@@ -16,16 +16,21 @@ use parking_lot::Mutex;
 use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter};
 
-// 轮询间隔是上游缺游标 API 下的部分缓解：每 tick 底座 `inspect_job` 都会整
-// 克隆+解码全部输出（根治需要 CodeWhale 提供游标式读取，此处改不动），拉长
-// 周期直接摊薄该常数；配合 `observe_jobs` 的字节长度短路与镜像上限兜底。
+// The poll interval partially mitigates the engine's missing cursor API:
+// every tick `inspect_job` clones and decodes a job's entire output (a real
+// fix needs a cursor read in CodeWhale, which cannot change here), so a
+// longer period amortizes that constant cost. Paired with the byte-length
+// short-circuit in `observe_jobs` and the bounded emission mirror below.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
-/// 单个任务已回显镜像（emitted_stdout+emitted_stderr）的累计上限。镜像只为
-/// 前缀增量计算服务，超限后停止增长并停发增量（见 `reconcile`）：实时展示
-/// 由前端自身尾部截断兜住，终态 BackgroundFinished 仍携带权威 tail，聊天里
-/// 的最终输出不受影响。上游提供游标 API 后应移除此兜底。
-const EMITTED_MIRROR_CAP_BYTES: usize = 8 * 1024 * 1024;
+/// Tail of already-emitted output kept per tracked stream. The tail acts as
+/// the reconciliation cursor: delta computation runs against the last
+/// `EMITTED_TAIL_KEEP_BYTES` bytes of emitted text plus the byte offset
+/// where that tail starts inside the job's full output buffer, so memory
+/// and per-tick compare costs stay bounded while live deltas keep flowing
+/// for arbitrarily verbose jobs. A cursor read API upstream remains the
+/// real fix for the per-tick full clone+decode.
+const EMITTED_TAIL_KEEP_BYTES: usize = 64 * 1024;
 
 #[derive(Clone)]
 pub(crate) struct ShellOutputMonitor {
@@ -37,9 +42,51 @@ struct TrackedTool {
     command: String,
     order: u64,
     task_id: Option<String>,
-    emitted_stdout: String,
-    emitted_stderr: String,
+    stdout: StreamMirror,
+    stderr: StreamMirror,
     keep_after_tool_end: bool,
+}
+
+/// Bounded tail of one stream's already-emitted text plus the byte offset
+/// where that tail starts inside the job's full output buffer.
+#[derive(Debug, Default)]
+struct StreamMirror {
+    /// Bytes of the full stream output before `text` begins.
+    skip: usize,
+    /// Already-emitted tail, at most `EMITTED_TAIL_KEEP_BYTES` bytes.
+    text: String,
+}
+
+impl StreamMirror {
+    /// Return the not-yet-emitted suffix of `current`, or `None` when
+    /// `current` does not extend the already-emitted text (hold the mirror
+    /// and retry on the next snapshot). While `running`, a trailing U+FFFD
+    /// is held back so a code point split across reader chunks is emitted
+    /// exactly once (`inspect_job` lossily decodes the whole buffer every
+    /// observation, so an incomplete trailing code point shows up as a
+    /// temporary replacement character).
+    fn delta(&mut self, current: &str, running: bool) -> Option<String> {
+        let stable = if running {
+            current.trim_end_matches('\u{fffd}')
+        } else {
+            current
+        };
+        let emitted_tail = stable.get(self.skip..)?;
+        let delta = emitted_tail.strip_prefix(self.text.as_str())?;
+        self.text.push_str(delta);
+        if self.text.len() > EMITTED_TAIL_KEEP_BYTES {
+            // Drop already-emitted head bytes so the mirror stays bounded;
+            // `skip` advances with them to keep `text` aligned with
+            // `stable[self.skip..]`. Trim only at char boundaries.
+            let mut trim = self.text.len() - EMITTED_TAIL_KEEP_BYTES;
+            while !self.text.is_char_boundary(trim) {
+                trim += 1;
+            }
+            self.skip += trim;
+            self.text.drain(..trim);
+        }
+        Some(delta.to_string())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -47,8 +94,11 @@ struct MonitorState {
     tools: HashMap<String, TrackedTool>,
     claimed_tasks: HashSet<String>,
     next_order: u64,
-    /// task_id -> 上一轮观察到的累计输出字节数（快照 stdout_len+stderr_len）。
-    /// 字节数没变且仍在运行时跳过 `inspect_job` 的整克隆+解码（短路面）。
+    /// task_id -> cumulative output bytes (snapshot stdout_len+stderr_len)
+    /// observed last round. While a job is running and the byte count is
+    /// unchanged, the decoded output must equal the previous round and the
+    /// delta must be empty, so the full clone+decode in `inspect_job` is
+    /// skipped entirely.
     last_output_bytes: HashMap<String, usize>,
 }
 
@@ -128,8 +178,8 @@ impl ShellOutputMonitor {
                 command: command.to_string(),
                 order,
                 task_id: None,
-                emitted_stdout: String::new(),
-                emitted_stderr: String::new(),
+                stdout: StreamMirror::default(),
+                stderr: StreamMirror::default(),
                 keep_after_tool_end: false,
             },
         );
@@ -207,10 +257,14 @@ fn observe_jobs(
     Ok(tracked
         .into_iter()
         .filter_map(|task_id| {
-            // `inspect_job` 每次都整克隆+解码全部输出（上游缺游标 API）。
-            // `list_jobs` 快照自带累计字节数且本调用内已 poll 过：仍在运行
-            // 且总字节数没变时，解码结果必与上一轮相同、增量必为空，直接
-            // 跳过本次整读。终态不短路，收口事件照常发出。
+            // `inspect_job` clones and decodes a job's entire output on every
+            // call (the engine has no cursor API). `list_jobs` snapshots
+            // carry cumulative byte counts and were already polled within
+            // this call: while a job is running and its total byte count is
+            // unchanged, the decoded output must equal the previous round
+            // and the delta must be empty, so skip the full read. Terminal
+            // snapshots are never short-circuited so the closing event is
+            // always emitted.
             if let Some(snapshot) = snapshots.iter().find(|job| job.id == task_id) {
                 let total = snapshot.stdout_len.saturating_add(snapshot.stderr_len);
                 if snapshot.status == ShellStatus::Running
@@ -276,45 +330,28 @@ impl MonitorState {
                 continue;
             };
 
-            // 镜像超限的兜底：不再增长镜像、也不再逐 tick 做全量前缀增量
-            // （strip_prefix 是 O(总输出)，短路后本 tick 代价归零）。前端实时
-            // 展示自身有尾部截断；终态 BackgroundFinished 仍走权威 tail，
-            // 最终落到聊天的输出不受影响。注意这是软上限：跨限那一 tick 的
-            // 整块 delta 仍会先入镜像（判定在追加前做），实际峰值 ≈ cap +
-            // 单个轮询周期的增量。
-            let mirror_over_cap = tool
-                .emitted_stdout
-                .len()
-                .saturating_add(tool.emitted_stderr.len())
-                > EMITTED_MIRROR_CAP_BYTES;
-            if !mirror_over_cap {
-                if let Some(delta) = appended_stable_delta(
-                    &tool.emitted_stdout,
-                    &job.stdout,
-                    job.status == ShellStatus::Running,
-                ) {
-                    tool.emitted_stdout.push_str(&delta);
-                    if !delta.is_empty() {
-                        emissions.push(MonitorEmission::Delta {
-                            tool_id: tool_id.clone(),
-                            stream: "stdout",
-                            content: delta,
-                        });
-                    }
+            if let Some(delta) = tool
+                .stdout
+                .delta(&job.stdout, job.status == ShellStatus::Running)
+            {
+                if !delta.is_empty() {
+                    emissions.push(MonitorEmission::Delta {
+                        tool_id: tool_id.clone(),
+                        stream: "stdout",
+                        content: delta,
+                    });
                 }
-                if let Some(delta) = appended_stable_delta(
-                    &tool.emitted_stderr,
-                    &job.stderr,
-                    job.status == ShellStatus::Running,
-                ) {
-                    tool.emitted_stderr.push_str(&delta);
-                    if !delta.is_empty() {
-                        emissions.push(MonitorEmission::Delta {
-                            tool_id: tool_id.clone(),
-                            stream: "stderr",
-                            content: delta,
-                        });
-                    }
+            }
+            if let Some(delta) = tool
+                .stderr
+                .delta(&job.stderr, job.status == ShellStatus::Running)
+            {
+                if !delta.is_empty() {
+                    emissions.push(MonitorEmission::Delta {
+                        tool_id: tool_id.clone(),
+                        stream: "stderr",
+                        content: delta,
+                    });
                 }
             }
 
@@ -354,20 +391,6 @@ impl From<ShellJobDetail> for ObservedJob {
             stderr_tail: detail.snapshot.stderr_tail,
         }
     }
-}
-
-/// `inspect_job` converts the complete byte buffer on every observation.  An
-/// incomplete UTF-8 code point can therefore appear temporarily as a trailing
-/// replacement character.  Hold that final marker until the next snapshot so
-/// a Chinese character split across reader chunks is emitted exactly once.
-fn appended_stable_delta(previous: &str, current: &str, running: bool) -> Option<String> {
-    let mut stable = current;
-    if running {
-        stable = stable.trim_end_matches('\u{fffd}');
-    }
-    stable
-        .strip_prefix(previous)
-        .map(std::string::ToString::to_string)
 }
 
 fn emit_monitor_event(app: &AppHandle, session_id: &str, emission: MonitorEmission) {
@@ -518,8 +541,8 @@ mod tests {
                 command: "cargo check".to_string(),
                 order: 0,
                 task_id: None,
-                emitted_stdout: String::new(),
-                emitted_stderr: String::new(),
+                stdout: StreamMirror::default(),
+                stderr: StreamMirror::default(),
                 keep_after_tool_end: false,
             },
         );
@@ -550,11 +573,9 @@ mod tests {
 
     #[test]
     fn holds_incomplete_utf8_replacement_until_a_stable_snapshot() {
-        assert_eq!(
-            appended_stable_delta("", "中\u{fffd}", true),
-            Some("中".into())
-        );
-        assert_eq!(appended_stable_delta("中", "中文", true), Some("文".into()));
+        let mut mirror = StreamMirror::default();
+        assert_eq!(mirror.delta("中\u{fffd}", true).as_deref(), Some("中"));
+        assert_eq!(mirror.delta("中文", true).as_deref(), Some("文"));
     }
 
     #[test]
@@ -581,8 +602,8 @@ mod tests {
                 command: "same".to_string(),
                 order: 0,
                 task_id: None,
-                emitted_stdout: String::new(),
-                emitted_stderr: String::new(),
+                stdout: StreamMirror::default(),
+                stderr: StreamMirror::default(),
                 keep_after_tool_end: false,
             },
         );
@@ -597,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_mirror_stops_deltas_but_completion_still_fires() {
+    fn bounded_mirror_keeps_streaming_after_the_window_overflows() {
         let mut state = MonitorState::default();
         state.tools.insert(
             "tool-1".to_string(),
@@ -605,37 +626,64 @@ mod tests {
                 command: "build".to_string(),
                 order: 0,
                 task_id: Some("job-1".to_string()),
-                emitted_stdout: "x".repeat(EMITTED_MIRROR_CAP_BYTES + 1),
-                emitted_stderr: String::new(),
+                stdout: StreamMirror::default(),
+                stderr: StreamMirror::default(),
                 keep_after_tool_end: true,
             },
         );
-        // 镜像超限：运行中的新输出不再产生增量，镜像也不再被撑大。
-        assert!(
-            state
-                .reconcile(vec![observed("job-1", ShellStatus::Running, "more\n")])
-                .is_empty()
-        );
+        // The first observation coalesces the whole backlog into one delta;
+        // the mirror then trims to the keep window.
+        let backlog = "x".repeat(EMITTED_TAIL_KEEP_BYTES + 4096);
         assert_eq!(
-            state.tools["tool-1"].emitted_stdout.len(),
-            EMITTED_MIRROR_CAP_BYTES + 1
-        );
-        // 终态收口不受兜底影响：BackgroundFinished 仍带权威 tail。
-        let emissions = state.reconcile(vec![observed(
-            "job-1",
-            ShellStatus::Completed,
-            "more\ndone\n",
-        )]);
-        assert_eq!(
-            emissions,
-            vec![MonitorEmission::BackgroundFinished {
+            state.reconcile(vec![observed("job-1", ShellStatus::Running, &backlog)]),
+            vec![MonitorEmission::Delta {
                 tool_id: "tool-1".to_string(),
-                task_id: "job-1".to_string(),
-                status: ShellStatus::Completed,
-                exit_code: Some(0),
-                stdout_tail: "more\ndone\n".to_string(),
-                stderr_tail: String::new(),
+                stream: "stdout",
+                content: backlog.clone(),
             }]
+        );
+        assert_eq!(state.tools["tool-1"].stdout.skip, 4096);
+        assert_eq!(
+            state.tools["tool-1"].stdout.text.len(),
+            EMITTED_TAIL_KEEP_BYTES
+        );
+
+        // Progress appended after the window overflowed still reaches the
+        // display while the job keeps running.
+        let progressed = backlog + "still alive\n";
+        assert_eq!(
+            state.reconcile(vec![observed("job-1", ShellStatus::Running, &progressed)]),
+            vec![MonitorEmission::Delta {
+                tool_id: "tool-1".to_string(),
+                stream: "stdout",
+                content: "still alive\n".to_string(),
+            }]
+        );
+        assert_eq!(
+            state.tools["tool-1"].stdout.text.len(),
+            EMITTED_TAIL_KEEP_BYTES
+        );
+
+        // The terminal snapshot still fires the closing event with the
+        // authoritative tails.
+        let completed = progressed + "done\n";
+        assert_eq!(
+            state.reconcile(vec![observed("job-1", ShellStatus::Completed, &completed)]),
+            vec![
+                MonitorEmission::Delta {
+                    tool_id: "tool-1".to_string(),
+                    stream: "stdout",
+                    content: "done\n".to_string(),
+                },
+                MonitorEmission::BackgroundFinished {
+                    tool_id: "tool-1".to_string(),
+                    task_id: "job-1".to_string(),
+                    status: ShellStatus::Completed,
+                    exit_code: Some(0),
+                    stdout_tail: completed.clone(),
+                    stderr_tail: String::new(),
+                }
+            ]
         );
         assert!(!state.tools.contains_key("tool-1"));
     }
@@ -649,8 +697,11 @@ mod tests {
                 command: "build".to_string(),
                 order: 0,
                 task_id: Some("job-1".to_string()),
-                emitted_stdout: "building\n".to_string(),
-                emitted_stderr: String::new(),
+                stdout: StreamMirror {
+                    skip: 0,
+                    text: "building\n".to_string(),
+                },
+                stderr: StreamMirror::default(),
                 keep_after_tool_end: true,
             },
         );
