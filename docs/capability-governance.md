@@ -43,7 +43,7 @@
   属安全评审事项。
 - **模式能力静态表 `MODE_TABLE`**（`features/assistant/session_policy.rs`）：
   每模式一行 `ModeCapabilities { unavailable_tools,
-  skills_empty_hides_load_skill, project_skills_opt_in }`，编译期常量、
+  skills_empty_hides_load_skill }`，编译期常量、
   查表取数（取代散落的 match 臂），新增模式漏填由穷尽性测试兜底
   （测试遍历的 `SessionMode::ALL` 由编译期穷尽哨兵绑定到枚举变体，
   漏挂即编译失败）。
@@ -118,8 +118,15 @@ scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
 
 | 模式 | 包默认策略 | 含义 |
 |---|---|---|
-| plain | AllowAll | 全开 |
+| plain | **DenyAll** | 全禁（工具开关全量收敛：外部能力一律显式开启） |
 | code | **DenyAll** | 全禁（外部能力显式开启，封泄露面/攻击面） |
+
+plain 从 AllowAll 翻为 DenyAll 时的**存量迁移**（读时迁移，见
+`scope.rs::load_disabled_bundles_file_locked`）：旧版文件（无
+`plain_defaults_migrated` 字段）或旧双文件时代的装机，plain 被初始化为
+落盘列表——锁定升级前 AllowAll 语义下的真实开关状态（缺省空 = 全开），
+升级后用户无感；全新装机只置迁移标记不初始化，未初始化 plain 按 DenyAll
+兜底（默认全关）。
 
 用户数据语义（三条线一致）：
 
@@ -128,9 +135,11 @@ scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
   已做过选择的用户（`initialized` 集合标记初始化）；
 - 未知条目（工具下架、上游改名残留）静默忽略，写回时清理。
 
-项目级技能（`.agents/skills` 等）保持**独立开关**、各 scope 默认关：
-项目内文本是 prompt-injection 面，信任级别与包装机技能不同，开启路径
-展示注入风险警告。
+项目级技能（`.agents/skills` 等）保持**独立开关**、默认关：项目内文本是
+prompt-injection 面，信任级别与包装机技能不同，开启路径展示注入风险警告。
+参与范围**跟绑定不跟模式**：仅绑定了真实目录的会话（原生 code 会话的项目
+目录、普通 chat 会话的用户工作目录绑定）在开关开启时扫描项目技能；未绑定
+会话（含 code 临时工作区）不扫描。
 
 ### 3.3 生效通道
 

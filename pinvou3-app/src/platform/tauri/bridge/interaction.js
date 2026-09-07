@@ -135,11 +135,16 @@
   }
   // 草稿态 chip 切换：写本 lane 全局默认（setDraftMode 不物化会话——
   // 物化时由 ensureSession 把 lane 默认应用到新会话）。
+  // 绑定了工作目录的草稿安全姿态对齐 code 模式：切换写 code lane 全局默认
+  // （不写 work lane），并把显式选择暂存到 pendingDraftMode，物化时按暂存值
+  // 逐会话应用（后端对绑定会话只解析 code lane 默认，不读 work/design）。
   async function setDraftMode(target) {
-    const lane = state.modeLane === "design" ? "design" : "work";
+    const boundDraft = !!state.draftWorkspacePath;
+    const lane = boundDraft ? "code" : (state.modeLane === "design" ? "design" : "work");
     try {
       const defaults = await invoke("set_mode_default", { lane, mode: target });
       if (defaults) state.modeDefaults = defaults;
+      if (boundDraft) state.pendingDraftMode = target;
       if (!state.activeSessionId) {
         state.modeState = {
           mode: target,
@@ -148,6 +153,21 @@
       }
     } catch (e) { addSystemItem(bt("switchModeFailed") + e); }
     notify();
+  }
+
+  // ── code 权限偏好（YOLO 一次性确认门）─────────────────────────────
+  // 绑定工作目录的普通会话切 YOLO 前与 code 模式共用同一确认门事实源。
+  // 读取失败按 null 返回（needsYoloConfirmation 对 null 按未确认处理——
+  // 安全方向：宁可多弹一次）；confirm 的失败上抛给 UI 提示，不静默。
+  async function getCodePermissionPrefs() {
+    try {
+      return await invoke("get_code_permission_prefs");
+    } catch {
+      return null;
+    }
+  }
+  async function confirmCodeYolo() {
+    return invoke("confirm_code_yolo");
   }
 
   // ── 卡片动作辅助 ─────────────────────────────────────────────────
@@ -572,6 +592,8 @@
       setDraftMode,
       setModeLane,
       refreshModeDefaults,
+      getCodePermissionPrefs,
+      confirmCodeYolo,
       setMultiAgentMode,
       planStuckReplan,
       planStuckGo,

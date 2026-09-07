@@ -166,6 +166,12 @@ fn work_layer_sections() -> (&'static str, &'static str, &'static str) {
     (env_section, browser_section, artifact_rule)
 }
 
+/// 绑定了真实工作目录的普通会话的环境段：仅 `## 工作环境` 一段（含
+/// `{{PINVOU3_WORKSPACE_HINT}}` 工作区占位）。与 work 层默认环境段的差异：
+/// 工作对象是用户选定的真实目录（改动实时可见），无产出物面板与 `tmp/` 语义。
+pub const INSTRUCTIONS_WORK_BOUND_MD: &str =
+    include_str!("../../../../resources/common/bundle/instructions-work-bound.md");
+
 /// work 模式完整 instructions（共享骨架 + work 层占位替换）。
 /// 与拆分前 instructions.md 逐字节相等。
 pub fn instructions_md() -> &'static str {
@@ -186,6 +192,26 @@ pub fn instructions_md() -> &'static str {
                 &format!("{artifact_rule}\n"),
             )
     })
+}
+
+/// 绑定真实工作目录的普通会话完整 instructions（共享骨架 + 绑定环境段 +
+/// work 层 Browser capabilities 段与成品条）：仅环境段换成绑定变体，浏览器
+/// 与成品卡能力与普通会话一致。`instructions_md()` 的逐字节语义不受影响。
+#[allow(clippy::expect_used)]
+pub fn instructions_work_bound_md(workspace_hint: &str) -> String {
+    let (_env_section, browser_section, artifact_rule) = work_layer_sections();
+    let env_section = INSTRUCTIONS_WORK_BOUND_MD
+        .trim_end()
+        .replace("{{PINVOU3_WORKSPACE_HINT}}", workspace_hint);
+    INSTRUCTIONS_SHARED_MD
+        .replace(
+            "{{PINVOU3_MODE_ENV_SECTION}}",
+            &format!("{env_section}\n\n{browser_section}\n"),
+        )
+        .replace(
+            "{{PINVOU3_MODE_ARTIFACT_RULE}}\n",
+            &format!("{artifact_rule}\n"),
+        )
 }
 
 /// 代码模式层（品悟原生代码会话）：§工作环境（代码模式身份 + `{{PINVOU3_WORKSPACE_HINT}}`
@@ -766,6 +792,41 @@ mod tests {
         let rendered = instructions_code_md("你在本会话专属工作目录中工作,相对路径即相对该目录;");
         assert!(rendered.contains("你在本会话专属工作目录中工作"));
         assert!(!rendered.contains("项目目录"));
+    }
+
+    #[test]
+    fn work_bound_instructions_render_workspace_hint_without_panel_tmp_semantics() {
+        let rendered = instructions_work_bound_md(
+            "你正在用户选择的工作目录 `/repo/demo` 中工作,相对路径即相对该目录;",
+        );
+        // 工作区占位渲染正确。
+        assert!(rendered.contains("你正在用户选择的工作目录 `/repo/demo` 中工作"));
+        assert!(!rendered.contains("{{PINVOU3_WORKSPACE_HINT}}"));
+        // 产出物面板/tmp 纪律不出现（环境段否定式提及"没有产出物面板与 tmp/ 语义"
+        // 是刻意保留的行为指引）。
+        assert!(!rendered.contains("自动落到本会话专属工作目录"));
+        assert!(!rendered.contains("只有**最终成品**"));
+        assert!(!rendered.contains("产出用**相对路径**写"));
+        // 浏览器段与成品条保留（普通会话能力不变）。
+        assert!(rendered.contains("## Browser capabilities"));
+        assert!(rendered.contains("mcp_pinvou3_present_artifact"));
+        // 占位行无残留；骨架结构保持：绑定环境段位于 §底线 与 §工具与事实 之间，
+        // Browser capabilities 段位于环境段之后。
+        assert!(!rendered.contains("{{PINVOU3_MODE_ENV_SECTION}}"));
+        assert!(!rendered.contains("{{PINVOU3_MODE_ARTIFACT_RULE}}"));
+        let bottom = rendered.find("## 底线").unwrap();
+        let env = rendered.find("## 工作环境").unwrap();
+        let browser = rendered.find("## Browser capabilities").unwrap();
+        let tools = rendered.find("## 工具与事实").unwrap();
+        assert!(bottom < env && env < browser && browser < tools);
+    }
+
+    #[test]
+    fn work_instructions_unbound_unaffected_by_bound_variant() {
+        // 绑定变体的存在不影响未绑定渲染：默认 work instructions 保持原语义。
+        let rendered = instructions_md();
+        assert!(rendered.contains("自动落到本会话专属工作目录"));
+        assert!(!rendered.contains("用户选择的工作目录"));
     }
 
     fn run_depth_guard(bundle: &Pinvou3Bundle, tool: &str, args: &str) -> std::process::Output {

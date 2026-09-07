@@ -431,6 +431,7 @@ command_protocol!(
         "list_sessions",
         "list_archived_sessions",
         "create_session",
+        "get_session_workspace_binding",
         "load_session",
         "delete_session",
         "rename_session",
