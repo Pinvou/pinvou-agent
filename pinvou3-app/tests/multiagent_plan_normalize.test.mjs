@@ -1275,7 +1275,7 @@ vm.runInThisContext(
   { filename: 'model-service-errors.js' },
 );
 
-test('transcript 适配：模型服务失败重建友好卡并脱敏原始报文', () => {
+test('transcript adaptation: model-service failure rebuilds the friendly card and redacts the raw body', () => {
   const { turns } = projectSubagentTranscript({
     messages: [
       { role: 'user', content: [{ type: 'text', text: '调研任务' }] },
@@ -1298,14 +1298,14 @@ test('transcript 适配：模型服务失败重建友好卡并脱敏原始报文
   });
   const turn = turns[0];
   assert.equal(turn.status, 'Failed');
-  assert.ok(turn.userError, '门控接管的模型服务失败必须重建 userError 卡');
+  assert.ok(turn.userError, 'a gate-taken-over model service failure must rebuild the userError card');
   assert.equal(turn.userError.kind, 'billing');
-  assert.doesNotMatch(turn.error, /sk-secret123/, '红字兜底必须先脱敏再上屏');
+  assert.doesNotMatch(turn.error, /sk-secret123/, 'the red-text fallback must be redacted before display');
   assert.doesNotMatch(turn.userError.technicalDetail || '', /sk-secret123/);
-  assert.match(turn.userError.title, /DeepSeek/, 'provider 标签须从 bridge state 推导');
+  assert.match(turn.userError.title, /DeepSeek/, 'the provider label must be derived from bridge state');
 });
 
-test('transcript 适配：本地工具错误不建友好卡，原文脱敏兜底', () => {
+test('transcript adaptation: local tool errors get no friendly card, raw text redacted as fallback', () => {
   const { turns } = projectSubagentTranscript({
     messages: [{ role: 'user', content: [{ type: 'text', text: '跑本地脚本' }] }],
     agent: {
@@ -1317,11 +1317,11 @@ test('transcript 适配：本地工具错误不建友好卡，原文脱敏兜底
     options: { language: 'en' },
   });
   const turn = turns[0];
-  assert.equal(turn.userError, null, '非模型服务错误不得劫持成模型服务卡');
-  assert.ok(turn.error && turn.error.includes('permission denied'), '原文保留作红字兜底');
+  assert.equal(turn.userError, null, 'non-model-service errors must not be hijacked into a model service card');
+  assert.ok(turn.error && turn.error.includes('permission denied'), 'the raw text is kept as the red-text fallback');
 });
 
-test('transcript 适配：友好卡文案跟随界面语言', () => {
+test('transcript adaptation: friendly card copy follows the UI language', () => {
   const { turns } = projectSubagentTranscript({
     messages: [],
     agent: {
@@ -1333,7 +1333,7 @@ test('transcript 适配：友好卡文案跟随界面语言', () => {
     options: { language: 'en' },
   });
   assert.equal(turns[0].userError.kind, 'rate_limit');
-  assert.doesNotMatch(turns[0].userError.title, /[\u4e00-\u9fff]/, 'en 界面不得泄漏中文标题');
+  assert.doesNotMatch(turns[0].userError.title, /[\u4e00-\u9fff]/, 'the en interface must not leak a Chinese title');
 });
 
 test('transcript 适配：文件工具归 file_change，终态后不留转圈条目', () => {

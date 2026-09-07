@@ -731,8 +731,9 @@ pub(crate) fn spawn_event_forwarder(
                     let operation_rejected = std::mem::take(&mut active_operation_rejected);
                     let mut shell_cleanup_failed = false;
                     let mut terminal_status = status;
-                    // chat:done 的错误文本同样先过 Rust 脱敏分层(与 Error 事件
-                    // 的 transient/fatal 路径同一道防线)。
+                    // The chat:done error text goes through the same Rust
+                    // redaction layer (one line of defense shared with the
+                    // Error event's transient/fatal paths).
                     let mut terminal_error =
                         error.map(|error| crate::platform::credential_store::redact_secret(&error));
                     if let Some(base_total_tokens) = scheduled_base_total_tokens {
@@ -1190,12 +1191,18 @@ pub(crate) fn spawn_event_forwarder(
                     // (且会误触发 flush/closeBubble/plan_phase 收尾)。只飘个 advisory。
                     // 仅 recoverable==false(致命)才是真结束 → chat:done。
                     if envelope.recoverable {
-                        // 错误文本跨 webview 边界前先过 Rust 脱敏分层
-                        // (Bearer/sk-/长随机 token),前端 redactTechnicalDetail
-                        // 是第二道;Rust 侧先行保证持久化/截图前的第一手文本已脱敏。
-                        // 结构化 code/category 原样透传,供前端在字符串分类之外
-                        // 保留受控错误语义(流式路径当前多为通用 "transient",
-                        // 前端不得仅凭它判定模型服务错误)。
+                        // Error text crosses the webview boundary through
+                        // the Rust redaction layer first (Bearer/sk-/long
+                        // random tokens); the frontend's
+                        // redactTechnicalDetail is the second line, but the
+                        // Rust pass guarantees the first-hand text is
+                        // already redacted before persistence/screenshots.
+                        // The structured code/category are passed through
+                        // untouched so the frontend can retain controlled
+                        // error semantics beyond string classification (the
+                        // streaming path currently emits mostly the generic
+                        // "transient", which alone must not drive
+                        // model-service classification).
                         let payload = json!({
                             "session_id": session_id,
                             "error": crate::platform::credential_store::redact_secret(&envelope.message),

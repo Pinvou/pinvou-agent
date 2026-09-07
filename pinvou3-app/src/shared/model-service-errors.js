@@ -1,14 +1,16 @@
 (function () {
   "use strict";
 
-  // 脱敏占位符按界面语言选择:技术详情在 en/ja 界面不得混入中文。
+  // Redaction placeholder follows the UI language: technical details must
+  // not mix Chinese into en/ja interfaces.
   const SENSITIVE_PLACEHOLDERS = {
     zh: "[敏感信息已隐藏]",
     en: "[redacted]",
     ja: "[秘匿済み]",
   };
-  // 品牌标签按界面语言提供:中文品牌名(通义千问/智谱/豆包)只用于 zh,
-  // en/ja 用拉丁名,避免 "The 通义千问 API quota ..." 这类中英混排。
+  // Brand labels follow the UI language: Chinese brand names (Qwen/Zhipu/
+  // Doubao) are only used for zh; en/ja use the latin names so cards never
+  // mix scripts ("The 通义千问 API quota ..." style mixing).
   const PROVIDER_LABELS = {
     zh: {
       deepseek: "DeepSeek",
@@ -71,14 +73,17 @@
     return table[key] || PROVIDER_LABELS.zh[key] || "";
   }
 
-  // 底座(CodeWhale)模型调用失败的固定错误前缀,出现即可接管,分两组:
-  // ①SSE 流式链路(chat.rs/stream_entry.rs):SSE stream request failed /
-  //   idle timeout / headers timed out / buffer exceeded、Stream read error、
-  //   Failed to call ... Chat API;
-  // ②LlmError Display 引导词(llm_client/mod.rs,传输层立即失败——DNS/连接
-  //   拒绝/TLS——不带 SSE 前缀直接上抛):经 llm_client 独产、与本地工具
-  //   错误文案无碰撞,且冒号/括号锚定("rate limit exceeded:" 不会命中
-  //   gh CLI 的 "API rate limit exceeded for ...")。
+  // Fixed error prefixes of base (CodeWhale) model-call failures; their
+  // presence alone authorizes takeover, in two groups:
+  // ① SSE streaming path (chat.rs/stream_entry.rs): SSE stream request
+  //    failed / idle timeout / headers timed out / buffer exceeded,
+  //    Stream read error, Failed to call ... Chat API;
+  // ② LlmError Display lead-ins (llm_client/mod.rs; transport-level
+  //    immediate failures — DNS/connection refused/TLS — propagate without
+  //    an SSE prefix): produced solely by llm_client, they cannot collide
+  //    with local tool error wording, and the colon/parenthesis anchoring
+  //    means "rate limit exceeded:" never matches the gh CLI's
+  //    "API rate limit exceeded for ...".
   const MODEL_CALL_PREFIXES = [
     "sse stream",
     "sse buffer",
@@ -99,13 +104,17 @@
     "provider stream connection dropped",
   ];
 
-  // 泛化信号词分三档:①无条件词——模型 API 计费/额度词与 "invalid api key"
-  // ("incorrect api key" 是 OpenAI 真实措辞)等,本地工具错误几乎不会出现;
-  // ②带上下文词——泛中文支付语("账户余额/余额不足/欠费"在本地支付/转账
-  // 错误里同样常见,须叠加 API/厂商上下文才接管);
-  // ③网络/服务/超时词(timeout、connection refused、server error 等)在本地
-  // 工具错误(git、ssh、npm、docker、脚本退出码)里同样常见,必须叠加
-  // API/厂商上下文(hasApiSignal/hasProviderNameSignal)才允许接管。
+  // Generic signal words in three tiers:
+  // ① Unconditional — model API billing/quota words and "invalid api key"
+  //    ("incorrect api key" is OpenAI's real wording); local tool errors
+  //    practically never produce them;
+  // ② Context-gated — generic Chinese payment phrases (账户余额/余额不足/
+  //    欠费 are equally common in local payment/transfer errors, so they
+  //    only take over with an API/provider context);
+  // ③ Network/service/timeout words (timeout, connection refused,
+  //    server error, ...) are just as common in local tool errors (git,
+  //    ssh, npm, docker, script exit codes) and require an API/provider
+  //    context (hasApiSignal/hasProviderNameSignal) before takeover.
   const STRONG_MODEL_ERROR_KEYWORDS = [
     "invalid api key",
     "incorrect api key",
@@ -115,14 +124,17 @@
     "quota has been exceeded",
     "exceeded your current quota",
     "payment required",
-    // Anthropic 官方 402 措辞("Your credit balance is too low")与通义
-    // "Arrearage" 错误码:纯厂商计费语,本地工具错误几乎不会出现,无状态码
-    // 裸串(ACP 泳道/子代理面板)也应接管。
+    // Anthropic's official 402 wording ("Your credit balance is too low")
+    // and Tongyi's "Arrearage" error code: pure vendor billing language
+    // that local tool errors practically never produce, so bare strings
+    // without a status code (ACP lane / subagent panel) also take over.
     "credit balance",
     "arrearage",
-    // 内容政策拒绝是模型服务专属语义(OpenAI moderation/safety system、
-    // Anthropic content filtering),本地工具不产这类措辞,无条件接管;
-    // 且属确定性失败,不得引导"稍后重试"(见 content 文案)。
+    // Content-policy rejections are model-service-specific semantics
+    // (OpenAI moderation/safety system, Anthropic content filtering);
+    // local tools never produce them, so they take over unconditionally.
+    // They are deterministic failures and must not tell users to "retry
+    // later" (see the content copy).
     "content policy",
     "content filter",
     "content filtering",
@@ -134,8 +146,10 @@
     "resource exhausted",
   ];
 
-  // 泛中文支付语:语义不足以单独接管(本地支付/转账错误同款措辞),
-  // 但叠加 API/厂商上下文后是强计费信号(如 "GLM 400 余额不足")。
+  // Generic Chinese payment phrases: their semantics alone do not justify
+  // takeover (local payment/transfer errors use the same words), but with
+  // an API/provider context they are a strong billing signal
+  // ("GLM 400 余额不足").
   const STRONG_WITH_CONTEXT_KEYWORDS = [
     "账户余额",
     "余额不足",
@@ -148,9 +162,11 @@
   ];
 
   const AMBIGUOUS_MODEL_ERROR_KEYWORDS = [
-    // 注意:"api key" 不在此列——它是 hasApiSignal 的上下文名词而非错误语义,
-    // 留在词表里会让门控形同虚设("failed to save api key to config: disk full"
-    // 这类本地错误被劫持)。强语义的 "invalid api key" 由 STRONG 词表接管。
+    // Note: "api key" is deliberately absent — it is a context noun for
+    // hasApiSignal, not error semantics; keeping it here would gut the
+    // gate ("failed to save api key to config: disk full" style local
+    // errors would be hijacked). The strong "invalid api key" is covered
+    // by the STRONG list.
     "invalid token",
     "unauthorized",
     "rate limit",
@@ -179,9 +195,11 @@
     return lang === "en" ? "current model service" : lang === "ja" ? "現在のモデルサービス" : "当前模型服务";
   }
 
-  // 三语文案表提升为模块常量:每次 build 只做两次查表,不再重建 ~60 项
-  // 对象字面量(错误分类在每条事件上高频调用)。{provider} 在取词时替换,
-  // {stop} 占位符由 build 按终态/瞬态措辞替换。
+  // The tri-lingual copy table is hoisted to a module constant: each build
+  // does two table lookups instead of rebuilding a ~60-entry object literal
+  // (error classification runs on every event). {provider} is substituted
+  // at lookup time; the {stop} placeholder is replaced by build() with the
+  // terminal or transient wording.
   const COPY = {
     zh: {
       billingTitle: "{provider}账户余额不足",
@@ -255,8 +273,9 @@
     const lang = languageTag(language);
     const p = provider || defaultProviderLabel(language);
     let out = String(COPY[lang][key]).split("{provider}").join(p);
-    // zh 默认标签以「服务」结尾,serverTitle 的「服务」后缀会叠词
-    // ("当前模型服务服务暂时不可用");品牌标签(DeepSeek/智谱等)保持后缀。
+    // The zh default label already ends with 服务 ("service"), so appending
+    // the serverTitle suffix would double it ("当前模型服务服务暂时不可用");
+    // brand labels (DeepSeek/Zhipu/...) keep the suffix.
     if (lang === "zh" && key === "serverTitle" && p.endsWith("服务")) {
       out = p + "暂时不可用";
     }
@@ -264,7 +283,8 @@
   }
 
   function extractHttpStatus(text) {
-    // HTTP/1.1 429、HTTP/2 503(带版本段)与 "status code 429"(axios)同属常见形态。
+    // HTTP/1.1 429 and HTTP/2 503 (with version segment) plus axios's
+    // "status code 429" are the common shapes.
     const match = String(text || "").match(/\bHTTPS?\/?[\d.]*\s*(\d{3})\b/i)
       || String(text || "").match(/\bstatus(?:\s+code)?[=:\s]+(\d{3})\b/i);
     return match ? Number(match[1]) : null;
@@ -278,17 +298,21 @@
       .trim();
   }
 
-  // 关键词匹配带词边界:裸 includes 会让 "chat api" 命中 "chat apiary"、
-  // "api key" 命中 "api-keys.yaml"(归一化后 "api keys"),把本地工具错误
-  // 误判成模型服务故障。正则按词编译并缓存(分类在每条错误上高频调用)。
+  // Keyword matching is word-bounded: a bare includes() would let
+  // "chat api" hit "chat apiary" or "api key" hit "api-keys.yaml"
+  // ("api keys" after normalization), misclassifying local tool errors as
+  // model service failures. Regexes are compiled per keyword and cached
+  // (classification runs on every error).
   const KEYWORD_REGEX_CACHE = new Map();
   function keywordRegex(word) {
     let re = KEYWORD_REGEX_CACHE.get(word);
     if (!re) {
       const escaped = String(word).replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
-      // 尾部词边界只对字母/数字结尾的关键词有意义:以 "(" 或空格收尾的
-      // 锚定形态(如 "server error ("/"request timed out after ")本身已
-      // 与后续字符隔离,加前瞻反而会拒绝紧随的数字(状态码/时长)。
+      // The trailing word boundary only makes sense for keywords ending in
+      // a letter/digit: anchored forms ending in "(" or a space ("server
+      // error (", "request timed out after ") are already separated from
+      // what follows, and a lookahead there would reject the number that
+      // legitimately follows (status code / duration).
       const tail = /[a-z0-9]$/i.test(word) ? "(?![a-z0-9])" : "";
       re = new RegExp("(?:^|[^a-z0-9])" + escaped + tail, "i");
       KEYWORD_REGEX_CACHE.set(word, re);
@@ -318,12 +342,16 @@
     ]);
   }
 
-  // 本地 CLI 工具的固定错误形态,先于语义词表排除:git 的 "fatal:" 行与
-  // ssh/curl 的 "connect to host … port N" 在 remote URL/主机名里带厂商名时
-  // (github.com/openai、git.openai.com)叠加网络歧义词,会被误判成模型服务
-  // 故障并劫持成"请重试"卡;npm/pnpm 的 CLI 输出头部同理——registry URL 里
-  // 的包名(如 …/openai)会冒充厂商信号。底座模型错误恒带 MODEL_CALL_PREFIXES
-  // 并已在上方接管,不会落到这里,故排除不伤及真实模型服务错误。
+  // Fixed error shapes of local CLI tools, excluded before the semantic
+  // keyword lists: git's "fatal:" lines and ssh/curl's "connect to host
+  // ... port N" carry vendor names inside remote URLs/hostnames
+  // (github.com/openai, git.openai.com) and, combined with ambiguous
+  // network words, would be misjudged as model service failures and
+  // hijacked into "please retry" cards; npm/pnpm CLI output headers are
+  // the same — the package name in the registry URL (e.g. .../openai)
+  // would masquerade as a provider signal. Base model errors always carry
+  // a MODEL_CALL_PREFIXES prefix and are taken over above, so they never
+  // reach these exclusions and real model service errors are unaffected.
   const LOCAL_TOOL_SHAPES = [
     /(?:^|[\s(@])fatal(?: error)?:/i,
     /(?:connect to host|failed to connect to)\s+\S+\s+port\s+\d+/i,
@@ -332,10 +360,12 @@
     /err_pnpm_[a-z0-9_]+/i,
   ];
 
-  // 分类器只接管两类错误:①底座模型调用的固定前缀(见 MODEL_CALL_PREFIXES);
-  // ②模型服务语义词,且必须叠加 API/厂商上下文——裸的 timeout/connection
-  // refused/server error 等词在本地工具错误(git、ssh、npm、docker)里同样
-  // 常见,不能仅凭它们断言"模型服务故障"。
+  // The classifier only takes over two error families: ① fixed prefixes of
+  // base model calls (see MODEL_CALL_PREFIXES); ② model-service semantic
+  // words that must come with an API/provider context — bare timeout/
+  // connection refused/server error words are equally common in local tool
+  // errors (git, ssh, npm, docker) and cannot assert a model service
+  // failure on their own.
   const MEMORY_EXHAUSTION_RE = /(?:^|[^a-z0-9])(?:out\s+of\s+memory|oom|内存(?:耗尽|不足|溢出))(?![a-z0-9])/i;
 
   function isModelServiceError(raw) {
@@ -344,11 +374,13 @@
     const lower = text.toLowerCase();
     const normalized = normalizeForMatch(text);
     if (hasAny(lower, normalized, MODEL_CALL_PREFIXES)) return true;
-    // 本地 CLI 工具形态(见 LOCAL_TOOL_SHAPES)先于全部语义词表排除。
+    // Local CLI tool shapes (see LOCAL_TOOL_SHAPES) are excluded before all
+    // semantic keyword lists.
     if (LOCAL_TOOL_SHAPES.some(function (re) { return re.test(text); })) return false;
-    // POSIX 磁盘/卷配额满(EDQUOT 的标准 strerror 就是 "Disk quota exceeded",
-    // 卷挂载报 "user quota exceeded")先于计费强词排除,否则本地写盘失败会被
-    // 提示"请充值或切换模型"。
+    // POSIX disk/volume quota exhaustion (EDQUOT's standard strerror is
+    // "Disk quota exceeded"; volume mounts report "user quota exceeded")
+    // is excluded before the billing strong words, or a local disk-write
+    // failure would be answered with "top up or switch models".
     if (/(?:^|[^a-z0-9])(?:disk|nfs|inode|filesystem|storage|user)\s+quota(?![a-z0-9])/i.test(normalized)) return false;
     // Local inference/training memory exhaustion (vLLM/PyTorch "CUDA out of
     // memory", worker OOM) shares its shape with gRPC RESOURCE_EXHAUSTED.
@@ -360,21 +392,27 @@
     if (hasAny(lower, normalized, STRONG_MODEL_ERROR_KEYWORDS)) return true;
     const apiSignal = hasApiSignal(lower, normalized);
     const providerSignal = hasProviderNameSignal(lower, normalized);
-    // 泛中文支付语须叠加 API/厂商上下文:"支付失败:账户余额不足"这类本地
-    // 支付错误不得引导用户去充值模型 API;带上下文的("GLM 400 余额不足")
-    // 仍是强计费信号。
+    // Generic Chinese payment phrases need an API/provider context: local
+    // payment errors like "支付失败:账户余额不足" must not steer users to
+    // top up the model API; with context ("GLM 400 余额不足") they remain a
+    // strong billing signal.
     if ((apiSignal || providerSignal) && hasAny(lower, normalized, STRONG_WITH_CONTEXT_KEYWORDS)) return true;
     const status = extractHttpStatus(text);
-    // extractHttpStatus 只在文本含 HTTP/status 字样时才返回非空,但状态码本身
-    // 不构成模型服务上下文——本地服务/代理输出同款 "HTTP/1.1 500"——故仍须
-    // 与 api/厂商信号叠加(见下方组合条件),裸状态行不接管。
+    // extractHttpStatus only returns non-null when the text mentions
+    // HTTP/status, but a status code alone is not model service context —
+    // local services/proxies emit the same "HTTP/1.1 500" — so it must
+    // still combine with an api/provider signal (combined conditions
+    // below); a bare status line does not take over.
     const statusIsModelLike = status !== null
       && (status === 401 || status === 402 || status === 403 || status === 429 || (status >= 500 && status <= 599));
-    // apiSignal 与 providerSignal 走同一规则:必须叠加歧义错误词或 model-like
-    // 状态码。裸的 "api key"/"model service" 字样只是上下文名词而非错误语义,
-    // 无叠加条件时接管会把 "failed to save api key to config: disk full" 这类
-    // 本地错误劫持成模型服务错误卡;取舍是错过 "api key 配置有误" 这类无错误
-    // 动词的文本,但 STRONG 词表("invalid api key" 等)仍保证强语义接管。
+    // apiSignal and providerSignal follow the same rule: they require an
+    // ambiguous error word or a model-like status code on top. Bare "api
+    // key"/"model service" words are context nouns, not error semantics;
+    // unconditional takeover would hijack "failed to save api key to
+    // config: disk full" style local errors into model service cards. The
+    // trade-off is missing texts without an error verb ("api key 配置有
+    // 误"), but the STRONG list ("invalid api key", ...) still guarantees
+    // takeover for strong semantics.
     if ((apiSignal || providerSignal)
         && (statusIsModelLike || hasAny(lower, normalized, AMBIGUOUS_MODEL_ERROR_KEYWORDS))) return true;
     return false;
@@ -386,8 +424,9 @@
     const normalized = normalizeForMatch(text);
     const status = extractHttpStatus(text);
 
-    // 内容政策拒绝(OpenAI moderation/safety system、Anthropic content
-    // filtering)最具体,先于其他类别;确定性失败,无 {stop} 占位符。
+    // Content-policy rejections (OpenAI moderation/safety system,
+    // Anthropic content filtering) are the most specific and come before
+    // the other kinds; deterministic failure, no {stop} placeholder.
     if (hasAny(lower, normalized, ["content policy", "content filter", "content filtering", "safety system", "内容政策", "内容安全策略"])) {
       return { kind: "content", httpStatus: status };
     }
@@ -404,7 +443,8 @@
       || (hasAny(lower, normalized, ["resource exhausted"]) && !MEMORY_EXHAUSTION_RE.test(normalized))) {
       return { kind: "quota", httpStatus: status };
     }
-    // 403 与频控词共存时按频控分(GitHub/OpenAI 风格 "403 forbidden: rate limit exceeded")
+    // A 403 co-occurring with rate-limit words classifies as rate limiting
+    // (GitHub/OpenAI style "403 forbidden: rate limit exceeded").
     if (status === 429 || hasAny(lower, normalized, ["rate limit", "too many requests", "请求过于频繁"])) {
       return { kind: "rate_limit", httpStatus: status };
     }
@@ -425,14 +465,20 @@
     const sensitive = SENSITIVE_PLACEHOLDERS[languageTag(language)];
     let text = String(raw || "");
     const keepPrefix = (prefix) => prefix + sensitive;
-    // Authorization/Proxy-Authorization 整段吞值:任意 scheme(scheme 词表
-    // 枚举追不完,API-Key/HMAC 等非标 scheme 曾整体漏掉凭证段)、可选 JSON
-    // 引号;值一段吞到首个分隔符(引号/逗号/分号/括号/&/换行),允许值内
-    // 空格以覆盖 "Digest username=x, ..." 之外的两段式凭证。值段不吞 `[`/
-    // `\`/行首空白:已脱敏占位符 "[redacted]" 不得被二次匹配——否则重复脱敏
-    // 会把它劣化成 "[redacted][redacted]" 并让去重键漂移(gap 贪心回溯会让
-    // 值段从空格起重新吞入,故值首字符强制非空白,回溯后仍无法命中);`\`
-    // 排除保住转义 JSON 的尾部 `\"`。
+    // Authorization/Proxy-Authorization: swallow the whole value for any
+    // scheme (the scheme list can never be exhaustive — non-standard
+    // schemes like API-Key/HMAC used to leak the credential part
+    // entirely), with optional JSON quotes; the value is swallowed up to
+    // the first separator (quote/comma/semicolon/paren/&/newline), and
+    // spaces inside the value are allowed to cover two-token credentials
+    // beyond "Digest username=x, ...". The value part does not consume
+    // `[`/`\`/leading whitespace: an already-redacted "[redacted]"
+    // placeholder must not re-match — otherwise repeat redaction degrades
+    // it into "[redacted][redacted]" and drifts the dedup key (greedy
+    // separator backtracking would re-swallow from the leading space, so
+    // the first value character is forced to be non-whitespace and the
+    // placeholder stays unmatched even after backtracking); excluding `\
+    // preserves the trailing `\"` of escaped JSON.
     // Digest parameter blobs (username="x", realm=y) are swallowed whole
     // before the generic value: the generic class stops at the first quote
     // and would leak the comma-separated params. A single-pass alternation
@@ -441,27 +487,37 @@
       /((?:proxy-)?authorization[\s"'\\]*[:=][\s"'\\]*)(?:digest\s+[^;\r\n]+|(?:[^"'),;}&\][\s\\])(?:[^"'),;}&\][\r\n\\]*))/gi,
       (m, p1) => keepPrefix(p1),
     );
-    // Cookie/Set-Cookie 头整段吞值:多对凭证以 "; " 分隔,下方 kv 规则的值
-    // 字符类在首个空格处截断,只能吞第一对(SID 吞掉、HSID/SSID 原样泄漏)。
-    // HTTP 头一行一对,按头名吞到行尾不越界;前缀限 [空格/引号/行首/JSON
-    // 分隔符],把 "document.cookie = …" 之外的普通说明词挡在外面;分隔符
-    // 允许 `\`,覆盖转义 JSON 的 \"cookie\": \"…\" 形态。
+    // Cookie/Set-Cookie headers: swallow the whole line. Multiple
+    // credential pairs are "; "-separated and the kv rule's value class
+    // below stops at the first space, so only the first pair would be
+    // consumed (SID redacted, HSID/SSID leaking in the clear). One HTTP
+    // header per line, so swallowing to end-of-line cannot overshoot; the
+    // prefix is restricted to [space/quote/line start/JSON separators] to
+    // keep ordinary prose like "document.cookie = ..." out; the separator
+    // also accepts `\`, covering the escaped-JSON \"cookie\": \"...\"
+    // shape.
     text = text.replaceAll(
       /((?:^|[\s"',;\\[])(?:set[\s_-]?cookie|cookie)[\s"'\\]*[:=][\s"'\\]*)[^\r\n]*/gi,
       (m, p1) => keepPrefix(p1),
     );
-    // 裸 Bearer <token>(无 Authorization 头名,配置回显/排错日志常见形态)。
+    // Bare Bearer <token> (no Authorization header name; common in config
+    // echoes and troubleshooting logs).
     text = text.replaceAll(/\b(Bearer\s+)[a-z0-9._~+=/-]{12,}/gi, (m, p1) => keepPrefix(p1));
     // Bare Basic/Digest <base64> (same shapes without a header name); the
     // threshold of 12 covers the shortest "user:pass" form (dXNlcjpwYXNz is
     // exactly 12 chars, which the previous 16-char threshold let through)
     // at the cost of occasionally masking a plain word after "basic".
     text = text.replaceAll(/\b((?:Basic|Digest)\s+)[a-z0-9+/=]{12,}/gi, (m, p1) => keepPrefix(p1));
-    // 强凭证键(password/passphrase/secret)两种形态都整段吞值:
-    // ①引号值允许空格("correct horse battery staple" 这类多词口令),
-    //   引号允许 `\` 前缀(网关报文嵌入外层信封后的 {\"password\": \"…\"}
-    //   转义 JSON 形态);值取惰性匹配,尾部 `\` 归还闭合引号组;
-    // ②未加引号时吞到行尾或首个 ,/;/&,否则多词口令只吞首词、其余词泄漏。
+    // Strong credential keys (password/passphrase/secret) swallow the
+    // whole value in both shapes:
+    // ① quoted values may contain spaces ("correct horse battery staple"
+    //    style multi-word passphrases), quotes may carry a `\` prefix
+    //    (the {\"password\": \"...\"} escaped-JSON shape after a gateway
+    //    embeds the body in an outer envelope); the value matches lazily
+    //    and a trailing `\` is returned to the closing-quote group;
+    // ② unquoted values are swallowed to end-of-line or the first ,/;/&
+    //    — otherwise only the first word of a multi-word passphrase is
+    //    consumed and the rest leaks.
     text = text.replaceAll(
       /((?:\\?["'])?\b(?:password|passphrase|secret)\b(?:\\?["'])?\s*[:=]\s*(?:\\?["']))([^"']{2,}?)(\\?["'])/gi,
       (m, p1, p2, p3) => p1 + sensitive + p3,
@@ -470,34 +526,46 @@
       /((?:\\?["'])?\b(?:password|passphrase|secret)\b(?:\\?["'])?\s*[:=]\s*)([^"'\r\n,;&]{2,})/gi,
       (m, p1) => keepPrefix(p1),
     );
-    // kv 形态的凭证键:键名白名单(含 refresh_token/client_secret 等复合名)。
-    // 键前置边界不能写 \b——\b 在下划线旁不成立,而环境变量形态的
-    // OPENAI_API_KEY / ZHIPUAI_API_KEY 恰好是 `_` 前缀;也不能写 lookbehind
-    // (?<![A-Za-z0-9])——静态运行时脚本受 Safari 14 语法基线约束(compat
-    // audit,Safari 16.4 才支持)。故把边界捕获进前缀组:引号分支(含转义
-    // JSON 的 \")与「行首或非字母数字」分支二选一,keepPrefix 原样保留前缀,
-    // 替换输出不变,同时仍挡住 "x99api_key" 这类子串误命中。
-    // 值取「字母开头」或「≥10 位、可含 -/_/./~/+// 的字母数字」(数字开头或
-    // 带连字符的会话凭证,如 8f3k9d2l-4abc-… / 1234-5678-…;/ 与 + 覆盖 Google
-    // OAuth refresh_token("1//0abc…")与 base64 形态);"token: 15000" 用量计数
-    // 是纯数字且不足 10 位,不命中,context 错误的排查信息得以保留。已脱敏
-    // 占位符以 `[` 开头,两支值形态都不命中,重复脱敏幂等。
+    // kv-shaped credential keys with a key-name whitelist (including
+    // compound names like refresh_token/client_secret).
+    // The key's leading boundary cannot be \b — \b does not hold next to
+    // an underscore, and the env-var shapes OPENAI_API_KEY /
+    // ZHIPUAI_API_KEY end in exactly that `_` prefix; a lookbehind
+    // (?<![A-Za-z0-9]) is also out — the static runtime script is bound to
+    // the Safari 14 syntax baseline (compat audit; lookbehind needs
+    // Safari 16.4). So the boundary is captured into the prefix group:
+    // either the quote branch (including escaped-JSON \") or the
+    // line-start/non-alphanumeric branch, with keepPrefix preserving the
+    // prefix verbatim so the replacement output is unchanged while
+    // substring accidents like "x99api_key" stay excluded.
+    // The value is either "starts with a letter" or "at least 10
+    // alphanumeric characters, possibly containing -/_/./~/+//" (leading
+    // digit or hyphenated session credentials such as 8f3k9d2l-4abc-... /
+    // 1234-5678-...; `/` and `+` cover Google OAuth refresh tokens
+    // ("1//0abc...") and base64 shapes). The "token: 15000" usage counter
+    // is pure digits below 10 chars and does not match, preserving the
+    // troubleshooting info of context-length errors. An already-redacted
+    // placeholder starts with `[` and matches neither value shape, so
+    // repeat redaction is idempotent.
     /* eslint-disable sonarjs/regex-complexity, sonarjs/duplicates-in-character-class -- the credential-key whitelist is deliberately exhaustive; splitting it would reduce auditability */
     text = text.replaceAll(
       /((?:\\?["'])|(?:^|[^A-Za-z0-9"']))((?:api[_-]?key|api[_-]?secret|api[_-]?token|authorization|token|password|secret|access[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|client[_-]?secret|app[_-]?secret|consumer[_-]?key|secret[_-]?key|secret[_-]?token|ssh[_-]?key|private[_-]?key|session[_-]?id|session[_-]?token|sessionid|jsessionid|cookie|set[_-]?cookie)\b(?:\\?["'])?\s*[:=]\s*(?:\\?['"])?)((?:[A-Za-z][^"',\s&}]*|[A-Za-z0-9][A-Za-z0-9._~+/-]{9,}))/gi,
       (m, p1, p2) => p1 + p2 + sensitive,
     );
     /* eslint-enable sonarjs/regex-complexity, sonarjs/duplicates-in-character-class */
-    // 裸 key 键另行收紧(值要求字母开头且含数字):"key": "model-name"
-    // 这类非凭证值不再被误吞,而 "key": "abc123def456" 仍被吞掉;引号允许
-    // `\` 前缀(转义 JSON)。
+    // The bare `key` key is tightened separately (value must start with a
+    // letter and contain a digit): non-credential values like
+    // "key": "model-name" are no longer swallowed while
+    // "key": "abc123def456" still is; quotes allow a `\` prefix (escaped
+    // JSON).
     /* eslint-disable sonarjs/regex-complexity -- key + optional escaped quotes + separator + digit-lookahead value shape is inherently multi-part; splitting it would obscure the single-match contract */
     text = text.replaceAll(
       /((?:\\?["'])?\bkey\b(?:\\?["'])?\s*[:=]\s*(?:\\?["'])?)((?=[a-z][^"',\s&}]*\d)[a-z][^"',\s&}]+)/gi,
       (m, p1) => keepPrefix(p1),
     );
     /* eslint-enable sonarjs/regex-complexity */
-    // URL 查询参数形态(query 里的值几乎必然是凭证,不加形态条件)。
+    // URL query-parameter shape (a value in a query string is almost
+    // certainly a credential, so no value-shape condition).
     /* eslint-disable sonarjs/regex-complexity -- same whitelist rationale as above */
     text = text.replaceAll(
       /([?&](?:api[_-]?key|api[_-]?secret|api[_-]?token|key|authorization|token|password|secret|access[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|client[_-]?secret|app[_-]?secret|consumer[_-]?key|ssh[_-]?key|session[_-]?id|sessionid)=)[^&#\s]+/gi,
@@ -505,9 +573,11 @@
     );
     /* eslint-enable sonarjs/regex-complexity */
     text = text.replaceAll(/\bsk-[A-Za-z0-9][A-Za-z0-9._-]{10,}\b/g, () => sensitive);
-    // 裸 Gemini API Key(AIza 前缀 + 35 位左右,无键名/配置回显常见形态)。
+    // Bare Gemini API key (AIza prefix plus ~35 chars; common without a
+    // key name in config echoes).
     text = text.replaceAll(/\bAIza[0-9A-Za-z_-]{30,}/g, () => sensitive);
-    // 裸 JWT/JWS(eyJ 开头三段式,无键名/无 Bearer 前缀的形态)。
+    // Bare JWT/JWS (three eyJ-led segments; the shape without a key name
+    // or Bearer prefix).
     text = text.replaceAll(/\b(eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*)/g, () => sensitive);
     if (text.length > 2000) text = [...text].slice(0, 2000).join("") + "...";
     return text;
@@ -551,10 +621,13 @@
       || "";
   }
 
-  // 从错误文本自身提取 provider 名。历史回合重建友好提示时(重启/切会话后),
-  // bridge state 里的 currentSessionModelId 是"当前"模型而不是出错回合当时的
-  // 模型;provider 信号(如 URL 里的 api.deepseek.com)比当前模型配置更可信,
-  // 因此它优先于 providerLabelFromState 的推导。
+  // Extract the provider name from the error text itself. When friendly
+  // notices are rebuilt for historical turns (after restart/session
+  // switch), the bridge state's currentSessionModelId is the *current*
+  // model, not the one at the time of the failure; a provider signal in
+  // the text (e.g. api.deepseek.com in a URL) is more trustworthy than
+  // the current model config, so it takes priority over
+  // providerLabelFromState.
   const PROVIDER_SIGNAL_ORDER = [
     "deepseek", "anthropic", "claude", "moonshot", "kimi", "dashscope", "qwen",
     "doubao", "volcengine", "zhipu", "zai", "glm", "minimax", "xai",
@@ -564,8 +637,9 @@
     const text = String(raw || "");
     const lower = text.toLowerCase();
     const normalized = normalizeForMatch(text);
-    // 与 hasProviderNameSignal 同款词边界匹配:裸 includes 会让 zai/xai/glm/
-    // kimi 这类短键被无关子串(如 "exhibit"/"kaiming")误命中。
+    // Same word-boundary matching as hasProviderNameSignal: a bare
+    // includes() would let short keys like zai/xai/glm/kimi hit unrelated
+    // substrings ("exhibit", "kaiming").
     for (let i = 0; i < PROVIDER_SIGNAL_ORDER.length; i++) {
       const key = PROVIDER_SIGNAL_ORDER[i];
       const re = keywordRegex(key);
@@ -601,8 +675,9 @@
     }
     const technicalDetail = redactTechnicalDetail(raw, language);
     const classified = classify(raw);
-    // 错误文本里的 provider 信号优先于调用方从"当前"模型配置推导的标签
-    // (历史回合重建时当前模型≠出错回合的模型)。
+    // A provider signal in the error text wins over the label derived by
+    // the caller from the *current* model config (on historical rebuilds
+    // the current model differs from the one that failed).
     const provider = providerLabelFromErrorText(raw, language)
       || options.providerLabel
       || providerLabelFrom(options.provider, language)
@@ -633,9 +708,12 @@
     };
   }
 
-  // terminal 与 transient(recoverable)共用同一批 message 模板,差异只在
-  // {stop} 占位符:终态声明"本次回复已停止",瞬态声明"系统会继续重试"。
-  // 旧实现按措辞字符串 replace 改写,文案一变就静默失效,故改为占位符参数化。
+  // Terminal and transient (recoverable) wordings share the same message
+  // templates; the only difference is the {stop} placeholder: terminal
+  // states "this reply has stopped", transient states "the system will
+  // keep retrying". The earlier implementation rewrote wording via string
+  // replace, which silently stopped working whenever copy changed — hence
+  // the placeholder parameterization.
   function stopPhraseFor(language, terminal) {
     const lang = languageTag(language);
     if (lang === "en") return terminal ? "so this reply stopped. " : "Pinvou will keep retrying this reply. ";
@@ -645,8 +723,9 @@
 
   function noticeText(userError) {
     if (!userError) return "";
-    // 聊天气泡是 pill 样式、无 whitespace-pre-wrap,"\n" 会被 HTML 折叠成
-    // 空格,标题与消息连成一行;改用单行分隔符。
+    // Chat bubbles are pill-styled without whitespace-pre-wrap, so "\n"
+    // collapses to a space in HTML and title/message would run together;
+    // use a single-line separator instead.
     return "⚠️ " + userError.title + " — " + userError.message;
   }
 

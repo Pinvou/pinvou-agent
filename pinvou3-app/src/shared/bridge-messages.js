@@ -85,9 +85,12 @@
     isInternalRuntimeUserMessage,
     isInternalUserMessageProvenance,
     userMessageInputProvenance,
-    // 门控漏判的错误文本(网关/代理自定义 body、provider 原始报文)不走
-    // model-service notice,但还会以裸串/红字展示。展示面前无条件脱敏:
-    // 分类允许漏判,凭证不允许漏。helper 缺失时原样返回(降级为既有行为)。
+    // Error texts the gate missed (gateway/proxy custom bodies, raw
+    // provider messages) do not become model-service notices but still get
+    // displayed as bare strings / red text. Redact unconditionally in
+    // front of every display surface: classification may miss, credentials
+    // must not. Returned as-is when the helper is missing (falls back to
+    // the existing behavior).
     redactRawError: function (error, state) {
       const text = String(error == null ? "" : error);
       if (!text) return text;
@@ -113,8 +116,11 @@
         providerLabel: helper.providerLabelFromState(state, language),
         terminal: payload.terminal !== false,
       });
-      // forwarder 透传的底座结构化 code/category 保留在用户卡上:流式路径
-      // 当前多为通用 "transient",仅作受控语义留存/诊断,不参与门控与分类。
+      // The structured base code/category forwarded by the forwarder is
+      // kept on the user card: the streaming path currently emits mostly
+      // the generic "transient", so this is controlled semantics retained
+      // for diagnostics only and does not participate in gating or
+      // classification.
       if (typeof (payload && payload.code) === "string" && payload.code) userError.errorCode = payload.code;
       if (typeof (payload && payload.category) === "string" && payload.category) userError.errorCategory = payload.category;
       return userError;
@@ -130,9 +136,11 @@
       const notice = helper.noticeText(userError);
       const chatItems = Array.isArray(state.chatItems) ? state.chatItems : [];
       const nextDetail = userError && userError.technicalDetail;
-      // 去重按错误身份(kind+技术详情),不按最终措辞:同一回合先 transient
-      // (recoverable 文案)后 done(terminal 文案)时措辞必然不同,按文本全等
-      // 去重会漏,导致同一错误双气泡且措辞互相矛盾。
+      // Dedup keys on the error identity (kind + technical detail), not
+      // the final wording: within one turn a transient notice (recoverable
+      // wording) followed by done (terminal wording) always differs in
+      // text, so exact-text dedup would miss and produce two contradictory
+      // bubbles for one error.
       const existing = chatItems.find(function (item) {
         if (!item || !item.turnErrorNotice || !item.userError) return false;
         if (item.userError.kind !== userError.kind) return false;
@@ -140,9 +148,11 @@
         if (existingDetail || nextDetail) return existingDetail === nextDetail;
         return true;
       });
-      // 终态隐藏气泡的前提:时间线终态记录确实写入且带 error(错误卡接管)。
-      // recordTurnCompleted 在 openStart/turnId 缺失时不写记录,此时若仍隐藏,
-      // 错误将完全不可见(静默吞错回归)。
+      // Hiding the bubble on terminal requires a timeline terminal record
+      // that actually exists and carries an error (the timeline card takes
+      // over). recordTurnCompleted writes no record when openStart/turnId
+      // is missing; hiding anyway would make the error fully invisible
+      // (silent-swallow regression).
       const timelineTakesOver = !!legacyConversationOnly
         && !!(terminalRecord && terminalRecord.error);
       let target = existing || null;
@@ -154,10 +164,12 @@
         target = { turnErrorNotice: true, legacyConversationOnly: timelineTakesOver, userError };
         addSystemItem(notice, target);
       }
-      // 终态接管时,同回合其余模型服务 transient 气泡(身份与终态不同,如先
-      // network idle timeout 后 billing done)一并隐藏:它们的"系统会继续重试"
-      // 措辞与终态"已停止"矛盾。bridge 在每次发送时清空 turnErrorNotice 项,
-      // 现存项均属于当前回合,不会误伤上一回合。
+      // On terminal takeover, hide the turn's other model-service transient
+      // bubbles too (of a different identity, e.g. a network idle timeout
+      // followed by a billing done): their "will keep retrying" wording
+      // contradicts the terminal "has stopped". The bridge clears
+      // turnErrorNotice items on every send, so everything still present
+      // belongs to the current turn and the previous turn is untouched.
       if (timelineTakesOver) {
         chatItems.forEach(function (item) {
           if (item && item !== target && item.turnErrorNotice && item.userError && !item.legacyConversationOnly) {
@@ -169,11 +181,14 @@
       payload.userError = userError;
       return true;
     },
-    // chat:done 成功(无 error)到达时,同回合的 transient 模型服务气泡("系统
-    // 会继续重试")已过时:回合恢复完成,过时声明不能比它描述的恢复活得更久。
-    // 仅隐藏带 userError 的项(其措辞含"继续重试"的未来承诺);裸串回退项是
-    // 对已发生错误的陈述,保留既有行为。错误终态不走此路径——
-    // addModelServiceErrorNotice 已按身份升级/隐藏。
+    // When a successful chat:done (no error) arrives, the turn's transient
+    // model-service bubbles ("will keep retrying") are stale: the turn has
+    // recovered, and an outdated claim must not outlive the recovery it
+    // described. Only items carrying a userError are hidden (their wording
+    // promises future retries); bare-string fallbacks are statements about
+    // errors that did happen and keep the existing behavior. Terminal
+    // errors do not go through this path — addModelServiceErrorNotice
+    // already upgrades/hides them by identity.
     settleModelServiceErrorNotices: function (state) {
       state = state || {};
       const chatItems = Array.isArray(state.chatItems) ? state.chatItems : [];

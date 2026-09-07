@@ -3,8 +3,10 @@ import {
   presentConversationItems,
 } from '../conversation/conversation-model.js';
 
-/// ACP 泳道错误文本(红字兜底)展示前的无条件脱敏:agent CLI 的原始报文
-/// 可能带网关自定义 body 或凭证,门控没接管的不建友好卡,但仍不得带密上屏。
+/// Unconditional redaction before ACP-lane error text (the red-text
+/// fallback) is displayed: an agent CLI's raw output may carry gateway
+/// custom bodies or credentials; errors the gate did not take over get no
+/// friendly card but must still never reach the screen with secrets.
 function redactDisplayError(error, language) {
   if (!error) return error || null;
   const helper = typeof globalThis !== 'undefined' && globalThis.PinvouModelServiceErrors;
@@ -351,9 +353,11 @@ export function projectAcpTimeline(input, options = {}) {
       turn.startedAt = envelope.timestamp;
     } else if (type === 'turn_completed') {
       turn.status = data.status || 'completed';
-      // ACP 泳道的错误文本来自 agent CLI(codex/claude/gemini),可能原样携带
-      // 网关报文或凭证;红字展示前无条件脱敏(分类可以漏,凭证不能漏)。
-      // helper(classic script)缺失时原样保留,降级为既有行为。
+      // ACP-lane error text comes from agent CLIs (codex/claude/gemini)
+      // and may carry gateway bodies or credentials verbatim; redact
+      // unconditionally before the red-text display (classification may
+      // miss, credentials must not). Kept as-is when the helper (classic
+      // script) is missing, degrading to existing behavior.
       turn.error = redactDisplayError(data.error || null, language);
       turn.completedAt = envelope.timestamp;
     }

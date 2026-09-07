@@ -31,8 +31,10 @@
       };
       state.turnTimeline = [...(state.turnTimeline || []), record];
       state.activeTurnTimelineId = null;
-      // 返回值供终态错误气泡的隐藏决策使用:只有确实写入了带 error 的时间线
-      // 终态记录,气泡才能交给时间线错误卡接管(否则隐藏=静默吞错)。
+      // The return value drives the terminal-bubble hiding decision: only a
+      // timeline terminal record that was actually written with an error
+      // lets the timeline error card take over (hiding otherwise = silent
+      // swallow).
       return record;
     },
   });

@@ -41,9 +41,11 @@ assert.equal(modelErrors.isModelServiceError('permission denied while reading lo
 assert.equal(modelErrors.isModelServiceError('Error: claude.config.json: permission denied'), false);
 assert.equal(modelErrors.isModelServiceError('read llm_cache.db failed'), false);
 assert.equal(modelErrors.isModelServiceError('insufficient_quota'), true);
-// 裸泛化词不再无条件接管:本地工具错误(git/ssh/npm/docker/redis/脚本退出码)
-// 同样会说 timeout/connection refused/server error,只有底座模型调用前缀
-// (SSE stream/Chat API)或 API 上下文才判定为模型服务错误。
+// Bare generic words no longer take over unconditionally: local tool
+// errors (git/ssh/npm/docker/redis/script exit codes) say timeout/
+// connection refused/server error just the same; only a base model-call
+// prefix (SSE stream/Chat API) or an API context counts as a model
+// service error.
 assert.equal(modelErrors.isModelServiceError('timeout'), false);
 assert.equal(modelErrors.isModelServiceError('ECONNREFUSED'), false);
 assert.equal(modelErrors.isModelServiceError('curl: (28) Operation timed out after 30000ms'), false);
@@ -55,21 +57,26 @@ assert.equal(modelErrors.isModelServiceError('exit status 500'), false);
 assert.equal(modelErrors.isModelServiceError('mcp server httpbin returned HTTP 500'), false);
 assert.equal(modelErrors.isModelServiceError('local vllm health probe failed: HTTP 500'), false);
 assert.equal(modelErrors.isModelServiceError('HTTP 500: worker killed 内存耗尽 (OOM)'), false);
-// 第三方支付/托管平台的计费词带 "API" 上下文时仍会命中(计费语义本身正确,
-// 只是 provider 名可能不准);无 API 上下文的纯本地计费串不接管。
+// Billing words on third-party payment/hosting platforms still hit when
+// an "API" context is present (the billing semantics are right even if
+// the provider label may be off); bare local billing strings without an
+// API context do not take over.
 assert.equal(modelErrors.isModelServiceError('Stripe API error: HTTP 402 payment required'), true);
-// "GitHub API:" 的裸 "API" 不是 api key/model service 级别的上下文信号,
-// 第三方平台限流保持原始错误展示。
+// The bare "API" in "GitHub API:" is not an api key/model service level
+// context signal, so third-party platform rate limits keep the raw
+// error display.
 assert.equal(modelErrors.isModelServiceError('GitHub API: HTTP 403 rate limit exceeded'), false);
 assert.equal(modelErrors.isModelServiceError('billing service rejected the request'), false);
-// apiSignal 裸放行会劫持无错误语义的本地错误:含 "api key"/"model service"
-// 字样但无歧义错误词、无 model-like 状态码的文本不得接管;强语义的
-// "invalid api key"(STRONG 词表)与 "api key + 状态码" 组合仍必须接管。
+// Letting apiSignal through alone would hijack local errors that carry
+// no error semantics: text containing "api key"/"model service" but no
+// ambiguous error word and no model-like status code must not take over;
+// the strong "invalid api key" (STRONG list) and "api key + status code"
+// combinations still must.
 assert.equal(modelErrors.isModelServiceError('failed to save api key to config: disk full'), false);
 assert.equal(modelErrors.isModelServiceError('wrote model service name to settings.json'), false);
 assert.equal(modelErrors.isModelServiceError('invalid api key'), true);
 assert.equal(modelErrors.isModelServiceError('api key rejected: HTTP 401'), true);
-// 底座固定前缀与 API 上下文仍必须命中。
+// Fixed base prefixes and API contexts must still hit.
 assert.equal(modelErrors.isModelServiceError('SSE stream request failed: HTTP 402'), true);
 assert.equal(modelErrors.isModelServiceError('SSE stream idle timeout after 30s — no data received'), true);
 assert.equal(modelErrors.isModelServiceError('Stream read error: connection reset by peer'), true);
@@ -77,8 +84,9 @@ assert.equal(modelErrors.isModelServiceError('Failed to call DeepSeek Chat API: 
 assert.equal(modelErrors.isModelServiceError('invalid api key'), true);
 assert.equal(modelErrors.isModelServiceError('quota exhausted'), true);
 assert.equal(modelErrors.isModelServiceError('model service HTTP 503 Service Unavailable'), true);
-// 裸 503 无模型上下文不接管(本地 MCP/vllm/脚本也可能 5xx);底座真实串
-// 必带 SSE stream/Chat API 前缀,不受影响。
+// A bare 503 without model context does not take over (local MCP/vLLM/
+// scripts can emit 5xx too); real base errors always carry an SSE
+// stream/Chat API prefix and are unaffected.
 assert.equal(modelErrors.isModelServiceError('HTTP 503 Service Unavailable'), false);
 assert.doesNotMatch(
   modelErrors.build('HTTP 402 payment required', {
@@ -87,14 +95,16 @@ assert.doesNotMatch(
   }).title,
   /当前模型服务/,
 );
-// provider 标签优先取错误文本里的厂商信号,而非当前会话模型配置
-// (历史回合重建时两者可能不同)。
+// The provider label prefers the vendor signal in the error text over
+// the current session model config (the two can differ when historical
+// turns are rebuilt).
 assert.match(
   modelErrors.build('SSE stream request failed: connect to api.deepseek.com: HTTP 402', { language: 'zh-Hans' }).title,
   /DeepSeek/,
 );
-// provider 标签按界面语言:中文品牌名不得混进 en 文案;短键(zai/xai/glm/
-// kimi)走词边界匹配,不得被无关子串(如 "xaio")误命中。
+// The provider label follows the UI language: Chinese brand names must
+// not leak into en copy; short keys (zai/xai/glm/kimi) match on word
+// boundaries and must not hit unrelated substrings (e.g. "xaio").
 assert.match(
   modelErrors.build('SSE stream request failed: connect to dashscope.aliyuncs.com: HTTP 402', { language: 'en' }).title,
   /Qwen/,
@@ -108,7 +118,8 @@ assert.notEqual(
   'xAI',
   'short provider keys must use word-boundary matching',
 );
-// 模糊匹配链(vendor 字段):google_gemini / xai 系也要能推导出标签。
+// Fuzzy matching chain (vendor field): google_gemini / xai families must
+// also resolve to a label.
 assert.equal(
   modelErrors.build('SSE stream request failed: HTTP 500', { language: 'en', provider: { vendor: 'google_gemini' } }).providerLabel,
   'Gemini',
@@ -117,7 +128,8 @@ assert.equal(
   modelErrors.build('SSE stream request failed: HTTP 500', { language: 'en', provider: { vendor: 'xai' } }).providerLabel,
   'xAI',
 );
-// 分类顺序:OOM(内存耗尽)不再落到 quota;403+rate limit 共存按频控分。
+// Classification order: OOM no longer falls into quota; a 403 plus rate
+// limit co-occurring classifies as rate limiting.
 assert.equal(modelErrors.classify('HTTP 500: worker killed 内存耗尽 (OOM)').kind, 'server');
 assert.equal(modelErrors.classify('HTTP 403 forbidden: rate limit exceeded').kind, 'rate_limit');
 // English OOM shares its shape with gRPC RESOURCE_EXHAUSTED: local
@@ -139,46 +151,57 @@ assert.equal(modelErrors.isModelServiceError('insufficient balance'), false);
 assert.equal(modelErrors.isModelServiceError('Payment failed: insufficient balance'), false);
 assert.equal(modelErrors.isModelServiceError('DeepSeek API error: insufficient balance'), true);
 assert.equal(modelErrors.classify('SSE stream request failed: HTTP 402 insufficient balance').kind, 'billing');
-// 泛中文支付语("账户余额/余额不足/欠费")在本地支付/转账错误里同样常见:
-// 裸措辞不再劫持,叠加 API/厂商上下文后仍是强计费信号。
+// Generic Chinese payment phrases (账户余额/余额不足/欠费) are equally
+// common in local payment/transfer errors: the bare wording no longer
+// hijacks, and with an API/provider context they remain a strong billing
+// signal.
 assert.equal(modelErrors.isModelServiceError('支付失败:账户余额不足'), false);
 assert.equal(modelErrors.isModelServiceError('转账出错:余额不足'), false);
 assert.equal(modelErrors.isModelServiceError('GLM 400 1113 "余额不足"'), true);
-// 本地 CLI 工具形态先于词表排除:remote URL/主机名带厂商名时不得劫持。
+// Local CLI tool shapes are excluded before the keyword lists: a vendor
+// name inside a remote URL/hostname must not hijack.
 assert.equal(modelErrors.isModelServiceError("fatal: unable to access 'https://github.com/openai/whisper.git/': Failed to connect to github.com port 443: Connection refused"), false);
 assert.equal(modelErrors.isModelServiceError('ssh: connect to host git.openai.com port 22: Connection refused'), false);
 assert.equal(modelErrors.isModelServiceError('error: failed to push some refs to https://github.com/deepseek-ai/models.git: read timed out'), false);
 assert.equal(modelErrors.isModelServiceError('collect2: fatal error: ld terminated with signal 11'), false);
 assert.equal(modelErrors.isModelServiceError('user quota exceeded on /home volume'), false);
-// 包管理器 CLI 输出头部(npm ERR! / ERR_PNPM_*):registry URL 里的包名
-// (…/openai)会冒充厂商信号,叠加 "connection refused" 歧义词曾把本地
-// registry 故障劫持成模型服务网络卡。
+// Package manager CLI output headers (npm ERR! / ERR_PNPM_*): the
+// package name in the registry URL (.../openai) masquerades as a provider
+// signal, which combined with the ambiguous "connection refused" once
+// hijacked a local registry failure into a model service network card.
 assert.equal(modelErrors.isModelServiceError('npm ERR! network request to https://registry.npmjs.org/openai failed, reason: connect ECONNREFUSED 127.0.0.1:4873'), false);
 assert.equal(modelErrors.isModelServiceError('ERR_PNPM_NO_NETWORK  request to https://registry.npmjs.org/openai failed'), false);
-// 漏接管修复:provider 名/裸 401 + unauthorized、"Incorrect API key"(OpenAI
-// 真实措辞)、gemini-cli 的 "[API Error: …]" 外壳、claude 厂商名。
+// Missed-takeover fixes: provider names / bare 401 + unauthorized,
+// "Incorrect API key" (OpenAI's real wording), gemini-cli's
+// "[API Error: ...]" shell, and the claude vendor name.
 assert.equal(modelErrors.isModelServiceError('OpenAI API error: 401 Unauthorized'), true);
 assert.equal(modelErrors.isModelServiceError('deepseek: 401 unauthorized'), true);
-// 假 key 用拼接构造:完整字面量会触发 GitHub push protection 的密钥形态
-// 扫描(测试语料均为合成值,非真实凭证)。
+// Fake keys are built by concatenation: a full literal would trigger
+// GitHub push protection's secret-pattern scan (all corpus values are
+// synthetic, not real credentials).
 const FAKE_PROJ_KEY = 'sk-proj-' + 'abcdefghijklmnop1234567890';
 assert.equal(modelErrors.isModelServiceError('Incorrect API key provided: ' + FAKE_PROJ_KEY), true);
 assert.equal(modelErrors.isModelServiceError('[API Error: 429 Too Many Requests]'), true);
 assert.equal(modelErrors.isModelServiceError('claude API timeout after 30s'), true);
 assert.equal(modelErrors.classify('OpenAI API error: 401 Unauthorized').kind, 'auth');
-// 底座大响应 abort 的真实错误串(chat.rs:SSE buffer exceeded)必须被固定前缀接管。
+// The real error string of the base aborting an oversized response
+// (chat.rs: SSE buffer exceeded) must be taken over by the fixed prefix.
 assert.equal(modelErrors.isModelServiceError('SSE buffer exceeded 10485760 bytes — aborting stream'), true);
-// 带版本段与 axios 措辞的状态码也能提出状态:429 → rate_limit。
+// Status codes with a version segment and axios wording must also parse:
+// 429 -> rate_limit.
 assert.equal(modelErrors.classify('HTTP/1.1 429 Too Many Requests').httpStatus, 429);
 assert.equal(modelErrors.classify('Request failed with status code 429').kind, 'rate_limit');
 assert.equal(modelErrors.classify('HTTP/2 503').httpStatus, 503);
-// HTTPS 形态(带 S)的状态码同样要提出。
+// The HTTPS shape (with the S) must parse too.
 assert.equal(modelErrors.classify('HTTPS 502 Bad Gateway').httpStatus, 502);
-// permission 分类的直接断言:403/forbidden 无频控词时按权限分。
+// Direct assertion for the permission kind: 403/forbidden without
+// rate-limit words classifies as permission.
 assert.equal(modelErrors.classify('SSE stream request failed: HTTP 403 forbidden').kind, 'permission');
-// LlmError Display 引导词(传输层立即失败,DNS/连接拒绝/TLS,不带 SSE 前缀
-// 直接上抛)必须接管;冒号/括号锚定形态与本地工具文案无碰撞——gh CLI 的
-// "API rate limit exceeded for ..." 无冒号,不得命中。
+// LlmError Display lead-ins (transport-level immediate failures - DNS/
+// connection refused/TLS - propagated without an SSE prefix) must take
+// over; the colon/parenthesis anchoring cannot collide with local tool
+// wording - the gh CLI's "API rate limit exceeded for ..." has no colon
+// and must not hit.
 assert.equal(modelErrors.isModelServiceError('Rate limit exceeded: Too many requests'), true);
 assert.equal(modelErrors.isModelServiceError('Network error: error sending request for url (https://api.deepseek.com/chat/completions)'), true);
 assert.equal(modelErrors.isModelServiceError('Request timed out after 30s'), true);
@@ -189,20 +212,23 @@ assert.equal(modelErrors.isModelServiceError('API rate limit exceeded for 1.2.3.
 assert.equal(modelErrors.classify('Rate limit exceeded: Too many requests').kind, 'rate_limit');
 assert.equal(modelErrors.classify('Context length exceeded: maximum context is 8192 tokens').kind, 'context');
 assert.equal(modelErrors.classify('Authorization failed: model access denied').kind, 'auth');
-// 门控厂商名单与标签名单对齐:GLM/MiniMax 等自家厂商此前漏标。
+// The gate provider list aligns with the label list: home vendors like
+// GLM/MiniMax used to be missed.
 assert.equal(modelErrors.isModelServiceError('GLM-4 API timeout'), true);
 assert.equal(modelErrors.isModelServiceError('MiniMax server error'), true);
-// Gemini 资源耗尽按额度语义分类。
+// Gemini resource exhaustion classifies with quota semantics.
 assert.equal(modelErrors.isModelServiceError('Gemini API Error: RESOURCE_EXHAUSTED'), true);
 assert.equal(modelErrors.classify('Gemini API Error: RESOURCE_EXHAUSTED').kind, 'quota');
-// POSIX 磁盘配额满(EDQUOT 的标准 strerror 即 "Disk quota exceeded")先于
-// 计费强词排除,不得提示"请充值"。
+// POSIX disk quota exhaustion (EDQUOT's standard strerror is "Disk
+// quota exceeded") is excluded before the billing strong words and must
+// not produce a "top up" prompt.
 assert.equal(modelErrors.isModelServiceError('cp: cannot create regular file: Disk quota exceeded'), false);
-// 词边界匹配:"chat api" 不得命中 "chat apiary","api key" 不得命中
-// "api-keys.yaml"(归一化后 "api keys")。
+// Word boundaries: "chat api" must not hit "chat apiary", "api key"
+// must not hit "api-keys.yaml" ("api keys" after normalization).
 assert.equal(modelErrors.isModelServiceError('chat apiary server down'), false);
 assert.equal(modelErrors.isModelServiceError('Error reading /etc/app/api-keys.yaml: connection refused'), false);
-// 脱敏:除占位符存在外,原始凭证实文必须消失。
+// Redaction: besides the placeholder being present, the raw credential
+// text must vanish.
 const basicRedacted = modelErrors.redactTechnicalDetail('Authorization: Basic dXNlcjpwYXNzd29yZA==');
 assert.match(basicRedacted, /\[敏感信息已隐藏\]/);
 assert.doesNotMatch(basicRedacted, /dXNlcjpwYXNzd29yZA==/, 'Basic credentials must be redacted');
@@ -222,13 +248,16 @@ assert.match(
   modelErrors.redactTechnicalDetail('Authorization: Bearer sk-deepseek-secret-token-123 api_key=sk-abc12345&token=demo'),
   /\[敏感信息已隐藏\]/,
 );
-// 无 Authorization 头名的裸 Basic/Digest base64 与小写裸 bearer 同样必须脱敏。
+// Bare Basic/Digest base64 without an Authorization header name and a
+// lowercase bare bearer must also be redacted.
 const bareBasicRedacted = modelErrors.redactTechnicalDetail('proxy replied: Basic dXNlcjpwYXNzd29yZA==');
 assert.doesNotMatch(bareBasicRedacted, /dXNlcjpwYXNzd29yZA==/, 'bare Basic credentials must be redacted');
 const lowercaseBearerRedacted = modelErrors.redactTechnicalDetail('error with bearer eyJhbGciOiJIUzI1NiJ9.abc123def456');
 assert.doesNotMatch(lowercaseBearerRedacted, /eyJhbGciOiJIUzI1NiJ9/, 'lowercase bare bearer tokens must be redacted');
-// 非标 scheme 的两段式 Authorization(含 JSON 引号形态)必须整段吞值:
-// 按 scheme 词表枚举时,API-Key/Token 等非标 scheme 的凭证段整体存活。
+// Two-token Authorization values with non-standard schemes (including
+// quoted JSON forms) must be swallowed whole: enumerating a scheme
+// whitelist used to leave the credential part of API-Key/Token-style
+// schemes fully intact.
 assert.doesNotMatch(
   modelErrors.redactTechnicalDetail('Authorization: API-Key abc123def456xyz'),
   /abc123def456/,
@@ -244,7 +273,8 @@ assert.doesNotMatch(
   /abcdef123456/,
   'proxy-authorization non-standard scheme credentials must be redacted',
 );
-// 下划线复合凭证键(\b 在下划线旁不成立,必须整体枚举)必须脱敏。
+// Underscore compound credential keys (\b does not hold next to an
+// underscore, hence the exhaustive enumeration) must be redacted.
 assert.doesNotMatch(
   modelErrors.redactTechnicalDetail('refresh_token: rt_live_abc123def456ghi789'),
   /rt_live_abc123/,
@@ -282,29 +312,34 @@ assert.doesNotMatch(
   /GOCSPX/,
   'client_secret values must be redacted',
 );
-// 裸 JWT(无键名、无 Bearer 前缀的三段式)必须脱敏。
+// Bare JWTs (three segments without a key name or Bearer prefix) must be
+// redacted.
 assert.doesNotMatch(
   modelErrors.redactTechnicalDetail('upstream replied eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c before dying'),
   /eyJhbGciOiJIUzI1NiJ9/,
   'bare JWTs must be redacted',
 );
-// 数字开头的会话凭证(Cookie sessionid)必须脱敏。
+// Digit-leading session credentials (Cookie sessionid) must be
+// redacted.
 assert.doesNotMatch(
   modelErrors.redactTechnicalDetail('Set-Cookie: sessionid=8f3k9d2l1a4b7c6e5f9a; Path=/'),
   /8f3k9d2l/,
   'session cookie values must be redacted',
 );
-// 强凭证键的引号值允许空格,整段吞掉。
+// Strong credential keys: quoted values may contain spaces and are
+// swallowed whole.
 assert.doesNotMatch(
   modelErrors.redactTechnicalDetail('"password": "correct horse battery staple"'),
   /horse/,
   'space-separated passwords must be fully redacted',
 );
-// 未加引号的多词口令同样整段吞掉(吞到行尾或首个 ,/;&),不得只吞首词。
+// Unquoted multi-word passphrases are swallowed whole too (to end of
+// line or the first ,/;/&), never just the first word.
 const unquotedPasswordRedacted = modelErrors.redactTechnicalDetail('password: correct horse battery staple');
 assert.doesNotMatch(unquotedPasswordRedacted, /horse/, 'unquoted multi-word passwords must be fully redacted');
 assert.match(unquotedPasswordRedacted, /\[敏感信息已隐藏\]/);
-// 数字开头/带连字符的 UUID 形态会话凭证必须脱敏。
+// Digit-leading / hyphenated UUID-shaped session credentials must be
+// redacted.
 assert.doesNotMatch(
   modelErrors.redactTechnicalDetail('session_id: "8f3k9d2l-4abc-def0-1234-567890abcdef"'),
   /8f3k9d2l/,
@@ -315,14 +350,16 @@ assert.doesNotMatch(
   /1234-5678/,
   'digit-starting hyphenated api keys must be redacted',
 );
-// 裸 Gemini API Key(AIza 前缀)必须脱敏。
+// Bare Gemini API keys (AIza prefix) must be redacted.
 assert.doesNotMatch(
   modelErrors.redactTechnicalDetail('request failed, key=AIzaSyB3dEfGhIjKlMnOpQrStUvWxYz012345'),
   /AIzaSy/,
   'bare Gemini API keys must be redacted',
 );
-// 通用 Cookie/Set-Cookie 头必须脱敏:多对凭证以 "; " 分隔,第二对起
-// (csrftoken 等)同样不得泄漏——早先语料第二对用 theme=light,掩盖了该缺陷。
+// Generic Cookie/Set-Cookie headers must be redacted: multiple
+// credential pairs are "; "-separated and the second pair onwards
+// (csrftoken etc.) must not leak - the earlier corpus used theme=light
+// for the second pair, masking the defect.
 assert.doesNotMatch(
   modelErrors.redactTechnicalDetail('Cookie: sessionid=abc123def456; csrftoken=zyx987wv654'),
   /abc123def456|zyx987wv654/,
@@ -333,7 +370,8 @@ assert.doesNotMatch(
   /AbCdEf123456|Xy987612345|Qw5432167890/,
   'multi-pair Set-Cookie header values must all be redacted',
 );
-// 脱敏占位符按界面语言选择:en/ja 界面的技术详情不得混入中文。
+// The redaction placeholder follows the UI language: technical details
+// in en/ja interfaces must not mix in Chinese.
 const enRedacted = modelErrors.redactTechnicalDetail('Authorization: Bearer sk-deepseek-secret-token-123', 'en');
 assert.match(enRedacted, /\[redacted\]/);
 assert.doesNotMatch(enRedacted, /敏感信息/);
@@ -341,21 +379,24 @@ assert.match(
   modelErrors.redactTechnicalDetail('Authorization: Bearer sk-deepseek-secret-token-123', 'ja'),
   /\[秘匿済み\]/,
 );
-// 非凭证值不被误吞:裸 "key" 的无数字短值(model-name)保留。
+// Non-credential values are not swallowed: a digit-less short value for
+// a bare "key" (model-name) is preserved.
 assert.doesNotMatch(
   modelErrors.redactTechnicalDetail('{"key": "model-name"}'),
   /\[敏感信息已隐藏\]/,
   'non-credential bare "key" values must not be redacted',
 );
-// structured payload(kind/title/message 对象直通):合法 kind 保留、非法 kind
-// 兜底 unknown、字段再次脱敏。
+// Structured payload (kind/title/message passthrough): a valid kind is
+// kept, an invalid kind falls back to unknown, and fields are
+// re-redacted.
 const structuredNotice = modelErrors.build(
   { kind: 'billing', title: '余额不足', message: '请充值', technicalDetail: 'Bearer sk-zzz-abc123def456' },
   { language: 'zh-Hans' },
 );
 assert.equal(structuredNotice.kind, 'billing');
 assert.doesNotMatch(structuredNotice.technicalDetail, /sk-zzz-abc123def456/, 'structured passthrough must redact technical detail');
-// structured 直通的 title/message 同样要脱敏(AIza 由裸规则兜住)。
+// The structured passthrough's title/message must be redacted as well
+// (AIza is caught by the bare-key rule).
 const structuredKeyed = modelErrors.build(
   { kind: 'auth', title: 'invalid key AIzaSyB3dEfGhIjKlMnOpQrStUvWxYz012345', message: 'check key Bearer sk-zzz-abc123def456' },
   { language: 'zh-Hans' },
@@ -363,8 +404,9 @@ const structuredKeyed = modelErrors.build(
 assert.doesNotMatch(structuredKeyed.title, /AIzaSy/, 'structured passthrough must redact title');
 assert.doesNotMatch(structuredKeyed.message, /sk-zzz-abc123def456/, 'structured passthrough must redact message');
 assert.match(structuredNotice.technicalDetail, /\[敏感信息已隐藏\]/);
-// 转义 JSON 形态(网关报文嵌入外层信封):kv 规则必须跨过键名两侧的 \"
-// 前缀吞掉值,否则凭证值完整泄漏。
+// Escaped-JSON shapes (a gateway body embedded in an outer envelope):
+// the kv rule must cross the \" on both sides of the key name to swallow
+// the value, or the credential value leaks in full.
 assert.doesNotMatch(
   modelErrors.redactTechnicalDetail('{\\"password\\": \\"sup3rSecretValue\\"}'),
   /sup3rSecretValue/,
@@ -385,8 +427,10 @@ assert.doesNotMatch(
   /HSID=ccc/,
   'backslash-escaped JSON cookie headers must be redacted',
 );
-// 环境变量形态:键名是 _ 前缀复合名(\b 在下划线旁不成立,曾整体泄漏),
-// 值可含 /(Google OAuth refresh_token "1//0…")与 +(base64)。
+// Env-var shapes: the key name is an underscore-prefixed compound (\b
+// does not hold next to an underscore - these used to leak whole), and
+// values may contain / (Google OAuth refresh tokens "1//0...") and +
+// (base64).
 assert.doesNotMatch(
   modelErrors.redactTechnicalDetail('OPENAI_API_KEY=1a2b3c4d5e6f7g8h9i0j'),
   /1a2b3c4d5e6f/,
@@ -402,9 +446,11 @@ assert.doesNotMatch(
   /1\/\/0abcDEF/,
   'slash-bearing OAuth refresh tokens must be redacted',
 );
-// 幂等性:同一文本经 forwarder 与 JS 两次 redact、或 build 对已构建卡片对象
-// 重脱敏时,结果必须稳定——占位符不得被二次吞改成 "[R][R]"(去重键随之漂移,
-// 同一错误出两张措辞矛盾的卡)。
+// Idempotency: running the same text through the forwarder's and the
+// JS-side redaction, or re-redacting an already-built card via build(),
+// must be stable - the placeholder must never be re-consumed into
+// "[R][R]" (that drifts the dedup key and yields two contradictory cards
+// for one error).
 const onceRedacted = modelErrors.redactTechnicalDetail(
   'Authorization: Basic dXNlcjpwYXNz; password: "two words here"; OPENAI_API_KEY=1a2b3c4d5e6f7g8h9i0j; sk-abcdef1234567890; Cookie: SID=aaa',
   'en',
@@ -436,8 +482,10 @@ messageSandbox.window.PinvouBridgeMessages.showShellCleanupFailure(
   addCleanupItem,
 );
 assert.equal(cleanupState.chatItems.length, 1, 'cleanup warning must be deduplicated');
-// redactRawError 门面:门控漏判的错误文本在展示面前无条件脱敏;
-// 凭证值被吞,但错误语义词("unauthorized"/状态码)保留供 401 刷新等逻辑使用。
+// The redactRawError facade: gate-missed error texts are redacted
+// unconditionally in front of display; credential values are swallowed
+// while error semantics ("unauthorized"/status codes) survive for logic
+// like the 401 model-config refresh.
 const zhState = { settings: { language: 'zh-Hans' } };
 const rawLeak = 'Incorrect API key provided: ' + FAKE_PROJ_KEY;
 const redacted = messageSandbox.window.PinvouBridgeMessages.redactRawError(rawLeak, zhState);
@@ -448,7 +496,8 @@ assert.doesNotMatch(
   /\[敏感信息已隐藏\]/,
   'plain text without credentials must pass through redaction unchanged',
 );
-// helper 缺失时降级原样返回(不抛错)。
+// Degrades to returning the input unchanged when the helper is missing
+// (no throw).
 const noHelperSandbox = { window: {} };
 vm.runInNewContext(bridgeMessagesSource, noHelperSandbox, { filename: 'bridge-messages.js' });
 assert.equal(
@@ -471,8 +520,9 @@ const billingAdded = messageSandbox.window.PinvouBridgeMessages.addModelServiceE
   modelErrorState,
   addModelErrorItem,
   true,
-  // 模拟 recordTurnCompleted 已写入的带 error 时间线终态记录:只有它存在时
-  // 终态气泡才隐藏(时间线错误卡接管)。
+  // Simulates an error-bearing timeline terminal record already written
+  // by recordTurnCompleted: only its presence lets the terminal bubble be
+  // hidden (the timeline error card takes over).
   { error: rawBillingError },
 );
 assert.equal(billingAdded, true);
@@ -527,9 +577,11 @@ messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
   false,
 );
 assert.doesNotMatch(transientState.chatItems[0].text, /已停止/);
-// 同一回合 transient → done 连续序列:transient 先以 recoverable 措辞入列,
-// done 到达时必须按错误身份(kind+technicalDetail)升级同一条目,而不是因
-// terminal 措辞不同新增第二条(旧实现按文本全等去重,必然双气泡且措辞矛盾)。
+// A transient -> done sequence within one turn: the transient notice is
+// listed first with recoverable wording; when done arrives it must
+// upgrade the same item by error identity (kind + technicalDetail)
+// instead of appending a second one over differing terminal wording (the
+// old exact-text dedup always produced two contradictory bubbles).
 const transientThenDoneState = { settings: { language: 'zh-Hans' }, chatItems: [] };
 const pushToSeqState = (text, metadata) => transientThenDoneState.chatItems.push({ text, ...metadata });
 messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
@@ -552,12 +604,15 @@ const upgraded = transientThenDoneState.chatItems[0];
 assert.match(upgraded.text, /本次回复已停止/, 'upgraded item switches to terminal wording');
 assert.equal(upgraded.legacyConversationOnly, true, 'upgraded item is hidden from the unified timeline');
 assert.equal(upgraded.userError.kind, 'billing');
-// done 双次构建回归:recordTurnCompleted 先把 build #1 卡片写回 payload 的
-// user_error 字段,addModelServiceErrorNotice 随后对 raw 再 build 一次
-// (bridge-messages.js modelServiceUserError 的 raw 分支)。脱敏不幂等时
-// Authorization 占位符被二次吞改、technicalDetail 漂移,身份去重落空 →
-// 同一错误出现 transient 与 terminal 两张措辞矛盾的卡。修复后二次 build
-// 必须逐字段稳定、去重命中、升级原条目。
+// Double-build regression for done: recordTurnCompleted first writes the
+// build #1 card back into the payload's user_error field, then
+// addModelServiceErrorNotice builds again from the raw error (the raw
+// branch of bridge-messages.js modelServiceUserError). With non-idempotent
+// redaction the Authorization placeholder was re-consumed and the
+// technicalDetail drifted, missing the identity dedup - one error showing
+// both a transient and a terminal card with contradictory wording. After
+// the fix the second build must be field-stable, hit the dedup, and
+// upgrade the original item.
 const doubleBuildError = 'SSE stream request failed: HTTP 402 {"error":{"message":"Insufficient Balance"},"headers":{"Authorization":"Basic dXNlcjpwYXNz"}}';
 const doubleBuildState = { settings: { language: 'zh-Hans' }, chatItems: [] };
 const pushToDoubleBuild = (text, metadata) => doubleBuildState.chatItems.push({ text, ...metadata });
@@ -589,10 +644,12 @@ assert.doesNotMatch(
   /\[敏感信息已隐藏\]\[敏感信息已隐藏\]/,
   'placeholder must never be doubled by re-redaction',
 );
-// 身份不同的 transient/done 序列:transient(network)与 done(billing)文本、
-// kind、技术详情均不同,身份去重必然落空;终态到达且时间线记录带 error 时,
-// 同回合所有模型服务 transient 气泡必须一并隐藏,否则残留"系统会继续重试"
-// 的瞬态气泡与终态"已停止"错误卡措辞矛盾。
+// A transient/done sequence with different identities: transient
+// (network) vs done (billing) differ in text, kind and technical detail,
+// so identity dedup necessarily misses; when the terminal arrives with an
+// error-bearing timeline record, every model-service transient bubble of
+// the turn must hide together, or the leftover "will keep retrying"
+// bubble contradicts the terminal "has stopped" card.
 const sweepState = { settings: { language: 'zh-Hans' }, chatItems: [] };
 const pushToSweepState = (text, metadata) => sweepState.chatItems.push({ text, ...metadata });
 messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
@@ -617,8 +674,9 @@ assert.ok(
   'terminal takeover must hide all same-turn model-service transient bubbles',
 );
 assert.match(sweepState.chatItems[1].text, /本次回复已停止/);
-// 静默吞错回归:终态到达但 recordTurnCompleted 未写入时间线记录
-// (openStart/turnId 缺失,以 null 传入)时,气泡必须保留可见。
+// Silent-swallow regression: when the terminal arrives but
+// recordTurnCompleted wrote no timeline record (missing openStart/turnId,
+// passed as null), the bubble must stay visible.
 const noTimelineState = { settings: { language: 'zh-Hans' }, chatItems: [] };
 messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
   { error: 'SSE stream request failed: HTTP 402 insufficient balance' },
@@ -633,8 +691,10 @@ assert.equal(
   false,
   'terminal notice must stay visible when no timeline record was written',
 );
-// en/ja 的 transient/terminal 措辞区分:所有 retryable 类别(rate_limit/server/
-// network/unknown)的 {stop} 占位符必须在三语模板齐全,瞬态与终态措辞不得相同。
+// en/ja transient/terminal wording split: the {stop} placeholder must be
+// present in all three language templates for every retryable kind
+// (rate_limit/server/network/unknown), and transient and terminal
+// wordings must never be identical.
 for (const language of ['en', 'ja', 'zh-Hans']) {
   for (const kind of [
     'HTTP 429 too many requests',
@@ -656,8 +716,10 @@ for (const language of ['en', 'ja', 'zh-Hans']) {
 assert.doesNotMatch(modelErrors.build('HTTP 429 too many requests', { language: 'en', terminal: false }).message, /\{stop\}/);
 assert.doesNotMatch(modelErrors.build('HTTP 429 too many requests', { language: 'ja', terminal: true }).message, /\{stop\}/);
 
-// ── 遗留清单修复:计费词表缺口(Anthropic 官方 402 措辞 / 通义 Arrearage 错误码,
-// R3 M5 残留)──无状态码裸串(ACP 泳道/子代理面板)也必须接管并归为 billing。
+// Legacy-list fix, billing vocabulary gap (Anthropic's official 402
+// wording / Tongyi's Arrearage error code, R3 M5 residual): bare strings
+// without a status code (ACP lane / subagent panel) must also take over
+// and classify as billing.
 assert.equal(modelErrors.isModelServiceError('Your credit balance is too low'), true);
 assert.equal(modelErrors.classify('Your credit balance is too low').kind, 'billing');
 assert.equal(modelErrors.isModelServiceError('Arrearage: account suspended, please recharge'), true);
@@ -667,9 +729,12 @@ assert.equal(
   'billing',
 );
 
-// ── 遗留清单修复:内容政策拒绝(R6 遗留"确定性失败仍引导稍后重试")──
-// 模型服务专属语义无条件接管;新增 content 类别为确定性失败(retryable=false),
-// 三语均无 {stop} 占位符,transient 与终态措辞一致,不再引导"稍后重试"。
+// Legacy-list fix, content-policy rejections (R6 residual:
+// deterministic failures still told users to retry later):
+// model-service-specific semantics take over unconditionally; the new
+// content kind is a deterministic failure (retryable=false), has no
+// {stop} placeholder in any language, and transient matches terminal
+// wording so users are never told to retry later.
 assert.equal(modelErrors.isModelServiceError('content policy violation: request blocked'), true);
 assert.equal(modelErrors.isModelServiceError('Your request was rejected as a result of our safety system'), true);
 assert.equal(modelErrors.isModelServiceError('output blocked by content filtering policy'), true);
@@ -687,7 +752,8 @@ assert.equal(
   'content-policy failures are deterministic: transient and terminal wording match',
 );
 
-// ── 遗留清单修复:zh 默认 provider + server 类别的叠词(R3 MINOR 4)──
+// Legacy-list fix, doubled word with the zh default provider plus the
+// server kind (R3 MINOR 4):
 assert.equal(
   modelErrors.build('SSE stream request failed: HTTP 503 Service Unavailable', { language: 'zh-Hans', terminal: true }).title,
   '当前模型服务暂时不可用',
@@ -698,9 +764,11 @@ assert.equal(
   'brand labels keep the 服务 suffix',
 );
 
-// ── 遗留清单修复:成功 done 收敛 transient 声明(R7 follow-up)──
-// 回合恢复完成后,"系统会继续重试"的未来承诺已过时,统一隐藏;裸串回退项是
-// 对已发生错误的陈述,保持可见;已隐藏项不被复活。
+// Legacy-list fix, a successful done settling transient claims (R7
+// follow-up): once the turn has recovered, the "will keep retrying"
+// promise is stale and hidden uniformly; bare-string fallbacks are
+// statements about errors that did happen and stay visible; already
+// hidden items are not resurrected.
 const settleState = { settings: { language: 'zh-Hans' }, chatItems: [] };
 messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
   { error: 'SSE stream idle timeout after 30s — no data received' },
@@ -720,9 +788,11 @@ assert.equal(
   'nothing to settle returns false',
 );
 
-// ── 遗留清单修复:forwarder 结构化 code/category 透传(R3 M3 / R4 P1)──
-// 受控语义保留在用户卡上供诊断与后续消费;不得参与门控/分类(流式路径多为
-// 通用 "transient",字符串门控仍是判定来源)。
+// Legacy-list fix, forwarder passthrough of structured code/category
+// (R3 M3 / R4 P1): the controlled semantics are kept on the user card
+// for diagnostics and later consumption; they must not drive gating or
+// classification (the streaming path emits mostly the generic
+// "transient", so string gating remains the source of truth).
 const codedState = { settings: { language: 'en' }, chatItems: [] };
 messageSandbox.window.PinvouBridgeMessages.addModelServiceErrorNotice(
   { error: 'SSE stream request failed: HTTP 402 insufficient balance', code: 'transient', category: 'internal' },
@@ -864,8 +934,10 @@ assert.match(doneSection, /legacyConversationOnly: timelineTakesOver/);
 assert.match(bridgeMessagesSource, /payload\.shell_cleanup_failed/);
 assert.match(doneSection, /messages\.addModelServiceErrorNotice/);
 assert.match(doneSection, /typeof messages\.addModelServiceErrorNotice === "function"/);
-// 成功终态(无 error)必须收敛同回合 transient 气泡(R7 follow-up);错误终态
-// 仍走 addModelServiceErrorNotice 的升级/隐藏路径,二者互斥。
+// A successful terminal (no error) must settle the turn's transient
+// bubbles (R7 follow-up); error terminals keep going through
+// addModelServiceErrorNotice's upgrade/hide path - the two are mutually
+// exclusive.
 assert.match(doneSection, /messages\.settleModelServiceErrorNotices/);
 assert.match(doneSection, /typeof messages\.settleModelServiceErrorNotices === "function"/);
 assert.match(bridgeMessagesSource, /settleModelServiceErrorNotices: function/);
@@ -919,16 +991,17 @@ assert.equal(
   'Shell cleanup warning must provide zh/en/ja translations',
 );
 
-// Wave-2 拆分把事件转发(含 Event::TurnComplete 处理)从 engine.rs 移到
-// forwarder.rs。契约检查事件处理顺序,故把 forwarder.rs 拼在前面(它含
-// TurnComplete→timing→emit 的顺序);未拆分的 main 上没有 forwarder.rs,
-// 自动回退为仅 engine.rs。
+// The wave-2 split moved event forwarding (including Event::TurnComplete
+// handling) from engine.rs into forwarder.rs. The contract checks event
+// processing order, so forwarder.rs is concatenated first (it owns the
+// TurnComplete -> timing -> emit order); on unsplit main there is no
+// forwarder.rs and this falls back to engine.rs alone.
 let engineSource = read('src-tauri', 'src', 'features', 'assistant', 'engine.rs');
 try {
   engineSource =
     read('src-tauri', 'src', 'features', 'assistant', 'forwarder.rs') + engineSource;
 } catch {
-  // main(未拆分)无 forwarder.rs
+  // main (unsplit) has no forwarder.rs
 }
 const turnCompleteStart = engineSource.indexOf('Event::TurnComplete');
 const turnCompleteSection = engineSource.slice(
@@ -940,8 +1013,10 @@ assert.ok(
     < turnCompleteSection.indexOf('emit_chat_terminal'),
   '正常完成必须先落权威时间线，再向前端发送 chat:done',
 );
-// 错误文本跨 webview 边界前先过 Rust 脱敏分层;transient payload 保留底座
-// 受控 code/category(R3 M3 / R4 P1:前端不得只靠字符串猜测)。
+// Error text crosses the webview boundary through the Rust redaction
+// layer first; the transient payload retains the base's controlled
+// code/category (R3 M3 / R4 P1: the frontend must not rely on string
+// guessing alone).
 const errorEventSection = engineSource.slice(
   engineSource.indexOf('Event::Error { envelope'),
   engineSource.indexOf('Event::CompactionFailed', engineSource.indexOf('Event::Error { envelope')),

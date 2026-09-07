@@ -1001,7 +1001,7 @@ function ConversationTurnView({
               {usageLabel && <span className="text-[11px] text-gray-400">{usageLabel}</span>}
               {turn.userError ? (
                 <div className="basis-full mt-2">
-                  {/* 双主题:亮色用白卡+灰阶文字,dark: 沿用深色玻璃样式。 */}
+                  {/* Dual theme: light uses a white card with gray text; dark: keeps the dark glass style. */}
                   <div className="w-fit max-w-[640px] rounded-[22px] bg-white/85 ring-1 ring-black/5 dark:bg-[rgba(38,38,42,0.78)] dark:ring-0 px-4 py-3 text-[13px] shadow-[0_16px_48px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.06)] dark:shadow-[0_16px_48px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-2xl">
                     <div className="flex items-start gap-3">
                       <span className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-red-500/10 text-red-600 dark:bg-[rgba(255,105,97,0.16)] dark:text-[#ff9f9a]">

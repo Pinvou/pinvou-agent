@@ -153,10 +153,13 @@ export function timelineUserError(event, options = {}) {
   });
 }
 
-/// 时间线裸 error 是给红字兜底展示的:权威回读/历史会话里可能带网关或
-/// provider 原始报文,门控没接管(不建 user_error 卡)的也要先脱敏再展示
-/// ——分类允许漏判,凭证不允许漏。userError 卡走 build(),自身已脱敏;
-/// provider 信号提取(如 URL 里的 api.deepseek.com)在 build 内用原文,不受影响。
+/// A timeline's bare error feeds the red-text fallback display: the
+/// authoritative replay / historical sessions may carry gateway or raw
+/// provider bodies that the gate did not take over (no user_error card),
+/// so they must be redacted before display - classification may miss,
+/// credentials must not. userError cards go through build(), which
+/// redacts on its own; provider-signal extraction (e.g. api.deepseek.com
+/// in a URL) runs inside build() on the original text and is unaffected.
 export function timelineDisplayError(error, options = {}) {
   if (!error) return error || null;
   const helper = globalThis.PinvouModelServiceErrors;
@@ -378,8 +381,9 @@ export function projectDeepSeekConversation({
     activeTurn.startedAt = thinking && thinking.startedAt || Date.now();
     activeTurn.completedAt = null;
     activeTurn.error = null;
-    // 与 error 同步清除:回合重新运行时,残留的 userError 卡会在
-    // "执行中"状态下展示上一轮的"已停止"措辞,与运行态自相矛盾。
+    // Cleared in lockstep with error: when a turn re-runs, a leftover
+    // userError card would show the previous turn's "has stopped" wording
+    // while the turn claims to be running - self-contradictory.
     activeTurn.userError = null;
     activeTurn.lifecycleKnown = true;
     activeTurn.activityToolName = thinking && thinking.phase === 'tool' && thinking.toolName

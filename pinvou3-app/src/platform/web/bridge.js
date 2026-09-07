@@ -6387,11 +6387,14 @@
       if (error) {
         const messages = bridgeMessages();
         if (!(typeof messages.addModelServiceErrorNotice === "function" && messages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, true, terminalRecord))) {
-          // 与 addModelServiceErrorNotice 同一前提:只有时间线终态记录确实带
-          // error 时才隐藏气泡(时间线以裸 error 小字接管),否则保留可见。
+          // Same premise as addModelServiceErrorNotice: the bubble is only
+          // hidden when the timeline terminal record actually carries an
+          // error (the timeline takes over with the raw error in small
+          // text); otherwise it stays visible.
           const timelineTakesOver = !!(terminalRecord && terminalRecord.error);
-          // 回退气泡与 transient 回退必须用同一脱敏文本,find 去重才不会因
-          // 措辞不同而漏匹配、产生双气泡。
+          // The fallback bubble must share the transient fallback's
+          // redacted text, or the find-based dedup misses over wording
+          // differences and produces a double bubble.
           const displayError = typeof messages.redactRawError === "function"
             ? messages.redactRawError(error, state)
             : error;
@@ -6409,8 +6412,10 @@
           }
         }
       } else {
-        // 成功(或无错误)终态:回合已恢复完成,本回合 transient 气泡的
-        // "系统会继续重试"声明过时,统一隐藏(发送时已清空上一回合项)。
+        // Successful (error-free) terminal: the turn has recovered, so the
+        // transient bubbles' "will keep retrying" claim is stale and they
+        // are hidden uniformly (sending already cleared the previous
+        // turn's items).
         const messages = bridgeMessages();
         if (typeof messages.settleModelServiceErrorNotices === "function") {
           messages.settleModelServiceErrorNotices(state);

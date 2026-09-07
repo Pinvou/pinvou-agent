@@ -1151,8 +1151,10 @@ export function CodexAcpView({
   const activeIdRef = useRef(activeId);
   const lastActiveSessionIdRef = useRef(activeId);
   if (activeId) lastActiveSessionIdRef.current = activeId;
-  // 原生泳道事件订阅 mount 一次，错误提示的友好文案需要当前界面语言与模型配置；
-  // 经 ref 透传最新值，避免闭包捕获过期 bridge state（与 activeIdRef 同款模式）。
+  // The native-lane event subscription mounts once, and the friendly
+  // error notice copy needs the current UI language and model config;
+  // the latest values are threaded through a ref so closures never hold a
+  // stale bridge state snapshot (same pattern as activeIdRef).
   const nativeEventContextRef = useRef({ language: null, modelServiceState: null });
   nativeEventContextRef.current = {
     language: bs && bs.settings && bs.settings.language,
@@ -1290,11 +1292,13 @@ export function CodexAcpView({
   // 知识库集合列表与 embedding 安装态由 ComposerKbSelector 内部经 bridge.knowledge
   // （kb_collection_list / kb_model_status，全局只读、不带会话）自行加载，代码页
   // 不再重复拉取（PR #214 统一底栏控件时移除 nativeKb* 本地变量）。
-  // projectNativeLane 只消费 bs 的模型服务相关字段(providerLabelFromState 读
-  // currentSessionModelId/activeModelId/savedModels/effectiveModelConfig/
-  // activeProvider,语言读 settings.language)。bs 是整体快照,流式 chunk 每次
-  // notify 都换引用,直接依赖会让 useMemo 在流式期间全程失效、全量重投影;
-  // 这里把依赖收窄为被消费字段的引用。
+  // projectNativeLane only consumes bs's model-service fields
+  // (providerLabelFromState reads currentSessionModelId/activeModelId/
+  // savedModels/effectiveModelConfig/activeProvider; the language comes
+  // from settings.language). bs is a whole-state snapshot that changes
+  // reference on every streaming notify, so depending on it directly
+  // would invalidate this useMemo throughout streaming and re-project
+  // everything; the deps are narrowed to the consumed field references.
   const nativeModelServiceLanguage = bs && bs.settings && bs.settings.language;
   const nativeModelServiceState = useMemo(
     () => (bs ? {
@@ -1304,13 +1308,15 @@ export function CodexAcpView({
       effectiveModelConfig: bs.effectiveModelConfig,
       activeProvider: bs.activeProvider,
     } : null),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只跟踪 providerLabelFromState 实际消费的字段引用,而非整个 bs 快照
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only the field references providerLabelFromState actually consumes, not the whole bs snapshot
     [bs && bs.currentSessionModelId, bs && bs.activeModelId, bs && bs.savedModels, bs && bs.effectiveModelConfig, bs && bs.activeProvider],
   );
   const nativeProjection = useMemo(
     () => (isNativeAgent ? projectNativeLane(activeNativeLane, activeId, {
-      // 与主聊天 ChatView 同款:时间线错误卡的友好文案按界面语言构建,
-      // provider 标签从 bridge state 推导(内部仍以错误文本里的厂商信号优先)。
+      // Same as the main chat ChatView: the timeline error card's friendly
+      // copy is built in the UI language, with the provider label derived
+      // from bridge state (internally, a provider signal in the error text
+      // still wins).
       language: nativeModelServiceLanguage,
       modelServiceState: nativeModelServiceState,
     }) : null),

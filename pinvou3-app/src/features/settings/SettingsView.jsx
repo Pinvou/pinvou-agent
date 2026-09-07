@@ -958,8 +958,10 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
             status,
             verified: !!value.verified,
             summary: value.summary ? String(value.summary) : '',
-            // http_status 是前端的计费信号:402 → 三语 connectionMessages.billing
-            // 文案(Rust 侧摘要已约定不带硬编码语言前缀,见 settings.rs)。
+            // http_status is the frontend's billing signal: 402 maps to the
+            // tri-lingual connectionMessages.billing copy (the Rust-side
+            // summary is contracted to carry no hardcoded language prefix;
+            // see settings.rs).
             httpStatus: value.http_status == null ? null : Number(value.http_status),
           };
         }
@@ -1532,8 +1534,10 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
               : imageTestResult.status === 'unverified'
                 // 后端 summary 已自带「未能正确识别图像，原因未知」完整句,直接展示避免重复。
                 ? (imageTestResult.summary || settingsCopy.imageCapabilityTestUnverified)
-                // 402 计费类与「测试连接」同口径:复用三语 connectionMessages.billing,
-                // Rust 侧只透传 http_status 与 provider 原始摘要,不硬编码单语言指引。
+                // A 402 billing failure matches the connection test: reuse
+                // the tri-lingual connectionMessages.billing copy - the Rust
+                // side only passes http_status and the raw provider summary,
+                // never a single-language guidance string.
                 : imageTestResult.httpStatus === 402
                   ? settingsCopy.connectionMessages.billing + (imageTestResult.summary ? ` · ${imageTestResult.summary}` : '')
                   : settingsCopy.imageCapabilityTestError + (imageTestResult.summary ? ` · ${imageTestResult.summary}` : '')

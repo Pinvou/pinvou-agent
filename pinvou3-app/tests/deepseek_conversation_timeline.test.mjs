@@ -280,8 +280,9 @@ try {
   assert.equal(billingHistory.turns[2].userError.kind, 'billing');
   assert.match(billingHistory.turns[2].userError.title, /DeepSeek account balance is insufficient/);
 
-  // providerLabelFromState 的 language 实参必须透传:openai_compatible 的默认
-  // 标签随界面语言构建,漏传时 en 界面会回落中文"当前模型服务"。
+  // providerLabelFromState's language argument must be threaded through:
+  // the openai_compatible default label is built in the UI language, and
+  // missing it lets an en interface fall back to the Chinese "当前模型服务".
   const genericProviderHistory = projectDeepSeekConversation({
     chatItems,
     busy: false,
@@ -337,9 +338,12 @@ try {
   assert.equal(paired.length, 1, 'send_error timing records must not shift visible user turns');
   assert.equal(paired[0].status, 'incomplete');
 
-  // 时间线裸 error 是红字兜底展示:门控漏判的网关/provider 报文也要在投影
-  // 层脱敏(分类可以漏,凭证不能漏);userError 卡走 build() 自带脱敏。
-  // 假 key 用拼接构造,避免触发 GitHub push protection 密钥形态扫描(合成值)。
+  // A timeline's bare error feeds the red-text fallback: gateway/provider
+  // bodies the gate missed must be redacted at the projection layer too
+  // (classification may miss, credentials must not); userError cards go
+  // through build(), which redacts on its own.
+  // Fake keys are built by concatenation to avoid triggering GitHub push
+  // protection's secret-pattern scan (synthetic values).
   const FAKE_PROJ_KEY = 'sk-proj-' + 'abcdefghijklmnop1234567890';
   const leaky = pairDeepSeekTimeline([
     { turn_id: 'leak-1', event: 'user_start', timestamp: 1 },
@@ -428,8 +432,9 @@ try {
   const conversationView = readFileSync(path.join(root, 'src', 'features', 'conversation', 'ConversationTimeline.jsx'), 'utf8');
   const questionChoiceCard = readFileSync(path.join(root, 'src', 'features', 'conversation', 'QuestionChoiceCard.jsx'), 'utf8');
   const toolRenderers = readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-renderers.jsx'), 'utf8');
-  // busy 块必须与 error 同步清除 userError(R2 L1):回合重新运行时,残留的
-  // userError 卡会在"执行中"状态下展示上一轮的"已停止"措辞。
+  // The busy block must clear userError in lockstep with error (R2 L1):
+  // when a turn re-runs, a leftover userError card would show the previous
+  // turn's "has stopped" wording while the turn claims to be running.
   const deepseekSource = readFileSync(path.join(root, 'src', 'features', 'conversation', 'deepseek-conversation.js'), 'utf8');
   const busyBlock = deepseekSource.slice(
     deepseekSource.indexOf('if (activeTurn && busy) {'),
@@ -439,7 +444,8 @@ try {
     busyBlock.includes('activeTurn.error = null') && busyBlock.includes('activeTurn.userError = null'),
     'busy re-run must clear stale userError in lockstep with error',
   );
-  // 时间线错误卡双主题(R3/R4 遗留):硬编码深色在亮色主题下突兀。
+  // Timeline error card dual theme (R3/R4 residual): the hardcoded dark
+  // style jarred under the light theme.
   assert.ok(
     conversationView.includes('bg-white/85') && conversationView.includes('dark:bg-[rgba(38,38,42,0.78)]'),
     'timeline user-error card must provide a light theme alongside the dark glass style',

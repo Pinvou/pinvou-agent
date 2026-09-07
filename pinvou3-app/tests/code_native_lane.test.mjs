@@ -705,8 +705,10 @@ try {
     session_id: 's13', plan_id: 'plan-r',
   }), false);
 
-  // ── lane14: 模型服务错误的统一气泡（分类/脱敏/终态升级/语言）─────────
-  // helper 以 classic script 形式挂 globalThis,与浏览器 index.html 加载形态一致。
+  // -- lane14: unified model-service error bubble
+  // (classification/redaction/terminal upgrade/language). The helper is
+  // attached to globalThis as a classic script, matching how the browser
+  // index.html loads it.
   const vm = await import('node:vm');
   const helperSandbox = { window: {}, Date };
   vm.runInNewContext(
@@ -717,7 +719,8 @@ try {
   globalThis.PinvouModelServiceErrors = helperSandbox.window.PinvouModelServiceErrors;
   const lane14 = createNativeLane();
   appendLocalUserMessage(lane14, '帮我总结这份报告');
-  // transient:模型服务错误接管,气泡为友好措辞(可恢复),非裸串。
+  // Transient: a model-service error is taken over, the bubble carries
+  // friendly (recoverable) wording, not the bare string.
   applyNativeChatEvent(lane14, 'chat:transient_error', {
     session_id: 's14',
     error: 'SSE stream request failed: HTTP 402 insufficient balance',
@@ -728,7 +731,8 @@ try {
   assert.equal(transientItem.userError.kind, 'billing');
   assert.equal(transientItem.legacyConversationOnly, undefined);
   assert.doesNotMatch(transientItem.text, /SSE stream request failed/, 'raw protocol error must not leak into the bubble');
-  // done:同身份气泡原地升级为终态措辞并转 legacyConversationOnly(时间线卡接管)。
+  // Done: the same-identity bubble upgrades in place to terminal wording
+  // and flips to legacyConversationOnly (the timeline card takes over).
   applyNativeChatEvent(lane14, 'chat:done', {
     session_id: 's14',
     status: 'Failed',
@@ -738,7 +742,7 @@ try {
   assert.equal(systemItems14.length, 1, 'terminal must upgrade the transient bubble, not add a second one');
   assert.match(systemItems14[0].text, /so this reply stopped/);
   assert.equal(systemItems14[0].legacyConversationOnly, true);
-  // 非模型错误保持裸串回退。
+  // Non-model errors keep the bare-string fallback.
   const lane15 = createNativeLane();
   applyNativeChatEvent(lane15, 'chat:done', {
     session_id: 's15',
@@ -751,11 +755,13 @@ try {
   assert.equal(
     fallbackItem.legacyConversationOnly,
     undefined,
-    '无 open user_start 时 recordTurnCompleted 不写时间线记录,裸串终态气泡必须保留可见',
+    'without an open user_start recordTurnCompleted writes no timeline record, so the bare terminal bubble must stay visible',
   );
-  // 投影层过滤(B2):终态升级项标记 legacyConversationOnly 后,projectNativeLane
-  // 必须经 conversationItemsForMode 隐藏气泡,只留时间线错误卡——否则同一错误
-  // 双显示(live 气泡+卡片),重启后却又只剩卡片。
+  // Projection filter (B2): once a terminal-upgraded item is flagged
+  // legacyConversationOnly, projectNativeLane must hide the bubble via
+  // conversationItemsForMode and keep only the timeline error card —
+  // otherwise the same error shows twice (live bubble + card) while a
+  // restart leaves only the card.
   const nativeProjection14 = projectNativeLane(lane14, 's14', { language: 'en' });
   const projectedErrorTurns = nativeProjection14.turns.filter(turn => turn.userError);
   assert.equal(projectedErrorTurns.length, 1, 'timeline error card must survive projection');
@@ -766,8 +772,10 @@ try {
     }
   }
   assert.equal(projectedSystemNotices, 0, 'terminal-upgraded bubble must be hidden from the projection');
-  // 回合作用域(M3):新回合同身份错误必须新建条目,不得并进上一回合的旧项
-  // (bridge 在发送时清 turnErrorNotice 项,原生 lane 保留历史,去重必须限回合)。
+  // Turn scoping (M3): a same-identity error in a new turn must create a
+  // new item, never fold into the previous turn's stale one (the bridge
+  // clears turnErrorNotice items on send, but the native lane keeps its
+  // history, so dedup must be turn-scoped).
   const lane17 = createNativeLane();
   applyNativeChatEvent(lane17, 'chat:user_message', { session_id: 's17', content: '第一问' });
   applyNativeChatEvent(lane17, 'chat:done', {
@@ -781,8 +789,10 @@ try {
   const crossTurnItems = lane17.items.filter(item => item.userError);
   assert.equal(crossTurnItems.length, 2, 'same-kind error in a new turn must create its own item');
   assert.equal(crossTurnItems[1].legacyConversationOnly, undefined, 'new turn transient item must stay visible');
-  // 非模型错误的裸串回退:done 与同文本 transient 只落一条并原地转终态隐藏
-  // (对齐 bridge chat:done 回退),不得出现两条同文本气泡(M4)。
+  // Bare-string fallback for non-model errors: done and a same-text
+  // transient collapse into one item hidden in place as terminal (aligned
+  // with the bridge chat:done fallback) — never two same-text bubbles
+  // (M4).
   const lane18 = createNativeLane();
   appendLocalUserMessage(lane18, '跑一下脚本');
   applyNativeChatEvent(lane18, 'chat:transient_error', {
@@ -794,8 +804,10 @@ try {
   const bareItems18 = lane18.items.filter(item => item.type === 'system');
   assert.equal(bareItems18.length, 1, 'same-text transient+done bare fallback must collapse into one item');
   assert.equal(bareItems18[0].legacyConversationOnly, true, 'collapsed bare fallback must hide the bubble');
-  // 静默吞错回归:done 到达但没有 open user_start(recordTurnCompleted 不写
-  // 时间线记录)时,模型服务终态气泡必须保留可见,不能交给不存在的时间线卡。
+  // Silent-swallow regression: when done arrives without an open
+  // user_start (recordTurnCompleted writes no timeline record), the
+  // model-service terminal bubble must stay visible and must not be
+  // handed to a timeline card that does not exist.
   const lane19 = createNativeLane();
   applyNativeChatEvent(lane19, 'chat:done', {
     session_id: 's19',
@@ -809,17 +821,21 @@ try {
     undefined,
     'terminal bubble must stay visible when no timeline record was written',
   );
-  // 身份不同的 transient/done 序列:transient(network)与 done(billing)
-  // 文本/技术详情均不同,终态到达且时间线记录带 error 时,同回合所有模型
-  // 服务 transient 气泡一并隐藏;上一回合的可见气泡不得误伤(回合作用域)。
+  // Transient/done sequence with different identities: transient
+  // (network) vs done (billing) differ in text/technical detail; when the
+  // terminal arrives with an error-bearing timeline record, every
+  // model-service transient bubble of the turn hides together, while the
+  // previous turn's visible bubble must be untouched (turn scoping).
   const lane20 = createNativeLane();
   applyNativeChatEvent(lane20, 'chat:user_message', { session_id: 's20', content: '第一问' });
   applyNativeChatEvent(lane20, 'chat:transient_error', {
     session_id: 's20', error: 'SSE stream idle timeout after 30s — no data received',
   }, { language: 'en', modelServiceState: null });
   applyNativeChatEvent(lane20, 'chat:done', { session_id: 's20', status: 'Completed' });
-  // 成功终态:transient 的"会继续重试"声明随回合恢复完成而过时,与
-  // bridge settleModelServiceErrorNotices 同语义统一隐藏,不得比恢复活得久。
+  // Successful terminal: the transient "will keep retrying" claim is
+  // stale once the turn has recovered; hide it uniformly, matching
+  // bridge settleModelServiceErrorNotices — it must not outlive the
+  // recovery it described.
   const settledTurnNotice = lane20.items.find(item => item.userError);
   assert.equal(settledTurnNotice.legacyConversationOnly, true, 'successful done must settle the same-turn transient claim');
   applyNativeChatEvent(lane20, 'chat:user_message', { session_id: 's20', content: '第二问' });
@@ -840,11 +856,13 @@ try {
     true,
     'terminal takeover must not resurrect the settled previous-turn bubble',
   );
-  // 假 key 用拼接构造,避免触发 GitHub push protection 密钥形态扫描(合成值)。
+  // Fake keys are built by concatenation to avoid triggering GitHub push
+  // protection's secret-pattern scan (synthetic values).
   const FAKE_PROJ_KEY = 'sk-proj-' + 'abcdefghijklmnop1234567890';
   const FAKE_ANTHROPIC_KEY = 'sk-ant-api03-T3Blbk' + 'FJ1234567890abcdef';
-  // "Incorrect API key provided"(OpenAI 真实措辞)必须被强词表接管为友好卡,
-  // 密钥不得出现在任何展示面。
+  // "Incorrect API key provided" (OpenAI's real wording) must be taken
+  // over by the strong keyword list into a friendly card, and the key
+  // must not appear on any display surface.
   const lane21 = createNativeLane();
   applyNativeChatEvent(lane21, 'chat:done', {
     session_id: 's21',
@@ -859,8 +877,10 @@ try {
     new RegExp(FAKE_PROJ_KEY),
     'the key must not leak into any displayed text',
   );
-  // 回退裸串也必须先脱敏:门控漏判的网关/provider 报文不得带凭证上屏。
-  // transient 与 done 回退用同一脱敏文本:done 的同文本去重必须命中 transient 项。
+  // Bare-string fallbacks must be redacted first: gateway/provider
+  // bodies the gate missed must not reach the screen with credentials.
+  // Transient and done fallbacks share one redacted text so done's
+  // same-text dedup hits the transient item.
   const lane22 = createNativeLane();
   const leaked = 'request failed: {"api_key":"' + FAKE_ANTHROPIC_KEY + '"}';
   applyNativeChatEvent(lane22, 'chat:transient_error', { session_id: 's22', error: leaked }, { language: 'en' });
@@ -868,8 +888,10 @@ try {
   const lane22Notices = lane22.items.filter(item => item.type === 'system');
   assert.equal(lane22Notices.length, 1, 'same redacted text must deduplicate between transient and done fallbacks');
   assert.doesNotMatch(lane22Notices[0].text, /sk-ant-api03/, 'proxy JSON echoes must not leak keys');
-  // 同毫秒两回合:turn_id 须含回合序号保持唯一,否则第二条 user_start 被误判
-  // 为已完结,终态记录与错误卡整体失效(A6 轮实测缺陷)。
+  // Two turns in the same millisecond: turn_id must carry a per-lane
+  // sequence to stay unique, otherwise the second user_start is mistaken
+  // for a completed turn and the terminal record plus error card break
+  // entirely (defect reproduced in round A6).
   const lane23 = createNativeLane();
   const frozenNow = 1788022152694;
   const originalNow = Date.now;
@@ -890,7 +912,8 @@ try {
   assert.equal(done23.length, 1, 'terminal record must pair with the second (open) turn');
   assert.equal(done23[0].turn_id, starts23[1].turn_id);
 
-  // helper 缺失(classic script 未加载)时回退裸串,不抛错。
+  // With the helper missing (classic script not loaded), fall back to
+  // the bare string without throwing.
   delete globalThis.PinvouModelServiceErrors;
   const lane16 = createNativeLane();
   applyNativeChatEvent(lane16, 'chat:transient_error', {

@@ -297,7 +297,9 @@ assert.deepEqual(memoryState.work_context.map(item => item.id), ['web-ctx-new'])
 assert.equal(memoryState.warnings[0].code, 'memory_topic_cleanup_required');
 
 const indexSource = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
-// indexOf 需同时断言存在:-1 < 任意值恒真,script 标签被删时排序断言会静默通过。
+// indexOf must be paired with an existence assertion: -1 < anything is
+// always true, so the ordering assertion would silently pass if the
+// script tag were removed.
 const indexScriptIndex = (name) => {
   const index = indexSource.indexOf(name);
   assert.notEqual(index, -1, `${name} must be present in index.html`);

@@ -121,9 +121,11 @@ export function appendNativeSystemItem(lane, text) {
   lane.items.push({ id: nextId(lane), type: 'system', text: String(text || ''), time: timeStr() });
 }
 
-/// 当前回合的起始下标(最后一个 user 项之后)。bridge 在每次发送时会清掉上一
-/// 回合的 turnErrorNotice 项(chat.js),原生 lane 则保留完整历史:错误去重与
-/// 终态升级若不限定回合作用域,新回合的同身份错误会被并进上一回合的旧项。
+/// Index where the current turn starts (right after the last user item).
+/// The bridge clears the previous turn's turnErrorNotice items on every
+/// send (chat.js), but the native lane keeps its full history: without
+/// turn-scoping, error dedup and terminal upgrades would fold a new
+/// turn's same-identity error into the previous turn's stale item.
 function currentTurnStart(lane) {
   for (let i = lane.items.length - 1; i >= 0; i -= 1) {
     if (lane.items[i] && lane.items[i].type === 'user') return i + 1;
@@ -131,9 +133,11 @@ function currentTurnStart(lane) {
   return 0;
 }
 
-/// 回退裸串展示前的无条件脱敏:门控漏判的网关/代理自定义 body、provider
-/// 原始报文仍会以系统项/红字上屏,分类允许漏判,凭证不允许漏。
-/// helper 缺失(classic script 未加载)时原样返回,降级为既有行为。
+/// Unconditional redaction before a bare-string fallback is displayed:
+/// gateway/proxy custom bodies and raw provider messages the gate missed
+/// would still reach system items / red text. Classification may miss,
+/// credentials must not. Returns the input unchanged when the helper is
+/// missing (classic script not loaded), degrading to existing behavior.
 function redactDisplayError(error, options = {}) {
   if (!error) return error;
   const helper = globalThis.PinvouModelServiceErrors;
@@ -141,13 +145,20 @@ function redactDisplayError(error, options = {}) {
   return helper.redactTechnicalDetail(String(error), options.language);
 }
 
-/// 原生泳道的模型服务错误气泡，与 bridge-messages.addModelServiceErrorNotice 同语义：
-/// 门控（isModelServiceError）通过才接管；去重按错误身份（kind+技术详情）而非文本，
-/// 同回合 transient→done 措辞升级原地生效；终态且时间线终态记录确实带 error 时
-/// （terminalRecord），本回合所有模型服务错误气泡一并标记 legacyConversationOnly，
-/// 投影层（projectNativeLane 经 conversationItemsForMode 过滤）据此隐藏气泡，只留
-/// 时间线错误卡；无时间线记录时气泡保留可见（否则静默吞错）。非模型错误返回 false
-/// 由调用方走裸串回退。helper 缺失（classic script 未加载）时同样回退。
+/// Native-lane model-service error bubble, mirroring
+/// bridge-messages.addModelServiceErrorNotice: takeover only when the
+/// gate (isModelServiceError) passes; dedup by error identity
+/// (kind + technical detail) instead of text; a transient-to-done wording
+/// upgrade happens in place; on terminal with a timeline terminal record
+/// that actually carries an error (terminalRecord), every model-service
+/// error bubble of this turn is flagged legacyConversationOnly so the
+/// projection (projectNativeLane filtered through
+/// conversationItemsForMode) hides the bubbles and keeps only the
+/// timeline error card; without a timeline record the bubble stays
+/// visible (otherwise the error is silently swallowed). Non-model errors
+/// return false and the caller keeps its bare-string fallback. The same
+/// fallback applies when the helper is missing (classic script not
+/// loaded).
 function upsertNativeModelServiceNotice(lane, payload, terminal, options, terminalRecord) {
   const helper = globalThis.PinvouModelServiceErrors;
   const error = payload && payload.error;
@@ -186,9 +197,11 @@ function upsertNativeModelServiceNotice(lane, payload, terminal, options, termin
     if (hideForTimeline) target.legacyConversationOnly = true;
     lane.items.push(target);
   }
-  // 终态接管时,当前回合其余模型服务 transient 气泡(身份与终态不同,如先
-  // idle timeout 后 HTTP 402)一并隐藏:它们的"会继续重试"措辞与终态矛盾。
-  // 去重循环从 currentTurnStart 起,上一回合的气泡不在作用域内。
+  // On terminal takeover, hide the turn's other model-service transient
+  // bubbles too (of a different identity, e.g. an idle timeout followed
+  // by HTTP 402): their "will keep retrying" wording contradicts the
+  // terminal one. The scan starts at currentTurnStart, so bubbles from
+  // earlier turns are out of scope.
   if (hideForTimeline) {
     for (let i = start; i < lane.items.length; i += 1) {
       const item = lane.items[i];
@@ -223,9 +236,11 @@ function openTimelineStart(lane, withinMs = 0) {
 }
 
 function recordTurnStarted(lane, turnId) {
-  // 同毫秒连续两回合(自动化/快速连发)Date.now() 会生成相同 id:第二条
-  // user_start 会被 openTimelineStart 误判为已完结回合,终态记录与错误卡
-  // 整体失效。补回合序号保证 id 唯一(与 bridge 侧 turnIndex 同思路)。
+  // Two turns within the same millisecond (automation / rapid-fire)
+  // collide on Date.now() ids: the second user_start would be mistaken by
+  // openTimelineStart for an already-completed turn, breaking the terminal
+  // record and the error card entirely. A per-lane turn sequence keeps ids
+  // unique (same idea as the bridge side's turnIndex).
   lane.turnSeq = (lane.turnSeq || 0) + 1;
   lane.timeline.push({
     turn_id: turnId || `ui_native_${Date.now()}_${lane.turnSeq}`,
@@ -247,8 +262,10 @@ function recordTurnCompleted(lane, payload) {
     ui_turn_index: open.ui_turn_index,
   };
   lane.timeline.push(record);
-  // 返回值供终态错误气泡的隐藏决策使用:只有确实写入了带 error 的时间线
-  // 终态记录,气泡才能交给时间线错误卡接管(否则隐藏=静默吞错)。
+  // The return value drives the terminal-bubble hiding decision: only a
+  // timeline terminal record that was actually written with an error lets
+  // the timeline error card take over (hiding otherwise = silent
+  // swallow).
   return record;
 }
 
@@ -495,12 +512,16 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
     }
     case 'chat:transient_error': {
       if (!p.error) return false;
-      // 回退裸串也先脱敏(门控漏判的网关/provider 报文不得带凭证上屏)。
+      // Bare-string fallbacks are redacted too (gateway/provider bodies
+      // the gate missed must not reach the screen with credentials).
       const displayError = redactDisplayError(p.error, options);
-      // 模型服务错误走统一分类/脱敏/三语气泡；本地工具错误保持裸串回退。
+      // Model-service errors go through the unified
+      // classification/redaction/tri-lingual bubble; local tool errors
+      // keep the bare-string fallback.
       if (upsertNativeModelServiceNotice(lane, p, false, options)) return true;
       const notice = `⚠️ ${displayError}`;
-      // 同文本去重限定当前回合(与上方身份去重同作用域)。
+      // Same-text dedup is turn-scoped (same scope as the identity dedup
+      // above).
       const start = currentTurnStart(lane);
       let duplicate = false;
       for (let i = start; i < lane.items.length; i += 1) {
@@ -603,11 +624,16 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
       lane.busy = false;
       lane.thinking = null;
       if (p.error && !upsertNativeModelServiceNotice(lane, p, true, options, terminalRecord)) {
-        // 终态：同身份 transient 气泡原地升级为终态措辞并转 legacyConversationOnly
-        //（时间线错误卡接管）；非模型错误与 bridge chat:done 回退同语义——
-        // 同文本瞬态项原地隐藏（时间线以裸 error 小字展示），不追加第二条。
-        // 隐藏的前提同样是时间线终态记录确实写入且带 error,否则保留气泡可见。
-        // 回退裸串与 transient 回退用同一脱敏文本,同文本去重才能命中。
+        // Terminal: the same-identity transient bubble upgrades in place
+        // to the terminal wording and flips to legacyConversationOnly
+        // (the timeline error card takes over); non-model errors mirror
+        // the bridge chat:done fallback - a same-text transient item is
+        // hidden in place (the timeline shows the raw error in small
+        // text) instead of appending a second bubble. Hiding likewise
+        // requires a timeline terminal record that was actually written
+        // with an error, otherwise the bubble stays visible. The bare
+        // fallback shares the transient fallback's redacted text so the
+        // same-text dedup can hit.
         const timelineTakesOver = Boolean(terminalRecord && terminalRecord.error);
         const notice = `⚠️ ${redactDisplayError(p.error, options)}`;
         const start = currentTurnStart(lane);
@@ -624,9 +650,12 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
           lane.items.push(item);
         }
       } else if (!p.error) {
-        // 成功(或无错误)终态:回合已恢复完成,当前回合 transient 模型服务气泡的
-        // "会继续重试"声明过时,与 bridge settleModelServiceErrorNotices 同语义
-        // 统一隐藏;裸串回退项(对已发生错误的陈述)保留既有行为。
+        // Successful (error-free) terminal: the turn has recovered, so the
+        // current turn's transient model-service bubbles ("will keep
+        // retrying") are stale and hidden, matching
+        // bridge settleModelServiceErrorNotices; bare-string fallbacks
+        // (statements about errors that did happen) keep the existing
+        // behavior.
         const start = currentTurnStart(lane);
         for (let i = start; i < lane.items.length; i += 1) {
           const item = lane.items[i];
@@ -845,9 +874,11 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
 
 /// lane → ConversationTimeline 使用的 turn 投影。
 export function projectNativeLane(lane, sessionId, options = {}) {
-  // legacyConversationOnly 项(终态错误气泡)在此处过滤:标记只被
-  // conversationItemsForMode 消费,原生泳道没有 legacy 模式,恒按 unified 过滤,
-  // 否则终态升级后气泡与时间线错误卡同时显示。
+  // legacyConversationOnly items (terminal error bubbles) are filtered
+  // here: the flag is only consumed by conversationItemsForMode, the
+  // native lane has no legacy mode and is always filtered as unified -
+  // otherwise a terminal-upgraded error would show both the bubble and
+  // the timeline error card.
   return projectDeepSeekConversation({
     chatItems: conversationItemsForMode(lane ? lane.items : [], true),
     busy: Boolean(lane && lane.busy),

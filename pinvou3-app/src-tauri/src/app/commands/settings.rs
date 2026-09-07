@@ -672,8 +672,10 @@ fn model_connection_http_result(status: reqwest::StatusCode) -> ModelConnectionT
 fn model_connection_error_result(err: &reqwest::Error) -> ModelConnectionTestResult {
     let raw = crate::platform::credential_store::redact_secret(&err.to_string());
     let raw_lower = raw.to_lowercase();
-    // detail 原样透传脱敏后的底层错误;中文摘要由前端按 code 查
-    // connectionMessages 提供(硬编码中文前缀会在 en/ja 界面混排)。
+    // The detail passes the redacted underlying error through untouched;
+    // the zh summary above is resolved by the frontend from the code via
+    // connectionMessages (a hardcoded Chinese detail prefix would mix
+    // scripts in en/ja interfaces).
     let detail = Some(raw);
     if err.is_timeout() {
         return model_connection_result(
@@ -1112,10 +1114,14 @@ fn classify_image_capability_http(
             format!("未能正确识别图像，原因未知（HTTP {status_code}）：{summary}"),
             Some(status_code),
         ),
-        // 402 计费类与「测试连接」同口径,但指引充值文案属 UI copy,不得在
-        // Rust 侧硬编码单语言(en/ja 界面会混排):这里只透传 http_status 与
-        // provider 原始摘要,前端按 http_status==402 查三语 connectionMessages.
-        // billing 文案。summary 保持 provider 原文,不带任何硬编码语言前缀。
+        // A 402 billing failure matches the connection test's semantics,
+        // but the top-up guidance is UI copy and must not be hardcoded in a
+        // single language on the Rust side (it would mix scripts in en/ja):
+        // only http_status and the raw provider summary are passed through,
+        // and the frontend resolves the tri-lingual
+        // connectionMessages.billing copy from http_status==402. The
+        // summary keeps the provider's own text with no hardcoded language
+        // prefix.
         402 => image_capability_result("error", false, summary, Some(status_code)),
         _ => image_capability_result("error", false, summary, Some(status_code)),
     }
@@ -1425,8 +1431,10 @@ mod tests {
 
     #[test]
     fn model_connection_http_result_maps_actionable_categories() {
-        // 402 → billing:欠费分类的 code 必须与前端 connectionMessages.billing 键
-        // 精确对齐,拼写漂移会静默降级 unknown 文案;其余可行动类别一并钉死。
+        // 402 -> billing: the arrearage category's code must match the
+        // frontend connectionMessages.billing key exactly — a spelling
+        // drift would silently degrade to the unknown copy; the other
+        // actionable categories are pinned the same way.
         let billing = model_connection_http_result(reqwest::StatusCode::PAYMENT_REQUIRED);
         assert!(!billing.ok);
         assert_eq!(billing.code, "billing");
@@ -1451,10 +1459,13 @@ mod tests {
 
     #[test]
     fn image_capability_http_result_402_keeps_status_and_raw_summary() {
-        // 图片能力探测的 402 与「测试连接」同口径,但充值指引文案属 UI copy:
-        // Rust 侧不硬编码单语言摘要,只透传 http_status(前端据此查三语
-        // connectionMessages.billing)与 provider 原始摘要(供详情展示)。
-        // 状态仍必须落在 "error"(与「不支持」严格区分)。
+        // The image capability probe's 402 matches the connection test's
+        // semantics, but top-up guidance is UI copy: the Rust side never
+        // hardcodes a single-language summary and only passes http_status
+        // (the frontend resolves the tri-lingual connectionMessages.billing
+        // copy from it) plus the raw provider summary (for the detail
+        // view). The status must still land on "error" (strictly distinct
+        // from "unsupported").
         let billing = classify_image_capability_http(
             reqwest::StatusCode::PAYMENT_REQUIRED,
             r#"{"error":{"message":"Insufficient Balance","type":"insufficient_balance"}}"#,
