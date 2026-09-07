@@ -206,7 +206,7 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
         color: isDark ? '#fff' : '#1F1F1F',
       };
     };
-    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, onMoveToProject, dragKind = 'session', dragging, onPickUp, dndPayload, dndDisabled }) => {
+    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, onMoveToProject, dragKind = 'session', dragging, onPickUp, dndPayload, dndDisabled, onDragEnd }) => {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
@@ -292,6 +292,7 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
           style={recentItemRowStyle(dragging, personaTarget, isDark)}
           draggable={dndPayload && !dndDisabled ? true : undefined}
+          onDragEnd={onDragEnd}
           onDragStart={dndPayload && !dndDisabled ? (e) => {
             // 侧栏内 HTML5 拖拽(移动到项目):按住不动 350ms 仍是 tear-off 拆窗
             // 手势——浏览器在指针移动时启动原生拖拽并取消 pointer 事件,
