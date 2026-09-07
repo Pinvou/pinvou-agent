@@ -416,6 +416,15 @@ impl BranchSwitchMode {
 /// 回滚与报错都无法对应到单次操作。
 static CHECKOUT_LOCK: Mutex<()> = Mutex::new(());
 
+/// refs/stash 当前指向；仓库没有任何 stash 条目时为 None。用于判断一次
+/// stash push 是否真的新建了条目（见 checkout_workspace_branch 的 Stash 模式）。
+fn stash_head(root: &Path) -> Result<Option<String>> {
+    match git_output(root, &["rev-parse", "-q", "--verify", "refs/stash"]) {
+        Ok(head) => Ok(Some(head.trim().to_string())),
+        Err(_) => Ok(None),
+    }
+}
+
 pub fn checkout_workspace_branch(
     root: &Path,
     branch: &str,
@@ -453,6 +462,10 @@ pub fn checkout_workspace_branch(
             // 现场看似丢失。切换后的 pop 冲突时 git 会保留该 stash 条目；注意
             // 未跟踪文件可能仅存在于该条目中，必须先确认内容再清理，不能直接
             // 引导 drop。
+            // push 可能不创建条目（status 非空但无可暂存内容，典型是仅子模块
+            // 工作区内容变更）：此时 pop 会误弹用户已有的 stash 条目并把其内容
+            // 应用到新分支。比对 push 前后 refs/stash 指向，只有新建了条目才 pop。
+            let prior_stash = stash_head(&root)?;
             git_output(
                 &root,
                 &[
@@ -463,23 +476,28 @@ pub fn checkout_workspace_branch(
                     "pinvou: branch switch",
                 ],
             )?;
+            let stash_created = stash_head(&root)? != prior_stash;
             if let Err(error) = git_output(&root, &["checkout", branch]) {
-                if let Err(pop_error) = git_output(&root, &["stash", "pop"]) {
-                    bail!(
-                        "切换到 {branch} 失败，且自动恢复暂存的更改也失败；你的更改完好\
-                         保留在 stash 中（git stash list 查看，git stash pop 恢复）。\
-                         切换错误: {error:#}；恢复错误: {pop_error:#}"
-                    );
+                if stash_created {
+                    if let Err(pop_error) = git_output(&root, &["stash", "pop"]) {
+                        bail!(
+                            "切换到 {branch} 失败，且自动恢复暂存的更改也失败；你的更改完好\
+                             保留在 stash 中（git stash list 查看，git stash pop 恢复）。\
+                             切换错误: {error:#}；恢复错误: {pop_error:#}"
+                        );
+                    }
                 }
                 return Err(error);
             }
-            if let Err(error) = git_output(&root, &["stash", "pop"]) {
-                bail!(
-                    "已切换到 {branch}，但恢复暂存的更改失败：冲突内容已应用到工作区，\
-                     该 stash 条目已保留。清理前先执行 git stash show -u stash@{{0}} 确认\
-                     内容——未跟踪文件可能仅存在于该条目中，直接 git stash drop 会丢失\
-                     它们: {error:#}"
-                );
+            if stash_created {
+                if let Err(error) = git_output(&root, &["stash", "pop"]) {
+                    bail!(
+                        "已切换到 {branch}，但恢复暂存的更改失败：冲突内容已应用到工作区，\
+                         该 stash 条目已保留。清理前先执行 git stash show -u stash@{{0}} 确认\
+                         内容——未跟踪文件可能仅存在于该条目中，直接 git stash drop 会丢失\
+                         它们: {error:#}"
+                    );
+                }
             }
         }
         BranchSwitchMode::Commit => {
@@ -1780,6 +1798,63 @@ mod tests {
         assert!(result.git);
         assert_eq!(result.current, None);
         assert!(result.branches.contains(&"main".to_string()));
+    }
+
+    /// Stash 模式的 push 可能不创建条目（status 非空但无可暂存内容，典型是
+    /// 仅子模块工作区内容变更——status 显示 modified 但 push 是 no-op）：此时
+    /// pop 会误弹用户已有的 stash 条目并把其内容应用到新分支。应跳过恢复，
+    /// 用户 stash 原样保留。
+    #[test]
+    fn checkout_workspace_branch_stash_mode_skips_pop_when_push_created_no_entry() {
+        let Some(root) = init_git_repo("stash-noop-push") else {
+            return;
+        };
+        // 本地子模块仓库（file 协议克隆在新版 git 默认拒绝，需显式允许）。
+        let sub = TestDir::new("stash-noop-push-sub");
+        let sub_run = |args: &[&str]| {
+            crate::platform::process::HiddenCommand::new("git")
+                .current_dir(sub.path())
+                .args(args)
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        };
+        assert!(sub_run(&["init", "-b", "main"]));
+        assert!(sub_run(&["config", "user.email", "test@example.com"]));
+        assert!(sub_run(&["config", "user.name", "test"]));
+        fs::write(sub.path().join("lib.txt"), "hi").unwrap();
+        assert!(sub_run(&["add", "."]));
+        assert!(sub_run(&["commit", "-m", "init"]));
+        let sub_url = sub.path().to_string_lossy().into_owned();
+        git_output(
+            root.path(),
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                &sub_url,
+                "sub",
+            ],
+        )
+        .unwrap();
+        git_output(root.path(), &["commit", "-am", "add submodule"]).unwrap();
+        // 用户在切换前就存在的 stash 条目：本流程不得动它。
+        fs::write(root.path().join("file.txt"), "user-edit").unwrap();
+        git_output(root.path(), &["stash", "push", "-m", "user-stash"]).unwrap();
+        // 唯一剩余变更 = 子模块内容修改：push 不创建条目。
+        fs::write(root.path().join("sub").join("lib.txt"), "dirty").unwrap();
+        assert!(!git_status_entries(root.path()).unwrap().is_empty());
+
+        checkout_workspace_branch(root.path(), "feature", BranchSwitchMode::Stash, None).unwrap();
+        assert_eq!(git_branch(root.path()).as_deref(), Some("feature"));
+        // 用户 stash 未被弹出：file.txt 仍是 feature 分支的已提交内容。
+        assert_eq!(
+            fs::read_to_string(root.path().join("file.txt")).unwrap(),
+            "v1"
+        );
+        let stash_list = git_output(root.path(), &["stash", "list"]).unwrap();
+        assert!(stash_list.contains("user-stash"));
     }
 
     #[test]
