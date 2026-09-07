@@ -76,6 +76,7 @@ const protocolSources = {
   updater: ['bridge/updater.js'],
   voice: ['bridge/voice.js'],
   multiAgent: ['bridge/multiagent.js'],
+  projects: ['bridge/projects.js'],
 };
 
 const expectedProtocolHashes = {
@@ -113,6 +114,7 @@ const expectedProtocolHashes = {
   settings: 'a44929caff59641eb059f28885f1674d4e277412526d31c1d3ddfd75e44d0496',
   updater: '86412d40999a268d3d92dc4fe97e3fe465de08745423be820f38a462d79aaced',
   voice: '281399c4de7cdc3adf2f50a422ea5725cb98cbf175e1de8beb0d610655d0028a',
+  projects: '4f0737d9a074629208d6a01e6b027907ad6f0676ef2ae456c95cc37350d8ca76',
 };
 
 for (const [domain, files] of Object.entries(protocolSources)) {
