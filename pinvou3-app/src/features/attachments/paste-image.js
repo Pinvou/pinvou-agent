@@ -21,7 +21,7 @@ export function collectClipboardImages(event) {
 /**
  * Reads into a byte array via FileReader (Safari 14 lacks Blob#arrayBuffer, so the paste bridge path keeps
  * the FileReader approach) and derives the extension; jpeg normalizes to jpg.
- * @returns {Promise<{ bytes: number[], ext: string }>}
+ * @returns {Promise<{ bytes: number[], ext: string }>} Resolves with the file bytes and the normalized extension.
  */
 export function readPasteImageAsBytes(file) {
   return new Promise((resolve, reject) => {

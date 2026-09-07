@@ -11,7 +11,7 @@ const TONES = {
 };
 
 /**
- * @param {{ tone?: keyof typeof TONES, size?: 'sm'|'md', className?: string }} props
+ * @param {{ tone?: keyof typeof TONES, size?: 'sm'|'md', className?: string }} props - Tone, size, and extra classes.
  */
 export function StatusDot({ tone = 'idle', size = 'sm', className = '' }) {
   const sizeClass = size === 'md' ? 'w-2 h-2' : 'w-1.5 h-1.5';

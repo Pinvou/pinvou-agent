@@ -4,17 +4,16 @@
 // callers should still extract locally within their feature instead of forcing this component to fit.
 
 /**
- * @param {{
- *   icon?: React.ReactNode,
- *   title: React.ReactNode,
- *   hint?: React.ReactNode,
- *   action?: React.ReactNode,
- *   className?: string,        // extra classes on the outer container (spacing, text-color tokens, ...)
- *   iconClassName?: string,    // icon container classes (size/radius/background); ignored without icon
- *   titleClassName?: string,
- *   hintClassName?: string,
- *   testId?: string,
- * }} props
+ * @param {object} props - Empty state content and styling hooks.
+ * @param {React.ReactNode} [props.icon] - Optional leading icon node.
+ * @param {React.ReactNode} props.title - Primary title line.
+ * @param {React.ReactNode} [props.hint] - Optional secondary hint line.
+ * @param {React.ReactNode} [props.action] - Optional action node rendered under the hint.
+ * @param {string} [props.className] - Extra classes on the outer container (spacing, text-color tokens, ...).
+ * @param {string} [props.iconClassName] - Icon container classes (size/radius/background); ignored without icon.
+ * @param {string} [props.titleClassName] - Extra classes for the title line.
+ * @param {string} [props.hintClassName] - Extra classes for the hint line.
+ * @param {string} [props.testId] - Test hook for the outer container.
  */
 export function EmptyState({
   icon,

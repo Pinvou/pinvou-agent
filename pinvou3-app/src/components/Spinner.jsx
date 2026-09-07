@@ -16,7 +16,7 @@ const TONES = {
 };
 
 /**
- * @param {{ size?: number, variant?: 'arc'|'top', tone?: string, className?: string }} props
+ * @param {{ size?: number, variant?: 'arc'|'top', tone?: string, className?: string }} props - Sizing and color variant for the spinner.
  */
 export function Spinner({ size = 14, variant = 'top', tone, className = '' }) {
   const variants = TONES[variant] || TONES.top;
