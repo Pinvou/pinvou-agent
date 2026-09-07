@@ -10,9 +10,14 @@ fn store_in(temp: &tempfile::TempDir) -> ProjectStore {
     ProjectStore::from_paths(temp.path().join("projects.json"))
 }
 
-/// 不真实存在的绝对路径:canonicalize 失败走词法绝对化,键仍可判定。
+/// 平台中立的不存在绝对路径:锚在 std::env::temp_dir() 下,Windows 上同样
+/// 满足 is_absolute()(此前硬编码 "/pinvou3-projects-test-root" 会让全部
+/// create 用例在 Windows 上被绝对性校验拒掉,套件只能跑 Ubuntu)。
+/// 路径刻意不存在:canonicalize 失败走词法绝对化,身份键仍可判定。
 fn abs(name: &str) -> PathBuf {
-    PathBuf::from("/pinvou3-projects-test-root").join(name)
+    std::env::temp_dir()
+        .join("pinvou3-projects-test-root")
+        .join(name)
 }
 
 fn create(store: &ProjectStore, name: &str, roots: &[PathBuf]) -> super::Project {
@@ -118,7 +123,7 @@ fn canonicalized_real_dirs_catch_overlap_across_projects() {
     std::fs::create_dir_all(&child).expect("create dirs");
 
     let store = store_in(&temp);
-    create(&store, "父", &[parent.clone()]);
+    create(&store, "父", std::slice::from_ref(&parent));
     let error = store
         .create_project("子".to_string(), vec![child])
         .expect_err("canonical overlap rejected");
@@ -254,7 +259,7 @@ fn move_add_workspace_root_atomically_and_idempotently() {
 
     let store = store_in(&temp);
     let project = create(&store, "目标", &[abs("elsewhere")]);
-    let other = create(&store, "他人领地", &[foreign.clone()]);
+    let other = create(&store, "他人领地", std::slice::from_ref(&foreign));
 
     // 顺带加 root:归并与加目录一次落盘。
     let outcome = store
@@ -324,7 +329,7 @@ fn corrupt_file_boots_empty_without_panicking() {
 }
 
 #[test]
-fn newer_schema_version_is_rejected() {
+fn newer_schema_version_is_rejected_and_never_overwritten() {
     let temp = tempfile::tempdir().expect("tempdir");
     let path = temp.path().join("projects.json");
     std::fs::write(
@@ -333,8 +338,18 @@ fn newer_schema_version_is_rejected() {
     )
     .expect("write future schema");
 
-    let store = ProjectStore::from_paths(path);
+    let store = ProjectStore::from_paths(path.clone());
     assert!(store.list().is_empty(), "future schema degrades to empty");
+
+    // 降级进程拒绝一切写入:空状态 + 首次变更不得把新结构文件降级覆盖。
+    let error = store
+        .create_project("降级写".to_string(), vec![])
+        .expect_err("writes refused after newer-schema load");
+    assert!(error.to_string().contains("refusing to overwrite"));
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("read preserved file"))
+            .expect("parse preserved file");
+    assert_eq!(raw["schema_version"], 99, "file content untouched");
 }
 
 #[test]
@@ -368,8 +383,8 @@ fn rebind_roots_rejects_overlap_and_keeps_state() {
     let occupied = temp.path().join("occupied");
     std::fs::create_dir_all(&occupied).expect("create occupied dir");
 
-    let project = create(&store, "待搬", &[from.clone()]);
-    create(&store, "已有领地", &[occupied.clone()]);
+    let project = create(&store, "待搬", std::slice::from_ref(&from));
+    create(&store, "已有领地", std::slice::from_ref(&occupied));
 
     let before = store.get(&project.id).unwrap();
     let error = store
@@ -405,4 +420,71 @@ fn forget_session_and_retain_sessions_prune_orphans() {
     assert_eq!(pruned, 1, "s2 的显式移出条目被剔除");
     assert_eq!(store.assignment_of("s2"), None);
     assert_eq!(store.assignment_of("s3"), Some(Some(project.id)));
+}
+
+#[test]
+fn move_workspace_ancestor_collapses_descendant_roots() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let parent = temp.path().join("repo");
+    let child = parent.join("sub");
+    std::fs::create_dir_all(&child).expect("create dirs");
+
+    let store = store_in(&temp);
+    let project = create(&store, "项目", &[]);
+
+    // 先挂子目录,再把父目录作为工作目录移入:祖先收编后代,组内不得出现嵌套。
+    let child_outcome = store
+        .move_session_to_project("s1", Some(&project.id), Some(&child))
+        .expect("move with child root");
+    assert_eq!(
+        child_outcome.added_root,
+        Some(child.canonicalize().expect("canon child"))
+    );
+    let parent_outcome = store
+        .move_session_to_project("s2", Some(&project.id), Some(&parent))
+        .expect("move with ancestor root");
+    assert_eq!(
+        parent_outcome.added_root,
+        Some(parent.canonicalize().expect("canon parent"))
+    );
+    let roots = store.get(&project.id).expect("project").roots;
+    assert_eq!(roots.len(), 1, "descendant collapsed into the ancestor");
+    assert_eq!(roots[0], parent.canonicalize().expect("canon parent"));
+
+    // 反方向保持幂等:现有 root 是祖先时,子目录工作目录不重复添加。
+    let nested_again = store
+        .move_session_to_project("s3", Some(&project.id), Some(&child))
+        .expect("covered workspace skips add");
+    assert_eq!(nested_again.added_root, None);
+    assert_eq!(store.get(&project.id).expect("project").roots.len(), 1);
+}
+
+#[test]
+#[cfg(windows)]
+fn windows_root_keys_fold_case_and_separators() {
+    // 同一(不存在的)目录的两种大小写/分隔符写法必须折叠为同一 root:
+    // 否则重叠校验对 `C:\Work` vs `c:\work` 失明。POSIX 对应用例见下方
+    // cfg(unix) 变体。
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let upper = abs("CaseProbe").to_string_lossy().replace('/', "\\");
+    let lower = abs("caseprobe").to_string_lossy().replace('/', "\\");
+    assert_ne!(upper, lower);
+
+    create(&store, "大写", &[PathBuf::from(&upper)]);
+    let error = store
+        .create_project("小写".to_string(), vec![PathBuf::from(&lower)])
+        .expect_err("case-folded duplicate root rejected");
+    assert!(error.to_string().contains("overlaps project"));
+}
+
+#[test]
+#[cfg(unix)]
+fn posix_root_keys_stay_case_sensitive() {
+    // Unix 文件系统大小写敏感:两种大小写写法是两个不同 root,都允许创建。
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    create(&store, "大写", &[abs("CaseProbe")]);
+    create(&store, "小写", &[abs("caseprobe")]);
+    assert_eq!(store.list().len(), 2);
 }

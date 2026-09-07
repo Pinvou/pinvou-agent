@@ -1,11 +1,12 @@
 // Sidebar project/folder group header. Presentational only: all actions come
 // in as callbacks so the component stays free of bridge/i18n-global access.
 // Three visual states mirror RecentItem's patterns (inline rename edit,
-// inline delete confirm, portal "more" menu on hover) to keep sidebar
-// interaction idioms uniform.
-import { useEffect, useState } from 'react';
+// inline delete confirm, portal "more" menu via the shared usePortalMenu
+// hook) to keep sidebar interaction idioms uniform.
+import { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Edit2, FolderPlus, MoreHorizontal, Trash2, X } from '../../components/icons.jsx';
+import { usePortalMenu } from '../../hooks/usePortalMenu.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 
 const PROJECT_DROP_TYPE = 'application/x-pinvou-session';
@@ -25,56 +26,45 @@ const ProjectGroupHeader = ({
   onDelete,
   onDropSession,
   onRebind,
-  rootsUnavailable,
+  // 每个失效 root 一个徽标入口(逐根重绑定):部分失效的项目也有修复路径,
+  // 且一根重绑后其余失效根的入口不会消失。
+  unavailableRoots,
+  // Highlight ownership lives in the sidebar container (one drop target lit at
+  // a time) so the source row's dragend can clear it unconditionally even when
+  // a webview skips dragleave/drop.
+  dropActive,
+  onDropActive,
   testId,
   headerExtra,
 }) => {
   const [editing, setEditing] = useState(null);
   const [confirming, setConfirming] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [menuStyle, setMenuStyle] = useState(null);
-  const [dropActive, setDropActive] = useState(false);
   const hasMenu = kind === 'folder' || kind === 'project';
+  const { menuOpen, menuStyle, closeMenu, toggleMenu } = usePortalMenu({
+    height: kind === 'project' ? 96 : 48,
+  });
 
-  const closeMenu = () => setMenuOpen(false);
-  const placeMenu = (target) => {
-    const rect = target.getBoundingClientRect();
-    const width = 176;
-    const height = kind === 'project' ? 96 : 48;
-    const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
-    const top = rect.bottom + 6 + height > window.innerHeight
-      ? Math.max(8, rect.top - height - 6)
-      : Math.max(8, rect.bottom + 6);
-    setMenuStyle({ left, top, width });
-  };
-  const toggleMenu = (e) => {
-    e.stopPropagation();
-    placeMenu(e.currentTarget);
-    setMenuOpen(v => !v);
-  };
+  // HTML5 drop-target handlers for the sidebar session drag; kept out of the
+  // JSX so the row render stays flat. dragover highlights, drop delegates the
+  // session id up, dragend/dragleave clear the highlight (dragend fires on the
+  // source row and can be skipped by the webview — the ring here also clears
+  // unconditionally on drop).
+  const dropHandlers = onDropSession ? {
+    onDragOver: (e) => {
+      if (!e.dataTransfer.types.includes(PROJECT_DROP_TYPE)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      onDropActive(true);
+    },
+    onDragLeave: () => onDropActive(false),
+    onDrop: (e) => {
+      e.preventDefault();
+      onDropActive(false);
+      const sessionId = e.dataTransfer.getData(PROJECT_DROP_TYPE);
+      if (sessionId) onDropSession(sessionId);
+    },
+  } : {};
 
-  useEffect(() => {
-    if (!menuOpen) {
-      return () => {};
-    }
-    const close = () => setMenuOpen(false);
-    const closeOnEscape = (event) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        close();
-      }
-    };
-    document.addEventListener('pointerdown', close);
-    window.addEventListener('keydown', closeOnEscape);
-    window.addEventListener('resize', close);
-    window.addEventListener('scroll', close, true);
-    return () => {
-      document.removeEventListener('pointerdown', close);
-      window.removeEventListener('keydown', closeOnEscape);
-      window.removeEventListener('resize', close);
-      window.removeEventListener('scroll', close, true);
-    };
-  }, [menuOpen]);
   const startConvert = () => setEditing({ mode: 'convert', value: label });
   const startRename = () => setEditing({ mode: 'rename', value: label });
   const commitEdit = () => {
@@ -125,8 +115,7 @@ const ProjectGroupHeader = ({
     return (
       <div className="flex h-7 items-center px-4">
         {/* biome-ignore lint/a11y/noAutofocus: converting/renaming lands focus in the input immediately (same idiom as RecentItem rename) */}
-        <input
-          autoFocus
+        <input autoFocus
           value={editing.value}
           disabled={busy}
           onChange={e => setEditing({ ...editing, value: e.target.value })}
@@ -152,7 +141,7 @@ const ProjectGroupHeader = ({
     return (
       <div className="w-full h-7 px-4 flex items-center justify-between rounded-full text-[12px] text-[#C5221F] dark:text-[#F28B82]">
         <span className="truncate" title={t.uiProjects.deleteProjectHint}>
-          {t.uiProjects.deleteConfirmLabel}（{count}）
+          {t.uiProjects.deleteConfirmLabel} ({count})
         </span>
         <span className="flex items-center gap-0.5 shrink-0">
           <button
@@ -180,24 +169,12 @@ const ProjectGroupHeader = ({
   // Row container is NOT interactive (same idiom as RecentItem): the toggle
   // button and the "more" button are siblings, so no control nests inside
   // another ARIA button. Project headers double as HTML5 drop targets for the
-  // sidebar session drag (application/x-pinvou-session); dragover highlights,
-  // drop delegates the session id up.
+  // sidebar session drag; role="presentation" declares the div
+  // non-interactive to the a11y tree while it carries the drag handlers.
   return (
     <div
-      onDragOver={onDropSession ? (e) => {
-        if (e.dataTransfer.types.includes(PROJECT_DROP_TYPE)) {
-          e.preventDefault();
-          e.dataTransfer.dropEffect = 'move';
-          setDropActive(true);
-        }
-      } : undefined}
-      onDragLeave={onDropSession ? () => setDropActive(false) : undefined}
-      onDrop={onDropSession ? (e) => {
-        e.preventDefault();
-        setDropActive(false);
-        const sessionId = e.dataTransfer.getData(PROJECT_DROP_TYPE);
-        if (sessionId) onDropSession(sessionId);
-      } : undefined}
+      role="presentation"
+      {...dropHandlers}
       className={`group/header w-full h-7 flex items-center rounded-full text-[12px] transition-colors ${dropActive
         ? 'ring-1 ring-[#0B57D0] bg-[#E8F0FE] dark:ring-[#A8C7FA] dark:bg-[#1F2A3D]'
         : theme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
@@ -211,26 +188,29 @@ const ProjectGroupHeader = ({
         className="flex min-w-0 flex-1 self-stretch items-center border-0 bg-transparent px-4 text-left"
       >
         <span className="min-w-0 flex-1 truncate pr-2">{label} ({count})</span>
-        {/* 全部 root 失效:徽标提示 + 一键重绑定。不自动删项目——归属与
-            历史 still 在,目录接骨是唯一修复路径。 */}
-        {kind === 'project' && rootsUnavailable && onRebind && (
-          <span
-            role="button"
-            tabIndex={0}
-            data-testid="project-folder-unavailable"
-            title={title || label}
-            onClick={(e) => { e.stopPropagation(); onRebind(); }}
-            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onRebind(); } }}
-            className="mr-2 shrink-0 max-w-[9rem] truncate rounded-full bg-[#FCE8E6] dark:bg-[#3C2A29] px-2 py-0.5 text-[11px] text-[#C5221F] dark:text-[#F28B82] hover:opacity-80"
-          >
-            {t.uiProjects.folderUnavailable} · {t.uiProjects.rebindFolder}
-          </span>
-        )}
         {headerExtra}
         <ChevronDown size={14} className={`shrink-0 transition-transform ${isOpen ? '' : '-rotate-90'}`} />
       </button>
+      {/* 失效 root 逐根徽标 + 一键重绑定。不自动删项目——归属与历史仍在,
+          目录接骨是唯一修复路径。徽标是切换按钮的真实兄弟 <button>(不再
+          嵌在 <button> 内部),每根一个,重绑一根其余入口保留。 */}
+      {(kind === 'project' ? unavailableRoots || [] : []).map((rootPath) => (
+        <button
+          key={rootPath}
+          type="button"
+          data-testid="project-folder-unavailable"
+          title={rootPath}
+          disabled={busy}
+          onClick={(e) => { e.stopPropagation(); onRebind && onRebind(rootPath); }}
+          className="mr-2 shrink-0 max-w-[9rem] truncate rounded-full bg-[#FCE8E6] dark:bg-[#3C2A29] px-2 py-0.5 text-[11px] text-[#C5221F] dark:text-[#F28B82] hover:opacity-80 disabled:opacity-50"
+        >
+          {t.uiProjects.folderUnavailable} · {t.uiProjects.rebindFolder}
+        </button>
+      ))}
       {hasMenu && (
-        <div className="mr-3 hidden group-hover/header:flex items-center shrink-0">
+        // max-sm keeps the actions reachable without hover (touch, narrow
+        // windows) — same contract as RecentItem's action cluster.
+        <div className="mr-3 hidden group-hover/header:flex max-sm:flex items-center shrink-0">
           <button
             type="button"
             title={t.riMore}
