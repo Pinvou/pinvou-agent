@@ -7,9 +7,9 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use deepseek_tui::ApprovalMode;
 use deepseek_tui::core::events::TurnOutcomeStatus;
 use deepseek_tui::core::ops::{Op, UserInputProvenance};
-use deepseek_tui::tui::approval::ApprovalMode;
 use tauri::{AppHandle, Manager};
 
 use crate::features::sessions::{ScheduledRunProfile, SessionStore};

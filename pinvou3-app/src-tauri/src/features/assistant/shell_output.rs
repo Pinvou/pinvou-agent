@@ -426,6 +426,9 @@ mod tests {
             linked_task_id: None,
             owner_agent_id: None,
             owner_agent_name: None,
+            origin_tool_call_id: None,
+            origin_turn_id: None,
+            owner_session_id: String::new(),
         }
     }
 

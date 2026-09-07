@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use deepseek_tui::tui::app::AppMode;
+use deepseek_tui::AppMode;
 use serde::{Deserialize, Serialize};
 
 use crate::features::assistant::engine_pool::EnginePool;
@@ -191,7 +191,7 @@ async fn run_turn(
             .submit(&TurnInput {
                 session_id: session_id.to_owned(),
                 content: prompt,
-                mode: AppMode::Yolo,
+                mode: AppMode::Agent,
                 restrict_tools: false,
                 eval_tool_policy: None,
             })

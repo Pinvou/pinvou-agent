@@ -4,7 +4,9 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PINVOU_CODEWHALE_PATH="CodeWhale"
 PINVOU_CODEWHALE_URL="https://github.com/Pinvou/CodeWhale.git"
-PINVOU_CODEWHALE_TAG="pinvou-v0.9.5-r13"
+PINVOU_CODEWHALE_BRANCH="pinvou3-clean"
+PINVOU_CODEWHALE_TAG="pinvou-v0.9.12-r1"
+MAX_ATTEMPTS=3
 
 if [[ $# -ne 0 ]]; then
   echo "unknown argument: $1" >&2
@@ -39,20 +41,45 @@ if [[ ! "$gitlink" =~ ^[0-9a-f]{40}$ ]]; then
   exit 1
 fi
 
-remote_refs="$(git ls-remote "$PINVOU_CODEWHALE_URL")"
-tag_target="$(
+remote_refs=""
+for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+  if remote_refs="$(git ls-remote --heads --tags "$PINVOU_CODEWHALE_URL" 2>/dev/null)"; then
+    break
+  fi
+  if [[ "$attempt" -eq "$MAX_ATTEMPTS" ]]; then
+    echo "错误：${MAX_ATTEMPTS} 次尝试后仍无法读取公开 CodeWhale refs" >&2
+    exit 1
+  fi
+  sleep "$attempt"
+done
+
+branch_target="$(
+  printf '%s\n' "$remote_refs" |
+    awk -v ref="refs/heads/${PINVOU_CODEWHALE_BRANCH}" '$2 == ref { print $1 }'
+)"
+tag_direct="$(
+  printf '%s\n' "$remote_refs" |
+    awk -v ref="refs/tags/${PINVOU_CODEWHALE_TAG}" '$2 == ref { print $1 }'
+)"
+tag_peeled="$(
   printf '%s\n' "$remote_refs" |
     awk -v ref="refs/tags/${PINVOU_CODEWHALE_TAG}^{}" '$2 == ref { print $1 }'
 )"
+tag_target="${tag_peeled:-$tag_direct}"
+
+if [[ "$branch_target" != "$gitlink" ]]; then
+  echo "错误：${PINVOU_CODEWHALE_BRANCH} 为 ${branch_target:-<不存在>}，父仓 gitlink 为 $gitlink" >&2
+  exit 1
+fi
 
 if [[ "$tag_target" != "$gitlink" ]]; then
   echo "错误：${PINVOU_CODEWHALE_TAG} 解引用为 ${tag_target:-<不存在>}，父仓 gitlink 为 $gitlink" >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$remote_refs" | awk -v sha="$gitlink" '$1 == sha { found = 1 } END { exit !found }'; then
-  echo "错误：父仓 gitlink $gitlink 无法从公开 CodeWhale refs 到达" >&2
+if [[ "$branch_target" != "$tag_target" ]]; then
+  echo "错误：公开维护分支与不可变标签未指向同一 commit" >&2
   exit 1
 fi
 
-echo "公开 CodeWhale 基线校验通过：${PINVOU_CODEWHALE_TAG} -> $gitlink"
+echo "公开 CodeWhale 基线校验通过：${PINVOU_CODEWHALE_BRANCH} = ${PINVOU_CODEWHALE_TAG} = $gitlink"

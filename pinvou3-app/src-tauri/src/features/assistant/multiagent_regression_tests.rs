@@ -6,10 +6,10 @@ use std::time::Duration;
 use super::expert_roster::ExpertRosterSnapshot;
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::features::personas::PersonaCard;
+use deepseek_tui::AppMode;
 use deepseek_tui::core::engine::Engine;
 use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
 use deepseek_tui::core::ops::Op;
-use deepseek_tui::tui::app::AppMode;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -237,9 +237,10 @@ async fn start_spawn_probe(
     (format!("http://{address}/v1"), probe, task)
 }
 
-/// CodeWhale 的 spawn-time refresh 使用的就是 `FleetRoster::load`：配置层专家
-/// 必须独立于 execution/ledger 的位置存在，读取不存在的项目目录也不得反向创建
-/// `.codewhale`。同名 Personal / Workspace 覆盖是底座公开语义，应继续允许。
+/// Fleet 管理界面仍使用公开的 `FleetRoster::load` 合并 Config、Personal 与
+/// Workspace 来源；它必须独立于 execution/ledger 的位置，且读取不存在的项目目录
+/// 不得反向创建 `.codewhale`。模型 spawn 另走底座的 host-config-only overlay，
+/// 不继承这里验证的 ambient 覆盖优先级。
 #[test]
 fn fleet_config_survives_execution_ledger_split_and_keeps_native_precedence() {
     let _env_lock = crate::platform::paths::tests::ENV_LOCK
@@ -316,8 +317,9 @@ fn fleet_config_survives_execution_ledger_split_and_keeps_native_precedence() {
 }
 
 /// 真实穿过 Engine 工具循环：父模型调用 `agent(profile=exp-*)` 后，CodeWhale 会在
-/// `spawn_subagent_from_input` 内从当轮 route.config 重新加载 roster，再执行
-/// `apply_spawn_profile`。子请求能携带专家正文 sentinel，证明不是仅初始 roster 假绿。
+/// `spawn_subagent_from_input` 内从当轮 route.config 重建 host-config-only、
+/// prompt-only overlay。子请求能携带专家正文 sentinel，证明不是仅初始 roster 假绿，
+/// 同时底座 forkguard 负责锁住 ambient 来源与可执行配置均不能借此注入。
 #[tokio::test(flavor = "current_thread")]
 #[allow(clippy::await_holding_lock)]
 async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_writes() {
@@ -456,7 +458,7 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
         .build_multi_agent_send_message_op(
             "code-a",
             "Dispatch the probe expert now.".to_string(),
-            AppMode::Yolo,
+            AppMode::Agent,
             None,
             false,
             &project,
@@ -492,8 +494,11 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
                 saw_agent_tool_success = true;
             }
             Event::AgentSpawned { .. } => saw_agent_spawned = true,
-            Event::AgentComplete { failed, result, .. } => {
-                assert!(!failed, "probe child failed: {result}");
+            Event::AgentComplete { result, .. } => {
+                assert!(
+                    !result.contains(r#""event":"subagent.failed""#),
+                    "probe child failed: {result}"
+                );
                 assert!(result.contains(CHILD_RESULT_SENTINEL), "{result}");
                 saw_agent_complete = true;
             }

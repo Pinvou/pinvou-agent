@@ -12,9 +12,9 @@
 //!     > /tmp/pinvou3_system_prompt.txt
 
 use anyhow::Result;
+use deepseek_tui::AppMode;
+use deepseek_tui::ApprovalMode;
 use deepseek_tui::prompts::{self, PromptSessionContext};
-use deepseek_tui::tui::app::AppMode;
-use deepseek_tui::tui::approval::ApprovalMode;
 use pinvou3_lib::features::assistant::platform::bridge::Pinvou3Bridge;
 
 fn main() -> Result<()> {
@@ -27,7 +27,7 @@ fn main() -> Result<()> {
     let (mode, approval) = match std::env::args().nth(1).as_deref() {
         Some("plan") => (AppMode::Plan, ApprovalMode::Never),
         Some("agent") => (AppMode::Agent, ApprovalMode::Suggest),
-        _ => (AppMode::Yolo, ApprovalMode::Auto),
+        _ => (AppMode::Agent, ApprovalMode::Auto),
     };
 
     // CodeWhale 的原生记忆装配已收口到 Engine 内部。Pinvou 当前明确关闭该能力；
@@ -50,6 +50,7 @@ fn main() -> Result<()> {
         context_window_override: None,
         verbosity: cfg.verbosity.as_deref(),
         skills_scan_codewhale_only: cfg.skills_scan_codewhale_only,
+        explicit_skills_root_only: cfg.explicit_skills_root_only,
         plugin_registry: cfg.plugin_registry.as_deref(),
         mode,
     };

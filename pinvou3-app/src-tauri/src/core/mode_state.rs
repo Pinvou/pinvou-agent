@@ -7,7 +7,7 @@
 //! `ModeDefaultsView`);session 域聚合(`SessionModeState`/`ActiveSkillBinding`/
 //! `MountedCollection*`)由 `features::sessions` 拥有并 re-export(见
 //! `features/sessions/mode_state.rs`),避免 core 沉淀 feature 内部状态。
-use deepseek_tui::tui::app::AppMode;
+use deepseek_tui::AppMode;
 use serde::{Deserialize, Serialize};
 
 /// `AppMode` 不是 Serialize，pinvou3 这层用一个序列化友好的镜像 enum，
@@ -23,7 +23,7 @@ impl SerializableMode {
     pub fn to_app_mode(self) -> AppMode {
         match self {
             Self::Plan => AppMode::Plan,
-            Self::Yolo => AppMode::Yolo,
+            Self::Yolo => AppMode::Agent,
         }
     }
 }

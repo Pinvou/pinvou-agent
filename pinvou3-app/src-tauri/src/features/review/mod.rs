@@ -1203,6 +1203,7 @@ mod tests {
                 name: name.into(),
                 input,
                 caller: None,
+                thought_signature: None,
             }],
         }
     }

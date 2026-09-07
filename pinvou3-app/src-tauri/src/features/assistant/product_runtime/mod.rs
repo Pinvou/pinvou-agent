@@ -11,8 +11,8 @@
 //! - 不引入循环依赖：product_runtime -> engine_pool（单向）
 
 use anyhow::Result;
+use deepseek_tui::AppMode;
 use deepseek_tui::models::{ContentBlock, Message};
-use deepseek_tui::tui::app::AppMode;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -452,6 +452,7 @@ mod tests {
                     name: "weather".into(),
                     input: json!({"query": "secret tool input"}),
                     caller: None,
+                    thought_signature: None,
                 }],
             },
             Message {

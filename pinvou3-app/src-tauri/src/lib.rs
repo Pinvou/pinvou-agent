@@ -998,7 +998,6 @@ pub fn run() {
             // skills_dir 指向 ~/.pinvou3/sessions/<sid>/skills/)。
             startup::mark("disabled_skills:start");
             let _ = crate::features::assistant::skill_materialization::load_disabled_skills();
-            deepseek_tui::skills::set_disabled_skills(Vec::new());
             startup::mark("disabled_skills:done");
 
             // Monitor 按需采样：state 只持有 session_uptime，sample 由前端调

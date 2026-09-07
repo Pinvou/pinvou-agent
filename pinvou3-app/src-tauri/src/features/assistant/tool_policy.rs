@@ -1,6 +1,6 @@
 //! Pinvou 产品层的模型工具白名单。
 //!
-//! CodeWhale 0.9.5 以 canonical action family 作为模型侧工具面，并由
+//! CodeWhale 0.9.12 以 canonical action family 作为模型侧工具面，并由
 //! `allowed_tools` 同时约束首轮目录、`tool_search` 结果和实际执行。Pinvou 只在
 //! 宿主层声明需要的家族与动态工具前缀，不在底座维护历史工具名黑名单。
 
@@ -10,7 +10,7 @@
 /// 表示前缀匹配。MCP 的具体工具名由已启用连接器动态发现，因此只允许标准
 /// `mcp_` 命名空间；连接器开关仍通过 `disallowed_tools` 施加更窄的拒绝规则。
 ///
-/// 进度工具必须是 v0.9.5 canonical 模型可见名 `todo_write`；`work_update` /
+/// 进度工具必须是 v0.9.12 canonical 模型可见名 `todo_write`；`work_update` /
 /// `checklist_write` / `update_plan` 是隐藏的 replay 兼容别名（`model_visible()`
 /// 为 false，不会出现在模型目录），写进白名单只是死条目。
 pub const PINVOU3_ALLOWED_TOOLS: &[&str] = &[

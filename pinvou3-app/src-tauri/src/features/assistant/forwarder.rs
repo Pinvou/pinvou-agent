@@ -545,6 +545,9 @@ pub(crate) fn spawn_event_forwarder(
                 // managed by the foundation itself; the app only consumes the
                 // generic subagent events (AgentSpawned no longer registers a
                 // role).
+                Event::AgentSpawned {
+                    owner_session_id, ..
+                } if owner_session_id == session_id => {}
                 Event::AgentSpawned { .. } => {}
                 // Mid-turn inject delivery confirmation (P0-A): after the
                 // engine appends the steer message to the transcript it emits
@@ -584,8 +587,16 @@ pub(crate) fn spawn_event_forwarder(
                         payload,
                     );
                 }
+                Event::WorkflowUi {
+                    owner_session_id, ..
+                } if owner_session_id == session_id => {}
                 Event::WorkflowUi { .. } => {}
-                Event::AgentProgress { id, status, .. } => {
+                Event::AgentProgress {
+                    owner_session_id,
+                    id,
+                    status,
+                    ..
+                } if owner_session_id == session_id => {
                     let payload = json!({
                         "session_id": session_id,
                         "agent_id": id,
@@ -600,8 +611,13 @@ pub(crate) fn spawn_event_forwarder(
                         payload,
                     );
                 }
+                Event::AgentProgress { .. } => {}
                 // mailbox 信封同时维护 Shell scope 与通用子智能体审计。
-                Event::SubAgentMailbox { message, .. } => {
+                Event::SubAgentMailbox {
+                    owner_session_id,
+                    message,
+                    ..
+                } if owner_session_id == session_id => {
                     use deepseek_tui::tools::subagent::MailboxMessage as MM;
                     // 审计是应用账本：绑了项目目录的原生代码会话写会话私有目录，
                     // 不污染用户项目；其余会话账本根与执行根相同，行为不变。
@@ -692,7 +708,13 @@ pub(crate) fn spawn_event_forwarder(
                         _ => {}
                     }
                 }
-                Event::AgentComplete { id, failed, .. } => {
+                Event::SubAgentMailbox { .. } => {}
+                Event::AgentComplete {
+                    owner_session_id,
+                    id,
+                    result,
+                } if owner_session_id == session_id => {
+                    let failed = result.contains(r#""event":"subagent.failed""#);
                     let payload = json!({
                         "session_id": session_id,
                         "agent_id": id,
@@ -700,6 +722,7 @@ pub(crate) fn spawn_event_forwarder(
                     });
                     let _ = app.emit("multiagent:agent_complete", payload);
                 }
+                Event::AgentComplete { .. } => {}
                 Event::TurnComplete {
                     usage,
                     status,

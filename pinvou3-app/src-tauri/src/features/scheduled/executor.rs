@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use deepseek_tui::core::events::TurnOutcomeStatus;
 use deepseek_tui::task_manager::{
     ExecutionTask, TaskExecutionEvent, TaskExecutionResult, TaskExecutor, TaskStatus,
+    TaskTerminalReason,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -263,7 +264,7 @@ impl TaskExecutor for ScheduledChatExecutor {
     async fn execute(
         &self,
         task: ExecutionTask,
-        events: mpsc::UnboundedSender<TaskExecutionEvent>,
+        events: mpsc::Sender<TaskExecutionEvent>,
         cancel: CancellationToken,
     ) -> TaskExecutionResult {
         let allow_shell = self.runtime.yolo_allow_shell();
@@ -318,9 +319,11 @@ impl TaskExecutor for ScheduledChatExecutor {
         // that fails or is interrupted before its first turn still links to
         // its session. The channel is fire-and-forget: persistence happens
         // when the manager drains events, with no ack before the send below.
-        let _ = events.send(TaskExecutionEvent::ThreadCreated {
-            thread_id: session_id.clone(),
-        });
+        let _ = events
+            .send(TaskExecutionEvent::ThreadCreated {
+                thread_id: session_id.clone(),
+            })
+            .await;
 
         let link_events = events.clone();
         let linked_session_id = session_id.clone();
@@ -337,6 +340,7 @@ impl TaskExecutor for ScheduledChatExecutor {
                     Box::pin(async move {
                         events
                             .send(TaskExecutionEvent::ThreadLinked { thread_id, turn_id })
+                            .await
                             .map_err(|_| anyhow!("scheduled task event channel closed"))
                     })
                 }),
@@ -371,6 +375,7 @@ fn map_completion(completion: ScheduledTurnCompletion) -> TaskExecutionResult {
             status: TaskStatus::Canceled,
             result_text: None,
             error: completion.error,
+            terminal_reason: TaskTerminalReason::Canceled,
         };
     }
 
@@ -379,6 +384,7 @@ fn map_completion(completion: ScheduledTurnCompletion) -> TaskExecutionResult {
             status: TaskStatus::Completed,
             result_text: Some("Scheduled conversation completed".to_string()),
             error: None,
+            terminal_reason: TaskTerminalReason::Completed,
         },
         TurnOutcomeStatus::Failed => TaskExecutionResult {
             status: TaskStatus::Failed,
@@ -388,6 +394,7 @@ fn map_completion(completion: ScheduledTurnCompletion) -> TaskExecutionResult {
                     .error
                     .unwrap_or_else(|| "Scheduled conversation failed".to_string()),
             ),
+            terminal_reason: TaskTerminalReason::Failed,
         },
         TurnOutcomeStatus::Interrupted => unreachable!("handled above"),
     }
@@ -398,6 +405,7 @@ fn failed(error: impl std::fmt::Display) -> TaskExecutionResult {
         status: TaskStatus::Failed,
         result_text: None,
         error: Some(error.to_string()),
+        terminal_reason: TaskTerminalReason::Failed,
     }
 }
 
@@ -406,6 +414,7 @@ fn canceled() -> TaskExecutionResult {
         status: TaskStatus::Canceled,
         result_text: None,
         error: None,
+        terminal_reason: TaskTerminalReason::Canceled,
     }
 }
 
@@ -424,7 +433,8 @@ mod tests {
     };
     use deepseek_tui::core::events::TurnOutcomeStatus;
     use deepseek_tui::task_manager::{
-        NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskRecord, TaskStatus,
+        NewTaskRequest, SharedTaskManager, TaskExecutionLimits, TaskManager, TaskManagerConfig,
+        TaskRecord, TaskStatus,
     };
     use tokio::sync::Notify;
     use tokio_util::sync::CancellationToken;
@@ -671,6 +681,7 @@ mod tests {
             default_mode: "agent".to_string(),
             allow_shell: false,
             trust_mode: false,
+            execution_limits: TaskExecutionLimits::default(),
         };
         let manager = TaskManager::start_with_executor(config, executor).await?;
         Ok((root, manager))
@@ -707,6 +718,8 @@ mod tests {
         NewTaskRequest {
             prompt: prompt.to_string(),
             model: Some("scheduled-model".to_string()),
+            model_provider: None,
+            model_provider_id: None,
             workspace: Some(PathBuf::from("D:/scheduled-workspace")),
             mode: Some("plan".to_string()),
             allow_shell: Some(false),
@@ -867,6 +880,8 @@ mod tests {
                     rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
                     cwds: Vec::new(),
                     model: Some("scheduled-model".to_string()),
+                    model_provider: None,
+                    model_provider_id: None,
                     mode: Some("yolo".to_string()),
                     allow_shell: Some(false),
                     trust_mode: Some(false),
@@ -939,6 +954,8 @@ mod tests {
                     rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
                     cwds: Vec::new(),
                     model: Some("scheduled-model".to_string()),
+                    model_provider: None,
+                    model_provider_id: None,
                     mode: Some("yolo".to_string()),
                     allow_shell: Some(false),
                     trust_mode: Some(false),
