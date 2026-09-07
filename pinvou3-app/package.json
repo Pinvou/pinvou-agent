@@ -64,6 +64,7 @@
     "test:multiagent-plan": "node --test tests/multiagent_plan_normalize.test.mjs",
     "test:chat-input-limit": "node tests/chat_input_limit_logic.test.js",
     "test:background-tasks": "node tests/background_tasks_logic.test.js",
+    "test:shell-task-projection": "node --test tests/shell_task_projection.test.mjs",
     "test:ime-compose-guard": "node tests/ime_compose_guard.test.mjs",
     "test:assistant-message-actions": "node tests/assistant_message_actions.test.mjs",
     "test:chat-error-isolation": "node tests/chat_turn_error_isolation.test.mjs",
