@@ -26,6 +26,7 @@ for (const language of ['zh', 'en', 'ja']) {
     'uiCodexView',
     'uiCodexWorkspace',
     'uiAcpProviders',
+    'uiProjects',
     'uiArtifacts',
     'uiToolDetails',
   ]) {
