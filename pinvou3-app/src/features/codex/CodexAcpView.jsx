@@ -3,12 +3,13 @@ import { createPortal } from 'react-dom';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import {
-  AlertTriangle, Brain, Check, CheckCircle2, ChevronDown, FileText, FolderOpen, Mic, Monitor, Paperclip,
+  AlertTriangle, Brain, Check, CheckCircle2, ChevronDown, FileText, FolderOpen, MessageSquare, Mic, Monitor, Paperclip,
   Plus, RefreshCw, Send, Sparkles, StopCircle, Terminal, Upload, User, Wrench,
 } from '../../components/icons.jsx';
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
 import { SubagentTranscriptPanel } from '../multiagent/SubagentTranscriptPanel.jsx';
+import { AuxChatPanel } from '../aux-chat/AuxChatPanel.jsx';
 import {
   refreshAcpAgentCatalog,
   startSerialStatusPolling,
@@ -1412,6 +1413,22 @@ export function CodexAcpView({
     rememberScrollBeforeRightPanelChange();
     setWorkspaceOpen(false);
   }, [rememberScrollBeforeRightPanelChange]);
+  // 辅助对话面板：与工作模式任务页同一条"每任务一条"的持久纯问答会话
+  //（bridge.auxChat，restrictTools，不碰代码会话的执行与上下文）。与
+  // subagentPanel 不同：切换代码会话时不关闭，由面板按 sessionId 自行换绑；
+  // 草稿态（无 activeSession）下面板随挂载条件隐藏，会话就绪后自动恢复。
+  // auxChatDockActive 是面板在 dock 中的真实可见态（同 workspaceDockActive）：
+  // 被工作区面板盖住时入口按钮不高亮，再点一次把面板带回前台。
+  const [auxChatPanel, setAuxChatPanel] = useState(null);
+  const [auxChatDockActive, setAuxChatDockActive] = useState(false);
+  const openAuxChatPanel = useCallback(() => {
+    rememberScrollBeforeRightPanelChange();
+    setAuxChatPanel(current => ({ openTick: (current?.openTick || 0) + 1 }));
+  }, [rememberScrollBeforeRightPanelChange]);
+  const closeAuxChatPanel = useCallback(() => {
+    rememberScrollBeforeRightPanelChange();
+    setAuxChatPanel(null);
+  }, [rememberScrollBeforeRightPanelChange]);
   useLayoutEffect(() => {
     const snapshot = rightPanelScrollRef.current;
     if (!snapshot) return;
@@ -1425,7 +1442,7 @@ export function CodexAcpView({
       autoScrollRef.current = true;
       setShowScrollBottom(false);
     }
-  }, [subagentPanel, workspaceDockActivation, workspaceOpen]);
+  }, [auxChatPanel, subagentPanel, workspaceDockActivation, workspaceOpen]);
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously collapse the subagent panel on session switch; one-shot mirror
     setSubagentPanel(null);
@@ -3495,6 +3512,23 @@ export function CodexAcpView({
           </div>
           {configApplying && <span className="text-[10px] text-blue-500 animate-pulse">{codexCopy.applyingConfig}</span>}
           {busy && <StatusBadge status="running" copy={t.uiConversation} />}
+          {bridge.available && bridge.auxChat && (
+            <button
+              type="button"
+              data-testid="aux-chat-open"
+              aria-label={t.uiAuxChat.openLabel}
+              title={t.uiAuxChat.openLabel}
+              onClick={openAuxChatPanel}
+              className={`h-8 px-2.5 rounded-lg inline-flex items-center gap-1.5 text-[11px] transition-colors ${
+                auxChatPanel && auxChatDockActive
+                  ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
+                  : 'text-gray-500 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
+              }`}
+            >
+              <MessageSquare size={14} />
+              <span>{t.uiAuxChat.openLabel}</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={toggleWorkspacePanel}
@@ -4300,6 +4334,16 @@ export function CodexAcpView({
             t={t}
             theme={theme}
             onClose={closeSubagentPanel}
+          />
+        )}
+        {auxChatPanel && activeSession && (
+          <AuxChatPanel
+            sessionId={activeSession.id}
+            activationKey={auxChatPanel.openTick}
+            onActiveChange={setAuxChatDockActive}
+            t={t}
+            theme={theme}
+            onClose={closeAuxChatPanel}
           />
         )}
         </div>

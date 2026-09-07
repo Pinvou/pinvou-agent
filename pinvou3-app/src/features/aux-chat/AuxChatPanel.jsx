@@ -23,7 +23,7 @@ import {
 
 const RESTART_CONFIRM_MS = 4000;
 
-export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose }) {
+export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onActiveChange }) {
   const copy = t.uiAuxChat;
   const conversationCopy = t.uiConversation;
   const auxChat = bridge.available ? bridge.auxChat : null;
@@ -152,6 +152,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose }) {
     <RightDockPanel
       panelId="aux-chat"
       activationKey={activationKey}
+      onActiveChange={onActiveChange}
       className="border-l border-black/[0.06] bg-white/92 backdrop-blur-xl dark:border-white/[0.07] dark:bg-[#17181A]/96"
       dataTestId="aux-chat-panel"
     >
