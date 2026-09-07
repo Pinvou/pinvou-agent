@@ -27,6 +27,8 @@ const entry = (overrides = {}) => ({
   ...overrides,
 });
 
+const byCodePoint = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
 test('isTerminal：done 且未受阻才是终态', () => {
   assert.equal(isTerminal(entry({ done: true })), true);
   assert.equal(isTerminal(entry({ done: true, blocked: true })), false, '受阻条目不算终态');
@@ -78,9 +80,9 @@ test('pruneOverlayEntries：未超限返回 null，超限淘汰最老终态，�
   };
   const pruned = pruneOverlayEntries(entries, 3);
   assert.ok(pruned, '超限必须淘汰');
-  assert.deepEqual(Object.keys(pruned).sort(), ['live', 'mid', 'new'], '最老终态先淘汰，非终态保留');
+  assert.deepEqual(Object.keys(pruned).sort(byCodePoint), ['live', 'mid', 'new'], '最老终态先淘汰，非终态保留');
   // 输入不被原地修改。
-  assert.deepEqual(Object.keys(entries).sort(), ['live', 'mid', 'new', 'old']);
+  assert.deepEqual(Object.keys(entries).sort(byCodePoint), ['live', 'mid', 'new', 'old']);
 });
 
 test('pruneOverlayEntries：终态条目不足时返回 null（非终态不受影响）', () => {
