@@ -194,3 +194,34 @@ test("project sessions without a workspace path fall into the temporary group", 
   assert.equal(groups.length, 1);
   assert.equal(groups[0].key, TEMPORARY_GROUP_KEY);
 });
+
+test("rows sort by updatedAt descending within a group", () => {
+  // Ported from the retired sidebar_grouping_logic suite: in-group ordering
+  // with multiple timestamps must survive the project-layer rewrite.
+  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
+  const groups = groupSessionsWithProjects(
+    [
+      projectItem("old", "D:/work/alpha", "2026-07-01T08:00:00Z"),
+      projectItem("new", "D:/work/alpha", "2026-08-01T08:00:00Z"),
+      projectItem("mid", "D:/work/alpha", "2026-07-15T08:00:00Z"),
+    ],
+    projects,
+    {},
+  );
+  assert.deepEqual(groups[0].rows.map((r) => r.id), ["new", "mid", "old"]);
+});
+
+test("temporary group rows sort by recency while the group stays last", () => {
+  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
+  const groups = groupSessionsWithProjects(
+    [
+      temporaryItem("t1", "2026-08-19T08:00:00Z"),
+      projectItem("a1", "D:/work/alpha", "2026-08-02T08:00:00Z"),
+      temporaryItem("t2", "2026-08-18T08:00:00Z"),
+    ],
+    projects,
+    {},
+  );
+  assert.equal(groups[groups.length - 1].key, TEMPORARY_GROUP_KEY);
+  assert.deepEqual(groups[groups.length - 1].rows.map((r) => r.id), ["t1", "t2"]);
+});
