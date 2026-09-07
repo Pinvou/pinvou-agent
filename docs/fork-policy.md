@@ -1,15 +1,15 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
-> 最后更新：2026-08-28（公开维护基线：上游 `v0.9.5` r12；r11 的 PR #18、#21、#22、#25、#26、#27、#29、#30 与 r12 的 PR #33、#35 已发布到现有 4 个 Pinvou 主题，父仓 gitlink 由父仓 PR #375 接入）
+> 最后更新：2026-09-07（本地候选基线：上游 `v0.9.12` r1；尚未发布远端分支或不可变标签）
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
 ## 0. 当前基线
 
-- 上游：`Hmbown/CodeWhale` tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c`。
-- 公开维护分支：`Pinvou/CodeWhale:pinvou3-clean`，head `9c5f4f19`（`pinvou-v0.9.5-r12`）。
-- 升级前基线 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` 同时保留在 tag `pinvou-v0.9.0-r4` 和 branch `backup/pinvou3-clean-v0.9.0-r4`。
-- `Pinvou/CodeWhale#18`、`#21`、`#22`、`#25`、`#26`、`#27`、`#29` 与 `#30` 已发布进 r11，`#33` 与 `#35` 已发布进 r12；`pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r12` 均公开可达并指向 `9c5f4f19`，`r1` 至 `r12` 保持不可变。
+- 上游：`Hmbown/CodeWhale` tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5`。
+- 本地维护候选：`codex/pinvou-v0.9.12-r1`，head `09c3b85e366379dbbb69539e4cec8c2dbadd91f4`，在上游之上保留 5 个签署提交。
+- 升级前 r13 head `f853f8f1566c57e6be40d5439a222a932aa79ef5` 保留在 branch `backup/pre-v0.9.12-sync`；既有 `pinvou-v0.9.5-r13` 不变。
+- r1 当前是本地、可测试候选，不得描述为公开可达。获得明确授权并发布后，才将 `Pinvou/CodeWhale:pinvou3-clean` 与不可变 tag `pinvou-v0.9.12-r1` 对齐该 head。
 - `.gitmodules` 不配置浮动 `branch`；发布后父仓 gitlink、维护分支和不可变标签必须指向同一 commit。
 - 当前只维护 4 个长期主题：
 
@@ -39,7 +39,7 @@ Pinvou 的产品工具白名单、UI、工作区选择和业务策略留在 app�
 - 总 drift 软上限：净增 1500 行（净增 = 新增 − 删除行数，与下方基线表述同口径）。
 - 单文件 fork-distinct 改动软上限：200 行。
 - 超过不是自动拒绝，但必须记录保留原因和减量顺序。
-- r12 公开基线相对 `v0.9.5` 为 `+9781/-1168，110 文件`，净增 8613 行；相对 r11 为 `+1941/-188，17 文件`，新增厂商原生搜索适配（#33，按厂商+模型+官方端点+产品面精确门控）与 API 后端免 key 链尾 Bing 化（#35），均归入 T2。既有 r11 基线相对 `v0.9.5` 为 `+7840/-980，96 文件`，净增 6860 行。保留原因见 `docs/fork-modifications.md` 软上限评估；后续优先上游化通用逐轮权限、宿主插入/编辑接口、会话快照/恢复 API、provider 兼容、MCP 宿主策略和 Automation 生命周期修复。
+- v0.9.12 r1 候选相对上游为 `49 files, +2993/-457`，净增 2536 行；相对 v0.9.5 r13 的 `110 files, +10895/-1195` 已大幅收敛。仍超总量与个别文件软上限，因为可靠 steer、受限轮最终分发、宿主 prompt/profile/Skills 所有权和 Automation 生命周期必须在 Engine/Task 原子边界内实现。减量顺序是：先上游化通用 steer 与逐轮安全，再上游化 Automation 生命周期，最后评估 prompt/profile/Skills ownership 是否能由稳定 host API 完全替代。
 
 ### 1.3 主题提交
 
@@ -130,7 +130,7 @@ python3 scripts/architecture-guard.py
 
 ## 6. 发布边界
 
-1. CodeWhale 先形成干净的 4 主题提交并完成底座测试。
+1. CodeWhale 先形成可按 4 个长期主题审阅的干净提交序列并完成底座测试；跨主题的生命周期安全收口可保留独立提交，但不得演变为未说明的 catch-up 串。
 2. 父仓更新 gitlink、app 适配、`Cargo.lock`、fork 文档、guard 和升级报告。
 3. 明确授权后才推送维护分支和固定标签；未推送前不得运行或放宽“公开可达”验证来伪造完成。
 4. 发布后复核远端 commit、不可变标签和父仓 gitlink 三者一致。
