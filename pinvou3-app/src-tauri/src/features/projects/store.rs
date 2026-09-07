@@ -34,8 +34,9 @@ pub struct Project {
 /// 归组,直接回落隐式文件夹分组);无条目 = 未裁决,走自动归组。
 pub type SessionAssignments = HashMap<String, Option<String>>;
 
-/// 单文件持久化结构。schema_version 供未来结构演进识别(读到更新版本时
-/// 拒绝加载,防止旧进程把新结构降级写坏)。
+/// 单文件持久化结构。schema_version 供未来结构演进识别:读到更新版本时
+/// 按空状态降级启动,但置位拒绝后续写入(见 `StoreState::refuse_writes`),
+/// 否则空状态 + 下次变更会把新结构文件降级覆盖写坏。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct ProjectsFile {
     pub schema_version: u32,
@@ -65,6 +66,9 @@ struct StoreState {
     /// 恒按 (position, id) 有序,`list` 直接返回快照。
     projects: Vec<Project>,
     assignments: SessionAssignments,
+    /// 读到高于本进程 schema_version 的文件时置位:后续写入全部拒绝,
+    /// 防止降级进程把新结构覆盖写坏。
+    refuse_writes: bool,
 }
 
 /// 项目层存储。字段 `Arc` 包裹,整值克隆进 Tauri State 与删除钩子闭包。
@@ -103,11 +107,45 @@ fn validate_name(raw: String) -> Result<String> {
     Ok(name)
 }
 
-/// root 的比较键:目录存在时用 fs::canonicalize(消 symlink),不存在时退回
-/// 词法绝对化——目录被移走后 overlap 校验仍需可判定,且键对已存值幂等
-/// (canonicalize(canonical p) == p)。
-fn root_key(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| lexical_absolute(path))
+/// root 的展示形态:目录存在时用 fs::canonicalize(消 symlink),不存在时
+/// 退回词法绝对化——目录被移走后 overlap 校验仍需可判定,且形态对已存值
+/// 幂等(canonicalize(canonical p) == p)。再经共享的 `platform_compat_path`
+/// 归一,剥掉 Windows canonicalize 产生的 `\\?\` verbatim 前缀(非 Windows
+/// 为恒等映射),与 `validate_codex_project_workspace` 的既有约定同源。
+fn root_display(path: &Path) -> PathBuf {
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| lexical_absolute(path));
+    crate::platform::os::platform_compat_path(&canonical.to_string_lossy())
+}
+
+/// root 的比较键:展示形态经共享的 `filesystem_path_identity_key` 折叠——
+/// Windows 折叠分隔符与大小写(`C:\Work` 与 `c:\work` 是同一 root),POSIX
+/// 大小写敏感、原样保留。
+///
+/// 已知残留(接受的边缘):macOS 默认 APFS 大小写不敏感,但共享 helper 按
+/// 「卷可能配置为大小写敏感」的约定不折叠大小写(见 platform/os/macos),
+/// 同一目录换大小写写法仍算两个 root。按平台自行折叠会破坏大小写敏感卷,
+/// 故在此记录而不折叠。
+fn root_key(path: &Path) -> String {
+    identity_key_of_display(&root_display(path))
+}
+
+/// 已存 root(写入时已是展示形态)的比较键:无需再触盘,只做键折叠。
+fn identity_key_of_display(path: &Path) -> String {
+    crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy())
+}
+
+/// 组件感知的「等于或嵌套于」:键是正斜杠化的字符串,裸 `starts_with` 会把
+/// `/a/bc` 误判进 `/a/b`,必须要求边界是分隔符。
+fn key_is_same_or_nested(key: &str, base: &str) -> bool {
+    if key == base {
+        return true;
+    }
+    let base = base.strip_suffix('/').unwrap_or(base);
+    if base.is_empty() {
+        // POSIX 根 "/":一切绝对路径都嵌套其下。
+        return key.starts_with('/');
+    }
+    key.starts_with(base) && key[base.len()..].starts_with('/')
 }
 
 /// 不触盘的绝对化:`.` 丢弃、`..` 回退一层、保留前缀(Unix 根 / Windows 盘符)。
@@ -128,7 +166,8 @@ fn lexical_absolute(path: &Path) -> PathBuf {
     stack.into_iter().collect()
 }
 
-/// 校验一组 roots 并返回 canonicalized 形态:
+/// 校验一组 roots 并返回展示形态(canonicalized):重的判定与嵌套判定都在
+/// 身份键上进行(Windows 折叠大小写/分隔符后可判定)。
 /// - 必须是绝对路径;
 /// - 组内不得重复或互相嵌套;
 /// - 不得与其它项目(skip_project_id 之外)的任何 root 重复或嵌套——自动
@@ -138,24 +177,27 @@ fn validate_roots(
     skip_project_id: Option<&str>,
     roots: &[PathBuf],
 ) -> Result<Vec<PathBuf>> {
+    let mut displays = Vec::with_capacity(roots.len());
     let mut keys = Vec::with_capacity(roots.len());
     for root in roots {
         if !root.is_absolute() {
             bail!("project root must be absolute: {}", root.display());
         }
-        let key = root_key(root);
+        let display = root_display(root);
+        let key = identity_key_of_display(&display);
         if keys.contains(&key) {
             bail!("duplicate project root: {}", root.display());
         }
+        displays.push(display);
         keys.push(key);
     }
-    for (index, key) in keys.iter().enumerate() {
-        for other in keys.iter().skip(index + 1) {
-            if key.starts_with(other) || other.starts_with(key) {
+    for (index, (key, display)) in keys.iter().zip(displays.iter()).enumerate() {
+        for (other, other_display) in keys.iter().zip(displays.iter()).skip(index + 1) {
+            if key_is_same_or_nested(key, other) || key_is_same_or_nested(other, key) {
                 bail!(
                     "project roots must not nest: {} vs {}",
-                    key.display(),
-                    other.display()
+                    display.display(),
+                    other_display.display()
                 );
             }
         }
@@ -165,23 +207,33 @@ fn validate_roots(
             continue;
         }
         for existing in &project.roots {
-            for key in &keys {
-                if key.starts_with(existing) || existing.starts_with(key) {
+            let existing_key = identity_key_of_display(existing);
+            for (key, display) in keys.iter().zip(displays.iter()) {
+                if key_is_same_or_nested(key, &existing_key)
+                    || key_is_same_or_nested(&existing_key, key)
+                {
                     bail!(
                         "project root overlaps project '{}' ({} vs {})",
                         project.name,
                         existing.display(),
-                        key.display()
+                        display.display()
                     );
                 }
             }
         }
     }
-    Ok(keys)
+    Ok(displays)
 }
 
-/// 原子落盘:tmp+rename。空状态删除文件,不留空壳。
+/// 原子落盘(共享 `atomic_write`:fsync + 唯一 tmp 名 + 备份语义)。空状态
+/// 删除文件,不留空壳。读到更新 schema 时拒绝写入(见 `refuse_writes`)。
 fn persist_locked(state: &StoreState, path: &Path) -> Result<()> {
+    if state.refuse_writes {
+        bail!(
+            "projects store on disk uses a newer schema; refusing to overwrite {}",
+            path.display()
+        );
+    }
     if state.projects.is_empty() && state.assignments.is_empty() {
         return match std::fs::remove_file(path) {
             Ok(()) => Ok(()),
@@ -197,10 +249,8 @@ fn persist_locked(state: &StoreState, path: &Path) -> Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)
         .with_context(|| format!("create project store dir {}", parent.display()))?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(&file)?)
-        .with_context(|| format!("write {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).with_context(|| format!("rename {}", path.display()))?;
+    crate::platform::filesystem::atomic_write(path, &serde_json::to_vec_pretty(&file)?)
+        .with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
 
@@ -217,17 +267,23 @@ fn load_state(path: &Path) -> Result<StoreState> {
     let file: ProjectsFile =
         serde_json::from_str(&content).with_context(|| format!("parse {}", path.display()))?;
     if file.schema_version > SCHEMA_VERSION {
-        bail!(
-            "projects schema {} is newer than supported {}",
+        eprintln!(
+            "[projects] {} uses schema {} newer than supported {}; writes are refused for this process",
+            path.display(),
             file.schema_version,
             SCHEMA_VERSION
         );
+        return Ok(StoreState {
+            refuse_writes: true,
+            ..StoreState::default()
+        });
     }
     let mut projects = file.projects;
     projects.sort_by(|a, b| (a.position, &a.id).cmp(&(b.position, &b.id)));
     Ok(StoreState {
         projects,
         assignments: file.assignments,
+        refuse_writes: false,
     })
 }
 
@@ -288,6 +344,11 @@ impl ProjectStore {
             .collect()
     }
 
+    /// 创建项目。roots 可为空(纯标签项目);非空时逐个过绝对性/重叠校验。
+    ///
+    /// 落盘失败时内存态已前进而磁盘滞后(persist 在锁内最后执行,失败向上
+    /// 抛,不回滚内存);同一进程内立即重试 create 会先撞内存重叠校验(磁盘
+    /// 还是旧内容)——已知语义,由下一次成功写盘自愈。
     pub fn create_project(&self, name: String, roots: Vec<PathBuf>) -> Result<Project> {
         let name = validate_name(name)?;
         let mut state = self.state.write();
@@ -408,17 +469,51 @@ impl ProjectStore {
                 }
                 // 单元素集组内校验退化为此路径自身的绝对性;跨项目重叠在此
                 // 一并拦截(错误信息指向冲突项目)。
-                let mut keys =
-                    validate_roots(&state.projects, Some(target_id), &[workspace.to_path_buf()])?;
-                let Some(key) = keys.pop() else {
+                let owned_root = workspace.to_path_buf();
+                let mut displays = validate_roots(
+                    &state.projects,
+                    Some(target_id),
+                    std::slice::from_ref(&owned_root),
+                )?;
+                let Some(display) = displays.pop() else {
                     bail!("add_workspace_root produced no canonical key");
                 };
+                let key = identity_key_of_display(&display);
                 let project = &mut state.projects[index];
-                let already_covered = project.roots.iter().any(|root| key.starts_with(root));
-                if !already_covered {
-                    project.roots.push(key.clone());
+                // 组内方向双查:workspace 被现有 root 覆盖 → 幂等跳过;workspace
+                // 是现有 root 的祖先 → 收编被覆盖的后代(镜像自动归组的最长
+                // root 匹配),否则放行祖先会破坏组内不嵌套不变量,并让下一次
+                // update 的全量校验永远报 "must not nest",项目 roots 卡死到
+                // 手工修文件为止。
+                let existing_keys: Vec<String> = project
+                    .roots
+                    .iter()
+                    .map(|root| identity_key_of_display(root))
+                    .collect();
+                let covered: Vec<usize> = existing_keys
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, existing_key)| key_is_same_or_nested(existing_key, &key))
+                    .map(|(index, _)| index)
+                    .collect();
+                let already_covered = existing_keys
+                    .iter()
+                    .any(|existing_key| key_is_same_or_nested(&key, existing_key));
+                if !covered.is_empty() && !already_covered {
+                    project.roots = project
+                        .roots
+                        .drain(..)
+                        .enumerate()
+                        .filter(|(index, _)| !covered.contains(index))
+                        .map(|(_, root)| root)
+                        .collect();
+                    project.roots.push(display.clone());
                     project.updated_at = Utc::now();
-                    added_root = Some(key);
+                    added_root = Some(display);
+                } else if !already_covered {
+                    project.roots.push(display.clone());
+                    project.updated_at = Utc::now();
+                    added_root = Some(display);
                 }
             }
             state
@@ -448,7 +543,9 @@ impl ProjectStore {
             return false;
         }
         if let Err(error) = persist_locked(&state, &self.path) {
-            eprintln!("[projects] persist after forget_session({session_id}) failed: {error:#}");
+            // 不带 session id:侧栏归属映射非敏感数据,但 CodeQL 对日志落
+            // 标识符告警(deny 门),且排查只需错误链不需要 id。
+            eprintln!("[projects] persist after forget_session failed: {error:#}");
         }
         true
     }
