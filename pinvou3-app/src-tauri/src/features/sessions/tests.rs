@@ -3862,13 +3862,14 @@ fn rebind_workspace_bindings_moves_plain_bindings_and_stays_idempotent() {
         .expect("rebind plain bindings");
     let mut ids: Vec<&str> = affected.iter().map(|(id, _)| id.as_str()).collect();
     ids.sort_unstable();
-    assert_eq!(
-        ids,
-        vec![
-            bound_session.metadata.id.as_str(),
-            nested_session.metadata.id.as_str()
-        ]
-    );
+    // id 字典序与创建顺序无关(同后缀不同前缀),期望侧同样排序,否则断言
+    // 平台间随机(评审 #452 finding 1:Linux 红 Windows 绿)。
+    let mut expected: Vec<&str> = vec![
+        bound_session.metadata.id.as_str(),
+        nested_session.metadata.id.as_str(),
+    ];
+    expected.sort_unstable();
+    assert_eq!(ids, expected);
     assert_eq!(
         store
             .session_workspace_binding(&bound_session.metadata.id)

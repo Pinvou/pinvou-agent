@@ -1,4 +1,4 @@
-import { lazy, startTransition as scheduleViewTransition, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { lazy, startTransition as scheduleViewTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import '../styles/base.css';
@@ -19,7 +19,7 @@ import { bridge, useBridgeState, usePlatformCapability, activeModelIsLocal, shou
 import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewport.js';
 import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
-import { groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId } from '../features/projects/projectGrouping.js';
+import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfirm } from '../features/projects/projectGrouping.js';
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
 import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
 import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
@@ -127,7 +127,7 @@ let appFirstRenderMarked = false;
 const APP_BRIDGE_STATE_DOMAINS = [
   'platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'monitor',
   'settings', 'models', 'vllm', 'interaction', 'personas',
-  'memory', 'remoteControl', 'updater', 'dependencies',
+  'memory', 'remoteControl', 'updater', 'dependencies', 'projects',
 ];
 
 function emitPetEvent(ev, name, payload) {
@@ -1426,7 +1426,9 @@ function workspaceDisplayName(path) {
           // #445 绑定:绑定工作会话携带 workspacePath/Kind,项目分组跟随绑定
           // (与安全姿态同一条信号),未绑定会话两个值为空、维持日期视图。
           workspacePath: s.workspace_binding || '',
-          workspaceKind: s.workspace_binding ? 'project' : '',
+          // 独立 'bound' kind:与代码/ACP 的 'project' 同享三层分组,但不是
+          // 伪装的 project-kind(评审 #452 finding 5)。
+          workspaceKind: s.workspace_binding ? 'bound' : '',
           leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
           testId: 'regular-sidebar-item',
           menuTestId: 'regular-sidebar-menu',
@@ -1595,6 +1597,9 @@ function workspaceDisplayName(path) {
       const [moveToProjectSession, setMoveToProjectSession] = useState(null);
       const [moveToPresetProject, setMoveToPresetProject] = useState(null);
       const [rebindDraft, setRebindDraft] = useState(null);
+      // 拖拽高亮的唯一所有者:源行 dragend 无条件清除,webview 丢 dragleave
+      // 事件时高亮也不会卡死(评审 #450 finding 5)。
+      const [dropTargetGroupKey, setDropTargetGroupKey] = useState(null);
       // 桥完成首次状态同步(bs 就绪)后拉一次项目快照;后续变更由
       // projects:list_changed 事件驱动桥内刷新(bridge/projects.js)。
       const projectsBootstrapReady = !!bs;
@@ -1777,22 +1782,25 @@ function workspaceDisplayName(path) {
 
       // 项目视图(原「代码」形态):所有绑定真实目录的会话——代码/ACP 会话
       // 与 #445 的绑定工作会话——统一按项目层三层分组;未绑定普通会话留在
-      // 「全部」的日期视图。分组跟随绑定,与安全姿态同一条信号。
-      const sidebarCodeTasks = sidebarCodeListActive
+      // 「全部」的日期视图。分组跟随绑定,与安全姿态同一条信号。分组链全程
+      // memo 化:tier-2 是 O(sessions × projects × roots),项目数还会增长
+      // (评审 #448 finding 8)。
+      const sidebarCodeTasks = useMemo(() => (sidebarCodeListActive
         ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex'
             || (chat.taskKind === 'regular' && chat.workspacePath))
-        : [];
-      const sidebarFolderPinned = taskListSort === 'pinned_first'
+        : []), [sidebarCodeListActive, sidebarTaskHistory]);
+      const sidebarFolderPinned = useMemo(() => (taskListSort === 'pinned_first'
         ? sidebarCodeTasks.filter(chat => !!chat.pinned)
-        : [];
+        : []), [taskListSort, sidebarCodeTasks]);
+      const sidebarUnpinnedCodeTasks = useMemo(() => sidebarCodeTasks.filter(chat => !(sidebarFolderPinned.length && chat.pinned)), [sidebarCodeTasks, sidebarFolderPinned]);
       const sidebarProjectsData = bs && bs.projectsList;
-      const sidebarFolderGroups = sidebarCodeListActive
+      const sidebarFolderGroups = useMemo(() => (sidebarCodeListActive
         ? groupSessionsWithProjects(
-            sidebarCodeTasks.filter(chat => !(sidebarFolderPinned.length && chat.pinned)),
+            sidebarUnpinnedCodeTasks,
             sidebarProjectsData ? sidebarProjectsData.projects : [],
             sidebarProjectsData ? sidebarProjectsData.assignments : {},
           )
-        : [];
+        : []), [sidebarCodeListActive, sidebarUnpinnedCodeTasks, sidebarProjectsData]);
 
       // latest-ref mirror: the pet-snapshot broadcast effect only subscribes to bs.sessions/sessionBusy/language,
       // while snapshot contents (id/title/working) are read via refs to reduce effect resubscription.
@@ -2337,7 +2345,8 @@ function workspaceDisplayName(path) {
       }
 
       // ── 项目层:分组归档是纯逻辑层操作,永不触碰会话的工作目录绑定。──
-      // 失败走统一的 sessionBatchFailed toast;bridge.projects 仅桌面存在。
+      // 失败走专用的 opFailed toast(借用会话批处理文案会让报错指向错误
+      // 的操作对象);bridge.projects 仅桌面存在。
       async function runProjectOp(op) {
         if (!bridge.available || !bridge.projects || projectOpsBusy) return;
         setProjectOpsBusy(true);
@@ -2345,7 +2354,7 @@ function workspaceDisplayName(path) {
           await op(bridge.projects);
         } catch (error) {
           console.warn('project operation failed', error);
-          setSettingsToast(t.sessionBatchFailed(1));
+          setSettingsToast(t.uiProjects.opFailed);
         } finally {
           setProjectOpsBusy(false);
         }
@@ -2355,37 +2364,52 @@ function workspaceDisplayName(path) {
       const handleDeleteProject = (projectId) => runProjectOp(p => p.deleteProject(projectId));
       // 移动归属:纯归档操作(工作目录绑定不动);目标 root 不覆盖会话目录时由
       // 选择器先走"添加文件夹"确认,再带着 addFolder 标记落到这里。
+      // 确认框展示的是侧栏投影的目录,命令实际加的是后端活记录——outcomes
+      // 里的 added_root 是权威答案,有值时在 toast 里如实呈现(评审 #449
+      // finding 9:两侧不得静默分叉)。
       const handleMoveSessionToProject = (sessionId, projectId, addWorkspaceRoot) => runProjectOp(async (p) => {
-        await p.moveSessionToProject(sessionId, projectId, addWorkspaceRoot);
+        const outcome = await p.moveSessionToProject(sessionId, projectId, addWorkspaceRoot);
         setMoveToProjectSession(null);
-        setSettingsToast(t.uiProjects.movedNotice);
+        // 提交后一并清预置目标,避免残留状态泄漏到下一次打开(finding 7)。
+        setMoveToPresetProject(null);
+        setSettingsToast(
+          outcome && outcome.added_root
+            ? t.uiProjects.movedNoticeWithFolder(outcome.added_root)
+            : t.uiProjects.movedNotice,
+        );
       });
       // 拖拽落点:root 已覆盖的直接移动;未覆盖的带着预置目标打开选择器,
-      // 进入"添加文件夹"确认(menu 路径则不带预置)。
+      // 进入"添加文件夹"确认(menu 路径则不带预置)。判定用共享的
+      // needsAddFolderConfirm,与选择器的初始化器/选择路径保持同源。
       const handleDropSessionOnProject = (sessionId, projectId) => {
         const chat = sidebarTaskHistory.find(c => c.id === sessionId);
-        if (!chat || projectOpsBusy) return;
+        if (!chat) return;
         const projects = sidebarProjectsData ? sidebarProjectsData.projects : [];
         const target = (projects || []).find(p => p && p.id === projectId);
         if (!target) return;
-        if (chat.workspaceKind === 'project' && chat.workspacePath
-            && !projectCoversPath(target, chat.workspacePath)) {
+        // 拖回当前所属项目 = 选择器里禁用当前项的同一语义,直接忽略。
+        if (resolveSessionProjectId(chat, projects, sidebarProjectsData ? sidebarProjectsData.assignments : {}) === projectId) return;
+        if (needsAddFolderConfirm(chat, target)) {
           setMoveToPresetProject(projectId);
           setMoveToProjectSession(chat);
           return;
         }
+        // projectOpsBusy 时静默忽略与侧栏其他拖拽反馈一致(runProjectOp
+        // 内部同样有 busy 守卫),不额外打断。
         handleMoveSessionToProject(sessionId, projectId, false);
       };
       // 目录重绑定(修断链):失效 root 的项目头上点"重新绑定" → 系统选目录
       // → 确认弹窗。两阶段确认:首调不带 confirmExisting,后端发现旧目录
       // 仍在时拒绝,弹窗升级为强警告后由用户再次确认。
-      const startRebindWorkspace = async (fromPath, sessionCount) => {
+      const startRebindWorkspace = async (fromPath) => {
         if (!bridge.files || !bridge.files.pickFolders || projectOpsBusy) return;
         try {
           const picked = await bridge.files.pickFolders();
           const to = Array.isArray(picked) ? picked[0] : picked;
           if (!to) return;
-          setRebindDraft({ from: fromPath, to, sessionCount, warnExisting: false });
+          // 不带会话数:命令实际重绑定 from 之下的一切会话,侧栏组渲染数
+          // 只是子集,数字承诺会与 RebindWorkspaceReport 对不上(finding 10)。
+          setRebindDraft({ from: fromPath, to, warnExisting: false });
         } catch (error) {
           console.warn('pick rebind folder failed', error);
         }
@@ -2397,12 +2421,22 @@ function workspaceDisplayName(path) {
           const report = await bridge.projects.rebindWorkspaceRoot(
             rebindDraft.from, rebindDraft.to, confirmExisting);
           setRebindDraft(null);
-          const count = (report && report.rebound_session_ids) ? report.rebound_session_ids.length : 0;
-          setSettingsToast(t.uiProjects.rebindSuccess(count));
+          const rebound = (report && report.rebound_session_ids) ? report.rebound_session_ids.length : 0;
+          const failed = (report && report.failed_session_ids) ? report.failed_session_ids.length : 0;
+          const postBusy = (report && report.post_busy_session_ids) ? report.post_busy_session_ids.length : 0;
+          // 部分失败不再吞掉(finding 3):数据迁移的半成功必须如实呈现。
+          if (failed > 0) {
+            setSettingsToast(t.uiProjects.rebindPartial(rebound, failed));
+          } else if (postBusy > 0) {
+            setSettingsToast(t.uiProjects.rebindBusyAfter(postBusy));
+          } else {
+            setSettingsToast(t.uiProjects.rebindSuccess(rebound));
+          }
           await refreshCodexSessions().catch(() => {});
         } catch (error) {
           const message = String(error);
-          if (message.includes('original folder still exists')) {
+          // 类型化标记匹配(finding 11):只认稳定前缀,不匹配人类文案。
+          if (message.startsWith('REBIND_OLD_ROOT_EXISTS')) {
             setRebindDraft(prev => prev && { ...prev, warnExisting: true });
           } else {
             console.warn('rebind workspace failed', error);
@@ -2683,12 +2717,13 @@ function workspaceDisplayName(path) {
             onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
             onArchive={handleArchiveSession}
             onMoveToProject={bridge.projects && (chat.taskKind === 'codex' || !!chat.workspacePath)
-              ? (() => { setMoveToPresetProject(null); setMoveToProjectSession(chat); })
+              ? (target) => { setMoveToPresetProject(null); setMoveToProjectSession(target); }
               : undefined}
-            dndPayload={bridge.projects && (chat.taskKind === 'codex' || !!chat.workspacePath)
+            dndPayload={bridge.projects && (chat.taskKind === 'codex' || !!chat.workspacePath) && sidebarCodeListActive
               ? { sessionId: chat.id }
               : undefined}
             dndDisabled={!!dragAvatar}
+            onDragEnd={() => setDropTargetGroupKey(null)}
             dragKind={detachKind}
             dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
             onPickUp={canDetachWindows ? ((geom) => beginTearOff(detachKind, chat.id, chat.title, geom)) : undefined}
@@ -2832,7 +2867,6 @@ function workspaceDisplayName(path) {
             <RebindFolderDialog
               from={rebindDraft.from}
               to={rebindDraft.to}
-              sessionCount={rebindDraft.sessionCount}
               warnExisting={rebindDraft.warnExisting}
               t={t}
               busy={projectOpsBusy}
@@ -3238,18 +3272,20 @@ function workspaceDisplayName(path) {
                                   title={group.kind === 'folder' ? group.path : undefined}
                                   busy={projectOpsBusy}
                                   testId="sidebar-folder-group"
-                                  onConvert={group.kind === 'folder' ? (name) => handleConvertFolderToProject(group.path, name) : undefined}
+                                  // bridge.projects 仅桌面存在:web 上目录组不渲染
+                                  // 死入口(点击无反馈违反显式不支持约定)。
+                                  onConvert={bridge.projects && group.kind === 'folder' ? (name) => handleConvertFolderToProject(group.path, name) : undefined}
                                   onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
                                   onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
                                   onDropSession={group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
-                                  rootsUnavailable={group.kind === 'project'
-                                    && Array.isArray(group.roots) && group.roots.length > 0
-                                    && group.roots.every(root => !(root && typeof root === 'object' ? root.available : root))}
-                                  onRebind={group.kind === 'project' && group.roots && group.roots.length
-                                    ? (() => startRebindWorkspace(
-                                        String(typeof group.roots[0] === 'object' ? group.roots[0].path : group.roots[0]),
-                                        group.rows.length))
-                                    : undefined}
+                                  unavailableRoots={group.kind === 'project'
+                                    ? (group.roots || [])
+                                        .filter(root => !(root && typeof root === 'object' ? root.available : root))
+                                        .map(root => String(typeof root === 'object' ? root.path : root))
+                                    : []}
+                                  onRebind={group.kind === 'project' ? (rootPath) => startRebindWorkspace(rootPath) : undefined}
+                                  dropActive={dropTargetGroupKey === group.key}
+                                  onDropActive={(active) => setDropTargetGroupKey(active ? group.key : null)}
                                 />
                                 {isOpen && (
                                   <div className="mt-1 space-y-0.5">

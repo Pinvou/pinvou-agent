@@ -16,12 +16,16 @@ use crate::features::projects::{
 };
 use crate::features::sessions::SessionStore;
 
+use super::sessions::ensure_chat_session;
+
+/// 项目事件只走本地 emit:projects 域按 bridge 契约是桌面端专属,
+/// remote-control 的转发白名单没有该事件,转发只会被中继拒绝并每次
+/// 刷一条拒绝日志(评审 #447 finding 11:在消费方出现前不转发)。
 fn emit_project_event(app: &AppHandle, event: &str, action: &str) {
-    let payload = serde_json::json!({ "action": action });
+    let _ = app.emit(event, serde_json::json!({ "action": action }));
     // 只走桌面 webview 通道。projects 域桌面独占(Web 桥整域缺席),远程端
     // 正式支持项目列表之前不转发——与 remote_control 对代码会话事件的
     // 同类裁决一致;转发不在 RUST_FORWARDED_EVENTS 白名单内会被拒并刷日志。
-    let _ = app.emit(event, payload);
 }
 
 /// root 的可用性(目录是否仍在磁盘上)——前端据此渲染"文件夹不可用·重新绑定",
@@ -151,10 +155,10 @@ pub async fn move_session_to_project(
     sessions: State<'_, SessionStore>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<MoveSessionOutcome, String> {
-    // 先确认会话存在,避免归属表残留无效 id(同 set_session_pinned 惯例)。
-    sessions
-        .load(&session_id)
-        .map_err(|e| format!("move_session_to_project({session_id}): session not found: {e:#}"))?;
+    // 先确认会话存在,避免归属表残留无效 id(同 set_session_pinned 惯例);
+    // scheduled-run 会话与兄弟命令同口径拒绝,防止运行记录被写进归属表。
+    ensure_chat_session(&sessions, &session_id, "move_session_to_project")
+        .map_err(|e| format!("move_session_to_project({session_id}): {e}"))?;
     let workspace_root = if add_workspace_root.unwrap_or(false) {
         if project_id.is_none() {
             return Err(
@@ -162,14 +166,15 @@ pub async fn move_session_to_project(
             );
         }
         // 统一工作区探测(跨模式融合):代码/ACP 会话走 agent 记录;普通绑定
-        // 会话(agent 记录缺失)回落到双根信号——执行根≠账本根 ⇒ 已绑定,
-        // 执行根即绑定目录(#445 的绑定语义)。临时/未绑定会话两者皆无。
+        // 会话回落到双根信号——执行根≠账本根 ⇒ 已绑定,执行根即绑定目录
+        // (#445 的绑定语义)。agent 记录存在但非项目形态(如临时)与记录缺失
+        // (Err)两种缺席模式都穿透到同一回退,不让 Ok(Temporary) 短路成错误
+        // (评审 #452 finding 4)。
         let detected = match acp_pool.workspace_info(&session_id) {
             Ok(info) if info.workspace_kind == CodexWorkspaceKind::Project => {
                 Some(PathBuf::from(info.workspace_path))
             }
-            Ok(_) => None,
-            Err(_) => sessions
+            _ => sessions
                 .session_roots(&session_id)
                 .ok()
                 .filter(|roots| roots.execution != roots.ledger)
@@ -204,6 +209,10 @@ pub struct RebindWorkspaceReport {
     pub rebound_session_ids: Vec<String>,
     pub failed_session_ids: Vec<String>,
     pub affected_project_ids: Vec<String>,
+    /// 迁移完成后复查发现已进入活跃回合的会话:它们的绑定已平移,但回合
+    /// 可能仍对着旧目录执行,前端据此提示必要时空闲后重试一次。
+    #[serde(default)]
+    pub post_busy_session_ids: Vec<String>,
 }
 
 /// 目录重绑定(修断链):项目文件夹被物理移走/删除后,把一切以 `from` 为
@@ -233,12 +242,35 @@ pub async fn rebind_workspace_root(
             rebound_session_ids: Vec::new(),
             failed_session_ids: Vec::new(),
             affected_project_ids: Vec::new(),
+            post_busy_session_ids: Vec::new(),
         });
     }
-    // 旧目录仍在磁盘上 = 非断链场景,要求显式强确认。
+    // `to` 不得位于 `from` 之内:重绑定按前缀平移,目标在旧目录内部时重跑会
+    // 不断加深 (/a/x → /a/x/new/x → …),幂等性被破坏(评审 #451 finding 6)。
+    {
+        let from_canon = std::fs::canonicalize(&from).unwrap_or_else(|_| from.clone());
+        let from_key = crate::platform::os::filesystem_path_identity_key(
+            &crate::platform::os::platform_compat_path(&from_canon.to_string_lossy())
+                .to_string_lossy(),
+        );
+        let to_key_str =
+            crate::platform::os::filesystem_path_identity_key(&to_key.to_string_lossy());
+        let from_trim = from_key.trim_end_matches('/');
+        let nested = to_key_str.trim_end_matches('/') == from_trim
+            || to_key_str
+                .trim_end_matches('/')
+                .starts_with(&format!("{from_trim}/"));
+        if !from_trim.is_empty() && nested {
+            return Err(
+                "rebind_workspace_root: 新目录不能位于旧目录内部（会造成递归加深）".to_string(),
+            );
+        }
+    }
+    // 旧目录仍在磁盘上 = 非断链场景,要求显式强确认。错误以稳定标记前缀
+    // 表达类型,前端据此升级强警告,不匹配人类文案(finding 11)。
     if from.is_dir() && !confirm_existing.unwrap_or(false) {
         return Err(
-            "rebind_workspace_root: 原目录仍存在，需在界面确认后重试 (original folder still exists)"
+            "REBIND_OLD_ROOT_EXISTS: 原目录仍存在，需在界面确认后重试 (original folder still exists)"
                 .to_string(),
         );
     }
@@ -311,9 +343,19 @@ pub async fn rebind_workspace_root(
             "workspace_rebound",
         );
     }
+    // 迁移后忙碌复查(finding 5):入口栅栏与多文件迁移不是互斥区,回合可能
+    // 在迁移期间启动、对着旧目录执行。绑定已平移,这里只如实上报,前端提示
+    // 必要时空闲后重试一次。
+    let mut post_busy_session_ids: Vec<String> = Vec::new();
+    for (session_id, _) in &guard_candidates {
+        if acp_pool.is_turn_active(session_id).await || engines.is_turn_active(session_id) {
+            post_busy_session_ids.push(session_id.clone());
+        }
+    }
     Ok(RebindWorkspaceReport {
         rebound_session_ids,
         failed_session_ids,
         affected_project_ids,
+        post_busy_session_ids,
     })
 }
