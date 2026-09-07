@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use crate::features::assistant::engine_pool::{EnginePool, ScheduledTurnCompletion};
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::features::memory::MemoryOrganizeReport;
-use crate::features::scheduled::tasks::SCHEDULED_TASK_KIND_MEMORY_ORGANIZE;
+use crate::features::scheduled::tasks::ScheduledTaskKindLookup;
 use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
 use crate::platform::prefs::{SavedModel, UserPrefs};
 
@@ -22,7 +22,7 @@ type StartedCallback =
     Box<dyn FnMut(String) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send>;
 type ModelIdResolver = Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>;
 /// automation_id → task kind (None = ordinary chat task).
-type KindResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+type KindResolver = Arc<dyn Fn(&str) -> ScheduledTaskKindLookup + Send + Sync>;
 
 /// The narrow boundary between base-owned task execution and Pinvou's scheduled
 /// conversation storage/engine runtime. Keeping this injectable lets executor
@@ -129,7 +129,20 @@ impl ScheduledConversationRuntime for EngineScheduledRuntime {
                 bridge
             }
         };
-        crate::features::memory::organize_memory_with_llm(&bridge, Some(&cancel)).await
+        let report =
+            crate::features::memory::organize_memory_with_llm(&bridge, Some(&cancel)).await?;
+        // Parity with the manual command's post-organize refresh: organize may have
+        // deleted or merged items, and `ensure_runtime_prompt` only writes the runtime
+        // memory file when it is missing, so the active session's file must be
+        // re-rendered here or it keeps serving removed items on the next turns.
+        // Best-effort, like the command layer's refresh: a render failure must not
+        // fail a run whose organize itself succeeded.
+        if let Some(session_id) = self.store.active_id() {
+            if let Err(error) = crate::features::memory::runtime_snapshot(&session_id) {
+                eprintln!("[memory] refresh runtime memory after scheduled organize: {error}");
+            }
+        }
+        Ok(report)
     }
 }
 
@@ -171,10 +184,11 @@ impl ScheduledChatExecutor {
         }
     }
 
-    fn kind_for(&self, automation_id: &str) -> Option<String> {
-        self.kind_resolver
-            .as_ref()
-            .and_then(|resolver| resolver(automation_id))
+    fn kind_for(&self, automation_id: &str) -> ScheduledTaskKindLookup {
+        match self.kind_resolver.as_ref() {
+            Some(resolver) => resolver(automation_id),
+            None => ScheduledTaskKindLookup::Chat,
+        }
     }
 
     /// One run of the `memory_organize` kind: no session is created, no engine turn is
@@ -258,9 +272,24 @@ impl TaskExecutor for ScheduledChatExecutor {
             .unwrap_or_else(|| task.id())
             .to_string();
         // Memory organize tasks branch off here: no session creation, no model binding
-        // resolution.
-        if self.kind_for(&automation_id).as_deref() == Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE) {
-            return self.execute_memory_organize(cancel).await;
+        // resolution. A stored kind this build does not support fails the run outright:
+        // degrading it to a chat task would execute the kind-specific stored prompt as
+        // an unattended full-permission agent conversation, which is the unsafe
+        // direction when the sidecar and the binary disagree.
+        match self.kind_for(&automation_id) {
+            ScheduledTaskKindLookup::MemoryOrganize => {
+                return self.execute_memory_organize(cancel).await;
+            }
+            ScheduledTaskKindLookup::Unsupported(raw) => {
+                return TaskExecutionResult {
+                    status: TaskStatus::Failed,
+                    result_text: None,
+                    error: Some(format!(
+                        "unsupported scheduled task kind {raw:?}; update the app or recreate the task"
+                    )),
+                };
+            }
+            ScheduledTaskKindLookup::Chat => {}
         }
         let model = task.model().to_string();
         let model_id = self.runtime.model_id_for_automation(&automation_id, &model);
@@ -1066,9 +1095,8 @@ mod tests {
     async fn memory_organize_run_completes_without_a_session_or_engine_turn() -> Result<()> {
         let runtime = Arc::new(ScriptedRuntime::new([]));
         let executor = Arc::new(
-            ScheduledChatExecutor::new(runtime.clone()).with_kind_resolver(Arc::new(|_| {
-                Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE.to_string())
-            })),
+            ScheduledChatExecutor::new(runtime.clone())
+                .with_kind_resolver(Arc::new(|_| ScheduledTaskKindLookup::MemoryOrganize)),
         );
         let (_root, manager) = manager_with_executor(executor).await?;
 
@@ -1101,9 +1129,8 @@ mod tests {
         let runtime = Arc::new(ScriptedRuntime::new([]));
         runtime.set_organize_error(Some("model unavailable".to_string()));
         let executor = Arc::new(
-            ScheduledChatExecutor::new(runtime.clone()).with_kind_resolver(Arc::new(|_| {
-                Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE.to_string())
-            })),
+            ScheduledChatExecutor::new(runtime.clone())
+                .with_kind_resolver(Arc::new(|_| ScheduledTaskKindLookup::MemoryOrganize)),
         );
         let (_root, manager) = manager_with_executor(executor).await?;
 
@@ -1127,13 +1154,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unsupported_kind_fails_the_run_without_a_session_or_engine_turn() -> Result<()> {
+        // A kind entry this build does not support must fail the run instead of
+        // degrading to a chat task: the stored prompt was authored for its kind,
+        // and running it as an unattended full-permission agent conversation is
+        // the unsafe direction.
+        let runtime = Arc::new(ScriptedRuntime::new([]));
+        let executor = Arc::new(
+            ScheduledChatExecutor::new(runtime.clone()).with_kind_resolver(Arc::new(|_| {
+                ScheduledTaskKindLookup::Unsupported("legacy_kind".to_string())
+            })),
+        );
+        let (_root, manager) = manager_with_executor(executor).await?;
+
+        let queued = manager.add_task(request("organize memory")).await?;
+        let finished =
+            wait_for_terminal_state(&manager, &queued.id, std::time::Duration::from_secs(5))
+                .await?;
+
+        assert_eq!(finished.status, TaskStatus::Failed);
+        let error = finished.error.as_deref().unwrap_or_default();
+        assert!(
+            error.contains("unsupported scheduled task kind"),
+            "error must name the unsupported kind, got: {error}"
+        );
+        assert!(
+            error.contains("legacy_kind"),
+            "error must carry the raw kind value"
+        );
+        assert_eq!(finished.thread_id, None, "must not create a session");
+        assert_eq!(finished.turn_id, None);
+        assert!(
+            runtime.profiles().is_empty(),
+            "unsupported kind must not create a session"
+        );
+        assert!(
+            runtime.calls().is_empty(),
+            "unsupported kind must not run an engine turn"
+        );
+        assert_eq!(
+            runtime.organize_call_count(),
+            0,
+            "unsupported kind must not reach the organize routine"
+        );
+        manager.shutdown();
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn memory_organize_run_cancels_without_waiting_for_the_llm_call() -> Result<()> {
         let runtime = Arc::new(ScriptedRuntime::new([]));
         runtime.set_organize_hang_after_cancel(true);
         let executor = Arc::new(
-            ScheduledChatExecutor::new(runtime.clone()).with_kind_resolver(Arc::new(|_| {
-                Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE.to_string())
-            })),
+            ScheduledChatExecutor::new(runtime.clone())
+                .with_kind_resolver(Arc::new(|_| ScheduledTaskKindLookup::MemoryOrganize)),
         );
         let (_root, manager) = manager_with_executor(executor).await?;
 

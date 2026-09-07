@@ -684,17 +684,46 @@ impl VersionedJsonStore<ScheduledTaskUiMetadataRegistry> {
 
 pub(crate) type ScheduledTaskKindStore = VersionedJsonStore<ScheduledTaskKindRegistry>;
 
+/// Executor-facing lookup result for one automation's stored kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ScheduledTaskKindLookup {
+    /// No kind entry: an ordinary chat task (also the default for tasks that
+    /// predate the kind sidecar).
+    Chat,
+    /// Created as a memory-organize task; the executor runs it app-side.
+    MemoryOrganize,
+    /// An entry exists but its value is not a kind this build supports
+    /// (hand-edited sidecar, or a task written by a different app version).
+    /// The executor must fail such a run instead of degrading it to a chat
+    /// task: the stored prompt was authored for its kind, and running it as an
+    /// unattended full-permission agent conversation is the unsafe direction.
+    Unsupported(String),
+}
+
 impl VersionedJsonStore<ScheduledTaskKindRegistry> {
-    /// Reads the task kind. Only `memory_organize` is a supported kind for now; any other
-    /// value left in the file is treated as an ordinary chat task (returns None),
-    /// mirroring the creation-side allow-list.
+    /// Reads the task kind for DTO display. Only `memory_organize` is a
+    /// supported kind for now; any other value left in the file surfaces as
+    /// None (an ordinary chat task), mirroring the creation-side allow-list.
+    /// The executor uses [`Self::kind_lookup_for`] instead, which distinguishes
+    /// an unsupported value from no entry at all.
     pub(crate) fn kind_for(&self, automation_id: &str) -> Option<String> {
-        self.registry
-            .read()
-            .tasks
-            .get(automation_id)
-            .map(|entry| entry.kind.clone())
-            .filter(|kind| kind == SCHEDULED_TASK_KIND_MEMORY_ORGANIZE)
+        match self.kind_lookup_for(automation_id) {
+            ScheduledTaskKindLookup::MemoryOrganize => {
+                Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE.to_string())
+            }
+            ScheduledTaskKindLookup::Chat | ScheduledTaskKindLookup::Unsupported(_) => None,
+        }
+    }
+
+    /// Executor-facing tri-state lookup; see [`ScheduledTaskKindLookup`].
+    pub(crate) fn kind_lookup_for(&self, automation_id: &str) -> ScheduledTaskKindLookup {
+        match self.registry.read().tasks.get(automation_id) {
+            None => ScheduledTaskKindLookup::Chat,
+            Some(entry) => match entry.kind.as_str() {
+                SCHEDULED_TASK_KIND_MEMORY_ORGANIZE => ScheduledTaskKindLookup::MemoryOrganize,
+                other => ScheduledTaskKindLookup::Unsupported(other.to_string()),
+            },
+        }
     }
 
     /// None removes the task's kind record (back to an ordinary chat task).

@@ -39,6 +39,10 @@ pub(crate) const SCHEDULED_TASK_KIND_MEMORY_ORGANIZE: &str = "memory_organize";
 
 #[path = "stores.rs"]
 mod stores;
+
+// The executor-facing kind lookup type is produced by the store and consumed by
+// the executor; re-export it at the feature boundary so both can name it.
+pub(crate) use stores::ScheduledTaskKindLookup;
 use stores::*;
 
 /// 删除一次定时运行对话的那一步。抽成 trait 只为可注入：EnginePool 需要活的
@@ -302,7 +306,7 @@ impl ScheduledTaskState {
             {
                 let task_kinds = task_kinds.clone();
                 Some(Arc::new(move |automation_id: &str| {
-                    task_kinds.kind_for(automation_id)
+                    task_kinds.kind_lookup_for(automation_id)
                 }))
             },
         ));
@@ -404,13 +408,17 @@ impl ScheduledTaskState {
         if let Some(kind) = requested_kind {
             if let Err(error) = self.task_kinds.set_kind(&created.id, Some(kind)) {
                 // Roll back the just-created automation so no kind-less task lingers;
-                // a failed rollback must stay diagnosable in the logs.
+                // a failed rollback must stay diagnosable in the logs. The workspace
+                // directory created moments ago is removed best-effort as well — a
+                // leftover empty dir is harmless, but keeping the rollback complete
+                // avoids litter per failed create.
                 if let Err(delete_error) = manager.delete_automation(&created.id) {
                     log::warn!(
                         "Failed to roll back scheduled task {} after its kind could not be saved: {delete_error:#}",
                         created.id
                     );
                 }
+                let _ = std::fs::remove_dir_all(scheduled_task_internal_workspace(&created.id));
                 return Err(format!("Failed to save scheduled task kind: {error:#}"));
             }
         }
@@ -1486,7 +1494,7 @@ fn canonical_scheduled_kind(kind: Option<String>) -> Result<Option<String>, Stri
     match kind {
         SCHEDULED_TASK_KIND_MEMORY_ORGANIZE => Ok(Some(kind.to_string())),
         _ => Err(format!(
-            "Scheduled task kind must be exactly one of memory_organize, got '{kind}'"
+            "Unsupported scheduled task kind '{kind}'; the only supported kind is 'memory_organize'"
         )),
     }
 }
@@ -2081,6 +2089,21 @@ mod tests {
         assert_eq!(
             reloaded.kind_for("automation-1").as_deref(),
             Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE)
+        );
+        // The executor-facing lookup distinguishes an unsupported value (fail
+        // the run) from no entry at all (ordinary chat task).
+        assert_eq!(
+            reloaded.kind_lookup_for("automation-legacy"),
+            ScheduledTaskKindLookup::Unsupported("legacy_kind".to_string()),
+            "an unsupported stored kind must not degrade to a chat task"
+        );
+        assert_eq!(
+            reloaded.kind_lookup_for("automation-1"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+        assert_eq!(
+            reloaded.kind_lookup_for("automation-missing"),
+            ScheduledTaskKindLookup::Chat
         );
 
         // set_kind(None) removes the record, back to an ordinary chat task.
