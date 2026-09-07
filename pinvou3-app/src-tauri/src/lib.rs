@@ -800,8 +800,19 @@ pub fn run() {
                     }
                 }
                 let hook_store = projects_store.clone();
+                // 钩子驱动的归属变更也发 list_changed:否则会话删除后项目组的
+                // 成员计数在下次项目操作/整表刷新前是陈旧的(评审 #447 finding 12)。
+                // boot 对账(上文 retain_sessions)不发——前端尚未启动,启动后
+                // 首次拉取即最新。
+                let hook_app = app.handle().clone();
                 store.register_session_deleted_hook(std::sync::Arc::new(move |session_id: &str| {
-                    hook_store.forget_session(session_id);
+                    if hook_store.forget_session(session_id) {
+                        use tauri::Emitter;
+                        let _ = hook_app.emit(
+                            "projects:list_changed",
+                            serde_json::json!({ "action": "session_forgotten" }),
+                        );
+                    }
                 }));
             }
             app.handle().manage(projects_store);
