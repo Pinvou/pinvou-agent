@@ -1,7 +1,10 @@
-//! Memory organize (`organize`): scan all six memory stores in full → the LLM
-//! produces delete / update / merge actions → each action is sanitized, validated,
-//! and applied, and every run's report is appended to `organize_history.json`
-//! (a bounded array keeping the most recent 20 entries).
+//! Memory organize (`organize`): scan every organizable memory store in full
+//! (preference / work_context / current_focus / recent_activity / pending, with
+//! profile and never_memory loaded as context) → the LLM produces delete /
+//! update / merge actions → each action is sanitized, validated, and applied,
+//! and every run's report is appended to `organize_history.json` (a bounded
+//! array keeping the most recent 20 entries). `recent_work` is out of scope:
+//! it is TTL-archived mechanically and has no update/delete entry point.
 //!
 //! Unlike the per-turn review in `llm_review`: organize is a user-initiated full
 //! pass whose goal is to merge duplicates, rewrite stale wording, and drop
@@ -14,17 +17,14 @@ use std::time::Duration as StdDuration;
 
 use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
-use reqwest::Client;
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use tokio_util::sync::CancellationToken;
-
-use crate::platform::prefs::ModelPreset;
 
 use super::io;
 use super::llm_review::{
-    append_memory_review_diagnostic, apply_memory_review_reasoning_controls,
-    memory_output_language_directive,
+    append_memory_review_diagnostic, extract_json_object, memory_output_language_directive,
+    send_memory_llm_request,
 };
 use super::types::{
     MemoryProfile, MemoryReviewModel, MemoryTextPatch, NeverMemoryItem, PendingMemoryItem,
@@ -84,7 +84,9 @@ pub(super) const MEMORY_ORGANIZE_PROMPT: &str = r#"你是 pinvou 的后台记忆
 /// `deleted` / `updated` / `merged` are counted per kind and never overlap:
 /// `merged` counts only source items absorbed and removed by a merge, `deleted`
 /// only items removed by delete actions; the three sums equal the number of
-/// items actually changed.
+/// items actually changed — each item is counted once per run even when several
+/// actions touch it (an overlapping later action still applies at the io layer
+/// but is reported as a warning, not a second count).
 /// `Deserialize` supports the bounded history readback from `organize_history.json`.
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct MemoryOrganizeReport {
@@ -140,10 +142,11 @@ pub async fn organize_memory_with_llm(
             "model": bridge.memory_model(),
         }),
     );
-    // Mechanical pre-cleanup: expire-and-archive stale entries. Each pub entry
-    // briefly holds the write lock on its own; idempotent and reentrant.
+    // Mechanical pre-cleanup: expire-and-archive stale entries. This one call
+    // already covers recent_work plus both timed stores (current_focus /
+    // recent_activity); each pub entry briefly holds the write lock on its own;
+    // idempotent and reentrant.
     io::refresh_recent_work_expiry().context("refresh recent work expiry")?;
-    io::refresh_timed_memory_expiry().context("refresh timed memory expiry")?;
     let snapshot = OrganizeSnapshot::load().context("load memory stores for organize")?;
     let scanned = snapshot.scanned_counts();
     let mut warnings = Vec::new();
@@ -459,11 +462,14 @@ pub(super) fn validate_organize_action(
     if op == "update" && ids.len() != 1 {
         return drop_action(format!("organize: drop update {kind} without exactly 1 id"));
     }
-    // Expired/archived timed items allow delete only: the io update/merge entry
-    // points unconditionally reset status/last_hit to active/now (update_timed_memory),
-    // reviving a just-archived item for a whole window at its original ttl_days —
-    // contradicting prompt rule 6 (「保持原有过期设置」, "keep the original expiry
-    // setting").
+    // Expired/archived timed items allow delete only. This snapshot check drops
+    // the action early with a precise warning; the authoritative guard is in the
+    // io layer (`update_active_timed_memory`), which re-checks the status under
+    // the write lock in case the item is expired/archived after this snapshot —
+    // the io update entry points reset status/last_hit to active/now, and
+    // honoring the patch would revive a just-archived item for a whole window
+    // at its original ttl_days, contradicting prompt rule 6 (「保持原有过期设置」,
+    // "keep the original expiry setting").
     if op != "delete" && matches!(kind.as_str(), "current_focus" | "recent_activity") {
         let items = if kind == "current_focus" {
             &snapshot.current_focus
@@ -500,7 +506,16 @@ pub(super) fn validate_organize_action(
                 "organize: drop content containing memory block markers".to_string(),
             );
         }
-        content = clean_candidate_sentence(&content, 180);
+        // Same per-store cap the io write path applies, so a content that passes
+        // validation is exactly what gets stored (no silent second truncation).
+        content = clean_candidate_sentence(
+            &content,
+            match kind.as_str() {
+                "preference" => io::PREFERENCE_TEXT_MAX_CHARS,
+                "work_context" => io::WORK_CONTEXT_TEXT_MAX_CHARS,
+                _ => io::TIMED_TEXT_MAX_CHARS,
+            },
+        );
         // Per-kind quality filters, same as sanitize_llm_memory_item.
         match kind.as_str() {
             "preference" => {
@@ -548,6 +563,26 @@ pub(super) fn validate_organize_action(
     })
 }
 
+/// Records one successful item mutation in the report counters. An item already
+/// changed by an earlier action in the same run is not counted again — the
+/// counters are unique changed items (see `MemoryOrganizeReport`); the io write
+/// itself still happened and is surfaced as a warning.
+fn count_item_change(
+    bucket: &mut BTreeMap<String, u32>,
+    changed: &mut BTreeSet<(String, String)>,
+    kind: &str,
+    id: &str,
+    warnings: &mut Vec<String>,
+) {
+    if !changed.insert((kind.to_string(), id.to_string())) {
+        warnings.push(format!(
+            "organize: {kind} {id} was already changed by an earlier action; not counted again"
+        ));
+        return;
+    }
+    *bucket.entry(kind.to_string()).or_default() += 1;
+}
+
 /// Apply validated actions one by one. Each action goes through the existing
 /// locked io entry points (each takes the write lock itself); a single failure
 /// records a warning and continues instead of aborting the batch.
@@ -562,13 +597,22 @@ fn apply_organize_actions(
     let mut deleted = BTreeMap::new();
     let mut updated = BTreeMap::new();
     let mut merged = BTreeMap::new();
+    let mut changed = BTreeSet::new();
     let mut warnings = Vec::new();
     for action in actions {
         match action.op.as_str() {
             "delete" => {
                 for id in &action.ids {
                     match delete_organize_item(&action.kind, id) {
-                        Ok(true) => *deleted.entry(action.kind.clone()).or_default() += 1,
+                        Ok(true) => {
+                            count_item_change(
+                                &mut deleted,
+                                &mut changed,
+                                &action.kind,
+                                id,
+                                &mut warnings,
+                            );
+                        }
                         Ok(false) => {
                             warnings.push(format!(
                                 "organize: delete {} {id} did not match any item",
@@ -585,7 +629,15 @@ fn apply_organize_actions(
             "update" => {
                 let id = &action.ids[0];
                 match update_organize_item(&action.kind, id, &action.content) {
-                    Ok(true) => *updated.entry(action.kind.clone()).or_default() += 1,
+                    Ok(true) => {
+                        count_item_change(
+                            &mut updated,
+                            &mut changed,
+                            &action.kind,
+                            id,
+                            &mut warnings,
+                        );
+                    }
                     Ok(false) => {
                         warnings.push(format!(
                             "organize: update {} {id} did not match any item",
@@ -608,7 +660,13 @@ fn apply_organize_actions(
                 match update_organize_item(&action.kind, keep, &action.content) {
                     Ok(true) => {
                         keep_updated = true;
-                        *updated.entry(action.kind.clone()).or_default() += 1;
+                        count_item_change(
+                            &mut updated,
+                            &mut changed,
+                            &action.kind,
+                            keep,
+                            &mut warnings,
+                        );
                     }
                     Ok(false) => {
                         warnings.push(format!(
@@ -634,7 +692,15 @@ fn apply_organize_actions(
                         // Items absorbed by a merge count only as merged, never
                         // double-counted as deleted: the three counters are disjoint and
                         // sum to the number of items actually changed.
-                        Ok(true) => *merged.entry(action.kind.clone()).or_default() += 1,
+                        Ok(true) => {
+                            count_item_change(
+                                &mut merged,
+                                &mut changed,
+                                &action.kind,
+                                id,
+                                &mut warnings,
+                            );
+                        }
                         Ok(false) => {
                             warnings.push(format!(
                                 "organize: merge {} {id} did not match any item",
@@ -676,7 +742,9 @@ fn update_organize_item(kind: &str, id: &str, content: &str) -> Result<bool> {
     // default bucket and silently overwrite unrelated items there. Merge means
     // consolidating duplicates into the kept item's bucket, so no migration is needed
     // either. ttl is out of organize scope: current_focus / recent_activity keep
-    // their original ttl.
+    // their original ttl. The timed branch uses the active-only variant so an item
+    // expired/archived after the snapshot cannot be revived (see
+    // `update_active_timed_memory`).
     let patch = MemoryTextPatch {
         topic: None,
         text: Some(content.to_string()),
@@ -689,7 +757,7 @@ fn update_organize_item(kind: &str, id: &str, content: &str) -> Result<bool> {
         "work_context" => io::update_work_context(id, patch)
             .map(|mutation| mutation.is_some())
             .context("update work context"),
-        _ => io::update_timed_memory(kind, id, patch)
+        _ => io::update_active_timed_memory(kind, id, patch)
             .map(|item| item.is_some())
             .context("update timed memory"),
     }
@@ -713,79 +781,19 @@ async fn request_llm_organize_actions(
     bridge: &(impl MemoryReviewModel + ?Sized),
     snapshot: &OrganizeSnapshot,
 ) -> Result<Vec<LlmOrganizeAction>> {
-    let client = Client::builder()
-        .timeout(LLM_ORGANIZE_TIMEOUT)
-        .build()
-        .context("build memory organize client")?;
-    let base_url = bridge.memory_base_url();
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let provider = bridge.memory_provider();
-    let preset = bridge.memory_model_preset();
-    let model_name = if provider == "vllm" {
-        // Same as the per-turn review: served-name probing uses the same inference key.
-        crate::features::monitor::probe_vllm_model_info(
-            &base_url,
-            Some(bridge.memory_api_key().as_str()),
-        )
-        .await
-        .0
-        .unwrap_or_else(|| bridge.memory_model())
-    } else {
-        bridge.memory_model()
-    };
-    let user_content = snapshot.user_content();
     let prompt = match memory_output_language_directive(&bridge.memory_locale_tag()) {
         Some(suffix) => format!("{MEMORY_ORGANIZE_PROMPT}{suffix}"),
         None => MEMORY_ORGANIZE_PROMPT.to_string(),
     };
-    // The official Anthropic endpoint uses a native Messages protocol direct call
-    // (same as llm_review's per-turn review).
-    if preset == ModelPreset::Anthropic {
-        let content = crate::core::model_endpoint::post_anthropic_messages(
-            &client,
-            &base_url,
-            &bridge.memory_api_key(),
-            &model_name,
-            &prompt,
-            &user_content,
-            1500,
-        )
-        .await?;
-        return parse_llm_organize_actions(&content);
-    }
-    let mut body = json!({
-        "model": model_name,
-        "messages": [
-            { "role": "system", "content": prompt },
-            { "role": "user", "content": user_content }
-        ],
-        "temperature": 0,
-        "max_tokens": 1500,
-        "stream": false,
-        "response_format": { "type": "json_object" }
-    });
-    apply_memory_review_reasoning_controls(&mut body, preset, &provider, &base_url, &model_name);
-    let resp = client
-        .post(url)
-        .bearer_auth(bridge.memory_api_key())
-        .json(&body)
-        .send()
-        .await
-        .context("post memory organize chat/completions")?
-        .error_for_status()
-        .context("memory organize chat/completions status")?;
-    let value: Value = resp
-        .json()
-        .await
-        .context("parse memory organize response json")?;
-    let content = value
-        .get("choices")
-        .and_then(Value::as_array)
-        .and_then(|choices| choices.first())
-        .and_then(|choice| choice.get("message"))
-        .and_then(|message| message.get("content"))
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+    let content = send_memory_llm_request(
+        bridge,
+        "organize",
+        &prompt,
+        &snapshot.user_content(),
+        1500,
+        LLM_ORGANIZE_TIMEOUT,
+    )
+    .await?;
     parse_llm_organize_actions(&content)
 }
 
@@ -811,10 +819,4 @@ fn parse_llm_organize_actions(content: &str) -> Result<Vec<LlmOrganizeAction>> {
                 .map(|actions| actions.actions)
         }
     }
-}
-
-fn extract_json_object(value: &str) -> Option<&str> {
-    let start = value.find('{')?;
-    let end = value.rfind('}')?;
-    (start <= end).then(|| &value[start..=end])
 }

@@ -45,6 +45,13 @@ pub(super) fn write_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Stored-text caps per store, shared by the write path (which re-cleans every
+/// incoming text) and by organize validation (which must validate against the
+/// same cap so a passing action is not silently truncated when stored).
+pub(super) const PREFERENCE_TEXT_MAX_CHARS: usize = 120;
+pub(super) const WORK_CONTEXT_TEXT_MAX_CHARS: usize = 160;
+pub(super) const TIMED_TEXT_MAX_CHARS: usize = 180;
+
 pub(super) fn turn_capture_store() -> &'static Mutex<BTreeMap<String, TurnCapture>> {
     static STORE: OnceLock<Mutex<BTreeMap<String, TurnCapture>>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(BTreeMap::new()))
@@ -530,7 +537,7 @@ pub(super) fn upsert_work_context_unlocked(
         id: id.clone(),
         kind: "work_context".to_string(),
         topic,
-        text: clean_candidate_sentence(&suggestion.content, 160),
+        text: clean_candidate_sentence(&suggestion.content, WORK_CONTEXT_TEXT_MAX_CHARS),
         source: clean_text(&suggestion.source, 40),
         confidence,
         created_at: now.clone(),
@@ -849,7 +856,7 @@ pub fn update_work_context(
     let text = patch
         .text
         .as_deref()
-        .map(|s| clean_candidate_sentence(s, 160))
+        .map(|s| clean_candidate_sentence(s, WORK_CONTEXT_TEXT_MAX_CHARS))
         .unwrap_or_else(|| existing.text.clone());
     if text.is_empty() || looks_sensitive(&text) {
         return Err(io::Error::new(
@@ -944,7 +951,7 @@ pub(super) fn upsert_timed_memory_unlocked(
         CURRENT_FOCUS_DEFAULT_TTL_DAYS
     };
     let ttl_days = ttl_days.unwrap_or(default_ttl).clamp(1, 90);
-    let text = clean_candidate_sentence(content, 180);
+    let text = clean_candidate_sentence(content, TIMED_TEXT_MAX_CHARS);
     if text.is_empty() || looks_sensitive(&text) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1038,6 +1045,29 @@ pub fn update_timed_memory(
     id: &str,
     patch: MemoryTextPatch,
 ) -> io::Result<Option<TimedMemoryItem>> {
+    update_timed_memory_inner(kind, id, patch, false)
+}
+
+/// Organize-scoped variant of [`update_timed_memory`]: refuses items whose
+/// current status is no longer `active`. The organize pass validates targets
+/// against a snapshot taken before its LLM call, so an item may be expired or
+/// archived by the per-turn review while that call is in flight; honoring the
+/// patch anyway would silently revive it and reset its TTL clock. Returns
+/// `Ok(None)` when the id matches no item or no active item.
+pub fn update_active_timed_memory(
+    kind: &str,
+    id: &str,
+    patch: MemoryTextPatch,
+) -> io::Result<Option<TimedMemoryItem>> {
+    update_timed_memory_inner(kind, id, patch, true)
+}
+
+fn update_timed_memory_inner(
+    kind: &str,
+    id: &str,
+    patch: MemoryTextPatch,
+    require_active: bool,
+) -> io::Result<Option<TimedMemoryItem>> {
     let _guard = write_lock().lock();
     let kind = normalize_timed_memory_kind(kind);
     let id = clean_id(id);
@@ -1049,11 +1079,14 @@ pub fn update_timed_memory(
     let Some(item) = items.iter_mut().find(|item| clean_id(&item.id) == id) else {
         return Ok(None);
     };
+    if require_active && item.status != "active" {
+        return Ok(None);
+    }
     if let Some(topic) = patch.topic.as_deref() {
         item.topic = normalize_timed_memory_topic(&kind, topic);
     }
     if let Some(text) = patch.text.as_deref() {
-        let text = clean_candidate_sentence(text, 180);
+        let text = clean_candidate_sentence(text, TIMED_TEXT_MAX_CHARS);
         if text.is_empty() || looks_sensitive(&text) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -1444,6 +1477,13 @@ pub fn ignore_pending_memory(id: &str) -> io::Result<Option<MemoryWriteEvent>> {
     let Some(item) = items.iter_mut().find(|item| item.id == id) else {
         return Ok(None);
     };
+    // A confirmed item carries the user's decision and must not be demoted to
+    // ignored — not even by an organize delete acting on a snapshot taken
+    // before the user confirmed (mirror of confirm_pending_memory's decided
+    // short-circuit). Already-ignored items stay idempotent.
+    if item.status == PENDING_STATUS_CONFIRMED {
+        return Ok(None);
+    }
     item.status = PENDING_STATUS_IGNORED.to_string();
     item.updated_at = now;
     let event = MemoryWriteEvent {
@@ -1521,8 +1561,9 @@ pub fn refresh_recent_work_expiry() -> io::Result<usize> {
         + refresh_timed_memory_expiry_unlocked("recent_activity", now)?)
 }
 
-/// Refresh expiry archiving for current_focus / recent_activity only. Called by
-/// standalone entry points like organize before a full scan; like
+/// Refresh expiry archiving for current_focus / recent_activity only. Organize
+/// uses `refresh_recent_work_expiry` instead, which already covers these two
+/// stores; this entry stays for callers that only target the timed stores. Like
 /// `refresh_recent_work_expiry`, it briefly holds the write lock on its own.
 pub fn refresh_timed_memory_expiry() -> io::Result<usize> {
     let _guard = write_lock().lock();
@@ -1645,7 +1686,7 @@ pub fn update_preference(
     let text = patch
         .text
         .as_deref()
-        .map(|s| clean_candidate_sentence(s, 120))
+        .map(|s| clean_candidate_sentence(s, PREFERENCE_TEXT_MAX_CHARS))
         .unwrap_or_else(|| existing.text.clone());
     if text.is_empty()
         || looks_sensitive_or_task_like(&text)

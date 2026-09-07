@@ -213,7 +213,14 @@ impl ScheduledChatExecutor {
             Err(error) => TaskExecutionResult {
                 status: TaskStatus::Failed,
                 result_text: None,
-                error: Some(format!("memory organize: {error:#}")),
+                // Same redaction as the chat command layer's organize_memory: the
+                // bridge-resolution and LLM error chains can carry endpoint or
+                // credential-probing details, and run records are persisted and
+                // rendered verbatim in the task-detail UI.
+                error: Some(format!(
+                    "memory organize: {}",
+                    crate::platform::credential_store::redact_secret(&format!("{error:#}"))
+                )),
             },
         }
     }

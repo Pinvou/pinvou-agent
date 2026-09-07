@@ -11,7 +11,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration as StdDuration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use parking_lot::Mutex;
 use reqwest::Client;
@@ -399,56 +399,63 @@ pub async fn review_turn_candidates_with_llm(
     Ok(outcome)
 }
 
+/// CJK "user explicitly asked to remember" phrases (no case to fold). Kept as a
+/// dedicated constant so the narrow write-consequence set and the wide
+/// review-trigger set share one source and cannot drift apart.
+const REMEMBER_REQUEST_PHRASES_CJK: [&str; 7] = [
+    "记住",
+    "记一下",
+    "帮我记",
+    "记录一下",
+    "记着",
+    "记好",
+    "记牢",
+];
+/// ASCII "explicitly asked to remember" phrases; matched against lowercased text.
+const REMEMBER_REQUEST_PHRASES_ASCII: [&str; 3] = ["keep in mind", "don't forget", "do not forget"];
+/// Wider status/context words that only suggest the turn may contain memorable
+/// content: they trigger a per-turn review but carry no relaxed write
+/// consequences.
+const REVIEW_STATUS_HINT_PHRASES_CJK: [&str; 31] = [
+    "以后",
+    "之后",
+    "叫我",
+    "称呼我",
+    "我叫你",
+    "你的名字",
+    "我喜欢",
+    "我不喜欢",
+    "我偏好",
+    "我的习惯",
+    "默认",
+    "优先",
+    "尽量",
+    "别太",
+    "不要太",
+    "长期",
+    "经常",
+    "负责",
+    "参与",
+    "最近在",
+    "最近",
+    "这周",
+    "这周在",
+    "本周",
+    "本周在",
+    "目前在",
+    "主要在",
+    "正在",
+    "最近主要",
+    "后面还",
+    "继续",
+];
+
+fn hits_any(needles: &[&str], haystack: &str) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
 pub(super) fn has_memory_review_signal(user: &str) -> bool {
-    // CJK morphemes have no case, so match against the raw text; ASCII phrases match
-    // after to_lowercase, covering case variants like "Remember" / "REMEMBER".
-    let lower = user.to_lowercase();
-    [
-        "记住",
-        "以后",
-        "之后",
-        "叫我",
-        "称呼我",
-        "我叫你",
-        "你的名字",
-        "我喜欢",
-        "我不喜欢",
-        "我偏好",
-        "我的习惯",
-        "记一下",
-        "帮我记",
-        "记录一下",
-        "记着",
-        "记好",
-        "记牢",
-        "默认",
-        "优先",
-        "尽量",
-        "别太",
-        "不要太",
-        "长期",
-        "经常",
-        "负责",
-        "参与",
-        "最近在",
-        "最近",
-        "这周",
-        "这周在",
-        "本周",
-        "本周在",
-        "目前在",
-        "主要在",
-        "正在",
-        "最近主要",
-        "后面还",
-        "继续",
-    ]
-    .iter()
-    .any(|needle| user.contains(needle))
-        || ["keep in mind", "don't forget", "do not forget"]
-            .iter()
-            .any(|needle| lower.contains(needle))
-        || contains_imperative_remember(&lower)
+    has_explicit_remember_signal(user) || hits_any(&REVIEW_STATUS_HINT_PHRASES_CJK, user)
 }
 
 /// Narrow-scope "user explicitly asked to remember" detection: only when a
@@ -460,21 +467,11 @@ pub(super) fn has_memory_review_signal(user: &str) -> bool {
 /// content, not an explicit record request, so they carry no relaxed write
 /// consequences.
 pub(super) fn has_explicit_remember_signal(user: &str) -> bool {
+    // CJK morphemes have no case, so match against the raw text; ASCII phrases match
+    // after to_lowercase, covering case variants like "Remember" / "REMEMBER".
     let lower = user.to_lowercase();
-    [
-        "记住",
-        "记一下",
-        "帮我记",
-        "记录一下",
-        "记着",
-        "记好",
-        "记牢",
-    ]
-    .iter()
-    .any(|needle| user.contains(needle))
-        || ["keep in mind", "don't forget", "do not forget"]
-            .iter()
-            .any(|needle| lower.contains(needle))
+    hits_any(&REMEMBER_REQUEST_PHRASES_CJK, user)
+        || hits_any(&REMEMBER_REQUEST_PHRASES_ASCII, &lower)
         || contains_imperative_remember(&lower)
 }
 
@@ -555,18 +552,29 @@ pub(super) fn assistant_suggests_delivery_complete(user: &str, assistant: &str) 
     .any(|needle| assistant.contains(needle))
 }
 
-async fn request_llm_memory_review(
+/// Shared transport for the two memory LLM calls (the per-turn review and the
+/// organize pass): client build, served-name resolution (vLLM probing), the
+/// native Anthropic Messages call for the official preset, otherwise an
+/// OpenAI-style chat/completions POST with `json_object` and the shared
+/// reasoning-dialect controls. Returns the assistant message content.
+///
+/// `label` ("review" / "organize") only feeds the error-context strings. A
+/// `finish_reason: "length"` response is reported as truncation instead of
+/// surfacing downstream as a confusing JSON parse error. The Anthropic branch
+/// cannot do this: `post_anthropic_messages` does not expose stop_reason, so a
+/// truncated response there still fails as a parse error.
+pub(super) async fn send_memory_llm_request(
     bridge: &(impl MemoryReviewModel + ?Sized),
-    user: &str,
-    assistant: &str,
-    trigger: &str,
-    explicit_remember: bool,
-    delivery_summary: &[String],
-) -> Result<LlmMemoryReview> {
+    label: &str,
+    prompt: &str,
+    user_content: &str,
+    max_tokens: u32,
+    timeout: StdDuration,
+) -> Result<String> {
     let client = Client::builder()
-        .timeout(LLM_REVIEW_TIMEOUT)
+        .timeout(timeout)
         .build()
-        .context("build memory review client")?;
+        .with_context(|| format!("build memory {label} client"))?;
     let base_url = bridge.memory_base_url();
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let provider = bridge.memory_provider();
@@ -587,6 +595,77 @@ async fn request_llm_memory_review(
     } else {
         bridge.memory_model()
     };
+    // The official Anthropic endpoint uses a native Messages protocol direct
+    // call (x-api-key auth, standalone system field, no response_format).
+    if preset == ModelPreset::Anthropic {
+        return crate::core::model_endpoint::post_anthropic_messages(
+            &client,
+            &base_url,
+            &bridge.memory_api_key(),
+            &model_name,
+            prompt,
+            user_content,
+            max_tokens,
+        )
+        .await;
+    }
+    let mut body = json!({
+        "model": model_name,
+        "messages": [
+            { "role": "system", "content": prompt },
+            { "role": "user", "content": user_content }
+        ],
+        "temperature": 0,
+        "max_tokens": max_tokens,
+        "stream": false,
+        "response_format": { "type": "json_object" }
+    });
+    apply_memory_review_reasoning_controls(&mut body, preset, &provider, &base_url, &model_name);
+    let resp = client
+        .post(url)
+        .bearer_auth(bridge.memory_api_key())
+        .json(&body)
+        .send()
+        .await
+        .with_context(|| format!("post memory {label} chat/completions"))?
+        .error_for_status()
+        .with_context(|| format!("memory {label} chat/completions status"))?;
+    let value: Value = resp
+        .json()
+        .await
+        .with_context(|| format!("parse memory {label} response json"))?;
+    if value
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("finish_reason"))
+        .and_then(Value::as_str)
+        == Some("length")
+    {
+        return Err(anyhow!(
+            "memory {label} response was truncated (finish_reason=length); the model hit \
+             max_tokens before producing complete JSON"
+        ));
+    }
+    Ok(value
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string())
+}
+
+async fn request_llm_memory_review(
+    bridge: &(impl MemoryReviewModel + ?Sized),
+    user: &str,
+    assistant: &str,
+    trigger: &str,
+    explicit_remember: bool,
+    delivery_summary: &[String],
+) -> Result<LlmMemoryReview> {
     let current_memory = super::render::render_memory_block()
         .map(|(block, _)| block)
         .unwrap_or_default();
@@ -640,55 +719,16 @@ async fn request_llm_memory_review(
     if let Some(suffix) = memory_output_language_directive(&bridge.memory_locale_tag()) {
         prompt.push_str(&suffix);
     }
-    // Anthropic 官方端点是 Messages 协议（x-api-key 鉴权，system 独立字段，
-    // 无 response_format），走原生直连；其余 preset 仍走 OpenAI chat/completions。
-    if preset == ModelPreset::Anthropic {
-        let content = crate::core::model_endpoint::post_anthropic_messages(
-            &client,
-            &base_url,
-            &bridge.memory_api_key(),
-            &model_name,
-            &prompt,
-            &user_content,
-            900,
-        )
-        .await?;
-        return parse_llm_memory_review(&content);
-    }
-    let mut body = json!({
-        "model": model_name,
-        "messages": [
-            { "role": "system", "content": prompt },
-            { "role": "user", "content": user_content }
-        ],
-        "temperature": 0,
-        "max_tokens": 900,
-        "stream": false,
-        "response_format": { "type": "json_object" }
-    });
-    apply_memory_review_reasoning_controls(&mut body, preset, &provider, &base_url, &model_name);
-    let resp = client
-        .post(url)
-        .bearer_auth(bridge.memory_api_key())
-        .json(&body)
-        .send()
-        .await
-        .context("post memory review chat/completions")?
-        .error_for_status()
-        .context("memory review chat/completions status")?;
-    let value: Value = resp
-        .json()
-        .await
-        .context("parse memory review response json")?;
-    let content = value
-        .get("choices")
-        .and_then(Value::as_array)
-        .and_then(|choices| choices.first())
-        .and_then(|choice| choice.get("message"))
-        .and_then(|message| message.get("content"))
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    parse_llm_memory_review(content)
+    let content = send_memory_llm_request(
+        bridge,
+        "review",
+        &prompt,
+        &user_content,
+        900,
+        LLM_REVIEW_TIMEOUT,
+    )
+    .await?;
+    parse_llm_memory_review(&content)
 }
 
 /// Apply a parsed review result. `explicit_remember` means this turn hit an explicit
@@ -920,7 +960,10 @@ pub(super) fn parse_llm_memory_review(content: &str) -> Result<LlmMemoryReview> 
     }
 }
 
-fn extract_json_object(value: &str) -> Option<&str> {
+/// Extract the JSON object between the first `{` and the last `}` of a response
+/// that wrapped its JSON in prose or code fences. Shared by both memory LLM
+/// parsers (review / organize).
+pub(super) fn extract_json_object(value: &str) -> Option<&str> {
     let start = value.find('{')?;
     let end = value.rfind('}')?;
     (start <= end).then(|| &value[start..=end])

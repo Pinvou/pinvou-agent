@@ -13,10 +13,11 @@ use crate::platform::paths;
 use crate::platform::prefs::ModelPreset;
 
 use super::io::{
-    commit_topic_migration_unlocked_with, compact_timed_memory_store, current_focus_path,
-    enqueue_memory_candidate, is_delivery_tool, load_preferences, load_profile,
-    pending_item_from_suggestion, reconcile_topic_migration_journals_unlocked,
-    summarize_tool_start, topic_migration_journal_path, upsert_timed_memory_unlocked,
+    archive_timed_memory_unlocked, commit_topic_migration_unlocked_with,
+    compact_timed_memory_store, current_focus_path, enqueue_memory_candidate, is_delivery_tool,
+    load_preferences, load_profile, pending_item_from_suggestion,
+    reconcile_topic_migration_journals_unlocked, summarize_tool_start,
+    topic_migration_journal_path, upsert_timed_memory_unlocked, write_lock,
     write_never_memory_unlocked, write_pending_memory_unlocked, write_recent_work_unlocked,
     write_timed_memory_file,
 };
@@ -2641,6 +2642,202 @@ async fn organize_scans_only_undecided_pending_candidates() {
         report.warnings.is_empty(),
         "unexpected warnings: {:?}",
         report.warnings
+    );
+}
+
+// Overlapping actions from the model (update, then a merge whose keep is the
+// already-updated item, then an explicit delete of the already-absorbed source)
+// must not break the report invariant: each item is counted once per run, so
+// the deleted/updated/merged sums stay equal to the number of items actually
+// changed (see MemoryOrganizeReport).
+#[tokio::test]
+async fn organize_overlapping_actions_count_each_item_once() {
+    let _home = IsolatedPinvouHome::new("organize-overlap-counts");
+    enable_memory_for_tests();
+    let now = Utc::now();
+    let hit = now.to_rfc3339();
+    let focus_a = TimedMemoryItem {
+        id: "focus_overlap_a".to_string(),
+        kind: "current_focus".to_string(),
+        topic: "current_work".to_string(),
+        text: "推进新版控制台的迁移方案".to_string(),
+        source: "test".to_string(),
+        confidence: 0.9,
+        created_at: hit.clone(),
+        updated_at: hit.clone(),
+        last_hit: hit.clone(),
+        ttl_days: 30,
+        status: "active".to_string(),
+    };
+    let focus_b = TimedMemoryItem {
+        id: "focus_overlap_b".to_string(),
+        kind: "current_focus".to_string(),
+        topic: "meeting_notes".to_string(),
+        text: "季度评审定在每月第二周".to_string(),
+        source: "test".to_string(),
+        confidence: 0.9,
+        created_at: hit.clone(),
+        updated_at: hit.clone(),
+        last_hit: hit.clone(),
+        ttl_days: 30,
+        status: "active".to_string(),
+    };
+    write_timed_memory_file(&current_focus_path(), &[focus_a, focus_b], "current_focus").unwrap();
+    let actions = json!({
+        "actions": [
+            {
+                "op": "update",
+                "kind": "current_focus",
+                "ids": ["focus_overlap_a"],
+                "content": "正在推进新版控制台的迁移方案",
+                "reason": "改写过时表述"
+            },
+            {
+                "op": "merge",
+                "kind": "current_focus",
+                "ids": ["focus_overlap_a", "focus_overlap_b"],
+                "content": "正在推进新版控制台的迁移方案",
+                "reason": "两条重复条目合并为一条"
+            },
+            {
+                "op": "delete",
+                "kind": "current_focus",
+                "ids": ["focus_overlap_b"],
+                "reason": "已被合并覆盖"
+            }
+        ]
+    });
+    let bridge = FakeOrganizeModel {
+        base_url: spawn_chat_completions_stub(actions.to_string()),
+    };
+
+    let report = organize_memory_with_llm(&bridge, None).await.unwrap();
+
+    // focus_overlap_a is counted once as updated (the merge-keep rewrite is a
+    // warning, not a second count); focus_overlap_b is counted once as merged
+    // (the later explicit delete finds no item left to remove).
+    assert_eq!(report.updated["current_focus"], 1);
+    assert_eq!(report.merged["current_focus"], 1);
+    assert!(!report.deleted.contains_key("current_focus"));
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("not counted again")),
+        "overlapping actions must be reported: {:?}",
+        report.warnings
+    );
+    // Store state is the merged outcome: one item holding the merged content.
+    let items = load_current_focus().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].text, "正在推进新版控制台的迁移方案");
+}
+
+// An item that is active at snapshot time but expired/archived by the per-turn
+// review while the organize LLM call is in flight must not be updated: the
+// authoritative status check lives in the io layer under the write lock, so the
+// stale snapshot cannot revive the item or reset its TTL clock.
+#[tokio::test]
+async fn organize_update_skips_item_archived_during_the_llm_call() {
+    let _home = IsolatedPinvouHome::new("organize-race-archive");
+    enable_memory_for_tests();
+    let now = Utc::now();
+    let hit = now.to_rfc3339();
+    let focus = TimedMemoryItem {
+        id: "focus_race".to_string(),
+        kind: "current_focus".to_string(),
+        topic: "current_work".to_string(),
+        text: "推进新版控制台的迁移方案".to_string(),
+        source: "test".to_string(),
+        confidence: 0.9,
+        created_at: hit.clone(),
+        updated_at: hit.clone(),
+        last_hit: hit.clone(),
+        ttl_days: 30,
+        status: "active".to_string(),
+    };
+    write_timed_memory_file(&current_focus_path(), &[focus], "current_focus").unwrap();
+    let actions = json!({
+        "actions": [
+            {
+                "op": "update",
+                "kind": "current_focus",
+                "ids": ["focus_race"],
+                "content": "正在推进新版控制台的迁移方案",
+                "reason": "改写过时表述"
+            }
+        ]
+    });
+    // The hook runs after the snapshot is loaded, while the LLM call is in
+    // flight: archive the item the same way the expiry refresh does (under the
+    // io write lock).
+    let bridge = FakeOrganizeModel {
+        base_url: spawn_chat_completions_stub_with_hook(
+            actions.to_string(),
+            Some(Box::new(move |_body: &str| {
+                let _guard = write_lock().lock();
+                archive_timed_memory_unlocked("current_focus", "focus_race").unwrap();
+            })),
+        ),
+    };
+
+    let report = organize_memory_with_llm(&bridge, None).await.unwrap();
+
+    assert!(
+        report.updated.get("current_focus").is_none(),
+        "an item archived during the LLM call must not be updated"
+    );
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("did not match any item")),
+        "unexpected warnings: {:?}",
+        report.warnings
+    );
+    // The entry stays archived: status is not revived and last_hit (the TTL
+    // clock) is not refreshed.
+    let items = load_current_focus().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].status, "archived");
+    assert_eq!(items[0].text, "推进新版控制台的迁移方案");
+    assert_eq!(items[0].last_hit, hit);
+}
+
+// A confirmed candidate carries the user's decision: a later ignore (e.g. an
+// organize delete acting on a snapshot taken before the confirmation) must not
+// demote it to ignored.
+#[test]
+fn ignore_pending_memory_never_clobbers_a_confirmed_item() {
+    let _home = IsolatedPinvouHome::new("pending-ignore-vs-confirm");
+    enable_memory_for_tests();
+    let candidate = enqueue_memory_candidate(MemorySuggestion {
+        kind: "preference".to_string(),
+        topic: "answer_style".to_string(),
+        content: "回答保持简洁分点".to_string(),
+        source: "test".to_string(),
+    })
+    .unwrap();
+    confirm_pending_memory(&candidate.id).unwrap();
+    let status = |items: &Vec<PendingMemoryItem>| {
+        items
+            .iter()
+            .find(|item| item.id == candidate.id)
+            .unwrap()
+            .status
+            .clone()
+    };
+    assert_eq!(
+        status(&load_pending_memory().unwrap()),
+        PENDING_STATUS_CONFIRMED
+    );
+
+    assert!(ignore_pending_memory(&candidate.id).unwrap().is_none());
+
+    assert_eq!(
+        status(&load_pending_memory().unwrap()),
+        PENDING_STATUS_CONFIRMED,
+        "confirm must survive a late ignore"
     );
 }
 

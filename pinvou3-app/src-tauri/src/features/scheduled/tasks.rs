@@ -403,7 +403,14 @@ impl ScheduledTaskState {
         }
         if let Some(kind) = requested_kind {
             if let Err(error) = self.task_kinds.set_kind(&created.id, Some(kind)) {
-                let _ = manager.delete_automation(&created.id);
+                // Roll back the just-created automation so no kind-less task lingers;
+                // a failed rollback must stay diagnosable in the logs.
+                if let Err(delete_error) = manager.delete_automation(&created.id) {
+                    log::warn!(
+                        "Failed to roll back scheduled task {} after its kind could not be saved: {delete_error:#}",
+                        created.id
+                    );
+                }
                 return Err(format!("Failed to save scheduled task kind: {error:#}"));
             }
         }
