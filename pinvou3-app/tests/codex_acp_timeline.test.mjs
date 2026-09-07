@@ -646,16 +646,6 @@ try {
     path.join(root, 'src', 'features', 'codex', 'runtimeNoticeState.js'),
     'utf8',
   );
-  assert.ok(codexView.includes('copy.permissionRequest(agentName)')
-    && codexView.includes('tool.title || copy.protectedOperation')
-    && codexView.includes('label={copy.command}')
-    && codexView.includes('copy.operationArguments')
-    && codexView.includes('copy.allowOnce')
-    && codexView.includes('copy.allowSession')
-    && codexView.includes('copy.reject')
-    && codexView.includes('copy.handled')
-    && codexView.includes('copy.expired'),
-  'the legacy ACP permission card must use the shared zh/en/ja conversation copy');
   const codexWorkspace = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexWorkspacePanel.jsx'), 'utf8');
   const runtimeStatus = readFileSync(path.join(root, 'src', 'features', 'codex', 'runtimeStatus.js'), 'utf8');
   const resizableSidePanel = readFileSync(path.join(root, 'src', 'components', 'layout', 'ResizableSidePanel.jsx'), 'utf8');
@@ -667,9 +657,17 @@ try {
   const conversationView = readFileSync(path.join(root, 'src', 'features', 'conversation', 'ConversationTimeline.jsx'), 'utf8');
   const baseStyles = readFileSync(path.join(root, 'src', 'styles', 'base.css'), 'utf8');
   const boundedPermissionOptionClass = 'max-w-full min-w-0 whitespace-normal break-all';
-  assert.ok(codexView.includes(boundedPermissionOptionClass)
-    && conversationView.includes(boundedPermissionOptionClass),
-  'long ACP permission option labels must wrap inside both unified and legacy permission cards');
+  // The permission-card option wrapping contract is now carried solely by the shared timeline implementation.
+  assert.ok(conversationView.includes(boundedPermissionOptionClass),
+  'long ACP permission option labels must wrap inside the shared permission card');
+
+  // The permission card's only implementation is ConversationTimeline (the legacy codex
+  // PermissionCard was removed along with the old timeline); the i18n copy contract is pinned to the shared implementation.
+  assert.ok(conversationView.includes('c.permissionRequest(')
+    && conversationView.includes('c.protectedOperation')
+    && conversationView.includes('c.allowOnce')
+    && conversationView.includes('c.handled'),
+  'the shared ACP permission card must use the zh/en/ja conversation copy');
   assert.ok(conversationView.includes('function runningToolLabel(item, copy)')
     && conversationView.includes("return copy.shellCommand;")
     && !conversationView.includes('runningItem.tool.name || runningItem.tool.title')
@@ -677,11 +675,10 @@ try {
     && conversationView.includes('min-w-0 flex-1 truncate'),
   'running tool groups must use bounded semantic labels instead of rendering raw command titles');
   const boundedLongTextClass = 'whitespace-pre-wrap break-words [overflow-wrap:anywhere]';
-  assert.ok(codexView.includes(boundedLongTextClass)
-    && conversationView.includes(boundedLongTextClass)
-    && codexView.includes('max-h-80 max-w-full overflow-auto whitespace-pre')
+  // The long-text bounding contract is now carried solely by the shared timeline implementation (the legacy codex transcript component was removed).
+  assert.ok(conversationView.includes(boundedLongTextClass)
     && conversationView.includes('max-h-80 max-w-full overflow-auto whitespace-pre'),
-  'reasoning, plan, permission, and terminal content must stay within both timeline implementations');
+  'reasoning, plan, permission, and terminal content must stay within the shared timeline');
   assert.ok(codexView.includes("open_codex_workspace_resource")
     && conversationView.includes('onOpenResource={onOpenResource}')
     && codexWorkspace.includes("const loadedDirectories = ['', ...expanded]")
@@ -796,8 +793,9 @@ try {
   // 契约（2026-08-12 更新）：Design 入口必须回到 ChatView design 模式；从 code
   // 页切回时保留原工作会话（不强制 createNewSession，否则新建 plain 会话把
   // 用户切过的 Plan 顶成 Yolo），仅草稿态才新建会话。
+  // The design and work branches were merged into a single parameterized path (behavior unchanged); the contract asserts the merged shape.
   assert.match(main,
-    /else if \(mode === 'design'\) \{[\s\S]*?savePinvouModeState\(\{ mode: 'design' \}[^;]*;[\s\S]*?createNewSession\(\);[\s\S]*?setCurrentView\('chat'\)/,
+    /else if \(mode === 'design' \|\| mode === 'work'\) \{[\s\S]*?savePinvouModeState\(\{ mode \}[^;]*;[\s\S]*?createNewSession\(\);[\s\S]*?setCurrentView\('chat'\)/,
     'selecting Design from the shared mode entry must return to ChatView design mode');
   assert.ok(
     main.includes("if (bridge.available && !bridge.activeSessionId) bridge.sessions.createNewSession();"),
@@ -819,8 +817,13 @@ try {
     && chatView.includes('<PinvouLogo className="h-5 w-5" title={chatViewCopy.agentName}')
     && codexView.includes('<AcpAgentLogo agentId={activeAgentId} className="h-5 w-5"'),
   'assistant avatars must use the Pinvou and selected ACP Agent identity marks');
-  assert.ok(conversationView.includes('思考中'), 'running reasoning must expose a timer label');
-  assert.ok(conversationView.includes('执行步骤'), 'tool items must use a compact presentation group');
+  // Copy fallback has been consolidated into dict.zh.uiConversation (ConversationTimeline references
+  // it via copy keys); assert that the key is consumed in the timeline and the zh entry exists.
+  const conversationZhDict = readFileSync(path.join(root, 'src', 'shared', 'i18n', 'zh.js'), 'utf8');
+  assert.ok(conversationView.includes('c.thinking') && conversationZhDict.includes("thinking:'思考中'"),
+    'running reasoning must expose a timer label');
+  assert.ok(conversationView.includes('c.executionSteps') && conversationZhDict.includes("executionSteps:'执行步骤'"),
+    'tool items must use a compact presentation group');
   assert.ok(!codexView.includes("useState(state === 'failed')"),
     'failed operation details must stay collapsed until the user opens them');
   assert.ok(!codexView.includes('useState(running || failed)'),

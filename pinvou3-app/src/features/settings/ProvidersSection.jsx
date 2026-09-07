@@ -46,6 +46,30 @@ function KeyDot({ hasCredential, copy }) {
   );
 }
 
+// Confirm card dialog (backdrop click closes + card stopPropagation + right-aligned pill button footer). Two
+// isomorphic sites: provider delete / CLI uninstall; the uninstall "also clean up config" checkbox comes in via
+// children. The confirm callback keeps the caller's semantics: remove/uninstall setXxx(null) before awaiting
+// (confirm closes the dialog, failure lands in the red error area); this component knows nothing of close timing.
+function CardConfirm({ title, desc, children, confirmLabel, cancelLabel, confirmTestId, confirmDisabled, onConfirm, onCancel, width }) {
+  return (
+    // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the cancel button inside the dialog
+    // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
+    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200" onClick={onCancel}>
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
+      <div onClick={event => event.stopPropagation()} className={`${width} rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}>
+        <h3 className="text-[16px] font-semibold">{title}</h3>
+        <p className="mt-2 text-[13px] leading-relaxed opacity-75">{desc}</p>
+        {children || null}
+        <div className="mt-6 flex justify-end gap-2">
+          <button type="button" onClick={onCancel} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{cancelLabel}</button>
+          <button type="button" data-testid={confirmTestId} onClick={onConfirm} disabled={confirmDisabled} className="h-9 px-4 rounded-full bg-red-500 text-white text-[13px] font-semibold disabled:opacity-50">{confirmLabel}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // 模块级缓存：设置页关闭导致组件卸载后仍存活，重开时同步水合（无加载闪烁），
 // 随后后台静默刷新。键 = agent id；仅在本次 app 运行期内有效。
 const PROVIDER_SECTION_CACHE = new Map();
@@ -941,53 +965,46 @@ export function ProvidersSection({ t }) {
 
       {/* 删除确认 */}
       {deleteConfirm && (
-        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the cancel button inside the dialog
-        // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
-        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200" onClick={() => setDeleteConfirm(null)}>
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
-          <div onClick={event => event.stopPropagation()} className={`w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}>
-            <h3 className="text-[16px] font-semibold">{copy.deleteTitle}</h3>
-            <p className="mt-2 text-[13px] leading-relaxed opacity-75">{copy.deleteDesc(deleteConfirm.name)}</p>
-            <div className="mt-6 flex justify-end gap-2">
-              <button type="button" onClick={() => setDeleteConfirm(null)} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{copy.cancel}</button>
-              <button type="button" data-testid="acp-provider-delete-confirm" onClick={remove} disabled={busyOnAgent} className="h-9 px-4 rounded-full bg-red-500 text-white text-[13px] font-semibold disabled:opacity-50">{copy.deleteConfirm}</button>
-            </div>
-          </div>
-        </div>
+        <CardConfirm
+          title={copy.deleteTitle}
+          desc={copy.deleteDesc(deleteConfirm.name)}
+          confirmLabel={copy.deleteConfirm}
+          cancelLabel={copy.cancel}
+          confirmTestId="acp-provider-delete-confirm"
+          confirmDisabled={busyOnAgent}
+          onConfirm={remove}
+          onCancel={() => setDeleteConfirm(null)}
+          width="w-[min(400px,calc(100vw-24px))]"
+        />
       )}
 
       {/* 卸载确认 */}
       {uninstallConfirm && (
-        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the cancel button inside the dialog
-        // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
-        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200" onClick={() => setUninstallConfirm(null)}>
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
-          <div onClick={event => event.stopPropagation()} className={`w-[min(420px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}>
-            <h3 className="text-[16px] font-semibold">{copy.uninstallTitle.replace('{agent}', () => copy[`agent${activeAgent[0].toUpperCase()}${activeAgent.slice(1)}`])}</h3>
-            <p className="mt-2 text-[13px] leading-relaxed opacity-75">{copy.uninstallDesc}</p>
-            <label className="mt-4 flex items-start gap-2 text-[12px] opacity-80 cursor-pointer">
-              <input
-                data-testid="acp-uninstall-cleanup"
-                type="checkbox"
-                checked={uninstallConfirm.cleanup}
-                onChange={event => setUninstallConfirm(current => ({ ...current, cleanup: event.target.checked }))}
-                className="mt-0.5"
-              />
-              <span>
-                {copy.uninstallCleanup}
-                <span className="block text-[11px] opacity-60">{copy.uninstallCleanupHint}</span>
-              </span>
-            </label>
-            <div className="mt-6 flex justify-end gap-2">
-              <button type="button" onClick={() => setUninstallConfirm(null)} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{copy.cancel}</button>
-              <button type="button" data-testid="acp-uninstall-confirm" onClick={uninstall} disabled={busyOnAgent} className="h-9 px-4 rounded-full bg-red-500 text-white text-[13px] font-semibold disabled:opacity-50">
-                {busy === 'uninstall:' + activeAgent ? copy.uninstallBusy : copy.uninstall}
-              </button>
-            </div>
-          </div>
-        </div>
+        <CardConfirm
+          title={copy.uninstallTitle.replace('{agent}', () => copy[`agent${activeAgent[0].toUpperCase()}${activeAgent.slice(1)}`])}
+          desc={copy.uninstallDesc}
+          confirmLabel={busy === 'uninstall:' + activeAgent ? copy.uninstallBusy : copy.uninstall}
+          cancelLabel={copy.cancel}
+          confirmTestId="acp-uninstall-confirm"
+          confirmDisabled={busyOnAgent}
+          onConfirm={uninstall}
+          onCancel={() => setUninstallConfirm(null)}
+          width="w-[min(420px,calc(100vw-24px))]"
+        >
+          <label className="mt-4 flex items-start gap-2 text-[12px] opacity-80 cursor-pointer">
+            <input
+              data-testid="acp-uninstall-cleanup"
+              type="checkbox"
+              checked={uninstallConfirm.cleanup}
+              onChange={event => setUninstallConfirm(current => ({ ...current, cleanup: event.target.checked }))}
+              className="mt-0.5"
+            />
+            <span>
+              {copy.uninstallCleanup}
+              <span className="block text-[11px] opacity-60">{copy.uninstallCleanupHint}</span>
+            </span>
+          </label>
+        </CardConfirm>
       )}
 
       {/* 导出（含明文 key 警告） */}

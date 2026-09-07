@@ -163,7 +163,7 @@ assert.match(viewSource, /const responding = Boolean\(activeId && respondingSess
   'response controls must only be disabled for their owning Session');
 assert.equal(
   viewSource.match(/onOpenResource=\{isWeb \? undefined : openWorkspaceResource\}/g)?.length,
-  3,
+  2,
   'Web ACP timelines must not receive the native-only workspace opener',
 );
 
