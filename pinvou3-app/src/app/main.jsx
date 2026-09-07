@@ -24,6 +24,7 @@ import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared
 import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfirm } from '../features/projects/projectGrouping.js';
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
 import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
+import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
@@ -1609,6 +1610,7 @@ function workspaceDisplayName(path) {
       // 拖拽高亮的唯一所有者:源行 dragend 无条件清除,webview 丢 dragleave
       // 事件时高亮也不会卡死(评审 #450 finding 5)。
       const [dropTargetGroupKey, setDropTargetGroupKey] = useState(null);
+      const [rebindDraft, setRebindDraft] = useState(null);
       // 桥完成首次状态同步(bs 就绪)后拉一次项目快照;后续变更由
       // projects:list_changed 事件驱动桥内刷新(bridge/projects.js)。
       const projectsBootstrapReady = !!bs;
@@ -2415,6 +2417,42 @@ function workspaceDisplayName(path) {
         // 内部同样有 busy 守卫),不额外打断。
         handleMoveSessionToProject(sessionId, projectId, false);
       };
+      // 目录重绑定(修断链):失效 root 的项目头上点"重新绑定" → 系统选目录
+      // → 确认弹窗。两阶段确认:首调不带 confirmExisting,后端发现旧目录
+      // 仍在时拒绝,弹窗升级为强警告后由用户再次确认。
+      const startRebindWorkspace = async (fromPath, sessionCount) => {
+        if (!bridge.files || !bridge.files.pickFolders || projectOpsBusy) return;
+        try {
+          const picked = await bridge.files.pickFolders();
+          const to = Array.isArray(picked) ? picked[0] : picked;
+          if (!to) return;
+          setRebindDraft({ from: fromPath, to, sessionCount, warnExisting: false });
+        } catch (error) {
+          console.warn('pick rebind folder failed', error);
+        }
+      };
+      const confirmRebindWorkspace = async (confirmExisting) => {
+        if (!bridge.projects || !rebindDraft || projectOpsBusy) return;
+        setProjectOpsBusy(true);
+        try {
+          const report = await bridge.projects.rebindWorkspaceRoot(
+            rebindDraft.from, rebindDraft.to, confirmExisting);
+          setRebindDraft(null);
+          const count = (report && report.rebound_session_ids) ? report.rebound_session_ids.length : 0;
+          setSettingsToast(t.uiProjects.rebindSuccess(count));
+          await refreshCodexSessions().catch(() => {});
+        } catch (error) {
+          const message = String(error);
+          if (message.includes('original folder still exists')) {
+            setRebindDraft(prev => prev && { ...prev, warnExisting: true });
+          } else {
+            console.warn('rebind workspace failed', error);
+            setSettingsToast(t.sessionBatchFailed(1));
+          }
+        } finally {
+          setProjectOpsBusy(false);
+        }
+      };
 
       function sessionRowsForIds(ids) {
         const byId = new Map(allSidebarTasks.map(item => [item.id, item]));
@@ -2863,6 +2901,19 @@ function workspaceDisplayName(path) {
             document.body
           )}
 
+          {rebindDraft && (
+            <RebindFolderDialog
+              from={rebindDraft.from}
+              to={rebindDraft.to}
+              sessionCount={rebindDraft.sessionCount}
+              warnExisting={rebindDraft.warnExisting}
+              t={t}
+              busy={projectOpsBusy}
+              onCancel={() => setRebindDraft(null)}
+              onConfirm={confirmRebindWorkspace}
+            />
+          )}
+
           {moveToProjectSession && (
             <MoveToProjectDialog
               session={moveToProjectSession}
@@ -3267,6 +3318,14 @@ function workspaceDisplayName(path) {
                                   onDropSession={bridge.projects && group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
                                   dropActive={dropTargetGroupKey === group.key}
                                   onDropActive={(active) => setDropTargetGroupKey(active ? group.key : null)}
+                                  rootsUnavailable={group.kind === 'project'
+                                    && Array.isArray(group.roots) && group.roots.length > 0
+                                    && group.roots.every(root => !(root && typeof root === 'object' ? root.available : root))}
+                                  onRebind={group.kind === 'project' && group.roots && group.roots.length
+                                    ? (() => startRebindWorkspace(
+                                        String(typeof group.roots[0] === 'object' ? group.roots[0].path : group.roots[0]),
+                                        group.rows.length))
+                                    : undefined}
                                 />
                                 {isOpen && (
                                   <div className="mt-1 space-y-0.5">

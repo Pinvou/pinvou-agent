@@ -333,7 +333,8 @@ command_protocol!(
         "create_project",
         "update_project",
         "delete_project",
-        "move_session_to_project"
+        "move_session_to_project",
+        "rebind_workspace_root"
     ]
 );
 command_protocol!(

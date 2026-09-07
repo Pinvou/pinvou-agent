@@ -188,3 +188,112 @@ pub async fn move_session_to_project(
     emit_project_event(&app, "projects:list_changed", "moved");
     Ok(outcome)
 }
+
+/// rebind_workspace_root 的结果汇报:逐会话结果 + 受影响项目。重绑定幂等,
+/// 失败项可直接重试(已成功的部分重跑为空操作)。
+#[derive(Debug, Clone, Serialize)]
+pub struct RebindWorkspaceReport {
+    pub rebound_session_ids: Vec<String>,
+    pub failed_session_ids: Vec<String>,
+    pub affected_project_ids: Vec<String>,
+}
+
+/// 目录重绑定(修断链):项目文件夹被物理移走/删除后,把一切以 `from` 为
+/// 前缀的绑定——项目 root、会话工作区(索引/sidecar/元数据三处)、归属
+/// 派生——整体平移到 `to`。与"移动归属"不同,这是物理层写操作,故有栅栏:
+/// - `to` 必须存在且是目录(经 validate_codex_project_workspace 校验);
+/// - 旧目录 `from` 仍存在时须 `confirm_existing = true`(前端已强确认);
+/// - 受影响会话任一有活跃回合(ACP prompt 或原生 Engine turn)即整体拒绝;
+/// - 平移后项目 root 不得与其它项目重叠,违者整体报错回滚。
+/// transcript 里的历史路径不改写;workspace baseline 逐会话重采集(失败仅
+/// 记日志,baseline 可再派生)。
+#[tauri::command]
+pub async fn rebind_workspace_root(
+    from: PathBuf,
+    to: PathBuf,
+    confirm_existing: Option<bool>,
+    app: AppHandle,
+    store: State<'_, ProjectStore>,
+    sessions: State<'_, SessionStore>,
+    acp_pool: State<'_, AcpPool>,
+    engines: State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<RebindWorkspaceReport, String> {
+    let to_key = crate::features::codex_acp::validate_codex_project_workspace(&to)
+        .map_err(|e| format!("rebind_workspace_root: 目标目录不可用: {e:#}"))?;
+    if from == to_key {
+        return Ok(RebindWorkspaceReport {
+            rebound_session_ids: Vec::new(),
+            failed_session_ids: Vec::new(),
+            affected_project_ids: Vec::new(),
+        });
+    }
+    // 旧目录仍在磁盘上 = 非断链场景,要求显式强确认。
+    if from.is_dir() && !confirm_existing.unwrap_or(false) {
+        return Err(
+            "rebind_workspace_root: 原目录仍存在，需在界面确认后重试 (original folder still exists)"
+                .to_string(),
+        );
+    }
+
+    // 活跃回合栅栏:受影响会话任一在跑 prompt/turn 就拒绝,等空闲后重试。
+    let affected = acp_pool.agents().sessions_under_workspace(&from);
+    let mut busy_ids = Vec::new();
+    for (session_id, _) in &affected {
+        if acp_pool.is_turn_active(session_id).await || engines.is_turn_active(session_id) {
+            busy_ids.push(session_id.clone());
+        }
+    }
+    if !busy_ids.is_empty() {
+        return Err(format!(
+            "rebind_workspace_root: 会话正在运行，稍后重试: {}",
+            busy_ids.join(", ")
+        ));
+    }
+
+    // 顺序:项目 root → 会话绑定(索引+sidecar) → 元数据 → baseline。
+    // 每步幂等,失败重试只补未完成部分。
+    let affected_project_ids = store
+        .rebind_roots(&from, &to_key)
+        .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
+    let rebound = acp_pool
+        .agents()
+        .rebind_workspace_prefix(&from, &to_key)
+        .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
+    let mut rebound_session_ids = Vec::new();
+    let mut failed_session_ids = Vec::new();
+    for (session_id, new_path) in &rebound {
+        // 孤儿 sidecar(会话 JSON 已不存在)没有元数据可写,按成功计。
+        if sessions.load(session_id).is_err() {
+            rebound_session_ids.push(session_id.clone());
+            continue;
+        }
+        match sessions.set_workspace(session_id, new_path.clone()) {
+            Ok(()) => rebound_session_ids.push(session_id.clone()),
+            Err(error) => {
+                eprintln!("[projects] rebind set_workspace({session_id}) failed: {error:#}");
+                failed_session_ids.push(session_id.clone());
+            }
+        }
+        // baseline 重采集:best-effort,git 指纹可再派生,失败不阻断重绑定。
+        if let Err(error) =
+            crate::features::codex_acp::workspace::capture_baseline(session_id, new_path)
+        {
+            eprintln!("[projects] rebind capture_baseline({session_id}) failed: {error:#}");
+        }
+    }
+
+    emit_project_event(&app, "projects:list_changed", "rebound");
+    for session_id in &rebound_session_ids {
+        super::sessions::emit_session_event(
+            &app,
+            "session:list_changed",
+            session_id,
+            "workspace_rebound",
+        );
+    }
+    Ok(RebindWorkspaceReport {
+        rebound_session_ids,
+        failed_session_ids,
+        affected_project_ids,
+    })
+}
