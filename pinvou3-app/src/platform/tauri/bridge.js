@@ -2388,6 +2388,13 @@
   const downloadKbModel = knowledgeModelFeature.downloadKbModel;
   const cancelKbModel = knowledgeModelFeature.cancelKbModel;
 
+  const projectsFeature = installBridgeFeature("projects", { state, notify, invoke, listen });
+  const loadProjects = projectsFeature.loadProjects;
+  const createProject = projectsFeature.createProject;
+  const renameProject = projectsFeature.renameProject;
+  const deleteProject = projectsFeature.deleteProject;
+  const moveSessionToProject = projectsFeature.moveSessionToProject;
+
   const multiAgentFeature = installBridgeFeature("multiagent", { state, notify, invoke, listen });
   const listMultiAgentSubagents = multiAgentFeature.listSubagentTranscripts;
   const readMultiAgentSubagent = multiAgentFeature.readSubagentTranscript;
@@ -2569,6 +2576,13 @@
       toggleSessionPinned,
       archiveSession,
       restoreArchivedSession,
+    },
+    projects: {
+      loadProjects,
+      createProject,
+      renameProject,
+      deleteProject,
+      moveSessionToProject,
     },
     monitor: {
       startMonitorPolling,
