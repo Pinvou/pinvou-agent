@@ -250,12 +250,19 @@ unsafe extern "system" fn keyboard_hook_proc(
         if decision.inject_alt_down {
             // The combo down was swallowed: replay [Alt↓, combo↓] in order
             // with a single SendInput, so the system/WebView sees the modifier
-            // order of a real press and Alt+Tab/Alt+F4 keep working. Only a
-            // successful replay confirms alt_forwarded (the real Alt up is let
-            // through to pair with it); on failure it stays unforwarded, the
-            // combo is lost, the real Alt up is wrapped up along the
-            // unforwarded path, and no state is left behind.
-            if replay_combo_with_alt(info.vkCode as VIRTUAL_KEY) {
+            // order of a real press and Alt+Tab/Alt+F4 keep working. SendInput
+            // reports how many entries were actually injected (not a
+            // transactional boolean), so the outcome is three-valued: a
+            // complete replay confirms alt_forwarded, and a partial replay
+            // (only the leading Alt↓ was injected) must confirm it too — the
+            // synthetic Alt down is already in the system and is paired by the
+            // real Alt up passing through; no synthetic cleanup key is sent
+            // because a cleanup SendInput could itself partially fail, while
+            // the physical Alt release is guaranteed to arrive. Only a
+            // zero-injection failure leaves alt_forwarded false: the combo is
+            // lost, the real Alt up is wrapped up along the unforwarded path,
+            // and no state is left behind.
+            if replay_combo_with_alt(info.vkCode as VIRTUAL_KEY).leaves_alt_forwarded() {
                 state.alt_forwarded = true;
             }
         }
@@ -311,10 +318,67 @@ fn focused_router_label(foreground: HWND) -> Option<String> {
 /// completing the sequence.
 /// Injected keys carry LLKHF_INJECTED and are let straight through at the hook
 /// entry, so they cannot recursively re-trigger gesture logic.
-/// Returns whether all entries were injected successfully.
+/// Returns which entries were injected (SendInput reports a count, not a
+/// transactional boolean — see [`ComboReplayOutcome`]).
 #[cfg(target_os = "windows")]
-fn replay_combo_with_alt(combo_vk: VIRTUAL_KEY) -> bool {
-    let inputs = [
+fn replay_combo_with_alt(combo_vk: VIRTUAL_KEY) -> ComboReplayOutcome {
+    let inputs = combo_replay_inputs(combo_vk);
+    let sent = unsafe {
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_ptr(),
+            std::mem::size_of::<INPUT>() as i32,
+        )
+    };
+    let outcome = combo_replay_outcome(sent, inputs.len() as u32);
+    match outcome {
+        ComboReplayOutcome::Complete => {}
+        ComboReplayOutcome::AltDownOnly => {
+            log::warn!(
+                "voice shortcut combo replay injected only the Alt down; the combo key is lost and the real Alt up will pair with the injected down"
+            );
+        }
+        ComboReplayOutcome::None => {
+            log::warn!("voice shortcut failed to replay combo key with ordered Alt down");
+        }
+    }
+    outcome
+}
+
+/// Which entries of the [Alt↓, combo↓] replay actually reached Windows.
+/// SendInput injects events in order and returns the number successfully
+/// inserted, so a partial call has injected the leading Alt↓ only.
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComboReplayOutcome {
+    /// Nothing was injected; the system saw no synthetic key.
+    None,
+    /// Only the Alt↓ was injected (the combo↓ was lost): the synthetic
+    /// modifier down is outstanding and must stay paired with the real Alt up.
+    AltDownOnly,
+    /// Both entries were injected.
+    Complete,
+}
+
+#[cfg(target_os = "windows")]
+impl ComboReplayOutcome {
+    /// Any injected Alt↓ must be paired by a release: marking the gesture
+    /// forwarded lets the real Alt up through to pair with it (identical
+    /// modifier lifetime to the complete path). No synthetic cleanup key is
+    /// emitted — a cleanup SendInput could itself partially fail, while the
+    /// physical Alt release is guaranteed because the gesture began with a
+    /// real Alt press.
+    fn leaves_alt_forwarded(self) -> bool {
+        matches!(
+            self,
+            ComboReplayOutcome::AltDownOnly | ComboReplayOutcome::Complete
+        )
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn combo_replay_inputs(combo_vk: VIRTUAL_KEY) -> [INPUT; 2] {
+    [
         INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
@@ -339,19 +403,18 @@ fn replay_combo_with_alt(combo_vk: VIRTUAL_KEY) -> bool {
                 },
             },
         },
-    ];
-    let sent = unsafe {
-        SendInput(
-            inputs.len() as u32,
-            inputs.as_ptr(),
-            std::mem::size_of::<INPUT>() as i32,
-        )
-    };
-    if sent != inputs.len() as u32 {
-        log::warn!("voice shortcut failed to replay combo key with ordered Alt down");
-        return false;
+    ]
+}
+
+#[cfg(target_os = "windows")]
+fn combo_replay_outcome(sent: u32, total: u32) -> ComboReplayOutcome {
+    if sent >= total {
+        ComboReplayOutcome::Complete
+    } else if sent >= 1 {
+        ComboReplayOutcome::AltDownOnly
+    } else {
+        ComboReplayOutcome::None
     }
-    true
 }
 
 #[cfg(target_os = "windows")]
@@ -432,5 +495,52 @@ fn send_event(event: VoiceShortcutEvent, window_label: String, route: &'static s
                 log::warn!("voice shortcut queue failed: {}", error);
             }
         }
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+
+    /// SendInput results 0/1/2 map to the three outcomes; 1 (partial) means
+    /// the leading Alt↓ reached Windows and must not be orphaned.
+    #[test]
+    fn combo_replay_outcome_distinguishes_zero_partial_and_complete() {
+        assert_eq!(combo_replay_outcome(0, 2), ComboReplayOutcome::None);
+        assert_eq!(combo_replay_outcome(1, 2), ComboReplayOutcome::AltDownOnly);
+        assert_eq!(combo_replay_outcome(2, 2), ComboReplayOutcome::Complete);
+    }
+
+    /// Zero injection leaves the gesture unforwarded (the real Alt up is
+    /// wrapped up along the unforwarded path); partial and complete both
+    /// confirm forwarding so the real Alt up pairs with the injected down.
+    /// No synthetic cleanup input exists in either case.
+    #[test]
+    fn partial_and_complete_replays_pair_the_alt_down_with_the_real_alt_up() {
+        assert!(!ComboReplayOutcome::None.leaves_alt_forwarded());
+        assert!(ComboReplayOutcome::AltDownOnly.leaves_alt_forwarded());
+        assert!(ComboReplayOutcome::Complete.leaves_alt_forwarded());
+    }
+
+    /// The replay array is exactly [Alt↓, combo↓] in that order (modifier
+    /// first, so Alt+Tab/Alt+F4 keep working), both as key-down events.
+    #[test]
+    fn combo_replay_inputs_are_ordered_alt_down_then_combo_down() {
+        let inputs = combo_replay_inputs(VK_SPACE);
+        assert_eq!(inputs.len(), 2);
+        for input in &inputs {
+            assert_eq!(input.r#type, INPUT_KEYBOARD);
+            // Safe: each entry is fully initialized by combo_replay_inputs.
+            let ki = unsafe { input.Anonymous.ki };
+            assert_eq!(ki.dwFlags, 0);
+        }
+        let alt_vk = unsafe { inputs[0].Anonymous.ki.wVk };
+        let combo_vk = unsafe { inputs[1].Anonymous.ki.wVk };
+        assert_eq!(alt_vk, VK_LMENU);
+        assert_eq!(combo_vk, VK_SPACE);
+
+        let inputs = combo_replay_inputs(VK_ESCAPE);
+        let combo_vk = unsafe { inputs[1].Anonymous.ki.wVk };
+        assert_eq!(combo_vk, VK_ESCAPE);
     }
 }

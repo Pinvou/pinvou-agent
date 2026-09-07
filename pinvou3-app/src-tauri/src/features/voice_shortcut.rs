@@ -28,8 +28,9 @@ struct VoiceShortcutState {
     alt_down: bool,
     alt_pending: bool,
     /// The [Alt↓, combo↓] ordered replay has been issued for a combo key (the
-    /// platform layer sets this after SendInput succeeds); the real Alt up must
-    /// be let through to pair with it.
+    /// platform layer sets this whenever at least the Alt down was injected,
+    /// complete or partial); the real Alt up must be let through to pair with
+    /// the injected down, so no synthetic modifier state is left behind.
     alt_forwarded: bool,
     /// Space down was swallowed within this gesture; its up must be swallowed
     /// in pairs only, never the up of a Space that was already held before Alt
@@ -57,8 +58,10 @@ struct VoiceShortcutDecision {
     suppress: bool,
     /// The current combo down was swallowed: the platform layer must replay
     /// [Alt↓, combo↓] in order with a single SendInput (confirming
-    /// alt_forwarded on success), otherwise the system never sees the combo
-    /// because Alt down was swallowed (Alt+Tab / Alt+F4 break).
+    /// alt_forwarded whenever at least the Alt down was injected — a partial
+    /// injection still leaves a synthetic Alt down that the real Alt up must
+    /// pair with), otherwise the system never sees the combo because Alt down
+    /// was swallowed (Alt+Tab / Alt+F4 break).
     inject_alt_down: bool,
 }
 
@@ -182,10 +185,12 @@ fn handle_voice_shortcut_key(
             if state.alt_pending {
                 state.alt_pending = false;
                 if !state.alt_forwarded {
-                    // alt_forwarded is confirmed by the platform layer after the
-                    // [Alt↓, combo↓] ordered replay succeeds; if the replay
-                    // fails it stays unforwarded, the real Alt up is wrapped up
-                    // along the unforwarded path, and no state is left behind.
+                    // alt_forwarded is confirmed by the platform layer whenever
+                    // the replay injected at least the Alt down (partial
+                    // included — the injected down must stay paired with the
+                    // real Alt up); only a zero-injection replay failure leaves
+                    // it unforwarded, the real Alt up is wrapped up along the
+                    // unforwarded path, and no state is left behind.
                     return VoiceShortcutDecision::forward_combo();
                 }
             }
@@ -440,6 +445,36 @@ mod tests {
         let up =
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, false, true, HWND_A, 0);
         assert_eq!(up, VoiceShortcutDecision::suppress(None));
+        assert_eq!(up.event, None);
+        assert_eq!(state, VoiceShortcutState::default());
+    }
+
+    #[test]
+    fn partial_combo_replay_still_pairs_the_injected_alt_down_with_the_real_up() {
+        // Partial SendInput injection (only the leading Alt↓ reached Windows):
+        // the platform layer confirms alt_forwarded for it too, so the real
+        // Alt up is let through to pair with the injected down — no stuck
+        // modifier — and no dictation trigger fires. The combo keystroke
+        // itself is lost, and no synthetic cleanup key is emitted.
+        let mut state = VoiceShortcutState::default();
+        handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, true, true, HWND_A, 0);
+        let combo =
+            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Other, true, true, HWND_A, 0);
+        assert_eq!(combo, VoiceShortcutDecision::forward_combo());
+        // (the platform layer confirms the partial injection)
+        state.alt_forwarded = true;
+
+        // Alt auto-repeat while held is let through, consistent with the
+        // injected down being held.
+        let repeat =
+            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, true, true, HWND_A, 0);
+        assert_eq!(repeat, VoiceShortcutDecision::pass());
+
+        // The real up is let through to pair with the injected Alt down.
+        let up =
+            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt, false, true, HWND_A, 0);
+        assert_eq!(up, VoiceShortcutDecision::pass());
+        assert!(!up.suppress);
         assert_eq!(up.event, None);
         assert_eq!(state, VoiceShortcutState::default());
     }
