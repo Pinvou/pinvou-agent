@@ -178,7 +178,8 @@ pub struct Pinvou3Bridge {
     /// RuntimeModelProvider 为本次引擎准备的内存凭据。Some 时是最终值，不能再被
     /// 环境变量或本地凭据库覆盖；Debug 由包装类型强制脱敏。
     pub runtime_model_credential: Option<RuntimeModelCredential>,
-    /// 本地 vLLM `/v1/models` 探测到的 `max_model_len`(上下文窗口)。Injected at
+    /// `max_model_len` (context window) probed from the local vLLM
+    /// `/v1/models` endpoint. Injected at
     /// EnginePool spawn by `resolve_served_model` (the matched entry's own
     /// window; `None` when the configured name is absent from the list or the
     /// probe fails). Some → min() with the SavedModel declaration fills
