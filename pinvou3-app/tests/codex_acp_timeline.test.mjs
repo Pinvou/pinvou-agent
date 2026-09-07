@@ -592,11 +592,12 @@ try {
     && i18n.includes("sidebarTaskFilterCodeSessions: 'Code sessions'")
     && i18n.includes("sidebarTaskFilterCodeSessions: 'コードセッション'")
     && main.includes("{t.sidebarTaskFilterCode}")
-    && i18n.includes("sidebarTaskFilterCode: '代码'")
-    && i18n.includes("sidebarTaskFilterCode: 'Code'")
-    && i18n.includes("sidebarTaskFilterCode: 'コード'"),
+    && i18n.includes("sidebarTaskFilterCode: '项目'")
+    && i18n.includes("sidebarTaskFilterCode: 'Projects'")
+    && i18n.includes("sidebarTaskFilterCode: 'プロジェクト'"),
   'the task-list Code filter must show only Codex sessions in every supported locale, '
-    + 'with a label distinct from the All/Code list-shape pill');
+    + 'with a label distinct from the All/Projects list-shape pill '
+    + '(the pill is now the project view: Codex sessions plus workspace-bound work sessions)');
   assert.ok(main.includes('leadingIcon: <PinvouLogo')
     && main.includes('<AcpAgentLogo agentId={session.agent_id} className="h-[18px] w-[18px]"')
     && main.includes('<Clock size={18} />'),

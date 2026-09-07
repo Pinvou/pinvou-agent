@@ -1525,6 +1525,12 @@ const NAV_PREFETCH = {
             pinned: !!s.pinned,
             pinnedAt: s.pinned_at || '',
             working: !!sessionBusy[s.id], // concurrent sessions: is this session generating in the background
+            // #445 binding: a bound work session carries workspacePath/Kind and
+            // project grouping follows the binding (the same signal as the
+            // safety posture); unbound sessions keep both empty and stay in
+            // the date view.
+            workspacePath: s.workspace_binding || '',
+            workspaceKind: s.workspace_binding ? 'project' : '',
             leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
             testId: 'regular-sidebar-item',
             menuTestId: 'regular-sidebar-menu',
@@ -1917,17 +1923,15 @@ const NAV_PREFETCH = {
         return groups;
       }, [sidebarTaskHistory, sidebarPinnedHoisted]);
 
-      // Code-style sidebar: lists only code sessions. Project layer resolves
-      // each session through three deterministic tiers (explicit assignment /
-      // project-root auto-grouping / implicit folder bucketing); without any
-      // created project the result is byte-identical to the legacy folder
-      // grouping. With "pinned first", pinned code sessions hoist above groups.
-      // Note: the upstream history chain (chatHistory/codexHistory/…) rebuilds
-      // on every App render, so these memos currently re-run each render too —
-      // end-to-end memoization of that legacy chain is deferred (finding 22);
-      // tier-2 grouping is O(sessions × projects × roots) (#448 finding 8).
+      // 项目视图(原「代码」形态):所有绑定真实目录的会话——代码/ACP 会话
+      // 与 #445 的绑定工作会话——统一按项目层三层分组;未绑定普通会话留在
+      // 「全部」的日期视图。分组跟随绑定,与安全姿态同一条信号。
+      // 说明:上游历史链(chatHistory/codexHistory/…)每次 render 重建,这些
+      // memo 目前也随之每轮重算——端到端记忆化留作后续(评审 finding 22);
+      // tier-2 分组是 O(sessions × projects × roots)(#448 finding 8)。
       const sidebarCodeTasks = useMemo(() => (sidebarCodeListActive
-        ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex')
+        ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex'
+            || (chat.taskKind === 'regular' && chat.workspacePath))
         : []), [sidebarCodeListActive, sidebarTaskHistory]);
       const sidebarFolderPinned = useMemo(() => (taskListSort === 'pinned_first'
         ? sidebarCodeTasks.filter(chat => !!chat.pinned)
@@ -2997,8 +3001,10 @@ const NAV_PREFETCH = {
       const renderSidebarTaskItem = (chat) => {
         const detachKind = chat.taskKind === 'codex' ? 'codex-session' : 'session';
         // 拖拽与"移动到项目"菜单项同一可用性门控:项目列表为空(bootstrap
-        // 窗口、零项目用户)时行不可拖,避免出现零可达落点的死手势。
-        const projectMovesAvailable = chat.taskKind === 'codex' && bridge.projects && !!sidebarProjectsData?.projects?.length;
+        // 窗口、零项目用户)时行不可拖,避免出现零可达落点的死手势。#445 的
+        // 绑定工作会话(taskKind regular + workspacePath)与代码会话同权——
+        // 分组跟随绑定,移动入口也跟随(评审 #452 finding 5 同一条信号)。
+        const projectMovesAvailable = (chat.taskKind === 'codex' || !!chat.workspacePath) && bridge.projects && !!sidebarProjectsData?.projects?.length;
         return (
           <RecentItem
             key={chat.taskKind === 'scheduled' ? `${chat.scheduledRun?.automationId || ''}:${chat.scheduledRun?.id || chat.id}` : `${chat.taskKind}:${chat.id}`}

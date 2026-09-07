@@ -174,19 +174,28 @@ pub async fn move_session_to_project(
                 "move_session_to_project: add_workspace_root requires project_id".to_string(),
             );
         }
-        // 普通 chat 会话在池里没有工作区记录,底层会报"not an ACP session"——
-        // 语义上该组合只是"没有可加的目录",错误信息按此表述,避免误导排查方向。
-        let info = acp_pool.workspace_info(&session_id).map_err(|e| {
-            format!(
-                "move_session_to_project({session_id}): session has no resolvable workspace record to add as a root (normal chat sessions have none): {e:#}"
-            )
-        })?;
-        if info.workspace_kind != CodexWorkspaceKind::Project {
-            return Err(format!(
-                "move_session_to_project({session_id}): temporary session has no project folder to add"
-            ));
+        // 统一工作区探测(跨模式融合):代码/ACP 会话走 agent 记录;普通绑定
+        // 会话(agent 记录缺失)回落到双根信号——执行根≠账本根 ⇒ 已绑定,
+        // 执行根即绑定目录(#445 的绑定语义)。临时/未绑定会话两者皆无。
+        let detected = match acp_pool.workspace_info(&session_id) {
+            Ok(info) if info.workspace_kind == CodexWorkspaceKind::Project => {
+                Some(PathBuf::from(info.workspace_path))
+            }
+            Ok(_) => None,
+            Err(_) => sessions
+                .session_roots(&session_id)
+                .ok()
+                .filter(|roots| roots.execution != roots.ledger)
+                .map(|roots| roots.execution),
+        };
+        match detected {
+            Some(path) => Some(path),
+            None => {
+                return Err(format!(
+                    "move_session_to_project({session_id}): session has no project folder to add"
+                ));
+            }
         }
-        Some(PathBuf::from(info.workspace_path))
     } else {
         None
     };
@@ -354,10 +363,13 @@ pub async fn rebind_workspace_root(
     // return of rebind_workspace_prefix is only the set this run rewrote — a
     // session translated by a previous run whose set_workspace failed no
     // longer matches `from` and could never be retried without the snapshot.
-    // sessions_under_workspace includes off-index orphan sidecars (M6);
-    // retry candidates "already under to but metadata not synced" are folded
-    // in too, so a failed rerun converges.
+    // The candidate set spans both binding stores: agent records (code/ACP,
+    // including off-index orphan sidecars, M6) and plain-session binding
+    // sidecars (unify: grouping follows binding, so bound plain sessions are
+    // in rebind scope too); retry candidates "already under to but metadata
+    // not synced" are folded in too, so a failed rerun converges.
     let mut affected = acp_pool.agents().sessions_under_workspace(&from);
+    affected.extend(sessions.workspace_bindings_under(&from));
     // Post-busy sessions of a previous run land here on retry (review #463
     // M2): their metadata was already synced in run 1, so they are absent
     // from `affected` — without feeding them back as explicit eviction
@@ -367,7 +379,12 @@ pub async fn rebind_workspace_root(
     // directly under `to` also land here; evicting their idle runtime is a
     // harmless lazy-respawn (the same thing the idle reaper does routinely).
     let mut retry_evict_candidates: Vec<String> = Vec::new();
-    for (session_id, path) in acp_pool.agents().sessions_under_workspace(&to_key) {
+    for (session_id, path) in acp_pool
+        .agents()
+        .sessions_under_workspace(&to_key)
+        .into_iter()
+        .chain(sessions.workspace_bindings_under(&to_key))
+    {
         if affected.iter().any(|(sid, _)| *sid == session_id) {
             continue;
         }
@@ -413,11 +430,12 @@ pub async fn rebind_workspace_root(
         return Err(format!("REBIND_SESSIONS_BUSY: {}", busy_ids.join(", ")));
     }
 
-    // Order: project roots → session bindings (index + sidecars) → metadata
-    // → baseline. Every step is idempotent; a failed retry only completes
-    // the unfinished parts. The metadata loop is driven by the snapshot
-    // above, computing the target per candidate (translated for those under
-    // the from prefix; as-is for retry candidates already under to).
+    // Order: project roots → session bindings (index + sidecars, both
+    // binding stores) → metadata → baseline. Every step is idempotent; a
+    // failed retry only completes the unfinished parts. The metadata loop
+    // is driven by the snapshot above, computing the target per candidate
+    // (translated for those under the from prefix; as-is for retry
+    // candidates already under to).
     let affected_project_ids = store
         .rebind_roots(&from, &to_key)
         .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
@@ -432,6 +450,16 @@ pub async fn rebind_workspace_root(
     let prefix_outcome = acp_pool
         .agents()
         .rebind_workspace_prefix(&from, &to_key)
+        .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
+    // Baseline recapture below is gated to code sessions (unify): plain
+    // bound sessions do not consume workspace baselines.
+    let code_rebound_ids: std::collections::HashSet<&str> = prefix_outcome
+        .affected
+        .iter()
+        .map(|(session_id, _)| session_id.as_str())
+        .collect();
+    sessions
+        .rebind_workspace_bindings(&from, &to_key)
         .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
     let mut rebound_session_ids = Vec::new();
     let mut failed_session_ids = Vec::new();
@@ -488,33 +516,37 @@ pub async fn rebind_workspace_root(
                 failed_session_ids.push(session_id.clone());
             }
         }
-        // Baseline recapture: best-effort, the git fingerprint is derivable
-        // again, and a failure does not block the rebind. Runs on
+        // Baseline recapture is gated to code sessions (unify): plain bound
+        // sessions do not consume workspace baselines, so no code-lane
+        // sidecar is created for them. Best-effort, the git fingerprint is
+        // derivable again, and a failure does not block the rebind. Runs on
         // spawn_blocking: a non-git directory synchronously walks tens of
         // thousands of entries and must not run serially on the async
         // command thread (same idiom as session creation in codex.rs).
-        let baseline_session_id = session_id.clone();
-        let baseline_root = new_path.clone();
-        match tauri::async_runtime::spawn_blocking(move || {
-            crate::features::codex_acp::workspace::capture_baseline(
-                &baseline_session_id,
-                &baseline_root,
-            )
-        })
-        .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                // Same CodeQL constraint as set_workspace above: the chain
-                // embeds sessions/<id>/…json.tmp paths; log the root cause
-                // only.
-                eprintln!(
-                    "[projects] rebind capture_baseline failed: {}",
-                    error.root_cause()
+        if code_rebound_ids.contains(session_id.as_str()) {
+            let baseline_session_id = session_id.clone();
+            let baseline_root = new_path.clone();
+            match tauri::async_runtime::spawn_blocking(move || {
+                crate::features::codex_acp::workspace::capture_baseline(
+                    &baseline_session_id,
+                    &baseline_root,
                 )
-            }
-            Err(error) => {
-                eprintln!("[projects] rebind capture_baseline task failed: {error}")
+            })
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    // Same CodeQL constraint as set_workspace above: the chain
+                    // embeds sessions/<id>/…json.tmp paths; log the root cause
+                    // only.
+                    eprintln!(
+                        "[projects] rebind capture_baseline failed: {}",
+                        error.root_cause()
+                    )
+                }
+                Err(error) => {
+                    eprintln!("[projects] rebind capture_baseline task failed: {error}")
+                }
             }
         }
     }
