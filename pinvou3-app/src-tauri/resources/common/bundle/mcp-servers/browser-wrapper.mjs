@@ -31,7 +31,7 @@
  * to stderr.
  *
  * Usage:
- *   node browser-wrapper.mjs <chrome-devtools-mcp-bin|@pinvou/browser-core> <host-state-json> [extra-args...]
+ *   node browser-wrapper.mjs <chrome-devtools-mcp-bin|@pinvou/browser-core> <cdp-port-json> [extra-args...]
  *
  * Exit: the wrapper lifetime is the MCP server lifetime. On Windows it also
  * owns the chrome-devtools-mcp child process; BrowserCore platforms create no

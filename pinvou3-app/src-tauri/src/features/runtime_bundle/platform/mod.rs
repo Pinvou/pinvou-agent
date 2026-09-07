@@ -301,9 +301,8 @@ pub const MODE_EXECUTE_MD: &str = "\
 ## Mode: Execute
 
 Tools run without per-call approval — the user has already authorized
-execution. Produce files and run commands now; never end the turn with
-a promise of future action. Then verify and report. Follow each
-message's `<system-reminder>`.";
+execution. Produce files and run commands now, then verify and report.
+Follow each message's `<system-reminder>`.";
 
 /// pinvou3 版静态层 composer：接管底座全部编译期静态文案
 /// (taxonomy/base/personality/mode/approval/ContextMgmt/compact 模板)。
@@ -789,6 +788,46 @@ mod tests {
         let rendered = instructions_code_md("你在本会话专属工作目录中工作,相对路径即相对该目录;");
         assert!(rendered.contains("你在本会话专属工作目录中工作"));
         assert!(!rendered.contains("项目目录"));
+    }
+
+    /// Prompt-composition regression for the auto-approval override: only code
+    /// sessions compose the base core_execution loop, so only their rendered
+    /// instructions may carry the reconciling note (current production posture
+    /// is auto-approval; runtime truth stays with the per-turn reminder), and
+    /// the note must sit after the base approval clause it qualifies. Also
+    /// locks the MODE_EXECUTE_MD dedup contract: the "never end the turn with
+    /// a promise" sentence was removed because the shared skeleton carries the
+    /// equivalent prohibition.
+    #[test]
+    fn code_instructions_carry_auto_approval_note_work_mode_does_not() {
+        let rendered = instructions_code_md("你在本会话专属工作目录中工作,相对路径即相对该目录;");
+        let core = deepseek_tui::prompts::CORE_EXECUTION_PROFILE_PROMPT.trim();
+        let core_at = rendered
+            .find(core)
+            .expect("code instructions must compose the base core_execution loop");
+        let note_at = rendered
+            .find("gated write 工具走 auto-approval")
+            .expect("code instructions must carry the auto-approval note");
+        assert!(
+            note_at > core_at,
+            "auto-approval note must follow the base approval clause it qualifies"
+        );
+        assert!(
+            rendered.contains("运行时批准姿态以每轮 `<system-reminder>` 为准"),
+            "auto-approval note must defer runtime posture to the per-turn reminder"
+        );
+
+        let work = instructions_md();
+        assert!(
+            !work.contains("auto-approval"),
+            "work mode never composes core_execution, so it must not carry the note"
+        );
+
+        assert!(
+            INSTRUCTIONS_SHARED_MD.contains("说做就做"),
+            "MODE_EXECUTE_MD dropped its promise prohibition only because the shared skeleton carries it"
+        );
+        assert!(!MODE_EXECUTE_MD.contains("promise of future action"));
     }
 
     fn run_depth_guard(bundle: &Pinvou3Bundle, tool: &str, args: &str) -> std::process::Output {
