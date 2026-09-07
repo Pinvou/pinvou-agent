@@ -133,11 +133,45 @@ function timelineUsage(usage) {
   };
 }
 
+// Exported for the sibling subagent transcript adapter
+// (subagent-conversation.mjs) so every lane shares one gate / redaction /
+// trilingual copy implementation instead of reimplementing it.
+export function timelineUserError(event, options = {}) {
+  const existing = event && (event.user_error || event.userError);
+  if (existing && typeof existing === 'object') return existing;
+  const error = event && event.error;
+  const helper = globalThis.PinvouModelServiceErrors;
+  if (!error || !helper || typeof helper.build !== 'function') return null;
+  if (typeof helper.isModelServiceError === 'function' && !helper.isModelServiceError(error)) return null;
+  const providerLabel = options.providerLabel
+    || (typeof helper.providerLabelFromState === 'function'
+      ? helper.providerLabelFromState(options.modelServiceState, options.language)
+      : '');
+  return helper.build(error, {
+    language: options.language,
+    providerLabel,
+  });
+}
+
+/// A timeline's bare error feeds the red-text fallback display: the
+/// authoritative replay / historical sessions may carry gateway or raw
+/// provider bodies that the gate did not take over (no user_error card),
+/// so they must be redacted before display - classification may miss,
+/// credentials must not. userError cards go through build(), which
+/// redacts on its own; provider-signal extraction (e.g. api.deepseek.com
+/// in a URL) runs inside build() on the original text and is unaffected.
+export function timelineDisplayError(error, options = {}) {
+  if (!error) return error || null;
+  const helper = globalThis.PinvouModelServiceErrors;
+  if (!helper || typeof helper.redactTechnicalDetail !== 'function') return error;
+  return helper.redactTechnicalDetail(String(error), options.language);
+}
+
 /**
  * timing_events.jsonl 是 DeepSeek 回合生命周期的事实源。这里把
  * user_start / assistant_done 配成只读 Turn 元数据，不改写消息历史。
  */
-export function pairDeepSeekTimeline(events = []) {
+export function pairDeepSeekTimeline(events = [], options = {}) {
   const ordered = [...events]
     .filter(event => event && event.turn_id && ['user_start', 'assistant_done'].includes(event.event))
     .sort((left, right) => Number(left.timestamp || 0) - Number(right.timestamp || 0));
@@ -155,6 +189,7 @@ export function pairDeepSeekTimeline(events = []) {
         status: 'incomplete',
         rawStatus: '',
         error: null,
+        userError: null,
         usage: null,
       };
       byId.set(id, record);
@@ -167,7 +202,8 @@ export function pairDeepSeekTimeline(events = []) {
       record.completedAt = Number(event.timestamp || 0) || event.ts || null;
       record.rawStatus = String(event.status || '');
       record.status = normalizeTurnStatus(event.status, true);
-      record.error = event.error || null;
+      record.error = timelineDisplayError(event.error, options);
+      record.userError = timelineUserError(event, options);
       record.usage = timelineUsage(event.usage);
     }
   }
@@ -188,8 +224,8 @@ export function pairDeepSeekTimeline(events = []) {
 //     than turns the surplus is record noise (a parked-steer resume
 //     continuation whose assistant_done attached to the original turn id), so
 //     prefer records that actually carry a terminal.
-function assignDeepSeekTimelines(userTurns, timelineEvents, busy) {
-  const timeline = pairDeepSeekTimeline(timelineEvents);
+function assignDeepSeekTimelines(userTurns, timelineEvents, busy, options) {
+  const timeline = pairDeepSeekTimeline(timelineEvents, options);
   const assigned = new Set();
   for (const record of timeline) {
     if (!Number.isSafeInteger(record.turnIndex) || !userTurns[record.turnIndex]) continue;
@@ -200,6 +236,7 @@ function assignDeepSeekTimelines(userTurns, timelineEvents, busy) {
     Object.assign(userTurns[record.turnIndex], {
       status: record.status,
       error: record.error,
+      userError: record.userError,
       startedAt: record.startedAt,
       completedAt: record.completedAt,
       usage: record.usage,
@@ -220,6 +257,7 @@ function assignDeepSeekTimelines(userTurns, timelineEvents, busy) {
     Object.assign(trailingTurns[index], {
       status: record.status,
       error: record.error,
+      userError: record.userError,
       startedAt: record.startedAt,
       completedAt: record.completedAt,
       usage: record.usage,
@@ -249,6 +287,7 @@ function transferSteeredRunTerminals(turns) {
       if (head.lifecycleKnown && head.completedAt) {
         tail.status = head.status;
         tail.error = head.error;
+        tail.userError = head.userError;
         tail.startedAt = head.startedAt;
         tail.completedAt = head.completedAt;
         tail.usage = head.usage;
@@ -256,6 +295,7 @@ function transferSteeredRunTerminals(turns) {
         for (let clear = start; clear < end; clear += 1) {
           turns[clear].status = 'completed';
           turns[clear].error = null;
+          turns[clear].userError = null;
           turns[clear].completedAt = null;
           turns[clear].usage = null;
           turns[clear].lifecycleKnown = false;
@@ -278,6 +318,9 @@ export function projectDeepSeekConversation({
   sessionId = null,
   timelineEvents = [],
   allowScheduledTaskDraft = false,
+  language = 'zh-Hans',
+  providerLabel = '',
+  modelServiceState = null,
 } = {}) {
   const turns = [];
   const userTurns = [];
@@ -329,7 +372,7 @@ export function projectDeepSeekConversation({
     ));
   }
 
-  assignDeepSeekTimelines(userTurns, timelineEvents, busy);
+  assignDeepSeekTimelines(userTurns, timelineEvents, busy, { language, providerLabel, modelServiceState });
   if (!busy) transferSteeredRunTerminals(turns);
 
   const activeTurn = turns[turns.length - 1];
@@ -338,6 +381,10 @@ export function projectDeepSeekConversation({
     activeTurn.startedAt = thinking && thinking.startedAt || Date.now();
     activeTurn.completedAt = null;
     activeTurn.error = null;
+    // Cleared in lockstep with error: when a turn re-runs, a leftover
+    // userError card would show the previous turn's "has stopped" wording
+    // while the turn claims to be running - self-contradictory.
+    activeTurn.userError = null;
     activeTurn.lifecycleKnown = true;
     activeTurn.activityToolName = thinking && thinking.phase === 'tool' && thinking.toolName
       ? thinking.toolName

@@ -1344,6 +1344,15 @@ export function CodexAcpView({
   const activeIdRef = useRef(activeId);
   const lastActiveSessionIdRef = useRef(activeId);
   if (activeId) lastActiveSessionIdRef.current = activeId;
+  // The native-lane event subscription mounts once, and the friendly
+  // error notice copy needs the current UI language and model config;
+  // the latest values are threaded through a ref so closures never hold a
+  // stale bridge state snapshot (same pattern as activeIdRef).
+  const nativeEventContextRef = useRef({ language: null, modelServiceState: null });
+  nativeEventContextRef.current = {
+    language: bs && bs.settings && bs.settings.language,
+    modelServiceState: bs,
+  };
   useLayoutEffect(() => {
     // loadSession may optimistically point this ref at a just-created session before
     // the parent commits activeId. Do not overwrite that handoff from an intermediate
@@ -1353,7 +1362,11 @@ export function CodexAcpView({
     acpConfigOperationTracker.switchSession(activeId);
     acpSendOperationTracker.switchSession(activeId || DRAFT_ATTACHMENT_KEY);
   }, [acpConfigOperationTracker, acpSendOperationTracker, activeId]);
-  const projection = useMemo(() => projectAcpTimeline(events), [events]);
+  const acpModelServiceLanguage = bs && bs.settings && bs.settings.language;
+  const projection = useMemo(
+    () => projectAcpTimeline(events, { language: acpModelServiceLanguage }),
+    [events, acpModelServiceLanguage],
+  );
   // 草稿态（!activeId）没有会话，退回使用该 agent 缓存的配置快照来预展示选项。
   const draftControlsInfo = activeId ? null : draftControlsCache[draftAgentId] || null;
   const sessionControlsInfo = sessionInfoSessionId === activeId ? sessionInfo : null;
@@ -1472,11 +1485,37 @@ export function CodexAcpView({
   // 知识库集合列表与 embedding 安装态由 ComposerKbSelector 内部经 bridge.knowledge
   // （kb_collection_list / kb_model_status，全局只读、不带会话）自行加载，代码页
   // 不再重复拉取（PR #214 统一底栏控件时移除 nativeKb* 本地变量）。
+  // projectNativeLane only consumes bs's model-service fields
+  // (providerLabelFromState reads currentSessionModelId/activeModelId/
+  // savedModels/effectiveModelConfig/activeProvider; the language comes
+  // from settings.language). bs is a whole-state snapshot that changes
+  // reference on every streaming notify, so depending on it directly
+  // would invalidate this useMemo throughout streaming and re-project
+  // everything; the deps are narrowed to the consumed field references.
+  const nativeModelServiceLanguage = bs && bs.settings && bs.settings.language;
+  const nativeModelServiceState = useMemo(
+    () => (bs ? {
+      currentSessionModelId: bs.currentSessionModelId,
+      activeModelId: bs.activeModelId,
+      savedModels: bs.savedModels,
+      effectiveModelConfig: bs.effectiveModelConfig,
+      activeProvider: bs.activeProvider,
+    } : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only the field references providerLabelFromState actually consumes, not the whole bs snapshot
+    [bs && bs.currentSessionModelId, bs && bs.activeModelId, bs && bs.savedModels, bs && bs.effectiveModelConfig, bs && bs.activeProvider],
+  );
   const nativeProjection = useMemo(
-    () => (isNativeAgent ? projectNativeLane(activeNativeLane, activeId) : null),
+    () => (isNativeAgent ? projectNativeLane(activeNativeLane, activeId, {
+      // Same as the main chat ChatView: the timeline error card's friendly
+      // copy is built in the UI language, with the provider label derived
+      // from bridge state (internally, a provider signal in the error text
+      // still wins).
+      language: nativeModelServiceLanguage,
+      modelServiceState: nativeModelServiceState,
+    }) : null),
     // nativeLaneTick 是 lane 内容变化的版本号（lane 本体是可变对象，靠 tick 触发重投影）。
     // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is the version counter of the mutable lane object; it must stay in deps to trigger re-projection
-    [isNativeAgent, activeNativeLane, activeId, nativeLaneTick],
+    [isNativeAgent, activeNativeLane, activeId, nativeLaneTick, nativeModelServiceLanguage, nativeModelServiceState],
   );
   const visibleTurns = useMemo(
     () => (isNativeAgent
@@ -2820,7 +2859,7 @@ export function CodexAcpView({
       const sessionId = payload.session_id;
       if (!sessionId || !nativeSessionIdsRef.current.has(sessionId)) return;
       const lane = getNativeLane(sessionId);
-      const changed = applyNativeChatEvent(lane, name, payload);
+      const changed = applyNativeChatEvent(lane, name, payload, nativeEventContextRef.current);
       if (name === 'chat:turn_started' || name === 'chat:done') {
         refreshSessions().catch(() => {});
       }
