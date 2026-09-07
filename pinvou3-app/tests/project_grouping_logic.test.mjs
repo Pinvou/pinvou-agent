@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   TEMPORARY_GROUP_KEY,
   groupSessionsWithProjects,
+  needsAddFolderConfirm,
   projectCoversPath,
   resolveSessionProjectId,
 } from "../src/features/projects/projectGrouping.js";
@@ -251,4 +252,25 @@ test("temporary group rows sort by recency while the group stays last", () => {
   );
   assert.equal(groups[groups.length - 1].key, TEMPORARY_GROUP_KEY);
   assert.deepEqual(groups[groups.length - 1].rows.map((r) => r.id), ["t1", "t2"]);
+});
+
+test("needsAddFolderConfirm is the shared drop/pick decision", () => {
+  const target = project("p1", "Alpha", ["D:/work/alpha"], 0);
+  assert.equal(
+    needsAddFolderConfirm(projectItem("a1", "D:/work/alpha", "x"), target),
+    false,
+    "covered workspace moves instantly",
+  );
+  assert.equal(
+    needsAddFolderConfirm(projectItem("a1", "D:/work/other", "x"), target),
+    true,
+    "uncovered workspace confirms the add-folder step first",
+  );
+  assert.equal(
+    needsAddFolderConfirm(temporaryItem("t1", "x"), target),
+    false,
+    "temporary sessions have no workspace and move instantly",
+  );
+  assert.equal(needsAddFolderConfirm(null, target), false, "missing session is a no-op");
+  assert.equal(needsAddFolderConfirm(projectItem("a1", "x", "x"), null), false, "missing target is a no-op");
 });

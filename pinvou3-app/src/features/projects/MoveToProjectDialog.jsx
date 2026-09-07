@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, Layers, Search, X } from '../../components/icons.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
-import { projectCoversPath } from './projectGrouping.js';
+import { needsAddFolderConfirm } from './projectGrouping.js';
 
 const MoveToProjectDialog = ({
   open,
@@ -29,8 +29,7 @@ const MoveToProjectDialog = ({
     const target = (Array.isArray(projects) ? projects.filter(Boolean) : [])
       .find(project => project.id === presetProjectId);
     if (!target) return null;
-    const workspacePath = session.workspaceKind === 'project' ? String(session.workspacePath || '') : '';
-    return workspacePath && !projectCoversPath(target, workspacePath) ? target : null;
+    return needsAddFolderConfirm(session, target) ? target : null;
   });
   // onClose is an inline arrow at the call site; keeping it in a ref keeps the
   // key listeners subscribed once instead of per render.
@@ -86,10 +85,11 @@ const MoveToProjectDialog = ({
 
   if (!open || !session || typeof document === 'undefined') return null;
 
+  // 显示用:确认框里向用户展示的目录(侧栏投影),实际添加以命令返回为准。
   const workspacePath = session.workspaceKind === 'project' ? String(session.workspacePath || '') : '';
   const choose = (project) => {
     if (busy || project.id === currentProjectId) return;
-    if (workspacePath && !projectCoversPath(project, workspacePath)) {
+    if (needsAddFolderConfirm(session, project)) {
       setPendingAddFolder(project);
       return;
     }
