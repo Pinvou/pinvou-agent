@@ -220,11 +220,15 @@ function renderLegacyMarkdownCached(item, syntaxVersion) {
   return html;
 }
 
-// 与 legacyMarkdownCache 同思路:ChatBubble 输入框每个按键、流式每个 delta、秒级 tick
-// 都会全量重渲,而 assistant 气泡每渲染要跑三轮 pre/code 正则解析(persona 草稿、定时
-// 任务草稿、card-question 追问)+流式折叠。整条链是
-// (html, streaming, allowScheduledTaskDraft, streamingDraftLabel) 的纯函数,按 item 键控
-// 缓存、四元组未变直接复用;流式期间 item 随 delta 换新引用,缓存自然失效,行为不变。
+// Same idea as legacyMarkdownCache: every composer keystroke, streaming
+// delta, and clock tick re-renders the full view, and each render of an
+// assistant bubble ran three rounds of pre/code regex parsing (persona
+// draft, scheduled-task draft, card-question follow-up) plus the streaming
+// fold. The whole chain is a pure function of
+// (html, streaming, allowScheduledTaskDraft, streamingDraftLabel), cached
+// per item and reused while the tuple is unchanged; while streaming, the
+// item gets a new reference per delta so the cache invalidates naturally —
+// behavior unchanged.
 const assistantParseCache = new WeakMap();
 function parseAssistantBubblesCached(item, html, streaming, allowScheduledTaskDraft, streamingDraftLabel) {
   const cached = assistantParseCache.get(item);
@@ -243,8 +247,9 @@ function parseAssistantBubblesCached(item, html, streaming, allowScheduledTaskDr
   return parsed;
 }
 
-// 记忆状态映射表只依赖当前语言词典 t(字典表为模块单例),按 t 缓存,
-// 避免每个气泡每次渲染都重建同一张表。
+// The memory status label map depends only on the current language
+// dictionary t (a module singleton); caching per t avoids rebuilding the
+// same map on every render of every bubble.
 const memoryStatusLabelsCache = new WeakMap();
 function getMemoryStatusLabels(t) {
   let labels = memoryStatusLabelsCache.get(t);
@@ -3288,8 +3293,10 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
           ? renderLegacyMarkdownCached(item, syntaxVersion)
           : (item.html || '');
         const streamingDraftLabel = /scheduled-task-draft/.test(html) ? t.uiChatExtra.draftingScheduled : (t && t.cpDesigning);
-        // 三轮解析链纯函数化并按 item 缓存(见 parseAssistantBubblesCached):
-        // memo 击穿(流式 delta/syntaxVersion bump)时也只重算真正变化的气泡。
+        // The three-pass parse chain is a pure function cached per item (see
+        // parseAssistantBubblesCached): even when the memo is defeated
+        // (streaming delta / syntaxVersion bump) only bubbles that actually
+        // changed reparse.
         const { pd, cq } = parseAssistantBubblesCached(item, html, !!item.streaming, allowScheduledTaskDraft, streamingDraftLabel);
         const assistantCopyAvailable = !item.streaming
           && [item.text, item.html].some(value => String(value || '').trim());
@@ -3507,10 +3514,14 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
 
       return null;
     });
-    // ChatBubble memo 化:inputText 挂在 ChatView 顶层,每个按键都整视图重渲;legacy
-    // 气泡列表 O(n),memo 后未变化的气泡只剩 prop 浅比较。调用点回调均为稳定引用
-    // (setInputText/sendChatMessage/onOpenEditor),item 由 bridge 会话数据保持引用稳定;
-    // syntaxVersion 订阅在组件内部,memo 不会阻断懒语言注册后的重渲染。
+    // ChatBubble memoization: inputText lives at the ChatView top level, so
+    // every keystroke re-renders the whole view; the legacy bubble list is
+    // O(n), and after memoization unchanged bubbles only pay a shallow prop
+    // compare. Callbacks at call sites are stable references
+    // (setInputText/sendChatMessage/onOpenEditor) and items keep stable
+    // references from the bridge session data; the syntaxVersion subscription
+    // lives inside the component, so the memo cannot block the re-render
+    // after lazy language registration.
 
     // ==========================================
     // Artifact Card — present_artifact 成品卡（点击打开预览）

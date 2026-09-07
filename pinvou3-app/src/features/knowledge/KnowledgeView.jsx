@@ -43,9 +43,11 @@ import { useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
  */
 
 const kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], allDocs: [], embedInfo: null, model: null, outputs: [], outputsLoaded: false };
-// 全量文档表(kb_documents limit:0)无上限,模块级缓存只保留有界切片:
-// 重挂载先秒显前若干条,完整数据由 loadColls() 挂载后重拉覆盖,
-// 避免整表在视图卸载后仍常驻整个窗口生命周期。
+// The full document table (kb_documents limit:0) is unbounded, so the
+// module-level cache keeps only a bounded slice: a remount instantly shows
+// the first rows and loadColls() re-fetches the complete data after mount,
+// so the whole table no longer stays resident for the window's lifetime
+// after the view unmounts.
 const KB_ALL_DOCS_CACHE_CAP = 2000;
 const capCachedAllDocs = (docs) => (docs.length > KB_ALL_DOCS_CACHE_CAP ? docs.slice(0, KB_ALL_DOCS_CACHE_CAP) : docs);
 
@@ -519,8 +521,10 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         const list = bridge && bridge.artifacts.listDeliverableIndex
           ? await bridge.artifacts.listDeliverableIndex().catch(() => [])
           : await inv('list_deliverable_index').catch(() => []);
-        // 卸载清理已释放大表：unmount 前发起的在途请求 resolve 后不得把索引
-        // 回写进模块级缓存，否则抵消清理意图（unmount 后 setOutputs 是 no-op，无害）。
+        // Unmount cleanup already released the big table: an in-flight
+        // request started before unmount must not write the index back into
+        // the module-level cache once it resolves, or it would undo the
+        // cleanup (setOutputs after unmount is a no-op and harmless).
         if (outputsDisposedRef.current) return;
         const nextList = list || [];
         const nextSig = outputListSig(nextList);
@@ -546,10 +550,13 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors into local state right after reading the backend snapshot, avoiding first-frame flicker
         if (sub === 'output') refreshOutputs();
       }, [sub, outputArtifactKey, refreshOutputs]);
-      // 视图按需条件渲染,卸载后模块级缓存会存活整个窗口周期:产出物索引是
-      // 无上限大表,卸载时释放;轻量字段(stats/embedInfo/scan 游标等)保留。
-      // 重挂载由 sub='output' 的既有 refreshOutputs() 路径重拉;outputsLoaded
-      // 归位让骨架屏接管,避免闪现「空状态」。disposed 标志拦下在途回写。
+      // The view renders conditionally on demand and module-level caches
+      // survive the whole window lifetime after unmount: the deliverables
+      // index is an unbounded table, released on unmount; lightweight fields
+      // (stats/embedInfo/scan cursors etc.) are kept. A remount re-fetches
+      // via the existing sub='output' refreshOutputs() path; resetting
+      // outputsLoaded hands control to the skeleton and avoids flashing the
+      // "empty state". The disposed flag blocks late writebacks.
       useEffect(() => () => {
         outputsDisposedRef.current = true;
         kbCache.outputs = [];

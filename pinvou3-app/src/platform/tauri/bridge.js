@@ -1080,10 +1080,13 @@
       if (id && typeof chatFeature.purgeSteerState === "function") {
         chatFeature.purgeSteerState(id);
       }
-      // 流式 markdown 渲染的尾沿定时器按 sid 记在 chat-events 内部表里；缓冲
-      // 被逐出/删除时一并取消，避免定时器在缓冲重建后再触发（虽然回调内有
-      // currentStreamId 守卫，但清掉才不留下跨生命周期的悬挂 timer）。
-      // chatEventsFeature 在本文件更下方初始化；purge 只在运行期发生，无 TDZ 问题。
+      // The streaming markdown render trailing-edge timers are recorded per
+      // sid in a chat-events internal table; cancel them when the buffer is
+      // evicted/deleted so a timer cannot fire after the buffer is rebuilt
+      // (the callback has a currentStreamId guard, but clearing the entry is
+      // what avoids leaving a dangling timer across lifecycles).
+      // chatEventsFeature is initialized further down this file; purge only
+      // happens at runtime, so there is no TDZ concern.
       if (id && chatEventsFeature && typeof chatEventsFeature.cancelStreamRenderTimers === "function") {
         chatEventsFeature.cancelStreamRenderTimers(id);
       }
@@ -2001,8 +2004,10 @@
               updateToolItem(c.tool_use_id, contentForCard, !c.is_error);
             }
           }
-          // 回填即删：meta 只服务于这一次 tool_result 还原（迟到的重复 tool_end
-          // 会被 toolCallAlreadyFinished 早退），残留会让历史 args 常驻会话缓冲。
+          // Delete after backfill: the meta serves exactly this one
+          // tool_result restoration (a late duplicate tool_end exits early
+          // via toolCallAlreadyFinished); leftovers would keep historical
+          // args resident in the session buffer.
           delete toolMeta[c.tool_use_id];
         }
         continue;
@@ -2031,9 +2036,12 @@
             addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
             textBuf = "";
           }
-          // 只为仍有 tool_result 待回填的历史 tool_use 重建 meta（上方回填循环
-          // 消费后立即删除）；无结果的中断轮残留没有任何消费者，不再插入。
-          // live hydration(keepLiveToolMeta) 例外：在途工具的 tool_end 事件仍需读 meta。
+          // Rebuild meta only for historical tool_use entries that still
+          // have a tool_result pending backfill (the backfill loop above
+          // deletes them right after consuming); leftovers from interrupted
+          // turns with no result have no consumer and are no longer inserted.
+          // live hydration exception (keepLiveToolMeta): the tool_end event
+          // of an in-flight tool still needs the meta.
           if (resultById[b.id] || (opts && opts.keepLiveToolMeta)) {
             toolMeta[b.id] = { name: b.name, args: b.input };
           }

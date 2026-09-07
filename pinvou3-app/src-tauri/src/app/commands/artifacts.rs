@@ -337,8 +337,10 @@ pub async fn read_artifact_image_b64(path: String) -> Result<String, String> {
     if !p.is_file() {
         return Err(format!("图片不存在: {path}"));
     }
-    // 先验大小再整读：超过上限的文件整读进内存纯属浪费，提前按同一错误
-    // 形态拒绝（与下方读后校验保持一致，防两查之间文件被写大的极端情况）。
+    // Check the size before reading the whole file: reading an oversized
+    // file into memory is pure waste, so reject up front with the same
+    // error shape as the post-read check below (which still guards the
+    // edge case of the file growing between the two checks).
     if std::fs::metadata(&p).map(|meta| meta.len()).unwrap_or(0) > 25_000_000 {
         return Err("图片过大(>25MB),请用外部打开".into());
     }

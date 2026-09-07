@@ -4,9 +4,10 @@ import { Archive, Check, Edit2, FolderOpen, MoreHorizontal, PinIcon, PinOffIcon,
 import { useLongPressDrag } from '../../hooks/useLongPressDrag.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 
-    // NavItem memo 化:主导航在 App 每次 bridge notify(含后台流式 token)都会重渲,
-    // props 引用稳定(见 main.jsx 的 NAV_ICON_*/NAV_PREFETCH/navNavigateHandlers)时
-    // 整个导航项可跳过重渲。
+    // NavItem memoization: the main nav re-renders on every App bridge
+    // notify (including background streaming tokens); when the props are
+    // reference stable (see NAV_ICON_*/NAV_PREFETCH/navNavigateHandlers in
+    // main.jsx) the whole nav item can skip the re-render.
     const NavItem = memo(function NavItem({ icon, label, active, unread = false, isSidebarOpen = true, onClick, dragKind, dragging, onPickUp, nativeButton = false, t, onPointerEnter, onFocus }) {
       const drag = useLongPressDrag(dragKind, onPickUp);
       const dragProps = dragKind ? drag.handlers : {};
@@ -208,9 +209,11 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
         color: isDark ? '#fff' : '#1F1F1F',
       };
     };
-    // RecentItem memo 化:O(sessions) 的侧栏列表是 token 速率重渲的主要成本。
-    // props 需引用稳定——chat 由父级 useMemo 派生,回调由父级 useCallback/逐项
-    // 闭包缓存提供(见 main.jsx renderSidebarTaskItem);默认浅比较即可正确跳过。
+    // RecentItem memoization: the O(sessions) sidebar list is the dominant
+    // token-rate re-render cost. Props must be reference stable — chat is
+    // derived by the parent's useMemo and callbacks come from the parent's
+    // useCallback / per-item closure cache (see renderSidebarTaskItem in
+    // main.jsx); the default shallow compare then skips correctly.
     const RecentItem = memo(function RecentItem({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, dragKind = 'session', dragging, onPickUp }) {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);

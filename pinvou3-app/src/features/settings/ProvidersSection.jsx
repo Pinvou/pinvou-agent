@@ -319,7 +319,8 @@ export function ProvidersSection({ t }) {
         }
       })
       .then(fn => {
-        // 注册是异步的：卸载后才 resolve 时必须立刻反注册，否则监听泄漏。
+        // Registration is async: if it resolves after unmount, unregister
+        // immediately or the listener leaks.
         if (disposed) { fn(); return; }
         unlisten = fn;
       });

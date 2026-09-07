@@ -50,15 +50,20 @@ const DELIVERABLE_EXTS: &[&str] = &[
     "jpeg", "svg", "gif", "webp", "zip",
 ];
 
-/// 会话 JSON 解析缓存的条目上限。单条只含 metadata+artifacts，量级很小；
-/// 满员逐出一条（哈希表任意序），不整表清空，避免清单刷新时的缓存雪崩。
+/// Entry limit of the session JSON parse cache. One entry holds only
+/// metadata+artifacts and is tiny; when full, a single entry is evicted (in
+/// hash-map order) instead of clearing the whole table, avoiding a cache
+/// avalanche on inventory refreshes.
 const DV_VIEW_CACHE_LIMIT: usize = 512;
 
-/// 按 (mtime, len) 缓存每个会话 JSON 解析出的索引视图（metadata+artifacts）。
-/// 会话文件每回合整体重写、mtime 必变，缓存只对未变化的文件省去重复整读
-/// +解析——正是「产出物」列表高频刷新时的常见情形。视图的其余派生数据
-/// （产物文件的 mtime/size 现取 fs、扩展名过滤、排序）每次调用都重新计算，
-/// 解析是纯读取、无副作用，缓存值可安全复用。
+/// Cache of the index view (metadata+artifacts) parsed out of each session
+/// JSON, keyed by (mtime, len). Session files are rewritten whole every
+/// turn, so the mtime always changes; the cache only saves the redundant
+/// full read+parse of unchanged files — exactly the common case during
+/// high-frequency "deliverables" list refreshes. The view's remaining
+/// derived data (artifact file mtime/size read live from the fs, extension
+/// filtering, sorting) is recomputed on every call. Parsing is a pure read
+/// with no side effects, so the cached value is safe to reuse.
 static DV_VIEW_CACHE: OnceLock<
     Mutex<HashMap<PathBuf, ((Option<SystemTime>, u64), DvSessionView)>>,
 > = OnceLock::new();
@@ -117,8 +122,9 @@ pub(crate) fn list_deliverable_index_impl() -> Vec<DeliverableItem> {
                 let mut guard = cache
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                // 满员只逐出一条（理由见 DV_VIEW_CACHE_LIMIT），签名不匹配的
-                // 条目靠 (mtime, len) 自然失效。
+                // When full, evict a single entry (rationale in
+                // DV_VIEW_CACHE_LIMIT); entries with mismatched signatures
+                // expire naturally via (mtime, len).
                 if guard.len() >= DV_VIEW_CACHE_LIMIT && !guard.contains_key(&file) {
                     if let Some(evicted) = guard.keys().next().cloned() {
                         guard.remove(&evicted);

@@ -15,11 +15,15 @@
 //! 不在 workspace/artifacts 子目录下的事件(如 `sessions/<id>.json` session 元数据本身)忽略。
 //!
 //! Debouncing：notify 后端(inotify)对单个文件写入可能 fire 多次事件
-//! (Create + 多次 Modify(Data) + 最后 Modify(Metadata))。产物事件(artifact:disk)
-//! watcher 端不 debounce,由前端按 path 去重(trackArtifact 已经处理重复 path)。
-//! 例外：顶层 `sched-*.json` 在一次定时运行里随每条消息整体重写,成片事件只
-//! 应换来一次刷新,因此按 path 做 400ms 尾沿去抖(scheduled_task:run_updated
-//! 只驱动前端刷新,payload 的 event 字段无消费者,延迟发射不损语义)。
+//! (Create + several Modify(Data) + a final Modify(Metadata)). Artifact
+//! events (artifact:disk) are not debounced watcher-side; the frontend
+//! deduplicates by path (trackArtifact already handles repeated paths).
+//! Exception: top-level `sched-*.json` files are rewritten whole with every
+//! message of a scheduled run, and that burst of events should produce a
+//! single refresh, so they get a 400ms trailing-edge debounce per path
+//! (scheduled_task:run_updated only drives a frontend refresh and no
+//! consumer reads the payload's event field, so emitting late keeps the
+//! semantics intact).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -31,7 +35,8 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
 
-/// 顶层 `sched-*.json` 事件的尾沿去抖窗口：最后一次事件后静默满窗口才发射。
+/// Trailing-edge debounce window for top-level `sched-*.json` events: emit
+/// once the stream has stayed quiet for a full window after the last event.
 const SCHED_DEBOUNCE: Duration = Duration::from_millis(400);
 
 /// 启动后台 watcher 线程。spawn 后 return,watcher 自己跑直到 app 退出。
@@ -63,8 +68,10 @@ pub fn spawn(app: AppHandle, sessions_root: PathBuf) {
         }
         eprintln!("[file_watcher] watching {}", sessions_root.display());
 
-        // sched-*.json 的待发射表：session_id -> (路径, 最后一次事件时刻)。
-        // 主循环在等下一条事件与等最早到期之间 recv_timeout，到期的先发射。
+        // Pending emission table for sched-*.json: session_id -> (path, time
+        // of the last event). The main loop recv_timeouts between waiting for
+        // the next event and waiting for the earliest deadline; due entries
+        // are emitted first.
         let mut pending_sched: HashMap<String, (PathBuf, Instant)> = HashMap::new();
         loop {
             let now = Instant::now();
@@ -126,8 +133,10 @@ fn handle_event(
     }
     for path in &ev.paths {
         if let Some(session_id) = scheduled_session_id(path, root) {
-            // 只登记、不立即发射：由主循环尾沿去抖后统一发出；event 语义
-            // （upsert/removed）延迟到发射时刻按 path 存在性现判。
+            // Record only, do not emit immediately: the main loop emits
+            // after the trailing-edge debounce; the event semantics
+            // (upsert/removed) are decided at emit time from the path's
+            // existence.
             pending_sched.insert(session_id, (path.clone(), Instant::now()));
             continue;
         }
@@ -178,8 +187,10 @@ fn handle_event(
     }
 }
 
-/// 发射一次定时运行刷新事件。`exists` 在发射时刻按 path 现判，保留原有
-/// upsert/removed 语义（当前前端两个监听方都只据此触发刷新、不读 event）。
+/// Emit one scheduled-run refresh event. `exists` is determined at emit time
+/// from the path, preserving the original upsert/removed semantics (both
+/// current frontend listeners only trigger a refresh from it and never read
+/// the event field).
 fn emit_scheduled_run_updated(app: &AppHandle, session_id: &str, exists: bool) {
     let payload = json!({
         "sessionId": session_id,
@@ -223,8 +234,10 @@ fn should_skip(basename: &str) -> bool {
     if basename.ends_with(".tmp") || basename.ends_with(".bak") {
         return true;
     }
-    // 工作流内部审计流水（assistant/audit.rs，逐条 TokenUsage 追加），纯基础
-    // 设施、前端零消费；不跳过会随每次子代理事件刷一遍产物面板。
+    // The workflow-internal audit journal (assistant/audit.rs, one
+    // TokenUsage appended per entry) is pure infrastructure with zero
+    // frontend consumers; without the skip, every subagent event would
+    // refresh the artifact panel.
     if basename == "workflow_audit.jsonl" {
         return true;
     }
@@ -273,7 +286,7 @@ mod tests {
         assert!(should_skip(".hidden")); // 通用 dot file
         assert!(should_skip(".bashrc.swp")); // vim swap
         assert!(should_skip("draft.tmp"));
-        assert!(should_skip("workflow_audit.jsonl")); // 工作流内部审计流水
+        assert!(should_skip("workflow_audit.jsonl")); // workflow-internal audit journal
         assert!(!should_skip("report.docx"));
         assert!(!should_skip("人类文档.docx")); // 正常中文文件名
         assert!(!should_skip("plan.md"));

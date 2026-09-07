@@ -129,13 +129,17 @@
     return { running, waiting };
   }
 
-  // MonitorView 只消费 state.monitor._fmt（含 vllmRaw 一层嵌套），浅等即显示
-  // 等价。轮询每秒跑一次，快照显示等价时不再赋值 + notify，避免监控页开着时
-  // 每秒一次的全量 App 重渲染。数值有天然抖动（cpu/gpu 百分比等），比较给
-  // 0.5 容差（宁可多发一次，也不许卡住不发）；计数经 toFixed/round 后多为
-  // 字符串，按精确比较。updatedAt 是轮询 tick 标记（无 UI 渲染，仅作采样
-  // 触发器），必须排除，否则每秒都「有变化」；页面时钟由 MonitorView 本地
-  // 1s 计时器驱动，不依赖它。
+  // MonitorView only consumes state.monitor._fmt (plus one level of vllmRaw
+  // nesting), so shallow equality means display equivalence. The poll runs
+  // once per second; when a snapshot is display-equivalent, skip the
+  // assignment + notify to avoid a full App re-render every second while the
+  // monitor page is open. Numeric values jitter naturally (cpu/gpu
+  // percentages etc.), so comparisons allow a 0.5 tolerance (prefer one
+  // extra notify over ever getting stuck); counters are mostly strings after
+  // toFixed/round and compare exactly. updatedAt is a poll-tick marker (never
+  // rendered, only a sampling trigger) and must be excluded, otherwise every
+  // second counts as "changed"; the page clock is driven by MonitorView's
+  // local 1s timer and does not depend on it.
   function monitorFmtEqual(prev, next) {
     if (prev === next) return true;
     if (!prev || !next) return false;
@@ -173,7 +177,8 @@
     monitorPollInFlight = true;
     try {
       const snap = await invoke("get_monitor_snapshot");
-      // 上一轮出错 → 本轮必须通知一次,让「读取失败」横幅切换回正常面板。
+      // The previous round errored → this round must notify once so the
+      // "read failed" banner switches back to the normal panel.
       const hadMonitorError = !!state.monitorError;
       state.monitorError = null;
       // GPU util sliding window
@@ -289,7 +294,8 @@
         maxModelLen = snap.vllm.max_model_len;
         state.tokens.max = maxModelLen;
       }
-      // 显示等价的快照不覆盖 state.monitor、不 notify（首帧或上一轮出错时必须发）。
+      // Display-equivalent snapshots neither overwrite state.monitor nor
+      // notify (must send on the first frame or after an errored round).
       const prevFmt = state.monitor && state.monitor._fmt;
       if (hadMonitorError || !prevFmt || !monitorFmtEqual(prevFmt, snap._fmt)) {
         state.monitor = snap;

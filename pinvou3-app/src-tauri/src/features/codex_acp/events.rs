@@ -1173,7 +1173,7 @@ impl TimelineWriter {
             self.writer = None;
             self.open()?;
             self.write_line(&line, flush_after)
-                .with_context(|| format!("重试写入 ACP timeline 失败: {error}"))?;
+                .with_context(|| format!("failed to retry the ACP timeline write: {error}"))?;
         }
         Ok(())
     }
@@ -1209,7 +1209,7 @@ impl TimelineWriter {
         if self.writer.is_none() {
             self.open()?;
         }
-        self.writer.as_mut().context("ACP timeline 写入句柄不可用")
+        self.writer.as_mut().context("ACP timeline writer handle unavailable")
     }
 
     fn journal_exists(&self) -> bool {
@@ -1222,13 +1222,13 @@ impl TimelineWriter {
         let path = timeline_path(&self.session_id)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
-                .with_context(|| format!("创建 ACP timeline 目录 {} 失败", parent.display()))?;
+                .with_context(|| format!("failed to create ACP timeline directory {}", parent.display()))?;
         }
         let file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)
-            .with_context(|| format!("打开 ACP timeline {} 失败", path.display()))?;
+            .with_context(|| format!("failed to open ACP timeline {}", path.display()))?;
         self.writer = Some(BufWriter::with_capacity(TIMELINE_APPEND_BUFFER_BYTES, file));
         Ok(())
     }
@@ -1284,7 +1284,7 @@ fn load_timeline_last_seq_from_path(path: &Path) -> Result<Option<u64>> {
         return Ok(None);
     }
     let file = fs::File::open(path)
-        .with_context(|| format!("读取 ACP timeline {} 失败", path.display()))?;
+        .with_context(|| format!("failed to open ACP timeline {}", path.display()))?;
     let file_len = file.metadata()?.len();
     if file_len == 0 {
         return Ok(None);
@@ -1294,7 +1294,7 @@ fn load_timeline_last_seq_from_path(path: &Path) -> Result<Option<u64>> {
     if from_tail {
         reader
             .seek(SeekFrom::Start(file_len - TIMELINE_TAIL_BYTES))
-            .with_context(|| format!("跳转 ACP timeline {} 失败", path.display()))?;
+            .with_context(|| format!("failed to seek in ACP timeline {}", path.display()))?;
         // The window may open mid-line; skip to the next line boundary so
         // parsing starts at a whole event (one earlier line changes nothing:
         // the maximum seq sits at the end).

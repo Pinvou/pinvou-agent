@@ -156,12 +156,16 @@ function workspaceDisplayName(path) {
   return parts[parts.length - 1] || String(path || '');
 }
 
-// RecentItem memo 化后的逐项回调缓存:侧栏任务项(item)由 useMemo 派生、底层数据
-// 不变时引用稳定,以 item 为键缓存 onPickUp/定时运行 onSelect 闭包,使 RecentItem
-// 的 props 在无关重渲染(本地 UI 状态、纯聊天流式 token)中保持全等而跳过整行重渲。
-// 闭包捕获的 handler 均为 useCallback 稳定引用,且其依赖(t 等)变化时 item 一定会
-// 随之重建(派生 memo 以同一批状态为依赖),因此缓存不会提供过期闭包;旧 item 键由
-// GC 连同闭包一并回收。
+// Per-item callback cache behind the RecentItem memo: sidebar task items
+// (item) are derived by useMemo and keep stable references while the
+// underlying data is unchanged, so caching the onPickUp / scheduled-run
+// onSelect closures keyed by item keeps RecentItem props shallow-equal
+// across unrelated re-renders (local UI state, pure chat streaming tokens)
+// and skips the row re-render. Every captured handler is a stable useCallback
+// reference, and whenever a dependency (t etc.) changes the item is rebuilt
+// too (the derived memo depends on the same state), so the cache can never
+// hand out a stale closure; old item keys are garbage-collected along with
+// their closures.
 function cachedItemCallback(cache, item, build) {
   let fn = cache.get(item);
   if (!fn) {
@@ -173,7 +177,8 @@ function cachedItemCallback(cache, item, build) {
 const sidebarPickUpCallbacks = new WeakMap();
 const sidebarScheduledSelectCallbacks = new WeakMap();
 
-// 侧栏主导航的静态图标元素:模块级常量保持元素引用稳定,NavItem memo 才能命中。
+// Static icon elements for the sidebar main nav: module-level constants keep
+// the element references stable so the NavItem memo can hit.
 const NAV_ICON_NEW_CHAT = <Edit2 size={18} />;
 const NAV_ICON_SEARCH = <Search size={18} />;
 const NAV_ICON_SCHEDULED = <Clock size={18} />;
@@ -184,7 +189,8 @@ const NAV_ICON_CARD_POOL = <Layers size={18} />;
 const NAV_ICON_KNOWLEDGE = <BookOpen size={18} />;
 const NAV_ICON_CURRENT_CHAT = <MessageSquare size={18} />;
 
-// 悬停/聚焦预取回调(prefetchView 为模块函数):常量引用,供 NavItem memo 比较。
+// Hover/focus prefetch callbacks (prefetchView is a module function):
+// constant references for the NavItem memo comparison.
 const NAV_PREFETCH = {
   scheduled: () => prefetchView('scheduled'),
   knowledge: () => prefetchView('knowledge'),
@@ -204,8 +210,10 @@ const NAV_PREFETCH = {
         window.__PINVOU_STARTUP__.mark('react:app_render_start');
       }
       const bs = useBridgeState(APP_BRIDGE_STATE_DOMAINS);
-      // latest-ref mirror:稳定 useCallback(如 navigateFromScheduledRun)在事件触发时
-      // 读取最新桥接快照,避免依赖 bs 而使回调身份逐 notify 变化、击穿 memo。
+      // latest-ref mirror: stable useCallbacks (e.g. navigateFromScheduledRun)
+      // read the latest bridge snapshot when the event fires instead of
+      // depending on bs, which would change the callback identity on every
+      // notify and defeat the memo.
       const bsRef = useRef(bs);
       bsRef.current = bs;
       useLayoutEffect(() => {
@@ -1169,8 +1177,10 @@ const NAV_PREFETCH = {
       // dragAvatar = 被拎起的标签副本(跟随光标的 DOM 元素);null=没在拖。原生只判落点,视觉全在这。
       const [dragAvatar, setDragAvatar] = useState(null); // {key,label,dx,dy,w,h,x,y}
       const dragOffsetRef = useRef({ dx: 0, dy: 0 });
-      // useCallback 稳定引用:RecentItem/NavItem 的逐项 onPickUp 闭包缓存(见 renderSidebarTaskItem)
-      // 依赖此引用跨渲染不变,memo 才不会被每次渲染的新回调击穿。
+      // Stable useCallback: the per-item onPickUp closure caches of
+      // RecentItem/NavItem (see renderSidebarTaskItem) rely on this reference
+      // staying constant across renders so fresh callbacks per render cannot
+      // defeat the memo.
       const beginTearOff = useCallback((kind, id, label, info) => {
         const inv = isTauriAvailable() ? invokeTauri : null;
         if (!inv || !info) return;
@@ -1203,7 +1213,8 @@ const NAV_PREFETCH = {
       // 原生拖拽结束(松手/取消)→ 收起 avatar。
       useEffect(() => {
         if (!isTauriAvailable()) return;
-        // 卸载晚于 listen() resolve 时直接 unlisten,避免泄漏(与 browser:activated 同口径)。
+        // If unmount happens after listen() resolves, unlisten immediately
+        // to avoid a leak (same policy as browser:activated).
         let disposed = false;
         let un;
         tauriEvents.listen('detach:drag-ended', () => setDragAvatar(null)).then(f => {
@@ -1466,15 +1477,21 @@ const NAV_PREFETCH = {
       // 语言已即时写盘+切 UI,但 LLM 的 locale_tag 要重启 engine 才生效 → 偏离启动语言就提示。
       const languageNeedsRestart = !!bootedLanguageRef.current && language !== bootedLanguageRef.current;
 
-      // 定时运行状态文案(依赖当前语言词典);定义在派生 useMemo 之前,供下方 memo 依赖。
+      // Scheduled-run status copy (depends on the current language
+      // dictionary); defined before the derived useMemos below so they can
+      // depend on it.
       const scheduledRunLabel = useCallback((value) => {
         return (t.uiScheduled.runStatus[value] || value || t.uiScheduled.unknown);
       }, [t]);
 
-      // App 每个 bridge notify 都整体重渲染(含与侧栏无关的本地 UI 状态变化)。
-      // 下方 O(sessions) 派生全部按真实数据切片做 useMemo:bridge 订阅快照是持久化
-      // 投影,未变化的切片引用不变(如纯聊天流式 token 只动 chat 域,sessions 域
-      // 引用保持),这些 memo 命中后侧栏派生与 RecentItem memo 才能真正跳过重算。
+      // App re-renders in full on every bridge notify (including local UI
+      // state changes unrelated to the sidebar). Every O(sessions) derivation
+      // below is a useMemo over the real data slices: bridge subscription
+      // snapshots are persistent projections whose unchanged slices keep
+      // their references (pure chat streaming tokens only touch the chat
+      // domain and keep the sessions domain identical), so these memos are
+      // what let the sidebar derivations and the RecentItem memo actually
+      // skip recomputation.
 
       // Build chat history from sessions
       const bridgeSessions = bs && bs.sessions;
@@ -1488,7 +1505,9 @@ const NAV_PREFETCH = {
             : sessionTitlePresentation(s.title, s.title_attachment_names);
           return {
             id: s.id,
-            // 后端默认标题是三语哨兵之一(见 isDefaultChatTitle;bridge 以此判断是否自动改名)——显示层映射成当前语言
+            // The backend default title is one of the trilingual sentinels
+            // (see isDefaultChatTitle; the bridge uses it to decide whether to
+            // auto-rename) — map it to the current language at the display layer
             title: sessionTitlePlainText(titlePresentation),
             titleContent: titlePresentation.attachments.length
               ? <SessionAttachmentTitle presentation={titlePresentation} />
@@ -1497,7 +1516,7 @@ const NAV_PREFETCH = {
             updatedAt: s.updated_at || s.created_at || '',
             pinned: !!s.pinned,
             pinnedAt: s.pinned_at || '',
-            working: !!sessionBusy[s.id], // 多 session 并发:该 session 是否正在后台生成
+            working: !!sessionBusy[s.id], // concurrent sessions: is this session generating in the background
             leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
             testId: 'regular-sidebar-item',
             menuTestId: 'regular-sidebar-menu',
@@ -1799,8 +1818,9 @@ const NAV_PREFETCH = {
         ...scheduledRunHistory.map(chat => ({ ...chat, taskKind: 'scheduled' })),
         ...codexHistory,
       ], [pinnedHistory, regularHistory, scheduledRunHistory, scheduledRunBySessionId, codexHistory, decorateScheduledRunChat]);
-      // latest-ref mirror:handleArchiveSession(稳定 useCallback)在调用时读取最新
-      // 任务列表取会话标题,避免为取值而让回调身份逐渲染变化。
+      // latest-ref mirror: handleArchiveSession (a stable useCallback) reads
+      // the latest task list for the session title at call time, instead of
+      // changing the callback identity per render just to read a value.
       const allSidebarTasksRef = useRef(allSidebarTasks);
       allSidebarTasksRef.current = allSidebarTasks;
       const sidebarTaskHistory = useMemo(() => allSidebarTasks
@@ -1915,8 +1935,9 @@ const NAV_PREFETCH = {
         }
       }, []);
 
-      // useCallback 稳定引用:侧栏 NavItem memo 依赖此回调身份。bs 经 latest-ref
-      // 读取——点击时取到的就是最近一次渲染的快照,与闭包捕获语义一致。
+      // Stable useCallback: the sidebar NavItem memo depends on this callback
+      // identity. bs is read through a latest-ref — a click sees the most
+      // recently rendered snapshot, matching closure-capture semantics.
       const navigateFromScheduledRun = useCallback(async (nextView, beforeNavigate) => {
         const bs = bsRef.current;
         const context = browserSurfaceTransitionContextRef.current;
@@ -1951,8 +1972,9 @@ const NAV_PREFETCH = {
         return navigateFromScheduledRun('settings');
       }
 
-      // useCallback 稳定引用:LazySearchView/RecentItem memo 依赖这些回调身份,
-      // 逐渲染重建会让 memo 失效(依赖取值即真实语义依赖)。
+      // Stable useCallbacks: the LazySearchView/RecentItem memos depend on
+      // these callback identities; rebuilding them per render would defeat
+      // the memo (the dependencies are the real semantic dependencies).
       const handleOpenScheduledRunShortcut = useCallback(async (run) => {
         if (!run || !run.sessionId) return;
         // A scheduled-run session is a normal chat: both the fallback and the
@@ -1986,7 +2008,8 @@ const NAV_PREFETCH = {
         });
       }, [t, closeMobileSidebar, runBrowserUiTransition, setCurrentView]);
 
-      // useCallback 稳定引用:侧栏「新对话」NavItems memo 依赖其身份(包装于 handleNavNewChat)。
+      // Stable useCallback: the sidebar "new chat" NavItems memo depends on
+      // its identity (wrapped in handleNavNewChat).
       const handleNewChat = useCallback((installedToolId, forceMode) => {
         // 类型守卫:installedToolId 必须是字符串 toolId。侧边栏按钮 onClick={() => handleNewChat()}
         // 本不传参,但若哪天有调用点写成 onClick={handleNewChat},React 会把事件对象当首参塞进来——
@@ -2100,7 +2123,8 @@ const NAV_PREFETCH = {
         setSearchOverlayOpen(false);
       }
 
-      // useCallback 稳定引用:RecentItem memo 的 onSelect(codex 分支)直接传本回调。
+      // Stable useCallback: passed directly as the RecentItem memo's onSelect
+      // (codex branch).
       const handleSwitchCodexSession = useCallback((id) => {
         setCodeModeOn(true);
         updateActiveCodexSession(id);
@@ -2347,8 +2371,9 @@ const NAV_PREFETCH = {
         };
       }, []);
 
-      // 以下四个会话操作回调均为 useCallback 稳定引用:RecentItem/搜索管理页的
-      // memo 依赖其身份,依赖数组即真实读取的状态。
+      // The four session-action callbacks below are all stable useCallbacks:
+      // the RecentItem/search management memos depend on their identities and
+      // their dependency arrays list exactly the state they read.
       const handleDeleteSession = useCallback(async (id) => {
         const isCodexSession = codexSessions.some(session => session.id === id);
         if (bridge.available) await bridge.sessions.deleteSession(id);
@@ -2370,14 +2395,17 @@ const NAV_PREFETCH = {
         if (isCodexSession) await refreshCodexSessions().catch(() => {});
       }, [codexSessions, refreshCodexSessions]);
 
-      // 归档确认需要会话标题:经 latest-ref 读最新任务列表,回调本身保持稳定,
-      // 避免 RecentItem memo 因该 prop 每渲染失效。
+      // The archive confirmation needs the session title: read through a
+      // latest-ref so the callback itself stays stable and the RecentItem
+      // memo is not defeated by this prop on every render.
       const handleArchiveSession = useCallback((id) => {
         const chat = (allSidebarTasksRef.current || []).find(c => c.id === id);
         setArchiveConfirm(chat || { id, title: t.newChat });
       }, [t]);
 
-      // 「打开会话文件夹」: RecentItem 与对话管理页共用;bridge 为模块单例,依赖恒稳定。
+      // "Open session folder": shared by RecentItem and the conversation
+      // management page; the bridge is a module singleton, so its dependency
+      // is constant.
       const handleRevealSessionFolder = useCallback((id) => {
         if (bridge.artifacts.revealSessionFolder) bridge.artifacts.revealSessionFolder(id);
       }, []);
@@ -2694,9 +2722,11 @@ const NAV_PREFETCH = {
         );
       };
 
-      // 侧栏主导航回调集合(稳定引用):NavItem memo 化后 onClick/onPickUp 必须引用
-      // 稳定,否则 memo 永远失效。导航经 navigateFromScheduledRun(内部读 bsRef),
-      // 撕离闭包仅依赖 beginTearOff(稳定)与当前语言词典 t。
+      // Sidebar main nav callback set (stable references): with NavItem
+      // memoized, onClick/onPickUp must be reference-stable or the memo never
+      // hits. Navigation goes through navigateFromScheduledRun (reads bsRef
+      // internally); the tear-off closure depends only on beginTearOff
+      // (stable) and the current language dictionary t.
       const navNavigateHandlers = useMemo(() => ({
         scheduled: () => navigateFromScheduledRun('scheduled'),
         outputs: () => navigateFromScheduledRun('outputs'),

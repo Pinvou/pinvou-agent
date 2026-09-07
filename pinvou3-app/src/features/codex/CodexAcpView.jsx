@@ -426,9 +426,11 @@ function CodexComposerConfigSelect({
   );
 }
 
-// 秒级时钟曾挂在 CodexAcpView 顶层 state(busy 时每秒重渲整个 4000+ 行视图),
-// 现按 ChatView 的 LiveConversationActivityIndicator 同款模式下沉:只有真正在显示
-// "已耗时" 的运行中指示器自己持有时钟,每秒只重渲这一小块子树。
+// The 1Hz clock used to live in CodexAcpView top-level state (re-rendering
+// the whole 4000+ line view every second while busy); it now sinks down with
+// the same pattern as ChatView's LiveConversationActivityIndicator: only the
+// running indicator that actually shows "elapsed" owns a clock, so each tick
+// re-renders just that small subtree.
 function LiveConversationActivityIndicator({ turn, onRequestAttention, className, copy }) {
   const running = !!turn && turn.status === 'running';
   const now = useConversationSecondClock(running);
@@ -2524,11 +2526,16 @@ export function CodexAcpView({
 
   // 原生（品悟）会话的 engine 事件：按 session 推进对应 lane，仅当前会话 bump 渲染；
   // turn 边界顺手刷新会话列表（标题/时间戳），与 acp:event 的 turn_completed 处理对齐。
-  // 注意:nativeLaneTick 是全视图共用的版本号——lane 是可变 ref 对象,除时间线投影外,
-  // 记忆弹层/底栏控件(直接读 lane 字段)与自动滚动 effect(2786 附近)都依赖此 bump。
-  // 把"每个 token 全视图重渲"收敛到单 lane 订阅组件,需要把 visibleTurns 及其全部
-  // 回调(respond/renderNativeItem/pendingByTool/rewind 系列等)沉到子组件,契约面太宽,
-  // 风险不匹配本项;时间线本身已有 ConversationTurn 深比较兜底,未变 turn 不重渲。
+  // Note: nativeLaneTick is a view-wide version counter — lane is a mutable
+  // ref object, and beyond the timeline projection, the memory popover /
+  // bottom-bar controls (reading lane fields directly) and the auto-scroll
+  // effect (near line 2786) all rely on this bump. Confining "re-render the
+  // whole view per token" to a per-lane subscription component would require
+  // sinking visibleTurns and all of its callbacks (respond/renderNativeItem/
+  // pendingByTool/the rewind family etc.) into a child — a contract surface
+  // too wide for the risk this item justifies; the timeline already has the
+  // ConversationTurn deep compare as a backstop, so unchanged turns do not
+  // re-render.
   useEffect(() => {
     let disposed = false;
     let unlisteners = [];

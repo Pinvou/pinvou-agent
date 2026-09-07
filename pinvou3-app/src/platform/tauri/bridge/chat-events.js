@@ -236,12 +236,16 @@
       context.pendingAssistantText = "";
       context.pendingAssistantBlocks = [];
     }
-    // chat:done 终态清扫：删除没有配对 tool_result 的 toolMeta 条目。forwarder
-    // 对同一 session 顺序投递邮箱事件，done 之后本 turn 不会再有 chat:tool_end
-    // （下一轮工具用全新 id），interrupt/error 轮的在途条目（args 可达数十 KB）
-    // 永远等不到消费者，只会随会话缓冲常驻。必须在 preserveInterruptedAssistant
-    // Presentation / flushAssistantMessageToHistory 之后调用：那时 pendingAssistant
-    // Blocks 已清空或全部入史，state.messages 即最终口径，按 tool_result 配对判定。
+    // chat:done terminal sweep: delete toolMeta entries that never got a
+    // paired tool_result. The forwarder delivers mailbox events for a session
+    // in order, and after done this turn sees no more chat:tool_end (the next
+    // turn's tools use fresh ids), so in-flight entries from interrupted /
+    // errored turns (args can reach tens of KB) would never find a consumer
+    // and would stay resident in the session buffer. Must run after
+    // preserveInterruptedAssistantPresentation /
+    // flushAssistantMessageToHistory: by then pendingAssistant Blocks are
+    // cleared or archived, state.messages is the final authority, and the
+    // tool_result pairing can be decided.
     function sweepUnpairedToolMeta() {
       const meta = context.toolMeta;
       const ids = Object.keys(meta || {});
@@ -358,8 +362,10 @@
               break;
             }
           }
-          // 流节流不变量：flush 必须先于流状态复位。此时旧流气泡已随上面的
-          // splice 删除，flush 无渲染目标，只负责取消该会话的尾沿定时器。
+          // Stream throttle invariant: the flush must precede the stream
+          // state reset. The old streaming bubble was already removed by the
+          // splice above, so the flush has no render target and only cancels
+          // the session's trailing-edge timer.
           flushPendingStreamRender();
           resetPendingAssistant();
         }
@@ -367,7 +373,7 @@
       }
       state.busy = true;
       if (!state.thinking.active) startThinking();
-      flushPendingStreamRender(); // 新 turn 复位流状态前，旧流气泡先出最终 html
+      flushPendingStreamRender(); // the old streaming bubble gets its final html before the new turn resets stream state
       context.currentStreamText = "";
       context.currentStreamId = 0;
     });
@@ -595,18 +601,24 @@
     }
   }
 
-  // ── 流式 markdown 渲染节流 ────────────────────────────────────────
-  // Rust 每个引擎 delta 都发一个 chat:delta（forwarder 无合帧），此前每个 delta
-  // 都对【全部累计文本】做一次 marked+DOMPurify+hljs 全量重解析 → 长回复 O(n²)。
-  // 流式期间改为 ~180ms 尾沿重渲一次（尾沿定时器保证最后一个 delta 之后仍会渲染，
-  // 不丢尾帧）；首个 delta（气泡新建或 html 尚空）仍立即渲染。
-  // 不变量：所有终结/迁移该流式气泡的路径（chat:done/error/interrupt、
-  // chat:tool_start、chat:tool_end、转 reasoning、新 user message 复位、会话缓冲清除）必须先
-  // flushPendingStreamRender 同步出最终 html —— 否则尾沿定时器会在气泡终结后才
-  // 触发，用过期快照覆盖权威文本。定时器按 session 隔离：active 与后台会话可能
-  // 同时流式，共用一个定时器会渲染错工作集。
+  // ── Streaming markdown render throttle ────────────────────────────
+  // Rust emits one chat:delta per engine delta (the forwarder does not
+  // coalesce), and every delta used to reparse the ENTIRE accumulated text
+  // with marked+DOMPurify+hljs → O(n²) over a long reply. While streaming,
+  // re-render once per ~180ms trailing edge instead (the trailing-edge timer
+  // guarantees a render after the last delta, so the tail frame is never
+  // lost); the first delta (new bubble or still-empty html) still renders
+  // immediately.
+  // Invariant: every path that terminates or migrates the streaming bubble
+  // (chat:done/error/interrupt, chat:tool_start, chat:tool_end, switching to
+  // reasoning, a new user message reset, session buffer eviction) must call
+  // flushPendingStreamRender first to synchronously produce the final html —
+  // otherwise the trailing-edge timer fires after the bubble terminated and
+  // overwrites authoritative text with a stale snapshot. Timers are isolated
+  // per session: active and background sessions can stream simultaneously,
+  // and a shared timer would render the wrong working set.
   const STREAM_RENDER_THROTTLE_MS = 180;
-  const streamRenderTimers = Object.create(null); // sid → 尾沿重渲定时器
+  const streamRenderTimers = Object.create(null); // sid → trailing-edge render timer
 
   function renderStreamItemHtml() {
     const item = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
@@ -616,38 +628,44 @@
     return true;
   }
 
-  // 只允许在 onSessionEvent/runSyncOnSession 的同步体内调用：此时
-  // state.activeSessionId 已被路由为事件所属 session，才能作为定时器表 key
-  // 与工作集一一对应。
+  // Only callable inside the synchronous body of
+  // onSessionEvent/runSyncOnSession: state.activeSessionId has been routed
+  // to the event's session there, making it a valid timer-table key that
+  // maps one-to-one onto the working set.
   function flushPendingStreamRender() {
     const sid = state.activeSessionId;
     if (sid && streamRenderTimers[sid]) {
       clearTimeout(streamRenderTimers[sid]);
       delete streamRenderTimers[sid];
     }
-    // 流文本为空时不出渲染：保住「空流泡（optimistic 空 html）被终结路径移除」
-    // 的既有行为，也不给空气泡伪造 html。
+    // Do not render while the stream text is empty: preserves the existing
+    // behavior where an empty streaming bubble (optimistic empty html) is
+    // removed by terminal paths, and avoids fabricating html for an empty
+    // bubble.
     if (!context.currentStreamId || !context.currentStreamText) return false;
     return renderStreamItemHtml();
   }
 
   function scheduleStreamRender(sid) {
-    // 无 sid 或宿主没有定时器（部分测试沙箱）时退回逐 delta 渲染的旧行为。
+    // Without a sid, or when the host has no timers (some test sandboxes),
+    // fall back to the old render-per-delta behavior.
     if (!sid || typeof setTimeout !== "function") {
       if (context.currentStreamId && context.currentStreamText) renderStreamItemHtml();
       return;
     }
-    if (streamRenderTimers[sid]) return; // 已有待渲尾沿：本次 delta 只攒文本
+    if (streamRenderTimers[sid]) return; // a trailing edge is already pending: this delta only accumulates text
     streamRenderTimers[sid] = setTimeout(function () {
       delete streamRenderTimers[sid];
       let rendered = false;
-      // 定时器在事件循环空闲点触发，必须重新进入该 session 的工作集再渲染；
-      // 流已终结（currentStreamId 复位）说明终态路径已同步 flush，直接跳过。
+      // The timer fires at an event-loop idle point, so it must re-enter the
+      // session's working set before rendering; a terminated stream
+      // (currentStreamId reset) means a terminal path already flushed
+      // synchronously — skip.
       runSyncOnSession(sid, function () {
         if (!context.currentStreamId || !context.currentStreamText) return;
         rendered = renderStreamItemHtml();
       });
-      if (rendered) notify(); // 后台会话在 runSyncOnSession 内被 suppress，补一次
+      if (rendered) notify(); // background sessions are suppressed inside runSyncOnSession; notify once more
     }, STREAM_RENDER_THROTTLE_MS);
   }
 
@@ -736,7 +754,9 @@
     const item = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
     if (item) {
       item.text = context.currentStreamText;
-      // 气泡首个 delta（html 尚空）立即渲染；后续只攒文本，html 交给节流尾沿
+      // The bubble's first delta (html still empty) renders immediately;
+      // later deltas only accumulate text and leave the html to the
+      // throttle's trailing edge
       if (!item.html) item.html = renderMarkdown(context.currentStreamText);
       item.streaming = true;
     } else {
@@ -777,7 +797,7 @@
     context.pendingAssistantBlocks.push({ type: "tool_use", id: p.id, name: p.name, input: p.args || {} });
 
     // Finalize current streaming bubble
-    flushPendingStreamRender(); // 工具卡接管前同步出最终 html，并取消待渲尾沿
+    flushPendingStreamRender(); // synchronously produce the final html before the tool card takes over, and cancel the pending trailing edge
     const streamItem = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
     if (streamItem) {
       streamItem.streaming = false;
@@ -1096,7 +1116,9 @@
       if (typeof shellMessages.showShellCleanupFailure === "function") {
         shellMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
       }
-      // 终态先同步出流式气泡的最终 html（含 interrupted 保留展示），并取消待渲尾沿
+      // Terminal states synchronously flush the streaming bubble's final
+      // html first (including the interrupted retention display) and cancel
+      // the pending trailing edge
       flushPendingStreamRender();
       const terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
       const interrupted = ["interrupted", "cancelled", "canceled"].includes(terminalStatus);
@@ -1541,7 +1563,8 @@
       latestTimelineCompletion,
       authoritativeTimelineMissesKnownCompletion,
       refreshAuthoritativeTurnTimeline,
-      // 会话缓冲清除（evict/delete）时由 bridge.js 调用，取消该 sid 的待渲尾沿
+      // Called from bridge.js on session buffer eviction/deletion to cancel
+      // the pending trailing edge for that sid
       cancelStreamRenderTimers,
     };
   };

@@ -1239,8 +1239,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         if (!ev) return;
         let disposed = false;
         const unlisten = [];
-        // 注册是异步的:卸载后才 resolve 的监听必须立刻反注册,
-        // 否则 push 进数组也无人消费,监听泄漏。
+        // Registration is async: a listener resolving after unmount must be
+        // unregistered immediately — nobody consumes the array entries and
+        // the listener leaks.
         const track = (p) => p.then((u) => {
           if (disposed) { try { u(); } catch { /* silent: listeners may already be stale at unmount */ } return; }
           unlisten.push(u);

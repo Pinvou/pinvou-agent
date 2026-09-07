@@ -1305,10 +1305,13 @@ async function longSessionStreamingAvoidsPerDeltaDeepClone() {
   }
   await tick();
 
-  // 节流契约（perf/memory-footprint-optimization）：每个 delta 仍立即 notify 一次
-  // （下限 1001 守住「流式边界与 delta 立即可观察」的原始回归方向）；在此之上，
-  // chat:delta 的流式 markdown 尾沿节流定时器（~180ms）可能在长流期间插入最多
-  // 数次额外的渲染快照（≤ 时长/180ms），属预期而非合并丢失。
+  // Throttle contract (perf/memory-footprint-optimization): every delta
+  // still notifies immediately (the floor of 1001 preserves the original
+  // regression direction "streaming boundaries and deltas are immediately
+  // observable"); on top of that, the chat:delta streaming markdown
+  // trailing-edge throttle timer (~180ms) may insert a few extra render
+  // snapshots during a long stream (≤ duration/180ms) — expected, not
+  // dropped coalescing.
   assert.ok(updates >= 1001, "stream boundaries and deltas should remain immediately observable");
   assert.ok(secondSubscriberUpdates >= 1001,
     "all subscribers should receive one immediate update per stream boundary and delta");

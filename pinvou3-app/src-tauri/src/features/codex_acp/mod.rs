@@ -3088,11 +3088,14 @@ impl AcpPool {
     pub async fn evict(&self, session_id: &str) {
         self.cancel_pending_permissions(session_id).await;
         self.cancel_pending_elicitations(session_id).await;
-        // 辅助索引映射此前只增不删：真正删除的会话条目会永久滞留。这里随
-        // 回收一并移除是安全的——`is_acp_metadata` 在 list() 时会按持久化
-        // 元数据（agents 索引或 `* (ACP)` model 字符串）按需重建该条目，启动
-        // 时也会按会话元数据整体重建。存活的会话（升级重启、模型探针）下一轮 list()
-        // 即自愈；空闲回收走 `evict_if_idle`，不经过本路径、映射原样保留。
+        // The helper index map previously only grew: entries of truly
+        // deleted sessions were retained forever. Removing them together
+        // with the eviction is safe — `is_acp_metadata` rebuilds the entry
+        // on demand from persisted metadata during list() (the agents index
+        // or the `* (ACP)` model string), and startup rebuilds the whole map
+        // from session metadata. Surviving sessions (upgrade restarts, model
+        // probes) self-heal on the next list(); idle eviction goes through
+        // `evict_if_idle`, never through this path, so its map entries stay.
         self.acp_metadata_backends.write().remove(session_id);
         if let Some(runtime) = self.sessions.lock().await.remove(session_id) {
             runtime.shutdown().await;
@@ -3309,10 +3312,14 @@ impl AcpPool {
         )
     }
 
-    // 读盘前 best-effort 排空该会话 journal 的缓冲窗：turn 边界之外，活跃 turn 的
-    // chunk 事件最多可在 BufWriter 内滞留 64KB；不先 flush，重连重放/时间线读取会
-    // 短暂看到滞后于内存投影的视图。锁内只克隆 bridge（Arc），flush 在锁外进行。
-    // 会话不在运行时（仅存历史 journal）时无需 flush，盘上即全部持久状态。
+    // Best-effort drain of the session journal's buffer window before
+    // reading from disk: outside turn boundaries, up to 64KB of an active
+    // turn's chunk events can sit in the BufWriter; without a flush first,
+    // reconnect replays / timeline reads would briefly observe a view
+    // lagging behind the in-memory projection. Only the bridge (Arc) is
+    // cloned under the lock; the flush happens outside it. A session not in
+    // the runtime (historical journal only) needs no flush — everything
+    // already lives on disk.
     async fn flush_session_journal(&self, session_id: &str) {
         let bridge = self
             .sessions
