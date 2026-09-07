@@ -42,7 +42,8 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::features::assistant::engine::{
-    AppEngine, EngineTurnSignal, TranscriptOperation, TurnLifecycle, TurnReservation,
+    AppEngine, EngineTurnSignal, TranscriptOperation, TurnBoundCancelAction, TurnLifecycle,
+    TurnReservation, turn_bound_cancel_action,
 };
 #[cfg(any(feature = "benchmark-hooks", test))]
 use crate::features::assistant::eval::{EvalModelSelection, EvalSuiteModelSnapshot, ModelIdentity};
@@ -2180,20 +2181,18 @@ impl EnginePool {
         // 时刻的轮次 epoch，并发请求中排队较晚的 C2 在 turn_lock 释放后若发现
         // 目标轮已结束（新轮已 reserve），整体 no-op，不误取消新轮。
         let app = &self.app;
-        // 目标轮的引擎侧身份（TurnStarted 观察到的 turn_id）。它与
-        // cancel_turn_with_gates 入口的 target epoch 快照是两次独立加锁，
-        // 极窄窗口内可能拿到跨轮视图（epoch 已切新轮、turn_id 仍是旧轮），
-        // 但所有交错都退化为安全结果：engine 槽裁决会取消已结束旧轮的死
-        // token（无害 no-op）或整体跳过，真正的本轮取消由 forwarder 的
-        // pending_cancel 重放兜底。引擎自主启动的续跑轮（idle 子代理完成 /
+        // 目标轮的同源身份（epoch + TurnStarted 观察到的 turn_id + 收口期
+        // 区分位）。它与 cancel_turn_with_gates 入口的 target epoch 快照是
+        // 两次独立加锁，极窄窗口内可能拿到跨轮视图（epoch 已切新轮、turn_id
+        // 仍是旧轮）——该视图退化为对已结束旧轮的 turn 绑定取消（槽已换则
+        // 底座跳过，无害 no-op）。引擎自主启动的续跑轮（idle 子代理完成 /
         // 后台 shell 唤醒 / goal 延续）不经过 app 的 reserve，其 token 在
         // forwarder 观察到 TurnStarted 之前就已换新——单靠 epoch 复查挡不住
         // 这个滞后窗口（issue #254），闭包在引擎槽上按 turn 身份做最终裁决。
-        let target_turn_id = self
+        let target_identity = self
             .turn_lifecycles
             .get(session_id)
-            .and_then(|lc| lc.current_turn_identity())
-            .and_then(|(_, turn_id)| turn_id);
+            .and_then(|lc| lc.current_turn_identity());
         let (target, claimed_unsubmitted) = cancel_turn_with_gates(
             &self.turn_locks,
             &self.turn_lifecycles,
@@ -2220,17 +2219,32 @@ impl EnginePool {
             |engine| {
                 // 引擎槽上的 turn 绑定裁决（issue #254）：epoch 复查通过仍可能
                 // 是滞后视图（引擎自主续跑轮已换 token、TurnStarted 尚未抵达
-                // forwarder）。槽内仍是目标轮时取消语义与 cancel_with_mode
-                // 完全一致；槽已切到别的轮则整体跳过——目标轮必然已结束，
-                // 新轮不是本次停止的对象。目标轮尚未启动（submit→TurnStarted
-                // 窗口，turn_id 未知）时退回无绑定取消：槽内是上一轮遗留
-                // token，取消无害；本轮的真正取消由 forwarder 在 TurnStarted
-                // 后按 pending_cancel 以 turn 绑定重放。
-                match target_turn_id.as_deref() {
-                    Some(turn_id) => {
-                        engine.cancel_turn_with_mode(turn_id, steer_mode);
+                // forwarder），按身份快照分派三种动作（见
+                // turn_bound_cancel_action，交错穷举有单测；槽在闭包前已被
+                // 引擎切到别的轮的情形由底座身份校验整体跳过，无需本侧处理）：
+                //   • 绑定命中：槽内即目标轮，语义与 cancel_with_mode 一致；
+                //   • 槽已切到别的轮：底座身份不匹配整体跳过——目标轮必然已
+                //     结束，新轮不是本次停止的对象；
+                //   • 已 reserve 未启动（submit→TurnStarted 窗口，turn_id 未
+                //     知）：无绑定回退——槽内是上一轮遗留 token（无害 no-op）
+                //     或本轮已在引擎侧装好的新 token（命中本轮）；与换槽竞态
+                //     丢失时由 forwarder 在 TurnStarted 后按 pending_cancel
+                //     以 turn 绑定重放兜底；
+                //   • 终态收口期（closing）：目标轮已结束、无 token 可发，仅
+                //     发布 stop 处置（清 parked steer、锁 cancel reason）——
+                //     此刻槽内可能是自主续跑轮的活 token，任何开火都是 #254。
+                // 已知边界：级联取消（下方 try_send）未随裁决收敛，绑定跳过
+                // 时仍会取消引擎当前全部子智能体——若 N+1 刚自启并已派生子
+                // 智能体，会被一并取消；N 的遗留子智能体清理是停止按钮的
+                // 契约，二者无法在 app 侧区分，见 fork 登记文档边界说明。
+                match turn_bound_cancel_action(target_identity.as_ref()) {
+                    TurnBoundCancelAction::BoundTurn(turn_id) => {
+                        engine.cancel_turn_with_mode(&turn_id, steer_mode);
                     }
-                    None => engine.cancel_current_with_mode(steer_mode),
+                    TurnBoundCancelAction::Unbound => engine.cancel_current_with_mode(steer_mode),
+                    TurnBoundCancelAction::DispositionOnly => {
+                        engine.publish_stop_disposition(steer_mode);
+                    }
                 }
                 let _ = engine.handle.try_send(Op::CancelSubAgents);
             },
@@ -2272,6 +2286,13 @@ impl EnginePool {
         // `idle_recheck` deliberately skips the re-issue — cancelling a
         // just-reserved turn here would break its admission contract, and
         // that turn's own step boundaries settle parked steers normally.
+        //
+        // 语义边界（issue #254 登记）：本 backstop 仅在「进入时 lifecycle 已
+        // idle」的 stop 上触发——那是有意的 stop=clear（用户对前端仍显示
+        // busy 的会话按下 ⏹），此刻若引擎已自主启动续跑轮而 forwarder 尚未
+        // 观察到，无绑定开火命中的就是该轮活 token，这是 clear 契约的预期
+        // 语义，不同于 #254 闭合的「瞄准已结束轮的 stop」（后者已被 turn
+        // 绑定裁决拦截：入口时 target=Some 不走本分支）。
         if !keep_inbox && target.is_none() {
             let still_idle = self
                 .turn_lifecycles
@@ -4608,6 +4629,60 @@ mod scheduled_model_tests {
         assert!(
             reservation2.ensure_active().is_ok(),
             "new turn reservation must remain valid after a phase-one TOCTOU"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_closing_cancel_reaches_the_closure_for_disposition_only() {
+        // issue #254 收口期残窗的守卫面：lifecycle 进入 terminal_closing
+        // （claim 后、finish 前）时，arm 的 idle 守卫（`!active &&
+        // !terminal_closing`）不得跳过闭包——生产闭包要在收口期发布 stop
+        // 处置（底座 disposition-only，清 parked steer、锁 cancel reason）。
+        // 若守卫在此跳过，用户已按下的 ⏹ 将丢失 steer 止损。token 开火由
+        // 闭包内 turn_bound_cancel_action 的 DispositionOnly 分支拦截（纯
+        // 函数穷举见 engine.rs），本测试锁定的是「闭包必须被触达」。
+        let locks = SessionTurnLocks::default();
+        let lifecycles = SessionTurnLifecycles::default();
+        let shell_tasks = SessionTurnShellTasks::default();
+        let sid = "session-closing-cancel";
+
+        let lifecycle = lifecycles.for_session(sid);
+        assert!(lifecycle.on_submitted());
+        // 终态认领：active=false、submitted=false、terminal_closing=true、
+        // turn_id 随 EmittedTerminal 取走。
+        assert!(lifecycle.claim_terminal().is_some());
+
+        let closure_calls = Arc::new(AtomicU64::new(0));
+        let probe = closure_calls.clone();
+        let (target, claimed_unsubmitted) = cancel_turn_with_gates(
+            &locks,
+            &lifecycles,
+            &shell_tasks,
+            sid,
+            deepseek_tui::core::engine::CancelMode::StopDropInbox,
+            || async { Some(()) },
+            move |_engine: &()| {
+                probe.fetch_add(1, Ordering::AcqRel);
+            },
+            |_engine: &()| async {},
+            |_lc, _target| false,
+        )
+        .await;
+
+        // 收口期 epoch 口径与 current_turn_generation 一致，gate 视目标轮
+        // 仍在场；闭包至少在阶段一被触达（阶段二无切轮时可能再次执行）。
+        assert_eq!(
+            target,
+            Some(1),
+            "terminal closing must keep the target epoch visible to the gates"
+        );
+        assert!(
+            !claimed_unsubmitted,
+            "a submitted turn never takes the unsubmitted-claim path"
+        );
+        assert!(
+            closure_calls.load(Ordering::Acquire) >= 1,
+            "the cancel closure must run during terminal closing so the stop disposition is published"
         );
     }
 
