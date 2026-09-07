@@ -216,9 +216,9 @@ function BranchSelector({ copy, branches, disabled, busy, menuOpen, onToggle, on
 // 到 <body>（composer 容器的 backdrop-blur 会成为 fixed 后代的包含块）、焦点夺取/
 // 归还、Escape 关闭（busy 时禁用）。backdrop 是 disabled 随 busy 的按钮，切换
 // 进行中不允许点空白处把弹窗藏到后台。仅当对应弹窗打开时才挂载（调用处条件渲染）。
-function BranchDialogShell({ copy, busy, testid, labelledBy, onCancel, children }) {
+function BranchDialogShell({ copy, busy, testid, labelledBy, initialFocusRef, onCancel, children }) {
   const dialogRef = useRef(null);
-  useDialogFocusRestore(dialogRef);
+  useDialogFocusRestore(dialogRef, initialFocusRef);
   useDialogEscapeKey(busy, onCancel);
   return createPortal(
     <div data-testid={testid} className="fixed inset-0 z-[120] flex items-center justify-center p-4">
@@ -1177,6 +1177,9 @@ export function CodexAcpView({
   // 第二步「提交后切换」弹窗：待提交后切换的目标分支。
   const [commitBranchSwitch, setCommitBranchSwitch] = useState(null);
   const [branchCommitMessage, setBranchCommitMessage] = useState('');
+  // 提交信息输入框：作为弹窗的初始焦点（autoFocus 会被 BranchDialogShell
+  // 挂载后的容器焦点夺取覆盖，无法真正落焦）。
+  const branchCommitInputRef = useRef(null);
   const [workspaceRefreshTick, setWorkspaceRefreshTick] = useState(0);
   // 这四个 composer 弹层不能用 `fixed inset-0` 关闭层：composer 容器的 backdrop-blur
   // 会成为 fixed 后代的包含块，使关闭层只覆盖输入框区域、外点失效。统一用
@@ -4556,13 +4559,14 @@ export function CodexAcpView({
             busy={branchBusy}
             testid="codex-branch-commit-dialog"
             labelledBy="codex-branch-commit-dialog-title"
+            initialFocusRef={branchCommitInputRef}
             onCancel={() => setCommitBranchSwitch(null)}
           >
             <p id="codex-branch-commit-dialog-title" className="text-[13px] leading-relaxed opacity-85">
               {codexCopy.branchSwitchCommitPrompt(commitBranchSwitch)}
             </p>
             <textarea
-              autoFocus
+              ref={branchCommitInputRef}
               data-testid="codex-branch-switch-commit-message"
               value={branchCommitMessage}
               onChange={event => setBranchCommitMessage(event.target.value)}
