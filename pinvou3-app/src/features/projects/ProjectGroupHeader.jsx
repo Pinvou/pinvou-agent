@@ -1,11 +1,12 @@
 // Sidebar project/folder group header. Presentational only: all actions come
 // in as callbacks so the component stays free of bridge/i18n-global access.
 // Three visual states mirror RecentItem's patterns (inline rename edit,
-// inline delete confirm, portal "more" menu on hover) to keep sidebar
-// interaction idioms uniform.
-import { useEffect, useState } from 'react';
+// inline delete confirm, portal "more" menu via the shared usePortalMenu
+// hook) to keep sidebar interaction idioms uniform.
+import { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Edit2, FolderPlus, MoreHorizontal, Trash2, X } from '../../components/icons.jsx';
+import { usePortalMenu } from '../../hooks/usePortalMenu.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 
 const PROJECT_DROP_TYPE = 'application/x-pinvou-session';
@@ -23,56 +24,17 @@ const ProjectGroupHeader = ({
   onConvert,
   onRename,
   onDelete,
-  onDropSession,
   testId,
   headerExtra,
 }) => {
   const [editing, setEditing] = useState(null);
   const [confirming, setConfirming] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [menuStyle, setMenuStyle] = useState(null);
   const [dropActive, setDropActive] = useState(false);
   const hasMenu = kind === 'folder' || kind === 'project';
+  const { menuOpen, menuStyle, closeMenu, toggleMenu } = usePortalMenu({
+    height: kind === 'project' ? 96 : 48,
+  });
 
-  const closeMenu = () => setMenuOpen(false);
-  const placeMenu = (target) => {
-    const rect = target.getBoundingClientRect();
-    const width = 176;
-    const height = kind === 'project' ? 96 : 48;
-    const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
-    const top = rect.bottom + 6 + height > window.innerHeight
-      ? Math.max(8, rect.top - height - 6)
-      : Math.max(8, rect.bottom + 6);
-    setMenuStyle({ left, top, width });
-  };
-  const toggleMenu = (e) => {
-    e.stopPropagation();
-    placeMenu(e.currentTarget);
-    setMenuOpen(v => !v);
-  };
-
-  useEffect(() => {
-    if (!menuOpen) {
-      return () => {};
-    }
-    const close = () => setMenuOpen(false);
-    const closeOnEscape = (event) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        close();
-      }
-    };
-    document.addEventListener('pointerdown', close);
-    window.addEventListener('keydown', closeOnEscape);
-    window.addEventListener('resize', close);
-    window.addEventListener('scroll', close, true);
-    return () => {
-      document.removeEventListener('pointerdown', close);
-      window.removeEventListener('keydown', closeOnEscape);
-      window.removeEventListener('resize', close);
-      window.removeEventListener('scroll', close, true);
-    };
-  }, [menuOpen]);
   const startConvert = () => setEditing({ mode: 'convert', value: label });
   const startRename = () => setEditing({ mode: 'rename', value: label });
   const commitEdit = () => {
@@ -123,8 +85,7 @@ const ProjectGroupHeader = ({
     return (
       <div className="flex h-7 items-center px-4">
         {/* biome-ignore lint/a11y/noAutofocus: converting/renaming lands focus in the input immediately (same idiom as RecentItem rename) */}
-        <input
-          autoFocus
+        <input autoFocus
           value={editing.value}
           disabled={busy}
           onChange={e => setEditing({ ...editing, value: e.target.value })}
@@ -150,7 +111,7 @@ const ProjectGroupHeader = ({
     return (
       <div className="w-full h-7 px-4 flex items-center justify-between rounded-full text-[12px] text-[#C5221F] dark:text-[#F28B82]">
         <span className="truncate" title={t.uiProjects.deleteProjectHint}>
-          {t.uiProjects.deleteConfirmLabel}（{count}）
+          {t.uiProjects.deleteConfirmLabel} ({count})
         </span>
         <span className="flex items-center gap-0.5 shrink-0">
           <button
@@ -179,9 +140,11 @@ const ProjectGroupHeader = ({
   // button and the "more" button are siblings, so no control nests inside
   // another ARIA button. Project headers double as HTML5 drop targets for the
   // sidebar session drag (application/x-pinvou-session); dragover highlights,
-  // drop delegates the session id up.
+  // drop delegates the session id up. role="presentation" declares the div
+  // non-interactive to the a11y tree while it carries the drag handlers.
   return (
     <div
+      role="presentation"
       onDragOver={onDropSession ? (e) => {
         if (e.dataTransfer.types.includes(PROJECT_DROP_TYPE)) {
           e.preventDefault();
@@ -196,6 +159,7 @@ const ProjectGroupHeader = ({
         const sessionId = e.dataTransfer.getData(PROJECT_DROP_TYPE);
         if (sessionId) onDropSession(sessionId);
       } : undefined}
+      onDragEnd={onDropSession ? () => setDropActive(false) : undefined}
       className={`group/header w-full h-7 flex items-center rounded-full text-[12px] transition-colors ${dropActive
         ? 'ring-1 ring-[#0B57D0] bg-[#E8F0FE] dark:ring-[#A8C7FA] dark:bg-[#1F2A3D]'
         : theme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
@@ -213,7 +177,9 @@ const ProjectGroupHeader = ({
         <ChevronDown size={14} className={`shrink-0 transition-transform ${isOpen ? '' : '-rotate-90'}`} />
       </button>
       {hasMenu && (
-        <div className="mr-3 hidden group-hover/header:flex items-center shrink-0">
+        // max-sm keeps the actions reachable without hover (touch, narrow
+        // windows) — same contract as RecentItem's action cluster.
+        <div className="mr-3 hidden group-hover/header:flex max-sm:flex items-center shrink-0">
           <button
             type="button"
             title={t.riMore}

@@ -16,10 +16,13 @@ use crate::features::projects::{
 };
 use crate::features::sessions::SessionStore;
 
+use super::sessions::ensure_chat_session;
+
+/// 项目事件只走本地 emit:projects 域按 bridge 契约是桌面端专属,
+/// remote-control 的转发白名单没有该事件,转发只会被中继拒绝并每次
+/// 刷一条拒绝日志(评审 #447 finding 11:在消费方出现前不转发)。
 fn emit_project_event(app: &AppHandle, event: &str, action: &str) {
-    let payload = serde_json::json!({ "action": action });
-    let _ = app.emit(event, payload.clone());
-    crate::features::remote_control::forward_app_event(app, event, payload);
+    let _ = app.emit(event, serde_json::json!({ "action": action }));
 }
 
 /// root 的可用性(目录是否仍在磁盘上)——前端据此渲染"文件夹不可用·重新绑定",
@@ -149,19 +152,23 @@ pub async fn move_session_to_project(
     sessions: State<'_, SessionStore>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<MoveSessionOutcome, String> {
-    // 先确认会话存在,避免归属表残留无效 id(同 set_session_pinned 惯例)。
-    sessions
-        .load(&session_id)
-        .map_err(|e| format!("move_session_to_project({session_id}): session not found: {e:#}"))?;
+    // 先确认会话存在,避免归属表残留无效 id(同 set_session_pinned 惯例);
+    // scheduled-run 会话与兄弟命令同口径拒绝,防止运行记录被写进归属表。
+    ensure_chat_session(&sessions, &session_id, "move_session_to_project")
+        .map_err(|e| format!("move_session_to_project({session_id}): {e}"))?;
     let workspace_root = if add_workspace_root.unwrap_or(false) {
         if project_id.is_none() {
             return Err(
                 "move_session_to_project: add_workspace_root requires project_id".to_string(),
             );
         }
-        let info = acp_pool
-            .workspace_info(&session_id)
-            .map_err(|e| format!("move_session_to_project({session_id}): {e:#}"))?;
+        // 普通 chat 会话在池里没有工作区记录,底层会报"not an ACP session"——
+        // 语义上该组合只是"没有可加的目录",错误信息按此表述,避免误导排查方向。
+        let info = acp_pool.workspace_info(&session_id).map_err(|e| {
+            format!(
+                "move_session_to_project({session_id}): session has no resolvable workspace record to add as a root (normal chat sessions have none): {e:#}"
+            )
+        })?;
         if info.workspace_kind != CodexWorkspaceKind::Project {
             return Err(format!(
                 "move_session_to_project({session_id}): temporary session has no project folder to add"
