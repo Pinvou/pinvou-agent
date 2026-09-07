@@ -21,7 +21,7 @@ import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
 import { COLOR_SCHEME_STORAGE_KEY, normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
 import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
-import { groupSessionsWithProjects, resolveSessionProjectId } from '../features/projects/projectGrouping.js';
+import { groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId } from '../features/projects/projectGrouping.js';
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
 import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
 import { runSessionBatch } from '../shared/session-management.js';
@@ -1693,6 +1693,7 @@ const NAV_PREFETCH = {
       const [settingsToast, setSettingsToast] = useState('');
       const [projectOpsBusy, setProjectOpsBusy] = useState(false);
       const [moveToProjectSession, setMoveToProjectSession] = useState(null);
+      const [moveToPresetProject, setMoveToPresetProject] = useState(null);
       // 稳定入口:RecentItem 的 memo 依赖 prop 引用稳定(NavigationComponents
       // 内注释),内联箭头会让每个 App 重渲染(每个流式 token 批次)重渲染
       // 全部 codex 侧栏行;identity 只在门控布尔翻转(项目从无到有/反之)时
@@ -2509,6 +2510,22 @@ const NAV_PREFETCH = {
             : t.uiProjects.movedNotice,
         );
       });
+      // 拖拽落点:root 已覆盖的直接移动;未覆盖的带着预置目标打开选择器,
+      // 进入"添加文件夹"确认(menu 路径则不带预置)。
+      const handleDropSessionOnProject = (sessionId, projectId) => {
+        const chat = sidebarTaskHistory.find(c => c.id === sessionId);
+        if (!chat || projectOpsBusy) return;
+        const projects = sidebarProjectsData ? sidebarProjectsData.projects : [];
+        const target = (projects || []).find(p => p && p.id === projectId);
+        if (!target) return;
+        if (chat.workspaceKind === 'project' && chat.workspacePath
+            && !projectCoversPath(target, chat.workspacePath)) {
+          setMoveToPresetProject(projectId);
+          setMoveToProjectSession(chat);
+          return;
+        }
+        handleMoveSessionToProject(sessionId, projectId, false);
+      };
 
       function sessionRowsForIds(ids) {
         const byId = new Map(allSidebarTasks.map(item => [item.id, item]));
@@ -2788,6 +2805,8 @@ const NAV_PREFETCH = {
             onMoveToProject={chat.taskKind === 'codex' && bridge.projects && sidebarProjectsData?.projects?.length
               ? openMovePicker
               : undefined}
+            dndPayload={chat.taskKind === 'codex' && bridge.projects ? { sessionId: chat.id } : undefined}
+            dndDisabled={!!dragAvatar}
             dragKind={detachKind}
             dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
             onPickUp={canDetachWindows
@@ -2996,9 +3015,10 @@ const NAV_PREFETCH = {
                 sidebarProjectsData ? sidebarProjectsData.projects : [],
                 sidebarProjectsData ? sidebarProjectsData.assignments : {},
               )}
+              presetProjectId={moveToPresetProject}
               t={t}
               busy={projectOpsBusy}
-              onClose={() => setMoveToProjectSession(null)}
+              onClose={() => { setMoveToPresetProject(null); setMoveToProjectSession(null); }}
               onMove={(projectId, addWorkspaceRoot) => handleMoveSessionToProject(
                 moveToProjectSession.id, projectId, addWorkspaceRoot)}
             />
@@ -3382,6 +3402,7 @@ const NAV_PREFETCH = {
                                   onConvert={bridge.projects && group.kind === 'folder' ? (name) => handleConvertFolderToProject(group.path, name) : undefined}
                                   onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
                                   onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
+                                  onDropSession={group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
                                 />
                                 {isOpen && (
                                   <div className="mt-1 space-y-0.5">
