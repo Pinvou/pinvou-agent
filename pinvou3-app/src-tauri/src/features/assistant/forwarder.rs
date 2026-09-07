@@ -112,11 +112,17 @@ pub(crate) fn spawn_event_forwarder(
                         continue;
                     }
                     if let Some((_, mode)) = pending_cancel {
-                        // 按引擎槽的轮次身份重放（issue #254）：TurnStarted 之前
-                        // 引擎已为本轮装上新 token，此刻重放命中的正是本轮活跃
-                        // token；若引擎在这个极窄窗口内又自主切到下一轮（自启
-                        // 续跑链），槽身份不匹配返回 false，重放被整体丢弃——
-                        // 旧轮的停止不追杀新轮，steer 处置与取消原因也不发布。
+                        // Replay bound to the engine slot's turn identity
+                        // (issue #254): by the time `TurnStarted` arrives the
+                        // engine has installed this turn's fresh token, so
+                        // the replay hits exactly this turn's active token.
+                        // If the engine self-started yet another turn inside
+                        // this narrow window (a self-started continuation
+                        // chain), the slot identity no longer matches,
+                        // `cancel_turn` returns false and the replay is
+                        // dropped wholesale — the old turn's stop does not
+                        // chase the newer turn, and no steer disposition or
+                        // cancel reason is published for it either.
                         let _replayed = approve_handle.cancel_turn(
                             &turn_id,
                             deepseek_tui::core::engine::CancelReason::User,
