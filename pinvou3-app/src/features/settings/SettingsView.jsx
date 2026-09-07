@@ -2335,9 +2335,12 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const [memoryOrganizing, setMemoryOrganizing] = useState(false);
       const [memoryOrganizeMessage, setMemoryOrganizeMessage] = useState('');
       const [memoryLastOrganizedAt, setMemoryLastOrganizedAt] = useState('');
+      // Same app-language relative format as the neighboring memory cards
+      // (formatMemoryTime), not the browser-locale string: the two render side
+      // by side and must not disagree under an OS/app language mismatch.
       const formatMemoryOrganizedAt = finishedAt => {
         const time = new Date(finishedAt);
-        return Number.isNaN(time.getTime()) ? '' : time.toLocaleString();
+        return Number.isNaN(time.getTime()) ? '' : formatMemoryTime({ updated_at: finishedAt }, t.uiSettingsView);
       };
       const loadMemoryOrganizeHistory = () => {
         if (!bridge.available || !bridge.memory.loadOrganizeHistory) return;
@@ -2350,6 +2353,9 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const organizeMemoryNow = async () => {
         if (!bridge.available || !bridge.memory.organizeMemory || memoryOrganizing) return;
         setMemoryOrganizing(true);
+        // Drop the previous run's result/error up front: leaving it rendered
+        // next to the spinner reads as if it described the run in progress.
+        setMemoryOrganizeMessage('');
         try {
           const result = await bridge.memory.organizeMemory();
           const report = (result && result.report) || {};

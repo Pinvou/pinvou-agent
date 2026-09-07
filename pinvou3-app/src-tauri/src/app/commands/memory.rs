@@ -602,8 +602,16 @@ pub async fn ignore_pending_memory(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<Option<crate::features::memory::MemoryWriteEvent>>, String> {
-    let event = crate::features::memory::ignore_pending_memory(&id)
-        .map_err(|e| format!("ignore pending memory: {e}"))?;
+    // The command's contract is Option<event>: the AlreadyDecided/NotFound
+    // distinction matters to organize's report wording, not to this caller,
+    // which historically answers None for both.
+    let event = match crate::features::memory::ignore_pending_memory(&id)
+        .map_err(|e| format!("ignore pending memory: {e}"))?
+    {
+        crate::features::memory::PendingIgnoreOutcome::Ignored(event) => Some(event),
+        crate::features::memory::PendingIgnoreOutcome::AlreadyDecided
+        | crate::features::memory::PendingIgnoreOutcome::NotFound => None,
+    };
     if let (Some(sid), Some(event)) = (
         resolve_memory_session_id(session_id.clone(), &store),
         event.as_ref(),

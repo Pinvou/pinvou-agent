@@ -38,6 +38,16 @@ use super::util::{
 const LLM_ORGANIZE_TIMEOUT: StdDuration = StdDuration::from_secs(75);
 const ORGANIZE_HISTORY_MAX_REPORTS: usize = 20;
 
+/// Per-run cap on item removals (delete targets plus merge-absorbed sources):
+/// `max(ORGANIZE_REMOVAL_BUDGET_MIN, ceil(organizable_items / ORGANIZE_REMOVAL_BUDGET_RATIO))`.
+/// The organize prompt carries every stored item id and memory text is
+/// untrusted content, so prompt wording alone cannot be what stands between a
+/// poisoned memory and a wipe — and the scheduled trigger runs with no user in
+/// the loop. The budget bounds the worst case of a single run; a rerun (manual
+/// or the next scheduled fire) continues the cleanup.
+const ORGANIZE_REMOVAL_BUDGET_MIN: u32 = 8;
+const ORGANIZE_REMOVAL_BUDGET_RATIO: u32 = 4;
+
 /// Process-wide single-flight guard: the manual button and the scheduled task can
 /// trigger two organize runs concurrently. The io layer is concurrency-safe, but
 /// the two passes would interleave destructive actions based on their own (up to
@@ -131,7 +141,7 @@ pub async fn organize_memory_with_llm(
             "skipped",
             json!({ "reason": "already_in_progress" }),
         );
-        return Err(anyhow!("memory organize already in progress"));
+        return Err(anyhow!("another organize pass is already in progress"));
     };
     let started_at = Utc::now().to_rfc3339();
     append_memory_review_diagnostic(
@@ -149,6 +159,7 @@ pub async fn organize_memory_with_llm(
     io::refresh_recent_work_expiry().context("refresh recent work expiry")?;
     let snapshot = OrganizeSnapshot::load().context("load memory stores for organize")?;
     let scanned = snapshot.scanned_counts();
+    let removal_budget = snapshot.removal_budget();
     let mut warnings = Vec::new();
 
     if snapshot.stores_empty() {
@@ -168,7 +179,7 @@ pub async fn organize_memory_with_llm(
         return Ok(report);
     }
 
-    let raw_actions = match request_llm_organize_actions(bridge, &snapshot).await {
+    let raw_actions = match request_llm_organize_actions(bridge, &snapshot, removal_budget).await {
         Ok(actions) => actions,
         Err(error) => {
             append_memory_review_diagnostic(
@@ -199,9 +210,15 @@ pub async fn organize_memory_with_llm(
             validate_organize_action(raw, &snapshot, &mut skipped_sensitive, &mut warnings)
         })
         .collect();
-    let (deleted, updated, merged, mut apply_warnings) = apply_organize_actions(&validated);
+    let (deleted, updated, merged, mut apply_warnings, removals_capped) =
+        apply_organize_actions(&validated, removal_budget);
     compact_timed_stores(&mut apply_warnings);
     warnings.append(&mut apply_warnings);
+    if removals_capped {
+        warnings.push(format!(
+            "organize: per-run removal cap is {removal_budget}; run organize again to continue cleaning up"
+        ));
+    }
 
     let no_change = deleted.values().sum::<u32>()
         + updated.values().sum::<u32>()
@@ -336,6 +353,18 @@ impl OrganizeSnapshot {
             .into_iter()
             .map(|(kind, count)| (kind.to_string(), count))
             .collect()
+    }
+
+    /// Removals (deletes plus merge-absorbed sources) this run may apply; see
+    /// `ORGANIZE_REMOVAL_BUDGET_MIN`. Only the five organizable stores count —
+    /// profile is out of scope and never removed.
+    fn removal_budget(&self) -> u32 {
+        let total = (self.preferences.len()
+            + self.work_context.len()
+            + self.current_focus.len()
+            + self.recent_activity.len()
+            + self.pending.len()) as u32;
+        ORGANIZE_REMOVAL_BUDGET_MIN.max(total.div_ceil(ORGANIZE_REMOVAL_BUDGET_RATIO))
     }
 
     fn ids_for(&self, kind: &str) -> BTreeSet<String> {
@@ -586,39 +615,65 @@ fn count_item_change(
 /// Apply validated actions one by one. Each action goes through the existing
 /// locked io entry points (each takes the write lock itself); a single failure
 /// records a warning and continues instead of aborting the batch.
+///
+/// `removal_budget` bounds how many items this run may remove (delete targets
+/// plus merge-absorbed sources, see `ORGANIZE_REMOVAL_BUDGET_MIN`). Budgeted
+/// removals are attempted in action order; once the budget is spent, further
+/// deletes keep their items and whole merges are skipped, each with a warning.
+/// Updates are non-destructive and never budgeted. Returns whether the cap was
+/// hit, so the caller can append one summary warning.
 fn apply_organize_actions(
     actions: &[OrganizeAction],
+    mut removal_budget: u32,
 ) -> (
     BTreeMap<String, u32>,
     BTreeMap<String, u32>,
     BTreeMap<String, u32>,
     Vec<String>,
+    bool,
 ) {
     let mut deleted = BTreeMap::new();
     let mut updated = BTreeMap::new();
     let mut merged = BTreeMap::new();
     let mut changed = BTreeSet::new();
     let mut warnings = Vec::new();
+    let mut capped = false;
     for action in actions {
         match action.op.as_str() {
             "delete" => {
                 for id in &action.ids {
+                    if removal_budget == 0 {
+                        capped = true;
+                        warnings.push(format!(
+                            "organize: per-run removal cap reached; {} {id} kept this run",
+                            action.kind
+                        ));
+                        continue;
+                    }
+                    removal_budget -= 1;
                     match delete_organize_item(&action.kind, id) {
-                        Ok(true) => {
-                            count_item_change(
-                                &mut deleted,
-                                &mut changed,
-                                &action.kind,
-                                id,
-                                &mut warnings,
-                            );
-                        }
-                        Ok(false) => {
-                            warnings.push(format!(
-                                "organize: delete {} {id} did not match any item",
-                                action.kind
-                            ));
-                        }
+                        Ok(outcome) => match outcome {
+                            OrganizeDeleteOutcome::Removed => {
+                                count_item_change(
+                                    &mut deleted,
+                                    &mut changed,
+                                    &action.kind,
+                                    id,
+                                    &mut warnings,
+                                );
+                            }
+                            OrganizeDeleteOutcome::Missing => {
+                                warnings.push(format!(
+                                    "organize: delete {} {id} did not match any item",
+                                    action.kind
+                                ));
+                            }
+                            OrganizeDeleteOutcome::Protected => {
+                                warnings.push(format!(
+                                    "organize: delete pending {id}: the candidate was confirmed during the run and is kept"
+                                ));
+                            }
+                        },
                         Err(error) => {
                             warnings
                                 .push(format!("organize: delete {} {id}: {error}", action.kind));
@@ -656,6 +711,19 @@ fn apply_organize_actions(
                     Some(split) => split,
                     None => continue,
                 };
+                let absorbed = rest.len() as u32;
+                if absorbed > removal_budget {
+                    // A half-applied merge would leave duplicate sources behind, so a
+                    // merge that does not fit the remaining budget is skipped whole
+                    // instead of losing its cleanup deletes.
+                    capped = true;
+                    warnings.push(format!(
+                        "organize: per-run removal cap reached; merge {} [{}] skipped this run",
+                        action.kind,
+                        action.ids.join(", ")
+                    ));
+                    continue;
+                }
                 let mut keep_updated = false;
                 match update_organize_item(&action.kind, keep, &action.content) {
                     Ok(true) => {
@@ -684,29 +752,42 @@ fn apply_organize_actions(
                 if !keep_updated {
                     // The merged content is not persisted yet; deleting the other source
                     // items now would lose data irreversibly. Treat the whole action as
-                    // failed and leave the source items untouched.
+                    // failed and leave the source items untouched (the budget reserved by
+                    // the pre-check stays untouched too — no cleanup delete is attempted).
                     continue;
                 }
                 for id in rest {
+                    // The pre-check guaranteed the budget fits this merge's absorbed
+                    // sources and nothing else runs in between, so these deletes never
+                    // hit a spent budget.
+                    removal_budget = removal_budget.saturating_sub(1);
                     match delete_organize_item(&action.kind, id) {
                         // Items absorbed by a merge count only as merged, never
                         // double-counted as deleted: the three counters are disjoint and
                         // sum to the number of items actually changed.
-                        Ok(true) => {
-                            count_item_change(
-                                &mut merged,
-                                &mut changed,
-                                &action.kind,
-                                id,
-                                &mut warnings,
-                            );
-                        }
-                        Ok(false) => {
-                            warnings.push(format!(
-                                "organize: merge {} {id} did not match any item",
-                                action.kind
-                            ));
-                        }
+                        Ok(outcome) => match outcome {
+                            OrganizeDeleteOutcome::Removed => {
+                                count_item_change(
+                                    &mut merged,
+                                    &mut changed,
+                                    &action.kind,
+                                    id,
+                                    &mut warnings,
+                                );
+                            }
+                            OrganizeDeleteOutcome::Missing => {
+                                warnings.push(format!(
+                                    "organize: merge {} {id} did not match any item",
+                                    action.kind
+                                ));
+                            }
+                            OrganizeDeleteOutcome::Protected => {
+                                warnings.push(format!(
+                                    "organize: merge {} cleanup delete {id}: the candidate was confirmed during the run and is kept",
+                                    action.kind
+                                ));
+                            }
+                        },
                         Err(error) => {
                             // Distinguishable from a delete-action failure: on a half-failed
                             // merge, keep is already updated and this source item lingers, so
@@ -722,17 +803,50 @@ fn apply_organize_actions(
             _ => {}
         }
     }
-    (deleted, updated, merged, warnings)
+    (deleted, updated, merged, warnings, capped)
 }
 
-fn delete_organize_item(kind: &str, id: &str) -> std::io::Result<bool> {
+/// One organize delete against the io layer. `Protected` marks the
+/// pending-specific decided-guard: the candidate was confirmed by the user
+/// while the run was in flight and is kept on purpose — a different event from
+/// not matching any item, and the report wording must not conflate them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OrganizeDeleteOutcome {
+    Removed,
+    Missing,
+    Protected,
+}
+
+fn delete_organize_item(kind: &str, id: &str) -> std::io::Result<OrganizeDeleteOutcome> {
     match kind {
-        "preference" => io::delete_preference(id),
-        "work_context" => io::delete_work_context(id),
+        "preference" => io::delete_preference(id).map(|deleted| {
+            if deleted {
+                OrganizeDeleteOutcome::Removed
+            } else {
+                OrganizeDeleteOutcome::Missing
+            }
+        }),
+        "work_context" => io::delete_work_context(id).map(|deleted| {
+            if deleted {
+                OrganizeDeleteOutcome::Removed
+            } else {
+                OrganizeDeleteOutcome::Missing
+            }
+        }),
         // Deleting a pending item equals the user ignoring it: mark it ignored instead
         // of physically removing it, preserving an audit trail.
-        "pending" => io::ignore_pending_memory(id).map(|event| event.is_some()),
-        _ => io::delete_timed_memory(kind, id),
+        "pending" => io::ignore_pending_memory(id).map(|outcome| match outcome {
+            io::PendingIgnoreOutcome::Ignored(_) => OrganizeDeleteOutcome::Removed,
+            io::PendingIgnoreOutcome::AlreadyDecided => OrganizeDeleteOutcome::Protected,
+            io::PendingIgnoreOutcome::NotFound => OrganizeDeleteOutcome::Missing,
+        }),
+        _ => io::delete_timed_memory(kind, id).map(|deleted| {
+            if deleted {
+                OrganizeDeleteOutcome::Removed
+            } else {
+                OrganizeDeleteOutcome::Missing
+            }
+        }),
     }
 }
 
@@ -780,11 +894,17 @@ fn compact_timed_stores(warnings: &mut Vec<String>) {
 async fn request_llm_organize_actions(
     bridge: &(impl MemoryReviewModel + ?Sized),
     snapshot: &OrganizeSnapshot,
+    removal_budget: u32,
 ) -> Result<Vec<LlmOrganizeAction>> {
-    let prompt = match memory_output_language_directive(&bridge.memory_locale_tag()) {
-        Some(suffix) => format!("{MEMORY_ORGANIZE_PROMPT}{suffix}"),
-        None => MEMORY_ORGANIZE_PROMPT.to_string(),
-    };
+    // The cap is stated in the prompt so the model prioritizes what it asks to
+    // remove; the authoritative enforcement is the budget in
+    // `apply_organize_actions`.
+    let mut prompt = format!(
+        "{MEMORY_ORGANIZE_PROMPT}9. 单次整理最多移除 {removal_budget} 条（delete 的目标与 merge 吸收的源条目合计计入）：超出上限的动作会被丢弃；优先处理最影响质量的整理动作，其余留给下一次整理。\n"
+    );
+    if let Some(suffix) = memory_output_language_directive(&bridge.memory_locale_tag()) {
+        prompt.push_str(&suffix);
+    }
     let content = send_memory_llm_request(
         bridge,
         "organize",

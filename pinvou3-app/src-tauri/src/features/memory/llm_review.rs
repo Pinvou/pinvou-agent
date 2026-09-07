@@ -412,7 +412,14 @@ const REMEMBER_REQUEST_PHRASES_CJK: [&str; 7] = [
     "记牢",
 ];
 /// ASCII "explicitly asked to remember" phrases; matched against lowercased text.
-const REMEMBER_REQUEST_PHRASES_ASCII: [&str; 3] = ["keep in mind", "don't forget", "do not forget"];
+/// Apostrophe phrases list both the straight quote and U+2019 (the default on
+/// many keyboards); `to_lowercase` does not fold the typographic one.
+const REMEMBER_REQUEST_PHRASES_ASCII: [&str; 4] = [
+    "keep in mind",
+    "don't forget",
+    "don’t forget",
+    "do not forget",
+];
 /// Wider status/context words that only suggest the turn may contain memorable
 /// content: they trigger a per-turn review but carry no relaxed write
 /// consequences.

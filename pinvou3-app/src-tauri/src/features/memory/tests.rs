@@ -1797,6 +1797,12 @@ fn review_signal_detects_explicit_remember_phrases() {
         "Don't forget to use simplified Chinese"
     ));
     assert!(has_memory_review_signal("Do not forget the deadline"));
+    // Typographic apostrophe (U+2019, the default on many keyboards) must hit
+    // the same narrow set as the straight quote: to_lowercase does not fold it.
+    assert!(has_explicit_remember_signal("Don’t forget to save this"));
+    assert!(has_memory_review_signal(
+        "Don’t forget to use simplified Chinese"
+    ));
     // CJK lexemes are matched directly against the raw text.
     assert!(has_memory_review_signal("记一下我的习惯"));
     assert!(has_memory_review_signal("帮我记一下这个偏好"));
@@ -2270,6 +2276,83 @@ async fn organize_memory_merges_duplicates_and_deletes_stale_focus() {
     assert_eq!(history[0].finished_at, report.finished_at);
     assert_eq!(history[0].deleted["current_focus"], 1);
     assert_eq!(history[0].updated["preference"], 1);
+}
+
+#[tokio::test]
+async fn organize_caps_removals_per_run_and_reports_the_overflow() {
+    let _home = IsolatedPinvouHome::new("organize-removal-cap");
+    enable_memory_for_tests();
+    // 12 undecided pending candidates: budget = max(8, ceil(12/4)) = 8, so a
+    // request to delete all of them must remove exactly 8 and keep 4. Stored
+    // memory content is untrusted (web/conversation-derived), so this cap -
+    // not the prompt wording - is what bounds an injection-driven mass delete
+    // on an unattended scheduled run. Pending candidates keep distinct ids
+    // (no topic-authority collapse) and fit the 20-item active cap.
+    let mut ids = Vec::new();
+    for index in 0..12 {
+        let candidate = enqueue_memory_candidate(MemorySuggestion {
+            kind: "preference".to_string(),
+            topic: "answer_style".to_string(),
+            content: format!("待确认偏好条目 {index}：回答保持简洁分点"),
+            source: "test".to_string(),
+        })
+        .unwrap();
+        ids.push(candidate.id);
+    }
+
+    let actions = json!({
+        "actions": [
+            {
+                "op": "delete",
+                "kind": "pending",
+                "ids": ids,
+                "reason": "全部清空"
+            }
+        ]
+    });
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let captured_for_hook = captured.clone();
+    let bridge = FakeOrganizeModel {
+        base_url: spawn_chat_completions_stub_with_hook(
+            actions.to_string(),
+            Some(Box::new(move |body| {
+                *captured_for_hook.lock().unwrap() = body.to_string();
+            })),
+        ),
+    };
+
+    let report = organize_memory_with_llm(&bridge, None).await.unwrap();
+
+    // The prompt states the cap so the model can prioritize; the wire prompt
+    // carries the concrete budget for this store.
+    let prompt = captured.lock().unwrap().clone();
+    assert!(
+        prompt.contains("最多移除 8"),
+        "prompt must state the per-run removal cap of 8"
+    );
+
+    // Exactly the budgeted 8 items are removed (pending deletes mark the
+    // candidates ignored); the rest stay undecided.
+    assert_eq!(report.deleted["pending"], 8);
+    let remaining = load_pending_memory()
+        .unwrap()
+        .into_iter()
+        .filter(|item| item.status == PENDING_STATUS_PENDING)
+        .count();
+    assert_eq!(
+        remaining, 4,
+        "the cap must keep the overflow candidates undecided"
+    );
+    let cap_warnings = report
+        .warnings
+        .iter()
+        .filter(|warning| warning.contains("removal cap"))
+        .count();
+    assert!(
+        cap_warnings >= 5,
+        "four per-item warnings plus the summary expected, got {:?}",
+        report.warnings
+    );
 }
 
 #[tokio::test]
@@ -2832,7 +2915,11 @@ fn ignore_pending_memory_never_clobbers_a_confirmed_item() {
         PENDING_STATUS_CONFIRMED
     );
 
-    assert!(ignore_pending_memory(&candidate.id).unwrap().is_none());
+    assert_eq!(
+        ignore_pending_memory(&candidate.id).unwrap(),
+        PendingIgnoreOutcome::AlreadyDecided,
+        "the confirmed candidate is reported as protected, not as missing"
+    );
 
     assert_eq!(
         status(&load_pending_memory().unwrap()),

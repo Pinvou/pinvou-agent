@@ -1469,20 +1469,35 @@ pub fn confirm_pending_memory(id: &str) -> io::Result<Option<MemoryWriteEvent>> 
     Ok(Some(event))
 }
 
-pub fn ignore_pending_memory(id: &str) -> io::Result<Option<MemoryWriteEvent>> {
+/// Outcome of ignoring a pending candidate. `AlreadyDecided` is distinct from
+/// `NotFound` so callers can report the concurrency event the decided-guard
+/// exists for (the user confirmed the candidate while a run was in flight)
+/// instead of a misleading "did not match any item".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingIgnoreOutcome {
+    /// The candidate was marked ignored; carries the write event.
+    Ignored(MemoryWriteEvent),
+    /// The candidate exists but already carries the user's decision
+    /// (confirmed); it is kept as-is.
+    AlreadyDecided,
+    /// No candidate with this id exists.
+    NotFound,
+}
+
+pub fn ignore_pending_memory(id: &str) -> io::Result<PendingIgnoreOutcome> {
     let _guard = write_lock().lock();
     let id = clean_id(id);
     let now = Utc::now().to_rfc3339();
     let mut items = load_pending_memory()?;
     let Some(item) = items.iter_mut().find(|item| item.id == id) else {
-        return Ok(None);
+        return Ok(PendingIgnoreOutcome::NotFound);
     };
     // A confirmed item carries the user's decision and must not be demoted to
     // ignored — not even by an organize delete acting on a snapshot taken
     // before the user confirmed (mirror of confirm_pending_memory's decided
     // short-circuit). Already-ignored items stay idempotent.
     if item.status == PENDING_STATUS_CONFIRMED {
-        return Ok(None);
+        return Ok(PendingIgnoreOutcome::AlreadyDecided);
     }
     item.status = PENDING_STATUS_IGNORED.to_string();
     item.updated_at = now;
@@ -1493,7 +1508,7 @@ pub fn ignore_pending_memory(id: &str) -> io::Result<Option<MemoryWriteEvent>> {
         text: item.content.clone(),
     };
     write_pending_memory_unlocked(&items)?;
-    Ok(Some(event))
+    Ok(PendingIgnoreOutcome::Ignored(event))
 }
 
 pub fn never_pending_memory(
@@ -1558,17 +1573,6 @@ pub fn refresh_recent_work_expiry() -> io::Result<usize> {
     let now = Utc::now();
     Ok(refresh_recent_work_expiry_unlocked(now)?
         + refresh_timed_memory_expiry_unlocked("current_focus", now)?
-        + refresh_timed_memory_expiry_unlocked("recent_activity", now)?)
-}
-
-/// Refresh expiry archiving for current_focus / recent_activity only. Organize
-/// uses `refresh_recent_work_expiry` instead, which already covers these two
-/// stores; this entry stays for callers that only target the timed stores. Like
-/// `refresh_recent_work_expiry`, it briefly holds the write lock on its own.
-pub fn refresh_timed_memory_expiry() -> io::Result<usize> {
-    let _guard = write_lock().lock();
-    let now = Utc::now();
-    Ok(refresh_timed_memory_expiry_unlocked("current_focus", now)?
         + refresh_timed_memory_expiry_unlocked("recent_activity", now)?)
 }
 

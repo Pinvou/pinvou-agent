@@ -42,9 +42,9 @@ pub use self::io::{
 
 // ---- 实体存储读写 pub 入口（io）----
 pub use self::io::{
-    append_turn_assistant, archive_recent_work, clear_profile, confirm_pending_memory,
-    delete_preference, delete_timed_memory, delete_work_context, discard_turn_capture,
-    enqueue_memory_candidate, ignore_pending_memory, list_preferences,
+    PendingIgnoreOutcome, append_turn_assistant, archive_recent_work, clear_profile,
+    confirm_pending_memory, delete_preference, delete_timed_memory, delete_work_context,
+    discard_turn_capture, enqueue_memory_candidate, ignore_pending_memory, list_preferences,
     list_preferences_with_cleanup, load_current_focus, load_never_memory, load_pending_memory,
     load_profile, load_recent_activity, load_recent_work, load_work_context,
     load_work_context_with_cleanup, memory_enabled, never_pending_memory,
