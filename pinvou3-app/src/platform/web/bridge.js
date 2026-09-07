@@ -4881,7 +4881,11 @@
   // 透传后端硬编码中文——英/日界面不该看到中文结论;文案与 ChatView 前置警告
   // (t.uiAttachments.*)同源语义。与 tauri bridge chat.js 同一口径。
   function displayTurnError(err) {
-    const text = String(err && err.toString ? err.toString() : err || "");
+    // RPC rejections arrive as Error objects (bootstrap.js wraps message.error
+    // in new Error), Tauri invoke rejections as plain strings; prefer
+    // Error.message over toString() so stable codes match without the
+    // "Error: " prefix that toString() prepends.
+    const text = String(err && err.message ? err.message : err || "");
     if (text.indexOf("image_input_unsupported") === 0) {
       return text.includes("能力未知") ? bt("imageUnknown") : bt("imageUnsupported");
     }
