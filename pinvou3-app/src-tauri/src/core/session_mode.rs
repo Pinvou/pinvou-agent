@@ -80,10 +80,12 @@ impl SessionMode {
     }
 
     /// 该模式能力开关未初始化时的包默认策略（见 [`PackDefaultPolicy`]）。
-    /// plain 默认全开，code 默认全禁已装条目（外部能力显式开启）。
+    /// 全部模式默认全禁已装条目（外部能力一律显式开启；plain 于工具开关收敛
+    /// 版本从 AllowAll 翻为 DenyAll，存量用户由 scope.rs 的读时迁移播种
+    /// 「保持原开关状态」，新装包不再默认进入任何会话）。
     pub fn pack_default_policy(self) -> PackDefaultPolicy {
         match self {
-            Self::Plain => PackDefaultPolicy::AllowAll,
+            Self::Plain => PackDefaultPolicy::DenyAll,
             Self::Code => PackDefaultPolicy::DenyAll,
         }
     }
@@ -113,13 +115,14 @@ mod tests {
 
     #[test]
     fn pack_default_policy_per_mode() {
-        assert_eq!(
-            SessionMode::Plain.pack_default_policy(),
-            PackDefaultPolicy::AllowAll
-        );
-        assert_eq!(
-            SessionMode::Code.pack_default_policy(),
-            PackDefaultPolicy::DenyAll
-        );
+        // 全部模式 DenyAll：外部能力默认全禁、显式开启（plain 的存量体验由
+        // scope.rs 读时迁移兜底，见 load_disabled_bundles_file_locked）。
+        for mode in SessionMode::ALL {
+            assert_eq!(
+                mode.pack_default_policy(),
+                PackDefaultPolicy::DenyAll,
+                "{mode:?} 必须默认全禁"
+            );
+        }
     }
 }

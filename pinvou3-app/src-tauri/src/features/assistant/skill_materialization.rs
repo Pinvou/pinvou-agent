@@ -59,10 +59,11 @@ fn skill_source_dirs() -> Vec<PathBuf> {
 
 /// 项目技能来源目录（workspace 内工具约定，按底座上游 #432 优先级降序，
 /// `.pinvou/skills` 为 pinvou3 自有约定，插在 `.agents/skills` 之后）。
-/// 仅当项目级 skills 开关开启且该 scope 的 `project_skills_opt_in` 表字段为
-/// true（当前仅 code）时使用（§2.4：项目内文本是 prompt-injection 面，显式
-/// 开启才扫描；fork #41 已砍断 workspace 并集发现，这里在 app 侧按同一来源
-/// 顺序补上，经组合目录通道物化）。
+/// 仅当项目级 skills 全局开关开启、且会话绑定了真实目录（调用方传入
+/// Some(workspace)：原生 code 会话的项目目录或普通 chat 会话的用户工作目录
+/// 绑定）时使用（§2.4：项目内文本是 prompt-injection 面，显式开启才扫描；
+/// fork #41 已砍断 workspace 并集发现，这里在 app 侧按同一来源顺序补上，经
+/// 组合目录通道物化）。
 fn project_skill_source_dirs(project_workspace: &Path) -> Vec<PathBuf> {
     [
         ".agents/skills",
@@ -82,8 +83,8 @@ fn project_skill_source_dirs(project_workspace: &Path) -> Vec<PathBuf> {
 ///
 /// 排除两类：本 scope 禁用集中的技能（含未初始化 DenyAll 模式的默认全禁）+
 /// 被禁用连接器声明的 companion skills（保持「关 MCP → 关联技能一并隐藏」的
-/// 既有联动）。`project_workspace` 仅在该 scope 的 `project_skills_opt_in` 表
-/// 字段为 true 且项目级 skills 开关开启时被扫描（排在用户/市场来源之前，
+/// 既有联动）。`project_workspace` 只在会话绑定了真实目录时由调用方传入
+/// （Some），且项目级 skills 全局开关开启时才被扫描（排在用户/市场来源之前，
 /// 项目本地覆盖语义与底座 workspace 目录优先一致）。
 pub fn enabled_skills_for(
     scope: ConnectorScope,
@@ -93,10 +94,10 @@ pub fn enabled_skills_for(
     let mut seen: HashSet<String> = HashSet::new();
     let mut out: Vec<(String, PathBuf)> = Vec::new();
     // 项目技能优先（workspace 目录 > 全局来源，与底座 first-wins 一致）；
-    // 项目门由模式能力表字段驱动（当前仅 code 为 true）。
-    if crate::features::assistant::session_policy::project_skills_opt_in_for(scope)
-        && project_skills_enabled()
-    {
+    // 项目门 = 全局开关 + 绑定：仅绑定了真实目录的会话（调用方传入
+    // Some(workspace)）且用户显式开启项目级 skills 开关时才扫描——项目内
+    // 文本是 prompt-injection 面，与模式无关、跟绑定走。
+    if project_skills_enabled() {
         if let Some(workspace) = project_workspace {
             for src in project_skill_source_dirs(workspace) {
                 collect_source_skills(&src, &disabled, &mut seen, &mut out);
@@ -409,6 +410,9 @@ mod tests {
     #[test]
     fn standalone_companion_named_skill_survives_uninstalled_connector() {
         with_temp_home(|| {
+            // 全模式 DenyAll 后 fresh home 默认全关；本测试钉的是条件认领形态
+            // （未装连接器的 companion 保留独立纯技能包），显式初始化 plain 全开。
+            save_disabled_skills_for(ConnectorScope::Plain, &[]);
             write_tool_manifest(
                 "gongwen",
                 r#"{"id":"gongwen","name":"公文写作","description":"d","version":"1.0.0","icon":"file-text","category":"办公","mcp_tools":["mcp_gongwen_make_gongwen"],"command":"python","args":["server.py"],"companion_skills":["government-writing"]}"#,
@@ -467,20 +471,25 @@ mod tests {
         });
     }
 
-    /// code scope 未初始化「默认全禁」覆盖 CLI 连接器技能：lark-* 不注册在
-    /// 技能市场清单（连接门控直接解包），仍被 code 默认禁用兜住；plain 不受影响。
+    /// plain/code scope 均未初始化时「默认全禁」（全模式 DenyAll 收敛）覆盖 CLI
+    /// 连接器技能：lark-* 不注册在技能市场清单（连接门控直接解包），仍被默认
+    /// 禁用兜住；显式初始化全开后恢复。
     #[test]
-    fn code_scope_default_disables_cli_connector_skills() {
+    fn uninitialized_scopes_default_disable_cli_connector_skills() {
         with_temp_home(|| {
             for name in crate::features::marketplace::bundle::LARK_SKILL_DIRS {
                 write_skill(&paths::bundle_skills_dir(), name, "# Lark\n");
             }
 
-            let enabled = enabled_skills_for(ConnectorScope::Code, None);
-            assert!(
-                !enabled.iter().any(|(n, _)| n.starts_with("lark-")),
-                "code 未初始化时 lark-* 技能应默认全禁"
-            );
+            for scope in [ConnectorScope::Code, ConnectorScope::Plain] {
+                let enabled = enabled_skills_for(scope, None);
+                assert!(
+                    !enabled.iter().any(|(n, _)| n.starts_with("lark-")),
+                    "{scope:?} 未初始化时 lark-* 技能应默认全禁"
+                );
+            }
+            // plain 显式初始化全开 → lark-* 恢复。
+            save_disabled_skills_for(ConnectorScope::Plain, &[]);
             let enabled_plain = enabled_skills_for(ConnectorScope::Plain, None);
             assert_eq!(
                 enabled_plain
@@ -488,7 +497,7 @@ mod tests {
                     .filter(|(n, _)| n.starts_with("lark-"))
                     .count(),
                 crate::features::marketplace::bundle::LARK_SKILL_DIRS.len(),
-                "plain scope 不应受影响"
+                "plain 显式全开后 lark-* 技能应恢复"
             );
         });
     }
@@ -578,6 +587,9 @@ mod tests {
     fn enabled_skills_respect_first_wins_and_scope_disabled() {
         with_temp_home(|| {
             seed_sources();
+            // 全模式 DenyAll 后 fresh home 默认全关；本测试聚焦 first-wins 与
+            // 开关语义，显式初始化 plain 为全开。
+            save_disabled_skills_for(ConnectorScope::Plain, &[]);
             // 默认（无禁用）：user 覆盖 bundle 同名 + 手放技能入集
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             let names: HashSet<&str> = enabled.iter().map(|(n, _)| n.as_str()).collect();
@@ -605,6 +617,9 @@ mod tests {
     fn materialize_then_rewrite_is_idempotent() {
         with_temp_home(|| {
             seed_sources();
+            // 全模式 DenyAll 后 fresh home 默认全关；本测试聚焦物化幂等，
+            // 显式初始化 plain 为全开。
+            save_disabled_skills_for(ConnectorScope::Plain, &[]);
             let sid = "session-test-1";
             materialize_session_skills(sid, ConnectorScope::Plain, None).unwrap();
             let dir = paths::session_skills_dir(sid);
@@ -703,9 +718,10 @@ mod tests {
             );
 
             // 本测试聚焦项目技能的门控与优先级覆盖。code scope「未初始化默认全禁」
-            // 语义会把已装技能也排除掉，与测试意图无关——先显式初始化 code scope
+            // 语义会把已装技能也排除掉，与测试意图无关——先显式初始化两个 scope
             // （空禁用集 = 全部启用），让项目技能覆盖链路可被断言。
             save_disabled_skills_for(ConnectorScope::Code, &[]);
+            save_disabled_skills_for(ConnectorScope::Plain, &[]);
 
             // 默认关：code 组合集不含项目技能
             let enabled = enabled_skills_for(ConnectorScope::Code, Some(&project));
@@ -742,7 +758,13 @@ mod tests {
                 ".agents/skills 优先级应高于 .pinvou/skills（同名仍取 .agents）"
             );
 
-            // plain scope 不受项目开关影响
+            // 项目门与模式解耦（跟绑定不跟模式）：plain scope 传入绑定目录时
+            // 同样扫描；全局开关关闭则不扫。
+            let enabled = enabled_skills_for(ConnectorScope::Plain, Some(&project));
+            assert!(
+                enabled.iter().any(|(n, _)| n == "project-skill"),
+                "绑定目录的普通会话同样参与项目技能扫描（开关开启时）"
+            );
             set_project_skills_enabled(false);
             let enabled = enabled_skills_for(ConnectorScope::Plain, Some(&project));
             assert!(!enabled.iter().any(|(n, _)| n == "project-skill"));

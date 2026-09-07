@@ -267,6 +267,14 @@
     modeLane: "work",
     // 草稿态寄存的多智能体开关意图：不物化会话，首条消息创建会话时落后端。
     pendingDraftMultiAgent: false,
+    // 绑定工作目录草稿的显式 mode 暂存（null = 未显式选过）：绑定草稿的 mode
+    // 走 code lane（对齐 code 模式安全姿态），物化时按暂存值逐会话应用；
+    // 未暂存则由后端按 code lane 全局默认解析，前端不再套用 work lane 默认。
+    pendingDraftMode: null,
+    // 草稿态选择的工作目录（普通聊天，对齐 code 模式草稿选择器）：null =
+    // 默认（会话私有目录）；随 create_session 的 workspacePath 参数下发，
+    // 物化成功后清除，enterDraft 复位。
+    draftWorkspacePath: null,
     // 最新 plan/todos 快照（用于 mode header 进度 chip，与 plan_ready 卡解耦）
     planSnapshot: { plan: null, todos: null },
     // 当前 session 产物列表 [{ path, basename }]
@@ -1007,6 +1015,9 @@
 
   const sessionsFeature = installBridgeFeature("sessions", {
     state, invoke, listen, notify,
+    // 草稿工作区选择器（pickDraftWorkspace）走系统目录对话框，与 artifacts
+    // 域同一注入通道；React 侧只调 sessions 域方法。
+    dialogOpen,
     sessionStates, scheduledRunSessionOwners,
     personaPlaceholderTitles, turnUsageDirty,
     // Clean host-side per-session side tables when a session buffer is
@@ -1091,6 +1102,9 @@
   const refreshHistoryList = sessionsFeature.refreshHistoryList;
   const enterDraft = sessionsFeature.enterDraft;
   const createNewSession = sessionsFeature.createNewSession;
+  const setDraftWorkspace = sessionsFeature.setDraftWorkspace;
+  const pickDraftWorkspace = sessionsFeature.pickDraftWorkspace;
+  const getSessionWorkspaceBinding = sessionsFeature.getSessionWorkspaceBinding;
   const ensureSession = sessionsFeature.ensureSession;
   const hydratedMessageKey = sessionsFeature.hydratedMessageKey;
   const mergeHydratedArtifacts = sessionsFeature.mergeHydratedArtifacts;
@@ -1147,10 +1161,13 @@
 
   // 草稿态（无 active 会话）的 modeState：取当前 lane 的全局默认，缺省 yolo
   // （与后端 plain 缺省方向一致）。三分 lane 语义：草稿显示 = 本 lane 全局默认。
+  // 绑定了工作目录的草稿安全姿态对齐 code 模式：显示 code lane 全局默认，
+  // 无记录（首次）→ plan（只读方向是安全侧，与 code 页草稿兜底一致）。
   function currentDraftModeState() {
-    const lane = state.modeLane === "design" ? "design" : "work";
+    const boundDraft = !!state.draftWorkspacePath;
+    const lane = boundDraft ? "code" : (state.modeLane === "design" ? "design" : "work");
     const d = state.modeDefaults && state.modeDefaults[lane];
-    return { mode: d || "yolo", multiAgent: false };
+    return { mode: d || (boundDraft ? "plan" : "yolo"), multiAgent: false };
   }
 
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
@@ -1473,7 +1490,7 @@
   let subscribers = [];
   const STATE_SLICE_FIELDS = {
     platform: ["appVersion", "backendOnline", "platformCapabilities"],
-    sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch"],
+    sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch", "draftWorkspacePath"],
     chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
     voice: ["voiceInput", "voiceAsrSetup"],
     knowledge: ["kbModelSetup", "mountedCollection", "mountedCollections", "mountedRemoteCollections", "mountedCollectionsRevision"],
@@ -2284,6 +2301,8 @@
   const setDraftMode = interactionFeature.setDraftMode;
   const setModeLane = interactionFeature.setModeLane;
   const refreshModeDefaults = interactionFeature.refreshModeDefaults;
+  const getCodePermissionPrefs = interactionFeature.getCodePermissionPrefs;
+  const confirmCodeYolo = interactionFeature.confirmCodeYolo;
   const setMultiAgentMode = interactionFeature.setMultiAgentMode;
   const planStuckReplan = interactionFeature.planStuckReplan;
   const planStuckGo = interactionFeature.planStuckGo;
@@ -2569,6 +2588,13 @@
       toggleSessionPinned,
       archiveSession,
       restoreArchivedSession,
+      // 草稿态工作目录选择（桌面专属：系统目录对话框 + create_session
+      // workspacePath 参数；Web 端无此通道，UI 以方法存在性守卫）。
+      setDraftWorkspace,
+      pickDraftWorkspace,
+      // 已生成会话的工作目录绑定查询（绑定会话安全姿态对齐 code 模式；
+      // Web/远程端无绑定概念，桩方法返回 null）。
+      getSessionWorkspaceBinding,
     },
     monitor: {
       startMonitorPolling,
@@ -2617,6 +2643,9 @@
     setDraftMode,
     setModeLane,
     refreshModeDefaults,
+      // 绑定工作目录会话的 YOLO 一次性确认门（与 code 模式同一事实源）
+    getCodePermissionPrefs,
+    confirmCodeYolo,
     setMultiAgentMode,
     planStuckReplan,
     planStuckGo,
