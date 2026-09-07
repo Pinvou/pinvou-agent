@@ -300,5 +300,3 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
     </div>
   );
 };
-
-export default RunningAgentsOverlay;
