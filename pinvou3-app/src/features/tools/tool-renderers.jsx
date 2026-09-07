@@ -609,13 +609,14 @@ const ToolOutput = ({ item, t }) => {
     // ExpertAgentCard 的安静协调行。提前返回发生在本组件任何 Hook 之前，
     // 且 item.name 对一个实例终生不变，因此每个实例的 Hook 数量恒定。
     // eslint-disable-next-line sonarjs/cognitive-complexity -- tool card rendering contains many inline branches;legacy view; tracked separately
-    const ToolCard = ({ item, t, variant = 'legacy', sessionId, spawnGroup: spawnGroupProp, spawnGroupHidden: spawnGroupHiddenProp }) => {
+    const ToolCard = ({ item, t, variant = 'legacy', sessionId }) => {
       if (EXPERT_CARD_ENABLED && (item.name === 'agent' || isAgentWaitCall(item.name, item.args))) {
         const delegation = isExpertDelegationCall(item.name, item.args);
         if (delegation) {
-          // 属性优先于条目自身标注（统一时间线车道经 renderToolItem 透传）。
-          const group = spawnGroupProp ?? item.spawnGroup;
-          const hidden = spawnGroupHiddenProp ?? item.spawnGroupHidden;
+          // 两条车道（legacy 气泡与统一时间线）的条目都在投影输入上统一
+          // 标注，计数行直接读条目自身字段即可。
+          const group = item.spawnGroup;
+          const hidden = item.spawnGroupHidden;
           // 聚合序列的非首条 spawn 不重复渲染文本行。
           if (hidden) return null;
           const resolved = group || { count: 1, failed: item.success === false || item.state === 'failed' ? 1 : 0 };
