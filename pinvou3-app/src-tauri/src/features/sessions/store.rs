@@ -492,6 +492,21 @@ impl SessionStore {
         Ok(())
     }
 
+    /// 目录重绑定的元数据写入(与 set_title 同款 load→patch→persist 模式)。
+    /// 只改 SavedSession 元数据的 workspace 字段,不触碰消息/transcript——
+    /// 历史回合里引用的旧路径是事实记录,保持原样。调用方(命令层)负责
+    /// 活跃回合栅栏;此处上锁防与 Engine 写盘竞争。
+    pub fn set_workspace(&self, id: &str, workspace: PathBuf) -> Result<()> {
+        let _mutation = self.scheduled_mutation.lock();
+        let mut session = self
+            .manager
+            .load_session_snapshot(id)
+            .with_context(|| format!("load_session({id}) for workspace rebind"))?;
+        session.metadata.workspace = workspace;
+        self.persist_then_reconcile(&session, "workspace rebind")?;
+        Ok(())
+    }
+
     pub fn touch_activity(&self, id: &str) -> Result<()> {
         let _mutation = self.scheduled_mutation.lock();
         validate_session_id(id)?;
