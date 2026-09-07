@@ -14,13 +14,23 @@ const MoveToProjectDialog = ({
   session,
   projects,
   currentProjectId,
+  presetProjectId,
   t,
   busy,
   onClose,
   onMove,
 }) => {
   const [query, setQuery] = useState('');
-  const [pendingAddFolder, setPendingAddFolder] = useState(null);
+  // 拖拽落点直达:拖到 root 未覆盖会话目录的项目上时,直接以该目标预置
+  // "添加文件夹"确认;初始化器即可(对话框每次打开都重新挂载)。
+  const [pendingAddFolder, setPendingAddFolder] = useState(() => {
+    if (!presetProjectId || !session) return null;
+    const target = (Array.isArray(projects) ? projects.filter(Boolean) : [])
+      .find(project => project.id === presetProjectId);
+    if (!target) return null;
+    const workspacePath = session.workspaceKind === 'project' ? String(session.workspacePath || '') : '';
+    return workspacePath && !projectCoversPath(target, workspacePath) ? target : null;
+  });
 
   useEffect(() => {
     if (!open) return () => {};

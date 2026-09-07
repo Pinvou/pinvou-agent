@@ -8,6 +8,8 @@ import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Edit2, FolderPlus, MoreHorizontal, Trash2, X } from '../../components/icons.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 
+const PROJECT_DROP_TYPE = 'application/x-pinvou-session';
+
 const ProjectGroupHeader = ({
   label,
   kind,
@@ -21,6 +23,7 @@ const ProjectGroupHeader = ({
   onConvert,
   onRename,
   onDelete,
+  onDropSession,
   testId,
   headerExtra,
 }) => {
@@ -28,6 +31,7 @@ const ProjectGroupHeader = ({
   const [confirming, setConfirming] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuStyle, setMenuStyle] = useState(null);
+  const [dropActive, setDropActive] = useState(false);
   const hasMenu = kind === 'folder' || kind === 'project';
 
   const closeMenu = () => setMenuOpen(false);
@@ -173,10 +177,29 @@ const ProjectGroupHeader = ({
 
   // Row container is NOT interactive (same idiom as RecentItem): the toggle
   // button and the "more" button are siblings, so no control nests inside
-  // another ARIA button.
+  // another ARIA button. Project headers double as HTML5 drop targets for the
+  // sidebar session drag (application/x-pinvou-session); dragover highlights,
+  // drop delegates the session id up.
   return (
     <div
-      className={`group/header w-full h-7 flex items-center rounded-full text-[12px] transition-colors ${theme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
+      onDragOver={onDropSession ? (e) => {
+        if (e.dataTransfer.types.includes(PROJECT_DROP_TYPE)) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          setDropActive(true);
+        }
+      } : undefined}
+      onDragLeave={onDropSession ? () => setDropActive(false) : undefined}
+      onDrop={onDropSession ? (e) => {
+        e.preventDefault();
+        setDropActive(false);
+        const sessionId = e.dataTransfer.getData(PROJECT_DROP_TYPE);
+        if (sessionId) onDropSession(sessionId);
+      } : undefined}
+      className={`group/header w-full h-7 flex items-center rounded-full text-[12px] transition-colors ${dropActive
+        ? 'ring-1 ring-[#0B57D0] bg-[#E8F0FE] dark:ring-[#A8C7FA] dark:bg-[#1F2A3D]'
+        : theme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
+      data-drop-target={onDropSession ? 'project' : undefined}
     >
       <button
         type="button"

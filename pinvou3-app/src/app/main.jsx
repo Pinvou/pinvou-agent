@@ -19,7 +19,7 @@ import { bridge, useBridgeState, usePlatformCapability, activeModelIsLocal, shou
 import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewport.js';
 import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
-import { groupSessionsWithProjects, resolveSessionProjectId } from '../features/projects/projectGrouping.js';
+import { groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId } from '../features/projects/projectGrouping.js';
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
 import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
 import { runSessionBatch } from '../shared/session-management.js';
@@ -1588,6 +1588,7 @@ function workspaceDisplayName(path) {
       const [settingsToast, setSettingsToast] = useState('');
       const [projectOpsBusy, setProjectOpsBusy] = useState(false);
       const [moveToProjectSession, setMoveToProjectSession] = useState(null);
+      const [moveToPresetProject, setMoveToPresetProject] = useState(null);
       // 桥完成首次状态同步(bs 就绪)后拉一次项目快照;后续变更由
       // projects:list_changed 事件驱动桥内刷新(bridge/projects.js)。
       const projectsBootstrapReady = !!bs;
@@ -2354,6 +2355,22 @@ function workspaceDisplayName(path) {
         setMoveToProjectSession(null);
         setSettingsToast(t.uiProjects.movedNotice);
       });
+      // 拖拽落点:root 已覆盖的直接移动;未覆盖的带着预置目标打开选择器,
+      // 进入"添加文件夹"确认(menu 路径则不带预置)。
+      const handleDropSessionOnProject = (sessionId, projectId) => {
+        const chat = sidebarTaskHistory.find(c => c.id === sessionId);
+        if (!chat || projectOpsBusy) return;
+        const projects = sidebarProjectsData ? sidebarProjectsData.projects : [];
+        const target = (projects || []).find(p => p && p.id === projectId);
+        if (!target) return;
+        if (chat.workspaceKind === 'project' && chat.workspacePath
+            && !projectCoversPath(target, chat.workspacePath)) {
+          setMoveToPresetProject(projectId);
+          setMoveToProjectSession(chat);
+          return;
+        }
+        handleMoveSessionToProject(sessionId, projectId, false);
+      };
 
       function sessionRowsForIds(ids) {
         const byId = new Map(allSidebarTasks.map(item => [item.id, item]));
@@ -2624,7 +2641,9 @@ function workspaceDisplayName(path) {
             onTogglePinned={handleToggleSessionPinned}
             onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
             onArchive={handleArchiveSession}
-            onMoveToProject={chat.taskKind === 'codex' && bridge.projects ? (() => setMoveToProjectSession(chat)) : undefined}
+            onMoveToProject={chat.taskKind === 'codex' && bridge.projects ? (() => { setMoveToPresetProject(null); setMoveToProjectSession(chat); }) : undefined}
+            dndPayload={chat.taskKind === 'codex' && bridge.projects ? { sessionId: chat.id } : undefined}
+            dndDisabled={!!dragAvatar}
             dragKind={detachKind}
             dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
             onPickUp={canDetachWindows ? ((geom) => beginTearOff(detachKind, chat.id, chat.title, geom)) : undefined}
@@ -2774,9 +2793,10 @@ function workspaceDisplayName(path) {
                 sidebarProjectsData ? sidebarProjectsData.projects : [],
                 sidebarProjectsData ? sidebarProjectsData.assignments : {},
               )}
+              presetProjectId={moveToPresetProject}
               t={t}
               busy={projectOpsBusy}
-              onClose={() => setMoveToProjectSession(null)}
+              onClose={() => { setMoveToPresetProject(null); setMoveToProjectSession(null); }}
               onMove={(projectId, addWorkspaceRoot) => handleMoveSessionToProject(
                 moveToProjectSession.id, projectId, addWorkspaceRoot)}
             />
@@ -3163,6 +3183,7 @@ function workspaceDisplayName(path) {
                                   onConvert={group.kind === 'folder' ? (name) => handleConvertFolderToProject(group.path, name) : undefined}
                                   onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
                                   onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
+                                  onDropSession={group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
                                 />
                                 {isOpen && (
                                   <div className="mt-1 space-y-0.5">
