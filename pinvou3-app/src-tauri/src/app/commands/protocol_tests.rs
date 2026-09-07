@@ -324,6 +324,17 @@ command_protocol!(
     ]
 );
 command_protocol!(
+    projects_protocol,
+    "projects.rs",
+    [
+        "list_projects",
+        "create_project",
+        "update_project",
+        "delete_project",
+        "move_session_to_project"
+    ]
+);
+command_protocol!(
     runtime_protocol,
     "runtime.rs",
     [

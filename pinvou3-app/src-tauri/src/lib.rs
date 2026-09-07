@@ -782,6 +782,29 @@ pub fn run() {
             if let Some(store) = session_store.clone() {
                 app.handle().manage(store);
             }
+            // 项目层(会话逻辑归档分组):纯偏好数据,boot 永不失败,损坏按空
+            // 状态降级。与 session store 的两处接线:
+            // 1) 启动对账——保留策略可能在删除钩子注册前已淘汰会话,剔除孤儿
+            //    归属条目,防映射表膨胀;
+            // 2) 删除钩子——运行期删除会话时同步摘除归属条目。
+            let projects_store = features::projects::ProjectStore::boot();
+            if let Some(store) = session_store.as_ref() {
+                if let Ok(all_sessions) = store.list_sessions_cached() {
+                    let existing: std::collections::HashSet<String> =
+                        all_sessions.iter().map(|metadata| metadata.id.clone()).collect();
+                    let pruned = projects_store.retain_sessions(&existing);
+                    if pruned > 0 {
+                        eprintln!(
+                            "[pinvou3-app] projects store pruned {pruned} orphan assignments"
+                        );
+                    }
+                }
+                let hook_store = projects_store.clone();
+                store.register_session_deleted_hook(std::sync::Arc::new(move |session_id: &str| {
+                    hook_store.forget_session(session_id);
+                }));
+            }
+            app.handle().manage(projects_store);
             let remote_control_manager = RemoteControlManager::new(app.handle().clone());
             let remote_event_transport = remote_control_manager.clone();
             let remote_event_endpoint = remote_control_manager.clone();
@@ -1218,6 +1241,11 @@ pub fn run() {
             commands::voice::voice_asr_status,
             commands::voice::install_voice_asr,
             commands::voice::cancel_voice_asr,
+            commands::projects::list_projects,
+            commands::projects::create_project,
+            commands::projects::update_project,
+            commands::projects::delete_project,
+            commands::projects::move_session_to_project,
             commands::sessions::list_sessions,
             commands::sessions::create_session,
             commands::sessions::load_session,
