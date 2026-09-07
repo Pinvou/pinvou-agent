@@ -78,12 +78,25 @@
       return outcome;
     }
 
+    // 目录重绑定(修断链):confirmExisting 由前端两阶段控制——先不带确认
+    // 调用,后端在旧目录仍存在时报特定错误,前端升级为强确认后重试。
+    async function rebindWorkspaceRoot(from, to, confirmExisting) {
+      const report = await invoke("rebind_workspace_root", {
+        from,
+        to,
+        confirmExisting: !!confirmExisting,
+      });
+      await loadProjects();
+      return report;
+    }
+
     return {
       loadProjects,
       createProject,
       renameProject,
       deleteProject,
-      moveSessionToProject
+      moveSessionToProject,
+      rebindWorkspaceRoot
     };
   };
 })(window);

@@ -338,6 +338,49 @@ fn newer_schema_version_is_rejected() {
 }
 
 #[test]
+fn rebind_roots_rewrites_prefix_and_stays_idempotent() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let from = abs("from");
+    let to = temp.path().join("moved");
+    std::fs::create_dir_all(&to).expect("create to dir");
+
+    let project = create(&store, "搬家", &[from.clone(), abs("untouched")]);
+    let other = create(&store, "无关", &[abs("elsewhere")]);
+
+    let affected = store.rebind_roots(&from, &to).expect("rebind roots");
+    assert_eq!(affected, vec![project.id.clone()]);
+    let roots = store.get(&project.id).unwrap().roots;
+    assert!(roots.contains(&to.canonicalize().unwrap()));
+    assert!(roots.contains(&abs("untouched")), "prefix 外的 root 不动");
+    assert_eq!(store.get(&other.id).unwrap().roots, vec![abs("elsewhere")]);
+
+    // 幂等:from 前缀已无命中,再跑为空操作。
+    assert!(store.rebind_roots(&from, &to).unwrap().is_empty());
+    assert_eq!(store.get(&project.id).unwrap().roots, roots);
+}
+
+#[test]
+fn rebind_roots_rejects_overlap_and_keeps_state() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let from = abs("from2");
+    let occupied = temp.path().join("occupied");
+    std::fs::create_dir_all(&occupied).expect("create occupied dir");
+
+    let project = create(&store, "待搬", &[from.clone()]);
+    create(&store, "已有领地", &[occupied.clone()]);
+
+    let before = store.get(&project.id).unwrap();
+    let error = store
+        .rebind_roots(&from, &occupied)
+        .expect_err("overlap after rebind rejected");
+    assert!(error.to_string().contains("overlap"));
+    // 报错回滚:内存态未变(未落盘)。
+    assert_eq!(store.get(&project.id).unwrap(), before);
+}
+
+#[test]
 fn forget_session_and_retain_sessions_prune_orphans() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);

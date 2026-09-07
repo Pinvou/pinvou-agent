@@ -24,6 +24,8 @@ const ProjectGroupHeader = ({
   onRename,
   onDelete,
   onDropSession,
+  onRebind,
+  rootsUnavailable,
   testId,
   headerExtra,
 }) => {
@@ -209,6 +211,21 @@ const ProjectGroupHeader = ({
         className="flex min-w-0 flex-1 self-stretch items-center border-0 bg-transparent px-4 text-left"
       >
         <span className="min-w-0 flex-1 truncate pr-2">{label} ({count})</span>
+        {/* 全部 root 失效:徽标提示 + 一键重绑定。不自动删项目——归属与
+            历史 still 在,目录接骨是唯一修复路径。 */}
+        {kind === 'project' && rootsUnavailable && onRebind && (
+          <span
+            role="button"
+            tabIndex={0}
+            data-testid="project-folder-unavailable"
+            title={title || label}
+            onClick={(e) => { e.stopPropagation(); onRebind(); }}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onRebind(); } }}
+            className="mr-2 shrink-0 max-w-[9rem] truncate rounded-full bg-[#FCE8E6] dark:bg-[#3C2A29] px-2 py-0.5 text-[11px] text-[#C5221F] dark:text-[#F28B82] hover:opacity-80"
+          >
+            {t.uiProjects.folderUnavailable} · {t.uiProjects.rebindFolder}
+          </span>
+        )}
         {headerExtra}
         <ChevronDown size={14} className={`shrink-0 transition-transform ${isOpen ? '' : '-rotate-90'}`} />
       </button>

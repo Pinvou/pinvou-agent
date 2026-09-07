@@ -1246,6 +1246,7 @@ pub fn run() {
             commands::projects::update_project,
             commands::projects::delete_project,
             commands::projects::move_session_to_project,
+            commands::projects::rebind_workspace_root,
             commands::sessions::list_sessions,
             commands::sessions::create_session,
             commands::sessions::load_session,
