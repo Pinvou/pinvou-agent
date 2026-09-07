@@ -3,10 +3,10 @@
 查看我今天/本周/指定日期的考勤记录（自动获取 userId）
 
 用法:
-    python attendance_my_record.py               # 今天
-    python attendance_my_record.py today          # 今天
-    python attendance_my_record.py 2026-03-10     # 指定日期
-    python attendance_my_record.py --dry-run      # 仅显示命令
+    python3 scripts/attendance_my_record.py               # 今天
+    python3 scripts/attendance_my_record.py today          # 今天
+    python3 scripts/attendance_my_record.py 2026-03-10     # 指定日期
+    python3 scripts/attendance_my_record.py --dry-run      # 仅显示命令
 """
 
 import sys

@@ -15,7 +15,7 @@
   pip install openpyxl
 
 用法:
-  python attendance_report_checkin.py \
+  python3 scripts/attendance_report_checkin.py \
     --users userId1,userId2,...  \
     --start "2026-04-01 00:00:00" \
     --end   "2026-04-07 23:59:59" \

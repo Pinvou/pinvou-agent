@@ -3,10 +3,10 @@
 从听记中提取所有待办事项并汇总
 
 用法:
-    python minutes_extract_todos.py              # 最近 5 条听记
-    python minutes_extract_todos.py --max 10     # 最近 10 条
-    python minutes_extract_todos.py --id <uuid>  # 指定听记
-    python minutes_extract_todos.py --dry-run
+    python3 scripts/minutes_extract_todos.py              # 最近 5 条听记（路径相对 Skill 根目录，执行时拼成完整路径）
+    python3 scripts/minutes_extract_todos.py --max 10     # 最近 10 条
+    python3 scripts/minutes_extract_todos.py --id <uuid>  # 指定听记
+    python3 scripts/minutes_extract_todos.py --dry-run
 """
 
 import sys

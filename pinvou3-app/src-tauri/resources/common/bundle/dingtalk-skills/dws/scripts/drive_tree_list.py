@@ -3,10 +3,10 @@
 递归列出钉盘目录树结构（可指定深度）
 
 用法:
-    python drive_tree_list.py                # 列出根目录
-    python drive_tree_list.py --depth 2      # 递归 2 层
-    python drive_tree_list.py --folder <id>  # 指定目录 (传 drive list 返回的 fileId)
-    python drive_tree_list.py --dry-run
+    python3 scripts/drive_tree_list.py                # 列出根目录
+    python3 scripts/drive_tree_list.py --depth 2      # 递归 2 层
+    python3 scripts/drive_tree_list.py --folder <id>  # 指定目录 (传 drive list 返回的 fileId)
+    python3 scripts/drive_tree_list.py --dry-run
 
 说明:
     `dws drive list` 返回的每个 item 有两个 ID：

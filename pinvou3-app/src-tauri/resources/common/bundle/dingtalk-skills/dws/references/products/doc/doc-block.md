@@ -92,6 +92,7 @@ Flags:
       --index int          参照位置索引 (从 0 开始)
       --where string       插入方向: before / after (默认 after)
       --ref-block string   参照块 ID (优先级高于 --index)
+      --parent-block string 目标父块 UUID（插入为子块时使用，配合 --index 在该父块内定位）
 ```
 
 > **content-format=jsonml 完整范例**：参见 [`./format/doc-jsonml-cookbook.md`](./format/doc-jsonml-cookbook.md)，包含所有节点类型的正确 insert/update 命令示例。
