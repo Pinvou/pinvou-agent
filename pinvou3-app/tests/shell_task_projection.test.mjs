@@ -9,7 +9,7 @@ const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const terminalPath = path.join(appRoot, 'src', 'platform', 'tauri', 'bridge', 'terminal.js');
 const terminalSource = fs.readFileSync(terminalPath, 'utf8');
 
-function createTerminal(initialItems = []) {
+function createTerminal(initialItems = [], runtime = 'tauri') {
   const chatItems = structuredClone(initialItems);
   const windowObject = {
     __PINVOU_TAURI_BRIDGE_FEATURES__: {},
@@ -25,7 +25,7 @@ function createTerminal(initialItems = []) {
   vm.runInContext(terminalSource, scriptContext, { filename: terminalPath });
 
   let notifications = 0;
-  const terminal = windowObject.__PINVOU_TAURI_BRIDGE_FEATURES__.terminal({
+  const context = {
     state: { chatItems, activeSessionId: 'session-current' },
     notify() { notifications += 1; },
     invoke: async () => [],
@@ -37,7 +37,19 @@ function createTerminal(initialItems = []) {
     },
     runSyncOnSession(_sessionId, callback) { callback(); },
     addChatItem(item) { chatItems.push(item); },
-  });
+  };
+  let terminal;
+  if (runtime === 'web') {
+    const webSource = fs.readFileSync(path.join(appRoot, 'src', 'platform', 'web', 'bridge.js'), 'utf8');
+    const start = webSource.indexOf('  const SHELL_TOOL_NAMES =');
+    const end = webSource.indexOf('  function scheduleShellPoll(', start);
+    assert.ok(start >= 0 && end > start, 'Web shell projection helpers must be present');
+    Object.assign(scriptContext, context);
+    vm.runInContext(`${webSource.slice(start, end)}\nthis.webTerminal = { applyShellSnapshots };`, scriptContext);
+    terminal = scriptContext.webTerminal;
+  } else {
+    terminal = windowObject.__PINVOU_TAURI_BRIDGE_FEATURES__.terminal(context);
+  }
 
   return { chatItems, terminal, notifications: () => notifications };
 }
@@ -321,6 +333,67 @@ test('identified completed subagent jobs without their origin card stay visible'
   assert.equal(harness.chatItems[0].shellStatus, 'failed');
   assert.equal(harness.notifications(), 1);
 });
+
+for (const runtime of ['tauri', 'web']) {
+  test(`${runtime}: a missing origin cannot adopt a same-command running card`, () => {
+    const current = {
+      type: 'tool', toolId: 'new-call', name: 'exec_shell', state: 'running',
+      args: { command: 'echo repeated' }, output: 'new output',
+    };
+    const harness = createTerminal([current], runtime);
+    const job = snapshot({
+      command: 'echo repeated', status: 'running', exit_code: null,
+      origin_tool_call_id: 'compacted-call', stdout_tail: 'old output', stderr_tail: '',
+      stdout_len: 10, stderr_len: 0,
+    });
+
+    assert.equal(harness.terminal.applyShellSnapshots('session-current', [job]), true);
+    assert.deepEqual(harness.chatItems[0], current);
+    assert.equal(harness.chatItems.length, 2);
+    assert.equal(harness.chatItems[1].toolId, 'shell-task:shell-old');
+
+    harness.terminal.applyShellSnapshots('session-current', [{ ...job, status: 'completed', exit_code: 0 }]);
+    assert.deepEqual(harness.chatItems[0], current);
+    assert.equal(harness.chatItems.length, 2);
+    assert.equal(harness.chatItems[1].state, 'done');
+  });
+
+  test(`${runtime}: a missing origin cannot adopt identical completed output`, () => {
+    const current = {
+      type: 'tool', toolId: 'new-call', name: 'exec_shell', state: 'done',
+      args: { command: 'echo repeated' }, output: 'same output',
+    };
+    const harness = createTerminal([current], runtime);
+    harness.terminal.applyShellSnapshots('session-current', [snapshot({
+      command: 'echo repeated', status: 'completed', exit_code: 0,
+      origin_tool_call_id: 'compacted-call', stdout_tail: 'same output', stderr_tail: '',
+      stdout_len: 11, stderr_len: 0,
+    })]);
+
+    assert.deepEqual(harness.chatItems, [current]);
+    assert.equal(harness.notifications(), 0);
+  });
+
+  test(`${runtime}: origin-less jobs retain running and terminal matching`, () => {
+    for (const status of ['running', 'completed']) {
+      const harness = createTerminal([{
+        type: 'tool', toolId: 'legacy-call', name: 'exec_shell',
+        state: status === 'running' ? 'running' : 'done',
+        args: { command: 'echo repeated' }, output: 'same output',
+      }], runtime);
+      harness.terminal.applyShellSnapshots('session-current', [snapshot({
+        command: 'echo repeated', status, exit_code: status === 'running' ? null : 0,
+        stdout_tail: 'same output', stderr_tail: '',
+        stdout_len: 11, stderr_len: 0,
+      })]);
+
+      assert.equal(harness.chatItems.length, 1);
+      assert.equal(harness.chatItems[0].toolId, 'legacy-call');
+      assert.equal(harness.chatItems[0].taskId, 'shell-old');
+      assert.equal(harness.notifications(), 1);
+    }
+  });
+}
 
 test('the web bridge keeps the same stale-completion guard', () => {
   const webBridge = fs.readFileSync(

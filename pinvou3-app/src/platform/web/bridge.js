@@ -4504,7 +4504,9 @@
             return it.type === "tool" && it.toolId === job.origin_tool_call_id;
           });
         }
-        if (!item && running) {
+        // Only legacy snapshots without an origin may match by command or
+        // output. A missing origin card must not redirect another tool call.
+        if (!item && running && !job.origin_tool_call_id) {
           const command = String(job.command || "");
           const candidates = state.chatItems.filter(function (it) {
             return it.type === "tool" && isShellExecutionTool(it.name) && !it.taskId &&
@@ -4514,7 +4516,7 @@
           // task id. Never guess when identical commands are concurrent.
           if (runningCommandCounts[command] === 1 && candidates.length === 1) item = candidates[0];
         }
-        if (!item && !running) {
+        if (!item && !running && !job.origin_tool_call_id) {
           item = state.chatItems.find(function (it) {
             return terminalShellHistoryMatch(it, job);
           });
