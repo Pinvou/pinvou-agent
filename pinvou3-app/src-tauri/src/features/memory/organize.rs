@@ -11,6 +11,10 @@
 //! the snapshot and is re-checked against the current store under the io write
 //! lock before it is mutated — an item changed meanwhile is skipped with a
 //! report warning instead of being overwritten or deleted by the stale action.
+//! Within the phase itself the check cannot see earlier actions of the same run
+//! (the re-check reads store views loaded before the loop), so an action whose
+//! target was already mutated by an earlier action of this run is rejected
+//! before it can touch the just-written content.
 //!
 //! Unlike the per-turn review in `llm_review`: organize is a user-initiated full
 //! pass whose goal is to merge duplicates, rewrite stale wording, and drop
@@ -100,9 +104,9 @@ pub(super) const MEMORY_ORGANIZE_PROMPT: &str = r#"你是 pinvou 的后台记忆
 /// `deleted` / `updated` / `merged` are counted per kind and never overlap:
 /// `merged` counts only source items absorbed and removed by a merge, `deleted`
 /// only items removed by delete actions; the three sums equal the number of
-/// items actually changed — each item is counted once per run even when several
-/// actions touch it (an overlapping later action still applies at the io layer
-/// but is reported as a warning, not a second count).
+/// items actually changed — an action whose target was already changed by an
+/// earlier action of the same run is skipped whole (reported as a warning), so
+/// no item is ever counted twice.
 /// `Deserialize` supports the bounded history readback from `organize_history.json`.
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct MemoryOrganizeReport {
@@ -660,23 +664,19 @@ pub(super) fn validate_organize_action(
     })
 }
 
-/// Records one successful item mutation in the report counters. An item already
-/// changed by an earlier action in the same run is not counted again — the
-/// counters are unique changed items (see `MemoryOrganizeReport`); the io write
-/// itself still happened and is surfaced as a warning.
-fn count_item_change(
+/// Records one successful item mutation: it enters both the report counter and
+/// the run's `changed` ledger that feeds the loop-head overlap gate (a later
+/// action targeting the item is rejected there). Uniqueness by construction:
+/// the gate rejects any action whose target an earlier action already changed,
+/// and ids are deduplicated within a single action at validation time — so an
+/// item reaches here at most once per run (see `MemoryOrganizeReport`).
+fn record_item_change(
     bucket: &mut BTreeMap<String, u32>,
     changed: &mut BTreeSet<(String, String)>,
     kind: &str,
     id: &str,
-    warnings: &mut Vec<String>,
 ) {
-    if !changed.insert((kind.to_string(), id.to_string())) {
-        warnings.push(format!(
-            "organize: {kind} {id} was already changed by an earlier action; not counted again"
-        ));
-        return;
-    }
+    changed.insert((kind.to_string(), id.to_string()));
     *bucket.entry(kind.to_string()).or_default() += 1;
 }
 
@@ -791,6 +791,13 @@ enum TargetFreshness {
 /// participant is checked before anything is mutated, so no writer can slip
 /// between the check and the act.
 ///
+/// One staleness source remains inside the phase: `fresh` is loaded once, so
+/// the re-check cannot see what earlier actions of this run just wrote. An
+/// action whose target was already mutated by an earlier action is therefore
+/// rejected outright (see the loop-head gate) — e.g. a chained merge would
+/// otherwise absorb and delete a source that already carries this run's merged
+/// text, losing it irreversibly.
+///
 /// `removal_budget` bounds how many items this run may remove (delete targets
 /// plus merge-absorbed sources, see `ORGANIZE_REMOVAL_BUDGET_MIN`). Budgeted
 /// removals are attempted in action order; once the budget is spent, further
@@ -810,7 +817,9 @@ fn apply_organize_actions(
     let mut deleted = BTreeMap::new();
     let mut updated = BTreeMap::new();
     let mut merged = BTreeMap::new();
-    let mut changed = BTreeSet::new();
+    // (kind, id) of every item this run already mutated: feeds the loop-head
+    // overlap gate that rejects actions targeting just-written content.
+    let mut changed: BTreeSet<(String, String)> = BTreeSet::new();
     let mut warnings = Vec::new();
     let mut capped = false;
     let _guard = io::write_lock().lock();
@@ -826,6 +835,36 @@ fn apply_organize_actions(
         }
     };
     for action in actions {
+        // Loop-head overlap gate: an item an earlier action of this run already
+        // mutated is the one case `target_freshness` cannot catch — `fresh` was
+        // loaded before the loop and still shows the snapshot state for it, so
+        // a later overlapping action would pass the re-check and then overwrite
+        // or delete the just-written content. A chained merge would even absorb
+        // (and delete) a source holding this run's merged text, losing it for
+        // good. The model built this action from the stale snapshot either way,
+        // so reject it whole; the next organize run sees the updated store and
+        // can converge.
+        let overlapping: Vec<&str> = action
+            .targets
+            .iter()
+            .filter(|target| changed.contains(&(action.kind.clone(), target.id.clone())))
+            .map(|target| target.id.as_str())
+            .collect();
+        if !overlapping.is_empty() {
+            warnings.push(format!(
+                "organize: skip {} {} [{}]: {} already changed by an earlier action this run",
+                action.op,
+                action.kind,
+                action
+                    .targets
+                    .iter()
+                    .map(|target| target.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                overlapping.join(", ")
+            ));
+            continue;
+        }
         match action.op.as_str() {
             "delete" => {
                 for target in &action.targets {
@@ -859,13 +898,7 @@ fn apply_organize_actions(
                     match delete_organize_item(&action.kind, id) {
                         Ok(outcome) => match outcome {
                             OrganizeDeleteOutcome::Removed => {
-                                count_item_change(
-                                    &mut deleted,
-                                    &mut changed,
-                                    &action.kind,
-                                    id,
-                                    &mut warnings,
-                                );
+                                record_item_change(&mut deleted, &mut changed, &action.kind, id);
                             }
                             OrganizeDeleteOutcome::Missing => {
                                 warnings.push(format!(
@@ -908,13 +941,7 @@ fn apply_organize_actions(
                 }
                 match update_organize_item(&action.kind, id, &action.content) {
                     Ok(true) => {
-                        count_item_change(
-                            &mut updated,
-                            &mut changed,
-                            &action.kind,
-                            id,
-                            &mut warnings,
-                        );
+                        record_item_change(&mut updated, &mut changed, &action.kind, id);
                     }
                     Ok(false) => {
                         warnings.push(format!(
@@ -1003,13 +1030,7 @@ fn apply_organize_actions(
                 match update_organize_item(&action.kind, keep, &action.content) {
                     Ok(true) => {
                         keep_updated = true;
-                        count_item_change(
-                            &mut updated,
-                            &mut changed,
-                            &action.kind,
-                            keep,
-                            &mut warnings,
-                        );
+                        record_item_change(&mut updated, &mut changed, &action.kind, keep);
                     }
                     Ok(false) => {
                         warnings.push(format!(
@@ -1043,13 +1064,7 @@ fn apply_organize_actions(
                         // sum to the number of items actually changed.
                         Ok(outcome) => match outcome {
                             OrganizeDeleteOutcome::Removed => {
-                                count_item_change(
-                                    &mut merged,
-                                    &mut changed,
-                                    &action.kind,
-                                    id,
-                                    &mut warnings,
-                                );
+                                record_item_change(&mut merged, &mut changed, &action.kind, id);
                             }
                             OrganizeDeleteOutcome::Missing => {
                                 warnings.push(format!(

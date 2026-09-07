@@ -2729,10 +2729,12 @@ async fn organize_scans_only_undecided_pending_candidates() {
 }
 
 // Overlapping actions from the model (update, then a merge whose keep is the
-// already-updated item, then an explicit delete of the already-absorbed source)
-// must not break the report invariant: each item is counted once per run, so
+// already-updated item, then an explicit delete of the never-absorbed source)
+// must neither break the report invariant (each item counted once per run, so
 // the deleted/updated/merged sums stay equal to the number of items actually
-// changed (see MemoryOrganizeReport).
+// changed, see MemoryOrganizeReport) nor touch the just-updated item again:
+// the merge is rejected by the loop-head overlap gate, and the explicit delete
+// then removes the source the merge would have absorbed.
 #[tokio::test]
 async fn organize_overlapping_actions_count_each_item_once() {
     let _home = IsolatedPinvouHome::new("organize-overlap-counts");
@@ -2796,9 +2798,95 @@ async fn organize_overlapping_actions_count_each_item_once() {
 
     let report = organize_memory_with_llm(&bridge, None).await.unwrap();
 
-    // focus_overlap_a is counted once as updated (the merge-keep rewrite is a
-    // warning, not a second count); focus_overlap_b is counted once as merged
-    // (the later explicit delete finds no item left to remove).
+    // The merge overlaps focus_overlap_a, which the update already changed, so
+    // it is rejected whole; the later explicit delete then removes the source.
+    // focus_overlap_a is counted once as updated, focus_overlap_b once as
+    // deleted.
+    assert_eq!(report.updated["current_focus"], 1);
+    assert_eq!(report.deleted["current_focus"], 1);
+    assert!(!report.merged.contains_key("current_focus"));
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("skip merge current_focus [focus_overlap_a, focus_overlap_b]: focus_overlap_a already changed by an earlier action this run")),
+        "overlapping merge must be rejected: {:?}",
+        report.warnings
+    );
+    // Store state is the merged outcome: one item holding the updated content.
+    let items = load_current_focus().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].text, "正在推进新版控制台的迁移方案");
+}
+
+// Chained overlapping merges — the data-loss case behind the loop-head gate.
+// A later merge whose source was already absorbed by an earlier merge of the
+// same run must be rejected. `fresh` is loaded once before the action loop, so
+// without the gate the second merge passed its freshness checks, overwrote c
+// with the stale C+A content, and deleted a together with the A+B content the
+// first merge had just written into it — B was lost irreversibly while the
+// counters only recorded a warning. With the gate, the second merge is skipped
+// whole and every already-merged content survives.
+#[tokio::test]
+async fn organize_chained_overlapping_merge_keeps_absorbed_content() {
+    let _home = IsolatedPinvouHome::new("organize-chained-merge");
+    enable_memory_for_tests();
+    let now = Utc::now();
+    let hit = now.to_rfc3339();
+    let item = |id: &str, topic: &str, text: &str| TimedMemoryItem {
+        id: id.to_string(),
+        kind: "current_focus".to_string(),
+        topic: topic.to_string(),
+        text: text.to_string(),
+        source: "test".to_string(),
+        confidence: 0.9,
+        created_at: hit.clone(),
+        updated_at: hit.clone(),
+        last_hit: hit.clone(),
+        ttl_days: 30,
+        status: "active".to_string(),
+    };
+    let a_text = "正在推进新版控制台的迁移方案";
+    let b_text = "团队站会固定在工作日上午";
+    let c_text = "季度评审定在每月第二周";
+    write_timed_memory_file(
+        &current_focus_path(),
+        &[
+            item("focus_chain_a", "current_work", a_text),
+            item("focus_chain_b", "task_pattern", b_text),
+            item("focus_chain_c", "meeting_notes", c_text),
+        ],
+        "current_focus",
+    )
+    .unwrap();
+    let merged_ab = "正在推进新版控制台的迁移方案，团队站会安排已同步";
+    let actions = json!({
+        "actions": [
+            {
+                "op": "merge",
+                "kind": "current_focus",
+                "ids": ["focus_chain_a", "focus_chain_b"],
+                "content": merged_ab,
+                "reason": "两条重复条目合并为一条"
+            },
+            {
+                "op": "merge",
+                "kind": "current_focus",
+                "ids": ["focus_chain_c", "focus_chain_a"],
+                "content": "季度评审定在每月第二周，正在推进新版控制台的迁移方案",
+                "reason": "合并当前关注"
+            }
+        ]
+    });
+    let bridge = FakeOrganizeModel {
+        base_url: spawn_chat_completions_stub(actions.to_string()),
+    };
+
+    let report = organize_memory_with_llm(&bridge, None).await.unwrap();
+
+    // The first merge applies (a rewritten to the merged content, b absorbed);
+    // the second merge is rejected because its source focus_chain_a was already
+    // mutated by the first.
     assert_eq!(report.updated["current_focus"], 1);
     assert_eq!(report.merged["current_focus"], 1);
     assert!(!report.deleted.contains_key("current_focus"));
@@ -2806,14 +2894,23 @@ async fn organize_overlapping_actions_count_each_item_once() {
         report
             .warnings
             .iter()
-            .any(|warning| warning.contains("not counted again")),
-        "overlapping actions must be reported: {:?}",
+            .any(|warning| warning.contains("skip merge current_focus [focus_chain_c, focus_chain_a]: focus_chain_a already changed by an earlier action this run")),
+        "chained overlapping merge must be rejected: {:?}",
         report.warnings
     );
-    // Store state is the merged outcome: one item holding the merged content.
+    // Previously absorbed content survives: a holds the first merge's content,
+    // c keeps its own text untouched by the stale C+A rewrite, b stays absorbed.
     let items = load_current_focus().unwrap();
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0].text, "正在推进新版控制台的迁移方案");
+    let text_of = |id: &str| {
+        items
+            .iter()
+            .find(|item| item.id == id)
+            .map(|item| item.text.as_str())
+    };
+    assert_eq!(text_of("focus_chain_a"), Some(merged_ab));
+    assert_eq!(text_of("focus_chain_c"), Some(c_text));
+    assert_eq!(text_of("focus_chain_b"), None);
+    assert_eq!(items.len(), 2);
 }
 
 // An item that is active at snapshot time but expired/archived by the per-turn
