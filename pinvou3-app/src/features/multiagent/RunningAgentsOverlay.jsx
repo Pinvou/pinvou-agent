@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { bridge } from '../../hooks/useBridge.js';
 import { can } from '../../shared/platform.js';
 import {
   RECENT_TERMINAL_MS,
   entryKey,
   isTerminal,
+  mergeOverlayEntry,
   overlayVisibleEntries,
   pruneOverlayEntries,
   statusPresentation,
@@ -16,13 +17,12 @@ import {
  * 状态点 + 简短状态），点击条目派发 `pinvou:open-subagent` 打开其只读执行
  * 记录面板；收起/展开选择记入 localStorage。
  *
- * 状态源两层（与行内专家卡同一哲学：实时事件可能丢，落盘投影是权威）：
+ * 状态源两层（落盘投影是权威，实时事件可能丢）：
  * - `pinvou:subagent-update`（bridge 转发的实时进展/完成事件）；
  * - 本组件自持的 `listSubagentTranscripts` 轮询兜底——只在存在未终态条目
- *   （或会话刚切换还没有数据）时轮询（3s 节流），全部终态即停；轮询读到的
- *   整份 ledger 快照另经 `pinvou:subagent-ledger-update` 广播：spawn 计数行
- *   取代行内专家卡后，行内卡原有的共享轮询不再有常驻 watcher，本组件是
- *   运行期唯一的常驻广播源，行内协调卡的后代树投影依赖它。
+ *   （或会话刚切换还没有数据）时轮询（3s 节流），全部终态即停。落盘快照
+ *   只服务本组件：spawn 计数行取代行内专家卡后，`pinvou:subagent-ledger-update`
+ *   在聊天车道已无存活消费者（专家卡仅剩不订阅任何事件的协调行），不再广播。
  *
  * 边框情绪价值：蜂群关闭 = 蓝边框，蜂群开启 = 紫边框（深浅色各配一档）；
  * 运行中状态点带呼吸动画，完成后短暂保持绿色成功态再淡出列表。
@@ -49,31 +49,28 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
   const [entries, setEntries] = useState({});
   const [expanded, setExpanded] = useState(() => {
     if (typeof localStorage === 'undefined') return false;
-    return localStorage.getItem(COLLAPSE_STORAGE_KEY) !== '1';
+    try {
+      return localStorage.getItem(COLLAPSE_STORAGE_KEY) !== '1';
+    } catch {
+      // 受限存储环境（如禁 cookie 的 WebView）读取即抛：按默认展开处理，
+      // 与下方 setItem 的防御对称。
+      return true;
+    }
   });
-  const entriesRef = useRef(entries);
-  useEffect(() => {
-    entriesRef.current = entries;
-  }, [entries]);
 
   const mergeEntry = useCallback((sessionIdIn, detail) => {
     if (!detail || !detail.agentId) return;
     const key = entryKey(sessionIdIn, detail.agentId);
     setEntries(previous => {
-      const prev = previous[key];
-      // 终态 ratchet：落盘（ledger）终态是权威；迟到的非终态实时事件不得把
-      // 条目翻回运行中（落盘重唤醒场景由 ledger 快照本身负责翻回）。
-      if (prev && prev.done && !detail.done && detail.source !== 'ledger') return previous;
-      const next = { ...prev, ...detail, sessionId: sessionIdIn };
-      if (detail.done && !(prev && prev.done)) next.completedAt = Date.now();
-      if (!detail.done) delete next.completedAt;
+      const next = mergeOverlayEntry(previous[key], detail, sessionIdIn, Date.now());
+      if (!next) return previous;
       const merged = { ...previous, [key]: next };
       const pruned = pruneOverlayEntries(merged);
       return pruned || merged;
     });
   }, []);
 
-  // 实时事件 + 共享 ledger 快照订阅。
+  // 实时事件订阅。
   useEffect(() => {
     if (!enabled || typeof window === 'undefined') return;
     const onUpdate = event => {
@@ -81,30 +78,9 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
       if (!detail || (sessionId && detail.sessionId && detail.sessionId !== sessionId)) return;
       mergeEntry(detail.sessionId || sessionId, detail);
     };
-    const onLedger = event => {
-      const detail = event && event.detail;
-      if (!detail || !Array.isArray(detail.agents)) return;
-      if (sessionId && detail.sessionId && detail.sessionId !== sessionId) return;
-      const ledgerSession = detail.sessionId || sessionId;
-      for (const summary of detail.agents) {
-        if (!summary || !summary.agent_id) continue;
-        mergeEntry(ledgerSession, {
-          sessionId: ledgerSession,
-          agentId: summary.agent_id,
-          role: summary.role || null,
-          status: summary.status || null,
-          done: !!summary.done,
-          failed: !!summary.failed,
-          blocked: !!summary.blocked,
-          source: 'ledger',
-        });
-      }
-    };
     window.addEventListener('pinvou:subagent-update', onUpdate);
-    window.addEventListener('pinvou:subagent-ledger-update', onLedger);
     return () => {
       window.removeEventListener('pinvou:subagent-update', onUpdate);
-      window.removeEventListener('pinvou:subagent-ledger-update', onLedger);
     };
   }, [enabled, mergeEntry, sessionId]);
 
@@ -147,10 +123,6 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
               source: 'ledger',
             });
           }
-          // 整份快照广播一次，供行内协调卡投影自己的后代树。
-          window.dispatchEvent(new CustomEvent('pinvou:subagent-ledger-update', {
-            detail: { sessionId, agents: list },
-          }));
         }
       } catch {
         // 单次轮询失败不致命，下一轮重试。

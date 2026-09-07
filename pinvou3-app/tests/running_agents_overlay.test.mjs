@@ -1,4 +1,4 @@
-/** 蜂群运行小窗纯模型（overlay-model.mjs）：可见性窗口 / 状态映射 / 缓存淘汰。 */
+/** 蜂群运行小窗纯模型（overlay-model.mjs）：可见性窗口 / 状态映射 / 缓存淘汰 / 条目合并。 */
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
@@ -6,6 +6,7 @@ import {
   RECENT_TERMINAL_MS,
   entryKey,
   isTerminal,
+  mergeOverlayEntry,
   overlayVisibleEntries,
   pruneOverlayEntries,
   statusPresentation,
@@ -92,4 +93,68 @@ test('pruneOverlayEntries：终态条目不足时返回 null（非终态不受�
   }
   entries.done_one = entry({ agentId: 'done_one', done: true, completedAt: 1 });
   assert.equal(pruneOverlayEntries(entries), null, '唯一终态淘汰后仍超限：宁可不淘汰也不丢运行态');
+});
+
+const ledgerRead = (overrides = {}) => ({
+  sessionId: 's1',
+  agentId: 'agent_1',
+  role: null,
+  status: 'completed',
+  done: true,
+  failed: false,
+  blocked: false,
+  source: 'ledger',
+  ...overrides,
+});
+
+test('mergeOverlayEntry：冷启动快照不授予 completedAt，历史终态不进成功态窗口', () => {
+  const now = 10_000;
+  const merged = mergeOverlayEntry(null, ledgerRead(), 's1', now);
+  assert.equal(merged.completedAt, undefined, '首次观测到的终态条目从未在本会话展示过运行态');
+  assert.deepEqual(overlayVisibleEntries([merged], now).recent, [], '打开历史会话不得弹出「运行中 0」假胶囊');
+});
+
+test('mergeOverlayEntry：本会话内 运行→终态 翻转授予 completedAt', () => {
+  const now = 10_000;
+  const running = mergeOverlayEntry(null, ledgerRead({ done: false, status: 'running' }), 's1', now);
+  assert.equal(running.completedAt, undefined);
+  const done = mergeOverlayEntry(running, ledgerRead(), 's1', now);
+  assert.equal(done.completedAt, now);
+  assert.deepEqual(overlayVisibleEntries([done], now).recent.map(item => item.agentId), ['agent_1']);
+  // 已是终态的迟到重复读数不重置计时起点。
+  const again = mergeOverlayEntry(done, ledgerRead(), 's1', now + 1000);
+  assert.equal(again.completedAt, now);
+});
+
+test('mergeOverlayEntry：终态 ratchet 拒绝迟到的非终态实时事件（返回 null）', () => {
+  const done = mergeOverlayEntry(null, ledgerRead(), 's1', 10_000);
+  done.completedAt = 10_000;
+  assert.equal(
+    mergeOverlayEntry(done, { done: false, status: 'still working', source: 'realtime' }, 's1', 11_000),
+    null,
+    '落盘终态是权威，非 ledger 的翻回不可变更',
+  );
+});
+
+test('mergeOverlayEntry：ledger 非终态读数负责翻回运行中，completedAt 清除', () => {
+  const done = mergeOverlayEntry(null, ledgerRead(), 's1', 10_000);
+  const revived = mergeOverlayEntry(done, ledgerRead({ done: false, status: 'running' }), 's1', 11_000);
+  assert.equal(revived.done, false);
+  assert.equal(revived.completedAt, undefined, '落盘重唤醒后回到运行态，成功态窗口作废');
+  assert.deepEqual(overlayVisibleEntries([revived], 11_000).active.map(item => item.agentId), ['agent_1']);
+});
+
+test('mergeOverlayEntry：受阻→解除按解除时刻授予成功态窗口', () => {
+  const now = 10_000;
+  // 受阻条目 done=true/blocked=true，不是终态。
+  const coldBlocked = mergeOverlayEntry(null, ledgerRead({ done: true, blocked: true, status: 'waiting_input' }), 's1', now);
+  assert.equal(coldBlocked.completedAt, undefined, '冷启动读到的受阻条目同样不授予');
+  const unblocked = mergeOverlayEntry(coldBlocked, ledgerRead({ done: true, blocked: false, status: 'completed' }), 's1', now + 500);
+  assert.equal(unblocked.completedAt, now + 500, '解除受阻才算真实完成翻转');
+  assert.deepEqual(overlayVisibleEntries([unblocked], now + 500).recent.map(item => item.agentId), ['agent_1']);
+});
+
+test('mergeOverlayEntry：条目归属跟随传入会话，跨会话事件不串台', () => {
+  const merged = mergeOverlayEntry(null, ledgerRead({ sessionId: 'other' }), 's1', 10_000);
+  assert.equal(merged.sessionId, 's1', 'detail 缺失或错带 sessionId 时以订阅会话为准');
 });

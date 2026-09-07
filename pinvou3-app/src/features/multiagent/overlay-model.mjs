@@ -21,6 +21,30 @@ export function isTerminal(entry) {
 }
 
 /**
+ * 单条目合并（组件 mergeEntry 的纯逻辑）：
+ * - 终态 ratchet：落盘终态是权威，迟到的非终态实时事件不得把条目翻回运行中
+ *   （落盘重唤醒场景由 ledger 快照本身负责翻回）；拒绝时返回 null，调用方
+ *   据此跳过重排。
+ * - completedAt 只在本会话内观测到「非终态→终态」的真实翻转时授予。冷启动
+ *   快照（挂载/切会话首轮读到的历史终态条目）不授予：它们从未在本会话展示
+ *   过运行态，授予会把整批历史条目计入成功态展示窗口，打开会话即弹出
+ *   「运行中 0」的假胶囊。
+ * @param {object|null} previous 该条目当前缓存（无则视为首次观测）
+ * @param {object} detail 新读数（含 done/blocked/source 等）
+ * @param {string} sessionIdIn 条目归属会话
+ * @param {number} now 时钟（测试注入）
+ */
+export function mergeOverlayEntry(previous, detail, sessionIdIn, now) {
+  if (previous && previous.done && !detail.done && detail.source !== 'ledger') return null;
+  const next = { ...previous, ...detail, sessionId: sessionIdIn };
+  // 首次观测（previous 为空）不算翻转：无论读到的是运行态还是终态，都不授予。
+  const wasLiveNonTerminal = !!previous && !isTerminal(previous);
+  if (isTerminal(detail) && wasLiveNonTerminal) next.completedAt = now;
+  if (!detail.done) delete next.completedAt;
+  return next;
+}
+
+/**
  * 状态展示：终态优先；非终态把 ledger 的英文状态 token 映射到 i18n 文案
  * （queued/pending/starting → 等待，running → 运行中，与 tool-renderers 的
  * LEDGER_STATUS_TOKENS 同口径），其余视为实时进展短语原样展示。
