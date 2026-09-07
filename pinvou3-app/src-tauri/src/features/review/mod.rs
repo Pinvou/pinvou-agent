@@ -506,18 +506,26 @@ async fn model_review(
         .context("build reqwest client")?;
     let base_url = bridge.base_url();
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    // 本地 vLLM：用实际 served name 发请求——vLLM 端改了 --served-model-name 后，配置里
-    // bridge.model() 可能仍是旧名（品悟走独立 HTTP，不经 engine 的 fresh_bridge_for 探测），
-    // 直接用会 404 model_not_found。探测失败回退配置值；云端 provider 不探测。
+    // Local vLLM: correct the model name against the server's served list
+    // (resolve_served_model) — after a server-side --served-model-name change
+    // the configured name would 404 model_not_found (review issues its own
+    // HTTP calls and does not go through the engine's fresh_bridge_for
+    // correction). A configured name the server lists must be kept verbatim
+    // (LM Studio/Ollama list every downloaded model; the first entry is
+    // unrelated to the configuration). On probe failure fall back to the
+    // configured value; cloud providers are not probed.
     let provider = bridge.provider();
     let preset = review_model_preset(bridge);
     let model_name = if provider == "vllm" {
         // The served-name probe uses an inference-same-origin key:
         // authenticated vLLM 401s on /v1/models.
-        crate::features::monitor::probe_vllm_model_info(&base_url, Some(bridge.api_key().as_str()))
-            .await
-            .0
-            .unwrap_or_else(|| bridge.model())
+        crate::features::monitor::resolve_served_model(
+            &base_url,
+            Some(bridge.api_key().as_str()),
+            &bridge.model(),
+        )
+        .await
+        .0
     } else {
         bridge.model()
     };
