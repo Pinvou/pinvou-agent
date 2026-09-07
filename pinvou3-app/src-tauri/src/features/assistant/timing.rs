@@ -210,8 +210,9 @@ pub fn finish_turn(session_id: &str, status: &str, error: Option<&str>) {
 pub fn has_active_turn(session_id: &str) -> bool {
     active_turns()
         .lock()
-        .map(|map| map.get(session_id).is_some_and(|queue| !queue.is_empty()))
-        .unwrap_or(false)
+        .unwrap_or_else(|p| p.into_inner())
+        .get(session_id)
+        .is_some_and(|queue| !queue.is_empty())
 }
 
 /// Records post-compaction context usage without creating a turn.
