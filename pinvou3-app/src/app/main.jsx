@@ -21,7 +21,8 @@ import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
 import { COLOR_SCHEME_STORAGE_KEY, normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
 import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
-import { TEMPORARY_GROUP_KEY, groupSessionsByFolder } from '../shared/sidebar-grouping.js';
+import { groupSessionsWithProjects } from '../features/projects/projectGrouping.js';
+import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
@@ -1601,6 +1602,13 @@ function workspaceDisplayName(path) {
       const [archiveConfirm, setArchiveConfirm] = useState(null);
       const [archiveToast, setArchiveToast] = useState(false);
       const [settingsToast, setSettingsToast] = useState('');
+      const [projectOpsBusy, setProjectOpsBusy] = useState(false);
+      // 桥完成首次状态同步(bs 就绪)后拉一次项目快照;后续变更由
+      // projects:list_changed 事件驱动桥内刷新(bridge/projects.js)。
+      const projectsBootstrapReady = !!bs;
+      useEffect(() => {
+        if (projectsBootstrapReady && bridge.projects) bridge.projects.loadProjects();
+      }, [projectsBootstrapReady]);
 
       // Expanded sidebar width: drag the right edge to adjust (220~480px), double-click
       // the handle to reset to default; the choice is persisted.
@@ -1775,19 +1783,24 @@ function workspaceDisplayName(path) {
         });
       }
 
-      // Code-style sidebar: lists only code sessions, grouped by folder (workspace);
-      // groups and rows both sort by latest activity descending, temporary sessions merge
-      // into one bottom group; with "pinned first", pinned code sessions hoist above the
-      // folder groups.
+      // Code-style sidebar: lists only code sessions. Project layer resolves
+      // each session through three deterministic tiers (explicit assignment /
+      // project-root auto-grouping / implicit folder bucketing); without any
+      // created project the result is byte-identical to the legacy folder
+      // grouping. With "pinned first", pinned code sessions hoist above groups.
       const sidebarCodeTasks = sidebarCodeListActive
         ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex')
         : [];
       const sidebarFolderPinned = taskListSort === 'pinned_first'
         ? sidebarCodeTasks.filter(chat => !!chat.pinned)
         : [];
+      const sidebarProjectsData = bs && bs.projectsList;
       const sidebarFolderGroups = sidebarCodeListActive
-        ? groupSessionsByFolder(
-            sidebarCodeTasks.filter(chat => !(sidebarFolderPinned.length && chat.pinned)))
+        ? groupSessionsWithProjects(
+            sidebarCodeTasks.filter(chat => !(sidebarFolderPinned.length && chat.pinned)),
+            sidebarProjectsData ? sidebarProjectsData.projects : [],
+            sidebarProjectsData ? sidebarProjectsData.assignments : {},
+          )
         : [];
 
       // latest-ref mirror: the pet-snapshot broadcast effect only subscribes to bs.sessions/sessionBusy/language,
@@ -2323,6 +2336,24 @@ function workspaceDisplayName(path) {
         if (bridge.available) await bridge.sessions.restoreArchivedSession(id);
         await refreshCodexSessions().catch(() => {});
       }
+
+      // ── 项目层:分组归档是纯逻辑层操作,永不触碰会话的工作目录绑定。──
+      // 失败走统一的 sessionBatchFailed toast;bridge.projects 仅桌面存在。
+      async function runProjectOp(op) {
+        if (!bridge.available || !bridge.projects || projectOpsBusy) return;
+        setProjectOpsBusy(true);
+        try {
+          await op(bridge.projects);
+        } catch (error) {
+          console.warn('project operation failed', error);
+          setSettingsToast(t.sessionBatchFailed(1));
+        } finally {
+          setProjectOpsBusy(false);
+        }
+      }
+      const handleConvertFolderToProject = (path, name) => runProjectOp(p => p.createProject(name, [path]));
+      const handleRenameProject = (projectId, name) => runProjectOp(p => p.renameProject(projectId, name));
+      const handleDeleteProject = (projectId) => runProjectOp(p => p.deleteProject(projectId));
 
       function sessionRowsForIds(ids) {
         const byId = new Map(allSidebarTasks.map(item => [item.id, item]));
@@ -3127,21 +3158,28 @@ function workspaceDisplayName(path) {
                           )}
                           {sidebarFolderGroups.map((group) => {
                             const isOpen = folderGroupOpen[group.key] ?? true;
-                            const label = group.key === TEMPORARY_GROUP_KEY
-                              ? t.uiCodex.temporarySession
-                              : workspaceDisplayName(group.key);
+                            const label = group.kind === 'project'
+                              ? group.name
+                              : group.kind === 'temporary'
+                                ? t.uiCodex.temporarySession
+                                : workspaceDisplayName(group.path);
                             return (
                               <div key={group.key}>
-                                <button
-                                  type="button"
-                                  data-testid="sidebar-folder-group"
-                                  title={group.key === TEMPORARY_GROUP_KEY ? undefined : group.key}
-                                  onClick={() => setFolderGroupOpen(prev => ({ ...prev, [group.key]: !isOpen }))}
-                                  className={`w-full h-7 px-4 flex items-center justify-between rounded-full text-[12px] transition-colors ${activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
-                                >
-                                  <span className="truncate">{label} ({group.rows.length})</span>
-                                  <ChevronDown size={14} className={`shrink-0 transition-transform ${isOpen ? '' : '-rotate-90'}`} />
-                                </button>
+                                <ProjectGroupHeader
+                                  label={label}
+                                  kind={group.kind}
+                                  count={group.rows.length}
+                                  isOpen={isOpen}
+                                  onToggle={() => setFolderGroupOpen(prev => ({ ...prev, [group.key]: !isOpen }))}
+                                  theme={activeTheme}
+                                  t={t}
+                                  title={group.kind === 'folder' ? group.path : undefined}
+                                  busy={projectOpsBusy}
+                                  testId="sidebar-folder-group"
+                                  onConvert={group.kind === 'folder' ? (name) => handleConvertFolderToProject(group.path, name) : undefined}
+                                  onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
+                                  onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
+                                />
                                 {isOpen && (
                                   <div className="mt-1 space-y-0.5">
                                     {group.rows.map(renderSidebarTaskItem)}
