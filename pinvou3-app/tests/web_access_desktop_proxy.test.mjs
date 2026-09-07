@@ -33,7 +33,7 @@ const context = vm.createContext({
     return {
       ok: true,
       json: async () => ({
-        allowed_commands: ['list_sessions'],
+        allowed_commands: ['list_sessions', 'web_access_transcribe_voice_audio'],
         allowed_events: ['chat:delta'],
       }),
     };
@@ -51,6 +51,11 @@ async function invoke(command, args) {
   invokeCalls.push([command, args]);
   if (command === 'web_access_rpc_begin') return true;
   if (command === 'list_sessions') return [{ id: 'session-1', title: '测试对话' }];
+  if (command === 'web_access_transcribe_voice_audio') {
+    // Simulate the Rust command rejecting with a structured VoiceCommandError object (carrying a stable error code).
+    const structuredVoiceError = { code: 'asr_timeout', category: 'timeout', message: '识别超时，请缩短录音后重试' };
+    throw structuredVoiceError;
+  }
   if (command === 'web_access_rpc_respond') {
     responses.push(args);
     return null;
@@ -109,6 +114,30 @@ assert.deepEqual(JSON.parse(JSON.stringify(responses.at(-1))), {
   ok: true,
   result: [{ id: 'session-1', title: '测试对话' }],
   error: null,
+  errorCode: null,
+  errorCategory: null,
+});
+
+// Structured desktop command errors (e.g. VoiceCommandError) must forward
+// their stable code/category to the browser lane; otherwise the
+// normalizeVoiceError code→trilingual-copy mapping is unreachable and the
+// Chinese raw message reaches en/ja users verbatim.
+await listeners.get('web_access:rpc_request')({
+  payload: {
+    request_id: 'request-2',
+    bridge_generation: readyGeneration,
+    command: 'web_access_transcribe_voice_audio',
+    args: { audio_base64: 'AAAA', session_id: 'session-1' },
+  },
+});
+assert.deepEqual(JSON.parse(JSON.stringify(responses.at(-1))), {
+  requestId: 'request-2',
+  generation: readyGeneration,
+  ok: false,
+  result: null,
+  error: '识别超时，请缩短录音后重试',
+  errorCode: 'asr_timeout',
+  errorCategory: 'timeout',
 });
 
 await listeners.get('web_access:status')({

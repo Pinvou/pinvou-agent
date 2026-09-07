@@ -78,6 +78,15 @@ export function tryGetCurrentTauriWindow() {
   }
 }
 
+/**
+ * Feature modules must read the `TauriBridge` global through this adapter
+ * instead of touching `globalThis` directly, so browser-preview fallback and
+ * bridge shape changes stay inside the platform layer.
+ */
+export function tryGetTauriBridge() {
+  return globalThis.TauriBridge || null;
+}
+
 export function currentTauriMonitor() {
   const api = windowApi();
   if (typeof api.currentMonitor !== 'function') {

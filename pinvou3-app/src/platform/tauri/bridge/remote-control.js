@@ -45,13 +45,18 @@
       return event && Object.prototype.hasOwnProperty.call(event, "payload") ? event.payload : (event || {});
     }
 
-    function respondToWebAccess(requestId, ok, result, error) {
+    function respondToWebAccess(requestId, ok, result, error, errorCode, errorCategory) {
       return invoke("web_access_rpc_respond", {
         requestId,
         generation: bridgeGeneration,
         ok: !!ok,
         result: result === undefined ? null : result,
         error: error ? String(error) : null,
+        // Structured identity of desktop command errors (e.g. VoiceCommandError
+        // {code, category, message}): the message text alone would leave the
+        // browser lane's error-code → trilingual copy mapping unreachable.
+        errorCode: errorCode || null,
+        errorCategory: errorCategory || null,
       }).catch(function (respondError) {
         console.warn("[WebAccess] failed to send RPC response", respondError);
       });
@@ -119,7 +124,19 @@
           const result = await invoke(command, request.args || {});
           await respondToWebAccess(requestId, true, result, null);
         } catch (error) {
-          await respondToWebAccess(requestId, false, null, error && error.message ? error.message : error);
+          // Desktop command errors arrive as structured objects (e.g.
+          // VoiceCommandError); keep their stable code/category for the
+          // browser's trilingual error mapping instead of only the message.
+          const structured = error && typeof error.code === "string";
+          const errorCategory = error && typeof error.category === "string" ? error.category : null;
+          await respondToWebAccess(
+            requestId,
+            false,
+            null,
+            error && error.message ? error.message : error,
+            structured ? error.code : null,
+            errorCategory
+          );
         }
       });
 
