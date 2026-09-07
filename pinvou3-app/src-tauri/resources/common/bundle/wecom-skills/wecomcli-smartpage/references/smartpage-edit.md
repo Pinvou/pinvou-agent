@@ -36,7 +36,7 @@ wecom-cli smartpage pages get --json '<JSON参数>'
 | `pages[].content_file_inner` | 页面内容，页面内容 ≤ 48KB 时直接返回文本内容于此字段中；文本格式由 `content_type` 决定：`markdown` → 裸 Markdown 文本，`text` → 纯文本页面内容，`block` → block 级 JSON（页面 block 树） |
 | `pages[].file_path` | 页面内容 > 48KB 时返回，页面内容写入本地文件、回包本地文件路径；文件内容格式与 `content_file_inner` 相同，由 `content_type` 决定（`markdown` / `text` / `block`） |
 
-> **提示**：传入 `page_id` 时，回包的 `file_path` 指向一个本地文件，文件内容根据 `content_type` 不同而不同。不带 `page_id` 时不返回 `file_path`。
+> **提示**：传入 `page_id` 时，页面内容 ≤48KB 时内容直接在 `content_file_inner` 字段，>48KB 才写入 `file_path` 指向的本地文件，文件内容根据 `content_type` 不同而不同。不带 `page_id` 时不返回 `file_path`。
 > **读取文件**：拿到 `file_path` 后，使用 `File(action="read")` 读取该路径下的文件内容，获取页面的完整数据。
 > **页面层级**：`pages` 数组是扁平列表，通过 `parent_id` 字段表达树形结构。没有 `parent_id`（或为空）的页面是根页面; 有 `parent_id` 的页面是对应父页面的子页面。梳理页面树时，以 `page_id` 为节点、`parent_id` 为边构建层级关系。
 > **注意**：`file_path` 中的文件编号仅用于保证文件名唯一，不代表任何业务 ID。所有 ID(如 `page_id`、`parent_id` 等)必须从实际回包字段中获取，禁止从文件名中提取。
@@ -449,7 +449,7 @@ wecom-cli smartpage pages get --json '{"docid": "<docid>"}'
 
 从返回 `pages` 数组中拿到各页面的 `page_id` 与层级关系，确认目标页面。
 
-**第二步 — 获取目标页面内容**（带 `page_id` + `content_type`，此时才会返回 `file_path`）：
+**第二步 — 获取目标页面内容**（带 `page_id` + `content_type`；页面内容 ≤48KB 时内容直接在 `content_file_inner` 字段，>48KB 才写入 `file_path`）：
 
 ```bash
 # 查看页面 markdown 内容（整页重写 / 末尾追加 / 查看文字）
@@ -471,7 +471,7 @@ wecom-cli smartpage pages get --json '{"docid": "<docid>", "page_id": "<page_id>
 #### 方案 A: block 级局部编辑（首选）
 
 只动页面里的某个组件，保留其他内容不变。使用 `smartpage blocks update`：
-- **前置条件：必须先读取 block tree**——调用 `smartpage pages get` 时**必须同时传入 `page_id` 和 `"content_type": "block"`**，从回包 `file_path` 文件中找到目标 block 的 `id`（即 `block_id`）以及需要定位的相邻 block。
+- **前置条件：必须先读取 block tree**——调用 `smartpage pages get` 时**必须同时传入 `page_id` 和 `"content_type": "block"`**，从回包获取 block 树（页面内容 ≤48KB 时内容直接在 `content_file_inner` 字段，>48KB 才写入 `file_path`），从中找到目标 block 的 `id`（即 `block_id`）以及需要定位的相邻 block。
 - **选择 method**：插入 → `insertBefore` / `insertAfter` / `prepend` / `append`；替换 → `replace`；删除 → `delete`。各 method 的完整参数与调用示例见上文「编辑页面 Block (smartpage blocks update)」章节。
 - **批量修改**：单次调用仅支持一种 `method`，多处修改需多次调用；批量删除可通过 `delete` + `block_ids` 数组一次完成。
 

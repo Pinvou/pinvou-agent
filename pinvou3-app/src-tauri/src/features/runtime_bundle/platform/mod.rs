@@ -130,7 +130,16 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 ///       connected users to refresh at startup (otherwise the refresh
 ///       waits for the post-first-frame refresh_connector_auth_gates
 ///       backfill).
-pub const BUNDLE_VERSION: &str = concat!("0.27-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.30: wecomcli doc-audit second-round fixes, 21 findings across ten
+///       packs (PR #438, registered in NOTICE-wecom.md). Next free slot
+///       after 0.27 (dws #359, on main) and 0.29 (lark-skills #439, in
+///       review); the extracted-VERSION gate is inequality-only, so
+///       landing order and skipped numbers stay safe. Skill trees are
+///       excluded from the content hash, so the semantic bump is
+///       required for connected users to refresh at startup (otherwise
+///       the refresh waits for the post-first-frame
+///       refresh_connector_auth_gates backfill).
+pub const BUNDLE_VERSION: &str = concat!("0.30-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
 /// 骨架 = 身份/底线/工具与事实通用纪律/怎么干/红线/输出，两个模式层占位行：

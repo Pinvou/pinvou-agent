@@ -160,7 +160,7 @@ wecom-cli calendar schedules get --json '{"schedule_ids": ["<schedule_id1>", "<s
 
 ```
 1. 每周站会（每周一次，截止 2026-12-31）
-   时间：4月7日（周一）09:00-09:30
+   时间：4月7日 09:00-09:30
    参与人：张三、李四
 ```
 
