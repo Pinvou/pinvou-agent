@@ -22,7 +22,11 @@ use super::sessions::ensure_chat_session;
 /// remote-control 的转发白名单没有该事件,转发只会被中继拒绝并每次
 /// 刷一条拒绝日志(评审 #447 finding 11:在消费方出现前不转发)。
 fn emit_project_event(app: &AppHandle, event: &str, action: &str) {
-    let _ = app.emit(event, serde_json::json!({ "action": action }));
+    let payload = serde_json::json!({ "action": action });
+    // 只走桌面 webview 通道。projects 域桌面独占(Web 桥整域缺席),远程端
+    // 正式支持项目列表之前不转发——与 remote_control 对代码会话事件的
+    // 同类裁决一致;转发不在 RUST_FORWARDED_EVENTS 白名单内会被拒并刷日志。
+    let _ = app.emit(event, payload);
 }
 
 /// root 的可用性(目录是否仍在磁盘上)——前端据此渲染"文件夹不可用·重新绑定",
