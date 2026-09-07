@@ -100,6 +100,13 @@ try {
   names = await page.evaluate(tabNames);
   assert(names.length === 1 && names[0] === 'main.py', '关闭 tab 后应只剩 main.py', names);
 
+  // While the preference is `system`, runtime OS theme flips must be followed
+  // live (regression: the reader used to apply the theme only once at load).
+  await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'dark' }]);
+  await page.waitForFunction(() => document.documentElement.classList.contains('dark'), { timeout: 5000 });
+  await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'light' }]);
+  await page.waitForFunction(() => !document.documentElement.classList.contains('dark'), { timeout: 5000 });
+
   assert(pageErrors.length === 0, '浏览器运行时异常', pageErrors);
 
   console.log('reader_app_smoke: ok');
