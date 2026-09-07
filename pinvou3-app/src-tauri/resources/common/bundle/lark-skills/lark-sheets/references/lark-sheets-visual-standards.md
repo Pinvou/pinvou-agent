@@ -82,7 +82,7 @@
 - 包含必要元素：标题、图例、数据标签、坐标轴标题。
 - 调整至合适大小，避免数据和标签过多堆叠。
 - **图表放置防重叠**：新增图表前须计算放置区域，避免与已有图表重叠。具体步骤：
-  1. 调用 `+chart-list` 获取当前工作表所有已有图表的 `position`（锚点单元格：`col` 是列字母如 "A"/"B"、`row` 是 1-based 行号；以 `+chart-list` 实际返回字段为准）、`offset`（锚点内偏移：`row_offset`、`col_offset`，单位像素）以及 `size`（`width`、`height`，单位像素）。
+  1. 调用 `+chart-list` 获取当前工作表所有已有图表的 `position`（锚点单元格：`col` 是列字母如 "A"/"B"、`row` 是 1-based 行号；以 `+chart-list` 实际返回字段为准）、`offset`（锚点内偏移：`row_offset`、`col_offset`，单位像素）以及 `size`（`width`、`height`，单位像素）。注意：`+chart-list` 返回的 `position.row` 基准与 `+chart-create` 入参可能不同（0/1-based），放置前以 [`lark-sheets-chart.md`](./lark-sheets-chart.md) 的口径换算。
   2. 获取工作表的行高和列宽信息（像素）。
   3. 根据每个图表的锚点 `position.row`/`position.col` + 偏移 `offset.row_offset`/`offset.col_offset` + 尺寸 `size.width`/`size.height`，结合行高列宽，计算出每个已有图表覆盖的像素矩形区域 `(x_min, y_min, x_max, y_max)`。
   4. 为新图表选定大小后，候选放置位置应避开所有已有矩形区域；若存在重叠则向下或向右偏移，直至找到无冲突位置。

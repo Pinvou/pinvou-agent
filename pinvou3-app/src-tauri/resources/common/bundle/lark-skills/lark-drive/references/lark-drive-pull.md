@@ -84,7 +84,7 @@ lark-cli drive +pull --local-dir ./repo --folder-token fldcnxxxxxxxxx \
 - 远端同名文件冲突且使用默认 `fail` → 在下载阶段前失败，删除阶段不会运行。
 - 不传 `--delete-local` → `summary.deleted_local` 永远是 0；命令对本地"多余"文件视而不见。
 
-第 6 章里把 `+pull --delete-local` 标了 `high-risk-write`，CLI 这边的实现等价于"未传 `--yes` 时拒绝执行"，符合该约束的精神。
+[lark-shared/SKILL.md](../../lark-shared/SKILL.md) 安全规则要求"写入/删除操作前必须确认用户意图"；CLI 对 `+pull --delete-local` 的实现等价于"未传 `--yes` 时拒绝执行（validation 错误）"，符合该约束的精神。
 
 ## 输出 schema
 
