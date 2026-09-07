@@ -235,7 +235,7 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
             <span>{t.riRename}</span>
           </button>
           {onMoveToProject && (
-            <button type="button" className={menuItemCls} onClick={() => { closeMenu(); onMoveToProject(chat.id); }}>
+            <button type="button" className={menuItemCls} onClick={() => { closeMenu(); onMoveToProject(chat); }}>
               <Layers size={15} />
               <span>{t.uiProjects.moveToProject}</span>
             </button>

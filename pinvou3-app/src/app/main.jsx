@@ -2377,10 +2377,17 @@ function workspaceDisplayName(path) {
       const handleDeleteProject = (projectId) => runProjectOp(p => p.deleteProject(projectId));
       // 移动归属:纯归档操作(工作目录绑定不动);目标 root 不覆盖会话目录时由
       // 选择器先走"添加文件夹"确认,再带着 addFolder 标记落到这里。
+      // 确认框展示的是侧栏投影的目录,命令实际加的是后端活记录——outcomes
+      // 里的 added_root 是权威答案,有值时在 toast 里如实呈现(评审 #449
+      // finding 9:两侧不得静默分叉)。
       const handleMoveSessionToProject = (sessionId, projectId, addWorkspaceRoot) => runProjectOp(async (p) => {
-        await p.moveSessionToProject(sessionId, projectId, addWorkspaceRoot);
+        const outcome = await p.moveSessionToProject(sessionId, projectId, addWorkspaceRoot);
         setMoveToProjectSession(null);
-        setSettingsToast(t.uiProjects.movedNotice);
+        setSettingsToast(
+          outcome && outcome.added_root
+            ? t.uiProjects.movedNoticeWithFolder(outcome.added_root)
+            : t.uiProjects.movedNotice,
+        );
       });
 
       function sessionRowsForIds(ids) {
@@ -2658,7 +2665,7 @@ function workspaceDisplayName(path) {
             onTogglePinned={handleToggleSessionPinned}
             onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
             onArchive={handleArchiveSession}
-            onMoveToProject={chat.taskKind === 'codex' && bridge.projects ? (() => setMoveToProjectSession(chat)) : undefined}
+            onMoveToProject={chat.taskKind === 'codex' && bridge.projects ? (target) => setMoveToProjectSession(target) : undefined}
             dragKind={detachKind}
             dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
             onPickUp={canDetachWindows ? ((geom) => beginTearOff(detachKind, chat.id, chat.title, geom)) : undefined}

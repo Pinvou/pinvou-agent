@@ -219,7 +219,31 @@ test("project sessions without a workspace path fall into the temporary group", 
   assert.equal(groups[0].key, TEMPORARY_GROUP_KEY);
 });
 
-<<<<<<< HEAD
+// ── Move-picker helpers ────────────────────────────────────────────────────
+
+test("resolveSessionProjectId mirrors the grouping tiers", () => {
+  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
+  const item = projectItem("a1", "D:/work/alpha", "2026-08-01T08:00:00Z");
+  assert.equal(resolveSessionProjectId(item, projects, {}), "p1");
+  assert.equal(resolveSessionProjectId(item, projects, { a1: "p1" }), "p1");
+  assert.equal(resolveSessionProjectId(item, projects, { a1: null }), null, "explicit move-out wins");
+  assert.equal(resolveSessionProjectId(temporaryItem("t1", "x"), projects, { t1: "p1" }), "p1");
+  assert.equal(resolveSessionProjectId(temporaryItem("t1", "x"), projects, {}), null, "temp never auto-groups");
+  // The real fork the picker must survive: a stale id does not stick as
+  // "ungrouped" — with a non-empty project list whose root still covers the
+  // path, resolution falls through to tier 2 and returns that project.
+  // (projects=[] would trivially yield null and pin nothing.)
+  assert.equal(resolveSessionProjectId(item, projects, { a1: "prj-gone" }), "p1", "stale id falls through to root matching");
+});
+
+test("projectCoversPath reports root containment for the add-folder prompt", () => {
+  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
+  assert.equal(projectCoversPath(projects[0], "D:/work/alpha"), true);
+  assert.equal(projectCoversPath(projects[0], "D:/work/alpha/sub"), true);
+  assert.equal(projectCoversPath(projects[0], "D:/work/beta"), false);
+  assert.equal(projectCoversPath(null, "D:/work/alpha"), false);
+});
+
 test("rows sort by updatedAt descending within a group", () => {
   // Ported from the retired sidebar_grouping_logic suite: in-group ordering
   // with multiple timestamps must survive the project-layer rewrite.
@@ -249,25 +273,4 @@ test("temporary group rows sort by recency while the group stays last", () => {
   );
   assert.equal(groups[groups.length - 1].key, TEMPORARY_GROUP_KEY);
   assert.deepEqual(groups[groups.length - 1].rows.map((r) => r.id), ["t1", "t2"]);
-});
-
-// ── Move-picker helpers ────────────────────────────────────────────────────
-
-test("resolveSessionProjectId mirrors the grouping tiers", () => {
-  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
-  const item = projectItem("a1", "D:/work/alpha", "2026-08-01T08:00:00Z");
-  assert.equal(resolveSessionProjectId(item, projects, {}), "p1");
-  assert.equal(resolveSessionProjectId(item, projects, { a1: "p1" }), "p1");
-  assert.equal(resolveSessionProjectId(item, projects, { a1: null }), null, "explicit move-out wins");
-  assert.equal(resolveSessionProjectId(temporaryItem("t1", "x"), projects, { t1: "p1" }), "p1");
-  assert.equal(resolveSessionProjectId(temporaryItem("t1", "x"), projects, {}), null, "temp never auto-groups");
-  assert.equal(resolveSessionProjectId(item, [], { a1: "prj-gone" }), null, "stale id is ungrouped");
-});
-
-test("projectCoversPath reports root containment for the add-folder prompt", () => {
-  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
-  assert.equal(projectCoversPath(projects[0], "D:/work/alpha"), true);
-  assert.equal(projectCoversPath(projects[0], "D:/work/alpha/sub"), true);
-  assert.equal(projectCoversPath(projects[0], "D:/work/beta"), false);
-  assert.equal(projectCoversPath(null, "D:/work/alpha"), false);
 });
