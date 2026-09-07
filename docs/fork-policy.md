@@ -7,7 +7,7 @@
 ## 0. 当前基线
 
 - 上游：`Hmbown/CodeWhale` tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5`。
-- 本地维护候选：`codex/pinvou-v0.9.12-r1`，head `09c3b85e366379dbbb69539e4cec8c2dbadd91f4`，在上游之上保留 5 个签署提交。
+- 本地维护候选：`codex/pinvou-v0.9.12-r1`，head `b4c02616b8561dfca43d540fe778bb15287fa719`，在上游之上保留 5 个签署提交。
 - 升级前 r13 head `f853f8f1566c57e6be40d5439a222a932aa79ef5` 保留在 branch `backup/pre-v0.9.12-sync`；既有 `pinvou-v0.9.5-r13` 不变。
 - r1 当前是本地、可测试候选，不得描述为公开可达。获得明确授权并发布后，才将 `Pinvou/CodeWhale:pinvou3-clean` 与不可变 tag `pinvou-v0.9.12-r1` 对齐该 head。
 - `.gitmodules` 不配置浮动 `branch`；发布后父仓 gitlink、维护分支和不可变标签必须指向同一 commit。
@@ -39,7 +39,7 @@ Pinvou 的产品工具白名单、UI、工作区选择和业务策略留在 app�
 - 总 drift 软上限：净增 1500 行（净增 = 新增 − 删除行数，与下方基线表述同口径）。
 - 单文件 fork-distinct 改动软上限：200 行。
 - 超过不是自动拒绝，但必须记录保留原因和减量顺序。
-- v0.9.12 r1 候选相对上游为 `49 files, +2993/-457`，净增 2536 行；相对 v0.9.5 r13 的 `110 files, +10895/-1195` 已大幅收敛。仍超总量与个别文件软上限，因为可靠 steer、受限轮最终分发、宿主 prompt/profile/Skills 所有权和 Automation 生命周期必须在 Engine/Task 原子边界内实现。减量顺序是：先上游化通用 steer 与逐轮安全，再上游化 Automation 生命周期，最后评估 prompt/profile/Skills ownership 是否能由稳定 host API 完全替代。
+- v0.9.12 r1 候选相对上游为 `62 files, +3127/-614`，净增 2513 行；相对 v0.9.5 r13 的 `110 files, +10895/-1195` 已大幅收敛。新增触达文件包含为当前 Rust 发布 lint 所做的等价条件折叠和窄 lint 说明，不增加 fork 行为主题。候选仍超总量与个别文件软上限，因为可靠 steer、受限轮最终分发、宿主 prompt/profile/Skills 所有权和 Automation 生命周期必须在 Engine/Task 原子边界内实现。减量顺序是：先上游化通用 steer 与逐轮安全，再上游化 Automation 生命周期，最后评估 prompt/profile/Skills ownership 是否能由稳定 host API 完全替代。
 
 ### 1.3 主题提交
 

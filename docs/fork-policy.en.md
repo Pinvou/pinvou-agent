@@ -6,7 +6,7 @@
 ## Baseline
 
 - Upstream: `Hmbown/CodeWhale` `v0.9.12` at `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5`.
-- Local maintenance candidate: `codex/pinvou-v0.9.12-r1` at `09c3b85e366379dbbb69539e4cec8c2dbadd91f4`, five signed commits above upstream.
+- Local maintenance candidate: `codex/pinvou-v0.9.12-r1` at `b4c02616b8561dfca43d540fe778bb15287fa719`, five signed commits above upstream.
 - The pre-upgrade r13 head `f853f8f1566c57e6be40d5439a222a932aa79ef5` remains at `backup/pre-v0.9.12-sync`; the existing `pinvou-v0.9.5-r13` tag remains immutable.
 - r1 is not publicly reachable yet. Only after explicit authorization should `Pinvou/CodeWhale:pinvou3-clean` and immutable tag `pinvou-v0.9.12-r1` be published at the candidate head.
 - Keep exactly four long-lived topics:
@@ -22,7 +22,7 @@ The exact commits and fingerprints are recorded in [`docs/fork-modifications.md`
 
 - Prefer the app bridge, bundle instructions/Skills, MCP/connectors/plugins, then an upstream contribution. Keep a fork patch only when the behavior must be atomic inside CodeWhale's Engine, SubAgent, Task, or Automation lifecycle.
 - Product tool policy, UI, workspace selection, and business routing stay in `pinvou3-app`.
-- The soft drift limits remain 1,500 net added lines and 200 fork-distinct lines per file. The v0.9.12 r1 candidate is 49 files and `+2993/-457` (net 2,536), down sharply from v0.9.5 r13 at 110 files and `+10895/-1195`. The remaining excess is justified by Engine/Task-atomic steer, final-dispatch security, host prompt/profile/Skills ownership, and Automation lifecycle behavior. Upstreaming priority is generic steer and per-turn security first, Automation lifecycle second, then replacement of prompt/profile/Skills ownership with stable host APIs.
+- The soft drift limits remain 1,500 net added lines and 200 fork-distinct lines per file. The v0.9.12 r1 candidate is 62 files and `+3127/-614` (net 2,513), down sharply from v0.9.5 r13 at 110 files and `+10895/-1195`. Newly touched files include equivalent rewrites, a `Default` implementation, and narrow lint annotations required by the current Rust release lane; they add no fork behavior topic. The remaining excess is justified by Engine/Task-atomic steer, final-dispatch security, host prompt/profile/Skills ownership, and Automation lifecycle behavior. Upstreaming priority is generic steer and per-turn security first, Automation lifecycle second, then replacement of prompt/profile/Skills ownership with stable host APIs.
 - Fixups are squashed into their owning topic; no long-lived catch-up commit chains are maintained, and generic host configuration, routing, tools, Automation, and OAuth must remain within their owning boundary.
 - A fork-distinct change must update the modification register and guard fingerprints, include a result-oriented `forkguard_*` test where applicable, and pass `./scripts/fork-guard.sh --fast`.
 - For a large upstream refactor, clean re-fork from the release tag and re-express each surviving topic. Do not preserve merge-conflict batches as long-lived history.

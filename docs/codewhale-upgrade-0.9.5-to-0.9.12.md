@@ -11,7 +11,7 @@
 | 父仓工作分支 | `codex/codewhale-v0.9.12-sync` |
 | 上游 release | `v0.9.12` `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5` |
 | 新 fork 分支 | `codex/pinvou-v0.9.12-r1` |
-| 新 fork head | `09c3b85e366379dbbb69539e4cec8c2dbadd91f4` |
+| 新 fork head | `b4c02616b8561dfca43d540fe778bb15287fa719` |
 | 旧 fork 回退点 | `backup/pre-v0.9.12-sync` `f853f8f1566c57e6be40d5439a222a932aa79ef5` |
 
 所有开发在隔离 worktree 完成；原始 `/home/whc0005/workspace/pinvou-agent` 的已有改动和未跟踪文件未被修改、清理或提交。
@@ -24,7 +24,7 @@
 2. **主应用兼容审计**：追踪 `pinvou3-app` 实际调用的 EngineConfig、事件、工具、会话、Automation 和持久化路径。
 3. **验证/发布审计**：核对 CI、跨平台、包发布、真实模型、公开 submodule 与回退门禁。
 
-旧 r13 修改 110 个文件，其中 104 个同时被 v0.9.12 上游改动，直接移植预计冲突 57 个文件。旧 fork drift 为 `+10895/-1195`；新候选从官方 tag clean re-fork 后为 `+2993/-457`（49 文件），因此没有采用 merge/cherry-pick 冲突树。
+旧 r13 修改 110 个文件，其中 104 个同时被 v0.9.12 上游改动，直接移植预计冲突 57 个文件。旧 fork drift 为 `+10895/-1195`；新候选从官方 tag clean re-fork 后为 `+3127/-614`（62 文件，净增 2513 行），因此没有采用 merge/cherry-pick 冲突树。新增触达文件包含当前 Rust/Clippy 发布门禁所需的等价条件折叠、`Default` 补全和窄 lint 说明，不引入新的 fork 行为主题。
 
 ## 3. 处置矩阵
 
@@ -82,8 +82,9 @@
 
 | 层级 | 命令/场景 | 当前结果 |
 |---|---|---|
-| CodeWhale compile | `cargo check -p codewhale-tui --lib --bins --locked`；`--lib --tests` | 均通过 |
+| CodeWhale compile | `cargo check -p codewhale-tui --lib --bins --locked`；`--lib --tests`；`cargo check --workspace --all-targets --locked` | 均通过 |
 | CodeWhale full lib | `RUST_MIN_STACK=16777216 cargo test -p codewhale-tui --lib --locked -- --test-threads=1` | 11,690 通过，0 失败，12 ignored |
+| CodeWhale release lane | `cargo test --workspace --all-features --locked -- --test-threads=1`；严格 workspace/all-targets/all-features Clippy；protocol/state parity；OHOS dependency contract | 全部通过；关键集合为 TUI 11,705、PTY/Cucumber 33、integration 283，均 0 失败，另含其余 crate 与 doc tests |
 | CodeWhale fork behavior | `cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1` | 18/18 通过 |
 | Parent compile | `cargo check --lib --locked` | 通过 |
 | Parent Rust tests | 普通全量 + CI 同构 `PINVOU_REQUIRE_REMOTE_E2E=1`/ARM64 Chromium/Relay 全量 | 两轮均为 2,006 通过，0 失败，12 个明确外部场景 ignored |
@@ -96,7 +97,7 @@
 | Relay | `npm --prefix remote-control-relay test` | 23 通过，0 失败 |
 | Script/MCP contracts | Python unittest + `mcp-server-contract-smoke.py` + 各内置 MCP `test_*.py` | 89 通过；全部 MCP server contract 及 3 个服务级测试文件通过 |
 | Repository/CI contracts | commit message、版本同步、PR routing、fork-link change contract | 均通过；版本文件一致为 `0.9.2`，gitlink 与 fork 文档同步变更 |
-| Secret scan | Gitleaks v8.30.1，父仓 `origin/main..HEAD` 与 CodeWhale `v0.9.12..HEAD` | 本次 2 + 5 个提交均为 0 新命中；裸全历史模式仍报告 105 条升级前历史命中，最近 10 次 GitHub PR secret-scan 工作流均成功 |
+| Secret scan | Gitleaks v8.30.1，父仓 `origin/main..HEAD` 与 CodeWhale `v0.9.12..HEAD` | 本次 3 + 5 个提交均为 0 新命中；裸全历史模式仍报告 105 条升级前历史命中，最近 10 次 GitHub PR secret-scan 工作流均成功 |
 | Knowledge crate | fmt/clippy/all-features test/install shell syntax | 92 通过，0 失败；其余均通过 |
 | Real model | strict L1 vLLM harness | 27 个场景可枚举；本机无 8000/11434/8080/3000 listener，且 L1/OpenAI/DeepSeek endpoint/credential 环境均未配置，故未执行、不得计为通过 |
 | Platform/package | `npm run build`；Linux/Windows/macOS 配置与打包契约 | Linux arm64 release 与 `.deb` 构建通过；4 组契约均通过（knowledge host 17/17）；本机仅安装 `aarch64-unknown-linux-gnu`，Windows/macOS 原生编译留给公开分支 CI |

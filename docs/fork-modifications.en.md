@@ -8,11 +8,11 @@
 | Item | Value |
 |---|---|
 | Upstream | `v0.9.12`, `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5` |
-| Local branch | `codex/pinvou-v0.9.12-r1`, head `09c3b85e366379dbbb69539e4cec8c2dbadd91f4` |
+| Local branch | `codex/pinvou-v0.9.12-r1`, head `b4c02616b8561dfca43d540fe778bb15287fa719` |
 | Publication | Not published; no remote branch or immutable r1 tag is claimed |
 | Rollback | `backup/pre-v0.9.12-sync` at v0.9.5 r13 `f853f8f1566c57e6be40d5439a222a932aa79ef5` |
 | History | Five signed commits above upstream, grouped into four long-lived topics |
-| Drift | 49 files, `+2993/-457` (net +2,536), down from r13's 110 files and `+10895/-1195` |
+| Drift | 62 files, `+3127/-614` (net +2,513), down from r13's 110 files and `+10895/-1195` |
 | Guard | 18 distinct CodeWhale `forkguard_*` behavior tests plus parent fingerprints/tests |
 
 ## Clean re-fork decision
@@ -36,7 +36,7 @@ The old r13 changed 110 files. Upstream v0.9.12 also changed 104 of those files,
 | `a5c12e203` | T2 tool compatibility, MCP secrets, and execution safety |
 | `7dc1a429a` | T3 host-owned static prompt composition |
 | `02c0faa27` | T4 Pinvou Automation and Task ownership |
-| `09c3b85e3` | Cross-topic lifecycle, safety, host prompt-only profile, and explicit-Skill-root closure |
+| `b4c02616b` | Cross-topic lifecycle, safety, host prompt-only profile, explicit-Skill-root closure, and current Rust release-lint compatibility |
 
 All commits carry DCO sign-off. Candidate SHAs may move for review fixes before publication; an immutable tag must never be rewritten.
 
@@ -85,7 +85,7 @@ Tests: `forkguard_automation_enqueue_preserves_settings_and_conversation_owner`,
 
 `pinvou3-app` owns product tool policy, AppMode-to-approval/trust mapping, reasoning effort, owner-event filtering, and scheduled-session creation. Its bridge retains v0.9.12 finite turn/tool limits, read denylist, bubblewrap, MCP OAuth, goal-loop, and telemetry-safe defaults.
 
-The candidate's net +2,527 lines exceed the +1,500 soft limit, chiefly in Engine state, final dispatch, and the child-only host profile plus explicit-Skill-root boundaries where an app-side mirror would create two unsafe sources of truth. Reduction order is: upstream generic steer and per-turn dispatch policy; upstream Automation ownership/misfire behavior; then replace T3 once upstream provides complete static-composer, explicit-Skill-root, and host-profile contracts.
+The candidate's net +2,513 lines exceed the +1,500 soft limit, chiefly in Engine state, final dispatch, and the child-only host profile plus explicit-Skill-root boundaries where an app-side mirror would create two unsafe sources of truth. The current Rust/Clippy compatibility edits are equivalent rewrites, a `Default` implementation, and narrow lint annotations; they do not change public function signatures or add runtime semantics. Reduction order is: upstream generic steer and per-turn dispatch policy; upstream Automation ownership/misfire behavior; then replace T3 once upstream provides complete static-composer, explicit-Skill-root, and host-profile contracts.
 
 ## Publication and rollback
 

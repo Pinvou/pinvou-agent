@@ -9,11 +9,11 @@
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5` |
-| 本地维护分支 | `codex/pinvou-v0.9.12-r1`，head `09c3b85e366379dbbb69539e4cec8c2dbadd91f4` |
+| 本地维护分支 | `codex/pinvou-v0.9.12-r1`，head `b4c02616b8561dfca43d540fe778bb15287fa719` |
 | 发布状态 | 未发布；`pinvou3-clean` 与 `pinvou-v0.9.12-r1` 只有获得明确授权后才创建或更新 |
 | 升级前备份 | branch `backup/pre-v0.9.12-sync` → `f853f8f1566c57e6be40d5439a222a932aa79ef5`（v0.9.5 r13） |
 | 历史组织 | 上游之上 5 个签署提交，仍归属 4 个长期主题；最后一个提交收口跨主题生命周期安全 |
-| drift | `49 files, +2993/-457`，净增 2536 行；旧 r13 为 `110 files, +10895/-1195` |
+| drift | `62 files, +3127/-614`，净增 2513 行；旧 r13 为 `110 files, +10895/-1195` |
 | 守护 | 18 条独立 CodeWhale `forkguard_*` 行为测试 + 父仓指纹与行为测试 |
 | 父仓适配 | v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2 |
 
@@ -40,7 +40,7 @@
 | `a5c12e203` | T2 | 保留工具兼容、MCP secret 与执行期安全入口 |
 | `7dc1a429a` | T3 | 恢复宿主静态 prompt 所有权 |
 | `02c0faa27` | T4 | 保留 Automation 与 Task 的 Pinvou 运行归属 |
-| `09c3b85e3` | T1–T4 收口 | 可靠 steer、受限控制面、最终分发、ambient 隔离、宿主 prompt-only profile/显式 Skills 根和生命周期回归 |
+| `b4c02616b` | T1–T4 收口 | 可靠 steer、受限控制面、最终分发、ambient 隔离、宿主 prompt-only profile/显式 Skills 根、生命周期回归及当前 Rust 发布 lint 兼容 |
 
 所有提交都含 DCO `Signed-off-by`。发布前允许因自审修复重写候选 SHA；一旦创建不可变 tag，不得重写。
 
@@ -123,7 +123,7 @@
 
 ## 9. 软上限评估与后续减量
 
-当前净增 2536 行，超过 1500 行软上限；`engine.rs`、`turn_loop.rs` 和 `engine/tests.rs` 也超过单文件 200 行提示线。原因是状态机、最终分发安全、“完整专家人设仅进入被选子智能体”的 spawn 边界，以及 bundle Skills 排除 ambient 文件源的权限边界必须和 v0.9.12 原生 Engine 同步，拆成 app 侧镜像会形成更危险的双状态源。
+当前净增 2513 行，超过 1500 行软上限；`engine.rs`、`turn_loop.rs` 和 `engine/tests.rs` 也超过单文件 200 行提示线。原因是状态机、最终分发安全、“完整专家人设仅进入被选子智能体”的 spawn 边界，以及 bundle Skills 排除 ambient 文件源的权限边界必须和 v0.9.12 原生 Engine 同步，拆成 app 侧镜像会形成更危险的双状态源。当前 Rust/Clippy 兼容只包含等价重写、`Default` 补全和窄 lint 说明，不改变公开函数签名或新增运行语义。
 
 后续减量顺序：
 
