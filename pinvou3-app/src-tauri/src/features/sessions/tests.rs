@@ -509,7 +509,17 @@ fn validate_user_workspace_path_rejects_invalid_and_accepts_directory() {
     let dir = unique_temp_dir("user-workspace-valid");
     std::fs::create_dir_all(&dir).expect("create dir");
     let validated = validate_user_workspace_path(dir.to_str().expect("utf8")).expect("valid dir");
-    assert_eq!(validated, dir.canonicalize().expect("canonicalize"));
+    let expected = crate::platform::os::platform_compat_path(
+        &dir.canonicalize().expect("canonicalize").to_string_lossy(),
+    );
+    assert_eq!(validated, expected);
+    // 回归断言:绑定目录不得携带 Windows verbatim 前缀(评审 #445 P1-1),
+    // 与 validate_codex_project_workspace 的既有约定同源。
+    assert!(
+        !validated.to_string_lossy().starts_with(r"\\?\"),
+        "validated workspace must not keep the verbatim prefix: {}",
+        validated.display()
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

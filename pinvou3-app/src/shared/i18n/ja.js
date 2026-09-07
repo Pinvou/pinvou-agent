@@ -949,7 +949,7 @@ Object.assign(dictJa, {
 dictJa.uiChatWorkspace = {
   defaultWorkspace:'既定のワークスペース', defaultWorkspaceDesc:'Pinvou が管理するセッション用ディレクトリを使用します',
   chooseDirectory:'ディレクトリを選択…', chooseDirectoryDesc:'そのディレクトリで Agent を直接作業させます',
-  recentDirectories:'最近使用した項目', chooseDirectoryDialog:'作業ディレクトリを選択', unknownDirectory:'不明なディレクトリ',
+  recentDirectories:'最近使用した項目', unknownDirectory:'不明なディレクトリ',
   // 作業ディレクトリに紐付けたセッションで初めて YOLO に切り替える際の
   // 一度きりの確認カード（uiCodex の modeYoloConfirm* と同じ意味だが、
   // 「プロジェクトディレクトリ」ではなく「作業ディレクトリ」の表現のため別キー）。

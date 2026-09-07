@@ -141,6 +141,9 @@ pub struct SessionStore {
     /// 这里:命中即 execution=绑定目录、ledger=会话私有目录(与原生代码会话
     /// 绑定同款双根语义)。
     pub(crate) session_workspaces: Arc<RwLock<HashMap<String, PathBuf>>>,
+    /// 本进程是否成功解析过旧全局表:解析失败的降级路径下,内存表为空而
+    /// 旧表条目未迁移,此时禁止以空表覆盖删除旧表(数据销毁守卫,#445 P2)。
+    pub(crate) legacy_session_workspaces_loaded: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// 品悟原生 code 会话判定（ACP 会话恒为 plain，见 codex_acp store）。
     /// 与 Engine bridge / 远程端共用同一份 `SessionAgentStore` 闭包，由 app 组合根
     /// (lib.rs) 注入；None = 无 code 会话判定（测试/启动早期），全部按 plain 语义。

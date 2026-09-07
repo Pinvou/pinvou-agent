@@ -605,6 +605,27 @@
       // localStorage 不可用时仅本次不记忆，不影响选目录本身。
     }
   }
+
+  // 从最近列表移除单个目录（workspace-recents.js forgetWorkspace 的镜像）：
+  // 物化失败（目录已被删/改名）时由 ensureSession 失败路径调用，坏条目不再
+  // 永久残留（评审 #445 P2）。shared 模块与经典脚本无法互 import，改任一侧
+  // 须同步另一侧。
+  function forgetDraftWorkspaceRecent(path) {
+    let list;
+    try {
+      const value = JSON.parse(localStorage.getItem(DRAFT_WORKSPACE_RECENTS_KEY) || "[]");
+      list = Array.isArray(value) ? value.filter(function (item) { return typeof item === "string"; }) : [];
+    } catch {
+      list = [];
+    }
+    const next = list.filter(function (item) { return item !== path; });
+    try {
+      localStorage.setItem(DRAFT_WORKSPACE_RECENTS_KEY, JSON.stringify(next));
+    } catch {
+      // localStorage 不可用时仅本次不记忆，不影响选目录本身。
+    }
+  }
+
   // 仅草稿态生效；path = null 表示回到默认（会话私有目录）。
   function setDraftWorkspace(path) {
     if (state.activeSessionId) return;
@@ -774,6 +795,12 @@
           && state.activeSessionId === meta.id ? meta.id : null;
       } catch (e) {
         addSystemItem(bt("newChatFailed") + e);
+        // 物化失败且草稿绑定了目录 ⇒ 多半是该目录已失效(重命名/删除):
+        // 就地从最近列表清除坏条目(评审 #445 P2;code 模式 forgetWorkspace
+        // 同口径)。草稿选择本身按既有契约保留,便于用户修复目录后重试。
+        if (state.draftWorkspacePath) {
+          forgetDraftWorkspaceRecent(state.draftWorkspacePath);
+        }
         return null;
       }
     })();

@@ -1,6 +1,5 @@
-import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import {
   Brain, Check, ChevronDown, FileText, FolderOpen, GitBranch, Monitor, Paperclip,
@@ -161,13 +160,8 @@ import {
   uploadAcpDeviceAttachment,
 } from './acpClient.js';
 import { can, canInvoke, isWeb, onPlatformConnectionChange } from '../../shared/platform.js';
-import {
-  forgetWorkspace,
-  loadRecentWorkspaces,
-  rememberWorkspace,
-  workspaceName,
-} from '../../shared/workspace-recents.js';
 const invoke = invokeTauri;
+const RECENT_WORKSPACES_KEY = 'pinvou_codex_recent_workspaces';
 const DRAFT_ATTACHMENT_KEY = '__codex_draft__';
 
 // 草稿配置快照缓存已抽到 ./acp-draft-controls.js（供设置页共用，避免与
@@ -185,11 +179,6 @@ const CODE_AGENT_IDS = new Set(['pinvou', 'codex', 'claude', 'kimi']);
 const EMPTY_CONVERSATION_TURNS = [];
 // Same idea: the sessions default must be a stable reference; an inline [] is a fresh array on every render.
 const EMPTY_SESSIONS = [];
-
-
-// token 缩写与主聊天 ChatView 的 fmtCtxTok 同款（1.2k / 3.4M）。
-function fmtNativeCtxTok(n) {
-  return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
 
 function workspaceName(path, unknownDirectory) {
   // Trailing-separator stripping + Windows drive-letter path semantics live in shared/path-utils (same as the former inline code).
@@ -268,8 +257,32 @@ function BranchDialogShell({ copy, busy, testid, labelledBy, initialFocusRef, on
       </div>
     </div>,
     document.body,
-  );
+  );
+}
 
+function loadRecentWorkspaces() {
+  try {
+    const value = JSON.parse(localStorage.getItem(RECENT_WORKSPACES_KEY) || '[]');
+    return Array.isArray(value) ? value.filter(path => typeof path === 'string').slice(0, 6) : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberWorkspace(path) {
+  const next = [path, ...loadRecentWorkspaces().filter(item => item !== path)].slice(0, 6);
+  localStorage.setItem(RECENT_WORKSPACES_KEY, JSON.stringify(next));
+  return next;
+}
+
+function forgetWorkspace(path) {
+  const next = loadRecentWorkspaces().filter(item => item !== path);
+  try {
+    localStorage.setItem(RECENT_WORKSPACES_KEY, JSON.stringify(next));
+  } catch {
+    // localStorage 不可用时仍允许当前窗口继续创建新会话。
+  }
+  return next;
 }
 
 // 记住用户上次在 code 界面选择的 agent：重开界面/重启应用后沿用，直到用户再次切换。
@@ -622,129 +635,6 @@ function NativePlanCard({ item, theme, t, copy, modePlan, busy, onAccept, onDisc
     </div>
   );
 }
-
-
-function TurnItem({
-  item,
-  now,
-  agentName,
-  copy,
-  cv,
-  pendingByTool,
-  pendingByElicitation,
-  onRespond,
-  onRespondElicitation,
-  responding,
-  onOpenExternal,
-  onOpenResource,
-}) {
-  if (item.type === 'reasoning') return <ReasoningItem item={item} now={now} copy={copy} />;
-  if (item.type === 'tool_group') return <ToolGroup group={item} now={now} copy={copy} cv={cv} onOpenResource={onOpenResource} />;
-  if (item.type === 'plan') return <PlanBlock plan={item.plan} copy={copy} />;
-  if (item.type === 'permission') {
-    return (
-      <PermissionCard permission={item.permission}
-        pending={pendingByTool[item.permission.toolCallId]}
-        onRespond={onRespond} responding={responding} agentName={agentName} copy={copy} />
-    );
-  }
-  if (item.type === 'elicitation') {
-    return (
-      <ElicitationCard elicitation={item.elicitation}
-        pending={pendingByElicitation[item.elicitation.elicitationId]}
-        onRespond={onRespondElicitation}
-        responding={responding} />
-    );
-  }
-  if (item.type === 'agent_message') {
-    const commentary = item.phase === 'commentary';
-    // streaming = the projection's in_progress convention (ACP/deepseek projections agree): while text
-    // can still grow, render through the throttle; when it ends, useThrottledValue replays the full text verbatim.
-    return commentary
-      ? <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource}
-          streaming={item.status === 'in_progress'}
-          className="text-[13px] leading-6 text-gray-500 dark:text-gray-400" />
-      : <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource}
-          streaming={item.status === 'in_progress'} />;
-  }
-  return null;
-}
-
-function Turn({
-  turn,
-  now,
-  agentId,
-  agentName,
-  copy,
-  cv,
-  pendingByTool,
-  pendingByElicitation,
-  onRespond,
-  onRespondElicitation,
-  responding,
-  onOpenExternal,
-  onOpenResource,
-}) {
-  const waitingPermission = turn.permissions.some(permission => !permission.resolved);
-  const waitingInput = turn.elicitations.some(elicitation => !elicitation.resolved);
-  const running = turn.status === 'running';
-  const duration = copy.elapsed(elapsedMs(turn.startedAt, turn.completedAt, now));
-  const assistantAvailable = assistantResponseAvailable(turn);
-  return (
-    <section className="space-y-4">
-      {(turn.userText || turn.userAttachments.length > 0) && (
-        <div className="flex justify-end">
-          <div className="max-w-[78%] rounded-[20px] rounded-br-md bg-[#E9EEF6] dark:bg-[#2A2B2E] px-4 py-3 text-[14px] leading-6 whitespace-pre-wrap break-words">
-            {turn.userText && <div>{turn.userText}</div>}
-            {turn.userAttachments.length > 0 && (
-              <div className={`flex flex-wrap gap-1.5 ${turn.userText ? 'mt-2' : ''}`}>
-                {turn.userAttachments.map((attachment, index) => (
-                  <span key={`${attachment.name || 'attachment'}-${index}`}
-                    className="inline-flex max-w-full items-center gap-1 rounded-lg bg-white/65 dark:bg-white/[0.07] px-2 py-1 text-[11px] leading-4">
-                    <FileTypeIcon name={attachment.name} className="h-4 w-4 shrink-0" />
-                    <span className="truncate">{attachment.name || copy.attachment}</span>
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-      <div className="flex items-start gap-3">
-        <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center text-[#1F1F1F] dark:text-[#E3E3E3]">
-          <AcpAgentLogo agentId={agentId} className="h-5 w-5" title={agentName} />
-        </div>
-        <div className="min-w-0 flex-1 space-y-1">
-          {running && (
-            <div className={`h-9 flex items-center gap-2 text-[12px] ${waitingPermission || waitingInput ? 'text-amber-600 dark:text-amber-300' : 'text-gray-500 dark:text-gray-400'}`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${waitingPermission || waitingInput ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'}`} />
-              {waitingPermission ? copy.waitingPermission : waitingInput ? copy.waitingInputShort : cv.processing} · {duration}
-            </div>
-          )}
-          {turn.presentation.map((item, index) => (
-            <TurnItem key={item.id || `${item.type}-${index}`} item={item} now={now}
-              agentName={agentName} copy={copy} cv={cv}
-              pendingByTool={pendingByTool} pendingByElicitation={pendingByElicitation}
-              onRespond={onRespond} onRespondElicitation={onRespondElicitation}
-              responding={responding} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource} />
-          ))}
-          {!running && (assistantAvailable || turn.completedAt || turn.error) && <AssistantMessageFooter>
-            {assistantAvailable && (
-              <AssistantMessageActions resolveText={() => assistantResponseText(turn)} copy={copy} />
-            )}
-            {(turn.completedAt || turn.error) && <>
-              <StatusBadge status={turn.status} copy={copy} />
-              <span className="text-[11px] text-gray-400">{duration}</span>
-              {turn.usage && <span className="text-[11px] text-gray-400">{copy.contextUsage(Number(turn.usage.used || 0).toLocaleString(), Number(turn.usage.size || 0).toLocaleString())}</span>}
-              {turn.error && <span className="text-[11px] text-red-500">{turn.error}</span>}
-            </>}
-          </AssistantMessageFooter>}
-        </div>
-      </div>
-    </section>
-  );
-}
-
 // eslint-disable-next-line sonarjs/cognitive-complexity -- ACP code main view: session/event/draft/attachment/scroll lifecycles share one set of ref+state; refactoring is high-risk
 export function CodexAcpView({
   theme,

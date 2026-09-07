@@ -3,15 +3,12 @@ import {
   presentConversationItems,
 } from '../conversation/conversation-model.js';
 
-/// Unconditional redaction before ACP-lane error text (the red-text
-/// fallback) is displayed: an agent CLI's raw output may carry gateway
-/// custom bodies or credentials; errors the gate did not take over get no
-/// friendly card but must still never reach the screen with secrets.
-function redactDisplayError(error, language) {
-  if (!error) return error || null;
-  const helper = typeof globalThis !== 'undefined' && globalThis.PinvouModelServiceErrors;
-  if (!helper || typeof helper.redactTechnicalDetail !== 'function') return error;
-  return helper.redactTechnicalDetail(String(error), language);
+export function unifiedConversationUiEnabled() {
+  try {
+    return localStorage.getItem('pinvou_conversation_ui_v2') !== 'false';
+  } catch {
+    return true;
+  }
 }
 
 export function updateAcpAttachmentDraft(drafts, attachmentId, update) {
@@ -181,8 +178,7 @@ export function presentTurnItems(items) {
  * 原始 event log 仍是事实源；tool update 只更新同一个 tool_call_id。
  */
 // eslint-disable-next-line sonarjs/cognitive-complexity -- event log to Turn/Item projection: single-pass merge of many ACP event shapes; splitting would repeat the traversal
-export function projectAcpTimeline(input, options = {}) {
-  const language = options && options.language;
+export function projectAcpTimeline(input) {
   const seen = new Set();
   const events = [...(input || [])]
     .filter(event => {
@@ -345,12 +341,7 @@ export function projectAcpTimeline(input, options = {}) {
       turn.startedAt = envelope.timestamp;
     } else if (type === 'turn_completed') {
       turn.status = data.status || 'completed';
-      // ACP-lane error text comes from agent CLIs (codex/claude/gemini)
-      // and may carry gateway bodies or credentials verbatim; redact
-      // unconditionally before the red-text display (classification may
-      // miss, credentials must not). Kept as-is when the helper (classic
-      // script) is missing, degrading to existing behavior.
-      turn.error = redactDisplayError(data.error || null, language);
+      turn.error = data.error || null;
       turn.completedAt = envelope.timestamp;
     }
   }
