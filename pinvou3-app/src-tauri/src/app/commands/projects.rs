@@ -165,19 +165,28 @@ pub async fn move_session_to_project(
                 "move_session_to_project: add_workspace_root requires project_id".to_string(),
             );
         }
-        // 普通 chat 会话在池里没有工作区记录,底层会报"not an ACP session"——
-        // 语义上该组合只是"没有可加的目录",错误信息按此表述,避免误导排查方向。
-        let info = acp_pool.workspace_info(&session_id).map_err(|e| {
-            format!(
-                "move_session_to_project({session_id}): session has no resolvable workspace record to add as a root (normal chat sessions have none): {e:#}"
-            )
-        })?;
-        if info.workspace_kind != CodexWorkspaceKind::Project {
-            return Err(format!(
-                "move_session_to_project({session_id}): temporary session has no project folder to add"
-            ));
+        // 统一工作区探测(跨模式融合):代码/ACP 会话走 agent 记录;普通绑定
+        // 会话(agent 记录缺失)回落到双根信号——执行根≠账本根 ⇒ 已绑定,
+        // 执行根即绑定目录(#445 的绑定语义)。临时/未绑定会话两者皆无。
+        let detected = match acp_pool.workspace_info(&session_id) {
+            Ok(info) if info.workspace_kind == CodexWorkspaceKind::Project => {
+                Some(PathBuf::from(info.workspace_path))
+            }
+            Ok(_) => None,
+            Err(_) => sessions
+                .session_roots(&session_id)
+                .ok()
+                .filter(|roots| roots.execution != roots.ledger)
+                .map(|roots| roots.execution),
+        };
+        match detected {
+            Some(path) => Some(path),
+            None => {
+                return Err(format!(
+                    "move_session_to_project({session_id}): session has no project folder to add"
+                ));
+            }
         }
-        Some(PathBuf::from(info.workspace_path))
     } else {
         None
     };
@@ -289,12 +298,19 @@ pub async fn rebind_workspace_root(
     require_confirm_existing(&from, confirm_existing)?;
 
     // 受影响集合快照(活跃回合栅栏与元数据重放共用),必须在重写之前取
-    // (评审 #463 M1):rebind_workspace_prefix 的返回只是本跑改写的集合,
-    // 上一跑已平移而 set_workspace 失败的会话不再匹配 `from`,不快照就
-    // 永远无法重试。sessions_under_workspace 含索引外孤儿 sidecar(M6);
-    // 另纳入"已在 to 下但元数据未同步"的重试候选,失败重跑即可收敛。
+    // (评审 #463 M1):重写返回的只是本跑改写的集合,上一跑已平移而
+    // set_workspace 失败的会话不再匹配 `from`,不快照就永远无法重试。
+    // 候选集跨两类绑定存储:agent 记录(代码/ACP,含索引外孤儿 sidecar,
+    // M6)与普通会话绑定 sidecar(unify:分组跟随绑定,普通绑定会话同样在
+    // 重绑定范围内);另纳入"已在 to 下但元数据未同步"的重试候选。
     let mut affected = acp_pool.agents().sessions_under_workspace(&from);
-    for (session_id, path) in acp_pool.agents().sessions_under_workspace(&to_key) {
+    affected.extend(sessions.workspace_bindings_under(&from));
+    for (session_id, path) in acp_pool
+        .agents()
+        .sessions_under_workspace(&to_key)
+        .into_iter()
+        .chain(sessions.workspace_bindings_under(&to_key))
+    {
         if affected.iter().any(|(sid, _)| *sid == session_id) {
             continue;
         }
@@ -328,15 +344,22 @@ pub async fn rebind_workspace_root(
         ));
     }
 
-    // 顺序:项目 root → 会话绑定(索引+sidecar) → 元数据 → baseline。
-    // 每步幂等,失败重试只补未完成部分。元数据循环驱动自上面的快照,
-    // 逐候选算目标路径(from 前缀下平移;已在 to 下的重试候选原样)。
+    // 顺序:项目 root → 会话绑定(索引+sidecar,两类绑定存储) → 元数据 →
+    // baseline。每步幂等,失败重试只补未完成部分。元数据循环驱动自上面的
+    // 快照,逐候选算目标路径(from 前缀下平移;已在 to 下的重试候选原样)。
     let affected_project_ids = store
         .rebind_roots(&from, &to_key)
         .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
-    acp_pool
+    let code_rebound = acp_pool
         .agents()
         .rebind_workspace_prefix(&from, &to_key)
+        .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
+    let code_rebound_ids: std::collections::HashSet<&str> = code_rebound
+        .iter()
+        .map(|(session_id, _)| session_id.as_str())
+        .collect();
+    sessions
+        .rebind_workspace_bindings(&from, &to_key)
         .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
     let mut rebound_session_ids = Vec::new();
     let mut failed_session_ids = Vec::new();
@@ -359,25 +382,28 @@ pub async fn rebind_workspace_root(
                 failed_session_ids.push(session_id.clone());
             }
         }
-        // baseline 重采集:best-effort,git 指纹可再派生,失败不阻断重绑定。
-        // 走 spawn_blocking:非 git 目录会同步遍历上万条目,不能在 async
-        // 命令线程上串行跑(同 codex.rs 建会话时的既有 idiom)。
-        let baseline_session_id = session_id.clone();
-        let baseline_root = new_path.clone();
-        match tauri::async_runtime::spawn_blocking(move || {
-            crate::features::codex_acp::workspace::capture_baseline(
-                &baseline_session_id,
-                &baseline_root,
-            )
-        })
-        .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                eprintln!("[projects] rebind capture_baseline({session_id}) failed: {error:#}")
-            }
-            Err(error) => {
-                eprintln!("[projects] rebind capture_baseline({session_id}) task failed: {error}")
+        // baseline 重采集只对代码会话:普通会话不消费 workspace baseline,
+        // 不为它们创建代码车道专属 sidecar。走 spawn_blocking:非 git 目录
+        // 会同步遍历上万条目,不能在 async 命令线程上串行跑(codex.rs 同款
+        // idiom)。best-effort,失败仅记日志。
+        if code_rebound_ids.contains(session_id.as_str()) {
+            let baseline_session_id = session_id.clone();
+            let baseline_root = new_path.clone();
+            match tauri::async_runtime::spawn_blocking(move || {
+                crate::features::codex_acp::workspace::capture_baseline(
+                    &baseline_session_id,
+                    &baseline_root,
+                )
+            })
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    eprintln!("[projects] rebind capture_baseline({session_id}) failed: {error:#}")
+                }
+                Err(error) => {
+                    eprintln!("[projects] rebind capture_baseline({session_id}) task failed: {error}")
+                }
             }
         }
     }

@@ -158,6 +158,79 @@ impl SessionStore {
         }
     }
 
+    /// 扫描全部 `workspace-binding.json` sidecar，列出绑定在 `from` 前缀下的
+    /// 会话（目录重绑定的栅栏候选集；`from` 通常已消失，按词法前缀匹配，
+    /// 与 SessionAgentStore::sessions_under_workspace 同语义）。不校验
+    /// `<id>.json` 存在——残留 sidecar 同样要被重绑定覆盖，否则旧目录复活。
+    pub fn workspace_bindings_under(&self, from: &Path) -> Vec<(String, PathBuf)> {
+        let mut matched = Vec::new();
+        let Ok(entries) = std::fs::read_dir(self.manager.sessions_dir()) else {
+            return matched;
+        };
+        for entry in entries.flatten() {
+            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let Some(id) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            let Some(sidecar) =
+                read_workspace_sidecar(&entry.path().join(SESSION_WORKSPACE_SIDECAR_FILE))
+            else {
+                continue;
+            };
+            if sidecar.path.strip_prefix(from).is_ok() {
+                matched.push((id, sidecar.path));
+            }
+        }
+        matched
+    }
+
+    /// 目录重绑定（修断链通道）：把绑定在 `from` 前缀下的普通会话绑定整体
+    /// 平移到 `to`（sidecar 原子重写 + 内存缓存同步）。与
+    /// SessionAgentStore::rebind_workspace_prefix 同语义、同幂等性——
+    /// from→to 重跑无命中即空操作，失败可整体重试。返回受影响
+    /// (session_id, 新路径)。会话元数据（metadata.workspace 展示字段）由
+    /// 命令层统一经 set_workspace 改写。
+    pub fn rebind_workspace_bindings(
+        &self,
+        from: &Path,
+        to: &Path,
+    ) -> Result<Vec<(String, PathBuf)>> {
+        let mut affected = Vec::new();
+        for (id, path) in self.workspace_bindings_under(from) {
+            let sidecar_path = self
+                .manager
+                .sessions_dir()
+                .join(&id)
+                .join(SESSION_WORKSPACE_SIDECAR_FILE);
+            let Ok(suffix) = path.strip_prefix(from) else {
+                continue;
+            };
+            let next = to.join(suffix);
+            let updated = SessionWorkspaceSidecar {
+                version: SESSION_WORKSPACE_SIDECAR_VERSION,
+                path: next.clone(),
+                bound_at: None,
+            };
+            let payload = serde_json::to_vec_pretty(&updated)
+                .context("serialize session workspace binding")?;
+            crate::platform::filesystem::atomic_write(&sidecar_path, &payload).with_context(
+                || {
+                    format!(
+                        "rebind session workspace binding {}",
+                        sidecar_path.display()
+                    )
+                },
+            )?;
+            self.session_workspaces
+                .write()
+                .insert(id.clone(), next.clone());
+            affected.push((id, next));
+        }
+        Ok(affected)
+    }
+
     /// boot 期存量迁移：全局表 `_session_workspaces.json` → per-session
     /// sidecar（只服务本 PR 中间版本 dev build 的 home，见模块文档）。活会话
     /// 条目逐条写成 sidecar（同值重写幂等），全部迁移成功即删除旧文件；任一
