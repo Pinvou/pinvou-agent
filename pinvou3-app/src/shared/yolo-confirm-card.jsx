@@ -14,7 +14,7 @@ function cardBtnCls(variant) {
 }
 
 // copy = { title, body, hint, ok, cancel }（两侧 i18n 键不同，由调用方映射）。
-export function YoloConfirmCard({ theme, copy, busy, onConfirm, onCancel }) {
+export function YoloConfirmCard({ theme, copy, error, busy, onConfirm, onCancel }) {
   const isDark = theme === 'dark';
   const dialogRef = useRef(null);
   // 打开即聚焦卡片（键盘可达），Esc 视为取消——与 NativePlanCard 内联卡不同，
@@ -58,6 +58,7 @@ export function YoloConfirmCard({ theme, copy, busy, onConfirm, onCancel }) {
           {copy.body}
         </div>
         <div className="mt-2 text-[12px] text-[#C5221F] dark:text-red-400">{copy.hint}</div>
+        {error && <div className="mt-1 text-[12px] text-[#C5221F] dark:text-red-400">{error}</div>}
         <div className="mt-4 flex items-center justify-end gap-2">
           <button
             type="button"

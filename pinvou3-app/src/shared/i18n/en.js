@@ -948,7 +948,7 @@ Object.assign(dictEn, {
 dictEn.uiChatWorkspace = {
   defaultWorkspace:'Default workspace', defaultWorkspaceDesc:'Use a Pinvou-managed session directory',
   chooseDirectory:'Choose directory…', chooseDirectoryDesc:'Let the Agent work directly in that directory',
-  recentDirectories:'Recent', chooseDirectoryDialog:'Choose a working directory', unknownDirectory:'Unknown directory',
+  recentDirectories:'Recent', unknownDirectory:'Unknown directory',
   // One-time confirmation card for the first YOLO switch on a session bound to
   // a working directory (mirrors uiCodex modeYoloConfirm*, but says "working
   // directory" instead of "project directory", hence separate keys).

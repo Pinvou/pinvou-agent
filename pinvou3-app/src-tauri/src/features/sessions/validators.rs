@@ -92,7 +92,12 @@ pub(crate) fn validate_user_workspace_path(raw: &str) -> Result<PathBuf> {
     if !canonical.is_dir() {
         bail!("Workspace path must be a directory: {raw}");
     }
-    Ok(canonical)
+    // Windows canonicalize 会返回 \?\ verbatim 前缀;agent 与前端对 cwd 做
+    // 字符串/前缀比较时会误判,统一归一成常规盘符路径(非 Windows 恒等)——
+    // 与 validate_codex_project_workspace 同一条不变量(评审 #445 P1-1)。
+    Ok(crate::platform::os::platform_compat_path(
+        &canonical.to_string_lossy(),
+    ))
 }
 
 pub(crate) fn persisted_system_prompt(system_prompt: Option<&SystemPrompt>) -> Option<String> {

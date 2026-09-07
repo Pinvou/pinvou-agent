@@ -709,7 +709,7 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   );
   // The fallback still shows the ledger error, redacted through the shared
   // timelineDisplayError before display.
-  assert.match(panelSource, /copy\.agentNoTranscript\(\n[\s\S]*?timelineDisplayError\(agent\.error, \{ language \}\)/);
+  assert.match(panelSource, /copy\.agentNoTranscript\(\r?\n[\s\S]*?timelineDisplayError\(agent\.error, \{ language \}\)/); // \r? for CRLF checkouts
   assert.match(panelSource, /const agentResolved = !!agent/);
   assert.match(panelSource, /const transcriptUnavailable = !!\(agent && agent\.has_transcript === false\)/);
   assert.match(

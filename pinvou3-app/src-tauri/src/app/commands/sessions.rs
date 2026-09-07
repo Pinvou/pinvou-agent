@@ -1,3 +1,6 @@
+use super::prelude::*;
+use std::path::PathBuf;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionListItem {
     #[serde(flatten)]
@@ -884,8 +887,6 @@ pub(super) fn list_workspace_files_for_session(
     out.sort();
     Ok(out)
 }
-use super::prelude::*;
-use std::path::PathBuf;
 
 #[cfg(test)]
 mod desktop_saved_session_contract_tests {
