@@ -1209,7 +1209,9 @@ impl TimelineWriter {
         if self.writer.is_none() {
             self.open()?;
         }
-        self.writer.as_mut().context("ACP timeline writer handle unavailable")
+        self.writer
+            .as_mut()
+            .context("ACP timeline writer handle unavailable")
     }
 
     fn journal_exists(&self) -> bool {
@@ -1221,8 +1223,12 @@ impl TimelineWriter {
         // they only run on first use and on reopen after a failure.
         let path = timeline_path(&self.session_id)?;
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create ACP timeline directory {}", parent.display()))?;
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create ACP timeline directory {}",
+                    parent.display()
+                )
+            })?;
         }
         let file = OpenOptions::new()
             .create(true)
