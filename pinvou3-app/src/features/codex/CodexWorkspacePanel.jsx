@@ -97,7 +97,7 @@ function WorkspaceTree({
             type="button"
             aria-label={copiedPath === entry.relativePath ? copy.copied : copy.copyPath}
             title={copiedPath === entry.relativePath ? copy.copied : copy.copyPath}
-            onClick={() => copyRowPath(entry.relativePath)}
+            onClick={() => copyRowPath(entry.relativePath, entry.relativePath)}
             className="w-6 h-6 shrink-0 rounded-md flex items-center justify-center text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] transition-opacity"
           >
             {copiedPath === entry.relativePath
