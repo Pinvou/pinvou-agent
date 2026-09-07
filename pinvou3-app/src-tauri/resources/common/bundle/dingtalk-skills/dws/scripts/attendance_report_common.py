@@ -1623,18 +1623,21 @@ def _embed_images_in_columns(
     # openpyxl 的 Image 类内部依赖 Pillow（模块加载时检测），
     # 如果 Pillow 不可用，OpenpyxlImage() 会抛出：
     #   ImportError: You must install Pillow to fetch image objects
-    # 这里提前检测：缺失时打印安装提示并退出（不自动装包，
-    # 对齐 attendance_report_checkin.py 的依赖检查模式）。
+    # Pre-check Pillow up front: when it is missing, degrade the image
+    # columns to clickable hyperlinks so the report is still produced.
+    # Never auto-install packages here; attendance_report_checkin.py
+    # enforces its own hard dependency check for its image-required flow.
     from openpyxl.drawing.image import PILImage as _openpyxl_pil_check
     if not _openpyxl_pil_check:
-        print(
-            "[ERROR] 缺少依赖：Pillow\n"
-            "  请先安装：pip install Pillow\n"
-            "安装后重新执行本脚本。\n"
-            "（图片嵌入需要 Pillow，脚本不会自动安装第三方包）",
-            file=sys.stderr,
+        warn(
+            "[image] Pillow is not installed; images cannot be embedded. "
+            "Image URLs are kept as clickable links. "
+            "To embed images, install it first: pip install Pillow"
         )
-        sys.exit(1)
+        _replace_all_image_urls_with_hyperlinks(
+            ws, headers, rows, image_column_names, first_data_row,
+        )
+        return
 
     # 找到目标列索引（1-based）
     name_to_col_idx: dict[str, int] = {}

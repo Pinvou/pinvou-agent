@@ -62,7 +62,7 @@ CHECK_MAX_DAYS_PER_SLICE = 31       # check result/record: 跨度 ≤ 1 个月
 CHECK_RESULT_PAGE_SIZE = 1000       # check result: --limit 最大值
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 固定表头（与 attendance-report.md「预定义列集合」对齐）
+# Fixed report header (aligned with attendance-report.md "预定义列集合")
 # ─────────────────────────────────────────────────────────────────────────────
 
 # 基础信息列

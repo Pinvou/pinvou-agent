@@ -50,7 +50,7 @@ from typing import Any
 
 import attendance_report_common as cmn
 
-# 默认关注字段 — 与 attendance-report.md「预定义列集合」对齐（每日统计 31 个）
+# Default columns of interest — aligned with attendance-report.md "预定义列集合" (daily report: 31 columns)
 # 字段名必须和 `dws attendance report columns` 返回的 name 精确匹配
 DEFAULT_KEYWORDS = [
     "班次",
