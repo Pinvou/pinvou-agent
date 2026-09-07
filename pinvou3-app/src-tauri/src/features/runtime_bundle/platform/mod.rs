@@ -221,7 +221,7 @@ pub const INSTRUCTIONS_CODE_MD: &str =
 /// 代码模式完整 instructions（共享骨架 + 代码层）：
 /// 骨架的 §工作环境 位填代码版环境段（workspace_hint 已按绑定情况渲染），
 /// 成品条位整行删除（代码会话无产出物/成品卡语义）；尾部依次拼接底座
-/// core_execution 执行循环、pinvou3 auto-approval 覆盖说明与 ## 代码场景纪律。
+/// core_execution 执行循环与 ## 代码场景纪律。
 // Same as work_layer_sections: the input is a compile-time embedded resource
 // whose section structure is fixed by the build artifact; if the resource is
 // accidentally modified, the panic surfaces at first startup, and no runtime
@@ -237,11 +237,6 @@ pub fn instructions_code_md(workspace_hint: &str) -> String {
         .replace("{{PINVOU3_MODE_ARTIFACT_RULE}}\n", "");
     out.push_str("\n\n");
     out.push_str(deepseek_tui::prompts::CORE_EXECUTION_PROFILE_PROMPT.trim());
-    // pinvou3 覆盖说明（英文，与底座 core_execution 风格一致）：生产路径 gated write
-    // 工具走 auto-approval，底座 approval 条款仅在调用被实际拒绝时适用。
-    out.push_str(
-        "\n\nIn this product, gated write tools run under auto-approval; treat the approval clause above as applying only when a call is actually denied.",
-    );
     out.push_str("\n\n");
     out.push_str(discipline.trim_end());
     out.push('\n');
@@ -793,6 +788,46 @@ mod tests {
         let rendered = instructions_code_md("你在本会话专属工作目录中工作,相对路径即相对该目录;");
         assert!(rendered.contains("你在本会话专属工作目录中工作"));
         assert!(!rendered.contains("项目目录"));
+    }
+
+    /// Prompt-composition regression for the auto-approval override: only code
+    /// sessions compose the base core_execution loop, so only their rendered
+    /// instructions may carry the reconciling note (current production posture
+    /// is auto-approval; runtime truth stays with the per-turn reminder), and
+    /// the note must sit after the base approval clause it qualifies. Also
+    /// locks the MODE_EXECUTE_MD dedup contract: the "never end the turn with
+    /// a promise" sentence was removed because the shared skeleton carries the
+    /// equivalent prohibition.
+    #[test]
+    fn code_instructions_carry_auto_approval_note_work_mode_does_not() {
+        let rendered = instructions_code_md("你在本会话专属工作目录中工作,相对路径即相对该目录;");
+        let core = deepseek_tui::prompts::CORE_EXECUTION_PROFILE_PROMPT.trim();
+        let core_at = rendered
+            .find(core)
+            .expect("code instructions must compose the base core_execution loop");
+        let note_at = rendered
+            .find("gated write 工具走 auto-approval")
+            .expect("code instructions must carry the auto-approval note");
+        assert!(
+            note_at > core_at,
+            "auto-approval note must follow the base approval clause it qualifies"
+        );
+        assert!(
+            rendered.contains("运行时批准姿态以每轮 `<system-reminder>` 为准"),
+            "auto-approval note must defer runtime posture to the per-turn reminder"
+        );
+
+        let work = instructions_md();
+        assert!(
+            !work.contains("auto-approval"),
+            "work mode never composes core_execution, so it must not carry the note"
+        );
+
+        assert!(
+            INSTRUCTIONS_SHARED_MD.contains("说做就做"),
+            "MODE_EXECUTE_MD dropped its promise prohibition only because the shared skeleton carries it"
+        );
+        assert!(!MODE_EXECUTE_MD.contains("promise of future action"));
     }
 
     fn run_depth_guard(bundle: &Pinvou3Bundle, tool: &str, args: &str) -> std::process::Output {
