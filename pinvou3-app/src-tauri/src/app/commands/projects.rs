@@ -18,8 +18,10 @@ use crate::features::sessions::SessionStore;
 
 fn emit_project_event(app: &AppHandle, event: &str, action: &str) {
     let payload = serde_json::json!({ "action": action });
-    let _ = app.emit(event, payload.clone());
-    crate::features::remote_control::forward_app_event(app, event, payload);
+    // 只走桌面 webview 通道。projects 域桌面独占(Web 桥整域缺席),远程端
+    // 正式支持项目列表之前不转发——与 remote_control 对代码会话事件的
+    // 同类裁决一致;转发不在 RUST_FORWARDED_EVENTS 白名单内会被拒并刷日志。
+    let _ = app.emit(event, payload);
 }
 
 /// root 的可用性(目录是否仍在磁盘上)——前端据此渲染"文件夹不可用·重新绑定",
