@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   TEMPORARY_GROUP_KEY,
   groupSessionsWithProjects,
+  needsAddFolderConfirm,
   projectCoversPath,
   resolveSessionProjectId,
 } from "../src/features/projects/projectGrouping.js";
@@ -207,7 +208,11 @@ test("resolveSessionProjectId mirrors the grouping tiers", () => {
   assert.equal(resolveSessionProjectId(item, projects, { a1: null }), null, "explicit move-out wins");
   assert.equal(resolveSessionProjectId(temporaryItem("t1", "x"), projects, { t1: "p1" }), "p1");
   assert.equal(resolveSessionProjectId(temporaryItem("t1", "x"), projects, {}), null, "temp never auto-groups");
-  assert.equal(resolveSessionProjectId(item, [], { a1: "prj-gone" }), null, "stale id is ungrouped");
+  // The real fork the picker must survive: a stale id does not stick as
+  // "ungrouped" — with a non-empty project list whose root still covers the
+  // path, resolution falls through to tier 2 and returns that project.
+  // (projects=[] would trivially yield null and pin nothing.)
+  assert.equal(resolveSessionProjectId(item, projects, { a1: "prj-gone" }), "p1", "stale id falls through to root matching");
 });
 
 test("projectCoversPath reports root containment for the add-folder prompt", () => {
@@ -216,4 +221,56 @@ test("projectCoversPath reports root containment for the add-folder prompt", () 
   assert.equal(projectCoversPath(projects[0], "D:/work/alpha/sub"), true);
   assert.equal(projectCoversPath(projects[0], "D:/work/beta"), false);
   assert.equal(projectCoversPath(null, "D:/work/alpha"), false);
+});
+
+test("rows sort by updatedAt descending within a group", () => {
+  // Ported from the retired sidebar_grouping_logic suite: in-group ordering
+  // with multiple timestamps must survive the project-layer rewrite.
+  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
+  const groups = groupSessionsWithProjects(
+    [
+      projectItem("old", "D:/work/alpha", "2026-07-01T08:00:00Z"),
+      projectItem("new", "D:/work/alpha", "2026-08-01T08:00:00Z"),
+      projectItem("mid", "D:/work/alpha", "2026-07-15T08:00:00Z"),
+    ],
+    projects,
+    {},
+  );
+  assert.deepEqual(groups[0].rows.map((r) => r.id), ["new", "mid", "old"]);
+});
+
+test("temporary group rows sort by recency while the group stays last", () => {
+  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
+  const groups = groupSessionsWithProjects(
+    [
+      temporaryItem("t1", "2026-08-19T08:00:00Z"),
+      projectItem("a1", "D:/work/alpha", "2026-08-02T08:00:00Z"),
+      temporaryItem("t2", "2026-08-18T08:00:00Z"),
+    ],
+    projects,
+    {},
+  );
+  assert.equal(groups[groups.length - 1].key, TEMPORARY_GROUP_KEY);
+  assert.deepEqual(groups[groups.length - 1].rows.map((r) => r.id), ["t1", "t2"]);
+});
+
+test("needsAddFolderConfirm is the shared drop/pick decision", () => {
+  const target = project("p1", "Alpha", ["D:/work/alpha"], 0);
+  assert.equal(
+    needsAddFolderConfirm(projectItem("a1", "D:/work/alpha", "x"), target),
+    false,
+    "covered workspace moves instantly",
+  );
+  assert.equal(
+    needsAddFolderConfirm(projectItem("a1", "D:/work/other", "x"), target),
+    true,
+    "uncovered workspace confirms the add-folder step first",
+  );
+  assert.equal(
+    needsAddFolderConfirm(temporaryItem("t1", "x"), target),
+    false,
+    "temporary sessions have no workspace and move instantly",
+  );
+  assert.equal(needsAddFolderConfirm(null, target), false, "missing session is a no-op");
+  assert.equal(needsAddFolderConfirm(projectItem("a1", "x", "x"), null), false, "missing target is a no-op");
 });

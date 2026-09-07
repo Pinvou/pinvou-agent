@@ -496,6 +496,24 @@ impl SessionAgentStore {
         }
     }
 
+    /// 折叠键前缀匹配 + 原样后缀:匹配经共享 `filesystem_path_identity_key`
+    /// 折叠(Windows 折叠分隔符与大小写,仅大小写改名不再漏配),后缀按组件数
+    /// 从原路径切回,保留子目录原有大小写。返回 `None` = 不在 `from` 之下;
+    /// 空后缀 = 路径本身就是 `from`。
+    fn rebind_relative_suffix(path: &Path, from: &Path) -> Option<PathBuf> {
+        let path_key = crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy());
+        let from_key = crate::platform::os::filesystem_path_identity_key(&from.to_string_lossy());
+        let path_trim = path_key.trim_end_matches('/');
+        let from_trim = from_key.trim_end_matches('/');
+        let covered = from_trim.is_empty()
+            || path_trim == from_trim
+            || path_trim.starts_with(&format!("{from_trim}/"));
+        if !covered {
+            return None;
+        }
+        Some(path.components().skip(from.components().count()).collect())
+    }
+
     /// 列出绑定在 `from` 前缀下的项目会话（目录重绑定的候选集；`from` 通常
     /// 已在磁盘上消失，因此按词法前缀匹配而非 canonicalize 比较）。
     pub fn sessions_under_workspace(&self, from: &Path) -> Vec<(String, PathBuf)> {
@@ -507,11 +525,7 @@ impl SessionAgentStore {
                     return None;
                 }
                 let path = record.workspace_path.as_ref()?;
-                // strip_prefix 按路径组件匹配,天然处理目录边界(不会把
-                // /a/bb 误匹配到 /a/b 前缀)。
-                path.strip_prefix(from)
-                    .ok()
-                    .map(|_| (session_id.clone(), path.clone()))
+                Self::rebind_relative_suffix(path, from).map(|_| (session_id.clone(), path.clone()))
             })
             .collect()
     }
@@ -543,10 +557,14 @@ impl SessionAgentStore {
                 let Some(path) = record.workspace_path.clone() else {
                     continue;
                 };
-                let Ok(suffix) = path.strip_prefix(from) else {
+                let Some(suffix) = Self::rebind_relative_suffix(&path, from) else {
                     continue;
                 };
-                let next = to.join(suffix);
+                let next = if suffix.as_os_str().is_empty() {
+                    to.to_path_buf()
+                } else {
+                    to.join(suffix)
+                };
                 record.workspace_path = Some(next.clone());
                 affected.push((session_id.clone(), next));
             }
@@ -575,10 +593,14 @@ impl SessionAgentStore {
                 let Some(path) = sidecar.workspace_path.as_ref() else {
                     continue;
                 };
-                let Ok(suffix) = path.strip_prefix(from) else {
+                let Some(suffix) = Self::rebind_relative_suffix(path, from) else {
                     continue;
                 };
-                let next = to.join(suffix);
+                let next = if suffix.as_os_str().is_empty() {
+                    to.to_path_buf()
+                } else {
+                    to.join(suffix)
+                };
                 let _ = persist_code_session_sidecar(
                     &code_session_sidecar_path(&self.path, &session_id),
                     &CodeSessionSidecar {

@@ -4,10 +4,11 @@
 // onMove(projectId | null, addWorkspaceRoot). When the target project's roots
 // do not cover the session's workspace, the picker first shows the
 // add-folder confirmation (add + move vs move-only) instead of moving at once.
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, Layers, Search, X } from '../../components/icons.jsx';
-import { projectCoversPath } from './projectGrouping.js';
+import { isImeComposing } from '../../shared/ime-guard.mjs';
+import { needsAddFolderConfirm } from './projectGrouping.js';
 
 const MoveToProjectDialog = ({
   open,
@@ -28,18 +29,43 @@ const MoveToProjectDialog = ({
     const target = (Array.isArray(projects) ? projects.filter(Boolean) : [])
       .find(project => project.id === presetProjectId);
     if (!target) return null;
-    const workspacePath = session.workspaceKind === 'project' ? String(session.workspacePath || '') : '';
-    return workspacePath && !projectCoversPath(target, workspacePath) ? target : null;
+    return needsAddFolderConfirm(session, target) ? target : null;
+  });
+  // onClose is an inline arrow at the call site; keeping it in a ref keeps the
+  // key listeners subscribed once instead of per render.
+  const onCloseRef = useRef(onClose);
+  const dialogRef = useRef(null);
+  useEffect(() => {
+    onCloseRef.current = onClose;
   });
 
   useEffect(() => {
     if (!open) return () => {};
     const onKey = (e) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape' && !isImeComposing(e)) {
+        e.preventDefault();
+        onCloseRef.current();
+      } else if (e.key === 'Tab' && dialogRef.current) {
+        // Minimal focus trap: cycle Tab within the dialog instead of letting
+        // it escape into the page behind the modal.
+        const focusables = dialogRef.current.querySelectorAll(
+          'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        );
+        if (!focusables.length) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  }, [open]);
 
   const projectList = useMemo(
     () => (Array.isArray(projects) ? projects.filter(Boolean) : []),
@@ -59,10 +85,11 @@ const MoveToProjectDialog = ({
 
   if (!open || !session || typeof document === 'undefined') return null;
 
+  // 显示用:确认框里向用户展示的目录(侧栏投影),实际添加以命令返回为准。
   const workspacePath = session.workspaceKind === 'project' ? String(session.workspacePath || '') : '';
   const choose = (project) => {
     if (busy || project.id === currentProjectId) return;
-    if (workspacePath && !projectCoversPath(project, workspacePath)) {
+    if (needsAddFolderConfirm(session, project)) {
       setPendingAddFolder(project);
       return;
     }
@@ -96,6 +123,7 @@ const MoveToProjectDialog = ({
     >
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: dialog body stops bubbling so backdrop close is not triggered accidentally; not interactive itself */}
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={t.uiProjects.moveToProject}
@@ -121,8 +149,7 @@ const MoveToProjectDialog = ({
           <div className="flex h-9 items-center gap-2 rounded-full px-3 bg-[#EAECEF] dark:bg-[#303134]">
             <Search size={14} className="shrink-0 text-[#5F6368] dark:text-[#9AA0A6]" />
             {/* biome-ignore lint/a11y/noAutofocus: modal opens for a single purpose; focus belongs in the filter field immediately */}
-            <input
-              autoFocus
+            <input autoFocus
               value={query}
               onChange={e => setQuery(e.target.value)}
               placeholder={t.uiProjects.searchPlaceholder}
@@ -131,7 +158,7 @@ const MoveToProjectDialog = ({
           </div>
         </div>
         {pendingAddFolder ? (
-          <div className="px-4 pb-4 pt-1" data-testid="move-project-add-folder-confirm">
+          <div className="px-4 pb-4 pt-1">
             <div className="rounded-2xl bg-[#EAECEF] dark:bg-[#303134] px-3.5 py-3">
               <div className="text-[13px] font-semibold mb-1">{t.uiProjects.addFolderTitle}</div>
               <div className="text-[12px] text-[#5F6368] dark:text-[#C4C7C5] mb-3 break-all">{t.uiProjects.addFolderBody(workspacePath)}</div>
@@ -156,9 +183,11 @@ const MoveToProjectDialog = ({
             </div>
           </div>
         ) : (
-          <div className="px-2 pb-3 max-h-[320px] overflow-y-auto" data-testid="move-project-list">
+          <div className="px-2 pb-3 max-h-[320px] overflow-y-auto">
             {filtered.length === 0 && (
-              <div className="px-3.5 py-4 text-[13px] text-[#8A8F94] dark:text-[#9AA0A6]">{t.uiProjects.noProjects}</div>
+              <div className="px-3.5 py-4 text-[13px] text-[#8A8F94] dark:text-[#9AA0A6]">
+                {projectList.length === 0 ? t.uiProjects.noProjects : t.uiProjects.noMatchProject}
+              </div>
             )}
             {filtered.map(project => (
               <button
@@ -167,7 +196,6 @@ const MoveToProjectDialog = ({
                 disabled={busy || project.id === currentProjectId}
                 onClick={() => choose(project)}
                 className={`${rowCls} disabled:opacity-60`}
-                data-testid="move-project-option"
               >
                 <Layers size={15} className="shrink-0 text-[#5F6368] dark:text-[#9AA0A6]" />
                 {projectLabel(project)}
@@ -185,7 +213,6 @@ const MoveToProjectDialog = ({
               disabled={busy || !currentProjectId}
               onClick={() => !busy && onMove(null, false)}
               className={`${rowCls} disabled:opacity-40`}
-              data-testid="move-project-ungrouped"
             >
               <X size={15} className="shrink-0 text-[#5F6368] dark:text-[#9AA0A6]" />
               <span className="min-w-0 flex-1 truncate">{t.uiProjects.moveToUngrouped}</span>
