@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   TEMPORARY_GROUP_KEY,
   groupSessionsWithProjects,
+  needsAddFolderConfirm,
   projectCoversPath,
   resolveSessionProjectId,
 } from "../src/features/projects/projectGrouping.js";
@@ -330,3 +331,23 @@ test("containment honors separator boundaries and mirrors the store rule", () =>
   assert.equal(projectCoversPath(unc, "\\\\server/share/alpha/sub"), true);
 });
 
+test("needsAddFolderConfirm is the shared drop/pick decision", () => {
+  const target = project("p1", "Alpha", ["D:/work/alpha"], 0);
+  assert.equal(
+    needsAddFolderConfirm(projectItem("a1", "D:/work/alpha", "x"), target),
+    false,
+    "covered workspace moves instantly",
+  );
+  assert.equal(
+    needsAddFolderConfirm(projectItem("a1", "D:/work/other", "x"), target),
+    true,
+    "uncovered workspace confirms the add-folder step first",
+  );
+  assert.equal(
+    needsAddFolderConfirm(temporaryItem("t1", "x"), target),
+    false,
+    "temporary sessions have no workspace and move instantly",
+  );
+  assert.equal(needsAddFolderConfirm(null, target), false, "missing session is a no-op");
+  assert.equal(needsAddFolderConfirm(projectItem("a1", "x", "x"), null), false, "missing target is a no-op");
+});
