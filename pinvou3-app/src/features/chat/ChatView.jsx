@@ -4,8 +4,8 @@ import {
   invokeObservedPanelSelection,
   isSubagentPanelPublicationCurrent,
 } from './subagent-panel-publication.mjs';
-import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, FolderOpen, Globe, ImageIcon, Mic, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
-import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
+import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, FolderOpen, Globe, ImageIcon, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Upload, X, Zap } from '../../components/icons.jsx';
+import { bridge } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { formatCompactCount } from '../../shared/format-number.js';
@@ -1916,6 +1916,29 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // 取消留在 Plan。未绑定对象走原路径不弹卡。
       const [pendingChatYoloSwitch, setPendingChatYoloSwitch] = useState(false);
       const [chatYoloConfirmBusy, setChatYoloConfirmBusy] = useState(false);
+      const [chatYoloConfirmError, setChatYoloConfirmError] = useState('');
+      // 切换瞬间的绑定解析不能依赖异步 state:查询在飞时点击会看到 null 而
+      // 跳过确认门。这里在裁决前同步式解析(缓存 → 桥查询),等待期间点击也
+      // 拿到权威绑定(评审 #445 P2:YOLO gate race)。
+      async function resolveBindingForGate() {
+        if (!activeSessionId) return null;
+        if (sessionWorkspaceBinding !== null) return sessionWorkspaceBinding;
+        if (Object.prototype.hasOwnProperty.call(workspaceBindingCacheRef.current, activeSessionId)) {
+          return workspaceBindingCacheRef.current[activeSessionId];
+        }
+        if (bridge.available && bridge.sessions && typeof bridge.sessions.getSessionWorkspaceBinding === 'function') {
+          try {
+            const binding = await bridge.sessions.getSessionWorkspaceBinding(activeSessionId);
+            const normalized = binding || null;
+            workspaceBindingCacheRef.current[activeSessionId] = normalized;
+            setSessionWorkspaceBinding(normalized);
+            return normalized;
+          } catch {
+            return null;
+          }
+        }
+        return null;
+      }
       async function handleModeChipSwitch(target, { isPlan }) {
         if (!bridge.available || !bridge.interaction) return;
         if (target === 'plan' && !isPlan) {
@@ -1923,9 +1946,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           return;
         }
         if (target !== 'yolo' || !isPlan) return;
+        const sessionBinding = await resolveBindingForGate();
         const boundTarget = chatYoloGateApplies({
           activeSessionId,
-          sessionBinding: sessionWorkspaceBinding,
+          sessionBinding,
           draftWorkspacePath: bs && bs.draftWorkspacePath,
         });
         if (boundTarget && typeof bridge.interaction.getCodePermissionPrefs === 'function') {
@@ -1940,12 +1964,16 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       async function confirmChatYoloSwitch() {
         if (chatYoloConfirmBusy) return;
         setChatYoloConfirmBusy(true);
+        setChatYoloConfirmError('');
         try {
           await bridge.interaction.confirmCodeYolo();
           setPendingChatYoloSwitch(false);
           await bridge.interaction.exitPlanToYolo();
         } catch (e) {
+          // 失败不再静默:卡片保持打开并就地显示原因(与 code 车道一致,
+          // 评审 #445 P2:旧后端缺 confirmCodeYolo 时用户不能毫无反馈)。
           console.warn('confirm chat yolo switch failed', e);
+          setChatYoloConfirmError(String(e && e.message || e || 'error'));
         } finally {
           setChatYoloConfirmBusy(false);
         }
@@ -2857,16 +2885,6 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                       <span className="truncate">{workspaceName(sessionWorkspaceBinding, t.uiChatWorkspace.unknownDirectory)}</span>
                     </span>
                   )}
-                  <button type="button" onClick={handleVoiceClick} disabled={primaryVoiceDisabled} data-testid="composer-voice-button" aria-label={primaryVoiceLabel} title={primaryVoiceLabel}
-                    className={`${
-                      voiceRecording
-                        ? 'w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors bg-[#C5221F] text-white hover:bg-[#A50E0E] border border-transparent'
-                        : voiceActive
-                          ? `${COMPOSER_ICON_BUTTON_CLASS} text-[#174EA6] dark:text-[#A8C7FA]`
-                          : COMPOSER_ICON_BUTTON_CLASS
-                    } ${primaryVoiceDisabled ? 'opacity-70 cursor-wait' : ''}`}>
-                    <Mic size={18} />
-                  </button>
                   <ComposerModeChip t={t} bs={bs} compact={composerCompact} onSwitch={handleModeChipSwitch} />
                   <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoModelSettings || onGotoSettings} compact={composerCompact} />
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} compact={composerCompact} activeSkill={bs && bs.activeSkill} />
@@ -2955,6 +2973,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                 ok: t.uiChatWorkspace.yoloConfirmOk,
                 cancel: t.uiChatWorkspace.yoloConfirmCancel,
               }}
+              error={chatYoloConfirmError}
               busy={chatYoloConfirmBusy}
               onConfirm={confirmChatYoloSwitch}
               onCancel={() => setPendingChatYoloSwitch(false)}
