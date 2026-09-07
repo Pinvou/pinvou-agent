@@ -6,6 +6,12 @@
 //! array keeping the most recent 20 entries). `recent_work` is out of scope:
 //! it is TTL-archived mechanically and has no update/delete entry point.
 //!
+//! The apply phase is an optimistic-concurrency checkpoint: the LLM call can
+//! take up to 75 seconds, so every action target carries the state it had in
+//! the snapshot and is re-checked against the current store under the io write
+//! lock before it is mutated — an item changed meanwhile is skipped with a
+//! report warning instead of being overwritten or deleted by the stale action.
+//!
 //! Unlike the per-turn review in `llm_review`: organize is a user-initiated full
 //! pass whose goal is to merge duplicates, rewrite stale wording, and drop
 //! low-value items without recording any new information; profile (user identity
@@ -210,9 +216,11 @@ pub async fn organize_memory_with_llm(
             validate_organize_action(raw, &snapshot, &mut skipped_sensitive, &mut warnings)
         })
         .collect();
+    // The apply phase holds the io write lock across the re-check of every
+    // target's snapshot state, the mutations, and the timed-store compaction —
+    // see `apply_organize_actions`.
     let (deleted, updated, merged, mut apply_warnings, removals_capped) =
         apply_organize_actions(&validated, removal_budget);
-    compact_timed_stores(&mut apply_warnings);
     warnings.append(&mut apply_warnings);
     if removals_capped {
         warnings.push(format!(
@@ -394,6 +402,48 @@ impl OrganizeSnapshot {
         }
     }
 
+    /// The snapshot state of one organizable item, as an apply-phase target.
+    /// Preferences have no revision field, so their text is the only comparable
+    /// state; every other store carries `updated_at` (bumped by all mutation
+    /// entry points) plus a status for the timed/pending stores.
+    fn expected_target(&self, kind: &str, id: &str) -> Option<OrganizeTarget> {
+        let build = |text: &str, updated_at: Option<&str>, status: Option<&str>| OrganizeTarget {
+            id: id.to_string(),
+            expected_text: text.to_string(),
+            expected_updated_at: updated_at.map(str::to_string),
+            expected_status: status.map(str::to_string),
+        };
+        match kind {
+            "preference" => self
+                .preferences
+                .iter()
+                .find(|item| clean_id(&item.id) == id)
+                .map(|item| build(&item.text, None, None)),
+            "work_context" => self
+                .work_context
+                .iter()
+                .find(|item| clean_id(&item.id) == id)
+                .map(|item| build(&item.text, Some(&item.updated_at), None)),
+            "current_focus" | "recent_activity" => {
+                let items = if kind == "current_focus" {
+                    &self.current_focus
+                } else {
+                    &self.recent_activity
+                };
+                items
+                    .iter()
+                    .find(|item| clean_id(&item.id) == id)
+                    .map(|item| build(&item.text, Some(&item.updated_at), Some(&item.status)))
+            }
+            "pending" => self
+                .pending
+                .iter()
+                .find(|item| clean_id(&item.id) == id)
+                .map(|item| build(&item.content, Some(&item.updated_at), Some(&item.status))),
+            _ => None,
+        }
+    }
+
     fn user_content(&self) -> String {
         json!({
             "profile": &self.profile,
@@ -433,13 +483,27 @@ pub(super) struct LlmOrganizeAction {
 }
 
 /// A validated action pending execution: ids confirmed to exist in the snapshot,
-/// content sanitized and past the quality filters.
+/// content sanitized and past the quality filters, and every target carrying
+/// the expected state it had in the snapshot.
 #[derive(Debug, Clone)]
 pub(super) struct OrganizeAction {
     op: String,
     kind: String,
-    ids: Vec<String>,
+    targets: Vec<OrganizeTarget>,
     content: String,
+}
+
+/// One action target plus the state it had in the snapshot. The apply phase
+/// compares this against the current store under the io write lock: the
+/// snapshot can be up to 75 seconds old (the LLM call), and a preference the
+/// user edited — or a timed item the per-turn review rewrote — during that
+/// window must not be overwritten or deleted by a stale model action.
+#[derive(Debug, Clone)]
+pub(super) struct OrganizeTarget {
+    id: String,
+    expected_text: String,
+    expected_updated_at: Option<String>,
+    expected_status: Option<String>,
 }
 
 /// Validate one LLM organize action: kind whitelist, id existence, op arity,
@@ -472,46 +536,50 @@ pub(super) fn validate_organize_action(
         return drop_action("organize: drop pending update/merge (delete only)".to_string());
     }
     let known = snapshot.ids_for(&kind);
-    let mut ids = Vec::new();
+    let mut targets: Vec<OrganizeTarget> = Vec::new();
     for id in raw.ids {
         let id = clean_id(&id);
-        if id.is_empty() || ids.contains(&id) {
+        if id.is_empty() || targets.iter().any(|target| target.id == id) {
             continue;
         }
-        if known.contains(&id) {
-            ids.push(id);
+        if !known.contains(&id) {
+            continue;
+        }
+        // Every known id comes from this snapshot, so the expected state is
+        // always available; a miss would mean an id-vs-clean_id mismatch and
+        // the action is dropped instead of applied unverified.
+        match snapshot.expected_target(&kind, &id) {
+            Some(target) => targets.push(target),
+            None => {
+                return drop_action(format!(
+                    "organize: drop {op} {kind} {id} without snapshot state"
+                ));
+            }
         }
     }
-    if ids.is_empty() {
+    if targets.is_empty() {
         return drop_action(format!("organize: drop {op} {kind} without known ids"));
     }
-    if op == "merge" && ids.len() < 2 {
+    if op == "merge" && targets.len() < 2 {
         return drop_action(format!("organize: drop merge {kind} with fewer than 2 ids"));
     }
-    if op == "update" && ids.len() != 1 {
+    if op == "update" && targets.len() != 1 {
         return drop_action(format!("organize: drop update {kind} without exactly 1 id"));
     }
     // Expired/archived timed items allow delete only. This snapshot check drops
-    // the action early with a precise warning; the authoritative guard is in the
-    // io layer (`update_active_timed_memory`), which re-checks the status under
-    // the write lock in case the item is expired/archived after this snapshot —
-    // the io update entry points reset status/last_hit to active/now, and
-    // honoring the patch would revive a just-archived item for a whole window
-    // at its original ttl_days, contradicting prompt rule 6 (「保持原有过期设置」,
-    // "keep the original expiry setting").
+    // the action early with a precise warning; the authoritative guards are in
+    // the apply phase (expected-state re-check under the write lock) and the io
+    // layer (`update_timed_memory_unlocked` with `require_active`), which catch
+    // items that expire or get archived after this snapshot — the io update
+    // entry points reset status/last_hit to active/now, and honoring the patch
+    // would revive a just-archived item for a whole window at its original
+    // ttl_days, contradicting prompt rule 6 (「保持原有过期设置」, "keep the
+    // original expiry setting").
     if op != "delete" && matches!(kind.as_str(), "current_focus" | "recent_activity") {
-        let items = if kind == "current_focus" {
-            &snapshot.current_focus
-        } else {
-            &snapshot.recent_activity
-        };
-        let not_active = |id: &str| {
-            items
-                .iter()
-                .find(|item| item.id == id)
-                .is_some_and(|item| item.status != "active")
-        };
-        if ids.iter().any(|id| not_active(id)) {
+        let not_active = targets
+            .iter()
+            .any(|target| target.expected_status.as_deref() != Some("active"));
+        if not_active {
             return drop_action(format!(
                 "organize: drop {op} {kind} targeting expired/archived items"
             ));
@@ -587,7 +655,7 @@ pub(super) fn validate_organize_action(
     Some(OrganizeAction {
         op,
         kind,
-        ids,
+        targets,
         content,
     })
 }
@@ -612,9 +680,116 @@ fn count_item_change(
     *bucket.entry(kind.to_string()).or_default() += 1;
 }
 
-/// Apply validated actions one by one. Each action goes through the existing
-/// locked io entry points (each takes the write lock itself); a single failure
-/// records a warning and continues instead of aborting the batch.
+/// Fresh store views reloaded at the start of the apply phase. Together with
+/// the per-target expected state captured in the snapshot they implement the
+/// optimistic-concurrency check: a target that no longer matches is skipped.
+struct FreshOrganizeState {
+    preferences: Vec<PreferenceFile>,
+    work_context: Vec<WorkContextFile>,
+    current_focus: Vec<TimedMemoryItem>,
+    recent_activity: Vec<TimedMemoryItem>,
+    pending: Vec<PendingMemoryItem>,
+}
+
+impl FreshOrganizeState {
+    /// The io loaders are lock-free reads; consistency comes from the caller
+    /// holding [`io::write_lock`] across the whole apply phase.
+    fn load() -> std::io::Result<Self> {
+        Ok(Self {
+            preferences: io::load_preferences()?,
+            work_context: io::load_work_context()?,
+            current_focus: io::load_current_focus()?,
+            recent_activity: io::load_recent_activity()?,
+            pending: io::load_pending_memory()?,
+        })
+    }
+
+    /// Where one snapshot target stands in the current store.
+    fn target_freshness(&self, kind: &str, target: &OrganizeTarget) -> TargetFreshness {
+        let current = match kind {
+            "preference" => self
+                .preferences
+                .iter()
+                .find(|item| clean_id(&item.id) == target.id)
+                .map(|item| (item.text.as_str(), None, None)),
+            "work_context" => self
+                .work_context
+                .iter()
+                .find(|item| clean_id(&item.id) == target.id)
+                .map(|item| (item.text.as_str(), Some(item.updated_at.as_str()), None)),
+            "current_focus" => self
+                .current_focus
+                .iter()
+                .find(|item| clean_id(&item.id) == target.id)
+                .map(|item| {
+                    (
+                        item.text.as_str(),
+                        Some(item.updated_at.as_str()),
+                        Some(item.status.as_str()),
+                    )
+                }),
+            "recent_activity" => self
+                .recent_activity
+                .iter()
+                .find(|item| clean_id(&item.id) == target.id)
+                .map(|item| {
+                    (
+                        item.text.as_str(),
+                        Some(item.updated_at.as_str()),
+                        Some(item.status.as_str()),
+                    )
+                }),
+            "pending" => self
+                .pending
+                .iter()
+                .find(|item| clean_id(&item.id) == target.id)
+                .map(|item| {
+                    (
+                        item.content.as_str(),
+                        Some(item.updated_at.as_str()),
+                        Some(item.status.as_str()),
+                    )
+                }),
+            _ => None,
+        };
+        let Some((text, updated_at, status)) = current else {
+            return TargetFreshness::Missing;
+        };
+        if text != target.expected_text {
+            return TargetFreshness::Changed("text");
+        }
+        if updated_at != target.expected_updated_at.as_deref() {
+            return TargetFreshness::Changed("updated_at");
+        }
+        if status != target.expected_status.as_deref() {
+            return TargetFreshness::Changed("status");
+        }
+        TargetFreshness::Unchanged
+    }
+}
+
+/// Result of comparing a snapshot target against the current store: `Unchanged`
+/// lets the action proceed, `Changed` names the first differing field for the
+/// report warning, `Missing` means the id matches no current item (deleted, or
+/// migrated to a new id by a topic edit).
+enum TargetFreshness {
+    Unchanged,
+    Changed(&'static str),
+    Missing,
+}
+
+/// Apply validated actions one by one, inside a single critical section: the
+/// whole phase (per-target re-check, mutations, timed-store compaction) holds
+/// the io write lock.
+///
+/// The snapshot can be up to 75 seconds old (the LLM call). Before each
+/// mutation, the target's snapshot state (text, `updated_at`, status) is
+/// compared against the current store: an item the user edited — or the
+/// per-turn review wrote — during the LLM call is reported as changed and
+/// skipped instead of being overwritten or deleted by the stale model action.
+/// Holding the lock across the phase also makes merge validation atomic: every
+/// participant is checked before anything is mutated, so no writer can slip
+/// between the check and the act.
 ///
 /// `removal_budget` bounds how many items this run may remove (delete targets
 /// plus merge-absorbed sources, see `ORGANIZE_REMOVAL_BUDGET_MIN`). Budgeted
@@ -638,10 +813,40 @@ fn apply_organize_actions(
     let mut changed = BTreeSet::new();
     let mut warnings = Vec::new();
     let mut capped = false;
+    let _guard = io::write_lock().lock();
+    let fresh = match FreshOrganizeState::load() {
+        Ok(fresh) => fresh,
+        Err(error) => {
+            // Without the fresh views no action can be verified against the
+            // current store: apply nothing rather than trusting the snapshot.
+            warnings.push(format!(
+                "organize: reload stores before applying actions: {error}; no action applied"
+            ));
+            return (deleted, updated, merged, warnings, capped);
+        }
+    };
     for action in actions {
         match action.op.as_str() {
             "delete" => {
-                for id in &action.ids {
+                for target in &action.targets {
+                    let id = &target.id;
+                    match fresh.target_freshness(&action.kind, target) {
+                        TargetFreshness::Changed(field) => {
+                            warnings.push(format!(
+                                "organize: skip delete {} {id}: {field} changed since the snapshot; the item is kept",
+                                action.kind
+                            ));
+                            continue;
+                        }
+                        TargetFreshness::Missing => {
+                            warnings.push(format!(
+                                "organize: delete {} {id} did not match any item",
+                                action.kind
+                            ));
+                            continue;
+                        }
+                        TargetFreshness::Unchanged => {}
+                    }
                     if removal_budget == 0 {
                         capped = true;
                         warnings.push(format!(
@@ -682,7 +887,25 @@ fn apply_organize_actions(
                 }
             }
             "update" => {
-                let id = &action.ids[0];
+                let target = &action.targets[0];
+                let id = &target.id;
+                match fresh.target_freshness(&action.kind, target) {
+                    TargetFreshness::Changed(field) => {
+                        warnings.push(format!(
+                            "organize: skip update {} {id}: {field} changed since the snapshot; the current value is kept",
+                            action.kind
+                        ));
+                        continue;
+                    }
+                    TargetFreshness::Missing => {
+                        warnings.push(format!(
+                            "organize: update {} {id} did not match any item",
+                            action.kind
+                        ));
+                        continue;
+                    }
+                    TargetFreshness::Unchanged => {}
+                }
                 match update_organize_item(&action.kind, id, &action.content) {
                     Ok(true) => {
                         count_item_change(
@@ -707,11 +930,58 @@ fn apply_organize_actions(
             "merge" => {
                 // Keep the first id as the primary item: update it to the merged
                 // content, delete the rest.
-                let (keep, rest) = match action.ids.split_first() {
+                let (keep_target, rest_targets) = match action.targets.split_first() {
                     Some(split) => split,
                     None => continue,
                 };
-                let absorbed = rest.len() as u32;
+                // Atomic participant validation: every participant must still
+                // match its snapshot state before any of them is mutated — a
+                // merge must not absorb a source whose content the user changed
+                // during the LLM call.
+                let blocked = {
+                    let mut blocked = None;
+                    for target in action.targets.iter() {
+                        match fresh.target_freshness(&action.kind, target) {
+                            TargetFreshness::Unchanged => {}
+                            TargetFreshness::Changed(field) => {
+                                blocked = Some(format!(
+                                    "organize: skip merge {} [{}]: {} {} changed since the snapshot; merge skipped",
+                                    action.kind,
+                                    action
+                                        .targets
+                                        .iter()
+                                        .map(|t| t.id.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(", "),
+                                    field,
+                                    target.id
+                                ));
+                                break;
+                            }
+                            TargetFreshness::Missing => {
+                                blocked = Some(format!(
+                                    "organize: merge {} [{}]: {} did not match any item; merge skipped",
+                                    action.kind,
+                                    action
+                                        .targets
+                                        .iter()
+                                        .map(|t| t.id.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(", "),
+                                    target.id
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                    blocked
+                };
+                if let Some(warning) = blocked {
+                    warnings.push(warning);
+                    continue;
+                }
+                let keep = &keep_target.id;
+                let absorbed = rest_targets.len() as u32;
                 if absorbed > removal_budget {
                     // A half-applied merge would leave duplicate sources behind, so a
                     // merge that does not fit the remaining budget is skipped whole
@@ -720,7 +990,12 @@ fn apply_organize_actions(
                     warnings.push(format!(
                         "organize: per-run removal cap reached; merge {} [{}] skipped this run",
                         action.kind,
-                        action.ids.join(", ")
+                        action
+                            .targets
+                            .iter()
+                            .map(|t| t.id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ));
                     continue;
                 }
@@ -756,10 +1031,11 @@ fn apply_organize_actions(
                     // the pre-check stays untouched too — no cleanup delete is attempted).
                     continue;
                 }
-                for id in rest {
+                for target in rest_targets {
+                    let id = &target.id;
                     // The pre-check guaranteed the budget fits this merge's absorbed
-                    // sources and nothing else runs in between, so these deletes never
-                    // hit a spent budget.
+                    // sources and nothing else runs in between (the write lock is held),
+                    // so these deletes never hit a spent budget.
                     removal_budget = removal_budget.saturating_sub(1);
                     match delete_organize_item(&action.kind, id) {
                         // Items absorbed by a merge count only as merged, never
@@ -803,6 +1079,16 @@ fn apply_organize_actions(
             _ => {}
         }
     }
+    // Post-apply normalize / dedupe / capacity compaction of the two timed
+    // stores, inside the same critical section as the mutations above: a
+    // compaction's whole-file rewrite must never race a concurrent write, and
+    // items the per-turn review wrote during the LLM call survive because the
+    // compaction reloads the store it rewrites.
+    for kind in ["current_focus", "recent_activity"] {
+        if let Err(error) = io::compact_timed_memory_store_unlocked(kind) {
+            warnings.push(format!("organize: compact {kind}: {error}"));
+        }
+    }
     (deleted, updated, merged, warnings, capped)
 }
 
@@ -810,6 +1096,7 @@ fn apply_organize_actions(
 /// pending-specific decided-guard: the candidate was confirmed by the user
 /// while the run was in flight and is kept on purpose — a different event from
 /// not matching any item, and the report wording must not conflate them.
+/// Caller must hold [`io::write_lock`] (the apply-phase critical section).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum OrganizeDeleteOutcome {
     Removed,
@@ -819,14 +1106,14 @@ enum OrganizeDeleteOutcome {
 
 fn delete_organize_item(kind: &str, id: &str) -> std::io::Result<OrganizeDeleteOutcome> {
     match kind {
-        "preference" => io::delete_preference(id).map(|deleted| {
+        "preference" => io::delete_preference_unlocked(id).map(|deleted| {
             if deleted {
                 OrganizeDeleteOutcome::Removed
             } else {
                 OrganizeDeleteOutcome::Missing
             }
         }),
-        "work_context" => io::delete_work_context(id).map(|deleted| {
+        "work_context" => io::delete_work_context_unlocked(id).map(|deleted| {
             if deleted {
                 OrganizeDeleteOutcome::Removed
             } else {
@@ -835,12 +1122,12 @@ fn delete_organize_item(kind: &str, id: &str) -> std::io::Result<OrganizeDeleteO
         }),
         // Deleting a pending item equals the user ignoring it: mark it ignored instead
         // of physically removing it, preserving an audit trail.
-        "pending" => io::ignore_pending_memory(id).map(|outcome| match outcome {
+        "pending" => io::ignore_pending_memory_unlocked(id).map(|outcome| match outcome {
             io::PendingIgnoreOutcome::Ignored(_) => OrganizeDeleteOutcome::Removed,
             io::PendingIgnoreOutcome::AlreadyDecided => OrganizeDeleteOutcome::Protected,
             io::PendingIgnoreOutcome::NotFound => OrganizeDeleteOutcome::Missing,
         }),
-        _ => io::delete_timed_memory(kind, id).map(|deleted| {
+        _ => io::delete_timed_memory_unlocked(kind, id).map(|deleted| {
             if deleted {
                 OrganizeDeleteOutcome::Removed
             } else {
@@ -850,44 +1137,31 @@ fn delete_organize_item(kind: &str, id: &str) -> std::io::Result<OrganizeDeleteO
     }
 }
 
+/// Caller must hold [`io::write_lock`] (the apply-phase critical section).
 fn update_organize_item(kind: &str, id: &str, content: &str) -> Result<bool> {
     // Topic always stays as-is (patch.topic = None): the io layer derives a target id
     // from the topic to migrate items, and an LLM-invented topic would fold into the
     // default bucket and silently overwrite unrelated items there. Merge means
     // consolidating duplicates into the kept item's bucket, so no migration is needed
     // either. ttl is out of organize scope: current_focus / recent_activity keep
-    // their original ttl. The timed branch uses the active-only variant so an item
+    // their original ttl. The timed branch requires an active item so one
     // expired/archived after the snapshot cannot be revived (see
-    // `update_active_timed_memory`).
+    // `update_timed_memory_unlocked`).
     let patch = MemoryTextPatch {
         topic: None,
         text: Some(content.to_string()),
         ttl_days: None,
     };
     match kind {
-        "preference" => io::update_preference(id, patch)
+        "preference" => io::update_preference_unlocked(id, patch)
             .map(|mutation| mutation.is_some())
             .context("update preference"),
-        "work_context" => io::update_work_context(id, patch)
+        "work_context" => io::update_work_context_unlocked(id, patch)
             .map(|mutation| mutation.is_some())
             .context("update work context"),
-        _ => io::update_active_timed_memory(kind, id, patch)
+        _ => io::update_timed_memory_unlocked(kind, id, patch, true)
             .map(|item| item.is_some())
             .context("update timed memory"),
-    }
-}
-
-/// After applying, run one more normalize / dedupe / capacity compaction over the
-/// two timed stores to clear duplicates or over-cap items left behind by
-/// update/merge. Compaction goes through the locked io entry point: load and the
-/// whole-file rewrite must hold the same lock, otherwise items the per-turn review
-/// just wrote during the snapshot gap would be overwritten and lost with the old
-/// list. Failures record a warning and do not affect the main flow.
-fn compact_timed_stores(warnings: &mut Vec<String>) {
-    for kind in ["current_focus", "recent_activity"] {
-        if let Err(error) = io::compact_timed_memory_store(kind) {
-            warnings.push(format!("organize: compact {kind}: {error}"));
-        }
     }
 }
 

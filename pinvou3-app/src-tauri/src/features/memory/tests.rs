@@ -2818,8 +2818,9 @@ async fn organize_overlapping_actions_count_each_item_once() {
 
 // An item that is active at snapshot time but expired/archived by the per-turn
 // review while the organize LLM call is in flight must not be updated: the
-// authoritative status check lives in the io layer under the write lock, so the
-// stale snapshot cannot revive the item or reset its TTL clock.
+// apply phase re-checks the target's snapshot state under the write lock and
+// skips it as changed; the io layer's active-only update guard stays as
+// defense-in-depth behind that check.
 #[tokio::test]
 async fn organize_update_skips_item_archived_during_the_llm_call() {
     let _home = IsolatedPinvouHome::new("organize-race-archive");
@@ -2874,7 +2875,7 @@ async fn organize_update_skips_item_archived_during_the_llm_call() {
         report
             .warnings
             .iter()
-            .any(|warning| warning.contains("did not match any item")),
+            .any(|warning| warning.contains("changed since the snapshot")),
         "unexpected warnings: {:?}",
         report.warnings
     );
@@ -2885,6 +2886,174 @@ async fn organize_update_skips_item_archived_during_the_llm_call() {
     assert_eq!(items[0].status, "archived");
     assert_eq!(items[0].text, "推进新版控制台的迁移方案");
     assert_eq!(items[0].last_hit, hit);
+}
+
+// An item edited through the normal io entry points while the organize LLM
+// call is in flight carries a newer value than the snapshot the actions were
+// derived from: applying the stale action would overwrite or delete that newer
+// value. The apply phase holds the io write lock, re-checks every target's
+// snapshot state against the current store, and skips changed targets with a
+// report warning — and a merge whose participant changed is skipped whole, so
+// the run can never absorb a just-edited source.
+#[tokio::test]
+async fn organize_skips_targets_edited_during_the_llm_call() {
+    let _home = IsolatedPinvouHome::new("organize-race-edit");
+    enable_memory_for_tests();
+    let preference_dir = paths::user_memory_preferences_dir();
+    fs::create_dir_all(&preference_dir).unwrap();
+    // Three preference targets on distinct canonical topics (non-canonical
+    // topics fold into the answer_style default bucket and would collapse to
+    // one authority on load): an update target and a merge keep + source pair.
+    // Their ids are the topic-derived stable ids the io update path assigns
+    // anyway, so the mid-call edits below rewrite text in place instead of
+    // migrating the items to new ids — modeling a plain same-topic text edit.
+    // The untouched delete target is a pending candidate (delete = ignore), so
+    // the run still applies one unchanged action.
+    let stable_preference_id = |topic: &str| stable_id_with_prefix("pref", topic);
+    let id_edit = stable_preference_id("answer_style");
+    let id_keep = stable_preference_id("workflow_preference");
+    let id_source = stable_preference_id("document_preference");
+    let write_preference = |id: &str, topic: &str, text: &str| {
+        write_json_atomic(
+            &preference_dir.join(format!("{id}.json")),
+            &preference_fixture(id, topic, text),
+        )
+        .unwrap();
+    };
+    write_preference(&id_edit, "answer_style", "回答默认先给结论");
+    write_preference(&id_keep, "workflow_preference", "先结论后步骤");
+    write_preference(&id_source, "document_preference", "结论之后给细节");
+    let untouched_pending = enqueue_memory_candidate(MemorySuggestion {
+        kind: "preference".to_string(),
+        topic: "reporting_preference".to_string(),
+        content: "汇报使用要点列表".to_string(),
+        source: "test".to_string(),
+    })
+    .unwrap();
+    let now = Utc::now();
+    let hit = now.to_rfc3339();
+    let focus = TimedMemoryItem {
+        id: "focus_race_edit".to_string(),
+        kind: "current_focus".to_string(),
+        topic: "current_work".to_string(),
+        text: "推进新版控制台的迁移方案".to_string(),
+        source: "test".to_string(),
+        confidence: 0.9,
+        created_at: hit.clone(),
+        updated_at: hit.clone(),
+        last_hit: hit.clone(),
+        ttl_days: 30,
+        status: "active".to_string(),
+    };
+    write_timed_memory_file(&current_focus_path(), &[focus], "current_focus").unwrap();
+
+    let actions = json!({
+        "actions": [
+            {
+                "op": "update",
+                "kind": "preference",
+                "ids": [id_edit],
+                "content": "回答默认先给出整理后的结论",
+                "reason": "改写过时表述"
+            },
+            {
+                "op": "delete",
+                "kind": "pending",
+                "ids": [untouched_pending.id],
+                "reason": "已被正式记忆覆盖"
+            },
+            {
+                "op": "delete",
+                "kind": "current_focus",
+                "ids": ["focus_race_edit"],
+                "reason": "过时动态"
+            },
+            {
+                "op": "merge",
+                "kind": "preference",
+                "ids": [id_keep, id_source],
+                "content": "回答先给结论再给步骤",
+                "reason": "两条重复偏好合并为一条"
+            }
+        ]
+    });
+    // The hook runs after the snapshot is loaded, while the LLM call is in
+    // flight: the "user" edits three of the five targets through the normal io
+    // entry points (each takes the io write lock itself).
+    let edit_patch = |text: &str| MemoryTextPatch {
+        topic: None,
+        text: Some(text.to_string()),
+        ttl_days: None,
+    };
+    let hook_edit = id_edit.clone();
+    let hook_source = id_source.clone();
+    let bridge = FakeOrganizeModel {
+        base_url: spawn_chat_completions_stub_with_hook(
+            actions.to_string(),
+            Some(Box::new(move |_body: &str| {
+                update_preference(&hook_edit, edit_patch("偏好使用简体中文回复")).unwrap();
+                update_preference(&hook_source, edit_patch("结论之后给出操作步骤")).unwrap();
+                update_timed_memory(
+                    "current_focus",
+                    "focus_race_edit",
+                    edit_patch("推进新版控制台的灰度切换方案"),
+                )
+                .unwrap();
+            })),
+        ),
+    };
+
+    let report = organize_memory_with_llm(&bridge, None).await.unwrap();
+
+    // Every edited value survives the stale action aimed at its id.
+    let preferences = list_preferences().unwrap();
+    let find_preference = |id: &str| {
+        preferences
+            .iter()
+            .find(|item| item.id == id)
+            .unwrap_or_else(|| panic!("preference {id} must survive; got {:?}", preferences))
+    };
+    assert_eq!(find_preference(&id_edit).text, "偏好使用简体中文回复");
+    assert_eq!(find_preference(&id_source).text, "结论之后给出操作步骤");
+    // The merge was skipped whole: the keep target keeps its original wording
+    // instead of receiving the stale merged content.
+    assert_eq!(find_preference(&id_keep).text, "先结论后步骤");
+    let focus_items = load_current_focus().unwrap();
+    assert_eq!(focus_items.len(), 1);
+    assert_eq!(focus_items[0].text, "推进新版控制台的灰度切换方案");
+    assert_eq!(focus_items[0].status, "active");
+    // The untouched target was still applied — the run is not disabled by the
+    // re-check, it only skips genuinely changed items. A pending delete equals
+    // ignoring the candidate.
+    let pending_items = load_pending_memory().unwrap();
+    let untouched = pending_items
+        .iter()
+        .find(|item| item.id == untouched_pending.id)
+        .unwrap_or_else(|| panic!("pending candidate must be kept as an audit trail"));
+    assert_eq!(untouched.status, PENDING_STATUS_IGNORED);
+    // Counters cover exactly the applied change; each skip leaves a warning.
+    assert_eq!(report.deleted.get("pending"), Some(&1));
+    assert!(report.updated.is_empty());
+    assert!(report.merged.is_empty());
+    let joined = report.warnings.join("\n");
+    assert!(
+        joined.contains(&format!(
+            "skip update preference {id_edit}: text changed since the snapshot"
+        )),
+        "unexpected warnings: {:?}",
+        report.warnings
+    );
+    assert!(
+        joined
+            .contains("skip delete current_focus focus_race_edit: text changed since the snapshot"),
+        "unexpected warnings: {:?}",
+        report.warnings
+    );
+    assert!(
+        joined.contains("skip merge preference") && joined.contains("changed since the snapshot"),
+        "unexpected warnings: {:?}",
+        report.warnings
+    );
 }
 
 // A confirmed candidate carries the user's decision: a later ignore (e.g. an
