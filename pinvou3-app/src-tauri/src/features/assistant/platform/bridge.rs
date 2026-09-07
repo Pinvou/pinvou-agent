@@ -2029,7 +2029,8 @@ impl Pinvou3Bridge {
         if swarm {
             // 蜂群模式：数量上限解除。无 user 配置可以让它更高——底座的
             // 128/1024 就是全系统硬上限。显式开启蜂群即用户要求不设限，
-            // 因此此处覆盖（而非 min）用户既有的保守配置。
+            // 因此此处覆盖（而非 min）用户既有的保守配置，包括显式 0
+            // （「0 = 禁用」在底座运行时本就 clamp 到 1，见下方 else 注释）。
             cfg.max_subagents = deepseek_tui::config::MAX_SUBAGENTS;
             cfg.max_admitted_subagents = deepseek_tui::config::MAX_SUBAGENT_ADMISSION;
             cfg.launch_concurrency = deepseek_tui::config::MAX_SUBAGENTS;
@@ -7556,12 +7557,35 @@ mod tests {
         disabled_bridge.prefs.advanced.max_subagents = Some(0);
         let disabled = disabled_bridge.build_engine_config_for_multi_agent(
             "ma-disabled",
-            roots,
+            roots.clone(),
             &snapshot,
             false,
         );
         assert_eq!(disabled.max_subagents, 0, "不得抬高用户原本的禁用配置");
         assert_eq!(disabled.launch_concurrency, 0);
+
+        // 蜂群开启时用户保守配置（含显式 0）一并被顶到底座硬上限：显式开启
+        // 蜂群即表达「不设限」意图，覆盖语义必须覆盖 0 值。
+        let mut zero_bridge = fixture_bridge();
+        zero_bridge.prefs.advanced.max_subagents = Some(0);
+        let zero_swarm = zero_bridge.build_engine_config_for_multi_agent(
+            "ma-swarm-zero",
+            roots,
+            &snapshot,
+            true,
+        );
+        assert_eq!(
+            zero_swarm.max_subagents,
+            deepseek_tui::config::MAX_SUBAGENTS
+        );
+        assert_eq!(
+            zero_swarm.max_admitted_subagents,
+            deepseek_tui::config::MAX_SUBAGENT_ADMISSION
+        );
+        assert_eq!(
+            zero_swarm.launch_concurrency,
+            deepseek_tui::config::MAX_SUBAGENTS
+        );
 
         let _ = std::fs::remove_dir_all(&workspace);
     }

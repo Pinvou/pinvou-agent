@@ -488,6 +488,16 @@ mod tests {
             swarm.contains("不设数量上限") && swarm.contains("不要递归裂变"),
             "Swarm-on reminder must state the caps are lifted: {swarm}"
         );
+        // 蜂群变体才是生产真实档位：除数量子句随开关切换外，委派教学主体
+        // 必须与 capped 变体同在（正文共享，不得只在本测试可达的 capped
+        // 档上验证教学内容）。
+        assert!(
+            swarm.contains("当前用户消息只要包含需要完成的任务")
+                && swarm.contains("你只负责拆解、派发")
+                && swarm.contains("不得亲自承担任务主体")
+                && swarm.contains("第二层子智能体不得继续派生"),
+            "Swarm-on reminder must keep the core delegation teaching: {swarm}"
+        );
         assert!(
             !swarm.contains("同时执行最多")
                 && !swarm.contains("合计最多")
