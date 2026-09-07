@@ -73,6 +73,9 @@ const context = vm.createContext({
 vm.runInContext(read('bridge.js'), context, { filename: 'platform/web/bridge.js' });
 const flat = windowObject.TauriBridge;
 assert.equal(typeof flat.getState, 'function', 'Web transport must expose its private flat state before adaptation');
+assert.equal(typeof flat.cancelVoiceAsrSetup, 'function',
+  'Web voice flow must expose cancelVoiceAsrSetup as a no-op (no ASR download on web)');
+await flat.cancelVoiceAsrSetup();
 
 let snapshotReads = 0;
 const readFlatState = flat.getState;
