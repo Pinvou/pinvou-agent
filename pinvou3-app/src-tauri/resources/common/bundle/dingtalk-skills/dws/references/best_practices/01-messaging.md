@@ -1,6 +1,6 @@
 # 消息沟通
 
-> lite recipe 见 [SKILL.md 速查表](../../SKILL.md)。
+> lite recipe 见 [lite-recipes.md](./lite-recipes.md)「#1 消息沟通」。
 
 | Recipe | 行动指南（固定路线） |
 |--------|-------------------|

@@ -11,6 +11,11 @@ pub(crate) struct DesktopCapabilities {
     pub(crate) browser_native_display: bool,
     pub(crate) browser_agent_automation: bool,
     pub(crate) browser_cdp: bool,
+    /// Native keyboard hook for the global Alt voice shortcut: implemented on
+    /// Windows only (Alt+Space is intercepted by the system menu, so a native
+    /// hook is required); on other platforms the native layer is a no-op and
+    /// only the in-window Alt fallback is available.
+    pub(crate) voice_shortcut_native: bool,
 }
 
 /// Sole production-release switch for macOS BrowserCore. Keep it `false` until physical
@@ -54,6 +59,7 @@ pub(crate) fn current() -> DesktopCapabilities {
         browser_native_display: browser_product_enabled(),
         browser_agent_automation: browser_product_enabled(),
         browser_cdp: cfg!(target_os = "windows"),
+        voice_shortcut_native: cfg!(target_os = "windows"),
     }
 }
 
@@ -103,6 +109,7 @@ mod tests {
             browser_product_enabled()
         );
         assert_eq!(capabilities.browser_cdp, is_windows());
+        assert_eq!(capabilities.voice_shortcut_native, is_windows());
     }
 
     #[test]

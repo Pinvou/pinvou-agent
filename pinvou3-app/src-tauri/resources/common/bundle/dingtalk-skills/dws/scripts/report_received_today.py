@@ -7,10 +7,10 @@
 reportId 不在 result[] 里，只在 _internalDetailCommands[].command 中，按页与 result[] 同序对应。
 
 用法:
-    python report_received_today.py
-    python report_received_today.py --days 3     # 最近 3 天
-    python report_received_today.py --detail     # 额外拉取每条正文 (entry get)
-    python report_received_today.py --dry-run
+    python3 scripts/report_received_today.py
+    python3 scripts/report_received_today.py --days 3     # 最近 3 天
+    python3 scripts/report_received_today.py --detail     # 额外拉取每条正文 (entry get)
+    python3 scripts/report_received_today.py --dry-run
 """
 
 import sys

@@ -77,7 +77,7 @@ Light mode quick pick: 50 fill + 600 stroke + 800 title / 600 subtitle.
 ## UI Components
 
 ### Aesthetic
-Flat, clean, white surfaces. Minimal 0.5px borders. Generous whitespace. No gradients or shadows except functional focus rings. Everything should feel native to the host UI.
+Flat, clean, white surfaces. Minimal 0.5px borders. Generous whitespace. No gradients or shadows — implement focus rings with `outline` (the validator bans `box-shadow`). Everything should feel native to the host UI.
 
 ### Tokens
 - Borders: `0.5px solid var(--color-border-tertiary)` or `--color-border-secondary` for emphasis.
@@ -145,14 +145,14 @@ Use these placement rules when drawing Chart.js value labels:
 - Use at least 11px text, weight 400 or 500, and hardcoded neutral hex from the c-gray scale (such as #5F5E5A or #444441) in canvas drawing code.
 
 ### Legends
-Always disable the default legend and use custom HTML:
+Always disable the default legend and use custom HTML. The validator requires the legend markup to carry a `class` or `id` containing `legend`:
 
 ```js
 plugins: { legend: { display: false } }
 ```
 
 ```html
-<div style="display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 8px; font-size: 12px; color: var(--color-text-secondary);">
+<div class="legend" style="display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 8px; font-size: 12px; color: var(--color-text-secondary);">
   <span style="display: flex; align-items: center; gap: 4px;">
     <span style="width: 10px; height: 10px; border-radius: 2px; background: #3266ad;"></span>Chrome 65%
   </span>

@@ -73,6 +73,9 @@ const context = vm.createContext({
 vm.runInContext(read('bridge.js'), context, { filename: 'platform/web/bridge.js' });
 const flat = windowObject.TauriBridge;
 assert.equal(typeof flat.getState, 'function', 'Web transport must expose its private flat state before adaptation');
+assert.equal(typeof flat.cancelVoiceAsrSetup, 'function',
+  'Web voice flow must expose cancelVoiceAsrSetup as a no-op (no ASR download on web)');
+await flat.cancelVoiceAsrSetup();
 
 let snapshotReads = 0;
 const readFlatState = flat.getState;
@@ -297,16 +300,28 @@ assert.deepEqual(memoryState.work_context.map(item => item.id), ['web-ctx-new'])
 assert.equal(memoryState.warnings[0].code, 'memory_topic_cleanup_required');
 
 const indexSource = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
+// indexOf must be paired with an existence assertion: -1 < anything is
+// always true, so the ordering assertion would silently pass if the
+// script tag were removed.
+const indexScriptIndex = (name) => {
+  const index = indexSource.indexOf(name);
+  assert.notEqual(index, -1, `${name} must be present in index.html`);
+  return index;
+};
 assert.ok(
-  indexSource.indexOf('shared/bridge-messages.js') < indexSource.indexOf('platform/web/bridge.js'),
+  indexScriptIndex('shared/model-service-errors.js') < indexScriptIndex('shared/bridge-messages.js'),
+  'model service error classifier must load before shared bridge messages',
+);
+assert.ok(
+  indexScriptIndex('shared/bridge-messages.js') < indexScriptIndex('platform/web/bridge.js'),
   'shared bridge messages must load before the web bridge',
 );
 assert.ok(
-  indexSource.indexOf('shared/chunked-file-upload.js') < indexSource.indexOf('platform/web/bridge.js'),
+  indexScriptIndex('shared/chunked-file-upload.js') < indexScriptIndex('platform/web/bridge.js'),
   'the shared chunk uploader must load before platform bridges',
 );
 assert.ok(
-  indexSource.indexOf('platform/web/bridge/turn-terminal.js') < indexSource.indexOf('platform/web/bridge.js'),
+  indexScriptIndex('platform/web/bridge/turn-terminal.js') < indexScriptIndex('platform/web/bridge.js'),
   'web turn terminal support must load before the web bridge',
 );
 assert.ok(

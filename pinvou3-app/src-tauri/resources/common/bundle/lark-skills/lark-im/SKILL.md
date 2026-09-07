@@ -134,7 +134,7 @@ lark-cli im <resource> <method> [flags] # 调用 API
 
 ### chats
 
-  - `create` — 创建群。Identity: `bot` only (`tenant_access_token`).
+  - `create` — 创建群。Identity: `bot` only (`tenant_access_token`); user-identity creation is only available via the `+chat-create` shortcut (requires `im:chat:create_by_user`).
   - `get` — 获取群信息。Identity: supports `user` and `bot`; the caller must be in the target chat to get full details, and must belong to the same tenant for internal chats.
   - `link` — 获取群分享链接。Identity: supports `user` and `bot`; the caller must be in the target chat, must be an owner or admin when chat sharing is restricted to owners/admins, and must belong to the same tenant for internal chats.
   - `update` — 更新群信息。Identity: supports `user` and `bot`.

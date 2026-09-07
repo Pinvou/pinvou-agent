@@ -448,11 +448,28 @@
           // 透传后端硬编码中文——英/日界面不该看到中文结论;文案与 ChatView
           // 前置警告(t.uiAttachments.*)同源。与 web bridge displayTurnError
           // 同一口径(chat.rs IMAGE_INPUT_*_ERROR)。
-          let errorText = String(err && err.toString ? err.toString() : err || "");
+          // Error.message first, same as the concurrentTurn check above and
+          // the web bridge: toString() prepends "Error: " and would defeat
+          // the stable-code prefix matching.
+          let errorText = String(err && err.message ? err.message : err || "");
           if (errorText.indexOf("image_input_unsupported") === 0) {
             errorText = errorText.includes("能力未知")
               ? bt("imageUnknown")
               : bt("imageUnsupported");
+          } else if (errorText.indexOf("session_model_binding_stale") === 0) {
+            // session_model_binding_stale:<missing id> (engine_pool.rs
+            // SESSION_MODEL_BINDING_STALE_ERROR) → localized copy carrying
+            // the id; matched before redaction so the recovery instruction
+            // is never swallowed by the raw-body redact fallback.
+            errorText = bt("sessionModelStale")(
+              errorText.slice("session_model_binding_stale:".length).trim(),
+            );
+          } else if (window.PinvouBridgeMessages && typeof window.PinvouBridgeMessages.redactRawError === "function") {
+            // Raw submit-failure bodies can also carry gateway bodies or
+            // credentials; redact through the same outlet as the
+            // transient/done fallbacks (classification may miss, credentials
+            // must not).
+            errorText = window.PinvouBridgeMessages.redactRawError(errorText, state);
           }
           addSystemItem(concurrentTurn
             ? bt("turnAlreadyInProgress")

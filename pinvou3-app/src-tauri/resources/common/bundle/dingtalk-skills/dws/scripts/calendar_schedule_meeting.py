@@ -3,14 +3,14 @@
 一键创建日程 + 添加参与者 + 搜索并预定空闲会议室
 
 用法:
-    python calendar_schedule_meeting.py \
+    python3 scripts/calendar_schedule_meeting.py \
         --title "Q1 复盘会" \
         --start "2026-03-15T14:00" \
         --end "2026-03-15T15:00" \
         --users userId1,userId2 \
         --book-room
 
-    python calendar_schedule_meeting.py --dry-run \
+    python3 scripts/calendar_schedule_meeting.py --dry-run \
         --title "测试" --start "2026-03-15T14:00" --end "2026-03-15T15:00"
 """
 

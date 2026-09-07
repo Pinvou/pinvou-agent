@@ -2,12 +2,16 @@ import { useEffect, useRef, useState } from 'react';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { ExternalLink, FolderOpen, Maximize2, Minimize2, XCircle } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
+import { formatLocalDateTime } from '../../shared/date-utils.js';
+import { formatBytes } from '../../shared/format-number.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { ScaledHtmlPreview } from '../settings/composer-shared.jsx';
 import { cardBtnCls } from '../tools/tool-renderers.jsx';
+import { useConversationSecondClock } from '../conversation/ConversationTimeline.jsx';
 import { DESIGN_MESSAGE_TYPES, buildDesignRuntimeScript } from './design-runtime.js';
 import { DesignInspectorPanel } from './DesignInspectorPanel.jsx';
 import { EditableMarkdownPreview } from './EditableMarkdownPreview.jsx';
+import { loadArtifactPreview } from './artifact-preview.js';
 
 const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls = 'w-5 h-5' }) => {
       return (
@@ -15,19 +19,6 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
           <FileTypeIcon name={name} className={glyphCls} />
         </span>
       );
-    };
-    const apPad2 = (x) => String(x).padStart(2, '0');
-    const apFormatBytes = (n) => {
-      if (n == null) return '';
-      if (n < 1024) return n + ' B';
-      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
-      return (n / (1024 * 1024)).toFixed(1) + ' MB';
-    };
-    const apFormatMtime = (sec) => {
-      if (!sec) return '';
-      const d = new Date(sec * 1000);
-      return d.getFullYear() + '-' + apPad2(d.getMonth() + 1) + '-' + apPad2(d.getDate()) +
-        ' ' + apPad2(d.getHours()) + ':' + apPad2(d.getMinutes());
     };
     // kind(后端分类) → 人话类型名;不在表里则回退扩展名大写。
     const apKindLabel = (t, kind, name) => {
@@ -87,7 +78,6 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       const [htmlZoomMenuOpen, setHtmlZoomMenuOpen] = useState(false);
       const [artifactMenuOpen, setArtifactMenuOpen] = useState(false);
       const [localDesignAiState, setLocalDesignAiState] = useState({ text: '', status: 'idle', lastPrompt: '', pendingPath: '', startedAt: 0 });
-      const [designAiNow, setDesignAiNow] = useState(() => Date.now());
       const mdPreviewRef = useRef(null);
       const designFrameRef = useRef(null);
       const designRuntimeScriptRef = useRef(null);
@@ -119,6 +109,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       const designAiLastPrompt = currentDesignAiState.lastPrompt || '';
       const designAiPendingPath = currentDesignAiState.pendingPath || '';
       const designAiStartedAt = Number(currentDesignAiState.startedAt || 0);
+      // 1s tick: only while a design AI request is in flight (sending/running); the baseline syncs on mount/activation.
+      const designAiNow = useConversationSecondClock(designAiStatus === 'sending' || designAiStatus === 'running');
       const designAiElapsedSec = designAiStartedAt > 0 ? Math.max(0, Math.round((designAiNow - designAiStartedAt) / 1000)) : 0;
       const setDesignAiStatePatch = (patchOrUpdater) => {
         const apply = (prev) => {
@@ -174,14 +166,6 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         setDesignAiStatePatch({ status: 'cancelled', startedAt: 0 });
         resetDesignAiStatusSoon(1400);
       };
-
-      useEffect(() => {
-        if (designAiStatus !== 'sending' && designAiStatus !== 'running') return;
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- set the elapsed-time baseline immediately, then let the timer advance it every second
-        setDesignAiNow(Date.now());
-        const timer = window.setInterval(() => setDesignAiNow(Date.now()), 1000);
-        return () => window.clearInterval(timer);
-      }, [designAiStatus]);
 
       function destroyDesignRuntime() {
         const frame = designFrameRef.current;
@@ -366,20 +350,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (!sel || !sel.path || !pv.loading) return;
         let cancelled = false;
         (async () => {
-          try {
-            const info = await bridge.artifacts.artifactInfo(sel.path);
-            if (cancelled) return;
-            if (!info || !info.exists) { setPv({ missing: true, info }); return; }
-            if (['md', 'html', 'text'].includes(info.kind)) {
-              const text = await bridge.artifacts.readArtifactText(sel.path);
-              if (!cancelled) setPv({ kind: info.kind, text, info });
-            } else {
-              const visual = await bridge.artifacts.renderArtifactVisual(sel.path);
-              if (!cancelled) setPv({ kind: info.kind, visual, info });
-            }
-          } catch (e) {
-            if (!cancelled) setPv({ error: String(e) });
-          }
+          const result = await loadArtifactPreview(sel.path, undefined, { includeInfo: true, isCancelled: () => cancelled });
+          if (!cancelled) setPv(result);
         })();
         return () => { cancelled = true; };
         // eslint-disable-next-line react-hooks/exhaustive-deps -- load once on the selected-path + loading edge only; unrelated deps like artifacts would trigger duplicate fetches
@@ -560,7 +532,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                         <span className="min-w-0 flex-1">
                           <span className={`block truncate text-[13px] font-medium text-[#1D1D1F] dark:text-[#F5F5F7]`}>{a.basename}</span>
                           <span className={`block truncate text-[11px] text-[#8E8E93] dark:text-[#A1A1AA]`}>
-                            {itemInfo ? apFormatMtime(itemInfo.modified) : '—'}
+                            {itemInfo ? formatLocalDateTime(itemInfo.modified * 1000, '') : '—'}
                           </span>
                         </span>
                         {active && <span className="shrink-0 text-[12px] text-[#007AFF]">✓</span>}
@@ -580,7 +552,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                 })}
                 {info && (
                   <div className={`mt-1 border-t px-3 pt-2 text-[11px] border-black/10 text-[#8E8E93] dark:border-white/10 dark:text-[#A1A1AA]`}>
-                    {uiA.currentMtime(apFormatMtime(info.modified))}
+                    {uiA.currentMtime(formatLocalDateTime(info.modified * 1000, ''))}
                   </div>
                 )}
               </div>
@@ -737,7 +709,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                         <div className="flex-1 min-w-0">
                           <div className={`text-[14px] truncate text-[#1F1F1F] dark:text-[#E3E3E3]`} title={a.path}>{a.basename}</div>
                           <div className={`text-[12px] truncate ${muted}`}>
-                            {t.apLastMod} {info ? apFormatMtime(info.modified) : '—'}
+                            {t.apLastMod} {info ? formatLocalDateTime(info.modified * 1000, '') : '—'}
                           </div>
                         </div>
                         {canOpenContainingFolder && <button type="button" title={t.apBtnLocate} onClick={(e) => { e.stopPropagation(); bridge.artifacts.openContainingFolder(a.path); }}
@@ -904,7 +876,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                     <div className={`text-[14px] font-medium truncate text-[#1F1F1F] dark:text-[#E3E3E3]`}>{sel.basename}</div>
                     <div className={`mt-0.5 text-[12px] ${muted}`}>
                       {apKindLabel(t, pv.info && pv.info.kind, sel.basename)}
-                      {pv.info && pv.info.size ? ' · ' + apFormatBytes(pv.info.size) : ''}
+                      {pv.info && pv.info.size ? ' · ' + formatBytes(pv.info.size, { missing: '' }) : ''}
                     </div>
                     <div className={`mt-1.5 text-[12px] flex gap-2 ${muted}`}>
                       <span className="shrink-0">{t.apLocLabel}</span>
@@ -913,7 +885,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                     {pv.info && pv.info.modified ? (
                       <div className={`mt-0.5 text-[12px] flex gap-2 ${muted}`}>
                         <span className="shrink-0">{t.apMtimeLabel}</span>
-                        <span>{apFormatMtime(pv.info.modified)}</span>
+                        <span>{formatLocalDateTime(pv.info.modified * 1000, '')}</span>
                       </div>
                     ) : null}
                     <div className="mt-3 flex items-center gap-2">
@@ -946,4 +918,4 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
     // ==========================================
     // Side B: agency-agents-zh 按"部门"组织(无档位/评分), 派生稳定的部门配色。
 
-export { ArtifactTileIcon, apPad2, apFormatBytes, apFormatMtime, apKindLabel, OFFICE_HTML_STYLE, ArtifactsPanel };
+export { ArtifactTileIcon, apKindLabel, OFFICE_HTML_STYLE, ArtifactsPanel };

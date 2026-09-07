@@ -82,7 +82,7 @@ What does the user need?
 ├─ "Link"/"associate"/"bind" records between tables → Link
 ├─ "Look up"/"reference"/"aggregate"/"count" from another table → Lookup — ONLY when the user explicitly requests a Lookup field; otherwise use Formula by default (see Default strategy)
 │   ├─ Needs aggregation (sum/count/average)? → Lookup + aggregate
-│   └─ Just reference a value? → Lookup (aggregate = null)
+│   └─ Just reference a value? → Lookup (omit `aggregate`; defaults to `raw_value`)
 ├─ Calculations/text manipulation within current table → Formula
 └─ Access linked record's field → Formula chain access by default; use Lookup only when the user explicitly requests it
 ```

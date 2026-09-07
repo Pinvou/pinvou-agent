@@ -130,7 +130,30 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 ///       connected users to refresh at startup (otherwise the refresh
 ///       waits for the post-first-frame refresh_connector_auth_gates
 ///       backfill).
-pub const BUNDLE_VERSION: &str = concat!("0.27-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.30: wecomcli doc-audit second-round fixes, 21 findings across ten
+///       packs (PR #438, registered in NOTICE-wecom.md). Next free slot
+///       after 0.27 (dws #359, on main) and 0.29 (lark-skills #439, in
+///       review); the extracted-VERSION gate is inequality-only, so
+///       landing order and skipped numbers stay safe. Skill trees are
+///       excluded from the content hash, so the semantic bump is
+///       required for connected users to refresh at startup (otherwise
+///       the refresh waits for the post-first-frame
+///       refresh_connector_auth_gates backfill).
+/// 0.31: lark-skills model-facing doc-audit partition fixes, 21
+///       findings across eight packs (PR #439, registered in
+///       lark-skills/NOTICE.md, verified against CLI behavior and
+///       upstream main): identity-switch consent gates, condition_list
+///       null semantics, workflow outer-field contract, dropdown color
+///       semantics, wiki token-routing split, task search routing, and
+///       deduplications. Next free slot after 0.29 (lark-skills #439,
+///       reserved in review) and 0.30 (wecom #438, on main); the
+///       extracted-VERSION gate is inequality-only, so landing order
+///       and skipped numbers stay safe. Skill trees are excluded from
+///       the content hash, so the semantic bump is required for
+///       connected users to refresh at startup (otherwise the refresh
+///       waits for the post-first-frame refresh_connector_auth_gates
+///       backfill).
+pub const BUNDLE_VERSION: &str = concat!("0.31-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
 /// 骨架 = 身份/底线/工具与事实通用纪律/怎么干/红线/输出，两个模式层占位行：
@@ -304,9 +327,8 @@ pub const MODE_EXECUTE_MD: &str = "\
 ## Mode: Execute
 
 Tools run without per-call approval — the user has already authorized
-execution. Produce files and run commands now; never end the turn with
-a promise of future action. Then verify and report. Follow each
-message's `<system-reminder>`.";
+execution. Produce files and run commands now, then verify and report.
+Follow each message's `<system-reminder>`.";
 
 /// pinvou3 版静态层 composer：接管底座全部编译期静态文案
 /// (taxonomy/base/personality/mode/approval/ContextMgmt/compact 模板)。
@@ -827,6 +849,46 @@ mod tests {
         let rendered = instructions_md();
         assert!(rendered.contains("自动落到本会话专属工作目录"));
         assert!(!rendered.contains("用户选择的工作目录"));
+    }
+
+    /// Prompt-composition regression for the auto-approval override: only code
+    /// sessions compose the base core_execution loop, so only their rendered
+    /// instructions may carry the reconciling note (current production posture
+    /// is auto-approval; runtime truth stays with the per-turn reminder), and
+    /// the note must sit after the base approval clause it qualifies. Also
+    /// locks the MODE_EXECUTE_MD dedup contract: the "never end the turn with
+    /// a promise" sentence was removed because the shared skeleton carries the
+    /// equivalent prohibition.
+    #[test]
+    fn code_instructions_carry_auto_approval_note_work_mode_does_not() {
+        let rendered = instructions_code_md("你在本会话专属工作目录中工作,相对路径即相对该目录;");
+        let core = deepseek_tui::prompts::CORE_EXECUTION_PROFILE_PROMPT.trim();
+        let core_at = rendered
+            .find(core)
+            .expect("code instructions must compose the base core_execution loop");
+        let note_at = rendered
+            .find("gated write 工具走 auto-approval")
+            .expect("code instructions must carry the auto-approval note");
+        assert!(
+            note_at > core_at,
+            "auto-approval note must follow the base approval clause it qualifies"
+        );
+        assert!(
+            rendered.contains("运行时批准姿态以每轮 `<system-reminder>` 为准"),
+            "auto-approval note must defer runtime posture to the per-turn reminder"
+        );
+
+        let work = instructions_md();
+        assert!(
+            !work.contains("auto-approval"),
+            "work mode never composes core_execution, so it must not carry the note"
+        );
+
+        assert!(
+            INSTRUCTIONS_SHARED_MD.contains("说做就做"),
+            "MODE_EXECUTE_MD dropped its promise prohibition only because the shared skeleton carries it"
+        );
+        assert!(!MODE_EXECUTE_MD.contains("promise of future action"));
     }
 
     fn run_depth_guard(bundle: &Pinvou3Bundle, tool: &str, args: &str) -> std::process::Output {

@@ -16,7 +16,7 @@
   5. 输出执行结果摘要
 
 用法:
-    python attendance_schedule_import.py \
+    python3 scripts/attendance_schedule_import.py \
         --group-id 123456 \
         --schedules '[{"userId":"u001","workDate":"2026-05-19","classId":789,"isRest":"N"}]' \
         --confirm

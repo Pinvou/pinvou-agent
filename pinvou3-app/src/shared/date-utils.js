@@ -65,4 +65,18 @@ function formatSessionDate(ts, language) {
         : cachedFormatter(L.locale, 'ymd', { year: 'numeric', month: 'short', day: 'numeric' }).format(date);
     }
 
-export { formatSessionDate, localDateKey, formatDateGroupLabel };
+    // Absolute local date / datetime (YYYY-MM-DD / YYYY-MM-DD HH:mm). artifacts /
+    // scheduled / knowledge previously each inlined padStart assembly of the same shapes; consolidated here.
+    // `missing` is the sentinel for empty / invalid timestamps (views originally returned '' / '—' / copy).
+    function formatLocalDate(ts, missing = '') {
+      const key = localDateKey(ts);
+      return key === 'unknown' ? missing : key;
+    }
+    function formatLocalDateTime(ts, missing = '') {
+      const key = localDateKey(ts);
+      if (key === 'unknown') return missing;
+      const d = new Date(ts);
+      return `${key} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    }
+
+export { formatSessionDate, localDateKey, formatDateGroupLabel, formatLocalDate, formatLocalDateTime };

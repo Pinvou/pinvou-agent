@@ -30,7 +30,7 @@
 
 - **用户未提及附加说明（最常见）**：正文默认**留空**。具体做法是**完全省略** `file_path` 字段，接口会自动带上原邮件正文。
 - **用户提到附加说明**：用 `File(action="write")` 把正文写入本地 Markdown 文件（`.md`），记录路径作为 `file_path`，调用时设 `content_type: "markdown"`。参考 [send-mail](send-mail.md) 步骤三。
-- 若需要追加附件或内嵌图片，按"**二选一，优先 `media_id`**"组装 `attachments[]` 和 `inline_images[]`：已有 `media_id` 直接复用；仅当只有本地文件、且没有现成 `media_id` 时才用 `file_path`。内嵌图 `$xxx$` 占位符严格写成 `![]($xxx$)`（方括号留空，不带 alt 和 title）。
+- 若需要追加附件或内嵌图片，组装 `attachments[]` 和 `inline_images[]` 时 `media_id` 与 `file_path` 二选一、禁止同时填，`media_id` 禁止自行构造，详见 send-mail.md 步骤四（附件）与步骤五（内嵌图片）。内嵌图 `$xxx$` 占位符严格写成 `![]($xxx$)`（方括号留空，不带 alt 和 title）。
 
 
 ## 步骤四：构造转发主题
@@ -127,5 +127,5 @@ wecom-cli mail send --json '{
 - **无说明的转发**：直接省略 `file_path`，不要传空字符串；接口会自动附带原邮件正文
 - **有说明的转发**：正文同样走本地 `.md` 文件路径；`content_type` 固定填 `"markdown"`
 - **主题必填且必须构造**：接口不会自动拼 `Fwd: ` 前缀，技能自己负责把 `subject` 构造为 `"转发：" + 原邮件主题`；原主题已有 `转发：`/`Fwd:` 前缀时直接沿用。因此在步骤一定位邮件时就要把 `subject` 一起记下来
-- **转发追加的附件/图片：优先 `media_id`，其次 `file_path`**：`attachments` / `inline_images` 每一项**二选一**填 `media_id` 或 `file_path`，**优先 `media_id`**——已有 `media_id` 直接复用；仅无现成 `media_id` 时才填 `file_path`，CLI 自动上传。`media_id` 必须来自接口真实返回值，禁止自行构造
+- **转发追加的附件/图片**：`media_id` 与 `file_path` 二选一、禁止同时填，`media_id` 禁止自行构造；详见 [send-mail](send-mail.md) 步骤四（附件）与步骤五（内嵌图片）
 - **邮件总大小不超过 50MB**：正文文件 + 所有附件合计不能超过 50MB，上传失败时提醒用户检查是否超限

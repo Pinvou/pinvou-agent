@@ -248,7 +248,7 @@ function rec(name, pass, detail = '') {
   rec('附件-only 发送也会按当前专业子模式创建 scene meta',
     /if \(visibleOutgoing \|\| hasReadyAttachment\)/.test(chatViewSource) &&
       /const scenePrompt = outgoing \|\| '请根据附件内容继续处理。';/.test(chatViewSource) &&
-      /\}, \[activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, t, visualPosterSceneActive\]\);/.test(chatViewSource),
+      /\}, \[activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, pptDesignSceneActive, t, visualPosterSceneActive\]\);/.test(chatViewSource),
     'ChatView sendChatMessage contract');
 
   rec('scene sidecar 通过 session 后端在 Tauri/Web 间共享并保留本地迁移缓存',
@@ -267,6 +267,12 @@ function rec(name, pass, detail = '') {
       webNormalizeSceneRegexSource.includes('work:personal-workbench') &&
       /Some\("work:personal-workbench"\) => "work:personal-workbench"/.test(sessionsRustSource),
     'normalize allowlist must register work:personal-workbench across tauri bridge, web bridge and Rust backend');
+
+  rec('三个场景白名单(Tauri/Web/Rust)必须同时登记 design:ppt，否则 sidecar 重载后会丢标签',
+    tauriNormalizeSceneRegexSource.includes('design:ppt') &&
+      webNormalizeSceneRegexSource.includes('design:ppt') &&
+      /Some\("design:ppt"\) => "design:ppt"/.test(sessionsRustSource),
+    'normalize allowlist must register design:ppt across tauri bridge, web bridge and Rust backend');
 
   rec('远程消息不会越过已有 FIFO 队列',
     /(?:var|const|let) remoteBuffer = getBuffer\(sid\);/.test(chatEventsSource) &&

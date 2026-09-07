@@ -2,6 +2,7 @@
 
 > 核心流程步骤 3 判定为 lite 后，按本文件中对应 recipe 的步骤**直接执行**。
 > 所有命令均须加 `--format json`（下文省略）。
+> #6（数据分析）、#10、#11 无 lite 形态：直接读对应编号的完整 recipe。
 
 ## #1 消息沟通
 
@@ -57,12 +58,12 @@
 
 ### query-doc
 
-1. `doc search --query "<关键词>"` → `nodeId`
+1. `drive search --query "<关键词>"` → `nodeId`
 2. `doc read --node <nodeId>`（按需；大文档只抽章节）
 
 ### list-folder-docs
 
-`doc list --workspace <WS_ID>` 或 `--folder <FOLDER_ID>`
+`drive list --workspace <WS_ID>` 或 `--folder <FOLDER_ID>`
 
 ## #5 工作汇报
 

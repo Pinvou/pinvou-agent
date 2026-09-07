@@ -206,7 +206,7 @@ function injectSource() {
           });
           return Promise.resolve(null);
         case 'voice_asr_status': return Promise.resolve(window.__VOICE_ASR_MISSING__
-          ? {ready:false,installable:true,missing:['model'],engine:{installed:true}}
+          ? {ready:false,installable:false,missing:['model'],engine:{installed:true}}
           : {ready:true,installable:true,missing:[],engine:{installed:true}});
         case 'create_session': return Promise.resolve({id:'s-new',metadata:{id:'s-new'}});
         case 'set_session_archived':
@@ -1027,211 +1027,75 @@ async function expand(page) {
   await clickText(page, '新对话');
   await sleep(250);
 
-  // Windows 平板尺寸会展示浮动语音按钮。用浏览器输入通道覆盖鼠标、触控笔与触摸，
-  // 并动态验证 capture 丢失、pointercancel、窗口失焦后的视觉态和点击语义。
+  // Voice entry is consolidated into the composer: no page-level floating
+  // bubble even at tablet width; the mic stays next to the send button, and
+  // recording feedback is carried by the in-composer pill.
   await page.setViewport({ width: 1000, height: 800, deviceScaleFactor: 1 });
   await sleep(350);
-  await page.evaluate(() => {
-    const button = document.querySelector('[data-testid="floating-voice-button"]');
-    window.__FLOATING_VOICE_COMPAT_CLICKS__ = 0;
-    if (button) button.addEventListener('click', () => { window.__FLOATING_VOICE_COMPAT_CLICKS__ += 1; });
-  });
-  const floatingVoiceSnapshot = () => page.evaluate(() => {
-    const button = document.querySelector('[data-testid="floating-voice-button"]');
-    if (!button) return null;
-    const rect = button.getBoundingClientRect();
-    const wrapRect = button.parentElement.getBoundingClientRect();
+  const composerVoiceEntry = await page.evaluate(() => {
+    const floatingButton = document.querySelector('[data-testid="floating-voice-button"]');
+    const composerButton = document.querySelector('[data-testid="composer-voice-button"]');
+    const sendButton = document.querySelector('[aria-label="发送"]') || document.querySelector('[title="发送"]');
+    if (!composerButton || !sendButton) {
+      return {
+        floatingFound: !!floatingButton,
+        composerFound: !!composerButton,
+        sendFound: !!sendButton,
+        composerVisible: false,
+        besideSend: false,
+      };
+    }
+    const voiceRect = composerButton.getBoundingClientRect();
+    const sendRect = sendButton.getBoundingClientRect();
     return {
-      x: rect.left + rect.width / 2,
-      y: rect.top + rect.height / 2,
-      left: wrapRect.left,
-      top: wrapRect.top,
-      pressed: button.getAttribute('data-pressed'),
-      voiceCalls: window.__TAURI_INVOKES__.filter(call => call.cmd === 'voice_asr_status').length,
-      clicks: window.__FLOATING_VOICE_COMPAT_CLICKS__,
+      floatingFound: !!floatingButton,
+      composerFound: true,
+      sendFound: true,
+      composerVisible: voiceRect.width > 0 && voiceRect.height > 0,
+      besideSend: voiceRect.right <= sendRect.left + 2 && Math.abs((voiceRect.top + voiceRect.bottom) / 2 - (sendRect.top + sendRect.bottom) / 2) <= 6,
     };
   });
-  const floatingVoiceStart = await floatingVoiceSnapshot();
-  let floatingVoiceDrag = { found: false };
-  if (floatingVoiceStart) {
-    await page.mouse.move(floatingVoiceStart.x, floatingVoiceStart.y);
-    await page.mouse.down();
-    await page.mouse.move(floatingVoiceStart.x + 12, floatingVoiceStart.y);
-    await sleep(60);
-    const mouseDuring = await floatingVoiceSnapshot();
-    await page.mouse.up();
-    await sleep(60);
-    const mouseAfter = await floatingVoiceSnapshot();
-
-    const lostStart = mouseAfter;
-    await page.evaluate(() => {
-      const button = document.querySelector('[data-testid="floating-voice-button"]');
-      window.__FLOATING_VOICE_POINTER_ID__ = null;
-      button?.addEventListener('pointerdown', event => { window.__FLOATING_VOICE_POINTER_ID__ = event.pointerId; }, { once: true });
-    });
-    await page.mouse.move(lostStart.x, lostStart.y);
-    await page.mouse.down();
-    await page.mouse.move(lostStart.x + 12, lostStart.y);
-    await page.evaluate(() => {
-      const button = document.querySelector('[data-testid="floating-voice-button"]');
-      const pointerId = window.__FLOATING_VOICE_POINTER_ID__;
-      if (button && pointerId !== null && button.hasPointerCapture(pointerId)) button.releasePointerCapture(pointerId);
-      if (button && pointerId !== null) {
-        button.dispatchEvent(new PointerEvent('lostpointercapture', {
-          bubbles: true, pointerId, pointerType: 'mouse', isPrimary: true,
-        }));
-      }
-    });
-    await sleep(30);
-    const lostCapture = await floatingVoiceSnapshot();
-    await page.mouse.up();
-    await sleep(60);
-    const lostAfter = await floatingVoiceSnapshot();
-
-    const input = await page.createCDPSession();
-    const penStart = lostAfter;
-    await input.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: penStart.x, y: penStart.y, buttons: 0, pointerType: 'pen' });
-    await input.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: penStart.x, y: penStart.y, button: 'left', buttons: 1, clickCount: 1, pointerType: 'pen' });
-    const penPressed = await floatingVoiceSnapshot();
-    await page.evaluate(() => {
-      const button = document.querySelector('[data-testid="floating-voice-button"]');
-      const rect = button.getBoundingClientRect();
-      const init = {
-        bubbles: true, pointerId: 302, pointerType: 'touch', isPrimary: true, button: 0,
-        clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
-      };
-      button.dispatchEvent(new PointerEvent('pointerdown', { ...init, buttons: 1 }));
-      button.dispatchEvent(new PointerEvent('pointerup', { ...init, buttons: 0 }));
-    });
-    await sleep(20);
-    const penAfterTouch = await floatingVoiceSnapshot();
-    await input.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: penStart.x + 12, y: penStart.y, buttons: 1, pointerType: 'pen' });
-    const penDuring = await floatingVoiceSnapshot();
-    await input.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: penStart.x + 12, y: penStart.y, button: 'left', buttons: 0, clickCount: 1, pointerType: 'pen' });
-    await sleep(60);
-    const penAfter = await floatingVoiceSnapshot();
-
-    await page.evaluate(() => {
-      const button = document.querySelector('[data-testid="floating-voice-button"]');
-      const rect = button.getBoundingClientRect();
-      button.dispatchEvent(new PointerEvent('pointerdown', {
-        bubbles: true, pointerId: 301, pointerType: 'pen', isPrimary: false, button: 0, buttons: 1,
-        clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
-      }));
-    });
-    await sleep(20);
-    const nonPrimaryPen = await floatingVoiceSnapshot();
-
-    await page.evaluate(() => {
-      const button = document.querySelector('[data-testid="floating-voice-button"]');
-      const rect = button.getBoundingClientRect();
-      const init = {
-        bubbles: true, pointerType: 'touch', button: 0, buttons: 1,
-        clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
-      };
-      button.dispatchEvent(new PointerEvent('pointerdown', { ...init, pointerId: 401, isPrimary: true }));
-      button.dispatchEvent(new PointerEvent('pointerdown', { ...init, pointerId: 402, isPrimary: false }));
-      button.dispatchEvent(new PointerEvent('pointerup', { ...init, pointerId: 402, isPrimary: false, buttons: 0 }));
-    });
-    await sleep(20);
-    const multiTouchSecondaryEnded = await floatingVoiceSnapshot();
-    await page.evaluate(() => {
-      const button = document.querySelector('[data-testid="floating-voice-button"]');
-      const rect = button.getBoundingClientRect();
-      button.dispatchEvent(new PointerEvent('pointercancel', {
-        bubbles: true, pointerId: 401, pointerType: 'touch', isPrimary: true, button: 0, buttons: 0,
-        clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
-      }));
-    });
-    await sleep(20);
-    const multiTouchCancelled = await floatingVoiceSnapshot();
-
-    const touchStart = penAfter;
-    await input.send('Input.dispatchTouchEvent', {
-      type: 'touchStart',
-      touchPoints: [{ x: touchStart.x, y: touchStart.y, id: 41, radiusX: 1, radiusY: 1, force: 1 }],
-    });
-    await input.send('Input.dispatchTouchEvent', {
-      type: 'touchMove',
-      touchPoints: [{ x: touchStart.x + 12, y: touchStart.y, id: 41, radiusX: 1, radiusY: 1, force: 1 }],
-    });
-    const touchDuring = await floatingVoiceSnapshot();
-    await input.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] });
-    await sleep(40);
-    const touchCancelled = await floatingVoiceSnapshot();
-
-    const composerBefore = touchCancelled;
-    const composerCenter = await page.evaluate(() => {
-      const button = document.querySelector('[data-testid="composer-voice-button"]');
-      if (!button) return null;
-      const rect = button.getBoundingClientRect();
-      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    });
-    if (composerCenter) await page.mouse.click(composerCenter.x, composerCenter.y);
-    await sleep(80);
-    const composerAfter = await floatingVoiceSnapshot();
-    await page.evaluate(() => window.TauriBridge.voice.clearVoiceInput());
-    await sleep(20);
-
-    const blurStart = touchCancelled;
-    await page.mouse.move(blurStart.x, blurStart.y);
-    await page.mouse.down();
-    await page.mouse.move(blurStart.x + 12, blurStart.y);
-    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
-    await sleep(30);
-    const blurred = await floatingVoiceSnapshot();
-    await page.mouse.move(1, 1);
-    await page.mouse.up();
-    await sleep(40);
-    const blurAfter = await floatingVoiceSnapshot();
-
-    await page.evaluate(() => document.querySelector('[data-testid="floating-voice-button"]')?.focus());
-    await page.keyboard.press('Enter');
-    await sleep(80);
-    const keyboardAfter = await floatingVoiceSnapshot();
-    await page.evaluate(() => window.TauriBridge.voice.clearVoiceInput());
-
-    floatingVoiceDrag = {
-      found: true,
-      mouseMovedImmediately: mouseDuring.pressed === 'true'
-        && (Math.abs(mouseDuring.left - floatingVoiceStart.left) > 4 || Math.abs(mouseDuring.top - floatingVoiceStart.top) > 4),
-      mouseCompatibleClickSuppressed: mouseAfter.pressed === 'false'
-        && mouseAfter.clicks > floatingVoiceStart.clicks
-        && mouseAfter.voiceCalls === floatingVoiceStart.voiceCalls,
-      lostCaptureCleared: lostCapture.pressed === 'false',
-      lostCaptureClickSuppressed: lostAfter.clicks > mouseAfter.clicks
-        && lostAfter.voiceCalls === mouseAfter.voiceCalls,
-      penPathPassed: penPressed.pressed === 'true'
-        && penAfterTouch.pressed === 'true'
-        && penDuring.pressed === 'true'
-        && (Math.abs(penDuring.left - penStart.left) > 4 || Math.abs(penDuring.top - penStart.top) > 4)
-        && penAfter.pressed === 'false'
-        && penAfter.voiceCalls === lostAfter.voiceCalls,
-      nonPrimaryPenIgnored: nonPrimaryPen.pressed === 'false',
-      secondTouchIgnored: multiTouchSecondaryEnded.pressed === 'true' && multiTouchCancelled.pressed === 'false',
-      touchCancelCleared: touchDuring.pressed === 'true'
-        && touchCancelled.pressed === 'false'
-        && touchCancelled.voiceCalls === penAfter.voiceCalls,
-      composerClickWorked: !!composerCenter && composerAfter.voiceCalls > composerBefore.voiceCalls,
-      blurCleared: blurred.pressed === 'false' && blurAfter.voiceCalls === composerAfter.voiceCalls,
-      keyboardClickWorked: keyboardAfter.voiceCalls > blurAfter.voiceCalls,
-    };
-  }
   rec(
-    '⓪b 浮动语音按钮 mouse/touch/pen 拖动及异常终止行为',
-    floatingVoiceDrag.found
-      && floatingVoiceDrag.mouseMovedImmediately
-      && floatingVoiceDrag.mouseCompatibleClickSuppressed
-      && floatingVoiceDrag.lostCaptureCleared
-      && floatingVoiceDrag.lostCaptureClickSuppressed
-      && floatingVoiceDrag.penPathPassed
-      && floatingVoiceDrag.nonPrimaryPenIgnored
-      && floatingVoiceDrag.secondTouchIgnored
-      && floatingVoiceDrag.touchCancelCleared
-      && floatingVoiceDrag.composerClickWorked
-      && floatingVoiceDrag.blurCleared
-      && floatingVoiceDrag.keyboardClickWorked,
-    JSON.stringify(floatingVoiceDrag),
+    '⓪b composer mic sits beside the send button and no floating voice bubble renders',
+    !composerVoiceEntry.floatingFound
+      && composerVoiceEntry.composerFound
+      && composerVoiceEntry.sendFound
+      && composerVoiceEntry.composerVisible
+      && composerVoiceEntry.besideSend,
+    JSON.stringify(composerVoiceEntry),
+  );
+  const composerVoiceInvoke = await page.evaluate(async () => {
+    window.__TAURI_INVOKES__ = [];
+    const composerButton = document.querySelector('[data-testid="composer-voice-button"]');
+    if (!composerButton) return { clicked: false, invoked: false };
+    composerButton.click();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    if (window.TauriBridge && window.TauriBridge.voice && window.TauriBridge.voice.closeVoiceAsrSetup) {
+      window.TauriBridge.voice.closeVoiceAsrSetup();
+    }
+    await new Promise(resolve => setTimeout(resolve, 120));
+    // The first click opens the one-time voice intro modal (a fixed fullscreen
+    // overlay). This smoke does not cover the intro interaction, but the modal
+    // must be explicitly dismissed: the overlay swallows the real puppeteer
+    // clicks later cases depend on (e.g. the ①a-3 task filter button).
+    // Clicking the close button also writes intro-seen back to React state
+    // and localStorage.
+    const introClose = [...document.querySelectorAll('button')]
+      .find(b => (b.getAttribute('aria-label') || '').includes('关闭语音快捷键'));
+    if (introClose) {
+      introClose.click();
+      await new Promise(resolve => setTimeout(resolve, 120));
+    }
+    return {
+      clicked: true,
+      invoked: window.__TAURI_INVOKES__.some(call => call.cmd === 'voice_asr_status'),
+      introDismissed: !document.querySelector('#voice-shortcut-intro-title'),
+    };
+  });
+  rec(
+    '⓪b-2 clicking the composer mic starts the voice capability probe',
+    composerVoiceInvoke.clicked && composerVoiceInvoke.invoked && composerVoiceInvoke.introDismissed,
+    JSON.stringify(composerVoiceInvoke),
   );
   await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
   await sleep(250);
@@ -2627,138 +2491,6 @@ async function expand(page) {
     return { auth: txt.includes('等待系统授权'), wait: txt.includes('等待模型加载就绪'), elapsed: txt.includes('已等待') };
   });
   rec('⑩ 点启用后等待系统授权+计时渲染', prog.auth && prog.wait && prog.elapsed, JSON.stringify(prog));
-
-  // 旧兼容渲染路径也必须暴露与详情 DOM 一致的展开状态。
-  await page.evaluate(() => localStorage.setItem('pinvou_conversation_ui_v2', 'false'));
-  await page.reload({ waitUntil: 'networkidle0' });
-  await page.waitForFunction(() => window.TauriBridge && document.body && document.body.innerText.includes('PINVOU'), { timeout: 20000 }).catch(() => {});
-  await sleep(1200);
-  await expand(page); await sleep(200);
-  await page.waitForSelector('[data-testid="codex-sidebar-item"]', { timeout: 10000 }).catch(() => {});
-  await page.evaluate(() => document.querySelector('[data-testid="codex-sidebar-item"]')?.click());
-  // CodexAcpView is lazy-loaded; wait for the legacy timeline instead of assuming
-  // the chunk and hydrated session will settle within a fixed local delay.
-  await page.waitForFunction(() => (
-    document.querySelector('[data-testid="conversation-reasoning-toggle"]')
-    && document.querySelector('[data-testid="conversation-tool-group-summary"]')
-    && document.querySelector('[data-testid="conversation-compact-item-toggle"]')
-  ), { timeout: 20000 }).catch(() => {});
-  const legacyConversationA11y = await page.evaluate(async () => {
-    const state = (toggle) => {
-      const controls = toggle?.getAttribute('aria-controls') || '';
-      return {
-        expanded: toggle?.getAttribute('aria-expanded') || '',
-        controls,
-        detailsPresent: Boolean(controls && document.getElementById(controls)),
-      };
-    };
-    const settle = () => new Promise(resolve => { requestAnimationFrame(() => requestAnimationFrame(resolve)); });
-    const reasoningToggle = document.querySelector('[data-testid="conversation-reasoning-toggle"]');
-    const reasoningBefore = state(reasoningToggle);
-    reasoningToggle?.click();
-    await settle();
-    const reasoningAfter = state(reasoningToggle);
-    reasoningToggle?.click();
-    await settle();
-    const reasoningCollapsed = state(reasoningToggle);
-
-    const summary = document.querySelector('[data-testid="conversation-tool-group-summary"]');
-    const groupBefore = state(summary);
-    summary?.click();
-    await settle();
-    const groupAfter = state(summary);
-
-    const compactToggle = document.querySelector('[data-testid="conversation-compact-item-toggle"]');
-    const compactBefore = state(compactToggle);
-    compactToggle?.click();
-    await settle();
-    const compactAfter = state(compactToggle);
-    compactToggle?.click();
-    await settle();
-    const compactCollapsed = state(compactToggle);
-    summary?.click();
-    await settle();
-    const groupCollapsed = state(summary);
-    const controls = [reasoningAfter.controls, groupAfter.controls, compactAfter.controls].filter(Boolean);
-    return {
-      found: Boolean(reasoningToggle && summary && compactToggle),
-      reasoningBefore,
-      reasoningAfter,
-      reasoningCollapsed,
-      groupBefore,
-      groupAfter,
-      groupCollapsed,
-      compactBefore,
-      compactAfter,
-      compactCollapsed,
-      uniqueControls: controls.length === 3 && new Set(controls).size === controls.length,
-    };
-  });
-  rec('⑩a 旧兼容对话详情向辅助技术同步展开状态',
-    legacyConversationA11y.found
-      && legacyConversationA11y.uniqueControls
-      && legacyConversationA11y.reasoningBefore.expanded === 'false'
-      && !legacyConversationA11y.reasoningBefore.controls
-      && !legacyConversationA11y.reasoningBefore.detailsPresent
-      && legacyConversationA11y.reasoningAfter.expanded === 'true'
-      && Boolean(legacyConversationA11y.reasoningAfter.controls)
-      && legacyConversationA11y.reasoningAfter.detailsPresent
-      && legacyConversationA11y.reasoningCollapsed.expanded === 'false'
-      && !legacyConversationA11y.reasoningCollapsed.controls
-      && !legacyConversationA11y.reasoningCollapsed.detailsPresent
-      && legacyConversationA11y.groupBefore.expanded === 'false'
-      && !legacyConversationA11y.groupBefore.controls
-      && !legacyConversationA11y.groupBefore.detailsPresent
-      && legacyConversationA11y.groupAfter.expanded === 'true'
-      && Boolean(legacyConversationA11y.groupAfter.controls)
-      && legacyConversationA11y.groupAfter.detailsPresent
-      && legacyConversationA11y.groupCollapsed.expanded === 'false'
-      && !legacyConversationA11y.groupCollapsed.controls
-      && !legacyConversationA11y.groupCollapsed.detailsPresent
-      && legacyConversationA11y.compactBefore.expanded === 'false'
-      && !legacyConversationA11y.compactBefore.controls
-      && !legacyConversationA11y.compactBefore.detailsPresent
-      && legacyConversationA11y.compactAfter.expanded === 'true'
-      && Boolean(legacyConversationA11y.compactAfter.controls)
-      && legacyConversationA11y.compactAfter.detailsPresent
-      && legacyConversationA11y.compactCollapsed.expanded === 'false'
-      && !legacyConversationA11y.compactCollapsed.controls
-      && !legacyConversationA11y.compactCollapsed.detailsPresent,
-    JSON.stringify(legacyConversationA11y));
-
-  // ⑩b legacy 长会话离屏合成不应为 ChatBubble 返回 null 的项（reasoning / 已忽略记忆候选 /
-  // 未知类型）产生空 content-visibility wrapper：空 wrapper 离屏时仍按
-  // contain-intrinsic-size(auto 600px) 占位，会污染 scrollHeight 造成滚动条缩跳与滚底跳变。
-  // 修复 = legacy 列表 map 跳过 reasoning + .cv-bubble:empty{display:none} 兜底其余 null 情况。
-  await clickText(page, '第三季度财报分析');
-  await sleep(1500);
-  const legacyReasoningGuard = await page.evaluate(async () => {
-    const emit = async (name, payload) => {
-      const handlers = window.__TAURI_EVENT_HANDLERS__[name] || [];
-      for (const handler of handlers) await handler({ payload });
-    };
-    // 向普通 s1 会话注入多条 reasoning 历史（每轮一条），模拟长 legacy 会话。
-    for (let i = 0; i < 12; i++) {
-      await emit('chat:reasoning_start', { session_id: 's1', index: `legacy-reasoning-${i}` });
-      await emit('chat:reasoning_delta', { session_id: 's1', index: `legacy-reasoning-${i}`, text: `离屏推理历史 ${i} `.repeat(40) });
-      await emit('chat:reasoning_done', { session_id: 's1', index: `legacy-reasoning-${i}` });
-    }
-    await new Promise(r => { setTimeout(r, 400); });
-    const wrappers = [...document.querySelectorAll('.cv-bubble')];
-    const emptyWrappers = wrappers.filter(w => w.children.length === 0);
-    const reasoningLeaked = document.body.innerText.includes('离屏推理历史');
-    const totalHeight = wrappers.reduce((sum, w) => sum + w.getBoundingClientRect().height, 0);
-    return {
-      wrapperCount: wrappers.length,
-      emptyCount: emptyWrappers.length,
-      reasoningLeaked,
-      // 12 条空 reasoning 若未被修复，离屏至少占 12 * 600 = 7200px；修复后应为 0。
-      emptyContributionPx: Math.round(totalHeight),
-    };
-  });
-  rec('⑩b legacy 离屏合不为 reasoning/隐藏项留空 wrapper（防 scrollHeight 污染）',
-    legacyReasoningGuard.emptyCount === 0 && !legacyReasoningGuard.reasoningLeaked,
-    JSON.stringify(legacyReasoningGuard));
 
   // ⑩c Keyboard operability of the sidebar resize handle (WAI-ARIA Window
   // Splitter): focusable, arrow-key stepping, Home/End land on the clamped

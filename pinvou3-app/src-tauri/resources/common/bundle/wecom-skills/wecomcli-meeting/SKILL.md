@@ -104,7 +104,7 @@ metadata:
 ## 前置条件
 
 - 需要企业微信账号且已登录
-- 取消/更新操作不预先按"是否本人创建"拦截，直接执行命令、由接口返回结果判断能否操作
+- 取消/更新操作不预先按"是否本人创建"拦截，由接口返回结果判断能否操作（取消前另须按规则 2 复述会议主题与时间并获确认）
 - 参会人 userid（前缀为 `wo`）组装为 `[{"userid": "woxxx"}]` 对象数组格式传入；用户提供的是姓名时通过 `读取 wecomcli-contact 技能` 解析为 userid
 
 ## 核心场景
@@ -139,7 +139,7 @@ metadata:
 
 ### 4. 取消会议
 
-**CRITICAL — 执行前必须先读取参考文档**：收到取消会议意图后，第一步立即读取 [`meeting-cancel`](references/meeting-cancel.md)，按其中的完整工作流（定位会议 → 状态检查 → 周期判断 → 执行取消 → 按返回结果判断）执行，禁止在未读取参考文档的情况下直接发起任何操作。
+**CRITICAL — 执行前必须先读取参考文档**：收到取消会议意图后，第一步立即读取 [`meeting-cancel`](references/meeting-cancel.md)，按其中的完整工作流（定位会议 → 状态检查 → 周期判断 → 复述主题与时间并获确认 → 执行取消 → 按返回结果判断）执行，禁止在未读取参考文档的情况下直接发起任何操作。
 
 > 详见 [meeting-cancel](references/meeting-cancel.md)
 
@@ -186,7 +186,7 @@ metadata:
 - **会议（Meeting）**：企业微信会议实体，含主题、起止时间、参会人、入会链接等属性。
 - **会议 ID（meeting_id）**：API 使用的会议唯一标识，较长的字符串（`mt` 前缀）。
 - **会议号（meeting_code）**：9 位纯数字，仅用于用户入会，不能作为 meeting_id 使用。
-- **周期会议（Recurring）**：按规则重复的会议，`update`/`cancel` 均不支持（见「已知限制」）；仅 `original get` 查询转写原文某场时需指定 `sub_meeting_id`。
+- **周期会议（Recurring）**：按规则重复的会议，`update`/`cancel` 均不支持（见「已知限制」）；`original get` 与 `meeting get` 查询周期会议的某一场时均需指定 `sub_meeting_id`。
 - **参会人（Attendee）**：以 userid（`wo` 前缀）标识。用户提供的是姓名时通过 `读取 wecomcli-contact 技能` 解析为 userid。
 
 ## 核心规则
@@ -198,11 +198,12 @@ metadata:
 - **禁止**把姓名当 userid 拼接，**禁止**凭记忆或猜测编造 userid。
 - `open_vid` 和 `userid` 是同一概念的不同叫法，其他系统返回的 `open_vid` 可直接作为 `userid` 使用。
 
-### 规则 2: 写操作直接执行
+### 规则 2: 写操作执行口径
 
-- 创建会议、取消会议时，参数就绪后直接执行，无需向用户展示摘要或询问确认。
+- 创建会议时，参数就绪后直接执行，无需向用户展示摘要或询问确认。
+- 取消会议前向用户复述会议主题与时间并获确认；参数就绪后执行。
 - 结果返回时**禁止暴露 userid**，只展示人名。
-- **原因**：上层交互已完整展示操作内容并完成确认，此处再展示一遍会造成冗余；userid 是系统内部标识，对用户没有实际意义，展示反而容易造成困惑。
+- **原因**：创建类操作的信息已在上层交互完整展示并确认，执行阶段再复述一遍冗余；取消会议属破坏性操作，复述主题与时间并获确认可防止误取消；userid 是系统内部标识，对用户没有实际意义，展示反而容易造成困惑。
 
 ### 规则 3: 参数补全
 
@@ -222,7 +223,7 @@ metadata:
 
 ### 规则 4: 权限判定交给接口
 
-- 取消 / 更新会议不预先按"是否本人创建"拦截，也不区分 `created_meetings` / `attended_meetings`——直接执行 `cancel` / `update`，能否操作由接口返回结果判断。
+- 取消 / 更新会议不预先按"是否本人创建"拦截，也不区分 `created_meetings` / `attended_meetings`——由接口返回结果判断能否操作（取消前另须按规则 2 复述会议主题与时间并获确认）。
 - 返回成功即操作完成；返回权限类错误则说明当前用户无权操作该会议，告知用户并建议联系会议发起人。
 
 ### 规则 5: 输入安全处理
@@ -264,8 +265,8 @@ wecom-cli meeting [action] --json '{"key": "value"}'
 |------|-------------|------|
 | `search` | `meetings[].meeting_id` | `get` 查详情、`cancel` 取消会议 |
 | `list` | `created_meetings[].meeting_id` / `attended_meetings[].meeting_id` | `get` 查详情、`cancel` 取消会议 |
-| `search` | `meetings[].meeting_id`（周期会议加 `meetings[].sub_meeting_id`） | `original get` 拉取会议转写原文 |
-| `list` | `created_meetings[].meeting_id` / `attended_meetings[].meeting_id`（周期会议加对应 `sub_meeting_id`） | `original get` 拉取会议转写原文 |
+| `search` | `meetings[].meeting_id`（周期会议加 `meetings[].sub_meeting_id`） | `original get` 拉取会议转写原文、`meeting get` 获取周期会议某场详情 |
+| `list` | `created_meetings[].meeting_id` / `attended_meetings[].meeting_id`（周期会议加对应 `sub_meeting_id`） | `original get` 拉取会议转写原文、`meeting get` 获取周期会议某场详情 |
 | `list` | `created_meetings` / `attended_meetings` | 展示会议列表时区分"我创建的"与"我参加的"（不用于取消/更新的权限判断） |
 | wecomcli-contact 技能搜索 | `userid`（`wo` 前缀） | `create` 的 `attendees` 数组 |
 | `get` | `meeting_status` | 判断会议状态（`"init"` / `"started"` / `"end"`） |
@@ -279,7 +280,7 @@ wecom-cli meeting [action] --json '{"key": "value"}'
 
 | 错误场景 | 可能原因 | 恢复建议 |
 |---------|---------|---------|
-| 接口返回权限不足（非发起人取消/修改） | 当前用户非会议发起人 | 直接执行后依返回判断；返回权限错误时告知用户无权操作，建议联系会议发起人；不重试 |
+| 接口返回权限不足（非发起人取消/修改） | 当前用户非会议发起人 | 由接口返回判断（取消前另须按规则 2 复述确认）；返回权限错误时告知用户无权操作，建议联系会议发起人；不重试 |
 | 时间校验失败 | `begin_time` 早于当前时间 | 提示用户重新选择未来的时间点；不重试，等待用户修正 |
 | 参数格式错误（meeting_id） | meeting_id 误传 9 位会议号 | 检查 ID 来源：[正确] `"meeting_id": "mtkSFfCgNxxxxxxx"`（长字符串）；[错误] `"meeting_id": "123456789"`（9 位会议号是 meeting_code，不能作为 meeting_id）；不重试 |
 | 参数格式错误（attendees） | attendees 格式不正确 | 检查格式：[正确] `"attendees": [{"userid": "woxxx"}]`；[错误] `"attendees": ["woxxx"]`（不接受平铺字符串数组）或 `"attendees": ["张三"]`（不接受姓名）；用户提供的是姓名时通过 `读取 wecomcli-contact 技能` 解析为 userid |
