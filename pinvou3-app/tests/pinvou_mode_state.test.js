@@ -35,7 +35,8 @@ this.savePinvouModeState = savePinvouModeState;
 ${personalWorkbenchCode}
 ${workSceneCode}
 this.shouldUseDocumentWritingScene = shouldUseDocumentWritingScene;
-this.shouldUsePersonalWorkbenchScene = shouldUsePersonalWorkbenchScene;`, ctx, {
+this.shouldUsePersonalWorkbenchScene = shouldUsePersonalWorkbenchScene;
+this.shouldUsePptDesignScene = shouldUsePptDesignScene;`, ctx, {
   filename: logicPath,
 });
 
@@ -53,6 +54,7 @@ const {
   savePinvouModeState,
   shouldUseDocumentWritingScene,
   shouldUsePersonalWorkbenchScene,
+  shouldUsePptDesignScene,
 } = ctx;
 
 const plain = (value) => JSON.parse(JSON.stringify(value));
@@ -64,7 +66,11 @@ assert.strictEqual(normalizePinvouMode('code'), 'work');
 assert.strictEqual(normalizePinvouMode('invalid'), 'work');
 assert.strictEqual(normalizeWorkSubtab('invalid'), 'general');
 assert.strictEqual(normalizeWorkSubtab('personal-workbench'), 'personal-workbench');
+assert.strictEqual(normalizeDesignSubtab('ppt'), 'ppt');
 assert.strictEqual(normalizeDesignSubtab('invalid'), 'general');
+assert.strictEqual(shouldUsePptDesignScene('design', 'ppt'), true);
+assert.strictEqual(shouldUsePptDesignScene('work', 'ppt'), false);
+assert.strictEqual(shouldUsePptDesignScene('design', 'poster'), false);
 
 let state = createPinvouModeState();
 assert.strictEqual(state.mode, 'work');

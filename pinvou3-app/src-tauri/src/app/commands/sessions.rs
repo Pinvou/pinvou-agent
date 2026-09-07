@@ -568,6 +568,7 @@ fn normalize_pinvou_scene_events(events: serde_json::Value) -> Result<serde_json
             Some("work:personal-workbench") => "work:personal-workbench",
             Some("design:poster") => "design:poster",
             Some("design:data-visualization") => "design:data-visualization",
+            Some("design:ppt") => "design:ppt",
             _ => return Err("pinvou scene event 包含无效 scene".to_string()),
         };
         normalized.insert(pos, scene);
@@ -730,13 +731,15 @@ mod pinvou_scene_event_tests {
         let normalized = normalize_pinvou_scene_events(serde_json::json!([
             { "pos": 7, "scene": "design:poster" },
             { "pos": 2, "scene": "work:document-writing" },
-            { "pos": 7, "scene": "design:data-visualization" }
+            { "pos": 7, "scene": "design:data-visualization" },
+            { "pos": 5, "scene": "design:ppt" }
         ]))
         .expect("valid scene events");
         assert_eq!(
             normalized,
             serde_json::json!([
                 { "pos": 2, "scene": "work:document-writing" },
+                { "pos": 5, "scene": "design:ppt" },
                 { "pos": 7, "scene": "design:data-visualization" }
             ])
         );
@@ -746,7 +749,7 @@ mod pinvou_scene_event_tests {
     fn scene_events_reject_unknown_scenes_and_invalid_positions() {
         assert!(
             normalize_pinvou_scene_events(serde_json::json!([
-                { "pos": 0, "scene": "design:ppt" }
+                { "pos": 0, "scene": "design:webpage" }
             ]))
             .is_err()
         );
@@ -770,6 +773,22 @@ mod pinvou_scene_event_tests {
             normalized,
             serde_json::json!([
                 { "pos": 3, "scene": "work:personal-workbench" }
+            ])
+        );
+    }
+
+    #[test]
+    fn scene_events_accept_ppt_design_scene() {
+        // The design:ppt scene label must be accepted and persisted by the
+        // backend, or the label on that message is lost after sidecar reload.
+        let normalized = normalize_pinvou_scene_events(serde_json::json!([
+            { "pos": 4, "scene": "design:ppt" }
+        ]))
+        .expect("design:ppt scene must be accepted");
+        assert_eq!(
+            normalized,
+            serde_json::json!([
+                { "pos": 4, "scene": "design:ppt" }
             ])
         );
     }

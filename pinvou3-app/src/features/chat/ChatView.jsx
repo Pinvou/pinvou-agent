@@ -116,10 +116,12 @@ import {
   createDataVisualizationMessageMeta,
   createDocumentWritingMessageMeta,
   createPersonalWorkbenchMessageMeta,
+  createPptDesignMessageMeta,
   PERSONAL_WORKBENCH_SCENE_KEY,
   shouldUseDataVisualizationScene,
   shouldUseDocumentWritingScene,
   shouldUsePersonalWorkbenchScene,
+  shouldUsePptDesignScene,
 } from './work-scene-routes.js';
 import {
   PERSONAL_WORKBENCH_TEMPLATES,
@@ -181,7 +183,7 @@ const WORK_MODE_SUBTABS = [
 const DESIGN_MODE_SUBTABS = [
   { key: 'poster', labelKey: 'poster', Icon: ImageIcon },
   { key: 'data-visualization', labelKey: 'dataVisualization', Icon: BarChart2 },
-  { key: 'ppt', labelKey: 'pptDesign', Icon: Presentation, disabled: true, disabledReasonKey: 'pptUnavailable' },
+  { key: 'ppt', labelKey: 'pptDesign', Icon: Presentation },
 ];
 
 // legacy assistant 气泡由 item.text 现算 markdown(懒语言注册后恢复高亮所必需),
@@ -218,6 +220,8 @@ function pinvouSceneDisplay(scene, copy) {
       return { label: copy.poster, Icon: ImageIcon };
     case 'design:data-visualization':
       return { label: copy.dataVisualization, Icon: BarChart2 };
+    case 'design:ppt':
+      return { label: copy.pptDesign, Icon: Presentation };
     default:
       return null;
   }
@@ -1146,6 +1150,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const documentWritingSceneActive = shouldUseDocumentWritingScene(pinvouMode, workSubtab);
       const personalWorkbenchSceneActive = shouldUsePersonalWorkbenchScene(pinvouMode, workSubtab);
       const dataVisualizationSceneActive = shouldUseDataVisualizationScene(pinvouMode, designSubtab);
+      const pptDesignSceneActive = shouldUsePptDesignScene(pinvouMode, designSubtab);
       const activeScene = pinvouMode === 'work'
         ? workModeSubtabs.find(item => item.key === workSubtab)
         : pinvouMode === 'design'
@@ -1158,6 +1163,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             ? chatViewCopy.placeholderDesignDataViz
           : visualPosterSceneActive
             ? chatViewCopy.placeholderDesignPoster
+          : pptDesignSceneActive
+            ? chatViewCopy.placeholderDesignPpt
             : sceneCopy.designGeneralPlaceholder
         : pinvouMode === 'work'
           ? personalWorkbenchSceneActive
@@ -1627,6 +1634,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           else if (documentWritingSceneActive) meta = createDocumentWritingMessageMeta(scenePrompt);
           else if (personalWorkbenchSceneActive) meta = createPersonalWorkbenchMessageMeta(scenePrompt, templateId);
           else if (dataVisualizationSceneActive) meta = createDataVisualizationMessageMeta(scenePrompt);
+          else if (pptDesignSceneActive) meta = createPptDesignMessageMeta(scenePrompt);
         }
         const requirements = requiredCapabilitiesForMeta(meta);
         if (requirements) {
@@ -1686,7 +1694,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         // composer (first-turn materialization abort, session switch);
         // restoring again would duplicate it.
         return dispatchResult !== false;
-      }, [activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, t, visualPosterSceneActive]);
+      }, [activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, pptDesignSceneActive, t, visualPosterSceneActive]);
       // ConversationTimeline render-callback stabilization: ConversationTurn is React.memoized, so a
       // per-render callback identity would make every turn fully re-render each time. Callbacks only
       // rebuild identity when their inputs change; the latestArtifactIds Set is a fresh reference on
