@@ -161,15 +161,28 @@ pub async fn move_session_to_project(
                 "move_session_to_project: add_workspace_root requires project_id".to_string(),
             );
         }
-        let info = acp_pool
-            .workspace_info(&session_id)
-            .map_err(|e| format!("move_session_to_project({session_id}): {e:#}"))?;
-        if info.workspace_kind != CodexWorkspaceKind::Project {
-            return Err(format!(
-                "move_session_to_project({session_id}): temporary session has no project folder to add"
-            ));
+        // 统一工作区探测(跨模式融合):代码/ACP 会话走 agent 记录;普通绑定
+        // 会话(agent 记录缺失)回落到双根信号——执行根≠账本根 ⇒ 已绑定,
+        // 执行根即绑定目录(#445 的绑定语义)。临时/未绑定会话两者皆无。
+        let detected = match acp_pool.workspace_info(&session_id) {
+            Ok(info) if info.workspace_kind == CodexWorkspaceKind::Project => {
+                Some(PathBuf::from(info.workspace_path))
+            }
+            Ok(_) => None,
+            Err(_) => sessions
+                .session_roots(&session_id)
+                .ok()
+                .filter(|roots| roots.execution != roots.ledger)
+                .map(|roots| roots.execution),
+        };
+        match detected {
+            Some(path) => Some(path),
+            None => {
+                return Err(format!(
+                    "move_session_to_project({session_id}): session has no project folder to add"
+                ));
+            }
         }
-        Some(PathBuf::from(info.workspace_path))
     } else {
         None
     };
@@ -231,9 +244,11 @@ pub async fn rebind_workspace_root(
     }
 
     // 活跃回合栅栏:受影响会话任一在跑 prompt/turn 就拒绝,等空闲后重试。
-    let affected = acp_pool.agents().sessions_under_workspace(&from);
+    // 候选集跨两类绑定存储:agent 记录(代码/ACP) + 普通会话绑定 sidecar。
+    let mut guard_candidates = acp_pool.agents().sessions_under_workspace(&from);
+    guard_candidates.extend(sessions.workspace_bindings_under(&from));
     let mut busy_ids = Vec::new();
-    for (session_id, _) in &affected {
+    for (session_id, _) in &guard_candidates {
         if acp_pool.is_turn_active(session_id).await || engines.is_turn_active(session_id) {
             busy_ids.push(session_id.clone());
         }
@@ -245,18 +260,25 @@ pub async fn rebind_workspace_root(
         ));
     }
 
-    // 顺序:项目 root → 会话绑定(索引+sidecar) → 元数据 → baseline。
+    // 顺序:项目 root → 会话绑定(索引+sidecar,两类存储) → 元数据 → baseline。
     // 每步幂等,失败重试只补未完成部分。
     let affected_project_ids = store
         .rebind_roots(&from, &to_key)
         .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
-    let rebound = acp_pool
+    let code_rebound = acp_pool
         .agents()
         .rebind_workspace_prefix(&from, &to_key)
         .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
+    let code_rebound_ids: std::collections::HashSet<&str> = code_rebound
+        .iter()
+        .map(|(session_id, _)| session_id.as_str())
+        .collect();
+    let plain_rebound = sessions
+        .rebind_workspace_bindings(&from, &to_key)
+        .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
     let mut rebound_session_ids = Vec::new();
     let mut failed_session_ids = Vec::new();
-    for (session_id, new_path) in &rebound {
+    for (session_id, new_path) in code_rebound.iter().chain(plain_rebound.iter()) {
         // 孤儿 sidecar(会话 JSON 已不存在)没有元数据可写,按成功计。
         if sessions.load(session_id).is_err() {
             rebound_session_ids.push(session_id.clone());
@@ -269,11 +291,14 @@ pub async fn rebind_workspace_root(
                 failed_session_ids.push(session_id.clone());
             }
         }
-        // baseline 重采集:best-effort,git 指纹可再派生,失败不阻断重绑定。
-        if let Err(error) =
-            crate::features::codex_acp::workspace::capture_baseline(session_id, new_path)
-        {
-            eprintln!("[projects] rebind capture_baseline({session_id}) failed: {error:#}");
+        // baseline 重采集只对代码会话:普通会话不消费 workspace baseline,
+        // 不为它们创建代码车道专属 sidecar。best-effort,失败仅记日志。
+        if code_rebound_ids.contains(session_id.as_str()) {
+            if let Err(error) =
+                crate::features::codex_acp::workspace::capture_baseline(session_id, new_path)
+            {
+                eprintln!("[projects] rebind capture_baseline({session_id}) failed: {error:#}");
+            }
         }
     }
 

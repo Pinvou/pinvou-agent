@@ -1423,6 +1423,10 @@ function workspaceDisplayName(path) {
           pinned: !!s.pinned,
           pinnedAt: s.pinned_at || '',
           working: !!sessionBusy[s.id], // 多 session 并发:该 session 是否正在后台生成
+          // #445 绑定:绑定工作会话携带 workspacePath/Kind,项目分组跟随绑定
+          // (与安全姿态同一条信号),未绑定会话两个值为空、维持日期视图。
+          workspacePath: s.workspace_binding || '',
+          workspaceKind: s.workspace_binding ? 'project' : '',
           leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
           testId: 'regular-sidebar-item',
           menuTestId: 'regular-sidebar-menu',
@@ -1771,13 +1775,12 @@ function workspaceDisplayName(path) {
         });
       }
 
-      // Code-style sidebar: lists only code sessions. Project layer resolves
-      // each session through three deterministic tiers (explicit assignment /
-      // project-root auto-grouping / implicit folder bucketing); without any
-      // created project the result is byte-identical to the legacy folder
-      // grouping. With "pinned first", pinned code sessions hoist above groups.
+      // 项目视图(原「代码」形态):所有绑定真实目录的会话——代码/ACP 会话
+      // 与 #445 的绑定工作会话——统一按项目层三层分组;未绑定普通会话留在
+      // 「全部」的日期视图。分组跟随绑定,与安全姿态同一条信号。
       const sidebarCodeTasks = sidebarCodeListActive
-        ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex')
+        ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex'
+            || (chat.taskKind === 'regular' && chat.workspacePath))
         : [];
       const sidebarFolderPinned = taskListSort === 'pinned_first'
         ? sidebarCodeTasks.filter(chat => !!chat.pinned)
@@ -2679,8 +2682,12 @@ function workspaceDisplayName(path) {
             onTogglePinned={handleToggleSessionPinned}
             onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
             onArchive={handleArchiveSession}
-            onMoveToProject={chat.taskKind === 'codex' && bridge.projects ? (() => { setMoveToPresetProject(null); setMoveToProjectSession(chat); }) : undefined}
-            dndPayload={chat.taskKind === 'codex' && bridge.projects ? { sessionId: chat.id } : undefined}
+            onMoveToProject={bridge.projects && (chat.taskKind === 'codex' || !!chat.workspacePath)
+              ? (() => { setMoveToPresetProject(null); setMoveToProjectSession(chat); })
+              : undefined}
+            dndPayload={bridge.projects && (chat.taskKind === 'codex' || !!chat.workspacePath)
+              ? { sessionId: chat.id }
+              : undefined}
             dndDisabled={!!dragAvatar}
             dragKind={detachKind}
             dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}

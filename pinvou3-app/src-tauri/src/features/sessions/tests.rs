@@ -3813,3 +3813,106 @@ fn truncate_reports_compaction_summary_residue_in_system_prompt() {
         .expect("rewind without marker");
     assert!(!outcome.had_compaction, "普通 system_prompt 不得误报");
 }
+
+#[test]
+fn rebind_workspace_bindings_moves_plain_bindings_and_stays_idempotent() {
+    let (store, _g) = isolated_store();
+    let bound = unique_temp_dir("rebind-plain-from");
+    let nested = bound.join("sub");
+    std::fs::create_dir_all(&nested).expect("create bound dirs");
+    let elsewhere = unique_temp_dir("rebind-plain-other");
+    std::fs::create_dir_all(&elsewhere).expect("create elsewhere");
+    let to = unique_temp_dir("rebind-plain-to");
+    std::fs::create_dir_all(&to).expect("create to dir");
+
+    let bound_session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create bound");
+    let nested_session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create nested");
+    let other_session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create other");
+    let sibling = bound.with_file_name(format!(
+        "{}-x",
+        bound.file_name().unwrap().to_string_lossy()
+    ));
+    let sibling_session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create sibling");
+    store
+        .bind_session_workspace(&bound_session.metadata.id, bound.clone())
+        .expect("bind");
+    store
+        .bind_session_workspace(&nested_session.metadata.id, nested.clone())
+        .expect("bind nested");
+    store
+        .bind_session_workspace(&other_session.metadata.id, elsewhere.clone())
+        .expect("bind other");
+    store
+        .bind_session_workspace(&sibling_session.metadata.id, sibling.clone())
+        .expect("bind sibling");
+
+    let matched = store.workspace_bindings_under(&bound);
+    assert_eq!(matched.len(), 2, "elsewhere 与 sibling 前缀不得命中");
+
+    let affected = store
+        .rebind_workspace_bindings(&bound, &to)
+        .expect("rebind plain bindings");
+    let mut ids: Vec<&str> = affected.iter().map(|(id, _)| id.as_str()).collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        vec![
+            bound_session.metadata.id.as_str(),
+            nested_session.metadata.id.as_str()
+        ]
+    );
+    assert_eq!(
+        store
+            .session_workspace_binding(&bound_session.metadata.id)
+            .as_deref(),
+        Some(to.as_path()),
+    );
+    assert_eq!(
+        store
+            .session_workspace_binding(&nested_session.metadata.id)
+            .as_deref(),
+        Some(to.join("sub").as_path()),
+    );
+    assert_eq!(
+        store
+            .session_workspace_binding(&other_session.metadata.id)
+            .as_deref(),
+        Some(elsewhere.as_path()),
+        "prefix 外绑定不动",
+    );
+    assert_eq!(
+        store
+            .session_workspace_binding(&sibling_session.metadata.id)
+            .as_deref(),
+        Some(sibling.as_path()),
+        "目录边界:sibling 前缀不得误命中",
+    );
+
+    // 幂等:再跑无命中;重启(冷缓存)后新值仍然可读。
+    assert!(
+        store
+            .rebind_workspace_bindings(&bound, &to)
+            .unwrap()
+            .is_empty()
+    );
+    store.session_workspaces.write().clear();
+    assert_eq!(
+        store
+            .session_workspace_binding(&nested_session.metadata.id)
+            .as_deref(),
+        Some(to.join("sub").as_path()),
+        "sidecar 已改写,冷缓存回读不得复活旧目录",
+    );
+
+    let _ = std::fs::remove_dir_all(&bound);
+    let _ = std::fs::remove_dir_all(&elsewhere);
+    let _ = std::fs::remove_dir_all(&to);
+}

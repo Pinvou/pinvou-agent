@@ -6,6 +6,10 @@ pub struct SessionListItem {
     pub pinned_at: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub title_attachment_names: Vec<String>,
+    /// 普通会话的用户工作目录绑定（#445；None = 未绑定）。项目层据此把
+    /// 绑定工作会话纳入项目分组（分组跟随绑定,与安全姿态同一条信号）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_binding: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -136,10 +140,15 @@ pub async fn list_sessions(
         .into_iter()
         .map(|metadata| {
             let title_attachment_names = session_title_attachment_names(&store, &metadata);
+            // 读缓存 miss 时回读 sidecar;列表 ≤50 条,冷缓存一次 N 读后常驻。
+            let workspace_binding = store
+                .session_workspace_binding(&metadata.id)
+                .map(|path| path.display().to_string());
             SessionListItem {
                 pinned: store.is_pinned(&metadata.id),
                 pinned_at: store.pinned_at(&metadata.id),
                 title_attachment_names,
+                workspace_binding,
                 metadata,
             }
         })
