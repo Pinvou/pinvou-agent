@@ -246,7 +246,7 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
             <span>{t.riRename}</span>
           </button>
           {onMoveToProject && (
-            <button type="button" className={menuItemCls} onClick={() => { closeMenu(); onMoveToProject(chat.id); }}>
+            <button type="button" className={menuItemCls} onClick={() => { closeMenu(); onMoveToProject(chat); }}>
               <Layers size={15} />
               <span>{t.uiProjects.moveToProject}</span>
             </button>
