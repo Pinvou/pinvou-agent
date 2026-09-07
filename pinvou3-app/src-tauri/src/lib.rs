@@ -1206,6 +1206,8 @@ pub fn run() {
             commands::codex::open_codex_workspace_resource,
             commands::codex::get_codex_workspace_changes,
             commands::codex::get_codex_workspace_diff,
+            commands::codex::list_codex_workspace_branches,
+            commands::codex::checkout_codex_workspace_branch,
             commands::codex::open_codex_workspace_file,
             commands::codex::reveal_codex_workspace_file,
             commands::codex::open_code_reader,

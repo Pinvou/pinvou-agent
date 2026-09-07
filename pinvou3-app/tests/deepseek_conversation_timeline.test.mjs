@@ -4,6 +4,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import vm from 'node:vm';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
@@ -17,6 +18,10 @@ for (const file of ['conversation-model.js', 'deepseek-conversation.js']) {
     path.join(conversationDir, file),
   );
 }
+vm.runInThisContext(
+  readFileSync(path.join(root, 'src', 'shared', 'model-service-errors.js'), 'utf8'),
+  { filename: 'model-service-errors.js' },
+);
 
 try {
   const { pairDeepSeekTimeline, projectDeepSeekConversation } = await import(
@@ -251,6 +256,80 @@ try {
   assert.equal(history.turns[2].error, '模型失败');
   assert.equal(history.turns[2].lifecycleKnown, true);
 
+  const billingHistory = projectDeepSeekConversation({
+    chatItems,
+    busy: false,
+    sessionId: 'session-1',
+    language: 'en',
+    modelServiceState: {
+      currentSessionModelId: 'deepseek-main',
+      savedModels: [{ id: 'deepseek-main', preset: 'deepseek', model: 'deepseek-chat' }],
+    },
+    timelineEvents: [
+      { turn_id: 'turn-live', event: 'user_start', timestamp: 123456, ts: '1970-01-01T00:02:03Z' },
+      {
+        turn_id: 'turn-live',
+        event: 'assistant_done',
+        timestamp: 125456,
+        ts: '1970-01-01T00:02:05Z',
+        status: 'Failed',
+        error: 'SSE stream request failed: HTTP 402 insufficient balance',
+      },
+    ],
+  });
+  assert.equal(billingHistory.turns[2].userError.kind, 'billing');
+  assert.match(billingHistory.turns[2].userError.title, /DeepSeek account balance is insufficient/);
+
+  // providerLabelFromState's language argument must be threaded through:
+  // the openai_compatible default label is built in the UI language, and
+  // missing it lets an en interface fall back to the Chinese "当前模型服务".
+  const genericProviderHistory = projectDeepSeekConversation({
+    chatItems,
+    busy: false,
+    sessionId: 'session-1',
+    language: 'en',
+    modelServiceState: {
+      currentSessionModelId: 'generic-main',
+      savedModels: [{ id: 'generic-main', preset: 'openai_compatible', model: 'gpt-4o' }],
+    },
+    timelineEvents: [
+      { turn_id: 'turn-live', event: 'user_start', timestamp: 123456, ts: '1970-01-01T00:02:03Z' },
+      {
+        turn_id: 'turn-live',
+        event: 'assistant_done',
+        timestamp: 125456,
+        ts: '1970-01-01T00:02:05Z',
+        status: 'Failed',
+        error: 'SSE stream request failed: HTTP 402 insufficient balance',
+      },
+    ],
+  });
+  assert.equal(genericProviderHistory.turns[2].userError.kind, 'billing');
+  assert.doesNotMatch(
+    genericProviderHistory.turns[2].userError.title,
+    /当前模型服务/,
+    'en cards must not fall back to the Chinese default provider label',
+  );
+  assert.match(genericProviderHistory.turns[2].userError.title, /current model service account balance is insufficient/);
+
+  const localPermissionHistory = projectDeepSeekConversation({
+    chatItems,
+    busy: false,
+    sessionId: 'session-1',
+    timelineEvents: [
+      { turn_id: 'turn-live', event: 'user_start', timestamp: 123456, ts: '1970-01-01T00:02:03Z' },
+      {
+        turn_id: 'turn-live',
+        event: 'assistant_done',
+        timestamp: 125456,
+        ts: '1970-01-01T00:02:05Z',
+        status: 'Failed',
+        error: 'permission denied while reading local file',
+      },
+    ],
+  });
+  assert.equal(localPermissionHistory.turns[2].userError, null);
+
   const paired = pairDeepSeekTimeline([
     { turn_id: 'not-admitted', event: 'user_start', timestamp: 1, ts: '1970-01-01T00:00:00Z' },
     { turn_id: 'not-admitted', event: 'assistant_done', timestamp: 2, ts: '1970-01-01T00:00:00Z', status: 'send_error' },
@@ -258,6 +337,30 @@ try {
   ]);
   assert.equal(paired.length, 1, 'send_error timing records must not shift visible user turns');
   assert.equal(paired[0].status, 'incomplete');
+
+  // A timeline's bare error feeds the red-text fallback: gateway/provider
+  // bodies the gate missed must be redacted at the projection layer too
+  // (classification may miss, credentials must not); userError cards go
+  // through build(), which redacts on its own.
+  // Fake keys are built by concatenation to avoid triggering GitHub push
+  // protection's secret-pattern scan (synthetic values).
+  const FAKE_PROJ_KEY = 'sk-proj-' + 'abcdefghijklmnop1234567890';
+  const leaky = pairDeepSeekTimeline([
+    { turn_id: 'leak-1', event: 'user_start', timestamp: 1 },
+    {
+      turn_id: 'leak-1', event: 'assistant_done', timestamp: 2, status: 'Failed',
+      error: 'Incorrect API key provided: ' + FAKE_PROJ_KEY + '.',
+    },
+  ], { language: 'en' });
+  assert.equal(leaky[0].status, 'Failed');
+  assert.doesNotMatch(
+    leaky[0].error,
+    new RegExp(FAKE_PROJ_KEY),
+    'projected raw error must be redacted',
+  );
+  assert.match(leaky[0].error, /\[redacted\]/);
+  assert.ok(leaky[0].userError, 'gated model-service errors must still build the friendly card');
+  assert.equal(leaky[0].userError.kind, 'auth');
 
   const emptyHistory = projectDeepSeekConversation({
     chatItems: [],
@@ -329,6 +432,24 @@ try {
   const conversationView = readFileSync(path.join(root, 'src', 'features', 'conversation', 'ConversationTimeline.jsx'), 'utf8');
   const questionChoiceCard = readFileSync(path.join(root, 'src', 'features', 'conversation', 'QuestionChoiceCard.jsx'), 'utf8');
   const toolRenderers = readFileSync(path.join(root, 'src', 'features', 'tools', 'tool-renderers.jsx'), 'utf8');
+  // The busy block must clear userError in lockstep with error (R2 L1):
+  // when a turn re-runs, a leftover userError card would show the previous
+  // turn's "has stopped" wording while the turn claims to be running.
+  const deepseekSource = readFileSync(path.join(root, 'src', 'features', 'conversation', 'deepseek-conversation.js'), 'utf8');
+  const busyBlock = deepseekSource.slice(
+    deepseekSource.indexOf('if (activeTurn && busy) {'),
+    deepseekSource.indexOf('if (activeTurn && busy && tokens'),
+  );
+  assert.ok(
+    busyBlock.includes('activeTurn.error = null') && busyBlock.includes('activeTurn.userError = null'),
+    'busy re-run must clear stale userError in lockstep with error',
+  );
+  // Timeline error card dual theme (R3/R4 residual): the hardcoded dark
+  // style jarred under the light theme.
+  assert.ok(
+    conversationView.includes('bg-white/85') && conversationView.includes('dark:bg-[rgba(38,38,42,0.78)]'),
+    'timeline user-error card must provide a light theme alongside the dark glass style',
+  );
   assert.ok(chatView.includes('<ConversationTimeline'), 'DeepSeek must render through the shared timeline by default');
   assert.ok(chatView.includes('data-testid="chat-artifacts-entry"')
     && chatView.includes('{activeSessionId && (')
@@ -480,6 +601,10 @@ try {
     'a turn with no assistant content must not render an avatar-only row (steered message sandwiched between consecutive injections)',
   );
 
+  assert.ok(conversationView.includes('turn.userError')
+    && conversationView.includes('technicalDetails')
+    && conversationView.includes('turn.userError.technicalDetail'),
+  'timeline terminal errors must render friendly model-service errors with optional technical details');
   assert.ok(conversationView.includes("closest('a[href]')")
     && conversationView.includes('event.preventDefault()')
     && conversationView.includes('onOpenExternal(external)'),

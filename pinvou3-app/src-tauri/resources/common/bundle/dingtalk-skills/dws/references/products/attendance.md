@@ -22,6 +22,8 @@
 > 4. 如果用户指定了具体日期范围（如"4月1日到4月15日"），直接使用用户给定的范围，不套用上述规则。
 > 5. 日期格式统一按各命令要求：`shift list` / `check result` 等使用 `YYYY-MM-DD`；`report query-data` / `report query-leave` 等使用 `yyyy-MM-dd HH:mm:ss`（start 取当天 `00:00:00`，end 取当天 `23:59:59`）。
 
+> **【全局参数说明】** `--timeout <秒>` 为全局超时参数（下文写操作示例中的 `--timeout 10` 即指它）；其余全局 Flags 与公共约定见 [global-reference.md](../global-reference.md)。
+
 ## 签到（checkin）— 优先路由
 
 > **只要用户句中含"签到"二字（签到记录/签到数据/签到明细/外勤签到/导出签到/签到报表），就走本节，不要走 `check record`（打卡流水）。"签到" ≠ "打卡"，签到是外勤场景的独立功能。**
@@ -150,51 +152,9 @@ Flags:
 - 补卡/加班场景：可将名称与“补卡”或“加班”最直接匹配的模板放在前面展示。
 - 回复用户时不要直接裸露任何 `submitUrl`，所有返回的表单模板都必须使用 Markdown 可点击链接格式展示：`[formName](submitUrl)`，例如 `[员工请假](https://...)`。如存在更匹配的模板，可以放在列表前面，但不要只返回推荐模板，必须同时返回其它可用模板供用户选择，且每个模板都应是用户可直接点击的 Markdown 链接。
 
-### 导入排班记录（排班 = 为员工安排工作日期和班次, 写场景接口，必须走二次确认流程）
-```
-Usage:
-  dws attendance schedule import [flags]
-Example:
-  dws attendance schedule import --group-id 123456 \
-    --schedules '[{"userId":"user001","classId":123,"workDate":"2026-04-22","isRest":"N"}]' \
-    --yes
-Flags:
-      --group-id string   考勤组（必填，传入考勤组ID）；--help 主名为 --groupId，--group-id 为别名
-      --schedules string  排班记录 JSON 数组（必填）；--help 主名为 --scheduleVOS，--schedules 为别名
-      --yes               跳过确认提示；--help 主名为 --user-say-yes，--yes 为别名
-```
+### 导入排班记录
 
-为排班制考勤组导入排班记录。`--schedules` 为 JSON 数组，每条记录包含：
-- `userId`: 员工ID（必填）
-- `classId`: 班次ID（必填）
-- `workDate`: 工作日期（YYYY-MM-DD），如 2026-04-22（必填）
-- `isRest`: 是否休息日 Y/N（**必填**，服务端要求传入）
-- `checkBeginTime` / `checkEndTime`: 开始/结束打卡时间（可传，但当前不会进入后端 payload，实际打卡时段以 `classId` 对应班次为准）
-
-#### AI 调用 `schedule import` 的二次确认流程
-
-`schedule import` 是写操作，会为考勤组导入或变更员工排班。AI 调用时必须按以下流程执行，不得在未确认的情况下直接导入：
-
-1. **识别写操作**：用户表达“导入排班 / 设置排班 / 安排排班 / 给员工排班 / 批量排班”等意图时，命中 `schedule import`。
-2. **收集必要参数**：必须明确 `--group-id` 和 `--schedules`，并确认排班记录中的 `userId`、`classId`、`workDate`、`checkBeginTime`、`checkEndTime`、`isRest` 等字段。
-3. **展示导入摘要并反问确认**：向用户展示考勤组 ID、导入员工数量、涉及日期范围、班次 ID 列表，以及排班记录明细摘要，并询问是否确认执行导入。
-4. **用户确认后再执行导入**：只有用户明确确认后，才可以执行 `dws attendance schedule import ... --format json`。
-
-确认话术示例：
-
-```text
-即将导入排班记录，请确认：
-- 考勤组 ID：<GROUP_ID>
-- 员工数量：<USER_COUNT>
-- 日期范围：<START_DATE> ~ <END_DATE>
-- 班次 ID：<CLASS_IDS>
-- 排班明细：
-  - <USER_ID>：<WORK_DATE> <CHECK_BEGIN_TIME>-<CHECK_END_TIME>，班次 <CLASS_ID>
-
-是否确认执行导入？
-```
-
-如用户明确要求跳过确认，或命令中明确包含全局 `--yes`，可跳过二次确认。
+排班导入必须走 scripts/attendance_schedule_import.py，流程见 [attendance-schedule.md](./attendance-schedule.md)（禁止直连 `dws attendance schedule import`）。
 
 ### 获取排班记录
 
@@ -1045,15 +1005,15 @@ Flags:
   - 该文档定义了：考勤组类型校验（必须为 TURN）、班次校验（必须属于该考勤组）、排班回显确认、错误处理等约束，缺一不可
   - 违反约束的后果：排错班次、排错人员、排班数据覆盖无法回退
 用户说"班次定义/班次列表/有哪些班次/我负责的班次" → `class search`（返回结果已包含全量属性，无需再调 get）
-用户说"班次详情/某个班次的具体信息" → `class search --name "..."`（search 直出，直接返回详情）。`class get` 仅在需要按已知 classId 精确查询时使用
+用户说"班次详情/某个班次的具体信息" → `class search --query "..."`（search 直出，直接返回详情）。`class get` 仅在需要按已知 classId 精确查询时使用
 用户说"更新班次/修改班次/班次改名/修改上下班时间" → `class update`
 用户说"补卡规则/补卡设置" → `adjustment search`（返回结果已包含全量属性，无需再调 get）
-用户说"补卡规则详情/某条补卡规则的具体信息" → `adjustment search --name "..."`（search 直出，已含全量属性）。**不要用 `adjustment get`**：当前服务端对任意 id 都只返回"有效期类型"、拿不到规则明细
+用户说"补卡规则详情/某条补卡规则的具体信息" → `adjustment search --query "..."`（search 直出，已含全量属性）。**不要用 `adjustment get`**：当前服务端对任意 id 都只返回"有效期类型"、拿不到规则明细
 用户说"加班规则/加班设置/加班计算" → `overtime search`（返回结果已包含全量属性，无需再调 get）
-用户说"加班规则详情/某条加班规则的具体信息" → `overtime search --name "..."`（search 直出）。如需查已删除/被覆盖的历史记录 → `overtime get`
+用户说"加班规则详情/某条加班规则的具体信息" → `overtime search --query "..."`（search 直出）。如需查已删除/被覆盖的历史记录 → `overtime get`
 用户说"考勤组列表/有哪些考勤组" → `group search`
-用户说"考勤组详情/全量考勤组信息" → `group get`,若返回结果中含成员 userId 列表，则对每个 userId 调用 `dws contact user get --user-ids <userId>`（或等价通讯录查询），在最终输出中展示员工姓名而非裸 userId
-用户说"考勤组成员/打卡地址/打卡wifi/打卡蓝牙" → `group filtered-get`（按需查询，节省成本）,若返回结果中含成员 userId 列表，则对每个 userId 调用 `dws contact user get --user-ids <userId>`（或等价通讯录查询），在最终输出中展示员工姓名而非裸 userId
+用户说"考勤组详情/全量考勤组信息" → `group get`,若返回结果中含成员 userId 列表，则对每个 userId 调用 `dws contact user get --ids <userId>`（或等价通讯录查询），在最终输出中展示员工姓名而非裸 userId
+用户说"考勤组成员/打卡地址/打卡wifi/打卡蓝牙" → `group filtered-get`（按需查询，节省成本）,若返回结果中含成员 userId 列表，则对每个 userId 调用 `dws contact user get --ids <userId>`（或等价通讯录查询），在最终输出中展示员工姓名而非裸 userId
 用户说"更新考勤组成员/添加考勤人员/删除考勤人员/添加考勤部门/删除考勤部门/加入考勤组/移出考勤组/设置无需考勤/取消无需考勤" → `group update-members`
 用户说"修改考勤组/更新考勤组配置/考勤组改名/改变考勤组绑定的班次/修改打卡范围/设置考勤组负责人" → `group update`
 用户说"创建考勤组/新建考勤组/添加考勤组" → `group create`
@@ -1106,7 +1066,7 @@ dws attendance adjustment search --page 1 --limit 20 --format json
 dws attendance adjustment search --query "标准" --page 1 --limit 20 --format json
 
 # 查询补卡规则详情
-dws attendance adjustment get --adjustment-id 12345 --format json
+⚠ `adjustment get` 当前拿不到有效规则详情，不要依赖（见上文 Flags 节说明），请改用 `adjustment search --query` 获取规则明细
 
 # 查询加班规则
 dws attendance overtime search --page 1 --limit 20 --format json
@@ -1307,7 +1267,7 @@ dws attendance checkin records --operator-corp-id corp001 --operator-staff-id op
 | --user-say-yes | n | 用户已确认，跳过交互式确认提示 | - |
 
 **获取 planId 步骤**:
-1. 查询排班记录：`dws attendance schedule get --userIdList USER_ID --workDateBegin DATE --workDateEnd DATE`
+1. 按 [attendance-schedule.md](./attendance-schedule.md) 的排班查询/导出工作流获取排班记录（禁止直连 `dws attendance schedule get`）
 2. 从返回结果中找到对应打卡类型（OnDuty=上班，OffDuty=下班）的记录
 3. 使用该记录的 `id` 字段作为 `--plan-id` 参数
 4. 示例返回：`{"id": 948964045503, "checkType": "OffDuty", ...}` → `--plan-id 948964045503`

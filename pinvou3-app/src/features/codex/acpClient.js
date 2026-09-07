@@ -106,6 +106,20 @@ export function loadAcpWorkspaceChanges({ sessionId }) {
   return invokeRequiredWebCommand('web_access_get_codex_workspace_changes', { sessionId });
 }
 
+// 分支显示/切换目前仅桌面端支持；web 端无对应 web_access_* 命令，显式拒绝。
+// 会话内传 sessionId；草稿态（会话未创建）传 workspacePath 直接扫描目录。
+export function listAcpWorkspaceBranches({ sessionId, workspacePath }) {
+  if (!isWeb) return invokeTauri('list_codex_workspace_branches', { sessionId, workspacePath });
+  return Promise.reject(acpClientError('web_acp_command_unavailable'));
+}
+
+// mode: "carry"（更改携带到目标分支，冲突时失败）| "stash"（先 stash 暂存，切换后自动恢复）
+//     | "commit"（先把全部更改提交到当前分支，需 commitMessage）
+export function checkoutAcpWorkspaceBranch({ sessionId, workspacePath, branch, mode, commitMessage }) {
+  if (!isWeb) return invokeTauri('checkout_codex_workspace_branch', { sessionId, workspacePath, branch, mode, commitMessage });
+  return Promise.reject(acpClientError('web_acp_command_unavailable'));
+}
+
 export function loadAcpWorkspaceDiff({ sessionId, relativePath }) {
   if (!isWeb) {
     return invokeTauri('get_codex_workspace_diff', { sessionId, relativePath });

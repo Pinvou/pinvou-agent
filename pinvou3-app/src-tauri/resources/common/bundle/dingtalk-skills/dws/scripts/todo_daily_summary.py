@@ -3,11 +3,11 @@
 查询今天/明天/本周未完成的待办并汇总输出
 
 用法:
-    python todo_daily_summary.py              # 默认查今天
-    python todo_daily_summary.py today        # 今天的待办
-    python todo_daily_summary.py tomorrow     # 明天的待办
-    python todo_daily_summary.py week         # 本周的待办
-    python todo_daily_summary.py --dry-run    # 仅显示将执行的命令
+    python3 scripts/todo_daily_summary.py              # 默认查今天
+    python3 scripts/todo_daily_summary.py today        # 今天的待办
+    python3 scripts/todo_daily_summary.py tomorrow     # 明天的待办
+    python3 scripts/todo_daily_summary.py week         # 本周的待办
+    python3 scripts/todo_daily_summary.py --dry-run    # 仅显示将执行的命令
 """
 
 import sys

@@ -3,9 +3,9 @@
 查看待我审批列表 + 逐条显示详情（自动时间戳计算）
 
 用法:
-    python oa_pending_review.py                # 最近 7 天
-    python oa_pending_review.py --days 30      # 最近 30 天
-    python oa_pending_review.py --dry-run
+    python3 scripts/oa_pending_review.py                # 最近 7 天
+    python3 scripts/oa_pending_review.py --days 30      # 最近 30 天
+    python3 scripts/oa_pending_review.py --dry-run
 """
 
 import sys

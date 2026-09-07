@@ -60,7 +60,7 @@ dws aitable record query --base-id X --table-id Y --all --cursor "上次返回�
 {"operator":"and","operands":[{"operator":"eq","operands":["<fieldId>","<value>"]}]}
 ```
 
-> **singleSelect/multipleSelect 过滤**：filters 中可传 option id 或 option name，但建议优先用 **option id**（通过 `field get` 获取），更可靠。
+> **singleSelect/multipleSelect 过滤**：与 [aitable-filter-sort.md](./aitable-filter-sort.md) 一致，过滤值传选项的 **exact 名称**（name）。
 
 ## 减少响应体积
 

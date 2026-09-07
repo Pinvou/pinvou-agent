@@ -43,6 +43,11 @@ assert.strictEqual(documentWritingRequirements.key, 'documentWriting');
 assert.deepStrictEqual([...documentWritingRequirements.tools], ['gongwen']);
 assert.deepStrictEqual([...documentWritingRequirements.skills], ['government-writing']);
 
+const pptDesignRequirements = requiredCapabilitiesForMeta({ pinvouScene: 'design:ppt' });
+assert.strictEqual(pptDesignRequirements.key, 'pptDesign');
+assert.deepStrictEqual([...pptDesignRequirements.tools], ['pptx']);
+assert.deepStrictEqual([...pptDesignRequirements.skills], ['pptx']);
+
 assert.strictEqual(requiredCapabilitiesForMeta(null), null);
 assert.strictEqual(requiredCapabilitiesForMeta({ pinvouScene: 'design:poster' }), null);
 // 用户可见文案由 UI 层从 t.uiChatScenes[requirements.key] 取值，模块不得再携带文案字段。

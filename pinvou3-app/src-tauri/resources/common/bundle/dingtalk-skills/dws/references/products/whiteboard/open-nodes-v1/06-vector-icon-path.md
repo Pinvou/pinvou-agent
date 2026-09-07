@@ -15,6 +15,7 @@ dws doc media upload \
   --node <DOC_NODE_ID> \
   --file ./icon.svg \
   --mime-type image/svg+xml \
+  --yes \
   --format json
 ```
 

@@ -4,7 +4,7 @@ import {
   invokeObservedPanelSelection,
   isSubagentPanelPublicationCurrent,
 } from './subagent-panel-publication.mjs';
-import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, Mic, Monitor, Package, Paperclip, PinIcon, Send, Sparkles, StopCircle, Terminal, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
+import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, Mic, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge, activeModelIsLocal } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -122,10 +122,12 @@ import {
   createDataVisualizationMessageMeta,
   createDocumentWritingMessageMeta,
   createPersonalWorkbenchMessageMeta,
+  createPptDesignMessageMeta,
   PERSONAL_WORKBENCH_SCENE_KEY,
   shouldUseDataVisualizationScene,
   shouldUseDocumentWritingScene,
   shouldUsePersonalWorkbenchScene,
+  shouldUsePptDesignScene,
 } from './work-scene-routes.js';
 import {
   PERSONAL_WORKBENCH_TEMPLATES,
@@ -188,6 +190,7 @@ const SCENE_TABS = [
   { key: 'document-writing', labelKey: 'documentWriting', Icon: FileText },
   { key: 'poster', labelKey: 'poster', Icon: ImageIcon },
   { key: 'data-visualization', labelKey: 'dataVisualization', Icon: BarChart2 },
+  { key: 'ppt', labelKey: 'pptDesign', Icon: Presentation },
 ];
 
 // legacy assistant 气泡由 item.text 现算 markdown(懒语言注册后恢复高亮所必需),
@@ -223,6 +226,8 @@ function pinvouSceneDisplay(scene, copy) {
       return { label: copy.poster, Icon: ImageIcon };
     case 'design:data-visualization':
       return { label: copy.dataVisualization, Icon: BarChart2 };
+    case 'design:ppt':
+      return { label: copy.pptDesign, Icon: Presentation };
     default:
       return null;
   }
@@ -1004,6 +1009,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const documentWritingSceneActive = shouldUseDocumentWritingScene(sceneSubtab);
       const personalWorkbenchSceneActive = shouldUsePersonalWorkbenchScene(sceneSubtab);
       const dataVisualizationSceneActive = shouldUseDataVisualizationScene(sceneSubtab);
+      const pptDesignSceneActive = shouldUsePptDesignScene(sceneSubtab);
       const activeScene = sceneSubtab === 'general'
         ? null
         : sceneTabs.find(item => item.key === sceneSubtab) || null;
@@ -1013,11 +1019,13 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           ? chatViewCopy.placeholderScenePoster
           : dataVisualizationSceneActive
             ? chatViewCopy.placeholderSceneDataViz
-            : personalWorkbenchSceneActive
-              ? chatViewCopy.placeholderPersonalWorkbench
-              : documentWritingSceneActive
-                ? chatViewCopy.placeholderWorkDocument
-                : t.placeholder;
+            : pptDesignSceneActive
+              ? chatViewCopy.placeholderScenePpt
+              : personalWorkbenchSceneActive
+                ? chatViewCopy.placeholderPersonalWorkbench
+                : documentWritingSceneActive
+                  ? chatViewCopy.placeholderWorkDocument
+                  : t.placeholder;
       const isScheduledTaskCreationChat = !!(bs && bs.scheduledTaskCreationSessionId && bs.activeSessionId === bs.scheduledTaskCreationSessionId);
       const scheduledRunContext = bs && bs.scheduledRunContext && bs.scheduledRunContext.sessionId === bs.activeSessionId
         ? bs.scheduledRunContext
@@ -1036,6 +1044,26 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // is a read-only pure function (no in-place mutation).
       const chatThinking = bs ? bs.thinking : undefined;
       const turnTimeline = bs ? bs.turnTimeline : undefined;
+      // Timeline error cards build friendly copy in the UI language and
+      // derive the provider label from bridge state (providerLabelFromState
+      // reads currentSessionModelId/activeModelId/savedModels/
+      // effectiveModelConfig/activeProvider). bs is a whole-snapshot object
+      // whose reference changes on every domain update; putting bs itself in
+      // the projection memo deps would re-project the full transcript on
+      // non-chat updates (updater/monitor). Same narrowing as CodexAcpView's
+      // nativeModelServiceState.
+      const modelServiceLanguage = bs && bs.settings && bs.settings.language;
+      const chatModelServiceState = useMemo(
+        () => (bs ? {
+          currentSessionModelId: bs.currentSessionModelId,
+          activeModelId: bs.activeModelId,
+          savedModels: bs.savedModels,
+          effectiveModelConfig: bs.effectiveModelConfig,
+          activeProvider: bs.activeProvider,
+        } : null),
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- track only the field references providerLabelFromState consumes, not the whole bs snapshot
+        [bs && bs.currentSessionModelId, bs && bs.activeModelId, bs && bs.savedModels, bs && bs.effectiveModelConfig, bs && bs.activeProvider],
+      );
       const derivedConversation = useMemo(() => {
         const visibleChatItems = chatItems.filter((item) => !(item.type === 'memory_candidate' && !item.resolved));
         const latestArtIdByPath = {};
@@ -1059,6 +1087,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           sessionId: activeSessionId,
           timelineEvents: turnTimeline,
           allowScheduledTaskDraft: isScheduledTaskCreationChat,
+          language: modelServiceLanguage,
+          modelServiceState: chatModelServiceState,
         });
         // Equivalent to [...turns].reverse().find(turn => turn.status === 'running'):
         // scan backwards for the last running turn, skipping the full reversed copy.
@@ -1068,7 +1098,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           if (turns[i].status === 'running') { activeConversationTurn = turns[i]; break; }
         }
         return { visibleChatItems, latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn };
-      }, [chatItems, busy, ctxTokens, isScheduledTaskCreationChat, useUnifiedConversationUi, chatThinking, turnTimeline, activeSessionId]);
+      }, [chatItems, busy, ctxTokens, isScheduledTaskCreationChat, useUnifiedConversationUi, chatThinking, turnTimeline, activeSessionId, modelServiceLanguage, chatModelServiceState]);
       const { visibleChatItems, latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn } = derivedConversation;
 
       // External entries can prefill the composer and focus its end.
@@ -1469,6 +1499,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           else if (documentWritingSceneActive) meta = createDocumentWritingMessageMeta(scenePrompt);
           else if (personalWorkbenchSceneActive) meta = createPersonalWorkbenchMessageMeta(scenePrompt, templateId);
           else if (dataVisualizationSceneActive) meta = createDataVisualizationMessageMeta(scenePrompt);
+          else if (pptDesignSceneActive) meta = createPptDesignMessageMeta(scenePrompt);
         }
         const requirements = requiredCapabilitiesForMeta(meta);
         if (requirements) {
@@ -1528,7 +1559,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         // composer (first-turn materialization abort, session switch);
         // restoring again would duplicate it.
         return dispatchResult !== false;
-      }, [activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, t, visualPosterSceneActive]);
+      }, [activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, pptDesignSceneActive, t, visualPosterSceneActive]);
       // ConversationTimeline render-callback stabilization: ConversationTurn is React.memoized, so a
       // per-render callback identity would make every turn fully re-render each time. Callbacks only
       // rebuild identity when their inputs change; the latestArtifactIds Set is a fresh reference on
@@ -2780,6 +2811,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               selectionRequestId={subagentPanel.selectionRequestId}
               t={t}
               theme={theme}
+              language={modelServiceLanguage}
+              modelServiceState={chatModelServiceState}
               onClose={closeSubagentPanel}
             />
             </PanelSuspense>

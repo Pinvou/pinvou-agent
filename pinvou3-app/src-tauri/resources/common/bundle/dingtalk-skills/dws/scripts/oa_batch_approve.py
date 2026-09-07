@@ -3,10 +3,10 @@
 批量同意/拒绝待审批项（含安全确认）
 
 用法:
-    python oa_batch_approve.py --action approve --days 7
-    python oa_batch_approve.py --action reject --remark "不符合要求"
-    python oa_batch_approve.py --action approve --instance-ids id1,id2
-    python oa_batch_approve.py --dry-run --action approve
+    python3 scripts/oa_batch_approve.py --action approve --days 7
+    python3 scripts/oa_batch_approve.py --action reject --remark "不符合要求"
+    python3 scripts/oa_batch_approve.py --action approve --instance-ids id1,id2
+    python3 scripts/oa_batch_approve.py --dry-run --action approve
 """
 
 import sys

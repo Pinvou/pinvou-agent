@@ -50,11 +50,13 @@ function injectSource() {
     var DRAFT_CONTENT = '<!doctype html><html><body><main id="app"><section class="hero"><h1 class="hero-title">Draft Poster</h1><button class="primary">Draft</button></section></main></body></html>';
     var SESSIONS = [{id:'s-design',title:'HTML设计测试',created_at:1,updated_at:9}];
     var MARKET_TOOLS = [
-      {id:'gongwen', installed:false, companion_skills:['government-writing']}
+      {id:'gongwen', installed:false, companion_skills:['government-writing']},
+      {id:'pptx', installed:false, companion_skills:['pptx']}
     ];
     var MARKET_SKILLS = [
       {id:'government-writing', installed:false},
-      {id:'visualizer', installed:false}
+      {id:'visualizer', installed:false},
+      {id:'pptx', installed:false}
     ];
     window.__PINVOU_TEST_INSTALLS = [];
     window.__PINVOU_TEST_CHAT_CALLS = [];
@@ -118,6 +120,9 @@ function injectSource() {
           MARKET_TOOLS.forEach(function(item){ if (item.id === (args && args.toolId)) item.installed = true; });
           if ((args && args.toolId) === 'gongwen') {
             MARKET_SKILLS.forEach(function(item){ if (item.id === 'government-writing') item.installed = true; });
+          }
+          if ((args && args.toolId) === 'pptx') {
+            MARKET_SKILLS.forEach(function(item){ if (item.id === 'pptx') item.installed = true; });
           }
           return Promise.resolve(null);
         case 'install_marketplace_skill':
@@ -193,16 +198,16 @@ async function clickExactButton(page, text) {
       placeholder: textarea && textarea.getAttribute('placeholder'),
     };
   });
-  rec('main entry has only work/code segments and four scene cards render below the empty-state greeting',
+  rec('main entry has only work/code segments and five scene cards (incl. the PPT card from #420) render below the empty-state greeting',
     initial.homeSwitcher && !initial.duplicateSwitcher &&
       initial.homeHasWork && initial.homeHasCode && !initial.homeHasDesign &&
       initial.homeText.includes('工作') && initial.homeText.includes('代码') && !initial.homeText.includes('设计') &&
       initial.legacyPickers.length === 0 &&
       initial.greeting && initial.cardGrid &&
       JSON.stringify(initial.cards) === JSON.stringify([
-        'scene-card-personal-workbench', 'scene-card-document-writing', 'scene-card-poster', 'scene-card-data-visualization',
+        'scene-card-personal-workbench', 'scene-card-document-writing', 'scene-card-poster', 'scene-card-data-visualization', 'scene-card-ppt',
       ]) &&
-      initial.cardLabels.join('|') === '个人工作台|公文写作|海报|数据可视化' &&
+      initial.cardLabels.join('|') === '个人工作台|公文写作|海报|数据可视化|PPT设计' &&
       !initial.templateCards && !initial.sceneTag &&
       initial.placeholder === '询问 PINVOU 或输入指令',
     JSON.stringify(initial));
@@ -572,6 +577,9 @@ async function clickExactButton(page, text) {
       placeholder: textarea && textarea.getAttribute('placeholder'),
       cardPressed: document.querySelector('[data-testid="scene-card-data-visualization"]')?.getAttribute('aria-pressed'),
       tag: document.querySelector('[data-testid="pinvou-scene-tag"]')?.textContent || '',
+      pptCardPresent: !!document.querySelector('[data-testid="scene-card-ppt"]'),
+      pptCardDisabled: document.querySelector('[data-testid="scene-card-ppt"]')?.getAttribute('aria-disabled'),
+      pptCardLabel: (document.querySelector('[data-testid="scene-card-ppt"]')?.textContent || '').trim(),
     };
   });
   await page.focus('textarea');
@@ -593,6 +601,11 @@ async function clickExactButton(page, text) {
       designDataPlaceholder.placeholder === '粘贴数据或描述指标，生成可视化看板' &&
       designDataPlaceholder.cardPressed === 'true' &&
       designDataPlaceholder.tag.includes('数据可视化') &&
+      // The PPT scene card (integrated from #420) must be present and
+      // enabled in the unified scene-card grid.
+      designDataPlaceholder.pptCardPresent &&
+      !designDataPlaceholder.pptCardDisabled &&
+      designDataPlaceholder.pptCardLabel.includes('PPT设计') &&
       dataPayload &&
       dataPayload.text === '把近 7 天销售额做成趋势图' &&
       dataPayload.scene === 'design:data-visualization' &&
@@ -604,6 +617,51 @@ async function clickExactButton(page, text) {
       /Chart\.js/.test(dataPayload.payload || '') &&
       !/Excel 仪表盘/.test((dataPayload.payload || '').split('---')[0] || ''),
     JSON.stringify({ designDataPlaceholder, dataPayload }));
+
+  await page.evaluate(() => { window.__PINVOU_TEST_SENT_MESSAGES = []; });
+  await page.click('[data-testid="scene-card-ppt"]');
+  await sleep(250);
+  const pptSceneState = await page.evaluate(() => {
+    const textarea = document.querySelector('textarea');
+    return {
+      placeholder: textarea && textarea.getAttribute('placeholder'),
+      tag: document.querySelector('[data-testid="pinvou-scene-tag"]')?.textContent || '',
+      cardPressed: document.querySelector('[data-testid="scene-card-ppt"]')?.getAttribute('aria-pressed'),
+    };
+  });
+  await page.focus('textarea');
+  await page.keyboard.type('做一个 Q2 季度汇报 PPT');
+  await page.keyboard.press('Enter');
+  await sleep(700);
+  const pptPayload = await page.evaluate(() => {
+    const sent = (window.__PINVOU_TEST_SENT_MESSAGES || [])[0] || null;
+    return sent && {
+      text: sent.text,
+      scene: sent.meta && sent.meta.pinvouScene,
+      requiredSkill: sent.meta && sent.meta.pinvouRequiredSkill,
+      requiredTool: sent.meta && sent.meta.pinvouRequiredTool,
+      payload: sent.meta && sent.meta.pinvouPayloadText,
+      installs: window.__PINVOU_TEST_INSTALLS || [],
+    };
+  });
+  rec('the ppt scene card auto-prepares and force-routes to the pptx skill and tool',
+      pptSceneState.placeholder === '描述你要生成的 PPT 主题或修改要求' &&
+      pptSceneState.tag.includes('PPT设计') &&
+      pptSceneState.cardPressed === 'true' &&
+      pptPayload &&
+      pptPayload.text === '做一个 Q2 季度汇报 PPT' &&
+      pptPayload.scene === 'design:ppt' &&
+      pptPayload.requiredSkill === 'pptx' &&
+      pptPayload.requiredTool === 'pptx' &&
+      pptPayload.installs.some(item => item.type === 'tool' && item.id === 'pptx') &&
+      /PPT 设计场景路由/.test(pptPayload.payload || '') &&
+      /pptx/.test(pptPayload.payload || '') &&
+      /mcp_pptx_make_pptx/.test(pptPayload.payload || '') &&
+      /present_artifact/.test(pptPayload.payload || '') &&
+      /PPT 自检/.test(pptPayload.payload || ''),
+    JSON.stringify({ pptSceneState, pptPayload }));
+  await page.click('[data-testid="scene-card-ppt"]');
+  await sleep(200);
 
   await page.evaluate(() => window.TauriBridge && window.TauriBridge.sessions && window.TauriBridge.sessions.switchToSession('s-design'));
   await sleep(900);

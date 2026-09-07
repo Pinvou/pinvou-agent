@@ -1,13 +1,13 @@
 # task +get-my-tasks
 
-If the user query only specifies a task name (e.g., "Complete task Lobster No. 1"), use this command to list and search for the task by its summary.
+If the user wants to find tasks among those assigned to me (a list scenario with no explicit search keywords), use this command to list and filter them. If the user provides search keywords (e.g., a task name like "Complete task Lobster No. 1"), prefer `+search` instead — see the task search guidance in [`../SKILL.md`](../SKILL.md).
 
 > **Prerequisites:** Please read [`../../lark-shared/SKILL.md`](../../lark-shared/SKILL.md) to understand authentication, global parameters, and security rules.
 > 
 > **⚠️ Note:** This API must be called with a user identity. **Do NOT use an app identity, otherwise the call will fail.**
 >
 > **Output rendering note:**
-> 1. If you need to present user fields (assignee, creator, etc.), do not only output the raw `id` (e.g. open_id). Also try to resolve and display the user's real name (e.g. via the contact skill) for readability.
+> 1. If you need to present user fields (assignee, creator, etc.), do not only output the raw `id` (e.g. open_id). Also try to resolve and display the user's real name (via `lark-cli contact +search-user`; the lark-contact skill is not bundled in this package) for readability.
 > 2. When rendering timestamps (e.g. created time, due time), use the local timezone. Format is 2006-01-02 15:04:05
 
 List tasks assigned to the current user, with support for filtering by completion status, creation time, and due date.

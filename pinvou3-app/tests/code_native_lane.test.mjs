@@ -2,7 +2,7 @@
 // code-native-lane.js 的纯逻辑回归：chat:* 事件推进、SavedSession hydration、投影。
 // 风格对齐 deepseek_conversation_timeline.test.mjs：把模块复制到临时 type:module 目录再导入。
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -704,6 +704,223 @@ try {
   assert.equal(applyNativeChatEvent(lane13, 'chat:plan_resolved', {
     session_id: 's13', plan_id: 'plan-r',
   }), false);
+
+  // -- lane14: unified model-service error bubble
+  // (classification/redaction/terminal upgrade/language). The helper is
+  // attached to globalThis as a classic script, matching how the browser
+  // index.html loads it.
+  const vm = await import('node:vm');
+  const helperSandbox = { window: {}, Date };
+  vm.runInNewContext(
+    readFileSync(path.join(root, 'src', 'shared', 'model-service-errors.js'), 'utf8'),
+    helperSandbox,
+    { filename: 'model-service-errors.js' },
+  );
+  globalThis.PinvouModelServiceErrors = helperSandbox.window.PinvouModelServiceErrors;
+  const lane14 = createNativeLane();
+  appendLocalUserMessage(lane14, '帮我总结这份报告');
+  // Transient: a model-service error is taken over, the bubble carries
+  // friendly (recoverable) wording, not the bare string.
+  applyNativeChatEvent(lane14, 'chat:transient_error', {
+    session_id: 's14',
+    error: 'SSE stream request failed: HTTP 402 insufficient balance',
+  }, { language: 'en', modelServiceState: null });
+  const transientItem = lane14.items.find(item => item.type === 'system');
+  assert.ok(transientItem, 'model service transient error must surface a notice');
+  assert.match(transientItem.text, /keep retrying/);
+  assert.equal(transientItem.userError.kind, 'billing');
+  assert.equal(transientItem.legacyConversationOnly, undefined);
+  assert.doesNotMatch(transientItem.text, /SSE stream request failed/, 'raw protocol error must not leak into the bubble');
+  // Done: the same-identity bubble upgrades in place to terminal wording
+  // and flips to legacyConversationOnly (the timeline card takes over).
+  applyNativeChatEvent(lane14, 'chat:done', {
+    session_id: 's14',
+    status: 'Failed',
+    error: 'SSE stream request failed: HTTP 402 insufficient balance',
+  }, { language: 'en', modelServiceState: null });
+  const systemItems14 = lane14.items.filter(item => item.type === 'system');
+  assert.equal(systemItems14.length, 1, 'terminal must upgrade the transient bubble, not add a second one');
+  assert.match(systemItems14[0].text, /so this reply stopped/);
+  assert.equal(systemItems14[0].legacyConversationOnly, true);
+  // Non-model errors keep the bare-string fallback.
+  const lane15 = createNativeLane();
+  applyNativeChatEvent(lane15, 'chat:done', {
+    session_id: 's15',
+    status: 'Failed',
+    error: 'ssh: connect to host github.com port 22: Connection refused',
+  }, { language: 'en', modelServiceState: null });
+  const fallbackItem = lane15.items.find(item => item.type === 'system');
+  assert.match(fallbackItem.text, /ssh: connect to host github\.com port 22/, 'local tool errors keep the raw fallback');
+  assert.equal(fallbackItem.userError, undefined);
+  assert.equal(
+    fallbackItem.legacyConversationOnly,
+    undefined,
+    'without an open user_start recordTurnCompleted writes no timeline record, so the bare terminal bubble must stay visible',
+  );
+  // Projection filter (B2): once a terminal-upgraded item is flagged
+  // legacyConversationOnly, projectNativeLane must hide the bubble via
+  // conversationItemsForMode and keep only the timeline error card —
+  // otherwise the same error shows twice (live bubble + card) while a
+  // restart leaves only the card.
+  const nativeProjection14 = projectNativeLane(lane14, 's14', { language: 'en' });
+  const projectedErrorTurns = nativeProjection14.turns.filter(turn => turn.userError);
+  assert.equal(projectedErrorTurns.length, 1, 'timeline error card must survive projection');
+  let projectedSystemNotices = 0;
+  for (const turn of nativeProjection14.turns) {
+    for (const item of turn.items || []) {
+      if (item.type === 'system_notice') projectedSystemNotices += 1;
+    }
+  }
+  assert.equal(projectedSystemNotices, 0, 'terminal-upgraded bubble must be hidden from the projection');
+  // Turn scoping (M3): a same-identity error in a new turn must create a
+  // new item, never fold into the previous turn's stale one (the bridge
+  // clears turnErrorNotice items on send, but the native lane keeps its
+  // history, so dedup must be turn-scoped).
+  const lane17 = createNativeLane();
+  applyNativeChatEvent(lane17, 'chat:user_message', { session_id: 's17', content: '第一问' });
+  applyNativeChatEvent(lane17, 'chat:done', {
+    session_id: 's17', status: 'Failed', error: 'SSE stream request failed: HTTP 402 detail-one',
+  }, { language: 'en', modelServiceState: null });
+  assert.equal(lane17.items.filter(item => item.userError).length, 1);
+  applyNativeChatEvent(lane17, 'chat:user_message', { session_id: 's17', content: '第二问' });
+  applyNativeChatEvent(lane17, 'chat:transient_error', {
+    session_id: 's17', error: 'SSE stream request failed: HTTP 402 detail-two',
+  }, { language: 'en', modelServiceState: null });
+  const crossTurnItems = lane17.items.filter(item => item.userError);
+  assert.equal(crossTurnItems.length, 2, 'same-kind error in a new turn must create its own item');
+  assert.equal(crossTurnItems[1].legacyConversationOnly, undefined, 'new turn transient item must stay visible');
+  // Bare-string fallback for non-model errors: done and a same-text
+  // transient collapse into one item hidden in place as terminal (aligned
+  // with the bridge chat:done fallback) — never two same-text bubbles
+  // (M4).
+  const lane18 = createNativeLane();
+  appendLocalUserMessage(lane18, '跑一下脚本');
+  applyNativeChatEvent(lane18, 'chat:transient_error', {
+    session_id: 's18', error: 'idle timeout after 120s',
+  }, { language: 'en', modelServiceState: null });
+  applyNativeChatEvent(lane18, 'chat:done', {
+    session_id: 's18', status: 'Failed', error: 'idle timeout after 120s',
+  }, { language: 'en', modelServiceState: null });
+  const bareItems18 = lane18.items.filter(item => item.type === 'system');
+  assert.equal(bareItems18.length, 1, 'same-text transient+done bare fallback must collapse into one item');
+  assert.equal(bareItems18[0].legacyConversationOnly, true, 'collapsed bare fallback must hide the bubble');
+  // Silent-swallow regression: when done arrives without an open
+  // user_start (recordTurnCompleted writes no timeline record), the
+  // model-service terminal bubble must stay visible and must not be
+  // handed to a timeline card that does not exist.
+  const lane19 = createNativeLane();
+  applyNativeChatEvent(lane19, 'chat:done', {
+    session_id: 's19',
+    status: 'Failed',
+    error: 'SSE stream request failed: HTTP 402 insufficient balance',
+  }, { language: 'en', modelServiceState: null });
+  const orphanTerminal = lane19.items.find(item => item.userError);
+  assert.ok(orphanTerminal, 'terminal model-service error must still surface a notice');
+  assert.equal(
+    orphanTerminal.legacyConversationOnly,
+    undefined,
+    'terminal bubble must stay visible when no timeline record was written',
+  );
+  // Transient/done sequence with different identities: transient
+  // (network) vs done (billing) differ in text/technical detail; when the
+  // terminal arrives with an error-bearing timeline record, every
+  // model-service transient bubble of the turn hides together, while the
+  // previous turn's visible bubble must be untouched (turn scoping).
+  const lane20 = createNativeLane();
+  applyNativeChatEvent(lane20, 'chat:user_message', { session_id: 's20', content: '第一问' });
+  applyNativeChatEvent(lane20, 'chat:transient_error', {
+    session_id: 's20', error: 'SSE stream idle timeout after 30s — no data received',
+  }, { language: 'en', modelServiceState: null });
+  applyNativeChatEvent(lane20, 'chat:done', { session_id: 's20', status: 'Completed' });
+  // Successful terminal: the transient "will keep retrying" claim is
+  // stale once the turn has recovered; hide it uniformly, matching
+  // bridge settleModelServiceErrorNotices — it must not outlive the
+  // recovery it described.
+  const settledTurnNotice = lane20.items.find(item => item.userError);
+  assert.equal(settledTurnNotice.legacyConversationOnly, true, 'successful done must settle the same-turn transient claim');
+  applyNativeChatEvent(lane20, 'chat:user_message', { session_id: 's20', content: '第二问' });
+  applyNativeChatEvent(lane20, 'chat:transient_error', {
+    session_id: 's20', error: 'SSE stream idle timeout after 30s — no data received',
+  }, { language: 'en', modelServiceState: null });
+  applyNativeChatEvent(lane20, 'chat:done', {
+    session_id: 's20', status: 'Failed', error: 'SSE stream request failed: HTTP 402 insufficient balance',
+  }, { language: 'en', modelServiceState: null });
+  const turn2Notices = lane20.items.filter(item => item.userError && item !== settledTurnNotice);
+  assert.equal(turn2Notices.length, 2, 'different-identity terminal error adds its own notice');
+  assert.ok(
+    turn2Notices.every(item => item.legacyConversationOnly === true),
+    'terminal takeover must hide all same-turn model-service transient bubbles',
+  );
+  assert.equal(
+    settledTurnNotice.legacyConversationOnly,
+    true,
+    'terminal takeover must not resurrect the settled previous-turn bubble',
+  );
+  // Fake keys are built by concatenation to avoid triggering GitHub push
+  // protection's secret-pattern scan (synthetic values).
+  const FAKE_PROJ_KEY = 'sk-proj-' + 'abcdefghijklmnop1234567890';
+  const FAKE_ANTHROPIC_KEY = 'sk-ant-api03-T3Blbk' + 'FJ1234567890abcdef';
+  // "Incorrect API key provided" (OpenAI's real wording) must be taken
+  // over by the strong keyword list into a friendly card, and the key
+  // must not appear on any display surface.
+  const lane21 = createNativeLane();
+  applyNativeChatEvent(lane21, 'chat:done', {
+    session_id: 's21',
+    status: 'Failed',
+    error: 'Incorrect API key provided: ' + FAKE_PROJ_KEY + '.',
+  }, { language: 'en', modelServiceState: null });
+  const incorrectKeyItem = lane21.items.find(item => item.type === 'system');
+  assert.ok(incorrectKeyItem, 'incorrect-api-key error must surface a notice');
+  assert.equal(incorrectKeyItem.userError.kind, 'auth');
+  assert.doesNotMatch(
+    lane21.items.map(item => item.text || '').join('\n'),
+    new RegExp(FAKE_PROJ_KEY),
+    'the key must not leak into any displayed text',
+  );
+  // Bare-string fallbacks must be redacted first: gateway/provider
+  // bodies the gate missed must not reach the screen with credentials.
+  // Transient and done fallbacks share one redacted text so done's
+  // same-text dedup hits the transient item.
+  const lane22 = createNativeLane();
+  const leaked = 'request failed: {"api_key":"' + FAKE_ANTHROPIC_KEY + '"}';
+  applyNativeChatEvent(lane22, 'chat:transient_error', { session_id: 's22', error: leaked }, { language: 'en' });
+  applyNativeChatEvent(lane22, 'chat:done', { session_id: 's22', status: 'Failed', error: leaked }, { language: 'en' });
+  const lane22Notices = lane22.items.filter(item => item.type === 'system');
+  assert.equal(lane22Notices.length, 1, 'same redacted text must deduplicate between transient and done fallbacks');
+  assert.doesNotMatch(lane22Notices[0].text, /sk-ant-api03/, 'proxy JSON echoes must not leak keys');
+  // Two turns in the same millisecond: turn_id must carry a per-lane
+  // sequence to stay unique, otherwise the second user_start is mistaken
+  // for a completed turn and the terminal record plus error card break
+  // entirely (defect reproduced in round A6).
+  const lane23 = createNativeLane();
+  const frozenNow = 1788022152694;
+  const originalNow = Date.now;
+  Date.now = () => frozenNow;
+  try {
+    appendLocalUserMessage(lane23, '回合一');
+    appendLocalUserMessage(lane23, '回合二');
+  } finally {
+    Date.now = originalNow;
+  }
+  const starts23 = lane23.timeline.filter(event => event.event === 'user_start');
+  assert.equal(starts23.length, 2);
+  assert.notEqual(starts23[0].turn_id, starts23[1].turn_id, 'same-millisecond turns must get distinct ids');
+  applyNativeChatEvent(lane23, 'chat:done', {
+    session_id: 's23', status: 'Failed', error: 'SSE stream request failed: HTTP 402 insufficient balance',
+  }, { language: 'en', modelServiceState: null });
+  const done23 = lane23.timeline.filter(event => event.event === 'assistant_done');
+  assert.equal(done23.length, 1, 'terminal record must pair with the second (open) turn');
+  assert.equal(done23[0].turn_id, starts23[1].turn_id);
+
+  // With the helper missing (classic script not loaded), fall back to
+  // the bare string without throwing.
+  delete globalThis.PinvouModelServiceErrors;
+  const lane16 = createNativeLane();
+  applyNativeChatEvent(lane16, 'chat:transient_error', {
+    session_id: 's16',
+    error: 'SSE stream request failed: HTTP 402 insufficient balance',
+  }, { language: 'en', modelServiceState: null });
+  assert.match(lane16.items.find(item => item.type === 'system').text, /SSE stream request failed/);
 
   console.log('code_native_lane.test.mjs: all assertions passed');
 } finally {

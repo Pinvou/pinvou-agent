@@ -1,6 +1,6 @@
 {
   "name": "pinvou3-app",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "品悟智能助手桌面应用",
   "private": true,
   "scripts": {
@@ -64,6 +64,7 @@
     "test:multiagent-plan": "node --test tests/multiagent_plan_normalize.test.mjs",
     "test:chat-input-limit": "node tests/chat_input_limit_logic.test.js",
     "test:background-tasks": "node tests/background_tasks_logic.test.js",
+    "test:shell-task-projection": "node --test tests/shell_task_projection.test.mjs",
     "test:ime-compose-guard": "node tests/ime_compose_guard.test.mjs",
     "test:assistant-message-actions": "node tests/assistant_message_actions.test.mjs",
     "test:chat-error-isolation": "node tests/chat_turn_error_isolation.test.mjs",
@@ -77,6 +78,7 @@
     "test:web-access-desktop-proxy": "node tests/web_access_desktop_proxy.test.mjs",
     "test:web-asset-base-path": "node tests/web_asset_base_path.test.mjs",
     "test:ui-language": "node tests/ui_language_coverage.test.mjs",
+    "test:color-scheme": "node --test tests/color_scheme_logic.test.mjs",
     "test:web-bootstrap": "node tests/web_bootstrap_transport.test.mjs",
     "test:api-key-gate": "node tests/api_key_gate_logic.test.js",
     "test:artifact-deliverable": "node tests/artifact_deliverable_logic.test.js",

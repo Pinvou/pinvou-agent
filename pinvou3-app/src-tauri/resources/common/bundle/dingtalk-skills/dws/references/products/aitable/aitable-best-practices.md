@@ -10,24 +10,9 @@
 | 公式/查找引用 | ❌ | 只读，由系统计算 |
 | AI 字段 | ❌ | 只读，由 AI 自动计算 |
 
-## 2. 查询执行契约
+## 2. 查询执行契约与任务选路
 
-1. **不要拉全量后在 context 里手动统计** — 优先用 `--filters` 在服务端过滤
-2. **has_more=true 时不能做全局结论** — 数据可能不完整
-3. **优先用 `--filters` 在服务端过滤** — 不要拉全量后在本地 jq/grep
-4. **字段名必须来自 `table get` 真实返回** — 不要猜测 fieldId
-5. **减少响应体积** — 用 `--field-ids` 仅返回需要的字段
-
-## 3. 任务选路
-
-| 用户诉求 | 优先方案 | 不要误走 |
-|---------|----------|----------|
-| 查看几条数据 | `record query` | 不要用 `--all` |
-| 全量拉取/统计 | `record query --all` | 不要手动循环 cursor |
-| 全量导出为文件 | `export data` | 不要 `--all` 拉全量再写文件 |
-| 批量写入 | `record create`（分批 100 条） | 不要一次传超过 100 条 |
-| 附件上传 | `attachment upload` + `record update` | 不要在 cells 里伪造附件值 |
-| 文件级导入 | `import upload` + `import data` | 不要手动解析 xlsx 再逐条写入 |
+四条要点：优先 `--filters` 在服务端过滤，不要拉全量后在 context 里手动统计；`has_more=true` 时数据可能不完整，禁止下全局结论；字段名（fieldId）必须来自 `table get` 真实返回，不要猜测；全量导出为文件走 `export data`（脚本 `aitable_export_via_task.py`），不要 `--all` 拉全量再写文件。查询细则（`--all`/`--page-limit`/filters 写法）见 [aitable-record-query.md](./aitable-record-query.md)，分析任务选路见 [aitable-data-analysis-sop.md](./aitable-data-analysis-sop.md)。
 
 ## 4. 创建/修改后回读确认
 

@@ -329,6 +329,10 @@ const NATIVE_WORKSPACE_COMMANDS: &[&str] = &[
     "open_codex_workspace_file",
     "reveal_codex_workspace_file",
     "open_code_reader",
+    // Branch view/checkout run local git mutations (add -A/commit/stash/checkout)
+    // with no web_access wrapper: desktop-only like the commands above.
+    "list_codex_workspace_branches",
+    "checkout_codex_workspace_branch",
 ];
 
 fn web_workspace_rpc_policy(command: &str) -> Option<WebWorkspaceRpcPolicy> {

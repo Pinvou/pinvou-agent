@@ -2,7 +2,7 @@
 
 | 方法 | 所需 scope |
 |------|-----------|
-| `chats.create` | `im:chat:create` |
+| `chats.create` | `im:chat:create`（原生方法仅 bot；user 身份建群走 `+chat-create`） |
 | `chats.get` | `im:chat:read` |
 | `chats.link` | `im:chat:read` |
 | `chats.update` | `im:chat:update` |
@@ -39,3 +39,7 @@
 | `feed.groups.create` | `im:feed_group_v1:write` |
 | `feed.groups.delete` | `im:feed_group_v1:write` |
 | `feed.groups.update` | `im:feed_group_v1:write` |
+
+## 快捷命令
+
+快捷命令（`+` 前缀）所需 scope 以各自 reference 为准（如 `+messages-search` 需 `search:message`；`+chat-create` 的 user 身份需 `im:chat:create_by_user`、bot 身份需 `im:chat:create`）。

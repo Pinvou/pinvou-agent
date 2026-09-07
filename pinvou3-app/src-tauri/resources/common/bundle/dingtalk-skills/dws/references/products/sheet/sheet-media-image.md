@@ -170,6 +170,8 @@ Flags:
 
 删除指定的浮动图片，操作不可恢复。`--float-image-id` 可通过 `list-float-images` 获取。
 
+> [强制] CAUTION：删除不可恢复。必须先向用户展示将删除的图片并获得明确同意，再加 `--yes` 执行。
+
 ## 核心工作流
 
 ```bash

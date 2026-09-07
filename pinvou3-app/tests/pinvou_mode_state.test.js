@@ -37,7 +37,8 @@ ${personalWorkbenchCode}
 ${workSceneCode}
 this.shouldUseDocumentWritingScene = shouldUseDocumentWritingScene;
 this.shouldUseDataVisualizationScene = shouldUseDataVisualizationScene;
-this.shouldUsePersonalWorkbenchScene = shouldUsePersonalWorkbenchScene;`, ctx, {
+this.shouldUsePersonalWorkbenchScene = shouldUsePersonalWorkbenchScene;
+this.shouldUsePptDesignScene = shouldUsePptDesignScene;`, ctx, {
   filename: logicPath,
 });
 
@@ -57,6 +58,7 @@ const {
   shouldUseDocumentWritingScene,
   shouldUseDataVisualizationScene,
   shouldUsePersonalWorkbenchScene,
+  shouldUsePptDesignScene,
 } = ctx;
 
 const plain = (value) => JSON.parse(JSON.stringify(value));
@@ -71,6 +73,7 @@ assert.deepStrictEqual(plain(SUBTABS), [
   'document-writing',
   'poster',
   'data-visualization',
+  'ppt',
 ]);
 assert.strictEqual(UNROUTED_SUBTAB, 'general');
 
@@ -82,6 +85,10 @@ assert.strictEqual(normalizeSubtab('invalid'), 'general');
 assert.strictEqual(normalizeSubtab('personal-workbench'), 'personal-workbench');
 assert.strictEqual(normalizeSubtab('poster'), 'poster');
 assert.strictEqual(normalizeSubtab('data-visualization'), 'data-visualization');
+assert.strictEqual(normalizeSubtab('ppt'), 'ppt');
+assert.strictEqual(shouldUsePptDesignScene('ppt'), true);
+assert.strictEqual(shouldUsePptDesignScene('general'), false);
+assert.strictEqual(shouldUsePptDesignScene('poster'), false);
 
 let state = createPinvouModeState();
 assert.strictEqual(state.mode, 'work');
@@ -159,8 +166,9 @@ const v3Storage = {
       sessions: {
         'session-document': { mode: 'work', workSubtab: 'document-writing', designSubtab: 'poster' },
         'session-data': { mode: 'design', workSubtab: 'document-writing', designSubtab: 'data-visualization' },
+        'session-ppt': { mode: 'design', workSubtab: 'general', designSubtab: 'ppt' },
       },
-      sessionOrder: ['session-document', 'session-data'],
+      sessionOrder: ['session-document', 'session-data', 'session-ppt'],
     }),
   },
   getItem(key) { return this.values[key] || null; },
@@ -173,6 +181,9 @@ const migratedV3Document = loadPinvouModeState(v3Storage, 'session-document');
 assert.strictEqual(migratedV3Document.mode, 'work');
 assert.strictEqual(migratedV3Document.subtab, 'document-writing');
 assert.strictEqual(loadPinvouModeState(v3Storage, 'session-data').subtab, 'data-visualization');
+// A historical design:ppt session record migrates into the unified subtab
+// whitelist instead of being folded back to general.
+assert.strictEqual(loadPinvouModeState(v3Storage, 'session-ppt').subtab, 'ppt');
 
 // v3 draft's work branch: mode:'work' takes the old workSubtab directly
 // (symmetric with the design branch).

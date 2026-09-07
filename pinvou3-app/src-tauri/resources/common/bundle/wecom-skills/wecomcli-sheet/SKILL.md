@@ -43,6 +43,10 @@ metadata:
 | 添加在线表格子工作表 | [references/sheet-subsheets-add.md](references/sheet-subsheets-add.md) |
 | 删除在线表格子工作表 | [references/sheet-subsheets-delete.md](references/sheet-subsheets-delete.md) |
 
+## 写操作确认
+
+- 删除子表（`sheet-subsheets-delete`）与 contents update 覆写前，必须向用户复述影响范围并获得明确确认。
+
 ## 接口详述
 
 ### 新建在线表格

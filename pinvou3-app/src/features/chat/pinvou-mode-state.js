@@ -13,8 +13,8 @@ const MAX_SESSION_MODE_STATES = 200;
 const UNROUTED_SUBTAB = 'general';
 const DEFAULT_SUBTAB = UNROUTED_SUBTAB;
 // Merged scene list: work's originals (personal workbench / document
-// writing) + the design additions folded in (poster / data visualization).
-const SUBTABS = [UNROUTED_SUBTAB, 'personal-workbench', 'document-writing', 'poster', 'data-visualization'];
+// writing) + the design additions folded in (poster / data visualization / PPT).
+const SUBTABS = [UNROUTED_SUBTAB, 'personal-workbench', 'document-writing', 'poster', 'data-visualization', 'ppt'];
 
 function normalizePinvouMode(value) {
   return PINVOU_MODES.includes(value) ? value : 'work';

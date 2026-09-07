@@ -23,7 +23,8 @@ window.__TAURI__ = {
       switch (command) {
         case 'get_settings':
           // 固定中文，断言不随运行环境系统语言漂移（与 ui_smoke.js 惯例一致）。
-          return { theme: 'liquid-light', language: 'zh-Hans' };
+          // 'system' keeps the reader on live prefers-color-scheme tracking.
+          return { theme: 'liquid-light', color_scheme: 'system', language: 'zh-Hans' };
         case 'take_code_reader_pending':
           return PENDING;
         case 'preview_codex_workspace_file':
