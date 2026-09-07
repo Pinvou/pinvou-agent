@@ -40,7 +40,7 @@ const codexEn = {
   branchSwitchCommit:'Commit and switch', branchSwitchCommitHint:'Commit all changes (including untracked files) on the current branch, then switch',
   branchSwitchCommitPlaceholder:'Commit message (required)',
   branchSwitchCommitPrompt:(branch)=>`Commit all uncommitted changes on the current branch, then switch to "${branch}":`,
-  branchSwitchBusyError:'The Agent is running. Wait for the current task to finish before switching branches.',
+  branchSwitchBusyError:'The Agent is running. Wait for the current task to finish before switching branches',
   recreatePrefix:'The original project directory no longer exists. ', recreate:'Recreate session',
   welcomeTitle:'Use a coding Agent for coding tasks',
   activeHint:'Tool calls, reasoning, plans, and permission requests are shown with their original ACP semantics, separate from Pinvou work-session messages.',
