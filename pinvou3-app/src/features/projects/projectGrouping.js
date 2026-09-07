@@ -60,6 +60,35 @@ function matchProjectByPath(projects, workspacePath) {
   return best;
 }
 
+// Resolve the project a session currently belongs to for UI affordances
+// (current-project marker in the move picker, "remove from project" entry).
+// Mirrors the grouping tiers: explicit assignment first, then auto-grouping;
+// returns null for ungrouped sessions.
+function resolveSessionProjectId(item, projects, assignments) {
+  const projectList = Array.isArray(projects) ? projects.filter(Boolean) : [];
+  const assignmentMap = assignments && typeof assignments === 'object' ? assignments : {};
+  if (!item) return null;
+  if (Object.prototype.hasOwnProperty.call(assignmentMap, item.id)) {
+    const assigned = assignmentMap[item.id];
+    if (assigned && projectList.some(project => project.id === assigned)) return assigned;
+    if (assigned === null) return null;
+  }
+  if (item.workspaceKind !== 'project') return null;
+  const matched = matchProjectByPath(projectList, item.workspacePath);
+  return matched ? matched.id : null;
+}
+
+// True when any of the project roots covers `path` (same containment rule as
+// tier 2; the move picker uses it to decide whether to offer adding the
+// session's folder to the target project).
+function projectCoversPath(project, path) {
+  if (!project || !path) return false;
+  return (project.roots || []).some((root) => {
+    const rootPath = root && typeof root === 'object' ? root.path : root;
+    return isUnderRoot(String(path), rootPath ? String(rootPath) : rootPath);
+  });
+}
+
 // Input: items = code sessions [{ id, workspacePath, workspaceKind, updatedAt, ... }],
 // projects = [{ id, name, roots: [path | { path }], position }],
 // assignments = { [sessionId]: projectId | null }.
@@ -143,4 +172,4 @@ function groupSessionsWithProjects(items, projects, assignments) {
   return groups;
 }
 
-export { TEMPORARY_GROUP_KEY, groupSessionsWithProjects };
+export { TEMPORARY_GROUP_KEY, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId };
