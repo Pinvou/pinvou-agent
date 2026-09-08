@@ -35,16 +35,20 @@ def git_text(repository, ref, path):
 def baseline_description(ref):
     source = git_text(ROOT / "CodeWhale", ref, "crates/tui/src/tools/shell.rs")
     # The baseline is the exact Rust string literal, not a handwritten paraphrase.
-    line = next(line.strip() for line in source.splitlines()
-                if line.strip().startswith('"Execute a shell command in the workspace.'))
+    line = next((line.strip() for line in source.splitlines()
+                 if line.strip().startswith('"Execute a shell command in the workspace.')), None)
+    if line is None:
+        raise ValueError("--engine-base must contain the pre-guidance shell description; "
+                         "choose an earlier baseline or use --before-fixture")
     return json.loads(line)
 
 
-def instructions(shared, work):
+def instructions(shared, work, model, title_language):
     sections = work.split("\n\n")
-    return (shared.replace("{{PINVOU3_MODEL}}", os.environ["SHELL_EVAL_MODEL"])
-            .replace("{{PINVOU3_MODE_ENV_SECTION}}", "\n\n".join(sections[:2]))
+    return (shared.replace("{{PINVOU3_MODE_ENV_SECTION}}", "\n\n".join(sections[:2]))
             .replace("{{PINVOU3_MODE_ARTIFACT_RULE}}", "\n\n".join(sections[2:]))
+            .replace("{{PINVOU3_MODEL}}", model)
+            .replace("{{PINVOU3_TITLE_LANG}}", title_language)
             .replace("{{PINVOU3_SUDO_INSTRUCTION}}", ""))
 
 
@@ -54,8 +58,10 @@ def main():
     parser.add_argument("--before-fixture", type=Path,
                         help="Compare two tool fixtures with identical current app instructions")
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--app-base", default="HEAD")
-    parser.add_argument("--engine-base", default="HEAD")
+    parser.add_argument("--app-base", help="Explicit app baseline for the before arm")
+    parser.add_argument("--engine-base", help="Explicit pre-guidance engine baseline")
+    parser.add_argument("--language", choices=("zh-Hans", "en", "ja"), default="zh-Hans",
+                        help="Application title language (default: zh-Hans)")
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--workers", type=int, default=3)
     parser.add_argument("--arms", nargs="+", choices=("before", "after"), default=["before", "after"])
@@ -63,12 +69,25 @@ def main():
     parser.add_argument("--tasks", nargs="+",
                         choices=("http_preview", "json_fields", "csv_sum", "quoted_path"))
     args = parser.parse_args()
+    if "before" in args.arms and not args.before_fixture:
+        if not args.app_base or not args.engine_base:
+            parser.error("the before arm requires --app-base and --engine-base, "
+                         "or --before-fixture")
+    if args.repeats < 1 or args.workers < 1:
+        parser.error("--repeats and --workers must be positive")
+    missing = [name for name in ("SHELL_EVAL_BASE_URL", "SHELL_EVAL_MODEL")
+               if not os.environ.get(name, "").strip()]
+    if missing:
+        parser.error("missing required environment variables: " + ", ".join(missing))
+    model = os.environ["SHELL_EVAL_MODEL"]
+    title_language = {"zh-Hans": "简体中文", "en": "English", "ja": "日本語"}[args.language]
     if ROOT == args.output.resolve() or ROOT in args.output.resolve().parents:
         parser.error("--output must be outside the repository")
     args.output.mkdir(parents=True, exist_ok=True)
     current = json.loads(args.fixture.read_text(encoding="utf-8"))
     current_prompt = instructions((ROOT / SHARED).read_text(encoding="utf-8"),
-                                  (ROOT / WORK).read_text(encoding="utf-8"))
+                                  (ROOT / WORK).read_text(encoding="utf-8"),
+                                  model, title_language)
     previous = None
     prompts = {"after": current_prompt}
     if "before" in args.arms:
@@ -79,12 +98,18 @@ def main():
             prompts["before"] = current_prompt
         else:
             previous = copy.deepcopy(current)
-            previous["description"] = baseline_description(args.engine_base)
+            try:
+                previous["description"] = baseline_description(args.engine_base)
+                prompts["before"] = instructions(git_text(ROOT, args.app_base, SHARED),
+                                                 git_text(ROOT, args.app_base, WORK),
+                                                 model, title_language)
+            except (ValueError, subprocess.CalledProcessError):
+                parser.error("cannot load the before baseline; --engine-base must contain "
+                             "the pre-guidance description and --app-base must contain "
+                             "the app instructions, or supply --before-fixture")
             previous["input_schema"]["properties"]["command"]["description"] = (
                 "The shell command to execute (action=run)"
             )
-            prompts["before"] = instructions(git_text(ROOT, args.app_base, SHARED),
-                                             git_text(ROOT, args.app_base, WORK))
     url = f"http://127.0.0.1:{args.fixture_port}/weather.json"
     tasks = {
         "http_preview": f"读取测试天气接口 {url}，超时15秒，只输出响应文本的前2000个字符。",
@@ -97,7 +122,6 @@ def main():
         tasks = {name: tasks[name] for name in args.tasks}
     base = os.environ["SHELL_EVAL_BASE_URL"].rstrip("/")
     endpoint = base if base.endswith("/chat/completions") else base + "/chat/completions"
-    model = os.environ["SHELL_EVAL_MODEL"]
 
     def generate(arm, task, repeat):
         fixture = previous if arm == "before" else current

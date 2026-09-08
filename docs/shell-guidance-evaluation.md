@@ -36,6 +36,9 @@ PATH resolved it without code changes. The local model results
 below measure the older fork surface, not that newer upstream integration.
 Upstream acceptance also does not replace publication of the Pinvou release.
 
+The 23 selected guidance tests include pre-existing coverage; the fork candidate
+adds three runnable test functions and one ignored fixture-export test.
+
 ## Final scope
 
 - CodeWhale: derive model-visible tool and command guidance from the existing
@@ -80,7 +83,11 @@ commands or writes credentials/provider addresses to its output.
    <private-directory> --app-base <before-app-commit> --engine-base
    <before-engine-commit> --repeats 5`. Output must be outside the repository.
    `--arms after` supports verification of an updated candidate without
-   regenerating an unchanged baseline.
+   regenerating an unchanged baseline. Without --before-fixture, the before arm
+   requires explicit --app-base and --engine-base; HEAD is not an implicit baseline.
+   --language zh-Hans|en|ja renders the application title-language placeholder
+   (default: zh-Hans). Missing base URL/model variables fail with a readable error;
+   SHELL_EVAL_API_KEY remains optional for unauthenticated local endpoints.
    For a controlled tool-guidance ablation, pass `--before-fixture <other.json>`;
    both arms then use the same current application instructions. Add
    `--tasks http_preview json_fields` to reproduce the HTTP-only task selection.
