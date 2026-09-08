@@ -3872,13 +3872,14 @@ fn rebind_workspace_bindings_moves_plain_bindings_and_stays_idempotent() {
         .expect("rebind plain bindings");
     let mut ids: Vec<&str> = affected.iter().map(|(id, _)| id.as_str()).collect();
     ids.sort_unstable();
-    assert_eq!(
-        ids,
-        vec![
+    assert_eq!(ids, {
+        let mut expected = vec![
             bound_session.metadata.id.as_str(),
-            nested_session.metadata.id.as_str()
-        ]
-    );
+            nested_session.metadata.id.as_str(),
+        ];
+        expected.sort_unstable();
+        expected
+    });
     assert_eq!(
         store
             .session_workspace_binding(&bound_session.metadata.id)
