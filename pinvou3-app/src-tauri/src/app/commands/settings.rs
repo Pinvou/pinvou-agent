@@ -1300,6 +1300,7 @@ pub struct GeneralSettingsPatch {
     pub color_scheme: Option<ColorScheme>,
     pub language: Option<Language>,
     pub memory_enabled: Option<bool>,
+    pub memory_export_enabled: Option<bool>,
     pub notifications: Option<NotificationPrefs>,
     pub sidebar: Option<SidebarPrefs>,
     pub advanced: Option<AdvancedPrefs>,
@@ -1310,6 +1311,7 @@ pub struct GeneralSettingsPatch {
 #[serde(default, deny_unknown_fields)]
 pub struct WebSettingsPatch {
     pub memory_enabled: Option<bool>,
+    pub memory_export_enabled: Option<bool>,
     pub search: Option<SearchPrefs>,
 }
 
@@ -1338,6 +1340,9 @@ fn apply_general_settings_patch(current: &mut UserPrefs, patch: GeneralSettingsP
     }
     if let Some(memory_enabled) = patch.memory_enabled {
         current.memory_enabled = memory_enabled;
+    }
+    if let Some(memory_export_enabled) = patch.memory_export_enabled {
+        current.memory_export_enabled = memory_export_enabled;
     }
     if let Some(notifications) = patch.notifications {
         current.notifications = notifications;
@@ -1378,6 +1383,9 @@ pub(crate) fn persist_web_settings(patch: WebSettingsPatch) -> Result<UserPrefs,
     UserPrefs::update_transaction(|prefs| {
         if let Some(memory_enabled) = patch.memory_enabled {
             prefs.memory_enabled = memory_enabled;
+        }
+        if let Some(memory_export_enabled) = patch.memory_export_enabled {
+            prefs.memory_export_enabled = memory_export_enabled;
         }
         if let Some(search) = patch.search {
             prefs.search = search;

@@ -477,6 +477,10 @@ pub struct ModeDefaultPrefs {
     pub design: Option<SerializableMode>,
 }
 
+fn default_memory_export_enabled() -> bool {
+    true
+}
+
 /// 用户偏好。`settings.json` 顶层结构。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -489,6 +493,10 @@ pub struct UserPrefs {
     pub color_scheme: ColorScheme,
     pub language: Language,
     pub memory_enabled: bool,
+    /// 压缩成功后向 `~/.pinvou3/memories/` 导出 Codex 兼容长期记忆。
+    /// 默认开启；旧 settings.json 缺该键时按开启处理。
+    #[serde(default = "default_memory_export_enabled")]
+    pub memory_export_enabled: bool,
     pub search: SearchPrefs,
     pub notifications: NotificationPrefs,
     pub pet: PetPrefs,
@@ -532,6 +540,10 @@ impl UserPrefs {
     fn defaults_for_system_locale(locale: Option<&str>) -> Self {
         Self {
             language: Language::from_system_locale(locale),
+            // derive(Default) 的 bool 是 false,但压缩长期记忆导出的产品默认是
+            // 开启;serde 字段默认只覆盖"旧 settings.json 缺键"的解析路径,
+            // 全新安装走这里,必须显式带上。
+            memory_export_enabled: default_memory_export_enabled(),
             ..Self::default()
         }
     }
@@ -1649,12 +1661,34 @@ mod tests {
     }
 
     #[test]
+    fn memory_export_enabled_defaults_on_for_fresh_and_legacy_settings() {
+        // 全新安装:derive(Default) 的 bool 是 false,默认构造必须显式带上产品默认值。
+        // derive 兜底仍为 false(仅测试性断言;产品路径都经 defaults_for_system_locale)。
+        assert!(!super::UserPrefs::default().memory_export_enabled);
+        let fresh = super::UserPrefs::defaults_for_system_locale(Some("zh_CN.UTF-8"));
+        assert!(
+            fresh.memory_export_enabled,
+            "全新安装默认开启压缩长期记忆导出"
+        );
+
+        // 旧 settings.json 缺键:serde 字段默认按开启解析。
+        let legacy: super::UserPrefs = serde_json::from_str(r#"{"theme":"genesis"}"#).unwrap();
+        assert!(legacy.memory_export_enabled);
+
+        // 显式关闭被尊重。
+        let opt_out: super::UserPrefs =
+            serde_json::from_str(r#"{"theme":"genesis","memory_export_enabled":false}"#).unwrap();
+        assert!(!opt_out.memory_export_enabled);
+    }
+
+    #[test]
     fn prefs_roundtrip() {
         let prefs = UserPrefs {
             theme: Theme::LiquidDark,
             color_scheme: ColorScheme::Dark,
             language: Language::En,
             memory_enabled: false,
+            memory_export_enabled: true,
             search: SearchPrefs::default(),
             notifications: NotificationPrefs::default(),
             pet: PetPrefs::default(),

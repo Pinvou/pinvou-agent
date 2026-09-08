@@ -7,9 +7,9 @@
 ## 0. 当前基线
 
 - 上游：`Hmbown/CodeWhale` tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c`。
-- 公开维护分支：`Pinvou/CodeWhale:pinvou3-clean`，head `9c5f4f19`（`pinvou-v0.9.5-r12`）。
+- 公开维护分支：`Pinvou/CodeWhale:pinvou3-clean`。固定标签 `pinvou-v0.9.5-r13` 指向 `f853f8f1`（GAIA 评测隔离）；r14 head `e3c57d97`（压缩长期记忆导出，Codex 兼容）在分支 `pinvou3/compaction-memory-export` 随本特性 PR 推送。
 - 升级前基线 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` 同时保留在 tag `pinvou-v0.9.0-r4` 和 branch `backup/pinvou3-clean-v0.9.0-r4`。
-- `Pinvou/CodeWhale#18`、`#21`、`#22`、`#25`、`#26`、`#27`、`#29` 与 `#30` 已发布进 r11，`#33` 与 `#35` 已发布进 r12；`pinvou3-clean` 与固定标签 `pinvou-v0.9.5-r12` 均公开可达并指向 `9c5f4f19`，`r1` 至 `r12` 保持不可变。
+- `Pinvou/CodeWhale#18`、`#21`、`#22`、`#25`、`#26`、`#27`、`#29` 与 `#30` 已发布进 r11，`#33` 与 `#35` 已发布进 r12，`#32` 已发布进 r13；`r1` 至 `r13` 保持不可变，r14 随压缩长期记忆导出 PR 发布。
 - `.gitmodules` 不配置浮动 `branch`；发布后父仓 gitlink、维护分支和不可变标签必须指向同一 commit。
 - 当前只维护 4 个长期主题：
 

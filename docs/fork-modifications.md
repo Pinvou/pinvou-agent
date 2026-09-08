@@ -4,19 +4,25 @@
 > 基线、主题边界、守护指纹和同步结论以本文与 `docs/fork-policy.md` 为准。
 > English: [`docs/fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-09-01 · v0.9.5 r13 基线，父仓 gitlink 由 PR #370 接入）
+## 0. 当前状态（2026-09-08 · v0.9.5 r14 基线，父仓 gitlink 由压缩长期记忆导出分支对齐）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.5`，commit `853cb707bbcf4f7dc4268fba6d811e0d04083f9c` |
-| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，r13 head `f853f8f1`（r12 + #32 GAIA 评测隔离扩展） |
+| 公开维护分支 | `Pinvou/CodeWhale:pinvou3-clean`，r14 head `e3c57d97`（r13 + 压缩长期记忆导出，待推送） |
 | 已合并修复 | 既有 `#9`、`#11`、`#12`、`#13`、`#15`、`#16`、`#17`、`#19`，以及 r11 的 `#18`、`#21`、`#22`、`#25`、`#26`、`#27`、`#29`、`#30`，r12 的 `#33`、`#35`，r13 的 `#32` 均已合并 |
-| 发布状态 | `pinvou3-clean` 与不可变 tag `pinvou-v0.9.5-r13` 均指向 `f853f8f1566c57e6be40d5439a222a932aa79ef5`；`r1` 至 `r13` 保持不可变；父仓 gitlink 由 PR #370 对齐 r13 |
+| 发布状态 | 不可变 tag `pinvou-v0.9.5-r13` 指向 `f853f8f1566c57e6be40d5439a222a932aa79ef5`；`r1` 至 `r13` 保持不可变；r14 head `e3c57d97` 在工作分支 `pinvou3/compaction-memory-export`，随本特性 PR 推送并对齐父仓 gitlink |
 | 旧基线备份 | tag `pinvou-v0.9.0-r4` + branch `backup/pinvou3-clean-v0.9.0-r4`，均指向 `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` |
 | 组织方式 | 从 `v0.9.5` clean re-fork 的 4 个当前长期主题；专用编排主题由 PR #13 整体撤销 |
-| drift | r13 基线合计 `110 files, +10895/-1195`（净增 9700 行）；r12→r13 为 `6 files, +1088/-1` |
-| 守护 | r13 为 63 条 CodeWhale `forkguard_*` 行为测试（含 6 条 GAIA 评测隔离测试）+ 通用工具/路由兼容回归 + 父仓指纹/行为测试 |
+| drift | r13 基线合计 `110 files, +10895/-1195`（净增 9700 行）；r12→r13 为 `6 files, +1088/-1`；r13→r14 为 `5 files, +1112/-0`（新增 `compaction/memory_export.rs`） |
+| 守护 | r13 为 63 条 CodeWhale `forkguard_*` 行为测试（含 6 条 GAIA 评测隔离测试）+ 通用工具/路由兼容回归 + 父仓指纹/行为测试；r14 追加 `forkguard_compaction_memory_export_writes_codex_format`（含 9 项格式/命名/解析单元测试）与父仓 wiring 测试 |
 | 父仓适配 | gitlink、`Cargo.lock`、`EngineConfig` v0.9.5 字段适配、拒绝编辑的终态/权威历史对账、压缩后用量即时刷新与持久化回填、严格直连模型大小写桥接回归、搜索源设置页引导文案，以及 operator-owned 未登记云端模型（自定义 openai-compatible 端点）的显式输出路由事实声明与官方端点 fail-closed 守护（承 PR #216） |
+
+### r14 压缩长期记忆导出（Codex 兼容，本分支待推送）
+
+- CodeWhale 提交 `e3c57d97`（分支 `pinvou3/compaction-memory-export`）：LLM 压缩（auto/manual）成功且产出摘要后，后台任务把压缩前完整转录提炼为 Codex Phase-1 格式的长期记忆并写入宿主隔离记忆根。字节格式与 `codex-rs/memories` 对齐：`raw_memories.md` 的 `## Thread` 条目（updated_at/cwd/rollout_path/rollout_summary_file 头 + frontmatter 任务块正文，稳定升序 thread-id）与 `rollout_summaries/<YYYY-MM-DDTHH-MM-SS>-<4位base62短哈希>[-<slug≤60>].md`（文件名 stem 算法从上游逐行移植，含 UUID v7 时间戳优先与回退哈希分支）。落盘前过 `redact_secrets`；提取走单次非流式调用，输出 `{"rollout_summary","rollout_slug","raw_memory"}` 三键 JSON，全空视为 no-op 不落盘；进程级锁串行化 `raw_memories.md` 读改写；180 秒墙钟超时。紧急恢复（`recover_context_overflow`）与 prune-only 路径不触发导出。刻意不写 `MEMORY.md` / `memory_summary.md`——那是 Codex Phase-2 整合代理的专属产物，机械代写会违反其格式契约（`memory_summary.md` 必须以 `v1` 行开头的忠实摘要）。
+- 父仓配套：`CompactionConfig.memory_export` 默认关闭，`Pinvou3Bridge.build_engine_config` 显式开启并指向 `~/.pinvou3/memories/`（`transcript_dir` 指向 `~/.pinvou3/sessions/` 作 Codex `rollout_path` 溯源）；子代理/worker 与手动触发共用的 `compaction_config_for_model` 保持关闭（只有根会话喂记忆库）；设置新增 `memory_export_enabled`（默认开，serde 字段默认覆盖旧 settings.json 缺键，全新安装经 `defaults_for_system_locale` 显式带上），通用设置页新增三语开关；`~/.pinvou3/memories/` 与应用自有记忆（`~/.pinvou3/user/memory/`）、底座原生记忆（`~/.codewhale/`）完全隔离。
+- 指纹锚点：`fn forkguard_compaction_memory_export_writes_codex_format`、`Merged stage-1 raw memories (stable ascending thread-id order):`、`fn maybe_spawn_memory_export`、父仓 `fn forkguard_compaction_memory_export_wiring_isolated_to_root_sessions`。
 
 ### r12 厂商原生搜索与免 key 兜底 Bing 化（已合入底座）
 
@@ -114,9 +120,9 @@
 
 ### T1：宿主嵌入与路由边界
 
-- **commits**：`331cb1594688c723d98499d9ca11f05af291b599`、`2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd`（`#11`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`#13`）、`8aa5f77d35ac1d00d1f444193543307a7e9b391c`（`#16`）、`07d183e350ce4a1ed4f91bdfa1875c996e710d2b`（`#17`）、`feb8761aeda31749f3d54c6e1f8ef460540567a1`（`#19`）、`485884913308cdf7564bc60da2e416be637083b5`（`#21`）、`04e109af4b4786a0d49fbbeefdd77af15a9f495e`（`#22`）、`e6bc347694ef4229b84919c49fea54fc584377c4` + `69ed3bfbdb314f901d4cf4120f1caaaf0b6aa529`（`#30`，steer 撤回 outcome）、`0d89a31be016457c180501417dd2c0f34ce844a6`（`#18`）。
+- **commits**：`331cb1594688c723d98499d9ca11f05af291b599`、`2eceab4e19cb0b15576c09d5b89e0d8bc42e11fd`（`#11`）、`a36e6cd533024cfe5724bae21875aea42b2ed87a`（`#13`）、`8aa5f77d35ac1d00d1f444193543307a7e9b391c`（`#16`）、`07d183e350ce4a1ed4f91bdfa1875c996e710d2b`（`#17`）、`feb8761aeda31749f3d54c6e1f8ef460540567a1`（`#19`）、`485884913308cdf7564bc60da2e416be637083b5`（`#21`）、`04e109af4b4786a0d49fbbeefdd77af15a9f495e`（`#22`）、`e6bc347694ef4229b84919c49fea54fc584377c4` + `69ed3bfbdb314f901d4cf4120f1caaaf0b6aa529`（`#30`，steer 撤回 outcome）、`0d89a31be016457c180501417dd2c0f34ce844a6`（`#18`）、`e3c57d975a961a551749eca088464b556dfb52a6`（r14 压缩长期记忆导出）。
 - **公开规模**：r8 前置规模为 10 文件、`+394/-31`；r9 至 r11 的增量按上节整体登记。
-- **核心文件**：`crates/tui/src/lib.rs`、`core/{engine,events,ops}.rs`、`core/engine/{handle,turn_loop}.rs`、`runtime_handoff.rs`、`route_runtime.rs`、`runtime_threads.rs`、`automation_manager.rs`、`session_manager.rs`。
+- **核心文件**：`crates/tui/src/lib.rs`、`core/{engine,events,ops}.rs`、`core/engine/{handle,turn_loop}.rs`、`compaction/memory_export.rs`、`runtime_handoff.rs`、`route_runtime.rs`、`runtime_threads.rs`、`automation_manager.rs`、`session_manager.rs`。
 - **内容**：
   - 在 v0.9.5 原生 library target 上只公开 Pinvou 实际使用的模块和宿主类型，不恢复旧的全量 bin facade。
   - 以根级窄重导出公开 `FleetRoster` 与工作区角色目录常量，供嵌入宿主在写入角色文件后装配和热刷新名册；不公开整个 `fleet` 模块。
@@ -131,9 +137,10 @@
   - `Op::EditLastTurn` 与宿主落盘兜底共用 `edit_last_turn_target`：工具结果与内部运行时信封同样以 `role = "user"` 持久化，裸 role 扫描会把截断落在 tool result 上；真实但不支持的最新用户内容必须拒绝，不能跳到更早文本。拒绝路径发送类型化错误与失败终态，不调用 provider，也不改变历史。
   - 固定采样路由剥离显式非 1 的 `temperature`（否则 400 "only 1 is allowed"）：Kimi Code 会员路由按会员模型名单精确匹配（`k3` / `k3-256k` / `kimi-for-coding` / `kimi-for-coding-highspeed`，Chat 方言 seam）；DeepSeek 侧仅在 Responses 方言对精确 `deepseek-v4-flash` 保留兼容 shim，Chat 方言按官方文档的 0..=2 契约透传（v4-pro 走 Chat 线，实测不受限）。网关与其他模型契约不动。修复 code 页手动压缩在 Kimi Code 路由必现 400。
   - `CompactionCompleted` 事件新增 `post_input_tokens`：压缩完成后完整请求的输入 token 保守估算（复用引擎 canonical 估算，含 system prompt 与压缩摘要），供宿主在压缩完成后立即刷新用量展示；TUI 与 runtime thread 持久化路径不消费。
+  - LLM 压缩成功后导出 Codex 兼容长期记忆（r14）：`CompactionConfig.memory_export`（默认关）由宿主开启并指定隔离根；auto/manual 两个挂点在摘要真实产出后派发后台任务，导出失败/超时/空产出均不影响压缩本身；紧急恢复与 prune-only 不导出。
   - `install_mcp_secret_resolver` 宿主钩子：mcp.json `${...}` 占位符、`env_headers`、`bearer_token_env_var` 解析先查宿主注册的进程内回调，未命中回落进程 env；嵌入宿主（品悟）据此把 MCP secret 承载改为 keyring + 进程内注册表，消除运行时进程 env 写。
 - **边界**：不实现 Pinvou 产品工具策略或专用编排完成语义。
-- **守护**：`forkguard_embedding_route_limits_preserve_wire_alias`、`forkguard_runtime_session_snapshot_preserves_in_flight_tool_call`、`forkguard_explicit_session_recovery_is_reported_and_idempotent_after_save`、`forkguard_host_bulk_cancel_stops_all_running_children_idempotently`、`forkguard_is_user_turn_prompt_separates_prompts_from_tool_results_and_envelopes`、`forkguard_edit_last_turn_cuts_at_user_prompt_before_tool_results`、`forkguard_edit_last_turn_without_user_prompt_errors_and_sends_nothing`、`forkguard_kimi_code_coding_plan_strips_non_one_temperature`、`forkguard_deepseek_v4_chat_preserves_documented_temperature`、`forkguard_deepseek_v4_flash_responses_drops_non_one_temperature`、`forkguard_compaction_completed_reports_complete_post_input_tokens`、`forkguard_mcp_secret_resolver_supplies_values_without_process_env_writes`，steer 生命周期/Shell 终止回归，以及父仓启动恢复、resolved-route、取消级联、compaction 合约、落盘编辑分类和双端拒绝回滚测试。
+- **守护**：`forkguard_embedding_route_limits_preserve_wire_alias`、`forkguard_runtime_session_snapshot_preserves_in_flight_tool_call`、`forkguard_explicit_session_recovery_is_reported_and_idempotent_after_save`、`forkguard_host_bulk_cancel_stops_all_running_children_idempotently`、`forkguard_is_user_turn_prompt_separates_prompts_from_tool_results_and_envelopes`、`forkguard_edit_last_turn_cuts_at_user_prompt_before_tool_results`、`forkguard_edit_last_turn_without_user_prompt_errors_and_sends_nothing`、`forkguard_kimi_code_coding_plan_strips_non_one_temperature`、`forkguard_deepseek_v4_chat_preserves_documented_temperature`、`forkguard_deepseek_v4_flash_responses_drops_non_one_temperature`、`forkguard_compaction_completed_reports_complete_post_input_tokens`、`forkguard_mcp_secret_resolver_supplies_values_without_process_env_writes`、`forkguard_compaction_memory_export_writes_codex_format`，steer 生命周期/Shell 终止回归，以及父仓启动恢复、resolved-route、取消级联、compaction 合约、落盘编辑分类和双端拒绝回滚测试。
 
 ### T2：工具兼容与命令执行安全
 

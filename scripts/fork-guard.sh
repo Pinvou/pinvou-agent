@@ -6,8 +6,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-PUBLISHED_HEAD="f853f8f1566c57e6be40d5439a222a932aa79ef5"
-PUBLISHED_COMMITS=37
+PUBLISHED_HEAD="e3c57d975a961a551749eca088464b556dfb52a6"
+PUBLISHED_COMMITS=38
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -174,6 +174,15 @@ fingerprints+=(
   "T2|评测工具预算截断受轮次测试约束      |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_benchmark_budget_truncates_batch_and_clears_followup_tool_surface"
   "T2|评测 final-only 熔断有界            |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_benchmark_final_only_rejects_repeated_tool_only_responses"
   "T2|评测参数修复经真实轮次执行          |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_benchmark_turn_repairs_file_aliases_before_execution"
+)
+
+# r14 压缩长期记忆导出(Codex 兼容):LLM 压缩成功后向宿主隔离记忆根写字节级
+# 对齐 codex-rs/memories 的 raw_memories.md + rollout_summaries/。
+fingerprints+=(
+  "T1|压缩记忆导出走 Codex Phase-1 端到端 |CodeWhale/crates/tui/src/compaction/memory_export.rs|fn forkguard_compaction_memory_export_writes_codex_format"
+  "T1|raw_memories 渲染对齐 Codex 字节格式 |CodeWhale/crates/tui/src/compaction/memory_export.rs|Merged stage-1 raw memories (stable ascending thread-id order):"
+  "T1|压缩记忆导出挂点仅在摘要成功后触发   |CodeWhale/crates/tui/src/core/engine.rs|fn maybe_spawn_memory_export"
+  "APP|压缩记忆导出隔离于根会话            |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn forkguard_compaction_memory_export_wiring_isolated_to_root_sessions"
 )
 
 for fp in "${fingerprints[@]}"; do

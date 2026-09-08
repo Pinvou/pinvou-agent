@@ -1628,10 +1628,24 @@ impl Pinvou3Bridge {
             // 上游默认 token_threshold=800K,对本地窗口永远撞不到,**必须显式 set**。
             // ⚠️ v0.8.51 上游移除了 CompactionConfig.auto_floor_tokens 字段(floor 概念
             //    随 cycle removal 一并去掉),原 60K 下限设置失效,删除。
-            compaction: deepseek_tui::compaction::CompactionConfig {
-                model: self.model(),
-                token_threshold: self.derive_compaction_threshold(&self.model()),
-                ..compaction
+            compaction: {
+                // [pinvou3-fork] 压缩成功后向 Codex 兼容记忆根导出长期记忆
+                // (~/.pinvou3/memories/,raw_memories.md + rollout_summaries/,
+                // 字节格式对齐 codex-rs/memories)。设置开关默认开;子代理配置
+                // 走 compaction_config_for_model(),不带 memory_export,只有根
+                // 会话写入记忆库。
+                let mut engine_compaction = deepseek_tui::compaction::CompactionConfig {
+                    model: self.model(),
+                    token_threshold: self.derive_compaction_threshold(&self.model()),
+                    ..compaction
+                };
+                engine_compaction.memory_export = deepseek_tui::compaction::MemoryExportConfig {
+                    enabled: self.prefs.memory_export_enabled,
+                    root: Some(paths::long_term_memory_root()),
+                    transcript_dir: Some(paths::sessions_root()),
+                    git_branch: None,
+                };
+                engine_compaction
             },
             // ⚠️ v0.8.51 上游整体移除 cycle 子系统(release "cycle removal"):
             //    EngineConfig.cycle 字段不复存在。原 pinvou3 在小窗口下显式关闭 cycle
@@ -2323,6 +2337,8 @@ impl Pinvou3Bridge {
         &self,
         model: &str,
     ) -> deepseek_tui::compaction::CompactionConfig {
+        // ..Default::default() 使 memory_export 保持关闭:该配置供子代理/worker
+        // 与手动压缩触发器使用,长期记忆导出只在根会话的 EngineConfig 上启用。
         deepseek_tui::compaction::CompactionConfig {
             model: model.to_string(),
             token_threshold: self.derive_compaction_threshold(model),
@@ -4427,6 +4443,40 @@ mod tests {
     /// 本地 vLLM 的 24576 由 is_local_vllm 分支显式携带（不依赖 env），两者都要锁。
     ///
     /// ⚠️ C 段语义（评审修正 2026-08-11）：品悟中间层确实不读该 env，但底座
+    /// [pinvou3-fork] 压缩长期记忆导出:根会话 EngineConfig 开启并指向隔离的
+    /// `~/.pinvou3/memories/`(transcript 指向 sessions 根做 Codex rollout_path
+    /// 溯源);子代理/手动触发用的 compaction_config_for_model 必须保持关闭,
+    /// 只有根会话喂记忆库;设置关闭时完全不装配导出配置的 enabled。
+    #[test]
+    fn forkguard_compaction_memory_export_wiring_isolated_to_root_sessions() {
+        let mut bridge = fixture_bridge();
+        bridge.prefs.memory_export_enabled = true;
+        let cfg = bridge.build_engine_config();
+        let export = &cfg.compaction.memory_export;
+        assert!(export.enabled, "根会话压缩记忆导出默认开启");
+        let root = export.root.as_ref().expect("显式记忆根目录");
+        assert_eq!(*root, paths::long_term_memory_root());
+        assert!(
+            root.starts_with(crate::platform::paths::pinvou3_home()),
+            "记忆根必须隔离在应用数据目录内: {}",
+            root.display()
+        );
+        assert_eq!(
+            export.transcript_dir.as_deref(),
+            Some(paths::sessions_root().as_path())
+        );
+
+        // 子代理/worker 与手动触发配置不得继承导出。
+        let subagent = bridge.compaction_config_for_model("some-model");
+        assert!(!subagent.memory_export.enabled);
+        assert!(subagent.memory_export.root.is_none());
+
+        // 用户关闭设置后,根会话也不导出。
+        bridge.prefs.memory_export_enabled = false;
+        let cfg_off = bridge.build_engine_config();
+        assert!(!cfg_off.compaction.memory_export.enabled);
+    }
+
     /// `effective_max_output_tokens_for_route` **优先**读它——env 残留仍会把云端
     /// **最终请求**的 max_tokens 钉回 24576。因此不能声称"残留 env 不影响云端"；
     /// 真正的防线是 release/boot 不再注入（见 lib.rs `release_env_defaults_guard`
