@@ -3227,10 +3227,30 @@ mod tests {
     #[test]
     fn disabled_connectors_scope_isolation() {
         with_temp_home(|| {
-            // 模拟已装 2 个连接器。
+            // 全新装机（家目录无任何状态）：未初始化 plain/code 均按 DenyAll 兜底
+            // （全模式 DenyAll 收敛），扩集 = 当前已装连接器 ∪ 内置 CLI 四连接器；
+            // 此刻无已装条目，仅内置四项（scope.rs DenyAll 扩集是有意语义）。
+            let builtin_cli = || {
+                vec![
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ]
+            };
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Plain),
+                builtin_cli()
+            );
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Code),
+                builtin_cli()
+            );
+            // 模拟已装 2 个连接器后继续：宽口径升级信号（installed.json 已存在）
+            // 下首读会把 plain 初始化为空表——保留旧 AllowAll 语义（全开，见
+            // plain_deny_all_upgraded_install_*）；code 未初始化，兜底扩集随之
+            // 并入已装条目。
             write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
-            // 未初始化:plain/code 均默认全禁（全模式 DenyAll 收敛）——已装连接器
-            // ∪ 内置 CLI 四连接器 ∪ 已装技能包（scope.rs DenyAll 扩集是有意语义）。
             let deny_all_default = || {
                 vec![
                     "weather".to_string(),
@@ -3241,10 +3261,7 @@ mod tests {
                     "tmeet".to_string(),
                 ]
             };
-            assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Plain),
-                deny_all_default()
-            );
+            assert!(load_disabled_connectors_for(ConnectorScope::Plain).is_empty());
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
                 deny_all_default()
