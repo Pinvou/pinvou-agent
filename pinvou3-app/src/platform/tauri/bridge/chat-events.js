@@ -1141,6 +1141,30 @@
     else if (phase === "done" && pruneOnlyAuto) addOrMergePruneCompaction(compactId);
     else if (phase === "done") addSystemItem(bt("compactDone") + auto + " " + msg);
     else if (phase === "fail") addSystemItem(bt("compactFail") + auto + ": " + msg);
+    else if (phase === "cancel") addSystemItem(bt("compactCancel") + auto + (msg ? ": " + msg : ""), { compactId, compactPhase: "cancel" });
+  }); });
+
+  // Sub-agent tool gates happen inside the foundation and do not produce an
+  // approval card. Project the final allow/deny decision into the visible
+  // timeline so users can audit why a delegated tool did or did not run.
+  listen("chat:tool_gate_decision", function (e) { onSessionEvent(e, function () {
+    const p = e.payload || {};
+    const decision = String(p.decision || "unavailable");
+    const decisionLabel = decision === "allowed"
+      ? bt("toolGateAllowed")
+      : decision === "denied"
+        ? bt("toolGateDenied")
+        : bt("toolGateUnavailable");
+    let text = bt("toolGateDecision") + ": " + (p.tool_name ? String(p.tool_name) + " — " : "") + decisionLabel;
+    if (p.agent_id) text += " · " + bt("toolGateAgent") + " " + String(p.agent_id);
+    if (p.risk) text += " · " + bt("toolGateRisk") + " " + String(p.risk);
+    if (p.reason) text += " · " + String(p.reason);
+    addSystemItem(text, {
+      toolGateDecision: true,
+      toolId: String(p.tool_id || ""),
+      agentId: String(p.agent_id || ""),
+      decision,
+    });
   }); });
 
   // ── request_user_input：渲染选择卡片（不进 messages.json）─────────

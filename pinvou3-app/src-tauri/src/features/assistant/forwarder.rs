@@ -1192,6 +1192,24 @@ pub(crate) fn spawn_event_forwarder(
                         );
                     }
                 }
+                Event::CompactionCancelled { id, message, auto } => {
+                    // Cancellation is a terminal compaction phase just like done/fail.
+                    // Forward the stable id so both UI lanes can settle the exact
+                    // in-flight card instead of leaving the manual compact action locked.
+                    let payload = json!({
+                        "session_id": session_id,
+                        "phase": "cancel",
+                        "id": id,
+                        "auto": auto,
+                        "message": message,
+                    });
+                    let _ = app.emit("chat:compaction", payload.clone());
+                    crate::features::remote_control::forward_app_event(
+                        &app,
+                        "chat:compaction",
+                        payload,
+                    );
+                }
                 Event::CompactionFailed { message, auto, .. } => {
                     let payload = json!({ "session_id": session_id, "phase": "fail", "auto": auto, "message": message });
                     let _ = app.emit("chat:compaction", payload.clone());
@@ -1246,20 +1264,27 @@ pub(crate) fn spawn_event_forwarder(
                         );
                     }
                 }
-                #[cfg(feature = "benchmark-hooks")]
                 Event::TurnUsage {
                     usage,
-                    request_duration_ms,
-                    ttft_ms,
+                    duration_ms,
+                    first_token_ms,
+                    request_ms,
                     ..
                 } => {
+                    #[cfg(feature = "benchmark-hooks")]
                     if crate::features::assistant::timing::eval_observation_enabled(&session_id) {
+                        // benchmark-core's stable product contract predates the
+                        // v0.9.12 event rename. Prefer the whole-request clock and
+                        // fall back to stream duration only for emitters that cannot
+                        // measure dispatch; TTFT remains honestly optional.
+                        let request_duration_ms = request_ms.unwrap_or(duration_ms);
                         crate::features::assistant::timing::record_milestone_meta(
                             &session_id,
                             "model_request_metric",
                             json!({
                                 "request_duration_ms": request_duration_ms,
-                                "ttft_ms": ttft_ms,
+                                "ttft_ms": first_token_ms,
+                                "stream_duration_ms": duration_ms,
                                 "input_tokens": usage.input_tokens,
                                 "output_tokens": usage.output_tokens,
                                 "cache_hit_tokens": usage.prompt_cache_hit_tokens,
@@ -1267,8 +1292,97 @@ pub(crate) fn spawn_event_forwarder(
                             }),
                         );
                     }
+                    #[cfg(not(feature = "benchmark-hooks"))]
+                    let _ = (usage, duration_ms, first_token_ms, request_ms);
                 }
-                _ => {}
+                Event::ToolGateDecision {
+                    agent_id,
+                    tool_id,
+                    tool_name,
+                    gate,
+                    decision,
+                    risk,
+                    reason,
+                } => {
+                    // These receipts are deliberately emitted only for decisions a
+                    // person would otherwise never see. Keep them user-visible in
+                    // both desktop and remote lanes; the foundation already bounds
+                    // and strips controls from `reason`, and the host redacts secrets
+                    // once more before crossing the WebView boundary.
+                    let payload = json!({
+                        "session_id": session_id,
+                        "agent_id": agent_id,
+                        "tool_id": tool_id,
+                        "tool_name": tool_name,
+                        "gate": gate.as_str(),
+                        "decision": decision.as_str(),
+                        "risk": risk,
+                        "reason": crate::platform::credential_store::redact_secret(&reason),
+                    });
+                    let _ = app.emit("chat:tool_gate_decision", payload.clone());
+                    crate::features::remote_control::forward_app_event(
+                        &app,
+                        "chat:tool_gate_decision",
+                        payload,
+                    );
+                }
+                // v0.9.12 events with no Pinvou host projection. Keep these arms
+                // explicit: adding another foundation event must fail this match at
+                // compile time instead of disappearing into a catch-all.
+                Event::MessageStarted { .. }
+                | Event::MessageComplete { .. }
+                | Event::ToolCallHeartbeat
+                | Event::ToolRequestSnapshot { .. }
+                | Event::RouteDispatched { .. }
+                | Event::GoalUpdated { .. }
+                | Event::GoalContinuationWaiting { .. }
+                | Event::GoalContinuationWaitEnded { .. }
+                | Event::PurgeStarted { .. }
+                | Event::PurgeCompleted { .. }
+                | Event::PurgeFailed { .. }
+                | Event::SubAgentFollowUp { .. }
+                | Event::AgentList { .. }
+                | Event::RequestManifestReady { .. }
+                | Event::PauseEvents { .. }
+                | Event::ResumeEvents
+                | Event::ElevationRequired { .. }
+                | Event::LspRepairUpdate { .. }
+                | Event::AdvisoryNote { .. }
+                | Event::PrefixCacheChange { .. } => {}
+                // Connector readiness is owned by Pinvou's marketplace state. The
+                // Engine event is intentionally observed only for diagnostics until
+                // that UI adopts the generation-based v0.9.12 snapshot protocol.
+                Event::McpSessionBoot {
+                    generation,
+                    finished,
+                    ..
+                } => {
+                    log::debug!(
+                        "[pinvou3][chat] mcp session boot sid={} generation={} finished={}",
+                        session_id,
+                        generation,
+                        finished
+                    );
+                }
+                Event::ToolProjectionWarning {
+                    provider,
+                    omitted_tool_count,
+                    ..
+                } => {
+                    log::warn!(
+                        "[pinvou3][chat] provider {} omitted {} incompatible tools for sid={}",
+                        provider,
+                        omitted_tool_count,
+                        session_id
+                    );
+                }
+                Event::Status { message } => {
+                    log::debug!(
+                        "[pinvou3][chat] engine status sid={}: {}",
+                        session_id,
+                        message
+                    );
+                }
             }
         }
         let stopped_error = "Engine event stream stopped before a terminal event".to_string();

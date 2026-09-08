@@ -43,7 +43,13 @@ fi
 
 remote_refs=""
 for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
-  if remote_refs="$(git ls-remote --heads --tags "$PINVOU_CODEWHALE_URL" 2>/dev/null)"; then
+  if remote_refs="$(
+    git ls-remote "$PINVOU_CODEWHALE_URL" \
+      "refs/heads/${PINVOU_CODEWHALE_BRANCH}" \
+      "refs/tags/${PINVOU_CODEWHALE_TAG}" \
+      "refs/tags/${PINVOU_CODEWHALE_TAG}^{}" \
+      2>/dev/null
+  )"; then
     break
   fi
   if [[ "$attempt" -eq "$MAX_ATTEMPTS" ]]; then

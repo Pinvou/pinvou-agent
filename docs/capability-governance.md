@@ -24,11 +24,11 @@
 
 | 线 | 管什么 | 决策时机 | 用户开关 |
 |---|---|---|---|
-| 原生家族线 | 底座 canonical 家族（`Bash`/`File`/`Git`/`Web`/`agent`/`workflow` 等） | 编译期 | **无** |
+| 原生家族线 | 底座 canonical 工具（`bash`/`read`/`write`/`edit`/`list_dir`/`file_search`/`grep_files`/`Git`/`Web`/`agent`/`workflow` 等） | 编译期 | **无** |
 | 能力包线 | 一切外部能力：MCP 连接器、组合工具、CLI 连接器、独立技能 | 运行期 | 有（按模式 scope） |
 
 设计纪律：**底座能力是产品承诺，不是用户偏好**——不开放用户级开关，避免
-"关掉 `File` 后应用坏了"这类 footgun。运行期配置只给真正有运行期写入者
+"关掉 `read` 后应用坏了"这类 footgun。运行期配置只给真正有运行期写入者
 （用户开关）的能力包线；没有写入者的运行期配置只是常量的间接层。
 
 ## 2. 原生家族线（编译期）
@@ -194,7 +194,7 @@ scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
 ```
 
 UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI 包的真实执行
-面是经 `Bash` 调用 CLI，开关只能隐藏引导；要封死需 Bash hook 拦截，
+面是经 `bash` 调用 CLI，开关只能隐藏引导；要封死需 bash hook 拦截，
 当前作为已接受风险记录于此。
 
 ## 6. 前端接线（目标形态，未实施——现状为 `set_disabled_connectors` / `set_disabled_skills` / `set_bundle_visibility` 等各开关命令 + `remote_control:tools_changed` 事件）
@@ -224,7 +224,7 @@ UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI
   凭据收集弹窗与缺失判定可能重复处理同一凭据。
 
 另有两条限制已随文内联登记：会话中关闭的上下文不可撤回边界（§3.3 末）、
-CLI 包真实执行面经 `Bash` 的开放侧翼（§5 末）。
+CLI 包真实执行面经 `bash` 的开放侧翼（§5 末）。
 
 ## 8. 相关文件
 

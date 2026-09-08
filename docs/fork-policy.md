@@ -1,15 +1,15 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
-> 最后更新：2026-09-07（本地候选基线：上游 `v0.9.12` r1；尚未发布远端分支或不可变标签）
+> 最后更新：2026-09-08（公开 PR 候选：上游 `v0.9.12` r1；受保护维护分支和不可变标签尚未发布）
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
 ## 0. 当前基线
 
 - 上游：`Hmbown/CodeWhale` tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5`。
-- 本地维护候选：`codex/pinvou-v0.9.12-r1`，head `b4c02616b8561dfca43d540fe778bb15287fa719`，在上游之上保留 5 个签署提交。
-- 升级前 r13 head `f853f8f1566c57e6be40d5439a222a932aa79ef5` 保留在 branch `backup/pre-v0.9.12-sync`；既有 `pinvou-v0.9.5-r13` 不变。
-- r1 当前是本地、可测试候选，不得描述为公开可达。获得明确授权并发布后，才将 `Pinvou/CodeWhale:pinvou3-clean` 与不可变 tag `pinvou-v0.9.12-r1` 对齐该 head。
+- 公开 PR 候选：`codex/pinvou-v0.9.12-r1`（CodeWhale PR #44），当前 head `fe0cd7551175f0f3df2c785b15c6c16e282218f7`，共 7 个签署提交。
+- 升级前公开回退点是不可变 tag `pinvou-v0.9.5-r13`，head `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 branch `backup/pre-v0.9.12-sync` 只作便利引用。
+- r1 候选分支已经公开可审阅，但尚未成为可消费的受保护基线。获得明确授权并发布后，才将 `Pinvou/CodeWhale:pinvou3-clean` 与不可变 tag `pinvou-v0.9.12-r1` 对齐该 head。
 - `.gitmodules` 不配置浮动 `branch`；发布后父仓 gitlink、维护分支和不可变标签必须指向同一 commit。
 - 当前只维护 4 个长期主题：
 
@@ -39,7 +39,7 @@ Pinvou 的产品工具白名单、UI、工作区选择和业务策略留在 app�
 - 总 drift 软上限：净增 1500 行（净增 = 新增 − 删除行数，与下方基线表述同口径）。
 - 单文件 fork-distinct 改动软上限：200 行。
 - 超过不是自动拒绝，但必须记录保留原因和减量顺序。
-- v0.9.12 r1 候选相对上游为 `62 files, +3127/-614`，净增 2513 行；相对 v0.9.5 r13 的 `110 files, +10895/-1195` 已大幅收敛。新增触达文件包含为当前 Rust 发布 lint 所做的等价条件折叠和窄 lint 说明，不增加 fork 行为主题。候选仍超总量与个别文件软上限，因为可靠 steer、受限轮最终分发、宿主 prompt/profile/Skills 所有权和 Automation 生命周期必须在 Engine/Task 原子边界内实现。减量顺序是：先上游化通用 steer 与逐轮安全，再上游化 Automation 生命周期，最后评估 prompt/profile/Skills ownership 是否能由稳定 host API 完全替代。
+- v0.9.12 r1 候选相对上游为 `66 files, +4769/-620`，净增 4149 行；相对 v0.9.5 r13 的 `110 files, +10895/-1195` 已收敛。新增触达文件包含当前 Rust 发布 lint 的等价调整，以及评审要求的生命周期和评测结果式回归，不增加 fork 行为主题。候选仍超总量与个别文件软上限，因为可靠 steer、受限轮最终分发、宿主 prompt/profile/Skills 所有权、Automation 生命周期和对应安全回归必须在 Engine/Task 原子边界内实现。减量顺序是：先上游化通用 steer 与逐轮安全，再上游化 Automation 生命周期，父仓迁移到窄 re-export API 后分批收窄 18 个 `pub mod` 兼容 facade，最后评估 prompt/profile/Skills ownership 是否能由稳定 host API 完全替代。
 
 ### 1.3 主题提交
 
@@ -112,8 +112,12 @@ clean re-fork 从 release tag 新建隔离分支，逐主题重表达仍必要�
 cargo check --manifest-path CodeWhale/Cargo.toml -p codewhale-tui --lib --locked
 cargo test --manifest-path CodeWhale/Cargo.toml -p codewhale-tui --lib --locked \
   forkguard_ -- --test-threads=1
+cargo test --manifest-path CodeWhale/Cargo.toml -p codewhale-tui --lib --locked \
+  --features benchmark-eval-controls forkguard_benchmark_ -- --test-threads=1
 
 cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml --locked
+cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml --all-targets \
+  --features benchmark-hooks --locked
 cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --locked \
   -- --test-threads=1
 python3 scripts/architecture-guard.py
@@ -132,6 +136,6 @@ python3 scripts/architecture-guard.py
 
 1. CodeWhale 先形成可按 4 个长期主题审阅的干净提交序列并完成底座测试；跨主题的生命周期安全收口可保留独立提交，但不得演变为未说明的 catch-up 串。
 2. 父仓更新 gitlink、app 适配、`Cargo.lock`、fork 文档、guard 和升级报告。
-3. 明确授权后才推送维护分支和固定标签；未推送前不得运行或放宽“公开可达”验证来伪造完成。
+3. 候选 review 分支可以为 PR 推送；只有获得明确授权后，才更新受保护维护分支 `pinvou3-clean` 并创建固定标签。发布前不得放宽“公开可达”验证来伪造完成。
 4. 发布后复核远端 commit、不可变标签和父仓 gitlink 三者一致。
 5. 清理临时 worktree/branch 是独立动作，不与升级默认捆绑。

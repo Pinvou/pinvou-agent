@@ -569,6 +569,20 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
       });
       return true;
     }
+    case 'chat:tool_gate_decision': {
+      lane.items.push({
+        id: nextId(lane),
+        type: 'system',
+        toolGateDecision: true,
+        toolName: String(p.tool_name || ''),
+        decision: String(p.decision || 'unavailable'),
+        reason: String(p.reason || ''),
+        risk: String(p.risk || ''),
+        agentId: String(p.agent_id || ''),
+        time: timeStr(),
+      });
+      return true;
+    }
     case 'chat:memory': {
       // 每轮 chat 后后端推送的本会话注入记忆快照（chat.rs 对全部会话发射）。
       // 只归一化 id/kind/text 三字段，渲染层做轻量展示（条数徽标 + 弹层列表）。

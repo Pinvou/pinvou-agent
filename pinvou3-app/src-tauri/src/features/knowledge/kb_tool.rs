@@ -103,7 +103,7 @@ fn source_rank_score(rank: usize) -> f64 {
 }
 
 fn build_unified_context_block(hits: &[UnifiedHit], warnings: &[String]) -> String {
-    let mut out = "在本会话启用的本地与远程知识集中检索到以下相关片段(已统一排序)。请严格基于这些片段作答并注明来源文件；上下文不足时可再次调用 `kb_search`，或用 `source_ref` 调用 `kb_open_source`。对于 XLSX/DOCX/PPTX 等二进制来源，禁止调用 `File(action=\"read\")` 或用 `Bash(action=\"run\")` 全量展开。\n\n".to_string();
+    let mut out = "在本会话启用的本地与远程知识集中检索到以下相关片段(已统一排序)。请严格基于这些片段作答并注明来源文件；上下文不足时可再次调用 `kb_search`，或用 `source_ref` 调用 `kb_open_source`。对于 XLSX/DOCX/PPTX 等二进制来源，禁止用 `read` 直接读取或用 `bash` 全量展开。\n\n".to_string();
     if !warnings.is_empty() {
         out.push_str("部分来源暂时不可用：");
         out.push_str(&warnings.join("；"));
@@ -151,7 +151,7 @@ pub(crate) fn build_kb_context_block(
         "在已启用知识集{title}中检索到以下相关片段(按相关度稳定排序)。请**严格基于这些片段**作答\
          并注明来源文件;若片段足够就直接回答,不要继续打开源文件。若上下文不足,可再次\
          `kb_search`,或用结果中的 `source_ref` 调用 `kb_open_source` 查看相邻片段。对于\
-         XLSX/DOCX/PPTX 等二进制来源,禁止调用 `File(action=\"read\")` 或用 `Bash(action=\"run\")` 全量展开。\n\n"
+         XLSX/DOCX/PPTX 等二进制来源,禁止用 `read` 直接读取或用 `bash` 全量展开。\n\n"
     );
     let mut spent = 0usize;
     for (i, scoped) in hits.iter().enumerate() {
@@ -534,7 +534,7 @@ impl ToolSpec for KbOpenSourceTool {
     fn description(&self) -> &str {
         "查看 `kb_search` 返回的某个本地或远程知识来源的相邻内容。只接受检索结果中的 `source_ref`,\
          不接受文件路径;默认从命中 chunk 的前一块开始返回 3 块。对于 XLSX/DOCX/PPTX 等\
-         来源使用本工具,不要调用 `File(action=\"read\")` 或用 `Bash(action=\"run\")` 全量展开。需要定位其他内容时先再次\
+         来源使用本工具,不要用 `read` 直接读取或用 `bash` 全量展开。需要定位其他内容时先再次\
          调用 `kb_search`,再打开它返回的新 `source_ref`。"
     }
 
@@ -759,7 +759,7 @@ mod tests {
         assert!(block.contains("CPU 峰值温度 78℃"));
         assert!(block.contains("TDP 28W"));
         assert!(block.contains("kb_open_source"));
-        assert!(block.contains("禁止调用 `File(action=\"read\")`"));
+        assert!(block.contains("禁止用 `read` 直接读取"));
 
         let none = build_kb_context_block(&[], &hits);
         assert!(none.contains("《知识库》"));
@@ -778,7 +778,7 @@ mod tests {
 
     /// The kb_search (production unified search) result header must also carry
     /// the binary-source prohibition: when the snippets look insufficient the
-    /// model tries to fully expand XLSX/DOCX/PPTX via File/Bash. The rule used to
+    /// model tries to fully expand XLSX/DOCX/PPTX via read/bash. The rule used to
     /// exist only in the kb_open_source description and the system reminder
     /// (regression: the production result header missed it).
     #[test]
@@ -796,15 +796,15 @@ mod tests {
         assert!(block.contains("kb_open_source"));
         assert!(
             block.contains("XLSX/DOCX/PPTX 等二进制来源")
-                && block.contains("禁止调用 `File(action=\"read\")`")
-                && block.contains("`Bash(action=\"run\")` 全量展开"),
+                && block.contains("禁止用 `read` 直接读取")
+                && block.contains("用 `bash` 全量展开"),
             "unified search result header must carry the binary-source prohibition: {block}"
         );
         // The prohibition survives warnings: it lives inside the fixed header
         // text and warnings are appended after it, so they cannot displace it.
         let with_warnings = build_unified_context_block(&unified, &["远程服务离线".to_string()]);
         assert!(with_warnings.contains("部分来源暂时不可用"));
-        assert!(with_warnings.contains("禁止调用 `File(action=\"read\")`"));
+        assert!(with_warnings.contains("禁止用 `read` 直接读取"));
     }
 
     /// 超总字符预算:保证第一条一定注入,余下截断并提示剩余条数。

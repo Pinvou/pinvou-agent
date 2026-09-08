@@ -518,6 +518,7 @@ const NATIVE_CHAT_EVENTS = [
   'chat:tool_end',
   'chat:shell_task_status',
   'chat:compaction',
+  'chat:tool_gate_decision',
   'chat:usage',
   'chat:memory',
   'chat:user_input_required',
@@ -3243,14 +3244,27 @@ export function CodexAcpView({
     if (item.type === 'system_notice' && item.legacyItem) {
       const legacy = item.legacyItem;
       if (legacy.compactPhase) {
-        const label = legacy.compactPhase === 'start'
-          ? codexCopy.compactStart
-          : legacy.compactPhase === 'fail'
-            ? codexCopy.compactFail
-            : codexCopy.compactDone;
+        const label = {
+          start: codexCopy.compactStart,
+          fail: codexCopy.compactFail,
+          cancel: codexCopy.compactCancel,
+        }[legacy.compactPhase] || codexCopy.compactDone;
         return (
           <div className="px-1 text-[11px] text-gray-400">
             {label}{legacy.text ? ` · ${legacy.text}` : ''}
+          </div>
+        );
+      }
+      if (legacy.toolGateDecision) {
+        return (
+          <div className="px-1 text-[11px] text-gray-400">
+            {codexCopy.nativeToolGateDecision(
+              legacy.toolName,
+              legacy.decision,
+              legacy.reason,
+              legacy.risk,
+              legacy.agentId,
+            )}
           </div>
         );
       }

@@ -597,17 +597,24 @@ mod tests {
         for retired in [
             "read_file",
             "write_file",
-            "list_dir",
-            "file_search",
             "exec_shell",
             "checklist_write",
+            "File(action=",
+            "Bash(action=",
         ] {
             assert!(
                 !rendered.contains(retired),
                 "retired tool leaked: {retired}"
             );
         }
-        for canonical in ["File(action=", "Bash(action=", "todo_write"] {
+        for canonical in [
+            "read(path=",
+            "write(path=",
+            "file_search(query=",
+            "bash(command=",
+            "terminal/run",
+            "todo_write",
+        ] {
             assert!(
                 rendered.contains(canonical),
                 "canonical guidance missing: {canonical}"

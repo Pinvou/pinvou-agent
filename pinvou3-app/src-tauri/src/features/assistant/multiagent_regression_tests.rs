@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::expert_roster::ExpertRosterSnapshot;
+use super::tool_policy::is_pinvou3_allowed;
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::features::personas::PersonaCard;
 use deepseek_tui::AppMode;
@@ -472,6 +473,7 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
     let mut saw_agent_spawned = false;
     let mut saw_agent_complete = false;
     let mut saw_parent_complete = false;
+    let mut parent_tool_catalog = None;
     let mut errors = Vec::new();
     let mut events = handle.rx_event.write().await;
     while !(saw_agent_complete && saw_parent_complete) {
@@ -502,8 +504,14 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
                 assert!(result.contains(CHILD_RESULT_SENTINEL), "{result}");
                 saw_agent_complete = true;
             }
-            Event::TurnComplete { status, error, .. } => {
+            Event::TurnComplete {
+                status,
+                error,
+                tool_catalog,
+                ..
+            } => {
                 assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+                parent_tool_catalog = tool_catalog;
                 saw_parent_complete = true;
             }
             Event::Error { envelope, .. } => errors.push(envelope.message),
@@ -517,6 +525,50 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
         "agent tool did not complete successfully"
     );
     assert!(saw_agent_spawned, "no AgentSpawned event was emitted");
+    let parent_tool_catalog = parent_tool_catalog
+        .expect("the real bridge turn must report the v0.9.12 model-visible catalog it sent");
+    let catalog_names = parent_tool_catalog
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        catalog_names.iter().all(|name| is_pinvou3_allowed(name)),
+        "the bridge admitted tools outside the Pinvou allowlist: {catalog_names:?}"
+    );
+    for expected in [
+        "bash",
+        "read",
+        "write",
+        "edit",
+        "list_dir",
+        "file_search",
+        "grep_files",
+        "Git",
+        "Web",
+        "terminal/run",
+        "terminal/send",
+        "terminal/wait",
+        "terminal/cancel",
+        "terminal/reset",
+        "agent",
+        "load_skill",
+        "request_user_input",
+        "revert_turn",
+        "todo_write",
+        "workflow",
+        "tool_search",
+    ] {
+        assert!(
+            catalog_names.contains(expected),
+            "allowlisted native tool {expected} no longer resolves through the live v0.9.12 registry: {catalog_names:?}"
+        );
+    }
+    for replay_only in ["Bash", "File", "work_update", "update_plan"] {
+        assert!(
+            !catalog_names.contains(replay_only),
+            "hidden replay alias {replay_only} leaked into the model-visible catalog"
+        );
+    }
     assert!(
         errors
             .iter()

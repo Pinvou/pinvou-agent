@@ -1092,7 +1092,7 @@ fn accept_plan_instruction_embeds_full_plan() {
 }
 
 /// 挂集时 Self-RAG 引导:含知识集名 + 必调 kb_search + 按需 kb_open_source + 禁止二进制
-/// read_file + 无依据说不知道;空名兜底。
+/// canonical read/bash 展开 + 无依据说不知道;空名兜底。
 #[test]
 fn agentic_guide_mentions_collection_and_kb_search() {
     let g = build_kb_agentic_guide(&["硬件资料".to_string(), "团队规范".to_string()]);
@@ -2375,7 +2375,7 @@ fn post_reservation_failure_never_unlinks_the_current_path() {
     let _ = std::fs::remove_dir_all(replacement_workspace);
 }
 
-/// 小附件维持全量内联:内容在代码块里,且明确告知无需 read_file。
+/// 小附件维持全量内联:内容在代码块里,且明确告知无需再次 read。
 #[test]
 fn small_attachment_stays_inline() {
     let ws = mk_test_ws("inline");
@@ -2386,8 +2386,8 @@ fn small_attachment_stays_inline() {
     );
     assert!(prompt.contains("row-10,value-10"), "小附件应全量内联");
     assert!(
-        prompt.contains("不需要再调 `File(action=\"read\")`"),
-        "内联段应声明无需 read_file"
+        prompt.contains("不需要再调 `read` 或 `file_search`"),
+        "内联段应声明无需再次 read"
     );
     assert!(!ws.join("attachments").exists(), "小附件不应落盘");
     let _ = std::fs::remove_dir_all(&ws);
@@ -2411,7 +2411,8 @@ fn large_spreadsheet_goes_path_mode() {
         "应给出落盘 CSV 相对路径"
     );
     assert!(
-        prompt.contains("File(action=\"read\")") && prompt.contains("Bash(action=\"run\")"),
+        prompt.contains("read(path=..., offset=..., limit=...)")
+            && prompt.contains("bash(command=...)"),
         "应引导工具消化"
     );
     assert!(prompt.contains("没有**嵌入"), "应声明未嵌入完整内容");

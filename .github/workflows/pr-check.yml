@@ -716,6 +716,18 @@ jobs:
         working-directory: pinvou3-app/src-tauri
         run: cargo check --bin dump_system_prompt --features dev-tools
 
+      # benchmark-hooks is intentionally outside the desktop default feature
+      # set, so the ordinary clippy/test legs cannot detect API drift in the
+      # headless evaluation bridge. Compile all gated targets and execute its
+      # smallest end-to-end contract whenever the heavy Rust gate runs.
+      - name: benchmark-hooks + product backend compile contract (hard gate)
+        if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
+        working-directory: pinvou3-app/src-tauri
+        run: |
+          cargo check --all-targets --features benchmark-hooks --locked
+          CARGO_TARGET_DIR=target cargo check --manifest-path ../../pinvou-cli/Cargo.toml --package pinvou-product-backend --locked
+          cargo test --test headless_bridge_contract --features benchmark-hooks --locked -- --test-threads=1
+
       # cargo-deny only cares about dependency/policy paths (Cargo/lock/deny/gitlink).
       - name: cargo-deny (advisories/licenses/bans/sources)
         if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' && needs.changes.outputs.rust_dependencies == 'true' }}

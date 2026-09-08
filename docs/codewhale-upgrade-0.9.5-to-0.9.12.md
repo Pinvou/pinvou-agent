@@ -1,6 +1,6 @@
 # CodeWhale v0.9.5 r13 → v0.9.12 r1 升级报告
 
-> 状态：本地候选；自动化与本机可执行门禁已通过，真实 vLLM 和公开发布待外部条件（2026-09-07）
+> 状态：公开 PR 候选；自动化与本机可执行门禁已通过，真实 vLLM 和受保护基线发布待外部条件（2026-09-08）
 > 目标：把 Pinvou Agent 底座完整迁到官方 CodeWhale v0.9.12，同时把 fork 收敛为可解释、可测试、可回退的 4 个长期主题。
 
 ## 1. 基线与隔离
@@ -10,11 +10,11 @@
 | 父仓基线 | `origin/main` `0147e2ef` |
 | 父仓工作分支 | `codex/codewhale-v0.9.12-sync` |
 | 上游 release | `v0.9.12` `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5` |
-| 新 fork 分支 | `codex/pinvou-v0.9.12-r1` |
-| 新 fork head | `b4c02616b8561dfca43d540fe778bb15287fa719` |
-| 旧 fork 回退点 | `backup/pre-v0.9.12-sync` `f853f8f1566c57e6be40d5439a222a932aa79ef5` |
+| 新 fork 分支 | 已推送 `codex/pinvou-v0.9.12-r1`，CodeWhale PR #44 |
+| 新 fork head | `fe0cd7551175f0f3df2c785b15c6c16e282218f7` |
+| 旧 fork 回退点 | 公开不可变 tag `pinvou-v0.9.5-r13`，commit `f853f8f1566c57e6be40d5439a222a932aa79ef5` |
 
-所有开发在隔离 worktree 完成；原始 `/home/whc0005/workspace/pinvou-agent` 的已有改动和未跟踪文件未被修改、清理或提交。
+所有开发在隔离 worktree 完成；原始工作区的已有改动和未跟踪文件未被修改、清理或提交。
 
 ## 2. 评估结论
 
@@ -24,7 +24,7 @@
 2. **主应用兼容审计**：追踪 `pinvou3-app` 实际调用的 EngineConfig、事件、工具、会话、Automation 和持久化路径。
 3. **验证/发布审计**：核对 CI、跨平台、包发布、真实模型、公开 submodule 与回退门禁。
 
-旧 r13 修改 110 个文件，其中 104 个同时被 v0.9.12 上游改动，直接移植预计冲突 57 个文件。旧 fork drift 为 `+10895/-1195`；新候选从官方 tag clean re-fork 后为 `+3127/-614`（62 文件，净增 2513 行），因此没有采用 merge/cherry-pick 冲突树。新增触达文件包含当前 Rust/Clippy 发布门禁所需的等价条件折叠、`Default` 补全和窄 lint 说明，不引入新的 fork 行为主题。
+旧 r13 修改 110 个文件，其中 104 个同时被 v0.9.12 上游改动，直接移植预计冲突 57 个文件。旧 fork drift 为 `+10895/-1195`；新候选从官方 tag clean re-fork 后为 `+4769/-620`（66 文件，净增 4149 行），因此没有采用 merge/cherry-pick 冲突树。新增触达文件包含当前 Rust/Clippy 发布门禁所需的等价条件折叠、`Default` 补全和窄 lint 说明，以及评审要求的生命周期与评测结果式回归，不引入新的 fork 行为主题。
 
 ## 3. 处置矩阵
 
@@ -53,7 +53,7 @@
 
 ### 3.3 仍需 fork 的四个主题
 
-- **T1 宿主/路由**：窄 facade、route-with-limits、可靠 steer、session owner、批量 child cancel、raw worker ledger。
+- **T1 宿主/路由**：host compatibility facade、route-with-limits、可靠 steer、session owner、批量 child cancel、raw worker ledger；当前 18 个 `pub mod` 的收窄工作已单独登记，需先迁移父仓 272 处直接引用。
 - **T2 工具/安全**：ExtraTools、MCP secret resolver、逐轮精确策略、最终分发复检、只读/审批 fail-closed、File 64 KiB、受限日志脱敏。
 - **T3 Prompt/Skills**：static composer 所有权、ambient authority 隔离、单一显式 Skills 根、Permissions 100 KiB 窄预算、working-set reminder 隔离。
 - **T4 Automation/Task**：稳定 conversation key、ThreadCreated、v3 writer/v4 窄兼容、离线不补跑、不重叠、终态清理。
@@ -64,9 +64,11 @@
 - bridge 按 v0.9.12 `EngineConfig` 重建字段，保留有限 turn/tool budget、read denylist、bubblewrap、MCP OAuth、goal 与 telemetry 安全配置。
 - `session_id` 在 `Engine::spawn` 前写入配置；不依赖事件到达后猜测归属。
 - 精确工具/只读策略以 `TurnToolSecurityPolicy` 随 `SendMessage` 下发，restricted turn 不携带 dynamic tools。
+- 产品工具面迁移到 v0.9.12 model-visible canonical 名称，并以真实 `ToolRegistry::to_api_tools()`/Engine `tool_catalog` 回归防止隐藏 replay 别名泄漏。
 - forwarder 只接收 owner session 匹配的 Agent/Workflow/SubAgent 事件。
-- Scheduled executor 使用 v0.9.12 `TaskExecutionLimits`、`TaskTerminalReason` 和 `ThreadCreated`；Pinvou 精确 `model_id` 继续由 automation id 对应的 companion binding store 持久化，新增的 CodeWhale provider registry 字段刻意留空，二者不混用。
-- `rusqlite` 对齐 0.40.2，并重生成父仓 `Cargo.lock`。
+- `ToolGateDecision` 与 `CompactionCancelled` 进入桌面/远程用户可见通道，其余 v0.9.12 事件全部显式处置或记录，不再被 wildcard 静默吞掉。`GoalContinuationWaiting/WaitEnded` 当前不投影，因产品没有开放延迟配置且 Engine 默认为 0，回归测试锁定其不可达性。
+- Scheduled executor 使用 v0.9.12 `TaskExecutionLimits`、`TaskTerminalReason` 和 `ThreadCreated`；产品将 idle 设为 31 分钟、wall 设为 30 分钟，避免未投影每个模型 delta 时健康本地推理被默认 2 分钟 idle 看门狗误杀；Pinvou 精确 `model_id` 继续由 automation id 对应的 companion binding store 持久化，新增的 CodeWhale provider registry 字段刻意留空，二者不混用。
+- `rusqlite` 对齐 0.40.2，并同步重生成 app 与 `pinvou-cli` 两份 `Cargo.lock`；重型 CI 显式执行 `benchmark-hooks` 及 `pinvou-product-backend --locked` 编译契约。
 
 ## 5. 安全与数据不变量
 
@@ -83,25 +85,27 @@
 | 层级 | 命令/场景 | 当前结果 |
 |---|---|---|
 | CodeWhale compile | `cargo check -p codewhale-tui --lib --bins --locked`；`--lib --tests`；`cargo check --workspace --all-targets --locked` | 均通过 |
-| CodeWhale full lib | `RUST_MIN_STACK=16777216 cargo test -p codewhale-tui --lib --locked -- --test-threads=1` | 11,690 通过，0 失败，12 ignored |
-| CodeWhale release lane | `cargo test --workspace --all-features --locked -- --test-threads=1`；严格 workspace/all-targets/all-features Clippy；protocol/state parity；OHOS dependency contract | 全部通过；关键集合为 TUI 11,705、PTY/Cucumber 33、integration 283，均 0 失败，另含其余 crate 与 doc tests |
-| CodeWhale fork behavior | `cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1` | 18/18 通过 |
-| Parent compile | `cargo check --lib --locked` | 通过 |
-| Parent Rust tests | 普通全量 + CI 同构 `PINVOU_REQUIRE_REMOTE_E2E=1`/ARM64 Chromium/Relay 全量 | 两轮均为 2,006 通过，0 失败，12 个明确外部场景 ignored |
-| Fork topology/fingerprints | `./scripts/fork-guard.sh` | 全过；18 个底座行为回归 + 23 个 app 行为回归 |
+| CodeWhale full lib | `RUST_MIN_STACK=16777216 cargo test -p codewhale-tui --lib --locked -- --test-threads=1` | 评审修复后 11,702 通过，0 失败，12 ignored |
+| CodeWhale release lane | `cargo test --workspace --all-features --locked -- --test-threads=1`；严格 workspace/all-targets/all-features Clippy；protocol/state parity；OHOS dependency contract | 全部通过；评审修复后的关键 TUI all-features 集合为 11,723 通过、0 失败、12 ignored；其余既有 PTY/Cucumber、integration、crate 与 doc tests 均通过 |
+| CodeWhale fork behavior | 默认 `forkguard_`；另以 `--features benchmark-eval-controls` 跑 `forkguard_benchmark_` | 27/27 默认行为 + 6/6 feature-gated eval controls 通过 |
+| Parent compile | app `cargo check --lib --locked`、`--all-targets --features benchmark-hooks --locked`；CLI `pinvou-product-backend --locked` | 全部通过；修复前 CLI lock 仍锁在 CodeWhale 0.9.5/rusqlite 0.39.0 并会 fail closed，重生成后解析为 0.9.12/0.40.2 |
+| Parent Rust tests | 普通全量 + CI 同构 `PINVOU_REQUIRE_REMOTE_E2E=1`/ARM64 Chromium/Relay 全量 | 评审修复后普通全量为 2,009 通过，0 失败，12 个明确外部场景 ignored；既有 CI 同构全量在候选更新前也无回归 |
+| Fork topology/fingerprints | `./scripts/fork-guard.sh` | 全过；35 个底座行为回归（含 6 个 feature-gated eval controls）+ 23 个 app 行为回归，并编译/定向执行父仓 `benchmark-hooks` |
 | Rust quality | app `fmt`、两级 `clippy`、`RUSTDOCFLAGS=-D warnings cargo doc --no-deps` | 均通过 |
 | Rust dependency policy | `cargo shear --deny-warnings`（app/knowledge）；`cargo deny check advisories licenses bans sources`（app/knowledge） | 两个工作区 shear 均为 0 问题；deny 四项策略均通过，仅有策略允许的 path dependency/未命中历史 ignore 提示 |
 | Architecture guard | `python3 scripts/architecture-guard.py` | 通过，无新增 architecture debt |
 | Prompt ownership | v0.9.5 r13 与 v0.9.12 r1 dump/字节对照 | 均为 89 行、10,419 bytes、SHA-256 `02c4d4b6b1b4b1f33ffaacd3157508f239400547d5550dcea06e6ad44cfedbe5`，`cmp=0` |
-| Frontend | 逻辑/静态/build/audit + diff selector 的 19 组 Chromium UI smoke | 537 通过、0 失败、16 skipped；19 组 UI smoke 全过，其中真实 Relay WebUI 32/32 桌面/移动旅程通过；无未引用项或循环依赖（静态检查仅有既有 warn 级提示） |
+| Frontend | Node 逻辑/静态、build/audit + diff selector 的 19 组 Chromium UI smoke | 评审修复后 Node 为 539 通过、0 失败、15 skipped，pet 资源与 UI build/lint 通过；既有 19 组 UI smoke 全过，其中真实 Relay WebUI 32/32 桌面/移动旅程通过 |
 | Relay | `npm --prefix remote-control-relay test` | 23 通过，0 失败 |
-| Script/MCP contracts | Python unittest + `mcp-server-contract-smoke.py` + 各内置 MCP `test_*.py` | 89 通过；全部 MCP server contract 及 3 个服务级测试文件通过 |
+| Script/MCP contracts | Python unittest + `mcp-server-contract-smoke.py` + 各内置 MCP `test_*.py` | 95 通过；全部 MCP server contract 及 3 个服务级测试文件通过 |
 | Repository/CI contracts | commit message、版本同步、PR routing、fork-link change contract | 均通过；版本文件一致为 `0.9.2`，gitlink 与 fork 文档同步变更 |
-| Secret scan | Gitleaks v8.30.1，父仓 `origin/main..HEAD` 与 CodeWhale `v0.9.12..HEAD` | 本次 3 + 5 个提交均为 0 新命中；裸全历史模式仍报告 105 条升级前历史命中，最近 10 次 GitHub PR secret-scan 工作流均成功 |
+| Secret scan | Gitleaks v8.30.1，父仓 `origin/main..HEAD` 与 CodeWhale `v0.9.12..HEAD` | 本次候选最终提交数为父仓 4 + CodeWhale 7；推送前需对新增提交复跑，裸全历史模式的 105 条升级前历史命中不归因于本次升级 |
 | Knowledge crate | fmt/clippy/all-features test/install shell syntax | 92 通过，0 失败；其余均通过 |
 | Real model | strict L1 vLLM harness | 27 个场景可枚举；本机无 8000/11434/8080/3000 listener，且 L1/OpenAI/DeepSeek endpoint/credential 环境均未配置，故未执行、不得计为通过 |
 | Platform/package | `npm run build`；Linux/Windows/macOS 配置与打包契约 | Linux arm64 release 与 `.deb` 构建通过；4 组契约均通过（knowledge host 17/17）；本机仅安装 `aarch64-unknown-linux-gnu`，Windows/macOS 原生编译留给公开分支 CI |
 | Public submodule | branch/tag/gitlink 三者一致 | 未通过（预期）：公开 `pinvou3-clean` 仍为旧 r13 `f853f8f1...`，`pinvou-v0.9.12-r1` 尚不存在；必须等明确授权发布 |
+
+`hashlink` 未强制统一：app 的锁图把 `rusqlite 0.40.2` 解析到 `hashlink 0.12.1`，与作为 path dependency 进入 app 的 `pinvou-knowledge` 共用这一份解析；`pinvou-knowledge` 独立工作区的 lockfile 则解析到兼容的 `0.12.2`。两者属于不同锁图，当前 app 产物不存在双版本；没有安全公告或功能修复要求升级，因此不为表面一致性制造无关 lockfile 漂移。
 
 补充执行了非 required gate 的 `npm run check:types`。它仍会命中仓库既有的全量 JavaScript 类型债务；本次没有修改 JavaScript 源码，因此不把该结果归因于底座升级，也不把它伪装为通过。
 
@@ -111,12 +115,12 @@
 
 ## 7. 发布与回退
 
-本轮不会自动 push、创建 tag 或发布 release。获得明确授权后按以下顺序执行：
+候选开发分支和评审修复会推送到现有两个 PR；本轮不会更新受保护基线、创建 tag、发布 release 或合并。获得明确授权后按以下顺序执行：
 
 1. 推送 CodeWhale `pinvou3-clean` 到候选 head。
 2. 创建不可变 tag `pinvou-v0.9.12-r1` 指向同一 head。
 3. 确认父仓 gitlink 与 branch/tag 三者一致。
 4. 执行 `scripts/verify-public-submodule.sh` 的真实远端校验。
-5. 再推送父仓分支并进入 PR/CI。
+5. 让父仓 PR 在公开一致性门禁通过后进入最终评审/CI。
 
-出现回归时，底座可回到 `backup/pre-v0.9.12-sync`；回退不会删除原工作区或历史 tag。
+出现回归时，父仓通过新提交把 gitlink 回到公开不可变 tag `pinvou-v0.9.5-r13`，并恢复配套应用代码和 lockfile；本地 `backup/pre-v0.9.12-sync` 只作便利引用，不作为公开回退前提。若新版本已经迁移用户数据，还必须一并恢复升级前的数据备份，不能只降二进制。回退不会删除原工作区或历史 tag。

@@ -2777,6 +2777,21 @@ mod tests {
         assert!(!bridge.multi_agent_mode_available("external-acp"));
     }
 
+    /// Pinvou does not expose a goal-continuation quiet-period setting. Keep
+    /// the foundation default at zero so `GoalContinuationWaiting` and
+    /// `GoalContinuationWaitEnded` remain unreachable in the desktop/remote
+    /// product path unless a future product change deliberately enables and
+    /// projects that lifecycle.
+    #[test]
+    fn goal_continuation_quiet_period_stays_disabled() {
+        assert_eq!(
+            fixture_bridge()
+                .build_engine_config()
+                .goal_continuation_delay_seconds,
+            0
+        );
+    }
+
     #[test]
     fn execution_root_resolver_overrides_session_workspace_only_when_hit() {
         let mut bridge = fixture_bridge();
@@ -3666,9 +3681,8 @@ mod tests {
                 .check(codewhale_execpolicy::ExecPolicyContext {
                     command,
                     cwd: ".",
-                    // The engine resolves Bash(action=run) to exec_shell via
-                    // canonical_action_alias before consulting rules
-                    // (engine.rs exec_shell_ask_rule_decision).
+                    // The model-facing `bash` tool reaches the internal
+                    // `exec_shell` policy identity before consulting rules.
                     tool: Some("exec_shell"),
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
@@ -5105,7 +5119,9 @@ mod tests {
             panic!("expected SendMessage")
         };
         assert_eq!(mode, AppMode::Agent);
-        assert!(content.contains("only callable tool is exactly `File`"));
+        assert!(content.contains(
+            "only callable tools are exactly `read`, `list_dir`, `file_search`, and `grep_files`"
+        ));
         assert!(content.ends_with("question"));
         assert!(!allow_shell);
         assert!(!trust_mode);

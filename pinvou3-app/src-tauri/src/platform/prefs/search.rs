@@ -16,7 +16,9 @@ use crate::platform::credential_store::CredentialReference;
 ///   DDG 在 GFW 下 DNS 污染 + SNI 重置,完全不可达。底座默认仍是
 ///   DuckDuckGo,但 bridge 构造 EngineConfig 时丢弃底座默认、显式注入
 ///   本枚举(forkguard_search_provider_translates_from_prefs 锁定),
-///   对应用用户等效于默认 Bing;底座侧 API 后端失败兜底同为 Bing。
+///   对应用用户等效于默认 Bing。配置型 API 后端失败时,底座外层先尝试
+///   DuckDuckGo；仅当标准 DuckDuckGo 路径无结果或遇到 challenge 时,再有界
+///   fallback 到 Bing（与 fork register 登记的 v0.9.12 行为一致）。
 /// - `Metaso` / `Bocha` / `Baidu`: 国内 AI 搜索 API,中文场景相关性远好于 Bing scrape。
 ///   Metaso 留空 key 走底座内置共享 key(~100 次/天);Bocha/Baidu 必须填 key。
 /// - `Tavily`: 海外 agent 搜索 API(<https://app.tavily.com/> 拿 `tvly-` key,API 实际打

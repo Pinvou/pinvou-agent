@@ -87,6 +87,27 @@ class BenchmarkIsolationPolicyTests(unittest.TestCase):
             timing,
         )
 
+    def test_ready_ci_compiles_and_executes_the_benchmark_feature_surface(self):
+        workflow = self.read(".github/workflows/pr-check.yml")
+        marker = "- name: benchmark-hooks + product backend compile contract (hard gate)"
+        self.assertIn(marker, workflow)
+        step = workflow.split(marker, 1)[1].split("\n      - name:", 1)[0]
+
+        self.assertIn("if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}", step)
+        self.assertIn("working-directory: pinvou3-app/src-tauri", step)
+        self.assertIn(
+            "cargo check --all-targets --features benchmark-hooks --locked",
+            step,
+        )
+        self.assertIn(
+            "CARGO_TARGET_DIR=target cargo check --manifest-path ../../pinvou-cli/Cargo.toml --package pinvou-product-backend --locked",
+            step,
+        )
+        self.assertIn(
+            "cargo test --test headless_bridge_contract --features benchmark-hooks --locked -- --test-threads=1",
+            step,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

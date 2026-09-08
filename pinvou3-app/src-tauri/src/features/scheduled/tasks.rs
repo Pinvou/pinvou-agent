@@ -38,6 +38,24 @@ const SCHEDULED_EXECUTION_MODE: &str = "yolo";
 /// Only supported task kind for now: runs app-side memory organization instead of an
 /// engine conversation turn.
 pub(crate) const SCHEDULED_TASK_KIND_MEMORY_ORGANIZE: &str = "memory_organize";
+const SCHEDULED_WALL_TIME: Duration = Duration::from_secs(30 * 60);
+// Pinvou's embedded Engine does not currently project every model delta/tool
+// heartbeat into TaskExecutionEvent. An idle deadline shorter than the hard
+// wall clock can therefore cancel healthy local-model inference. Keep idle
+// strictly beyond the wall ceiling: wall_time remains the authoritative
+// unattended-run bound while cancellation still uses a short grace period.
+const SCHEDULED_IDLE_PROGRESS: Duration = Duration::from_secs(31 * 60);
+const SCHEDULED_CANCEL_GRACE: Duration = Duration::from_secs(5);
+const SCHEDULED_PERSIST_DEBOUNCE: Duration = Duration::from_millis(250);
+
+fn scheduled_execution_limits() -> TaskExecutionLimits {
+    TaskExecutionLimits {
+        wall_time: SCHEDULED_WALL_TIME,
+        idle_progress: SCHEDULED_IDLE_PROGRESS,
+        cancel_grace: SCHEDULED_CANCEL_GRACE,
+        persist_debounce: SCHEDULED_PERSIST_DEBOUNCE,
+    }
+}
 
 #[path = "stores.rs"]
 mod stores;
@@ -295,7 +313,7 @@ impl ScheduledTaskState {
             default_mode: SCHEDULED_EXECUTION_MODE.to_string(),
             allow_shell,
             trust_mode: true,
-            execution_limits: TaskExecutionLimits::default(),
+            execution_limits: scheduled_execution_limits(),
         };
         let executor = Arc::new(ScheduledChatExecutor::from_services(
             sessions.clone(),
@@ -1881,6 +1899,20 @@ pub fn scheduled_task_chat_prompt() -> Result<String, String> {
 mod tests {
     use super::*;
     use parking_lot::RwLock;
+
+    #[test]
+    fn scheduled_limits_do_not_apply_the_two_minute_foundation_idle_cutoff() {
+        let limits = scheduled_execution_limits();
+
+        assert_eq!(limits.wall_time, Duration::from_secs(30 * 60));
+        assert_eq!(limits.idle_progress, Duration::from_secs(31 * 60));
+        assert!(
+            limits.idle_progress > limits.wall_time,
+            "a healthy silent local-model turn must reach the wall deadline first"
+        );
+        assert_eq!(limits.cancel_grace, Duration::from_secs(5));
+        assert_eq!(limits.persist_debounce, Duration::from_millis(250));
+    }
 
     impl ScheduledTaskState {
         async fn create_for_test(
