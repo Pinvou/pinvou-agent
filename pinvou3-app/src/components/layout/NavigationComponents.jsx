@@ -294,9 +294,13 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
           draggable={dndPayload && !dndDisabled ? true : undefined}
           onDragEnd={onDragEnd}
           onDragStart={dndPayload && !dndDisabled ? (e) => {
-            // 侧栏内 HTML5 拖拽(移动到项目):按住不动 350ms 仍是 tear-off 拆窗
-            // 手势——浏览器在指针移动时启动原生拖拽并取消 pointer 事件,
-            // 两条手势路径天然互斥。tear-off 进行中(dndDisabled)不再启动。
+            // 侧栏内 HTML5 拖拽(移动到项目)与 tear-off(长按 350ms)本来
+            // 天然冲突——原生 dragstart 取消 pointer 事件,350ms 定时器照跑,
+            // 中途会误触发拆窗。互斥由 useLongPressDrag 的工程手段提供:
+            // pointerdown 时装 capture 阶段 dragstart 监听({once}) +
+            // pointercancel 兜底,clearPress 幂等,自然竞态被消除;
+            // 该行注释仅描述消费侧,不要因"看起来多余"而删 hook 的联锁。
+            // tear-off 进行中(dndDisabled)不再启动 HTML5 拖拽。
             e.dataTransfer.setData('application/x-pinvou-session', dndPayload.sessionId);
             e.dataTransfer.effectAllowed = 'move';
           } : undefined}
