@@ -335,6 +335,46 @@ test('identified completed subagent jobs without their origin card stay visible'
 });
 
 for (const runtime of ['tauri', 'web']) {
+  for (const observer of [
+    { name: 'exec_shell_wait' },
+    { name: 'Bash', args: { action: 'wait', task_id: 'observed-task' } },
+  ]) {
+    test(`${runtime}: ${observer.name} wait observer suppresses an unmatched terminal snapshot`, () => {
+      // Include a preceding start card: overlooking the trailing legacy wait
+      // name would incorrectly leave the guard disarmed on the Web bridge.
+      const items = [{
+        type: 'tool', toolId: 'start', name: 'Bash', state: 'done',
+        args: { action: 'run', command: 'different command' }, output: 'started',
+      }, {
+        type: 'tool', toolId: 'wait', state: 'done', output: 'observed', ...observer,
+      }];
+      const harness = createTerminal(items, runtime);
+      assert.equal(harness.terminal.applyShellSnapshots('session-current', [snapshot()]), false);
+      assert.deepEqual(harness.chatItems, items);
+      assert.equal(harness.notifications(), 0);
+    });
+  }
+
+  test(`${runtime}: an existing task binding takes precedence over another origin card`, () => {
+    const origin = {
+      type: 'tool', toolId: 'origin-call', name: 'Bash', state: 'done',
+      args: { action: 'run', command: 'same command' }, output: 'origin output',
+    };
+    const harness = createTerminal([{
+      type: 'tool', toolId: 'bound-call', taskId: 'shell-old', name: 'Bash',
+      state: 'running', args: { action: 'run', command: 'same command' }, output: '',
+    }, origin], runtime);
+    harness.terminal.applyShellSnapshots('session-current', [snapshot({
+      origin_tool_call_id: 'origin-call', command: 'same command',
+    })]);
+    assert.equal(harness.chatItems.length, 2);
+    assert.equal(harness.chatItems[0].toolId, 'bound-call');
+    assert.equal(harness.chatItems[0].state, 'failed');
+    assert.match(harness.chatItems[0].output, /old task failed/);
+    assert.deepEqual(harness.chatItems[1], origin);
+    assert.equal(harness.notifications(), 1);
+  });
+
   test(`${runtime}: a missing origin cannot adopt a same-command running card`, () => {
     const current = {
       type: 'tool', toolId: 'new-call', name: 'exec_shell', state: 'running',
