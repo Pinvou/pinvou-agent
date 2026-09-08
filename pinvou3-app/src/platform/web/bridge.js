@@ -284,6 +284,9 @@
     updateReady: false,       // 安装完成,等用户点重启
     updateError: null,        // 下载/安装阶段错误(sha256/apt stderr 透传)
     updateCancelling: false,  // 用户点了取消,据此把后端「已取消下载」当正常而非错误
+    // projects 域桌面专属;Web 端不挂载该切片数据,但 domain-adapter 的
+    // fields 注册表中留了键位,读数恒为空数组(APP 侧按需桥时)。
+    projectsList: [],
     // 依赖体检(设置页): deps = [{key, installed, apt}], null = 尚未检测
     deps: null,
     depsChecking: false,
