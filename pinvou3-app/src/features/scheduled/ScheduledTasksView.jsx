@@ -1195,7 +1195,6 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
                 <ScheduledSelect value={editor.repeat} options={repeatOptions}
                   onChange={value => onEdit('repeat', value)}
                   testId={`${prefix}-repeat`} ariaLabel={scheduledCopy.chooseRepeat} theme={theme} emptyLabel={scheduledCopy.choose} />
-                <ChevronRight className={`h-3.5 w-3.5 text-[#C5C5C7] dark:text-[#EBEBF5]/30`} />
               </div>
             </div>
           </div>
@@ -1218,7 +1217,6 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
                     onChange={values => onEdit('days', values)} multiple minSelected={1}
                     onClose={onCloseWeekly}
                     testId={`${prefix}-day`} ariaLabel={scheduledCopy.chooseDate} theme={theme} minWidth={190} emptyLabel={scheduledCopy.choose} separator={scheduledCopy.daySeparator} />
-                  <ChevronRight className={`h-3.5 w-3.5 text-[#C5C5C7] dark:text-[#EBEBF5]/30`} />
                 </div>
               </div>
             </div>
