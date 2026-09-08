@@ -176,20 +176,20 @@ fn delete_expels_all_members_to_ungrouped() {
     let other = create(&store, "幸存", &[abs("y")]);
 
     store
-        .move_session_to_project("s1", Some(&project.id), None, None)
+        .move_session_to_project("s1", Some(&project.id), None)
         .expect("assign s1");
     store
-        .move_session_to_project("s2", Some(&project.id), None, None)
+        .move_session_to_project("s2", Some(&project.id), None)
         .expect("assign s2");
     // s3 显式移出:语义是"不进任何项目",与目标项目存亡无关。
     store
-        .move_session_to_project("s3", Some(&project.id), None, None)
+        .move_session_to_project("s3", Some(&project.id), None)
         .expect("assign s3");
     store
-        .move_session_to_project("s3", None, None, None)
+        .move_session_to_project("s3", None, None)
         .expect("move s3 out");
     store
-        .move_session_to_project("s4", Some(&other.id), None, None)
+        .move_session_to_project("s4", Some(&other.id), None)
         .expect("assign s4");
 
     // 删除时命令层枚举的自动归组成员(s5:无归属条目)一并传入。
@@ -227,25 +227,25 @@ fn move_assigns_explicitly_and_unassign_blocks_auto_revival() {
     let project = create(&store, "目标", &[]);
 
     store
-        .move_session_to_project("s1", Some(&project.id), None, None)
+        .move_session_to_project("s1", Some(&project.id), None)
         .expect("assign");
     assert_eq!(store.assignment_of("s1"), Some(Some(project.id.clone())));
     assert_eq!(store.assigned_session_ids(&project.id), vec!["s1"]);
 
     // 显式移出 = 条目存在且为 None(区别于"无条目走自动归组")。
     store
-        .move_session_to_project("s1", None, None, None)
+        .move_session_to_project("s1", None, None)
         .expect("explicit move out");
     assert_eq!(store.assignment_of("s1"), Some(None));
     assert!(store.assigned_session_ids(&project.id).is_empty());
 
     let unknown = store
-        .move_session_to_project("s1", Some("prj-nope"), None, None)
+        .move_session_to_project("s1", Some("prj-nope"), None)
         .expect_err("unknown project rejected");
     assert!(unknown.to_string().contains("project not found"));
 
     let orphan_root = store
-        .move_session_to_project("s1", None, Some(&abs("nowhere")), None)
+        .move_session_to_project("s1", None, Some(&abs("nowhere")))
         .expect_err("add_workspace_root without project rejected");
     assert!(
         orphan_root
@@ -270,7 +270,7 @@ fn move_add_workspace_root_atomically_and_idempotently() {
 
     // 顺带加 root:归并与加目录一次落盘。
     let outcome = store
-        .move_session_to_project("s1", Some(&project.id), Some(&workspace), None)
+        .move_session_to_project("s1", Some(&project.id), Some(&workspace))
         .expect("move with workspace root");
     assert_eq!(outcome.project_id, Some(project.id.clone()));
     assert_eq!(outcome.added_root, Some(canonical.clone()));
@@ -278,14 +278,14 @@ fn move_add_workspace_root_atomically_and_idempotently() {
 
     // 已被现有 root 覆盖时幂等跳过,不重复添加。
     let again = store
-        .move_session_to_project("s2", Some(&project.id), Some(&workspace.join("deep")), None)
+        .move_session_to_project("s2", Some(&project.id), Some(&workspace.join("deep")))
         .expect("covered workspace skips add");
     assert_eq!(again.added_root, None);
     assert_eq!(store.get(&project.id).unwrap().roots.len(), 2);
 
     // 落在他人领地内的目录必须拦截,且不得污染两个项目。
     let conflict = store
-        .move_session_to_project("s3", Some(&project.id), Some(&foreign.join("deeper")), None)
+        .move_session_to_project("s3", Some(&project.id), Some(&foreign.join("deeper")))
         .map(|_| ())
         .expect_err("cross-project overlap rejected");
     assert!(conflict.to_string().contains("overlaps project '他人领地'"));
@@ -302,7 +302,7 @@ fn persist_roundtrip_preserves_state_on_reopen() {
         let store = ProjectStore::from_paths(path.clone());
         let project = create(&store, "持久化", &[abs("persist")]);
         store
-            .move_session_to_project("s1", Some(&project.id), None, None)
+            .move_session_to_project("s1", Some(&project.id), None)
             .expect("assign");
         project.id
     };
@@ -408,10 +408,10 @@ fn forget_session_and_retain_sessions_prune_orphans() {
     let store = store_in(&temp);
     let project = create(&store, "项目", &[]);
     store
-        .move_session_to_project("s1", Some(&project.id), None, None)
+        .move_session_to_project("s1", Some(&project.id), None)
         .expect("assign s1");
     store
-        .move_session_to_project("s2", None, None, None)
+        .move_session_to_project("s2", None, None)
         .expect("explicit move out s2");
 
     assert!(store.forget_session("s1"));
@@ -420,7 +420,7 @@ fn forget_session_and_retain_sessions_prune_orphans() {
 
     // 启动对账:只保留仍存在的会话条目。
     store
-        .move_session_to_project("s3", Some(&project.id), None, None)
+        .move_session_to_project("s3", Some(&project.id), None)
         .expect("assign s3");
     let existing: HashSet<String> = ["s3".to_string()].into_iter().collect();
     let pruned = store.retain_sessions(&existing);
@@ -441,14 +441,14 @@ fn move_workspace_ancestor_collapses_descendant_roots() {
 
     // 先挂子目录,再把父目录作为工作目录移入:祖先收编后代,组内不得出现嵌套。
     let child_outcome = store
-        .move_session_to_project("s1", Some(&project.id), Some(&child), None)
+        .move_session_to_project("s1", Some(&project.id), Some(&child))
         .expect("move with child root");
     assert_eq!(
         child_outcome.added_root,
         Some(child.canonicalize().expect("canon child"))
     );
     let parent_outcome = store
-        .move_session_to_project("s2", Some(&project.id), Some(&parent), None)
+        .move_session_to_project("s2", Some(&project.id), Some(&parent))
         .expect("move with ancestor root");
     assert_eq!(
         parent_outcome.added_root,
@@ -460,7 +460,7 @@ fn move_workspace_ancestor_collapses_descendant_roots() {
 
     // 反方向保持幂等:现有 root 是祖先时,子目录工作目录不重复添加。
     let nested_again = store
-        .move_session_to_project("s3", Some(&project.id), Some(&child), None)
+        .move_session_to_project("s3", Some(&project.id), Some(&child))
         .expect("covered workspace skips add");
     assert_eq!(nested_again.added_root, None);
     assert_eq!(store.get(&project.id).expect("project").roots.len(), 1);
@@ -620,7 +620,7 @@ fn manual_add_root_takes_over_folder_project_root() {
     let target = create(&store, "目标", &[abs("other")]);
 
     let outcome = store
-        .move_session_to_project("s1", Some(&target.id), Some(&abs("web")), None)
+        .move_session_to_project("s1", Some(&target.id), Some(&abs("web")))
         .expect("move with add root");
     assert_eq!(outcome.added_root, Some(abs("web")));
     assert_eq!(store.get(&target.id).expect("target").roots, vec![abs("other"), abs("web")]);
@@ -635,12 +635,12 @@ fn manual_add_root_keeps_folder_project_with_explicit_members() {
     ensure(&store, &[abs("web")]);
     let folder_project = store.list()[0].clone();
     store
-        .move_session_to_project("s9", Some(&folder_project.id), None, None)
+        .move_session_to_project("s9", Some(&folder_project.id), None)
         .expect("explicit member");
     let target = create(&store, "目标", &[abs("other")]);
 
     store
-        .move_session_to_project("s1", Some(&target.id), Some(&abs("web")), None)
+        .move_session_to_project("s1", Some(&target.id), Some(&abs("web")))
         .expect("move with add root");
     let survivor = store.get(&folder_project.id).expect("有显式成员的自动项目保留");
     assert!(survivor.roots.is_empty(), "root 已让渡,项目降级为标签项目");
@@ -655,7 +655,7 @@ fn manual_add_root_still_rejected_against_manual_project() {
     let target = create(&store, "目标", &[abs("other")]);
 
     let error = store
-        .move_session_to_project("s1", Some(&target.id), Some(&abs("web")), None)
+        .move_session_to_project("s1", Some(&target.id), Some(&abs("web")))
         .expect_err("手工项目之间不得蚕食");
     assert!(error.to_string().contains("overlaps project"));
     assert_eq!(store.get(&holder.id).expect("holder").roots.len(), 1, "状态不变");
@@ -673,7 +673,7 @@ fn manual_add_root_strips_ancestor_folder_root() {
     let target = create(&store, "目标", &[abs("other")]);
 
     store
-        .move_session_to_project("s1", Some(&target.id), Some(&abs("web/sub")), None)
+        .move_session_to_project("s1", Some(&target.id), Some(&abs("web/sub")))
         .expect("move with add sub root");
     assert_eq!(
         store.get(&target.id).expect("target").roots,
@@ -712,103 +712,4 @@ fn ensure_never_takes_over_existing_roots() {
     assert!(matches!(&outcomes[0], super::EnsureFolderOutcome::Failed { reason }
         if reason.contains("overlaps")));
     assert_eq!(store.list()[0].roots.len(), 1, "既有 root 未被剥离");
-}
-
-// ── 项目内手动顺序 ─────────────────────────────────────────────────────────
-
-#[test]
-fn move_with_project_order_replaces_and_move_out_clears() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let store = store_in(&temp);
-    let target = create(&store, "目标", &[abs("web")]);
-
-    // 带 project_order 的移入:列表整体替换(前端按落点算好完整顺序)。
-    store
-        .move_session_to_project(
-            "s1",
-            Some(&target.id),
-            None,
-            Some(&["a".to_string(), "s1".to_string(), "b".to_string()]),
-        )
-        .expect("move s1");
-    assert_eq!(
-        store.orders_snapshot().get(&target.id),
-        Some(&vec!["a".to_string(), "s1".to_string(), "b".to_string()]),
-    );
-
-    // 不带顺序的再次移入(菜单路径):只摘自己的位置,其余成员的手动序保留。
-    store
-        .move_session_to_project("s1", Some(&target.id), None, None)
-        .expect("re-move s1");
-    assert_eq!(
-        store.orders_snapshot().get(&target.id),
-        Some(&vec!["a".to_string(), "b".to_string()]),
-    );
-
-    // 移出:从所有顺序表摘除。
-    store
-        .move_session_to_project("s2", Some(&target.id), None, Some(&["s2".to_string()]))
-        .expect("move s2");
-    store
-        .move_session_to_project("s2", None, None, None)
-        .expect("move s2 out");
-    assert_eq!(store.orders_snapshot().get(&target.id), None);
-}
-
-#[test]
-fn order_entries_leave_with_session_and_project() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let store = store_in(&temp);
-    let project = create(&store, "P", &[abs("web")]);
-    store
-        .move_session_to_project(
-            "s1",
-            Some(&project.id),
-            None,
-            Some(&["s1".to_string(), "s2".to_string()]),
-        )
-        .expect("move s1");
-
-    // 会话删除钩子只摘自己的位置,其余保留;列表空了条目才整体退场。
-    store.forget_session("s1");
-    assert_eq!(
-        store.orders_snapshot().get(&project.id),
-        Some(&vec!["s2".to_string()]),
-    );
-    store.forget_session("s2");
-    assert_eq!(store.orders_snapshot().get(&project.id), None);
-
-    // 项目删除连带顺序表退场。
-    store
-        .move_session_to_project(
-            "s3",
-            Some(&project.id),
-            None,
-            Some(&["s3".to_string()]),
-        )
-        .expect("move s3");
-    store.delete_project(&project.id, &[]).expect("delete");
-    assert!(store.orders_snapshot().is_empty());
-}
-
-#[test]
-fn retain_sessions_prunes_order_entries() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let store = store_in(&temp);
-    let project = create(&store, "P", &[abs("web")]);
-    store
-        .move_session_to_project(
-            "s1",
-            Some(&project.id),
-            None,
-            Some(&["s1".to_string(), "s2".to_string(), "s3".to_string()]),
-        )
-        .expect("move s1");
-    let mut existing = std::collections::HashSet::new();
-    existing.insert("s2".to_string());
-    store.retain_sessions(&existing);
-    assert_eq!(
-        store.orders_snapshot().get(&project.id),
-        Some(&vec!["s2".to_string()]),
-    );
 }

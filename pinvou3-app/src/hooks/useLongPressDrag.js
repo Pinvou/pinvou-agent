@@ -31,15 +31,6 @@ const LONGPRESS_MS = 350;
         startRef.current = null;
         document.body.style.userSelect = '';
       };
-      const resolveDropTarget = (x, y) => {
-        const target = document.elementFromPoint(x, y);
-        const dropTarget = target && target.closest
-          ? target.closest('[data-project-drop-target]')
-          : null;
-        return dropTarget
-          ? { key: dropTarget.getAttribute('data-drop-key'), x, y }
-          : null;
-      };
       const endMoveDrag = (drop) => {
         const session = moveDragRef.current;
         moveDragRef.current = { active: false, payload: null };
@@ -48,8 +39,11 @@ const LONGPRESS_MS = 350;
         document.body.style.userSelect = '';
         if (moveDrag && moveDrag.onHover) moveDrag.onHover(null);
         if (drop && moveDrag && moveDrag.onDrop) {
-          const hit = resolveDropTarget(session.lastX, session.lastY);
-          moveDrag.onDrop(hit ? { ...hit, payload: session.payload } : { key: null, x: session.lastX, y: session.lastY, payload: session.payload });
+          const target = document.elementFromPoint(session.lastX, session.lastY);
+          const dropTarget = target && target.closest
+            ? target.closest('[data-project-drop-target]')
+            : null;
+          moveDrag.onDrop(dropTarget ? dropTarget.getAttribute('data-drop-key') : null, session.payload);
         }
         if (moveDrag && moveDrag.onEnd) moveDrag.onEnd();
       };
@@ -87,8 +81,12 @@ const LONGPRESS_MS = 350;
           if (!moveDragRef.current.active) return;
           moveDragRef.current.lastX = e.clientX;
           moveDragRef.current.lastY = e.clientY;
+          const target = document.elementFromPoint(e.clientX, e.clientY);
+          const dropTarget = target && target.closest
+            ? target.closest('[data-project-drop-target]')
+            : null;
           if (moveDrag && moveDrag.onHover) {
-            moveDrag.onHover(resolveDropTarget(e.clientX, e.clientY));
+            moveDrag.onHover(dropTarget ? dropTarget.getAttribute('data-drop-key') : null);
           }
           return;
         }

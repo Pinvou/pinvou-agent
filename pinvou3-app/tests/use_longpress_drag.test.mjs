@@ -115,8 +115,8 @@ const dragCfg = (events) => ({
   enabled: true,
   payload: 'sess-1',
   onBegin: (geom) => events.begins.push(geom),
-  onHover: (hit) => events.hover.push(hit),
-  onDrop: (info) => events.drops.push(info),
+  onHover: (key) => events.hover.push(key),
+  onDrop: (key, payload) => events.drops.push([key, payload]),
   onEnd: () => events.ends.push(true),
 });
 
@@ -145,16 +145,10 @@ const dragCfg = (events) => ({
   h.pointTarget.key = 'project:prj-1';
   hook.handlers.onPointerMove(h.move(150, 400));
   hook.handlers.onPointerMove(h.move(150, 401));
-  assert.deepEqual(
-    h.events.hover.map((hit) => hit && hit.key),
-    ['project:prj-1', 'project:prj-1'],
-  );
+  assert.deepEqual(h.events.hover, ['project:prj-1', 'project:prj-1']);
   // 悬停后松手:drop 正常送达(WebKitGTK 的 HTML5 悬停丢 drop 问题不复存在)。
   hook.handlers.onPointerUp(h.up(150, 401));
-  assert.deepEqual(
-    h.events.drops.map((d) => ({ key: d.key, payload: d.payload })),
-    [{ key: 'project:prj-1', payload: 'sess-1' }],
-  );
+  assert.deepEqual(h.events.drops, [['project:prj-1', 'sess-1']]);
   assert.deepEqual(h.events.ends, [true], 'drop 后必然回调 onEnd(收起 ghost)');
   assert.equal(h.rerender().moveDragging, false, '松手复位');
 }
@@ -167,10 +161,7 @@ const dragCfg = (events) => ({
   hook.handlers.onPointerDown(h.press(150, 220));
   hook.handlers.onPointerMove(h.move(200, 260));
   hook.handlers.onPointerUp(h.up(200, 262));
-  assert.deepEqual(
-    h.events.drops.map((d) => ({ key: d.key, payload: d.payload })),
-    [{ key: null, payload: 'sess-1' }],
-  );
+  assert.deepEqual(h.events.drops, [[null, 'sess-1']]);
   let clicked = false;
   hook.guardClick(() => { clicked = true; })({ stopPropagation() {}, preventDefault() {} });
   assert.equal(clicked, false, '拖拽后的 click 不得触发选择会话');

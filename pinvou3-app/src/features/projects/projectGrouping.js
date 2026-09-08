@@ -163,12 +163,9 @@ function groupSessionsByFolder(items) {
 // via explicit assignment (the adopt flow). Projects render in manual
 // position order even when empty; the ungrouped bucket always sinks last and
 // is the drag source / move-out landing place.
-// Within a group: sessions listed in the project's manual order render first
-// in that order, the rest follow by latest activity descending.
-function groupSessionsByProject(items, projects, assignments, orders) {
+function groupSessionsByProject(items, projects, assignments) {
   const projectList = Array.isArray(projects) ? projects.filter(Boolean) : [];
   const assignmentMap = assignments && typeof assignments === 'object' ? assignments : {};
-  const orderMap = orders && typeof orders === 'object' ? orders : {};
   const byId = new Map(projectList.map(project => [project.id, project]));
   const projectRows = new Map(projectList.map(project => [project.id, []]));
   const ungrouped = [];
@@ -198,19 +195,9 @@ function groupSessionsByProject(items, projects, assignments, orders) {
     ungrouped.push(item);
   });
 
-  // rows 由调用方排好(项目组走手动序+活动序,未分组走活动序),这里不再排序。
-  const finalize = (key, kind, meta, rows) => ({ key, kind, ...meta, rows, latestAt: itemTime(rows[0]) });
-
-  const orderedRows = (projectId, rows) => {
-    const manual = Array.isArray(orderMap[projectId]) ? orderMap[projectId] : [];
-    const bySession = new Map(rows.map(row => [row.id, row]));
-    const listed = [];
-    manual.forEach((sessionId) => {
-      const row = bySession.get(sessionId);
-      if (row) { listed.push(row); bySession.delete(sessionId); }
-    });
-    const rest = [...bySession.values()].sort((a, b) => itemTime(b).localeCompare(itemTime(a)));
-    return [...listed, ...rest];
+  const finalize = (key, kind, meta, rows) => {
+    rows.sort((a, b) => itemTime(b).localeCompare(itemTime(a)));
+    return { key, kind, ...meta, rows, latestAt: itemTime(rows[0]) };
   };
 
   const groups = [...projectList]
@@ -220,9 +207,8 @@ function groupSessionsByProject(items, projects, assignments, orders) {
       name: project.name,
       roots: project.roots || [],
       path: '',
-    }, orderedRows(project.id, projectRows.get(project.id) || [])));
+    }, projectRows.get(project.id) || []));
   if (ungrouped.length > 0) {
-    ungrouped.sort((a, b) => itemTime(b).localeCompare(itemTime(a)));
     groups.push(finalize(UNGROUPED_GROUP_KEY, 'ungrouped', {
       projectId: null,
       name: '',

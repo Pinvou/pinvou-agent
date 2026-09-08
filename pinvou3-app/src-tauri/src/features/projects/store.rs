@@ -39,11 +39,6 @@ pub struct Project {
 /// 归组,直接回落隐式文件夹分组);无条目 = 未裁决,走自动归组。
 pub type SessionAssignments = HashMap<String, Option<String>>;
 
-/// 项目内会话的手动顺序:项目 id → 有序会话 id 列表。列表只约束其中出现
-/// 的成员(其余成员按活动时间排在列表之后);整列表替换式写入(前端在落点
-/// 时计算完整顺序),删除/移出/会话退场时逐 id 摘除。
-pub type SessionOrders = HashMap<String, Vec<String>>;
-
 /// 单文件持久化结构。schema_version 供未来结构演进识别:读到更新版本时
 /// 按空状态降级启动,但置位拒绝后续写入(见 `StoreState::refuse_writes`),
 /// 否则空状态 + 下次变更会把新结构文件降级覆盖写坏。
@@ -53,8 +48,6 @@ struct ProjectsFile {
     pub projects: Vec<Project>,
     #[serde(default)]
     pub assignments: SessionAssignments,
-    #[serde(default)]
-    pub session_orders: SessionOrders,
 }
 
 const SCHEMA_VERSION: u32 = 1;
@@ -92,7 +85,6 @@ struct StoreState {
     /// 恒按 (position, id) 有序,`list` 直接返回快照。
     projects: Vec<Project>,
     assignments: SessionAssignments,
-    session_orders: SessionOrders,
     /// 读到高于本进程 schema_version 的文件时置位:后续写入全部拒绝,
     /// 防止降级进程把新结构覆盖写坏。
     refuse_writes: bool,
@@ -328,10 +320,7 @@ fn persist_locked(state: &StoreState, path: &Path) -> Result<()> {
             path.display()
         );
     }
-    if state.projects.is_empty()
-        && state.assignments.is_empty()
-        && state.session_orders.is_empty()
-    {
+    if state.projects.is_empty() && state.assignments.is_empty() {
         return match std::fs::remove_file(path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
@@ -342,7 +331,6 @@ fn persist_locked(state: &StoreState, path: &Path) -> Result<()> {
         schema_version: SCHEMA_VERSION,
         projects: state.projects.clone(),
         assignments: state.assignments.clone(),
-        session_orders: state.session_orders.clone(),
     };
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)
@@ -381,7 +369,6 @@ fn load_state(path: &Path) -> Result<StoreState> {
     Ok(StoreState {
         projects,
         assignments: file.assignments,
-        session_orders: file.session_orders,
         refuse_writes: false,
     })
 }
@@ -429,24 +416,6 @@ impl ProjectStore {
     /// 全量归属快照(命令层随 list_projects 一并下发,前端分组解析用)。
     pub fn assignments_snapshot(&self) -> SessionAssignments {
         self.state.read().assignments.clone()
-    }
-
-    /// 全量项目内手动顺序快照(同随 list_projects 下发)。
-    pub fn orders_snapshot(&self) -> SessionOrders {
-        self.state.read().session_orders.clone()
-    }
-
-    /// 把会话 id 从所有项目顺序表里摘除(移动/移出/会话退场的公共清理)。
-    fn forget_session_from_orders_locked(state: &mut StoreState, session_id: &str) {
-        let mut changed = false;
-        for order in state.session_orders.values_mut() {
-            let before = order.len();
-            order.retain(|id| id != session_id);
-            changed |= order.len() != before;
-        }
-        if changed {
-            state.session_orders.retain(|_, order| !order.is_empty());
-        }
     }
 
     /// 显式归属到某项目的会话 id 列表(命令层统计成员数用)。
@@ -565,7 +534,6 @@ impl ProjectStore {
             bail!("project not found: {project_id}");
         }
         state.projects.retain(|project| project.id != project_id);
-        state.session_orders.remove(project_id);
         let mut affected: Vec<String> = state
             .assignments
             .iter()
@@ -602,7 +570,6 @@ impl ProjectStore {
         session_id: &str,
         project_id: Option<&str>,
         add_workspace_root: Option<&Path>,
-        project_order: Option<&[String]>,
     ) -> Result<MoveSessionOutcome> {
         let mut state = self.state.write();
         let mut added_root = None;
@@ -691,20 +658,6 @@ impl ProjectStore {
             state
                 .assignments
                 .insert(session_id.to_string(), Some(target_id.to_string()));
-            // 顺序语义:先清掉旧位置;带 project_order(组内落点/拖到两行之间)
-            // 时整列表替换为前端算好的完整顺序(去重,自 id 不允许出现在自己
-            // 前面以外的位置由前端保证,这里只做去重保序);不带则维持
-            // "无手动位置"——按活动时间自然排序。
-            Self::forget_session_from_orders_locked(&mut state, session_id);
-            if let Some(order) = project_order {
-                let mut seen = std::collections::HashSet::new();
-                let deduped: Vec<String> = order
-                    .iter()
-                    .filter(|id| seen.insert((*id).clone()))
-                    .cloned()
-                    .collect();
-                state.session_orders.insert(target_id.to_string(), deduped);
-            }
         } else {
             if let Some(workspace) = add_workspace_root {
                 bail!(
@@ -713,7 +666,6 @@ impl ProjectStore {
                 );
             }
             state.assignments.insert(session_id.to_string(), None);
-            Self::forget_session_from_orders_locked(&mut state, session_id);
         }
         persist_locked(&state, &self.path)?;
         Ok(MoveSessionOutcome {
@@ -856,13 +808,7 @@ impl ProjectStore {
     /// 发生变更;落盘失败仅记日志,内存态已前进,下次变更自愈。
     pub fn forget_session(&self, session_id: &str) -> bool {
         let mut state = self.state.write();
-        let removed_assignment = state.assignments.remove(session_id).is_some();
-        // 顺序表条目独立于归属条目存在(手动序可包含仅经自动归组的成员),
-        // 无论归属是否存在都要摘除。
-        let order_len_before: usize = state.session_orders.values().map(Vec::len).sum();
-        Self::forget_session_from_orders_locked(&mut state, session_id);
-        let order_len_after: usize = state.session_orders.values().map(Vec::len).sum();
-        if !removed_assignment && order_len_before == order_len_after {
+        if state.assignments.remove(session_id).is_none() {
             return false;
         }
         if let Err(error) = persist_locked(&state, &self.path) {
@@ -881,10 +827,6 @@ impl ProjectStore {
         state
             .assignments
             .retain(|session_id, _| existing.contains(session_id));
-        for order in state.session_orders.values_mut() {
-            order.retain(|session_id| existing.contains(session_id));
-        }
-        state.session_orders.retain(|_, order| !order.is_empty());
         let pruned = before.saturating_sub(state.assignments.len());
         if pruned > 0 {
             if let Err(error) = persist_locked(&state, &self.path) {
