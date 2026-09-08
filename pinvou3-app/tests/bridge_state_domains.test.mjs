@@ -81,3 +81,44 @@ test('projects domain is fully wired (feature -> slice -> app)', () => {
     'APP_BRIDGE_STATE_DOMAINS must subscribe the projects domain',
   );
 });
+
+// Web 端的 fields 注册表与桌面订阅列表必须同步:否则 web 启动期
+// getMany(APP_BRIDGE_STATE_DOMAINS) 抛 "Unknown Tauri bridge state slice",
+// 整个 WebUI 冒烟超时(#448 的根因,栈内所有 PR 的 frontend-test 全红)。
+function parseWebFields(source) {
+  const match = source.match(/const fields = \{([\s\S]*?)\n {4}\};/);
+  assert.ok(match, 'fields registry not found in web domain-adapter.js');
+  const domains = {};
+  for (const entry of match[1].matchAll(/(\w+): \[([^\]]*)\]/g)) {
+    domains[entry[1]] = entry[2]
+      .split(',')
+      .map((field) => field.trim().replace(/^"|"$/g, ''))
+      .filter(Boolean);
+  }
+  return domains;
+}
+
+test('web domain-adapter fields registry covers every subscribed domain', () => {
+  const webFields = parseWebFields(read('platform/web/bridge/domain-adapter.js'));
+  const appDomains = parseAppDomains(read('app/main.jsx'));
+  const webBridge = read('platform/web/bridge.js');
+  const missing = appDomains.filter((domain) => !webFields[domain]);
+  assert.deepEqual(
+    missing,
+    [],
+    `web fields registry must cover every APP_BRIDGE_STATE_DOMAINS entry: ${missing.join(', ')}`,
+  );
+  // 桌面专属域(projects)在 Web 上挂空桩:注册表字段必须在 web 状态对象中
+  // 播种,否则读取仍抛/未定义。桩语义=空数组。其它双端域播种由
+  // web_bridge_domain_contract 另行覆盖,不重复。
+  const desktopOnly = ['projects'];
+  for (const domain of desktopOnly) {
+    const declared = webFields[domain] || [];
+    for (const field of declared) {
+      assert.ok(
+        webBridge.includes(`${field}:`),
+        `web bridge state must seed field "${field}" for desktop-only domain "${domain}" (stub = empty)`,
+      );
+    }
+  }
+});
