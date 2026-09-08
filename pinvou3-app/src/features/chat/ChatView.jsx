@@ -912,7 +912,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         personalWorkbenchTemplateIdRef.current = null;
         setPersonalWorkbenchTemplateId(null);
       }, [setInputText]);
-      // eslint-disable-next-line react-hooks/preserve-manual-memoization -- legacy manual memoization surfaced by compiler lint after floating-ball removal; behavior preserved verbatim
+       
       const handlePinvouModeChange = useCallback((mode) => {
         updatePinvouModeState({ type: 'set-mode', mode });
         if (mode !== 'work') clearPersonalWorkbenchTemplateDraft();
@@ -2209,7 +2209,6 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         designCommand,
         selectedDesignElement,
         designChanges: visibleDesignChanges,
-        onDesignRuntimeStatus: handleDesignRuntimeStatus,
         onDesignElementSelected: handleDesignElementSelected,
         onDesignChangeApplied: handleDesignChangeApplied,
         onDesignMutation: handleDesignMutation,

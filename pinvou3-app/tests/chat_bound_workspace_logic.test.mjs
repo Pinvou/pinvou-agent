@@ -278,9 +278,12 @@ test('setDraftMode：未绑定草稿维持本 lane 语义且不暂存（回归�
   assert.deepEqual(rt.invokeArgs('set_mode_default'), [{ lane: 'work', mode: 'plan' }]);
   assert.equal(rt.state.pendingDraftMode, null, '未绑定草稿不引入暂存语义');
 
+  // Two-lane world (#428: design folded into work): a stale 'design' lane
+  // value resolves to work, mirroring the backend's ModeLane::parse('design')
+  // rejection and the settings load-time fold.
   const rtDesign = loadFeature('interaction', null, { modeLane: 'design' });
   await rtDesign.api.setDraftMode('plan');
-  assert.deepEqual(rtDesign.invokeArgs('set_mode_default'), [{ lane: 'design', mode: 'plan' }]);
+  assert.deepEqual(rtDesign.invokeArgs('set_mode_default'), [{ lane: 'work', mode: 'plan' }]);
 });
 
 // ── code 权限偏好包装（YOLO 确认门事实源）──────────────────────

@@ -1,4 +1,4 @@
-import { lazy, startTransition as scheduleViewTransition, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { lazy, startTransition as scheduleViewTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import '../styles/base.css';
@@ -21,7 +21,10 @@ import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
 import { COLOR_SCHEME_STORAGE_KEY, normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
 import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
-import { TEMPORARY_GROUP_KEY, groupSessionsByFolder } from '../shared/sidebar-grouping.js';
+import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfirm } from '../features/projects/projectGrouping.js';
+import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
+import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
+import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
@@ -49,11 +52,11 @@ import {
   selectArtifactsPane,
   settleBrowserOpen,
 } from '../features/browser/browser-pane-state.mjs';
-import { SettingsErrorBoundary } from '../features/settings/SettingsErrorBoundary.jsx';
 import { ViewErrorBoundary } from '../shared/ViewErrorBoundary.jsx';
 import { ChatView } from '../features/chat/ChatView.jsx';
 import { createPinvouModeScopeKey, savePinvouModeState } from '../features/chat/pinvou-mode-state.js';
 import { WebConnectionStatus } from '../features/web/WebConnectionStatus.jsx';
+import { VoiceShortcutRouter } from '../features/voice-composer/VoiceShortcutRouter.jsx';
 import { createPetActivationGuard } from '../features/pet/activation-guard.js';
 import { SessionAttachmentTitle } from '../features/attachments/SessionAttachmentTitle.jsx';
 import {
@@ -126,7 +129,7 @@ let appFirstRenderMarked = false;
 const APP_BRIDGE_STATE_DOMAINS = [
   'platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'monitor',
   'settings', 'models', 'vllm', 'interaction', 'personas',
-  'memory', 'remoteControl', 'updater', 'dependencies',
+  'memory', 'remoteControl', 'updater', 'dependencies', 'projects',
 ];
 
 function emitPetEvent(ev, name, payload) {
@@ -1437,6 +1440,12 @@ function workspaceDisplayName(path) {
           pinned: !!s.pinned,
           pinnedAt: s.pinned_at || '',
           working: !!sessionBusy[s.id], // 多 session 并发:该 session 是否正在后台生成
+          // #445 绑定:绑定工作会话携带 workspacePath/Kind,项目分组跟随绑定
+          // (与安全姿态同一条信号),未绑定会话两个值为空、维持日期视图。
+          workspacePath: s.workspace_binding || '',
+          // 独立 'bound' kind:与代码/ACP 的 'project' 同享三层分组,但不是
+          // 伪装的 project-kind(评审 #452 finding 5)。
+          workspaceKind: s.workspace_binding ? 'bound' : '',
           leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
           testId: 'regular-sidebar-item',
           menuTestId: 'regular-sidebar-menu',
@@ -1601,6 +1610,19 @@ function workspaceDisplayName(path) {
       const [archiveConfirm, setArchiveConfirm] = useState(null);
       const [archiveToast, setArchiveToast] = useState(false);
       const [settingsToast, setSettingsToast] = useState('');
+      const [projectOpsBusy, setProjectOpsBusy] = useState(false);
+      const [moveToProjectSession, setMoveToProjectSession] = useState(null);
+      const [moveToPresetProject, setMoveToPresetProject] = useState(null);
+      const [rebindDraft, setRebindDraft] = useState(null);
+      // 拖拽高亮的唯一所有者:源行 dragend 无条件清除,webview 丢 dragleave
+      // 事件时高亮也不会卡死(评审 #450 finding 5)。
+      const [dropTargetGroupKey, setDropTargetGroupKey] = useState(null);
+      // 桥完成首次状态同步(bs 就绪)后拉一次项目快照;后续变更由
+      // projects:list_changed 事件驱动桥内刷新(bridge/projects.js)。
+      const projectsBootstrapReady = !!bs;
+      useEffect(() => {
+        if (projectsBootstrapReady && bridge.projects) bridge.projects.loadProjects();
+      }, [projectsBootstrapReady]);
 
       // Expanded sidebar width: drag the right edge to adjust (220~480px), double-click
       // the handle to reset to default; the choice is persisted.
@@ -1775,20 +1797,27 @@ function workspaceDisplayName(path) {
         });
       }
 
-      // Code-style sidebar: lists only code sessions, grouped by folder (workspace);
-      // groups and rows both sort by latest activity descending, temporary sessions merge
-      // into one bottom group; with "pinned first", pinned code sessions hoist above the
-      // folder groups.
-      const sidebarCodeTasks = sidebarCodeListActive
-        ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex')
-        : [];
-      const sidebarFolderPinned = taskListSort === 'pinned_first'
+      // 项目视图(原「代码」形态):所有绑定真实目录的会话——代码/ACP 会话
+      // 与 #445 的绑定工作会话——统一按项目层三层分组;未绑定普通会话留在
+      // 「全部」的日期视图。分组跟随绑定,与安全姿态同一条信号。分组链全程
+      // memo 化:tier-2 是 O(sessions × projects × roots),项目数还会增长
+      // (评审 #448 finding 8)。
+      const sidebarCodeTasks = useMemo(() => (sidebarCodeListActive
+        ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex'
+            || (chat.taskKind === 'regular' && chat.workspacePath))
+        : []), [sidebarCodeListActive, sidebarTaskHistory]);
+      const sidebarFolderPinned = useMemo(() => (taskListSort === 'pinned_first'
         ? sidebarCodeTasks.filter(chat => !!chat.pinned)
-        : [];
-      const sidebarFolderGroups = sidebarCodeListActive
-        ? groupSessionsByFolder(
-            sidebarCodeTasks.filter(chat => !(sidebarFolderPinned.length && chat.pinned)))
-        : [];
+        : []), [taskListSort, sidebarCodeTasks]);
+      const sidebarUnpinnedCodeTasks = useMemo(() => sidebarCodeTasks.filter(chat => !(sidebarFolderPinned.length && chat.pinned)), [sidebarCodeTasks, sidebarFolderPinned]);
+      const sidebarProjectsData = bs && bs.projectsList;
+      const sidebarFolderGroups = useMemo(() => (sidebarCodeListActive
+        ? groupSessionsWithProjects(
+            sidebarUnpinnedCodeTasks,
+            sidebarProjectsData ? sidebarProjectsData.projects : [],
+            sidebarProjectsData ? sidebarProjectsData.assignments : {},
+          )
+        : []), [sidebarCodeListActive, sidebarUnpinnedCodeTasks, sidebarProjectsData]);
 
       // latest-ref mirror: the pet-snapshot broadcast effect only subscribes to bs.sessions/sessionBusy/language,
       // while snapshot contents (id/title/working) are read via refs to reduce effect resubscription.
@@ -2324,6 +2353,109 @@ function workspaceDisplayName(path) {
         await refreshCodexSessions().catch(() => {});
       }
 
+      // ── 项目层:分组归档是纯逻辑层操作,永不触碰会话的工作目录绑定。──
+      // 失败走专用的 opFailed toast(借用会话批处理文案会让报错指向错误
+      // 的操作对象);bridge.projects 仅桌面存在。
+      async function runProjectOp(op) {
+        if (!bridge.available || !bridge.projects || projectOpsBusy) return;
+        setProjectOpsBusy(true);
+        try {
+          await op(bridge.projects);
+        } catch (error) {
+          console.warn('project operation failed', error);
+          setSettingsToast(t.uiProjects.opFailed);
+        } finally {
+          setProjectOpsBusy(false);
+        }
+      }
+      const handleConvertFolderToProject = (path, name) => runProjectOp(p => p.createProject(name, [path]));
+      const handleRenameProject = (projectId, name) => runProjectOp(p => p.renameProject(projectId, name));
+      const handleDeleteProject = (projectId) => runProjectOp(p => p.deleteProject(projectId));
+      // 移动归属:纯归档操作(工作目录绑定不动);目标 root 不覆盖会话目录时由
+      // 选择器先走"添加文件夹"确认,再带着 addFolder 标记落到这里。
+      // 确认框展示的是侧栏投影的目录,命令实际加的是后端活记录——outcomes
+      // 里的 added_root 是权威答案,有值时在 toast 里如实呈现(评审 #449
+      // finding 9:两侧不得静默分叉)。
+      const handleMoveSessionToProject = (sessionId, projectId, addWorkspaceRoot) => runProjectOp(async (p) => {
+        const outcome = await p.moveSessionToProject(sessionId, projectId, addWorkspaceRoot);
+        setMoveToProjectSession(null);
+        // 提交后一并清预置目标,避免残留状态泄漏到下一次打开(finding 7)。
+        setMoveToPresetProject(null);
+        setSettingsToast(
+          outcome && outcome.added_root
+            ? t.uiProjects.movedNoticeWithFolder(outcome.added_root)
+            : t.uiProjects.movedNotice,
+        );
+      });
+      // 拖拽落点:root 已覆盖的直接移动;未覆盖的带着预置目标打开选择器,
+      // 进入"添加文件夹"确认(menu 路径则不带预置)。判定用共享的
+      // needsAddFolderConfirm,与选择器的初始化器/选择路径保持同源。
+      const handleDropSessionOnProject = (sessionId, projectId) => {
+        const chat = sidebarTaskHistory.find(c => c.id === sessionId);
+        if (!chat) return;
+        const projects = sidebarProjectsData ? sidebarProjectsData.projects : [];
+        const target = (projects || []).find(p => p && p.id === projectId);
+        if (!target) return;
+        // 拖回当前所属项目 = 选择器里禁用当前项的同一语义,直接忽略。
+        if (resolveSessionProjectId(chat, projects, sidebarProjectsData ? sidebarProjectsData.assignments : {}) === projectId) return;
+        if (needsAddFolderConfirm(chat, target)) {
+          setMoveToPresetProject(projectId);
+          setMoveToProjectSession(chat);
+          return;
+        }
+        // projectOpsBusy 时静默忽略与侧栏其他拖拽反馈一致(runProjectOp
+        // 内部同样有 busy 守卫),不额外打断。
+        handleMoveSessionToProject(sessionId, projectId, false);
+      };
+      // 目录重绑定(修断链):失效 root 的项目头上点"重新绑定" → 系统选目录
+      // → 确认弹窗。两阶段确认:首调不带 confirmExisting,后端发现旧目录
+      // 仍在时拒绝,弹窗升级为强警告后由用户再次确认。
+      const startRebindWorkspace = async (fromPath) => {
+        if (!bridge.files || !bridge.files.pickFolders || projectOpsBusy) return;
+        try {
+          const picked = await bridge.files.pickFolders();
+          const to = Array.isArray(picked) ? picked[0] : picked;
+          if (!to) return;
+          // 不带会话数:命令实际重绑定 from 之下的一切会话,侧栏组渲染数
+          // 只是子集,数字承诺会与 RebindWorkspaceReport 对不上(finding 10)。
+          setRebindDraft({ from: fromPath, to, warnExisting: false });
+        } catch (error) {
+          console.warn('pick rebind folder failed', error);
+        }
+      };
+      const confirmRebindWorkspace = async (confirmExisting) => {
+        if (!bridge.projects || !rebindDraft || projectOpsBusy) return;
+        setProjectOpsBusy(true);
+        try {
+          const report = await bridge.projects.rebindWorkspaceRoot(
+            rebindDraft.from, rebindDraft.to, confirmExisting);
+          setRebindDraft(null);
+          const rebound = (report && report.rebound_session_ids) ? report.rebound_session_ids.length : 0;
+          const failed = (report && report.failed_session_ids) ? report.failed_session_ids.length : 0;
+          const postBusy = (report && report.post_busy_session_ids) ? report.post_busy_session_ids.length : 0;
+          // 部分失败不再吞掉(finding 3):数据迁移的半成功必须如实呈现。
+          if (failed > 0) {
+            setSettingsToast(t.uiProjects.rebindPartial(rebound, failed));
+          } else if (postBusy > 0) {
+            setSettingsToast(t.uiProjects.rebindBusyAfter(postBusy));
+          } else {
+            setSettingsToast(t.uiProjects.rebindSuccess(rebound));
+          }
+          await refreshCodexSessions().catch(() => {});
+        } catch (error) {
+          const message = String(error);
+          // 类型化标记匹配(finding 11):只认稳定前缀,不匹配人类文案。
+          if (message.startsWith('REBIND_OLD_ROOT_EXISTS')) {
+            setRebindDraft(prev => prev && { ...prev, warnExisting: true });
+          } else {
+            console.warn('rebind workspace failed', error);
+            setSettingsToast(t.sessionBatchFailed(1));
+          }
+        } finally {
+          setProjectOpsBusy(false);
+        }
+      };
+
       function sessionRowsForIds(ids) {
         const byId = new Map(allSidebarTasks.map(item => [item.id, item]));
         return (ids || []).map(id => byId.get(id) || { id });
@@ -2599,6 +2731,14 @@ function workspaceDisplayName(path) {
             onTogglePinned={handleToggleSessionPinned}
             onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
             onArchive={handleArchiveSession}
+            onMoveToProject={bridge.projects && (chat.taskKind === 'codex' || !!chat.workspacePath)
+              ? (target) => { setMoveToPresetProject(null); setMoveToProjectSession(target); }
+              : undefined}
+            dndPayload={bridge.projects && (chat.taskKind === 'codex' || !!chat.workspacePath) && sidebarCodeListActive
+              ? { sessionId: chat.id }
+              : undefined}
+            dndDisabled={!!dragAvatar}
+            onDragEnd={() => setDropTargetGroupKey(null)}
             dragKind={detachKind}
             dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
             onPickUp={canDetachWindows ? ((geom) => beginTearOff(detachKind, chat.id, chat.title, geom)) : undefined}
@@ -2681,6 +2821,34 @@ function workspaceDisplayName(path) {
         return () => { disposed = true; };
       }, [browserOverlayIntent, runBrowserUiTransition]);
 
+      // The 11 props identical across ChatView's two mount points (main chat / scheduled-run chat) are
+      // consolidated into one block; each mount point writes only its differing props (prefill / focus tick / code-mode entry),
+      // so two long prop lists cannot silently drift after copy-paste.
+      // The props below are NOT consolidated and stay as JSX literals (source-string contracts: tests regex-assert
+      // that main.jsx contains these literals; see the individual test files):
+      // - onBackScheduledRun：scheduled_tasks_unit.test.js
+      // - browserDockAvailable / rightDockActivePanelId /
+      //   onRightDockPanelSelectionChange：browser_native_surface.test.mjs
+      const chatViewBaseProps = {
+        theme: activeTheme,
+        t,
+        bs,
+        onOpenEditor: handleOpenPersonaEditor,
+        justInstalledTool,
+        setJustInstalledTool,
+        onGotoSettings: () => openSettingsSection('general'),
+        onGotoModelSettings: () => openSettingsSection('model'),
+        onGotoTools: () => navigateFromScheduledRun('toolStore'),
+        browserDockOpen: browserPaneOpen,
+        onOpenBrowserDock: openBrowserDock,
+      };
+      // The three byte-identical empty states in the sidebar task list (task groups / date groups / flat list) share one node.
+      const sidebarTaskEmptyNode = (
+        <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
+          {t.sidebarTaskEmpty}
+        </div>
+      );
+
       return (
         <div data-testid="app-root" data-current-view={currentView} data-platform={isWeb ? 'web' : 'desktop'}
           className={`flex flex-col h-screen font-sans overflow-hidden antialiased transition-colors duration-300 ${activeTheme === 'dark' ? 'bg-[#131314] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'}`}
@@ -2694,6 +2862,7 @@ function workspaceDisplayName(path) {
             paddingLeft: 'env(safe-area-inset-left)',
           } : undefined}>
 
+          <VoiceShortcutRouter />
           <WebConnectionStatus theme={activeTheme} t={t} />
 
           {/* 撕离拖拽 avatar:被拎起的标签,跟随光标(DOM 实现,丝滑跟手、不选中文字) */}
@@ -2736,6 +2905,37 @@ function workspaceDisplayName(path) {
               {settingsToast}
             </div>,
             document.body
+          )}
+
+          {rebindDraft && (
+            <RebindFolderDialog
+              from={rebindDraft.from}
+              to={rebindDraft.to}
+              warnExisting={rebindDraft.warnExisting}
+              t={t}
+              busy={projectOpsBusy}
+              onCancel={() => setRebindDraft(null)}
+              onConfirm={confirmRebindWorkspace}
+            />
+          )}
+
+          {moveToProjectSession && (
+            <MoveToProjectDialog
+              open={!!moveToProjectSession}
+              session={moveToProjectSession}
+              projects={sidebarProjectsData ? sidebarProjectsData.projects : []}
+              currentProjectId={resolveSessionProjectId(
+                moveToProjectSession,
+                sidebarProjectsData ? sidebarProjectsData.projects : [],
+                sidebarProjectsData ? sidebarProjectsData.assignments : {},
+              )}
+              presetProjectId={moveToPresetProject}
+              t={t}
+              busy={projectOpsBusy}
+              onClose={() => { setMoveToPresetProject(null); setMoveToProjectSession(null); }}
+              onMove={(projectId, addWorkspaceRoot) => handleMoveSessionToProject(
+                moveToProjectSession.id, projectId, addWorkspaceRoot)}
+            />
           )}
 
           {searchOverlayOpen && browserOverlayPublicationReady && createPortal(
@@ -3098,21 +3298,39 @@ function workspaceDisplayName(path) {
                           )}
                           {sidebarFolderGroups.map((group) => {
                             const isOpen = folderGroupOpen[group.key] ?? true;
-                            const label = group.key === TEMPORARY_GROUP_KEY
-                              ? t.uiCodex.temporarySession
-                              : workspaceDisplayName(group.key);
+                            const label = group.kind === 'project'
+                              ? group.name
+                              : group.kind === 'temporary'
+                                ? t.uiCodex.temporarySession
+                                : workspaceDisplayName(group.path);
                             return (
                               <div key={group.key}>
-                                <button
-                                  type="button"
-                                  data-testid="sidebar-folder-group"
-                                  title={group.key === TEMPORARY_GROUP_KEY ? undefined : group.key}
-                                  onClick={() => setFolderGroupOpen(prev => ({ ...prev, [group.key]: !isOpen }))}
-                                  className={`w-full h-7 px-4 flex items-center justify-between rounded-full text-[12px] transition-colors ${activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
-                                >
-                                  <span className="truncate">{label} ({group.rows.length})</span>
-                                  <ChevronDown size={14} className={`shrink-0 transition-transform ${isOpen ? '' : '-rotate-90'}`} />
-                                </button>
+                                <ProjectGroupHeader
+                                  label={label}
+                                  kind={group.kind}
+                                  count={group.rows.length}
+                                  isOpen={isOpen}
+                                  onToggle={() => setFolderGroupOpen(prev => ({ ...prev, [group.key]: !isOpen }))}
+                                  theme={activeTheme}
+                                  t={t}
+                                  title={group.kind === 'folder' ? group.path : undefined}
+                                  busy={projectOpsBusy}
+                                  testId="sidebar-folder-group"
+                                  // bridge.projects 仅桌面存在:web 上目录组不渲染
+                                  // 死入口(点击无反馈违反显式不支持约定)。
+                                  onConvert={bridge.projects && group.kind === 'folder' ? (name) => handleConvertFolderToProject(group.path, name) : undefined}
+                                  onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
+                                  onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
+                                  onDropSession={group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
+                                  unavailableRoots={group.kind === 'project'
+                                    ? (group.roots || [])
+                                        .filter(root => !(root && typeof root === 'object' ? root.available : root))
+                                        .map(root => String(typeof root === 'object' ? root.path : root))
+                                    : []}
+                                  onRebind={group.kind === 'project' ? (rootPath) => startRebindWorkspace(rootPath) : undefined}
+                                  dropActive={dropTargetGroupKey === group.key}
+                                  onDropActive={(active) => setDropTargetGroupKey(active ? group.key : null)}
+                                />
                                 {isOpen && (
                                   <div className="mt-1 space-y-0.5">
                                     {group.rows.map(renderSidebarTaskItem)}
@@ -3123,9 +3341,7 @@ function workspaceDisplayName(path) {
                           })}
                         </>
                       ) : (
-                        <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
-                          {t.sidebarTaskEmpty}
-                        </div>
+                        sidebarTaskEmptyNode
                       )
                     ) : sidebarDateGrouping ? (sidebarPinnedHoisted.length > 0 || sidebarTaskGroups.length > 0) ? (
                       <>
@@ -3156,15 +3372,11 @@ function workspaceDisplayName(path) {
                         })}
                       </>
                     ) : (
-                      <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
-                        {t.sidebarTaskEmpty}
-                      </div>
+                      sidebarTaskEmptyNode
                     ) : (
                       <div className="space-y-0.5">
                         {sidebarTaskHistory.length > 0 ? sidebarTaskHistory.map(renderSidebarTaskItem) : (
-                          <div className={`px-3 py-3 text-[13px] ${activeTheme === 'dark' ? 'text-[#9AA0A6]' : 'text-[#8A8F94]'}`}>
-                            {t.sidebarTaskEmpty}
-                          </div>
+                          sidebarTaskEmptyNode
                         )}
                       </div>
                     )}
@@ -3296,7 +3508,7 @@ function workspaceDisplayName(path) {
               <Suspense fallback={<ViewFallback />}>
             {currentView === 'monitor' && <LazyMonitorView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'settings' && (
-              <SettingsErrorBoundary theme={activeTheme} t={t}>
+              <ViewErrorBoundary heading={t.uiSettingsDetail.settingsLoadFailed} t={t}>
                 <LazySettingsView
                   activeTheme={activeTheme} colorScheme={colorScheme} onColorSchemeChange={handleSetTheme}
                   language={language} setLanguage={handleSetLanguage}
@@ -3328,7 +3540,7 @@ function workspaceDisplayName(path) {
                   initialSection={settingsInitialSection}
                   onCloseSettings={() => navigateFromScheduledRun(settingsReturnViewRef.current || 'chat')}
                 />
-              </SettingsErrorBoundary>
+              </ViewErrorBoundary>
             )}
             {isCompactShell && browserActive && currentView === 'browser' && (
               <BrowserView
@@ -3341,7 +3553,21 @@ function workspaceDisplayName(path) {
             )}
             {currentView === 'toolStore' && <LazyToolStoreView theme={activeTheme} t={t} onNewChat={handleNewChat} />}
             {currentView === 'cardpool' && <LazyCardPoolView theme={activeTheme} t={t} bs={bs} onEquipped={() => { setCodeModeOn(false); setCurrentView('chat'); }} onAICreate={startAICard} initialMyOnly={poolMyOnly} />}
-            {currentView === 'chat' && <ChatView theme={activeTheme} t={t} bs={bs} prefill={chatPrefill} prefillAppend={chatPrefillAppend} focusComposerTick={petFocusComposerTick} onPrefillConsumed={() => { setChatPrefill(''); setChatPrefillAppend(false); }} onOpenEditor={handleOpenPersonaEditor} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} codeModeAvailable={codexAcpSupported} onSwitchHomeMode={handleSwitchHomeMode} browserDockAvailable={browserDockAvailable} browserDockOpen={browserPaneOpen} rightDockActivePanelId={browserDockSelectedPanelId} onRightDockPanelSelectionChange={selectRightDockPanel} onOpenBrowserDock={openBrowserDock} />}
+            {currentView === 'chat' && (
+              <ChatView
+                {...chatViewBaseProps}
+                prefill={chatPrefill}
+                prefillAppend={chatPrefillAppend}
+                focusComposerTick={petFocusComposerTick}
+                onPrefillConsumed={() => { setChatPrefill(''); setChatPrefillAppend(false); }}
+                onBackScheduledRun={() => navigateFromScheduledRun('scheduled')}
+                codeModeAvailable={codexAcpSupported}
+                onSwitchHomeMode={handleSwitchHomeMode}
+                browserDockAvailable={browserDockAvailable}
+                rightDockActivePanelId={browserDockSelectedPanelId}
+                onRightDockPanelSelectionChange={selectRightDockPanel}
+              />
+            )}
             {codexAcpSupported && currentView === 'codex' && (
               <CodexAcpView
                 theme={activeTheme}
@@ -3361,7 +3587,7 @@ function workspaceDisplayName(path) {
             )}
             {SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled' && (
               bs && bs.scheduledRunContext ? (
-                <ChatView theme={activeTheme} t={t} bs={bs} prefill="" onPrefillConsumed={() => {}} onOpenEditor={handleOpenPersonaEditor} justInstalledTool={justInstalledTool} setJustInstalledTool={setJustInstalledTool} onGotoSettings={() => openSettingsSection('general')} onGotoModelSettings={() => openSettingsSection('model')} onGotoTools={() => navigateFromScheduledRun('toolStore')} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} browserDockAvailable={browserDockAvailable} browserDockOpen={browserPaneOpen} rightDockActivePanelId={browserDockSelectedPanelId} onRightDockPanelSelectionChange={selectRightDockPanel} onOpenBrowserDock={openBrowserDock} />
+                <ChatView {...chatViewBaseProps} prefill="" onPrefillConsumed={() => {}} onBackScheduledRun={() => navigateFromScheduledRun('scheduled')} browserDockAvailable={browserDockAvailable} rightDockActivePanelId={browserDockSelectedPanelId} onRightDockPanelSelectionChange={selectRightDockPanel} />
               ) : (
                 <LazyScheduledTasksView theme={activeTheme} t={t} onOpenChat={() => { setCodeModeOn(false); setCurrentView('chat'); }} onGotoModelSettings={() => openSettingsSection('model')} />
               )

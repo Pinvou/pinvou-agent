@@ -197,17 +197,13 @@ impl SessionStore {
     /// `<id>.json` 存在——残留 sidecar 同样要被重绑定覆盖，否则旧目录复活。
     pub fn workspace_bindings_under(&self, from: &Path) -> Vec<(String, PathBuf)> {
         let from_trim = {
-            let key =
-                crate::platform::os::filesystem_path_identity_key(&from.to_string_lossy());
+            let key = crate::platform::os::filesystem_path_identity_key(&from.to_string_lossy());
             key.trim_end_matches('/').to_string()
         };
         let covered = |path: &Path| -> bool {
-            let key =
-                crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy());
+            let key = crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy());
             let trim = key.trim_end_matches('/');
-            from_trim.is_empty()
-                || trim == from_trim
-                || trim.starts_with(&format!("{from_trim}/"))
+            from_trim.is_empty() || trim == from_trim || trim.starts_with(&format!("{from_trim}/"))
         };
         let mut matched = Vec::new();
         let Ok(entries) = std::fs::read_dir(self.manager.sessions_dir()) else {
@@ -244,17 +240,13 @@ impl SessionStore {
         to: &Path,
     ) -> Result<Vec<(String, PathBuf)>> {
         let from_trim = {
-            let key =
-                crate::platform::os::filesystem_path_identity_key(&from.to_string_lossy());
+            let key = crate::platform::os::filesystem_path_identity_key(&from.to_string_lossy());
             key.trim_end_matches('/').to_string()
         };
         let covered = |path: &Path| -> bool {
-            let key =
-                crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy());
+            let key = crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy());
             let trim = key.trim_end_matches('/');
-            from_trim.is_empty()
-                || trim == from_trim
-                || trim.starts_with(&format!("{from_trim}/"))
+            from_trim.is_empty() || trim == from_trim || trim.starts_with(&format!("{from_trim}/"))
         };
         let skip = from.components().count();
         let mut affected = Vec::new();
