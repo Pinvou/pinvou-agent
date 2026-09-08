@@ -3308,8 +3308,8 @@ mod tests {
     }
 
     /// CLI 硬拦截规则集（scope 门禁的 execpolicy 通道）：按会话 scope 的被禁
-    /// CLI 连接器生成二进制 deny 规则——plain/code 均未初始化时默认全禁 4 个
-    /// 内置 CLI 二进制（全模式 DenyAll 收敛语义）；显式开启后仅余被禁者。
+    /// CLI 连接器生成二进制 deny 规则——code 未初始化时默认全禁 4 个内置 CLI
+    /// 二进制（外部能力显式开启）；plain 默认全开，显式禁用后仅余被禁者。
     /// 并钉住底座执行语义：deny 在直跑 / 链式 / wrapper 形态下都硬拒
     /// （AskForApproval::Never 也拦）。
     #[test]
@@ -3328,58 +3328,55 @@ mod tests {
         }));
 
         use crate::features::marketplace::ConnectorScope;
-        // 4 个内置 CLI 二进制全禁时的 deny 命令清单（裸名 + .exe/.cmd 变体各一条，R4）。
-        let all_four_cli_denied = [
-            "dws",
-            "dws.cmd",
-            "dws.exe",
-            "lark-cli",
-            "lark-cli.cmd",
-            "lark-cli.exe",
-            "tmeet",
-            "tmeet.cmd",
-            "tmeet.exe",
-            "wecom-cli",
-            "wecom-cli.cmd",
-            "wecom-cli.exe",
-        ];
-        fn denied_bins(rs: &codewhale_execpolicy::Ruleset) -> Vec<&str> {
-            let mut bins: Vec<&str> = rs
-                .ask_rules
-                .iter()
-                .filter_map(|r| r.command.as_deref())
-                .collect();
-            bins.sort_unstable();
-            bins
-        }
-
-        // plain 未初始化 → DenyAll 收敛后与 code 同语义：默认全禁 4 个内置 CLI。
+        // plain 无禁用 → 无规则。
         let rs = bridge.cli_deny_ruleset("sess-plain");
-        assert_eq!(
-            denied_bins(&rs),
-            all_four_cli_denied,
-            "plain 未初始化默认全禁内置 CLI（DenyAll 收敛）"
-        );
+        assert!(rs.ask_rules.is_empty(), "plain 默认无 CLI deny 规则");
 
-        // plain 显式只禁 feishu → 仅 lark-cli deny。
+        // plain 禁 feishu → 仅 lark-cli deny（裸名 + .exe/.cmd 变体各一条，R4）。
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Plain,
             &["feishu".to_string()],
         );
         let rs = bridge.cli_deny_ruleset("sess-plain");
-        assert_eq!(
-            denied_bins(&rs),
-            ["lark-cli", "lark-cli.cmd", "lark-cli.exe"]
-        );
+        let mut cmds: Vec<&str> = rs
+            .ask_rules
+            .iter()
+            .filter_map(|r| r.command.as_deref())
+            .collect();
+        cmds.sort_unstable();
+        assert_eq!(cmds, ["lark-cli", "lark-cli.cmd", "lark-cli.exe"]);
         assert!(
             rs.ask_rules
                 .iter()
                 .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny)
         );
 
-        // code 未初始化 → 默认全禁 4 个内置 CLI 二进制（与连接器开关默认同语义）。
+        // code 未初始化 → 默认全禁 4 个内置 CLI 二进制（与连接器开关默认同语义），
+        // 每个二进制发裸名 + .exe/.cmd 变体共 3 条。
         let rs = bridge.cli_deny_ruleset("sess-code");
-        assert_eq!(denied_bins(&rs), all_four_cli_denied);
+        let mut bins: Vec<&str> = rs
+            .ask_rules
+            .iter()
+            .filter_map(|r| r.command.as_deref())
+            .collect();
+        bins.sort_unstable();
+        assert_eq!(
+            bins,
+            [
+                "dws",
+                "dws.cmd",
+                "dws.exe",
+                "lark-cli",
+                "lark-cli.cmd",
+                "lark-cli.exe",
+                "tmeet",
+                "tmeet.cmd",
+                "tmeet.exe",
+                "wecom-cli",
+                "wecom-cli.cmd",
+                "wecom-cli.exe"
+            ]
+        );
         assert!(
             rs.ask_rules
                 .iter()
@@ -3592,16 +3589,15 @@ mod tests {
         }));
         use crate::features::marketplace::ConnectorScope;
 
-        // 全模式 DenyAll 收敛：plain 未初始化与 code 同语义——已装技能默认
-        // 全禁，`run.py` 脚本规则默认存在（safety-net 规则恒定在场，由
-        // safety_deny_rules 测试覆盖）。
+        // With no scope disablement: no CLI binary rules, no skill script
+        // rules (`run.py` style). Safety-net rules (path + command) are
+        // always present; covered by the safety_deny_rules tests.
         assert!(
             bridge
                 .scope_deny_ruleset("sess-plain")
                 .ask_rules
                 .iter()
-                .any(|r| r.command.as_deref().is_some_and(|c| c.contains("run.py"))),
-            "plain 未初始化默认全禁已装技能（DenyAll 收敛），脚本规则应在场"
+                .all(|r| !r.command.as_deref().is_some_and(|c| c.contains("run.py")))
         );
         assert!(
             bridge
