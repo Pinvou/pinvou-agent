@@ -3259,55 +3259,58 @@ mod tests {
         }));
 
         use crate::features::marketplace::ConnectorScope;
-        // plain 无禁用 → 无规则。
-        let rs = bridge.cli_deny_ruleset("sess-plain");
-        assert!(rs.ask_rules.is_empty(), "plain 默认无 CLI deny 规则");
+        // 4 个内置 CLI 二进制全禁时的 deny 命令清单（裸名 + .exe/.cmd 变体各一条，R4）。
+        let all_four_cli_denied = [
+            "dws",
+            "dws.cmd",
+            "dws.exe",
+            "lark-cli",
+            "lark-cli.cmd",
+            "lark-cli.exe",
+            "tmeet",
+            "tmeet.cmd",
+            "tmeet.exe",
+            "wecom-cli",
+            "wecom-cli.cmd",
+            "wecom-cli.exe",
+        ];
+        fn denied_bins(rs: &codewhale_execpolicy::Ruleset) -> Vec<&str> {
+            let mut bins: Vec<&str> = rs
+                .ask_rules
+                .iter()
+                .filter_map(|r| r.command.as_deref())
+                .collect();
+            bins.sort_unstable();
+            bins
+        }
 
-        // plain 禁 feishu → 仅 lark-cli deny（裸名 + .exe/.cmd 变体各一条，R4）。
+        // plain 未初始化 → DenyAll 收敛后与 code 同语义：默认全禁 4 个内置 CLI。
+        let rs = bridge.cli_deny_ruleset("sess-plain");
+        assert_eq!(
+            denied_bins(&rs),
+            all_four_cli_denied,
+            "plain 未初始化默认全禁内置 CLI（DenyAll 收敛）"
+        );
+
+        // plain 显式只禁 feishu → 仅 lark-cli deny。
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Plain,
             &["feishu".to_string()],
         );
         let rs = bridge.cli_deny_ruleset("sess-plain");
-        let mut cmds: Vec<&str> = rs
-            .ask_rules
-            .iter()
-            .filter_map(|r| r.command.as_deref())
-            .collect();
-        cmds.sort_unstable();
-        assert_eq!(cmds, ["lark-cli", "lark-cli.cmd", "lark-cli.exe"]);
+        assert_eq!(
+            denied_bins(&rs),
+            ["lark-cli", "lark-cli.cmd", "lark-cli.exe"]
+        );
         assert!(
             rs.ask_rules
                 .iter()
                 .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny)
         );
 
-        // code 未初始化 → 默认全禁 4 个内置 CLI 二进制（与连接器开关默认同语义），
-        // 每个二进制发裸名 + .exe/.cmd 变体共 3 条。
+        // code 未初始化 → 默认全禁 4 个内置 CLI 二进制（与连接器开关默认同语义）。
         let rs = bridge.cli_deny_ruleset("sess-code");
-        let mut bins: Vec<&str> = rs
-            .ask_rules
-            .iter()
-            .filter_map(|r| r.command.as_deref())
-            .collect();
-        bins.sort_unstable();
-        assert_eq!(
-            bins,
-            [
-                "dws",
-                "dws.cmd",
-                "dws.exe",
-                "lark-cli",
-                "lark-cli.cmd",
-                "lark-cli.exe",
-                "tmeet",
-                "tmeet.cmd",
-                "tmeet.exe",
-                "wecom-cli",
-                "wecom-cli.cmd",
-                "wecom-cli.exe"
-            ]
-        );
+        assert_eq!(denied_bins(&rs), all_four_cli_denied);
         assert!(
             rs.ask_rules
                 .iter()
@@ -3472,8 +3475,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 通道③ 取数口径：scope 禁用技能（含 code 未初始化默认全禁）的脚本目录生成
-    /// deny 规则；启用后规则消失；与 CLI 二进制 deny 共存于同一规则集。
+    /// 通道③ 取数口径：scope 禁用技能（plain/code 未初始化均默认全禁）的脚本
+    /// 目录生成 deny 规则；启用后规则消失；与 CLI 二进制 deny 共存于同一规则集。
     #[test]
     fn scope_deny_ruleset_covers_disabled_skill_scripts() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
@@ -3520,15 +3523,20 @@ mod tests {
         }));
         use crate::features::marketplace::ConnectorScope;
 
-        // With no scope disablement: no CLI binary rules, no skill script
-        // rules (`run.py` style). Safety-net rules (path + command) are
-        // always present; covered by the safety_deny_rules tests.
+        // 全模式 DenyAll 收敛后 plain 的「禁用技能 → 脚本 deny 规则」与 code
+        // 同语义。这里用显式初始化驱动（未初始化的 DenyAll 兜底展开依赖进程
+        // env 的读取时点，并行套件下非确定；兜底语义本身由 marketplace 的
+        // plain_deny_all_* 测试覆盖）。
+        crate::features::marketplace::skill_scope::save_disabled_skills_for(
+            ConnectorScope::Plain,
+            &["my-skill".to_string()],
+        );
+        let rs = bridge.scope_deny_ruleset("sess-plain");
         assert!(
-            bridge
-                .scope_deny_ruleset("sess-plain")
-                .ask_rules
+            rs.ask_rules
                 .iter()
-                .all(|r| !r.command.as_deref().is_some_and(|c| c.contains("run.py")))
+                .any(|r| r.command.as_deref().is_some_and(|c| c.contains("run.py"))),
+            "plain 禁用已装技能后，脚本 deny 规则应在场"
         );
         assert!(
             bridge
@@ -7413,6 +7421,10 @@ mod tests {
     /// 一致（workflow 也同样可用——不教不荐，但不禁用）。
     #[test]
     fn multi_agent_engine_config_adds_roles_and_resource_guards() {
+        // 两次 build 的禁用列表读取 PINVOU3_HOME 下的市场状态：持 env 锁防止
+        // 并行的 env 翻转测试跨过两次读取（否则两次结果可能各取一个家目录，
+        // 断言间歇性失败）。
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
         let bridge = fixture_bridge();
         let workspace = std::env::temp_dir().join(format!(
             "pinvou3-wf-roles-{}-{:p}",
