@@ -105,8 +105,10 @@ const expectedProtocolHashes = {
   // scans raw source, so comment wording is part of the digest). Recomputed
   // on the latest-main rebase: main's shell-task isolation changes touched
   // the same listeners, and the PR's developer comments were translated to
-  // English, both of which shift the raw-source digest.
-  chat: '614a99efe647770ca2056069ea19e9c69606930680b7f30ce15681f4f5e51a3e',
+  // English, both of which shift the raw-source digest. Recomputed for the
+  // v0.9.12 rereview fix that persists toolName/reason/risk with each
+  // ToolGateDecision so history replay retains the structured audit detail.
+  chat: '33fd417d1f15f4e9531c63d7447c49c48e12d3f10e990ea9ea31770fb6f0ec3c',
   dependencies: '2cb185d38dabeb35f48773457c182e1c35951b210f5d0fc853b074eb2eb68626',
   interaction: '3f275b9c4fc77ebf42a56df1c84d638ca5f1f8a3b80612efebeddf1a39f14efd',
   knowledge: '9105a42c6b69f04d0bc28b6a72e0746648110a44823891ded3261cdcbc99766b',

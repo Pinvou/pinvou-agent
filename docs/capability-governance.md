@@ -136,13 +136,17 @@ scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
 
 ```
 开关 → capability_changed(scope, line) → 下一轮生效（不 respawn）：
-         持久化 → 重算投影 → 组合目录重写 → disallowed 热刷 → 事件广播
+         持久化 → 重算投影 → 组合目录重写 → 会话 disallowed 热刷 → 事件广播
 
    包的 MCP 部分:  工具名进 disallowed_tools → catalog retain 过滤
    包的技能部分:   组合目录物化（~/.pinvou3/sessions/<sid>/skills/）
                   → 底座每轮重扫渲染 ## Skills 块
                   → 组合目录为空 → load_skill 一并隐藏（无"假开关"状态）
 ```
+
+这里的“热刷”只更新当前会话/轮次的目录与最终调用权限，不会全局断开共享
+`McpPool` 中已经连接的 server；全局断连会影响仍获授权的其他会话。连接按正常
+pool/session 生命周期回收，catalog 与最终 dispatch 都继续 fail closed。
 
 - **会话中关闭的边界（上下文不可撤回）**：`## Skills` 块在系统提示里，底座每轮
   重拼系统提示（发现走 mtime 缓存，组合目录一变下一轮即失效重扫），所以禁用后

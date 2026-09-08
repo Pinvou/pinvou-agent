@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: seven commits, four maintained themes.
+# CodeWhale v0.9.12 clean re-fork guard: eight commits, four maintained themes.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-EXPECTED_HEAD="fe0cd7551175f0f3df2c785b15c6c16e282218f7"
-EXPECTED_COMMITS=7
+EXPECTED_HEAD="ff299f94b0795180c76d0336152385dbd02dfa05"
+EXPECTED_COMMITS=8
 FAST_ONLY=0
 
 case "${1:-}" in
@@ -73,6 +73,7 @@ fingerprints=(
   "T2|受限轮推迟 idle Shell 唤醒           |CodeWhale/crates/tui/src/core/engine/tests.rs|forkguard_restricted_turn_defers_idle_shell_wake_until_new_message"
   "T2|禁用 MCP 不进入 catalog 或执行       |CodeWhale/crates/tui/src/core/engine/tests.rs|forkguard_denied_mcp_is_absent_from_catalog_and_blocked_at_execution"
   "T2|禁用 MCP 与未知工具错误不可区分       |CodeWhale/crates/tui/src/core/engine/turn_loop.rs|forkguard_denied_mcp_tool_error_matches_the_unknown_tool_error"
+  "T2|API 搜索后备链直接落到 Bing          |CodeWhale/crates/tui/src/tools/web/backend.rs|forkguard_api_provider_chain_tail_is_bing"
   "T2|宿主 Shell owner+session 入口      |CodeWhale/crates/tui/src/tools/shell.rs|pub fn execute_with_options_env_for_owner_and_session("
   "T2|评测控制默认关闭且显式启用          |CodeWhale/crates/tui/src/core/ops.rs|forkguard_benchmark_controls_are_explicit_and_default_off"
   "T2|评测只修复无歧义只读调用            |CodeWhale/crates/tui/src/core/engine/turn_loop.rs|forkguard_benchmark_repairs_only_unambiguous_read_actions"
@@ -132,10 +133,10 @@ for fp in "${fingerprints[@]}"; do
 done
 
 forkguard_count="$(grep -Rho --include='*.rs' 'forkguard_[A-Za-z0-9_]*' "$CODEWHALE/crates" 2>/dev/null | sort -u | wc -l | tr -d ' ')"
-if [[ "$forkguard_count" -ge 35 ]]; then
-  green "  ✓ CodeWhale 至少保留 35 条独立 forkguard 行为名（实际 $forkguard_count）"
+if [[ "$forkguard_count" -ge 36 ]]; then
+  green "  ✓ CodeWhale 至少保留 36 条独立 forkguard 行为名（实际 $forkguard_count）"
 else
-  red "  ✗ CodeWhale forkguard 行为名仅 ${forkguard_count:-0}，登记下限为 35"
+  red "  ✗ CodeWhale forkguard 行为名仅 ${forkguard_count:-0}，登记下限为 36"
   fail=1
 fi
 

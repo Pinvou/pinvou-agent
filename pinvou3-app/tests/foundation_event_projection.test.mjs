@@ -84,7 +84,10 @@ const gateNotice = state.chatItems.at(-1);
 assert.equal(gateNotice.type, 'system');
 assert.equal(gateNotice.toolGateDecision, true);
 assert.equal(gateNotice.toolId, 'tool-1');
+assert.equal(gateNotice.toolName, 'bash');
 assert.equal(gateNotice.decision, 'denied');
+assert.equal(gateNotice.reason, 'outside delegated scope');
+assert.equal(gateNotice.risk, 'high');
 assert.match(gateNotice.text, /Permission gate: bash — denied/);
 assert.match(gateNotice.text, /outside delegated scope/);
 
@@ -100,5 +103,13 @@ assert.ok(webSection.includes('phase === "cancel"'));
 assert.ok(webSection.includes('bt("compactCancel")'));
 assert.ok(webSection.includes('listen("chat:tool_gate_decision"'));
 assert.ok(webSection.includes('toolGateDecision: true'));
+assert.ok(webSection.includes('toolName: String(p.tool_name || "")'));
+assert.ok(webSection.includes('reason: String(p.reason || "")'));
+assert.ok(webSection.includes('risk: String(p.risk || "")'));
+assert.match(
+  read('src', 'features', 'codex', 'CodexAcpView.jsx'),
+  /!hasStructuredAuditDetails && legacy\.text/,
+  'legacy persisted notices must retain their already-rendered audit text',
+);
 
 console.log('foundation_event_projection.test.mjs: OK');

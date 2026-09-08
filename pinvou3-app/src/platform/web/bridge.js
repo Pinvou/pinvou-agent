@@ -6643,8 +6643,11 @@
     addSystemItem(text, {
       toolGateDecision: true,
       toolId: String(p.tool_id || ""),
+      toolName: String(p.tool_name || ""),
       agentId: String(p.agent_id || ""),
       decision,
+      reason: String(p.reason || ""),
+      risk: String(p.risk || ""),
     });
   }); });
 

@@ -9,12 +9,12 @@
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5` |
-| 候选分支 | 已推送 `codex/pinvou-v0.9.12-r1`（CodeWhale PR #44），当前 head `fe0cd7551175f0f3df2c785b15c6c16e282218f7` |
+| 候选分支 | 已推送 `codex/pinvou-v0.9.12-r1`（CodeWhale PR #44），当前 head `ff299f94b0795180c76d0336152385dbd02dfa05` |
 | 发布状态 | 未成为受保护基线；公开 `pinvou3-clean` 仍是 r13，`pinvou-v0.9.12-r1` 不可变 tag 尚未创建 |
 | 升级前回退点 | 公开不可变 tag `pinvou-v0.9.5-r13` → `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 `backup/pre-v0.9.12-sync` 仅作便利引用 |
-| 历史组织 | 上游之上 7 个签署提交，仍归属 4 个长期主题；最后两个提交收口评审确认的行为、测试与文档缺口 |
-| drift | `66 files, +4769/-620`，净增 4149 行；旧 r13 为 `110 files, +10895/-1195` |
-| 守护 | 35 条独立 CodeWhale `forkguard_*` 行为测试（29 条默认 + 6 条 `benchmark-eval-controls`）+ 父仓指纹与行为测试 |
+| 历史组织 | 上游之上 8 个签署提交，仍归属 4 个长期主题；最后三个提交收口评审确认的行为、测试与文档缺口 |
+| drift | `72 files, +4848/-637`，净增 4211 行；旧 r13 为 `110 files, +10895/-1195` |
+| 守护 | 36 条独立 CodeWhale `forkguard_*` 行为测试（30 条默认 + 6 条 `benchmark-eval-controls`）+ 父仓指纹与行为测试 |
 | 父仓适配 | v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2 |
 
 ## 1. 为什么本次使用 clean re-fork
@@ -31,7 +31,7 @@
 | 语义迁移 | `Yolo`/`Auto` 模式、全局 reasoning、旧 custom-tools/disabled-skills 接口 | 映射到 `Agent` + approval/trust、逐轮 `Op::SendMessage` reasoning、`ExtraTools` 与显式 Skills 根 |
 | 继续保留 | 宿主 facade/route limits、可靠 steer 与批量取消、MCP secret resolver、raw worker ledger、逐轮最终分发安全、64 KiB File 上限、prompt ownership、Automation conversation/schema/lifecycle | 重写到 v0.9.12 当前 Engine/Task/Prompt 结构并增加结果式测试 |
 | 继续保留但默认关闭 | r13 benchmark eval controls | 在 v0.9.12 架构上恢复 final-only-after-tool-budget 与无歧义 missing-read-action repair；仅由 benchmark feature 显式启用，桌面默认路径关闭，父仓 `benchmark-hooks` 负责编排与观测 |
-| 不再移植 | #35 API 搜索链直接以 Bing 收尾的覆盖 | 采用 v0.9.12：配置型 API backend 的外层尾部先走 DuckDuckGo，标准 DuckDuckGo 路径无结果或遇 challenge 时再有界 fallback 到 Bing；Pinvou 桌面默认显式选择 Bing，默认产品路径不变，但 API-backend 用户会多经过一次 DuckDuckGo 尝试 |
+| 继续保留 | #35 API 搜索链直接以 Bing 收尾的覆盖 | 配置型 API backend 失败后直接落到免密 Bing。DuckDuckGo 的内部 Bing fallback 只覆盖空结果/challenge，不覆盖连接失败；在 DuckDuckGo 不可达的网络中把它作为外层尾部会提前返回错误，因此恢复直接 Bing 尾部并以结果式测试锁定全部 API provider |
 | 采用上游删除 | stuck/read-repeat/coaching guards | 接受上游 `b39cf5650` 的处置：旧 stuck 指纹不含结果摘要，会把活跃 job 的重复 poll 误判为无进展；不恢复旧 guard 或相关环境开关，继续依靠有限 `max_steps`、工具预算和取消边界 |
 
 ### 上游测试处置注记
@@ -55,6 +55,7 @@
 | `b4c02616b` | T1–T4 收口 | 可靠 steer、受限控制面、最终分发、ambient 隔离、宿主 prompt-only profile/显式 Skills 根、生命周期回归及当前 Rust 发布 lint 兼容 |
 | `dbd1b7cb3` | T1/T2/T4 评审修复 | 恢复 feature-gated benchmark eval controls，并补齐 64 KiB 写入、session cancel、终态删除、受限轮 idle deferral 与 MCP 隐藏/拒绝的结果式守护 |
 | `fe0cd7551` | T1/T2/T3 评审收口 | 恢复上游对照测试并注明产品反转；增加 steer 真实 channel/turn-loop 回归；登记 Permissions fragment 上游化债务 |
+| `ff299f94b` | T2 复审修复 | 恢复配置型 API 搜索链的可达 Bing 尾部；移除空的 benchmark observability feature；补回评测兼容路径的设计理由注释 |
 
 所有提交都含 DCO `Signed-off-by`。`b4c02616b` 包含大部分跨主题收口，历史粒度确实不利于 bisect；但候选已公开进入评审，本轮不为历史美化 force-push，而是以新的签署提交修复评审问题，并用本表、指纹和行为测试弥补审计粒度。一旦创建不可变 tag，不得重写。
 
@@ -84,7 +85,7 @@
 
 - `ExtraTools` 允许 app 在 Agent/Plan 原生注册宿主工具，不复制底座工具循环。
 - MCP secret 只经宿主 resolver 注入；不写进程环境或普通配置文件。
-- `SetDisallowedTools` 在 v0.9.12 更新后继续于 catalog/调用边界拒绝匹配工具，但不再热断开已经建立的 MCP server 连接；连接在正常 pool/session 生命周期结束时回收。
+- `SetDisallowedTools` 是逐会话/逐轮的权限塑形：更新后继续在该会话的 catalog 和最终调用边界拒绝匹配工具，但不热断开共享 `McpPool` 中已经建立的 server 连接。全局断连会干扰仍获授权的其他会话；底层连接由正常 pool/session 生命周期回收，安全边界由 catalog + 最终 dispatch 的 fail-closed 双检提供。
 - `TurnToolSecurityPolicy` 把精确工具白名单、只读动作与 trusted external paths 下沉到每轮执行。
 - 受限轮禁止动态工具、MCP、子智能体和未授权控制操作；新的显式用户消息才可安装替代权限。
 - 工具在最终 backend dispatch 前再次做 exact/read-only 校验；Full Access 也不能绕过 non-bypassable approval。
@@ -102,6 +103,7 @@
 - `forkguard_restricted_turn_defers_idle_shell_wake_until_new_message`
 - `forkguard_denied_mcp_is_absent_from_catalog_and_blocked_at_execution`
 - `forkguard_denied_mcp_tool_error_matches_the_unknown_tool_error`
+- `forkguard_api_provider_chain_tail_is_bing`
 - `forkguard_mcp_secret_resolver_supplies_values_without_process_env_writes`
 - `forkguard_write_primitive_enforces_the_64kib_boundary`
 - `forkguard_write_file_enforces_the_64kib_boundary`
@@ -135,7 +137,7 @@
 - 每个 Automation 的 id 作为稳定 `conversation_key`；每次 run 仍是独立 Task。
 - Task writer 使用上游 v3；reader 仅额外接受历史 Pinvou v4，v5 及以后 fail closed。
 - `ThreadCreated` 在 turn 链接前持久化真实线程；`ExecutionTask` 只公开宿主所需 getters。
-- 离线超过 60 秒的 recurring slot 不补跑；存在 queued/running attempt 时不重叠，直接推进到首个未来 slot。
+- 离线超过 60 秒的 recurring slot 不补跑；存在 queued/running attempt 时不重叠，直接推进到首个未来 slot。调度去重刻意扫描保留期内的完整 run 历史，而非只看最近一页，避免同一 scheduled slot 或较早 active run 被较新的终态记录挤出窗口后重复执行；有限保留策略约束扫描成本。
 - 终态 run 清理对应 terminal Task；删除 Automation 不复活记录，也不遗失已经 enqueue 的 run。
 
 ### 关键测试
@@ -155,7 +157,7 @@
 
 ## 9. 软上限评估与后续减量
 
-当前净增 4149 行，超过 1500 行软上限；`engine.rs`、`turn_loop.rs` 和 `engine/tests.rs` 也超过单文件 200 行提示线。原因是状态机、最终分发安全、“完整专家人设仅进入被选子智能体”的 spawn 边界、bundle Skills 排除 ambient 文件源的权限边界，以及评审要求的结果式生命周期/评测回归必须和 v0.9.12 原生 Engine 同步，拆成 app 侧镜像会形成更危险的双状态源。当前 Rust/Clippy 兼容只包含等价重写、`Default` 补全和窄 lint 说明，不改变公开函数签名或新增运行语义。
+当前净增 4211 行，超过 1500 行软上限；`engine.rs`、`turn_loop.rs` 和 `engine/tests.rs` 也超过单文件 200 行提示线。原因是状态机、最终分发安全、“完整专家人设仅进入被选子智能体”的 spawn 边界、bundle Skills 排除 ambient 文件源的权限边界，以及评审要求的结果式生命周期/评测回归必须和 v0.9.12 原生 Engine 同步，拆成 app 侧镜像会形成更危险的双状态源。当前 Rust/Clippy 兼容只包含等价重写、`Default` 补全和窄 lint 说明，不改变公开函数签名或新增运行语义。
 
 后续减量顺序：
 

@@ -3256,6 +3256,11 @@ export function CodexAcpView({
         );
       }
       if (legacy.toolGateDecision) {
+        const hasStructuredAuditDetails = ['toolName', 'reason', 'risk']
+          .some(key => Object.prototype.hasOwnProperty.call(legacy, key));
+        if (!hasStructuredAuditDetails && legacy.text) {
+          return <div className="px-1 text-[11px] text-gray-400">{legacy.text}</div>;
+        }
         return (
           <div className="px-1 text-[11px] text-gray-400">
             {codexCopy.nativeToolGateDecision(
