@@ -35,6 +35,7 @@ pub(crate) mod multiagent;
 pub(crate) mod personas;
 pub(crate) mod pet;
 mod prelude;
+pub(crate) mod projects;
 pub(crate) mod remote_control;
 pub(crate) mod remote_knowledge;
 pub(crate) mod runtime;

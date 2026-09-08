@@ -1139,6 +1139,22 @@ impl AcpPool {
         &self.agents
     }
 
+    /// 该 ACP 会话当前是否有进行中的 prompt turn。目录重绑定等改写工作区
+    /// 绑定的操作以此拒绝运行中的会话（与 EnginePool::is_turn_active 同语义,
+    /// 供命令层统一栅栏）。无运行时会话(未启动)返回 false。
+    pub async fn is_turn_active(&self, session_id: &str) -> bool {
+        self.sessions
+            .lock()
+            .await
+            .get(session_id)
+            .is_some_and(|runtime| {
+                runtime.busy.load(std::sync::atomic::Ordering::Acquire)
+                    || runtime
+                        .configuring
+                        .load(std::sync::atomic::Ordering::Acquire)
+            })
+    }
+
     /// 会话类型以 ACP 辅助索引为主，并用 SavedSession 中持久化的 Agent 模型类型兜底。
     ///
     /// `session-agents.json` 是可重建的辅助索引，缺失或损坏时不能让历史 Codex

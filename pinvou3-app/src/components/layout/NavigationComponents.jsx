@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Archive, Check, Edit2, FolderOpen, MoreHorizontal, PinIcon, PinOffIcon, Sparkles, Trash2, X } from '../icons.jsx';
+import { Archive, Check, Edit2, FolderOpen, Layers, MoreHorizontal, PinIcon, PinOffIcon, Sparkles, Trash2, X } from '../icons.jsx';
 import { useLongPressDrag } from '../../hooks/useLongPressDrag.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 
@@ -205,7 +205,7 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
         color: isDark ? '#fff' : '#1F1F1F',
       };
     };
-    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, dragKind = 'session', dragging, onPickUp }) => {
+    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, onMoveToProject, dragKind = 'session', dragging, onPickUp, dndPayload, dndDisabled }) => {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
@@ -273,6 +273,12 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
             <Edit2 size={15} />
             <span>{t.riRename}</span>
           </button>
+          {onMoveToProject && (
+            <button type="button" className={menuItemCls} onClick={() => { closeMenu(); onMoveToProject(chat.id); }}>
+              <Layers size={15} />
+              <span>{t.uiProjects.moveToProject}</span>
+            </button>
+          )}
           <button type="button" className={`${menuItemCls} text-[#C5221F] hover:bg-[#FAD2CF] dark:text-[#F28B82] dark:hover:bg-[#5c2b29]`} onClick={() => { closeMenu(); setConfirming(true); }}>
             <Trash2 size={15} />
             <span>{t.cpDelete}</span>
@@ -324,6 +330,14 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
           data-drag-kind={sessionDragKind || undefined}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
           style={recentItemRowStyle(dragging, personaTarget, isDark)}
+          draggable={dndPayload && !dndDisabled ? true : undefined}
+          onDragStart={dndPayload && !dndDisabled ? (e) => {
+            // 侧栏内 HTML5 拖拽(移动到项目):按住不动 350ms 仍是 tear-off 拆窗
+            // 手势——浏览器在指针移动时启动原生拖拽并取消 pointer 事件,
+            // 两条手势路径天然互斥。tear-off 进行中(dndDisabled)不再启动。
+            e.dataTransfer.setData('application/x-pinvou-session', dndPayload.sessionId);
+            e.dataTransfer.effectAllowed = 'move';
+          } : undefined}
           className={`group flex h-11 items-center rounded-full text-[15px] transition-all
             ${personaTarget ? ''
               : active ? 'bg-[#E1E5EA] text-[#1F1F1F] dark:bg-[#333537] dark:text-white'
