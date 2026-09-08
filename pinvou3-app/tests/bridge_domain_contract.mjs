@@ -24,7 +24,7 @@ export const desktopBridgeApi = {
   memory: ['archiveRecentWorkMemory', 'confirmMemoryCandidate', 'deleteMemoryItem', 'deleteMemoryPreference', 'ignoreMemoryCandidate', 'loadMemoryOverview', 'neverMemoryCandidate', 'saveMemoryProfilePatch', 'updateMemoryItem'],
   updater: ['cancelUpdate', 'checkForUpdate', 'downloadAndInstallUpdate', 'restartApp'],
   dependencies: ['checkDependencies', 'installDependencies'],
-  projects: ['createProject', 'deleteProject', 'loadProjects', 'moveSessionToProject', 'rebindWorkspaceRoot', 'renameProject'],
+  projects: ['createProject', 'deleteProject', 'ensureFolderProjects', 'loadProjects', 'moveSessionToProject', 'rebindWorkspaceRoot', 'renameProject'],
 };
 
 // These methods intentionally depend on desktop lifecycle or local machine

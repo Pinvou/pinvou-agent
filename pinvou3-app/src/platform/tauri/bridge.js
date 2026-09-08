@@ -2463,6 +2463,7 @@
   const renameProject = projectsFeature.renameProject;
   const deleteProject = projectsFeature.deleteProject;
   const moveSessionToProject = projectsFeature.moveSessionToProject;
+  const ensureFolderProjects = projectsFeature.ensureFolderProjects;
   const rebindWorkspaceRoot = projectsFeature.rebindWorkspaceRoot;
 
   const multiAgentFeature = installBridgeFeature("multiagent", { state, notify, invoke, listen });
@@ -2663,6 +2664,7 @@
       renameProject,
       deleteProject,
       moveSessionToProject,
+      ensureFolderProjects,
       rebindWorkspaceRoot,
     },
     monitor: {

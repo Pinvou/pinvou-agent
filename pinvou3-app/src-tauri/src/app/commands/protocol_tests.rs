@@ -332,6 +332,7 @@ command_protocol!(
         "update_project",
         "delete_project",
         "move_session_to_project",
+        "ensure_folder_projects",
         "rebind_workspace_root"
     ]
 );

@@ -93,6 +93,26 @@ function needsAddFolderConfirm(session, target) {
   return !!workspacePath && !projectCoversPath(target, workspacePath);
 }
 
+// Distinct workspace folders backing the given sessions that no project root
+// covers yet — the auto-materialization input for the Codex-style
+// folder→same-name-project ensure. Coverage mirrors the display-side grouping
+// guard (matchProjectByPath: equal-or-ancestor project root wins); the backend
+// re-checks under its own canonical keys, so a disagreement can only cause a
+// harmless Covered outcome, never a duplicate project.
+function uncoveredWorkspaceRoots(items, projects) {
+  const projectList = Array.isArray(projects) ? projects.filter(Boolean) : [];
+  const seen = new Set();
+  const roots = [];
+  (Array.isArray(items) ? items : []).forEach((item) => {
+    if (!item || !hasProjectWorkspace(item)) return;
+    const root = String(item.workspacePath || '');
+    if (!root || seen.has(root)) return;
+    seen.add(root);
+    if (!matchProjectByPath(projectList, root)) roots.push(root);
+  });
+  return roots;
+}
+
 // ── Folder view (physical layer) ───────────────────────────────────────────
 // Original folder grouping restored: workspace-bound sessions bucket by
 // directory, temporary sessions merge into one bottom group; rows sort by
@@ -179,6 +199,8 @@ function groupSessionsByProject(items, projects, assignments) {
       projectId: project.id,
       name: project.name,
       roots: project.roots || [],
+      // 'folder' = 按文件夹自动物化的项目(徽标);null = 手工创建。
+      origin: project.origin || null,
       path: '',
     }, projectRows.get(project.id) || []));
   if (ungrouped.length > 0) {
@@ -201,4 +223,5 @@ export {
   resolveSessionProjectId,
   needsAddFolderConfirm,
   hasProjectWorkspace,
+  uncoveredWorkspaceRoots,
 };

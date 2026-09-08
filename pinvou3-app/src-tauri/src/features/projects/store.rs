@@ -28,6 +28,11 @@ pub struct Project {
     pub position: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// 来源标识:`Some("folder")` = 按文件夹自动物化的项目(Codex 客户端式
+    /// 收编);`None` = 用户手工创建。仅作 UI 徽标与删除墓碑依据,不参与
+    /// 分组判定;用户改名/加根后保留原值,不做名字回写同步。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 /// 归属映射值:`Some(project_id)` = 显式归属;`None` = 显式移出(跳过自动
@@ -43,6 +48,12 @@ struct ProjectsFile {
     pub projects: Vec<Project>,
     #[serde(default)]
     pub assignments: SessionAssignments,
+    /// 已删除文件夹项目(origin=folder)的 root 身份键墓碑:阻止 ensure 对
+    /// 同一文件夹自动重建——用户删了文件夹项目,重启后的回填不得复活它。
+    /// 手工 create_project 不查墓碑,改主意后可手动重建。键不引用项目 id,
+    /// 项目删除后仍长期保留(等价 Codex 幂等键表在项目删除后的残留语义)。
+    #[serde(default)]
+    pub retired_folder_roots: Vec<String>,
 }
 
 const SCHEMA_VERSION: u32 = 1;
@@ -61,11 +72,27 @@ pub struct MoveSessionOutcome {
     pub added_root: Option<PathBuf>,
 }
 
+/// `ensure_folder_roots` 的单根结果:前端/调用方据此区分新建、复用、墓碑
+/// 跳过与冲突,冲突不阻断其余根。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum EnsureFolderOutcome {
+    /// 新建了同名文件夹项目(origin=folder)。
+    Created { project: Project },
+    /// 已有项目 root 覆盖该文件夹(等于或祖先),复用不动。
+    Covered { project_id: String },
+    /// 该文件夹的自动项目曾被删除,墓碑阻止重建(手工 create 不受限)。
+    Retired,
+    /// 无法创建(非绝对路径、与既有 root 嵌套等);`reason` 可直接进日志。
+    Failed { reason: String },
+}
+
 #[derive(Debug, Default)]
 struct StoreState {
     /// 恒按 (position, id) 有序,`list` 直接返回快照。
     projects: Vec<Project>,
     assignments: SessionAssignments,
+    retired_folder_roots: Vec<String>,
     /// 读到高于本进程 schema_version 的文件时置位:后续写入全部拒绝,
     /// 防止降级进程把新结构覆盖写坏。
     refuse_writes: bool,
@@ -234,7 +261,10 @@ fn persist_locked(state: &StoreState, path: &Path) -> Result<()> {
             path.display()
         );
     }
-    if state.projects.is_empty() && state.assignments.is_empty() {
+    if state.projects.is_empty()
+        && state.assignments.is_empty()
+        && state.retired_folder_roots.is_empty()
+    {
         return match std::fs::remove_file(path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
@@ -245,6 +275,7 @@ fn persist_locked(state: &StoreState, path: &Path) -> Result<()> {
         schema_version: SCHEMA_VERSION,
         projects: state.projects.clone(),
         assignments: state.assignments.clone(),
+        retired_folder_roots: state.retired_folder_roots.clone(),
     };
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)
@@ -283,6 +314,7 @@ fn load_state(path: &Path) -> Result<StoreState> {
     Ok(StoreState {
         projects,
         assignments: file.assignments,
+        retired_folder_roots: file.retired_folder_roots,
         refuse_writes: false,
     })
 }
@@ -350,6 +382,16 @@ impl ProjectStore {
     /// 抛,不回滚内存);同一进程内立即重试 create 会先撞内存重叠校验(磁盘
     /// 还是旧内容)——已知语义,由下一次成功写盘自愈。
     pub fn create_project(&self, name: String, roots: Vec<PathBuf>) -> Result<Project> {
+        self.create_project_with_origin(name, roots, None)
+    }
+
+    /// `create_project` 的带来源版本:ensure 收编通道传 `Some("folder")`。
+    fn create_project_with_origin(
+        &self,
+        name: String,
+        roots: Vec<PathBuf>,
+        origin: Option<String>,
+    ) -> Result<Project> {
         let name = validate_name(name)?;
         let mut state = self.state.write();
         let roots = validate_roots(&state.projects, None, &roots)?;
@@ -368,6 +410,7 @@ impl ProjectStore {
             position,
             created_at: now,
             updated_at: now,
+            origin,
         };
         state.projects.push(project.clone());
         state
@@ -418,7 +461,19 @@ impl ProjectStore {
         else {
             bail!("project not found: {project_id}");
         };
-        state.projects.remove(index);
+        let removed = state.projects.remove(index);
+        // 文件夹自动物化的项目被删除 → 其 root 进墓碑,ensure 不再对该文件夹
+        // 自动重建(等价 Codex 幂等键残留语义);手工项目删除不墓碑——它从未
+        // 走过自动物化,该文件夹若仍有会话,下次回填建文件夹项目是符合预期的
+        // "文件夹有会话就有项目"。
+        if removed.origin.as_deref() == Some("folder") {
+            for root in &removed.roots {
+                let key = identity_key_of_display(root);
+                if !state.retired_folder_roots.contains(&key) {
+                    state.retired_folder_roots.push(key);
+                }
+            }
+        }
         // 只清 Some(pid) 条目;显式移出条目(None)的语义是"不进任何项目",
         // 与项目存亡无关,保留。被清掉的会话回落自动/隐式分组。
         let affected: Vec<String> = state
@@ -533,6 +588,93 @@ impl ProjectStore {
             project_id: project_id.map(str::to_string),
             added_root,
         })
+    }
+
+    /// 文件夹项目自动物化(Codex 客户端式收编,幂等):对每个输入文件夹,
+    /// 已有项目 root 覆盖(等于或祖先)则复用,否则建 `origin=folder`、
+    /// 名为目录 basename 的项目。墓碑(曾删除的文件夹项目 root)跳过;
+    /// 与既有项目 root 嵌套等冲突逐根 Failed 上报,不阻断其余根。
+    /// 输入按键去重;整批共享一次落盘。分组规则不变——新项目的 roots 让
+    /// 既有 tier-② 根匹配自然收编该文件夹的会话,显式移出条目仍压制。
+    pub fn ensure_folder_roots(&self, roots: &[PathBuf]) -> Result<Vec<EnsureFolderOutcome>> {
+        let mut state = self.state.write();
+        let mut outcomes = Vec::with_capacity(roots.len());
+        let mut seen_keys: Vec<String> = Vec::with_capacity(roots.len());
+        let mut created_any = false;
+        for root in roots {
+            if !root.is_absolute() {
+                outcomes.push(EnsureFolderOutcome::Failed {
+                    reason: format!("folder root must be absolute: {}", root.display()),
+                });
+                continue;
+            }
+            let display = root_display(root);
+            let key = identity_key_of_display(&display);
+            if seen_keys.contains(&key) {
+                continue;
+            }
+            seen_keys.push(key.clone());
+            // 覆盖优先于墓碑:已有活项目罩住该文件夹时无事可做(墓碑只拦
+            // "重建",用户手工在同根上重建后,ensure 对该根的答复是 Covered
+            // 而非 Retired)。
+            let covered = state.projects.iter().find(|project| {
+                project
+                    .roots
+                    .iter()
+                    .any(|existing| key_is_same_or_nested(&key, &identity_key_of_display(existing)))
+            });
+            if let Some(project) = covered {
+                outcomes.push(EnsureFolderOutcome::Covered {
+                    project_id: project.id.clone(),
+                });
+                continue;
+            }
+            if state.retired_folder_roots.contains(&key) {
+                outcomes.push(EnsureFolderOutcome::Retired);
+                continue;
+            }
+            let name = display
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| display.to_string_lossy().into_owned());
+            // 同批先建的文件夹项目已在 state.projects 中,后续根与之重叠会被
+            // validate 拦下,保证整批任何顺序执行结果一致。
+            match validate_roots(&state.projects, None, std::slice::from_ref(root)) {
+                Ok(displays) => {
+                    let now = Utc::now();
+                    let position = state
+                        .projects
+                        .iter()
+                        .map(|project| project.position)
+                        .max()
+                        .unwrap_or(-1)
+                        + 1;
+                    let project = Project {
+                        id: generate_project_id(),
+                        name,
+                        roots: displays,
+                        position,
+                        created_at: now,
+                        updated_at: now,
+                        origin: Some("folder".to_string()),
+                    };
+                    state.projects.push(project.clone());
+                    state.projects.sort_by(|a, b| {
+                        (a.position, &a.id).cmp(&(b.position, &b.id))
+                    });
+                    created_any = true;
+                    outcomes.push(EnsureFolderOutcome::Created { project });
+                }
+                Err(error) => outcomes.push(EnsureFolderOutcome::Failed {
+                    reason: format!("{error:#}"),
+                }),
+            }
+        }
+        if created_any {
+            persist_locked(&state, &self.path)?;
+        }
+        Ok(outcomes)
     }
 
     /// 目录重绑定(修断链通道):把落在 `from` 前缀下的项目 root 平移到 `to`。

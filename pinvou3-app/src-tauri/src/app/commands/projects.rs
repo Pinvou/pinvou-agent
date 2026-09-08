@@ -12,7 +12,8 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::features::codex_acp::{AcpPool, CodexWorkspaceKind};
 use crate::features::projects::{
-    DeleteProjectReport, MoveSessionOutcome, Project, ProjectStore, SessionAssignments,
+    DeleteProjectReport, EnsureFolderOutcome, MoveSessionOutcome, Project, ProjectStore,
+    SessionAssignments,
 };
 use crate::features::sessions::SessionStore;
 
@@ -44,6 +45,9 @@ pub struct ProjectListItem {
     pub position: i64,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    /// `Some("folder")` = 按文件夹自动物化的项目(前端徽标);None = 手工。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
     /// 显式归属的会话数;自动归组的成员数由前端分组解析计算(Phase 1)。
     pub assigned_session_count: usize,
 }
@@ -64,6 +68,7 @@ impl ProjectListItem {
             position: project.position,
             created_at: project.created_at,
             updated_at: project.updated_at,
+            origin: project.origin.clone(),
             assigned_session_count,
         }
     }
@@ -200,6 +205,27 @@ pub async fn move_session_to_project(
         .map_err(|e| format!("move_session_to_project({session_id}): {e:#}"))?;
     emit_project_event(&app, "projects:list_changed", "moved");
     Ok(outcome)
+}
+
+/// 文件夹项目自动物化(Codex 客户端式收编):roots 由前端从会话列表的
+/// 工作区聚合(客户端驱动,与 Codex `project/import` 由桌面端发起同构)。
+/// 幂等:覆盖复用 / 墓碑跳过 / 冲突逐根上报;有新建才广播列表变更。
+#[tauri::command]
+pub async fn ensure_folder_projects(
+    roots: Vec<PathBuf>,
+    app: AppHandle,
+    store: State<'_, ProjectStore>,
+) -> Result<Vec<EnsureFolderOutcome>, String> {
+    let outcomes = store
+        .ensure_folder_roots(&roots)
+        .map_err(|e| format!("ensure_folder_projects: {e:#}"))?;
+    if outcomes
+        .iter()
+        .any(|outcome| matches!(outcome, EnsureFolderOutcome::Created { .. }))
+    {
+        emit_project_event(&app, "projects:list_changed", "folder_ensured");
+    }
+    Ok(outcomes)
 }
 
 /// rebind_workspace_root 的结果汇报:逐会话结果 + 受影响项目。重绑定幂等,

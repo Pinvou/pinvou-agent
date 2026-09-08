@@ -21,7 +21,7 @@ import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
 import { COLOR_SCHEME_STORAGE_KEY, normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
 import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
-import { groupSessionsByFolder, groupSessionsByProject, resolveSessionProjectId, needsAddFolderConfirm } from '../features/projects/projectGrouping.js';
+import { groupSessionsByFolder, groupSessionsByProject, resolveSessionProjectId, needsAddFolderConfirm, uncoveredWorkspaceRoots } from '../features/projects/projectGrouping.js';
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
 import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
 import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
@@ -1626,6 +1626,40 @@ function workspaceDisplayName(path) {
         if (projectsBootstrapReady && bridge.projects) bridge.projects.loadProjects();
       }, [projectsBootstrapReady]);
 
+      // ── 文件夹项目自动物化(Codex 客户端式收编)───────────────────────
+      // 会话列表出现未被任何项目 root 覆盖的工作区文件夹时,后端 ensure 同名
+      // 项目(origin=folder)。与展示视图无关(全部/目录/项目都会触发),保证
+      // 用户切到项目视图时文件夹已就位。ensure 幂等:后端按覆盖复用、按墓碑
+      // (用户删过的文件夹项目)跳过;这里再用 ref 记住本进程已 ensure 过的根,
+      // 墓碑/冲突根不会在每次桥刷新时重复请求。分组规则不变——文件夹项目的
+      // roots 让 tier-2 自动归组自然收编,显式移出条目仍压制。
+      const projectsListData = bs && bs.projectsList;
+      const boundWorkspaceItems = useMemo(() => {
+        if (!bs) return [];
+        const regular = (bs.sessions || [])
+          .filter(s => s.workspace_binding)
+          .map(s => ({ workspaceKind: 'bound', workspacePath: String(s.workspace_binding) }));
+        const codex = (codexSessions || [])
+          .filter(s => s.workspace_kind === 'project' && s.workspace_path)
+          .map(s => ({ workspaceKind: 'project', workspacePath: String(s.workspace_path) }));
+        return [...regular, ...codex];
+      }, [bs, codexSessions]);
+      const pendingFolderRoots = useMemo(() => uncoveredWorkspaceRoots(
+        boundWorkspaceItems,
+        (projectsListData && projectsListData.projects) || [],
+      ), [boundWorkspaceItems, projectsListData]);
+      const ensuredFolderRootsRef = useRef(new Set());
+      useEffect(() => {
+        const ensureFn = bridge.projects && bridge.projects.ensureFolderProjects;
+        if (!ensureFn || !pendingFolderRoots.length) return;
+        const fresh = pendingFolderRoots.filter(root => !ensuredFolderRootsRef.current.has(root));
+        if (!fresh.length) return;
+        fresh.forEach((root) => { ensuredFolderRootsRef.current.add(root); });
+        // 失败(如与既有项目 root 嵌套)不撤销 ref 登记:冲突是稳定状态,重试
+        // 只会重复同一结果;根集合或项目集合变化时自然重算补试。
+        ensureFn(fresh).catch(() => {});
+      }, [pendingFolderRoots]);
+
       // Expanded sidebar width: drag the right edge to adjust (220~480px), double-click
       // the handle to reset to default; the choice is persisted.
       const SIDEBAR_WIDTH_DEFAULT = 280;
@@ -2771,6 +2805,17 @@ function workspaceDisplayName(path) {
               .filter(root => !(root && typeof root === 'object' ? root.available : root))
               .map(root => String(typeof root === 'object' ? root.path : root)),
             onRebind: (rootPath) => startRebindWorkspace(rootPath),
+            // 文件夹自动物化项目的来源徽标:提示该组是"文件夹有会话就有项目"
+            // 自动建出的,改名/删项目等手工操作不受限(删除后不会自动重建)。
+            headerExtra: group.origin === 'folder' ? (
+              <span
+                data-testid="project-folder-origin-badge"
+                title={t.uiProjects.folderOriginHint}
+                className="shrink-0 rounded-full bg-[#E8F0FE] px-1.5 py-0.5 text-[10px] leading-none text-[#0B57D0] dark:bg-[#1F2A3D] dark:text-[#A8C7FA]"
+              >
+                {t.uiProjects.folderOriginBadge}
+              </span>
+            ) : undefined,
           };
         }
         if (group.kind === 'folder') {

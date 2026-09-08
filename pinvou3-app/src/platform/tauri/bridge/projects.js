@@ -78,6 +78,15 @@
       return outcome;
     }
 
+    // 文件夹项目自动物化:幂等 ensure,新建时后端广播 projects:list_changed
+    // (事件刷新与下方主动刷新双保险,同 createProject)。失败根(嵌套冲突等)
+    // 由调用方按逐根 outcome 处理;此处不吞错。
+    async function ensureFolderProjects(roots) {
+      const outcomes = await invoke("ensure_folder_projects", { roots: roots || [] });
+      await loadProjects();
+      return outcomes;
+    }
+
     // 目录重绑定(修断链):confirmExisting 由前端两阶段控制——先不带确认
     // 调用,后端在旧目录仍存在时报特定错误,前端升级为强确认后重试。
     async function rebindWorkspaceRoot(from, to, confirmExisting) {
@@ -96,6 +105,7 @@
       renameProject,
       deleteProject,
       moveSessionToProject,
+      ensureFolderProjects,
       rebindWorkspaceRoot
     };
   };

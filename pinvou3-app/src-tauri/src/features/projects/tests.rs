@@ -484,3 +484,144 @@ fn root_keys_fold_case_only_on_windows() {
         assert_eq!(store.list().len(), 2);
     }
 }
+
+// ── 文件夹项目自动物化(ensure)──────────────────────────────────────────────
+
+fn ensure(store: &ProjectStore, roots: &[PathBuf]) -> Vec<super::EnsureFolderOutcome> {
+    store.ensure_folder_roots(roots).expect("ensure folder roots")
+}
+
+#[test]
+fn ensure_creates_basename_named_folder_projects_idempotently() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+
+    let outcomes = ensure(&store, &[abs("web"), abs("api")]);
+    assert!(matches!(&outcomes[0], super::EnsureFolderOutcome::Created { project }
+        if project.name == "web" && project.origin.as_deref() == Some("folder")));
+    assert!(matches!(&outcomes[1], super::EnsureFolderOutcome::Created { project }
+        if project.name == "api"));
+    assert_eq!(store.list().len(), 2);
+
+    // 幂等:同批根重放 → 全部 Covered,不新建。
+    let replay = ensure(&store, &[abs("web"), abs("api")]);
+    let ids: Vec<&str> = replay
+        .iter()
+        .filter_map(|o| match o {
+            super::EnsureFolderOutcome::Covered { project_id } => Some(project_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids.len(), 2, "重放全为 Covered: {replay:?}");
+    assert_eq!(store.list().len(), 2);
+
+    // 既有手工项目已覆盖的文件夹同样只复用,不产生第二个项目。
+    let manual = create(&store, "手工", &[abs("manual/root")]);
+    let covered = ensure(&store, &[abs("manual/root/sub")]);
+    assert!(matches!(&covered[0], super::EnsureFolderOutcome::Covered { project_id }
+        if *project_id == manual.id));
+    assert_eq!(store.list().len(), 3);
+}
+
+#[test]
+fn ensure_input_dedupes_and_reports_relative_roots() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+
+    let outcomes = ensure(&store, &[abs("web"), abs("web"), PathBuf::from("relative/x")]);
+    assert_eq!(outcomes.len(), 2, "重复根折叠为一项: {outcomes:?}");
+    assert!(matches!(outcomes[0], super::EnsureFolderOutcome::Created { .. }));
+    assert!(matches!(&outcomes[1], super::EnsureFolderOutcome::Failed { reason }
+        if reason.contains("absolute")));
+    assert_eq!(store.list().len(), 1);
+}
+
+#[test]
+fn ensure_conflicts_report_per_root_without_blocking_the_batch() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    // 既有项目占据 abs("nest/child"):为祖先目录 abs("nest") 建文件夹项目会
+    // 与之嵌套,该根 Failed,同批其它根照常创建。
+    create(&store, "深根", &[abs("nest/child")]);
+
+    let outcomes = ensure(&store, &[abs("nest"), abs("clean")]);
+    assert!(matches!(&outcomes[0], super::EnsureFolderOutcome::Failed { reason }
+        if reason.contains("overlaps")));
+    assert!(matches!(outcomes[1], super::EnsureFolderOutcome::Created { .. }));
+    assert_eq!(store.list().len(), 2);
+}
+
+#[test]
+fn deleting_folder_project_tombstones_the_folder_root() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+
+    // 文件夹项目删除 → 墓碑 → ensure 不复活。
+    ensure(&store, &[abs("web")]);
+    let created = store.list()[0].clone();
+    store.delete_project(&created.id).expect("delete");
+    let after_delete = ensure(&store, &[abs("web")]);
+    assert!(matches!(after_delete[0], super::EnsureFolderOutcome::Retired));
+    assert!(store.list().is_empty());
+
+    // 墓碑只拦自动物化:手工 create 同根仍可用(用户改主意的出路)。
+    let manual = create(&store, "手工重建", &[abs("web")]);
+    assert_eq!(manual.origin, None);
+    let covered = ensure(&store, &[abs("web")]);
+    assert!(matches!(&covered[0], super::EnsureFolderOutcome::Covered { project_id }
+        if *project_id == manual.id));
+
+    // 手工项目再删除后墓碑仍然生效:该文件夹的自动项目被用户拒绝过,
+    // 两次删除的累积意志是"不要自动项目",复活它才是意外行为;想要项目
+    // 的出路始终是手工 create。
+    store.delete_project(&manual.id).expect("delete manual");
+    let recreate = ensure(&store, &[abs("web")]);
+    assert!(matches!(recreate[0], super::EnsureFolderOutcome::Retired));
+
+    // 从未走过自动物化的文件夹:手工项目删除不墓碑,回填按"文件夹有会话
+    // 就有项目"建同名文件夹项目。
+    create(&store, "纯手工", &[abs("fresh")]);
+    let fresh = store.list()[0].clone();
+    store.delete_project(&fresh.id).expect("delete fresh");
+    let outcomes = ensure(&store, &[abs("fresh")]);
+    assert!(matches!(&outcomes[0], super::EnsureFolderOutcome::Created { project }
+        if project.name == "fresh" && project.origin.as_deref() == Some("folder")));
+}
+
+#[test]
+fn retired_roots_and_origin_persist_across_reopen() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    {
+        let store = store_in(&temp);
+        ensure(&store, &[abs("web")]);
+        let created = store.list()[0].clone();
+        store.delete_project(&created.id).expect("delete");
+        ensure(&store, &[abs("api")]);
+    }
+    let reopened = store_in(&temp);
+    let projects = reopened.list();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].origin.as_deref(), Some("folder"));
+    let outcomes = ensure(&reopened, &[abs("web"), abs("api")]);
+    assert!(matches!(outcomes[0], super::EnsureFolderOutcome::Retired), "墓碑跨进程存活");
+    assert!(matches!(outcomes[1], super::EnsureFolderOutcome::Covered { .. }));
+}
+
+#[test]
+fn ensure_folder_roots_survives_when_store_is_empty_except_tombstones() {
+    // 只剩墓碑时也不回落到"空状态删文件":否则墓碑丢失,重启后已删除的
+    // 文件夹项目会被回填复活(persist_locked 的空文件条件必须计入墓碑)。
+    let temp = tempfile::tempdir().expect("tempdir");
+    {
+        let store = store_in(&temp);
+        ensure(&store, &[abs("web")]);
+        let created = store.list()[0].clone();
+        store.delete_project(&created.id).expect("delete");
+    }
+    let reopened = store_in(&temp);
+    assert!(temp.path().join("projects.json").exists(), "墓碑仍在盘上");
+    assert!(matches!(
+        ensure(&reopened, &[abs("web")])[0],
+        super::EnsureFolderOutcome::Retired
+    ));
+}

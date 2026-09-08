@@ -9,6 +9,7 @@ import {
   needsAddFolderConfirm,
   projectCoversPath,
   resolveSessionProjectId,
+  uncoveredWorkspaceRoots,
 } from "../src/features/projects/projectGrouping.js";
 
 const projectItem = (id, path, updatedAt) => ({
@@ -228,6 +229,66 @@ test("projectCoversPath and needsAddFolderConfirm share the containment rule", (
   assert.equal(needsAddFolderConfirm(projectItem("s", "D:/work/beta"), projects[0]), true);
   assert.equal(needsAddFolderConfirm(projectItem("s", "D:/work/alpha/x"), projects[0]), false);
   assert.equal(needsAddFolderConfirm(temporaryItem("t"), projects[0]), false, "临时会话无目录,直移");
+});
+
+// ── Folder-project auto-materialization input ──────────────────────────────
+
+test("uncoveredWorkspaceRoots dedupes and drops covered/temporary workspaces", () => {
+  const projects = [project("p1", "Work", ["D:/work/alpha"], 0)];
+  const roots = uncoveredWorkspaceRoots(
+    [
+      projectItem("a1", "D:/work/alpha", "x"),
+      projectItem("a2", "D:/work/alpha/sub", "x"),
+      boundItem("w1", "D:/work/beta", "x"),
+      boundItem("w2", "D:/work/beta", "x"),
+      temporaryItem("t1", "x"),
+      null,
+      { id: "no-path", workspaceKind: "project", workspacePath: "" },
+    ],
+    projects,
+  );
+  assert.deepEqual(roots, ["D:/work/beta"], "被覆盖根与临时/无目录会话不产生 ensure 输入");
+});
+
+test("uncoveredWorkspaceRoots: an ancestor project root covers descendant folders", () => {
+  const projects = [project("p1", "Work", ["D:/work"], 0)];
+  assert.deepEqual(
+    uncoveredWorkspaceRoots([projectItem("a1", "D:/work/alpha", "x")], projects),
+    [],
+    "D:/work 已覆盖其子目录,无需为子目录建项目",
+  );
+  assert.deepEqual(uncoveredWorkspaceRoots([projectItem("a1", "D:/elsewhere", "x")], projects), [
+    "D:/elsewhere",
+  ]);
+});
+
+test("uncoveredWorkspaceRoots with no projects lists every distinct bound folder", () => {
+  const roots = uncoveredWorkspaceRoots(
+    [
+      projectItem("a1", "D:/one", "x"),
+      boundItem("w1", "D:/two", "x"),
+      temporaryItem("t1", "x"),
+    ],
+    [],
+  );
+  assert.deepEqual(roots, ["D:/one", "D:/two"]);
+});
+
+test("project view passes folder origin through for the badge", () => {
+  const projects = [{ ...project("p1", "alpha", ["D:/work/alpha"], 0), origin: "folder" }];
+  const groups = groupSessionsByProject(
+    [projectItem("a1", "D:/work/alpha", "2026-08-01T08:00:00Z")],
+    projects,
+    {},
+  );
+  assert.equal(groups[0].origin, "folder");
+  assert.equal(groups[0].kind, "project");
+  const manual = groupSessionsByProject(
+    [projectItem("a1", "D:/work/alpha", "2026-08-01T08:00:00Z")],
+    [project("p2", "Alpha", ["D:/work/alpha"], 0)],
+    {},
+  );
+  assert.equal(manual[0].origin, null, "手工项目无来源徽标");
 });
 
 // ── Cases ported from the legacy sidebar-grouping suite ────────────────────
