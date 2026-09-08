@@ -3025,7 +3025,6 @@ const NAV_PREFETCH = {
 
           {moveToProjectSession && (
             <MoveToProjectDialog
-              open={!!moveToProjectSession}
               session={moveToProjectSession}
               projects={sidebarProjectsData ? sidebarProjectsData.projects : []}
               currentProjectId={resolveSessionProjectId(
