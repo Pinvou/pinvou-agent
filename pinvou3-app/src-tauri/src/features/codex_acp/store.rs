@@ -527,6 +527,124 @@ impl SessionAgentStore {
         }
     }
 
+    /// 列出绑定在 `from` 前缀下的项目会话（目录重绑定的候选集；`from` 通常
+    /// 已在磁盘上消失，因此按词法前缀匹配而非 canonicalize 比较）。
+    pub fn sessions_under_workspace(&self, from: &Path) -> Vec<(String, PathBuf)> {
+        self.records
+            .read()
+            .iter()
+            .filter_map(|(session_id, record)| {
+                if record.workspace_kind != CodexWorkspaceKind::Project {
+                    return None;
+                }
+                let path = record.workspace_path.as_ref()?;
+                // strip_prefix 按路径组件匹配,天然处理目录边界(不会把
+                // /a/bb 误匹配到 /a/b 前缀)。
+                path.strip_prefix(from)
+                    .ok()
+                    .map(|_| (session_id.clone(), path.clone()))
+            })
+            .collect()
+    }
+
+    /// 目录重绑定（修断链通道）：把绑定在 `from` 前缀下的项目会话整体平移到
+    /// `to`。与 `set_acp_workspace`/`bind_code_native_session` 的“会话开始后
+    /// 不可换目录”不同，本方法绕过该约束——仅当目录已失效（或用户在旧目录
+    /// 仍存在时显式确认）时由命令层调用，命令层负责活跃回合栅栏与目标校验。
+    ///
+    /// 三处一致中的前两处在此落盘：辅助索引（session-agents.json）与权威
+    /// sidecar（code-session.json，含索引外孤儿——启动扫描按 sidecar 恢复，
+    /// 漏写会让旧值复活）；第三处 SavedSession 元数据由命令层经 SessionStore
+    /// 写入。幂等：from→to 重跑无匹配即空操作。返回受影响 (session_id, 新路径)。
+    pub fn rebind_workspace_prefix(
+        &self,
+        from: &Path,
+        to: &Path,
+    ) -> Result<Vec<(String, PathBuf)>> {
+        if from == to {
+            return Ok(Vec::new());
+        }
+        let mut affected: Vec<(String, PathBuf)> = Vec::new();
+        {
+            let mut records = self.records.write();
+            for (session_id, record) in records.iter_mut() {
+                if record.workspace_kind != CodexWorkspaceKind::Project {
+                    continue;
+                }
+                let Some(path) = record.workspace_path.clone() else {
+                    continue;
+                };
+                let Ok(suffix) = path.strip_prefix(from) else {
+                    continue;
+                };
+                let next = to.join(suffix);
+                record.workspace_path = Some(next.clone());
+                affected.push((session_id.clone(), next));
+            }
+        }
+        self.persist()?;
+        // sidecar 重写：原生代码会话的权威绑定。ACP 会话本就无 sidecar（绑定
+        // 时即清除）；索引外孤儿 sidecar 也要改——否则重启恢复会用旧目录复活。
+        let sidecar_root = code_session_sidecar_root(&self.path);
+        if let Ok(entries) = fs::read_dir(&sidecar_root) {
+            for entry in entries.flatten() {
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if !file_type.is_dir() {
+                    continue;
+                }
+                let Some(session_id) = entry.file_name().to_str().map(str::to_string) else {
+                    continue;
+                };
+                let Some(sidecar) = read_code_session_sidecar(&self.path, &session_id) else {
+                    continue;
+                };
+                if sidecar.workspace_kind != CodexWorkspaceKind::Project {
+                    continue;
+                }
+                let Some(path) = sidecar.workspace_path.as_ref() else {
+                    continue;
+                };
+                let Ok(suffix) = path.strip_prefix(from) else {
+                    continue;
+                };
+                let next = to.join(suffix);
+                let _ = persist_code_session_sidecar(
+                    &code_session_sidecar_path(&self.path, &session_id),
+                    &CodeSessionSidecar {
+                        version: CODE_SESSION_SIDECAR_VERSION,
+                        workspace_kind: CodexWorkspaceKind::Project,
+                        workspace_path: Some(next.clone()),
+                        bound_at: sidecar.bound_at,
+                    },
+                );
+                // 索引缺失的孤儿会话也计入受影响名单（索引里改不到它们）。
+                if !affected.iter().any(|(sid, _)| *sid == session_id) {
+                    affected.push((session_id, next));
+                }
+            }
+        }
+        // 索引内已改绑的原生代码会话补写 sidecar（失败仅记日志，启动回填自愈）。
+        {
+            let records = self.records.read();
+            for (session_id, path) in &affected {
+                if records
+                    .get(session_id)
+                    .is_some_and(|record| record.mode.is_code())
+                {
+                    write_code_session_sidecar(
+                        &self.path,
+                        session_id,
+                        CodexWorkspaceKind::Project,
+                        Some(path.clone()),
+                    );
+                }
+            }
+        }
+        Ok(affected)
+    }
+
     pub fn set_acp_session(
         &self,
         session_id: &str,
@@ -1235,6 +1353,110 @@ mod tests {
         let record = store.get("session-1");
         assert_eq!(record.workspace_kind, CodexWorkspaceKind::Project);
         assert_eq!(record.workspace_path.as_deref(), Some(root.as_path()));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rebind_workspace_prefix_rewrites_index_and_sidecars() {
+        let root =
+            std::env::temp_dir().join(format!("pinvou3-codex-rebind-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let from = root.join("from");
+        let to = root.join("to");
+        fs::create_dir_all(from.join("sub")).unwrap();
+        fs::create_dir_all(&to).unwrap();
+
+        // s1:原生代码会话,绑定 = from 本身(写 sidecar);
+        // s2:ACP 项目会话,绑定 = from/sub(无 sidecar);
+        // s3:绑定在别处,不受影响;前缀边界:from-x 不得命中 from。
+        store
+            .bind_code_native_session("s1", CodexWorkspaceKind::Project, Some(from.clone()))
+            .unwrap();
+        store
+            .set_acp_workspace(
+                "s2",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Project,
+                Some(from.join("sub")),
+            )
+            .unwrap();
+        store
+            .bind_code_native_session(
+                "s3",
+                CodexWorkspaceKind::Project,
+                Some(root.join("elsewhere")),
+            )
+            .unwrap();
+        store
+            .bind_code_native_session("s4", CodexWorkspaceKind::Project, Some(root.join("from-x")))
+            .unwrap();
+
+        let matched = store.sessions_under_workspace(&from);
+        assert_eq!(matched.len(), 2);
+
+        let affected = store.rebind_workspace_prefix(&from, &to).unwrap();
+        let mut ids: Vec<&str> = affected.iter().map(|(sid, _)| sid.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["s1", "s2"]);
+        assert_eq!(
+            store.get("s1").workspace_path.as_deref(),
+            Some(to.as_path())
+        );
+        assert_eq!(
+            store.get("s2").workspace_path.as_deref(),
+            Some(to.join("sub").as_path())
+        );
+        assert_eq!(
+            store.get("s3").workspace_path.as_deref(),
+            Some(root.join("elsewhere").as_path()),
+            "prefix 外会话不动"
+        );
+        assert_eq!(
+            store.get("s4").workspace_path.as_deref(),
+            Some(root.join("from-x").as_path()),
+            "目录边界:sibling 前缀不得误命中"
+        );
+
+        // 权威 sidecar 同步改写(s1);ACP 会话 s2 无 sidecar。
+        let sidecar = read_code_session_sidecar(&store.path, "s1").unwrap();
+        assert_eq!(sidecar.workspace_path.as_deref(), Some(to.as_path()));
+
+        // 幂等:再跑一遍 from→to 无命中。
+        assert!(
+            store
+                .rebind_workspace_prefix(&from, &to)
+                .unwrap()
+                .is_empty()
+        );
+
+        // 孤儿 sidecar(索引无记录)也会被改写,重启恢复不会复活旧目录。
+        persist_code_session_sidecar(
+            &code_session_sidecar_path(&store.path, "orphan"),
+            &CodeSessionSidecar {
+                version: CODE_SESSION_SIDECAR_VERSION,
+                workspace_kind: CodexWorkspaceKind::Project,
+                workspace_path: Some(from.join("deep")),
+                bound_at: None,
+            },
+        )
+        .unwrap();
+        let affected = store
+            .rebind_workspace_prefix(&root.join("from"), &root.join("to2"))
+            .unwrap();
+        fs::create_dir_all(root.join("to2")).unwrap();
+        // 上一步 to 已改走;此轮 from 无索引命中,但孤儿 sidecar 命中。
+        assert!(affected.iter().any(|(sid, _)| sid == "orphan"));
+        let orphan = read_code_session_sidecar(&store.path, "orphan").unwrap();
+        assert_eq!(
+            orphan.workspace_path.as_deref(),
+            Some(root.join("to2").join("deep").as_path())
+        );
+
         fs::remove_dir_all(&root).unwrap();
     }
 

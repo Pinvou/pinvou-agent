@@ -2448,6 +2448,14 @@
   const downloadKbModel = knowledgeModelFeature.downloadKbModel;
   const cancelKbModel = knowledgeModelFeature.cancelKbModel;
 
+  const projectsFeature = installBridgeFeature("projects", { state, notify, invoke, listen });
+  const loadProjects = projectsFeature.loadProjects;
+  const createProject = projectsFeature.createProject;
+  const renameProject = projectsFeature.renameProject;
+  const deleteProject = projectsFeature.deleteProject;
+  const moveSessionToProject = projectsFeature.moveSessionToProject;
+  const rebindWorkspaceRoot = projectsFeature.rebindWorkspaceRoot;
+
   const multiAgentFeature = installBridgeFeature("multiagent", { state, notify, invoke, listen });
   const listMultiAgentSubagents = multiAgentFeature.listSubagentTranscripts;
   const readMultiAgentSubagent = multiAgentFeature.readSubagentTranscript;
@@ -2638,6 +2646,14 @@
       // 已生成会话的工作目录绑定查询（绑定会话安全姿态对齐 code 模式；
       // Web/远程端无绑定概念，桩方法返回 null）。
       getSessionWorkspaceBinding,
+    },
+    projects: {
+      loadProjects,
+      createProject,
+      renameProject,
+      deleteProject,
+      moveSessionToProject,
+      rebindWorkspaceRoot,
     },
     monitor: {
       startMonitorPolling,

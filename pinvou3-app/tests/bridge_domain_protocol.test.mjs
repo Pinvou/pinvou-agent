@@ -76,6 +76,7 @@ const protocolSources = {
   updater: ['bridge/updater.js'],
   voice: ['bridge/voice.js'],
   multiAgent: ['bridge/multiagent.js'],
+  projects: ['bridge/projects.js'],
 };
 
 const expectedProtocolHashes = {
@@ -130,6 +131,7 @@ const expectedProtocolHashes = {
   // (PR-added Chinese comments inside the postprocess_voice_text invoke
   // span are part of the hashed source; no invoke/listen surface changed).
   voice: '2a2e8d12150ca86bb970ad099e7b72ab6491768bbc42354cd5ecc800c891c733',
+  projects: '3108533baca6692918b8ac0e095ee036e49460c49b997194f7cb2174401e5be1',
 };
 
 for (const [domain, files] of Object.entries(protocolSources)) {

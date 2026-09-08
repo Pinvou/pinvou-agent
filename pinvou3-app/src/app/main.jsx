@@ -21,7 +21,10 @@ import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
 import { COLOR_SCHEME_STORAGE_KEY, normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
 import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
-import { TEMPORARY_GROUP_KEY, groupSessionsByFolder } from '../shared/sidebar-grouping.js';
+import { groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId } from '../features/projects/projectGrouping.js';
+import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
+import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
+import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
@@ -1437,6 +1440,10 @@ function workspaceDisplayName(path) {
           pinned: !!s.pinned,
           pinnedAt: s.pinned_at || '',
           working: !!sessionBusy[s.id], // 多 session 并发:该 session 是否正在后台生成
+          // #445 绑定:绑定工作会话携带 workspacePath/Kind,项目分组跟随绑定
+          // (与安全姿态同一条信号),未绑定会话两个值为空、维持日期视图。
+          workspacePath: s.workspace_binding || '',
+          workspaceKind: s.workspace_binding ? 'project' : '',
           leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
           testId: 'regular-sidebar-item',
           menuTestId: 'regular-sidebar-menu',
@@ -1601,6 +1608,16 @@ function workspaceDisplayName(path) {
       const [archiveConfirm, setArchiveConfirm] = useState(null);
       const [archiveToast, setArchiveToast] = useState(false);
       const [settingsToast, setSettingsToast] = useState('');
+      const [projectOpsBusy, setProjectOpsBusy] = useState(false);
+      const [moveToProjectSession, setMoveToProjectSession] = useState(null);
+      const [moveToPresetProject, setMoveToPresetProject] = useState(null);
+      const [rebindDraft, setRebindDraft] = useState(null);
+      // 桥完成首次状态同步(bs 就绪)后拉一次项目快照;后续变更由
+      // projects:list_changed 事件驱动桥内刷新(bridge/projects.js)。
+      const projectsBootstrapReady = !!bs;
+      useEffect(() => {
+        if (projectsBootstrapReady && bridge.projects) bridge.projects.loadProjects();
+      }, [projectsBootstrapReady]);
 
       // Expanded sidebar width: drag the right edge to adjust (220~480px), double-click
       // the handle to reset to default; the choice is persisted.
@@ -1775,19 +1792,23 @@ function workspaceDisplayName(path) {
         });
       }
 
-      // Code-style sidebar: lists only code sessions, grouped by folder (workspace);
-      // groups and rows both sort by latest activity descending, temporary sessions merge
-      // into one bottom group; with "pinned first", pinned code sessions hoist above the
-      // folder groups.
+      // 项目视图(原「代码」形态):所有绑定真实目录的会话——代码/ACP 会话
+      // 与 #445 的绑定工作会话——统一按项目层三层分组;未绑定普通会话留在
+      // 「全部」的日期视图。分组跟随绑定,与安全姿态同一条信号。
       const sidebarCodeTasks = sidebarCodeListActive
-        ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex')
+        ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex'
+            || (chat.taskKind === 'regular' && chat.workspacePath))
         : [];
       const sidebarFolderPinned = taskListSort === 'pinned_first'
         ? sidebarCodeTasks.filter(chat => !!chat.pinned)
         : [];
+      const sidebarProjectsData = bs && bs.projectsList;
       const sidebarFolderGroups = sidebarCodeListActive
-        ? groupSessionsByFolder(
-            sidebarCodeTasks.filter(chat => !(sidebarFolderPinned.length && chat.pinned)))
+        ? groupSessionsWithProjects(
+            sidebarCodeTasks.filter(chat => !(sidebarFolderPinned.length && chat.pinned)),
+            sidebarProjectsData ? sidebarProjectsData.projects : [],
+            sidebarProjectsData ? sidebarProjectsData.assignments : {},
+          )
         : [];
 
       // latest-ref mirror: the pet-snapshot broadcast effect only subscribes to bs.sessions/sessionBusy/language,
@@ -2324,6 +2345,83 @@ function workspaceDisplayName(path) {
         await refreshCodexSessions().catch(() => {});
       }
 
+      // ── 项目层:分组归档是纯逻辑层操作,永不触碰会话的工作目录绑定。──
+      // 失败走统一的 sessionBatchFailed toast;bridge.projects 仅桌面存在。
+      async function runProjectOp(op) {
+        if (!bridge.available || !bridge.projects || projectOpsBusy) return;
+        setProjectOpsBusy(true);
+        try {
+          await op(bridge.projects);
+        } catch (error) {
+          console.warn('project operation failed', error);
+          setSettingsToast(t.sessionBatchFailed(1));
+        } finally {
+          setProjectOpsBusy(false);
+        }
+      }
+      const handleConvertFolderToProject = (path, name) => runProjectOp(p => p.createProject(name, [path]));
+      const handleRenameProject = (projectId, name) => runProjectOp(p => p.renameProject(projectId, name));
+      const handleDeleteProject = (projectId) => runProjectOp(p => p.deleteProject(projectId));
+      // 移动归属:纯归档操作(工作目录绑定不动);目标 root 不覆盖会话目录时由
+      // 选择器先走"添加文件夹"确认,再带着 addFolder 标记落到这里。
+      const handleMoveSessionToProject = (sessionId, projectId, addWorkspaceRoot) => runProjectOp(async (p) => {
+        await p.moveSessionToProject(sessionId, projectId, addWorkspaceRoot);
+        setMoveToProjectSession(null);
+        setSettingsToast(t.uiProjects.movedNotice);
+      });
+      // 拖拽落点:root 已覆盖的直接移动;未覆盖的带着预置目标打开选择器,
+      // 进入"添加文件夹"确认(menu 路径则不带预置)。
+      const handleDropSessionOnProject = (sessionId, projectId) => {
+        const chat = sidebarTaskHistory.find(c => c.id === sessionId);
+        if (!chat || projectOpsBusy) return;
+        const projects = sidebarProjectsData ? sidebarProjectsData.projects : [];
+        const target = (projects || []).find(p => p && p.id === projectId);
+        if (!target) return;
+        if (chat.workspaceKind === 'project' && chat.workspacePath
+            && !projectCoversPath(target, chat.workspacePath)) {
+          setMoveToPresetProject(projectId);
+          setMoveToProjectSession(chat);
+          return;
+        }
+        handleMoveSessionToProject(sessionId, projectId, false);
+      };
+      // 目录重绑定(修断链):失效 root 的项目头上点"重新绑定" → 系统选目录
+      // → 确认弹窗。两阶段确认:首调不带 confirmExisting,后端发现旧目录
+      // 仍在时拒绝,弹窗升级为强警告后由用户再次确认。
+      const startRebindWorkspace = async (fromPath, sessionCount) => {
+        if (!bridge.files || !bridge.files.pickFolders || projectOpsBusy) return;
+        try {
+          const picked = await bridge.files.pickFolders();
+          const to = Array.isArray(picked) ? picked[0] : picked;
+          if (!to) return;
+          setRebindDraft({ from: fromPath, to, sessionCount, warnExisting: false });
+        } catch (error) {
+          console.warn('pick rebind folder failed', error);
+        }
+      };
+      const confirmRebindWorkspace = async (confirmExisting) => {
+        if (!bridge.projects || !rebindDraft || projectOpsBusy) return;
+        setProjectOpsBusy(true);
+        try {
+          const report = await bridge.projects.rebindWorkspaceRoot(
+            rebindDraft.from, rebindDraft.to, confirmExisting);
+          setRebindDraft(null);
+          const count = (report && report.rebound_session_ids) ? report.rebound_session_ids.length : 0;
+          setSettingsToast(t.uiProjects.rebindSuccess(count));
+          await refreshCodexSessions().catch(() => {});
+        } catch (error) {
+          const message = String(error);
+          if (message.includes('original folder still exists')) {
+            setRebindDraft(prev => prev && { ...prev, warnExisting: true });
+          } else {
+            console.warn('rebind workspace failed', error);
+            setSettingsToast(t.sessionBatchFailed(1));
+          }
+        } finally {
+          setProjectOpsBusy(false);
+        }
+      };
+
       function sessionRowsForIds(ids) {
         const byId = new Map(allSidebarTasks.map(item => [item.id, item]));
         return (ids || []).map(id => byId.get(id) || { id });
@@ -2599,6 +2697,13 @@ function workspaceDisplayName(path) {
             onTogglePinned={handleToggleSessionPinned}
             onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
             onArchive={handleArchiveSession}
+            onMoveToProject={bridge.projects && (chat.taskKind === 'codex' || !!chat.workspacePath)
+              ? (() => { setMoveToPresetProject(null); setMoveToProjectSession(chat); })
+              : undefined}
+            dndPayload={bridge.projects && (chat.taskKind === 'codex' || !!chat.workspacePath)
+              ? { sessionId: chat.id }
+              : undefined}
+            dndDisabled={!!dragAvatar}
             dragKind={detachKind}
             dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
             onPickUp={canDetachWindows ? ((geom) => beginTearOff(detachKind, chat.id, chat.title, geom)) : undefined}
@@ -2765,6 +2870,38 @@ function workspaceDisplayName(path) {
               {settingsToast}
             </div>,
             document.body
+          )}
+
+          {rebindDraft && (
+            <RebindFolderDialog
+              from={rebindDraft.from}
+              to={rebindDraft.to}
+              sessionCount={rebindDraft.sessionCount}
+              warnExisting={rebindDraft.warnExisting}
+              t={t}
+              busy={projectOpsBusy}
+              onCancel={() => setRebindDraft(null)}
+              onConfirm={confirmRebindWorkspace}
+            />
+          )}
+
+          {moveToProjectSession && (
+            <MoveToProjectDialog
+              open={!!moveToProjectSession}
+              session={moveToProjectSession}
+              projects={sidebarProjectsData ? sidebarProjectsData.projects : []}
+              currentProjectId={resolveSessionProjectId(
+                moveToProjectSession,
+                sidebarProjectsData ? sidebarProjectsData.projects : [],
+                sidebarProjectsData ? sidebarProjectsData.assignments : {},
+              )}
+              presetProjectId={moveToPresetProject}
+              t={t}
+              busy={projectOpsBusy}
+              onClose={() => { setMoveToPresetProject(null); setMoveToProjectSession(null); }}
+              onMove={(projectId, addWorkspaceRoot) => handleMoveSessionToProject(
+                moveToProjectSession.id, projectId, addWorkspaceRoot)}
+            />
           )}
 
           {searchOverlayOpen && browserOverlayPublicationReady && createPortal(
@@ -3127,21 +3264,37 @@ function workspaceDisplayName(path) {
                           )}
                           {sidebarFolderGroups.map((group) => {
                             const isOpen = folderGroupOpen[group.key] ?? true;
-                            const label = group.key === TEMPORARY_GROUP_KEY
-                              ? t.uiCodex.temporarySession
-                              : workspaceDisplayName(group.key);
+                            const label = group.kind === 'project'
+                              ? group.name
+                              : group.kind === 'temporary'
+                                ? t.uiCodex.temporarySession
+                                : workspaceDisplayName(group.path);
                             return (
                               <div key={group.key}>
-                                <button
-                                  type="button"
-                                  data-testid="sidebar-folder-group"
-                                  title={group.key === TEMPORARY_GROUP_KEY ? undefined : group.key}
-                                  onClick={() => setFolderGroupOpen(prev => ({ ...prev, [group.key]: !isOpen }))}
-                                  className={`w-full h-7 px-4 flex items-center justify-between rounded-full text-[12px] transition-colors ${activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
-                                >
-                                  <span className="truncate">{label} ({group.rows.length})</span>
-                                  <ChevronDown size={14} className={`shrink-0 transition-transform ${isOpen ? '' : '-rotate-90'}`} />
-                                </button>
+                                <ProjectGroupHeader
+                                  label={label}
+                                  kind={group.kind}
+                                  count={group.rows.length}
+                                  isOpen={isOpen}
+                                  onToggle={() => setFolderGroupOpen(prev => ({ ...prev, [group.key]: !isOpen }))}
+                                  theme={activeTheme}
+                                  t={t}
+                                  title={group.kind === 'folder' ? group.path : undefined}
+                                  busy={projectOpsBusy}
+                                  testId="sidebar-folder-group"
+                                  onConvert={group.kind === 'folder' ? (name) => handleConvertFolderToProject(group.path, name) : undefined}
+                                  onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
+                                  onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
+                                  onDropSession={group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
+                                  rootsUnavailable={group.kind === 'project'
+                                    && Array.isArray(group.roots) && group.roots.length > 0
+                                    && group.roots.every(root => !(root && typeof root === 'object' ? root.available : root))}
+                                  onRebind={group.kind === 'project' && group.roots && group.roots.length
+                                    ? (() => startRebindWorkspace(
+                                        String(typeof group.roots[0] === 'object' ? group.roots[0].path : group.roots[0]),
+                                        group.rows.length))
+                                    : undefined}
+                                />
                                 {isOpen && (
                                   <div className="mt-1 space-y-0.5">
                                     {group.rows.map(renderSidebarTaskItem)}
