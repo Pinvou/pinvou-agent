@@ -244,6 +244,73 @@ fn validate_roots(
     Ok(displays)
 }
 
+/// incoming roots 的展示形态与身份键(绝对性在此一并拦截),供让位剥离与
+/// 校验共用同一套 canonicalize 规则。
+fn root_keys_of(roots: &[PathBuf]) -> Result<Vec<String>> {
+    roots
+        .iter()
+        .map(|root| {
+            if !root.is_absolute() {
+                bail!("project root must be absolute: {}", root.display());
+            }
+            Ok(identity_key_of_display(&root_display(root)))
+        })
+        .collect()
+}
+
+/// 手工 root 决策对自动文件夹项目的让位剥离:incoming roots 即将出自用户
+/// 显式意图(手工建项目/改 roots/移动会话加文件夹),先把与其重叠(任一方向)
+/// 的 `origin=folder` 项目 root 摘掉——自动物化是系统给的便利,不敌用户的
+/// 手工决策;项目被摘空且无显式成员时整体退场,有显式成员则留作纯标签
+/// 项目。手工项目的 root 永不让位(重叠仍由 `validate_roots` 拒绝,由用户
+/// 自行重组)。ensure 通道不走此处(自动决策之间不互相蚕食)。就地改写
+/// `projects`,返回是否发生变更。
+fn strip_folder_project_roots(
+    projects: &mut Vec<Project>,
+    assignments: &SessionAssignments,
+    skip_project_id: Option<&str>,
+    incoming_keys: &[String],
+) -> bool {
+    let overlaps = |root_key: &str| {
+        incoming_keys.iter().any(|incoming| {
+            key_is_same_or_nested(root_key, incoming) || key_is_same_or_nested(incoming, root_key)
+        })
+    };
+    let mut changed = false;
+    for project in projects.iter_mut() {
+        if Some(project.id.as_str()) == skip_project_id
+            || project.origin.as_deref() != Some("folder")
+        {
+            continue;
+        }
+        let before = project.roots.len();
+        project
+            .roots
+            .retain(|root| !overlaps(&identity_key_of_display(root)));
+        if project.roots.len() == before {
+            continue;
+        }
+        project.updated_at = Utc::now();
+        changed = true;
+    }
+    let emptied: Vec<String> = projects
+        .iter()
+        .filter(|project| {
+            project.origin.as_deref() == Some("folder")
+                && project.roots.is_empty()
+                && !assignments
+                    .values()
+                    .any(|assigned| assigned.as_deref() == Some(&project.id))
+        })
+        .map(|project| project.id.clone())
+        .collect();
+    if !emptied.is_empty() {
+        projects.retain(|project| !emptied.contains(&project.id));
+        changed = true;
+    }
+    changed
+}
+
 /// 原子落盘(共享 `atomic_write`:fsync + 唯一 tmp 名 + 备份语义)。空状态
 /// 删除文件,不留空壳。读到更新 schema 时拒绝写入(见 `refuse_writes`)。
 fn persist_locked(state: &StoreState, path: &Path) -> Result<()> {
@@ -369,22 +436,16 @@ impl ProjectStore {
     /// 抛,不回滚内存);同一进程内立即重试 create 会先撞内存重叠校验(磁盘
     /// 还是旧内容)——已知语义,由下一次成功写盘自愈。
     pub fn create_project(&self, name: String, roots: Vec<PathBuf>) -> Result<Project> {
-        self.create_project_with_origin(name, roots, None)
-    }
-
-    /// `create_project` 的带来源版本:ensure 收编通道传 `Some("folder")`。
-    fn create_project_with_origin(
-        &self,
-        name: String,
-        roots: Vec<PathBuf>,
-        origin: Option<String>,
-    ) -> Result<Project> {
         let name = validate_name(name)?;
         let mut state = self.state.write();
-        let roots = validate_roots(&state.projects, None, &roots)?;
+        // 手工建项目:与文件夹自动项目重叠的 root 先让位(见
+        // strip_folder_project_roots),再过剩余校验(组内/与手工项目重叠)。
+        let incoming_keys = root_keys_of(&roots)?;
+        let mut candidate = state.projects.clone();
+        strip_folder_project_roots(&mut candidate, &state.assignments, None, &incoming_keys);
+        let roots = validate_roots(&candidate, None, &roots)?;
         let now = Utc::now();
-        let position = state
-            .projects
+        let position = candidate
             .iter()
             .map(|project| project.position)
             .max()
@@ -397,12 +458,11 @@ impl ProjectStore {
             position,
             created_at: now,
             updated_at: now,
-            origin,
+            origin: None,
         };
-        state.projects.push(project.clone());
-        state
-            .projects
-            .sort_by(|a, b| (a.position, &a.id).cmp(&(b.position, &b.id)));
+        candidate.push(project.clone());
+        candidate.sort_by(|a, b| (a.position, &a.id).cmp(&(b.position, &b.id)));
+        state.projects = candidate;
         persist_locked(&state, &self.path)?;
         Ok(project)
     }
@@ -415,17 +475,37 @@ impl ProjectStore {
     ) -> Result<Project> {
         let name = name.map(validate_name).transpose()?;
         let mut state = self.state.write();
-        let Some(index) = state
+        if !state
+            .projects
+            .iter()
+            .any(|project| project.id == project_id)
+        {
+            bail!("project not found: {project_id}");
+        }
+        let roots = match roots {
+            // 手工改 roots:重叠的文件夹自动项目 root 先让位(见
+            // strip_folder_project_roots),再过剩余校验;剥离可能移除项目,
+            // 目标索引以剥离后的列表为准。
+            Some(roots) => {
+                let incoming_keys = root_keys_of(&roots)?;
+                let mut candidate = state.projects.clone();
+                strip_folder_project_roots(
+                    &mut candidate,
+                    &state.assignments,
+                    Some(project_id),
+                    &incoming_keys,
+                );
+                let validated = validate_roots(&candidate, Some(project_id), &roots)?;
+                state.projects = candidate;
+                Some(validated)
+            }
+            None => None,
+        };
+        let index = state
             .projects
             .iter()
             .position(|project| project.id == project_id)
-        else {
-            bail!("project not found: {project_id}");
-        };
-        let roots = match roots {
-            Some(roots) => Some(validate_roots(&state.projects, Some(project_id), &roots)?),
-            None => None,
-        };
+            .expect("target retained through folder-root stripping");
         let project = &mut state.projects[index];
         if let Some(name) = name {
             project.name = name;
@@ -494,13 +574,13 @@ impl ProjectStore {
         let mut state = self.state.write();
         let mut added_root = None;
         if let Some(target_id) = project_id {
-            let Some(index) = state
+            if !state
                 .projects
                 .iter()
-                .position(|project| project.id == target_id)
-            else {
+                .any(|project| project.id == target_id)
+            {
                 bail!("project not found: {target_id}");
-            };
+            }
             if let Some(workspace) = add_workspace_root {
                 if !workspace.is_absolute() {
                     bail!(
@@ -508,11 +588,23 @@ impl ProjectStore {
                         workspace.display()
                     );
                 }
-                // 单元素集组内校验退化为此路径自身的绝对性;跨项目重叠在此
-                // 一并拦截(错误信息指向冲突项目)。
+                // 手工加文件夹:重叠的文件夹自动项目 root 先让位(见
+                // strip_folder_project_roots)——否则自动物化占住所有文件夹
+                // 后,任何跨项目"添加并移动"都必撞跨项目重叠校验。
                 let owned_root = workspace.to_path_buf();
+                let incoming_keys =
+                    root_keys_of(std::slice::from_ref(&owned_root))?;
+                let mut candidate = state.projects.clone();
+                strip_folder_project_roots(
+                    &mut candidate,
+                    &state.assignments,
+                    Some(target_id),
+                    &incoming_keys,
+                );
+                // 单元素集组内校验退化为此路径自身的绝对性;跨项目重叠在此
+                // 一并拦截(仅剩手工项目会拦,错误信息指向冲突项目)。
                 let mut displays = validate_roots(
-                    &state.projects,
+                    &candidate,
                     Some(target_id),
                     std::slice::from_ref(&owned_root),
                 )?;
@@ -520,6 +612,12 @@ impl ProjectStore {
                     bail!("add_workspace_root produced no canonical key");
                 };
                 let key = identity_key_of_display(&display);
+                state.projects = candidate;
+                let index = state
+                    .projects
+                    .iter()
+                    .position(|project| project.id == target_id)
+                    .expect("target retained through folder-root stripping");
                 let project = &mut state.projects[index];
                 // 组内方向双查:workspace 被现有 root 覆盖 → 幂等跳过;workspace
                 // 是现有 root 的祖先 → 收编被覆盖的后代(镜像自动归组的最长

@@ -606,3 +606,110 @@ fn origin_and_expelled_assignments_persist_across_reopen() {
         "移出条目跨进程存活:旧会话不随重建复活"
     );
 }
+
+// ── 手工 root 决策对文件夹项目的让位 ────────────────────────────────────────
+
+#[test]
+fn manual_add_root_takes_over_folder_project_root() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    // 文件夹自动项目占住 abs("web");用户把该文件夹的会话拖进手工项目并选
+    // "添加并移动" → 让位:root 转移,摘空的自动项目退场。
+    ensure(&store, &[abs("web")]);
+    let folder_project = store.list()[0].clone();
+    let target = create(&store, "目标", &[abs("other")]);
+
+    let outcome = store
+        .move_session_to_project("s1", Some(&target.id), Some(&abs("web")))
+        .expect("move with add root");
+    assert_eq!(outcome.added_root, Some(abs("web")));
+    assert_eq!(store.get(&target.id).expect("target").roots, vec![abs("other"), abs("web")]);
+    assert!(store.get(&folder_project.id).is_none(), "摘空的自动项目退场");
+    assert_eq!(store.assignment_of("s1"), Some(Some(target.id.clone())));
+}
+
+#[test]
+fn manual_add_root_keeps_folder_project_with_explicit_members() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    ensure(&store, &[abs("web")]);
+    let folder_project = store.list()[0].clone();
+    store
+        .move_session_to_project("s9", Some(&folder_project.id), None)
+        .expect("explicit member");
+    let target = create(&store, "目标", &[abs("other")]);
+
+    store
+        .move_session_to_project("s1", Some(&target.id), Some(&abs("web")))
+        .expect("move with add root");
+    let survivor = store.get(&folder_project.id).expect("有显式成员的自动项目保留");
+    assert!(survivor.roots.is_empty(), "root 已让渡,项目降级为标签项目");
+    assert_eq!(store.assignment_of("s9"), Some(Some(folder_project.id.clone())));
+}
+
+#[test]
+fn manual_add_root_still_rejected_against_manual_project() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let holder = create(&store, "占位", &[abs("web")]);
+    let target = create(&store, "目标", &[abs("other")]);
+
+    let error = store
+        .move_session_to_project("s1", Some(&target.id), Some(&abs("web")))
+        .expect_err("手工项目之间不得蚕食");
+    assert!(error.to_string().contains("overlaps project"));
+    assert_eq!(store.get(&holder.id).expect("holder").roots.len(), 1, "状态不变");
+    assert_eq!(store.assignment_of("s1"), None, "未归属");
+}
+
+#[test]
+fn manual_add_root_strips_ancestor_folder_root() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    // 自动项目占住父目录 abs("web");用户往手工项目加子目录 abs("web/sub"):
+    // 重叠任一方向都让位(不嵌套不变量),父 root 被摘除。
+    ensure(&store, &[abs("web")]);
+    let folder_project = store.list()[0].clone();
+    let target = create(&store, "目标", &[abs("other")]);
+
+    store
+        .move_session_to_project("s1", Some(&target.id), Some(&abs("web/sub")))
+        .expect("move with add sub root");
+    assert_eq!(
+        store.get(&target.id).expect("target").roots,
+        vec![abs("other"), abs("web/sub")]
+    );
+    assert!(store.get(&folder_project.id).is_none());
+}
+
+#[test]
+fn manual_create_and_update_take_over_folder_roots() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    // 手工建项目直接携带被自动项目占据的 root(目录视图"转为项目"路径)。
+    ensure(&store, &[abs("web")]);
+    let created = create(&store, "转正", &[abs("web")]);
+    assert_eq!(created.roots, vec![abs("web")]);
+    assert_eq!(store.list().len(), 1, "自动项目已让位退场");
+
+    // update 改 roots 同理:新 roots 撞上另一个自动项目时让位。
+    ensure(&store, &[abs("api")]);
+    let updated = store
+        .update_project(&created.id, None, Some(vec![abs("web"), abs("api")]))
+        .expect("update roots");
+    assert_eq!(updated.roots, vec![abs("web"), abs("api")]);
+    assert_eq!(store.list().len(), 1);
+}
+
+#[test]
+fn ensure_never_takes_over_existing_roots() {
+    // 自动决策之间不互相蚕食:自动项目占住子目录后,ensure 父目录仍按冲突
+    // 上报 Failed,不剥离既有 root。
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    ensure(&store, &[abs("nest/child")]);
+    let outcomes = ensure(&store, &[abs("nest")]);
+    assert!(matches!(&outcomes[0], super::EnsureFolderOutcome::Failed { reason }
+        if reason.contains("overlaps")));
+    assert_eq!(store.list()[0].roots.len(), 1, "既有 root 未被剥离");
+}
