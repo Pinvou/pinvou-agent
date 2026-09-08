@@ -70,6 +70,15 @@
 - 勘误时点（2026-08-22）现状：父仓 gitlink、`Pinvou/CodeWhale:pinvou3-clean` HEAD 与 `pinvou-v0.9.5-r8` 标签均指向 `d127aed113529dc93754d044b9f352e9746f6b83`；当前基线以上方第 0 节为准。
 - 另勘误 #302 的父仓侧改动范围：能力包统一模型（父仓 commit `c75f2fb2`）把开关存储收敛为单一 `disabled_bundles.json`（包 id × 模式禁用集 + `hidden_scopes`），取代原先分开的 `disabled_connectors.json` / `disabled_skills.json` 双文件（读到旧双文件即迁移不删）。
 
+### 项目指令 source 标签相对化（2026-09-08,本分支未推送）
+
+- `ProjectContext::as_system_block` 的 `<project_instructions source="…">` 由绝对路径改为仅文件名
+  （`AGENTS.md` 等）;`context_report` 同语义对齐。
+- 动机:该标签位于系统提示词 KV 缓存稳定区(块 2),同一文件仅目录搬移(大小写、父目录改名)
+  不应打穿提供商前缀缓存导致整段请求重算。新测试 `test_as_system_block_source_is_file_name_not_absolute_path`
+  锁定"同内容不同目录 → 块文本逐字节一致"。
+- 行为变化:模型不再能从标签读到项目绝对路径(本来也只是展示性标签;目录身份经 shell 运行时获知)。
+
 ### 本次会话修复（已验证并发布）
 
 - v0.9.5 的 `load_session` 会把无配对 `tool_use` 视为进程崩溃并立即补写失败结果；Pinvou 运行中持久化工具调用后再次读取同一会话时，这一假设并不成立。
