@@ -286,7 +286,11 @@ pub fn delete_user_persona(id: &str) -> Result<(), String> {
         return Err("只能删除自制卡".to_string());
     }
     let path = crate::platform::paths::user_personas_dir().join(format!("{id}.json"));
-    let _ = std::fs::remove_file(&path);
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("Failed to delete persona: {error}")),
+    }
     reload_user();
     Ok(())
 }
@@ -515,6 +519,18 @@ mod tests {
         // delete
         delete_user_persona(&sum.id).expect("delete");
         assert!(get(&sum.id).is_none(), "删后查不到");
+
+        // Missing files are idempotent; other filesystem failures must reach the UI.
+        delete_user_persona(&sum.id).expect("delete already missing card");
+        let blocked_path =
+            crate::platform::paths::user_personas_dir().join(format!("{}.json", sum.id));
+        std::fs::create_dir(&blocked_path).expect("create non-file deletion target");
+        let error = delete_user_persona(&sum.id).expect_err("directory is not a card file");
+        assert!(error.starts_with("Failed to delete persona:"));
+        assert!(
+            blocked_path.is_dir(),
+            "failed deletion must not remove the target"
+        );
 
         // cleanup
         match prev {

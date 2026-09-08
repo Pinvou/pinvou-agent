@@ -2377,7 +2377,7 @@
   const resolveConversationAttachment = artifactsFeature.resolveConversationAttachment;
   const openConversationAttachment = artifactsFeature.openConversationAttachment;
   const revealConversationAttachment = artifactsFeature.revealConversationAttachment;
-  const personasFeature = installBridgeFeature("personas", { state, notify, invoke, listen, bt, isDefaultChatTitle, addSystemItem, addChatItem, timeStr, ensureSession, runOnSession, personaPlaceholderTitles });
+  const personasFeature = installBridgeFeature("personas", { state, sessionStates, notify, invoke, listen, bt, isDefaultChatTitle, addSystemItem, addChatItem, timeStr, ensureSession, runOnSession, personaPlaceholderTitles });
   const loadPersonas = personasFeature.loadPersonas;
   const getPersonas = personasFeature.getPersonas;
   const createPersona = personasFeature.createPersona;

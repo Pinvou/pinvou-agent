@@ -153,7 +153,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
               </div>
               {/* 删除(编辑态) */}
               {isEdit ? (
-                <button type="button" onClick={()=>{ if(confirmDel){ bridge.personas.deletePersona(init.id).then(()=>{ if(onDeleted) { onDeleted(init); } onClose(); }); } else { setConfirmDel(true); } }}
+                <button type="button" onClick={()=>{ if(confirmDel){ bridge.personas.deletePersona(init.id).then(()=>{ if(onDeleted) { onDeleted(init); } onClose(); }).catch(() => { setErr(t.cpToastDelFailed); }); } else { setConfirmDel(true); } }}
                   className="w-full rounded-[10px] py-3 text-[17px] transition-colors bg-[#fff] dark:bg-[#000]" style={{ color:'#FF3B30' }}>
                   {confirmDel ? t.cpDelThisConfirm : t.cpDeleteThis}
                 </button>
