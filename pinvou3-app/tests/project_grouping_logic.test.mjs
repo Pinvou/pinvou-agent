@@ -246,20 +246,38 @@ test("uncoveredWorkspaceRoots dedupes and drops covered/temporary workspaces", (
       { id: "no-path", workspaceKind: "project", workspacePath: "" },
     ],
     projects,
+    {},
   );
-  assert.deepEqual(roots, ["D:/work/beta"], "被覆盖根与临时/无目录会话不产生 ensure 输入");
+  assert.deepEqual(roots, [{ root: "D:/work/beta", sessionIds: ["w1", "w2"] }]);
+});
+
+test("uncoveredWorkspaceRoots skips sessions with any assignment entry", () => {
+  // 删除项目把成员写成显式移出(null):被删文件夹不得因旧会话立刻重建,
+  // 只有无条目的新会话驱动 ensure;显式归属它处(Some)同样不再驱动。
+  const projects = [project("p1", "Elsewhere", ["D:/other"], 0)];
+  const roots = uncoveredWorkspaceRoots(
+    [
+      projectItem("moved-out", "D:/work/beta", "x"),
+      projectItem("filed", "D:/work/beta", "x"),
+      projectItem("fresh", "D:/work/beta", "x"),
+    ],
+    projects,
+    { "moved-out": null, filed: "p1" },
+  );
+  assert.deepEqual(roots, [{ root: "D:/work/beta", sessionIds: ["fresh"] }]);
 });
 
 test("uncoveredWorkspaceRoots: an ancestor project root covers descendant folders", () => {
   const projects = [project("p1", "Work", ["D:/work"], 0)];
   assert.deepEqual(
-    uncoveredWorkspaceRoots([projectItem("a1", "D:/work/alpha", "x")], projects),
+    uncoveredWorkspaceRoots([projectItem("a1", "D:/work/alpha", "x")], projects, {}),
     [],
     "D:/work 已覆盖其子目录,无需为子目录建项目",
   );
-  assert.deepEqual(uncoveredWorkspaceRoots([projectItem("a1", "D:/elsewhere", "x")], projects), [
-    "D:/elsewhere",
-  ]);
+  assert.deepEqual(
+    uncoveredWorkspaceRoots([projectItem("a1", "D:/elsewhere", "x")], projects, {}),
+    [{ root: "D:/elsewhere", sessionIds: ["a1"] }],
+  );
 });
 
 test("uncoveredWorkspaceRoots with no projects lists every distinct bound folder", () => {
@@ -270,8 +288,12 @@ test("uncoveredWorkspaceRoots with no projects lists every distinct bound folder
       temporaryItem("t1", "x"),
     ],
     [],
+    {},
   );
-  assert.deepEqual(roots, ["D:/one", "D:/two"]);
+  assert.deepEqual(roots, [
+    { root: "D:/one", sessionIds: ["a1"] },
+    { root: "D:/two", sessionIds: ["w1"] },
+  ]);
 });
 
 test("project view passes folder origin through for the badge", () => {

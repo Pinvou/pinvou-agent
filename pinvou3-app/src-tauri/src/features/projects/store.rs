@@ -29,8 +29,8 @@ pub struct Project {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// 来源标识:`Some("folder")` = 按文件夹自动物化的项目(Codex 客户端式
-    /// 收编);`None` = 用户手工创建。仅作 UI 徽标与删除墓碑依据,不参与
-    /// 分组判定;用户改名/加根后保留原值,不做名字回写同步。
+    /// 收编);`None` = 用户手工创建。仅作 UI 徽标与测试定位,不参与分组
+    /// 判定与删除语义;用户改名/加根后保留原值,不做名字回写同步。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
 }
@@ -48,17 +48,12 @@ struct ProjectsFile {
     pub projects: Vec<Project>,
     #[serde(default)]
     pub assignments: SessionAssignments,
-    /// 已删除文件夹项目(origin=folder)的 root 身份键墓碑:阻止 ensure 对
-    /// 同一文件夹自动重建——用户删了文件夹项目,重启后的回填不得复活它。
-    /// 手工 create_project 不查墓碑,改主意后可手动重建。键不引用项目 id,
-    /// 项目删除后仍长期保留(等价 Codex 幂等键表在项目删除后的残留语义)。
-    #[serde(default)]
-    pub retired_folder_roots: Vec<String>,
 }
 
 const SCHEMA_VERSION: u32 = 1;
 
-/// 删除项目的结果汇报:受影响会话只被解绑(回落隐式分组),永不删除。
+/// 删除项目的结果汇报:受影响会话 = 全体成员(显式归属 + 自动归组),一律写
+/// 成显式移出留在未分组;会话本体永不删除。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeleteProjectReport {
     pub affected_session_ids: Vec<String>,
@@ -72,8 +67,8 @@ pub struct MoveSessionOutcome {
     pub added_root: Option<PathBuf>,
 }
 
-/// `ensure_folder_roots` 的单根结果:前端/调用方据此区分新建、复用、墓碑
-/// 跳过与冲突,冲突不阻断其余根。
+/// `ensure_folder_roots` 的单根结果:前端/调用方据此区分新建、复用与冲突,
+/// 冲突不阻断其余根。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum EnsureFolderOutcome {
@@ -81,8 +76,6 @@ pub enum EnsureFolderOutcome {
     Created { project: Project },
     /// 已有项目 root 覆盖该文件夹(等于或祖先),复用不动。
     Covered { project_id: String },
-    /// 该文件夹的自动项目曾被删除,墓碑阻止重建(手工 create 不受限)。
-    Retired,
     /// 无法创建(非绝对路径、与既有 root 嵌套等);`reason` 可直接进日志。
     Failed { reason: String },
 }
@@ -92,7 +85,6 @@ struct StoreState {
     /// 恒按 (position, id) 有序,`list` 直接返回快照。
     projects: Vec<Project>,
     assignments: SessionAssignments,
-    retired_folder_roots: Vec<String>,
     /// 读到高于本进程 schema_version 的文件时置位:后续写入全部拒绝,
     /// 防止降级进程把新结构覆盖写坏。
     refuse_writes: bool,
@@ -261,10 +253,7 @@ fn persist_locked(state: &StoreState, path: &Path) -> Result<()> {
             path.display()
         );
     }
-    if state.projects.is_empty()
-        && state.assignments.is_empty()
-        && state.retired_folder_roots.is_empty()
-    {
+    if state.projects.is_empty() && state.assignments.is_empty() {
         return match std::fs::remove_file(path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
@@ -275,7 +264,6 @@ fn persist_locked(state: &StoreState, path: &Path) -> Result<()> {
         schema_version: SCHEMA_VERSION,
         projects: state.projects.clone(),
         assignments: state.assignments.clone(),
-        retired_folder_roots: state.retired_folder_roots.clone(),
     };
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)
@@ -314,7 +302,6 @@ fn load_state(path: &Path) -> Result<StoreState> {
     Ok(StoreState {
         projects,
         assignments: file.assignments,
-        retired_folder_roots: file.retired_folder_roots,
         refuse_writes: false,
     })
 }
@@ -452,39 +439,38 @@ impl ProjectStore {
         Ok(updated)
     }
 
-    pub fn delete_project(&self, project_id: &str) -> Result<DeleteProjectReport> {
+    /// 删除项目:成员会话(显式 Some(pid) + 命令层枚举的自动归组成员
+    /// `expel_session_ids`)一律写成显式移出(None)——它们留在未分组,且不随
+    /// 该文件夹的下一次自动物化复活;之后在该文件夹新建的会话没有归属条目,
+    /// 照常自动归组。已有归属条目的 id(None=已移出/Some(其它)=显式归属它处)
+    /// 不改写,tier-① 语义优先。会话永不删除。
+    pub fn delete_project(
+        &self,
+        project_id: &str,
+        expel_session_ids: &[String],
+    ) -> Result<DeleteProjectReport> {
         let mut state = self.state.write();
-        let Some(index) = state
-            .projects
-            .iter()
-            .position(|project| project.id == project_id)
-        else {
+        if !state.projects.iter().any(|project| project.id == project_id) {
             bail!("project not found: {project_id}");
-        };
-        let removed = state.projects.remove(index);
-        // 文件夹自动物化的项目被删除 → 其 root 进墓碑,ensure 不再对该文件夹
-        // 自动重建(等价 Codex 幂等键残留语义);手工项目删除不墓碑——它从未
-        // 走过自动物化,该文件夹若仍有会话,下次回填建文件夹项目是符合预期的
-        // "文件夹有会话就有项目"。
-        if removed.origin.as_deref() == Some("folder") {
-            for root in &removed.roots {
-                let key = identity_key_of_display(root);
-                if !state.retired_folder_roots.contains(&key) {
-                    state.retired_folder_roots.push(key);
-                }
-            }
         }
-        // 只清 Some(pid) 条目;显式移出条目(None)的语义是"不进任何项目",
-        // 与项目存亡无关,保留。被清掉的会话回落自动/隐式分组。
-        let affected: Vec<String> = state
+        state.projects.retain(|project| project.id != project_id);
+        let mut affected: Vec<String> = state
             .assignments
             .iter()
-            .filter_map(|(session_id, assigned)| {
-                (assigned.as_deref() == Some(project_id)).then(|| session_id.clone())
-            })
+            .filter(|(_, assigned)| assigned.as_deref() == Some(project_id))
+            .map(|(session_id, _)| session_id.clone())
             .collect();
+        for session_id in expel_session_ids {
+            if !state.assignments.contains_key(session_id)
+                && !affected.contains(session_id)
+            {
+                affected.push(session_id.clone());
+            }
+        }
         for session_id in &affected {
-            state.assignments.remove(session_id);
+            state
+                .assignments
+                .insert(session_id.clone(), None);
         }
         persist_locked(&state, &self.path)?;
         Ok(DeleteProjectReport {
@@ -592,10 +578,10 @@ impl ProjectStore {
 
     /// 文件夹项目自动物化(Codex 客户端式收编,幂等):对每个输入文件夹,
     /// 已有项目 root 覆盖(等于或祖先)则复用,否则建 `origin=folder`、
-    /// 名为目录 basename 的项目。墓碑(曾删除的文件夹项目 root)跳过;
-    /// 与既有项目 root 嵌套等冲突逐根 Failed 上报,不阻断其余根。
-    /// 输入按键去重;整批共享一次落盘。分组规则不变——新项目的 roots 让
-    /// 既有 tier-② 根匹配自然收编该文件夹的会话,显式移出条目仍压制。
+    /// 名为目录 basename 的项目。与既有项目 root 嵌套等冲突逐根 Failed 上报,
+    /// 不阻断其余根。输入按键去重;整批共享一次落盘。分组规则不变——新项目
+    /// 的 roots 让既有 tier-② 根匹配自然收编该文件夹的会话,显式移出条目
+    /// (删除项目时写入)仍压制,故删除后重建的项目只收新会话。
     pub fn ensure_folder_roots(&self, roots: &[PathBuf]) -> Result<Vec<EnsureFolderOutcome>> {
         let mut state = self.state.write();
         let mut outcomes = Vec::with_capacity(roots.len());
@@ -614,9 +600,6 @@ impl ProjectStore {
                 continue;
             }
             seen_keys.push(key.clone());
-            // 覆盖优先于墓碑:已有活项目罩住该文件夹时无事可做(墓碑只拦
-            // "重建",用户手工在同根上重建后,ensure 对该根的答复是 Covered
-            // 而非 Retired)。
             let covered = state.projects.iter().find(|project| {
                 project
                     .roots
@@ -627,10 +610,6 @@ impl ProjectStore {
                 outcomes.push(EnsureFolderOutcome::Covered {
                     project_id: project.id.clone(),
                 });
-                continue;
-            }
-            if state.retired_folder_roots.contains(&key) {
-                outcomes.push(EnsureFolderOutcome::Retired);
                 continue;
             }
             let name = display

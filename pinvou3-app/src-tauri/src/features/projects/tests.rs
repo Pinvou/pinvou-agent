@@ -169,7 +169,7 @@ fn update_renames_and_replaces_roots() {
 }
 
 #[test]
-fn delete_unassigns_sessions_but_keeps_explicit_move_out() {
+fn delete_expels_all_members_to_ungrouped() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
     let project = create(&store, "待删", &[abs("x")]);
@@ -192,24 +192,31 @@ fn delete_unassigns_sessions_but_keeps_explicit_move_out() {
         .move_session_to_project("s4", Some(&other.id), None)
         .expect("assign s4");
 
-    let report = store.delete_project(&project.id).expect("delete project");
+    // 删除时命令层枚举的自动归组成员(s5:无归属条目)一并传入。
+    let report = store
+        .delete_project(&project.id, &["s5".to_string()])
+        .expect("delete project");
     let mut affected = report.affected_session_ids;
     affected.sort();
-    assert_eq!(affected, vec!["s1", "s2"]);
+    assert_eq!(affected, vec!["s1", "s2", "s5"]);
 
-    assert_eq!(store.assignment_of("s1"), None);
-    assert_eq!(store.assignment_of("s2"), None);
-    // s3 的显式移出条目保留,不被删除项目连带清理。
+    // 显式成员与自动成员一律写成显式移出:留在未分组,不随该文件夹下一次
+    // 自动物化复活。
+    assert_eq!(store.assignment_of("s1"), Some(None));
+    assert_eq!(store.assignment_of("s2"), Some(None));
+    assert_eq!(store.assignment_of("s5"), Some(None));
+    // 既有条目不改写:s3 的移出条目保留,s4 的显式归属幸存。
     assert_eq!(store.assignment_of("s3"), Some(None));
     assert_eq!(store.assignment_of("s4"), Some(Some(other.id.clone())));
     assert!(store.get(&project.id).is_none());
 
-    // 全部项目删除 + 归属清空后,空状态不留文件。
-    store
-        .move_session_to_project("s3", None, None)
-        .expect("re-move s3");
-    store.delete_project(&other.id).expect("delete other");
-    store.forget_session("s3");
+    // 幸存项目删除(无成员)后归属表仍有移出条目,文件保留;条目全部退场
+    // (会话删除钩子)后才回落空状态删文件。
+    store.delete_project(&other.id, &[]).expect("delete other");
+    assert!(temp.path().join("projects.json").exists());
+    for session_id in ["s1", "s2", "s3", "s4", "s5"] {
+        store.forget_session(session_id);
+    }
     assert!(!temp.path().join("projects.json").exists());
 }
 
@@ -552,76 +559,50 @@ fn ensure_conflicts_report_per_root_without_blocking_the_batch() {
 }
 
 #[test]
-fn deleting_folder_project_tombstones_the_folder_root() {
+fn ensure_recreates_folder_project_after_delete_for_new_sessions() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
 
-    // 文件夹项目删除 → 墓碑 → ensure 不复活。
+    // 首次物化 → 删除(成员写成显式移出)。
     ensure(&store, &[abs("web")]);
     let created = store.list()[0].clone();
-    store.delete_project(&created.id).expect("delete");
-    let after_delete = ensure(&store, &[abs("web")]);
-    assert!(matches!(after_delete[0], super::EnsureFolderOutcome::Retired));
-    assert!(store.list().is_empty());
+    store
+        .delete_project(&created.id, &["s-old".to_string()])
+        .expect("delete");
+    assert_eq!(store.assignment_of("s-old"), Some(None), "成员留未分组");
 
-    // 墓碑只拦自动物化:手工 create 同根仍可用(用户改主意的出路)。
-    let manual = create(&store, "手工重建", &[abs("web")]);
-    assert_eq!(manual.origin, None);
-    let covered = ensure(&store, &[abs("web")]);
-    assert!(matches!(&covered[0], super::EnsureFolderOutcome::Covered { project_id }
-        if *project_id == manual.id));
-
-    // 手工项目再删除后墓碑仍然生效:该文件夹的自动项目被用户拒绝过,
-    // 两次删除的累积意志是"不要自动项目",复活它才是意外行为;想要项目
-    // 的出路始终是手工 create。
-    store.delete_project(&manual.id).expect("delete manual");
+    // 无墓碑:同一文件夹再次 ensure 即重建(前端由"新会话"驱动触发;旧会话
+    // 的移出条目压住 tier-②,重建项目只收新会话)。
     let recreate = ensure(&store, &[abs("web")]);
-    assert!(matches!(recreate[0], super::EnsureFolderOutcome::Retired));
-
-    // 从未走过自动物化的文件夹:手工项目删除不墓碑,回填按"文件夹有会话
-    // 就有项目"建同名文件夹项目。
-    create(&store, "纯手工", &[abs("fresh")]);
-    let fresh = store.list()[0].clone();
-    store.delete_project(&fresh.id).expect("delete fresh");
-    let outcomes = ensure(&store, &[abs("fresh")]);
-    assert!(matches!(&outcomes[0], super::EnsureFolderOutcome::Created { project }
-        if project.name == "fresh" && project.origin.as_deref() == Some("folder")));
+    assert!(matches!(&recreate[0], super::EnsureFolderOutcome::Created { project }
+        if project.name == "web" && project.origin.as_deref() == Some("folder")));
+    // 移出条目跨删除保留:旧会话不因重建复活。
+    assert_eq!(store.assignment_of("s-old"), Some(None));
 }
 
 #[test]
-fn retired_roots_and_origin_persist_across_reopen() {
+fn origin_and_expelled_assignments_persist_across_reopen() {
     let temp = tempfile::tempdir().expect("tempdir");
     {
         let store = store_in(&temp);
-        ensure(&store, &[abs("web")]);
-        let created = store.list()[0].clone();
-        store.delete_project(&created.id).expect("delete");
-        ensure(&store, &[abs("api")]);
+        ensure(&store, &[abs("web"), abs("api")]);
+        let web = store
+            .list()
+            .iter()
+            .find(|project| project.name == "web")
+            .cloned()
+            .expect("web project");
+        store
+            .delete_project(&web.id, &["s-old".to_string()])
+            .expect("delete");
     }
     let reopened = store_in(&temp);
     let projects = reopened.list();
     assert_eq!(projects.len(), 1);
     assert_eq!(projects[0].origin.as_deref(), Some("folder"));
-    let outcomes = ensure(&reopened, &[abs("web"), abs("api")]);
-    assert!(matches!(outcomes[0], super::EnsureFolderOutcome::Retired), "墓碑跨进程存活");
-    assert!(matches!(outcomes[1], super::EnsureFolderOutcome::Covered { .. }));
-}
-
-#[test]
-fn ensure_folder_roots_survives_when_store_is_empty_except_tombstones() {
-    // 只剩墓碑时也不回落到"空状态删文件":否则墓碑丢失,重启后已删除的
-    // 文件夹项目会被回填复活(persist_locked 的空文件条件必须计入墓碑)。
-    let temp = tempfile::tempdir().expect("tempdir");
-    {
-        let store = store_in(&temp);
-        ensure(&store, &[abs("web")]);
-        let created = store.list()[0].clone();
-        store.delete_project(&created.id).expect("delete");
-    }
-    let reopened = store_in(&temp);
-    assert!(temp.path().join("projects.json").exists(), "墓碑仍在盘上");
-    assert!(matches!(
-        ensure(&reopened, &[abs("web")])[0],
-        super::EnsureFolderOutcome::Retired
-    ));
+    assert_eq!(
+        reopened.assignment_of("s-old"),
+        Some(None),
+        "移出条目跨进程存活:旧会话不随重建复活"
+    );
 }

@@ -1629,34 +1629,43 @@ function workspaceDisplayName(path) {
       // ── 文件夹项目自动物化(Codex 客户端式收编)───────────────────────
       // 会话列表出现未被任何项目 root 覆盖的工作区文件夹时,后端 ensure 同名
       // 项目(origin=folder)。与展示视图无关(全部/目录/项目都会触发),保证
-      // 用户切到项目视图时文件夹已就位。ensure 幂等:后端按覆盖复用、按墓碑
-      // (用户删过的文件夹项目)跳过;这里再用 ref 记住本进程已 ensure 过的根,
-      // 墓碑/冲突根不会在每次桥刷新时重复请求。分组规则不变——文件夹项目的
-      // roots 让 tier-2 自动归组自然收编,显式移出条目仍压制。
+      // 用户切到项目视图时文件夹已就位。ensure 幂等(后端按覆盖复用);驱动源
+      // 是"没有任何归属条目的会话"——删除项目时成员写成显式移出,所以被删
+      // 文件夹不会立刻重建,只有该文件夹再出现新会话时才重新 ensure。ref 按
+      // root 记住已 ensure 过的会话 id:同一批会话的重算不重复请求,新会话
+      // id 自然重触发。
       const projectsListData = bs && bs.projectsList;
       const boundWorkspaceItems = useMemo(() => {
         if (!bs) return [];
         const regular = (bs.sessions || [])
           .filter(s => s.workspace_binding)
-          .map(s => ({ workspaceKind: 'bound', workspacePath: String(s.workspace_binding) }));
+          .map(s => ({ id: s.id, workspaceKind: 'bound', workspacePath: String(s.workspace_binding) }));
         const codex = (codexSessions || [])
           .filter(s => s.workspace_kind === 'project' && s.workspace_path)
-          .map(s => ({ workspaceKind: 'project', workspacePath: String(s.workspace_path) }));
+          .map(s => ({ id: s.id, workspaceKind: 'project', workspacePath: String(s.workspace_path) }));
         return [...regular, ...codex];
       }, [bs, codexSessions]);
       const pendingFolderRoots = useMemo(() => uncoveredWorkspaceRoots(
         boundWorkspaceItems,
         (projectsListData && projectsListData.projects) || [],
+        (projectsListData && projectsListData.assignments) || {},
       ), [boundWorkspaceItems, projectsListData]);
-      const ensuredFolderRootsRef = useRef(new Set());
+      const ensuredFolderRootsRef = useRef(new Map());
       useEffect(() => {
         const ensureFn = bridge.projects && bridge.projects.ensureFolderProjects;
         if (!ensureFn || !pendingFolderRoots.length) return;
-        const fresh = pendingFolderRoots.filter(root => !ensuredFolderRootsRef.current.has(root));
+        const fresh = [];
+        pendingFolderRoots.forEach(({ root, sessionIds }) => {
+          const seen = ensuredFolderRootsRef.current.get(root) || new Set();
+          const newcomers = sessionIds.filter(id => !seen.has(id));
+          if (!newcomers.length) return;
+          newcomers.forEach((id) => { seen.add(id); });
+          ensuredFolderRootsRef.current.set(root, seen);
+          fresh.push(root);
+        });
         if (!fresh.length) return;
-        fresh.forEach((root) => { ensuredFolderRootsRef.current.add(root); });
-        // 失败(如与既有项目 root 嵌套)不撤销 ref 登记:冲突是稳定状态,重试
-        // 只会重复同一结果;根集合或项目集合变化时自然重算补试。
+        // 失败(如与既有项目 root 嵌套)不撤销登记:冲突是稳定状态,重试只会
+        // 重复同一结果;根集合或项目集合变化时自然重算补试。
         ensureFn(fresh).catch(() => {});
       }, [pendingFolderRoots]);
 

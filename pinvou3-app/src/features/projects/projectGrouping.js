@@ -93,24 +93,31 @@ function needsAddFolderConfirm(session, target) {
   return !!workspacePath && !projectCoversPath(target, workspacePath);
 }
 
-// Distinct workspace folders backing the given sessions that no project root
-// covers yet — the auto-materialization input for the Codex-style
-// folder→same-name-project ensure. Coverage mirrors the display-side grouping
-// guard (matchProjectByPath: equal-or-ancestor project root wins); the backend
-// re-checks under its own canonical keys, so a disagreement can only cause a
-// harmless Covered outcome, never a duplicate project.
-function uncoveredWorkspaceRoots(items, projects) {
+// Distinct workspace folders driving auto-materialization: folders backing
+// sessions that no project root covers yet AND that carry no assignment entry.
+// Sessions with an entry are excluded both ways — null = explicit move-out
+// (deleting a project writes null for its members, so a folder whose project
+// was deleted only re-materializes when a NEW entry-less session appears),
+// and an explicit Some(projectId) already filed the session elsewhere.
+// Coverage mirrors the display-side grouping guard (matchProjectByPath:
+// equal-or-ancestor project root wins); the backend re-checks under its own
+// canonical keys, so a disagreement can only cause a harmless Covered
+// outcome, never a duplicate project. Each entry reports the driving session
+// ids so the caller can re-trigger per new session instead of per refresh.
+function uncoveredWorkspaceRoots(items, projects, assignments) {
   const projectList = Array.isArray(projects) ? projects.filter(Boolean) : [];
-  const seen = new Set();
-  const roots = [];
+  const assignmentMap = assignments && typeof assignments === 'object' ? assignments : {};
+  const byRoot = new Map();
   (Array.isArray(items) ? items : []).forEach((item) => {
     if (!item || !hasProjectWorkspace(item)) return;
     const root = String(item.workspacePath || '');
-    if (!root || seen.has(root)) return;
-    seen.add(root);
-    if (!matchProjectByPath(projectList, root)) roots.push(root);
+    if (!root || Object.prototype.hasOwnProperty.call(assignmentMap, item.id)) return;
+    if (!byRoot.has(root)) byRoot.set(root, []);
+    byRoot.get(root).push(String(item.id));
   });
-  return roots;
+  return [...byRoot.entries()]
+    .filter(([root]) => !matchProjectByPath(projectList, root))
+    .map(([root, sessionIds]) => ({ root, sessionIds }));
 }
 
 // ── Folder view (physical layer) ───────────────────────────────────────────

@@ -131,16 +131,35 @@ pub async fn update_project(
     Ok(ProjectListItem::from_project(&project, count))
 }
 
-/// 删除项目:会话只被解绑(回落自动/隐式分组),永不删除;返回受影响会话
-/// id 供前端提示。
+/// 删除项目:全体成员(显式归属 + 自动归组)写成显式移出,留在未分组且不随
+/// 该文件夹的下一次自动物化复活;之后在该文件夹新建的会话照常自动归组。
+/// 会话本体永不删除;返回受影响会话 id 供前端提示。
 #[tauri::command]
 pub async fn delete_project(
     project_id: String,
     app: AppHandle,
     store: State<'_, ProjectStore>,
+    sessions: State<'_, SessionStore>,
+    acp_pool: State<'_, AcpPool>,
 ) -> Result<DeleteProjectReport, String> {
+    // 自动归组成员枚举:两类绑定存储里落在该项目任一 root 之下的会话。
+    // 已有归属条目的 id 由 store 侧按 tier-① 语义跳过(显式归属它处/已移出
+    // 都不是本项目成员)。
+    let roots = store
+        .get(&project_id)
+        .map(|project| project.roots.clone())
+        .unwrap_or_default();
+    let mut expel_session_ids = Vec::new();
+    for root in &roots {
+        for (session_id, _) in acp_pool.agents().sessions_under_workspace(root) {
+            expel_session_ids.push(session_id);
+        }
+        for (session_id, _) in sessions.workspace_bindings_under(root) {
+            expel_session_ids.push(session_id);
+        }
+    }
     let report = store
-        .delete_project(&project_id)
+        .delete_project(&project_id, &expel_session_ids)
         .map_err(|e| format!("delete_project({project_id}): {e:#}"))?;
     emit_project_event(&app, "projects:list_changed", "deleted");
     Ok(report)
