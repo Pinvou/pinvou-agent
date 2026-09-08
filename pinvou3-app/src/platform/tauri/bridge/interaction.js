@@ -79,7 +79,8 @@
   async function syncModeState() {
     const sid = state.activeSessionId;
     if (!sid) {
-      // 草稿态：显示当前 lane 的全局默认（三分 lane 语义），不再恒 yolo。
+      // Draft state: show the current lane's global default (two-lane
+      // semantics), no longer a constant yolo.
       state.modeState = currentDraftModeState();
       return;
     }
@@ -109,10 +110,12 @@
     }
   }
 
-  // ── lane 全局默认（工作/设计/代码三分，复审拍板）─────────────────
-  // 草稿态 mode = 本 lane 全局默认；草稿切换只写全局默认（不物化会话），
-  // 已生成会话的切换只写会话自己的记录（set_plan_mode_next 等 per-session
-  // 命令，后端不再渗全局）。
+  // ── lane global defaults (work/code split; the design lane was merged into work) ───────
+  // Draft mode = this lane's global default; a draft switch writes only the
+  // global default (no session materialization), and a switch inside an
+  // already-materialized session writes only that session's own record
+  // (set_plan_mode_next and other per-session commands no longer leak into
+  // globals in the backend).
   async function refreshModeDefaults() {
     try {
       const defaults = await invoke("get_mode_defaults");
@@ -125,7 +128,7 @@
   }
   // ChatView 随 pinvouMode 传入当前 lane；草稿态立即按新 lane 默认刷新显示。
   function setModeLane(lane) {
-    const next = lane === "design" ? "design" : "work";
+    const next = lane === "code" ? "code" : "work";
     if (state.modeLane === next) return;
     state.modeLane = next;
     if (!state.activeSessionId) {
@@ -140,7 +143,7 @@
   // 逐会话应用（后端对绑定会话只解析 code lane 默认，不读 work/design）。
   async function setDraftMode(target) {
     const boundDraft = !!state.draftWorkspacePath;
-    const lane = boundDraft ? "code" : (state.modeLane === "design" ? "design" : "work");
+    const lane = boundDraft ? "code" : "work";
     try {
       const defaults = await invoke("set_mode_default", { lane, mode: target });
       if (defaults) state.modeDefaults = defaults;
@@ -332,7 +335,8 @@
   }
   async function exitPlanToYolo() {
     const sid = state.activeSessionId;
-    // 草稿态：不物化会话，改写本 lane 全局默认（三分 lane 语义）。
+    // Draft state: do not materialize a session; rewrite this lane's global
+    // default (two-lane semantics).
     if (!sid) { await setDraftMode("yolo"); return; }
     try {
       // invoke 形状保持 { sessionId: state.activeSessionId }（协议指纹按文本
@@ -344,8 +348,9 @@
   }
   // 灯泡 toggle：plan ↔ yolo
   async function setPlanModeNext() {
-    // 草稿态：不物化会话，改写本 lane 全局默认（三分 lane 语义；旧实现会先
-    // ensureSession 物化——草稿页点 Plan 凭空造出空会话）。
+    // Draft state: do not materialize a session; rewrite this lane's global
+    // default (two-lane semantics; the old implementation called ensureSession
+    // first — clicking Plan on the draft page conjured an empty session).
     const sid = state.activeSessionId;
     if (!sid) { await setDraftMode("plan"); return; }
     try {

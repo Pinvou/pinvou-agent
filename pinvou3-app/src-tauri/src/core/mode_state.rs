@@ -28,14 +28,18 @@ impl SerializableMode {
     }
 }
 
-/// 三个工作区 lane（工作 work / 设计 design / 代码 code）的全局默认 mode 标识。
-/// 草稿态显式切换只写本 lane 的全局默认（`set_mode_default`）；已生成会话的
-/// 切换只写会话自己的 per-session 记录，不渗全局（复审拍板的三分 lane 语义）。
+/// Identifies the workspace lane (work / code) a global default mode belongs to.
+/// The design lane has been merged into the work lane; a legacy
+/// `mode_defaults.design` value in settings.json is folded into the work
+/// mirror at startup load (see `features/sessions/store.rs`).
+/// An explicit switch in the draft state writes only this lane's global
+/// default (`set_mode_default`); a switch in an already-materialized session
+/// writes only that session's per-session record and never leaks into
+/// globals (the two-lane semantics settled in review).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModeLane {
     Work,
-    Design,
     Code,
 }
 
@@ -44,20 +48,17 @@ impl ModeLane {
     pub fn parse(raw: &str) -> Result<Self, String> {
         match raw {
             "work" => Ok(Self::Work),
-            "design" => Ok(Self::Design),
             "code" => Ok(Self::Code),
-            other => Err(format!(
-                "unknown mode lane: {other:?}（期望 work/design/code）"
-            )),
+            other => Err(format!("unknown mode lane: {other:?} (expected work/code)")),
         }
     }
 }
 
-/// `get_mode_defaults` 的返回视图：三个 lane 的全局默认 mode（None = 该 lane
-/// 从未显式选过；前端缺省解析 code→plan、work/design→yolo）。
+/// Return view of `get_mode_defaults`: the global default mode per lane
+/// (None = the lane was never explicitly chosen; the frontend resolves
+/// defaults as code→plan, work→yolo).
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct ModeDefaultsView {
     pub work: Option<SerializableMode>,
-    pub design: Option<SerializableMode>,
     pub code: Option<SerializableMode>,
 }
