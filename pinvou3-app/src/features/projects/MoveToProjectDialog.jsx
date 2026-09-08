@@ -135,7 +135,12 @@ const MoveToProjectDialog = ({
       >
         <div className="px-4 pt-4 pb-2 flex items-center justify-between gap-2">
           <div className="min-w-0">
-            <div className="text-[15px] font-semibold truncate">{t.uiProjects.moveToProject}</div>
+            {/* 确认模式(拖拽落点已定)标题点名目标;选择模式保留省略号。 */}
+            <div className="text-[15px] font-semibold truncate">
+              {pendingAddFolder
+                ? t.uiProjects.moveToProjectNamed(pendingAddFolder.name)
+                : t.uiProjects.moveToProject}
+            </div>
             <div className="text-[12px] text-[#8A8F94] dark:text-[#9AA0A6] truncate" title={session.title}>{session.title}</div>
           </div>
           <button
