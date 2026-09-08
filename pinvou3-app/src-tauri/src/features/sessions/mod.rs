@@ -141,9 +141,6 @@ pub struct SessionStore {
     /// 这里:命中即 execution=绑定目录、ledger=会话私有目录(与原生代码会话
     /// 绑定同款双根语义)。
     pub(crate) session_workspaces: Arc<RwLock<HashMap<String, PathBuf>>>,
-    /// 本进程是否成功解析过旧全局表:解析失败的降级路径下,内存表为空而
-    /// 旧表条目未迁移,此时禁止以空表覆盖删除旧表(数据销毁守卫,#445 P2)。
-    pub(crate) legacy_session_workspaces_loaded: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// 品悟原生 code 会话判定（ACP 会话恒为 plain，见 codex_acp store）。
     /// 与 Engine bridge / 远程端共用同一份 `SessionAgentStore` 闭包，由 app 组合根
     /// (lib.rs) 注入；None = 无 code 会话判定（测试/启动早期），全部按 plain 语义。
@@ -229,10 +226,16 @@ pub type SessionDeletedHook = Arc<dyn Fn(&str) + Send + Sync>;
 ///
 /// 由 [`SessionStore::session_roots`] 统一解析,调用方按用途显式选择用哪个根,
 /// 避免把执行根误当账本根写盘(或反之)。
+///
+/// `bound` 是显式的"已绑定真实目录"信号(原生代码会话的项目目录,或普通
+/// chat 会话的用户工作目录绑定):调用方以此判定绑定态,不得用
+/// `ledger != execution` 的路径比较代打——未来出现其他双根形态时,路径
+/// 相等与否不再等价于绑定(评审 #445 P2)。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRoots {
     pub execution: PathBuf,
     pub ledger: PathBuf,
+    pub bound: bool,
 }
 
 /// 两个根的纯解析:给定会话绑定的执行目录(原生代码会话的项目目录,或普通
@@ -245,10 +248,12 @@ pub fn session_roots_for(session_id: &str, bound_project_root: Option<PathBuf>) 
         Some(project) => SessionRoots {
             execution: project,
             ledger: private,
+            bound: true,
         },
         None => SessionRoots {
             execution: private.clone(),
             ledger: private,
+            bound: false,
         },
     }
 }

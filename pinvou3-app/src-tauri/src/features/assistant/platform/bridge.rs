@@ -661,7 +661,7 @@ impl Pinvou3Bridge {
         execution_workspace: &std::path::Path,
     ) -> std::path::PathBuf {
         let roots = self.session_roots(session_id);
-        if roots.ledger != roots.execution {
+        if roots.bound {
             roots.ledger
         } else {
             execution_workspace.to_path_buf()
@@ -2437,10 +2437,10 @@ impl Pinvou3Bridge {
     fn ensure_session_skills_for_send(&self, session_id: &str) {
         // 发送路径自愈（skill 双 scope 治理 §2.3.3）：组合目录缺失时按当前模式
         // scope 重建（微秒级 stat），防手动删除后静默丢失；不做每轮全量比对（V-7/V-10）。
-        // 项目技能来源根只在会话绑定了真实目录时传入（双根分叉即绑定信号）；
+        // 项目技能来源根只在会话绑定了真实目录时传入（显式 SessionRoots::bound 信号）；
         // 未绑定会话传 None——项目技能扫描由「绑定 + 全局开关」双门控，与模式无关。
         let roots = self.session_roots(session_id);
-        let bound_workspace = (roots.ledger != roots.execution).then_some(roots.execution);
+        let bound_workspace = roots.bound.then_some(roots.execution);
         crate::features::assistant::skill_materialization::ensure_session_skills(
             session_id,
             self.session_policy(session_id).mode(),
@@ -7387,6 +7387,7 @@ mod tests {
         let roots = SessionRoots {
             execution: code_workspace.clone(),
             ledger: code_state_root.clone(),
+            bound: true,
         };
         let ordinary_code =
             bridge.build_engine_config_for_session_roots("code-session", roots.clone());
@@ -7457,6 +7458,7 @@ mod tests {
         let roots = SessionRoots {
             execution: automation.clone(),
             ledger: automation.clone(),
+            bound: false,
         };
 
         let ordinary = bridge.build_engine_config_for_session_roots("sched-run", roots.clone());
@@ -7494,6 +7496,7 @@ mod tests {
         let roots = SessionRoots {
             execution: workspace.clone(),
             ledger: workspace.clone(),
+            bound: false,
         };
         let snapshot = ExpertRosterSnapshot::capture();
         let cfg = bridge.build_engine_config_for_multi_agent("ma-test", roots.clone(), &snapshot);

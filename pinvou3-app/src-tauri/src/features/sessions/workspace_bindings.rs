@@ -13,10 +13,14 @@
 //! `code-session.json` 同一机制——绑定随会话目录存续，删目录即随之消失，
 //! 不再有全局表的 boot 期 ghost 清理。内存 `session_workspaces` 退化为读
 //! 缓存：bind 时写入、读 miss 时从 sidecar 回填（跨进程新绑定同样可见）、
-//! 删除/保留策略清理时清除。存量全局表 `_session_workspaces.json` 由 boot
-//! 期 [`SessionStore::migrate_legacy_session_workspaces`] 收敛：活会话条目
-//! 逐条写成 sidecar 后删除旧文件；写失败的条目留在旧路径继续由旧机制管理
-//! （下次 boot 重试），不阻断启动。
+//! 删除/保留策略清理时清除。
+//!
+//! 存量全局表 `_session_workspaces.json` 是本 PR 开发期的中间格式，从未随
+//! `main` 发布（评审 #445 P2）；boot 期
+//! [`SessionStore::migrate_legacy_session_workspaces`] 只为收敛中间版本
+//! dev build 的 home：活会话条目逐条写成 sidecar 后删除旧文件；写失败的
+//! 条目留在旧文件原样不动（本次运行内由内存表接管解析），下次 boot 重试，
+//! 不阻断启动。中间版本存量迁完后该迁移即成恒 no-op（文件缺失直接返回）。
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -29,7 +33,7 @@ use super::{SessionStore, validate_session_id};
 
 /// 绑定 sidecar 的 schema 版本；未来字段演进时用于迁移。
 const SESSION_WORKSPACE_SIDECAR_VERSION: u32 = 1;
-/// 收敛前的存量全局绑定表（boot 期迁移成功后删除）。
+/// 本 PR 中间版本的全局绑定表（从未随 `main` 发布；boot 期迁移成功后删除）。
 const LEGACY_SESSION_WORKSPACES_FILE: &str = "_session_workspaces.json";
 /// per-session 绑定 sidecar 文件名（位于会话私有目录内）。
 const SESSION_WORKSPACE_SIDECAR_FILE: &str = "workspace-binding.json";
@@ -154,47 +158,12 @@ impl SessionStore {
         }
     }
 
-    /// 移除绑定：清内存缓存并删除 sidecar 文件。存量迁移未完成的降级路径
-    /// （旧全局表仍在盘上）下同步重写旧表，防止下次 boot 迁移复活已解绑
-    /// 的条目。
-    pub(crate) fn remove_session_workspace(&self, id: &str) {
-        self.session_workspaces.write().remove(id);
-        self.remove_workspace_sidecar_file(id);
-        if crate::platform::paths::sessions_root()
-            .join(LEGACY_SESSION_WORKSPACES_FILE)
-            .is_file()
-        {
-            self.save_session_workspaces();
-        }
-    }
-
-    pub(crate) fn persist_session_workspaces(bindings: &HashMap<String, PathBuf>) -> Result<()> {
-        let legacy = crate::platform::paths::sessions_root().join(LEGACY_SESSION_WORKSPACES_FILE);
-        if bindings.is_empty() {
-            return match std::fs::remove_file(&legacy) {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(error).with_context(|| format!("remove {}", legacy.display())),
-            };
-        }
-        let payload =
-            serde_json::to_vec_pretty(bindings).context("serialize session workspace bindings")?;
-        crate::platform::filesystem::atomic_write(&legacy, &payload)
-            .with_context(|| format!("persist session workspace bindings to {}", legacy.display()))
-    }
-
-    /// 旧全局表的落盘（仅存量迁移未完成的降级路径使用；写失败只记日志）。
-    pub(crate) fn save_session_workspaces(&self) {
-        if let Err(error) = Self::persist_session_workspaces(&self.session_workspaces.read()) {
-            eprintln!("[sessions] save_session_workspaces failed: {error:#}");
-        }
-    }
-
     /// boot 期存量迁移：全局表 `_session_workspaces.json` → per-session
-    /// sidecar。活会话条目逐条写成 sidecar（同值重写幂等），全部迁移成功
-    /// 即删除旧文件；任一条目写失败时保留旧文件，未迁移条目接管进内存表
-    /// 继续由旧机制读写（下次 boot 重试），不阻断启动。ghost 条目（对应
-    /// `<id>.json` 已不存在——会话在进程外被删的残留）直接丢弃，不迁移。
+    /// sidecar（只服务本 PR 中间版本 dev build 的 home，见模块文档）。活会话
+    /// 条目逐条写成 sidecar（同值重写幂等），全部迁移成功即删除旧文件；任一
+    /// 条目写失败时旧文件原样保留，未迁移条目接管进内存表继续可解析，下次
+    /// boot 重试，不阻断启动。ghost 条目（对应 `<id>.json` 已不存在——会话在
+    /// 进程外被删的残留）直接丢弃，不迁移。
     pub fn migrate_legacy_session_workspaces(&self) {
         let legacy = crate::platform::paths::sessions_root().join(LEGACY_SESSION_WORKSPACES_FILE);
         let Ok(content) = std::fs::read_to_string(&legacy) else {
