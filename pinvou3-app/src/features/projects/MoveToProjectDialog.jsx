@@ -71,6 +71,8 @@ const MoveToProjectDialog = ({
     () => (Array.isArray(projects) ? projects.filter(Boolean) : []),
     [projects],
   );
+  // 搜索框只在项目多到值得过滤时出现;少数项目直接列出来,弹窗更轻。
+  const showSearch = projectList.length > 6;
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return projectList;
@@ -145,18 +147,20 @@ const MoveToProjectDialog = ({
             <X size={16} />
           </button>
         </div>
-        <div className="px-4 pb-2">
-          <div className="flex h-9 items-center gap-2 rounded-full px-3 bg-[#EAECEF] dark:bg-[#303134]">
-            <Search size={14} className="shrink-0 text-[#5F6368] dark:text-[#9AA0A6]" />
-            {/* biome-ignore lint/a11y/noAutofocus: modal opens for a single purpose; focus belongs in the filter field immediately */}
-            <input autoFocus
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              placeholder={t.uiProjects.searchPlaceholder}
-              className="w-full bg-transparent border-0 outline-none text-[14px] placeholder:text-[#8A8F94] dark:placeholder:text-[#9AA0A6]"
-            />
+        {showSearch && (
+          <div className="px-4 pb-2">
+            <div className="flex h-9 items-center gap-2 rounded-full px-3 bg-[#EAECEF] dark:bg-[#303134]">
+              <Search size={14} className="shrink-0 text-[#5F6368] dark:text-[#9AA0A6]" />
+              {/* biome-ignore lint/a11y/noAutofocus: modal opens for a single purpose; focus belongs in the filter field immediately */}
+              <input autoFocus
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder={t.uiProjects.searchPlaceholder}
+                className="w-full bg-transparent border-0 outline-none text-[14px] placeholder:text-[#8A8F94] dark:placeholder:text-[#9AA0A6]"
+              />
+            </div>
           </div>
-        </div>
+        )}
         {pendingAddFolder ? (
           <div className="px-4 pb-4 pt-1">
             <div className="rounded-2xl bg-[#EAECEF] dark:bg-[#303134] px-3.5 py-3">
