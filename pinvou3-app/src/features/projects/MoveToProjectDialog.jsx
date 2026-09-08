@@ -98,9 +98,11 @@ const MoveToProjectDialog = ({
     onMove(project.id, false);
   };
   const commitPending = (addFolder) => {
-    const target = pendingAddFolder;
-    setPendingAddFolder(null);
-    if (target && !busy) onMove(target.id, addFolder);
+    // 不预清确认面板:提交后弹窗保持确认态(busy 禁用按钮),成功时由容器
+    // 关闭整个对话框(卸载即复位);失败时确认面板留在原处供重试/取消——
+    // 若先清 pendingAddFolder,异步进行/失败期间会回落成"选择项目"列表,
+    // 看起来像点击后又弹出了另一个弹窗。
+    if (pendingAddFolder && !busy) onMove(pendingAddFolder.id, addFolder);
   };
 
   const rowCls = 'w-full px-3.5 py-2.5 flex items-center gap-2.5 text-left text-[14px] rounded-2xl transition-colors text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]';
