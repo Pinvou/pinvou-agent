@@ -2509,6 +2509,10 @@ impl Pinvou3Bridge {
             AppMode::Agent | AppMode::Operate => sudo.to_string(),
         };
         // 卡片池: 该 session 加持了专家面具时,每 turn 注入 persona 人设(粘性身份)。
+        // Re-read installation and scope toggles for every turn, including live sessions.
+        let mcp_inventory = crate::features::assistant::mcp_inventory::turn_reminder(policy.mode());
+        reminder_body.push_str("\n\n");
+        reminder_body.push_str(&mcp_inventory);
         if let Some(persona) = persona_reminder {
             reminder_body = format!("{reminder_body}\n\n{persona}");
         }
@@ -3207,6 +3211,91 @@ mod tests {
     /// 代码会话的连接器禁用集来自 code scope(独立于 plain scope):
     /// plain 禁用 weather 但 code 未初始化(默认全禁已装连接器)时,weather 仍被禁;
     /// code 显式只禁用 pptx 时,weather 恢复可用、pptx 保持禁用;非连接器禁用不受影响。
+    #[test]
+    fn mcp_inventory_tracks_live_scope_toggles_without_enabling_tools() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: platform::paths::tests::ENV_LOCK held by locked_env.
+        unsafe { std::env::set_var("PINVOU3_HOME", dir.path()) };
+        let installed = dir.path().join("marketplace/installed.json");
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::write(&installed, r#"["weather","qcc"]"#).unwrap();
+        let mut bridge = fixture_bridge();
+        bridge.set_code_session_predicate(Arc::new(|sid| sid == "code"));
+        use crate::features::marketplace::{ConnectorScope, save_disabled_connectors_for};
+        save_disabled_connectors_for(ConnectorScope::Plain, &["weather".into(), "qcc".into()]);
+        save_disabled_connectors_for(ConnectorScope::Code, &[]);
+
+        let inventory = |sid: &str| -> serde_json::Value {
+            let Op::SendMessage { content, .. } = bridge
+                .build_send_message_op(
+                    sid,
+                    "List my MCP applications".into(),
+                    AppMode::Yolo,
+                    None,
+                    false,
+                )
+                .unwrap()
+            else {
+                panic!("expected SendMessage")
+            };
+            let line = content
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix(
+                        "Installed marketplace MCP applications (current conversation mode): ",
+                    )
+                })
+                .expect("inventory must reach the model input");
+            serde_json::from_str(line).unwrap()
+        };
+        let plain = inventory("plain");
+        assert_eq!(plain.as_array().unwrap().len(), 2);
+        assert!(
+            plain
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| entry["enabled"] == false)
+        );
+        assert!(
+            plain
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["id"] == "weather")
+        );
+        assert!(
+            plain
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["id"] == "qcc")
+        );
+        assert!(
+            inventory("code")
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| entry["enabled"] == true)
+        );
+        let denied = crate::features::marketplace::disabled_tool_names_for(ConnectorScope::Plain);
+        assert!(denied.contains(&"mcp_weather_get_weather".to_string()));
+        assert!(denied.contains(&"mcp_qcc-company_*".to_string()));
+        save_disabled_connectors_for(ConnectorScope::Plain, &[]);
+        assert!(
+            inventory("plain")
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| entry["enabled"] == true)
+        );
+        std::fs::write(&installed, r#"["qcc"]"#).unwrap();
+        assert_eq!(inventory("plain").as_array().unwrap().len(), 1);
+        std::fs::write(&installed, "[]").unwrap();
+        assert!(inventory("plain").as_array().unwrap().is_empty());
+    }
+
     #[test]
     fn code_session_tool_shaping_uses_code_scope_for_connectors() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);

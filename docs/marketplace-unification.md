@@ -267,3 +267,20 @@ install_bundle(id):
 决策点强制（→ execpolicy 硬拦截）、单一真相源派生一切（→ BundleStore + 删除投影层）、
 Known Limitations 明文化（→ 本文 §11 + capability-governance.md 登记）。
 不引入：cordis 组合层、HMR/disposer、进程内插件运行时（现阶段无对应需求）。
+
+
+## Model discovery of installed MCP applications
+
+Each native chat turn carries a fresh marketplace MCP inventory containing only
+installed application IDs, display names, and the current conversation mode's
+enabled flags. This metadata remains visible when an application's toggle is off;
+it does not expose credentials, server configuration, or disabled tool schemas.
+The latest snapshot supersedes previous snapshots, including an empty list after
+all MCP applications have been uninstalled.
+
+A disabled application exists but cannot be invoked. The assistant should explain
+that it is not enabled and direct the user to the chat tool menu. An enabled flag
+only reports the toggle; authentication, connectivity, and other tool policies
+still determine whether a tool is callable. Empty tool-search or MCP-resource
+results are not proof that an application is uninstalled. Existing tool gates
+continue to enforce invocation restrictions.
