@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter, State};
 use crate::features::codex_acp::{AcpPool, CodexWorkspaceKind};
 use crate::features::projects::{
     DeleteProjectReport, EnsureFolderOutcome, MoveSessionOutcome, Project, ProjectStore,
-    SessionAssignments,
+    SessionAssignments, SessionOrders,
 };
 use crate::features::sessions::SessionStore;
 
@@ -80,12 +80,15 @@ impl ProjectListItem {
 pub struct ProjectListResponse {
     pub projects: Vec<ProjectListItem>,
     pub assignments: SessionAssignments,
+    /// 项目内会话的手动顺序(成员渲染:列表序在前,其余按活动时间在后)。
+    pub session_orders: SessionOrders,
 }
 
 /// 项目列表,按 position 有序,含每个 root 的可用性、显式成员数与归属映射。
 #[tauri::command]
 pub async fn list_projects(store: State<'_, ProjectStore>) -> Result<ProjectListResponse, String> {
     let assignments = store.assignments_snapshot();
+    let session_orders = store.orders_snapshot();
     let projects = store
         .list()
         .iter()
@@ -96,6 +99,7 @@ pub async fn list_projects(store: State<'_, ProjectStore>) -> Result<ProjectList
     Ok(ProjectListResponse {
         projects,
         assignments,
+        session_orders,
     })
 }
 
@@ -168,12 +172,15 @@ pub async fn delete_project(
 /// 移动会话归属(纯归档操作,运行中的会话同样允许)。
 /// `project_id = None` 表示显式移出;`add_workspace_root = true` 时把该会话
 /// 绑定的项目目录顺带加为目标 root——临时会话没有项目目录,该组合报错。
+/// `project_order` = 组内落点的完整目标顺序(拖到两行之间时由前端按当前
+/// 渲染序 + 插入位计算);None = 不指定位置(按活动时间自然排)。
 /// 物理层(工作目录绑定)永不触碰。
 #[tauri::command]
 pub async fn move_session_to_project(
     session_id: String,
     project_id: Option<String>,
     add_workspace_root: Option<bool>,
+    project_order: Option<Vec<String>>,
     app: AppHandle,
     store: State<'_, ProjectStore>,
     sessions: State<'_, SessionStore>,
@@ -220,6 +227,7 @@ pub async fn move_session_to_project(
             &session_id,
             project_id.as_deref(),
             workspace_root.as_deref(),
+            project_order.as_deref(),
         )
         .map_err(|e| format!("move_session_to_project({session_id}): {e:#}"))?;
     emit_project_event(&app, "projects:list_changed", "moved");

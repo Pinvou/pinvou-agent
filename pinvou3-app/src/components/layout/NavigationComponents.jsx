@@ -302,6 +302,7 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
           role="presentation"
           onContextMenu={openContextMenu}
           data-drag-kind={sessionDragKind || undefined}
+          data-session-id={chat.id}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
           style={recentItemRowStyle(drag.moveDragging || dragging, personaTarget, isDark)}
           className={`group flex h-11 items-center rounded-full text-[15px] transition-all

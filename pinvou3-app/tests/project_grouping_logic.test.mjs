@@ -231,6 +231,30 @@ test("projectCoversPath and needsAddFolderConfirm share the containment rule", (
   assert.equal(needsAddFolderConfirm(temporaryItem("t"), projects[0]), false, "临时会话无目录,直移");
 });
 
+test("project view applies manual in-project order before activity sort", () => {
+  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
+  const groups = groupSessionsByProject(
+    [
+      projectItem("new", "D:/work/alpha", "2026-08-30T08:00:00Z"),
+      projectItem("mid", "D:/work/alpha", "2026-08-20T08:00:00Z"),
+      projectItem("old", "D:/work/alpha", "2026-08-10T08:00:00Z"),
+    ],
+    projects,
+    {},
+    { p1: ["old", "new"] },
+  );
+  assert.deepEqual(groups[0].rows.map((r) => r.id), ["old", "new", "mid"],
+    "手动列表序在前,其余按活动时间补在后面");
+  // 列表含未知 id(会话已删)时忽略,不影响其余排序。
+  const stale = groupSessionsByProject(
+    [projectItem("a", "D:/work/alpha", "x"), projectItem("b", "D:/work/alpha", "y")],
+    projects,
+    {},
+    { p1: ["gone", "b"] },
+  );
+  assert.deepEqual(stale[0].rows.map((r) => r.id), ["b", "a"]);
+});
+
 // ── Folder-project auto-materialization input ──────────────────────────────
 
 test("uncoveredWorkspaceRoots dedupes and drops covered/temporary workspaces", () => {

@@ -131,9 +131,10 @@ const expectedProtocolHashes = {
   // (PR-added Chinese comments inside the postprocess_voice_text invoke
   // span are part of the hashed source; no invoke/listen surface changed).
   voice: '2a2e8d12150ca86bb970ad099e7b72ab6491768bbc42354cd5ecc800c891c733',
-  // Recomputed for folder-project auto-materialization: ensure_folder_projects
-  // invoke (roots payload) joins the projects domain surface.
-  projects: '96e2ff59198b4cb27751668b84f5d8fde9975b5626c7ead87733fb7e04daf660',
+  // Recomputed for folder-project auto-materialization (ensure_folder_projects
+  // invoke) and again for in-project manual ordering (move_session_to_project
+  // gains the projectOrder payload).
+  projects: '96f3cb38121c8cc3c5ccc23e147e44987959be7edfacb8351839349bca39fe18',
 };
 
 for (const [domain, files] of Object.entries(protocolSources)) {

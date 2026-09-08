@@ -1,4 +1,4 @@
-import { lazy, startTransition as scheduleViewTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Fragment, startTransition as scheduleViewTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import '../styles/base.css';
@@ -1864,6 +1864,7 @@ function workspaceDisplayName(path) {
             sidebarUnpinnedCodeTasks,
             sidebarProjectsData ? sidebarProjectsData.projects : [],
             sidebarProjectsData ? sidebarProjectsData.assignments : {},
+            sidebarProjectsData ? sidebarProjectsData.session_orders : {},
           );
         }
         return groupSessionsByFolder(sidebarUnpinnedCodeTasks);
@@ -2426,8 +2427,13 @@ function workspaceDisplayName(path) {
       // 确认框展示的是侧栏投影的目录,命令实际加的是后端活记录——outcomes
       // 里的 added_root 是权威答案,有值时在 toast 里如实呈现(评审 #449
       // finding 9:两侧不得静默分叉)。
-      const handleMoveSessionToProject = (sessionId, projectId, addWorkspaceRoot) => runProjectOp(async (p) => {
-        const outcome = await p.moveSessionToProject(sessionId, projectId, addWorkspaceRoot);
+      // pendingProjectOrderRef:确认框路径暂存的组内落点顺序(按会话一次性消费)。
+      const pendingProjectOrderRef = useRef(null);
+      const handleMoveSessionToProject = (sessionId, projectId, addWorkspaceRoot, projectOrderIds) => runProjectOp(async (p) => {
+        const order = projectOrderIds
+          || (pendingProjectOrderRef.current ? pendingProjectOrderRef.current : undefined);
+        pendingProjectOrderRef.current = null;
+        const outcome = await p.moveSessionToProject(sessionId, projectId, addWorkspaceRoot, order);
         setMoveToProjectSession(null);
         // 提交后一并清预置目标,避免残留状态泄漏到下一次打开(finding 7)。
         setMoveToPresetProject(null);
@@ -2440,28 +2446,39 @@ function workspaceDisplayName(path) {
       // 拖拽落点:root 已覆盖的直接移动;未覆盖的带着预置目标打开选择器,
       // 进入"添加文件夹"确认(menu 路径则不带预置)。判定用共享的
       // needsAddFolderConfirm,与选择器的初始化器/选择路径保持同源。
-      const handleDropSessionOnProject = (sessionId, projectId) => {
+      const handleDropSessionOnProject = (sessionId, projectId, projectOrderIds) => {
         const chat = sidebarTaskHistory.find(c => c.id === sessionId);
         if (!chat) return;
         const projects = sidebarProjectsData ? sidebarProjectsData.projects : [];
+        const assignments = sidebarProjectsData ? sidebarProjectsData.assignments : {};
         const target = (projects || []).find(p => p && p.id === projectId);
         if (!target) return;
-        // 拖回当前所属项目 = 选择器里禁用当前项的同一语义,直接忽略。
-        if (resolveSessionProjectId(chat, projects, sidebarProjectsData ? sidebarProjectsData.assignments : {}) === projectId) return;
+        const currentProject = resolveSessionProjectId(chat, projects, assignments);
+        // 同组拖拽 = 组内重排(带落点顺序);回到当前位/原项目的普通落点
+        // 与选择器禁用当前项同语义,忽略。
+        if (currentProject === projectId) {
+          if (projectOrderIds) handleMoveSessionToProject(sessionId, projectId, false, projectOrderIds);
+          return;
+        }
         if (needsAddFolderConfirm(chat, target)) {
+          // 确认框提交时消费暂存的落点顺序(对话框回调不带该参数)。
+          pendingProjectOrderRef.current = projectOrderIds || null;
           setMoveToPresetProject(projectId);
           setMoveToProjectSession(chat);
           return;
         }
         // projectOpsBusy 时静默忽略与侧栏其他拖拽反馈一致(runProjectOp
         // 内部同样有 busy 守卫),不额外打断。
-        handleMoveSessionToProject(sessionId, projectId, false);
+        handleMoveSessionToProject(sessionId, projectId, false, projectOrderIds);
       };
       // 指针拖拽(移动到项目)的悬停/落点回调:命中标记是分组容器的
       // data-drop-key(项目组 'project:<id>' / 未分组桶 UNGROUPED),组头与会话
       // 行区域都算落点。悬停只点亮一个环,落点分发到与菜单路径同源的处理函数。
       // ghost(跟手标签副本)复用 tear-off avatar 的视觉与跟随方式。
       const [sessionDragGhost, setSessionDragGhost] = useState(null); // {label,sessionId,dx,dy,w,h,x,y}
+      // 行间落点指示:{key, beforeId:string|null}——beforeId=某行 id 表示插到
+      // 它前面,null 表示追加到组末尾;拖拽结束清空。
+      const [dropHover, setDropHover] = useState(null);
       const sessionDragGhostOffsetRef = useRef({ dx: 0, dy: 0 });
       const sessionDragGhostActive = !!sessionDragGhost;
       useEffect(() => {
@@ -2490,18 +2507,58 @@ function workspaceDisplayName(path) {
           y: geom.startY - geom.dy,
         });
       };
-      const handleDndHover = (key) => {
-        setDropTargetGroupKey((prev) => (prev === (key || null) ? prev : (key || null)));
+      // 行间落点解析:命中行上半 → 插到该行前;下半 → 插到组数据序的下一个
+      // 非拖拽行前;不在任何行上(组头/空白) → 追加到末尾(beforeId=null)。
+      // 下一行取自分组数据而非 DOM 兄弟,避免插入指示线本身成为兄弟干扰。
+      const resolveDropHover = (x, y) => {
+        const el = document.elementFromPoint(x, y);
+        const groupEl = el && el.closest ? el.closest('[data-project-drop-target]') : null;
+        if (!groupEl) return null;
+        const key = groupEl.getAttribute('data-drop-key');
+        const rowEl = el.closest ? el.closest('[data-session-id]') : null;
+        if (!rowEl || !groupEl.contains(rowEl)) return { key, beforeId: null };
+        const rowId = rowEl.getAttribute('data-session-id');
+        const rect = rowEl.getBoundingClientRect();
+        if (y < rect.top + rect.height / 2) return { key, beforeId: rowId };
+        const group = sidebarFolderGroups.find(g => g.key === key);
+        const rows = (group && group.rows) || [];
+        const index = rows.findIndex(row => row.id === rowId);
+        const next = rows.slice(index + 1).find(row => row.id !== (sessionDragGhost && sessionDragGhost.sessionId));
+        return { key, beforeId: next ? next.id : null };
       };
-      const handleDndDrop = (dropKey, sessionId) => {
-        if (dropTargetGroupKey !== null) setDropTargetGroupKey(null);
+      const handleDndHover = (hit) => {
+        const next = hit ? resolveDropHover(hit.x, hit.y) : null;
+        setDropTargetGroupKey((prev) => (prev === (next && next.key) ? prev : (next ? next.key : null)));
+        setDropHover((prev) => {
+          const same = prev && next && prev.key === next.key && prev.beforeId === next.beforeId;
+          return same ? prev : next;
+        });
+      };
+      const handleDndDrop = (info) => {
+        const dropKey = info && info.key;
+        const sessionId = info && info.payload;
+        const hover = dropKey ? resolveDropHover(info.x, info.y) : null;
+        setDropTargetGroupKey(null);
+        setDropHover(null);
         if (!dropKey || !sessionId) return;
         if (dropKey === UNGROUPED_GROUP_KEY) {
           handleMoveSessionToProject(sessionId, null, false);
           return;
         }
         const projectId = dropKey.startsWith('project:') ? dropKey.slice('project:'.length) : null;
-        if (projectId) handleDropSessionOnProject(sessionId, projectId);
+        if (projectId) {
+          // 目标组完整顺序 = 当前渲染序去掉拖拽会话,再按落点插入。
+          const group = sidebarFolderGroups.find(g => g.key === dropKey);
+          const ids = ((group && group.rows) || []).map(row => row.id).filter(id => id !== sessionId);
+          if (hover && hover.beforeId) {
+            const at = ids.indexOf(hover.beforeId);
+            if (at >= 0) ids.splice(at, 0, sessionId);
+            else ids.push(sessionId);
+          } else {
+            ids.push(sessionId);
+          }
+          handleDropSessionOnProject(sessionId, projectId, ids);
+        }
       };
       // 目录重绑定(修断链):失效 root 的项目头上点"重新绑定" → 系统选目录
       // → 确认弹窗。两阶段确认:首调不带 confirmExisting,后端发现旧目录
@@ -3479,7 +3536,18 @@ function workspaceDisplayName(path) {
                                 />
                                 {isOpen && (
                                   <div className="mt-1 space-y-0.5">
-                                    {group.rows.map(renderSidebarTaskItem)}
+                                    {group.rows.map((row) => (
+                                      <Fragment key={row.id}>
+                                        {dropHover && dropHover.key === group.key && dropHover.beforeId === row.id
+                                          && row.id !== (sessionDragGhost && sessionDragGhost.sessionId) && (
+                                          <div data-testid="project-insert-line" className="h-[2px] rounded-full bg-[#0B57D0] dark:bg-[#A8C7FA]" />
+                                        )}
+                                        {renderSidebarTaskItem(row)}
+                                      </Fragment>
+                                    ))}
+                                    {dropHover && dropHover.key === group.key && dropHover.beforeId === null && (
+                                      <div data-testid="project-insert-line" className="h-[2px] rounded-full bg-[#0B57D0] dark:bg-[#A8C7FA]" />
+                                    )}
                                   </div>
                                 )}
                               </div>

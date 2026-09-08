@@ -68,11 +68,14 @@
       return report;
     }
 
-    async function moveSessionToProject(sessionId, projectId, addWorkspaceRoot) {
+    // projectOrder: 组内落点的完整目标顺序(拖到两行之间时前端计算);
+    // 省略 = 不指定位置(按活动时间自然排)。
+    async function moveSessionToProject(sessionId, projectId, addWorkspaceRoot, projectOrder) {
       const outcome = await invoke("move_session_to_project", {
         sessionId,
         projectId: projectId === undefined ? null : projectId,
         addWorkspaceRoot: !!addWorkspaceRoot,
+        projectOrder: projectOrder || null,
       });
       await loadProjects();
       return outcome;
