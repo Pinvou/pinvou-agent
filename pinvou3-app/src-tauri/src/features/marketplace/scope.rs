@@ -74,19 +74,33 @@ pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
 /// plain 默认策略迁移（工具开关全量收敛 DenyAll）：旧版文件（无
 /// `plain_defaults_migrated` 字段）或旧版双文件时代（legacy 文件存在）= 升级
 /// 装机，把 plain 初始化为落盘列表——其有效状态即旧 AllowAll 语义下的真实开关
-/// 状态（缺省空 = 全开），升级后用户无感；全新装机（无任何文件）只置标记不
-/// 初始化，plain 未初始化按 DenyAll 兜底（默认全关）。
+/// 状态（缺省空 = 全开），升级后用户无感；全新装机只置标记不初始化，plain 未
+/// 初始化按 DenyAll 兜底（默认全关）。
+///
+/// 「全新装机」的判定不能只看本文件与两份 legacy 文件：统一文件自 v0.8.6
+/// 起就存在、且只在有内容可写时才落盘——老装机 + 从未动过开关的用户可能
+/// 三者皆无。因此升级信号放宽为「任何既有 pinvou3_home 痕迹」：
+/// marketplace/installed.json、settings.json 或已有会话目录，任一存在即视
+/// 为升级装机并保留旧 AllowAll 语义（评审 #445 P1-2）。全空家目录才算全新。
 fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
     let path = disabled_bundles_path();
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(_) => {
-            let legacy_existed = paths::pinvou3_home()
-                .join("disabled_connectors.json")
-                .exists()
-                || paths::pinvou3_home().join("disabled_skills.json").exists();
+            let home = paths::pinvou3_home();
+            let legacy_existed = home.join("disabled_connectors.json").exists()
+                || home.join("disabled_skills.json").exists();
+            // 宽口径升级信号:三份开关相关文件皆无,但家目录有其他状态
+            // (安装记录/设置/会话) ⇒ 老装机,plain 保持旧 AllowAll 语义。
+            let upgraded_install = legacy_existed
+                || home.join("marketplace").join("installed.json").is_file()
+                || paths::settings_path().is_file()
+                || paths::sessions_root()
+                    .read_dir()
+                    .map(|mut entries| entries.next().is_some())
+                    .unwrap_or(false);
             let mut file = migrate_from_legacy_files();
-            if legacy_existed {
+            if upgraded_install {
                 // 升级：初始化 plain（scopes 缺省空 = 旧语义全开），锁定升级前状态。
                 file.initialized
                     .insert(SessionMode::Plain.as_str().to_string());
@@ -98,7 +112,15 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
             return file;
         }
     };
-    let mut file: DisabledBundlesFile = serde_json::from_str(&content).unwrap_or_default();
+    let mut file: DisabledBundlesFile = match serde_json::from_str(&content) {
+        Ok(file) => file,
+        Err(error) => {
+            // 损坏文件不静默覆盖:先留 .corrupt.<ts> 隔离副本(installed.json
+            // 同款),再按空状态降级,原始字节可人工找回(评审 #445 P2)。
+            quarantine_corrupt_disabled_bundles(&content, &error.to_string());
+            DisabledBundlesFile::default()
+        }
+    };
     if !file.plain_defaults_migrated {
         file.initialized
             .insert(SessionMode::Plain.as_str().to_string());
@@ -732,4 +754,25 @@ mod tests {
     fn load_disabled_bundles_for_plain_for_lock_test() -> Vec<String> {
         load_disabled_bundles_for(ConnectorScope::Plain)
     }
+}
+
+/// 把损坏的 disabled_bundles.json 原始字节隔离成 `.corrupt.<ts>` 副本
+/// （同 `installed.json` 的隔离先例），随后按空状态降级自愈。
+fn quarantine_corrupt_disabled_bundles(content: &str, error: &str) {
+    let path = disabled_bundles_path();
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backup = parent.join(format!("disabled_bundles.json.corrupt.{ts}"));
+    if let Err(write_err) = std::fs::write(&backup, content) {
+        eprintln!("[marketplace] failed to quarantine corrupt disabled_bundles.json: {write_err}");
+    }
+    eprintln!(
+        "[marketplace] disabled_bundles.json was corrupt ({error}); quarantined to {} and reset to defaults",
+        backup.display()
+    );
 }

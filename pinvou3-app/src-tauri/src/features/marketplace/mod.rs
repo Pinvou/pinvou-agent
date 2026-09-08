@@ -79,9 +79,22 @@ pub(crate) fn fail_next_installed_write_for_test() -> InstalledWriteFailureGuard
 static FAIL_NEXT_JOURNAL_REMOVAL: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// 与 installed 写失败注入同款的复位守卫:调用点设置标志后、begin(..) 到达
+/// 前失败(或 panic)时自动清零,不再泄漏到无关用例(评审 #445 P2)。
 #[cfg(test)]
-pub(crate) fn fail_next_journal_removal_for_test() {
+pub(crate) struct JournalRemovalFailureGuard;
+
+#[cfg(test)]
+impl Drop for JournalRemovalFailureGuard {
+    fn drop(&mut self) {
+        FAIL_NEXT_JOURNAL_REMOVAL.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_journal_removal_for_test() -> JournalRemovalFailureGuard {
     FAIL_NEXT_JOURNAL_REMOVAL.store(true, std::sync::atomic::Ordering::SeqCst);
+    JournalRemovalFailureGuard
 }
 
 #[cfg(test)]
@@ -2444,7 +2457,7 @@ mod tests {
     #[test]
     fn transaction_commit_retries_transient_journal_removal_failure() {
         with_temp_home(|| {
-            fail_next_journal_removal_for_test();
+            let _journal_removal_guard = fail_next_journal_removal_for_test();
             let installed_file = paths::pinvou3_home()
                 .join("marketplace")
                 .join("installed.json");
@@ -3458,27 +3471,57 @@ mod tests {
         });
     }
 
-    /// plain 收敛 DenyAll 的读时迁移（全新装机）：无任何文件 → 只置标记不
-    /// 初始化 plain，未初始化 scope 按 DenyAll 兜底（默认全关）；不产生落盘。
+    /// plain 收敛 DenyAll 的读时迁移（全新装机）：家目录无任何既有状态 → 只
+    /// 置标记不初始化 plain，未初始化 scope 按 DenyAll 兜底（默认全关，内置
+    /// CLI 列表）；不产生落盘。「全新」是宽口径升级信号的补集：装过包、写过
+    /// 设置或有过会话都算升级装机（评审 #445 P1-2）。
     #[test]
     fn plain_deny_all_fresh_install_defaults_off() {
         with_temp_home(|| {
-            write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
             assert_eq!(
                 load_disabled_connectors(),
                 vec![
-                    "weather".to_string(),
-                    "pptx".to_string(),
                     "feishu".to_string(),
                     "wecom".to_string(),
                     "dingtalk".to_string(),
                     "tmeet".to_string(),
                 ],
-                "全新装机 plain 未初始化 → DenyAll 默认全关（已装 ∪ 内置 CLI）"
+                "全新装机 plain 未初始化 → DenyAll 默认全关（内置 CLI）"
             );
             let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
             assert!(!path.exists(), "全新装机的纯读路径不应落盘");
         });
+    }
+
+    /// 宽口径升级信号:installed.json/settings/会话目录任一存在 ⇒ 老装机,
+    /// plain 初始化为落盘状态(缺省空 = 旧 AllowAll 全开),不被 DenyAll 兜底
+    /// 波及。三份开关相关文件皆无的 v0.8.6-v0.9.2 老装机正是本信号要救的
+    /// 群体(评审 #445 P1-2)。
+    #[test]
+    fn plain_deny_all_upgraded_install_with_existing_state_preserves_all_on() {
+        for seed in [
+            |home: &std::path::Path| {
+                std::fs::create_dir_all(home.join("marketplace")).unwrap();
+                std::fs::write(home.join("marketplace").join("installed.json"), r"[]").unwrap();
+            },
+            |home: &std::path::Path| {
+                std::fs::write(home.join("settings.json"), "{}").unwrap();
+            },
+            |_home: &std::path::Path| {
+                let sessions = crate::platform::paths::sessions_root();
+                std::fs::create_dir_all(&sessions).unwrap();
+                std::fs::write(sessions.join("seed-session.json"), "{}").unwrap();
+            },
+        ] {
+            with_temp_home(|| {
+                seed(crate::platform::paths::pinvou3_home().as_path());
+                let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+                assert!(
+                    file.initialized.contains("plain"),
+                    "既有状态 ⇒ 升级装机,plain 初始化: {file:?}"
+                );
+            });
+        }
     }
 
     /// 旧版双文件时代升级（legacy 文件存在）→ plain 初始化锁定迁移后的落盘
