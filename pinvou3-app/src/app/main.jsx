@@ -21,7 +21,7 @@ import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
 import { COLOR_SCHEME_STORAGE_KEY, normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
 import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
-import { groupSessionsByFolder, groupSessionsByProject, resolveSessionProjectId, needsAddFolderConfirm, uncoveredWorkspaceRoots } from '../features/projects/projectGrouping.js';
+import { groupSessionsByFolder, groupSessionsByProject, resolveSessionProjectId, needsAddFolderConfirm, uncoveredWorkspaceRoots, UNGROUPED_GROUP_KEY } from '../features/projects/projectGrouping.js';
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
 import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
 import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
@@ -2457,6 +2457,22 @@ function workspaceDisplayName(path) {
         // 内部同样有 busy 守卫),不额外打断。
         handleMoveSessionToProject(sessionId, projectId, false);
       };
+      // 指针拖拽(移动到项目)的悬停/落点回调:命中标记是组头的
+      // data-drop-key(项目组 'project:<id>' / 未分组桶 UNGROUPED)。
+      // 悬停只点亮一个环,落点分发到与菜单/旧 HTML5 路径同源的处理函数。
+      const handleDndHover = (key) => {
+        setDropTargetGroupKey((prev) => (prev === (key || null) ? prev : (key || null)));
+      };
+      const handleDndDrop = (dropKey, sessionId) => {
+        if (dropTargetGroupKey !== null) setDropTargetGroupKey(null);
+        if (!dropKey || !sessionId) return;
+        if (dropKey === UNGROUPED_GROUP_KEY) {
+          handleMoveSessionToProject(sessionId, null, false);
+          return;
+        }
+        const projectId = dropKey.startsWith('project:') ? dropKey.slice('project:'.length) : null;
+        if (projectId) handleDropSessionOnProject(sessionId, projectId);
+      };
       // 目录重绑定(修断链):失效 root 的项目头上点"重新绑定" → 系统选目录
       // → 确认弹窗。两阶段确认:首调不带 confirmExisting,后端发现旧目录
       // 仍在时拒绝,弹窗升级为强警告后由用户再次确认。
@@ -2788,7 +2804,8 @@ function workspaceDisplayName(path) {
               ? { sessionId: chat.id }
               : undefined}
             dndDisabled={!!dragAvatar}
-            onDragEnd={() => setDropTargetGroupKey(null)}
+            onDndHover={handleDndHover}
+            onDndDrop={handleDndDrop}
             dragKind={detachKind}
             dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
             onPickUp={canDetachWindows ? ((geom) => beginTearOff(detachKind, chat.id, chat.title, geom)) : undefined}
@@ -2809,7 +2826,8 @@ function workspaceDisplayName(path) {
           return {
             onRename: (name) => handleRenameProject(group.projectId, name),
             onDelete: () => handleDeleteProject(group.projectId),
-            onDropSession: (sessionId) => handleDropSessionOnProject(sessionId, group.projectId),
+            // 指针拖拽命中标记:源行松手按 data-drop-key 分发(handleDndDrop)。
+            dropKey: group.key,
             unavailableRoots: (group.roots || [])
               .filter(root => !(root && typeof root === 'object' ? root.available : root))
               .map(root => String(typeof root === 'object' ? root.path : root)),
@@ -2824,7 +2842,7 @@ function workspaceDisplayName(path) {
           };
         }
         if (group.kind === 'ungrouped') {
-          return { onDropSessionOut: (sessionId) => handleMoveSessionToProject(sessionId, null, false) };
+          return { dropKey: group.key };
         }
         return {};
       };
@@ -3407,7 +3425,6 @@ function workspaceDisplayName(path) {
                                   busy={projectOpsBusy}
                                   testId="sidebar-folder-group"
                                   dropActive={dropTargetGroupKey === group.key}
-                                  onDropActive={(active) => setDropTargetGroupKey(active ? group.key : null)}
                                   {...sidebarGroupHeaderProps(group)}
                                 />
                                 {isOpen && (

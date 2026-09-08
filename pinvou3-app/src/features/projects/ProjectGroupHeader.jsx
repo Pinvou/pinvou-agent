@@ -9,8 +9,6 @@ import { Check, ChevronDown, Edit2, FolderPlus, MoreHorizontal, Trash2, X } from
 import { usePortalMenu } from '../../hooks/usePortalMenu.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 
-const PROJECT_DROP_TYPE = 'application/x-pinvou-session';
-
 const ProjectGroupHeader = ({
   label,
   kind,
@@ -24,18 +22,16 @@ const ProjectGroupHeader = ({
   onConvert,
   onRename,
   onDelete,
-  onDropSession,
-  // 未分组桶的落点:拖入 = 显式移出项目(区别于项目头的"拖入 = 归属")。
-  onDropSessionOut,
+  // 指针拖拽的命中标记:源行松手时按 data-drop-key 命中(项目组/未分组桶)。
+  // 不再使用 HTML5 drop 处理器——WebKitGTK 页内拖放在指针停止移动后不再
+  // 投递 dragover/drop,悬停后松手会被静默丢弃;高亮环改由父级在指针
+  // 悬停时经 dropActive 驱动。
+  dropKey,
   onRebind,
   // 每个失效 root 一个徽标入口(逐根重绑定):部分失效的项目也有修复路径,
   // 且一根重绑后其余失效根的入口不会消失。
   unavailableRoots,
-  // Highlight ownership lives in the sidebar container (one drop target lit at
-  // a time) so the source row's dragend can clear it unconditionally even when
-  // a webview skips dragleave/drop.
   dropActive,
-  onDropActive,
   testId,
   headerExtra,
 }) => {
@@ -45,30 +41,6 @@ const ProjectGroupHeader = ({
   const { menuOpen, menuStyle, closeMenu, toggleMenu } = usePortalMenu({
     height: kind === 'project' ? 96 : 48,
   });
-
-  // HTML5 drop-target handlers for the sidebar session drag; kept out of the
-  // JSX so the row render stays flat. dragover highlights, drop delegates the
-  // session id up, dragend/dragleave clear the highlight (dragend fires on the
-  // source row and can be skipped by the webview — the ring here also clears
-  // unconditionally on drop). Two target flavors: project headers take
-  // onDropSession (move in), the ungrouped bucket takes onDropSessionOut
-  // (explicit move-out).
-  const dropAction = onDropSession || onDropSessionOut;
-  const dropHandlers = dropAction ? {
-    onDragOver: (e) => {
-      if (!e.dataTransfer.types.includes(PROJECT_DROP_TYPE)) return;
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-      onDropActive(true);
-    },
-    onDragLeave: () => onDropActive(false),
-    onDrop: (e) => {
-      e.preventDefault();
-      onDropActive(false);
-      const sessionId = e.dataTransfer.getData(PROJECT_DROP_TYPE);
-      if (sessionId) dropAction(sessionId);
-    },
-  } : {};
 
   const startConvert = () => setEditing({ mode: 'convert', value: label });
   const startRename = () => setEditing({ mode: 'rename', value: label });
@@ -173,17 +145,17 @@ const ProjectGroupHeader = ({
 
   // Row container is NOT interactive (same idiom as RecentItem): the toggle
   // button and the "more" button are siblings, so no control nests inside
-  // another ARIA button. Project headers double as HTML5 drop targets for the
-  // sidebar session drag; role="presentation" declares the div
-  // non-interactive to the a11y tree while it carries the drag handlers.
+  // another ARIA button. The drop ring is driven by the parent's hover state
+  // during a pointer drag; role="presentation" declares the div non-interactive
+  // to the a11y tree.
   return (
     <div
       role="presentation"
-      {...dropHandlers}
+      data-project-drop-target={dropKey || undefined}
+      data-drop-key={dropKey || undefined}
       className={`group/header w-full h-7 flex items-center rounded-full text-[12px] transition-colors ${dropActive
         ? 'ring-1 ring-[#0B57D0] bg-[#E8F0FE] dark:ring-[#A8C7FA] dark:bg-[#1F2A3D]'
         : theme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
-      data-drop-target={onDropSession ? 'project' : undefined}
     >
       <button
         type="button"
