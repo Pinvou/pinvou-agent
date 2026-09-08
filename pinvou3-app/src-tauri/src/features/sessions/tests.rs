@@ -3141,13 +3141,25 @@ fn legacy_design_default_folds_into_work_on_load() {
     .expect("write legacy settings");
     let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
     assert_eq!(store.mode_defaults().work, Some(SerializableMode::Plan));
-    // The fold is not written back: after boot, settings.json keeps its
-    // legacy shape (work key absent, design value preserved).
-    let on_disk =
-        std::fs::read_to_string(paths::settings_path()).expect("read settings after boot");
+    // The fold is not written back: after boot, the persisted `work` entry
+    // stays unset (absent or null) and the legacy `design` value survives.
+    // The raw shape is no longer assertable: since #416, first load of a
+    // legacy settings.json without `color_scheme` derives it and persists
+    // the normalized whole-preferences file — legitimately adding sibling
+    // keys (including `"work": null`) while the fold semantics hold.
+    let on_disk: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(paths::settings_path()).expect("read settings after boot"),
+    )
+    .expect("settings stay valid JSON after boot");
+    let mode_defaults = on_disk
+        .get("mode_defaults")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let persisted_work = mode_defaults.get("work").and_then(|v| v.as_str());
+    let persisted_design = mode_defaults.get("design").and_then(|v| v.as_str());
     assert!(
-        on_disk.contains("\"design\"") && !on_disk.contains("\"work\""),
-        "fold must not write back to disk: {on_disk}"
+        persisted_design == Some("plan") && persisted_work.is_none(),
+        "fold must not write back: work={persisted_work:?} design={persisted_design:?} (raw: {on_disk})"
     );
 
     // work already set → design does not override.
