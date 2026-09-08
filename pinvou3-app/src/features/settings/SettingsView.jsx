@@ -2332,8 +2332,53 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         ...(memory.current_focus || []).filter(item => item.status !== 'archived').map(item => ({ ...item, kind: 'current_focus', type: settingsCopy.memoryTypes.current_focus })),
         ...(memory.recent_activity || []).filter(item => item.status !== 'archived').map(item => ({ ...item, kind: 'recent_activity', type: settingsCopy.memoryTypes.recent_activity })),
       ];
+      const [memoryOrganizing, setMemoryOrganizing] = useState(false);
+      const [memoryOrganizeMessage, setMemoryOrganizeMessage] = useState('');
+      const [memoryLastOrganizedAt, setMemoryLastOrganizedAt] = useState('');
+      // Same app-language relative format as the neighboring memory cards
+      // (formatMemoryTime), not the browser-locale string: the two render side
+      // by side and must not disagree under an OS/app language mismatch.
+      const formatMemoryOrganizedAt = finishedAt => {
+        const time = new Date(finishedAt);
+        return Number.isNaN(time.getTime()) ? '' : formatMemoryTime({ updated_at: finishedAt }, t.uiSettingsView);
+      };
+      const loadMemoryOrganizeHistory = () => {
+        if (!bridge.available || !bridge.memory.loadOrganizeHistory) return;
+        bridge.memory.loadOrganizeHistory().then(history => {
+          if (history && history[0] && history[0].finished_at) {
+            setMemoryLastOrganizedAt(formatMemoryOrganizedAt(history[0].finished_at));
+          }
+        }).catch(() => {});
+      };
+      const organizeMemoryNow = async () => {
+        if (!bridge.available || !bridge.memory.organizeMemory || memoryOrganizing) return;
+        setMemoryOrganizing(true);
+        // Drop the previous run's result/error up front: leaving it rendered
+        // next to the spinner reads as if it described the run in progress.
+        setMemoryOrganizeMessage('');
+        try {
+          const result = await bridge.memory.organizeMemory();
+          const report = (result && result.report) || {};
+          const count = map => Object.values(map || {}).reduce((acc, n) => acc + (n || 0), 0);
+          setMemoryOrganizeMessage(report.no_change
+            ? t.uiSettingsView.memoryOrganizeNoChange
+            : t.uiSettingsView.memoryOrganizeSummary(count(report.merged), count(report.updated), count(report.deleted)));
+          loadMemoryOrganizeHistory();
+        } catch (error) {
+          // organizeMemory failures only throw without writing state: memory.error
+          // is the dedicated load-failure channel (rendered uniformly as the
+          // "加载失败" (load failed) copy, which would mislead about the cause),
+          // so the concrete reason is surfaced right here to the organize result line.
+          const reason = (error && error.message) || String(error);
+          setMemoryOrganizeMessage(t.uiSettingsView.memoryOrganizeFailed(reason));
+        } finally {
+          setMemoryOrganizing(false);
+        }
+      };
       useEffect(() => {
         if (activeSection === 'memory' && memoryEnabled && bridge.available && bridge.memory.loadMemoryOverview) bridge.memory.loadMemoryOverview();
+        if (activeSection === 'memory' && memoryEnabled) loadMemoryOrganizeHistory();
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: history load follows the same gated section-open trigger as the overview load
       }, [activeSection, memoryEnabled]);
       useEffect(() => {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors the backend snapshot into local state once it lands, avoiding first-frame flicker
@@ -2646,10 +2691,30 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                   {settingsCopy.memorySaveFailed}
                 </div>
               ) : memoryError && (
-                <div data-testid="memory-settings-error" role="alert" aria-live="polite" className="mb-4 rounded-[14px] bg-[#FF3B30]/10 px-4 py-3 text-[13px] leading-5 text-[#FF3B30]">
+                <div data-testid="memory-settings-error" role="alert" aria-live="polite" className={`mb-4 rounded-[14px] bg-[#FF3B30]/10 px-4 py-3 text-[13px] leading-5 text-[#FF3B30]`}>
                   {memoryErrorMessage}
                 </div>
               )}
+              <IOSSection>
+                <IOSRow label={t.uiSettingsView.memoryOrganize} desc={t.uiSettingsView.memoryOrganizeDesc}>
+                  <button
+                    type="button"
+                    data-testid="memory-organize-section"
+                    onClick={organizeMemoryNow}
+                    disabled={!bridge.available || memoryOrganizing}
+                    className={`shrink-0 inline-flex items-center gap-1.5 text-[14px] px-3 py-1.5 rounded-full disabled:opacity-50 ${actionButton('blue')}`}
+                  >
+                    <Sparkles size={13} className={memoryOrganizing ? 'animate-spin' : ''} />
+                    {memoryOrganizing ? t.uiSettingsView.memoryOrganizing : t.uiSettingsView.memoryOrganize}
+                  </button>
+                </IOSRow>
+                {memoryOrganizeMessage && (
+                  <div data-testid="memory-organize-result" className={`px-4 py-2.5 text-[13px] leading-5 text-[#8A8A8E] dark:text-[#98989D]`}>{memoryOrganizeMessage}</div>
+                )}
+                {memoryLastOrganizedAt && (
+                  <div data-testid="memory-last-organized" className={`px-4 py-2.5 text-[13px] leading-5 text-[#8A8A8E] dark:text-[#98989D]`}>{t.uiSettingsView.memoryLastOrganized(memoryLastOrganizedAt)}</div>
+                )}
+              </IOSSection>
               <IOSSection title={settingsCopy.profile}>
                 <div data-testid="memory-profile-call-name">
                   <IOSRow label={settingsCopy.userCallName} desc={settingsCopy.callNameDesc} value={identity.call_name || settingsCopy.notSet} onClick={() => editProfile('call_name')}>
