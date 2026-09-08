@@ -2814,17 +2814,6 @@ function workspaceDisplayName(path) {
               .filter(root => !(root && typeof root === 'object' ? root.available : root))
               .map(root => String(typeof root === 'object' ? root.path : root)),
             onRebind: (rootPath) => startRebindWorkspace(rootPath),
-            // 文件夹自动物化项目的来源徽标:提示该组是"文件夹有会话就有项目"
-            // 自动建出的,改名/删项目等手工操作不受限(删除后不会自动重建)。
-            headerExtra: group.origin === 'folder' ? (
-              <span
-                data-testid="project-folder-origin-badge"
-                title={t.uiProjects.folderOriginHint}
-                className="shrink-0 rounded-full bg-[#E8F0FE] px-1.5 py-0.5 text-[10px] leading-none text-[#0B57D0] dark:bg-[#1F2A3D] dark:text-[#A8C7FA]"
-              >
-                {t.uiProjects.folderOriginBadge}
-              </span>
-            ) : undefined,
           };
         }
         if (group.kind === 'folder') {

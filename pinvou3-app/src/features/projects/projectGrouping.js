@@ -206,8 +206,6 @@ function groupSessionsByProject(items, projects, assignments) {
       projectId: project.id,
       name: project.name,
       roots: project.roots || [],
-      // 'folder' = 按文件夹自动物化的项目(徽标);null = 手工创建。
-      origin: project.origin || null,
       path: '',
     }, projectRows.get(project.id) || []));
   if (ungrouped.length > 0) {

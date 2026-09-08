@@ -296,23 +296,6 @@ test("uncoveredWorkspaceRoots with no projects lists every distinct bound folder
   ]);
 });
 
-test("project view passes folder origin through for the badge", () => {
-  const projects = [{ ...project("p1", "alpha", ["D:/work/alpha"], 0), origin: "folder" }];
-  const groups = groupSessionsByProject(
-    [projectItem("a1", "D:/work/alpha", "2026-08-01T08:00:00Z")],
-    projects,
-    {},
-  );
-  assert.equal(groups[0].origin, "folder");
-  assert.equal(groups[0].kind, "project");
-  const manual = groupSessionsByProject(
-    [projectItem("a1", "D:/work/alpha", "2026-08-01T08:00:00Z")],
-    [project("p2", "Alpha", ["D:/work/alpha"], 0)],
-    {},
-  );
-  assert.equal(manual[0].origin, null, "手工项目无来源徽标");
-});
-
 // ── Cases ported from the legacy sidebar-grouping suite ────────────────────
 
 test("folder view: missing updatedAt sorts as oldest without crashing", () => {
