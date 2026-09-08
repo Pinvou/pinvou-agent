@@ -417,31 +417,27 @@ fn move_workspace_ancestor_collapses_descendant_roots() {
 }
 
 #[test]
-#[cfg(windows)]
-fn windows_root_keys_fold_case_and_separators() {
-    // 同一(不存在的)目录的两种大小写/分隔符写法必须折叠为同一 root:
-    // 否则重叠校验对 `C:\Work` vs `c:\work` 失明。POSIX 对应用例见下方
-    // cfg(unix) 变体。
+fn root_keys_fold_case_only_on_windows() {
+    // Windows 大小写不敏感:同一(不存在的)目录的两种大小写/分隔符写法必须
+    // 折叠为同一 root,否则重叠校验对 `C:\Work` vs `c:\work` 失明;
+    // Unix 文件系统大小写敏感,两种写法是两个互不重叠的 root,都允许创建。
+    // 用 std::env::consts::OS 常量分支而非 cfg 语法:平台条件编译不得出现在
+    // 适配层外(architecture-guard rust_target_cfg_outside_adapter)。
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    let upper = abs("CaseProbe").to_string_lossy().replace('/', "\\");
-    let lower = abs("caseprobe").to_string_lossy().replace('/', "\\");
-    assert_ne!(upper, lower);
+    if std::env::consts::OS == "windows" {
+        let upper = abs("CaseProbe").to_string_lossy().replace('/', "\\");
+        let lower = abs("caseprobe").to_string_lossy().replace('/', "\\");
+        assert_ne!(upper, lower);
 
-    create(&store, "大写", &[PathBuf::from(&upper)]);
-    let error = store
-        .create_project("小写".to_string(), vec![PathBuf::from(&lower)])
-        .expect_err("case-folded duplicate root rejected");
-    assert!(error.to_string().contains("overlaps project"));
-}
-
-#[test]
-#[cfg(unix)]
-fn posix_root_keys_stay_case_sensitive() {
-    // Unix 文件系统大小写敏感:两种大小写写法是两个不同 root,都允许创建。
-    let temp = tempfile::tempdir().expect("tempdir");
-    let store = store_in(&temp);
-    create(&store, "大写", &[abs("CaseProbe")]);
-    create(&store, "小写", &[abs("caseprobe")]);
-    assert_eq!(store.list().len(), 2);
+        create(&store, "大写", &[PathBuf::from(&upper)]);
+        let error = store
+            .create_project("小写".to_string(), vec![PathBuf::from(&lower)])
+            .expect_err("case-folded duplicate root rejected");
+        assert!(error.to_string().contains("overlaps project"));
+    } else {
+        create(&store, "大写", &[abs("CaseProbe")]);
+        create(&store, "小写", &[abs("caseprobe")]);
+        assert_eq!(store.list().len(), 2);
+    }
 }
