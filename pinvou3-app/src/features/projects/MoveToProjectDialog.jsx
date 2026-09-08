@@ -147,7 +147,12 @@ const MoveToProjectDialog = ({
             <X size={16} />
           </button>
         </div>
-        {showSearch && (
+        {/*
+          搜索框只属于"列表选择模式"(从会话菜单进入,未带预置目标)。拖拽
+          落点已确定目标项目,弹窗只做"添加文件夹"确认——搜索框在那里没有
+          可解释的意义;项目少(≤6)时同样直接列出。
+        */}
+        {!pendingAddFolder && showSearch && (
           <div className="px-4 pb-2">
             <div className="flex h-9 items-center gap-2 rounded-full px-3 bg-[#EAECEF] dark:bg-[#303134]">
               <Search size={14} className="shrink-0 text-[#5F6368] dark:text-[#9AA0A6]" />
