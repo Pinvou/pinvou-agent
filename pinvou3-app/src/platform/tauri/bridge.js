@@ -1544,6 +1544,10 @@
     remoteControl: ["webAccess"],
     updater: ["updateCancelling", "updateCheckError", "updateChecking", "updateDownloading", "updateError", "updateInfo", "updateProgress", "updateReady"],
     dependencies: ["deps", "depsChecking", "depsInstallError", "depsInstallProgress", "depsInstalling"],
+    // Registered by the projects feature (bridge/projects.js). Must stay in
+    // sync with APP_BRIDGE_STATE_DOMAINS in main.jsx — locked by
+    // tests/bridge_state_domains.test.mjs.
+    projects: ["projectsList"],
   };
   function snapshotStateSlice(domain) {
     const fields = STATE_SLICE_FIELDS[domain];

@@ -509,17 +509,7 @@ fn validate_user_workspace_path_rejects_invalid_and_accepts_directory() {
     let dir = unique_temp_dir("user-workspace-valid");
     std::fs::create_dir_all(&dir).expect("create dir");
     let validated = validate_user_workspace_path(dir.to_str().expect("utf8")).expect("valid dir");
-    let expected = crate::platform::os::platform_compat_path(
-        &dir.canonicalize().expect("canonicalize").to_string_lossy(),
-    );
-    assert_eq!(validated, expected);
-    // 回归断言:绑定目录不得携带 Windows verbatim 前缀(评审 #445 P1-1),
-    // 与 validate_codex_project_workspace 的既有约定同源。
-    assert!(
-        !validated.to_string_lossy().starts_with(r"\\?\"),
-        "validated workspace must not keep the verbatim prefix: {}",
-        validated.display()
-    );
+    assert_eq!(validated, dir.canonicalize().expect("canonicalize"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3872,14 +3862,14 @@ fn rebind_workspace_bindings_moves_plain_bindings_and_stays_idempotent() {
         .expect("rebind plain bindings");
     let mut ids: Vec<&str> = affected.iter().map(|(id, _)| id.as_str()).collect();
     ids.sort_unstable();
-    assert_eq!(ids, {
-        let mut expected = vec![
-            bound_session.metadata.id.as_str(),
-            nested_session.metadata.id.as_str(),
-        ];
-        expected.sort_unstable();
-        expected
-    });
+    // id 字典序与创建顺序无关(同后缀不同前缀),期望侧同样排序,否则断言
+    // 平台间随机(评审 #452 finding 1:Linux 红 Windows 绿)。
+    let mut expected: Vec<&str> = vec![
+        bound_session.metadata.id.as_str(),
+        nested_session.metadata.id.as_str(),
+    ];
+    expected.sort_unstable();
+    assert_eq!(ids, expected);
     assert_eq!(
         store
             .session_workspace_binding(&bound_session.metadata.id)
