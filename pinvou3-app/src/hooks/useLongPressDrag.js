@@ -5,7 +5,9 @@ const LONGPRESS_MS = 350;
     // 即移拖拽(移动到项目):按下后立即移动超过阈值进入。不依赖 HTML5 DnD——
     // WebKitGTK 的页内拖放在指针停止移动后不再投递 dragover/drop(悬停后松手
     // 被静默丢弃),Chromium 之外不可依赖;指针路径全平台一致。
-    // { enabled, payload, onHover(key|null), onDrop(key|null, payload) }
+    // { enabled, payload, onBegin(geom), onHover(key|null), onDrop(key|null, payload), onEnd() }
+    // onBegin 在激活瞬间上报抓取几何(与 tear-off 的 info 同构,驱动跟手
+    // ghost);onEnd 在 drop/cancel 之后必然回调,用于收起 ghost。
     const useLongPressDrag = (kind, onPickUp, moveDrag) => {
       const startRef = useRef(null);
       const timerRef = useRef(null);
@@ -43,6 +45,7 @@ const LONGPRESS_MS = 350;
             : null;
           moveDrag.onDrop(dropTarget ? dropTarget.getAttribute('data-drop-key') : null, session.payload);
         }
+        if (moveDrag && moveDrag.onEnd) moveDrag.onEnd();
       };
       const onPointerDown = (e) => {
         if (e.button !== 0 || !kind) return;
@@ -92,10 +95,19 @@ const LONGPRESS_MS = 350;
           // 优先即移拖拽(项目视图里拖会话);没有该模式时维持旧语义:
           // 快速移动交给原生 HTML5 拖拽/普通点击取消。
           if (moveDragEnabled()) {
+            const geom = {
+              dx: s.x - s.rect.left,
+              dy: s.y - s.rect.top,
+              w: s.rect.width,
+              h: s.rect.height,
+              startX: s.x,
+              startY: s.y,
+            };
             clearPress();
             moveDragRef.current = { active: true, payload: moveDrag.payload, lastX: e.clientX, lastY: e.clientY };
             setMoveDragging(true);
             try { s.currentTarget.setPointerCapture(s.pointerId); } catch { /* 已释放等边缘:捕获失败不影响命中测试 */ }
+            if (moveDrag && moveDrag.onBegin) moveDrag.onBegin(geom);
             return;
           }
           clearPress();

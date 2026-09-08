@@ -22,11 +22,8 @@ const ProjectGroupHeader = ({
   onConvert,
   onRename,
   onDelete,
-  // 指针拖拽的命中标记:源行松手时按 data-drop-key 命中(项目组/未分组桶)。
-  // 不再使用 HTML5 drop 处理器——WebKitGTK 页内拖放在指针停止移动后不再
-  // 投递 dragover/drop,悬停后松手会被静默丢弃;高亮环改由父级在指针
-  // 悬停时经 dropActive 驱动。
-  dropKey,
+  // 指针拖拽的落点在分组容器(main.jsx 的 wrapper 带 data-drop-key,组头与
+  // 会话行都算命中);这里只渲染高亮环(父级 dropActive 驱动)。
   onRebind,
   // 每个失效 root 一个徽标入口(逐根重绑定):部分失效的项目也有修复路径,
   // 且一根重绑后其余失效根的入口不会消失。
@@ -151,8 +148,6 @@ const ProjectGroupHeader = ({
   return (
     <div
       role="presentation"
-      data-project-drop-target={dropKey || undefined}
-      data-drop-key={dropKey || undefined}
       className={`group/header w-full h-7 flex items-center rounded-full text-[12px] transition-colors ${dropActive
         ? 'ring-1 ring-[#0B57D0] bg-[#E8F0FE] dark:ring-[#A8C7FA] dark:bg-[#1F2A3D]'
         : theme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}

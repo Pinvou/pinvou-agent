@@ -2457,9 +2457,39 @@ function workspaceDisplayName(path) {
         // 内部同样有 busy 守卫),不额外打断。
         handleMoveSessionToProject(sessionId, projectId, false);
       };
-      // 指针拖拽(移动到项目)的悬停/落点回调:命中标记是组头的
-      // data-drop-key(项目组 'project:<id>' / 未分组桶 UNGROUPED)。
-      // 悬停只点亮一个环,落点分发到与菜单/旧 HTML5 路径同源的处理函数。
+      // 指针拖拽(移动到项目)的悬停/落点回调:命中标记是分组容器的
+      // data-drop-key(项目组 'project:<id>' / 未分组桶 UNGROUPED),组头与会话
+      // 行区域都算落点。悬停只点亮一个环,落点分发到与菜单路径同源的处理函数。
+      // ghost(跟手标签副本)复用 tear-off avatar 的视觉与跟随方式。
+      const [sessionDragGhost, setSessionDragGhost] = useState(null); // {label,sessionId,dx,dy,w,h,x,y}
+      const sessionDragGhostOffsetRef = useRef({ dx: 0, dy: 0 });
+      const sessionDragGhostActive = !!sessionDragGhost;
+      useEffect(() => {
+        if (!sessionDragGhostActive) return;
+        const prevUS = document.body.style.userSelect, prevCur = document.body.style.cursor;
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = 'grabbing';
+        const onMove = (e) => {
+          const o = sessionDragGhostOffsetRef.current;
+          setSessionDragGhost(g => (g ? { ...g, x: e.clientX - o.dx, y: e.clientY - o.dy } : g));
+        };
+        window.addEventListener('pointermove', onMove);
+        return () => {
+          window.removeEventListener('pointermove', onMove);
+          document.body.style.userSelect = prevUS;
+          document.body.style.cursor = prevCur;
+        };
+      }, [sessionDragGhostActive]);
+      const handleDndBegin = (geom) => {
+        sessionDragGhostOffsetRef.current = { dx: geom.dx, dy: geom.dy };
+        setSessionDragGhost({
+          label: geom.label,
+          sessionId: geom.sessionId,
+          w: geom.w, h: geom.h,
+          x: geom.startX - geom.dx,
+          y: geom.startY - geom.dy,
+        });
+      };
       const handleDndHover = (key) => {
         setDropTargetGroupKey((prev) => (prev === (key || null) ? prev : (key || null)));
       };
@@ -2804,8 +2834,10 @@ function workspaceDisplayName(path) {
               ? { sessionId: chat.id }
               : undefined}
             dndDisabled={!!dragAvatar}
+            onDndBegin={handleDndBegin}
             onDndHover={handleDndHover}
             onDndDrop={handleDndDrop}
+            onDndEnd={() => setSessionDragGhost(null)}
             dragKind={detachKind}
             dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
             onPickUp={canDetachWindows ? ((geom) => beginTearOff(detachKind, chat.id, chat.title, geom)) : undefined}
@@ -2826,8 +2858,6 @@ function workspaceDisplayName(path) {
           return {
             onRename: (name) => handleRenameProject(group.projectId, name),
             onDelete: () => handleDeleteProject(group.projectId),
-            // 指针拖拽命中标记:源行松手按 data-drop-key 分发(handleDndDrop)。
-            dropKey: group.key,
             unavailableRoots: (group.roots || [])
               .filter(root => !(root && typeof root === 'object' ? root.available : root))
               .map(root => String(typeof root === 'object' ? root.path : root)),
@@ -2842,7 +2872,7 @@ function workspaceDisplayName(path) {
           };
         }
         if (group.kind === 'ungrouped') {
-          return { dropKey: group.key };
+          return {};
         }
         return {};
       };
@@ -2974,6 +3004,16 @@ function workspaceDisplayName(path) {
               background: activeTheme === 'dark' ? '#A8C7FA' : '#0B57D0', color: activeTheme === 'dark' ? '#041E49' : '#ffffff',
               boxShadow:'0 14px 34px rgba(0,0,0,.5)', transform:'scale(1.03)', opacity:0.96 }}>
               {dragAvatar.label}
+            </div>
+          )}
+          {/* 移动到项目的指针拖拽 ghost:同款跟手视觉(锁定抓取相对位置) */}
+          {sessionDragGhost && (
+            <div style={{ position:'fixed', left: sessionDragGhost.x, top: sessionDragGhost.y, width: sessionDragGhost.w, height: sessionDragGhost.h,
+              pointerEvents:'none', zIndex:9999, borderRadius:14, overflow:'hidden', whiteSpace:'nowrap',
+              display:'flex', alignItems:'center', padding:'0 16px', fontWeight:600, fontSize:15,
+              background: activeTheme === 'dark' ? '#A8C7FA' : '#0B57D0', color: activeTheme === 'dark' ? '#041E49' : '#ffffff',
+              boxShadow:'0 14px 34px rgba(0,0,0,.5)', transform:'scale(1.03)', opacity:0.96 }}>
+              {sessionDragGhost.label}
             </div>
           )}
 
@@ -3412,8 +3452,18 @@ function workspaceDisplayName(path) {
                           )}
                           {sidebarFolderGroups.map((group) => {
                             const isOpen = folderGroupOpen[group.key] ?? true;
+                            // 落点=整个分组区域(组头+会话行):命中测试从任意
+                            // 子元素经 closest() 爬到这里的 data-drop-key。
+                            // 目录分组(物理视图)不作为项目拖拽落点。
+                            const groupDropKey = group.kind === 'project' || group.kind === 'ungrouped'
+                              ? group.key
+                              : undefined;
                             return (
-                              <div key={group.key}>
+                              <div
+                                key={group.key}
+                                data-project-drop-target={groupDropKey || undefined}
+                                data-drop-key={groupDropKey || undefined}
+                              >
                                 <ProjectGroupHeader
                                   label={sidebarGroupLabel(group)}
                                   kind={group.kind}

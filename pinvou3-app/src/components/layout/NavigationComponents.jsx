@@ -206,7 +206,7 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
         color: isDark ? '#fff' : '#1F1F1F',
       };
     };
-    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, onMoveToProject, dragKind = 'session', dragging, onPickUp, dndPayload, dndDisabled, onDndHover, onDndDrop }) => {
+    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, onMoveToProject, dragKind = 'session', dragging, onPickUp, dndPayload, dndDisabled, onDndBegin, onDndHover, onDndDrop, onDndEnd }) => {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
@@ -221,8 +221,10 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
       const drag = useLongPressDrag(sessionDragKind, onPickUp, dndPayload && !dndDisabled ? {
         enabled: true,
         payload: dndPayload.sessionId,
+        onBegin: (geom) => onDndBegin && onDndBegin({ ...geom, label: chat.title, sessionId: dndPayload.sessionId }),
         onHover: onDndHover,
         onDrop: onDndDrop,
+        onEnd: () => onDndEnd && onDndEnd(),
       } : undefined);
       const dragProps = sessionDragKind ? drag.handlers : {};
       const selectChat = () => onSelect(chat.id);

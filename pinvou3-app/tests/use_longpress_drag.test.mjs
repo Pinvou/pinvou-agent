@@ -81,7 +81,7 @@ function makeHarness(options = {}) {
   globalThis.document = createDom(pointTarget);
   const runtime = createHookRuntime();
   globalThis.__pinvouReactHooks = runtime;
-  const events = { hover: [], drops: [], pickups: [] };
+  const events = { hover: [], drops: [], pickups: [], begins: [], ends: [] };
   const surface = {
     captured: [],
     setPointerCapture(id) { this.captured.push(id); },
@@ -114,8 +114,10 @@ function makeHarness(options = {}) {
 const dragCfg = (events) => ({
   enabled: true,
   payload: 'sess-1',
+  onBegin: (geom) => events.begins.push(geom),
   onHover: (key) => events.hover.push(key),
   onDrop: (key, payload) => events.drops.push([key, payload]),
+  onEnd: () => events.ends.push(true),
 });
 
 // ── 即移拖拽(移动到项目)───────────────────────────────────────────────────
@@ -132,6 +134,11 @@ const dragCfg = (events) => ({
   hook.handlers.onPointerMove(h.move(150, 245));
   assert.equal(h.rerender().moveDragging, true);
   assert.deepEqual(h.surface.captured, [7], '激活即 setPointerCapture');
+  assert.equal(h.events.begins.length, 1, '激活瞬间上报抓取几何(驱动 ghost)');
+  assert.deepEqual(
+    { dx: h.events.begins[0].dx, dy: h.events.begins[0].dy, w: h.events.begins[0].w, h: h.events.begins[0].h },
+    { dx: 50, dy: 20, w: 240, h: 44 },
+  );
   assert.deepEqual(h.events.hover, [], '激活瞬间不上报,首次移动才上报');
   // 移到项目组头上 → hover 上报 drop-key;悬停多久都无所谓(指针路径)。
   h.pointTarget.hit = true;
@@ -142,6 +149,7 @@ const dragCfg = (events) => ({
   // 悬停后松手:drop 正常送达(WebKitGTK 的 HTML5 悬停丢 drop 问题不复存在)。
   hook.handlers.onPointerUp(h.up(150, 401));
   assert.deepEqual(h.events.drops, [['project:prj-1', 'sess-1']]);
+  assert.deepEqual(h.events.ends, [true], 'drop 后必然回调 onEnd(收起 ghost)');
   assert.equal(h.rerender().moveDragging, false, '松手复位');
 }
 
@@ -175,6 +183,7 @@ const dragCfg = (events) => ({
   hook.handlers.onPointerCancel();
   assert.deepEqual(h.events.drops, [], 'cancel 不投递落点');
   assert.deepEqual(h.events.hover.slice(-1), [null], 'cancel 清空悬停高亮');
+  assert.deepEqual(h.events.ends, [true], 'cancel 也回调 onEnd');
 }
 
 // ── 长按 350ms 仍是 tear-off 拆窗,与即移拖拽互斥 ────────────────────────────
