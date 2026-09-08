@@ -219,6 +219,7 @@ pub(super) fn rpc_response(
         "result": completion.result,
         "error": completion.error,
         "error_code": completion.error_code,
+        "error_category": completion.error_category,
     })
 }
 
@@ -231,13 +232,20 @@ pub(super) fn rpc_error_completion(
         result: Value::Null,
         error: Some(error.into().chars().take(16_384).collect()),
         error_code: Some(code.into()),
+        error_category: None,
     }
 }
 
+/// `error_code`/`error_category` carry the desktop command's structured
+/// `VoiceCommandError` identity to the browser lane, whose RPC proxy only
+/// forwards the (Chinese) message text; without them the web lane's
+/// `normalizeVoiceError` code mapping is unreachable for Rust errors.
 pub(super) fn bounded_rpc_completion(
     ok: bool,
     result: Option<Value>,
     error: Option<String>,
+    error_code: Option<String>,
+    error_category: Option<String>,
 ) -> RpcCompletion {
     let result = result.unwrap_or(Value::Null);
     let response_bytes = serde_json::to_vec(&result)
@@ -256,7 +264,8 @@ pub(super) fn bounded_rpc_completion(
         ok,
         result,
         error: error.map(|message| message.chars().take(16_384).collect()),
-        error_code: None,
+        error_code,
+        error_category,
     }
 }
 

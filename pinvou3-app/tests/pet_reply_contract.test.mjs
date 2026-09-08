@@ -49,7 +49,8 @@ assert.match(petWindow, /import \{ renderPetMarkdown \} from ['"]\.\/pet-markdow
 assert.match(petWindow, /dangerouslySetInnerHTML=\{\{ __html: renderPetMarkdown\(source\) \}\}/);
 assert.match(petWindow, /event\.key === ['"]Enter['"] && !event\.shiftKey/);
 assert.match(petWindow, /event\.key === ['"]Escape['"]/);
-assert.match(petWindow, /Math\.min\(element\.scrollHeight, 52\)/);
+assert.match(petWindow, /useAutoResizeTextarea\(/);
+assert.match(petWindow, /max: 52/);
 assert.match(petWindow, /className="pet-reply-send-icon"/);
 assert.doesNotMatch(
   petWindow,

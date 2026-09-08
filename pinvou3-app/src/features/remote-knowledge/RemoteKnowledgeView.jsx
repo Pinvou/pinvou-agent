@@ -4,10 +4,13 @@ import {
   AlertTriangle, BookOpen, Check, CheckCircle2, ChevronDown, Copy, Database, Download, FolderPlus,
   Link, Plus, RefreshCw, Search, Server, Trash2, Upload, Users, X,
 } from '../../components/icons.jsx';
+import { useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
 import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { invokeTauri, isTauriAvailable, listenTauri, openTauriDialog, saveTauriDialog } from '../../platform/tauri/client.js';
 import { copyClipboardText } from '../../shared/clipboard.js';
+import { formatBytes } from '../../shared/format-number.js';
+import { applyDocumentDelta, stableAccentColor } from '../../shared/knowledge-utils.js';
 import remoteKnowledgeHeroImage from '../../assets/remote-knowledge/remote-knowledge-hero.webp';
 
 const panel = 'border border-[#ececf1] bg-white dark:border-white/10 dark:bg-[#1E1F20]';
@@ -23,7 +26,6 @@ const iconButton = 'grid h-8 w-8 shrink-0 place-items-center rounded-full text-[
 const field = 'h-10 w-full rounded-xl border border-[#dfe3ea] bg-white px-3.5 text-[13px] text-[#1F1F1F] outline-none transition-shadow placeholder:text-[#8b8d94] focus:border-[#0B57D0] focus:ring-2 focus:ring-[#0B57D0]/10 dark:border-white/10 dark:bg-[#171719] dark:text-[#E3E3E3] dark:focus:border-[#A8C7FA]';
 const ownerSection = 'rounded-2xl border border-[#e3e7ee] bg-white p-4 dark:border-white/10 dark:bg-[#1E1F20] sm:p-5';
 const ownerTab = 'inline-flex h-10 min-w-0 items-center justify-center gap-2 rounded-lg px-3 text-[13px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0B57D0]/25';
-const collectionPalette = ['#3f7bf0', '#7b5fe6', '#1aa07a', '#d6873e', '#d6589a', '#4b7bd6'];
 const documentPageSize = 200;
 const documentStatusBatchSize = 500;
 const uploadIndexPollIntervalMs = 1000;
@@ -66,16 +68,22 @@ async function settleDocumentStatusBatches(documentIds, deadline, requestBatch) 
     : []));
 }
 
-function stableColor(value) {
-  const hash = [...String(value || '')].reduce((total, character) => total + character.codePointAt(0), 0);
-  return collectionPalette[Math.abs(hash) % collectionPalette.length];
-}
-
-function formatBytes(bytes) {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+// Page-level and owner panel share one success / error notice. Differences preserved as-is: page level pins
+// role=status, a break-all body and a plain close button; the owner panel uses role=alert + a break-words body on errors,
+// and an icon close button with aria-label. role can be overridden explicitly; defaults are alert for errors, status for success.
+function NoticeBanner({ notice, onClose, role, owner = false, closeLabel }) {
+  if (!notice) return null;
+  const error = notice.type === 'error';
+  return (
+    <div
+      role={role || (error ? 'alert' : 'status')}
+      className={`flex items-start gap-2 rounded-xl border px-3.5 py-3 text-[13px] ${error ? 'border-[#d63a3a]/20 bg-[#d63a3a]/8 text-[#b72f2f]' : 'border-[#18a957]/20 bg-[#18a957]/8 text-[#16894a]'}`}
+    >
+      {error ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
+      <span className={`min-w-0 flex-1 ${owner ? 'break-words' : 'break-all'}`}>{notice.text}</span>
+      <button type="button" className={owner ? iconButton : 'opacity-70 hover:opacity-100'} onClick={onClose} aria-label={closeLabel}><X size={15} /></button>
+    </div>
+  );
 }
 
 function OverlayDialog({
@@ -613,20 +621,14 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [closeOwnerPanel, confirmation, documentToTrash, finishConfirmation, isBusy, joinFeedback?.status, showCollectionCreator, showConnector, showOwnerPanel, showPublishDialog, showRecoveryCode, showRestoreDialog, showUploadDialog, uploadHasStarted]);
-  useEffect(() => {
-    if (!showUploadSourceMenu) return;
-    const closeMenu = event => {
-      if (event.key === 'Escape' || !uploadSourceMenuRef.current?.contains(event.target)) {
-        setShowUploadSourceMenu(false);
-      }
-    };
-    window.addEventListener('keydown', closeMenu);
-    window.addEventListener('pointerdown', closeMenu);
-    return () => {
-      window.removeEventListener('keydown', closeMenu);
-      window.removeEventListener('pointerdown', closeMenu);
-    };
-  }, [showUploadSourceMenu]);
+  // Escape / outside-click close for the add-content menu; escapeOnWindow keeps the original window-level keydown listener,
+  // preserving the original ordering against the popover Escape chain above (closeOnEscape).
+  useOutsidePointerClose(
+    showUploadSourceMenu,
+    () => setShowUploadSourceMenu(false),
+    [uploadSourceMenuRef],
+    { escape: true, escapeOnWindow: true },
+  );
 
   async function connectServer() {
     if (!connectionDetailsReady || connecting || connectInFlightRef.current) return;
@@ -735,102 +737,79 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     await refreshPendingJoins();
   }
 
-  async function installHost() {
+  // Common skeleton for the install / upgrade / reconnect host operations: in-flight re-entry guard, busyCounts bookkeeping,
+  // hostProgress phase advancement, and a 1.2s clear after success. Differences are parameterized: install/reconnect
+  // selectServer on success; on failure install/upgrade keep current.percent || 5 while reconnect pins 100.
+  async function runHostOperation({
+    busyKey,
+    operation,
+    command,
+    successText,
+    selectConnection = false,
+    failurePercent,
+  }) {
     if (hostOperationInFlightRef.current) return;
     hostOperationInFlightRef.current = true;
-    setBusyCounts(current => ({ ...current, 'install-host': (current['install-host'] || 0) + 1 }));
+    setBusyCounts(current => ({ ...current, [busyKey]: (current[busyKey] || 0) + 1 }));
     setNotice(null);
-    setHostProgress({ operation: 'install', phase: 'prepare', percent: 5, error: null });
+    setHostProgress({ operation, phase: 'prepare', percent: 5, error: null });
     try {
-      const connection = await invokeTauri('shared_kb_host_install');
+      const connection = await invokeTauri(command);
       await Promise.all([loadHostStatus(), loadConnections()]);
-      selectServer(connection.serverId);
-      setHostProgress(current => (current?.operation === 'install'
-        ? { operation: 'install', phase: 'complete', percent: 100, error: null }
+      if (selectConnection) selectServer(connection.serverId);
+      setHostProgress(current => (current?.operation === operation
+        ? { operation, phase: 'complete', percent: 100, error: null }
         : null));
-      setNotice({ type: 'success', text: t.remoteKbHostCreated });
+      setNotice({ type: 'success', text: successText });
       window.setTimeout(() => setHostProgress(current => (
-        current?.operation === 'install' && current.phase === 'complete' ? null : current
+        current?.operation === operation && current.phase === 'complete' ? null : current
       )), 1200);
     } catch (error) {
       const message = String(error);
-      setHostProgress(current => (current?.operation === 'install' ? {
-        operation: 'install', phase: 'failed', percent: current.percent || 5, error: message,
+      setHostProgress(current => (current?.operation === operation ? {
+        operation, phase: 'failed', percent: failurePercent(current), error: message,
       } : null));
       setNotice({ type: 'error', text: message });
     } finally {
       hostOperationInFlightRef.current = false;
       setBusyCounts(current => {
         const next = { ...current };
-        delete next['install-host'];
+        delete next[busyKey];
         return next;
       });
     }
   }
 
-  async function upgradeHost() {
-    if (hostOperationInFlightRef.current) return;
-    hostOperationInFlightRef.current = true;
-    setBusyCounts(current => ({ ...current, 'upgrade-host': (current['upgrade-host'] || 0) + 1 }));
-    setNotice(null);
-    setHostProgress({ operation: 'upgrade', phase: 'prepare', percent: 5, error: null });
-    try {
-      await invokeTauri('shared_kb_host_upgrade');
-      await Promise.all([loadHostStatus(), loadConnections()]);
-      setHostProgress(current => (current?.operation === 'upgrade'
-        ? { operation: 'upgrade', phase: 'complete', percent: 100, error: null }
-        : null));
-      setNotice({ type: 'success', text: t.remoteKbHostUpgraded });
-      window.setTimeout(() => setHostProgress(current => (
-        current?.operation === 'upgrade' && current.phase === 'complete' ? null : current
-      )), 1200);
-    } catch (error) {
-      const message = String(error);
-      setHostProgress(current => (current?.operation === 'upgrade' ? {
-        operation: 'upgrade', phase: 'failed', percent: current.percent || 5, error: message,
-      } : null));
-      setNotice({ type: 'error', text: message });
-    } finally {
-      hostOperationInFlightRef.current = false;
-      setBusyCounts(current => {
-        const next = { ...current };
-        delete next['upgrade-host'];
-        return next;
-      });
-    }
+  function installHost() {
+    return runHostOperation({
+      busyKey: 'install-host',
+      operation: 'install',
+      command: 'shared_kb_host_install',
+      successText: t.remoteKbHostCreated,
+      selectConnection: true,
+      failurePercent: current => current.percent || 5,
+    });
   }
 
-  async function reconnectHost() {
-    if (hostOperationInFlightRef.current) return;
-    hostOperationInFlightRef.current = true;
-    setBusyCounts(current => ({ ...current, 'reconnect-host': (current['reconnect-host'] || 0) + 1 }));
-    setNotice(null);
-    setHostProgress({ operation: 'reconnect', phase: 'prepare', percent: 5, error: null });
-    try {
-      const connection = await invokeTauri('shared_kb_host_reconnect');
-      await Promise.all([loadHostStatus(), loadConnections()]);
-      selectServer(connection.serverId);
-      setHostProgress(current => (current?.operation === 'reconnect'
-        ? { operation: 'reconnect', phase: 'complete', percent: 100, error: null }
-        : null));
-      setNotice({ type: 'success', text: t.remoteKbHostReconnected });
-      window.setTimeout(() => setHostProgress(current => (
-        current?.operation === 'reconnect' && current.phase === 'complete' ? null : current
-      )), 1200);
-    } catch (error) {
-      const message = String(error);
-      setHostProgress(current => (current?.operation === 'reconnect'
-        ? { operation: 'reconnect', phase: 'failed', percent: 100, error: message }
-        : null));
-      setNotice({ type: 'error', text: message });
-    } finally {
-      hostOperationInFlightRef.current = false;
-      setBusyCounts(current => {
-        const next = { ...current };
-        delete next['reconnect-host'];
-        return next;
-      });
-    }
+  function upgradeHost() {
+    return runHostOperation({
+      busyKey: 'upgrade-host',
+      operation: 'upgrade',
+      command: 'shared_kb_host_upgrade',
+      successText: t.remoteKbHostUpgraded,
+      failurePercent: current => current.percent || 5,
+    });
+  }
+
+  function reconnectHost() {
+    return runHostOperation({
+      busyKey: 'reconnect-host',
+      operation: 'reconnect',
+      command: 'shared_kb_host_reconnect',
+      successText: t.remoteKbHostReconnected,
+      selectConnection: true,
+      failurePercent: () => 100,
+    });
   }
 
   async function openOwnerPanel() {
@@ -1329,12 +1308,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     setNotice(null);
     documentsRef.current = optimisticDocuments;
     setDocuments(optimisticDocuments);
-    setCollections(current => current.map(collection => (collection.id === document.collectionId ? {
-      ...collection,
-      docCount: Math.max(0, (collection.docCount || 0) + countDelta),
-      chunkCount: Math.max(0, (collection.chunkCount || 0) + countDelta * (document.nChunks || 0)),
-      totalBytes: Math.max(0, (collection.totalBytes || 0) + countDelta * (document.size || 0)),
-    } : collection)));
+    setCollections(current => applyDocumentDelta(current, document.collectionId, document, countDelta));
     setBusyCounts(current => ({ ...current, [busyKey]: (current[busyKey] || 0) + 1 }));
     try {
       await invokeTauri(command, {
@@ -1537,11 +1511,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
         )}
 
         {notice && (
-          <div role="status" className={`flex items-start gap-2 rounded-xl border px-3.5 py-3 text-[13px] ${notice.type === 'error' ? 'border-[#d63a3a]/20 bg-[#d63a3a]/8 text-[#b72f2f]' : 'border-[#18a957]/20 bg-[#18a957]/8 text-[#16894a]'}`}>
-            {notice.type === 'error' ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
-            <span className="min-w-0 flex-1 break-all">{notice.text}</span>
-            <button type="button" className="opacity-70 hover:opacity-100" onClick={() => setNotice(null)}><X size={15} /></button>
-          </div>
+          <NoticeBanner notice={notice} onClose={() => setNotice(null)} role="status" />
         )}
 
         {!!pendingJoins.length && (
@@ -1661,7 +1631,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
               {collections.length ? (
                 <div data-testid="remote-collections-grid" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                   {collections.map(collection => {
-                    const color = stableColor(collection.name);
+                    const color = stableAccentColor(collection.name);
                     const selected = selectedCollectionId === collection.id;
                     return (
                       <article
@@ -1774,7 +1744,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
                         {documentStatusLabel(document.status)}
                       </span>
                       <span className={`w-auto text-right text-[11.5px] md:w-20 ${muted}`}>{document.nChunks}</span>
-                      <span className={`w-auto text-right text-[11.5px] md:w-20 ${muted}`}>{formatBytes(document.size)}</span>
+                      <span className={`w-auto text-right text-[11.5px] md:w-20 ${muted}`}>{formatBytes(document.size, { missing: '0 B' })}</span>
                       <div className="ml-auto flex w-auto items-center justify-end gap-0.5 md:w-28">
                         {!document.deletedAt && <button type="button" className={iconButton} onClick={() => downloadDocument(document)} title={t.remoteKbDownload}><Download size={14} /></button>}
                         {canManage && !document.deletedAt && <button type="button" className={iconButton} onClick={() => replaceDocument(document)} title={t.remoteKbReplace}><RefreshCw size={14} /></button>}
@@ -2038,11 +2008,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
               </div>
 
               {notice && (
-                <div role={notice.type === 'error' ? 'alert' : 'status'} className={`flex items-start gap-2 rounded-xl border px-3.5 py-3 text-[13px] ${notice.type === 'error' ? 'border-[#d63a3a]/20 bg-[#d63a3a]/8 text-[#b72f2f]' : 'border-[#18a957]/20 bg-[#18a957]/8 text-[#16894a]'}`}>
-                  {notice.type === 'error' ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
-                  <span className="min-w-0 flex-1 break-words">{notice.text}</span>
-                  <button type="button" className={iconButton} onClick={() => setNotice(null)} aria-label={t.remoteKbClose}><X size={15} /></button>
-                </div>
+                <NoticeBanner notice={notice} onClose={() => setNotice(null)} owner closeLabel={t.remoteKbClose} />
               )}
 
               {ownerPanelTab === 'people' ? (

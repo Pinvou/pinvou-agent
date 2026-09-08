@@ -481,7 +481,10 @@ command_protocol!(
     voice_protocol,
     "voice.rs",
     [
+        "set_voice_shortcut_enabled",
+        "set_voice_shortcut_recording",
         "transcribe_voice_audio",
+        "postprocess_voice_text",
         "reset_microphone_permission",
         "voice_asr_status",
         "install_voice_asr",
