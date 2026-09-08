@@ -130,16 +130,65 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 ///       connected users to refresh at startup (otherwise the refresh
 ///       waits for the post-first-frame refresh_connector_auth_gates
 ///       backfill).
-pub const BUNDLE_VERSION: &str = concat!("0.27-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.30: wecomcli doc-audit second-round fixes, 21 findings across ten
+///       packs (PR #438, registered in NOTICE-wecom.md). Next free slot
+///       after 0.27 (dws #359, on main) and 0.29 (lark-skills #439, in
+///       review); the extracted-VERSION gate is inequality-only, so
+///       landing order and skipped numbers stay safe. Skill trees are
+///       excluded from the content hash, so the semantic bump is
+///       required for connected users to refresh at startup (otherwise
+///       the refresh waits for the post-first-frame
+///       refresh_connector_auth_gates backfill).
+/// 0.31: lark-skills model-facing doc-audit partition fixes, 21
+///       findings across eight packs (PR #439, registered in
+///       lark-skills/NOTICE.md, verified against CLI behavior and
+///       upstream main): identity-switch consent gates, condition_list
+///       null semantics, workflow outer-field contract, dropdown color
+///       semantics, wiki token-routing split, task search routing, and
+///       deduplications. Next free slot after 0.29 (lark-skills #439,
+///       reserved in review) and 0.30 (wecom #438, on main); the
+///       extracted-VERSION gate is inequality-only, so landing order
+///       and skipped numbers stay safe. Skill trees are excluded from
+///       the content hash, so the semantic bump is required for
+///       connected users to refresh at startup (otherwise the refresh
+///       waits for the post-first-frame refresh_connector_auth_gates
+///       backfill).
+pub const BUNDLE_VERSION: &str = concat!("0.31-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
-/// 骨架 = 身份/底线/工具与事实通用纪律/怎么干/红线/输出，两个模式层占位行：
+/// skeleton = identity / baseline / user memory (placeholder) / tool-and-fact discipline /
+/// how-to / red lines / output; three placeholder lines:
+/// `{{PINVOU3_MEMORY_SECTION}}` at the 「用户记忆」 slot, filled per the memory toggle
+/// (see [`memory_section`]),
 /// `{{PINVOU3_MODE_ENV_SECTION}}`（§工作环境 位）与
 /// `{{PINVOU3_MODE_ARTIFACT_RULE}}`（§工具与事实 的成品条位）。
 /// 拆分说明：work 专属的 §工作环境(L10-13) 与 present_artifact 条(L18) 在原文中
 /// 不连续，纯 concat 无法逐字节复原，故骨架留占位行、按模式替换拼装。
 pub const INSTRUCTIONS_SHARED_MD: &str =
     include_str!("../../../../resources/common/bundle/instructions-shared.md");
+
+/// Body of the 「用户记忆」 (user memory) section; fills the `{{PINVOU3_MEMORY_SECTION}}`
+/// placeholder line when enabled, trailing inter-section blank line included.
+/// Long-term memory is an optional capability: off by default, and force-disabled for
+/// non-Simplified-Chinese users by prefs' `enforce_memory_locale_policy`. If the section
+/// went into the skeleton unconditionally, a memory-disabled user saying 「记住」
+/// ("remember this") would get the guided confirmation 「已记下」 ("noted") while the
+/// background writes no memory — exactly violating rule 3 of the section, 「不编造已记住
+/// 的内容」 ("never fabricate remembered content"). So the skeleton keeps only the
+/// placeholder line, and the session render layer fills the body or drops the whole line
+/// based on `memory_enabled`; it stays out of the `instructions_md` OnceLock and shares
+/// `{{PINVOU3_SUDO_INSTRUCTION}}`'s lifecycle (setting changes take effect on new sessions).
+const MEMORY_SECTION_MD: &str = "## 用户记忆\n\
+- 用户明确要你记住(「记住」「记一下」「帮我记下」/\"remember this\" 之类):**简短确认已记下,同轮照常把任务做完**;要点由应用后台在回合结束后写入长期记忆(个别情况会先请用户确认),无需你复述或调用工具。\n\
+- 对「以后都…」这类没有明说「记」的偏好表述:自然回应即可,不要断言已记住,是否入库由后台判断。\n\
+- **不编造、不夸大已记住的内容**;不确定是否已记住就如实说,别假装记得。与当下指令冲突时以当下指令为准(权威顺序见「底线」)。\n\n";
+
+/// Fill for the `{{PINVOU3_MEMORY_SECTION}}` placeholder line (newline included): the
+/// [`MEMORY_SECTION_MD`] when memory is on, an empty string when off (the placeholder
+/// line's own newline makes the whole line disappear).
+pub(crate) fn memory_section(enabled: bool) -> &'static str {
+    if enabled { MEMORY_SECTION_MD } else { "" }
+}
 
 /// Work-mode layer: the `## 工作环境` section for artifact-panel and tmp/ semantics, the
 /// `## Browser capabilities` section as the model's static discovery entry point for the
@@ -278,9 +327,8 @@ pub const MODE_EXECUTE_MD: &str = "\
 ## Mode: Execute
 
 Tools run without per-call approval — the user has already authorized
-execution. Produce files and run commands now; never end the turn with
-a promise of future action. Then verify and report. Follow each
-message's `<system-reminder>`.";
+execution. Produce files and run commands now, then verify and report.
+Follow each message's `<system-reminder>`.";
 
 /// pinvou3 版静态层 composer：接管底座全部编译期静态文案
 /// (taxonomy/base/personality/mode/approval/ContextMgmt/compact 模板)。
@@ -727,6 +775,35 @@ mod tests {
         let tools_at = INSTRUCTIONS_SHARED_MD.find("## 工具与事实").unwrap();
         let how_at = INSTRUCTIONS_SHARED_MD.find("## 怎么干").unwrap();
         assert!(env_at < tools_at && tools_at < artifact_at && artifact_at < how_at);
+        // The 「用户记忆」 placeholder line sits right after 「底线」 and before the
+        // mode-layer environment section (see where the baseline's authority order is cited).
+        let bottom_at = INSTRUCTIONS_SHARED_MD.find("## 底线").unwrap();
+        let memory_at = INSTRUCTIONS_SHARED_MD
+            .find("{{PINVOU3_MEMORY_SECTION}}")
+            .expect("memory placeholder must stay in the shared skeleton");
+        assert!(bottom_at < memory_at && memory_at < env_at);
+    }
+
+    #[test]
+    fn memory_section_renders_verbatim_when_enabled_and_vanishes_when_disabled() {
+        // Enabled: the whole section body lands in the skeleton verbatim with no
+        // placeholder left; the section directly follows the baseline section.
+        let enabled =
+            INSTRUCTIONS_SHARED_MD.replace("{{PINVOU3_MEMORY_SECTION}}\n", memory_section(true));
+        assert!(enabled.contains(MEMORY_SECTION_MD));
+        assert!(!enabled.contains("{{PINVOU3_MEMORY_SECTION}}"));
+        assert!(enabled.contains("语气平实,少感叹号与最高级。\n\n## 用户记忆\n"));
+        // The section's trailing blank line catches the mode-layer environment placeholder,
+        // preserving the original inter-section blank line.
+        assert!(enabled.contains("权威顺序见「底线」)。\n\n{{PINVOU3_MODE_ENV_SECTION}}\n"));
+        // Disabled: the whole line disappears, no blank line or placeholder left; exactly
+        // one blank line remains between the baseline section and the mode-layer
+        // environment section.
+        let disabled =
+            INSTRUCTIONS_SHARED_MD.replace("{{PINVOU3_MEMORY_SECTION}}\n", memory_section(false));
+        assert!(!disabled.contains("用户记忆"));
+        assert!(!disabled.contains("{{PINVOU3_MEMORY_SECTION}}"));
+        assert!(disabled.contains("语气平实,少感叹号与最高级。\n\n{{PINVOU3_MODE_ENV_SECTION}}\n"));
     }
 
     #[test]
@@ -766,6 +843,46 @@ mod tests {
         let rendered = instructions_code_md("你在本会话专属工作目录中工作,相对路径即相对该目录;");
         assert!(rendered.contains("你在本会话专属工作目录中工作"));
         assert!(!rendered.contains("项目目录"));
+    }
+
+    /// Prompt-composition regression for the auto-approval override: only code
+    /// sessions compose the base core_execution loop, so only their rendered
+    /// instructions may carry the reconciling note (current production posture
+    /// is auto-approval; runtime truth stays with the per-turn reminder), and
+    /// the note must sit after the base approval clause it qualifies. Also
+    /// locks the MODE_EXECUTE_MD dedup contract: the "never end the turn with
+    /// a promise" sentence was removed because the shared skeleton carries the
+    /// equivalent prohibition.
+    #[test]
+    fn code_instructions_carry_auto_approval_note_work_mode_does_not() {
+        let rendered = instructions_code_md("你在本会话专属工作目录中工作,相对路径即相对该目录;");
+        let core = deepseek_tui::prompts::CORE_EXECUTION_PROFILE_PROMPT.trim();
+        let core_at = rendered
+            .find(core)
+            .expect("code instructions must compose the base core_execution loop");
+        let note_at = rendered
+            .find("gated write 工具走 auto-approval")
+            .expect("code instructions must carry the auto-approval note");
+        assert!(
+            note_at > core_at,
+            "auto-approval note must follow the base approval clause it qualifies"
+        );
+        assert!(
+            rendered.contains("运行时批准姿态以每轮 `<system-reminder>` 为准"),
+            "auto-approval note must defer runtime posture to the per-turn reminder"
+        );
+
+        let work = instructions_md();
+        assert!(
+            !work.contains("auto-approval"),
+            "work mode never composes core_execution, so it must not carry the note"
+        );
+
+        assert!(
+            INSTRUCTIONS_SHARED_MD.contains("说做就做"),
+            "MODE_EXECUTE_MD dropped its promise prohibition only because the shared skeleton carries it"
+        );
+        assert!(!MODE_EXECUTE_MD.contains("promise of future action"));
     }
 
     fn run_depth_guard(bundle: &Pinvou3Bundle, tool: &str, args: &str) -> std::process::Output {

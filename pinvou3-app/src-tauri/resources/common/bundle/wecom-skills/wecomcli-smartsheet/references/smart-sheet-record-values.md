@@ -20,7 +20,7 @@
 | `email` | string | `"<email>"` |
 | `single_select` | Option 数组 | `[{"id": "服务端返回的选项ID", "text": "选项A"}]` |
 | `reference` | CellReferenceValue 数组 | `[{"record_id": "rec_xxx"}]`（关联的记录 ID） |
-| `location` | CellLocationValue 数组 | `[{"id": "<腾讯地图给的UID>", "source_type": 1, "title": "<地点名称>", "latitude": "<纬度>", "longitude": "<经度>", "address": "<详细地址>"}]` |
+| `location` | CellLocationValue 数组 | `[{"id": "<腾讯地图给的UID>", "source_type": 1, "title": "<地点名称>", "latitude": "<纬度>", "longitude": "<经度>", "address": "<详细地址>"}]`（当前无法写入：无法获取腾讯地图位置 ID，见下文说明；请提醒用户手动插入） |
 | `autonumber` | 只读 | 系统自动生成，不可写入 |
 | `currency` | double | `99.99` |
 | `wwgroup` | CellGroupValue 数组 | `[{"chat_id": "<chat_id>"}]` |
@@ -63,10 +63,10 @@ wecom-cli smartsheet files upload --json '{"media_id": "<media_id>", "docid": "<
 
 ```bash
 # 上传图片
-wecom-cli smartsheet images upload --json '{"media_id": "mcabc123...", "docid": "a1_xxx"}'
+wecom-cli smartsheet images upload --json '{"media_id": "mcabc123...", "docid": "s3_xxx"}'
 
 # 上传非图片文件
-wecom-cli smartsheet files upload --json '{"media_id": "mcabc123...", "docid": "a1_xxx"}'
+wecom-cli smartsheet files upload --json '{"media_id": "mcabc123...", "docid": "s3_xxx"}'
 ```
 
 ---

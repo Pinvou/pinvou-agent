@@ -263,6 +263,8 @@ command_protocol!(
     [
         "update_memory_profile",
         "get_memory_overview",
+        "organize_memory",
+        "get_memory_organize_history",
         "confirm_pending_memory",
         "ignore_pending_memory",
         "never_pending_memory",
@@ -484,7 +486,10 @@ command_protocol!(
     voice_protocol,
     "voice.rs",
     [
+        "set_voice_shortcut_enabled",
+        "set_voice_shortcut_recording",
         "transcribe_voice_audio",
+        "postprocess_voice_text",
         "reset_microphone_permission",
         "voice_asr_status",
         "install_voice_asr",

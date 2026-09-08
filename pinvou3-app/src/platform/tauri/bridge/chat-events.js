@@ -67,6 +67,10 @@
         .catch(function () {});
     }
 
+    function bridgeMessages() {
+      return window.PinvouBridgeMessages || {};
+    }
+
     function visibleUserTurnIndex() {
       const count = state.chatItems.filter(function (item) { return item && item.type === "user"; }).length;
       return Math.max(0, count - 1);
@@ -109,21 +113,38 @@
     function recordTurnCompleted(payload) {
       const openStart = latestOpenTimelineStart();
       const turnId = state.activeTurnTimelineId || (openStart && openStart.turn_id);
-      if (!turnId) return;
+      if (!turnId) return null;
+      if (payload && payload.error && !(payload.user_error || payload.userError)) {
+        const messages = bridgeMessages();
+        const userError = typeof messages.modelServiceUserError === "function"
+          ? messages.modelServiceUserError(payload, state)
+          : null;
+        if (userError) {
+          payload.user_error = userError;
+          payload.userError = userError;
+        }
+      }
       const timestamp = Date.now();
       const start = openStart || (state.turnTimeline || []).find(function (event) {
         return event && event.turn_id === turnId && event.event === "user_start";
       });
-      state.turnTimeline = [...(state.turnTimeline || []), {
+      const record = {
         turn_id: turnId,
         event: "assistant_done",
         timestamp,
         ts: new Date(timestamp).toISOString(),
         status: payload && payload.status || (payload && payload.error ? "Failed" : "Completed"),
         error: payload && payload.error || null,
+        user_error: payload && (payload.user_error || payload.userError) || null,
         ui_turn_index: start && start.ui_turn_index,
-      }];
+      };
+      state.turnTimeline = [...(state.turnTimeline || []), record];
       state.activeTurnTimelineId = null;
+      // The return value drives the terminal-bubble hiding decision: only a
+      // timeline terminal record that was actually written with an error
+      // lets the timeline error card take over (hiding otherwise = silent
+      // swallow).
+      return record;
     }
 
     function latestTimelineCompletion(events) {
@@ -930,23 +951,51 @@
     if (!requiresAuthorityReconcile) markScheduledInitialTurnTerminal(sid);
     runSyncOnSession(sid, function () {
       const error = e.payload && e.payload.error;
-      recordTurnCompleted(e.payload || {});
+      const terminalRecord = recordTurnCompleted(e.payload || {});
       refreshEffectiveModelConfigAfterAuthError(error);
       if (error) {
-        const finalNotice = "⚠️ " + error;
-        const finalNoticeItem = state.chatItems.find(function (item) {
-          return item && item.turnErrorNotice && item.text === finalNotice;
-        });
-        if (finalNoticeItem) {
-          finalNoticeItem.legacyConversationOnly = true;
-        } else {
-          addSystemItem(finalNotice, {
-            turnErrorNotice: true,
-            legacyConversationOnly: true,
+        const messages = bridgeMessages();
+        const addedModelServiceNotice = typeof messages.addModelServiceErrorNotice === "function" &&
+          messages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, true, terminalRecord);
+        if (!addedModelServiceNotice) {
+          // Same premise as addModelServiceErrorNotice: the bubble is only
+          // hidden when the timeline terminal record actually carries an
+          // error (the timeline takes over with the raw error in small
+          // text); otherwise it stays visible.
+          const timelineTakesOver = !!(terminalRecord && terminalRecord.error);
+          // The fallback bubble must share the transient fallback's
+          // redacted text, or the find-based dedup misses over wording
+          // differences and produces a double bubble.
+          const displayError = typeof messages.redactRawError === "function"
+            ? messages.redactRawError(error, state)
+            : error;
+          const finalNotice = "⚠️ " + displayError;
+          const finalNoticeItem = state.chatItems.find(function (item) {
+            return item && item.turnErrorNotice && item.text === finalNotice;
           });
+          if (finalNoticeItem) {
+            if (timelineTakesOver) finalNoticeItem.legacyConversationOnly = true;
+          } else {
+            addSystemItem(finalNotice, {
+              turnErrorNotice: true,
+              legacyConversationOnly: timelineTakesOver,
+            });
+          }
+        }
+      } else {
+        // Successful (error-free) terminal: the turn has recovered, so the
+        // transient bubbles' "will keep retrying" claim is stale and they
+        // are hidden uniformly (sending already cleared the previous
+        // turn's items).
+        const messages = bridgeMessages();
+        if (typeof messages.settleModelServiceErrorNotices === "function") {
+          messages.settleModelServiceErrorNotices(state);
         }
       }
-      window.PinvouBridgeMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
+      const shellMessages = bridgeMessages();
+      if (typeof shellMessages.showShellCleanupFailure === "function") {
+        shellMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
+      }
       const terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
       const interrupted = ["interrupted", "cancelled", "canceled"].includes(terminalStatus);
       if (interrupted) preserveInterruptedAssistantPresentation();
@@ -1115,11 +1164,19 @@
     const error = e.payload && e.payload.error;
     refreshEffectiveModelConfigAfterAuthError(error);
     if (error) {
-      const notice = "⚠️ " + error;
-      const duplicate = state.chatItems.some(function (item) {
-        return item && item.turnErrorNotice && item.text === notice;
-      });
-      if (!duplicate) addSystemItem(notice, { turnErrorNotice: true });
+      const messages = bridgeMessages();
+      const addedModelServiceNotice = typeof messages.addModelServiceErrorNotice === "function" &&
+        messages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, false);
+      if (!addedModelServiceNotice) {
+        const displayError = typeof messages.redactRawError === "function"
+          ? messages.redactRawError(error, state)
+          : error;
+        const notice = "⚠️ " + displayError;
+        const duplicate = state.chatItems.some(function (item) {
+          return item && item.turnErrorNotice && item.text === notice;
+        });
+        if (!duplicate) addSystemItem(notice, { turnErrorNotice: true });
+      }
     }
   }); });
 

@@ -24,6 +24,7 @@ wecom-cli mail get --json '{"mail_ids": ["<mail_id>"]}'
 {
   "mail_list": [
     {
+      "ori_mail_id": "<对应请求的 mail_id>",
       "subject": "...",
       "content": "<Markdown 格式正文内容字符串>",
       "file_path": "<本地正文文件路径（Markdown 格式），与 content 二选一>",

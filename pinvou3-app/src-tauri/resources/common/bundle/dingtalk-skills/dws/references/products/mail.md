@@ -63,7 +63,7 @@
 | `dws mail rule delete` | 删除个人收信规则 |
 | `dws mail rule adjust` | 调整收信规则排序 |
 
-> **查找他人邮箱**（如「获取严龙的邮箱」）→ **不要用 `mailbox list`**，应走三路并发查询，详见「查找他人邮箱地址」章节。
+> **查找他人邮箱**（如「获取严龙的邮箱」）→ **不要用 `mailbox list`**，应走三路邮箱查询流程（依次尝试、取首个有效结果），详见「查找他人邮箱地址」章节。
 
 ---
 
@@ -90,7 +90,7 @@
 ## 命令总览
 
 ### 查询可用邮箱地址
-> **注意：** 仅返回当前登录用户**自己的**邮箱列表，不能用于查找他人邮箱。查找他人邮箱请使用三路并发流程（见"查找他人邮箱地址"章节）。
+> **注意：** 仅返回当前登录用户**自己的**邮箱列表，不能用于查找他人邮箱。查找他人邮箱请使用三路邮箱查询流程（见"查找他人邮箱地址"章节）。
 ```
 Usage:
   dws mail mailbox list [flags]
@@ -127,14 +127,14 @@ Flags:
 
 ### 查找他人邮箱地址（通讯录查人）
 
-> **这不是 `mailbox list`。** 当需要获取**某人**的邮箱地址时，必须走以下三路并发查询，取最先返回有效邮箱的结果。禁止臆测邮箱地址。
+> **这不是 `mailbox list`。** 当需要获取**某人**的邮箱地址时，必须走以下三路查询（依次尝试、任一路拿到有效邮箱即采用并停止）。禁止臆测邮箱地址。
 
 **触发场景：** 用户说「获取/查找/得到 某人的邮箱地址」、「给某人发邮件」、「某人发给我的邮件」等任何涉及按姓名找邮箱的场景。
 
-**三路并发查询流程：**
+**三路邮箱查询流程（依次尝试，取首个有效结果）：**
 
 ```bash
-# 同时发起以下三路，取最先返回有效邮箱的结果
+# 依次执行以下三路，任一路返回有效邮箱即采用，不再继续后续路
 # 路径 1：aisearch + contact user get
 dws aisearch person --keyword "姓名" --dimension name --format json
 # → 取 userId，再执行：
@@ -146,7 +146,7 @@ dws mail user search --email <当前邮箱> --keyword "姓名" --format json
 # → 提取 users[].email
 
 # 路径 3：contact user search
-dws contact user search --keyword "姓名" --format json
+dws contact user search --query "姓名" --format json
 # → 提取用户邮箱字段
 ```
 
@@ -904,11 +904,13 @@ Flags:
 Usage:
   dws mail message batch-delete [flags]
 Example:
-  dws mail message batch-delete --email user@company.com --ids <id1>,<id2>
+  dws mail message batch-delete --email user@company.com --ids <id1>,<id2> --yes
 Flags:
       --email string   邮件所属邮箱地址 (必填)
       --ids string     要删除的邮件 ID 列表，逗号分隔 (必填)
 ```
+
+> ⚠️ **危险操作**：此命令会批量删除邮件。建议先通过 `message search` 确认目标邮件后再执行。执行前需向用户确认，同意后追加全局 `--yes` 执行（CLI 对本命令不强制确认门禁，确认是技能层要求）。
 
 ### 批量修改邮件状态
 
@@ -1623,19 +1625,18 @@ Flags:
 
 用户说"我的邮箱/邮箱地址" → `mailbox list`（**仅限查询自己的邮箱，不能查他人**）
 用户说"邮箱详情/邮箱容量/邮箱别名/邮箱 profile" → `mailbox profile --email <邮箱>`
-用户说"获取/查找/得到 某人的邮箱地址" → **不是 `mailbox list`**，走三路并发查询流程（见「查找他人邮箱地址」章节）
+用户说"获取/查找/得到 某人的邮箱地址" → **不是 `mailbox list`**，走三路邮箱查询流程（见「查找他人邮箱地址」章节）
 用户说"找邮件/搜邮件/查邮件" → `message search`
 用户说"看邮件/打开邮件/邮件内容" → 先 `message search` 获取 messageId，再 `message get`
 用户说"批量查看邮件详情/批量打开这些邮件/按多个邮件ID取详情" → `message batch-get --ids <id1,id2,...>`（单次最多 20 个）
 用户说"发邮件/写邮件" → 先 `mailbox list` 获取发件地址，再 `message send`
 用户说“给(某人名字)发邮件” / “查询某人发给我的邮件” / “查询发给某人的邮件” / 任何涉及按人名查找邮箱的场景 →
-  **第一步**：并发同时发起以下三路查询，取最先返回有效邮箱的结果；若三路均无有效邮箱，ask_human 请用户提供，禁止臆测：
+  **第一步**：依次发起以下三路查询，任一路返回有效邮箱即采用并停止；若三路均无有效邮箱，ask_human 请用户提供，禁止臆测：
     1. `aisearch person --keyword <姓名>` → `contact user get --ids <userId>`，提取 `orgAuthEmail`
     2. `mail user search --email <当前邮箱> --keyword <姓名>`，提取 `users[].email`（仅企业邮箱可用）
-    3. `contact user search --keyword <姓名>`，提取用户邮箱字段
+    3. `contact user search --query <姓名>`，提取用户邮箱字段
   **第二步**：用获得的目标邮箱拼入 KQL（如 `from:<email>` 或 `to:<email>`）执行 `message search`，或用于 `message send`
 用户说"发带附件的邮件/发邮件附件" → 先 `mailbox list` 获取发件地址，再 `message send --attachment <文件路径>`
-用户说"给(某人名字)发邮件" → 先 `aisearch person` 获取 userId，再 `contact user get` 获取收件人邮箱，再 `message send`
 用户说"查看附件/邮件附件/有什么附件" → 先 `message search` 获取 messageId，再 `attachment list`
 用户说"下载附件/保存附件/把附件存到本地/把所有附件下载到..." → 先 `message search` 获取 messageId，再 `attachment list` 获取 attachmentId 和 name，最后逐个 `attachment download`（**不支持批量下载，不存在 download_batch/download_all 命令，必须逐个下载**）
 用户说"把XX邮件的所有附件都下载" / "批量下载附件" / "下载4月所有发票邮件的附件" → **不存在批量下载命令**，必须按以下流程循环执行：1) `message search` 搜索匹配邮件获取 messageId 列表 → 2) 对每封邮件 `attachment list` 获取 attachmentId + name → 3) 对每个附件逐个调用 `attachment download`。不要编造 `download_batch` / `download_all` / `batch_download` 等不存在的命令
@@ -1788,7 +1789,7 @@ dws mail thread get --email user@company.com --id <conversationId> --select mess
 | `tag list` | `tags[].id` | message batch-update 的 --tags；thread update/batch-update 的 --tag-ids |
 | `tag list` | `tags[].id` | tag create 的 --parent-id；tag delete/update 的 --id |
 | `tag create` | `result.tag.id` | 后续创建子标签时作为 --parent-id；更新/删除该标签时作为 --id |
-| `aisearch person` → `contact user get` / `contact user search` / `mail user search` | 用户邮箱 (orgAuthEmail / email) | message send 的 --to/--cc（三路并发，取先到结果） |
+| `aisearch person` → `contact user get` / `contact user search` / `mail user search` | 用户邮箱 (orgAuthEmail / email) | message send 的 --to/--cc（三路依次尝试，取首个有效结果） |
 | `user search` | 用户邮箱 (email) | message send 的 --to/--cc |
 | `message send` / `draft send` / `message reply` / `message reply-all` / `message forward` | `internetMessageId` | `message verify` 的 --internet-message-id |
 | `sent-message recall` | `id` | sent-message recall-detail 的 --id |
@@ -1800,10 +1801,10 @@ dws mail thread get --email user@company.com --id <conversationId> --select mess
 - `message search` 返回邮件 ID 和元信息（不含正文），需 `message get` 获取完整内容
 - KQL 查询支持 AND/OR/NOT 组合，字段值含空格时需用双引号
 - `--cc` 抄送人支持多人，逗号分隔
-- 收件人邮箱获取：用户只知道同事名字时，**并发**同时执行以下三路查询，取最先返回有效邮箱的结果，无需等待其他路完成：
+- 收件人邮箱获取：用户只知道同事名字时，依次执行以下三路查询，任一路返回有效邮箱即采用并停止：
   1. `dws aisearch person --keyword "名字" --dimension name` → `dws contact user get --ids <userId>`，提取 `orgAuthEmail`
   2. `dws mail user search --email <发件人邮箱> --keyword "名字"`，提取 `users[].email`（仅企业邮箱账号可调用，个人 @dingtalk.com 邮箱会报权限错误可忽略）
-  3. `dws contact user search --keyword "名字"`，提取用户邮箱字段
+  3. `dws contact user search --query "名字"`，提取用户邮箱字段
   若三路均无有效邮箱，必须 ask_human 请用户手动提供收件人邮箱，严禁臆测和假设
 - `thread get` 无法直接通过邮箱地址查询会话列表，**必须先有 conversationId**；conversationId 来自 `message search` 或 `message get` 返回的邮件字段 `conversationId`
 - `thread get` 默认即返回会话内 `messages` 列表，但列表中每封邮件的正文（`body`）、收件人（`toRecipients`）等字段默认为 null；需在 `--select` 中额外指定才有值，如 `--select messages,internetMessageId`（多个字段用英文逗号分隔）
@@ -1819,5 +1820,5 @@ dws mail thread get --email user@company.com --id <conversationId> --select mess
 
 | 脚本 | 场景 | 用法 |
 |------|------|------|
-| [mail_send_with_cc.py](../../scripts/mail_send_with_cc.py) | 发送带抄送的邮件（自动获取发件地址、校验邮箱格式） | `python3 mail_send_with_cc.py --to <邮箱> [--cc <邮箱1,邮箱2>] --subject "<标题>" --body "<正文>" [--dry-run]` |
-| [mail_unread_summary.py](../../scripts/mail_unread_summary.py) | 查询今天未读邮件并汇总 | `python3 mail_unread_summary.py [--size 20] [--dry-run]` |
+| [mail_send_with_cc.py](../../scripts/mail_send_with_cc.py) | 发送带抄送的邮件（自动获取发件地址、校验邮箱格式） | `python3 scripts/mail_send_with_cc.py --to <邮箱> [--cc <邮箱1,邮箱2>] --subject "<标题>" --body "<正文>" [--dry-run]` |
+| [mail_unread_summary.py](../../scripts/mail_unread_summary.py) | 查询今天未读邮件并汇总 | `python3 scripts/mail_unread_summary.py [--size 20] [--dry-run]` |

@@ -176,6 +176,10 @@ for (const command of [
   'purge_recycled_plugin',
   'export_recycled_plugin',
   'export_installed_plugin',
+  // Workspace branch view/checkout run local git mutations (add -A / commit /
+  // stash / checkout): desktop-only, the web client rejects them explicitly.
+  'list_codex_workspace_branches',
+  'checkout_codex_workspace_branch',
 ]) {
   assert.equal(allowed.has(command), false, `${command} must remain desktop-only`);
 }
@@ -190,6 +194,14 @@ for (const command of [
   'kb_index_failed_files',
 ]) {
   assert.equal(allowed.has(command), true, `${command} must be allowed on Web (KB import controls)`);
+}
+
+// Memory organize is a global action (no session scope, same surface as
+// get_memory_overview): the settings "AI 整理记忆" (AI organize memory) button and
+// the "上次整理" (last organized) history read must work on WebUI too; missing
+// either one makes the button fail silently with command_not_allowed.
+for (const command of ['organize_memory', 'get_memory_organize_history']) {
+  assert.equal(allowed.has(command), true, `${command} must be allowed on Web (memory organize)`);
 }
 
 // 已授权连接器的只读状态查询属于 WebUI 业务面（ToolStoreView 挂载即调用 *_status，

@@ -178,9 +178,13 @@ pub struct Pinvou3Bridge {
     /// RuntimeModelProvider 为本次引擎准备的内存凭据。Some 时是最终值，不能再被
     /// 环境变量或本地凭据库覆盖；Debug 由包装类型强制脱敏。
     pub runtime_model_credential: Option<RuntimeModelCredential>,
-    /// 本地 vLLM `/v1/models` 探测到的 `max_model_len`(上下文窗口)。EnginePool spawn
-    /// 时由 `probe_vllm_model_info` 注入。Some → 与 SavedModel 声明取较小值后填入
-    /// active_route_limits，并与 output profile 一起推导压缩阈值。
+    /// `max_model_len` (context window) probed from the local vLLM
+    /// `/v1/models` endpoint. Injected at
+    /// EnginePool spawn by `resolve_served_model` (the matched entry's own
+    /// window; `None` when the configured name is absent from the list or the
+    /// probe fails). Some → min() with the SavedModel declaration fills
+    /// active_route_limits, and compaction thresholds derive from it together
+    /// with the output profile.
     pub probed_context_tokens: Option<u32>,
     /// 本地 loopback 端点（OpenAI 兼容 preset）探测出的服务类型（Ollama / vLLM /
     /// LM Studio / 通用）。EnginePool spawn 时由 `probe_local_server_kind` 注入；
@@ -448,6 +452,15 @@ impl Pinvou3Bridge {
             .replace(
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
                 crate::platform::super_permission::instruction_block(),
+            )
+            // The user memory section is filled or dropped with the memory toggle (off by
+            // default plus force-off for en/ja, see the memory_section comment). Replaced
+            // at the session render layer rather than inside the OnceLock instructions_md,
+            // so a setting change takes effect on new sessions; old session prompts are
+            // left unchanged.
+            .replace(
+                "{{PINVOU3_MEMORY_SECTION}}\n",
+                bundle::memory_section(crate::features::memory::memory_enabled()),
             )
             // present_artifact 的 title 语言随 locale(原写死「中文 title」会把英文 UI 的产物
             // 标题/描述/后续总结整段拽回中文,见 prefs::title_language_name 注释)。
@@ -1417,7 +1430,10 @@ impl Pinvou3Bridge {
     pub fn instructions(&self) -> Vec<InstructionSource> {
         let mut out: Vec<InstructionSource> = vec![InstructionSource::Inline {
             name: "pinvou3:bundle/instructions".to_string(),
-            content: instructions_md().to_string(),
+            content: instructions_md().replace(
+                "{{PINVOU3_MEMORY_SECTION}}\n",
+                bundle::memory_section(crate::features::memory::memory_enabled()),
+            ),
         }];
         let user = paths::user_instructions();
         if user.is_file() {

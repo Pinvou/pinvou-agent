@@ -419,6 +419,33 @@
       if (sid === state.activeSessionId) addSystemItem(bt("memoryNeverFailed") + e);
     }
   }
+  // AI organize memory ("AI 整理记忆"): operates on global memory data and does
+  // not depend on the current session; the entry point still captures the
+  // session so success and failure are both written back only to the panel of
+  // the session that started it (same invariant as saveMemoryProfilePatch:
+  // prevents rendering results or errors into another conversation stream if
+  // the user switches away during the await). On success, reuse the write
+  // flow's runtime/warnings reconciliation (applyMemoryWriteState) and refetch
+  // the overview to refresh panel content; the caller reads the report from
+  // the return value. On failure, rethrow: memory.error is the dedicated
+  // load-failure channel (the settings banner renders it as the generic
+  // "加载失败" (load failed) copy), so the organize failure reason is
+  // surfaced by the caller's catch and must not pollute that channel.
+  async function organizeMemory() {
+    if (!invoke) return null;
+    const sid = state.activeSessionId; // same as saveMemoryProfilePatch: after switching away, never write to B's panel
+    const result = await invoke("organize_memory");
+    if (sid === state.activeSessionId && result) applyMemoryWriteState(result);
+    // Organizing can merge/delete entries: refetch the overview like the other
+    // write flows to refresh panel content; the return value stays the raw
+    // organize_memory payload (report/runtime/warnings).
+    await loadMemoryOverview();
+    return result;
+  }
+  async function loadOrganizeHistory() {
+    if (!invoke) return [];
+    return invoke("get_memory_organize_history");
+  }
     return {
       handleMemoryWrite,
       loadMemoryOverview,
@@ -429,7 +456,9 @@
       archiveRecentWorkMemory,
       confirmMemoryCandidate,
       ignoreMemoryCandidate,
-      neverMemoryCandidate
+      neverMemoryCandidate,
+      organizeMemory,
+      loadOrganizeHistory
     };
   };
 })(window);

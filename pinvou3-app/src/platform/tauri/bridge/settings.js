@@ -36,7 +36,9 @@
     try {
       state.settings = await invoke("get_settings");
     } catch {
-      state.settings = { theme: "genesis", language: "zh-Hans" };
+      // Backend unreachable = nothing to judge; fall back to following the
+      // system for the color scheme (color_scheme: system).
+      state.settings = { theme: "genesis", color_scheme: "system", language: "zh-Hans" };
     }
     notify();
   }

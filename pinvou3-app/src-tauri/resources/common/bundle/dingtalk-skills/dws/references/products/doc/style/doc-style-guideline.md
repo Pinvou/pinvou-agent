@@ -48,7 +48,7 @@
 | 看推理链路 / 分析 / 调研过程 | 知识沉淀型 | 含对比/数据可视化时**直接 JSONML 起稿**；纯叙事时 markdown + 精修（见 [doc-create-workflow.md §JSONML 起稿](./doc-create-workflow.md#jsonml-起稿判定)） | ℹ️ 信息 callout / 引用块（原话）/ 流程图 | §2.4 |
 | 以上都不像 | 兜底走知识沉淀型 §2.4 | — | — | — |
 
-> **推荐格式列**：起稿统一用 markdown，富结构（callout/分栏/带颜色的对比/sectPr）一律走精修阶段的 JSONML；JSONML 形态优先级与命令见 [doc-update-workflow.md §1.3](./doc-update-workflow.md)。决策型默认进 JSONML 优先，因为汇报/方案的视觉锚点（callout + 彩色表头）markdown 表达不出来。
+> **推荐格式列**：非决策型的富结构内容（callout/分栏/带颜色的对比/sectPr）仍从 markdown 起稿再精修；决策型与含可视化的知识沉淀型按 §2.0 直接 JSONML 起稿；JSONML 形态优先级与命令见 [doc-update-workflow.md §1.3](./doc-update-workflow.md)。决策型默认进 JSONML 优先，因为汇报/方案的视觉锚点（callout + 彩色表头）markdown 表达不出来。
 
 ### 2.0.1 写前三问（草稿前 30 秒自答）
 

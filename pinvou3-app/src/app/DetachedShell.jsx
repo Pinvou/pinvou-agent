@@ -2,6 +2,7 @@ import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { CodexAcpView as LazyCodexAcpView } from '../features/codex/LazyCodexAcpView.jsx';
 import { ChatView } from '../features/chat/ChatView.jsx';
 import { VIEW_LOADERS } from './view-loaders.js';
+import { VoiceShortcutRouter } from '../features/voice-composer/VoiceShortcutRouter.jsx';
 // 撕离窗与主窗口共用同一批懒加载视图 chunk(rolldown 自动共享),工厂统一走
 // view-loaders.js 的 VIEW_LOADERS。静态 import 会让对应视图被钉回主 chunk,
 // every view here goes through lazy; each window only actually loads the chunk
@@ -19,6 +20,8 @@ const LazyToolStoreView = lazy(() => VIEW_LOADERS.toolStore().then(m => ({ defau
 const LazyCardPoolView = lazy(() => VIEW_LOADERS.cardpool().then(m => ({ default: m.CardPoolView })));
 const DetachedViewFallback = () => <div className="p-6 text-sm opacity-60">…</div>;
 import { useBridgeState } from '../hooks/useBridge.js';
+import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
+import { normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
 import { emitTauri, isTauriAvailable, listenTauri } from '../platform/tauri/client.js';
 import { listAcpSessions } from '../features/codex/acpClient.js';
 import { dict, ensureLanguage, initialSystemLanguage, TAG_TO_LANG } from '../shared/i18n.js';
@@ -30,7 +33,13 @@ function useDetachedBase() {
     'settings', 'personas',
   ]);
   const [language, setLanguage] = useState(initialSystemLanguage);
-  const [activeTheme, setActiveTheme] = useState('dark');
+  // Same color-scheme semantics as the main window: `system` follows the OS
+  // live (light when undeterminable). Detached windows have no settings entry,
+  // so the preference is read once from the main settings at bootstrap and
+  // keeps following system flips afterwards (while on `system`).
+  const systemDark = useSystemDarkMode();
+  const [colorScheme, setColorScheme] = useState('system');
+  const activeTheme = resolveTheme(colorScheme, systemDark);
   const [, setPersonaI18nTick] = useState(0);
   const initRef = useRef(false);
 
@@ -44,7 +53,7 @@ function useDetachedBase() {
     // en/ja lazy dictionaries: the entry only bootstraps the system language;
     // the persisted language may not be loaded yet, so ensure it before switching.
     if (lang) ensureLanguage(lang).then((ok) => { if (ok) setLanguage(lang); }).catch(() => {});
-    setActiveTheme(bs.settings.theme === 'liquid-light' ? 'light' : 'dark');
+    setColorScheme(normalizeColorScheme(bs.settings.color_scheme));
     initRef.current = true;
   }, [bs]);
   useEffect(() => {
@@ -171,6 +180,7 @@ export function DetachedShell({ kind, id }) {
   const View = DETACHED_VIEWS[kind] || DETACHED_VIEWS.monitor;
   return (
     <div className={`h-screen w-screen flex flex-col bg-white text-[#1F1F1F] dark:bg-[#1B1C1D] dark:text-[#E3E3E3]`}>
+      <VoiceShortcutRouter />
       <div
         data-tauri-drag-region
         className="h-9 shrink-0 flex items-center px-3 text-[13px] font-medium select-none"

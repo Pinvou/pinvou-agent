@@ -284,6 +284,9 @@ Flags:
 ```
 
 #### 解散群聊 — 解散指定群聊，操作不可逆，需要群主权限
+
+> **CAUTION:** 解散群聊不可恢复（群聊与全部消息一并消失）。执行前必须向用户确认，同意后追加全局 `--yes` 执行（未加时 CLI 返回确认门禁错误）。
+
 ```
 Usage:
   dws chat group dismiss [flags]
@@ -1844,6 +1847,9 @@ Flags:
 ### clear-messages (清空会话聊天记录)
 
 #### 清空会话聊天记录 — 清空当前用户指定会话的消息
+
+> **CAUTION:** 清空后本侧消息不可恢复。执行前必须向用户确认，同意后追加全局 `--yes` 执行。
+
 ```
 Usage:
   dws chat clear-messages [flags]

@@ -631,6 +631,13 @@ fn model_connection_http_result(status: reqwest::StatusCode) -> ModelConnectionT
             detail,
             Some(status_code),
         ),
+        402 => model_connection_result(
+            false,
+            "billing",
+            "账户余额不足，请充值后重试，或切换到其他模型",
+            detail,
+            Some(status_code),
+        ),
         408 => model_connection_result(
             false,
             "timeout",
@@ -665,7 +672,11 @@ fn model_connection_http_result(status: reqwest::StatusCode) -> ModelConnectionT
 fn model_connection_error_result(err: &reqwest::Error) -> ModelConnectionTestResult {
     let raw = crate::platform::credential_store::redact_secret(&err.to_string());
     let raw_lower = raw.to_lowercase();
-    let detail = Some(format!("连接失败: {raw}"));
+    // The detail passes the redacted underlying error through untouched;
+    // the zh summary above is resolved by the frontend from the code via
+    // connectionMessages (a hardcoded Chinese detail prefix would mix
+    // scripts in en/ja interfaces).
+    let detail = Some(raw);
     if err.is_timeout() {
         return model_connection_result(
             false,
@@ -1103,6 +1114,15 @@ fn classify_image_capability_http(
             format!("未能正确识别图像，原因未知（HTTP {status_code}）：{summary}"),
             Some(status_code),
         ),
+        // A 402 billing failure matches the connection test's semantics,
+        // but the top-up guidance is UI copy and must not be hardcoded in a
+        // single language on the Rust side (it would mix scripts in en/ja):
+        // only http_status and the raw provider summary are passed through,
+        // and the frontend resolves the tri-lingual
+        // connectionMessages.billing copy from http_status==402. The
+        // summary keeps the provider's own text with no hardcoded language
+        // prefix.
+        402 => image_capability_result("error", false, summary, Some(status_code)),
         _ => image_capability_result("error", false, summary, Some(status_code)),
     }
 }
@@ -1408,6 +1428,54 @@ use super::prelude::*;
 mod tests {
     use super::*;
     use crate::platform::paths::tests::ENV_LOCK;
+
+    #[test]
+    fn model_connection_http_result_maps_actionable_categories() {
+        // 402 -> billing: the arrearage category's code must match the
+        // frontend connectionMessages.billing key exactly — a spelling
+        // drift would silently degrade to the unknown copy; the other
+        // actionable categories are pinned the same way.
+        let billing = model_connection_http_result(reqwest::StatusCode::PAYMENT_REQUIRED);
+        assert!(!billing.ok);
+        assert_eq!(billing.code, "billing");
+        assert_eq!(billing.http_status, Some(402));
+        assert_eq!(
+            model_connection_http_result(reqwest::StatusCode::UNAUTHORIZED).code,
+            "auth_invalid"
+        );
+        assert_eq!(
+            model_connection_http_result(reqwest::StatusCode::FORBIDDEN).code,
+            "auth_forbidden"
+        );
+        assert_eq!(
+            model_connection_http_result(reqwest::StatusCode::TOO_MANY_REQUESTS).code,
+            "rate_limited"
+        );
+        assert_eq!(
+            model_connection_http_result(reqwest::StatusCode::BAD_GATEWAY).code,
+            "server_unavailable"
+        );
+    }
+
+    #[test]
+    fn image_capability_http_result_402_keeps_status_and_raw_summary() {
+        // The image capability probe's 402 matches the connection test's
+        // semantics, but top-up guidance is UI copy: the Rust side never
+        // hardcodes a single-language summary and only passes http_status
+        // (the frontend resolves the tri-lingual connectionMessages.billing
+        // copy from it) plus the raw provider summary (for the detail
+        // view). The status must still land on "error" (strictly distinct
+        // from "unsupported").
+        let billing = classify_image_capability_http(
+            reqwest::StatusCode::PAYMENT_REQUIRED,
+            r#"{"error":{"message":"Insufficient Balance","type":"insufficient_balance"}}"#,
+        );
+        assert_eq!(billing.status, "error");
+        assert!(!billing.verified);
+        assert_eq!(billing.http_status, Some(402));
+        assert!(billing.summary.contains("Insufficient Balance"));
+        assert!(!billing.summary.contains("账户余额不足"));
+    }
 
     #[test]
     fn image_probe_base_url_feeds_anthropic_messages_url_without_suffix() {

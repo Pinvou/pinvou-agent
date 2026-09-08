@@ -12,7 +12,7 @@
 // plan_card 的终态文案存 statusKey（approved/discarded/superseded/historical），
 // 三语文案在渲染层按 key 组装（与 compactPhase 同一约定）。
 
-import { projectDeepSeekConversation } from '../conversation/deepseek-conversation.js';
+import { projectDeepSeekConversation, conversationItemsForMode } from '../conversation/deepseek-conversation.js';
 import { isInternalRuntimeEnvelopeText, isInternalUserMessage } from '../../shared/internal-message.mjs';
 
 export function createNativeLane() {
@@ -121,6 +121,98 @@ export function appendNativeSystemItem(lane, text) {
   lane.items.push({ id: nextId(lane), type: 'system', text: String(text || ''), time: timeStr() });
 }
 
+/// Index where the current turn starts (right after the last user item).
+/// The bridge clears the previous turn's turnErrorNotice items on every
+/// send (chat.js), but the native lane keeps its full history: without
+/// turn-scoping, error dedup and terminal upgrades would fold a new
+/// turn's same-identity error into the previous turn's stale item.
+function currentTurnStart(lane) {
+  for (let i = lane.items.length - 1; i >= 0; i -= 1) {
+    if (lane.items[i] && lane.items[i].type === 'user') return i + 1;
+  }
+  return 0;
+}
+
+/// Unconditional redaction before a bare-string fallback is displayed:
+/// gateway/proxy custom bodies and raw provider messages the gate missed
+/// would still reach system items / red text. Classification may miss,
+/// credentials must not. Returns the input unchanged when the helper is
+/// missing (classic script not loaded), degrading to existing behavior.
+function redactDisplayError(error, options = {}) {
+  if (!error) return error;
+  const helper = globalThis.PinvouModelServiceErrors;
+  if (!helper || typeof helper.redactTechnicalDetail !== 'function') return error;
+  return helper.redactTechnicalDetail(String(error), options.language);
+}
+
+/// Native-lane model-service error bubble, mirroring
+/// bridge-messages.addModelServiceErrorNotice: takeover only when the
+/// gate (isModelServiceError) passes; dedup by error identity
+/// (kind + technical detail) instead of text; a transient-to-done wording
+/// upgrade happens in place; on terminal with a timeline terminal record
+/// that actually carries an error (terminalRecord), every model-service
+/// error bubble of this turn is flagged legacyConversationOnly so the
+/// projection (projectNativeLane filtered through
+/// conversationItemsForMode) hides the bubbles and keeps only the
+/// timeline error card; without a timeline record the bubble stays
+/// visible (otherwise the error is silently swallowed). Non-model errors
+/// return false and the caller keeps its bare-string fallback. The same
+/// fallback applies when the helper is missing (classic script not
+/// loaded).
+function upsertNativeModelServiceNotice(lane, payload, terminal, options, terminalRecord) {
+  const helper = globalThis.PinvouModelServiceErrors;
+  const error = payload && payload.error;
+  if (!error || !helper || typeof helper.build !== 'function'
+      || typeof helper.isModelServiceError !== 'function') return false;
+  if (!helper.isModelServiceError(error)) return false;
+  const language = options && options.language;
+  const userError = helper.build(error, {
+    language,
+    terminal,
+    providerLabel: typeof helper.providerLabelFromState === 'function'
+      ? helper.providerLabelFromState(options && options.modelServiceState, language)
+      : '',
+  });
+  const notice = helper.noticeText(userError);
+  const nextDetail = userError.technicalDetail;
+  const start = currentTurnStart(lane);
+  let existing = null;
+  for (let i = start; i < lane.items.length; i += 1) {
+    const item = lane.items[i];
+    if (!item || !item.userError || item.userError.kind !== userError.kind) continue;
+    const existingDetail = item.userError.technicalDetail;
+    if ((existingDetail || nextDetail) ? existingDetail === nextDetail : true) {
+      existing = item;
+      break;
+    }
+  }
+  const hideForTimeline = Boolean(terminal && terminalRecord && terminalRecord.error);
+  let target = existing;
+  if (target) {
+    target.text = notice;
+    target.userError = userError;
+    if (hideForTimeline) target.legacyConversationOnly = true;
+  } else {
+    target = { id: nextId(lane), type: 'system', text: notice, time: timeStr(), userError };
+    if (hideForTimeline) target.legacyConversationOnly = true;
+    lane.items.push(target);
+  }
+  // On terminal takeover, hide the turn's other model-service transient
+  // bubbles too (of a different identity, e.g. an idle timeout followed
+  // by HTTP 402): their "will keep retrying" wording contradicts the
+  // terminal one. The scan starts at currentTurnStart, so bubbles from
+  // earlier turns are out of scope.
+  if (hideForTimeline) {
+    for (let i = start; i < lane.items.length; i += 1) {
+      const item = lane.items[i];
+      if (item && item !== target && item.userError && !item.legacyConversationOnly) {
+        item.legacyConversationOnly = true;
+      }
+    }
+  }
+  return true;
+}
+
 /// plan_card 状态迁移（批准/放弃/新方案覆盖），供事件与视图动作共用。
 function resolvePlanCard(card, cardState, statusKey) {
   card.cardState = cardState;
@@ -144,8 +236,14 @@ function openTimelineStart(lane, withinMs = 0) {
 }
 
 function recordTurnStarted(lane, turnId) {
+  // Two turns within the same millisecond (automation / rapid-fire)
+  // collide on Date.now() ids: the second user_start would be mistaken by
+  // openTimelineStart for an already-completed turn, breaking the terminal
+  // record and the error card entirely. A per-lane turn sequence keeps ids
+  // unique (same idea as the bridge side's turnIndex).
+  lane.turnSeq = (lane.turnSeq || 0) + 1;
   lane.timeline.push({
-    turn_id: turnId || `ui_native_${Date.now()}`,
+    turn_id: turnId || `ui_native_${Date.now()}_${lane.turnSeq}`,
     event: 'user_start',
     timestamp: Date.now(),
     ui_turn_index: visibleUserTurnIndex(lane),
@@ -154,15 +252,21 @@ function recordTurnStarted(lane, turnId) {
 
 function recordTurnCompleted(lane, payload) {
   const open = openTimelineStart(lane);
-  if (!open) return;
-  lane.timeline.push({
+  if (!open) return null;
+  const record = {
     turn_id: open.turn_id,
     event: 'assistant_done',
     timestamp: Date.now(),
     status: payload && payload.status || (payload && payload.error ? 'Failed' : 'Completed'),
     error: payload && payload.error || null,
     ui_turn_index: open.ui_turn_index,
-  });
+  };
+  lane.timeline.push(record);
+  // The return value drives the terminal-bubble hiding decision: only a
+  // timeline terminal record that was actually written with an error lets
+  // the timeline error card take over (hiding otherwise = silent
+  // swallow).
+  return record;
 }
 
 function finalizeStream(lane) {
@@ -208,7 +312,7 @@ export function removeLocalUserMessage(lane, id) {
 /// chat:* 事件 → lane 状态。payload 一律带 session_id（后端 forwarder 打 tag）。
 /// 返回是否有可视变化；无变化时 React 侧不必 bump 渲染。
 // eslint-disable-next-line sonarjs/cognitive-complexity -- chat:* event dispatch: each event maps to one lane state transition; the switch branches are the event contract
-export function applyNativeChatEvent(lane, name, payload) {
+export function applyNativeChatEvent(lane, name, payload, options = {}) {
   const p = payload || {};
   switch (name) {
     case 'chat:user_message': {
@@ -408,8 +512,23 @@ export function applyNativeChatEvent(lane, name, payload) {
     }
     case 'chat:transient_error': {
       if (!p.error) return false;
-      const notice = `⚠️ ${p.error}`;
-      if (lane.items.some(item => item && item.type === 'system' && item.text === notice)) return false;
+      // Bare-string fallbacks are redacted too (gateway/provider bodies
+      // the gate missed must not reach the screen with credentials).
+      const displayError = redactDisplayError(p.error, options);
+      // Model-service errors go through the unified
+      // classification/redaction/tri-lingual bubble; local tool errors
+      // keep the bare-string fallback.
+      if (upsertNativeModelServiceNotice(lane, p, false, options)) return true;
+      const notice = `⚠️ ${displayError}`;
+      // Same-text dedup is turn-scoped (same scope as the identity dedup
+      // above).
+      const start = currentTurnStart(lane);
+      let duplicate = false;
+      for (let i = start; i < lane.items.length; i += 1) {
+        const item = lane.items[i];
+        if (item && item.type === 'system' && item.text === notice) { duplicate = true; break; }
+      }
+      if (duplicate) return false;
       lane.items.push({ id: nextId(lane), type: 'system', text: notice, time: timeStr() });
       return true;
     }
@@ -501,11 +620,47 @@ export function applyNativeChatEvent(lane, name, payload) {
     case 'chat:done': {
       finalizeReasoning(lane);
       finalizeStream(lane);
-      recordTurnCompleted(lane, p);
+      const terminalRecord = recordTurnCompleted(lane, p);
       lane.busy = false;
       lane.thinking = null;
-      if (p.error) {
-        lane.items.push({ id: nextId(lane), type: 'system', text: `⚠️ ${p.error}`, time: timeStr() });
+      if (p.error && !upsertNativeModelServiceNotice(lane, p, true, options, terminalRecord)) {
+        // Terminal: the same-identity transient bubble upgrades in place
+        // to the terminal wording and flips to legacyConversationOnly
+        // (the timeline error card takes over); non-model errors mirror
+        // the bridge chat:done fallback - a same-text transient item is
+        // hidden in place (the timeline shows the raw error in small
+        // text) instead of appending a second bubble. Hiding likewise
+        // requires a timeline terminal record that was actually written
+        // with an error, otherwise the bubble stays visible. The bare
+        // fallback shares the transient fallback's redacted text so the
+        // same-text dedup can hit.
+        const timelineTakesOver = Boolean(terminalRecord && terminalRecord.error);
+        const notice = `⚠️ ${redactDisplayError(p.error, options)}`;
+        const start = currentTurnStart(lane);
+        let existing = null;
+        for (let i = start; i < lane.items.length; i += 1) {
+          const item = lane.items[i];
+          if (item && item.type === 'system' && item.text === notice) { existing = item; break; }
+        }
+        if (existing) {
+          if (timelineTakesOver) existing.legacyConversationOnly = true;
+        } else {
+          const item = { id: nextId(lane), type: 'system', text: notice, time: timeStr() };
+          if (timelineTakesOver) item.legacyConversationOnly = true;
+          lane.items.push(item);
+        }
+      } else if (!p.error) {
+        // Successful (error-free) terminal: the turn has recovered, so the
+        // current turn's transient model-service bubbles ("will keep
+        // retrying") are stale and hidden, matching
+        // bridge settleModelServiceErrorNotices; bare-string fallbacks
+        // (statements about errors that did happen) keep the existing
+        // behavior.
+        const start = currentTurnStart(lane);
+        for (let i = start; i < lane.items.length; i += 1) {
+          const item = lane.items[i];
+          if (item && item.userError && !item.legacyConversationOnly) item.legacyConversationOnly = true;
+        }
       }
       return true;
     }
@@ -718,13 +873,20 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
 }
 
 /// lane → ConversationTimeline 使用的 turn 投影。
-export function projectNativeLane(lane, sessionId) {
+export function projectNativeLane(lane, sessionId, options = {}) {
+  // legacyConversationOnly items (terminal error bubbles) are filtered
+  // here: the flag is only consumed by conversationItemsForMode, the
+  // native lane has no legacy mode and is always filtered as unified -
+  // otherwise a terminal-upgraded error would show both the bubble and
+  // the timeline error card.
   return projectDeepSeekConversation({
-    chatItems: lane ? lane.items : [],
+    chatItems: conversationItemsForMode(lane ? lane.items : [], true),
     busy: Boolean(lane && lane.busy),
     thinking: lane ? lane.thinking : null,
     tokens: lane ? lane.tokens : null,
     sessionId,
     timelineEvents: lane ? lane.timeline : [],
+    language: options.language,
+    modelServiceState: options.modelServiceState || null,
   });
 }

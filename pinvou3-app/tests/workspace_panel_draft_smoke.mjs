@@ -135,6 +135,31 @@ try {
     rowButtons,
   );
 
+  // Click the file row's "copy relative path" button: the clipboard must receive the path
+  // itself and the button feedback must flip to "copied". Regression anchor: useCopyFlash's
+  // copy(key, text) takes two arguments and silently did nothing when only the key was passed.
+  await page.evaluate(() => {
+    window.__clipboardWrites = [];
+    navigator.clipboard.writeText = (text) => {
+      window.__clipboardWrites.push(text);
+      return Promise.resolve();
+    };
+  });
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll('.group')].find((item) => item.innerText.includes('main.py'));
+    row?.querySelector('button[aria-label="复制相对路径"]')?.click();
+  });
+  await page.waitForFunction(() => {
+    const row = [...document.querySelectorAll('.group')].find((item) => item.innerText.includes('main.py'));
+    return row?.querySelector('button[aria-label="已复制"]') != null;
+  }, { timeout: 5000 });
+  const clipboardWrites = await page.evaluate(() => window.__clipboardWrites);
+  assert(
+    JSON.stringify(clipboardWrites) === JSON.stringify(['main.py']),
+    '复制按钮未把相对路径写入剪贴板',
+    clipboardWrites,
+  );
+
   // 「更改」tab：无会话时显示专属空态文案，且不发起 changes 请求。
   await page.evaluate(() => {
     const tab = [...document.querySelectorAll('button')].find((button) => button.textContent.trim().startsWith('更改'));
