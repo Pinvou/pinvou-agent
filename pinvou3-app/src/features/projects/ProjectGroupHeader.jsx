@@ -25,6 +25,8 @@ const ProjectGroupHeader = ({
   onRename,
   onDelete,
   onDropSession,
+  // 未分组桶的落点:拖入 = 显式移出项目(区别于项目头的"拖入 = 归属")。
+  onDropSessionOut,
   onRebind,
   // 每个失效 root 一个徽标入口(逐根重绑定):部分失效的项目也有修复路径,
   // 且一根重绑后其余失效根的入口不会消失。
@@ -48,8 +50,11 @@ const ProjectGroupHeader = ({
   // JSX so the row render stays flat. dragover highlights, drop delegates the
   // session id up, dragend/dragleave clear the highlight (dragend fires on the
   // source row and can be skipped by the webview — the ring here also clears
-  // unconditionally on drop).
-  const dropHandlers = onDropSession ? {
+  // unconditionally on drop). Two target flavors: project headers take
+  // onDropSession (move in), the ungrouped bucket takes onDropSessionOut
+  // (explicit move-out).
+  const dropAction = onDropSession || onDropSessionOut;
+  const dropHandlers = dropAction ? {
     onDragOver: (e) => {
       if (!e.dataTransfer.types.includes(PROJECT_DROP_TYPE)) return;
       e.preventDefault();
@@ -61,7 +66,7 @@ const ProjectGroupHeader = ({
       e.preventDefault();
       onDropActive(false);
       const sessionId = e.dataTransfer.getData(PROJECT_DROP_TYPE);
-      if (sessionId) onDropSession(sessionId);
+      if (sessionId) dropAction(sessionId);
     },
   } : {};
 

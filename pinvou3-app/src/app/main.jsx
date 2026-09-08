@@ -21,7 +21,7 @@ import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
 import { COLOR_SCHEME_STORAGE_KEY, normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
 import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
-import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfirm } from '../features/projects/projectGrouping.js';
+import { groupSessionsByFolder, groupSessionsByProject, resolveSessionProjectId, needsAddFolderConfirm } from '../features/projects/projectGrouping.js';
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
 import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
 import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
@@ -1565,7 +1565,7 @@ function workspaceDisplayName(path) {
       const [sidebarCodeStyle, setSidebarCodeStyle] = useState(() => {
         try {
           const stored = localStorage.getItem('pinvou_sidebar_code_style');
-          return stored === 'normal' || stored === 'code' ? stored : null;
+          return ['normal', 'code', 'projects'].includes(stored) ? stored : null;
         } catch {
           return null;
         }
@@ -1589,10 +1589,12 @@ function workspaceDisplayName(path) {
       // code sessions; only explicitly switching back to work, or opening a normal
       // chat session, exits it.
       const [codeModeOn, setCodeModeOn] = useState(false);
-      // 任务列表的展示形态由 全部/代码 胶囊决定;未显式选择(null)时普通模式
-      // 默认「全部」标准列表、code 模式默认 code 样式(沿用既有默认)。
-      // codeStyleActive 仍用于主导航折叠等 code 模式专属行为。
-      const sidebarCodeListActive = sidebarCodeStyle === null ? codeModeOn : sidebarCodeStyle === 'code';
+      // 任务列表的展示形态由 全部/目录/项目 胶囊决定;未显式选择(null)时普通
+      // 模式默认「全部」、code 模式默认「目录」(沿用既有默认)。'code' = 目录
+      // 视图(纯物理分组,与项目层出现之前的原行为逐字节一致);'projects' =
+      // 项目视图(纯逻辑分组 + 未分组桶)。旧存量 'code' 语义不变,零迁移。
+      const sidebarCodeListActive = sidebarCodeStyle === null ? codeModeOn : sidebarCodeStyle !== 'normal';
+      const sidebarProjectsViewActive = sidebarCodeStyle === 'projects';
       const codeStyleActive = codeModeOn && sidebarCodeListActive;
       // Exiting code mode resets the primary-nav collapse bar, so the next entry starts
       // from the default collapsed form.
@@ -1797,11 +1799,12 @@ function workspaceDisplayName(path) {
         });
       }
 
-      // 项目视图(原「代码」形态):所有绑定真实目录的会话——代码/ACP 会话
-      // 与 #445 的绑定工作会话——统一按项目层三层分组;未绑定普通会话留在
-      // 「全部」的日期视图。分组跟随绑定,与安全姿态同一条信号。分组链全程
-      // memo 化:tier-2 是 O(sessions × projects × roots),项目数还会增长
-      // (评审 #448 finding 8)。
+      // 分组视图(目录/项目):所有绑定真实目录的会话——代码/ACP 会话与
+      // #445 的绑定工作会话。两个维度拆开(评审后定稿):
+      // - 目录视图 = 纯物理层,按工作区分组,项目存在与否不影响它;
+      // - 项目视图 = 纯逻辑层,只有命名项目作为分组(显式归属 + root 自动
+      //   归组),未认领会话沉入「未分组」桶(拖入来源/移出落点)。
+      // 分组链全程 memo 化:tier-2 是 O(sessions × projects × roots)。
       const sidebarCodeTasks = useMemo(() => (sidebarCodeListActive
         ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex'
             || (chat.taskKind === 'regular' && chat.workspacePath))
@@ -1811,13 +1814,17 @@ function workspaceDisplayName(path) {
         : []), [taskListSort, sidebarCodeTasks]);
       const sidebarUnpinnedCodeTasks = useMemo(() => sidebarCodeTasks.filter(chat => !(sidebarFolderPinned.length && chat.pinned)), [sidebarCodeTasks, sidebarFolderPinned]);
       const sidebarProjectsData = bs && bs.projectsList;
-      const sidebarFolderGroups = useMemo(() => (sidebarCodeListActive
-        ? groupSessionsWithProjects(
+      const sidebarFolderGroups = useMemo(() => {
+        if (!sidebarCodeListActive) return [];
+        if (sidebarProjectsViewActive) {
+          return groupSessionsByProject(
             sidebarUnpinnedCodeTasks,
             sidebarProjectsData ? sidebarProjectsData.projects : [],
             sidebarProjectsData ? sidebarProjectsData.assignments : {},
-          )
-        : []), [sidebarCodeListActive, sidebarUnpinnedCodeTasks, sidebarProjectsData]);
+          );
+        }
+        return groupSessionsByFolder(sidebarUnpinnedCodeTasks);
+      }, [sidebarCodeListActive, sidebarProjectsViewActive, sidebarUnpinnedCodeTasks, sidebarProjectsData]);
 
       // latest-ref mirror: the pet-snapshot broadcast effect only subscribes to bs.sessions/sessionBusy/language,
       // while snapshot contents (id/title/working) are read via refs to reduce effect resubscription.
@@ -2734,7 +2741,7 @@ function workspaceDisplayName(path) {
             onMoveToProject={bridge.projects && (chat.taskKind === 'codex' || !!chat.workspacePath)
               ? (target) => { setMoveToPresetProject(null); setMoveToProjectSession(target); }
               : undefined}
-            dndPayload={bridge.projects && (chat.taskKind === 'codex' || !!chat.workspacePath) && sidebarCodeListActive
+            dndPayload={bridge.projects && (chat.taskKind === 'codex' || !!chat.workspacePath) && sidebarProjectsViewActive
               ? { sessionId: chat.id }
               : undefined}
             dndDisabled={!!dragAvatar}
@@ -2744,6 +2751,39 @@ function workspaceDisplayName(path) {
             onPickUp={canDetachWindows ? ((geom) => beginTearOff(detachKind, chat.id, chat.title, geom)) : undefined}
           />
         );
+      };
+
+      // 分组头标签/操作集按 kind 分流:目录组(转正)、项目组(全操作+落点)、
+      // 未分组桶(拖入=移出)、临时桶(仅折叠)。抽出以控制渲染回调复杂度。
+      const sidebarGroupLabel = (group) => {
+        if (group.kind === 'project') return group.name;
+        if (group.kind === 'ungrouped') return t.uiProjects.ungrouped;
+        if (group.kind === 'temporary') return t.uiCodex.temporarySession;
+        return workspaceDisplayName(group.path);
+      };
+      const sidebarGroupHeaderProps = (group) => {
+        if (group.kind === 'project') {
+          return {
+            onRename: (name) => handleRenameProject(group.projectId, name),
+            onDelete: () => handleDeleteProject(group.projectId),
+            onDropSession: (sessionId) => handleDropSessionOnProject(sessionId, group.projectId),
+            unavailableRoots: (group.roots || [])
+              .filter(root => !(root && typeof root === 'object' ? root.available : root))
+              .map(root => String(typeof root === 'object' ? root.path : root)),
+            onRebind: (rootPath) => startRebindWorkspace(rootPath),
+          };
+        }
+        if (group.kind === 'folder') {
+          return {
+            title: group.path,
+            // bridge.projects 仅桌面存在:web 上不渲染死入口。
+            onConvert: bridge.projects ? (name) => handleConvertFolderToProject(group.path, name) : undefined,
+          };
+        }
+        if (group.kind === 'ungrouped') {
+          return { onDropSessionOut: (sessionId) => handleMoveSessionToProject(sessionId, null, false) };
+        }
+        return {};
       };
 
       const apiKeyGateOpen = shouldShowApiKeyGate(bs, currentView, bridge.available);
@@ -3218,10 +3258,23 @@ function workspaceDisplayName(path) {
                         <button
                           type="button"
                           data-testid="sidebar-task-pill-code"
-                          aria-pressed={sidebarCodeListActive}
+                          aria-pressed={sidebarCodeListActive && !sidebarProjectsViewActive}
                           onClick={() => { setSidebarCodeStylePersisted('code'); setTaskFilterOpen(false); }}
                           className={`h-6 px-2.5 rounded-full text-[12px] font-normal transition-colors ${
-                            sidebarCodeListActive
+                            sidebarCodeListActive && !sidebarProjectsViewActive
+                              ? (activeTheme === 'dark' ? 'bg-[#333537] text-[#E3E3E3]' : 'bg-[#E1E5EA] text-[#0B57D0]')
+                              : (activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]')
+                          }`}
+                        >
+                          {t.sidebarTaskFilterFolders}
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="sidebar-task-pill-projects"
+                          aria-pressed={sidebarProjectsViewActive}
+                          onClick={() => { setSidebarCodeStylePersisted('projects'); setTaskFilterOpen(false); }}
+                          className={`h-6 px-2.5 rounded-full text-[12px] font-normal transition-colors ${
+                            sidebarProjectsViewActive
                               ? (activeTheme === 'dark' ? 'bg-[#333537] text-[#E3E3E3]' : 'bg-[#E1E5EA] text-[#0B57D0]')
                               : (activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]')
                           }`}
@@ -3298,38 +3351,21 @@ function workspaceDisplayName(path) {
                           )}
                           {sidebarFolderGroups.map((group) => {
                             const isOpen = folderGroupOpen[group.key] ?? true;
-                            const label = group.kind === 'project'
-                              ? group.name
-                              : group.kind === 'temporary'
-                                ? t.uiCodex.temporarySession
-                                : workspaceDisplayName(group.path);
                             return (
                               <div key={group.key}>
                                 <ProjectGroupHeader
-                                  label={label}
+                                  label={sidebarGroupLabel(group)}
                                   kind={group.kind}
                                   count={group.rows.length}
                                   isOpen={isOpen}
                                   onToggle={() => setFolderGroupOpen(prev => ({ ...prev, [group.key]: !isOpen }))}
                                   theme={activeTheme}
                                   t={t}
-                                  title={group.kind === 'folder' ? group.path : undefined}
                                   busy={projectOpsBusy}
                                   testId="sidebar-folder-group"
-                                  // bridge.projects 仅桌面存在:web 上目录组不渲染
-                                  // 死入口(点击无反馈违反显式不支持约定)。
-                                  onConvert={bridge.projects && group.kind === 'folder' ? (name) => handleConvertFolderToProject(group.path, name) : undefined}
-                                  onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
-                                  onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
-                                  onDropSession={group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
-                                  unavailableRoots={group.kind === 'project'
-                                    ? (group.roots || [])
-                                        .filter(root => !(root && typeof root === 'object' ? root.available : root))
-                                        .map(root => String(typeof root === 'object' ? root.path : root))
-                                    : []}
-                                  onRebind={group.kind === 'project' ? (rootPath) => startRebindWorkspace(rootPath) : undefined}
                                   dropActive={dropTargetGroupKey === group.key}
                                   onDropActive={(active) => setDropTargetGroupKey(active ? group.key : null)}
+                                  {...sidebarGroupHeaderProps(group)}
                                 />
                                 {isOpen && (
                                   <div className="mt-1 space-y-0.5">
