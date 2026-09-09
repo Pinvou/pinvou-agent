@@ -758,6 +758,11 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const [detectResult, setDetectResult] = useState(null);
       const [localDetecting, setLocalDetecting] = useState(false);
       const [localDetectResult, setLocalDetectResult] = useState(null);
+      // Optional custom port for local-model auto-detection (raw user input; empty = default ports only).
+      const [localPortDraft, setLocalPortDraft] = useState('');
+      // Inline validation message for the custom port. Kept separate from
+      // localDetectResult so a failed validation never hides previous candidates.
+      const [localPortError, setLocalPortError] = useState(null);
       // 图片输入能力三档(pinvou/enabled/disabled)与兜底视觉模型引用(阶段 G 设置页控件)。
       // 已下线的「保存时检测」(auto)档残留值按「自动处理」(pinvou)回显。
       // 未人工钉死(非 enabled/disabled)时按目录视觉能力标注预填:命中已验证
@@ -1177,12 +1182,26 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       }
       async function handleLocalDetect() {
         if (!bridge.available || !bridge.vllm.discoverLocalVllm || localDetecting) return;
+        // Optional custom port: the draft keeps the raw input as typed; anything
+        // outside 1-65535 (or not plain digits) shows an inline error and issues no probe.
+        const rawPort = localPortDraft.trim();
+        let customPort = null;
+        if (rawPort !== '') {
+          const portNumber = /^\d+$/.test(rawPort) ? Number(rawPort) : NaN;
+          if (!Number.isSafeInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
+            setLocalPortError(settingsCopy.localPortInvalid);
+            return;
+          }
+          customPort = portNumber;
+        }
+        setLocalPortError(null);
         setLocalDetecting(true);
         setLocalDetectResult(null);
         try {
           const result = await bridge.vllm.discoverLocalVllm({
             currentBaseUrl: null,
             savedBaseUrl: null,
+            customPort,
           });
           setLocalDetectResult({ candidates: (result && result.candidates) || [] });
         } catch (error) {
@@ -1402,9 +1421,26 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                     <span className={`block text-[15px] leading-5 font-normal truncate text-[#1C1C1E] dark:text-[#F2F2F7]`}>{settingsCopy.autoDetectLocalModel}</span>
                     <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>{settingsCopy.localDetectionTargets}</span>
                   </span>
+                  {/* Optional custom port: empty scans default ports only; raw input is kept
+                      as typed and validated when Detect runs. */}
+                  <span className={`shrink-0 text-[12px] leading-[17px] ${mutedText}`}>{settingsCopy.localPortLabel}</span>
+                  <input
+                    value={localPortDraft}
+                    onChange={e => { setLocalPortDraft(e.target.value); setLocalPortError(null); }}
+                    placeholder={settingsCopy.localPortPlaceholder}
+                    aria-label={settingsCopy.localPortLabel}
+                    data-testid="local-detect-port"
+                    disabled={localDetecting}
+                    inputMode="numeric"
+                    spellCheck={false}
+                    className={`shrink-0 w-[72px] min-h-8 px-2.5 rounded-lg text-right text-[13px] leading-[32px] outline-none bg-black/[0.04] text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:bg-white/[0.08] dark:text-[#F2F2F7] dark:placeholder:text-[#636366] disabled:opacity-45`}
+                  />
                   <button type="button" disabled={localDetecting} onClick={handleLocalDetect}
                     className={`${actionClass} disabled:opacity-45`}>{localDetecting ? t.detectingLocalVllm : (localDetectResult ? settingsCopy.redetect : settingsCopy.detect)}</button>
                 </div>
+                {localPortError && (
+                  <div className={`px-3.5 py-3 text-[12px] leading-5 border-b last:border-b-0 border-black/[0.10] text-[#C5221F] dark:border-white/[0.10] dark:text-[#F28B82]`}>{localPortError}</div>
+                )}
                 {localDetectResult && localDetectResult.error && (
                   <div className={`px-3.5 py-3 text-[12px] leading-5 border-b last:border-b-0 border-black/[0.10] text-[#C5221F] dark:border-white/[0.10] dark:text-[#F28B82]`}>{localDetectResult.error}</div>
                 )}
