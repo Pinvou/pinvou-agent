@@ -54,7 +54,7 @@
         error: error ? String(error) : null,
         // Structured identity of desktop command errors (e.g. VoiceCommandError
         // {code, category, message}): the message text alone would leave the
-        // browser lane's error-code → trilingual copy mapping unreachable.
+        // browser lane's error-code → bilingual copy mapping unreachable.
         errorCode: errorCode || null,
         errorCategory: errorCategory || null,
       }).catch(function (respondError) {
@@ -126,7 +126,7 @@
         } catch (error) {
           // Desktop command errors arrive as structured objects (e.g.
           // VoiceCommandError); keep their stable code/category for the
-          // browser's trilingual error mapping instead of only the message.
+          // browser's bilingual error mapping instead of only the message.
           const structured = error && typeof error.code === "string";
           const errorCategory = error && typeof error.category === "string" ? error.category : null;
           await respondToWebAccess(

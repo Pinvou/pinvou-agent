@@ -139,7 +139,7 @@ pub fn email_dependency_packages() -> &'static str {
 /// 无 Homebrew formula，且非 root 安装实测会坏（模块不在系统 Perl 的 @INC），
 /// 只能 `sudo cpan` 装到系统 Perl 路径。返回语义化 hint key（非界面文案），
 /// 由前端 i18n 按 `depHint_<key>` 映射当前语言的完整指引（含命令与文档链接）；
-/// 不直接返回中文文案，否则英文/日文界面会看到中文，违反三语文案约束。
+/// 不直接返回中文文案，否则英文界面会看到中文，违反双语文案约束。
 /// 其他平台返回 None（apt/winget 可装）。
 pub fn email_manual_hint() -> Option<&'static str> {
     Some("email_manual")

@@ -38,7 +38,7 @@ lark-sheets、lark-im、lark-task、lark-wiki、lark-base。
 2. 拉上游源:上游 tag 带 `v` 前缀,即
    `https://github.com/larksuite/cli/archive/refs/tags/v<version>.tar.gz`
    (当前 v1.0.87),解压后取其 `skills/<域>`(上游仓库共 27 个 lark-* 域,
-   品悟只收录上述 9 域;其余域一律「未随包收录」,文档中提及须按「技能未随包
+   鲜小助只收录上述 9 域;其余域一律「未随包收录」,文档中提及须按「技能未随包
    收录 + CLI 命令直给」口径,不复制其目录)。
 3. 以该 tag 为三方合并基线,按下文登记逐条重放本地修改后,保留本 NOTICE。
 
@@ -50,7 +50,7 @@ PR #302),不在本目录内,不来自 lark-cli 上游,sync 时不涉及。
 `lark-shared/references/lark-wiki-token-routing.md`;裸写 `references/…` 的
 其他条目均属各自所属域,如 lark-doc 域的 `references/lark-doc-create.md`。)
 
-## Pinvou3 本地修改登记
+## 鲜小助本地修改登记
 
 以下修改为 pinvou3 在上游 skill 基础上的本地分叉。**下次上游 sync 时需逐条重放。**
 
@@ -92,7 +92,7 @@ PR #302),不在本目录内,不来自 lark-cli 上游,sync 时不涉及。
 - **lark-doc**:fetch.md 自指小节名与错位标题修正;4 个 media/resource 文档
   的 `../lark-shared` 链接显示文本与目标对齐。
 - **lark-sheets**:SKILL.md 与 read-data.md 的 scripts 分发口径由上游的
-  「只随仓库版/二进制内嵌版不含」修正为「随品悟应用内置分发」(品悟 bundle
+  「只随仓库版/二进制内嵌版不含」修正为「随鲜小助应用内置分发」(鲜小助 bundle
   实际携带 scripts/ 且物化时整目录释放)。
 - frontmatter 的 `requires.skills`(lark-doc)与 `siblings`(lark-sheets)键名
   不一致:引擎(CodeWhale)只消费 name/description,两者均无实际作用,保持
@@ -119,7 +119,7 @@ PR #302),不在本目录内,不来自 lark-cli 上游,sync 时不涉及。
   并入 genres/),该子项无需重放;slides 行已被 2026-08-16 真实性审查补录
   改为「技能未随包收录 + `lark-cli slides` 直给」,以补录条为准。lark-base-view-set-filter.md 一条见下方对账注。)
   (对账注 2026-08-16:经复核,v1.0.87 上游 lark-base/references/ 仍含
-  lark-base-view-set-filter.md,且与品悟当前文件逐字节一致、内文已无 lark-contact
+  lark-base-view-set-filter.md,且与鲜小助当前文件逐字节一致、内文已无 lark-contact
   提及——该文件的旧登记在 v1.0.87 文本上无需重放(上游重写已消化);
   cell-value 与 drive-search 两处仍有效,已在 v1.0.87 文本上重放,可对照上游
   tag diff 验证。)
@@ -128,7 +128,7 @@ PR #302),不在本目录内,不来自 lark-cli 上游,sync 时不涉及。
 
 ### 本地工具依赖审查补录(2026-08-16,第四轮)
 
-品悟为三端应用(macOS/Linux/Windows),Windows 不保证本地 `jq` 可用;lark-cli 全局
+鲜小助为三端应用(macOS/Linux/Windows),Windows 不保证本地 `jq` 可用;lark-cli 全局
 `--jq` 实测对 API/shortcut 命令可用(管理命令如 `auth status` 不支持)。以下修改
 改为 CLI 内置 `--jq` 或模型直接读取,下次上游 sync 需重放:
 
@@ -238,7 +238,7 @@ emit_error(JSON+exit 1)、无裸 except。修复 1 处,下次 sync 需重放:
 下次 sync 需逐条重放:
 
 - **`python` → `python3` 改写(5 处/3 文件,上游 v1.0.87 原文均为裸 `python`;
-  品悟宿主环境无裸 `python`,实测 command not found;2026-08-17 计数勘误:原记
+  鲜小助宿主环境无裸 `python`,实测 command not found;2026-08-17 计数勘误:原记
   「7 处」,实测 sop 1 + read-data 3 + write-cells 1 = 5 处)**:
   `lark-base/references/lark-base-data-analysis-sop.md`(uv run 示例 1 处)、
   `lark-sheets/references/lark-sheets-read-data.md`(3 处)、
@@ -284,10 +284,10 @@ emit_error(JSON+exit 1)、无裸 except。修复 1 处,下次 sync 需重放:
 有误,下次 sync 逐条重放:
 
 - **lark-shared/SKILL.md「更新检查」节重写(第四轮 f2f7dfbc 引入,此前未登记)**:
-  上游「始终使用 `lark-cli update` 更新」整段改成品悟钉扎口径——品悟内
+  上游「始终使用 `lark-cli update` 更新」整段改成鲜小助钉扎口径——鲜小助内
   lark-cli 由应用按 `connectors.lock.json` 钉扎分发与升级,不要执行
-  `lark-cli update` 自行更新(自行更新会脱离品悟校验,下次使用时被重装回
-  钉扎版本);`_notice.update` 提示改为「新版本会随品悟应用更新自动就位」。
+  `lark-cli update` 自行更新(自行更新会脱离鲜小助校验,下次使用时被重装回
+  钉扎版本);`_notice.update` 提示改为「新版本会随鲜小助应用更新自动就位」。
   本条是自更新禁令的正文载体,重放时必须保留,不得回退上游原文。
 - **lark-im / lark-base 的 SKILL.md description 本地重写(2026-07-25 批次沿袭,
   2026-08-17 二次勘误:同批共 3 域漏登——im/base/task;其余 6 域已登记)**:
@@ -300,7 +300,7 @@ emit_error(JSON+exit 1)、无裸 except。修复 1 处,下次 sync 需重放:
   lark-shared),查用户日程必须 `--as user`」——依据为 lark-shared/SKILL.md
   上游原文第 61 行同款口径,属对上游既有事实的收录补写。同处「压缩身份示例」
   的删除侧已登记,本条补登新增侧。
-- **lark-task/SKILL.md 措辞分叉(1 处,品悟基线沿袭)**:「列取任务列表」
+- **lark-task/SKILL.md 措辞分叉(1 处,鲜小助基线沿袭)**:「列取任务列表」
   (上游 v1.0.87 原文)在本地为「获取任务列表」,语义等价;下次 sync 跟随
   上游即可,无需重放(登记仅为对账完备)。
 

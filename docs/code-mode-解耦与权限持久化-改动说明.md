@@ -61,7 +61,7 @@ code 模式（真实项目目录绑定）与 plain 模式（沙箱会话目录�
   - `CodexAcpView.jsx`：`NATIVE_CHAT_EVENTS` 注册两个 plan 事件；新增 `NativePlanCard` 组件（复用 `PlanLayer`，与 work 方案卡同视觉语言）；`acceptNativePlan` 调 `accept_plan`（planMarkdown 逐字镜像 work 的 `composePlanMarkdown`）、`discardNativePlan` 调 `discard_plan`（失败按 `plan_not_active` 分流，与 work 同构）；删除"本期不接"注释。仅 native 生效，ACP 分支零改动。
   - 按钮在非 Plan / busy 时前置禁用（比 work 的错误收口更诚实）。
 - **reminder 诚实化核对**：审批卡落地后，同文 reminder（"方案卡片由系统在你调 update_plan 后自动展示"）对 code 变为真实描述，**保持同文不改**；卡片批准按钮文案与 reminder 的【就这么干】一致。
-- i18n：`uiCodex` 新增 6 key（批准/放弃/覆盖/历史/两类失败提示），卡片按钮复用既有 `planReady/planGo/planDrop` 等顶层 key，zh/en/ja 三语齐全。
+- i18n：`uiCodex` 新增 6 key（批准/放弃/覆盖/历史/两类失败提示），卡片按钮复用既有 `planReady/planGo/planDrop` 等顶层 key，zh/en 双语齐全。
 - 测试：`code_native_lane.test.mjs` 新增 Plan 审批与 hydrate 两组用例（快照增量、出卡、markdown 拼装、幂等、覆盖冻结、回声批卡、只读还原等约 +128 行）。
 
 #### R-2：审批参数收编策略 + 白名单链路锁定
@@ -75,7 +75,7 @@ code 模式（真实项目目录绑定）与 plain 模式（沙箱会话目录�
 - **什么**（仅 native，底栏 kb 选择器后两元素）：
   - **用量 chip 兼 compact 入口**：lane 已消费的 `chat:usage` 渲染"上下文 Nk"（`tokens.max` 恒 0 为已知限制，按只显已用降级，格式与 work `fmtCtxTok` 同款）；点击调 `compact_now`（参数与 work 侧封装同款），busy/compacting 置灰，压缩过程由既有 `chat:compaction` 系统项呈现。
   - **memory 徽标**：lane 新增 `chat:memory` 监听（事件本就对全部会话发射），底栏 Brain 徽标 + 条数，点击只读弹层列条目；无条目不占位。不照搬 work 完整记忆面板（取舍：轻量展示，code 页信息架构克制）。
-- i18n：`uiCodex` 新增 4 key，三语齐全；反馈文案复用既有 `compactStart/Done/Fail`。
+- i18n：`uiCodex` 新增 4 key，中英文齐全；反馈文案复用既有 `compactStart/Done/Fail`。
 - 测试：lane 新增 memory 快照归一化/过滤/hydration 保留、`compacting` 置位复位断言。
 
 #### 文档同步
@@ -146,8 +146,8 @@ code 会话执行根是用户真实项目目录，但此前权限语义有两个
 #### 前端
 
 - **mode 后端驱动**（`CodexAcpView.jsx`）：去掉 useState 初值与两处回落共三处写死 `'yolo'`；切换/新建会话时按 `get_mode_state` + 全局偏好渲染 chip。新增纯逻辑模块 `code-permission-state.js`（fallback 矩阵：无记录→Plan、读取失败按未确认的安全方向）。
-- **确认门**：`switchNativeMode` 切 yolo 前查 `yolo_confirmed`——false 弹 `NativeYoloConfirmCard`（复用审批卡风格与既有 backdrop 弹层，三语文案含"以后不再提示"），【确认】调 `confirm_code_yolo` 后继续原切换路径（含 busy 先 cancel），【取消】留在 Plan；true 直接切。草稿态（未建会话）同门，并补齐 yolo 方向暂存应用的原缺口。
-- i18n：`uiCodex` 新增 5 key × zh/en/ja。
+- **确认门**：`switchNativeMode` 切 yolo 前查 `yolo_confirmed`——false 弹 `NativeYoloConfirmCard`（复用审批卡风格与既有 backdrop 弹层，中英文案含"以后不再提示"），【确认】调 `confirm_code_yolo` 后继续原切换路径（含 busy 先 cancel），【取消】留在 Plan；true 直接切。草稿态（未建会话）同门，并补齐 yolo 方向暂存应用的原缺口。
+- i18n：`uiCodex` 新增 5 key × zh/en。
 
 #### 测试
 

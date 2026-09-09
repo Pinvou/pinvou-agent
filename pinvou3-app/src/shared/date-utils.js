@@ -2,7 +2,7 @@
 
 // Intl.DateTimeFormat construction is expensive, and the sidebar calls
 // formatSessionDate/formatDateGroupLabel for every session on each App
-// render. Cache formatters by locale|opts (closed key space: three
+// render. Cache formatters by locale|opts (closed key space: two
 // languages × two opts variants).
 const formatterCache = new Map();
 function cachedFormatter(locale, optsKey, opts) {
@@ -23,7 +23,6 @@ function formatSessionDate(ts, language) {
       if (diff < 0) diff = 0; // 时钟漂移/未来时间戳 → 当「刚刚」,不出现负数
       const L = {
         zh: { justNow: '刚刚', minsAgo: n => `${n} 分钟前`, hoursAgo: n => `${n} 小时前`, yesterday: '昨天', daysAgo: n => `${n} 天前`, locale: 'zh-CN' },
-        ja: { justNow: 'たった今', minsAgo: n => `${n} 分前`, hoursAgo: n => `${n} 時間前`, yesterday: '昨日', daysAgo: n => `${n} 日前`, locale: 'ja-JP' },
         en: { justNow: 'Just now', minsAgo: n => `${n}m ago`, hoursAgo: n => `${n}h ago`, yesterday: 'Yesterday', daysAgo: n => `${n}d ago`, locale: 'en-US' },
       }[language] || { justNow: 'Just now', minsAgo: n => `${n}m ago`, hoursAgo: n => `${n}h ago`, yesterday: 'Yesterday', daysAgo: n => `${n}d ago`, locale: 'en-US' };
       // 今天之内:相对时间(刚刚 / X分钟前 / X小时前)——比绝对钟点更直观传达「多近」,
@@ -52,7 +51,6 @@ function formatSessionDate(ts, language) {
     function formatDateGroupLabel(key, language) {
       const L = {
         zh: { today: '今天', yesterday: '昨天', unknown: '时间未知', locale: 'zh-CN' },
-        ja: { today: '今日', yesterday: '昨日', unknown: '日時不明', locale: 'ja-JP' },
         en: { today: 'Today', yesterday: 'Yesterday', unknown: 'Unknown time', locale: 'en-US' },
       }[language] || { today: 'Today', yesterday: 'Yesterday', unknown: 'Unknown time', locale: 'en-US' };
       if (key === 'unknown') return L.unknown;

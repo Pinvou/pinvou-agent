@@ -1,11 +1,11 @@
 ---
 name: package-author
-description: 当用户要把手头的工具打包/标准化成 pinvou 插件包时使用——包括纯技能(SKILL.md)、纯 MCP 服务或它们的组合包。用户说"打包/做成插件包/标准化这个工具/给我一个能上传的标准包/写 plugin.json/加个图标"等，或给了散乱脚本/目录要整理成可上传 zip 时，用本技能把内容规范成 plugin-protocol 标准包（补 plugin.json、补 mcp/manifest.json、补 SKILL.md、补图标、校验命名）。
+description: 当用户要把手头的工具打包/标准化成鲜小助插件包时使用——包括纯技能(SKILL.md)、纯 MCP 服务或它们的组合包。用户说"打包/做成插件包/标准化这个工具/给我一个能上传的标准包/写 plugin.json/加个图标"等，或给了散乱脚本/目录要整理成可上传 zip 时，用本技能把内容规范成 plugin-protocol 标准包（补 plugin.json、补 mcp/manifest.json、补 SKILL.md、补图标、校验命名）。
 ---
 
 # 插件包标准化（package-author）
 
-把用户给的工具/技能/脚本，整理成 pinvou 应用商店可导入的**标准插件包**。规范以
+把用户给的工具/技能/脚本，整理成鲜小助应用商店可导入的**标准插件包**。规范以
 `docs/plugin-package-spec.md` 为准，本文件内置完整规则，可直接照做、不依赖文档可达。
 
 ## 何时用 / 何时不用

@@ -1125,7 +1125,7 @@ heartbeatTimer.unref();
 
 server.listen(PORT, HOST, () => {
   console.log(
-    `pinvou remote relay listening on http://${HOST}:${PORT}`
+    `鲜小助 remote relay listening on http://${HOST}:${PORT}`
     + ` (protocol=v2, max_endpoints=${MAX_ENDPOINTS}`
     + `, max_ws_connections=${MAX_WS_CONNECTIONS}`
     + `, ws_connect_limit=${WS_CONNECT_LIMIT}/${WS_CONNECT_WINDOW_MS}ms`

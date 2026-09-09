@@ -4,27 +4,22 @@
 
 # 鲜小助
 
-本项目基于开源 [Pinvou Agent](https://github.com/Pinvou/pinvou-agent) 独立维护，产品名称统一为 **鲜小助**。保留的上游链接用于说明来源，不代表上游官方发行或背书。参见[品牌与兼容性说明](docs/branding.md)。
+**鲜小助** 由本仓库独立维护。为兼容升级和既有用户数据而保留的技术标识，参见[品牌与兼容性说明](docs/branding.md)。
 
 **面向工作、设计与代码的开源桌面 AI Agent 工作台。**
 
-[English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
+[English](README.md) · [简体中文](README.zh-CN.md)
 
-[![CI](https://github.com/Pinvou/pinvou-agent/actions/workflows/pr-check.yml/badge.svg)](https://github.com/Pinvou/pinvou-agent/actions/workflows/pr-check.yml)
-[![License: MIT](https://img.shields.io/github/license/Pinvou/pinvou-agent)](LICENSE)
-[![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FPinvou%2Fpinvou-agent%2Fmain%2Fpinvou3-app%2Fpackage.json&query=%24.version&label=version&color=blue)](pinvou3-app/package.json)
+[![CI](https://github.com/mlmr-coder/fresh-agent/actions/workflows/pr-check.yml/badge.svg)](https://github.com/mlmr-coder/fresh-agent/actions/workflows/pr-check.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmlmr-coder%2Ffresh-agent%2Fmain%2Fpinvou3-app%2Fpackage.json&query=%24.version&label=version&color=blue)](pinvou3-app/package.json)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#-快速开始)
-[![GitHub Stars](https://img.shields.io/github/stars/Pinvou/pinvou-agent?style=flat)](https://github.com/Pinvou/pinvou-agent/stargazers)
+[![GitHub Stars](https://img.shields.io/github/stars/mlmr-coder/fresh-agent?style=flat)](https://github.com/mlmr-coder/fresh-agent/stargazers)
 
-[下载预览版](https://github.com/Pinvou/pinvou-agent/releases) · [官网](https://pinvou.com/) · [QQ 用户群](#-社区与安全) · [问题反馈](https://github.com/Pinvou/pinvou-agent/issues) · [讨论区](https://github.com/Pinvou/pinvou-agent/discussions) · [安全政策](SECURITY.md)
+[下载预览版](https://github.com/mlmr-coder/fresh-agent/releases) · [问题反馈](https://github.com/mlmr-coder/fresh-agent/issues) · [讨论区](https://github.com/mlmr-coder/fresh-agent/discussions) · [安全政策](SECURITY.md)
 
 <p align="center">
-  <a href="https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4">
-    <img src="docs/assets/screenshots/mode-work.webp" alt="鲜小助 工作模式">
-  </a>
-</p>
-<p align="center">
-  <a href="https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4"><strong>▶ 观看 90 秒功能演示（中文）</strong></a>
+  <img src="docs/assets/screenshots/mode-work.webp" alt="鲜小助 工作模式">
 </p>
 
 </div>
@@ -131,8 +126,8 @@ export DEEPSEEK_MODEL="your-model-name"
 ### 启动应用
 
 ```bash
-git clone --recursive https://github.com/Pinvou/pinvou-agent.git
-cd pinvou-agent/pinvou3-app
+git clone --recursive https://github.com/mlmr-coder/fresh-agent.git
+cd fresh-agent/pinvou3-app
 npm ci
 cd ..
 ./pinvou3-app/run-dev.sh
@@ -206,14 +201,9 @@ docs/                 架构设计、验证报告与维护文档
 
 ## 💬 社区与安全
 
-- 🐧 **QQ 用户交流群：1108909346** — 扫描下方二维码，或在 QQ 中搜索群号加入
-- 🐛 [GitHub Issues](https://github.com/Pinvou/pinvou-agent/issues) — 可复现的 bug 与聚焦的功能建议
-- 💡 [GitHub Discussions](https://github.com/Pinvou/pinvou-agent/discussions) — 问题与想法交流（社区支持为尽力而为，见 [SUPPORT.md](SUPPORT.md)）
-- 🔒 **请勿在公开 Issue 中报告安全漏洞** — 请使用 [SECURITY.md](SECURITY.md) 中的私有渠道，或发送邮件至 `security@pinvou.com`
-
-<p align="center">
-  <img src="pinvou3-app/src/assets/community/qq-group-1108909346.png" alt="鲜小助 官方 QQ 用户交流群二维码，群号 1108909346" width="260" />
-</p>
+- 🐛 [GitHub Issues](https://github.com/mlmr-coder/fresh-agent/issues) — 可复现的 bug 与聚焦的功能建议
+- 💡 [GitHub Discussions](https://github.com/mlmr-coder/fresh-agent/discussions) — 问题与想法交流（社区支持为尽力而为，见 [SUPPORT.md](SUPPORT.md)）
+- 🔒 **请勿在公开 Issue 中报告安全漏洞** — 请使用 [SECURITY.md](SECURITY.md) 中的私有渠道
 
 ## 📖 进一步阅读
 
@@ -221,20 +211,6 @@ docs/                 架构设计、验证报告与维护文档
 - [商标使用规则](TRADEMARKS.md)
 - [SBOM 说明](docs/sbom.md)
 - [工具市场概览](docs/工具市场.md)
-
-## 🔗 友情链接
-
-- [LINUX DO](https://linux.do/)
-
-## ⭐ Star History
-
-<a href="https://www.star-history.com/?repos=pinvou%2Fpinvou-agent&type=date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&theme=dark&sealed_token=k7dkorBV3gOYRbA3ai0hCjYhzSjr1TFHk6Z9Lxdr5i_rhBGio7qlD80ERUfWzofzxF8394-zl1QwsZJEhzGPELvh9_Fm4xXR5Jm4xdEAfAENh8uizuoqey8O1_1aY5b-IZZsqiZjk3VyNn3v8sAgDQmveN9oz2jtOlYmwOYMYZYOhJp8mTouzJQyRCAB" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&sealed_token=k7dkorBV3gOYRbA3ai0hCjYhzSjr1TFHk6Z9Lxdr5i_rhBGio7qlD80ERUfWzofzxF8394-zl1QwsZJEhzGPELvh9_Fm4xXR5Jm4xdEAfAENh8uizuoqey8O1_1aY5b-IZZsqiZjk3VyNn3v8sAgDQmveN9oz2jtOlYmwOYMYZYOhJp8mTouzJQyRCAB" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&sealed_token=k7dkorBV3gOYRbA3ai0hCjYhzSjr1TFHk6Z9Lxdr5i_rhBGio7qlD80ERUfWzofzxF8394-zl1QwsZJEhzGPELvh9_Fm4xXR5Jm4xdEAfAENh8uizuoqey8O1_1aY5b-IZZsqiZjk3VyNn3v8sAgDQmveN9oz2jtOlYmwOYMYZYOhJp8mTouzJQyRCAB" />
- </picture>
-</a>
 
 ---
 

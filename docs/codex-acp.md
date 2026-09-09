@@ -155,8 +155,8 @@ Linux 发布脚本会自动准备 Bridge。单独执行 Tauri 构建前也可手
 ## 边界
 
 - ACP Agent 自己负责 Codex 会话、system prompt、tools、tool loop、skills、MCP 和上下文。
-- pinvou 负责进程托管、ACP 事件还原、权限交互、时间线持久化和 UI。
-- MVP 不向 Codex 注入 pinvou bundle skill、MCP、知识库或 persona。
+- 鲜小助负责进程托管、ACP 事件还原、权限交互、时间线持久化和 UI。
+- MVP 不向 Codex 注入鲜小助 bundle skill、MCP、知识库或 persona。
 - 附件入口位于代码输入框；图片按 Agent capability 发送，小型文本资源可内嵌，
   其他文件以资源链接发送。不支持的图片能力或格式会明确报错。
 - CodeWhale 的技能市场、知识库、工具、Plan/YOLO、远程控制和历史链路保持原样。

@@ -1,8 +1,8 @@
-# Pinvou Agent 贡献指南
+# 鲜小助 贡献指南
 
 [English](CONTRIBUTING.md) | [简体中文](CONTRIBUTING.zh-CN.md)
 
-感谢你帮助改进 Pinvou Agent。我们欢迎问题修复、文档、连接器、Skills、工作流、平台支持和边界清晰的产品改进。
+感谢你帮助改进 鲜小助。我们欢迎问题修复、文档、连接器、Skills、工作流、平台支持和边界清晰的产品改进。
 
 本文是 [CONTRIBUTING.md](CONTRIBUTING.md) 的中文参考版；两者内容冲突时以英文版为准。
 本文只说明贡献流程；项目级实现与质量边界以 [AGENTS.md](AGENTS.md) 为准。
@@ -14,12 +14,11 @@
 3. 按 [README.zh-CN.md](README.zh-CN.md) 准备开发环境。
 4. 从官方仓库最新 `main` 开始开发。
 
-维护者可从 `origin/main` 创建分支。外部贡献者应先配置一次官方仓库，并从 `upstream/main` 创建分支：
+从本仓库最新的 `origin/main` 创建分支：
 
 ```bash
-git remote add upstream https://github.com/Pinvou/pinvou-agent.git
-git fetch upstream
-git switch -c feat/short-description upstream/main
+git fetch origin
+git switch -c feat/short-description origin/main
 git submodule update --init --recursive
 ```
 
@@ -42,7 +41,7 @@ git commit -s
 
 ## 改动应放在哪里
 
-Pinvou Agent 使用 [CodeWhale](https://github.com/Pinvou/CodeWhale) 作为 Agent 底座，不在桌面层重复实现底座能力。扩展落位边界表单点维护在 [AGENTS.md](AGENTS.md) 第 2 节；CodeWhale 改动必须遵循该边界和 [`docs/fork-policy.md`](docs/fork-policy.md)，包括同 PR 配套的文档、指纹和测试要求。
+鲜小助 使用 [CodeWhale](https://github.com/Pinvou/CodeWhale) 作为 Agent 底座，不在桌面层重复实现底座能力。扩展落位边界表单点维护在 [AGENTS.md](AGENTS.md) 第 2 节；CodeWhale 改动必须遵循该边界和 [`docs/fork-policy.md`](docs/fork-policy.md)，包括同 PR 配套的文档、指纹和测试要求。
 
 ## Commit 信息
 
@@ -134,4 +133,4 @@ PR 应说明：
 
 ## 安全
 
-禁止提交凭据、Token、密码、客户或私人数据及仅限内部使用的地址。未修复的安全漏洞应按 [SECURITY.md](SECURITY.md) 或通过 `security@pinvou.com` 私密报告。
+禁止提交凭据、Token、密码、客户或私人数据及仅限内部使用的地址。未修复的安全漏洞应按 [SECURITY.md](SECURITY.md) 私密报告。

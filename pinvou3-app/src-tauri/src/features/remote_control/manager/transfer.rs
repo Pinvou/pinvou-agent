@@ -93,7 +93,7 @@ pub(super) fn finish_web_attachment_reservation_inner(
 }
 
 /// Stable wire codes for the upload integrity failures. The Web clients map
-/// them to localized zh/en/ja copy (pinned by web_access_contract.test.mjs);
+/// them to localized zh/en copy (pinned by web_access_contract.test.mjs);
 /// they must stay machine-stable, not translated.
 pub(crate) const WEB_ATTACHMENT_DIGEST_INVALID: &str = "web_attachment_digest_invalid";
 pub(crate) const WEB_ATTACHMENT_INTEGRITY_MISMATCH: &str = "web_attachment_integrity_mismatch";
@@ -193,7 +193,7 @@ pub(super) fn append_web_attachment_upload_chunk(
         // the manager lock at commit only; the desktop staging stack reuses
         // the same digest-format rule via platform::encoding. Both failures
         // return stable wire codes (pinned by web_access_contract.test.mjs)
-        // that the Web clients map to localized zh/en/ja copy; raw,
+        // that the Web clients map to localized zh/en copy; raw,
         // single-language text must never cross the Relay.
         let Some(expected) = crate::platform::encoding::normalize_sha256_hex(expected) else {
             return Err(WEB_ATTACHMENT_DIGEST_INVALID.to_string());

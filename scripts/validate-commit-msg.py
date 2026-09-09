@@ -167,7 +167,7 @@ def main() -> int:
     errors = validate_range(*args.range) if args.range else validate_file(args.message_file)
 
     if errors:
-        print("Commit message does not follow the mandatory Pinvou Agent convention.", file=sys.stderr)
+        print("Commit message does not follow the mandatory 鲜小助 convention.", file=sys.stderr)
         print(f"See {DOC_PATH}", file=sys.stderr)
         for error in errors:
             print(f"- {error}", file=sys.stderr)

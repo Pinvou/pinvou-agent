@@ -5,7 +5,7 @@
 //! 真正等价的 Unix helper，消除重复源。
 //!
 //! **不提取的 helper**（各有平台差异，保留在各自文件）：
-//! - `user_home_dir`：linux 硬编码 `/tmp`（品悟临时产物目录），macOS 用 `temp_dir()`
+//! - `user_home_dir`：linux 硬编码 `/tmp`（鲜小助临时产物目录），macOS 用 `temp_dir()`
 //! - `kill_pid_tree`：linux 与 macOS 的组杀实现现已统一为直调 kill(2)，不再委托外部 kill 命令
 //! - `connector_cli_command` / `apply_user_npm_prefix`：有结构性差异
 //!

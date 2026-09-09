@@ -1,6 +1,6 @@
-//! Pinvou 的可复用知识库核心。
+//! 鲜小助的可复用知识库核心。
 //!
-//! 本 crate 不依赖 Tauri 或 Pinvou 桌面应用。桌面端通过 [`client`] 访问远程服务，
+//! 本 crate 不依赖 Tauri 或鲜小助桌面应用。桌面端通过 [`client`] 访问远程服务，
 //! 服务端通过 [`KnowledgeService`] 持有源文档、索引与授权状态。
 
 use std::fs::{File, OpenOptions, TryLockError};

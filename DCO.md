@@ -1,6 +1,6 @@
 # Developer Certificate of Origin
 
-Pinvou Agent uses the [Developer Certificate of Origin 1.1](https://developercertificate.org/).
+鲜小助 uses the [Developer Certificate of Origin 1.1](https://developercertificate.org/).
 
 By adding a `Signed-off-by` trailer to a commit, you certify that you have the right to submit the contribution under the license of this repository and that the contribution meets the DCO 1.1 terms.
 

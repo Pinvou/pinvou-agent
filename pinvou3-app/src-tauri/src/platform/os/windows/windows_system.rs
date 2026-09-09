@@ -242,7 +242,7 @@ pub fn ocr_dependency_packages() -> &'static str {
 }
 
 pub fn pandoc_missing_message() -> &'static str {
-    "文档解析组件缺失或不可用：内置 Pandoc 未在安装目录 pandoc 下找到，请修复或重新安装 pinvou。"
+    "文档解析组件缺失或不可用：内置 Pandoc 未在安装目录 pandoc 下找到，请修复或重新安装鲜小助。"
 }
 
 pub fn libreoffice_missing_message() -> &'static str {
@@ -250,19 +250,19 @@ pub fn libreoffice_missing_message() -> &'static str {
 }
 
 pub fn pdf_text_missing_message() -> &'static str {
-    "PDF 解析组件缺失或不可用：内置 Poppler 未在安装目录 poppler 下找到，请修复或重新安装 pinvou。"
+    "PDF 解析组件缺失或不可用：内置 Poppler 未在安装目录 poppler 下找到，请修复或重新安装鲜小助。"
 }
 
 pub fn pdf_render_missing_message() -> &'static str {
-    "PDF 渲染组件缺失或不可用：内置 Poppler 未在安装目录 poppler 下找到，请修复或重新安装 pinvou。"
+    "PDF 渲染组件缺失或不可用：内置 Poppler 未在安装目录 poppler 下找到，请修复或重新安装鲜小助。"
 }
 
 pub fn pdf_ocr_missing_message() -> &'static str {
-    "扫描件 PDF OCR 需要 Tesseract；PDF 渲染组件由内置 Poppler 提供，如仍失败请修复或重新安装 pinvou。"
+    "扫描件 PDF OCR 需要 Tesseract；PDF 渲染组件由内置 Poppler 提供，如仍失败请修复或重新安装鲜小助。"
 }
 
 pub fn presentation_pdf_missing_message() -> &'static str {
-    "演示文稿解析需要 LibreOffice；PDF 文本组件由内置 Poppler 提供，如缺失请修复或重新安装 pinvou。"
+    "演示文稿解析需要 LibreOffice；PDF 文本组件由内置 Poppler 提供，如缺失请修复或重新安装鲜小助。"
 }
 
 pub fn system_default_open_supported(path: &Path) -> bool {

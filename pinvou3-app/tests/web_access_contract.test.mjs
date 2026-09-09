@@ -109,7 +109,7 @@ const codeViewerModal = readSource(
 );
 const acpPlatformClient = readSource(path.join(root, 'src', 'features', 'codex', 'acpClient.js'), 'utf8');
 const acpErrors = readSource(path.join(root, 'src', 'features', 'codex', 'acpErrors.js'), 'utf8');
-const i18n = ['zh', 'en', 'ja'].map((l) => readSource(path.join(root, 'src', 'shared', 'i18n', `${l}.js`), 'utf8')).join('\n'); // 拆分后三语在 i18n/ 目录
+const i18n = ['zh', 'en'].map((l) => readSource(path.join(root, 'src', 'shared', 'i18n', `${l}.js`), 'utf8')).join('\n');
 const appMain = readSource(path.join(root, 'src', 'app', 'main.jsx'), 'utf8');
 const policy = JSON.parse(readSource(path.join(root, 'src', 'platform', 'web', 'access-policy.json'), 'utf8'));
 const allowed = new Set(policy.allowed_commands);
@@ -438,8 +438,8 @@ assert.match(acpErrors, /CONTROLLED_WEB_ERROR[\s\S]*?copy\.operationFailed/,
   'controlled Web error codes must become localized UI copy instead of raw browser text');
 
 // Upload integrity failures must surface a stable wire code that the web
-// client maps to trilingual copy; the Chinese raw text must no longer pass
-// through the Relay to en/ja users (review P2).
+// client maps to bilingual copy; the Chinese raw text must no longer pass
+// through the Relay to English users (review P2).
 // web_access_upload_attachment_chunk serves both plain sessions and the ACP
 // code mode, so both display paths must recognize these two codes.
 assert.match(remoteControlManager, /WEB_ATTACHMENT_DIGEST_INVALID: &str = "web_attachment_digest_invalid"/,
@@ -454,18 +454,18 @@ assert.match(webBridge, /rawUploadError === "web_attachment_digest_invalid"[\s\S
   'the Web chat upload path must localize the malformed-digest code');
 assert.match(webBridge, /rawUploadError === "web_attachment_integrity_mismatch"[\s\S]*?bt\("deviceUploadIntegrityMismatch"\)/,
   'the Web chat upload path must localize the mismatch code');
-assert.equal((webBridge.match(/deviceUploadDigestInvalid:/g) || []).length, 3,
-  'the malformed-digest copy must exist in all three BT_TABLE language blocks');
-assert.equal((webBridge.match(/deviceUploadIntegrityMismatch:/g) || []).length, 3,
-  'the mismatch copy must exist in all three BT_TABLE language blocks');
+assert.equal((webBridge.match(/deviceUploadDigestInvalid:/g) || []).length, 2,
+  'the malformed-digest copy must exist in both BT_TABLE language blocks');
+assert.equal((webBridge.match(/deviceUploadIntegrityMismatch:/g) || []).length, 2,
+  'the mismatch copy must exist in both BT_TABLE language blocks');
 assert.match(codexView, /uploadErrorText === 'web_attachment_digest_invalid'[\s\S]*?uiAttachments\.deviceUploadDigestInvalid/,
   'the ACP attachment path must localize the malformed-digest code');
 assert.match(codexView, /uploadErrorText === 'web_attachment_integrity_mismatch'[\s\S]*?uiAttachments\.deviceUploadIntegrityMismatch/,
   'the ACP attachment path must localize the mismatch code');
-assert.equal((i18n.match(/deviceUploadDigestInvalid:/g) || []).length, 3,
-  'the ACP malformed-digest copy must exist in all three i18n dictionaries');
-assert.equal((i18n.match(/deviceUploadIntegrityMismatch:/g) || []).length, 3,
-  'the ACP mismatch copy must exist in all three i18n dictionaries');
+assert.equal((i18n.match(/deviceUploadDigestInvalid:/g) || []).length, 2,
+  'the ACP malformed-digest copy must exist in both i18n dictionaries');
+assert.equal((i18n.match(/deviceUploadIntegrityMismatch:/g) || []).length, 2,
+  'the ACP mismatch copy must exist in both i18n dictionaries');
 
 // After the watchdog skips a stalled predecessor, the web live stream shows
 // an envelope-seq hole; the listener must detect the jump and debounce-refetch
@@ -532,7 +532,6 @@ assert.match(remoteControlManager,
 for (const label of [
   '请先在桌面端允许远程访问本机目录',
   'Allow remote access to local folders on the desktop first',
-  '先にデスクトップでローカルフォルダーへの遠隔アクセスを許可してください',
 ]) {
   assert.equal(i18n.includes(label), true, `missing localized host workspace error: ${label}`);
 }

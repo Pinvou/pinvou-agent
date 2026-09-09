@@ -6,7 +6,7 @@ import { formatCompactCount } from '../../shared/format-number.js';
 import { useConversationSecondClock } from '../conversation/ConversationTimeline.jsx';
 
 // 界面语言 → BCP 47 locale，用于时钟等本地化格式化
-const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
+const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US' };
 
     const MONITOR_BRAND_ICONS = {
       qwen: 'brand-icons/qwen.svg',

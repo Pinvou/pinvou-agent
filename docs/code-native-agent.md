@@ -6,7 +6,7 @@
 
 ## 1. 背景与目标
 
-"代码"模块此前只接入三个第三方 ACP Agent（Codex / Claude Code / Kimi），原生能力缺位。本特性把 pinvou 原生（CodeWhale Engine）编码能力作为第四个 agent"鲜小助"（agent_id `pinvou`）加入代码模块，目标：
+"代码"模块此前只接入三个第三方 ACP Agent（Codex / Claude Code / Kimi），原生能力缺位。本特性把鲜小助原生（CodeWhale Engine）编码能力作为第四个 agent"鲜小助"（agent_id `pinvou`）加入代码模块，目标：
 
 - 代码模式下可直接创建鲜小助原生会话并对话，支持绑定用户自选项目目录；
 - 不依赖第三方 CLI 安装与登录，无 Node/无账号环境可用；
@@ -84,7 +84,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 
 | Hash | 说明 |
 |---|---|
-| `241fe054` | 代码模块接入鲜小助原生代码会话：store `code_session` 标记、`create_codex_acp_session` 原生分支、列表纳入、workspace_info 支持、前端双车道（code-native-lane）、选择器加"鲜小助"、i18n 三语、文档同步 |
+| `241fe054` | 代码模块接入鲜小助原生代码会话：store `code_session` 标记、`create_codex_acp_session` 原生分支、列表纳入、workspace_info 支持、前端双车道（code-native-lane）、选择器加"鲜小助"、i18n 中英文、文档同步 |
 
 ### 阶段二：项目目录绑定（两个根）
 
@@ -92,7 +92,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 |---|---|
 | `ce6139e0` | Rust 执行根：bridge 注入执行根解析器、`bind_code_native_session` 支持 kind/path、workspace_info/execution_workspace Project 分支、create 命令放开项目路径 |
 | `be791705` | 账本锚定：附件绝对路径引用、审计分流、产物面板 code_session 守卫、远程授权回归测试（授权根本来就是账本根，无需改代码） |
-| `f88817ba` | 前端开放项目目录选择（移除 pinvou 三处钳制、i18n 清理） |
+| `f88817ba` | 前端开放项目目录选择（移除鲜小助三处钳制、i18n 清理） |
 | `fcf2702e` | 文档更新 + 架构决策变更记录 |
 
 ### 阶段三：实机验证驱动的缺陷修复（含一次全盘审查，发现 11 项）
@@ -104,7 +104,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 | `c12c2adc` | 标题自动命名下沉后端公共函数 `apply_default_session_title`（ACP/chat 两链路统一，28 字符，已命名不覆盖） |
 | `70be4b45` | bridge 不再覆盖代码会话标题与产物索引（`!meta` 恒真导致误读 active 聊天首条消息命名代码会话；tauri/web 两处同修） |
 | `e5411a30` | 确认卡与忙碌态跨组件重建可恢复（app 侧 pending 登记表 + `get_pending_user_inputs` 命令，engine/submodule 不碰） |
-| `babfccc2` | 原生车道补消费 `chat:shell_task_status`/`chat:compaction`（新增三语 key） |
+| `babfccc2` | 原生车道补消费 `chat:shell_task_status`/`chat:compaction`（新增中英文 key） |
 | `3eab0c6e` | 死代码防御性分支注释 + 决策记录时效标注 |
 
 ### 阶段四：配置控件搬入
@@ -146,7 +146,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 - `features/conversation/HomeModeSwitcher.jsx`：CODE_AGENT_OPTIONS 增加"鲜小助"。
 - `app/main.jsx`：原生会话 busy 全局监听、CodexAcpView 补传 bs 与导航回调。
 - `platform/tauri/bridge.js` + `platform/web/bridge.js`：persist 守卫——会话不在聊天列表则跳过 persist+rename。
-- `shared/i18n.js`：uiCodex 三语 key（nativeDraftHint/nativeActiveHint/nativeBlockedNotice/compactStart/compactDone/compactFail 等）。
+- `shared/i18n.js`：uiCodex 中英文 key（nativeDraftHint/nativeActiveHint/nativeBlockedNotice/compactStart/compactDone/compactFail 等）。
 
 ### 测试
 
@@ -157,7 +157,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 ## 6. 接口契约（前端集成要点）
 
 - 创建：`create_codex_acp_session { agentId: "pinvou", workspacePath }`；workspacePath 为空=临时会话，非空=项目绑定（校验失败/回滚均中文报错）。
-- 列表：原生会话 `agent_id="pinvou"`、`agent_name="品悟"`；标题创建时为"新对话"，首条消息后自动命名（前 28 字符）。
+- 列表：原生会话 `agent_id="pinvou"`、`agent_name="鲜小助"`；标题创建时为"新对话"，首条消息后自动命名（前 28 字符）。
 - 发送：`chat { sessionId, message, attachments, restrictTools: false }`；取消 `cancel_generation { sessionId }`；确认卡 `submit_user_input`/`cancel_user_input`（显式 sessionId）。
 - 恢复：`get_pending_user_inputs { sessionId }` → `{busy, pending}`。
 - Plan 闭环（R-1）：事件 `chat:plan_snapshot` / `chat:plan_ready`；批准 `accept_plan { sessionId, planId, planMarkdown, displayMessage? }`，放弃 `discard_plan { sessionId, planId }`。

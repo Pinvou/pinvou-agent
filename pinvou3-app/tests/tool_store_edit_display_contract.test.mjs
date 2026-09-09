@@ -163,18 +163,18 @@ assert.match(
   'dialog prefill must read the raw display_description override from bundle facts',
 );
 
-// 5. 三语词条：uiToolCommon.editDisplay 与 uiToolStore 的对话框 key 三语齐全
-// （词典已按语言拆分为 src/shared/i18n/{zh,en,ja}.js 惰性 chunk；结构性奇偶
+// 5. 中英文词条：uiToolCommon.editDisplay 与 uiToolStore 的对话框 key 齐全
+// （词典已按语言拆分为 src/shared/i18n/{zh,en}.js 惰性 chunk；结构性奇偶
 // 由 ui_language_coverage.test.mjs 兜底，这里钉关键 key 存在）。
-const dictNames = { zh: 'dictZh', en: 'dictEn', ja: 'dictJa' };
+const dictNames = { zh: 'dictZh', en: 'dictEn' };
 const chunkSources = {};
-for (const lang of ['zh', 'en', 'ja']) {
+for (const lang of ['zh', 'en']) {
   chunkSources[lang] = await readFile(
     new URL(`../src/shared/i18n/${lang}.js`, import.meta.url),
     'utf8',
   );
 }
-for (const lang of ['zh', 'en', 'ja']) {
+for (const lang of ['zh', 'en']) {
   assert.match(
     chunkSources[lang],
     new RegExp(`${dictNames[lang]}\\.uiToolCommon = \\{[\\s\\S]*?editDisplay:`),
@@ -191,9 +191,9 @@ for (const key of [
   'editDisplaySave',
   'editDisplaySaved',
 ]) {
-  const occurrences = ['zh', 'en', 'ja']
+  const occurrences = ['zh', 'en']
     .flatMap((lang) => chunkSources[lang].match(new RegExp(`${key}:`, 'g')) || []);
-  assert.equal(occurrences.length, 3, `${key} must exist in all three uiToolStore dicts`);
+  assert.equal(occurrences.length, 2, `${key} must exist in both uiToolStore dicts`);
 }
 
 // 6. 导入成功后即打开展示信息编辑弹窗：导入命令返回新包 id（None/null=用户取消），

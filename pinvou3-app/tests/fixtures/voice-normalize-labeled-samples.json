@@ -750,30 +750,6 @@
    "spoken_text": "把王总标记为重点客户，并记录下周二需要电话跟进。"
   },
   {
-   "id": "translate_japanese_001",
-   "type": "translation",
-   "mode": "task",
-   "gold_text": "把这句话翻译成日语，保留产品名 Pinvou。",
-   "keywords": [
-    "翻译成日语",
-    "产品名",
-    "Pinvou"
-   ],
-   "asr_expected_errors": [
-    "pin vo",
-    "保留产品民"
-   ],
-   "forbidden_additions": [
-    "英文",
-    "重新命名",
-    "解释翻译"
-   ],
-   "allow_empty_final": false,
-   "asr_text": "把这句话翻译成日语，保留产品民 pin vo。",
-   "expected_final_text": "把这句话翻译成日语，保留产品名 Pinvou。",
-   "spoken_text": "把这句话翻译成日语，保留产品名 Pinvou。"
-  },
-  {
    "id": "api_docs_outline_001",
    "type": "mixed_language",
    "mode": "dictation",

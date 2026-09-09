@@ -6,15 +6,13 @@ agreement.
 
 ## Choose the right channel
 
-- Use [GitHub Issues](https://github.com/Pinvou/pinvou-agent/issues) for
+- Use [GitHub Issues](https://github.com/mlmr-coder/fresh-agent/issues) for
   reproducible bugs and focused feature requests.
-- Use [GitHub Discussions](https://github.com/Pinvou/pinvou-agent/discussions)
+- Use [GitHub Discussions](https://github.com/mlmr-coder/fresh-agent/discussions)
   for setup questions, ideas, extension sharing, and community examples.
-- Use [GitHub Private Vulnerability Reporting](https://github.com/Pinvou/pinvou-agent/security/advisories/new)
+- Use [GitHub Private Vulnerability Reporting](https://github.com/mlmr-coder/fresh-agent/security/advisories/new)
   for suspected vulnerabilities. Do not disclose unpatched vulnerabilities in
   public issues or discussions.
-- Visit [pinvou.com](https://pinvou.com/) for commercial editions and enterprise
-  support.
 
 ## What to include in a bug report
 

@@ -768,7 +768,7 @@ const ToolOutput = ({ item, t }) => {
       return `${base} bg-white text-[#1F1F1F] hover:bg-[#E1E5EA] border border-black/10 dark:border-transparent dark:bg-[#333537] dark:text-[#E3E3E3] dark:hover:bg-[#444746]`;
     };
 
-    // 品悟角色配色（与产物卡一致）：品=盾·橙 #FF9500/#FF9F0A，悟=闪光·紫 #5E5CE6。
+    // 鲜小助角色配色（与产物卡一致）：品=盾·橙 #FF9500/#FF9F0A，悟=闪光·紫 #5E5CE6。
     // 返回 { name, accentHex(inline-style 原色,品需 isDark), text(类), softBg(类), Icon }。
     const pvRole = (isWu, isDark) => isWu
       ? { name: '悟', accentHex: '#5E5CE6', text: 'text-[#5E5CE6]',

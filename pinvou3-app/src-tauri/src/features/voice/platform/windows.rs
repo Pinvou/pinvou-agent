@@ -85,7 +85,7 @@ pub fn asr_dependency_installable() -> bool {
 }
 
 pub fn asr_install_unavailable_message() -> &'static str {
-    "本地语音识别运行时缺失，请修复或重新安装 pinvou。"
+    "本地语音识别运行时缺失，请修复或重新安装鲜小助。"
 }
 
 pub async fn install_asr_runtime(app: tauri::AppHandle) -> Result<(), String> {
@@ -103,7 +103,7 @@ pub fn asr_dependency_packages() -> &'static str {
 }
 
 pub fn asr_missing_message() -> &'static str {
-    "本地语音识别组件缺失或不可用：运行时缺失时请修复或重新安装 pinvou；仅缺 ASR 模型时可在应用内下载。"
+    "本地语音识别组件缺失或不可用：运行时缺失时请修复或重新安装鲜小助；仅缺 ASR 模型时可在应用内下载。"
 }
 
 /// Windows 的打包运行时是 CLI 形态，保持原有路径交给调用方启动。

@@ -32,10 +32,10 @@ require_absolute_path() {
 [ "$(id -u)" -eq 0 ] || fail "需要管理员权限"
 [ "$(uname -s)" = Linux ] || fail "仅支持 Linux"
 case "${PKEXEC_UID:-}" in
-  0|''|*[!0-9]*) fail "无法确认发起操作的 PINVOU 用户" ;;
+  0|''|*[!0-9]*) fail "无法确认发起操作的 鲜小助 用户" ;;
 esac
 PKEXEC_CALLER_UID=$PKEXEC_UID
-getent passwd "$PKEXEC_CALLER_UID" >/dev/null || fail "发起操作的 PINVOU 用户不存在"
+getent passwd "$PKEXEC_CALLER_UID" >/dev/null || fail "发起操作的 鲜小助 用户不存在"
 command -v flock >/dev/null 2>&1 || fail "系统缺少 flock，无法安全管理共享知识库"
 if [ -e "$LOCK_DIR" ] || [ -L "$LOCK_DIR" ]; then
   [ -d "$LOCK_DIR" ] || fail "共享知识库锁目录不是目录"
@@ -95,9 +95,9 @@ secure_packaged_file() {
     return 0
   fi
 
-  [ "$DEVELOPMENT_RESOURCE" -eq 1 ] || fail "请使用正式安装的 PINVOU 创建共享知识库"
-  [ "$owner" -eq "$service_uid" ] || fail "开发服务资源不属于当前 PINVOU 用户"
-  [ "$helper_owner" -eq "$service_uid" ] || fail "开发管理组件不属于当前 PINVOU 用户"
+  [ "$DEVELOPMENT_RESOURCE" -eq 1 ] || fail "请使用正式安装的 鲜小助 创建共享知识库"
+  [ "$owner" -eq "$service_uid" ] || fail "开发服务资源不属于当前 鲜小助 用户"
+  [ "$helper_owner" -eq "$service_uid" ] || fail "开发管理组件不属于当前 鲜小助 用户"
   [ "$(basename "$path")" = pinvou-knowledge-server ] || fail "开发服务资源名称无效"
   source_path=$(readlink -f "$path" 2>/dev/null) || fail "无法检查开发服务资源"
   resource_dir=$(dirname "$helper_path")
@@ -105,7 +105,7 @@ secure_packaged_file() {
   validate_development_path_chain "$resource_dir" "$service_uid"
   resource_owner=$(stat -c %u "$resource_dir" 2>/dev/null) || fail "无法检查开发资源目录"
   resource_mode=$(stat -c %a "$resource_dir" 2>/dev/null) || fail "无法检查开发资源目录权限"
-  [ "$resource_owner" -eq "$service_uid" ] || fail "开发资源目录不属于当前 PINVOU 用户"
+  [ "$resource_owner" -eq "$service_uid" ] || fail "开发资源目录不属于当前 鲜小助 用户"
   case "$resource_mode" in
     *[2367][0-9]|*[0-9][2367]) fail "开发资源目录权限不安全" ;;
   esac
@@ -311,7 +311,7 @@ validate_service_account() {
     *[!0-9:]*|0:*|*:0) fail "宿主用户无效" ;;
   esac
   service_account=$(getent passwd "$candidate_uid") || fail "宿主用户不存在"
-  [ "$candidate_uid" = "$PKEXEC_CALLER_UID" ] || fail "宿主用户与授权操作的 PINVOU 用户不一致"
+  [ "$candidate_uid" = "$PKEXEC_CALLER_UID" ] || fail "宿主用户与授权操作的 鲜小助 用户不一致"
   service_primary_gid=$(printf '%s' "$service_account" | cut -d: -f4)
   [ "$service_primary_gid" = "$candidate_gid" ] || fail "宿主用户主组不匹配"
   validated_service_home=$(printf '%s' "$service_account" | cut -d: -f6)
@@ -327,11 +327,11 @@ validate_model_path_chain() {
       [ -d "$current_dir" ] || fail "模型目录链包含非目录路径"
       [ ! -L "$current_dir" ] || fail "拒绝使用符号链接模型目录"
       directory_owner=$(stat -c %u "$current_dir" 2>/dev/null) || fail "无法检查模型目录链"
-      [ "$directory_owner" -eq "$service_uid" ] || fail "模型目录链不属于当前 PINVOU 用户"
+      [ "$directory_owner" -eq "$service_uid" ] || fail "模型目录链不属于当前 鲜小助 用户"
     fi
     [ "$current_dir" = "$user_home" ] && break
     parent_dir=$(dirname "$current_dir")
-    [ "$parent_dir" != "$current_dir" ] || fail "模型目录不属于当前 PINVOU 用户"
+    [ "$parent_dir" != "$current_dir" ] || fail "模型目录不属于当前 鲜小助 用户"
     current_dir=$parent_dir
   done
 }
@@ -340,7 +340,7 @@ validate_existing_host_owner() {
   validate_data_dir
   [ -d "$DATA_DIR" ] || fail "共享知识库数据不存在"
   data_owner=$(stat -c %u "$DATA_DIR" 2>/dev/null) || fail "无法检查共享知识库数据目录"
-  [ "$data_owner" = "$PKEXEC_CALLER_UID" ] || fail "共享知识库数据不属于当前 PINVOU 用户"
+  [ "$data_owner" = "$PKEXEC_CALLER_UID" ] || fail "共享知识库数据不属于当前 鲜小助 用户"
 }
 
 write_unit() {
@@ -351,7 +351,7 @@ write_unit() {
   model_name=$(basename "$model_dir")
   cat >"$UNIT_FILE.new" <<EOF
 [Unit]
-Description=PINVOU shared knowledge host
+Description=鲜小助 shared knowledge host
 After=network-online.target
 Wants=network-online.target
 
@@ -491,7 +491,7 @@ install_or_upgrade() {
   user_home=$validated_service_home
   case "$model_dir" in
     "$user_home"/.pinvou3/knowledge/models/bge-m3) ;;
-    *) fail "模型目录不属于当前 PINVOU 用户" ;;
+    *) fail "模型目录不属于当前 鲜小助 用户" ;;
   esac
   validate_model_path_chain "$model_dir" "$user_home" "$service_uid"
   secure_packaged_file "$source_bin" "$service_uid"
@@ -501,7 +501,7 @@ install_or_upgrade() {
     installed_version=$(binary_release_version "$INSTALL_BIN" "$service_uid" "$service_gid")
     version_result=$(semver_compare "$source_version" "$installed_version")
     if [ "$version_result" -lt 0 ]; then
-      fail "当前 PINVOU 版本 $source_version 低于已安装的共享知识库服务 $installed_version，已拒绝降级；请先升级 PINVOU"
+      fail "当前 鲜小助 版本 $source_version 低于已安装的共享知识库服务 $installed_version，已拒绝降级；请先升级 鲜小助"
     fi
   fi
 
@@ -577,7 +577,7 @@ read_owner_claim() {
   [ ! -L "$claim" ] || fail "拒绝读取符号链接所有者凭据"
   claim_owner_uid=$(stat -c %u "$claim" 2>/dev/null) || fail "无法检查本机所有者凭据"
   claim_mode=$(stat -c %a "$claim" 2>/dev/null) || fail "无法检查本机所有者凭据权限"
-  [ "$claim_owner_uid" -eq "$service_uid" ] || fail "本机所有者凭据不属于当前 PINVOU 用户"
+  [ "$claim_owner_uid" -eq "$service_uid" ] || fail "本机所有者凭据不属于当前 鲜小助 用户"
   case "$claim_mode" in *[1-7][0-9]|*[0-9][1-7]) fail "本机所有者凭据权限不安全" ;; esac
   command -v setpriv >/dev/null 2>&1 || fail "系统缺少 setpriv，无法安全读取所有者凭据"
   setpriv --reuid "$service_uid" --regid "$service_gid" --clear-groups -- \
@@ -690,7 +690,7 @@ restore_host() {
   [ -f "$identity_file" ] || fail "恢复密钥不存在"
   identity_owner=$(stat -c %u "$identity_file" 2>/dev/null) || fail "无法检查恢复密钥"
   identity_mode=$(stat -c %a "$identity_file" 2>/dev/null) || fail "无法检查恢复密钥权限"
-  [ "$identity_owner" -eq "$service_uid" ] || fail "恢复密钥不属于当前 PINVOU 用户"
+  [ "$identity_owner" -eq "$service_uid" ] || fail "恢复密钥不属于当前 鲜小助 用户"
   case "$identity_mode" in *[1-7][0-9]|*[0-9][1-7]) fail "恢复密钥权限不安全" ;; esac
   case "$mode" in same-host|content-only) ;; *) fail "恢复模式无效" ;; esac
   begin_service_maintenance

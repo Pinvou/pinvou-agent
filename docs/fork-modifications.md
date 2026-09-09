@@ -22,7 +22,7 @@
 
 - CodeWhale PR #33（六提交 rebase 后以 `4f612e548` 汇入）：新增 DeepSeek Responses、Model Studio Token Plan（Qwen）、Moonshot/Kimi（K2.6 内建 `$web_search`、K3 官方 Formula 协议、Kimi Code `/search`）、Z.AI/智谱（全球 `search-prime` / 中国 `search_std`）、Xiaomi MiMo 的厂商原生搜索适配。能力按"厂商+模型+官方端点+产品面"四重精确匹配 fail-closed，K3 Formula 独立 180 秒预算与 8 次调用上限；评审发现的端点匹配宽松（整 URL 小写、无限剥尾斜杠）由收官提交 `4f612e548` 引入 `is_exact_url_route` 收紧。指纹锚点：`documented_server_side_web_search_for_route`、`WEB_SEARCH_FORMULA_URI`。
 - CodeWhale PR #35（`9c5f4f19` 汇入）：API 后端（Tavily/Bocha/Metaso/Baidu/SearXNG/Volcengine/Sofya）失败后的免 key 链尾由 DuckDuckGo 换成 Bing（实测 DDG 在中国大陆 DNS 污染 + SNI 重置不可达，Bing 全球与国内端点均免 key 可达）；全链失败错误追加 API 后端配置建议；新增 `forkguard_api_provider_chain_tail_is_bing`（forkguard 总数 56→57）。
-- r12 父仓配套（PR #375）：gitlink → `9c5f4f19`、设置页搜索源引导文案（i18n 三语）、`prefs/search.rs` 注释勘误与 `bridge.rs` 注入点注释/测试 docstring 同步勘误（底座默认仍为 DuckDuckGo，应用侧默认 Bing 由 bridge 构造 `EngineConfig` 时显式注入）。
+- r12 父仓配套（PR #375）：gitlink → `9c5f4f19`、设置页搜索源引导文案（i18n 中英文）、`prefs/search.rs` 注释勘误与 `bridge.rs` 注入点注释/测试 docstring 同步勘误（底座默认仍为 DuckDuckGo，应用侧默认 Bing 由 bridge 构造 `EngineConfig` 时显式注入）。
 
 ### r11 Provider、MCP、steer 与平台边界（已发布）
 
@@ -131,7 +131,7 @@
   - `Op::EditLastTurn` 与宿主落盘兜底共用 `edit_last_turn_target`：工具结果与内部运行时信封同样以 `role = "user"` 持久化，裸 role 扫描会把截断落在 tool result 上；真实但不支持的最新用户内容必须拒绝，不能跳到更早文本。拒绝路径发送类型化错误与失败终态，不调用 provider，也不改变历史。
   - 固定采样路由剥离显式非 1 的 `temperature`（否则 400 "only 1 is allowed"）：Kimi Code 会员路由按会员模型名单精确匹配（`k3` / `k3-256k` / `kimi-for-coding` / `kimi-for-coding-highspeed`，Chat 方言 seam）；DeepSeek 侧仅在 Responses 方言对精确 `deepseek-v4-flash` 保留兼容 shim，Chat 方言按官方文档的 0..=2 契约透传（v4-pro 走 Chat 线，实测不受限）。网关与其他模型契约不动。修复 code 页手动压缩在 Kimi Code 路由必现 400。
   - `CompactionCompleted` 事件新增 `post_input_tokens`：压缩完成后完整请求的输入 token 保守估算（复用引擎 canonical 估算，含 system prompt 与压缩摘要），供宿主在压缩完成后立即刷新用量展示；TUI 与 runtime thread 持久化路径不消费。
-  - `install_mcp_secret_resolver` 宿主钩子：mcp.json `${...}` 占位符、`env_headers`、`bearer_token_env_var` 解析先查宿主注册的进程内回调，未命中回落进程 env；嵌入宿主（品悟）据此把 MCP secret 承载改为 keyring + 进程内注册表，消除运行时进程 env 写。
+  - `install_mcp_secret_resolver` 宿主钩子：mcp.json `${...}` 占位符、`env_headers`、`bearer_token_env_var` 解析先查宿主注册的进程内回调，未命中回落进程 env；嵌入宿主（鲜小助）据此把 MCP secret 承载改为 keyring + 进程内注册表，消除运行时进程 env 写。
 - **边界**：不实现 Pinvou 产品工具策略或专用编排完成语义。
 - **守护**：`forkguard_embedding_route_limits_preserve_wire_alias`、`forkguard_runtime_session_snapshot_preserves_in_flight_tool_call`、`forkguard_explicit_session_recovery_is_reported_and_idempotent_after_save`、`forkguard_host_bulk_cancel_stops_all_running_children_idempotently`、`forkguard_is_user_turn_prompt_separates_prompts_from_tool_results_and_envelopes`、`forkguard_edit_last_turn_cuts_at_user_prompt_before_tool_results`、`forkguard_edit_last_turn_without_user_prompt_errors_and_sends_nothing`、`forkguard_kimi_code_coding_plan_strips_non_one_temperature`、`forkguard_deepseek_v4_chat_preserves_documented_temperature`、`forkguard_deepseek_v4_flash_responses_drops_non_one_temperature`、`forkguard_compaction_completed_reports_complete_post_input_tokens`、`forkguard_mcp_secret_resolver_supplies_values_without_process_env_writes`，steer 生命周期/Shell 终止回归，以及父仓启动恢复、resolved-route、取消级联、compaction 合约、落盘编辑分类和双端拒绝回滚测试。
 

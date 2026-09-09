@@ -44,7 +44,7 @@ impl LatestVersionProbe {
         let client = Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
-            .user_agent(concat!("Pinvou-Agent/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("Fresh-Assistant/", env!("CARGO_PKG_VERSION")))
             .build()
             .context("创建 ACP Agent 最新版本查询客户端失败")?;
         let gates = [

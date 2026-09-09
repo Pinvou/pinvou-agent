@@ -2499,7 +2499,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         <>
           <IOSSection title={t.uiSettings.appearance}>
             <IOSRow label={t.uiSettings.language} desc={t.uiSettings.languageDesc}>
-              <SSegmented value={language} onChange={v => { setLanguage(v); setRestartDialog('language'); }} options={[{ key: 'zh', label: '中文' }, { key: 'en', label: 'English' }, { key: 'ja', label: '日本語' }]} />
+              <SSegmented value={language} onChange={v => { setLanguage(v); setRestartDialog('language'); }} options={[{ key: 'zh', label: '中文' }, { key: 'en', label: 'English' }]} />
             </IOSRow>
             <IOSRow label={t.uiSettings.theme} desc={t.uiSettings.themeDesc}>
               <SSegmented value={colorScheme} onChange={onColorSchemeChange} options={[{ key: 'system', label: t.followSystem }, { key: 'light', label: t.light }, { key: 'dark', label: t.dark }]} />

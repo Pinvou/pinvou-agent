@@ -12,7 +12,7 @@ import {
   assistantExportFilename,
   buildAssistantResponseExport,
 } from '../src/features/conversation/assistant-response-export.js';
-import { dict } from '../src/shared/i18n-all.js'; // 三语全量断言:浏览器入口用 i18n.js 惰性装载,测试用聚合 shim
+import { dict } from '../src/shared/i18n-all.js'; // 中英文全量断言：浏览器入口用 i18n.js 惰性装载，测试用聚合 shim
 import { renderMarkdownMarkup } from '../src/shared/markdown-renderer.js';
 
 const source = relative => readFileSync(new URL(`../src/${relative}`, import.meta.url), 'utf8');
@@ -26,7 +26,7 @@ assert.equal(
 const fixedExportDate = new Date(2026, 7, 14, 9, 8, 7);
 assert.equal(
   assistantExportFilename('md', fixedExportDate),
-  'pinvou-response-20260814-090807.md',
+  'fresh-assistant-response-20260814-090807.md',
   'Markdown must be the stable default export naming format',
 );
 assert.equal(
@@ -382,7 +382,7 @@ try {
   else delete globalThis.document;
 }
 
-for (const language of ['zh', 'en', 'ja']) {
+for (const language of ['zh', 'en']) {
   assert.ok(dict[language].uiConversation.copyReply, `${language}.uiConversation.copyReply must exist`);
   assert.ok(dict[language].uiConversation.copyReplySuccess, `${language}.uiConversation.copyReplySuccess must exist`);
   assert.ok(dict[language].uiConversation.copyReplyFailed, `${language}.uiConversation.copyReplyFailed must exist`);

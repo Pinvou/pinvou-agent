@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-Pinvou Agent includes or redistributes the following open-source components.
+鲜小助 includes or redistributes the following open-source components.
 Their original licenses remain in effect.
 
 ## Directly included or downloaded components
@@ -12,7 +12,7 @@ Their original licenses remain in effect.
 | Lark CLI and skills | 1.0.87 | MIT skill sources; official CLI binaries downloaded and SHA-256-verified by the app on first connector use (linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64) | MIT | https://github.com/larksuite/cli |
 | WeCom CLI and skills | 1.1.0 | MIT skill sources; official CLI binaries downloaded and SHA-256-verified by the app on first connector use (linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64) | MIT | https://github.com/WecomTeam/wecom-cli |
 | Tencent Meeting CLI (`tmeet`) and skills | 1.0.15 | MIT skill sources bundled from the upstream `skills/tmeet-skill/`; official CLI installed from npm (`@tencentcloud/tmeet`, version pinned in `tmeet.rs`) | MIT | https://github.com/TencentCloud/tencentmeeting-cli |
-| agency-agents-zh | bundle schema `agency-1.0`, 268-role snapshot imported 2026-08-18 (upstream main@6e158d9c; one telemetry example in a persona body normalized from `web_search` to `search` to satisfy the retired-tool-name lint) | Normalized Chinese persona data and retained upstream license | MIT | https://github.com/jnMetaCode/agency-agents-zh |
+| agency-agents-zh | bundle schema `agency-1.0`, 261-role snapshot imported 2026-08-18 (upstream main@6e158d9c; language-specific personas outside this distribution's supported locales are excluded) | Normalized Chinese persona data and retained upstream license | MIT | https://github.com/jnMetaCode/agency-agents-zh |
 | SenseVoice.cpp | Source pinned by setup script | Built on user setup; no executable stored in Git | MIT | https://github.com/lovemefan/SenseVoice.cpp |
 | marked | 14.1.4 | npm dependency bundled by Vite (`pinvou3-app/package.json`; highest major whose browser output stays free of Safari 15.4+ runtime APIs) | MIT | https://github.com/markedjs/marked |
 | DOMPurify | 3.4.14 | npm dependency bundled by Vite (`pinvou3-app/package.json`) | Apache-2.0 OR MPL-2.0 | https://github.com/cure53/DOMPurify |
@@ -28,7 +28,7 @@ Vendored script attribution:
   Christopher Jeffrey; its Markdown compatibility code retains the upstream
   John Gruber attribution and BSD-style terms.
 - DOMPurify: Copyright 2025–2026 Dr.-Ing. Mario Heiderich, Cure53.
-- chrome-devtools-mcp: Modified by Pinvou Agent during vendoring:
+- chrome-devtools-mcp: Modified by the application during vendoring:
   `build/src/McpResponse.js` adds the `target_id` field to structured page
   entries so the host can enforce conversation and tab ownership. The adapted
   output is pinned by SHA-256.
@@ -65,8 +65,8 @@ metadata.
 ## Assets and trademarks
 
 Except for components and icon glyphs identified above, the application
-images, screenshots, pet sprites, and Pinvou visual assets in this repository
-were created for Pinvou and are not imported third-party asset packs. Service
+images, screenshots, pet sprites, and 鲜小助 visual assets in this repository
+are not imported third-party asset packs. Service
 icons and product names may reproduce third-party marks only to identify
 compatible integrations.
 

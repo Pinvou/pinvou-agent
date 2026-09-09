@@ -646,7 +646,7 @@ pub async fn respond_codex_acp_elicitation(
         .map_err(|error| format!("回复 Codex ACP 输入请求失败: {error:#}"))
 }
 
-/// 列表项的 agent_id：ACP 后端使用各自 id；原生（品悟）代码会话固定为 "pinvou"。
+/// 列表项的 agent_id：ACP 后端使用各自 id；原生（鲜小助）代码会话固定为 "pinvou"。
 fn code_session_agent_id(backend: AgentBackend) -> String {
     backend.agent_id().unwrap_or("pinvou").to_string()
 }
@@ -868,7 +868,7 @@ pub(crate) async fn create_codex_acp_session_with_workspace_binding(
     Ok(session.metadata)
 }
 
-/// 创建“代码”模块原生（品悟 Engine）会话。
+/// 创建“代码”模块原生（鲜小助 Engine）会话。
 ///
 /// 临时会话执行目录与 ACP 临时会话共用 `SessionStore::session_roots` 推导
 /// （两根一致，均为会话私有目录）；项目会话绑定调用方选定的目录（经

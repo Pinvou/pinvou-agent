@@ -116,7 +116,6 @@ async function withLanguage(language, run) {
 const STALE_ID = 'removed-model';
 const LOCALE_MARKERS = {
   en: { marker: 'no longer available', tail: 'pick a model again' },
-  ja: { marker: '無効になりました', tail: '選び直し' },
   'zh-Hans': { marker: '已失效', tail: '重新选择模型' },
 };
 

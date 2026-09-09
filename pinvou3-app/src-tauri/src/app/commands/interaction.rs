@@ -363,7 +363,7 @@ pub async fn set_super_permission(
 /// 读 pinvou3 内置 skill 的 body(去掉 frontmatter)。
 /// 用途:前端 autoTriggerPinvouReview 把完整 SKILL.md 内容塞进 user message,
 /// 不依赖本地 Qwen3.6 主动 read_file —— 弱模型不会主动用 progressive disclosure。
-/// 设计依据:docs/Pinvou-品悟设计.md §10.5 (即将补)
+/// 设计依据:docs/Pinvou-鲜小助设计.md §10.5 (即将补)
 #[tauri::command]
 pub async fn read_skill_body(name: String) -> Result<String, String> {
     use crate::platform::paths;
@@ -497,7 +497,7 @@ pub async fn restart_engine(
 
 // ===================== Pinvou v4 召唤式检阅 =====================
 
-/// Boss 主动召唤 Pinvou 检阅当前 session 的工作（设计 `docs/品悟v4-常驻检阅助手设计.md`）。
+/// Boss 主动召唤鲜小助检阅当前 session 的工作。
 /// 取该 session 全部 messages → 投影/全喂 → 单次独立 LLM 审查 → 返回 personas/issues。
 /// 纯召唤、不替 Boss 决策；自动触发已彻底移除。
 #[tauri::command]

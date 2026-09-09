@@ -26,7 +26,7 @@ function timestampPart(date) {
 
 export function assistantExportFilename(format, date = new Date()) {
   const extension = ASSISTANT_EXPORT_FORMATS.includes(format) ? format : 'md';
-  return `pinvou-response-${timestampPart(date)}.${extension}`;
+  return `fresh-assistant-response-${timestampPart(date)}.${extension}`;
 }
 
 export function buildAssistantResponseExport(markdown, format, options = {}) {

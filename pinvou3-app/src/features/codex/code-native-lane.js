@@ -1,4 +1,4 @@
-// 代码模块原生（品悟 Engine）会话的本地会话车道。
+// 代码模块原生（鲜小助 Engine）会话的本地会话车道。
 //
 // ACP 会话由后端维护 timeline（get_codex_acp_timeline）；原生会话复用主聊天的
 // engine 链路：chat 命令发消息、`chat:*` 事件推进、SavedSession messages 落盘。
@@ -10,7 +10,7 @@
 // tool / user_input / careful_blocked / system / plan_card。与 bridge 的差异：assistant 保留
 // 原始 markdown 文本（bridge 存预渲染 html），渲染层用 ConversationMarkdown；
 // plan_card 的终态文案存 statusKey（approved/discarded/superseded/historical），
-// 三语文案在渲染层按 key 组装（与 compactPhase 同一约定）。
+// 中英文案在渲染层按 key 组装（与 compactPhase 同一约定）。
 
 import { projectDeepSeekConversation, conversationItemsForMode } from '../conversation/deepseek-conversation.js';
 import { isInternalRuntimeEnvelopeText, isInternalUserMessage } from '../../shared/internal-message.mjs';
@@ -551,7 +551,7 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
       return true;
     }
     case 'chat:compaction': {
-      // 压缩事件渲染为系统提示项；三语文案在渲染层按 compactPhase 组装。
+      // 压缩事件渲染为系统提示项；中英文案在渲染层按 compactPhase 组装。
       const phase = String(p.phase || 'done');
       lane.compacting = phase === 'start';
       // Refresh from the conservative post-compaction estimate instead of showing the old

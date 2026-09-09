@@ -48,7 +48,7 @@ function trimDraft(value) {
 // threw): the catch in bridge finishVoiceInput normalizes it into a failure notification
 // instead of leaving the fake "voice task sent" success showing.
 // message is left empty and toString overridden so normalizeVoiceError lands on the existing
-// trilingual generic copy voiceInputFailed; the bridge can map dedicated copy for the
+// bilingual generic copy voiceInputFailed; the bridge can map dedicated copy for the
 // send_failed category later.
 function createVoiceTaskSendError() {
   const error = new Error('');

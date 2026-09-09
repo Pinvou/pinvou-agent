@@ -458,7 +458,7 @@ fn memory_runtime_injects_effective_five_layer_memory_only() {
         id: "focus_memory".to_string(),
         kind: "current_focus".to_string(),
         topic: "current_work".to_string(),
-        text: "正在完善 pinvou 记忆系统的自动写入机制。".to_string(),
+        text: "正在完善 鲜小助记忆系统的自动写入机制。".to_string(),
         source: "test".to_string(),
         confidence: 0.91,
         created_at: now.to_rfc3339(),
@@ -798,9 +798,9 @@ async fn memory_llm_realistic_effect_snapshot() {
     let current_focus = memory::review_turn_candidates_with_llm(
         &bridge,
         &memory::TurnMemoryCapture {
-            user: "我最近主要在推进 pinvou 记忆系统，要把自动发现、确认和近期工作状态做稳定。"
+            user: "我最近主要在推进 鲜小助记忆系统，要把自动发现、确认和近期工作状态做稳定。"
                 .to_string(),
-            assistant: "明白，这属于你近期正在推进的 pinvou 记忆系统工作。".to_string(),
+            assistant: "明白，这属于你近期正在推进的 鲜小助记忆系统工作。".to_string(),
             ..memory::TurnMemoryCapture::default()
         },
         session_id,
@@ -811,7 +811,7 @@ async fn memory_llm_realistic_effect_snapshot() {
     let delivery = memory::review_turn_candidates_with_llm(
         &bridge,
         &memory::TurnMemoryCapture {
-            user: "帮我把 pinvou 记忆系统设计文档改成可开发方案。".to_string(),
+            user: "帮我把 鲜小助记忆系统设计文档改成可开发方案。".to_string(),
             assistant: "已完成：设计文档已经改成可开发方案，并补充了分类、写入、确认和过期策略。"
                 .to_string(),
             tool_summaries: vec![
@@ -896,7 +896,7 @@ async fn memory_llm_realistic_effect_snapshot() {
         assert!(
             focus
                 .iter()
-                .any(|item| item.text.contains("pinvou") || item.text.contains("记忆系统")),
+                .any(|item| item.text.contains("鲜小助") || item.text.contains("记忆系统")),
             "current focus should stay relevant: {focus:#?}"
         );
     }
@@ -957,9 +957,9 @@ async fn memory_llm_background_project_midterm_snapshot() {
     let project_background = memory::review_turn_candidates_with_llm(
         &bridge,
         &memory::TurnMemoryCapture {
-            user: "也请记住一个长期项目背景：我长期维护 pinvou，它是本地 AI 通用办公助手，重点关注桌面体验、记忆系统、本地模型和办公工作流。这里说的是我长期做的项目，不是当前运行环境。"
+            user: "也请记住一个长期项目背景：我长期维护鲜小助，它是本地 AI 通用办公助手，重点关注桌面体验、记忆系统、本地模型和办公工作流。这里说的是我长期做的项目，不是当前运行环境。"
                 .to_string(),
-            assistant: "明白，这会作为你的长期项目背景候选，不会当作 pinvou 当前运行环境。"
+            assistant: "明白，这会作为你的长期项目背景候选，不会当作 鲜小助当前运行环境。"
                 .to_string(),
             ..memory::TurnMemoryCapture::default()
         },
@@ -971,9 +971,9 @@ async fn memory_llm_background_project_midterm_snapshot() {
     let current_focus = memory::review_turn_candidates_with_llm(
         &bridge,
         &memory::TurnMemoryCapture {
-            user: "这两周我正在做 pinvou 的记忆系统和设置页联动，重点验证中期记忆、项目记忆、用户背景能不能正确生成。"
+            user: "这两周我正在做 鲜小助的记忆系统和设置页联动，重点验证中期记忆、项目记忆、用户背景能不能正确生成。"
                 .to_string(),
-            assistant: "明白，这是你近期正在推进的 pinvou 记忆系统验证工作。".to_string(),
+            assistant: "明白，这是你近期正在推进的 鲜小助记忆系统验证工作。".to_string(),
             ..memory::TurnMemoryCapture::default()
         },
         session_id,
@@ -1056,7 +1056,7 @@ async fn memory_llm_background_project_midterm_snapshot() {
     assert!(
         work_context
             .iter()
-            .any(|item| item.text.contains("pinvou") && item.text.contains("本地 AI")),
+            .any(|item| item.text.contains("鲜小助") && item.text.contains("本地 AI")),
         "project background should become work_context: {work_context:#?}"
     );
     if focus.is_empty() {

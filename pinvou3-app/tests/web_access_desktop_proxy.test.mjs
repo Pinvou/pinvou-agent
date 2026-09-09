@@ -120,8 +120,8 @@ assert.deepEqual(JSON.parse(JSON.stringify(responses.at(-1))), {
 
 // Structured desktop command errors (e.g. VoiceCommandError) must forward
 // their stable code/category to the browser lane; otherwise the
-// normalizeVoiceError code→trilingual-copy mapping is unreachable and the
-// Chinese raw message reaches en/ja users verbatim.
+// normalizeVoiceError code→bilingual-copy mapping is unreachable and the
+// Chinese raw message reaches English users verbatim.
 await listeners.get('web_access:rpc_request')({
   payload: {
     request_id: 'request-2',

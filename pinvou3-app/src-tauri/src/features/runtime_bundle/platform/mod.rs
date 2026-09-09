@@ -237,7 +237,7 @@ pub fn instructions_md() -> &'static str {
     })
 }
 
-/// 代码模式层（品悟原生代码会话）：§工作环境（代码模式身份 + `{{PINVOU3_WORKSPACE_HINT}}`
+/// 代码模式层（鲜小助原生代码会话）：§工作环境（代码模式身份 + `{{PINVOU3_WORKSPACE_HINT}}`
 /// 工作区占位）+ ## 代码场景纪律 增量段，两段以空行分隔。
 /// 底座 `CORE_EXECUTION_PROFILE_PROMPT` 不复制进文件，由 [`instructions_code_md`]
 /// 在渲染层原样拼接——上游更新自动跟随。
@@ -295,24 +295,12 @@ pub const BASE_PROMPT_MD: &str = include_str!("../../../../resources/common/bund
 /// `reasoning_effort=off` 无 thinking,该 failure mode 不存在;回复语言由
 /// 用户消息驱动,这里只补"判断不了时的默认语言"。closer 同理。
 pub const LOCALE_PREAMBLE_ZH_HANS: &str = "## 语言要求\n\n\
-pinvou3 界面语言为简体中文。跟随用户消息的语言回复;无法判断时用简体中文。\
+鲜小助界面语言为简体中文。跟随用户消息的语言回复;无法判断时用简体中文。\
 代码、路径、工具名、URL 保持原样。";
 
 /// pinvou3 版简体中文 locale 收尾段（替换底座 `LOCALE_CLOSER_ZH_HANS` ~660B）。
 pub const LOCALE_CLOSER_ZH_HANS: &str = "## 语言再提醒\n\n\
 跟随用户最新消息的语言回复;无法判断时用简体中文。";
-
-/// pinvou3 版日语 locale 前导段（替换底座 `LOCALE_PREAMBLE_JA` ~800B,瘦身
-/// 依据同 `LOCALE_PREAMBLE_ZH_HANS`）。
-pub const LOCALE_PREAMBLE_JA: &str = "## 言語要件\n\n\
-pinvou3 の UI 言語は日本語です。ユーザーのメッセージの言語に従って\
-返信し、判断できない場合は日本語を使用してください。コード、パス、\
-ツール名、URL は元のまま。";
-
-/// pinvou3 版日语 locale 收尾段（替换底座 `LOCALE_CLOSER_JA` ~660B）。
-pub const LOCALE_CLOSER_JA: &str = "## 言語再確認\n\n\
-ユーザーの最新メッセージの言語に従って返信してください。\
-判断できない場合は日本語。";
 
 /// pinvou3 版静态层 mode 块——Yolo（生产主路径,approval=Auto）。瘦身依据:
 /// 行为引导大头已由 `build_send_message_op`(Plan 段经 `SessionPolicy::plan_reminder`)

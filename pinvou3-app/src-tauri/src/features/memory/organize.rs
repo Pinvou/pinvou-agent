@@ -65,7 +65,7 @@ const ORGANIZE_REMOVAL_BUDGET_RATIO: u32 = 4;
 /// lets the concurrency-rejection test pre-occupy the lock.
 pub(super) static ORGANIZE_IN_FLIGHT: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
-pub(super) const MEMORY_ORGANIZE_PROMPT: &str = r#"你是 pinvou 的后台记忆整理器。你只做一件事：对照已有的全部记忆存储，输出整理优化动作（合并重复、改写过时表述、删除低价值条目）。不要回答用户问题，不要解释你的判断，不要记录任何新信息。
+pub(super) const MEMORY_ORGANIZE_PROMPT: &str = r#"你是鲜小助的后台记忆整理器。你只做一件事：对照已有的全部记忆存储，输出整理优化动作（合并重复、改写过时表述、删除低价值条目）。不要回答用户问题，不要解释你的判断，不要记录任何新信息。
 
 你必须只输出 JSON，不要解释。格式：
 {

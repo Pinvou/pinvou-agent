@@ -4,27 +4,22 @@
 
 # 鲜小助
 
-This independently maintained project is based on [Pinvou Agent](https://github.com/Pinvou/pinvou-agent). Its product name is **鲜小助**. Upstream links identify the original project and do not imply endorsement. See [branding compatibility](docs/branding.md).
+**鲜小助** is independently maintained. See [branding and compatibility](docs/branding.md) for the stable technical identifiers retained for upgrades and existing user data.
 
 **An open-source desktop AI agent workspace for work, design, and coding.**
 
-[English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
+[English](README.md) · [简体中文](README.zh-CN.md)
 
-[![CI](https://github.com/Pinvou/pinvou-agent/actions/workflows/pr-check.yml/badge.svg)](https://github.com/Pinvou/pinvou-agent/actions/workflows/pr-check.yml)
-[![License: MIT](https://img.shields.io/github/license/Pinvou/pinvou-agent)](LICENSE)
-[![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FPinvou%2Fpinvou-agent%2Fmain%2Fpinvou3-app%2Fpackage.json&query=%24.version&label=version&color=blue)](pinvou3-app/package.json)
+[![CI](https://github.com/mlmr-coder/fresh-agent/actions/workflows/pr-check.yml/badge.svg)](https://github.com/mlmr-coder/fresh-agent/actions/workflows/pr-check.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmlmr-coder%2Ffresh-agent%2Fmain%2Fpinvou3-app%2Fpackage.json&query=%24.version&label=version&color=blue)](pinvou3-app/package.json)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#-quick-start)
-[![GitHub Stars](https://img.shields.io/github/stars/Pinvou/pinvou-agent?style=flat)](https://github.com/Pinvou/pinvou-agent/stargazers)
+[![GitHub Stars](https://img.shields.io/github/stars/mlmr-coder/fresh-agent?style=flat)](https://github.com/mlmr-coder/fresh-agent/stargazers)
 
-[Download Preview](https://github.com/Pinvou/pinvou-agent/releases) · [Website](https://pinvou.com/) · [QQ Group](#-community--security) · [Issues](https://github.com/Pinvou/pinvou-agent/issues) · [Discussions](https://github.com/Pinvou/pinvou-agent/discussions) · [Security](SECURITY.md)
+[Download Preview](https://github.com/mlmr-coder/fresh-agent/releases) · [Issues](https://github.com/mlmr-coder/fresh-agent/issues) · [Discussions](https://github.com/mlmr-coder/fresh-agent/discussions) · [Security](SECURITY.md)
 
 <p align="center">
-  <a href="https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4">
-    <img src="docs/assets/screenshots/mode-work.webp" alt="鲜小助 Work mode">
-  </a>
-</p>
-<p align="center">
-  <a href="https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4"><strong>▶ Watch the 90-second feature demo (Chinese)</strong></a>
+  <img src="docs/assets/screenshots/mode-work.webp" alt="鲜小助 Work mode">
 </p>
 
 </div>
@@ -131,8 +126,8 @@ The source tree supports **Linux, Windows, and macOS**. Linux release packages t
 ### Run from source
 
 ```bash
-git clone --recursive https://github.com/Pinvou/pinvou-agent.git
-cd pinvou-agent/pinvou3-app
+git clone --recursive https://github.com/mlmr-coder/fresh-agent.git
+cd fresh-agent/pinvou3-app
 npm ci
 cd ..
 ./pinvou3-app/run-dev.sh
@@ -205,30 +200,11 @@ Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for th
 
 ## 💬 Community & Security
 
-- 🐧 **QQ user group (Chinese): 1108909346** — scan the QR code below or search for the group number in QQ
-- 🐛 [GitHub Issues](https://github.com/Pinvou/pinvou-agent/issues) — reproducible bugs and focused feature requests
-- 💡 [GitHub Discussions](https://github.com/Pinvou/pinvou-agent/discussions) — questions and ideas (community support is best-effort, see [SUPPORT.md](SUPPORT.md))
-- 🔒 **Do not report security vulnerabilities in public issues** — use the private channel in [SECURITY.md](SECURITY.md) or email `security@pinvou.com`
-
-<p align="center">
-  <img src="pinvou3-app/src/assets/community/qq-group-1108909346.png" alt="QR code for the 鲜小助 official QQ user group, group number 1108909346" width="260" />
-</p>
+- 🐛 [GitHub Issues](https://github.com/mlmr-coder/fresh-agent/issues) — reproducible bugs and focused feature requests
+- 💡 [GitHub Discussions](https://github.com/mlmr-coder/fresh-agent/discussions) — questions and ideas (community support is best-effort, see [SUPPORT.md](SUPPORT.md))
+- 🔒 **Do not report security vulnerabilities in public issues** — use the private channel in [SECURITY.md](SECURITY.md)
 
 Licensing, third-party attribution, SBOM, brand-use boundaries, and the extension marketplace overview are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), [docs/sbom.md](docs/sbom.md), [TRADEMARKS.md](TRADEMARKS.md), and [docs/工具市场.md](docs/工具市场.md).
-
-## 🔗 Friendly Links
-
-- [LINUX DO](https://linux.do/)
-
-## ⭐ Star History
-
-<a href="https://www.star-history.com/?repos=pinvou%2Fpinvou-agent&type=date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&theme=dark&sealed_token=k7dkorBV3gOYRbA3ai0hCjYhzSjr1TFHk6Z9Lxdr5i_rhBGio7qlD80ERUfWzofzxF8394-zl1QwsZJEhzGPELvh9_Fm4xXR5Jm4xdEAfAENh8uizuoqey8O1_1aY5b-IZZsqiZjk3VyNn3v8sAgDQmveN9oz2jtOlYmwOYMYZYOhJp8mTouzJQyRCAB" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&sealed_token=k7dkorBV3gOYRbA3ai0hCjYhzSjr1TFHk6Z9Lxdr5i_rhBGio7qlD80ERUfWzofzxF8394-zl1QwsZJEhzGPELvh9_Fm4xXR5Jm4xdEAfAENh8uizuoqey8O1_1aY5b-IZZsqiZjk3VyNn3v8sAgDQmveN9oz2jtOlYmwOYMYZYOhJp8mTouzJQyRCAB" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pinvou%2Fpinvou-agent&type=date&sealed_token=k7dkorBV3gOYRbA3ai0hCjYhzSjr1TFHk6Z9Lxdr5i_rhBGio7qlD80ERUfWzofzxF8394-zl1QwsZJEhzGPELvh9_Fm4xXR5Jm4xdEAfAENh8uizuoqey8O1_1aY5b-IZZsqiZjk3VyNn3v8sAgDQmveN9oz2jtOlYmwOYMYZYOhJp8mTouzJQyRCAB" />
- </picture>
-</a>
 
 ---
 

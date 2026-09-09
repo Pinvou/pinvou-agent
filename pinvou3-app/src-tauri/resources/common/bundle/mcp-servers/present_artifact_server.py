@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""present_artifact — pinvou3 内置 MCP server(零第三方依赖,只用 stdlib)。
+"""present_artifact — 鲜小助内置 MCP server(零第三方依赖,只用 stdlib)。
 
 把一个"阶段性成品"交给 鲜小助 客户端展示。工具成功只表示文件验证通过；客户端
 收到结果后会尝试展示，不是对用户当前可见界面的反向确认。

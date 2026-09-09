@@ -77,7 +77,7 @@ test('Linux dev stages an explicit user-owned host resource without weakening pa
   });
   assert.match(buildScript, /prepareKnowledgeHost\(\{ development: true \}\)/u);
   assert.match(buildScript, /additionalConfigs\.push\(developmentHost\.configSpec\)/u);
-  assert.match(helper, /\[ "\$DEVELOPMENT_RESOURCE" -eq 1 \] \|\| fail "请使用正式安装的 PINVOU/u);
+  assert.match(helper, /\[ "\$DEVELOPMENT_RESOURCE" -eq 1 \] \|\| fail "请使用正式安装的 鲜小助/u);
   assert.match(helper, /\[ "\$owner" -eq "\$service_uid" \]/u);
   assert.match(helper, /\[ "\$helper_owner" -eq "\$service_uid" \]/u);
   assert.match(helper, /开发服务资源必须与管理组件同目录/u);

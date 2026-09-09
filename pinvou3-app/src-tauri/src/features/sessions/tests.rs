@@ -2939,7 +2939,7 @@ fn retention_purge_notifies_session_purged_hooks() {
 
 // ===================== code 会话权限模式（两层持久化 + 默认值解析）=====================
 
-/// 注入一个简易 code 会话判定：列表内的 id 视为品悟原生 code 会话。
+/// 注入一个简易 code 会话判定：列表内的 id 视为鲜小助原生 code 会话。
 fn with_code_sessions(store: &SessionStore, ids: &[&str]) {
     let owned: Vec<String> = ids.iter().map(|s| s.to_string()).collect();
     store.set_code_session_predicate(Arc::new(move |id: &str| {

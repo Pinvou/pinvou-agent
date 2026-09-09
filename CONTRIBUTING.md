@@ -1,8 +1,8 @@
-# Contributing to Pinvou Agent
+# Contributing to 鲜小助
 
 [English](CONTRIBUTING.md) | [简体中文](CONTRIBUTING.zh-CN.md)
 
-Thank you for helping improve Pinvou Agent. Bug fixes, documentation, connectors, Skills, workflows, platform support, and focused product improvements are welcome.
+Thank you for helping improve 鲜小助. Bug fixes, documentation, connectors, Skills, workflows, platform support, and focused product improvements are welcome.
 
 This document covers the contribution workflow. Project-wide implementation and quality boundaries are defined in [AGENTS.md](AGENTS.md).
 
@@ -13,12 +13,11 @@ This document covers the contribution workflow. Project-wide implementation and 
 3. Follow [README.md](README.md) for development setup.
 4. Start from the latest official `main`.
 
-Maintainers may branch from `origin/main`. External contributors should configure the official repository once and branch from `upstream/main`:
+Create a branch from this repository's latest `origin/main`:
 
 ```bash
-git remote add upstream https://github.com/Pinvou/pinvou-agent.git
-git fetch upstream
-git switch -c feat/short-description upstream/main
+git fetch origin
+git switch -c feat/short-description origin/main
 git submodule update --init --recursive
 ```
 
@@ -44,7 +43,7 @@ Use `--signoff` when amending or rebasing existing commits. See [DCO.md](DCO.md)
 
 ## Where changes belong
 
-Pinvou Agent uses [CodeWhale](https://github.com/Pinvou/CodeWhale) as its agent engine. Do not reimplement engine capabilities in the desktop layer. The extension-boundary table is defined once in [AGENTS.md](AGENTS.md) §2; CodeWhale changes must follow it and [`docs/fork-policy.md`](docs/fork-policy.md), including the required same-PR documentation, fingerprints, and tests.
+鲜小助 uses [CodeWhale](https://github.com/Pinvou/CodeWhale) as its agent engine. Do not reimplement engine capabilities in the desktop layer. The extension-boundary table is defined once in [AGENTS.md](AGENTS.md) §2; CodeWhale changes must follow it and [`docs/fork-policy.md`](docs/fork-policy.md), including the required same-PR documentation, fingerprints, and tests.
 
 ## Commit messages
 
@@ -146,4 +145,4 @@ By participating, you agree to follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). 
 
 ## Security
 
-Never commit credentials, tokens, passwords, customer or private data, or internal-only addresses. Report unpatched vulnerabilities privately through [SECURITY.md](SECURITY.md) or `security@pinvou.com`.
+Never commit credentials, tokens, passwords, customer or private data, or internal-only addresses. Report unpatched vulnerabilities privately through [SECURITY.md](SECURITY.md).

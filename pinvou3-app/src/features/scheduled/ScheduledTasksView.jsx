@@ -697,7 +697,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
       };
       // The "记忆整理" (memory organize) template uses the same gate as the manual
       // settings entry: hidden while memory is disabled (off by default, and forced
-      // off for en/ja); otherwise the task would be created successfully but log a
+      // off for English); otherwise the task would be created successfully but log a
       // "memory disabled" failure on every trigger.
       const memoryEnabled = !!(appState.settings && appState.settings.memory_enabled);
       const visibleSuggestions = SCHEDULED_TASK_TEMPLATES

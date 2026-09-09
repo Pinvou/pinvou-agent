@@ -118,7 +118,7 @@ fn session_title_attachment_names(store: &SessionStore, metadata: &SessionMetada
 
 /// 列出所有 session 元数据，按 updated_at 倒序。前端历史面板渲染用。
 /// 返回 SessionMetadata 数组（id/title/时间/token/model/workspace 等字段）。
-/// 代码会话(ACP 与品悟原生)同样不进 chat 侧栏,由 list_codex_acp_sessions 单独提供。
+/// 代码会话(ACP 与鲜小助原生)同样不进 chat 侧栏,由 list_codex_acp_sessions 单独提供。
 #[tauri::command]
 pub async fn list_sessions(
     store: State<'_, SessionStore>,
@@ -803,7 +803,7 @@ pub async fn list_workspace_files(
     store: State<'_, SessionStore>,
     acp_pool: State<'_, crate::features::codex_acp::AcpPool>,
 ) -> Result<Vec<String>, String> {
-    // 语义守卫:代码会话(品悟原生)没有“产物面板”概念——其文件浏览与变更 diff 走
+    // 语义守卫:代码会话(鲜小助原生)没有“产物面板”概念——其文件浏览与变更 diff 走
     // 代码模式的基线工作区面板,这里跳过顶层扫描,避免把工作区代码文件误当产物。
     if acp_pool.agents().is_code_session(&session_id) {
         return Ok(Vec::new());

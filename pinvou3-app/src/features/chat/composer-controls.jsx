@@ -1,7 +1,7 @@
 // 聊天/代码页共用的输入框底栏控件。
 //
 // 从 ChatView 提取（2026-08）：原定义在 ChatView 组件体内。为支持代码模块原生
-// （品悟）车道复用，三个控件都接受可选的“显式会话态驱动”props：传入时绕开
+// （鲜小助）车道复用，三个控件都接受可选的“显式会话态驱动”props：传入时绕开
 // bridge 聊天 active 绑定（bridge 的 models/knowledge/interaction 方法都绑聊天
 // activeSession 且 ensureSession 会物化聊天会话，代码车道必须直调 invoke 显式
 // 传 sessionId）；不传时走原 bs/bridge 路径，聊天页行为不变。

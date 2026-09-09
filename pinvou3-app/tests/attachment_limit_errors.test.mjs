@@ -9,7 +9,6 @@ import {
   formatAttachmentLimitError,
 } from '../src/features/attachments/attachment-limit-errors.js';
 import { dictEn } from '../src/shared/i18n/en.js';
-import { dictJa } from '../src/shared/i18n/ja.js';
 import { dictZh } from '../src/shared/i18n/zh.js';
 
 test('normalizes browser and backend attachment limit failures', () => {
@@ -28,7 +27,7 @@ test('normalizes browser and backend attachment limit failures', () => {
 });
 
 test('renders every hard limit in all supported languages', () => {
-  for (const dictionary of [dictZh, dictEn, dictJa]) {
+  for (const dictionary of [dictZh, dictEn]) {
     assert.match(
       formatAttachmentLimitError(ATTACHMENT_LIMIT_ERROR_CODES.fileTooLarge, dictionary.uiAttachments),
       /20/,
@@ -68,8 +67,8 @@ test('ordinary chat and Codex paste entries use the shared limit formatter', () 
   );
   assert.equal(
     webBridge.match(/archiveUnsafeEntry:/g)?.length,
-    3,
-    'the web bridge must define unsafe-archive copy in all three inline languages',
+    2,
+    'the web bridge must define unsafe-archive copy in both inline languages',
   );
   assert.match(
     webBridge,

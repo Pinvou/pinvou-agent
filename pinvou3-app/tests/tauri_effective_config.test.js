@@ -52,7 +52,7 @@ const thirdPartyNotices = fs.readFileSync(
   "utf8",
 );
 const chromeDevtoolsMcpNotice = thirdPartyNotices.match(
-  /- chrome-devtools-mcp: Modified by Pinvou Agent during vendoring:[\s\S]*?(?=\n- |\n\n)/,
+  /- chrome-devtools-mcp: Modified by the application during vendoring:[\s\S]*?(?=\n- |\n\n)/,
 )?.[0];
 assert.ok(chromeDevtoolsMcpNotice, "the chrome-devtools-mcp adapter must be disclosed");
 for (const requiredNoticeText of [
@@ -479,7 +479,7 @@ assert.ok(
   macosManifest.files.some((file) => file.destination.startsWith("runtime/codex-bridge/")),
   "macOS resource manifest must contain the Codex ACP Bridge runtime",
 );
-for (const locale of ["en", "zh-Hans", "ja"]) {
+for (const locale of ["en", "zh-Hans"]) {
   assert.ok(
     macosManifest.files.some(
       (file) => file.destination === `${locale}.lproj/InfoPlist.strings`,

@@ -153,14 +153,14 @@ assert.strictEqual(
 );
 assert.strictEqual(
   ruleContext.applyVoiceDeterministicCorrections("产品名con 是什么", ""),
-  "产品名 Pinvou 是什么",
+  "产品名鲜小助 是什么",
   "产品名con misrecognition must still be corrected",
 );
 const evalScriptSource = fs.readFileSync(path.join(__dirname, "..", "scripts", "voice-normalize-eval.mjs"), "utf8");
 assert.match(
   evalScriptSource,
   /产品名con\(\?!\[a-zA-Z\]\)/,
-  "eval copy of the Pinvou correction must not lag behind the bounded production rule",
+  "eval copy of the brand correction must not lag behind the bounded production rule",
 );
 assert.match(source, /const candidateText = postprocessResult\.text;/);
 assert.doesNotMatch(
@@ -719,8 +719,8 @@ vm.runInContext(
     /if \(activeVoiceInput !== session\) return;/,
     "web startVoiceInput catch must exit early when the session was already cancelled",
   );
-  // The requestVoiceMedia timeout references bt("voiceDeviceTimeout"); all three language tables on the web lane must define that key.
-  for (const lang of ["en", "ja", "zh"]) {
+  // The requestVoiceMedia timeout references bt("voiceDeviceTimeout"); both language tables on the web lane must define that key.
+  for (const lang of ["en", "zh"]) {
     const tableMatch = webBridgeSource.match(new RegExp(`^    ${lang}: \\{([\\s\\S]*?)\\r?\\n    \\},`, "m"));
     assert.notStrictEqual(tableMatch, null, `web BT_TABLE ${lang} block must exist`);
     assert.match(
@@ -948,8 +948,8 @@ assert.match(
 );
 assert.strictEqual(
   (bridgeMainSource.match(/voiceEditPostprocessDisabled:/g) || []).length,
-  3,
-  "voiceEditPostprocessDisabled must exist in all three BT_TABLE languages",
+  2,
+  "voiceEditPostprocessDisabled must exist in both BT_TABLE languages",
 );
 assert.match(
   source,
@@ -1023,7 +1023,7 @@ const codedJoin = normalizeVoiceError({
 assert.strictEqual(
   codedJoin.message,
   bt("voiceInputFailed"),
-  "stable code must map to trilingual copy even inside recognition_failed",
+  "stable code must map to bilingual copy even inside recognition_failed",
 );
 assert.strictEqual(
   codedJoin.diagnostic,
@@ -1043,7 +1043,7 @@ assert.strictEqual(codedTooLong.diagnostic, "录音时长超过上限（60 秒�
 
 // (2) web lane: after remote-control RPC passthrough, the bootstrap-rebuilt
 // Error carries code/category; normalizeVoiceError must map by code to
-// trilingual copy — with a category it takes the dedicated branch, and with
+// bilingual copy — with a category it takes the dedicated branch, and with
 // only a code the final codeKey branch catches it (same semantics as the
 // tauri lane).
 const webVoiceStart = webBridgeSource.indexOf("  const VOICE_ERROR_CODE_KEYS = {");

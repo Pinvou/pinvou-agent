@@ -1,4 +1,4 @@
-//! Link-local discovery for PINVOU shared knowledge hosts.
+//! Link-local discovery for 鲜小助 shared knowledge hosts.
 //!
 //! mDNS is deliberately treated as an untrusted source of *addresses only*.
 //! It never advertises a server id, the private service CA, an invitation

@@ -1079,14 +1079,14 @@ mod tests {
             let r = ingest(img);
             assert_eq!(r.kind, "image");
             let md = r.markdown.expect("中文图必须 OCR 出文字");
-            assert!(md.contains("品悟"), "图片中文 OCR 内容异常: {md}");
+            assert!(md.contains("鲜小助"), "图片中文 OCR 内容异常: {md}");
         }
         let pdf = Path::new("/tmp/ocr_test_scan.pdf");
         if pdf.exists() {
             let r = ingest(pdf);
             assert_eq!(r.kind, "pdf");
             let md = r.markdown.expect("扫描件 PDF 必须走 OCR 兜底出文字");
-            assert!(md.contains("品悟"), "扫描件 OCR 内容异常: {md}");
+            assert!(md.contains("鲜小助"), "扫描件 OCR 内容异常: {md}");
             assert!(
                 r.warning.as_deref().unwrap_or("").contains("OCR"),
                 "扫描件应标注内容由 OCR 提取, got {:?}",

@@ -51,9 +51,9 @@ pub struct VoicePostprocessResponse {
 pub struct VoiceCommandError {
     pub category: String,
     pub stage: String,
-    /// Stable machine-decidable error code: the frontend maps it to trilingual
+    /// Stable machine-decidable error code: the frontend maps it to bilingual
     /// copy. The text in `message` is kept only as the raw log/diagnostic
-    /// string and is no longer passed through to en/ja user interfaces.
+    /// string and is no longer passed through to English user interfaces.
     pub code: String,
     pub message: String,
 }
@@ -552,7 +552,7 @@ ASR 文本：
 4. 不把输出形态改掉：用户说图表就保留图表，不要改成表格；用户说输入框就不要发送。
 5. 正常查询、比较、搜索、整理、生成、做、把、帮我等句子都必须保留原请求，不能输出空字符串。
 6. 禁止截断句子；如果不确定，只做最小纠错并保留原句结构。
-7. 英文实体、模型名、产品名和 API 名称要尽量标准化：GPT-5、Claude Sonnet、DeepSeek V3、REST API、PDF、Pinvou、鲜小助。
+7. 英文实体、模型名、产品名和 API 名称要尽量标准化：GPT-5、Claude Sonnet、DeepSeek V3、REST API、PDF、鲜小助。
 8. 只有整句去掉标点后只剩“嗯/啊/呃/额/那个/就是/文”等口头禅或噪声占位，才输出空字符串。
 9. 优先纠正上下文中明显 ASR 错词：
    - 行情/价格查询里的“进价/惊吓”通常应修为“金价”
@@ -681,7 +681,7 @@ fn voice_postprocess_user_content(
         corrected_text.trim()
     ));
     // Pin the output language back to the source language: the prompts and
-    // examples are written in Chinese, so without this an en/ja user's
+    // examples are written in Chinese, so without this an English user's
     // dictation would come back translated into Chinese and be written into
     // the input box.
     sections.push(

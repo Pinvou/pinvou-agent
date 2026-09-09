@@ -2322,7 +2322,7 @@ async function expand(page) {
     cancelFailureState.visible && cancelFailureState.retryable, JSON.stringify(cancelFailureState));
   await page.evaluate(() => { window.__CANCEL_SHELL_ERROR__=false; });
 
-  // ⑤ 品悟检阅 modal 本地化渲染:threading t 不报错 + 裁决标签/trace 出现(i18n 回归)
+  // ⑤ 鲜小助检阅 modal 本地化渲染:threading t 不报错 + 裁决标签/trace 出现(i18n 回归)
   await page.evaluate(() => window.TauriBridge.interaction.summonPinvou('/home/x/会议纪要.md'));
   await sleep(900);
   const modal = await page.evaluate(() => {

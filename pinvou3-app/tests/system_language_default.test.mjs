@@ -11,7 +11,6 @@ const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 test('system locale maps to a supported initial language', () => {
   assert.equal(languageFromLocaleTags(['zh-CN']), 'zh');
   assert.equal(languageFromLocaleTags(['zh-Hant-TW']), 'zh');
-  assert.equal(languageFromLocaleTags(['ja-JP']), 'ja');
   assert.equal(languageFromLocaleTags(['en-US']), 'en');
   assert.equal(languageFromLocaleTags(['fr-FR']), 'en');
 });

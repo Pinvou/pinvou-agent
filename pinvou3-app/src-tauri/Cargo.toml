@@ -2,7 +2,7 @@
 name = "pinvou3-tauri"
 version = "0.9.3"
 description = "鲜小助智能助手桌面应用后端"
-authors = ["pinvou"]
+authors = ["鲜小助 contributors"]
 license = "MIT"
 # edition 2024: aligned with the CodeWhale foundation (workspace edition
 # "2024"); requires rustc >= 1.85.

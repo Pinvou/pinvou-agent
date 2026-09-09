@@ -21,12 +21,12 @@
 
 ### 2.1 不启用底座快照（CodeWhale `crates/tui/src/snapshot/`）
 
-底座已有完整 shadow-git 快照体系（pre/post-turn + per-tool 快照、`restore` 带 pre-restore 反悔、`/undo`/`revert_turn`），但不适用于 pinvou 场景：
+底座已有完整 shadow-git 快照体系（pre/post-turn + per-tool 快照、`restore` 带 pre-restore 反悔、`/undo`/`revert_turn`），但不适用于鲜小助场景：
 
 - `mod snapshot;` 非 pub（`CodeWhale/crates/tui/src/lib.rs:134`），app 使用必须改 fork；
 - 标签用进程内 `turn_counter`（`engine.rs`），重启后 `pre-turn:1` 重复，多进程下锚定失效；
 - 存储按工作区哈希隔离（`~/.codewhale/snapshots/`），同工作区多会话交错，保留策略 7 天/50 个/500MB 与会话生命周期脱节；
-- pinvou 当前显式关闭：`snapshots_enabled: false`（`pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs:1500`），两套体系不并存。
+- 鲜小助当前显式关闭：`snapshots_enabled: false`（`pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs:1500`），两套体系不并存。
 
 复用底座需 4 处 fork 改动（pub/facade、锚定、会话命名空间、保留策略），按项目公约应优先回馈上游，周期不可控。
 
@@ -142,7 +142,7 @@ feat 分支没有的部分，本方案新增：
 - 回退入口只在代码会话页（聊天页不做，与 feat 分支一致）。
 - 入口按 turn 边界渲染；无 checkpoint 的 turn 渲染「仅对话回退」变体或不渲染。
 - 确认弹窗三要素：将撤销的变更摘要（added/modified/deleted 计数）、对话将截断到的位置、共享执行根警示（条件出现）。
-- i18n：全部文案走 `pinvou3-app/src/shared/i18n.js`，中英日三语（移植 feat 分支已有文案并补齐对话截断部分）。
+- i18n：全部文案走 `pinvou3-app/src/shared/i18n.js`，提供中英文（移植 feat 分支已有文案并补齐对话截断部分）。
 
 ## 8. 需要同步的文档与决策
 
@@ -163,7 +163,7 @@ feat 分支没有的部分，本方案新增：
 | 1 | 移植 checkpoint 机制 + turn 口径修正 + 模块落位 | 2~3 天 |
 | 2 | 对话截断到任意 turn + sidecar + 守卫放行 + engine 回收重注水 | 2~3 天 |
 | 3 | `rewind_to_turn` 编排 + 跨会话忙碌门 + 绑定感知提示 | 1~2 天 |
-| 4 | UI（Chip 移植 + 确认弹窗 + 三语文案） | 1~2 天 |
+| 4 | UI（Chip 移植 + 确认弹窗 + 中英文案） | 1~2 天 |
 | 5 | 测试链 + ADR-0006 修订 | 1~2 天 |
 
 总计约一到两周。风险集中在截断口径（有 `8d4d2a991` 经验直接套用）和守卫放行两处。
@@ -191,5 +191,5 @@ feat 分支没有的部分，本方案新增：
 - **悬停入口的触屏可达性**：回退入口平时是淡色细线、hover 显形（桌面鼠标语义）；纯触屏无 hover，需首 tap 触发 `:hover` 再点按。鉴于 rewind 命令桌面专属（web 策略锚定测试锁定），v1 不为触屏加交互复杂度。
 - **Web 车道不支持**：rewind 直接改写本地文件，`rewind_to_turn`/`undo_last_rewind`/`rewind_undo_state`/`list_checkpoints`/`checkpoint_diff` 均未加入 web access-policy 的 allowed_commands，前端经 `canInvoke` 能力检查提前收口（不发必被拒的请求）。放行需单独评估（桌面执行语义），由 `codex_checkpoints_logic.test.mjs` 的策略断言锚定。
 - **秘密排除恒大小写不敏感，core.ignorecase 仅承载 git 原生语义**：为堵住大写秘密文件逃过 exclude 后被 restore 误删的链路（评审 B1），敏感模式自身写成大小写不敏感形式——info/exclude 用 `icase_gitignore_pattern` 展开的字符类（`[xX]`）、purge pathspec 恒带 `:(icase)`、预览过滤恒按 ASCII 折叠匹配——三层在任何文件系统上命中相同的大小写变体集合，不依赖影子仓库的 core.ignorecase。core.ignorecase 仍按 `fs_is_case_insensitive` 探测设置（每次 ensure 幂等校正），但只承载 git 原生大小写语义：不无条件强制 true，大小写敏感文件系统上强制不敏感会引发 git alias 冲突（`Makefile`/`makefile` 共存时 `add -A` 整体 fatal、别名新文件静默跳过、仅大小写改名记成空树，评审 M1）；探测后这些都不触发。alias 冲突发生时快照失败以 error 级日志显式上报（不再静默 warn）。残余取舍：大小写不敏感系统上仅大小写不同的改名对快照不可见、不随回退恢复。
-- **嵌套 git 仓库/submodule 在回退语义之外**：快照以 gitlink 记录嵌套仓库（内容不跟踪），restore 不 materialize 它，`clean -fd` 也不删除含 `.git` 的目录——agent 在嵌套仓库内的编辑不会被回退，turn 中 clone 出的仓库在回退后存活。changes 清单对 gitlink 条目如实标注（三语「嵌套仓库（不回退）」）。
+- **嵌套 git 仓库/submodule 在回退语义之外**：快照以 gitlink 记录嵌套仓库（内容不跟踪），restore 不 materialize 它，`clean -fd` 也不删除含 `.git` 的目录——agent 在嵌套仓库内的编辑不会被回退，turn 中 clone 出的仓库在回退后存活。changes 清单对 gitlink 条目如实标注（中英文「嵌套仓库（不回退）」）。
 - **影子 git 的环境隔离（2026-09-02 评审后加固）**：影子仓库的全部 git 子进程剥离宿主 `GIT_*` 变量（`GIT_INDEX_FILE`/`GIT_OBJECT_DIRECTORY`/`GIT_DIR` 等会把内部操作重定向到无关仓库）并钉死系统/全局 gitconfig（用户全局 `core.fsmonitor=true` 会对执行根拉起守护进程）；`fs_is_case_insensitive` 的探针文件（`.Pinvou-Icase-Probe-*`）入 exclude，并发同根会话的 `add -A` 不会把它卷进快照；体积估算遇不可读目录时如实记路径级日志（调用方的「超预算」文案不再掩盖权限类失败）。

@@ -215,7 +215,7 @@ fn archive_tool_missing_message() -> String {
             format!("压缩包解析需要 7z: sudo apt install {packages}")
         }
     } else {
-        "内置压缩包解析组件缺失或不可用，请修复或重新安装 pinvou。".into()
+        "内置压缩包解析组件缺失或不可用，请修复或重新安装鲜小助。".into()
     }
 }
 

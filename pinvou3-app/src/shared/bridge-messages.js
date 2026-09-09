@@ -5,15 +5,12 @@
   const shellCleanupFailed = {
     zh: "⚠️ 部分后台任务未能停止，可在后台任务列表中逐个停止。",
     en: "⚠️ Some background tasks could not be stopped. You can stop them individually from the background task list.",
-    ja: "⚠️ 一部のバックグラウンドタスクを停止できませんでした。バックグラウンドタスク一覧から個別に停止できます。",
   };
 
-  // 与 bridge 层 bt() 约定一致:settings.language 存的是 tag(zh-Hans/en/ja),
-  // 非 en/ja 一律回退中文。
+  // 与 bridge 层 bt() 约定一致:settings.language 存的是 tag(zh-Hans/en),
+  // 非 en 一律回退中文。
   function shellCleanupFailedText(language) {
-    return language === "en" ? shellCleanupFailed.en
-      : language === "ja" ? shellCleanupFailed.ja
-      : shellCleanupFailed.zh;
+    return language === "en" ? shellCleanupFailed.en : shellCleanupFailed.zh;
   }
 
   // Runtime-owned user-role turns may arrive with their trailing turn metadata

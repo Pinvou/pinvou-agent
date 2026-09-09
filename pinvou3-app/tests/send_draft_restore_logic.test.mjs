@@ -326,7 +326,7 @@ const chatViewSource = read('src', 'features', 'chat', 'ChatView.jsx');
 
 // ── web 行为 ──────────────────────────────────────────────────────────
 {
-  // 附件仍在解析 → false（web bt 是内置真实三语文案，断言用条目形状而非文本）。
+  // 附件仍在解析 → false（web bt 是内置真实中英文案，断言用条目形状而非文本）。
   // addParsingAttachment 的底层 invoke 永不结算：不 await（无 rejection 路径），
   // 只等微任务让状态同步到 parsing。
   const web = createWebBridge();

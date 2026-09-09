@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 const MAX_TITLE_CHARS: usize = 120;
 const MAX_DESCRIPTION_CHARS: usize = 5000;
-const COMMUNITY_ISSUES_URL: &str = "https://github.com/Pinvou/pinvou-agent/issues";
+const COMMUNITY_ISSUES_URL: &str = "https://github.com/mlmr-coder/fresh-agent/issues";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

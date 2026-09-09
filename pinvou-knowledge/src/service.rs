@@ -167,7 +167,7 @@ impl KnowledgeService {
                 .set_meta("server_identity", &random_secret(32))
                 .map_err(|error| error.to_string())?;
         }
-        // v2 is claimed by the host PINVOU through an Owner device credential.
+        // v2 is claimed by the host 鲜小助 application through an Owner device credential.
         // Remove obsolete Web-console and abandoned quick-join credentials during migration.
         let _ = std::fs::remove_file(data_dir.join("initialization.key"));
         for key in [

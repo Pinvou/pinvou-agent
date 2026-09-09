@@ -50,7 +50,7 @@ function useDetachedBase() {
     // initial values at detached-window startup, then this window manages them);
     // initRef blocks repeat writes from later settings changes, keeping the
     // original one-shot semantics.
-    // en/ja lazy dictionaries: the entry only bootstraps the system language;
+    // The English dictionary is lazy: the entry only bootstraps the system language;
     // the persisted language may not be loaded yet, so ensure it before switching.
     if (lang) ensureLanguage(lang).then((ok) => { if (ok) setLanguage(lang); }).catch(() => {});
     setColorScheme(normalizeColorScheme(bs.settings.color_scheme));
@@ -59,11 +59,11 @@ function useDetachedBase() {
   useEffect(() => {
     document.documentElement.classList.toggle('dark', activeTheme === 'dark');
   }, [activeTheme]);
-  // 与主窗 App 同一兜底:撕离窗加载同一 index.html,「系统中文 + 英/日 UI」时
-  // index.html 快速路径跳过注入,卡池撕离窗卡名会停在中文。UI 语言为 en/ja 时
+  // 与主窗 App 同一兜底:撕离窗加载同一 index.html,切换英文 UI 时
+  // index.html 快速路径可能跳过注入。UI 语言为 en 时
   // 兜底注入 overlay,加载完成 bump 一次让卡名重渲染。
   useEffect(() => {
-    if (language === 'en' || language === 'ja') {
+    if (language === 'en') {
       ensurePersonaI18nOverlay(() => setPersonaI18nTick(v => v + 1));
     }
   }, [language]);

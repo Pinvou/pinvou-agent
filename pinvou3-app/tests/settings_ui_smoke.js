@@ -18,7 +18,7 @@ const settingsViewSource = fs.readFileSync(
   path.join(__dirname, '..', 'src', 'features', 'settings', 'SettingsView.jsx'),
   'utf8',
 );
-const settingsI18nSources = ['zh', 'en', 'ja'].map((lang) => fs.readFileSync(
+const settingsI18nSources = ['zh', 'en'].map((lang) => fs.readFileSync(
   path.join(__dirname, '..', 'src', 'shared', 'i18n', `${lang}.js`),
   'utf8',
 ));
@@ -1854,7 +1854,7 @@ async function modalWidth(page, headingText) {
     const greeting = [...document.querySelectorAll('h1')].find(node => {
       const text = node.textContent || '';
       const fontSize = Number.parseFloat(window.getComputedStyle(node).fontSize);
-      return text.includes('今天想聊点什么') || text.includes("what's good") || text.includes('今日は') || fontSize >= 30;
+      return text.includes('今天想聊点什么') || text.includes("what's good") || fontSize >= 30;
     });
     const rect = greeting && greeting.getBoundingClientRect();
     const fontSize = greeting ? Number.parseFloat(window.getComputedStyle(greeting).fontSize) : 0;

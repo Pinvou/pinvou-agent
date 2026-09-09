@@ -22,7 +22,7 @@ test('dev signing leaves release, non-macOS and explicit opt-out untouched', () 
 });
 
 test('self-signed and ambiguous identities cannot silently replace Apple signing', () => {
-  assert.deepEqual(appleIdentities(`1) ${state.identity} "Fresh Assistant Local Development"`), []);
+  assert.deepEqual(appleIdentities(`1) ${state.identity} "鲜小助 Local Development"`), []);
   assert.throws(() => selectIdentity([], null), /No valid Apple/);
   const identities = appleIdentities(identityOutput);
   assert.equal(selectIdentity(identities).identity, state.identity);

@@ -20,7 +20,10 @@ const TMEET_MIN_VERSION: (u64, u64, u64) = (1, 0, 15);
 
 const TMEET_CTX: CliCtx = CliCtx {
     cli_bin: "tmeet",
-    envs: &[("TMEET_AGENT", "Pinvou"), ("TMEET_MODEL", "Pinvou")],
+    envs: &[
+        ("TMEET_AGENT", "FreshAssistant"),
+        ("TMEET_MODEL", "FreshAssistant"),
+    ],
     auth_domains: &["meeting.tencent.com"],
 };
 

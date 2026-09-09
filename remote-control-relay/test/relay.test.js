@@ -239,14 +239,14 @@ after(async () => {
 test("serves the built WebUI SPA at the public base path", async () => {
   const root = await fetch(`${httpUrl}/pinvou3/remote/`);
   assert.equal(root.status, 200);
-  assert.match(await root.text(), /PINVOU WebUI v2/);
+  assert.match(await root.text(), /鲜小助 WebUI v2/);
   assert.equal(root.headers.get("cache-control"), "no-store");
   assert.match(root.headers.get("content-security-policy"), /connect-src 'self' ws: wss:/);
   assert.equal(root.headers.get("referrer-policy"), "no-referrer");
 
   const spa = await fetch(`${httpUrl}/pinvou3/remote/conversations/current`);
   assert.equal(spa.status, 200);
-  assert.match(await spa.text(), /PINVOU WebUI v2/);
+  assert.match(await spa.text(), /鲜小助 WebUI v2/);
 
   const asset = await fetch(`${httpUrl}/pinvou3/remote/app.js`);
   assert.equal(asset.status, 200);

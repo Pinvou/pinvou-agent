@@ -110,7 +110,7 @@
       return normalizeTerminalTail(String(raw || "").replace(/^\.\.\.\s*/, "")).trim();
     }).filter(Boolean);
     if (evidence.length) return evidence.every(function (text) { return output.includes(text); });
-    return /\(no output\)|no output|无输出|出力なし/i.test(output);
+    return /\(no output\)|no output|无输出/i.test(output);
   }
 
   function applyShellSnapshots(sid, jobs) {

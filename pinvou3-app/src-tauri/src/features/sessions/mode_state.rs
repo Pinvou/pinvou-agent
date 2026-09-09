@@ -61,14 +61,14 @@ pub struct MountedCollectionsSnapshot {
 /// 单 session 的 mode 状态。前端通过 `get_mode_state` 拉取，
 /// `set_plan_mode_next` / `accept_plan` 等命令修改。
 ///
-/// **品悟 review 是与 Plan/YOLO 正交的独立开关**(`pinvou_review_enabled`):
+/// **鲜小助 review 是与 Plan/YOLO 正交的独立开关**(`pinvou_review_enabled`):
 /// - Plan + 开 = plan 出炉 EXIT GATE + 任务收口 final review
 /// - Plan + 关 = 现状行为
 /// - YOLO + 开 = 只触发 final review(YOLO 无 plan 期)
 /// - YOLO + 关 = 现状行为
 ///
 /// careful hook 跨所有组合默认开启(由 CodeWhale shell.rs 强制 BLOCKED Dangerous 实现,
-/// 不依赖此开关)。设计依据:docs/Pinvou-品悟设计.md §5。
+/// 不依赖此开关)。设计依据:docs/Pinvou-鲜小助设计.md §5。
 ///
 /// 上游 PhaseDef 只 derive Serialize,所以这里也只单向序列化给前端;
 /// SessionModeState 不需要从前端 deserialize 回来(它通过 set_*_state 命令逐字段写)。
@@ -90,7 +90,7 @@ pub struct SessionModeState {
     /// 仅用于进程内失败回滚，不暴露给前端。
     #[serde(skip)]
     pub(crate) plan_claim_in_flight: Option<String>,
-    /// 品悟 review 质量护栏开关。默认 false(保持现状)。
+    /// 鲜小助 review 质量护栏开关。默认 false(保持现状)。
     /// 开启后 accept_plan / exit_plan_to_yolo 触发 EXIT GATE。
     #[serde(default)]
     pub pinvou_review_enabled: bool,

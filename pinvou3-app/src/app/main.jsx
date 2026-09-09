@@ -72,10 +72,10 @@ import { revealStartupWindow } from '../platform/tauri/startup-window.js';
 // 定时任务创建与运行链路已恢复，展示入口并允许自动跳转。
 const SCHEDULED_TASKS_ENTRY_ENABLED = true;
 
-// 后端默认会话标题哨兵集合(bridge 按当前语言生成三语兜底标题,并据此判断是否自动改名)——
+// 后端默认会话标题哨兵集合（bridge 按当前语言生成中英文兜底标题，并据此判断是否自动改名）——
 // 显示层把任意一种哨兵标题映射成当前语言的「新对话」文案。哨兵是跨语言的后端
 // 契约而非当前 UI 文案,直接使用 shared/i18n.js 的静态集合,与词典装载进度无关
-// (zh 主用户不会装载 en/ja chunk,不能从 dict 派生)。
+// （zh 主用户不会装载 en chunk，不能从 dict 派生）。
 function isDefaultChatTitle(title) {
   return DEFAULT_CHAT_TITLES.has(title);
 }
@@ -862,7 +862,7 @@ function workspaceDisplayName(path) {
           if (disposed) unlisten();
           else unlisteners.push(unlisten);
         }).catch(() => {});
-        // 原生（品悟）代码会话的 turn 走 chat:* 事件：busy 徽标与 ACP 会话同机制，
+        // 原生（鲜小助）代码会话的 turn 走 chat:* 事件：busy 徽标与 ACP 会话同机制，
         // 只跟踪代码会话列表内的 session，普通聊天会话不影响。
         ['chat:turn_started', 'chat:done'].forEach(eventName => {
           tauriEvents.listen(eventName, (message) => {
@@ -959,11 +959,10 @@ function workspaceDisplayName(path) {
       });
       // 语言切换统一走该门(handleSetLanguage):装载完成乱序时只落地最新选择。
       const switchToLanguage = useRef(createLatestLanguageGate()).current;
-      // UI 语言为 en/ja 时确保 personas-i18n overlay 已加载(覆盖「系统中文 + 手动切
-      // 英/日 UI」、index.html 快速路径跳过的场景),加载完成 bump 一次让卡名重渲染。
+      // UI 语言为 en 时确保 personas-i18n overlay 已加载，加载完成后刷新卡名。
       const [, setPersonaI18nTick] = useState(0);
       useEffect(() => {
-        if (language === 'en' || language === 'ja') {
+        if (language === 'en') {
           ensurePersonaI18nOverlay(() => setPersonaI18nTick(v => v + 1));
         }
       }, [language]);
@@ -1267,7 +1266,7 @@ function workspaceDisplayName(path) {
           setColorScheme(normalizeColorScheme(storedScheme));
         } else {
           const lang = TAG_TO_LANG[settings.language];
-          // 落盘语言可能尚未装载(en/ja 惰性 chunk);ensure 后再切,失败停在系统语言
+          // 落盘语言可能尚未装载（en 惰性 chunk）；ensure 后再切，失败停在系统语言
           if (lang && lang !== language) ensureLanguage(lang).then((ok) => { if (ok) setLanguage(lang); }).catch(() => {});
           // engine 已用此语言启动,作为「需重启」基线(切语言不重启 engine,见 commands.rs)
           bootedLanguageRef.current = lang || language;
@@ -1427,7 +1426,7 @@ function workspaceDisplayName(path) {
           : sessionTitlePresentation(s.title, s.title_attachment_names);
         return {
           id: s.id,
-          // 后端默认标题是三语哨兵之一(见 isDefaultChatTitle;bridge 以此判断是否自动改名)——显示层映射成当前语言
+          // 后端默认标题是中英文哨兵之一（见 isDefaultChatTitle；bridge 以此判断是否自动改名）——显示层映射成当前语言
           title: sessionTitlePlainText(titlePresentation),
           titleContent: titlePresentation.attachments.length
             ? <SessionAttachmentTitle presentation={titlePresentation} />
@@ -2479,11 +2478,11 @@ function workspaceDisplayName(path) {
       }
 
       function handleSetLanguage(lang) {
-        // en/ja 是惰性词典 chunk:先装载再切状态/广播,辅助窗口(桌宠/阅读器)
+        // en 是惰性词典 chunk：先装载再切状态/广播，辅助窗口（桌宠/阅读器）
         // 收到 ui:language_changed 时词典必须已在本窗就位(各入口首帧引导只保证
         // 初始语言)。装载失败(资源损坏)保持原语言,不产生半翻译界面。
-        // 经「最新选择胜出」门落地:ja chunk 静态依赖 en chunk,先选 ja 再选
-        // en 时旧 ja 请求可能后完成并覆盖新选择(见 createLatestLanguageGate)。
+        // 经「最新选择胜出」门落地，避免旧请求后完成并覆盖新选择
+        // （见 createLatestLanguageGate）。
         switchToLanguage(lang, () => {
           setLanguage(lang);
           if (isWeb) {
@@ -3026,7 +3025,7 @@ function workspaceDisplayName(path) {
                         </span>
                       </div>
                       {/* 全部/代码 胶囊 + 一键折叠(分组)按钮:位于「任务列表」标题下方。
-                          flex-wrap 兜底:ja 等语言在 220px 最小宽度下此行已无富余
+                          flex-wrap 兜底：较长文案在 220px 最小宽度下此行已无富余
                           (实测正好占满),字体渲染偏宽的环境让折叠按钮换行而非溢出。 */}
                       <div className="flex flex-wrap items-center justify-between gap-2 px-1">
                         {/* biome-ignore lint/a11y/useSemanticElements: toggle-button pair in an ARIA group, not form controls; a <fieldset> would need its default styles reset */}
@@ -3741,7 +3740,7 @@ function workspaceDisplayName(path) {
     const root = createRoot(document.querySelector('#root'));
     window.__PINVOU_STARTUP__.mark('react:create_root_done');
     const __q = new URLSearchParams(window.location.search);
-    // 首帧语言引导:zh 词典内嵌(Promise 已 resolve,仅一个微任务),en/ja 系统
+    // 首帧语言引导:zh 词典内嵌(Promise 已 resolve,仅一个微任务),en 系统
     // 用户先取惰性词典 chunk 再首渲染,保证 t = dict[language] 首帧即有效。
     // 装载失败(资源损坏)按 zh 兜底渲染,不空白。
     const __initialLang = initialSystemLanguage();
@@ -3749,7 +3748,7 @@ function workspaceDisplayName(path) {
       if (!isWeb) return null;
       try {
         const value = window.localStorage.getItem('pinvou.web.language');
-        return value && ['zh', 'en', 'ja'].includes(value) ? value : null;
+        return value && ['zh', 'en'].includes(value) ? value : null;
       } catch { return null; }
     })();
     ensureLanguage(__storedLang || __initialLang).catch(() => {}).then(function () {

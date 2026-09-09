@@ -307,7 +307,7 @@ impl SkillMarketplaceManager {
                             .clone()
                             .or_else(|| super::store::upload_display_fallback(&record))
                             .unwrap_or_else(|| record.id.clone()),
-                        // 空 subtitle 让前端回退三语 localized 文案(上传技能无自有副标题)
+                        // 空 subtitle 让前端回退中英文 localized 文案（上传技能无自有副标题）
                         subtitle: String::new(),
                         // 解析 SKILL.md frontmatter description 展示;缺失则空
                         description: display_description.clone().unwrap_or_else(|| {

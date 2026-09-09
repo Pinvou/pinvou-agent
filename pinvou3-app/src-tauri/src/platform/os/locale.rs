@@ -64,12 +64,12 @@ mod tests {
     fn language_precedes_non_portable_base_locale() {
         assert_eq!(
             select_message_locale(
-                Some("ja_JP"),
+                Some("fr_FR"),
                 Some("en_US.UTF-8"),
                 Some("zh_CN.UTF-8"),
                 Some("de_DE.UTF-8"),
             ),
-            Some("ja_JP".to_string())
+            Some("fr_FR".to_string())
         );
     }
 
@@ -79,14 +79,14 @@ mod tests {
             select_message_locale(
                 Some("  "),
                 Some("en_US.UTF-8"),
-                Some("ja_JP.UTF-8"),
+                Some("fr_FR.UTF-8"),
                 Some("zh_CN.UTF-8"),
             ),
             Some("en_US.UTF-8".to_string())
         );
         assert_eq!(
-            select_message_locale(None, Some(""), Some("ja_JP.UTF-8"), Some("zh_CN.UTF-8")),
-            Some("ja_JP.UTF-8".to_string())
+            select_message_locale(None, Some(""), Some("fr_FR.UTF-8"), Some("zh_CN.UTF-8")),
+            Some("fr_FR.UTF-8".to_string())
         );
         assert_eq!(
             select_message_locale(None, None, None, Some("zh_CN.UTF-8")),
@@ -97,15 +97,15 @@ mod tests {
     #[test]
     fn language_uses_first_non_empty_colon_list_entry() {
         assert_eq!(
-            select_message_locale(Some(" : ja_JP : zh_CN "), None, None, Some("en_US.UTF-8")),
-            Some("ja_JP".to_string())
+            select_message_locale(Some(" : fr_FR : zh_CN "), None, None, Some("en_US.UTF-8")),
+            Some("fr_FR".to_string())
         );
     }
 
     #[test]
     fn c_base_locale_ignores_language() {
         assert_eq!(
-            select_message_locale(Some("ja_JP"), Some(" c "), Some("zh_CN"), Some("en_US")),
+            select_message_locale(Some("fr_FR"), Some(" c "), Some("zh_CN"), Some("en_US")),
             Some("c".to_string())
         );
     }
@@ -113,15 +113,15 @@ mod tests {
     #[test]
     fn c_encoding_base_locales_ignore_language() {
         assert_eq!(
-            select_message_locale(Some("ja_JP"), Some("C.UTF-8"), None, None),
+            select_message_locale(Some("fr_FR"), Some("C.UTF-8"), None, None),
             Some("C.UTF-8".to_string())
         );
         assert_eq!(
-            select_message_locale(Some("ja_JP"), None, Some("C.utf8"), None),
+            select_message_locale(Some("fr_FR"), None, Some("C.utf8"), None),
             Some("C.utf8".to_string())
         );
         assert_eq!(
-            select_message_locale(Some("ja_JP"), None, None, Some("c.UtF-8")),
+            select_message_locale(Some("fr_FR"), None, None, Some("c.UtF-8")),
             Some("c.UtF-8".to_string())
         );
     }
@@ -129,15 +129,15 @@ mod tests {
     #[test]
     fn locale_starting_with_c_is_not_automatically_portable() {
         assert_eq!(
-            select_message_locale(Some("ja_JP"), Some("ca_ES.UTF-8"), None, None),
-            Some("ja_JP".to_string())
+            select_message_locale(Some("fr_FR"), Some("ca_ES.UTF-8"), None, None),
+            Some("fr_FR".to_string())
         );
     }
 
     #[test]
     fn posix_base_locale_ignores_language() {
         assert_eq!(
-            select_message_locale(Some("ja_JP"), None, Some("POSIX"), Some("zh_CN")),
+            select_message_locale(Some("fr_FR"), None, Some("POSIX"), Some("zh_CN")),
             Some("POSIX".to_string())
         );
     }
@@ -152,9 +152,9 @@ mod tests {
 
     #[test]
     fn language_without_an_explicit_base_locale_is_ignored() {
-        assert_eq!(select_message_locale(Some("ja_JP"), None, None, None), None);
+        assert_eq!(select_message_locale(Some("fr_FR"), None, None, None), None);
         assert_eq!(
-            select_message_locale(Some("ja_JP"), Some(" "), Some(""), Some("  ")),
+            select_message_locale(Some("fr_FR"), Some(" "), Some(""), Some("  ")),
             None
         );
     }

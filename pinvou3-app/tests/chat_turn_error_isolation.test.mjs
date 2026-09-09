@@ -371,14 +371,10 @@ assert.doesNotMatch(
   'multi-pair Set-Cookie header values must all be redacted',
 );
 // The redaction placeholder follows the UI language: technical details
-// in en/ja interfaces must not mix in Chinese.
+// in English interfaces must not mix in Chinese.
 const enRedacted = modelErrors.redactTechnicalDetail('Authorization: Bearer sk-deepseek-secret-token-123', 'en');
 assert.match(enRedacted, /\[redacted\]/);
 assert.doesNotMatch(enRedacted, /敏感信息/);
-assert.match(
-  modelErrors.redactTechnicalDetail('Authorization: Bearer sk-deepseek-secret-token-123', 'ja'),
-  /\[秘匿済み\]/,
-);
 // Non-credential values are not swallowed: a digit-less short value for
 // a bare "key" (model-name) is preserved.
 assert.doesNotMatch(
@@ -467,7 +463,7 @@ assert.equal(rebuiltCard.technicalDetail, builtCard.technicalDetail, 're-buildin
 assert.equal(rebuiltCard.title, builtCard.title, 're-building a built card must keep the title stable');
 assert.doesNotMatch(rebuiltCard.technicalDetail, /\[redacted\]\[redacted\]/, 'placeholder must never be re-masked into a doubled placeholder');
 assert.equal(modelErrors.build({ kind: 'nope', title: 't', message: 'm' }, { language: 'zh-Hans' }).kind, 'unknown', 'unknown structured kinds must fall back to unknown');
-const cleanupState = { settings: { language: 'ja' }, chatItems: [] };
+const cleanupState = { settings: { language: 'en' }, chatItems: [] };
 const addCleanupItem = (text, metadata) => cleanupState.chatItems.push({ text, ...metadata });
 messageSandbox.window.PinvouBridgeMessages.showShellCleanupFailure(
   { shell_cleanup_failed: true },
@@ -475,7 +471,7 @@ messageSandbox.window.PinvouBridgeMessages.showShellCleanupFailure(
   addCleanupItem,
 );
 assert.equal(cleanupState.chatItems.length, 1);
-assert.match(cleanupState.chatItems[0].text, /バックグラウンドタスク/);
+assert.match(cleanupState.chatItems[0].text, /background tasks/);
 messageSandbox.window.PinvouBridgeMessages.showShellCleanupFailure(
   { shell_cleanup_failed: true },
   cleanupState,
@@ -691,11 +687,11 @@ assert.equal(
   false,
   'terminal notice must stay visible when no timeline record was written',
 );
-// en/ja transient/terminal wording split: the {stop} placeholder must be
-// present in all three language templates for every retryable kind
+// The transient/terminal wording split: the {stop} placeholder must be
+// present in both language templates for every retryable kind
 // (rate_limit/server/network/unknown), and transient and terminal
 // wordings must never be identical.
-for (const language of ['en', 'ja', 'zh-Hans']) {
+for (const language of ['en', 'zh-Hans']) {
   for (const kind of [
     'HTTP 429 too many requests',
     'SSE stream request failed: HTTP 500 internal error',
@@ -714,7 +710,7 @@ for (const language of ['en', 'ja', 'zh-Hans']) {
   }
 }
 assert.doesNotMatch(modelErrors.build('HTTP 429 too many requests', { language: 'en', terminal: false }).message, /\{stop\}/);
-assert.doesNotMatch(modelErrors.build('HTTP 429 too many requests', { language: 'ja', terminal: true }).message, /\{stop\}/);
+assert.doesNotMatch(modelErrors.build('HTTP 429 too many requests', { language: 'zh-Hans', terminal: true }).message, /\{stop\}/);
 
 // Legacy-list fix, billing vocabulary gap (Anthropic's official 402
 // wording / Tongyi's Arrearage error code, R3 M5 residual): bare strings
@@ -747,8 +743,8 @@ const contentZh = modelErrors.build('content policy violation: request blocked',
 assert.equal(contentZh.kind, 'content');
 assert.doesNotMatch(contentZh.message, /稍后重试/);
 assert.equal(
-  modelErrors.build('content policy violation: request blocked', { language: 'ja', terminal: false }).message,
-  modelErrors.build('content policy violation: request blocked', { language: 'ja', terminal: true }).message,
+  modelErrors.build('content policy violation: request blocked', { language: 'en', terminal: false }).message,
+  modelErrors.build('content policy violation: request blocked', { language: 'en', terminal: true }).message,
   'content-policy failures are deterministic: transient and terminal wording match',
 );
 
@@ -981,9 +977,9 @@ assert.match(webBridgeSource, /typeof messages\.addModelServiceErrorNotice === "
 assert.match(webBridgeSource, /typeof shellMessages\.showShellCleanupFailure === "function"/);
 assert.match(webBridgeSource, /typeof terminal\.recordCompleted === "function"/);
 assert.equal(
-  (bridgeMessagesSource.match(/^ {4}(zh|en|ja):/gm) || []).length,
-  3,
-  'Shell cleanup warning must provide zh/en/ja translations',
+  (bridgeMessagesSource.match(/^ {4}(zh|en):/gm) || []).length,
+  2,
+  'Shell cleanup warning must provide zh/en translations',
 );
 
 // The wave-2 split moved event forwarding (including Event::TurnComplete

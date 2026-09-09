@@ -1,5 +1,5 @@
 [Unit]
-Description=Pinvou shared knowledge server
+Description=鲜小助 shared knowledge server
 After=network-online.target
 Wants=network-online.target
 

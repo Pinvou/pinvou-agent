@@ -117,7 +117,7 @@ const requiredPrivacyKeys = [
   "NSSpeechRecognitionUsageDescription",
   "NSLocalNetworkUsageDescription",
 ];
-for (const locale of ["en", "zh-Hans", "ja"]) {
+for (const locale of ["en", "zh-Hans"]) {
   const strings = read(
     `pinvou3-app/src-tauri/resources/platforms/macos/infoplist/${locale}.lproj/InfoPlist.strings`,
   );

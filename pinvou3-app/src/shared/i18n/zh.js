@@ -1,8 +1,8 @@
 import { BRAND_NAME } from '../brand.js';
-// 中文 UI 词典。zh 全量内嵌:启动即用,不经 ensureLanguage。en/ja 对 zh 全部
+// 中文 UI 词典。zh 全量内嵌：启动即用，不经 ensureLanguage。en 对 zh 全部
 // 叶子 key 的覆盖由 tests/ui_language_coverage.test.mjs 强制(parity 断言)。
-// 维护约定:新增 key 三处同步;ja 以 en 兜底(i18n/ja.js 内 spread)。
-// i18n.js 聚合 shim 与 Node 契约测试(ui_language_coverage)静态 import 全部三语,拆分仅影响浏览器 chunk。
+// 维护约定：新增 key 时同步 zh/en 两处。
+// i18n.js 聚合 shim 与 Node 契约测试（ui_language_coverage）静态 import 全部中英文，拆分仅影响浏览器 chunk。
 
 /* eslint-disable sonarjs/no-nested-template-literals, sonarjs/no-unenclosed-multiline-block -- compact i18n dictionary: nested templates mirror the copy structure one-to-one; credential field names are false-positive secrets */
 import { browserZh } from './browser.js';
@@ -580,7 +580,7 @@ dictZh.uiToolDetails.tmeetSteps = [{key:'runtime',label:'准备运行时',sub:'�
 
 dictZh.uiToolDetails.showRawErrors = true;
 
-// 工具商店 MCP 连接器卡片三语 overlay(tool-common.jsx tsToolsData;localizeTool 按 backendId 或占位卡 'card'+id 命中)。
+// 工具商店 MCP 连接器卡片中英文 overlay（tool-common.jsx tsToolsData；localizeTool 按 backendId 或占位卡 'card'+id 命中）。
 // zh 与源数据逐字一致(zh 界面零变化);configFields 只覆盖 label/helpText/placeholder,由 localizeTool 按 key 深合并。
 Object.assign(dictZh.uiToolDetails.tools, {
   weather:{ title:'高德天气', subtitle:'高德地图实时天气与多日预报', desc:'通过高德地图 Web 服务 API 查询全国城市实时天气与未来多日预报。需要填写你自己的高德 Web 服务 API Key，密钥只写入本机系统凭据。', configTitle:'高德天气 Key', configDescription:'Key 只保存在本机凭据，不写入 mcp.json。', configDocLabel:'去创建 Web 服务 Key', configFields:[{key:'AMAP_KEY', label:'API Key', helpText:'请选择「Web 服务」类型。', placeholder:'粘贴高德 Web 服务 Key'}], welcomeQueries:['杭州今天天气','北京这周会下雨吗','上海明天穿什么'] },
@@ -946,11 +946,11 @@ tokenMissing:'授权流程返回成功，但本地未检测到 OAuth token，当
 });
 
 
-// ChatView.jsx(后端持久化的记忆状态值在 UI 边界的三语映射)。
+// ChatView.jsx（后端持久化的记忆状态值在 UI 边界的中英文映射）。
 Object.assign(dictZh.uiChatView, { memStatusRemembered:'已记住', memStatusArchived:'已归档', memStatusDeleted:'已删除', memStatusArchivedNotice:'记忆已归档', memStatusDeletedNotice:'记忆已删除' });
 
 
-// tool-common.jsx 内容数据（tsSkillsData / tsCategories）的三语 overlay：
+// tool-common.jsx 内容数据（tsSkillsData / tsCategories）的中英文 overlay：
 // ToolStoreView 渲染处按 localizeTool() 同款模式消费（localizeSkill / localizeCategory），数据文件本身不改。
 Object.assign(dictZh.uiToolStore, { storeData: {
   skills: {
@@ -965,7 +965,7 @@ s5: { title:'视觉设计', subtitle:'设计系统直出网页 / banner / 海报
 } });
 
 
-// 工具商店列表视图双维度分组(按类型/按业务 + 分组筛选)词条,三语齐全。
+// 工具商店列表视图双维度分组（按类型/按业务 + 分组筛选）词条，中英文齐全。
 Object.assign(dictZh.uiToolStore, {
   groupByType:'按类型', groupByBusiness:'按业务',
   typeGroups:{ bundle:'插件包', mcp:'MCP', skill:'Skill', cli:'CLI 集成', api:'API & Webhook', upcoming:'即将上线' },

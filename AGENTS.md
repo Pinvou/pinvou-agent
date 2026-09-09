@@ -1,4 +1,4 @@
-# Pinvou Agent Project Conventions
+# 鲜小助 Project Conventions
 
 ## Core constraints
 
@@ -16,7 +16,7 @@ The contribution workflow — syncing `origin/main`, conflict-resolution expecta
 
 ### 2. CodeWhale and fork boundaries
 
-CodeWhale provides the foundation for model calls, streaming output, tool loops, Sessions, Skills, Commands, MCP, Hooks, and Compaction. Pinvou Agent does not reimplement these capabilities.
+CodeWhale provides the foundation for model calls, streaming output, tool loops, Sessions, Skills, Commands, MCP, Hooks, and Compaction. 鲜小助 does not reimplement these capabilities.
 
 Place extensions according to these boundaries:
 
@@ -35,7 +35,7 @@ Place extensions according to these boundaries:
 
 ### 3. Cross-platform architecture boundaries
 
-Pinvou Agent is organized by business capability first and platform adaptation second:
+鲜小助 is organized by business capability first and platform adaptation second:
 
 | Change type | Location |
 |---|---|
@@ -64,7 +64,7 @@ Pinvou Agent is organized by business capability first and platform adaptation s
 - Community features must work completely without private services, internal addresses, or enterprise-only data. Integrate enterprise capabilities through generic extension interfaces.
 - New features must form a complete, usable workflow and handle key errors, insufficient permissions, and unsupported platforms. Placeholder code or fake data is not a completed implementation.
 - Preserve compatibility with existing configuration, data, and public interfaces. Confirm unavoidable breaking changes first and provide a migration path and regression tests.
-- Application UI copy must reuse `pinvou3-app/src/shared/i18n.js` and provide Simplified Chinese, English, and Japanese. Do not introduce single-language copy in components or depend on fallback from another language.
+- Application UI copy must reuse `pinvou3-app/src/shared/i18n.js` and provide Simplified Chinese and English. Do not introduce single-language copy in components or depend on fallback from another language.
 - Use secure defaults and clearly inform users when changes involve network access, uploads, external commands, or new dependencies. Update tests and documentation with behavior changes.
 - Never put accounts, passwords, keys, tokens, cookies, customer or private data, or internal addresses in code, commits, pull requests, examples, or logs. Report suspected disclosures privately according to `SECURITY.md`.
 

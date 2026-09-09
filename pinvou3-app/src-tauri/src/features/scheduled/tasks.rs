@@ -374,7 +374,7 @@ impl ScheduledTaskState {
         // rejected outright (same style as the mode check).
         let requested_kind = canonical_scheduled_kind(input.kind.clone())?;
         // Memory organize tasks follow the same rule as the settings-page manual entry:
-        // refuse creation while memory is disabled (off by default, force-off for en-ja),
+        // refuse creation while memory is disabled (off by default, force-off for English),
         // or the task is created fine but every run logs a "memory disabled" failure.
         if requested_kind.as_deref() == Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE)
             && !crate::features::memory::memory_enabled()
@@ -4489,7 +4489,7 @@ mod tests {
     }
 
     // Memory organize tasks follow the same rule as the settings-page manual entry:
-    // refuse creation while memory is disabled (off by default, force-off for en-ja),
+    // refuse creation while memory is disabled (off by default, force-off for English),
     // or the task is created fine but every run logs a "memory disabled" failure.
     #[tokio::test]
     async fn memory_organize_task_creation_requires_memory_enabled() {

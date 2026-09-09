@@ -43,17 +43,8 @@ test('成功装载:去重在途并发,词典一次装箱', async () => {
   assert.equal(await ensureLanguage('en'), true);
 });
 
-test('成功装载:ja chunk 装箱(经 en 兜底 spread)', async () => {
-  const { ensureLanguage, dict } = await freshGate();
-  assert.ok(!dict.ja);
-  const ok = await ensureLanguage('ja');
-  assert.equal(ok, true); // Node 下 ja chunk 可解析,验证成功路径装箱
-  assert.ok(dict.ja);
-  assert.equal(dict.ja.newChat, '新しいチャット');
-});
-
 // 失败/重试分支需要 loader 可控失败,而 LAZY_DICT_LOADERS 冻结且键固定为
-// en/ja。子进程里用 --import 钩子拦截动态 import 不值得;改为直接源码级
+// en。子进程里用 --import 钩子拦截动态 import 不值得;改为直接源码级
 // 驱动:读取 i18n.js 源码,把 en loader 替换为受控桩后在 data: URL 里实例化,
 // 验证 catch(false)/finally(清挂起)/重试三轮契约。
 test('失败分支:源码注入桩 loader 验证 false + 清挂起 + 可重试', async () => {
@@ -104,52 +95,50 @@ test('失败分支:源码注入桩 loader 验证 false + 清挂起 + 可重试',
   delete globalThis.__stubEn;
 });
 
-test('en/ja 惰性 chunk 在浏览器口径下不进首屏(静态扫描 i18n.js 不 import en/ja)', async () => {
+test('en 惰性 chunk 在浏览器口径下不进首屏(静态扫描 i18n.js 不 import en)', async () => {
   const fs = await import('node:fs');
   const source = fs.readFileSync(new URL('../src/shared/i18n.js', import.meta.url), 'utf8');
   // 核心模块只允许动态 import 语言文件;出现静态 import 即拆分失效。
-  const staticImport = source.match(/^import\s+[^'"]*['"][^'"]*i18n\/(en|ja)\.js['"]/m);
-  assert.equal(staticImport, null, 'i18n.js 不得静态 import en/ja(会钉进共享 chunk)');
+  const staticImport = source.match(/^import\s+[^'"]*['"][^'"]*i18n\/en\.js['"]/m);
+  assert.equal(staticImport, null, 'i18n.js 不得静态 import en(会钉进共享 chunk)');
 });
 
-// 语言切换「最新选择胜出」门的乱序回归:ja chunk 静态依赖 en chunk,先选 ja
-// 再选 en 时较新的 en 请求可能先完成(共享依赖先行就位),慢的旧 ja continuation
-// 若无守卫会覆盖状态/持久化/广播,回退到用户未选择的语言(同步时代是最后
-// 选择胜出,惰性化后必须保持该语义)。
+// 语言切换「最新选择胜出」门的乱序回归:较新的请求可能先完成，慢的旧请求
+// 若无守卫会覆盖状态/持久化/广播。惰性化后仍须保持最后选择胜出的语义。
 test('切换乱序:后发起的较新选择胜出,慢的旧请求不得覆盖', async () => {
   const { createLatestLanguageGate } = await freshGate();
   const applied = [];
-  // 受控装载时钟:en 快(5ms)、ja 慢(30ms),模拟真实依赖顺序。
+  // 受控装载时钟:en 快(5ms)、slow 慢(30ms)。
   const ensure = (lang) => new Promise((resolve) => {
-    setTimeout(() => resolve(true), lang === 'ja' ? 30 : 5);
+    setTimeout(() => resolve(true), lang === 'slow' ? 30 : 5);
   });
   const switchTo = createLatestLanguageGate(ensure);
-  switchTo('ja', () => applied.push('ja'));
+  switchTo('slow', () => applied.push('slow'));
   switchTo('en', () => applied.push('en'));
   await new Promise((resolve) => { setTimeout(resolve, 100); });
-  assert.deepEqual(applied, ['en'], '只应落地较新的 en 选择,慢的旧 ja continuation 必须被拦下');
+  assert.deepEqual(applied, ['en'], '只应落地较新的 en 选择,慢的旧 continuation 必须被拦下');
 });
 
 test('切换门:成功落地恰一次;装载失败不落地且可重试', async () => {
   const { createLatestLanguageGate } = await freshGate();
   const applied = [];
-  let jaAttempts = 0;
+  let slowAttempts = 0;
   const ensure = (lang) => {
-    if (lang !== 'ja') return Promise.resolve(true);
-    jaAttempts += 1;
-    return jaAttempts === 1 ? Promise.resolve(false) : Promise.resolve(true);
+    if (lang !== 'slow') return Promise.resolve(true);
+    slowAttempts += 1;
+    return slowAttempts === 1 ? Promise.resolve(false) : Promise.resolve(true);
   };
   const switchTo = createLatestLanguageGate(ensure);
-  switchTo('ja', () => applied.push('ja-fail'));
+  switchTo('slow', () => applied.push('slow-fail'));
   await new Promise((resolve) => { setTimeout(resolve, 0); });
   assert.deepEqual(applied, [], '装载失败(false)不得落地');
   // 失败后重试(无更新选择在途)应正常落地;顺序发起的选择各自落地。
-  switchTo('ja', () => applied.push('ja-retry'));
+  switchTo('slow', () => applied.push('slow-retry'));
   await new Promise((resolve) => { setTimeout(resolve, 0); });
-  assert.deepEqual(applied, ['ja-retry'], '失败清挂起后重试应落地');
+  assert.deepEqual(applied, ['slow-retry'], '失败清挂起后重试应落地');
   switchTo('zh', () => applied.push('zh'));
   await new Promise((resolve) => { setTimeout(resolve, 0); });
-  assert.deepEqual(applied, ['ja-retry', 'zh'], '顺序发起的选择按发起顺序落地');
+  assert.deepEqual(applied, ['slow-retry', 'zh'], '顺序发起的选择按发起顺序落地');
 });
 
 test('切换门:ensure 抛异常不得炸出未处理 rejection', async () => {

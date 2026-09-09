@@ -118,7 +118,7 @@
   // 抹平裸 <script>/<style>/<iframe> 等危险标签:它们一旦被 marked 透传成真 HTML,
   // 浏览器按 HTML 解析时 script 元素会"吞掉"后续兄弟节点直到 </script>(或文档末尾),
   // 然后 DOMPurify 把整段 script 连同被卷进去的内容一起剥掉。后果:LLM 正文里裸写
-  // "在同一个 <script> 标签内……"会把后续表格/文字整段吞掉(历史上品悟报告表格踩过)。
+  // "在同一个 <script> 标签内……"会把后续表格/文字整段吞掉(历史上鲜小助报告表格踩过)。
   //
   // 关键:在 marked.parse 【之后】做替换,而不是之前。原因:marked 给代码块/inline code 的
   // 输出本身就已经把 < 转义成 &lt;(不会有真 <script>),只有用户在正文里裸写 HTML 时才会
@@ -533,105 +533,6 @@
       echoOtherPrefix: "(Other) ",
       newChatFallbackTitle: "New chat",
     },
-    ja: {
-      newChatFailed: "⚠️ 新規チャットの作成に失敗: ", loadChatFailed: "⚠️ チャットの読み込みに失敗: ", deleteFailed: "⚠️ 削除に失敗: ",
-      personaUnequipped: "🎴 エキスパートカードを外しました: ",
-      reviewFixHeader: "下のレビュー意見に従い、**該当するセクションのみを修正してください。全文の書き直しはしないでください**：",
-      reviewVerifyHeader: "以下の項目は外部事実に関わります。**必ず検証してから修正し、根拠を示してください（記憶に頼った編集はしないでください）**：",
-      reviewAdoptHeader: "以下の事項は確定しました。この通り成果物を更新してください：",
-      reviewAskHeader: "以下の未確定項目については、推測せず request_user_input で正式に私に質問してください：",
-      reviewFillHeader: "成果物には以下の観点が不足しています。補足してください（既存部分は保持し、追記のみで書き換えないでください）：",
-      reviewFillFooter: "（外部事実に関わる部分は、検証してから記述し、根拠を示してください。記憶からの創作はしないでください。）",
-      planStuckReplanPrompt: "todo_write ツールで計画の全ステップを出力してください。書き込み系ツールを直接実行しないでください。",
-      planStuckGoPrompt: "上で議論した計画に従ってタスクを続行してください。ファイルの書き込みやコマンドの実行を直接行い、計画の再議論はしないでください。",
-      planHistorical: "📜 過去のプラン", planSuperseded: "📜 新しいプランで上書きされました",
-      attachStillParsing: "⚠️ 添付ファイルを解析中です。少し待ってから送信してください",
-      imageUnsupported: "現在のモデルは画像に対応していません。画像対応モデルに切り替えるか、モデル設定でビジョンモデルを構成してください。",
-      imageUnknown: "現在のモデルの画像入力能力は不明です。画像に対応している場合は、モデル設定で画像入力能力を「画像対応」に設定してください。ビジョンモデルを構成することもできます。",
-      sessionModelStale: id => `この会話で選択したモデルの設定は無効になりました（見つからない設定: ${id}）。会話でモデルを選び直してください。`,
-      turnAlreadyInProgress: "⚠️ このチャットでは別のターンを処理中です。重複した送信は実行されませんでした。",
-      steerDropped: "キューしたメッセージが未達（ターン中断）のため取り消しました",
-      steerFailed: "割り込みに失敗しました（セッション無効またはエンジン未起動）。内容は入力欄に復元しました",
-      interruptQueuedFailed: "割り込み送信に失敗しました。メッセージはキューに復元しました",
-      interruptBusy: "別の割り込みが進行中のため実行できません。メッセージはキューに残ります。しばらくしてから再試行してください",
-      compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactAuto: "（自動）",
-      compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
-      compactInactive: "セッション Engine はまだ起動していません。メッセージを送信してからコンテキストを圧縮してください",
-      gpuUnavailable: "GPU 情報を取得できません",
-      cpuUnavailable: "CPU 情報を取得できません",
-      superOn: "⚠️ スーパー権限が有効になりました", superOff: "スーパー権限が無効になりました",
-      approved: "✅ 承認済み", echoGo: "✅ これでいく",
-      acceptPlanFailed: "⚠️ accept_plan に失敗: ",
-      planDiscarded: "🚪 プランを破棄", discardPlanFailed: "⚠️ discard_plan に失敗: ", exitPlanFailed: "⚠️ Plan の終了に失敗: ", switchModeFailed: "⚠️ モード切替に失敗: ", planContinueFailed: "⚠️ 継続指示の送信に失敗: ",
-      replanRequested: "📋 AI にプランを出し直させています…",
-      openFailed: "⚠️ 開けませんでした: ", pasteImageFailed: "⚠️ 画像の貼り付けに失敗: ",
-      filePickUnavailable: "⚠️ ファイル選択を利用できません", filePickFailed: "⚠️ ファイル選択に失敗: ",
-      equipNoSession: "⚠️ エキスパートを装備する前にチャットを開くか新規作成してください", equipFailed: "⚠️ 装備に失敗: ",
-      shellOutputOmitted: kind => `[途中の${kind === "stderr" ? "標準エラー" : "標準出力"}を省略]`, shellUnknownExit: "不明",
-      shellTaskFinished: code => `[タスク終了、終了コード: ${code}]`,
-      skillContentHidden: "（スキルを読み込みました。内容は非表示です）",
-      desktopDoneSyncPending: "⚠️ 会話はデスクトップ側で完了しましたが、権威レコードはまだ同期されていません。接続回復後に再試行できます。",
-      sessionSyncingTurn: "このチャットは別端末で完了したターンを同期中です。しばらくしてから再試行してください",
-      targetSessionMissing: "対象のチャットが存在しません",
-      replyContentEmpty: "返信内容が空です",
-      targetSessionSyncing: "対象のチャットは別端末で完了したターンをまだ同期中です",
-      summonNeedsSession: "先に会話を始めてから 鲜小助 レビューを召喚してください。",
-      runHasNoSession: "この実行記録には開けるセッションがありません",
-      sessionDataInvalid: "セッションデータが無効です",
-      voicePermissionDenied: "マイクへのアクセスが拒否されました。システム設定でこのアプリのマイクアクセスを許可してから再試行してください。",
-      voiceNoDevice: "利用可能なマイクが見つかりません。録音デバイスが有効か、他で使用されていないか確認してください。",
-      voiceConstraintUnsupported: "録音を開始できません：現在のマイクまたは WebView が必要な録音設定に対応していません。再試行し、それでも失敗する場合はマイク設定やシステムコンポーネントを確認・更新してください。",
-      voiceEmptyResult: "音声を認識できませんでした。マイクに近づいて再試行してください。",
-      voiceContextMismatch: "認識は完了しましたが、セッションが切り替わったため結果は自動入力されませんでした。",
-      voiceTimeout: "音声入力がタイムアウトしました。再試行してください。",
-      voiceRecognitionFailed: "音声認識に失敗しました。しばらくしてから再試行してください。",
-      voiceInputFailed: "音声入力に失敗しました。マイクを確認して再試行してください。",
-      voiceCancelled: "音声入力をキャンセルしました",
-      voiceDeviceTimeout: "マイク検出がタイムアウトし、録音デバイスが見つかりませんでした。デバイスの接続とシステムのマイク設定を確認して再試行してください。",
-      voiceTranscribing: "音声を認識中…",
-      voicePostprocessing: "音声テキストを整えています…",
-      voiceTaskPostprocessing: "音声タスクを整理しています…",
-      voiceStructuredPostprocessing: "リストに整理中…",
-      voiceEditPostprocessing: "現在の入力を編集しています…",
-      voiceRecordingTooShort: "録音時間が短すぎます。再試行してください。",
-      voiceRecordingTooLong: "録音が長すぎます。短くして再試行してください。",
-      voiceAudioInvalid: "録音データが無効です。もう一度録音してください。",
-      voiceMicUnavailable: "マイクは他のアプリで使用中です。使用中のアプリを終了するか、別のマイクを選んでから再試行してください。",
-      voiceWrittenBack: "音声を入力ボックスに書き込みました",
-      voiceTaskSent: "音声タスクを送信しました",
-      voiceEditPreviewReady: "音声編集を確認してください",
-      voiceEditNoChange: "音声編集による変更はありません。原文を保持しました",
-      voiceEditPostprocessFailed: "音声編集の処理に失敗しました。入力は変更されていません。再試行してください。",
-      voiceEditPostprocessDisabled: "スマート整理がオフのため音声編集は利用できません。入力は変更されていません。設定でスマート整理を有効にすると利用できます。",
-      voiceCheckingDevice: "マイクデバイスを確認中…",
-      voiceRequestingPermission: "マイクの権限をリクエスト中…",
-      voiceWebviewNoMic: "この WebView はマイク入力に対応していません。",
-      voiceWebviewNoRecording: "この WebView は音声録音に対応していません。",
-      voiceNoDeviceConnect: "利用可能なマイクが見つかりません。録音デバイスを接続または有効にして再試行してください。",
-      voiceRecording: "録音中です。もう一度タップすると終了します",
-      voicePermissionDeniedRetry: "マイクの権限が拒否されています。もう一度音声入力をタップし、許可を選択してください。それでも失敗する場合はシステムのマイク設定を確認してください。",
-      scheduledDraftInvalid: "スケジュールタスクの下書きに名前・タスク説明・時間ルールのいずれかが不足しています",
-      scheduledCreateFailed: "スケジュールタスクの作成に失敗：",
-      scheduledTaskFallbackName: "スケジュールタスク",
-      scheduledActionBusy: "別のスケジュールタスク操作がまだ実行中です",
-      scheduledCreateNoId: "スケジュールタスクの作成に失敗：バックエンドがタスク ID を返しませんでした",
-      scheduledChatPrefill: "スケジュールタスクを作成したい：",
-      pickFolderTitle: "作業ディレクトリを選択",
-      fileMediaFilterName: "画像と動画",
-      kbPickFolderTitle: "知識ベースにインポートするフォルダーを選択",
-      memoryWriteFailed: "メモリの書き込みに失敗: ", memoryIgnoreFailed: "メモリの無視に失敗: ", memoryNeverFailed: "「今後表示しない」の設定に失敗: ",
-      attachNeedSession: "⚠️ 添付ファイルを追加する前に新しいチャットを開始してください", attachEmptyFile: "空のファイルは追加できません", attachAddCancelled: "添付ファイルの追加はキャンセルされました", attachInvalidResult: "添付ファイルの追加で有効な結果が返されませんでした", deviceUploadFailed: "⚠️ アップロードに失敗: ",
-      planTicketInvalid: "⚠️ プランの資格情報が無効になりました。プランを再生成してから実行してください。",
-      remoteTurnSyncing: "⚠️ このセッションは別の端末で完了したターンを同期中です。しばらくしてから再試行してください。",
-      mountCollectionFailed: "ナレッジセットのマウントに失敗: ",
-      metricNotApplicable: "対象外", metricUnavailable: "未提供",
-      targetKindRemote: "リモートモデル", targetKindLocal: "ローカルモデル", targetKindInvalid: "設定エラー",
-      depsInstallManual: "不足している項目はワンクリックでインストールできません。各不足項目の上にある説明に従ってインストールしてから、再検出してください。",
-      remoteCmdNotAllowed: cmd => "リモートコントロールではこのコマンドを呼び出せません: " + cmd,
-      remoteDialogDesktop: "リモートコントロールではデスクトップ側のファイル選択ダイアログを使用します",
-      echoOtherPrefix: "(その他) ",
-      newChatFallbackTitle: "新しいチャット",
-    },
     zh: {
       newChatFailed: "⚠️ 新建对话失败: ", loadChatFailed: "⚠️ 加载对话失败: ", deleteFailed: "⚠️ 删除失败: ",
       personaUnequipped: "🎴 已卸下专家卡牌: ",
@@ -734,19 +635,19 @@
   };
   function bt(key) {
     const lang = state.settings && state.settings.language;
-    const m = lang === "en" ? BT_TABLE.en : lang === "ja" ? BT_TABLE.ja : BT_TABLE.zh;
+    const m = lang === "en" ? BT_TABLE.en : BT_TABLE.zh;
     return m[key] === undefined ? BT_TABLE.zh[key] : m[key];
   }
   // Transfer badges are restored from message text, but messages persist in the
   // UI language used at send time; replay must match all three variants instead
   // of only the current language. Used for the review/plan wording keys.
   function textMatchesBtKey(text, key) {
-    return text.includes(BT_TABLE.zh[key]) || text.includes(BT_TABLE.en[key]) || text.includes(BT_TABLE.ja[key]);
+    return text.includes(BT_TABLE.zh[key]) || text.includes(BT_TABLE.en[key]);
   }
-  // 默认会话标题哨兵:三语兜底标题都视为占位(自动改名/显示映射的依据),
+  // 默认会话标题哨兵:中英文兜底标题都视为占位(自动改名/显示映射的依据),
   // 与 web 桥和 main.jsx 的同款判断保持一致。
   function isDefaultChatTitle(title) {
-    return [BT_TABLE.zh.newChatFallbackTitle, BT_TABLE.en.newChatFallbackTitle, BT_TABLE.ja.newChatFallbackTitle]
+    return [BT_TABLE.zh.newChatFallbackTitle, BT_TABLE.en.newChatFallbackTitle]
       .includes(title);
   }
 
@@ -1245,7 +1146,7 @@
   async function persistMessagesFor(sid) {
     if (!sid) return;
     if (isScheduledRunSession(sid)) return;
-    // 代码会话（品悟原生/ACP）不在 list_sessions 里：它不是桥接聊天会话——
+    // 代码会话（鲜小助原生/ACP）不在 list_sessions 里：它不是桥接聊天会话——
     // 消息由后端 persist_chat_engine_state 持久化、标题由后端自动命名管理。
     // 跳过产物索引与自动重命名：meta 缺失时 msgs 会错读 active 聊天 state 的
     // 首条用户消息，把别的会话文本命名到代码会话上。正常聊天会话经

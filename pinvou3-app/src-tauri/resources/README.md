@@ -16,7 +16,7 @@ resources/
    │  └─ x86_64/bundle/connectors/   # x64 连接器二进制与 connectors.lock.json
    ├─ macos/
    │  ├─ PrivacyInfo.xcprivacy       # 隐私清单
-   │  ├─ infoplist/                  # en/ja/zh-Hans .lproj 的 InfoPlist.strings
+   │  ├─ infoplist/                  # en/zh-Hans .lproj 的 InfoPlist.strings
    │  ├─ codex-bridge/               # Codex ACP Bridge 运行时生成目录
    │  ├─ aarch64/bundle/connectors/  # arm64 连接器二进制与 connectors.lock.json
    │  └─ x86_64/bundle/connectors/   # x64 连接器二进制与 connectors.lock.json

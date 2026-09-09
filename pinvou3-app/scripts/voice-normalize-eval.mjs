@@ -74,10 +74,10 @@ function extractVoiceProductionLogic() {
   }
   const slice = source.slice(start, end);
   // Mirrors the drift guard in tests/voice_input_error_logic.test.js: the extracted production slice must still
-  // contain the boundary-aware Pinvou correction rule; if the production rule is renamed or removed, eval fails
+  // contain the boundary-aware brand correction rule; if the production rule is renamed or removed, eval fails
   // immediately instead of continuing to measure the stale behavior.
   if (!/产品名con(?![a-zA-Z])/.test(slice)) {
-    throw new Error('voice.js slice is missing the boundary-aware Pinvou correction rule (产品名con(?![a-zA-Z])); the production rule may have changed — sync eval first');
+    throw new Error('voice.js slice is missing the boundary-aware brand correction rule (产品名con(?![a-zA-Z])); the production rule may have changed — sync eval first');
   }
   const context = { performance: { now: () => 0 }, Date };
   vm.createContext(context);
@@ -450,7 +450,7 @@ function resolveEvalModelConfig() {
 async function callOpenAiCompatible(correctedText, rawText, mode, production, llmConfig) {
   const config = resolveEvalModelConfig();
   if (!config.baseUrl || !config.apiKey || !config.model) {
-    throw new Error('missing PINVOU_VOICE_EVAL_BASE_URL / PINVOU_VOICE_EVAL_API_KEY / PINVOU_VOICE_EVAL_MODEL and no usable Pinvou active model credential');
+    throw new Error('missing PINVOU_VOICE_EVAL_BASE_URL / PINVOU_VOICE_EVAL_API_KEY / PINVOU_VOICE_EVAL_MODEL and no usable 鲜小助 active model credential');
   }
   const normalizedMode = production.normalizeVoiceMode(mode);
   const started = performance.now();

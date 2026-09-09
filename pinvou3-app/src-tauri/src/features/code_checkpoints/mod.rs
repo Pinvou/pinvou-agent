@@ -2,7 +2,7 @@
 //!
 //! 移植自 fork 分支 `qiuYliangM/feat-full-code-mode` 提交 `32b5fdf9e` 的
 //! `code_sessions/checkpoints.rs`（设计文档 `docs/code-mode-改动随对话回退-设计.md`
-//! §3），砍掉 ACP 钩子、仅保留品悟原生 code 车道。与 feat 分支的差异：
+//! §3），砍掉 ACP 钩子、仅保留鲜小助原生 code 车道。与 feat 分支的差异：
 //! - 模块落位改为 `features/code_checkpoints`（main 无 `code_sessions` 拆分）；
 //! - turn 计数口径修正：feat 分支按 `role == "user"` 计数会把 tool_result 计入，
 //!   改用 [`turns`] 中与 fork `8cc61b609` `is_user_turn_prompt` 同口径的谓词。

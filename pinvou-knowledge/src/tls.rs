@@ -59,7 +59,7 @@ fn generate_ca(certificate_path: &Path, key_path: &Path) -> Result<(), String> {
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     params
         .distinguished_name
-        .push(DnType::CommonName, "PINVOU Shared Knowledge CA");
+        .push(DnType::CommonName, "鲜小助 Shared Knowledge CA");
     params.key_usages = vec![
         KeyUsagePurpose::DigitalSignature,
         KeyUsagePurpose::KeyCertSign,
@@ -102,7 +102,7 @@ fn generate_server_certificate(
     let mut params = CertificateParams::new(names).map_err(|error| error.to_string())?;
     params
         .distinguished_name
-        .push(DnType::CommonName, "PINVOU Shared Knowledge");
+        .push(DnType::CommonName, "鲜小助 Shared Knowledge");
     params.use_authority_key_identifier_extension = true;
     params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];

@@ -781,7 +781,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   }}
                   // 后端展示说明只接受单行（控制字符校验拒换行），Enter 在此
                   // 只会换来一次必败的保存——直接拦截，避免用户按回车后困惑。
-                  // IME 合成中的 Enter 是确认候选词（中/日文输入法），不得拦截。
+                  // IME 合成中的 Enter 是确认候选词，不得拦截。
                   onKeyDown={e => { if (e.key === 'Enter' && !isImeComposing(e)) e.preventDefault(); }}
                   className={`${inputCls} resize-none`}
                 />
@@ -877,7 +877,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const storeCopy = t.uiToolStore;
       const detailCopy = t.uiToolDetails;
       // 数据文件(tool-common.jsx)里技能/分类/精选的中文 label/title/subtitle/desc:
-      // 按 localizeTool() 同款 overlay 模式,从 uiToolStore 词条做三语覆盖,数据文件本身不改。
+      // 按 localizeTool() 同款 overlay 模式，从 uiToolStore 词条做中英文覆盖，数据文件本身不改。
       const storeData = storeCopy.storeData || {};
       const localizeSkill = (s) => {
         const ov = (storeData.skills || {})[s.backendId || s.id];
@@ -1271,7 +1271,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         // 功能事实（刀9）：版本号与配置弹窗字段定义切后端 bundle 源——版本取
         // lock 表钉住值（飞书从腐化的 v1.0.56 修正为 1.0.65）；tmeet（npm 自报）/
         // ima（无版本概念）后端为空时回退 overlay。desc/category 维持 overlay：
-        // desc 已由 uiToolDetails 三语本地化，category 的 manifest 中文词汇与前端
+        // desc 已由 uiToolDetails 中英文本地化，category 的 manifest 中文词汇与前端
         // 分组 id 不兼容（统一词汇属后续清理）。
         const bf = bs && bs.bundle ? bs.bundle : null;
         // 可导出性跟随后端（list_marketplace_tools.exportable）：预置目录包 false
@@ -1312,7 +1312,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       });
       // 自定义 MCP（不在内置 tsToolsData 里的后端条目）动态合成卡片：安装时显示、
       // 卸载后从 list_marketplace_tools 消失，不依赖前端硬编码。展示文案走 i18n
-      // overlay（localizeTool，按 backendId 三语覆盖），后端 name/desc 兜底。
+      // overlay（localizeTool，按 backendId 中英文覆盖），后端 name/desc 兜底。
       // userUploaded 以后端 source 为准：仅 upload（用户上传包）卸载进回收站；
       // preset（市场预置/手写自定义 MCP 迁移登记）卸载保留目录、不进回收站；
       // source 缺失（旧后端）取 false——宁可少提示「移入回收站」，不说谎。
@@ -1337,7 +1337,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           return localizeTool(base, t);
         });
       const tools = [...builtinTools, ...customMcpTools];
-      // 按 backendId 取已 localize 的工具卡;兜底分支也走 localizeTool,避免 en/ja 下漏出中文原文。
+      // 按 backendId 取已 localize 的工具卡；兜底分支也走 localizeTool，避免英文界面漏出中文原文。
       const findLocalizedTool = (backendId) =>
         tools.find(x => x.backendId === backendId) || localizeTool(tsToolsData.find(x => x.backendId === backendId), t);
       const isToolVisibleOnPlatform = (tool) => (

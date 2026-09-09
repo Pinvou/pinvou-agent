@@ -13,7 +13,7 @@ gh api repos/Pinvou/pinvou-agent/dependency-graph/sbom \
 ```
 
 The same dependency inventory is available from the repository's
-[Dependency graph](https://github.com/Pinvou/pinvou-agent/network/dependencies).
+[Dependency graph](https://github.com/mlmr-coder/fresh-agent/network/dependencies).
 
 The generated document covers dependencies detected from committed manifests
 and lockfiles. Directly redistributed scripts, Skills, connectors, and assets

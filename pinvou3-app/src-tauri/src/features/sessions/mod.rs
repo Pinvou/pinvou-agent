@@ -131,7 +131,7 @@ pub struct SessionStore {
     /// 后注入;None = 无代码会话项目绑定,所有会话的执行根都是会话私有目录。
     /// 账本根(附件/审计/产物/远程授权)不受其影响,恒为会话私有目录。
     pub(crate) execution_root_resolver: Arc<RwLock<Option<ExecutionRootResolver>>>,
-    /// 品悟原生 code 会话判定（ACP 会话恒为 plain，见 codex_acp store）。
+    /// 鲜小助原生 code 会话判定（ACP 会话恒为 plain，见 codex_acp store）。
     /// 与 Engine bridge / 远程端共用同一份 `SessionAgentStore` 闭包，由 app 组合根
     /// (lib.rs) 注入；None = 无 code 会话判定（测试/启动早期），全部按 plain 语义。
     code_session_predicate: Arc<RwLock<Option<CodeSessionPredicate>>>,
@@ -178,7 +178,7 @@ pub struct SessionStore {
     session_deleted_hooks: Arc<RwLock<Vec<SessionDeletedHook>>>,
 }
 
-/// 原生代码会话(品悟 Engine)的执行根解析器:绑定了项目目录的原生代码会话
+/// 原生代码会话(鲜小助 Engine)的执行根解析器:绑定了项目目录的原生代码会话
 /// 返回 `Some(项目目录)`;其余会话返回 `None`,调用方回退到会话私有目录。
 ///
 /// 用闭包而非直接依赖 `codex_acp::SessionAgentStore`:`sessions` 与 `codex_acp`
@@ -186,10 +186,10 @@ pub struct SessionStore {
 /// 持有的同一份 store(clone 共享 Arc,运行时读到最新绑定)。
 pub type ExecutionRootResolver = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
 
-/// 品悟原生 code 会话判定闭包：与 `ExecutionRootResolver` 同样的注入理由
+/// 鲜小助原生 code 会话判定闭包：与 `ExecutionRootResolver` 同样的注入理由
 /// （避免 sessions ↔ codex_acp 成环），由 lib.rs 共享同一份 `SessionAgentStore`。
 /// ACP 会话在其 store 里恒为 plain（`bind_*` 时显式重置），故本判定命中即
-/// "品悟原生 code 会话"，不会误伤 ACP 会话自己的权限模式。
+/// "鲜小助原生 code 会话"，不会误伤 ACP 会话自己的权限模式。
 pub type CodeSessionPredicate = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Session-purged hook: fired by [`SessionStore::delete`] and deep deletion

@@ -1,6 +1,6 @@
 //! 模型服务端点（URL / 协议）层面的共用判定与直连：连接测试
 //! （app/commands/settings.rs）与运行状态探测（features/monitor）都直连
-//! `{base}/models`，鉴权方式与探测地址必须同一口径；品悟（features/review）与
+//! `{base}/models`，鉴权方式与探测地址必须同一口径；鲜小助（features/review）与
 //! 记忆回顾（features/memory）选 Anthropic preset 时走 Messages 原生协议，
 //! 鉴权与地址口径与上述探测一致。
 

@@ -37,7 +37,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## Pinvou3 本地修改登记
+## 鲜小助本地修改登记
 
 以下修改为 pinvou3 在上游 skill 基础上的本地分叉。**本地修改在下次上游 sync 时需重放。**
 
@@ -64,18 +64,18 @@ SOFTWARE.
 - **上游同步(2026-07-25)(失效)**:todo 同步 `9d2aeaf`、smartsheet 同步
   `bae1cc3e`——两者的内容已包含在 1.1.0 重写版中。
 - **真实性审查(2026-08-16)(吸收)**:0.1.9 二进制命令面核实与 frontmatter
-  防误用前缀(「何时用:」开头、≤280 字符)作为品悟常设口径保留,本轮已在
+  防误用前缀(「何时用:」开头、≤280 字符)作为鲜小助常设口径保留,本轮已在
   全部 14 个技能上重放;`File(action="read")` 引擎工具名口径、smartsheet
   `records.values` 双层嵌套 JSON 上游 bug 修正,在 1.1.0 新文本上复核重放。
 
-### 本轮(1.1.0)品悟适配清单
+### 本轮(1.1.0)鲜小助适配清单
 
 1. **frontmatter description 防误用前缀**:14 个 SKILL.md 的 description 改写为
    「何时用:仅当用户明确指向企业微信…时使用;泛指…默认走本地工具」开头,全部
    ≤280 字符(上游 disk/doc/smartsheet 三个超限 description 压缩改写)。
-2. **安装教学改品悟代管口径**:wecomcli-shared Step 1 的
-   `npm install -g @wecom/cli` 自更新指引(会绕过品悟 lock 钉扎触发哈希不匹配
-   重装循环)改写为「wecom-cli 由品悟代管、随应用更新;版本不足时在工具商店
+2. **安装教学改鲜小助代管口径**:wecomcli-shared Step 1 的
+   `npm install -g @wecom/cli` 自更新指引(会绕过鲜小助 lock 钉扎触发哈希不匹配
+   重装循环)改写为「wecom-cli 由鲜小助代管、随应用更新;版本不足时在工具商店
    企业微信卡片重新点连接触发安装/升级」。
 3. **引擎工具名口径**:上游「先 `read` 对应 references 文件」「用 `write` 工具
    写入」「用 Write 工具」「`grep 工具` 提取」等裸引擎工具名统一改为
@@ -96,7 +96,7 @@ SOFTWARE.
 ### 路由口径统一与文档缺陷修复(2026-08-27)
 
 wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(在上文
-「本轮品悟适配清单」第 1 条 description 口径基础上继续演进):
+「本轮鲜小助适配清单」第 1 条 description 口径基础上继续演进):
 
 1. **泛指做表格口径统一为先消歧**:sheet 与 smartsheet 的 description 原本
    对「企微语境+泛指做表格」给出相反缺省(前者先消歧、后者默认本技能)。
@@ -266,7 +266,7 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
 ### 各技能重放基线
 
 14 个技能全部 = 上游 `cd0480e0`(v1.1.0 发布提交,npm 1.1.0 同源),技能目录与
-上游同名同构;本地分叉为上文「本轮品悟适配清单」六类,审计登记「路由口径
+上游同名同构;本地分叉为上文「本轮鲜小助适配清单」六类,审计登记「路由口径
 统一与文档缺陷修复(2026-08-27)」(sheet/smartsheet/smartpage 三技能)、
 「文档缺陷修复(2026-08-27,calendar/meeting/email/message/media 五技能)」
 及「文档缺陷修复(2026-09-05,全量第二轮:十个技能)」。

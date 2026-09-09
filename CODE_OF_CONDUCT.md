@@ -30,8 +30,9 @@ spaces where someone represents the 鲜小助 community.
 ## Reporting and enforcement
 
 For ordinary moderation concerns, use GitHub's reporting tools and avoid
-escalating the conflict in public. For a confidential report, email
-`security@pinvou.com` with `[Code of Conduct]` in the subject.
+escalating the conflict in public. For a confidential report, use the
+repository's private vulnerability reporting channel described in
+[SECURITY.md](SECURITY.md).
 
 Maintainers may edit or remove content, lock discussions, reject contributions,
 or temporarily or permanently restrict participation when behavior violates

@@ -1,4 +1,4 @@
-// 连接器技能包口径契约：把历次审查（2026-08-16 六轮）确认的品悟适配规则固化为
+// 连接器技能包口径契约：把历次审查（2026-08-16 六轮）确认的鲜小助适配规则固化为
 // CI 门禁，防止下次上游 sync 时机械迁移把已修复的问题带回来。
 // 规则来源见各 NOTICE 的「本地修改登记」；上游历史登记（NOTICE 文件本身）豁免扫描。
 const assert = require("node:assert/strict");
@@ -88,7 +88,7 @@ for (const f of docs) {
   }
 }
 
-// 3) 安装/升级一律由品悟宿主代管
+// 3) 安装/升级一律由鲜小助宿主代管
 for (const f of docs) {
   const text = read(f);
   assert.ok(
@@ -102,7 +102,7 @@ for (const f of docs) {
   assert.ok(!/\bpython\s+(?!3\b)(?:-\w+\s+)*\S*\.py/.test(text), `${rel(f)}: 脚本调用用裸 python（应为 python3）`);
 }
 
-// 4) 上游宿主断言（Hermes/OpenClaw，含小写形态）必须以品悟为锚。
+// 4) 上游宿主断言（Hermes/OpenClaw，含小写形态）必须以鲜小助为锚。
 // 判定前剥掉 URL 与行内代码段：宿主词仅出现在链接/代码标识符（如
 // https://…/hermes-setup、`hermes_config_path`）时是客观引用而非宿主断言。
 for (const f of docs) {

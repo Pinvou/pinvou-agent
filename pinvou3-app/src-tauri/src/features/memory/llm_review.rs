@@ -53,7 +53,7 @@ pub(super) const WORK_CONTEXT_AUTO_THRESHOLD_RELAXED: f32 = 0.90;
 /// rule-following model would emit pending_confirm inside the relaxed band, making
 /// the code-side adjustment a no-op. Brace sentinels go through `replace` instead of
 /// `format!` to avoid escaping the JSON examples.
-pub(super) const LLM_REVIEW_PROMPT_TEMPLATE: &str = r#"你是 pinvou 的后台记忆整理器。你只做一件事：复盘刚刚这一轮对话，并对照已有记忆，输出是否需要保存、更新或跳过记忆。不要回答用户问题，不要解释你的判断。
+pub(super) const LLM_REVIEW_PROMPT_TEMPLATE: &str = r#"你是鲜小助的后台记忆整理器。你只做一件事：复盘刚刚这一轮对话，并对照已有记忆，输出是否需要保存、更新或跳过记忆。不要回答用户问题，不要解释你的判断。
 
 你必须只输出 JSON，不要解释。格式：
 {
@@ -88,7 +88,7 @@ pub(super) const LLM_REVIEW_PROMPT_TEMPLATE: &str = r#"你是 pinvou 的后台�
 记忆类别：
 - profile：稳定、低敏的用户资料，例如用户希望被如何称呼、用户如何称呼助手。
 - preference：长期使用习惯，例如回答风格、工作方式、文档偏好。
-- work_context：用户长期工作背景，例如长期角色、领域、项目、任务类型、工具流、交付物期待。它描述用户，不描述 pinvou 的运行环境。
+- work_context：用户长期工作背景，例如长期角色、领域、项目、任务类型、工具流、交付物期待。它描述用户，不描述鲜小助的运行环境。
 - current_focus：用户最近正在推进、后续短期内可能继续聊的事项，会过期。
 - recent_activity：用户最近刚完成的交付、修复、报告、文档或调研，会过期。
 
@@ -101,7 +101,7 @@ topic 规则：
 
 判断原则：
 1. 只记录以后仍然有用的信息。一次性问答、普通闲聊、临时情绪、问题本身、模型猜测都不要记。
-2. 记忆必须以用户为中心。不要把 pinvou 当前模型、临时路径、调试状态、工具日志、文件原文当作用户记忆。
+2. 记忆必须以用户为中心。不要把鲜小助当前模型、临时路径、调试状态、工具日志、文件原文当作用户记忆。
 3. 不记录密码、手机号、证件号、token、API key、地址等敏感信息。
 4. content 必须是清洗后的事实摘要，不要照抄整句，不要包含“请记住/以后你要”等命令口吻。
 5. 同一主题已有记忆或 pending_memory 已覆盖时输出 skip。
@@ -181,11 +181,11 @@ pub(super) fn explicit_signal_prompt() -> String {
 ///
 /// Reachability: `enforce_memory_locale_policy` (platform/prefs/mod.rs) forces
 /// `memory_enabled` back to false for non-zh-Hans UI on every load/save, so in
-/// the normal flow en/ja users never run memory review. This directive is
+/// the normal flow English users never run memory review. This directive is
 /// defense-in-depth mirroring the review-side precedent, not a fix for a
 /// reachable failure — the zh-Hans branch is the live per-review path (it
 /// hard-forces Chinese `content` even in English conversations, the same
-/// measured drift the review side hit); the en/ja branches only cover the
+/// measured drift the review side hit); the English branch only covers the
 /// narrow window where the locale was switched to Chinese with "restart later",
 /// memory was re-enabled, and a pre-switch engine snapshot still carries the
 /// old locale.
@@ -198,14 +198,13 @@ pub(super) fn memory_output_language_directive(locale_tag: &str) -> Option<Strin
         return Some(
             "\n\n## 输出语言(强制)\n\
              JSON 里所有自然语言字段值(content / reason)必须用简体中文,即使本轮\
-             对话是英文/日文也别跟着写。JSON 的 key、action / kind / topic 枚举值\
+             对话是英文也别跟着写。JSON 的 key、action / kind / topic 枚举值\
              保持原样 ASCII。"
                 .to_string(),
         );
     }
     let lang = match locale_tag {
         "en" => "English",
-        "ja" => "Japanese (日本語)",
         _ => return None, // unknown locale → keep the prompt as-is (Chinese)
     };
     Some(format!(

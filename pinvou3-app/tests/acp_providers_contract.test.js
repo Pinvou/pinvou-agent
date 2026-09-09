@@ -236,7 +236,7 @@ const PROVIDER_FORM = fs.readFileSync(
   path.join(ROOT, 'src', 'features', 'settings', 'ProviderFormModal.jsx'),
   'utf8'
 );
-const I18N = ['zh', 'en', 'ja'].map((l) => fs.readFileSync(path.join(ROOT, 'src', 'shared', 'i18n', `${l}.js`), 'utf8')).join('\n'); // 拆分后三语在 i18n/ 目录,拼起来等价旧单文件扫描
+const I18N = ['zh', 'en'].map((l) => fs.readFileSync(path.join(ROOT, 'src', 'shared', 'i18n', `${l}.js`), 'utf8')).join('\n');
 const HOME_SWITCHER = fs.readFileSync(
   path.join(ROOT, 'src', 'features', 'conversation', 'HomeModeSwitcher.jsx'),
   'utf8'
@@ -310,8 +310,8 @@ assert.match(
 );
 assert.strictEqual(
   (I18N.match(/apiKeyEmptyConfirm/g) || []).length,
-  3,
-  '空 key 确认文案必须覆盖 zh/en/ja 三语'
+  2,
+  '空 key 确认文案必须覆盖 zh/en 双语'
 );
 // 会话级 Provider 覆盖仅 Codex 展示（H1）
 assert.match(

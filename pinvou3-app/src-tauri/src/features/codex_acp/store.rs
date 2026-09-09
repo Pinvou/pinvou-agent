@@ -461,7 +461,7 @@ impl SessionAgentStore {
         Ok(())
     }
 
-    /// 绑定“代码”模块的原生（品悟 Engine）会话。临时会话目录由 session id 推导；
+    /// 绑定“代码”模块的原生（鲜小助 Engine）会话。临时会话目录由 session id 推导；
     /// 项目会话保存创建时选定的绝对目录（调用前须经 `validate_codex_project_workspace`
     /// 校验）。与 ACP 会话同样遵循“会话开始后不可换 Agent 或工作目录”。
     pub fn bind_code_native_session(
@@ -510,7 +510,7 @@ impl SessionAgentStore {
             .unwrap_or_default()
     }
 
-    /// 是否为“代码”模块的原生（品悟 Engine）会话。
+    /// 是否为“代码”模块的原生（鲜小助 Engine）会话。
     pub fn is_code_session(&self, session_id: &str) -> bool {
         self.session_mode(session_id).is_code()
     }

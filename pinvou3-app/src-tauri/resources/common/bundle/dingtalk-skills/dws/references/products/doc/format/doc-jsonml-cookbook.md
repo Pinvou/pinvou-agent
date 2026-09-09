@@ -171,7 +171,7 @@ dws doc block insert --node <DOC_ID> --content-format jsonml \
 | PMingLiU | `PMingLiU` | — | — |
 
 **英文字体**（font-family 值即为字体名）：
-`Arial` ・ `Calibri` ・ `Cambria` ・ `Centaur` ・ `Comfortaa` ・ `Comic Sans MS` ・ `Courier New` ・ `Franklin Gothic` ・ `Garamond` ・ `Georgia` ・ `Helvetica` ・ `Impact` ・ `Lora` ・ `Lucida Sans` ・ `Merriweather` ・ `Montserrat` ・ `Nunito` ・ `Oswald` ・ `Playfair Display` ・ `Roboto` ・ `Spectral` ・ `Times New Roman` ・ `Trebuchet MS` ・ `Verdana`
+`Arial`, `Calibri`, `Cambria`, `Centaur`, `Comfortaa`, `Comic Sans MS`, `Courier New`, `Franklin Gothic`, `Garamond`, `Georgia`, `Helvetica`, `Impact`, `Lora`, `Lucida Sans`, `Merriweather`, `Montserrat`, `Nunito`, `Oswald`, `Playfair Display`, `Roboto`, `Spectral`, `Times New Roman`, `Trebuchet MS`, `Verdana`
 
 > **规则**：优先从上表匹配；用户指定的字体不在列表时，使用该字体在操作系统中的真实 font-family 名称（如"更纱黑体" → `Sarasa Gothic SC`）。
 

@@ -4,7 +4,6 @@ import vm from 'node:vm';
 
 import { formatAttachmentLimitError } from '../src/features/attachments/attachment-limit-errors.js';
 import { dictEn } from '../src/shared/i18n/en.js';
-import { dictJa } from '../src/shared/i18n/ja.js';
 import { dictZh } from '../src/shared/i18n/zh.js';
 
 globalThis.window = {
@@ -158,7 +157,7 @@ assert.equal(
 );
 
 pasteImageError = 'attachment_file_too_large';
-for (const dictionary of [dictZh, dictEn, dictJa]) {
+for (const dictionary of [dictZh, dictEn]) {
   await api.addPasteImage('oversized.png', [1], error => (
     formatAttachmentLimitError(error, dictionary.uiAttachments)
   ));

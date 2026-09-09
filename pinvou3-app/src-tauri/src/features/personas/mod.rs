@@ -1,7 +1,7 @@
 //! 专家面具池（卡牌池）—— **Side B: agency-agents-zh 全正文版 + 用户自创卡**。
 //!
 //! 三个数据源（[`all_summaries`] / [`get`] 合并）:
-//! 1. **agency 内嵌**（`source="builtin"`）: jnMetaCode/agency-agents-zh(MIT, 268 个),
+//! 1. **agency 内嵌**（`source="builtin"`）: jnMetaCode/agency-agents-zh(MIT, 261 个),
 //!    每个带 ~6K 字完整人设正文。编译期 `include_str!`，OnceLock 缓存。
 //! 2. **pinvou3 内置卡**（`source="builtin"`）: 目前只有「卡牌制造专家」(见 `builtin_extra`)。
 //! 3. **用户自创卡**（`source="user"`）: 扫 `~/.pinvou3/user/personas/<id>.json`,

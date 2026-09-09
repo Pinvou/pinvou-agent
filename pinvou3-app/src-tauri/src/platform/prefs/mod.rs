@@ -48,18 +48,31 @@ pub enum ColorScheme {
     System,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default)]
 pub enum Language {
     #[serde(rename = "zh-Hans")]
     #[default]
     ZhHans,
     #[serde(rename = "en")]
     En,
-    /// 日语。底座 prompts.rs 的 translation_target_language_for_tag 已认识 "ja"，
-    /// LLM 回复语言链路零改动。
-    #[serde(rename = "ja")]
-    Ja,
 }
+
+impl<'de> Deserialize<'de> for Language {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "zh-Hans" => Language::ZhHans,
+            "en" => Language::En,
+            // Preserve the rest of a valid settings file when an older or
+            // future build stored a language this edition does not ship.
+            _ => Language::En,
+        })
+    }
+}
+
 impl Language {
     fn from_system_locale(locale: Option<&str>) -> Self {
         let Some(locale) = locale.map(str::trim).filter(|locale| !locale.is_empty()) else {
@@ -72,9 +85,8 @@ impl Language {
             .to_ascii_lowercase();
         match primary.as_str() {
             "zh" => Language::ZhHans,
-            "ja" => Language::Ja,
             "en" => Language::En,
-            // 品悟当前只提供中、英、日；其它系统语言使用英文，而不是误显示中文。
+            // 鲜小助当前只提供中文和英文；其它系统语言使用英文。
             _ => Language::En,
         }
     }
@@ -83,7 +95,6 @@ impl Language {
         match self {
             Language::ZhHans => "zh-Hans",
             Language::En => "en",
-            Language::Ja => "ja",
         }
     }
 
@@ -98,7 +109,6 @@ impl Language {
         match self {
             Language::ZhHans => "简体中文",
             Language::En => "English",
-            Language::Ja => "日本語",
         }
     }
 
@@ -112,14 +122,13 @@ impl Language {
         match self {
             Language::ZhHans => "zh-CN",
             Language::En => "en-US",
-            Language::Ja => "ja-JP",
         }
     }
 
     /// pinvou3 补丁:底座 `locale_reinforcement_preamble` 对 `en` 返回 `None`
     /// (英文是模型默认语言,底座认为无需强化)。但 pinvou3 的 system prompt 主体
     /// (instructions.md)整份是中文,会把模型的回复语言拽回中文 —— 故英文 UI 下
-    /// 仍中文回复。zh-Hans / ja 已由底座 bookend(见 `bridge::bundle` 的
+    /// 仍中文回复。zh-Hans 已由底座 bookend(见 `bridge::bundle` 的
     /// `set_locale_preamble_*_override`)覆盖,这里只补底座留空的 locale,返回
     /// `None` 的不再重复注入。文案采 mirror 语义,与 zh-Hans preamble 对称。
     pub fn extra_language_directive(self) -> Option<&'static str> {
@@ -133,7 +142,7 @@ impl Language {
                  prose follows the language rule.",
             ),
             // 底座已注入对应 bookend,避免重复。
-            Language::ZhHans | Language::Ja => None,
+            Language::ZhHans => None,
         }
     }
 }
@@ -447,7 +456,7 @@ impl Default for SidebarPrefs {
     }
 }
 
-/// 品悟原生 code 会话权限模式的全局记忆。产品语义（已拍板）：
+/// 鲜小助原生 code 会话权限模式的全局记忆。产品语义（已拍板）：
 /// - 从未用过 code 模式时，新建 code 会话默认 Plan（只读）；
 /// - 新建 code 会话的默认 mode = code lane 的全局 last_mode；
 /// - last_mode 只由「code 页草稿态显式切换」写入（已生成会话的切换只写
@@ -1708,7 +1717,6 @@ mod tests {
             Language::from_system_locale(Some("zh-Hant-TW")),
             Language::ZhHans
         );
-        assert_eq!(Language::from_system_locale(Some("ja-JP")), Language::Ja);
         assert_eq!(Language::from_system_locale(Some("en-US")), Language::En);
         assert_eq!(Language::from_system_locale(Some("fr-FR")), Language::En);
         assert_eq!(Language::from_system_locale(None), Language::En);
@@ -1716,8 +1724,8 @@ mod tests {
 
     #[test]
     fn missing_settings_uses_system_language() {
-        let prefs = UserPrefs::parse_settings(None, Some("ja-JP"));
-        assert_eq!(prefs.language, Language::Ja);
+        let prefs = UserPrefs::parse_settings(None, Some("fr-FR"));
+        assert_eq!(prefs.language, Language::En);
     }
 
     #[test]
@@ -1730,7 +1738,7 @@ mod tests {
     fn invalid_settings_never_allow_normalization_persist() {
         for (raw, locale, expected_language) in [
             ("{broken", "en-US", Language::En),
-            (r#"{"language":42}"#, "ja-JP", Language::Ja),
+            (r#"{"language":42}"#, "fr-FR", Language::En),
         ] {
             let mut parsed = UserPrefs::parse_settings_with_state(Some(raw), Some(locale));
             assert_eq!(parsed.prefs.language, expected_language);
@@ -1761,7 +1769,7 @@ mod tests {
     fn valid_settings_allow_existing_normalization_persist() {
         let mut parsed = UserPrefs::parse_settings_with_state(
             Some(r#"{"language":"en","memory_enabled":true}"#),
-            Some("ja-JP"),
+            Some("fr-FR"),
         );
         assert!(parsed.allow_normalization_persist);
         let normalization_changed = parsed.prefs.enforce_memory_locale_policy();
@@ -1775,9 +1783,9 @@ mod tests {
 
     #[test]
     fn settings_without_language_uses_system_language() {
-        let prefs = UserPrefs::parse_settings(Some(r#"{"theme":"genesis"}"#), Some("ja-JP"));
+        let prefs = UserPrefs::parse_settings(Some(r#"{"theme":"genesis"}"#), Some("fr-FR"));
         assert_eq!(prefs.theme, Theme::Genesis);
-        assert_eq!(prefs.language, Language::Ja);
+        assert_eq!(prefs.language, Language::En);
     }
 
     /// Old settings (no color_scheme key) derive the preference from the legacy
@@ -1939,14 +1947,22 @@ mod tests {
             r#""zh-Hans""#
         );
         assert_eq!(serde_json::to_string(&Language::En).unwrap(), r#""en""#);
-        assert_eq!(serde_json::to_string(&Language::Ja).unwrap(), r#""ja""#);
+    }
+
+    #[test]
+    fn unsupported_saved_language_falls_back_without_discarding_settings() {
+        let prefs = UserPrefs::parse_settings(
+            Some(r#"{"theme":"liquid-light","language":"unsupported"}"#),
+            Some("zh-CN"),
+        );
+        assert_eq!(prefs.theme, Theme::LiquidLight);
+        assert_eq!(prefs.language, Language::En);
     }
 
     #[test]
     fn locale_tag_helper() {
         assert_eq!(Language::ZhHans.locale_tag(), "zh-Hans");
         assert_eq!(Language::En.locale_tag(), "en");
-        assert_eq!(Language::Ja.locale_tag(), "ja");
     }
 
     #[test]
@@ -1955,14 +1971,12 @@ mod tests {
         // 与 UI 语言保持一致,避免「中文 UI 但英文识别」错配。
         assert_eq!(Language::ZhHans.speech_recognition_locale(), "zh-CN");
         assert_eq!(Language::En.speech_recognition_locale(), "en-US");
-        assert_eq!(Language::Ja.speech_recognition_locale(), "ja-JP");
     }
 
     #[test]
     fn memory_is_only_available_for_zh_hans() {
         assert!(Language::ZhHans.supports_memory());
         assert!(!Language::En.supports_memory());
-        assert!(!Language::Ja.supports_memory());
 
         let mut english = UserPrefs {
             language: Language::En,
@@ -1972,14 +1986,6 @@ mod tests {
         assert!(english.enforce_memory_locale_policy());
         assert!(!english.memory_enabled);
 
-        let mut japanese = UserPrefs {
-            language: Language::Ja,
-            memory_enabled: true,
-            ..Default::default()
-        };
-        assert!(japanese.enforce_memory_locale_policy());
-        assert!(!japanese.memory_enabled);
-
         let mut chinese = UserPrefs {
             language: Language::ZhHans,
             memory_enabled: true,
@@ -1987,13 +1993,6 @@ mod tests {
         };
         assert!(!chinese.enforce_memory_locale_policy());
         assert!(chinese.memory_enabled);
-    }
-
-    #[test]
-    fn language_ja_roundtrip() {
-        let json = r#"{"theme":"genesis","language":"ja"}"#;
-        let prefs: UserPrefs = serde_json::from_str(json).unwrap();
-        assert_eq!(prefs.language, Language::Ja);
     }
 
     #[test]

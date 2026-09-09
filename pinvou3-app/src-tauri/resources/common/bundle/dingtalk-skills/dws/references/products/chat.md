@@ -1670,13 +1670,13 @@ Usage:
 Example:
   dws chat text translate --query "你好世界" --to en_US
   dws chat text translate --query "Hello World" --to zh_CN
-  dws chat text translate --query "Bonjour" --to ja_JP
+  dws chat text translate --query "Bonjour" --to zh_CN
 Flags:
       --query string   待翻译的文本内容 (必填)
       --to string      目标语言代码 (必填)
 ```
 
-支持的目标语言代码：`en_US`, `zh_CN`, `zh_TW`, `zh_HK`, `ja_JP`, `ko_KR`, `vi_VN`, `th_TH`, `id_ID`, `ms_MY`, `es_419`, `fr_FR`, `pt_BR`, `tr_TR`, `ru_RU`, `de_DE`, `hi_IN`, `hu_HU`, `pl_PL`, `sv_SE`, `fi_FI`, `cs_CZ`, `ar_SA`, `tl_PH`, `he_IL`, `nl_NL`, `lo_LA`, `it_IT`。
+支持的目标语言代码：`en_US`, `zh_CN`, `zh_TW`, `zh_HK`, `ko_KR`, `vi_VN`, `th_TH`, `id_ID`, `ms_MY`, `es_419`, `fr_FR`, `pt_BR`, `tr_TR`, `ru_RU`, `de_DE`, `hi_IN`, `hu_HU`, `pl_PL`, `sv_SE`, `fi_FI`, `cs_CZ`, `ar_SA`, `tl_PH`, `he_IL`, `nl_NL`, `lo_LA`, `it_IT`。
 
 ### mute (会话免打扰)
 

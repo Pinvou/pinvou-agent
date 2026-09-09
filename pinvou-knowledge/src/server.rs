@@ -31,7 +31,7 @@ pub async fn serve(service: Arc<KnowledgeService>, bind: SocketAddr) -> Result<(
             match crate::discovery::advertise(&info.name, bind.port()) {
                 Ok(advertisement) => Some(advertisement),
                 Err(error) => {
-                    eprintln!("[pinvou-knowledge] LAN discovery unavailable: {error}");
+                    eprintln!("[鲜小助知识库] LAN discovery unavailable: {error}");
                     None
                 }
             }

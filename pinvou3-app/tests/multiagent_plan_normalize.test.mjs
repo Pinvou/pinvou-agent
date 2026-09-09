@@ -49,7 +49,7 @@ const memoryCommandSource = read('src-tauri', 'src', 'app', 'commands', 'memory.
 const interactionCommandSource = read('src-tauri', 'src', 'app', 'commands', 'interaction.rs');
 const interactionBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'interaction.js');
 const settingsSource = read('src', 'features', 'settings', 'composer-shared.jsx');
-const i18nSource = ['zh', 'en', 'ja'].map((l) => read('src', 'shared', 'i18n', `${l}.js`)).join('\n'); // 拆分后三语在 i18n/ 目录
+const i18nSource = ['zh', 'en'].map((l) => read('src', 'shared', 'i18n', `${l}.js`)).join('\n');
 const poolSource = read('src-tauri', 'src', 'features', 'assistant', 'engine_pool.rs');
 // wave3 起多智能体状态注释随 SessionModeState 迁至 sessions 特性域
 // （core/mode_state.rs 只剩跨层协议类型），契约断言跟随定义位置。
@@ -101,7 +101,7 @@ test('共享界面不订阅废弃运行态，并阻止 Web 续写多智能体会
     /ensure_web_chat_session_supported\(store\.mode_state\(&session_id\)\.multi_agent\)\?/,
     'Web 续写必须校验多智能体开关（桌面专属）',
   );
-  assert.equal((i18nSource.match(/uiMultiAgent:/g) || []).length, 3, '多智能体界面必须提供中英日文案');
+  assert.equal((i18nSource.match(/uiMultiAgent:/g) || []).length, 2, '多智能体界面必须提供中英文案');
 });
 
 test('多智能体能力门禁与会话策略契约（multiagent_desktop_scope 独有断言回迁）', () => {
@@ -643,10 +643,9 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   );
   assert.match(i18nSource, /关闭会回收引擎，并取消仍在运行的子智能体/, '中文开关文案必须如实说明关闭会取消');
   assert.match(i18nSource, /turning it off recycles the engine and cancels any subagents still running/, '英文开关文案必须如实说明关闭会取消');
-  assert.match(i18nSource, /オフにするとエンジンを解放し、実行中のサブエージェントをキャンセルします/, '日文开关文案必须如实说明关闭会取消（回収は中国語「回收」の直訳で不自然なため、解放で表現）');
   assert.doesNotMatch(
     i18nSource,
-    /关闭不影响在跑的子智能体|turning it off never interrupts running subagents|オフにしても実行中のサブエージェントは中断されない/,
+    /关闭不影响在跑的子智能体|turning it off never interrupts running subagents/,
     '不得再保留与 ADR-0006 和实际回收行为相反的旧文案',
   );
   assert.match(

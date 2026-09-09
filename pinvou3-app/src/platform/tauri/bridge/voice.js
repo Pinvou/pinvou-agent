@@ -58,7 +58,7 @@
   ];
   const VOICE_PROTECTED_TERMS = [
     "金价", "图表", "表格", "PPT", "GPT-5", "Claude Sonnet", "DeepSeek V3",
-    "AI 新闻", "PDF", "Pinvou", "REST API", "401", "token", "高铁票",
+    "AI 新闻", "PDF", "鲜小助", "REST API", "401", "token", "高铁票",
     "负责人", "截止时间", "预算", "部门", "超支项", "付款风险", "交付风险",
     "客服投诉", "产品线", "高频问题", "语音输入", "模型下载体验", "知识库",
     "差旅报销标准", "住宿上限", "banner", "温暖简洁"
@@ -199,7 +199,7 @@
       .replaceAll(/talken/gi, "token")
       .replaceAll('过期处里', "过期处理")
       // eslint-disable-next-line sonarjs/duplicates-in-character-class -- single lookahead guard per branch; sonarjs miscounts the escaped-class dupes here
-      .replaceAll(/产品民\s*pin\s+vo\b|产品名con(?![a-zA-Z])|\bpin\s+vo\b/gi, "产品名 Pinvou")
+      .replaceAll(/产品民\s*pin\s+vo\b|产品名con(?![a-zA-Z])|\bpin\s+vo\b/gi, "产品名鲜小助")
       .replaceAll(/rest\s*a\s*p\s*i/gi, "REST API")
       .replaceAll('认正', "认证")
       .replaceAll(/错误马(?!上)/g, "错误码")
@@ -323,9 +323,9 @@
     fn.call(console, "[voice-input]", event);
   }
 
-  // Stable VoiceCommandError codes from the Rust side → trilingual copy keys inside the
+  // Stable VoiceCommandError codes from the Rust side → bilingual copy keys inside the
   // bridge. Codes take precedence over rawMessage: the Rust message is Chinese engineering
-  // prose, meant for logs/diagnostics only, never passed straight to en/ja UIs
+  // prose, meant for logs/diagnostics only, never passed straight to English UIs
   // (review leftover: ~12 Chinese strings still pass through).
   const VOICE_ERROR_CODE_KEYS = {
     asr_timeout: "voiceTimeout",
@@ -365,7 +365,7 @@
     }
     // Chrome reports "microphone busy with another app" as NotReadableError / TrackStartError,
     // distinct from "no device"; the browser message is English, so map it to dedicated
-    // trilingual copy.
+    // bilingual copy.
     if (name === "NotReadableError" || name === "TrackStartError") {
       return { category: "device_unavailable", stage: "device", message: bt("voiceMicUnavailable") };
     }
@@ -395,7 +395,7 @@
       return { category: "timeout", stage: "recording", message: bt("voiceTimeout") };
     }
     if (rawCategory === "recognition_failed") {
-      // With a stable error code, map to trilingual copy by code and demote the Chinese
+      // With a stable error code, map to bilingual copy by code and demote the Chinese
       // original to diagnostics; only legacy errors without a code fall back to rawMessage
       // (Chinese engineering prose only, kept for historical behavior).
       if (codeKey) {

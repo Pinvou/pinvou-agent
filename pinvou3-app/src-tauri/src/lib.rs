@@ -1,4 +1,4 @@
-//! Pinvou Agent Tauri 后端入口。
+//! 鲜小助 Tauri 后端入口。
 
 mod app;
 mod core;

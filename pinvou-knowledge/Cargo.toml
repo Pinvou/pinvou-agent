@@ -2,7 +2,7 @@
 name = "pinvou-knowledge"
 version = "0.9.3"
 description = "鲜小助 可复用知识库核心与自包含服务器"
-authors = ["pinvou"]
+authors = ["鲜小助 contributors"]
 license = "MIT"
 # edition 2024: aligned with the CodeWhale foundation and pinvou3-app;
 # requires rustc >= 1.85 — MSRV 1.89 unchanged.

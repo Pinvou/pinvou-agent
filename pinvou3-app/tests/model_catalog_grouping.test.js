@@ -291,7 +291,7 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   assert.deepStrictEqual(tiers(anthropic), ['low', 'medium', 'high', 'max']);
   const openai56 = { preset: 'openai', vendor: 'openai', model: 'gpt-5.6-terra' };
   assert.deepStrictEqual(tiers(openai56), ['off', 'low', 'medium', 'high', 'max']);
-  // 品悟目录收录的 reasoning 家族模型（gpt-5.5 / gpt-5.6-sol/terra/luna）提供切换
+  // 鲜小助目录收录的 reasoning 家族模型（gpt-5.5 / gpt-5.6-sol/terra/luna）提供切换
   const openai55 = { preset: 'openai', vendor: 'openai', model: 'gpt-5.5' };
   assert.deepStrictEqual(tiers(openai55), ['off', 'low', 'medium', 'high', 'max']);
   const openai56Sol = { preset: 'openai', vendor: 'openai', model: 'gpt-5.6-sol' };

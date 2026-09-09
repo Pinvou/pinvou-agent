@@ -281,7 +281,7 @@ fn download_verified(artifact: &Artifact, destination: &Path) -> Result<(), Stri
                 attempt.follow()
             }
         }))
-        .user_agent("Pinvou-Agent connector-installer")
+        .user_agent("Fresh-Assistant connector-installer")
         .build()
         .map_err(|e| format!("创建下载客户端失败: {e}"))?;
     let response = client

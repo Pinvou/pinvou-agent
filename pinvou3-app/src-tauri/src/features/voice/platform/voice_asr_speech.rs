@@ -49,7 +49,7 @@ pub fn decide_on_device(supports_on_device: bool) -> bool {
 /// 前端录音 → 16kHz mono 16-bit PCM WAV（首选格式，零转码）→ 写到临时文件 →
 /// 传文件 URL 给 `SFSpeechURLRecognitionRequest`。
 ///
-/// `locale_tag` 决定识别语言（如 `zh-CN` / `en-US` / `ja-JP`，来自 UI 语言偏好
+/// `locale_tag` 决定识别语言（如 `zh-CN` / `en-US`，来自 UI 语言偏好
 /// [`crate::platform::prefs::Language::speech_recognition_locale`]）。**不可用系统默认
 /// locale**：macOS 系统语言为英文时，默认 locale = en-US → 中文语音被当英文解析，
 /// 产出无意义英文字母。显式 `initWithLocale` 锁定与 UI 一致的语言。
@@ -71,7 +71,7 @@ pub fn transcribe_with_speech(wav_path: &Path, locale_tag: &str) -> Result<Strin
 
     // 2. recognizer（按 locale_tag 锁定识别语言，而非系统默认 locale）。
     //    用 initWithLocale 创建：系统语言为英文时默认 locale=en-US，会把中文音频当
-    //    英文解析 → 无意义英文字母。显式 zh-CN/en-US/ja-JP 与 UI 语言一致。
+    //    英文解析 → 无意义英文字母。显式 zh-CN/en-US 与 UI 语言一致。
     // localeWithLocaleIdentifier is a safe class method (returns Retained,
     // autoreleased); locale_tag comes from a trusted constant mapping.
     let locale = NSLocale::localeWithLocaleIdentifier(&NSString::from_str(locale_tag));
@@ -181,7 +181,7 @@ pub fn auth_status_decision(
             "语音识别尚未授权（未决定）。请再次触发语音输入以弹出授权请求".to_string(),
         ),
         S::Denied => Err(
-            "语音识别权限已被拒绝。请到「系统设置 > 隐私与安全性 > 语音识别」开启 pinvou3 的权限后重试"
+            "语音识别权限已被拒绝。请到「系统设置 > 隐私与安全性 > 语音识别」开启鲜小助的权限后重试"
                 .to_string(),
         ),
         S::Restricted => Err("该设备限制使用语音识别（受 MDM / 家长控制等策略管控）".to_string()),

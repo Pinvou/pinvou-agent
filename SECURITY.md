@@ -8,9 +8,8 @@ current `main` branch. Older releases may not receive backports.
 ## Report a vulnerability
 
 Use
-[GitHub Private Vulnerability Reporting](https://github.com/Pinvou/pinvou-agent/security/advisories/new)
-as the primary reporting channel. If that is not available, email
-[security@pinvou.com](mailto:security@pinvou.com).
+[GitHub Private Vulnerability Reporting](https://github.com/mlmr-coder/fresh-agent/security/advisories/new)
+as the reporting channel.
 
 Include the affected version, reproduction steps, and potential impact when
 possible. Include only the minimum data needed to reproduce the issue, and
@@ -22,7 +21,7 @@ bypass, or cross-user data access.
 
 ## Disclosure process
 
-Reports are reviewed on a best-effort basis. Pinvou does not currently promise
+Reports are reviewed on a best-effort basis. The 鲜小助 maintainers do not currently promise
 a response-time SLA or operate a vulnerability bounty program. When a report is
 confirmed, we will work with the reporter on a reasonable disclosure timeline
 and publish a fix or mitigation before public technical details when practical.

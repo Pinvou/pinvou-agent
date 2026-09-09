@@ -675,7 +675,7 @@ fn model_connection_error_result(err: &reqwest::Error) -> ModelConnectionTestRes
     // The detail passes the redacted underlying error through untouched;
     // the zh summary above is resolved by the frontend from the code via
     // connectionMessages (a hardcoded Chinese detail prefix would mix
-    // scripts in en/ja interfaces).
+    // scripts in English interfaces).
     let detail = Some(raw);
     if err.is_timeout() {
         return model_connection_result(
@@ -1116,7 +1116,7 @@ fn classify_image_capability_http(
         ),
         // A 402 billing failure matches the connection test's semantics,
         // but the top-up guidance is UI copy and must not be hardcoded in a
-        // single language on the Rust side (it would mix scripts in en/ja):
+        // single language on the Rust side (it would mix scripts in English):
         // only http_status and the raw provider summary are passed through,
         // and the frontend resolves the tri-lingual
         // connectionMessages.billing copy from http_status==402. The

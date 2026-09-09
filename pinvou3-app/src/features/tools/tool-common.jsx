@@ -489,7 +489,7 @@ const AcFmtIcon = FileTypeIcon;
     // 4. 连接器认领的技能(如 ima-skills 归 ima):加入 ToolStoreView 的
     //    CONNECTOR_CLAIMED_SKILLS,防止单独成卡。
     // 5. 占位卡(未上线)用 backendId: null;builtin 技能(如视觉设计)保留 builtin 标记。
-    // 6. 文案三语走 i18n overlay(uiToolDetails/storeData),本文件只留中文原文。
+    // 6. 中英文案走 i18n overlay（uiToolDetails/storeData），本文件只留中文原文。
     // 旧实现待更新:7 个 MCP manifest 仍内嵌 routing_rules/tool_table_entries
     // (weather/iwencai/obsidian/patsnap-search/qcc/canva-mcp/yuandian-mcp)——
     // 非组合包无双写问题,新增组合包时勿模仿,知识一律进 SKILL.md。
@@ -521,7 +521,7 @@ const AcFmtIcon = FileTypeIcon;
     ];
 
     // 本地能力的元数据(非商店连接器卡):组合包化的 pptx 已无连接器卡,但安装后
-    // 「去新对话」引导卡按 backendId 取标题/描述/欢迎问题(三语 overlay 同 localizeTool);
+    // 「去新对话」引导卡按 backendId 取标题/描述/欢迎问题（中英文 overlay 同 localizeTool）；
     // category 同时供商店组合包合成卡确定业务分区。
     const tsToolWelcomeData = [
       { backendId: 'pptx', title: 'PPT 生成', category: 'docs', desc: '说“做个 PPT / 汇报”，AI 先列大纲让你确认，再按内容自动选主题（9 套）生成可编辑 .pptx——真·图表、自带封面缩略图，全程本地、数据不出机。首次安装会自动下载 python-pptx 依赖（需联网）。', icon: Presentation, welcomeQueries: ['做个 Q2 季度汇报 PPT', '帮我做一份产品介绍 PPT', '做个项目方案演示', '做个公司介绍 PPT'] },

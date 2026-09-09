@@ -454,7 +454,7 @@ impl Pinvou3Bridge {
                 crate::platform::super_permission::instruction_block(),
             )
             // The user memory section is filled or dropped with the memory toggle (off by
-            // default plus force-off for en/ja, see the memory_section comment). Replaced
+            // default plus force-off for English, see the memory_section comment). Replaced
             // at the session render layer rather than inside the OnceLock instructions_md,
             // so a setting change takes effect on new sessions; old session prompts are
             // left unchanged.
@@ -470,7 +470,7 @@ impl Pinvou3Bridge {
             );
         // [pinvou3] 非中文 locale 的语言指令补丁:底座 locale_reinforcement_preamble
         // 对 en 返回 None,而 pinvou3 整份 system prompt 是中文,会把回复语言拽回中文。
-        // 这里给底座留空的 locale 补一段 mirror 指令(zh-Hans/ja 已有底座 bookend,返回
+        // 这里给底座留空的 locale 补一段 mirror 指令（zh-Hans 已有底座 bookend，返回
         // None 不重复)。固定值(随 language 变,不随 session 变)→ 不破 prefix-cache。
         if let Some(block) = self.prefs.language.extra_language_directive() {
             rendered.push_str("\n\n");
@@ -540,7 +540,7 @@ impl Pinvou3Bridge {
         self.external_acp_session_predicate = Some(predicate);
     }
 
-    /// 该 session 是否为原生（品悟 Engine）代码会话（含临时与绑项目两种）。
+    /// 该 session 是否为原生（鲜小助 Engine）代码会话（含临时与绑项目两种）。
     pub fn is_code_session(&self, session_id: &str) -> bool {
         self.code_session_predicate
             .as_ref()
@@ -890,7 +890,7 @@ impl Pinvou3Bridge {
     ///
     /// 优先级：用户显式设置的 `SavedModel.reasoning_effort` > provider 默认
     /// （本地模型——vLLM 与探测出的 Ollama——默认 off 防 SSE timeout；其余默认
-    /// high——底座自身默认是 Max，品悟统一收口到 high，符合产品默认思考强度）。
+    /// high——底座自身默认是 Max，鲜小助统一收口到 high，符合产品默认思考强度）。
     /// The exception is models whose thinking cannot be disabled on local
     /// routes: when the `core::always_thinking` knowledge table matches,
     /// normalize per the table (NoControl sends no thinking parameters; Tiers
@@ -4325,7 +4325,7 @@ mod tests {
         // output 预留：本地 vLLM 的 24576 由 route_limits_for_model 的 is_local_vllm
         // 分支显式携带进 RouteLimits.output_tokens，主导预留计算（min(requested_cap,
         // route_cap)=24576），不依赖 DEEPSEEK_MAX_OUTPUT_TOKENS env。云端模型不再
-        // 被品悟钉死 24576，落底座 64K 兜底。
+        // 被鲜小助钉死 24576，落底座 64K 兜底。
         // A. 真实 128K 部署:探测拿到 131072
         // 默认预设已平台感知(macOS/Windows→Deepseek),显式设 LocalVllm 才测 128K vLLM compaction。
         let mut a = fixture_bridge();
@@ -4426,7 +4426,7 @@ mod tests {
     /// route_limits.output_tokens 必须为 None（不声明 → 底座 64K/厂商能力兜底）；
     /// 本地 vLLM 的 24576 由 is_local_vllm 分支显式携带（不依赖 env），两者都要锁。
     ///
-    /// ⚠️ C 段语义（评审修正 2026-08-11）：品悟中间层确实不读该 env，但底座
+    /// ⚠️ C 段语义（评审修正 2026-08-11）：鲜小助中间层确实不读该 env，但底座
     /// `effective_max_output_tokens_for_route` **优先**读它——env 残留仍会把云端
     /// **最终请求**的 max_tokens 钉回 24576。因此不能声称"残留 env 不影响云端"；
     /// 真正的防线是 release/boot 不再注入（见 lib.rs `release_env_defaults_guard`
@@ -4486,7 +4486,7 @@ mod tests {
             "本地 vLLM 仍显式携带 24K 预算（不依赖 DEEPSEEK_MAX_OUTPUT_TOKENS env）"
         );
 
-        // C. env 残留（旧生产双保险未清干净 / 未来有人重新注入）：品悟中间层不读
+        // C. env 残留（旧生产双保险未清干净 / 未来有人重新注入）：鲜小助中间层不读
         //    该 env（route 仍不声明）——但这只是中间层事实，底座最终预算链会读
         //    （见 D 段）。此处只锁"中间层不被 env 污染"，不能据此声称残留无害。
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
@@ -4498,7 +4498,7 @@ mod tests {
             "鲜小助中间层不读该 env（云端 route 仍不声明）；env 影响发生在底座最终预算链（见 D 段）"
         );
 
-        // D. 沿底座公开预算链（context_input_budget_for_route，品悟 derive_compaction_threshold
+        // D. 沿底座公开预算链（context_input_budget_for_route，鲜小助 derive_compaction_threshold
         //    同款 API）验证：env 残留 24576 会把底座 output reservation 从 clean env 的 64K
         //    压回 24K → 可用输入预算随之变大。证明"残留 env 不影响云端"不成立——真正防线是
         //    release/boot 不再注入（lib.rs release_env_defaults_guard）。用显式 256K RouteLimits

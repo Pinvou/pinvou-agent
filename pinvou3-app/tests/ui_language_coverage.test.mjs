@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { dict } from '../src/shared/i18n-all.js'; // 三语全量断言:浏览器入口用 i18n.js 惰性装载,测试用聚合 shim
+import { dict } from '../src/shared/i18n-all.js'; // 中英文全量断言：浏览器入口用 i18n.js 惰性装载，测试用聚合 shim
 
 const source = relative => readFileSync(new URL(`../src/${relative}`, import.meta.url), 'utf8');
 
-for (const language of ['zh', 'en', 'ja']) {
+for (const language of ['zh', 'en']) {
   assert.equal(dict[language].appTitle, '鲜小助');
   assert.equal(dict[language].uiPlatformMisc.appTitle, '鲜小助');
   assert.ok(dict[language].remoteKbBackupFileType.includes('鲜小助'));
@@ -95,10 +95,10 @@ for (const language of ['zh', 'en', 'ja']) {
   }
 }
 
-// 三语 key parity:zh 是全集基准,en 必须覆盖 zh 的每个叶子 key(ja 经 en
-// spread 兜底,同样断言)。en/ja 历史上比 zh 多出的 settings 相关键属基线
+// 中英文 key parity：zh 是全集基准，en 必须覆盖 zh 的每个叶子 key
+// 同样断言。en 历史上比 zh 多出的 settings 相关键属基线
 // 固有(zh 侧由 UI 层默认值兜底),故只断言方向性覆盖而非严格相等——漏 key
-// 的 en 用户会渲染 undefined,ja 也随 en 一起漏。
+// 的 en 用户会渲染 undefined。
 {
   const leafPaths = (obj, prefix = '') => {
     const out = [];
@@ -112,7 +112,7 @@ for (const language of ['zh', 'en', 'ja']) {
   };
   const zhKeys = leafPaths(dict.zh);
   assert.ok(zhKeys.length > 2000, `zh leaf key count looks wrong: ${zhKeys.length}`);
-  for (const language of ['en', 'ja']) {
+  for (const language of ['en']) {
     const known = new Set(leafPaths(dict[language]));
     const missing = zhKeys.filter((key) => !known.has(key));
     assert.deepEqual(
@@ -201,22 +201,22 @@ assert.match(personas, /\{t\.cpMyCards\}/);
 assert.doesNotMatch(personas, /ExpertTeamsPanel|expertPoolTeamTab|expertPoolIndividualTab/);
 
 // 设计检查器字体预设:数据侧 label 保留中文原名(选中态比较键),展示走 labelKey;
-// 每个预设都必须声明 labelKey 且三语词典都有该 key,否则 en/ja 用户会看到中文原名。
+// 每个预设都必须声明 labelKey 且双语词典都有该 key，否则英文用户会看到中文原名。
 const fontPresets = source('features/artifacts/DesignInspectorPanel.jsx');
 const fontLabelKeys = [...fontPresets.matchAll(/labelKey: '(\w+)'/g)].map(m => m[1]);
 assert.ok(fontLabelKeys.length >= 9, `font presets should declare labelKey, found ${fontLabelKeys.length}`);
-for (const language of ['zh', 'en', 'ja']) {
+for (const language of ['zh', 'en']) {
   for (const key of fontLabelKeys) {
     assert.ok(dict[language].uiArtifacts[key], `${language}.uiArtifacts.${key} must exist`);
   }
 }
 
-// 个人工作台模板 chip:每个模板 id 三语都要有展示名;数据侧 zh title 只是
-// 草稿匹配与消息 meta 的正本,不直接展示给 en/ja 用户。
+// 个人工作台模板 chip：每个模板 id 都要有中英文展示名；数据侧 zh title 只是
+// 草稿匹配与消息 meta 的正本，不直接展示给英文用户。
 const workbench = source('features/chat/personal-workbench-scene.js');
 const workbenchTemplateIds = [...workbench.matchAll(/\n {4}id: '([\w-]+)',/g)].map(m => m[1]);
 assert.equal(workbenchTemplateIds.length, 7, `expected 7 workbench templates, found ${workbenchTemplateIds.length}`);
-for (const language of ['zh', 'en', 'ja']) {
+for (const language of ['zh', 'en']) {
   for (const id of workbenchTemplateIds) {
     assert.ok(dict[language].uiChatScenes.workbenchTemplates[id], `${language}.uiChatScenes.workbenchTemplates.${id} must exist`);
   }

@@ -507,7 +507,7 @@ try {
     path.join(root, 'src', 'features', 'codex', 'LazyCodexAcpView.jsx'),
     'utf8',
   );
-  const i18n = ['zh', 'en', 'ja'].map((l) => readFileSync(path.join(root, 'src', 'shared', 'i18n', `${l}.js`), 'utf8')).join('\n'); // 拆分后三语在 i18n/ 目录
+  const i18n = ['zh', 'en'].map((l) => readFileSync(path.join(root, 'src', 'shared', 'i18n', `${l}.js`), 'utf8')).join('\n');
   const navigationComponents = readFileSync(path.join(root, 'src', 'components', 'layout', 'NavigationComponents.jsx'), 'utf8');
   assert.ok(main.includes("currentView === 'codex'"));
   assert.ok(
@@ -555,11 +555,9 @@ try {
     && main.includes("if (taskListFilter === 'code') return chat.taskKind === 'codex';")
     && i18n.includes("sidebarTaskFilterCodeSessions: '代码会话'")
     && i18n.includes("sidebarTaskFilterCodeSessions: 'Code sessions'")
-    && i18n.includes("sidebarTaskFilterCodeSessions: 'コードセッション'")
     && main.includes("{t.sidebarTaskFilterCode}")
     && i18n.includes("sidebarTaskFilterCode: '代码'")
-    && i18n.includes("sidebarTaskFilterCode: 'Code'")
-    && i18n.includes("sidebarTaskFilterCode: 'コード'"),
+    && i18n.includes("sidebarTaskFilterCode: 'Code'"),
   'the task-list Code filter must show only Codex sessions in every supported locale, '
     + 'with a label distinct from the All/Code list-shape pill');
   assert.ok(main.includes('leadingIcon: <PinvouLogo')
@@ -667,7 +665,7 @@ try {
     && conversationView.includes('c.protectedOperation')
     && conversationView.includes('c.allowOnce')
     && conversationView.includes('c.handled'),
-  'the shared ACP permission card must use the zh/en/ja conversation copy');
+  'the shared ACP permission card must use the zh/en conversation copy');
   assert.ok(conversationView.includes('function runningToolLabel(item, copy)')
     && conversationView.includes("return copy.shellCommand;")
     && !conversationView.includes('runningItem.tool.name || runningItem.tool.title')
@@ -952,7 +950,7 @@ try {
   assert.ok(baseStyles.includes('.codex-markdown ol { list-style:decimal outside; }'),
     'Codex ordered lists must retain numbering after Tailwind preflight');
 
-  // 原生（品悟）车道底栏控件契约：仅 isNativeAgent 渲染、与工作/设计页共用同一套
+  // 原生（鲜小助）车道底栏控件契约：仅 isNativeAgent 渲染、与工作/设计页共用同一套
   // 共享 composer 控件（ComposerModeChip / ComposerModelSelector / ComposerKbSelector，
   // 显式会话态驱动 props 绕开 bridge 聊天 active 绑定）、直调 per-session 命令、
   // 并带与 ChatView 同款的语音输入按钮（bridge.voice 写回 draft）。

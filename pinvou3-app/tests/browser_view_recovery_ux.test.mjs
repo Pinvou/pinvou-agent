@@ -167,7 +167,6 @@ test('initial status retry is bounded and the failed empty state exposes retry',
   assert.match(browserView, /onClick=\{retryStatus\}/);
   assert.match(browserI18n, /export const browserZh = \{[\s\S]*?browserRetry: '重试'/);
   assert.match(browserI18n, /export const browserEn = \{[\s\S]*?browserRetry: 'Retry'/);
-  assert.match(browserI18n, /export const browserJa = \{[\s\S]*?browserRetry: '再試行'/);
 });
 
 test('BrowserView invalidates async work and ignores queued events after unmount', () => {

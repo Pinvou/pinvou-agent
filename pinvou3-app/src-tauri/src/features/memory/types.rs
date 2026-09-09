@@ -19,10 +19,10 @@ pub trait MemoryReviewModel {
     fn memory_base_url(&self) -> String;
     fn memory_api_key(&self) -> String;
     fn memory_model_preset(&self) -> ModelPreset;
-    /// UI locale (BCP 47 tag, e.g. "zh-Hans"/"en"/"ja"). The memory review prompt
+    /// UI locale (BCP 47 tag, e.g. "zh-Hans"/"en"). The memory review prompt
     /// body is Chinese, so an output-language directive is appended per locale,
     /// mirroring the review-side `output_language_directive` precedent; the
-    /// zh-Hans branch is the live per-review path, while en/ja are
+    /// zh-Hans branch is the live per-review path, while en is
     /// defense-in-depth for the narrow pre-switch engine-snapshot window after a
     /// "restart later" locale switch (see memory_output_language_directive for
     /// reachability).

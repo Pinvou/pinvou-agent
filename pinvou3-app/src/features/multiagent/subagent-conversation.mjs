@@ -14,7 +14,7 @@
  */
 
 import { presentConversationItems } from '../conversation/conversation-model.js';
-// Same model-service gate / redaction / trilingual copy as the main chat
+// Same model-service gate / redaction / bilingual copy as the main chat
 // timeline: subagents call the same model API, so billing/auth failures must
 // not put raw provider bodies (potentially credential-bearing) on screen.
 import { timelineDisplayError, timelineUserError } from '../conversation/deepseek-conversation.js';

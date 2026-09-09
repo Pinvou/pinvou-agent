@@ -2,14 +2,13 @@
   "use strict";
 
   // Redaction placeholder follows the UI language: technical details must
-  // not mix Chinese into en/ja interfaces.
+  // not mix Chinese into English interfaces.
   const SENSITIVE_PLACEHOLDERS = {
     zh: "[敏感信息已隐藏]",
     en: "[redacted]",
-    ja: "[秘匿済み]",
   };
   // Brand labels follow the UI language: Chinese brand names (Qwen/Zhipu/
-  // Doubao) are only used for zh; en/ja use the latin names so cards never
+  // Doubao) are only used for zh; English uses the latin names so cards never
   // mix scripts ("The 通义千问 API quota ..." style mixing).
   const PROVIDER_LABELS = {
     zh: {
@@ -31,24 +30,6 @@
       gemini: "Gemini",
     },
     en: {
-      deepseek: "DeepSeek",
-      openai: "OpenAI",
-      moonshot: "Kimi",
-      kimi: "Kimi",
-      qwen: "Qwen",
-      dashscope: "Qwen",
-      doubao: "Doubao",
-      volcengine: "Doubao",
-      minimax: "MiniMax",
-      glm: "Zhipu",
-      zai: "Zhipu",
-      zhipu: "Zhipu",
-      anthropic: "Claude",
-      claude: "Claude",
-      xai: "xAI",
-      gemini: "Gemini",
-    },
-    ja: {
       deepseek: "DeepSeek",
       openai: "OpenAI",
       moonshot: "Kimi",
@@ -187,15 +168,15 @@
   ];
 
   function languageTag(language) {
-    return language === "en" ? "en" : language === "ja" ? "ja" : "zh";
+    return language === "en" ? "en" : "zh";
   }
 
   function defaultProviderLabel(language) {
     const lang = languageTag(language);
-    return lang === "en" ? "current model service" : lang === "ja" ? "現在のモデルサービス" : "当前模型服务";
+    return lang === "en" ? "current model service" : "当前模型服务";
   }
 
-  // The tri-lingual copy table is hoisted to a module constant: each build
+  // The bilingual copy table is hoisted to a module constant: each build
   // does two table lookups instead of rebuilding a ~60-entry object literal
   // (error classification runs on every event). {provider} is substituted
   // at lookup time; the {stop} placeholder is replaced by build() with the
@@ -244,28 +225,6 @@
       contentMessage: "The model service declined this content under its content policy. Rephrase or split the content, or switch to another model in settings.",
       unknownTitle: "Current model service is unavailable",
       unknownMessage: "The current model service returned an error, {stop}Try again later or switch to another model in settings.",
-    },
-    ja: {
-      billingTitle: "{provider} のアカウント残高が不足しています",
-      billingMessage: "現在使用している {provider} API アカウントの残高が不足しているため、{stop}プロバイダー側でチャージするか、モデル設定で別のモデルに切り替えてください。",
-      quotaTitle: "{provider} API の割り当てが不足しています",
-      quotaMessage: "現在使用している {provider} API の割り当てが不足しているため、{stop}割り当てを確認するか、別のモデルに切り替えてください。",
-      rateTitle: "{provider} のリクエストが多すぎます",
-      rateMessage: "現在のモデルサービスへのリクエストが多すぎます。{stop}しばらくしてから再試行するか、別のモデルに切り替えてください。",
-      authTitle: "{provider} API Key が無効です",
-      authMessage: "現在のモデルサービスの API Key が無効、または期限切れです。モデル設定で確認して再入力してください。",
-      permissionTitle: "{provider} にアクセスできません",
-      permissionMessage: "現在の API Key にはこのモデルサービスへのアクセス権がありません。アカウント権限を確認するか、別のモデルに切り替えてください。",
-      serverTitle: "{provider} は一時的に利用できません",
-      serverMessage: "現在のモデルサービスは一時的に利用できません。{stop}しばらくしてから再試行するか、別のモデルに切り替えてください。",
-      networkTitle: "ネットワーク接続に失敗しました",
-      networkMessage: "現在のモデルサービスに接続できません。{stop}ネットワーク、プロキシ、またはエンドポイント設定を確認して再試行してください。",
-      contextTitle: "コンテキストが長すぎます",
-      contextMessage: "この会話はモデルが処理できる範囲を超えています。コンテキストを圧縮する、入力を減らす、または新しい会話で再試行してください。",
-      contentTitle: "コンテンツがモデルサービスに拒否されました",
-      contentMessage: "現在のコンテンツはモデルサービスのコンテンツポリシーによって拒否されました。表現を変えるか内容を分割して再試行するか、モデル設定で別のモデルに切り替えてください。",
-      unknownTitle: "現在のモデルサービスを利用できません",
-      unknownMessage: "現在のモデルサービスでエラーが発生しました。{stop}しばらくしてから再試行するか、別のモデルに切り替えてください。",
     },
   };
 
@@ -717,7 +676,6 @@
   function stopPhraseFor(language, terminal) {
     const lang = languageTag(language);
     if (lang === "en") return terminal ? "so this reply stopped. " : "鲜小助 will keep retrying this reply. ";
-    if (lang === "ja") return terminal ? "この応答は停止しました。" : "鲜小助 は現在の応答を再試行しています。";
     return terminal ? "本次回复已停止。" : "系统会继续重试当前回复。";
   }
 

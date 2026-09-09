@@ -247,7 +247,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
         if (myOnly && c.source !== 'user') return false;
         if (activeDept !== ALL_DEPT && c.dept !== activeDept) return false;
         if (q) {
-          // 原文 + 本地化名/简介都进搜索域,中英日关键词均可命中
+          // 原文 + 本地化名/简介都进搜索域，中英文关键词均可命中
           const loc = personaText(c, t);
           const hay = (c.name+' '+c.description+' '+loc.name+' '+loc.description+' '+c.dept+' '+deptLabelFor(t, c.dept)).toLowerCase();
           if (!hay.includes(q)) return false;

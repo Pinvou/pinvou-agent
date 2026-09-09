@@ -11,12 +11,12 @@
 1. 查当前版本：读任一 `connectors.lock.json` 中 `name: "dws"` 的 `version`（当前 1.0.58）。
 2. 拉技能源：GitHub Releases 资产，URL 模式
    `https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/v<version>/dws-skills.zip`（当前 v1.0.58；版本号带 `v` 前缀）。
-3. 取 mono 形态：zip 解压后顶层为 `NOTICE`、`mono/`、`multi/` 三部分——品悟收录的是 **`mono/` 子目录**（单一 `dws/SKILL.md` 入口 + references/ + scripts/，LICENSE 与 NOTICE 在 mono/ 内也各有一份）；顶层与 `mono/` 内容经 diff 确认一致，`multi/`（dingtalk-chat/ 等 14 个子 skill 布局）不随包分发。核对 zip 真伪可对照同 Release 的 `checksums.txt`。
+3. 取 mono 形态：zip 解压后顶层为 `NOTICE`、`mono/`、`multi/` 三部分——鲜小助收录的是 **`mono/` 子目录**（单一 `dws/SKILL.md` 入口 + references/ + scripts/，LICENSE 与 NOTICE 在 mono/ 内也各有一份）；顶层与 `mono/` 内容经 diff 确认一致，`multi/`（dingtalk-chat/ 等 14 个子 skill 布局）不随包分发。核对 zip 真伪可对照同 Release 的 `checksums.txt`。
 4. 以该 zip 的 `mono/` 为三方合并基线，按下文登记逐条重放本地修改后，保留本声明。
 
-Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首次使用时按 lock 在线下载、校验并安装到用户目录。凭证由官方 CLI 管理。
+鲜小助随应用内置并按用户连接状态门控该 skill；dws CLI 在首次使用时按 lock 在线下载、校验并安装到用户目录。凭证由官方 CLI 管理。
 
-## Pinvou3 本地修改登记
+## 鲜小助本地修改登记
 
 依据 Apache-2.0 §4(b) 登记对 `dws/SKILL.md` 的本地修改（2026-07-25）。下次升级 dws npm 版本时本节修改需重放。
 
@@ -41,7 +41,7 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 
 上游结构变化（1.0.51 → 1.0.58 mono）：
 
-- references 新增：`products/event.md`、`products/hrbrain.md`、`products/markdown.md`、`products/pat.md`、`products/whiteboard.md`、`products/whiteboard/`（open-nodes-v1 全套 + recipes）、`products/oa/`（表单组件/流程节点）。上游另有 `channel-login.md`，品悟不随包分发（见下方补录第 9 条）。
+- references 新增：`products/event.md`、`products/hrbrain.md`、`products/markdown.md`、`products/pat.md`、`products/whiteboard.md`、`products/whiteboard/`（open-nodes-v1 全套 + recipes）、`products/oa/`（表单组件/流程节点）。上游另有 `channel-login.md`，鲜小助不随包分发（见下方补录第 9 条）。
 - references 删除：`recovery-guide.md`（SKILL.md「错误处理」同步移除 RECOVERY_EVENT_ID 闭环说明）。（状态注：已删，无需重放。）
 - scripts 删除：`bot_broadcast.py`、`chat_export_messages.py`、`chat_history_with_user.py`、`doc_create_and_write.py`、`extract_media_id.py`（Chat 历史导出与机器人广播下沉 Runtime）。（状态注：已删，无需重放。）
 - SKILL.md 大改：新增 Shortcut 使用原则/总览、多组织多账号（profile）、确认门禁协议、Schema 渐进查询；产品域新增 hrbrain/markdown/pat/whiteboard/event，`aiapp` 移除（标注无稳定产品参考），`agoal` 保留（mono 意图树仍路由，CLI 1.0.58 `--help` 服务列表仍含 agoal）。
@@ -73,7 +73,7 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 6. `references/best_practices/07-minutes.md`：删除 2 处「（开源版未引入）」不实标注（`minutes_extract_todos.py`/`minutes_recent_summary.py` 均随包存在）；browse-minutes 中脚本参数 `--limit` 修正为脚本实际定义的 `--max`。
 7. `references/best_practices/`（08-directory.md、10-minutes-speaker-match.md、lite-recipes.md）：3 处「`aisearch`（开源版未引入，悟空内部产品）」改为链接 `../products/aisearch.md`（该产品参考随包存在，服务在 1.0.58 服务列表内）。
 8. `references/products/report.md` 示例表格中占位链接 `[在钉钉中查看日志](...)` 目标改为 `(<dingtalkOpenUrl>)`（与同文档操作列规则用语一致，避免悬空 `...` 目标）。
-9. 删除 `references/channel-login.md`：该文件是上游面向阿里内部受控渠道场景的配置参考，含内部评测渠道的具体 `DWS_CHANNEL` 哈希、内部 profile 名与「EI智能体评测」渠道归因，对品悟社区版用户无意义且违反「不依赖企业专属数据」的社区版公约；文件未被包内任何其他文档引用。后续 sync 若上游仍带此文件，继续不随包分发。
+9. 删除 `references/channel-login.md`：该文件是上游面向阿里内部受控渠道场景的配置参考，含内部评测渠道的具体 `DWS_CHANNEL` 哈希、内部 profile 名与「EI智能体评测」渠道归因，对鲜小助社区版用户无意义且违反「不依赖企业专属数据」的社区版公约；文件未被包内任何其他文档引用。后续 sync 若上游仍带此文件，继续不随包分发。
 
 ## 第四轮结构终检补录（2026-08-16）
 
@@ -82,7 +82,7 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 
 ## 第四轮本地工具依赖审查补录（2026-08-16，跨平台与 Agent 会话口径）
 
-品悟为三端应用（macOS/Linux/Windows），Windows 不保证本地 `jq`/`grep` 可用；dws 全局 `--jq` 对产品命令已生效（global-reference.md 明示）。以下修改均改为 CLI 内置能力或模型直接读取，下次 sync 需重放：
+鲜小助为三端应用（macOS/Linux/Windows），Windows 不保证本地 `jq`/`grep` 可用；dws 全局 `--jq` 对产品命令已生效（global-reference.md 明示）。以下修改均改为 CLI 内置能力或模型直接读取，下次 sync 需重放：
 
 1. `references/products/aitable/aitable-workflow.md`：创建确认流删除 `| tee` + 本地 `jq` 链（3 命令）改为 `--jq` 直出；list 汇总/状态过滤 3 处 `| jq` 改 `--jq`；`for ... | jq -r` 批量禁用循环改为「list --jq 列 flowId + 逐条 disable」两步，消除 shell 循环依赖。
 2. `references/products/aitable/aitable-record-history.md`：3 处 `| jq` 改 `--jq`。
@@ -112,13 +112,13 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 
 按统一模式清单（上游宿主名/不存在形态措辞/npm 残留/skills 管理命令/裸 auth login/Read 工具名/api-version/假命令/multi 形态/已删文件引用/自更新指令/内部 URL 密钥）对四个技能包全量复扫，`dws/` 内修复以下残留，下次 sync 需重放：
 
-1. `scripts/` 8 个考勤脚本 docstring 的强制门禁阅读路径 `dingtalk-workspace/references/products/attendance-*.md` 改为包内相对路径 `../references/products/attendance-*.md`（上游仓库名形态在品悟包内不存在，实际文件位于 `dws/references/products/`）：attendance_report_checkin.py、attendance_report_common.py、attendance_report_daily.py、attendance_report_detail.py、attendance_report_monthly.py、attendance_schedule_export.py、attendance_schedule_import.py、attendance_vacation_balance.py。
-2. `references/products/minutes.md` 跨平台兼容性条：「悟空运行环境可能是 Windows cmd / PowerShell / macOS bash」宿主断言改为「品悟应用运行在 Windows cmd / PowerShell / macOS bash 等不同 shell 环境」（同文档其余「悟空」均为听记热词/替换示例词，非宿主口径，保留）。
+1. `scripts/` 8 个考勤脚本 docstring 的强制门禁阅读路径 `dingtalk-workspace/references/products/attendance-*.md` 改为包内相对路径 `../references/products/attendance-*.md`（上游仓库名形态在鲜小助包内不存在，实际文件位于 `dws/references/products/`）：attendance_report_checkin.py、attendance_report_common.py、attendance_report_daily.py、attendance_report_detail.py、attendance_report_monthly.py、attendance_schedule_export.py、attendance_schedule_import.py、attendance_vacation_balance.py。
+2. `references/products/minutes.md` 跨平台兼容性条：「悟空运行环境可能是 Windows cmd / PowerShell / macOS bash」宿主断言改为「鲜小助应用运行在 Windows cmd / PowerShell / macOS bash 等不同 shell 环境」（同文档其余「悟空」均为听记热词/替换示例词，非宿主口径，保留）。
 3. `references/best_practices/06-data-analytics.md` export-aitable-to-xlsx 条：「与悟空脚本路径并存」改为「与脚本路径并存」（指包内 `scripts/aitable_export_via_task.py`，非悟空平台）。
 4. `references/products/sheet/sheet-filter.md`：删除「（参照飞书 core-operations）」括注（lark 域 `lark-sheets-core-operations.md` 未随包收录，为悬空跨域参照；规范正文本身完整，删除后语义不变）。
 5. `references/products/attendance.md` 命令可用性提示：禁止性理由「不要以"开源版不支持"为由拒答」改为「不要以"命令不存在/不支持"为由拒答」（保留禁拒答语义，去除上游"开源版"形态措辞，为真实性审查补录第 6/7 条「开源版未引入」清理的漏网变体）。
 
-其余命中均为已登记豁免或合理保留：`OPENCLAW_WORKSPACE` 环境变量（scripts/import_records.py、bulk_add_fields.py 路径安全护栏，未设时回退 `os.getcwd()`，品悟内不依赖该变量亦可用，上游原样保留）；dws/tmeet 域裸 `auth login`（各自 CLI 真实教学）；`alidocs.dingtalk.com`（钉钉文档公网 URL 域名，非内部地址）。
+其余命中均为已登记豁免或合理保留：`OPENCLAW_WORKSPACE` 环境变量（scripts/import_records.py、bulk_add_fields.py 路径安全护栏，未设时回退 `os.getcwd()`，鲜小助内不依赖该变量亦可用，上游原样保留）；dws/tmeet 域裸 `auth login`（各自 CLI 真实教学）；`alidocs.dingtalk.com`（钉钉文档公网 URL 域名，非内部地址）。
 
 ## 第七轮脚本代码安全审计（2026-08-16）
 
@@ -143,7 +143,7 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 
 第七轮同批 commit 还包含以下文档层改动（此前未登记，依据上游 v1.0.58 zip diff 实测，下次 sync 需逐条重放）：
 
-- **裸 `python` → `python3` 改写（55 处/19 个 references 文件，上游 v1.0.58 原文均为裸 `python`；2026-08-17 计数勘误：原记「约 50 处/17 个」为低估）**：`references/` 下全部命令示例统一为 `python3 scripts/...`（品悟宿主无裸 `python`，实测 command not found）。脚本自身 docstring 中的 usage 示例仍为上游原文裸 `python`，属已知豁免（模型按 SKILL.md 调用约定执行，不按 docstring）。
+- **裸 `python` → `python3` 改写（55 处/19 个 references 文件，上游 v1.0.58 原文均为裸 `python`；2026-08-17 计数勘误：原记「约 50 处/17 个」为低估）**：`references/` 下全部命令示例统一为 `python3 scripts/...`（鲜小助宿主无裸 `python`，实测 command not found）。脚本自身 docstring 中的 usage 示例仍为上游原文裸 `python`，属已知豁免（模型按 SKILL.md 调用约定执行，不按 docstring）。
 - **SKILL.md 新增「脚本调用约定」节**：统一 `python3` 调用、`scripts/...` 相对路径须拼完整路径、不假设 CWD（上游 SKILL.md 无此节）。
 - **attendance-report.md**：「报表类型（四选一）」改「五选一」（补签到报表项，`attendance_report_record.py` 覆盖考勤记录/签到报表两型）；「不适用于」指引的三处命令指针修正（`attendance check record`→`attendance record get`、班次查询补 `attendance class search` 并将排班导出导向 attendance-schedule.md 工作流）。
 

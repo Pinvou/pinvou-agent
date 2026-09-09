@@ -126,7 +126,7 @@ pub async fn get_session_persona_events(session_id: String) -> Result<serde_json
 
 /// Pinvou 召唤检阅时间线（opaque JSON，后端透明落盘，同 persona_events 范式）。
 /// 前端每次召唤后存，load_session 时读回，rerender 按 pos 插回审查卡——独立于
-/// messages，绝不进 LLM 上下文（设计 §6 / `docs/品悟v4-常驻检阅助手设计.md`）。
+/// messages，绝不进 LLM 上下文。
 /// 落盘前保留盘上已有的 resolution：防止后续全量 save（典型=核账 record 用不含 resolution
 /// 的快照）冲掉 Boss 已做的逐条裁决。按数组下标对齐——pinvouReviews 是 append-only、每条
 /// review 内容不可变，下标稳定可靠。new 自带 resolution 就用 new（允许 Boss 改裁决）；new

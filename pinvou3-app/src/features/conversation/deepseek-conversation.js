@@ -134,7 +134,7 @@ function timelineUsage(usage) {
 
 // Exported for the sibling subagent transcript adapter
 // (subagent-conversation.mjs) so every lane shares one gate / redaction /
-// trilingual copy implementation instead of reimplementing it.
+// bilingual copy implementation instead of reimplementing it.
 export function timelineUserError(event, options = {}) {
   const existing = event && (event.user_error || event.userError);
   if (existing && typeof existing === 'object') return existing;

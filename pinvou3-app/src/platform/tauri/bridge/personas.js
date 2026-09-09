@@ -62,7 +62,7 @@
     if (!p) return "";
     // 内置卡名按 UI 语言显示(personas-i18n.js overlay),中文兜底;自制卡不翻
     const lang = state.settings && state.settings.language;
-    const L = lang === "en" ? "en" : lang === "ja" ? "ja" : null;
+    const L = lang === "en" ? "en" : null;
     const tr = L && p.source !== "user" && window.PERSONA_I18N && window.PERSONA_I18N[p.id] && window.PERSONA_I18N[p.id][L];
     if (tr && tr.name) return tr.name;
     return (p.name || p.cn_name) || "";
@@ -92,7 +92,7 @@
       const card = await invoke("equip_persona", { sessionId: state.activeSessionId, personaId });
       lastEquippedSid = sid; // 成功加持的目标会话(即使已切走)：供紧随其后的引导卡定向(审计补充)
       if (sid !== state.activeSessionId) return card; // 已切走：不写当前显示
-      // 标题仍是默认占位(三语哨兵,见 isDefaultChatTitle)→ 用卡牌名命名(无论草稿态物化还是遗留空会话;
+      // 标题仍是默认占位（中英文哨兵，见 isDefaultChatTitle）→ 用卡牌名命名（无论草稿态物化还是遗留空会话；
       // 用户已主动改名 / 已被首条消息命名的会话不动)。决策:卡牌优先于首条消息。
       const m = state.sessions.find(function (s) { return s.id === sid; });
       // 标题还是默认值 / 仍是卡牌占位(换卡场景)→ 用(新)卡牌名命名,并标记为占位。
