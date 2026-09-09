@@ -1,4 +1,5 @@
-//! Linux 后端:X11 全功能;Wayland 显式部分支持(截屏尽力而为,输入一律 unsupported)。
+//! Linux 后端:X11 全功能;Wayland 截屏尽力而为,输入走 xdg-desktop-portal
+//! RemoteDesktop(见 [`super::wayland_portal`] 模块文档)。
 //!
 //! 会话探测决定能力面(`detect_session` 为纯函数,便于单测):
 //! - 主信号 `XDG_SESSION_TYPE`(`x11`/`wayland`/`tty`),`WAYLAND_DISPLAY` +
@@ -11,9 +12,10 @@
 //!   `origin_x/y` 需把 xcap 的逻辑原点乘回 `scale_factor`,输入倍率恒为 1.0。
 //! - Wayland:截屏尝试 xcap 的 GNOME-Shell/portal/wlroots 回退链(构造时探测,
 //!   portal 路径可能每次弹授权对话框,`capabilities().notes` 注明);探测失败则
-//!   显式 `unsupported`。输入一律显式 `unsupported`(v1 范围决定:不用 enigo
-//!   实验性 wayland/libei,不依赖 XTest-through-XWayland;portal RemoteDesktop
-//!   为后续跟进项)。
+//!   显式 `unsupported`。输入合成走 portal RemoteDesktop(懒启动,首次输入
+//!   动作弹系统授权对话框;探测不到 portal 时显式不可用)。输入坐标系是绑定
+//!   ScreenCast stream 的**逻辑**空间,故 `origin_x/y` 保持 xcap 的逻辑原点、
+//!   `input_scale = 1/scale`,ScaleMap 输出即 portal 输入坐标。
 //! - 无障碍树:`atspi`(AT-SPI over D-Bus,独立 a11y 总线,X11/Wayland 均可)。
 //!   trait 为同步而 atspi 为 async:backend 持有一个专用 current-thread tokio
 //!   runtime,在 worker 线程(普通 std::thread,不含引擎主 runtime)上
@@ -35,6 +37,7 @@ use super::super::types::{
     Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
     UiTreeOptions,
 };
+use super::wayland_portal::{self, PortalInput};
 
 /// 移动后点击/按下前的静置时间(XTEST 注入与合成器处理间的竞态缓冲)。
 const SETTLE_MS: u64 = 40;
@@ -85,8 +88,7 @@ impl SessionInfo {
 /// Wayland 信号时才算 X11 判据(它在 XWayland 会话里同样存在)。
 fn detect_session(env: &dyn Fn(&str) -> Option<String>) -> SessionInfo {
     let nonempty = |key: &str| env(key).filter(|value| !value.trim().is_empty());
-    let session_type =
-        nonempty("XDG_SESSION_TYPE").map(|value| value.trim().to_ascii_lowercase());
+    let session_type = nonempty("XDG_SESSION_TYPE").map(|value| value.trim().to_ascii_lowercase());
     let wayland_display = nonempty("WAYLAND_DISPLAY");
     let runtime_dir = nonempty("XDG_RUNTIME_DIR");
     let display = nonempty("DISPLAY");
@@ -357,7 +359,10 @@ impl TreeWriter<'_> {
             if child_ref.is_null() {
                 continue;
             }
-            if let Ok(child) = child_ref.into_accessible_proxy(self.conn.connection()).await {
+            if let Ok(child) = child_ref
+                .into_accessible_proxy(self.conn.connection())
+                .await
+            {
                 Box::pin(self.write_node(&child, depth + 1)).await;
             }
         }
@@ -476,7 +481,8 @@ async fn a11y_init() -> Result<AccessibilityConnection, String> {
 /// xcap 的 Wayland 链路(GNOME Shell D-Bus → portal Screenshot → wlroots
 /// wayshot)任一可用即成功;portal 路径可能向用户弹授权对话框。
 fn probe_wayland_screenshot() -> Result<(), String> {
-    let monitors = Monitor::all().map_err(|error| format!("monitor enumeration failed: {error}"))?;
+    let monitors =
+        Monitor::all().map_err(|error| format!("monitor enumeration failed: {error}"))?;
     let monitor = monitors
         .iter()
         .find(|m| m.is_primary().unwrap_or(false))
@@ -506,9 +512,12 @@ pub(super) struct LinuxComputerUseBackend {
     runtime: tokio::runtime::Runtime,
     a11y: Option<AccessibilityConnection>,
     a11y_init_error: Option<String>,
-    /// 仅 X11 构造;Wayland 恒为 None(输入显式 unsupported)。
+    /// 仅 X11 构造;Wayland 输入走 `wayland_portal`。
     input: Option<Enigo>,
     input_init_error: Option<String>,
+    /// 仅 Wayland 构造(portal RemoteDesktop,懒启动会话)。
+    wayland_portal: Option<PortalInput>,
+    wayland_portal_error: Option<String>,
     wayland_screenshot_ok: bool,
     wayland_screenshot_error: Option<String>,
 }
@@ -518,22 +527,13 @@ impl LinuxComputerUseBackend {
         self.session.kind == SessionKind::Wayland
     }
 
-    fn wayland_unsupported(&self, capability: &'static str) -> ComputerUseError {
-        ComputerUseError::unsupported(
-            capability,
-            format!(
-                "Wayland session ({}): input injection and pointer queries are unsupported \
-                 in v1; xdg-desktop-portal RemoteDesktop is a documented follow-up (enigo's \
-                 experimental wayland/libei backends and XTest-through-XWayland are \
-                 deliberately not used)",
-                self.session.desktop_label()
-            ),
-        )
-    }
-
-    fn require_input(&mut self) -> Result<&mut Enigo, ComputerUseError> {
+    fn require_enigo(&mut self) -> Result<&mut Enigo, ComputerUseError> {
         if self.is_wayland() {
-            return Err(self.wayland_unsupported("input"));
+            return Err(ComputerUseError::unsupported(
+                "input",
+                "XTEST input is not used on Wayland sessions (XWayland would only reach \
+                 X11 clients); input goes through the portal RemoteDesktop backend",
+            ));
         }
         match self.input.as_mut() {
             Some(enigo) => Ok(enigo),
@@ -550,14 +550,28 @@ impl LinuxComputerUseBackend {
         }
     }
 
+    /// Wayland portal 输入后端(探测失败的粘性错误在 `wayland_portal_error`)。
+    fn require_portal(&mut self) -> Result<&mut PortalInput, ComputerUseError> {
+        match self.wayland_portal.as_mut() {
+            Some(portal) => Ok(portal),
+            None => {
+                let detail = self
+                    .wayland_portal_error
+                    .as_deref()
+                    .unwrap_or("unknown error");
+                Err(ComputerUseError::unavailable(format!(
+                    "Wayland input via xdg-desktop-portal RemoteDesktop is not available: \
+                     {detail}"
+                )))
+            }
+        }
+    }
+
     fn require_a11y(&self) -> Result<&AccessibilityConnection, ComputerUseError> {
         match self.a11y.as_ref() {
             Some(conn) => Ok(conn),
             None => {
-                let detail = self
-                    .a11y_init_error
-                    .as_deref()
-                    .unwrap_or("unknown error");
+                let detail = self.a11y_init_error.as_deref().unwrap_or("unknown error");
                 Err(ComputerUseError::unavailable(format!(
                     "AT-SPI bus connection failed at backend init: {detail}"
                 )))
@@ -604,13 +618,19 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                         .unwrap_or("probe failed")
                 )
             };
+            let input_note = match (&self.wayland_portal, &self.wayland_portal_error) {
+                (Some(_), _) => "input via xdg-desktop-portal RemoteDesktop (the first input \
+                                 action opens a system authorization dialog)"
+                    .to_string(),
+                (None, Some(error)) => format!("input unavailable: {error}"),
+                (None, None) => "input unavailable".to_string(),
+            };
             Capabilities {
                 screenshot: self.wayland_screenshot_ok,
-                input: false,
+                input: self.wayland_portal.is_some(),
                 ui_tree,
                 notes: format!(
-                    "Wayland session ({}): input injection unsupported in v1 \
-                     (portal RemoteDesktop follow-up); {screenshot_note}; \
+                    "Wayland session ({}): {input_note}; {screenshot_note}; \
                      AT-SPI bounds best-effort on Wayland",
                     self.session.desktop_label()
                 ),
@@ -650,8 +670,9 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 ),
             ));
         }
-        let monitors = Monitor::all()
-            .map_err(|error| ComputerUseError::unavailable(format!("monitor enumeration: {error}")))?;
+        let monitors = Monitor::all().map_err(|error| {
+            ComputerUseError::unavailable(format!("monitor enumeration: {error}"))
+        })?;
         // X11 下 xcap 用 Xft.dpi/96 作 scale 并把 RandR 几何除以它;截图与
         // XTEST 都在根窗口物理像素平面,故输入倍率恒 1.0,origin 乘回 scale。
         let scale = monitors
@@ -700,46 +721,87 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
         })?;
         let width = image.width();
         let height = image.height();
-        let origin_x = monitor
-            .x()
-            .map(|x| (x as f32 * scale).round() as i32)
-            .unwrap_or(0);
-        let origin_y = monitor
-            .y()
-            .map(|y| (y as f32 * scale).round() as i32)
-            .unwrap_or(0);
+        // X11:xcap 报告逻辑原点,乘回 scale 得根窗口物理像素(=输入空间,
+        // 输入倍率 1.0)。Wayland:portal 输入在 stream 逻辑坐标空间,与 xcap
+        // 的逻辑几何同空间,origin 不乘 scale,输入倍率取 1/scale(见
+        // wayland_portal 模块文档)。
+        let (origin_x, origin_y, input_scale_x, input_scale_y) = if self.is_wayland() {
+            let scale = f64::from(scale);
+            let origin_x = monitor.x().unwrap_or(0);
+            let origin_y = monitor.y().unwrap_or(0);
+            (origin_x, origin_y, 1.0 / scale, 1.0 / scale)
+        } else {
+            let origin_x = monitor
+                .x()
+                .map(|x| (x as f32 * scale).round() as i32)
+                .unwrap_or(0);
+            let origin_y = monitor
+                .y()
+                .map(|y| (y as f32 * scale).round() as i32)
+                .unwrap_or(0);
+            (origin_x, origin_y, 1.0, 1.0)
+        };
         Ok(Capture {
             rgba: image.into_raw(),
             width,
             height,
             origin_x,
             origin_y,
-            input_scale_x: 1.0,
-            input_scale_y: 1.0,
+            input_scale_x,
+            input_scale_y,
         })
     }
 
     fn cursor_position(&mut self) -> Result<(i32, i32), ComputerUseError> {
         if self.is_wayland() {
-            return Err(self.wayland_unsupported("cursor_position"));
+            return match self.require_portal()?.last_pointer() {
+                Some(position) => Ok(position),
+                None => Err(ComputerUseError::unsupported(
+                    "cursor_position",
+                    "Wayland exposes no cursor query API; the position becomes known after \
+                     the first mouse_move of an authorized portal session",
+                )),
+            };
         }
-        let enigo = self.require_input()?;
+        let enigo = self.require_enigo()?;
         enigo
             .location()
             .map_err(|error| input_failed("cursor position query", error))
     }
 
     fn move_to(&mut self, x: i32, y: i32) -> Result<(), ComputerUseError> {
-        let enigo = self.require_input()?;
+        if self.is_wayland() {
+            let portal = self.require_portal()?;
+            portal.ensure_started()?;
+            portal.motion_absolute(x, y)?;
+            portal.track_pointer(x, y);
+            return Ok(());
+        }
+        let enigo = self.require_enigo()?;
         enigo
             .move_mouse(x, y, Coordinate::Abs)
             .map_err(|error| input_failed("mouse move", error))
     }
 
     fn click(&mut self, button: MouseButton, count: u8) -> Result<(), ComputerUseError> {
-        let enigo = self.require_input()?;
-        let button = map_enigo_button(button);
         let count = count.max(1);
+        if self.is_wayland() {
+            let portal = self.require_portal()?;
+            portal.ensure_started()?;
+            let evdev = wayland_portal::map_button(button);
+            // 移动与点击之间留静置窗口(与 XTEST 同样的注入竞态缓冲)。
+            settle();
+            for i in 0..count {
+                portal.button(evdev, true)?;
+                portal.button(evdev, false)?;
+                if i + 1 < count {
+                    sleep(Duration::from_millis(CLICK_GAP_MS));
+                }
+            }
+            return Ok(());
+        }
+        let enigo = self.require_enigo()?;
+        let button = map_enigo_button(button);
         // 移动与点击之间留静置窗口,降低 XTEST 注入竞态。
         settle();
         for i in 0..count {
@@ -754,21 +816,54 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
     }
 
     fn mouse_down(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
-        let enigo = self.require_input()?;
+        if self.is_wayland() {
+            let portal = self.require_portal()?;
+            portal.ensure_started()?;
+            return portal.button(wayland_portal::map_button(button), true);
+        }
+        let enigo = self.require_enigo()?;
         enigo
             .button(map_enigo_button(button), Direction::Press)
             .map_err(|error| input_failed("mouse down", error))
     }
 
     fn mouse_up(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
-        let enigo = self.require_input()?;
+        if self.is_wayland() {
+            let portal = self.require_portal()?;
+            portal.ensure_started()?;
+            return portal.button(wayland_portal::map_button(button), false);
+        }
+        let enigo = self.require_enigo()?;
         enigo
             .button(map_enigo_button(button), Direction::Release)
             .map_err(|error| input_failed("mouse up", error))
     }
 
     fn drag(&mut self, from: (i32, i32), to: (i32, i32)) -> Result<(), ComputerUseError> {
-        let enigo = self.require_input()?;
+        if self.is_wayland() {
+            let portal = self.require_portal()?;
+            portal.ensure_started()?;
+            portal.motion_absolute(from.0, from.1)?;
+            settle();
+            portal.button(wayland_portal::map_button(MouseButton::Left), true)?;
+            // 插值移动;无论中途成败,最后都必须释放按键。
+            let mut result = Ok(());
+            for step in 1..=DRAG_STEPS {
+                let t = f64::from(step) / f64::from(DRAG_STEPS);
+                let x = f64::from(from.0) + f64::from(to.0 - from.0) * t;
+                let y = f64::from(from.1) + f64::from(to.1 - from.1) * t;
+                if let Err(error) = portal.motion_absolute(x.round() as i32, y.round() as i32) {
+                    result = Err(error);
+                    break;
+                }
+                sleep(Duration::from_millis(DRAG_STEP_MS));
+            }
+            let release = portal.button(wayland_portal::map_button(MouseButton::Left), false);
+            portal.track_pointer(to.0, to.1);
+            result.and(release)?;
+            return Ok(());
+        }
+        let enigo = self.require_enigo()?;
         enigo
             .move_mouse(from.0, from.1, Coordinate::Abs)
             .map_err(|error| input_failed("drag: move to start", error))?;
@@ -782,7 +877,8 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             let t = f64::from(step) / f64::from(DRAG_STEPS);
             let x = f64::from(from.0) + f64::from(to.0 - from.0) * t;
             let y = f64::from(from.1) + f64::from(to.1 - from.1) * t;
-            if let Err(error) = enigo.move_mouse(x.round() as i32, y.round() as i32, Coordinate::Abs)
+            if let Err(error) =
+                enigo.move_mouse(x.round() as i32, y.round() as i32, Coordinate::Abs)
             {
                 result = Err(input_failed("drag: interpolated move", error));
                 break;
@@ -796,7 +892,14 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
     }
 
     fn scroll(&mut self, direction: ScrollDirection, clicks: u32) -> Result<(), ComputerUseError> {
-        let enigo = self.require_input()?;
+        if self.is_wayland() {
+            let portal = self.require_portal()?;
+            portal.ensure_started()?;
+            // 一次离散滚轮事件可携带多格(合成器内部逐格注入)。
+            let (axis, steps) = wayland_portal::map_discrete_scroll(direction, clicks);
+            return portal.axis_discrete(axis, steps);
+        }
+        let enigo = self.require_enigo()?;
         // 显式用滚轮按钮而非 Mouse::scroll():后者符号约定因平台而异
         // (x11rb 正数=向下),按钮循环语义无歧义。
         let button = match direction {
@@ -817,7 +920,21 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
     }
 
     fn type_text(&mut self, text: &str) -> Result<(), ComputerUseError> {
-        let enigo = self.require_input()?;
+        if self.is_wayland() {
+            let portal = self.require_portal()?;
+            portal.ensure_started()?;
+            // 逐字符 keysym 注入(\n→Return、\t→Tab;不可映射字符显式报错)。
+            let keysyms = text
+                .chars()
+                .map(wayland_portal::char_keysym)
+                .collect::<Result<Vec<_>, _>>()?;
+            for keysym in keysyms {
+                portal.keysym_event(keysym, true)?;
+                portal.keysym_event(keysym, false)?;
+            }
+            return Ok(());
+        }
+        let enigo = self.require_enigo()?;
         // enigo text() 走 Unicode 注入(X11 临时 keycode 重映射,xdotool 同款
         // 技巧),中文等字符直接进入焦点字段,不经 IME 合成。
         enigo
@@ -826,21 +943,58 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
     }
 
     fn key_chord(&mut self, keys: &[Key]) -> Result<(), ComputerUseError> {
+        if self.is_wayland() {
+            let portal = self.require_portal()?;
+            let mapped = keys
+                .iter()
+                .map(|key| wayland_portal::map_keysym(*key))
+                .collect::<Result<Vec<_>, _>>()?;
+            portal.ensure_started()?;
+            for (index, keysym) in mapped.iter().enumerate() {
+                if let Err(error) = portal.keysym_event(*keysym, true) {
+                    // 错误路径上释放已按下的键,避免修饰键卡死。
+                    for held in mapped[..index].iter().rev() {
+                        let _ = portal.keysym_event(*held, false);
+                    }
+                    return Err(error);
+                }
+            }
+            for keysym in mapped.iter().rev() {
+                portal.keysym_event(*keysym, false)?;
+            }
+            return Ok(());
+        }
         let mapped = keys
             .iter()
             .map(|key| map_enigo_key(*key))
             .collect::<Result<Vec<_>, _>>()?;
-        let enigo = self.require_input()?;
+        let enigo = self.require_enigo()?;
         Self::press_chord(enigo, &mapped)?;
         Self::release_chord(enigo, &mapped)
     }
 
     fn hold_key(&mut self, keys: &[Key], ms: u64) -> Result<(), ComputerUseError> {
+        if self.is_wayland() {
+            let portal = self.require_portal()?;
+            let mapped = keys
+                .iter()
+                .map(|key| wayland_portal::map_keysym(*key))
+                .collect::<Result<Vec<_>, _>>()?;
+            portal.ensure_started()?;
+            for keysym in &mapped {
+                portal.keysym_event(*keysym, true)?;
+            }
+            sleep(Duration::from_millis(ms));
+            for keysym in mapped.iter().rev() {
+                portal.keysym_event(*keysym, false)?;
+            }
+            return Ok(());
+        }
         let mapped = keys
             .iter()
             .map(|key| map_enigo_key(*key))
             .collect::<Result<Vec<_>, _>>()?;
-        let enigo = self.require_input()?;
+        let enigo = self.require_enigo()?;
         Self::press_chord(enigo, &mapped)?;
         sleep(Duration::from_millis(ms));
         Self::release_chord(enigo, &mapped)
@@ -882,7 +1036,9 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
         .enable_all()
         .build()
         .map_err(|error| {
-            ComputerUseError::unavailable(format!("cannot create tokio runtime for AT-SPI: {error}"))
+            ComputerUseError::unavailable(format!(
+                "cannot create tokio runtime for AT-SPI: {error}"
+            ))
         })?;
     let (a11y, a11y_init_error) = match runtime.block_on(a11y_init()) {
         Ok(conn) => (Some(conn), None),
@@ -890,7 +1046,7 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
     };
 
     // Wayland 不构造 enigo:XTEST 经 XWayland 只能触达 X11 客户端,且
-    // enigo 的 wayland/libei 后端均为实验性——输入一律显式 unsupported。
+    // enigo 的 wayland/libei 后端均为实验性——输入走 portal RemoteDesktop。
     let (input, input_init_error) = if wayland {
         (None, None)
     } else {
@@ -898,6 +1054,20 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
             Ok(enigo) => (Some(enigo), None),
             Err(error) => (None, Some(error.to_string())),
         }
+    };
+
+    // Wayland 输入:探测 portal 的 RemoteDesktop 支持(纯属性查询,不弹窗);
+    // 探测失败记为粘性错误,输入动作显式不可用。
+    let (wayland_portal, wayland_portal_error) = if wayland {
+        match PortalInput::probe() {
+            Ok(()) => match PortalInput::new() {
+                Ok(portal) => (Some(portal), None),
+                Err(error) => (None, Some(error.to_string())),
+            },
+            Err(detail) => (None, Some(detail)),
+        }
+    } else {
+        (None, None)
     };
 
     let (wayland_screenshot_ok, wayland_screenshot_error) = if wayland {
@@ -916,9 +1086,21 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
         a11y_init_error,
         input,
         input_init_error,
+        wayland_portal,
+        wayland_portal_error,
         wayland_screenshot_ok,
         wayland_screenshot_error,
     }))
+}
+
+/// backend 在 worker 线程上析构(Shutdown):portal 授权授予的会话在这里
+/// 尽力关闭,不跨进程泄漏。
+impl Drop for LinuxComputerUseBackend {
+    fn drop(&mut self) {
+        if let Some(portal) = self.wayland_portal.as_mut() {
+            portal.close();
+        }
+    }
 }
 
 #[cfg(test)]

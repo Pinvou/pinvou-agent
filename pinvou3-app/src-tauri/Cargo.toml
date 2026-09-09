@@ -283,6 +283,9 @@ x11 = { version = "2.21", features = ["xlib"] }
 javascriptcore = { package = "javascriptcore-rs", version = "1.1" }
 # Computer Use 无障碍树(features/computer_use):Linux AT-SPI(D-Bus)。
 atspi = "0.30"
+# Computer Use Wayland 输入注入(features/computer_use):xdg-desktop-portal
+# RemoteDesktop(D-Bus)。feature 组合与 atspi 一致,共享同一份 zbus 编译。
+zbus = { version = "5.5", default-features = false, features = ["async-io"] }
 # Tauri's unstable Wry plugin API lets the browser feature pre-register its
 # dedicated WebKit context with automation enabled. Keep this exact version
 # aligned with Tauri's resolved runtime so the unstable runtime API cannot drift.

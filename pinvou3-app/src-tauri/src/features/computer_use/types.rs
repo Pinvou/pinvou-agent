@@ -228,7 +228,7 @@ pub struct Capabilities {
     pub screenshot: bool,
     pub input: bool,
     pub ui_tree: bool,
-    /// 自由文本说明（如 "Wayland session: input injection unsupported"）。
+    /// 自由文本说明（如 "input unavailable: no portal authorization"）。
     pub notes: String,
 }
 
@@ -280,8 +280,11 @@ pub struct UiTreeOptions {
 /// 后端错误。平台缺少能力时必须显式 `Unsupported`，不得静默降级。
 #[derive(Debug, Clone)]
 pub enum ComputerUseError {
-    /// 该平台/会话不支持此能力（如 Wayland 输入注入、未实现的后端）。
-    Unsupported { capability: &'static str, detail: String },
+    /// 该平台/会话不支持此能力（如 portal 未提供 RemoteDesktop、未实现的后端）。
+    Unsupported {
+        capability: &'static str,
+        detail: String,
+    },
     /// 能力原则上支持但当前不可用（权限未授予、显示器句柄失效等）。
     Unavailable { detail: String },
     /// 执行失败。
@@ -472,14 +475,8 @@ mod tests {
                 "{meta} should map to Meta"
             );
         }
-        assert_eq!(
-            parse_key_chord("arrowup").as_deref(),
-            Ok(&[Key::Up][..])
-        );
-        assert_eq!(
-            parse_key_chord("pgdn").as_deref(),
-            Ok(&[Key::PageDown][..])
-        );
+        assert_eq!(parse_key_chord("arrowup").as_deref(), Ok(&[Key::Up][..]));
+        assert_eq!(parse_key_chord("pgdn").as_deref(), Ok(&[Key::PageDown][..]));
         assert_eq!(
             parse_key_chord("ctrl+plus").as_deref(),
             Ok(&[Key::Control, Key::Char('+')][..])

@@ -6638,6 +6638,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "x11",
  "xcap",
+ "zbus 5.19.0",
  "zip",
 ]
 
