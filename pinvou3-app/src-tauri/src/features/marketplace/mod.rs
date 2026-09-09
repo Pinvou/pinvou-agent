@@ -3561,11 +3561,11 @@ mod tests {
         });
     }
 
-    /// 评审 #455 阻塞项回归：真实首启时 bridge/paths 会先自写 settings.json
-    /// 与 sessions/default/artifacts/，早于任何开关读。若全新装机的迁移判定
-    /// 不随首读落盘冻结，宽口径升级信号（settings/会话存在 ⇒ 升级装机）会
-    /// 被首启痕迹污染，次读把 plain 初始化回旧 AllowAll 全开。本测试模拟
-    /// 「首读（冻结全新判定）→ 首启自写痕迹 → 次读」的完整序列。
+    /// 评审 #455 阻塞项回归：真实首启时 bridge/paths 会自写 settings.json
+    /// 与 sessions/default/artifacts/。生产保证来自启动顺序——首读被上提至
+    /// Tauri setup 钩子顶部（lib.rs `disabled_bundles_migration` 标记），早于
+    /// bridge boot 的一切首启自写；本测试覆盖该顺序所依赖的冻结语义：判定
+    /// 一旦随首读落盘，之后出现的首启痕迹不得把全新装机翻回旧 AllowAll 全开。
     #[test]
     fn plain_deny_all_marker_frozen_at_first_read() {
         with_temp_home(|| {

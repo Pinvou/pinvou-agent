@@ -86,11 +86,12 @@ pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
 /// marketplace/installed.json、settings.json 或已有会话目录，任一存在即视
 /// 为升级装机并保留旧 AllowAll 语义（评审 #445 P1-2）。全空家目录才算全新。
 ///
-/// 该宽口径信号会被应用自身的首启行为污染（首启即自写 settings.json 与
-/// sessions/default/artifacts/，均早于首次开关读），因此「升级 vs 全新」的
-/// 判定必须在**首次读取时无条件落盘**（置 `plain_defaults_migrated` 标记）
-/// 冻结——否则全新装机的第二次读取会被首启痕迹误判为升级而翻回全开
-/// （评审 #455 阻塞项）。
+/// 该宽口径信号会被应用自身的首启行为污染（bridge boot 的 ensure_dirs 自写
+/// sessions/default/artifacts/、缺省补写默认 settings.json），因此首读被
+/// 上提至 Tauri setup 钩子顶部（lib.rs `disabled_bundles_migration` 标记，
+/// 早于一切首启自写痕迹），且「升级 vs 全新」的判定在**首次读取时无条件
+/// 落盘**（置 `plain_defaults_migrated` 标记）冻结——否则全新装机会被
+/// 首启痕迹误判为升级装机而翻回全开（评审 #455 阻塞项）。
 fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
     let path = disabled_bundles_path();
     let content = match std::fs::read_to_string(&path) {

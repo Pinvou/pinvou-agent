@@ -709,6 +709,15 @@ pub fn run() {
         })
         .setup(|app| {
             startup::mark("setup:start");
+            // disabled_bundles 迁移判定必须在此冻结：宽口径升级信号
+            // （settings.json/会话目录存在 ⇒ 升级装机）会被 bridge boot 的首启
+            // 行为污染（ensure_dirs 自写 sessions/default/artifacts/、缺省补写
+            // 默认 settings.json），全新装机的首读若晚于这些写入，会被误判为
+            // 升级装机而翻回旧 AllowAll 全开（评审 #455 阻塞项）。此处读取触发
+            // 迁移并把「全新 vs 升级」判定落盘冻结，早于一切首启自写痕迹。
+            startup::mark("disabled_bundles_migration:start");
+            let _ = crate::features::assistant::skill_materialization::load_disabled_skills();
+            startup::mark("disabled_bundles_migration:done");
             if let Ok(resource_dir) = app.path().resource_dir() {
                 crate::platform::paths::set_runtime_resource_dir(resource_dir);
             }
@@ -990,8 +999,11 @@ pub fn run() {
             startup::mark("engine_pool:done");
 
             // 技能/工具开关 scope 治理(已收敛为 disabled_bundles.json):启动时
-            //   1. 读一次 disabled_bundles.json——触发旧双文件迁移(disabled_connectors
-            //      .json / disabled_skills.json → 包 id × SessionMode 单一禁用集);
+            //   1. 读一次 disabled_bundles.json——旧双文件迁移(disabled_connectors
+            //      .json / disabled_skills.json → 包 id × SessionMode 单一禁用集)
+            //      与「全新 vs 升级」判定冻结已在 setup 钩子顶部完成(必须早于
+            //      bridge boot 的首启自写,见 disabled_bundles_migration 标记),
+            //      此处为幂等重读;
             //   2. 退役进程级全局 DISABLED_SKILLS(过滤职责移交组合目录,组合目录
             //      空 → 整个 `## Skills` 块不渲染,路径泄露面随之封闭)。
             // 组合目录的物化在 engine spawn 时按会话进行(build_engine_config 注入
