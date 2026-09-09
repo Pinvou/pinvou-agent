@@ -349,10 +349,14 @@ class CiGatePolicyTests(unittest.TestCase):
         rust_lint = self.pr_workflow.split(
             "\n  rust-lint:", maxsplit=1
         )[1].split("\n  rust-test:", maxsplit=1)[0]
-        self.assertIn("timeout-minutes: 60", rust_lint)
+        self.assertIn("timeout-minutes: 30", rust_lint)
         self.assertIn("RUN_HEAVY_RUST_CHECKS", rust_lint)
         self.assertIn("github.event.pull_request.draft == false", rust_lint)
         self.assertIn("needs.changes.outputs.rust_dependencies == 'true'", rust_lint)
+        self.assertNotIn(
+            "cargo test --test headless_bridge_contract",
+            rust_lint,
+        )
 
         rust_test = self.pr_workflow.split("\n  rust-test:", maxsplit=1)[1].split(
             "\n  windows-rust-test:", maxsplit=1
@@ -385,6 +389,12 @@ class CiGatePolicyTests(unittest.TestCase):
             "cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1",
             rust_test,
         )
+        self.assertIn(
+            "cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml "
+            "--test headless_bridge_contract --features benchmark-hooks --locked "
+            "-- --test-threads=1",
+            rust_test,
+        )
         # push(main) 只编译暖 cache,不执行测试:MQ 已对同一组合树跑过全量测试;
         # push 恢复暖 cache 后跑全量测试曾连续触发 hosted runner 失联(见 workflow 注释)。
         self.assertIn(
@@ -406,7 +416,7 @@ class CiGatePolicyTests(unittest.TestCase):
             "        if: ${{ github.event_name != 'push' }}",
             rust_test,
         )
-        self.assertEqual(rust_test.count("bash scripts/ci-memguard.sh &"), 3)
+        self.assertEqual(rust_test.count("bash scripts/ci-memguard.sh &"), 4)
         self.assertIn('CARGO_PROFILE_DEV_DEBUG: "0"', rust_test)
         self.assertIn("timeout-minutes: 120", rust_test)
         self.assertIn(

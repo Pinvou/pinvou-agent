@@ -38,9 +38,9 @@ name: PR Check
 #   也能从 main cache 增量编译,不再全冷。
 # - 曾用 sccache 按内容哈希缓存仓库内 crate 的编译产物,但 sccache 的 client-server
 #   架构只会把 RUST_MIN_STACK 传给 client、到不了 server 派生的 rustc,codewhale-tui
-#   codegen 仍会栈溢出(#271 已移除)。rust-cache 的 target 目录缓存保留,仓库内 crate
-#   暖缓存重编通常约 5min；v0.9.12 的 benchmark/product backend 冷编译可超过
-#   30min，因此 rust-lint 保持 60min 有界上限且不接入 sccache(见该 job 注释)。
+#   codegen 仍会栈溢出(#271 已移除)。rust-lint 保留 target 目录缓存用于
+#   clippy/check；会重链接的 headless integration test 在 rust-test 的单次 rustc 图中
+#   复用产物，并沿用 ThinLTO/lld/内存看门狗的 hosted-runner 边界。
 
 on:
   pull_request:
@@ -582,9 +582,10 @@ jobs:
   # clippy/fmt/deny 独立 job:与 rust-test 并行,各自独立 cache。
   # clippy 用 clippy-driver 编译,产物不能被 cargo test(rustc)复用;在同一 job 里
   # 串行跑会导致依赖图被编译两遍。拆成并行 job 后 wall-clock ≈ max(lint, test)。
-  # 不接入 sccache:clippy 产物与 test 不通用,接入会使 sccache 写入量翻倍,
-  # 暖缓存时本 job 仍约 2-3min；冷缓存下 benchmark/product backend 会显著更久，
-  # 但接入 sccache 仍会挤压 10GB 配额，因此用 60min 有界 job 上限兜住冷编译。
+  # 不接入 sccache:clippy 产物与 test 不通用,接入会使 sccache 写入量翻倍并
+  # 挤压 10GB 配额。benchmark/product backend 只在此做 cargo check；需要链接的
+  # headless 合同放在 rust-test 复用 rustc 产物与其 lld/内存防护，避免 lint runner
+  # 在同一 target 图上先 clippy 后再独立冷链接而被 hosted runner 关停。
   rust-lint:
     name: rust-lint
     needs: changes
@@ -593,7 +594,7 @@ jobs:
     # 否则 deny.toml 策略改动会静默漏检 cargo-deny。
     if: ${{ !cancelled() && github.event.action != 'closed' && (needs.changes.outputs.rust_code == 'true' || needs.changes.outputs.rust_dependencies == 'true') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     env:
       # Draft 只跑无系统依赖的 fmt 快检；Ready PR、Queue 与 main 跑 clippy。
       RUN_HEAVY_RUST_CHECKS: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -719,16 +720,16 @@ jobs:
         run: cargo check --bin dump_system_prompt --features dev-tools
 
       # benchmark-hooks is intentionally outside the desktop default feature
-      # set, so the ordinary clippy/test legs cannot detect API drift in the
-      # headless evaluation bridge. Compile all gated targets and execute its
-      # smallest end-to-end contract whenever the heavy Rust gate runs.
-      - name: benchmark-hooks + product backend compile contract (hard gate)
+      # set, so the ordinary clippy legs cannot detect API drift in the
+      # headless evaluation bridge. Keep both compile contracts here, but run
+      # the link-heavy executable contract in rust-test where rustc test
+      # artifacts, ThinLTO/lld, and the memory guard are available.
+      - name: benchmark-hooks + product backend compile checks (hard gate)
         if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
         working-directory: pinvou3-app/src-tauri
         run: |
           cargo check --all-targets --features benchmark-hooks --locked
           CARGO_TARGET_DIR=target cargo check --manifest-path ../../pinvou-cli/Cargo.toml --package pinvou-product-backend --locked
-          cargo test --test headless_bridge_contract --features benchmark-hooks --locked -- --test-threads=1
 
       # cargo-deny only cares about dependency/policy paths (Cargo/lock/deny/gitlink).
       - name: cargo-deny (advisories/licenses/bans/sources)
@@ -922,6 +923,22 @@ jobs:
           guard_pid=$!
           set +e
           cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
+          status=$?
+          set -e
+          kill "$guard_pid" 2>/dev/null || true
+          exit "$status"
+
+      # benchmark-hooks 不在桌面默认 feature 集中。该 integration test 会重新
+      # 链接完整依赖图；放在 rust-lint 时两个独立 hosted runner 均在同一
+      # 链接区间收到 shutdown/143。放到本 job 复用上方 rustc 测试产物，
+      # 并沿用 ThinLTO + 串行 lld + ci-memguard 的已验证内存边界。
+      - name: benchmark-hooks headless bridge contract
+        if: ${{ github.event_name != 'push' }}
+        run: |
+          bash scripts/ci-memguard.sh &
+          guard_pid=$!
+          set +e
+          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --test headless_bridge_contract --features benchmark-hooks --locked -- --test-threads=1
           status=$?
           set -e
           kill "$guard_pid" 2>/dev/null || true

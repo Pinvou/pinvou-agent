@@ -89,23 +89,46 @@ class BenchmarkIsolationPolicyTests(unittest.TestCase):
 
     def test_ready_ci_compiles_and_executes_the_benchmark_feature_surface(self):
         workflow = self.read(".github/workflows/pr-check.yml")
-        marker = "- name: benchmark-hooks + product backend compile contract (hard gate)"
-        self.assertIn(marker, workflow)
-        step = workflow.split(marker, 1)[1].split("\n      - name:", 1)[0]
+        compile_marker = (
+            "- name: benchmark-hooks + product backend compile checks (hard gate)"
+        )
+        self.assertIn(compile_marker, workflow)
+        compile_step = workflow.split(compile_marker, 1)[1].split(
+            "\n      - name:", 1
+        )[0]
 
-        self.assertIn("if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}", step)
-        self.assertIn("working-directory: pinvou3-app/src-tauri", step)
+        self.assertIn(
+            "if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}", compile_step
+        )
+        self.assertIn(
+            "working-directory: pinvou3-app/src-tauri", compile_step
+        )
         self.assertIn(
             "cargo check --all-targets --features benchmark-hooks --locked",
-            step,
+            compile_step,
         )
         self.assertIn(
             "CARGO_TARGET_DIR=target cargo check --manifest-path ../../pinvou-cli/Cargo.toml --package pinvou-product-backend --locked",
-            step,
+            compile_step,
         )
+        self.assertNotIn("cargo test", compile_step)
+
+        rust_test = workflow.split("\n  rust-test:", 1)[1].split(
+            "\n  windows-rust-test:", 1
+        )[0]
+        contract_marker = "- name: benchmark-hooks headless bridge contract"
+        self.assertIn(contract_marker, rust_test)
+        contract_step = rust_test.split(contract_marker, 1)[1].split(
+            "\n      - name:", 1
+        )[0]
+        self.assertIn("if: ${{ github.event_name != 'push' }}", contract_step)
+        self.assertIn("bash scripts/ci-memguard.sh &", contract_step)
+        self.assertIn("/usr/bin/time -v cargo test", contract_step)
         self.assertIn(
-            "cargo test --test headless_bridge_contract --features benchmark-hooks --locked -- --test-threads=1",
-            step,
+            "cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml "
+            "--test headless_bridge_contract --features benchmark-hooks --locked "
+            "-- --test-threads=1",
+            contract_step,
         )
 
 
