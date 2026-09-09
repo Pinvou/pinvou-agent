@@ -63,7 +63,7 @@ function loadTauriSessionsFeature(overrides) {
     sessions: [], archivedSessions: [],
     scheduledTaskRecentRuns: [], scheduledTaskRuns: [],
     modeState: { mode: 'yolo', multiAgent: false },
-    modeDefaults: { work: 'yolo', design: 'yolo' },
+    modeDefaults: { work: 'yolo', code: 'yolo' },
     modeLane: 'work',
     draftEpoch: 0,
     composerDraft: '',

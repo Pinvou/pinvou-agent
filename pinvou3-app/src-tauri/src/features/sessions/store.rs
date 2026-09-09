@@ -162,6 +162,21 @@ impl SessionStore {
         let manager = SessionManager::new(sessions_dir.clone())
             .with_context(|| format!("SessionManager::new({}) failed", sessions_dir.display()))?;
         let prefs_snapshot = UserPrefs::load();
+        // The design lane has been merged into the work lane: when legacy
+        // settings.json has `mode_defaults.design` set and work is empty,
+        // backfill the work in-memory mirror from the design value (a
+        // one-time read fold, never written back to disk; explicit switches
+        // afterwards land on work only). When work already has a value,
+        // design does not override it.
+        // The design field itself must round-trip verbatim through
+        // whole-preferences writes: until the user explicitly writes work,
+        // it is the only default value on disk — if an unrelated preferences
+        // write evaporated it, a restart could never fold it back (see the
+        // `ModeDefaultPrefs::design` comment).
+        let mut mode_defaults_snapshot = prefs_snapshot.mode_defaults;
+        if mode_defaults_snapshot.work.is_none() {
+            mode_defaults_snapshot.work = mode_defaults_snapshot.design;
+        }
         let store = Self {
             manager: Arc::new(manager),
             scheduled_profiles: Arc::new(RwLock::new(HashMap::new())),
@@ -180,7 +195,7 @@ impl SessionStore {
             code_session_predicate: Arc::new(RwLock::new(None)),
             session_mode_states: Arc::new(RwLock::new(HashMap::new())),
             code_permission: Arc::new(RwLock::new(prefs_snapshot.code_permission)),
-            mode_defaults: Arc::new(RwLock::new(prefs_snapshot.mode_defaults)),
+            mode_defaults: Arc::new(RwLock::new(mode_defaults_snapshot)),
             session_purged_hooks: Arc::new(RwLock::new(Vec::new())),
             session_deleted_hooks: Arc::new(RwLock::new(Vec::new())),
         };
