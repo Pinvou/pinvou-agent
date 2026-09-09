@@ -24,20 +24,8 @@ pub const CONFIRM_TTL: Duration = Duration::from_secs(5 * 60);
 /// T3 后果性动作名单（大小写不敏感子串匹配；中英文）。
 /// 命中即不执行，要求用户显式确认。
 pub const T3_DENYLIST: &[&str] = &[
-    "buy",
-    "pay",
-    "purchase",
-    "send",
-    "delete",
-    "transfer",
-    "submit",
-    "购买",
-    "支付",
-    "付款",
-    "发送",
-    "删除",
-    "转账",
-    "提交",
+    "buy", "pay", "purchase", "send", "delete", "transfer", "submit", "购买", "支付", "付款",
+    "发送", "删除", "转账", "提交",
 ];
 
 /// 标签是否命中 T3 后果性名单。
@@ -179,9 +167,10 @@ impl ComputerUseShared {
     /// 会话当前是否持有有效授权（未空闲过期）。只读投影，供状态命令使用；
     /// 门控判定仍以 [`Self::begin_input_action`] 为准。
     pub fn has_active_grant(&self, session_id: &str) -> bool {
-        self.sessions.lock().get(session_id).is_some_and(|consent| {
-            consent.last_activity.elapsed() <= GRANT_IDLE_TIMEOUT
-        })
+        self.sessions
+            .lock()
+            .get(session_id)
+            .is_some_and(|consent| consent.last_activity.elapsed() <= GRANT_IDLE_TIMEOUT)
     }
 
     /// 紧急停止：置停止旗标并吊销全部会话授权。
@@ -337,7 +326,8 @@ mod tests {
         {
             let mut sessions = shared.sessions.lock();
             if let Some(consent) = sessions.get_mut("s1") {
-                consent.last_activity = Instant::now() - GRANT_IDLE_TIMEOUT - Duration::from_secs(1);
+                consent.last_activity =
+                    Instant::now() - GRANT_IDLE_TIMEOUT - Duration::from_secs(1);
             }
         }
         assert!(!shared.has_active_grant("s1"));
@@ -356,7 +346,8 @@ mod tests {
             let mut sessions = shared.sessions.lock();
             let consent = sessions.get_mut("s1");
             if let Some(consent) = consent {
-                consent.last_activity = Instant::now() - GRANT_IDLE_TIMEOUT - Duration::from_secs(1);
+                consent.last_activity =
+                    Instant::now() - GRANT_IDLE_TIMEOUT - Duration::from_secs(1);
             }
         }
         assert_eq!(

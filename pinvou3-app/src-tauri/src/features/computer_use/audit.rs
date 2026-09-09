@@ -195,12 +195,11 @@ mod tests {
     fn begin_then_end_records_share_call_id_and_never_hold_plaintext() {
         let (dir, log) = temp_log();
         let secret = "hunter2-密码";
-        let mut begin = AuditRecord::begin("cu-call-1", "s1", "type", "input", "input:session-grant");
+        let mut begin =
+            AuditRecord::begin("cu-call-1", "s1", "type", "input", "input:session-grant");
         begin.with_typed_text(secret).with_target("password field");
         log.append(&begin).unwrap_or(());
-        let end = begin
-            .clone()
-            .finish("ok", None, 12);
+        let end = begin.clone().finish("ok", None, 12);
         log.append(&end).unwrap_or(());
 
         let raw = fs::read_to_string(log.path()).unwrap_or_default();
