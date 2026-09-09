@@ -23,6 +23,7 @@ import { RightDockPanel, useRightDockOcclusion } from '../../components/layout/R
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
 import { annotateAgentSpawnGroups } from '../multiagent/spawn-aggregation.mjs';
 import { RunningAgentsOverlay } from '../multiagent/RunningAgentsOverlay.jsx';
+import { ComputerUseBanner, ComputerUseDialogs } from '../computer-use/ComputerUseConsent.jsx';
 import {
   ConversationTimeline,
   LiveConversationActivityIndicator,
@@ -171,6 +172,10 @@ import {
 import { useComposerVoiceInput } from '../voice-composer/useComposerVoiceInput.js';
 
 const MULTI_AGENT_ENABLED = can('multiAgent');
+
+// Computer use（截屏 + 键鼠控制）是桌面专属能力：Web 端 can() 恒 false，
+// 授权条/授权弹窗整体不渲染，工具卡也回退默认卡片。
+const COMPUTER_USE_ENABLED = can('computerUse');
 
 // Enter-to-submit guard (shared by the main input, queued-message edit, and in-bubble edit):
 // Shift+Enter still inserts a newline; Enter during IME composition confirms the candidate text
@@ -755,6 +760,15 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const activeSessionId = bs ? bs.activeSessionId : null;
       const activeSessionIdRef = useRef(activeSessionId);
       activeSessionIdRef.current = activeSessionId;
+      const computerUseCopy = t.uiComputerUse;
+      const computerUseSlice = (bs && bs.computerUse) || null;
+      // 会话挂载/切换时拉取 computer-use 权威状态：横幅与授权弹窗只对
+      // active 会话生效，后台会话的待决请求由 bridge 端按会话寄存，
+      // 切回时随本次 refresh 重新浮出。
+      useEffect(() => {
+        if (!COMPUTER_USE_ENABLED || !bridge.available || !bridge.computerUse || !activeSessionId) return;
+        bridge.computerUse.refreshStatus(activeSessionId).catch(() => {});
+      }, [activeSessionId]);
       const busy = bs ? bs.busy : false;
       // 停止按钮 single-flight:busy 在首次 cancel_generation 返回前就复位,
       // 双击会发第二个并发取消请求。cancellingSessionIds 在 invoke 完成前禁用
@@ -2540,6 +2554,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               onToggleShortcut={handleVoiceIntroToggleShortcut}
             />
           )}
+          {COMPUTER_USE_ENABLED && (
+            <ComputerUseDialogs slice={computerUseSlice} copy={computerUseCopy} />
+          )}
           {/* Floating Input Area */}
           <div
             ref={composerWrapRef}
@@ -2548,6 +2565,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             style={responsiveGutterStyle}
           >
             <div className="max-w-[800px] w-full mx-auto">
+              {COMPUTER_USE_ENABLED && (
+                <ComputerUseBanner slice={computerUseSlice} copy={computerUseCopy} />
+              )}
               {!scheduledRunContext && !conversationStarted && (
                 <HomeModeSwitcher
                   mode={pinvouMode}

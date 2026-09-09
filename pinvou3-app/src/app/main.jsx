@@ -141,7 +141,7 @@ let appFirstRenderMarked = false;
 const APP_BRIDGE_STATE_DOMAINS = [
   'platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'monitor',
   'settings', 'models', 'vllm', 'interaction', 'personas',
-  'memory', 'remoteControl', 'updater', 'dependencies', 'projects',
+  'memory', 'remoteControl', 'updater', 'dependencies', 'projects', 'computerUse',
 ];
 
 function emitPetEvent(ev, name, payload) {

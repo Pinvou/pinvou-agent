@@ -60,6 +60,10 @@ pub const PINVOU3_ALLOWED_TOOLS: &[&str] = &[
     // deny wins over this admission (first-turn catalog, `tool_search`
     // results, and execution all reject).
     "ima_openapi",
+    // Computer use stays in the allowlist unconditionally; while the feature
+    // toggle is off the engine disallow list hides it and the consent guard
+    // rejects every call.
+    "computer_use",
     "mcp_*",
     "list_mcp_resources",
     "list_mcp_resource_templates",
