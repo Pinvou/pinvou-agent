@@ -156,6 +156,7 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libssl-dev \
             libayatana-appindicator3-dev \
+            libpipewire-0.3-dev libdrm-dev libgbm-dev libegl-dev \
             build-essential pkg-config cmake lld
           # Reduce footprint at the source: orphan dependencies, apt cache packages, and index lists do not stay on the build disk.
           sudo apt-get autoremove -y --purge
@@ -279,6 +280,7 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libssl-dev \
             libayatana-appindicator3-dev \
+            libpipewire-0.3-dev libdrm-dev libgbm-dev libegl-dev \
             build-essential pkg-config cmake lld
           # Reduce footprint at the source: orphan dependencies, apt cache packages, and index lists do not stay on the build disk.
           sudo apt-get autoremove -y --purge
