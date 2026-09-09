@@ -1,4 +1,4 @@
-/** 蜂群模式 spawn 聚合（spawn-aggregation.mjs）：连续 spawn → 单条计数行。 */
+/** Swarm-mode spawn aggregation (spawn-aggregation.mjs): consecutive spawns → one count row. */
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
@@ -17,7 +17,7 @@ const spawnItem = (id, extra = {}) => ({
   ...extra,
 });
 
-test('spawn 判定：只有 start 动作且带任务正文的 agent 调用是 spawn', () => {
+test('spawn predicate: only agent calls with a start action and a task body are spawns', () => {
   assert.equal(isAgentSpawnChatItem(spawnItem('aaaa0001')), true);
   assert.equal(isAgentSpawnChatItem(spawnItem('aaaa0002', { args: { action: 'status', agent_id: 'agent_aaaa0001' } })), false);
   assert.equal(isAgentSpawnChatItem(spawnItem('aaaa0003', { args: { action: 'wait', agent_id: 'agent_aaaa0001' } })), false);
@@ -26,7 +26,7 @@ test('spawn 判定：只有 start 动作且带任务正文的 agent 调用是 sp
   assert.equal(isAgentSpawnChatItem(null), false);
 });
 
-test('连续 spawn 聚合为一条计数行：首条带 spawnGroup，其余隐藏', () => {
+test('consecutive spawns aggregate into one count row: first carries spawnGroup, rest hidden', () => {
   const items = [
     spawnItem('aaaa0001'),
     spawnItem('aaaa0002'),
@@ -41,19 +41,19 @@ test('连续 spawn 聚合为一条计数行：首条带 spawnGroup，其余隐�
   assert.ok(!annotated[0].spawnGroupHidden);
 });
 
-test('spawn 之间夹着其他内容块时断组开新行', () => {
+test('a non-tool content block between spawns breaks the group and starts a new row', () => {
   const items = [
     spawnItem('aaaa0001'),
-    { type: 'assistant', text: '中间的话' },
+    { type: 'assistant', text: 'words in between' },
     spawnItem('aaaa0002'),
   ];
   const annotated = annotateAgentSpawnGroups(items);
   assert.equal(annotated[0].spawnGroup.count, 1);
-  assert.ok(!annotated[1].spawnGroupHidden && !annotated[1].spawnGroup, '非工具条目不受标注影响');
-  assert.equal(annotated[2].spawnGroup.count, 1, '新序列重新从 1 计数');
+  assert.ok(!annotated[1].spawnGroupHidden && !annotated[1].spawnGroup, 'non-tool items are untouched by annotation');
+  assert.equal(annotated[2].spawnGroup.count, 1, 'a new sequence counts from 1 again');
 });
 
-test('status/wait/cancel 协调调用打断 spawn 序列且不计数', () => {
+test('status/wait/cancel coordination calls break the spawn sequence and never count', () => {
   const items = [
     spawnItem('aaaa0001'),
     spawnItem('aaaa0002', { args: { action: 'status', agent_id: 'agent_aaaa0001' } }),
@@ -61,11 +61,11 @@ test('status/wait/cancel 协调调用打断 spawn 序列且不计数', () => {
   ];
   const annotated = annotateAgentSpawnGroups(items);
   assert.equal(annotated[0].spawnGroup.count, 1);
-  assert.ok(!annotated[1].spawnGroupHidden, '协调行保持原样渲染');
-  assert.equal(annotated[2].spawnGroup.count, 1, '协调调用后的 spawn 属于新序列');
+  assert.ok(!annotated[1].spawnGroupHidden, 'coordination rows render untouched');
+  assert.equal(annotated[2].spawnGroup.count, 1, 'a spawn after a coordination call belongs to a new sequence');
 });
 
-test('失败 spawn 计入 failed，不影响计数行总数', () => {
+test('failed spawns count toward failed without changing the row total', () => {
   const items = [
     spawnItem('aaaa0001', { success: false, output: 'Error: spawn failed' }),
     spawnItem('aaaa0002'),
@@ -75,16 +75,16 @@ test('失败 spawn 计入 failed，不影响计数行总数', () => {
   assert.equal(annotated[0].spawnGroup.failed, 1);
 });
 
-test('annotateAgentSpawnGroups 不改动未进组的条目引用', () => {
+test('annotateAgentSpawnGroups leaves non-grouped item references untouched', () => {
   const plain = { type: 'user', text: 'hi' };
   const annotated = annotateAgentSpawnGroups([plain]);
   assert.equal(annotated[0], plain);
 });
 
-test('无 spawn 的条目按引用原样返回（数组是新建的，条目不换引用）', () => {
+test('items without spawns are returned by reference (new array, same item references)', () => {
   const plain = { type: 'user', text: 'hi' };
   const items = [plain];
   const annotated = annotateAgentSpawnGroups(items);
-  assert.notEqual(annotated, items, '数组总是新建');
-  assert.equal(annotated[0], plain, '条目保持原引用');
+  assert.notEqual(annotated, items, 'the array is always newly built');
+  assert.equal(annotated[0], plain, 'items keep their references');
 });

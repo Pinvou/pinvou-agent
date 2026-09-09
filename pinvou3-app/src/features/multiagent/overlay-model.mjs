@@ -1,14 +1,16 @@
 /**
- * 蜂群运行小窗的纯展示/筛选模型（无 React、无 bridge 依赖，可被 node:test
- * 直接覆盖）。RunningAgentsOverlay 是唯一生产消费者。
+ * Pure display/filter model for the swarm running overlay (no React, no bridge
+ * dependency, directly coverable by node:test). RunningAgentsOverlay is the
+ * only production consumer.
  */
 
-/** 终态条目在列表里短暂停留的时长（成功态可见窗口）。 */
+/** How long a terminal entry lingers in the list (success-state window). */
 export const RECENT_TERMINAL_MS = 3500;
 
 /**
- * entries 缓存的条目上限：超出后优先淘汰最老的终态条目。蜂群模式单树准入
- * 可达底座上限（1024），长会话不淘汰会无界积攒。
+ * Entry cap for the entries cache: beyond it, evict the oldest terminal
+ * entries first. Swarm-mode per-tree admission reaches the foundation cap
+ * (1024), so a long session would accumulate without bound otherwise.
  */
 export const MAX_OVERLAY_ENTRIES = 200;
 
@@ -21,23 +23,27 @@ export function isTerminal(entry) {
 }
 
 /**
- * 单条目合并（组件 mergeEntry 的纯逻辑）：
- * - 终态 ratchet：落盘终态是权威，迟到的非终态实时事件不得把条目翻回运行中
- *   （落盘重唤醒场景由 ledger 快照本身负责翻回）；拒绝时返回 null，调用方
- *   据此跳过重排。
- * - completedAt 只在本会话内观测到「非终态→终态」的真实翻转时授予。冷启动
- *   快照（挂载/切会话首轮读到的历史终态条目）不授予：它们从未在本会话展示
- *   过运行态，授予会把整批历史条目计入成功态展示窗口，打开会话即弹出
- *   「运行中 0」的假胶囊。
- * @param {object|null} previous 该条目当前缓存（无则视为首次观测）
- * @param {object} detail 新读数（含 done/blocked/source 等）
- * @param {string} sessionIdIn 条目归属会话
- * @param {number} now 时钟（测试注入）
+ * Single-entry merge (the pure logic behind the component's mergeEntry):
+ * - Terminal ratchet: the persisted terminal state is authoritative; a late
+ *   non-terminal real-time event must not flip an entry back to running (the
+ *   persisted re-awaken path flips back through the ledger snapshot itself).
+ *   Rejections return null so the caller can skip the state update.
+ * - completedAt is granted only for a real non-terminal → terminal flip
+ *   observed within this session. Cold-start snapshots (historical terminal
+ *   entries read on mount or on the first poll after a session switch) get
+ *   none: they were never shown as running in this session, and granting
+ *   would pull the whole historical batch into the success-state window,
+ *   flashing a fake "running 0" pill on open.
+ * @param {object|null} previous the entry's current cache (null = first observation)
+ * @param {object} detail the new reading (with done/blocked/source, etc.)
+ * @param {string} sessionIdIn session the entry belongs to
+ * @param {number} now clock (injected by tests)
  */
 export function mergeOverlayEntry(previous, detail, sessionIdIn, now) {
   if (previous && previous.done && !detail.done && detail.source !== 'ledger') return null;
   const next = { ...previous, ...detail, sessionId: sessionIdIn };
-  // 首次观测（previous 为空）不算翻转：无论读到的是运行态还是终态，都不授予。
+  // A first observation (no previous) is not a flip: grant nothing whether the
+  // reading is running or terminal.
   const wasLiveNonTerminal = !!previous && !isTerminal(previous);
   if (isTerminal(detail) && wasLiveNonTerminal) next.completedAt = now;
   if (!detail.done) delete next.completedAt;
@@ -45,9 +51,10 @@ export function mergeOverlayEntry(previous, detail, sessionIdIn, now) {
 }
 
 /**
- * 状态展示：终态优先；非终态把 ledger 的英文状态 token 映射到 i18n 文案
- * （queued/pending/starting → 等待，running → 运行中，与 tool-renderers 的
- * LEDGER_STATUS_TOKENS 同口径），其余视为实时进展短语原样展示。
+ * Status presentation: terminal first; non-terminal entries map the ledger's
+ * English status tokens to i18n copy (queued/pending/starting → pending,
+ * running → working, same set as tool-renderers' LEDGER_STATUS_TOKENS);
+ * anything else is treated as a real-time progress phrase and shown verbatim.
  */
 export function statusPresentation(entry, copy) {
   const statusToken = String(entry && entry.status || '').toLowerCase();
@@ -60,9 +67,10 @@ export function statusPresentation(entry, copy) {
 }
 
 /**
- * 覆盖层可见性：有未终态条目，或刚结束的终态条目还在成功态展示窗口内。
- * @param {Array} entries 当前会话的条目列表
- * @param {number} now 时钟（测试注入）
+ * Overlay visibility: some entry is non-terminal, or a just-finished terminal
+ * entry is still inside its success-state window.
+ * @param {Array} entries the current session's entries
+ * @param {number} now clock (injected by tests)
  */
 export function overlayVisibleEntries(entries, now) {
   const active = [];
@@ -75,9 +83,10 @@ export function overlayVisibleEntries(entries, now) {
 }
 
 /**
- * entries 缓存淘汰：超过上限时按 completedAt 升序淘汰最老的终态条目（无
- * completedAt 视为最老）。返回 null 表示无需变更（未超限，或终态条目不够
- * 淘汰——非终态条目由实际运行中的智能体数天然限定）。
+ * Entries cache eviction: past the cap, evict the oldest terminal entries by
+ * completedAt ascending (missing completedAt counts as oldest). Returns null
+ * when no change is needed (under the cap, or not enough terminal entries to
+ * evict — non-terminal entries are naturally bounded by the live agent count).
  */
 export function pruneOverlayEntries(entries, max = MAX_OVERLAY_ENTRIES) {
   const keys = Object.keys(entries);

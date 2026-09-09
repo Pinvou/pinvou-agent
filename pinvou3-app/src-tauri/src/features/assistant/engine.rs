@@ -1435,9 +1435,11 @@ impl AppEngine {
         // the bool and the Option.
         let mut engine_config = match expert_snapshot.as_deref() {
             Some(snapshot) => {
-                // 多智能体面：装配专家名册和专用资源上限；工具面仍与普通会话
-                // 完全一致，普通会话不继承这些限制。swarm 开关与会话
-                // multi_agent 开关同源（上面刚读取的 mode_state）。
+                // Multi-agent surface: assemble the expert roster and the
+                // dedicated resource caps; the tool surface stays identical to
+                // a plain session, which inherits none of these limits. The
+                // swarm switch and the session's multi_agent switch share one
+                // source (the mode_state just read above).
                 bridge.build_engine_config_for_multi_agent(
                     session_id,
                     roots,
