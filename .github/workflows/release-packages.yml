@@ -143,6 +143,7 @@ jobs:
             librsvg2-dev libssl-dev \
             libx11-dev libxi-dev libxtst-dev \
             libayatana-appindicator3-dev \
+            libpipewire-0.3-dev libdrm-dev libgbm-dev libegl-dev \
             build-essential pkg-config cmake lld
 
       - name: Node.js
@@ -261,6 +262,7 @@ jobs:
             librsvg2-dev libssl-dev \
             libx11-dev libxi-dev libxtst-dev \
             libayatana-appindicator3-dev \
+            libpipewire-0.3-dev libdrm-dev libgbm-dev libegl-dev \
             build-essential pkg-config cmake lld
 
       - name: Node.js

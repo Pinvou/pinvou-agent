@@ -37,11 +37,7 @@ pub trait ComputerUseBackend: Send {
     fn mouse_up(&mut self, button: MouseButton) -> Result<(), ComputerUseError>;
     fn drag(&mut self, from: (i32, i32), to: (i32, i32)) -> Result<(), ComputerUseError>;
     /// clicks: 滚轮格数（正数，方向由 direction 给出）。
-    fn scroll(
-        &mut self,
-        direction: ScrollDirection,
-        clicks: u32,
-    ) -> Result<(), ComputerUseError>;
+    fn scroll(&mut self, direction: ScrollDirection, clicks: u32) -> Result<(), ComputerUseError>;
     fn type_text(&mut self, text: &str) -> Result<(), ComputerUseError>;
     /// 按下全部键再逆序释放（和弦）。
     fn key_chord(&mut self, keys: &[Key]) -> Result<(), ComputerUseError>;
@@ -49,11 +45,8 @@ pub trait ComputerUseBackend: Send {
     fn hold_key(&mut self, keys: &[Key], ms: u64) -> Result<(), ComputerUseError>;
     /// 无障碍树序列化文本（格式由后端定，建议缩进文本树）。
     fn ui_tree(&mut self, opts: &UiTreeOptions) -> Result<String, ComputerUseError>;
-    fn element_at_point(
-        &mut self,
-        x: i32,
-        y: i32,
-    ) -> Result<Option<ElementInfo>, ComputerUseError>;
+    fn element_at_point(&mut self, x: i32, y: i32)
+    -> Result<Option<ElementInfo>, ComputerUseError>;
 }
 
 enum BackendRequestKind {
@@ -118,11 +111,12 @@ struct BackendRequest {
     reply: Sender<BackendResult>,
 }
 
-fn dispatch(backend: &mut dyn ComputerUseBackend, kind: BackendRequestKind) -> Option<BackendResult> {
+fn dispatch(
+    backend: &mut dyn ComputerUseBackend,
+    kind: BackendRequestKind,
+) -> Option<BackendResult> {
     let result = match kind {
-        BackendRequestKind::Capabilities => {
-            BackendReply::Capabilities(backend.capabilities())
-        }
+        BackendRequestKind::Capabilities => BackendReply::Capabilities(backend.capabilities()),
         BackendRequestKind::Capture => match backend.capture() {
             Ok(capture) => BackendReply::Capture(capture),
             Err(error) => return Some(Err(error)),
@@ -207,7 +201,8 @@ fn worker_loop(
     }
 }
 
-type BackendFactory = Box<dyn FnOnce() -> Result<Box<dyn ComputerUseBackend>, ComputerUseError> + Send>;
+type BackendFactory =
+    Box<dyn FnOnce() -> Result<Box<dyn ComputerUseBackend>, ComputerUseError> + Send>;
 
 enum WorkerState {
     /// 懒启动：工厂已存，首个请求到来时才 spawn 线程构造 backend。
@@ -287,9 +282,7 @@ impl BackendInner {
             kind,
             reply: reply_tx,
         })
-        .map_err(|_| {
-            ComputerUseError::unavailable("computer use backend thread is not running")
-        })?;
+        .map_err(|_| ComputerUseError::unavailable("computer use backend thread is not running"))?;
         reply_rx.recv().map_err(|_| {
             ComputerUseError::unavailable("computer use backend thread dropped the request")
         })?
@@ -379,11 +372,7 @@ impl BackendHandle {
         self.unit(BackendRequestKind::Drag { from, to })
     }
 
-    pub fn scroll(
-        &self,
-        direction: ScrollDirection,
-        clicks: u32,
-    ) -> Result<(), ComputerUseError> {
+    pub fn scroll(&self, direction: ScrollDirection, clicks: u32) -> Result<(), ComputerUseError> {
         self.unit(BackendRequestKind::Scroll { direction, clicks })
     }
 
@@ -419,7 +408,10 @@ impl BackendHandle {
         x: i32,
         y: i32,
     ) -> Result<Option<ElementInfo>, ComputerUseError> {
-        match self.inner.request(BackendRequestKind::ElementAtPoint { x, y })? {
+        match self
+            .inner
+            .request(BackendRequestKind::ElementAtPoint { x, y })?
+        {
             BackendReply::Element(element) => Ok(element),
             _ => Err(ComputerUseError::failed("unexpected backend reply")),
         }
@@ -534,7 +526,10 @@ mod tests {
         let capture = handle.capture();
         assert!(capture.as_ref().is_ok_and(|c| c.width == 4));
         let tree = handle.ui_tree(UiTreeOptions::default());
-        assert!(tree.as_ref().is_err_and(|e| e.to_string().contains("unsupported")));
+        assert!(
+            tree.as_ref()
+                .is_err_and(|e| e.to_string().contains("unsupported"))
+        );
     }
 
     #[test]
@@ -593,11 +588,7 @@ mod tests {
             fn drag(&mut self, _f: (i32, i32), _t: (i32, i32)) -> Result<(), ComputerUseError> {
                 Err(ComputerUseError::unsupported("input", "mock"))
             }
-            fn scroll(
-                &mut self,
-                _d: ScrollDirection,
-                _c: u32,
-            ) -> Result<(), ComputerUseError> {
+            fn scroll(&mut self, _d: ScrollDirection, _c: u32) -> Result<(), ComputerUseError> {
                 Err(ComputerUseError::unsupported("input", "mock"))
             }
             fn type_text(&mut self, _t: &str) -> Result<(), ComputerUseError> {

@@ -197,31 +197,43 @@ fn context(workspace: &Path) -> ToolContext {
 fn rejects_coordinate_for_key() {
     let err = parse_action(&json!({"action": "key", "text": "ctrl+s", "x": 1, "y": 2}));
     let text = err.err().map(|e| e.to_string()).unwrap_or_default();
-    assert!(text.contains("coordinate is not accepted for key"), "{text}");
+    assert!(
+        text.contains("coordinate is not accepted for key"),
+        "{text}"
+    );
 }
 
 #[test]
 fn rejects_bad_param_combinations() {
     let cases: &[(&str, Value)] = &[
         ("type", json!({"action": "type"})),
-        ("left_click", json!({"action": "left_click", "x": -1, "y": 5})),
+        (
+            "left_click",
+            json!({"action": "left_click", "x": -1, "y": 5}),
+        ),
         ("left_click", json!({"action": "left_click", "x": 5})),
-        ("scroll", json!({"action": "scroll", "direction": "north", "amount": 1})),
+        (
+            "scroll",
+            json!({"action": "scroll", "direction": "north", "amount": 1}),
+        ),
         ("scroll", json!({"action": "scroll", "direction": "down"})),
         ("wait", json!({"action": "wait"})),
-        ("left_click_drag", json!({"action": "left_click_drag", "x": 1, "y": 2})),
+        (
+            "left_click_drag",
+            json!({"action": "left_click_drag", "x": 1, "y": 2}),
+        ),
         ("key", json!({"action": "key", "text": "ctrl+shift"})),
         ("key", json!({"action": "key", "text": "ctrl+nosuchkey"})),
         ("screenshot", json!({"action": "screenshot", "text": "x"})),
-        ("hold_key", json!({"action": "hold_key", "text": "a", "ms": 99999})),
+        (
+            "hold_key",
+            json!({"action": "hold_key", "text": "a", "ms": 99999}),
+        ),
         ("mouse_move", json!({"action": "mouse_move", "x": 1})),
         ("bogus", json!({"action": "bogus"})),
     ];
     for (name, input) in cases {
-        assert!(
-            parse_action(input).is_err(),
-            "{name} should reject {input}"
-        );
+        assert!(parse_action(input).is_err(), "{name} should reject {input}");
     }
 }
 
@@ -262,10 +274,16 @@ async fn disabled_returns_clear_error() {
     fixture.shared.set_enabled(false);
     let result = fixture
         .tool
-        .execute(json!({"action": "screenshot"}), &context(&fixture.workspace))
+        .execute(
+            json!({"action": "screenshot"}),
+            &context(&fixture.workspace),
+        )
         .await;
     let text = result.ok().map(|r| r.content).unwrap_or_default();
-    assert!(text.contains("computer use is disabled in settings"), "{text}");
+    assert!(
+        text.contains("computer use is disabled in settings"),
+        "{text}"
+    );
 }
 
 #[tokio::test]
@@ -273,16 +291,18 @@ async fn input_without_grant_emits_event_and_errors() {
     let (fixture, _restore) = fixture();
     let result = fixture
         .tool
-        .execute(json!({"action": "left_click", "x": 1, "y": 2}), &context(&fixture.workspace))
+        .execute(
+            json!({"action": "left_click", "x": 1, "y": 2}),
+            &context(&fixture.workspace),
+        )
         .await;
     let text = result.ok().map(|r| r.content).unwrap_or_default();
     assert!(text.contains("has not granted control"), "{text}");
     let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
     assert!(
-        events
-            .iter()
-            .any(|(name, payload)| name == EVENT_GRANT_REQUIRED
-                && payload["session_id"] == "s-test"),
+        events.iter().any(
+            |(name, payload)| name == EVENT_GRANT_REQUIRED && payload["session_id"] == "s-test"
+        ),
         "expected grant_required event, got {events:?}"
     );
     // 未授权时绝不能触碰后端。
@@ -295,7 +315,10 @@ async fn granted_click_executes_and_attaches_screenshot() {
     fixture.shared.grant_session("s-test");
     let result = fixture
         .tool
-        .execute(json!({"action": "left_click", "x": 5, "y": 6}), &context(&fixture.workspace))
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 6}),
+            &context(&fixture.workspace),
+        )
         .await;
     let result = match result {
         Ok(r) => r,
@@ -320,8 +343,16 @@ async fn granted_click_executes_and_attaches_screenshot() {
     let path = images[0].as_str().unwrap_or_default().to_string();
     assert!(path.ends_with(".png"), "{path}");
     assert!(Path::new(&path).is_file(), "{path} should exist");
-    assert!(result.content.contains("attachments/computer_use/"), "{}", result.content);
-    assert!(result.content.contains("image_analyze"), "{}", result.content);
+    assert!(
+        result.content.contains("attachments/computer_use/"),
+        "{}",
+        result.content
+    );
+    assert!(
+        result.content.contains("image_analyze"),
+        "{}",
+        result.content
+    );
 }
 
 #[tokio::test]
@@ -330,7 +361,10 @@ async fn out_of_bounds_coordinates_clamp_with_warning() {
     fixture.shared.grant_session("s-test");
     let result = fixture
         .tool
-        .execute(json!({"action": "left_click", "x": 9999, "y": 50}), &context(&fixture.workspace))
+        .execute(
+            json!({"action": "left_click", "x": 9999, "y": 50}),
+            &context(&fixture.workspace),
+        )
         .await;
     let result = match result {
         Ok(r) => r,
@@ -362,7 +396,13 @@ async fn first_coordinate_action_auto_captures() {
         "{}",
         result.content
     );
-    assert!(result.metadata.as_ref().and_then(|m| m.get("images")).is_some());
+    assert!(
+        result
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("images"))
+            .is_some()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -384,7 +424,10 @@ async fn t3_denylist_blocks_click_until_user_confirms() {
     });
     let result = fixture
         .tool
-        .execute(json!({"action": "left_click", "x": 5, "y": 5}), &context(&fixture.workspace))
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5}),
+            &context(&fixture.workspace),
+        )
         .await;
     let text = result.ok().map(|r| r.content).unwrap_or_default();
     assert!(text.contains("NOT executed"), "{text}");
@@ -401,7 +444,10 @@ async fn t3_denylist_blocks_click_until_user_confirms() {
         None => panic!("expected confirm_required event, got {events:?}"),
     };
     assert_eq!(payload["element"], "Buy now (button)");
-    let confirm_id = payload["confirm_id"].as_str().unwrap_or_default().to_string();
+    let confirm_id = payload["confirm_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
 
     // 伪造/重复使用 confirm_id 一律拒绝。
     let forged = fixture
@@ -412,7 +458,10 @@ async fn t3_denylist_blocks_click_until_user_confirms() {
         )
         .await;
     let forged_text = forged.ok().map(|r| r.content).unwrap_or_default();
-    assert!(forged_text.contains("invalid or was already used"), "{forged_text}");
+    assert!(
+        forged_text.contains("invalid or was already used"),
+        "{forged_text}"
+    );
 
     // 用户确认（未来的 computer_use_confirm 命令铸造令牌）后重试成功。
     fixture.shared.mint_confirmation(&confirm_id);
@@ -446,7 +495,10 @@ async fn secure_field_blocks_typing() {
     });
     let result = fixture
         .tool
-        .execute(json!({"action": "type", "text": "hunter2"}), &context(&fixture.workspace))
+        .execute(
+            json!({"action": "type", "text": "hunter2"}),
+            &context(&fixture.workspace),
+        )
         .await;
     let text = result.ok().map(|r| r.content).unwrap_or_default();
     assert!(text.contains("NOT executed"), "{text}");
@@ -463,7 +515,10 @@ async fn screenshot_always_attaches_and_reports_geometry() {
     let (fixture, _restore) = fixture();
     let result = fixture
         .tool
-        .execute(json!({"action": "screenshot"}), &context(&fixture.workspace))
+        .execute(
+            json!({"action": "screenshot"}),
+            &context(&fixture.workspace),
+        )
         .await;
     let result = match result {
         Ok(r) => r,
@@ -472,7 +527,13 @@ async fn screenshot_always_attaches_and_reports_geometry() {
     assert!(result.success, "{}", result.content);
     assert!(result.content.contains("16x16 px"), "{}", result.content);
     assert!(result.content.contains("scale 1.000"), "{}", result.content);
-    assert!(result.metadata.as_ref().and_then(|m| m.get("images")).is_some());
+    assert!(
+        result
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("images"))
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -480,11 +541,17 @@ async fn cursor_position_reports_screenshot_space_after_capture() {
     let (fixture, _restore) = fixture();
     let _ = fixture
         .tool
-        .execute(json!({"action": "screenshot"}), &context(&fixture.workspace))
+        .execute(
+            json!({"action": "screenshot"}),
+            &context(&fixture.workspace),
+        )
         .await;
     let result = fixture
         .tool
-        .execute(json!({"action": "cursor_position"}), &context(&fixture.workspace))
+        .execute(
+            json!({"action": "cursor_position"}),
+            &context(&fixture.workspace),
+        )
         .await;
     let text = result.ok().map(|r| r.content).unwrap_or_default();
     assert!(text.contains("(7, 9) in screenshot space"), "{text}");

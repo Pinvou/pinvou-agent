@@ -23,15 +23,12 @@ use deepseek_tui::tools::spec::{
 
 use super::audit::{self, AuditLog, AuditRecord};
 use super::backend::BackendHandle;
-use super::guard::{
-    ComputerUseShared, GuardRejection, is_secure_role, matches_t3_denylist,
-};
+use super::guard::{ComputerUseShared, GuardRejection, is_secure_role, matches_t3_denylist};
 use super::platform;
 use super::scaling::{self, ScaleMap, ScaledScreenshot};
 use super::types::{
-    ActionClass, ComputerUseAction, ComputerUseError, EVENT_CONFIRM_REQUIRED,
-    EVENT_GRANT_REQUIRED, MouseButton, ScrollDirection, TOOL_NAME, UiTreeOptions,
-    parse_key_chord,
+    ActionClass, ComputerUseAction, ComputerUseError, EVENT_CONFIRM_REQUIRED, EVENT_GRANT_REQUIRED,
+    MouseButton, ScrollDirection, TOOL_NAME, UiTreeOptions, parse_key_chord,
 };
 
 /// 输入/scroll 动作执行后的界面稳定等待（唯一的 settle 常数定义点）。
@@ -193,7 +190,9 @@ fn opt_coord(input: &Value) -> Result<Option<(i64, i64)>, ToolError> {
 fn req_text(input: &Value, action: &str) -> Result<String, ToolError> {
     match input.get("text") {
         Some(Value::String(text)) if !text.is_empty() => Ok(text.clone()),
-        Some(Value::String(_)) => Err(invalid(format!("text must be a non-empty string for {action}"))),
+        Some(Value::String(_)) => Err(invalid(format!(
+            "text must be a non-empty string for {action}"
+        ))),
         None | Some(Value::Null) => Err(invalid(format!("text is required for {action}"))),
         Some(_) => Err(field_type_error("text", "a string")),
     }
@@ -264,7 +263,8 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
         }
         "element_at_point" => {
             reject_unexpected(input, action_name, &["x", "y"])?;
-            let (x, y) = coord.ok_or_else(|| invalid("x and y are required for element_at_point"))?;
+            let (x, y) =
+                coord.ok_or_else(|| invalid("x and y are required for element_at_point"))?;
             ComputerUseAction::ElementAtPoint { x, y }
         }
         "mouse_move" => {
@@ -333,8 +333,8 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
                 .ok_or_else(|| invalid("start_x is required for left_click_drag"))?;
             let start_y = opt_i64(input, "start_y")?
                 .ok_or_else(|| invalid("start_y is required for left_click_drag"))?;
-            let (x, y) = coord
-                .ok_or_else(|| invalid("x and y are required for left_click_drag"))?;
+            let (x, y) =
+                coord.ok_or_else(|| invalid("x and y are required for left_click_drag"))?;
             if start_x < 0 || start_y < 0 {
                 return Err(invalid("coordinates must be non-negative"));
             }
@@ -353,10 +353,7 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
             reject_unexpected(input, action_name, &["text"])?;
             let text = req_text(input, action_name)?;
             let keys = parse_key_chord(&text).map_err(invalid)?;
-            ComputerUseAction::KeyChord {
-                keys,
-                chord: text,
-            }
+            ComputerUseAction::KeyChord { keys, chord: text }
         }
         "hold_key" => {
             reject_unexpected(input, action_name, &["text", "ms"])?;
@@ -407,8 +404,9 @@ fn capture_and_store(parts: &Parts, workspace: &Path) -> Result<ShotOutcome, Com
     let capture = parts.backend.capture()?;
     let scaled: ScaledScreenshot = scaling::downscale_and_encode(&capture)?;
     let dir = workspace.join(ATTACHMENTS_DIR);
-    std::fs::create_dir_all(&dir)
-        .map_err(|error| ComputerUseError::failed(format!("cannot create {ATTACHMENTS_DIR}: {error}")))?;
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        ComputerUseError::failed(format!("cannot create {ATTACHMENTS_DIR}: {error}"))
+    })?;
     let mut state = parts.state.lock();
     state.shot_seq += 1;
     let seq = state.shot_seq;
@@ -483,13 +481,11 @@ struct T3Hit {
     reason: &'static str,
 }
 
-fn t3_check(
-    parts: &Parts,
-    action: &ComputerUseAction,
-    map: Option<&ScaleMap>,
-) -> Option<T3Hit> {
+fn t3_check(parts: &Parts, action: &ComputerUseAction, map: Option<&ScaleMap>) -> Option<T3Hit> {
     let target_input: Option<(i32, i32)> = match action {
-        ComputerUseAction::Click { at: Some((x, y)), .. }
+        ComputerUseAction::Click {
+            at: Some((x, y)), ..
+        }
         | ComputerUseAction::Scroll {
             at: Some((x, y)), ..
         } => map.map(|m| {
@@ -585,10 +581,7 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
             record.with_target(&format!("keys: {chord}"));
         }
         ComputerUseAction::Click { at, button, count } => {
-            record.with_target(&format!(
-                "{} click x{count} at {at:?}",
-                button.as_str()
-            ));
+            record.with_target(&format!("{} click x{count} at {at:?}", button.as_str()));
         }
         ComputerUseAction::Drag { start, end } => {
             record.with_target(&format!("drag {start:?} -> {end:?}"));
@@ -665,7 +658,10 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         }
 
         // 能力检查。
-        let capabilities = parts.backend.capabilities().map_err(|e| backend_error_text(&e))?;
+        let capabilities = parts
+            .backend
+            .capabilities()
+            .map_err(|e| backend_error_text(&e))?;
         match action.class() {
             ActionClass::Input if !capabilities.input => {
                 return Err(format!(
@@ -674,8 +670,10 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                 ));
             }
             ActionClass::Observe
-                if matches!(action, ComputerUseAction::UiTree { .. } | ComputerUseAction::ElementAtPoint { .. })
-                    && !capabilities.ui_tree =>
+                if matches!(
+                    action,
+                    ComputerUseAction::UiTree { .. } | ComputerUseAction::ElementAtPoint { .. }
+                ) && !capabilities.ui_tree =>
             {
                 return Err(format!(
                     "the accessibility tree is unsupported on this platform/session ({})",
@@ -846,11 +844,7 @@ fn execute_action(
                 amount
             ))
         }
-        ComputerUseAction::Click {
-            button,
-            count,
-            at,
-        } => {
+        ComputerUseAction::Click { button, count, at } => {
             if let Some((x, y)) = at {
                 let Some(m) = map else {
                     return Err(ComputerUseError::failed(

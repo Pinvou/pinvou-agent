@@ -220,12 +220,16 @@ fn pick_monitor(cursor: Option<(i32, i32)>) -> Result<Monitor, ComputerUseError>
     }
     let mut monitors =
         Monitor::all().map_err(|err| map_xcap_err("cannot enumerate monitors", err))?;
-    if let Some(primary) = monitors.iter().position(|m| m.is_primary().unwrap_or(false)) {
+    if let Some(primary) = monitors
+        .iter()
+        .position(|m| m.is_primary().unwrap_or(false))
+    {
         return Ok(monitors.swap_remove(primary));
     }
-    monitors.drain(..).next().ok_or_else(|| {
-        ComputerUseError::unavailable("no monitor available for screen capture")
-    })
+    monitors
+        .drain(..)
+        .next()
+        .ok_or_else(|| ComputerUseError::unavailable("no monitor available for screen capture"))
 }
 
 /// 显示器像素/点倍率（Retina 2x → 2.0）。异常值（非有限/非正）回退 1.0。
@@ -847,11 +851,7 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         result.and(release)
     }
 
-    fn scroll(
-        &mut self,
-        direction: ScrollDirection,
-        clicks: u32,
-    ) -> Result<(), ComputerUseError> {
+    fn scroll(&mut self, direction: ScrollDirection, clicks: u32) -> Result<(), ComputerUseError> {
         let (axis, length) = map_scroll(direction, clicks);
         self.enigo()?
             .scroll(length, axis)
