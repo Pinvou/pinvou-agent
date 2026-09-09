@@ -158,10 +158,12 @@ class ReleaseSizePolicyTests(unittest.TestCase):
     def test_windows_ota_uses_smallest_size_compression(self):
         self.assertNotIn("CompressionLevel]::Optimal", self.ota)
         self.assertIn("CompressionLevel]::SmallestSize", self.ota)
-        # SmallestSize does not exist on .NET Framework (Windows PowerShell
-        # 5.1); the script must declare the pwsh requirement so it fails
-        # loudly up front instead of dying mid-run on the default shell.
-        self.assertIn("#requires -Version 6", self.ota)
+        # SmallestSize was introduced in .NET 6, so it is absent on Windows
+        # PowerShell 5.1 (.NET Framework) and on PowerShell 6.x/7.0/7.1
+        # (.NET Core / .NET 5); the first PowerShell built on .NET 6 is 7.2.
+        # The script must declare that requirement so it fails loudly up
+        # front instead of dying mid-run at the first CreateEntry.
+        self.assertIn("#requires -Version 7.2", self.ota)
 
     def test_manual_release_scripts_share_the_same_pipeline(self):
         self.assertIn("scripts/repack-deb-xz.sh", self.release_deb)
