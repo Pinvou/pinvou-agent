@@ -65,8 +65,10 @@ SOFTWARE.
   `bae1cc3e`——两者的内容已包含在 1.1.0 重写版中。
 - **真实性审查(2026-08-16)(吸收)**:0.1.9 二进制命令面核实与 frontmatter
   防误用前缀(「何时用:」开头、≤280 字符)作为品悟常设口径保留,本轮已在
-  全部 14 个技能上重放;`File(action="read")` 引擎工具名口径、smartsheet
-  `records.values` 双层嵌套 JSON 上游 bug 修正,在 1.1.0 新文本上复核重放。
+  全部 14 个技能上重放;当时旧底座采用的 `File(action="read")` 工具名口径
+  (历史事实)、smartsheet `records.values` 双层嵌套 JSON 上游 bug 修正,在
+  1.1.0 新文本上复核重放。当前 CodeWhale v0.9.12 同步必须改用模型可见的
+  canonical `read(path=...)` / `write(path=..., content=...)`。
 
 ### 本轮(1.1.0)品悟适配清单
 
@@ -78,8 +80,9 @@ SOFTWARE.
    重装循环)改写为「wecom-cli 由品悟代管、随应用更新;版本不足时在工具商店
    企业微信卡片重新点连接触发安装/升级」。
 3. **引擎工具名口径**:上游「先 `read` 对应 references 文件」「用 `write` 工具
-   写入」「用 Write 工具」「`grep 工具` 提取」等裸引擎工具名统一改为
-   `File(action="read")` / `File(action="write")` 口径,覆盖 doc/doc-manage/
+   写入」「用 Write 工具」「`grep 工具` 提取」等裸引擎工具名统一登记为
+   CodeWhale v0.9.12 模型可见的 `read(path=...)` / `write(path=..., content=...)`
+   canonical 口径,覆盖 doc/doc-manage/
    meeting/sheet/smartpage/smartsheet/email 七个技能的 SKILL.md 与 references
    (含 doc-create.md 的 Write 写文件示例、smart-sheet-read.md 的 grep 提取与
    smartpage-edit.md 的回包文件读写);calendar/contact/todo/disk/media 上游

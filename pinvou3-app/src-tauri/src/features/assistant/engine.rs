@@ -3300,7 +3300,7 @@ mod scheduled_turn_tests {
             &store,
             &scheduled.metadata.id,
             &workspace,
-            "write_file",
+            "write",
             &serde_json::json!({"path": "report.md", "content": "durable report"}),
             "Created report.md",
         )
@@ -3310,6 +3310,22 @@ mod scheduled_turn_tests {
             persisted,
             std::fs::canonicalize(&report).expect("canonical report")
         );
+
+        let notes = workspace.join("notes.md");
+        std::fs::write(&notes, "edited notes").expect("edited artifact file");
+        persist_successful_tool_artifact(
+            &store,
+            &scheduled.metadata.id,
+            &workspace,
+            "edit",
+            &serde_json::json!({
+                "path": "notes.md",
+                "old_string": "draft notes",
+                "new_string": "edited notes"
+            }),
+            "Updated notes.md",
+        )
+        .expect("persist canonical edit artifact from plain-text output");
 
         let appendix = workspace.join("appendix.md");
         std::fs::write(&appendix, "patched appendix").expect("patched artifact file");
@@ -3343,6 +3359,7 @@ mod scheduled_turn_tests {
             paths,
             vec![
                 persisted,
+                std::fs::canonicalize(&notes).expect("canonical notes"),
                 std::fs::canonicalize(&appendix).expect("canonical appendix")
             ]
         );

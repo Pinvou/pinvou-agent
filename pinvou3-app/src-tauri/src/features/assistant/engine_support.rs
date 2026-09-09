@@ -176,9 +176,12 @@ fn is_file_artifact_tool(name: &str, input: &serde_json::Value) -> bool {
             .and_then(serde_json::Value::as_str)
             .is_some_and(|action| matches!(action, "write" | "edit" | "patch"));
     } else {
-        ["write_file", "edit_file", "apply_patch"]
+        matches!(
+            name,
+            "write" | "edit" | "write_file" | "edit_file" | "apply_patch"
+        ) || ["write_file", "edit_file", "apply_patch"]
             .iter()
-            .any(|tool| name == *tool || name.ends_with(&format!("_{tool}")))
+            .any(|tool| name.ends_with(&format!("_{tool}")))
     }
 }
 

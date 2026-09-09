@@ -68,6 +68,10 @@ enum MonitorEmission {
     },
 }
 
+pub(super) fn is_shell_execution_tool(name: &str) -> bool {
+    matches!(name, "bash" | "exec_shell" | "task_shell_start" | "Bash")
+}
+
 impl ShellOutputMonitor {
     pub(crate) fn spawn(
         app: AppHandle,
@@ -95,8 +99,9 @@ impl ShellOutputMonitor {
     }
 
     pub(crate) fn tool_started(&self, tool_id: &str, name: &str, input: &Value) {
-        // v0.9.5 的 shell 工具面是 canonical `Bash` 家族；旧名仅旧会话回放出现。
-        if !matches!(name, "exec_shell" | "task_shell_start" | "Bash") {
+        // v0.9.12 exposes lowercase `bash`; retain the older names so restored
+        // transcripts and in-flight sessions can still reconnect to their jobs.
+        if !is_shell_execution_tool(name) {
             return;
         }
         let Some(command) = input.get("command").and_then(Value::as_str) else {
@@ -442,6 +447,17 @@ mod tests {
             stdout_tail: stdout.to_string(),
             stderr_tail: String::new(),
         }
+    }
+
+    #[test]
+    fn tracks_v0912_bash_and_keeps_replay_aliases() {
+        for name in ["bash", "exec_shell", "task_shell_start", "Bash"] {
+            assert!(
+                is_shell_execution_tool(name),
+                "shell tool not tracked: {name}"
+            );
+        }
+        assert!(!is_shell_execution_tool("read"));
     }
 
     #[test]

@@ -524,6 +524,12 @@ try {
   assert.equal(gateNotice.agentId, 'agent-reviewer');
   assert.equal(gateNotice.reason, 'outside delegated scope');
 
+  hydrateNativeLane(lane7, { messages: [] }, []);
+  const replayedGateNotices = lane7.items.filter(item => item.toolGateDecision);
+  assert.equal(replayedGateNotices.length, 1, 'SavedSession rehydrate must retain the live tool-gate audit');
+  assert.equal(replayedGateNotices[0].toolId, 'gate-tool-1');
+  assert.equal(replayedGateNotices[0].risk, 'high');
+
   // A completed compaction refreshes usage without waiting for the next chat:usage event.
   const lane7b = createNativeLane();
   lane7b.tokens = { input: 98000, max: 262144 };

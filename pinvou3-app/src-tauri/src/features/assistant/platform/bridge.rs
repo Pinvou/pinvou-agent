@@ -2289,7 +2289,7 @@ impl Pinvou3Bridge {
     /// | mode | allow_shell | trust_mode | auto_approve | approval_mode | 实际效果 |
     /// |------|-------------|------------|--------------|---------------|---------|
     /// | Yolo | self.allow  | true       | true         | Auto          | 全自动 + 信任全家目录 |
-    /// | Plan | true        | false      | true         | Auto          | 只读工具集 + ReadOnly sandbox（底座 tool_setup.rs 按 mode 自动切换） |
+    /// | Plan | true        | true       | true         | Auto          | 只读工具集 + ReadOnly sandbox（底座 tool_setup.rs 按 mode 自动切换） |
     ///
     /// **M1 弱模型加固**: 在 user content 前 prepend `<system-reminder>` 段,
     /// 内容按 `phase` 动态生成。Claude Code 同款机制对抗 long-context 遗忘 +
@@ -2298,8 +2298,9 @@ impl Pinvou3Bridge {
     ///
     /// 注：底座现已让 `auto_approve = true` **旁路**可绕过的 Required 审批
     /// （`turn_loop.rs::registered_tool_approval_required`，早期版本不旁路）。
-    /// 需要审批事件的场景必须逐轮关掉它；Yolo 还会在底座重新折算成自动批准，
-    /// 因此需要审批的运行必须同步收紧 mode、trust 与审批字段；定时任务按 profile。
+    /// 需要审批事件的场景必须逐轮关掉它；Yolo 还会在底座重新折算成自动批准。
+    /// `trust_mode` 是本地 workspace 边界语义，不与是否自动批准联动；定时任务
+    /// 按其独立 profile 收紧权限与审批字段。
     pub fn resolve_runtime_route_for_model(
         &self,
         model: &str,
@@ -2475,7 +2476,9 @@ impl Pinvou3Bridge {
         // AppMode variant. Keep mode and approval as separate typed inputs.
         let (auto_approve, approval_mode) = policy.approval_params();
         let (allow_shell, trust_mode) = match mode {
-            AppMode::Agent => (self.allow_shell(), auto_approve),
+            // Agent/Yolo 是本地单用户工作模式；workspace 信任是固定产品语义，
+            // 不能因未来调整 auto_approve 而意外收窄文件访问边界。
+            AppMode::Agent => (self.allow_shell(), true),
             // Plan: allow_shell=true 让 engine 正常路由 shell 工具，
             // 底座 tool_setup.rs 会把 sandbox 切到 ReadOnly + 工具白名单切到只读集。
             // trust_mode=true 让 list_dir/read_file 等只读工具能跨 session workspace

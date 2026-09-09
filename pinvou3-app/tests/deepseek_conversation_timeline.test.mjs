@@ -60,7 +60,7 @@ try {
   assert.equal(countsAsFailedOperation({
     type: 'tool',
     status: 'failed',
-    tool: { name: 'read_file', rawInput: {} },
+    tool: { name: 'read', rawInput: {} },
   }), true, 'ordinary tool failures must remain visible');
   assert.equal(isNearConversationBottom({ scrollHeight: 1000, scrollTop: 820, clientHeight: 100 }), true);
   assert.equal(isNearConversationBottom({ scrollHeight: 1000, scrollTop: 700, clientHeight: 100 }), false);
@@ -80,7 +80,7 @@ try {
       id: 4,
       type: 'tool',
       toolId: 'shell-1',
-      name: 'exec_shell',
+      name: 'bash',
       args: { command: 'git status', cwd: '/workspace/pinvou3' },
       output: 'clean',
       success: true,
@@ -90,7 +90,7 @@ try {
       id: 5,
       type: 'tool',
       toolId: 'read-1',
-      name: 'read_file',
+      name: 'read',
       args: { path: 'README.md' },
       output: '读取失败',
       success: false,
@@ -151,7 +151,7 @@ try {
     reasoningTokens: 0,
   });
   assert.equal(projected.turns[1].items[2].legacyItem, chatItems[4], 'tool cards must retain the original item for provider rendering');
-  assert.equal(projected.turns[1].items[3].tool.name, 'read_file', 'shared presentation must retain the provider tool name');
+  assert.equal(projected.turns[1].items[3].tool.name, 'read', 'shared presentation must retain the provider tool name');
   assert.equal(projected.turns[2].status, 'running');
   assert.equal(projected.turns[2].startedAt, 123456);
   assert.equal(projected.turns[2].waitingPermission, false);

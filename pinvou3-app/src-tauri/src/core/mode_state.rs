@@ -1,7 +1,9 @@
 //! 会话 mode 的跨层协议类型。
 //!
-//! pinvou3 把底座 `AppMode::Plan / Yolo` 二态暴露给用户。Plan 流程的交接
-//! (出方案→accept→执行) 复用底座原生闭环,app 不再自建 phase 状态机。
+//! pinvou3 UI 继续以 `Plan / Yolo` 二态呈现；CodeWhale v0.9.12 的底座
+//! 类型是 `AppMode::Plan / Agent`，序列化层把兼容名 Yolo 映射到 Agent。
+//! Plan 流程的交接(出方案→accept→执行)复用底座原生闭环,app 不再自建
+//! phase 状态机。
 //!
 //! 这里只保留跨层流通的协议类型(`SerializableMode`/`ModeLane`/
 //! `ModeDefaultsView`);session 域聚合(`SessionModeState`/`ActiveSkillBinding`/

@@ -252,7 +252,7 @@ pub(crate) fn spawn_event_forwarder(
                         );
                     }
                     let background_task_id =
-                        if matches!(name.as_str(), "exec_shell" | "task_shell_start" | "Bash")
+                        if crate::features::assistant::shell_output::is_shell_execution_tool(&name)
                             && metadata
                                 .as_ref()
                                 .and_then(|value| value.get("status"))
@@ -1210,8 +1210,8 @@ pub(crate) fn spawn_event_forwarder(
                         payload,
                     );
                 }
-                Event::CompactionFailed { message, auto, .. } => {
-                    let payload = json!({ "session_id": session_id, "phase": "fail", "auto": auto, "message": message });
+                Event::CompactionFailed { id, message, auto } => {
+                    let payload = json!({ "session_id": session_id, "phase": "fail", "id": id, "auto": auto, "message": message });
                     let _ = app.emit("chat:compaction", payload.clone());
                     crate::features::remote_control::forward_app_event(
                         &app,

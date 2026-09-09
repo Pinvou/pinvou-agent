@@ -13,6 +13,7 @@ OTHER_COMMIT = "2222222222222222222222222222222222222222"
 TAG_OBJECT = "3333333333333333333333333333333333333333"
 
 
+@unittest.skipIf(os.name == "nt", "shell verifier requires a Unix-compatible bash host")
 class PublicSubmoduleVerifierTests(unittest.TestCase):
     def _run(self, scenario):
         with tempfile.TemporaryDirectory() as temp_dir:

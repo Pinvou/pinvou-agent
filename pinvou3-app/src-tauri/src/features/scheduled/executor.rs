@@ -224,6 +224,7 @@ impl ScheduledChatExecutor {
                 status: TaskStatus::Completed,
                 result_text: Some(memory_organize_summary(&report)),
                 error: None,
+                terminal_reason: TaskTerminalReason::Completed,
             },
             Err(error) => TaskExecutionResult {
                 status: TaskStatus::Failed,
@@ -236,6 +237,7 @@ impl ScheduledChatExecutor {
                     "memory organize: {}",
                     crate::platform::credential_store::redact_secret(&format!("{error:#}"))
                 )),
+                terminal_reason: TaskTerminalReason::Failed,
             },
         }
     }
@@ -288,6 +290,7 @@ impl TaskExecutor for ScheduledChatExecutor {
                     error: Some(format!(
                         "unsupported scheduled task kind {raw:?}; update the app or recreate the task"
                     )),
+                    terminal_reason: TaskTerminalReason::Failed,
                 };
             }
             ScheduledTaskKindLookup::Chat => {}

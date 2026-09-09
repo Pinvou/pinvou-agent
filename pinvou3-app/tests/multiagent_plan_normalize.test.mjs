@@ -1343,8 +1343,8 @@ test('transcript 适配：文件工具归 file_change，终态后不留转圈条
       {
         role: 'assistant',
         content: [
-          { type: 'tool_use', id: 'tu-1', name: 'edit_file', input: { path: 'report.md' } },
-          { type: 'tool_use', id: 'tu-2', name: 'exec_shell', input: { command: 'ls' } },
+          { type: 'tool_use', id: 'tu-1', name: 'edit', input: { path: 'report.md' } },
+          { type: 'tool_use', id: 'tu-2', name: 'bash', input: { command: 'ls' } },
         ],
       },
     ],

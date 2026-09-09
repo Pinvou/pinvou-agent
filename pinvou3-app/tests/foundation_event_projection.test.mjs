@@ -112,4 +112,12 @@ assert.match(
   'legacy persisted notices must retain their already-rendered audit text',
 );
 
+const forwarderSource = read('src-tauri', 'src', 'features', 'assistant', 'forwarder.rs');
+const compactionFailedSection = forwarderSource.slice(
+  forwarderSource.indexOf('Event::CompactionFailed'),
+  forwarderSource.indexOf('Event::Error { envelope', forwarderSource.indexOf('Event::CompactionFailed')),
+);
+assert.match(compactionFailedSection, /Event::CompactionFailed \{ id, message, auto \}/);
+assert.match(compactionFailedSection, /"id": id/);
+
 console.log('foundation_event_projection.test.mjs: OK');

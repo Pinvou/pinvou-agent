@@ -4354,7 +4354,7 @@
     return null;
   }
 
-  const SHELL_TOOL_NAMES = ["exec_shell", "task_shell_start", "shell", "Bash"];
+  const SHELL_TOOL_NAMES = ["bash", "exec_shell", "task_shell_start", "shell", "Bash"];
   const SHELL_WAIT_TOOL_NAMES = ["exec_shell_wait", "exec_wait", "task_shell_wait"];
 
   function isShellExecutionTool(name) {
@@ -4366,10 +4366,8 @@
       const item = state.chatItems[i];
       if (item && item.type === "tool" &&
           (isShellExecutionTool(item.name) || SHELL_WAIT_TOOL_NAMES.includes(item.name))) {
-        // Since engine v0.9.3 the wait observer is the canonical Bash tool
-        // with action="wait"; the exec_shell_wait/exec_wait names survive
-        // only in replayed legacy sessions. Cards carry the action both live
-        // (chat:tool_start) and after history replay.
+        // Lowercase `bash` is canonical in v0.9.12. Uppercase `Bash` and the
+        // dedicated wait names remain here for replayed legacy sessions.
         return SHELL_WAIT_TOOL_NAMES.includes(item.name) ||
           (item.name === "Bash" && item.args != null && item.args.action === "wait");
       }
@@ -4380,7 +4378,7 @@
   function mentionsShellTool(text) {
     // 子智能体的工具调用不产生 chat:tool_start，forwarder 把 mailbox 的
     // ToolCallStarted 转成 multiagent:agent_progress（status 形如
-    // "🔧 exec_shell (step 3)"）。据此调度快照轮询，让子 agent 的后台
+    // "🔧 bash (step 3)"，历史记录也可能是 exec_shell）。据此调度快照轮询，让子 agent 的后台
     // shell 任务被 applyShellSnapshots 发现。
     const raw = String(text || "");
     return SHELL_TOOL_NAMES.some((name) => raw.includes(name));
@@ -4513,7 +4511,7 @@
         if (!item && !running && suppressUnmatchedTerminal) return;
         if (!item) {
           item = {
-            type: "tool", toolId: "shell-task:" + job.id, name: "exec_shell",
+            type: "tool", toolId: "shell-task:" + job.id, name: "bash",
             args: { command: job.command || "" }, output: null, success: null,
             state: running ? "running" : "failed", shellSnapshot: true,
           };
@@ -4813,8 +4811,8 @@
       const action = String(args && args.action || "").toLowerCase();
       return ["write", "edit", "patch"].includes(action) ? action : null;
     }
-    if (name === "write_file") return "write";
-    if (name === "edit_file") return "edit";
+    if (name === "write" || name === "write_file") return "write";
+    if (name === "edit" || name === "edit_file") return "edit";
     return null;
   }
 

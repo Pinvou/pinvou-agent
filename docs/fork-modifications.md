@@ -4,17 +4,17 @@
 > 维护策略见 [`fork-policy.md`](fork-policy.md)，升级证据见 [`codewhale-upgrade-0.9.5-to-0.9.12.md`](codewhale-upgrade-0.9.5-to-0.9.12.md)。
 > English: [`fork-modifications.en.md`](fork-modifications.en.md)
 
-## 0. 当前状态（2026-09-08 · v0.9.12 r1 公开 PR 候选）
+## 0. 当前状态（2026-09-09 · v0.9.12 r1 已发布基线）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5` |
-| 候选分支 | 已推送 `codex/pinvou-v0.9.12-r1`（CodeWhale PR #44），当前 head `ff299f94b0795180c76d0336152385dbd02dfa05` |
-| 发布状态 | 未成为受保护基线；公开 `pinvou3-clean` 仍是 r13，`pinvou-v0.9.12-r1` 不可变 tag 尚未创建 |
+| 维护分支 | CodeWhale PR #44 与 fast-follow PR #46 将 `pinvou3-clean` 对齐到 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf` |
+| 发布状态 | 公开 `pinvou3-clean`、不可变 tag `pinvou-v0.9.12-r1` 与父仓 gitlink 均指向同一 head |
 | 升级前回退点 | 公开不可变 tag `pinvou-v0.9.5-r13` → `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 `backup/pre-v0.9.12-sync` 仅作便利引用 |
-| 历史组织 | 上游之上 8 个签署提交，仍归属 4 个长期主题；最后三个提交收口评审确认的行为、测试与文档缺口 |
-| drift | `72 files, +4848/-637`，净增 4211 行；旧 r13 为 `110 files, +10895/-1195` |
-| 守护 | 36 条独立 CodeWhale `forkguard_*` 行为测试（30 条默认 + 6 条 `benchmark-eval-controls`）+ 父仓指纹与行为测试 |
+| 历史组织 | 上游之上 15 个带 DCO sign-off 的提交，仍归属 4 个长期主题；最后十个提交收口评审确认的行为、测试、文档与精确 SHA 发布门禁缺口 |
+| drift | `94 files, +5022/-944`，净增 4078 行；旧 r13 为 `110 files, +10895/-1195` |
+| 守护 | 37 条独立 CodeWhale `forkguard_*` 行为测试（31 条默认 + 6 条 `benchmark-eval-controls`）+ 父仓指纹与行为测试 |
 | 父仓适配 | v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2 |
 
 ## 1. 为什么本次使用 clean re-fork
@@ -56,14 +56,21 @@
 | `dbd1b7cb3` | T1/T2/T4 评审修复 | 恢复 feature-gated benchmark eval controls，并补齐 64 KiB 写入、session cancel、终态删除、受限轮 idle deferral 与 MCP 隐藏/拒绝的结果式守护 |
 | `fe0cd7551` | T1/T2/T3 评审收口 | 恢复上游对照测试并注明产品反转；增加 steer 真实 channel/turn-loop 回归；登记 Permissions fragment 上游化债务 |
 | `ff299f94b` | T2 复审修复 | 恢复配置型 API 搜索链的可达 Bing 尾部；移除空的 benchmark observability feature；补回评测兼容路径的设计理由注释 |
+| `54819b0d6` | 发布门禁 fast-follow | 为手动精确 SHA CI 补齐 migration manifest 比较基线；修正 rustdoc 私有链接与过时步数说明；将 18 个仅供下游宿主兼容的宽 facade 从生成 API 文档中隐藏，不改变编译 API 或运行行为 |
+| `ff9959bfc` | 发布门禁跟进 | 删除已由当前阻断结果式回归替代、且产品语义已明确反转的上游 Full Access 比较 helper；不抬高 dead-code 预算 |
+| `6615af7ca` | 文档复审收口 | 删除 4 处指向不存在的 fork-policy 小节引用，直接说明测试所锁定的产品反转与显式宿主边界 |
+| `409138dbe` | 运行时契约发布门禁 | 精确登记官方 v0.9.12 `automation`/`tasks` 路由字段与 Agent 精简的净增长，以及 Pinvou r1 写入上限和 host prompt-only profile 的模型可见增长；只抬高 Act/Operate full 的真实上限，同时收紧 active 与 Plan full，工具 identity 不变 |
+| `881cf4444` | 精确 SHA CI 收口 | macOS npm wrapper 在可选 sccache 丢失后的冷启动 release build 可使用 60 分钟上限，并以 wiring 回归锁定例外只作用于该 job |
+| `baa87f4de` | T4 复审修复 | offline-misfire skip 只作用于 recurring，使过期一次性任务仍精确持久入队一次后暂停 |
+| `1fafee7e2` | T2 复审修复 | 所有搜索后端不可用时恢复可操作且脱敏的 provider/config 配置提示 |
 
-所有提交都含 DCO `Signed-off-by`。`b4c02616b` 包含大部分跨主题收口，历史粒度确实不利于 bisect；但候选已公开进入评审，本轮不为历史美化 force-push，而是以新的签署提交修复评审问题，并用本表、指纹和行为测试弥补审计粒度。一旦创建不可变 tag，不得重写。
+所有提交都含 DCO `Signed-off-by`。`b4c02616b` 包含大部分跨主题收口，历史粒度确实不利于 bisect；分支公开进入评审后没有为历史美化 force-push，而是追加带 sign-off 的提交修复评审和发布门禁问题，并用本表、指纹和行为测试弥补审计粒度。不可变 tag 已创建，后续不得重写。
 
 ## 4. T1 — 宿主嵌入与路由边界
 
 ### 保留内容
 
-- 对宿主公开 `AppMode`、`ApprovalMode`、Automation、Task、route 和 worker ledger API。当前兼容 facade 还包含 18 个 `pub mod`，父仓 48 个 Rust 文件存在 272 处直接引用；这是已登记的收窄债务，不在本次热修中做破坏性改名。
+- 对宿主公开 `AppMode`、`ApprovalMode`、Automation、Task、route 和 worker ledger API。当前兼容 facade 还包含 18 个 `pub mod`，父仓全部 Rust 源码中有 61 个文件、340 处直接引用；这些模块作为不稳定下游兼容桥刻意不进入生成 API 文档。这是已登记的收窄债务，不在本次热修中做破坏性改名。
 - `resolve_runtime_route_with_limits` 保留 wire model、context/output 上限与 embedding alias。
 - `EngineConfig.session_id` 在 Engine spawn 前绑定，所有子智能体/工作流事件带 owner session 并由宿主按 owner 过滤。
 - `EngineHandle::steer` 返回 opaque id；`withdraw_steer` 区分已撤回与非 pending；中断、停止、压缩、换会话和 Engine drop 都使每个 id 恰好进入 committed/dropped 终态。
@@ -104,6 +111,7 @@
 - `forkguard_denied_mcp_is_absent_from_catalog_and_blocked_at_execution`
 - `forkguard_denied_mcp_tool_error_matches_the_unknown_tool_error`
 - `forkguard_api_provider_chain_tail_is_bing`
+- `all_unavailable_returns_actionable_error_without_private_details`
 - `forkguard_mcp_secret_resolver_supplies_values_without_process_env_writes`
 - `forkguard_write_primitive_enforces_the_64kib_boundary`
 - `forkguard_write_file_enforces_the_64kib_boundary`
@@ -144,6 +152,7 @@
 
 - `forkguard_automation_enqueue_preserves_settings_and_conversation_owner`
 - `forkguard_scheduler_skips_offline_backfill_and_overlapping_runs`
+- `forkguard_once_schedule_missed_while_offline_enqueues_exactly_one_run`
 - `forkguard_accepts_legacy_v4_but_rejects_newer_task_schema`
 - `forkguard_terminal_task_delete_refuses_active_and_is_idempotent`
 - `forkguard_terminal_automation_run_delete_refuses_active_and_is_idempotent`
@@ -157,7 +166,7 @@
 
 ## 9. 软上限评估与后续减量
 
-当前净增 4211 行，超过 1500 行软上限；`engine.rs`、`turn_loop.rs` 和 `engine/tests.rs` 也超过单文件 200 行提示线。原因是状态机、最终分发安全、“完整专家人设仅进入被选子智能体”的 spawn 边界、bundle Skills 排除 ambient 文件源的权限边界，以及评审要求的结果式生命周期/评测回归必须和 v0.9.12 原生 Engine 同步，拆成 app 侧镜像会形成更危险的双状态源。当前 Rust/Clippy 兼容只包含等价重写、`Default` 补全和窄 lint 说明，不改变公开函数签名或新增运行语义。
+当前净增 4078 行，超过 1500 行软上限；`engine.rs`、`turn_loop.rs` 和 `engine/tests.rs` 也超过单文件 200 行提示线。原因是状态机、最终分发安全、“完整专家人设仅进入被选子智能体”的 spawn 边界、bundle Skills 排除 ambient 文件源的权限边界，以及评审要求的结果式生命周期/评测回归必须和 v0.9.12 原生 Engine 同步，拆成 app 侧镜像会形成更危险的双状态源。当前 Rust/Clippy/rustdoc 兼容只包含等价重写、`Default` 补全、窄 lint 说明、文档可达性修复和无调用测试 helper 清理，不改变公开函数签名或新增运行语义。
 
 后续减量顺序：
 
@@ -171,6 +180,6 @@
 ## 10. 发布与回退
 
 - 公开回退点是不可变 tag `pinvou-v0.9.5-r13`；本地 `backup/pre-v0.9.12-sync` 不是发布前提。
-- 当前候选分支虽已通过 PR #44 公开，但尚未进入 `pinvou3-clean` 且没有不可变 tag，因此仍不满足“公开 submodule 基线可达”。
-- 获得明确授权后，先推送 `pinvou3-clean`，再创建不可变 `pinvou-v0.9.12-r1`，最后让父仓 gitlink 指向同一 SHA 并执行 `scripts/verify-public-submodule.sh`。
-- 未授权时不得降低公开校验或把本地 object 当成发布成功。
+- `pinvou3-clean` 与不可变 `pinvou-v0.9.12-r1` 已发布到 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`；父仓 gitlink 对齐同一 SHA 后以 `scripts/verify-public-submodule.sh` 验证公开可达性。
+- 发布过程中只为精确 head 的受保护分支更新临时移除无法在该维护分支触发的 required status contexts，完成快进后立即恢复原保护配置；未关闭 force-push 防护，也未重写已发布 tag。
+- 后续发布仍不得降低公开校验或把本地 object 当成发布成功。
