@@ -1159,8 +1159,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         let lastUserId = null;
         for (let i = chatItems.length - 1; i >= 0; i--) { if (chatItems[i].type === 'user') { lastUserId = chatItems[i].id; break; } }
         // 蜂群改造：连续 spawn 型 agent 调用聚合为一条计数行（标注 spawnGroup /
-        // spawnGroupHidden）。标注在投影输入上做一次：legacy ChatBubble 车道
-        // 直接读条目标注，统一时间线车道经投影条目的 legacyItem 读到同一份。
+        // spawnGroupHidden）。标注在投影输入上做一次，统一时间线车道经投影条目
+        // 的 legacyItem 读到同一份。
         const spawnAnnotatedItems = annotateAgentSpawnGroups(visibleChatItems);
         const conversationProjection = projectDeepSeekConversation({
           chatItems: conversationItemsForMode(spawnAnnotatedItems),
@@ -1180,9 +1180,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         for (let i = turns.length - 1; i >= 0; i--) {
           if (turns[i].status === 'running') { activeConversationTurn = turns[i]; break; }
         }
-        return { visibleChatItems: spawnAnnotatedItems, latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn };
+        return { latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn };
       }, [chatItems, busy, ctxTokens, isScheduledTaskCreationChat, chatThinking, turnTimeline, activeSessionId, modelServiceLanguage, chatModelServiceState]);
-      const { visibleChatItems, latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn } = derivedConversation;
+      const { latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn } = derivedConversation;
 
       // External entries can prefill the composer and focus its end.
       // Template/navigation entries (KnowledgeView "continue in chat",
