@@ -136,7 +136,17 @@ test('web build index strips tauri-only bridge scripts', {
   const sourceIndex = fs.readFileSync(path.join(sourceRoot, 'index.html'), 'utf8');
   const expected = localClassicScriptPaths(sourceIndex);
   const webIndex = fs.readFileSync(webDistIndexPath, 'utf8');
-  const built = localClassicScriptPaths(webIndex);
+  // build:web bakes the relay deployment base (vite.config.mjs
+  // normalizeWebBasePath: PINVOU_REMOTE_PUBLIC_BASE_PATH, default
+  // /pinvou3/remote) into every copied runtime URL; strip it so the built
+  // index compares against source-relative paths.
+  const webBase = String(process.env.PINVOU_REMOTE_PUBLIC_BASE_PATH || '/pinvou3/remote')
+    .replace(/^https?:\/\/[^/]+/iu, '')
+    .replace(/^\/+|\/+$/gu, '');
+  const built = localClassicScriptPaths(webIndex)
+    .map((relative) => (webBase && relative.startsWith(`${webBase}/`)
+      ? relative.slice(webBase.length + 1)
+      : relative));
 
   assert.deepEqual(
     built.filter((relative) => !expected.includes(relative)),
