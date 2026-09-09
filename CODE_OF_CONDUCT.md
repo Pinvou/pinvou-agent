@@ -2,7 +2,7 @@
 
 ## Our commitment
 
-We want participation in the Pinvou Agent community to be respectful, useful,
+We want participation in the 鲜小助 community to be respectful, useful,
 and safe for people of every background and experience level.
 
 ## Expected behavior
@@ -25,7 +25,7 @@ and safe for people of every background and experience level.
 ## Scope
 
 This policy applies to repository issues, pull requests, discussions, and other
-spaces where someone represents the Pinvou community.
+spaces where someone represents the 鲜小助 community.
 
 ## Reporting and enforcement
 
@@ -46,4 +46,4 @@ acceptable.
 
 This policy is informed by the
 [Contributor Covenant](https://www.contributor-covenant.org/version/2/1/code_of_conduct/)
-and is adapted for the Pinvou Agent community.
+and is adapted for the 鲜小助 community.

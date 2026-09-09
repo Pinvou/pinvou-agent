@@ -436,7 +436,7 @@ def _cover_thumbnail(spec, th):
     if sub:
         d.text((M, 344), str(sub)[:48], fill="#" + th["muted"], font=sf)
     n = len(spec.get("slides", []))
-    d.text((M, H - 84), "Pinvou · %d 页 · %s" % (n, spec.get("theme", DEFAULT_THEME)),
+    d.text((M, H - 84), "鲜小助 · %d 页 · %s" % (n, spec.get("theme", DEFAULT_THEME)),
            fill="#" + th["muted"], font=ff)
     buf = BytesIO()
     img.save(buf, format="JPEG", quality=86)

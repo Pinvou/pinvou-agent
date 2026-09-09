@@ -32,14 +32,14 @@ gh release view "$TAG" >/dev/null
 (cd "$APP_DIR" && npm ci --prefer-offline --no-audit)
 (cd "$APP_DIR" && node scripts/tauri/build.js build --target universal-apple-darwin)
 
-APP_BIN="$APP_DIR/src-tauri/target/universal-apple-darwin/release/bundle/macos/pinvou3.app/Contents/MacOS/pinvou3-tauri"
+APP_BIN="$APP_DIR/src-tauri/target/universal-apple-darwin/release/bundle/macos/鲜小助.app/Contents/MacOS/pinvou3-tauri"
 if [ ! -f "$APP_BIN" ]; then
   echo "Community app binary not found: $APP_BIN" >&2
   exit 1
 fi
 lipo "$APP_BIN" -verify_arch arm64 x86_64
 
-SOURCE="$APP_DIR/src-tauri/target/universal-apple-darwin/release/bundle/dmg/pinvou3_${VERSION}_universal.dmg"
+SOURCE="$APP_DIR/src-tauri/target/universal-apple-darwin/release/bundle/dmg/鲜小助_${VERSION}_universal.dmg"
 ASSET="$APP_DIR/src-tauri/target/universal-apple-darwin/release/bundle/dmg/pinvou-agent_${VERSION}_macos-universal-community.dmg"
 if [ ! -f "$SOURCE" ]; then
   echo "Community dmg not found: $SOURCE" >&2

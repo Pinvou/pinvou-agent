@@ -4352,7 +4352,7 @@ mod tests {
         assert_eq!(
             cfg_a.active_route_limits.and_then(|l| l.output_tokens),
             Some(24_576),
-            "128K 本地 route 必须显式携带 Pinvou 24K output"
+            "128K 本地 route 必须显式携带 鲜小助 24K output"
         );
         assert!(
             (40_000..=55_000).contains(&t_a),
@@ -4495,7 +4495,7 @@ mod tests {
         assert_eq!(
             cloud_limits_env.as_ref().and_then(|l| l.output_tokens),
             None,
-            "品悟中间层不读该 env（云端 route 仍不声明）；env 影响发生在底座最终预算链（见 D 段）"
+            "鲜小助中间层不读该 env（云端 route 仍不声明）；env 影响发生在底座最终预算链（见 D 段）"
         );
 
         // D. 沿底座公开预算链（context_input_budget_for_route，品悟 derive_compaction_threshold
@@ -5010,7 +5010,7 @@ mod tests {
         assert_eq!(
             allowed(false),
             Some(crate::features::assistant::tool_policy::allowed_tool_names()),
-            "普通卡 / 未加持必须恢复 Pinvou 基础白名单"
+            "普通卡 / 未加持必须恢复 鲜小助 基础白名单"
         );
 
         // code 会话同链路生效(原 build_send_message_op_restrict_tools_also_
@@ -5041,7 +5041,7 @@ mod tests {
         assert_eq!(
             allowed_code(false),
             Some(crate::features::assistant::tool_policy::allowed_tool_names()),
-            "code 会话未限制时必须恢复 Pinvou 基础白名单"
+            "code 会话未限制时必须恢复 鲜小助 基础白名单"
         );
     }
 
@@ -5549,7 +5549,7 @@ mod tests {
         let engine_executor = config
             .hook_executor
             .as_ref()
-            .expect("PINVOU Engine 必须注入 hook executor");
+            .expect("鲜小助 Engine 必须注入 hook executor");
         let runtime_executor = config
             .runtime_services
             .hook_executor
@@ -5597,7 +5597,7 @@ mod tests {
                     && hook.name.as_deref() == Some("pinvou3-cli-shell-env")
                     && hook.command.contains("shell_env.sh")
             }),
-            "Unix PINVOU 必须通过底座现有 shell_env hook 注入 CLI 环境"
+            "Unix 鲜小助 必须通过底座现有 shell_env hook 注入 CLI 环境"
         );
         let Op::SendMessage {
             hook_executor: Some(message_executor),
@@ -7534,7 +7534,7 @@ mod tests {
         assert_eq!(
             allowed_tools,
             Some(crate::features::assistant::tool_policy::allowed_tool_names()),
-            "普通会话使用 Pinvou 基础白名单"
+            "普通会话使用 鲜小助 基础白名单"
         );
         assert_eq!(multi_allowed_tools, allowed_tools);
         let has_hook = |executor: &Option<Arc<HookExecutor>>, name: &str| {

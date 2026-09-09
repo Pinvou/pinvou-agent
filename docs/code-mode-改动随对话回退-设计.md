@@ -1,7 +1,7 @@
 # 代码模式「改动随对话回退」设计方案
 
 > 状态：已落地（PR #397，经两轮评审加固）。
-> 范围：**仅品悟原生代码会话（Native code lane）**；ACP 会话（Codex/Claude 外部进程）明确不做。
+> 范围：**仅鲜小助原生代码会话（Native code lane）**；ACP 会话（Codex/Claude 外部进程）明确不做。
 > 关联：`docs/adr/0006-多智能体收缩为会话内主动委派模式.md`（需修订，见 §8）、`docs/code-native-agent-完全体架构设计.md`（qiuYliangM/feat-full-code-mode 分支，本方案移植其 checkpoint 机制）。
 
 ## 1. 目标与语义定义

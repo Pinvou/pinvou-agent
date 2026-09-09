@@ -35,7 +35,7 @@ description: 当用户要求数据可视化、做图表、生成看板、数据�
 在执行任务前读取 `references/visualizer-design-system.md`，并遵守其中的 Chart.js、布局、配色、无障碍和流式输出规则。若任务很小，也至少遵守本文件的硬性规则。
 
 ## 交付方式
-Pinvou 的聊天正文会转义或清理 `<script>`，所以不要把带 Chart.js 的 HTML 直接贴在普通回复正文里当最终成品。
+鲜小助 的聊天正文会转义或清理 `<script>`，所以不要把带 Chart.js 的 HTML 直接贴在普通回复正文里当最终成品。
 
 必须按以下流程交付：
 1. 用 `write_file` 写出一个 `.html` 文件，文件内容可以是完整可打开 HTML，必须包含可执行的 Chart.js 脚本。

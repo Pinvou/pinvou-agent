@@ -121,7 +121,7 @@ pub async fn prepare_codex_acp(acp_pool: State<'_, AcpPool>) -> Result<CodexAcpS
     let status = acp_pool.refresh_status().await;
     if !status.bridge_ready {
         return Err(
-            "准备 Codex 运行环境失败: Pinvou 安装包缺少可用的 Codex ACP Bridge".to_string(),
+            "准备 Codex 运行环境失败: 鲜小助 安装包缺少可用的 Codex ACP Bridge".to_string(),
         );
     }
     acp_pool

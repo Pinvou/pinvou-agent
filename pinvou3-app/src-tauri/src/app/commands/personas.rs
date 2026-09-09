@@ -199,7 +199,7 @@ pub async fn save_session_pinvou_reviews(
     }
     let merged = preserve_resolutions(&path, reviews);
     let json = serde_json::to_string(&merged).map_err(|e| format!("序列化失败: {e}"))?;
-    std::fs::write(&path, json).map_err(|e| format!("写 Pinvou 审查失败: {e}"))
+    std::fs::write(&path, json).map_err(|e| format!("写 鲜小助 审查失败: {e}"))
 }
 
 /// 读某 session 的 Pinvou 审查时间线（无则返回空数组）。

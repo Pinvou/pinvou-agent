@@ -153,7 +153,7 @@ function injectSource() {
     var saveModelError = null;
     var dependencyCheckResponse = [];
     var memoryOverview = {
-      profile: { version: 1, revision: 3, identity: { call_name: '升级前称呼', assistant_alias: 'PINVOU' }, conventions: {} },
+      profile: { version: 1, revision: 3, identity: { call_name: '升级前称呼', assistant_alias: '鲜小助' }, conventions: {} },
       preferences: [], work_context: [], current_focus: [], recent_activity: [], recent_work: [], pending: [], never: [],
       runtime: null, snapshot_path: '', warnings: [],
       sources: {

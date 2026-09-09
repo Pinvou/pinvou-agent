@@ -1,8 +1,10 @@
 <div align="center">
 
-<img src="pinvou3-app/src-tauri/icons/icon.png" alt="Pinvou Agent ロゴ" width="120" />
+<img src="pinvou3-app/src-tauri/icons/icon.png" alt="鲜小助 ロゴ" width="120" />
 
-# Pinvou Agent
+# 鲜小助
+
+このプロジェクトは [Pinvou Agent](https://github.com/Pinvou/pinvou-agent) を基に独立して保守されています。製品名は **鲜小助** です。上流リンクは出典を示し、公式配布や推奨を意味しません。[ブランドと互換性](docs/branding.md)も参照してください。
 
 **仕事、デザイン、コーディングのためのオープンソース・デスクトップ AI Agent ワークスペース。**
 
@@ -18,7 +20,7 @@
 
 <p align="center">
   <a href="https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4">
-    <img src="docs/assets/screenshots/mode-work.webp" alt="Pinvou Agent 作業モード">
+    <img src="docs/assets/screenshots/mode-work.webp" alt="鲜小助 作業モード">
   </a>
 </p>
 <p align="center">
@@ -27,7 +29,7 @@
 
 </div>
 
-Pinvou Agent は、単なるチャットウィンドウではありません。日々の仕事、ビジュアルデザイン、ソフトウェア開発を 1 つのデスクトップワークスペースにまとめ、チャットの返事で終わらせるのではなく、**成果**で終わるべきタスクのために設計されています。ツールを使い、ファイルを操作し、個人の知識を蓄えられます。ACP 経由で専用のコーディング Agent を実際のプロジェクトに取り込んだり、プロンプトから後で編集を続けられるビジュアル成果物を生み出したりすることもできます。
+鲜小助 は、単なるチャットウィンドウではありません。日々の仕事、ビジュアルデザイン、ソフトウェア開発を 1 つのデスクトップワークスペースにまとめ、チャットの返事で終わらせるのではなく、**成果**で終わるべきタスクのために設計されています。ツールを使い、ファイルを操作し、個人の知識を蓄えられます。ACP 経由で専用のコーディング Agent を実際のプロジェクトに取り込んだり、プロンプトから後で編集を続けられるビジュアル成果物を生み出したりすることもできます。
 
 ローカルモデルを使えば完全にプライベートなループで動作し、OpenAI 互換のエンドポイントであれば自由に接続できます。MCP サーバー、CLI コネクター、スキル、ワークフローで Agent を拡張しましょう。
 
@@ -83,16 +85,16 @@ Pinvou Agent は、単なるチャットウィンドウではありません。�
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/assets/screenshots/mode-design.webp" alt="Pinvou Agent デザインモード"></td>
-    <td width="50%"><img src="docs/assets/screenshots/mode-code.webp" alt="Pinvou Agent コードモード"></td>
+    <td width="50%"><img src="docs/assets/screenshots/mode-design.webp" alt="鲜小助 デザインモード"></td>
+    <td width="50%"><img src="docs/assets/screenshots/mode-code.webp" alt="鲜小助 コードモード"></td>
   </tr>
   <tr>
     <td align="center">ポスターやデータビジュアライゼーションのためのデザインモード</td>
     <td align="center">Codex、Claude Code、Kimi を使えるコードモード</td>
   </tr>
   <tr>
-    <td width="50%"><img src="docs/assets/screenshots/tool-store.webp" alt="Pinvou Agent ツールストア"></td>
-    <td width="50%"><img src="docs/assets/screenshots/artifacts-preview.webp" alt="Pinvou Agent 成果物プレビュー"></td>
+    <td width="50%"><img src="docs/assets/screenshots/tool-store.webp" alt="鲜小助 ツールストア"></td>
+    <td width="50%"><img src="docs/assets/screenshots/artifacts-preview.webp" alt="鲜小助 成果物プレビュー"></td>
   </tr>
   <tr>
     <td align="center">ツールとコネクターで Agent を拡張</td>
@@ -102,7 +104,7 @@ Pinvou Agent は、単なるチャットウィンドウではありません。�
 
 ## 🤖 モデル接続
 
-Pinvou Agent は**ローカル vLLM** と任意の **OpenAI 互換 API** で動作します。複数のモデル設定をアプリに保存でき、クラウド設定には任意の表示名（エイリアス）を付けられます。プロバイダーに送るモデル識別子を変えずに、セッションごとに切り替えられます。内蔵テンプレートは、ローカル vLLM、DeepSeek、Kimi、Qwen、Doubao、MiniMax、Zhipu (GLM)、MiMo、OpenAI、Anthropic、Gemini、xAI に対応 — その他のカスタム互換エンドポイントも入力できます。
+鲜小助 は**ローカル vLLM** と任意の **OpenAI 互換 API** で動作します。複数のモデル設定をアプリに保存でき、クラウド設定には任意の表示名（エイリアス）を付けられます。プロバイダーに送るモデル識別子を変えずに、セッションごとに切り替えられます。内蔵テンプレートは、ローカル vLLM、DeepSeek、Kimi、Qwen、Doubao、MiniMax、Zhipu (GLM)、MiMo、OpenAI、Anthropic、Gemini、xAI に対応 — その他のカスタム互換エンドポイントも入力できます。
 
 ローカル vLLM の例:
 
@@ -209,7 +211,7 @@ docs/                 アーキテクチャと保守のドキュメント
 - 🔒 **セキュリティの脆弱性を公開イシューで報告しないでください** — [SECURITY.md](SECURITY.md) の非公開チャネルか、`security@pinvou.com` 宛のメールを利用してください
 
 <p align="center">
-  <img src="pinvou3-app/src/assets/community/qq-group-1108909346.png" alt="Pinvou Agent 公式 QQ ユーザーグループ（グループ番号 1108909346）の QR コード" width="260" />
+  <img src="pinvou3-app/src/assets/community/qq-group-1108909346.png" alt="鲜小助 公式 QQ ユーザーグループ（グループ番号 1108909346）の QR コード" width="260" />
 </p>
 
 ライセンス、サードパーティの帰属表示、SBOM、ブランド利用の範囲、拡張マーケットの概要は、[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)、[docs/sbom.md](docs/sbom.md)、[TRADEMARKS.md](TRADEMARKS.md)、[docs/工具市场.md](docs/工具市场.md) にまとめられています。
@@ -232,8 +234,8 @@ docs/                 アーキテクチャと保守のドキュメント
 
 <div align="center">
 
-Pinvou Agent は現在も活発に開発が進んでいます。現在の動作に関する正しい情報源は、`main` ブランチと最新のリリースノートです。
+鲜小助 は現在も活発に開発が進んでいます。現在の動作に関する正しい情報源は、`main` ブランチと最新のリリースノートです。
 
-**[MIT ライセンス](LICENSE)** · Pinvou チームとコントリビューターが ❤️ を込めて開発しています
+**[MIT ライセンス](LICENSE)** · 鲜小助 チームとコントリビューターが ❤️ を込めて開発しています
 
 </div>

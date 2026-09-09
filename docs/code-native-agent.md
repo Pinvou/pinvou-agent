@@ -1,4 +1,4 @@
-# 代码模块品悟原生会话（code-native-agent）技术文档
+# 代码模块鲜小助原生会话（code-native-agent）技术文档
 
 > 分支：`feat/code-native-agent`（PR #138，已 rebase 至最新 `main`）
 > 周期：2026-08-01 单日完成，共 19 个开发节点（squash 为 PR 的 6 个提交，见 §4）。
@@ -6,9 +6,9 @@
 
 ## 1. 背景与目标
 
-"代码"模块此前只接入三个第三方 ACP Agent（Codex / Claude Code / Kimi），原生能力缺位。本特性把 pinvou 原生（CodeWhale Engine）编码能力作为第四个 agent"品悟"（agent_id `pinvou`）加入代码模块，目标：
+"代码"模块此前只接入三个第三方 ACP Agent（Codex / Claude Code / Kimi），原生能力缺位。本特性把 pinvou 原生（CodeWhale Engine）编码能力作为第四个 agent"鲜小助"（agent_id `pinvou`）加入代码模块，目标：
 
-- 代码模式下可直接创建品悟原生会话并对话，支持绑定用户自选项目目录；
+- 代码模式下可直接创建鲜小助原生会话并对话，支持绑定用户自选项目目录；
 - 不依赖第三方 CLI 安装与登录，无 Node/无账号环境可用；
 - ACP 会话行为零变化；普通聊天页行为零变化；
 - 提示词与编码场景对齐，避免工作模式语义污染代码任务。
@@ -33,7 +33,7 @@
 
 ### 3.1 会话标记而非新链路
 
-- `AgentBackend` 枚举复用既有原生变体 `Deepseek`（display_name "品悟"），`parse` 增加 `"pinvou"` 别名，kebab-case 序列化契约不变。
+- `AgentBackend` 枚举复用既有原生变体 `Deepseek`（display_name "鲜小助"），`parse` 增加 `"pinvou"` 别名，kebab-case 序列化契约不变。
 - 会话类型按**两条正交轴**类型化（2026-08-05 解耦，D-1）：产品模式轴 `SessionAgentRecord.mode: SessionMode::{Plain, Code}`（`core/session_mode.rs`），运行时轴即 `AgentBackend`（Deepseek=原生、其余=ACP）——替代原 `code_session: bool` 布尔约定（互斥曾靠调用顺序维持）。磁盘 `session-agents.json` 保持原 `code_session` 键与布尔格式（自研 serde 适配层），新旧版本互读兼容、零迁移；普通会话无记录默认 `Plain`。
 - 原生代码会话对 `AcpPool::is_acp` 保持 false：`chat` 命令天然放行，ACP 命令经 `acp_record` 检查自然拒绝，两链路互不串台。
 - "会话创建时绑定 Agent/目录，开始后不可切换"对原生与 ACP 同样生效。
@@ -43,8 +43,8 @@
 绑项目目录的核心安全设计：
 
 - **执行根**（LLM 面向）：engine cwd、文件工具相对路径根、shell 执行目录。经 `Pinvou3Bridge` 注入的执行根解析器（共享 AcpPool 那份 `SessionAgentStore` 实例）推导；engine spawn（`engine.rs`）与 shell_workspace（`engine_pool.rs`）两个消费点经 `bridge.session_workspace` 自动同源。
-- **账本根**（应用面向）：附件、暂存、审计、产物、远程授权，恒为 `~/.pinvou3/sessions/<sid>/`（`SessionStore::execution_workspace` **一行未改**，25+ 调用点全是账本语义）。CodeWhale delegated-agent 的账本、transcript 与协调锁通过 `subagent_state_root` 使用该会话的 `workspace/`；Pinvou 专家由全局专家池生成内存 `fleet.profiles`，不写入账本根。
-- 效果：项目目录零污染（无 `attachments/`、`.pinvou3/`、`workflow_audit.jsonl` 或 Pinvou 专家名册写入）、删会话零残留、远程下载授权面不扩大、产物面板不误扫项目。
+- **账本根**（应用面向）：附件、暂存、审计、产物、远程授权，恒为 `~/.pinvou3/sessions/<sid>/`（`SessionStore::execution_workspace` **一行未改**，25+ 调用点全是账本语义）。CodeWhale delegated-agent 的账本、transcript 与协调锁通过 `subagent_state_root` 使用该会话的 `workspace/`；鲜小助 专家由全局专家池生成内存 `fleet.profiles`，不写入账本根。
+- 效果：项目目录零污染（无 `attachments/`、`.pinvou3/`、`workflow_audit.jsonl` 或 鲜小助 专家名册写入）、删会话零残留、远程下载授权面不扩大、产物面板不误扫项目。
 - 例外适配：附件引用在绑项目会话改用绝对路径（相对路径会相对项目根解析落空）。
 
 ### 3.3 前端双车道而非复用 bridge
@@ -84,7 +84,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 
 | Hash | 说明 |
 |---|---|
-| `241fe054` | 代码模块接入品悟原生代码会话：store `code_session` 标记、`create_codex_acp_session` 原生分支、列表纳入、workspace_info 支持、前端双车道（code-native-lane）、选择器加"品悟"、i18n 三语、文档同步 |
+| `241fe054` | 代码模块接入鲜小助原生代码会话：store `code_session` 标记、`create_codex_acp_session` 原生分支、列表纳入、workspace_info 支持、前端双车道（code-native-lane）、选择器加"鲜小助"、i18n 三语、文档同步 |
 
 ### 阶段二：项目目录绑定（两个根）
 
@@ -143,7 +143,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 - `features/codex/CodexAcpView.jsx`：按 `agent_id === 'pinvou'` 分流（发送/事件/确认卡/取消/busy），ACP 专属 UI 隐藏，工作区选择器与项目目录流程，四配置控件接入与草稿暂存，pending/busy 恢复。
 - `features/chat/composer-controls.jsx`（新增，自 ChatView 提取）：`ComposerKbSelector`/`ComposerModeChip`/`COMPOSER_ICON_BUTTON_CLASS`，可选显式会话态 props。
 - `features/settings/SettingsView.jsx`：`ComposerModelSelector` 增加显式会话态 props（sessionId/sessionModelId/onSwitchModel）；`ComposerToolMenu` 增加 `triggerVariant='pill'`。
-- `features/conversation/HomeModeSwitcher.jsx`：CODE_AGENT_OPTIONS 增加"品悟"。
+- `features/conversation/HomeModeSwitcher.jsx`：CODE_AGENT_OPTIONS 增加"鲜小助"。
 - `app/main.jsx`：原生会话 busy 全局监听、CodexAcpView 补传 bs 与导航回调。
 - `platform/tauri/bridge.js` + `platform/web/bridge.js`：persist 守卫——会话不在聊天列表则跳过 persist+rename。
 - `shared/i18n.js`：uiCodex 三语 key（nativeDraftHint/nativeActiveHint/nativeBlockedNotice/compactStart/compactDone/compactFail 等）。

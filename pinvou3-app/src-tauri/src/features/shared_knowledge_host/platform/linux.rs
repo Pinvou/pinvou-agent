@@ -90,7 +90,7 @@ pub async fn install_or_upgrade(
 ) -> Result<Option<HostOwnerClaim>, String> {
     tokio::task::spawn_blocking(move || {
         if !resources.helper.is_file() || !resources.server.is_file() {
-            return Err("安装包缺少共享知识库服务，请重新安装 PINVOU".to_string());
+            return Err("安装包缺少共享知识库服务，请重新安装 鲜小助".to_string());
         }
         let uid = command_identity("-u")?;
         let gid = command_identity("-g")?;
@@ -140,7 +140,7 @@ pub async fn set_owner_device(
 ) -> Result<DeviceGrant, String> {
     tokio::task::spawn_blocking(move || {
         if !resources.helper.is_file() {
-            return Err("安装包缺少共享知识库管理组件，请重新安装 PINVOU".to_string());
+            return Err("安装包缺少共享知识库管理组件，请重新安装 鲜小助".to_string());
         }
         let uid = command_identity("-u")?;
         let gid = command_identity("-g")?;
@@ -181,7 +181,7 @@ pub async fn consume_owner_claim(
 pub async fn recover_owner(resources: PackagedHostResources) -> Result<HostOwnerClaim, String> {
     tokio::task::spawn_blocking(move || {
         if !resources.helper.is_file() || !resources.server.is_file() {
-            return Err("安装包缺少共享知识库管理组件，请重新安装 PINVOU".to_string());
+            return Err("安装包缺少共享知识库管理组件，请重新安装 鲜小助".to_string());
         }
         let uid = command_identity("-u")?;
         let gid = command_identity("-g")?;
@@ -208,7 +208,7 @@ pub async fn remove_host(
 ) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         if !resources.helper.is_file() {
-            return Err("安装包缺少共享知识库管理组件，请重新安装 PINVOU".to_string());
+            return Err("安装包缺少共享知识库管理组件，请重新安装 鲜小助".to_string());
         }
         privileged_helper(
             &resources,
@@ -314,7 +314,7 @@ fn privileged_helper<const N: usize>(
     timeout: Duration,
 ) -> Result<String, String> {
     if !resources.helper.is_file() {
-        return Err("安装包缺少共享知识库管理组件，请重新安装 PINVOU".to_string());
+        return Err("安装包缺少共享知识库管理组件，请重新安装 鲜小助".to_string());
     }
     let mut command = Command::new("pkexec");
     command.arg(&resources.helper).args(args);

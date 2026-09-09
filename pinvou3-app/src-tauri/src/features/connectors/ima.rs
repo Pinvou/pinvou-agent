@@ -217,7 +217,7 @@ impl ToolSpec for ImaOpenApiTool {
 
     fn description(&self) -> &str {
         "调用腾讯 ima 官方 OpenAPI，操作用户已连接的 ima 笔记与知识库。\
-         仅接受受控的 api_path 和 JSON body；凭据由 Pinvou 从本机系统凭据读取，\
+         仅接受受控的 api_path 和 JSON body；凭据由 鲜小助 从本机系统凭据读取，\
          不要询问、传入或输出 Client ID、API Key、请求头。"
     }
 
@@ -284,7 +284,7 @@ impl ToolSpec for ImaOpenApiTool {
             credentials(&SystemCredentialStore::new())
                 .map_err(|e| redact_secret(&e))?
                 .ok_or_else(|| {
-                    "未找到 IMA 凭据。请先在 Pinvou 插件中心连接「腾讯 ima」。".to_string()
+                    "未找到 IMA 凭据。请先在 鲜小助 插件中心连接「腾讯 ima」。".to_string()
                 })
         })
         .await

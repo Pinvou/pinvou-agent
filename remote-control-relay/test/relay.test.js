@@ -211,7 +211,7 @@ before(async () => {
   relayStatePath = join(testRoot, "relay-state.json");
   await mkdir(webDir, { recursive: true });
   await mkdir(join(webDir, "assets"), { recursive: true });
-  await writeFile(join(webDir, "index.html"), "<!doctype html><title>PINVOU WebUI v2</title><main id=app></main>");
+  await writeFile(join(webDir, "index.html"), "<!doctype html><title>鲜小助 WebUI v2</title><main id=app></main>");
   await writeFile(join(webDir, "app.js"), "window.__pinvou_webui_v2__ = true;\n");
   await writeFile(join(webDir, "assets", "app-01234567.js"), "window.__hashed__ = true;\n");
   await writeFile(join(webDir, "assets", "brand-banner.jpg"), "fixed-name-asset\n");

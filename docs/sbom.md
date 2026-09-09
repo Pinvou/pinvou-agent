@@ -1,6 +1,6 @@
 # Software Bill of Materials
 
-Pinvou Agent uses GitHub's dependency graph to maintain a live SPDX 2.3 Software
+鲜小助 uses GitHub's dependency graph to maintain a live SPDX 2.3 Software
 Bill of Materials (SBOM) for the public repository.
 
 ## Export the current source SBOM

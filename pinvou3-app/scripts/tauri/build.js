@@ -18,6 +18,7 @@ const {
 const { linuxStartupWindowConfigSpec } = require("./startup-window-config.js");
 const { prepareKnowledgeHost } = require("./knowledge-host.js");
 const { WRAPPER_ENV } = require("./require-wrapper.js");
+const { developmentArgs } = require("./macos-dev-signing.js");
 const { stageWindowsInstaller } = require("./windows-installer.js");
 const {
   stageWindowsOnnxRuntime,
@@ -233,7 +234,7 @@ function main() {
     isDev,
     tauriRuntimeEnvironment(windowsRuntime || windowsDevRuntime),
   );
-  process.exitCode = runTauri(preparedArgs, undefined, tauriEnvironment);
+  process.exitCode = runTauri(developmentArgs(preparedArgs), undefined, tauriEnvironment);
 }
 
 if (require.main === module) {

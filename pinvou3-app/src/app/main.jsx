@@ -2537,10 +2537,10 @@ function workspaceDisplayName(path) {
       const scheduledUnread = !!(bs && ((bs.scheduledTasks || []).some(task => task.hasUnreadRuns)
         || (bs.scheduledTaskRecentRuns || []).some(run => run && run.unread)));
       const mobileTitle = currentView === 'chat'
-        ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || 'PINVOU')
+        ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || t.appTitle)
         : currentView === 'codex'
           ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || t.sidebarTaskFilterCode)
-        : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings, browser: t.browser }[currentView] || 'PINVOU');
+        : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings, browser: t.browser }[currentView] || t.appTitle);
       const mobileNavigate = (view, beforeNavigate) => {
         setMobileMoreOpen(false);
         navigateFromScheduledRun(view, beforeNavigate);
@@ -2839,7 +2839,7 @@ function workspaceDisplayName(path) {
                 <Menu size={20} className={activeTheme === 'dark' ? 'text-[#E3E3E3]' : 'text-[#444746]'} />
               </button>
               <span className={`text-[18px] font-medium tracking-wide flex items-center gap-2 whitespace-nowrap transition-opacity duration-200 ${isSidebarOpen ? 'opacity-100' : 'opacity-0 w-0'}`}>
-                PINVOU
+                {t.appTitle}
               </span>
               {isSidebarOpen && !isCompactShell && (
                 <button
@@ -3566,7 +3566,7 @@ function workspaceDisplayName(path) {
               </div>
             )}
 
-            {/* Pinvou 检阅弹窗(品/悟) —— 居中弹窗 + 毛玻璃背景(虚化身后 app);全局,任何视图都能弹;点背景或卡内「跳过」关闭 */}
+            {/* 鲜小助 检阅弹窗(品/悟) —— 居中弹窗 + 毛玻璃背景(虚化身后 app);全局,任何视图都能弹;点背景或卡内「跳过」关闭 */}
             {bs && bs.pinvouModal && browserOverlayPublicationReady && (
               // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard users close the dialog through its real close button
               // biome-ignore lint/a11y/noStaticElementInteractions: this is a pointer-only backdrop around an accessible dialog card

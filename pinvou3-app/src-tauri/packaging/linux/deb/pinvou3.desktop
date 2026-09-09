@@ -1,8 +1,10 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=PINVOU 智能助手
-Name[en]=PINVOU Assistant
+Name=鲜小助 智能助手
+Name[en]=鲜小助 Assistant
+Name[zh_CN]=鲜小助智能助手
+Name[ja]=鲜小助アシスタント
 GenericName=AI 智能助手
 GenericName[en]=AI Assistant
 Comment=本地大模型桌面智能助手
@@ -11,6 +13,6 @@ Exec=pinvou3-tauri
 Icon=pinvou3-tauri
 Terminal=false
 Categories=Utility;
-Keywords=AI;LLM;assistant;chat;pinvou;品悟;智能助手;
+Keywords=AI;LLM;assistant;chat;pinvou;鲜小助;智能助手;
 StartupNotify=true
 StartupWMClass=pinvou3-tauri

@@ -64,7 +64,7 @@ if ((rust_major < 1 || (rust_major == 1 && rust_minor < 89))); then
 fi
 
 log "使用 $(rustc --version) / $(cargo --version)"
-log "编译 PINVOU Knowledge（并行任务：${BUILD_JOBS}）"
+log "编译 鲜小助 Knowledge（并行任务：${BUILD_JOBS}）"
 cargo build \
   --locked \
   -j "${BUILD_JOBS}" \
@@ -144,8 +144,8 @@ if [[ -n "${tailscale_ip}" ]]; then
 fi
 
 if run_root test -f "${DATA_DIR}/host-owner.claim"; then
-  printf '\n待 Pinvou 安全领取的本机所有者凭据：%s\n' "${DATA_DIR}/host-owner.claim"
-  printf '请优先通过 Linux 版 Pinvou 的“在本机创建”流程安装，不要手工复制该文件。\n'
+  printf '\n待 鲜小助 安全领取的本机所有者凭据：%s\n' "${DATA_DIR}/host-owner.claim"
+  printf '请优先通过 Linux 版 鲜小助 的“在本机创建”流程安装，不要手工复制该文件。\n'
 else
   printf '\n本机所有者凭据已被领取。\n'
 fi

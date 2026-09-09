@@ -357,7 +357,7 @@ async fn owner_update_device(
 ) -> ApiResult<Json<DeviceGrant>> {
     require_owner_device(&service, &headers)?;
     if request.scope.is_some_and(AccessScope::is_owner) {
-        return Err(ApiError::forbidden("所有者只能由主机本机 PINVOU 提升"));
+        return Err(ApiError::forbidden("所有者只能由主机本机 鲜小助 提升"));
     }
     Ok(Json(
         service
@@ -458,7 +458,7 @@ async fn owner_download_model(
         .is_host_owner_device(&caller.id)
         .map_err(ApiError::internal)?
     {
-        return Err(ApiError::forbidden("模型下载只能由宿主本机 PINVOU 启动"));
+        return Err(ApiError::forbidden("模型下载只能由宿主本机 鲜小助 启动"));
     }
     service.begin_model_download().map_err(ApiError::conflict)?;
     let task = service.clone();
@@ -989,7 +989,7 @@ mod tests {
         assert!(!service.ready(), "空 tempdir 引导后模型不应就绪");
         let owner_token = "host-owner-token-that-is-long-enough-0002";
         service
-            .ensure_host_owner("Host PINVOU", owner_token)
+            .ensure_host_owner("Host 鲜小助", owner_token)
             .unwrap();
         let app = router(service.clone());
 
@@ -1108,7 +1108,7 @@ mod tests {
             .service;
         let owner_token = "host-owner-token-that-is-long-enough-0001";
         let owner = service
-            .ensure_host_owner("Host PINVOU", owner_token)
+            .ensure_host_owner("Host 鲜小助", owner_token)
             .unwrap();
         assert_eq!(owner.scope, AccessScope::Owner);
         let app = router(service.clone());

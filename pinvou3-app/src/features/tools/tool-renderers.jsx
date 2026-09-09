@@ -936,13 +936,13 @@ const ToolOutput = ({ item, t }) => {
       if (item.loading) return <PinvouLoading isWu={isWu} isDark={isDark} t={t} isLocal={isLocal} />;
       if (item.error) return (
         <div className="py-2">
-          <div className={`flex items-center gap-1.5 text-[15px] font-semibold ${role.text}`}><role.Icon className="w-[18px] h-[18px]" /><span>Pinvou {role.name}</span></div>
+          <div className={`flex items-center gap-1.5 text-[15px] font-semibold ${role.text}`}><role.Icon className="w-[18px] h-[18px]" /><span>{t.appTitle} {role.name}</span></div>
           <div className={`text-[14px] mt-2 text-[#FF3B30] dark:text-[#FF453A]`}>{t.pvFail}{item.error}</div>
         </div>
       );
       const r = item.review || {};
       if (r.dismissed) return (
-        <div className={`py-2 flex items-center gap-1.5 text-[14px] ${muted}`}><role.Icon className="w-4 h-4" /><span>{'Pinvou · ' + role.name + ' · ' + t.pvSkipped}</span></div>
+        <div className={`py-2 flex items-center gap-1.5 text-[14px] ${muted}`}><role.Icon className="w-4 h-4" /><span>{t.appTitle + ' · ' + role.name + ' · ' + t.pvSkipped}</span></div>
       );
       const personas = r.personas || [];
       const primary = personas.find(p => p && p.primary) || personas[0] || {};
@@ -955,7 +955,7 @@ const ToolOutput = ({ item, t }) => {
               <role.Icon className={`w-[17px] h-[17px] ${role.text}`} />
             </span>
             <span className={`text-[16px] font-semibold ${body}`}>
-              {'Pinvou · ' + role.name}
+              {t.appTitle + ' · ' + role.name}
               {primary.label && <span className={`text-[14px] font-normal ${muted}`}> · {primary.label + t.pvPerspective}</span>}
             </span>
             {r.verdict === 'pass' && <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[#34C759]/15 text-[#248A3D] dark:bg-[#30D158]/20 dark:text-[#30D158]`}>{t.pvVerdictPass}</span>}

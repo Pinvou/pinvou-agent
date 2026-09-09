@@ -56,7 +56,7 @@ pub(crate) fn ensure_host_install_allowed(
         return Ok(());
     }
     Err(format!(
-        "当前 PINVOU 版本 {} 低于已安装的共享知识库服务 {}，已拒绝降级；请先升级 PINVOU",
+        "当前 鲜小助 版本 {} 低于已安装的共享知识库服务 {}，已拒绝降级；请先升级 鲜小助",
         status.app_version,
         status.service_version.as_deref().unwrap_or("未知版本")
     ))

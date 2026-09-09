@@ -1,6 +1,6 @@
 # Support
 
-Pinvou Agent is maintained on a best-effort basis. Community support does not
+鲜小助 is maintained on a best-effort basis. Community support does not
 include guaranteed response times, resolution times, or a service-level
 agreement.
 
@@ -20,7 +20,7 @@ agreement.
 
 Please include:
 
-- the Pinvou Agent version or commit;
+- the 鲜小助 version or commit;
 - operating system and architecture;
 - clear reproduction steps;
 - expected and actual behavior;

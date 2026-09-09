@@ -60,7 +60,7 @@ impl AgentBackend {
 
     pub fn display_name(self) -> &'static str {
         match self {
-            Self::Deepseek => "品悟",
+            Self::Deepseek => "鲜小助",
             Self::CodexAcp => "Codex",
             Self::ClaudeAcp => "Claude Code",
             Self::KimiAcp => "Kimi",

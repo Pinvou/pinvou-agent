@@ -80,7 +80,7 @@ for cli in lark-cli wecom-cli dws; do
     elif command -v "$cli" >/dev/null 2>&1; then
         echo "  ✓ $cli(PATH)"
     else
-        echo "  ⚠ $cli 尚未安装(首次在 Pinvou Agent 工具面板连接时会在线下载并校验)"
+        echo "  ⚠ $cli 尚未安装(首次在 鲜小助 工具面板连接时会在线下载并校验)"
     fi
 done
 
@@ -163,7 +163,7 @@ echo "=== 7. universal 二进制双切片校验 (arm64 + x86_64) ==="
 # verify --skip-test 常在未打包场景跑(本地 dev / 非 main 分支),硬失败会挡住所有未构建
 # universal 的正常流程。main push 时 mac-build.yml 的 bundle smoke 产 universal 产物,
 # 本校验在 verify 步骤即时激活;非 main/未打包场景 warn-only。
-APP_BIN="$APP_SRC_TAURI/target/universal-apple-darwin/release/bundle/macos/pinvou3.app/Contents/MacOS/pinvou3-tauri"
+APP_BIN="$APP_SRC_TAURI/target/universal-apple-darwin/release/bundle/macos/鲜小助.app/Contents/MacOS/pinvou3-tauri"
 if [ -f "$APP_BIN" ]; then
     APP_BUNDLE="${APP_BIN%/Contents/MacOS/pinvou3-tauri}"
     BUNDLED_INFO_PLIST="$APP_BUNDLE/Contents/Info.plist"

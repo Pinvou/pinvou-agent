@@ -23,7 +23,7 @@ GAIA 数据集托管在 Hugging Face 仓库 `gaia-benchmark/GAIA`。该仓库为
 
 同一数据目录已有 fetch/import 正在运行时返回 `gaia_fetch_in_progress`；锁由操作系统持有，进程崩溃后自动释放，遗留锁文件可安全复用。
 
-访问权限审批由 Hugging Face 平台管理，Pinvou 无法代为申请。
+访问权限审批由 Hugging Face 平台管理，鲜小助 无法代为申请。
 
 ## Pinned revisions
 

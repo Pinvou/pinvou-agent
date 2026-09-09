@@ -253,7 +253,7 @@ install_bundle(id):
 
 | 风险 | 对策 |
 |---|---|
-| 上游不接受 ToolingSource | fork 短期沉淀可接受（用户少 = 同步冲突面小）；缝按可上游化标准设计，不掺 Pinvou 语义 |
+| 上游不接受 ToolingSource | fork 短期沉淀可接受（用户少 = 同步冲突面小）；缝按可上游化标准设计，不掺 鲜小助 语义 |
 | Phase 3 cutover blast radius | Compare old/new data sources field by field; require full serial PR regression plus the combined-tree Merge Queue gate |
 | 存量用户迁移失败 | 迁移幂等 + 失败回滚 FileSource + 重装自愈逃生门 |
 | 技能不落盘损失可调试性 | dump_session_tooling + 审计日志补上，列入 Phase 1 验收 |

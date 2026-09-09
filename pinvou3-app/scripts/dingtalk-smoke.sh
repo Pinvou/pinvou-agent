@@ -21,7 +21,7 @@ for plat in linux-arm64 linux-x64 darwin-arm64 darwin-x64; do
   [ -z "$CLI" ] && [ -f "$HOME/.pinvou3/connectors/$plat/bin/dws" ] && CLI="$HOME/.pinvou3/connectors/$plat/bin/dws"
 done
 [ -z "$CLI" ] && [ -f "$HOME/.pinvou3/connectors/windows-x64/bin/dws.exe" ] && CLI="$HOME/.pinvou3/connectors/windows-x64/bin/dws.exe"
-if [ -z "$CLI" ]; then echo "找不到 dws(先在 Pinvou Agent 工具面板连接钉钉，应用会在线下载并校验)"; exit 2; fi
+if [ -z "$CLI" ]; then echo "找不到 dws(先在 鲜小助 工具面板连接钉钉，应用会在线下载并校验)"; exit 2; fi
 echo "dws = $CLI"
 echo
 

@@ -211,11 +211,11 @@ pub struct ScheduledRunViewedDto {
     pub has_unread_runs: bool,
 }
 
-const SCHEDULED_TASK_CHAT_PROMPT: &str = r#"我想创建一个 Pinvou 定时任务。请通过提问帮我确定方案，回复保持简短，不要长篇解释。
+const SCHEDULED_TASK_CHAT_PROMPT: &str = r#"我想创建一个 鲜小助 定时任务。请通过提问帮我确定方案，回复保持简短，不要长篇解释。
 
 这是一个纯对话收集流程。不要调用任何工具，不要写文件，不要读写 ~/.pinvou3，也不要手动创建 automations JSON。信息完整后只输出给前端解析的任务参数，前端会通过 create_scheduled_task 创建并打开任务详情，不再要求用户二次确认。
 
-严禁使用 schtasks、Windows Task Scheduler、任务计划程序、cron、crontab、systemd timer 或任何系统级计划任务。错误做法：使用 schtasks 创建 Windows 任务。正确做法：返回 scheduled-task-draft JSON，由 Pinvou 前端调用 create_scheduled_task。
+严禁使用 schtasks、Windows Task Scheduler、任务计划程序、cron、crontab、systemd timer 或任何系统级计划任务。错误做法：使用 schtasks 创建 Windows 任务。正确做法：返回 scheduled-task-draft JSON，由 鲜小助 前端调用 create_scheduled_task。
 
 请一次只问我一个问题，并依次确认这些信息：
 1. 任务要做什么。

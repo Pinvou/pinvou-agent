@@ -151,7 +151,7 @@ def validate(path):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Validate Pinvou visualizer HTML artifacts.")
+    ap = argparse.ArgumentParser(description="Validate 鲜小助 visualizer HTML artifacts.")
     ap.add_argument("html", help="Path to the generated .html artifact")
     ap.add_argument("--json", action="store_true", help="Print JSON instead of text")
     args = ap.parse_args()

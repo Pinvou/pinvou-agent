@@ -1,6 +1,6 @@
 # 由私有 Windows 发布流水线在构建机上调用(仓库内无 CI 引用属预期)。
 # 输入产物名与 release-packages.yml 的 tauri nsis 默认名
-# pinvou3_<version>_x64-setup.exe 一致。
+# 鲜小助_<version>_x64-setup.exe 一致。
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true, Position = 0)]
@@ -28,7 +28,7 @@ function Get-NormalizedVersion {
     $fileName = [System.IO.Path]::GetFileName($InstallerPath)
     $match = [regex]::Match(
         $fileName,
-        '^pinvou3_(?<version>\d+(?:\.\d+){2,3})_x64-setup\.exe$',
+        '^(?:pinvou3|\u9c9c\u5c0f\u52a9)_(?<version>\d+(?:\.\d+){2,3})_x64-setup\.exe$',
         [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
     )
 

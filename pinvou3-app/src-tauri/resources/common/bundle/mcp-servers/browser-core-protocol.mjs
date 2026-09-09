@@ -266,7 +266,7 @@ export function mergePinvouBrowserCatalog(
     if (!inputSchema) continue;
     common.push({
       name,
-      description: `Pinvou BrowserCore ${name}`,
+      description: `鲜小助 BrowserCore ${name}`,
       inputSchema,
     });
   }

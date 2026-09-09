@@ -354,7 +354,7 @@ fn parse_latest_response(backend: AgentBackend, body: &[u8]) -> Result<String> {
             .context("官方 latest 响应不是 UTF-8")?
             .trim()
             .to_string(),
-        AgentBackend::Deepseek => bail!("品悟不是外部 ACP Agent"),
+        AgentBackend::Deepseek => bail!("鲜小助不是外部 ACP Agent"),
     };
     normalize_semver(&raw).context("官方 latest 响应不是三段数字版本")
 }

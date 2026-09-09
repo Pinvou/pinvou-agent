@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible problem in Pinvou Agent Community
+description: Report a reproducible problem in 鲜小助 Community
 title: "[Bug]: "
 labels:
   - bug
@@ -7,7 +7,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for helping improve Pinvou Agent. Remove credentials, private data, account identifiers, and internal URLs before submitting.
+        Thanks for helping improve 鲜小助. Remove credentials, private data, account identifiers, and internal URLs before submitting.
         Do not report security vulnerabilities here. Use the private security link in the template chooser.
   - type: input
     id: version
@@ -42,7 +42,7 @@ body:
       label: Reproduction steps
       description: Provide the smallest reliable sequence that reproduces the problem.
       placeholder: |
-        1. Start Pinvou Agent with ...
+        1. Start 鲜小助 with ...
         2. Open ...
         3. Run ...
         4. Observe ...

@@ -1,3 +1,4 @@
+import { BRAND_NAME } from '../../shared/brand.js';
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -1235,9 +1236,11 @@ export function CodexAcpView({
     ? (nativeControlsSessionRef.current === activeId && Boolean(nativeControls.multiAgentAvailable))
     : isNativeAgent;
   const nativeMultiAgentEnabled = nativeMultiAgentAvailable && nativeMultiAgentSelected;
-  const activeAgentName = activeSession?.agent_name
-    || agents?.find(agent => agent.agent_id === activeAgentId)?.agent_name
-    || (activeAgentId === 'pinvou' ? '品悟' : activeAgentId === 'claude' ? 'Claude Code' : activeAgentId === 'kimi' ? 'Kimi' : 'Codex');
+  const activeAgentName = isNativeAgent
+    ? BRAND_NAME
+    : (activeSession?.agent_name
+      || agents?.find(agent => agent.agent_id === activeAgentId)?.agent_name
+      || (activeAgentId === 'claude' ? 'Claude Code' : activeAgentId === 'kimi' ? 'Kimi' : 'Codex'));
   const activeAgentIdRef = useRef(activeAgentId);
   activeAgentIdRef.current = activeAgentId;
   const rememberScrollBeforeRightPanelChange = useCallback(() => {
@@ -1681,7 +1684,7 @@ export function CodexAcpView({
     return refreshAcpAgentCatalog(setAgents, list => (
       isWeb || list.some(agent => agent?.agent_id === 'pinvou')
         ? list
-        : [{ agent_id: 'pinvou', agent_name: '品悟' }, ...list]
+        : [{ agent_id: 'pinvou', agent_name: BRAND_NAME }, ...list]
     ));
   }
 

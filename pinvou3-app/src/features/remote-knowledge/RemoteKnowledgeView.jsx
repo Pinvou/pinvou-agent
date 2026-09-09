@@ -955,7 +955,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
   async function backupHost() {
     const destination = await saveTauriDialog({
       defaultPath: `pinvou-shared-knowledge-${new Date().toISOString().slice(0, 10)}.pinbak`,
-      filters: [{ name: 'PINVOU Backup', extensions: ['pinbak'] }],
+      filters: [{ name: t.remoteKbBackupFileType, extensions: ['pinbak'] }],
     });
     if (!destination) return;
     const result = await run('backup-host', () => invokeTauri('shared_kb_host_backup', { destination }));
@@ -969,7 +969,7 @@ function RemoteKnowledgeView({ t, embedded = false }) {
     const source = await openTauriDialog({
       multiple: false,
       directory: false,
-      filters: [{ name: 'PINVOU Backup', extensions: ['pinbak'] }],
+      filters: [{ name: t.remoteKbBackupFileType, extensions: ['pinbak'] }],
     });
     if (!source) return;
     setRestoreSource(source);

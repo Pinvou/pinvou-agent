@@ -63,7 +63,7 @@ function injectSource() {
       }
       if (cmd === "list_scheduled_tasks") return Promise.resolve(TASKS.slice());
       if (cmd === "scheduled_task_chat_prompt") {
-        return Promise.resolve("我想创建一个 Pinvou 定时任务。请通过提问帮我确定方案。信息完整后输出 scheduled-task-draft 参数，系统会立即创建任务，不需要第二次确认。");
+        return Promise.resolve("我想创建一个 鲜小助 定时任务。请通过提问帮我确定方案。信息完整后输出 scheduled-task-draft 参数，系统会立即创建任务，不需要第二次确认。");
       }
       switch (cmd) {
         // The memory-organize template card only renders when memory_enabled
@@ -341,7 +341,7 @@ async function openScheduledNav(page) {
   await page.evaluateOnNewDocument(injectSource());
   await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
   await page.goto(url, { waitUntil: 'networkidle0' });
-  await page.waitForFunction(() => window.TauriBridge && document.body.innerText.includes('PINVOU'), { timeout: 20000 }).catch(() => {});
+  await page.waitForFunction(() => window.TauriBridge && document.body.innerText.includes('鲜小助'), { timeout: 20000 }).catch(() => {});
   await sleep(1200);
 
   await page.evaluate(() => window.TauriBridge.chat.sendMessage('普通聊天 JSON 回归测试'));

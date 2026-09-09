@@ -2244,7 +2244,7 @@ mod tests {
                     .as_str()
                     .unwrap()
                     .ends_with("browser-wrapper.mjs"),
-                "the session-reserved browser name must always target the Pinvou wrapper"
+                "the session-reserved browser name must always target the 鲜小助 wrapper"
             );
             assert_eq!(
                 conflict["servers"]["browser_user_3"], global_with_conflict["servers"]["browser"],

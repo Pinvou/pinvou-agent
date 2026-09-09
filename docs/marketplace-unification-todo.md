@@ -155,7 +155,7 @@ store 损坏时的回退；旧 `list_marketplace_tools` 视图仍自 `installed.
   2. `ToolingSource` 抽象双轨（FileSource 默认 = 现状行为；RegistrySource 由 pinvou3 注册）；
   3. `CredentialResolver`（删除 `${PINVOU3_MCP_SECRET_*}` 占位符体系）。
 - **fork 纪律**：改底座必须同 PR 更新 `docs/fork-modifications.md` + 指纹 + 行为测试，
-  跑 `./scripts/fork-guard.sh --fast`；缝按可上游化标准设计，不掺 Pinvou 语义。
+  跑 `./scripts/fork-guard.sh --fast`；缝按可上游化标准设计，不掺 鲜小助 语义。
 - 落地后删除：技能物化模块（skill_materialization.rs 大幅瘦身）、mcp.json 写入逻辑
   （FileSource 回退保留一个版本周期后删）、`dump_session_tooling` 可观测命令随
   RegistrySource 同时交付（验收硬要求）。

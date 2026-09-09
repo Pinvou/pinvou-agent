@@ -125,7 +125,7 @@ test('多智能体能力门禁与会话策略契约（multiagent_desktop_scope �
   assert.match(
     policy,
     /pub fn supports_multi_agent_mode\(&self\)[\s\S]{0,160}SessionMode::Plain \| SessionMode::Code/,
-    'Work/Plain 与原生 Code 都开放 Pinvou 多智能体产品能力',
+    'Work/Plain 与原生 Code 都开放 鲜小助 多智能体产品能力',
   );
   assert.match(
     bridge,

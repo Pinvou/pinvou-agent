@@ -5,6 +5,9 @@ import { dict } from '../src/shared/i18n-all.js'; // 三语全量断言:浏览�
 const source = relative => readFileSync(new URL(`../src/${relative}`, import.meta.url), 'utf8');
 
 for (const language of ['zh', 'en', 'ja']) {
+  assert.equal(dict[language].appTitle, '鲜小助');
+  assert.equal(dict[language].uiPlatformMisc.appTitle, '鲜小助');
+  assert.ok(dict[language].remoteKbBackupFileType.includes('鲜小助'));
   for (const section of [
     'uiRemote',
     'uiMonitor',

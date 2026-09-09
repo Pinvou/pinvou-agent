@@ -784,7 +784,7 @@ fn verify_environment(
         .arg(minor.to_string())
         .arg(site_packages)
         .args(&target.imports);
-    let output = run_python_probe(command, "Pinvou Python dependency verification")?;
+    let output = run_python_probe(command, "鲜小助 Python dependency verification")?;
     if output.status.success() {
         return Ok(());
     }

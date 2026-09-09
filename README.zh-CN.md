@@ -1,8 +1,10 @@
 <div align="center">
 
-<img src="pinvou3-app/src-tauri/icons/icon.png" alt="Pinvou Agent 图标" width="120" />
+<img src="pinvou3-app/src-tauri/icons/icon.png" alt="鲜小助 图标" width="120" />
 
-# Pinvou Agent
+# 鲜小助
+
+本项目基于开源 [Pinvou Agent](https://github.com/Pinvou/pinvou-agent) 独立维护，产品名称统一为 **鲜小助**。保留的上游链接用于说明来源，不代表上游官方发行或背书。参见[品牌与兼容性说明](docs/branding.md)。
 
 **面向工作、设计与代码的开源桌面 AI Agent 工作台。**
 
@@ -18,7 +20,7 @@
 
 <p align="center">
   <a href="https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4">
-    <img src="docs/assets/screenshots/mode-work.webp" alt="Pinvou Agent 工作模式">
+    <img src="docs/assets/screenshots/mode-work.webp" alt="鲜小助 工作模式">
   </a>
 </p>
 <p align="center">
@@ -27,7 +29,7 @@
 
 </div>
 
-Pinvou Agent 不只是一个聊天界面。它把通用工作、视觉设计和代码开发放进同一个桌面应用，让 AI 从“回答问题”进一步走到“**完成任务**”。你可以让它调用工具、处理文件和沉淀知识，也可以通过 ACP 驱动专业代码 Agent，或把一句描述变成可继续编辑的视觉产物。
+鲜小助 不只是一个聊天界面。它把通用工作、视觉设计和代码开发放进同一个桌面应用，让 AI 从“回答问题”进一步走到“**完成任务**”。你可以让它调用工具、处理文件和沉淀知识，也可以通过 ACP 驱动专业代码 Agent，或把一句描述变成可继续编辑的视觉产物。
 
 模型既可以运行在本地，也可以接入任意 OpenAI-compatible 服务；工具、Skills 与连接器按需启用。
 
@@ -83,8 +85,8 @@ Pinvou Agent 不只是一个聊天界面。它把通用工作、视觉设计和�
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/assets/screenshots/mode-design.webp" alt="Pinvou Agent 设计模式"></td>
-    <td width="50%"><img src="docs/assets/screenshots/mode-code.webp" alt="Pinvou Agent 代码模式"></td>
+    <td width="50%"><img src="docs/assets/screenshots/mode-design.webp" alt="鲜小助 设计模式"></td>
+    <td width="50%"><img src="docs/assets/screenshots/mode-code.webp" alt="鲜小助 代码模式"></td>
   </tr>
   <tr>
     <td align="center">设计模式：海报与数据可视化</td>
@@ -102,7 +104,7 @@ Pinvou Agent 不只是一个聊天界面。它把通用工作、视觉设计和�
 
 ## 🤖 模型接入
 
-Pinvou Agent 支持**本地 vLLM** 和任意 **OpenAI-compatible API**。应用内可保存多个模型配置，为云端配置设置可选显示别名，并在不改变实际请求模型 ID 的情况下于不同会话间快速切换；当前提供本地 vLLM、DeepSeek、Kimi、通义千问、豆包、MiniMax、智谱、MiMo、OpenAI、Anthropic、Gemini、xAI 等配置模板，也可以填写自定义兼容端点。
+鲜小助 支持**本地 vLLM** 和任意 **OpenAI-compatible API**。应用内可保存多个模型配置，为云端配置设置可选显示别名，并在不改变实际请求模型 ID 的情况下于不同会话间快速切换；当前提供本地 vLLM、DeepSeek、Kimi、通义千问、豆包、MiniMax、智谱、MiMo、OpenAI、Anthropic、Gemini、xAI 等配置模板，也可以填写自定义兼容端点。
 
 本地 vLLM 示例：
 
@@ -210,7 +212,7 @@ docs/                 架构设计、验证报告与维护文档
 - 🔒 **请勿在公开 Issue 中报告安全漏洞** — 请使用 [SECURITY.md](SECURITY.md) 中的私有渠道，或发送邮件至 `security@pinvou.com`
 
 <p align="center">
-  <img src="pinvou3-app/src/assets/community/qq-group-1108909346.png" alt="Pinvou Agent 官方 QQ 用户交流群二维码，群号 1108909346" width="260" />
+  <img src="pinvou3-app/src/assets/community/qq-group-1108909346.png" alt="鲜小助 官方 QQ 用户交流群二维码，群号 1108909346" width="260" />
 </p>
 
 ## 📖 进一步阅读
@@ -238,8 +240,8 @@ docs/                 架构设计、验证报告与维护文档
 
 <div align="center">
 
-Pinvou Agent 正在持续迭代中，功能状态以 `main` 分支和当前发布版本为准。
+鲜小助 正在持续迭代中，功能状态以 `main` 分支和当前发布版本为准。
 
-**[MIT License](LICENSE)** · 由 Pinvou 团队与社区贡献者用 ❤️ 打造
+**[MIT License](LICENSE)** · 由 鲜小助 团队与社区贡献者用 ❤️ 打造
 
 </div>

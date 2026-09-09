@@ -742,7 +742,7 @@ async fn read_upload_path(path: &Path) -> Result<Vec<u8>, String> {
 pub fn parse_share(value: &str) -> Result<ParsedShare, String> {
     let url = url::Url::parse(value.trim()).map_err(|_| "分享连接格式无效".to_string())?;
     if url.scheme() != "pinvou-knowledge" || url.host_str() != Some("share") {
-        return Err("这不是 Pinvou 共享知识库连接".to_string());
+        return Err("这不是 鲜小助 共享知识库连接".to_string());
     }
     let mut server_id = None;
     let mut identity = None;
@@ -967,7 +967,7 @@ fn validate_probed_server_info(info: &ServerInfo) -> Result<(), String> {
         || info.name.trim().is_empty()
         || info.name.len() > 512
     {
-        return Err("目标地址不是受支持的 PINVOU 共享知识库".to_string());
+        return Err("目标地址不是受支持的 鲜小助 共享知识库".to_string());
     }
     ca_fingerprint(&info.tls_ca).map(|_| ())
 }

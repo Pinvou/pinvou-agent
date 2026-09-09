@@ -1,7 +1,7 @@
 const VISUAL_POSTER_SCENE_KEY = 'poster';
 
-const VISUAL_POSTER_CONTEXT = `Pinvou 视觉海报场景约束：
-- 交付物优先生成自包含 HTML/CSS 视觉海报或 Banner，保证可以在 Pinvou 产物预览里继续点选、编辑文字和样式。
+const VISUAL_POSTER_CONTEXT = `鲜小助 视觉海报场景约束：
+- 交付物优先生成自包含 HTML/CSS 视觉海报或 Banner，保证可以在 鲜小助 产物预览里继续点选、编辑文字和样式。
 - 构图必须有一个明确视觉焦点，用户第一眼能看出主标题或主视觉；不要让 3 个以上元素竞争焦点。
 - 先建立阅读路径：主视觉/主标题 -> 副标题 -> 关键信息 -> 行动入口/落款。
 - 主视觉优先使用真实图片、真实产品图、真实场景图或真实质感素材；不要只靠渐变、抽象 SVG、装饰纹理撑完整画面。

@@ -15,11 +15,11 @@ workspace、本地图片/Office 预解析及可选公网检索；禁止 shell、
 
 ## 当前风险
 
-当前 headless bridge 提交 `AppMode::Yolo`、`restrict_tools=false`。Pinvou bridge 会将其构造为
+当前 headless bridge 提交 `AppMode::Yolo`、`restrict_tools=false`。鲜小助 bridge 会将其构造为
 `allow_shell=true`、`trust_mode=true`、自动批准和不受限工具表。GAIA 问题和附件是不可信
 输入，prompt injection 因而可能诱导读取 workspace 外文件或执行命令。
 
-`AppMode::Plan` 不是替代方案：Pinvou 当前 Plan turn 仍为 trust mode，CodeWhale Plan 工具集
+`AppMode::Plan` 不是替代方案：鲜小助 当前 Plan turn 仍为 trust mode，CodeWhale Plan 工具集
 也远超 GAIA 需求，且规划提示会改变答题语义。
 
 CodeWhale 路径保护还有两个旁路：用户持久化的 `trusted_external_paths`，以及

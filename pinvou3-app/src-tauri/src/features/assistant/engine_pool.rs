@@ -1777,7 +1777,7 @@ impl EnginePool {
         enabled: bool,
     ) -> Result<()> {
         if enabled && !self.multi_agent_mode_available(session_id) {
-            anyhow::bail!("当前会话不支持 Pinvou 多智能体模式");
+            anyhow::bail!("当前会话不支持 鲜小助 多智能体模式");
         }
         let _reservation = self.turn_lifecycles.for_session(session_id).reserve()?;
         let turn_lock = self.turn_locks.for_session(session_id).await;

@@ -240,7 +240,7 @@
           gen: sadj.gen == null ? null : sadj.gen,
           prompt: sadj.prompt == null ? null : sadj.prompt,
         } : null,
-        appVersion: snap.app ? snap.app.pinvou3_version + bt("betaVersionSuffix") : "—",
+        appVersion: snap.app ? snap.app.pinvou3_version : "—",
         dtVersion: snap.app ? snap.app.deepseek_tui_version : "—",
         uptime: snap.app ? fmtDuration(snap.app.session_uptime_secs) : "—",
         updatedAt: snap.generated_at_ms ? new Date(snap.generated_at_ms).toLocaleTimeString() : "—",

@@ -404,7 +404,7 @@ pub fn cleanup_legacy_expert_projection(
         || session_dir.parent() != Some(sessions_root)
     {
         return Err(format!(
-            "拒绝在非 Pinvou 会话账本清理旧专家投影: {}",
+            "拒绝在非 鲜小助 会话账本清理旧专家投影: {}",
             ledger.display()
         ));
     }

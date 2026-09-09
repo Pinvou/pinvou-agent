@@ -49,7 +49,8 @@ fi
 
 # ── macOS 提示 ───────────────────────────────────────────────────
 # Mac 不需要 webkit/fcitx/X11 相关 env(那些在 lib.rs RELEASE_ENV_DEFAULTS Linux 段)。
-# 此处无需额外 Mac 专属 export,直接落到 tauri dev 即可。
+# 可先运行 npm run setup:macos-signing 选择 Apple 签名身份；build.js 会在
+# 每次 cargo run 前签名并验证主程序，减少重新编译后的钥匙串授权弹窗。
 # macOS dev 同样套用平台 overlay(原生红绿灯顶栏 titleBarStyle=Overlay)，
 # Linux dev 动态生成隐藏启动 overlay；两者统一通过 build.js 注入，避免配置分叉。
 if [ "$OS_NAME" = "Darwin" ]; then

@@ -101,7 +101,7 @@ assert.match(DEFAULT_PERSONAL_WORKBENCH_PROMPT, /内联 SVG/);
 assert.match(DEFAULT_PERSONAL_WORKBENCH_PROMPT, /今天要处理/);
 
 const defaultPayload = buildDefaultPersonalWorkbenchPayloadText('运动');
-assert.match(defaultPayload, /^你是 PINVOU 的个人数字工作台搭建专家/);
+assert.match(defaultPayload, /^你是鲜小助的个人数字工作台搭建专家/);
 assert.match(defaultPayload, /用户需求：\n运动$/);
 
 const meta = createPersonalWorkbenchMessageMeta('生成一个任务看板', 3);

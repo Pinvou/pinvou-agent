@@ -1,8 +1,10 @@
 <div align="center">
 
-<img src="pinvou3-app/src-tauri/icons/icon.png" alt="Pinvou Agent logo" width="120" />
+<img src="pinvou3-app/src-tauri/icons/icon.png" alt="鲜小助 logo" width="120" />
 
-# Pinvou Agent
+# 鲜小助
+
+This independently maintained project is based on [Pinvou Agent](https://github.com/Pinvou/pinvou-agent). Its product name is **鲜小助**. Upstream links identify the original project and do not imply endorsement. See [branding compatibility](docs/branding.md).
 
 **An open-source desktop AI agent workspace for work, design, and coding.**
 
@@ -18,7 +20,7 @@
 
 <p align="center">
   <a href="https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4">
-    <img src="docs/assets/screenshots/mode-work.webp" alt="Pinvou Agent Work mode">
+    <img src="docs/assets/screenshots/mode-work.webp" alt="鲜小助 Work mode">
   </a>
 </p>
 <p align="center">
@@ -27,7 +29,7 @@
 
 </div>
 
-Pinvou Agent is more than a chat window. It brings everyday work, visual design, and software development into one desktop workspace — designed for tasks that should end with **a result**, not just another chat response. Use tools, work with files, and build personal knowledge; bring a dedicated coding agent into a real project over ACP; or turn a prompt into a visual artifact you can continue editing.
+鲜小助 is more than a chat window. It brings everyday work, visual design, and software development into one desktop workspace — designed for tasks that should end with **a result**, not just another chat response. Use tools, work with files, and build personal knowledge; bring a dedicated coding agent into a real project over ACP; or turn a prompt into a visual artifact you can continue editing.
 
 Use a local model for a fully private loop, connect any OpenAI-compatible endpoint, and extend the agent with MCP servers, CLI connectors, Skills, and workflows.
 
@@ -83,16 +85,16 @@ Use **Codex, Claude Code, or Kimi** through [ACP](docs/multi-agent-acp.md) in th
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/assets/screenshots/mode-design.webp" alt="Pinvou Agent Design mode"></td>
-    <td width="50%"><img src="docs/assets/screenshots/mode-code.webp" alt="Pinvou Agent Code mode"></td>
+    <td width="50%"><img src="docs/assets/screenshots/mode-design.webp" alt="鲜小助 Design mode"></td>
+    <td width="50%"><img src="docs/assets/screenshots/mode-code.webp" alt="鲜小助 Code mode"></td>
   </tr>
   <tr>
     <td align="center">Design mode for posters and data visualizations</td>
     <td align="center">Code mode with Codex, Claude Code, and Kimi</td>
   </tr>
   <tr>
-    <td width="50%"><img src="docs/assets/screenshots/tool-store.webp" alt="Pinvou Agent tool store"></td>
-    <td width="50%"><img src="docs/assets/screenshots/artifacts-preview.webp" alt="Pinvou Agent artifact preview"></td>
+    <td width="50%"><img src="docs/assets/screenshots/tool-store.webp" alt="鲜小助 tool store"></td>
+    <td width="50%"><img src="docs/assets/screenshots/artifacts-preview.webp" alt="鲜小助 artifact preview"></td>
   </tr>
   <tr>
     <td align="center">Extend the agent with tools and connectors</td>
@@ -102,7 +104,7 @@ Use **Codex, Claude Code, or Kimi** through [ACP](docs/multi-agent-acp.md) in th
 
 ## 🤖 Model Access
 
-Pinvou Agent works with **local vLLM** and any **OpenAI-compatible API**. Save multiple model configurations in the app, give cloud configurations optional display aliases, and switch between them per session without changing the model identifier sent to the provider. Built-in templates cover local vLLM, DeepSeek, Kimi, Qwen, Doubao, MiniMax, Zhipu (GLM), MiMo, OpenAI, Anthropic, Gemini, and xAI — or fill in any custom compatible endpoint.
+鲜小助 works with **local vLLM** and any **OpenAI-compatible API**. Save multiple model configurations in the app, give cloud configurations optional display aliases, and switch between them per session without changing the model identifier sent to the provider. Built-in templates cover local vLLM, DeepSeek, Kimi, Qwen, Doubao, MiniMax, Zhipu (GLM), MiMo, OpenAI, Anthropic, Gemini, and xAI — or fill in any custom compatible endpoint.
 
 Local vLLM example:
 
@@ -209,7 +211,7 @@ Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for th
 - 🔒 **Do not report security vulnerabilities in public issues** — use the private channel in [SECURITY.md](SECURITY.md) or email `security@pinvou.com`
 
 <p align="center">
-  <img src="pinvou3-app/src/assets/community/qq-group-1108909346.png" alt="QR code for the Pinvou Agent official QQ user group, group number 1108909346" width="260" />
+  <img src="pinvou3-app/src/assets/community/qq-group-1108909346.png" alt="QR code for the 鲜小助 official QQ user group, group number 1108909346" width="260" />
 </p>
 
 Licensing, third-party attribution, SBOM, brand-use boundaries, and the extension marketplace overview are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), [docs/sbom.md](docs/sbom.md), [TRADEMARKS.md](TRADEMARKS.md), and [docs/工具市场.md](docs/工具市场.md).
@@ -232,8 +234,8 @@ Licensing, third-party attribution, SBOM, brand-use boundaries, and the extensio
 
 <div align="center">
 
-Pinvou Agent is under active development — the `main` branch and the latest release notes are the source of truth for current behavior.
+鲜小助 is under active development — the `main` branch and the latest release notes are the source of truth for current behavior.
 
-**[MIT License](LICENSE)** · Made with ❤️ by the Pinvou team and contributors
+**[MIT License](LICENSE)** · Made with ❤️ by the 鲜小助 team and contributors
 
 </div>

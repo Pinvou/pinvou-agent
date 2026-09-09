@@ -287,7 +287,7 @@ fn render_memory_snapshot_document(
 ) -> stdio::Result<String> {
     use std::fmt::Write as _;
     let mut doc = String::new();
-    let _ = writeln!(&mut doc, "# PINVOU 设备记忆快照");
+    let _ = writeln!(&mut doc, "# 鲜小助 设备记忆快照");
     let _ = writeln!(&mut doc);
     let _ = writeln!(&mut doc, "- 生成时间：{generated_at}");
     let _ = writeln!(

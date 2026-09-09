@@ -218,7 +218,7 @@ pub fn create_or_show(app: &AppHandle) -> Result<(), String> {
         state.vertical_alignment.as_str()
     );
     let win = WebviewWindowBuilder::new(app, PET_LABEL, WebviewUrl::App(pet_url.into()))
-        .title("PINVOU 桌伴公仔")
+        .title("鲜小助 桌伴公仔")
         .inner_size(initial_size.0, initial_size.1)
         // GTK 下无显式 min hint 的窗口会被钳到 ~200x200 最小尺寸(GB10 实测,
         // 菜单窗口同病):紧凑桌伴请求 144x165 实得 200x200,定位数学随之失准。

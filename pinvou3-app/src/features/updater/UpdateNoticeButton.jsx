@@ -64,7 +64,7 @@ export const UpdateNoticeButton = ({ bs, t, onShowChangelog }) => {
               <X size={14} />
             </button>
           </div>
-          <span className={`text-[11px] font-mono px-1.5 py-0.5 rounded w-fit mt-0.5 transition-colors duration-300 text-gray-500 bg-gray-100 dark:text-gray-400 dark:bg-black/20`}>PINVOU v{vm.version}</span>
+          <span className={`text-[11px] font-mono px-1.5 py-0.5 rounded w-fit mt-0.5 transition-colors duration-300 text-gray-500 bg-gray-100 dark:text-gray-400 dark:bg-black/20`}>{t.appTitle} v{vm.version}</span>
         </div>
       </div>
 

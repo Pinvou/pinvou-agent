@@ -1,7 +1,7 @@
 [package]
 name = "pinvou-knowledge"
 version = "0.9.3"
-description = "Pinvou 可复用知识库核心与自包含服务器"
+description = "鲜小助 可复用知识库核心与自包含服务器"
 authors = ["pinvou"]
 license = "MIT"
 # edition 2024: aligned with the CodeWhale foundation and pinvou3-app;

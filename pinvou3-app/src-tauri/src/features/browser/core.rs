@@ -161,7 +161,7 @@ pub(super) fn committed_platform_outcome(action: &str, error: &str) -> Option<Va
             true,
             None,
             format!(
-                "{action} was committed, but Pinvou could not restore the previous application focus"
+                "{action} was committed, but 鲜小助 could not restore the previous application focus"
             ),
         )
     } else if error.starts_with(ACTION_COMMIT_UNKNOWN_FOCUS_RESTORE_FAILED) {
@@ -173,7 +173,7 @@ pub(super) fn committed_platform_outcome(action: &str, error: &str) -> Option<Va
             true,
             None,
             format!(
-                "{action} may already have been committed, and Pinvou could not restore the previous application focus"
+                "{action} may already have been committed, and 鲜小助 could not restore the previous application focus"
             ),
         )
     } else if error.starts_with(ACTION_COMMIT_UNKNOWN_INPUT_INTERRUPTION) {

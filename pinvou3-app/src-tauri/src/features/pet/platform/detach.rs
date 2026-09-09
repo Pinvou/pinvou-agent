@@ -239,7 +239,7 @@ pub fn view_title(kind: &str) -> &'static str {
         "cardpool" => "专家卡牌池",
         "localenv" => "本地环境",
         "outputs" => "产出物",
-        _ => "PINVOU",
+        _ => "鲜小助",
     }
 }
 
@@ -446,7 +446,7 @@ mod tests {
         assert_eq!(view_title("persona"), "专家");
         assert_eq!(view_title("codex-session"), "Coding 对话");
         assert_eq!(view_title("outputs"), "产出物");
-        assert_eq!(view_title("???"), "PINVOU");
+        assert_eq!(view_title("???"), "鲜小助");
     }
 
     #[test]

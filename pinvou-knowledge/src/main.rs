@@ -12,7 +12,7 @@ use pinvou_knowledge::server;
 #[command(
     name = "pinvou-knowledge-server",
     version,
-    about = "Pinvou 自包含共享知识库服务"
+    about = "鲜小助 自包含共享知识库服务"
 )]
 struct Args {
     #[arg(long, env = "PINVOU_KNOWLEDGE_BIND", default_value = "0.0.0.0:3210")]
@@ -80,7 +80,7 @@ async fn main() -> anyhow::Result<()> {
             .server_id;
         let claim = std::cell::RefCell::new(None);
         boot.service
-            .recover_host_owner("Host PINVOU", |device_id, token| {
+            .recover_host_owner("Host 鲜小助", |device_id, token| {
                 let value = serde_json::json!({
                     "serverId": server_id,
                     "deviceId": device_id,
@@ -150,7 +150,7 @@ async fn main() -> anyhow::Result<()> {
         .map_err(anyhow::Error::msg)?
         .server_id;
     boot.service
-        .provision_host_owner("Host PINVOU", |device_id, token| {
+        .provision_host_owner("Host 鲜小助", |device_id, token| {
             write_host_owner_claim(
                 &args.data_dir.join("host-owner.claim"),
                 &serde_json::json!({
@@ -162,8 +162,8 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|error| error.to_string())
         })
         .map_err(anyhow::Error::msg)?;
-    eprintln!("PINVOU Knowledge data: {}", args.data_dir.display());
-    eprintln!("PINVOU Knowledge listening on https://{}", args.bind);
+    eprintln!("鲜小助 Knowledge data: {}", args.data_dir.display());
+    eprintln!("鲜小助 Knowledge listening on https://{}", args.bind);
     let service = boot.service;
     {
         let background = service.clone();

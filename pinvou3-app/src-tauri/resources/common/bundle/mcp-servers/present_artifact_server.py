@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """present_artifact — pinvou3 内置 MCP server(零第三方依赖,只用 stdlib)。
 
-把一个"阶段性成品"交给 Pinvou 客户端展示。工具成功只表示文件验证通过；客户端
+把一个"阶段性成品"交给 鲜小助 客户端展示。工具成功只表示文件验证通过；客户端
 收到结果后会尝试展示，不是对用户当前可见界面的反向确认。
 
 协议:newline-delimited JSON-RPC 2.0 over stdio(对齐底座 mcp.rs 的 stdio
@@ -33,7 +33,7 @@ _KIND_BY_EXT = {
 TOOL_DEF = {
     "name": "present_artifact",
     "description": (
-        "把一个阶段性作品交给 Pinvou 客户端展示。调用成功只表示文件验证通过；客户端"
+        "把一个阶段性作品交给 鲜小助 客户端展示。调用成功只表示文件验证通过；客户端"
         "收到结果后会尝试展示，不代表已反向验证用户看到的界面；回复时不要声称已验证界面弹出。"
         "什么时候调:产出 html / markdown / 图片等单文件作品且打算"
         "给客户看时,立刻调。什么时候别调:写中间文件、配置、脚本、做内部处理时不要调。"

@@ -536,7 +536,7 @@ impl BundleRegistry {
                     required: true,
                 },
             ],
-            description: "接入腾讯 ima OpenAPI Skill：通过 Pinvou 内置的受控工具调用 ima.qq.com 官方 OpenAPI，支持笔记搜索/读取/创建/追加，以及知识库搜索、浏览、网页导入和内容添加。需要填写你自己的 Client ID 和 API Key，凭据只写入本机系统凭据，不进入对话、环境变量、仓库或 mcp.json。".to_string(),
+            description: "接入腾讯 ima OpenAPI Skill：通过 鲜小助 内置的受控工具调用 ima.qq.com 官方 OpenAPI，支持笔记搜索/读取/创建/追加，以及知识库搜索、浏览、网页导入和内容添加。需要填写你自己的 Client ID 和 API Key，凭据只写入本机系统凭据，不进入对话、环境变量、仓库或 mcp.json。".to_string(),
             // 预置技能无版本概念（无版本号/无自动更新机制），version 留空，
             // 前端 overlay 保留自报版本展示
             version: String::new(),

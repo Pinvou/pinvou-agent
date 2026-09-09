@@ -125,7 +125,7 @@ code 会话执行根是用户真实项目目录，但此前权限语义有两个
 |---|---|
 | 后端 | `mode_state` 默认值解析（code→全局 last_mode→Plan；plain→Yolo 不变）；per-session mode 持久化（仅 code）；全局 `code_permission` 域；两个新命令 |
 | 前端 | code 页 mode 由后端驱动（去三处写死 `'yolo'`）；切 yolo 确认门 + `NativeYoloConfirmCard` |
-| 边界 | 仅品悟原生 code 会话；ACP 与 plain/work 行为逐字节不变 |
+| 边界 | 仅鲜小助原生 code 会话；ACP 与 plain/work 行为逐字节不变 |
 
 9 个文件修改 + 3 个文件新增（约 +868/-35）。
 

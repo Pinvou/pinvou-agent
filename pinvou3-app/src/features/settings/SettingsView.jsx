@@ -2721,7 +2721,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                     <ChevronDown size={22} className="-rotate-90 opacity-35" />
                   </IOSRow>
                 </div>
-                <IOSRow label={settingsCopy.assistantNickname} desc={settingsCopy.assistantNameDesc} value={identity.assistant_alias || 'PINVOU'} onClick={() => editProfile('assistant_alias')}>
+                <IOSRow label={settingsCopy.assistantNickname} desc={settingsCopy.assistantNameDesc} value={identity.assistant_alias || t.appTitle} onClick={() => editProfile('assistant_alias')}>
                   <ChevronDown size={22} className="-rotate-90 opacity-35" />
                 </IOSRow>
               </IOSSection>

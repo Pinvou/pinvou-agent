@@ -1,6 +1,6 @@
 # 知识库模型来源
 
-Pinvou 的本地知识库与共享知识库使用同一份 BGE-M3 INT8 ONNX 模型。运行时直接从 Hugging Face 上游仓库下载固定的五文件清单，不通过 Pinvou 的 GitHub Release 分发模型。
+鲜小助 的本地知识库与共享知识库使用同一份 BGE-M3 INT8 ONNX 模型。运行时直接从 Hugging Face 上游仓库下载固定的五文件清单，不通过 鲜小助 的 GitHub Release 分发模型。
 
 ## 固定来源
 

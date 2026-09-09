@@ -4,7 +4,7 @@ description: 腾讯文档（docs.qq.com）-在线云文档平台，是创建、�
 homepage: https://docs.qq.com/home
 version: 1.0.41-pinvou2
 author: tencent-docs
-source: https://cdn.addon.tencentsuite.com/static/tencent-docs.zip（官方 1.0.41；Pinvou 适配：原版命令行调用方式改为内置 MCP 工具名 tencent-docs/tdoc-slide/tdoc-doc/tdoc-sheet，移除授权脚本与文件导入/OCR 外部依赖脚本，get_slide_info.sh 改为 stdin 喂响应的纯 jq 归并器，移除 slidep 全局安装脚本 setup.js，大图上传兜底改为引导用户自行走开放平台 OpenAPI、模型不经手 OAuth 凭证）
+source: https://cdn.addon.tencentsuite.com/static/tencent-docs.zip（官方 1.0.41；鲜小助 适配：原版命令行调用方式改为内置 MCP 工具名 tencent-docs/tdoc-slide/tdoc-doc/tdoc-sheet，移除授权脚本与文件导入/OCR 外部依赖脚本，get_slide_info.sh 改为 stdin 喂响应的纯 jq 归并器，移除 slidep 全局安装脚本 setup.js，大图上传兜底改为引导用户自行走开放平台 OpenAPI、模型不经手 OAuth 凭证）
 ---
 
 # 腾讯文档 MCP 使用指南
@@ -27,7 +27,7 @@ source: https://cdn.addon.tencentsuite.com/static/tencent-docs.zip（官方 1.0.
 
 ## ⚙️ 快速配置
 
-本 skill 由 Pinvou 工具商店的「腾讯文档 MCP」连接器自动安装，四个 MCP 服务（tencent-docs / tdoc-slide / tdoc-doc / tdoc-sheet）共用同一个 Token，已由连接器写入本机系统凭据，无需在对话中配置。鉴权报错时见 `references/auth.md` 的处理指引。
+本 skill 由 鲜小助 工具商店的「腾讯文档 MCP」连接器自动安装，四个 MCP 服务（tencent-docs / tdoc-slide / tdoc-doc / tdoc-sheet）共用同一个 Token，已由连接器写入本机系统凭据，无需在对话中配置。鉴权报错时见 `references/auth.md` 的处理指引。
 
 ## 🎯 场景路由表
 
@@ -127,7 +127,7 @@ tencent-docs/
 
 ## 🔧 调用方式
 
-在 Pinvou 中四个服务以 MCP 工具形式提供，模型直接调用（无需命令行）：
+在 鲜小助 中四个服务以 MCP 工具形式提供，模型直接调用（无需命令行）：
 
 | 服务 | 工具名前缀 | 用途 |
 |------|-----------|------|
@@ -199,9 +199,9 @@ tencent-docs/
 
 1. **匹配错误码**：先查上方错误码表，按对应方案处理
 2. **确认工具可用**：按品类核对对应前缀的工具（`mcp_tencent-docs_*` 通用 / `mcp_tdoc-slide_*` PPT / `mcp_tdoc-doc_*` Word / `mcp_tdoc-sheet_*` Excel）
-3. **确认授权状态**：如有鉴权相关错误，按 `references/auth.md` 的指引提示用户在 Pinvou 工具商店更新 Token
+3. **确认授权状态**：如有鉴权相关错误，按 `references/auth.md` 的指引提示用户在 鲜小助 工具商店更新 Token
 4. **查阅品类参考文档**：根据场景路由表找到对应参考文档，确认工具调用规范和参数约束
 
 ## SKILL 更新
 
-skill 版本随 Pinvou 连接器发布更新，无需在对话中自行检查升级。如需了解官方最新动态，可访问 [腾讯文档 MCP 开发者文档](https://docs.qq.com/open/document/app)。
+skill 版本随 鲜小助 连接器发布更新，无需在对话中自行检查升级。如需了解官方最新动态，可访问 [腾讯文档 MCP 开发者文档](https://docs.qq.com/open/document/app)。

@@ -1354,7 +1354,7 @@ where
             Ok(())
         })
         .build(context)
-        .context("build windowless Pinvou host")?;
+        .context("build windowless 鲜小助 host")?;
     app.run_return(|_, _| {});
     result_rx
         .blocking_recv()

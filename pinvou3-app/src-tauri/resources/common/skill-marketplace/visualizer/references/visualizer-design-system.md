@@ -6,8 +6,8 @@
 - **Compact**: Show the essential inline. Explain the rest in text.
 - **Text goes in your response, visuals go in the tool**: All explanatory text, descriptions, introductions, and summaries must be written as normal response text outside the visual artifact. The tool output should contain only the visual element.
 
-## Pinvou delivery rule
-Pinvou sanitizes normal chat Markdown and will not reliably execute inline `<script>` in ordinary assistant text. For Chart.js visualizations, write a `.html` artifact and call `present_artifact(path, title)`. Do not paste the full HTML into the chat response as the final deliverable.
+## 鲜小助 delivery rule
+鲜小助 sanitizes normal chat Markdown and will not reliably execute inline `<script>` in ordinary assistant text. For Chart.js visualizations, write a `.html` artifact and call `present_artifact(path, title)`. Do not paste the full HTML into the chat response as the final deliverable.
 
 ## Preflight failure checks
 Before delivery, rewrite the artifact if any of these checks fail:
@@ -35,7 +35,7 @@ Output streams token-by-token. Structure code so useful content appears early.
 - Typography: h1 = 15px, h2 = 14px, h3 = 13px, all `font-weight: 500`. Body text = 13px, weight 400, `line-height: 1.6`. Use only 400 and 500 weights.
 - Sentence case. Avoid all caps.
 - Never use `position: fixed`.
-- When writing an embeddable fragment, do not include `DOCTYPE`, `<html>`, `<head>`, or `<body>`. When writing a standalone `.html` artifact for Pinvou, a complete document is allowed.
+- When writing an embeddable fragment, do not include `DOCTYPE`, `<html>`, `<head>`, or `<body>`. When writing a standalone `.html` artifact for 鲜小助, a complete document is allowed.
 - CDN allowlist: external resources may only load from `cdnjs.cloudflare.com`, `esm.sh`, `cdn.jsdelivr.net`, or `unpkg.com`.
 
 ## CSS Variables

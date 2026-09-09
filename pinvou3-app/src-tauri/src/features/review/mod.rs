@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 
 use crate::features::assistant::platform::bridge::{Pinvou3Bridge, prefs::ModelPreset};
 
-const PROMPT: &str = r#"你是 Pinvou，Boss 身边的独立检阅顾问，召之即来。
+const PROMPT: &str = r#"你是 鲜小助，Boss 身边的独立检阅顾问，召之即来。
 
 Boss 刚刚召唤你，让你检阅前面主 AI 的工作。给你的材料分两部分：
 - 【Boss 需求】：Boss 在整个过程里说过的意图、约束、做过的选择。这是你的立场起点。
@@ -53,7 +53,7 @@ B. recommendations = 需 **Boss 拿主意**的决策点/缺信息：选项、偏
 
 /// 核账模式 prompt（§3，sim 验证收敛）：对同一产出物的复审，只核账、禁新增、终态。
 /// 治 tejz7cxrd5jd0 的不收敛——暴增/翻案/永久挂账/无终态。
-const RECONCILE_PROMPT: &str = r#"你是 Pinvou，Boss 身边的独立检阅顾问。这是对**同一产出物**的复审（核账模式），不是重新自由批评。
+const RECONCILE_PROMPT: &str = r#"你是 鲜小助，Boss 身边的独立检阅顾问。这是对**同一产出物**的复审（核账模式），不是重新自由批评。
 给你【上轮账目】（上次立的问题）+【当前产物】（已修订版本）。严格按规则核账：
 1. 逐条核对账目对照产物：**已改好的不要再列进 issues**（视为闭合）；只把**没改/没改对**的留在 issues 里，说明还差什么。
 2. **禁止新增问题**。唯一例外：本次修订在它改动的段落内新引入的错误（issue 里注明"修订引入"）。不要提上轮没提过的新角度。
@@ -64,7 +64,7 @@ const RECONCILE_PROMPT: &str = r#"你是 Pinvou，Boss 身边的独立检阅顾�
 
 /// 覆盖镜头 prompt（§coverage，多场景 sim 4abe9ae 背书）：不挑错，查"全不全"。领域无关——
 /// 让模型自判专家身份临场列该类产物的完整性维度框架，再标缺/薄弱维度。收敛靠框架有限。
-const COVERAGE_PROMPT: &str = r#"你是 Pinvou，Boss 身边的独立检阅顾问。这次专做【覆盖度检查】——不挑已有内容的对错，只看产物"全不全"。
+const COVERAGE_PROMPT: &str = r#"你是 鲜小助，Boss 身边的独立检阅顾问。这次专做【覆盖度检查】——不挑已有内容的对错，只看产物"全不全"。
 
 给你 Boss 的需求 + 主 AI 的产物。两步走：
 1. 以你**自判的领域专家身份**，先想清楚：**这一类产物**要算完整、合格、能交付，行业惯例本该覆盖哪些维度？列出这个领域的完整性维度框架（贴合行业惯例，别硬套别的领域）。
@@ -547,7 +547,7 @@ async fn model_review(
             1600,
         )
         .await?;
-        return parse_model_review(&content).context("parse Pinvou review");
+        return parse_model_review(&content).context("parse 鲜小助 review");
     }
     let mut body = json!({
         "model": model_name,
@@ -583,7 +583,7 @@ async fn model_review(
         .and_then(|m| m.get("content"))
         .and_then(Value::as_str)
         .unwrap_or_default();
-    parse_model_review(content).context("parse Pinvou review")
+    parse_model_review(content).context("parse 鲜小助 review")
 }
 
 fn review_model_preset(bridge: &Pinvou3Bridge) -> ModelPreset {

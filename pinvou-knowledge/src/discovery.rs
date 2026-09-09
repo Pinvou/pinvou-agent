@@ -97,7 +97,7 @@ pub fn discover_lan_candidates(timeout: Duration) -> Result<Vec<LanDiscoveryCand
         }
         let advertised_name = service
             .get_property_val_str("name")
-            .unwrap_or("PINVOU Knowledge")
+            .unwrap_or("鲜小助 Knowledge")
             .trim()
             .chars()
             .take(120)

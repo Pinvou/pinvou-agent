@@ -291,7 +291,7 @@ test('macOS native input waits for the WebContent process and emits complete nav
   assert.match(keyParser, /"arrowleft" \| "left" => function\(NSLeftArrowFunctionKey, 123, true\)/);
 });
 
-test('macOS fill selects through the scoped native responder even while Pinvou is non-key', () => {
+test('macOS fill selects through the scoped native responder even while 鲜小助 is non-key', () => {
   const fill = macos.slice(
     macos.indexOf('pub(super) async fn fill_element'),
     macos.indexOf('pub(super) async fn type_text'),

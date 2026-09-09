@@ -397,13 +397,13 @@ jobs:
         working-directory: pinvou3-app
         run: npm run build:nsis
 
-      # tauri nsis 产物默认名 pinvou3_<version>_x64-setup.exe,重命名为统一全平台命名
+      # tauri nsis 产物默认名 鲜小助_<version>_x64-setup.exe,重命名为统一全平台命名
       # pinvou-agent_<version>-windows-x64-setup.exe(与制品 zip 名对齐)。
       - name: 校验产物 + 统一命名 + sha256
         working-directory: pinvou3-app/src-tauri/target/release/bundle/nsis
         run: |
           set -euo pipefail
-          SRC="pinvou3_${VERSION}_x64-setup.exe"
+          SRC="鲜小助_${VERSION}_x64-setup.exe"
           EXE="pinvou-agent_${VERSION}-windows-x64-setup.exe"
           test -f "$SRC" || { echo "❌ nsis 产物不存在: $SRC"; ls -la; exit 1; }
           mv "$SRC" "$EXE"
@@ -517,8 +517,8 @@ jobs:
           # 产出可在 Intel + Apple Silicon 通用运行的 dmg/app。
           node scripts/tauri/build.js build --target universal-apple-darwin
 
-          DMG="src-tauri/target/universal-apple-darwin/release/bundle/dmg/pinvou3_${VERSION}_universal.dmg"
-          APP_BUNDLE="src-tauri/target/universal-apple-darwin/release/bundle/macos/pinvou3.app"
+          DMG="src-tauri/target/universal-apple-darwin/release/bundle/dmg/鲜小助_${VERSION}_universal.dmg"
+          APP_BUNDLE="src-tauri/target/universal-apple-darwin/release/bundle/macos/鲜小助.app"
 
           # dmg 打包偶发失败兜底:
           # bundle_dmg.sh 调 osascript 做 Finder 图标美化,CI 无 head 交互环境下偶尔失败
@@ -549,13 +549,13 @@ jobs:
           test -f "$DMG" || { echo "❌ dmg 产物不存在: $DMG"; exit 1; }
 
           # 校验 universal dmg 双架构完整性 + 写 checksum 文件(随 artifact 附带)
-          BIN="src-tauri/target/universal-apple-darwin/release/bundle/macos/pinvou3.app/Contents/MacOS/pinvou3-tauri"
+          BIN="src-tauri/target/universal-apple-darwin/release/bundle/macos/鲜小助.app/Contents/MacOS/pinvou3-tauri"
           echo "lipo 校验 universal 双切片:"
           lipo "$BIN" -info || { echo "❌ universal 二进制校验失败"; exit 1; }
           lipo "$BIN" -verify_arch x86_64 arm64 || { echo "❌ universal 缺 x86_64 或 arm64 切片"; exit 1; }
           echo "✓ universal 双切片齐全 (arm64 + x86_64)"
 
-          # 统一全平台命名:tauri 默认名 pinvou3_<version>_universal.dmg →
+          # 统一全平台命名:tauri 默认名 鲜小助_<version>_universal.dmg →
           # pinvou-agent_<version>-macos-universal.dmg(与制品 zip 名对齐)。
           DMG_DIR="$(dirname "$DMG")"
           UNIFIED="pinvou-agent_${VERSION}-macos-universal.dmg"

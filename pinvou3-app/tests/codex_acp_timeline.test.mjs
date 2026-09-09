@@ -74,7 +74,7 @@ try {
       rawInput: { path: 'README.md' },
     } }),
     event(5, 'tool_call_update', { update: {
-      toolCallId: 'tool-1', status: 'completed', rawOutput: { text: '# PINVOU' },
+      toolCallId: 'tool-1', status: 'completed', rawOutput: { text: '# 鲜小助' },
     } }),
     event(6, 'permission_requested', { toolCallId: 'tool-2', request: {
       toolCall: { toolCallId: 'tool-2', title: '写入 README' },
@@ -109,7 +109,7 @@ try {
   assert.equal(turn.tools.length, 1, 'tool updates must be merged in place');
   assert.equal(turn.tools[0].status, 'completed');
   assert.deepEqual(turn.tools[0].rawInput, { path: 'README.md' });
-  assert.deepEqual(turn.tools[0].rawOutput, { text: '# PINVOU' });
+  assert.deepEqual(turn.tools[0].rawOutput, { text: '# 鲜小助' });
   assert.equal(turn.permissions[0].resolved, true);
   assert.equal(turn.elicitations[0].resolved, true);
   assert.equal(turn.elicitations[0].action, 'accept');
@@ -816,7 +816,7 @@ try {
     && chatView.includes('assistantAvatar={(')
     && chatView.includes('<PinvouLogo className="h-5 w-5" title={chatViewCopy.agentName}')
     && codexView.includes('<AcpAgentLogo agentId={activeAgentId} className="h-5 w-5"'),
-  'assistant avatars must use the Pinvou and selected ACP Agent identity marks');
+  'assistant avatars must use the 鲜小助 and selected ACP Agent identity marks');
   // Copy fallback has been consolidated into dict.zh.uiConversation (ConversationTimeline references
   // it via copy keys); assert that the key is consumed in the timeline and the zh entry exists.
   const conversationZhDict = readFileSync(path.join(root, 'src', 'shared', 'i18n', 'zh.js'), 'utf8');
@@ -980,7 +980,7 @@ try {
     && codexView.includes('<SubagentTranscriptPanel')
     && codexView.includes("window.addEventListener('pinvou:open-subagent'")
     && codexView.includes('<ToolCard'),
-  'the native lane must always expose factual delegated-agent cards and transcripts; product mode only controls the Pinvou roster and reminder');
+  'the native lane must always expose factual delegated-agent cards and transcripts; product mode only controls the 鲜小助 roster and reminder');
   const interactionCommands = readFileSync(
     path.join(root, 'src-tauri', 'src', 'app', 'commands', 'interaction.rs'),
     'utf8',

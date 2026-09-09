@@ -1355,7 +1355,7 @@ pub fn render_smoke_markdown(
         ""
     };
     Ok(format!(
-        "# Pinvou Smoke 报告\n\n- Cases: {}\n- Completed: {completed}\n\n## Smoke Health Score\n\n- 总分：{score_text}\n- 等级：{grade_text}\n- 公式版本：{}\n- Confidence: {confidence_text}{low_sample_warning}\n\n{dimensions}\n\n### Deductions / 扣分明细\n\n{deductions}\n\n> 该健康分只用于内部 Smoke 产品诊断，不是官方 benchmark 分数。公开榜单分数：不可用。\n\n## 产品问题与改进方向\n\n发现 {} 项，建议优化如下：\n\n{recommendations}\n\n## 独立 Judge 质量评分\n\n状态：{judge_text}{judge_note}\n",
+        "# 鲜小助 Smoke 报告\n\n- Cases: {}\n- Completed: {completed}\n\n## Smoke Health Score\n\n- 总分：{score_text}\n- 等级：{grade_text}\n- 公式版本：{}\n- Confidence: {confidence_text}{low_sample_warning}\n\n{dimensions}\n\n### Deductions / 扣分明细\n\n{deductions}\n\n> 该健康分只用于内部 Smoke 产品诊断，不是官方 benchmark 分数。公开榜单分数：不可用。\n\n## 产品问题与改进方向\n\n发现 {} 项，建议优化如下：\n\n{recommendations}\n\n## 独立 Judge 质量评分\n\n状态：{judge_text}{judge_note}\n",
         records.len(),
         score.version(),
         analysis.findings().len()

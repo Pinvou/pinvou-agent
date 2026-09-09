@@ -95,7 +95,7 @@ for (const f of docs) {
     !/\bnpm\s+(?:-g\s+|--global\s+)?(?:install|i)\s+(?:-g\s+|--global\s+)?\S+/.test(text) &&
       !/\bnpm\s+(?:install|i)\s+[^-\n]*@latest\b/.test(text) &&
       !/\b@[a-z0-9-]+\/[a-z0-9.-]+@latest\b/.test(text),
-    `${rel(f)}: 残留 npm 安装教学（-g/--global/@latest 均禁止，安装由品悟代管）`,
+    `${rel(f)}: 残留 npm 安装教学（-g/--global/@latest 均禁止，安装由鲜小助代管）`,
   );
   assert.ok(!/\bnpx\s+(?:\S*skills\b|(?:@[\w.-]+\/)?[\w.-]+\s+skills\b)/.test(text), `${rel(f)}: 残留 npx skills 教学（含路径与 scoped 子命令形态）`);
   // dws 脚本示例统一 python3：宿主环境无裸 `python` 命令（macOS/Homebrew/Win embeddable 均只装 python3）
@@ -114,8 +114,8 @@ for (const f of docs) {
       if (/[（(][^）)]*hermes[^）)]*openclaw[^）)]*[）)]/i.test(line) || /hermes`?\/`?openclaw`?\s*渠道/.test(line)) continue;
       const hostInProse = /(hermes|openclaw(?!_workspace))/i.test(stripAnchors(line));
       assert.ok(
-        !hostInProse || line.includes("品悟"),
-        `${rel(f)}: 上游宿主断言未锚定品悟语境: ${line.trim()}`,
+        !hostInProse || line.includes("鲜小助"),
+        `${rel(f)}: 上游宿主断言未锚定鲜小助语境: ${line.trim()}`,
       );
     }
   }

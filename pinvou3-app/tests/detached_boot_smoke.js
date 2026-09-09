@@ -53,9 +53,9 @@ function injectSource() {
       if (cmd === 'list_sessions') return [{ id:sessionId, title:'分离测试会话', updated_at:'2026-08-07T00:00:00Z', message_count:1 }];
       if (cmd === 'list_codex_acp_sessions') return [
         { id:'detached-codex-42', title:'Coding分离测试会话', agent_id:'codex', agent_name:'Codex', workspace_kind:'temporary', workspace_path:'', workspace_available:true, updated_at:'2026-08-07T00:00:00Z' },
-        { id:'detached-native-42', title:'品悟Coding分离测试会话', agent_id:'pinvou', agent_name:'品悟', workspace_kind:'temporary', workspace_path:'', workspace_available:true, updated_at:'2026-08-07T00:00:00Z' }
+        { id:'detached-native-42', title:'鲜小助Coding分离测试会话', agent_id:'pinvou', agent_name:'鲜小助', workspace_kind:'temporary', workspace_path:'', workspace_available:true, updated_at:'2026-08-07T00:00:00Z' }
       ];
-      if (cmd === 'load_session' && args && args.id === 'detached-native-42') return { metadata:{ id:'detached-native-42', title:'品悟Coding分离测试会话' }, messages:[{ role:'user', content:[{ type:'text', text:'DETACHED_NATIVE_HISTORY_OK' }] },{ role:'assistant', content:[{ type:'text', text:'DETACHED_NATIVE_REPLY_OK' }] }], artifacts:[] };
+      if (cmd === 'load_session' && args && args.id === 'detached-native-42') return { metadata:{ id:'detached-native-42', title:'鲜小助Coding分离测试会话' }, messages:[{ role:'user', content:[{ type:'text', text:'DETACHED_NATIVE_HISTORY_OK' }] },{ role:'assistant', content:[{ type:'text', text:'DETACHED_NATIVE_REPLY_OK' }] }], artifacts:[] };
       if (cmd === 'load_session') return { metadata:{ id:sessionId, title:'分离测试会话' }, messages:[{ role:'user', content:[{ type:'text', text:'DETACHED_SESSION_HISTORY_OK' }] }], artifacts:[] };
       if (cmd === 'list_acp_agents') return [{agent_id:'codex',agent_name:'Codex'}];
       if (cmd === 'get_acp_agent_status') return {agent_id:'codex',installed:true,node_supported:true,authenticated:true};
@@ -147,7 +147,7 @@ function injectSource() {
     await page.waitForFunction(() => document.body.innerText.includes('DETACHED_NATIVE_HISTORY_OK')
       && document.body.innerText.includes('DETACHED_NATIVE_REPLY_OK'), { timeout: 5000 });
   } catch {
-    console.error('FAIL: detached 品悟 Coding session 未还原目标会话历史'); ok = false;
+    console.error('FAIL: detached 鲜小助 Coding session 未还原目标会话历史'); ok = false;
   }
   await page.evaluate(() => {
     window.__emitDetachedTestEvent('chat:turn_started', {session_id:'detached-native-42',turn_id:'native-turn-2'});
@@ -156,7 +156,7 @@ function injectSource() {
   try {
     await page.waitForFunction(() => document.body.innerText.includes('DETACHED_NATIVE_STREAM_OK'), { timeout: 5000 });
   } catch {
-    console.error('FAIL: detached 品悟 Coding session 未接收实时 chat 事件'); ok = false;
+    console.error('FAIL: detached 鲜小助 Coding session 未接收实时 chat 事件'); ok = false;
   }
 
   await page.goto(url + '?detached=1&kind=monitor', { waitUntil: 'networkidle0' });
@@ -168,6 +168,6 @@ function injectSource() {
   }
 
   await browser.close(); fs.rmSync(PROFILE, { recursive: true, force: true });
-  if (ok) { console.log('PASS: detached session/ACP及品悟Coding/monitor 启动与状态投影正常'); process.exit(0); }
+  if (ok) { console.log('PASS: detached session/ACP及鲜小助Coding/monitor 启动与状态投影正常'); process.exit(0); }
   process.exit(1);
 })();

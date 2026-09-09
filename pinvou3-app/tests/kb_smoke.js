@@ -177,17 +177,17 @@ function injectSource() {
             window.__REMOTE_DEFER_OWNER_DEVICES_ONCE__ = false;
             return new Promise(resolve => {
               window.__REMOTE_RESOLVE_OWNER_DEVICES__ = () => resolve([
-                {id:'local-owner',name:'Stale PINVOU',scope:'owner',revoked:false},
+                {id:'local-owner',name:'Stale 鲜小助',scope:'owner',revoked:false},
               ]);
             });
           }
           return Promise.resolve([{
-            id:'local-owner',name:window.__REMOTE_OWNER_DEVICE_NAME__ || 'This PINVOU',scope:'owner',revoked:false,
+            id:'local-owner',name:window.__REMOTE_OWNER_DEVICE_NAME__ || 'This 鲜小助',scope:'owner',revoked:false,
           }]);
         }
         case 'remote_kb_model_status': return Promise.resolve({ready:true,downloading:false,error:null});
         case 'shared_kb_host_backup': return Promise.resolve({manifest:{format:1},recoveryCode:'AGE-SECRET-KEY-1MOCK'});
-        case 'shared_kb_host_restore': return Promise.resolve({serverId:args?.serverId,name:'PINVOU Knowledge',endpoint:'https://127.0.0.1:3210',scope:'owner',deviceId:'local-owner'});
+        case 'shared_kb_host_restore': return Promise.resolve({serverId:args?.serverId,name:'鲜小助 Knowledge',endpoint:'https://127.0.0.1:3210',scope:'owner',deviceId:'local-owner'});
         case 'remote_kb_request_join': {
           if (window.__REMOTE_JOIN_PENDING_MODE__) {
             const pending={
@@ -380,7 +380,7 @@ async function chooseRemoteUploadSource(page, testId) {
   await page.evaluateOnNewDocument(injectSource());
   await page.setViewport({ width: 1440, height: 1000 });
   await page.goto(INDEX, { waitUntil: 'networkidle0' });
-  await page.waitForFunction(() => window.TauriBridge && document.body && document.body.innerText.includes('PINVOU'), { timeout: 20000 }).catch(() => {});
+  await page.waitForFunction(() => window.TauriBridge && document.body && document.body.innerText.includes('鲜小助'), { timeout: 20000 }).catch(() => {});
   await sleep(1500);
 
   await page.evaluate(() => {
@@ -1150,13 +1150,13 @@ async function chooseRemoteUploadSource(page, testId) {
   JSON.stringify({ localOwnerProtected, recoveryEntry, recoveredHost }));
   await page.evaluate(() => {
     window.__REMOTE_DEFER_OWNER_DEVICES_ONCE__ = true;
-    window.__REMOTE_OWNER_DEVICE_NAME__ = 'Current PINVOU';
+    window.__REMOTE_OWNER_DEVICE_NAME__ = 'Current 鲜小助';
   });
   await page.click('[data-testid="remote-govern"]');
   await page.waitForSelector('[data-testid="remote-owner-panel"]');
   await page.click('[data-testid="remote-owner-panel"] button[aria-label="关闭"]');
   await page.click('[data-testid="remote-govern"]');
-  await page.waitForFunction(() => (document.querySelector('[data-testid="remote-owner-panel"]')?.innerText || '').includes('Current PINVOU'));
+  await page.waitForFunction(() => (document.querySelector('[data-testid="remote-owner-panel"]')?.innerText || '').includes('Current 鲜小助'));
   await page.evaluate(() => window.__REMOTE_RESOLVE_OWNER_DEVICES__?.());
   await sleep(120);
   const ownerRefreshIsolation = await page.evaluate(() => {
@@ -1167,8 +1167,8 @@ async function chooseRemoteUploadSource(page, testId) {
     };
   });
   rec('成员管理关闭重开后忽略旧请求且关闭按钮使用当前语言',
-    ownerRefreshIsolation.text.includes('Current PINVOU')
-      && !ownerRefreshIsolation.text.includes('Stale PINVOU')
+    ownerRefreshIsolation.text.includes('Current 鲜小助')
+      && !ownerRefreshIsolation.text.includes('Stale 鲜小助')
       && ownerRefreshIsolation.closeLabel === '关闭',
     JSON.stringify(ownerRefreshIsolation));
   const ownerJoinPollBefore = await page.evaluate(() => (window.__KB_CALLS__ || [])

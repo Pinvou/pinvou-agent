@@ -421,7 +421,7 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
             .members()
             .iter()
             .all(|member| !member.id.starts_with("exp-")),
-        "ordinary sessions must not gain Pinvou experts"
+        "ordinary sessions must not gain 鲜小助 experts"
     );
     assert!(
         bridge.build_dt_config().fleet_config().profiles.is_empty(),

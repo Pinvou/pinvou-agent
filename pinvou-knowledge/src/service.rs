@@ -155,7 +155,7 @@ impl KnowledgeService {
             .is_none()
         {
             store
-                .set_meta("server_name", "PINVOU Knowledge")
+                .set_meta("server_name", "鲜小助 Knowledge")
                 .map_err(|error| error.to_string())?;
         }
         if store
@@ -248,8 +248,8 @@ impl KnowledgeService {
             let service = Arc::clone(&self);
             match tokio::task::spawn_blocking(move || service.purge_expired_trash()).await {
                 Ok(Ok(_)) => {}
-                Ok(Err(error)) => eprintln!("PINVOU Knowledge trash cleanup failed: {error}"),
-                Err(error) => eprintln!("PINVOU Knowledge trash cleanup task failed: {error}"),
+                Ok(Err(error)) => eprintln!("鲜小助 Knowledge trash cleanup failed: {error}"),
+                Err(error) => eprintln!("鲜小助 Knowledge trash cleanup task failed: {error}"),
             }
         }
     }
@@ -280,7 +280,7 @@ impl KnowledgeService {
                 .store
                 .meta("server_name")
                 .map_err(|error| error.to_string())?
-                .unwrap_or_else(|| "PINVOU Knowledge".to_string()),
+                .unwrap_or_else(|| "鲜小助 Knowledge".to_string()),
             version: env!("CARGO_PKG_VERSION").to_string(),
             protocol_version: 2,
             tls_ca: self.tls.ca_encoded.clone(),
@@ -1764,14 +1764,14 @@ mod tests {
             .service;
 
         let error = service
-            .provision_host_owner("Host PINVOU", |_, _| Err("disk full".to_string()))
+            .provision_host_owner("Host 鲜小助", |_, _| Err("disk full".to_string()))
             .unwrap_err();
         assert_eq!(error, "disk full");
         assert!(service.list_devices().unwrap().is_empty());
 
         let persisted = std::cell::RefCell::new(None);
         let owner = service
-            .provision_host_owner("Host PINVOU", |device_id, token| {
+            .provision_host_owner("Host 鲜小助", |device_id, token| {
                 assert!(service.list_devices().unwrap().is_empty());
                 persisted.replace(Some((device_id.to_string(), token.to_string())));
                 Ok(())
@@ -1792,7 +1792,7 @@ mod tests {
             .service;
         let original_claim = std::cell::RefCell::new(None);
         let original = service
-            .provision_host_owner("Host PINVOU", |device_id, token| {
+            .provision_host_owner("Host 鲜小助", |device_id, token| {
                 original_claim.replace(Some((device_id.to_string(), token.to_string())));
                 Ok(())
             })
@@ -1801,7 +1801,7 @@ mod tests {
         let (_, original_token) = original_claim.into_inner().unwrap();
 
         let error = service
-            .recover_host_owner("Host PINVOU", |_, _| Err("disk full".to_string()))
+            .recover_host_owner("Host 鲜小助", |_, _| Err("disk full".to_string()))
             .unwrap_err();
         assert_eq!(error, "disk full");
         assert_eq!(
@@ -1811,7 +1811,7 @@ mod tests {
 
         let recovered_claim = std::cell::RefCell::new(None);
         let recovered = service
-            .recover_host_owner("Host PINVOU", |device_id, token| {
+            .recover_host_owner("Host 鲜小助", |device_id, token| {
                 recovered_claim.replace(Some((device_id.to_string(), token.to_string())));
                 Ok(())
             })

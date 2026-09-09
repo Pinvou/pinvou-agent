@@ -963,7 +963,7 @@ fn writes_memory_snapshot_document_for_debugging() {
 
     assert_eq!(path, snapshot_path());
     let doc = fs::read_to_string(path).unwrap();
-    assert!(doc.contains("# PINVOU 设备记忆快照"));
+    assert!(doc.contains("# 鲜小助 设备记忆快照"));
     assert!(doc.contains("用户称呼"));
     assert!(doc.contains("回答先给结论"));
     assert!(doc.contains("pinvou-memory-snapshot/v1"));

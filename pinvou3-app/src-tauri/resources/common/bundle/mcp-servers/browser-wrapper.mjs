@@ -595,7 +595,7 @@ async function ensureBrowserRunning() {
   }
 
   hostedWebView2 = false;
-  const reason = 'browser/host-backend-unavailable: in-app WebView2 is not ready; restart PINVOU and retry; external Chrome will not be started';
+  const reason = 'browser/host-backend-unavailable: in-app WebView2 is not ready; restart 鲜小助 and retry; external Chrome will not be started';
   throw new Error(reason);
 }
 
@@ -833,7 +833,7 @@ function hostMutationCommitUnknownOutcome(
       type: 'text',
       text:
         `The ${toolName || 'browser'} action crossed the native-host dispatch boundary, but its ` +
-        'final acknowledgement or exact compensation was not proven, so Pinvou cannot prove ' +
+        'final acknowledgement or exact compensation was not proven, so 鲜小助 cannot prove ' +
         'that the page mutation did not occur. ' +
         'Do not repeat the action; inspect the page state before continuing. ' +
         `Host error: ${hostError}`,
@@ -867,7 +867,7 @@ function committedActionFollowupFailureOutcome(
     content: [{
       type: 'text',
       text:
-        `The ${toolName || 'browser'} action was committed, but Pinvou could not refresh the ` +
+        `The ${toolName || 'browser'} action was committed, but 鲜小助 could not refresh the ` +
         'page view afterwards. Do not repeat the action; refresh or inspect the page state before ' +
         `continuing. Follow-up error: ${followupError}`,
     }],

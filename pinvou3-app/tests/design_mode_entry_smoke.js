@@ -40,7 +40,7 @@ function injectSource() {
   return `(function(){
     var HTML_PATH = '/tmp/pinvou3/sessions/s-design/artifacts/landing.html';
     var DRAFT_PATH = '/tmp/pinvou3/sessions/s-design/artifacts/poster-draft.html';
-    var HTML_CONTENT = '<!doctype html><html><body><main id="app"><section class="hero"><h1 class="hero-title">Pinvou Design</h1><button class="primary">Start</button><a id="external-link" href="https://example.com/docs">Docs</a></section></main></body></html>';
+    var HTML_CONTENT = '<!doctype html><html><body><main id="app"><section class="hero"><h1 class="hero-title">鲜小助 Design</h1><button class="primary">Start</button><a id="external-link" href="https://example.com/docs">Docs</a></section></main></body></html>';
     var DRAFT_CONTENT = '<!doctype html><html><body><main id="app"><section class="hero"><h1 class="hero-title">Draft Poster</h1><button class="primary">Draft</button></section></main></body></html>';
     var SESSIONS = [{id:'s-design',title:'HTML设计测试',created_at:1,updated_at:9}];
     var MARKET_TOOLS = [
@@ -1111,7 +1111,7 @@ async function clickExactButton(page, text) {
   await page.keyboard.down('Control');
   await page.keyboard.press('A');
   await page.keyboard.up('Control');
-  await page.keyboard.type('Pinvou 可视化编辑');
+  await page.keyboard.type('鲜小助 可视化编辑');
   await page.keyboard.press('Enter');
   await sleep(350);
   await page.click('[data-testid="design-font-size-input"]');
@@ -1155,7 +1155,7 @@ async function clickExactButton(page, text) {
     return { exists: !!log, text: log && log.textContent };
   });
   rec('设计面板可临时修改文案、字号、颜色和字体并记录 changes log',
-    edited && edited.text === 'Pinvou 可视化编辑' && edited.fontSize === '40px' &&
+    edited && edited.text === '鲜小助 可视化编辑' && edited.fontSize === '40px' &&
       /0,\s*122,\s*255/.test(edited.color || '') && /Georgia/i.test(edited.fontFamily || '') &&
       changesCollapsed && changesLog.exists && changesLog.text.includes('设计变更') &&
       changesLog.text.includes('fontSize') && changesLog.text.includes('color') && changesLog.text.includes('fontFamily'),
@@ -1180,7 +1180,7 @@ async function clickExactButton(page, text) {
   const returnedFrameHandle = await page.$('[data-testid="artifact-html-preview-frame"]');
   frame = returnedFrameHandle && await returnedFrameHandle.contentFrame();
   if (frame) {
-    await frame.waitForFunction(() => document.querySelector('h1.hero-title')?.textContent === 'Pinvou 可视化编辑');
+    await frame.waitForFunction(() => document.querySelector('h1.hero-title')?.textContent === '鲜小助 可视化编辑');
   }
   const restoredAfterArtifactSwitch = frame ? await frame.evaluate(() => {
     const h1 = document.querySelector('h1.hero-title');
@@ -1206,7 +1206,7 @@ async function clickExactButton(page, text) {
   });
   rec('切换产物再返回后恢复手工修改和 changes log',
     restoredAfterArtifactSwitch &&
-      restoredAfterArtifactSwitch.text === 'Pinvou 可视化编辑' &&
+      restoredAfterArtifactSwitch.text === '鲜小助 可视化编辑' &&
       restoredAfterArtifactSwitch.fontSize === '40px' &&
       /0,\s*122,\s*255/.test(restoredAfterArtifactSwitch.color || '') &&
       /Georgia/i.test(restoredAfterArtifactSwitch.fontFamily || '') &&
@@ -1228,7 +1228,7 @@ async function clickExactButton(page, text) {
   }) : null;
   const logAfterClear = await page.evaluate(() => !!document.querySelector('[data-testid="design-changes-log"]'));
   rec('清空修改后恢复预览并清空 changes log',
-    cleared && cleared.text === 'Pinvou Design' && cleared.fontSize === '32px' &&
+    cleared && cleared.text === '鲜小助 Design' && cleared.fontSize === '32px' &&
       /0,\s*0,\s*0/.test(cleared.color || '') && cleared.fontFamily === originalFontFamily && !logAfterClear,
     JSON.stringify({ cleared, originalFontFamily, logAfterClear }));
 

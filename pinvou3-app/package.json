@@ -1,11 +1,12 @@
 {
   "name": "pinvou3-app",
   "version": "0.9.3",
-  "description": "品悟智能助手桌面应用",
+  "description": "鲜小助智能助手桌面应用",
   "private": true,
   "scripts": {
     "tauri": "node scripts/tauri/build.js",
     "dev": "node scripts/tauri/build.js dev",
+    "setup:macos-signing": "node scripts/tauri/macos-dev-signing.js setup",
     "dev:ui": "node scripts/tauri/build.js dev",
     "serve:src": "vite",
     "build:ui": "vite build",

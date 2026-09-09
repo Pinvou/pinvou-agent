@@ -5,16 +5,16 @@
 ## 术语
 
 **多智能体模式（Multi-agent Mode）**：
-品悟原生工作会话与原生 Code 会话内的一项可开关能力，开关位于输入框的模型选择列表底部，每个会话记住自己的开关状态。开启后，当前消息只要包含需要完成的任务，模型就必须派出子智能体并由父模型统筹；完全不要求新调查、执行或产出的纯对话与控制消息不派。它不是一种会话类型。Codex、Claude Code、Kimi 等外部 ACP 代码会话不继承该能力，也不显示该开关。
+鲜小助原生工作会话与原生 Code 会话内的一项可开关能力，开关位于输入框的模型选择列表底部，每个会话记住自己的开关状态。开启后，当前消息只要包含需要完成的任务，模型就必须派出子智能体并由父模型统筹；完全不要求新调查、执行或产出的纯对话与控制消息不派。它不是一种会话类型。Codex、Claude Code、Kimi 等外部 ACP 代码会话不继承该能力，也不显示该开关。
 _Avoid_: 多智能体对话、工作流运行、专属会话
 
-**品悟原生代码会话（Pinvou Native Code Session）**：
-代码模式中由品悟直接承担任务的会话。它与外部 ACP 代码会话共享代码界面，并接入 Pinvou 多智能体开关；开关只控制 Pinvou 专家名册与强制委派提醒，不控制底座 `agent` / `workflow` 的执行事实。只要当前会话实际发生子智能体委派，无论开关状态如何，都显示行内子智能体卡和只读 transcript 面板。绑定项目时，父模型与子智能体仍在项目目录执行；CodeWhale 的 delegated-agent 账本、transcript 和协调锁通过 `subagent_state_root` 落在 `~/.pinvou3/sessions/<id>/workspace/`，Pinvou 专家则通过内存 `fleet.profiles` 配置提供，不向项目或会话目录写入专家 TOML。关闭产品开关后，CodeWhale 原有 `agent` / `workflow` 能力仍保持不变。
-_Avoid_: 品悟 ACP 会话、Codex 会话
+**鲜小助原生代码会话（鲜小助 Native Code Session）**：
+代码模式中由鲜小助直接承担任务的会话。它与外部 ACP 代码会话共享代码界面，并接入 鲜小助 多智能体开关；开关只控制 鲜小助 专家名册与强制委派提醒，不控制底座 `agent` / `workflow` 的执行事实。只要当前会话实际发生子智能体委派，无论开关状态如何，都显示行内子智能体卡和只读 transcript 面板。绑定项目时，父模型与子智能体仍在项目目录执行；CodeWhale 的 delegated-agent 账本、transcript 和协调锁通过 `subagent_state_root` 落在 `~/.pinvou3/sessions/<id>/workspace/`，鲜小助 专家则通过内存 `fleet.profiles` 配置提供，不向项目或会话目录写入专家 TOML。关闭产品开关后，CodeWhale 原有 `agent` / `workflow` 能力仍保持不变。
+_Avoid_: 鲜小助 ACP 会话、Codex 会话
 
 **外部 ACP 代码会话（External ACP Code Session）**：
-代码模式中由 Codex、Claude Code、Kimi 等外部 Agent 承担任务的会话，其能力与配置由对应 Agent 提供，不继承品悟的多智能体模式。
-_Avoid_: 品悟原生代码会话
+代码模式中由 Codex、Claude Code、Kimi 等外部 Agent 承担任务的会话，其能力与配置由对应 Agent 提供，不继承鲜小助的多智能体模式。
+_Avoid_: 鲜小助原生代码会话
 
 **主动委派（Delegation）**：
 多智能体模式开启后注入给模型的行事方式：当前消息只要包含需要完成的任务，就必须调用裸 `agent`；单一任务至少派一个，能够拆分时尽可能拆成边界清晰、可独立交付或验证的子任务。父模型只负责拆解、派发、分配上下文、等待、协调、复核和最终汇总，不亲自承担任务主体；不得以简单、聚焦、串行、自己能完成、协调成本或共享工作区为由跳过委派，派发失败也不得退回父模型包办。只有完全不要求新调查、执行或产出的纯对话与控制消息不属于任务。已有子智能体时，追加委派先检查任务范围，交叉验证须明确标记；接力传递结构化摘要、关键证据或产物路径与必要约束，不复制完整上游回复。普通委派的一级子智能体是叶子；只有任务本身确实复杂时，一级子智能体才可再派生一层，二级不得继续派生。两级是会话默认继承值与模型行为约定，不是嵌套调用不可覆盖的底座硬上限；这是 CodeWhale 的通用语义缺口，已由 [Hmbown/CodeWhale#5253](https://github.com/Hmbown/CodeWhale/issues/5253) 修复（随 v0.9.7 发布，2026-08-11 closed）；当前 v0.9.5 基线仍保留该行为，确定性的消耗边界仍由整树准入额度提供：工作模式允许最多 4 个直属子智能体并行、全树排队与运行合计最多 8 个；原生 Code 分别为 6 个与 12 个。直属并行闸不限制后代立即执行，防止父子互等死锁；全树准入总数负责兜住整体消耗。
@@ -37,7 +37,7 @@ _Avoid_: 子代理聊天、抽屉
 _Avoid_: Agent
 
 **角色名册（Roster）**：
-供模型按名字派工的角色集合。Pinvou 的内置卡与用户自建专家卡是全局唯一持久化源，App 将可执行专家转换成 CodeWhale 原生 `fleet.profiles` 并随 Engine 配置提供；不再为每个会话复制整份 `exp-*.toml`。CodeWhale 的个人目录与项目 `.codewhale/agents/` 仍按原生优先级参与加载，同名 profile 允许覆盖 Pinvou 全局配置。升级时只清理 Pinvou 自有 session ledger 内的旧投影；项目或个人目录中的同名文件不自动删除，因为无法可靠证明它仍由 Pinvou 独占所有权。
+供模型按名字派工的角色集合。鲜小助 的内置卡与用户自建专家卡是全局唯一持久化源，App 将可执行专家转换成 CodeWhale 原生 `fleet.profiles` 并随 Engine 配置提供；不再为每个会话复制整份 `exp-*.toml`。CodeWhale 的个人目录与项目 `.codewhale/agents/` 仍按原生优先级参与加载，同名 profile 允许覆盖 鲜小助 全局配置。升级时只清理 鲜小助 自有 session ledger 内的旧投影；项目或个人目录中的同名文件不自动删除，因为无法可靠证明它仍由 鲜小助 独占所有权。
 _Avoid_: 团队、卡池
 
 **CodeWhale 执行根与状态根（Execution Root / Subagent State Root）**：

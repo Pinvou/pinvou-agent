@@ -1,6 +1,6 @@
 ---
 name: ima-skills
-description: Tencent IMA OpenAPI skill for notes and knowledge-base operations. Use after the user connects IMA in Pinvou Plugin Center.
+description: Tencent IMA OpenAPI skill for notes and knowledge-base operations. Use after the user connects IMA in 鲜小助 Plugin Center.
 version: 1.1.8-pinvou2
 display_name: "腾讯 ima"
 ---
@@ -11,13 +11,13 @@ Use this skill when the user asks to search, read, create, append, import (web p
 
 ## Credential Rules
 
-Pinvou stores IMA credentials in the local system credential store. The native `ima_openapi` tool reads them only when it sends a request to the fixed official endpoint.
+鲜小助 stores IMA credentials in the local system credential store. The native `ima_openapi` tool reads them only when it sends a request to the fixed official endpoint.
 
 Do not ask the user to paste credentials into the chat. Do not write credentials to `~/.config/ima`, repository files, logs, notes, or artifacts.
 
 Do not probe credentials with shell commands, environment inspection, local files, or ad-hoc network requests. Never pass a host, URL, Client ID, API Key, or HTTP header as tool input.
 
-To verify access or perform any IMA operation, call `ima_openapi`. If it reports missing credentials, tell the user to connect "腾讯 ima" from the Pinvou Plugin Center.
+To verify access or perform any IMA operation, call `ima_openapi`. If it reports missing credentials, tell the user to connect "腾讯 ima" from the 鲜小助 Plugin Center.
 
 ## Module Routing
 
@@ -29,7 +29,7 @@ Read the relevant child instruction before operating:
 
 ## Native Tool
 
-All calls go through Pinvou's native `ima_openapi` tool. Pass only an allowlisted `api_path` and a JSON object in `body`:
+All calls go through 鲜小助's native `ima_openapi` tool. Pass only an allowlisted `api_path` and a JSON object in `body`:
 
 ```json
 {
