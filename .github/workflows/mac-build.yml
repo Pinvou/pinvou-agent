@@ -125,9 +125,11 @@ jobs:
           shared-key: mac-build
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # macOS 27+ strip=none 规避已移除:rust-toolchain.toml 钉住的 1.98.0 包含
-      # Mach-O __LINKEDIT 8 字节对齐修复(rust#157750,LLVM backport #158410),
-      # release/release-fast 的 strip 在 macOS 全版本恢复安全(同 release-packages.yml)。
+      # The macOS 27+ strip=none workaround is removed: the 1.98.0 toolchain
+      # pinned in rust-toolchain.toml contains the Mach-O __LINKEDIT 8-byte
+      # alignment fix (rust#157750, LLVM backport #158410), so stripping in
+      # release/release-fast is safe again on every macOS version (same as
+      # release-packages.yml).
 
       - name: Node.js
         uses: actions/setup-node@v7

@@ -101,16 +101,21 @@ jobs:
       # 必须用 ${{ github.workspace }} 绝对路径:Cargo 按自身进程 cwd 解析相对路径,
       # 构建步骤 working-directory 为 pinvou3-app,相对路径会被双拼成不存在的路径。
       # lld:BFD ld 处理大型 Rust binary 内存效率差,是 link OOM 独立主因(同 arm64);
-      # BFD 亦无 --icf,支持不了下一行的相同代码折叠。thin LTO 本身由 rustc 执行
-      # (最终单元 -C lto=thin),与链接器身份无关,机制详见 Cargo.toml
-      # [profile.release] 注释。
-      # --icf=safe:lld 相同代码折叠(相似代码段合并,体积优化)。safe 档只折叠
-      # 「地址确定未被取用」的函数。ICF 与 Rust 函数地址同一性的边界是已知问题
-      # (rust#160267 即一例:safe 档下也曾误编译,根因在 LLVM 侧、尚未修复),
-      # 故取保守档而非 all。RUSTFLAGS 是 env 级注入,同时覆盖本 job 内的
-      # tauri 主构建与 knowledge-host 独立构建(后者 profile 已在
-      # pinvou-knowledge/Cargo.toml)。
-      # remap-path-prefix:产物内嵌的构建机绝对路径(panic location 等)归一为 /。
+      # BFD also has no --icf, so it cannot perform the identical-code folding
+      # on the next line. Thin LTO itself is executed by rustc (the final unit
+      # gets -C lto=thin) and is independent of the linker identity; see the
+      # Cargo.toml [profile.release] comments for the mechanism.
+      # --icf=safe: lld identical-code folding (merges identical code sections,
+      # a size optimization). The safe tier only folds functions whose address
+      # is provably never taken. The boundary between ICF and Rust function
+      # address identity is a known issue (rust#160267 is one example: a
+      # miscompilation occurred even under the safe tier, LLVM-side root
+      # cause, still unfixed), so the conservative tier is chosen over all.
+      # RUSTFLAGS is an env-level injection covering both the tauri main build
+      # and the standalone knowledge-host build in this job (the latter's
+      # profile lives in pinvou-knowledge/Cargo.toml).
+      # remap-path-prefix: normalizes build-machine absolute paths embedded in
+      # the artifact (panic locations etc.) to /.
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--icf=safe -C remap-path-prefix=${{ github.workspace }}=/"
       RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
     steps:
@@ -186,9 +191,11 @@ jobs:
         working-directory: pinvou3-app
         run: node scripts/tauri/build.js build --bundles deb
 
-      # tauri bundler 硬编码 data.tar 为 gzip-6(tauri.conf 无压缩配置项);
-      # 重打包为 xz -9 缩小包体。内容零改动,sha256 在其后的「校验产物」步骤计算。
-      - name: deb 重打包 (data.tar gzip-6 → xz -9)
+      # The tauri bundler hardcodes data.tar to gzip-6 (tauri.conf exposes no
+      # compression knob); repack as xz -9 to shrink the package. The content
+      # is untouched and the sha256 is computed afterwards, so it covers the
+      # final artifact.
+      - name: Repack deb (data.tar gzip-6 → xz -9)
         working-directory: pinvou3-app/src-tauri/target/release/bundle/deb
         run: bash "$GITHUB_WORKSPACE/scripts/repack-deb-xz.sh" "pinvou3_${VERSION}_amd64.deb"
 
@@ -237,12 +244,14 @@ jobs:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
       # release profile 已在 Cargo.toml 设为 thin LTO(原 fat 在 ubuntu 16GB 上
       # link 内存越线被 SIGTERM),ARM 不再用 env 覆盖 profile。
-      # lld 是必需的:BFD 对大二进制 link 内存效率差(OOM 实证),且 BFD 无 --icf、
-      # 支持不了 --icf=safe。thin LTO 本身由 rustc 执行,与链接器身份无关
-      # (机制详见 Cargo.toml [profile.release] 注释)。
-      # --icf=safe / remap-path-prefix 同 build-linux-x64(保守档的取舍与 fn 地址
-      # 同一性的已知边界 rust#160267 见该 job 注释;RUSTFLAGS env 同时覆盖 tauri
-      # 主构建与 knowledge-host)。
+      # lld is required: BFD links large binaries with poor memory efficiency
+      # (proven OOM) and has no --icf, so it cannot do --icf=safe. Thin LTO
+      # itself is executed by rustc and is independent of the linker identity
+      # (see the Cargo.toml [profile.release] comments for the mechanism).
+      # --icf=safe / remap-path-prefix: same as build-linux-x64 (see that
+      # job's comments for the conservative-tier trade-off and the known
+      # fn-address identity boundary rust#160267; the RUSTFLAGS env covers
+      # both the tauri main build and knowledge-host).
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--icf=safe -C remap-path-prefix=${{ github.workspace }}=/"
       # release 编译 codewhale-tui 的 SIGBUS 同源风险防护(同 build-linux-x64,
       # 正式入口按平台注入 RUSTC_WRAPPER,见 config.toml 注释)。
@@ -310,8 +319,8 @@ jobs:
         working-directory: pinvou3-app
         run: node scripts/tauri/build.js build --bundles deb
 
-      # deb 重打包 (data.tar gzip-6 → xz -9),同 build-linux-x64。
-      - name: deb 重打包 (data.tar gzip-6 → xz -9)
+      # Repack deb (data.tar gzip-6 → xz -9), same as build-linux-x64.
+      - name: Repack deb (data.tar gzip-6 → xz -9)
         working-directory: pinvou3-app/src-tauri/target/release/bundle/deb
         run: bash "$GITHUB_WORKSPACE/scripts/repack-deb-xz.sh" "pinvou3_${VERSION}_arm64.deb"
 
@@ -469,8 +478,10 @@ jobs:
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
       VERSION: ${{ needs.check-version-bump.outputs.version }}
-      # 产物内嵌的构建机绝对路径(panic location 等)归一为 /。Apple ld/ld-prime
-      # 无 ICF 能力,macOS 无需(也无法)注入 icf 参数;-dead_strip 由 rustc 默认传入。
+      # Normalizes build-machine absolute paths embedded in the artifact
+      # (panic locations etc.) to /. Apple ld/ld-prime has no ICF capability,
+      # so macOS needs no (and cannot take an) icf flag; -dead_strip is
+      # already passed by rustc by default.
       RUSTFLAGS: "-C remap-path-prefix=${{ github.workspace }}=/"
       # v0.9.5 升级后 release(thin-LTO O3)编译 codewhale-tui 时 rustc/LLVM 栈溢出
       # (SIGBUS,run 31558490865 实证)。.cargo/config.toml 不设置 rustc-wrapper
@@ -505,10 +516,11 @@ jobs:
           # 只在 main 保存(对齐 pr-check 的配额保护策略);PR 侧只读,不写 2GB+ 缓存。
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # macOS 27+ strip=none 规避已移除:rust-toolchain.toml 钉住的 1.98.0 包含
-      # Mach-O __LINKEDIT 8 字节对齐修复(rust#157750,LLVM backport #158410),
-      # strip="symbols" 在 macOS 全版本恢复安全,产物不再保留符号表/调试映射。
-      # 详见 docs/binary-size-optimization.md。
+      # The macOS 27+ strip=none workaround is removed: the 1.98.0 toolchain
+      # pinned in rust-toolchain.toml contains the Mach-O __LINKEDIT 8-byte
+      # alignment fix (rust#157750, LLVM backport #158410), so strip="symbols"
+      # is safe again on every macOS version and artifacts no longer keep
+      # symbol tables / debug maps. See docs/binary-size-optimization.md.
 
       - name: Node.js
         uses: actions/setup-node@v7
@@ -574,23 +586,27 @@ jobs:
 
           test -f "$DMG" || { echo "❌ dmg 产物不存在: $DMG"; exit 1; }
 
-          # 压缩升级:tauri dmg(bundler 的 bundle_dmg)是 UDZO/zlib,且未传
-          # -imagekey zlib-level → hdiutil 默认压缩级别 1(重速度)。转 ULMO(LZMA)
-          # 对 app 载荷通常再省 20-40%;ULMO 需 macOS 10.15+ 挂载(本项目最低 11.0)。
-          # ad-hoc 签名(signingIdentity="-")下 dmg 本身不签名,容器转换不破坏
-          # 任何签名;.app 内层签名不受外层容器格式影响。转换失败降级保留原 dmg。
+          # Compression upgrade: the tauri dmg (bundler's bundle_dmg) is
+          # UDZO/zlib and passes no -imagekey zlib-level, so hdiutil uses its
+          # default compression level 1 (speed-oriented). Converting to ULMO
+          # (LZMA) usually saves another 20-40% on the app payload; mounting
+          # ULMO requires macOS 10.15+ (our floor is 11.0). Under an ad-hoc
+          # signature (signingIdentity="-") the dmg itself is not signed, so
+          # a container conversion breaks no signature; the inner .app
+          # signature is unaffected by the outer container format. A failed
+          # conversion degrades to keeping the original dmg.
           DMG_FORMAT=$(hdiutil imageinfo -format "$DMG" 2>/dev/null || echo UNKNOWN)
           if [ "$DMG_FORMAT" != "ULMO" ]; then
             DMG_BEFORE=$(stat -f%z "$DMG")
-            # hdiutil convert 的 -o 目标名会被追加 .dmg 扩展(out.ulmo → out.ulmo.dmg),
-            # 故 mv 的源固定为 "$DMG.ulmo.dmg"。
+            # hdiutil convert appends .dmg to the -o target name (out.ulmo ->
+            # out.ulmo.dmg), so the mv source is fixed as "$DMG.ulmo.dmg".
             rm -f "$DMG.ulmo.dmg"
             if hdiutil convert "$DMG" -format ULMO -o "$DMG.ulmo" >/dev/null; then
               mv -f "$DMG.ulmo.dmg" "$DMG"
-              echo "dmg 压缩升级 ${DMG_FORMAT}→ULMO: ${DMG_BEFORE} -> $(stat -f%z "$DMG") bytes"
+              echo "dmg compression upgraded ${DMG_FORMAT}→ULMO: ${DMG_BEFORE} -> $(stat -f%z "$DMG") bytes"
             else
               rm -f "$DMG.ulmo.dmg"
-              echo "⚠️ ULMO 转换失败,保留原 ${DMG_FORMAT} dmg"
+              echo "⚠️ ULMO conversion failed, keeping the original ${DMG_FORMAT} dmg"
             fi
           fi
 
