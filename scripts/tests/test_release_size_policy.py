@@ -8,6 +8,7 @@ MAC_BUILD_WORKFLOW = ROOT / ".github/workflows/mac-build.yml"
 APP_CARGO_TOML = ROOT / "pinvou3-app/src-tauri/Cargo.toml"
 KNOWLEDGE_CARGO_TOML = ROOT / "pinvou-knowledge/Cargo.toml"
 REPACK_SCRIPT = ROOT / "scripts/repack-deb-xz.sh"
+ULMO_SCRIPT = ROOT / "scripts/convert-dmg-ulmo.sh"
 OTA_SCRIPT = ROOT / "scripts/build-windows-ota.ps1"
 RELEASE_DEB_SCRIPT = ROOT / "scripts/release-deb.sh"
 RELEASE_MACOS_SCRIPT = ROOT / "scripts/release-macos.sh"
@@ -39,6 +40,7 @@ class ReleaseSizePolicyTests(unittest.TestCase):
         self.app_cargo = APP_CARGO_TOML.read_text(encoding="utf-8")
         self.knowledge_cargo = KNOWLEDGE_CARGO_TOML.read_text(encoding="utf-8")
         self.repack = REPACK_SCRIPT.read_text(encoding="utf-8")
+        self.ulmo = ULMO_SCRIPT.read_text(encoding="utf-8")
         self.ota = OTA_SCRIPT.read_text(encoding="utf-8")
         self.release_deb = RELEASE_DEB_SCRIPT.read_text(encoding="utf-8")
         self.release_macos = RELEASE_MACOS_SCRIPT.read_text(encoding="utf-8")
@@ -61,10 +63,16 @@ class ReleaseSizePolicyTests(unittest.TestCase):
             # whose addresses are provably never taken).
             self.assertIn("-C link-arg=-Wl,--icf=safe", job_env, start)
             # Normalizes build-machine absolute paths embedded in the
-            # artifacts (panic locations, etc.).
+            # artifacts (panic locations, etc.). Top-level rustc flag, not a
+            # -C codegen option — rustc rejects `-C remap-path-prefix`.
             self.assertIn(
-                "-C remap-path-prefix=${{ github.workspace }}=/", job_env, start
+                "--remap-path-prefix=${{ github.workspace }}=/", job_env, start
             )
+            # The -C spelling would fail every rustc invocation of the job
+            # (checked on the RUSTFLAGS lines only; comments may discuss it).
+            for line in job_env.splitlines():
+                if line.strip().startswith("RUSTFLAGS:"):
+                    self.assertNotIn("-C remap-path-prefix", line, start)
 
     def test_linux_jobs_repack_deb_as_xz_before_sha256(self):
         for start, end in (
@@ -103,10 +111,24 @@ class ReleaseSizePolicyTests(unittest.TestCase):
         macos_job = self.job(
             "\n  build-macos-universal:", "\n      - name: 上传 dmg artifact"
         )
-        self.assertIn("-format ULMO", macos_job)
+        # The conversion lives in the shared helper (same file for the
+        # workflow and the manual release script, so the paths cannot drift).
+        self.assertIn("scripts/convert-dmg-ulmo.sh", macos_job)
+
+    def test_ulmo_helper_converts_and_degrades(self):
+        # Only executable lines count (counterexamples inside comments don't).
+        code_only = "\n".join(
+            line
+            for line in self.ulmo.splitlines()
+            if not line.lstrip().startswith("#")
+        )
         # Format detection: artifacts already in ULMO are not re-converted
         # (also covers the output of the degradation path).
-        self.assertIn("hdiutil imageinfo -format", macos_job)
+        self.assertIn("hdiutil imageinfo -format", code_only)
+        self.assertIn("-format ULMO", code_only)
+        # Degradation: a failed conversion keeps the original dmg instead of
+        # failing the release packaging.
+        self.assertIn("conversion failed, keeping the original", code_only)
 
     def test_macos_strip_workaround_stays_removed(self):
         # rustc 1.98.0 contains the Mach-O __LINKEDIT alignment fix
@@ -116,14 +138,20 @@ class ReleaseSizePolicyTests(unittest.TestCase):
         self.assertNotIn("CARGO_PROFILE_RELEASE_FAST_STRIP", self.mac_build_workflow)
         self.assertNotIn("-C strip=none", self.release_workflow)
         self.assertNotIn("-C strip=none", self.mac_build_workflow)
-        # Path normalization flag of the macOS release job (same reason as Linux).
+        # Path normalization flag of the macOS release job (same reason as
+        # Linux; top-level rustc flag, not a -C codegen option).
         macos_env = self.job(
             "\n  build-macos-universal:", "\n    steps:"
         ).split("\n    steps:", maxsplit=1)[0]
         self.assertIn(
-            'RUSTFLAGS: "-C remap-path-prefix=${{ github.workspace }}=/"',
+            'RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/"',
             macos_env,
         )
+        # The -C spelling would fail every rustc invocation of the job
+        # (checked on the RUSTFLAGS lines only; comments may discuss it).
+        for line in macos_env.splitlines():
+            if line.strip().startswith("RUSTFLAGS:"):
+                self.assertNotIn("-C remap-path-prefix", line)
 
     def test_app_release_profile_ships_no_debug_info(self):
         release = cargo_profile(
@@ -167,8 +195,7 @@ class ReleaseSizePolicyTests(unittest.TestCase):
 
     def test_manual_release_scripts_share_the_same_pipeline(self):
         self.assertIn("scripts/repack-deb-xz.sh", self.release_deb)
-        self.assertIn("-format ULMO", self.release_macos)
-        self.assertIn("hdiutil imageinfo -format", self.release_macos)
+        self.assertIn("scripts/convert-dmg-ulmo.sh", self.release_macos)
 
 
 if __name__ == "__main__":
