@@ -73,17 +73,23 @@ impl StreamMirror {
         };
         let emitted_tail = stable.get(self.skip..)?;
         let delta = emitted_tail.strip_prefix(self.text.as_str())?;
-        self.text.push_str(delta);
-        if self.text.len() > EMITTED_TAIL_KEEP_BYTES {
-            // Drop already-emitted head bytes so the mirror stays bounded;
-            // `skip` advances with them to keep `text` aligned with
-            // `stable[self.skip..]`. Trim only at char boundaries.
-            let mut trim = self.text.len() - EMITTED_TAIL_KEEP_BYTES;
-            while !self.text.is_char_boundary(trim) {
+        if emitted_tail.len() <= EMITTED_TAIL_KEEP_BYTES {
+            self.text.push_str(delta);
+        } else {
+            // `text + delta == emitted_tail`, so the bounded mirror is the
+            // last keep-window bytes of `emitted_tail`. Rebuild from that
+            // suffix instead of push+drain: `drain` shortens the string
+            // without releasing capacity, so one large observation would
+            // keep a whole-delta allocation resident for the job's
+            // lifetime. `skip` advances with the dropped head to keep
+            // `text` aligned with `stable[self.skip..]`, cutting only at
+            // char boundaries.
+            let mut trim = emitted_tail.len() - EMITTED_TAIL_KEEP_BYTES;
+            while !emitted_tail.is_char_boundary(trim) {
                 trim += 1;
             }
             self.skip += trim;
-            self.text.drain(..trim);
+            self.text = String::from(&emitted_tail[trim..]);
         }
         Some(delta.to_string())
     }
@@ -686,6 +692,41 @@ mod tests {
             ]
         );
         assert!(!state.tools.contains_key("tool-1"));
+    }
+
+    #[test]
+    fn large_burst_trims_without_retaining_the_whole_allocation() {
+        let mut mirror = StreamMirror::default();
+        // A first observation after substantial output accumulation: the
+        // burst crosses the keep window with a multibyte code point
+        // straddling the trim cut, so the trim must advance to the next
+        // char boundary.
+        let burst = format!(
+            "{}中{}",
+            "x".repeat(EMITTED_TAIL_KEEP_BYTES),
+            "y".repeat(EMITTED_TAIL_KEEP_BYTES - 2)
+        );
+        assert_eq!(mirror.delta(&burst, true).as_deref(), Some(burst.as_str()));
+        // The mirror keeps only the bounded suffix and, unlike push+drain,
+        // does not retain the whole-burst capacity afterwards.
+        assert_eq!(mirror.text, "y".repeat(EMITTED_TAIL_KEEP_BYTES - 2));
+        assert_eq!(mirror.skip, EMITTED_TAIL_KEEP_BYTES + 3);
+        assert!(mirror.text.capacity() <= EMITTED_TAIL_KEEP_BYTES);
+
+        // Progress after the burst still reaches the display while the
+        // job keeps running, and retained capacity stays bounded.
+        let progressed = format!("{burst}still alive\n");
+        assert_eq!(
+            mirror.delta(&progressed, true).as_deref(),
+            Some("still alive\n")
+        );
+        assert!(mirror.text.capacity() <= EMITTED_TAIL_KEEP_BYTES);
+
+        // Completion emits the remainder, still without growing the
+        // retained allocation.
+        let completed = format!("{progressed}done\n");
+        assert_eq!(mirror.delta(&completed, false).as_deref(), Some("done\n"));
+        assert!(mirror.text.capacity() <= EMITTED_TAIL_KEEP_BYTES);
     }
 
     #[test]
