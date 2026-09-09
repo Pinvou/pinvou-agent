@@ -349,6 +349,7 @@ class CiGatePolicyTests(unittest.TestCase):
         rust_lint = self.pr_workflow.split(
             "\n  rust-lint:", maxsplit=1
         )[1].split("\n  rust-test:", maxsplit=1)[0]
+        self.assertIn("timeout-minutes: 60", rust_lint)
         self.assertIn("RUN_HEAVY_RUST_CHECKS", rust_lint)
         self.assertIn("github.event.pull_request.draft == false", rust_lint)
         self.assertIn("needs.changes.outputs.rust_dependencies == 'true'", rust_lint)

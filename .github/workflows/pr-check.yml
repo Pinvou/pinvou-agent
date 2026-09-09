@@ -39,7 +39,8 @@ name: PR Check
 # - 曾用 sccache 按内容哈希缓存仓库内 crate 的编译产物,但 sccache 的 client-server
 #   架构只会把 RUST_MIN_STACK 传给 client、到不了 server 派生的 rustc,codewhale-tui
 #   codegen 仍会栈溢出(#271 已移除)。rust-cache 的 target 目录缓存保留,仓库内 crate
-#   每轮重编约 5min 的成本接受;rust-lint 从不接入 sccache(见该 job 注释)。
+#   暖缓存重编通常约 5min；v0.9.12 的 benchmark/product backend 冷编译可超过
+#   30min，因此 rust-lint 保持 60min 有界上限且不接入 sccache(见该 job 注释)。
 
 on:
   pull_request:
@@ -582,7 +583,8 @@ jobs:
   # clippy 用 clippy-driver 编译,产物不能被 cargo test(rustc)复用;在同一 job 里
   # 串行跑会导致依赖图被编译两遍。拆成并行 job 后 wall-clock ≈ max(lint, test)。
   # 不接入 sccache:clippy 产物与 test 不通用,接入会使 sccache 写入量翻倍,
-  # 而本 job 仅 ~2-3min、收益过小,权衡 10GB 配额压力后不接入(#47 评审结论)。
+  # 暖缓存时本 job 仍约 2-3min；冷缓存下 benchmark/product backend 会显著更久，
+  # 但接入 sccache 仍会挤压 10GB 配额，因此用 60min 有界 job 上限兜住冷编译。
   rust-lint:
     name: rust-lint
     needs: changes
@@ -591,7 +593,7 @@ jobs:
     # 否则 deny.toml 策略改动会静默漏检 cargo-deny。
     if: ${{ !cancelled() && github.event.action != 'closed' && (needs.changes.outputs.rust_code == 'true' || needs.changes.outputs.rust_dependencies == 'true') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       # Draft 只跑无系统依赖的 fmt 快检；Ready PR、Queue 与 main 跑 clippy。
       RUN_HEAVY_RUST_CHECKS: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
