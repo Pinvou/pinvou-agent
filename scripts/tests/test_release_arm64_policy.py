@@ -28,11 +28,11 @@ class ReleaseArm64PolicyTests(unittest.TestCase):
         # safe tier only folds functions whose address is never taken,
         # conservatively handling the known fn-address identity boundary)
         # and remap-path-prefix (normalizes build-machine paths embedded in
-        # the artifact to /).
+        # the artifact to /; top-level rustc flag, not a -C codegen option).
         self.assertIn(
             'RUSTFLAGS: "-C link-arg=-fuse-ld=lld '
             '-C link-arg=-Wl,--icf=safe '
-            '-C remap-path-prefix=${{ github.workspace }}=/"',
+            '--remap-path-prefix=${{ github.workspace }}=/"',
             job_env,
         )
         self.assertNotIn("CARGO_PROFILE_RELEASE_LTO", job_env)
