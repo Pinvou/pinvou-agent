@@ -537,7 +537,6 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         kbCache.outputsLoaded = true;
       // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: this effect only needs the listed deps; completing it would cause duplicate requests or polling loops
       }, []);
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors into local state right after reading the backend snapshot, avoiding first-frame flicker
       useEffect(() => { if (sub === 'output') refreshOutputs(); }, [sub, refreshOutputs]);
       useEffect(() => {
         if (sub !== 'output') return;
@@ -547,7 +546,6 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       }, [sub, refreshOutputs]);
       const outputArtifactKey = ((bs && bs.artifacts) || []).map((a) => `${a.path || ''}:${a.basename || ''}`).join('|');
       useEffect(() => {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors into local state right after reading the backend snapshot, avoiding first-frame flicker
         if (sub === 'output') refreshOutputs();
       }, [sub, outputArtifactKey, refreshOutputs]);
       // The view renders conditionally on demand and module-level caches

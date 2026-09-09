@@ -2529,7 +2529,7 @@ export function CodexAcpView({
   // Note: nativeLaneTick is a view-wide version counter — lane is a mutable
   // ref object, and beyond the timeline projection, the memory popover /
   // bottom-bar controls (reading lane fields directly) and the auto-scroll
-  // effect (near line 2786) all rely on this bump. Confining "re-render the
+  // effect below all rely on this bump. Confining "re-render the
   // whole view per token" to a per-lane subscription component would require
   // sinking visibleTurns and all of its callbacks (respond/renderNativeItem/
   // pendingByTool/the rewind family etc.) into a child — a contract surface
