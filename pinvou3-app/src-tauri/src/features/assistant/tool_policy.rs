@@ -42,6 +42,7 @@ pub const PINVOU3_ALLOWED_TOOLS: &[&str] = &[
     "image_analyze",
     "kb_search",
     "kb_open_source",
+    "computer_use",
     "mcp_*",
     "list_mcp_resources",
     "list_mcp_resource_templates",

@@ -3,6 +3,7 @@ pub(crate) mod behavior_telemetry;
 pub(crate) mod browser;
 pub(crate) mod code_checkpoints;
 pub(crate) mod codex_acp;
+pub(crate) mod computer_use;
 pub(crate) mod connectors;
 pub(crate) mod deliverables;
 pub(crate) mod dependencies;
