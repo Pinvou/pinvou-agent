@@ -114,9 +114,10 @@ jobs:
       # RUSTFLAGS is an env-level injection covering both the tauri main build
       # and the standalone knowledge-host build in this job (the latter's
       # profile lives in pinvou-knowledge/Cargo.toml).
-      # remap-path-prefix: normalizes build-machine absolute paths embedded in
-      # the artifact (panic locations etc.) to /.
-      RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--icf=safe -C remap-path-prefix=${{ github.workspace }}=/"
+      # --remap-path-prefix: normalizes build-machine absolute paths embedded
+      # in the artifact (panic locations etc.) to /. Top-level rustc flag —
+      # NOT a -C codegen option; rustc rejects `-C remap-path-prefix`.
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--icf=safe --remap-path-prefix=${{ github.workspace }}=/"
       RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
     steps:
       - name: Checkout (含 submodule)
@@ -252,7 +253,7 @@ jobs:
       # job's comments for the conservative-tier trade-off and the known
       # fn-address identity boundary rust#160267; the RUSTFLAGS env covers
       # both the tauri main build and knowledge-host).
-      RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--icf=safe -C remap-path-prefix=${{ github.workspace }}=/"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--icf=safe --remap-path-prefix=${{ github.workspace }}=/"
       # release 编译 codewhale-tui 的 SIGBUS 同源风险防护(同 build-linux-x64,
       # 正式入口按平台注入 RUSTC_WRAPPER,见 config.toml 注释)。
       RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
@@ -479,10 +480,11 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
       VERSION: ${{ needs.check-version-bump.outputs.version }}
       # Normalizes build-machine absolute paths embedded in the artifact
-      # (panic locations etc.) to /. Apple ld/ld-prime has no ICF capability,
+      # (panic locations etc.) to /. Top-level rustc flag — NOT a -C codegen
+      # option. Apple ld/ld-prime has no ICF capability,
       # so macOS needs no (and cannot take an) icf flag; -dead_strip is
       # already passed by rustc by default.
-      RUSTFLAGS: "-C remap-path-prefix=${{ github.workspace }}=/"
+      RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/"
       # v0.9.5 升级后 release(thin-LTO O3)编译 codewhale-tui 时 rustc/LLVM 栈溢出
       # (SIGBUS,run 31558490865 实证)。.cargo/config.toml 不设置 rustc-wrapper
       # (全局键无法按平台条件化),由本 macOS 发布 job 显式注入 RUSTC_WRAPPER
@@ -588,27 +590,11 @@ jobs:
 
           # Compression upgrade: the tauri dmg (bundler's bundle_dmg) is
           # UDZO/zlib and passes no -imagekey zlib-level, so hdiutil uses its
-          # default compression level 1 (speed-oriented). Converting to ULMO
-          # (LZMA) usually saves another 20-40% on the app payload; mounting
-          # ULMO requires macOS 10.15+ (our floor is 11.0). Under an ad-hoc
-          # signature (signingIdentity="-") the dmg itself is not signed, so
-          # a container conversion breaks no signature; the inner .app
-          # signature is unaffected by the outer container format. A failed
-          # conversion degrades to keeping the original dmg.
-          DMG_FORMAT=$(hdiutil imageinfo -format "$DMG" 2>/dev/null || echo UNKNOWN)
-          if [ "$DMG_FORMAT" != "ULMO" ]; then
-            DMG_BEFORE=$(stat -f%z "$DMG")
-            # hdiutil convert appends .dmg to the -o target name (out.ulmo ->
-            # out.ulmo.dmg), so the mv source is fixed as "$DMG.ulmo.dmg".
-            rm -f "$DMG.ulmo.dmg"
-            if hdiutil convert "$DMG" -format ULMO -o "$DMG.ulmo" >/dev/null; then
-              mv -f "$DMG.ulmo.dmg" "$DMG"
-              echo "dmg compression upgraded ${DMG_FORMAT}→ULMO: ${DMG_BEFORE} -> $(stat -f%z "$DMG") bytes"
-            else
-              rm -f "$DMG.ulmo.dmg"
-              echo "⚠️ ULMO conversion failed, keeping the original ${DMG_FORMAT} dmg"
-            fi
-          fi
+          # default compression level 1 (speed-oriented). The shared helper
+          # converts it to ULMO (LZMA, mountable since macOS 10.15+; our
+          # floor is 11.0) and degrades to keeping the original dmg on
+          # failure; see scripts/convert-dmg-ulmo.sh for the rationale.
+          bash "$GITHUB_WORKSPACE/scripts/convert-dmg-ulmo.sh" "$DMG"
 
           # 校验 universal dmg 双架构完整性 + 写 checksum 文件(随 artifact 附带)
           BIN="src-tauri/target/universal-apple-darwin/release/bundle/macos/pinvou3.app/Contents/MacOS/pinvou3-tauri"

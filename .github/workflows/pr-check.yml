@@ -208,6 +208,7 @@ jobs:
               - 'scripts/asr/build-sensevoice-runtime.sh'
               - 'scripts/asr/sensevoice-source.env'
               - 'scripts/repack-deb-xz.sh'
+              - 'scripts/convert-dmg-ulmo.sh'
               - 'scripts/release-deb.sh'
               - 'scripts/release-macos.sh'
               - 'scripts/build-windows-ota.ps1'
