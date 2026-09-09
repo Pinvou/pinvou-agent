@@ -1012,7 +1012,7 @@ mod tests {
         manager
             .lock()
             .expect("shell manager lock")
-            .execute_with_options_env_for_owner(
+            .execute_with_options_env_for_owner_and_session(
                 sleep_command(),
                 None,
                 600_000,
@@ -1022,6 +1022,7 @@ mod tests {
                 None,
                 HashMap::new(),
                 owner,
+                "test-session",
             )
             .expect("start background shell")
             .task_id
@@ -1057,6 +1058,9 @@ mod tests {
             linked_task_id: None,
             owner_agent_id: owner_agent_id.map(str::to_string),
             owner_agent_name: owner_agent_id.map(str::to_string),
+            origin_tool_call_id: None,
+            origin_turn_id: None,
+            owner_session_id: "test-session".to_string(),
         }
     }
 

@@ -23,13 +23,18 @@ class HeadlessBootContractTests(unittest.TestCase):
     def test_gaia_policy_uses_codewhale_canonical_tool_families(self):
         production = EVAL_TOOL_POLICY.read_text(encoding="utf-8").split("#[cfg(test)]", 1)[0]
 
-        for canonical in ['"File"', '"Web"', '"image_analyze"']:
+        for canonical in [
+            '"read"',
+            '"list_dir"',
+            '"file_search"',
+            '"grep_files"',
+            '"Web"',
+            '"image_analyze"',
+        ]:
             self.assertIn(canonical, production)
         for retired in [
+            '"File"',
             '"read_file"',
-            '"list_dir"',
-            '"grep_files"',
-            '"file_search"',
             '"web_search"',
             '"fetch_url"',
         ]:

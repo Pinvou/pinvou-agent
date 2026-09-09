@@ -138,7 +138,7 @@ impl Default for SessionModeState {
 #[cfg(test)]
 mod type_tests {
     use super::*;
-    use deepseek_tui::tui::app::AppMode;
+    use deepseek_tui::AppMode;
 
     #[test]
     fn default_is_yolo() {
@@ -154,7 +154,7 @@ mod type_tests {
         ));
         assert!(matches!(
             SerializableMode::Yolo.to_app_mode(),
-            AppMode::Yolo
+            AppMode::Agent
         ));
     }
 

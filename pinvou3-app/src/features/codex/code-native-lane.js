@@ -569,6 +569,21 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
       });
       return true;
     }
+    case 'chat:tool_gate_decision': {
+      lane.items.push({
+        id: nextId(lane),
+        type: 'system',
+        toolGateDecision: true,
+        toolId: String(p.tool_id || ''),
+        toolName: String(p.tool_name || ''),
+        decision: String(p.decision || 'unavailable'),
+        reason: String(p.reason || ''),
+        risk: String(p.risk || ''),
+        agentId: String(p.agent_id || ''),
+        time: timeStr(),
+      });
+      return true;
+    }
     case 'chat:memory': {
       // 每轮 chat 后后端推送的本会话注入记忆快照（chat.rs 对全部会话发射）。
       // 只归一化 id/kind/text 三字段，渲染层做轻量展示（条数徽标 + 弹层列表）。
@@ -715,6 +730,13 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
       || Object.keys(lane.toolMeta).length > 0,
   );
   const messages = saved && Array.isArray(saved.messages) ? saved.messages : [];
+  // Tool-gate decisions are host-visible audit records rather than model
+  // messages. Keep them across an authoritative SavedSession rehydrate just
+  // like the work/web bridge keeps live-only system items in its session
+  // buffer; otherwise a reconnect immediately erases the decision.
+  const liveToolGateNotices = lane.items
+    .filter(item => item && item.type === 'system' && item.toolGateDecision)
+    .map(item => ({ ...item }));
   const resultById = {};
   for (const message of messages) {
     const blocks = Array.isArray(message && message.content) ? message.content : [];
@@ -850,6 +872,13 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
 
     item.state = 'done';
     item.success = item.success === null ? false : item.success;
+  }
+  for (const notice of liveToolGateNotices) {
+    const duplicate = lane.items.some(item => (
+      item && item.type === 'system' && item.toolGateDecision
+        && item.toolId === notice.toolId && item.decision === notice.decision
+    ));
+    if (!duplicate) lane.items.push({ ...notice, id: nextId(lane) });
   }
   lane.timeline = Array.isArray(timelineEvents) ? [...timelineEvents] : [];
   // Restore the newest usage-bearing turn or compaction snapshot after the mutable lane is

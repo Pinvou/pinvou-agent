@@ -507,6 +507,29 @@ try {
   assert.equal(notices[1].compactPhase, 'done');
   assert.equal(notices[1].text, '12 → 8');
 
+  applyNativeChatEvent(lane7, 'chat:tool_gate_decision', {
+    session_id: 's7',
+    tool_id: 'gate-tool-1',
+    tool_name: 'bash',
+    agent_id: 'agent-reviewer',
+    decision: 'denied',
+    risk: 'high',
+    reason: 'outside delegated scope',
+  });
+  const gateNotice = lane7.items.at(-1);
+  assert.equal(gateNotice.type, 'system');
+  assert.equal(gateNotice.toolGateDecision, true);
+  assert.equal(gateNotice.toolName, 'bash');
+  assert.equal(gateNotice.decision, 'denied');
+  assert.equal(gateNotice.agentId, 'agent-reviewer');
+  assert.equal(gateNotice.reason, 'outside delegated scope');
+
+  hydrateNativeLane(lane7, { messages: [] }, []);
+  const replayedGateNotices = lane7.items.filter(item => item.toolGateDecision);
+  assert.equal(replayedGateNotices.length, 1, 'SavedSession rehydrate must retain the live tool-gate audit');
+  assert.equal(replayedGateNotices[0].toolId, 'gate-tool-1');
+  assert.equal(replayedGateNotices[0].risk, 'high');
+
   // A completed compaction refreshes usage without waiting for the next chat:usage event.
   const lane7b = createNativeLane();
   lane7b.tokens = { input: 98000, max: 262144 };
@@ -669,7 +692,7 @@ try {
   hydrateNativeLane(lane11, { messages: [] }, []);
   assert.equal(lane11.memory.items.length, 1, 'hydration 保留记忆快照');
 
-  // ── compaction 进行中标记：start 置位、done/fail 复位（用于禁用压缩入口）──
+  // ── compaction 进行中标记：start 置位、done/fail/cancel 复位（用于禁用压缩入口）──
   const lane12 = createNativeLane();
   assert.equal(lane12.compacting, false);
   applyNativeChatEvent(lane12, 'chat:compaction', { session_id: 's12', phase: 'start' });
@@ -679,6 +702,10 @@ try {
   applyNativeChatEvent(lane12, 'chat:compaction', { session_id: 's12', phase: 'start' });
   applyNativeChatEvent(lane12, 'chat:compaction', { session_id: 's12', phase: 'fail', message: 'boom' });
   assert.equal(lane12.compacting, false, 'fail 同样复位');
+  applyNativeChatEvent(lane12, 'chat:compaction', { session_id: 's12', phase: 'start' });
+  applyNativeChatEvent(lane12, 'chat:compaction', { session_id: 's12', phase: 'cancel', message: 'interrupted' });
+  assert.equal(lane12.compacting, false, 'cancel 是终态并复位进行中标记');
+  assert.equal(lane12.items.at(-1).compactPhase, 'cancel');
 
   // ── lane13: chat:plan_resolved 远端回声（多端/远端 discard 同步）─────────
   // 本地 discardNativePlan 已乐观冻结;plan_resolved 是后端广播,保证另一端 active 卡

@@ -1,14 +1,14 @@
 # Pinvou CodeWhale Fork Policy
 
-> Updated: 2026-08-28. Public maintenance baseline: upstream `v0.9.5` r12; r11 PRs #18, #21, #22, #25, #26, #27, #29, and #30 plus r12 PRs #33 and #35 are published within the existing four long-lived topics, and the parent gitlink lands via parent PR #375.
+> Updated: 2026-09-09. Upstream `v0.9.12` r1; the protected maintenance branch, immutable tag, and parent gitlink are published and aligned.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md). This English page is a condensed summary; the Chinese version is the complete, authoritative process.
 
 ## Baseline
 
-- Upstream: `Hmbown/CodeWhale` `v0.9.5` at `853cb707bbcf4f7dc4268fba6d811e0d04083f9c`.
-- Public maintenance branch: `Pinvou/CodeWhale:pinvou3-clean` at `9c5f4f19` (`pinvou-v0.9.5-r12`).
-- The pre-upgrade head `03e9e1027c03ce1e4b35ab9e3ccce751b65b9624` remains available as tag `pinvou-v0.9.0-r4` and branch `backup/pinvou3-clean-v0.9.0-r4`.
-- `Pinvou/CodeWhale#18`, `#21`, `#22`, `#25`, `#26`, `#27`, `#29`, and `#30` are published in r11, and `#33` plus `#35` are published in r12. `pinvou3-clean` and immutable tag `pinvou-v0.9.5-r12` are publicly reachable at `9c5f4f19`; tags `r1` through `r12` remain immutable.
+- Upstream: `Hmbown/CodeWhale` `v0.9.12` at `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5`.
+- Current fork baseline: `Pinvou/CodeWhale:pinvou3-clean` and immutable tag `pinvou-v0.9.12-r1`, head `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`, with fifteen DCO-signed-off commits formed through CodeWhale PR #44 and fast-follow PR #46.
+- The public pre-upgrade rollback point is immutable tag `pinvou-v0.9.5-r13` at `f853f8f1566c57e6be40d5439a222a932aa79ef5`; local `backup/pre-v0.9.12-sync` at the same SHA is only a convenience ref.
+- r1 is the protected consumable baseline. The parent gitlink, maintenance branch, and immutable tag must continue to resolve to the same commit.
 - Keep exactly four long-lived topics:
 
   1. Host embedding and routing boundary
@@ -22,11 +22,11 @@ The exact commits and fingerprints are recorded in [`docs/fork-modifications.md`
 
 - Prefer the app bridge, bundle instructions/Skills, MCP/connectors/plugins, then an upstream contribution. Keep a fork patch only when the behavior must be atomic inside CodeWhale's Engine, SubAgent, Task, or Automation lifecycle.
 - Product tool policy, UI, workspace selection, and business routing stay in `pinvou3-app`.
-- The soft drift limits are 1,500 net added lines and 200 fork-distinct lines per file (net = added minus removed, same accounting as the register). The published r12 baseline is 110 files and `+9781/-1168` (net 8,613 added lines), with `+1941/-188` across 17 files over r11 (provider-native search adapters with exact fail-closed endpoint gating, and the keyless Bing chain tail after API-backed providers, both in T2). The prior r11 baseline was 96 files and `+7840/-980` (net 6,860 added lines). Retention reasons and the reduction order are recorded in the register's soft-limit assessment; future reduction prioritizes generic per-turn policy, host insertion/edit APIs, session snapshot/recovery APIs, provider compatibility, host MCP policy, and Automation lifecycle fixes for upstreaming.
+- The soft drift limits remain 1,500 net added lines and 200 fork-distinct lines per file. The v0.9.12 r1 baseline is 94 files and `+5022/-944` (net 4,078), down from v0.9.5 r13 at 110 files and `+10895/-1195`. Newly touched files include equivalent Rust/rustdoc release-lint adjustments, review-requested result-level lifecycle and evaluation regressions, the API-search fallback reachability/error-guidance fix, removal of an obsolete upstream-comparison test helper, an exact runtime-contract budget ratchet for the official v0.9.12 plus Pinvou r1 model-visible schemas, a bounded macOS cold-build timeout, and overdue one-shot delivery; they add no fork behavior topic. The remaining excess is justified by Engine/Task-atomic steer, final-dispatch security, host prompt/profile/Skills ownership, Automation lifecycle behavior, and their safety tests. Upstreaming priority is generic steer and per-turn security first, Automation lifecycle second, parent migration to narrow re-export APIs followed by retirement of the 18-module compatibility facade, then replacement of prompt/profile/Skills ownership with stable host APIs.
 - Fixups are squashed into their owning topic; no long-lived catch-up commit chains are maintained, and generic host configuration, routing, tools, Automation, and OAuth must remain within their owning boundary.
 - A fork-distinct change must update the modification register and guard fingerprints, include a result-oriented `forkguard_*` test where applicable, and pass `./scripts/fork-guard.sh --fast`.
 - For a large upstream refactor, clean re-fork from the release tag and re-express each surviving topic. Do not preserve merge-conflict batches as long-lived history.
-- Push the maintenance branch and create an immutable tag only after explicit authorization. The published tag, maintenance branch, and parent gitlink must resolve to the same commit.
+- Candidate review branches may be pushed for a PR. Update the protected maintenance branch and create an immutable tag only after explicit authorization. The published tag, maintenance branch, and parent gitlink resolve to the same commit and must remain aligned.
 
 ## Required verification
 
@@ -35,7 +35,11 @@ The exact commits and fingerprints are recorded in [`docs/fork-modifications.md`
 cargo check --manifest-path CodeWhale/Cargo.toml -p codewhale-tui --lib --locked
 cargo test --manifest-path CodeWhale/Cargo.toml -p codewhale-tui --lib --locked \
   forkguard_ -- --test-threads=1
+cargo test --manifest-path CodeWhale/Cargo.toml -p codewhale-tui --lib --locked \
+  --features benchmark-eval-controls forkguard_benchmark_ -- --test-threads=1
 cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml --locked
+cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml --all-targets \
+  --features benchmark-hooks --locked
 cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --locked \
   -- --test-threads=1
 python3 scripts/architecture-guard.py

@@ -103,13 +103,18 @@ test('work instructions define a durable and verified loopback preview workflow'
 
   assert.match(instructions, /local web page produced by this session/);
   assert.match(instructions, /127\.0\.0\.1/);
-  assert.match(instructions, /background=true/);
+  assert.match(instructions, /`terminal\/run`.*named persistent terminal session/);
+  assert.match(instructions, /`terminal\/cancel`/);
+  assert.match(instructions, /Windows hosts without terminal sessions/);
+  assert.match(instructions, /`Bash\(action="run", command="\.\.\.", background=true\)`/);
+  assert.match(instructions, /`Bash\(action="cancel", task_id="\.\.\."\)`/);
+  assert.match(instructions, /lowercase `bash` is foreground-only in v0\.9\.12/);
   assert.match(instructions, /Do not.*shell `&` or `nohup`/i);
-  assert.match(instructions, /`curl`.*HTTP 200/i);
+  assert.match(instructions, /`bash\(command="curl \.\.\."\)`.*HTTP 200/i);
   assert.match(instructions, /mcp_browser_list_pages/);
   assert.match(instructions, /never guess an id such as `1`/i);
   assert.match(instructions, /mcp_browser_take_snapshot/);
-  assert.match(instructions, /Keep the background service running until the user explicitly ends the preview/i);
+  assert.match(instructions, /Keep the terminal session or tracked Bash job running until the user explicitly ends the preview/i);
   assert.match(instructions, /all web content is untrusted/);
   assert.match(instructions, /private-network, or localhost addresses/);
 });

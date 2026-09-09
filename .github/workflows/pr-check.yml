@@ -38,8 +38,9 @@ name: PR Check
 #   也能从 main cache 增量编译,不再全冷。
 # - 曾用 sccache 按内容哈希缓存仓库内 crate 的编译产物,但 sccache 的 client-server
 #   架构只会把 RUST_MIN_STACK 传给 client、到不了 server 派生的 rustc,codewhale-tui
-#   codegen 仍会栈溢出(#271 已移除)。rust-cache 的 target 目录缓存保留,仓库内 crate
-#   每轮重编约 5min 的成本接受;rust-lint 从不接入 sccache(见该 job 注释)。
+#   codegen 仍会栈溢出(#271 已移除)。rust-lint 保留 target 目录缓存用于
+#   clippy/check；会重链接的 headless integration test 在 rust-test 的单次 rustc 图中
+#   复用产物，并沿用 ThinLTO/lld/内存看门狗的 hosted-runner 边界。
 
 on:
   pull_request:
@@ -581,8 +582,10 @@ jobs:
   # clippy/fmt/deny 独立 job:与 rust-test 并行,各自独立 cache。
   # clippy 用 clippy-driver 编译,产物不能被 cargo test(rustc)复用;在同一 job 里
   # 串行跑会导致依赖图被编译两遍。拆成并行 job 后 wall-clock ≈ max(lint, test)。
-  # 不接入 sccache:clippy 产物与 test 不通用,接入会使 sccache 写入量翻倍,
-  # 而本 job 仅 ~2-3min、收益过小,权衡 10GB 配额压力后不接入(#47 评审结论)。
+  # 不接入 sccache:clippy 产物与 test 不通用,接入会使 sccache 写入量翻倍并
+  # 挤压 10GB 配额。benchmark/product backend 只在此做 cargo check；需要链接的
+  # headless 合同放在 rust-test 的 lib harness，与全量单测只链接一个大型
+  # Tauri 测试二进制，并复用其 lld/内存防护。
   rust-lint:
     name: rust-lint
     needs: changes
@@ -715,6 +718,18 @@ jobs:
         if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
         working-directory: pinvou3-app/src-tauri
         run: cargo check --bin dump_system_prompt --features dev-tools
+
+      # benchmark-hooks is intentionally outside the desktop default feature
+      # set, so the ordinary clippy legs cannot detect API drift in the
+      # headless evaluation bridge. Keep both compile contracts here, but run
+      # the executable contract in rust-test's shared lib harness, where it is
+      # covered without linking a second full Tauri integration-test binary.
+      - name: benchmark-hooks + product backend compile checks (hard gate)
+        if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
+        working-directory: pinvou3-app/src-tauri
+        run: |
+          cargo check --all-targets --features benchmark-hooks --locked
+          CARGO_TARGET_DIR=target cargo check --manifest-path ../../pinvou-cli/Cargo.toml --package pinvou-product-backend --locked
 
       # cargo-deny only cares about dependency/policy paths (Cargo/lock/deny/gitlink).
       - name: cargo-deny (advisories/licenses/bans/sources)
@@ -884,15 +899,16 @@ jobs:
       # 多线程测试仍可能观察到其他测试的临时值。Mutex poison 后通过 into_inner()
       # 取得的仍是已加锁 guard，不会绕过互斥；根治需消除测试对进程级 env 的依赖
       # 或让所有读写都通过同一隔离层，超出本 PR 范围。
-      # strict_mode 的三个确定性回归已并入 pinvou3_lib 单测，和全量 lib tests
-      # 共用一次编译与链接，避免第二个 integration test 目标重复链接全依赖树。
+      # strict_mode 回归和 benchmark-hooks headless 合同均在 pinvou3_lib 单测中；
+      # 本 job 统一开启 benchmark-hooks，让它们与全量 lib tests 共用一次
+      # 编译与链接，避免第二个 integration-test 二进制超过 16GB runner 边界。
       - name: cargo test --lib --no-run（编译链接测试二进制）
         if: ${{ github.event_name != 'push' }}
         run: |
           bash scripts/ci-memguard.sh &
           guard_pid=$!
           set +e
-          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
+          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --features benchmark-hooks --locked --no-run
           status=$?
           set -e
           kill "$guard_pid" 2>/dev/null || true
@@ -907,7 +923,7 @@ jobs:
           bash scripts/ci-memguard.sh &
           guard_pid=$!
           set +e
-          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --features benchmark-hooks --locked -- --test-threads=1
           status=$?
           set -e
           kill "$guard_pid" 2>/dev/null || true
@@ -927,7 +943,7 @@ jobs:
           bash scripts/ci-memguard.sh &
           guard_pid=$!
           set +e
-          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
+          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --features benchmark-hooks --locked --no-run
           status=$?
           set -e
           kill "$guard_pid" 2>/dev/null || true

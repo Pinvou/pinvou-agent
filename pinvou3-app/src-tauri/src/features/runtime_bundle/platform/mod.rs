@@ -592,27 +592,40 @@ mod tests {
     }
 
     #[test]
-    fn work_instructions_use_only_canonical_model_visible_tools() {
+    fn work_instructions_use_canonical_tools_with_narrow_preview_compatibility() {
         let rendered = instructions_md();
         for retired in [
             "read_file",
             "write_file",
-            "list_dir",
-            "file_search",
             "exec_shell",
             "checklist_write",
+            "File(action=",
         ] {
             assert!(
                 !rendered.contains(retired),
                 "retired tool leaked: {retired}"
             );
         }
-        for canonical in ["File(action=", "Bash(action=", "todo_write"] {
+        for canonical in [
+            "read(path=",
+            "write(path=",
+            "file_search(query=",
+            "bash(command=",
+            "terminal/run",
+            "Bash(action=\"run\", command=\"...\", background=true)",
+            "Bash(action=\"cancel\", task_id=\"...\")",
+            "todo_write",
+        ] {
             assert!(
                 rendered.contains(canonical),
                 "canonical guidance missing: {canonical}"
             );
         }
+        assert_eq!(
+            rendered.matches("Bash(action=").count(),
+            2,
+            "legacy Bash must remain limited to run/cancel for Windows preview compatibility"
+        );
     }
 
     #[test]

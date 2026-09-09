@@ -4,12 +4,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::expert_roster::ExpertRosterSnapshot;
+use super::tool_policy::is_pinvou3_allowed;
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::features::personas::PersonaCard;
+use deepseek_tui::AppMode;
 use deepseek_tui::core::engine::Engine;
 use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
 use deepseek_tui::core::ops::Op;
-use deepseek_tui::tui::app::AppMode;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -237,9 +238,10 @@ async fn start_spawn_probe(
     (format!("http://{address}/v1"), probe, task)
 }
 
-/// CodeWhale 的 spawn-time refresh 使用的就是 `FleetRoster::load`：配置层专家
-/// 必须独立于 execution/ledger 的位置存在，读取不存在的项目目录也不得反向创建
-/// `.codewhale`。同名 Personal / Workspace 覆盖是底座公开语义，应继续允许。
+/// Fleet 管理界面仍使用公开的 `FleetRoster::load` 合并 Config、Personal 与
+/// Workspace 来源；它必须独立于 execution/ledger 的位置，且读取不存在的项目目录
+/// 不得反向创建 `.codewhale`。模型 spawn 另走底座的 host-config-only overlay，
+/// 不继承这里验证的 ambient 覆盖优先级。
 #[test]
 fn fleet_config_survives_execution_ledger_split_and_keeps_native_precedence() {
     let _env_lock = crate::platform::paths::tests::ENV_LOCK
@@ -316,8 +318,9 @@ fn fleet_config_survives_execution_ledger_split_and_keeps_native_precedence() {
 }
 
 /// 真实穿过 Engine 工具循环：父模型调用 `agent(profile=exp-*)` 后，CodeWhale 会在
-/// `spawn_subagent_from_input` 内从当轮 route.config 重新加载 roster，再执行
-/// `apply_spawn_profile`。子请求能携带专家正文 sentinel，证明不是仅初始 roster 假绿。
+/// `spawn_subagent_from_input` 内从当轮 route.config 重建 host-config-only、
+/// prompt-only overlay。子请求能携带专家正文 sentinel，证明不是仅初始 roster 假绿，
+/// 同时底座 forkguard 负责锁住 ambient 来源与可执行配置均不能借此注入。
 #[tokio::test(flavor = "current_thread")]
 #[allow(clippy::await_holding_lock)]
 async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_writes() {
@@ -456,7 +459,7 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
         .build_multi_agent_send_message_op(
             "code-a",
             "Dispatch the probe expert now.".to_string(),
-            AppMode::Yolo,
+            AppMode::Agent,
             None,
             false,
             &project,
@@ -470,6 +473,7 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
     let mut saw_agent_spawned = false;
     let mut saw_agent_complete = false;
     let mut saw_parent_complete = false;
+    let mut parent_tool_catalog = None;
     let mut errors = Vec::new();
     let mut events = handle.rx_event.write().await;
     while !(saw_agent_complete && saw_parent_complete) {
@@ -492,13 +496,22 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
                 saw_agent_tool_success = true;
             }
             Event::AgentSpawned { .. } => saw_agent_spawned = true,
-            Event::AgentComplete { failed, result, .. } => {
-                assert!(!failed, "probe child failed: {result}");
+            Event::AgentComplete { result, .. } => {
+                assert!(
+                    !result.contains(r#""event":"subagent.failed""#),
+                    "probe child failed: {result}"
+                );
                 assert!(result.contains(CHILD_RESULT_SENTINEL), "{result}");
                 saw_agent_complete = true;
             }
-            Event::TurnComplete { status, error, .. } => {
+            Event::TurnComplete {
+                status,
+                error,
+                tool_catalog,
+                ..
+            } => {
                 assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+                parent_tool_catalog = tool_catalog;
                 saw_parent_complete = true;
             }
             Event::Error { envelope, .. } => errors.push(envelope.message),
@@ -512,6 +525,50 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
         "agent tool did not complete successfully"
     );
     assert!(saw_agent_spawned, "no AgentSpawned event was emitted");
+    let parent_tool_catalog = parent_tool_catalog
+        .expect("the real bridge turn must report the v0.9.12 model-visible catalog it sent");
+    let catalog_names = parent_tool_catalog
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        catalog_names.iter().all(|name| is_pinvou3_allowed(name)),
+        "the bridge admitted tools outside the Pinvou allowlist: {catalog_names:?}"
+    );
+    for expected in [
+        "bash",
+        "read",
+        "write",
+        "edit",
+        "list_dir",
+        "file_search",
+        "grep_files",
+        "Git",
+        "Web",
+        "terminal/run",
+        "terminal/send",
+        "terminal/wait",
+        "terminal/cancel",
+        "terminal/reset",
+        "agent",
+        "load_skill",
+        "request_user_input",
+        "revert_turn",
+        "todo_write",
+        "workflow",
+        "tool_search",
+    ] {
+        assert!(
+            catalog_names.contains(expected),
+            "allowlisted native tool {expected} no longer resolves through the live v0.9.12 registry: {catalog_names:?}"
+        );
+    }
+    for replay_only in ["Bash", "File", "work_update", "update_plan"] {
+        assert!(
+            !catalog_names.contains(replay_only),
+            "hidden replay alias {replay_only} leaked into the model-visible catalog"
+        );
+    }
     assert!(
         errors
             .iter()

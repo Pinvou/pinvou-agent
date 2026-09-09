@@ -24,11 +24,11 @@
 
 | 线 | 管什么 | 决策时机 | 用户开关 |
 |---|---|---|---|
-| 原生家族线 | 底座 canonical 家族（`Bash`/`File`/`Git`/`Web`/`agent`/`workflow` 等） | 编译期 | **无** |
+| 原生家族线 | 底座 canonical 工具（`bash`/`read`/`write`/`edit`/`list_dir`/`file_search`/`grep_files`/`Git`/`Web`/`agent`/`workflow` 等） | 编译期 | **无** |
 | 能力包线 | 一切外部能力：MCP 连接器、组合工具、CLI 连接器、独立技能 | 运行期 | 有（按模式 scope） |
 
 设计纪律：**底座能力是产品承诺，不是用户偏好**——不开放用户级开关，避免
-"关掉 `File` 后应用坏了"这类 footgun。运行期配置只给真正有运行期写入者
+"关掉 `read` 后应用坏了"这类 footgun。运行期配置只给真正有运行期写入者
 （用户开关）的能力包线；没有写入者的运行期配置只是常量的间接层。
 
 ## 2. 原生家族线（编译期）
@@ -136,13 +136,17 @@ scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
 
 ```
 开关 → capability_changed(scope, line) → 下一轮生效（不 respawn）：
-         持久化 → 重算投影 → 组合目录重写 → disallowed 热刷 → 事件广播
+         持久化 → 重算投影 → 组合目录重写 → 会话 disallowed 热刷 → 事件广播
 
    包的 MCP 部分:  工具名进 disallowed_tools → catalog retain 过滤
    包的技能部分:   组合目录物化（~/.pinvou3/sessions/<sid>/skills/）
                   → 底座每轮重扫渲染 ## Skills 块
                   → 组合目录为空 → load_skill 一并隐藏（无"假开关"状态）
 ```
+
+这里的“热刷”只更新当前会话/轮次的目录与最终调用权限，不会全局断开共享
+`McpPool` 中已经连接的 server；全局断连会影响仍获授权的其他会话。连接按正常
+pool/session 生命周期回收，catalog 与最终 dispatch 都继续 fail closed。
 
 - **会话中关闭的边界（上下文不可撤回）**：`## Skills` 块在系统提示里，底座每轮
   重拼系统提示（发现走 mtime 缓存，组合目录一变下一轮即失效重扫），所以禁用后
@@ -194,7 +198,7 @@ scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
 ```
 
 UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI 包的真实执行
-面是经 `Bash` 调用 CLI，开关只能隐藏引导；要封死需 Bash hook 拦截，
+面是经 `bash` 调用 CLI，开关只能隐藏引导；要封死需 bash hook 拦截，
 当前作为已接受风险记录于此。
 
 ## 6. 前端接线（目标形态，未实施——现状为 `set_disabled_connectors` / `set_disabled_skills` / `set_bundle_visibility` 等各开关命令 + `remote_control:tools_changed` 事件）
@@ -224,7 +228,7 @@ UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI
   凭据收集弹窗与缺失判定可能重复处理同一凭据。
 
 另有两条限制已随文内联登记：会话中关闭的上下文不可撤回边界（§3.3 末）、
-CLI 包真实执行面经 `Bash` 的开放侧翼（§5 末）。
+CLI 包真实执行面经 `bash` 的开放侧翼（§5 末）。
 
 ## 8. 相关文件
 

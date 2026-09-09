@@ -15,11 +15,11 @@ class BenchmarkIsolationPolicyTests(unittest.TestCase):
 
         self.assertIn('default = ["local-embed"]', features)
         self.assertIn(
-            'benchmark-hooks = ["dep:agent-backend-api", "deepseek-tui/benchmark-observability", "deepseek-tui/benchmark-eval-controls"]',
+            'benchmark-hooks = ["dep:agent-backend-api", "deepseek-tui/benchmark-eval-controls"]',
             features,
         )
         codewhale_manifest = self.read("CodeWhale/crates/tui/Cargo.toml")
-        self.assertIn("benchmark-observability = []", codewhale_manifest)
+        self.assertNotIn("benchmark-observability", codewhale_manifest)
         self.assertIn("benchmark-eval-controls = []", codewhale_manifest)
         self.assertIn("agent-backend-api = {", manifest)
         self.assertIn("optional = true", manifest)
@@ -85,6 +85,61 @@ class BenchmarkIsolationPolicyTests(unittest.TestCase):
             '#[cfg(not(any(feature = "benchmark-hooks", test)))]\n'
             "    let is_observation_event = false;",
             timing,
+        )
+
+    def test_ready_ci_compiles_and_executes_the_benchmark_feature_surface(self):
+        workflow = self.read(".github/workflows/pr-check.yml")
+        compile_marker = (
+            "- name: benchmark-hooks + product backend compile checks (hard gate)"
+        )
+        self.assertIn(compile_marker, workflow)
+        compile_step = workflow.split(compile_marker, 1)[1].split(
+            "\n      - name:", 1
+        )[0]
+
+        self.assertIn(
+            "if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}", compile_step
+        )
+        self.assertIn(
+            "working-directory: pinvou3-app/src-tauri", compile_step
+        )
+        self.assertIn(
+            "cargo check --all-targets --features benchmark-hooks --locked",
+            compile_step,
+        )
+        self.assertIn(
+            "CARGO_TARGET_DIR=target cargo check --manifest-path ../../pinvou-cli/Cargo.toml --package pinvou-product-backend --locked",
+            compile_step,
+        )
+        self.assertNotIn("cargo test", compile_step)
+
+        rust_test = workflow.split("\n  rust-test:", 1)[1].split(
+            "\n  windows-rust-test:", 1
+        )[0]
+        self.assertIn(
+            "cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib "
+            "--features benchmark-hooks --locked -- --test-threads=1",
+            rust_test,
+        )
+        self.assertNotIn(
+            "--test headless_bridge_contract",
+            rust_test,
+        )
+        product_runtime = self.read(
+            "pinvou3-app/src-tauri/src/features/assistant/product_runtime/mod.rs"
+        )
+        self.assertIn(
+            '#[cfg(all(test, feature = "benchmark-hooks"))]\n'
+            "mod headless_bridge_contract_tests;",
+            product_runtime,
+        )
+        contract_tests = self.read(
+            "pinvou3-app/src-tauri/src/features/assistant/product_runtime/"
+            "headless_bridge_contract_tests.rs"
+        )
+        self.assertIn(
+            "async fn backend_runs_one_private_task_and_closes_its_session()",
+            contract_tests,
         )
 
 

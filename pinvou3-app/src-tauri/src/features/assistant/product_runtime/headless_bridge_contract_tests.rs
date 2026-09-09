@@ -1,14 +1,15 @@
-#![cfg(feature = "benchmark-hooks")]
+//! Feature-gated product headless bridge behavior contract.
+// architecture-guard: allow-target-cfg -- Contract tests cover Unix path replacement and the explicit Windows unsupported result.
 
 use std::sync::{Arc, Mutex};
 
+use crate::headless_bridge::{ProductHeadlessBackend, ProductRuntimePort, ProductToolPolicy};
 use agent_backend_api::{
     AgentRunObserver, AgentTaskInput, AgentToolPolicyId, AttachmentHandle, HeadlessAgentBackend,
     PrepareRequest, PrivateInputHandle, PrivateInputResolver, ResolvedAttachmentSource,
     ResolvedPrivateInput, SafeAgentEvent, SafeRunStatus, SecretText,
 };
 use async_trait::async_trait;
-use pinvou3_lib::headless_bridge::{ProductHeadlessBackend, ProductRuntimePort, ProductToolPolicy};
 
 fn prepare_request(task_id: &str, attachments: Vec<AttachmentHandle>) -> PrepareRequest {
     PrepareRequest::new(task_id, attachments).with_tool_policy(
@@ -40,17 +41,17 @@ impl ProductRuntimePort for RecordingRuntime {
         &self,
         session_id: &str,
         prompt: &str,
-    ) -> anyhow::Result<pinvou3_lib::headless_bridge::ProductTurnOutcome> {
+    ) -> anyhow::Result<crate::headless_bridge::ProductTurnOutcome> {
         self.calls
             .lock()
             .unwrap()
             .push(format!("run:{session_id}:{prompt}"));
-        Ok(pinvou3_lib::headless_bridge::ProductTurnOutcome {
+        Ok(crate::headless_bridge::ProductTurnOutcome {
             status: "completed".into(),
             failure_code: None,
             assistant_text: "private answer".into(),
             usage: Some(agent_backend_api::SafeUsageMetrics::new(10, 4, 3, 7)),
-            tools: vec![pinvou3_lib::headless_bridge::SafeToolOutcome {
+            tools: vec![crate::headless_bridge::SafeToolOutcome {
                 name: "weather".into(),
                 failed: false,
                 failure_code: None,
@@ -65,7 +66,7 @@ impl ProductRuntimePort for RecordingRuntime {
         session_id: &str,
         prompt: &str,
         _policy: ProductToolPolicy,
-    ) -> anyhow::Result<pinvou3_lib::headless_bridge::ProductTurnOutcome> {
+    ) -> anyhow::Result<crate::headless_bridge::ProductTurnOutcome> {
         self.run(session_id, prompt).await
     }
 
@@ -216,7 +217,7 @@ impl ProductRuntimePort for FailingRuntime {
         &self,
         _session_id: &str,
         _prompt: &str,
-    ) -> anyhow::Result<pinvou3_lib::headless_bridge::ProductTurnOutcome> {
+    ) -> anyhow::Result<crate::headless_bridge::ProductTurnOutcome> {
         anyhow::bail!("private provider failure")
     }
     async fn run_with_policy(
@@ -224,7 +225,7 @@ impl ProductRuntimePort for FailingRuntime {
         session_id: &str,
         prompt: &str,
         _policy: ProductToolPolicy,
-    ) -> anyhow::Result<pinvou3_lib::headless_bridge::ProductTurnOutcome> {
+    ) -> anyhow::Result<crate::headless_bridge::ProductTurnOutcome> {
         self.run(session_id, prompt).await
     }
     async fn cancel(&self, _session_id: &str) -> anyhow::Result<()> {
@@ -579,8 +580,8 @@ impl ProductRuntimePort for BlockingCleanupRuntime {
         &self,
         _session_id: &str,
         _prompt: &str,
-    ) -> anyhow::Result<pinvou3_lib::headless_bridge::ProductTurnOutcome> {
-        Ok(pinvou3_lib::headless_bridge::ProductTurnOutcome {
+    ) -> anyhow::Result<crate::headless_bridge::ProductTurnOutcome> {
+        Ok(crate::headless_bridge::ProductTurnOutcome {
             status: "completed".into(),
             failure_code: None,
             assistant_text: "private answer".into(),
@@ -595,7 +596,7 @@ impl ProductRuntimePort for BlockingCleanupRuntime {
         session_id: &str,
         prompt: &str,
         _policy: ProductToolPolicy,
-    ) -> anyhow::Result<pinvou3_lib::headless_bridge::ProductTurnOutcome> {
+    ) -> anyhow::Result<crate::headless_bridge::ProductTurnOutcome> {
         self.run(session_id, prompt).await
     }
 
@@ -727,7 +728,7 @@ impl ProductRuntimePort for AttachmentAwareRuntime {
         &self,
         _session_id: &str,
         _prompt: &str,
-    ) -> anyhow::Result<pinvou3_lib::headless_bridge::ProductTurnOutcome> {
+    ) -> anyhow::Result<crate::headless_bridge::ProductTurnOutcome> {
         anyhow::bail!("ordinary run must not receive attachments")
     }
 
@@ -737,13 +738,13 @@ impl ProductRuntimePort for AttachmentAwareRuntime {
         _prompt: &str,
         staged_workspace: &std::path::Path,
         _policy: ProductToolPolicy,
-    ) -> anyhow::Result<pinvou3_lib::headless_bridge::ProductTurnOutcome> {
+    ) -> anyhow::Result<crate::headless_bridge::ProductTurnOutcome> {
         let bytes = std::fs::read(staged_workspace.join("attachment.txt"))?;
         self.saw_private_bytes.store(
             bytes == b"private attachment",
             std::sync::atomic::Ordering::Relaxed,
         );
-        Ok(pinvou3_lib::headless_bridge::ProductTurnOutcome {
+        Ok(crate::headless_bridge::ProductTurnOutcome {
             status: "completed".into(),
             failure_code: None,
             assistant_text: "attachment answer".into(),
