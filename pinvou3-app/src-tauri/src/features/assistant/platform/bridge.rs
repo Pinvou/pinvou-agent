@@ -2004,15 +2004,11 @@ impl Pinvou3Bridge {
     /// 被派中的子智能体。没有相关候选时模型自拟任务说明裸派。**工具目录与普通会话完全一致**
     /// ——禁用列表只来自连接器开关，`workflow` 与主线一样保持可用（委派
     /// 提醒不教学不推荐）。默认直属实例为叶子；复杂任务允许直属实例再拆一层，
-    /// 第二层不得继续派生。蜂群模式（swarm）开启时解除数量上限：App 侧把
-    /// concurrent/admitted 顶到底座自身硬上限（`config::MAX_SUBAGENTS` /
-    /// `config::MAX_SUBAGENT_ADMISSION`），底座在 manager 构造与
-    /// `with_admission_limit` 处会再次 clamp 到同一组常量，两端一致且无需改
-    /// CodeWhale。蜂群未开启时 Work 与 Code 会话共用同一档：直属并行 4 /
-    /// 全树准入 8。更深后代为避免父子互等死锁不占直属 launch gate，
-    /// 但仍受整棵树的准入上限约束。
-    ///
-    /// `swarm` 即会话的 `mode_state.multi_agent` 开关（蜂群模式）。
+    /// 第二层不得继续派生。Swarm on lifts the caps: the app pins concurrent /
+    /// admitted to the foundation hard ceilings (`config::MAX_SUBAGENTS` /
+    /// `MAX_SUBAGENT_ADMISSION`). Swarm off: one shared tier, 4 direct / 8
+    /// tree-admitted. Deeper descendants skip the direct launch gate but
+    /// count against tree admission. `swarm` is `mode_state.multi_agent`.
     pub(crate) fn build_engine_config_for_multi_agent(
         &self,
         session_id: &str,
@@ -2027,19 +2023,18 @@ impl Pinvou3Bridge {
         // 收窄）与全局准入/并发额度兜底。
         cfg.max_spawn_depth = cfg.max_spawn_depth.min(MULTI_AGENT_MAX_SPAWN_DEPTH);
         if swarm {
-            // 蜂群模式：数量上限解除。无 user 配置可以让它更高——底座的
-            // 128/1024 就是全系统硬上限。显式开启蜂群即用户要求不设限，
-            // 因此此处覆盖（而非 min）用户既有的保守配置，包括显式 0
-            // （「0 = 禁用」在底座运行时本就 clamp 到 1，见下方 else 注释）。
+            // Swarm mode: caps lifted — the foundation's 128/1024 are the
+            // system-wide hard caps. Enabling swarm means "no limit", so this
+            // overrides (not mins) the user config, even an explicit 0.
             cfg.max_subagents = deepseek_tui::config::MAX_SUBAGENTS;
             cfg.max_admitted_subagents = deepseek_tui::config::MAX_SUBAGENT_ADMISSION;
             cfg.launch_concurrency = deepseek_tui::config::MAX_SUBAGENTS;
         } else {
-            // 蜂群关闭档：生产接线不会走到（见 `delegation_limits_for` 与
-            // engine 侧 expert_snapshot 的构造条件），仅由测试与防御性调用
-            // 触达。显式用户配置只做上限，不抬高更保守的值；注意「0 = 禁用」
-            // 在运行时并不成立——底座 SubAgentManager 构造会把 max_agents
-            // clamp 到 1..=MAX_SUBAGENTS，Some(0) 实际表现为 1 并发可用。
+            // Swarm-off tier: unreachable in production wiring (see
+            // `delegation_limits_for` and the expert_snapshot condition);
+            // tests/defensive calls only. A user config only caps; note "0 =
+            // disable" is not a runtime fact — Some(0) acts as one usable
+            // slot after the manager constructor clamp.
             cfg.max_subagents = self
                 .prefs
                 .advanced
@@ -7497,8 +7492,9 @@ mod tests {
             "多智能体会话的禁用列表必须与普通对话一字不差"
         );
         assert_eq!(cfg.max_spawn_depth, MULTI_AGENT_MAX_SPAWN_DEPTH);
-        // 蜂群开启：数量上限解除——顶到底座自身硬上限（底座还会再 clamp 到
-        // 同一组常量，两端一致）。
+        // Swarm on: the numeric caps are lifted — pinned to the foundation's
+        // own hard ceilings (the foundation clamps again to the same constant
+        // set; both ends agree).
         assert_eq!(cfg.max_subagents, deepseek_tui::config::MAX_SUBAGENTS);
         assert_eq!(
             cfg.max_admitted_subagents,
@@ -7541,7 +7537,7 @@ mod tests {
             "底座内置成员应保持可用"
         );
 
-        // 蜂群关闭：Work 与 Code 共用同一档（直属并行 4 / 全树准入 8）。
+        // Swarm off: Work and Code share one tier (4 direct-concurrent / 8 tree-admitted).
         let capped_bridge = fixture_bridge();
         let capped = capped_bridge.build_engine_config_for_multi_agent(
             "ma-capped",
@@ -7561,11 +7557,16 @@ mod tests {
             &snapshot,
             false,
         );
-        assert_eq!(disabled.max_subagents, 0, "不得抬高用户原本的禁用配置");
+        assert_eq!(
+            disabled.max_subagents, 0,
+            "must not raise the user's original disable configuration"
+        );
         assert_eq!(disabled.launch_concurrency, 0);
 
-        // 蜂群开启时用户保守配置（含显式 0）一并被顶到底座硬上限：显式开启
-        // 蜂群即表达「不设限」意图，覆盖语义必须覆盖 0 值。
+        // With swarm on, the user's conservative configuration (including
+        // explicit 0) is pinned to the foundation hard caps as well: enabling
+        // swarm expresses "no limit", so the override semantics must also
+        // cover a 0 value.
         let mut zero_bridge = fixture_bridge();
         zero_bridge.prefs.advanced.max_subagents = Some(0);
         let zero_swarm = zero_bridge.build_engine_config_for_multi_agent(

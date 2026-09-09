@@ -961,8 +961,9 @@ assert.match(
   desktopBridgeSource,
   /if \(item\.turnErrorNotice && !item\.legacyConversationOnly\) return false/,
 );
-// 蜂群改造：投影输入先经 spawn 聚合标注（annotateAgentSpawnGroups），再进
-// conversationItemsForMode；错误隔离条目仍必须在两条车道都可见。
+// Swarm rework: the projection input first goes through the spawn aggregation
+// annotation (annotateAgentSpawnGroups), then conversationItemsForMode; the
+// error-isolation items must stay visible on both lanes.
 assert.match(chatViewSource, /annotateAgentSpawnGroups\(visibleChatItems\)/);
 assert.match(chatViewSource, /conversationItemsForMode\(spawnAnnotatedItems\)/);
 

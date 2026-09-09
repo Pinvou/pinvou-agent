@@ -159,15 +159,17 @@ function watchExpertCard(sessionId, agentId) {
 
 function openSubagentTranscript(agentId, sessionId) {
   if (typeof window === 'undefined') return;
-  // agentId 为 null 是合法请求：打开面板的列表态（蜂群计数行的入口）。
+  // agentId === null is a valid request: open the panel's list state (the
+  // swarm count row's entry point).
   if (!agentId && agentId !== null) return;
   window.dispatchEvent(new CustomEvent('pinvou:open-subagent', {
     detail: { agentId, sessionId: sessionId || null },
   }));
 }
 
-// 蜂群模式开关的只读镜像（与 composer-shared 同源：modeState.multiAgent）。
-// 只用于装饰性边框配色；权威状态与开关交互都在 composer / bridge 侧。
+// Read-only mirror of the swarm mode switch (same source as composer-shared:
+// modeState.multiAgent). Decorative border color only; the authoritative state
+// and the switch interaction live on the composer / bridge side.
 function swarmModeOn() {
   if (!bridge.available || !bridge.state || typeof bridge.state.get !== 'function') return false;
   const chat = bridge.state.get('chat') || {};
@@ -175,10 +177,11 @@ function swarmModeOn() {
 }
 
 /**
- * 蜂群 spawn 计数行：同一条消息里连续的 spawn 调用聚合为一行小字
- * （「品悟创建了 x 个智能体」），新 spawn 只把 x 原地递增。计数来自
- * spawn-aggregation 对消息条目序列的聚合结果，随会话流增量更新。
- * 点击派发 `pinvou:open-subagent`（agentId=null → 面板列表态）。
+ * Swarm spawn count row: consecutive spawn calls within one message aggregate
+ * into a single small row ("Pinvou created x agents"); a new spawn only
+ * increments x in place. The count comes from spawn-aggregation's result over
+ * the message item sequence and updates incrementally with the session flow.
+ * Clicking dispatches `pinvou:open-subagent` (agentId=null → panel list state).
  */
 const AgentSpawnCountRow = ({ count, failed = 0, sessionId, t }) => {
   const copy = t.uiMultiAgent;
@@ -261,8 +264,9 @@ function expertStatusPresentation({ summary, failedSpawn = false, itemState, cop
  * 轮询广播的落盘权威快照，终态 ratchet 保证落盘赢），点击整卡派发
  * `pinvou:open-subagent`，由 ChatView 打开只读执行记录面板。
  * status/wait/cancel 等协调操作渲染成安静的单行，不冒充新委派。
- * 蜂群改造后本组件只承接协调操作行：spawn 型调用改由 AgentSpawnCountRow
- * 聚合计数展示，不再进入本卡。
+ * After the swarm rework this component only serves the coordination rows:
+ * spawn-type calls are aggregated by AgentSpawnCountRow instead and never
+ * enter this card.
  */
 const ExpertAgentCard = ({ item, t, sessionId: sessionIdProp }) => {
   const copy = t.uiMultiAgent;
@@ -604,20 +608,23 @@ const ToolOutput = ({ item, t }) => {
       return <OutputPre text={out} />;
     };
 
-    // 蜂群改造（ADR-0006）：spawn 型 `agent` 调用不再渲染占地的专家卡
-    // banner，改为一条聚合计数行；status/wait/cancel 等协调操作仍走
-    // ExpertAgentCard 的安静协调行。提前返回发生在本组件任何 Hook 之前，
-    // 且 item.name 对一个实例终生不变，因此每个实例的 Hook 数量恒定。
+    // Swarm rework (ADR-0006): spawn-type `agent` calls no longer render the
+    // space-hogging expert card banner; they become one aggregated count row.
+    // Coordination operations (status/wait/cancel) still go through
+    // ExpertAgentCard's quiet coordination row. The early return happens
+    // before any Hook of this component, and item.name never changes for a
+    // given instance, so each instance's Hook count stays constant.
     // eslint-disable-next-line sonarjs/cognitive-complexity -- tool card rendering contains many inline branches;legacy view; tracked separately
     const ToolCard = ({ item, t, variant = 'legacy', sessionId }) => {
       if (EXPERT_CARD_ENABLED && (item.name === 'agent' || isAgentWaitCall(item.name, item.args))) {
         const delegation = isExpertDelegationCall(item.name, item.args);
         if (delegation) {
-          // 两条车道（legacy 气泡与统一时间线）的条目都在投影输入上统一
-          // 标注，计数行直接读条目自身字段即可。
+          // Items of both lanes (legacy bubbles and the unified timeline) are
+          // annotated uniformly on the projection input, so the count row can
+          // read the item's own fields directly.
           const group = item.spawnGroup;
           const hidden = item.spawnGroupHidden;
-          // 聚合序列的非首条 spawn 不重复渲染文本行。
+          // Non-first spawns of an aggregated sequence do not repeat the text row.
           if (hidden) return null;
           const resolved = group || { count: 1, failed: item.success === false || item.state === 'failed' ? 1 : 0 };
           return (

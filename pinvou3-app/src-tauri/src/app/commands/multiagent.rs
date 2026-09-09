@@ -11,18 +11,21 @@ use super::prelude::*;
 use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
 use crate::features::multiagent;
 
-/// 蜂群模式（swarm mode）系统提示：逐字注入，不得改写。放在每轮委派提醒
-/// 之前、同一条拼接链（`{swarm_prompt}\n\n{reminder}\n\n---\n\n{content}`）。
+/// Swarm mode system prompt: injected verbatim, never rewritten. It goes
+/// before the per-turn delegation reminder on the same composition chain
+/// (`{swarm_prompt}\n\n{reminder}\n\n---\n\n{content}`).
 pub(crate) const SWARM_MODE_PROMPT: &str = "This is a system message. User has activated Pinvou swarm mode, which means the user wants as much subagents as possible to finish this task. You should carefully figure out which parts of your task can be parallelized and launch them as subagents. Do consider conflict and dependency between subagents and do tell subagents about potential conflict if any. Do not launch subagents without reasonable improvement only to satisfy the swarm mode itself.";
 
 /// Per-turn reminder numbers for the multi-agent resource caps (must match the
 /// MULTI_AGENT_* constants in bridge.rs).
 ///
-/// 蜂群模式开启时数量上限解除（`delegation_limits_for` 返回 `None`，提醒文案
-/// 不再给出数字）；未开启时为统一一档：Work 与 Code 会话同为直属并发 4 /
-/// 全树准入 8。注意：生产接线上 `expert_snapshot` 只在 multi_agent 开启时
-/// 才存在，因此「未开启」一档目前仅由测试与防御性调用触达，其数字只约束
-/// 提醒文案与引擎配置的一致性。
+/// With swarm mode on the numeric caps are lifted (`delegation_limits_for`
+/// returns `None` and the reminder states no number); with it off there is one
+/// shared tier: Work and Code sessions both run 4 direct-concurrent / 8
+/// tree-admitted. Note: in production wiring `expert_snapshot` only exists
+/// while multi_agent is on, so the "off" tier is currently reached only by
+/// tests and defensive calls; its numbers just bind the reminder copy and the
+/// engine config together.
 pub(crate) struct DelegationLimits {
     /// Max direct children running at the same time (launch_concurrency).
     pub max_concurrent: usize,
@@ -92,8 +95,8 @@ fn delegation_reminder_with_roles(roles: Vec<String>, limits: Option<&Delegation
             "直属子智能体同时执行最多 {max_concurrent} 个，\
              整棵树排队与执行合计最多 {max_admitted} 个；不要递归裂变"
         ),
-        // 蜂群模式：引擎配置已顶到底座硬上限，文案不给数字，避免模型
-        // 对着一个不存在的上限自我节流。
+        // Swarm mode: the engine config pins the foundation's hard caps, so
+        // the copy states no number to throttle against.
         None => "直属子智能体的并发与整棵树准入均不设数量上限，可在底座安全\
                  上限内尽量多派；不要递归裂变"
             .to_string(),
@@ -159,9 +162,11 @@ fn delegation_reminder(task: &str, limits: Option<DelegationLimits>) -> String {
     delegation_reminder_with_roles(snapshot.available_role_lines(task), limits.as_ref())
 }
 
-/// 把（可选的）蜂群系统提示、委派提醒与用户内容拼成最终 turn 内容。
-/// 蜂群开启时顺序固定为 `{swarm_prompt}\n\n{reminder}\n\n---\n\n{content}`；
-/// 蜂群关闭时不出现蜂群提示。独立成纯函数以便单测钉死注入顺序。
+/// Compose the final turn content from the (optional) swarm system prompt,
+/// the delegation reminder, and the user content. With swarm on, the order is
+/// fixed as `{swarm_prompt}\n\n{reminder}\n\n---\n\n{content}`; with swarm off
+/// no swarm prompt appears. A standalone pure function so unit tests pin the
+/// injection order.
 fn compose_delegation_turn(swarm: bool, reminder: &str, content: &str) -> String {
     if swarm {
         format!("{}\n\n{reminder}\n\n---\n\n{content}", SWARM_MODE_PROMPT)
@@ -488,9 +493,11 @@ mod tests {
             swarm.contains("不设数量上限") && swarm.contains("不要递归裂变"),
             "Swarm-on reminder must state the caps are lifted: {swarm}"
         );
-        // 蜂群变体才是生产真实档位：除数量子句随开关切换外，委派教学主体
-        // 必须与 capped 变体同在（正文共享，不得只在本测试可达的 capped
-        // 档上验证教学内容）。
+        // The swarm variant is the production tier: beyond the number clauses
+        // switching with the toggle, the delegation teaching body must be
+        // present in the swarm variant too (the body is shared; the teaching
+        // must not be verified only on the capped tier, reachable solely by
+        // this test).
         assert!(
             swarm.contains("当前用户消息只要包含需要完成的任务")
                 && swarm.contains("你只负责拆解、派发")
@@ -530,7 +537,7 @@ mod tests {
              conflict and dependency between subagents and do tell subagents \
              about potential conflict if any. Do not launch subagents without \
              reasonable improvement only to satisfy the swarm mode itself.",
-            "蜂群提示文本被改动——必须逐字使用产品下发的原文"
+            "the swarm prompt text was changed — the product-issued original must be used verbatim"
         );
 
         let reminder = delegation_reminder("审查 React 前端代码", capped_limits());

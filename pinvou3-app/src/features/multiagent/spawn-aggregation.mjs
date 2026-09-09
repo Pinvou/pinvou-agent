@@ -1,27 +1,32 @@
 /**
- * spawn 型 `agent` 工具调用的连续序列聚合（蜂群模式展示层，纯函数无 React）。
+ * Aggregation of consecutive spawn-type `agent` tool calls (swarm-mode display
+ * layer; pure functions, no React).
  *
- * 蜂群模式（ADR-0006 蜂群改造）之后，消息流里的 spawn 不再逐个渲染行内
- * 专家卡，而是把"同一条 assistant 消息里连续的 spawn 调用（中间没有其他
- * 内容块）"聚合为一条小字计数行：「品悟创建了 x 个智能体」。新 spawn 到达
- * 时只让计数 x 原地递增，不产生新的文本行；spawn 之间夹着任何其他内容块
- * 时自然断组开新行。
+ * After the swarm mode (ADR-0006 swarm rework), spawns in the message stream
+ * no longer render one inline expert card each: consecutive spawn calls within
+ * the same assistant message (with no other content block in between) are
+ * aggregated into one small count row ("Pinvou created x agents"). A newly
+ * arriving spawn only increments x in place instead of adding a text row; any
+ * other content block between spawns naturally breaks the group and starts a
+ * new row.
  *
- * 标注只做一次：在投影输入（可见 chatItems）上执行
- * `annotateAgentSpawnGroups`。两条车道都经它拿到结果——legacy ChatBubble
- * 车道直接读条目上的 spawnGroup / spawnGroupHidden；统一
- * ConversationTimeline 车道的投影条目把整条 chat item 挂在 `legacyItem`
- * 上（deepseek-conversation 的 projectItem），ToolCard 读
- * `item.legacyItem.spawnGroup`。不要在投影后的 turns 上再补一次标注：
- * turn.presentation 持有的是未标注的原始投影条目，二次标注到不了渲染层。
+ * Annotation happens exactly once: `annotateAgentSpawnGroups` runs on the
+ * projection input (the visible chatItems). Both lanes read its result — the
+ * legacy ChatBubble lane reads spawnGroup / spawnGroupHidden straight off the
+ * item, and the unified ConversationTimeline lane's projected items carry the
+ * whole chat item on `legacyItem` (deepseek-conversation's projectItem), so
+ * ToolCard reads `item.legacyItem.spawnGroup`. Do not annotate again on the
+ * projected turns: turn.presentation holds the unannotated original projected
+ * items, so a second pass never reaches the render layer.
  *
- * 判定与 conversation 层的 `isExpertDelegationCall` 同源：status/wait/cancel
- * 等协调操作不是 spawn，永远不进计数行。
+ * The predicate mirrors the conversation layer's `isExpertDelegationCall`:
+ * coordination operations such as status/wait/cancel are not spawns and never
+ * enter the count row.
  */
 
 import { isAgentWaitCall, isExpertDelegationCall } from '../conversation/conversation-model.js';
 
-/** 裸 chat tool 条目是否是 spawn 型 agent 调用。 */
+/** Whether a bare chat tool item is a spawn-type agent call. */
 export function isAgentSpawnChatItem(item) {
   if (!item || item.type !== 'tool') return false;
   if (isAgentWaitCall(item.name, item.args)) return false;
@@ -36,11 +41,12 @@ function spawnGroupOf(item) {
 }
 
 /**
- * 聚合裸 chatItems 中的连续 spawn 序列。只对进组的条目做浅拷贝并附加
- * `spawnGroup`（序列首条）或 `spawnGroupHidden: true`（其余），其余条目
- * 按引用原样返回，避免整表重渲染。
+ * Aggregate consecutive spawn sequences in the bare chatItems. Group members
+ * are shallow-copied and get `spawnGroup` (first of the sequence) or
+ * `spawnGroupHidden: true` (the rest); all other items are returned by
+ * reference to avoid re-rendering the whole list.
  *
- * @returns {Array} 新数组；未进组的条目保持原引用。
+ * @returns {Array} a new array; non-grouped items keep their references.
  */
 export function annotateAgentSpawnGroups(items) {
   if (!Array.isArray(items)) return items;

@@ -1158,9 +1158,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         )).join('\u0000');
         let lastUserId = null;
         for (let i = chatItems.length - 1; i >= 0; i--) { if (chatItems[i].type === 'user') { lastUserId = chatItems[i].id; break; } }
-        // 蜂群改造：连续 spawn 型 agent 调用聚合为一条计数行（标注 spawnGroup /
-        // spawnGroupHidden）。标注在投影输入上做一次，统一时间线车道经投影条目
-        // 的 legacyItem 读到同一份。
+        // Swarm rework: consecutive spawn-type agent calls aggregate into one
+        // count row (annotated with spawnGroup / spawnGroupHidden). Annotation
+        // runs once on the projection input; the unified timeline lane reads
+        // the same result through the projected items' legacyItem.
         const spawnAnnotatedItems = annotateAgentSpawnGroups(visibleChatItems);
         const conversationProjection = projectDeepSeekConversation({
           chatItems: conversationItemsForMode(spawnAnnotatedItems),
@@ -1356,7 +1357,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // modeState.multiAgent 经 get_mode_state 双端同步（开关已持久化）。
       const isMultiAgentReadOnly = !MULTI_AGENT_ENABLED
         && !!(bs && bs.modeState && bs.modeState.multiAgent);
-      // 蜂群模式开关的只读镜像：右上角运行小窗的边框情绪配色（开=紫/关=蓝）。
+      // Read-only mirror of the swarm mode switch: mood border color of the
+      // top-right running overlay (on = purple / off = blue).
       const swarmModeOn = !!(bs && bs.modeState && bs.modeState.multiAgent);
       const artifactsVisible = Boolean(activeSessionId && artifactsOpen);
       const artifactFullscreenPublicationReady = useRightDockOcclusion(
