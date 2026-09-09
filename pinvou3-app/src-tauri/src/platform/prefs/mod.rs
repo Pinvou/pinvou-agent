@@ -431,6 +431,16 @@ pub struct PetPrefs {
     pub enabled: bool,
 }
 
+/// Computer Use 偏好。只存总开关：默认关闭，用户显式开启后模型才能看到
+/// `computer_use` 工具。开关由 `computer_use_set_enabled` 专用命令经字段级
+/// 事务写入（同 PetPrefs，不进通用设置补丁），启动时由 lib.rs 回放进
+/// `ComputerUseShared` 的 AtomicBool；会话授权永不落盘（只活于内存）。
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ComputerUsePrefs {
+    pub enabled: bool,
+}
+
 /// 侧栏任务列表偏好。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(default)]
@@ -525,6 +535,7 @@ pub struct UserPrefs {
     /// storage is cleared, and races where a later multi-window mount invoke
     /// overwrites an earlier one.
     pub voice_shortcut_enabled: bool,
+    pub computer_use: ComputerUsePrefs,
     pub advanced: AdvancedPrefs,
 }
 
@@ -1282,6 +1293,21 @@ mod tests {
     }
 
     #[test]
+    fn computer_use_enabled_defaults_off_and_round_trips() {
+        // Older settings.json lacks the field: the serde container-level
+        // default falls back to false (off by default).
+        let legacy = UserPrefs::parse_settings(Some(r#"{"theme":"genesis"}"#), Some("zh-CN"));
+        assert!(!legacy.computer_use.enabled);
+        let enabled = UserPrefs::parse_settings(
+            Some(r#"{"theme":"genesis","computer_use":{"enabled":true}}"#),
+            Some("zh-CN"),
+        );
+        assert!(enabled.computer_use.enabled);
+        let serialized = serde_json::to_string(&enabled).expect("UserPrefs serialize");
+        assert!(serialized.contains("\"computer_use\":{\"enabled\":true}"));
+    }
+
+    #[test]
     fn migrate_creates_default_model_for_fresh_prefs() {
         let mut prefs = UserPrefs::default();
         prefs.migrate_models();
@@ -1682,6 +1708,7 @@ mod tests {
             code_permission: CodePermissionPrefs::default(),
             mode_defaults: ModeDefaultPrefs::default(),
             voice_shortcut_enabled: false,
+            computer_use: ComputerUsePrefs::default(),
             advanced: AdvancedPrefs {
                 allow_shell: Some(false),
                 max_output_tokens: Some(8192),

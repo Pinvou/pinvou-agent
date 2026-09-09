@@ -1703,6 +1703,7 @@ const formatMemoryTime = (item, copy) => {
       const [modelTab, setModelTab] = useState(initialSection === 'providers' ? 'acp' : 'models');
       const canUsePet = can('pet');
       const canUseSuperPermission = can('superPermission');
+      const canUseComputerUse = can('computerUse');
       const canUpdateApp = can('appUpdate');
       const canInstallDependencies = can('dependencyInstall');
       const canConfigureDesktopNotifications = can('desktopNotifications');
@@ -2494,6 +2495,21 @@ const formatMemoryTime = (item, copy) => {
               <IOSSection title={settingsCopy.system}>
                 <IOSRow label={settingsCopy.advancedPermission} desc={settingsCopy.advancedPermissionDesc}>
                   <IOSSwitch checked={!!superPerm} onChange={setSuperPerm} />
+                </IOSRow>
+              </IOSSection>
+            )}
+            {canUseComputerUse && (
+              <IOSSection title={t.uiComputerUse.settingsSection}>
+                <IOSRow label={t.uiComputerUse.settingsToggle} desc={t.uiComputerUse.settingsHint}>
+                  <IOSSwitch
+                    checked={!!(bs && bs.computerUse && bs.computerUse.enabled)}
+                    onChange={(value) => {
+                      if (!bridge.available || !bridge.computerUse) return;
+                      // 开启时由 bridge 首次触发 computer_use_request_permissions
+                      // （macOS 权限申请，其他平台 no-op）；失败回滚由 bridge 负责。
+                      bridge.computerUse.setEnabled(value).catch(() => {});
+                    }}
+                  />
                 </IOSRow>
               </IOSSection>
             )}

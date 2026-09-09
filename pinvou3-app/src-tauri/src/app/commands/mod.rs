@@ -21,6 +21,7 @@ pub(crate) mod browser;
 pub(crate) mod chat;
 pub(crate) mod checkpoints;
 pub(crate) mod codex;
+pub(crate) mod computer_use;
 pub(crate) mod connectors;
 pub(crate) mod dependencies;
 pub(crate) mod diagnostics;

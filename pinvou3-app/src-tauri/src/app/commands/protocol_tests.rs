@@ -85,6 +85,19 @@ command_protocol!(
     ["chat", "steer_chat", "withdraw_steer"]
 );
 command_protocol!(
+    computer_use_protocol,
+    "computer_use.rs",
+    [
+        "computer_use_get_status",
+        "computer_use_grant",
+        "computer_use_revoke",
+        "computer_use_stop",
+        "computer_use_confirm",
+        "computer_use_set_enabled",
+        "computer_use_request_permissions"
+    ]
+);
+command_protocol!(
     connectors_protocol,
     "connectors.rs",
     [
