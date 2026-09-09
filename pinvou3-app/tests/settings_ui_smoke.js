@@ -86,12 +86,13 @@ for (const settingsI18nSource of settingsI18nSources) {
     'local model port validation message must be provided in every UI language',
   );
 }
-// 记忆删除/反馈关闭必须走应用内自绘二级确认弹窗（Tauri WebView2 下系统
-// window.confirm 实测不弹；详情见 tests/settings_window_confirm.test.mjs）。
+// Memory delete / feedback close must route through in-app confirm dialogs
+// (the native window.confirm does not render in Tauri WebView2; see
+// tests/settings_window_confirm.test.mjs).
 assert.doesNotMatch(
   settingsViewSource,
   /window\.confirm\s*\(/,
-  '设置页不得调用 window.confirm（Tauri WebView2 下不弹，须走应用内自绘确认弹窗）',
+  'settings page must not call window.confirm (does not render in Tauri WebView2; use in-app confirm dialogs)',
 );
 for (const confirmTestId of [
   'memory-delete-confirm',
@@ -101,7 +102,7 @@ for (const confirmTestId of [
 ]) {
   assert.ok(
     settingsViewSource.includes(`data-testid="${confirmTestId}"`),
-    `缺少应用内二级确认弹窗标识: ${confirmTestId}`,
+    `missing in-app confirm dialog testid: ${confirmTestId}`,
   );
 }
 
@@ -220,9 +221,11 @@ function injectSource() {
     var failMemoryUpdate = false;
     var pendingDownloadResolve = null;
     function record(cmd, args) { calls.push({ cmd: cmd, args: args || null }); }
-    // 注意：这里故意不 stub window.confirm。SettingsView 已全部改用应用内自绘二级确认
-    // （Tauri WebView2 下原生 confirm 不弹）；若有人复现原生 confirm，headless 下会
-    // 自动 dismiss 并导致流程断言失败，而不是被假 stub 掩盖。
+    // Deliberately not stubbing window.confirm here. SettingsView now routes
+    // everything through in-app confirm dialogs (the native confirm does not
+    // render in Tauri WebView2); if someone reintroduces a native confirm,
+    // headless auto-dismiss makes the flow assertions fail loudly instead of
+    // being masked by a fake stub.
     window.alert = function (message) { record('window_alert', { message: message }); };
     function emit(name, payload) {
       return Promise.all((handlers[name] || []).slice().map(function (handler) {
@@ -574,21 +577,24 @@ async function modalWidth(page, headingText) {
     if (buttons.length) buttons[0].click();
   });
 
-  // ①e 记忆删除：行内删除按钮 → 应用内二级确认弹窗（WebView2 无原生 confirm）
-  // → 确认后真正调用删除命令并从列表移除，相邻条目不受影响。
+  // ①e memory delete: row delete button → in-app confirm dialog (no native
+  // confirm in WebView2) → confirming really invokes the delete command and
+  // removes the row, leaving the sibling item untouched.
   await page.waitForFunction(() => !!document.querySelector('[data-testid="memory-item-delete"]'));
   await page.click('[data-testid="memory-item-delete"]');
   await page.waitForFunction(() => !!document.querySelector('[data-testid="memory-delete-confirm"]'));
   await page.click('[data-testid="memory-delete-confirm-ok"]');
   await page.waitForFunction(() => !document.querySelector('[data-testid="memory-delete-confirm"]'));
   await page.waitForFunction(() => !document.body.innerText.includes('待删除的偏好记忆'), { timeout: 5000 });
-  rec('①e 记忆删除经应用内确认后真正移除条目', await page.evaluate(() =>
+  rec('①e memory delete removes the item after in-app confirmation', await page.evaluate(() =>
     !document.body.innerText.includes('待删除的偏好记忆')
       && document.body.innerText.includes('保留的偏好记忆')
       && window.__SETTINGS_TEST__.calls.some(function (item) { return item.cmd === 'delete_memory_preference'; })));
 
-  // ①f 工作上下文行删除走同一确认路径（bridge 按 kind 映射调用 delete_work_context_memory）。
-  // ①e 已移除首条偏好，长期记忆列表剩余删除按钮的最后一个即工作上下文行。
+  // ①f the work-context row delete goes through the same confirm path (the
+  // bridge maps the kind to delete_work_context_memory). ①e already removed the
+  // first preference row, so the last remaining delete button in the long-term
+  // memory list belongs to the work-context row.
   await page.evaluate(() => {
     const buttons = [...document.querySelectorAll('[data-testid="memory-item-delete"]')];
     if (buttons.length) buttons[buttons.length - 1].click();
@@ -596,7 +602,7 @@ async function modalWidth(page, headingText) {
   await page.waitForFunction(() => !!document.querySelector('[data-testid="memory-delete-confirm"]'));
   await page.click('[data-testid="memory-delete-confirm-ok"]');
   await page.waitForFunction(() => !document.body.innerText.includes('待删除的工作上下文'), { timeout: 5000 });
-  rec('①f 工作上下文删除经同一确认路径', await page.evaluate(() =>
+  rec('①f work-context delete goes through the same confirm path', await page.evaluate(() =>
     !document.body.innerText.includes('待删除的工作上下文')
       && document.body.innerText.includes('保留的偏好记忆')
       && window.__SETTINGS_TEST__.calls.some(function (item) { return item.cmd === 'delete_work_context_memory'; })));
@@ -2001,8 +2007,9 @@ async function modalWidth(page, headingText) {
   rec('⑰ 提交反馈成功使用应用内 toast，不弹系统 alert', feedbackTyped === '反馈弹窗测试' && feedbackSubmit.nativeAlertCalls === 0 && feedbackSubmit.submitCalls === 1 && feedbackSubmit.toast && feedbackSubmit.dialogClosed, JSON.stringify({ feedbackTyped, ...feedbackSubmit }));
   await sleep(200);
 
-  // ⑰.5 脏草稿关闭：走应用内确认层（Tauri WebView2 无原生 confirm）；
-  // 取消保留草稿与面板，确认后才真正关闭，且全程不误提交。
+  // ⑰.5 dirty-draft close: goes through the in-app confirm layer (no native
+  // confirm in Tauri WebView2); cancel keeps the draft and the panel, confirm
+  // truly closes, and nothing is submitted along the way.
   await clickExact(page, '提交反馈');
   await sleep(250);
   await page.evaluate(() => {
@@ -2039,7 +2046,7 @@ async function modalWidth(page, headingText) {
   await page.waitForFunction(() => !document.querySelector('[data-testid="feedback-close-confirm"]') && !document.querySelector('[data-feedback-dialog="true"]'));
   const feedbackCloseSubmitCalls = await page.evaluate(() =>
     window.__SETTINGS_TEST__.calls.filter(call => call.cmd === 'submit_feedback').length);
-  rec('⑰.5 脏草稿关闭走应用内确认层：取消保留草稿，确认后真正关闭且不误提交', feedbackCloseGuard.panelStillOpen && feedbackCloseGuard.draftKept && feedbackCloseSubmitCalls === 1, JSON.stringify({ ...feedbackCloseGuard, submitCalls: feedbackCloseSubmitCalls }));
+  rec('⑰.5 dirty-draft close uses the in-app confirm layer: cancel keeps the draft, confirm truly closes without submitting', feedbackCloseGuard.panelStillOpen && feedbackCloseGuard.draftKept && feedbackCloseSubmitCalls === 1, JSON.stringify({ ...feedbackCloseGuard, submitCalls: feedbackCloseSubmitCalls }));
   await sleep(200);
 
   await page.setViewport({ width: 760, height: 620 });

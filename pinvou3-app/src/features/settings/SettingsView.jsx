@@ -1674,7 +1674,7 @@ const formatMemoryTime = (item, copy) => {
         onCancel={() => setSearchDeleteConfirm(null)}
       />
     );
-    /** @param {{ item: MemoryItem, copy: { memoryDeleteConfirm: string }, detailCopy: { delete: string, cancel: string }, onConfirmDelete: (item: MemoryItem) => void, setMemoryDeleteConfirm: (next: MemoryItem | null) => void }} props - Delete-memory confirm state and actions. Tauri WebView2 下系统 window.confirm 不弹，故与模型/搜索删除一样使用应用内自绘二级确认。 */
+    /** @param {{ item: MemoryItem, copy: { memoryDeleteConfirm: string }, detailCopy: { delete: string, cancel: string }, onConfirmDelete: (item: MemoryItem) => void, setMemoryDeleteConfirm: (next: MemoryItem | null) => void }} props - Delete-memory confirm state and actions. The native window.confirm does not render in Tauri WebView2, so this uses the same in-app confirm dialog as the model/search deletes. */
     const MemoryDeleteDialog = ({ item, copy, detailCopy, onConfirmDelete, setMemoryDeleteConfirm }) => (
       <div data-testid="memory-delete-confirm" className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
         <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
@@ -1826,8 +1826,9 @@ const formatMemoryTime = (item, copy) => {
       const closeFeedback = () => {
         const dirty = feedbackDraft.title.trim() || feedbackDraft.description.trim() || feedbackDraft.attachments.length > 0;
         if (dirty && feedbackStatus.state !== 'submitted' && !feedbackCloseConfirm) {
-          // Tauri WebView2 下系统 window.confirm 实测不弹；应用内自绘弹窗无此限制
-          // （同 ProviderFormModal / MemoryDeleteDialog），先弹应用内确认层再真正关闭。
+          // The native window.confirm does not render in Tauri WebView2; in-app
+          // dialogs do (same as ProviderFormModal / MemoryDeleteDialog). Show the
+          // in-app confirm layer first and close only after confirmation.
           setFeedbackCloseConfirm(true);
           return;
         }
@@ -1885,7 +1886,8 @@ const formatMemoryTime = (item, copy) => {
           if (receipt && receipt.status === 'submitted') {
             setFeedbackNotice(receipt.message || t.feedbackSubmitted);
             resetFeedback();
-            // 提交成功不经 closeFeedback 出口；不复位确认层会在重开面板时残留幽灵确认层。
+            // The submit-success path bypasses the closeFeedback exit; without this
+            // reset a stale confirm layer would linger over a reopened panel.
             setFeedbackCloseConfirm(false);
             setFeedbackOpen(false);
             return;
@@ -2059,7 +2061,8 @@ const formatMemoryTime = (item, copy) => {
         setMemorySaving(true);
         setMemoryEditorError('');
         setProfileSaveError('');
-        // 删除失败横幅不粘滞：横幅链里它优先级最高，保存动作要能让位给最新错误
+        // The delete-failure banner is not sticky: it ranks first in the banner
+        // chain, so a save must clear it to make room for the latest error.
         setMemoryDeleteError('');
         try {
           if (memoryEditor.mode === 'memory') {
@@ -2077,23 +2080,26 @@ const formatMemoryTime = (item, copy) => {
           setMemorySaving(false);
         }
       };
-      /** @param {MemoryItem} item - 记忆条目；只记录待删项，确认后由 confirmDeleteItem 真正删除。 */
+      /** @param {MemoryItem} item - Memory item; only records the pending item — confirmDeleteItem performs the actual delete after confirmation. */
       const deleteItem = item => {
         if (!item || !bridge.memory.deleteMemoryItem) return;
-        // Tauri WebView2 下系统 window.confirm 实测不弹；应用内自绘弹窗无此限制
-        // （同 ProviderFormModal / ToolStoreView），先记下待删条目，确认后再真正删除。
+        // The native window.confirm does not render in Tauri WebView2; in-app
+        // dialogs do (same as ProviderFormModal / ToolStoreView). Record the
+        // pending item first and delete only after confirmation.
         setMemoryDeleteError('');
         setMemoryDeleteConfirm(item);
       };
-      /** @param {MemoryItem} item - 已确认删除的记忆条目（唯一调用 deleteMemoryItem 的确认路径）。 */
+      /** @param {MemoryItem} item - Memory item confirmed for deletion (the only confirmed path that calls deleteMemoryItem). */
       const confirmDeleteItem = async item => {
         if (!item || !bridge.memory.deleteMemoryItem) return;
         try {
           await bridge.memory.deleteMemoryItem(item.kind, item.id);
           setMemoryDeleteError('');
         } catch (error) {
-          // bridge 已把错误写入 bs.memory 并重抛；这里落横幅（删除失败语义），
-          // 避免浮动 promise 拒绝噪声。兜底非空，保证横幅必然渲染。
+          // The bridge already recorded the error in bs.memory and rethrew;
+          // surface it here as the delete-failure banner instead of leaving a
+          // floating promise rejection. The non-empty fallback guarantees the
+          // banner always renders.
           setMemoryDeleteError(String(error?.message || error || 'delete failed'));
         }
       };
@@ -2630,7 +2636,7 @@ const formatMemoryTime = (item, copy) => {
           )}
           {modelDeleteConfirm && <ModelDeleteDialog model={modelDeleteConfirm} settingsCopy={settingsCopy} onDeleteModel={onDeleteModel} setModelDeleteConfirm={setModelDeleteConfirm} />}
           {searchDeleteConfirm && <SearchDeleteDialog source={searchDeleteConfirm} settingsCopy={settingsCopy} onDeleteSearchProvider={onDeleteSearchProvider} setSearchDeleteConfirm={setSearchDeleteConfirm} setRestartDialog={setRestartDialog} />}
-          {/* 删除二级确认：与 ModelDeleteDialog / SearchDeleteDialog 同款 iOS 弹窗配方（背景点击不关闭） */}
+          {/* Delete confirm: same iOS dialog recipe as ModelDeleteDialog / SearchDeleteDialog (backdrop click does not close) */}
           {memoryDeleteConfirm && (
             <MemoryDeleteDialog
               item={memoryDeleteConfirm}
@@ -2814,7 +2820,7 @@ const formatMemoryTime = (item, copy) => {
               </div>
             </div>
           )}
-          {/* 关闭反馈的二级确认层：盖在反馈面板（z-[100]）之上，配方同 MemoryDeleteDialog（背景点击不关闭） */}
+          {/* Feedback-close confirm layer: sits above the feedback panel (z-[100]), same recipe as MemoryDeleteDialog (backdrop click does not close) */}
           {feedbackOpen && feedbackCloseConfirm && (
             <div data-testid="feedback-close-confirm" className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
               <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
