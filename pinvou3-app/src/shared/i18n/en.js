@@ -369,6 +369,7 @@ export const dictEn = {
           newTopic:'New topic',
           newTopicConfirm:'Click again to confirm: discard this auxiliary conversation and start over',
           sendFailed:'Failed to send. Please try again.',
+          ensureFailed:'Failed to start the auxiliary session. Start a new topic or try again later.',
           close:'Close',
         },
         uiHomeMode: { work:'Work', design:'Design', code:'Code', providerSettings:'Provider settings' },

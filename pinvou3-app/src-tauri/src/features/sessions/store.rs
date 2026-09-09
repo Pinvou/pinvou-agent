@@ -183,6 +183,7 @@ impl SessionStore {
             pinned_sessions: Arc::new(RwLock::new(HashMap::new())),
             hidden_sessions: Arc::new(RwLock::new(HashMap::new())),
             aux_sessions: Arc::new(RwLock::new(HashMap::new())),
+            aux_sessions_io: Arc::new(Mutex::new(())),
             execution_root_resolver: Arc::new(RwLock::new(None)),
             code_session_predicate: Arc::new(RwLock::new(None)),
             session_mode_states: Arc::new(RwLock::new(HashMap::new())),
@@ -544,11 +545,12 @@ impl SessionStore {
     }
 
     /// 创建 `parent_id` 的辅助对话(`aux-` 前缀 id,与 sched- 先例同款带前缀
-    /// 创建路径):标题固定为「辅助对话」的内部默认标题,模型与工作区继承主会话,
-    /// `parent_session_id` 回指主会话,最后把 主→辅 映射落入 `_aux_sessions.json`。
+    /// 创建路径):标题固定为「辅助对话」的内部默认标题,模型与工作区继承主会话
+    /// (含 `_session_models.json` 里的 per-session 模型绑定),`parent_session_id`
+    /// 回指主会话,最后把 主→辅 映射落入 `_aux_sessions.json`。
     /// 任一步失败都回滚已落盘的会话 JSON,避免留下重启后无法回收的孤儿 aux 会话。
-    /// 复用语义(已有映射且目标仍在盘上时直接复用)由命令层
-    /// `get_or_create_aux_session` 决定,不在本函数内。
+    /// 复用语义(已有映射且目标仍在盘上时直接复用)由 [`Self::get_or_create_aux_session`]
+    /// 决定,不在本函数内。
     pub fn create_aux_session(&self, parent_id: &str) -> Result<SessionMetadata> {
         let parent = self
             .load(parent_id)
@@ -565,6 +567,13 @@ impl SessionStore {
         );
         session.metadata.title = AUX_SESSION_TITLE.to_string();
         session.metadata.parent_session_id = Some(parent_id.to_string());
+        // per-session 模型绑定存在 `_session_models.json` sidecar、不在
+        // metadata.model 里:与 create_new 同款顺序——先落 sidecar 再公开
+        // Session JSON;后续步骤失败回滚删除会话时 purge_session_side_maps
+        // 会顺带清掉这条绑定。
+        if let Some(model_id) = self.session_model_override(parent_id) {
+            self.set_session_model_id(&id, Some(model_id))?;
+        }
         if let Err(error) = self.save(&session) {
             let rollback = self.delete(&id);
             return Err(match rollback {
@@ -584,6 +593,27 @@ impl SessionStore {
             });
         }
         Ok(session.metadata)
+    }
+
+    /// 原子版 get-or-create:映射查询(含幽灵映射摘除)与创建在同一把 aux 创建
+    /// 锁内完成,两个并发调用不会各自创建、后写覆盖映射而留下孤儿 aux 会话。
+    /// 辅助对话不能再挂辅助对话(aux-of-aux):aux 会话自身也是 Chat kind,命令层
+    /// 的 `ensure_chat_session` 拦不住,必须在唯一创建入口显式拒绝。
+    pub fn get_or_create_aux_session(&self, parent_id: &str) -> Result<SessionMetadata> {
+        if parent_id.starts_with("aux-") {
+            bail!("Auxiliary session '{parent_id}' cannot own an aux session");
+        }
+        let _create = self.aux_sessions_io.lock();
+        if let Some(aux_id) = self.aux_session_id(parent_id) {
+            if let Ok(aux) = self.load(&aux_id) {
+                return Ok(aux.metadata);
+            }
+            // 映射目标已不在盘上(外部清理删掉了 aux 会话):先摘幽灵映射再
+            // 重建,避免把失效 id 返回给前端。
+            self.set_aux_session(parent_id, None)
+                .with_context(|| format!("clear stale aux mapping for {parent_id}"))?;
+        }
+        self.create_aux_session(parent_id)
     }
 
     pub fn update_messages(&self, id: &str, messages: Vec<Message>) -> Result<()> {

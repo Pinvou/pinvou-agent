@@ -2347,7 +2347,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               )}
             </div>
             <div className="flex items-center gap-2">
-              {activeSessionId && bridge.available && bridge.auxChat && (
+              {activeSessionId && !activeSessionId.startsWith('sched-') && bridge.available && bridge.auxChat && (
                 <button
                   type="button"
                   data-testid="aux-chat-open"

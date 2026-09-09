@@ -3752,3 +3752,181 @@ fn purge_session_side_maps_clears_aux_bidirectionally() {
     // 无命中:不动内存也不落盘(映射已空,无副作用可断言,只需不 panic)。
     store.purge_session_side_maps(&["unrelated".to_string()]);
 }
+
+/// get-or-create 原子入口:已有映射且目标在盘上时复用同一条 aux 会话;映射
+/// 目标丢失时摘除幽灵映射并重建;aux 会话不得再挂 aux(aux-of-aux)。
+#[test]
+fn get_or_create_aux_session_reuses_rebuilds_and_rejects_aux_of_aux() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+
+    let first = store
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect("create aux");
+    let again = store
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect("reuse aux");
+    assert_eq!(
+        again.id, first.id,
+        "已有映射且目标在盘上时必须复用同一条 aux 会话"
+    );
+
+    // 幽灵映射:目标被外部清理 → 摘除旧映射并重建新 id。
+    let ghost_record = store
+        .manager
+        .sessions_dir()
+        .join(format!("{}.json", first.id));
+    std::fs::remove_file(&ghost_record).expect("remove aux record out of band");
+    let rebuilt = store
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect("rebuild after ghost mapping");
+    assert_ne!(rebuilt.id, first.id, "幽灵映射必须重建新 aux 会话");
+    assert_eq!(
+        store.aux_session_id(&main.metadata.id).as_deref(),
+        Some(rebuilt.id.as_str())
+    );
+
+    let error = store
+        .get_or_create_aux_session(&rebuilt.id)
+        .expect_err("aux-of-aux must be rejected");
+    assert!(
+        error.to_string().contains("cannot own an aux session"),
+        "拒绝信息必须明确指出辅助对话不能再挂辅助对话: {error:#}"
+    );
+}
+
+/// 创建辅助会话必须继承主会话在 `_session_models.json` 里的 per-session 模型
+/// 绑定(metadata.model 之外的覆盖),否则 aux 聊天会静默落到别的模型。
+#[test]
+fn aux_session_inherits_parent_model_override() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    store
+        .set_session_model_id(&main.metadata.id, Some("saved-model-x".to_string()))
+        .expect("set parent model override");
+
+    let aux = store
+        .create_aux_session(&main.metadata.id)
+        .expect("create aux");
+    assert_eq!(
+        store.session_model_id(&aux.id).as_deref(),
+        Some("saved-model-x"),
+        "辅助会话必须继承主会话的 per-session 模型绑定"
+    );
+
+    // 主会话无覆盖时:aux 不留 sidecar 条目,与主会话同样回退全局默认。
+    let main2 = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main 2");
+    let aux2 = store
+        .create_aux_session(&main2.metadata.id)
+        .expect("create aux 2");
+    assert!(store.session_model_override(&aux2.id).is_none());
+}
+
+/// 保留策略淘汰主会话时级联淘汰其辅助会话:两条记录都不在盘上,映射被
+/// purge,删除钩子同时收到 main 与 aux 两个 id。
+#[test]
+fn retention_evicts_main_session_together_with_its_aux() {
+    let (store, _g) = isolated_store();
+    let deletions = record_session_deletions(&store);
+    let now = Utc::now();
+    let main_id = "retention-main-with-aux";
+    // 最旧的主会话(带辅助对话)压在淘汰线上;其余 MAX_SESSIONS_PER_KIND 条更新。
+    let mut oldest = create_saved_session_with_id_and_mode(
+        main_id.to_string(),
+        &[],
+        "/retention-model",
+        &std::env::temp_dir(),
+        0,
+        None,
+        None,
+    );
+    oldest.metadata.updated_at = now - chrono::Duration::seconds(MAX_SESSIONS_PER_KIND as i64 + 1);
+    store
+        .save_session_atomic(&oldest)
+        .expect("seed oldest main");
+    let aux = store.create_aux_session(main_id).expect("create aux");
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("retention-aux-peer-{index}"),
+            &[],
+            "/retention-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(index as i64);
+        store
+            .save_session_atomic(&session)
+            .expect("seed peer session");
+    }
+
+    store
+        .enforce_session_retention_locked()
+        .expect("enforce retention");
+
+    assert!(store.load(main_id).is_err(), "超帽主会话必须被淘汰");
+    assert!(store.load(&aux.id).is_err(), "辅助会话必须随主会话一起淘汰");
+    assert!(
+        store.aux_session_id(main_id).is_none(),
+        "淘汰后 主→辅 映射不得残留"
+    );
+    let seen = deletions
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(seen.iter().any(|id| id == main_id));
+    assert!(seen.iter().any(|id| id == &aux.id));
+    assert_eq!(
+        store.list().expect("chat list").len(),
+        MAX_SESSIONS_PER_KIND
+    );
+}
+
+/// 辅助会话不占可见会话的保留预算:恰好 MAX_SESSIONS_PER_KIND 条主会话各自
+/// 带 aux 时,保留策略不得淘汰其中任何一条。
+#[test]
+fn aux_sessions_do_not_consume_chat_retention_budget() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+    let mut pairs = Vec::new();
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let main_id = format!("retention-budget-main-{index}");
+        let mut session = create_saved_session_with_id_and_mode(
+            main_id.clone(),
+            &[],
+            "/retention-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(index as i64);
+        store.save_session_atomic(&session).expect("seed main");
+        let aux = store.create_aux_session(&main_id).expect("create aux");
+        pairs.push((main_id, aux.id));
+    }
+
+    store
+        .enforce_session_retention_locked()
+        .expect("enforce retention");
+
+    assert_eq!(
+        store.list().expect("chat list").len(),
+        MAX_SESSIONS_PER_KIND,
+        "aux 会话不得占用可见会话的保留预算"
+    );
+    for (main_id, aux_id) in &pairs {
+        assert!(store.load(main_id).is_ok(), "主会话 {main_id} 不得被淘汰");
+        assert!(store.load(aux_id).is_ok(), "辅助会话 {aux_id} 不得被淘汰");
+        assert_eq!(
+            store.aux_session_id(main_id).as_deref(),
+            Some(aux_id.as_str())
+        );
+    }
+}

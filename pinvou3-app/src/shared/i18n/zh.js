@@ -369,6 +369,7 @@ export const dictZh = {
           newTopic:'重开话题',
           newTopicConfirm:'再点一次确认：丢弃当前辅助对话并重开',
           sendFailed:'发送失败，请重试。',
+          ensureFailed:'辅助会话初始化失败，请重开话题或稍后再试。',
           close:'关闭',
         },
         uiHomeMode: { work:'工作', design:'设计', code:'代码', providerSettings:'Provider 配置' },

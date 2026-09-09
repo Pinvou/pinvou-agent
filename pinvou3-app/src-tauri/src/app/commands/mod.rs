@@ -13,8 +13,7 @@
 //! - `delete_session(id)` / `rename_session(id, title)`
 //!
 //! 辅助对话（aux session，不进普通会话列表）：
-//! - `get_or_create_aux_session(session_id)` / `get_aux_session(session_id)`
-//! - `discard_aux_session(session_id)`
+//! - `get_or_create_aux_session(session_id)` / `discard_aux_session(session_id)`
 
 pub(crate) mod acp_providers;
 pub(crate) mod artifacts;

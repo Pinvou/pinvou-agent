@@ -427,7 +427,6 @@ command_protocol!(
         "set_session_pinned",
         "set_session_archived",
         "get_or_create_aux_session",
-        "get_aux_session",
         "discard_aux_session",
         "save_session_messages",
         "save_session_artifacts",

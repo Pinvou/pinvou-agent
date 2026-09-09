@@ -69,12 +69,31 @@ impl SessionStore {
             // Scheduled sessions own additional records outside sessions/.
             // Generic chat cleanup must not delete only the transcript and
             // strand the other half of their history.
-            if metadata.id.starts_with("sched-") {
+            // 辅助对话(aux-)的生命周期由主会话级联/discard 拥有(同 sched-
+            // 先例):不进淘汰候选,也不占用可见会话的保留预算。
+            if metadata.id.starts_with("sched-") || metadata.id.starts_with("aux-") {
                 continue;
             }
             chat_count += 1;
             if chat_count > MAX_SESSIONS_PER_KIND {
                 let id = metadata.id;
+                // 淘汰主会话时级联淘汰其辅助会话:先解析映射(主记录提交后
+                // purge_session_side_maps 会摘掉它),aux 记录与主记录进入
+                // 同一个 deleted_ids 集合,统一做 side-map 清理。
+                if let Some(aux_id) = self.aux_session_id(&id) {
+                    let (aux_committed, aux_result) = self.delete_session_record(&aux_id);
+                    if aux_committed {
+                        deleted_ids.push(aux_id.clone());
+                    }
+                    if let Err(error) = aux_result {
+                        if error.kind() != ErrorKind::NotFound && delete_error.is_none() {
+                            delete_error = Some(
+                                anyhow::anyhow!(error)
+                                    .context(format!("delete retained aux session {aux_id}")),
+                            );
+                        }
+                    }
+                }
                 let (committed, result) = self.delete_session_record(&id);
                 if committed {
                     deleted_ids.push(id.clone());

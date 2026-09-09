@@ -432,7 +432,6 @@ pub(super) fn web_session_scope(command: &str) -> Option<WebSessionScope> {
         | "equip_persona"
         | "exit_plan_to_yolo"
         | "get_active_persona"
-        | "get_aux_session"
         | "get_codex_workspace_changes"
         | "get_codex_workspace_diff"
         | "get_mode_state"

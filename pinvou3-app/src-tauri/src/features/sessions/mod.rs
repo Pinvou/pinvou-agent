@@ -131,6 +131,11 @@ pub struct SessionStore {
     /// 独立落盘到 `_aux_sessions.json`;辅助会话不进普通会话列表,随主会话
     /// 删除级联清理(见 store.rs `delete`)。
     pub(crate) aux_sessions: Arc<RwLock<HashMap<String, String>>>,
+    /// aux 会话 get-or-create 的互斥:映射查询与创建必须在同一临界区内,否则
+    /// 两个并发调用各自创建、后写覆盖映射,先建的 aux 会话成为无法回收的孤儿。
+    /// 只保护 get-or-create 临界区;create/save 内部的 `scheduled_mutation`
+    /// 锁序恒为 `aux_sessions_io` → `scheduled_mutation`,无反向持锁路径。
+    pub(crate) aux_sessions_io: Arc<Mutex<()>>,
     /// 原生代码会话绑定的项目目录解析器,由 app 组合根(lib.rs)在 AcpPool 就绪
     /// 后注入;None = 无代码会话项目绑定,所有会话的执行根都是会话私有目录。
     /// 账本根(附件/审计/产物/远程授权)不受其影响,恒为会话私有目录。

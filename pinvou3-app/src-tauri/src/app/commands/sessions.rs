@@ -437,6 +437,22 @@ pub async fn delete_session(
     {
         SessionKind::Chat => {
             acp_pool.evict(&id).await;
+            // 辅助会话级联必须先走 gated 删除(turn gate + 引擎回收 + late
+            // sweep,与 discard_aux_session 同链路):store.delete 的级联只删
+            // 盘上记录,会把仍在运行的 aux 引擎留成无句柄孤儿。
+            if let Some(aux_id) = store.aux_session_id(&id) {
+                pool.delete_chat_session(&aux_id).await.map_err(|error| {
+                    format!("delete_session({id}): 级联删除辅助会话 {aux_id}: {error:#}")
+                })?;
+                pool.forget_session(&aux_id);
+                let payload = serde_json::json!({ "id": &aux_id });
+                let _ = app.emit("session:deleted", payload.clone());
+                crate::features::remote_control::forward_app_event(
+                    &app,
+                    "session:deleted",
+                    payload,
+                );
+            }
             let result = pool
                 .delete_chat_session(&id)
                 .await
@@ -530,7 +546,6 @@ pub async fn set_session_archived(
 pub async fn get_or_create_aux_session(
     session_id: String,
     store: State<'_, SessionStore>,
-    _pool: State<'_, EnginePool>,
 ) -> Result<SessionMetadata, String> {
     // 辅助对话只挂在普通 chat 会话上:scheduled 会话走自己的删除链路
     // (delete_scheduled_run 只清映射不级联删会话),挂上去会泄漏孤儿 aux 会话。
@@ -538,34 +553,9 @@ pub async fn get_or_create_aux_session(
     store
         .load(&session_id)
         .map_err(|e| format!("get_or_create_aux_session({session_id}): 主会话不存在: {e:#}"))?;
-    if let Some(aux_id) = store.aux_session_id(&session_id) {
-        if let Ok(aux) = store.load(&aux_id) {
-            return Ok(aux.metadata);
-        }
-        // 映射目标已不在盘上(保留策略或外部清理删掉了 aux 会话):先摘幽灵
-        // 映射再重建,避免把失效 id 返回给前端。
-        store
-            .set_aux_session(&session_id, None)
-            .map_err(|e| format!("get_or_create_aux_session({session_id}): {e:#}"))?;
-    }
     store
-        .create_aux_session(&session_id)
+        .get_or_create_aux_session(&session_id)
         .map_err(|e| format!("get_or_create_aux_session({session_id}): {e:#}"))
-}
-
-/// 读取主会话当前绑定的辅助对话;无绑定或绑定目标已丢失时返回 None。
-#[tauri::command]
-pub async fn get_aux_session(
-    session_id: String,
-    store: State<'_, SessionStore>,
-) -> Result<Option<SessionMetadata>, String> {
-    let Some(aux_id) = store.aux_session_id(&session_id) else {
-        return Ok(None);
-    };
-    match store.load(&aux_id) {
-        Ok(aux) => Ok(Some(aux.metadata)),
-        Err(_) => Ok(None),
-    }
 }
 
 /// 丢弃主会话的辅助对话:回收引擎、删除 aux 会话并清映射。重复调用幂等

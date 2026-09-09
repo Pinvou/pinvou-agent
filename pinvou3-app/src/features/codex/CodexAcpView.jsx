@@ -1280,6 +1280,14 @@ export function CodexAcpView({
     rememberScrollBeforeRightPanelChange();
     setAuxChatPanel(null);
   }, [rememberScrollBeforeRightPanelChange]);
+  // 挂载条件（auxChatPanel && activeSession，见下方面板挂载点）消失时面板直接
+  // 卸载，而 RightDockPanel 的 onActiveChange 没有卸载清理，高亮会残留；这里在
+  // 挂载条件掉下去时同步复位，会话恢复后面板重新挂载会再回报真实可见态。
+  useEffect(() => {
+    if (auxChatPanel && activeSession) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset dock highlight when the panel unmounts; one-shot mirror, same pattern as the subagent reset below
+    setAuxChatDockActive(false);
+  }, [auxChatPanel, activeSession]);
   useLayoutEffect(() => {
     const snapshot = rightPanelScrollRef.current;
     if (!snapshot) return;
@@ -3411,7 +3419,7 @@ export function CodexAcpView({
             />
           )}
           {busy && <ConversationStatusBadge status="running" copy={t.uiConversation} />}
-          {bridge.available && bridge.auxChat && (
+          {activeSession && bridge.available && bridge.auxChat && (
             <button
               type="button"
               data-testid="aux-chat-open"

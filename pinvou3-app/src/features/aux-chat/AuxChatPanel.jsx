@@ -7,6 +7,7 @@ import { ConversationTimeline } from '../conversation/ConversationTimeline.jsx';
 import {
   auxChatBusy,
   auxChatHasContent,
+  auxSnapshotsEqual,
   normalizeAuxSnapshot,
   projectAuxChatTurns,
 } from './aux-chat-state.mjs';
@@ -32,14 +33,21 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
   const [snapshot, setSnapshot] = useState(() => normalizeAuxSnapshot(null));
   const [draft, setDraft] = useState('');
   const [sendFailed, setSendFailed] = useState(false);
+  const [ensureFailed, setEnsureFailed] = useState(false);
   const [restartArmed, setRestartArmed] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const generationRef = useRef(0);
   const auxIdRef = useRef(null);
   const scrollRef = useRef(null);
 
+  // 快照没变时沿用旧 state（函数式 setState 返回原值，React 跳过重渲染），
+  // 挡住主会话流式 tick 经 chat 域 notify 带来的无效重拉。
   const pullSnapshot = useCallback((id) => {
-    setSnapshot(normalizeAuxSnapshot(id && auxChat ? auxChat.snapshot(id) : null));
+    const raw = id && auxChat ? auxChat.snapshot(id) : null;
+    setSnapshot((current) => {
+      const next = normalizeAuxSnapshot(raw);
+      return auxSnapshotsEqual(current, next) ? current : next;
+    });
   }, [auxChat]);
 
   // 首开与主会话换绑：丢弃旧绑定并幂等 ensure 新任务的辅助会话。generation
@@ -52,6 +60,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     setAuxId(null);
     setSnapshot(normalizeAuxSnapshot(null));
     setSendFailed(false);
+    setEnsureFailed(false);
     setRestartArmed(false);
     setDraft('');
     if (!auxChat || !sessionId) return;
@@ -65,6 +74,10 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       })
       .catch((error) => {
         console.warn('[pinvou3][aux-chat] ensure failed', error);
+        // ensure 失败时 composer 因 auxId 为空而禁用，但原因不可见；内联提示
+        // 让用户知道初始化没成功，而不是面对一个无反应的面板。
+        if (disposed || generationRef.current !== generation) return;
+        setEnsureFailed(true);
       });
     return () => { disposed = true; };
   }, [auxChat, sessionId, pullSnapshot]);
@@ -138,8 +151,15 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       setSnapshot(normalizeAuxSnapshot(nextAuxId ? auxChat.snapshot(nextAuxId) : null));
       setDraft('');
       setSendFailed(false);
+      setEnsureFailed(false);
     } catch (error) {
       console.warn('[pinvou3][aux-chat] restart failed', error);
+      if (generationRef.current !== generation) return;
+      // discard 成功而 ensure 重建失败时，旧 auxId 已指向被删会话：必须清掉
+      // 绑定让 composer 如实禁用，否则之后每次发送都必然失败。
+      auxIdRef.current = null;
+      setAuxId(null);
+      setSnapshot(normalizeAuxSnapshot(null));
       setSendFailed(true);
     } finally {
       setRestarting(false);
@@ -209,6 +229,9 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         )}
         {sendFailed && (
           <div className="mb-2 text-[11px] text-red-600 dark:text-red-400" role="alert">{copy.sendFailed}</div>
+        )}
+        {ensureFailed && (
+          <div className="mb-2 text-[11px] text-red-600 dark:text-red-400" role="alert">{copy.ensureFailed}</div>
         )}
         <div className={`flex items-end gap-2 rounded-xl border px-3 py-2 ${
           theme === 'dark' ? 'border-white/[0.08] bg-white/[0.03]' : 'border-black/[0.08] bg-white/60'

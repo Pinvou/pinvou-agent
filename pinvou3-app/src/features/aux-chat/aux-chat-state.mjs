@@ -20,6 +20,32 @@ export function normalizeAuxSnapshot(raw) {
   };
 }
 
+// chat 域 notify 也会携主会话的流式 tick 进来；辅助会话的快照没变时跳过
+// setSnapshot，避免每个 token 都触发面板重渲染与 turns 重投影。逐条浅比较
+// 条目字段（不能只看引用：流式 delta 是原地修改条目的 text/streaming 字段）。
+function auxItemsEqual(left, right) {
+  if (left === right) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  const leftKeys = Object.keys(left);
+  if (leftKeys.length !== Object.keys(right).length) return false;
+  return leftKeys.every((key) => Object.is(left[key], right[key]));
+}
+
+export function auxSnapshotsEqual(prev, next) {
+  if (prev === next) return true;
+  const a = normalizeAuxSnapshot(prev);
+  const b = normalizeAuxSnapshot(next);
+  if (a.busy !== b.busy) return false;
+  if (a.chatItems.length !== b.chatItems.length || a.queued.length !== b.queued.length) return false;
+  for (let i = 0; i < a.chatItems.length; i += 1) {
+    if (!auxItemsEqual(a.chatItems[i], b.chatItems[i])) return false;
+  }
+  for (let i = 0; i < a.queued.length; i += 1) {
+    if (!auxItemsEqual(a.queued[i], b.queued[i])) return false;
+  }
+  return true;
+}
+
 // 与 bridge send 的拒绝口径一致：busy 或仍有排队消息时都视为不可发送。
 export function auxChatBusy(snapshot) {
   const snap = normalizeAuxSnapshot(snapshot);

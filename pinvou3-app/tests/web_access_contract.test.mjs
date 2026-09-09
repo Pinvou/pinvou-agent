@@ -287,15 +287,16 @@ assert.equal(allowed.has('list_archived_sessions'), false,
   'Web must not call the native archived list that exposes host workspace metadata');
 
 // 辅助对话(aux chat)域:platform/web/bridge.js 的 auxChatEnsure/auxChatDiscard
-// 直接 invoke 这三条;发送走既有 web_access_chat(aux 会话可按 id store.load,
+// 直接 invoke 这两条;发送走既有 web_access_chat(aux 会话可按 id store.load,
 // 不受 list_sessions 过滤影响)。任一遗漏会让 Web 辅助对话静默失败。
 for (const command of [
   'get_or_create_aux_session',
-  'get_aux_session',
   'discard_aux_session',
 ]) {
   assert.equal(allowed.has(command), true, `${command} must be allowed on Web (aux chat)`);
 }
+assert.equal(allowed.has('get_aux_session'), false,
+  'the dead get_aux_session command must stay removed from the Web surface');
 
 assert.equal(allowedEvents.has('acp:event'), true,
   'the shared ACP timeline must reach WebUI through the normal event transport');

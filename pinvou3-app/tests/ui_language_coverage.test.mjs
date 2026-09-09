@@ -33,7 +33,7 @@ for (const language of ['zh', 'en', 'ja']) {
   }
   for (const key of [
     'openLabel', 'panelTitle', 'landingHint', 'emptyState', 'inputPlaceholder',
-    'send', 'busyHint', 'newTopic', 'newTopicConfirm', 'sendFailed', 'close',
+    'send', 'busyHint', 'newTopic', 'newTopicConfirm', 'sendFailed', 'ensureFailed', 'close',
   ]) {
     assert.ok(dict[language].uiAuxChat[key], `${language}.uiAuxChat.${key} must exist`);
   }

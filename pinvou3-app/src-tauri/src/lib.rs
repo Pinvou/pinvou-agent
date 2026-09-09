@@ -1251,7 +1251,6 @@ pub fn run() {
             commands::sessions::list_archived_sessions,
             commands::sessions::set_session_archived,
             commands::sessions::get_or_create_aux_session,
-            commands::sessions::get_aux_session,
             commands::sessions::discard_aux_session,
             commands::timeline::get_session_timeline,
             commands::scheduled::list_scheduled_tasks,

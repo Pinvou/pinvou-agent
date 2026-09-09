@@ -30,7 +30,6 @@
     "feishu_status",
     "get_active_persona",
     "get_app_version",
-    "get_aux_session",
     "get_backend_status",
     "get_disabled_connectors",
     "get_bundle_visibility",
