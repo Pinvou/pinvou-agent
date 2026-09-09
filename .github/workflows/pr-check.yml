@@ -584,8 +584,8 @@ jobs:
   # 串行跑会导致依赖图被编译两遍。拆成并行 job 后 wall-clock ≈ max(lint, test)。
   # 不接入 sccache:clippy 产物与 test 不通用,接入会使 sccache 写入量翻倍并
   # 挤压 10GB 配额。benchmark/product backend 只在此做 cargo check；需要链接的
-  # headless 合同放在 rust-test 复用 rustc 产物与其 lld/内存防护，避免 lint runner
-  # 在同一 target 图上先 clippy 后再独立冷链接而被 hosted runner 关停。
+  # headless 合同放在 rust-test 的 lib harness，与全量单测只链接一个大型
+  # Tauri 测试二进制，并复用其 lld/内存防护。
   rust-lint:
     name: rust-lint
     needs: changes
@@ -722,8 +722,8 @@ jobs:
       # benchmark-hooks is intentionally outside the desktop default feature
       # set, so the ordinary clippy legs cannot detect API drift in the
       # headless evaluation bridge. Keep both compile contracts here, but run
-      # the link-heavy executable contract in rust-test where rustc test
-      # artifacts, ThinLTO/lld, and the memory guard are available.
+      # the executable contract in rust-test's shared lib harness, where it is
+      # covered without linking a second full Tauri integration-test binary.
       - name: benchmark-hooks + product backend compile checks (hard gate)
         if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
         working-directory: pinvou3-app/src-tauri
@@ -899,15 +899,16 @@ jobs:
       # 多线程测试仍可能观察到其他测试的临时值。Mutex poison 后通过 into_inner()
       # 取得的仍是已加锁 guard，不会绕过互斥；根治需消除测试对进程级 env 的依赖
       # 或让所有读写都通过同一隔离层，超出本 PR 范围。
-      # strict_mode 的三个确定性回归已并入 pinvou3_lib 单测，和全量 lib tests
-      # 共用一次编译与链接，避免第二个 integration test 目标重复链接全依赖树。
+      # strict_mode 回归和 benchmark-hooks headless 合同均在 pinvou3_lib 单测中；
+      # 本 job 统一开启 benchmark-hooks，让它们与全量 lib tests 共用一次
+      # 编译与链接，避免第二个 integration-test 二进制超过 16GB runner 边界。
       - name: cargo test --lib --no-run（编译链接测试二进制）
         if: ${{ github.event_name != 'push' }}
         run: |
           bash scripts/ci-memguard.sh &
           guard_pid=$!
           set +e
-          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
+          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --features benchmark-hooks --locked --no-run
           status=$?
           set -e
           kill "$guard_pid" 2>/dev/null || true
@@ -922,23 +923,7 @@ jobs:
           bash scripts/ci-memguard.sh &
           guard_pid=$!
           set +e
-          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1
-          status=$?
-          set -e
-          kill "$guard_pid" 2>/dev/null || true
-          exit "$status"
-
-      # benchmark-hooks 不在桌面默认 feature 集中。该 integration test 会重新
-      # 链接完整依赖图；放在 rust-lint 时两个独立 hosted runner 均在同一
-      # 链接区间收到 shutdown/143。放到本 job 复用上方 rustc 测试产物，
-      # 并沿用 ThinLTO + 串行 lld + ci-memguard 的已验证内存边界。
-      - name: benchmark-hooks headless bridge contract
-        if: ${{ github.event_name != 'push' }}
-        run: |
-          bash scripts/ci-memguard.sh &
-          guard_pid=$!
-          set +e
-          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --test headless_bridge_contract --features benchmark-hooks --locked -- --test-threads=1
+          cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --features benchmark-hooks --locked -- --test-threads=1
           status=$?
           set -e
           kill "$guard_pid" 2>/dev/null || true
@@ -958,7 +943,7 @@ jobs:
           bash scripts/ci-memguard.sh &
           guard_pid=$!
           set +e
-          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-run
+          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --features benchmark-hooks --locked --no-run
           status=$?
           set -e
           kill "$guard_pid" 2>/dev/null || true

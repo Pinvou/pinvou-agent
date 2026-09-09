@@ -116,19 +116,30 @@ class BenchmarkIsolationPolicyTests(unittest.TestCase):
         rust_test = workflow.split("\n  rust-test:", 1)[1].split(
             "\n  windows-rust-test:", 1
         )[0]
-        contract_marker = "- name: benchmark-hooks headless bridge contract"
-        self.assertIn(contract_marker, rust_test)
-        contract_step = rust_test.split(contract_marker, 1)[1].split(
-            "\n      - name:", 1
-        )[0]
-        self.assertIn("if: ${{ github.event_name != 'push' }}", contract_step)
-        self.assertIn("bash scripts/ci-memguard.sh &", contract_step)
-        self.assertIn("/usr/bin/time -v cargo test", contract_step)
         self.assertIn(
-            "cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml "
-            "--test headless_bridge_contract --features benchmark-hooks --locked "
-            "-- --test-threads=1",
-            contract_step,
+            "cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib "
+            "--features benchmark-hooks --locked -- --test-threads=1",
+            rust_test,
+        )
+        self.assertNotIn(
+            "--test headless_bridge_contract",
+            rust_test,
+        )
+        product_runtime = self.read(
+            "pinvou3-app/src-tauri/src/features/assistant/product_runtime/mod.rs"
+        )
+        self.assertIn(
+            '#[cfg(all(test, feature = "benchmark-hooks"))]\n'
+            "mod headless_bridge_contract_tests;",
+            product_runtime,
+        )
+        contract_tests = self.read(
+            "pinvou3-app/src-tauri/src/features/assistant/product_runtime/"
+            "headless_bridge_contract_tests.rs"
+        )
+        self.assertIn(
+            "async fn backend_runs_one_private_task_and_closes_its_session()",
+            contract_tests,
         )
 
 

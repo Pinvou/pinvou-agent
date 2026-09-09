@@ -161,7 +161,7 @@ bold "── 第 3 层：pinvou3-app forkguard 回归 ──"
 ( cd "$APP" && cargo test --lib --locked --features benchmark-hooks features::assistant::product_runtime::headless_bridge::tests -- --test-threads=1 ) || fail=1
 ( cd "$APP" && cargo test --lib --locked --features benchmark-hooks features::assistant::product_runtime::agentic_task::tests -- --test-threads=1 ) || fail=1
 ( cd "$APP" && cargo test --lib --locked --features benchmark-hooks engine_config_tool_call_cap_respects_env_override -- --test-threads=1 ) || fail=1
-( cd "$APP" && cargo test --test headless_bridge_contract --locked --features benchmark-hooks -- --test-threads=1 ) || fail=1
+( cd "$APP" && cargo test --lib --locked --features benchmark-hooks headless_bridge_contract_tests:: -- --test-threads=1 ) || fail=1
 
 echo
 if [[ $fail -eq 0 ]]; then

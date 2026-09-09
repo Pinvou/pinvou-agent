@@ -301,7 +301,7 @@ class CiGatePolicyTests(unittest.TestCase):
             "pinvou3-app/src-tauri/src/features/voice/voice_asr.rs",
             "pinvou3-app/src-tauri/src/features/updater/mod.rs",
             "pinvou3-app/src-tauri/src/features/future_feature/mod.rs",
-            "pinvou3-app/src-tauri/tests/headless_bridge_contract.rs",
+            "pinvou3-app/src-tauri/src/features/assistant/product_runtime/headless_bridge_contract_tests.rs",
         )
         for path in high_risk_examples:
             self.assertTrue(
@@ -353,10 +353,7 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("RUN_HEAVY_RUST_CHECKS", rust_lint)
         self.assertIn("github.event.pull_request.draft == false", rust_lint)
         self.assertIn("needs.changes.outputs.rust_dependencies == 'true'", rust_lint)
-        self.assertNotIn(
-            "cargo test --test headless_bridge_contract",
-            rust_lint,
-        )
+        self.assertNotIn("headless_bridge_contract_tests", rust_lint)
 
         rust_test = self.pr_workflow.split("\n  rust-test:", maxsplit=1)[1].split(
             "\n  windows-rust-test:", maxsplit=1
@@ -386,13 +383,13 @@ class CiGatePolicyTests(unittest.TestCase):
             rust_test,
         )
         self.assertIn(
-            "cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1",
+            "cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib "
+            "--features benchmark-hooks --locked -- --test-threads=1",
             rust_test,
         )
         self.assertIn(
-            "cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml "
-            "--test headless_bridge_contract --features benchmark-hooks --locked "
-            "-- --test-threads=1",
+            "cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib "
+            "--features benchmark-hooks --locked --no-run",
             rust_test,
         )
         # push(main) 只编译暖 cache,不执行测试:MQ 已对同一组合树跑过全量测试;
@@ -416,7 +413,7 @@ class CiGatePolicyTests(unittest.TestCase):
             "        if: ${{ github.event_name != 'push' }}",
             rust_test,
         )
-        self.assertEqual(rust_test.count("bash scripts/ci-memguard.sh &"), 4)
+        self.assertEqual(rust_test.count("bash scripts/ci-memguard.sh &"), 3)
         self.assertIn('CARGO_PROFILE_DEV_DEBUG: "0"', rust_test)
         self.assertIn("timeout-minutes: 120", rust_test)
         self.assertIn(
