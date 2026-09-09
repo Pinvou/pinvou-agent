@@ -5,6 +5,10 @@
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+/// Linux 专属:Wayland 输入注入的 portal RemoteDesktop 适配
+/// (被 `linux` 在 Wayland 会话下使用)。
+#[cfg(target_os = "linux")]
+mod wayland_portal;
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -35,7 +39,11 @@ pub(crate) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
 
 /// 当前操作系统是否有 computer_use 后端实现（Tauri 状态命令的平台能力位）。
 pub(crate) fn backend_supported() -> bool {
-    cfg!(any(target_os = "windows", target_os = "macos", target_os = "linux"))
+    cfg!(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux"
+    ))
 }
 
 /// 触发平台授权引导：macOS 弹 Screen Recording + Accessibility 两条 TCC 系统
