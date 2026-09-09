@@ -244,14 +244,16 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         // eslint-disable-next-line react-hooks/exhaustive-deps -- re-inject only when the preview document identity changes; depending on the inject function itself would break that trigger timing
       }, [showDesignWorkbench, tab, pv.kind, pv.text, pv.visual && pv.visual.html]);
 
-      // Auto-exit edit mode on artifact switch / tab switch / leaving
-      // fullscreen: record the scope on entering edit mode, and exit as soon
-      // as the scope changes (including a different artifact).
-      const designEditScopeKey = sel && sel.path ? `${tab}:${sel.path}:${isFullscreen}` : null;
+      // Auto-exit edit mode on artifact switch / tab switch: record the scope
+      // on entering edit mode, and exit as soon as the scope changes
+      // (including a different artifact). Leaving fullscreen unmounts this
+      // panel instead of reaching this effect; ChatView resets the selected
+      // element on that path.
+      const designEditScopeKey = sel && sel.path ? `${tab}:${sel.path}` : null;
       const designEditEnteredScopeRef = useRef(null);
       useEffect(() => {
         if (!designEditMode) return;
-        if (!isFullscreen || tab !== 'preview' || designEditEnteredScopeRef.current !== designEditScopeKey) {
+        if (tab !== 'preview' || designEditEnteredScopeRef.current !== designEditScopeKey) {
           exitDesignEditMode();
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps -- reset only on scope switches; designEditMode itself is set by user action

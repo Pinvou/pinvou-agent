@@ -85,7 +85,8 @@ pub enum SessionKind {
     ScheduledRun,
 }
 
-/// pinvou3 session 存储：包 SessionManager + active id 跟踪 + per-session mode 状态。
+/// pinvou3 session store: wraps SessionManager + active-id tracking +
+/// per-session mode state.
 ///
 /// Mode state lives on two layers (two-lane semantics, settled in review;
 /// the design lane has been merged into work):
@@ -104,10 +105,13 @@ pub enum SessionKind {
 ///   materialization). The one-shot yolo confirmation flag
 ///   `code_permission.yolo_confirmed` also lives in settings.json, written by
 ///   the confirmation command.
-/// 其余运行时交互状态（pending_plan、persona、知识库挂载等）仍 in-memory only。
+/// Other runtime interaction state (pending_plan, persona, knowledge-base
+/// mounts, etc.) stays in-memory only.
 ///
-/// `auto_continue_count`：M2 弱模型加固——Executing 态 LLM 调一次工具就停时,
-/// bridge 自动 send "继续"消息驱动 agent loop。每个用户主动消息重置为 0,
+/// `auto_continue_count`: M2 weak-model hardening — when an Executing-state
+/// LLM stops after a single tool call, the bridge automatically sends a
+/// "continue" message to drive the agent loop. Reset to 0 on every
+/// user-initiated message.
 #[derive(Clone)]
 pub struct SessionStore {
     /// Underlying upstream session manager (durable JSON store).

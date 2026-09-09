@@ -912,15 +912,18 @@ impl SessionStore {
         }
     }
 
-    /// accept 方案（`claim_pending_plan` 切 Yolo）确认提交后，把任务级切换纳入
-    /// per-session 持久化：写 `_session_mode_states.json`（重开/切走切回恢复
-    /// Yolo）。Global lane defaults are **not** updated (two-lane semantics: a
-    /// switch in an already-materialized session writes only that session's
-    /// own record).
+    /// After the accept flow (`claim_pending_plan` switching to Yolo) is
+    /// confirmed and committed, records the task-level switch in per-session
+    /// persistence: writes `_session_mode_states.json` (reopening the session,
+    /// or switching away and back, restores Yolo). Global lane defaults are
+    /// **not** updated (two-lane semantics: a switch in an
+    /// already-materialized session writes only that session's own record).
     ///
-    /// 只在 `PendingPlanClaim::commit`（engine 提交已确认）调用：任务真正开始
-    /// 执行时才记忆，提交失败回滚（`restore_pending_plan_claim`）不碰磁盘，
-    /// 内存回 Plan 与磁盘保持一致。
+    /// Called only from `PendingPlanClaim::commit` (engine commit confirmed):
+    /// the mode is remembered once the task actually starts executing; a
+    /// failed commit rolls back via `restore_pending_plan_claim` without
+    /// touching disk, and the in-memory return to Plan stays consistent with
+    /// disk.
     pub(crate) fn persist_accepted_yolo_mode(&self, id: &str) {
         self.session_mode_states
             .write()

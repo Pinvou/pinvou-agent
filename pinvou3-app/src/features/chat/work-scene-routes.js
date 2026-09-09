@@ -5,8 +5,7 @@ import {
 } from './personal-workbench-scene.js';
 
 const WORK_DOCUMENT_SCENE_KEY = 'document-writing';
-const WORK_DATA_VISUALIZATION_SCENE_KEY = 'data-visualization';
-const DESIGN_DATA_VISUALIZATION_SCENE_KEY = WORK_DATA_VISUALIZATION_SCENE_KEY;
+const DATA_VISUALIZATION_SCENE_KEY = 'data-visualization';
 const DESIGN_PPT_SCENE_KEY = 'ppt';
 
 const DOCUMENT_WRITING_CONTEXT = `Pinvou 公文写作场景路由：
@@ -60,7 +59,7 @@ function shouldUseDocumentWritingScene(subtab) {
 }
 
 function shouldUseDataVisualizationScene(subtab) {
-  return subtab === DESIGN_DATA_VISUALIZATION_SCENE_KEY;
+  return subtab === DATA_VISUALIZATION_SCENE_KEY;
 }
 
 function shouldUsePptDesignScene(subtab) {
@@ -84,7 +83,7 @@ function createDocumentWritingMessageMeta(text) {
 
 function createDataVisualizationMessageMeta(text) {
   return {
-    pinvouScene: `design:${DESIGN_DATA_VISUALIZATION_SCENE_KEY}`,
+    pinvouScene: `design:${DATA_VISUALIZATION_SCENE_KEY}`,
     pinvouRequiredSkill: 'visualizer',
     pinvouPayloadText: buildWorkScenePayloadText(text, DATA_VISUALIZATION_CONTEXT, DATA_VISUALIZATION_AUDIT),
   };
@@ -100,10 +99,8 @@ function createPptDesignMessageMeta(text) {
 }
 
 export {
-  DESIGN_DATA_VISUALIZATION_SCENE_KEY,
   DESIGN_PPT_SCENE_KEY,
   PERSONAL_WORKBENCH_SCENE_KEY,
-  WORK_DATA_VISUALIZATION_SCENE_KEY,
   WORK_DOCUMENT_SCENE_KEY,
   buildWorkScenePayloadText,
   createDataVisualizationMessageMeta,

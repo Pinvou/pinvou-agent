@@ -909,8 +909,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       }, [setInputText]);
       const handlePinvouModeChange = useCallback((mode) => {
         updatePinvouModeState({ type: 'set-mode', mode });
-        if (mode !== 'work') clearPersonalWorkbenchTemplateDraft();
-      }, [clearPersonalWorkbenchTemplateDraft, updatePinvouModeState]);
+      }, [updatePinvouModeState]);
       const handleHomeModeChange = useCallback((mode) => {
         if (mode === 'code') {
           if (onSwitchHomeMode) onSwitchHomeMode(mode);
