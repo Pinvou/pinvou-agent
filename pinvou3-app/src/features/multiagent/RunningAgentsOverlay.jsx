@@ -10,26 +10,36 @@ import {
   pruneOverlayEntries,
   statusPresentation,
 } from './overlay-model.mjs';
+import { useSubagentLedgerPoll } from './useSubagentLedgerPoll.js';
 
 /**
- * 蜂群运行小窗（右上角，ADR-0006 蜂群改造）：当前会话有未终态子智能体时
- * 显示。收起态是一枚计数胶囊，展开态列出每个运行中的子智能体（名称/角色 +
- * 状态点 + 简短状态），点击条目派发 `pinvou:open-subagent` 打开其只读执行
- * 记录面板；收起/展开选择记入 localStorage。
+ * Swarm running overlay (top-right, ADR-0006 swarm rework): shown while the
+ * current session has non-terminal subagents. Collapsed it is a count pill;
+ * expanded it lists every running subagent (name/role + status dot + short
+ * status). Clicking an entry dispatches `pinvou:open-subagent` to open its
+ * read-only transcript panel. The collapsed/expanded choice is persisted in
+ * localStorage.
  *
- * 状态源两层（落盘投影是权威，实时事件可能丢）：
- * - `pinvou:subagent-update`（bridge 转发的实时进展/完成事件）；
- * - 本组件自持的 `listSubagentTranscripts` 轮询兜底——只在存在未终态条目
- *   （或会话刚切换还没有数据）时轮询（3s 节流），全部终态即停。落盘快照
- *   只服务本组件：spawn 计数行取代行内专家卡后，`pinvou:subagent-ledger-update`
- *   在聊天车道已无存活消费者（专家卡仅剩不订阅任何事件的协调行），不再广播。
+ * Two state sources (the persisted projection is authoritative; real-time
+ * events can be lost):
+ * - `pinvou:subagent-update` (real-time progress/completion events forwarded
+ *   by the bridge);
+ * - this component's own `listSubagentTranscripts` ledger poll — 3s while
+ *   something is non-terminal, and never fully stopped: with nothing active it
+ *   keeps an idle authoritative read (15s), so a child that starts later whose
+ *   real-time event was lost is still discovered (a poll that stopped on an
+ *   empty ledger could never learn about it). The persisted snapshot serves
+ *   only this component: after the spawn count row replaced inline expert
+ *   cards, `pinvou:subagent-ledger-update` has no live consumer left on the
+ *   chat lane (the remaining expert row subscribes to no events), so it is no
+ *   longer broadcast.
  *
- * 边框情绪价值：蜂群关闭 = 蓝边框，蜂群开启 = 紫边框（深浅色各配一档）；
- * 运行中状态点带呼吸动画，完成后短暂保持绿色成功态再淡出列表。
+ * Border mood: swarm off = blue border, swarm on = purple border (one shade
+ * per light/dark theme); running status dots breathe, and completed entries
+ * hold a green success state briefly before fading out of the list.
  */
 
 const COLLAPSE_STORAGE_KEY = 'pinvou3.swarmOverlay.collapsed';
-const POLL_INTERVAL_MS = 3000;
 
 const swarmBorder = on => (on
   ? 'border-[#7C3AED]/50 dark:border-[#A78BFA]/45'
@@ -52,8 +62,8 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
     try {
       return localStorage.getItem(COLLAPSE_STORAGE_KEY) !== '1';
     } catch {
-      // 受限存储环境（如禁 cookie 的 WebView）读取即抛：按默认展开处理，
-      // 与下方 setItem 的防御对称。
+      // Restricted storage environments (e.g. cookie-blocked WebViews) throw on
+      // read: fall back to expanded, mirroring the setItem defense below.
       return true;
     }
   });
@@ -70,7 +80,7 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
     });
   }, []);
 
-  // 实时事件订阅。
+  // Real-time event subscription.
   useEffect(() => {
     if (!enabled || typeof window === 'undefined') return;
     const onUpdate = event => {
@@ -88,58 +98,53 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
     () => Object.values(entries).filter(entry => entry.sessionId === sessionId),
     [entries, sessionId],
   );
-  // 会话内是否存在未终态条目：驱动轮询兜底的启停（见下方 effect）。
+  // Whether any entry in this session is non-terminal: drives the ledger poll
+  // cadence (see the hook).
   const sessionHasActive = useMemo(
     () => sessionEntries.some(entry => !isTerminal(entry)),
     [sessionEntries],
   );
 
-  // 轮询兜底：有未终态条目（或会话刚切换还没有数据）时轮询落盘投影，全部
-  // 终态即停。重启是声明式的：新条目进入运行态时 `sessionHasActive` 翻回
-  // true，本 effect 重跑——不存在「停表后无法唤醒」的死状态。单次读数失败
-  // （bridge 返回 null 而不是 []）是瞬时故障：不停表，下一轮照常重试（与
-  // SubagentTranscriptPanel 同口径）。
-  useEffect(() => {
-    if (!enabled || !sessionId) return;
-    let stopped = false;
-    let timer = null;
-    const poll = async () => {
-      timer = null;
-      if (stopped) return;
-      try {
-        const list = await bridge.multiAgent.listSubagentTranscripts(sessionId);
-        if (stopped) return;
-        if (Array.isArray(list)) {
-          for (const summary of list) {
-            if (!summary || !summary.agent_id) continue;
-            mergeEntry(sessionId, {
-              sessionId,
-              agentId: summary.agent_id,
-              role: summary.role || null,
-              status: summary.status || null,
-              done: !!summary.done,
-              failed: !!summary.failed,
-              blocked: !!summary.blocked,
-              source: 'ledger',
-            });
-          }
-        }
-      } catch {
-        // 单次轮询失败不致命，下一轮重试。
-      }
-      if (!stopped && sessionHasActive) timer = setTimeout(poll, POLL_INTERVAL_MS);
-    };
-    timer = setTimeout(poll, 0);
-    return () => {
-      stopped = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [enabled, mergeEntry, sessionId, sessionHasActive]);
+  const readLedger = useCallback(
+    id => bridge.multiAgent.listSubagentTranscripts(id),
+    [],
+  );
 
-  // 会话切换时丢弃其他会话的条目，避免跨会话串台。
+  const mergeLedgerSummaries = useCallback(summaries => {
+    for (const summary of summaries) {
+      if (!summary || !summary.agent_id) continue;
+      mergeEntry(sessionId, {
+        sessionId,
+        agentId: summary.agent_id,
+        role: summary.role || null,
+        status: summary.status || null,
+        done: !!summary.done,
+        failed: !!summary.failed,
+        blocked: !!summary.blocked,
+        source: 'ledger',
+      });
+    }
+  }, [mergeEntry, sessionId]);
+
+  // Ledger fallback poll. The loop never stops while mounted: it reads the
+  // authoritative persisted projection at 3s while something is non-terminal
+  // and keeps an idle 15s heartbeat otherwise, so a child that appears later
+  // with its real-time event lost is still discovered (this effect restarting
+  // on `hasActive` alone cannot cover that case — nothing flips `hasActive`
+  // until some source observes the child). Restarts on session switches and
+  // `hasActive` flips are declarative: each generation re-reads immediately.
+  useSubagentLedgerPoll({
+    enabled,
+    sessionId,
+    hasActive: sessionHasActive,
+    readLedger,
+    onSummaries: mergeLedgerSummaries,
+  });
+
+  // Drop entries of other sessions on a session switch to avoid cross-talk.
   useEffect(() => {
     if (!sessionId) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 只在 sessionId 变化时清理一次旧会话缓存，与渲染级联无关
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time cleanup of the previous session's cache on sessionId change, unrelated to the render cascade
     setEntries(previous => {
       const next = {};
       let changed = false;
@@ -151,9 +156,10 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
     });
   }, [sessionId]);
 
-  // 成功态展示窗口到期后自醒一次，把已展示完的终态条目淡出列表。
+  // Wake once when the success-state display window expires so finished
+  // terminal entries fade out of the list.
   const [, setRecentTick] = useState(0);
-  // eslint-disable-next-line react-hooks/purity -- 成功态展示窗口按真实时钟判定，tick 到点后重算一次
+  // eslint-disable-next-line react-hooks/purity -- the success-state window is judged on the real clock; recompute once when the tick fires
   const { active, recent } = overlayVisibleEntries(sessionEntries, Date.now());
   useEffect(() => {
     if (recent.length === 0) return;
@@ -168,7 +174,7 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
       try {
         localStorage.setItem(COLLAPSE_STORAGE_KEY, next ? '0' : '1');
       } catch {
-        // 存储不可写只影响记忆，不影响功能。
+        // Unwritable storage only loses the preference, not functionality.
       }
       return next;
     });
