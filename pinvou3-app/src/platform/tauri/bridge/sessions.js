@@ -648,16 +648,25 @@
     return path;
   }
 
+  // Tauri 对未注册命令的拒绝文案（旧后端无此命令的兼容识别）；invoke 本身
+  // 不可用（Web 端桩）同样按"无此命令"处理。
+  function isCommandMissingError(error) {
+    const message = String((error && error.message) || error || "");
+    return /unknown command|command not found|not implemented|invoke is unavailable/i.test(message);
+  }
+
   // 已生成会话的工作目录绑定（普通聊天绑定目录会话，安全姿态对齐 code 模式）：
-  // 返回绑定的完整路径；未绑定 / Web 与远程端无此命令 / 查询失败一律按 null
-  // 处理（UI 不显示绑定指示，YOLO 确认门也不因此误触发）。
+  // 返回绑定的完整路径；未绑定返回 null；旧后端无此命令按 null 处理（UI 不显示
+  // 绑定指示）。其余查询失败（瞬时错误）抛给调用方——YOLO 确认门据此
+  // fail-closed 过量施加确认，而非对已绑定会话静默跳过（评审 #445 R3）。
   async function getSessionWorkspaceBinding(sessionId) {
     if (!sessionId) return null;
     try {
       const binding = await invoke("get_session_workspace_binding", { sessionId });
       return typeof binding === "string" && binding ? binding : null;
-    } catch {
-      return null;
+    } catch (error) {
+      if (isCommandMissingError(error)) return null;
+      throw error;
     }
   }
 

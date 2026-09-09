@@ -187,7 +187,7 @@ test('getSessionWorkspaceBinding：绑定路径透传，空串/非字符串按 n
   assert.equal(await rtEmpty.api.getSessionWorkspaceBinding('chat-a'), null);
 });
 
-test('getSessionWorkspaceBinding：无 sessionId / 查询失败（Web、旧后端无此命令）按 null', async () => {
+test('getSessionWorkspaceBinding：无 sessionId / 旧后端无此命令按 null；瞬时失败上抛', async () => {
   const rt = loadFeature('sessions', {
     invoke(name) {
       if (name === 'get_session_workspace_binding') return Promise.reject(new Error('unknown command'));
@@ -195,7 +195,19 @@ test('getSessionWorkspaceBinding：无 sessionId / 查询失败（Web、旧后�
     },
   });
   assert.equal(await rt.api.getSessionWorkspaceBinding(null), null);
-  assert.equal(await rt.api.getSessionWorkspaceBinding('chat-a'), null, '查询失败不得上抛，UI 按无绑定处理');
+  assert.equal(await rt.api.getSessionWorkspaceBinding('chat-a'), null, '旧后端无此命令按无绑定处理');
+
+  const rtTransient = loadFeature('sessions', {
+    invoke(name) {
+      if (name === 'get_session_workspace_binding') return Promise.reject(new Error('connection reset'));
+      return Promise.resolve(null);
+    },
+  });
+  await assert.rejects(
+    () => rtTransient.api.getSessionWorkspaceBinding('chat-a'),
+    /connection reset/,
+    '瞬时查询失败必须上抛，YOLO 门据此 fail-closed 过量施加确认（评审 #445 R3）',
+  );
 });
 
 // ── setDraftWorkspace：绑定/解绑即刷新草稿 mode 显示 ──────────────────

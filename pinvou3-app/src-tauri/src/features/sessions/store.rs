@@ -454,8 +454,10 @@ impl SessionStore {
         if self.is_scheduled_session(id)? {
             bail!("Scheduled-run session '{id}' has no persisted execution profile");
         }
-        // resolver 只解析 codex_acp 原生代码会话的项目绑定;普通 chat 会话的
-        // 用户工作目录绑定由 store 自持有的 sidecar 回退解析。
+        // 生产注入的 resolver（lib.rs）已同时覆盖两类绑定：codex_acp 原生
+        // 代码会话的项目绑定 + 普通 chat 会话的用户工作目录绑定（sidecar）。
+        // 这里的 .or_else 回退是防御性的，只在未注入 resolver 时（测试/启动
+        // 早期）生效——bridge 直接走 resolver（bridge.rs），不会经过本回退。
         let bound_project_root = self
             .execution_root_resolver
             .read()

@@ -17,10 +17,21 @@ function cardBtnCls(variant) {
 export function YoloConfirmCard({ theme, copy, error, busy, onConfirm, onCancel }) {
   const isDark = theme === 'dark';
   const dialogRef = useRef(null);
-  // 打开即聚焦卡片（键盘可达），Esc 视为取消——与 NativePlanCard 内联卡不同，
-  // 这是一张全屏模态，必须挡住底层控件，故补 role=dialog/aria-modal/键盘交互。
+  // 挂载时夺取焦点一次（键盘可达）、卸载时归还先前焦点元素（触发元素可能
+  // 已随时间线重建，isConnected 守卫）。焦点 effect 不带依赖：父组件内联
+  // onCancel 每渲染换新身份，打开期间任意父级重渲染都会把焦点从按钮拽回
+  // 容器（镜像 features/codex/RewindChip.jsx 的 useDialogFocusRestore；
+  // shared 层不反向依赖 features，改任一侧须同步另一侧）。
   useEffect(() => {
+    const previous = document.activeElement;
     dialogRef.current?.focus();
+    return () => {
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+    };
+  }, []);
+  // Esc 视为取消（busy 时禁用）——与 NativePlanCard 内联卡不同，这是一张
+  // 全屏模态，必须挡住底层控件。重注册监听器无害，不含焦点副作用。
+  useEffect(() => {
     const onKey = (e) => {
       if (e.key === 'Escape' && !busy) {
         e.preventDefault();
