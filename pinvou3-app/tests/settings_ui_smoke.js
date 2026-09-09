@@ -54,6 +54,38 @@ assert.doesNotMatch(
   /loaded !== false/,
   'unknown model state must not be treated as loaded during automatic fill',
 );
+const localDetectStart = settingsViewSource.indexOf('async function handleLocalDetect()');
+const localDetectEnd = settingsViewSource.indexOf('function startManualLocalModel()', localDetectStart);
+assert.notStrictEqual(localDetectStart, -1, 'local picker detect handler must exist');
+assert.notStrictEqual(localDetectEnd, -1, 'local picker detect handler boundary must exist');
+const localDetectSource = settingsViewSource.slice(localDetectStart, localDetectEnd);
+assert.match(
+  localDetectSource,
+  /customPort/,
+  'local picker detect must pass the optional custom port to the discovery command',
+);
+assert.match(
+  localDetectSource,
+  /65535/,
+  'local picker detect must validate the custom port range before probing',
+);
+for (const settingsI18nSource of settingsI18nSources) {
+  assert.match(
+    settingsI18nSource,
+    /localPortLabel:/,
+    'local model port input label must be provided in every UI language',
+  );
+  assert.match(
+    settingsI18nSource,
+    /localPortPlaceholder:/,
+    'local model port input placeholder must be provided in every UI language',
+  );
+  assert.match(
+    settingsI18nSource,
+    /localPortInvalid:/,
+    'local model port validation message must be provided in every UI language',
+  );
+}
 
 function loadPuppeteer() {
   try { return require('puppeteer-core'); } catch { /* fall through */ }
@@ -879,6 +911,85 @@ async function modalWidth(page, headingText) {
     };
   });
   rec('⑥.3 本地模型自动检测展示多个服务与多个模型 ID', Object.values(localDetectUi).every(Boolean), JSON.stringify(localDetectUi));
+  // Custom port: fill 8080 and re-detect; the probe request must pass through
+  // customPort=8080 (the main path for picking a local model by port).
+  // The value is written through the native value setter: clearing a controlled
+  // input via select+backspace is unreliable.
+  const setPortDraft = value => page.evaluate(text => {
+    const input = document.querySelector('[data-testid="local-detect-port"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, text);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }, value);
+  await setPortDraft('8080');
+  await clickExact(page, '重新检测');
+  await sleep(500);
+  const localDetectWithPort = await page.evaluate(() => {
+    const calls = window.__SETTINGS_TEST__.calls.filter(call => call.cmd === 'discover_local_vllm');
+    const last = calls[calls.length - 1];
+    return { request: last && last.args && last.args.request };
+  });
+  rec('⑥.3b custom port is passed through to the discovery command',
+    localDetectWithPort.request
+      && localDetectWithPort.request.customPort === 8080
+      && localDetectWithPort.request.currentBaseUrl === null
+      && localDetectWithPort.request.savedBaseUrl === null,
+    JSON.stringify(localDetectWithPort));
+  // Invalid port (out of range): inline error, no probe request, and the
+  // previously detected candidates stay visible.
+  const discoverCallsBeforeInvalidPort = await page.evaluate(() =>
+    window.__SETTINGS_TEST__.calls.filter(call => call.cmd === 'discover_local_vllm').length);
+  await setPortDraft('99999');
+  await clickExact(page, '重新检测');
+  await sleep(300);
+  const localDetectInvalidPort = await page.evaluate(before => ({
+    errorShown: document.body.innerText.includes('端口无效：请输入 1-65535 之间的数字'),
+    noNewCall: window.__SETTINGS_TEST__.calls.filter(call => call.cmd === 'discover_local_vllm').length === before,
+    candidatesKept: document.body.innerText.includes('qwen2.5-coder:32b'),
+  }), discoverCallsBeforeInvalidPort);
+  rec('⑥.3c invalid port errors inline without probing and keeps previous candidates', Object.values(localDetectInvalidPort).every(Boolean), JSON.stringify(localDetectInvalidPort));
+  // Negative and decimal inputs: the raw value stays as typed, an inline error
+  // is shown, and no probe request is issued (the input must not silently
+  // rewrite -1 into 1 or 1.5 into 15 before validation).
+  const discoverCallsBeforeNegativePort = await page.evaluate(() =>
+    window.__SETTINGS_TEST__.calls.filter(call => call.cmd === 'discover_local_vllm').length);
+  await setPortDraft('-1');
+  await clickExact(page, '重新检测');
+  await sleep(300);
+  const localDetectNegativePort = await page.evaluate(before => ({
+    rawValueKept: document.querySelector('[data-testid="local-detect-port"]').value === '-1',
+    errorShown: document.body.innerText.includes('端口无效：请输入 1-65535 之间的数字'),
+    noNewCall: window.__SETTINGS_TEST__.calls.filter(call => call.cmd === 'discover_local_vllm').length === before,
+  }), discoverCallsBeforeNegativePort);
+  rec('⑥.3e negative port keeps the raw input, errors inline, issues no probe', Object.values(localDetectNegativePort).every(Boolean), JSON.stringify(localDetectNegativePort));
+  const discoverCallsBeforeDecimalPort = await page.evaluate(() =>
+    window.__SETTINGS_TEST__.calls.filter(call => call.cmd === 'discover_local_vllm').length);
+  await setPortDraft('1.5');
+  await clickExact(page, '重新检测');
+  await sleep(300);
+  const localDetectDecimalPort = await page.evaluate(before => ({
+    rawValueKept: document.querySelector('[data-testid="local-detect-port"]').value === '1.5',
+    errorShown: document.body.innerText.includes('端口无效：请输入 1-65535 之间的数字'),
+    noNewCall: window.__SETTINGS_TEST__.calls.filter(call => call.cmd === 'discover_local_vllm').length === before,
+  }), discoverCallsBeforeDecimalPort);
+  rec('⑥.3f decimal port keeps the raw input, errors inline, issues no probe', Object.values(localDetectDecimalPort).every(Boolean), JSON.stringify(localDetectDecimalPort));
+  // Clear the port and run a valid detection; this also locks the request shape
+  // for "empty port = default ports only" (customPort null).
+  await setPortDraft('');
+  await clickExact(page, '重新检测');
+  await sleep(500);
+  const localDetectPortCleared = await page.evaluate(() => {
+    const calls = window.__SETTINGS_TEST__.calls.filter(call => call.cmd === 'discover_local_vllm');
+    const last = calls[calls.length - 1];
+    return { request: last && last.args && last.args.request };
+  });
+  rec('⑥.3d cleared port sends a discovery request without a custom port',
+    localDetectPortCleared.request
+      && localDetectPortCleared.request.customPort === null
+      && localDetectPortCleared.request.currentBaseUrl === null
+      && localDetectPortCleared.request.savedBaseUrl === null,
+    JSON.stringify(localDetectPortCleared));
+  await sleep(100);
   const localAddClicked = await page.evaluate(() => {
     const title = [...document.querySelectorAll('span')].find(node => (node.textContent || '').trim() === 'qwen2.5-coder:32b');
     let row = title;

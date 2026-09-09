@@ -60,9 +60,9 @@ pub async fn confirm_code_yolo(
     store.confirm_code_yolo()
 }
 
-/// 三个工作区 lane（work/design/code）的全局默认 mode。前端启动/进草稿时
-/// 拉取驱动草稿态 chip 显示；None = 该 lane 从未显式选过（缺省 code→plan、
-/// work/design→yolo）。
+/// The per-lane (work/code) global default modes. Fetched at startup / on
+/// entering the draft state to drive the draft-state chip; None = the lane
+/// was never explicitly chosen (defaults code→plan, work→yolo).
 #[tauri::command]
 pub async fn get_mode_defaults(
     store: State<'_, SessionStore>,
@@ -70,9 +70,12 @@ pub async fn get_mode_defaults(
     Ok(store.mode_defaults())
 }
 
-/// 草稿态显式切换 mode：写入对应 lane 的全局默认（新建会话默认跟随）。
-/// 已生成会话的切换不走这里（`set_plan_mode_next`/`exit_plan_to_yolo`
-/// 只写 per-session 记录）——三分 lane 语义：草稿写全局，会话写自己。
+/// Explicit draft-state mode switch: writes the matching lane's global
+/// default (new sessions follow it as their default). Switches inside
+/// already-materialized sessions do not go through here
+/// (`set_plan_mode_next`/`exit_plan_to_yolo` write only per-session
+/// records) — two-lane semantics: drafts write the global, sessions write
+/// their own record.
 #[tauri::command]
 pub async fn set_mode_default(
     lane: String,
