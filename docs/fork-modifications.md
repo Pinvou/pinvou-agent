@@ -24,6 +24,17 @@
 - 父仓配套：`CompactionConfig.memory_export` 默认关闭，`Pinvou3Bridge.build_engine_config` 显式开启并指向 `~/.pinvou3/memories/`（`transcript_dir` 指向 `~/.pinvou3/sessions/` 作 Codex `rollout_path` 溯源）；子代理/worker 与手动触发共用的 `compaction_config_for_model` 保持关闭（只有根会话喂记忆库）；设置新增 `memory_export_enabled`（默认开，serde 字段默认覆盖旧 settings.json 缺键，全新安装经 `defaults_for_system_locale` 显式带上），通用设置页新增三语开关；`~/.pinvou3/memories/` 与应用自有记忆（`~/.pinvou3/user/memory/`）、底座原生记忆（`~/.codewhale/`）完全隔离。
 - 指纹锚点：`fn forkguard_compaction_memory_export_writes_codex_format`、`Merged stage-1 raw memories (stable ascending thread-id order):`、`fn maybe_spawn_memory_export`、父仓 `fn forkguard_compaction_memory_export_wiring_isolated_to_root_sessions`。
 
+### 多根工作区 workspace_roots（2026-09-09，本分支未推送）
+
+- CodeWhale 分支 `pinvou3/workspace-roots`（r14 之上 7 个提交，head `2db754ecd`）：线程从单根 `cwd` 扩展为 **cwd（主根）+ workspace_roots（全量可访问根集合）**，对齐 OpenAI codex 原版机制，是"单入口工作区"（项目 = 主文件夹 + 一组钥匙）的底座前提。四层落地：
+  1. **协议与会话模型**：`ThreadStartParams`/`ThreadResumeParams`/`ThreadForkParams` 与 `Thread` DTO 增加 `workspace_roots`（serde default，旧载荷读入为空）；SQLite `threads` 表 v5 迁移加 `workspace_roots TEXT`（JSON 数组，缺省 `'[]'`，旧库零迁移退化）；TUI 两侧 JSON（`ThreadRecord`/`SessionMetadata`）按 additive 先例加 serde default 字段。
+  2. **回合环境**：根集合经 `Op::SyncSession` / Runtime API `UpdateThreadRequest` 运行中替换（活动回合拒绝 + 驱逐缓存引擎），引擎每回合读取当前集合——快照语义，下回合生效；`normalize_workspace_roots`（core）保证 cwd 恒居首、去重保序，空集合 ≡ `[cwd]`。resume 三态：带 roots 整体替换；只带 cwd 替换主根槽位、附加根保留去重；都不带沿用持久化值（顺带修复持久化路径上 cwd 被 current_dir fallback 无条件覆盖的缺陷）。
+  3. **权限沙箱**：新增符号常量 `:workspace_roots`（`WORKSPACE_ROOTS_SYMBOL`），在每回合策略构造点物化——`workspace_write_policy` 的 writable_roots = 归一化全集合（空集合逐字节等于旧值 `[workspace]`）；写豁免 carve-out 逐根独立判定（排除名 `.git`/`.env*`/`.codewhale` 等在附加根内仍拒）；`ToolContext::resolve_path` 边界跨附加根放行、真越界仍 `PathEscape`；execpolicy 规则的 path/workspace 锚定逐根匹配，permissions.toml 规则对附加根生效。
+  4. **提示词/项目指令**：AGENTS.md 发现刻意保持仅主根（附加根只给访问权不注入指令，防提示词膨胀与 KV 前缀缓存随根集合漂移），代码零改动，由行为测试锁定。
+- 行为变化边界：未配置多根（空集合）时协议帧、策略值、路径判定逐字节等价单根现状；TUI 交互端无多根 UI，根集合只能经 Runtime API/headless 进入。fork 语义暂不继承父线程附加根（空 roots → `[cwd]`），与 codex 的 fork 继承差异留待后续裁决。
+- r14→本主题为 `40 files, +1635/-142`；新增 5 条 `forkguard_workspace_roots_*`（forkguard 总数 63→68）。
+- 指纹锚点：`pub workspace_roots: Vec<PathBuf>,`（protocol）、`pub fn normalize_workspace_roots(`（core）、`ADD COLUMN workspace_roots TEXT NOT NULL DEFAULT '[]';`（state）、`WORKSPACE_ROOTS_SYMBOL: &str = ":workspace_roots"`（sandbox/policy）及 5 条 `fn forkguard_workspace_roots_*`。
+
 ### r12 厂商原生搜索与免 key 兜底 Bing 化（已合入底座）
 
 - CodeWhale PR #33（六提交 rebase 后以 `4f612e548` 汇入）：新增 DeepSeek Responses、Model Studio Token Plan（Qwen）、Moonshot/Kimi（K2.6 内建 `$web_search`、K3 官方 Formula 协议、Kimi Code `/search`）、Z.AI/智谱（全球 `search-prime` / 中国 `search_std`）、Xiaomi MiMo 的厂商原生搜索适配。能力按"厂商+模型+官方端点+产品面"四重精确匹配 fail-closed，K3 Formula 独立 180 秒预算与 8 次调用上限；评审发现的端点匹配宽松（整 URL 小写、无限剥尾斜杠）由收官提交 `4f612e548` 引入 `is_exact_url_route` 收紧。指纹锚点：`documented_server_side_web_search_for_route`、`WEB_SEARCH_FORMULA_URI`。

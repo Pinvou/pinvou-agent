@@ -6,8 +6,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-PUBLISHED_HEAD="e3c57d975a961a551749eca088464b556dfb52a6"
-PUBLISHED_COMMITS=38
+PUBLISHED_HEAD="2db754ecd48a343ef9a84cb4607b8ded3c829860"
+PUBLISHED_COMMITS=45
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -183,6 +183,21 @@ fingerprints+=(
   "T1|raw_memories 渲染对齐 Codex 字节格式 |CodeWhale/crates/tui/src/compaction/memory_export.rs|Merged stage-1 raw memories (stable ascending thread-id order):"
   "T1|压缩记忆导出挂点仅在摘要成功后触发   |CodeWhale/crates/tui/src/core/engine.rs|fn maybe_spawn_memory_export"
   "APP|压缩记忆导出隔离于根会话            |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn forkguard_compaction_memory_export_wiring_isolated_to_root_sessions"
+)
+
+# 多根工作区 workspace_roots(本分支待推送):线程携带 cwd(主根)+全量根集合,
+# 协议/SQLite/JSON 三层持久化,空集合逐字节等价单根现状;权限在每回合策略
+# 构造点物化(:workspace_roots 符号),附加根给访问权但不注入项目指令。
+fingerprints+=(
+  "T1|协议线程参数携带 workspace_roots     |CodeWhale/crates/protocol/src/lib.rs|pub workspace_roots: Vec<PathBuf>,"
+  "T1|core 归一化根集合 cwd 居首去重       |CodeWhale/crates/core/src/lib.rs|pub fn normalize_workspace_roots("
+  "T1|SQLite threads 表持久化根集合        |CodeWhale/crates/state/src/lib.rs|ADD COLUMN workspace_roots TEXT NOT NULL DEFAULT '[]';"
+  "T1|runtime 线程根集合持久化兼容旧档     |CodeWhale/crates/tui/src/runtime_threads/tests.rs|fn forkguard_workspace_roots_thread_record_persists_and_legacy_defaults_empty"
+  "T2|:workspace_roots 符号每回合物化      |CodeWhale/crates/tui/src/sandbox/policy.rs|WORKSPACE_ROOTS_SYMBOL: &str = \":workspace_roots\""
+  "T2|沙箱物化覆盖全部根且空集等价现状     |CodeWhale/crates/tui/src/core/authority.rs|fn forkguard_workspace_roots_sandbox_materializes_every_root"
+  "T2|写豁免 carve-out 跨根且排除名仍拒    |CodeWhale/crates/tui/src/core/authority.rs|fn forkguard_workspace_roots_carve_out_spans_attached_roots"
+  "T2|resolve_path 跨附加根放行越界仍拒    |CodeWhale/crates/tui/src/tools/spec/tests.rs|fn forkguard_workspace_roots_resolve_path_spans_attached_roots"
+  "T3|项目指令发现仅主根(缓存稳定)       |CodeWhale/crates/tui/src/project_context.rs|fn forkguard_workspace_roots_instructions_stay_primary_root_only"
 )
 
 for fp in "${fingerprints[@]}"; do
