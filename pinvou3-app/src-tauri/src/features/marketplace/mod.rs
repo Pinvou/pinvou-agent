@@ -2954,7 +2954,9 @@ mod tests {
 
     /// 损坏的 disabled_bundles.json：原始字节隔离成 `.corrupt.<ts>` 副本，
     /// 恢复 fail-closed——plain 保持 DenyAll 全关（不翻回全开）、迁移标记
-    /// 置位落盘（评审 #455：安全收敛特性宁可恢复全关，也不静默恢复全开）。
+    /// 置位**落盘**（评审 #455：安全收敛特性宁可恢复全关，也不静默恢复全开）。
+    /// 恢复一次性完成：损坏文件被降级态覆盖，重复读不再重新隔离（否则副本
+    /// 无界累积，评审 #455 阻塞项 2）。
     #[test]
     fn corrupt_disabled_bundles_quarantined_and_recovers_fail_closed() {
         with_temp_home(|| {
@@ -2976,11 +2978,32 @@ mod tests {
                 ],
                 "损坏恢复必须 fail-closed：plain 按 DenyAll 兜底全关"
             );
+            // 恢复态落盘：标记置位且不初始化任何 scope（内存与磁盘一致）。
+            let on_disk: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("恢复态应覆盖落盘"))
+                    .expect("落盘应为合法 JSON");
+            assert_eq!(
+                on_disk.get("plain_defaults_migrated"),
+                Some(&serde_json::Value::Bool(true)),
+                "迁移标记应置位落盘: {on_disk}"
+            );
+            assert!(
+                on_disk
+                    .get("initialized")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.is_empty())
+                    .unwrap_or(true),
+                "不得初始化任何 scope（fail-closed 靠 DenyAll 兜底）: {on_disk}"
+            );
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
             assert!(
                 file.plain_defaults_migrated,
                 "恢复后迁移标记应置位（不重复走升级判定）: {file:?}"
             );
+            // 重复读不重新隔离：恢复一次性完成（跨秒等一等再读，排除同秒
+            // 同名覆盖造成的假阳性）。
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+            let _ = load_disabled_connectors();
             let backups: Vec<_> = std::fs::read_dir(path.parent().unwrap())
                 .unwrap()
                 .flatten()
@@ -2990,7 +3013,7 @@ mod tests {
                         .starts_with("disabled_bundles.json.corrupt.")
                 })
                 .collect();
-            assert_eq!(backups.len(), 1, "损坏文件应留隔离副本");
+            assert_eq!(backups.len(), 1, "重复读不得产生新的隔离副本");
             assert_eq!(
                 std::fs::read_to_string(backups[0].path()).unwrap(),
                 "{\"plain_defaults_migrated\":",
@@ -3646,6 +3669,180 @@ mod tests {
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
             assert!(file.plain_defaults_migrated);
             assert!(file.initialized.contains("plain"));
+        });
+    }
+
+    /// composer 连接器开关桥接（评审 #455 阻塞项 1）：未初始化 scope 的门控
+    /// 来自 DenyAll 现算扩集（无视落盘列表），「开」方向只删落盘列表是静默
+    /// no-op——UI 显示已启用而 CLI 硬拦截/技能排除依旧。开方向必须以
+    /// 「扩集减该 id」初始化该 scope（用户显式开启 = 显式 opt-in）。
+    #[test]
+    fn connector_switch_enable_on_uninitialized_scope_materializes_opt_in() {
+        with_temp_home(|| {
+            // 全新装机：feishu（内置 CLI）在 plain/code 的 DenyAll 扩集里。
+            for scope in [ConnectorScope::Plain, ConnectorScope::Code] {
+                assert!(
+                    load_disabled_connectors_for(scope).contains(&"feishu".to_string()),
+                    "{scope:?} 未初始化应按 DenyAll 兜底含内置 feishu"
+                );
+            }
+            // 用户开回 feishu → 两个 scope 初始化（扩集减 feishu），feishu 退出
+            // 有效禁用集；其余内置包保持默认关。
+            sync_disabled_bundles_for_connector_switch("feishu", true);
+            for scope in [ConnectorScope::Plain, ConnectorScope::Code] {
+                let disabled = load_disabled_connectors_for(scope);
+                assert!(
+                    !disabled.contains(&"feishu".to_string()),
+                    "{scope:?} 开回后 feishu 必须退出有效禁用集: {disabled:?}"
+                );
+                for other in ["wecom", "dingtalk", "tmeet"] {
+                    assert!(
+                        disabled.contains(&other.to_string()),
+                        "{scope:?} 其余内置包应保持默认关: {disabled:?}"
+                    );
+                }
+            }
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(file.initialized.contains("plain") && file.initialized.contains("code"));
+        });
+    }
+
+    /// 关方向在**未初始化** scope 上必须物化状态（resolve + push +
+    /// initialized）：fresh 装机下已装连接器的落盘禁用列表为空（首读已冻结
+    /// 全新判定，installed.json 后补不进已冻结状态——这正是评审 #455 阻塞项 1
+    /// 引用的断裂场景），UI 关方向必须把它显式写入；再开回，退出有效禁用集，
+    /// 其余落盘条目不动（已初始化 scope 以落盘为准）。
+    #[test]
+    fn connector_switch_disable_then_enable_roundtrip_on_uninitialized_scope() {
+        with_temp_home(|| {
+            write_installed_ids(&["weather".to_string()]);
+            // fresh 装机：plain 未初始化、落盘禁用列表为空（冻结判定不受后补的
+            // installed.json 影响），weather 此刻不在有效禁用集。
+            let baseline = load_disabled_connectors_for(ConnectorScope::Plain);
+            assert!(!baseline.contains(&"weather".to_string()));
+
+            sync_disabled_bundles_for_connector_switch("weather", false);
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Plain),
+                vec!["weather".to_string()],
+                "关方向必须物化：weather 写入有效禁用集"
+            );
+
+            sync_disabled_bundles_for_connector_switch("weather", true);
+            assert!(
+                load_disabled_connectors_for(ConnectorScope::Plain).is_empty(),
+                "开回后 weather 退出，落盘其余条目（空）保持不动"
+            );
+        });
+    }
+
+    /// 关方向早退（评审 #455 非阻塞 2）：关掉一个不在有效禁用集里的 id
+    /// （未装的预置包）不得把当前扩集固化为用户状态——否则未来新增的内置包
+    /// 会因 scope 已初始化而默认开。
+    #[test]
+    fn connector_switch_disable_unknown_id_does_not_freeze_expansion() {
+        with_temp_home(|| {
+            sync_disabled_bundles_for_connector_switch("not-installed-preset", false);
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(
+                !file.initialized.contains("plain") && !file.initialized.contains("code"),
+                "id 不在有效禁用集时不得初始化 scope: {file:?}"
+            );
+            // 后装的新包仍按 DenyAll 默认关（扩集现算，未被固化）。
+            write_installed_ids(&["late-joiner".to_string()]);
+            assert!(
+                load_disabled_connectors_for(ConnectorScope::Plain)
+                    .contains(&"late-joiner".to_string()),
+                "scope 未初始化，后装包仍默认关"
+            );
+        });
+    }
+
+    /// 升级装机的开方向：已初始化 scope 保持原有「从落盘列表移除」行为。
+    #[test]
+    fn connector_switch_enable_on_initialized_scope_removes_from_stored_list() {
+        with_temp_home(|| {
+            save_disabled_connectors_for(
+                ConnectorScope::Plain,
+                &["weather".to_string(), "pptx".to_string()],
+            );
+            sync_disabled_bundles_for_connector_switch("weather", true);
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Plain),
+                vec!["pptx".to_string()]
+            );
+        });
+    }
+
+    /// 判定矩阵补全（评审 #455 非阻塞 4）：升级装机里 plain 在收敛前已被
+    /// 用户显式初始化（旧版文件 initialized 含 plain、无迁移标记）→ 保留
+    /// 落盘列表，不被迁移重置。
+    #[test]
+    fn plain_deny_all_upgrade_with_plain_pre_initialized_preserves_user_list() {
+        with_temp_home(|| {
+            write_installed_ids(&["weather".to_string()]);
+            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            // 旧版文件（无 plain_defaults_migrated）：用户早已显式关过 weather。
+            std::fs::write(
+                &path,
+                r#"{"scopes":{"plain":["weather"]},"initialized":["plain"]}"#,
+            )
+            .unwrap();
+            assert_eq!(load_disabled_connectors(), vec!["weather".to_string()]);
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(file.plain_defaults_migrated);
+            assert_eq!(
+                file.scopes.get("plain"),
+                Some(&vec!["weather".to_string()]),
+                "用户显式初始化的 plain 列表必须原样保留: {file:?}"
+            );
+        });
+    }
+
+    /// 判定矩阵补全：升级装机（家目录有既有状态）里的损坏文件 → 恢复同样
+    /// fail-closed（隔离 + 标记落盘 + DenyAll 兜底），升级信号不参与损坏恢复。
+    #[test]
+    fn corrupt_disabled_bundles_in_upgraded_install_also_recovers_fail_closed() {
+        with_temp_home(|| {
+            write_installed_ids(&["weather".to_string()]);
+            std::fs::write(
+                crate::platform::paths::pinvou3_home().join("settings.json"),
+                "{}",
+            )
+            .unwrap();
+            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::write(&path, "{not-json").unwrap();
+            let disabled = load_disabled_connectors();
+            assert!(
+                disabled.contains(&"weather".to_string())
+                    && disabled.contains(&"feishu".to_string()),
+                "升级装机的损坏恢复同样 fail-closed: {disabled:?}"
+            );
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(file.plain_defaults_migrated);
+            assert!(!file.initialized.contains("plain"));
+        });
+    }
+
+    /// 判定矩阵补全：空 sessions/ 目录（无任何目录项）不算升级信号——
+    /// 全新装机的 DenyAll 判定不受影响。
+    #[test]
+    fn plain_deny_all_empty_sessions_dir_is_not_an_upgrade_signal() {
+        with_temp_home(|| {
+            std::fs::create_dir_all(crate::platform::paths::sessions_root()).unwrap();
+            assert_eq!(
+                load_disabled_connectors(),
+                vec![
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ],
+                "空 sessions/ 目录不算升级信号，plain 仍 DenyAll 默认全关"
+            );
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(!file.initialized.contains("plain"));
         });
     }
 
