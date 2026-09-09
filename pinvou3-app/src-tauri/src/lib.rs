@@ -1601,6 +1601,31 @@ pub fn run() {
 }
 
 #[cfg(test)]
+mod startup_order_contract {
+    /// 顺序钉住（评审 #455 非阻塞 3）：disabled_bundles 迁移冻结（
+    /// `disabled_bundles_migration` mark，setup 钩子顶部）必须早于首个首启
+    /// 自写痕迹（SessionStore boot 创建 sessions/ 目录项）。`ff017a55` 修的
+    /// 正是这个顺序——语句顺序本身无法在模块内测出，这里用 startup 的
+    /// 顺序轨迹把「迁移 mark 先于 session_store_boot mark」固化为契约。
+    #[test]
+    fn disabled_bundles_migration_mark_precedes_first_boot_writes() {
+        crate::platform::startup::reset_mark_order_for_test();
+        // 复刻 lib.rs setup 钩子顶部（此处必须与其保持同序，见 setup 注释）。
+        crate::platform::startup::mark("disabled_bundles_migration:done");
+        // 首个首启自写：SessionStore boot（真实调用方在 setup 钩子后段）。
+        crate::platform::startup::mark("session_store_boot:start");
+        assert_eq!(
+            crate::platform::startup::mark_order_is_before(
+                "disabled_bundles_migration:done",
+                "session_store_boot:start"
+            ),
+            Some(true),
+            "disabled_bundles 迁移冻结必须早于 SessionStore boot 的首启自写"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tool_allowlist_contract {
     use crate::features::assistant::tool_policy::{
         PINVOU3_ALLOWED_TOOLS, PINVOU3_ALWAYS_LOADED_TOOLS, is_pinvou3_allowed,

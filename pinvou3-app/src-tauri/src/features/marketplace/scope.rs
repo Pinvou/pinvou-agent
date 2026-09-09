@@ -127,15 +127,19 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
         Ok(file) => file,
         Err(error) => {
             // 损坏文件不静默覆盖:先留 .corrupt.<ts> 隔离副本(installed.json
-            // 同款)再降级,原始字节可人工找回(评审 #445 P2)。恢复必须 fail-closed：
-            // 按空状态降级会把带迁移标记的新格式文件（用户可能显式关过包）恢复成
-            // 全开；安全收敛特性宁可恢复全关——只置迁移标记（冻结为全新装机判定）、
-            // 不初始化任何 scope，未初始化 scope 按 DenyAll 兜底（评审 #455）。
+            // 同款),再把降级态**覆盖落盘**——恢复须一次性完成,否则损坏文件
+            // 留在盘上、每次读都重新隔离,副本无界累积(评审 #455 阻塞项)。
+            // 恢复必须 fail-closed：按空状态降级会把带迁移标记的新格式文件
+            // （用户可能显式关过包）恢复成全开；安全收敛特性宁可恢复全关——
+            // 只置迁移标记（冻结为全新装机判定）、不初始化任何 scope，未初始化
+            // scope 按 DenyAll 兜底（评审 #455）。
             quarantine_corrupt_disabled_bundles(&content, &error.to_string());
-            DisabledBundlesFile {
+            let recovered = DisabledBundlesFile {
                 plain_defaults_migrated: true,
                 ..DisabledBundlesFile::default()
-            }
+            };
+            save_disabled_bundles_file(&recovered);
+            recovered
         }
     };
     if !file.plain_defaults_migrated {
@@ -337,12 +341,19 @@ fn merge_ids_into_scope(file: &mut DisabledBundlesFile, key: &str, ids: Vec<Stri
     }
 }
 
-/// 写完整文件（原子替换，与旧文件同范式）。
+/// 写完整文件（原子替换，与旧文件同范式）。先建父目录：迁移冻结/损坏恢复的
+/// 首次落盘可能早于任何建目录的启动步骤，`write_atomic` 不代建父目录，写失败
+/// 会让「全新 vs 升级」判定静默解冻、次读 fail-open（评审 #455）。
 fn save_disabled_bundles_file(file: &DisabledBundlesFile) {
+    let path = disabled_bundles_path();
+    if let Some(parent) = path.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            eprintln!("[scope] create parent dir for disabled_bundles.json failed: {error}");
+            return;
+        }
+    }
     if let Ok(json) = serde_json::to_string(file) {
-        if let Err(error) =
-            deepseek_tui::utils::write_atomic(&disabled_bundles_path(), json.as_bytes())
-        {
+        if let Err(error) = deepseek_tui::utils::write_atomic(&path, json.as_bytes()) {
             eprintln!("[scope] write disabled_bundles.json failed: {error}");
         }
     }
@@ -485,10 +496,10 @@ pub fn sync_deny_all_scopes_after_install(raw_id: &str) {
 /// composer 连接器开关 ↔ 统一禁用集桥接（二轮评审：CLI 三数据源无桥接）。
 /// 连接器停用标志（`<connector>_disabled` 文件）只删技能目录，而 execpolicy CLI
 /// 硬拦截与技能物化排除读 `disabled_bundles.json`——开关关掉连接器时必须同步把
-/// 包 id 写入所有 scope 的禁用集（开回时移除），两条门控才一致。
+/// 包 id 写入所有 scope 的禁用集，开回时必须把它从有效禁用集移除，两条门控才一致。
 pub fn sync_disabled_bundles_for_connector_switch(connector_id: &str, enabled: bool) {
     if enabled {
-        remove_bundle_from_disabled_scopes(connector_id);
+        enable_bundle_in_deny_all_scopes(connector_id);
         return;
     }
     // 单临界区 RMW（四轮评审 M-6b）：逐 scope 独立 load→save 两次加锁会在跨临界区
@@ -503,11 +514,63 @@ pub fn sync_disabled_bundles_for_connector_switch(connector_id: &str, enabled: b
         if ids.iter().any(|id| id == connector_id) {
             continue;
         }
+        // id 不在有效禁用集（未初始化 scope 按现算扩集兜底，未装的预置包不在
+        // 扩集里）：落盘初始化会把当前扩集固化为用户状态，未来新增的内置包将
+        // 默认开——与「用户没碰过的包默认关」语义相悖，不动（评审 #455）。
+        if !file.initialized.contains(mode.as_str()) {
+            continue;
+        }
         ids.push(connector_id.to_string());
         let key = mode.as_str().to_string();
         file.scopes.insert(key.clone(), ids);
         file.initialized.insert(key);
         changed = true;
+    }
+    if changed {
+        save_disabled_bundles_file(&file);
+    }
+}
+
+/// 连接器开回（enabled=true）方向的桥接：必须让包 id 退出**有效**禁用集。
+/// 只编辑落盘列表对未初始化 scope 是静默 no-op——其门控来自 DenyAll 现算扩集
+/// （无视落盘列表），UI 显示「已启用」而 CLI 硬拦截/技能排除依旧（评审 #455
+/// 阻塞项）。因此对每个「包 id 在现算扩集里且未初始化」的 scope，以
+/// 扩集减该 id 初始化（用户刚显式开启 = 显式 opt-in）；已初始化的 scope
+/// 保持原有从落盘列表移除的行为；同时清理可见性集残留。
+fn enable_bundle_in_deny_all_scopes(connector_id: &str) {
+    let _guard = DISABLED_BUNDLES_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut file = load_disabled_bundles_file_locked();
+    let mut changed = false;
+    for mode in SessionMode::ALL {
+        if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
+            continue;
+        }
+        let key = mode.as_str();
+        if file.initialized.contains(key) {
+            continue;
+        }
+        let mut ids = resolve_scope_disabled_ids(&file, *mode);
+        let before = ids.len();
+        ids.retain(|id| id != connector_id);
+        if ids.len() == before {
+            continue;
+        }
+        file.scopes.insert(key.to_string(), ids);
+        file.initialized.insert(key.to_string());
+        changed = true;
+    }
+    // 已初始化 scope 与可见性集：从落盘列表移除（与卸载清理同路径）。
+    for ids in file.scopes.values_mut() {
+        let before = ids.len();
+        ids.retain(|id| id != connector_id);
+        changed |= ids.len() != before;
+    }
+    for ids in file.hidden_scopes.values_mut() {
+        let before = ids.len();
+        ids.retain(|id| id != connector_id);
+        changed |= ids.len() != before;
     }
     if changed {
         save_disabled_bundles_file(&file);
