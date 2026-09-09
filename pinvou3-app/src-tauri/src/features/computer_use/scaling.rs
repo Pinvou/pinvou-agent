@@ -137,7 +137,12 @@ pub fn downscale_and_encode(capture: &Capture) -> Result<ScaledScreenshot, Compu
     let source = image::RgbaImage::from_raw(capture.width, capture.height, capture.rgba.clone())
         .ok_or_else(|| ComputerUseError::failed("capture buffer cannot form an image"))?;
     let shot = if factor < 1.0 {
-        image::imageops::resize(&source, shot_w, shot_h, image::imageops::FilterType::Triangle)
+        image::imageops::resize(
+            &source,
+            shot_w,
+            shot_h,
+            image::imageops::FilterType::Triangle,
+        )
     } else {
         source
     };
