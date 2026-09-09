@@ -98,6 +98,10 @@ impl SessionStore {
     /// Open the process-owned session store and recover tool histories left
     /// incomplete by a previous process, before any Engine is started.
     pub fn boot_for_process_startup() -> Result<Self> {
+        // 顺序钉住（评审 #455）：本 boot 会创建 sessions/ 目录项（首启自写
+        // 痕迹），disabled_bundles 迁移判定必须先于此完成——测试据此 mark
+        // 断言 lib.rs setup 钩子的顺序。
+        crate::platform::startup::mark("session_store_boot:start");
         Self::boot_inner(true)
     }
 
