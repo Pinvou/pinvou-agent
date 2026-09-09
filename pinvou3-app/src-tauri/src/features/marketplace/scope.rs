@@ -7,8 +7,10 @@
 //! 唯一跟随所属包（§5.2 不变量）。
 //!
 //! 落盘格式与 #287 泛化后的两份旧文件同构：`{scopes: {"<mode>": [...]},
-//! "initialized": ["<mode>"], project_skills_enabled}`，scope 键即 `SessionMode` 的
-//! kebab-case 名。首个版本读取时把两份旧文件迁移到本文件（读到即迁移）：
+//! "initialized": ["<mode>"], project_skills_enabled, plain_defaults_migrated}`，
+//! scope 键即 `SessionMode` 的 kebab-case 名。`plain_defaults_migrated` 是 plain
+//! scope 默认策略迁移标记：旧版文件（false）= 写于 plain 仍 AllowAll 的时代，
+//! 读到即迁移把 plain 初始化为落盘列表后落盘置位。首个版本读取时把两份旧文件迁移到本文件（读到即迁移）：
 //! 旧连接器 id 原样进包 id（连接器 id 即包 id）；旧技能 id 经 `bundle::skill_owner_package`
 //! 映射到所属包（companion → MCP/CLI 包，独立技能 → 自身）；`skill:` 前缀跨文件借道
 //! 残留统一剥除并清出连接器文件。迁移幂等，失败回退默认值（安全兜底）。
@@ -43,8 +45,9 @@ pub struct DisabledBundlesFile {
     pub project_skills_enabled: bool,
     /// plain scope 默认策略迁移标记：false（旧版文件无此字段）= 文件写于 plain
     /// 仍 AllowAll 的时代，读时迁移会把 plain 初始化为落盘列表（锁定当时实际的
-    /// 开/关状态）后置 true——存量用户升级后开关状态不变；新装机的首个写路径
-    /// 直接带 true，plain 未初始化时按 DenyAll 兜底（默认全关）。
+    /// 开/关状态）后置 true——存量用户升级后开关状态不变；全新装机首读置 true
+    /// 不初始化 plain，且**同样落盘冻结判定**（首启自写 settings.json/sessions
+    /// 会污染升级信号，见读路径注释），plain 未初始化时按 DenyAll 兜底（默认全关）。
     #[serde(default)]
     pub plain_defaults_migrated: bool,
     /// 未知键原样保留（前向兼容）。
@@ -82,6 +85,12 @@ pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
 /// 三者皆无。因此升级信号放宽为「任何既有 pinvou3_home 痕迹」：
 /// marketplace/installed.json、settings.json 或已有会话目录，任一存在即视
 /// 为升级装机并保留旧 AllowAll 语义（评审 #445 P1-2）。全空家目录才算全新。
+///
+/// 该宽口径信号会被应用自身的首启行为污染（首启即自写 settings.json 与
+/// sessions/default/artifacts/，均早于首次开关读），因此「升级 vs 全新」的
+/// 判定必须在**首次读取时无条件落盘**（置 `plain_defaults_migrated` 标记）
+/// 冻结——否则全新装机的第二次读取会被首启痕迹误判为升级而翻回全开
+/// （评审 #455 阻塞项）。
 fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
     let path = disabled_bundles_path();
     let content = match std::fs::read_to_string(&path) {
@@ -106,9 +115,10 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
                     .insert(SessionMode::Plain.as_str().to_string());
             }
             file.plain_defaults_migrated = true;
-            if !file.scopes.is_empty() || file.initialized.iter().any(|k| !k.is_empty()) {
-                save_disabled_bundles_file(&file);
-            }
+            // 无条件落盘冻结判定：全新装机不持久化标记时，首启自写的
+            // settings.json/sessions/default 会污染宽口径升级信号，次读即被
+            // 误判为升级装机而翻回全开（评审 #455 阻塞项）。
+            save_disabled_bundles_file(&file);
             return file;
         }
     };
@@ -116,9 +126,15 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
         Ok(file) => file,
         Err(error) => {
             // 损坏文件不静默覆盖:先留 .corrupt.<ts> 隔离副本(installed.json
-            // 同款),再按空状态降级,原始字节可人工找回(评审 #445 P2)。
+            // 同款)再降级,原始字节可人工找回(评审 #445 P2)。恢复必须 fail-closed：
+            // 按空状态降级会把带迁移标记的新格式文件（用户可能显式关过包）恢复成
+            // 全开；安全收敛特性宁可恢复全关——只置迁移标记（冻结为全新装机判定）、
+            // 不初始化任何 scope，未初始化 scope 按 DenyAll 兜底（评审 #455）。
             quarantine_corrupt_disabled_bundles(&content, &error.to_string());
-            DisabledBundlesFile::default()
+            DisabledBundlesFile {
+                plain_defaults_migrated: true,
+                ..DisabledBundlesFile::default()
+            }
         }
     };
     if !file.plain_defaults_migrated {
@@ -757,22 +773,12 @@ mod tests {
 }
 
 /// 把损坏的 disabled_bundles.json 原始字节隔离成 `.corrupt.<ts>` 副本
-/// （同 `installed.json` 的隔离先例），随后按空状态降级自愈。
+/// （与 installed.json 共用 `quarantine_corrupt_state_file`），随后由读路径
+/// fail-closed 降级自愈。
 fn quarantine_corrupt_disabled_bundles(content: &str, error: &str) {
     let path = disabled_bundles_path();
-    let Some(parent) = path.parent() else {
-        return;
-    };
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let backup = parent.join(format!("disabled_bundles.json.corrupt.{ts}"));
-    if let Err(write_err) = std::fs::write(&backup, content) {
-        eprintln!("[marketplace] failed to quarantine corrupt disabled_bundles.json: {write_err}");
-    }
+    super::quarantine_corrupt_state_file(&path, content);
     eprintln!(
-        "[marketplace] disabled_bundles.json was corrupt ({error}); quarantined to {} and reset to defaults",
-        backup.display()
+        "[marketplace] disabled_bundles.json was corrupt ({error}); quarantined and reset to fail-closed defaults"
     );
 }

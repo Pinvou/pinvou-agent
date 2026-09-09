@@ -56,45 +56,40 @@ const JOURNAL_REMOVE_RETRY_DELAY: Duration = Duration::from_millis(120);
 static FAIL_NEXT_INSTALLED_WRITE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// 「下一次 installed.json 写失败」注入的复位守卫：作用域结束（含 panic
-/// unwind 或安装路径提前失败、未消费注入）时自动清零，防止标志泄漏到后续
-/// 测试（曾在 install 早于 save_installed 失败时泄漏，击穿无关用例）。
+/// 故障注入标志的通用复位守卫：作用域结束（含 panic unwind 或目标路径提前
+/// 失败、未消费注入）时自动清零，防止标志泄漏到后续测试（曾在 install 早于
+/// save_installed 失败时泄漏，击穿无关用例）。三个注入点共用本守卫
+/// （评审 #455：三份逐字重复的守卫结构体合一）。
 #[cfg(test)]
-pub(crate) struct InstalledWriteFailureGuard;
+pub(crate) struct FailpointResetGuard(&'static std::sync::atomic::AtomicBool);
 
 #[cfg(test)]
-impl Drop for InstalledWriteFailureGuard {
+impl Drop for FailpointResetGuard {
     fn drop(&mut self) {
-        FAIL_NEXT_INSTALLED_WRITE.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
 #[cfg(test)]
-pub(crate) fn fail_next_installed_write_for_test() -> InstalledWriteFailureGuard {
-    FAIL_NEXT_INSTALLED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
-    InstalledWriteFailureGuard
+fn arm_failpoint(flag: &'static std::sync::atomic::AtomicBool) -> FailpointResetGuard {
+    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    FailpointResetGuard(flag)
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_installed_write_for_test() -> FailpointResetGuard {
+    arm_failpoint(&FAIL_NEXT_INSTALLED_WRITE)
 }
 
 #[cfg(test)]
 static FAIL_NEXT_JOURNAL_REMOVAL: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// 与 installed 写失败注入同款的复位守卫:调用点设置标志后、begin(..) 到达
+/// 与 installed 写失败注入同款:调用点设置标志后、begin(..) 到达
 /// 前失败(或 panic)时自动清零,不再泄漏到无关用例(评审 #445 P2)。
 #[cfg(test)]
-pub(crate) struct JournalRemovalFailureGuard;
-
-#[cfg(test)]
-impl Drop for JournalRemovalFailureGuard {
-    fn drop(&mut self) {
-        FAIL_NEXT_JOURNAL_REMOVAL.store(false, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn fail_next_journal_removal_for_test() -> JournalRemovalFailureGuard {
-    FAIL_NEXT_JOURNAL_REMOVAL.store(true, std::sync::atomic::Ordering::SeqCst);
-    JournalRemovalFailureGuard
+pub(crate) fn fail_next_journal_removal_for_test() -> FailpointResetGuard {
+    arm_failpoint(&FAIL_NEXT_JOURNAL_REMOVAL)
 }
 
 #[cfg(test)]
@@ -102,20 +97,8 @@ static FAIL_NEXT_MANAGED_DEPENDENCY_INSTALL: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(test)]
-pub(crate) struct ManagedDependencyInstallFailureGuard;
-
-#[cfg(test)]
-impl Drop for ManagedDependencyInstallFailureGuard {
-    fn drop(&mut self) {
-        FAIL_NEXT_MANAGED_DEPENDENCY_INSTALL.store(false, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn fail_next_managed_dependency_install_for_test() -> ManagedDependencyInstallFailureGuard
-{
-    FAIL_NEXT_MANAGED_DEPENDENCY_INSTALL.store(true, std::sync::atomic::Ordering::SeqCst);
-    ManagedDependencyInstallFailureGuard
+pub(crate) fn fail_next_managed_dependency_install_for_test() -> FailpointResetGuard {
+    arm_failpoint(&FAIL_NEXT_MANAGED_DEPENDENCY_INSTALL)
 }
 
 #[cfg(test)]
@@ -160,6 +143,29 @@ fn marketplace_transaction_journal() -> PathBuf {
     paths::pinvou3_home()
         .join("marketplace")
         .join("state-transaction.json")
+}
+
+/// 把损坏的状态文件原始字节隔离成 `<name>.corrupt.<ts>` 旁路副本（不删原文件），
+/// 供人工找回；随后调用方按各自策略降级自愈。installed.json 与
+/// disabled_bundles.json 共用本入口（评审 #455：两处曾近乎逐字重复）。
+pub(crate) fn quarantine_corrupt_state_file(path: &Path, content: &str) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backup = parent.join(format!("{name}.corrupt.{ts}"));
+    if let Err(error) = std::fs::write(&backup, content) {
+        eprintln!(
+            "[marketplace] failed to quarantine corrupt {name} to {}: {error}",
+            backup.display()
+        );
+    }
 }
 
 fn read_optional_file(path: &Path) -> Result<Option<Vec<u8>>, String> {
@@ -1573,20 +1579,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     }
 
     fn backup_corrupt_installed(&self, content: &str) {
-        let Some(parent) = self.installed_file.parent() else {
-            return;
-        };
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let backup = parent.join(format!("installed.json.corrupt.{ts}"));
-        if let Err(e) = std::fs::write(&backup, content) {
-            eprintln!(
-                "[marketplace] failed to backup corrupt installed.json to {}: {e}",
-                backup.display()
-            );
-        }
+        quarantine_corrupt_state_file(&self.installed_file, content);
     }
 
     fn recover_installed_ids_from_mcp(&self) -> Vec<String> {
@@ -2959,6 +2952,53 @@ mod tests {
         });
     }
 
+    /// 损坏的 disabled_bundles.json：原始字节隔离成 `.corrupt.<ts>` 副本，
+    /// 恢复 fail-closed——plain 保持 DenyAll 全关（不翻回全开）、迁移标记
+    /// 置位落盘（评审 #455：安全收敛特性宁可恢复全关，也不静默恢复全开）。
+    #[test]
+    fn corrupt_disabled_bundles_quarantined_and_recovers_fail_closed() {
+        with_temp_home(|| {
+            write_installed_ids(&["weather".to_string()]);
+            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "{\"plain_defaults_migrated\":").unwrap();
+
+            let disabled = load_disabled_connectors();
+
+            assert_eq!(
+                disabled,
+                vec![
+                    "weather".to_string(),
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ],
+                "损坏恢复必须 fail-closed：plain 按 DenyAll 兜底全关"
+            );
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(
+                file.plain_defaults_migrated,
+                "恢复后迁移标记应置位（不重复走升级判定）: {file:?}"
+            );
+            let backups: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+                .unwrap()
+                .flatten()
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with("disabled_bundles.json.corrupt.")
+                })
+                .collect();
+            assert_eq!(backups.len(), 1, "损坏文件应留隔离副本");
+            assert_eq!(
+                std::fs::read_to_string(backups[0].path()).unwrap(),
+                "{\"plain_defaults_migrated\":",
+                "隔离副本应保留原始字节"
+            );
+        });
+    }
+
     /// list_tools（composer 工具菜单数据源）必须与 BundleRegistry::list
     /// （bundle_readiness）同口径应用上传包的展示名/说明覆盖——两处标题
     /// 不一致就是这条路径漏了覆盖（评审发现的测试空缺）。
@@ -3246,10 +3286,9 @@ mod tests {
                 load_disabled_connectors_for(ConnectorScope::Code),
                 builtin_cli()
             );
-            // 模拟已装 2 个连接器后继续：宽口径升级信号（installed.json 已存在）
-            // 下首读会把 plain 初始化为空表——保留旧 AllowAll 语义（全开，见
-            // plain_deny_all_upgraded_install_*）；code 未初始化，兜底扩集随之
-            // 并入已装条目。
+            // 模拟已装 2 个连接器后继续：plain 首读已冻结 DenyAll 判定
+            // （plain_deny_all_marker_frozen_at_first_read），installed.json 出现
+            // 不再触发翻回全开；code 兜底扩集随之并入已装条目。
             write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
             let deny_all_default = || {
                 vec![
@@ -3261,7 +3300,10 @@ mod tests {
                     "tmeet".to_string(),
                 ]
             };
-            assert!(load_disabled_connectors_for(ConnectorScope::Plain).is_empty());
+            assert_eq!(
+                load_disabled_connectors_for(ConnectorScope::Plain),
+                deny_all_default()
+            );
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
                 deny_all_default()
@@ -3490,8 +3532,9 @@ mod tests {
 
     /// plain 收敛 DenyAll 的读时迁移（全新装机）：家目录无任何既有状态 → 只
     /// 置标记不初始化 plain，未初始化 scope 按 DenyAll 兜底（默认全关，内置
-    /// CLI 列表）；不产生落盘。「全新」是宽口径升级信号的补集：装过包、写过
-    /// 设置或有过会话都算升级装机（评审 #445 P1-2）。
+    /// CLI 列表）；判定在首读即落盘冻结（宽口径升级信号会被首启自写的
+    /// settings.json/sessions 污染，评审 #455 阻塞项）。「全新」是宽口径升级
+    /// 信号的补集：装过包、写过设置或有过会话都算升级装机（评审 #445 P1-2）。
     #[test]
     fn plain_deny_all_fresh_install_defaults_off() {
         with_temp_home(|| {
@@ -3506,7 +3549,56 @@ mod tests {
                 "全新装机 plain 未初始化 → DenyAll 默认全关（内置 CLI）"
             );
             let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
-            assert!(!path.exists(), "全新装机的纯读路径不应落盘");
+            let content = std::fs::read_to_string(&path).expect("首读应落盘冻结迁移判定");
+            assert!(
+                content.contains("\"plain_defaults_migrated\":true"),
+                "冻结的判定只置迁移标记、不初始化 plain: {content}"
+            );
+            assert!(
+                !content.contains("\"plain\""),
+                "不得初始化 plain: {content}"
+            );
+        });
+    }
+
+    /// 评审 #455 阻塞项回归：真实首启时 bridge/paths 会先自写 settings.json
+    /// 与 sessions/default/artifacts/，早于任何开关读。若全新装机的迁移判定
+    /// 不随首读落盘冻结，宽口径升级信号（settings/会话存在 ⇒ 升级装机）会
+    /// 被首启痕迹污染，次读把 plain 初始化回旧 AllowAll 全开。本测试模拟
+    /// 「首读（冻结全新判定）→ 首启自写痕迹 → 次读」的完整序列。
+    #[test]
+    fn plain_deny_all_marker_frozen_at_first_read() {
+        with_temp_home(|| {
+            let builtin_cli = || {
+                vec![
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ]
+            };
+            // 首读：全新装机判定冻结落盘（DenyAll 兜底全关）。
+            assert_eq!(load_disabled_connectors(), builtin_cli());
+            // 首启自写痕迹（bridge.rs 首启默认 settings.json；ensure_dirs 创建
+            // sessions/default/artifacts/）。
+            let home = crate::platform::paths::pinvou3_home();
+            std::fs::write(home.join("settings.json"), "{}").unwrap();
+            std::fs::create_dir_all(
+                crate::platform::paths::sessions_root().join("default/artifacts"),
+            )
+            .unwrap();
+            // 次读：信号已被污染，但判定已冻结——plain 必须保持 DenyAll。
+            assert_eq!(
+                load_disabled_connectors(),
+                builtin_cli(),
+                "首启痕迹不得把已冻结的全新装机判定翻回全开"
+            );
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(file.plain_defaults_migrated);
+            assert!(
+                !file.initialized.contains("plain"),
+                "全新装机 plain 不得被初始化: {file:?}"
+            );
         });
     }
 

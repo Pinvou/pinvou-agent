@@ -28,6 +28,8 @@ pub enum SessionMode {
 /// feature 依赖环（见 marketplace/skill_scope.rs 头注释）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackDefaultPolicy {
+    /// 默认全开。当前所有模式均已收敛 DenyAll，此变体仅为未来可能的新模式
+    /// 保留（评审 #455），现有代码路径不可达。
     AllowAll,
     DenyAll,
 }
