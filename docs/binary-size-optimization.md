@@ -22,7 +22,7 @@ that test in the same PR.
 | DMG compression | tauri emits UDZO without zlib-level (hdiutil default level 1); converted to **ULMO** (LZMA) after the build (mounting needs macOS 10.15+; our floor is 11.0) | `release-packages.yml` macOS job + `scripts/release-macos.sh` |
 | NSIS compression | already solid LZMA (`bundle.windows.nsis.compression` in `config/platforms/windows/tauri.conf.json`; the tauri v2 default is the best tier) | no change needed |
 | Frontend assets | tauri `compression` (default feature) embeds frontendDist with Brotli q9 | tauri built-in, no stronger tier |
-| Windows OTA zip | `CompressionLevel::SmallestSize` (was Optimal); requires pwsh ≥ 6 — the value does not exist on .NET Framework / Windows PowerShell 5.1, so the script declares `#requires -Version 6` | `scripts/build-windows-ota.ps1` |
+| Windows OTA zip | `CompressionLevel::SmallestSize` (was Optimal); requires pwsh ≥ 7.2 — the value was introduced in .NET 6, so it is absent on .NET Framework / Windows PowerShell 5.1 and on PowerShell 6.x–7.1, and the script declares `#requires -Version 7.2` | `scripts/build-windows-ota.ps1` |
 | knowledge-server ELF | the standalone ELF inside the deb now matches the main app: thin LTO + strip | `pinvou-knowledge/Cargo.toml [profile.release]` |
 
 ## macOS strip and the dyld alignment fix

@@ -1,10 +1,12 @@
 # Invoked by the private Windows release pipeline on a build machine (no CI
 # reference inside this repo is expected). The input artifact name matches the
 # release-packages.yml tauri nsis default: pinvou3_<version>_x64-setup.exe.
-# Requires pwsh: CompressionLevel::SmallestSize does not exist on .NET
-# Framework, so Windows PowerShell 5.1 would fail mid-run without the
+# Requires pwsh 7.2+: CompressionLevel::SmallestSize was introduced in .NET 6
+# and the first PowerShell built on .NET 6 is 7.2 — Windows PowerShell 5.1
+# (.NET Framework) and PowerShell 6.x/7.0/7.1 (.NET Core / .NET 5) all lack
+# the enum member and would fail mid-run at the first CreateEntry without the
 # explicit version requirement below.
-#requires -Version 6
+#requires -Version 7.2
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true, Position = 0)]
