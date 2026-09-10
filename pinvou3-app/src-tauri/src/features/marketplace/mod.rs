@@ -3707,19 +3707,28 @@ mod tests {
         });
     }
 
-    /// 关方向在**未初始化** scope 上必须物化状态（resolve + push +
-    /// initialized）：fresh 装机下已装连接器的落盘禁用列表为空（首读已冻结
-    /// 全新判定，installed.json 后补不进已冻结状态——这正是评审 #455 阻塞项 1
-    /// 引用的断裂场景），UI 关方向必须把它显式写入；再开回，退出有效禁用集，
-    /// 其余落盘条目不动（已初始化 scope 以落盘为准）。
+    /// 关 → 开往返（评审 #455 三轮 M1）：本测试在首读前写入 installed.json，
+    /// 宽口径升级信号因此把 plain **迁移初始化**为空落盘列表——钉住的是
+    /// 「迁移已初始化 scope 的往返」，不是未初始化 scope。关方向：id 不在
+    /// 有效禁用集且 scope 已初始化 → 物化（resolve + push）；开方向：从落盘
+    /// 列表移除，其余条目不动（已初始化 scope 以落盘为准）。真正未初始化
+    /// scope 的关方向语义与之不同：id 已在 DenyAll 现算扩集里 → no-op；
+    /// id 不在扩集里 → 早退不初始化——分别见
+    /// `connector_switch_disable_builtin_on_uninitialized_scope_is_noop` 与
+    /// `connector_switch_disable_unknown_id_does_not_freeze_expansion`。
     #[test]
-    fn connector_switch_disable_then_enable_roundtrip_on_uninitialized_scope() {
+    fn connector_switch_disable_then_enable_roundtrip_on_migration_initialized_scope() {
         with_temp_home(|| {
+            // installed.json 先于首读落盘 ⇒ 升级信号 ⇒ plain 迁移初始化为空
+            // 落盘列表，weather 此刻不在有效禁用集。
             write_installed_ids(&["weather".to_string()]);
-            // fresh 装机：plain 未初始化、落盘禁用列表为空（冻结判定不受后补的
-            // installed.json 影响），weather 此刻不在有效禁用集。
             let baseline = load_disabled_connectors_for(ConnectorScope::Plain);
             assert!(!baseline.contains(&"weather".to_string()));
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(
+                file.initialized.contains("plain"),
+                "升级信号应先迁移初始化 plain: {file:?}"
+            );
 
             sync_disabled_bundles_for_connector_switch("weather", false);
             assert_eq!(
@@ -3732,6 +3741,36 @@ mod tests {
             assert!(
                 load_disabled_connectors_for(ConnectorScope::Plain).is_empty(),
                 "开回后 weather 退出，落盘其余条目（空）保持不动"
+            );
+        });
+    }
+
+    /// 真正未初始化 scope 的关方向（评审 #455 三轮 M1）：全空家目录首读冻结
+    /// 全新装机判定（不初始化任何 scope）后，关掉一个**已在 DenyAll 现算扩集
+    /// 里**的内置 id（feishu）是 no-op——门控本就来自扩集，物化落盘反而会把
+    /// 当前扩集固化为用户状态（未来新增内置包将默认开）。因此不得初始化
+    /// scope、不得落盘任何列表，feishu 继续由扩集兜底默认关。
+    #[test]
+    fn connector_switch_disable_builtin_on_uninitialized_scope_is_noop() {
+        with_temp_home(|| {
+            // 首读冻结全新装机判定；feishu（内置 CLI）经 DenyAll 扩集已在
+            // 有效禁用集。
+            assert!(
+                load_disabled_connectors_for(ConnectorScope::Plain).contains(&"feishu".to_string())
+            );
+            sync_disabled_bundles_for_connector_switch("feishu", false);
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(
+                !file.initialized.contains("plain") && !file.initialized.contains("code"),
+                "id 已在扩集里时关方向是 no-op，不得初始化 scope: {file:?}"
+            );
+            assert!(
+                file.scopes.get("plain").is_none() && file.scopes.get("code").is_none(),
+                "no-op 不得落盘物化任何列表: {file:?}"
+            );
+            // 门控仍来自现算扩集：feishu 保持默认关。
+            assert!(
+                load_disabled_connectors_for(ConnectorScope::Plain).contains(&"feishu".to_string())
             );
         });
     }
