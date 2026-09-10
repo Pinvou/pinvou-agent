@@ -15,15 +15,19 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 
-/// 单次 backend 请求的等待上限。必须覆盖最长的合法操作：`hold_key` 30s +
-/// Wayland portal 授权对话框 120s（评审发现：`recv()` 无上限，一个挂死的
-/// XTEST/CGEvent/portal 调用会让该会话后续所有请求永远排队且无错误返回）。
+/// 单次 backend 请求的等待上限。必须覆盖**同一条**懒启动路径的最坏合法
+/// 组合（评审第三轮发现：常数论证要按求和做，不能只看单项）：portal 探测
+/// 建连 5s + Start 方法调用 30s + 授权对话框 120s + `hold_key` 30s = 185s，
+/// 取 190s 留余量。旧值 150s 恰好等于「120+30」的字面拼凑，同帧懒启动的
+/// hold_key 会假超时——调用方误判失败并重试，而已出队不可中断的僵尸请求
+/// 仍会执行，产生双重注入。此前的历史评审发现仍然成立：`recv()` 无上限会让
+/// 一个挂死的 XTEST/CGEvent/portal 调用让该会话后续所有请求永远排队。
 /// 超时只释放调用方；超时/断连后调用方置位请求的取消旗标，worker 在出队
 /// 后、执行前检查，已取消的请求不再执行。剩余缺口（固有限制，如实记录）：
 /// 已进入 OS 调用（XTEST/CGEvent/portal）的请求无法中断，只能在请求边界
 /// 拦截；worker 线程若仍卡在 OS 调用里，后续请求会被 in-flight 旗标拒绝
 /// 而不是排队占线程。
-const BACKEND_CALL_TIMEOUT: Duration = Duration::from_secs(150);
+const BACKEND_CALL_TIMEOUT: Duration = Duration::from_secs(190);
 
 use super::types::{
     Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
