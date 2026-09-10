@@ -212,25 +212,45 @@ assert.deepStrictEqual(
   { type: 'trigger', mode: 'dictation' },
 );
 
-// Right Alt shares key === 'Alt' but must never trigger: the Windows hook
-// classifies VK_RMENU as Other ("右 Alt / AltGr 不触发语音快捷键"), so the
-// JS gesture channel must agree — otherwise a bare right-Alt tap would fire
-// dictation through the page lane the hook deliberately passes through.
+// Right Alt triggers the same gesture as left Alt: the Rust hook classifies
+// VK_RMENU as Alt(AltSide::Right) (bare right-Alt taps are swallowed and
+// trigger there, so on Windows-native this lane only matters when the hook is
+// off), and on macOS this JS lane is the only channel — right Option must
+// work. AltGr (Ctrl+right Alt, European layouts) stays inert via the ctrlKey
+// guard, matching the hook where the layout-synthesized left-Ctrl passes
+// unswallowed and no gesture arms.
 const altRight = () => alt({ code: 'AltRight', location: 2 });
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown(altRight(), { status: 'idle', pendingAlt: false }),
-  { type: 'none' },
-  'right Alt keydown must not start a pending gesture',
+  { type: 'pending_alt' },
+  'right Alt keydown must arm the gesture like left Alt',
 );
 assert.deepStrictEqual(
   voiceShortcutActionForKeyUp(altRight(), { status: 'idle', pendingAlt: true }),
-  { type: 'clear_pending' },
-  'right Alt keyup while pending must clear, not trigger (or stop a recording)',
+  { type: 'trigger', mode: 'dictation' },
+  'right Alt keyup while pending must trigger dictation',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(altRight(), { status: 'idle', pendingAlt: false }),
+  { type: 'none' },
+);
+// A bare right-Alt tap from keydown to keyup is one full gesture.
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(altRight(), { status: 'recording', mode: 'task', pendingAlt: true }),
+  { type: 'trigger', mode: 'task' },
+  'right Alt must also stop an active recording',
 );
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown(alt({ code: 'AltRight', location: 2, ctrlKey: true }), { status: 'idle', pendingAlt: false }),
   { type: 'none' },
   'AltGr (ctrl+right Alt) must stay inert',
+);
+// The location/code exclusions were removed, so an AltRight event without a
+// location field must arm as well.
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(alt({ code: 'AltRight' }), { status: 'idle', pendingAlt: false }),
+  { type: 'pending_alt' },
+  'right Alt without a location field must still arm the gesture',
 );
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown(alt(), { status: 'idle', pendingAlt: false }),
