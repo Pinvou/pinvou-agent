@@ -9,7 +9,15 @@ use std::sync::Mutex as StdMutex;
 
 #[derive(Default)]
 struct MockState {
+    /// 命中测试按元素 bounds 判定（真实 a11y 语义）：element_at_point 只在
+    /// 查询点落入元素矩形内时返回它。
     element: Option<ElementInfo>,
+    /// 置位时 element_at_point 返回 Err（a11y 故障注入）。
+    element_error: bool,
+    /// 置位时 cursor_position 返回 Err（光标未知，如 Wayland 首次 move 前）。
+    cursor_error: bool,
+    /// 置位时 input 能力位为 false（默认具备输入能力）。
+    no_input_cap: bool,
     moved_to: Vec<(i32, i32)>,
     clicked: Vec<(MouseButton, u8)>,
     typed: Vec<String>,
@@ -24,7 +32,7 @@ impl ComputerUseBackend for MockBackend {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             screenshot: true,
-            input: true,
+            input: !self.state.lock().no_input_cap,
             ui_tree: true,
             notes: "mock".to_string(),
         }
@@ -47,6 +55,12 @@ impl ComputerUseBackend for MockBackend {
     }
 
     fn cursor_position(&mut self) -> Result<(i32, i32), ComputerUseError> {
+        if self.state.lock().cursor_error {
+            return Err(ComputerUseError::unsupported(
+                "cursor_position",
+                "mock: cursor position unknown",
+            ));
+        }
         Ok((7, 9))
     }
 
@@ -100,10 +114,21 @@ impl ComputerUseBackend for MockBackend {
 
     fn element_at_point(
         &mut self,
-        _x: i32,
-        _y: i32,
+        x: i32,
+        y: i32,
     ) -> Result<Option<ElementInfo>, ComputerUseError> {
-        Ok(self.state.lock().element.clone())
+        let state = self.state.lock();
+        if state.element_error {
+            return Err(ComputerUseError::unavailable("mock: a11y backend failed"));
+        }
+        let Some(element) = &state.element else {
+            return Ok(None);
+        };
+        let hit = x >= element.x
+            && x < element.x + element.width
+            && y >= element.y
+            && y < element.y + element.height;
+        Ok(hit.then(|| element.clone()))
     }
 }
 
@@ -379,6 +404,8 @@ async fn out_of_bounds_coordinates_clamp_with_warning() {
 #[tokio::test]
 async fn first_coordinate_action_auto_captures() {
     let (fixture, _restore) = fixture();
+    // scroll 是 Input 类动作（评审修正）：需要会话授权。
+    fixture.shared.grant_session("s-test");
     let result = fixture
         .tool
         .execute(
@@ -459,7 +486,7 @@ async fn t3_denylist_blocks_click_until_user_confirms() {
         .await;
     let forged_text = forged.ok().map(|r| r.content).unwrap_or_default();
     assert!(
-        forged_text.contains("invalid or was already used"),
+        forged_text.contains("invalid, expired, or was already used"),
         "{forged_text}"
     );
 
@@ -555,4 +582,286 @@ async fn cursor_position_reports_screenshot_space_after_capture() {
         .await;
     let text = result.ok().map(|r| r.content).unwrap_or_default();
     assert!(text.contains("(7, 9) in screenshot space"), "{text}");
+}
+
+// ---------------------------------------------------------------------------
+// 评审修复回归:层级绕过 / fail-open / 令牌绑定 / 能力先行
+// ---------------------------------------------------------------------------
+
+/// P0 回归:mouse_down/mouse_up 曾不在 T3 清单里,可拆解出零确认点击。
+#[tokio::test]
+async fn mouse_down_up_composition_is_t3_screened() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    // 光标 (7,9) 处是 denylist 控件。
+    fixture.mock.lock().element = Some(ElementInfo {
+        role: "button".to_string(),
+        name: "Delete forever".to_string(),
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: false,
+    });
+    for action in ["left_mouse_down", "left_mouse_up"] {
+        let result = fixture
+            .tool
+            .execute(json!({"action": action}), &context(&fixture.workspace))
+            .await;
+        let text = result.ok().map(|r| r.content).unwrap_or_default();
+        assert!(text.contains("NOT executed"), "{action}: {text}");
+        assert!(text.contains("confirm_id"), "{action}: {text}");
+    }
+    assert!(
+        !fixture
+            .events
+            .lock()
+            .map(|e| e.clone())
+            .unwrap_or_default()
+            .is_empty(),
+        "confirm_required must have been emitted"
+    );
+}
+
+/// 筛查故障必须失败关闭:无法证明目标无害 = 要求确认,绝不放行。
+#[tokio::test]
+async fn unscreenable_a11y_failure_requires_confirmation() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().element_error = true;
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("NOT executed"), "{text}");
+    assert!(text.contains("unverifiable target"), "{text}");
+    assert!(fixture.mock.lock().clicked.is_empty());
+}
+
+/// 光标未知(如 Wayland 首次 move 前)时 type/key 也必须失败关闭。
+#[tokio::test]
+async fn unknown_cursor_fails_closed_for_typing() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().cursor_error = true;
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "type", "text": "hello"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("NOT executed"), "{text}");
+    assert!(fixture.mock.lock().typed.is_empty());
+}
+
+/// drag 的落点(而不只是光标)必须被筛查:起点无元素、终点命中 denylist。
+#[tokio::test]
+async fn drag_drop_target_is_screened() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().element = Some(ElementInfo {
+        role: "button".to_string(),
+        name: "Delete".to_string(),
+        x: 10,
+        y: 10,
+        width: 5,
+        height: 5,
+        secure: false,
+    });
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click_drag", "start_x": 1, "start_y": 1, "x": 12, "y": 12}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("NOT executed"), "{text}");
+    assert!(text.contains("Delete"), "{text}");
+}
+
+/// 用户拒绝后的 confirm_id 重试必须得到明确「已被拒绝」。
+#[tokio::test]
+async fn denied_confirmation_reports_denial_on_retry() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().element = Some(ElementInfo {
+        role: "button".to_string(),
+        name: "Buy now".to_string(),
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: false,
+    });
+    let first = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    let confirm_id = events
+        .iter()
+        .rev()
+        .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+        .map(|(_, p)| p["confirm_id"].as_str().unwrap_or_default().to_string())
+        .expect("confirm event");
+    assert!(
+        first
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("NOT executed")
+    );
+    fixture.shared.deny_confirmation(&confirm_id);
+    let retry = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5, "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = retry.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("user denied"), "{text}");
+    assert!(fixture.mock.lock().clicked.is_empty());
+}
+
+/// 令牌绑定动作:为 A 动作铸造的 confirm_id 不能给 B 动作用(工具层集成)。
+#[tokio::test]
+async fn confirm_token_is_bound_to_the_action() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().element = Some(ElementInfo {
+        role: "button".to_string(),
+        name: "Buy now".to_string(),
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: false,
+    });
+    let _ = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    let confirm_id = events
+        .iter()
+        .rev()
+        .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+        .map(|(_, p)| p["confirm_id"].as_str().unwrap_or_default().to_string())
+        .expect("confirm event");
+    fixture.shared.mint_confirmation(&confirm_id);
+    // 拿「点击」的令牌去重放「type」——必须被拒。
+    let replay = fixture
+        .tool
+        .execute(
+            json!({"action": "type", "text": "hi", "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = replay.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("invalid, expired, or was already used"),
+        "{text}"
+    );
+    assert!(fixture.mock.lock().typed.is_empty());
+}
+
+/// 评审修正:mouse_move/scroll 是真实指针输入,必须持会话授权。
+#[tokio::test]
+async fn mouse_move_requires_session_grant() {
+    let (fixture, _restore) = fixture();
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "mouse_move", "x": 3, "y": 4}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("has not granted control"), "{text}");
+    assert!(fixture.mock.lock().moved_to.is_empty(), "must not move");
+}
+
+/// 能力先行:无输入能力的平台在授权门控之前就被拒绝,不弹授权、不耗预算。
+#[tokio::test]
+async fn unsupported_input_platform_is_rejected_before_grant_prompt() {
+    let (fixture, _restore) = fixture();
+    fixture.mock.lock().no_input_cap = true;
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 1, "y": 2}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("input injection is unsupported"), "{text}");
+    assert!(
+        !text.contains("has not granted control"),
+        "must not ask for a grant on an incapable platform: {text}"
+    );
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    assert!(
+        !events.iter().any(|(name, _)| name == EVENT_GRANT_REQUIRED),
+        "no grant prompt expected, got {events:?}"
+    );
+}
+
+/// schema enum、未知动作错误文案与 parse_action 分发三者一致。
+#[tokio::test]
+async fn schema_actions_match_parser() {
+    let (fixture, _restore) = fixture();
+    let schema = fixture.tool.input_schema();
+    let enum_values = schema["properties"]["action"]["enum"]
+        .as_array()
+        .expect("enum");
+    let listed: Vec<&str> = enum_values
+        .iter()
+        .map(|v| v.as_str().expect("string enum entry"))
+        .collect();
+    assert_eq!(
+        listed, SUPPORTED_ACTIONS,
+        "schema enum must match SUPPORTED_ACTIONS"
+    );
+    for action in SUPPORTED_ACTIONS {
+        assert!(
+            parse_action(&minimal_input(action)).is_ok(),
+            "{action} should parse with minimal valid args"
+        );
+    }
+    let err = parse_action(&json!({"action": "bogus"}));
+    let text = err.err().map(|e| e.to_string()).unwrap_or_default();
+    for action in SUPPORTED_ACTIONS {
+        assert!(text.contains(action), "error must list {action}: {text}");
+    }
+}
+
+/// 每个动作的最小合法参数（parity 测试用）。
+fn minimal_input(action: &str) -> Value {
+    match action {
+        "wait" => json!({"action": "wait", "ms": 1}),
+        "element_at_point" => json!({"action": "element_at_point", "x": 1, "y": 2}),
+        "mouse_move" => json!({"action": "mouse_move", "x": 1, "y": 2}),
+        "scroll" => json!({"action": "scroll", "direction": "down", "amount": 1}),
+        "left_click_drag" => {
+            json!({"action": "left_click_drag", "start_x": 1, "start_y": 2, "x": 3, "y": 4})
+        }
+        "type" => json!({"action": "type", "text": "a"}),
+        "key" => json!({"action": "key", "text": "a"}),
+        "hold_key" => json!({"action": "hold_key", "text": "a", "ms": 10}),
+        other => json!({"action": other}),
+    }
 }
