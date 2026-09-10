@@ -383,8 +383,8 @@ fn rebind_roots_rejects_overlap_and_keeps_state() {
     let occupied = temp.path().join("occupied");
     std::fs::create_dir_all(&occupied).expect("create occupied dir");
 
-    let project = create(&store, "待搬", &[from.clone()]);
-    create(&store, "已有领地", &[occupied.clone()]);
+    let project = create(&store, "待搬", std::slice::from_ref(&from));
+    create(&store, "已有领地", std::slice::from_ref(&occupied));
 
     let before = store.get(&project.id).unwrap();
     let error = store
