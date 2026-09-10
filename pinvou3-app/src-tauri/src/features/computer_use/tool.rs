@@ -103,6 +103,10 @@ impl ComputerUseEventSink for TauriEventSink {
 struct ToolState {
     last_map: Option<ScaleMap>,
     shot_seq: u64,
+    /// 左键是否处于本工具按下的状态(down 成功置位、up/drag 成功清除)。
+    /// 按住期间 mouse_move 实质是拖拽,落点必须过 T3 筛查(评审发现:
+    /// down(无害)→move(不筛查)→up 的拆解可把文件拖进回收站)。
+    mouse_buttons_held: bool,
 }
 
 /// 可克隆的执行部件（execute 是 async，后端调用全同步，整体移入
@@ -239,16 +243,15 @@ fn req_text(input: &Value, action: &str) -> Result<String, ToolError> {
     }
 }
 
-/// 拒绝该动作不接受的字段（`action`/`confirm_id` 全局通用，不计）。
+/// 拒绝该动作不接受的字段（`action`/`confirm_id` 全局通用，不计）。显式
+/// `null` 同样拒绝——schema 未定义的字段即使值为 null 也是模型幻觉/协议
+/// 漂移的信号，静默放行会让 schema 漂移不可观测（评审发现）。
 fn reject_unexpected(input: &Value, action: &str, allowed: &[&str]) -> Result<(), ToolError> {
     let Some(object) = input.as_object() else {
         return Err(invalid("input must be a JSON object"));
     };
     for key in object.keys() {
         if key == "action" || key == "confirm_id" || allowed.contains(&key.as_str()) {
-            continue;
-        }
-        if object.get(key).is_some_and(Value::is_null) {
             continue;
         }
         let label = match key.as_str() {
@@ -580,6 +583,34 @@ fn screen_point(parts: &Parts, x: i32, y: i32) -> T3Screening {
     }
 }
 
+/// 键盘和弦是否具有后果性语义：Delete/Backspace 与修饰键组合（cmd+delete
+/// 删除文件、ctrl+w 丢失未保存工作）、Enter 与修饰键组合（cmd/ctrl+Enter
+/// 发送/提交）。评审发现：焦点元素的 name 看不出按键会触发的后果——焦点
+/// 在聊天框（name 为空）时 `key "cmd+Enter"` 直接发送消息，焦点元素筛查
+/// 完全拦不住。普通 Enter/Delete（文本编辑最常用）不受影响。
+fn chord_is_consequential(keys: &[Key]) -> bool {
+    let has_modifier = keys
+        .iter()
+        .any(|k| matches!(k, Key::Control | Key::Alt | Key::Meta));
+    let destructive = keys
+        .iter()
+        .any(|k| matches!(k, Key::Delete | Key::Backspace));
+    let enter = keys.iter().any(|k| matches!(k, Key::Enter));
+    (destructive && has_modifier) || (enter && has_modifier)
+}
+
+/// Type 动作的目标是否密码/安全字段（确认摘要据此掩码预览）。以焦点元素为
+/// 准；焦点读不出时无法证明不是密码框，保守掩码（评审发现：确认摘要把键入
+/// 文本前 12 字符明文送进确认弹窗/事件流，而「向密码框键入」恰是必然被拦
+/// 走确认流程的场景）。
+fn type_target_is_secure(parts: &Parts) -> bool {
+    match parts.backend.focused_element() {
+        Ok(Some(element)) => element.secure || is_secure_role(&element.role),
+        // Ok(None)=无处键入（掩码与否无意义）；Err=查询失败，保守掩码。
+        _ => true,
+    }
+}
+
 /// T3 后果性筛查：Input 类动作执行前查目标处的 a11y 元素。
 ///
 /// 筛查点选择：
@@ -589,22 +620,45 @@ fn screen_point(parts: &Parts, x: i32, y: i32) -> T3Screening {
 ///   是光标处——焦点在密码框、光标在别处时按光标筛查会漏判放行（评审发现，
 ///   最重级别）。`focused_element` 返回 Ok(None)=明确无焦点=无处键入，放行；
 ///   Err=查询失败/平台不支持 → `Unscreenable` 失败关闭。后端不支持时默认
-///   实现返回 Err，同样失败关闭。
+///   实现返回 Err，同样失败关闭。此外，破坏性组合键（见
+///   [`chord_is_consequential`]）无论焦点为何都要求确认。
+/// - mouse_move 在左键**未**按下时只悬停、不产生后果，明确不筛查（否则合法
+///   hover 全被拦）；按住期间移动实质是拖拽，落点照常筛查（评审发现：
+///   down(无害)→move(不筛查)→up 的拆解可零确认完成后果性拖拽）。
 /// - 其余输入动作（mouse down/up、无坐标点击/滚动）作用于光标处，查当前
 ///   光标；光标必须落在截图显示器范围内（混合 DPI 防护：光标在另一块屏上
 ///   时换算结果是垃圾坐标，按 Unscreenable 失败关闭）。
-/// - mouse_move 只悬停、不产生后果，明确不筛查（否则合法 hover 全被拦）；
-///   它的后果由随后的按下动作自身筛查兜住。
 ///
 /// 映射缺失（无截图）或光标未知时不再用设备像素硬猜坐标（评审发现：缩放
 /// 屏上会查错位置静默放行），一律 `Unscreenable` 失败关闭。
 fn t3_screening(parts: &Parts, action: &ComputerUseAction, map: Option<&ScaleMap>) -> T3Screening {
     const NO_MAP: &str = "no screenshot mapping is available to resolve the target point";
     match action {
-        ComputerUseAction::MouseMove { .. } | ComputerUseAction::ElementAtPoint { .. } => {
-            return T3Screening::Clear;
+        ComputerUseAction::ElementAtPoint { .. } => return T3Screening::Clear,
+        ComputerUseAction::MouseMove { x, y } => {
+            if !parts.state.lock().mouse_buttons_held {
+                return T3Screening::Clear;
+            }
+            // 按住期间移动=拖拽：筛查落点。
+            let Some(m) = map else {
+                return T3Screening::Unscreenable(NO_MAP.to_string());
+            };
+            let (cx, cy, _) = m.clamp_shot(*x, *y);
+            let (ix, iy) = m.shot_to_input(cx, cy);
+            return screen_point(parts, ix, iy);
         }
-        // 键盘类动作：筛查焦点元素（键盘输入的真正落点）。
+        // 键盘类动作：筛查焦点元素（键盘输入的真正落点）+ 和弦语义。
+        ComputerUseAction::KeyChord { keys, chord }
+        | ComputerUseAction::HoldKey { keys, chord, .. }
+            if chord_is_consequential(keys) =>
+        {
+            return T3Screening::Blocked(T3Hit {
+                element_label: format!("key chord \"{chord}\""),
+                reason: "a consequential key chord (destructive delete/send semantics on the focused control)",
+            });
+        }
+        // 键盘类动作：筛查焦点元素（键盘输入的真正落点）。破坏性和弦已在
+        // 上面的守卫臂拦截；余下的按焦点元素筛查。
         ComputerUseAction::Type { .. }
         | ComputerUseAction::KeyChord { .. }
         | ComputerUseAction::HoldKey { .. } => {
@@ -689,11 +743,18 @@ fn request_confirmation(
     element_label: &str,
     reason_phrase: &str,
 ) -> String {
-    let confirm_id = parts.shared.new_pending_confirmation(
+    // 确认队列满（大量未决确认）时拒绝并给出可操作的错误——评审发现：旧的
+    // 「逐出最旧 pending」会把用户正在等待的确认弹窗挤掉。
+    let Some(confirm_id) = parts.shared.new_pending_confirmation(
         &parts.session_id,
         summary.to_string(),
         element_label.to_string(),
-    );
+    ) else {
+        return "the confirmation queue is full (too many unresolved confirmations). \
+                Do not spam further blocked actions; wait for the user to respond to the \
+                pending prompts first."
+            .to_string();
+    };
     parts.events.emit(
         EVENT_CONFIRM_REQUIRED,
         json!({
@@ -828,7 +889,17 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         // T3 确认令牌：模型回传 confirm_id 且状态里有与之匹配（同会话、同
         // 动作摘要）的批准令牌才放行。
         if requires_t3_check(&action) {
-            let summary = action_summary(&action);
+            // 摘要绑定输入：
+            // - cursor：无坐标 click/down/up/scroll 的落点是执行时刻的光标，
+            //   静态参数绑不住——把铸造/消费时刻的光标位置写进摘要，模型把
+            //   光标移到别的目标上再花令牌时摘要失配被拒（评审发现：用户
+            //   批准的落点与实际执行的落点可能不同）。
+            // - secure_type_target：Type 的目标是密码框时掩码预览（铸造与
+            //   消费都按当时焦点重算，焦点不变即确定一致）。
+            let cursor = parts.backend.cursor_position().ok();
+            let secure_type_target =
+                matches!(&action, ComputerUseAction::Type { .. }) && type_target_is_secure(&parts);
+            let summary = action_summary(&action, cursor, secure_type_target);
             let bypass = match &parsed.confirm_id {
                 Some(id) => Some(
                     parts
@@ -1017,33 +1088,85 @@ fn type_preview(text: &str) -> String {
     preview
 }
 
-/// 键入文本的全文指纹：SHA-256 前 8 个 hex。确认令牌与摘要绑定，文本一变
-/// 指纹即变——同长度的另一段文本不能换用同一令牌。
+/// 键入文本的全文指纹：SHA-256 前 16 个 hex（64 位）。确认令牌与摘要绑定，
+/// 文本一变指纹即变——同长度的另一段文本不能换用同一令牌。评审发现：8 个
+/// hex（32 位）对有代码执行能力的对抗模型可离线暴力碰撞（同长度+同前缀+
+/// 同指纹的恶意文本分钟级可得），摘要又是字符串全等比较，故加倍到 64 位
+/// （2^64 次SHA-256 在会话时间尺度内不可行）。
 fn text_fingerprint(text: &str) -> String {
-    audit::sha256_hex(text.as_bytes())[..8].to_string()
+    audit::sha256_hex(text.as_bytes())[..16].to_string()
 }
 
 /// Type 动作摘要：字符数 + 预览 + 指纹。摘要会展示给用户（知情批准）并
 /// 参与 guard 令牌绑定——旧摘要只有 `type N chars`，用户盲批且同长度不同
-/// 文本可换用同一令牌（评审发现）。
-fn typed_text_summary(verb: &str, text: &str) -> String {
+/// 文本可换用同一令牌（评审发现）。`secure_target` 为真时预览掩码：向密码
+/// 框键入恰是必然走确认流程的场景，明文预览会把密码前 12 字符送进确认
+/// 弹窗/事件流（评审发现）。
+fn typed_text_summary(verb: &str, text: &str, secure_target: bool) -> String {
+    let preview = if secure_target {
+        "<masked: the typing target is a password/secure field>".to_string()
+    } else {
+        type_preview(text)
+    };
     format!(
         "{verb} {} chars: \"{}\" [{}]",
         text.chars().count(),
-        type_preview(text),
+        preview,
         text_fingerprint(text)
     )
 }
 
-fn action_summary(action: &ComputerUseAction) -> String {
+/// 无坐标点击/down/up 的落点绑定后缀：这类动作的落点 = 执行时刻的光标，
+/// 摘要绑不住静态参数，把**铸造时的光标位置**写进摘要——消费时按当时光标
+/// 重建摘要，光标被移到别的目标上时摘要失配、令牌被拒（评审发现：用户批准
+/// 的落点与实际执行的落点可能不同）。None=光标读不出（保守绑定，消费时
+/// 除非同样读不出否则不放行）。
+fn cursor_binding_suffix(cursor: Option<(i32, i32)>) -> String {
+    format!(" at cursor {cursor:?}")
+}
+
+fn action_summary(
+    action: &ComputerUseAction,
+    cursor: Option<(i32, i32)>,
+    secure_type_target: bool,
+) -> String {
     match action {
         ComputerUseAction::Click { button, count, at } => {
-            format!("{} click x{count} at {at:?}", button.as_str())
+            let mut summary = format!("{} click x{count} at {at:?}", button.as_str());
+            if at.is_none() {
+                summary.push_str(&cursor_binding_suffix(cursor));
+            }
+            summary
         }
         ComputerUseAction::Drag { start, end } => format!("drag {start:?} -> {end:?}"),
-        ComputerUseAction::Type { text } => typed_text_summary("type", text),
+        ComputerUseAction::Type { text } => typed_text_summary("type", text, secure_type_target),
         ComputerUseAction::KeyChord { chord, .. } => format!("key {chord}"),
         ComputerUseAction::HoldKey { chord, ms, .. } => format!("hold {chord} for {ms}ms"),
+        ComputerUseAction::Scroll {
+            direction,
+            amount,
+            at,
+        } => {
+            let mut summary = format!("scroll {} x{amount} at {at:?}", direction.as_str());
+            if at.is_none() {
+                summary.push_str(&cursor_binding_suffix(cursor));
+            }
+            summary
+        }
+        ComputerUseAction::MouseDown { button } => {
+            format!(
+                "{} mouse down{}",
+                button.as_str(),
+                cursor_binding_suffix(cursor)
+            )
+        }
+        ComputerUseAction::MouseUp { button } => {
+            format!(
+                "{} mouse up{}",
+                button.as_str(),
+                cursor_binding_suffix(cursor)
+            )
+        }
         other => other.name().to_string(),
     }
 }
@@ -1168,10 +1291,18 @@ fn execute_action(
         }
         ComputerUseAction::MouseDown { button } => {
             backend.mouse_down(*button)?;
+            // 按住状态供 mouse_move 的拖拽筛查使用（失败路径不置位：按下
+            // 失败=物理上没有按住）。
+            if *button == MouseButton::Left {
+                parts.state.lock().mouse_buttons_held = true;
+            }
             Ok(format!("{} mouse button is down", button.as_str()))
         }
         ComputerUseAction::MouseUp { button } => {
             backend.mouse_up(*button)?;
+            if *button == MouseButton::Left {
+                parts.state.lock().mouse_buttons_held = false;
+            }
             Ok(format!("{} mouse button is up", button.as_str()))
         }
         ComputerUseAction::Drag { start, end } => {
@@ -1185,6 +1316,8 @@ fn execute_action(
                 return Err(ComputerUseError::failed("missing drag targets"));
             };
             backend.drag(from, to)?;
+            // 拖拽内部完成按下+释放：无论此前状态如何，左键已不在按下态。
+            parts.state.lock().mouse_buttons_held = false;
             Ok(format!("dragged from {start:?} to {end:?}"))
         }
         ComputerUseAction::Type { text } => {

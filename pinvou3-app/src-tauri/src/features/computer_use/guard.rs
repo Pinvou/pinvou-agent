@@ -45,6 +45,12 @@ pub const T3_DENYLIST: &[&str] = &[
     "delete",
     "transfer",
     "submit",
+    // 拖拽/删除的常见目的地（评审发现：把文件拖进回收站/废纸篓零确认完成）。
+    "trash",
+    "bin",
+    "回收站",
+    "废纸篓",
+    "ゴミ箱",
     "购买",
     "支付",
     "付款",
@@ -52,6 +58,8 @@ pub const T3_DENYLIST: &[&str] = &[
     "删除",
     "转账",
     "提交",
+    "清空",
+    "确认",
     "購入",
     "支払い",
     "送信",
@@ -287,15 +295,17 @@ impl ComputerUseShared {
         self.stop.store(false, Ordering::SeqCst);
     }
 
-    /// 吊销全部会话授权并清空待决确认，但**不置**停止旗标——与
-    /// [`Self::stop_all`] 的紧急停止语义区分：总开关关闭不是急停，重新开启
-    /// 后不应残留停止状态（`computer_use_set_enabled(false)` 调用）。
-    /// 评审发现：此前关闭开关不清授权，重开后旧 grant 在 10 分钟空闲窗口内
-    /// 仍然有效；待决确认一并清除——开关关闭期间弹出的确认请求在重开后
-    /// 不应还能铸造批准令牌。
+    /// 吊销全部会话授权并清空全部同意状态（待决确认、已铸令牌、拒绝记忆），
+    /// 但**不置**停止旗标——与 [`Self::stop_all`] 的紧急停止语义区分：总开关
+    /// 关闭不是急停，重新开启后不应残留停止状态
+    /// （`computer_use_set_enabled(false)` 调用）。评审发现：此前关闭开关不清
+    /// 授权与令牌，重开后旧 grant 在 10 分钟空闲窗口内、旧批准令牌在 5 分钟
+    /// TTL 内仍然有效——开关关闭期间的同意状态在重开后不应存活。
     pub fn revoke_all_sessions(&self) {
         self.sessions.lock().clear();
         self.pending_confirmations.lock().clear();
+        self.approved_tokens.lock().clear();
+        self.denied_confirmations.lock().clear();
     }
 
     /// 观察/被动类动作门控：只需总开关开启且未停止。
@@ -383,27 +393,24 @@ impl ComputerUseShared {
             .ok_or(GuardRejection::InputBusy)
     }
 
-    /// 注册一个等待用户决定的 T3 确认，返回 confirm_id。
-    /// 顺带清扫过期 pending 并执行存量上限（超限逐出最旧）。
+    /// 注册一个等待用户决定的 T3 确认，返回 confirm_id；存量已达
+    /// [`MAX_PENDING_CONFIRMATIONS`] 时返回 `None`（**拒绝新 pending**）。
+    /// 顺带清扫过期 pending。评审发现：此前的「超限逐出最旧」会把用户正在
+    /// 等待答复的确认弹窗逐掉——失控模型以 60 次/分钟发起被拦动作，约
+    /// 100 秒即可把用户的 pending 挤出，用户点批准得到「不存在」。容量满时
+    /// 宁可让发起方拿到显式错误（fail-closed）也不能丢用户正在看的弹窗。
     pub fn new_pending_confirmation(
         &self,
         session_id: &str,
         action_summary: impl Into<String>,
         element_label: impl Into<String>,
-    ) -> String {
+    ) -> Option<String> {
         let confirm_id = format!("cu-{:016x}", rand::random::<u64>());
         let now = Instant::now();
         let mut pending = self.pending_confirmations.lock();
         pending.retain(|_, entry| now.duration_since(entry.created_at) <= CONFIRM_TTL);
-        while pending.len() >= MAX_PENDING_CONFIRMATIONS {
-            let oldest = pending
-                .iter()
-                .min_by_key(|(_, entry)| entry.created_at)
-                .map(|(id, _)| id.clone());
-            match oldest {
-                Some(id) => pending.remove(&id),
-                None => break,
-            };
+        if pending.len() >= MAX_PENDING_CONFIRMATIONS {
+            return None;
         }
         pending.insert(
             confirm_id.clone(),
@@ -414,7 +421,7 @@ impl ComputerUseShared {
                 created_at: now,
             },
         );
-        confirm_id
+        Some(confirm_id)
     }
 
     pub fn pending_confirmation(&self, confirm_id: &str) -> Option<PendingConfirmation> {
@@ -677,6 +684,16 @@ mod tests {
             "フォームを提出",
             "注文を確定",
             "内容の確認",
+            // 拖拽/删除目的地与简体「确认」（第三轮评审发现：把文件拖进
+            // 回收站可零确认完成；简体「确认」缺席而日文「確認」在列）。
+            "Recycle Bin",
+            "Move to Trash",
+            "Empty Trash",
+            "移到废纸篓",
+            "拖入回收站",
+            "ゴミ箱に移動",
+            "清空列表",
+            "确认订单",
         ] {
             assert!(matches_t3_denylist(label), "should match: {label}");
         }
@@ -699,7 +716,9 @@ mod tests {
     fn confirmation_tokens_are_single_use_and_bound_to_session_and_action() {
         let shared = enabled_shared();
         let summary = "left click x1 at Some((100, 200))";
-        let id = shared.new_pending_confirmation("s1", summary, "Buy now");
+        let id = shared
+            .new_pending_confirmation("s1", summary, "Buy now")
+            .expect("pending below cap");
         let pending = shared.pending_confirmation(&id);
         assert!(pending.as_ref().is_some_and(|p| p.session_id == "s1"));
         // 未铸造前不可消费。
@@ -739,7 +758,9 @@ mod tests {
     #[test]
     fn deny_marks_confirmation_denied_and_forgets_after_ttl() {
         let shared = enabled_shared();
-        let id = shared.new_pending_confirmation("s1", "left click", "Buy now");
+        let id = shared
+            .new_pending_confirmation("s1", "left click", "Buy now")
+            .expect("pending below cap");
         assert!(shared.deny_confirmation(&id));
         // deny 清除 pending：不能再为它铸币（mint 返回 false，不再静默 no-op）。
         assert!(shared.pending_confirmation(&id).is_none());
@@ -786,16 +807,30 @@ mod tests {
         );
     }
 
+    /// 评审修复回归：pending 存量达上限时**拒绝新请求**（返回 None）而不是
+    /// 逐出最旧——逐出会把用户正在等待的确认弹窗挤掉（第三轮评审发现）。
     #[test]
-    fn pending_and_token_maps_are_capped() {
+    fn pending_map_rejects_new_requests_when_full() {
         let shared = enabled_shared();
-        for i in 0..(MAX_PENDING_CONFIRMATIONS + 20) {
+        for i in 0..MAX_PENDING_CONFIRMATIONS {
             let id = shared.new_pending_confirmation("s1", format!("action {i}"), "Buy now");
-            if i < MAX_APPROVED_TOKENS {
-                assert!(shared.mint_confirmation(&id));
+            assert!(id.is_some(), "request {i} must be admitted below the cap");
+        }
+        // 满员：新请求被显式拒绝。
+        assert!(
+            shared
+                .new_pending_confirmation("s1", "one more", "Buy now")
+                .is_none(),
+            "a full queue must reject new pending requests"
+        );
+        // 已有令牌存量上限照旧（铸造路径仍然逐出最旧：丢弃一个未消费的
+        // 旧令牌不影响用户正在看的弹窗）。
+        for i in 0..(MAX_APPROVED_TOKENS + 20) {
+            let id = shared.new_pending_confirmation("s1", format!("m {i}"), "Buy now");
+            if let Some(id) = id {
+                let _ = shared.mint_confirmation(&id);
             }
         }
-        assert!(shared.pending_confirmations.lock().len() <= MAX_PENDING_CONFIRMATIONS);
         assert!(shared.approved_tokens.lock().len() <= MAX_APPROVED_TOKENS);
     }
 
@@ -835,13 +870,21 @@ mod tests {
         assert!(shared.physical_input_lock.try_lock().is_some());
     }
 
-    /// 评审修复回归：总开关关闭吊销全部会话授权与待决确认，但**不置**停止
-    /// 旗标（与 stop_all 语义区分）——重开后旧 grant 不得在 10 分钟窗口内复活。
+    /// 评审修复回归：总开关关闭吊销全部会话授权与全部同意状态（待决确认、
+    /// 已铸令牌、拒绝记忆），但**不置**停止旗标（与 stop_all 语义区分）——
+    /// 重开后旧 grant 不得在 10 分钟窗口内复活，disable→enable 循环里旧的
+    /// 已铸令牌也不得被免确认重放（第三轮评审发现）。
     #[test]
     fn revoke_all_sessions_clears_grants_and_pendings_without_stop_flag() {
         let shared = enabled_shared();
         shared.grant_session("s1");
-        let confirm_id = shared.new_pending_confirmation("s1", "left click", "Buy now");
+        let confirm_id = shared
+            .new_pending_confirmation("s1", "left click", "Buy now")
+            .expect("pending below cap");
+        let token_id = shared
+            .new_pending_confirmation("s1", "left click 2", "Buy now")
+            .expect("pending below cap");
+        assert!(shared.mint_confirmation(&token_id));
         shared.revoke_all_sessions();
         assert!(!shared.has_active_grant("s1"));
         assert_eq!(
@@ -849,6 +892,12 @@ mod tests {
             Err(GuardRejection::GrantRequired)
         );
         assert!(shared.pending_confirmation(&confirm_id).is_none());
+        // 已铸令牌一并清除：重新开启+重新授权后不能拿旧令牌免确认重放。
+        assert_eq!(
+            shared.take_confirmation(&token_id, "s1", "left click 2"),
+            ConfirmationCheck::Unknown,
+            "a disabled cycle must wipe minted approval tokens"
+        );
         // 与 stop_all 的语义区分：停止旗标不被置位，观察类动作仍可用。
         assert!(!shared.is_stopped());
         assert!(shared.begin_observe_action("s1").is_ok());
@@ -857,7 +906,9 @@ mod tests {
     #[test]
     fn pending_confirmation_expires_after_ttl() {
         let shared = enabled_shared();
-        let id = shared.new_pending_confirmation("s1", "left_click (100,200)", "Buy now");
+        let id = shared
+            .new_pending_confirmation("s1", "left_click (100,200)", "Buy now")
+            .expect("pending below cap");
         // 手工把 created_at 拨回 TTL 之前（等真实 5 分钟太慢）。
         {
             let mut pending = shared.pending_confirmations.lock();
