@@ -1,4 +1,4 @@
-//! Wayland 输入注入:xdg-desktop-portal RemoteDesktop。
+//! Wayland 输入注入与同会话截屏:xdg-desktop-portal RemoteDesktop(+ScreenCast)。
 //!
 //! enigo 没有 Wayland 后端,XTest-through-XWayland 只能触达 X11 客户端,故
 //! Wayland 输入合成的规范路径是 RemoteDesktop portal(GNOME/KDE 均有实现;
@@ -6,7 +6,7 @@
 //! 静默退化)。portal 的系统授权对话框是独立于应用内同意流之外的第二层用户
 //! 同意。
 //!
-//! 会话流程(懒启动,首次输入动作才触发,全程 `handle_token` 驱动
+//! 会话流程(懒启动,首次输入动作或截屏才触发,全程 `handle_token` 驱动
 //! Request/Response 信号往返):
 //! 1. `CreateSession` → Response 结果取 `session_handle`(返回值本身是
 //!    Request 对象,历史包袱);
@@ -16,14 +16,17 @@
 //!    移动(mutter 对未知 stream 直接报错);
 //! 4. `RemoteDesktop.Start`(弹系统授权对话框,用户决定后 Response 携带
 //!    `devices` 与 `streams`);
-//! 5. 输入全部走 `Notify*`;`Session.Close` 在 backend 析构时尽力调用。
+//! 5. `ScreenCast.OpenPipeWireRemote`:用同一会话换取截屏流的 PipeWire fd,
+//!    交给 [`super::wayland_capture`] 建帧接收器——截屏与输入共用这一个
+//!    会话/授权,不再依赖 xcap 的旧截屏链(见 `linux.rs` 的回退说明);
+//! 6. 输入全部走 `Notify*`;`Session.Close` 在 backend 析构时尽力调用。
 //!
 //! 语义以 mutter `meta-remote-desktop-session.c` 为准:
-//! - `NotifyPointerMotionAbsolute` 的 x/y(oa{sv}udd 的 d)在 stream 的逻辑
-//!   坐标空间(`meta_screen_cast_stream_transform_position`),与 AT-SPI
-//!   `CoordType::Screen` 同为全局逻辑空间。故 linux.rs 在 Wayland 下把
-//!   `Capture.input_scale` 设为 `1/scale`、origin 保持逻辑坐标,ScaleMap 的
-//!   输出即本后端的输入坐标。
+//! - `NotifyPointerMotionAbsolute` 的 x/y(oa{sv}udd 的 d)是**流本地像素**
+//!   (mutter `transform_position`:全局逻辑 = 显示器布局原点 + x/scale;
+//!   KDE 由 portal 层补流的逻辑原点,scale=1 时两者一致)。流本地像素即
+//!   PipeWire 协商的缓冲像素,故截屏(`linux.rs` 用协商尺寸构造 Capture)
+//!   与输入共用同一坐标空间,origin 恒 (0,0)。
 //! - `NotifyPointerAxisDiscrete`(oa{sv}ui):axis 0=垂直 1=水平;steps 正=
 //!   下/右、负=上/左(`discrete_steps_to_scroll_direction`),一次可带多格。
 //! - 按键用 `NotifyKeyboardKeysym`(X keysym;U+0000..=U+00FF 用码点,其余
@@ -36,14 +39,16 @@
 
 use std::collections::HashMap;
 use std::future::poll_fn;
+use std::os::fd::{AsFd as _, OwnedFd};
 use std::pin::Pin;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use zbus::export::futures_core;
 use zbus::message::Type as MessageType;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 
 use super::super::types::{ComputerUseError, Key, MouseButton, ScrollDirection};
+use super::wayland_capture::{PortalFrame, PwCapture};
 
 const PORTAL_DEST: &str = "org.freedesktop.portal.Desktop";
 const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
@@ -201,15 +206,59 @@ async fn next_message(stream: &mut zbus::MessageStream) -> Option<zbus::Result<z
     poll_fn(|cx| futures_core::stream::Stream::poll_next(Pin::new(stream), cx)).await
 }
 
-/// Start 响应的 streams (a(ua{sv})):取首个 stream 的 PipeWire node id。
-fn first_stream_node(results: &HashMap<String, OwnedValue>) -> Option<u32> {
-    let Value::Array(array) = results.get("streams").map(|owned| &**owned)? else {
+/// 剥掉任意层 variant 包裹(zvariant 对 a{sv} 的值可能存成 Value::Value)。
+fn unwrap_variant<'a>(value: &'a Value<'a>) -> &'a Value<'a> {
+    let mut value = value;
+    while let Value::Value(inner) = value {
+        value = inner;
+    }
+    value
+}
+
+/// a{sv} 里取 (i32, i32)(结构或两元素数组都接受)。
+fn dict_i32_pair(dict: &zbus::zvariant::Dict<'_, '_>, key: &str) -> Option<(i32, i32)> {
+    let entry = dict
+        .iter()
+        .find(|(dict_key, _)| {
+            matches!(unwrap_variant(dict_key), Value::Str(name) if name.as_str() == key)
+        })
+        .map(|(_, value)| value)?;
+    // 字典值还可能是 variant 包裹,统一剥掉。
+    let value = unwrap_variant(entry);
+    let ints = |fields: &[Value<'_>]| -> Option<(i32, i32)> {
+        match fields {
+            [Value::I32(a), Value::I32(b)] => Some((*a, *b)),
+            _ => None,
+        }
+    };
+    match value {
+        Value::Structure(structure) => ints(structure.fields()),
+        Value::Array(array) => {
+            let fields: Vec<Value<'_>> = array.iter().cloned().collect();
+            ints(&fields)
+        }
+        _ => None,
+    }
+}
+
+/// Start 响应的 streams (a(ua{sv})):取首个 stream 的 PipeWire node id 与
+/// 合成器报告的流逻辑尺寸(`size`,KDE 输入倍率换算用;合成器不填时为
+/// None,输入倍率按 1.0 处理)。vardict 的值都可能是 variant 包裹的。
+fn first_stream_info(results: &HashMap<String, OwnedValue>) -> Option<(u32, Option<(i32, i32)>)> {
+    let Value::Array(array) = unwrap_variant(&**results.get("streams")?) else {
         return None;
     };
     let Value::Structure(structure) = array.iter().next()? else {
         return None;
     };
-    value_u32(structure.fields().first()?)
+    let node = value_u32(unwrap_variant(structure.fields().first()?))?;
+    let logical = structure.fields().get(1).and_then(|entry| {
+        let Value::Dict(dict) = unwrap_variant(entry) else {
+            return None;
+        };
+        dict_i32_pair(dict, "size")
+    });
+    Some((node, logical))
 }
 
 /// 已启动的 portal 会话状态。
@@ -219,10 +268,15 @@ struct PortalSession {
     devices: u32,
     /// 绑定的 ScreenCast stream(PipeWire node id),绝对移动的坐标参照。
     stream: u32,
+    /// 合成器报告的流逻辑尺寸(诊断与 KDE 输入倍率换算用;可缺省)。
+    stream_logical: Option<(i32, i32)>,
+    /// 同会话截屏的 PipeWire 帧接收器(OpenPipeWireRemote 失败时为 None,
+    /// 截屏回退 xcap 链,输入不受影响)。
+    capture: Option<PwCapture>,
 }
 
-/// Wayland portal 输入后端(同步外观)。懒启动:首次输入动作才走会话建立
-/// 与系统授权对话框;之后会话复用,失效自动重建。
+/// Wayland portal 输入后端(同步外观)。懒启动:首次输入动作或截屏才走
+/// 会话建立与系统授权对话框;之后会话复用,失效自动重建。
 pub(super) struct PortalInput {
     /// 专用 current-thread runtime:同步方法内驱动 async zbus(同 AT-SPI)。
     runtime: tokio::runtime::Runtime,
@@ -326,6 +380,40 @@ impl PortalInput {
     pub(super) fn track_pointer(&mut self, x: i32, y: i32) {
         self.inner.last_pointer = Some((x, y));
     }
+
+    /// 同会话截屏:会话未启动则启动(可能弹系统授权对话框),再从绑定的
+    /// ScreenCast 流取最新帧。`not_before` 语义见 [`PwCapture::latest_frame`]。
+    pub(super) fn capture_frame(
+        &mut self,
+        not_before: Option<Instant>,
+    ) -> Result<PortalFrame, ComputerUseError> {
+        self.runtime.block_on(async {
+            self.inner.ensure_started().await?;
+            let session = self
+                .inner
+                .session
+                .as_mut()
+                .ok_or_else(|| ComputerUseError::unavailable("portal session not started"))?;
+            match session.capture.as_mut() {
+                Some(capture) => capture.latest_frame(not_before),
+                None => Err(ComputerUseError::unavailable(format!(
+                    "same-session capture is not available: {}",
+                    self.inner
+                        .capture_error
+                        .as_deref()
+                        .unwrap_or("OpenPipeWireRemote failed")
+                ))),
+            }
+        })
+    }
+
+    /// 合成器报告的流逻辑尺寸(KDE 输入倍率换算用;可缺省)。
+    pub(super) fn stream_logical_size(&self) -> Option<(i32, i32)> {
+        self.inner
+            .session
+            .as_ref()
+            .and_then(|session| session.stream_logical)
+    }
 }
 
 /// portal 会话的 async 主体(状态与 D-Bus 连接;`PortalInput` 的 runtime 与
@@ -333,9 +421,13 @@ impl PortalInput {
 struct PortalInner {
     conn: zbus::Connection,
     session: Option<PortalSession>,
+    /// 当前会话的截屏初始化失败原因(输入不受影响;截屏回退 xcap 链)。
+    capture_error: Option<String>,
     /// 我方注入产生的光标位置(逻辑全局坐标)。Wayland 无查询 API,只能跟踪。
     last_pointer: Option<(i32, i32)>,
     request_counter: u32,
+    /// CreateSession 的 session_handle_token 计数(路由器用它命名 session)。
+    session_counter: u32,
 }
 
 impl PortalInner {
@@ -346,8 +438,10 @@ impl PortalInner {
         Ok(Self {
             conn,
             session: None,
+            capture_error: None,
             last_pointer: None,
             request_counter: 0,
+            session_counter: 0,
         })
     }
 
@@ -373,6 +467,24 @@ impl PortalInner {
         interface: &str,
         method: &'static str,
         session: Option<&OwnedObjectPath>,
+        extra: Vec<(&'static str, OwnedValue)>,
+        timeout: Duration,
+    ) -> Result<HashMap<String, OwnedValue>, ComputerUseError> {
+        self.request_impl(interface, method, session, None, extra, timeout)
+            .await
+    }
+
+    /// `parent_window` 为 `Some` 时方法签名是 `(o session_handle,
+    /// s parent_window, a{sv} options)`:实测 xdg-desktop-portal 1.18 的
+    /// Start 是 session 在前、父窗口字符串(空串 = 无父窗)在后,与规范
+    /// 文档的顺序相反,以 introspection 为准。缺参数会被 InvalidArgs 拒绝。
+    #[allow(clippy::too_many_arguments)]
+    async fn request_impl(
+        &mut self,
+        interface: &str,
+        method: &'static str,
+        session: Option<&OwnedObjectPath>,
+        parent_window: Option<&str>,
         extra: Vec<(&'static str, OwnedValue)>,
         timeout: Duration,
     ) -> Result<HashMap<String, OwnedValue>, ComputerUseError> {
@@ -408,6 +520,17 @@ impl PortalInner {
         // 完成后统一为 Result<Message>。
         tokio::time::timeout(timeout, async {
             match session {
+                Some(path) if parent_window.is_some() => {
+                    self.conn
+                        .call_method(
+                            Some(PORTAL_DEST),
+                            PORTAL_PATH,
+                            Some(interface),
+                            method,
+                            &(path, parent_window.unwrap_or_default(), &options),
+                        )
+                        .await
+                }
                 Some(path) => {
                     self.conn
                         .call_method(
@@ -467,28 +590,43 @@ impl PortalInner {
             return Ok(());
         }
 
-        // 1) CreateSession。
+        // 1) CreateSession。`session_handle_token` 是路由器命名 session 对象
+        //    的依据,xdg-desktop-portal ≥1.17 缺失即拒绝("Missing token")。
+        self.session_counter = self.session_counter.wrapping_add(1);
         let results = self
             .request(
                 REMOTE_DESKTOP_IFACE,
                 "CreateSession",
                 None,
-                vec![],
+                vec![(
+                    "session_handle_token",
+                    Value::from(format!("pinvou_cu_s{}", self.session_counter))
+                        .try_to_owned()
+                        .map_err(|error| {
+                            ComputerUseError::failed(format!("portal session token: {error}"))
+                        })?,
+                )],
                 REQUEST_TIMEOUT,
             )
             .await?;
-        let session_path = match results.get("session_handle") {
-            Some(owned) => match &**owned {
-                Value::ObjectPath(path) => OwnedObjectPath::from(path.clone()),
-                _ => {
-                    return Err(ComputerUseError::unavailable(
-                        "portal CreateSession response has a non-object session_handle",
-                    ));
-                }
-            },
-            None => {
+        // 实测 xdg-desktop-portal 1.18 把 session_handle 作为字符串放进响应
+        // (规范写的是 o);两种形式都接受。
+        let session_path = match results
+            .get("session_handle")
+            .map(|owned| unwrap_variant(owned))
+        {
+            Some(Value::ObjectPath(path)) => OwnedObjectPath::from(path.clone()),
+            Some(Value::Str(path)) => {
+                let path = ObjectPath::try_from(path.as_str()).map_err(|error| {
+                    ComputerUseError::unavailable(format!(
+                        "portal CreateSession response has an invalid session_handle: {error}"
+                    ))
+                })?;
+                OwnedObjectPath::from(path)
+            }
+            _ => {
                 return Err(ComputerUseError::unavailable(
-                    "portal CreateSession response has no session_handle",
+                    "portal CreateSession response has a non-object session_handle",
                 ));
             }
         };
@@ -517,19 +655,20 @@ impl PortalInner {
         )
         .await?;
 
-        // 4) Start:系统授权对话框(用户可见的第二层同意)。
+        // 4) Start:系统授权对话框(用户可见的第二层同意)。签名含父窗口。
         let results = self
-            .request(
+            .request_impl(
                 REMOTE_DESKTOP_IFACE,
                 "Start",
                 Some(&session_path),
+                Some(""),
                 vec![],
                 START_TIMEOUT,
             )
             .await?;
         let devices = results
             .get("devices")
-            .and_then(|owned| value_u32(owned))
+            .and_then(|owned| value_u32(unwrap_variant(owned)))
             .unwrap_or(0);
         if devices & (DEVICE_KEYBOARD | DEVICE_POINTER) == 0 {
             self.reset();
@@ -537,7 +676,7 @@ impl PortalInner {
                 "the system authorization dialog granted no keyboard/pointer devices",
             ));
         }
-        let Some(stream) = first_stream_node(&results) else {
+        let Some((stream, stream_logical)) = first_stream_info(&results) else {
             self.reset();
             return Err(ComputerUseError::unavailable(
                 "portal Start response has no ScreenCast stream; absolute pointer motion has \
@@ -545,13 +684,62 @@ impl PortalInner {
             ));
         };
 
+        // 5) 同会话截屏:OpenPipeWireRemote 换 PipeWire fd 并建帧接收器。
+        //    失败不放弃会话:输入仍可用,截屏回退 xcap 链。
+        let (capture, capture_error) = match self.open_pipewire_remote(&session_path).await {
+            Ok(fd) => match PwCapture::spawn(stream, fd) {
+                Ok(capture) => (Some(capture), None),
+                Err(error) => (None, Some(error.to_string())),
+            },
+            Err(error) => (None, Some(error.to_string())),
+        };
+        self.capture_error = capture_error;
+
         self.session = Some(PortalSession {
             path: session_path,
             devices,
             stream,
+            stream_logical,
+            capture,
         });
         self.last_pointer = None;
         Ok(())
+    }
+
+    /// `ScreenCast.OpenPipeWireRemote`:用当前会话换取截屏流的 PipeWire
+    /// 私有连接 fd(同步快速方法,非 Request 往返)。
+    async fn open_pipewire_remote(
+        &self,
+        session_path: &OwnedObjectPath,
+    ) -> Result<OwnedFd, ComputerUseError> {
+        let options: HashMap<&str, OwnedValue> = HashMap::new();
+        let reply = tokio::time::timeout(
+            REQUEST_TIMEOUT,
+            self.conn.call_method(
+                Some(PORTAL_DEST),
+                PORTAL_PATH,
+                Some(SCREEN_CAST_IFACE),
+                "OpenPipeWireRemote",
+                &(&session_path, &options),
+            ),
+        )
+        .await
+        .map_err(|_| ComputerUseError::unavailable("portal OpenPipeWireRemote timed out"))?
+        .map_err(|error| {
+            ComputerUseError::unavailable(format!("portal OpenPipeWireRemote: {error}"))
+        })?;
+        let fd = reply
+            .body()
+            .deserialize::<zbus::zvariant::OwnedFd>()
+            .map_err(|error| {
+                ComputerUseError::unavailable(format!(
+                    "portal OpenPipeWireRemote returned no fd: {error}"
+                ))
+            })?;
+        // portal 侧 fd 复制一份给 PipeWire 线程,zvariant 包装随消息释放。
+        fd.as_fd()
+            .try_clone_to_owned()
+            .map_err(|error| ComputerUseError::unavailable(format!("fd clone: {error}")))
     }
 
     /// 解析并克隆会话路径(借用不能横跨 `notify` 的 `&mut self`:调用体里
@@ -596,7 +784,10 @@ impl PortalInner {
     }
 
     fn reset(&mut self) {
+        // session 置 None 会连带 drop PwCapture(停流并 join 其线程);
+        // PortalSession 的 Drop 路径在 close/reset 共用。
         self.session = None;
+        self.capture_error = None;
         self.last_pointer = None;
     }
 
@@ -728,16 +919,50 @@ mod tests {
     }
 
     #[test]
-    fn stream_node_is_extracted_from_start_results() {
+    fn stream_info_is_extracted_from_start_results() {
         // 真实 Start 响应的 streams 是 a(ua{sv}):元素为 (node u, a{sv}) 结构。
         // 注意不能经 Value::from(Vec<Value>) 构造——那会把每个元素再包一层
         // variant(Value::Value),形状变成 a(v)。
         let element_signature = zbus::zvariant::Signature::try_from("(ua{sv})").expect("sig");
         let mut array = zbus::zvariant::Array::new(&element_signature);
+        let mut stream_props: HashMap<String, Value<'static>> = HashMap::new();
+        // vardict 值按线上格式是 variant 包裹的:Value::Value((i32,i32))。
+        stream_props.insert(
+            "size".to_string(),
+            Value::Value(Box::new(Value::from((1920, 1080)))),
+        );
         array
             .append(Value::Structure(zbus::zvariant::Structure::from((
                 7u32,
-                HashMap::<String, Value<'static>>::new(),
+                stream_props,
+            ))))
+            .expect("append");
+        let mut results: HashMap<String, OwnedValue> = HashMap::new();
+        // Response 响应字典的值同样是 variant 包裹:Value::Value(a(ua{sv}))。
+        results.insert(
+            "streams".to_string(),
+            Value::Value(Box::new(Value::Array(array)))
+                .try_to_owned()
+                .expect("owned"),
+        );
+        let (node, logical) = first_stream_info(&results).expect("stream info");
+        assert_eq!(node, 7);
+        assert_eq!(logical, Some((1920, 1080)));
+        // 无 size 属性(合成器不填)时 node 仍可用。
+        let bare = first_stream_info(&empty_streams(7, true));
+        assert_eq!(bare.map(|(node, _)| node), Some(7));
+        assert_eq!(first_stream_info(&HashMap::new()), None);
+    }
+
+    /// 构造只有 node id、(可选)空属性字典的 streams 响应。
+    fn empty_streams(node: u32, with_props: bool) -> HashMap<String, OwnedValue> {
+        let element_signature = zbus::zvariant::Signature::try_from("(ua{sv})").expect("sig");
+        let mut array = zbus::zvariant::Array::new(&element_signature);
+        let props: HashMap<String, Value<'static>> = HashMap::new();
+        array
+            .append(Value::Structure(zbus::zvariant::Structure::from((
+                node,
+                if with_props { props } else { HashMap::new() },
             ))))
             .expect("append");
         let mut results: HashMap<String, OwnedValue> = HashMap::new();
@@ -745,8 +970,7 @@ mod tests {
             "streams".to_string(),
             Value::Array(array).try_to_owned().expect("owned"),
         );
-        assert_eq!(first_stream_node(&results), Some(7));
-        assert_eq!(first_stream_node(&HashMap::new()), None);
+        results
     }
 
     /// 真机验证:portal RemoteDesktop 可达且声明键盘/指针支持(只读属性,
