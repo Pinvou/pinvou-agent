@@ -81,11 +81,11 @@ const MAX_ANCESTOR_CLIMB: u32 = 16;
 /// 即 panic），后端侧再钳一次防上游传大数溢出。
 const MAX_SCROLL_CLICKS: u32 = (i32::MAX / WHEEL_DELTA as i32) as u32;
 
-/// `VkKeyScanExW` 返回值高字节的修饰位（Win32 文档）：bit0=Shift，bit1=Ctrl，
-/// bit2=Alt（AltGr = Ctrl+Alt）。高字节非零表示产生该字符需要修饰键。
-const VKSHIFT_SHIFT: i16 = 0x01;
-const VKSHIFT_CTRL: i16 = 0x02;
-const VKSHIFT_ALT: i16 = 0x04;
+/// `VkKeyScanExW` 返回值高字节的修饰位（Win32 文档）：bit0=Shift（0x01），
+/// bit1=Ctrl（0x02），bit2=Alt（0x04，AltGr = Ctrl+Alt）。高字节非零表示
+/// 产生该字符需要修饰键；bit0-2 之外的高位 Win32 未定义，注入计划一律按
+/// 「需要修饰键」fail-closed 处理（见 `char_injection_from_scan`），判断
+/// 只依赖「高字节非零」，无需逐位常量。
 
 /// `GetAwarenessFromDpiAwarenessContext` 的返回值：Per-Monitor 感知。
 /// （windows-sys `Win32_UI_HiDpi` 的 `DPI_AWARENESS_PER_MONITOR_AWARE`。）
@@ -147,12 +147,15 @@ enum CharInjection {
 
 /// `VkKeyScanExW` 返回值 → 注入计划（纯函数，便于单测）。低字节为 VK，
 /// 高字节为修饰位（`VKSHIFT_*`）；返回负值表示布局无法产生该字符。
+/// 高字节任何非零位都按「需要修饰键」处理（fail-closed）：Win32 只定义
+/// bit0-2，未知高位组合按需修饰而不是直接注入（第三轮评审发现：掩码
+/// `& 0x07` 把未知高位当 Direct，与模块文档/单测承诺的 fail-closed 矛盾；
+/// 运行时语义无差（未知位不会真实出现），但代码必须兑现承诺的行为）。
 fn char_injection_from_scan(scan: i16) -> CharInjection {
     if scan < 0 {
         return CharInjection::NotInLayout;
     }
-    let shift_state = (scan >> 8) & (VKSHIFT_SHIFT | VKSHIFT_CTRL | VKSHIFT_ALT);
-    if shift_state != 0 {
+    if (scan >> 8) != 0 {
         CharInjection::NeedsModifier
     } else {
         CharInjection::Direct

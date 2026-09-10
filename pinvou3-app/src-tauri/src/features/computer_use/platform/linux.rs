@@ -318,10 +318,31 @@ async fn screen_extents_strict(
     let component = component_of(conn, proxy).await.ok_or_else(|| {
         ComputerUseError::unavailable("AT-SPI Component proxy unavailable for window")
     })?;
-    component
+    let extents = component
         .get_extents(CoordType::Screen)
         .await
-        .map_err(|error| ComputerUseError::unavailable(format!("AT-SPI window extents: {error}")))
+        .map_err(|error| {
+            ComputerUseError::unavailable(format!("AT-SPI window extents: {error}"))
+        })?;
+    // 「成功但零尺寸」无法判定覆盖关系:Wayland 上的 AT-SPI 普遍把 extents
+    // 报告为全 0(见模块底部 e2e 注释),若放行会让**每个**窗口都被判
+    // 「不覆盖该点」→ Ok(None) → 工具层 Clear,指针类 T3 筛查整体空转
+    // (第二轮评审发现的 fail-open)。按查询失败上抛 → Unscreenable →
+    // 要求确认,方向 fail-closed。
+    if extents.2 <= 0 || extents.3 <= 0 {
+        return Err(ComputerUseError::unavailable(format!(
+            "AT-SPI window extents are empty ({},{},{},{}); the window exposes no usable \
+             coordinate space (common on Wayland), so hit-testing cannot be trusted",
+            extents.0, extents.1, extents.2, extents.3
+        )));
+    }
+    Ok(extents)
+}
+
+/// 点是否落在窗口 extents 内(右/下边开区间)。纯函数,便于单元测试。
+fn extents_contain(extents: (i32, i32, i32, i32), x: i32, y: i32) -> bool {
+    let (wx, wy, ww, wh) = extents;
+    x >= wx && x < wx + ww && y >= wy && y < wy + wh
 }
 
 /// 注册表根的全部应用顶层窗口(不区分活动与否)。
@@ -572,8 +593,8 @@ async fn element_at_point_async(
     active_first(&mut windows).await;
     for window in &windows {
         // extents 失败 → 无法判定覆盖关系 → 查询失败(不 continue)。
-        let (wx, wy, ww, wh) = screen_extents_strict(conn, window).await?;
-        if x < wx || x >= wx + ww || y < wy || y >= wy + wh {
+        let extents = screen_extents_strict(conn, window).await?;
+        if !extents_contain(extents, x, y) {
             continue; // 明确不覆盖该点。
         }
         let component = component_of(conn, window).await.ok_or_else(|| {
@@ -754,6 +775,10 @@ pub(super) struct LinuxComputerUseBackend {
     /// 最近一次输入动作的开始时刻:同会话截屏流是 damage 驱动的,补拍
     /// 截图要等比它新的帧,才能看到动作后的画面(无视觉变化时沿用现有帧)。
     last_input_at: Option<Instant>,
+    /// 最近一次 portal 截屏折算出的输入倍率(KDE 逻辑像素流 <1,其余 1.0)。
+    /// `cursor_position` 记录的是输入坐标,契约要求返回设备物理像素,用
+    /// 它做还原;首个截屏之前无从得知,按 1.0 处理(GNOME 恒为 1.0)。
+    wayland_input_scale: (f64, f64),
 }
 
 impl LinuxComputerUseBackend {
@@ -797,6 +822,9 @@ impl LinuxComputerUseBackend {
         } else {
             (1.0, 1.0)
         };
+        // 记录倍率供 cursor_position 把记录的输入坐标还原为设备物理像素
+        // (trait 契约)。
+        self.wayland_input_scale = input_scale;
         Some(Capture {
             rgba: frame.rgba,
             width: frame.width,
@@ -807,7 +835,6 @@ impl LinuxComputerUseBackend {
             input_scale_y: input_scale.1,
         })
     }
-
     fn require_enigo(&mut self) -> Result<&mut Enigo, ComputerUseError> {
         if self.is_wayland() {
             return Err(ComputerUseError::unsupported(
@@ -927,12 +954,20 @@ impl LinuxComputerUseBackend {
     }
 
     fn release_chord(enigo: &mut Enigo, keys: &[enigo::Key]) -> Result<(), ComputerUseError> {
+        // 中途失败也要尽力释放全部键,否则修饰键卡死影响后续所有输入;
+        // 返回首个错误供上层感知。
+        let mut first_err = None;
         for key in keys.iter().rev() {
-            enigo
-                .key(*key, Direction::Release)
-                .map_err(|error| input_failed("key release", error))?;
+            if let Err(error) = enigo.key(*key, Direction::Release) {
+                if first_err.is_none() {
+                    first_err = Some(error);
+                }
+            }
         }
-        Ok(())
+        match first_err {
+            Some(error) => Err(input_failed("key release", error)),
+            None => Ok(()),
+        }
     }
 }
 
@@ -1099,7 +1134,22 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
     fn cursor_position(&mut self) -> Result<(i32, i32), ComputerUseError> {
         if self.is_wayland() {
             return match self.require_portal()?.last_pointer() {
-                Some(position) => Ok(position),
+                Some(position) => {
+                    // track_pointer 记录的是输入坐标(工具层 move_to 的入参,
+                    // KDE 分支下为流本地逻辑像素);契约要求返回全局设备物理
+                    // 像素,按最近一次截屏的输入倍率还原(评审缺陷:GNOME 的
+                    // 倍率恒为 1 不受影响,KDE 分数缩放下此前会按错误倍率
+                    // 回报并让无坐标 T3 筛查双重缩放)。
+                    let (sx, sy) = self.wayland_input_scale;
+                    let device = |value: i32, scale: f64| {
+                        if scale > 0.0 && scale.is_finite() {
+                            (f64::from(value) / scale).round() as i32
+                        } else {
+                            value
+                        }
+                    };
+                    Ok((device(position.0, sx), device(position.1, sy)))
+                }
                 None => Err(ComputerUseError::unsupported(
                     "cursor_position",
                     "Wayland exposes no cursor query API; the position becomes known after \
@@ -1320,10 +1370,20 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                     return Err(error);
                 }
             }
+            // 释放阶段中途失败也要尽力释放全部键(避免修饰键卡死),返回
+            // 首个错误。
+            let mut first_err = None;
             for keysym in mapped.iter().rev() {
-                portal.keysym_event(*keysym, false)?;
+                if let Err(error) = portal.keysym_event(*keysym, false) {
+                    if first_err.is_none() {
+                        first_err = Some(error);
+                    }
+                }
             }
-            return Ok(());
+            match first_err {
+                Some(error) => return Err(error),
+                None => return Ok(()),
+            }
         }
         let mapped = keys
             .iter()
@@ -1347,10 +1407,20 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 portal.keysym_event(*keysym, true)?;
             }
             sleep(Duration::from_millis(ms));
+            // 释放阶段中途失败也要尽力释放全部键(避免修饰键卡死),返回
+            // 首个错误。
+            let mut first_err = None;
             for keysym in mapped.iter().rev() {
-                portal.keysym_event(*keysym, false)?;
+                if let Err(error) = portal.keysym_event(*keysym, false) {
+                    if first_err.is_none() {
+                        first_err = Some(error);
+                    }
+                }
             }
-            return Ok(());
+            match first_err {
+                Some(error) => return Err(error),
+                None => return Ok(()),
+            }
         }
         let mapped = keys
             .iter()
@@ -1471,6 +1541,7 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
         wayland_screenshot_error,
         wayland_portal_capture_error: None,
         last_input_at: None,
+        wayland_input_scale: (1.0, 1.0),
     }))
 }
 
@@ -1609,6 +1680,27 @@ mod tests {
         // 对象真实报告 Unknown(非查询失败)不算 secure。
         assert!(!is_secure_role(Role::Unknown, false));
         assert!(!is_secure_role(Role::PushButton, false));
+    }
+
+    #[test]
+    fn extents_contain_is_half_open_and_rejects_zero_sized() {
+        // 常规包含:原点、内部点;右/下边开区间(恰在边上不算覆盖)。
+        let extents = (10, 20, 100, 50);
+        assert!(extents_contain(extents, 10, 20));
+        assert!(extents_contain(extents, 109, 69));
+        assert!(!extents_contain(extents, 110, 69));
+        assert!(!extents_contain(extents, 109, 70));
+        assert!(!extents_contain(extents, 9, 20));
+        assert!(!extents_contain(extents, 10, 19));
+        // 负原点(多显示器布局,副屏在左侧/上方)。
+        let negative = (-1920, -400, 1920, 1080);
+        assert!(extents_contain(negative, -1, -1));
+        assert!(!extents_contain(negative, -1921, 0));
+        // 零尺寸 extents 不包含任何点(screen_extents_strict 已对它报错,
+        // 这里保证即使漏进循环也不会被误判为覆盖)。
+        let zero = (0, 0, 0, 0);
+        assert!(!extents_contain(zero, 0, 0));
+        assert!(!extents_contain(zero, i32::MAX, i32::MAX));
     }
 
     #[test]

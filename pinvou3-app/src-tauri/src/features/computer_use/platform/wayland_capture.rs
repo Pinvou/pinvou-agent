@@ -246,6 +246,19 @@ fn run_pw_loop(
                     info.parse(param)
                         .map(|_| info)
                         .map_err(|e| format!("cannot parse negotiated video format: {e}"))
+                })
+                .and_then(|info| {
+                    // 防御性校验:offer 虽然把格式固定为 BGRx,但异常合成器
+                    // fixate 出别的格式时 convert_frame 的通道交换会静默输出
+                    // 错色帧——协商阶段直接拒绝(fail-closed)。
+                    if info.format() == VideoFormat::BGRx {
+                        Ok(info)
+                    } else {
+                        Err(format!(
+                            "negotiated pixel format is {:?}, expected BGRx",
+                            info.format()
+                        ))
+                    }
                 });
             if let Ok(mut shared) = shared.lock() {
                 match parsed {

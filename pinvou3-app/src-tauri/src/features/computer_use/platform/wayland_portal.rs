@@ -564,8 +564,11 @@ impl PortalInner {
         }
 
         // 两个分支的 call_method 产出不同 opaque future 类型,各自 await 到
-        // 完成后统一为 Result<Message>。
-        tokio::time::timeout(timeout, async {
+        // 完成后统一为 Result<Message>。方法调用本身应当毫秒级返回,封顶在
+        // REQUEST_TIMEOUT;授权对话框的等待发生在 Response 信号(下一段)——
+        // 两段各自配完整 timeout 的旧写法让 Start 最坏 240s,击穿 backend 层
+        // 150s 请求预算(评审发现)。
+        tokio::time::timeout(timeout.min(REQUEST_TIMEOUT), async {
             match session {
                 Some(path) if parent_window.is_some() => {
                     self.conn
