@@ -403,7 +403,9 @@ pub async fn rebind_workspace_root(
                     eprintln!("[projects] rebind capture_baseline({session_id}) failed: {error:#}")
                 }
                 Err(error) => {
-                    eprintln!("[projects] rebind capture_baseline({session_id}) task failed: {error}")
+                    eprintln!(
+                        "[projects] rebind capture_baseline({session_id}) task failed: {error}"
+                    )
                 }
             }
         }
@@ -441,6 +443,20 @@ pub async fn rebind_workspace_root(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 线缆形状锁:bridge 的 applySnapshot 按 projects/assignments 键消费
+    /// 快照,serde 改名会让每次快照被静默丢弃(评审 finding 41)。
+    #[test]
+    fn project_list_response_wire_keys_are_stable() {
+        let value = serde_json::to_value(ProjectListResponse {
+            projects: Vec::new(),
+            assignments: SessionAssignments::default(),
+        })
+        .expect("serialize ProjectListResponse");
+        let object = value.as_object().expect("response serializes as an object");
+        assert!(object.contains_key("projects"));
+        assert!(object.contains_key("assignments"));
+    }
 
     #[test]
     fn rebind_from_rejects_empty_and_root() {
