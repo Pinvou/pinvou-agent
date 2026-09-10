@@ -193,10 +193,6 @@ age = { version = "=0.12.1", default-features = false }
 # 一律在 computer_use 的专用 worker 线程上构造/使用/析构。
 xcap = "0.9.8"
 enigo = "0.6"
-# Wayland 同会话截屏(features/computer_use/platform/wayland_capture):
-# portal RemoteDesktop 会话的 ScreenCast 流经 OpenPipewireRemote 的 fd 直连
-# PipeWire 取帧。版本与 xcap 传递依赖一致,不新增编译面。
-pipewire = "0.10"
 
 # keyring 不再直接依赖 —— 凭证走底座 codewhale-secrets(它内部按平台引 keyring)。
 # macOS 桌伴窗口策略补丁(pet_window.rs):
@@ -291,6 +287,13 @@ libc = "0.2"
 # Linux webview(webkit2gtk)默认拒绝 getUserMedia → 语音输入点麦克风被拒。
 # 连 permission-request 信号放行 UserMedia(麦克风)请求。版本对齐 wry 0.55 用的 2.0.x。
 [target.'cfg(target_os = "linux")'.dependencies]
+# Wayland 同会话截屏(features/computer_use/platform/wayland_capture,Linux 专属
+# 模块):portal RemoteDesktop 会话的 ScreenCast 流经 OpenPipeWireRemote 的 fd
+# 直连 PipeWire 取帧。版本与 xcap 传递依赖一致,不新增编译面。放 Linux target
+# 段——macOS/Windows 不编译该模块,也不能引入需要系统 PipeWire 头文件的构建
+# 依赖(libspa-sys build script 会直接失败)。
+pipewire = "0.10"
+
 # Tauri 的 show/set_focus 是两条独立主循环消息；隐藏启动窗口在 release 下可能
 # 尚未完成 map 就执行 present。直接在 GTK 主线程原子 show/deiconify/present。
 gtk = "0.18"
