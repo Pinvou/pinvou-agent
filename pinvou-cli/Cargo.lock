@@ -6400,6 +6400,8 @@ dependencies = [
  "async-trait",
  "benchmark-core",
  "pinvou-product-backend",
+ "pinvou3-tauri",
+ "reqwest 0.13.4",
  "serde_json",
 ]
 

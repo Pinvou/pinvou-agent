@@ -18,6 +18,21 @@ serde_json = "1"
 anyhow = { version = "1.0", optional = true }
 async-trait = { workspace = true, optional = true }
 pinvou-product-backend = { path = "../pinvou-product-backend", optional = true }
+# Product feature layer (prefs/credential store); same feature set as the
+# product-backend crate uses so the workspace builds one pinvou3-tauri.
+pinvou3-lib = { package = "pinvou3-tauri", path = "../../../pinvou3-app/src-tauri", default-features = false, features = [
+    "benchmark-hooks",
+    "local-embed",
+] }
+# Connection probes (`models test` / `models probe-local` / `settings search
+# test`): standalone HTTP mirroring app/commands/settings.rs; blocking client
+# so the CLI needs no async runtime. TLS stack unifies with pinvou3-tauri's
+# rustls configuration.
+reqwest = { version = "0.13", default-features = false, features = [
+    "blocking",
+    "json",
+    "rustls",
+] }
 
 [[bin]]
 name = "pinvou"

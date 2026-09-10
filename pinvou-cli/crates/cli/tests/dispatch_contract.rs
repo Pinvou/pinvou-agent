@@ -8,30 +8,30 @@ fn usage_error(args: [&str; 2]) -> String {
 
 #[test]
 fn every_family_token_dispatches_to_its_module() {
+    // One representative valid subcommand per family: the parse layer must
+    // route the family token even when the subcommand-specific validation
+    // differs per family.
     let tokens = [
-        "sessions",
-        "models",
-        "settings",
-        "memory",
-        "knowledge",
-        "scheduled",
-        "plugins",
-        "connectors",
-        "personas",
-        "code",
-        "files",
-        "voice",
-        "deps",
-        "feedback",
-        "monitor",
-        "artifacts",
+        ("sessions", "list"),
+        ("models", "list"),
+        ("settings", "get"),
+        ("memory", "overview"),
+        ("knowledge", "stats"),
+        ("scheduled", "list"),
+        ("plugins", "readiness"),
+        ("connectors", "status"),
+        ("personas", "list"),
+        ("code", "agents"),
+        ("files", "ingest"),
+        ("voice", "asr-status"),
+        ("deps", "check"),
+        ("feedback", "submit"),
+        ("monitor", "status"),
+        ("artifacts", "list"),
     ];
-    for token in tokens {
-        let parsed = parse_args(["pinvou", token, "list"]).unwrap_or_else(|error| {
-            // `list` is not a valid subcommand for every family; the stub
-            // accepts any subcommand word, so this only fails on dispatch.
-            panic!("family {token} did not dispatch: {error}");
-        });
+    for (token, subcommand) in tokens {
+        let parsed = parse_args(["pinvou", token, subcommand])
+            .unwrap_or_else(|error| panic!("family {token} did not dispatch: {error}"));
         let command = parsed.command();
         assert!(
             matches!(

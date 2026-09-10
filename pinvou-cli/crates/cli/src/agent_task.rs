@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{CliError, CliOutcome, ExitCode, OutputMode, named_options, option};
+use crate::{CliError, CliOutcome, ExitCode, OutputMode};
 
 /// Parse-time cap for `agent run --timeout-secs` (7 days): an unbounded u64
 /// would overflow `Instant + Duration`, exiting 101 with no report. Must stay
@@ -19,37 +19,124 @@ pub enum AgentCommand {
         prompt_file: PathBuf,
         workspace: Option<PathBuf>,
         timeout_secs: u64,
+        /// `--session <id>`: continue an existing chat session
+        /// (`AgenticTaskRequest.session_id`). None = historical behavior
+        /// (fresh temporary session).
+        session: Option<String>,
+        /// `--mode plan|agent` (`AgenticTaskRequest.mode`). None = historical
+        /// behavior (agent turn).
+        mode: Option<String>,
+        /// `--model <model-id>` (`AgenticTaskRequest.model_id`).
+        model: Option<String>,
+        /// `--attach <PATH>`, repeatable (`AgenticTaskRequest.attachments`
+        /// with `remove_after_ingest: false`).
+        attachments: Vec<PathBuf>,
+        /// `--keep-session`: env-var-independent twin of
+        /// `PINVOU3_AGENT_TASK_KEEP_SESSION` (the agentic task API exposes
+        /// keep-session only through that environment variable).
+        keep_session: bool,
     },
 }
+
+/// Flags that carry a value. `--attach` is intentionally repeatable; every
+/// other flag rejects duplicates.
+const RUN_OPTIONS: &[&str] = &[
+    "--prompt-file",
+    "--workspace",
+    "--timeout-secs",
+    "--session",
+    "--mode",
+    "--model",
+    "--attach",
+];
 
 pub(crate) fn parse(values: &[String]) -> Result<AgentCommand, CliError> {
     match values.get(1).map(String::as_str) {
         Some("run") => {
-            let options = named_options(
-                &values[2..],
-                &["--prompt-file", "--workspace", "--timeout-secs"],
-            )?;
-            let prompt_file = option(&options, "--prompt-file")
-                .map(PathBuf::from)
-                .ok_or_else(|| CliError::usage("agent run requires --prompt-file"))?;
-            let workspace = option(&options, "--workspace").map(PathBuf::from);
-            let timeout_secs = match option(&options, "--timeout-secs") {
-                None => 600,
-                Some(value) => value
-                    .parse::<u64>()
-                    .ok()
-                    .filter(|seconds| *seconds > 0 && *seconds <= AGENT_TIMEOUT_SECS_MAX)
-                    .ok_or_else(|| {
-                        CliError::usage(format!(
-                            "agent run requires --timeout-secs to be a positive integer \
-                             no greater than {AGENT_TIMEOUT_SECS_MAX}"
-                        ))
-                    })?,
-            };
+            let mut prompt_file = None;
+            let mut workspace = None;
+            let mut timeout_secs: Option<u64> = None;
+            let mut session = None;
+            let mut mode = None;
+            let mut model = None;
+            let mut attachments = Vec::new();
+            let mut keep_session = false;
+            let mut index = 2;
+            while index < values.len() {
+                let token = values[index].as_str();
+                if token == "--keep-session" {
+                    if keep_session {
+                        return Err(CliError::usage("duplicate agent run option --keep-session"));
+                    }
+                    keep_session = true;
+                    index += 1;
+                    continue;
+                }
+                if !RUN_OPTIONS.contains(&token) {
+                    return Err(CliError::usage(format!(
+                        "unsupported agent run option: {token}"
+                    )));
+                }
+                let duplicate = match token {
+                    "--prompt-file" => prompt_file.is_some(),
+                    "--workspace" => workspace.is_some(),
+                    "--timeout-secs" => timeout_secs.is_some(),
+                    "--session" => session.is_some(),
+                    "--mode" => mode.is_some(),
+                    "--model" => model.is_some(),
+                    _ => false,
+                };
+                if duplicate {
+                    return Err(CliError::usage(format!(
+                        "duplicate agent run option {token}"
+                    )));
+                }
+                let value = values.get(index + 1).ok_or_else(|| {
+                    CliError::usage(format!("agent run option {token} requires a value"))
+                })?;
+                if value.is_empty() || value.starts_with("--") {
+                    return Err(CliError::usage(format!(
+                        "agent run option {token} requires a value"
+                    )));
+                }
+                match token {
+                    "--prompt-file" => prompt_file = Some(PathBuf::from(value)),
+                    "--workspace" => workspace = Some(PathBuf::from(value)),
+                    "--timeout-secs" => {
+                        timeout_secs = Some(value.parse::<u64>().ok().filter(|seconds| {
+                            *seconds > 0 && *seconds <= AGENT_TIMEOUT_SECS_MAX
+                        }).ok_or_else(|| {
+                            CliError::usage(format!(
+                                "agent run requires --timeout-secs to be a positive integer \
+                                 no greater than {AGENT_TIMEOUT_SECS_MAX}"
+                            ))
+                        })?);
+                    }
+                    "--session" => session = Some(value.clone()),
+                    "--mode" => match value.as_str() {
+                        "plan" | "agent" => mode = Some(value.clone()),
+                        other => {
+                            return Err(CliError::usage(format!(
+                                "agent run --mode must be plan or agent (got {other})"
+                            )));
+                        }
+                    },
+                    "--model" => model = Some(value.clone()),
+                    _ => attachments.push(PathBuf::from(value)),
+                }
+                index += 2;
+            }
+            let prompt_file =
+                prompt_file.ok_or_else(|| CliError::usage("agent run requires --prompt-file"))?;
             Ok(AgentCommand::Run {
                 prompt_file,
                 workspace,
-                timeout_secs,
+                timeout_secs: timeout_secs.unwrap_or(600),
+                session,
+                mode,
+                model,
+                attachments,
+                keep_session,
             })
         }
         _ => Err(CliError::usage("usage: pinvou agent run")),
@@ -62,25 +149,52 @@ pub(crate) fn execute(command: AgentCommand, output: OutputMode) -> Result<CliOu
             prompt_file,
             workspace,
             timeout_secs,
-        } => run_agent(&prompt_file, workspace.as_deref(), timeout_secs, output),
+            session,
+            mode,
+            model,
+            attachments,
+            keep_session,
+        } => run_agent(
+            &prompt_file,
+            workspace.as_deref(),
+            timeout_secs,
+            session.as_deref(),
+            mode.as_deref(),
+            model,
+            attachments,
+            keep_session,
+            output,
+        ),
     }
 }
 
 #[cfg(not(feature = "product-backend"))]
+#[allow(clippy::too_many_arguments)]
 fn run_agent(
     _prompt_file: &Path,
     _workspace: Option<&Path>,
     _timeout_secs: u64,
+    _session: Option<&str>,
+    _mode: Option<&str>,
+    _model: Option<String>,
+    _attachments: Vec<PathBuf>,
+    _keep_session: bool,
     _output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     Err(CliError::failed("product_backend_not_enabled"))
 }
 
 #[cfg(feature = "product-backend")]
+#[allow(clippy::too_many_arguments)]
 fn run_agent(
     prompt_file: &Path,
     workspace: Option<&Path>,
     timeout_secs: u64,
+    session: Option<&str>,
+    mode: Option<&str>,
+    model: Option<String>,
+    attachments: Vec<PathBuf>,
+    keep_session: bool,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     // Consistent with the other read failures in lib.rs (read_to_string ->
@@ -117,15 +231,42 @@ fn run_agent(
         }
         None => None,
     };
+    let mode = mode.map(|mode| {
+        if mode == "plan" {
+            pinvou_product_backend::AgenticTaskMode::Plan
+        } else {
+            pinvou_product_backend::AgenticTaskMode::Agent
+        }
+    });
+    let attachments = attachments
+        .into_iter()
+        .map(|path| pinvou_product_backend::AgenticTaskAttachment {
+            path,
+            remove_after_ingest: false,
+        })
+        .collect();
     let request = pinvou_product_backend::AgenticTaskRequest {
         prompt,
         workspace,
         timeout_secs,
-        // New optional parity fields (session_id/mode/model_id/attachments)
-        // default to the historical behavior until the CLI gains flags for
-        // them.
-        ..Default::default()
+        // New optional parity fields default to the historical behavior when
+        // the flags are absent; the app-side request treats None exactly as
+        // before the fields were introduced.
+        session_id: session.map(str::to_owned),
+        mode,
+        model_id: model,
+        attachments,
     };
+    // `--keep-session` mirrors the PINVOU3_AGENT_TASK_KEEP_SESSION cleanup
+    // opt-out, which the agentic task API only exposes as an environment
+    // variable: set it in-process for this invocation, before any thread is
+    // spawned by the host below.
+    if keep_session {
+        // SAFETY: single-threaded at this point (the product host and its
+        // runtime are built inside run_agentic_task below), so no concurrent
+        // env readers can race this write.
+        unsafe { std::env::set_var("PINVOU3_AGENT_TASK_KEEP_SESSION", "1") };
+    }
     let report = pinvou_product_backend::run_agentic_task(request)
         .map_err(|error| CliError::failed(format!("agent_run_failed: {error:#}")))?;
     // TB/harness semantics: exit 0 whenever a report is produced (timeouts and
@@ -177,6 +318,25 @@ mod tests {
     use super::*;
     use crate::{CliCommand, ExitCode, parse_args};
 
+    /// The flag-less contract: only the three historical fields are set;
+    /// every parity field defaults to "unset" (byte-identical request).
+    fn historical(
+        prompt_file: PathBuf,
+        workspace: Option<PathBuf>,
+        timeout_secs: u64,
+    ) -> AgentCommand {
+        AgentCommand::Run {
+            prompt_file,
+            workspace,
+            timeout_secs,
+            session: None,
+            mode: None,
+            model: None,
+            attachments: Vec::new(),
+            keep_session: false,
+        }
+    }
+
     #[test]
     fn parse_args_accepts_agent_run_with_options() {
         let parsed = parse_args([
@@ -193,11 +353,11 @@ mod tests {
         .unwrap();
         assert_eq!(
             parsed.command(),
-            &CliCommand::Agent(AgentCommand::Run {
-                prompt_file: PathBuf::from("task.txt"),
-                workspace: Some(PathBuf::from("/tmp/task")),
-                timeout_secs: 900,
-            })
+            &CliCommand::Agent(historical(
+                PathBuf::from("task.txt"),
+                Some(PathBuf::from("/tmp/task")),
+                900,
+            ))
         );
         assert_eq!(parsed.output(), OutputMode::Human);
     }
@@ -207,11 +367,7 @@ mod tests {
         let parsed = parse_args(["pinvou", "agent", "run", "--prompt-file", "task.txt"]).unwrap();
         assert_eq!(
             parsed.command(),
-            &CliCommand::Agent(AgentCommand::Run {
-                prompt_file: PathBuf::from("task.txt"),
-                workspace: None,
-                timeout_secs: 600,
-            })
+            &CliCommand::Agent(historical(PathBuf::from("task.txt"), None, 600))
         );
     }
 
@@ -288,5 +444,167 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(parsed.output(), OutputMode::Json);
+    }
+
+    #[test]
+    fn parse_args_accepts_every_new_parity_flag() {
+        let parsed = parse_args([
+            "pinvou",
+            "agent",
+            "run",
+            "--prompt-file",
+            "task.txt",
+            "--session",
+            "sess-1",
+            "--mode",
+            "plan",
+            "--model",
+            "model-1",
+            "--attach",
+            "a.md",
+            "--attach",
+            "/tmp/b.md",
+            "--keep-session",
+        ])
+        .unwrap();
+        assert_eq!(
+            parsed.command(),
+            &CliCommand::Agent(AgentCommand::Run {
+                prompt_file: PathBuf::from("task.txt"),
+                workspace: None,
+                timeout_secs: 600,
+                session: Some("sess-1".into()),
+                mode: Some("plan".into()),
+                model: Some("model-1".into()),
+                attachments: vec![PathBuf::from("a.md"), PathBuf::from("/tmp/b.md")],
+                keep_session: true,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_args_accepts_agent_mode_explicitly() {
+        let parsed = parse_args([
+            "pinvou",
+            "agent",
+            "run",
+            "--prompt-file",
+            "task.txt",
+            "--mode",
+            "agent",
+        ])
+        .unwrap();
+        match parsed.command() {
+            CliCommand::Agent(AgentCommand::Run { mode, .. }) => {
+                assert_eq!(mode.as_deref(), Some("agent"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_args_rejects_unknown_mode_with_usage_exit_code() {
+        let error = parse_args([
+            "pinvou",
+            "agent",
+            "run",
+            "--prompt-file",
+            "task.txt",
+            "--mode",
+            "bogus",
+        ])
+        .unwrap_err();
+        assert_eq!(error.exit_code(), ExitCode::Usage);
+        assert!(error.to_string().contains("plan or agent"));
+    }
+
+    #[test]
+    fn parse_args_rejects_invalid_new_flag_values_and_duplicates() {
+        let invalid = [
+            vec![
+                "pinvou",
+                "agent",
+                "run",
+                "--prompt-file",
+                "task.txt",
+                "--mode",
+            ],
+            vec![
+                "pinvou",
+                "agent",
+                "run",
+                "--prompt-file",
+                "task.txt",
+                "--session",
+            ],
+            vec![
+                "pinvou",
+                "agent",
+                "run",
+                "--prompt-file",
+                "task.txt",
+                "--model",
+            ],
+            vec![
+                "pinvou",
+                "agent",
+                "run",
+                "--prompt-file",
+                "task.txt",
+                "--attach",
+            ],
+            vec![
+                "pinvou",
+                "agent",
+                "run",
+                "--prompt-file",
+                "task.txt",
+                "--session",
+                "a",
+                "--session",
+                "b",
+            ],
+            vec![
+                "pinvou",
+                "agent",
+                "run",
+                "--prompt-file",
+                "task.txt",
+                "--model",
+                "a",
+                "--model",
+                "b",
+            ],
+            vec![
+                "pinvou",
+                "agent",
+                "run",
+                "--prompt-file",
+                "task.txt",
+                "--keep-session",
+                "--keep-session",
+            ],
+            vec![
+                "pinvou",
+                "agent",
+                "run",
+                "--prompt-file",
+                "task.txt",
+                "--bogus",
+            ],
+            vec![
+                "pinvou",
+                "agent",
+                "run",
+                "--prompt-file",
+                "task.txt",
+                "--session",
+                "--model",
+            ],
+        ];
+        for arguments in invalid {
+            let error = parse_args(&arguments).expect_err(arguments.join(" ").as_str());
+            assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
+        }
     }
 }
