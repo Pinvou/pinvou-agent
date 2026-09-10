@@ -19,6 +19,9 @@
     interruptSend: false,
     deviceFileUpload: true,
     acpCodeMode: true,
+    // Mouse/keyboard control is desktop-only by design; the web bridge only
+    // exposes rejecting stubs (review finding: state the polarity explicitly).
+    computerUse: false,
   };
   const SEMANTIC_COMMAND_REQUIREMENTS = {
     hostFilePicker: ["web_access_list_host_files", "web_access_ingest_file"],
