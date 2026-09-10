@@ -19,20 +19,29 @@
 //!   对话框,`capabilities().notes` 注明);两条路都失败则显式 `unsupported`。
 //!   输入合成走 portal RemoteDesktop;探测不到 portal 时输入显式不可用。
 //! - 无障碍树:`atspi`(AT-SPI over D-Bus,独立 a11y 总线,X11/Wayland 均可)。
-//!   trait 为同步而 atspi 为 async:backend 持有一个专用 current-thread tokio
-//!   runtime,在 worker 线程(普通 std::thread,不含引擎主 runtime)上
-//!   `block_on`,无嵌套运行时死锁风险。Wayland 下 Component extents 为
-//!   尽力而为(合成器/工具包相关),ui_tree 输出头部注明。
+//!   a11y 总线连接由本模块自建(`zbus::connection::Builder` +
+//!   `method_timeout`):atspi 的 `AccessibilityConnection` 不允许注入自建
+//!   connection(`new`/`from_address` 内部各自 build,无超时设置点),而 zbus
+//!   默认超时很宽,树遍历每节点多次调用,一个挂死的 app 曾能永久钉死
+//!   worker——故绕开该薄封装,直接用 atspi 的 proxy 类型 + 自管连接,并在
+//!   操作层再加一道整体 deadline 兜底。trait 为同步而 atspi 为 async:
+//!   backend 持有一个专用 current-thread tokio runtime,在 worker 线程(普通
+//!   std::thread,不含引擎主 runtime)上 `block_on`,无嵌套运行时死锁风险。
+//!   Wayland 下 Component extents 为尽力而为(合成器/工具包相关),ui_tree
+//!   输出头部注明。
 //! - 线程约定同其他平台:对象于 worker 线程构造,不得跨线程移动。
 
+use std::future::Future;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use atspi::proxy::accessible::{AccessibleProxy, ObjectRefExt};
+use atspi::proxy::bus::BusProxy;
 use atspi::proxy::component::ComponentProxy;
-use atspi::{AccessibilityConnection, CoordType, Role, State, StateSet};
+use atspi::{CoordType, Role, State, StateSet};
 use enigo::{Button, Coordinate, Direction, Enigo, Keyboard, Mouse, Settings};
 use xcap::Monitor;
+use zbus::proxy::CacheProperties;
 
 use super::super::backend::ComputerUseBackend;
 use super::super::types::{
@@ -55,6 +64,18 @@ const DEFAULT_MAX_DEPTH: u32 = 8;
 const DEFAULT_MAX_NODES: usize = 200;
 /// 单节点名称最长保留字符数(防止超大文本撑爆工具结果)。
 const MAX_NAME_CHARS: usize = 80;
+/// a11y D-Bus 单次方法调用的超时(zbus connection 级 `method_timeout`)。
+/// 评审发现:zbus 默认超时很宽,树遍历每节点 4-5 次调用,一个挂死的 app
+/// 即可让 worker 永久 pending。
+const A11Y_METHOD_TIMEOUT: Duration = Duration::from_secs(3);
+/// 单点 a11y 查询(`element_at_point`/`focused_element`)的操作级 deadline:
+/// 方法级 3s 之上的第二层兜底,防"每步都快但总时长失控"。
+const A11Y_POINT_DEADLINE: Duration = Duration::from_secs(6);
+/// ui_tree 全树遍历的操作级 deadline(节点数有上限但每节点多次调用;20s
+/// 覆盖健康桌面,挂死环境快速失败,保持 worker 响应)。
+const A11Y_TREE_DEADLINE: Duration = Duration::from_secs(20);
+/// focused_element 树搜索的节点预算(与操作级 deadline 双约束)。
+const FOCUSED_SEARCH_MAX_NODES: usize = 300;
 
 /// 会话类型(探测结果)。纯数据,供 `detect_session` 单测断言。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,10 +231,18 @@ fn sanitize_name(raw: &str) -> String {
         .collect()
 }
 
-/// 节点标志位(紧凑单行输出用)。PasswordText 即安全输入框(T3 确认信号)。
-fn state_flags(role: Role, state: Option<StateSet>) -> Vec<&'static str> {
+/// secure 判定(纯函数):`PasswordText` 直接判定;**角色查询失败**
+/// (`role_unknown`)保守兜底为 secure——无法证明不是密码框,宁可让工具层
+/// 多要一次确认,也不能把密码框当普通元素放行(评审发现)。
+fn is_secure_role(role: Role, role_unknown: bool) -> bool {
+    role == Role::PasswordText || role_unknown
+}
+
+/// 节点标志位(紧凑单行输出用)。`secure` 由调用方按 [`is_secure_role`]
+/// 给出;此时调用方须同时抹除 name(见 `write_node`/`element_info_of`)。
+fn state_flags(secure: bool, state: Option<StateSet>) -> Vec<&'static str> {
     let mut flags = Vec::new();
-    if role == Role::PasswordText {
+    if secure {
         flags.push("secure");
     }
     if let Some(set) = state {
@@ -236,16 +265,29 @@ fn state_flags(role: Role, state: Option<StateSet>) -> Vec<&'static str> {
     flags
 }
 
+/// a11y 注册表根的 AccessibleProxy。复制 atspi
+/// `AccessibilityConnection::root_accessible_on_registry` 的构造要点:
+/// registry 对 DBus 属性接口实现不完整,属性缓存必须显式关闭。
+async fn root_accessible(conn: &zbus::Connection) -> Result<AccessibleProxy<'_>, ComputerUseError> {
+    AccessibleProxy::builder(conn)
+        .destination("org.a11y.atspi.Registry")
+        .map_err(|error| {
+            ComputerUseError::unavailable(format!("AT-SPI registry destination: {error}"))
+        })?
+        .cache_properties(CacheProperties::No)
+        .build()
+        .await
+        .map_err(|error| ComputerUseError::unavailable(format!("AT-SPI registry root: {error}")))
+}
+
 /// 由 AccessibleProxy 盲建同对象的 ComponentProxy(不对每个节点先查
 /// GetInterfaces,避免一次额外 D-Bus 往返;不支持 Component 的对象在
 /// get_extents 时报错,按"无 bounds"处理)。
-/// 注意:crate 未直接依赖 zbus,`zbus::Connection` 类型一律经
-/// `AccessibilityConnection::connection()` 以内联临时值传入,不出现在签名里。
 async fn component_of<'c>(
-    conn: &'c AccessibilityConnection,
+    conn: &'c zbus::Connection,
     proxy: &AccessibleProxy<'_>,
 ) -> Option<ComponentProxy<'c>> {
-    ComponentProxy::builder(conn.connection())
+    ComponentProxy::builder(conn)
         .destination(proxy.inner().destination().as_str().to_string())
         .ok()?
         .path(proxy.inner().path().as_str().to_string())
@@ -256,7 +298,7 @@ async fn component_of<'c>(
 }
 
 async fn screen_extents(
-    conn: &AccessibilityConnection,
+    conn: &zbus::Connection,
     proxy: &AccessibleProxy<'_>,
 ) -> Option<(i32, i32, i32, i32)> {
     component_of(conn, proxy)
@@ -266,35 +308,88 @@ async fn screen_extents(
         .ok()
 }
 
+/// 严格版 extents:命中测试要靠窗口 extents 判定"点是否在此窗口内",
+/// 查询失败必须上抛(工具层 T3 筛查按 Unscreenable 失败关闭),不能
+/// continue 成"窗口不覆盖该点"(评审发现的 fail-open)。
+async fn screen_extents_strict(
+    conn: &zbus::Connection,
+    proxy: &AccessibleProxy<'_>,
+) -> Result<(i32, i32, i32, i32), ComputerUseError> {
+    let component = component_of(conn, proxy).await.ok_or_else(|| {
+        ComputerUseError::unavailable("AT-SPI Component proxy unavailable for window")
+    })?;
+    component
+        .get_extents(CoordType::Screen)
+        .await
+        .map_err(|error| ComputerUseError::unavailable(format!("AT-SPI window extents: {error}")))
+}
+
 /// 注册表根的全部应用顶层窗口(不区分活动与否)。
-async fn app_windows<'c>(
-    conn: &'c AccessibilityConnection,
+///
+/// `strict = true`(element_at_point / focused_element 等筛查路径)时任何
+/// 一层查询失败都向上报,绝不静默吞成"没有窗口";`strict = false`(ui_tree
+/// 观察路径)保持尽力而为:单个 app 挂了就跳过,不拖垮整棵树。
+async fn app_windows(
+    conn: &zbus::Connection,
     root: &AccessibleProxy<'_>,
-) -> Vec<AccessibleProxy<'c>> {
+    strict: bool,
+) -> Result<Vec<AccessibleProxy<'_>>, ComputerUseError> {
     let mut windows = Vec::new();
-    let Ok(apps) = root.get_children().await else {
-        return windows;
+    let apps = match root.get_children().await {
+        Ok(apps) => apps,
+        Err(error) => {
+            if strict {
+                return Err(ComputerUseError::unavailable(format!(
+                    "AT-SPI registry root children: {error}"
+                )));
+            }
+            // 尽力而为路径:根 children 失败 → 空窗口表(树退化为浅层根)。
+            return Ok(windows);
+        }
     };
     for app_ref in apps {
         if app_ref.is_null() {
             continue;
         }
-        let Ok(app) = app_ref.into_accessible_proxy(conn.connection()).await else {
-            continue;
+        let app = match app_ref.into_accessible_proxy(conn).await {
+            Ok(app) => app,
+            Err(error) => {
+                if strict {
+                    return Err(ComputerUseError::unavailable(format!(
+                        "AT-SPI application proxy: {error}"
+                    )));
+                }
+                continue;
+            }
         };
-        let Ok(children) = app.get_children().await else {
-            continue;
+        let children = match app.get_children().await {
+            Ok(children) => children,
+            Err(error) => {
+                if strict {
+                    return Err(ComputerUseError::unavailable(format!(
+                        "AT-SPI application children: {error}"
+                    )));
+                }
+                continue;
+            }
         };
         for child_ref in children {
             if child_ref.is_null() {
                 continue;
             }
-            if let Ok(window) = child_ref.into_accessible_proxy(conn.connection()).await {
-                windows.push(window);
+            match child_ref.into_accessible_proxy(conn).await {
+                Ok(window) => windows.push(window),
+                Err(error) => {
+                    if strict {
+                        return Err(ComputerUseError::unavailable(format!(
+                            "AT-SPI window proxy: {error}"
+                        )));
+                    }
+                }
             }
         }
     }
-    windows
+    Ok(windows)
 }
 
 /// 把带 `State::Active` 的窗口排到最前(命中测试优先活动窗口)。
@@ -309,9 +404,43 @@ async fn active_first(windows: &mut [AccessibleProxy<'_>]) {
     }
 }
 
+/// 由 AccessibleProxy 构造 [`ElementInfo`]。
+///
+/// secure 判定:PasswordText 直接判定;**角色查询失败**时保守兜底为 secure
+/// ——无法证明不是密码框,宁可让工具层多要一次确认,也不能把密码框当普通
+/// 元素放行;此时 name 一并抹除,避免密码内容经 ElementInfo 泄露。
+/// `fallback_bounds`:extents 查询失败时的兜底 bounds(命中路径传命中点,
+/// 搜索路径传 0;bounds 仅展示用,命中已完成)。
+async fn element_info_of(
+    conn: &zbus::Connection,
+    proxy: &AccessibleProxy<'_>,
+    fallback_bounds: (i32, i32, i32, i32),
+) -> ElementInfo {
+    let (role, role_unknown) = match proxy.get_role().await {
+        Ok(role) => (role, false),
+        Err(_) => (Role::Unknown, true),
+    };
+    let secure = is_secure_role(role, role_unknown);
+    let name = if secure {
+        String::new()
+    } else {
+        sanitize_name(&proxy.name().await.unwrap_or_default())
+    };
+    let (x, y, width, height) = screen_extents(conn, proxy).await.unwrap_or(fallback_bounds);
+    ElementInfo {
+        role: role.name().to_string(),
+        name,
+        x,
+        y,
+        width,
+        height,
+        secure,
+    }
+}
+
 /// 紧凑文本树写出器:`[i] role "name" (x,y,w,h) flags`,深度/节点数双上限。
 struct TreeWriter<'c> {
-    conn: &'c AccessibilityConnection,
+    conn: &'c zbus::Connection,
     out: String,
     next_index: usize,
     max_nodes: usize,
@@ -330,8 +459,20 @@ impl TreeWriter<'_> {
         let index = self.next_index;
         self.next_index += 1;
 
-        let role = proxy.get_role().await.unwrap_or(Role::Unknown);
-        let name = sanitize_name(&proxy.name().await.unwrap_or_default());
+        // 角色查询失败按 Unknown 保守处理:secure 兜底 + name 抹除(评审
+        // 发现:Unknown 角色无法证明不是密码框)。
+        let (role, role_unknown) = match proxy.get_role().await {
+            Ok(role) => (role, false),
+            Err(_) => (Role::Unknown, true),
+        };
+        let secure = is_secure_role(role, role_unknown);
+        // 密码框与角色不明的节点不在树里输出 name(评审发现:name 可能
+        // 就是密码内容本身);顺带省一次 D-Bus 属性查询。
+        let name = if secure {
+            String::new()
+        } else {
+            sanitize_name(&proxy.name().await.unwrap_or_default())
+        };
         let state = proxy.get_state().await.ok();
         let extents = screen_extents(self.conn, proxy).await;
 
@@ -340,7 +481,7 @@ impl TreeWriter<'_> {
         if let Some((x, y, width, height)) = extents {
             line.push_str(&format!(" ({x},{y},{width},{height})"));
         }
-        let flags = state_flags(role, state);
+        let flags = state_flags(secure, state);
         if !flags.is_empty() {
             line.push(' ');
             line.push_str(&flags.join(" "));
@@ -361,10 +502,7 @@ impl TreeWriter<'_> {
             if child_ref.is_null() {
                 continue;
             }
-            if let Ok(child) = child_ref
-                .into_accessible_proxy(self.conn.connection())
-                .await
-            {
+            if let Ok(child) = child_ref.into_accessible_proxy(self.conn).await {
                 Box::pin(self.write_node(&child, depth + 1)).await;
             }
         }
@@ -372,15 +510,12 @@ impl TreeWriter<'_> {
 }
 
 async fn ui_tree_async(
-    conn: &AccessibilityConnection,
+    conn: &zbus::Connection,
     opts: &UiTreeOptions,
     wayland: bool,
     desktop: &str,
 ) -> Result<String, ComputerUseError> {
-    let root = conn
-        .root_accessible_on_registry()
-        .await
-        .map_err(|error| ComputerUseError::unavailable(format!("AT-SPI registry root: {error}")))?;
+    let root = root_accessible(conn).await?;
 
     let session = if wayland { "wayland" } else { "x11" };
     // Wayland 没有全局坐标系,AT-SPI Component extents 是尽力而为
@@ -398,7 +533,8 @@ async fn ui_tree_async(
         max_depth: opts.max_depth.unwrap_or(DEFAULT_MAX_DEPTH),
     };
 
-    let mut windows = app_windows(conn, &root).await;
+    // 观察路径:尽力而为枚举(单个 app 挂了就跳过)。
+    let mut windows = app_windows(conn, &root, false).await?;
     active_first(&mut windows).await;
     if let Some(active) = windows.first() {
         if let Ok(state) = active.get_state().await {
@@ -420,63 +556,153 @@ async fn ui_tree_async(
     Ok(writer.out)
 }
 
+/// 命中测试。两种结局语义分明(评审发现的 fail-open 修复):
+/// - `Ok(None)`:**确认无元素**——枚举到的每个窗口都明确不覆盖该点,或
+///   覆盖的窗口经 AT-SPI 明确返回空命中(null ObjectRef);
+/// - `Err`:**查询失败**——根/应用/窗口枚举、extents、命中查询任何一环
+///   挂掉都向上报;工具层 T3 筛查按 Unscreenable 失败关闭,绝不当作
+///   "无元素"放行。
 async fn element_at_point_async(
-    conn: &AccessibilityConnection,
+    conn: &zbus::Connection,
     x: i32,
     y: i32,
 ) -> Result<Option<ElementInfo>, ComputerUseError> {
-    let root = conn
-        .root_accessible_on_registry()
-        .await
-        .map_err(|error| ComputerUseError::unavailable(format!("AT-SPI registry root: {error}")))?;
-
-    let mut windows = app_windows(conn, &root).await;
+    let root = root_accessible(conn).await?;
+    let mut windows = app_windows(conn, &root, true).await?;
     active_first(&mut windows).await;
     for window in &windows {
-        let Some((wx, wy, ww, wh)) = screen_extents(conn, window).await else {
-            continue;
-        };
+        // extents 失败 → 无法判定覆盖关系 → 查询失败(不 continue)。
+        let (wx, wy, ww, wh) = screen_extents_strict(conn, window).await?;
         if x < wx || x >= wx + ww || y < wy || y >= wy + wh {
-            continue;
+            continue; // 明确不覆盖该点。
         }
-        let Some(component) = component_of(conn, window).await else {
-            continue;
-        };
-        let Ok(target_ref) = component
+        let component = component_of(conn, window).await.ok_or_else(|| {
+            ComputerUseError::unavailable("AT-SPI Component proxy unavailable for window")
+        })?;
+        let target_ref = component
             .get_accessible_at_point(x, y, CoordType::Screen)
             .await
-        else {
-            continue;
-        };
+            .map_err(|error| {
+                ComputerUseError::unavailable(format!("AT-SPI hit test at ({x}, {y}): {error}"))
+            })?;
         if target_ref.is_null() {
+            continue; // AT-SPI 明确空结果:该窗口内确认无元素。
+        }
+        let target = target_ref
+            .into_accessible_proxy(conn)
+            .await
+            .map_err(|error| {
+                ComputerUseError::unavailable(format!("AT-SPI target proxy: {error}"))
+            })?;
+        let info = element_info_of(conn, &target, (x, y, 0, 0)).await;
+        return Ok(Some(info));
+    }
+    Ok(None)
+}
+
+/// 焦点元素。atspi 0.30 的 proxy 层没有 GetFocusedObject 类查询(焦点只能
+/// 从事件流异步积累),故退而求其次:**在可达树上找 state 含 FOCUSED 的
+/// 节点**——活动窗口优先,DFS,受 [`FOCUSED_SEARCH_MAX_NODES`] 节点预算与
+/// 操作级 deadline 双约束(选择此路线而非返回 `Err(unsupported)`:树搜索
+/// 在 X11/Wayland 下都可行,不该浪费已有的 AT-SPI 通路)。
+///
+/// 结局语义:搜完可达树没找到 → `Ok(None)`(确认无焦点元素:部分工具包
+/// 不实现 FOCUSED state);预算耗尽仍无定论 → `Err`(fail-closed,结果
+/// 不确定时不说"没有")。
+async fn focused_element_async(
+    conn: &zbus::Connection,
+) -> Result<Option<ElementInfo>, ComputerUseError> {
+    let root = root_accessible(conn).await?;
+    let mut windows = app_windows(conn, &root, true).await?;
+    active_first(&mut windows).await;
+    let mut budget = FOCUSED_SEARCH_MAX_NODES;
+    for window in &windows {
+        if let Some(info) = find_focused_in_subtree(conn, window, &mut budget).await? {
+            return Ok(Some(info));
+        }
+        if budget == 0 {
+            break;
+        }
+    }
+    if budget == 0 {
+        return Err(ComputerUseError::unavailable(
+            "focused element search exhausted its node budget without a definitive answer",
+        ));
+    }
+    Ok(None)
+}
+
+/// 在子树内 DFS 找 state 含 FOCUSED 的节点;`budget` 限制访问节点数。
+async fn find_focused_in_subtree(
+    conn: &zbus::Connection,
+    proxy: &AccessibleProxy<'_>,
+    budget: &mut usize,
+) -> Result<Option<ElementInfo>, ComputerUseError> {
+    if *budget == 0 {
+        return Ok(None);
+    }
+    *budget -= 1;
+    let state = proxy
+        .get_state()
+        .await
+        .map_err(|error| ComputerUseError::unavailable(format!("AT-SPI state query: {error}")))?;
+    if state.contains(State::Focused) {
+        return Ok(Some(element_info_of(conn, proxy, (0, 0, 0, 0)).await));
+    }
+    let children = proxy
+        .get_children()
+        .await
+        .map_err(|error| ComputerUseError::unavailable(format!("AT-SPI node children: {error}")))?;
+    for child_ref in children {
+        if child_ref.is_null() {
             continue;
         }
-        let Ok(target) = target_ref.into_accessible_proxy(conn.connection()).await else {
-            continue;
-        };
-        let role = target.get_role().await.unwrap_or(Role::Unknown);
-        let name = sanitize_name(&target.name().await.unwrap_or_default());
-        let (ex, ey, ew, eh) = screen_extents(conn, &target).await.unwrap_or((x, y, 0, 0));
-        return Ok(Some(ElementInfo {
-            role: role.name().to_string(),
-            name,
-            x: ex,
-            y: ey,
-            width: ew,
-            height: eh,
-            secure: role == Role::PasswordText,
-        }));
+        let child = child_ref
+            .into_accessible_proxy(conn)
+            .await
+            .map_err(|error| {
+                ComputerUseError::unavailable(format!("AT-SPI child proxy: {error}"))
+            })?;
+        if let Some(found) = Box::pin(find_focused_in_subtree(conn, &child, budget)).await? {
+            return Ok(Some(found));
+        }
+        if *budget == 0 {
+            return Ok(None);
+        }
     }
     Ok(None)
 }
 
 /// AT-SPI 初始化:先打开会话 a11y 开关(Electron/Chromium 只在有 AT 注册后
-/// 才构建无障碍树;该调用失败非致命),再连接 a11y 总线。
-async fn a11y_init() -> Result<AccessibilityConnection, String> {
+/// 才构建无障碍树;该调用失败非致命),再**自建** a11y 总线连接。
+///
+/// 连接用 `zbus::connection::Builder` 构造并设 `method_timeout`(3s)。评审
+/// 发现:zbus 默认超时很宽,而 atspi 的 `AccessibilityConnection` 不允许
+/// 注入自建 connection——故按 atspi `AccessibilityConnection::new` 同款流程
+/// 自行拿总线地址(`org.a11y.Bus.GetAddress`)建连接,直接使用 atspi 的
+/// proxy 类型。(zbus 5 的 connection::Builder 只有 method_timeout 一个超时
+/// 设置点;操作级整体 deadline 由
+/// [`LinuxComputerUseBackend::block_on_a11y`] 兜底。)
+async fn a11y_connect() -> Result<zbus::Connection, String> {
     let _ = atspi::connection::set_session_accessibility(true).await;
-    AccessibilityConnection::new()
+    let session = zbus::Connection::session()
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| format!("session bus: {error}"))?;
+    let bus = BusProxy::new(&session)
+        .await
+        .map_err(|error| format!("a11y bus address proxy: {error}"))?;
+    let address: zbus::Address = bus
+        .get_address()
+        .await
+        .map_err(|error| format!("a11y bus address: {error}"))?
+        .parse()
+        .map_err(|error| format!("a11y bus address parse: {error}"))?;
+    zbus::connection::Builder::address(address)
+        .map_err(|error| format!("a11y connection builder: {error}"))?
+        .method_timeout(A11Y_METHOD_TIMEOUT)
+        .build()
+        .await
+        .map_err(|error| format!("a11y bus connection: {error}"))
 }
 
 /// Wayland 截屏探测:枚举显示器并对主屏(兜底首个)实际抓一帧。
@@ -512,7 +738,8 @@ pub(super) struct LinuxComputerUseBackend {
     session: SessionInfo,
     /// 专用 current-thread runtime:atspi(async/zbus)在同步 trait 内的桥。
     runtime: tokio::runtime::Runtime,
-    a11y: Option<AccessibilityConnection>,
+    /// 自建 a11y 总线连接(带 method_timeout,见 [`a11y_connect`])。
+    a11y: Option<zbus::Connection>,
     a11y_init_error: Option<String>,
     /// 仅 X11 构造;Wayland 输入走 `wayland_portal`。
     input: Option<Enigo>,
@@ -655,7 +882,7 @@ impl LinuxComputerUseBackend {
         }
     }
 
-    fn require_a11y(&self) -> Result<&AccessibilityConnection, ComputerUseError> {
+    fn require_a11y(&self) -> Result<&zbus::Connection, ComputerUseError> {
         match self.a11y.as_ref() {
             Some(conn) => Ok(conn),
             None => {
@@ -665,6 +892,25 @@ impl LinuxComputerUseBackend {
                 )))
             }
         }
+    }
+
+    /// a11y 异步操作桥:current-thread runtime `block_on` + 操作级整体
+    /// deadline(zbus `method_timeout` 之外的第二层兜底;超时区分不了
+    /// "无结果"与"失败",一律按 unavailable 上报——fail-closed)。
+    fn block_on_a11y<T>(
+        &self,
+        deadline: Duration,
+        what: &str,
+        fut: impl Future<Output = Result<T, ComputerUseError>>,
+    ) -> Result<T, ComputerUseError> {
+        self.runtime.block_on(async move {
+            match tokio::time::timeout(deadline, fut).await {
+                Ok(result) => result,
+                Err(_) => Err(ComputerUseError::unavailable(format!(
+                    "AT-SPI operation '{what}' did not finish within {deadline:?}"
+                ))),
+            }
+        })
     }
 
     fn press_chord(enigo: &mut Enigo, keys: &[enigo::Key]) -> Result<(), ComputerUseError> {
@@ -719,12 +965,18 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 (None, Some(error)) => format!("input unavailable: {error}"),
                 (None, None) => "input unavailable".to_string(),
             };
+            // 如实披露(评审发现):Wayland 输入整体按 experimental 对待
+            // (合成器实现差异);非 Latin-1 文本注入显式拒绝(mutter 对
+            // keymap 外 keysym 静默丢弃,见 wayland_portal::char_keysym)。
+            let experimental = "Wayland input is experimental (compositor implementations \
+                 differ), and typing non-Latin-1 text (CJK etc.) is explicitly rejected: \
+                 mutter silently drops keysyms outside the active keymap";
             Capabilities {
                 screenshot: portal_ok || self.wayland_screenshot_ok,
                 input: self.wayland_portal.is_some(),
                 ui_tree,
                 notes: format!(
-                    "Wayland session ({}): {input_note}; {screenshot_note}; \
+                    "Wayland session ({}): {input_note}; {screenshot_note}; {experimental}; \
                      AT-SPI bounds best-effort on Wayland",
                     self.session.desktop_label()
                 ),
@@ -990,6 +1242,12 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
 
     fn scroll(&mut self, direction: ScrollDirection, clicks: u32) -> Result<(), ComputerUseError> {
         if self.is_wayland() {
+            // amount=0 直接 no-op:mutter 对 axis steps=0 报 Invalid,而
+            // notify() 的错误路径会把整个 portal 会话 reset(下次动作重新弹
+            // 授权对话框)——不能为一次空滚动付出会话重建的代价。
+            if clicks == 0 {
+                return Ok(());
+            }
             self.note_input();
             let portal = self.require_portal()?;
             portal.ensure_started()?;
@@ -1021,12 +1279,15 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
         if self.is_wayland() {
             self.note_input();
             let portal = self.require_portal()?;
-            portal.ensure_started()?;
-            // 逐字符 keysym 注入(\n→Return、\t→Tab;不可映射字符显式报错)。
+            // 逐字符 keysym 注入(\n→Return、\t→Tab)。映射先行:非 Latin-1
+            // 字符(中文等)显式报错(fail-closed)——mutter 对 keymap 外
+            // keysym 静默丢弃,照发就是"成功"却无输入;报错时不应已经弹出
+            // 授权对话框。
             let keysyms = text
                 .chars()
                 .map(wayland_portal::char_keysym)
                 .collect::<Result<Vec<_>, _>>()?;
+            portal.ensure_started()?;
             for keysym in keysyms {
                 portal.keysym_event(keysym, true)?;
                 portal.keysym_event(keysym, false)?;
@@ -1104,9 +1365,12 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
     fn ui_tree(&mut self, opts: &UiTreeOptions) -> Result<String, ComputerUseError> {
         let a11y = self.require_a11y()?;
         let wayland = self.is_wayland();
-        let desktop = self.session.desktop_label();
-        self.runtime
-            .block_on(ui_tree_async(a11y, opts, wayland, desktop))
+        let desktop = self.session.desktop_label().to_string();
+        self.block_on_a11y(
+            A11Y_TREE_DEADLINE,
+            "ui_tree",
+            ui_tree_async(a11y, opts, wayland, &desktop),
+        )
     }
 
     fn element_at_point(
@@ -1115,7 +1379,21 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
         y: i32,
     ) -> Result<Option<ElementInfo>, ComputerUseError> {
         let a11y = self.require_a11y()?;
-        self.runtime.block_on(element_at_point_async(a11y, x, y))
+        self.block_on_a11y(
+            A11Y_POINT_DEADLINE,
+            "element_at_point",
+            element_at_point_async(a11y, x, y),
+        )
+    }
+
+    fn focused_element(&mut self) -> Result<Option<ElementInfo>, ComputerUseError> {
+        // portal/Wayland 分支同 X11:AT-SPI 是跨会话类型的通路。
+        let a11y = self.require_a11y()?;
+        self.block_on_a11y(
+            A11Y_POINT_DEADLINE,
+            "focused_element",
+            focused_element_async(a11y),
+        )
     }
 }
 
@@ -1141,7 +1419,7 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
                 "cannot create tokio runtime for AT-SPI: {error}"
             ))
         })?;
-    let (a11y, a11y_init_error) = match runtime.block_on(a11y_init()) {
+    let (a11y, a11y_init_error) = match runtime.block_on(a11y_connect()) {
         Ok(conn) => (Some(conn), None),
         Err(error) => (None, Some(error)),
     };
@@ -1321,6 +1599,32 @@ mod tests {
         let long = "x".repeat(MAX_NAME_CHARS + 20);
         assert_eq!(sanitize_name(&long).chars().count(), MAX_NAME_CHARS);
     }
+
+    #[test]
+    fn secure_role_decision_is_conservative() {
+        // PasswordText 直接判定。
+        assert!(is_secure_role(Role::PasswordText, false));
+        // 角色查询失败(未知)保守兜底:无法证明不是密码框。
+        assert!(is_secure_role(Role::Unknown, true));
+        // 对象真实报告 Unknown(非查询失败)不算 secure。
+        assert!(!is_secure_role(Role::Unknown, false));
+        assert!(!is_secure_role(Role::PushButton, false));
+    }
+
+    #[test]
+    fn state_flags_mark_secure_and_states() {
+        // secure 标志由调用方按 is_secure_role 给出。
+        assert!(state_flags(true, None).contains(&"secure"));
+        assert!(!state_flags(false, None).contains(&"secure"));
+        // 常规状态位不受 secure 判定影响。
+        let flags = state_flags(false, Some(StateSet::new(State::Focused)));
+        assert!(flags.contains(&"focused"));
+        assert!(!flags.contains(&"secure"));
+        let flags = state_flags(true, Some(StateSet::new(State::Active | State::Editable)));
+        assert!(flags.contains(&"active") && flags.contains(&"editable"));
+        // Enabled 缺失 → disabled。
+        assert!(state_flags(false, Some(StateSet::empty())).contains(&"disabled"));
+    }
 }
 
 #[cfg(test)]
@@ -1335,24 +1639,14 @@ mod wayland_e2e_tests {
     use atspi::proxy::text::TextProxy;
 
     /// DFS 收集所有 role=Text 节点的文本(a11y 验证打字结果)。
-    async fn read_texts_via_a11y(
-        conn: &AccessibilityConnection,
-    ) -> Result<Vec<String>, ComputerUseError> {
+    async fn read_texts_via_a11y(conn: &zbus::Connection) -> Result<Vec<String>, ComputerUseError> {
         let mut texts = Vec::new();
-        walk_texts(
-            conn,
-            conn.root_accessible_on_registry()
-                .await
-                .map_err(|e| ComputerUseError::unavailable(format!("a11y root: {e}")))?,
-            18,
-            &mut texts,
-        )
-        .await?;
+        walk_texts(conn, root_accessible(conn).await?, 18, &mut texts).await?;
         Ok(texts)
     }
 
     async fn walk_texts(
-        conn: &AccessibilityConnection,
+        conn: &zbus::Connection,
         proxy: AccessibleProxy<'_>,
         depth: u32,
         out: &mut Vec<String>,
@@ -1362,7 +1656,7 @@ mod wayland_e2e_tests {
         }
         let role = proxy.get_role().await.unwrap_or(Role::Unknown);
         if role == Role::Text {
-            let text = TextProxy::builder(conn.connection())
+            let text = TextProxy::builder(conn)
                 .destination(proxy.inner().destination().as_str().to_string())
                 .map_err(|e| ComputerUseError::failed(e.to_string()))?
                 .path(proxy.inner().path().as_str().to_string())
@@ -1380,7 +1674,7 @@ mod wayland_e2e_tests {
                 if child.is_null() {
                     continue;
                 }
-                if let Ok(child) = child.into_accessible_proxy(conn.connection()).await {
+                if let Ok(child) = child.into_accessible_proxy(conn).await {
                     Box::pin(walk_texts(conn, child, depth - 1, out)).await?;
                 }
             }
@@ -1533,7 +1827,7 @@ mod wayland_e2e_tests {
             .enable_all()
             .build()
             .expect("runtime");
-        let conn = runtime.block_on(a11y_init()).expect("a11y connection");
+        let conn = runtime.block_on(a11y_connect()).expect("a11y connection");
         let texts = runtime
             .block_on(read_texts_via_a11y(&conn))
             .expect("read texts via a11y");

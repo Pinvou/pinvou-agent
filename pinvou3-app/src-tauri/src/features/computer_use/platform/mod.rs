@@ -62,8 +62,7 @@ pub(crate) fn request_permissions() -> Result<(), ComputerUseError> {
     Ok(())
 }
 
-/// 触发平台授权引导：macOS 弹 Screen Recording + Accessibility 两条 TCC 系统
-/// 窗；Windows/Linux 无需系统授权，显式返回 unsupported（不静默 no-op）。
+/// 触发平台授权引导：本平台无系统授权弹窗，显式返回 unsupported（不静默 no-op）。
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn request_permissions() -> Result<(), ComputerUseError> {
     Err(ComputerUseError::unsupported(
