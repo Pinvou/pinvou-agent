@@ -1700,8 +1700,10 @@ const NAV_PREFETCH = {
       // 稳定入口:RecentItem 的 memo 依赖 prop 引用稳定(NavigationComponents
       // 内注释),内联箭头会让每个 App 重渲染(每个流式 token 批次)重渲染
       // 全部 codex 侧栏行;identity 只在门控布尔翻转(项目从无到有/反之)时
-      // 变化。RecentItem 自己传 chat,无需逐行捕获。
-      const openMovePicker = useCallback((target) => setMoveToProjectSession(target), []);
+      // 变化。RecentItem 自己传 chat,无需逐行捕获。menu 打开时一并清陈旧
+      // 拖拽预置,避免上一次落点残留到本次选择(finding 7;setState 引用
+      // 稳定,不影响本回调的 identity)。
+      const openMovePicker = useCallback((target) => { setMoveToPresetProject(null); setMoveToProjectSession(target); }, []);
       // 桥完成首次状态同步(bs 就绪)后拉一次项目快照;后续变更由
       // projects:list_changed 事件驱动桥内刷新(bridge/projects.js)。
       const projectsBootstrapReady = !!bs;
@@ -2814,7 +2816,7 @@ const NAV_PREFETCH = {
             onMoveToProject={chat.taskKind === 'codex' && bridge.projects && sidebarProjectsData?.projects?.length
               ? openMovePicker
               : undefined}
-            dndPayload={chat.taskKind === 'codex' && bridge.projects ? { sessionId: chat.id } : undefined}
+            dndPayload={chat.taskKind === 'codex' && bridge.projects && sidebarCodeListActive ? { sessionId: chat.id } : undefined}
             dndDisabled={!!dragAvatar}
             onDragEnd={() => setDropTargetGroupKey(null)}
             dragKind={detachKind}
@@ -3412,7 +3414,7 @@ const NAV_PREFETCH = {
                                   onConvert={bridge.projects && group.kind === 'folder' ? (name) => handleConvertFolderToProject(group.path, name) : undefined}
                                   onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
                                   onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
-                                  onDropSession={group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
+                                  onDropSession={bridge.projects && group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
                                   dropActive={dropTargetGroupKey === group.key}
                                   onDropActive={(active) => setDropTargetGroupKey(active ? group.key : null)}
                                 />
