@@ -139,37 +139,7 @@ pub fn init() {
 }
 
 pub fn mark(stage: &str) {
-    #[cfg(test)]
-    record_mark_order(stage);
     write_line("rust", stage, elapsed().as_secs_f64() * 1000.0, None);
-}
-
-/// 启动顺序钉住（评审 #455）：测试期记录 mark 顺序，供「迁移冻结早于一切
-/// 首启自写」这类跨模块顺序断言使用——只改 lib.rs 里语句顺序无法在模块内
-/// 测出，必须有可观测的顺序轨迹。
-#[cfg(test)]
-static MARK_ORDER: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-#[cfg(test)]
-fn record_mark_order(stage: &str) {
-    MARK_ORDER
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .push(stage.to_string());
-}
-
-/// 两个 mark 的出现顺序：都存在时返回 Some(a 在 b 之前)；任一缺失返回 None。
-#[cfg(test)]
-pub(crate) fn mark_order_is_before(a: &str, b: &str) -> Option<bool> {
-    let order = MARK_ORDER.lock().unwrap_or_else(|p| p.into_inner());
-    let pos_a = order.iter().position(|s| *s == a)?;
-    let pos_b = order.iter().position(|s| *s == b)?;
-    Some(pos_a < pos_b)
-}
-
-#[cfg(test)]
-pub(crate) fn reset_mark_order_for_test() {
-    MARK_ORDER.lock().unwrap_or_else(|p| p.into_inner()).clear();
 }
 
 pub fn mark_with_detail(source: &str, stage: &str, detail: &str) {
