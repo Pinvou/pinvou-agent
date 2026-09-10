@@ -21,7 +21,7 @@ fn every_family_token_dispatches_to_its_module() {
         ("plugins", "readiness"),
         ("connectors", "status"),
         ("personas", "list"),
-        ("code", "agents"),
+        ("code", "agents list"),
         ("files", "ingest"),
         ("voice", "asr-status"),
         ("deps", "check"),
@@ -30,7 +30,9 @@ fn every_family_token_dispatches_to_its_module() {
         ("artifacts", "list"),
     ];
     for (token, subcommand) in tokens {
-        let parsed = parse_args(["pinvou", token, subcommand])
+        let mut argv = vec!["pinvou".to_string(), token.to_string()];
+        argv.extend(subcommand.split_whitespace().map(str::to_string));
+        let parsed = parse_args(&argv)
             .unwrap_or_else(|error| panic!("family {token} did not dispatch: {error}"));
         let command = parsed.command();
         assert!(
