@@ -2,6 +2,7 @@ import { memo, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Archive, Check, Edit2, FolderOpen, MoreHorizontal, PinIcon, PinOffIcon, Sparkles, Trash2, X } from '../icons.jsx';
 import { useLongPressDrag } from '../../hooks/useLongPressDrag.js';
+import { usePortalMenu } from '../../hooks/usePortalMenu.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 
     // NavItem memoization: the main nav re-renders on every App bridge
@@ -218,56 +219,16 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
-      const [menuOpen, setMenuOpen] = useState(false);
-      const [menuStyle, setMenuStyle] = useState(null);
       const [val, setVal] = useState(chat.title);
       const sessionDragKind = onPickUp ? dragKind : null;
       const drag = useLongPressDrag(sessionDragKind, onPickUp);
       const dragProps = sessionDragKind ? drag.handlers : {};
       const selectChat = () => onSelect(chat.id);
       function save() { const tx = val.trim(); setEditing(false); if (tx && tx !== chat.title) onRename(chat.id, tx); }
-      const closeMenu = () => setMenuOpen(false);
-      const placeMenu = (target) => {
-        const rect = target.getBoundingClientRect();
-        const width = 176;
-        const height = 184;
-        const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
-        const top = rect.bottom + 6 + height > window.innerHeight
-          ? Math.max(8, rect.top - height - 6)
-          : Math.max(8, rect.bottom + 6);
-        setMenuStyle({ left, top, width });
-      };
-      const toggleMenu = (e) => {
-        e.stopPropagation();
-        placeMenu(e.currentTarget);
-        setMenuOpen(v => !v);
-      };
-      const openContextMenu = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        placeMenu(e.currentTarget);
-        setMenuOpen(true);
-      };
-      useEffect(() => {
-        if (!menuOpen) return;
-        const close = () => setMenuOpen(false);
-        const closeOnEscape = (event) => {
-          if (event.key === 'Escape') {
-            event.preventDefault();
-            close();
-          }
-        };
-        document.addEventListener('pointerdown', close);
-        window.addEventListener('keydown', closeOnEscape);
-        window.addEventListener('resize', close);
-        window.addEventListener('scroll', close, true);
-        return () => {
-          document.removeEventListener('pointerdown', close);
-          window.removeEventListener('keydown', closeOnEscape);
-          window.removeEventListener('resize', close);
-          window.removeEventListener('scroll', close, true);
-        };
-      }, [menuOpen]);
+      // Portal "more" menu placement/close lives in the shared hook (same
+      // plumbing as the project-group header menu).
+      const { menuOpen, menuStyle, closeMenu, toggleMenu, openMenuAt } = usePortalMenu({ height: 184 });
+      const openContextMenu = openMenuAt;
       const menuItemCls = `w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] whitespace-nowrap transition-colors text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]`;
       const menu = menuOpen && menuStyle && typeof document !== 'undefined' ? createPortal(
         <div onPointerDown={e => e.stopPropagation()}

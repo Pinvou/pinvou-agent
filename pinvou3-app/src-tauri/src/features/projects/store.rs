@@ -32,7 +32,7 @@ pub struct Project {
 
 /// 归属映射值:`Some(project_id)` = 显式归属;`None` = 显式移出(跳过自动
 /// 归组,直接回落隐式文件夹分组);无条目 = 未裁决,走自动归组。
-type SessionAssignments = HashMap<String, Option<String>>;
+pub type SessionAssignments = HashMap<String, Option<String>>;
 
 /// 单文件持久化结构。schema_version 供未来结构演进识别:读到更新版本时
 /// 按空状态降级启动,但置位拒绝后续写入(见 `StoreState::refuse_writes`),
@@ -325,6 +325,11 @@ impl ProjectStore {
     /// 归属解析原料:显式归属条目(`None` = 显式移出)。
     pub fn assignment_of(&self, session_id: &str) -> Option<Option<String>> {
         self.state.read().assignments.get(session_id).cloned()
+    }
+
+    /// 全量归属快照(命令层随 list_projects 一并下发,前端分组解析用)。
+    pub fn assignments_snapshot(&self) -> SessionAssignments {
+        self.state.read().assignments.clone()
     }
 
     /// 显式归属到某项目的会话 id 列表(命令层统计成员数用)。
