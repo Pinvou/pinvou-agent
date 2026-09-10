@@ -673,7 +673,11 @@ fn status(connector: Option<ConnectorKind>, output: OutputMode) -> Result<CliOut
     for kind in kinds {
         entries.push(vendor_status_entry(kind)?);
     }
-    entries.push(ima_status_entry()?);
+    // ima is part of the default overview only; a filtered `status <id>`
+    // must not report unrelated connectors.
+    if connector.is_none() {
+        entries.push(ima_status_entry()?);
+    }
 
     let human = entries
         .iter()

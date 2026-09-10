@@ -13,6 +13,15 @@
 //! "只能删除自制卡", "卡牌不存在"); the CLI surfaces the same failure
 //! conditions as exit-code 1 errors with English copy (developer tool, all
 //! CLI output is English per the CLI spec).
+//!
+//! Equip-state note (headless deviation): the GUI keeps `active_persona` /
+//! `pending_persona_body` in `SessionModeState`, which is deliberately
+//! memory-only over the app's lifetime. The CLI is one process per
+//! invocation, so `equip` additionally persists the state to the per-session
+//! sidecar `~/.pinvou3/sessions/<id>/persona_equipped.json` (the directory
+//! that already hosts the other per-session sidecars) and `active` reads it
+//! back; `unequip` removes it. The in-memory `SessionStore` calls still run
+//! so same-process semantics stay identical to the GUI commands.
 
 use std::path::PathBuf;
 
@@ -440,16 +449,81 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     Ok(success(render(output, format!("deleted {id}"), &value)))
 }
 
+/// Session ids join onto paths (the equip sidecar below), so apply the same
+/// `[A-Za-z0-9_-]` restriction the sessions family enforces before any path
+/// use; anything else is a usage error, never a traversal.
+fn valid_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// Per-session equip state file; see the module-level equip-state note for
+/// why the CLI needs a file where the GUI keeps the state in memory only.
+fn equip_state_path(session_id: &str) -> Result<PathBuf, CliError> {
+    if !valid_session_id(session_id) {
+        return Err(CliError::usage(format!(
+            "personas session id must use only letters, digits, '-' or '_': {session_id}"
+        )));
+    }
+    Ok(sandbox_home()?
+        .join("sessions")
+        .join(session_id)
+        .join("persona_equipped.json"))
+}
+
+/// Reads the persisted equip state; a missing, unreadable, or corrupt sidecar
+/// degrades to "no persona equipped" (the same tolerance as the GUI restart
+/// path, where the memory-only state is simply gone).
+fn equipped_persona_id(session_id: &str) -> Option<String> {
+    let path = equip_state_path(session_id).ok()?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    value
+        .get("persona_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned)
+}
+
+/// Persists the equip state for the next CLI invocation.
+fn persist_equipped_persona(
+    session_id: &str,
+    persona_id: &str,
+    pending_body: &str,
+) -> Result<(), CliError> {
+    let path = equip_state_path(session_id)?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|error| {
+            CliError::failed(format!(
+                "cannot create session persona sidecar directory: {error}"
+            ))
+        })?;
+    }
+    let payload = serde_json::json!({ "persona_id": persona_id, "pending_body": pending_body });
+    let bytes = serde_json::to_vec(&payload).map_err(|error| {
+        CliError::failed(format!("cannot serialize session persona sidecar: {error}"))
+    })?;
+    std::fs::write(&path, bytes).map_err(|error| {
+        CliError::failed(format!("cannot save session persona sidecar: {error}"))
+    })?;
+    Ok(())
+}
+
 /// Mirror of `equip_persona`: resolve the card, stage the full body for a
-/// one-shot injection on the session's next turn, persist the active id, and
+/// one-shot injection on the session's next turn, persist the active id (the
+/// sidecar — the in-memory store entries would die with this process), and
 /// return the summary (the GUI renders it as the session widget).
 fn equip(session_id: &str, persona_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let card = get(persona_id)
         .ok_or_else(|| CliError::failed(format!("unknown persona: {persona_id}")))?;
     let store = open_store()?;
     let summary = card.summary();
-    store.set_pending_persona_body(session_id, Some(equip_body_injection(&card)));
+    let injection = equip_body_injection(&card);
+    store.set_pending_persona_body(session_id, Some(injection.clone()));
     store.set_active_persona(session_id, Some(persona_id.to_owned()));
+    persist_equipped_persona(session_id, persona_id, &injection)?;
     let value = serde_json::to_value(&summary).unwrap_or_else(|_| serde_json::json!({}));
     Ok(success(render(
         output,
@@ -459,11 +533,14 @@ fn equip(session_id: &str, persona_id: &str, output: OutputMode) -> Result<CliOu
 }
 
 /// Mirror of `unequip_persona`: clear both the active id and the pending
-/// body so nothing is injected on the next turn.
+/// body so nothing is injected on the next turn (memory + persisted sidecar;
+/// a missing sidecar is the already-unequipped case).
 fn unequip(session_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
+    let path = equip_state_path(session_id)?;
     let store = open_store()?;
     store.set_active_persona(session_id, None);
     store.set_pending_persona_body(session_id, None);
+    let _ = std::fs::remove_file(&path);
     let value = serde_json::json!({ "session_id": session_id, "action": "unequipped" });
     Ok(success(render(
         output,
@@ -472,11 +549,15 @@ fn unequip(session_id: &str, output: OutputMode) -> Result<CliOutcome, CliError>
     )))
 }
 
-/// Mirror of `get_active_persona`: the equipped card's summary, or null.
+/// Mirror of `get_active_persona`: the equipped card's summary, or null. The
+/// persisted sidecar is the source of truth across CLI invocations; the
+/// in-memory store stays as the fallback for state set in this process.
 fn active(session_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
+    // Reject ids that cannot name a session directory before any path use.
+    equip_state_path(session_id)?;
     let store = open_store()?;
-    let summary = store
-        .active_persona_id(session_id)
+    let summary = equipped_persona_id(session_id)
+        .or_else(|| store.active_persona_id(session_id))
         .and_then(|persona_id| get(&persona_id).map(|card| card.summary()));
     let human = match &summary {
         Some(summary) => format!("{}\t{}\t{}", summary.id, summary.name, summary.source),
