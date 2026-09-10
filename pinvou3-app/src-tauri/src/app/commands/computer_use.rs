@@ -70,6 +70,23 @@ pub fn computer_use_confirm(
     Ok(())
 }
 
+/// 用户在前端明确「拒绝」一个被拦截的 T3 动作：清除 pending 并短期记忆
+/// 该决定。没有这条命令时，拒绝只关前端对话框，后端只能靠 TTL 过期——
+/// 模型在超时窗口内重试会被再次放行到确认流程（评审发现）。
+#[tauri::command]
+pub fn computer_use_deny(
+    confirm_id: String,
+    shared: State<'_, Arc<ComputerUseShared>>,
+) -> Result<(), String> {
+    if shared.deny_confirmation(&confirm_id) {
+        Ok(())
+    } else {
+        Err(format!(
+            "unknown or expired confirm_id (already decided?): {confirm_id}"
+        ))
+    }
+}
+
 /// 设置总开关。先落盘后翻内存旗标（同 set_voice_shortcut_enabled 的顺序）：
 /// 写盘失败时内存态不得与 settings.json 不一致。重新开启时清除急停旗标
 /// （guard 的既定语义），但不恢复任何会话授权。

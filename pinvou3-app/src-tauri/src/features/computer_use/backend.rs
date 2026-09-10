@@ -10,8 +10,16 @@
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use parking_lot::Mutex;
+
+/// 单次 backend 请求的等待上限。必须覆盖最长的合法操作：`hold_key` 30s +
+/// Wayland portal 授权对话框 120s（评审发现：`recv()` 无上限，一个挂死的
+/// XTEST/CGEvent/portal 调用会让该会话后续所有请求永远排队且无错误返回）。
+/// 超时只释放调用方；worker 线程若仍卡在 OS 调用里，后续请求会继续排队，
+/// 这是平台 API 层面的固有限制。
+const BACKEND_CALL_TIMEOUT: Duration = Duration::from_secs(150);
 
 use super::types::{
     Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
@@ -240,7 +248,7 @@ impl BackendInner {
                             "cannot spawn computer use backend thread: {error}"
                         ))
                     })?;
-                match startup_rx.recv() {
+                match startup_rx.recv_timeout(BACKEND_CALL_TIMEOUT) {
                     Ok(Ok(())) => {
                         *state = WorkerState::Running {
                             tx: tx.clone(),
@@ -283,8 +291,10 @@ impl BackendInner {
             reply: reply_tx,
         })
         .map_err(|_| ComputerUseError::unavailable("computer use backend thread is not running"))?;
-        reply_rx.recv().map_err(|_| {
-            ComputerUseError::unavailable("computer use backend thread dropped the request")
+        reply_rx.recv_timeout(BACKEND_CALL_TIMEOUT).map_err(|_| {
+            ComputerUseError::unavailable(format!(
+                "computer use backend did not respond within {BACKEND_CALL_TIMEOUT:?}"
+            ))
         })?
     }
 }
