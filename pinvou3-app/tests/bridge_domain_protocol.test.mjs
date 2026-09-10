@@ -93,7 +93,7 @@ const expectedProtocolHashes = {
   // Recomputed after the deny() method + computer_use_deny invoke were added
   // (review fix: per-action Deny now reaches the backend instead of relying
   // on the pending TTL).
-  computerUse: 'be1695548b25a85b7b6de9ecd287d974f85c57cf9ddf2abad2d23965d7833035',
+  computerUse: 'cb9e84b8e9de07671bc8384ad17b0ef602ef6e2d27380ba9fa12b9e3a293ac6d',
   multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
   // Recomputed for the shared-helper dedup (see batch note above).
   orchestration: '341efb3b1e4a4036269559294c33b76a744bcde7c3903b9ba3525711d6182f6f',
