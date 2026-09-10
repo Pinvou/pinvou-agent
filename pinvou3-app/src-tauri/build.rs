@@ -17,6 +17,20 @@ fn main() {
     );
     tauri_build::build();
 
+    // ScreenCaptureKit.framework only ships on macOS 12.3+, but the app
+    // declares minimumSystemVersion 11.0. The framework dependency must be
+    // weak so dyld skips it on older systems instead of refusing to launch;
+    // the capture path gates on the runtime OS version and falls back to
+    // xcap/CGWindowList there (see computer_use/platform/screen_capture_kit.rs).
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        for kind in ["bins", "tests"] {
+            println!("cargo:rustc-link-arg-{kind}=-weak_framework");
+            println!("cargo:rustc-link-arg-{kind}=ScreenCaptureKit");
+        }
+        println!("cargo:rustc-link-arg=-weak_framework");
+        println!("cargo:rustc-link-arg=ScreenCaptureKit");
+    }
+
     // tauri-build links OUT_DIR/resource.lib only into application binaries.
     // A library unit-test harness is not a Cargo `test` target, so
     // rustc-link-arg-tests does not reach it. Wrap the generated COFF resource

@@ -1,5 +1,6 @@
-//! macOS 后端：xcap（CGWindowListCreateImage）截屏 + enigo（CGEvent）输入注入
-//! + ApplicationServices AXUIElement 无障碍树。
+//! macOS 后端：xcap（CGWindowListCreateImage）/ScreenCaptureKit 截屏 + 鼠标
+//! 事件原生 CGEvent 直发、键盘/滚轮经 enigo + ApplicationServices AXUIElement
+//! 无障碍树。
 //!
 //! 坐标约定（types.rs 契约的 macOS 具体化）：
 //! - 输入坐标空间 = CGEvent 全局**点**（左上角原点，多显示器可为负）。
@@ -11,12 +12,12 @@
 //!   显示器的 scale），由 ScaleMap::device_to_input 乘 input_scale 还原为点。
 //! - AX 返回的元素位置/尺寸同为屏幕点坐标，与输入坐标空间一致。
 //!
-//! 截屏实现：macOS 14+ 走 ScreenCaptureKit（[`super::screen_capture_kit`]，
-//! `SCScreenshotManager::captureImageInRect`）；CGWindowListCreateImage 在
-//! macOS 15 SDK 已 obsoleted（"Please use ScreenCaptureKit instead"），且基于
-//! 它的截屏在 Sequoia+ 会触发周期性"继续允许录屏"系统确认。应用最低支持
-//! macOS 11，11-13 回退 xcap 的 CGWindowList 路径（同一条 Screen Recording
-//! TCC 授权，预检共用）。
+//! 截屏实现：macOS 15.2+ 走 ScreenCaptureKit（[`super::screen_capture_kit`]，
+//! `SCScreenshotManager::captureImageInRect`——该类方法 15.2 才可用）；14.x 及
+//! 更早回退 xcap 的 CGWindowListCreateImage 路径（该 API 在 macOS 15 SDK 已
+//! obsoleted，且在 Sequoia+ 会触发周期性"继续允许录屏"系统确认，但对旧系统
+//! 仍是唯一选择）。应用最低支持 macOS 11：ScreenCaptureKit.framework 为弱
+//! 链接（见 build.rs），12.3 之前的系统由 dyld 跳过并走回退。
 //!
 //! 权限（TCC，两条独立授权，授权后通常都需要重启本应用才生效）：
 //! - Screen Recording：截屏前用 CGPreflightScreenCaptureAccess 预检，缺失返回
@@ -47,7 +48,7 @@ use std::ptr::NonNull;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use enigo::{Axis, Button, Coordinate, Direction, Enigo, Keyboard, Mouse, Settings};
+use enigo::{Axis, Direction, Enigo, Keyboard, Mouse, Settings};
 use objc2::rc::Retained;
 use objc2_application_services::{AXError, AXIsProcessTrusted, AXUIElement, AXValue, AXValueType};
 use objc2_core_foundation::CFRetained;
@@ -106,6 +107,18 @@ const ACCESSIBILITY_DENIED: &str = "accessibility_denied: enable in System Setti
 unsafe extern "C" {
     fn CGEventCreate(source: *const c_void) -> *const c_void;
     fn CGEventGetLocation(event: *const c_void) -> NSPoint;
+    /// CGEventRef CGEventCreateMouseEvent(CGEventSourceRef, CGEventType,
+    /// CGPoint, CGMouseButton)。类型按 SDK 原型自行声明：枚举是 u32。
+    fn CGEventCreateMouseEvent(
+        source: *const c_void,
+        mouse_type: u32,
+        at: NSPoint,
+        button: u32,
+    ) -> *const c_void;
+    /// void CGEventSetIntegerValueField(CGEventRef, CGEventField, int64_t)。
+    fn CGEventSetIntegerValueField(event: *const c_void, field: u32, value: i64);
+    /// void CGEventPost(CGEventTapLocation, CGEventRef)。
+    fn CGEventPost(tap: u32, event: *const c_void);
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -114,7 +127,9 @@ unsafe extern "C" {
     fn CFGetTypeID(cf: *const c_void) -> usize;
     fn CFStringGetTypeID() -> usize;
     fn CFBooleanGetTypeID() -> usize;
-    fn CFBooleanGetValue(boolean: *const c_void) -> bool;
+    /// C 原型返回 `Boolean`（unsigned char），按逐类型一致原则声明为 u8
+    /// 再判 `!= 0`（Rust `bool` 的 ABI 虽然实践中兼容，但不依赖它）。
+    fn CFBooleanGetValue(boolean: *const c_void) -> u8;
     fn CFArrayGetTypeID() -> usize;
     fn CFArrayGetCount(array: *const c_void) -> isize;
     fn CFArrayGetValueAtIndex(array: *const c_void, index: isize) -> *const c_void;
@@ -134,8 +149,8 @@ unsafe extern "C" {
     /// 带选项的 Accessibility 查询（kAXTrustedCheckOptionPrompt 可触发系统授权
     /// 弹窗）。签名自行声明为 *const c_void：crate 里的版本参数是
     /// Option<&CFDictionary>，而 CFDictionary 的泛型默认参数是 crate 私有类型，
-    /// 外部构造不出该引用。
-    fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+    /// 外部构造不出该引用。C 原型返回 `Boolean`（unsigned char）→ u8。
+    fn AXIsProcessTrustedWithOptions(options: *const c_void) -> u8;
     /// objc2-application-services 只经 crate 私有的 ConcreteType trait 暴露
     /// type_id；此处直接声明 C 符号用于 AX 对象的类型校验。
     fn AXUIElementGetTypeID() -> usize;
@@ -205,7 +220,7 @@ pub fn request_permissions() {
     // SAFETY: options 是上面成功创建的有效 CFDictionaryRef；
     // AXIsProcessTrustedWithOptions 只读它并异步弹窗；CFRelease 精确释放一次。
     unsafe {
-        let _ = AXIsProcessTrustedWithOptions(options);
+        let _ = AXIsProcessTrustedWithOptions(options) != 0;
         CFRelease(options);
     }
 }
@@ -353,11 +368,53 @@ fn is_layout_safe_char(c: char) -> bool {
         )
 }
 
-fn map_mouse_button(button: MouseButton) -> Button {
+/// CGEventType 中的鼠标事件类型（`CGEventType` 枚举的原始值）。
+const CG_EVENT_LEFT_MOUSE_DOWN: u32 = 1;
+const CG_EVENT_LEFT_MOUSE_UP: u32 = 2;
+const CG_EVENT_RIGHT_MOUSE_DOWN: u32 = 3;
+const CG_EVENT_RIGHT_MOUSE_UP: u32 = 4;
+const CG_EVENT_MOUSE_MOVED: u32 = 5;
+const CG_EVENT_LEFT_MOUSE_DRAGGED: u32 = 6;
+const CG_EVENT_RIGHT_MOUSE_DRAGGED: u32 = 7;
+const CG_EVENT_OTHER_MOUSE_DOWN: u32 = 21;
+const CG_EVENT_OTHER_MOUSE_UP: u32 = 22;
+const CG_EVENT_OTHER_MOUSE_DRAGGED: u32 = 25;
+/// CGMouseButton 枚举原始值。
+const CG_MOUSE_BUTTON_LEFT: u32 = 0;
+const CG_MOUSE_BUTTON_RIGHT: u32 = 1;
+const CG_MOUSE_BUTTON_CENTER: u32 = 2;
+/// kCGHIDEventTap：事件注入的 tap 位置（与 enigo 的 CGEventTapLocation::HID
+/// 一致）。
+const CG_EVENT_TAP_HID: u32 = 0;
+/// kCGMouseEventClickState：单击计数事件字段（双击/三击识别依据）。
+const CG_EVENT_FIELD_CLICK_STATE: u32 = 1;
+
+fn cg_mouse_button(button: MouseButton) -> u32 {
     match button {
-        MouseButton::Left => Button::Left,
-        MouseButton::Right => Button::Right,
-        MouseButton::Middle => Button::Middle,
+        MouseButton::Left => CG_MOUSE_BUTTON_LEFT,
+        MouseButton::Right => CG_MOUSE_BUTTON_RIGHT,
+        MouseButton::Middle => CG_MOUSE_BUTTON_CENTER,
+    }
+}
+
+/// 该鼠标键对应的 (down, up, dragged) CGEventType。
+fn cg_mouse_event_types(button: MouseButton) -> (u32, u32, u32) {
+    match button {
+        MouseButton::Left => (
+            CG_EVENT_LEFT_MOUSE_DOWN,
+            CG_EVENT_LEFT_MOUSE_UP,
+            CG_EVENT_LEFT_MOUSE_DRAGGED,
+        ),
+        MouseButton::Right => (
+            CG_EVENT_RIGHT_MOUSE_DOWN,
+            CG_EVENT_RIGHT_MOUSE_UP,
+            CG_EVENT_RIGHT_MOUSE_DRAGGED,
+        ),
+        MouseButton::Middle => (
+            CG_EVENT_OTHER_MOUSE_DOWN,
+            CG_EVENT_OTHER_MOUSE_UP,
+            CG_EVENT_OTHER_MOUSE_DRAGGED,
+        ),
     }
 }
 
@@ -577,7 +634,9 @@ fn ax_bool(element: &AXUIElement, attribute: &NSString) -> Result<Option<bool>, 
         return Ok(None);
     }
     // SAFETY: 已校验 CFBoolean；纯读取，指针只作参数传入不解引用。
-    Ok(Some(unsafe { CFBooleanGetValue(obj.inner().as_ptr()) }))
+    Ok(Some(
+        unsafe { CFBooleanGetValue(obj.inner().as_ptr()) } != 0,
+    ))
 }
 
 /// 读一个 AXUIElement 类型属性（Copy 规则 +1，CFRetained 托管）。
@@ -954,12 +1013,17 @@ fn focused_window_root(system: &AXUIElement, names: &AxNames) -> Option<CFRetain
 }
 
 pub(super) struct MacosComputerUseBackend {
-    /// 懒构造：Accessibility 未授权时 Enigo::new 会直接失败，延迟到首个输入
-    /// 操作再构造——截屏/光标等免授权能力在权限缺失时仍可用，也避免权限后补
-    /// 授权后整个 backend 粘性失败（backend 工厂失败是粘性的）。
+    /// 懒构造：Accessibility 未授权时 Enigo::new 会直接失败，延迟到首个键盘/
+    /// 滚轮操作再构造——截屏/光标等免授权能力在权限缺失时仍可用，也避免权限
+    /// 后补授权后整个 backend 粘性失败（backend 工厂失败是粘性的）。
+    /// **只承载键盘（key/text）与滚轮**：鼠标事件（移动/点击/拖拽）全部经
+    /// [`Self::post_mouse_event`] 直发 CGEvent——enigo 0.6.1 的
+    /// `button()`/`move_mouse()` 依赖 `location()`，而后者把 NSEvent 的
+    /// **点**坐标用 CGDisplay 的**物理像素**高翻转，Retina/多显示器上结果
+    /// 落在屏幕外（点错位置），crates.io 最新发布版（0.6.1）无修复。
     enigo: Option<Enigo>,
-    /// 最近一次合成移动落定的目标点（点坐标），作为 click/mouse_down 落点
-    /// 防护的基准。enigo 的点击落在系统当前鼠标位置：用户物理移动鼠标与
+    /// 最近一次合成移动落定的目标点（点坐标），作为 click/mouse_down 的落点
+    /// 与落点防护的基准。点击落在系统当前鼠标位置：用户物理移动鼠标与
     /// 我们的合成移动存在竞态（评审缺陷 6），点击前据此校验并重定位。
     pending_move_target: Option<(i32, i32)>,
 }
@@ -1001,7 +1065,7 @@ impl MacosComputerUseBackend {
 
     /// 点击/按下前的落点防护：读系统光标实际位置，与最近一次合成移动目标
     /// 偏差超过 [`CLICK_POSITION_TOLERANCE_PT`] 时先重新移动到目标再继续——
-    /// enigo 的点击落在系统当前鼠标位置，用户物理移动鼠标会与之竞态。没有
+    /// 点击落在系统当前鼠标位置，用户物理移动鼠标会与之竞态。没有
     /// 可信目标（尚未 move_to）时维持现状；光标位置读不出时显式失败
     /// （fail-closed：不知道落点的点击不可放行）。
     fn guard_click_position(&mut self) -> Result<(), ComputerUseError> {
@@ -1014,11 +1078,67 @@ impl MacosComputerUseBackend {
         {
             return Ok(());
         }
-        self.enigo()?
-            .move_mouse(target.0, target.1, Coordinate::Abs)
-            .map_err(|err| map_input_err("re-position before click", err))?;
+        self.post_move(target)?;
         sleep(Duration::from_millis(CLICK_SETTLE_MS));
         Ok(())
+    }
+
+    /// 无坐标点击/按下/释放的落点：优先最近一次合成移动目标（可信），否则
+    /// 用系统光标实际位置（免授权可读）。
+    fn click_destination(&self) -> Result<(i32, i32), ComputerUseError> {
+        match self.pending_move_target {
+            Some(target) => Ok(target),
+            None => cursor_points(),
+        }
+    }
+
+    /// 合成一个鼠标事件（CGEventPost at kCGHIDEventTap，与 enigo 的注入
+    /// 位置一致）。`click_state > 0` 时附带 kCGMouseEventClickState——双击/
+    /// 三击识别的依据。Accessibility 缺失时 CGEventPost 被静默丢弃，先预检。
+    fn post_mouse_event(
+        &mut self,
+        event_type: u32,
+        cg_button: u32,
+        at: (i32, i32),
+        click_state: i64,
+    ) -> Result<(), ComputerUseError> {
+        if !accessibility_granted() {
+            return Err(accessibility_error());
+        }
+        // SAFETY: CGEventCreateMouseEvent 接受 NULL source（默认事件源）；
+        // 返回 +1 事件判空后使用，CGEventPost 只消费不持有，CFRelease 精确
+        // 释放一次；at 是纯值参数。
+        let event = unsafe {
+            CGEventCreateMouseEvent(
+                std::ptr::null(),
+                event_type,
+                NSPoint {
+                    x: f64::from(at.0),
+                    y: f64::from(at.1),
+                },
+                cg_button,
+            )
+        };
+        if event.is_null() {
+            return Err(ComputerUseError::failed(format!(
+                "CGEventCreateMouseEvent returned null for event type {event_type}"
+            )));
+        }
+        // SAFETY: event 是上面成功创建的有效 CGEventRef；click_state 字段按
+        // CG 文档写入（多击计数）。
+        unsafe {
+            if click_state > 0 {
+                CGEventSetIntegerValueField(event, CG_EVENT_FIELD_CLICK_STATE, click_state);
+            }
+            CGEventPost(CG_EVENT_TAP_HID, event);
+            CFRelease(event);
+        }
+        Ok(())
+    }
+
+    /// 合成一次鼠标移动（MouseMoved，不带 clickState）。
+    fn post_move(&mut self, at: (i32, i32)) -> Result<(), ComputerUseError> {
+        self.post_mouse_event(CG_EVENT_MOUSE_MOVED, CG_MOUSE_BUTTON_LEFT, at, 0)
     }
 
     /// 按下全部键（出错时回滚已按下的），停顿，再逆序释放。
@@ -1079,12 +1199,17 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             input: true,
             ui_tree: true,
             notes: "macos: all input coordinates are CGEvent global points (screenshot px / \
-                    backing scale factor); Screen Recording + Accessibility TCC grants are \
-                    required and usually need an app restart after granting; macOS 26 (Tahoe) \
-                    may filter synthetic modifier-key events aimed at global hotkey listeners; \
-                    multi-click recognition does not verify that repeated clicks land on the \
-                    same point; key-chord characters outside the safe keyboard-layout set are \
-                    rejected with an explicit error instead of injecting a wrong key"
+                    backing scale factor); mouse events are posted as native CGEvents and \
+                    keyboard/wheel go through enigo; Screen Recording + Accessibility TCC \
+                    grants are required and usually need an app restart after granting; \
+                    macOS 26 (Tahoe) may filter synthetic modifier-key events aimed at global \
+                    hotkey listeners; multi-click recognition does not verify that repeated \
+                    clicks land on the same point; key-chord characters outside the safe \
+                    keyboard-layout set are rejected with an explicit error instead of \
+                    injecting a wrong key; T3 target screening relies on the AX tree — \
+                    windows that expose no accessibility data (some Electron/web-contents \
+                    windows) report no element at the target point, so consequential targets \
+                    inside them cannot be recognized and are NOT confirmation-screened"
                 .to_string(),
         }
     }
@@ -1121,7 +1246,7 @@ impl ComputerUseBackend for MacosComputerUseBackend {
                 height_points,
             );
         }
-        // macOS 11-13 回退：xcap 的 CGWindowListCreateImage 路径。截图为
+        // macOS 15.2 以下回退：xcap 的 CGWindowListCreateImage 路径。截图为
         // 设备物理像素（xcap 已做 BGRA→RGBA 行修复）。实际倍率从返回图像
         // 反推（点 / 实际像素宽）——不信任 scale_factor 估计值，与 SCK 路径
         // 同一策略，对旋转屏/非整数倍率也成立。
@@ -1160,28 +1285,31 @@ impl ComputerUseBackend for MacosComputerUseBackend {
     }
 
     fn move_to(&mut self, x: i32, y: i32) -> Result<(), ComputerUseError> {
-        // x/y 是 CGEvent 全局点坐标（工具层已按 input_scale 换算）。
-        self.enigo()?
-            .move_mouse(x, y, Coordinate::Abs)
-            .map_err(|err| map_input_err("mouse move", err))?;
-        // 记录可信落点，供后续 click/mouse_down 的落点防护使用。
+        // x/y 是 CGEvent 全局点坐标（工具层已按 input_scale 换算）。原生直发
+        // MouseMoved：enigo 的 move_mouse 在 Retina 上以坏掉的 location() 计算
+        // delta 字段。
+        self.post_move((x, y))?;
+        // 记录可信落点，供后续 click/mouse_down 的落点防护与落点选择使用。
         self.pending_move_target = Some((x, y));
         Ok(())
     }
 
     fn click(&mut self, button: MouseButton, count: u8) -> Result<(), ComputerUseError> {
-        // 落点防护先行（需要独立的 &mut self 借用）：用户物理移动鼠标与
-        // 合成移动竞态时，enigo 的点击会落在用户光标处（评审缺陷 6）。
+        // 落点防护先行：用户物理移动鼠标与合成移动竞态时，点击会落在用户
+        // 光标处（评审缺陷 6）。
         self.guard_click_position()?;
-        let enigo = self.enigo()?;
-        let button = map_mouse_button(button);
+        let dest = self.click_destination()?;
         // 让先前的 move 落位再点击，避免点在旧光标位置。
         sleep(Duration::from_millis(CLICK_SETTLE_MS));
-        for i in 0..count.max(1) {
-            enigo
-                .button(button, Direction::Click)
-                .map_err(|err| map_input_err("mouse click", err))?;
-            if i + 1 < count {
+        let (down, up, _) = cg_mouse_event_types(button);
+        let cg_button = cg_mouse_button(button);
+        let rounds = u32::from(count.max(1));
+        for i in 0..rounds {
+            // clickState 从 1 递增：系统/应用据此识别双击与三击。
+            let click_state = i64::from(i) + 1;
+            self.post_mouse_event(down, cg_button, dest, click_state)?;
+            self.post_mouse_event(up, cg_button, dest, click_state)?;
+            if i + 1 < rounds {
                 sleep(Duration::from_millis(MULTI_CLICK_INTERVAL_MS));
             }
         }
@@ -1191,40 +1319,36 @@ impl ComputerUseBackend for MacosComputerUseBackend {
     fn mouse_down(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
         // 落点防护同 click：按下位置错了，后续拖拽/选择全错。
         self.guard_click_position()?;
-        self.enigo()?
-            .button(map_mouse_button(button), Direction::Press)
-            .map_err(|err| map_input_err("mouse down", err))
+        let dest = self.click_destination()?;
+        sleep(Duration::from_millis(CLICK_SETTLE_MS));
+        let (down, _, _) = cg_mouse_event_types(button);
+        self.post_mouse_event(down, cg_mouse_button(button), dest, 1)
     }
 
     fn mouse_up(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
-        self.enigo()?
-            .button(map_mouse_button(button), Direction::Release)
-            .map_err(|err| map_input_err("mouse up", err))
+        // 释放不做落点防护/重定位（down→move→up 的 up 必须落在拖拽终点）。
+        let dest = self.click_destination()?;
+        let (_, up, _) = cg_mouse_event_types(button);
+        self.post_mouse_event(up, cg_mouse_button(button), dest, 1)
     }
 
     fn drag(&mut self, from: (i32, i32), to: (i32, i32)) -> Result<(), ComputerUseError> {
-        let enigo = self.enigo()?;
-        enigo
-            .move_mouse(from.0, from.1, Coordinate::Abs)
-            .map_err(|err| map_input_err("drag move to start", err))?;
+        let (down, up, dragged) = cg_mouse_event_types(MouseButton::Left);
+        let left = cg_mouse_button(MouseButton::Left);
+        self.post_move(from)?;
         sleep(Duration::from_millis(CLICK_SETTLE_MS));
-        enigo
-            .button(Button::Left, Direction::Press)
-            .map_err(|err| map_input_err("drag press", err))?;
+        self.post_mouse_event(down, left, from, 1)?;
         sleep(Duration::from_millis(DRAG_PRESS_SETTLE_MS));
         let result = (|| {
             for (x, y) in drag_waypoints(from, to, DRAG_STEPS) {
-                enigo
-                    .move_mouse(x, y, Coordinate::Abs)
-                    .map_err(|err| map_input_err("drag move", err))?;
+                // 按住期间发 LeftMouseDragged（部分应用只识别 dragged 类型）。
+                self.post_mouse_event(dragged, left, (x, y), 1)?;
                 sleep(Duration::from_millis(DRAG_STEP_DELAY_MS));
             }
             Ok(())
         })();
         // 无论路径移动是否出错都必须释放按键，避免鼠标卡在按下状态。
-        let release = enigo
-            .button(Button::Left, Direction::Release)
-            .map_err(|err| map_input_err("drag release", err));
+        let release = self.post_mouse_event(up, left, to, 1);
         result.and(release)?;
         // 拖拽终点即光标落点，刷新可信落点基准（起点 move 不改动）。
         self.pending_move_target = Some(to);
@@ -1588,6 +1712,17 @@ mod tests {
             map_scroll(ScrollDirection::Down, u32::MAX),
             (Axis::Vertical, i32::MAX)
         );
+    }
+
+    #[test]
+    fn cg_mouse_event_mapping_matches_core_graphics_constants() {
+        // 原始值对照 CoreGraphics 的 CGEventType/CGMouseButton 枚举（SDK 头）。
+        assert_eq!(cg_mouse_button(MouseButton::Left), 0);
+        assert_eq!(cg_mouse_button(MouseButton::Right), 1);
+        assert_eq!(cg_mouse_button(MouseButton::Middle), 2);
+        assert_eq!(cg_mouse_event_types(MouseButton::Left), (1, 2, 6));
+        assert_eq!(cg_mouse_event_types(MouseButton::Right), (3, 4, 7));
+        assert_eq!(cg_mouse_event_types(MouseButton::Middle), (21, 22, 25));
     }
 
     #[test]

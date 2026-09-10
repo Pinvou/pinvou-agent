@@ -1,4 +1,4 @@
-//! macOS ScreenCaptureKit 静态截图适配（macOS 14+，被 `macos` 后端在
+//! macOS ScreenCaptureKit 静态截图适配（macOS 15.2+，被 `macos` 后端在
 //! [`available`] 为真时优先使用）。
 //!
 //! 为什么迁移：xcap 0.9.8 的 macOS 静态截图走 CGWindowListCreateImage——
@@ -19,8 +19,9 @@
 //! 处理，不把 worker 线程钉死。回调交付的 CGImage 只在块执行期内有效，
 //! 因此 BGRA→RGBA 转换在块内完成，通道只传 `Vec<u8>`（无 CF/NS 对象跨线程）。
 //!
-//! 系统版本门：应用最低支持 macOS 11（Cargo.toml），静态截图 API 需要 14，
-//! 老系统由调用方回退 xcap 的 CGWindowList 路径。
+//! 系统版本门：应用最低支持 macOS 11（Cargo.toml），静态截图 API 需要
+//! 15.2（见 [`MIN_MACOS_VERSION`] 的注释：类 14.0 引入，类方法 15.2 才有），
+//! 之下由调用方回退 xcap 的 CGWindowList 路径。
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -33,24 +34,29 @@ use objc2_screen_capture_kit::SCScreenshotManager;
 
 use super::super::types::ComputerUseError;
 
-/// ScreenCaptureKit 静态截图（SCScreenshotManager，macOS 14.0+）所需的最低
-/// 主版本。应用最低支持 macOS 11，之下走 xcap 回退路径。
-pub(super) const MIN_MACOS_MAJOR: usize = 14;
+/// `SCScreenshotManager::captureImageInRect` 所需的最低系统版本。
+///
+/// 注意这不是 14.0：类本身在 macOS 14.0 引入，但 `captureImageInRect:
+/// completionHandler:` 是 `API_AVAILABLE(macos(15.2))`（SDK 头文件实测）。
+/// 若只按主版本 14 放行，14.0–15.1 上会向已合法注册的类发送不存在的
+/// selector → Obj-C 异常无着陆垫 → 进程 abort。之下（含 14.x）走 xcap 的
+/// CGWindowList 回退路径。
+const MIN_MACOS_VERSION: (isize, isize) = (15, 2);
 
 /// 单次截图完成回调的等待上限。远小于调用方的 150s 请求预算；超时按失败
 /// 处理（迟到的回调向已断开的通道发送，静默丢弃）。
 const CAPTURE_CALLBACK_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// 运行时判定本系统是否可用 ScreenCaptureKit 静态截图（macOS >= 14）。
+/// 运行时判定本系统是否可用 ScreenCaptureKit 静态截图（macOS >= 15.2）。
 pub(super) fn available() -> bool {
-    macos_major_version() >= MIN_MACOS_MAJOR
+    let version = NSProcessInfo::processInfo().operatingSystemVersion();
+    satisfies_min_version(version.majorVersion, version.minorVersion)
 }
 
-fn macos_major_version() -> usize {
-    // processInfo/operatingSystemVersion 是无副作用的进程查询（绑定层已封
-    // 装为安全函数），任意线程可调。
-    let version = NSProcessInfo::processInfo().operatingSystemVersion();
-    usize::try_from(version.majorVersion).unwrap_or(0)
+/// 版本比较的纯函数形态（便于对 14.x/15.0/15.1 这类无法在本机构造的边界
+/// 做单元测试）。字段类型与 NSOperatingSystemVersion（isize）一致。
+fn satisfies_min_version(major: isize, minor: isize) -> bool {
+    (major, minor) >= MIN_MACOS_VERSION
 }
 
 /// 一次截图的原始像素（RGBA，每像素 4 字节，行紧凑无 stride）。
@@ -197,11 +203,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn availability_gate_tracks_os_version_threshold() {
-        // 应用最低支持 macOS 11，本机可跑测试则必然 >= 11。
-        let major = macos_major_version();
-        assert!(major >= 11, "unexpected macOS major version: {major}");
-        assert_eq!(available(), major >= MIN_MACOS_MAJOR);
+    fn availability_gate_requires_15_2() {
+        // captureImageInRect 是 API_AVAILABLE(macos(15.2))：类 14.0 就存在,
+        // 但 14.0-15.1 上发送该 selector 会直接 abort——这些版本必须走回退。
+        assert!(!satisfies_min_version(14, 0));
+        assert!(!satisfies_min_version(14, 4));
+        assert!(!satisfies_min_version(15, 1));
+        assert!(satisfies_min_version(15, 2));
+        assert!(satisfies_min_version(15, 7));
+        assert!(satisfies_min_version(16, 0));
+        // 本机（能跑测试则必然 >= 11）：available() 必须与真实版本一致。
+        let version = NSProcessInfo::processInfo().operatingSystemVersion();
+        assert_eq!(
+            available(),
+            satisfies_min_version(version.majorVersion, version.minorVersion)
+        );
     }
 
     #[test]
