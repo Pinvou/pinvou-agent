@@ -2421,7 +2421,9 @@ function workspaceDisplayName(path) {
       // → 确认弹窗。两阶段确认:首调不带 confirmExisting,后端发现旧目录
       // 仍在时拒绝,弹窗升级为强警告后由用户再次确认。
       const startRebindWorkspace = async (fromPath) => {
-        if (!bridge.files || !bridge.files.pickFolders || projectOpsBusy) return;
+        // rebindDraft 已开时不再重复开:焦点留在徽标上时按 Enter 会重复触发
+        // onRebind(评审 #463 minor),projectOpsBusy 守卫管不到这个窗口。
+        if (!bridge.files || !bridge.files.pickFolders || projectOpsBusy || rebindDraft) return;
         try {
           const picked = await bridge.files.pickFolders();
           const to = Array.isArray(picked) ? picked[0] : picked;
@@ -2436,6 +2438,8 @@ function workspaceDisplayName(path) {
       const confirmRebindWorkspace = async (confirmExisting) => {
         if (!bridge.projects || !rebindDraft || projectOpsBusy) return;
         setProjectOpsBusy(true);
+        // 清掉上一次失败的内联错误,避免与本次结果叠显。
+        setRebindDraft(prev => prev && { ...prev, error: null });
         try {
           const report = await bridge.projects.rebindWorkspaceRoot(
             rebindDraft.from, rebindDraft.to, confirmExisting);
@@ -2451,15 +2455,21 @@ function workspaceDisplayName(path) {
           } else {
             setSettingsToast(t.uiProjects.rebindSuccess(rebound));
           }
-          await refreshCodexSessions().catch(() => {});
+          await refreshCodexSessions().catch((error) => {
+            // 失败不吞:会话列表靠 session:list_changed 事件自愈,但显式
+            // 失败的静默间隙要对排查可见(评审 #463 minor)。
+            console.warn('refresh sessions after rebind failed', error);
+          });
         } catch (error) {
           const message = String(error);
           // 类型化标记匹配(finding 11):只认稳定前缀,不匹配人类文案。
           if (message.startsWith('REBIND_OLD_ROOT_EXISTS')) {
-            setRebindDraft(prev => prev && { ...prev, warnExisting: true });
+            setRebindDraft(prev => prev && { ...prev, warnExisting: true, error: null });
           } else {
             console.warn('rebind workspace failed', error);
-            setSettingsToast(t.sessionBatchFailed(1));
+            // 失败保持对话框打开并内联呈现错误(评审 #463 M7):toast 层级
+            // 在对话框遮罩(z-200 + blur)之下,关窗前 toast 用户看不到。
+            setRebindDraft(prev => prev && { ...prev, error: message });
           }
         } finally {
           setProjectOpsBusy(false);
@@ -2918,6 +2928,7 @@ function workspaceDisplayName(path) {
               from={rebindDraft.from}
               to={rebindDraft.to}
               warnExisting={rebindDraft.warnExisting}
+              errorMessage={rebindDraft.error}
               t={t}
               busy={projectOpsBusy}
               onCancel={() => setRebindDraft(null)}
@@ -3332,7 +3343,7 @@ function workspaceDisplayName(path) {
                                         .filter(root => !(root && typeof root === 'object' ? root.available : root))
                                         .map(root => String(typeof root === 'object' ? root.path : root))
                                     : []}
-                                  onRebind={group.kind === 'project' ? (rootPath) => startRebindWorkspace(rootPath) : undefined}
+                                  onRebind={bridge.projects && group.kind === 'project' ? (rootPath) => startRebindWorkspace(rootPath) : undefined}
                                   dropActive={dropTargetGroupKey === group.key}
                                   onDropActive={(active) => setDropTargetGroupKey(active ? group.key : null)}
                                 />
