@@ -22,10 +22,17 @@ fn every_family_token_dispatches_to_its_module() {
         ("connectors", "status"),
         ("personas", "list"),
         ("code", "agents list"),
-        ("files", "ingest"),
+        // files ingest requires its PATH argument since the family was
+        // implemented (it used to be a bare-token stub).
+        ("files", "ingest /tmp/a.md"),
         ("voice", "asr-status"),
         ("deps", "check"),
-        ("feedback", "submit"),
+        // feedback submit requires its options since the family was
+        // implemented (it used to be a bare-token stub).
+        (
+            "feedback",
+            "submit --type issue --title t --body-file /tmp/b.md",
+        ),
         ("monitor", "status"),
         ("artifacts", "list"),
     ];
@@ -76,13 +83,11 @@ fn family_without_subcommand_is_a_usage_error_naming_the_family() {
     assert!(message.contains("memory"), "unexpected message: {message}");
 }
 
-#[test]
-fn stub_execution_reports_not_implemented_as_host_failure() {
-    let parsed = parse_args(["pinvou", "monitor", "snapshot"]).unwrap();
-    let error = pinvou_cli::execute(parsed).unwrap_err();
-    assert_eq!(error.exit_code(), ExitCode::Failed);
-    assert!(error.to_string().contains("not_implemented_yet"));
-}
+// The former `stub_execution_reports_not_implemented_as_host_failure` test
+// was removed when the files/voice/deps/feedback/monitor families were
+// implemented: it asserted the temporary `not_implemented_yet` stub error for
+// `monitor snapshot`, which now boots the windowless host instead (its real
+// behavior is covered by the `#[ignore]` opt-in tests in misc_contract.rs).
 
 #[test]
 fn unknown_top_level_command_lists_the_full_surface() {
