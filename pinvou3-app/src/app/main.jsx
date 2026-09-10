@@ -1443,7 +1443,9 @@ function workspaceDisplayName(path) {
           // #445 绑定:绑定工作会话携带 workspacePath/Kind,项目分组跟随绑定
           // (与安全姿态同一条信号),未绑定会话两个值为空、维持日期视图。
           workspacePath: s.workspace_binding || '',
-          workspaceKind: s.workspace_binding ? 'project' : '',
+          // 独立 'bound' kind:与代码/ACP 的 'project' 同享三层分组,但不是
+          // 伪装的 project-kind(评审 #452 finding 5)。
+          workspaceKind: s.workspace_binding ? 'bound' : '',
           leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
           testId: 'regular-sidebar-item',
           menuTestId: 'regular-sidebar-menu',

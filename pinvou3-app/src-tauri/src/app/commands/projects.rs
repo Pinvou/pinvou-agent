@@ -166,14 +166,15 @@ pub async fn move_session_to_project(
             );
         }
         // 统一工作区探测(跨模式融合):代码/ACP 会话走 agent 记录;普通绑定
-        // 会话(agent 记录缺失)回落到双根信号——执行根≠账本根 ⇒ 已绑定,
-        // 执行根即绑定目录(#445 的绑定语义)。临时/未绑定会话两者皆无。
+        // 会话回落到双根信号——执行根≠账本根 ⇒ 已绑定,执行根即绑定目录
+        // (#445 的绑定语义)。agent 记录存在但非项目形态(如临时)与记录缺失
+        // (Err)两种缺席模式都穿透到同一回退,不让 Ok(Temporary) 短路成错误
+        // (评审 #452 finding 4)。
         let detected = match acp_pool.workspace_info(&session_id) {
             Ok(info) if info.workspace_kind == CodexWorkspaceKind::Project => {
                 Some(PathBuf::from(info.workspace_path))
             }
-            Ok(_) => None,
-            Err(_) => sessions
+            _ => sessions
                 .session_roots(&session_id)
                 .ok()
                 .filter(|roots| roots.execution != roots.ledger)

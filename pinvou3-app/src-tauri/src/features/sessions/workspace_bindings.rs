@@ -159,10 +159,24 @@ impl SessionStore {
     }
 
     /// 扫描全部 `workspace-binding.json` sidecar，列出绑定在 `from` 前缀下的
-    /// 会话（目录重绑定的栅栏候选集；`from` 通常已消失，按词法前缀匹配，
-    /// 与 SessionAgentStore::sessions_under_workspace 同语义）。不校验
+    /// 会话（目录重绑定的栅栏候选集；`from` 通常已消失，匹配在共享折叠键
+    /// 上进行——Windows 折叠分隔符与大小写，与
+    /// SessionAgentStore::sessions_under_workspace 同语义）。不校验
     /// `<id>.json` 存在——残留 sidecar 同样要被重绑定覆盖，否则旧目录复活。
     pub fn workspace_bindings_under(&self, from: &Path) -> Vec<(String, PathBuf)> {
+        let from_trim = {
+            let key =
+                crate::platform::os::filesystem_path_identity_key(&from.to_string_lossy());
+            key.trim_end_matches('/').to_string()
+        };
+        let covered = |path: &Path| -> bool {
+            let key =
+                crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy());
+            let trim = key.trim_end_matches('/');
+            from_trim.is_empty()
+                || trim == from_trim
+                || trim.starts_with(&format!("{from_trim}/"))
+        };
         let mut matched = Vec::new();
         let Ok(entries) = std::fs::read_dir(self.manager.sessions_dir()) else {
             return matched;
@@ -179,7 +193,7 @@ impl SessionStore {
             else {
                 continue;
             };
-            if sidecar.path.strip_prefix(from).is_ok() {
+            if covered(&sidecar.path) {
                 matched.push((id, sidecar.path));
             }
         }
@@ -197,21 +211,51 @@ impl SessionStore {
         from: &Path,
         to: &Path,
     ) -> Result<Vec<(String, PathBuf)>> {
+        let from_trim = {
+            let key =
+                crate::platform::os::filesystem_path_identity_key(&from.to_string_lossy());
+            key.trim_end_matches('/').to_string()
+        };
+        let covered = |path: &Path| -> bool {
+            let key =
+                crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy());
+            let trim = key.trim_end_matches('/');
+            from_trim.is_empty()
+                || trim == from_trim
+                || trim.starts_with(&format!("{from_trim}/"))
+        };
+        let skip = from.components().count();
         let mut affected = Vec::new();
-        for (id, path) in self.workspace_bindings_under(from) {
+        // 候选 = sidecar 扫描 ∪ 内存旧表:存量迁移未完成的降级路径下,未迁移
+        // 条目只存在于内存/旧全局表,漏配会在下次 boot 迁移时以旧目录复活。
+        let mut candidates: Vec<(String, PathBuf)> = self.workspace_bindings_under(from);
+        for (id, path) in self.session_workspaces.read().iter() {
+            if !candidates.iter().any(|(existing_id, _)| existing_id == id) {
+                candidates.push((id.clone(), path.clone()));
+            }
+        }
+        for (id, path) in candidates {
+            if !covered(&path) {
+                continue;
+            }
+            let suffix: PathBuf = path.components().skip(skip).collect();
+            let next = if suffix.as_os_str().is_empty() {
+                to.to_path_buf()
+            } else {
+                to.join(suffix)
+            };
             let sidecar_path = self
                 .manager
                 .sessions_dir()
                 .join(&id)
                 .join(SESSION_WORKSPACE_SIDECAR_FILE);
-            let Ok(suffix) = path.strip_prefix(from) else {
-                continue;
-            };
-            let next = to.join(suffix);
+            // bound_at 仅元信息:原样保留,与 codex 存储的 rebind 同口径,
+            // 不再重置为 None(评审 #452 finding 3)。
+            let bound_at = read_workspace_sidecar(&sidecar_path).and_then(|s| s.bound_at);
             let updated = SessionWorkspaceSidecar {
                 version: SESSION_WORKSPACE_SIDECAR_VERSION,
                 path: next.clone(),
-                bound_at: None,
+                bound_at,
             };
             let payload = serde_json::to_vec_pretty(&updated)
                 .context("serialize session workspace binding")?;
@@ -227,6 +271,14 @@ impl SessionStore {
                 .write()
                 .insert(id.clone(), next.clone());
             affected.push((id, next));
+        }
+        // 降级路径对称(评审 #452 finding 9):旧全局表仍在盘上时同步重写,
+        // 否则重绑定会在下次 boot 迁移时被旧表复活。
+        if crate::platform::paths::sessions_root()
+            .join(LEGACY_SESSION_WORKSPACES_FILE)
+            .is_file()
+        {
+            self.save_session_workspaces();
         }
         Ok(affected)
     }
