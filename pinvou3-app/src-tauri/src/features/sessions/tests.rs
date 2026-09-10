@@ -3698,3 +3698,96 @@ fn truncate_reports_compaction_summary_residue_in_system_prompt() {
         .expect("rewind without marker");
     assert!(!outcome.had_compaction, "普通 system_prompt 不得误报");
 }
+
+/// GUI 导出走 store → 底座 `deepseek_tui::session_export` 的接线必须产出
+/// 全保真归档：记录（session.json）与 portable container（container.json）
+/// 齐备，artifacts 目录按参数包含/排除。归档内容级的 roundtrip（system
+/// prompt、tool_use/tool_result 还原）由底座 `session_export` 测试锁定，
+/// 这里锁 app 侧的参数传递与成员清单契约。
+#[test]
+fn forkguard_session_archive_export_via_store_keeps_full_context() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create ordinary chat");
+    store
+        .update_messages(
+            &session.metadata.id,
+            vec![
+                user_text("export me"),
+                Message {
+                    role: "assistant".into(),
+                    content: vec![ContentBlock::ToolUse {
+                        id: "toolu_export".into(),
+                        name: "shell".into(),
+                        input: serde_json::json!({ "command": "ls" }),
+                        caller: None,
+                        thought_signature: None,
+                    }],
+                },
+                Message {
+                    role: "user".into(),
+                    content: vec![ContentBlock::ToolResult {
+                        tool_use_id: "toolu_export".into(),
+                        content: "ok".into(),
+                        is_error: None,
+                        content_blocks: None,
+                    }],
+                },
+            ],
+        )
+        .expect("seed transcript with tool call");
+
+    // 造一个 artifacts 文件，验证默认打包与 skip 两档行为。
+    let artifacts_dir = store
+        .manager
+        .sessions_dir()
+        .join(&session.metadata.id)
+        .join("artifacts");
+    std::fs::create_dir_all(&artifacts_dir).expect("artifacts dir");
+    std::fs::write(artifacts_dir.join("note.txt"), b"artifact").expect("artifact file");
+
+    let output_dir = std::env::temp_dir().join(format!(
+        "pinvou3-session-export-test-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&output_dir).expect("output dir");
+    let output = output_dir.join(format!("{}.tar.xz", session.metadata.id));
+
+    let summary = store
+        .export_archive(&session.metadata.id, &output, true)
+        .expect("export with artifacts");
+    assert_eq!(summary.session_id, session.metadata.id);
+    assert!(summary.includes_artifacts);
+    let member_names: Vec<_> = summary.members.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(
+        member_names,
+        vec!["session.json", "container.json", "artifacts/note.txt"]
+    );
+    assert!(summary.compressed_bytes() > 0, "archive must be written");
+    let stored = summary
+        .members
+        .iter()
+        .find(|m| m.name == "artifacts/note.txt")
+        .expect("artifact member");
+    assert_eq!(stored.bytes, "artifact".len() as u64);
+
+    let lean = output_dir.join("lean.tar.xz");
+    let transcript_only = store
+        .export_archive(&session.metadata.id, &lean, false)
+        .expect("export transcript only");
+    assert!(!transcript_only.includes_artifacts);
+    assert!(
+        transcript_only
+            .members
+            .iter()
+            .all(|m| !m.name.starts_with("artifacts/"))
+    );
+
+    // 非法 session id 在 store 入口即被拒绝，不落盘任何文件。
+    let escape = output_dir.join("escape.tar.xz");
+    assert!(store.export_archive("../escape", &escape, true).is_err());
+    assert!(!escape.exists());
+
+    let _ = std::fs::remove_dir_all(&output_dir);
+}

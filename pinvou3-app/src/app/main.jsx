@@ -2389,6 +2389,25 @@ const NAV_PREFETCH = {
         if (isCodexSession) await refreshCodexSessions().catch(() => {});
       }, [codexSessions, refreshCodexSessions]);
 
+      // 一键导出完整会话日志（.tar.xz，全保真上下文）。后端弹原生保存对话框：
+      // 用户取消返回 null；成功/失败用设置页 toast 提示。默认文件名带会话标题
+      // 与短 id，最终命名由后端净化（防路径穿越/非法字符）。标题经 allSidebarTasksRef
+      // 读取以保持回调引用稳定（RecentItem 已 memo 化）。
+      const handleExportSessionArchive = useCallback(async (id) => {
+        if (!bridge.available || !bridge.sessions.exportSessionArchive) return;
+        const chat = (allSidebarTasksRef.current || []).find(c => c.id === id);
+        const title = ((chat && chat.title) || 'session').trim() || 'session';
+        const defaultName = `pinvoy-session-${title.slice(0, 30)}-${id.slice(0, 8)}.tar.xz`;
+        try {
+          const result = await bridge.sessions.exportSessionArchive(id, defaultName);
+          if (!result) return;
+          setSettingsToast(t.exportSessionDone);
+        } catch (error) {
+          console.warn('export session archive failed', error);
+          setSettingsToast(t.exportSessionFailed);
+        }
+      }, [t]);
+
       const handleToggleSessionPinned = useCallback(async (id, pinned) => {
         const isCodexSession = codexSessions.some(session => session.id === id);
         if (bridge.available) await bridge.sessions.toggleSessionPinned(id, pinned);
@@ -2712,6 +2731,7 @@ const NAV_PREFETCH = {
             onDelete={handleDeleteSession}
             onTogglePinned={handleToggleSessionPinned}
             onOpenFolder={can('externalSystemOpen') ? handleRevealSessionFolder : undefined}
+            onExportArchive={chat.taskKind !== 'codex' && bridge.sessions.exportSessionArchive ? handleExportSessionArchive : undefined}
             onArchive={handleArchiveSession}
             dragKind={detachKind}
             dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
@@ -3560,6 +3580,7 @@ const NAV_PREFETCH = {
                 onDelete={handleDeleteSession}
                 onTogglePinned={handleToggleSessionPinned}
                 onOpenFolder={can('externalSystemOpen') ? handleRevealSessionFolder : undefined}
+                onExportArchive={bridge.sessions.exportSessionArchive ? handleExportSessionArchive : undefined}
                 onArchive={handleArchiveSession}
                 onArchiveMany={handleBatchArchiveSessions}
                 onDeleteMany={handleBatchDeleteSessions}

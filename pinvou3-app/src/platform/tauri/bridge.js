@@ -1157,6 +1157,7 @@
   const toggleSessionPinned = sessionsFeature.toggleSessionPinned;
   const archiveSession = sessionsFeature.archiveSession;
   const restoreArchivedSession = sessionsFeature.restoreArchivedSession;
+  const exportSessionArchive = sessionsFeature.exportSessionArchive;
   function runSyncOnSession(sid, fn) {
     if (!sid || sid === state.activeSessionId) { fn(); return; }
     const bg = sessionStates[sid]; if (!bg) return;
@@ -2643,6 +2644,7 @@
       toggleSessionPinned,
       archiveSession,
       restoreArchivedSession,
+      exportSessionArchive,
     },
     monitor: {
       startMonitorPolling,

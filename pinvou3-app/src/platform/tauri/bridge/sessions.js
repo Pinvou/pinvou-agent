@@ -1239,6 +1239,14 @@
     }
   }
 
+  // 一键导出完整会话日志：后端弹原生保存对话框，把全保真会话记录
+  // （system prompt、全部轮次、工具调用与结果）连同 artifacts 打包为
+  // .tar.xz。返回 { path, ... }；用户取消返回 null。Web 端无本机会话
+  // 文件，bridge 不暴露该入口（前端按能力隐藏菜单项）。
+  async function exportSessionArchive(id, defaultName) {
+    return invoke("export_session", { id, defaultName, includeArtifacts: true });
+  }
+
   async function archiveSession(id) {
     invalidateScheduledRecentRunsForSession(id);
     const idx = state.sessions.findIndex(function (s) { return s.id === id; });
@@ -1395,7 +1403,8 @@
       renameSession,
       toggleSessionPinned,
       archiveSession,
-      restoreArchivedSession
+      restoreArchivedSession,
+      exportSessionArchive
     };
   };
 })(window);

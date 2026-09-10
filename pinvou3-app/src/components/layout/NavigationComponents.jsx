@@ -1,6 +1,6 @@
 import { memo, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Archive, Check, Edit2, FolderOpen, MoreHorizontal, PinIcon, PinOffIcon, Sparkles, Trash2, X } from '../icons.jsx';
+import { Archive, Check, Download, Edit2, FolderOpen, MoreHorizontal, PinIcon, PinOffIcon, Sparkles, Trash2, X } from '../icons.jsx';
 import { useLongPressDrag } from '../../hooks/useLongPressDrag.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 
@@ -214,7 +214,7 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
     // derived by the parent's useMemo and callbacks come from the parent's
     // useCallback / per-item closure cache (see renderSidebarTaskItem in
     // main.jsx); the default shallow compare then skips correctly.
-    const RecentItem = memo(function RecentItem({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, dragKind = 'session', dragging, onPickUp }) {
+    const RecentItem = memo(function RecentItem({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onExportArchive, onArchive, dragKind = 'session', dragging, onPickUp }) {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
@@ -293,6 +293,12 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
             <button type="button" className={menuItemCls} onClick={() => { closeMenu(); onOpenFolder(chat.id); }}>
               <FolderOpen size={15} />
               <span>{t.riOpenFolder}</span>
+            </button>
+          )}
+          {onExportArchive && (
+            <button type="button" className={menuItemCls} data-testid="session-export-archive" onClick={() => { closeMenu(); onExportArchive(chat.id); }}>
+              <Download size={15} />
+              <span>{t.exportSessionArchive}</span>
             </button>
           )}
           {onArchive && (

@@ -1246,6 +1246,7 @@ pub fn run() {
             commands::sessions::load_session,
             commands::sessions::delete_session,
             commands::sessions::rename_session,
+            commands::sessions::export_session,
             commands::sessions::set_session_pinned,
             commands::sessions::list_archived_sessions,
             commands::sessions::set_session_archived,

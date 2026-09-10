@@ -178,6 +178,7 @@ const jaBase = {
         previewTaskDailyBrief: 'デイリーブリーフ', previewTaskFollowUp: 'フォローアップ確認', previewTaskSalesWeekly: 'リード週報',
         archiveSession: '隠す', archiveConfirmTitle: 'このタスクを隠しますか？', archiveConfirmMessage: 'このタスクはサイドバーから外れます。', archiveConfirmDetail: '会話と成果物は削除されず、チャット管理ページから戻せます。', archiveConfirmAction: '隠す',
         archiveSuccess: '隠しました', archiveSuccessView: '表示',
+        exportSessionArchive: 'セッションログを書き出す', exportSessionDone: 'セッションログを書き出しました', exportSessionFailed: 'セッションログの書き出しに失敗しました',
         sessionBatchFailed: n => `${n} 件のタスク操作に失敗しました。再試行してください。`,
         archivedTasks: '設定に隠したタスク', archivedTasksDesc: '', archivedEmpty: '隠したタスクはありません', restoreArchived: '一覧に戻す',
         archivedDeleteTitle: '隠したタスクを削除しますか？', archivedDeleteMessage: 'このタスクと内容は完全に削除され、元に戻せません。', archivedDeleteAction: '削除',
