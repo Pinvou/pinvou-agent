@@ -2,13 +2,21 @@
 //!
 //! Parse-level tests cover every subcommand plus the invalid shapes that must
 //! map to exit-code 2 usage errors. Execute-level tests run against a temp
-//! `PINVOU3_HOME` (serialized through ENV_LOCK, following cli_contract.rs).
-//! The session-mount surface runs against a real `SessionStore` fixture; the
-//! KnowledgeService-backed surface is behind the `pub(crate)` boundary
-//! documented in knowledge.rs, so those tests freeze the stable
-//! `knowledge_backend_unavailable` contract instead of touching data. No test
-//! here reaches the network or a model (AGENTS.md rule); the model-download
-//! path additionally needs the desktop model host and stays opt-in only.
+//! `PINVOU3_HOME` (serialized through ENV_LOCK, following cli_contract.rs):
+//! the KnowledgeService round-trips (collections CRUD, document listing, the
+//! scan trio, add-sources indexing, L0 stats/type-counts/search, model
+//! status) are offline — an empty `index.db` needs no model and no network,
+//! because the import thread skips embedder loading when the model is not
+//! installed and degrades to full-text. The L0 search round-trip seeds rows
+//! through a completed `scan start` (still offline) and asserts the NL-rule
+//! merge ("上周的 pdf" → ext + mtime filter + residual text) indirectly.
+//! The session-mount surface runs against a real `SessionStore`
+//! fixture and freezes the GUI's verbatim gate errors. Paths that need the
+//! network, a model download, a configured remote server or the windowless
+//! product host stay behind `#[ignore]` with their opt-in command named
+//! (AGENTS.md rule: never touch the network in default tests); `model
+//! download` keeps its stable `knowledge_backend_unavailable` code with the
+//! documented upstream blocker.
 
 use pinvou_cli::{ExitCode, execute, parse_args};
 use std::path::{Path, PathBuf};
@@ -486,77 +494,412 @@ fn mounts_and_unmount_round_trip_on_an_existing_session() {
     assert_eq!(snapshot["collections"], serde_json::json!([]));
 }
 
+/// `model download` keeps its stable unavailable code: the orchestration and
+/// its cancel/downloading state live behind model_download.rs privates (see
+/// the CLI module docs for the exact blocker). stats/type-counts/search and
+/// remote probe are real now and covered by the round-trip/opt-in tests.
 #[test]
-fn service_backed_subcommands_report_the_stable_unavailable_code() {
-    let cases = [
-        vec!["pinvou", "knowledge", "scan", "start"],
-        vec!["pinvou", "knowledge", "scan", "start", "--root", "/tmp"],
-        vec!["pinvou", "knowledge", "scan", "status"],
-        vec!["pinvou", "knowledge", "scan", "cancel"],
-        vec!["pinvou", "knowledge", "stats"],
-        vec!["pinvou", "knowledge", "type-counts"],
-        vec!["pinvou", "knowledge", "collections", "list"],
-        vec![
-            "pinvou",
-            "knowledge",
-            "collections",
-            "create",
-            "--name",
-            "n",
-        ],
-        vec![
-            "pinvou",
-            "knowledge",
-            "collections",
-            "update",
-            "1",
-            "--name",
-            "n",
-        ],
-        vec!["pinvou", "knowledge", "collections", "delete", "1", "--yes"],
-        vec![
-            "pinvou",
-            "knowledge",
-            "collections",
-            "add-sources",
-            "1",
-            "/tmp",
-        ],
-        vec!["pinvou", "knowledge", "documents", "1"],
-        vec!["pinvou", "knowledge", "documents", "remove", "1", "--yes"],
-        vec!["pinvou", "knowledge", "index", "status"],
-        vec!["pinvou", "knowledge", "index", "cancel", "j"],
-        vec!["pinvou", "knowledge", "index", "resume", "j"],
-        vec!["pinvou", "knowledge", "index", "retry", "j", "1"],
-        vec!["pinvou", "knowledge", "index", "failed", "j"],
-        vec!["pinvou", "knowledge", "search", "hello"],
-        vec!["pinvou", "knowledge", "model", "status"],
-        vec!["pinvou", "knowledge", "model", "download"],
-        vec!["pinvou", "knowledge", "model", "cancel"],
-    ];
-    for arguments in cases {
-        let error = execute_error(&arguments);
-        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
-        assert!(
-            error
-                .to_string()
-                .starts_with("knowledge_backend_unavailable"),
-            "{arguments:?}: {error}"
-        );
-    }
+fn model_download_keeps_its_stable_unavailable_code() {
+    let error = execute_error(&["pinvou", "knowledge", "model", "download"]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error
+            .to_string()
+            .starts_with("knowledge_backend_unavailable"),
+        "{error}"
+    );
+    assert!(error.to_string().contains("model_download.rs"), "{error}");
 }
 
 #[test]
-fn remote_and_host_surfaces_name_their_own_boundaries() {
+fn stats_type_counts_and_search_answer_zero_state_offline() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::new("l0-zero");
+
+    let stats = run_json(&["pinvou", "knowledge", "stats"]);
+    assert_eq!(stats["totalFiles"], serde_json::json!(0));
+    assert_eq!(stats["totalBytes"], serde_json::json!(0));
+    assert_eq!(stats["duplicateGroups"], serde_json::json!(0));
+
+    let counts = run_json(&["pinvou", "knowledge", "type-counts"]);
+    assert_eq!(counts["typeCounts"], serde_json::json!([]));
+
+    let hits = run_json(&["pinvou", "knowledge", "search", "hello"]);
+    assert_eq!(hits["query"], serde_json::json!("hello"));
+    assert_eq!(hits["hits"], serde_json::json!([]));
+}
+
+// ---- execute-level coverage: real hermetic round-trips ----
+
+#[test]
+fn collections_crud_round_trip_on_a_temp_home() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::new("collections-crud");
+
+    let first = run_json(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "create",
+        "--name",
+        "papers",
+    ]);
+    let first_id = first["id"].as_i64().expect("created collection id");
+    let second = run_json(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "create",
+        "--name",
+        "books",
+        "--category",
+        "reading",
+        "--description",
+        "long form",
+    ]);
+    let second_id = second["id"].as_i64().expect("created collection id");
+
+    let listed = run_json(&["pinvou", "knowledge", "collections", "list"]);
+    let collections = listed["collections"].as_array().expect("collections array");
+    assert_eq!(collections.len(), 2);
+    assert!(
+        collections
+            .iter()
+            .any(|collection| collection["name"] == serde_json::json!("papers"))
+    );
+
+    let updated = run_json(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "update",
+        &first_id.to_string(),
+        "--name",
+        "renamed",
+    ]);
+    assert_eq!(updated["name"], serde_json::json!("renamed"));
+    // The unspecified flags keep the stored values (GUI replace semantics
+    // with a CLI-side merge).
+    assert_eq!(updated["id"], serde_json::json!(first_id));
+
+    let error = execute_error(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "update",
+        "999",
+        "--name",
+        "ghost",
+    ]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(error.to_string().contains("not found"), "{error}");
+
+    run_ok(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "delete",
+        &second_id.to_string(),
+        "--yes",
+    ]);
+    let listed = run_json(&["pinvou", "knowledge", "collections", "list"]);
+    let collections = listed["collections"].as_array().expect("collections array");
+    assert_eq!(collections.len(), 1);
+    assert_eq!(collections[0]["id"], serde_json::json!(first_id));
+}
+
+#[test]
+fn documents_zero_state_and_remove_no_op() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::new("documents-zero");
+
+    let created = run_json(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "create",
+        "--name",
+        "empty",
+    ]);
+    let id = created["id"].as_i64().expect("created collection id");
+
+    let documents = run_json(&["pinvou", "knowledge", "documents", &id.to_string()]);
+    assert_eq!(documents["collection_id"], serde_json::json!(id));
+    assert_eq!(documents["documents"], serde_json::json!([]));
+
+    // Removing an unknown document is a no-op like the GUI delete.
+    let removed = run_json(&["pinvou", "knowledge", "documents", "remove", "123", "--yes"]);
+    assert_eq!(removed["id"], serde_json::json!(123));
+}
+
+/// Index jobs are DB-persisted and polled (`kb_index_status`), so the
+/// background import thread that `add-sources` spawns is observable across
+/// fresh CLI invocations. The embedder load is skipped (model not installed
+/// in the sandbox home), keeping this fully offline.
+#[test]
+fn add_sources_indexes_a_text_file_end_to_end() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = TempHome::new("index-roundtrip");
+
+    let created = run_json(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "create",
+        "--name",
+        "notes",
+    ]);
+    let id = created["id"].as_i64().expect("created collection id");
+
+    let docs = home.path().join("docs");
+    std::fs::create_dir_all(&docs).unwrap();
+    let source = docs.join("hello.txt");
+    std::fs::write(
+        &source,
+        "Pinvou knowledge stores local notes about embeddings.",
+    )
+    .unwrap();
+
+    let started = run_json(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "add-sources",
+        &id.to_string(),
+        source.to_str().unwrap(),
+    ]);
+    assert_eq!(started["collectionId"], serde_json::json!(id));
+    let job_id = started["jobId"]
+        .as_str()
+        .expect("started job id")
+        .to_owned();
+
+    // The import runs on the `add-sources` invocation's background thread —
+    // here the test process. Let it finish before the first fresh service
+    // boot: every new invocation runs the GUI's startup recovery, which
+    // recovers an in-flight job to `interrupted` (crash semantics), so
+    // polling mid-flight would disturb the live import.
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let state = loop {
+        let state = run_json(&["pinvou", "knowledge", "index", "status"]);
+        let phase = state["phase"].as_str().unwrap_or_default().to_owned();
+        if phase == "done" || phase == "done_with_errors" {
+            break state;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "index job did not finish in time; last state: {state}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert_eq!(state["jobId"], serde_json::json!(job_id));
+    assert!(
+        state["completed"].as_u64().unwrap_or(0) >= 1,
+        "expected one completed item: {state}"
+    );
+
+    let documents = run_json(&["pinvou", "knowledge", "documents", &id.to_string()]);
+    let documents = documents["documents"].as_array().expect("documents array");
+    assert_eq!(documents.len(), 1);
+    assert_eq!(documents[0]["name"], serde_json::json!("hello.txt"));
+    assert_eq!(documents[0]["parseStatus"], serde_json::json!("parsed"));
+
+    let failed = run_ok(&["pinvou", "knowledge", "index", "failed", &job_id]);
+    assert!(failed.contains("no failed files"), "{failed}");
+
+    // Per-job live state is not addressable headlessly: an unknown/latest
+    // mismatch names the boundary instead of silently returning another job.
+    let error = execute_error(&["pinvou", "knowledge", "index", "status", "other-job"]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(error.to_string().contains("per-job state"), "{error}");
+
+    // Cancel targets the active/latest job; on a finished job it is a
+    // signal-only no-op that still succeeds.
+    run_ok(&["pinvou", "knowledge", "index", "cancel", &job_id]);
+
+    // Resuming an unknown job surfaces the upstream error verbatim.
+    let error = execute_error(&["pinvou", "knowledge", "index", "resume", "bogus-job"]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+}
+
+/// The scan state is in-process, but its completion marker
+/// (`last_scan_finished_at`) persists in `index.db` — so `scan status` from a
+/// fresh CLI invocation converges to `done` once the background scan thread
+/// of `scan start` finishes.
+#[test]
+fn scan_start_persists_its_completion_marker() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = TempHome::new("scan-roundtrip");
+    let root = home.path().join("docs");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("note.txt"), "pinvou scan fixture").unwrap();
+
+    let started = run_json(&[
+        "pinvou",
+        "knowledge",
+        "scan",
+        "start",
+        "--root",
+        root.to_str().unwrap(),
+    ]);
+    // The background thread may finish before the returned snapshot for a
+    // tiny root, so both phases are valid starts.
+    assert!(
+        started["phase"] == serde_json::json!("scanning")
+            || started["phase"] == serde_json::json!("done"),
+        "{started}"
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let state = run_json(&["pinvou", "knowledge", "scan", "status"]);
+        if state["phase"] == serde_json::json!("done") {
+            assert!(
+                state["finishedAt"].as_i64().unwrap_or(0) > 0,
+                "finished scan must persist its marker: {state}"
+            );
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "scan did not finish in time; last state: {state}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    // Cancel is a real signal on the service (harmless once the scan is done).
+    let cancelled = run_json(&["pinvou", "knowledge", "scan", "cancel"]);
+    assert_eq!(cancelled["cancelled"], serde_json::json!(true));
+}
+
+/// L0 seeding is scan-driven and offline: `scan start` upserts file metadata
+/// on its background thread (in-process, like add-sources) and the persisted
+/// rows answer later invocations. The GUI `kb_search` NL-rule merge is
+/// asserted indirectly through the CLI: "上周的 pdf" must degrade to an
+/// ext + last-week-mtime filter (residual text stripped) that hits the
+/// freshly seeded pdf — a raw FTS over the whole phrase would find nothing.
+#[test]
+fn search_hits_scan_seeded_files_with_nl_merge_and_explicit_flags() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = TempHome::new("l0-seeded");
+    let docs = home.path().join("docs");
+    std::fs::create_dir_all(&docs).unwrap();
+    std::fs::write(docs.join("季度报告.pdf"), b"pinvou knowledge fixture").unwrap();
+    std::fs::write(docs.join("notes.txt"), b"plain text").unwrap();
+
+    let started = run_json(&[
+        "pinvou",
+        "knowledge",
+        "scan",
+        "start",
+        "--root",
+        docs.to_str().unwrap(),
+    ]);
+    assert!(
+        started["phase"] == serde_json::json!("scanning")
+            || started["phase"] == serde_json::json!("done"),
+        "{started}"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let state = run_json(&["pinvou", "knowledge", "scan", "status"]);
+        if state["phase"] == serde_json::json!("done") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "scan did not finish in time; last state: {state}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    let stats = run_json(&["pinvou", "knowledge", "stats"]);
+    assert_eq!(stats["totalFiles"], serde_json::json!(2));
+    let counts = run_json(&["pinvou", "knowledge", "type-counts"]);
+    let counts = counts["typeCounts"].as_array().expect("typeCounts array");
+    assert_eq!(counts.len(), 2);
+    assert!(
+        counts
+            .iter()
+            .any(|count| count["ext"] == serde_json::json!("pdf"))
+    );
+
+    // Plain substring over name/path (2 CJK chars take the LIKE fallback).
+    let hits = run_json(&["pinvou", "knowledge", "search", "报告"]);
+    let hits = hits["hits"].as_array().expect("hits array");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0]["name"], serde_json::json!("季度报告.pdf"));
+    assert_eq!(hits[0]["ext"], serde_json::json!("pdf"));
+
+    // NL merge without any explicit flag: ext + mtime filter only.
+    let hits = run_json(&[
+        "pinvou",
+        "knowledge",
+        "search",
+        "上周的 pdf",
+        "--limit",
+        "5",
+    ]);
+    let hits = hits["hits"].as_array().expect("hits array");
+    assert_eq!(hits.len(), 1, "NL-merged query must hit the seeded pdf");
+    assert_eq!(hits[0]["ext"], serde_json::json!("pdf"));
+
+    // Explicit --ext composes with the text query.
+    let hits = run_json(&["pinvou", "knowledge", "search", "notes", "--ext", "txt"]);
+    let hits = hits["hits"].as_array().expect("hits array");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0]["name"], serde_json::json!("notes.txt"));
+    let hits = run_json(&["pinvou", "knowledge", "search", "notes", "--ext", "pdf"]);
+    assert_eq!(hits["hits"], serde_json::json!([]));
+
+    // Invalid date flags are usage errors (exit 2), like bad ids.
+    assert_usage(&[
+        "pinvou",
+        "knowledge",
+        "search",
+        "q",
+        "--after",
+        "not-a-date",
+    ]);
+    assert_usage(&[
+        "pinvou",
+        "knowledge",
+        "search",
+        "q",
+        "--before",
+        "2026-02-30",
+    ]);
+}
+
+#[test]
+fn model_status_reports_disk_state_and_model_cancel_succeeds() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::new("model-status");
+
+    let status = run_json(&["pinvou", "knowledge", "model", "status"]);
+    assert_eq!(status["version"], serde_json::json!("bge-m3"));
+    assert_eq!(status["installed"], serde_json::json!(false));
+    assert_eq!(status["ready"], serde_json::json!(false));
+    let model_dir = status["model_dir"].as_str().expect("model dir");
+    assert!(
+        model_dir.ends_with("knowledge/models/bge-m3"),
+        "{model_dir}"
+    );
+
+    let cancelled = run_json(&["pinvou", "knowledge", "model", "cancel"]);
+    assert_eq!(cancelled["cancelled"], serde_json::json!(true));
+}
+
+#[test]
+fn remote_connections_answer_offline_without_configured_servers() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::new("remote-empty");
+
+    let listed = run_json(&["pinvou", "knowledge", "remote", "connections"]);
+    assert_eq!(listed["connections"], serde_json::json!([]));
+
     for arguments in [
-        vec!["pinvou", "knowledge", "remote", "connections"],
-        vec![
-            "pinvou",
-            "knowledge",
-            "remote",
-            "probe",
-            "https://host:3210",
-        ],
         vec!["pinvou", "knowledge", "remote", "collections"],
         vec!["pinvou", "knowledge", "remote", "search", "papers", "query"],
     ] {
@@ -565,16 +908,68 @@ fn remote_and_host_surfaces_name_their_own_boundaries() {
         assert!(
             error
                 .to_string()
-                .starts_with("remote_knowledge_backend_unavailable"),
+                .contains("no remote knowledge connections configured"),
             "{arguments:?}: {error}"
         );
     }
-    let error = execute_error(&["pinvou", "knowledge", "host", "status"]);
-    assert_eq!(error.exit_code(), ExitCode::Failed);
-    assert!(
-        error
-            .to_string()
-            .starts_with("shared_knowledge_host_backend_unavailable"),
-        "{error}"
+}
+
+// ---- opt-in paths (network / display / windowless host) ----
+
+#[test]
+#[ignore = "opt-in: cargo test -p pinvou-cli --test knowledge_contract -- --ignored — \
+           boots the windowless product host (needs a display/xvfb); \
+           command: pinvou knowledge host status"]
+fn host_status_reports_the_shared_host_snapshot() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::new("host-status");
+    let status = run_json(&["pinvou", "knowledge", "host", "status"]);
+    assert_eq!(
+        status["endpoint"],
+        serde_json::json!("https://127.0.0.1:3210")
     );
+    assert!(status["supported"].is_boolean());
+    assert!(status["app_version"].is_string());
+}
+
+#[test]
+#[ignore = "opt-in: cargo test -p pinvou-cli --test knowledge_contract -- --ignored — \
+           boots the windowless product host (needs a display/xvfb) and dials the \
+           endpoint; command: pinvou knowledge remote probe <url>"]
+fn remote_probe_reports_a_dead_endpoint_as_a_failed_host_call() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::new("remote-probe-dead");
+    // The TLS-pinned identity handshake is a real network call now; a dead
+    // endpoint must surface as a failed command, not a crash.
+    let error = execute_error(&[
+        "pinvou",
+        "knowledge",
+        "remote",
+        "probe",
+        "https://127.0.0.1:9",
+    ]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(error.to_string().contains("remote probe"), "{error}");
+}
+
+#[test]
+#[ignore = "opt-in: needs a display (windowless host boot) plus real network; \
+            command: pinvou knowledge remote connections (configured server)"]
+fn remote_connections_probe_a_configured_server() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = TempHome::new("remote-configured");
+    let knowledge_dir = home.path().join("knowledge");
+    std::fs::create_dir_all(&knowledge_dir).unwrap();
+    // A configured-but-dead endpoint must surface as an offline connection
+    // status, not a crash (GUI `remote_kb_connections` semantics).
+    std::fs::write(
+        knowledge_dir.join("remote-connections.json"),
+        r#"{"version":3,"connections":[{"serverId":"srv-test","name":"lan","endpoint":"https://127.0.0.1:9","scope":"read","deviceId":"dev-test","tlsCa":"","legacyInsecureHttp":false}]}"#,
+    )
+    .unwrap();
+    let listed = run_json(&["pinvou", "knowledge", "remote", "connections"]);
+    let connections = listed["connections"].as_array().expect("connections array");
+    assert_eq!(connections.len(), 1);
+    assert_eq!(connections[0]["serverId"], serde_json::json!("srv-test"));
+    assert_eq!(connections[0]["online"], serde_json::json!(false));
 }

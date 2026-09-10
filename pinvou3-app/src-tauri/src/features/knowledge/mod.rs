@@ -593,6 +593,29 @@ impl KnowledgeService {
     pub fn status(&self) -> ScanState {
         self.scan_state.lock().clone()
     }
+
+    // ───────────────────── headless（CLI）读数入口 ─────────────────────
+    //
+    // 与下方 Tauri 命令（kb_stats / kb_type_counts / kb_search）语义完全一致，但
+    // 同步执行：spawn_db 的意义是把阻塞查询挪出 Tauri **主线程**（同步命令在主线程
+    // 跑，大库全表 COUNT 会冻死 UI），headless 调用方（pinvou-cli 一次性进程）不在
+    // async 运行时 / UI 主线程内，直查即可，无需也不应引入 runtime 依赖。
+
+    /// L0 索引概况（kb_stats 同语义）。
+    pub fn stats(&self) -> Result<Stats, String> {
+        self.store.stats().map_err(|e| e.to_string())
+    }
+
+    /// L0：按扩展名分类计数（kb_type_counts 同语义）。
+    pub fn type_counts(&self) -> Result<Vec<TypeCount>, String> {
+        self.store.type_counts().map_err(|e| e.to_string())
+    }
+
+    /// 秒搜（kb_search 同语义，含 NL 规则合并，见 [`merge_nl_rules`]）。
+    pub fn search(&self, query: SearchQueryDto) -> Result<Vec<FileHit>, String> {
+        let sq = merge_nl_rules(query.into());
+        self.store.search(&sq).map_err(|e| e.to_string())
+    }
 }
 
 /// 后台索引入口的补载实现已上收到 `KnowledgeService::
@@ -859,13 +882,10 @@ pub fn kb_embed_info(state: State<'_, KnowledgeService>) -> EmbedInfo {
     }
 }
 
-/// 秒搜。文本会先过 NL 规则解析（"上周的 pdf" → exts+时间过滤+残余文本）；
-/// 前端**显式**传入的结构化过滤优先于解析结果，不被覆盖。
-pub async fn kb_search(
-    state: State<'_, KnowledgeService>,
-    query: SearchQueryDto,
-) -> Result<Vec<FileHit>, String> {
-    let mut sq: SearchQuery = query.into();
+/// kb_search 的 NL 规则合并核心（GUI 命令与 headless [`KnowledgeService::search`]
+/// 共用，保证两端同语义）：文本先过 NL 规则解析（"上周的 pdf" → exts+时间过滤+
+/// 残余文本）；调用方**显式**传入的结构化过滤优先于解析结果，不被覆盖。
+fn merge_nl_rules(mut sq: SearchQuery) -> SearchQuery {
     if let Some(text) = sq.text.clone() {
         let parsed = query::parse(&text);
         sq.text = parsed.text; // 残余文本（已剥离时间/类型/大小词）
@@ -885,6 +905,16 @@ pub async fn kb_search(
             sq.max_size = parsed.max_size;
         }
     }
+    sq
+}
+
+/// 秒搜。文本会先过 NL 规则解析（"上周的 pdf" → exts+时间过滤+残余文本）；
+/// 前端**显式**传入的结构化过滤优先于解析结果，不被覆盖。
+pub async fn kb_search(
+    state: State<'_, KnowledgeService>,
+    query: SearchQueryDto,
+) -> Result<Vec<FileHit>, String> {
+    let sq = merge_nl_rules(query.into());
     let store = state.store.clone();
     spawn_db(move || store.search(&sq).map_err(|e| e.to_string())).await
 }
@@ -931,5 +961,76 @@ mod tests {
         let svc = service();
         svc.reload_embedder_if_import_needed_with(true, || Err("再次失败".into()));
         assert!(!svc.semantic_ready(), "失败后再次导入仍应重试补载");
+    }
+
+    /// headless 读数契约（stats / type_counts / search）：零态读数、入库后读数、
+    /// 检索（含 NL 规则合并 "上周的 pdf" → exts+mtime 过滤+残余文本剥离）与
+    /// kb_stats / kb_type_counts / kb_search 同语义；显式结构化过滤优先于解析结果。
+    #[test]
+    fn headless_stats_type_counts_and_search_match_gui_semantics() {
+        let svc = service();
+        assert_eq!(svc.stats().expect("zero-state stats"), Stats::default());
+        assert!(
+            svc.type_counts()
+                .expect("zero-state type counts")
+                .is_empty()
+        );
+
+        // L0 直写一条元数据（与 scanner 同一 upsert 通路），不起全盘扫描。
+        svc.store
+            .upsert_many(&[store::FileRecord {
+                path: "/tmp/docs/季度报告.pdf".into(),
+                name: "季度报告.pdf".into(),
+                ext: Some("pdf".into()),
+                size: 2048,
+                mtime: now(),
+                is_dir: false,
+            }])
+            .expect("seed one file record");
+
+        let stats = svc.stats().expect("stats after seed");
+        assert_eq!(stats.total_files, 1);
+        assert_eq!(stats.total_bytes, 2048);
+        assert_eq!(
+            svc.type_counts().expect("type counts after seed"),
+            vec![TypeCount {
+                ext: "pdf".into(),
+                count: 1
+            }]
+        );
+
+        // 显式结构化检索：text 走 FTS/LIKE，与 GUI 命令同一 store 通路。
+        let hits = svc
+            .search(SearchQueryDto {
+                text: Some("季度报告".into()),
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("structured search");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].ext.as_deref(), Some("pdf"));
+
+        // NL 规则合并："上周的 pdf" → exts=[pdf] + mtime_after≈7 天前 + 残余文本
+        // 剥离为空。若未合并（原样 FTS "上周的 pdf"）则查不到任何命中。
+        let hits = svc
+            .search(SearchQueryDto {
+                text: Some("上周的 pdf".into()),
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("nl-rule merged search");
+        assert_eq!(hits.len(), 1, "NL 合并后应命中刚入库的 pdf: {hits:?}");
+        assert_eq!(hits[0].name, "季度报告.pdf");
+
+        // 显式传入的 exts 优先于解析结果，不被覆盖（GUI 契约）。
+        let hits = svc
+            .search(SearchQueryDto {
+                text: Some("上周的 pdf".into()),
+                exts: vec!["txt".into()],
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("explicit ext wins over parsed");
+        assert!(hits.is_empty(), "显式 txt 过滤不应命中 pdf: {hits:?}");
     }
 }
