@@ -99,4 +99,3 @@ pub fn render(output: crate::OutputMode, human: String, value: &serde_json::Valu
         }),
     }
 }
-
