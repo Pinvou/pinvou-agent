@@ -1308,7 +1308,19 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             // clickState 从 1 递增：系统/应用据此识别双击与三击。
             let click_state = i64::from(i) + 1;
             self.post_mouse_event(down, cg_button, dest, click_state)?;
-            self.post_mouse_event(up, cg_button, dest, click_state)?;
+            // down 成功、up 失败（TCC 中途吊销、事件分配失败）会让物理按键
+            // 卡在按下状态，劫持用户的下一次物理点击（评审发现）——释放
+            // 失败重试一次，仍失败则上报"按键可能未释放"而不是静默返回。
+            if let Err(error) = self.post_mouse_event(up, cg_button, dest, click_state) {
+                sleep(Duration::from_millis(MULTI_CLICK_INTERVAL_MS));
+                self.post_mouse_event(up, cg_button, dest, click_state)
+                    .map_err(|retry| {
+                        ComputerUseError::failed(format!(
+                            "click release failed twice ({error}; {retry}); \
+                             the mouse button may still be pressed"
+                        ))
+                    })?;
+            }
             if i + 1 < rounds {
                 sleep(Duration::from_millis(MULTI_CLICK_INTERVAL_MS));
             }

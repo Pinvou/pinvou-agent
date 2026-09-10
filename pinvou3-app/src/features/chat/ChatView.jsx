@@ -818,7 +818,17 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         // grant 有 10 分钟空闲过期，但后端没有过期事件——横幅只靠
         // refreshStatus 与后端对账。停在同会话时周期性对账，避免授权
         // 已过期而「正在控制电脑」横幅长期失真（第三轮评审发现）。
+        // 最近已知 disabled 时跳过轮询（评审发现：此前对账循环在功能
+        // 关闭时也按应用全生命周期运行）；重新启用走 setEnabled，它直接
+        // 重读权威状态，不会漏掉状态翻转。
         const reconciler = setInterval(() => {
+          try {
+            const snapshot = bridge.state.get("computerUse");
+            const slice = snapshot && snapshot.computerUse;
+            if (slice && slice.enabled === false) return;
+          } catch {
+            /* state.get 不可用：保持轮询 */
+          }
           bridge.computerUse.refreshStatus(activeSessionId).catch(() => {});
         }, 30_000);
         return () => clearInterval(reconciler);

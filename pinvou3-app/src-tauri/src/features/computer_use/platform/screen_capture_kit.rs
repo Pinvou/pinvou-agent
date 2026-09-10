@@ -43,7 +43,7 @@ use super::super::types::ComputerUseError;
 /// CGWindowList 回退路径。
 const MIN_MACOS_VERSION: (isize, isize) = (15, 2);
 
-/// 单次截图完成回调的等待上限。远小于调用方的 150s 请求预算；超时按失败
+/// 单次截图完成回调的等待上限。远小于调用方的 190s 请求预算；超时按失败
 /// 处理（迟到的回调向已断开的通道发送，静默丢弃）。
 const CAPTURE_CALLBACK_TIMEOUT: Duration = Duration::from_secs(10);
 

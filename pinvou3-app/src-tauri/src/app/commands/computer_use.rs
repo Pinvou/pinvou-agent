@@ -57,7 +57,9 @@ pub fn computer_use_grant(
     Ok(())
 }
 
-/// 吊销本会话输入授权。
+/// 吊销本会话输入授权。应用内授权即时失效；同时触发后端关闭持久 OS 级
+/// 授权（Wayland portal 会话）——detached 线程执行，不阻塞本命令
+/// （评审发现：授权此前会活到进程退出，与"可随时停止"承诺不符）。
 #[tauri::command]
 pub fn computer_use_revoke(
     session_id: String,
@@ -65,13 +67,16 @@ pub fn computer_use_revoke(
 ) -> Result<(), String> {
     ensure_non_empty("session_id", &session_id)?;
     shared.revoke_session(&session_id);
+    shared.backends.release(&session_id);
     Ok(())
 }
 
-/// 紧急停止：置停止旗标并吊销全部会话授权。
+/// 紧急停止：置停止旗标并吊销全部会话授权，同时触发所有后端关闭持久
+/// OS 级授权（detached 线程，见 [`computer_use_revoke`]）。
 #[tauri::command]
 pub fn computer_use_stop(shared: State<'_, Arc<ComputerUseShared>>) {
     shared.stop_all();
+    shared.backends.release_all();
 }
 
 /// 用户在前端确认一个被拦截的 T3 后果性动作：铸造单次批准令牌。
@@ -137,6 +142,8 @@ pub async fn computer_use_set_enabled(
         shared.reset_stop();
     } else {
         shared.revoke_all_sessions();
+        // 总开关关闭：所有后端的持久 OS 级授权一并终止（detached 线程）。
+        shared.backends.release_all();
     }
     pool.refresh_disallowed_tools().await;
     Ok(())

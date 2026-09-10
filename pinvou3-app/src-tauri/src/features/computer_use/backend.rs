@@ -7,6 +7,7 @@
 //!
 //! 线程通过 `BackendHandle` 全部析构时的 Drop 发送 `Shutdown` 并 join 退出。
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
@@ -73,6 +74,16 @@ pub trait ComputerUseBackend: Send {
             "this backend cannot query the keyboard-focused element",
         ))
     }
+    /// 用户撤销会话授权 / 全局停止 / 总开关关闭时调用：关闭该后端持有的
+    /// **持久性 OS 级授权**（评审发现：Wayland RemoteDesktop 的 portal 会话
+    /// 是系统级输入授权，revoke/stop 只清应用内状态会让它活到进程退出，
+    /// 与"可随时停止"的用户可见承诺不符）。X11 XTEST、Windows SendInput、
+    /// macOS CGEvent 无持久授权，默认 no-op。调用后后端必须保持可用：
+    /// 下次动作按既有路径懒重建授权（需要时用户会看到系统授权对话框）。
+    fn release_os_grant(&mut self) -> Result<(), ComputerUseError> {
+        let _ = &mut *self;
+        Ok(())
+    }
 }
 
 enum BackendRequestKind {
@@ -119,6 +130,7 @@ enum BackendRequestKind {
         y: i32,
     },
     FocusedElement,
+    ReleaseOsGrant,
     Shutdown,
 }
 
@@ -208,6 +220,10 @@ fn dispatch(
             Ok(element) => BackendReply::Element(element),
             Err(error) => return Some(Err(error)),
         },
+        BackendRequestKind::ReleaseOsGrant => match backend.release_os_grant() {
+            Ok(()) => BackendReply::Unit,
+            Err(error) => return Some(Err(error)),
+        },
         BackendRequestKind::Shutdown => return None,
     };
     Some(Ok(result))
@@ -265,7 +281,7 @@ enum WorkerState {
 struct BackendInner {
     state: Mutex<WorkerState>,
     /// 在途请求旗标（每 handle 一枚，克隆共享）。请求通道无界，worker 卡死时
-    /// 每个新调用都会占一个 blocking 线程等满 150s（评审发现）；compare_exchange
+    /// 每个新调用都会占一个 blocking 线程等满 190s（评审发现）；compare_exchange
     /// 获取/释放把并发在途请求钉在 1，超出的调用立即失败、不再排队占线程。
     in_flight: AtomicBool,
 }
@@ -310,7 +326,7 @@ impl BackendInner {
                         cleanup = Some((tx, thread));
                         Err(error)
                     }
-                    // 超时/启动应答通道断开：工厂 >150s 未返回，或线程已 panic。
+                    // 超时/启动应答通道断开：工厂 >190s 未返回，或线程已 panic。
                     Err(_) => {
                         *state = WorkerState::StartFailed(
                             "computer use backend thread died during startup".to_string(),
@@ -543,6 +559,65 @@ impl BackendHandle {
             BackendReply::Element(element) => Ok(element),
             _ => Err(ComputerUseError::failed("unexpected backend reply")),
         }
+    }
+
+    /// 关闭该会话后端持有的持久 OS 级授权（见 trait 同名方法）。阻塞直到
+    /// worker 应答（可能排在在行动作之后）；UI 调用方应经
+    /// [`BackendRegistry`] 在 detached 线程里触发，不阻塞事件循环。
+    pub fn release_os_grant(&self) -> Result<(), ComputerUseError> {
+        self.unit(BackendRequestKind::ReleaseOsGrant)
+    }
+}
+
+/// 会话 → 后端句柄登记表。工具构造时登记、析构时注销；revoke/stop/总开关
+/// 关闭时由命令层触发对应会话的 `release_os_grant`（评审发现：用户"停止
+/// 控制"后，OS 级 portal 授权必须随之终止而不是活到进程退出）。
+#[derive(Default)]
+pub struct BackendRegistry {
+    handles: Mutex<HashMap<String, BackendHandle>>,
+}
+
+impl BackendRegistry {
+    /// 工具构造时登记会话句柄（同会话重复登记以最新为准）。
+    pub fn insert(&self, session_id: &str, handle: BackendHandle) {
+        self.handles.lock().insert(session_id.to_string(), handle);
+    }
+
+    /// 工具析构时注销，避免句柄把 worker 线程吊在登记表里。
+    pub fn remove(&self, session_id: &str) {
+        self.handles.lock().remove(session_id);
+    }
+
+    /// 在 detached 线程里触发会话后端的 `release_os_grant`：worker 可能正
+    /// 忙（release 排在在行动作之后），不能阻塞 UI；结果只记日志——授权
+    /// 泄漏的最坏情形回到"活到进程退出"，不产生新的故障面。
+    pub fn release(&self, session_id: &str) {
+        let handle = self.handles.lock().get(session_id).cloned();
+        let Some(handle) = handle else {
+            return;
+        };
+        std::thread::spawn(move || {
+            if let Err(error) = handle.release_os_grant() {
+                eprintln!("[computer_use] release_os_grant failed: {error}");
+            }
+        });
+    }
+
+    /// 对所有登记会话触发 `release_os_grant`（stop / 总开关关闭）。
+    pub fn release_all(&self) {
+        let handles: Vec<BackendHandle> = self.handles.lock().values().cloned().collect();
+        for handle in handles {
+            std::thread::spawn(move || {
+                if let Err(error) = handle.release_os_grant() {
+                    eprintln!("[computer_use] release_os_grant failed: {error}");
+                }
+            });
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains(&self, session_id: &str) -> bool {
+        self.handles.lock().contains_key(session_id)
     }
 }
 
@@ -782,7 +857,7 @@ mod tests {
     }
 
     /// 评审修复回归：请求通道无界，worker 卡死时每个新调用都会占一个
-    /// blocking 线程等满 150s——in-flight 旗标把并发在途请求钉在 1。
+    /// blocking 线程等满 190s——in-flight 旗标把并发在途请求钉在 1。
     #[test]
     fn concurrent_requests_are_rejected_while_one_is_in_flight() {
         let handle = BackendHandle::lazy(|| {

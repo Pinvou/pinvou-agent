@@ -80,10 +80,38 @@
 
     // Only the active session owns the public slice: the banner/dialogs in the
     // chat UI describe what the user is looking at, never a background session.
+    // A patch that changes nothing publishes nothing (review finding): the 30s
+    // reconciler re-reads authoritative status for the app's lifetime, and
+    // assigning a fresh slice object + notifying on every tick re-rendered the
+    // whole UI every 30s even when nothing changed.
     function publish(sessionId, patch) {
       if (!sessionId || sessionId !== state.activeSessionId) return;
-      state.computerUse = Object.assign({}, state.computerUse, patch);
+      const current = state.computerUse;
+      if (current) {
+        const changed = Object.keys(patch).some((key) => {
+          const before = current[key];
+          const after = patch[key];
+          if (key === "grantRequest" || key === "confirmRequest") return !sameRequest(before, after);
+          return !Object.is(before, after);
+        });
+        if (!changed) return;
+      }
+      state.computerUse = Object.assign({}, current, patch);
       notify();
+    }
+
+    // Request objects are re-created on every refreshStatus from the per-session
+    // pending map; compare by value so an unchanged dialog does not count as a
+    // change.
+    function sameRequest(a, b) {
+      if (a === b) return true;
+      if (!a || !b) return false;
+      return (
+        a.sessionId === b.sessionId &&
+        a.confirmId === b.confirmId &&
+        a.action === b.action &&
+        a.element === b.element
+      );
     }
 
     function getStatus(sessionId) {
@@ -192,15 +220,29 @@
         publish(clearPendingConfirm(), { confirmRequest: null });
         throw error;
       }
-      const sid = clearPendingConfirm();
+      // Clear only the dialog that was confirmed (review finding): a new
+      // request landing during the IPC round-trip keeps its own dialog and
+      // pending entry instead of being wiped by this decision.
+      const request = state.computerUse && state.computerUse.confirmRequest;
+      const sid = (request && request.sessionId) || state.activeSessionId;
       clearDenial(sid);
-      publish(sid, { confirmRequest: null });
+      if (!request || String(request.confirmId) === String(confirmId)) {
+        const pending = pendingBySession[sid];
+        if (pending) pending.confirm = null;
+        publish(sid, { confirmRequest: null });
+      }
     }
 
     // Explicit backend deny: clears the pending confirmation and records the
     // decision, so the model's retry gets a definite "user denied" instead of
     // waiting out the backend TTL (review finding).
     async function deny(confirmId) {
+      // Attribute the denial to the session the user is actually looking at,
+      // captured BEFORE the IPC round-trip (review finding): a new confirm
+      // request landing mid-flight must not be wiped, and its session must
+      // not inherit a cooldown armed by a decision about another request.
+      const request = state.computerUse && state.computerUse.confirmRequest;
+      const sid = (request && request.sessionId) || state.activeSessionId;
       try {
         await invoke("computer_use_deny", { confirmId });
       } catch (error) {
@@ -208,11 +250,14 @@
         publish(clearPendingConfirm(), { confirmRequest: null });
         throw error;
       }
-      const request = state.computerUse && state.computerUse.confirmRequest;
-      const sid = (request && request.sessionId) || state.activeSessionId;
       markDenied(sid);
-      clearPendingConfirm();
-      publish(sid, { confirmRequest: null });
+      // Same targeted clear as confirm(): only the denied dialog goes away.
+      const current = state.computerUse && state.computerUse.confirmRequest;
+      if (!current || String(current.confirmId) === String(confirmId)) {
+        const pending = pendingBySession[sid];
+        if (pending) pending.confirm = null;
+        publish(sid, { confirmRequest: null });
+      }
     }
 
     // Kept for compatibility: dismisses locally without telling the backend
