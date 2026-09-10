@@ -4,6 +4,7 @@ import { COMPOSER_ICON_BUTTON_CLASS } from '../chat/composer-controls.jsx';
 import { VoiceAsrPopover } from './VoiceAsrPopover.jsx';
 import { VoiceNoticeBar, VoiceReadyNotice } from './VoiceNoticeBar.jsx';
 import { VoiceRecordingPill } from './VoiceRecordingPill.jsx';
+import { useVoicePillPresence } from './useVoicePillPresence.js';
 import {
   isVoiceActive,
   isVoiceRecording,
@@ -13,14 +14,21 @@ import {
 } from './voice-ui-policy.mjs';
 
 function VoiceComposerPillLayer({ voiceInput, voiceMode, copy, onCancel, onConfirm }) {
-  if (!shouldShowVoicePill(voiceInput)) return null;
+  const shouldShow = shouldShowVoicePill(voiceInput);
+  const presence = useVoicePillPresence(shouldShow, voiceInput);
+  if (!presence.mounted) return null;
+  // During the exit animation the status has already left the active set;
+  // render the frozen last-active input so the fade-out shows what was on
+  // screen before completion rather than a terminal status.
+  const shown = shouldShow ? voiceInput : (presence.snapshot || voiceInput);
   return (
     <div className="pointer-events-none absolute inset-x-0 top-1/2 z-[3] flex -translate-y-1/2 justify-center px-4">
       <VoiceRecordingPill
-        status={voiceInput.status}
+        status={shown.status}
         mode={voiceMode}
-        message={voiceInput.message}
+        message={shown.message}
         copy={copy}
+        closing={presence.closing}
         onCancel={onCancel}
         onConfirm={onConfirm}
       />
