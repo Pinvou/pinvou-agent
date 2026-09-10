@@ -524,8 +524,9 @@ mod tests {
         );
     }
 
-    /// 蜂群系统提示必须逐字注入，顺序固定为 swarm prompt → reminder → 用户
-    /// 内容；蜂群关闭时不得出现。
+    /// The swarm system prompt must be injected verbatim, in the fixed order
+    /// swarm prompt → reminder → user content; it must be absent when swarm
+    /// is off.
     #[test]
     fn swarm_prompt_is_injected_verbatim_before_reminder() {
         assert_eq!(
