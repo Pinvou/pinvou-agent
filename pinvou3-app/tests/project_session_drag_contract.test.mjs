@@ -34,7 +34,10 @@ test('drag MIME lives in exactly one shared definition', () => {
   assert.match(GROUPING, /export \{[^}]*PROJECT_SESSION_DRAG_TYPE/, 'the shared type must be exported');
   assert.ok(!HEADER.includes(`'${MIME}'`), 'consumer must import the shared type, not re-declare the literal');
   assert.ok(!NAV.includes(`'${MIME}'`), 'producer must import the shared type, not hardcode the literal');
-  assert.match(HEADER, /import \{ PROJECT_SESSION_DRAG_TYPE \} from '\.\/projectGrouping\.js';/);
+  // The consumer may import the shared type alongside other symbols from the
+  // same module (ProjectGroupHeader also pulls the badge-cap helper); the
+  // invariant is "imported from the shared definition", not the import shape.
+  assert.match(HEADER, /import \{[^}]*PROJECT_SESSION_DRAG_TYPE[^}]*\} from '\.\/projectGrouping\.js';/);
   assert.match(NAV, /import \{ PROJECT_SESSION_DRAG_TYPE \} from '\.\.\/\.\.\/features\/projects\/projectGrouping\.js';/);
 });
 
