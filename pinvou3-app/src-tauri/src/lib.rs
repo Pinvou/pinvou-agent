@@ -1003,9 +1003,9 @@ pub fn run() {
             //      .json / disabled_skills.json → 包 id × SessionMode 单一禁用集)
             //      与「全新 vs 升级」判定冻结已在 setup 钩子顶部完成(必须早于
             //      bridge boot 的首启自写,见 disabled_bundles_migration 标记),
-            //      此处为幂等重读;
-            //   2. 退役进程级全局 DISABLED_SKILLS(过滤职责移交组合目录,组合目录
-            //      空 → 整个 `## Skills` 块不渲染,路径泄露面随之封闭)。
+            //      此处为幂等重读。
+            // （进程级全局 DISABLED_SKILLS 的退役已在 main 完成，组合目录空 →
+            // 整个 `## Skills` 块不渲染,路径泄露面随之封闭。）
             // 组合目录的物化在 engine spawn 时按会话进行(build_engine_config 注入
             // skills_dir 指向 ~/.pinvou3/sessions/<sid>/skills/)。
             startup::mark("disabled_skills:start");
