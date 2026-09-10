@@ -3,14 +3,36 @@
 // container owns picking and the two-phase confirmExisting handshake (first
 // attempt without confirmation, backend rejects when the original folder still
 // exists, then this dialog escalates to the strong warning).
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { AlertTriangle, RefreshCw, X } from '../../components/icons.jsx';
 
-const RebindFolderDialog = ({ from, to, warnExisting, t, busy, onCancel, onConfirm }) => {
+const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, t, busy, onCancel, onConfirm }) => {
+  const dialogRef = useRef(null);
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key === 'Escape' && !busy) onCancel();
+      if (e.key === 'Escape' && !busy) {
+        onCancel();
+        return;
+      }
+      if (e.key === 'Tab' && dialogRef.current) {
+        // Minimal focus trap (same idiom as MoveToProjectDialog, #449 review):
+        // cycle Tab within the dialog instead of letting focus fall through to
+        // the page behind the overlay — where Enter would re-trigger the badge.
+        const focusables = dialogRef.current.querySelectorAll(
+          'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        );
+        if (!focusables.length) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -28,6 +50,7 @@ const RebindFolderDialog = ({ from, to, warnExisting, t, busy, onCancel, onConfi
     >
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: dialog body stops bubbling so backdrop close is not triggered accidentally; not interactive itself */}
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={t.uiProjects.rebindTitle}
@@ -73,6 +96,8 @@ const RebindFolderDialog = ({ from, to, warnExisting, t, busy, onCancel, onConfi
         <div className="px-4 pb-4 pt-1 flex gap-2">
           <button
             type="button"
+            // biome-ignore lint/a11y/noAutofocus: modal opens for a single purpose; focus belongs on the primary action immediately (same idiom as MoveToProjectDialog)
+            autoFocus
             disabled={busy}
             onClick={() => onConfirm(!!warnExisting)}
             className="flex-1 h-10 rounded-full bg-[#0B57D0] text-white text-[14px] font-medium hover:bg-[#0A4CB8] disabled:opacity-50"
@@ -88,6 +113,18 @@ const RebindFolderDialog = ({ from, to, warnExisting, t, busy, onCancel, onConfi
             {t.cpCancel}
           </button>
         </div>
+        {/* 失败内联呈现(评审 #463 M7):toast portal 层级(z-120)在本遮罩
+            (z-200 + backdrop blur)之下,失败时对话框不关,toast 完全不可见。
+            文案是后端错误原文(后端已按类型化标记/中文详情组织),非 UI copy,
+            不经 i18n 键。 */}
+        {errorMessage && (
+          <div className="px-4 pb-4 -mt-1">
+            <div className="flex items-start gap-2 rounded-2xl bg-[#FCE8E6] dark:bg-[#3C2A29] px-3 py-2 text-[12px] text-[#C5221F] dark:text-[#F28B82]" data-testid="rebind-error">
+              <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+              <span className="break-all">{errorMessage}</span>
+            </div>
+          </div>
+        )}
       </div>
     </div>,
     document.body,
