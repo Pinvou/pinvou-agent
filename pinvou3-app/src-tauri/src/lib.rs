@@ -1601,25 +1601,48 @@ pub fn run() {
 
 #[cfg(test)]
 mod startup_order_contract {
-    /// 顺序钉住（评审 #455 非阻塞 3）：disabled_bundles 迁移冻结（
-    /// `disabled_bundles_migration` mark，setup 钩子顶部）必须早于首个首启
-    /// 自写痕迹（SessionStore boot 创建 sessions/ 目录项）。`ff017a55` 修的
-    /// 正是这个顺序——语句顺序本身无法在模块内测出，这里用 startup 的
-    /// 顺序轨迹把「迁移 mark 先于 session_store_boot mark」固化为契约。
+    /// 顺序钉住（评审 #455 非阻塞 3，三轮改为源码位置断言）：disabled_bundles
+    /// 迁移读取（冻结「全新 vs 升级」判定）必须在三个宿主的启动钩里早于首个
+    /// 首启自写痕迹（SessionStore boot 创建 sessions/ 目录项、bridge boot 补
+    /// 写默认 settings.json）。语句顺序本身无法在模块内测出；自建 mark 轨迹的
+    /// 断言自证无效（重排真实 setup 钩子不会失败），因此这里用 `include_str!`
+    /// 直接读取三处宿主源码，钉死迁移读取调用点的**文本位置**早于 boot 调用点。
+    fn assert_migration_read_precedes(source: &str, earlier: &str, later: &str, file: &str) {
+        let pos_earlier = source
+            .find(earlier)
+            .unwrap_or_else(|| panic!("{file} 缺迁移读取调用点: {earlier}"));
+        let pos_later = source
+            .find(later)
+            .unwrap_or_else(|| panic!("{file} 缺首启自写调用点: {later}"));
+        assert!(
+            pos_earlier < pos_later,
+            "{file}: 迁移读取（{earlier}）必须早于首启自写（{later}）"
+        );
+    }
+
     #[test]
-    fn disabled_bundles_migration_mark_precedes_first_boot_writes() {
-        crate::platform::startup::reset_mark_order_for_test();
-        // 复刻 lib.rs setup 钩子顶部（此处必须与其保持同序，见 setup 注释）。
-        crate::platform::startup::mark("disabled_bundles_migration:done");
-        // 首个首启自写：SessionStore boot（真实调用方在 setup 钩子后段）。
-        crate::platform::startup::mark("session_store_boot:start");
-        assert_eq!(
-            crate::platform::startup::mark_order_is_before(
-                "disabled_bundles_migration:done",
-                "session_store_boot:start"
-            ),
-            Some(true),
-            "disabled_bundles 迁移冻结必须早于 SessionStore boot 的首启自写"
+    fn disabled_bundles_migration_read_precedes_first_boot_writes() {
+        // GUI 宿主：setup 钩顶部迁移读取早于 SessionStore boot。
+        assert_migration_read_precedes(
+            include_str!("lib.rs"),
+            "skill_materialization::load_disabled_skills()",
+            "SessionStore::boot_for_process_startup()",
+            "lib.rs",
+        );
+        // 无窗宿主（agentic/headless）：同序冻结早于 SessionStore boot。
+        assert_migration_read_precedes(
+            include_str!("features/assistant/product_runtime/headless_bridge.rs"),
+            "skill_materialization::load_disabled_skills()",
+            "SessionStore::boot()",
+            "headless_bridge.rs",
+        );
+        // dump_system_prompt 工具：同序冻结早于 bridge.boot()（ensure_dirs /
+        // 默认 settings.json 首启自写）。
+        assert_migration_read_precedes(
+            include_str!("bin/dump_system_prompt.rs"),
+            "load_disabled_bundles()",
+            "Pinvou3Bridge::boot()",
+            "dump_system_prompt.rs",
         );
     }
 }
