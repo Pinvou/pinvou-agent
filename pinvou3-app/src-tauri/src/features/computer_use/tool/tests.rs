@@ -14,6 +14,12 @@ struct MockState {
     element: Option<ElementInfo>,
     /// 置位时 element_at_point 返回 Err（a11y 故障注入）。
     element_error: bool,
+    /// 焦点元素（focused_element 的返回值；None = 明确无焦点）。
+    focused: Option<ElementInfo>,
+    /// 置位时 focused_element 返回 Err（焦点查询失败/平台不支持的故障注入）。
+    focused_error: bool,
+    /// 截图捕获的显示器原点（输入坐标空间；默认 (0,0) 即恒等映射）。
+    capture_origin: (i32, i32),
     /// 置位时 cursor_position 返回 Err（光标未知，如 Wayland 首次 move 前）。
     cursor_error: bool,
     /// 置位时 input 能力位为 false（默认具备输入能力）。
@@ -39,6 +45,7 @@ impl ComputerUseBackend for MockBackend {
     }
 
     fn capture(&mut self) -> Result<Capture, ComputerUseError> {
+        let state = self.state.lock();
         let mut rgba = vec![0u8; 16 * 16 * 4];
         for (i, byte) in rgba.iter_mut().enumerate() {
             *byte = (i % 253) as u8;
@@ -47,8 +54,8 @@ impl ComputerUseBackend for MockBackend {
             rgba,
             width: 16,
             height: 16,
-            origin_x: 0,
-            origin_y: 0,
+            origin_x: state.capture_origin.0,
+            origin_y: state.capture_origin.1,
             input_scale_x: 1.0,
             input_scale_y: 1.0,
         })
@@ -130,6 +137,17 @@ impl ComputerUseBackend for MockBackend {
             && y < element.y + element.height;
         Ok(hit.then(|| element.clone()))
     }
+
+    fn focused_element(&mut self) -> Result<Option<ElementInfo>, ComputerUseError> {
+        let state = self.state.lock();
+        if state.focused_error {
+            return Err(ComputerUseError::unsupported(
+                "focused_element",
+                "mock: focus query unavailable",
+            ));
+        }
+        Ok(state.focused.clone())
+    }
 }
 
 struct RecordingSink(Arc<StdMutex<Vec<(String, Value)>>>);
@@ -148,6 +166,8 @@ struct TestFixture {
     mock: Arc<Mutex<MockState>>,
     events: Arc<StdMutex<Vec<(String, Value)>>>,
     workspace: PathBuf,
+    /// PINVOU3_HOME 指向的临时根（审计 JSONL 落在 `<home>/computer-use/`）。
+    home: PathBuf,
     _env_guard: std::sync::MutexGuard<'static, ()>,
 }
 
@@ -204,6 +224,7 @@ fn fixture() -> (TestFixture, EnvRestore) {
             mock,
             events,
             workspace,
+            home,
             _env_guard: env_lock,
         },
         EnvRestore(previous),
@@ -242,6 +263,11 @@ fn rejects_bad_param_combinations() {
             json!({"action": "scroll", "direction": "north", "amount": 1}),
         ),
         ("scroll", json!({"action": "scroll", "direction": "down"})),
+        // 评审修复回归：scroll amount 下限 1，0 格显式拒绝。
+        (
+            "scroll",
+            json!({"action": "scroll", "direction": "down", "amount": 0}),
+        ),
         ("wait", json!({"action": "wait"})),
         (
             "left_click_drag",
@@ -249,6 +275,13 @@ fn rejects_bad_param_combinations() {
         ),
         ("key", json!({"action": "key", "text": "ctrl+shift"})),
         ("key", json!({"action": "key", "text": "ctrl+nosuchkey"})),
+        // 评审修复回归：和弦 token 上限与控制字符拒绝。
+        ("key", json!({"action": "key", "text": "a+b+c+d+e"})),
+        (
+            "key",
+            json!({"action": "key", "text": "ctrl+alt+shift+meta+c"}),
+        ),
+        ("key", json!({"action": "key", "text": "\u{1}"})),
         ("screenshot", json!({"action": "screenshot", "text": "x"})),
         (
             "hold_key",
@@ -260,6 +293,25 @@ fn rejects_bad_param_combinations() {
     for (name, input) in cases {
         assert!(parse_action(input).is_err(), "{name} should reject {input}");
     }
+}
+
+/// 评审修复回归：type 文本上限 10_000 字符、拒绝 NUL。
+#[test]
+fn type_rejects_oversized_text_and_nul() {
+    let ok = "a".repeat(MAX_TYPE_TEXT_CHARS);
+    assert!(parse_action(&json!({"action": "type", "text": ok})).is_ok());
+    let too_long = "a".repeat(MAX_TYPE_TEXT_CHARS + 1);
+    let err = parse_action(&json!({"action": "type", "text": too_long}))
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(err.contains("too long"), "{err}");
+    assert!(err.contains("10000"), "{err}");
+    let err = parse_action(&json!({"action": "type", "text": "bad\0nul"}))
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(err.contains("NUL"), "{err}");
 }
 
 #[test]
@@ -511,7 +563,8 @@ async fn t3_denylist_blocks_click_until_user_confirms() {
 async fn secure_field_blocks_typing() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
-    fixture.mock.lock().element = Some(ElementInfo {
+    // 键盘筛查查**焦点元素**：焦点在密码框即拦截，与光标位置无关。
+    fixture.mock.lock().focused = Some(ElementInfo {
         role: "AXSecureTextField".to_string(),
         name: "Password".to_string(),
         x: 0,
@@ -642,12 +695,63 @@ async fn unscreenable_a11y_failure_requires_confirmation() {
     assert!(fixture.mock.lock().clicked.is_empty());
 }
 
-/// 光标未知(如 Wayland 首次 move 前)时 type/key 也必须失败关闭。
+/// 评审修复回归（最重）：键盘输入落在**焦点元素**而非光标处——焦点在密码
+/// 框、光标在空白处时，type 旧实现按光标筛查（查不到元素）直接放行注入。
 #[tokio::test]
-async fn unknown_cursor_fails_closed_for_typing() {
+async fn focus_on_password_with_cursor_elsewhere_requires_confirmation() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
-    fixture.mock.lock().cursor_error = true;
+    // 焦点在密码框；光标 (7,9) 处无任何元素（element 只用于证明光标处空白）。
+    fixture.mock.lock().focused = Some(ElementInfo {
+        role: "AXSecureTextField".to_string(),
+        name: "Password".to_string(),
+        x: 100,
+        y: 100,
+        width: 5,
+        height: 5,
+        secure: true,
+    });
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "type", "text": "hunter2"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("NOT executed"), "{text}");
+    assert!(text.contains("password/secure field"), "{text}");
+    assert!(fixture.mock.lock().typed.is_empty(), "must not type");
+
+    // key 和弦同样按焦点筛查：焦点在后果性控件上时要求确认。
+    fixture.mock.lock().focused = Some(ElementInfo {
+        role: "button".to_string(),
+        name: "Send payment".to_string(),
+        x: 100,
+        y: 100,
+        width: 5,
+        height: 5,
+        secure: false,
+    });
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "key", "text": "ctrl+s"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("NOT executed"), "{text}");
+    assert!(text.contains("Send payment"), "{text}");
+    assert!(fixture.mock.lock().chords.is_empty(), "must not press");
+}
+
+/// 评审修复回归：焦点查询失败时键盘动作必须失败关闭（Unscreenable → 确认）。
+#[tokio::test]
+async fn focus_query_failure_fails_closed_for_typing() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().focused_error = true;
     let result = fixture
         .tool
         .execute(
@@ -657,7 +761,32 @@ async fn unknown_cursor_fails_closed_for_typing() {
         .await;
     let text = result.ok().map(|r| r.content).unwrap_or_default();
     assert!(text.contains("NOT executed"), "{text}");
+    assert!(text.contains("unverifiable target"), "{text}");
     assert!(fixture.mock.lock().typed.is_empty());
+}
+
+/// 明确无焦点元素 = 无处键入，type 放行（Ok(None) ≠ Err，不误伤）。
+#[tokio::test]
+async fn no_focused_element_allows_typing() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().focused = None;
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "type", "text": "hello"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => panic!("execute failed: {e}"),
+    };
+    assert!(result.success, "{}", result.content);
+    assert_eq!(
+        fixture.mock.lock().typed.last().map(String::as_str),
+        Some("hello")
+    );
 }
 
 /// drag 的落点(而不只是光标)必须被筛查:起点无元素、终点命中 denylist。
@@ -864,4 +993,338 @@ fn minimal_input(action: &str) -> Value {
         "hold_key" => json!({"action": "hold_key", "text": "a", "ms": 10}),
         other => json!({"action": other}),
     }
+}
+
+// ---------------------------------------------------------------------------
+// 评审修复回归:确认摘要含预览+指纹 / 令牌绑定内容而非长度
+// ---------------------------------------------------------------------------
+
+/// 评审修复回归：同长度不同文本不能换用同一确认令牌（旧摘要只有
+/// `type N chars`，令牌盲绑字符数）。
+#[tokio::test]
+async fn type_confirm_token_is_bound_to_text_not_length() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    // 焦点在密码框：两次同长度（8 字符）的 type 都会被拦。
+    fixture.mock.lock().focused = Some(ElementInfo {
+        role: "AXSecureTextField".to_string(),
+        name: "Password".to_string(),
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: true,
+    });
+    let first = " hunter2".to_string();
+    let second = "wrongpwd".to_string();
+    assert_eq!(
+        first.chars().count(),
+        second.chars().count(),
+        "预置条件：同长度"
+    );
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "type", "text": first}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        result
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("NOT executed")
+    );
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    let confirm_id = events
+        .iter()
+        .rev()
+        .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+        .map(|(_, p)| p["confirm_id"].as_str().unwrap_or_default().to_string())
+        .expect("confirm event");
+    fixture.shared.mint_confirmation(&confirm_id);
+
+    // 拿「 hunter2」的令牌去键入「wrongpwd」（同长度）——必须被拒。
+    let replay = fixture
+        .tool
+        .execute(
+            json!({"action": "type", "text": second, "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = replay.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("invalid, expired, or was already used"),
+        "same-length text must not consume the token: {text}"
+    );
+    assert!(fixture.mock.lock().typed.is_empty());
+}
+
+/// 评审修复回归：确认摘要在「N chars」之外必须含安全预览（控制字符转义、
+/// 超长省略）与全文指纹，向用户展示即将键入的内容（知情批准）。
+#[tokio::test]
+async fn type_summary_shows_preview_and_fingerprint() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().focused = Some(ElementInfo {
+        role: "AXSecureTextField".to_string(),
+        name: "Password".to_string(),
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: true,
+    });
+    // 20 个字符（> 预览上限 12），第 6 个字符是控制字符 BEL。
+    let text = "hello\u{7}world123456789".to_string();
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "type", "text": text}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        result
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("NOT executed")
+    );
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    let summary = events
+        .iter()
+        .rev()
+        .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+        .map(|(_, p)| p["action"].as_str().unwrap_or_default().to_string());
+    let summary = summary.expect("confirm event carries the action summary");
+
+    assert!(summary.starts_with("type 20 chars:"), "{summary}");
+    // 预览 = 前 12 字符（"hello<BEL>world123"）+ 省略号；控制字符转义为 \uXXXX。
+    assert!(
+        summary.contains(r"\u0007"),
+        "control char must be escaped: {summary}"
+    );
+    assert!(
+        !summary.contains('\u{7}'),
+        "raw control char must not appear: {summary:?}"
+    );
+    assert!(
+        summary.contains('…'),
+        "truncated preview must end with ellipsis: {summary}"
+    );
+    assert!(summary.contains("\"hello"), "{summary}");
+    // 截断之后的内容不进摘要。
+    assert!(!summary.contains("456789"), "{summary}");
+    // 指纹 = 全文 SHA-256 前 8 hex。
+    let expected_hash = super::super::audit::sha256_hex(text.as_bytes());
+    let expected_fingerprint = &expected_hash[..8];
+    assert!(
+        summary.contains(&format!("[{expected_fingerprint}]")),
+        "fingerprint {expected_fingerprint} must be in summary: {summary}"
+    );
+    // 不同文本 → 不同指纹（同长度令牌不可换用的机制保证）。
+    let other = "hello\u{7}world87654321".to_string();
+    let other_hash = super::super::audit::sha256_hex(other.as_bytes());
+    let other_fingerprint = &other_hash[..8];
+    assert_ne!(expected_fingerprint, other_fingerprint);
+}
+
+// ---------------------------------------------------------------------------
+// 评审修复回归:审计内容（单字符 key 走 HMAC；含修饰键的和弦保留明文）
+// ---------------------------------------------------------------------------
+
+/// 评审修复回归：`key "p"` 逐字符泄漏密码——单 Char 无修饰键的和弦按
+/// 键入文本审计（长度 + salt || text 的 HMAC），明文不进 JSONL；
+/// `ctrl+s` 等快捷键和弦保留明文。
+#[tokio::test]
+async fn single_char_key_chord_is_audited_as_typed_text() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    for chord in ["p", "ctrl+s"] {
+        let result = fixture
+            .tool
+            .execute(
+                json!({"action": "key", "text": chord}),
+                &context(&fixture.workspace),
+            )
+            .await;
+        let result = match result {
+            Ok(r) => r,
+            Err(e) => panic!("execute failed for {chord}: {e}"),
+        };
+        assert!(result.success, "{chord}: {}", result.content);
+    }
+
+    let audit_path = fixture.home.join("computer-use").join("audit-s-test.jsonl");
+    let raw = std::fs::read_to_string(&audit_path).expect("audit jsonl exists");
+    let records: Vec<serde_json::Value> = raw
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_str(line).expect("valid jsonl line"))
+        .collect();
+    let begins: Vec<&serde_json::Value> = records
+        .iter()
+        .filter(|r| r["action"] == "key" && r["phase"] == "begin")
+        .collect();
+    assert_eq!(begins.len(), 2, "two key calls: {records:?}");
+
+    let single = begins
+        .iter()
+        .copied()
+        .find(|r| r["target"] == "keyboard focus")
+        .expect("single-char chord audited as typed text");
+    assert_eq!(single["text_len"], 1);
+    // 与 type 同策略：盐 + HMAC 齐备。
+    assert_eq!(single["salt"].as_str().unwrap_or_default().len(), 32);
+    assert_eq!(
+        single["text_hmac_sha256"]
+            .as_str()
+            .unwrap_or_default()
+            .len(),
+        64
+    );
+    // 修饰键和弦保留明文（快捷键无字典风险）。
+    let chorded = begins
+        .iter()
+        .copied()
+        .find(|r| r["target"] == "keys: ctrl+s")
+        .expect("modifier chord keeps plaintext target");
+    assert!(chorded["text_len"].is_null());
+    assert!(chorded["text_hmac_sha256"].is_null());
+    // 单字符明文绝不能以 keys: 形式出现。
+    assert!(!raw.contains("keys: p"));
+}
+
+// ---------------------------------------------------------------------------
+// 评审修复回归:审计 fail-closed / 混合 DPI 出界防护
+// ---------------------------------------------------------------------------
+
+/// 审计目录不可用时：Input 类拒绝执行；Observe 类降级可用（只读无注入
+/// 后果）。PINVOU3_HOME 指向一个普通文件即可让审计目录创建失败。
+#[tokio::test]
+// ENV_LOCK 必须横跨 await 持有：run() 在 spawn_blocking 线程上按进程级 env
+// 解析 PINVOU3_HOME，env 与锁都要活到测试结束（与 fixture() 同一约定）。
+#[allow(clippy::await_holding_lock)]
+async fn input_action_fails_closed_when_audit_dir_unavailable() {
+    let env_lock = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let previous = std::env::var_os("PINVOU3_HOME");
+    let blocker = std::env::temp_dir().join(format!(
+        "pinvou3-cu-blocker-{}-{}",
+        std::process::id(),
+        crate::platform::paths::tests::unique_suffix()
+    ));
+    std::fs::write(&blocker, b"not a directory").expect("write blocker file");
+    // SAFETY: 持有 platform::paths::tests::ENV_LOCK，进程内 env 写串行。
+    unsafe { std::env::set_var("PINVOU3_HOME", &blocker) };
+
+    // workspace 与审计目录解耦：放在独立临时目录，观察类动作仍可执行。
+    let workspace = std::env::temp_dir().join(format!(
+        "pinvou3-cu-nows-{}-{}",
+        std::process::id(),
+        crate::platform::paths::tests::unique_suffix()
+    ));
+    let _ = std::fs::create_dir_all(&workspace);
+
+    let shared = Arc::new(ComputerUseShared::new());
+    shared.set_enabled(true);
+    shared.grant_session("s-test");
+    let mock = Arc::new(Mutex::new(MockState::default()));
+    let events = Arc::new(StdMutex::new(Vec::new()));
+    let mock_for_factory = Arc::clone(&mock);
+    let backend = BackendHandle::lazy(move || {
+        Ok(Box::new(MockBackend {
+            state: mock_for_factory,
+        }) as Box<dyn ComputerUseBackend>)
+    });
+    let tool = ComputerUseTool::with_parts(
+        "s-test".to_string(),
+        Arc::clone(&shared),
+        backend,
+        Arc::new(RecordingSink(Arc::clone(&events))),
+    );
+
+    // Input 类：审计不可用 → 拒绝执行。
+    let typed = tool
+        .execute(
+            json!({"action": "type", "text": "hello"}),
+            &context(&workspace),
+        )
+        .await;
+    let text = typed.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("audit log is unavailable"), "{text}");
+    assert!(text.contains("refusing"), "{text}");
+    assert!(mock.lock().typed.is_empty(), "must not type without audit");
+
+    // Observe 类：维持 eprintln 降级，动作照常。
+    let shot = tool
+        .execute(json!({"action": "screenshot"}), &context(&workspace))
+        .await;
+    let shot = match shot {
+        Ok(r) => r,
+        Err(e) => panic!("screenshot failed: {e}"),
+    };
+    assert!(shot.success, "{}", shot.content);
+
+    // SAFETY: 持有 ENV_LOCK（上面同一把锁未释放）。
+    unsafe {
+        match previous {
+            Some(value) => std::env::set_var("PINVOU3_HOME", value),
+            None => std::env::remove_var("PINVOU3_HOME"),
+        }
+    }
+    drop(env_lock);
+    let _ = std::fs::remove_dir_all(&workspace);
+    let _ = std::fs::remove_file(&blocker);
+}
+
+/// 混合 DPI 防护：光标在截图显示器之外时，cursor_position 不硬换算，
+/// 回报设备坐标并附警告文本。
+#[tokio::test]
+async fn cursor_outside_captured_monitor_reports_device_position_with_warning() {
+    let (fixture, _restore) = fixture();
+    // 截图显示器在 (-1000,-1000)..(0,0)；光标 (7,9) 在另一块屏上。
+    fixture.mock.lock().capture_origin = (-1000, -1000);
+    let _ = fixture
+        .tool
+        .execute(
+            json!({"action": "screenshot"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "cursor_position"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("device position (7, 9)"), "{text}");
+    assert!(text.contains("outside the captured monitor"), "{text}");
+    assert!(text.contains("warning: cursor is outside"), "{text}");
+    assert!(!text.contains("in screenshot space"), "{text}");
+}
+
+/// 混合 DPI 防护：光标在截图显示器之外时 mouse_down 的筛查无法定位目标
+/// ——失败关闭（Unscreenable → 要求确认），绝不拿跨屏垃圾坐标筛查。
+#[tokio::test]
+async fn mouse_down_outside_captured_monitor_fails_closed() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().capture_origin = (-1000, -1000);
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("NOT executed"), "{text}");
+    assert!(text.contains("outside the captured monitor"), "{text}");
+    assert!(text.contains("confirm_id"), "{text}");
 }

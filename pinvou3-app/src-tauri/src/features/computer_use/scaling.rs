@@ -48,9 +48,24 @@ pub struct ScaleMap {
 }
 
 impl ScaleMap {
-    pub fn from_capture(shot_w: u32, shot_h: u32, capture: &Capture) -> Self {
+    /// 从捕获结果构建映射表。`input_scale` 非正/非有限时拒绝（评审发现：
+    /// 0 或 NaN 倍率会让后续所有换算除零/产生垃圾坐标——混合 DPI 屏上曾
+    /// 静默映射到错误位置）。
+    pub fn from_capture(
+        shot_w: u32,
+        shot_h: u32,
+        capture: &Capture,
+    ) -> Result<Self, ComputerUseError> {
         let (input_scale_x, input_scale_y) = capture.input_scale();
-        Self {
+        for (axis, scale) in [("x", input_scale_x), ("y", input_scale_y)] {
+            if !scale.is_finite() || scale <= 0.0 {
+                return Err(ComputerUseError::failed(format!(
+                    "capture reports non-positive input_scale_{axis} ({scale}); \
+                     the capture is not usable for coordinate mapping"
+                )));
+            }
+        }
+        Ok(Self {
             shot_w: shot_w.max(1),
             shot_h: shot_h.max(1),
             dev_w: capture.width.max(1),
@@ -59,7 +74,7 @@ impl ScaleMap {
             origin_y: capture.origin_y,
             input_scale_x,
             input_scale_y,
-        }
+        })
     }
 
     /// 截图相对设备像素的缩放比（结果文本里展示给模型）。
@@ -90,6 +105,15 @@ impl ScaleMap {
         let iy = f64::from(self.origin_y)
             + y as f64 * f64::from(self.dev_h) * self.input_scale_y / f64::from(self.shot_h);
         (ix.round() as i32, iy.round() as i32)
+    }
+
+    /// 设备物理像素点是否落在截图显示器范围内。混合 DPI 防护：多显示器下
+    /// 光标可能在另一块屏上，此时按本映射换算是无意义的垃圾坐标（评审发现
+    /// 的 `u32 as` 截断同源问题）——调用方必须先检查本方法。
+    pub fn contains_device_point(&self, x: i32, y: i32) -> bool {
+        let (ox, oy) = self.origin_device();
+        let (fx, fy) = (f64::from(x), f64::from(y));
+        ox <= fx && fx < ox + f64::from(self.dev_w) && oy <= fy && fy < oy + f64::from(self.dev_h)
     }
 
     /// 全局设备物理像素 → 截图坐标（cursor_position 回报给模型用）。
@@ -127,7 +151,19 @@ pub struct ScaledScreenshot {
 
 /// 设备物理像素捕获 → 均匀缩放（长边 ≤1440）→ PNG 编码。
 pub fn downscale_and_encode(capture: &Capture) -> Result<ScaledScreenshot, ComputerUseError> {
-    let expected_len = capture.width as usize * capture.height as usize * 4;
+    // 评审修复：`w * h * 4` 用 checked 乘法——超大尺寸在乘法处显式失败，
+    // 而不是依赖 usize 宽度碰运气（32 位目标会回绕成假的小长度）。
+    let expected_len = capture
+        .width
+        .checked_mul(capture.height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .map(|pixels| pixels as usize)
+        .ok_or_else(|| {
+            ComputerUseError::failed(format!(
+                "capture {}x{} overflows the addressable rgba buffer size",
+                capture.width, capture.height
+            ))
+        })?;
     if capture.width == 0 || capture.height == 0 || capture.rgba.len() != expected_len {
         return Err(ComputerUseError::failed(format!(
             "capture buffer mismatch: {}x{} expects {expected_len} rgba bytes, got {}",
@@ -171,7 +207,7 @@ pub fn downscale_and_encode(capture: &Capture) -> Result<ScaledScreenshot, Compu
 
     Ok(ScaledScreenshot {
         png,
-        map: ScaleMap::from_capture(shot_w, shot_h, capture),
+        map: ScaleMap::from_capture(shot_w, shot_h, capture)?,
     })
 }
 
@@ -199,6 +235,39 @@ mod tests {
         }
     }
 
+    /// 测试助手：合法捕获 → 解包映射表。
+    fn map(shot_w: u32, shot_h: u32, cap: &Capture) -> ScaleMap {
+        ScaleMap::from_capture(shot_w, shot_h, cap).expect("valid capture map")
+    }
+
+    /// 评审修复回归：非正/非有限 input_scale 必须被拒绝。
+    #[test]
+    fn from_capture_rejects_non_positive_input_scale() {
+        for (sx, sy) in [(0.0, 1.0), (1.0, 0.0), (-0.5, 1.0), (1.0, -1.0)] {
+            let error = ScaleMap::from_capture(10, 10, &capture(100, 100, 0, 0, sx, sy))
+                .expect_err("non-positive scale must be rejected");
+            assert!(error.to_string().contains("input_scale"), "{error}");
+        }
+        let error = ScaleMap::from_capture(10, 10, &capture(100, 100, 0, 0, f64::NAN, 1.0))
+            .expect_err("NaN scale must be rejected");
+        assert!(error.to_string().contains("input_scale"), "{error}");
+        // 合法倍率仍通过。
+        assert!(ScaleMap::from_capture(10, 10, &capture(100, 100, 0, 0, 0.5, 0.5)).is_ok());
+    }
+
+    /// 评审修复回归：设备点必须落在截图显示器内才允许映射（混合 DPI 防护）。
+    #[test]
+    fn contains_device_point_bounds_multi_monitor() {
+        let map = map(1440, 810, &capture(2560, 1440, -2560, 0, 1.0, 1.0));
+        assert!(map.contains_device_point(-2560, 0));
+        assert!(map.contains_device_point(-1, 1439));
+        // 右边缘开区间：越界一点都算出界。
+        assert!(!map.contains_device_point(0, 0));
+        assert!(!map.contains_device_point(-2561, 0));
+        assert!(!map.contains_device_point(-100, 1440));
+        assert!(!map.contains_device_point(-100, -1));
+    }
+
     #[test]
     fn scale_factor_only_downscales_long_edge() {
         assert_eq!(scale_factor(1280, 720), 1.0);
@@ -215,7 +284,7 @@ mod tests {
     #[test]
     fn shot_device_input_round_trip_windows_style() {
         // Windows：物理像素 2560x1440，input_scale = 1，无缩放截图。
-        let map = ScaleMap::from_capture(1440, 810, &capture(2560, 1440, 0, 0, 1.0, 1.0));
+        let map = map(1440, 810, &capture(2560, 1440, 0, 0, 1.0, 1.0));
         let (dx, dy) = map.shot_to_device(720, 405);
         assert_eq!((dx, dy), (1280, 720));
         let (ix, iy) = map.shot_to_input(720, 405);
@@ -232,7 +301,7 @@ mod tests {
         let cap = capture(3024, 1964, 0, 0, 0.5, 0.5);
         let shot_w = (3024.0 * scale_factor(3024, 1964)).round() as u32;
         let shot_h = (1964.0 * scale_factor(3024, 1964)).round() as u32;
-        let map = ScaleMap::from_capture(shot_w, shot_h, &cap);
+        let map = map(shot_w, shot_h, &cap);
         // 截图中心 → 设备中心（物理像素）→ 输入点 = 物理像素/2。
         let (dx, dy) = map.shot_to_device(i64::from(shot_w) / 2, i64::from(shot_h) / 2);
         // 截图像素中心按缩放比还原（整数中心带来 ≤1px 的舍入）。
@@ -250,7 +319,7 @@ mod tests {
     #[test]
     fn multi_monitor_negative_origin_is_preserved() {
         // 主屏右侧的副屏：Windows 虚拟桌面原点可为负。
-        let map = ScaleMap::from_capture(1440, 810, &capture(2560, 1440, -2560, 0, 1.0, 1.0));
+        let map = map(1440, 810, &capture(2560, 1440, -2560, 0, 1.0, 1.0));
         let (dx, dy) = map.shot_to_device(0, 0);
         assert_eq!((dx, dy), (-2560, 0));
         let (ix, iy) = map.shot_to_input(0, 0);
@@ -262,7 +331,7 @@ mod tests {
     #[test]
     fn non_unit_scale_factor_round_trips_within_one_pixel() {
         // 奇数尺寸 + 非 1 缩放比：往返误差 ≤ 1 设备像素。
-        let map = ScaleMap::from_capture(1113, 627, &capture(1983, 1117, 0, 0, 1.0, 1.0));
+        let map = map(1113, 627, &capture(1983, 1117, 0, 0, 1.0, 1.0));
         for (sx, sy) in [(0, 0), (500, 300), (1112, 626), (1, 625)] {
             let (dx, dy) = map.shot_to_device(sx, sy);
             let (rx, ry) = map.device_to_shot(dx, dy);
@@ -273,7 +342,7 @@ mod tests {
 
     #[test]
     fn clamp_shot_bounds_and_flags() {
-        let map = ScaleMap::from_capture(1440, 810, &capture(2560, 1440, 0, 0, 1.0, 1.0));
+        let map = map(1440, 810, &capture(2560, 1440, 0, 0, 1.0, 1.0));
         assert_eq!(map.clamp_shot(100, 100), (100, 100, false));
         assert_eq!(map.clamp_shot(-5, 100), (0, 100, true));
         assert_eq!(map.clamp_shot(100, 900), (100, 809, true));
@@ -348,5 +417,24 @@ mod tests {
             input_scale_y: 1.0,
         };
         assert!(downscale_and_encode(&bad).is_err());
+    }
+
+    /// 评审修复回归：尺寸乘法用 checked——溢出显式失败而非回绕成假的小长度。
+    #[test]
+    fn downscale_and_encode_rejects_overflowing_dimensions() {
+        let huge = Capture {
+            rgba: vec![0u8; 16],
+            width: u32::MAX,
+            height: u32::MAX,
+            origin_x: 0,
+            origin_y: 0,
+            input_scale_x: 1.0,
+            input_scale_y: 1.0,
+        };
+        let error = match downscale_and_encode(&huge) {
+            Err(error) => error,
+            Ok(scaled) => panic!("overflow must be rejected, got {} bytes", scaled.png.len()),
+        };
+        assert!(error.to_string().contains("overflows"), "{error}");
     }
 }
