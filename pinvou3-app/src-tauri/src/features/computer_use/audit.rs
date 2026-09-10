@@ -15,7 +15,6 @@
 //! 明文）。
 
 use std::ffi::OsStr;
-use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -205,10 +204,10 @@ impl AuditLog {
         let mut line = serde_json::to_string(record)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         line.push('\n');
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
+        // 审计记录（即使已脱敏）属私有数据治理范畴：走平台层的私有追加文件
+        // 助手（unix 上 0600 创建、无 umask 暴露窗口；评审发现：此前经普通
+        // OpenOptions 按 0644 落盘，纵深不足）。
+        let mut file = crate::platform::filesystem::open_private_append_file(&self.path)?;
         file.write_all(line.as_bytes())
     }
 }

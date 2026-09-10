@@ -7,7 +7,6 @@ use std::sync::Mutex as StdMutex;
 // 测试替身
 // ---------------------------------------------------------------------------
 
-#[derive(Default)]
 struct MockState {
     /// 命中测试按元素 bounds 判定（真实 a11y 语义）：element_at_point 只在
     /// 查询点落入元素矩形内时返回它。
@@ -20,14 +19,57 @@ struct MockState {
     focused_error: bool,
     /// 截图捕获的显示器原点（输入坐标空间；默认 (0,0) 即恒等映射）。
     capture_origin: (i32, i32),
+    /// cursor_position 的返回值（设备像素；评审修复：可配置以驱动「光标
+    /// 移动后令牌失配」的场景）。默认 (7,9)（历史行为）。
+    cursor: (i32, i32),
     /// 置位时 cursor_position 返回 Err（光标未知，如 Wayland 首次 move 前）。
     cursor_error: bool,
     /// 置位时 input 能力位为 false（默认具备输入能力）。
     no_input_cap: bool,
     moved_to: Vec<(i32, i32)>,
     clicked: Vec<(MouseButton, u8)>,
+    /// 评审修复（第三轮）：五个注入面全部记录——down/up/drag/scroll/hold_key
+    /// 的「NOT executed」断言此前验不了执行面（回归钉子是软的）。
+    downed: Vec<MouseButton>,
+    upped: Vec<MouseButton>,
+    drags: Vec<((i32, i32), (i32, i32))>,
+    scrolled: Vec<(ScrollDirection, u32)>,
+    held: Vec<(Vec<Key>, u64)>,
     typed: Vec<String>,
     chords: Vec<Vec<Key>>,
+}
+
+impl Default for MockState {
+    fn default() -> Self {
+        Self {
+            element: None,
+            element_error: false,
+            focused: None,
+            focused_error: false,
+            capture_origin: (0, 0),
+            cursor: (7, 9),
+            cursor_error: false,
+            no_input_cap: false,
+            moved_to: Vec::new(),
+            clicked: Vec::new(),
+            downed: Vec::new(),
+            upped: Vec::new(),
+            drags: Vec::new(),
+            scrolled: Vec::new(),
+            held: Vec::new(),
+            typed: Vec::new(),
+            chords: Vec::new(),
+        }
+    }
+}
+
+impl MockState {
+    fn with_cursor(cursor: (i32, i32)) -> Self {
+        Self {
+            cursor,
+            ..Self::default()
+        }
+    }
 }
 
 struct MockBackend {
@@ -62,13 +104,14 @@ impl ComputerUseBackend for MockBackend {
     }
 
     fn cursor_position(&mut self) -> Result<(i32, i32), ComputerUseError> {
-        if self.state.lock().cursor_error {
+        let state = self.state.lock();
+        if state.cursor_error {
             return Err(ComputerUseError::unsupported(
                 "cursor_position",
                 "mock: cursor position unknown",
             ));
         }
-        Ok((7, 9))
+        Ok(state.cursor)
     }
 
     fn move_to(&mut self, x: i32, y: i32) -> Result<(), ComputerUseError> {
@@ -81,23 +124,23 @@ impl ComputerUseBackend for MockBackend {
         Ok(())
     }
 
-    fn mouse_down(&mut self, _button: MouseButton) -> Result<(), ComputerUseError> {
+    fn mouse_down(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
+        self.state.lock().downed.push(button);
         Ok(())
     }
 
-    fn mouse_up(&mut self, _button: MouseButton) -> Result<(), ComputerUseError> {
+    fn mouse_up(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
+        self.state.lock().upped.push(button);
         Ok(())
     }
 
-    fn drag(&mut self, _from: (i32, i32), _to: (i32, i32)) -> Result<(), ComputerUseError> {
+    fn drag(&mut self, from: (i32, i32), to: (i32, i32)) -> Result<(), ComputerUseError> {
+        self.state.lock().drags.push((from, to));
         Ok(())
     }
 
-    fn scroll(
-        &mut self,
-        _direction: ScrollDirection,
-        _clicks: u32,
-    ) -> Result<(), ComputerUseError> {
+    fn scroll(&mut self, direction: ScrollDirection, clicks: u32) -> Result<(), ComputerUseError> {
+        self.state.lock().scrolled.push((direction, clicks));
         Ok(())
     }
 
@@ -111,7 +154,8 @@ impl ComputerUseBackend for MockBackend {
         Ok(())
     }
 
-    fn hold_key(&mut self, _keys: &[Key], _ms: u64) -> Result<(), ComputerUseError> {
+    fn hold_key(&mut self, keys: &[Key], ms: u64) -> Result<(), ComputerUseError> {
+        self.state.lock().held.push((keys.to_vec(), ms));
         Ok(())
     }
 
@@ -674,6 +718,19 @@ async fn mouse_down_up_composition_is_t3_screened() {
             .is_empty(),
         "confirm_required must have been emitted"
     );
+    // 第三轮评审修复回归：注入面执行断言——拦截时 down/up 不得真的下发
+    // （mock 现在记录全部五个注入面）。
+    let mock = fixture.mock.lock();
+    assert!(
+        mock.downed.is_empty(),
+        "down must not execute: {:?}",
+        mock.downed
+    );
+    assert!(
+        mock.upped.is_empty(),
+        "up must not execute: {:?}",
+        mock.upped
+    );
 }
 
 /// 筛查故障必须失败关闭:无法证明目标无害 = 要求确认,绝不放行。
@@ -813,6 +870,11 @@ async fn drag_drop_target_is_screened() {
     let text = result.ok().map(|r| r.content).unwrap_or_default();
     assert!(text.contains("NOT executed"), "{text}");
     assert!(text.contains("Delete"), "{text}");
+    // 第三轮评审修复回归：拦截时拖拽不得真的下发。
+    assert!(
+        fixture.mock.lock().drags.is_empty(),
+        "drag must not execute"
+    );
 }
 
 /// 用户拒绝后的 confirm_id 重试必须得到明确「已被拒绝」。
@@ -1063,18 +1125,21 @@ async fn type_confirm_token_is_bound_to_text_not_length() {
 
 /// 评审修复回归：确认摘要在「N chars」之外必须含安全预览（控制字符转义、
 /// 超长省略）与全文指纹，向用户展示即将键入的内容（知情批准）。
+/// 第三轮评审修正拆成两个用例：普通目标展示预览；密码字段目标掩码预览
+/// （明文预览会把密码前缀送进确认弹窗/事件流）。
 #[tokio::test]
 async fn type_summary_shows_preview_and_fingerprint() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().focused = Some(ElementInfo {
-        role: "AXSecureTextField".to_string(),
-        name: "Password".to_string(),
+        // 非 secure 但命中 T3 名单的焦点元素：走确认流程且预览不掩码。
+        role: "AXButton".to_string(),
+        name: "Send message".to_string(),
         x: 0,
         y: 0,
         width: 10,
         height: 10,
-        secure: true,
+        secure: false,
     });
     // 20 个字符（> 预览上限 12），第 6 个字符是控制字符 BEL。
     let text = "hello\u{7}world123456789".to_string();
@@ -1117,9 +1182,10 @@ async fn type_summary_shows_preview_and_fingerprint() {
     assert!(summary.contains("\"hello"), "{summary}");
     // 截断之后的内容不进摘要。
     assert!(!summary.contains("456789"), "{summary}");
-    // 指纹 = 全文 SHA-256 前 8 hex。
+    // 指纹 = 全文 SHA-256 前 16 hex（64 位：32 位对持壳模型的暴力碰撞不够，
+    // 第三轮评审发现）。
     let expected_hash = super::super::audit::sha256_hex(text.as_bytes());
-    let expected_fingerprint = &expected_hash[..8];
+    let expected_fingerprint = &expected_hash[..16];
     assert!(
         summary.contains(&format!("[{expected_fingerprint}]")),
         "fingerprint {expected_fingerprint} must be in summary: {summary}"
@@ -1127,8 +1193,61 @@ async fn type_summary_shows_preview_and_fingerprint() {
     // 不同文本 → 不同指纹（同长度令牌不可换用的机制保证）。
     let other = "hello\u{7}world87654321".to_string();
     let other_hash = super::super::audit::sha256_hex(other.as_bytes());
-    let other_fingerprint = &other_hash[..8];
+    let other_fingerprint = &other_hash[..16];
     assert_ne!(expected_fingerprint, other_fingerprint);
+}
+
+/// 第三轮评审修复回归：type 的目标是密码/安全字段时，确认摘要**掩码**
+/// 预览——「向密码框键入」必然走确认流程，明文预览等于把密码前缀送进
+/// 确认弹窗与事件流。指纹与长度仍然展示（知情+完整性）。
+#[tokio::test]
+async fn type_summary_masks_preview_for_secure_targets() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().focused = Some(ElementInfo {
+        role: "AXSecureTextField".to_string(),
+        name: "Password".to_string(),
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: true,
+    });
+    let text = "hunter2secret!".to_string();
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "type", "text": text}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        result
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("NOT executed")
+    );
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    let summary = events
+        .iter()
+        .rev()
+        .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+        .map(|(_, p)| p["action"].as_str().unwrap_or_default().to_string());
+    let summary = summary.expect("confirm event carries the action summary");
+
+    // 明文不得出现在摘要；长度+指纹保留。
+    assert!(!summary.contains("hunter2"), "{summary}");
+    assert!(summary.contains("type 14 chars:"), "{summary}");
+    assert!(
+        summary.contains("<masked: the typing target is a password/secure field>"),
+        "masked preview marker must be present: {summary}"
+    );
+    let expected_hash = super::super::audit::sha256_hex(text.as_bytes());
+    assert!(
+        summary.contains(&format!("[{}]", &expected_hash[..16])),
+        "fingerprint must still be shown: {summary}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1327,4 +1446,207 @@ async fn mouse_down_outside_captured_monitor_fails_closed() {
     assert!(text.contains("NOT executed"), "{text}");
     assert!(text.contains("outside the captured monitor"), "{text}");
     assert!(text.contains("confirm_id"), "{text}");
+    // 第三轮评审修复回归：拦截时按下不得真的下发。
+    assert!(
+        fixture.mock.lock().downed.is_empty(),
+        "down must not execute"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 第三轮评审修复回归：和弦语义筛查 / 按住拖拽筛查 / 无坐标令牌的光标绑定
+// ---------------------------------------------------------------------------
+
+/// 破坏性和弦（修饰键 + Delete/Backspace、修饰键 + Enter）无论焦点元素
+/// 名单判定如何都要求确认：焦点元素的 name 看不出按键会触发的后果
+/// （聊天框 cmd+Enter 发送、Finder cmd+delete 删文件）。
+#[tokio::test]
+async fn destructive_key_chords_require_confirmation() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    // 焦点是普通文本域（名单判定 Clear）——和弦语义仍须拦截。
+    fixture.mock.lock().focused = Some(ElementInfo {
+        role: "AXTextArea".to_string(),
+        name: String::new(),
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: false,
+    });
+    for chord in ["cmd+delete", "ctrl+backspace", "meta+Enter", "ctrl+Enter"] {
+        let result = fixture
+            .tool
+            .execute(
+                json!({"action": "key", "text": chord}),
+                &context(&fixture.workspace),
+            )
+            .await;
+        let text = result.ok().map(|r| r.content).unwrap_or_default();
+        assert!(text.contains("NOT executed"), "{chord}: {text}");
+        assert!(text.contains("confirm_id"), "{chord}: {text}");
+    }
+    assert!(fixture.mock.lock().chords.is_empty(), "no chord may inject");
+    // 普通键不受影响：无修饰键的 Enter/Delete 直接放行（文本编辑主路径）。
+    for chord in ["Return", "Delete", "Backspace"] {
+        let result = fixture
+            .tool
+            .execute(
+                json!({"action": "key", "text": chord}),
+                &context(&fixture.workspace),
+            )
+            .await;
+        let text = result.ok().map(|r| r.content).unwrap_or_default();
+        assert!(!text.contains("NOT executed"), "{chord}: {text}");
+    }
+    assert_eq!(fixture.mock.lock().chords.len(), 3);
+}
+
+/// 按住左键期间 mouse_move 实质是拖拽：落点必须过 T3 筛查（拆解
+/// down→move→up 不得零确认把目标拖进后果性位置）。
+#[tokio::test]
+async fn mouse_move_while_button_held_is_screened() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    // 光标 (7,9) 处是无害位置：down 放行并置按住状态。
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        result
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("mouse button is down")
+    );
+    // 目标 (12,12) 处是回收站：按住期间的 move 必须被拦截。
+    fixture.mock.lock().element = Some(ElementInfo {
+        role: "AXButton".to_string(),
+        name: "Trash".to_string(),
+        x: 10,
+        y: 10,
+        width: 5,
+        height: 5,
+        secure: false,
+    });
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "mouse_move", "x": 12, "y": 12}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("NOT executed"), "{text}");
+    assert!(text.contains("confirm_id"), "{text}");
+    // 未按住时同样的 move 照常放行（先释放：up 在 (7,9) 处无元素）。
+    fixture.mock.lock().element = None;
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_up"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        result
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("mouse button is up")
+    );
+    let moved: Vec<_> = fixture.mock.lock().moved_to.clone();
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "mouse_move", "x": 12, "y": 12}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let moved_text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        moved_text.contains("mouse moved to"),
+        "unheld move must execute: {moved_text}"
+    );
+    assert_eq!(
+        fixture.mock.lock().moved_to.len(),
+        moved.len() + 1,
+        "exactly one more move after release"
+    );
+}
+
+/// 无坐标 click 的令牌绑定含光标位置：铸造后把光标移到别的目标再花令牌，
+/// 摘要失配必须被拒（用户批准的落点与实际执行落点不同）。
+#[tokio::test]
+async fn token_for_coordinateless_click_breaks_when_cursor_moves() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    // 光标 (7,9) 处是 denylist 控件 → 拦截并铸造（摘要含 cursor Some((7,9))）。
+    fixture.mock.lock().element = Some(ElementInfo {
+        role: "button".to_string(),
+        name: "Buy now".to_string(),
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: false,
+    });
+    let first = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        first
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("NOT executed")
+    );
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    let confirm_id = events
+        .iter()
+        .rev()
+        .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+        .map(|(_, p)| p["confirm_id"].as_str().unwrap_or_default().to_string())
+        .expect("confirm event");
+    assert!(fixture.shared.mint_confirmation(&confirm_id));
+
+    // 用户批准后模型把光标移走再花令牌：摘要失配 → 拒绝且不执行。
+    fixture.mock.lock().cursor = (12, 12);
+    let retry = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = retry.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("confirm_id is invalid"), "{text}");
+    assert!(fixture.mock.lock().clicked.is_empty(), "click must not run");
+
+    // 光标回到批准时的位置：同一令牌照常消费执行。
+    fixture.mock.lock().cursor = (7, 9);
+    let retry = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        retry
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("click executed"),
+        "same cursor position must spend the token"
+    );
+    assert_eq!(fixture.mock.lock().clicked.len(), 1);
 }
