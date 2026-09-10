@@ -41,6 +41,9 @@ struct VoiceShortcutState {
     alt_pending: bool,
     /// Which physical Alt key started the current gesture (meaningful only
     /// while `alt_down`); the platform layer reads it at combo replay time.
+    /// If the other side is pressed while held, it is swallowed as a repeat
+    /// and the recorded side stays the arming one, so a combo is replayed
+    /// with the side that started the gesture, not the most recent press.
     alt_side: AltSide,
     /// The [Alt↓, combo↓] ordered replay has been issued for a combo key (the
     /// platform layer sets this whenever at least the Alt down was injected,
@@ -145,7 +148,11 @@ fn handle_voice_shortcut_key(
                 // Long-press auto-repeat: keep swallowing when not forwarded,
                 // let through when forwarded (consistent with the synthetic
                 // down). Covers the other Alt side too: both downs are
-                // swallowed and the first up resolves the gesture.
+                // swallowed and the first up resolves the gesture — releasing
+                // the arming side fires dictation while the other side is
+                // still held, whose auto-repeat re-arms and fires once more
+                // on its own release. Holding both Alts is exotic enough that
+                // this double trigger is accepted over per-side tracking.
                 return if state.alt_forwarded {
                     VoiceShortcutDecision::pass()
                 } else {
