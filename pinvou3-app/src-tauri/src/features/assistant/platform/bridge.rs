@@ -3242,7 +3242,7 @@ mod tests {
                 .build_send_message_op(
                     sid,
                     "List my MCP applications".into(),
-                    AppMode::Yolo,
+                    AppMode::Agent,
                     None,
                     false,
                 )

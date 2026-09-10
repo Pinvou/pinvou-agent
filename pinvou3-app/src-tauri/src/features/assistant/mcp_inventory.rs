@@ -41,7 +41,7 @@ fn render_inventory(tools: &[MarketplaceToolInfo], disabled: &[String]) -> Strin
     // Names are metadata, not instructions; keep them inside JSON strings and
     // prevent uploaded display names from closing the surrounding reminder.
     let inventory = serde_json::to_string(&entries)
-        .expect("MCP inventory contains only strings and booleans")
+        .unwrap_or_else(|_| "[]".to_string())
         .replace('<', "\\u003c")
         .replace('>', "\\u003e");
     format!("市场 MCP 应用（当前会话模式）: {inventory}")
