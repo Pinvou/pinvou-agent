@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import {
+  DENY_SUPPRESSION_MS,
   computerUseConsentView,
   extractComputerUseScreenshotPath,
+  isDeniedRequestSuppressed,
 } from '../src/features/computer-use/computer-use-logic.js';
 
 // ── 截图路径提取 ──────────────────────────────────────────────────
@@ -21,6 +23,15 @@ assert.equal(
   })),
   '/ws/attachments/computer_use/envelope.png',
   'MCP-style JSON envelopes must be unwrapped before searching',
+);
+// Envelope + Windows path: the raw JSON's escaped backslashes must NOT win
+// the last-match rule and produce a doubled-separator path (review finding).
+assert.equal(
+  extractComputerUseScreenshotPath(JSON.stringify({
+    content: [{ type: 'text', text: 'saved C:\\Users\\u\\attachments\\computer_use\\win.png' }],
+  })),
+  'C:\\Users\\u\\attachments\\computer_use\\win.png'.replaceAll('\\\\', '\\'),
+  'envelope Windows paths must resolve to the clean single-separator form',
 );
 assert.equal(
   extractComputerUseScreenshotPath('first /ws/attachments/computer_use/a.png then /ws/attachments/computer_use/b.png'),
@@ -58,40 +69,59 @@ assert.equal(
 // ── 授权界面可见性状态机 ──────────────────────────────────────────
 assert.deepEqual(
   computerUseConsentView(null),
-  { enabled: false, showBanner: false, grantRequest: null, confirmRequest: null },
+  { enabled: false, stopped: false, showBanner: false, grantRequest: null, confirmRequest: null },
   'a missing slice hides every surface',
 );
 assert.deepEqual(
   computerUseConsentView({ enabled: false, granted: true, grantRequest: { sessionId: 's1' }, confirmRequest: { confirmId: 'c1' } }),
-  { enabled: false, showBanner: false, grantRequest: null, confirmRequest: null },
+  { enabled: false, stopped: false, showBanner: false, grantRequest: null, confirmRequest: null },
   'feature toggle off: no banner, no dialogs even with stale requests',
 );
 assert.deepEqual(
   computerUseConsentView({ enabled: true, granted: false, stopped: false }),
-  { enabled: true, showBanner: false, grantRequest: null, confirmRequest: null },
+  { enabled: true, stopped: false, showBanner: false, grantRequest: null, confirmRequest: null },
   'enabled but ungranted stays quiet until a request arrives',
 );
 const grantRequest = { sessionId: 's1' };
 assert.deepEqual(
   computerUseConsentView({ enabled: true, grantRequest }),
-  { enabled: true, showBanner: false, grantRequest, confirmRequest: null },
+  { enabled: true, stopped: false, showBanner: false, grantRequest, confirmRequest: null },
   'grant_required surfaces the grant dialog',
 );
 const confirmRequest = { sessionId: 's1', action: 'click', element: 'Save', confirmId: 'c1' };
 assert.deepEqual(
   computerUseConsentView({ enabled: true, granted: true, stopped: false, confirmRequest }),
-  { enabled: true, showBanner: true, grantRequest: null, confirmRequest },
+  { enabled: true, stopped: false, showBanner: true, grantRequest: null, confirmRequest },
   'a per-action confirmation stacks on top of the persistent banner',
 );
 assert.deepEqual(
   computerUseConsentView({ enabled: true, granted: true, stopped: true, confirmRequest }),
-  { enabled: true, showBanner: false, grantRequest: null, confirmRequest },
-  'stop() hides the banner immediately while a pending confirm still shows',
+  { enabled: true, stopped: true, showBanner: false, grantRequest: null, confirmRequest: null },
+  'stop() collapses the banner and the dialogs: stop_all already killed the pending confirm, so its approve button must not stay live (review finding)',
+);
+assert.deepEqual(
+  computerUseConsentView({ enabled: true, granted: false, stopped: true, grantRequest }),
+  { enabled: true, stopped: true, showBanner: false, grantRequest: null, confirmRequest: null },
+  'stop() also collapses a pending grant dialog',
 );
 assert.deepEqual(
   computerUseConsentView({ enabled: true, granted: true, stopped: false }),
-  { enabled: true, showBanner: true, grantRequest: null, confirmRequest: null },
+  { enabled: true, stopped: false, showBanner: true, grantRequest: null, confirmRequest: null },
   'granted and not stopped keeps the non-dismissible banner visible',
 );
+
+// ── 明确拒绝后的弹窗频控（评审修复）──────────────────────────────
+assert.equal(
+  isDeniedRequestSuppressed(Date.now() - 1000, Date.now()),
+  true,
+  'a request within the cooldown of an explicit deny must be suppressed',
+);
+assert.equal(
+  isDeniedRequestSuppressed(Date.now() - DENY_SUPPRESSION_MS - 1, Date.now()),
+  false,
+  'after the cooldown a fresh dialog may be shown again',
+);
+assert.equal(isDeniedRequestSuppressed(undefined, Date.now()), false, 'no deny recorded → never suppressed');
+assert.equal(isDeniedRequestSuppressed(Date.now() + 5_000, Date.now()), false, 'clock skew must not suppress forever');
 
 console.log('computer use logic tests passed');
