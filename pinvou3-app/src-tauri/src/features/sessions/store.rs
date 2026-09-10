@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::LazyLock;
@@ -268,6 +268,37 @@ impl SessionStore {
         self.manager
             .load_session_snapshot(id)
             .with_context(|| format!("load_session({id})"))
+    }
+
+    /// 把一个会话打包为全保真 `.tar.xz` 归档，复用底座
+    /// `deepseek_tui::session_export`。归档含完整上下文（system prompt、
+    /// 全部轮次消息、工具调用与结果）与 portable container JSON，默认
+    /// 连同 artifacts 目录一起打包；`include_artifacts=false` 只导出记录。
+    pub(crate) fn export_archive(
+        &self,
+        id: &str,
+        output: &Path,
+        include_artifacts: bool,
+    ) -> Result<deepseek_tui::session_export::SessionArchiveSummary> {
+        validate_session_id(id)?;
+        let session = self.load(id)?;
+        let artifacts_dir = if include_artifacts {
+            deepseek_tui::session_export::session_artifacts_dir(
+                self.manager.sessions_dir(),
+                &session.metadata.id,
+            )
+        } else {
+            None
+        };
+        Ok(deepseek_tui::session_export::write_session_archive(
+            &session,
+            artifacts_dir.as_deref(),
+            output,
+            deepseek_tui::session_export::SessionArchiveOptions {
+                include_artifacts,
+                ..deepseek_tui::session_export::SessionArchiveOptions::default()
+            },
+        )?)
     }
 
     pub(crate) fn persisted_size(&self, id: &str) -> Result<u64> {
