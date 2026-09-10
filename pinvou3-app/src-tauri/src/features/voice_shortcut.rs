@@ -739,6 +739,69 @@ mod tests {
     }
 
     #[test]
+    fn cross_side_hold_resolves_on_first_up_and_rearms_on_repeat() {
+        // Documented cross-side hold: both downs are swallowed (the other side
+        // is a repeat and the arming side sticks), the first up resolves the
+        // gesture and fires once, and the still-held side's auto-repeat
+        // re-arms, so its eventual release fires a second time. Per-side
+        // tracking was deliberately rejected as not worth complicating the
+        // main gesture path — this pins the accepted behavior.
+        let mut state = VoiceShortcutState::default();
+        let left_down = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            true,
+            true,
+            HWND_A,
+            1000,
+        );
+        assert!(left_down.suppress);
+
+        let right_down = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Right),
+            true,
+            true,
+            HWND_A,
+            1100,
+        );
+        assert_eq!(right_down, VoiceShortcutDecision::suppress(None));
+        assert_eq!(state.alt_side, AltSide::Left);
+        assert!(state.alt_pending);
+
+        let left_up = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            false,
+            true,
+            HWND_A,
+            1200,
+        );
+        assert_eq!(left_up.event, Some(VoiceShortcutEvent::TriggerDictation));
+        assert_eq!(state, VoiceShortcutState::default());
+
+        let right_repeat = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Right),
+            true,
+            true,
+            HWND_A,
+            1300,
+        );
+        assert!(right_repeat.suppress);
+        assert_eq!(state.alt_side, AltSide::Right);
+        let right_up = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Right),
+            false,
+            true,
+            HWND_A,
+            1400,
+        );
+        assert_eq!(right_up.event, Some(VoiceShortcutEvent::TriggerDictation));
+    }
+
+    #[test]
     fn alt_space_suppresses_pair_and_never_triggers_or_injects() {
         let mut state = VoiceShortcutState::default();
         handle_voice_shortcut_key(
