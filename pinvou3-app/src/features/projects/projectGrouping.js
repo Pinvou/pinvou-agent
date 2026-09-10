@@ -22,10 +22,24 @@ function itemTime(item) {
 
 // True when `path` equals `root` or lives directly under it. Both separators
 // are accepted so canonicalized unix roots still match windows-stored paths.
+// Windows paths fold case for comparison, mirroring the store's
+// filesystem_path_identity_key (Windows identity keys fold case, POSIX does
+// not): the pure module has no host-OS signal, so it keys off path shape —
+// drive-letter/UNC paths only ever come from Windows sessions.
+function looksWindowsPath(value) {
+  return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\');
+}
+
 function isUnderRoot(path, root) {
   if (!path || !root) return false;
-  if (path === root) return true;
-  return path.startsWith(`${root}/`) || path.startsWith(`${root}\\`);
+  let a = String(path);
+  let b = String(root);
+  if (looksWindowsPath(a) && looksWindowsPath(b)) {
+    a = a.toLowerCase();
+    b = b.toLowerCase();
+  }
+  if (a === b) return true;
+  return a.startsWith(`${b}/`) || a.startsWith(`${b}\\`);
 }
 
 // Longest root wins so nested project roots cannot steal sessions from a

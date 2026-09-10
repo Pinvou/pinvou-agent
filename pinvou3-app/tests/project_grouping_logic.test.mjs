@@ -160,6 +160,28 @@ test("temporary sessions never auto-group even under a project root", () => {
   assert.deepEqual(temporary.rows.map((r) => r.id), ["t1"]);
 });
 
+test("windows roots match case-insensitively, posix roots stay case-sensitive", () => {
+  // The store folds identity keys on Windows (root_keys_fold_case_only_on_windows);
+  // the display-side longest-root guard must not let a case-differing workspace
+  // path slip past its project (review finding 19).
+  const projects = [project("p1", "Alpha", ["D:/Work/Alpha"], 0)];
+  const groups = groupSessionsWithProjects(
+    [projectItem("a1", "d:/work/alpha/sub", "2026-08-01T08:00:00Z")],
+    projects,
+    {},
+  );
+  assert.deepEqual(groups.find((g) => g.projectId === "p1").rows.map((r) => r.id), ["a1"]);
+
+  const posix = [project("p2", "Beta", ["/home/x/Beta"], 0)];
+  const posixGroups = groupSessionsWithProjects(
+    [projectItem("b1", "/home/x/beta/sub", "2026-08-01T08:00:00Z")],
+    posix,
+    {},
+  );
+  assert.equal(posixGroups.find((g) => g.projectId === "p2").rows.length, 0);
+  assert.equal(posixGroups.find((g) => g.kind === "folder").key, "/home/x/beta/sub");
+});
+
 test("empty and invalid inputs degrade safely", () => {
   assert.deepEqual(groupSessionsWithProjects([], [], {}), []);
   assert.deepEqual(groupSessionsWithProjects(null, null, null), []);
