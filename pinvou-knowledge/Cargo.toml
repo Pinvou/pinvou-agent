@@ -71,7 +71,7 @@ rcgen = { version = "=0.14.9", features = ["x509-parser"], optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "multipart", "stream"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"], optional = true }
 tar = { version = "0.4", optional = true }
-tower-http = { version = "0.6", features = ["catch-panic", "limit", "request-id", "trace"], optional = true }
+tower-http = { version = "0.7", features = ["catch-panic", "limit", "request-id", "trace"], optional = true }
 wait-timeout = { version = "0.2", optional = true }
 
 [target.'cfg(windows)'.dependencies]
