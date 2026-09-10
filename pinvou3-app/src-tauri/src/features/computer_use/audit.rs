@@ -6,13 +6,14 @@
 //! 「同长度同 MAC」相关性不存在；截图记 SHA-256 + 文件路径；target 字段按
 //! 平台审计约定截到 ≤600 字节。
 //!
-//! HMAC 密钥获取链（进程级缓存）：OS 钥匙环（codewhale-secrets，缺则随机
-//! 生成并写入）→ 钥匙环不可用时回退文件密钥 `<数据根>/keys/computer-use-
-//! audit-hmac.key`（0700 目录 + 尽力 0600 文件；首次使用时若旧布局
-//! `computer-use/audit-hmac.key` 存在则原子 rename 迁移）→ 两者都失败则
-//! **只记长度**。密钥与日志分离是底线：只拿到单条 jsonl 的人不能对键入内容
-//! 做离线字典恢复（评审发现：无盐 SHA-256 + 明文长度对密码这类小键空间形同
-//! 明文）。
+//! HMAC 密钥获取链（进程级缓存，只缓存成功）：生产构建 OS 钥匙环优先
+//! （codewhale-secrets 直连 keyring，探测失败回退文件库以延续既存密钥；
+//! 缺则随机生成并写入）→ 仍不可用时回退私有文件密钥 `<数据根>/keys/
+//! computer-use-audit-hmac.key`（0700 目录 + 尽力 0600 文件；首次使用时若
+//! 旧布局 `computer-use/audit-hmac.key` 存在则原子 rename 迁移）→ 全部失败
+//! 则**只记长度**（失败不缓存，下次调用重试）。密钥与日志分离是底线：只
+//! 拿到单条 jsonl 的人不能对键入内容做离线字典恢复（评审发现：无盐 SHA-256
+//! + 明文长度对密码这类小键空间形同明文）。
 
 use std::ffi::OsStr;
 use std::io::{self, Write};
@@ -234,41 +235,76 @@ fn typed_text_mac(key: &[u8], salt: &[u8], text: &str) -> Option<String> {
     hmac_sha256_hex(key, &input)
 }
 
-/// 审计 HMAC 密钥（进程级缓存）。获取链见模块文档。
+/// 审计 HMAC 密钥。获取链见模块文档。进程级缓存**只缓存成功**（评审发现：
+/// 曾用 `OnceLock<Option<_>>` 把钥匙环/密钥目录的瞬时不可用钉死成进程级
+/// 「只记长度」降级，环境恢复也不重试）——失败返回 None，下次调用重试
+/// 全链。检索失败链路本身是有界快速失败（探测/读写），不会拖慢记录。
 fn audit_mac_key() -> Option<&'static Vec<u8>> {
-    static KEY: OnceLock<Option<Vec<u8>>> = OnceLock::new();
-    KEY.get_or_init(|| {
-        let secrets = codewhale_secrets::Secrets::auto_detect();
-        if let Ok(Some(stored)) = secrets.get(AUDIT_HMAC_SECRET_NAME) {
-            if let Some(key) = decode_hex_32(&stored) {
-                return Some(key);
+    static KEY: OnceLock<Vec<u8>> = OnceLock::new();
+    if let Some(key) = KEY.get() {
+        return Some(key);
+    }
+    let key = compute_audit_mac_key()?;
+    let _ = KEY.set(key);
+    KEY.get()
+}
+
+/// secrets 层后端选择。生产构建 OS 钥匙环优先（评审发现：此前用
+/// `Secrets::auto_detect()`——它默认**文件库优先**，与模块文档承诺的
+/// 「OS 钥匙环」相反；改为直连 keyring 并探测，与
+/// `platform/credential_store` 的 `SystemCredentialStore` 同构）。测试构建
+/// 保持 `auto_detect()`（文件库优先）：keyring 是系统级全局资源，`PINVOU3_HOME`
+/// 隔离不了它——单测必须密闭，绝不能在开发者/CI 的真实 Keychain 里写入
+/// 测试密钥。
+fn audit_secrets_backend() -> codewhale_secrets::Secrets {
+    #[cfg(not(test))]
+    {
+        let store = codewhale_secrets::DefaultKeyringStore::new(AUDIT_HMAC_SECRET_NAME);
+        match store.probe() {
+            Ok(()) => {
+                return codewhale_secrets::Secrets::new(std::sync::Arc::new(store));
             }
+            // 钥匙环不可用（headless/无 D-Bus）：文件库。仍先读取既存密钥
+            // （auto_detect 时代的密钥延续可用，审计 MAC 不因升级换钥匙）。
+            Err(_) => return codewhale_secrets::Secrets::file_backed(),
         }
-        let key: [u8; AUDIT_HMAC_KEY_BYTES] = rand::random();
-        let hex = hex_lower(&key);
-        if secrets.set(AUDIT_HMAC_SECRET_NAME, &hex).is_ok() {
-            return Some(key.to_vec());
+    }
+    #[cfg(test)]
+    {
+        codewhale_secrets::Secrets::auto_detect()
+    }
+}
+
+fn compute_audit_mac_key() -> Option<Vec<u8>> {
+    let secrets = audit_secrets_backend();
+    if let Ok(Some(stored)) = secrets.get(AUDIT_HMAC_SECRET_NAME) {
+        if let Some(key) = decode_hex_32(&stored) {
+            return Some(key);
         }
-        // 钥匙环不可用：回退文件密钥（经 platform 私有文件基座，0700 目录 +
-        // 私有 ACL/权限，OS 差异留在 platform 层）。现行位置是
-        // `<数据根>/keys/`（与日志分目录）；首次使用时若旧布局（审计目录内
-        // 的 audit-hmac.key）存在则原子 rename 迁移，新密钥直接写新位置。
-        // keys/ 目录不可用时退回旧布局位置读写（保持 v1 保障不丢）。
-        let legacy = crate::platform::filesystem::open_private_file_directory(&audit_dir()).ok();
-        match crate::platform::filesystem::open_private_file_directory(&audit_keys_dir()) {
-            Ok(keys_dir) => load_or_migrate_key_file(
-                &keys_dir,
-                OsStr::new(AUDIT_HMAC_KEY_V2_FILE),
-                legacy
-                    .as_ref()
-                    .map(|directory| (directory, OsStr::new(AUDIT_HMAC_KEY_FILE))),
-            ),
-            Err(_) => legacy.and_then(|directory| {
-                load_or_migrate_key_file(&directory, OsStr::new(AUDIT_HMAC_KEY_FILE), None)
-            }),
-        }
-    })
-    .as_ref()
+    }
+    let key: [u8; AUDIT_HMAC_KEY_BYTES] = rand::random();
+    let hex = hex_lower(&key);
+    if secrets.set(AUDIT_HMAC_SECRET_NAME, &hex).is_ok() {
+        return Some(key.to_vec());
+    }
+    // secrets 层不可用：回退文件密钥（经 platform 私有文件基座，0700 目录 +
+    // 私有 ACL/权限，OS 差异留在 platform 层）。现行位置是
+    // `<数据根>/keys/`（与日志分目录）；首次使用时若旧布局（审计目录内
+    // 的 audit-hmac.key）存在则原子 rename 迁移，新密钥直接写新位置。
+    // keys/ 目录不可用时退回旧布局位置读写（保持 v1 保障不丢）。
+    let legacy = crate::platform::filesystem::open_private_file_directory(&audit_dir()).ok();
+    match crate::platform::filesystem::open_private_file_directory(&audit_keys_dir()) {
+        Ok(keys_dir) => load_or_migrate_key_file(
+            &keys_dir,
+            OsStr::new(AUDIT_HMAC_KEY_V2_FILE),
+            legacy
+                .as_ref()
+                .map(|directory| (directory, OsStr::new(AUDIT_HMAC_KEY_FILE))),
+        ),
+        Err(_) => legacy.and_then(|directory| {
+            load_or_migrate_key_file(&directory, OsStr::new(AUDIT_HMAC_KEY_FILE), None)
+        }),
+    }
 }
 
 /// 文件密钥回退链（`audit_mac_key` 的可测内核）：

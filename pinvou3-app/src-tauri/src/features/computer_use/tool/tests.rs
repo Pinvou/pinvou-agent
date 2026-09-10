@@ -37,6 +37,9 @@ struct MockState {
     held: Vec<(Vec<Key>, u64)>,
     typed: Vec<String>,
     chords: Vec<Vec<Key>>,
+    /// release_os_grant 被调用次数（评审修复回归：revoke/stop 必须触发
+    /// 后端关闭持久 OS 级授权）。
+    released: u64,
 }
 
 impl Default for MockState {
@@ -59,6 +62,7 @@ impl Default for MockState {
             held: Vec::new(),
             typed: Vec::new(),
             chords: Vec::new(),
+            released: 0,
         }
     }
 }
@@ -191,6 +195,11 @@ impl ComputerUseBackend for MockBackend {
             ));
         }
         Ok(state.focused.clone())
+    }
+
+    fn release_os_grant(&mut self) -> Result<(), ComputerUseError> {
+        self.state.lock().released += 1;
+        Ok(())
     }
 }
 
@@ -1261,7 +1270,10 @@ async fn type_summary_masks_preview_for_secure_targets() {
 async fn single_char_key_chord_is_audited_as_typed_text() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
-    for chord in ["p", "ctrl+s"] {
+    // 评审修复回归：shift+字符（两种顺序，解析保留模型给定顺序）是大写/
+    // 符号的键入形态，与裸单字符同策略——只记 HMAC，明文不得进 JSONL
+    // （`key "shift+H"` 逐字符可拼出密码）。
+    for chord in ["p", "shift+h", "h+shift", "ctrl+s"] {
         let result = fixture
             .tool
             .execute(
@@ -1287,23 +1299,36 @@ async fn single_char_key_chord_is_audited_as_typed_text() {
         .iter()
         .filter(|r| r["action"] == "key" && r["phase"] == "begin")
         .collect();
-    assert_eq!(begins.len(), 2, "two key calls: {records:?}");
+    assert_eq!(begins.len(), 4, "four key calls: {records:?}");
 
-    let single = begins
+    let typed: Vec<&serde_json::Value> = begins
         .iter()
         .copied()
-        .find(|r| r["target"] == "keyboard focus")
-        .expect("single-char chord audited as typed text");
-    assert_eq!(single["text_len"], 1);
-    // 与 type 同策略：盐 + HMAC 齐备。
-    assert_eq!(single["salt"].as_str().unwrap_or_default().len(), 32);
+        .filter(|r| r["target"] == "keyboard focus")
+        .collect();
     assert_eq!(
-        single["text_hmac_sha256"]
-            .as_str()
-            .unwrap_or_default()
-            .len(),
-        64
+        typed.len(),
+        3,
+        "single-char and shift+char audited as typed text"
     );
+    // 长度 = 和弦文本长度（"p"、"shift+h"、"h+shift"）。
+    let mut lens: Vec<u64> = typed
+        .iter()
+        .map(|r| r["text_len"].as_u64().unwrap_or_default())
+        .collect();
+    lens.sort();
+    assert_eq!(lens, vec![1, 7, 7], "typed-text lengths: {typed:?}");
+    for record in &typed {
+        // 与 type 同策略：盐 + HMAC 齐备。
+        assert_eq!(record["salt"].as_str().unwrap_or_default().len(), 32);
+        assert_eq!(
+            record["text_hmac_sha256"]
+                .as_str()
+                .unwrap_or_default()
+                .len(),
+            64
+        );
+    }
     // 修饰键和弦保留明文（快捷键无字典风险）。
     let chorded = begins
         .iter()
@@ -1312,8 +1337,10 @@ async fn single_char_key_chord_is_audited_as_typed_text() {
         .expect("modifier chord keeps plaintext target");
     assert!(chorded["text_len"].is_null());
     assert!(chorded["text_hmac_sha256"].is_null());
-    // 单字符明文绝不能以 keys: 形式出现。
+    // 单字符明文（含 shift+字符）绝不能以 keys: 形式出现。
     assert!(!raw.contains("keys: p"));
+    assert!(!raw.contains("keys: shift+h"));
+    assert!(!raw.contains("keys: h+shift"));
 }
 
 // ---------------------------------------------------------------------------
@@ -1474,7 +1501,16 @@ async fn destructive_key_chords_require_confirmation() {
         height: 10,
         secure: false,
     });
-    for chord in ["cmd+delete", "ctrl+backspace", "meta+Enter", "ctrl+Enter"] {
+    for chord in [
+        "cmd+delete",
+        "ctrl+backspace",
+        "meta+Enter",
+        "ctrl+Enter",
+        // 评审修复回归：Shift 参与 Delete/Backspace 判定——shift+delete 是
+        // 绕过回收站的永久删除。
+        "shift+delete",
+        "shift+Backspace",
+    ] {
         let result = fixture
             .tool
             .execute(
@@ -1487,8 +1523,9 @@ async fn destructive_key_chords_require_confirmation() {
         assert!(text.contains("confirm_id"), "{chord}: {text}");
     }
     assert!(fixture.mock.lock().chords.is_empty(), "no chord may inject");
-    // 普通键不受影响：无修饰键的 Enter/Delete 直接放行（文本编辑主路径）。
-    for chord in ["Return", "Delete", "Backspace"] {
+    // 普通键不受影响：无修饰键的 Enter/Delete 直接放行（文本编辑主路径）；
+    // shift+Enter 是换行等键入形态，不升级为强制确认（Shift 不参与 Enter 判定）。
+    for chord in ["Return", "Delete", "Backspace", "shift+Return"] {
         let result = fixture
             .tool
             .execute(
@@ -1499,7 +1536,7 @@ async fn destructive_key_chords_require_confirmation() {
         let text = result.ok().map(|r| r.content).unwrap_or_default();
         assert!(!text.contains("NOT executed"), "{chord}: {text}");
     }
-    assert_eq!(fixture.mock.lock().chords.len(), 3);
+    assert_eq!(fixture.mock.lock().chords.len(), 4);
 }
 
 /// 按住左键期间 mouse_move 实质是拖拽：落点必须过 T3 筛查（拆解
@@ -1579,6 +1616,177 @@ async fn mouse_move_while_button_held_is_screened() {
     );
 }
 
+/// 评审修复回归：mouse_move 的确认摘要必须绑定坐标。旧的兜底摘要只有动作
+/// 名——弹窗盲批 "mouse_move"，且批准后带任意坐标重试都能重建相同摘要。
+#[tokio::test]
+async fn held_move_confirmation_binds_coordinates() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        result
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("mouse button is down")
+    );
+    // (12,12) 是回收站：按住 move 被拦，确认事件必须带目的地坐标。
+    fixture.mock.lock().element = Some(ElementInfo {
+        role: "AXButton".to_string(),
+        name: "Trash".to_string(),
+        x: 10,
+        y: 10,
+        width: 5,
+        height: 5,
+        secure: false,
+    });
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "mouse_move", "x": 12, "y": 12}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("NOT executed"), "{text}");
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    let confirmed = events
+        .iter()
+        .rev()
+        .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+        .expect("confirm event");
+    let confirm_id = confirmed.1["confirm_id"].as_str().unwrap_or_default();
+    let summary = confirmed.1["action"].as_str().unwrap_or_default();
+    assert!(
+        summary.contains("(12, 12)"),
+        "summary must bind the destination: {summary}"
+    );
+    fixture.shared.mint_confirmation(confirm_id);
+    // 拿 (12,12) 的令牌去 move (2,2)——摘要失配必须被拒。
+    let replay = fixture
+        .tool
+        .execute(
+            json!({"action": "mouse_move", "x": 2, "y": 2, "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = replay.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("invalid, expired, or was already used"),
+        "{text}"
+    );
+    assert!(
+        fixture.mock.lock().moved_to.is_empty(),
+        "no move may inject"
+    );
+}
+
+/// 评审修复回归：批准后重试必须重筛。批准到重试之间隔着任意模型调用
+/// （可重新截图/焦点已移动），摘要绑定的静态参数挡不住"目标处的东西
+/// 变了"；重筛确定性命中后果性名单时作废本次批准、要求重新确认。
+#[tokio::test]
+async fn approved_retry_is_rescreened_against_the_current_world() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    // 铸造时刻 a11y 故障：不可筛 → 走人工确认。
+    fixture.mock.lock().element_error = true;
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("NOT executed"), "{text}");
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    let confirm_id = events
+        .iter()
+        .rev()
+        .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+        .map(|(_, p)| p["confirm_id"].as_str().unwrap_or_default().to_string())
+        .expect("confirm event");
+    fixture.shared.mint_confirmation(&confirm_id);
+    // 世界变了：目标处现在是回收站。批准不得静默生效——重筛命中名单，
+    // 令牌作废（单次有效），要求重新确认。
+    fixture.mock.lock().element_error = false;
+    fixture.mock.lock().element = Some(ElementInfo {
+        role: "AXButton".to_string(),
+        name: "Trash".to_string(),
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: false,
+    });
+    let replay = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5, "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = replay.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("NOT executed"), "{text}");
+    assert!(text.contains("consequential"), "{text}");
+    assert!(fixture.mock.lock().clicked.is_empty(), "must not click");
+    // 新的确认请求已发出（用户要再批一次）。
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+            .count(),
+        2,
+        "a fresh confirmation must be requested: {events:?}"
+    );
+}
+
+/// 不可筛 → 用户批准 → 重试执行 的既有放行语义不得被重筛误伤：
+/// Unscreenable 在批准语境下是"用户已在知情下批准"，不二次索要确认。
+#[tokio::test]
+async fn approved_unscreenable_action_executes_after_confirmation() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().element_error = true;
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("NOT executed"), "{text}");
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    let confirm_id = events
+        .iter()
+        .rev()
+        .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+        .map(|(_, p)| p["confirm_id"].as_str().unwrap_or_default().to_string())
+        .expect("confirm event");
+    fixture.shared.mint_confirmation(&confirm_id);
+    let replay = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5, "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = replay.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        !text.contains("NOT executed"),
+        "user-approved unverifiable action must execute: {text}"
+    );
+    assert_eq!(fixture.mock.lock().clicked.len(), 1);
+}
+
 /// 无坐标 click 的令牌绑定含光标位置：铸造后把光标移到别的目标再花令牌，
 /// 摘要失配必须被拒（用户批准的落点与实际执行落点不同）。
 #[tokio::test]
@@ -1649,4 +1857,42 @@ async fn token_for_coordinateless_click_breaks_when_cursor_moves() {
         "same cursor position must spend the token"
     );
     assert_eq!(fixture.mock.lock().clicked.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// 评审修复回归:撤销/停止必须终止持久 OS 级授权(登记表 → release_os_grant)
+// ---------------------------------------------------------------------------
+
+/// revoke 经登记表触发后端 `release_os_grant`(detached 线程,轮询等待)。
+/// Wayland portal 会话由此随用户"停止控制"终止,而不是活到进程退出。
+#[tokio::test]
+async fn revoking_a_session_releases_the_backend_os_grant() {
+    let (fixture, _restore) = fixture();
+    assert!(
+        fixture.shared.backends.contains("s-test"),
+        "tool construction must register its backend handle"
+    );
+    fixture.shared.backends.release("s-test");
+    let mut released = false;
+    for _ in 0..300 {
+        if fixture.mock.lock().released > 0 {
+            released = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(released, "release_os_grant must reach the backend");
+}
+
+/// 工具析构注销登记:否则登记表里的句柄把 worker 线程(及其上的 portal
+/// 会话)吊到进程退出。
+#[tokio::test]
+async fn dropping_the_tool_unregisters_its_backend_handle() {
+    let (fixture, _restore) = fixture();
+    assert!(fixture.shared.backends.contains("s-test"));
+    drop(fixture.tool);
+    assert!(
+        !fixture.shared.backends.contains("s-test"),
+        "tool drop must unregister its backend handle"
+    );
 }
