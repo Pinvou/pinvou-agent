@@ -1,5 +1,16 @@
 #!/usr/bin/env bash
-# 校验文件或目录内全部 ELF 的架构和 Ubuntu 22.04 动态符号版本基线。
+# Validate the target architecture and the Ubuntu 22.04 dynamic-symbol
+# floors of every ELF under a file or directory:
+#   GLIBC_   <= 2.35   (jammy glibc 2.35; overridable via the third argument)
+#   GLIBCXX_ <= 3.4.30 (jammy libstdc++, gcc 12)
+#   CXXABI_  <= 1.3.13 (jammy libstdc++, gcc 12)
+# Release binaries link the build host's glibc, so a runner upgrade silently
+# raises the baseline; any ELF above the floor fails here in CI instead of
+# crashing on launch for 22.04 users. Runs on the release runner (see the
+# glibc floor guard steps in release-packages.yml) and at the end of
+# build-sensevoice-runtime.sh. Depends on dpkg/file/find/objdump/readelf,
+# all preinstalled on ubuntu runners; meaningful only on Linux, use bash -n
+# for a local syntax check.
 set -euo pipefail
 
 usage() {
@@ -66,7 +77,8 @@ check_prefix() {
 
 check_architecture() {
   local elf="$1" machine shown
-  # LC_ALL=C：readelf 头部字段名随 locale 本地化（如 zh_CN 下输出「系统架构」）。
+  # LC_ALL=C: readelf localizes header field names (e.g. under zh_CN the
+  # "Machine:" header is translated), which would break parsing below.
   machine="$(LC_ALL=C readelf -h "$elf" | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')"
   shown="$(display_path "$elf")"
   if [ "$machine" != "$expected_machine" ]; then
@@ -79,9 +91,23 @@ check_architecture() {
 elf_count=0
 failed=0
 while IFS= read -r -d '' elf; do
-  file -b "$elf" | grep -q '^ELF' || continue
+  file_out="$(file -b "$elf")"
+  case "$file_out" in
+    ELF*) ;;
+    *) continue ;;
+  esac
   elf_count=$((elf_count + 1))
   ok=0
+  case "$file_out" in
+    *executable*)
+      # A lost exec bit would otherwise surface late as "Permission denied"
+      # when the engine or host binary is launched.
+      [ -x "$elf" ] || {
+        echo "FAIL: $(display_path "$elf") is an ELF executable without the execute bit" >&2
+        ok=1
+      }
+      ;;
+  esac
   check_architecture "$elf" || ok=1
   dynsyms="$(dump_dynamic_symbols "$elf")" || { failed=1; continue; }
   check_prefix "$dynsyms" "$elf" 'GLIBC_' "$glibc_floor" || ok=1

@@ -32,9 +32,9 @@ const trackedCheck = spawnSync(
   ["ls-files", "--error-unmatch", trackedRuntime],
   { cwd: repoRoot, encoding: "utf8" },
 );
-assert.notEqual(
+assert.equal(
   trackedCheck.status,
-  0,
+  1,
   "precompiled SenseVoice ELF must not be stored in Git",
 );
 assert.match(fs.readFileSync(senseVoiceLicense, "utf8"), /Copyright \(c\) 2024 lovemefan/u);

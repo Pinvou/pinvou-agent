@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# 从固定 SenseVoice.cpp commit 为当前 Linux 主机构建可发布的 ASR 引擎。
+# Build a shippable ASR engine (sense-voice-main) for the current Linux host
+# from the pinned SenseVoice.cpp commit. Must run on Ubuntu 22.04 or older:
+# the output links the build host's glibc, and the post-build validation
+# rejects symbols above the 22.04 (glibc 2.35) baseline; release CI builds
+# on ubuntu-22.04 runners.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -70,7 +74,9 @@ if [ -x "$output_path" ] && [ -f "$build_info" ] \
   exit 0
 fi
 
-for command_name in cmake g++ git make sha256sum strip; do
+# Pre-check the validation dependencies as well, so a host that cannot run
+# check-linux-elf-policy.sh fails here instead of after a full compile.
+for command_name in cmake g++ git make sha256sum strip dpkg file objdump readelf; do
   command -v "$command_name" >/dev/null || {
     echo "missing SenseVoice build dependency: $command_name" >&2
     exit 1
@@ -88,6 +94,9 @@ git -C "$source_tmp" submodule update --init --recursive --depth 1
 rm -rf -- "$source_dir" "$build_dir"
 mv "$source_tmp" "$source_dir"
 
+# With GGML_NATIVE=OFF the pinned ggml still defaults AVX2/FMA to ON, so the
+# x86_64 engine carries a Haswell+ (AVX2) floor: pre-Haswell CPUs would
+# SIGILL at inference time. Accepted as the release baseline.
 cmake -S "$source_dir" -B "$build_dir" \
   -DCMAKE_BUILD_TYPE=Release \
   -DBUILD_SHARED_LIBS=OFF \

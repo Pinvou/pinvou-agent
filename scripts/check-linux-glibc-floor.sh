@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# 解包 deb 后校验全部 ELF 的目标架构和 Ubuntu 22.04 动态符号版本基线。
+# Extract a release deb and validate the target architecture plus the
+# Ubuntu 22.04 dynamic-symbol floors of every ELF inside; the policy itself
+# lives in check-linux-elf-policy.sh.
 set -euo pipefail
 
 usage() {
