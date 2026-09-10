@@ -1706,9 +1706,12 @@ const NAV_PREFETCH = {
       // movePickerRestoreRef:移动成功的 regroup 会把出发行重新挂到新的分组
       // 容器下,原标签节点随之销毁,被动还原会因 isConnected 失败跳过——
       // 成功时按会话键解析新节点,交给 useDialogFocusRestore 的关闭时还原。
+      // menu 打开时一并清陈旧拖拽预置,避免上一次落点残留到本次选择
+      // (finding 7;setState 引用稳定,不影响本回调的 identity)。
       const movePickerRestoreRef = useRef(null);
       const openMovePicker = useCallback((target) => {
         movePickerRestoreRef.current = null;
+        setMoveToPresetProject(null);
         setMoveToProjectSession(target);
       }, []);
       // 桥完成首次状态同步(bs 就绪)后拉一次项目快照;后续变更由
@@ -2891,7 +2894,7 @@ const NAV_PREFETCH = {
             onMoveToProject={chat.taskKind === 'codex' && bridge.projects && sidebarProjectsData?.projects?.length
               ? openMovePicker
               : undefined}
-            dndPayload={chat.taskKind === 'codex' && bridge.projects ? { sessionId: chat.id } : undefined}
+            dndPayload={chat.taskKind === 'codex' && bridge.projects && sidebarCodeListActive ? { sessionId: chat.id } : undefined}
             dndDisabled={!!dragAvatar}
             onDragEnd={() => setDropTargetGroupKey(null)}
             dragKind={detachKind}
@@ -3491,7 +3494,7 @@ const NAV_PREFETCH = {
                                   onConvert={bridge.projects && group.kind === 'folder' ? (name) => handleConvertFolderToProject(group.path, name) : undefined}
                                   onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
                                   onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
-                                  onDropSession={group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
+                                  onDropSession={bridge.projects && group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
                                   dropActive={dropTargetGroupKey === group.key}
                                   onDropActive={(active) => setDropTargetGroupKey(active ? group.key : null)}
                                 />
