@@ -7,7 +7,7 @@ import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { AlertTriangle, RefreshCw, X } from '../../components/icons.jsx';
 
-const RebindFolderDialog = ({ from, to, sessionCount, warnExisting, t, busy, onCancel, onConfirm }) => {
+const RebindFolderDialog = ({ from, to, warnExisting, t, busy, onCancel, onConfirm }) => {
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === 'Escape' && !busy) onCancel();
@@ -61,7 +61,7 @@ const RebindFolderDialog = ({ from, to, sessionCount, warnExisting, t, busy, onC
             <span className="font-medium break-all">{to}</span>
           </div>
           <div className="text-[12px] text-[#5F6368] dark:text-[#C4C7C5]">
-            {t.uiProjects.rebindSessionsHint(sessionCount)}
+            {t.uiProjects.rebindSessionsHint()}
           </div>
           {warnExisting && (
             <div className="flex items-start gap-2 rounded-2xl bg-[#FCE8E6] dark:bg-[#3C2A29] px-3 py-2 text-[12px] text-[#C5221F] dark:text-[#F28B82]" data-testid="rebind-warn-existing">

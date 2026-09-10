@@ -1695,6 +1695,7 @@ const NAV_PREFETCH = {
       const [projectOpsBusy, setProjectOpsBusy] = useState(false);
       const [moveToProjectSession, setMoveToProjectSession] = useState(null);
       const [moveToPresetProject, setMoveToPresetProject] = useState(null);
+      const [rebindDraft, setRebindDraft] = useState(null);
       // 拖拽高亮的唯一所有者:源行 dragend 无条件清除,webview 丢 dragleave
       // 事件时高亮也不会卡死(评审 #450 finding 5)。
       const [dropTargetGroupKey, setDropTargetGroupKey] = useState(null);
@@ -1705,7 +1706,6 @@ const NAV_PREFETCH = {
       // 拖拽预置,避免上一次落点残留到本次选择(finding 7;setState 引用
       // 稳定,不影响本回调的 identity)。
       const openMovePicker = useCallback((target) => { setMoveToPresetProject(null); setMoveToProjectSession(target); }, []);
-      const [rebindDraft, setRebindDraft] = useState(null);
       // 桥完成首次状态同步(bs 就绪)后拉一次项目快照;后续变更由
       // projects:list_changed 事件驱动桥内刷新(bridge/projects.js)。
       const projectsBootstrapReady = !!bs;
@@ -2542,13 +2542,15 @@ const NAV_PREFETCH = {
       // 目录重绑定(修断链):失效 root 的项目头上点"重新绑定" → 系统选目录
       // → 确认弹窗。两阶段确认:首调不带 confirmExisting,后端发现旧目录
       // 仍在时拒绝,弹窗升级为强警告后由用户再次确认。
-      const startRebindWorkspace = async (fromPath, sessionCount) => {
+      const startRebindWorkspace = async (fromPath) => {
         if (!bridge.files || !bridge.files.pickFolders || projectOpsBusy) return;
         try {
           const picked = await bridge.files.pickFolders();
           const to = Array.isArray(picked) ? picked[0] : picked;
           if (!to) return;
-          setRebindDraft({ from: fromPath, to, sessionCount, warnExisting: false });
+          // 不带会话数:命令实际重绑定 from 之下的一切会话,侧栏组渲染数
+          // 只是子集,数字承诺会与 RebindWorkspaceReport 对不上(finding 10)。
+          setRebindDraft({ from: fromPath, to, warnExisting: false });
         } catch (error) {
           console.warn('pick rebind folder failed', error);
         }
@@ -2560,12 +2562,22 @@ const NAV_PREFETCH = {
           const report = await bridge.projects.rebindWorkspaceRoot(
             rebindDraft.from, rebindDraft.to, confirmExisting);
           setRebindDraft(null);
-          const count = (report && report.rebound_session_ids) ? report.rebound_session_ids.length : 0;
-          setSettingsToast(t.uiProjects.rebindSuccess(count));
+          const rebound = (report && report.rebound_session_ids) ? report.rebound_session_ids.length : 0;
+          const failed = (report && report.failed_session_ids) ? report.failed_session_ids.length : 0;
+          const postBusy = (report && report.post_busy_session_ids) ? report.post_busy_session_ids.length : 0;
+          // 部分失败不再吞掉(finding 3):数据迁移的半成功必须如实呈现。
+          if (failed > 0) {
+            setSettingsToast(t.uiProjects.rebindPartial(rebound, failed));
+          } else if (postBusy > 0) {
+            setSettingsToast(t.uiProjects.rebindBusyAfter(postBusy));
+          } else {
+            setSettingsToast(t.uiProjects.rebindSuccess(rebound));
+          }
           await refreshCodexSessions().catch(() => {});
         } catch (error) {
           const message = String(error);
-          if (message.includes('original folder still exists')) {
+          // 类型化标记匹配(finding 11):只认稳定前缀,不匹配人类文案。
+          if (message.startsWith('REBIND_OLD_ROOT_EXISTS')) {
             setRebindDraft(prev => prev && { ...prev, warnExisting: true });
           } else {
             console.warn('rebind workspace failed', error);
@@ -3060,7 +3072,6 @@ const NAV_PREFETCH = {
             <RebindFolderDialog
               from={rebindDraft.from}
               to={rebindDraft.to}
-              sessionCount={rebindDraft.sessionCount}
               warnExisting={rebindDraft.warnExisting}
               t={t}
               busy={projectOpsBusy}
@@ -3466,16 +3477,14 @@ const NAV_PREFETCH = {
                                   onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
                                   onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
                                   onDropSession={bridge.projects && group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
+                                  unavailableRoots={group.kind === 'project'
+                                    ? (group.roots || [])
+                                        .filter(root => !(root && typeof root === 'object' ? root.available : root))
+                                        .map(root => String(typeof root === 'object' ? root.path : root))
+                                    : []}
+                                  onRebind={group.kind === 'project' ? (rootPath) => startRebindWorkspace(rootPath) : undefined}
                                   dropActive={dropTargetGroupKey === group.key}
                                   onDropActive={(active) => setDropTargetGroupKey(active ? group.key : null)}
-                                  rootsUnavailable={group.kind === 'project'
-                                    && Array.isArray(group.roots) && group.roots.length > 0
-                                    && group.roots.every(root => !(root && typeof root === 'object' ? root.available : root))}
-                                  onRebind={group.kind === 'project' && group.roots && group.roots.length
-                                    ? (() => startRebindWorkspace(
-                                        String(typeof group.roots[0] === 'object' ? group.roots[0].path : group.roots[0]),
-                                        group.rows.length))
-                                    : undefined}
                                 />
                                 {isOpen && (
                                   <div className="mt-1 space-y-0.5">
