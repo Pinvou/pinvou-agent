@@ -1286,8 +1286,9 @@ impl TurnLifecycle {
     ///   `chat:done` 使 reservation 失效，而不是挂成 pending——否则空闲 engine 仍
     ///   存在时 cancel 不发终态、reservation 仍有效，原 chat future 后续照常提交，
     ///   前端 busy 在 cancel 后到 TurnStarted 之间无法复位。
-    /// - 若 `turn_id` 已有值说明 TurnStarted 已被转发器消费，取消闭包按该
-    ///   身份走 turn 绑定取消、直接命中本轮 token，无需补打。
+    /// - A set `turn_id` means the forwarder already consumed `TurnStarted`:
+    ///   the cancel closure dispatches turn-bound under that identity and
+    ///   hits exactly this turn's own token, with no replay needed.
     /// - 必须 `turn_epoch == epoch`：并发取消请求（C1/C2）中，排队较晚的 C2 在
     ///   持锁恢复后读到的是「当前 lifecycle」。cancel 已在取 `turn_lock` 前后比对
     ///   过 epoch（见 [`current_turn_generation`]/cancel 路径），此处传入**当前**
@@ -1408,7 +1409,7 @@ impl TurnLifecycle {
     /// 原子取出并清除 `pending_cancel` 标记。
     ///
     /// 由事件转发器在收到 `TurnStarted` 后调用：此时 CodeWhale 的
-    /// `reset_cancel_token()` 已执行完毕（它在 `TurnStarted` 之前）。
+    /// `reset_cancel_token()` has already run (it executes before `TurnStarted`).
     /// The turn-bound replay (`EngineHandle::cancel_turn(turn_id, …)`) fires
     /// exactly the named turn's own token, and is dropped wholesale if the
     /// slot has already moved on to a newer turn (issue #254).
