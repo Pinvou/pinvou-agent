@@ -1157,6 +1157,7 @@ pub fn run() {
             commands::computer_use::computer_use_grant,
             commands::computer_use::computer_use_revoke,
             commands::computer_use::computer_use_stop,
+            commands::computer_use::computer_use_deny,
             commands::computer_use::computer_use_confirm,
             commands::computer_use::computer_use_set_enabled,
             commands::computer_use::computer_use_request_permissions,

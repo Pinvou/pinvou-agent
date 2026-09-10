@@ -124,6 +124,11 @@ rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] 
 # 0.11 与 CodeWhale 子模块对齐。digest 的 Output 不实现 LowerHex,统一用 hex_lower 编码
 # (见 src/platform/encoding.rs)。
 sha2 = "0.11"
+# Computer Use 审计日志（features/computer_use/audit.rs）：键入文本以
+# HMAC-SHA256（钥匙环密钥）入账，防离线字典恢复（评审发现：无盐哈希 +
+# 明文长度对密码等小键空间形同明文）。0.13 对齐 app 已用的 sha2 0.11
+# （digest 0.11 已在 lockfile；锁内已有的 hmac 0.12 配的是 sha2 0.10）。
+hmac = "0.13"
 # 8.x 与 calamine 传递引入的 zip 8.6.0 收敛为单一版本（消除旧 zip 2.x + 连带传递依赖）。
 # 仅 deflate（读 .pptx / 写技能 zip 包），关默认 feature 去掉 bzip2/lzma/zstd 等。
 zip = { version = "8", default-features = false, features = ["deflate"] }
@@ -241,7 +246,7 @@ objc2-speech = { version = "0.3", default-features = false, features = [
 # (AXUIElement / HIServices)。版本对齐 objc2 0.6 family。
 objc2-application-services = "0.3"
 # Computer Use 截屏权限预检(features/computer_use):CGPreflight/CGRequestScreenCaptureAccess。
-# 已在 lockfile(0.3.2,xcap 传递依赖),此处仅提升为直接依赖,不新增 crate。
+# 已在 lockfile(0.3.2,objc2 家族传递依赖),此处仅提升为直接依赖,不新增 crate。
 objc2-core-graphics = "0.3"
 
 [target.'cfg(windows)'.dependencies]

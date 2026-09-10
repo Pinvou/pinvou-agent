@@ -23,7 +23,9 @@ use deepseek_tui::tools::spec::{
 
 use super::audit::{self, AuditLog, AuditRecord};
 use super::backend::BackendHandle;
-use super::guard::{ComputerUseShared, GuardRejection, is_secure_role, matches_t3_denylist};
+use super::guard::{
+    ComputerUseShared, ConfirmationCheck, GuardRejection, is_secure_role, matches_t3_denylist,
+};
 use super::platform;
 use super::scaling::{self, ScaleMap, ScaledScreenshot};
 use super::types::{
@@ -46,6 +48,30 @@ pub const MAX_UI_TREE_NODES: u32 = 10_000;
 /// 截图存放的子目录（相对 workspace）：engine 的 image_analyze 回退按
 /// workspace 相对路径解析，`attachments/` 是它的既定根。
 const ATTACHMENTS_DIR: &str = "attachments/computer_use";
+
+/// 工具 schema 暴露的动作全集。单一来源：schema 的 enum、未知动作的错误
+/// 文案与 `parse_action` 的分发必须一致——parity 测试（tool/tests.rs）钉住
+/// 三者，防止新增动作时只改一处。
+pub const SUPPORTED_ACTIONS: &[&str] = &[
+    "screenshot",
+    "cursor_position",
+    "wait",
+    "ui_tree",
+    "element_at_point",
+    "mouse_move",
+    "scroll",
+    "left_click",
+    "right_click",
+    "middle_click",
+    "double_click",
+    "triple_click",
+    "left_mouse_down",
+    "left_mouse_up",
+    "left_click_drag",
+    "type",
+    "key",
+    "hold_key",
+];
 
 /// Tauri 事件出口（测试注入记录器替代）。
 pub trait ComputerUseEventSink: Send + Sync {
@@ -373,7 +399,8 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
         }
         other => {
             return Err(invalid(format!(
-                "unknown action '{other}'; supported: screenshot, cursor_position, wait, ui_tree, element_at_point, mouse_move, scroll, left_click, right_click, middle_click, double_click, triple_click, left_mouse_down, left_mouse_up, left_click_drag, type, key, hold_key"
+                "unknown action '{other}'; supported: {}",
+                SUPPORTED_ACTIONS.join(", ")
             )));
         }
     };
@@ -474,77 +501,155 @@ fn resolve_targets(
         .collect()
 }
 
-/// T3 后果性检测：点击/键盘动作前查目标（或光标）处的 a11y 元素，
-/// 命中名单或密码字段即拦截。
+/// T3 筛查结论。`Unscreenable` 表示无法证明目标无害（a11y 查询故障、光标
+/// 位置未知、缺截图映射等）——按**失败关闭**处理：与命中名单同样要求显式
+/// 用户确认。旧实现把后端错误吞成「无元素」直接放行（评审发现），安全
+/// 筛查绝不能 fail-open。
+enum T3Screening {
+    Clear,
+    Blocked(T3Hit),
+    Unscreenable(String),
+}
+
 struct T3Hit {
     element_label: String,
     reason: &'static str,
 }
 
-fn t3_check(parts: &Parts, action: &ComputerUseAction, map: Option<&ScaleMap>) -> Option<T3Hit> {
-    let target_input: Option<(i32, i32)> = match action {
-        ComputerUseAction::Click {
-            at: Some((x, y)), ..
-        }
-        | ComputerUseAction::Scroll {
-            at: Some((x, y)), ..
-        } => map.map(|m| {
-            let (cx, cy, _) = m.clamp_shot(*x, *y);
-            m.shot_to_input(cx, cy)
-        }),
-        ComputerUseAction::ElementAtPoint { .. } | ComputerUseAction::MouseMove { .. } => None,
-        _ => {
-            // 无坐标输入动作：用当前光标位置。
-            match parts.backend.cursor_position() {
-                Ok((dx, dy)) => Some(match map {
-                    Some(m) => m.device_to_input(dx, dy),
-                    None => (dx, dy),
-                }),
-                Err(_) => None,
-            }
+/// 对一个输入坐标处的 a11y 元素做名单/密码字段筛查。
+fn screen_point(parts: &Parts, x: i32, y: i32) -> T3Screening {
+    let element = match parts.backend.element_at_point(x, y) {
+        Ok(element) => element,
+        Err(error) => {
+            return T3Screening::Unscreenable(format!(
+                "accessibility screening failed at ({x}, {y}): {error}"
+            ));
         }
     };
-    let (x, y) = target_input?;
-    let element = parts.backend.element_at_point(x, y).ok().flatten()?;
+    let Some(element) = element else {
+        return T3Screening::Clear;
+    };
     if element.secure || is_secure_role(&element.role) {
-        return Some(T3Hit {
+        return T3Screening::Blocked(T3Hit {
             element_label: format!("{} ({})", element.name, element.role),
             reason: "a password/secure field",
         });
     }
     if matches_t3_denylist(&element.name) || matches_t3_denylist(&element.role) {
-        return Some(T3Hit {
+        return T3Screening::Blocked(T3Hit {
             element_label: format!("{} ({})", element.name, element.role),
             reason: "a consequential control (purchase/payment/send/delete/transfer/submit)",
         });
     }
-    None
+    T3Screening::Clear
 }
 
+/// T3 后果性筛查：Input 类动作执行前查目标处的 a11y 元素。
+///
+/// 筛查点选择：
+/// - 带坐标的点击/滚动查目标点；`left_click_drag` 查**起点与落点**两个点
+///   （拖进回收站/Delete 区是典型后果性动作，只查光标会漏掉终点——评审发现）。
+/// - 无坐标输入动作（type/key/按下释放）查当前光标：type 打进焦点字段，
+///   mouse down/up 作用于光标处。
+/// - mouse_move 只悬停、不产生后果，明确不筛查（否则合法 hover 全被拦）；
+///   它的后果由随后的按下动作自身筛查兜住。
+///
+/// 映射缺失（无截图）或光标未知时不再用设备像素硬猜坐标（评审发现：缩放
+/// 屏上会查错位置静默放行），一律 `Unscreenable` 失败关闭。
+fn t3_screening(parts: &Parts, action: &ComputerUseAction, map: Option<&ScaleMap>) -> T3Screening {
+    const NO_MAP: &str = "no screenshot mapping is available to resolve the target point";
+    let points: Vec<(i32, i32)> = match action {
+        ComputerUseAction::MouseMove { .. } | ComputerUseAction::ElementAtPoint { .. } => {
+            return T3Screening::Clear;
+        }
+        ComputerUseAction::Click {
+            at: Some((x, y)), ..
+        }
+        | ComputerUseAction::Scroll {
+            at: Some((x, y)), ..
+        } => {
+            let Some(m) = map else {
+                return T3Screening::Unscreenable(NO_MAP.to_string());
+            };
+            let (cx, cy, _) = m.clamp_shot(*x, *y);
+            vec![m.shot_to_input(cx, cy)]
+        }
+        ComputerUseAction::Drag { start, end } => {
+            let Some(m) = map else {
+                return T3Screening::Unscreenable(NO_MAP.to_string());
+            };
+            let (sx, sy, _) = m.clamp_shot(start.0, start.1);
+            let (ex, ey, _) = m.clamp_shot(end.0, end.1);
+            vec![m.shot_to_input(sx, sy), m.shot_to_input(ex, ey)]
+        }
+        _ => match parts.backend.cursor_position() {
+            Ok((dx, dy)) => {
+                let Some(m) = map else {
+                    return T3Screening::Unscreenable(
+                        "cursor position cannot be mapped into the input space without a                          screenshot"
+                            .to_string(),
+                    );
+                };
+                vec![m.device_to_input(dx, dy)]
+            }
+            Err(error) => {
+                return T3Screening::Unscreenable(format!(
+                    "cursor position is unknown, so the focused target cannot be screened:                      {error}"
+                ));
+            }
+        },
+    };
+    for (x, y) in points {
+        match screen_point(parts, x, y) {
+            T3Screening::Clear => {}
+            other => return other,
+        }
+    }
+    T3Screening::Clear
+}
+
+/// T3 筛查覆盖全部 Input 类动作——层级表以 [`ActionClass::class`] 为单一
+/// 来源（评审发现：旧版手抄清单漏掉 MouseDown/Up，点击可被拆解绕过）。
 fn requires_t3_check(action: &ComputerUseAction) -> bool {
-    matches!(
-        action,
-        ComputerUseAction::Click { .. }
-            | ComputerUseAction::Drag { .. }
-            | ComputerUseAction::Type { .. }
-            | ComputerUseAction::KeyChord { .. }
-            | ComputerUseAction::HoldKey { .. }
+    action.class() == ActionClass::Input
+}
+
+/// 铸造待确认请求、发事件并给模型返回「未执行、去要确认」错误。
+fn request_confirmation(
+    parts: &Parts,
+    summary: &str,
+    element_label: &str,
+    reason_phrase: &str,
+) -> String {
+    let confirm_id = parts.shared.new_pending_confirmation(
+        &parts.session_id,
+        summary.to_string(),
+        element_label.to_string(),
+    );
+    parts.events.emit(
+        EVENT_CONFIRM_REQUIRED,
+        json!({
+            "session_id": parts.session_id,
+            "action": summary,
+            "element": element_label,
+            "confirm_id": confirm_id,
+        }),
+    );
+    format!(
+        "this action targets {reason_phrase}: \"{element_label}\". It was NOT executed. \
+         Ask the user to confirm in the app; then retry the same action with \
+         confirm_id=\"{confirm_id}\"."
     )
 }
 
-/// 动作是否附截图：截图/wait 总是；输入类与 scroll 执行后补拍。
+/// 动作是否附截图（单一事实来源在 [`ComputerUseAction::attaches_screenshot`]）。
 fn attaches_screenshot(action: &ComputerUseAction) -> bool {
-    matches!(
-        action,
-        ComputerUseAction::Screenshot | ComputerUseAction::Wait { .. }
-    ) || action.class() == ActionClass::Input
-        || matches!(action, ComputerUseAction::Scroll { .. })
+    action.attaches_screenshot()
 }
 
 fn consent_label(action: &ComputerUseAction, confirmed: bool) -> String {
     match action.class() {
         ActionClass::Observe => "observe".to_string(),
-        ActionClass::Passive => "passive".to_string(),
         ActionClass::Input => {
             if confirmed {
                 "input:session-grant+t3-confirmed".to_string()
@@ -566,12 +671,14 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         })
         .ok();
 
+    // begin 记录的 consent 标签保持中性：此刻令牌尚未验证（评审发现：带
+    // confirm_id 的调用曾被预标成 t3-confirmed，伪造 id 会留下失实审计）。
     let mut record = AuditRecord::begin(
         call_id,
         parts.session_id.clone(),
         action.name(),
         action.class().as_str(),
-        consent_label(&action, parsed.confirm_id.is_some()),
+        consent_label(&action, false),
     );
     match &action {
         ComputerUseAction::Type { text } => {
@@ -602,8 +709,16 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
     let mut confirmed_t3 = false;
 
     let body: Result<String, String> = (|| {
-        // 带坐标动作没有 ScaleMap 时先自动截图（会话首次）。
-        if action.needs_scale_map() && parts.state.lock().last_map.is_none() {
+        // 物理输入是全局独占资源：Input 类动作从筛查到注入全程持有进程级
+        // 互斥，两个并发会话不能交替打字/点击（评审发现）。
+        let _input_guard =
+            (action.class() == ActionClass::Input).then(|| parts.shared.lock_physical_input());
+
+        // 带坐标动作没有 ScaleMap 时先自动截图（会话首次）；T3 动作同样需要
+        // 映射——筛查点的坐标换算和光标映射都依赖它。
+        if (action.needs_scale_map() || requires_t3_check(&action))
+            && parts.state.lock().last_map.is_none()
+        {
             let auto = capture_and_store(&parts, &workspace).map_err(|e| backend_error_text(&e))?;
             warnings.push(
                 "no screenshot had been taken this session; one was captured automatically and is attached"
@@ -612,49 +727,66 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
             shot = Some(auto);
         }
 
-        // T3 确认令牌：模型回传 confirm_id 且状态里有批准令牌才放行。
+        // T3 确认令牌：模型回传 confirm_id 且状态里有与之匹配（同会话、同
+        // 动作摘要）的批准令牌才放行。
         if requires_t3_check(&action) {
-            let map = parts.state.lock().last_map.clone();
+            let summary = action_summary(&action);
             let bypass = match &parsed.confirm_id {
-                Some(id) => parts.shared.take_confirmation(id),
-                None => false,
+                Some(id) => Some(
+                    parts
+                        .shared
+                        .take_confirmation(id, &parts.session_id, &summary),
+                ),
+                None => None,
             };
-            if parsed.confirm_id.is_some() && !bypass {
-                return Err(
-                    "the confirm_id is invalid or was already used. Ask the user to confirm again."
-                        .to_string(),
-                );
-            }
-            if !bypass {
-                if let Some(hit) = t3_check(&parts, &action, map.as_ref()) {
-                    let summary = action_summary(&action);
-                    let confirm_id = parts.shared.new_pending_confirmation(
-                        &parts.session_id,
-                        summary.clone(),
-                        hit.element_label.clone(),
+            match bypass {
+                Some(ConfirmationCheck::Granted) => confirmed_t3 = true,
+                Some(ConfirmationCheck::Denied) => {
+                    return Err(
+                        "the user denied this action. Do not retry it; ask the user how to \
+                         proceed."
+                            .to_string(),
                     );
-                    parts.events.emit(
-                        EVENT_CONFIRM_REQUIRED,
-                        json!({
-                            "session_id": parts.session_id,
-                            "action": summary,
-                            "element": hit.element_label,
-                            "confirm_id": confirm_id,
-                        }),
-                    );
-                    return Err(format!(
-                        "this action targets {}: \"{}\". It was NOT executed. Ask the user to confirm in the app; then retry the same action with confirm_id=\"{confirm_id}\".",
-                        hit.reason, hit.element_label
-                    ));
                 }
-            } else {
-                confirmed_t3 = true;
+                Some(ConfirmationCheck::Unknown) => {
+                    return Err(
+                        "the confirm_id is invalid, expired, or was already used. Ask the \
+                         user to confirm again."
+                            .to_string(),
+                    );
+                }
+                None => {
+                    let map = parts.state.lock().last_map.clone();
+                    match t3_screening(&parts, &action, map.as_ref()) {
+                        T3Screening::Clear => {}
+                        T3Screening::Blocked(hit) => {
+                            return Err(request_confirmation(
+                                &parts,
+                                &summary,
+                                &hit.element_label,
+                                hit.reason,
+                            ));
+                        }
+                        T3Screening::Unscreenable(reason) => {
+                            // 失败关闭：无法证明目标无害时同样要求用户确认。
+                            return Err(request_confirmation(
+                                &parts,
+                                &summary,
+                                &reason,
+                                "an unverifiable target (screening unavailable)",
+                            ));
+                        }
+                    }
+                }
             }
         }
 
-        // 停止旗标：注入前最后一刻检查。
-        if action.class() == ActionClass::Input && parts.shared.is_stopped() {
-            return Err(GuardRejection::Stopped.message());
+        // 注入前最后一刻只读复检（停止旗标 + 授权仍有效）：gate 之后可能隔
+        // 着自动截图等耗时步骤，期间用户可能 revoke/stop（评审发现）。
+        if action.class() == ActionClass::Input {
+            if let Err(rejection) = parts.shared.verify_input_action(&parts.session_id) {
+                return Err(rejection.message());
+            }
         }
 
         // 能力检查。
@@ -916,10 +1048,12 @@ impl ToolSpec for ComputerUseTool {
          press key chords, scroll, and inspect the accessibility tree. \
          Coordinates are ALWAYS in the pixel space of the last screenshot this tool returned \
          (origin top-left); take a screenshot first and reuse its coordinate space. \
-         Input actions (clicks, keys, typing) require the user's session grant; consequential \
-         actions (purchase/payment/send/delete/submit controls, password fields) require explicit \
-         user confirmation via confirm_id. After every action a fresh screenshot is attached; \
-         if it is not visible, call image_analyze with the returned attachments path."
+         Every action that touches the mouse or keyboard (mouse_move, scroll, clicks, keys, \
+         typing) requires the user's session grant; consequential actions (purchase/payment/ \
+         send/delete/submit controls, password fields) additionally require explicit user \
+         confirmation via confirm_id. After actions that change the screen a fresh screenshot \
+         is attached; if it is not visible, call image_analyze with the returned attachments \
+         path."
     }
 
     fn input_schema(&self) -> Value {
@@ -928,13 +1062,7 @@ impl ToolSpec for ComputerUseTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": [
-                        "screenshot", "cursor_position", "wait", "ui_tree", "element_at_point",
-                        "mouse_move", "scroll",
-                        "left_click", "right_click", "middle_click", "double_click", "triple_click",
-                        "left_mouse_down", "left_mouse_up", "left_click_drag",
-                        "type", "key", "hold_key"
-                    ],
+                    "enum": SUPPORTED_ACTIONS,
                     "description": "The computer action to perform"
                 },
                 "x": { "type": "integer", "minimum": 0, "description": "X coordinate in the last screenshot's pixel space" },
@@ -971,9 +1099,27 @@ impl ToolSpec for ComputerUseTool {
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let parsed = parse_action(&input)?;
 
+        // 能力先行（评审发现：先弹授权再报不支持，会诱导用户为一个永远无法
+        // 使用的平台授权，还白白消耗一次授权预算）。
+        if parsed.action.class() == ActionClass::Input {
+            let backend = self.parts.backend.clone();
+            let capabilities = tauri::async_runtime::spawn_blocking(move || backend.capabilities())
+                .await
+                .map_err(|error| {
+                    ToolError::execution_failed(format!("computer use worker join failed: {error}"))
+                })?
+                .map_err(|error| ToolError::execution_failed(backend_error_text(&error)))?;
+            if !capabilities.input {
+                return Ok(ToolResult::error(format!(
+                    "input injection is unsupported on this platform/session ({})",
+                    capabilities.notes
+                )));
+            }
+        }
+
         // 同意门控（同步快速路径，拒绝时发事件）。
         let gate = match parsed.action.class() {
-            ActionClass::Observe | ActionClass::Passive => self.parts.shared.check_readonly(),
+            ActionClass::Observe => self.parts.shared.check_readonly(),
             ActionClass::Input => self.parts.shared.begin_input_action(&self.parts.session_id),
         };
         if let Err(rejection) = gate {

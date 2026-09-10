@@ -1,19 +1,33 @@
 //! 审计日志：append-only JSONL，每次工具调用执行前写 begin 记录、完成后写
 //! end 记录（同一 call_id 关联，纯追加绝不原地改）。
 //!
-//! 隐私契约：键入文本只记**长度 + SHA-256**，永不记明文（可能是密码）；
+//! 隐私契约：键入文本只记**长度 + HMAC-SHA256**，永不记明文（可能是密码）；
 //! 截图记 SHA-256 + 文件路径；target 字段按平台审计约定截到 ≤600 字节。
+//!
+//! HMAC 密钥获取链（进程级缓存）：OS 钥匙环（codewhale-secrets，缺则随机
+//! 生成并写入）→ 钥匙环不可用时回退审计目录内的 `audit-hmac.key`（0700
+//! 目录 + 尽力 0600 文件）→ 两者都失败则**只记长度**。密钥与日志分离是
+//! 底线：只拿到单条 jsonl 的人不能对键入内容做离线字典恢复（评审发现：
+//! 无盐 SHA-256 + 明文长度对密码这类小键空间形同明文）。
 
+use std::ffi::OsStr;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
+use hmac::{KeyInit, Mac};
 use serde::Serialize;
 use sha2::Digest as _;
+type HmacSha256 = hmac::Hmac<sha2::Sha256>;
 
 use crate::platform::encoding::hex_lower;
 use crate::platform::paths;
 use crate::platform::strings::truncate_utf8;
+
+const AUDIT_HMAC_SECRET_NAME: &str = "pinvou3-computer-use-audit-hmac";
+const AUDIT_HMAC_KEY_FILE: &str = "audit-hmac.key";
+const AUDIT_HMAC_KEY_BYTES: usize = 32;
 
 /// target / 元素标签字段的字节上限（平台审计字段统一约定）。
 pub const AUDIT_TARGET_MAX_BYTES: usize = 600;
@@ -58,8 +72,9 @@ pub struct AuditRecord {
     pub target: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_len: Option<usize>,
+    /// 键入文本的 HMAC-SHA256（密钥见模块文档）；密钥不可用时缺省（仅长度）。
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub text_sha256: Option<String>,
+    pub text_hmac_sha256: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screenshot_sha256: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -92,7 +107,7 @@ impl AuditRecord {
             class: class.into(),
             target: None,
             text_len: None,
-            text_sha256: None,
+            text_hmac_sha256: None,
             screenshot_sha256: None,
             screenshot_path: None,
             consent: consent.into(),
@@ -102,10 +117,13 @@ impl AuditRecord {
         }
     }
 
-    /// 记录键入文本：只存长度与哈希。
+    /// 记录键入文本：只存长度与 HMAC（密钥不可用时仅长度）。
     pub fn with_typed_text(&mut self, text: &str) -> &mut Self {
         self.text_len = Some(text.chars().count());
-        self.text_sha256 = Some(sha256_hex(text.as_bytes()));
+        if let Some(digest) = audit_mac_key().and_then(|key| hmac_sha256_hex(key, text.as_bytes()))
+        {
+            self.text_hmac_sha256 = Some(digest);
+        }
         self
     }
 
@@ -171,6 +189,68 @@ impl AuditLog {
     }
 }
 
+fn decode_hex_32(stored: &str) -> Option<Vec<u8>> {
+    let stored = stored.trim();
+    if stored.len() != AUDIT_HMAC_KEY_BYTES * 2 || !stored.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    (0..AUDIT_HMAC_KEY_BYTES)
+        .map(|i| u8::from_str_radix(&stored[i * 2..i * 2 + 2], 16).ok())
+        .collect()
+}
+
+/// 审计 HMAC 密钥（进程级缓存）。获取链见模块文档。
+fn audit_mac_key() -> Option<&'static Vec<u8>> {
+    static KEY: OnceLock<Option<Vec<u8>>> = OnceLock::new();
+    KEY.get_or_init(|| {
+        let secrets = codewhale_secrets::Secrets::auto_detect();
+        if let Ok(Some(stored)) = secrets.get(AUDIT_HMAC_SECRET_NAME) {
+            if let Some(key) = decode_hex_32(&stored) {
+                return Some(key);
+            }
+        }
+        let key: [u8; AUDIT_HMAC_KEY_BYTES] = rand::random();
+        let hex = hex_lower(&key);
+        if secrets.set(AUDIT_HMAC_SECRET_NAME, &hex).is_ok() {
+            return Some(key.to_vec());
+        }
+        // 钥匙环不可用：回退审计目录内的密钥文件（经 platform 私有文件
+        // 基座写入，0700 目录 + 私有 ACL/权限，OS 差异留在 platform 层）。
+        if let Ok(directory) =
+            crate::platform::filesystem::open_private_file_directory(&audit_dir())
+        {
+            if let Some(key) = read_audit_key_file(&directory, AUDIT_HMAC_KEY_FILE) {
+                return Some(key);
+            }
+            if directory
+                .atomic_write_private_file(OsStr::new(AUDIT_HMAC_KEY_FILE), hex.as_bytes())
+                .is_ok()
+            {
+                return Some(key.to_vec());
+            }
+        }
+        None
+    })
+    .as_ref()
+}
+
+fn read_audit_key_file(
+    directory: &crate::platform::filesystem::PrivateFileDirectory,
+    name: &str,
+) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let mut file = directory.open_plain_file(OsStr::new(name)).ok()??;
+    let mut stored = String::new();
+    file.read_to_string(&mut stored).ok()?;
+    decode_hex_32(&stored)
+}
+
+fn hmac_sha256_hex(key: &[u8], data: &[u8]) -> Option<String> {
+    let mut mac = <HmacSha256 as KeyInit>::new_from_slice(key).ok()?;
+    mac.update(data);
+    Some(hex_lower(&mac.finalize().into_bytes()))
+}
+
 pub fn new_call_id() -> String {
     format!("cu-call-{:016x}", rand::random::<u64>())
 }
@@ -218,8 +298,20 @@ mod tests {
         // 明文绝不进日志（中英文两边都查）。
         assert!(!raw.contains("hunter2"));
         assert!(!raw.contains("密码"));
-        assert!(raw.contains(&sha256_hex(secret.as_bytes())));
+        // HMAC 字段存在且不等于无盐 SHA-256（密钥参与运算的证据）。
+        let hmac_field = first["text_hmac_sha256"].as_str().unwrap_or_default();
+        assert_eq!(hmac_field.len(), 64, "hmac hex: {hmac_field}");
+        assert_ne!(hmac_field, sha256_hex(secret.as_bytes()));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hmac_helper_matches_rfc4231_vector() {
+        // RFC 4231 test case 2: key="Jefe", data="what do ya want for nothing?".
+        assert_eq!(
+            hmac_sha256_hex(b"Jefe", b"what do ya want for nothing?").as_deref(),
+            Some("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
+        );
     }
 
     #[test]

@@ -551,6 +551,35 @@ impl LinuxComputerUseBackend {
     }
 
     /// Wayland portal 输入后端(探测失败的粘性错误在 `wayland_portal_error`)。
+    /// Wayland 截屏探测失败后在下一次 capture 时重试（评审发现：旧实现一次
+    /// 探测失败就粘死整个 backend 生命周期——portal 对话框被用户误关、合成器
+    /// 短暂抖动都会永久失去截屏，且无任何重试入口）。
+    fn ensure_wayland_capture(&mut self) -> Result<(), ComputerUseError> {
+        if !self.is_wayland() || self.wayland_screenshot_ok {
+            return Ok(());
+        }
+        match probe_wayland_screenshot_guarded() {
+            Ok(()) => {
+                self.wayland_screenshot_ok = true;
+                self.wayland_screenshot_error = None;
+            }
+            Err(error) => self.wayland_screenshot_error = Some(error),
+        }
+        if !self.wayland_screenshot_ok {
+            return Err(ComputerUseError::unsupported(
+                "screenshot",
+                format!(
+                    "screenshot on Wayland compositor {}: {}",
+                    self.session.desktop_label(),
+                    self.wayland_screenshot_error
+                        .as_deref()
+                        .unwrap_or("probe failed")
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     fn require_portal(&mut self) -> Result<&mut PortalInput, ComputerUseError> {
         match self.wayland_portal.as_mut() {
             Some(portal) => Ok(portal),
@@ -658,18 +687,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
     }
 
     fn capture(&mut self) -> Result<Capture, ComputerUseError> {
-        if self.is_wayland() && !self.wayland_screenshot_ok {
-            return Err(ComputerUseError::unsupported(
-                "screenshot",
-                format!(
-                    "screenshot on Wayland compositor {}: {}",
-                    self.session.desktop_label(),
-                    self.wayland_screenshot_error
-                        .as_deref()
-                        .unwrap_or("probe failed")
-                ),
-            ));
-        }
+        self.ensure_wayland_capture()?;
         let monitors = Monitor::all().map_err(|error| {
             ComputerUseError::unavailable(format!("monitor enumeration: {error}"))
         })?;
