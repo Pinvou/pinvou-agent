@@ -144,6 +144,9 @@ pub async fn active_model_snapshot() -> Option<VllmSnapshot> {
     let api_key = model.as_ref().and_then(model_api_key);
     let model_id = model.as_ref().map(|m| m.id.clone());
     let provider = preset.as_str().to_string();
+    // 用户在模型表单显式声明的上下文窗口必须参与监控/Live-dot 展示口径，
+    // 否则保存 1M 后聊天页(chat:usage 分母)与监控页/进度条分母各说各话。
+    let configured_context = model.as_ref().and_then(|m| m.context_window_tokens);
     snapshot_for_model_config(
         &upstream,
         configured_model,
@@ -151,6 +154,7 @@ pub async fn active_model_snapshot() -> Option<VllmSnapshot> {
         model_id,
         provider,
         api_key.as_deref(),
+        configured_context,
     )
     .await
 }
@@ -166,6 +170,7 @@ pub async fn vllm_snapshot(
         ModelPreset::LocalVllm,
         None,
         "local_vllm".to_string(),
+        None,
         None,
     )
     .await
@@ -225,6 +230,7 @@ async fn snapshot_for_model_config(
     model_id: Option<String>,
     provider: String,
     api_key: Option<&str>,
+    configured_context: Option<u32>,
 ) -> Option<VllmSnapshot> {
     let client = shared_probe_client()?;
     let target_kind = if preset == ModelPreset::LocalVllm {
@@ -337,7 +343,9 @@ async fn snapshot_for_model_config(
 
     let (served_model, max_model_len) = match models_resp {
         Some(r) => match r.json::<serde_json::Value>().await.ok() {
-            Some(v) => parse_models_response(v).unwrap_or((None, None)),
+            Some(v) => {
+                parse_models_response(v, configured_model.as_deref()).unwrap_or((None, None))
+            }
             None => (None, None),
         },
         None => (None, None),
@@ -368,19 +376,22 @@ async fn snapshot_for_model_config(
     } else {
         Vec::new()
     };
-    let max_model_len = max_model_len.or_else(|| {
-        let inferred = infer_context_window(
-            preset,
-            configured_model.as_deref().or(served_model.as_deref()),
-        );
-        if inferred.is_some() {
-            metric_diagnostics.push(MonitorDiagnostic {
-                code: "context_window_inferred".to_string(),
-                message: "上下文长度由模型名/供应商预设推断，远端模型接口未直接提供".to_string(),
-            });
-        }
-        inferred
-    });
+    // 展示窗口优先级与 Engine `route_limits_for_model` 同口径(用户显式声明
+    // 优先,探测值只对本地部署收紧);云端探测值(常来自代理/网关的列表首条,
+    // 与配置模型无关甚至过时)不得覆盖用户声明,否则保存 1M 后进度条被打回
+    // 131K。探测与目录/预设兜底只在无声明时补位。
+    let inferred = infer_context_window(
+        preset,
+        configured_model.as_deref().or(served_model.as_deref()),
+    );
+    let (max_model_len, window_from_inference) =
+        resolve_display_context_window(target_kind, configured_context, max_model_len, inferred);
+    if window_from_inference {
+        metric_diagnostics.push(MonitorDiagnostic {
+            code: "context_window_inferred".to_string(),
+            message: "上下文长度由模型名/供应商预设推断，远端模型接口未直接提供".to_string(),
+        });
+    }
 
     let running = metrics_text
         .as_deref()
@@ -486,11 +497,43 @@ async fn snapshot_for_model_config(
     Some(snapshot)
 }
 
-fn parse_models_response(v: serde_json::Value) -> Option<(Option<String>, Option<u32>)> {
-    let first = crate::core::model_endpoint::parse_models_response_list(v)?
-        .into_iter()
-        .next()?;
-    Some((Some(first.id), first.max_model_len))
+fn parse_models_response(
+    v: serde_json::Value,
+    configured: Option<&str>,
+) -> Option<(Option<String>, Option<u32>)> {
+    let entries = crate::core::model_endpoint::parse_models_response_list(v)?;
+    // 云端 /models 往往一次列出全部模型，首条的 max_model_len 未必属于配置的
+    // 模型：优先取配置名自身的条目（大小写不敏感兜底），无匹配才退回首条
+    // （与 resolve_served_model_from_entries 的「先匹配、后单条」同一取向）。
+    let matched = configured.and_then(|name| {
+        entries.iter().find(|entry| entry.id == name).or_else(|| {
+            entries
+                .iter()
+                .find(|entry| entry.id.eq_ignore_ascii_case(name))
+        })
+    });
+    let entry = matched.or_else(|| entries.first())?;
+    Some((Some(entry.id.clone()), entry.max_model_len))
+}
+
+/// 展示侧上下文窗口优先级（监控卡 + `get_backend_status` 的进度条分母）。
+/// 与 Engine `route_limits_for_model` 对齐：用户显式声明优先；探测值仅对
+/// 本地部署(可实地内省的 vLLM)做 min 收紧——云端探测值不覆盖声明，避免
+/// 网关/代理的列表首条窗口(常见 131072)打回用户保存的 1M。声明与探测都
+/// 缺席时回落到模型名/供应商预设推断，此时第二个返回值为 true 供诊断标注。
+fn resolve_display_context_window(
+    target_kind: &str,
+    configured: Option<u32>,
+    probed: Option<u32>,
+    inferred: Option<u32>,
+) -> (Option<u32>, bool) {
+    match (configured, probed) {
+        (Some(configured), Some(probed)) if target_kind == "local" => {
+            (Some(configured.min(probed)), false)
+        }
+        (Some(configured), _) => (Some(configured), false),
+        (None, probed) => (probed.or(inferred), probed.is_none() && inferred.is_some()),
+    }
 }
 
 fn infer_context_window(preset: ModelPreset, model: Option<&str>) -> Option<u32> {
@@ -606,9 +649,11 @@ pub async fn probe_vllm_model_info(
     bearer: Option<&str>,
 ) -> (Option<String>, Option<u32>) {
     // HTTP layer and URL assembly reuse the shared core probe (no /v1/models
-    // semantics drift).
+    // semantics drift). Local single-model probe: no configured name to match,
+    // so the first list entry stays the served-name source (unchanged here;
+    // the configured-name matching lives in `snapshot_for_model_config`).
     match crate::core::model_endpoint::fetch_v1_models(base_url, bearer).await {
-        Some(v) => parse_models_response(v).unwrap_or((None, None)),
+        Some(v) => parse_models_response(v, None).unwrap_or((None, None)),
         None => (None, None),
     }
 }
@@ -748,9 +793,90 @@ mod tests {
             r#"{"object":"list","data":[{"id":"/model","object":"model","max_model_len":65536}]}"#,
         )
         .unwrap();
-        let (id, max) = parse_models_response(json).unwrap();
+        let (id, max) = parse_models_response(json, None).unwrap();
         assert_eq!(id.as_deref(), Some("/model"));
         assert_eq!(max, Some(65536));
+    }
+
+    fn models_list_json(entries: &[(&str, Option<u32>)]) -> serde_json::Value {
+        let data: Vec<String> = entries
+            .iter()
+            .map(|(id, len)| match len {
+                Some(len) => format!(r#"{{"id":"{id}","max_model_len":{len}}}"#),
+                None => format!(r#"{{"id":"{id}"}}"#),
+            })
+            .collect();
+        serde_json::from_str(&format!(
+            r#"{{"object":"list","data":[{}]}}"#,
+            data.join(",")
+        ))
+        .unwrap()
+    }
+
+    /// 云端 /models 一次列出全部模型：max_model_len 必须取配置模型自身的条目，
+    /// 不能借首条（往往是别的模型甚至网关默认 131072）的窗口。
+    #[test]
+    fn parse_models_response_matches_configured_model_entry() {
+        let json = models_list_json(&[
+            ("glm-5.2", Some(1000_000)),
+            ("glm-5.3-flash", Some(131_072)),
+        ]);
+        let (id, max) = parse_models_response(json, Some("glm-5.3-flash")).unwrap();
+        assert_eq!(id.as_deref(), Some("glm-5.3-flash"));
+        assert_eq!(max, Some(131_072));
+    }
+
+    /// 配置名不在列表（网关只回部分名单）：保持首条回退，行为与修复前一致。
+    #[test]
+    fn parse_models_response_falls_back_to_first_entry_when_absent() {
+        let json = models_list_json(&[("a", Some(4096)), ("b", Some(8192))]);
+        let (id, max) = parse_models_response(json, Some("gone")).unwrap();
+        assert_eq!(id.as_deref(), Some("a"));
+        assert_eq!(max, Some(4096));
+    }
+
+    /// 用户显式声明的窗口（云端，探测值 131072 来自网关列表）：声明必须原样
+    /// 胜出——回归本次「保存 1048576 后进度条仍显示 131.1K」的根因。
+    #[test]
+    fn display_window_remote_configured_declaration_beats_probe() {
+        let (window, inferred) = resolve_display_context_window(
+            "remote",
+            Some(1_048_576),
+            Some(131_072),
+            Some(1_000_000),
+        );
+        assert_eq!(window, Some(1_048_576));
+        assert!(!inferred);
+    }
+
+    /// 本地部署探测值是实地事实：与 Engine route_limits 同款 min 收紧。
+    #[test]
+    fn display_window_local_min_clamps_declaration_with_probe() {
+        let (window, inferred) =
+            resolve_display_context_window("local", Some(1_048_576), Some(131_072), None);
+        assert_eq!(window, Some(131_072));
+        assert!(!inferred);
+        // 反向：声明 32K、实机 128K → 按声明收紧（与 route_limits 一致）。
+        let (window, _) =
+            resolve_display_context_window("local", Some(32_768), Some(131_072), None);
+        assert_eq!(window, Some(32_768));
+    }
+
+    /// 无声明时保持既有口径：探测值优先，探测缺席才用推断；推断被真正采用时
+    /// 才置诊断标记。
+    #[test]
+    fn display_window_without_declaration_keeps_probe_then_infer() {
+        let (window, inferred) =
+            resolve_display_context_window("remote", None, Some(262_144), Some(131_072));
+        assert_eq!(window, Some(262_144));
+        assert!(!inferred);
+        let (window, inferred) =
+            resolve_display_context_window("remote", None, None, Some(1_000_000));
+        assert_eq!(window, Some(1_000_000));
+        assert!(inferred);
+        let (window, inferred) = resolve_display_context_window("remote", None, None, None);
+        assert_eq!(window, None);
+        assert!(!inferred);
     }
 
     fn served_entry(
