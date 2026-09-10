@@ -100,6 +100,7 @@ function resolveSessionProjectId(item, projects, assignments) {
   const projectList = Array.isArray(projects) ? projects.filter(Boolean) : [];
   const assignmentMap = assignments && typeof assignments === 'object' ? assignments : {};
   if (!item) return null;
+  // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor and Object.hasOwn is unavailable; this call is already in safe form
   if (Object.prototype.hasOwnProperty.call(assignmentMap, item.id)) {
     const assigned = assignmentMap[item.id];
     if (assigned && projectList.some(project => project.id === assigned)) return assigned;
@@ -149,6 +150,7 @@ function groupSessionsWithProjects(items, projects, assignments) {
     if (!item) return;
     let target = null;
     let autoGroupBlocked = false;
+    // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor and Object.hasOwn is unavailable; this call is already in safe form
     if (Object.prototype.hasOwnProperty.call(assignmentMap, item.id)) {
       const assigned = assignmentMap[item.id];
       if (assigned && byId.has(assigned)) {
