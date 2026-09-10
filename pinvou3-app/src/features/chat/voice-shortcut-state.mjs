@@ -69,10 +69,13 @@ function voiceShortcutActionForKeyDown(event, current) {
   }
 
   // While an Alt gesture is pending, any other key (including Esc) is a combo member:
-  // clear pending, neither trigger nor cancel. Otherwise the Esc inside the passthrough
-  // batch of Alt+Esc (system window cycling) would cancel an active recording too,
-  // inconsistent with Alt+Tab (Other keys only clear pending).
-  if (state.pendingAlt) return { type: 'clear_pending' };
+  // clear pending, neither trigger nor cancel. swallow:false tells the router to pass
+  // the keydown through unswallowed so it keeps its own behavior (macOS Option
+  // symbols, app menu keys) — the keyup lane already passes combo tails through.
+  // Otherwise the Esc inside the passthrough batch of Alt+Esc (system window
+  // cycling) would cancel an active recording too, inconsistent with Alt+Tab
+  // (Other keys only clear pending).
+  if (state.pendingAlt) return { type: 'clear_pending', swallow: false };
 
   if (event && event.key === 'Escape') {
     return isActiveVoiceShortcutStatus(status) ? { type: 'cancel' } : { type: 'none' };

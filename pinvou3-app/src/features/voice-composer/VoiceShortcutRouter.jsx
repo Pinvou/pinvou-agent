@@ -115,6 +115,15 @@ function VoiceShortcutRouter({ enabled = true }) {
       // While the intro modal is open, Esc yields to the modal's own close handling
       // (no preventDefault, no voice-start cancel).
       if (action.type === 'cancel' && isVoiceShortcutIntroOpen()) return;
+      // A human combo-member keydown only disarms the pending gesture: pass it
+      // through unswallowed so the key keeps its own behavior (macOS Option
+      // symbols, app menu keys) — mirror of the keyup lane below, which also
+      // returns before preventDefault for clear_pending. Alt+Space carries no
+      // swallow:false and stays suppressed (it opens the window system menu).
+      if (action.type === 'clear_pending' && action.swallow === false) {
+        clearPendingShortcut();
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       if (action.type === 'clear_pending') {

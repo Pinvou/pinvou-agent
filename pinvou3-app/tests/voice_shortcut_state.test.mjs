@@ -65,8 +65,8 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown(key(), { status: 'idle', pendingAlt: true }),
-  { type: 'clear_pending' },
-  'pressing any other key while Alt is pending must cancel the plain-Alt trigger',
+  { type: 'clear_pending', swallow: false },
+  'pressing any other key while Alt is pending must disarm the trigger, unswallowed',
 );
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown(alt(), { status: 'idle', pendingSpace: true }),
@@ -144,12 +144,12 @@ assert.deepStrictEqual(
 // still cancels. Same policy as Alt+Tab (Other keys only clear pending).
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown({ key: 'Escape' }, { status: 'recording', mode: 'task', pendingAlt: true }),
-  { type: 'clear_pending' },
+  { type: 'clear_pending', swallow: false },
   'Escape inside an Alt combo passthrough must not cancel an active recording',
 );
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown({ key: 'Escape' }, { status: 'idle', pendingAlt: true }),
-  { type: 'clear_pending' },
+  { type: 'clear_pending', swallow: false },
   'Escape inside an Alt combo passthrough must clear the pending gesture instead of ignoring it',
 );
 assert.deepStrictEqual(
@@ -319,6 +319,23 @@ assert.deepStrictEqual(
   }),
   { type: 'pending_alt' },
   'an Alt down well after the last combo keydown is a genuine gesture start',
+);
+
+// A human Alt/Option combo member only disarms the pending gesture, and its
+// keydown must stay unswallowed (swallow:false) so the router lets it through:
+// on macOS, right-Option + letter still has to type the symbol (Option+p → π)
+// while merely cancelling the tap — the #470 review regression. Alt+Space keeps
+// no swallow field: it stays swallowed with the gesture cleared (window system
+// menu), pinned by the exact-shape Alt+Space assertions above.
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(key({ key: 'π', code: 'KeyP' }), { status: 'idle', pendingAlt: true }),
+  { type: 'clear_pending', swallow: false },
+  'the symbol keydown of a right-Option combo must disarm without being swallowed',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(altRight(), { status: 'idle', pendingAlt: false }),
+  { type: 'none' },
+  'the Option up after a cleared combo must stay inert instead of ghost-triggering',
 );
 
 console.log('voice_shortcut_state: ok');
