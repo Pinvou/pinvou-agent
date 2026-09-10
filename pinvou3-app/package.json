@@ -147,7 +147,7 @@
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-sonarjs": "^4.2.0",
-    "eslint-plugin-unicorn": "^73.0.0",
+    "eslint-plugin-unicorn": "^74.0.0",
     "globals": "^17.11.0",
     "jscpd": "^5.0.16",
     "knip": "^6.32.2",

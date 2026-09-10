@@ -46,7 +46,7 @@ export default defineConfig([
       ecmaVersion: 2021,
       sourceType: 'module',
       parserOptions: { ecmaFeatures: { jsx: true } },
-      globals: { ...globals.browser, DOMPurify: 'readonly', marked: 'readonly' },
+      globals: { ...globals.browser },
     },
     plugins: { compat, 'import-x': importX, jsdoc, unicorn, sonarjs },
     settings: { 'import-x/resolver': { node: { extensions: ['.js', '.jsx'] } } },
