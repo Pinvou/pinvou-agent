@@ -468,6 +468,8 @@ impl Pinvou3Bridge {
                 "{{PINVOU3_TITLE_LANG}}",
                 self.prefs.language.title_language_name(),
             );
+        rendered.push_str("\n\n");
+        rendered.push_str(crate::features::assistant::mcp_inventory::instruction_block());
         // [pinvou3] 非中文 locale 的语言指令补丁:底座 locale_reinforcement_preamble
         // 对 en 返回 None,而 pinvou3 整份 system prompt 是中文,会把回复语言拽回中文。
         // 这里给底座留空的 locale 补一段 mirror 指令(zh-Hans/ja 已有底座 bookend,返回
@@ -2508,11 +2510,15 @@ impl Pinvou3Bridge {
             // 其余 mode: 无 per-turn reminder,只注入动态 sudo 状态。
             AppMode::Agent | AppMode::Operate => sudo.to_string(),
         };
-        // 卡片池: 该 session 加持了专家面具时,每 turn 注入 persona 人设(粘性身份)。
         // Re-read installation and scope toggles for every turn, including live sessions.
+        // Plan receives the snapshot too because users can inspect installed applications
+        // while planning, and its enabled flag is scoped independently from execution mode.
+        // Only the compact JSON snapshot is repeated; its interpretation lives in the
+        // static session prompt.
         let mcp_inventory = crate::features::assistant::mcp_inventory::turn_reminder(policy.mode());
         reminder_body.push_str("\n\n");
         reminder_body.push_str(&mcp_inventory);
+        // 卡片池: 该 session 加持了专家面具时,每 turn 注入 persona 人设(粘性身份)。
         if let Some(persona) = persona_reminder {
             reminder_body = format!("{reminder_body}\n\n{persona}");
         }
@@ -3208,9 +3214,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 代码会话的连接器禁用集来自 code scope(独立于 plain scope):
-    /// plain 禁用 weather 但 code 未初始化(默认全禁已装连接器)时,weather 仍被禁;
-    /// code 显式只禁用 pptx 时,weather 恢复可用、pptx 保持禁用;非连接器禁用不受影响。
+    /// The model sees the live installed/enabled snapshot without changing the
+    /// tool gate, and an empty snapshot explicitly supersedes prior inventory.
     #[test]
     fn mcp_inventory_tracks_live_scope_toggles_without_enabling_tools() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
@@ -3222,6 +3227,12 @@ mod tests {
         std::fs::write(&installed, r#"["weather","qcc"]"#).unwrap();
         let mut bridge = fixture_bridge();
         bridge.set_code_session_predicate(Arc::new(|sid| sid == "code"));
+        assert!(
+            bridge
+                .build_session_system_prompt("plain")
+                .contains("## 市场 MCP 应用发现"),
+            "inventory interpretation belongs in the static session prompt"
+        );
         use crate::features::marketplace::{ConnectorScope, save_disabled_connectors_for};
         save_disabled_connectors_for(ConnectorScope::Plain, &["weather".into(), "qcc".into()]);
         save_disabled_connectors_for(ConnectorScope::Code, &[]);
@@ -3241,11 +3252,7 @@ mod tests {
             };
             let line = content
                 .lines()
-                .find_map(|line| {
-                    line.strip_prefix(
-                        "Installed marketplace MCP applications (current conversation mode): ",
-                    )
-                })
+                .find_map(|line| line.strip_prefix("市场 MCP 应用（当前会话模式）: "))
                 .expect("inventory must reach the model input");
             serde_json::from_str(line).unwrap()
         };
@@ -3294,8 +3301,24 @@ mod tests {
         assert_eq!(inventory("plain").as_array().unwrap().len(), 1);
         std::fs::write(&installed, "[]").unwrap();
         assert!(inventory("plain").as_array().unwrap().is_empty());
+        let Op::SendMessage { content, .. } = bridge
+            .build_send_message_op(
+                "plain",
+                "Plan how to configure applications".into(),
+                AppMode::Plan,
+                None,
+                false,
+            )
+            .unwrap()
+        else {
+            panic!("expected SendMessage")
+        };
+        assert!(content.contains("市场 MCP 应用（当前会话模式）: []"));
     }
 
+    /// 代码会话的连接器禁用集来自 code scope(独立于 plain scope):
+    /// plain 禁用 weather 但 code 未初始化(默认全禁已装连接器)时,weather 仍被禁;
+    /// code 显式只禁用 pptx 时,weather 恢复可用、pptx 保持禁用;非连接器禁用不受影响。
     #[test]
     fn code_session_tool_shaping_uses_code_scope_for_connectors() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
