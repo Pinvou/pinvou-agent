@@ -49,6 +49,9 @@ def instructions(shared, work, model, title_language):
             .replace("{{PINVOU3_MODE_ARTIFACT_RULE}}", "\n\n".join(sections[2:]))
             .replace("{{PINVOU3_MODEL}}", model)
             .replace("{{PINVOU3_TITLE_LANG}}", title_language)
+            # Synthetic shell comparisons use the production memory-disabled
+            # prompt; never read the operator's personal memory settings.
+            .replace("{{PINVOU3_MEMORY_SECTION}}\n", "")
             .replace("{{PINVOU3_SUDO_INSTRUCTION}}", ""))
 
 
