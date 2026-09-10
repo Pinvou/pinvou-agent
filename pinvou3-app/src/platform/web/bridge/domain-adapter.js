@@ -27,6 +27,11 @@
     personas: ["activePersona", "personaEvents", "personaPool"],
     memory: ["memory"],
     remoteControl: ["webAccess"],
+    // projects 域为桌面专属(整域不出现在 bridgeDomainContract 的 Web 域面),
+    // 但 APP_BRIDGE_STATE_DOMAINS 的订阅列表双端共享;Web 端补一个空桩
+    // (没有 bridge.projects 方法面,列表恒空),防止启动期 getMany 抛
+    // "Unknown Tauri bridge state slice: projects"(栈内 #448 的根因)。
+    projects: ["projectsList"],
     updater: ["updateCancelling", "updateCheckError", "updateChecking", "updateDownloading", "updateError", "updateInfo", "updateProgress", "updateReady"],
     dependencies: ["deps", "depsChecking", "depsInstallError", "depsInstalling"]
   };

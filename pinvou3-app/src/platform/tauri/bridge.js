@@ -1534,6 +1534,10 @@
     remoteControl: ["webAccess"],
     updater: ["updateCancelling", "updateCheckError", "updateChecking", "updateDownloading", "updateError", "updateInfo", "updateProgress", "updateReady"],
     dependencies: ["deps", "depsChecking", "depsInstallError", "depsInstallProgress", "depsInstalling"],
+    // Registered by the projects feature (bridge/projects.js). Must stay in
+    // sync with APP_BRIDGE_STATE_DOMAINS in main.jsx — locked by
+    // tests/bridge_state_domains.test.mjs.
+    projects: ["projectsList"],
   };
   function snapshotStateSlice(domain) {
     const fields = STATE_SLICE_FIELDS[domain];
@@ -2438,6 +2442,13 @@
   const downloadKbModel = knowledgeModelFeature.downloadKbModel;
   const cancelKbModel = knowledgeModelFeature.cancelKbModel;
 
+  const projectsFeature = installBridgeFeature("projects", { state, notify, invoke, listen });
+  const loadProjects = projectsFeature.loadProjects;
+  const createProject = projectsFeature.createProject;
+  const renameProject = projectsFeature.renameProject;
+  const deleteProject = projectsFeature.deleteProject;
+  const moveSessionToProject = projectsFeature.moveSessionToProject;
+
   const multiAgentFeature = installBridgeFeature("multiagent", { state, notify, invoke, listen });
   const listMultiAgentSubagents = multiAgentFeature.listSubagentTranscripts;
   const readMultiAgentSubagent = multiAgentFeature.readSubagentTranscript;
@@ -2622,6 +2633,13 @@
       toggleSessionPinned,
       archiveSession,
       restoreArchivedSession,
+    },
+    projects: {
+      loadProjects,
+      createProject,
+      renameProject,
+      deleteProject,
+      moveSessionToProject,
     },
     monitor: {
       startMonitorPolling,

@@ -11,7 +11,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::features::codex_acp::{AcpPool, CodexWorkspaceKind};
-use crate::features::projects::{DeleteProjectReport, MoveSessionOutcome, Project, ProjectStore};
+use crate::features::projects::{
+    DeleteProjectReport, MoveSessionOutcome, Project, ProjectStore, SessionAssignments,
+};
 use crate::features::sessions::SessionStore;
 
 use super::sessions::ensure_chat_session;
@@ -64,16 +66,29 @@ impl ProjectListItem {
     }
 }
 
-/// 项目列表,按 position 有序,含每个 root 的可用性与显式成员数。
+/// list_projects 响应:项目列表 + 全量归属映射(前端三层分组解析的原料,
+/// null 归属 = 显式移出)。
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectListResponse {
+    pub projects: Vec<ProjectListItem>,
+    pub assignments: SessionAssignments,
+}
+
+/// 项目列表,按 position 有序,含每个 root 的可用性、显式成员数与归属映射。
 #[tauri::command]
-pub async fn list_projects(store: State<'_, ProjectStore>) -> Result<Vec<ProjectListItem>, String> {
-    Ok(store
+pub async fn list_projects(store: State<'_, ProjectStore>) -> Result<ProjectListResponse, String> {
+    let assignments = store.assignments_snapshot();
+    let projects = store
         .list()
         .iter()
         .map(|project| {
             ProjectListItem::from_project(project, store.assigned_session_ids(&project.id).len())
         })
-        .collect())
+        .collect();
+    Ok(ProjectListResponse {
+        projects,
+        assignments,
+    })
 }
 
 /// 创建项目。roots 可为空(纯标签项目);非空时逐个过绝对性/重叠校验。
