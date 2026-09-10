@@ -1731,7 +1731,7 @@ function workspaceDisplayName(path) {
       const sidebarTaskFilterOptions = [
         { id: 'all', label: t.sidebarTaskFilterAll },
         { id: 'pinned', label: t.sidebarTaskFilterPinned },
-        // code 形态(胶囊选中「代码」)下列表恒为代码会话:「代码会话」筛选等同
+        // 项目形态(胶囊选中「项目」)下列表恒为代码/绑定会话:「代码会话」筛选等同
         // 「全部」、「定时任务」恒为空——两个选项都是死胡同,只在标准形态提供。
         ...(sidebarCodeListActive ? [] : [
           { id: 'code', label: t.sidebarTaskFilterCodeSessions },
@@ -2469,6 +2469,10 @@ function workspaceDisplayName(path) {
           // 类型化标记匹配(finding 11):只认稳定前缀,不匹配人类文案。
           if (message.startsWith('REBIND_OLD_ROOT_EXISTS')) {
             setRebindDraft(prev => prev && { ...prev, warnExisting: true, error: null });
+          } else if (message.startsWith('REBIND_NESTED_TARGET')) {
+            // 嵌套目标拒绝:同样类型化标记,映射三语文案而非透传后端散文
+            // (评审 #464 MINOR 9);内联呈现,不toast(遮罩层级见下)。
+            setRebindDraft(prev => prev && { ...prev, error: t.uiProjects.rebindNestedRejected });
           } else {
             console.warn('rebind workspace failed', error);
             // 失败保持对话框打开并内联呈现错误(评审 #463 M7):toast 层级
@@ -2695,7 +2699,7 @@ function workspaceDisplayName(path) {
       const mobileTitle = currentView === 'chat'
         ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || 'PINVOU')
         : currentView === 'codex'
-          ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || t.sidebarTaskFilterCode)
+          ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || t.uiCodex.untitledSession)
         : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings, browser: t.browser }[currentView] || 'PINVOU');
       const mobileNavigate = (view, beforeNavigate) => {
         setMobileMoreOpen(false);
@@ -2946,7 +2950,6 @@ function workspaceDisplayName(path) {
 
           {moveToProjectSession && (
             <MoveToProjectDialog
-              open={!!moveToProjectSession}
               session={moveToProjectSession}
               projects={sidebarProjectsData ? sidebarProjectsData.projects : []}
               currentProjectId={resolveSessionProjectId(
