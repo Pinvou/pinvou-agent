@@ -141,11 +141,6 @@ impl SessionPolicy {
     // 判断——新增模式的运行行为只改这里。
     // 语义命名表达"为什么"（绑项目目录/用代码层指令），而非"是什么模式"。
 
-    /// 该模式绑定真实项目目录（决定 code_session_project_rules 注入等）。
-    pub fn binds_project(&self) -> bool {
-        matches!(self.mode, SessionMode::Code)
-    }
-
     /// 该模式使用代码层 instructions（编码执行循环 + 代码场景纪律，无产物卡语义）。
     pub fn uses_code_instructions(&self) -> bool {
         matches!(self.mode, SessionMode::Code)
@@ -196,7 +191,6 @@ mod tests {
             // skill row is not shown either).
             unavailable_builtin_skills: &'static [&'static str],
             hides_load_skill_when_empty: bool,
-            binds_project: bool,
             uses_code_instructions: bool,
         }
         let rows = [
@@ -205,7 +199,6 @@ mod tests {
                 unavailable_tools: &["mcp_pinvou3_present_artifact"],
                 unavailable_builtin_skills: &["visual-design"],
                 hides_load_skill_when_empty: true,
-                binds_project: true,
                 uses_code_instructions: true,
             },
             // plain has no mode-unavailable tools (the Git family was decided
@@ -215,7 +208,6 @@ mod tests {
                 unavailable_tools: &[],
                 unavailable_builtin_skills: &[],
                 hides_load_skill_when_empty: false,
-                binds_project: false,
                 uses_code_instructions: false,
             },
         ];
@@ -243,12 +235,6 @@ mod tests {
                 policy.capabilities().skills_empty_hides_load_skill,
                 row.hides_load_skill_when_empty,
                 "{:?} skills_empty_hides_load_skill",
-                row.mode
-            );
-            assert_eq!(
-                policy.binds_project(),
-                row.binds_project,
-                "{:?} binds_project",
                 row.mode
             );
             assert_eq!(

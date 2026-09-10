@@ -421,8 +421,11 @@ impl Pinvou3Bridge {
         self.prefs.language.locale_tag()
     }
 
-    /// Render the session-scoped inline instructions. Workspace is deliberately
-    /// absent from this static prompt and is supplied through per-turn metadata.
+    /// Render the session-scoped inline instructions. The date is deliberately
+    /// absent from this static prompt and is supplied through per-turn metadata;
+    /// a bound workspace path (code-lane project root / bound chat working
+    /// directory) is stable per session and is rendered into the static prompt
+    /// by the respective instruction layer.
     pub fn build_session_system_prompt(&self, session_id: &str) -> String {
         // [pinvou3] date/workspace 已移出静态 system → per-turn <turn_meta>:每 session
         // 变的 workspace 路径(及每天变的 date)若进 cached system prefix, vLLM prefix-cache
@@ -454,7 +457,8 @@ impl Pinvou3Bridge {
             .and_then(|resolver| resolver(session_id))
         {
             // 绑定工作目录的普通会话：绑定路径是每会话稳定值(同 code 的项目路径),
-            // 不进 per-turn turn_meta——turn_meta 每轮重复会稀释指令权重。
+            // 故渲染进静态提示词;引擎 per-turn 仍会输出 `Current workspace`
+            // (与 code lane 一致,无害冗余)。
             let workspace_hint = format!(
                 "你正在用户选择的工作目录 `{}` 中工作,相对路径即相对该目录;",
                 root.display()
@@ -626,8 +630,9 @@ impl Pinvou3Bridge {
         }
         // 连接器禁用集：非 plain 模式用其 scope 的禁用集替换传入的 plain scope
         // 禁用集（plain 的禁用集就是传入值本身，无需替换）。scope 即模式——绑定
-        // 工作目录的普通会话仍属 plain scope（两个 scope 均为 DenyAll，默认全关
-        // 的安全底线由模式默认策略承载，不借道 code scope）。
+        // 工作目录的普通会话仍属 plain scope，不借道 code scope。注意本分支上
+        // plain 未初始化 = AllowAll（连接器/包默认开）：绑定会话的补偿控制是
+        // Plan-first + 一次性 YOLO 确认卡；DenyAll 收敛在 #455。
         let scope = policy.mode();
         if scope != SessionMode::Plain {
             let plain_connector = crate::features::marketplace::disabled_tool_names();
@@ -2968,7 +2973,7 @@ mod tests {
         bridge.set_code_session_predicate(std::sync::Arc::new(|_session_id: &str| false));
 
         // 模式身份不变（Plain），连接器/技能 scope 跟随模式（不借道 code
-        // scope——两个 scope 均为 DenyAll，默认全关由模式默认策略承载）。
+        // scope；本分支 plain 未初始化 = AllowAll，DenyAll 收敛在 #455）。
         assert_eq!(
             bridge.session_policy("sess-plain-bound").mode(),
             SessionMode::Plain
@@ -3596,8 +3601,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 通道③ 取数口径：scope 禁用技能（plain/code 未初始化均默认全禁）的脚本
-    /// 目录生成 deny 规则；启用后规则消失；与 CLI 二进制 deny 共存于同一规则集。
+    /// 通道③ 取数口径：scope 禁用技能的脚本目录生成 deny 规则（code 未初始化
+    /// 默认全禁；本分支 plain 未初始化 = AllowAll，不产生 deny 规则，DenyAll
+    /// 收敛在 #455）；启用后规则消失；与 CLI 二进制 deny 共存于同一规则集。
     #[test]
     fn scope_deny_ruleset_covers_disabled_skill_scripts() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);

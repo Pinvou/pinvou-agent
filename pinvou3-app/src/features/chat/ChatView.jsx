@@ -1763,19 +1763,23 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const [chatYoloConfirmError, setChatYoloConfirmError] = useState('');
       // 切换瞬间的绑定解析不能依赖异步 state:查询在飞时点击会看到 null 而
       // 跳过确认门。这里在裁决前同步式解析(缓存 → 桥查询),等待期间点击也
-      // 拿到权威绑定(评审 #445 P2:YOLO gate race)。
-      async function resolveBindingForGate() {
-        if (!activeSessionId) return null;
-        if (sessionWorkspaceBinding !== null) return sessionWorkspaceBinding;
-        if (Object.prototype.hasOwnProperty.call(workspaceBindingCacheRef.current, activeSessionId)) {
-          return workspaceBindingCacheRef.current[activeSessionId];
+      // 拿到权威绑定(评审 #445 P2:YOLO gate race)。入参 sid 在点击时捕获：
+      // await 期间用户可能已切走，post-await 写 state/应用裁决前必须比对
+      // 当前 active，否则 chip 被上一会话的目录覆盖、门控对错会话生效
+      // （评审 #445 R5）。
+      async function resolveBindingForGate(sid) {
+        if (!sid) return null;
+        if (sid === activeSessionId && sessionWorkspaceBinding !== null) return sessionWorkspaceBinding;
+        if (Object.prototype.hasOwnProperty.call(workspaceBindingCacheRef.current, sid)) {
+          return workspaceBindingCacheRef.current[sid];
         }
         if (bridge.available && bridge.sessions && typeof bridge.sessions.getSessionWorkspaceBinding === 'function') {
           try {
-            const binding = await bridge.sessions.getSessionWorkspaceBinding(activeSessionId);
+            const binding = await bridge.sessions.getSessionWorkspaceBinding(sid);
             const normalized = binding || null;
-            workspaceBindingCacheRef.current[activeSessionId] = normalized;
-            setSessionWorkspaceBinding(normalized);
+            // 缓存按 sid 键控，写入总是安全；state 只在仍是当前会话时写。
+            workspaceBindingCacheRef.current[sid] = normalized;
+            if (sid === activeSessionId) setSessionWorkspaceBinding(normalized);
             return normalized;
           } catch {
             // 瞬时查询失败（旧后端"无此命令"已在桥层按未绑定返回 null，不
@@ -1794,7 +1798,11 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           return;
         }
         if (target !== 'yolo' || !isPlan) return;
-        const sessionBinding = await resolveBindingForGate();
+        const gateSid = activeSessionId;
+        const sessionBinding = await resolveBindingForGate(gateSid);
+        // 查询往返期间用户已切走：裁决是按点击时的会话算的，对当前 active
+        // 会话套用会改错对象（确认流与 exitPlanToYolo 都作用于 active）。
+        if (gateSid !== activeSessionId) return;
         const boundTarget = chatYoloGateApplies({
           activeSessionId,
           sessionBinding,

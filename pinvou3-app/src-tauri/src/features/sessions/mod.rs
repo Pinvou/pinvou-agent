@@ -141,9 +141,12 @@ pub struct SessionStore {
     /// 从左侧任务列表收起的会话:session_id -> hidden_at。独立落盘到
     /// `_hidden_sessions.json`,不改 SavedSession 结构。
     pub(crate) hidden_sessions: Arc<RwLock<HashMap<String, String>>>,
-    /// 原生代码会话绑定的项目目录解析器,由 app 组合根(lib.rs)在 AcpPool 就绪
-    /// 后注入;None = 无代码会话项目绑定,所有会话的执行根都是会话私有目录。
-    /// 账本根(附件/审计/产物/远程授权)不受其影响,恒为会话私有目录。
+    /// 会话执行根解析器,由 app 组合根(lib.rs)在 AcpPool 就绪后注入——生产
+    /// 实现同时覆盖两类来源：codex_acp 原生代码会话的项目绑定 + 普通 chat
+    /// 会话的用户工作目录绑定（sidecar，见下方读缓存字段）。None（测试/启动
+    /// 早期未注入）= 无外部绑定，所有会话的执行根都是会话私有目录；`store.rs`
+    /// 的 or_else 回退仅是此情形的防御。账本根(附件/审计/产物/远程授权)不受
+    /// 其影响,恒为会话私有目录。
     pub(crate) execution_root_resolver: Arc<RwLock<Option<ExecutionRootResolver>>>,
     /// 普通 chat 会话的用户工作目录绑定读缓存:session_id → 用户选择的目录。
     /// 权威存储是会话私有目录内的 per-session sidecar `workspace-binding.json`

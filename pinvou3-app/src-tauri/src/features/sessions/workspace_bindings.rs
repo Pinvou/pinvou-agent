@@ -165,7 +165,10 @@ impl SessionStore {
     /// boot 重试，不阻断启动。ghost 条目（对应 `<id>.json` 已不存在——会话在
     /// 进程外被删的残留）直接丢弃，不迁移。
     pub fn migrate_legacy_session_workspaces(&self) {
-        let legacy = crate::platform::paths::sessions_root().join(LEGACY_SESSION_WORKSPACES_FILE);
+        let legacy = self
+            .manager
+            .sessions_dir()
+            .join(LEGACY_SESSION_WORKSPACES_FILE);
         let Ok(content) = std::fs::read_to_string(&legacy) else {
             return;
         };
@@ -201,7 +204,9 @@ impl SessionStore {
                 ),
             }
         } else {
-            *self.session_workspaces.write() = unmigrated;
+            // 未迁移条目接管进缓存继续可解析（下次 boot 重试）。extend 而非整表
+            // 替换：整表替换会丢弃本 boot 内迁移前已绑定的条目（评审 #445）。
+            self.session_workspaces.write().extend(unmigrated);
         }
     }
 }

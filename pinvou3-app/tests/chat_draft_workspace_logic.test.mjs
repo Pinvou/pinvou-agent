@@ -173,6 +173,43 @@ test('ensureSession：create_session 失败保留草稿选择以便重试', asyn
   assert.equal(rt.state.draftWorkspacePath, '/work/project', '失败路径必须保留选择');
 });
 
+test('ensureSession：仅路径失效失败清理最近列表；瞬时失败与中途改选不误伤', async () => {
+  // 瞬时后端错误：不得清除最近列表里的有效条目（评审 #445 R5：原实现
+  // 对任何 create_session 失败都清理）。
+  const rtTransient = loadSessionsFeature({
+    invoke(name) {
+      if (name === 'create_session') return Promise.reject(new Error('backend down'));
+      return Promise.resolve(name === 'list_sessions' || name === 'list_archived_sessions' ? [] : {});
+    },
+  });
+  rtTransient.storage.set(RECENTS_KEY, JSON.stringify(['/work/project']));
+  rtTransient.api.setDraftWorkspace('/work/project');
+  assert.equal(await rtTransient.api.ensureSession(), null);
+  assert.deepEqual(
+    JSON.parse(rtTransient.storage.get(RECENTS_KEY)),
+    ['/work/project'],
+    '瞬时失败不得清除有效的最近条目',
+  );
+  assert.equal(rtTransient.state.draftWorkspacePath, '/work/project');
+
+  // 路径失效（后端 invalid workspace_path）：按物化时捕获的目录清除。
+  // X1 创建在飞期间用户改选 X2 —— 失败的是 X1，清 X1 留 X2。
+  const rtInvalid = loadSessionsFeature();
+  rtInvalid.storage.set(RECENTS_KEY, JSON.stringify(['/work/x2', '/work/x1']));
+  rtInvalid.api.setDraftWorkspace('/work/x1');
+  const created = rtInvalid.defer('create_session');
+  const p = rtInvalid.api.ensureSession();
+  rtInvalid.api.setDraftWorkspace('/work/x2');
+  created.reject(new Error('create_session: invalid workspace_path: path is not a directory'));
+  assert.equal(await p, null);
+  assert.deepEqual(
+    JSON.parse(rtInvalid.storage.get(RECENTS_KEY)),
+    ['/work/x2'],
+    '只清除失败的 X1，不得误伤改选后的 X2',
+  );
+  assert.equal(rtInvalid.state.draftWorkspacePath, '/work/x2', '草稿选择按既有契约保留');
+});
+
 test('enterDraft：复位草稿工作区选择（含已在干净草稿态的提前返回分支）', () => {
   const rt = loadSessionsFeature();
   rt.api.setDraftWorkspace('/work/project');

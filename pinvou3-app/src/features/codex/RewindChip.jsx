@@ -19,7 +19,7 @@ const FILE_LIST_LIMIT = 8;
 // focusing a detached element is a spec-permitted no-op). When initialFocusRef is provided it is
 // focused first (e.g. a text box needing immediate input) — this runs after React commits autoFocus
 // and overrides it, so initial focus must go through this path instead of the autoFocus attribute.
-// Shared by the two confirm dialogs, NativeYoloConfirmCard, and CodexAcpView's branch-switch dialog.
+// Shared by the two confirm dialogs, the shared YoloConfirmCard (shared/yolo-confirm-card.jsx), and CodexAcpView's branch-switch dialog.
 export function useDialogFocusRestore(dialogRef, initialFocusRef) {
   useEffect(() => {
     const previous = document.activeElement;
@@ -30,7 +30,7 @@ export function useDialogFocusRestore(dialogRef, initialFocusRef) {
   }, [dialogRef, initialFocusRef]);
 }
 
-// Escape to close (disabled while busy). Shared by the two confirm dialogs, NativeYoloConfirmCard,
+// Escape to close (disabled while busy). Shared by the two confirm dialogs, the shared YoloConfirmCard,
 // and CodexAcpView's branch-switch dialog.
 export function useDialogEscapeKey(busy, onCancel) {
   useEffect(() => {

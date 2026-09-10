@@ -608,6 +608,16 @@
     }
   }
 
+  // create_session 失败后按既定口径清理最近列表：仅后端明确拒绝路径
+  // （invalid workspace_path，目录已失效/被删）才清，瞬时错误不得误伤有效
+  // 条目；按物化时捕获的 boundWorkspace 而非实时 draftWorkspacePath——X1
+  // 创建在飞时用户改选 X2，失败的是 X1，不能清掉有效的 X2（评审 #445 R5）。
+  function maybePruneFailedWorkspaceRecent(boundWorkspace, error) {
+    if (!boundWorkspace) return;
+    if (!/invalid workspace_path/.test(String((error && error.message) || error || ''))) return;
+    forgetDraftWorkspaceRecent(boundWorkspace);
+  }
+
   // 从最近列表移除单个目录（workspace-recents.js forgetWorkspace 的镜像）：
   // 物化失败（目录已被删/改名）时由 ensureSession 失败路径调用，坏条目不再
   // 永久残留（评审 #445 P2）。shared 模块与经典脚本无法互 import，改任一侧
@@ -685,13 +695,15 @@
     // 只推进 token 不改 activeSessionId（仍为 null），在途 create_session 返回
     // 后必须连同 token 一起校验，否则会劫持用户新进的草稿（三审 P1）。
     const navToken = sessionSwitchRequestToken;
+    // boundWorkspace 在 try 外捕获：catch 的最近列表清理也要以本次物化绑定
+    // 的目录为准（而非实时的 draftWorkspacePath，评审 #445 R5）。
+    const boundWorkspace = state.draftWorkspacePath || null;
     const p = (async function () {
       // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
       try {
         // 草稿选定的工作目录随物化一并下发；null = 后端现状（会话私有目录）。
         // 参数在 invoke 同步求值时捕获，await 期间的后续选择不影响本次创建。
-        // boundWorkspace 同步捕获：物化后的 lane 默认应用以本次创建是否绑定为准。
-        const boundWorkspace = state.draftWorkspacePath || null;
+        // 物化后的 lane 默认应用也以本次创建是否绑定为准。
         const meta = await invoke("create_session", { workspacePath: boundWorkspace });
         // create_session 等待期间用户可能已发送/清空输入，必须读取最新值，
         // 不能把 await 前的已发送文本带入新 session。
@@ -808,12 +820,10 @@
           && state.activeSessionId === meta.id ? meta.id : null;
       } catch (e) {
         addSystemItem(bt("newChatFailed") + e);
-        // 物化失败且草稿绑定了目录 ⇒ 多半是该目录已失效(重命名/删除):
-        // 就地从最近列表清除坏条目(评审 #445 P2;code 模式 forgetWorkspace
-        // 同口径)。草稿选择本身按既有契约保留,便于用户修复目录后重试。
-        if (state.draftWorkspacePath) {
-          forgetDraftWorkspaceRecent(state.draftWorkspacePath);
-        }
+        // 最近列表清理口径收敛在 maybePruneFailedWorkspaceRecent（仅路径失效
+        // 才清、按捕获的绑定目录清，评审 #445 R5）。草稿选择本身按既有契约
+        // 保留,便于用户修复目录后重试。
+        maybePruneFailedWorkspaceRecent(boundWorkspace, e);
         return null;
       }
     })();
