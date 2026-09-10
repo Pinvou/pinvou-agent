@@ -252,7 +252,7 @@ pub(crate) fn spawn_event_forwarder(
                         );
                     }
                     let background_task_id =
-                        if matches!(name.as_str(), "exec_shell" | "task_shell_start" | "Bash")
+                        if crate::features::assistant::shell_output::is_shell_execution_tool(&name)
                             && metadata
                                 .as_ref()
                                 .and_then(|value| value.get("status"))
@@ -545,6 +545,9 @@ pub(crate) fn spawn_event_forwarder(
                 // managed by the foundation itself; the app only consumes the
                 // generic subagent events (AgentSpawned no longer registers a
                 // role).
+                Event::AgentSpawned {
+                    owner_session_id, ..
+                } if owner_session_id == session_id => {}
                 Event::AgentSpawned { .. } => {}
                 // Mid-turn inject delivery confirmation (P0-A): after the
                 // engine appends the steer message to the transcript it emits
@@ -584,8 +587,16 @@ pub(crate) fn spawn_event_forwarder(
                         payload,
                     );
                 }
+                Event::WorkflowUi {
+                    owner_session_id, ..
+                } if owner_session_id == session_id => {}
                 Event::WorkflowUi { .. } => {}
-                Event::AgentProgress { id, status, .. } => {
+                Event::AgentProgress {
+                    owner_session_id,
+                    id,
+                    status,
+                    ..
+                } if owner_session_id == session_id => {
                     let payload = json!({
                         "session_id": session_id,
                         "agent_id": id,
@@ -600,8 +611,13 @@ pub(crate) fn spawn_event_forwarder(
                         payload,
                     );
                 }
+                Event::AgentProgress { .. } => {}
                 // mailbox 信封同时维护 Shell scope 与通用子智能体审计。
-                Event::SubAgentMailbox { message, .. } => {
+                Event::SubAgentMailbox {
+                    owner_session_id,
+                    message,
+                    ..
+                } if owner_session_id == session_id => {
                     use deepseek_tui::tools::subagent::MailboxMessage as MM;
                     // 审计是应用账本：绑了项目目录的原生代码会话写会话私有目录，
                     // 不污染用户项目；其余会话账本根与执行根相同，行为不变。
@@ -692,7 +708,13 @@ pub(crate) fn spawn_event_forwarder(
                         _ => {}
                     }
                 }
-                Event::AgentComplete { id, failed, .. } => {
+                Event::SubAgentMailbox { .. } => {}
+                Event::AgentComplete {
+                    owner_session_id,
+                    id,
+                    result,
+                } if owner_session_id == session_id => {
+                    let failed = result.contains(r#""event":"subagent.failed""#);
                     let payload = json!({
                         "session_id": session_id,
                         "agent_id": id,
@@ -700,6 +722,7 @@ pub(crate) fn spawn_event_forwarder(
                     });
                     let _ = app.emit("multiagent:agent_complete", payload);
                 }
+                Event::AgentComplete { .. } => {}
                 Event::TurnComplete {
                     usage,
                     status,
@@ -1169,8 +1192,26 @@ pub(crate) fn spawn_event_forwarder(
                         );
                     }
                 }
-                Event::CompactionFailed { message, auto, .. } => {
-                    let payload = json!({ "session_id": session_id, "phase": "fail", "auto": auto, "message": message });
+                Event::CompactionCancelled { id, message, auto } => {
+                    // Cancellation is a terminal compaction phase just like done/fail.
+                    // Forward the stable id so both UI lanes can settle the exact
+                    // in-flight card instead of leaving the manual compact action locked.
+                    let payload = json!({
+                        "session_id": session_id,
+                        "phase": "cancel",
+                        "id": id,
+                        "auto": auto,
+                        "message": message,
+                    });
+                    let _ = app.emit("chat:compaction", payload.clone());
+                    crate::features::remote_control::forward_app_event(
+                        &app,
+                        "chat:compaction",
+                        payload,
+                    );
+                }
+                Event::CompactionFailed { id, message, auto } => {
+                    let payload = json!({ "session_id": session_id, "phase": "fail", "id": id, "auto": auto, "message": message });
                     let _ = app.emit("chat:compaction", payload.clone());
                     crate::features::remote_control::forward_app_event(
                         &app,
@@ -1223,20 +1264,27 @@ pub(crate) fn spawn_event_forwarder(
                         );
                     }
                 }
-                #[cfg(feature = "benchmark-hooks")]
                 Event::TurnUsage {
                     usage,
-                    request_duration_ms,
-                    ttft_ms,
+                    duration_ms,
+                    first_token_ms,
+                    request_ms,
                     ..
                 } => {
+                    #[cfg(feature = "benchmark-hooks")]
                     if crate::features::assistant::timing::eval_observation_enabled(&session_id) {
+                        // benchmark-core's stable product contract predates the
+                        // v0.9.12 event rename. Prefer the whole-request clock and
+                        // fall back to stream duration only for emitters that cannot
+                        // measure dispatch; TTFT remains honestly optional.
+                        let request_duration_ms = request_ms.unwrap_or(duration_ms);
                         crate::features::assistant::timing::record_milestone_meta(
                             &session_id,
                             "model_request_metric",
                             json!({
                                 "request_duration_ms": request_duration_ms,
-                                "ttft_ms": ttft_ms,
+                                "ttft_ms": first_token_ms,
+                                "stream_duration_ms": duration_ms,
                                 "input_tokens": usage.input_tokens,
                                 "output_tokens": usage.output_tokens,
                                 "cache_hit_tokens": usage.prompt_cache_hit_tokens,
@@ -1244,8 +1292,97 @@ pub(crate) fn spawn_event_forwarder(
                             }),
                         );
                     }
+                    #[cfg(not(feature = "benchmark-hooks"))]
+                    let _ = (usage, duration_ms, first_token_ms, request_ms);
                 }
-                _ => {}
+                Event::ToolGateDecision {
+                    agent_id,
+                    tool_id,
+                    tool_name,
+                    gate,
+                    decision,
+                    risk,
+                    reason,
+                } => {
+                    // These receipts are deliberately emitted only for decisions a
+                    // person would otherwise never see. Keep them user-visible in
+                    // both desktop and remote lanes; the foundation already bounds
+                    // and strips controls from `reason`, and the host redacts secrets
+                    // once more before crossing the WebView boundary.
+                    let payload = json!({
+                        "session_id": session_id,
+                        "agent_id": agent_id,
+                        "tool_id": tool_id,
+                        "tool_name": tool_name,
+                        "gate": gate.as_str(),
+                        "decision": decision.as_str(),
+                        "risk": risk,
+                        "reason": crate::platform::credential_store::redact_secret(&reason),
+                    });
+                    let _ = app.emit("chat:tool_gate_decision", payload.clone());
+                    crate::features::remote_control::forward_app_event(
+                        &app,
+                        "chat:tool_gate_decision",
+                        payload,
+                    );
+                }
+                // v0.9.12 events with no Pinvou host projection. Keep these arms
+                // explicit: adding another foundation event must fail this match at
+                // compile time instead of disappearing into a catch-all.
+                Event::MessageStarted { .. }
+                | Event::MessageComplete { .. }
+                | Event::ToolCallHeartbeat
+                | Event::ToolRequestSnapshot { .. }
+                | Event::RouteDispatched { .. }
+                | Event::GoalUpdated { .. }
+                | Event::GoalContinuationWaiting { .. }
+                | Event::GoalContinuationWaitEnded { .. }
+                | Event::PurgeStarted { .. }
+                | Event::PurgeCompleted { .. }
+                | Event::PurgeFailed { .. }
+                | Event::SubAgentFollowUp { .. }
+                | Event::AgentList { .. }
+                | Event::RequestManifestReady { .. }
+                | Event::PauseEvents { .. }
+                | Event::ResumeEvents
+                | Event::ElevationRequired { .. }
+                | Event::LspRepairUpdate { .. }
+                | Event::AdvisoryNote { .. }
+                | Event::PrefixCacheChange { .. } => {}
+                // Connector readiness is owned by Pinvou's marketplace state. The
+                // Engine event is intentionally observed only for diagnostics until
+                // that UI adopts the generation-based v0.9.12 snapshot protocol.
+                Event::McpSessionBoot {
+                    generation,
+                    finished,
+                    ..
+                } => {
+                    log::debug!(
+                        "[pinvou3][chat] mcp session boot sid={} generation={} finished={}",
+                        session_id,
+                        generation,
+                        finished
+                    );
+                }
+                Event::ToolProjectionWarning {
+                    provider,
+                    omitted_tool_count,
+                    ..
+                } => {
+                    log::warn!(
+                        "[pinvou3][chat] provider {} omitted {} incompatible tools for sid={}",
+                        provider,
+                        omitted_tool_count,
+                        session_id
+                    );
+                }
+                Event::Status { message } => {
+                    log::debug!(
+                        "[pinvou3][chat] engine status sid={}: {}",
+                        session_id,
+                        message
+                    );
+                }
             }
         }
         let stopped_error = "Engine event stream stopped before a terminal event".to_string();

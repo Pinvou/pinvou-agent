@@ -17,7 +17,7 @@ use agent_backend_api::{
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use deepseek_tui::tui::app::AppMode;
+use deepseek_tui::AppMode;
 use tauri::Manager;
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -135,7 +135,7 @@ impl EnginePoolPort {
             .submit(&TurnInput {
                 session_id: session_id.to_owned(),
                 content,
-                mode: AppMode::Yolo,
+                mode: AppMode::Agent,
                 restrict_tools: false,
                 eval_tool_policy: Some(eval_tool_policy),
             })

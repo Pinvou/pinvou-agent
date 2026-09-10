@@ -6,7 +6,7 @@
 
 | 步骤         | 命令                                                                               | 说明 |
 |------------|----------------------------------------------------------------------------------|---|
-| 1. 写 jsonl | `File(action="write")` 工具                                                                       | 输出一个 `*.jsonl` 文件 |
+| 1. 写 jsonl | `write` 工具                                                                                      | 输出一个 `*.jsonl` 文件 |
 | 2. 生成 docx | `python3 build_docx.py <*.jsonl>` | 自动应用默认样式 → 按 `action` 派发 → 输出 `.docx` |
 
 > **`build_docx.py` 位置**：（即与 当前 `references/` 同级的 `scripts/` 目录下）

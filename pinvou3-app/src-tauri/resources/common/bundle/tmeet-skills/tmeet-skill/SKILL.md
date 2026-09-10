@@ -109,7 +109,7 @@ tmeet
 
 ### 录制查询
 
-> **CRITICAL — 涉及录制/回放/转写查询前，MUST 先用 `File(action="read")` 工具读取 [`references/tmeet-record.md`](references/tmeet-record.md)**，其「录制查询路由总则」定义了 `meeting get` / `meeting search` / `meeting list-ended` / `record list` / `record search` / `record transcript-search` 的分流规则与 `permission_status` 权限判断。录制查询涉及会议级/录制级两套入口、无权限录制、内容级搜索、单文件内定位等多层级，路由复杂，**不读将导致命令选择、录制产物定位、权限边界判断错误，不得仅凭本节直接决策。**
+> **CRITICAL — 涉及录制/回放/转写查询前，MUST 先用 `read` 工具读取 [`references/tmeet-record.md`](references/tmeet-record.md)**，其「录制查询路由总则」定义了 `meeting get` / `meeting search` / `meeting list-ended` / `record list` / `record search` / `record transcript-search` 的分流规则与 `permission_status` 权限判断。录制查询涉及会议级/录制级两套入口、无权限录制、内容级搜索、单文件内定位等多层级，路由复杂，**不读将导致命令选择、录制产物定位、权限边界判断错误，不得仅凭本节直接决策。**
 
 ### 使用准则
 

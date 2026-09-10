@@ -228,8 +228,8 @@
       const action = String(args && args.action || "").toLowerCase();
       return ["write", "edit", "patch"].includes(action) ? action : null;
     }
-    if (name === "write_file") return "write";
-    if (name === "edit_file") return "edit";
+    if (name === "write" || name === "write_file") return "write";
+    if (name === "edit" || name === "edit_file") return "edit";
     return null;
   }
 

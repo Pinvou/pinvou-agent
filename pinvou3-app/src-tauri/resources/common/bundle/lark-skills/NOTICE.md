@@ -211,11 +211,11 @@ v1.0.87 diff 实测,均需在下次 sync 重放):
 
 - **`Read 工具` 同类残留修正**:lark-task / lark-wiki / lark-drive / lark-sheets 的 SKILL.md 与 lark-doc 的 SKILL.md、references/lark-doc-create.md、references/lark-doc-update.md 中残留的 `Read 工具` 统一改为实际工具名 `read_file`(此前仅修了 lark-im)。
 
-(对账注 2026-08-16:本节及 2026-07-25 各条中的 `read_file` 登记已被后续 CodeWhale
-v0.9.5 升级(PR #231)再次统一为 `File(action="read")`,当前 9 域文件实际即此口径。
-下次 sync 重放时,所有「读取工具名适配」一律写 `File(action="read")`,不要再写
-`read_file`——它已是引擎退役名。同理,lark-doc-fetch.md 等文件中的读取指引以
-`File(action="read")` 为准。)
+(对账注 2026-09-09:本节及 2026-07-25 各条中的 `read_file` 登记曾在 CodeWhale
+v0.9.5 升级(PR #231)时记作 `File(action="read")`。当前 v0.9.12 模型可见的
+canonical 写法是 `read(path=...)`；下次 sync 重放时一律使用 `read`,不要再写
+`read_file` 或历史 replay alias `File(action="read")`。lark-doc-fetch.md 等文件中的
+读取指引同样以 canonical `read` 为准。)
 - **lark-doc**:description 补回压缩时丢失的 doubao 路由句(doubao.com 的 /docx/ 或 /wiki/ URL 也走本 skill),与 lark-sheets / lark-wiki / lark-drive 压缩版口径一致,description 仍控制在引擎 280 字符上限内。
 
 ## 第七轮脚本代码安全审计补录(2026-08-16)
@@ -249,7 +249,7 @@ emit_error(JSON+exit 1)、无裸 except。修复 1 处,下次 sync 需重放:
 - **lark-doc/SKILL.md**:复制文档路由由 `drive files copy` 改为
   `drive +copy`(并补「复制到知识库用 `wiki +node-copy`」分流)——上游命令
   实为 `+copy` 快捷方式(对照上游 Go 源 shortcuts/drive/drive_copy.go),
-  `files copy` 是回退形态。同步重放本条时保留 `File(action="read")` 口径注。
+  `files copy` 是回退形态。同步重放本条时保留 canonical `read` 口径注。
 - **lark-base/SKILL.md**:url-resolve 段补「Wiki URL(`.../wiki/<token>`)也可
   直接传给 `+url-resolve`(先解析 Wiki 节点再返回底层 base_token)」整句。
 - **lark-wiki/SKILL.md**:新增「交接到底层文档/表格 Skill(obj_type 分流)」

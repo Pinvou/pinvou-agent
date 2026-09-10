@@ -30,7 +30,7 @@ metadata:
 
 ## 接口路由表
 
-> **硬规则**：第二列是 `references/xxx.md` 链接的, 命中这一行后先用 `File(action="read")` 读取对应 references 文件，再构造命令。
+> **硬规则**：第二列是 `references/xxx.md` 链接的, 命中这一行后先用 `read` 读取对应 references 文件，再构造命令。
 
 | 用户意图 | 参考位置 |
 |---|---|
@@ -149,7 +149,7 @@ wecom-cli sheet get --json '<JSON 参数>'
 
 #### 使用规则
 
-- 拿到 `sheet_id` 后**继续读取子表数据是另一个接口**，命令字符串、参数名、是否分页等都没有在本节出现，**必须**先用 `File(action="read")` 读 `references/sheet-ranges-get.md`，再据此构造命令。
+- 拿到 `sheet_id` 后**继续读取子表数据是另一个接口**，命令字符串、参数名、是否分页等都没有在本节出现，**必须**先用 `read` 读 `references/sheet-ranges-get.md`，再据此构造命令。
 
 ## 跨技能依赖
 

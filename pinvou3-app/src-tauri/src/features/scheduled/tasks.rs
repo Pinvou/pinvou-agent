@@ -11,7 +11,9 @@ use deepseek_tui::automation_manager::{
     SharedAutomationManager, UpdateAutomationRequest, reconcile_run_statuses_shared,
     run_now_shared, spawn_scheduler,
 };
-use deepseek_tui::task_manager::{SharedTaskManager, TaskManager, TaskManagerConfig, TaskStatus};
+use deepseek_tui::task_manager::{
+    SharedTaskManager, TaskExecutionLimits, TaskManager, TaskManagerConfig, TaskStatus,
+};
 use parking_lot::Mutex as ParkingMutex;
 use tokio_util::sync::CancellationToken;
 
@@ -36,6 +38,24 @@ const SCHEDULED_EXECUTION_MODE: &str = "yolo";
 /// Only supported task kind for now: runs app-side memory organization instead of an
 /// engine conversation turn.
 pub(crate) const SCHEDULED_TASK_KIND_MEMORY_ORGANIZE: &str = "memory_organize";
+const SCHEDULED_WALL_TIME: Duration = Duration::from_secs(30 * 60);
+// Pinvou's embedded Engine does not currently project every model delta/tool
+// heartbeat into TaskExecutionEvent. An idle deadline shorter than the hard
+// wall clock can therefore cancel healthy local-model inference. Keep idle
+// strictly beyond the wall ceiling: wall_time remains the authoritative
+// unattended-run bound while cancellation still uses a short grace period.
+const SCHEDULED_IDLE_PROGRESS: Duration = Duration::from_secs(31 * 60);
+const SCHEDULED_CANCEL_GRACE: Duration = Duration::from_secs(5);
+const SCHEDULED_PERSIST_DEBOUNCE: Duration = Duration::from_millis(250);
+
+fn scheduled_execution_limits() -> TaskExecutionLimits {
+    TaskExecutionLimits {
+        wall_time: SCHEDULED_WALL_TIME,
+        idle_progress: SCHEDULED_IDLE_PROGRESS,
+        cancel_grace: SCHEDULED_CANCEL_GRACE,
+        persist_debounce: SCHEDULED_PERSIST_DEBOUNCE,
+    }
+}
 
 #[path = "stores.rs"]
 mod stores;
@@ -293,6 +313,7 @@ impl ScheduledTaskState {
             default_mode: SCHEDULED_EXECUTION_MODE.to_string(),
             allow_shell,
             trust_mode: true,
+            execution_limits: scheduled_execution_limits(),
         };
         let executor = Arc::new(ScheduledChatExecutor::from_services(
             sessions.clone(),
@@ -1422,6 +1443,11 @@ fn build_create_request(
         rrule: input.rrule,
         cwds: Vec::new(),
         model: Some(model),
+        // Pinvou's exact saved-model id is persisted in model-bindings.json
+        // after AutomationManager allocates the id. These CodeWhale fields
+        // address its provider registry and are not interchangeable with that id.
+        model_provider: None,
+        model_provider_id: None,
         mode: Some(SCHEDULED_EXECUTION_MODE.to_string()),
         // 权限不属于定时任务的用户设置；保留输入字段仅用于旧调用兼容。
         // 与普通聊天 Yolo 一致：Shell 跟随全局开关，信任和自动批准开启。
@@ -1456,6 +1482,10 @@ fn build_update_request(
         // 目录概念已移除,cwds 不再接受更新(见 build_create_request)。
         cwds: None,
         model: input.model,
+        // Exact Pinvou model selection is updated atomically in the companion
+        // model binding store after this Automation record is saved.
+        model_provider: None,
+        model_provider_id: None,
         mode: Some(SCHEDULED_EXECUTION_MODE.to_string()),
         // 权限不再接受任务级更新。
         allow_shell: None,
@@ -1870,6 +1900,20 @@ mod tests {
     use super::*;
     use parking_lot::RwLock;
 
+    #[test]
+    fn scheduled_limits_do_not_apply_the_two_minute_foundation_idle_cutoff() {
+        let limits = scheduled_execution_limits();
+
+        assert_eq!(limits.wall_time, Duration::from_secs(30 * 60));
+        assert_eq!(limits.idle_progress, Duration::from_secs(31 * 60));
+        assert!(
+            limits.idle_progress > limits.wall_time,
+            "a healthy silent local-model turn must reach the wall deadline first"
+        );
+        assert_eq!(limits.cancel_grace, Duration::from_secs(5));
+        assert_eq!(limits.persist_debounce, Duration::from_millis(250));
+    }
+
     impl ScheduledTaskState {
         async fn create_for_test(
             &self,
@@ -2282,9 +2326,7 @@ mod tests {
         async fn execute(
             &self,
             task: deepseek_tui::task_manager::ExecutionTask,
-            events: tokio::sync::mpsc::UnboundedSender<
-                deepseek_tui::task_manager::TaskExecutionEvent,
-            >,
+            events: tokio::sync::mpsc::Sender<deepseek_tui::task_manager::TaskExecutionEvent>,
             _cancel: CancellationToken,
         ) -> deepseek_tui::task_manager::TaskExecutionResult {
             use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile};
@@ -2305,11 +2347,13 @@ mod tests {
                     auto_approve: true,
                 })
                 .expect("create scheduled session");
-            let _ = events.send(
-                deepseek_tui::task_manager::TaskExecutionEvent::ThreadCreated {
-                    thread_id: session.metadata.id.clone(),
-                },
-            );
+            let _ = events
+                .send(
+                    deepseek_tui::task_manager::TaskExecutionEvent::ThreadCreated {
+                        thread_id: session.metadata.id.clone(),
+                    },
+                )
+                .await;
             if let Some(hold) = &self.hold {
                 hold.notified().await;
             }
@@ -2317,6 +2361,7 @@ mod tests {
                 status: TaskStatus::Completed,
                 result_text: Some("cascade fixture run".to_string()),
                 error: None,
+                terminal_reason: deepseek_tui::task_manager::TaskTerminalReason::Completed,
             }
         }
     }
@@ -2433,6 +2478,7 @@ mod tests {
                 default_mode: SCHEDULED_EXECUTION_MODE.to_string(),
                 allow_shell: false,
                 trust_mode: true,
+                execution_limits: TaskExecutionLimits::default(),
             },
             Arc::new(SessionCreatingExecutor {
                 sessions: sessions.clone(),
@@ -2451,6 +2497,8 @@ mod tests {
                     rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
                     cwds: Vec::new(),
                     model: Some("cascade-model".to_string()),
+                    model_provider: None,
+                    model_provider_id: None,
                     mode: Some(SCHEDULED_EXECUTION_MODE.to_string()),
                     allow_shell: Some(false),
                     trust_mode: Some(true),
@@ -3714,6 +3762,8 @@ mod tests {
                 rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
                 cwds: Vec::new(),
                 model: Some("model-1".to_string()),
+                model_provider: None,
+                model_provider_id: None,
                 mode: Some("agent".to_string()),
                 allow_shell: Some(false),
                 trust_mode: Some(false),
@@ -3805,6 +3855,8 @@ mod tests {
         assert_eq!(request.allow_shell, Some(true));
         assert_eq!(request.trust_mode, Some(true));
         assert_eq!(request.auto_approve, Some(true));
+        assert_eq!(request.model_provider, None);
+        assert_eq!(request.model_provider_id, None);
         // 目录概念已移除:无 cwds 也直接激活,不再强制暂停。
         assert_eq!(request.status, Some(AutomationStatus::Active));
         assert!(request.cwds.is_empty());

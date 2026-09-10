@@ -2114,6 +2114,32 @@ mod tests {
     }
 
     #[test]
+    fn gaia_diagnostics_accept_model_requests_without_ttft() {
+        let outcome = TaskOutcome::new("no-ttft", TaskStatus::Completed, None, vec![], 10)
+            .with_model_request_observations(vec![benchmark_core::ModelRequestObservation {
+                request_duration_ms: 900,
+                ttft_ms: None,
+                input_tokens: 20,
+                output_tokens: 10,
+            }]);
+
+        let diagnostics = GaiaDiagnostics::from_outcomes(&[outcome]).to_json();
+        assert_eq!(diagnostics["performance"]["model_requests"]["count"], 1);
+        assert_eq!(
+            diagnostics["performance"]["model_requests"]["ttft_ms"]["samples"],
+            0
+        );
+        assert_eq!(
+            diagnostics["performance"]["model_requests"]["ttft_ms"]["coverage_ratio"],
+            0.0
+        );
+        assert_eq!(
+            diagnostics["performance"]["model_requests"]["effective_decode_tokens_per_second"]["samples"],
+            0
+        );
+    }
+
+    #[test]
     fn gaia_tool_observations_have_explicit_issue_attribution() {
         assert_eq!(
             tool_observation_issue_layer(Some("invalid_arguments")),

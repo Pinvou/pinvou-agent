@@ -11,8 +11,8 @@
 //! - 不引入循环依赖：product_runtime -> engine_pool（单向）
 
 use anyhow::Result;
+use deepseek_tui::AppMode;
 use deepseek_tui::models::{ContentBlock, Message};
-use deepseek_tui::tui::app::AppMode;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -26,6 +26,11 @@ pub mod agentic_task;
 pub(crate) mod eval_tool_policy;
 #[cfg(feature = "benchmark-hooks")]
 pub mod headless_bridge;
+// Keep the benchmark bridge contract in the lib test harness. Building it as
+// a standalone integration-test crate links the complete Tauri graph a second
+// time and exceeds the 16 GB hosted-runner boundary even with serialized lld.
+#[cfg(all(test, feature = "benchmark-hooks"))]
+mod headless_bridge_contract_tests;
 
 /// 会话创建规格
 pub struct SessionSpec {
@@ -452,6 +457,7 @@ mod tests {
                     name: "weather".into(),
                     input: json!({"query": "secret tool input"}),
                     caller: None,
+                    thought_signature: None,
                 }],
             },
             Message {

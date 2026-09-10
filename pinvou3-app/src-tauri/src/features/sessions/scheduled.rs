@@ -9,8 +9,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use deepseek_tui::AppMode;
 use deepseek_tui::models::SystemPrompt;
-use deepseek_tui::tui::app::AppMode;
 use serde::{Deserialize, Serialize};
 
 pub(crate) const SCHEDULED_PROFILE_SCHEMA_VERSION: u32 = 1;
@@ -44,7 +44,7 @@ impl ScheduledRunMode {
         match self {
             Self::Agent => AppMode::Agent,
             Self::Plan => AppMode::Plan,
-            Self::Yolo => AppMode::Yolo,
+            Self::Yolo => AppMode::Agent,
         }
     }
 }

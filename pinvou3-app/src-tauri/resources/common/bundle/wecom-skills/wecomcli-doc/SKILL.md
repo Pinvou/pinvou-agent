@@ -32,7 +32,7 @@ metadata:
 
 ## 接口路由表
 
-路由表第二列若是 `references/xxx.md` 链接 → 必须先用 `File(action="read")` 读完该文件，再构造命令。
+路由表第二列若是 `references/xxx.md` 链接 → 必须先用 `read` 读完该文件，再构造命令。
 
 | 用户意图 | 参考位置                                                          |
 |---|---------------------------------------------------------------|
@@ -107,7 +107,7 @@ wecom-cli doc contents get --json '<JSON 参数>'
 | `url` | string | 文档访问链接 |
 | `name` | string | 文档名称 |
 | `content` | string | 文档内容较短时直接返回的原文 |
-| `file_path` | string | 文档内容较长时自动落盘的**本地文件路径**；需用 `File(action="read")` 读取路径内文本后再展示 |
+| `file_path` | string | 文档内容较长时自动落盘的**本地文件路径**；需用 `read` 读取路径内文本后再展示 |
 | `document` | object | `content_type=ooxml` 时返回的文档对象 |
 | `version` | int | 文档版本号 |
 

@@ -81,6 +81,7 @@ fn assistant_tool_use(id: &str) -> Message {
             name: "Bash".into(),
             input: serde_json::json!({"command": "printf still-running"}),
             caller: None,
+            thought_signature: None,
         }],
     }
 }
@@ -320,7 +321,7 @@ fn scheduled_profile(task_id: &str) -> ScheduledRunProfile {
 
 fn text_message(role: &str, text: &str) -> Message {
     Message {
-        role: role.to_string(),
+        role: role.into(),
         content: vec![ContentBlock::Text {
             text: text.to_string(),
             cache_control: None,
@@ -992,10 +993,7 @@ fn scheduled_agent_mode_round_trips_without_collapsing_profile_or_metadata() {
     let id = scheduled.metadata.id.clone();
 
     assert_eq!(scheduled.metadata.mode.as_deref(), Some("agent"));
-    assert_eq!(
-        profile.mode.to_app_mode(),
-        deepseek_tui::tui::app::AppMode::Agent
-    );
+    assert_eq!(profile.mode.to_app_mode(), deepseek_tui::AppMode::Agent);
     let persisted = store
         .persist_scheduled_engine_state(
             &id,

@@ -864,7 +864,7 @@ mod tests {
         assert_eq!(listed.len(), 1, "没有 transcript 也必须出现在清单里");
         assert_eq!(listed[0].agent_id, "agent_a");
         assert_eq!(listed[0].session_name.as_deref(), Some("build-report"));
-        assert_eq!(listed[0].agent_type.as_deref(), Some("worker"));
+        assert_eq!(listed[0].agent_type.as_deref(), Some("general"));
         assert_eq!(listed[0].parent_run_id, None);
         assert_eq!(listed[0].spawn_depth, Some(1));
         assert_eq!(listed[0].status.as_deref(), Some("starting"));

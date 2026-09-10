@@ -102,7 +102,7 @@ test('completed shell jobs still update their explicitly linked tool card', () =
     type: 'tool',
     toolId: 'tool-old',
     taskId: 'shell-old',
-    name: 'exec_shell',
+    name: 'bash',
     state: 'running',
     args: { command: 'winget search "BaiduNetdisk"' },
     output: null,
@@ -121,7 +121,7 @@ test('a fast detached job can still appear after its start tool', () => {
   const harness = createTerminal([{
     type: 'tool',
     toolId: 'start-fast-detached',
-    name: 'exec_shell',
+    name: 'bash',
     state: 'done',
     output: 'running in background',
   }]);
@@ -172,9 +172,7 @@ test('the guard is not disarmed by a running job projected in the same poll', ()
   assert.equal(harness.notifications(), 1);
 });
 
-test('the canonical Bash action=wait card also arms the guard', () => {
-  // Since engine v0.9.3 the wait observer is Bash with action="wait"
-  // (exec_shell_wait/exec_wait survive only in replayed legacy sessions).
+test('a replayed legacy Bash action=wait card still arms the guard', () => {
   const harness = createTerminal([{
     type: 'tool',
     toolId: 'bash-wait',
@@ -192,7 +190,7 @@ test('the canonical Bash action=wait card also arms the guard', () => {
   assert.equal(harness.chatItems.some(item => item.toolId === 'shell-task:shell-old'), false);
 });
 
-test('a Bash action=run card is a start tool and does not arm the guard', () => {
+test('a replayed legacy Bash action=run card is a start tool and does not arm the guard', () => {
   // Accepted limit: the guard stays off behind a start tool, so a very short
   // detached job whose first snapshot is terminal still gets its card.
   const harness = createTerminal([{
@@ -262,9 +260,10 @@ test('the web bridge keeps the same stale-completion guard', () => {
     webBridge,
     /const suppressUnmatchedTerminal = latestShellToolIsWaitObserver\(\);/,
   );
-  // The canonical Bash action=wait recognition must exist on both bridges.
+  // Legacy Bash action=wait recognition must exist on both bridges.
   assert.match(
     webBridge,
     /item\.name === "Bash" && item\.args != null && item\.args\.action === "wait"/,
   );
+  assert.match(webBridge, /const SHELL_TOOL_NAMES = \["bash",/);
 });
