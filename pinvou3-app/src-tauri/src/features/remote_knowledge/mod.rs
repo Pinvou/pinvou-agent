@@ -204,6 +204,14 @@ pub fn discover_folder_files(roots: &[String]) -> Result<RemoteFolderDiscovery, 
     })
 }
 
+/// 共享知识库私网身份探测（GUI `remote_kb_probe_private_endpoint` 的同一底层
+/// TLS-pinned 握手）。以自由函数收口：headless 调用方（pinvou-cli）不依赖
+/// `pinvou_knowledge` crate，而 `RemoteKnowledgeProbe` 本就在本模块公开面
+/// （`request_join_confirmed` 入参），该包装不向公开面引入任何新类型。
+pub async fn probe_private_identity(source: &str) -> Result<RemoteKnowledgeProbe, String> {
+    KnowledgeClient::probe_private_identity(source).await
+}
+
 fn keep_folder_entry(entry: &DirEntry) -> bool {
     if entry.depth() == 0 || !entry.file_type().is_dir() {
         return true;
