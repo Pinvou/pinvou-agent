@@ -474,6 +474,24 @@ impl SessionStore {
             .pending_persona_body = body;
     }
 
+    /// Clear a deleted persona and its one-shot body from every session that
+    /// still references it. Returning the affected IDs lets callers publish a
+    /// presentation update for each session after the atomic state change.
+    pub fn remove_persona_from_all(&self, persona_id: &str) -> Vec<String> {
+        let mut states = self.mode_states.write();
+        let mut changed = Vec::new();
+        for (session_id, state) in states.iter_mut() {
+            if state.active_persona.as_deref() != Some(persona_id) {
+                continue;
+            }
+            state.active_persona = None;
+            state.pending_persona_body = None;
+            changed.push(session_id.clone());
+        }
+        changed.sort();
+        changed
+    }
+
     pub fn set_mounted_collection(&self, id: &str, collection_id: Option<i64>) {
         let mounted = collection_id
             .filter(|collection_id| *collection_id > 0)

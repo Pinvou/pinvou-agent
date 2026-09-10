@@ -396,6 +396,17 @@ test('deletePersona blocks an in-flight equip response for the deleted card', as
   assert.equal(rt.state.chatItems.length, 0);
 });
 
+test('deletePersona blocks an in-flight update response for the deleted card', async () => {
+  const rt = loadPersonasFeature();
+  rt.state.activePersona = { id: 'user-a', name: 'Old card' };
+  const update = rt.defer('update_persona');
+  const pending = rt.api.updatePersona('user-a', { name: 'Updated card' });
+  await rt.api.deletePersona('user-a');
+  update.resolve({ id: 'user-a', name: 'Updated card' });
+  assert.equal(await pending, null);
+  assert.equal(rt.state.activePersona, null);
+});
+
 
 test('recreated persona IDs can be equipped after deletion', async () => {
   const rt = loadPersonasFeature();

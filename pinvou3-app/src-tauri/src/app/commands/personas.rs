@@ -95,8 +95,21 @@ pub async fn update_persona(
 
 /// 删除自制卡。
 #[tauri::command]
-pub async fn delete_persona(persona_id: String) -> Result<(), String> {
-    crate::features::personas::delete_user_persona(&persona_id)
+pub async fn delete_persona(
+    persona_id: String,
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+) -> Result<(), String> {
+    crate::features::personas::delete_user_persona(&persona_id)?;
+    for session_id in store.remove_persona_from_all(&persona_id) {
+        super::sessions::emit_session_event(
+            &app,
+            "session:persona_changed",
+            &session_id,
+            "unequipped",
+        );
+    }
+    Ok(())
 }
 
 /// 保存某 session 的卡牌加持/卸下事件时间线(sidecar,不进 messages)。

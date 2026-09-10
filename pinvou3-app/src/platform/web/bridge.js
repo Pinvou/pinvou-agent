@@ -8769,6 +8769,7 @@
   async function updatePersona(personaId, input) {
     const sum = await invoke("update_persona", { personaId, input });
     await refreshPersonas();
+    if (deletedPersonaIds.has(personaId)) return null;
     // 若改的正是当前 session 加持的卡, 同步挂件显示
     if (state.activePersona && state.activePersona.id === personaId) { state.activePersona = sum; notify(); }
     return sum;

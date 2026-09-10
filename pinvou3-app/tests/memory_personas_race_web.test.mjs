@@ -290,6 +290,16 @@ test('web: successful deletion clears the equipped card before pool refresh', as
   await pending;
 });
 
+test('web: successful deletion clears the cached session selection', async () => {
+  const rt = bootWebBridge();
+  await primeSessionA(rt);
+  rt.leave();
+  await rt.personas.deletePersona('persona-prime');
+  const switching = rt.sessions.switchToSession('chat-a');
+  assert.equal(rt.view().activePersona, null, 'cached presentation must be clear before backend sync');
+  await switching;
+});
+
 test('web: failed deletion leaves the equipped card intact', async () => {
   const rt = bootWebBridge();
   await primeSessionA(rt);
@@ -306,6 +316,28 @@ test('web: late persona read cannot restore a deleted card', async () => {
   await rt.personas.deletePersona('persona-prime');
   get.resolve({ id: 'persona-prime', name: 'Card A' });
   await new Promise(resolve => { setTimeout(resolve, 0); });
+  assert.equal(rt.view().activePersona, null);
+});
+
+test('web: in-flight equip cannot restore a deleted card', async () => {
+  const rt = bootWebBridge();
+  await primeSessionA(rt);
+  const equip = rt.defer('equip_persona');
+  const pending = rt.personas.equipPersona('persona-prime');
+  await rt.personas.deletePersona('persona-prime');
+  equip.resolve({ id: 'persona-prime', name: 'Card A' });
+  assert.equal(await pending, null);
+  assert.equal(rt.view().activePersona, null);
+});
+
+test('web: in-flight update cannot restore a deleted card', async () => {
+  const rt = bootWebBridge();
+  await primeSessionA(rt);
+  const update = rt.defer('update_persona');
+  const pending = rt.personas.updatePersona('persona-prime', { name: 'Updated card' });
+  await rt.personas.deletePersona('persona-prime');
+  update.resolve({ id: 'persona-prime', name: 'Updated card' });
+  assert.equal(await pending, null);
   assert.equal(rt.view().activePersona, null);
 });
 
