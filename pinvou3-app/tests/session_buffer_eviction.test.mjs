@@ -578,7 +578,6 @@ test('web scheduled-run reopen: after eviction, the scheduled open restores the 
 });
 
 // ── web getBuffer restore: the rebuild point for late events ──────────
-
 test('web late chat:usage event: buffer rebuilt by the event via getBuffer, draft restored', async () => {
   const rt = bootWebBridge();
   assert.equal(await rt.flat.switchToSession('s1'), true);
@@ -598,4 +597,101 @@ test('web late chat:usage event: buffer rebuilt by the event via getBuffer, draf
   assert.equal(await rt.flat.switchToSession('s1'), true);
   assert.equal(rt.flat.getComposerDraft(), 'late-event-draft',
     'a late event rebuilding the buffer via getBuffer must restore the side-table draft');
+});
+
+// ── aux-chat: snapshot() refreshes LRU recency so an open aux panel survives ──
+//
+// An always-open aux panel polls auxChat.snapshot() on a timer, but snapshot
+// used to read sessionStates[sid] without touching lastTouched — after 32+
+// session switches the panel's own buffer was the oldest idle entry and the
+// all-session LRU evicted it, leaving the open panel on a false empty state.
+// Fix: snapshot() (like every other read path) refreshes the buffer's LRU
+// recency via touchSessionBuffer, on both the tauri and the web bridge.
+
+function loadTauriAuxChatFeature(sessionsBoot) {
+  const root = { __PINVOU_SHARED_I18N__: {} };
+  const src = fs.readFileSync(path.join(bridgeDir, 'aux-chat.js'), 'utf8');
+  vm.runInNewContext(src, { window: root, globalThis: root, setTimeout, clearTimeout });
+  const factory = root.__PINVOU_TAURI_BRIDGE_FEATURES__.auxChat;
+  return factory({
+    state: sessionsBoot.state,
+    sessionStates: sessionsBoot.sessionStates,
+    bt(key) { return key; },
+    invoke() { return Promise.resolve({}); },
+    ensureSessionBufferLoaded: sessionsBoot.api.ensureSessionBufferLoaded,
+    purgeSessionBuffer: sessionsBoot.api.purgeSessionBuffer,
+    touchSessionBuffer: sessionsBoot.api.touchSessionBuffer,
+    isBusyFor() { return false; },
+  });
+}
+
+test('tauri aux snapshot() refreshes LRU recency: an open aux panel survives 33 session switches', () => {
+  const boot = loadTauriSessionsFeature();
+  const auxChat = loadTauriAuxChatFeature(boot);
+  // The open panel's aux buffer (materialized by ensure via the getBuffer
+  // path) holds one committed turn.
+  const buf = boot.api.getBuffer('aux-1');
+  buf.chatItems.push({ id: 1, type: 'user', text: 'q' });
+  buf.loadedFromDisk = true;
+  for (let i = 1; i <= 33; i++) {
+    boot.api.switchActiveTo(`s${i}`, null);
+    // The open panel polls snapshot on a timer: each poll proves the panel
+    // is alive and must count as a read for LRU recency.
+    const snap = auxChat.snapshot('aux-1');
+    assert.equal(snap.chatItems.length, 1, `the aux buffer must survive switch ${i}`);
+  }
+  assert.notEqual(boot.sessionStates['aux-1'], undefined,
+    'snapshot polling must refresh LRU recency so an open aux buffer survives pruning');
+  assert.equal(auxChat.snapshot('aux-1').chatItems[0].text, 'q');
+});
+
+test('tauri aux buffer without snapshot polling is evicted (control)', () => {
+  const boot = loadTauriSessionsFeature();
+  const auxChat = loadTauriAuxChatFeature(boot);
+  const buf = boot.api.getBuffer('aux-1');
+  buf.chatItems.push({ id: 1, type: 'user', text: 'q' });
+  for (let i = 1; i <= 33; i++) {
+    boot.api.switchActiveTo(`s${i}`, null);
+  }
+  assert.equal(boot.sessionStates['aux-1'], undefined,
+    'control: the untouched aux buffer is the oldest idle entry and is evicted');
+  // The factory runs in a vm realm: compare field-wise instead of deepEqual
+  // (cross-realm Array/Object prototypes fail deepStrictEqual).
+  const snap = auxChat.snapshot('aux-1');
+  assert.equal(snap.chatItems.length, 0);
+  assert.equal(snap.busy, false);
+  assert.equal(snap.queued.length, 0);
+});
+
+test('web aux snapshot polling keeps an open aux buffer alive through 34 session switches (no rehydration)', async () => {
+  const rt = bootWebBridge();
+  rt.handlers.get_or_create_aux_session = args => ({ id: `aux-${args.sessionId}` });
+  const auxId = await rt.flat.auxChatEnsure('task-1');
+  assert.equal(auxId, 'aux-task-1');
+  assert.equal(rt.calls.chunkLoads.filter(id => id === auxId).length, 1,
+    'precondition: ensure cold-loaded the aux buffer exactly once');
+  // The open panel polls snapshot constantly while the user switches sessions.
+  for (let i = 1; i <= 34; i++) {
+    assert.equal(await rt.flat.switchToSession(`s${i}`), true);
+    rt.flat.auxChatSnapshot(auxId);
+  }
+  // Re-ensure (e.g. the restart flow) must hit the resident buffer's
+  // loadedFromDisk fast path. Before the recency fix the untouched aux
+  // buffer was the oldest idle entry, got evicted at switch 32, and this
+  // ensure rehydrated from disk (second chunk load).
+  await rt.flat.auxChatEnsure('task-1');
+  assert.equal(rt.calls.chunkLoads.filter(id => id === auxId).length, 1,
+    'snapshot polling must refresh LRU recency so the open aux buffer survives pruning');
+});
+
+test('web aux buffer without snapshot polling is evicted and rehydrated on re-ensure (control)', async () => {
+  const rt = bootWebBridge();
+  rt.handlers.get_or_create_aux_session = args => ({ id: `aux-${args.sessionId}` });
+  const auxId = await rt.flat.auxChatEnsure('task-1');
+  for (let i = 1; i <= 34; i++) {
+    assert.equal(await rt.flat.switchToSession(`s${i}`), true);
+  }
+  await rt.flat.auxChatEnsure('task-1');
+  assert.equal(rt.calls.chunkLoads.filter(id => id === auxId).length, 2,
+    'control: without the recency touch the idle aux buffer is evicted and rehydrates');
 });

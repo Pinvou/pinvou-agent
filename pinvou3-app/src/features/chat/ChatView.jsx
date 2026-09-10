@@ -1350,6 +1350,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // detail -> list -> same parent card a new selection even when agentId is unchanged.
       const [subagentPanel, setSubagentPanel] = useState(null);
       const subagentPanelRequestRef = useRef(0);
+      // 辅助对话面板的挂载态提前声明：下面的滚动恢复 useLayoutEffect 依赖它
+      //（面板开合改变右侧 dock 布局，须恢复主会话滚动位置，与 CodexAcpView 一致）。
+      const [auxChatPanel, setAuxChatPanel] = useState(null);
+      const auxChatPanelRequestRef = useRef(0);
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the sub-agent panel on session switch
       useEffect(() => { setSubagentPanel(null); }, [activeSessionId]);
       const rememberScrollBeforeSubagentPanelChange = useCallback(() => {
@@ -1403,7 +1407,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           autoScrollRef.current = true;
           setShowScrollBottom(false);
         }
-      }, [subagentPanel]);
+      }, [subagentPanel, auxChatPanel]);
       useEffect(() => {
         if (typeof window === 'undefined') return;
         const onOpen = (event) => {
@@ -1459,8 +1463,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       ]);
       // 辅助对话面板（右侧 dock 的独立纯问答会话，不经子代理体系）。与
       // subagentPanel 不同：主会话切换时**不关闭**，把新 sessionId 传入换绑。
-      const [auxChatPanel, setAuxChatPanel] = useState(null);
-      const auxChatPanelRequestRef = useRef(0);
+      // 开合前记录主会话滚动位置（subagentPanelScrollRef），由上面的恢复
+      // useLayoutEffect 统一回放，与 CodexAcpView 的 aux 入口行为一致。
       const openAuxChatPanel = useCallback(() => {
         const requestedSessionId = activeSessionId;
         if (!requestedSessionId) return;
@@ -1475,6 +1479,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             sessionId: requestedSessionId,
             currentSessionId: activeSessionIdRef.current,
           })) return false;
+          rememberScrollBeforeSubagentPanelChange();
           setAuxChatPanel((current) => ({ openTick: (current?.openTick || 0) + 1 }));
           return true;
         };
@@ -1487,9 +1492,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         } else {
           publishOpen();
         }
-      }, [activeSessionId, onRightDockPanelSelectionChange]);
+      }, [activeSessionId, onRightDockPanelSelectionChange, rememberScrollBeforeSubagentPanelChange]);
       const closeAuxChatPanel = useCallback(() => {
         auxChatPanelRequestRef.current += 1;
+        rememberScrollBeforeSubagentPanelChange();
         setAuxChatPanel(null);
         if (browserDockOpen) {
           void invokeObservedPanelSelection(
@@ -1498,7 +1504,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             reportRightDockSelectionFailure,
           );
         }
-      }, [activeSessionId, browserDockOpen, onRightDockPanelSelectionChange]);
+      }, [activeSessionId, browserDockOpen, onRightDockPanelSelectionChange, rememberScrollBeforeSubagentPanelChange]);
       const handlePreviewArtifact = useCallback((artifact) => {
         setActiveArtifactPath(artifact && artifact.path ? artifact.path : null);
         setArtifactDockActivation((value) => value + 1);
@@ -2771,7 +2777,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             </PanelSuspense>
             </ViewErrorBoundary>
           )}
-          {auxChatPanel && activeSessionId && (
+          {/* sched- 运行会话无辅助对话（入口按钮同样隐藏）：切到 sched- 时
+              面板随挂载条件卸载，切回普通会话后自动重挂并重新 ensure。 */}
+          {auxChatPanel && activeSessionId && !activeSessionId.startsWith('sched-') && (
             <ViewErrorBoundary t={t} variant="panel">
             <PanelSuspense>
             <LazyAuxChatPanel

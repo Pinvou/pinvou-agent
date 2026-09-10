@@ -4046,3 +4046,165 @@ fn aux_sessions_do_not_consume_chat_retention_budget() {
         );
     }
 }
+
+/// 孤儿 aux 对账(评审 MINOR):映射缺失的 aux 记录(崩溃在「记录已落、映射
+/// 未落」窗口)必须被回收;主会话不受影响。
+#[test]
+fn reconcile_aux_sessions_reclaims_orphan_with_missing_mapping() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let aux = store
+        .create_aux_session(&main.metadata.id)
+        .expect("create aux session");
+
+    // 模拟创建窗口崩溃:映射摘掉(等同从未落下),aux 记录留在盘上。
+    store
+        .set_aux_session(&main.metadata.id, None)
+        .expect("drop aux mapping");
+    store.reconcile_aux_sessions().expect("reconcile aux");
+
+    assert!(
+        store.load(&aux.id).is_err(),
+        "无映射的 aux 孤儿记录必须被对账回收"
+    );
+    assert!(
+        store.load(&main.metadata.id).is_ok(),
+        "主会话不得受对账影响"
+    );
+}
+
+/// `_aux_sessions.json` 损坏时,重启后映射为空表,启动路径的 aux 对账必须把
+/// 失去映射的 aux 孤儿记录回收(评审 MINOR 的 corruption 场景,走
+/// boot_with_scheduled_root 真实启动接线)。
+#[test]
+fn startup_reconcile_reclaims_orphan_after_aux_sidecar_corruption() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let aux = store
+        .create_aux_session(&main.metadata.id)
+        .expect("create aux session");
+    let scheduled_root = store.scheduled_root.as_ref().clone();
+    let sidecar = paths::sessions_root().join("_aux_sessions.json");
+    std::fs::write(&sidecar, b"{ not json").expect("corrupt aux sidecar");
+
+    // 重启:损坏的 sidecar 加载失败 → 映射空表;启动对账回收孤儿。
+    let rebooted = SessionStore::boot_with_scheduled_root(scheduled_root).expect("reboot");
+
+    assert!(
+        rebooted.aux_session_id(&main.metadata.id).is_none(),
+        "损坏的 sidecar 不得恢复出映射"
+    );
+    assert!(
+        rebooted.load(&aux.id).is_err(),
+        "启动对账必须回收映射丢失的 aux 孤儿记录"
+    );
+    assert!(
+        rebooted.load(&main.metadata.id).is_ok(),
+        "主会话不得受对账影响"
+    );
+}
+
+/// 孤儿 aux 对账:映射在但主会话记录已死(外部清理绕过级联)→ aux 回收,
+/// 主→辅 幽灵映射一并摘除。
+#[test]
+fn reconcile_aux_sessions_reclaims_orphan_with_dead_parent() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let aux = store
+        .create_aux_session(&main.metadata.id)
+        .expect("create aux session");
+
+    // 外部清理删掉主会话记录(绕过 store.delete 的级联)→ 主死辅孤。
+    let main_record = store
+        .manager
+        .sessions_dir()
+        .join(format!("{}.json", main.metadata.id));
+    std::fs::remove_file(&main_record).expect("remove main record out of band");
+    store.reconcile_aux_sessions().expect("reconcile aux");
+
+    assert!(
+        store.load(&aux.id).is_err(),
+        "主会话已死的 aux 孤儿记录必须被对账回收"
+    );
+    assert!(
+        store.aux_session_id(&main.metadata.id).is_none(),
+        "主死辅孤的幽灵映射必须一并摘除"
+    );
+    let sidecar = paths::sessions_root().join("_aux_sessions.json");
+    assert!(!sidecar.exists(), "映射清空后 sidecar 应被删除");
+}
+
+/// 孤儿 aux 对账不得误伤健康的主+辅对:两条记录与映射都保持原样。
+#[test]
+fn reconcile_aux_sessions_leaves_healthy_pair_untouched() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let aux = store
+        .create_aux_session(&main.metadata.id)
+        .expect("create aux session");
+
+    store.reconcile_aux_sessions().expect("reconcile aux");
+
+    assert!(store.load(&main.metadata.id).is_ok());
+    assert!(store.load(&aux.id).is_ok(), "健康的主+辅对不得被对账误删");
+    assert_eq!(
+        store.aux_session_id(&main.metadata.id).as_deref(),
+        Some(aux.id.as_str())
+    );
+}
+
+/// 并发 get-or-create(评审 MINOR):N 个线程对同一主会话同时调用,
+/// `aux_sessions_io` 互斥必须保证恰好创建一条 aux 会话——全部调用收敛到
+/// 同一 id,盘上只有一条 aux- 记录,映射唯一。SessionStore 内部全 Arc +
+/// parking_lot 锁,可跨线程共享。
+#[test]
+fn get_or_create_aux_session_concurrent_calls_converge_to_one() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let main_id = main.metadata.id.clone();
+
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let store = store.clone();
+        let main_id = main_id.clone();
+        handles.push(std::thread::spawn(move || {
+            store
+                .get_or_create_aux_session(&main_id)
+                .expect("get or create aux")
+                .id
+        }));
+    }
+    let ids: std::collections::HashSet<String> = handles
+        .into_iter()
+        .map(|handle| handle.join().expect("worker joins"))
+        .collect();
+
+    assert_eq!(
+        ids.len(),
+        1,
+        "并发 get-or-create 必须收敛到同一条 aux 会话: {ids:?}"
+    );
+    let aux_id = ids.iter().next().expect("exactly one id");
+    assert_eq!(
+        store.aux_session_id(&main_id).as_deref(),
+        Some(aux_id.as_str())
+    );
+    let aux_records = store
+        .manager
+        .list_sessions()
+        .expect("list sessions")
+        .into_iter()
+        .filter(|metadata| metadata.id.starts_with("aux-"))
+        .count();
+    assert_eq!(aux_records, 1, "盘上必须恰好有一条 aux 会话记录");
+}

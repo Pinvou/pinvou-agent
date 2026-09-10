@@ -140,7 +140,8 @@ pub struct SessionStore {
     pub(crate) hidden_sessions: Arc<RwLock<HashMap<String, String>>>,
     /// 辅助对话映射:主会话 session_id -> 辅助会话 session_id(`aux-` 前缀)。
     /// 独立落盘到 `_aux_sessions.json`;辅助会话不进普通会话列表,随主会话
-    /// 删除级联清理(见 store.rs `delete`)。
+    /// 删除级联清理(见 store.rs `delete`);映射缺失/主会话先死的孤儿记录由
+    /// 启动路径的 `reconcile_aux_sessions`(retention.rs)回收。
     pub(crate) aux_sessions: Arc<RwLock<HashMap<String, String>>>,
     /// aux 会话 get-or-create 的互斥:映射查询与创建必须在同一临界区内,否则
     /// 两个并发调用各自创建、后写覆盖映射,先建的 aux 会话成为无法回收的孤儿。

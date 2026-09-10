@@ -235,6 +235,22 @@ impl SessionTurnLifecycles {
     }
 }
 
+/// 本轮是否强制零工具:纯对话元卡 / 调用方逐轮要求 / `aux-` 辅助对话,任一成立即限。
+/// `aux-` 是服务端强制(与 `sched-` 前缀守卫同思路):桥接层永远传
+/// `restrictTools: true`,但 `restrict_tools` 只是 `chat` / `web_access_chat` 的
+/// 可选调用参数——浏览器传 false、或任何绕过第一方桥接的调用方,都能在 aux
+/// 会话拿到全工具轮,因此在 pool 发送收口钉死,不看调用方传值。
+/// edit_last_turn 重发不经过本函数(底座 Op::EditLastTurn 不带工具面、沿用
+/// engine config),其零工具由 spawn 配置兜底,见
+/// `bridge::build_engine_config_for_session_roots` 的 `aux-` 分支。
+pub(crate) fn turn_restrict_tools(
+    session_id: &str,
+    persona_conversational: bool,
+    caller_restrict: bool,
+) -> bool {
+    persona_conversational || caller_restrict || session_id.starts_with("aux-")
+}
+
 fn scheduled_profile_after_turn_gate(
     store: &SessionStore,
     session_id: &str,
@@ -272,8 +288,6 @@ where
     store.delete_scheduled_run(session_id, expected_task_id)
 }
 
-/// EnginePool 预备 API(含测试覆盖,待 Tauri command 层接入);在 lib 生产视角下为 dead code。
-#[allow(dead_code)]
 async fn delete_chat_session_with_gate<F, Fut, G>(
     turn_locks: &SessionTurnLocks,
     store: &SessionStore,
@@ -2015,8 +2029,11 @@ impl EnginePool {
         let persona_reminder = active_card
             .as_ref()
             .map(crate::features::personas::equip_anchor);
-        let restrict_tools = active_card.as_ref().is_some_and(|c| c.conversational_only);
-        let restrict_tools = restrict_tools || restrict_tools_for_turn;
+        let restrict_tools = turn_restrict_tools(
+            session_id,
+            active_card.as_ref().is_some_and(|c| c.conversational_only),
+            restrict_tools_for_turn,
+        );
         self.get_or_spawn(session_id)
             .await?
             .send_reserved_user_message(
@@ -2793,7 +2810,7 @@ mod scheduled_model_tests {
         identity_for_saved_model, quiesce_engine_before_reclaim, resolve_eval_model_selection_from,
         resolve_runtime_model_override, resolve_scheduled_model, resolve_spawn_model,
         scheduled_profile_after_turn_gate, should_still_reap_after_snapshot, should_sync_session,
-        user_display_message,
+        turn_restrict_tools, user_display_message,
     };
     use crate::features::assistant::runtime_model::PreparedRuntimeModel;
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
@@ -2853,6 +2870,23 @@ mod scheduled_model_tests {
         unsafe { std::env::remove_var("DEEPSEEK_BASE_URL") };
         let bridge = Pinvou3Bridge::boot().expect("boot isolated test bridge");
         (bridge, home, restore)
+    }
+
+    /// PR #433 评审(MAJOR):`restrict_tools` 只是 `chat` / `web_access_chat` 的
+    /// 可选调用参数,aux 会话的工具限制不能依赖调用方自觉——`aux-` 前缀在
+    /// pool 发送收口强制零工具,调用方传 false 同样受限;普通会话行为不变。
+    #[test]
+    fn aux_session_turn_is_tool_free_regardless_of_caller() {
+        // aux 会话:调用方传 false / true、有无元卡,一律零工具。
+        assert!(turn_restrict_tools("aux-1", false, false));
+        assert!(turn_restrict_tools("aux-1", false, true));
+        assert!(turn_restrict_tools("aux-1", true, false));
+        // 普通会话:维持既有语义(调用方逐轮要求 / 纯对话元卡才限)。
+        assert!(!turn_restrict_tools("sess-plain", false, false));
+        assert!(turn_restrict_tools("sess-plain", false, true));
+        assert!(turn_restrict_tools("sess-plain", true, false));
+        // sched- 等其它带前缀会话不走 aux 规则。
+        assert!(!turn_restrict_tools("sched-1", false, false));
     }
 
     /// ADR-0006：引擎回收必须**先**取消全部子智能体、**后**发 Shutdown。
@@ -3858,6 +3892,106 @@ mod scheduled_model_tests {
         assert!(!fake_engine_present.load(Ordering::Acquire));
         assert!(forgotten.load(Ordering::Acquire));
         assert!(store.load(&session_id).is_err());
+
+        match previous_home {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// PR #433 评审回归：`delete_session` 的 Chat 分支对辅助会话走 gated 级联
+    /// （与 `discard_aux_session` 同链路）——先 `pool.delete_chat_session(aux)`
+    /// （turn gate 内回收引擎 + store.delete + late sweep），再删主会话；
+    /// `store.delete` 的盘上级联只删记录，会把在跑的 aux 引擎留成无句柄孤儿。
+    /// 命令本体依赖 AppHandle/Tauri State（repo 无 mock_app 先例，见 cancel
+    /// 测试注释），无法直接单测；这里用命令同款的
+    /// `delete_chat_session_with_gate` + 裸组件按命令顺序重放，验证 pool 删除
+    /// 路径确实回收 aux 引擎、删除 aux 记录并摘掉映射，且严格先于主会话删除。
+    #[tokio::test]
+    async fn chat_delete_cascades_aux_engine_reclaim_before_main_delete() {
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-engine-pool-aux-cascade-{}",
+            std::process::id()
+        ));
+        let previous_home = std::env::var("PINVOU3_HOME").ok();
+        let _ = std::fs::remove_dir_all(&home);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+
+        let store = SessionStore::boot().expect("session store");
+        let main_id = store
+            .create_new("wire-model".to_string(), None, home.join("workspace"))
+            .expect("chat session")
+            .metadata
+            .id;
+        let aux_id = store
+            .get_or_create_aux_session(&main_id)
+            .expect("aux session")
+            .id;
+        let locks = SessionTurnLocks::default();
+        let aux_engine_present = Arc::new(AtomicBool::new(true));
+        let main_engine_present = Arc::new(AtomicBool::new(true));
+        let order = Arc::new(StdMutex::new(Vec::new()));
+
+        // 命令 delete_session Chat 分支的同序重放（app/commands/sessions.rs）：
+        // 先解析映射、gated 删 aux（回收引擎 + 删记录），再 gated 删主会话。
+        let resolved_aux = store.aux_session_id(&main_id).expect("aux mapping");
+        assert_eq!(resolved_aux, aux_id);
+        {
+            let engine = aux_engine_present.clone();
+            let steps = order.clone();
+            delete_chat_session_with_gate(
+                &locks,
+                &store,
+                &resolved_aux,
+                || async move {
+                    engine.store(false, Ordering::Release);
+                    steps.lock().unwrap().push("evict-aux");
+                },
+                || {},
+            )
+            .await
+            .expect("delete aux session");
+        }
+        {
+            let engine = main_engine_present.clone();
+            let steps = order.clone();
+            delete_chat_session_with_gate(
+                &locks,
+                &store,
+                &main_id,
+                || async move {
+                    engine.store(false, Ordering::Release);
+                    steps.lock().unwrap().push("evict-main");
+                },
+                || {},
+            )
+            .await
+            .expect("delete main session");
+        }
+
+        assert!(
+            !aux_engine_present.load(Ordering::Acquire),
+            "级联删除必须回收 aux 引擎,不得留无句柄孤儿"
+        );
+        assert!(!main_engine_present.load(Ordering::Acquire));
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec!["evict-aux", "evict-main"],
+            "aux 引擎回收必须严格先于主会话删除"
+        );
+        assert!(store.load(&aux_id).is_err(), "aux 会话记录必须删除");
+        assert!(store.load(&main_id).is_err());
+        assert!(
+            store.aux_session_id(&main_id).is_none(),
+            "级联删除后 主→辅 映射不得残留"
+        );
 
         match previous_home {
             // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.

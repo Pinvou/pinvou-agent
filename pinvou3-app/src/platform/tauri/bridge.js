@@ -1172,11 +1172,13 @@
     }
   }
   // 辅助对话域：复用 chat/sessions 的注入件（isBusyFor、getBuffer 系、
-  // ensureSessionBufferLoaded、purgeSessionBuffer），不自建状态与事件监听。
+  // ensureSessionBufferLoaded、purgeSessionBuffer、touchSessionBuffer），
+  // 不自建状态与事件监听。
   const auxChatFeature = installBridgeFeature("auxChat", {
     state, invoke, bt, sessionStates,
     ensureSessionBufferLoaded,
     purgeSessionBuffer,
+    touchSessionBuffer,
     isBusyFor,
   });
 

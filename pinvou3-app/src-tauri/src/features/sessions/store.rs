@@ -129,6 +129,11 @@ impl SessionStore {
             store.enforce_session_retention_locked()?;
         }
         store.purge_all_scheduled_side_maps();
+        // aux 孤儿对账与 sched- 侧表对账同点接入(判据与为何不能进 enforce
+        // 见 reconcile_aux_sessions 注释);失败不阻塞启动,下一次启动再收尾。
+        if let Err(error) = store.reconcile_aux_sessions() {
+            eprintln!("[sessions] startup aux session reconciliation failed: {error:#}");
+        }
         Ok(store)
     }
 
@@ -157,6 +162,10 @@ impl SessionStore {
             store.enforce_session_retention_locked()?;
         }
         store.purge_all_scheduled_side_maps();
+        // 同 boot_inner:aux 孤儿对账,失败不阻塞启动。
+        if let Err(error) = store.reconcile_aux_sessions() {
+            eprintln!("[sessions] startup aux session reconciliation failed: {error:#}");
+        }
         Ok(store)
     }
 

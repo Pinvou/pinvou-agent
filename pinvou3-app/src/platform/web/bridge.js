@@ -5189,6 +5189,9 @@
     }
     const buf = sessionStates[sid];
     if (!buf) return auxChatEmptySnapshot();
+    // 与桌面端 aux-chat.js 同形：常开的面板按 snapshot 轮询即"在读"，刷新
+    // LRU 新近度，否则 32+ 次切会话后 buffer 被容量回收，面板误显空态。
+    touchSessionBuffer(sid, buf, false);
     return {
       chatItems: Array.isArray(buf.chatItems) ? [...buf.chatItems] : [],
       busy: !!buf.busy,

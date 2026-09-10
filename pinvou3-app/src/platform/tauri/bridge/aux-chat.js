@@ -20,6 +20,7 @@
     const sessionStates = context.sessionStates;
     const ensureSessionBufferLoaded = context.ensureSessionBufferLoaded;
     const purgeSessionBuffer = context.purgeSessionBuffer || function () {};
+    const touchSessionBuffer = context.touchSessionBuffer || function () {};
     const isBusyFor = context.isBusyFor;
 
     const AUX_SESSION_ID_PATTERN = /^aux-/;
@@ -75,6 +76,9 @@
       }
       const buf = sessionStates[sid];
       if (!buf) return emptySnapshot();
+      // 常开的面板按 snapshot 轮询即"在读"：与 getBuffer 系读路径一致刷新
+      // LRU 新近度，否则 32+ 次切会话后 buffer 被容量回收，面板误显空态。
+      touchSessionBuffer(sid, buf, false);
       return {
         chatItems: Array.isArray(buf.chatItems) ? [...buf.chatItems] : [],
         busy: !!buf.busy,
