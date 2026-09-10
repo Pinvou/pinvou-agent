@@ -1853,7 +1853,7 @@ const NAV_PREFETCH = {
       const sidebarTaskFilterOptions = [
         { id: 'all', label: t.sidebarTaskFilterAll },
         { id: 'pinned', label: t.sidebarTaskFilterPinned },
-        // code 形态(胶囊选中「代码」)下列表恒为代码会话:「代码会话」筛选等同
+        // 项目形态(胶囊选中「项目」)下列表恒为代码/绑定会话:「代码会话」筛选等同
         // 「全部」、「定时任务」恒为空——两个选项都是死胡同,只在标准形态提供。
         ...(sidebarCodeListActive ? [] : [
           { id: 'code', label: t.sidebarTaskFilterCodeSessions },
@@ -2726,6 +2726,11 @@ const NAV_PREFETCH = {
             // Concurrent-gate rejection (round-7 m1): map the typed prefix to
             // copy instead of surfacing raw prose.
             setRebindDraft(prev => prev && { ...prev, error: t.uiProjects.rebindInProgress });
+          } else if (message.startsWith('REBIND_NESTED_TARGET')) {
+            // Nested-target rejection: same typed-marker pattern, mapped to
+            // trilingual copy instead of backend prose (review #464 MINOR 9);
+            // shown inline, not toasted (overlay stacking, see below).
+            setRebindDraft(prev => prev && { ...prev, error: t.uiProjects.rebindNestedRejected });
           } else if (message.startsWith('REBIND_SESSIONS_BUSY')) {
             // Busy rejection is the fence's high-frequency happy path
             // (Minor 7): map it to i18n copy; only session ids follow the
@@ -2964,7 +2969,7 @@ const NAV_PREFETCH = {
       const mobileTitle = currentView === 'chat'
         ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || 'PINVOU')
         : currentView === 'codex'
-          ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || t.sidebarTaskFilterCode)
+          ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || t.uiCodex.untitledSession)
         : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings, browser: t.browser }[currentView] || 'PINVOU');
       const mobileNavigate = (view, beforeNavigate) => {
         setMobileMoreOpen(false);
@@ -3253,7 +3258,6 @@ const NAV_PREFETCH = {
 
           {moveToProjectSession && browserOverlayPublicationReady && (
             <MoveToProjectDialog
-              open={!!moveToProjectSession}
               session={moveToProjectSession}
               projects={sidebarProjectsData ? sidebarProjectsData.projects : []}
               currentProjectId={resolveSessionProjectId(
