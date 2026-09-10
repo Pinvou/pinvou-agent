@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
+use super::backend::BackendRegistry;
+
 /// 输入类会话授权的空闲超时：10 分钟无输入动作即失效，需重新授权。
 pub const GRANT_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// 输入类动作滑动窗口速率上限：60 次/分钟。
@@ -30,13 +32,18 @@ pub const DENIED_TTL: Duration = Duration::from_secs(60);
 /// pending，无上限会随进程寿命无界增长（评审发现）；超限逐出最旧条目。
 pub const MAX_PENDING_CONFIRMATIONS: usize = 100;
 pub const MAX_APPROVED_TOKENS: usize = 100;
+/// 单个会话的待决确认子上限：全局上限是跨会话共享资源，无子上限时一个
+/// 失控会话可把全局队列填满，其他会话的确认通道被 DoS 掉约一个 TTL
+/// （评审发现）。正常交互单会话同时只有一枚用户可见弹窗，10 已远超需要。
+pub const MAX_PENDING_PER_SESSION: usize = 10;
 /// 跨会话物理输入锁的有界等待上限。Input 动作从筛查到注入全程持锁（最长
-/// 可达 150s×n），无限挂等会让其他会话静默卡死（评审发现）——超时显式报错，
+/// 可达 190s×n），无限挂等会让其他会话静默卡死（评审发现）——超时显式报错，
 /// 由模型自行等待重试。
 pub const PHYSICAL_INPUT_LOCK_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// T3 后果性动作名单（大小写不敏感子串匹配；中英日）。
-/// 命中即不执行，要求用户显式确认。
+/// 命中即不执行，要求用户显式确认。误伤（如 "bin" 命中 "combine"）方向
+/// 是 fail-closed，代价只是一次额外确认。
 pub const T3_DENYLIST: &[&str] = &[
     "buy",
     "pay",
@@ -48,6 +55,15 @@ pub const T3_DENYLIST: &[&str] = &[
     // 拖拽/删除的常见目的地（评审发现：把文件拖进回收站/废纸篓零确认完成）。
     "trash",
     "bin",
+    // 评审补充覆盖：确认/下单/安装/抹除类语义（此前 "confirm"、"checkout"、
+    // "install"、繁体全域缺席——icon 按钮之外最常被命中的词恰恰是 "Confirm"）。
+    "confirm",
+    "checkout",
+    "place order",
+    "order now",
+    "install",
+    "erase",
+    "discard",
     "回收站",
     "废纸篓",
     "ゴミ箱",
@@ -60,6 +76,18 @@ pub const T3_DENYLIST: &[&str] = &[
     "提交",
     "清空",
     "确认",
+    "安裝",
+    // 繁体（评审发现：繁体界面全域缺席）。
+    "刪除",
+    "購買",
+    "支付",
+    "傳送",
+    "轉帳",
+    "提交",
+    "確認",
+    "清空",
+    "資源回收筒",
+    "廢紙簍",
     "購入",
     "支払い",
     "送信",
@@ -187,19 +215,23 @@ pub struct PendingConfirmation {
     pub created_at: Instant,
 }
 
-/// 已铸造的批准令牌：绑定会话与动作摘要，[`CONFIRM_TTL`] 内未消费即过期。
+/// 已铸造的批准令牌：绑定会话、动作摘要与**用户批准时看到的元素标签**，
+/// [`CONFIRM_TTL`] 内未消费即过期。
 #[derive(Debug, Clone)]
 struct ApprovedToken {
     session_id: String,
     action_summary: String,
+    element_label: String,
     minted_at: Instant,
 }
 
 /// 消费批准令牌的结果。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfirmationCheck {
-    /// 令牌有效且与会话/动作匹配，已消费（单次有效）。
-    Granted,
+    /// 令牌有效且与会话/动作匹配，已消费（单次有效）。携带用户批准时
+    /// 看到的元素标签——工具层重筛时用它判定"眼前的目标还是用户批准
+    /// 的那个"（评审发现：批准到重试之间目标可能被换内容）。
+    Granted { approved_element_label: String },
     /// 无此令牌（未知 / 已消费 / 已过期 / 会话或动作不匹配）。
     Unknown,
     /// 用户明确拒绝了该确认（[`DENIED_TTL`] 内）——模型不应重试同一动作。
@@ -220,6 +252,11 @@ pub struct ComputerUseShared {
     pending_confirmations: Mutex<HashMap<String, PendingConfirmation>>,
     approved_tokens: Mutex<HashMap<String, ApprovedToken>>,
     denied_confirmations: Mutex<HashMap<String, Instant>>,
+    /// 会话 → 后端句柄登记表（构造登记/析构注销）。撤销授权、全局停止或
+    /// 总开关关闭时，命令层经此触发后端关闭持久 OS 级授权（如 Wayland
+    /// portal 会话）——授权语义的应用侧事实来源在本模块，OS 侧的终止
+    /// 动作经这里转交后端。
+    pub backends: BackendRegistry,
 }
 
 impl Default for ComputerUseShared {
@@ -240,6 +277,7 @@ impl ComputerUseShared {
             pending_confirmations: Mutex::new(HashMap::new()),
             approved_tokens: Mutex::new(HashMap::new()),
             denied_confirmations: Mutex::new(HashMap::new()),
+            backends: BackendRegistry::default(),
         }
     }
 
@@ -399,6 +437,9 @@ impl ComputerUseShared {
     /// 等待答复的确认弹窗逐掉——失控模型以 60 次/分钟发起被拦动作，约
     /// 100 秒即可把用户的 pending 挤出，用户点批准得到「不存在」。容量满时
     /// 宁可让发起方拿到显式错误（fail-closed）也不能丢用户正在看的弹窗。
+    /// 另有每会话子上限 [`MAX_PENDING_PER_SESSION`]：全局上限是跨会话资源，
+    /// 无子上限时单个失控会话 100 秒即可填满全局队列，把**其他**会话的
+    /// 确认通道 DoS 掉约一个 TTL（评审发现）。
     pub fn new_pending_confirmation(
         &self,
         session_id: &str,
@@ -410,6 +451,14 @@ impl ComputerUseShared {
         let mut pending = self.pending_confirmations.lock();
         pending.retain(|_, entry| now.duration_since(entry.created_at) <= CONFIRM_TTL);
         if pending.len() >= MAX_PENDING_CONFIRMATIONS {
+            return None;
+        }
+        if pending
+            .values()
+            .filter(|entry| entry.session_id == session_id)
+            .count()
+            >= MAX_PENDING_PER_SESSION
+        {
             return None;
         }
         pending.insert(
@@ -481,6 +530,7 @@ impl ComputerUseShared {
             ApprovedToken {
                 session_id: entry.session_id,
                 action_summary: entry.action_summary,
+                element_label: entry.element_label,
                 minted_at: now,
             },
         );
@@ -518,8 +568,11 @@ impl ComputerUseShared {
             // 确认。
             return ConfirmationCheck::Unknown;
         }
+        let approved_element_label = token.element_label.clone();
         tokens.remove(confirm_id);
-        ConfirmationCheck::Granted
+        ConfirmationCheck::Granted {
+            approved_element_label,
+        }
     }
 }
 
@@ -694,6 +747,15 @@ mod tests {
             "ゴミ箱に移動",
             "清空列表",
             "确认订单",
+            // 评审补充覆盖：确认/下单/安装/抹除 + 繁体。
+            "Confirm purchase",
+            "Checkout now",
+            "Place order",
+            "Install updates",
+            "Erase disk",
+            "刪除檔案",
+            "購買",
+            "資源回收筒",
         ] {
             assert!(matches_t3_denylist(label), "should match: {label}");
         }
@@ -746,7 +808,9 @@ mod tests {
         // 不匹配的误试不销毁令牌(精确绑定下唯一能通过的只有用户批准的原动作)。
         assert_eq!(
             shared.take_confirmation(&id, "s1", summary),
-            ConfirmationCheck::Granted
+            ConfirmationCheck::Granted {
+                approved_element_label: "Buy now".to_string()
+            }
         );
         // 单次使用：第二次消费失败。
         assert_eq!(
@@ -809,29 +873,65 @@ mod tests {
 
     /// 评审修复回归：pending 存量达上限时**拒绝新请求**（返回 None）而不是
     /// 逐出最旧——逐出会把用户正在等待的确认弹窗挤掉（第三轮评审发现）。
+    /// 另有每会话子上限（评审修复回归）：全局上限是跨会话资源，无子上限时
+    /// 单个失控会话即可把全局队列填满，其他会话的确认通道被 DoS 掉约一个
+    /// TTL。
     #[test]
     fn pending_map_rejects_new_requests_when_full() {
         let shared = enabled_shared();
-        for i in 0..MAX_PENDING_CONFIRMATIONS {
+        // 每会话子上限：s1 第 MAX_PENDING_PER_SESSION+1 个被拒；s2 预算独立。
+        for i in 0..MAX_PENDING_PER_SESSION {
             let id = shared.new_pending_confirmation("s1", format!("action {i}"), "Buy now");
             assert!(id.is_some(), "request {i} must be admitted below the cap");
         }
-        // 满员：新请求被显式拒绝。
         assert!(
             shared
                 .new_pending_confirmation("s1", "one more", "Buy now")
                 .is_none(),
-            "a full queue must reject new pending requests"
+            "a session at its per-session cap must be rejected"
+        );
+        assert!(
+            shared
+                .new_pending_confirmation("s2", "other session", "Buy now")
+                .is_some(),
+            "another session must keep its own confirmation budget"
         );
         // 已有令牌存量上限照旧（铸造路径仍然逐出最旧：丢弃一个未消费的
-        // 旧令牌不影响用户正在看的弹窗）。
+        // 旧令牌不影响用户正在看的弹窗）。铸造会移除 pending，用独立会话
+        // 循环避免被上面的子上限/全局上限卡住。
         for i in 0..(MAX_APPROVED_TOKENS + 20) {
-            let id = shared.new_pending_confirmation("s1", format!("m {i}"), "Buy now");
+            let id = shared.new_pending_confirmation(&format!("t{i}"), format!("m {i}"), "Buy now");
             if let Some(id) = id {
                 let _ = shared.mint_confirmation(&id);
             }
         }
-        assert!(shared.approved_tokens.lock().len() <= MAX_APPROVED_TOKENS);
+        assert_eq!(
+            shared.approved_tokens.lock().len(),
+            MAX_APPROVED_TOKENS,
+            "token cap is enforced by evicting the oldest"
+        );
+        // 全局上限：跨多个会话填满（每会话至多 MAX_PENDING_PER_SESSION 个），
+        // 之后新请求被显式拒绝。存活 pending：s1×10 + s2×1（t* 已被铸造移除）。
+        let mut admitted = MAX_PENDING_PER_SESSION + 1;
+        'fill: for s in 3.. {
+            let session = format!("s{s}");
+            for _ in 0..MAX_PENDING_PER_SESSION {
+                match shared.new_pending_confirmation(&session, "fill", "Buy now") {
+                    Some(_) => admitted += 1,
+                    None => break 'fill,
+                }
+            }
+        }
+        assert_eq!(
+            admitted, MAX_PENDING_CONFIRMATIONS,
+            "global cap must bind exactly across per-session caps"
+        );
+        assert!(
+            shared
+                .new_pending_confirmation("s-final", "one more", "Buy now")
+                .is_none(),
+            "a full queue must reject new pending requests"
+        );
     }
 
     #[test]
