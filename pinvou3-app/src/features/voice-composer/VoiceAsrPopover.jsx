@@ -3,7 +3,7 @@ import { RefreshCw } from '../../components/icons.jsx';
 function VoiceAsrPopover({ visible, label, pct, cancelling, copy, onCancel }) {
   if (!visible) return null;
   return (
-    <div className="absolute bottom-full right-0 z-[40] mb-2 w-[236px] overflow-hidden rounded-[20px] border border-black/10 bg-white/90 p-3 text-[#1D1D1F] shadow-[0_18px_45px_-18px_rgba(0,0,0,0.45)] backdrop-blur-2xl dark:border-white/10 dark:bg-[#1C1C1E]/90 dark:text-[#F2F2F7]">
+    <div className="voice-pop-in absolute bottom-full right-0 z-[40] mb-2 w-[236px] overflow-hidden rounded-[20px] border border-black/10 bg-white/90 p-3 text-[#1D1D1F] shadow-[0_18px_45px_-18px_rgba(0,0,0,0.45)] backdrop-blur-2xl dark:border-white/10 dark:bg-[#1C1C1E]/90 dark:text-[#F2F2F7]">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <div className="truncate text-[12px] font-semibold">{label}</div>

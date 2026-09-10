@@ -1,5 +1,8 @@
 import { Check, X } from '../../components/icons.jsx';
-import { voiceModeLabel, voicePostprocessingLabel } from './voice-ui-policy.mjs';
+import { voicePostprocessingLabel } from './voice-ui-policy.mjs';
+
+const PILL_ACTIVE_STATUSES = ['requesting_permission', 'recording', 'transcribing', 'postprocessing'];
+const PILL_BUSY_STATUSES = ['requesting_permission', 'transcribing', 'postprocessing'];
 
 const WAVE_BARS = [
   { height: 11, colors: ['#B388FF', '#7C4DFF'] },
@@ -30,13 +33,15 @@ function VoiceWaveform({ muted = false }) {
   );
 }
 
-function VoiceRecordingPill({ status, mode, message, copy, onCancel, onConfirm }) {
-  const active = ['requesting_permission', 'recording', 'transcribing', 'postprocessing'].includes(status);
+function VoiceRecordingPill({ status, mode, message, copy, closing = false, onCancel, onConfirm }) {
+  const active = closing || PILL_ACTIVE_STATUSES.includes(status);
   if (!active) return null;
-  const busy = ['requesting_permission', 'transcribing', 'postprocessing'].includes(status);
-  const modeLabel = voiceModeLabel(mode, copy);
-  const statusText = status === 'recording'
-    ? modeLabel
+  const busy = PILL_BUSY_STATUSES.includes(status);
+  const recording = status === 'recording';
+  // While recording the bubble carries the stop-shortcut hint instead of a
+  // status line: the pill itself is the only surface naming the key that stops.
+  const statusText = recording
+    ? copy.voiceStopHint
     : status === 'postprocessing'
       ? voicePostprocessingLabel(mode, copy)
       : status === 'transcribing'
@@ -45,8 +50,8 @@ function VoiceRecordingPill({ status, mode, message, copy, onCancel, onConfirm }
           ? copy.voiceRequesting
           : (message || copy.voiceInputFailed);
   return (
-    <div className="pointer-events-auto flex flex-col items-center gap-1">
-      <div className="flex w-[min(240px,calc(100vw-32px))] items-center justify-between rounded-full border border-white/15 bg-[#16161C]/80 px-2 py-1.5 shadow-[0_18px_38px_-16px_rgba(0,0,0,0.7),0_0_28px_rgba(161,140,209,0.16),inset_0_1px_2px_rgba(255,255,255,0.14),inset_0_-1px_2px_rgba(0,0,0,0.45)] backdrop-blur-xl">
+    <div className={`flex flex-col items-center gap-1 voice-pop-in ${closing ? 'voice-pop-out pointer-events-none' : 'pointer-events-auto'}`}>
+      <div className={`flex w-[min(240px,calc(100vw-32px))] items-center justify-between rounded-full border border-white/15 bg-[#16161C]/80 px-2 py-1.5 shadow-[0_18px_38px_-16px_rgba(0,0,0,0.7),0_0_28px_rgba(161,140,209,0.16),inset_0_1px_2px_rgba(255,255,255,0.14),inset_0_-1px_2px_rgba(0,0,0,0.45)] backdrop-blur-xl ${recording ? 'voice-pill-live' : ''}`}>
         <button
           type="button"
           onClick={onCancel}
@@ -68,11 +73,9 @@ function VoiceRecordingPill({ status, mode, message, copy, onCancel, onConfirm }
           <Check size={21} strokeWidth={3} />
         </button>
       </div>
-      {status !== 'recording' && (
-        <div className="max-w-[min(220px,calc(100vw-40px))] truncate rounded-full bg-black/75 px-2.5 py-0.5 text-[11px] font-medium text-white shadow-lg backdrop-blur-md">
-          {statusText}
-        </div>
-      )}
+      <div className="max-w-[min(220px,calc(100vw-40px))] truncate rounded-full bg-black/75 px-2.5 py-0.5 text-[11px] font-medium text-white shadow-lg backdrop-blur-md">
+        {statusText}
+      </div>
     </div>
   );
 }

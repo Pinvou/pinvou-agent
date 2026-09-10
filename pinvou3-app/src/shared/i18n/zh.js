@@ -477,7 +477,7 @@ export const dictZh = {
         attachmentOpen: '使用默认应用打开', attachmentDownload: '下载附件', attachmentCopyAddress: '复制地址',
         attachmentCopyName: '复制文件名', attachmentReveal: '在文件管理器中显示',
         voiceStart: '语音输入', voiceStop: '结束录音', voiceCancel: '取消语音输入', voiceCancelShort: '取消', voiceRetry: '重试', voiceRetryAgain: '再试一次',
-        voiceRequesting: '正在请求麦克风权限…', voiceRecording: '正在录音，再按一次结束', voiceTranscribing: '正在识别语音…',
+        voiceRequesting: '正在请求麦克风权限…', voiceRecording: '正在录音，再按一次结束', voiceTranscribing: '正在识别语音…', voiceStopHint: '再按一次 Alt（Option）停止',
         voicePostprocessing: '正在整理语音文本…', voiceTaskPostprocessing: '正在整理语音任务…',
         voiceCompleted: '语音已写入输入框', voiceTaskSent: '语音任务已发送', voiceClose: '关闭语音提示', voiceGotoDeps: '去依赖体检',
         voiceDictationMode: '填入输入框', voiceTaskMode: '发送任务', voiceInputFailed: '语音输入失败',

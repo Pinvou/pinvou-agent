@@ -477,7 +477,7 @@ export const dictEn = {
         attachmentOpen: 'Open with default app', attachmentDownload: 'Download attachment', attachmentCopyAddress: 'Copy address',
         attachmentCopyName: 'Copy filename', attachmentReveal: 'Show in file manager',
         voiceStart: 'Voice input', voiceStop: 'Stop recording', voiceCancel: 'Cancel voice input', voiceCancelShort: 'Cancel', voiceRetry: 'Retry', voiceRetryAgain: 'Try again',
-        voiceRequesting: 'Requesting microphone permission…', voiceRecording: 'Recording, press again to stop', voiceTranscribing: 'Transcribing voice…',
+        voiceRequesting: 'Requesting microphone permission…', voiceRecording: 'Recording, press again to stop', voiceTranscribing: 'Transcribing voice…', voiceStopHint: 'Press Alt (Option) again to stop',
         voicePostprocessing: 'Polishing voice text…', voiceTaskPostprocessing: 'Rewriting voice task…',
         voiceCompleted: 'Voice text added', voiceTaskSent: 'Voice task sent', voiceClose: 'Close voice notice', voiceGotoDeps: 'Open dependency check',
         voiceDictationMode: 'Insert into input', voiceTaskMode: 'Send task', voiceInputFailed: 'Voice input failed',
