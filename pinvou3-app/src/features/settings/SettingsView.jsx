@@ -1695,11 +1695,19 @@ const formatMemoryTime = (item, copy) => {
      * back with no explanation). Also consumes the status projection's
      * platform_supported: on a platform without a backend the toggle is
      * disabled instead of letting users enable something that cannot work.
+     *
+     * Lives at module scope (stable component identity across parent
+     * renders — the third review round suspected a remount-per-render bug
+     * here, but the definition sits outside SettingsView at depth 0). The
+     * switch disables itself while a write is in flight so rapid clicks
+     * cannot interleave contradictory set_enabled calls (matching the
+     * consent dialog's single-flight standard).
      */
     const ComputerUseSettingSection = ({ t }) => {
       const slice = useBridgeState(['computerUse']);
       const computerUse = (slice && slice.computerUse) || {};
       const [actionError, setActionError] = useState('');
+      const [pending, setPending] = useState(false);
       const unsupported = computerUse.platformSupported === false;
       return (
         <IOSSection title={t.uiComputerUse.settingsSection}>
@@ -1709,13 +1717,16 @@ const formatMemoryTime = (item, copy) => {
           >
             <IOSSwitch
               checked={!!computerUse.enabled}
-              disabled={unsupported}
+              disabled={unsupported || pending}
               onChange={(value) => {
                 if (!bridge.available || !bridge.computerUse) return;
                 setActionError('');
-                bridge.computerUse.setEnabled(value).catch((error) => {
-                  setActionError(t.uiComputerUse.actionFailed(String(error && error.message ? error.message : error)));
-                });
+                setPending(true);
+                bridge.computerUse.setEnabled(value)
+                  .catch((error) => {
+                    setActionError(t.uiComputerUse.actionFailed(String(error && error.message ? error.message : error)));
+                  })
+                  .finally(() => setPending(false));
               }}
             />
           </IOSRow>

@@ -18,6 +18,11 @@ assert.equal(
   'windows drive paths with backslash separators must be extracted',
 );
 assert.equal(
+  extractComputerUseScreenshotPath('saved /ws/attachments/computer_use/shot.png.png and more'),
+  '/ws/attachments/computer_use/shot.png.png',
+  'a basename ending in .png.png must not be truncated at the first .png',
+);
+assert.equal(
   extractComputerUseScreenshotPath(JSON.stringify({
     content: [{ type: 'text', text: '截图已保存到 /ws/attachments/computer_use/envelope.png' }],
   })),

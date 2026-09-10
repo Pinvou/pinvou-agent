@@ -815,6 +815,13 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       useEffect(() => {
         if (!COMPUTER_USE_ENABLED || !bridge.available || !bridge.computerUse || !activeSessionId) return;
         bridge.computerUse.refreshStatus(activeSessionId).catch(() => {});
+        // grant 有 10 分钟空闲过期，但后端没有过期事件——横幅只靠
+        // refreshStatus 与后端对账。停在同会话时周期性对账，避免授权
+        // 已过期而「正在控制电脑」横幅长期失真（第三轮评审发现）。
+        const reconciler = setInterval(() => {
+          bridge.computerUse.refreshStatus(activeSessionId).catch(() => {});
+        }, 30_000);
+        return () => clearInterval(reconciler);
       }, [activeSessionId]);
       const busy = bs ? bs.busy : false;
       // 停止按钮 single-flight:busy 在首次 cancel_generation 返回前就复位,
