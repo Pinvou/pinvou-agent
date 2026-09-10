@@ -2946,6 +2946,7 @@ function workspaceDisplayName(path) {
 
           {moveToProjectSession && (
             <MoveToProjectDialog
+              open={!!moveToProjectSession}
               session={moveToProjectSession}
               projects={sidebarProjectsData ? sidebarProjectsData.projects : []}
               currentProjectId={resolveSessionProjectId(
