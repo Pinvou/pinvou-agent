@@ -30,7 +30,7 @@ use super::platform;
 use super::scaling::{self, ScaleMap, ScaledScreenshot};
 use super::types::{
     ActionClass, ComputerUseAction, ComputerUseError, EVENT_CONFIRM_REQUIRED, EVENT_GRANT_REQUIRED,
-    MouseButton, ScrollDirection, TOOL_NAME, UiTreeOptions, parse_key_chord,
+    ElementInfo, Key, MouseButton, ScrollDirection, TOOL_NAME, UiTreeOptions, parse_key_chord,
 };
 
 /// 输入/scroll 动作执行后的界面稳定等待（唯一的 settle 常数定义点）。
@@ -41,6 +41,9 @@ pub const MAX_WAIT_MS: u64 = 30_000;
 pub const MAX_HOLD_KEY_MS: u64 = 30_000;
 /// 单次 scroll 格数上限。
 pub const MAX_SCROLL_AMOUNT: u32 = 100;
+/// `type` 文本长度上限（字符数）。超限显式拒绝——失控的超长注入既会拖死
+/// 输入循环，也会让确认摘要失去可读性。
+pub const MAX_TYPE_TEXT_CHARS: usize = 10_000;
 /// `ui_tree` 参数上限。
 pub const MAX_UI_TREE_DEPTH: u32 = 64;
 pub const MAX_UI_TREE_NODES: u32 = 10_000;
@@ -193,6 +196,18 @@ fn opt_i64(input: &Value, field: &str) -> Result<Option<i64>, ToolError> {
     }
 }
 
+/// `Option<u64>` 参数收窄到 `Option<u32>`：`opt_u64` 的 max 已把取值钉在
+/// u32 范围内，这里仍用 `try_from` 显式拒绝而不是 `as u32` 静默截断
+/// （评审发现：截断会让 max_nodes/max_depth 参数静默变成别的值）。
+fn opt_u32_bounded(input: &Value, field: &str, max: u32) -> Result<Option<u32>, ToolError> {
+    match opt_u64(input, field, u64::from(max))? {
+        None => Ok(None),
+        Some(value) => u32::try_from(value)
+            .map(Some)
+            .map_err(|_| invalid(format!("{field} out of range; got {value}"))),
+    }
+}
+
 /// x/y 成对出现、非负（截图空间坐标）。
 fn opt_coord(input: &Value) -> Result<Option<(i64, i64)>, ToolError> {
     let x = opt_i64(input, "x")?;
@@ -278,12 +293,12 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
         }
         "ui_tree" => {
             reject_unexpected(input, action_name, &["max_depth", "max_nodes"])?;
-            let max_depth = opt_u64(input, "max_depth", u64::from(MAX_UI_TREE_DEPTH))?;
-            let max_nodes = opt_u64(input, "max_nodes", u64::from(MAX_UI_TREE_NODES))?;
+            let max_depth = opt_u32_bounded(input, "max_depth", MAX_UI_TREE_DEPTH)?;
+            let max_nodes = opt_u32_bounded(input, "max_nodes", MAX_UI_TREE_NODES)?;
             ComputerUseAction::UiTree {
                 opts: UiTreeOptions {
-                    max_depth: max_depth.map(|v| v as u32),
-                    max_nodes: max_nodes.map(|v| v as u32),
+                    max_depth,
+                    max_nodes,
                 },
             }
         }
@@ -315,6 +330,10 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
                     .as_u64()
                     .ok_or_else(|| field_type_error("amount", "a non-negative integer"))?,
             };
+            // 下限 1：滚动 0 格是模型错误，显式拒绝而不是静默 no-op。
+            if amount == 0 {
+                return Err(invalid("amount must be >= 1 for scroll"));
+            }
             if amount > u64::from(MAX_SCROLL_AMOUNT) {
                 return Err(invalid(format!(
                     "amount must be <= {MAX_SCROLL_AMOUNT}; got {amount}"
@@ -322,7 +341,8 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
             }
             ComputerUseAction::Scroll {
                 direction,
-                amount: amount as u32,
+                amount: u32::try_from(amount)
+                    .map_err(|_| invalid("amount out of range for scroll"))?,
                 at: coord,
             }
         }
@@ -371,9 +391,19 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
         }
         "type" => {
             reject_unexpected(input, action_name, &["text"])?;
-            ComputerUseAction::Type {
-                text: req_text(input, action_name)?,
+            let text = req_text(input, action_name)?;
+            // NUL 无法有意义地键入，且会污染下游的长度/审计统计：显式拒绝。
+            if text.contains('\0') {
+                return Err(invalid("text must not contain NUL characters for type"));
             }
+            let count = text.chars().count();
+            if count > MAX_TYPE_TEXT_CHARS {
+                return Err(invalid(format!(
+                    "text is too long for type: {count} chars (max {MAX_TYPE_TEXT_CHARS}); \
+                     split it into smaller chunks"
+                )));
+            }
+            ComputerUseAction::Type { text }
         }
         "key" => {
             reject_unexpected(input, action_name, &["text"])?;
@@ -516,19 +546,9 @@ struct T3Hit {
     reason: &'static str,
 }
 
-/// 对一个输入坐标处的 a11y 元素做名单/密码字段筛查。
-fn screen_point(parts: &Parts, x: i32, y: i32) -> T3Screening {
-    let element = match parts.backend.element_at_point(x, y) {
-        Ok(element) => element,
-        Err(error) => {
-            return T3Screening::Unscreenable(format!(
-                "accessibility screening failed at ({x}, {y}): {error}"
-            ));
-        }
-    };
-    let Some(element) = element else {
-        return T3Screening::Clear;
-    };
+/// 对一个 a11y 元素做名单/密码字段判定。坐标筛查（screen_point）与键盘焦点
+/// 筛查共用同一套判定，两条路径的安全标准必须一致。
+fn screen_element(element: &ElementInfo) -> T3Screening {
     if element.secure || is_secure_role(&element.role) {
         return T3Screening::Blocked(T3Hit {
             element_label: format!("{} ({})", element.name, element.role),
@@ -544,13 +564,35 @@ fn screen_point(parts: &Parts, x: i32, y: i32) -> T3Screening {
     T3Screening::Clear
 }
 
+/// 对一个输入坐标处的 a11y 元素做名单/密码字段筛查。
+fn screen_point(parts: &Parts, x: i32, y: i32) -> T3Screening {
+    let element = match parts.backend.element_at_point(x, y) {
+        Ok(element) => element,
+        Err(error) => {
+            return T3Screening::Unscreenable(format!(
+                "accessibility screening failed at ({x}, {y}): {error}"
+            ));
+        }
+    };
+    match element {
+        Some(element) => screen_element(&element),
+        None => T3Screening::Clear,
+    }
+}
+
 /// T3 后果性筛查：Input 类动作执行前查目标处的 a11y 元素。
 ///
 /// 筛查点选择：
 /// - 带坐标的点击/滚动查目标点；`left_click_drag` 查**起点与落点**两个点
 ///   （拖进回收站/Delete 区是典型后果性动作，只查光标会漏掉终点——评审发现）。
-/// - 无坐标输入动作（type/key/按下释放）查当前光标：type 打进焦点字段，
-///   mouse down/up 作用于光标处。
+/// - 键盘类动作（type/key/hold_key）查**焦点元素**：键盘输入落在焦点上而不
+///   是光标处——焦点在密码框、光标在别处时按光标筛查会漏判放行（评审发现，
+///   最重级别）。`focused_element` 返回 Ok(None)=明确无焦点=无处键入，放行；
+///   Err=查询失败/平台不支持 → `Unscreenable` 失败关闭。后端不支持时默认
+///   实现返回 Err，同样失败关闭。
+/// - 其余输入动作（mouse down/up、无坐标点击/滚动）作用于光标处，查当前
+///   光标；光标必须落在截图显示器范围内（混合 DPI 防护：光标在另一块屏上
+///   时换算结果是垃圾坐标，按 Unscreenable 失败关闭）。
 /// - mouse_move 只悬停、不产生后果，明确不筛查（否则合法 hover 全被拦）；
 ///   它的后果由随后的按下动作自身筛查兜住。
 ///
@@ -558,10 +600,26 @@ fn screen_point(parts: &Parts, x: i32, y: i32) -> T3Screening {
 /// 屏上会查错位置静默放行），一律 `Unscreenable` 失败关闭。
 fn t3_screening(parts: &Parts, action: &ComputerUseAction, map: Option<&ScaleMap>) -> T3Screening {
     const NO_MAP: &str = "no screenshot mapping is available to resolve the target point";
-    let points: Vec<(i32, i32)> = match action {
+    match action {
         ComputerUseAction::MouseMove { .. } | ComputerUseAction::ElementAtPoint { .. } => {
             return T3Screening::Clear;
         }
+        // 键盘类动作：筛查焦点元素（键盘输入的真正落点）。
+        ComputerUseAction::Type { .. }
+        | ComputerUseAction::KeyChord { .. }
+        | ComputerUseAction::HoldKey { .. } => {
+            return match parts.backend.focused_element() {
+                Ok(Some(element)) => screen_element(&element),
+                Ok(None) => T3Screening::Clear,
+                Err(error) => T3Screening::Unscreenable(format!(
+                    "the keyboard-focused element cannot be determined, so the typing target \
+                     cannot be screened: {error}"
+                )),
+            };
+        }
+        _ => {}
+    }
+    let points: Vec<(i32, i32)> = match action {
         ComputerUseAction::Click {
             at: Some((x, y)), ..
         }
@@ -586,15 +644,25 @@ fn t3_screening(parts: &Parts, action: &ComputerUseAction, map: Option<&ScaleMap
             Ok((dx, dy)) => {
                 let Some(m) = map else {
                     return T3Screening::Unscreenable(
-                        "cursor position cannot be mapped into the input space without a                          screenshot"
+                        "cursor position cannot be mapped into the input space without a \
+                         screenshot"
                             .to_string(),
                     );
                 };
+                // 混合 DPI 防护：光标不在截图显示器上时 device_to_input 的
+                // 结果对本次动作没有意义（如 mouse_down 在副屏、映射是主屏）。
+                if !m.contains_device_point(dx, dy) {
+                    return T3Screening::Unscreenable(format!(
+                        "cursor at device ({dx}, {dy}) is outside the captured monitor \
+                         (origin ({}, {}), {}x{}), so the target cannot be screened",
+                        m.origin_x, m.origin_y, m.dev_w, m.dev_h
+                    ));
+                }
                 vec![m.device_to_input(dx, dy)]
             }
             Err(error) => {
                 return T3Screening::Unscreenable(format!(
-                    "cursor position is unknown, so the focused target cannot be screened:                      {error}"
+                    "cursor position is unknown, so the target cannot be screened: {error}"
                 ));
             }
         },
@@ -664,12 +732,22 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
     let started = Instant::now();
     let action = parsed.action;
     let call_id = audit::new_call_id();
-    let audit_log = AuditLog::for_session(&parts.session_id)
-        .map_err(|error| {
+    // 审计 fail-closed（评审发现：Input 类动作曾可静默无审计执行）。审计
+    // 目录不可用时：Input 类拒绝执行；Observe 类维持 eprintln 降级（只读
+    // 观察没有注入后果，可用性优先）。
+    let audit_log = match AuditLog::for_session(&parts.session_id) {
+        Ok(log) => Some(log),
+        Err(error) => {
             eprintln!("[computer_use] audit log unavailable: {error}");
-            error
-        })
-        .ok();
+            if action.class() == ActionClass::Input {
+                return ToolResult::error(format!(
+                    "refusing to execute an input action because the audit log is \
+                     unavailable: {error}"
+                ));
+            }
+            None
+        }
+    };
 
     // begin 记录的 consent 标签保持中性：此刻令牌尚未验证（评审发现：带
     // confirm_id 的调用曾被预标成 t3-confirmed，伪造 id 会留下失实审计）。
@@ -683,6 +761,16 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
     match &action {
         ComputerUseAction::Type { text } => {
             record.with_typed_text(text).with_target("keyboard focus");
+        }
+        // 评审发现：`key "p"` 逐字符调用可把密码明文写进审计。仅由单个
+        // Char 组成（无修饰键）的和弦实质是键入文本，与 type 同策略——
+        // 只记长度 + salt || text 的 HMAC；含修饰键的和弦是快捷键，无
+        // 字典风险，保留明文（用户可读性优先）。
+        ComputerUseAction::KeyChord { keys, chord }
+        | ComputerUseAction::HoldKey { keys, chord, .. }
+            if matches!(keys.as_slice(), [Key::Char(_)]) =>
+        {
+            record.with_typed_text(chord).with_target("keyboard focus");
         }
         ComputerUseAction::KeyChord { chord, .. } | ComputerUseAction::HoldKey { chord, .. } => {
             record.with_target(&format!("keys: {chord}"));
@@ -701,6 +789,12 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
     if let Some(log) = &audit_log {
         if let Err(error) = log.append(&record) {
             eprintln!("[computer_use] audit begin append failed: {error}");
+            if action.class() == ActionClass::Input {
+                return ToolResult::error(format!(
+                    "refusing to execute an input action because its audit record \
+                     could not be written: {error}"
+                ));
+            }
         }
     }
 
@@ -710,9 +804,13 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
 
     let body: Result<String, String> = (|| {
         // 物理输入是全局独占资源：Input 类动作从筛查到注入全程持有进程级
-        // 互斥，两个并发会话不能交替打字/点击（评审发现）。
-        let _input_guard =
-            (action.class() == ActionClass::Input).then(|| parts.shared.lock_physical_input());
+        // 互斥，两个并发会话不能交替打字/点击（评审发现）。获取改为有界等待：
+        // 锁被其他会话持有时超时显式报错（InputBusy），而不是无限挂等把其他
+        // 会话静默卡死（评审发现）。
+        let _input_guard = (action.class() == ActionClass::Input)
+            .then(|| parts.shared.lock_physical_input())
+            .transpose()
+            .map_err(|rejection| rejection.message())?;
 
         // 带坐标动作没有 ScaleMap 时先自动截图（会话首次）；T3 动作同样需要
         // 映射——筛查点的坐标换算和光标映射都依赖它。
@@ -852,6 +950,15 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         record.with_screenshot(&shot.png, &shot.abs_path);
     }
 
+    // 审计 end 记录失败时动作已执行、无法撤销，但绝不能静默吞掉（评审发现
+    // 的 `let _ = append` 路径）：Input 类把失败显式带回给模型与用户。
+    let audit_end_failure = |log: &AuditLog, record: &AuditRecord| {
+        log.append(record).err().map(|error| {
+            eprintln!("[computer_use] audit end append failed: {error}");
+            format!("the audit record for this action could not be written: {error}")
+        })
+    };
+
     match body {
         Ok(text) => {
             let mut result = ToolResult::success(text);
@@ -861,8 +968,13 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
             record.consent = consent_label(&action, confirmed_t3);
             let record = record.finish("ok", None, duration_ms);
             if let Some(log) = &audit_log {
-                if let Err(error) = log.append(&record) {
-                    eprintln!("[computer_use] audit end append failed: {error}");
+                if let Some(audit_error) = audit_end_failure(log, &record) {
+                    if action.class() == ActionClass::Input {
+                        return ToolResult::error(format!(
+                            "the action was executed, but {audit_error}; \
+                             treat this action as unverified"
+                        ));
+                    }
                 }
             }
             result
@@ -870,13 +982,57 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         Err(message) => {
             let record = record.finish("error", Some(message.clone()), duration_ms);
             if let Some(log) = &audit_log {
-                if let Err(error) = log.append(&record) {
-                    eprintln!("[computer_use] audit end append failed: {error}");
+                if let Some(audit_error) = audit_end_failure(log, &record) {
+                    if action.class() == ActionClass::Input {
+                        return ToolResult::error(format!(
+                            "{message}; additionally, {audit_error}"
+                        ));
+                    }
                 }
             }
             ToolResult::error(message)
         }
     }
+}
+
+/// Type 摘要预览的最大字符数。
+const TYPE_PREVIEW_CHARS: usize = 12;
+
+/// Type 摘要的安全预览：最多 [`TYPE_PREVIEW_CHARS`] 个字符，控制字符转义为
+/// `\uXXXX`（预览会进确认对话框/事件与模型结果，不可夹带不可见载荷），
+/// 超长截断加省略号。
+fn type_preview(text: &str) -> String {
+    let mut preview = String::new();
+    let mut chars = text.chars();
+    for _ in 0..TYPE_PREVIEW_CHARS {
+        match chars.next() {
+            None => return preview,
+            Some(c) if c.is_control() => preview.push_str(&format!("\\u{:04x}", c as u32)),
+            Some(c) => preview.push(c),
+        }
+    }
+    if chars.next().is_some() {
+        preview.push('…');
+    }
+    preview
+}
+
+/// 键入文本的全文指纹：SHA-256 前 8 个 hex。确认令牌与摘要绑定，文本一变
+/// 指纹即变——同长度的另一段文本不能换用同一令牌。
+fn text_fingerprint(text: &str) -> String {
+    audit::sha256_hex(text.as_bytes())[..8].to_string()
+}
+
+/// Type 动作摘要：字符数 + 预览 + 指纹。摘要会展示给用户（知情批准）并
+/// 参与 guard 令牌绑定——旧摘要只有 `type N chars`，用户盲批且同长度不同
+/// 文本可换用同一令牌（评审发现）。
+fn typed_text_summary(verb: &str, text: &str) -> String {
+    format!(
+        "{verb} {} chars: \"{}\" [{}]",
+        text.chars().count(),
+        type_preview(text),
+        text_fingerprint(text)
+    )
 }
 
 fn action_summary(action: &ComputerUseAction) -> String {
@@ -885,7 +1041,7 @@ fn action_summary(action: &ComputerUseAction) -> String {
             format!("{} click x{count} at {at:?}", button.as_str())
         }
         ComputerUseAction::Drag { start, end } => format!("drag {start:?} -> {end:?}"),
-        ComputerUseAction::Type { text } => format!("type {} chars", text.chars().count()),
+        ComputerUseAction::Type { text } => typed_text_summary("type", text),
         ComputerUseAction::KeyChord { chord, .. } => format!("key {chord}"),
         ComputerUseAction::HoldKey { chord, ms, .. } => format!("hold {chord} for {ms}ms"),
         other => other.name().to_string(),
@@ -905,6 +1061,19 @@ fn execute_action(
             let (dx, dy) = backend.cursor_position()?;
             match map {
                 Some(m) => {
+                    // 混合 DPI 防护：光标不在截图显示器上时不硬换算（换算结果
+                    // 是跨屏垃圾坐标），回报设备坐标并附警告（评审发现）。
+                    if !m.contains_device_point(dx, dy) {
+                        warnings.push(format!(
+                            "cursor is outside the captured monitor (origin ({}, {}), {}x{}); \
+                             screenshot-space coordinates are unavailable for it this turn",
+                            m.origin_x, m.origin_y, m.dev_w, m.dev_h
+                        ));
+                        return Ok(format!(
+                            "cursor is at device position ({dx}, {dy}), which is outside the \
+                             captured monitor"
+                        ));
+                    }
                     let (sx, sy) = m.device_to_shot(dx, dy);
                     Ok(format!("cursor is at ({sx}, {sy}) in screenshot space"))
                 }
@@ -1072,7 +1241,7 @@ impl ToolSpec for ComputerUseTool {
                 "text": { "type": "string", "description": "Text to type (type) or xdotool-style key chord like \"ctrl+s\", \"Return\", \"alt+Tab\" (key, hold_key)" },
                 "ms": { "type": "integer", "minimum": 0, "description": "Duration in milliseconds (wait, hold_key)" },
                 "direction": { "type": "string", "enum": ["up", "down", "left", "right"], "description": "Scroll direction (scroll)" },
-                "amount": { "type": "integer", "minimum": 0, "description": "Scroll wheel clicks (scroll)" },
+                "amount": { "type": "integer", "minimum": 1, "description": "Scroll wheel clicks, 1-100 (scroll)" },
                 "max_depth": { "type": "integer", "minimum": 1, "description": "Max accessibility tree depth (ui_tree)" },
                 "max_nodes": { "type": "integer", "minimum": 1, "description": "Max accessibility tree nodes (ui_tree)" },
                 "confirm_id": { "type": "string", "description": "Single-use user-confirmation token for a blocked consequential action" }
@@ -1117,9 +1286,13 @@ impl ToolSpec for ComputerUseTool {
             }
         }
 
-        // 同意门控（同步快速路径，拒绝时发事件）。
+        // 同意门控（同步快速路径，拒绝时发事件）。观察类动作同样过限速记账
+        // （评审发现：screenshot/ui_tree/cursor 此前完全不限速）。
         let gate = match parsed.action.class() {
-            ActionClass::Observe => self.parts.shared.check_readonly(),
+            ActionClass::Observe => self
+                .parts
+                .shared
+                .begin_observe_action(&self.parts.session_id),
             ActionClass::Input => self.parts.shared.begin_input_action(&self.parts.session_id),
         };
         if let Err(rejection) = gate {
@@ -1129,7 +1302,8 @@ impl ToolSpec for ComputerUseTool {
                     json!({ "session_id": self.parts.session_id }),
                 );
             }
-            // 审计被拒调用（best-effort）。
+            // 审计被拒调用（非输入类允许降级为 eprintln；动作未执行，无注入
+            // 后果，但绝不静默吞错——评审发现）。
             let mut record = AuditRecord::begin(
                 audit::new_call_id(),
                 self.parts.session_id.clone(),
@@ -1137,10 +1311,19 @@ impl ToolSpec for ComputerUseTool {
                 parsed.action.class().as_str(),
                 format!("rejected:{}", rejection_name(rejection)),
             );
-            if let Ok(log) = AuditLog::for_session(&self.parts.session_id) {
-                let _ = log.append(&record);
-                record = record.finish("rejected", Some(rejection.message()), 0);
-                let _ = log.append(&record);
+            match AuditLog::for_session(&self.parts.session_id) {
+                Ok(log) => {
+                    if let Err(error) = log.append(&record) {
+                        eprintln!("[computer_use] rejected-call audit append failed: {error}");
+                    }
+                    record = record.finish("rejected", Some(rejection.message()), 0);
+                    if let Err(error) = log.append(&record) {
+                        eprintln!("[computer_use] rejected-call audit append failed: {error}");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("[computer_use] audit log unavailable for rejected call: {error}");
+                }
             }
             return Ok(ToolResult::error(rejection.message()));
         }
@@ -1161,7 +1344,9 @@ fn rejection_name(rejection: GuardRejection) -> &'static str {
         GuardRejection::Stopped => "stopped",
         GuardRejection::GrantRequired => "grant-required",
         GuardRejection::RateLimited => "rate-limited",
+        GuardRejection::ObserveRateLimited => "observe-rate-limited",
         GuardRejection::BudgetExhausted => "budget-exhausted",
+        GuardRejection::InputBusy => "input-busy",
     }
 }
 

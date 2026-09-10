@@ -15,6 +15,9 @@ use parking_lot::Mutex;
 pub const GRANT_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// 输入类动作滑动窗口速率上限：60 次/分钟。
 pub const INPUT_RATE_LIMIT_PER_MINUTE: u32 = 60;
+/// 观察类动作滑动窗口速率上限：screenshot/ui_tree/cursor 等共享 60 次/分钟
+/// （评审发现：失控的截图循环可以无限制烧盘/烧 token/刷屏）。
+pub const OBSERVE_RATE_LIMIT_PER_MINUTE: u32 = 60;
 /// 单次授权的输入类动作预算：用尽后强制重新授权（防失控循环）。
 pub const INPUT_ACTION_BUDGET: u64 = 500;
 /// T3 确认的有效期：未答复的 pending 必须自行过期——过期后读取视为不存在，
@@ -27,12 +30,36 @@ pub const DENIED_TTL: Duration = Duration::from_secs(60);
 /// pending，无上限会随进程寿命无界增长（评审发现）；超限逐出最旧条目。
 pub const MAX_PENDING_CONFIRMATIONS: usize = 100;
 pub const MAX_APPROVED_TOKENS: usize = 100;
+/// 跨会话物理输入锁的有界等待上限。Input 动作从筛查到注入全程持锁（最长
+/// 可达 150s×n），无限挂等会让其他会话静默卡死（评审发现）——超时显式报错，
+/// 由模型自行等待重试。
+pub const PHYSICAL_INPUT_LOCK_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// T3 后果性动作名单（大小写不敏感子串匹配；中英文）。
+/// T3 后果性动作名单（大小写不敏感子串匹配；中英日）。
 /// 命中即不执行，要求用户显式确认。
 pub const T3_DENYLIST: &[&str] = &[
-    "buy", "pay", "purchase", "send", "delete", "transfer", "submit", "购买", "支付", "付款",
-    "发送", "删除", "转账", "提交",
+    "buy",
+    "pay",
+    "purchase",
+    "send",
+    "delete",
+    "transfer",
+    "submit",
+    "购买",
+    "支付",
+    "付款",
+    "发送",
+    "删除",
+    "转账",
+    "提交",
+    "購入",
+    "支払い",
+    "送信",
+    "削除",
+    "送金",
+    "提出",
+    "注文",
+    "確認",
 ];
 
 /// 标签是否命中 T3 后果性名单。
@@ -58,8 +85,13 @@ pub enum GuardRejection {
     GrantRequired,
     /// 超过 60 次/分钟速率上限。
     RateLimited,
+    /// 观察类动作超过 60 次/分钟速率上限。
+    ObserveRateLimited,
     /// 会话动作预算用尽，强制重新授权。
     BudgetExhausted,
+    /// 跨会话物理输入锁被其他会话持有，有界等待超时（见
+    /// [`PHYSICAL_INPUT_LOCK_TIMEOUT`]）。
+    InputBusy,
 }
 
 impl GuardRejection {
@@ -82,8 +114,17 @@ impl GuardRejection {
                 "input action rate limit exceeded (60/minute). Wait before issuing more input actions."
                     .to_string()
             }
+            Self::ObserveRateLimited => {
+                "observe action rate limit exceeded (60/minute shared by screenshot/ui_tree/cursor). \
+                 Wait before issuing more observe actions."
+                    .to_string()
+            }
             Self::BudgetExhausted => {
                 "the session input-action budget is exhausted. Ask the user to re-grant control to continue."
+                    .to_string()
+            }
+            Self::InputBusy => {
+                "another session is performing a physical input action. Wait and retry."
                     .to_string()
             }
         }
@@ -91,16 +132,31 @@ impl GuardRejection {
 }
 
 struct SessionConsent {
-    granted_at: Instant,
     last_activity: Instant,
     input_actions: u64,
     recent_inputs: VecDeque<Instant>,
 }
 
+/// 观察类动作的滑动窗口记账（复用输入限速的 VecDeque<Instant> 结构），
+/// 按会话分桶，全部观察动作共享一个窗口。
+type ObserveWindows = HashMap<String, VecDeque<Instant>>;
+
+/// 滑动窗口限速的共用内核：淘汰窗口外旧样本；窗口满返回 false。
+fn sliding_window_admit(recent: &mut VecDeque<Instant>, limit: usize, now: Instant) -> bool {
+    let window_start = now.checked_sub(Duration::from_secs(60)).unwrap_or(now);
+    while recent.front().is_some_and(|t| *t < window_start) {
+        recent.pop_front();
+    }
+    if recent.len() >= limit {
+        return false;
+    }
+    recent.push_back(now);
+    true
+}
+
 impl SessionConsent {
     fn new(now: Instant) -> Self {
         Self {
-            granted_at: now,
             last_activity: now,
             input_actions: 0,
             recent_inputs: VecDeque::new(),
@@ -147,6 +203,8 @@ pub struct ComputerUseShared {
     enabled: AtomicBool,
     stop: AtomicBool,
     sessions: Mutex<HashMap<String, SessionConsent>>,
+    /// 观察类动作限速窗口（按会话分桶）。
+    observe_windows: Mutex<ObserveWindows>,
     /// 物理鼠标/键盘是全局独占资源，但 backend 是每会话一条 worker——这把
     /// 进程级锁把**跨会话**的输入注入串行化（评审发现：两个并发会话可各持
     /// 有效授权交替打字/点击）。Input 类动作在筛查+执行全程持有。
@@ -169,6 +227,7 @@ impl ComputerUseShared {
             enabled: AtomicBool::new(false),
             stop: AtomicBool::new(false),
             sessions: Mutex::new(HashMap::new()),
+            observe_windows: Mutex::new(HashMap::new()),
             physical_input_lock: Mutex::new(()),
             pending_confirmations: Mutex::new(HashMap::new()),
             approved_tokens: Mutex::new(HashMap::new()),
@@ -217,6 +276,7 @@ impl ComputerUseShared {
     pub fn stop_all(&self) {
         self.stop.store(true, Ordering::SeqCst);
         self.sessions.lock().clear();
+        self.observe_windows.lock().clear();
         self.pending_confirmations.lock().clear();
         self.approved_tokens.lock().clear();
         self.denied_confirmations.lock().clear();
@@ -225,6 +285,17 @@ impl ComputerUseShared {
     /// 用户重新开启后清除停止旗标（不恢复任何授权）。
     pub fn reset_stop(&self) {
         self.stop.store(false, Ordering::SeqCst);
+    }
+
+    /// 吊销全部会话授权并清空待决确认，但**不置**停止旗标——与
+    /// [`Self::stop_all`] 的紧急停止语义区分：总开关关闭不是急停，重新开启
+    /// 后不应残留停止状态（`computer_use_set_enabled(false)` 调用）。
+    /// 评审发现：此前关闭开关不清授权，重开后旧 grant 在 10 分钟空闲窗口内
+    /// 仍然有效；待决确认一并清除——开关关闭期间弹出的确认请求在重开后
+    /// 不应还能铸造批准令牌。
+    pub fn revoke_all_sessions(&self) {
+        self.sessions.lock().clear();
+        self.pending_confirmations.lock().clear();
     }
 
     /// 观察/被动类动作门控：只需总开关开启且未停止。
@@ -255,20 +326,33 @@ impl ComputerUseShared {
             sessions.remove(session_id);
             return Err(GuardRejection::BudgetExhausted);
         }
-        let window_start = now.checked_sub(Duration::from_secs(60)).unwrap_or(now);
-        while consent
-            .recent_inputs
-            .front()
-            .is_some_and(|t| *t < window_start)
-        {
-            consent.recent_inputs.pop_front();
-        }
-        if consent.recent_inputs.len() >= INPUT_RATE_LIMIT_PER_MINUTE as usize {
+        let admitted = sliding_window_admit(
+            &mut consent.recent_inputs,
+            INPUT_RATE_LIMIT_PER_MINUTE as usize,
+            now,
+        );
+        if !admitted {
             return Err(GuardRejection::RateLimited);
         }
-        consent.recent_inputs.push_back(now);
         consent.input_actions += 1;
         consent.last_activity = now;
+        Ok(())
+    }
+
+    /// 观察类动作门控 + 限速记账（screenshot/ui_tree/cursor 等共享 60 次/
+    /// 分钟，按会话分桶；评审发现：观察类此前完全不限速，失控循环可无限
+    /// 截图刷盘）。超限显式报错，由模型自行降速。
+    pub fn begin_observe_action(&self, session_id: &str) -> Result<(), GuardRejection> {
+        self.check_readonly()?;
+        let now = Instant::now();
+        let mut windows = self.observe_windows.lock();
+        // 清扫早已停用会话的僵尸窗口（整个窗口都过期的桶）。
+        let window_start = now.checked_sub(Duration::from_secs(60)).unwrap_or(now);
+        windows.retain(|_, recent| recent.back().is_some_and(|t| *t >= window_start));
+        let recent = windows.entry(session_id.to_string()).or_default();
+        if !sliding_window_admit(recent, OBSERVE_RATE_LIMIT_PER_MINUTE as usize, now) {
+            return Err(GuardRejection::ObserveRateLimited);
+        }
         Ok(())
     }
 
@@ -289,8 +373,14 @@ impl ComputerUseShared {
     }
 
     /// 跨会话串行化物理输入注入（见 [`ComputerUseShared::physical_input_lock`]）。
-    pub fn lock_physical_input(&self) -> parking_lot::MutexGuard<'_, ()> {
-        self.physical_input_lock.lock()
+    /// 获取改为**有界等待**（`try_lock_for`，见 [`PHYSICAL_INPUT_LOCK_TIMEOUT`]）：
+    /// 锁被其他会话持有时超时返回显式 [`GuardRejection::InputBusy`]，不再无限
+    /// 挂等（评审发现）。锁语义（Input 动作筛查到注入全程持有）与释放路径
+    /// （guard drop）不变。
+    pub fn lock_physical_input(&self) -> Result<parking_lot::MutexGuard<'_, ()>, GuardRejection> {
+        self.physical_input_lock
+            .try_lock_for(PHYSICAL_INPUT_LOCK_TIMEOUT)
+            .ok_or(GuardRejection::InputBusy)
     }
 
     /// 注册一个等待用户决定的 T3 确认，返回 confirm_id。
@@ -339,25 +429,32 @@ impl ComputerUseShared {
 
     /// 用户在前端明确「拒绝」一个被拦截的 T3 动作：清除 pending 并短期记忆
     /// 该决定（[`DENIED_TTL`]），模型重试同一 confirm_id 会得到明确的拒绝。
+    /// 未知 id 返回 false 且**不写** denied 表——模型自造/过期的 id 不应能向
+    /// 拒绝记忆投毒，把未来合法的 confirm_id 变成「已被拒绝」（评审发现）。
     pub fn deny_confirmation(&self, confirm_id: &str) -> bool {
         let removed = self.pending_confirmations.lock().remove(confirm_id);
+        if removed.is_none() {
+            return false;
+        }
         let now = Instant::now();
         let mut denied = self.denied_confirmations.lock();
         denied.retain(|_, at| now.duration_since(*at) <= DENIED_TTL);
         denied.insert(confirm_id.to_string(), now);
-        removed.is_some()
+        true
     }
 
     /// 铸造批准令牌。只能由 `computer_use_confirm` Tauri 命令调用——绝不能让
-    /// 模型经工具调用自己铸造。只为存在且未过期的 pending 铸币；令牌继承该
-    /// pending 的会话与动作摘要（消费时逐项比对）。
-    pub fn mint_confirmation(&self, confirm_id: &str) {
+    /// 模型经工具调用自己铸造。只为存在且未过期的 pending 铸币并返回 `true`；
+    /// pending 不存在/已过期/已被决定时返回 `false`——静默 no-op 会让前端把
+    /// 失败显示为成功（评审发现）。令牌继承该 pending 的会话与动作摘要
+    /// （消费时逐项比对）。
+    pub fn mint_confirmation(&self, confirm_id: &str) -> bool {
         let entry = self.pending_confirmations.lock().remove(confirm_id);
         let Some(entry) = entry else {
-            return;
+            return false;
         };
         if entry.created_at.elapsed() > CONFIRM_TTL {
-            return;
+            return false;
         }
         let now = Instant::now();
         let mut tokens = self.approved_tokens.lock();
@@ -380,6 +477,7 @@ impl ComputerUseShared {
                 minted_at: now,
             },
         );
+        true
     }
 
     /// 消费批准令牌（单次有效）。工具在执行带 `confirm_id` 的动作前调用；
@@ -570,10 +668,26 @@ mod tests {
             "彻底删除",
             "转账",
             "提交订单",
+            // 日文词项（评审发现：日文界面元素此前完全不在名单内）。
+            "カートに追加して購入",
+            "お支払い",
+            "メッセージを送信",
+            "ファイルを削除",
+            "口座に送金",
+            "フォームを提出",
+            "注文を確定",
+            "内容の確認",
         ] {
             assert!(matches_t3_denylist(label), "should match: {label}");
         }
-        for label in ["Open", "Save as", "显示更多", "取消", "Settings"] {
+        for label in [
+            "Open",
+            "Save as",
+            "显示更多",
+            "取消",
+            "Settings",
+            "キャンセル",
+        ] {
             assert!(!matches_t3_denylist(label), "should not match: {label}");
         }
         assert!(is_secure_role("Password Text"));
@@ -593,7 +707,10 @@ mod tests {
             shared.take_confirmation(&id, "s1", summary),
             ConfirmationCheck::Unknown
         );
-        shared.mint_confirmation(&id);
+        assert!(
+            shared.mint_confirmation(&id),
+            "mint must report success for a live pending"
+        );
         // 铸造后 pending 清除。
         assert!(shared.pending_confirmation(&id).is_none());
         // 正确的会话 + 动作摘要才能消费。
@@ -624,19 +741,48 @@ mod tests {
         let shared = enabled_shared();
         let id = shared.new_pending_confirmation("s1", "left click", "Buy now");
         assert!(shared.deny_confirmation(&id));
-        // deny 清除 pending：不能再为它铸币。
+        // deny 清除 pending：不能再为它铸币（mint 返回 false，不再静默 no-op）。
         assert!(shared.pending_confirmation(&id).is_none());
-        shared.mint_confirmation(&id);
+        assert!(!shared.mint_confirmation(&id));
         assert_eq!(
             shared.take_confirmation(&id, "s1", "left click"),
             ConfirmationCheck::Denied,
             "denied confirm_id must report Denied, not Unknown"
         );
-        // 未知 id 的 deny 只记忆,不算成功清除。
+        // 未知 id 的 deny 失败，且**不写** denied 表（评审修正：自造 id 不得
+        // 向拒绝记忆投毒，否则未来合法 id 会被误报「已被拒绝」）。
         assert!(!shared.deny_confirmation("cu-unknown"));
         assert_eq!(
             shared.take_confirmation("cu-unknown", "s1", "x"),
-            ConfirmationCheck::Denied
+            ConfirmationCheck::Unknown,
+            "unknown id must stay Unknown, not Denied"
+        );
+    }
+
+    /// 评审修复回归：观察类动作共享 60 次/分钟限速，超限显式报错。
+    #[test]
+    fn observe_actions_share_a_rate_limit_window() {
+        let shared = enabled_shared();
+        for _ in 0..OBSERVE_RATE_LIMIT_PER_MINUTE {
+            assert!(shared.begin_observe_action("s1").is_ok());
+        }
+        assert_eq!(
+            shared.begin_observe_action("s1"),
+            Err(GuardRejection::ObserveRateLimited)
+        );
+        assert!(
+            GuardRejection::ObserveRateLimited
+                .message()
+                .contains("observe action rate limit")
+        );
+        // 其他会话独立分桶，不受 s1 拖累。
+        assert!(shared.begin_observe_action("s2").is_ok());
+        // 急停清空观察窗口。
+        shared.stop_all();
+        shared.reset_stop();
+        assert!(
+            shared.observe_windows.lock().is_empty(),
+            "stop_all must clear observe windows"
         );
     }
 
@@ -646,7 +792,7 @@ mod tests {
         for i in 0..(MAX_PENDING_CONFIRMATIONS + 20) {
             let id = shared.new_pending_confirmation("s1", format!("action {i}"), "Buy now");
             if i < MAX_APPROVED_TOKENS {
-                shared.mint_confirmation(&id);
+                assert!(shared.mint_confirmation(&id));
             }
         }
         assert!(shared.pending_confirmations.lock().len() <= MAX_PENDING_CONFIRMATIONS);
@@ -678,13 +824,34 @@ mod tests {
     fn physical_input_lock_serializes_holders() {
         let shared = enabled_shared();
         {
-            let _guard = shared.lock_physical_input();
+            let _guard = shared
+                .lock_physical_input()
+                .expect("free lock must be acquired");
             assert!(
                 shared.physical_input_lock.try_lock().is_none(),
                 "second holder must block while input is in flight"
             );
         }
         assert!(shared.physical_input_lock.try_lock().is_some());
+    }
+
+    /// 评审修复回归：总开关关闭吊销全部会话授权与待决确认，但**不置**停止
+    /// 旗标（与 stop_all 语义区分）——重开后旧 grant 不得在 10 分钟窗口内复活。
+    #[test]
+    fn revoke_all_sessions_clears_grants_and_pendings_without_stop_flag() {
+        let shared = enabled_shared();
+        shared.grant_session("s1");
+        let confirm_id = shared.new_pending_confirmation("s1", "left click", "Buy now");
+        shared.revoke_all_sessions();
+        assert!(!shared.has_active_grant("s1"));
+        assert_eq!(
+            shared.begin_input_action("s1"),
+            Err(GuardRejection::GrantRequired)
+        );
+        assert!(shared.pending_confirmation(&confirm_id).is_none());
+        // 与 stop_all 的语义区分：停止旗标不被置位，观察类动作仍可用。
+        assert!(!shared.is_stopped());
+        assert!(shared.begin_observe_action("s1").is_ok());
     }
 
     #[test]
@@ -700,8 +867,8 @@ mod tests {
         }
         // 过期即视为不存在。
         assert!(shared.pending_confirmation(&id).is_none());
-        // 过期 pending 不再铸币：令牌不可用。
-        shared.mint_confirmation(&id);
+        // 过期 pending 不再铸币：令牌不可用，且 mint 显式报告失败。
+        assert!(!shared.mint_confirmation(&id));
         assert_eq!(
             shared.take_confirmation(&id, "s1", "left_click (100,200)"),
             ConfirmationCheck::Unknown

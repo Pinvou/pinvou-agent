@@ -1374,10 +1374,12 @@ where
     })
 }
 
-/// Build an EnginePool isomorphic to the GUI (same
-/// tool_factory/tool_policy combination). The `agentic_task` headless host
-/// reuses this constructor so agentic turns stay identical to the product
-/// path.
+/// Build an EnginePool with the same tool_policy combination as the GUI. The
+/// tool_factory intentionally stays narrower than the GUI's: computer_use is
+/// not constructed here because headless hosts have no consent UI to answer
+/// its grant/confirm prompts (the tool would be unusable and unsupervised).
+/// The `agentic_task` headless host reuses this constructor so agentic turns
+/// stay identical to the product path for everything else.
 pub(crate) fn build_pool(app: tauri::AppHandle, store: SessionStore) -> Result<EnginePool> {
     let tool_factory: EngineToolFactory = Arc::new(|app, session_id| {
         vec![

@@ -8,7 +8,8 @@
 //! 线程通过 `BackendHandle` 全部析构时的 Drop 发送 `Shutdown` 并 join 退出。
 
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -17,8 +18,11 @@ use parking_lot::Mutex;
 /// 单次 backend 请求的等待上限。必须覆盖最长的合法操作：`hold_key` 30s +
 /// Wayland portal 授权对话框 120s（评审发现：`recv()` 无上限，一个挂死的
 /// XTEST/CGEvent/portal 调用会让该会话后续所有请求永远排队且无错误返回）。
-/// 超时只释放调用方；worker 线程若仍卡在 OS 调用里，后续请求会继续排队，
-/// 这是平台 API 层面的固有限制。
+/// 超时只释放调用方；超时/断连后调用方置位请求的取消旗标，worker 在出队
+/// 后、执行前检查，已取消的请求不再执行。剩余缺口（固有限制，如实记录）：
+/// 已进入 OS 调用（XTEST/CGEvent/portal）的请求无法中断，只能在请求边界
+/// 拦截；worker 线程若仍卡在 OS 调用里，后续请求会被 in-flight 旗标拒绝
+/// 而不是排队占线程。
 const BACKEND_CALL_TIMEOUT: Duration = Duration::from_secs(150);
 
 use super::types::{
@@ -55,6 +59,16 @@ pub trait ComputerUseBackend: Send {
     fn ui_tree(&mut self, opts: &UiTreeOptions) -> Result<String, ComputerUseError>;
     fn element_at_point(&mut self, x: i32, y: i32)
     -> Result<Option<ElementInfo>, ComputerUseError>;
+    /// 返回当前持有键盘焦点的元素（用于键盘类动作的 T3 筛查）。
+    /// Ok(None) = 明确无焦点元素；Err = 查询失败或平台不支持（调用方按
+    /// fail-closed 处理）。
+    fn focused_element(&mut self) -> Result<Option<ElementInfo>, ComputerUseError> {
+        let _ = &mut *self;
+        Err(ComputerUseError::unsupported(
+            "focused_element",
+            "this backend cannot query the keyboard-focused element",
+        ))
+    }
 }
 
 enum BackendRequestKind {
@@ -100,6 +114,7 @@ enum BackendRequestKind {
         x: i32,
         y: i32,
     },
+    FocusedElement,
     Shutdown,
 }
 
@@ -117,6 +132,12 @@ type BackendResult = Result<BackendReply, ComputerUseError>;
 struct BackendRequest {
     kind: BackendRequestKind,
     reply: Sender<BackendResult>,
+    /// 取消旗标：caller 与请求各持一半 `Arc`。调用方超时/通道断开放弃后
+    /// 置位；worker 在出队后、执行前检查，已取消的请求不再执行（评审发现：
+    /// 调用方超时返回后请求仍被照常执行——此刻物理输入锁已释放、guard 不会
+    /// 复检，其他会话可能同时在注入，击穿跨会话全程串行化保证，且模型已被
+    /// 误导「动作失败」）。
+    cancelled: Arc<AtomicBool>,
 }
 
 fn dispatch(
@@ -179,6 +200,10 @@ fn dispatch(
             Ok(element) => BackendReply::Element(element),
             Err(error) => return Some(Err(error)),
         },
+        BackendRequestKind::FocusedElement => match backend.focused_element() {
+            Ok(element) => BackendReply::Element(element),
+            Err(error) => return Some(Err(error)),
+        },
         BackendRequestKind::Shutdown => return None,
     };
     Some(Ok(result))
@@ -200,6 +225,15 @@ fn worker_loop(
         }
     };
     while let Ok(request) = rx.recv() {
+        // 出队后、执行前检查取消旗标：调用方已放弃的请求不再执行。剩余缺口
+        // （平台 API 层面的固有限制，如实记录）：已进入 OS 调用的请求无法
+        // 中断，只能在请求边界拦截。
+        if request.cancelled.load(Ordering::SeqCst) {
+            let _ = request.reply.send(Err(ComputerUseError::unavailable(
+                "request was cancelled after the caller timed out",
+            )));
+            continue;
+        }
         match dispatch(backend.as_mut(), request.kind) {
             Some(result) => {
                 let _ = request.reply.send(result);
@@ -226,6 +260,10 @@ enum WorkerState {
 
 struct BackendInner {
     state: Mutex<WorkerState>,
+    /// 在途请求旗标（每 handle 一枚，克隆共享）。请求通道无界，worker 卡死时
+    /// 每个新调用都会占一个 blocking 线程等满 150s（评审发现）；compare_exchange
+    /// 获取/释放把并发在途请求钉在 1，超出的调用立即失败、不再排队占线程。
+    in_flight: AtomicBool,
 }
 
 impl BackendInner {
@@ -248,7 +286,13 @@ impl BackendInner {
                             "cannot spawn computer use backend thread: {error}"
                         ))
                     })?;
-                match startup_rx.recv_timeout(BACKEND_CALL_TIMEOUT) {
+                let startup = startup_rx.recv_timeout(BACKEND_CALL_TIMEOUT);
+                // 失败分支暂存 (发送端, 线程)：先在锁内写状态、释放 state 锁，
+                // 再在锁外收尾。评审发现：此前超时分支在 state 锁临界区内
+                // `thread.join()`，而局部 tx 仍存活、worker 阻塞在 rx.recv()
+                // 永不退出 → join 永久挂起且持有 state 锁，全会话卡死。
+                let mut cleanup: Option<(Sender<BackendRequest>, JoinHandle<()>)> = None;
+                let result = match startup {
                     Ok(Ok(())) => {
                         *state = WorkerState::Running {
                             tx: tx.clone(),
@@ -259,19 +303,28 @@ impl BackendInner {
                     Ok(Err(error)) => {
                         let message = error.to_string();
                         *state = WorkerState::StartFailed(message.clone());
-                        let _ = thread.join();
+                        cleanup = Some((tx, thread));
                         Err(error)
                     }
+                    // 超时/启动应答通道断开：工厂 >150s 未返回，或线程已 panic。
                     Err(_) => {
                         *state = WorkerState::StartFailed(
                             "computer use backend thread died during startup".to_string(),
                         );
-                        let _ = thread.join();
+                        cleanup = Some((tx, thread));
                         Err(ComputerUseError::unavailable(
                             "computer use backend thread died during startup",
                         ))
                     }
+                };
+                drop(state);
+                if let Some((tx, thread)) = cleanup {
+                    // 对齐 Drop impl 的做法：先丢弃发送端（worker 的 rx.recv()
+                    // 得到断连并退出循环），再在锁外 join 回收线程。
+                    drop(tx);
+                    let _ = thread.join();
                 }
+                result
             }
             WorkerState::Running { tx, .. } => Ok(tx.clone()),
             WorkerState::StartFailed(message) => Err(ComputerUseError::unavailable(format!(
@@ -283,19 +336,68 @@ impl BackendInner {
         }
     }
 
+    /// worker 线程已退出/解 unwind（发送端全部失效）但状态机停留 Running：
+    /// 迁移为粘性 StartFailed（评审发现），与工厂失败同语义——否则会话剩余
+    /// 生命周期里每个请求都先成功入队、再报误导性的 "did not respond within
+    /// 150s"。已在 Running 之外的状态（并发迁移/Drop 抢先）不覆盖。
+    fn mark_thread_dead(&self) {
+        let mut state = self.state.lock();
+        if matches!(&*state, WorkerState::Running { .. }) {
+            *state = WorkerState::StartFailed("computer use backend thread died".to_string());
+        }
+    }
+
     fn request(&self, kind: BackendRequestKind) -> Result<BackendReply, ComputerUseError> {
+        if self
+            .in_flight
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err(ComputerUseError::unavailable(
+                "another computer use request is still in flight",
+            ));
+        }
+        let result = self.request_inner(kind);
+        self.in_flight.store(false, Ordering::SeqCst);
+        result
+    }
+
+    fn request_inner(&self, kind: BackendRequestKind) -> Result<BackendReply, ComputerUseError> {
         let tx = self.ensure_sender()?;
         let (reply_tx, reply_rx) = channel::<BackendResult>();
+        let cancelled = Arc::new(AtomicBool::new(false));
         tx.send(BackendRequest {
             kind,
             reply: reply_tx,
+            cancelled: Arc::clone(&cancelled),
         })
-        .map_err(|_| ComputerUseError::unavailable("computer use backend thread is not running"))?;
-        reply_rx.recv_timeout(BACKEND_CALL_TIMEOUT).map_err(|_| {
-            ComputerUseError::unavailable(format!(
-                "computer use backend did not respond within {BACKEND_CALL_TIMEOUT:?}"
-            ))
-        })?
+        .map_err(|_| {
+            // 全部发送端失效即 worker 线程已死：状态机从 Running 迁移为粘性
+            // StartFailed，本请求与后续请求都得到明确错误（评审发现）。
+            self.mark_thread_dead();
+            ComputerUseError::unavailable("computer use backend thread died")
+        })?;
+        match reply_rx.recv_timeout(BACKEND_CALL_TIMEOUT) {
+            Ok(result) => result,
+            // 超时：置位取消旗标，worker 出队后不再执行该请求（已进入 OS
+            // 调用的请求无法中断，见 worker_loop 处注释）。
+            Err(RecvTimeoutError::Timeout) => {
+                cancelled.store(true, Ordering::SeqCst);
+                Err(ComputerUseError::unavailable(format!(
+                    "computer use backend did not respond within {BACKEND_CALL_TIMEOUT:?}"
+                )))
+            }
+            // 断连 = worker 已退出，与超时是不同故障，分开报错（评审发现：
+            // 此前混报 "did not respond within 150s"）。置位取消旗标仅为防御
+            // （worker 已死不会再消费请求），并让状态机同步落地。
+            Err(RecvTimeoutError::Disconnected) => {
+                cancelled.store(true, Ordering::SeqCst);
+                self.mark_thread_dead();
+                Err(ComputerUseError::unavailable(
+                    "computer use backend thread is not running",
+                ))
+            }
+        }
     }
 }
 
@@ -307,6 +409,9 @@ impl Drop for BackendInner {
             let _ = tx.send(BackendRequest {
                 kind: BackendRequestKind::Shutdown,
                 reply: channel::<BackendResult>().0,
+                // Shutdown 请求绝不能带取消旗标：worker 会先检查旗标并跳过，
+                // 永远走不到 Shutdown 分支退出（评审修正）。
+                cancelled: Arc::new(AtomicBool::new(false)),
             });
             drop(tx);
             let _ = thread.join();
@@ -329,6 +434,7 @@ impl BackendHandle {
         Self {
             inner: Arc::new(BackendInner {
                 state: Mutex::new(WorkerState::Pending(Some(Box::new(factory)))),
+                in_flight: AtomicBool::new(false),
             }),
         }
     }
@@ -422,6 +528,14 @@ impl BackendHandle {
             .inner
             .request(BackendRequestKind::ElementAtPoint { x, y })?
         {
+            BackendReply::Element(element) => Ok(element),
+            _ => Err(ComputerUseError::failed("unexpected backend reply")),
+        }
+    }
+
+    /// 当前持有键盘焦点的元素。Err = 后端不支持/查询失败（调用方 fail-closed）。
+    pub fn focused_element(&self) -> Result<Option<ElementInfo>, ComputerUseError> {
+        match self.inner.request(BackendRequestKind::FocusedElement)? {
             BackendReply::Element(element) => Ok(element),
             _ => Err(ComputerUseError::failed("unexpected backend reply")),
         }
@@ -630,5 +744,57 @@ mod tests {
         }
         // Drop 后 worker 线程收到 Shutdown 并析构 backend 对象。
         assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    /// 评审修复回归：调用方已放弃（超时/断连置位旗标）的请求在 worker 出队
+    /// 后、执行前被跳过，并回明确的取消错误——不能照常执行击穿跨会话串行化。
+    #[test]
+    fn worker_skips_requests_cancelled_before_dequeue() {
+        let (req_tx, req_rx) = channel::<BackendRequest>();
+        let (startup_tx, startup_rx) = channel::<Result<(), ComputerUseError>>();
+        let factory: BackendFactory =
+            Box::new(|| Ok(Box::new(MockBackend { clicks: 0 }) as Box<dyn ComputerUseBackend>));
+        let worker = std::thread::spawn(move || worker_loop(factory, req_rx, startup_tx));
+        assert!(startup_rx.recv().expect("startup channel alive").is_ok());
+        let (reply_tx, reply_rx) = channel::<BackendResult>();
+        req_tx
+            .send(BackendRequest {
+                kind: BackendRequestKind::Capabilities,
+                reply: reply_tx,
+                cancelled: Arc::new(AtomicBool::new(true)),
+            })
+            .expect("worker alive");
+        let error = reply_rx
+            .recv()
+            .expect("worker must still answer cancelled requests")
+            .err()
+            .expect("cancelled request must reply with an error");
+        assert!(
+            error.to_string().contains("cancelled"),
+            "unexpected error: {error}"
+        );
+        drop(req_tx);
+        worker.join().expect("worker exits when channel closes");
+    }
+
+    /// 评审修复回归：请求通道无界，worker 卡死时每个新调用都会占一个
+    /// blocking 线程等满 150s——in-flight 旗标把并发在途请求钉在 1。
+    #[test]
+    fn concurrent_requests_are_rejected_while_one_is_in_flight() {
+        let handle = BackendHandle::lazy(|| {
+            Ok(Box::new(MockBackend { clicks: 0 }) as Box<dyn ComputerUseBackend>)
+        });
+        // 直接置位旗标模拟「已有在途请求」（真实路径由 request 获取/释放）。
+        handle.inner.in_flight.store(true, Ordering::SeqCst);
+        let error = handle
+            .capabilities()
+            .err()
+            .expect("second request must fail fast, not queue");
+        assert!(
+            error.to_string().contains("in flight"),
+            "unexpected error: {error}"
+        );
+        handle.inner.in_flight.store(false, Ordering::SeqCst);
+        assert!(handle.capabilities().is_ok(), "flag must be released");
     }
 }

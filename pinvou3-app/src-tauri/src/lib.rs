@@ -910,7 +910,11 @@ pub fn run() {
                         tools.push("kb_open_source".to_string());
                     }
                     // 设置开关动态禁用 computer_use：与工厂侧「不构造工具」互为
-                    // 双保险，disallowed_tools 兜底已在跑的存量 engine 目录。
+                    // 双保险。本闭包只在 refresh_disallowed_tools 被调用时重算；
+                    // computer_use_set_enabled 命令翻转开关后会立即调用该刷新
+                    // （见 app/commands/computer_use.rs），已在跑的存量引擎目录
+                    // 随之即时更新；其余触发刷新的路径（连接器/市场/知识库变化）
+                    // 重算时取到的同样是当前开关状态。
                     if !computer_use_shared.is_enabled() {
                         tools.push(features::computer_use::TOOL_NAME.to_string());
                     }
