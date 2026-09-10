@@ -410,3 +410,63 @@ pub async fn rebind_workspace_root(
         post_busy_session_ids,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rebind_from_rejects_empty_and_root() {
+        assert!(
+            validate_rebind_from(Path::new("")).is_err(),
+            "空串是全量重写"
+        );
+        // 平台根(Unix `/`、Windows 盘符根)没有 parent,必须拒绝。
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .ok()
+            .and_then(|p| p.ancestors().last().map(|a| a.to_path_buf()))
+            .expect("temp dir must have a root ancestor");
+        assert!(
+            validate_rebind_from(&root).is_err(),
+            "文件系统根 {root:?} 配合 confirm-existing 是全量重安置"
+        );
+        let normal = std::env::temp_dir().join("pinvou3-rebind-from-check");
+        assert!(validate_rebind_from(&normal).is_ok());
+    }
+
+    #[test]
+    fn rebind_rejects_target_nested_inside_from() {
+        let from = Path::new("/a/b");
+        assert!(reject_nested_rebind_target(from, Path::new("/a/b/c")).is_err());
+        assert!(reject_nested_rebind_target(from, Path::new("/a/b")).is_err());
+        assert!(
+            reject_nested_rebind_target(from, Path::new("/a/bc")).is_ok(),
+            "目录边界:sibling 前缀不得误命中"
+        );
+        assert!(reject_nested_rebind_target(from, Path::new("/a")).is_ok());
+    }
+
+    #[test]
+    fn rebind_requires_confirm_when_old_root_exists() {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-rebind-confirm-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let error = require_confirm_existing(&dir, None).unwrap_err();
+        assert!(
+            error.starts_with("REBIND_OLD_ROOT_EXISTS"),
+            "稳定标记前缀:前端据此升级强警告,不匹配人类文案"
+        );
+        assert!(require_confirm_existing(&dir, Some(false)).is_err());
+        assert!(require_confirm_existing(&dir, Some(true)).is_ok());
+        let missing = dir.join("gone");
+        assert!(
+            require_confirm_existing(&missing, None).is_ok(),
+            "断链场景(目录已不在盘上)无需确认"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

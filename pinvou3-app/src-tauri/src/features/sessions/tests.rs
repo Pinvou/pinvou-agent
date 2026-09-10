@@ -3698,3 +3698,27 @@ fn truncate_reports_compaction_summary_residue_in_system_prompt() {
         .expect("rewind without marker");
     assert!(!outcome.had_compaction, "普通 system_prompt 不得误报");
 }
+
+/// 目录重绑定的元数据写入路径(评审 #463):set_workspace 只改 workspace
+/// 字段并可重读验证;不存在/损坏 JSON 的分类由命令层据此区分孤儿。
+#[test]
+fn set_workspace_persists_rebound_path() {
+    let (store, _guard) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let target = std::env::temp_dir().join("pinvou3-rebound-workspace");
+    store
+        .set_workspace(&session.metadata.id, target.clone())
+        .expect("set workspace");
+    let reloaded = store.load(&session.metadata.id).expect("reload");
+    assert_eq!(reloaded.metadata.workspace, target);
+    // 同值重复写幂等(重绑定失败重试路径依赖这一点)。
+    store
+        .set_workspace(&session.metadata.id, target.clone())
+        .expect("idempotent rewrite");
+    // 会话 JSON 不存在 = durable 缺席(孤儿分类只认它);在场(哪怕损坏)
+    // 不得被当孤儿静默跳过。
+    assert!(!store.durable_session_record_is_absent(&session.metadata.id));
+    assert!(store.durable_session_record_is_absent("sess-definitely-missing"));
+}
