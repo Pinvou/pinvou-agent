@@ -248,6 +248,22 @@ objc2-application-services = "0.3"
 # Computer Use 截屏权限预检(features/computer_use):CGPreflight/CGRequestScreenCaptureAccess。
 # 已在 lockfile(0.3.2,objc2 家族传递依赖),此处仅提升为直接依赖,不新增 crate。
 objc2-core-graphics = "0.3"
+# Computer Use 截屏(features/computer_use):ScreenCaptureKit 静态截图
+# (SCScreenshotManager::captureImageInRect,macOS 14+)。CGWindowListCreateImage
+# (xcap 的 macOS 路径)在 macOS 15 SDK 已 obsoleted 且在 Sequoia+ 触发周期性
+# 录屏再确认;macOS 11-13 仍回退 xcap 的 CGWindowList 路径
+# (见 platform/screen_capture_kit.rs)。版本对齐 objc2 0.6 family。
+# Computer Use 截屏(features/computer_use):CGRect/CGSize/CFRetained 等类型
+# 来自 objc2-core-foundation(SCK 调用的坐标参数与 CFData 智能指针)。已在
+# lockfile(objc2 家族传递依赖),此处仅提升为直接依赖,不新增 crate。
+objc2-core-foundation = "0.3"
+objc2-screen-capture-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "SCScreenshotManager",
+    "block2",
+    "objc2-core-foundation",
+    "objc2-core-graphics",
+] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Globalization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Performance", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
