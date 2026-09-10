@@ -19,7 +19,10 @@
 //! 5. `ScreenCast.OpenPipeWireRemote`:用同一会话换取截屏流的 PipeWire fd,
 //!    交给 [`super::wayland_capture`] 建帧接收器——截屏与输入共用这一个
 //!    会话/授权,不再依赖 xcap 的旧截屏链(见 `linux.rs` 的回退说明);
-//! 6. 输入全部走 `Notify*`;`Session.Close` 在 backend 析构时尽力调用。
+//! 6. 输入全部走 `Notify*`;`Session.Close` 在 backend 析构时尽力调用——
+//!    CreateSession 成功后的任何失败路径(请求错误/超时/用户取消/授权不含
+//!    设备/无 stream)同样尽力关闭,不让半授权会话在合成器侧泄漏
+//!    (见 [`PortalInner::abandon`])。
 //!
 //! 语义以 mutter `meta-remote-desktop-session.c` 为准:
 //! - `NotifyPointerMotionAbsolute` 的 x/y(oa{sv}udd 的 d)是**流本地像素**
@@ -28,9 +31,13 @@
 //!   PipeWire 协商的缓冲像素,故截屏(`linux.rs` 用协商尺寸构造 Capture)
 //!   与输入共用同一坐标空间,origin 恒 (0,0)。
 //! - `NotifyPointerAxisDiscrete`(oa{sv}ui):axis 0=垂直 1=水平;steps 正=
-//!   下/右、负=上/左(`discrete_steps_to_scroll_direction`),一次可带多格。
-//! - 按键用 `NotifyKeyboardKeysym`(X keysym;U+0000..=U+00FF 用码点,其余
-//!   Unicode 为 `0x01000000 | 码点`,同 libxkbcommon `xkb_keysym_from_utf32`)。
+//!   下/右、负=上/左(`discrete_steps_to_scroll_direction`),一次可带多格;
+//!   steps=0 会被 mutter 报 Invalid 并触发会话重置,调用方须先行挡下
+//!   (见 `linux.rs` scroll 的 clicks=0 no-op)。
+//! - 按键用 `NotifyKeyboardKeysym`(X keysym;仅命名键与 Latin-1 区——其余
+//!   Unicode 虽有 `0x01000000 | 码点` 编码,但 mutter 对**不在当前 keymap
+//!   内**的 keysym 静默丢弃,注入"成功"却无输入,故 [`char_keysym`] 对超出
+//!   Latin-1 的字符显式报错,fail-closed)。
 //! - 指针按钮为 evdev 按钮码;按下/释放 state=1/0。
 //!
 //! 线程约定:对象在 computer_use 专用 worker 线程构造/使用;对外是同步方法,
@@ -74,6 +81,12 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const START_TIMEOUT: Duration = Duration::from_secs(120);
 /// Notify* 事件注入超时(会话被合成器撤销等异常时不能挂死 worker)。
 const NOTIFY_TIMEOUT: Duration = Duration::from_secs(10);
+/// `Session.Close` 的尽力超时(析构/失败清理路径,不阻塞太久)。
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
+/// portal 探测/建连的整体超时。zbus 对 session bus 的默认 method_timeout
+/// 很宽,挂死的 portal 服务不得把 backend 构造无期挂起(评审发现:无界的
+/// 属性查询会钉死 worker)。
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// evdev 按钮码(portal 规范:Linux evdev button codes)。
 const EVDEV_BTN_LEFT: i32 = 0x110;
@@ -82,7 +95,7 @@ const EVDEV_BTN_MIDDLE: i32 = 0x112;
 
 /// types 的归一化按键 → X keysym(NotifyKeyboardKeysym 的编码空间)。
 pub(super) fn map_keysym(key: Key) -> Result<i32, ComputerUseError> {
-    let keysym: u32 = match key {
+    let keysym: i32 = match key {
         Key::Control => 0xffe3, // Control_L
         Key::Alt => 0xffe9,     // Alt_L
         Key::Shift => 0xffe1,   // Shift_L
@@ -104,7 +117,7 @@ pub(super) fn map_keysym(key: Key) -> Result<i32, ComputerUseError> {
         Key::PageUp => 0xff55,
         Key::PageDown => 0xff56,
         Key::Function(n) => match n {
-            1..=12 => 0xffbe + u32::from(n) - 1, // F1..F12 连续段
+            1..=12 => (0xffbe + u32::from(n) - 1) as i32, // F1..F12 连续段
             _ => {
                 return Err(ComputerUseError::unsupported(
                     "input",
@@ -112,29 +125,45 @@ pub(super) fn map_keysym(key: Key) -> Result<i32, ComputerUseError> {
                 ));
             }
         },
-        Key::Char(c) => keysym_for_char(c).ok_or_else(|| {
-            ComputerUseError::unsupported(
-                "input",
-                format!("character {c:?} (U+{:04X}) has no X keysym", c as u32),
-            )
-        })?,
+        Key::Char(c) => char_keysym(c)?,
     };
-    i32::try_from(keysym)
-        .map_err(|_| ComputerUseError::failed("keysym does not fit the portal i32 argument"))
+    Ok(keysym)
 }
 
-/// type_text 逐字符注入用的 keysym(\n→Return、\t→Tab;不可映射字符显式报错)。
+/// type_text 逐字符注入与 `Key::Char` 共用的单字符 keysym(\n→Return、
+/// \t→Tab;Latin-1 区 keysym 与码点一致)。
+///
+/// 超出 Latin-1 的字符**显式报错**(fail-closed):它们在 X keysym 里有
+/// `0x01000000 | 码点` 编码,但 mutter 对**不在当前 keymap 内**的 keysym
+/// 静默丢弃——逐字符调用全部"成功"、中文一个都进不去(评审发现的静默
+/// 丢失)。宁可显式失败,也不假成功。
 pub(super) fn char_keysym(c: char) -> Result<i32, ComputerUseError> {
+    let code = u32::from(c);
     let keysym = keysym_for_char(c).ok_or_else(|| {
-        ComputerUseError::unsupported(
-            "input",
-            format!("character {c:?} (U+{:04X}) has no X keysym", c as u32),
-        )
+        if code > 0xff {
+            ComputerUseError::unsupported(
+                "input",
+                format!(
+                    "cannot type {c:?} (U+{code:04X}) via the Wayland portal: mutter \
+                     silently drops keysyms outside the active keymap, so non-Latin-1 \
+                     text (CJK etc.) would be lost; type ASCII/Latin-1 text or switch to \
+                     a keymap that contains the character"
+                ),
+            )
+        } else {
+            ComputerUseError::unsupported(
+                "input",
+                format!("character {c:?} (U+{code:04X}) has no X keysym"),
+            )
+        }
     })?;
     i32::try_from(keysym)
         .map_err(|_| ComputerUseError::failed("keysym does not fit the portal i32 argument"))
 }
 
+/// 单字符 → keysym 的纯映射。非 Latin-1 返回 None(不编码为
+/// `0x01000000 | 码点`:mutter 会静默丢弃 keymap 外的 keysym,注入等于假
+/// 成功;理由与错误文案见 [`char_keysym`])。
 fn keysym_for_char(c: char) -> Option<u32> {
     let code = u32::from(c);
     match code {
@@ -142,7 +171,7 @@ fn keysym_for_char(c: char) -> Option<u32> {
         0x09 => Some(0xff09),
         0x00 | 0x7f => None,
         0x01..=0xff => Some(code), // Latin-1 区 keysym 与码点一致
-        _ => Some(0x0100_0000 | code),
+        _ => None,
     }
 }
 
@@ -286,12 +315,22 @@ pub(super) struct PortalInput {
 impl PortalInput {
     /// 探测 portal 与 RemoteDesktop 输入支持(纯属性查询,不弹任何对话框)。
     /// 失败时返回人类可读原因,由调用方存为粘性错误。
+    ///
+    /// 整体受 [`PROBE_TIMEOUT`] 约束:zbus 默认 method_timeout 很宽,挂死的
+    /// portal 服务不得把 backend 构造无期挂起(评审发现)。
     pub(super) fn probe() -> Result<(), String> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|error| format!("cannot create probe runtime: {error}"))?;
-        runtime.block_on(Self::probe_async())
+        runtime.block_on(async {
+            match tokio::time::timeout(PROBE_TIMEOUT, Self::probe_async()).await {
+                Ok(result) => result,
+                Err(_) => Err(format!(
+                    "portal probe did not finish within {PROBE_TIMEOUT:?}"
+                )),
+            }
+        })
     }
 
     async fn probe_async() -> Result<(), String> {
@@ -332,7 +371,15 @@ impl PortalInput {
             .map_err(|error| {
                 ComputerUseError::unavailable(format!("cannot create portal runtime: {error}"))
             })?;
-        let inner = runtime.block_on(PortalInner::new())?;
+        // 建连同样受 PROBE_TIMEOUT 约束(session bus 连接握手可能挂死)。
+        let inner = runtime.block_on(async {
+            match tokio::time::timeout(PROBE_TIMEOUT, PortalInner::new()).await {
+                Ok(result) => result,
+                Err(_) => Err(ComputerUseError::unavailable(format!(
+                    "portal session bus connection did not finish within {PROBE_TIMEOUT:?}"
+                ))),
+            }
+        })?;
         Ok(Self { runtime, inner })
     }
 
@@ -584,7 +631,9 @@ impl PortalInner {
         Ok(results)
     }
 
-    /// 完整建立流程(弹系统授权对话框)。
+    /// 完整建立流程(弹系统授权对话框)。CreateSession 成功后,任何后续
+    /// 步骤失败(请求错误/超时/用户取消/授权不含设备/无 stream)都必须
+    /// 关闭已创建的会话对象再返回(评审发现的泄漏路径,见 [`PortalInner::abandon`])。
     async fn ensure_started(&mut self) -> Result<(), ComputerUseError> {
         if self.session.is_some() {
             return Ok(());
@@ -610,7 +659,8 @@ impl PortalInner {
             )
             .await?;
         // 实测 xdg-desktop-portal 1.18 把 session_handle 作为字符串放进响应
-        // (规范写的是 o);两种形式都接受。
+        // (规范写的是 o);两种形式都接受。解析不出有效 handle 时无从关闭,
+        // 响应畸形本身即错误(直接抛出)。
         let session_path = match results
             .get("session_handle")
             .map(|owned| unwrap_variant(owned))
@@ -632,31 +682,42 @@ impl PortalInner {
         };
 
         // 2) SelectDevices:keyboard + pointer。
-        self.request(
-            REMOTE_DESKTOP_IFACE,
-            "SelectDevices",
-            Some(&session_path),
-            vec![("types", OwnedValue::from(DEVICE_KEYBOARD | DEVICE_POINTER))],
-            REQUEST_TIMEOUT,
-        )
-        .await?;
+        if let Err(error) = self
+            .request(
+                REMOTE_DESKTOP_IFACE,
+                "SelectDevices",
+                Some(&session_path),
+                vec![("types", OwnedValue::from(DEVICE_KEYBOARD | DEVICE_POINTER))],
+                REQUEST_TIMEOUT,
+            )
+            .await
+        {
+            self.abandon(session_path).await;
+            return Err(error);
+        }
 
         // 3) ScreenCast.SelectSources:绑定一个显示器流,绝对移动坐标才有参照。
-        self.request(
-            SCREEN_CAST_IFACE,
-            "SelectSources",
-            Some(&session_path),
-            vec![
-                ("types", OwnedValue::from(SOURCE_MONITOR)),
-                ("multiple", OwnedValue::from(false)),
-                ("cursor_mode", OwnedValue::from(CURSOR_MODE_HIDDEN)),
-            ],
-            REQUEST_TIMEOUT,
-        )
-        .await?;
+        if let Err(error) = self
+            .request(
+                SCREEN_CAST_IFACE,
+                "SelectSources",
+                Some(&session_path),
+                vec![
+                    ("types", OwnedValue::from(SOURCE_MONITOR)),
+                    ("multiple", OwnedValue::from(false)),
+                    ("cursor_mode", OwnedValue::from(CURSOR_MODE_HIDDEN)),
+                ],
+                REQUEST_TIMEOUT,
+            )
+            .await
+        {
+            self.abandon(session_path).await;
+            return Err(error);
+        }
 
-        // 4) Start:系统授权对话框(用户可见的第二层同意)。签名含父窗口。
-        let results = self
+        // 4) Start:系统授权对话框(用户可见的第二层同意)。签名含父窗口;
+        //    取消/超时同样要关闭会话。
+        let results = match self
             .request_impl(
                 REMOTE_DESKTOP_IFACE,
                 "Start",
@@ -665,19 +726,26 @@ impl PortalInner {
                 vec![],
                 START_TIMEOUT,
             )
-            .await?;
+            .await
+        {
+            Ok(results) => results,
+            Err(error) => {
+                self.abandon(session_path).await;
+                return Err(error);
+            }
+        };
         let devices = results
             .get("devices")
             .and_then(|owned| value_u32(unwrap_variant(owned)))
             .unwrap_or(0);
         if devices & (DEVICE_KEYBOARD | DEVICE_POINTER) == 0 {
-            self.reset();
+            self.abandon(session_path).await;
             return Err(ComputerUseError::unavailable(
                 "the system authorization dialog granted no keyboard/pointer devices",
             ));
         }
         let Some((stream, stream_logical)) = first_stream_info(&results) else {
-            self.reset();
+            self.abandon(session_path).await;
             return Err(ComputerUseError::unavailable(
                 "portal Start response has no ScreenCast stream; absolute pointer motion has \
                  no coordinate reference",
@@ -791,23 +859,31 @@ impl PortalInner {
         self.last_pointer = None;
     }
 
-    /// 尽力关闭 portal 会话。
-    async fn close(&mut self) {
-        let Some(session) = self.session.take() else {
-            return;
-        };
-        self.last_pointer = None;
+    /// 关闭一个已创建但尚未入册(`self.session`)或正在销毁的 portal 会话:
+    /// 尽力 `Session.Close`(短超时,关闭自身的错误被吞——调用方的原始错误
+    /// 照常向上抛),并清掉指针跟踪。评审发现:CreateSession 成功后的失败
+    /// 路径若只 reset 本地状态,半授权会话会在合成器侧泄漏。
+    async fn abandon(&mut self, session_path: OwnedObjectPath) {
         let _ = tokio::time::timeout(
-            Duration::from_secs(1),
+            CLOSE_TIMEOUT,
             self.conn.call_method(
                 Some(PORTAL_DEST),
-                session.path,
+                session_path,
                 Some(SESSION_IFACE),
                 "Close",
                 &(),
             ),
         )
         .await;
+        self.last_pointer = None;
+    }
+
+    /// 尽力关闭 portal 会话(backend 析构时)。
+    async fn close(&mut self) {
+        let Some(session) = self.session.take() else {
+            return;
+        };
+        self.abandon(session.path).await;
     }
 
     async fn motion_absolute(&mut self, x: i32, y: i32) -> Result<(), ComputerUseError> {
@@ -865,16 +941,27 @@ mod tests {
     }
 
     #[test]
-    fn keysym_covers_chars_via_latin1_and_unicode_ranges() {
+    fn latin1_chars_map_and_non_latin1_fail_closed() {
+        // Latin-1 区:keysym 与码点一致,维持注入。
         assert_eq!(map_keysym(Key::Char('s')).ok(), Some(0x73));
         assert_eq!(map_keysym(Key::Char('S')).ok(), Some(0x53));
         assert_eq!(map_keysym(Key::Char('+')).ok(), Some(0x2b));
-        // U+4E2D 中:超出 Latin-1,取 0x01000000 | 码点。
-        assert_eq!(map_keysym(Key::Char('中')).ok(), Some(0x0100_0000 | 0x4e2d));
+        // U+4E2D 中:旧实现编码为 0x01000000|码点照发,但 mutter 对 keymap 外
+        // keysym 静默丢弃——逐字符"成功"却无输入(评审发现的 CJK 静默丢失)。
+        // 现显式报错,错误文案说明 Wayland 限制。
+        let error = map_keysym(Key::Char('中')).unwrap_err().to_string();
+        assert!(error.contains("Wayland"), "{error}");
+        assert!(error.contains("drops keysyms"), "{error}");
+        assert!(error.contains("U+4E2D"), "{error}");
+        let error = char_keysym('\u{1F600}').unwrap_err().to_string();
+        assert!(error.contains("drops keysyms"), "{error}");
         // 换行/制表映射为命名键;NUL 与 DEL 无 keysym。
         assert_eq!(keysym_for_char('\n'), Some(0xff0d));
         assert_eq!(keysym_for_char('\t'), Some(0xff09));
         assert_eq!(keysym_for_char('\0'), None);
+        // Latin-1 边界:0xFF(ÿ)可注入,0x100(Ā)报错。
+        assert_eq!(char_keysym('\u{FF}').ok(), Some(0xff));
+        assert!(char_keysym('\u{100}').is_err());
     }
 
     #[test]
@@ -899,6 +986,10 @@ mod tests {
         assert_eq!(map_discrete_scroll(ScrollDirection::Down, 3), (0, 3));
         assert_eq!(map_discrete_scroll(ScrollDirection::Left, 1), (1, -1));
         assert_eq!(map_discrete_scroll(ScrollDirection::Right, 1), (1, 1));
+        // amount=0 映射为 0 步:调用方(linux.rs)须在 portal 分支先行 no-op,
+        // 否则 mutter 对 steps=0 报 Invalid,notify() 会重置整个会话。
+        assert_eq!(map_discrete_scroll(ScrollDirection::Up, 0), (0, 0));
+        assert_eq!(map_discrete_scroll(ScrollDirection::Right, 0), (1, 0));
     }
 
     #[test]
