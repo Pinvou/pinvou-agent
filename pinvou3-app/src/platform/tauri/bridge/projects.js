@@ -44,7 +44,9 @@
       try {
         applySnapshot(await invoke("list_projects"));
       } catch (e) {
-        // 归属是纯偏好数据:拉取失败保持旧快照,侧栏回落隐式分组,不打断 UI。
+        // 归属是纯偏好数据,失败不打断 UI:首次拉取失败时侧栏回落隐式分组;
+        // 已有快照则继续显示旧快照(与最新无从区分),直到下一个
+        // projects:list_changed 事件才重试。
         console.warn("[projects] list_projects failed:", e);
       } finally {
         fetchInFlight = false;
