@@ -1389,7 +1389,8 @@ jobs:
             'features::monitor::platform::windows_cpu::tests::' \
             'features::monitor::platform::windows_memory::tests::' \
             'features::monitor::platform::windows_gpu::tests::' \
-            'features::remote_control::platform::windows::tests::'; do
+            'features::remote_control::platform::windows::tests::' \
+            'features::computer_use::platform::windows::tests::'; do
             "$test_exe" "$filter" --test-threads=1 2>&1 | tee /tmp/windows_regression.log
             grep -qE 'running [1-9][0-9]* tests?' /tmp/windows_regression.log || {
               echo "FAIL: 回归过滤器 '$filter' 匹配 0 个测试(疑似测试改名导致静默空跑)" >&2
