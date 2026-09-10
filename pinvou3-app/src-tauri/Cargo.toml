@@ -161,7 +161,7 @@ walkdir = "2"
 # 模型(bge-m3 ONNX)用户本地下载，UserDefinedEmbeddingModel 从目录加载，不走 HF 自动下载。
 # 电子表格解析（file_ingest 用）：读 xlsx/xls/ods 的全部工作表。
 # 0.36 拉入 quick-xml 0.41+,修 RUSTSEC-2026-0194/0195 ReDoS。
-# plist/tauri 传递的 quick-xml 也已统一到 0.41,全图无残留旧版。
+# The quick-xml pulled in transitively by plist/tauri is unified to 0.41 too; no stale version remains in the graph.
 calamine = "0.36"
 # XLSX structure preservation: inspect OOXML cell styles, formulas, and merged
 # ranges that calamine's value-only Range intentionally does not expose.
