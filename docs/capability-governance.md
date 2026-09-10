@@ -126,7 +126,19 @@ plain 从 AllowAll 翻为 DenyAll 时的**存量迁移**（读时迁移，见
 `plain_defaults_migrated` 字段）或旧双文件时代的装机，plain 被初始化为
 落盘列表——锁定升级前 AllowAll 语义下的真实开关状态（缺省空 = 全开），
 升级后用户无感；全新装机只置迁移标记不初始化，未初始化 plain 按 DenyAll
-兜底（默认全关）。
+兜底（默认全关）。「升级 vs 全新」的判定使用**宽口径升级信号**：三份开关
+相关文件皆无、但家目录存在任何既有状态（`marketplace/installed.json`、
+`settings.json` 或非空 `sessions/` 目录）即视为升级装机——统一文件自
+v0.8.6 起就存在且只在有内容可写时才落盘，老装机 + 从未动过开关的用户可能
+三者皆无，只有全空家目录才算全新。该信号会被应用自身首启行为污染（bridge
+boot 自写 `sessions/` 目录项、缺省补写默认 `settings.json`），因此首读被
+上提至各宿主启动钩顶部（GUI setup、headless bridge、dump_system_prompt，
+早于一切首启自写），且判定在**首次读取时无条件落盘**（置
+`plain_defaults_migrated`）冻结——否则全新装机会被自己的首启痕迹误判为
+升级装机而翻回全开。文件损坏时不静默覆盖：先隔离为 `.corrupt.<ts>` 副本，
+再按 **fail-closed** 一次性恢复落盘——只置迁移标记（冻结为全新装机判定）、
+不初始化任何 scope，未初始化 scope 按 DenyAll 兜底（宁可恢复全关，不把
+用户显式关过的状态恢复成全开）。
 
 用户数据语义（三条线一致）：
 

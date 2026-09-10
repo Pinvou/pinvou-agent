@@ -537,7 +537,10 @@ pub fn sync_disabled_bundles_for_connector_switch(connector_id: &str, enabled: b
 /// 阻塞项）。因此对每个「包 id 在现算扩集里且未初始化」的 scope，以
 /// 扩集减该 id 初始化（用户刚显式开启 = 显式 opt-in）；已初始化的 scope
 /// 保持原有从落盘列表移除的行为；同时清理可见性集残留。
-fn enable_bundle_in_deny_all_scopes(connector_id: &str) {
+fn enable_bundle_in_deny_all_scopes(raw_id: &str) {
+    // 与旧 enable 路径（save/remove 等写方）同口径：入参统一归一为包 id
+    // （剥 `skill:` 前缀 + companion 映射），防御非内置 id 调用方。
+    let connector_id = to_package_id(raw_id);
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -553,7 +556,7 @@ fn enable_bundle_in_deny_all_scopes(connector_id: &str) {
         }
         let mut ids = resolve_scope_disabled_ids(&file, *mode);
         let before = ids.len();
-        ids.retain(|id| id != connector_id);
+        ids.retain(|id| id != &connector_id);
         if ids.len() == before {
             continue;
         }
@@ -564,12 +567,12 @@ fn enable_bundle_in_deny_all_scopes(connector_id: &str) {
     // 已初始化 scope 与可见性集：从落盘列表移除（与卸载清理同路径）。
     for ids in file.scopes.values_mut() {
         let before = ids.len();
-        ids.retain(|id| id != connector_id);
+        ids.retain(|id| id != &connector_id);
         changed |= ids.len() != before;
     }
     for ids in file.hidden_scopes.values_mut() {
         let before = ids.len();
-        ids.retain(|id| id != connector_id);
+        ids.retain(|id| id != &connector_id);
         changed |= ids.len() != before;
     }
     if changed {

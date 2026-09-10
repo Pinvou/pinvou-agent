@@ -224,6 +224,12 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 - 安装连接器后：DenyAll 且已初始化的 scope 中新装连接器默认仍关闭（自动加入
   禁用集）；未初始化无需落盘（读取时按「默认全禁已装连接器」兜底）。卸载
   连接器时从所有 scope 禁用集移除残留 id（含运行时清理路径）。
+- 连接器开关桥接（`sync_disabled_bundles_for_connector_switch`）：「启用」
+  方向在**未初始化** scope 上以（现算扩集 − 该 id）物化 opt-in 状态落盘——
+  只删落盘列表对未初始化 scope 是静默 no-op（门控来自 DenyAll 现算扩集，
+  无视落盘列表），用户显式开启 = 显式 opt-in；「关闭」方向对已在扩集里的
+  id 是 no-op、对不在扩集里的 id 早退，均不初始化未初始化 scope（避免把
+  当前扩集固化为用户状态）。
 - 前端工具菜单按会话类型传 `scope`（普通 = `plain` / 代码 = `code`），读写各自
   scope；`shape_disallowed_tools` 经 `SessionPolicy` 策略化（§3.6）：code 会话
   按 `policy.mode()` 取 code scope 禁用集替换 plain scope 的（非连接器
