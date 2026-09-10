@@ -1,5 +1,6 @@
-//! Linux 后端:X11 全功能;Wayland 截屏尽力而为,输入走 xdg-desktop-portal
-//! RemoteDesktop(见 [`super::wayland_portal`] 模块文档)。
+//! Linux 后端:X11 全功能;Wayland 截屏走 portal RemoteDesktop 会话绑定的
+//! ScreenCast 流(PipeWire,见 [`super::wayland_portal`]/[`super::wayland_capture`]),
+//! 输入走 xdg-desktop-portal RemoteDesktop。
 //!
 //! 会话探测决定能力面(`detect_session` 为纯函数,便于单测):
 //! - 主信号 `XDG_SESSION_TYPE`(`x11`/`wayland`/`tty`),`WAYLAND_DISPLAY` +
@@ -10,12 +11,13 @@
 //!   注意 xcap 在 X11 下把 RandR 几何除以 Xft.dpi/96 报告(逻辑坐标),而
 //!   `capture_image` 按根窗口像素截图、XTEST 也注入根窗口像素,故
 //!   `origin_x/y` 需把 xcap 的逻辑原点乘回 `scale_factor`,输入倍率恒为 1.0。
-//! - Wayland:截屏尝试 xcap 的 GNOME-Shell/portal/wlroots 回退链(构造时探测,
-//!   portal 路径可能每次弹授权对话框,`capabilities().notes` 注明);探测失败则
-//!   显式 `unsupported`。输入合成走 portal RemoteDesktop(懒启动,首次输入
-//!   动作弹系统授权对话框;探测不到 portal 时显式不可用)。输入坐标系是绑定
-//!   ScreenCast stream 的**逻辑**空间,故 `origin_x/y` 保持 xcap 的逻辑原点、
-//!   `input_scale = 1/scale`,ScaleMap 输出即 portal 输入坐标。
+//! - Wayland:截屏与输入共用 portal RemoteDesktop 会话(懒启动,首次截屏或
+//!   输入动作弹一次系统授权对话框):截屏取 `OpenPipewireRemote` 的 PipeWire
+//!   流帧(输入坐标 = 流本地像素,origin (0,0);KDE 的输入单位是流逻辑像素,
+//!   按合成器报告的流尺寸折算倍率)。会话内的截屏流不可用时回退 xcap 的
+//!   GNOME-Shell/portal/wlroots 链(构造时探测,portal 路径可能每次弹授权
+//!   对话框,`capabilities().notes` 注明);两条路都失败则显式 `unsupported`。
+//!   输入合成走 portal RemoteDesktop;探测不到 portal 时输入显式不可用。
 //! - 无障碍树:`atspi`(AT-SPI over D-Bus,独立 a11y 总线,X11/Wayland 均可)。
 //!   trait 为同步而 atspi 为 async:backend 持有一个专用 current-thread tokio
 //!   runtime,在 worker 线程(普通 std::thread,不含引擎主 runtime)上
@@ -24,7 +26,7 @@
 //! - 线程约定同其他平台:对象于 worker 线程构造,不得跨线程移动。
 
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use atspi::proxy::accessible::{AccessibleProxy, ObjectRefExt};
 use atspi::proxy::component::ComponentProxy;
@@ -520,11 +522,63 @@ pub(super) struct LinuxComputerUseBackend {
     wayland_portal_error: Option<String>,
     wayland_screenshot_ok: bool,
     wayland_screenshot_error: Option<String>,
+    /// 同会话截屏流最近一次失败原因(回退 xcap 链后随错误透出)。
+    wayland_portal_capture_error: Option<String>,
+    /// 最近一次输入动作的开始时刻:同会话截屏流是 damage 驱动的,补拍
+    /// 截图要等比它新的帧,才能看到动作后的画面(无视觉变化时沿用现有帧)。
+    last_input_at: Option<Instant>,
 }
 
 impl LinuxComputerUseBackend {
     fn is_wayland(&self) -> bool {
         self.session.kind == SessionKind::Wayland
+    }
+
+    /// 输入动作入口打点(补拍截图等比它新的帧)。
+    fn note_input(&mut self) {
+        self.last_input_at = Some(Instant::now());
+    }
+
+    /// Wayland 首选截屏:portal 同会话 ScreenCast 流(PipeWire)。会话未启动
+    /// 则启动(首次截屏弹一次系统授权对话框,与输入共用)。失败返回 None 并
+    /// 记录原因(`wayland_portal_capture_error`,回退 xcap 链后随错误透出)。
+    fn wayland_portal_capture(&mut self) -> Option<Capture> {
+        let portal = self.wayland_portal.as_mut()?;
+        let frame = match portal.capture_frame(self.last_input_at) {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.wayland_portal_capture_error = Some(error.to_string());
+                return None;
+            }
+        };
+        // 输入坐标 = 流本地像素(mutter 语义;origin 由合成器/portal 层内部
+        // 处理)。KDE 的输入单位是流本地逻辑像素而其缓冲是物理像素,按合成器
+        // 报告的流尺寸折算;其余合成器(含 scale=1 的 KDE)倍率为 1。
+        let input_scale = if self
+            .session
+            .desktop
+            .as_deref()
+            .map_or(false, |desktop| desktop.contains("KDE"))
+        {
+            match portal.stream_logical_size() {
+                Some((lw, lh)) if lw > 0 && lh > 0 && frame.width > 0 && frame.height > 0 => (
+                    f64::from(lw) / f64::from(frame.width),
+                    f64::from(lh) / f64::from(frame.height),
+                ),
+                _ => (1.0, 1.0),
+            }
+        } else {
+            (1.0, 1.0)
+        };
+        Some(Capture {
+            rgba: frame.rgba,
+            width: frame.width,
+            height: frame.height,
+            origin_x: 0,
+            origin_y: 0,
+            input_scale_x: input_scale.0,
+            input_scale_y: input_scale.1,
+        })
     }
 
     fn require_enigo(&mut self) -> Result<&mut Enigo, ComputerUseError> {
@@ -566,10 +620,15 @@ impl LinuxComputerUseBackend {
             Err(error) => self.wayland_screenshot_error = Some(error),
         }
         if !self.wayland_screenshot_ok {
+            let portal_note = self
+                .wayland_portal_capture_error
+                .as_deref()
+                .map(|error| format!("; same-session stream capture failed: {error}"))
+                .unwrap_or_default();
             return Err(ComputerUseError::unsupported(
                 "screenshot",
                 format!(
-                    "screenshot on Wayland compositor {}: {}",
+                    "screenshot on Wayland compositor {}: {}{portal_note}",
                     self.session.desktop_label(),
                     self.wayland_screenshot_error
                         .as_deref()
@@ -635,8 +694,13 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
     fn capabilities(&self) -> Capabilities {
         let ui_tree = self.a11y.is_some();
         if self.is_wayland() {
-            let screenshot_note = if self.wayland_screenshot_ok {
-                "screenshot probed OK via GNOME-Shell/portal/wlroots fallback chain \
+            let portal_ok = self.wayland_portal.is_some();
+            let screenshot_note = if portal_ok {
+                "screenshot via the same-session ScreenCast stream (PipeWire; the first \
+                 screenshot or input action opens one system authorization dialog)"
+                    .to_string()
+            } else if self.wayland_screenshot_ok {
+                "screenshot via the xcap GNOME-Shell/portal/wlroots fallback chain \
                  (the portal path may show a compositor permission dialog per capture)"
                     .to_string()
             } else {
@@ -648,14 +712,15 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 )
             };
             let input_note = match (&self.wayland_portal, &self.wayland_portal_error) {
-                (Some(_), _) => "input via xdg-desktop-portal RemoteDesktop (the first input \
-                                 action opens a system authorization dialog)"
+                (Some(_), _) => "input via xdg-desktop-portal RemoteDesktop (the first \
+                                 screenshot or input action opens a system authorization \
+                                 dialog)"
                     .to_string(),
                 (None, Some(error)) => format!("input unavailable: {error}"),
                 (None, None) => "input unavailable".to_string(),
             };
             Capabilities {
-                screenshot: self.wayland_screenshot_ok,
+                screenshot: portal_ok || self.wayland_screenshot_ok,
                 input: self.wayland_portal.is_some(),
                 ui_tree,
                 notes: format!(
@@ -687,6 +752,15 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
     }
 
     fn capture(&mut self) -> Result<Capture, ComputerUseError> {
+        // Wayland 首选:portal 同会话截屏流(与输入共用一次授权,无逐次弹窗)。
+        if self.is_wayland() {
+            if let Some(capture) = self.wayland_portal_capture() {
+                return Ok(capture);
+            }
+        }
+        // 回退:xcap 链(X11 主路径;Wayland 上探测失败可在后续截屏时重试,
+        // 评审发现:旧实现一次探测失败就粘死整个 backend 生命周期——portal
+        // 对话框被用户误关、合成器短暂抖动都会永久失去截屏,且无任何重试入口)。
         self.ensure_wayland_capture()?;
         let monitors = Monitor::all().map_err(|error| {
             ComputerUseError::unavailable(format!("monitor enumeration: {error}"))
@@ -789,6 +863,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
 
     fn move_to(&mut self, x: i32, y: i32) -> Result<(), ComputerUseError> {
         if self.is_wayland() {
+            self.note_input();
             let portal = self.require_portal()?;
             portal.ensure_started()?;
             portal.motion_absolute(x, y)?;
@@ -804,6 +879,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
     fn click(&mut self, button: MouseButton, count: u8) -> Result<(), ComputerUseError> {
         let count = count.max(1);
         if self.is_wayland() {
+            self.note_input();
             let portal = self.require_portal()?;
             portal.ensure_started()?;
             let evdev = wayland_portal::map_button(button);
@@ -835,6 +911,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
 
     fn mouse_down(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
         if self.is_wayland() {
+            self.note_input();
             let portal = self.require_portal()?;
             portal.ensure_started()?;
             return portal.button(wayland_portal::map_button(button), true);
@@ -847,6 +924,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
 
     fn mouse_up(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
         if self.is_wayland() {
+            self.note_input();
             let portal = self.require_portal()?;
             portal.ensure_started()?;
             return portal.button(wayland_portal::map_button(button), false);
@@ -859,6 +937,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
 
     fn drag(&mut self, from: (i32, i32), to: (i32, i32)) -> Result<(), ComputerUseError> {
         if self.is_wayland() {
+            self.note_input();
             let portal = self.require_portal()?;
             portal.ensure_started()?;
             portal.motion_absolute(from.0, from.1)?;
@@ -911,6 +990,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
 
     fn scroll(&mut self, direction: ScrollDirection, clicks: u32) -> Result<(), ComputerUseError> {
         if self.is_wayland() {
+            self.note_input();
             let portal = self.require_portal()?;
             portal.ensure_started()?;
             // 一次离散滚轮事件可携带多格(合成器内部逐格注入)。
@@ -939,6 +1019,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
 
     fn type_text(&mut self, text: &str) -> Result<(), ComputerUseError> {
         if self.is_wayland() {
+            self.note_input();
             let portal = self.require_portal()?;
             portal.ensure_started()?;
             // 逐字符 keysym 注入(\n→Return、\t→Tab;不可映射字符显式报错)。
@@ -962,6 +1043,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
 
     fn key_chord(&mut self, keys: &[Key]) -> Result<(), ComputerUseError> {
         if self.is_wayland() {
+            self.note_input();
             let portal = self.require_portal()?;
             let mapped = keys
                 .iter()
@@ -993,6 +1075,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
 
     fn hold_key(&mut self, keys: &[Key], ms: u64) -> Result<(), ComputerUseError> {
         if self.is_wayland() {
+            self.note_input();
             let portal = self.require_portal()?;
             let mapped = keys
                 .iter()
@@ -1108,6 +1191,8 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
         wayland_portal_error,
         wayland_screenshot_ok,
         wayland_screenshot_error,
+        wayland_portal_capture_error: None,
+        last_input_at: None,
     }))
 }
 
@@ -1235,5 +1320,256 @@ mod tests {
         assert_eq!(sanitize_name("say \"hi\"\nnow"), "say 'hi' now");
         let long = "x".repeat(MAX_NAME_CHARS + 20);
         assert_eq!(sanitize_name(&long).chars().count(), MAX_NAME_CHARS);
+    }
+}
+
+#[cfg(test)]
+mod wayland_e2e_tests {
+    //! 真机 Wayland E2E(dialog → grant → 同会话截屏 → move/click/type)。
+    //! 需要真实 Wayland 会话 + xdg-desktop-portal(RemoteDesktop/ScreenCast),
+    //! 且系统授权对话框须被确认——验证环境用 root 的 uinput 脚本模拟用户按
+    //! Enter(见 PR 描述的验证章节)。默认 ignored:
+    //! `cargo test --lib computer_use::platform::linux::wayland_e2e_tests -- --ignored --nocapture`
+
+    use super::*;
+    use atspi::proxy::text::TextProxy;
+
+    /// DFS 收集所有 role=Text 节点的文本(a11y 验证打字结果)。
+    async fn read_texts_via_a11y(
+        conn: &AccessibilityConnection,
+    ) -> Result<Vec<String>, ComputerUseError> {
+        let mut texts = Vec::new();
+        walk_texts(
+            conn,
+            conn.root_accessible_on_registry()
+                .await
+                .map_err(|e| ComputerUseError::unavailable(format!("a11y root: {e}")))?,
+            18,
+            &mut texts,
+        )
+        .await?;
+        Ok(texts)
+    }
+
+    async fn walk_texts(
+        conn: &AccessibilityConnection,
+        proxy: AccessibleProxy<'_>,
+        depth: u32,
+        out: &mut Vec<String>,
+    ) -> Result<(), ComputerUseError> {
+        if depth == 0 || out.len() >= 64 {
+            return Ok(());
+        }
+        let role = proxy.get_role().await.unwrap_or(Role::Unknown);
+        if role == Role::Text {
+            let text = TextProxy::builder(conn.connection())
+                .destination(proxy.inner().destination().as_str().to_string())
+                .map_err(|e| ComputerUseError::failed(e.to_string()))?
+                .path(proxy.inner().path().as_str().to_string())
+                .map_err(|e| ComputerUseError::failed(e.to_string()))?
+                .build()
+                .await
+                .map_err(|e| ComputerUseError::failed(format!("text proxy: {e}")))?;
+            let content = text.get_text(0, -1).await.unwrap_or_default();
+            if !content.trim().is_empty() {
+                out.push(content);
+            }
+        }
+        if let Ok(children) = proxy.get_children().await {
+            for child in children {
+                if child.is_null() {
+                    continue;
+                }
+                if let Ok(child) = child.into_accessible_proxy(conn.connection()).await {
+                    Box::pin(walk_texts(conn, child, depth - 1, out)).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 临时诊断:把收到的帧存为 PNG(验证环境用)。
+    fn save_debug_png(capture: &Capture, index: i32) {
+        let path = format!("/tmp/pinvou-wl-e2e/frame-{index}.png");
+        let image =
+            xcap::image::RgbaImage::from_raw(capture.width, capture.height, capture.rgba.clone());
+        if let Some(image) = image {
+            let _ = xcap::image::DynamicImage::ImageRgba8(image).save(std::path::Path::new(&path));
+        }
+    }
+
+    /// 两帧 RGBA 的差分包围盒(无差分返回 None)。步长 4 像素采样,足够定位
+    /// 窗口级包围盒且省时。
+    fn diff_bounding_box(a: &[u8], b: &[u8]) -> Option<(i32, i32, u32, u32)> {
+        assert_eq!(a.len(), b.len());
+        let width = ((a.len() / 4) as f64).sqrt() as usize;
+        let height = (a.len() / 4) / width;
+        let mut x0 = usize::MAX;
+        let mut y0 = usize::MAX;
+        let mut x1 = 0;
+        let mut y1 = 0;
+        for y in (0..height).step_by(4) {
+            for x in (0..width).step_by(4) {
+                let i = (y * width + x) * 4;
+                if a[i..i + 3] != b[i..i + 3] {
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x);
+                    y1 = y1.max(y);
+                }
+            }
+        }
+        if x0 == usize::MAX {
+            return None;
+        }
+        Some((
+            x0 as i32,
+            y0 as i32,
+            (x1 - x0 + 4) as u32,
+            (y1 - y0 + 4) as u32,
+        ))
+    }
+
+    #[test]
+    #[ignore = "needs a live Wayland session with xdg-desktop-portal and the system \
+                authorization dialog confirmed (uinput Enter in the verification env)"]
+    fn e2e_dialog_grant_capture_and_input() {
+        let session = detect_session(&|key| std::env::var(key).ok());
+        assert_eq!(
+            session.kind,
+            SessionKind::Wayland,
+            "run inside a live Wayland session"
+        );
+
+        // backend 构造即建立 AT-SPI 连接(a11y 总线),之后启动的目标应用才
+        // 能注册到 a11y 树上。
+        let mut backend = create_backend().expect("backend on a live Wayland session");
+        let caps = backend.capabilities();
+        println!(
+            "capabilities: screenshot={} input={} ui_tree={}\n  {}",
+            caps.screenshot, caps.input, caps.ui_tree, caps.notes
+        );
+        assert!(
+            caps.screenshot,
+            "portal same-session capture must be available"
+        );
+        assert!(caps.input, "portal input must be available");
+
+        // 1) 首次截屏:建立 portal 会话并弹系统授权对话框(由验证环境的
+        //    对话框脚本确认),截屏帧来自同会话 ScreenCast 流。
+        let shot1 = backend
+            .capture()
+            .expect("first capture establishes the portal session (dialog must be granted)");
+        println!(
+            "capture #1: {}x{} origin=({},{}) input_scale={}",
+            shot1.width, shot1.height, shot1.origin_x, shot1.origin_y, shot1.input_scale_x
+        );
+        assert_eq!((shot1.origin_x, shot1.origin_y), (0, 0));
+        assert_eq!(shot1.input_scale_x, 1.0);
+        assert_eq!(
+            shot1.rgba.len(),
+            shot1.width as usize * shot1.height as usize * 4
+        );
+        assert!(shot1.rgba.iter().any(|byte| *byte != 0), "frame not blank");
+
+        // 2) 输入目标:GNOME Shell 顶栏时钟(位置已知:顶栏中央)。
+        //    Wayland 下 AT-SPI extents 不可靠(全 0),computer-use 的正路就是
+        //    看截图:点击后用像素差分验证 UI 真的响应了。
+        let shot_w = shot1.width;
+        let shot_h = shot1.height;
+        let clock = (i64::from(shot_w) / 2, 8);
+        backend
+            .move_to(clock.0 as i32, clock.1)
+            .expect("mouse_move");
+        assert_eq!(
+            backend.cursor_position().ok(),
+            Some((clock.0 as i32, clock.1)),
+            "cursor_position tracks our injected move"
+        );
+        backend.click(MouseButton::Left, 1).expect("click");
+
+        // 3) 等待比点击新的帧:日历/通知下拉必须出现在屏幕上半部。
+        let dropdown = wait_for_big_change(&mut backend, &shot1, 40, shot_h / 2)
+            .expect("clicking the clock must open the calendar dropdown");
+        println!("calendar dropdown box: {dropdown:?}");
+
+        // 4) 键盘链路:Escape 关闭下拉,Super 打开概览(搜索框自动聚焦)。
+        backend.key_chord(&[Key::Escape]).expect("escape key chord");
+        std::thread::sleep(Duration::from_millis(600));
+        let baseline = backend.capture().expect("capture before overview");
+        backend.key_chord(&[Key::Meta]).expect("super key chord");
+
+        // 5) 打字进 shell 搜索框:概览稳定后输入 "fire",搜索结果(Firefox)
+        //    出现 = 按键注入真实到达 shell 搜索框(相对概览基线的第二次
+        //    窗口级差分)。
+        let typed = "fire";
+        let mut typed_shot = None;
+        for i in 0..40 {
+            std::thread::sleep(Duration::from_millis(400));
+            if i == 6 {
+                backend.type_text(typed).expect("type_text");
+            }
+            let Ok(shot) = backend.capture() else {
+                continue;
+            };
+            if i >= 8 {
+                if let Some(box_) = diff_bounding_box(&baseline.rgba, &shot.rgba) {
+                    if box_.2 > 200 && box_.3 > 200 {
+                        typed_shot = Some(box_);
+                        break;
+                    }
+                }
+            }
+        }
+        println!("search results diff box: {typed_shot:?}");
+        assert!(
+            typed_shot.is_some(),
+            "search results must appear after typing into the overview search"
+        );
+
+        // 6) a11y 文本读回(嵌套 shell 的 cally 桥在启动时未开,树可能很浅,
+        //    仅作诊断输出,不作断言)。
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let conn = runtime.block_on(a11y_init()).expect("a11y connection");
+        let texts = runtime
+            .block_on(read_texts_via_a11y(&conn))
+            .expect("read texts via a11y");
+        println!(
+            "a11y texts ({} entries, first 3): {:?}",
+            texts.len(),
+            texts
+                .iter()
+                .take(3)
+                .map(|t| t.chars().take(80).collect::<String>())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// 反复截图直到与 `baseline` 出现窗口级差分(忽略 `ignore_prefixes` 里
+    /// 以这些前缀开头的固定小变化区域),返回差分包围盒。
+    fn wait_for_big_change(
+        backend: &mut Box<dyn ComputerUseBackend>,
+        baseline: &Capture,
+        rounds: usize,
+        max_y: u32,
+    ) -> Option<(i32, i32, u32, u32)> {
+        for _ in 0..rounds {
+            std::thread::sleep(Duration::from_millis(400));
+            let Ok(shot) = backend.capture() else {
+                continue;
+            };
+            if shot.width != baseline.width || shot.height != baseline.height {
+                continue;
+            }
+            if let Some(box_) = diff_bounding_box(&baseline.rgba, &shot.rgba) {
+                if box_.2 > 200 && box_.3 > 200 && (box_.1 as u32) < max_y {
+                    return Some(box_);
+                }
+            }
+        }
+        None
     }
 }
