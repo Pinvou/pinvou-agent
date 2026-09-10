@@ -27,7 +27,10 @@ const ProjectGroupHeader = ({
 }) => {
   const [editing, setEditing] = useState(null);
   const [confirming, setConfirming] = useState(false);
-  const hasMenu = kind === 'folder' || kind === 'project';
+  // 菜单按实际可用的动作渲染:web 没有 projects 后端,onConvert 等为
+  // undefined,此时整个组不渲染「更多」按钮,避免点开一个空菜单。
+  const hasMenu = (kind === 'folder' && !!onConvert)
+    || (kind === 'project' && (!!onRename || !!onDelete));
   const { menuOpen, menuStyle, closeMenu, toggleMenu } = usePortalMenu({
     height: kind === 'project' ? 96 : 48,
   });
@@ -39,7 +42,10 @@ const ProjectGroupHeader = ({
     setEditing(null);
     if (!draft) return;
     const value = String(draft.value || '').trim();
-    if (!value || value === label || busy) return;
+    if (!value || busy) return;
+    // 「值未变 = 取消」只对重命名成立:convert 把目录名预填为默认项目名,
+    // 直接回车必须按预填值创建,否则默认路径静默无操作(评审 finding 16)。
+    if (draft.mode === 'rename' && value === label) return;
     if (draft.mode === 'convert' && onConvert) onConvert(value);
     if (draft.mode === 'rename' && onRename) onRename(value);
   };
@@ -115,7 +121,7 @@ const ProjectGroupHeader = ({
             type="button"
             title={t.uiProjects.deleteProject}
             disabled={busy}
-            onClick={(e) => { e.stopPropagation(); onDelete && onDelete(); setConfirming(false); }}
+            onClick={(e) => { e.stopPropagation(); if (onDelete) { onDelete(); } setConfirming(false); }}
             className="w-5 h-5 rounded-full flex items-center justify-center hover:bg-[#FAD2CF] dark:hover:bg-[#5c2b29]"
           >
             <Check size={13} />
