@@ -346,7 +346,10 @@ impl SessionStore {
         (committed, result)
     }
 
-    pub(super) fn durable_session_record_is_absent(&self, id: &str) -> bool {
+    /// 会话 JSON 是否已不在盘上(无效 id 一律按"在场"处理,fail-closed)。
+    /// 除删除路径外,目录重绑定的孤儿分类也用它:只认 NotFound,损坏 JSON
+    /// 不算孤儿(评审 #463:解析失败必须进失败名单可重试,不静默跳过)。
+    pub(crate) fn durable_session_record_is_absent(&self, id: &str) -> bool {
         if validate_session_id(id).is_err() {
             return false;
         }
