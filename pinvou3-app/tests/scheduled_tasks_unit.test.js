@@ -384,6 +384,10 @@ assert.ok(
   'Scheduled model and frequency controls should use the themed keyboard-dismissible popover'
 );
 assert.ok(
+  !/testId="scheduled-live-(?:model|repeat|day)"[\s\S]{0,320}?\/>\s*<ChevronRight\b/.test(scheduledViewSource),
+  'scheduled selectors should not render a second inert chevron outside their trigger'
+);
+assert.ok(
   /const iosInsetSurface =/.test(indexHtml) &&
     /data-testid="scheduled-create-settings" className=\{`overflow-visible rounded-\[16px\] \$\{iosInsetSurface\}`\}/.test(indexHtml) &&
     /data-testid="scheduled-detail-settings" className=\{`overflow-visible rounded-\[16px\] \$\{iosInsetSurface\}`\}/.test(indexHtml) &&

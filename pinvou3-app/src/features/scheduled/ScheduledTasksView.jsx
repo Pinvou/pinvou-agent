@@ -1459,7 +1459,6 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
                       <ScheduledSelect value={detailForm.modelId || ''} options={modelOptions}
                         onChange={value => editModel(value)} alwaysCommit
                         testId="scheduled-live-model" ariaLabel={scheduledCopy.chooseModel} theme={theme} minWidth={220} emptyLabel={scheduledCopy.choose} footerAction={modelManageAction} />
-                      <ChevronRight className={`h-3.5 w-3.5 text-[#C5C5C7] dark:text-[#EBEBF5]/30`} />
                     </div>
                   </div>
                 </div>
