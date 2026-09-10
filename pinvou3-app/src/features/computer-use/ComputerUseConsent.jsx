@@ -109,8 +109,6 @@ export function ComputerUseDialogs({ slice, copy }) {
     if (open && target && typeof target.focus === 'function') target.focus();
   }, [open, grantRequest, confirmRequest]);
 
-  if (!grantRequest && !confirmRequest) return null;
-
   // Esc maps to Deny: the reflexive way out of a machine-control prompt must
   // never equal approval, so Esc performs the conservative action (revoke or
   // per-action deny) instead of a neutral dismiss.
@@ -150,6 +148,20 @@ export function ComputerUseDialogs({ slice, copy }) {
     }
   };
 
+  // Listen at document level while a dialog is up: clicking the backdrop can
+  // move focus to <body>, which takes the dialog out of the keydown
+  // propagation path — Escape (the conservative deny) and the Tab trap must
+  // keep working wherever focus went (review finding: after an overlay
+  // click, Escape stopped denying and Tab escaped the trap).
+  useEffect(() => {
+    if (!open) return;
+    document.addEventListener('keydown', handleDialogKeyDown);
+    return () => document.removeEventListener('keydown', handleDialogKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handler closes over the request/pending state that these deps track
+  }, [open, grantRequest, confirmRequest, pendingAction]);
+
+  if (!grantRequest && !confirmRequest) return null;
+
   // The per-action confirmation is the more time-sensitive surface: when both
   // are pending (rare — a confirm arriving before the grant is settled), show
   // the grant first; the confirm request stays pending underneath.
@@ -161,7 +173,6 @@ export function ComputerUseDialogs({ slice, copy }) {
           aria-modal="true"
           aria-labelledby="computer-use-grant-title"
           ref={grantDialogRef}
-          onKeyDown={handleDialogKeyDown}
           className="w-full max-w-[440px] rounded-[20px] shadow-2xl p-6 bg-white text-[#1C1C1E] dark:bg-[#1E1F20] dark:text-[#E3E3E3]"
         >
           <h3 id="computer-use-grant-title" className="text-[16px] font-semibold mb-2">{copy.grantTitle}</h3>
@@ -200,7 +211,6 @@ export function ComputerUseDialogs({ slice, copy }) {
         aria-modal="true"
         aria-labelledby="computer-use-confirm-title"
         ref={confirmDialogRef}
-        onKeyDown={handleDialogKeyDown}
         className="w-full max-w-[440px] rounded-[20px] shadow-2xl p-6 bg-white text-[#1C1C1E] dark:bg-[#1E1F20] dark:text-[#E3E3E3]"
       >
         <h3 id="computer-use-confirm-title" className="text-[16px] font-semibold mb-2">{copy.confirmTitle}</h3>
