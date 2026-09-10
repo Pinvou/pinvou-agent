@@ -809,7 +809,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const computerUseSlice = (bs && bs.computerUse) || null;
       // 会话挂载/切换时拉取 computer-use 权威状态：横幅与授权弹窗只对
       // active 会话生效，后台会话的待决请求由 bridge 端按会话寄存，
-      // 切回时随本次 refresh 重新浮出。
+      // 切回时随本次 refresh 重新浮出。refreshStatus 在发起 IPC 前会同步
+      // 调 clearSessionRequests 清掉上一个会话遗留的待决弹窗（纯状态操作），
+      // 异步刷新窗口期内旧会话的授权弹窗不可再点击。
       useEffect(() => {
         if (!COMPUTER_USE_ENABLED || !bridge.available || !bridge.computerUse || !activeSessionId) return;
         bridge.computerUse.refreshStatus(activeSessionId).catch(() => {});

@@ -342,7 +342,7 @@ export const dictEn = {
         uiComputerUse: {
           settingsSection:'Computer use',
           settingsToggle:'Computer use (allow the agent to see and control your screen)',
-          settingsHint:'When enabled, the agent can take screenshots and control your mouse and keyboard, which carries a risk of unintended actions. The agent asks for your consent before the first control of each session, and consequential actions need per-action confirmation.',
+          settingsHint:'When enabled, the agent can take screenshots and control your mouse and keyboard, which carries a risk of unintended actions. The agent asks for your consent again before the first control of each session, and consequential actions need per-action confirmation.',
           platformUnsupportedHint:'Computer use is not available on this platform: there is no computer-use backend for this operating system.',
           bannerTitle:'Agent is controlling your computer',
           bannerNote:'The agent can see your screen and move the mouse and keyboard. You can stop it at any time.',

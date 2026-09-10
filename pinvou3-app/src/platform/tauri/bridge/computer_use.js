@@ -61,6 +61,23 @@
       return pendingBySession[sid];
     }
 
+    // Drops requests that belong to `sessionId` from the published slice.
+    // pendingBySession is intentionally untouched: switching back to the
+    // session must resurface them via refreshStatus. Pure state operation
+    // (no command traffic); refreshStatus calls this synchronously when it
+    // detects a session switch, and the behavior tests drive it directly.
+    function clearSessionRequests(sessionId) {
+      const sid = String(sessionId || "");
+      const current = state.computerUse;
+      if (!sid || !current) return;
+      const matches = (request) => !!(request && String(request.sessionId || "") === sid);
+      if (!matches(current.grantRequest) && !matches(current.confirmRequest)) return;
+      publish(state.activeSessionId, {
+        grantRequest: matches(current.grantRequest) ? null : (current.grantRequest || null),
+        confirmRequest: matches(current.confirmRequest) ? null : (current.confirmRequest || null),
+      });
+    }
+
     // Only the active session owns the public slice: the banner/dialogs in the
     // chat UI describe what the user is looking at, never a background session.
     function publish(sessionId, patch) {
@@ -76,6 +93,19 @@
     async function refreshStatus(sessionId) {
       const sid = sessionId || state.activeSessionId;
       if (!sid) return null;
+      // Session switch (ChatView's refresh effect): the live slice may still
+      // carry the previous session's requests, and during the IPC round-trip
+      // its grant dialog would stay clickable (review finding). Drop them
+      // synchronously, before the await; the per-session pending map keeps
+      // them, so switching back still resurfaces the requests.
+      const current = state.computerUse;
+      const liveRequestSession = current && (
+        (current.grantRequest && current.grantRequest.sessionId) ||
+        (current.confirmRequest && current.confirmRequest.sessionId)
+      );
+      if (liveRequestSession && String(liveRequestSession) !== String(sid)) {
+        clearSessionRequests(liveRequestSession);
+      }
       const seq = ++statusRequestSeq;
       let raw;
       try {
@@ -85,14 +115,20 @@
       }
       if (seq !== statusRequestSeq) return raw;
       const pending = pendingBySession[sid] || null;
+      // A fresh denial suppresses the dialogs for DENY_SUPPRESSION_MS; the
+      // requests stay pending, so refreshStatus must apply the same gate as
+      // the event handlers — otherwise switching sessions back and forth
+      // bypassed the cooldown and re-opened the blocking modal (review
+      // finding).
+      const suppressDialogs = suppressedByDenial(sid);
       publish(sid, {
         sessionId: sid,
         enabled: !!(raw && raw.enabled),
         granted: !!(raw && raw.granted),
         stopped: !!(raw && raw.stopped),
         platformSupported: !!(raw && (raw.platform_supported || raw.platformSupported)),
-        grantRequest: pending && pending.grant ? { sessionId: sid } : null,
-        confirmRequest: pending && pending.confirm ? pending.confirm : null,
+        grantRequest: pending && pending.grant && !suppressDialogs ? { sessionId: sid } : null,
+        confirmRequest: pending && pending.confirm && !suppressDialogs ? pending.confirm : null,
       });
       return raw;
     }
@@ -137,8 +173,25 @@
       return sid || state.activeSessionId;
     }
 
+    // Backend TTL: a confirmation older than its five-minute window is
+    // rejected as "unknown or expired". Both buttons then keep failing with
+    // no way out of the full-screen modal (review finding), so the caller
+    // cleans up locally and rethrows — the modal closes and the failure
+    // still surfaces through the UI's actionError.
+    function isExpiredConfirmError(error) {
+      return /unknown or expired/i.test(String((error && error.message) || error));
+    }
+
     async function confirm(confirmId) {
-      await invoke("computer_use_confirm", { confirmId });
+      try {
+        await invoke("computer_use_confirm", { confirmId });
+      } catch (error) {
+        if (!isExpiredConfirmError(error)) throw error;
+        // Expired: the backend already dropped the request; closing locally
+        // must not record a denial (an expiry is not a user decision).
+        publish(clearPendingConfirm(), { confirmRequest: null });
+        throw error;
+      }
       const sid = clearPendingConfirm();
       clearDenial(sid);
       publish(sid, { confirmRequest: null });
@@ -148,7 +201,13 @@
     // decision, so the model's retry gets a definite "user denied" instead of
     // waiting out the backend TTL (review finding).
     async function deny(confirmId) {
-      await invoke("computer_use_deny", { confirmId });
+      try {
+        await invoke("computer_use_deny", { confirmId });
+      } catch (error) {
+        if (!isExpiredConfirmError(error)) throw error;
+        publish(clearPendingConfirm(), { confirmRequest: null });
+        throw error;
+      }
       const request = state.computerUse && state.computerUse.confirmRequest;
       const sid = (request && request.sessionId) || state.activeSessionId;
       markDenied(sid);
@@ -178,6 +237,14 @@
         notify();
         throw error;
       }
+      if (target) {
+        // Re-enabling must clear a sticky stop: the toggle command only flips
+        // `enabled` on the backend, so without re-reading the authoritative
+        // status a latched `stopped` kept every later consent dialog
+        // collapsed until the next session switch (review finding). Runs
+        // before the macOS permission flow, which can block on an OS dialog.
+        await refreshStatus(state.activeSessionId);
+      }
       if (target && !permissionsRequested) {
         permissionsRequested = true;
         // macOS triggers the OS permission flows here; a rejection must not
@@ -204,7 +271,11 @@
         // Fresh user denial: the request stays pending but the blocking modal
         // must not re-open on every retry (consent-fatigue guard).
         if (suppressedByDenial(sid)) return;
-        publish(sid, { grantRequest: { sessionId: sid }, confirmRequest: null });
+        // The backend never emits this event while stopped, so a `stopped`
+        // flag still latched here is frontend residue (e.g. from a stop that
+        // predates a re-enable); clearing it keeps the dialog reachable even
+        // if the refresh below has not landed yet (review finding).
+        publish(sid, { stopped: false, grantRequest: { sessionId: sid }, confirmRequest: null });
       });
       listen("computer_use:confirm_required", function (event) {
         const payload = (event && event.payload) || {};
@@ -227,6 +298,7 @@
     return {
       getStatus,
       refreshStatus,
+      clearSessionRequests,
       grant,
       revoke,
       stop,

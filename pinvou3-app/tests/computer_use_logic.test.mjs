@@ -111,6 +111,9 @@ assert.deepEqual(
 );
 
 // ── 明确拒绝后的弹窗频控（评审修复）──────────────────────────────
+// 数值等值断言：computer_use.js 的 classic-script 载荷镜像此常量
+//（bridge 行为测试同时断言两份相等），调整冷却窗口必须同步改动。
+assert.equal(DENY_SUPPRESSION_MS, 30_000, 'deny cooldown pinned at 30s');
 assert.equal(
   isDeniedRequestSuppressed(Date.now() - 1000, Date.now()),
   true,
