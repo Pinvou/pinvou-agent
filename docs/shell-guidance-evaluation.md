@@ -6,23 +6,16 @@ changed. Application instructions no longer prescribe Unix-only defaults.
 
 ## Integration review status
 
-Independent source review accepted the scoped repairs. This does not establish
-release readiness: [parent PR #443](https://github.com/Pinvou/pinvou-agent/pull/443)
-must remain draft while its public-submodule gate is blocked.
-`scripts/verify-public-submodule.sh` requires the official immutable
-`pinvou-v0.9.5-r13` tag, whose commit is
-`f853f8f1566c57e6be40d5439a222a932aa79ef5`; the candidate parent gitlink is
-`0d409a97802179f1df9bcdbef185c1bfb5dc23e2`. These commits differ, so the candidate
-does not satisfy that gate even though its focused source tests passed.
-
-An authorized `Pinvou/CodeWhale` maintainer must integrate
-[fork PR #42](https://github.com/Pinvou/CodeWhale/pull/42) and publish a new
-immutable release tag containing the fix. The authenticated `zhuowp` identity
-lacks push permission to the official repository. Once that release exists,
-align the parent gitlink, verifier, fork guard, and release documentation with
-the actual tag and SHA, then rerun the integration checks before marking the
-parent ready. The current r13 tag must stay immutable; accepting a contributor
-ref or guessing a future release tag would not resolve the dependency.
+Independent source review accepted the scoped repairs. The release dependency
+recorded during that review has since been resolved: [CodeWhale PR #50](https://github.com/Pinvou/CodeWhale/pull/50)
+merged the re-ported candidate (a re-port of [fork PR #42](https://github.com/Pinvou/CodeWhale/pull/42)
+onto v0.9.12 r1) as `1d9ee26e6`, and parent PR #482 advanced the parent gitlink
+to `ae7e3fb36f89486f30d41b28ae0eaaa516ae4740`, which includes it.
+`scripts/verify-public-submodule.sh` accepts this state in transition mode: the
+official immutable `pinvou-v0.9.12-r1` tag remains at
+`1fafee7e26b60a59457a43bce50c63aa2ad9dbaf` while the gitlink rides the public
+maintenance branch ahead of the tag, so this parent PR no longer pins a
+separate candidate ref.
 
 [Upstream PR #5900](https://github.com/Hmbown/CodeWhale/pull/5900) adapts the fix
 to the newer model-visible lowercase `bash` surface, preserving its foreground,
