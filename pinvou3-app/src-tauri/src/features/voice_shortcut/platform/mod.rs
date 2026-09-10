@@ -584,9 +584,18 @@ mod tests {
     /// Both physical Alt keys start the gesture; only the side differs.
     #[test]
     fn voice_shortcut_key_maps_both_alt_sides() {
-        assert_eq!(voice_shortcut_key(VK_LMENU), VoiceShortcutKey::Alt(AltSide::Left));
-        assert_eq!(voice_shortcut_key(VK_MENU), VoiceShortcutKey::Alt(AltSide::Left));
-        assert_eq!(voice_shortcut_key(VK_RMENU), VoiceShortcutKey::Alt(AltSide::Right));
+        assert_eq!(
+            voice_shortcut_key(VK_LMENU),
+            VoiceShortcutKey::Alt(AltSide::Left)
+        );
+        assert_eq!(
+            voice_shortcut_key(VK_MENU),
+            VoiceShortcutKey::Alt(AltSide::Left)
+        );
+        assert_eq!(
+            voice_shortcut_key(VK_RMENU),
+            VoiceShortcutKey::Alt(AltSide::Right)
+        );
         assert_eq!(voice_shortcut_key(VK_SPACE), VoiceShortcutKey::Space);
         assert_eq!(voice_shortcut_key(VK_ESCAPE), VoiceShortcutKey::Escape);
         assert_eq!(voice_shortcut_key(0x41), VoiceShortcutKey::Other);

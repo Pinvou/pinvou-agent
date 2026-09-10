@@ -358,14 +358,26 @@ mod tests {
     #[test]
     fn alt_tap_swallows_down_and_up_symmetrically_and_triggers() {
         let mut state = VoiceShortcutState::default();
-        let down =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), true, true, HWND_A, 0);
+        let down = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            true,
+            true,
+            HWND_A,
+            0,
+        );
         assert_eq!(down.event, None);
         assert!(down.suppress);
         assert!(!down.inject_alt_down);
 
-        let up =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), false, true, HWND_A, 0);
+        let up = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            false,
+            true,
+            HWND_A,
+            0,
+        );
         assert_eq!(up.event, Some(VoiceShortcutEvent::TriggerDictation));
         assert!(up.suppress);
         assert_eq!(state, VoiceShortcutState::default());
@@ -374,24 +386,56 @@ mod tests {
     #[test]
     fn alt_autorepeat_stays_swallowed_and_triggers_once() {
         let mut state = VoiceShortcutState::default();
-        handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), true, true, HWND_A, 0);
-        let repeat =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), true, true, HWND_A, 0);
+        handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            true,
+            true,
+            HWND_A,
+            0,
+        );
+        let repeat = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            true,
+            true,
+            HWND_A,
+            0,
+        );
         assert_eq!(repeat, VoiceShortcutDecision::suppress(None));
 
-        let up =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), false, true, HWND_A, 0);
+        let up = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            false,
+            true,
+            HWND_A,
+            0,
+        );
         assert_eq!(up.event, Some(VoiceShortcutEvent::TriggerDictation));
 
-        let stray =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), false, true, HWND_A, 0);
+        let stray = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            false,
+            true,
+            HWND_A,
+            0,
+        );
         assert_eq!(stray, VoiceShortcutDecision::pass());
     }
 
     #[test]
     fn alt_combo_injects_alt_down_once_and_forwards_real_up() {
         let mut state = VoiceShortcutState::default();
-        handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), true, true, HWND_A, 0);
+        handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            true,
+            true,
+            HWND_A,
+            0,
+        );
 
         let combo =
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Other, true, true, HWND_A, 0);
@@ -409,14 +453,26 @@ mod tests {
 
         // Alt auto-repeat down after a combo is let through, consistent with
         // the synthetic down.
-        let repeat =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), true, true, HWND_A, 0);
+        let repeat = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            true,
+            true,
+            HWND_A,
+            0,
+        );
         assert_eq!(repeat, VoiceShortcutDecision::pass());
 
         // The real up is let through to pair with the synthetic down; no
         // dictation trigger.
-        let up =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), false, true, HWND_A, 0);
+        let up = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            false,
+            true,
+            HWND_A,
+            0,
+        );
         assert_eq!(up, VoiceShortcutDecision::pass());
         assert_eq!(state, VoiceShortcutState::default());
     }
@@ -424,7 +480,14 @@ mod tests {
     #[test]
     fn alt_escape_combo_forwards_alt_down_once_and_never_triggers() {
         let mut state = VoiceShortcutState::default();
-        handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), true, true, HWND_A, 0);
+        handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            true,
+            true,
+            HWND_A,
+            0,
+        );
 
         // Alt+Esc is treated like a regular combo: swallow and replay
         // [Alt↓, Esc↓] in order, so Esc does not leak through bare.
@@ -435,8 +498,14 @@ mod tests {
 
         // The real Alt up is let through to pair with the synthetic down; no
         // dictation trigger.
-        let alt_up =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), false, true, HWND_A, 0);
+        let alt_up = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            false,
+            true,
+            HWND_A,
+            0,
+        );
         assert_eq!(alt_up, VoiceShortcutDecision::pass());
         assert!(!alt_up.suppress);
         assert_eq!(state, VoiceShortcutState::default());
@@ -449,7 +518,14 @@ mod tests {
         // unforwarded path — no trigger, state reset, no "Alt still held"
         // residue.
         let mut state = VoiceShortcutState::default();
-        handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), true, true, HWND_A, 0);
+        handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            true,
+            true,
+            HWND_A,
+            0,
+        );
         let combo =
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Other, true, true, HWND_A, 0);
         assert_eq!(combo, VoiceShortcutDecision::forward_combo());
@@ -459,8 +535,14 @@ mod tests {
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Other, false, true, HWND_A, 0);
         assert_eq!(combo_up, VoiceShortcutDecision::pass());
 
-        let up =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), false, true, HWND_A, 0);
+        let up = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            false,
+            true,
+            HWND_A,
+            0,
+        );
         assert_eq!(up, VoiceShortcutDecision::suppress(None));
         assert_eq!(up.event, None);
         assert_eq!(state, VoiceShortcutState::default());
@@ -474,7 +556,14 @@ mod tests {
         // modifier — and no dictation trigger fires. The combo keystroke
         // itself is lost, and no synthetic cleanup key is emitted.
         let mut state = VoiceShortcutState::default();
-        handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), true, true, HWND_A, 0);
+        handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            true,
+            true,
+            HWND_A,
+            0,
+        );
         let combo =
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Other, true, true, HWND_A, 0);
         assert_eq!(combo, VoiceShortcutDecision::forward_combo());
@@ -483,13 +572,25 @@ mod tests {
 
         // Alt auto-repeat while held is let through, consistent with the
         // injected down being held.
-        let repeat =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), true, true, HWND_A, 0);
+        let repeat = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            true,
+            true,
+            HWND_A,
+            0,
+        );
         assert_eq!(repeat, VoiceShortcutDecision::pass());
 
         // The real up is let through to pair with the injected Alt down.
-        let up =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), false, true, HWND_A, 0);
+        let up = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            false,
+            true,
+            HWND_A,
+            0,
+        );
         assert_eq!(up, VoiceShortcutDecision::pass());
         assert!(!up.suppress);
         assert_eq!(up.event, None);
@@ -503,7 +604,14 @@ mod tests {
         // A later Alt up no longer ghost-triggers dictation, and the next
         // gesture works in full.
         let mut state = VoiceShortcutState::default();
-        handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), true, true, HWND_A, 1000);
+        handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            true,
+            true,
+            HWND_A,
+            1000,
+        );
 
         let ghost_up = handle_voice_shortcut_key(
             &mut state,
@@ -522,8 +630,14 @@ mod tests {
 
         // New gesture: down swallowed, up triggers — identical to the first
         // time.
-        let down =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), true, true, HWND_A, 90500);
+        let down = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            true,
+            true,
+            HWND_A,
+            90500,
+        );
         assert!(down.suppress);
         let up = handle_voice_shortcut_key(
             &mut state,
@@ -541,12 +655,31 @@ mod tests {
         // Held normally: OS auto-repeat keeps refreshing the event stream with
         // gaps far below the threshold, so no reset is triggered.
         let mut state = VoiceShortcutState::default();
-        handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), true, true, HWND_A, 1000);
-        let repeat =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), true, true, HWND_A, 1600);
+        handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            true,
+            true,
+            HWND_A,
+            1000,
+        );
+        let repeat = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            true,
+            true,
+            HWND_A,
+            1600,
+        );
         assert_eq!(repeat, VoiceShortcutDecision::suppress(None));
-        let up =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), false, true, HWND_A, 1630);
+        let up = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            false,
+            true,
+            HWND_A,
+            1630,
+        );
         assert_eq!(up.event, Some(VoiceShortcutEvent::TriggerDictation));
     }
 
@@ -601,7 +734,14 @@ mod tests {
     #[test]
     fn alt_space_suppresses_pair_and_never_triggers_or_injects() {
         let mut state = VoiceShortcutState::default();
-        handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), true, true, HWND_A, 0);
+        handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            true,
+            true,
+            HWND_A,
+            0,
+        );
 
         let space_down =
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Space, true, true, HWND_A, 0);
@@ -611,8 +751,14 @@ mod tests {
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Space, false, true, HWND_A, 0);
         assert_eq!(space_up, VoiceShortcutDecision::suppress(None));
 
-        let up =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), false, true, HWND_A, 0);
+        let up = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            false,
+            true,
+            HWND_A,
+            0,
+        );
         assert_eq!(up, VoiceShortcutDecision::suppress(None));
         assert_eq!(up.event, None);
     }
@@ -627,7 +773,14 @@ mod tests {
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Space, true, true, HWND_A, 0);
         assert_eq!(space_down, VoiceShortcutDecision::pass());
 
-        handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), true, true, HWND_A, 0);
+        handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            true,
+            true,
+            HWND_A,
+            0,
+        );
 
         let space_up =
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Space, false, true, HWND_A, 0);
@@ -650,12 +803,24 @@ mod tests {
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Space, true, true, HWND_A, 0);
         assert_eq!(space, VoiceShortcutDecision::pass());
 
-        let alt =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), true, true, HWND_A, 0);
+        let alt = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            true,
+            true,
+            HWND_A,
+            0,
+        );
         assert_eq!(alt, VoiceShortcutDecision::suppress(None));
 
-        let up =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), false, true, HWND_A, 0);
+        let up = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            false,
+            true,
+            HWND_A,
+            0,
+        );
         assert_eq!(up.event, Some(VoiceShortcutEvent::TriggerDictation));
         assert!(up.suppress);
     }
@@ -663,14 +828,26 @@ mod tests {
     #[test]
     fn alt_up_in_another_app_window_does_not_trigger() {
         let mut state = VoiceShortcutState::default();
-        let down =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), true, true, HWND_A, 0);
+        let down = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            true,
+            true,
+            HWND_A,
+            0,
+        );
         assert!(down.suppress);
 
         // Hold Alt, switch to another window of the same process, release: no
         // trigger; the down was swallowed, so the up is swallowed in pairs.
-        let up =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), false, true, HWND_B, 0);
+        let up = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            false,
+            true,
+            HWND_B,
+            0,
+        );
         assert_eq!(up.event, None);
         assert!(up.suppress);
         assert_eq!(state, VoiceShortcutState::default());
@@ -679,35 +856,74 @@ mod tests {
     #[test]
     fn unknown_foreground_hwnd_still_allows_trigger() {
         let mut state = VoiceShortcutState::default();
-        handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), true, true, 0, 0);
-        let up = handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), false, true, 0, 0);
+        handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            true,
+            true,
+            0,
+            0,
+        );
+        let up = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            false,
+            true,
+            0,
+            0,
+        );
         assert_eq!(up.event, Some(VoiceShortcutEvent::TriggerDictation));
     }
 
     #[test]
     fn shortcuts_are_ignored_when_no_target_window() {
         let mut state = VoiceShortcutState::default();
-        let down =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), true, false, HWND_A, 0);
+        let down = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            true,
+            false,
+            HWND_A,
+            0,
+        );
         assert_eq!(down, VoiceShortcutDecision::pass());
         assert_eq!(state, VoiceShortcutState::default());
 
-        let up =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), false, false, HWND_A, 0);
+        let up = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            false,
+            false,
+            HWND_A,
+            0,
+        );
         assert_eq!(up, VoiceShortcutDecision::pass());
     }
 
     #[test]
     fn gesture_state_resets_when_focus_leaves_target_mid_hold() {
         let mut state = VoiceShortcutState::default();
-        handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), true, true, HWND_A, 0);
+        handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            true,
+            true,
+            HWND_A,
+            0,
+        );
         // Hold Alt while focus leaves the target window: keys in between are
         // all let through, and state resets at Alt up.
         let other =
             handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Other, true, false, HWND_B, 0);
         assert_eq!(other, VoiceShortcutDecision::pass());
-        let up =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Alt(AltSide::Left), false, false, HWND_B, 0);
+        let up = handle_voice_shortcut_key(
+            &mut state,
+            VoiceShortcutKey::Alt(AltSide::Left),
+            false,
+            false,
+            HWND_B,
+            0,
+        );
         assert_eq!(up, VoiceShortcutDecision::pass());
         assert_eq!(state, VoiceShortcutState::default());
     }
