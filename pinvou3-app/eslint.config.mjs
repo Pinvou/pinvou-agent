@@ -159,7 +159,7 @@ export default defineConfig([
       'unicorn/prefer-dom-node-append': 'error',
       'unicorn/prefer-dom-node-remove': 'error',
       'unicorn/prefer-dom-node-text-content': 'error',
-      'unicorn/prefer-dom-node-dataset': 'error',
+      'unicorn/dom-node-dataset': 'error',
       'unicorn/prefer-query-selector': 'error',
       'unicorn/require-array-sort-compare': 'error',
       'unicorn/throw-new-error': 'error',

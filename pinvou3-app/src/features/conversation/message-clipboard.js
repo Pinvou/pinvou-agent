@@ -11,13 +11,18 @@ export { copyClipboardText, fallbackCopyText };
 let legacyHtmlConverter = null;
 let legacyConverterLoading = null;
 
+// turndown 的 node 在 Node/测试下由 domino 解析:domino 的 Element 没有
+// dataset,只有 getAttribute;浏览器下才是真实 Element。这里必须用
+// getAttribute 读 data-*,对 unicorn/dom-node-dataset 逐行豁免。
 function legacyFencedCodeLanguage(node) {
   const code = node && node.firstChild;
   const className = String((code && code.getAttribute && code.getAttribute('class')) || '');
   const classLanguage = (className.match(/language-(\S+)/) || [null, ''])[1];
+  // eslint-disable-next-line unicorn/dom-node-dataset -- domino 无 dataset,见上
   const dataLanguageId = String((node && node.getAttribute && node.getAttribute('data-language-id')) || '')
     .trim()
     .toLowerCase();
+  // eslint-disable-next-line unicorn/dom-node-dataset -- domino 无 dataset,见上
   const dataLanguage = String((node && node.getAttribute && node.getAttribute('data-language')) || '')
     .trim();
   // renderMarkdown 把无法被 hljs 识别的围栏语言（persona-card / card-question /
@@ -41,6 +46,7 @@ async function ensureLegacyHtmlConverter() {
           && node.nodeName === 'PRE'
           && node.firstChild
           && node.firstChild.nodeName === 'CODE'
+          // eslint-disable-next-line unicorn/dom-node-dataset -- domino 无 dataset,见 legacyFencedCodeLanguage
           && node.getAttribute('data-language')
         ),
         replacement: (_content, node, options) => {
