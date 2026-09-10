@@ -287,6 +287,38 @@ fn move_add_workspace_root_atomically_and_idempotently() {
     assert_eq!(store.get(&project.id).unwrap().roots.len(), 2);
 }
 
+#[cfg(unix)]
+#[test]
+fn covered_workspace_skip_survives_symlinked_ancestor() {
+    // 评审 #464 MAJOR 3(macOS /var→/private/var 的同型):root 入库时已
+    // canonicalize,而被覆盖判定的工作区路径不存在时,旧的纯词法回退保留
+    // symlink 形态,身份键不再嵌套,会被当成未覆盖重复添加。用 symlink
+    // 祖先在任意平台复现(Windows 的 symlink_dir 需要权限,不跨平台跑)。
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("real").join("workspace");
+    std::fs::create_dir_all(&workspace).expect("create workspace");
+    let link = temp.path().join("link");
+    std::os::unix::fs::symlink(temp.path().join("real"), &link).expect("symlink");
+
+    let store = store_in(&temp);
+    let project = create(
+        &store,
+        "目标",
+        std::slice::from_ref(&link.join("workspace")),
+    );
+
+    // 不存在的嵌套路径经 symlink 祖先书写:covered 判定必须命中已有 root。
+    let covered = link.join("workspace").join("deep");
+    let outcome = store
+        .move_session_to_project("s1", Some(&project.id), Some(&covered))
+        .expect("move with covered workspace");
+    assert_eq!(
+        outcome.added_root, None,
+        "symlink 形态不得绕过 covered 跳过"
+    );
+    assert_eq!(store.get(&project.id).unwrap().roots.len(), 1);
+}
+
 #[test]
 fn persist_roundtrip_preserves_state_on_reopen() {
     let temp = tempfile::tempdir().expect("tempdir");

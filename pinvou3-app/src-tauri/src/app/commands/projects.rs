@@ -177,7 +177,9 @@ pub async fn move_session_to_project(
             _ => sessions
                 .session_roots(&session_id)
                 .ok()
-                .filter(|roots| roots.execution != roots.ledger)
+                // bound 标志是权威判定:不得用 ledger != execution 的路径比较
+                // 代打(SessionRoots::bound 的文档约定;评审 #464 MINOR 7)。
+                .filter(|roots| roots.bound)
                 .map(|roots| roots.execution),
         };
         match detected {
@@ -245,7 +247,8 @@ fn reject_nested_rebind_target(from: &Path, to_key: &Path) -> Result<(), String>
         && (to_trim == from_trim || to_trim.starts_with(&format!("{from_trim}/")))
     {
         return Err(
-            "rebind_workspace_root: 新目录不能位于旧目录内部（会造成递归加深）".to_string(),
+            "REBIND_NESTED_TARGET: 新目录不能位于旧目录内部（会造成递归加深） (nested target rejected)"
+                .to_string(),
         );
     }
     Ok(())
@@ -359,12 +362,22 @@ pub async fn rebind_workspace_root(
         .iter()
         .map(|(session_id, _)| session_id.as_str())
         .collect();
-    sessions
+    let plain_rebind = sessions
         .rebind_workspace_bindings(&from, &to_key)
         .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
+    // 侧写失败的条目绑定仍指向 from:元数据循环跳过它们(否则绑定/元数据
+    // 分叉),失败名单并入报告(评审 #464 MAJOR 4)。
+    let plain_failed: std::collections::HashSet<&str> = plain_rebind
+        .failed_session_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
     let mut rebound_session_ids = Vec::new();
-    let mut failed_session_ids = Vec::new();
+    let mut failed_session_ids = plain_rebind.failed_session_ids.clone();
     for (session_id, bound_path) in &affected {
+        if plain_failed.contains(session_id.as_str()) {
+            continue;
+        }
         let Some(new_path) = SessionAgentStore::rebind_target_path(bound_path, &from, &to_key)
         else {
             continue;
