@@ -546,18 +546,28 @@ impl ProjectStore {
             return Ok(Vec::new());
         }
         // to 由命令层保证存在,这里统一成 canonical 键,与存储形态一致;
-        // from 按存储原值匹配(可能已消失)。改写在副本上进行,复验通过才
-        // 提交内存态——重叠冲突时调用方看到的状态与盘面保持一致。
-        let to_key = root_key(to);
+        // from 的匹配在折叠键上进行(Windows 折叠大小写/分隔符,仅大小写
+        // 改名的目录不再漏配),后缀按组件数从原 root 切回,保留子目录
+        // 原有大小写。改写在副本上进行,复验通过才提交内存态——重叠
+        // 冲突时调用方看到的状态与盘面保持一致。
+        let to_key = root_display(to);
+        let from_key = root_key(from);
         let mut candidate = state.projects.clone();
         let mut affected_projects = Vec::new();
         for project in candidate.iter_mut() {
             let mut changed = false;
             for root in project.roots.iter_mut() {
-                if let Ok(suffix) = root.strip_prefix(from) {
-                    *root = to_key.join(suffix);
-                    changed = true;
+                let root_key_str = identity_key_of_display(root);
+                if !key_is_same_or_nested(&root_key_str, &from_key) {
+                    continue;
                 }
+                let suffix: PathBuf = root.components().skip(from.components().count()).collect();
+                *root = if suffix.as_os_str().is_empty() {
+                    to_key.clone()
+                } else {
+                    to_key.join(suffix)
+                };
+                changed = true;
             }
             if changed {
                 project.updated_at = Utc::now();
