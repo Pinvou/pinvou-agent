@@ -14,6 +14,12 @@ use super::types::{Capture, ComputerUseError};
 
 /// 截图长边上限（像素）。Anthropic 建议长边 ≤1568；取 1440 兼顾细节与 token 成本。
 pub const MAX_LONG_EDGE: u32 = 1440;
+/// 底座 `image_attach` 的单图硬上限是 5 MB，超限会被**静默跳过**（模型该轮
+/// 失去视觉）。PNG 对照片类内容压缩率差，1440px 的噪点截图可以远超 5 MB
+/// （评审发现）。编码后超限时按 0.8 步进降分辨率重编码，保住视觉通路，
+/// 长边不低于 [`MIN_LONG_EDGE_FLOOR`]。
+pub const MAX_IMAGE_BYTES: usize = 4 * 1024 * 1024;
+pub const MIN_LONG_EDGE_FLOOR: u32 = 640;
 
 /// 均匀缩放系数：长边压到 ≤ [`MAX_LONG_EDGE`]，小图不放大。
 pub fn scale_factor(width: u32, height: u32) -> f64 {
@@ -131,12 +137,12 @@ pub fn downscale_and_encode(capture: &Capture) -> Result<ScaledScreenshot, Compu
         )));
     }
     let factor = scale_factor(capture.width, capture.height);
-    let shot_w = ((f64::from(capture.width) * factor).round() as u32).max(1);
-    let shot_h = ((f64::from(capture.height) * factor).round() as u32).max(1);
+    let mut shot_w = ((f64::from(capture.width) * factor).round() as u32).max(1);
+    let mut shot_h = ((f64::from(capture.height) * factor).round() as u32).max(1);
 
     let source = image::RgbaImage::from_raw(capture.width, capture.height, capture.rgba.clone())
         .ok_or_else(|| ComputerUseError::failed("capture buffer cannot form an image"))?;
-    let shot = if factor < 1.0 {
+    let mut shot = if factor < 1.0 {
         image::imageops::resize(
             &source,
             shot_w,
@@ -147,15 +153,34 @@ pub fn downscale_and_encode(capture: &Capture) -> Result<ScaledScreenshot, Compu
         source
     };
 
-    let mut png = std::io::Cursor::new(Vec::new());
-    image::DynamicImage::ImageRgba8(shot)
-        .write_to(&mut png, image::ImageFormat::Png)
-        .map_err(|error| ComputerUseError::failed(format!("png encode: {error}")))?;
+    // 编码超过底座 5MB 上限时降分辨率重编码：超限文件会被 image_attach
+    // 静默跳过，模型该轮直接失去视觉——宁可细节少一点也不能盲。
+    let mut png = encode_png(&shot)?;
+    while png.len() > MAX_IMAGE_BYTES {
+        let long_edge = shot_w.max(shot_h);
+        if long_edge <= MIN_LONG_EDGE_FLOOR {
+            break;
+        }
+        let scale = f64::from((long_edge as f32 * 0.8).round() as u32) / f64::from(long_edge);
+        shot_w = ((f64::from(shot_w) * scale).round() as u32).max(1);
+        shot_h = ((f64::from(shot_h) * scale).round() as u32).max(1);
+        shot =
+            image::imageops::resize(&shot, shot_w, shot_h, image::imageops::FilterType::Triangle);
+        png = encode_png(&shot)?;
+    }
 
     Ok(ScaledScreenshot {
-        png: png.into_inner(),
+        png,
         map: ScaleMap::from_capture(shot_w, shot_h, capture),
     })
+}
+
+fn encode_png(shot: &image::RgbaImage) -> Result<Vec<u8>, ComputerUseError> {
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(shot.clone())
+        .write_to(&mut png, image::ImageFormat::Png)
+        .map_err(|error| ComputerUseError::failed(format!("png encode: {error}")))?;
+    Ok(png.into_inner())
 }
 
 #[cfg(test)]
@@ -279,6 +304,36 @@ mod tests {
             Err(_) => unreachable!(),
         };
         assert_eq!((small.map.shot_w, small.map.shot_h), (64, 32));
+    }
+
+    #[test]
+    fn oversized_png_downgrades_resolution_instead_of_losing_vision() {
+        // 噪点 RGBA 产生远超 5MB 的 PNG（照片类内容的最坏情况）。
+        let w = 2560u32;
+        let h = 1440u32;
+        let mut cap = Capture {
+            rgba: vec![0u8; (w * h * 4) as usize],
+            width: w,
+            height: h,
+            origin_x: 0,
+            origin_y: 0,
+            input_scale_x: 1.0,
+            input_scale_y: 1.0,
+        };
+        // 线性同余噪声：不可压缩，逼出真实的大 PNG。
+        let mut state = 123_456_789u32;
+        for byte in cap.rgba.iter_mut() {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            *byte = (state >> 16) as u8;
+        }
+        let scaled = downscale_and_encode(&cap).expect("encode");
+        assert!(
+            scaled.png.len() <= MAX_IMAGE_BYTES,
+            "encoded {} bytes must fit the foundation cap {MAX_IMAGE_BYTES}",
+            scaled.png.len()
+        );
+        assert_eq!(&scaled.png[..4], b"\x89PNG");
+        assert!(scaled.map.shot_w >= MIN_LONG_EDGE_FLOOR / 2);
     }
 
     #[test]

@@ -15,13 +15,16 @@ pub const EVENT_GRANT_REQUIRED: &str = "computer_use:grant_required";
 pub const EVENT_CONFIRM_REQUIRED: &str = "computer_use:confirm_required";
 
 /// 动作同意层级（consent tier）。
+///
+/// 单一事实来源：`class()` 决定门控强度，`requires_t3_check` 等派生判断一律
+/// 以此为准（曾因层级表散落三处导致 MouseDown/Up 绕过 T3）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionClass {
     /// 只读观察：screenshot / cursor_position / wait / ui_tree / element_at_point。
     Observe,
-    /// 不改变焦点/状态的指针动作：mouse_move / scroll。
-    Passive,
-    /// 真实输入注入：点击、拖拽、键盘、文本。
+    /// 真实输入注入：鼠标移动/滚轮/点击/按下释放/拖拽/键盘/文本——全部需要
+    /// 会话授权。mouse_move 与 scroll 同样实际触碰用户的指针设备，与点击同级
+    /// 门控（评审修正：原 Passive 层允许无授权移动用户光标/滚动滚轮）。
     Input,
 }
 
@@ -29,7 +32,6 @@ impl ActionClass {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Observe => "observe",
-            Self::Passive => "passive",
             Self::Input => "input",
         }
     }
@@ -388,8 +390,9 @@ impl ComputerUseAction {
             | Self::Wait { .. }
             | Self::UiTree { .. }
             | Self::ElementAtPoint { .. } => ActionClass::Observe,
-            Self::MouseMove { .. } | Self::Scroll { .. } => ActionClass::Passive,
-            Self::Click { .. }
+            Self::MouseMove { .. }
+            | Self::Scroll { .. }
+            | Self::Click { .. }
             | Self::MouseDown { .. }
             | Self::MouseUp { .. }
             | Self::Drag { .. }
@@ -439,6 +442,25 @@ impl ComputerUseAction {
             Self::ElementAtPoint { .. } | Self::MouseMove { .. } | Self::Drag { .. } => true,
             Self::Scroll { at, .. } | Self::Click { at, .. } => at.is_some(),
             _ => false,
+        }
+    }
+
+    /// 动作完成后是否补拍截图附上。单点事实来源：真实改变屏幕内容的动作
+    /// （键盘、点击、拖拽、滚轮）与 wait 后都补拍；mouse_move 只动指针、
+    /// 不改内容，补拍只会烧 token，不附。
+    pub fn attaches_screenshot(&self) -> bool {
+        match self {
+            Self::Screenshot | Self::Wait { .. } | Self::Scroll { .. } => true,
+            Self::Click { .. }
+            | Self::MouseDown { .. }
+            | Self::MouseUp { .. }
+            | Self::Drag { .. }
+            | Self::Type { .. }
+            | Self::KeyChord { .. }
+            | Self::HoldKey { .. } => true,
+            Self::CursorPosition | Self::UiTree { .. } | Self::ElementAtPoint { .. } => false,
+            // mouse_move 特意不补拍。
+            Self::MouseMove { .. } => false,
         }
     }
 }
@@ -505,9 +527,10 @@ mod tests {
             ComputerUseAction::Wait { ms: 100 }.class(),
             ActionClass::Observe
         );
+        // mouse_move/scroll 真实触碰指针设备,与点击同级门控(评审修正)。
         assert_eq!(
             ComputerUseAction::MouseMove { x: 1, y: 2 }.class(),
-            ActionClass::Passive
+            ActionClass::Input
         );
         assert_eq!(
             ComputerUseAction::Scroll {
@@ -516,7 +539,7 @@ mod tests {
                 at: None,
             }
             .class(),
-            ActionClass::Passive
+            ActionClass::Input
         );
         assert_eq!(
             ComputerUseAction::Click {
@@ -528,8 +551,35 @@ mod tests {
             ActionClass::Input
         );
         assert_eq!(
+            ComputerUseAction::MouseDown {
+                button: MouseButton::Left
+            }
+            .class(),
+            ActionClass::Input
+        );
+        assert_eq!(
             ComputerUseAction::Type { text: "x".into() }.class(),
             ActionClass::Input
+        );
+        // 补拍契约:真实改变屏幕内容的动作与 wait 后补拍;mouse_move 不补拍。
+        assert!(
+            ComputerUseAction::Scroll {
+                direction: ScrollDirection::Down,
+                amount: 1,
+                at: None,
+            }
+            .attaches_screenshot()
+        );
+        assert!(ComputerUseAction::Type { text: "x".into() }.attaches_screenshot());
+        assert!(
+            !ComputerUseAction::MouseMove { x: 1, y: 2 }.attaches_screenshot(),
+            "mouse_move must not attach a screenshot"
+        );
+        assert!(
+            !ComputerUseAction::UiTree {
+                opts: UiTreeOptions::default()
+            }
+            .attaches_screenshot()
         );
     }
 }
