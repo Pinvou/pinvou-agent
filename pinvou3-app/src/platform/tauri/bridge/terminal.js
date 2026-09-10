@@ -144,8 +144,13 @@
           return it.type === "tool" && it.taskId === job.id;
         });
         if (!item && job.origin_tool_call_id) {
+          // Never steal a card already bound to another job: origins are
+          // unique per root job on the current engine, and if an engine ever
+          // shares one, the later job must fall through to a synthetic card
+          // or the terminal suppression guard instead of redirecting output.
           item = state.chatItems.find(function (it) {
-            return it.type === "tool" && it.toolId === job.origin_tool_call_id;
+            return it.type === "tool" && it.toolId === job.origin_tool_call_id &&
+              (!it.taskId || it.taskId === job.id);
           });
         }
         // Only legacy snapshots without an origin may match by command or

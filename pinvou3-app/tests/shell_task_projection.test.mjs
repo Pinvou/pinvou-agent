@@ -375,6 +375,48 @@ for (const runtime of ['tauri', 'web']) {
     assert.equal(harness.notifications(), 1);
   });
 
+  test(`${runtime}: an identified running root job updates its origin card live`, () => {
+    const origin = {
+      type: 'tool', toolId: 'origin-call', name: 'exec_shell', state: 'running',
+      args: { command: 'echo live' }, output: '',
+    };
+    const harness = createTerminal([origin], runtime);
+    const stillRunning = harness.terminal.applyShellSnapshots('session-current', [snapshot({
+      status: 'running', exit_code: null, origin_tool_call_id: 'origin-call',
+      stdout_tail: 'partial output', stderr_tail: '', stdout_len: 14, stderr_len: 0,
+    })]);
+
+    assert.equal(stillRunning, true);
+    assert.equal(harness.chatItems.length, 1);
+    assert.equal(harness.chatItems[0].toolId, 'origin-call');
+    assert.equal(harness.chatItems[0].taskId, 'shell-old');
+    assert.equal(harness.chatItems[0].state, 'running');
+    assert.match(harness.chatItems[0].output, /partial output/);
+    assert.equal(harness.notifications(), 1);
+  });
+
+  test(`${runtime}: a shared origin cannot steal a card bound to another job`, () => {
+    const wrapper = {
+      type: 'tool', toolId: 'wrapper-call', name: 'multi_tool_use.parallel',
+      state: 'running', args: {}, output: '',
+    };
+    const harness = createTerminal([wrapper], runtime);
+    const stillRunning = harness.terminal.applyShellSnapshots('session-current', [
+      snapshot({
+        status: 'running', exit_code: null, origin_tool_call_id: 'wrapper-call',
+        stdout_tail: 'A partial', stderr_tail: '', stdout_len: 9, stderr_len: 0,
+      }),
+      snapshot({ id: 'job-done', origin_tool_call_id: 'wrapper-call', stdout_tail: 'B done', stdout_len: 6 }),
+    ]);
+
+    assert.equal(stillRunning, true);
+    assert.equal(harness.chatItems.length, 1);
+    assert.equal(harness.chatItems[0].taskId, 'shell-old');
+    assert.equal(harness.chatItems[0].state, 'running');
+    assert.match(harness.chatItems[0].output, /A partial/);
+    assert.equal(harness.notifications(), 1);
+  });
+
   test(`${runtime}: a missing origin cannot adopt a same-command running card`, () => {
     const current = {
       type: 'tool', toolId: 'new-call', name: 'exec_shell', state: 'running',
