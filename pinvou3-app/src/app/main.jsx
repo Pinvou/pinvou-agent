@@ -1530,7 +1530,9 @@ const NAV_PREFETCH = {
             // safety posture); unbound sessions keep both empty and stay in
             // the date view.
             workspacePath: s.workspace_binding || '',
-            workspaceKind: s.workspace_binding ? 'project' : '',
+            // 独立 'bound' kind:与代码/ACP 的 'project' 同享三层分组,但不是
+            // 伪装的 project-kind(评审 #452 finding 5)。
+            workspaceKind: s.workspace_binding ? 'bound' : '',
             leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
             testId: 'regular-sidebar-item',
             menuTestId: 'regular-sidebar-menu',

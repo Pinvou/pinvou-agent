@@ -105,7 +105,7 @@ function resolveSessionProjectId(item, projects, assignments) {
     if (assigned && projectList.some(project => project.id === assigned)) return assigned;
     if (assigned === null) return null;
   }
-  if (item.workspaceKind !== 'project') return null;
+  if (!hasProjectWorkspace(item)) return null;
   const matched = matchProjectByPath(projectList, item.workspacePath);
   return matched ? matched.id : null;
 }
@@ -116,6 +116,20 @@ function resolveSessionProjectId(item, projects, assignments) {
 function projectCoversPath(project, path) {
   if (!project || !path) return false;
   return (project.roots || []).some((root) => isUnderRoot(String(path), rootPath(root)));
+}
+
+// 携带真实项目工作目录的会话形态:'project'(代码/ACP)与 'bound'(#445
+// 绑定的普通工作会话)。'bound' 独立成 kind,不伪装成 'project'——将来
+// project-kind 获得自有行为(如 baseline 面板)时不会误伤普通绑定会话
+// (评审 #452 finding 5)。
+const WORKSPACE_KINDS_WITH_PROJECT_DIR = ['project', 'bound'];
+
+function hasProjectWorkspace(item) {
+  return (
+    !!item
+    && WORKSPACE_KINDS_WITH_PROJECT_DIR.includes(item.workspaceKind)
+    && !!item.workspacePath
+  );
 }
 
 // Input: items = code sessions [{ id, workspacePath, workspaceKind, updatedAt, ... }],
@@ -150,7 +164,7 @@ function groupSessionsWithProjects(items, projects, assignments) {
     // Tier 2: auto-group by workspace root containment. Only project-kind
     // sessions participate — temporary sessions enter a project exclusively
     // through explicit assignment (the "adopt" flow), never implicitly.
-    if (!target && !autoGroupBlocked && item.workspaceKind === 'project') {
+    if (!target && !autoGroupBlocked && hasProjectWorkspace(item)) {
       target = matchProjectByPath(projectList, item.workspacePath);
     }
     if (target) {
@@ -158,7 +172,7 @@ function groupSessionsWithProjects(items, projects, assignments) {
       return;
     }
     // Tier 3: legacy folder bucketing.
-    const key = item.workspaceKind === 'project' && item.workspacePath
+    const key = hasProjectWorkspace(item) && item.workspacePath
       ? String(item.workspacePath)
       : TEMPORARY_GROUP_KEY;
     if (!byFolder.has(key)) byFolder.set(key, []);
@@ -208,7 +222,7 @@ function groupSessionsWithProjects(items, projects, assignments) {
 // copies (drag drop handler, dialog initializer, dialog choose).
 function needsAddFolderConfirm(session, target) {
   if (!session || !target) return false;
-  const workspacePath = session.workspaceKind === 'project' ? String(session.workspacePath || '') : '';
+  const workspacePath = hasProjectWorkspace(session) ? String(session.workspacePath || '') : '';
   return !!workspacePath && !projectCoversPath(target, workspacePath);
 }
 
@@ -222,4 +236,4 @@ function capUnavailableRootsForDisplay(roots, expanded) {
   return { visibleRoots: list.slice(0, 1), hiddenCount: Math.max(0, list.length - 1) };
 }
 
-export { TEMPORARY_GROUP_KEY, PROJECT_SESSION_DRAG_TYPE, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath, needsAddFolderConfirm, capUnavailableRootsForDisplay };
+export { TEMPORARY_GROUP_KEY, PROJECT_SESSION_DRAG_TYPE, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath, needsAddFolderConfirm, hasProjectWorkspace, capUnavailableRootsForDisplay };
