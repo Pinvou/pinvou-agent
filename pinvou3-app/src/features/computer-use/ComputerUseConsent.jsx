@@ -1,6 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+// (useEffect/useRef below: the consent dialog moves focus to the safe Deny
+// button when it opens — a security-critical prompt must not be silent to
+// screen readers, which the role/aria-modal dialog props above also serve.)
 import { bridge } from '../../hooks/useBridge.js';
 import { computerUseConsentView } from './computer-use-logic.js';
+
+const DIALOG_PROPS = { role: 'dialog', 'aria-modal': 'true' };
 
 /**
  * Computer-use consent surfaces for the chat view. All visibility derives from
@@ -60,6 +65,14 @@ export function ComputerUseDialogs({ slice, copy }) {
   const { pendingAction, actionError, run } = useConsentAction(copy);
   const grantRequest = view.grantRequest;
   const confirmRequest = view.confirmRequest;
+  // Focus the safe (deny) button of whichever dialog is up; effects may read
+  // refs, render may not, so the refs are per-dialog and never spread around.
+  const grantDenyRef = useRef(null);
+  const confirmDenyRef = useRef(null);
+  useEffect(() => {
+    const target = grantRequest ? grantDenyRef.current : confirmDenyRef.current;
+    if (target && typeof target.focus === 'function') target.focus();
+  }, [grantRequest, confirmRequest]);
   if (!grantRequest && !confirmRequest) return null;
 
   // The per-action confirmation is the more time-sensitive surface: when both
@@ -68,13 +81,14 @@ export function ComputerUseDialogs({ slice, copy }) {
   if (grantRequest) {
     return (
       <div data-testid="computer-use-grant-dialog" className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/45">
-        <div className="w-full max-w-[440px] rounded-[20px] shadow-2xl p-6 bg-white text-[#1C1C1E] dark:bg-[#1E1F20] dark:text-[#E3E3E3]">
+        <div {...DIALOG_PROPS} aria-label={copy.grantTitle} className="w-full max-w-[440px] rounded-[20px] shadow-2xl p-6 bg-white text-[#1C1C1E] dark:bg-[#1E1F20] dark:text-[#E3E3E3]">
           <h3 className="text-[16px] font-semibold mb-2">{copy.grantTitle}</h3>
           <p className="text-[13px] leading-relaxed opacity-80 mb-4">{copy.grantDesc}</p>
           {actionError && <div className="text-[13px] text-[#EA4335] mb-3">{actionError}</div>}
           <div className="flex items-center justify-end gap-2">
             <button
               type="button"
+              ref={grantDenyRef}
               data-testid="computer-use-grant-deny"
               disabled={!!pendingAction}
               onClick={() => run('deny', () => bridge.computerUse.revoke(grantRequest.sessionId))}
@@ -99,7 +113,7 @@ export function ComputerUseDialogs({ slice, copy }) {
 
   return (
     <div data-testid="computer-use-confirm-dialog" className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/45">
-      <div className="w-full max-w-[440px] rounded-[20px] shadow-2xl p-6 bg-white text-[#1C1C1E] dark:bg-[#1E1F20] dark:text-[#E3E3E3]">
+      <div {...DIALOG_PROPS} aria-label={copy.confirmTitle} className="w-full max-w-[440px] rounded-[20px] shadow-2xl p-6 bg-white text-[#1C1C1E] dark:bg-[#1E1F20] dark:text-[#E3E3E3]">
         <h3 className="text-[16px] font-semibold mb-2">{copy.confirmTitle}</h3>
         <div className="text-[13px] leading-relaxed mb-4 space-y-1.5">
           <div className="flex gap-2">
@@ -117,9 +131,10 @@ export function ComputerUseDialogs({ slice, copy }) {
         <div className="flex items-center justify-end gap-2">
           <button
             type="button"
+            ref={confirmDenyRef}
             data-testid="computer-use-confirm-deny"
             disabled={!!pendingAction}
-            onClick={() => bridge.computerUse.dismissConfirm()}
+            onClick={() => run('deny', () => bridge.computerUse.deny(confirmRequest.confirmId))}
             className={dialogSecondaryButton}
           >
             {copy.confirmDeny}

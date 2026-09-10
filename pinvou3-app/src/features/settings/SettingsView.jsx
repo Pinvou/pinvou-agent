@@ -4,7 +4,7 @@ import { Toggle } from '../../components/Toggle.jsx';
 import { VllmSetupProgress } from '../../components/VllmSetupProgress.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
 import { DEFAULT_PET_ID } from '../pet/pet-registry.js';
-import { bridge, isLocalModel } from '../../hooks/useBridge.js';
+import { bridge, isLocalModel, useBridgeState } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import qwenIcon from '../../brand-icons/qwen.svg';
 import {
@@ -1688,6 +1688,40 @@ const formatMemoryTime = (item, copy) => {
         </div>
       </div>
     );
+    /**
+     * Computer-use settings row as a self-contained component so the failed
+     * write can surface an inline error (review finding: the old code did
+     * `catch(() => {})`, so a failed enable looked like the switch bouncing
+     * back with no explanation). Also consumes the status projection's
+     * platform_supported: on a platform without a backend the toggle is
+     * disabled instead of letting users enable something that cannot work.
+     */
+    const ComputerUseSettingSection = ({ t }) => {
+      const slice = useBridgeState(['computerUse']);
+      const computerUse = (slice && slice.computerUse) || {};
+      const [actionError, setActionError] = useState('');
+      const unsupported = computerUse.platformSupported === false;
+      return (
+        <IOSSection title={t.uiComputerUse.settingsSection}>
+          <IOSRow
+            label={t.uiComputerUse.settingsToggle}
+            desc={unsupported ? t.uiComputerUse.platformUnsupportedHint : (actionError || t.uiComputerUse.settingsHint)}
+          >
+            <IOSSwitch
+              checked={!!computerUse.enabled}
+              disabled={unsupported}
+              onChange={(value) => {
+                if (!bridge.available || !bridge.computerUse) return;
+                setActionError('');
+                bridge.computerUse.setEnabled(value).catch((error) => {
+                  setActionError(t.uiComputerUse.actionFailed(String(error && error.message ? error.message : error)));
+                });
+              }}
+            />
+          </IOSRow>
+        </IOSSection>
+      );
+    };
 
     // eslint-disable-next-line no-unused-vars, sonarjs/cognitive-complexity -- contract slot parameters kept; the settings page aggregates many form branches, splitting needs a dedicated design
     const SettingsView = ({ activeTheme, colorScheme, onColorSchemeChange, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders = DEFAULT_ENABLED_SEARCH_PROVIDERS, onAddSearchProvider, onDeleteSearchProvider, _searchApiKey, setSearchApiKey, _searchHasSavedKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, _searchNeedsRestart, _languageNeedsRestart, bs, t, sidebarDateGrouping = true, onSidebarDateGroupingChange, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
@@ -2498,21 +2532,7 @@ const formatMemoryTime = (item, copy) => {
                 </IOSRow>
               </IOSSection>
             )}
-            {canUseComputerUse && (
-              <IOSSection title={t.uiComputerUse.settingsSection}>
-                <IOSRow label={t.uiComputerUse.settingsToggle} desc={t.uiComputerUse.settingsHint}>
-                  <IOSSwitch
-                    checked={!!(bs && bs.computerUse && bs.computerUse.enabled)}
-                    onChange={(value) => {
-                      if (!bridge.available || !bridge.computerUse) return;
-                      // 开启时由 bridge 首次触发 computer_use_request_permissions
-                      // （macOS 权限申请，其他平台 no-op）；失败回滚由 bridge 负责。
-                      bridge.computerUse.setEnabled(value).catch(() => {});
-                    }}
-                  />
-                </IOSRow>
-              </IOSSection>
-            )}
+            {canUseComputerUse && <ComputerUseSettingSection t={t} />}
             <div id="settings-dependencies">
               <IOSSection
                 title={t.depCheckTitle}

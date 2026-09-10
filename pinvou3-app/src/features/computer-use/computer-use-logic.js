@@ -55,7 +55,11 @@ export function extractComputerUseScreenshotPath(output) {
       const textParts = blocks
         .filter(block => block && block.type === 'text' && typeof block.text === 'string')
         .map(block => block.text);
-      if (textParts.length > 0) text = `${textParts.join('\n')}\n${text}`;
+      // When an envelope parses, search ONLY its text blocks. Appending the raw
+      // JSON made Windows paths lose: their escaped backslashes (\\) surface
+      // as doubled separators, and being later in the search text they won the
+      // "last match wins" rule (review finding).
+      if (textParts.length > 0) text = textParts.join('\n');
     } catch {
       // Not JSON — search the raw text as-is.
     }
@@ -85,12 +89,34 @@ export function extractComputerUseScreenshotPath(output) {
 export function computerUseConsentView(slice) {
   const enabled = !!(slice && slice.enabled);
   if (!enabled) {
-    return { enabled: false, showBanner: false, grantRequest: null, confirmRequest: null };
+    return { enabled: false, stopped: false, showBanner: false, grantRequest: null, confirmRequest: null };
   }
+  // Stop collapses the dialogs too: the backend's stop_all clears every
+  // pending confirmation and grant, so a dialog that stayed up would offer an
+  // approve button for an already-dead request (review finding).
+  const stopped = !!slice.stopped;
   return {
     enabled: true,
-    showBanner: !!slice.granted && !slice.stopped,
-    grantRequest: slice.grantRequest || null,
-    confirmRequest: slice.confirmRequest || null,
+    stopped,
+    showBanner: !!slice.granted && !stopped,
+    grantRequest: stopped ? null : (slice.grantRequest || null),
+    confirmRequest: stopped ? null : (slice.confirmRequest || null),
   };
+}
+
+/**
+ * Cooldown after an explicit user denial. Repeated blocked attempts re-emit
+ * grant/confirm events, and re-opening the full-screen modal on every attempt
+ * is a consent-fatigue vector (review finding): inside the cooldown window the
+ * requests stay pending in the bridge state but no dialog is shown.
+ */
+export const DENY_SUPPRESSION_MS = 30_000;
+
+export function isDeniedRequestSuppressed(lastDeniedAt, now, cooldownMs = DENY_SUPPRESSION_MS) {
+  return (
+    typeof lastDeniedAt === 'number' &&
+    typeof now === 'number' &&
+    now >= lastDeniedAt &&
+    now - lastDeniedAt < cooldownMs
+  );
 }
