@@ -241,6 +241,33 @@ assert.deepStrictEqual(
   'right Alt must also stop an active recording',
 );
 assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(altRight(), { status: 'requesting_permission', pendingAlt: true }),
+  { type: 'cancel' },
+  'releasing right Alt while permission is pending must cancel instead of triggering again',
+);
+// The injected-passthrough signature is side-agnostic: a right-Alt down right
+// after a combo keydown is marked injected, and its up clears instead of
+// firing dictation.
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(altRight(), {
+    status: 'idle',
+    pendingAlt: false,
+    now: 1000,
+    lastNonAltKeyDownAt: 990,
+  }),
+  { type: 'pending_alt', injected: true },
+  'an injected right-Alt down must be marked like the left one',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(altRight(), {
+    status: 'idle',
+    pendingAlt: true,
+    pendingInjected: true,
+  }),
+  { type: 'clear_pending' },
+  'right Alt up of an injected pending must clear instead of firing dictation',
+);
+assert.deepStrictEqual(
   voiceShortcutActionForKeyDown(alt({ code: 'AltRight', location: 2, ctrlKey: true }), { status: 'idle', pendingAlt: false }),
   { type: 'none' },
   'AltGr (ctrl+right Alt) must stay inert',
