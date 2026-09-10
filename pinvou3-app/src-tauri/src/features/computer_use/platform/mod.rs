@@ -5,6 +5,10 @@
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+/// macOS 专属:ScreenCaptureKit 静态截图适配(macOS 14+,被 `macos` 优先
+/// 使用;老系统回退 xcap 的 CGWindowList 路径)。
+#[cfg(target_os = "macos")]
+mod screen_capture_kit;
 /// Linux 专属:Wayland 输入注入的 portal RemoteDesktop 适配
 /// (被 `linux` 在 Wayland 会话下使用)。
 #[cfg(target_os = "linux")]
