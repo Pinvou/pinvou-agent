@@ -4223,6 +4223,8 @@ fn set_workspace_persists_rebound_path() {
     // skipped as an orphan.
     assert!(!store.durable_session_record_is_absent(&session.metadata.id));
     assert!(store.durable_session_record_is_absent("sess-definitely-missing"));
+}
+
 #[test]
 fn rebind_workspace_bindings_moves_plain_bindings_and_stays_idempotent() {
     let (store, _g) = isolated_store();
@@ -4268,7 +4270,8 @@ fn rebind_workspace_bindings_moves_plain_bindings_and_stays_idempotent() {
 
     let affected = store
         .rebind_workspace_bindings(&bound, &to)
-        .expect("rebind plain bindings");
+        .expect("rebind plain bindings")
+        .rebound;
     let mut ids: Vec<&str> = affected.iter().map(|(id, _)| id.as_str()).collect();
     ids.sort_unstable();
     // id 字典序与创建顺序无关(同后缀不同前缀),期望侧同样排序,否则断言
@@ -4311,6 +4314,7 @@ fn rebind_workspace_bindings_moves_plain_bindings_and_stays_idempotent() {
         store
             .rebind_workspace_bindings(&bound, &to)
             .unwrap()
+            .rebound
             .is_empty()
     );
     store.session_workspaces.write().clear();
