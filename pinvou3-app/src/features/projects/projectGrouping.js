@@ -20,12 +20,14 @@ function itemTime(item) {
   return String((item && (item.updatedAt || item.pinnedAt)) || '');
 }
 
-// True when `path` equals `root` or lives directly under it. Both separators
-// are accepted so canonicalized unix roots still match windows-stored paths.
-// Windows paths fold case for comparison, mirroring the store's
-// filesystem_path_identity_key (Windows identity keys fold case, POSIX does
-// not): the pure module has no host-OS signal, so it keys off path shape —
-// drive-letter/UNC paths only ever come from Windows sessions.
+// True when `path` equals `root` or lives directly under it.
+// Windows-shaped paths (drive letter or UNC) fold case, unify separators and
+// strip a trailing one, mirroring the store's filesystem_path_identity_key /
+// key_is_same_or_nested (windows_path.rs, store.rs) — mixed-shape pairs like
+// root `D:\work` vs path `D:/work/x` must still hit tier 2. The pure module
+// has no host-OS signal, so it keys off path shape — drive-letter/UNC paths
+// only ever come from Windows sessions. POSIX paths stay case-sensitive and
+// keep the loose both-separator match for windows-stored paths.
 function looksWindowsPath(value) {
   return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\');
 }
@@ -35,8 +37,14 @@ function isUnderRoot(path, root) {
   let a = String(path);
   let b = String(root);
   if (looksWindowsPath(a) && looksWindowsPath(b)) {
-    a = a.toLowerCase();
-    b = b.toLowerCase();
+    const fold = (value) => {
+      let v = value.toLowerCase().replaceAll('\\', '/');
+      while (v.endsWith('/')) v = v.slice(0, -1);
+      return v;
+    };
+    a = fold(a);
+    b = fold(b);
+    return a === b || a.startsWith(`${b}/`);
   }
   if (a === b) return true;
   return a.startsWith(`${b}/`) || a.startsWith(`${b}\\`);
@@ -68,6 +76,7 @@ function resolveSessionProjectId(item, projects, assignments) {
   const projectList = Array.isArray(projects) ? projects.filter(Boolean) : [];
   const assignmentMap = assignments && typeof assignments === 'object' ? assignments : {};
   if (!item) return null;
+  // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor and Object.hasOwn is unavailable; this call is already in safe form
   if (Object.prototype.hasOwnProperty.call(assignmentMap, item.id)) {
     const assigned = assignmentMap[item.id];
     if (assigned && projectList.some(project => project.id === assigned)) return assigned;
@@ -120,6 +129,7 @@ function groupSessionsWithProjects(items, projects, assignments) {
     if (!item) return;
     let target = null;
     let autoGroupBlocked = false;
+    // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor and Object.hasOwn is unavailable; this call is already in safe form
     if (Object.prototype.hasOwnProperty.call(assignmentMap, item.id)) {
       const assigned = assignmentMap[item.id];
       if (assigned && byId.has(assigned)) {

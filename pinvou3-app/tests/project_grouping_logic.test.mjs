@@ -185,6 +185,24 @@ test("windows roots match case-insensitively, posix roots stay case-sensitive", 
   assert.equal(posixGroups.find((g) => g.kind === "folder").key, "/home/x/beta/sub");
 });
 
+test("windows roots match across separator shapes and trailing separators", () => {
+  // Finding 40: the store's identity key folds `\` -> `/` and strips trailing
+  // separators; a mixed-shape or trailing-separator root must not miss tier 2.
+  const projects = [project("p1", "Alpha", ["D:\\work\\alpha\\"], 0)];
+  const groups = groupSessionsWithProjects(
+    [
+      projectItem("a1", "D:/work/alpha/sub", "2026-08-01T08:00:00Z"),
+      projectItem("a2", "D:\\work\\alpha", "2026-08-02T08:00:00Z"),
+    ],
+    projects,
+    {},
+  );
+  assert.deepEqual(
+    groups.find((g) => g.projectId === "p1").rows.map((r) => r.id).sort((x, y) => x.localeCompare(y)),
+    ["a1", "a2"],
+  );
+});
+
 test("empty and invalid inputs degrade safely", () => {
   assert.deepEqual(groupSessionsWithProjects([], [], {}), []);
   assert.deepEqual(groupSessionsWithProjects(null, null, null), []);
