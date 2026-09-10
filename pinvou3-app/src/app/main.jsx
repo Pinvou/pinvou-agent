@@ -2691,8 +2691,8 @@ function workspaceDisplayName(path) {
             onTogglePinned={handleToggleSessionPinned}
             onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
             onArchive={handleArchiveSession}
-            onMoveToProject={chat.taskKind === 'codex' && bridge.projects ? (target) => setMoveToProjectSession(target) : undefined}
-            dndPayload={chat.taskKind === 'codex' && bridge.projects ? { sessionId: chat.id } : undefined}
+            onMoveToProject={chat.taskKind === 'codex' && bridge.projects ? (target) => { setMoveToPresetProject(null); setMoveToProjectSession(target); } : undefined}
+            dndPayload={chat.taskKind === 'codex' && bridge.projects && sidebarCodeListActive ? { sessionId: chat.id } : undefined}
             dndDisabled={!!dragAvatar}
             onDragEnd={() => setDropTargetGroupKey(null)}
             dragKind={detachKind}
@@ -3264,7 +3264,7 @@ function workspaceDisplayName(path) {
                                   onConvert={bridge.projects && group.kind === 'folder' ? (name) => handleConvertFolderToProject(group.path, name) : undefined}
                                   onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
                                   onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
-                                  onDropSession={group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
+                                  onDropSession={bridge.projects && group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
                                   dropActive={dropTargetGroupKey === group.key}
                                   onDropActive={(active) => setDropTargetGroupKey(active ? group.key : null)}
                                 />
