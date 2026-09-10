@@ -10,10 +10,12 @@
 //!   显示器的 scale），由 ScaleMap::device_to_input 乘 input_scale 还原为点。
 //! - AX 返回的元素位置/尺寸同为屏幕点坐标，与输入坐标空间一致。
 //!
-//! 截屏 deprecation 说明：xcap 0.9.8 的 macOS 静态截图仍走
-//! CGWindowListCreateImage——该 API 在 macOS 15 SDK 已 obsoleted（"Please use
-//! ScreenCaptureKit instead"），且基于它的截屏在 Sequoia+ 会触发周期性
-//! "继续允许录屏"系统确认。迁移 ScreenCaptureKit 是已记录的后续工作项。
+//! 截屏实现：macOS 14+ 走 ScreenCaptureKit（[`super::screen_capture_kit`]，
+//! `SCScreenshotManager::captureImageInRect`）；CGWindowListCreateImage 在
+//! macOS 15 SDK 已 obsoleted（"Please use ScreenCaptureKit instead"），且基于
+//! 它的截屏在 Sequoia+ 会触发周期性"继续允许录屏"系统确认。应用最低支持
+//! macOS 11，11-13 回退 xcap 的 CGWindowList 路径（同一条 Screen Recording
+//! TCC 授权，预检共用）。
 //!
 //! 权限（TCC，两条独立授权，授权后通常都需要重启本应用才生效）：
 //! - Screen Recording：截屏前用 CGPreflightScreenCaptureAccess 预检，缺失返回
@@ -160,7 +162,7 @@ pub fn request_permissions() {
     // kAXTrustedCheckOptionPrompt 的字符串值恒为 "AXTrustedCheckOptionPrompt"；
     // 用 toll-free bridged 的 NSString 当键，绕开 crate 未生成该 static 的限制。
     let key = NSString::from_str("AXTrustedCheckOptionPrompt");
-    let keys = [Retained::as_ptr(&key) as *const c_void];
+    let keys = [Retained::as_ptr(&key).cast::<c_void>()];
     // SAFETY: kCFBooleanTrue 是 CoreFoundation 导出的有效 CFBoolean 单例，
     // 进程生命周期内恒定有效；此处只把它的地址借给临时字典。
     let values = [unsafe { kCFBooleanTrue }];
@@ -364,7 +366,7 @@ fn sanitize_name(name: &str) -> String {
         })
         .take(MAX_NODE_NAME_CHARS)
         .collect();
-    cleaned.trim_end().to_string()
+    cleaned.trim().to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -437,7 +439,7 @@ fn copy_attr(element: &AXUIElement, attribute: &NSString) -> Option<CfObject> {
     if err != AXError::Success || raw.is_null() {
         return None;
     }
-    Some(CfObject(raw as *const c_void))
+    Some(CfObject(raw.cast::<c_void>()))
 }
 
 fn ax_string(element: &AXUIElement, attribute: &NSString) -> Option<String> {
@@ -448,7 +450,7 @@ fn ax_string(element: &AXUIElement, attribute: &NSString) -> Option<String> {
     }
     // SAFETY: 上面已校验对象是 CFString；NSString 与 CFString toll-free
     // bridged、布局相同；guard 持有 +1，借用不超过 guard 生命周期。
-    let text = unsafe { &*(obj.0 as *const NSString) };
+    let text = unsafe { &*obj.0.cast::<NSString>() };
     Some(text.to_string())
 }
 
@@ -477,7 +479,7 @@ fn ax_ui_element(element: &AXUIElement, attribute: &NSString) -> Option<CfObject
 fn as_ui_element(obj: &CfObject) -> &AXUIElement {
     // SAFETY: 调用方已校验对象类型为 AXUIElement；guard 持有 +1，
     // 借用不超过 guard 生命周期。
-    unsafe { &*(obj.0 as *const AXUIElement) }
+    unsafe { &*obj.0.cast::<AXUIElement>() }
 }
 
 fn ax_point(element: &AXUIElement, attribute: &NSString) -> Option<NSPoint> {
@@ -487,7 +489,7 @@ fn ax_point(element: &AXUIElement, attribute: &NSString) -> Option<NSPoint> {
         return None;
     }
     // SAFETY: 已校验 AXValue；guard 持有 +1，借用不超过 guard 生命周期。
-    let value = unsafe { &*(obj.0 as *const AXValue) };
+    let value = unsafe { &*obj.0.cast::<AXValue>() };
     // SAFETY: point 是栈上有效 out buffer；value() 仅在类型匹配时写它并返回
     // true，此时读取才有效。
     unsafe {
@@ -510,7 +512,7 @@ fn ax_size(element: &AXUIElement, attribute: &NSString) -> Option<NSSize> {
         return None;
     }
     // SAFETY: 已校验 AXValue；guard 持有 +1，借用不超过 guard 生命周期。
-    let value = unsafe { &*(obj.0 as *const AXValue) };
+    let value = unsafe { &*obj.0.cast::<AXValue>() };
     // SAFETY: size 是栈上有效 out buffer；value() 仅在类型匹配时写它并返回
     // true，此时读取才有效。
     unsafe {
@@ -552,7 +554,7 @@ fn array_element_at(array: &CfObject, index: usize) -> Option<&AXUIElement> {
         return None;
     }
     // SAFETY: 见上；借用不超过数组 guard 生命周期。
-    Some(unsafe { &*(raw as *const AXUIElement) })
+    Some(unsafe { &*raw.cast::<AXUIElement>() })
 }
 
 /// 树节点的单行信息（位置/尺寸为屏幕点坐标，与输入坐标空间一致）。
@@ -726,6 +728,40 @@ impl MacosComputerUseBackend {
         sleep(hold);
         release_reverse(&pressed, enigo).map_err(|err| map_input_err("key release", err))
     }
+
+    /// ScreenCaptureKit 截屏（macOS 14+）。captureImageInRect 按显示器原生
+    /// 倍率返回物理像素，实际倍率从返回图像反推（点 / 实际像素宽）——不信任
+    /// scale_factor 估计值，对旋转屏/非整数倍率也成立。
+    fn capture_via_screen_capture_kit(
+        &mut self,
+        origin_x: i32,
+        origin_y: i32,
+        width_points: f64,
+        height_points: f64,
+    ) -> Result<Capture, ComputerUseError> {
+        let shot = super::screen_capture_kit::capture_region(
+            origin_x,
+            origin_y,
+            width_points.round() as i32,
+            height_points.round() as i32,
+        )?;
+        let mut rgba = shot.rgba;
+        // ScreenCaptureKit 输出预乘 alpha；单趟置不透明，避免下游 PNG 编码
+        // 透出无意义 alpha（与 xcap 回退路径同一约定）。
+        for pixel in rgba.chunks_exact_mut(4) {
+            pixel[3] = 255;
+        }
+        let actual_scale = width_points / shot.width.max(1) as f64;
+        Ok(Capture {
+            rgba,
+            width: shot.width as u32,
+            height: shot.height as u32,
+            origin_x,
+            origin_y,
+            input_scale_x: actual_scale,
+            input_scale_y: actual_scale,
+        })
+    }
 }
 
 impl ComputerUseBackend for MacosComputerUseBackend {
@@ -749,14 +785,34 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         let cursor = cursor_points().ok();
         let monitor = pick_monitor(cursor)?;
         let scale = monitor_scale(&monitor)?;
-        // xcap macOS 显示器原点是 CGDisplayBounds = 点（输入坐标空间）。
+        // 显示器原点是 CGDisplayBounds = 点（输入坐标空间）；width/height
+        // 同为点。
         let origin_x = monitor
             .x()
             .map_err(|err| map_xcap_err("monitor origin", err))?;
         let origin_y = monitor
             .y()
             .map_err(|err| map_xcap_err("monitor origin", err))?;
-        // 截图为设备物理像素（xcap 已做 BGRA→RGBA 行修复）。
+        let width_points = f64::from(
+            monitor
+                .width()
+                .map_err(|err| map_xcap_err("monitor size", err))?,
+        );
+        let height_points = f64::from(
+            monitor
+                .height()
+                .map_err(|err| map_xcap_err("monitor size", err))?,
+        );
+        if super::screen_capture_kit::available() {
+            return self.capture_via_screen_capture_kit(
+                origin_x,
+                origin_y,
+                width_points,
+                height_points,
+            );
+        }
+        // macOS 11-13 回退：xcap 的 CGWindowListCreateImage 路径。截图为
+        // 设备物理像素（xcap 已做 BGRA→RGBA 行修复）。
         let image = monitor
             .capture_image()
             .map_err(|err| map_xcap_err("screen capture", err))?;
@@ -953,7 +1009,7 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         if raw.is_null() {
             return Ok(None);
         }
-        let guard = CfObject(raw as *const c_void);
+        let guard = CfObject(raw.cast::<c_void>());
         let info = read_node_info(as_ui_element(&guard), &names);
         Ok(Some(ElementInfo {
             role: info.role,
