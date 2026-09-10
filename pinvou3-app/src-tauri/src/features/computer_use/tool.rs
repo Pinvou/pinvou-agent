@@ -127,11 +127,15 @@ pub struct ComputerUseTool {
 impl ComputerUseTool {
     /// 生产构造：后端懒启动（首个请求才 spawn worker 线程）。
     pub fn new(app: AppHandle, session_id: String, shared: Arc<ComputerUseShared>) -> Self {
+        let backend = BackendHandle::lazy(platform::create_backend);
+        // 登记句柄：revoke/stop/总开关关闭时命令层经 shared.backends 触发
+        // 后端关闭持久 OS 级授权（Wayland portal 会话）；Drop 注销。
+        shared.backends.insert(&session_id, backend.clone());
         Self {
             parts: Parts {
                 session_id,
                 shared,
-                backend: BackendHandle::lazy(platform::create_backend),
+                backend,
                 events: Arc::new(TauriEventSink::new(app)),
                 state: Arc::new(Mutex::new(ToolState::default())),
             },
@@ -146,6 +150,7 @@ impl ComputerUseTool {
         backend: BackendHandle,
         events: Arc<dyn ComputerUseEventSink>,
     ) -> Self {
+        shared.backends.insert(&session_id, backend.clone());
         Self {
             parts: Parts {
                 session_id,
@@ -155,6 +160,14 @@ impl ComputerUseTool {
                 state: Arc::new(Mutex::new(ToolState::default())),
             },
         }
+    }
+}
+
+impl Drop for ComputerUseTool {
+    fn drop(&mut self) {
+        // 注销登记：否则登记表里的句柄会把 worker 线程（及其上的 portal
+        // 会话）吊到进程退出。
+        self.parts.shared.backends.remove(&self.parts.session_id);
     }
 }
 
@@ -464,16 +477,22 @@ fn capture_and_store(parts: &Parts, workspace: &Path) -> Result<ShotOutcome, Com
     let capture = parts.backend.capture()?;
     let scaled: ScaledScreenshot = scaling::downscale_and_encode(&capture)?;
     let dir = workspace.join(ATTACHMENTS_DIR);
-    std::fs::create_dir_all(&dir).map_err(|error| {
-        ComputerUseError::failed(format!("cannot create {ATTACHMENTS_DIR}: {error}"))
-    })?;
+    // 私有文件基座落盘（评审发现：此前 `std::fs::write` 按 umask 默认权限
+    // 落盘，屏幕内容可能含密码，而审计记录本身是 0600——隐私口径自相
+    // 矛盾）。0700 目录 + 0600 文件（Windows 为 profile ACL 语义），
+    // 前端 `openArtifactExternal` 同用户读取不受影响。
+    let directory =
+        crate::platform::filesystem::open_private_file_directory(&dir).map_err(|error| {
+            ComputerUseError::failed(format!("cannot create {ATTACHMENTS_DIR}: {error}"))
+        })?;
     let mut state = parts.state.lock();
     state.shot_seq += 1;
     let seq = state.shot_seq;
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let file_name = format!("{stamp}-{seq:04}.png");
     let abs_path = dir.join(&file_name);
-    std::fs::write(&abs_path, &scaled.png)
+    directory
+        .atomic_write_private_file(std::ffi::OsStr::new(&file_name), &scaled.png)
         .map_err(|error| ComputerUseError::failed(format!("cannot write screenshot: {error}")))?;
     let map = scaled.map;
     state.last_map = Some(map.clone());
@@ -588,15 +607,19 @@ fn screen_point(parts: &Parts, x: i32, y: i32) -> T3Screening {
 /// 发送/提交）。评审发现：焦点元素的 name 看不出按键会触发的后果——焦点
 /// 在聊天框（name 为空）时 `key "cmd+Enter"` 直接发送消息，焦点元素筛查
 /// 完全拦不住。普通 Enter/Delete（文本编辑最常用）不受影响。
+/// Shift 只参与 Delete/Backspace 的判定：shift+delete/backspace 是绕过
+/// 回收站永久删除级别的语义（评审发现：修饰集漏 Shift）；shift+Enter/
+/// shift+字母 仍是换行、大写等键入形态，不升级为强制确认。
 fn chord_is_consequential(keys: &[Key]) -> bool {
     let has_modifier = keys
         .iter()
         .any(|k| matches!(k, Key::Control | Key::Alt | Key::Meta));
+    let has_shift = keys.iter().any(|k| matches!(k, Key::Shift));
     let destructive = keys
         .iter()
         .any(|k| matches!(k, Key::Delete | Key::Backspace));
     let enter = keys.iter().any(|k| matches!(k, Key::Enter));
-    (destructive && has_modifier) || (enter && has_modifier)
+    (destructive && (has_modifier || has_shift)) || (enter && has_modifier)
 }
 
 /// Type 动作的目标是否密码/安全字段（确认摘要据此掩码预览）。以焦点元素为
@@ -826,18 +849,46 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         // 评审发现：`key "p"` 逐字符调用可把密码明文写进审计。仅由单个
         // Char 组成（无修饰键）的和弦实质是键入文本，与 type 同策略——
         // 只记长度 + salt || text 的 HMAC；含修饰键的和弦是快捷键，无
-        // 字典风险，保留明文（用户可读性优先）。
+        // 字典风险，保留明文（用户可读性优先）。例外：shift+字符 是
+        // 大写字母/符号的键入形态而非快捷键（评审发现：`key "shift+H"`
+        // 逐字符键入可绕开 HMAC 策略拼出明文），同样只记 HMAC；解析保留
+        // 模型给定的顺序，两种顺序都要覆盖。
         ComputerUseAction::KeyChord { keys, chord }
         | ComputerUseAction::HoldKey { keys, chord, .. }
-            if matches!(keys.as_slice(), [Key::Char(_)]) =>
+            if matches!(
+                keys.as_slice(),
+                [Key::Char(_)] | [Key::Shift, Key::Char(_)] | [Key::Char(_), Key::Shift]
+            ) =>
         {
             record.with_typed_text(chord).with_target("keyboard focus");
         }
-        ComputerUseAction::KeyChord { chord, .. } | ComputerUseAction::HoldKey { chord, .. } => {
+        ComputerUseAction::KeyChord { chord, .. } => {
             record.with_target(&format!("keys: {chord}"));
+        }
+        // hold_key 记录按住时长（评审发现：审计此前答不了"按了多久"）。
+        ComputerUseAction::HoldKey { chord, ms, .. } => {
+            record.with_target(&format!("keys: {chord} held for {ms}ms"));
         }
         ComputerUseAction::Click { at, button, count } => {
             record.with_target(&format!("{} click x{count} at {at:?}", button.as_str()));
+        }
+        // 滚动/按下/释放此前不记参数（评审发现：审计答不了"滚了哪个方向
+        // 几格"）。
+        ComputerUseAction::Scroll {
+            direction,
+            amount,
+            at,
+        } => {
+            record.with_target(&format!(
+                "scroll {} x{amount} at {at:?}",
+                direction.as_str()
+            ));
+        }
+        ComputerUseAction::MouseDown { button } => {
+            record.with_target(&format!("{} mouse button down", button.as_str()));
+        }
+        ComputerUseAction::MouseUp { button } => {
+            record.with_target(&format!("{} mouse button up", button.as_str()));
         }
         ComputerUseAction::Drag { start, end } => {
             record.with_target(&format!("drag {start:?} -> {end:?}"));
@@ -909,7 +960,36 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                 None => None,
             };
             match bypass {
-                Some(ConfirmationCheck::Granted) => confirmed_t3 = true,
+                Some(ConfirmationCheck::Granted {
+                    approved_element_label,
+                }) => {
+                    // 已获批准不等于可以免检执行：批准到重试之间隔着任意
+                    // 模型调用（可能已重新截图、焦点已移动），摘要绑定的
+                    // 静态参数挡不住"目标处的东西变了"（评审发现：批准会
+                    // 被静默改指向）。重筛一次：
+                    // - Clear / 不可筛 → 放行（后者用户本就是在知情下批准）；
+                    // - 命中后果性名单 → 按用户批准时看到的元素标签绑定：
+                    //   眼前的目标还是批准的那个（标签一致）→ 放行；换了
+                    //   内容（标签不一致）→ 作废本次批准、要求重新确认
+                    //   （令牌单次有效，已消费）。
+                    let map = parts.state.lock().last_map.clone();
+                    match t3_screening(&parts, &action, map.as_ref()) {
+                        T3Screening::Clear => confirmed_t3 = true,
+                        T3Screening::Unscreenable(_) => confirmed_t3 = true,
+                        T3Screening::Blocked(hit) => {
+                            if hit.element_label == approved_element_label {
+                                confirmed_t3 = true;
+                            } else {
+                                return Err(request_confirmation(
+                                    &parts,
+                                    &summary,
+                                    &hit.element_label,
+                                    &hit.reason,
+                                ));
+                            }
+                        }
+                    }
+                }
                 Some(ConfirmationCheck::Denied) => {
                     return Err(
                         "the user denied this action. Do not retry it; ask the user how to \
@@ -1167,6 +1247,10 @@ fn action_summary(
                 cursor_binding_suffix(cursor)
             )
         }
+        // mouse_move 带静态坐标，必须绑定进摘要（评审发现：兜底分支只留
+        // 动作名，确认弹窗盲批 "mouse_move"，批准后带任意坐标重试即可
+        // 重建相同摘要）。
+        ComputerUseAction::MouseMove { x, y } => format!("mouse_move to ({x}, {y})"),
         other => other.name().to_string(),
     }
 }
@@ -1412,6 +1496,17 @@ impl ToolSpec for ComputerUseTool {
                 })?
                 .map_err(|error| ToolError::execution_failed(backend_error_text(&error)))?;
             if !capabilities.input {
+                // 审计被拒调用（评审发现：能力拒绝此前无任何痕迹，与 gate
+                // 拒绝的既有审计口径不一致）。
+                audit_rejected_call(
+                    &self.parts,
+                    &parsed.action,
+                    "capability:input-unsupported",
+                    &format!(
+                        "input injection is unsupported on this platform/session ({})",
+                        capabilities.notes
+                    ),
+                );
                 return Ok(ToolResult::error(format!(
                     "input injection is unsupported on this platform/session ({})",
                     capabilities.notes
@@ -1437,27 +1532,12 @@ impl ToolSpec for ComputerUseTool {
             }
             // 审计被拒调用（非输入类允许降级为 eprintln；动作未执行，无注入
             // 后果，但绝不静默吞错——评审发现）。
-            let mut record = AuditRecord::begin(
-                audit::new_call_id(),
-                self.parts.session_id.clone(),
-                parsed.action.name(),
-                parsed.action.class().as_str(),
-                format!("rejected:{}", rejection_name(rejection)),
+            audit_rejected_call(
+                &self.parts,
+                &parsed.action,
+                rejection_name(rejection),
+                &rejection.message(),
             );
-            match AuditLog::for_session(&self.parts.session_id) {
-                Ok(log) => {
-                    if let Err(error) = log.append(&record) {
-                        eprintln!("[computer_use] rejected-call audit append failed: {error}");
-                    }
-                    record = record.finish("rejected", Some(rejection.message()), 0);
-                    if let Err(error) = log.append(&record) {
-                        eprintln!("[computer_use] rejected-call audit append failed: {error}");
-                    }
-                }
-                Err(error) => {
-                    eprintln!("[computer_use] audit log unavailable for rejected call: {error}");
-                }
-            }
             return Ok(ToolResult::error(rejection.message()));
         }
 
@@ -1480,6 +1560,32 @@ fn rejection_name(rejection: GuardRejection) -> &'static str {
         GuardRejection::ObserveRateLimited => "observe-rate-limited",
         GuardRejection::BudgetExhausted => "budget-exhausted",
         GuardRejection::InputBusy => "input-busy",
+    }
+}
+
+/// 被拒调用（gate 拒绝 / 能力拒绝）的审计：动作未执行、无注入后果，但
+/// 绝不静默吞错（非输入类允许降级为 eprintln）。
+fn audit_rejected_call(parts: &Parts, action: &ComputerUseAction, reason: &str, message: &str) {
+    let mut record = AuditRecord::begin(
+        audit::new_call_id(),
+        parts.session_id.clone(),
+        action.name(),
+        action.class().as_str(),
+        format!("rejected:{reason}"),
+    );
+    match AuditLog::for_session(&parts.session_id) {
+        Ok(log) => {
+            if let Err(error) = log.append(&record) {
+                eprintln!("[computer_use] rejected-call audit append failed: {error}");
+            }
+            record = record.finish("rejected", Some(message.to_string()), 0);
+            if let Err(error) = log.append(&record) {
+                eprintln!("[computer_use] rejected-call audit append failed: {error}");
+            }
+        }
+        Err(error) => {
+            eprintln!("[computer_use] audit log unavailable for rejected call: {error}");
+        }
     }
 }
 

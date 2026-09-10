@@ -215,6 +215,24 @@ fn input_failed(context: &str, error: impl std::fmt::Display) -> ComputerUseErro
     ComputerUseError::failed(format!("{context}: {error}"))
 }
 
+/// 拖拽收尾错误合并（评审发现：移动与释放**双双失败**时，旧实现只向上报
+/// 移动错误——调用方永远不知道左键还卡在按下状态）。两败俱伤时显式指出
+/// 按键可能未释放。
+fn combine_drag_errors(
+    move_result: Result<(), ComputerUseError>,
+    release_result: Result<(), ComputerUseError>,
+) -> Result<(), ComputerUseError> {
+    match (move_result, release_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(error)) => Err(error),
+        (Err(error), Ok(())) => Err(error),
+        (Err(move_error), Err(release_error)) => Err(ComputerUseError::failed(format!(
+            "{move_error}; additionally the drag release failed ({release_error}) — \
+             the left mouse button may still be pressed"
+        ))),
+    }
+}
+
 fn settle() {
     sleep(Duration::from_millis(SETTLE_MS));
 }
@@ -350,11 +368,11 @@ fn extents_contain(extents: (i32, i32, i32, i32), x: i32, y: i32) -> bool {
 /// `strict = true`(element_at_point / focused_element 等筛查路径)时任何
 /// 一层查询失败都向上报,绝不静默吞成"没有窗口";`strict = false`(ui_tree
 /// 观察路径)保持尽力而为:单个 app 挂了就跳过,不拖垮整棵树。
-async fn app_windows(
-    conn: &zbus::Connection,
+async fn app_windows<'a>(
+    conn: &'a zbus::Connection,
     root: &AccessibleProxy<'_>,
     strict: bool,
-) -> Result<Vec<AccessibleProxy<'_>>, ComputerUseError> {
+) -> Result<Vec<AccessibleProxy<'a>>, ComputerUseError> {
     let mut windows = Vec::new();
     let apps = match root.get_children().await {
         Ok(apps) => apps,
@@ -972,6 +990,18 @@ impl LinuxComputerUseBackend {
 }
 
 impl ComputerUseBackend for LinuxComputerUseBackend {
+    /// 用户撤销授权/全局停止/总开关关闭时由命令层经登记表（BackendRegistry）
+    /// `release_os_grant` 请求触发：关闭 portal 会话并保留后端可用（`close`
+    /// 后 `session` 为 None，下次输入动作按既有路径懒重建，需要时用户会
+    /// 重新看到系统授权对话框）。X11 会话本就无持久授权，`wayland_portal`
+    /// 为 None 时此为 no-op。
+    fn release_os_grant(&mut self) -> Result<(), ComputerUseError> {
+        if let Some(portal) = self.wayland_portal.as_mut() {
+            portal.close();
+        }
+        Ok(())
+    }
+
     fn capabilities(&self) -> Capabilities {
         let ui_tree = self.a11y.is_some();
         if self.is_wayland() {
@@ -1259,7 +1289,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             }
             let release = portal.button(wayland_portal::map_button(MouseButton::Left), false);
             portal.track_pointer(to.0, to.1);
-            result.and(release)?;
+            combine_drag_errors(result, release)?;
             return Ok(());
         }
         let enigo = self.require_enigo()?;
@@ -1287,7 +1317,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
         let release = enigo
             .button(Button::Left, Direction::Release)
             .map_err(|error| input_failed("drag: button release", error));
-        result.and(release)
+        combine_drag_errors(result, release)
     }
 
     fn scroll(&mut self, direction: ScrollDirection, clicks: u32) -> Result<(), ComputerUseError> {
@@ -1677,9 +1707,9 @@ mod tests {
         assert!(is_secure_role(Role::PasswordText, false));
         // 角色查询失败(未知)保守兜底:无法证明不是密码框。
         assert!(is_secure_role(Role::Unknown, true));
-        // 对象真实报告 Unknown(非查询失败)不算 secure。
+        // 对象真实报告 Unknown(非查询失败)不算 secure;普通按钮角色同样不算。
         assert!(!is_secure_role(Role::Unknown, false));
-        assert!(!is_secure_role(Role::PushButton, false));
+        assert!(!is_secure_role(Role::Button, false));
     }
 
     #[test]

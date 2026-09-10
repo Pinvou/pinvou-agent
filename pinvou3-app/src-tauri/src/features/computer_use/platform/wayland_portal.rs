@@ -567,7 +567,7 @@ impl PortalInner {
         // 完成后统一为 Result<Message>。方法调用本身应当毫秒级返回,封顶在
         // REQUEST_TIMEOUT;授权对话框的等待发生在 Response 信号(下一段)——
         // 两段各自配完整 timeout 的旧写法让 Start 最坏 240s,击穿 backend 层
-        // 150s 请求预算(评审发现)。
+        // 190s 请求预算(评审发现)。
         tokio::time::timeout(timeout.min(REQUEST_TIMEOUT), async {
             match session {
                 Some(path) if parent_window.is_some() => {
@@ -889,7 +889,26 @@ impl PortalInner {
         self.abandon(session.path).await;
     }
 
+    /// 会话已启动时校验用户实际授予的设备位（评审发现：GNOME 授权对话框
+    /// 有逐设备开关，只查并集会让 pointer-only 授权的键盘动作在
+    /// `NotifyKeyboardKeysym` 上报错 → reset → 下次动作再弹授权对话框，
+    /// 用户被对话框循环纠缠；在注入前显式报错即可打破循环）。
+    fn require_device(&self, device: u32, what: &str) -> Result<(), ComputerUseError> {
+        let Some(session) = self.session.as_ref() else {
+            // 未启动由调用链的 ensure_started 保证，不在此重复报错。
+            return Ok(());
+        };
+        if session.devices & device == 0 {
+            return Err(ComputerUseError::unavailable(format!(
+                "the RemoteDesktop authorization did not include the {what}; \
+                 ask the user to re-grant control and enable it in the system dialog"
+            )));
+        }
+        Ok(())
+    }
+
     async fn motion_absolute(&mut self, x: i32, y: i32) -> Result<(), ComputerUseError> {
+        self.require_device(DEVICE_POINTER, "pointer")?;
         let path = self.session_path()?;
         let options: HashMap<&str, OwnedValue> = HashMap::new();
         let stream = self.session.as_ref().map(|s| s.stream).unwrap_or_default();
@@ -898,6 +917,7 @@ impl PortalInner {
     }
 
     async fn button(&mut self, evdev_button: i32, pressed: bool) -> Result<(), ComputerUseError> {
+        self.require_device(DEVICE_POINTER, "pointer")?;
         let state = if pressed {
             STATE_PRESSED
         } else {
@@ -910,6 +930,7 @@ impl PortalInner {
     }
 
     async fn axis_discrete(&mut self, axis: u32, steps: i32) -> Result<(), ComputerUseError> {
+        self.require_device(DEVICE_POINTER, "pointer")?;
         let path = self.session_path()?;
         let options: HashMap<&str, OwnedValue> = HashMap::new();
         let body = (&path, &options, axis, steps);
@@ -917,6 +938,7 @@ impl PortalInner {
     }
 
     async fn keysym_event(&mut self, keysym: i32, pressed: bool) -> Result<(), ComputerUseError> {
+        self.require_device(DEVICE_KEYBOARD, "keyboard")?;
         let state = if pressed {
             STATE_PRESSED
         } else {
