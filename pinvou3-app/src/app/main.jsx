@@ -1788,9 +1788,10 @@ function workspaceDisplayName(path) {
       // project-root auto-grouping / implicit folder bucketing); without any
       // created project the result is byte-identical to the legacy folder
       // grouping. With "pinned first", pinned code sessions hoist above groups.
-      // The grouping chain is memoized end to end: tier-2 inside
-      // groupSessionsWithProjects is O(sessions × projects × roots) and the
-      // project count grows with later stack phases (review #448 finding 8).
+      // Note: the upstream history chain (chatHistory/codexHistory/…) rebuilds
+      // on every App render, so these memos currently re-run each render too —
+      // end-to-end memoization of that legacy chain is deferred (finding 22);
+      // tier-2 grouping is O(sessions × projects × roots) (#448 finding 8).
       const sidebarCodeTasks = useMemo(() => (sidebarCodeListActive
         ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex')
         : []), [sidebarCodeListActive, sidebarTaskHistory]);
@@ -1806,6 +1807,19 @@ function workspaceDisplayName(path) {
             sidebarProjectsData ? sidebarProjectsData.assignments : {},
           )
         : []), [sidebarCodeListActive, sidebarUnpinnedCodeTasks, sidebarProjectsData]);
+      // 置顶提升会把成员从组 rows 里摘走,但组头计数(含删除确认)要按提升前
+      // 的全量成员算,否则成员全置顶的组确认删除时显示 (0)(评审 finding 24)。
+      // 置顶项通常很少,单独对它们跑一遍分组拿到每组被摘走的数量即可。
+      const sidebarGroupPinnedCounts = useMemo(() => {
+        if (!sidebarCodeListActive || sidebarFolderPinned.length === 0) return {};
+        const counts = {};
+        groupSessionsWithProjects(
+          sidebarFolderPinned,
+          sidebarProjectsData ? sidebarProjectsData.projects : [],
+          sidebarProjectsData ? sidebarProjectsData.assignments : {},
+        ).forEach((group) => { counts[group.key] = group.rows.length; });
+        return counts;
+      }, [sidebarCodeListActive, sidebarFolderPinned, sidebarProjectsData]);
 
       // latest-ref mirror: the pet-snapshot broadcast effect only subscribes to bs.sessions/sessionBusy/language,
       // while snapshot contents (id/title/working) are read via refs to reduce effect resubscription.
@@ -3173,7 +3187,7 @@ function workspaceDisplayName(path) {
                                 <ProjectGroupHeader
                                   label={label}
                                   kind={group.kind}
-                                  count={group.rows.length}
+                                  count={group.rows.length + (sidebarGroupPinnedCounts[group.key] || 0)}
                                   isOpen={isOpen}
                                   onToggle={() => setFolderGroupOpen(prev => ({ ...prev, [group.key]: !isOpen }))}
                                   theme={activeTheme}
