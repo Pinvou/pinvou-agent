@@ -22,8 +22,12 @@ function screenshotSpanAtMarker(normalized, markerIndex) {
   let end = tail;
   while (end < normalized.length && !RIGHT_STOP.test(normalized[end])) end += 1;
   const basename = normalized.slice(tail, end);
-  const pngIndex = basename.toLowerCase().indexOf('.png');
-  if (pngIndex <= 0) return null;
+  // Take the LAST ".png" occurrence: trailing prose after the path is allowed
+  // (RIGHT_STOP doesn't stop at whitespace, so "shot 2.png done" is normal),
+  // but the basename itself ending in ".png.png" must not be truncated at the
+  // first occurrence (review fix: indexOf found the first one).
+  const pngIndex = basename.toLowerCase().lastIndexOf('.png');
+  if (pngIndex < 0) return null;
   return { start, end: tail + pngIndex + 4 };
 }
 
