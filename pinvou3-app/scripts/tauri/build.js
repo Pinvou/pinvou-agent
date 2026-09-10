@@ -16,6 +16,7 @@ const {
   platformConfigPath,
 } = require("./platform-config.js");
 const { linuxStartupWindowConfigSpec } = require("./startup-window-config.js");
+const { prepareLinuxAsrRuntime } = require("./linux-asr-runtime.js");
 const { prepareKnowledgeHost } = require("./knowledge-host.js");
 const { WRAPPER_ENV } = require("./require-wrapper.js");
 const { stageWindowsInstaller } = require("./windows-installer.js");
@@ -208,6 +209,7 @@ function main() {
     if (developmentHost?.configSpec) additionalConfigs.push(developmentHost.configSpec);
   }
   if (hasTauriBuildCommand) {
+    prepareLinuxAsrRuntime();
     prepareCodexBridge();
     prepareChromeDevtoolsMcpForPlatform();
     prepareWindowsCodexBridge(windowsBridgeOptions);
@@ -253,6 +255,7 @@ module.exports = {
   prepareChromeDevtoolsMcpForPlatform,
   prepareCodexBridge,
   prepareKnowledgeHost,
+  prepareLinuxAsrRuntime,
   prepareWindowsCodexBridge,
   stageWindowsInstaller,
   stageWindowsOnnxRuntime,

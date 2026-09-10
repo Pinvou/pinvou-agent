@@ -14,11 +14,12 @@
 set -euo pipefail
 
 QUANT="${1:-q4_k}"
-SENSEVOICE_COMMIT="c78e6919351ac83255e96de46169f518097f1ef3"
 CMAKE_VERSION="4.4.2"
 ASR_DIR="$HOME/.pinvou3/asr"
 MODEL_FILE="sense-voice-small-${QUANT}.gguf"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=sensevoice-source.env
+source "$HERE/sensevoice-source.env"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -51,10 +52,10 @@ fi
 
 echo "[2/5] 克隆 + 构建 SenseVoice.cpp（CUDA=${GGML_CUDA:-OFF}）…"
 git init -q "$WORK/sv"
-git -C "$WORK/sv" remote add origin https://github.com/lovemefan/SenseVoice.cpp
-git -C "$WORK/sv" fetch --depth 1 origin "$SENSEVOICE_COMMIT"
+git -C "$WORK/sv" remote add origin "$SENSEVOICE_SOURCE_URL"
+git -C "$WORK/sv" fetch --depth 1 origin "$SENSEVOICE_SOURCE_COMMIT"
 git -C "$WORK/sv" checkout -q --detach FETCH_HEAD
-test "$(git -C "$WORK/sv" rev-parse HEAD)" = "$SENSEVOICE_COMMIT"
+test "$(git -C "$WORK/sv" rev-parse HEAD)" = "$SENSEVOICE_SOURCE_COMMIT"
 git -C "$WORK/sv" submodule update --init --recursive
 mkdir -p "$WORK/sv/build"
 ( cd "$WORK/sv/build" \

@@ -26,6 +26,8 @@ function assertResourceSourcesExist(config, label) {
 
 const common = readJson("tauri.conf.json");
 const linux = readJson("config/platforms/linux/tauri.conf.json");
+const linuxX64 = readJson("config/platforms/linux/x86_64/tauri.conf.json");
+const linuxArm64 = readJson("config/platforms/linux/aarch64/tauri.conf.json");
 const macos = readJson("config/platforms/macos/tauri.conf.json");
 const windows = readJson("config/platforms/windows/tauri.conf.json");
 
@@ -40,6 +42,12 @@ assert.ok(
   resourceSources(linux).every((source) => source.startsWith("resources/platforms/linux/")),
   "Linux overlay may only package resources/platforms/linux",
 );
+assert.deepEqual(resourceSources(linuxX64), [
+  "target/linux-asr-runtime/x86_64/sense-voice-main",
+]);
+assert.deepEqual(resourceSources(linuxArm64), [
+  "target/linux-asr-runtime/aarch64/sense-voice-main",
+]);
 assert.ok(
   resourceSources(macos).every((source) => source.startsWith("resources/platforms/macos/")),
   "macOS overlay may only package resources/platforms/macos",

@@ -29,6 +29,12 @@ on:
     branches: [main]
     paths:
       - 'VERSION'
+      - 'scripts/asr/build-sensevoice-runtime.sh'
+      - 'scripts/asr/sensevoice-source.env'
+      - 'scripts/check-linux-elf-policy.sh'
+      - 'pinvou3-app/scripts/tauri/linux-asr-runtime.js'
+      - 'pinvou3-app/src-tauri/config/platforms/linux/**'
+      - 'pinvou3-app/tests/linux_asr_runtime_packaging.test.js'
   workflow_dispatch:
 
 permissions:
@@ -198,7 +204,7 @@ jobs:
       # 的 node + knowledge-host 的 pinvou-knowledge-server(asr 是 python、
       # knowledge-host 的 helper 是 shell、连接器 CLI 首用下载)。
       - name: glibc 下限守护 (Ubuntu 22.04 = glibc 2.35)
-        run: ./scripts/check-linux-glibc-floor.sh "pinvou3-app/src-tauri/target/release/bundle/deb/pinvou-agent_${VERSION}-linux-x64.deb"
+        run: ./scripts/check-linux-glibc-floor.sh "pinvou3-app/src-tauri/target/release/bundle/deb/pinvou-agent_${VERSION}-linux-x64.deb" amd64
 
       - name: 上传 deb artifact
         uses: actions/upload-artifact@v7
@@ -309,7 +315,7 @@ jobs:
 
       # glibc 下限守护(同 build-linux-x64,断言全部 ELF 的 GLIBC_ 符号 ≤ 2.35)。
       - name: glibc 下限守护 (Ubuntu 22.04 = glibc 2.35)
-        run: ./scripts/check-linux-glibc-floor.sh "pinvou3-app/src-tauri/target/release/bundle/deb/pinvou-agent_${VERSION}-linux-arm64.deb"
+        run: ./scripts/check-linux-glibc-floor.sh "pinvou3-app/src-tauri/target/release/bundle/deb/pinvou-agent_${VERSION}-linux-arm64.deb" arm64
 
       - name: 上传 deb artifact
         uses: actions/upload-artifact@v7
