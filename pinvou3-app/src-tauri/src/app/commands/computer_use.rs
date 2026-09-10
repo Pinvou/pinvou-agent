@@ -10,6 +10,15 @@ use std::sync::Arc;
 use super::prelude::*;
 use crate::features::computer_use::ComputerUseShared;
 
+/// grant/revoke（session_id）与 confirm/deny（confirm_id）的标识符空串防御
+/// （评审发现）：空串既无业务意义，也不应静默成功污染守卫状态。
+fn ensure_non_empty(field: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err(format!("{field} must not be empty"));
+    }
+    Ok(())
+}
+
 /// `computer_use_get_status` 的返回投影（前端据此渲染授权/急停状态）。
 #[derive(Debug, Clone, Serialize)]
 pub struct ComputerUseStatus {
@@ -39,14 +48,24 @@ pub fn computer_use_get_status(
 /// 授予本会话鼠标/键盘控制权（一次性会话授权，10 分钟空闲或 500 次输入
 /// 动作后自动失效，需重新授权）。
 #[tauri::command]
-pub fn computer_use_grant(session_id: String, shared: State<'_, Arc<ComputerUseShared>>) {
+pub fn computer_use_grant(
+    session_id: String,
+    shared: State<'_, Arc<ComputerUseShared>>,
+) -> Result<(), String> {
+    ensure_non_empty("session_id", &session_id)?;
     shared.grant_session(&session_id);
+    Ok(())
 }
 
 /// 吊销本会话输入授权。
 #[tauri::command]
-pub fn computer_use_revoke(session_id: String, shared: State<'_, Arc<ComputerUseShared>>) {
+pub fn computer_use_revoke(
+    session_id: String,
+    shared: State<'_, Arc<ComputerUseShared>>,
+) -> Result<(), String> {
+    ensure_non_empty("session_id", &session_id)?;
     shared.revoke_session(&session_id);
+    Ok(())
 }
 
 /// 紧急停止：置停止旗标并吊销全部会话授权。
@@ -63,11 +82,18 @@ pub fn computer_use_confirm(
     confirm_id: String,
     shared: State<'_, Arc<ComputerUseShared>>,
 ) -> Result<(), String> {
-    if shared.pending_confirmation(&confirm_id).is_none() {
-        return Err(format!("unknown or expired confirm_id: {confirm_id}"));
+    ensure_non_empty("confirm_id", &confirm_id)?;
+    // mint_confirmation 只为存在且未过期的 pending 铸币并返回 true（评审
+    // 发现：此前静默 no-op，前端把失败显示为成功）；false 显式报错。
+    // 括注保留 "unknown or expired"：前端 bridge 以该短语识别「pending 已
+    // 过期」并本地清理确认弹窗（过期不是用户拒绝），文案不得破坏该契约。
+    if shared.mint_confirmation(&confirm_id) {
+        Ok(())
+    } else {
+        Err(format!(
+            "confirmation request no longer exists (unknown or expired): {confirm_id}"
+        ))
     }
-    shared.mint_confirmation(&confirm_id);
-    Ok(())
 }
 
 /// 用户在前端明确「拒绝」一个被拦截的 T3 动作：清除 pending 并短期记忆
@@ -78,6 +104,7 @@ pub fn computer_use_deny(
     confirm_id: String,
     shared: State<'_, Arc<ComputerUseShared>>,
 ) -> Result<(), String> {
+    ensure_non_empty("confirm_id", &confirm_id)?;
     if shared.deny_confirmation(&confirm_id) {
         Ok(())
     } else {
@@ -89,11 +116,17 @@ pub fn computer_use_deny(
 
 /// 设置总开关。先落盘后翻内存旗标（同 set_voice_shortcut_enabled 的顺序）：
 /// 写盘失败时内存态不得与 settings.json 不一致。重新开启时清除急停旗标
-/// （guard 的既定语义），但不恢复任何会话授权。
+/// （guard 的既定语义），但不恢复任何会话授权；关闭时吊销全部会话授权并
+/// 清空待决确认（评审发现：否则重开后旧 grant 在 10 分钟窗口内仍有效）。
+/// 最后热刷 disallowed_tools（评审发现：tool_policy 闭包只在 refresh 时
+/// 重算，不主动刷新则已在跑的存量引擎目录要滞后到下一次任意策略刷新；
+/// 与 marketplace/connectors 命令调用 `pool.refresh_disallowed_tools()`
+/// 的既有模式一致）。
 #[tauri::command]
-pub fn computer_use_set_enabled(
+pub async fn computer_use_set_enabled(
     enabled: bool,
     shared: State<'_, Arc<ComputerUseShared>>,
+    pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
     UserPrefs::update_transaction(|prefs| {
         prefs.computer_use.enabled = enabled;
@@ -102,7 +135,10 @@ pub fn computer_use_set_enabled(
     shared.set_enabled(enabled);
     if enabled {
         shared.reset_stop();
+    } else {
+        shared.revoke_all_sessions();
     }
+    pool.refresh_disallowed_tools().await;
     Ok(())
 }
 
@@ -138,5 +174,16 @@ mod tests {
                 "platform_supported": true,
             })
         );
+    }
+
+    /// 评审修复回归：grant/revoke（session_id）与 confirm/deny（confirm_id）
+    /// 的空串/纯空白标识符必须显式报错，不得静默成功。
+    #[test]
+    fn empty_identifiers_are_rejected() {
+        assert!(ensure_non_empty("session_id", "").is_err());
+        assert!(ensure_non_empty("session_id", "   ").is_err());
+        assert!(ensure_non_empty("confirm_id", "").is_err());
+        assert!(ensure_non_empty("confirm_id", "cu-0123456789abcdef").is_ok());
+        assert!(ensure_non_empty("session_id", "s1").is_ok());
     }
 }

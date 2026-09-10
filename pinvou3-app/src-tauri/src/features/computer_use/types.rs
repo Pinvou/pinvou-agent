@@ -149,6 +149,11 @@ impl Key {
     }
 }
 
+/// 单个和弦的 token 上限。合法快捷键最多 4 键（ctrl+shift+alt+f1）；更长的
+/// 序列几乎必然是模型在用 key 动作逐字符键入文本（评审发现：无上限时可用
+/// `key "p"` 之类的调用绕开 type 的筛查与审计策略）。
+pub const MAX_KEY_CHORD_TOKENS: usize = 4;
+
 fn parse_key_token(token: &str) -> Option<Key> {
     let lower = token.to_ascii_lowercase();
     let named = match lower.as_str() {
@@ -187,9 +192,11 @@ fn parse_key_token(token: &str) -> Option<Key> {
                 }
             }
             // 单字符键：归一到小写（大小写不敏感；要按大写 "S" 用 shift+s）。
+            // 控制字符不是可按压的键位，拒绝注入（评审发现：NUL/ESC 之类的
+            // 不可见字符经 key 动作注入既无意义也难以审计）。
             let mut chars = lower.chars();
             match (chars.next(), chars.next()) {
-                (Some(c), None) => return Some(Key::Char(c)),
+                (Some(c), None) if !c.is_control() => return Some(Key::Char(c)),
                 _ => return None,
             }
         }
@@ -198,7 +205,8 @@ fn parse_key_token(token: &str) -> Option<Key> {
 }
 
 /// 解析 xdotool 风格和弦："ctrl+s"、"Return"、"alt+Tab"、"shift+f5"。
-/// 大小写不敏感；同义词表见 `parse_key_token`。
+/// 大小写不敏感；同义词表见 `parse_key_token`。token 数上限
+/// [`MAX_KEY_CHORD_TOKENS`]。
 pub fn parse_key_chord(text: &str) -> Result<Vec<Key>, String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -206,6 +214,12 @@ pub fn parse_key_chord(text: &str) -> Result<Vec<Key>, String> {
     }
     let mut keys = Vec::new();
     for token in trimmed.split('+') {
+        if keys.len() >= MAX_KEY_CHORD_TOKENS {
+            return Err(format!(
+                "invalid key chord '{text}': more than {MAX_KEY_CHORD_TOKENS} keys; \
+                 use the type action for text input"
+            ));
+        }
         let token = token.trim();
         if token.is_empty() {
             return Err(format!(
@@ -518,6 +532,31 @@ mod tests {
         assert!(parse_key_chord("ctrl+shift").is_err());
         // 多字符且不在同义词表。
         assert!(parse_key_chord("ctrl+ab").is_err());
+    }
+
+    /// 评审修复回归：和弦 token 数上限 ≤4，控制字符不是合法键位。
+    /// （更长的序列应改走 type 动作，接受筛查与 HMAC 审计。）
+    #[test]
+    fn key_chord_rejects_overlong_chords_and_control_characters() {
+        assert!(parse_key_chord("ctrl+alt+shift+meta+c").is_err());
+        assert!(parse_key_chord("a+b+c+d+e").is_err());
+        // 上限内仍接受。
+        assert!(parse_key_chord("ctrl+alt+shift+f1").is_ok());
+        assert!(parse_key_chord("ctrl+a").is_ok());
+        // 控制字符（NUL、ESC、BEL、DEL……）一律拒绝。
+        for control in ['\0', '\u{1}', '\u{7}', '\u{1b}', '\u{7f}'] {
+            let chord = control.to_string();
+            assert!(
+                parse_key_chord(&chord).is_err(),
+                "control char U+{:04X} must be rejected",
+                control as u32
+            );
+            assert!(
+                parse_key_chord(&format!("ctrl+{control}")).is_err(),
+                "control char U+{:04X} must be rejected inside a chord",
+                control as u32
+            );
+        }
     }
 
     #[test]
