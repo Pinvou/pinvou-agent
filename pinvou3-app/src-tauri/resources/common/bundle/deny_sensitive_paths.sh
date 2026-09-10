@@ -22,6 +22,10 @@
 # fold_tool_call_before_results only accepts exit_code==2 or the stdout JSON
 # {"decision":"deny"}; exit 1 is treated as passthrough (ALLOW).
 
+# Policy boundary: this concealment applies only to skill-based connectors.
+# Marketplace MCP packages deliberately expose installed/enabled metadata to the
+# model; see docs/marketplace-unification.md section 5.4. The sets do not overlap.
+
 set -uo pipefail
 
 ARGS="${DEEPSEEK_TOOL_ARGS:-}"
