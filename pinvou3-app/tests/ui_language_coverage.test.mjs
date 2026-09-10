@@ -21,6 +21,7 @@ for (const language of ['zh', 'en', 'ja']) {
     'uiPet',
     'uiWebConnection',
     'uiConversation',
+    'uiComputerUse',
     'uiHomeMode',
     'uiAttachments',
     'uiCodex',
