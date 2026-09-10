@@ -18,13 +18,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
+use deepseek_tui::AppMode;
 use deepseek_tui::core::engine::{EngineHandle, spawn_engine};
 use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
 use deepseek_tui::core::ops::Op;
 use deepseek_tui::models::Message;
 use deepseek_tui::tools::shell::{SharedShellManager, new_shared_shell_manager};
 use deepseek_tui::tools::user_input::UserInputResponse;
-use deepseek_tui::tui::app::AppMode;
 use parking_lot::Mutex;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
@@ -1659,7 +1659,7 @@ impl AppEngine {
         let op = self.profiled_send_op(content, profile)?;
         self.handle
             .send(Op::SetDisallowedTools {
-                tools: self.scheduled_disallowed_tools.clone(),
+                tools: Some(self.scheduled_disallowed_tools.clone()),
             })
             .await?;
         self.send_turn_op(op).await
@@ -1839,6 +1839,7 @@ impl AppEngine {
         };
         self.handle
             .send(Op::CompactContext {
+                id: format!("compact-{}", uuid::Uuid::new_v4()),
                 route: Box::new(route),
                 compaction: Box::new(self.bridge.compaction_config_for_model(&model)),
             })
@@ -1882,7 +1883,7 @@ impl AppEngine {
                 system_prompt_override: false,
                 model: self.bridge.model(),
                 workspace: self.workspace.clone(),
-                mode: AppMode::Yolo,
+                mode: AppMode::Agent,
             })
             .await?;
         Ok(())
@@ -1972,7 +1973,7 @@ mod turn_lifecycle_tests {
 
     fn message(role: &str, text: &str) -> Message {
         Message {
-            role: role.to_string(),
+            role: role.into(),
             content: vec![ContentBlock::Text {
                 text: text.to_string(),
                 cache_control: None,
@@ -1982,7 +1983,7 @@ mod turn_lifecycle_tests {
 
     fn engine_user(text: &str) -> Message {
         Message {
-            role: "user".to_string(),
+            role: deepseek_tui::models::Role::User,
             content: vec![
                 ContentBlock::Text {
                     text: text.to_string(),
@@ -2871,7 +2872,7 @@ mod turn_lifecycle_tests {
             .expect("actual prompt");
 
         let tool_result = Message {
-            role: "user".to_string(),
+            role: deepseek_tui::models::Role::User,
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: "tool-1".to_string(),
                 content: "tool output".to_string(),
@@ -2967,7 +2968,7 @@ mod turn_lifecycle_tests {
     fn sanitize_strips_steer_turn_meta_tail_but_keeps_internal_envelopes() {
         let lifecycle = TurnLifecycle::default();
         let turn_meta_tail = |text: &str| Message {
-            role: "user".to_string(),
+            role: deepseek_tui::models::Role::User,
             content: vec![
                 ContentBlock::Text {
                     text: text.to_string(),
@@ -2980,7 +2981,7 @@ mod turn_lifecycle_tests {
             ],
         };
         let runtime_owned = Message {
-            role: "user".to_string(),
+            role: deepseek_tui::models::Role::User,
             content: vec![
                 ContentBlock::Text {
                     text: "sub-agent done".to_string(),
@@ -3089,20 +3090,20 @@ mod scheduled_turn_tests {
         persist_successful_tool_artifact, scheduled_tool_should_auto_approve,
     };
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile};
+    use deepseek_tui::AppMode;
+    use deepseek_tui::ApprovalMode;
     use deepseek_tui::compaction::CompactionConfig;
     use deepseek_tui::config::Config;
     use deepseek_tui::core::events::TurnOutcomeStatus;
     use deepseek_tui::core::ops::{Op, UserInputProvenance};
     use deepseek_tui::tools::goal::GoalStatus;
-    use deepseek_tui::tui::app::AppMode;
-    use deepseek_tui::tui::approval::ApprovalMode;
     use std::path::PathBuf;
 
     fn base_op() -> Op {
         let config = Config::default();
         Op::SendMessage {
             content: "scheduled prompt".to_string(),
-            mode: AppMode::Yolo,
+            mode: AppMode::Agent,
             route: Box::new(
                 deepseek_tui::route_runtime::resolve_runtime_route(
                     &config,
@@ -3299,7 +3300,7 @@ mod scheduled_turn_tests {
             &store,
             &scheduled.metadata.id,
             &workspace,
-            "write_file",
+            "write",
             &serde_json::json!({"path": "report.md", "content": "durable report"}),
             "Created report.md",
         )
@@ -3309,6 +3310,22 @@ mod scheduled_turn_tests {
             persisted,
             std::fs::canonicalize(&report).expect("canonical report")
         );
+
+        let notes = workspace.join("notes.md");
+        std::fs::write(&notes, "edited notes").expect("edited artifact file");
+        persist_successful_tool_artifact(
+            &store,
+            &scheduled.metadata.id,
+            &workspace,
+            "edit",
+            &serde_json::json!({
+                "path": "notes.md",
+                "old_string": "draft notes",
+                "new_string": "edited notes"
+            }),
+            "Updated notes.md",
+        )
+        .expect("persist canonical edit artifact from plain-text output");
 
         let appendix = workspace.join("appendix.md");
         std::fs::write(&appendix, "patched appendix").expect("patched artifact file");
@@ -3342,6 +3359,7 @@ mod scheduled_turn_tests {
             paths,
             vec![
                 persisted,
+                std::fs::canonicalize(&notes).expect("canonical notes"),
                 std::fs::canonicalize(&appendix).expect("canonical appendix")
             ]
         );

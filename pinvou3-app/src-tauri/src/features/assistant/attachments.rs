@@ -216,7 +216,7 @@ pub(crate) fn stage_remote_attachment_source(
 /// 的部分,不再全量嵌入 prompt——256K 窗口一条消息就能撑爆(实测 5000 行 xlsx 转
 /// CSV ≈ 237K tokens,直接顶穿 vLLM 262144 上限),且即使不炸窗口,小模型在超长
 /// 内联里的注意力质量也差。超限附件改注入「落盘路径 + 预览」,引导模型按需
-/// read_file 分页 / exec_shell 聚合(底座 read_file 原生支持 start_line/max_lines)。
+/// `read` 分页 / `bash` 聚合（底座 `read` 原生支持 offset/limit）。
 pub(crate) const ATTACH_INLINE_MAX_TOKENS: u32 = 8_000;
 const ATTACH_TOTAL_BUDGET_TOKENS: u32 = 16_000;
 /// 路径模式的开头预览:行数与字符双上限,先到为准。
@@ -346,14 +346,13 @@ fn push_large_attachment_section(
     ));
     if read_only_tools {
         out.push_str(
-            "- 通读/定位:用 `File(action=\"read\")` 分页(start_line/max_lines;返回 \
-             truncated=\"true\" 时按 next_start_line 续读)\n\
-             - 当前会话只有只读工具;不要请求 Bash、代码执行或 File 写入动作\n",
+            "- 通读/定位:用 `read(path=..., offset=..., limit=...)` 分页;输出截断时增加 offset 续读\n\
+             - 当前会话只有只读工具;不要请求 bash、代码执行、write 或 edit\n",
         );
     } else {
         out.push_str(
-            "- 统计/筛选/聚合(尤其表格数据):优先用 `Bash(action=\"run\")` 写 awk 或 python 一次算出结果,不要逐页通读\n\
-             - 通读/定位:用 `File(action=\"read\")` 分页(start_line/max_lines;返回 truncated=\"true\" 时按 next_start_line 续读)\n",
+            "- 统计/筛选/聚合(尤其表格数据):优先用 `bash(command=...)` 写 awk 或 python 一次算出结果,不要逐页通读\n\
+             - 通读/定位:用 `read(path=..., offset=..., limit=...)` 分页;输出截断时增加 offset 续读\n",
         );
     }
 }
@@ -403,7 +402,7 @@ fn build_message_with_attachments_in_dir_with_access(
             out.push_str(&format!(", ~{} tokens", a.token_estimate));
         }
         out.push_str(")\n");
-        // 真实路径 —— AI 如果一定要 read_file 也能找到对的位置，
+        // 真实路径 —— AI 如果一定要用 read 也能找到对的位置，
         // 同时避免 AI 凭想象编造 workspace/<timestamp>-... 这种伪路径
         out.push_str(&format!("原始路径: `{}`\n", a.path));
         if a.kind == "image" {
@@ -442,14 +441,13 @@ fn build_message_with_attachments_in_dir_with_access(
                 inline_spent = inline_spent.saturating_add(a.token_estimate);
                 if read_only_tools {
                     out.push_str(
-                        "**以下代码块是文件完整内容,可直接使用,不需要再调 `File(action=\"read\")` / \
-                         `File(action=\"search_name\")` 重新读取。**当前会话只有只读工具;不要请求 File 写入、\
-                         Bash 或代码执行动作。\n",
+                        "**以下代码块是文件完整内容,可直接使用,不需要再调 `read` 或 `file_search` 重新读取。**\
+                         当前会话只有只读工具;不要请求 write、edit、bash 或代码执行动作。\n",
                     );
                 } else {
                     out.push_str(
-                        "**以下代码块是文件完整内容,可直接使用,不需要再调 `File(action=\"read\")` / \
-                         `File(action=\"search_name\")` 重新读取。**如需保存修改版本,用 `File(action=\"write\")` 写到 \
+                        "**以下代码块是文件完整内容,可直接使用,不需要再调 `read` 或 `file_search` 重新读取。**\
+                         如需保存修改版本,用 `write` 写到 \
                          PINVOU3_WORKSPACE 下;单个文件过大时拆分为多个有明确用途的文件。\n",
                     );
                 }
@@ -584,7 +582,7 @@ pub(crate) fn prepare_native_user_message_in_dir(
             segment.push_str(&format!(", ~{} tokens", a.token_estimate));
         }
         segment.push_str(")\n");
-        // 真实路径 —— AI 如果一定要 read_file 也能找到对的位置(与文本路径同行为)
+        // 真实路径 —— AI 如果一定要用 read 也能找到对的位置（与文本路径同行为）
         segment.push_str(&format!("原始路径: `{}`\n", a.path));
         if let Some(md) = &a.markdown {
             let fits = a.token_estimate <= ATTACH_INLINE_MAX_TOKENS
@@ -592,8 +590,8 @@ pub(crate) fn prepare_native_user_message_in_dir(
             if fits {
                 inline_spent = inline_spent.saturating_add(a.token_estimate);
                 segment.push_str(
-                    "**以下代码块是文件完整内容,可直接使用,不需要再调 `File(action=\"read\")` / \
-                     `File(action=\"search_name\")` 重新读取。**如需保存修改版本,用 `File(action=\"write\")` 写到 \
+                    "**以下代码块是文件完整内容,可直接使用,不需要再调 `read` 或 `file_search` 重新读取。**\
+                     如需保存修改版本,用 `write` 写到 \
                      PINVOU3_WORKSPACE 下;单个文件过大时拆分为多个有明确用途的文件。\n",
                 );
                 segment.push_str("```\n");
@@ -653,8 +651,9 @@ mod read_only_prompt_tests {
         );
 
         assert!(prompt.contains("当前会话只有只读工具"));
-        assert!(!prompt.contains("File(action=\"write\")"));
-        assert!(!prompt.contains("Bash(action=\"run\")"));
+        assert!(prompt.contains("`read` 或 `file_search`"));
+        assert!(!prompt.contains("`write`"));
+        assert!(!prompt.contains("bash(command="));
     }
 
     #[test]
@@ -666,9 +665,9 @@ mod read_only_prompt_tests {
             workspace.path(),
         );
 
-        assert!(prompt.contains("File(action=\"read\")"));
-        assert!(prompt.contains("不要请求 Bash、代码执行或 File 写入动作"));
-        assert!(!prompt.contains("Bash(action=\"run\")"));
-        assert!(!prompt.contains("File(action=\"write\")"));
+        assert!(prompt.contains("read(path=..., offset=..., limit=...)"));
+        assert!(prompt.contains("不要请求 bash、代码执行、write 或 edit"));
+        assert!(!prompt.contains("bash(command="));
+        assert!(!prompt.contains("`write`"));
     }
 }

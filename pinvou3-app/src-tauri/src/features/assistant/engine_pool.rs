@@ -27,13 +27,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 
 use anyhow::{Context, Result, bail};
+use deepseek_tui::AppMode;
 use deepseek_tui::core::events::TurnOutcomeStatus;
 use deepseek_tui::core::ops::Op;
 use deepseek_tui::models::{ContentBlock, Message};
 use deepseek_tui::tools::shell::{ShellJobSnapshot, ShellResult};
 use deepseek_tui::tools::spec::ToolSpec;
 use deepseek_tui::tools::user_input::UserInputResponse;
-use deepseek_tui::tui::app::AppMode;
 use parking_lot::Mutex as SyncMutex;
 use serde::Serialize;
 use tauri::AppHandle;
@@ -2330,7 +2330,7 @@ impl EnginePool {
             if let Err(e) = engine
                 .handle
                 .send(Op::SetDisallowedTools {
-                    tools: self.bridge.shape_disallowed_tools(&sid, tools.clone()),
+                    tools: Some(self.bridge.shape_disallowed_tools(&sid, tools.clone())),
                 })
                 .await
             {
@@ -2583,7 +2583,7 @@ fn resolve_eval_model_selection_from(
 
 pub(crate) fn user_display_message(text: impl Into<String>) -> Message {
     Message {
-        role: "user".to_string(),
+        role: deepseek_tui::models::Role::User,
         content: vec![ContentBlock::Text {
             text: text.into(),
             cache_control: None,
@@ -2607,7 +2607,7 @@ async fn persist_scheduled_prompt(
         store.update_messages(
             &session_id,
             vec![Message {
-                role: "user".to_string(),
+                role: deepseek_tui::models::Role::User,
                 content: vec![ContentBlock::Text {
                     text: prompt,
                     cache_control: None,

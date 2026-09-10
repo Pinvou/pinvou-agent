@@ -109,8 +109,8 @@ function createPersonalWorkbenchMessageMeta(userText = '', templateRef = null) {
   return meta;
 }
 
-function shouldUsePersonalWorkbenchScene(mode, subtab) {
-  return mode === 'work' && subtab === PERSONAL_WORKBENCH_SCENE_KEY;
+function shouldUsePersonalWorkbenchScene(subtab) {
+  return subtab === PERSONAL_WORKBENCH_SCENE_KEY;
 }
 
 export {

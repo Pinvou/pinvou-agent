@@ -72,12 +72,10 @@ for (const f of docs) {
   const text = read(f);
   assert.ok(!/Read 工具/.test(text), `${rel(f)}: 残留「Read 工具」`);
   assert.ok(!/\bread_file\b/.test(text), `${rel(f)}: 残留 read_file`);
-  // 裸工具名兜底（2026-08-18 #316 复审发现）：上游技能原文以「`read` 工具」「Write 工具」
-  // 等形态教引擎调用，规则 1 的 Read 工具/read_file 黑名单拦不住小写与 write/grep 变体。
-  // 权限枚举值（`edit` / `read` / `apply` 等表格单元格）不构成「X 工具」短语，不会误伤。
-  for (const m of text.matchAll(/\b(Read|Write|read|write|grep|Grep)[`’ ]*工具/g)) {
-    assert.ok(false, `${rel(f)}: 裸工具名「${m[0]}」应为 File(action="read"/"write") 口径`);
-  }
+  // CodeWhale v0.9.12 将小写 read/write/edit 与文件检索原语直接暴露给模型；
+  // File/Bash 仅用于旧会话 replay，不得继续写入运行时技能指导。
+  assert.ok(!text.includes('File(action='), `${rel(f)}: 残留隐藏 File replay 工具名`);
+  assert.ok(!text.includes('Bash(action='), `${rel(f)}: 残留隐藏 Bash replay 工具名`);
   for (const line of text.split("\n")) {
     if (line.includes("lark-cli update")) {
       assert.ok(

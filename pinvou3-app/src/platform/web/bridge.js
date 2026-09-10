@@ -223,13 +223,15 @@
     currentSessionModelId: null, // 当前 active session 显式绑定的模型;null=跟随全局默认
     superPermEnabled: false,
     modeState: { mode: "yolo" },
-    // 三个工作区 lane（work/design/code）的全局默认 mode（null=该 lane 未显式
-    // 选过；缺省 code→plan、work/design→yolo）。草稿态 chip 显示与切换的事实源，
-    // 启动时经 get_mode_defaults 拉取；草稿切换经 set_mode_default 写回。
-    modeDefaults: { work: null, design: null, code: null },
-    // 当前聊天页所处 lane（work/design；code 页车道有自己的草稿控件逻辑）。
-    // lane 是纯前端概念，由 ChatView 随 pinvouMode 显式传入，bridge 不读
-    // localStorage。
+    // Per-lane (work/code) global default modes (null = the lane was never
+    // explicitly chosen; defaults code→plan, work→yolo). Source of truth for
+    // the draft-state chip display and switches: fetched at startup via
+    // get_mode_defaults, written back on draft switches via set_mode_default.
+    modeDefaults: { work: null, code: null },
+    // The lane the current chat page is in (work; the code page lane has its
+    // own draft-control logic). The lane is a pure frontend concept, passed
+    // in explicitly by ChatView with pinvouMode; the bridge never reads
+    // localStorage.
     modeLane: "work",
     // 最新 plan/todos 快照（用于 mode header 进度 chip，与 plan_ready 卡解耦）
     planSnapshot: { plan: null, todos: null },
@@ -425,7 +427,8 @@
       deviceUploadDigestInvalid: "the attachment integrity digest was invalid. Try again.",
       deviceUploadIntegrityMismatch: "the attachment content was corrupted in transit. Upload it again.",
       turnAlreadyInProgress: "⚠️ This chat is already processing a turn. The duplicate send was not executed.",
-      compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactAuto: " (auto)",
+      compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactCancel: "Context compaction canceled", compactAuto: " (auto)",
+      toolGateDecision: "Permission gate", toolGateAllowed: "allowed", toolGateDenied: "denied", toolGateUnavailable: "could not review and denied", toolGateAgent: "agent", toolGateRisk: "risk",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
       compactInactive: "The session engine is not running yet. Send a message before compacting the context",
       gpuUnavailable: "GPU info unavailable",
@@ -556,7 +559,8 @@
       deviceUploadDigestInvalid: "添付ファイルの整合性ダイジェストが無効です。もう一度お試しください。",
       deviceUploadIntegrityMismatch: "添付ファイルの内容が転送中に破損しました。再度アップロードしてください。",
       turnAlreadyInProgress: "⚠️ このチャットでは別のターンを処理中です。重複した送信は実行されませんでした。",
-      compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactAuto: "（自動）",
+      compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactCancel: "コンテキストの圧縮をキャンセルしました", compactAuto: "（自動）",
+      toolGateDecision: "権限ゲート", toolGateAllowed: "許可", toolGateDenied: "拒否", toolGateUnavailable: "レビュー不能のため拒否", toolGateAgent: "エージェント", toolGateRisk: "リスク",
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
       compactInactive: "セッション Engine はまだ起動していません。メッセージを送信してからコンテキストを圧縮してください",
       gpuUnavailable: "GPU 情報を取得できません",
@@ -687,7 +691,8 @@
       deviceUploadDigestInvalid: "附件完整性校验值无效，请重试",
       deviceUploadIntegrityMismatch: "附件内容在传输中损坏，请重新上传",
       turnAlreadyInProgress: "⚠️ 当前会话已有一轮正在处理，本次重复发送未执行。",
-      compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactAuto: "（自动）",
+      compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactCancel: "已取消上下文压缩", compactAuto: "（自动）",
+      toolGateDecision: "权限闸门", toolGateAllowed: "允许", toolGateDenied: "拒绝", toolGateUnavailable: "无法审查并拒绝", toolGateAgent: "子智能体", toolGateRisk: "风险",
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
       compactInactive: "会话引擎尚未运行。请先发送一条消息，再压缩上下文",
       gpuUnavailable: "GPU 信息不可用",
@@ -2816,8 +2821,14 @@
   async function createScheduledTask(input) {
     return runScheduledTaskAction("create", async function () {
       const templateId = input && typeof input.templateId === "string" ? input.templateId.trim() : "";
+      // kind is create-time task metadata (currently only "memory_organize"; the
+      // backend rejects anything else). It deliberately stays out of
+      // SCHEDULED_TASK_WRITABLE_FIELDS so edit flows can never resend it.
+      // Kept identical to the tauri bridge contract (audit alignment).
+      const kind = input && typeof input.kind === "string" ? input.kind.trim() : "";
       const selectAfterCreate = !input || input.selectAfterCreate !== false;
       const backendInput = scheduledTaskBackendInput(input);
+      if (kind) backendInput.kind = kind;
       const created = await invoke("create_scheduled_task", { input: backendInput });
       if (!created || !created.id) {
         throw new Error(bt("scheduledCreateNoId"));
@@ -3098,7 +3109,8 @@
     // 会背离(persona 气泡 / ensureSession 失败的 system 报错卡只进 chatItems),否则残留卡顶掉「你好」。
     if (!state.activeSessionId && state.messages.length === 0 && state.chatItems.length === 0) {
       state.composerDraft = "";
-      // 草稿 mode 显示 = 当前 lane 全局默认（三分 lane 语义）。
+      // Draft mode display = the current lane's global default (two-lane
+      // semantics).
       state.modeState = currentDraftModeState();
       notify();
       return;
@@ -3106,8 +3118,9 @@
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
     state.activeSessionId = null;
     loadWorkingSetFrom(freshBuffer());
-    // freshBuffer 的 modeState 是通用缺省（yolo）；草稿显示须覆盖为本 lane
-    // 全局默认（work/design 各自的 last_mode）。
+    // freshBuffer's modeState is the generic default (yolo); the draft
+    // display must be overridden with this lane's global default (the work
+    // lane's last_mode).
     state.modeState = currentDraftModeState();
     notify();
   }
@@ -3151,11 +3164,13 @@
         getBuffer(meta.id).sessionRevision = String(meta.transcript_revision || meta.transcriptRevision || "");
         await refreshHistoryList();
         await syncModeState();
-        // 三分 lane 语义：后端 plain 缺省恒 Yolo、不区分 work/design 两个 lane；
-        // 新会话所在 lane 的全局默认为 plan 时，在物化此刻显式应用（写入即成为
-        // 该会话自己的 per-session 记录，全局默认不受影响）。
+        // Two-lane semantics: the backend's plain default is always Yolo and
+        // lanes are only work/code; when the materializing session's lane
+        // global default is plan, apply it right now (the write becomes that
+        // session's own per-session record; the global default is
+        // unaffected).
         const laneDefault = state.modeDefaults
-          && state.modeDefaults[state.modeLane === "design" ? "design" : "work"];
+          && state.modeDefaults[state.modeLane === "code" ? "code" : "work"];
         // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户
         // 可能已切走，对当前 active 会话执行 set_plan_mode_next 会改错对象。
         if (laneDefault === "plan") {
@@ -4345,7 +4360,7 @@
     return null;
   }
 
-  const SHELL_TOOL_NAMES = ["exec_shell", "task_shell_start", "shell", "Bash"];
+  const SHELL_TOOL_NAMES = ["bash", "exec_shell", "task_shell_start", "shell", "Bash"];
   const SHELL_WAIT_TOOL_NAMES = ["exec_shell_wait", "exec_wait", "task_shell_wait"];
 
   function isShellExecutionTool(name) {
@@ -4357,10 +4372,8 @@
       const item = state.chatItems[i];
       if (item && item.type === "tool" &&
           (isShellExecutionTool(item.name) || SHELL_WAIT_TOOL_NAMES.includes(item.name))) {
-        // Since engine v0.9.3 the wait observer is the canonical Bash tool
-        // with action="wait"; the exec_shell_wait/exec_wait names survive
-        // only in replayed legacy sessions. Cards carry the action both live
-        // (chat:tool_start) and after history replay.
+        // Lowercase `bash` is canonical in v0.9.12. Uppercase `Bash` and the
+        // dedicated wait names remain here for replayed legacy sessions.
         return SHELL_WAIT_TOOL_NAMES.includes(item.name) ||
           (item.name === "Bash" && item.args != null && item.args.action === "wait");
       }
@@ -4371,7 +4384,7 @@
   function mentionsShellTool(text) {
     // 子智能体的工具调用不产生 chat:tool_start，forwarder 把 mailbox 的
     // ToolCallStarted 转成 multiagent:agent_progress（status 形如
-    // "🔧 exec_shell (step 3)"）。据此调度快照轮询，让子 agent 的后台
+    // "🔧 bash (step 3)"，历史记录也可能是 exec_shell）。据此调度快照轮询，让子 agent 的后台
     // shell 任务被 applyShellSnapshots 发现。
     const raw = String(text || "");
     return SHELL_TOOL_NAMES.some((name) => raw.includes(name));
@@ -4504,7 +4517,7 @@
         if (!item && !running && suppressUnmatchedTerminal) return;
         if (!item) {
           item = {
-            type: "tool", toolId: "shell-task:" + job.id, name: "exec_shell",
+            type: "tool", toolId: "shell-task:" + job.id, name: "bash",
             args: { command: job.command || "" }, output: null, success: null,
             state: running ? "running" : "failed", shellSnapshot: true,
           };
@@ -4804,8 +4817,8 @@
       const action = String(args && args.action || "").toLowerCase();
       return ["write", "edit", "patch"].includes(action) ? action : null;
     }
-    if (name === "write_file") return "write";
-    if (name === "edit_file") return "edit";
+    if (name === "write" || name === "write_file") return "write";
+    if (name === "edit" || name === "edit_file") return "edit";
     return null;
   }
 
@@ -6614,6 +6627,32 @@
     else if (phase === "done" && pruneOnlyAuto) addOrMergePruneCompaction(compactId);
     else if (phase === "done") addSystemItem(bt("compactDone") + auto + " " + msg);
     else if (phase === "fail") addSystemItem(bt("compactFail") + auto + ": " + msg);
+    else if (phase === "cancel") addSystemItem(bt("compactCancel") + auto + (msg ? ": " + msg : ""), { compactId, compactPhase: "cancel" });
+  }); });
+
+  // Foundation sub-agent tool-gate decisions have no approval card. Keep the
+  // final allow/deny outcome visible in the web timeline for auditability.
+  listen("chat:tool_gate_decision", function (e) { onSessionEvent(e, function () {
+    const p = e.payload || {};
+    const decision = String(p.decision || "unavailable");
+    const decisionLabel = decision === "allowed"
+      ? bt("toolGateAllowed")
+      : decision === "denied"
+        ? bt("toolGateDenied")
+        : bt("toolGateUnavailable");
+    let text = bt("toolGateDecision") + ": " + (p.tool_name ? String(p.tool_name) + " — " : "") + decisionLabel;
+    if (p.agent_id) text += " · " + bt("toolGateAgent") + " " + String(p.agent_id);
+    if (p.risk) text += " · " + bt("toolGateRisk") + " " + String(p.risk);
+    if (p.reason) text += " · " + String(p.reason);
+    addSystemItem(text, {
+      toolGateDecision: true,
+      toolId: String(p.tool_id || ""),
+      toolName: String(p.tool_name || ""),
+      agentId: String(p.agent_id || ""),
+      decision,
+      reason: String(p.reason || ""),
+      risk: String(p.risk || ""),
+    });
   }); });
 
   // ── request_user_input：渲染选择卡片（不进 messages.json）─────────
@@ -7363,7 +7402,8 @@
   async function syncModeState() {
     const sid = state.activeSessionId;
     if (!sid) {
-      // 草稿态：显示当前 lane 的全局默认（三分 lane 语义），不再恒 yolo。
+      // Draft state: show the current lane's global default (two-lane
+      // semantics), no longer a constant yolo.
       state.modeState = currentDraftModeState();
       return;
     }
@@ -7385,10 +7425,10 @@
     }
   }
 
-  // ── lane 全局默认（工作/设计/代码三分，与 tauri bridge 对齐）────────
+  // ── lane global defaults (work/code split, aligned with the tauri bridge) ───────
   // 草稿态（无 active 会话）的 modeState：取当前 lane 的全局默认，缺省 yolo。
   function currentDraftModeState() {
-    const lane = state.modeLane === "design" ? "design" : "work";
+    const lane = state.modeLane === "code" ? "code" : "work";
     const d = state.modeDefaults && state.modeDefaults[lane];
     return { mode: d || "yolo", multiAgent: false };
   }
@@ -7404,7 +7444,7 @@
   }
   // ChatView 随 pinvouMode 传入当前 lane；草稿态立即按新 lane 默认刷新显示。
   function setModeLane(lane) {
-    const next = lane === "design" ? "design" : "work";
+    const next = lane === "code" ? "code" : "work";
     if (state.modeLane === next) return;
     state.modeLane = next;
     if (!state.activeSessionId) {
@@ -7422,7 +7462,7 @@
   // 草稿态 chip 切换：写本 lane 全局默认（不物化会话——物化时由
   // ensureSession 把 lane 默认应用到新会话）。
   async function setDraftMode(target) {
-    const lane = state.modeLane === "design" ? "design" : "work";
+    const lane = state.modeLane === "code" ? "code" : "work";
     try {
       const defaults = await invoke("set_mode_default", { lane, mode: target });
       if (defaults) state.modeDefaults = defaults;
@@ -7866,6 +7906,29 @@
       if (sid === state.activeSessionId) addSystemItem(bt("memoryNeverFailed") + e);
     }
   }
+  // AI organize memory ("AI 整理记忆"; same contract as tauri memory.js):
+  // operates on global memory data; the entry point still captures the session
+  // so success and failure are written back only to the originating session's
+  // panel. On success, reconcile runtime/warnings via applyMemoryWriteState and
+  // refetch the overview; the caller reads the report from the return value. On
+  // failure, rethrow: memory.error is the dedicated load-failure channel (the
+  // settings banner renders it as the generic "加载失败" (load failed) copy),
+  // so the organize failure reason is surfaced by the caller's catch and must
+  // not pollute that channel.
+  async function organizeMemory() {
+    if (!invoke) return null;
+    const sid = state.activeSessionId; // same as saveMemoryProfilePatch: after switching away, never write to B's panel
+    const result = await invoke("organize_memory");
+    if (sid === state.activeSessionId && result) applyMemoryWriteState(result);
+    // Organizing can merge/delete entries: refetch the overview to refresh the
+    // panel; return the raw payload.
+    await loadMemoryOverview();
+    return result;
+  }
+  async function loadOrganizeHistory() {
+    if (!invoke) return [];
+    return invoke("get_memory_organize_history");
+  }
   // ── 思考指示器状态（每次阶段切换重置计时）──────────────────────
   function startThinking() { state.thinking = { active: true, phase: "thinking", toolName: "", startedAt: Date.now() }; }
   function thinkingTool(name) { state.thinking = { active: true, phase: "tool", toolName: name || "", startedAt: Date.now() }; }
@@ -8017,7 +8080,8 @@
   }
   async function exitPlanToYolo() {
     const sid = state.activeSessionId;
-    // 草稿态：不物化会话，改写本 lane 全局默认（三分 lane 语义）。
+    // Draft state: do not materialize a session; rewrite this lane's global
+    // default (two-lane semantics).
     if (!sid) { await setDraftMode("yolo"); return; }
     try {
       // invoke 形状保持 { sessionId: state.activeSessionId }（协议指纹按文本
@@ -8029,8 +8093,9 @@
   }
   // 灯泡 toggle：plan ↔ yolo
   async function setPlanModeNext() {
-    // 草稿态：不物化会话，改写本 lane 全局默认（三分 lane 语义；旧实现会先
-    // ensureSession 物化——草稿页点 Plan 凭空造出空会话）。
+    // Draft state: do not materialize a session; rewrite this lane's global
+    // default (two-lane semantics; the old implementation called ensureSession
+    // first — clicking Plan on the draft page conjured an empty session).
     const sid = state.activeSessionId;
     if (!sid) { await setDraftMode("plan"); return; }
     try {
@@ -9882,7 +9947,8 @@
       window.PinvouWebClient.markStateReady();
     }
     if (hasCapability("superPermission")) await refreshSuperPerm();
-    // lane 全局默认（work/design/code）是草稿态 mode chip 的事实源，启动即拉取。
+    // The per-lane global defaults (work/code) are the source of truth for
+    // the draft-state mode chip; fetched at startup.
     refreshModeDefaults().catch(function () {});
     loadPersonas(); // 预载卡池(让聊天里草稿"已存入"判定能查到同名自制卡), fire-and-forget
     pollBackendStatus();
@@ -10084,6 +10150,8 @@
     confirmMemoryCandidate,
     ignoreMemoryCandidate,
     neverMemoryCandidate,
+    organizeMemory,
+    loadOrganizeHistory,
     // AI 造卡开场引导卡:落一条展示气泡 + 记一条 persona 事件(随会话持久化)。
     // 走 personaEvents 时间线,冷重载时 rerenderFromMessages 按 pos 还原 → 切会话/重启不丢。
     postCardCreatorIntro,

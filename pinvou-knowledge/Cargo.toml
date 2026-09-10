@@ -1,6 +1,6 @@
 [package]
 name = "pinvou-knowledge"
-version = "0.9.2"
+version = "0.9.3"
 description = "Pinvou 可复用知识库核心与自包含服务器"
 authors = ["pinvou"]
 license = "MIT"
@@ -49,7 +49,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 encoding_rs = "0.8"
 parking_lot = "0.12"
 rand = "0.10"
-rusqlite = { version = "0.39", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.11"

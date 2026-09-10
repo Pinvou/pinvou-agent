@@ -817,6 +817,24 @@ mod pinvou_scene_event_tests {
     }
 
     #[test]
+    fn legacy_design_scene_names_stay_valid() {
+        // The design lane has been merged into the work lane, but the scene
+        // marker strings design:poster / design:data-visualization /
+        // design:ppt are historical persisted data and must stay accepted by
+        // the whitelist.
+        for scene in ["design:poster", "design:data-visualization", "design:ppt"] {
+            let normalized = normalize_pinvou_scene_events(serde_json::json!([
+                { "pos": 1, "scene": scene }
+            ]))
+            .expect("legacy design scene must stay valid");
+            assert_eq!(
+                normalized,
+                serde_json::json!([{ "pos": 1, "scene": scene }])
+            );
+        }
+    }
+
+    #[test]
     fn scene_events_accept_ppt_design_scene() {
         // The design:ppt scene label must be accepted and persisted by the
         // backend, or the label on that message is lost after sidecar reload.

@@ -119,10 +119,10 @@ function loadFeature(name, contextOverrides, stateOverrides) {
     rerenderFromMessages() {},
     syncModeState() { return Promise.resolve(); },
     // 与 bridge.js 同构的草稿态显示解析：绑定草稿 → code lane（缺省 plan），
-    // 否则当前 lane 全局默认（缺省 yolo）。
+    // 否则当前 lane 全局默认（缺省 yolo；design 已并入 work，#428）。
     currentDraftModeState() {
       const boundDraft = !!state.draftWorkspacePath;
-      const lane = boundDraft ? 'code' : (state.modeLane === 'design' ? 'design' : 'work');
+      const lane = boundDraft || state.modeLane === 'code' ? 'code' : 'work';
       const d = state.modeDefaults && state.modeDefaults[lane];
       return { mode: d || (boundDraft ? 'plan' : 'yolo'), multiAgent: false };
     },
@@ -290,9 +290,14 @@ test('setDraftMode：未绑定草稿维持本 lane 语义且不暂存（回归�
   assert.deepEqual(rt.invokeArgs('set_mode_default'), [{ lane: 'work', mode: 'plan' }]);
   assert.equal(rt.state.pendingDraftMode, null, '未绑定草稿不引入暂存语义');
 
+  // 历史值 design 折叠进 work（#428 并入），code lane 保持独立。
   const rtDesign = loadFeature('interaction', null, { modeLane: 'design' });
   await rtDesign.api.setDraftMode('plan');
-  assert.deepEqual(rtDesign.invokeArgs('set_mode_default'), [{ lane: 'design', mode: 'plan' }]);
+  assert.deepEqual(rtDesign.invokeArgs('set_mode_default'), [{ lane: 'work', mode: 'plan' }]);
+
+  const rtCode = loadFeature('interaction', null, { modeLane: 'code' });
+  await rtCode.api.setDraftMode('plan');
+  assert.deepEqual(rtCode.invokeArgs('set_mode_default'), [{ lane: 'code', mode: 'plan' }]);
 });
 
 // ── code 权限偏好包装（YOLO 确认门事实源）──────────────────────

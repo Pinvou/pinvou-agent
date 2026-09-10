@@ -3,6 +3,7 @@ import {
   presentConversationItems,
 } from './conversation-model.js';
 const SHELL_TOOLS = new Set([
+  'bash',
   'exec_shell',
   'exec_shell_wait',
   'exec_wait',

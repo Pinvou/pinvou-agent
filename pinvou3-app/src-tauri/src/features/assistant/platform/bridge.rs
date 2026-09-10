@@ -21,6 +21,7 @@ pub use crate::platform::prefs;
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Result;
+use deepseek_tui::AppMode;
 use deepseek_tui::config::{
     ApiProvider, Config as DtConfig, ProviderConfig, ProvidersConfig, wire_model_for_provider,
 };
@@ -28,7 +29,6 @@ use deepseek_tui::core::engine::EngineConfig;
 use deepseek_tui::core::ops::Op;
 use deepseek_tui::hooks::{Hook, HookCondition, HookEvent, HookExecutor, HooksConfig};
 use deepseek_tui::prompts::InstructionSource;
-use deepseek_tui::tui::app::AppMode;
 
 use self::bundle::{
     Pinvou3Bundle, instructions_code_md, instructions_md, instructions_work_bound_md,
@@ -468,6 +468,15 @@ impl Pinvou3Bridge {
             .replace(
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
                 crate::platform::super_permission::instruction_block(),
+            )
+            // The user memory section is filled or dropped with the memory toggle (off by
+            // default plus force-off for en/ja, see the memory_section comment). Replaced
+            // at the session render layer rather than inside the OnceLock instructions_md,
+            // so a setting change takes effect on new sessions; old session prompts are
+            // left unchanged.
+            .replace(
+                "{{PINVOU3_MEMORY_SECTION}}\n",
+                bundle::memory_section(crate::features::memory::memory_enabled()),
             )
             // present_artifact 的 title 语言随 locale(原写死「中文 title」会把英文 UI 的产物
             // 标题/描述/后续总结整段拽回中文,见 prefs::title_language_name 注释)。
@@ -1443,7 +1452,10 @@ impl Pinvou3Bridge {
     pub fn instructions(&self) -> Vec<InstructionSource> {
         let mut out: Vec<InstructionSource> = vec![InstructionSource::Inline {
             name: "pinvou3:bundle/instructions".to_string(),
-            content: instructions_md().to_string(),
+            content: instructions_md().replace(
+                "{{PINVOU3_MEMORY_SECTION}}\n",
+                bundle::memory_section(crate::features::memory::memory_enabled()),
+            ),
         }];
         let user = paths::user_instructions();
         if user.is_file() {
@@ -1463,10 +1475,13 @@ impl Pinvou3Bridge {
             // —— pinvou3 自定义（destructure 这里 `_`，新结构体里覆盖）——
             model: _,
             workspace: _,
+            session_id: _,
             allow_shell: _,
             trust_mode: _,
             notes_path: _,
             mcp_config_path: _,
+            mcp_oauth_callback_port,
+            mcp_oauth_callback_url,
             skills_dir: _,
             plugin_registry: _,
             instructions: _,
@@ -1494,6 +1509,9 @@ impl Pinvou3Bridge {
             subagent_model_overrides,
             goal_objective,
             goal_max_continuations,
+            goal_continuation_delay_seconds,
+            reasoning_only_max_reprompts,
+            reasoning_only_reprompt_message,
             workshop,
             snapshots_max_workspace_bytes,
             search_provider: _, // pinvou3 显式构造 (见下),由 prefs.search 翻译
@@ -1502,8 +1520,6 @@ impl Pinvou3Bridge {
             mut tools_always_load,
             prefer_bwrap,
             turn_tool_security: _,
-            // pinvou3-fork 自定义:会话初始思考开关(显式构造见下)
-            reasoning_effort: _,
             // —— v0.8.49 上游新增字段,透传 default ——
             allowed_tools: _,
             tools,
@@ -1520,6 +1536,9 @@ impl Pinvou3Bridge {
             //   subagent_api_timeout 一样调大(配 C3 SSE idle-timeout 遥测),先透传 default 验证。
             search_base_url,
             stream_chunk_timeout,
+            turn_wall_clock,
+            stream_max_content_bytes,
+            stream_max_duration,
             // —— v0.8.58-60 上游新增字段,透传 default ——
             //   verbosity: concise 输出模式(CLI noninteractive 默认;GUI → None)。
             //   interactive_launch_limit: #3095 交互 fanout 闸信号量上限(default 4)。
@@ -1539,6 +1558,7 @@ impl Pinvou3Bridge {
             //   active_route_limits/skills_scan_codewhale_only/workspace_follow_symlinks: 透传。
             active_route_limits: _, // pinvou3 按 SavedModel + probe 显式构造，不透传 default
             skills_scan_codewhale_only,
+            explicit_skills_root_only: _, // bundle skills 是完整 filesystem authority
             max_admitted_subagents,
             subagents_enabled,
             auto_review_policy,
@@ -1546,6 +1566,8 @@ impl Pinvou3Bridge {
             workspace_follow_symlinks,
             exec_policy_engine,
             extra_tools,
+            bwrap_extensions,
+            read_denylist,
             fleet_roster,
             terminal_chrome_enabled,
             advisor_config,
@@ -1575,6 +1597,7 @@ impl Pinvou3Bridge {
             // pinvou3 覆盖
             model: self.model(),
             workspace: self.workspace.clone(),
+            session_id: None,
             allow_shell: self.allow_shell(),
             trust_mode: true,
             notes_path: paths::notes_path(),
@@ -1584,7 +1607,10 @@ impl Pinvou3Bridge {
             // prerequisites are missing. External Agents such as Codex ACP do not use this
             // path and therefore cannot receive browser tools.
             mcp_config_path: self.bundle.work_mode_mcp_config_path(),
+            mcp_oauth_callback_port,
+            mcp_oauth_callback_url,
             skills_dir: self.bundle.skills_dir.clone(),
+            explicit_skills_root_only: true,
             plugin_registry: None,
             instructions: self.instructions(),
             project_context_pack_enabled: false,
@@ -1685,6 +1711,9 @@ impl Pinvou3Bridge {
             subagent_model_overrides,
             goal_objective,
             goal_max_continuations,
+            goal_continuation_delay_seconds,
+            reasoning_only_max_reprompts,
+            reasoning_only_reprompt_message,
             workshop,
             snapshots_max_workspace_bytes,
             // pinvou3 search 后端: prefs 翻译。
@@ -1704,10 +1733,7 @@ impl Pinvou3Bridge {
             tools_always_load,
             prefer_bwrap,
             turn_tool_security: None,
-            // 会话初始思考开关：本地 vLLM(Qwen3.6)必须关 thinking。在 engine
-            // 配置层统一钉死，避免子智能体继承到未预期的思考模式。
-            reasoning_effort: self.request_reasoning_effort(),
-            // Pinvou 产品工具面使用 CodeWhale 0.9.5 原生 hard allowlist。它约束
+            // Pinvou 产品工具面使用 CodeWhale 0.9.12 原生 hard allowlist。它约束
             // 初始目录、tool_search 与 dispatch；SubAgent 角色仍会在此基础上进一步收窄。
             allowed_tools: Some(crate::features::assistant::tool_policy::allowed_tool_names()),
             tools,
@@ -1719,6 +1745,9 @@ impl Pinvou3Bridge {
             // v0.8.54-57 上游新增,透传 default(search_base_url=None / stream_chunk_timeout)
             search_base_url,
             stream_chunk_timeout,
+            turn_wall_clock,
+            stream_max_content_bytes,
+            stream_max_duration,
             // v0.8.58-60 上游新增,透传 default(verbosity/fanout 闸/goal 管理/disallowed_tools)
             verbosity,
             launch_concurrency,
@@ -1795,6 +1824,8 @@ impl Pinvou3Bridge {
             workspace_follow_symlinks,
             exec_policy_engine,
             extra_tools,
+            bwrap_extensions,
+            read_denylist,
             fleet_roster,
             terminal_chrome_enabled,
             advisor_config,
@@ -1825,6 +1856,7 @@ impl Pinvou3Bridge {
         let _ = std::fs::create_dir_all(&roots.execution);
         let _ = std::fs::create_dir_all(&roots.ledger);
         cfg.workspace = roots.execution;
+        cfg.session_id = Some(session_id.to_string());
         cfg.subagent_state_root = Some(roots.ledger);
         cfg.instructions = self.session_instructions(session_id);
         // 技能发现根按会话指向组合目录（skill 双 scope 治理：目录内容 = 该会话
@@ -2184,6 +2216,7 @@ impl Pinvou3Bridge {
             background: false,
             continue_on_error: false,
             name: Some("pinvou3-sensitive-firewall".into()),
+            plugin_authority: None,
         }];
 
         // Linux/macOS 桌面安装通常不继承用户登录 shell 的 PATH/SDK 环境。
@@ -2205,6 +2238,7 @@ impl Pinvou3Bridge {
                 background: false,
                 continue_on_error: false,
                 name: Some("pinvou3-cli-shell-env".into()),
+                plugin_authority: None,
             });
             hooks
         };
@@ -2265,6 +2299,7 @@ impl Pinvou3Bridge {
             background: false,
             continue_on_error: false,
             name: Some("pinvou3-multiagent-depth-guard".into()),
+            plugin_authority: None,
         });
         Arc::new(HookExecutor::new(config, workspace.to_path_buf()))
     }
@@ -2276,7 +2311,7 @@ impl Pinvou3Bridge {
     /// | mode | allow_shell | trust_mode | auto_approve | approval_mode | 实际效果 |
     /// |------|-------------|------------|--------------|---------------|---------|
     /// | Yolo | self.allow  | true       | true         | Auto          | 全自动 + 信任全家目录 |
-    /// | Plan | true        | false      | true         | Auto          | 只读工具集 + ReadOnly sandbox（底座 tool_setup.rs 按 mode 自动切换） |
+    /// | Plan | true        | true       | true         | Auto          | 只读工具集 + ReadOnly sandbox（底座 tool_setup.rs 按 mode 自动切换） |
     ///
     /// **M1 弱模型加固**: 在 user content 前 prepend `<system-reminder>` 段,
     /// 内容按 `phase` 动态生成。Claude Code 同款机制对抗 long-context 遗忘 +
@@ -2285,8 +2320,9 @@ impl Pinvou3Bridge {
     ///
     /// 注：底座现已让 `auto_approve = true` **旁路**可绕过的 Required 审批
     /// （`turn_loop.rs::registered_tool_approval_required`，早期版本不旁路）。
-    /// 需要审批事件的场景必须逐轮关掉它；Yolo 还会在底座重新折算成自动批准，
-    /// 因此需要审批的运行必须同步收紧 mode、trust 与审批字段；定时任务按 profile。
+    /// 需要审批事件的场景必须逐轮关掉它；Yolo 还会在底座重新折算成自动批准。
+    /// `trust_mode` 是本地 workspace 边界语义，不与是否自动批准联动；定时任务
+    /// 按其独立 profile 收紧权限与审批字段。
     pub fn resolve_runtime_route_for_model(
         &self,
         model: &str,
@@ -2307,8 +2343,9 @@ impl Pinvou3Bridge {
     }
 
     /// 解析携带本轮专家快照的路由。底座在真正执行 `agent(profile=...)` 前会
-    /// 从 `ResolvedRuntimeRoute.config.fleet` 重新构造名册，因此只更新
-    /// `EngineConfig.fleet_roster` 不足以支持 execution != ledger 的 Code 会话。
+    /// 从 `ResolvedRuntimeRoute.config.fleet` 重建仅含宿主 Config 来源、prompt-only
+    /// 的 profile overlay，因此只更新 `EngineConfig.fleet_roster` 不足以支持
+    /// execution != ledger 的 Code 会话，也不能依赖 ambient Personal/Workspace profile。
     pub(crate) fn resolve_multi_agent_runtime_route_for_model(
         &self,
         model: &str,
@@ -2399,7 +2436,7 @@ impl Pinvou3Bridge {
             allow_shell: false,
             trust_mode: false,
             auto_approve: false,
-            approval_mode: deepseek_tui::tui::approval::ApprovalMode::Never,
+            approval_mode: deepseek_tui::ApprovalMode::Never,
             translation_enabled: false,
             allowed_tools: Some(allowed_tools),
             hook_executor: None,
@@ -2458,16 +2495,21 @@ impl Pinvou3Bridge {
         hook_executor: Arc<HookExecutor>,
         expert_snapshot: Option<&ExpertRosterSnapshot>,
     ) -> Result<Op> {
+        let policy = self.session_policy(session_id);
+        // CodeWhale 0.9.12 no longer represents bypass authority as an
+        // AppMode variant. Keep mode and approval as separate typed inputs.
+        let (auto_approve, approval_mode) = policy.approval_params();
         let (allow_shell, trust_mode) = match mode {
-            AppMode::Yolo => (self.allow_shell(), true),
+            // Agent/Yolo 是本地单用户工作模式；workspace 信任是固定产品语义，
+            // 不能因未来调整 auto_approve 而意外收窄文件访问边界。
+            AppMode::Agent => (self.allow_shell(), true),
             // Plan: allow_shell=true 让 engine 正常路由 shell 工具，
             // 底座 tool_setup.rs 会把 sandbox 切到 ReadOnly + 工具白名单切到只读集。
             // trust_mode=true 让 list_dir/read_file 等只读工具能跨 session workspace
             // 边界（pinvou3 是本地单用户工具，无跨用户安全边界，写保护靠 ReadOnly
             // sandbox + 只读工具集，不依赖 trust_mode）。
             AppMode::Plan => (true, true),
-            // Agent mode pinvou3 不暴露，但保留 default 处理避免 panic
-            AppMode::Agent | AppMode::Auto | AppMode::Operate => (self.allow_shell(), false),
+            AppMode::Operate => (self.allow_shell(), false),
         };
         // 超级权限状态每 turn 实时注入(is_enabled() 每次读 disk),绕开
         // refresh_all_instructions no-op 导致的"切开关不生效"——静态 prompt
@@ -2479,7 +2521,6 @@ impl Pinvou3Bridge {
         // 策略产出(D-2,本期两模式同文);其余 mode 无 reminder——Yolo 大产物分块实测
         // 不再 load-bearing 已砍(只剩 sudo 动态状态),Agent pinvou3 不暴露。
         // 命中率优先于优雅:每段都是命令式、短、列禁令清单(Qwen3.6 友好)。
-        let policy = self.session_policy(session_id);
         // plan_reminder() 仅 Plan 产出 Some;原两步 match 的 `Some(r) => format!(…sudo)`
         // 分支要求 Some 且 mode≠Plan,永不命中,故合并为单 match 消除死分支。
         let mut reminder_body = match mode {
@@ -2489,7 +2530,7 @@ impl Pinvou3Bridge {
                 .map(str::to_string)
                 .unwrap_or_else(|| sudo.to_string()),
             // 其余 mode: 无 per-turn reminder,只注入动态 sudo 状态。
-            AppMode::Yolo | AppMode::Agent | AppMode::Auto | AppMode::Operate => sudo.to_string(),
+            AppMode::Agent | AppMode::Operate => sudo.to_string(),
         };
         // 卡片池: 该 session 加持了专家面具时,每 turn 注入 persona 人设(粘性身份)。
         if let Some(persona) = persona_reminder {
@@ -2499,7 +2540,6 @@ impl Pinvou3Bridge {
             format!("<system-reminder>\n{reminder_body}\n</system-reminder>\n\n{content}");
         let model = self.model();
         // 审批参数经会话策略产出(R-2),与 reminder 同一 policy 来源。
-        let (auto_approve, approval_mode) = policy.approval_params();
         let route = match expert_snapshot {
             Some(snapshot) => self.resolve_multi_agent_runtime_route_for_model(&model, snapshot)?,
             None => self.resolve_runtime_route_for_model(&model)?,
@@ -2762,6 +2802,21 @@ mod tests {
         assert!(bridge.multi_agent_mode_available("work"));
         assert!(bridge.multi_agent_mode_available("native-code"));
         assert!(!bridge.multi_agent_mode_available("external-acp"));
+    }
+
+    /// Pinvou does not expose a goal-continuation quiet-period setting. Keep
+    /// the foundation default at zero so `GoalContinuationWaiting` and
+    /// `GoalContinuationWaitEnded` remain unreachable in the desktop/remote
+    /// product path unless a future product change deliberately enables and
+    /// projects that lifecycle.
+    #[test]
+    fn goal_continuation_quiet_period_stays_disabled() {
+        assert_eq!(
+            fixture_bridge()
+                .build_engine_config()
+                .goal_continuation_delay_seconds,
+            0
+        );
     }
 
     #[test]
@@ -3710,9 +3765,8 @@ mod tests {
                 .check(codewhale_execpolicy::ExecPolicyContext {
                     command,
                     cwd: ".",
-                    // The engine resolves Bash(action=run) to exec_shell via
-                    // canonical_action_alias before consulting rules
-                    // (engine.rs exec_shell_ask_rule_decision).
+                    // The model-facing `bash` tool reaches the internal
+                    // `exec_shell` policy identity before consulting rules.
                     tool: Some("exec_shell"),
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
@@ -4171,7 +4225,7 @@ mod tests {
             .build_send_message_op(
                 "sess-plain",
                 "看看这张图\n[Attached image: /tmp/shot.png]".to_string(),
-                AppMode::Yolo,
+                AppMode::Agent,
                 None,
                 false,
             )
@@ -4934,13 +4988,14 @@ mod tests {
         const R: usize = 4_500;
         const S: usize = 4_000;
         const FRAMING: usize = 2_500;
-        // (模型名, 期望窗口, 底座该窗口的 output 预留)
+        // (模型名, 期望窗口)。输出预留与 emergency 预算直接取底座公开预算链，
+        // 不复制某个版本的分档常数。
         let cases = [
-            ("deepseek-v4-pro", 1_000_000usize, 262_144usize), // ≥500K → 底座 TURN_MAX
-            ("kimi-k2.6", 262_144, 24_576),                    // <500K → effective_max_output
-            ("doubao-pro-256k", 256_000, 24_576),
+            ("deepseek-v4-pro", 1_000_000usize),
+            ("kimi-k2.6", 262_144),
+            ("doubao-pro-256k", 256_000),
         ];
-        for (model, want_window, output) in cases {
+        for (model, want_window) in cases {
             let mut b = fixture_bridge();
             set_active_model(&mut b, ModelPreset::Deepseek, model, "https://x/v1", "");
             b.probed_context_tokens = None; // 云端不探测
@@ -4950,11 +5005,15 @@ mod tests {
                 "{model} 窗口应 {want_window}(catalog/hint),实得 {win}"
             );
             let t = b.build_engine_config().compaction.token_threshold;
-            let e = win - output - 1_024;
+            let e = deepseek_tui::core::engine::context_input_budget_for_route(
+                b.build_dt_config().api_provider(),
+                model,
+                b.route_limits_for_model(model),
+                0,
+            )
+            .expect("catalog model must have a canonical input budget");
             let conservative = (t + R) * K_NUM / K_DEN + S + FRAMING;
-            eprintln!(
-                "[cloud {model}] window={win} output={output} → T={t}  E={e}  conservative={conservative}"
-            );
+            eprintln!("[cloud {model}] window={win} → T={t}  E={e}  conservative={conservative}");
             assert!(
                 conservative <= e,
                 "{model}: T={t} 换算 conservative={conservative} 必须 ≤ E={e}(不倒置)"
@@ -5006,7 +5065,7 @@ mod tests {
             Op::SendMessage { content, .. } => content,
             other => panic!("期望 SendMessage,得到 {other:?}"),
         };
-        let yolo = content_of(AppMode::Yolo);
+        let yolo = content_of(AppMode::Agent);
         assert!(
             yolo.contains("<system-reminder>") && yolo.contains("超级权限"),
             "Yolo 能 exec,必须每 turn 注入超级权限状态,得到:\n{yolo}"
@@ -5028,7 +5087,7 @@ mod tests {
             .build_send_message_op(
                 "sess-plain",
                 "用户消息".to_string(),
-                AppMode::Yolo,
+                AppMode::Agent,
                 Some(persona.clone()),
                 false,
             )
@@ -5043,7 +5102,7 @@ mod tests {
         );
         // None 时不应出现该文案
         let op_none = bridge
-            .build_send_message_op("sess-plain", "hi".to_string(), AppMode::Yolo, None, false)
+            .build_send_message_op("sess-plain", "hi".to_string(), AppMode::Agent, None, false)
             .expect("resolve test route");
         if let Op::SendMessage { content, .. } = op_none {
             assert!(!content.contains("数据库架构师"), "未加持不应注入 persona");
@@ -5062,7 +5121,7 @@ mod tests {
             .build_send_message_op(
                 "sess-plain",
                 "hi".to_string(),
-                AppMode::Yolo,
+                AppMode::Agent,
                 None,
                 restrict,
             )
@@ -5093,7 +5152,7 @@ mod tests {
             .build_send_message_op(
                 "sess-code-project",
                 "hi".to_string(),
-                AppMode::Yolo,
+                AppMode::Agent,
                 None,
                 restrict,
             )
@@ -5144,15 +5203,14 @@ mod tests {
             panic!("expected SendMessage")
         };
         assert_eq!(mode, AppMode::Agent);
-        assert!(content.contains("only callable tool is exactly `File`"));
+        assert!(content.contains(
+            "only callable tools are exactly `read`, `list_dir`, `file_search`, and `grep_files`"
+        ));
         assert!(content.ends_with("question"));
         assert!(!allow_shell);
         assert!(!trust_mode);
         assert!(!auto_approve);
-        assert_eq!(
-            approval_mode,
-            deepseek_tui::tui::approval::ApprovalMode::Never
-        );
+        assert_eq!(approval_mode, deepseek_tui::ApprovalMode::Never);
         assert_eq!(
             allowed_tools.unwrap(),
             policy
@@ -5176,7 +5234,7 @@ mod tests {
         );
 
         let ordinary = bridge
-            .build_send_message_op("gui-session", "hello".into(), AppMode::Yolo, None, false)
+            .build_send_message_op("gui-session", "hello".into(), AppMode::Agent, None, false)
             .unwrap();
         assert!(matches!(
             ordinary,
@@ -5290,10 +5348,10 @@ mod tests {
         );
         assert!(!cfg.memory_enabled, "memory feature 暂不开（Phase C）");
         assert_eq!(
-            cfg.reasoning_effort.as_deref(),
+            bridge.request_reasoning_effort().as_deref(),
             Some("off"),
-            "本地 vLLM(Qwen3.6)会话初始 thinking 必须关；引擎配置层统一钉死，\
-             避免子智能体继承到未预期的思考模式"
+            "本地 vLLM(Qwen3.6)每轮 thinking 必须关；v0.9.12 由 SendMessage 下发，\
+             不再依赖已删除的 EngineConfig 全局字段"
         );
         assert_eq!(cfg.locale_tag, "zh-Hans", "默认中文 locale");
         assert_eq!(
@@ -5672,7 +5730,7 @@ mod tests {
             hook_executor: Some(message_executor),
             ..
         } = bridge
-            .build_send_message_op("sess-plain", "test".into(), AppMode::Yolo, None, false)
+            .build_send_message_op("sess-plain", "test".into(), AppMode::Agent, None, false)
             .expect("resolve test route")
         else {
             panic!("每轮 SendMessage 必须显式携带 hook executor");
@@ -5787,7 +5845,7 @@ mod tests {
         unsafe { std::env::remove_var("PINVOU3_ALLOW_SHELL") };
         let bridge = fixture_bridge();
         let op = bridge
-            .build_send_message_op("sess-plain", "hi".into(), AppMode::Yolo, None, false)
+            .build_send_message_op("sess-plain", "hi".into(), AppMode::Agent, None, false)
             .expect("resolve test route");
         let (_allow_shell, trust_mode) = extract_shell_trust(op);
         assert!(trust_mode, "Yolo 模式 trust_mode 必须 true");
@@ -5858,7 +5916,7 @@ mod tests {
         // mode 匹配产出 None)。
         let bridge = fixture_bridge();
         let yolo = match bridge
-            .build_send_message_op("sess-plain", "hi".into(), AppMode::Yolo, None, false)
+            .build_send_message_op("sess-plain", "hi".into(), AppMode::Agent, None, false)
             .expect("resolve test route")
         {
             Op::SendMessage { content, .. } => content,
@@ -6440,13 +6498,8 @@ mod tests {
             Some("off"),
             "DtConfig 注入点必须透传显式档位"
         );
-        assert_eq!(
-            bridge.build_engine_config().reasoning_effort.as_deref(),
-            Some("off"),
-            "EngineConfig 注入点必须透传显式档位"
-        );
         let op = bridge
-            .build_send_message_op("sess-plain", "hi".to_string(), AppMode::Yolo, None, false)
+            .build_send_message_op("sess-plain", "hi".to_string(), AppMode::Agent, None, false)
             .expect("resolve test route");
         let Op::SendMessage {
             reasoning_effort, ..
@@ -7568,7 +7621,7 @@ mod tests {
             "k",
         );
         let ordinary_op = bridge
-            .build_send_message_op("plain-session", "hi".into(), AppMode::Yolo, None, false)
+            .build_send_message_op("plain-session", "hi".into(), AppMode::Agent, None, false)
             .expect("build op");
         let workspace = std::env::temp_dir().join("pinvou3-multiagent-send-hook");
         let snapshot = ExpertRosterSnapshot::capture();
@@ -7576,7 +7629,7 @@ mod tests {
             .build_multi_agent_send_message_op(
                 "multi-agent-session",
                 "hi".into(),
-                AppMode::Yolo,
+                AppMode::Agent,
                 None,
                 false,
                 &workspace,
@@ -7601,7 +7654,7 @@ mod tests {
         else {
             panic!("multi-agent SendMessage op expected");
         };
-        assert_eq!(mode, AppMode::Yolo, "会话模式原样透传，不被多智能体改写");
+        assert_eq!(mode, AppMode::Agent, "会话模式原样透传，不被多智能体改写");
         assert_eq!(multi_mode, mode);
         assert_eq!(
             allowed_tools,

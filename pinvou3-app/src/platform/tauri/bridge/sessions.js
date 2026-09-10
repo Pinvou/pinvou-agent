@@ -568,7 +568,8 @@
     // 会背离(persona 气泡 / ensureSession 失败的 system 报错卡只进 chatItems),否则残留卡顶掉「你好」。
     if (!state.activeSessionId && state.messages.length === 0 && state.chatItems.length === 0) {
       state.composerDraft = "";
-      // 草稿 mode 显示 = 当前 lane 全局默认（三分 lane 语义）。
+      // Draft mode display = the current lane's global default (two-lane
+      // semantics).
       state.modeState = currentDraftModeState();
       notify();
       return;
@@ -576,8 +577,9 @@
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
     state.activeSessionId = null;
     loadWorkingSetFrom(freshBuffer());
-    // freshBuffer 的 modeState 是通用缺省（yolo）；草稿显示须覆盖为本 lane
-    // 全局默认（work/design 各自的 last_mode）。
+    // freshBuffer's modeState is the generic default (yolo); the draft
+    // display must be overridden with this lane's global default (the work
+    // lane's last_mode).
     state.modeState = currentDraftModeState();
     notify();
   }
@@ -755,7 +757,7 @@
         await syncModeState();
         if (boundWorkspace) {
           // 绑定工作目录的会话安全姿态对齐 code 模式：后端已为绑定会话按
-          // code lane 全局默认解析 mode，此处不再把 work/design lane 默认经
+          // code lane 全局默认解析 mode，此处不再把 work lane 默认经
           // set_plan_mode_next 套用；仅当用户在草稿态显式暂存过 mode 选择时
           // 按暂存值应用（切 yolo 的一次性确认门在草稿切换时已由 ChatView 过过）。
           if (stagedDraftMode === "plan" || stagedDraftMode === "yolo") {
@@ -773,11 +775,13 @@
             }
           }
         } else {
-        // 三分 lane 语义：后端 plain 缺省恒 Yolo、不区分 work/design 两个 lane；
-        // 新会话所在 lane 的全局默认为 plan 时，在物化此刻显式应用（写入即成为
-        // 该会话自己的 per-session 记录，全局默认不受影响）。
+        // Two-lane semantics (#428 merged design into work): the backend's
+        // plain default is always Yolo and lanes are only work/code; when the
+        // materializing session's lane global default is plan, apply it right
+        // now (the write becomes that session's own per-session record; the
+        // global default is unaffected).
         const laneDefault = state.modeDefaults
-          && state.modeDefaults[state.modeLane === "design" ? "design" : "work"];
+          && state.modeDefaults[state.modeLane === "code" ? "code" : "work"];
         // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户
         // 可能已切走，对当前 active 会话执行 set_plan_mode_next 会改错对象。
         if (laneDefault === "plan") {

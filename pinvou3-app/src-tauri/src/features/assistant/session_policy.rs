@@ -12,7 +12,7 @@
 //! 穷尽性测试兜底（测试遍历的 ALL 已被编译期哨兵绑定到枚举变体）。
 
 use crate::core::session_mode::SessionMode;
-use deepseek_tui::tui::approval::ApprovalMode;
+use deepseek_tui::ApprovalMode;
 
 /// Plan 模式 per-turn reminder:命令式、短、列禁令(Qwen3.6 友好)。写保护真防线是底座
 /// 只读工具集 + ReadOnly sandbox,禁写条只是减少弱模型撞墙的引导(消融证非 load-bearing)。

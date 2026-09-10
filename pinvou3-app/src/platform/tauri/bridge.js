@@ -257,13 +257,15 @@
     currentSessionModelId: null, // 当前 active session 显式绑定的模型;null=跟随全局默认
     superPermEnabled: false,
     modeState: { mode: "yolo" },
-    // 三个工作区 lane（work/design/code）的全局默认 mode（null=该 lane 未显式
-    // 选过；缺省 code→plan、work/design→yolo）。草稿态 chip 显示与切换的事实源，
-    // 启动时经 get_mode_defaults 拉取；草稿切换经 set_mode_default 写回。
-    modeDefaults: { work: null, design: null, code: null },
-    // 当前聊天页所处 lane（work/design；code 页车道有自己的草稿控件逻辑）。
-    // lane 是纯前端概念，由 ChatView 随 pinvouMode 显式传入，bridge 不读
-    // localStorage。
+    // Per-lane (work/code) global default modes (null = the lane was never
+    // explicitly chosen; defaults code→plan, work→yolo). Source of truth for
+    // the draft-state chip display and switches: fetched at startup via
+    // get_mode_defaults, written back on draft switches via set_mode_default.
+    modeDefaults: { work: null, code: null },
+    // The lane the current chat page is in (work; the code page lane has its
+    // own draft-control logic). The lane is a pure frontend concept, passed
+    // in explicitly by ChatView with pinvouMode; the bridge never reads
+    // localStorage.
     modeLane: "work",
     // 草稿态寄存的多智能体开关意图：不物化会话，首条消息创建会话时落后端。
     pendingDraftMultiAgent: false,
@@ -463,7 +465,8 @@
       steerFailed: "Interrupt failed (session unavailable or engine not running); your text was restored to the input",
       interruptQueuedFailed: "Interrupt & send failed; the message was restored to the queue",
       interruptBusy: "Another interrupt is already in progress; the message stays queued — retry in a moment",
-      compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactAuto: " (auto)",
+      compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactCancel: "Context compaction canceled", compactAuto: " (auto)",
+      toolGateDecision: "Permission gate", toolGateAllowed: "allowed", toolGateDenied: "denied", toolGateUnavailable: "could not review and denied", toolGateAgent: "agent", toolGateRisk: "risk",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
       compactInactive: "The session engine is not running yet. Send a message before compacting the context",
       gpuUnavailable: "GPU info unavailable",
@@ -563,7 +566,8 @@
       steerFailed: "割り込みに失敗しました（セッション無効またはエンジン未起動）。内容は入力欄に復元しました",
       interruptQueuedFailed: "割り込み送信に失敗しました。メッセージはキューに復元しました",
       interruptBusy: "別の割り込みが進行中のため実行できません。メッセージはキューに残ります。しばらくしてから再試行してください",
-      compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactAuto: "（自動）",
+      compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactCancel: "コンテキストの圧縮をキャンセルしました", compactAuto: "（自動）",
+      toolGateDecision: "権限ゲート", toolGateAllowed: "許可", toolGateDenied: "拒否", toolGateUnavailable: "レビュー不能のため拒否", toolGateAgent: "エージェント", toolGateRisk: "リスク",
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
       compactInactive: "セッション Engine はまだ起動していません。メッセージを送信してからコンテキストを圧縮してください",
       gpuUnavailable: "GPU 情報を取得できません",
@@ -663,7 +667,8 @@
       steerFailed: "插队失败（会话不可用或引擎未运行），内容已恢复到输入框",
       interruptQueuedFailed: "插队发送失败，消息已恢复到排队区",
       interruptBusy: "已有打断正在进行，消息保留在排队区，请稍后重试",
-      compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactAuto: "（自动）",
+      compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactCancel: "已取消上下文压缩", compactAuto: "（自动）",
+      toolGateDecision: "权限闸门", toolGateAllowed: "允许", toolGateDenied: "拒绝", toolGateUnavailable: "无法审查并拒绝", toolGateAgent: "子智能体", toolGateRisk: "风险",
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
       compactInactive: "会话引擎尚未运行。请先发送一条消息，再压缩上下文",
       gpuUnavailable: "GPU 信息不可用",
@@ -1198,13 +1203,18 @@
     });
   }
 
-  // 草稿态（无 active 会话）的 modeState：取当前 lane 的全局默认，缺省 yolo
-  // （与后端 plain 缺省方向一致）。三分 lane 语义：草稿显示 = 本 lane 全局默认。
-  // 绑定了工作目录的草稿安全姿态对齐 code 模式：显示 code lane 全局默认，
-  // 无记录（首次）→ plan（只读方向是安全侧，与 code 页草稿兜底一致）。
+  // The draft-state (no active session) modeState: take the current lane's
+  // global default, falling back to yolo (aligned with the backend's plain
+  // default direction). Two-lane semantics (design merged into work, #428):
+  // the draft display = this lane's global default. A draft bound to a
+  // workspace aligns with the code lane's safety posture: show the code
+  // lane's global default, falling back to plan on first use (read-only is
+  // the safe side, same as the code page's draft fallback).
   function currentDraftModeState() {
     const boundDraft = !!state.draftWorkspacePath;
-    const lane = boundDraft ? "code" : (state.modeLane === "design" ? "design" : "work");
+    // 绑定草稿恒显示 code lane 默认；未绑定草稿跟随当前 lane（design 已并入
+    // work，#428）。
+    const lane = boundDraft || state.modeLane === "code" ? "code" : "work";
     const d = state.modeDefaults && state.modeDefaults[lane];
     return { mode: d || (boundDraft ? "plan" : "yolo"), multiAgent: false };
   }
@@ -2361,6 +2371,8 @@
   const confirmMemoryCandidate = memoryFeature.confirmMemoryCandidate;
   const ignoreMemoryCandidate = memoryFeature.ignoreMemoryCandidate;
   const neverMemoryCandidate = memoryFeature.neverMemoryCandidate;
+  const organizeMemory = memoryFeature.organizeMemory;
+  const loadOrganizeHistory = memoryFeature.loadOrganizeHistory;
   const artifactsFeature = installBridgeFeature("artifacts", { state, notify, invoke, bt, addSystemItem, dialogOpen, basename, isDeliverable, isAbsPath, sessionStates, discardManagedAttachment });
   const artifactInfo = artifactsFeature.artifactInfo;
   const readArtifactText = artifactsFeature.readArtifactText;
@@ -2520,7 +2532,8 @@
       startupMark("bridge:draft_entered");
     }
     if (needsSessionRuntime) {
-      // lane 全局默认（work/design/code）是草稿态 mode chip 的事实源，启动即拉取。
+      // The per-lane global defaults (work/code) are the source of truth
+      // for the draft-state mode chip; fetched at startup.
       startupAwait("bridge:refresh_mode_defaults", refreshModeDefaults);
     }
     if (!isDetachedWindow || detachedWindowKind === "session" || detachedWindowKind === "cardpool") {
@@ -2675,8 +2688,9 @@
       probeLocalServerKind,
     },
     interaction: { toggleSuperPerm,
-      // modeState 权威读取（评审 P1 后纳入公开面：main.jsx 从 code 页切回
-      // 工作/设计时拉一次实测值，避免 ChatView 挂载后显示旧 modeState）
+      // Authoritative modeState read (exposed after review P1: main.jsx
+      // pulls a fresh value when switching back from the code page to work,
+      // so ChatView does not mount with a stale modeState)
     syncModeState,
       // Plan/YOLO
     acceptPlan,
@@ -2772,6 +2786,8 @@
       confirmMemoryCandidate,
       ignoreMemoryCandidate,
       neverMemoryCandidate,
+      organizeMemory,
+      loadOrganizeHistory,
     },
     updater: {
       checkForUpdate,

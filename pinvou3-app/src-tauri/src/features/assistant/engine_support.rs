@@ -7,9 +7,9 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use deepseek_tui::ApprovalMode;
 use deepseek_tui::core::events::TurnOutcomeStatus;
 use deepseek_tui::core::ops::{Op, UserInputProvenance};
-use deepseek_tui::tui::approval::ApprovalMode;
 use tauri::{AppHandle, Manager};
 
 use crate::features::sessions::{ScheduledRunProfile, SessionStore};
@@ -176,9 +176,12 @@ fn is_file_artifact_tool(name: &str, input: &serde_json::Value) -> bool {
             .and_then(serde_json::Value::as_str)
             .is_some_and(|action| matches!(action, "write" | "edit" | "patch"));
     } else {
-        ["write_file", "edit_file", "apply_patch"]
+        matches!(
+            name,
+            "write" | "edit" | "write_file" | "edit_file" | "apply_patch"
+        ) || ["write_file", "edit_file", "apply_patch"]
             .iter()
-            .any(|tool| name == *tool || name.ends_with(&format!("_{tool}")))
+            .any(|tool| name.ends_with(&format!("_{tool}")))
     }
 }
 

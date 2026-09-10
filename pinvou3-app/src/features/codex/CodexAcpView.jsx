@@ -519,6 +519,7 @@ const NATIVE_CHAT_EVENTS = [
   'chat:tool_end',
   'chat:shell_task_status',
   'chat:compaction',
+  'chat:tool_gate_decision',
   'chat:usage',
   'chat:memory',
   'chat:user_input_required',
@@ -1562,8 +1563,10 @@ export function CodexAcpView({
     await performNativeModeSwitch(target, { isPlan });
   }
 
-  /// 草稿态暂存 mode 选择：本地暂存（新建会话时应用）+ 刷新 code lane 全局
-  /// 默认（三分 lane 语义：草稿切换写全局；已生成会话的切换不碰全局）。
+  /// Stage the draft mode choice: staged locally (applied when a session is
+  /// created) + refresh the code lane global default (two-lane semantics:
+  /// draft switches write the global; switches in already-materialized
+  /// sessions never touch it).
   function stageDraftMode(target) {
     setNativeDraftControls(current => ({ ...current, mode: target }));
     invoke('set_mode_default', { lane: 'code', mode: target })
@@ -3182,14 +3185,32 @@ export function CodexAcpView({
     if (item.type === 'system_notice' && item.legacyItem) {
       const legacy = item.legacyItem;
       if (legacy.compactPhase) {
-        const label = legacy.compactPhase === 'start'
-          ? codexCopy.compactStart
-          : legacy.compactPhase === 'fail'
-            ? codexCopy.compactFail
-            : codexCopy.compactDone;
+        const label = {
+          start: codexCopy.compactStart,
+          fail: codexCopy.compactFail,
+          cancel: codexCopy.compactCancel,
+        }[legacy.compactPhase] || codexCopy.compactDone;
         return (
           <div className="px-1 text-[11px] text-gray-400">
             {label}{legacy.text ? ` · ${legacy.text}` : ''}
+          </div>
+        );
+      }
+      if (legacy.toolGateDecision) {
+        const hasStructuredAuditDetails = ['toolName', 'reason', 'risk']
+          .some(key => Object.prototype.hasOwnProperty.call(legacy, key));
+        if (!hasStructuredAuditDetails && legacy.text) {
+          return <div className="px-1 text-[11px] text-gray-400">{legacy.text}</div>;
+        }
+        return (
+          <div className="px-1 text-[11px] text-gray-400">
+            {codexCopy.nativeToolGateDecision(
+              legacy.toolName,
+              legacy.decision,
+              legacy.reason,
+              legacy.risk,
+              legacy.agentId,
+            )}
           </div>
         );
       }
@@ -3798,11 +3819,16 @@ export function CodexAcpView({
                       title={availableCommands.length ? codexCopy.commandsAvailable : codexCopy.commandsAfterSession}>/</button>
                   )}
                   {isNativeAgent && (
-                    // 原生（品悟）车道的底栏控件：与工作/设计页共用同一套共享 composer
-                    // 控件（ComposerModeChip / ComposerModelSelector / ComposerKbSelector，
-                    // 显式会话态驱动 props 绕开 bridge 聊天 active 绑定）；行为（直调
-                    // per-session 命令、草稿暂存、busy 禁用、归属保护）不变。Plan 说明：
-                    // 原生车道已接 plan_snapshot/plan_ready，切 Plan 后方案以审批卡呈现。
+                    // Native (Pinvou) lane bottom-bar controls: share the
+                    // same composer controls as the work page
+                    // (ComposerModeChip / ComposerModelSelector /
+                    // ComposerKbSelector, with explicit session-state-driven
+                    // props bypassing the bridge chat-active binding);
+                    // behavior unchanged (direct per-session commands, draft
+                    // staging, busy disabling, ownership guard). Plan note:
+                    // the native lane is wired to plan_snapshot/plan_ready,
+                    // so after switching to Plan the proposal renders as an
+                    // approval card.
                     <div data-testid="native-composer-controls" className="flex min-w-0 flex-wrap items-center gap-2">
                       <ComposerModeChip
                         t={t}

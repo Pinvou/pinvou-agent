@@ -78,9 +78,10 @@ tshoot/report/control 五篇与上游一致，record.md / auth.md 的差异即�
    SkillRegistry 的 280 字符截断上限，压缩为 211 字符，并按品悟契约改为
    「何时用：」开头、附「泛指需求默认走本地工具」防误用语义。
 2. **读取工具名适配**：SKILL.md「录制查询」节 CRITICAL 前置块中的上游写法
-   「MUST 先用 Read 工具读取 `references/tmeet-record.md`」改为「MUST 先用
-   `File(action="read")` 工具读取」（CodeWhale canonical 工具族命名；全包实测
-   仅此 1 处，tmeet-auth.md 等其余文件无读取工具指引）。
+   「MUST 先用 Read 工具读取 `references/tmeet-record.md`」在旧底座时期曾改为
+   `File(action="read")`（历史事实）；当前 CodeWhale v0.9.12 同步登记为模型
+   可见的 canonical `read(path="references/tmeet-record.md")`。全包实测仅此
+   1 处，tmeet-auth.md 等其余文件无读取工具指引。
 3. **悬空占位链接修复**：命令总览说明行中的占位示例
    `[references/xxx.md](references/xxx.md)` 改为纯代码格式 `references/xxx.md`
    （原写法是指向不存在文件的悬空 markdown 链接，仅去链接化，语义不变）。

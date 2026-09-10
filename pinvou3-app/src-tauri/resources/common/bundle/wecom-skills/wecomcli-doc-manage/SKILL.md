@@ -23,7 +23,7 @@ metadata:
 
 ## 接口路由表
 
-路由表第二列若是 `references/xxx.md` 链接 → 必须先用 `File(action="read")` 读完该文件，再构造命令。
+路由表第二列若是 `references/xxx.md` 链接 → 必须先用 `read` 读完该文件，再构造命令。
 
 | 用户意图                                                    | 参考位置 |
 |---------------------------------------------------------|---|
@@ -122,11 +122,11 @@ wecom-cli doc search --json '{"keywords":["待办 tool","待办","tool","产品"
 | `wecomcli-contact` | 添加文档成员时用户只给姓名，需先解析为 `userid` | `wecomcli-contact` 的 `contact users search` → 返回 `userid` → 本 skill 的 `doc members update` 接口 |
 
 ### 需要读取、打开搜索到的docid
-拿到 `docid` 只是第一步。读取/打开文档正文是另一类技能，**必须**按doc_types，先用 `File(action="read")` 读取对应"内容技能"的 SKILL.md，再按其文档发命令：
+拿到 `docid` 只是第一步。读取/打开文档正文是另一类技能，**必须**按doc_types，先用 `read` 读取对应"内容技能"的 SKILL.md，再按其文档发命令：
   - `doc`（在线文档）→ `wecomcli-doc` 技能
   - `smartpage`（智能文档）→ `wecomcli-smartpage` 技能
   - `sheet`（在线表格）→ `wecomcli-sheet` 技能
   - `smartsheet`（智能表格）→ `wecomcli-smartsheet` 技能
-严禁直接拼"读正文"的命令；首次读取正文前必须先用 `File(action="read")` 读取上述对应内容技能的 SKILL.md，命令一律以该 SKILL.md 为准。
+严禁直接拼"读正文"的命令；首次读取正文前必须先用 `read` 读取上述对应内容技能的 SKILL.md，命令一律以该 SKILL.md 为准。
 
 > 搜索多候选需确认 / 搜索意图类确认 / 必填参数（`docid`、权限角色等）缺失时，用简洁自然语言仅追问缺失或有歧义的信息；有候选项时在文字中列出供用户选择，不得自行猜测。

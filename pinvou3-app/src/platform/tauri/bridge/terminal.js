@@ -26,7 +26,7 @@
     return null;
   }
 
-  const SHELL_TOOL_NAMES = ["exec_shell", "exec_shell_wait", "exec_wait", "task_shell_start", "task_shell_wait", "shell", "Bash"];
+  const SHELL_TOOL_NAMES = ["bash", "exec_shell", "exec_shell_wait", "exec_wait", "task_shell_start", "task_shell_wait", "shell", "Bash"];
   const SHELL_WAIT_TOOL_NAMES = ["exec_shell_wait", "exec_wait", "task_shell_wait"];
 
   function isShellExecutionTool(name) {
@@ -37,10 +37,8 @@
     for (let i = state.chatItems.length - 1; i >= 0; i--) {
       const item = state.chatItems[i];
       if (item && item.type === "tool" && isShellExecutionTool(item.name)) {
-        // Since engine v0.9.3 the wait observer is the canonical Bash tool
-        // with action="wait"; the exec_shell_wait/exec_wait names survive
-        // only in replayed legacy sessions. Cards carry the action both live
-        // (chat:tool_start) and after history replay.
+        // Lowercase `bash` is canonical in v0.9.12. Uppercase `Bash` and the
+        // dedicated wait names remain here for replayed legacy sessions.
         return SHELL_WAIT_TOOL_NAMES.includes(item.name) ||
           (item.name === "Bash" && item.args != null && item.args.action === "wait");
       }
@@ -51,7 +49,8 @@
   function mentionsShellTool(text) {
     // 子智能体的工具调用不产生 chat:tool_start（forwarder 只把 Mailbox 的
     // ToolCallStarted 转成 multiagent:agent_progress），只能从进展文本里认出
-    // shell 工具并借此调度快照轮询。status 形如 "🔧 exec_shell (step 3)"。
+    // shell 工具并借此调度快照轮询。status 形如 "🔧 bash (step 3)"；
+    // 历史子智能体也可能仍报告 exec_shell。
     const raw = String(text || "");
     return SHELL_TOOL_NAMES.some((name) => raw.includes(name));
   }
@@ -162,7 +161,7 @@
         if (!item && !running && suppressUnmatchedTerminal) return;
         if (!item) {
           item = {
-            type: "tool", toolId: "shell-task:" + job.id, name: "exec_shell",
+            type: "tool", toolId: "shell-task:" + job.id, name: "bash",
             args: { command: job.command || "" }, output: null, success: null,
             state: running ? "running" : "failed", shellSnapshot: true,
           };

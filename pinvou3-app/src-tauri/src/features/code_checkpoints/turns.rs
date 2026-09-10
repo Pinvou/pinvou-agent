@@ -27,7 +27,7 @@ mod tests {
 
     fn text_message(role: &str, text: &str) -> Message {
         Message {
-            role: role.to_string(),
+            role: role.into(),
             content: vec![ContentBlock::Text {
                 text: text.to_string(),
                 cache_control: None,
@@ -37,7 +37,7 @@ mod tests {
 
     fn tool_result_message() -> Message {
         Message {
-            role: "user".to_string(),
+            role: deepseek_tui::models::Role::User,
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: "call_1".to_string(),
                 content: "tool output".to_string(),

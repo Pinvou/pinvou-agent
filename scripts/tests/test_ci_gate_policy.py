@@ -112,7 +112,10 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertNotIn("--allow-registered-candidate", verifier_gate)
         self.assertNotIn("LOCAL_SECURITY_HEAD", verifier)
         self.assertIn('[[ "$tag_target" != "$gitlink" ]]', verifier)
-        self.assertIn('PINVOU_CODEWHALE_TAG="pinvou-v0.9.5-r13"', verifier)
+        self.assertIn('PINVOU_CODEWHALE_BRANCH="pinvou3-clean"', verifier)
+        self.assertIn('PINVOU_CODEWHALE_TAG="pinvou-v0.9.12-r1"', verifier)
+        self.assertIn('[[ "$branch_target" != "$gitlink" ]]', verifier)
+        self.assertIn('[[ "$branch_target" != "$tag_target" ]]', verifier)
         self.assertIn("unknown argument", verifier)
 
     def test_pr_modes_and_stacked_pr_triggers_are_explicit(self):
@@ -298,7 +301,7 @@ class CiGatePolicyTests(unittest.TestCase):
             "pinvou3-app/src-tauri/src/features/voice/voice_asr.rs",
             "pinvou3-app/src-tauri/src/features/updater/mod.rs",
             "pinvou3-app/src-tauri/src/features/future_feature/mod.rs",
-            "pinvou3-app/src-tauri/tests/headless_bridge_contract.rs",
+            "pinvou3-app/src-tauri/src/features/assistant/product_runtime/headless_bridge_contract_tests.rs",
         )
         for path in high_risk_examples:
             self.assertTrue(
@@ -346,9 +349,11 @@ class CiGatePolicyTests(unittest.TestCase):
         rust_lint = self.pr_workflow.split(
             "\n  rust-lint:", maxsplit=1
         )[1].split("\n  rust-test:", maxsplit=1)[0]
+        self.assertIn("timeout-minutes: 30", rust_lint)
         self.assertIn("RUN_HEAVY_RUST_CHECKS", rust_lint)
         self.assertIn("github.event.pull_request.draft == false", rust_lint)
         self.assertIn("needs.changes.outputs.rust_dependencies == 'true'", rust_lint)
+        self.assertNotIn("headless_bridge_contract_tests", rust_lint)
 
         rust_test = self.pr_workflow.split("\n  rust-test:", maxsplit=1)[1].split(
             "\n  windows-rust-test:", maxsplit=1
@@ -378,7 +383,13 @@ class CiGatePolicyTests(unittest.TestCase):
             rust_test,
         )
         self.assertIn(
-            "cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-threads=1",
+            "cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib "
+            "--features benchmark-hooks --locked -- --test-threads=1",
+            rust_test,
+        )
+        self.assertIn(
+            "cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib "
+            "--features benchmark-hooks --locked --no-run",
             rust_test,
         )
         # push(main) 只编译暖 cache,不执行测试:MQ 已对同一组合树跑过全量测试;
