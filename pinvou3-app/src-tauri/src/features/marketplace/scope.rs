@@ -40,7 +40,8 @@ pub struct DisabledBundlesFile {
     /// 已被用户显式初始化（改过开关）的 scope 集合。
     #[serde(default)]
     pub initialized: std::collections::BTreeSet<String>,
-    /// 项目级 skills 是否对 code 会话开启（默认关）。随技能侧迁入本文件。
+    /// 项目级 skills 是否开启（默认关；生效条件是会话绑定了项目/工作目录，
+    /// 非仅 code 会话，见 skill_materialization.rs）。随技能侧迁入本文件。
     #[serde(default)]
     pub project_skills_enabled: bool,
     /// plain scope 默认策略迁移标记：false（旧版文件无此字段）= 文件写于 plain
