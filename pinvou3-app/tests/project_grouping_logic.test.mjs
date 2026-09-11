@@ -42,6 +42,9 @@ const project = (id, name, roots, position) => ({
   position,
 });
 
+// origin=folder 的物化项目(锚定判定的唯一覆盖来源,§9.9)。
+const folderProject = (id, name, roots, position) => ({ ...project(id, name, roots, position), origin: 'folder' });
+
 // ── 目录视图(纯物理层) ─────────────────────────────────────────────────────
 
 test("folder view buckets by workspace path, activity-sorted, temporary last", () => {
@@ -155,21 +158,36 @@ test("project view: stale assignment ids fall through to auto grouping", () => {
   assert.deepEqual(groups[0].rows.map((r) => r.id), ["a1"]);
 });
 
-test("project view: longest matching root wins for nested roots", () => {
-  const projects = [
-    project("p1", "Work", ["D:/work"], 0),
-    project("p2", "Deep", ["D:/work/deep"], 1),
+test("project view: smallest position claims sessions covered by several projects", () => {
+  // §9.9(2026-09-11 裁定):跨项目重叠/嵌套合法,多命中不再按最长 root,
+  // 由 position 最靠前者收编(侧栏排序是用户可控的决胜旋钮),与后端
+  // resolve_session_project 同口径。
+  const items = [
+    projectItem("shallow", "D:/work/other", "2026-08-01T08:00:00Z"),
+    projectItem("deep", "D:/work/deep/x", "2026-08-02T08:00:00Z"),
   ];
   const groups = groupSessionsByProject(
-    [
-      projectItem("shallow", "D:/work/other", "2026-08-01T08:00:00Z"),
-      projectItem("deep", "D:/work/deep/x", "2026-08-02T08:00:00Z"),
-    ],
-    projects,
+    items,
+    [project("p1", "Work", ["D:/work"], 0), project("p2", "Deep", ["D:/work/deep"], 1)],
     {},
   );
-  assert.deepEqual(groups.find((g) => g.projectId === "p1").rows.map((r) => r.id), ["shallow"]);
-  assert.deepEqual(groups.find((g) => g.projectId === "p2").rows.map((r) => r.id), ["deep"]);
+  assert.deepEqual(groups.find((g) => g.projectId === "p1").rows.map((r) => r.id), ["deep", "shallow"]);
+  assert.equal(groups.find((g) => g.projectId === "p2").rows.length, 0);
+  // position 翻转即翻转归属:用户拖排序即可改判。
+  const flipped = groupSessionsByProject(
+    items,
+    [project("p1", "Work", ["D:/work"], 1), project("p2", "Deep", ["D:/work/deep"], 0)],
+    {},
+  );
+  assert.deepEqual(flipped.find((g) => g.projectId === "p2").rows.map((r) => r.id), ["deep"]);
+  assert.deepEqual(flipped.find((g) => g.projectId === "p1").rows.map((r) => r.id), ["shallow"]);
+  // 输入顺序不影响结果(id 兜底决胜,排序在判定前)。
+  const shuffled = groupSessionsByProject(
+    items,
+    [project("p2", "Deep", ["D:/work/deep"], 1), project("p1", "Work", ["D:/work"], 0)],
+    {},
+  );
+  assert.deepEqual(shuffled.find((g) => g.projectId === "p1").rows.map((r) => r.id), ["deep", "shallow"]);
 });
 
 test("project view: 'bound' work sessions auto-group like code sessions", () => {
@@ -233,8 +251,11 @@ test("projectCoversPath and needsAddFolderConfirm share the containment rule", (
 
 // ── Folder-project auto-materialization input ──────────────────────────────
 
-test("uncoveredWorkspaceRoots dedupes and drops covered/temporary workspaces", () => {
-  const projects = [project("p1", "Work", ["D:/work/alpha"], 0)];
+test("uncoveredWorkspaceRoots dedupes and drops anchored/temporary workspaces", () => {
+  // 锚定覆盖(§9.9):只有 origin=folder 且 roots 精确含该路径的项目算覆盖;
+  // "D:/work/alpha" 被锚定 → a1 不驱动;"D:/work/alpha/sub" 未被精确锚定
+  // → a2 驱动(为该子目录物化新项目,重叠合法)。
+  const projects = [folderProject("p1", "Work", ["D:/work/alpha"], 0)];
   const roots = uncoveredWorkspaceRoots(
     [
       projectItem("a1", "D:/work/alpha", "x"),
@@ -248,7 +269,10 @@ test("uncoveredWorkspaceRoots dedupes and drops covered/temporary workspaces", (
     projects,
     {},
   );
-  assert.deepEqual(roots, [{ root: "D:/work/beta", sessionIds: ["w1", "w2"] }]);
+  assert.deepEqual(roots, [
+    { root: "D:/work/alpha/sub", sessionIds: ["a2"] },
+    { root: "D:/work/beta", sessionIds: ["w1", "w2"] },
+  ]);
 });
 
 test("uncoveredWorkspaceRoots skips sessions with any assignment entry", () => {
@@ -267,16 +291,26 @@ test("uncoveredWorkspaceRoots skips sessions with any assignment entry", () => {
   assert.deepEqual(roots, [{ root: "D:/work/beta", sessionIds: ["fresh"] }]);
 });
 
-test("uncoveredWorkspaceRoots: an ancestor project root covers descendant folders", () => {
-  const projects = [project("p1", "Work", ["D:/work"], 0)];
+test("uncoveredWorkspaceRoots: only an exact folder-project anchor covers", () => {
+  // 祖先生效的旧语义已随锚定复用退役(§9.9):物化项目锚定 D:/work 不再
+  // 覆盖其子目录——子目录照常物化(与后端 ensure 的精确锚定一致)。
+  const projects = [folderProject("p1", "Work", ["D:/work"], 0)];
   assert.deepEqual(
     uncoveredWorkspaceRoots([projectItem("a1", "D:/work/alpha", "x")], projects, {}),
-    [],
-    "D:/work 已覆盖其子目录,无需为子目录建项目",
+    [{ root: "D:/work/alpha", sessionIds: ["a1"] }],
+    "祖先锚定不再覆盖子目录",
   );
   assert.deepEqual(
-    uncoveredWorkspaceRoots([projectItem("a1", "D:/elsewhere", "x")], projects, {}),
-    [{ root: "D:/elsewhere", sessionIds: ["a1"] }],
+    uncoveredWorkspaceRoots([projectItem("a2", "D:/work", "x")], projects, {}),
+    [],
+    "精确锚定才覆盖",
+  );
+  // 手工项目(无 origin=folder)引用同一路径不算覆盖,浏览/物化通道仍新建。
+  const manual = [project("p2", "Manual", ["D:/work"], 0)];
+  assert.deepEqual(
+    uncoveredWorkspaceRoots([projectItem("a3", "D:/work", "x")], manual, {}),
+    [{ root: "D:/work", sessionIds: ["a3"] }],
+    "被手工项目引用不锚定",
   );
 });
 

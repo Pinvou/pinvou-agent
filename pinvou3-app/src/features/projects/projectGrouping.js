@@ -59,22 +59,22 @@ function hasProjectWorkspace(item) {
   );
 }
 
-// Longest root wins so nested project roots cannot steal sessions from a
-// deeper project (backend also rejects cross-project nesting, this is the
-// display-side guard for hand-edited state).
+// Auto-grouping ownership (design §9.9, 2026-09-11 ruling): root overlap
+// across projects is legal, and a session whose workspace is covered by
+// several projects is claimed by the one with the smallest position —
+// sidebar order is the user-controllable knob, id breaks residual ties so
+// the result never depends on input order. Matches the backend's
+// resolve_session_project exactly.
 function matchProjectByPath(projects, workspacePath) {
-  let best = null;
-  let bestRoot = '';
-  projects.forEach((project) => {
-    (project && project.roots ? project.roots : []).forEach((root) => {
+  const ordered = (Array.isArray(projects) ? [...projects] : [])
+    .filter(Boolean)
+    .sort((a, b) => (a.position || 0) - (b.position || 0) || String(a.id).localeCompare(String(b.id)));
+  return ordered.find(project =>
+    (project.roots ? project.roots : []).some((root) => {
       const rootPath = root && typeof root === 'object' ? root.path : root;
-      if (isUnderRoot(workspacePath, rootPath) && String(rootPath).length > bestRoot.length) {
-        best = project;
-        bestRoot = String(rootPath);
-      }
-    });
-  });
-  return best;
+      return isUnderRoot(workspacePath, rootPath);
+    })
+  ) || null;
 }
 
 // Resolve the project a session currently belongs to for UI affordances
@@ -117,16 +117,29 @@ function needsAddFolderConfirm(session, target) {
 }
 
 // Distinct workspace folders driving auto-materialization: folders backing
-// sessions that no project root covers yet AND that carry no assignment entry.
-// Sessions with an entry are excluded both ways — null = explicit move-out
-// (deleting a project writes null for its members, so a folder whose project
-// was deleted only re-materializes when a NEW entry-less session appears),
-// and an explicit Some(projectId) already filed the session elsewhere.
-// Coverage mirrors the display-side grouping guard (matchProjectByPath:
-// equal-or-ancestor project root wins); the backend re-checks under its own
-// canonical keys, so a disagreement can only cause a harmless Covered
-// outcome, never a duplicate project. Each entry reports the driving session
-// ids so the caller can re-trigger per new session instead of per refresh.
+// sessions that no materialized project ANCHORS yet AND that carry no
+// assignment entry. Sessions with an entry are excluded both ways — null =
+// explicit move-out (deleting a project writes null for its members, so a
+// folder whose project was deleted only re-materializes when a NEW
+// entry-less session appears), and an explicit Some(projectId) already
+// filed the session elsewhere.
+// Coverage is anchored (design §9.9, mirrors the backend ensure): only an
+// origin=folder project whose roots contain this exact path counts as
+// covering — a folder merely referenced by another project (even as its
+// primary root) still materializes, overlap being legal. The backend
+// re-checks under its own canonical keys, so a disagreement can only cause
+// a harmless extra Created, never a duplicate anchor. Each entry reports
+// the driving session ids so the caller can re-trigger per new session
+// instead of per refresh.
+function projectAnchorsFolder(project, folderPath) {
+  if (!project || project.origin !== 'folder') return false;
+  return (project.roots ? project.roots : []).some((root) => {
+    const rootPath = root && typeof root === 'object' ? root.path : root;
+    // 精确锚定:双向 isUnderRoot 即同路径(折叠大小写/分隔符差异)。
+    return isUnderRoot(folderPath, rootPath) && isUnderRoot(rootPath, folderPath);
+  });
+}
+
 function uncoveredWorkspaceRoots(items, projects, assignments) {
   const projectList = Array.isArray(projects) ? projects.filter(Boolean) : [];
   const assignmentMap = assignments && typeof assignments === 'object' ? assignments : {};
@@ -140,7 +153,7 @@ function uncoveredWorkspaceRoots(items, projects, assignments) {
     byRoot.get(root).push(String(item.id));
   });
   return [...byRoot.entries()]
-    .filter(([root]) => !matchProjectByPath(projectList, root))
+    .filter(([root]) => projectList.every(project => !projectAnchorsFolder(project, root)))
     .map(([root, sessionIds]) => ({ root, sessionIds }));
 }
 
@@ -247,6 +260,7 @@ function groupSessionsByProject(items, projects, assignments) {
 export {
   TEMPORARY_GROUP_KEY,
   UNGROUPED_GROUP_KEY,
+  projectAnchorsFolder,
   groupSessionsByFolder,
   groupSessionsByProject,
   projectCoversPath,
