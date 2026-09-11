@@ -30,6 +30,9 @@ pub struct CodexAcpSessionListItem {
     pub pinned_at: Option<String>,
     #[serde(flatten)]
     pub workspace: CodexAcpWorkspaceInfo,
+    /// 创建时锁定的钥匙串快照(§6,全量可访问根);空 = 单根语义。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub workspace_roots: Vec<String>,
     pub agent_id: String,
     pub agent_name: String,
 }
@@ -673,11 +676,18 @@ pub async fn list_codex_acp_sessions(
             let workspace = acp_pool
                 .workspace_info(&metadata.id)
                 .map_err(|error| format!("读取代码会话 {} 工作目录失败: {error:#}", metadata.id))?;
+            let workspace_roots = acp_pool
+                .agents()
+                .session_workspace_roots(&metadata.id)
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect();
             Ok(CodexAcpSessionListItem {
                 pinned: store.is_pinned(&metadata.id),
                 pinned_at: store.pinned_at(&metadata.id),
                 metadata,
                 workspace,
+                workspace_roots,
                 agent_id: code_session_agent_id(backend),
                 agent_name: backend.display_name().to_string(),
             })
@@ -715,6 +725,12 @@ fn redact_session_metadata_for_web_in_place(metadata: &mut SessionMetadata) {
 fn redact_codex_session_list_item_for_web(item: &mut CodexAcpSessionListItem) {
     redact_session_metadata_for_web_in_place(&mut item.metadata);
     item.workspace.workspace_path = redact_workspace_path_for_web(&item.workspace.workspace_path);
+    // 钥匙串快照含主机绝对路径,与 workspace_path 同款投影为目录名。
+    item.workspace_roots = item
+        .workspace_roots
+        .iter()
+        .map(|root| redact_workspace_path_for_web(root))
+        .collect();
 }
 
 /// Web 版代码会话列表：复用桌面端列表逻辑，但把工作区路径投影为目录名，
@@ -738,11 +754,18 @@ pub async fn list_codex_acp_sessions_for_web(
             let workspace = acp_pool
                 .workspace_info(&metadata.id)
                 .map_err(|error| format!("读取代码会话 {} 工作目录失败: {error:#}", metadata.id))?;
+            let workspace_roots = acp_pool
+                .agents()
+                .session_workspace_roots(&metadata.id)
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect();
             Ok(CodexAcpSessionListItem {
                 pinned: store.is_pinned(&metadata.id),
                 pinned_at: store.pinned_at(&metadata.id),
                 metadata,
                 workspace,
+                workspace_roots,
                 agent_id: code_session_agent_id(backend),
                 agent_name: backend.display_name().to_string(),
             })
@@ -835,6 +858,8 @@ pub(crate) async fn create_codex_acp_session_with_workspace_binding(
         backend,
         kind,
         project_workspace.clone(),
+        // 钥匙串接线在 create_session 链路(B6)接入;此处先传空(单根现状)。
+        Vec::new(),
     ) {
         rollback_created_code_session(&session.metadata.id, &store, &acp_pool);
         return Err(format!("保存 Codex ACP 会话工作目录失败: {error:#}"));
@@ -900,6 +925,8 @@ async fn create_code_native_session(
         &session.metadata.id,
         kind,
         project_workspace.clone(),
+        // 钥匙串接线在 create_session 链路(B6)接入;此处先传空(单根现状)。
+        Vec::new(),
     ) {
         rollback_created_code_session(&session.metadata.id, store, acp_pool);
         return Err(format!("保存原生代码会话标记失败: {error:#}"));
@@ -1054,6 +1081,7 @@ mod tests {
                 workspace_path: PRIVATE_WORKSPACE.to_string(),
                 workspace_available: true,
             },
+            workspace_roots: Vec::new(),
             agent_id: "codex".to_string(),
             agent_name: "Codex".to_string(),
         };

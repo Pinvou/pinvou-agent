@@ -13,6 +13,10 @@ pub struct SessionListItem {
     /// 绑定工作会话纳入项目分组（分组跟随绑定,与安全姿态同一条信号）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_binding: Option<String>,
+    /// 创建时锁定的钥匙串快照(§6,全量可访问根,含主根);空 = 单根语义。
+    /// 选择器/管理面板据此展示"该对话可访问的文件夹集"。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub workspace_roots: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -149,11 +153,22 @@ pub async fn list_sessions(
             let workspace_binding = store
                 .session_workspace_binding(&metadata.id)
                 .map(|path| path.display().to_string());
+            // 钥匙串快照仅在绑定时存在;冷读 sidecar(列表量级同 binding)。
+            let workspace_roots = if workspace_binding.is_some() {
+                store
+                    .session_workspace_roots(&metadata.id)
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect()
+            } else {
+                Vec::new()
+            };
             SessionListItem {
                 pinned: store.is_pinned(&metadata.id),
                 pinned_at: store.pinned_at(&metadata.id),
                 title_attachment_names,
                 workspace_binding,
+                workspace_roots,
                 metadata,
             }
         })

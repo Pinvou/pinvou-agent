@@ -330,6 +330,8 @@ fn acp_recovery_record(
         acp_config_values: acp_config_values_from_state(state),
         workspace_kind,
         workspace_path: (workspace_kind == CodexWorkspaceKind::Project).then_some(workspace_path),
+        // ACP 恢复路径没有钥匙串快照来源:空 = 单根语义,引擎按 cwd 归一。
+        workspace_roots: Vec::new(),
         mode: SessionMode::Plain,
     })
 }
@@ -3267,7 +3269,7 @@ impl AcpPool {
         );
         // 临时工作区：spawn 时自动创建独立目录，不污染真实项目。
         self.agents
-            .set_acp_workspace(&probe_id, backend, CodexWorkspaceKind::Temporary, None)?;
+            .set_acp_workspace(&probe_id, backend, CodexWorkspaceKind::Temporary, None, Vec::new())?;
         let result = self.session_info(&probe_id).await;
         // 无论成败都必须收口，不得留下运行中的探针进程或 store 残留记录；
         // 清理失败只告警，主结果（上报或原始错误）优先透传。
@@ -4451,6 +4453,7 @@ mod tests {
             .expect("session store");
         let record = SessionAgentRecord {
             mode: SessionMode::Code,
+            workspace_roots: Vec::new(),
             ..SessionAgentRecord::default()
         };
         let info =
@@ -4488,6 +4491,7 @@ mod tests {
             mode: SessionMode::Code,
             workspace_kind: CodexWorkspaceKind::Project,
             workspace_path: Some(root.clone()),
+            workspace_roots: Vec::new(),
             ..SessionAgentRecord::default()
         };
         let info =
@@ -4507,6 +4511,7 @@ mod tests {
             mode: SessionMode::Code,
             workspace_kind: CodexWorkspaceKind::Project,
             workspace_path: None,
+            workspace_roots: Vec::new(),
             ..SessionAgentRecord::default()
         };
         assert!(
@@ -4706,7 +4711,7 @@ mod tests {
         // 写入一个已绑定的原生代码会话（索引 + sidecar）。
         let writer = SessionAgentStore::for_test(path.clone());
         writer
-            .bind_code_native_session("code-1", CodexWorkspaceKind::Project, Some(root.clone()))
+            .bind_code_native_session("code-1", CodexWorkspaceKind::Project, Some(root.clone()), Vec::new())
             .unwrap();
         // 模拟辅助索引丢失：空内存索引 + 磁盘 sidecar 仍在 → 真实恢复一次。
         let agents = SessionAgentStore::for_test(path.clone());
@@ -4750,6 +4755,7 @@ mod tests {
                 AgentBackend::CodexAcp,
                 CodexWorkspaceKind::Temporary,
                 None,
+                Vec::new(),
             )
             .unwrap();
         let leftover_dir = root.join("sessions").join("acp-1");
@@ -4761,6 +4767,7 @@ mod tests {
                 workspace_kind: CodexWorkspaceKind::Temporary,
                 workspace_path: None,
                 bound_at: None,
+                workspace_roots: Vec::new(),
             })
             .unwrap(),
         )
