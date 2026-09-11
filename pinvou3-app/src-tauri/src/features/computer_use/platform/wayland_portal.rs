@@ -138,22 +138,23 @@ pub(super) fn map_keysym(key: Key) -> Result<i32, ComputerUseError> {
 /// 静默丢弃——逐字符调用全部"成功"、中文一个都进不去(评审发现的静默
 /// 丢失)。宁可显式失败,也不假成功。
 pub(super) fn char_keysym(c: char) -> Result<i32, ComputerUseError> {
-    let code = u32::from(c);
     let keysym = keysym_for_char(c).ok_or_else(|| {
-        if code > 0xff {
+        if u32::from(c) > 0xff {
+            // No echo of the character itself: execution errors land
+            // verbatim in the audit JSONL error field, so a password typed
+            // one call at a time would leak through the error text.
             ComputerUseError::unsupported(
                 "input",
-                format!(
-                    "cannot type {c:?} (U+{code:04X}) via the Wayland portal: mutter \
-                     silently drops keysyms outside the active keymap, so non-Latin-1 \
-                     text (CJK etc.) would be lost; type ASCII/Latin-1 text or switch to \
-                     a keymap that contains the character"
-                ),
+                "cannot type a character outside the injectable keysym range via the \
+                 Wayland portal: mutter silently drops keysyms outside the compositor \
+                 keymap, so non-Latin-1 text (CJK etc.) would be lost; type ASCII/Latin-1 \
+                 text or switch to a keymap that contains the character",
             )
         } else {
             ComputerUseError::unsupported(
                 "input",
-                format!("character {c:?} (U+{code:04X}) has no X keysym"),
+                "cannot type this control character via the Wayland portal: it has no \
+                 injectable X keysym (only newline, tab, printable ASCII and Latin-1 do)",
             )
         }
     })?;
@@ -161,16 +162,22 @@ pub(super) fn char_keysym(c: char) -> Result<i32, ComputerUseError> {
         .map_err(|_| ComputerUseError::failed("keysym does not fit the portal i32 argument"))
 }
 
-/// 单字符 → keysym 的纯映射。非 Latin-1 返回 None(不编码为
-/// `0x01000000 | 码点`:mutter 会静默丢弃 keymap 外的 keysym,注入等于假
-/// 成功;理由与错误文案见 [`char_keysym`])。
+/// Single char → keysym pure mapping, failing closed on everything outside
+/// real X keysym coverage: '\n' → Return and '\t' → Tab, then the two ranges
+/// with direct keysyms — printable ASCII 0x20..=0x7e and Latin-1 0xa0..=0xff
+/// (keysym == code point). C0/C1 controls (0x01-0x1f, 0x7f, 0x80-0x9f) have
+/// NO keysyms; the old 0x01..=0xff acceptance handed mutter nonexistent
+/// keysyms that it silently drops — a fake-success no-op contradicting this
+/// module's fail-closed design. '\r' never reaches here (type_text folds
+/// CRLF/CR to '\n' first) and returns None. Non-Latin-1 also returns None:
+/// no `0x01000000 | code point` encoding, since mutter drops keysyms outside
+/// the active keymap (rationale and error text in [`char_keysym`]).
 fn keysym_for_char(c: char) -> Option<u32> {
     let code = u32::from(c);
     match code {
-        0x0a => Some(0xff0d), // type_text 的换行注入为 Return
-        0x09 => Some(0xff09),
-        0x00 | 0x7f => None,
-        0x01..=0xff => Some(code), // Latin-1 区 keysym 与码点一致
+        0x0a => Some(0xff0d), // type_text newline injection → Return
+        0x09 => Some(0xff09), // Tab
+        0x20..=0x7e | 0xa0..=0xff => Some(code),
         _ => None,
     }
 }
@@ -548,11 +555,22 @@ impl PortalInner {
             .map_err(|error| {
                 ComputerUseError::unavailable(format!("portal response match rule: {error}"))
             })?;
-        let mut stream = zbus::MessageStream::for_match_rule(rule, &self.conn, None)
-            .await
-            .map_err(|error| {
-                ComputerUseError::unavailable(format!("portal response subscription: {error}"))
-            })?;
+        // AddMatch is itself a D-Bus round-trip, and zbus's default method
+        // timeout is unbounded: without this wrap it is the only unbounded
+        // await on the lazy-start path.
+        let mut stream = tokio::time::timeout(
+            REQUEST_TIMEOUT,
+            zbus::MessageStream::for_match_rule(rule, &self.conn, None),
+        )
+        .await
+        .map_err(|_| {
+            ComputerUseError::unavailable(format!(
+                "portal {method} response subscription timed out after {REQUEST_TIMEOUT:?}"
+            ))
+        })?
+        .map_err(|error| {
+            ComputerUseError::unavailable(format!("portal response subscription: {error}"))
+        })?;
 
         let mut options: HashMap<&str, OwnedValue> = HashMap::new();
         let token_value = Value::from(token.as_str())
@@ -566,8 +584,8 @@ impl PortalInner {
         // 两个分支的 call_method 产出不同 opaque future 类型,各自 await 到
         // 完成后统一为 Result<Message>。方法调用本身应当毫秒级返回,封顶在
         // REQUEST_TIMEOUT;授权对话框的等待发生在 Response 信号(下一段)——
-        // 两段各自配完整 timeout 的旧写法让 Start 最坏 240s,击穿 backend 层
-        // 190s 请求预算(评审发现)。
+        // 两段各自配完整 timeout 的旧写法会让 Start 最坏等待成倍叠加、击穿
+        // backend 层调用预算(评审发现)。
         tokio::time::timeout(timeout.min(REQUEST_TIMEOUT), async {
             match session {
                 Some(path) if parent_window.is_some() => {
@@ -994,13 +1012,31 @@ mod tests {
         let error = map_keysym(Key::Char('中')).unwrap_err().to_string();
         assert!(error.contains("Wayland"), "{error}");
         assert!(error.contains("drops keysyms"), "{error}");
-        assert!(error.contains("U+4E2D"), "{error}");
+        // Echo hygiene: the character (and its code point) must NOT appear
+        // in the error — execution errors land verbatim in the audit JSONL,
+        // so a password typed one call at a time would leak through it.
+        assert!(!error.contains('中'), "{error}");
+        assert!(!error.contains("U+4E2D"), "{error}");
         let error = char_keysym('\u{1F600}').unwrap_err().to_string();
         assert!(error.contains("drops keysyms"), "{error}");
+        assert!(!error.contains("\u{1F600}"), "{error}");
         // 换行/制表映射为命名键;NUL 与 DEL 无 keysym。
         assert_eq!(keysym_for_char('\n'), Some(0xff0d));
         assert_eq!(keysym_for_char('\t'), Some(0xff09));
         assert_eq!(keysym_for_char('\0'), None);
+        // Keysym range fails closed: C0/C1 controls have no X keysyms (the
+        // old 0x01..=0xff acceptance produced keysyms mutter silently
+        // drops — a fake-success no-op).
+        assert_eq!(keysym_for_char('\r'), None); // unreachable after type_text folding
+        assert_eq!(keysym_for_char('\u{1b}'), None); // ESC
+        assert_eq!(keysym_for_char('\u{7f}'), None); // DEL
+        assert_eq!(keysym_for_char('\u{80}'), None); // C1 range
+        assert_eq!(keysym_for_char('\u{9f}'), None);
+        // The injectable ranges themselves: printable ASCII and Latin-1.
+        assert_eq!(keysym_for_char('\u{20}'), Some(0x20));
+        assert_eq!(keysym_for_char('\u{7e}'), Some(0x7e));
+        assert_eq!(keysym_for_char('\u{a0}'), Some(0xa0));
+        assert_eq!(keysym_for_char('\u{ff}'), Some(0xff));
         // Latin-1 边界:0xFF(ÿ)可注入,0x100(Ā)报错。
         assert_eq!(char_keysym('\u{FF}').ok(), Some(0xff));
         assert!(char_keysym('\u{100}').is_err());

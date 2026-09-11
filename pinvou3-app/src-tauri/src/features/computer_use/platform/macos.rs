@@ -8,8 +8,8 @@
 //!   CGDisplayBounds 返回点）；`Capture.input_scale_x/y` 从返回图像反推
 //!   （点宽 / 实际像素宽，Retina 2x → 0.5），不信任 scale_factor 估计值；
 //!   截图为物理像素。
-//! - `cursor_position` 按 trait 契约返回全局**设备物理像素**（点 × 光标所在
-//!   显示器的 scale），由 ScaleMap::device_to_input 乘 input_scale 还原为点。
+//! - `cursor_position` returns global input-space coordinates (CGEvent
+//!   points), the same space the action coordinates use.
 //! - AX 返回的元素位置/尺寸同为屏幕点坐标，与输入坐标空间一致。
 //!
 //! 截屏实现：macOS 15.2+ 走 ScreenCaptureKit（[`super::screen_capture_kit`]，
@@ -56,7 +56,7 @@ use std::ptr::NonNull;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use enigo::{Axis, Direction, Enigo, Keyboard, Mouse, Settings};
+use enigo::{Direction, Enigo, Keyboard, Mouse, Settings};
 use objc2::rc::Retained;
 use objc2_application_services::{AXError, AXIsProcessTrusted, AXUIElement, AXValue, AXValueType};
 use objc2_core_foundation::CFRetained;
@@ -69,6 +69,7 @@ use super::super::types::{
     Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
     UiTreeOptions,
 };
+use super::helpers::{drag_waypoints, map_scroll, sanitize_name};
 
 /// 点击前等待先前 move 落位（目标进程消费鼠标移动事件）。
 const CLICK_SETTLE_MS: u64 = 30;
@@ -278,20 +279,6 @@ fn pick_monitor(cursor: Option<(i32, i32)>) -> Result<Monitor, ComputerUseError>
         .ok_or_else(|| ComputerUseError::unavailable("no monitor available for screen capture"))
 }
 
-/// 显示器像素/点倍率（Retina 2x → 2.0）。异常值（非有限/非正）回退 1.0。
-fn monitor_scale(monitor: &Monitor) -> Result<f64, ComputerUseError> {
-    let scale = f64::from(
-        monitor
-            .scale_factor()
-            .map_err(|err| map_xcap_err("monitor scale factor", err))?,
-    );
-    if scale.is_finite() && scale > 0.0 {
-        Ok(scale)
-    } else {
-        Ok(1.0)
-    }
-}
-
 /// 本 crate `Key` → enigo 按键。macOS 差异：
 /// - `Char` 走 `Unicode`：enigo macOS 经当前键盘布局反查 keycode。反查不中
 ///   （布局外字符）时 enigo 返回初始值 keycode 0——即 ANSI 'a'，会**静默
@@ -347,10 +334,12 @@ fn map_key(key: Key) -> Result<enigo::Key, ComputerUseError> {
                 // enigo 对布局外字符返回 keycode 0（= ANSI 'a'）、对 Shift 态
                 // 字符只返回基础 keycode——两种情况都会静默注入错误的键，
                 // 必须在此显式失败，不能交给 enigo。
-                return Err(ComputerUseError::failed(format!(
-                    "character {c:?} is not representable in the current keyboard layout; \
-                     use type_text for arbitrary text"
-                )));
+                // No echo of the offending character: this string lands in
+                // the audit log's error field verbatim.
+                return Err(ComputerUseError::failed(
+                    "a character is not representable in the current keyboard layout; \
+                     use the type action for arbitrary text",
+                ));
             }
             EK::Unicode(c)
         }
@@ -384,9 +373,13 @@ const CG_EVENT_RIGHT_MOUSE_UP: u32 = 4;
 const CG_EVENT_MOUSE_MOVED: u32 = 5;
 const CG_EVENT_LEFT_MOUSE_DRAGGED: u32 = 6;
 const CG_EVENT_RIGHT_MOUSE_DRAGGED: u32 = 7;
-const CG_EVENT_OTHER_MOUSE_DOWN: u32 = 21;
-const CG_EVENT_OTHER_MOUSE_UP: u32 = 22;
-const CG_EVENT_OTHER_MOUSE_DRAGGED: u32 = 25;
+// Middle button = kCGEventOtherMouseDown/Up/Dragged = 25/26/27 (CGEventType
+// enum in vendored core-graphics 0.25, src/event.rs:200-224; 21 is undefined
+// and 22 is kCGEventScrollWheel, so the old 21/22/25 values silently no-op'ed
+// middle clicks and posted a junk scroll event for middle mouse_up).
+const CG_EVENT_OTHER_MOUSE_DOWN: u32 = 25;
+const CG_EVENT_OTHER_MOUSE_UP: u32 = 26;
+const CG_EVENT_OTHER_MOUSE_DRAGGED: u32 = 27;
 /// CGMouseButton 枚举原始值。
 const CG_MOUSE_BUTTON_LEFT: u32 = 0;
 const CG_MOUSE_BUTTON_RIGHT: u32 = 1;
@@ -426,31 +419,6 @@ fn cg_mouse_event_types(button: MouseButton) -> (u32, u32, u32) {
     }
 }
 
-/// 滚轮方向 → enigo（轴, 带符号格数）。enigo 约定：Vertical 正值向下/负值向上，
-/// Horizontal 正值向右/负值向左（macOS 内部再换算为 CG 滚轮方向）。
-fn map_scroll(direction: ScrollDirection, clicks: u32) -> (Axis, i32) {
-    let clicks = i32::try_from(clicks).unwrap_or(i32::MAX);
-    match direction {
-        ScrollDirection::Up => (Axis::Vertical, -clicks),
-        ScrollDirection::Down => (Axis::Vertical, clicks),
-        ScrollDirection::Left => (Axis::Horizontal, -clicks),
-        ScrollDirection::Right => (Axis::Horizontal, clicks),
-    }
-}
-
-/// 拖拽路径的线性插值点（含终点，不含起点），保证目标收到足够 motion 事件。
-fn drag_waypoints(from: (i32, i32), to: (i32, i32), steps: usize) -> Vec<(i32, i32)> {
-    let steps = steps.max(1);
-    (1..=steps)
-        .map(|i| {
-            let t = i as f64 / steps as f64;
-            let x = f64::from(from.0) + f64::from(to.0 - from.0) * t;
-            let y = f64::from(from.1) + f64::from(to.1 - from.1) * t;
-            (x.round() as i32, y.round() as i32)
-        })
-        .collect()
-}
-
 /// 密码框判定：权威信号是 subrole AXSecureTextField（AppKit/Safari/Chrome 均
 /// 暴露）；少数应用把安全字段直接报为 role AXSecureTextField。
 fn is_secure_text(role: &str, subrole: &str) -> bool {
@@ -471,19 +439,6 @@ fn release_reverse(pressed: &[enigo::Key], enigo: &mut Enigo) -> Result<(), enig
         Some(err) => Err(err),
         None => Ok(()),
     }
-}
-
-fn sanitize_name(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|c| match c {
-            '"' => '\'',
-            '\n' | '\r' | '\t' => ' ',
-            other => other,
-        })
-        .take(MAX_NODE_NAME_CHARS)
-        .collect();
-    cleaned.trim().to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -875,7 +830,7 @@ fn element_info_from(info: AxNodeInfo) -> ElementInfo {
     };
     ElementInfo {
         role: info.role,
-        name: sanitize_name(&name),
+        name: sanitize_name(&name, MAX_NODE_NAME_CHARS),
         x: info.x,
         y: info.y,
         width: info.width,
@@ -944,7 +899,7 @@ fn format_tree_line(index: u32, depth: u32, info: &AxNodeInfo) -> String {
         "{indent}[{index}] {role} \"{title}\" ({x},{y},{w},{h}){flags}",
         indent = "  ".repeat(depth as usize),
         role = info.role,
-        title = sanitize_name(display_title),
+        title = sanitize_name(display_title, MAX_NODE_NAME_CHARS),
         x = info.x,
         y = info.y,
         w = info.width,
@@ -1283,14 +1238,13 @@ impl ComputerUseBackend for MacosComputerUseBackend {
     }
 
     fn cursor_position(&mut self) -> Result<(i32, i32), ComputerUseError> {
-        // trait 契约：全局设备物理像素 = CGEvent 点 × 光标所在显示器的 scale。
-        let (px, py) = cursor_points()?;
-        let monitor = pick_monitor(Some((px, py)))?;
-        let scale = monitor_scale(&monitor)?;
-        Ok((
-            (f64::from(px) * scale).round() as i32,
-            (f64::from(py) * scale).round() as i32,
-        ))
+        // The trait contract wants global input-space coordinates: on macOS
+        // that is CGEvent global points, exactly what cursor_points() reads.
+        // Points are globally unambiguous across monitors; the former
+        // points × monitor-scale "device pixel" value was ill-defined under
+        // mixed DPI (per-monitor device rects overlap) and broke downstream
+        // containment checks against point-space rects.
+        cursor_points()
     }
 
     fn move_to(&mut self, x: i32, y: i32) -> Result<(), ComputerUseError> {
@@ -1744,43 +1698,17 @@ mod tests {
     }
 
     #[test]
-    fn scroll_mapping_matches_enigo_sign_convention() {
-        assert_eq!(map_scroll(ScrollDirection::Up, 3), (Axis::Vertical, -3));
-        assert_eq!(map_scroll(ScrollDirection::Down, 3), (Axis::Vertical, 3));
-        assert_eq!(map_scroll(ScrollDirection::Left, 2), (Axis::Horizontal, -2));
-        assert_eq!(map_scroll(ScrollDirection::Right, 2), (Axis::Horizontal, 2));
-        // u32::MAX 不溢出。
-        assert_eq!(
-            map_scroll(ScrollDirection::Down, u32::MAX),
-            (Axis::Vertical, i32::MAX)
-        );
-    }
-
-    #[test]
     fn cg_mouse_event_mapping_matches_core_graphics_constants() {
-        // 原始值对照 CoreGraphics 的 CGEventType/CGMouseButton 枚举（SDK 头）。
+        // Raw values pinned against the CGEventType/CGMouseButton enums
+        // (vendored core-graphics 0.25 src/event.rs).
         assert_eq!(cg_mouse_button(MouseButton::Left), 0);
         assert_eq!(cg_mouse_button(MouseButton::Right), 1);
         assert_eq!(cg_mouse_button(MouseButton::Middle), 2);
         assert_eq!(cg_mouse_event_types(MouseButton::Left), (1, 2, 6));
         assert_eq!(cg_mouse_event_types(MouseButton::Right), (3, 4, 7));
-        assert_eq!(cg_mouse_event_types(MouseButton::Middle), (21, 22, 25));
-    }
-
-    #[test]
-    fn drag_waypoints_interpolate_and_end_at_target() {
-        let points = drag_waypoints((0, 0), (80, 40), 8);
-        assert_eq!(points.len(), 8);
-        assert_eq!(points.first().copied(), Some((10, 5)));
-        assert_eq!(points.last().copied(), Some((80, 40)));
-        // 反向拖拽与负坐标（多显示器原点）。
-        let back = drag_waypoints((80, 40), (0, 0), 4);
-        assert_eq!(back.last().copied(), Some((0, 0)));
-        let negative = drag_waypoints((-100, -50), (0, 0), 2);
-        assert_eq!(negative.first().copied(), Some((-50, -25)));
-        // steps=0 防御：至少一步且落在终点。
-        let single = drag_waypoints((1, 2), (3, 4), 0);
-        assert_eq!(single, vec![(3, 4)]);
+        // Middle = kCGEventOtherMouseDown/Up/Dragged = 25/26/27; 21 is
+        // undefined and 22 is kCGEventScrollWheel.
+        assert_eq!(cg_mouse_event_types(MouseButton::Middle), (25, 26, 27));
     }
 
     #[test]
@@ -1789,14 +1717,6 @@ mod tests {
         assert!(is_secure_text("AXSecureTextField", ""));
         assert!(!is_secure_text("AXTextField", ""));
         assert!(!is_secure_text("AXButton", ""));
-    }
-
-    #[test]
-    fn sanitize_name_strips_quotes_and_caps_length() {
-        assert_eq!(sanitize_name("a\"b\nc\td"), "a'b c d");
-        let long = "x".repeat(MAX_NODE_NAME_CHARS + 50);
-        assert_eq!(sanitize_name(&long).chars().count(), MAX_NODE_NAME_CHARS);
-        assert_eq!(sanitize_name("  padded  "), "padded");
     }
 
     #[test]

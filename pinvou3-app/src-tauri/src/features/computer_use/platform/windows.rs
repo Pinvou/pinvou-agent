@@ -35,7 +35,7 @@ use std::fmt::Write as _;
 use std::thread::sleep;
 use std::time::Duration;
 
-use enigo::{Axis, Button, Direction, Enigo, Keyboard, Mouse, Settings};
+use enigo::{Button, Direction, Enigo, Keyboard, Mouse, Settings};
 use uiautomation::UIAutomation;
 use uiautomation::types::{ControlType, Point, TreeScope, UIProperty};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
@@ -44,7 +44,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId, SM_CXVIRTUALSCREEN,
-    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WHEEL_DELTA,
+    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 use xcap::Monitor;
 
@@ -53,6 +53,7 @@ use super::super::types::{
     Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
     UiTreeOptions,
 };
+use super::helpers::{drag_waypoints, map_scroll, sanitize_name};
 
 /// 点击前等待先前 move 落位（目标进程消费鼠标移动事件）。
 const CLICK_SETTLE_MS: u64 = 30;
@@ -76,10 +77,6 @@ const MAX_TREE_NODES: u32 = 2000;
 const MAX_NODE_NAME_CHARS: usize = 80;
 /// 焦点元素向上爬升查找所属窗口的防御性上限。
 const MAX_ANCESTOR_CLIMB: u32 = 16;
-
-/// 滚轮格数上限：enigo 在 Windows 上将格数乘 `WHEEL_DELTA`(120)（debug 下溢出
-/// 即 panic），后端侧再钳一次防上游传大数溢出。
-const MAX_SCROLL_CLICKS: u32 = (i32::MAX / WHEEL_DELTA as i32) as u32;
 
 /// `VkKeyScanExW` 返回值高字节的修饰位（Win32 文档）：bit0=Shift（0x01），
 /// bit1=Ctrl（0x02），bit2=Alt（0x04，AltGr = Ctrl+Alt）。高字节非零表示
@@ -280,9 +277,15 @@ fn map_char_with_plan(
         }
         CharInjection::NeedsModifier => {
             if chord_len > 1 {
-                Err(ComputerUseError::failed(format!(
-                    "character '{c}' requires shift and cannot be combined with modifier chords"
-                )))
+                // No echo of the character (this string lands in the audit
+                // log's error field verbatim), and no "requires shift"
+                // claim: the blocker is any modifier keyboard state
+                // (Shift/AltGr) that a chord cannot express.
+                Err(ComputerUseError::failed(
+                    "character cannot be typed as part of a modifier chord (it needs a \
+                     Shift/AltGr keyboard state chords cannot express); use the type action \
+                     for text",
+                ))
             } else {
                 Ok(MappedKey::UnicodeOnly(c))
             }
@@ -347,50 +350,11 @@ fn map_mouse_button(button: MouseButton) -> Button {
     }
 }
 
-/// 滚轮方向 → enigo（轴, 带符号格数）。enigo 约定：Vertical 正值向下/负值向上，
-/// Horizontal 正值向右/负值向左。格数在后端侧再钳一次：enigo 内部会乘
-/// `WHEEL_DELTA`(120)，不钳位时大格数会 i32 溢出（debug panic / release 回绕）。
-fn map_scroll(direction: ScrollDirection, clicks: u32) -> (Axis, i32) {
-    let clicks = i32::try_from(clicks.min(MAX_SCROLL_CLICKS)).unwrap_or(i32::MAX);
-    match direction {
-        ScrollDirection::Up => (Axis::Vertical, -clicks),
-        ScrollDirection::Down => (Axis::Vertical, clicks),
-        ScrollDirection::Left => (Axis::Horizontal, -clicks),
-        ScrollDirection::Right => (Axis::Horizontal, clicks),
-    }
-}
-
-/// 拖拽路径的线性插值点（含终点，不含起点），保证目标收到足够 motion 事件。
-fn drag_waypoints(from: (i32, i32), to: (i32, i32), steps: usize) -> Vec<(i32, i32)> {
-    let steps = steps.max(1);
-    (1..=steps)
-        .map(|i| {
-            let t = i as f64 / steps as f64;
-            let x = f64::from(from.0) + f64::from(to.0 - from.0) * t;
-            let y = f64::from(from.1) + f64::from(to.1 - from.1) * t;
-            (x.round() as i32, y.round() as i32)
-        })
-        .collect()
-}
-
 /// 树序列化的节点预算与序号。
 struct TreeWriter {
     next_index: u32,
     remaining: u32,
     truncated: bool,
-}
-
-fn sanitize_name(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|c| match c {
-            '"' => '\'',
-            '\n' | '\r' | '\t' => ' ',
-            other => other,
-        })
-        .take(MAX_NODE_NAME_CHARS)
-        .collect();
-    cleaned.trim().to_string()
 }
 
 /// 单行格式：`[i] role "name" (x,y,w,h) flags`，flags 省略时为无。
@@ -406,6 +370,7 @@ fn format_tree_line(
         &element
             .get_cached_name()
             .map_err(|e| map_uia_err("ui_tree name", e))?,
+        MAX_NODE_NAME_CHARS,
     );
     let rect = element
         .get_cached_bounding_rectangle()
@@ -467,14 +432,43 @@ fn write_tree_node(
     let Ok(children) = cached.get_cached_children() else {
         return Ok(());
     };
-    for child in &children {
+    let mut children = children.iter();
+    while let Some(child) = children.next() {
         write_tree_node(child, cache, depth + 1, max_depth, writer, out)?;
-        if writer.remaining == 0 {
+        // Budget spent is real truncation only when a further child actually
+        // exists and is skipped: hitting zero on the last child means the
+        // tree was serialized completely (flagging on `remaining == 0` alone
+        // used to emit a false "(truncated)" footer; the entry check above is
+        // the authoritative signal for a genuinely skipped node).
+        if writer.remaining == 0 && children.next().is_some() {
             writer.truncated = true;
             break;
         }
     }
     Ok(())
+}
+
+/// Merge the interpolated-move and button-release results of `drag`. The
+/// release always runs, but `Result::and` kept only the first error: when the
+/// release failed too, callers never learned that the mouse button may still
+/// be pressed (the macOS/Linux backends already surface this signal).
+fn combine_drag_errors(
+    move_result: Result<(), ComputerUseError>,
+    release_result: Result<(), ComputerUseError>,
+) -> Result<(), ComputerUseError> {
+    match (move_result, release_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        // Only the path move failed and the release succeeded: report the
+        // move error unchanged.
+        (Err(move_error), Ok(())) => Err(move_error),
+        (Ok(()), Err(release)) => Err(ComputerUseError::failed(format!(
+            "{release}; the mouse button may still be pressed"
+        ))),
+        (Err(move_error), Err(release)) => Err(ComputerUseError::failed(format!(
+            "drag move failed ({move_error}); its release also failed ({release}); \
+             the mouse button may still be pressed"
+        ))),
+    }
 }
 
 pub(super) struct WindowsComputerUseBackend {
@@ -799,7 +793,7 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
             .enigo
             .button(Button::Left, Direction::Release)
             .map_err(|err| map_input_err("drag release", err));
-        result.and(release)
+        combine_drag_errors(result, release)
     }
 
     fn scroll(&mut self, direction: ScrollDirection, clicks: u32) -> Result<(), ComputerUseError> {
@@ -879,7 +873,7 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
             .map_err(|e| map_uia_err("focused_element password", e))?;
         Ok(Some(ElementInfo {
             role: format!("{control_type:?}"),
-            name: sanitize_name(&name),
+            name: sanitize_name(&name, MAX_NODE_NAME_CHARS),
             x: rect.get_left(),
             y: rect.get_top(),
             width: (rect.get_right() - rect.get_left()).max(0),
@@ -915,7 +909,7 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
             .map_err(|e| map_uia_err("element_at_point password", e))?;
         Ok(Some(ElementInfo {
             role: format!("{control_type:?}"),
-            name: sanitize_name(&name),
+            name: sanitize_name(&name, MAX_NODE_NAME_CHARS),
             x: rect.get_left(),
             y: rect.get_top(),
             width: (rect.get_right() - rect.get_left()).max(0),
@@ -940,6 +934,16 @@ mod tests {
             Ok(MappedKey::UnicodeOnly(c)) => panic!("unexpected UnicodeOnly({c})"),
             Err(_) => None,
         }
+    }
+
+    /// [`combine_drag_errors`] 的移动失败样本（测试辅助）。
+    fn failed_move() -> ComputerUseError {
+        ComputerUseError::failed("move aborted")
+    }
+
+    /// [`combine_drag_errors`] 的释放失败样本（带 map_input_err 同款上下文）。
+    fn failed_release() -> ComputerUseError {
+        ComputerUseError::failed("drag release: injected 0/1 events")
     }
 
     #[test]
@@ -1040,8 +1044,10 @@ mod tests {
         );
         // 与修饰键组合：显式报错（enigo 会把 shift state 高字节当 VK，目标收不到）。
         let err = map_char_with_plan('+', CharInjection::NeedsModifier, 2).unwrap_err();
-        assert!(err.to_string().contains("requires shift"));
-        assert!(err.to_string().contains("modifier chords"));
+        assert!(err.to_string().contains("modifier chord"));
+        assert!(err.to_string().contains("use the type action"));
+        // 模型输入的字符本身绝不能回显进审计日志的 error 字段。
+        assert!(!err.to_string().contains('+'), "{}", err);
         // Direct / NotInLayout 维持 enigo 路径，与和弦长度无关。
         assert_eq!(
             map_char_with_plan('s', CharInjection::Direct, 2).ok(),
@@ -1068,29 +1074,37 @@ mod tests {
     }
 
     #[test]
-    fn scroll_mapping_matches_enigo_sign_convention() {
-        assert_eq!(map_scroll(ScrollDirection::Up, 3), (Axis::Vertical, -3));
-        assert_eq!(map_scroll(ScrollDirection::Down, 3), (Axis::Vertical, 3));
-        assert_eq!(map_scroll(ScrollDirection::Left, 2), (Axis::Horizontal, -2));
-        assert_eq!(map_scroll(ScrollDirection::Right, 2), (Axis::Horizontal, 2));
-        // 常数本身必须保证 enigo 乘 WHEEL_DELTA 后不溢出 i32（向下取整除法）。
-        assert_eq!(MAX_SCROLL_CLICKS, (i32::MAX / 120) as u32);
-        let max_scaled = i64::from(MAX_SCROLL_CLICKS) * i64::from(WHEEL_DELTA);
-        assert!(max_scaled <= i64::from(i32::MAX));
-        assert!(max_scaled + i64::from(WHEEL_DELTA) > i64::from(i32::MAX));
-        // 边界内不钳位。
+    fn drag_error_merging_surfaces_stranded_button() {
+        // Both succeed: nothing to merge.
+        assert!(combine_drag_errors(Ok(()), Ok(())).is_ok());
+        // Only the move failed: the move error passes through unchanged.
         assert_eq!(
-            map_scroll(ScrollDirection::Down, MAX_SCROLL_CLICKS),
-            (Axis::Vertical, MAX_SCROLL_CLICKS as i32)
+            combine_drag_errors(Err(failed_move()), Ok(()))
+                .unwrap_err()
+                .to_string(),
+            "failed: move aborted"
         );
-        // 超界钳位（u32::MAX 原实现会 i32 溢出）。
-        assert_eq!(
-            map_scroll(ScrollDirection::Down, u32::MAX),
-            (Axis::Vertical, MAX_SCROLL_CLICKS as i32)
+        // Only the release failed: the stranded-button warning must surface.
+        let only_release = combine_drag_errors(Ok(()), Err(failed_release()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            only_release.contains("the mouse button may still be pressed"),
+            "{only_release}"
         );
-        assert_eq!(
-            map_scroll(ScrollDirection::Up, u32::MAX),
-            (Axis::Vertical, -(MAX_SCROLL_CLICKS as i32))
+        // Both fail: the move failure AND the stranded-button warning must
+        // both be present (`result.and(release)` used to drop the latter).
+        let both = combine_drag_errors(Err(failed_move()), Err(failed_release()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            both.contains("drag move failed (failed: move aborted)"),
+            "{both}"
+        );
+        assert!(both.contains("its release also failed"), "{both}");
+        assert!(
+            both.contains("the mouse button may still be pressed"),
+            "{both}"
         );
     }
 
@@ -1118,29 +1132,5 @@ mod tests {
         assert_eq!(normalize_abs_axis(100, 0, 1), 0);
         assert_eq!(normalize_abs_axis(100, 0, 0), 0);
         assert_eq!(normalize_abs_axis(100, 0, -5), 0);
-    }
-
-    #[test]
-    fn drag_waypoints_interpolate_and_end_at_target() {
-        let points = drag_waypoints((0, 0), (80, 40), 8);
-        assert_eq!(points.len(), 8);
-        assert_eq!(points.first().copied(), Some((10, 5)));
-        assert_eq!(points.last().copied(), Some((80, 40)));
-        // 反向拖拽与负坐标（多显示器原点）。
-        let back = drag_waypoints((80, 40), (0, 0), 4);
-        assert_eq!(back.last().copied(), Some((0, 0)));
-        let negative = drag_waypoints((-100, -50), (0, 0), 2);
-        assert_eq!(negative.first().copied(), Some((-50, -25)));
-        // steps=0 防御：至少一步且落在终点。
-        let single = drag_waypoints((1, 2), (3, 4), 0);
-        assert_eq!(single, vec![(3, 4)]);
-    }
-
-    #[test]
-    fn sanitize_name_strips_quotes_and_caps_length() {
-        assert_eq!(sanitize_name("a\"b\nc\td"), "a'b c d");
-        let long = "x".repeat(MAX_NODE_NAME_CHARS + 50);
-        assert_eq!(sanitize_name(&long).chars().count(), MAX_NODE_NAME_CHARS);
-        assert_eq!(sanitize_name("  padded  "), "padded");
     }
 }

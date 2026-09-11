@@ -151,23 +151,6 @@ impl PwCapture {
         }
     }
 
-    /// PipeWire 协商出的缓冲尺寸(诊断与 KDE 输入倍率换算用)。
-    pub(super) fn negotiated_size(&self) -> Option<(u32, u32)> {
-        self.shared
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .negotiated
-    }
-
-    /// 最近一次流状态(诊断用)。
-    pub(super) fn last_state(&self) -> Option<String> {
-        self.shared
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .last_state
-            .clone()
-    }
-
     /// 停流并 join 线程(backend 析构时调用;幂等)。
     pub(super) fn shutdown(&mut self) {
         self.shared
@@ -289,9 +272,21 @@ fn run_pw_loop(
             }
             let (width, height) = negotiated;
             let data = &mut datas[0];
-            let (offset, stride) = {
+            let (offset, chunk_stride) = {
                 let chunk = data.chunk();
-                (chunk.offset() as usize, chunk.stride() as usize)
+                (chunk.offset() as usize, chunk.stride())
+            };
+            // A non-positive stride cannot address buffer rows, and casting
+            // a negative i32 to usize would wrap into a huge value (debug
+            // overflow panic, release slice panic): record the failure the
+            // same way the BGRx rejection reports and skip the frame.
+            let stride = match usize::try_from(chunk_stride) {
+                Ok(stride) if stride > 0 => stride,
+                _ => {
+                    shared.last_state =
+                        Some(format!("frame has non-positive stride {chunk_stride}"));
+                    return;
+                }
             };
             let Some(raw) = data.data() else {
                 return;

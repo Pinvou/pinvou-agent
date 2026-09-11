@@ -48,14 +48,17 @@ use super::super::types::{
     Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
     UiTreeOptions,
 };
+use super::helpers::{drag_waypoints, sanitize_name};
 use super::wayland_portal::{self, PortalInput};
 
-/// 移动后点击/按下前的静置时间(XTEST 注入与合成器处理间的竞态缓冲)。
+/// Settle time between a move and the click that follows it (applied in
+/// `click` and at drag start; `mouse_down` does not settle) — a race buffer
+/// between injection and compositor processing.
 const SETTLE_MS: u64 = 40;
 /// 多次点击(双击/三击)之间的间隔。
 const CLICK_GAP_MS: u64 = 40;
 /// 拖拽插值步数与每步间隔(过快的瞬时移动会被部分应用识别为非拖拽)。
-const DRAG_STEPS: u32 = 12;
+const DRAG_STEPS: usize = 12;
 const DRAG_STEP_MS: u64 = 10;
 /// 滚动每格之间的间隔。
 const SCROLL_GAP_MS: u64 = 15;
@@ -260,16 +263,19 @@ fn press_keysyms_unwind(
     Ok(())
 }
 
-/// 名称清洗:去引号/换行并截断,保证单行输出。
-fn sanitize_name(raw: &str) -> String {
-    raw.chars()
-        .take(MAX_NAME_CHARS)
-        .map(|c| match c {
-            '"' => '\'',
-            '\n' | '\r' => ' ',
-            c => c,
-        })
-        .collect()
+/// Line-break normalization for type_text (pure, unit-tested): CRLF/CR fold
+/// to '\n' — a raw CR would submit twice / inject a stray key on both
+/// injection paths.
+fn normalize_line_breaks(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+/// X11 type_text segmentation (pure, unit-tested): split at every '\n'
+/// boundary. Empty segments are kept so a trailing newline ("text\n") still
+/// produces the closing Enter; the caller skips empty runs for text
+/// injection but still emits the Enter between segments.
+fn x11_type_runs(text: &str) -> Vec<String> {
+    text.split('\n').map(str::to_string).collect()
 }
 
 /// secure 判定(纯函数):`PasswordText` 直接判定;**角色查询失败**
@@ -487,7 +493,7 @@ async fn element_info_of(
     let name = if secure {
         String::new()
     } else {
-        sanitize_name(&proxy.name().await.unwrap_or_default())
+        sanitize_name(&proxy.name().await.unwrap_or_default(), MAX_NAME_CHARS)
     };
     let (x, y, width, height) = screen_extents(conn, proxy).await.unwrap_or(fallback_bounds);
     ElementInfo {
@@ -534,7 +540,7 @@ impl TreeWriter<'_> {
         let name = if secure {
             String::new()
         } else {
-            sanitize_name(&proxy.name().await.unwrap_or_default())
+            sanitize_name(&proxy.name().await.unwrap_or_default(), MAX_NAME_CHARS)
         };
         let state = proxy.get_state().await.ok();
         let extents = screen_extents(self.conn, proxy).await;
@@ -801,7 +807,7 @@ fn probe_wayland_screenshot() -> Result<(), String> {
 /// Wayland 探测时限。xcap 的 portal 应答是**无界** D-Bus 等待（内部
 /// `receiver.recv()??`，KDE 还可能每次弹交互式对话框）——一旦在等人，
 /// 探测永远不返回，而 catch_unwind 挡不住挂起：backend worker 会被永久
-/// pin 死，190s 调用方超时后 in-flight 门与控制通道（紧急抬起、授权释放）
+/// pin 死，backend 层调用预算耗尽后 in-flight 门与控制通道（紧急抬起、授权释放）
 /// 全部堵死（round-6 评审）。超时后放弃并遗弃探测线程（纯捕获、不碰共享
 /// 状态；多次超时至多多遗弃几个线程，好过 worker 卡死）。下一次截屏仍会
 /// 重试探测——粘死探测状态会退回「一次失败永久失去截屏」的旧缺陷。
@@ -857,10 +863,6 @@ pub(super) struct LinuxComputerUseBackend {
     /// 最近一次输入动作的开始时刻:同会话截屏流是 damage 驱动的,补拍
     /// 截图要等比它新的帧,才能看到动作后的画面(无视觉变化时沿用现有帧)。
     last_input_at: Option<Instant>,
-    /// 最近一次 portal 截屏折算出的输入倍率(KDE 逻辑像素流 <1,其余 1.0)。
-    /// `cursor_position` 记录的是输入坐标,契约要求返回设备物理像素,用
-    /// 它做还原;首个截屏之前无从得知,按 1.0 处理(GNOME 恒为 1.0)。
-    wayland_input_scale: (f64, f64),
 }
 
 impl LinuxComputerUseBackend {
@@ -904,9 +906,6 @@ impl LinuxComputerUseBackend {
         } else {
             (1.0, 1.0)
         };
-        // 记录倍率供 cursor_position 把记录的输入坐标还原为设备物理像素
-        // (trait 契约)。
-        self.wayland_input_scale = input_scale;
         Some(Capture {
             rgba: frame.rgba,
             width: frame.width,
@@ -1214,15 +1213,6 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 .unwrap_or(0);
             (origin_x, origin_y, 1.0, 1.0)
         };
-        // Keep the stored input scale in sync with the capture actually
-        // returned: portal and xcap-fallback captures live in different
-        // input coordinate spaces, and cursor_position undoes the scale of
-        // the LAST successful capture path (a stale portal scale would
-        // misreport cursor_position once captures alternate portal stream →
-        // xcap fallback, e.g. under KDE fractional scaling).
-        if self.is_wayland() {
-            self.wayland_input_scale = (input_scale_x, input_scale_y);
-        }
         Ok(Capture {
             rgba: image.into_raw(),
             width,
@@ -1237,22 +1227,15 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
     fn cursor_position(&mut self) -> Result<(i32, i32), ComputerUseError> {
         if self.is_wayland() {
             return match self.require_portal()?.last_pointer() {
-                Some(position) => {
-                    // track_pointer 记录的是输入坐标(工具层 move_to 的入参,
-                    // KDE 分支下为流本地逻辑像素);契约要求返回全局设备物理
-                    // 像素,按最近一次截屏的输入倍率还原(评审缺陷:GNOME 的
-                    // 倍率恒为 1 不受影响,KDE 分数缩放下此前会按错误倍率
-                    // 回报并让无坐标 T3 筛查双重缩放)。
-                    let (sx, sy) = self.wayland_input_scale;
-                    let device = |value: i32, scale: f64| {
-                        if scale > 0.0 && scale.is_finite() {
-                            (f64::from(value) / scale).round() as i32
-                        } else {
-                            value
-                        }
-                    };
-                    Ok((device(position.0, sx), device(position.1, sy)))
-                }
+                // track_pointer records input-space coordinates (the same
+                // space move_to/click consume): stream-logical pixels under
+                // KDE fractional scaling, buffer pixels elsewhere. The
+                // trait contract returns input space directly — globally
+                // unambiguous, with no round-trip through the ill-defined
+                // device-pixel space (the old division by the last
+                // capture's input scale double-scaled under KDE fractional
+                // scaling whenever the captured map differed).
+                Some(position) => Ok(position),
                 None => Err(ComputerUseError::unsupported(
                     "cursor_position",
                     "Wayland exposes no cursor query API; the position becomes known after \
@@ -1351,15 +1334,12 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             // 插值移动;无论中途成败,最后都必须释放按键。
             let mut result = Ok(());
             let mut last_reached = (from.0, from.1);
-            for step in 1..=DRAG_STEPS {
-                let t = f64::from(step) / f64::from(DRAG_STEPS);
-                let x = f64::from(from.0) + f64::from(to.0 - from.0) * t;
-                let y = f64::from(from.1) + f64::from(to.1 - from.1) * t;
-                if let Err(error) = portal.motion_absolute(x.round() as i32, y.round() as i32) {
+            for (x, y) in drag_waypoints(from, to, DRAG_STEPS) {
+                if let Err(error) = portal.motion_absolute(x, y) {
                     result = Err(error);
                     break;
                 }
-                last_reached = (x.round() as i32, y.round() as i32);
+                last_reached = (x, y);
                 sleep(Duration::from_millis(DRAG_STEP_MS));
             }
             let release = portal.button(wayland_portal::map_button(MouseButton::Left), false);
@@ -1385,13 +1365,8 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             .map_err(|error| input_failed("drag: button press", error))?;
         // 插值移动;无论中途成败,最后都必须释放按键。
         let mut result = Ok(());
-        for step in 1..=DRAG_STEPS {
-            let t = f64::from(step) / f64::from(DRAG_STEPS);
-            let x = f64::from(from.0) + f64::from(to.0 - from.0) * t;
-            let y = f64::from(from.1) + f64::from(to.1 - from.1) * t;
-            if let Err(error) =
-                enigo.move_mouse(x.round() as i32, y.round() as i32, Coordinate::Abs)
-            {
+        for (x, y) in drag_waypoints(from, to, DRAG_STEPS) {
+            if let Err(error) = enigo.move_mouse(x, y, Coordinate::Abs) {
                 result = Err(input_failed("drag: interpolated move", error));
                 break;
             }
@@ -1439,6 +1414,10 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
     }
 
     fn type_text(&mut self, text: &str) -> Result<(), ComputerUseError> {
+        // Fold CRLF/CR to '\n' first: a raw CR would submit twice / inject a
+        // stray key on both injection paths, and the '\n'-only form is what
+        // the Enter handling below keys off.
+        let text = normalize_line_breaks(text);
         if self.is_wayland() {
             self.note_input();
             let portal = self.require_portal()?;
@@ -1471,11 +1450,27 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             }
         }
         let enigo = self.require_enigo()?;
-        // enigo text() 走 Unicode 注入(X11 临时 keycode 重映射,xdotool 同款
-        // 技巧),中文等字符直接进入焦点字段,不经 IME 合成。
-        enigo
-            .text(text)
-            .map_err(|error| input_failed("type text", error))
+        // enigo's text() types a run via per-char Unicode injection (a
+        // temporary keycode remap on X11, the xdotool trick), so CJK etc.
+        // reach the focused field without IME synthesis. But that same
+        // per-char path maps '\n' to Linefeed (0xff0a, Ctrl+J semantics),
+        // NOT Return, so multi-line text would never submit: inject each
+        // run via text() and an explicit Enter between runs (an empty
+        // trailing run still produces the closing Enter, so "text\n"
+        // submits).
+        let enter = map_enigo_key(Key::Enter)?;
+        for (index, run) in x11_type_runs(&text).into_iter().enumerate() {
+            if index > 0 {
+                Self::press_chord(enigo, &[enter])?;
+                Self::release_chord(enigo, &[enter])?;
+            }
+            if !run.is_empty() {
+                enigo
+                    .text(&run)
+                    .map_err(|error| input_failed("type text", error))?;
+            }
+        }
+        Ok(())
     }
 
     fn key_chord(&mut self, keys: &[Key]) -> Result<(), ComputerUseError> {
@@ -1601,6 +1596,23 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
     }
     let wayland = session.kind == SessionKind::Wayland;
 
+    // Capture/input plane mismatch warning: xcap's own Wayland detector
+    // prefers WAYLAND_DISPLAY over XDG_SESSION_TYPE=x11, so capture can be
+    // routed through the Wayland portal chain while XTEST input targets
+    // X11. The classification itself is deliberate (pinned by tests) — warn
+    // once so the split is diagnosable instead of silent.
+    if session.kind == SessionKind::X11
+        && std::env::var("WAYLAND_DISPLAY")
+            .ok()
+            .is_some_and(|value| !value.trim().is_empty() && value.contains("wayland"))
+    {
+        eprintln!(
+            "[computer_use] XDG_SESSION_TYPE=x11 but WAYLAND_DISPLAY is set: capture may be \
+             routed through the Wayland portal chain while input targets X11; unset \
+             WAYLAND_DISPLAY for consistent behavior"
+        );
+    }
+
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1661,7 +1673,6 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
         wayland_screenshot_error,
         wayland_portal_capture_error: None,
         last_input_at: None,
-        wayland_input_scale: (1.0, 1.0),
     }))
 }
 
@@ -1786,9 +1797,49 @@ mod tests {
 
     #[test]
     fn sanitize_name_strips_quotes_and_truncates() {
-        assert_eq!(sanitize_name("say \"hi\"\nnow"), "say 'hi' now");
+        // Shared helper order (map → truncate → trim): quotes straightened,
+        // control characters folded to space, result trimmed.
+        assert_eq!(
+            sanitize_name("say \"hi\"\nnow", MAX_NAME_CHARS),
+            "say 'hi' now"
+        );
+        // Tab and C0 controls fold to space (the old local copy kept them)
+        // and the result is trimmed.
+        assert_eq!(sanitize_name("a\tb\u{1}c ", MAX_NAME_CHARS), "a b c");
         let long = "x".repeat(MAX_NAME_CHARS + 20);
-        assert_eq!(sanitize_name(&long).chars().count(), MAX_NAME_CHARS);
+        assert_eq!(
+            sanitize_name(&long, MAX_NAME_CHARS).chars().count(),
+            MAX_NAME_CHARS
+        );
+    }
+
+    #[test]
+    fn normalize_line_breaks_folds_cr_and_crlf() {
+        assert_eq!(normalize_line_breaks("a\r\nb"), "a\nb");
+        assert_eq!(normalize_line_breaks("a\rb"), "a\nb");
+        assert_eq!(normalize_line_breaks("plain"), "plain");
+        assert_eq!(normalize_line_breaks(""), "");
+    }
+
+    #[test]
+    fn x11_type_runs_split_on_newline_and_keep_trailing_segment() {
+        // The injection loop emits an Enter before every segment after the
+        // first, so the trailing empty segment is what makes "text\n" still
+        // submit.
+        assert_eq!(
+            x11_type_runs("a\nb"),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert_eq!(x11_type_runs("a\n"), vec!["a".to_string(), String::new()]);
+        // split always yields at least one segment: empty text is a no-op
+        // run, not an error.
+        assert_eq!(x11_type_runs(""), vec![String::new()]);
+        // Consecutive newlines: empty runs carry no text but separate the
+        // two Enters.
+        assert_eq!(
+            x11_type_runs("\n\n"),
+            vec![String::new(), String::new(), String::new()]
+        );
     }
 
     #[test]
@@ -2771,7 +2822,7 @@ mod x11_live_tests {
             .await;
         assert!(!success, "{text}");
         assert!(
-            text.contains("invalid key chord") && text.contains("more than 4"),
+            text.contains("key chord has more than 4"),
             "overlong chord must be rejected at parse: {text}"
         );
 
