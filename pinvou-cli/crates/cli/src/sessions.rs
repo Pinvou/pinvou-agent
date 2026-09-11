@@ -22,6 +22,7 @@
 //!   (the CLI never owns a live engine, so non-terminal workers report as
 //!   interrupted, matching a stopped GUI process).
 
+use std::io::BufRead;
 use std::path::PathBuf;
 
 use crate::support::{render, require_yes, sandbox_home, success};
@@ -292,7 +293,10 @@ fn require_existing(store: &SessionStore, id: &str, action: &str) -> Result<(), 
 fn kind_label(store: &SessionStore, id: &str) -> &'static str {
     match store.session_kind(id) {
         Ok(SessionKind::Chat) => "chat",
-        Ok(SessionKind::ScheduledRun) | Err(_) => "scheduled-run",
+        Ok(SessionKind::ScheduledRun) => "scheduled-run",
+        // A transient profiles-file error must not mislabel a chat session
+        // as a scheduled run; surface it as unknown instead.
+        Err(_) => "unknown",
     }
 }
 
@@ -633,10 +637,44 @@ fn timeline(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     }
     let path = pinvou3_lib::platform::paths::session_timing_events(id);
     let mut events = Vec::new();
-    match std::fs::read_to_string(&path) {
-        Ok(content) => {
-            for line in content.lines() {
-                if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+    match std::fs::File::open(&path) {
+        Ok(file) => {
+            // Same 32 MiB cap as `timing::read_timeline` (crate-private): a
+            // runaway sidecar must not be read fully into memory. The file
+            // may grow after the metadata check, so the limit is re-checked
+            // per line like the GUI reader does.
+            const MAX_TIMING_FILE_BYTES: u64 = 32 * 1024 * 1024;
+            let file_len = file
+                .metadata()
+                .map_err(|error| {
+                    CliError::failed(format!(
+                        "sessions timeline({id}): cannot stat {}: {error}",
+                        path.display()
+                    ))
+                })?
+                .len();
+            if file_len > MAX_TIMING_FILE_BYTES {
+                return Err(CliError::failed(format!(
+                    "sessions timeline({id}): timing sidecar too large: {file_len} bytes \
+                     (limit {MAX_TIMING_FILE_BYTES})"
+                )));
+            }
+            let mut bytes_read = 0_u64;
+            for line in std::io::BufReader::new(file).lines() {
+                let line = line.map_err(|error| {
+                    CliError::failed(format!(
+                        "sessions timeline({id}): cannot read {}: {error}",
+                        path.display()
+                    ))
+                })?;
+                bytes_read = bytes_read.saturating_add(line.len() as u64 + 1);
+                if bytes_read > MAX_TIMING_FILE_BYTES {
+                    return Err(CliError::failed(format!(
+                        "sessions timeline({id}): timing sidecar grew beyond \
+                         {MAX_TIMING_FILE_BYTES} bytes while reading"
+                    )));
+                }
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
                     if value.is_object() {
                         events.push(value);
                     }

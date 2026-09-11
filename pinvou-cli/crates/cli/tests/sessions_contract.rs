@@ -446,6 +446,10 @@ fn artifacts_list_read_write_round_trip_with_fixture_session() {
     std::fs::create_dir_all(&workspace_dir).unwrap();
     let report = workspace_dir.join("report.md");
     std::fs::write(&report, "# Report\n\nfirst version\n").unwrap();
+    // The CLI canonicalizes stored artifact paths (session containment
+    // check); on macOS $TMPDIR (/var/folders/...) canonicalizes to
+    // /private/var/..., so expectations must use the canonical form.
+    let report = std::fs::canonicalize(&report).unwrap();
 
     let store = SessionStore::boot().expect("boot session store");
     store
