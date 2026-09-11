@@ -191,11 +191,10 @@ jobs:
               - '!pinvou3-app/src-tauri/src/features/personas/**'
               - '!pinvou3-app/src-tauri/src/features/pet/**'
             cli_rust:
-              - 'pinvou-cli/**/*.rs'
+              - 'pinvoy-cli/**/*.rs'
               - 'pinvou-cli/**/Cargo.toml'
               - 'pinvou-cli/**/Cargo.lock'
               - 'CodeWhale'
-              - '.github/workflows/pr-check.yml'
             knowledge_rust:
               - 'pinvou-knowledge/**/*.rs'
               - 'pinvou-knowledge/Cargo.toml'
@@ -1006,13 +1005,14 @@ jobs:
             : > "$d/$f"
           done
 
+      # Follows the repo's pinned toolchain single source
+      # (pinvou3-app/src-tauri/rust-toolchain.toml); rustfmt is required by
+      # the `cargo fmt --check` step below (minimal profile otherwise).
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.98.0
-
-      - name: Align pinned toolchain
-        run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
+          components: rustfmt
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
@@ -1042,6 +1042,7 @@ jobs:
             github.event.pull_request.draft == false &&
             (
               needs.changes.outputs.rust_full == 'true' ||
+              needs.changes.outputs.cli_rust == 'true' ||
               (
                 needs.changes.outputs.rust_code == 'true' &&
                 contains(github.event.pull_request.labels.*.name, 'ci:full-rust')
@@ -1306,6 +1307,7 @@ jobs:
       - knowledge-rust
       - rust-lint
       - rust-test
+      - cli-test
       - windows-rust-test
       - macos-codex-runtime-test
       - windows-codex-runtime-test
@@ -1331,6 +1333,7 @@ jobs:
           KNOWLEDGE_RUST_RESULT: ${{ needs.knowledge-rust.result }}
           RUST_LINT_RESULT: ${{ needs.rust-lint.result }}
           RUST_RESULT: ${{ needs.rust-test.result }}
+          CLI_TEST_RESULT: ${{ needs.cli-test.result }}
           WINDOWS_RUST_RESULT: ${{ needs.windows-rust-test.result }}
           MACOS_CODEX_RESULT: ${{ needs.macos-codex-runtime-test.result }}
           WINDOWS_CODEX_RESULT: ${{ needs.windows-codex-runtime-test.result }}
@@ -1355,6 +1358,7 @@ jobs:
             "knowledge-rust:$KNOWLEDGE_RUST_RESULT" \
             "rust-lint:$RUST_LINT_RESULT" \
             "rust-test:$RUST_RESULT" \
+            "cli-test:$CLI_TEST_RESULT" \
             "windows-rust-test:$WINDOWS_RUST_RESULT" \
             "macos-codex-runtime-test:$MACOS_CODEX_RESULT" \
             "windows-codex-runtime-test:$WINDOWS_CODEX_RESULT"; do
