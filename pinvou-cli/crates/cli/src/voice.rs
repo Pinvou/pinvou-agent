@@ -13,10 +13,9 @@
 //!   `PADDLESPEECH_BIN` external-CLI fallback chain with the same `asr
 //!   --model --lang --input` protocol, 60 s default timeout and exit-code-6
 //!   "no speech" convention.
-//! - the app verifies downloaded models by size **and** sha256
-//!   (`platform::hashing::sha256_file`, also crate-private); the CLI has no
-//!   hash dependency, so `asr-install` verifies the expected byte size only
-//!   and says so in its output.
+//! - the app verifies downloaded models by size **and** sha256; the CLI
+//!   mirrors both (sha256 through the shared
+//!   `platform::connector_lock::file_sha256_hex`).
 //! - the app's transcript parser (`features::voice::transcript`) handles
 //!   several engine log protocols; the CLI mirrors the common shapes (JSON
 //!   `{"text": …}` lines, `[0.00s → 2.10s] …` segments, plain final lines)
@@ -183,6 +182,9 @@ pub fn parse(values: &[String]) -> Result<VoiceCommand, CliError> {
 }
 
 pub fn execute(command: VoiceCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
+    // The ASR staging/models root lives under the product data root; a
+    // relative PINVOU3_HOME would silently resolve against the cwd.
+    crate::support::sandbox_home()?;
     match command {
         VoiceCommand::Transcribe { path } => transcribe(&path, output),
         VoiceCommand::Postprocess {
@@ -202,7 +204,6 @@ pub fn execute(command: VoiceCommand, output: OutputMode) -> Result<CliOutcome, 
 struct AsrModelSpec {
     filename: &'static str,
     expected_size: u64,
-    #[allow(dead_code)] // mirrored for documentation; CLI verifies size only
     sha256: &'static str,
     primary_url: &'static str,
     mirror_url: &'static str,
@@ -612,16 +613,23 @@ fn write_temp_wav(bytes: &[u8]) -> Result<PathBuf, CliError> {
         .map_err(|error| {
             CliError::failed(format!("voice transcribe: cannot stage audio: {error}"))
         })?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(
-            |error| CliError::failed(format!("voice transcribe: cannot stage audio: {error}")),
-        )?;
+    // Any failure after the exclusive create must not leak the (empty or
+    // partial) staging file.
+    let staged = (|| -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        std::io::Write::write_all(&mut file, bytes)?;
+        Ok(())
+    })();
+    if let Err(error) = staged {
+        let _ = std::fs::remove_file(&path);
+        return Err(CliError::failed(format!(
+            "voice transcribe: cannot stage audio: {error}"
+        )));
     }
-    std::io::Write::write_all(&mut file, bytes).map_err(|error| {
-        CliError::failed(format!("voice transcribe: cannot stage audio: {error}"))
-    })?;
     Ok(path)
 }
 
@@ -652,8 +660,11 @@ fn run_recognition(wav: &Path) -> Result<(String, &'static str), CliError> {
 fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
     let engine = engine_path().expect("engine checked by caller");
     let model = model_path();
-    // The nonce keeps two concurrent transcribes (or a reused pid) from
-    // colliding on the normalized scratch file, same as `write_temp_wav`.
+    // The normalized scratch file is the same private audio as the staged
+    // input: pre-create it 0600 + exclusive (ffmpeg then writes into the
+    // existing private file) so a second world-readable copy never exists,
+    // and remove it on every path — the app removes it unconditionally after
+    // the engine attempt, half-written ffmpeg output included.
     let normalized = std::env::temp_dir().join(format!(
         "pinvou-cli-asr-{}-{}.wav",
         std::process::id(),
@@ -662,6 +673,19 @@ fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
+    let mut normalized_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&normalized)
+        .map_err(|error| {
+            CliError::failed(format!("voice transcribe: cannot stage audio: {error}"))
+        })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&normalized, std::fs::Permissions::from_mode(0o600));
+    }
+    drop(normalized_file);
     let input = if ffmpeg_available() {
         let converted = std::process::Command::new("ffmpeg")
             .args(["-y", "-i"])
@@ -693,19 +717,19 @@ fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
         .arg(&input)
         .args(["-t", "4", "-l", "auto", "-itn"])
         .output();
-    if input != wav {
-        let _ = std::fs::remove_file(&input);
-    }
+    let _ = std::fs::remove_file(&normalized);
     let engine_result = engine_result.map_err(|error| {
         CliError::failed(format!(
             "voice transcribe: cannot start ASR engine: {error}"
         ))
     })?;
     if !engine_result.status.success() {
-        let tail = String::from_utf8_lossy(&engine_result.stderr);
+        // The engine transcript can leak into stderr; report the failure
+        // shape only, like the external-CLI lane and the GUI.
         return Err(CliError::failed(format!(
-            "asr_engine_error: ASR engine failed: {}",
-            tail.lines().last().unwrap_or("").trim()
+            "asr_engine_error: ASR engine failed (stdout {} bytes, stderr {} bytes)",
+            engine_result.stdout.len(),
+            engine_result.stderr.len()
         )));
     }
     let stdout = String::from_utf8_lossy(&engine_result.stdout).into_owned();
