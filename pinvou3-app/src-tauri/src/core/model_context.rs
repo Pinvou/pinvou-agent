@@ -74,6 +74,30 @@ pub fn resolved_context_window(model: &str) -> Option<u32> {
         .map(|(_, window)| *window)
 }
 
+/// operator-owned 端点（本地 vLLM、自定义 OpenAI 兼容 / custom；判定见
+/// `SavedModel::is_operator_owned_endpoint`）的输出上限分档声明——宿主作为
+/// 部署者的代理，按窗口分档代为声明 route 输出事实（替换底座对未编目模型
+/// 的 8192 fail-close 猜测）。
+///
+/// 单一事实源：`bridge::route_limits_for_model` 的声明臂与监控页 live 探测
+/// 测试都从这里取值，禁止再内联同公式（曾经的内联副本在引入当轮就漏掉了
+/// 500K 档发生漂移）。
+#[must_use]
+pub fn operator_owned_output_declaration(window: Option<u32>) -> Option<u32> {
+    let declared = match window {
+        Some(window) if window >= 500_000 => 131_072,
+        Some(window) if window >= 250_000 => 65_536,
+        Some(window) => (window / 4).min(32_768),
+        // 无窗口事实：按底座 128K 默认窗口的 1/4 兜底（非底座自身数值：
+        // 底座模型级兜底 64000、路由级 fail-close ≤8192；min(64000, 32768)
+        // 后恰好生效 32768）。
+        None => 32_768,
+    };
+    // 窗口过小时 window/4 装不下一个有意义的输出预算（<4K）：保持不声明
+    // （fail-closed），不发 Some(<4K) 的 route 事实。
+    (declared >= 4_096).then_some(declared)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,5 +138,47 @@ mod tests {
             deepseek_tui::models::context_window_for_model("gpt-5.6-sol")
         );
         assert_eq!(resolved_context_window("unknown-cloud-model"), None);
+    }
+
+    #[test]
+    fn operator_owned_output_declaration_tiers_and_fail_closed_floor() {
+        // 分档边界（与 bridge 分档测试同表，此处钉纯函数本身）。
+        assert_eq!(
+            operator_owned_output_declaration(Some(1_048_576)),
+            Some(131_072)
+        );
+        assert_eq!(
+            operator_owned_output_declaration(Some(500_000)),
+            Some(131_072)
+        );
+        assert_eq!(
+            operator_owned_output_declaration(Some(499_999)),
+            Some(65_536)
+        );
+        assert_eq!(
+            operator_owned_output_declaration(Some(250_000)),
+            Some(65_536)
+        );
+        assert_eq!(
+            operator_owned_output_declaration(Some(249_999)),
+            Some(32_768)
+        );
+        assert_eq!(
+            operator_owned_output_declaration(Some(262_144)),
+            Some(65_536)
+        );
+        assert_eq!(
+            operator_owned_output_declaration(Some(131_072)),
+            Some(32_768)
+        );
+        assert_eq!(
+            operator_owned_output_declaration(Some(65_536)),
+            Some(16_384)
+        );
+        assert_eq!(operator_owned_output_declaration(Some(16_384)), Some(4_096));
+        assert_eq!(operator_owned_output_declaration(Some(16_383)), None);
+        assert_eq!(operator_owned_output_declaration(Some(4_096)), None);
+        // 无窗口事实 → 128K 默认窗口的 1/4 兜底。
+        assert_eq!(operator_owned_output_declaration(None), Some(32_768));
     }
 }

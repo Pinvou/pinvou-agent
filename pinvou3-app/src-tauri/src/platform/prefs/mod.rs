@@ -673,12 +673,19 @@ impl UserPrefs {
             .saved_models
             .iter()
             .any(|model| model.preset == ModelPreset::LocalVllm && model.alias.is_some());
+        // 本地 24576 遗留哨兵迁移（`normalize_route_limits` 把机器写入的 24K 归一为
+        // 未配置）同理：必须在 migrate/normalize 改写前记录，否则 save gate 看不到
+        // 变化，存量 settings.json 里的 24K 会永久留在磁盘上。
+        let local_output_sentinel_changed = prefs.advanced.saved_models.iter().any(|model| {
+            model.preset == ModelPreset::LocalVllm && model.max_output_tokens == Some(24_576)
+        });
         prefs.migrate_models();
         prefs.normalize_saved_model_metadata();
         let migration = prefs.migrate_plaintext_api_keys_with_store(&SystemCredentialStore::new());
         let memory_policy_changed = prefs.enforce_memory_locale_policy();
         let normalization_changed = minimax_endpoint_changed
             || local_model_alias_changed
+            || local_output_sentinel_changed
             || migration.settings_sanitized
             || memory_policy_changed
             || color_scheme_derived;
@@ -1581,6 +1588,121 @@ mod tests {
         let persisted = std::fs::read_to_string(&path).expect("read migrated prefs");
         assert!(!persisted.contains("api.minimax.chat"));
         assert!(persisted.contains("api.minimaxi.com"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        match old_home {
+            // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: same as above; restore-side removal serialized under ENV_LOCK.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+    }
+
+    /// 本地 24576 遗留哨兵迁移必须在 load 时落盘（round-2 评审 MAJOR：曾只改内存，
+    /// save gate 看不到变化，机器写入的 24K 永久留在 settings.json）。同时钉住：
+    /// 非 LocalVllm 端点的 24576 是显式输入，迁移不得碰它。
+    #[test]
+    fn load_persists_legacy_local_output_sentinel_migration() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let old_home = std::env::var_os("PINVOU3_HOME");
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-prefs-local-output-sentinel-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("create temporary prefs home");
+        // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let mut prefs = UserPrefs::default();
+        prefs.advanced.saved_models.push(SavedModel {
+            id: "legacy-local".into(),
+            name: "Legacy Local".into(),
+            alias: None,
+            preset: ModelPreset::LocalVllm,
+            context_window_tokens: Some(262_144),
+            // 旧版本 normalize + 设置页预填机器写入的 24K：应被迁移清除并落盘。
+            max_output_tokens: Some(24_576),
+            reasoning_effort: None,
+            model: "qwen36_35b_256k".into(),
+            base_url: "http://127.0.0.1:8000/v1".into(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        });
+        prefs.advanced.saved_models.push(SavedModel {
+            id: "custom-explicit".into(),
+            name: "Custom Explicit".into(),
+            alias: None,
+            preset: ModelPreset::OpenaiCompatible,
+            context_window_tokens: None,
+            // 自定义端点的 24576 是显式输入：必须原样保留。
+            max_output_tokens: Some(24_576),
+            reasoning_effort: None,
+            model: "custom-model".into(),
+            base_url: "https://gateway.example.com/v1".into(),
+            provider_kind: Some(MODEL_PROVIDER_KIND_CUSTOM.into()),
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        });
+        prefs.advanced.active_model_id = Some("legacy-local".into());
+        let path = super::super::paths::settings_path();
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&prefs).expect("serialize legacy prefs"),
+        )
+        .expect("write legacy prefs");
+
+        let loaded = UserPrefs::load();
+        let legacy_local = loaded
+            .model_by_id("legacy-local")
+            .expect("legacy local model");
+        assert_eq!(
+            legacy_local.max_output_tokens, None,
+            "内存中的遗留 24K 应已归一为未配置"
+        );
+        let custom = loaded.model_by_id("custom-explicit").expect("custom model");
+        assert_eq!(
+            custom.max_output_tokens,
+            Some(24_576),
+            "自定义端点的显式 24576 不得被迁移"
+        );
+
+        // 关键断言：归一已写回磁盘（而不仅改内存）。
+        let persisted: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read migrated prefs"))
+                .expect("parse migrated prefs");
+        let models = persisted["advanced"]["saved_models"]
+            .as_array()
+            .expect("saved_models array");
+        let legacy_on_disk = models
+            .iter()
+            .find(|model| model["id"] == "legacy-local")
+            .expect("legacy local on disk");
+        assert!(
+            legacy_on_disk["max_output_tokens"].is_null(),
+            "磁盘上的遗留 24K 应已清除，实得 {}",
+            legacy_on_disk["max_output_tokens"]
+        );
+        let custom_on_disk = models
+            .iter()
+            .find(|model| model["id"] == "custom-explicit")
+            .expect("custom on disk");
+        assert_eq!(custom_on_disk["max_output_tokens"], 24_576);
 
         let _ = std::fs::remove_dir_all(&tmp);
         match old_home {

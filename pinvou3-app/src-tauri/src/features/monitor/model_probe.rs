@@ -672,9 +672,14 @@ pub async fn resolve_served_model(
 
 /// 探测条目的事实（context window / 自报输出上限）是否可被本路由采纳。
 /// 事实必须属于真正发给端点的模型名：跟随 served name 的路由（vLLM，
-/// 名字会被纠偏到条目本身）恒可采纳；不改名的路由仅当配置名精确命中
+/// 名字通常被纠偏到条目本身）恒可采纳；不改名的路由仅当配置名精确命中
 /// 列表时采纳——单条目“借名”场景返回的 served 名与配置名无关，其事实
 /// 属于别家模型，不得用来收紧本路由的窗口/输出上限。
+///
+/// 已知例外（有意取舍）：vLLM + `pins_scheduled_model` 时 served-name 纠偏
+/// 被抑制、配置名原样上线，但 `follows_served_name` 仍按路由类型恒真——
+/// 此时单条目事实会被采纳。宽松的单模型服务确实在服务该条目（事实正确）；
+/// 严格的服务会对配置名 404（事实无影响），故不为此角增加条件复杂度。
 pub fn adopts_probed_facts(follows_served_name: bool, configured: &str, served: &str) -> bool {
     follows_served_name || served == configured
 }
@@ -729,12 +734,10 @@ mod tests {
         // 端到端佐证:探测窗口喂进 derive 公式应得按窗口缩放的 T(非写死 190K)。
         // 复算 derive_compaction_threshold(bridge 私有,此处内联同公式):
         //   E = W − O − 1024;T = (E−S)/1.5 − 22000, clamp[4096, 0.75W]。
-        // O=窗口分档声明(>=250K → 65536)。
-        let o = if window >= 250_000 {
-            65_536
-        } else {
-            (window / 4).min(32_768)
-        };
+        // O=窗口分档声明——与生产同源取自
+        // core::model_context::operator_owned_output_declaration,禁止再内联副本。
+        let o = crate::core::model_context::operator_owned_output_declaration(Some(window))
+            .expect("真机窗口 >=100K,分档声明必然成立");
         let e = (window as usize)
             .saturating_sub(o as usize)
             .saturating_sub(1_024);

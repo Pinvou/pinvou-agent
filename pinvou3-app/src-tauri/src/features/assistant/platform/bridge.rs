@@ -225,6 +225,7 @@ impl std::fmt::Debug for Pinvou3Bridge {
             .field("session_model", &self.session_model)
             .field("runtime_model_credential", &self.runtime_model_credential)
             .field("probed_context_tokens", &self.probed_context_tokens)
+            .field("probed_output_tokens", &self.probed_output_tokens)
             .field("probed_local_kind", &self.probed_local_kind)
             .field(
                 "execution_root_resolver",
@@ -1304,31 +1305,32 @@ impl Pinvou3Bridge {
         // 端点由用户配置，输出上限是部署者自己的责任。底座（upstream #5461
         // 语义）对未编目模型 fail-close 到 8192 保守猜测、仅在有显式
         // output_tokens 事实时替换——宿主作为部署者的代理，按窗口分档代为
-        // 声明该 route 事实：>=500K→131072，>=250K→65536，否则
-        // min(window/4, 32768)；无窗口事实声明 128K 默认窗口的 1/4（32768，
-        // 非底座自身数值：底座模型级兜底 64000、路由级 fail-close ≤8192，
-        // min(64000, 32768) 后恰好生效 32768）。本地 vLLM 无探测时 128K
-        // 兜底会先成为窗口事实（is_local_vllm 分支），落 32000 而非本兜底。
+        // 声明该 route 事实。分档公式单一实现在
+        // `core::model_context::operator_owned_output_declaration`：
+        // >=500K→131072，>=250K→65536，否则 min(window/4, 32768)；无窗口事实
+        // 兜底 32768（128K 默认窗口的 1/4，非底座自身数值：底座模型级兜底
+        // 64000、路由级 fail-close ≤8192，min(64000, 32768) 后恰好生效
+        // 32768）。本地 vLLM 无探测时 128K 兜底会先成为窗口事实
+        // （is_local_vllm 分支），落 32000 而非本兜底。<4096 由分档函数
+        // fail-closed 返回 None。
         // 声明的是端点能力，不是 Pinvou 单轮预算，因此不参与进程级
         // max_output_tokens()（24K）的钳制——与已收录云端模型同权；用户可以
         // 通过 SavedModel.max_output_tokens 显式收紧（configured_output 优先）。
+        // 注意方向：显式配置仍受进程级 24K 预算钳制（base 既有语义），因此
+        // 在 >=250K 窗口上"显式填 65536"反而小于"不填拿分档 65536"——要抬高
+        // 上限请走 PINVOU3_MAX_OUTPUT_TOKENS / prefs.advanced.max_output_tokens。
         let is_operator_owned_endpoint =
             saved.is_some_and(|saved| saved.is_operator_owned_endpoint());
         let output_tokens = configured_output
             .map(|tokens| tokens.min(self.max_output_tokens()))
             .or_else(|| {
-                // 窗口过小时 window/4 装不下一个有意义的输出预算（<4K）：
-                // 保持不声明（fail-closed），不发 Some(<4K) 的 route 事实。
-                let declared = context_tokens.map_or(32_768, |window| {
-                    if window >= 500_000 {
-                        131_072
-                    } else if window >= 250_000 {
-                        65_536
-                    } else {
-                        (window / 4).min(32_768)
-                    }
-                });
-                (is_operator_owned_endpoint && declared >= 4_096).then_some(declared)
+                is_operator_owned_endpoint
+                    .then_some(())
+                    .and_then(|()| {
+                        crate::core::model_context::operator_owned_output_declaration(
+                            context_tokens,
+                        )
+                    })
             })
             // 端点自报输出上限（`/v1/models` 探测）只做 min 收紧：API 拒绝
             // 超限请求时，声明值必须让步。
@@ -1787,7 +1789,9 @@ impl Pinvou3Bridge {
             //   active_route_limits/skills_scan_codewhale_only/workspace_follow_symlinks: 透传。
             // [pinvou3-fork] active_route_limits:把 SavedModel 声明和实时 probe 收敛成同一份
             // context/output route facts，让底座 emergency 线、Compact 与真实请求上限同尺。
-            // 未登记的 vLLM 才回退 128K/24K；其他兼容引擎可在 SavedModel 显式声明。
+            // 未登记的 vLLM 才回退 128K 窗口 + 窗口分档输出（见
+            // route_limits_for_model / operator_owned_output_declaration）；
+            // 其他兼容引擎可在 SavedModel 显式声明。
             active_route_limits: self.route_limits_for_model(&self.model()),
             skills_scan_codewhale_only,
             max_admitted_subagents,
@@ -4187,7 +4191,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_cloud_model_does_not_gain_a_speculative_route_limit() {
+    fn unknown_cloud_model_context_stays_unspeculative_output_declared_by_tier() {
         // 锁 DEEPSEEK_* env：本用例读 `model()`（env 优先），若与其他写 env 的
         // 测试并发会读到临时 DEEPSEEK_MODEL（如 deepseek-ai/DeepSeek-V4-Pro →
         // 底座推导 1M 窗口），导致 route limits 误判为已知。锁保证串行 + 恢复。
@@ -5497,8 +5501,8 @@ mod tests {
 
     /// probed_context_tokens=Some → 必须填进 active_route_limits.context_tokens
     /// (底座 emergency 线 + footer 百分比据此按真实 max_model_len 计);None → 本地 vLLM
-    /// 仍给 model hint/128K + 24K 保守 profile。下次 sync 若构造块改回透传 default，
-    /// 本测试立刻报错。
+    /// 仍给 model hint/128K 窗口 + 分档输出(262144 窗口→65536,不再是旧 24K 预算)。
+    /// 下次 sync 若构造块改回透传 default，本测试立刻报错。
     #[test]
     fn forkguard_probed_window_fills_route_limits() {
         // 本测试钉死本地 vLLM 的 route_limits 行为(默认预设已平台感知),两处 fixture 都显式设 LocalVllm。
