@@ -24,7 +24,7 @@ fn ensure_non_empty(field: &str, value: &str) -> Result<(), String> {
 pub struct ComputerUseStatus {
     /// 设置总开关（settings.json `computer_use.enabled` 的内存镜像）。
     pub enabled: bool,
-    /// 该会话当前持有有效输入授权（未空闲过期、未被吊销/急停清除）。
+    /// 该会话当前持有有效输入授权（未被吊销/急停清除；授权无空闲过期）。
     pub granted: bool,
     /// 急停旗标（`computer_use_stop` 置位，重新开启总开关时清除）。
     pub stopped: bool,
@@ -45,9 +45,9 @@ pub fn computer_use_get_status(
     }
 }
 
-/// 授予本会话鼠标/键盘控制权（一次性会话授权，10 分钟空闲后自动失效，需
-/// 重新授权；空闲时钟只由**执行成功**的输入动作续期——被拦/被拒的调用
-/// 不续期）。
+/// 授予本会话鼠标/键盘控制权（会话授权）。授权活到被显式吊销（revoke /
+/// stop / 总开关关闭），无空闲过期——没有主流产品给会话级授权设空闲时钟
+/// （Claude Code 的「本次会话允许」同口径）。
 #[tauri::command]
 pub fn computer_use_grant(
     session_id: String,
@@ -125,7 +125,7 @@ pub fn computer_use_deny(
 /// 设置总开关。先落盘后翻内存旗标（同 set_voice_shortcut_enabled 的顺序）：
 /// 写盘失败时内存态不得与 settings.json 不一致。重新开启时清除急停旗标
 /// （guard 的既定语义），但不恢复任何会话授权；关闭时吊销全部会话授权并
-/// 清空待决确认（评审发现：否则重开后旧 grant 在 10 分钟窗口内仍有效）。
+/// 清空待决确认（评审发现：否则重开后旧 grant 与旧批准令牌仍然有效）。
 /// 最后热刷 disallowed_tools（评审发现：tool_policy 闭包只在 refresh 时
 /// 重算，不主动刷新则已在跑的存量引擎目录要滞后到下一次任意策略刷新；
 /// 与 marketplace/connectors 命令调用 `pool.refresh_disallowed_tools()`
