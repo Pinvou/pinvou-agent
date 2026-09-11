@@ -6,8 +6,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-EXPECTED_HEAD="a78c223de58ccd6afee26ce140e0cf9260028769"
-EXPECTED_COMMITS=24
+EXPECTED_HEAD="f2526196c1ea21f35994fbd19bb6e4aed65710f2"
+EXPECTED_COMMITS=25
 FAST_ONLY=0
 
 case "${1:-}" in
@@ -139,6 +139,7 @@ fingerprints+=(
   "T3|项目指令发现仅主根(缓存稳定)     |CodeWhale/crates/tui/src/project_context.rs|fn forkguard_workspace_roots_instructions_stay_primary_root_only"
   "T3|指令 source 标签统一走文件名 helper |CodeWhale/crates/tui/src/project_context/types.rs|fn project_instructions_source_label("
   "T3|指令 source 相对化行为锁定         |CodeWhale/crates/tui/src/project_context.rs|fn forkguard_project_instructions_source_is_file_name_not_absolute_path"
+  "T2|turn_meta 列出附加根且单根无此行    |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_workspace_roots_turn_meta_lists_attached_roots"
 )
 
 for fp in "${fingerprints[@]}"; do

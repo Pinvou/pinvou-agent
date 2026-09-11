@@ -19,14 +19,14 @@
 
 ### 多根工作区 workspace_roots + 指令 source 相对化（2026-09-11，本分支未推送）
 
-- CodeWhale 分支 `pinvou3/workspace-roots-v12`（v0.9.12 r1 之上 9 个提交，head `a78c223de`，自 v0.9.5 线的 `pinvou3/workspace-roots` @d9431a28f 逐提交移植，层次 1:1）：线程从单根 `cwd` 扩展为 **cwd（主根）+ workspace_roots（全量可访问根集合）**，是"单入口工作区"（项目 = 主文件夹 + 一组钥匙）的底座前提。四层落地：
+- CodeWhale 分支 `pinvou3/workspace-roots-v12`（v0.9.12 r1 之上 10 个提交，head `f2526196c`，自 v0.9.5 线的 `pinvou3/workspace-roots` @d9431a28f 逐提交移植，层次 1:1）：线程从单根 `cwd` 扩展为 **cwd（主根）+ workspace_roots（全量可访问根集合）**，是"单入口工作区"（项目 = 主文件夹 + 一组钥匙）的底座前提。四层落地：
   1. **协议与会话模型**：`ThreadStartParams`/`ThreadResumeParams`/`ThreadForkParams` 与 `Thread` DTO 增加 `workspace_roots`（serde default，旧载荷读入为空）；SQLite `threads` 表 v5 迁移加 `workspace_roots TEXT`（缺省 `'[]'`，旧库零迁移退化）；TUI 两侧 JSON（`ThreadRecord`/`SessionMetadata`）additive serde default 字段。
   2. **回合环境**：根集合经 `Op::SyncSession` / Runtime API `UpdateThreadRequest` 运行中替换（活动回合拒绝 + 驱逐缓存引擎），每回合读取——快照语义，下回合生效；`normalize_workspace_roots` 保证 cwd 居首去重，空集合 ≡ `[cwd]`。resume 三态：带 roots 整体替换；只带 cwd 替换主根槽位、附加根保留；都不带沿用持久化值（顺带修复 cwd 被 fallback 覆盖的缺陷）。v12 适配：`SyncSession` wire 镜像、exec_agent 装配、acp_server 接缝均已接线。
   3. **权限沙箱**：`:workspace_roots` 符号常量（`WORKSPACE_ROOTS_SYMBOL`）在每回合策略构造点物化（注：暂无配置面消费该字面值）；`workspace_write_policy(workspace, roots, network_access)` 的 writable_roots = 归一化全集合（空集合逐字节等于旧值 `[workspace]`）；写豁免 carve-out 逐根判定（排除名仍拒）；`ToolContext::resolve_path` 跨根放行、真越界仍 `PathEscape`；execpolicy 规则跨根匹配。v12 的 `SandboxNetworkAccess` 类型化参数与 fork 反转点全部保留。
   4. **提示词/项目指令**：AGENTS.md 发现仅主根（v12 的仓库边界回溯语义保留），附加根只给访问权不注入指令；`<project_instructions source="…">` 标签由绝对路径改为仅文件名（统一 helper `project_instructions_source_label`，位于 `project_context/types.rs`），目录搬移/换主根且指令内容相同者不再击破 KV 前缀缓存。v12 差异：compaction 逐字重注入点已在上游重构中消失，旧线对应测试未移植。
 - 行为变化边界：未配置多根（空集合）时协议帧、策略值、路径判定逐字节等价单根现状；TUI 交互端无多根 UI，根集合只能经 Runtime API/headless 进入；fork 暂不继承父线程附加根。
-- drift：v0.9.12 r1 → 本主题为 `40 files, +1635/-142` 的移植等价物；新增 6 条 forkguard（5 条 `forkguard_workspace_roots_*` + 1 条 source 相对化），默认组 31→37 条运行通过。
-- 指纹锚点：`pub workspace_roots: Vec<PathBuf>,`（protocol）、`pub fn normalize_workspace_roots(`（core）、`ADD COLUMN workspace_roots TEXT NOT NULL DEFAULT '[]';`（state）、`WORKSPACE_ROOTS_SYMBOL: &str = ":workspace_roots"`（sandbox/policy）、`fn project_instructions_source_label(`（project_context/types.rs）及 6 条 `fn forkguard_*` 测试名。
+- drift：v0.9.12 r1 → 本主题为 `40 files, +1635/-142` 的移植等价物；新增 7 条 forkguard（6 条 `forkguard_workspace_roots_*` + 1 条 source 相对化），默认组 31→38 条运行通过。另含 turn_meta 列根：多根会话的每回合元数据新增 `Accessible folders:` 行（紧贴 `Current workspace:`，最多 5 个超出截断，单根逐字节无此行）——模型获知附加根的通道。
+- 指纹锚点：`pub workspace_roots: Vec<PathBuf>,`（protocol）、`pub fn normalize_workspace_roots(`（core）、`ADD COLUMN workspace_roots TEXT NOT NULL DEFAULT '[]';`（state）、`WORKSPACE_ROOTS_SYMBOL: &str = ":workspace_roots"`（sandbox/policy）、`fn project_instructions_source_label(`（project_context/types.rs）及 7 条 `fn forkguard_*` 测试名。
 
 ## 1. 为什么本次使用 clean re-fork
 
