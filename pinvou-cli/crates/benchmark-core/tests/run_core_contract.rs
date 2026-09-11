@@ -1157,3 +1157,34 @@ async fn unbounded_deadline_runs_without_a_harness_task_timeout() {
     assert_eq!(outcome.status(), TaskStatus::Completed);
     fs::remove_dir_all(base).unwrap();
 }
+
+/// The contrast the None-lane pin claims: the SAME slow backend cut off by a
+/// finite deadline does time out. Without this, `None` silently acquiring a
+/// default deadline longer than the sleep would pass both tests.
+#[tokio::test]
+async fn some_deadline_cuts_off_the_same_slow_backend() {
+    let base = temp_base("some-deadline-slow");
+    let backend = Arc::new(MockBackend::with_behavior(BackendBehavior::SlowRun));
+    let runner = NativeAgentRunner::new(backend);
+    let outcome = runner
+        .run_task(
+            &BenchmarkTask::new(
+                "some-deadline-slow",
+                None,
+                None,
+                ExecutionRequest::native_turn(
+                    PrivateInputHandle::new("private"),
+                    vec![],
+                    Some(Duration::from_millis(10)),
+                    ToolPolicyId::new("smoke/v1"),
+                    OutputContract::new("text/v1"),
+                ),
+                None,
+            ),
+            &RunContext::new("some-deadline-slow", base.clone()),
+        )
+        .await
+        .expect("the harness machinery itself must not fail");
+    assert_eq!(outcome.status(), TaskStatus::Timeout);
+    fs::remove_dir_all(base).unwrap();
+}
