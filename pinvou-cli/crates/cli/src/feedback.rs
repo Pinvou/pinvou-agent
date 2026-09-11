@@ -267,19 +267,9 @@ fn new_feedback_id() -> String {
 /// `submit_feedback` body contains no `.await`); `Pending` is surfaced as
 /// `None` so the caller fails cleanly instead of hanging.
 fn poll_once<F: std::future::Future>(future: F) -> Option<F::Output> {
-    use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+    use std::task::{Context, Poll, Waker};
 
-    fn noop(_: *const ()) {}
-    fn clone_raw(_: *const ()) -> RawWaker {
-        RawWaker::new(std::ptr::null(), &VTABLE)
-    }
-    static VTABLE: RawWakerVTable = RawWakerVTable::new(clone_raw, noop, noop, noop);
-
-    // SAFETY: the vtable functions are no-ops (or return the same null-backed
-    // raw waker); the waker is never actually woken because the future is
-    // polled at most once.
-    let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) };
-    let mut cx = Context::from_waker(&waker);
+    let mut cx = Context::from_waker(Waker::noop());
     let mut pinned = std::pin::pin!(future);
     match pinned.as_mut().poll(&mut cx) {
         Poll::Ready(output) => Some(output),
