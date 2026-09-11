@@ -63,43 +63,14 @@ pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
 }
 
 /// 已持锁读实现。首个版本：文件不存在时从两份旧文件迁移（幂等）；文件存在时按新
-/// 格式解析，防御性剥除 `skill:` 前缀残留（新写路径不会再产生）。
-///
-/// plain 默认策略迁移（工具开关全量收敛 DenyAll）：旧版文件（无
-/// `plain_defaults_migrated` 键）或旧版双文件时代（legacy 文件存在）= 升级
-/// 装机，把 plain 初始化为落盘列表——其有效状态即旧 AllowAll 语义下的真实开关
-/// 状态（缺省空 = 全开），升级后用户无感；全新装机只置标记不初始化，plain 未
-/// 初始化按 DenyAll 兜底（默认全关）。
-///
-/// 「全新装机」的判定不能只看本文件与两份 legacy 文件：统一文件自 v0.8.6
-/// 起就存在、且只在有内容可写时才落盘——老装机 + 从未动过开关的用户可能
-/// 三者皆无。因此升级信号放宽为「任何既有 pinvou3_home 痕迹」：
-/// marketplace/installed.json、settings.json 或已有会话目录，任一存在即视
-/// 为升级装机并保留旧 AllowAll 语义（评审 #445 P1-2）。全空家目录才算全新。
+/// 格式解析，防御性剥除 `skill:` 前缀残留（新写路径不会再产生）；损坏文件先留
+/// `.corrupt.<ts>` 隔离副本再按空状态降级（评审 #445 P2，原始字节可人工找回）。
 fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
     let path = disabled_bundles_path();
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(_) => {
-            let home = paths::pinvou3_home();
-            let legacy_existed = home.join("disabled_connectors.json").exists()
-                || home.join("disabled_skills.json").exists();
-            // 宽口径升级信号:三份开关相关文件皆无,但家目录有其他状态
-            // (安装记录/设置/会话) ⇒ 老装机,plain 保持旧 AllowAll 语义。
-            let upgraded_install = legacy_existed
-                || home.join("marketplace").join("installed.json").is_file()
-                || paths::settings_path().is_file()
-                || paths::sessions_root()
-                    .read_dir()
-                    .map(|mut entries| entries.next().is_some())
-                    .unwrap_or(false);
-            let mut file = migrate_from_legacy_files();
-            if upgraded_install {
-                // 升级：初始化 plain（scopes 缺省空 = 旧语义全开），锁定升级前状态。
-                file.initialized
-                    .insert(SessionMode::Plain.as_str().to_string());
-            }
-            mark_plain_defaults_migrated(&mut file);
+            let file = migrate_from_legacy_files();
             if !file.scopes.is_empty() || file.initialized.iter().any(|k| !k.is_empty()) {
                 save_disabled_bundles_file(&file);
             }
@@ -109,38 +80,16 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
     let mut file: DisabledBundlesFile = match serde_json::from_str(&content) {
         Ok(file) => file,
         Err(error) => {
-            // 损坏文件不静默覆盖:先留 .corrupt.<ts> 隔离副本(installed.json
-            // 同款),再按空状态降级,原始字节可人工找回(评审 #445 P2)。
             quarantine_corrupt_disabled_bundles(&content, &error.to_string());
             DisabledBundlesFile::default()
         }
     };
-    if !plain_defaults_migrated(&file) {
-        file.initialized
-            .insert(SessionMode::Plain.as_str().to_string());
-        mark_plain_defaults_migrated(&mut file);
-        save_disabled_bundles_file(&file);
-    }
     if strip_skill_prefixes(&mut file) {
         save_disabled_bundles_file(&file);
     }
     file
 }
 
-/// plain 默认收敛迁移标记(#452)经 `extra` 扁平键携带:结构体字段与
-/// unify/main 的 `DisabledBundlesFile` 对齐(不新增显式字段),磁盘键名与
-/// 引入时一致,旧文件原样可读可续写。
-pub(crate) fn plain_defaults_migrated(file: &DisabledBundlesFile) -> bool {
-    file.extra
-        .get("plain_defaults_migrated")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-}
-
-fn mark_plain_defaults_migrated(file: &mut DisabledBundlesFile) {
-    file.extra
-        .insert("plain_defaults_migrated".to_string(), serde_json::Value::Bool(true));
-}
 
 /// 防御：剥除所有 scope 禁用集与不可见集里的 `skill:` 前缀（旧前端 bug 窗口期
 /// 误写入的带前缀 id；本文件按裸包 id 匹配，读者在此统一归一）。返回是否剥出过前缀。

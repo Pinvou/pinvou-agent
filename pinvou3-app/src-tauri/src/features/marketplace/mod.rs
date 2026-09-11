@@ -3444,94 +3444,16 @@ mod tests {
         });
     }
 
-    /// plain 收敛 DenyAll 的读时迁移（升级）：旧版 disabled_bundles.json（无
-    /// `plain_defaults_migrated` 字段、plain 未初始化）→ plain 初始化为落盘
-    /// 列表（缺省空 = 旧 AllowAll 语义全开），升级后开关状态不变。
+    /// 旧版双文件时代升级（legacy 文件存在）→ 旧禁用列表迁移进统一文件，
+    /// plain 有效状态保持旧 AllowAll 语义（main 线 plain 默认全开）。
     #[test]
-    fn plain_deny_all_migration_preserves_upgrade_state() {
-        with_temp_home(|| {
-            write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
-            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            // 旧版文件：code 已初始化（用户管过 code 开关），plain 从未碰过。
-            std::fs::write(&path, r#"{"scopes":{"code":[]},"initialized":["code"]}"#).unwrap();
-            // 迁移后 plain 保持旧语义（全开），而不是 DenyAll 兜底全关。
-            assert_eq!(load_disabled_connectors(), Vec::<String>::new());
-            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
-            assert!(super::scope::plain_defaults_migrated(&file), "迁移标记应置位: {file:?}");
-            assert!(
-                file.initialized.contains("plain"),
-                "plain 应被初始化: {file:?}"
-            );
-        });
-    }
-
-    /// plain 收敛 DenyAll 的读时迁移（全新装机）：家目录无任何既有状态 → 只
-    /// 置标记不初始化 plain，未初始化 scope 按 DenyAll 兜底（默认全关，内置
-    /// CLI 列表）；不产生落盘。「全新」是宽口径升级信号的补集：装过包、写过
-    /// 设置或有过会话都算升级装机（评审 #445 P1-2）。
-    #[test]
-    fn plain_deny_all_fresh_install_defaults_off() {
-        with_temp_home(|| {
-            assert_eq!(
-                load_disabled_connectors(),
-                vec![
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ],
-                "全新装机 plain 未初始化 → DenyAll 默认全关（内置 CLI）"
-            );
-            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
-            assert!(!path.exists(), "全新装机的纯读路径不应落盘");
-        });
-    }
-
-    /// 宽口径升级信号:installed.json/settings/会话目录任一存在 ⇒ 老装机,
-    /// plain 初始化为落盘状态(缺省空 = 旧 AllowAll 全开),不被 DenyAll 兜底
-    /// 波及。三份开关相关文件皆无的 v0.8.6-v0.9.2 老装机正是本信号要救的
-    /// 群体(评审 #445 P1-2)。
-    #[test]
-    fn plain_deny_all_upgraded_install_with_existing_state_preserves_all_on() {
-        for seed in [
-            |home: &std::path::Path| {
-                std::fs::create_dir_all(home.join("marketplace")).unwrap();
-                std::fs::write(home.join("marketplace").join("installed.json"), r"[]").unwrap();
-            },
-            |home: &std::path::Path| {
-                std::fs::write(home.join("settings.json"), "{}").unwrap();
-            },
-            |_home: &std::path::Path| {
-                let sessions = crate::platform::paths::sessions_root();
-                std::fs::create_dir_all(&sessions).unwrap();
-                std::fs::write(sessions.join("seed-session.json"), "{}").unwrap();
-            },
-        ] {
-            with_temp_home(|| {
-                seed(crate::platform::paths::pinvou3_home().as_path());
-                let file = crate::features::marketplace::scope::load_disabled_bundles_file();
-                assert!(
-                    file.initialized.contains("plain"),
-                    "既有状态 ⇒ 升级装机,plain 初始化: {file:?}"
-                );
-            });
-        }
-    }
-
-    /// 旧版双文件时代升级（legacy 文件存在）→ plain 初始化锁定迁移后的落盘
-    /// 状态（空 = 全开），不走 DenyAll 兜底。
-    #[test]
-    fn plain_deny_all_migration_from_legacy_files_preserves_all_on() {
+    fn migration_from_legacy_files_preserves_disabled_state() {
         with_temp_home(|| {
             write_installed_ids(&["weather".to_string()]);
             let legacy = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
             std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
             std::fs::write(&legacy, r#"["weather"]"#).unwrap();
             assert_eq!(load_disabled_connectors(), vec!["weather".to_string()]);
-            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
-            assert!(super::scope::plain_defaults_migrated(&file));
-            assert!(file.initialized.contains("plain"));
         });
     }
 
