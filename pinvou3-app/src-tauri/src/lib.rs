@@ -1622,11 +1622,14 @@ mod startup_order_contract {
 
     #[test]
     fn disabled_bundles_migration_read_precedes_first_boot_writes() {
-        // GUI 宿主：setup 钩顶部迁移读取早于 SessionStore boot。
+        // GUI 宿主：setup 钩顶部迁移读取早于 SessionStore boot。针尖取调用点
+        // 旁唯一的 startup mark 字面量，并以分片拼接构造——本测试与生产调用点
+        // 同处 lib.rs，include_str! 会连测试模块一并扫描，完整针尖若以字面量
+        // 出现在测试里会退化成自匹配（评审 #455 R4-S1 指出的自证漏洞）。
         assert_migration_read_precedes(
             include_str!("lib.rs"),
-            "skill_materialization::load_disabled_skills()",
-            "SessionStore::boot_for_process_startup()",
+            &["startup::mark(\"disabled_bundles_migration:start", "\")"].concat(),
+            &["startup::mark(\"session_store:start", "\")"].concat(),
             "lib.rs",
         );
         // 无窗宿主（agentic/headless）：同序冻结早于 SessionStore boot。
