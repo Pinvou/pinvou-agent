@@ -45,4 +45,4 @@ Run as `xvfb-run -a pinvou agent run ...`. The model endpoint must be reachable 
 
 - `pinvou3-app/src-tauri/src/features/assistant/product_runtime/agentic_task.rs`: host bootstrap, execution root binding, turn driving, and the timeout watchdog.
 - `pinvou-cli/crates/pinvou-product-backend`: the public `run_agentic_task` launcher.
-- `pinvou-cli/crates/cli/src/lib.rs`: `agent run` argument parsing and output rendering.
+- `pinvou-cli/crates/cli/src/agent_task.rs`: `agent run` argument parsing and output rendering.
