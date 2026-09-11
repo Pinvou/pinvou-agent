@@ -12,7 +12,8 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::features::codex_acp::{AcpPool, CodexWorkspaceKind, SessionAgentStore};
 use crate::features::projects::{
-    DeleteProjectReport, MoveSessionOutcome, Project, ProjectStore, SessionAssignments,
+    DeleteProjectReport, EnsureFolderOutcome, MoveSessionOutcome, Project, ProjectStore,
+    SessionAssignments,
 };
 use crate::features::sessions::SessionStore;
 
@@ -44,6 +45,12 @@ pub struct ProjectListItem {
     pub position: i64,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    /// `Some("folder")` = 按文件夹自动物化的项目(前端徽标);None = 手工。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// 项目记忆的主文件夹(§9.3 项目通道新建会话的默认 cwd);None = 未记。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_primary_root: Option<PathBuf>,
     /// 显式归属的会话数;自动归组的成员数由前端分组解析计算(Phase 1)。
     pub assigned_session_count: usize,
 }
@@ -64,17 +71,21 @@ impl ProjectListItem {
             position: project.position,
             created_at: project.created_at,
             updated_at: project.updated_at,
+            origin: project.origin.clone(),
+            last_primary_root: project.last_primary_root.clone(),
             assigned_session_count,
         }
     }
 }
 
 /// list_projects 响应:项目列表 + 全量归属映射(前端三层分组解析的原料,
-/// null 归属 = 显式移出)。
+/// null 归属 = 显式移出) + 反物化排除列表(§3,canonical 键;管理面板
+/// 查看/撤销用)。
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectListResponse {
     pub projects: Vec<ProjectListItem>,
     pub assignments: SessionAssignments,
+    pub never_materialize_roots: Vec<String>,
 }
 
 /// 项目列表,按 position 有序,含每个 root 的可用性、显式成员数与归属映射。
@@ -91,6 +102,7 @@ pub async fn list_projects(store: State<'_, ProjectStore>) -> Result<ProjectList
     Ok(ProjectListResponse {
         projects,
         assignments,
+        never_materialize_roots: store.never_materialize_roots(),
     })
 }
 
@@ -110,32 +122,89 @@ pub async fn create_project(
 }
 
 /// 更新项目:名称与 roots 均为可选补丁,None 保持不变。
+///
+/// 移除 root 的成员移出(§4):被移除根之下、尚无归属条目的会话写成显式
+/// 移出(None),进未分组并留住——防止 tier-② 归组或 ensure 物化立即翻案;
+/// 已有条目(显式归属本/他项目、已移出)不动。移除不影响在飞会话(快照
+/// 语义 §6/§9.5),这里只写逻辑层归属,不触碰任何会话的工作目录绑定。
 #[tauri::command]
 pub async fn update_project(
     project_id: String,
     name: Option<String>,
     roots: Option<Vec<PathBuf>>,
+    last_primary_root: Option<PathBuf>,
     app: AppHandle,
     store: State<'_, ProjectStore>,
+    sessions: State<'_, SessionStore>,
+    acp_pool: State<'_, AcpPool>,
 ) -> Result<ProjectListItem, String> {
+    let previous_roots = roots
+        .as_ref()
+        .and_then(|_| store.get(&project_id))
+        .map(|project| project.roots);
     let project = store
-        .update_project(&project_id, name, roots)
+        .update_project(&project_id, name, roots.clone())
         .map_err(|e| format!("update_project({project_id}): {e:#}"))?;
+    if let (Some(previous), Some(new_roots)) = (previous_roots, roots) {
+        let removed = crate::features::projects::removed_roots(&previous, &new_roots);
+        if !removed.is_empty() {
+            // 与 delete_project 同款枚举:两类绑定存储里落在被移除 root 之下
+            // 的会话;store 侧按 tier-① 语义跳过已有归属条目。
+            let mut expel_session_ids = Vec::new();
+            for root in &removed {
+                for (session_id, _) in acp_pool.agents().sessions_under_workspace(root) {
+                    expel_session_ids.push(session_id);
+                }
+                for (session_id, _) in sessions.workspace_bindings_under(root) {
+                    expel_session_ids.push(session_id);
+                }
+            }
+            store
+                .expel_unassigned_sessions(&expel_session_ids)
+                .map_err(|e| format!("update_project({project_id}) expel members: {e:#}"))?;
+        }
+    }
+    // 主文件夹记忆(§9.2):显式补丁,必须是 roots 成员(store 校验)。
+    let project = match last_primary_root {
+        Some(root) => store
+            .set_last_primary_root(&project_id, &root)
+            .map_err(|e| format!("update_project({project_id}) primary root: {e:#}"))?,
+        None => project,
+    };
     let count = store.assigned_session_ids(&project_id).len();
     emit_project_event(&app, "projects:list_changed", "updated");
     Ok(ProjectListItem::from_project(&project, count))
 }
 
-/// 删除项目:会话只被解绑(回落自动/隐式分组),永不删除;返回受影响会话
-/// id 供前端提示。
+/// 删除项目:全体成员(显式归属 + 自动归组)写成显式移出,留在未分组且不随
+/// 该文件夹的下一次自动物化复活;之后在该文件夹新建的会话照常自动归组。
+/// 会话本体永不删除;返回受影响会话 id 供前端提示。
 #[tauri::command]
 pub async fn delete_project(
     project_id: String,
     app: AppHandle,
     store: State<'_, ProjectStore>,
+    sessions: State<'_, SessionStore>,
+    acp_pool: State<'_, AcpPool>,
 ) -> Result<DeleteProjectReport, String> {
+    // 自动归组成员枚举:两类绑定存储里落在该项目任一 root 之下的会话。
+    // 已有归属条目的 id 由 store 侧按 tier-① 语义跳过(显式归属它处/已移出
+    // 都不是本项目成员)。
+    let roots = store
+        .get(&project_id)
+        .map(|project| project.roots.clone())
+        .unwrap_or_default();
+    let mut expel_session_ids = Vec::new();
+    for root in &roots {
+        for (session_id, _) in acp_pool.agents().sessions_under_workspace(root) {
+            expel_session_ids.push(session_id);
+        }
+        for (session_id, _) in sessions.workspace_bindings_under(root) {
+            expel_session_ids.push(session_id);
+        }
+    }
     let report = store
-        .delete_project(&project_id)
+        .delete_project(&project_id, &expel_session_ids)
         .map_err(|e| format!("delete_project({project_id}): {e:#}"))?;
     emit_project_event(&app, "projects:list_changed", "deleted");
     Ok(report)
@@ -202,6 +271,181 @@ pub async fn move_session_to_project(
         .map_err(|e| format!("move_session_to_project({session_id}): {e:#}"))?;
     emit_project_event(&app, "projects:list_changed", "moved");
     Ok(outcome)
+}
+
+/// 文件夹项目自动物化(Codex 客户端式收编):roots 由前端从会话列表的
+/// 工作区聚合(客户端驱动,与 Codex `project/import` 由桌面端发起同构)。
+/// 幂等:覆盖复用 / 冲突逐根上报;有新建才广播列表变更。
+#[tauri::command]
+pub async fn ensure_folder_projects(
+    roots: Vec<PathBuf>,
+    app: AppHandle,
+    store: State<'_, ProjectStore>,
+) -> Result<Vec<EnsureFolderOutcome>, String> {
+    let outcomes = store
+        .ensure_folder_roots(&roots)
+        .map_err(|e| format!("ensure_folder_projects: {e:#}"))?;
+    if outcomes
+        .iter()
+        .any(|outcome| matches!(outcome, EnsureFolderOutcome::Created { .. }))
+    {
+        emit_project_event(&app, "projects:list_changed", "folder_ensured");
+    }
+    Ok(outcomes)
+}
+
+/// 反物化排除列表(§3):`never = true` 表示"不再为此文件夹自动建项目",
+/// `false` 撤销。可见、可撤销、幂等;只影响未来的自动物化,不动既有项目。
+/// 返回更新后的排除列表;经 projects:list_changed 让面板/侧栏刷新。
+#[tauri::command]
+pub async fn projects_set_never_materialize(
+    root: PathBuf,
+    never: bool,
+    app: AppHandle,
+    store: State<'_, ProjectStore>,
+) -> Result<Vec<String>, String> {
+    let roots = store
+        .set_never_materialize(&root, never)
+        .map_err(|e| format!("projects_set_never_materialize: {e:#}"))?;
+    emit_project_event(&app, "projects:list_changed", "never_materialize_changed");
+    Ok(roots)
+}
+
+/// `align_session_to_project` 的结果汇报。applied=false 时 reason 区分
+/// `no_project`(无归属)与 `no_change`(钥匙串已与项目一致)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AlignOutcome {
+    pub session_id: String,
+    /// 对齐后(或未变更时的当前)钥匙串快照:主根槽位 = 会话 cwd。
+    pub roots: Vec<PathBuf>,
+    pub applied: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// 对齐到项目(§6/§9.7 显式动作):把会话的钥匙串快照替换为其归属项目
+/// **当时**的全部根——主根槽位 = 会话自己的 cwd(不换门牌,§9.2),附加根 =
+/// 项目 roots 去掉 cwd 后保序。项目解析与前端同口径:显式归属优先,
+/// tier-② 多命中按 position 最小者收编(resolve_session_project)。
+///
+/// 写入双存储(agent 记录 / plain 绑定 sidecar,与 rebind 的双存储平移同款);
+/// 在飞引擎经 Op::SyncSession 推送,下回合生效。栅栏:活动回合(ACP prompt /
+/// 原生 turn / scheduled 轮)拒绝,返回 ALIGN_BUSY 类型化错误;无绑定工作区
+/// 的临时/scheduled 会话报 ALIGN_NO_WORKSPACE。幂等:钥匙串与现状相同则
+/// applied=false, reason=no_change。
+#[tauri::command]
+pub async fn align_session_to_project(
+    session_id: String,
+    app: AppHandle,
+    store: State<'_, ProjectStore>,
+    sessions: State<'_, SessionStore>,
+    acp_pool: State<'_, AcpPool>,
+    engines: State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<AlignOutcome, String> {
+    let session_roots = sessions
+        .session_roots(&session_id)
+        .map_err(|e| format!("align_session_to_project: {e:#}"))?;
+    if !session_roots.bound {
+        return Err(format!(
+            "ALIGN_NO_WORKSPACE: 临时会话没有绑定工作区，无法对齐到项目 (session has no bound workspace)"
+        ));
+    }
+    let cwd = session_roots.execution;
+
+    // 当前快照:agent 记录(代码/ACP)或 plain 绑定 sidecar。
+    let agent_bound = acp_pool
+        .agents()
+        .get(&session_id)
+        .workspace_path
+        .is_some();
+    let current = if agent_bound {
+        acp_pool.agents().session_workspace_roots(&session_id)
+    } else {
+        sessions.session_workspace_roots(&session_id)
+    };
+    if !agent_bound && sessions.session_workspace_binding(&session_id).is_none() {
+        return Err(format!(
+            "ALIGN_NO_WORKSPACE: 临时会话没有绑定工作区，无法对齐到项目 (session has no bound workspace)"
+        ));
+    }
+
+    let Some(project) = store.resolve_session_project(&session_id, &cwd) else {
+        return Ok(AlignOutcome {
+            session_id,
+            roots: current,
+            applied: false,
+            reason: Some("no_project".to_string()),
+        });
+    };
+    let next = ProjectStore::keychain_for_workspace(&cwd, &project.roots);
+    let same = current.len() == next.len()
+        && current
+            .iter()
+            .zip(next.iter())
+            .all(|(a, b)| a == b);
+    if same {
+        return Ok(AlignOutcome {
+            session_id,
+            roots: next,
+            applied: false,
+            reason: Some("no_change".to_string()),
+        });
+    }
+
+    // 活跃回合栅栏(同 rebind 门口径):在跑 prompt/turn/scheduled 轮即拒绝。
+    if acp_pool.is_turn_active(&session_id).await
+        || engines.is_turn_active(&session_id)
+        || engines.is_scheduled_turn_running(&session_id)
+    {
+        return Err(
+            "ALIGN_BUSY: 会话有活动回合，对齐被拒绝，请空闲后重试 (active turn in progress)"
+                .to_string(),
+        );
+    }
+
+    // 双存储写入:agent 记录(原生代码会话含 sidecar 重写)/ plain sidecar。
+    if agent_bound {
+        acp_pool
+            .agents()
+            .set_session_workspace_roots(&session_id, next.clone())
+            .map_err(|e| format!("align_session_to_project: {e:#}"))?;
+    } else {
+        sessions
+            .set_session_workspace_roots(&session_id, next.clone())
+            .map_err(|e| format!("align_session_to_project: {e:#}"))?;
+    }
+
+    // 在飞引擎推送新根集合(下回合生效);推送失败不阻断——下次 spawn/resume
+    // 从绑定存储回填同一快照。
+    if let Some(engine) = engines.handle_for(&session_id).await {
+        match sessions.load(&session_id) {
+            Ok(saved) => {
+                if let Err(error) = engine
+                    .sync_session(session_id.clone(), saved.messages)
+                    .await
+                {
+                    eprintln!(
+                        "[projects] align_session_to_project: push roots to live engine failed: {error:#}"
+                    );
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "[projects] align_session_to_project: load session for live push failed: {error:#}"
+                );
+            }
+        }
+    }
+    // 列表透出刷新:workspace_roots 随 list_sessions / 代码会话列表下发,
+    // 经既有 session:list_changed 订阅让 chat 车道桥层重取(代码车道由
+    // 前端 align 调用点自行 refreshSessions)。
+    super::sessions::emit_session_event(&app, "session:list_changed", &session_id, "aligned");
+    Ok(AlignOutcome {
+        session_id,
+        roots: next,
+        applied: true,
+        reason: None,
+    })
 }
 
 /// rebind_workspace_root 的结果汇报:逐会话结果 + 受影响项目。重绑定幂等,
@@ -458,17 +702,20 @@ mod tests {
     use super::*;
 
     /// 线缆形状锁:bridge 的 applySnapshot 按 projects/assignments 键消费
-    /// 快照,serde 改名会让每次快照被静默丢弃(评审 finding 41)。
+    /// 快照,serde 改名会让每次快照被静默丢弃(评审 finding 41);
+    /// never_materialize_roots(§3 排除列表)同在快照内。
     #[test]
     fn project_list_response_wire_keys_are_stable() {
         let value = serde_json::to_value(ProjectListResponse {
             projects: Vec::new(),
             assignments: SessionAssignments::default(),
+            never_materialize_roots: Vec::new(),
         })
         .expect("serialize ProjectListResponse");
         let object = value.as_object().expect("response serializes as an object");
         assert!(object.contains_key("projects"));
         assert!(object.contains_key("assignments"));
+        assert!(object.contains_key("never_materialize_roots"));
     }
 
     #[test]

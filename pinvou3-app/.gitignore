@@ -1,5 +1,7 @@
 # Tauri backend build output
 src-tauri/target/
+# 本机无 sudo 环境的 GTK/WebKit sysroot(scripts/local-sysroot-env.sh 头注释记录重建步骤)
+src-tauri/.gtk-sysroot/
 # Temporary vendor staging (normally removed in finally; SIGKILL or power loss may leave it behind)
 target/
 # Note: src-tauri/Cargo.lock belongs to this binary crate and must be committed.

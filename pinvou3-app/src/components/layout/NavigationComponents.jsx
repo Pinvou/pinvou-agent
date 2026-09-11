@@ -206,13 +206,26 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
         color: isDark ? '#fff' : '#1F1F1F',
       };
     };
-    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, onMoveToProject, dragKind = 'session', dragging, onPickUp, dndPayload, dndDisabled, onDragEnd }) => {
+    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, onMoveToProject, dragKind = 'session', dragging, onPickUp, dndPayload, dndDisabled, onDndBegin, onDndHover, onDndDrop, onDndEnd }) => {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
       const [val, setVal] = useState(chat.title);
-      const sessionDragKind = onPickUp ? dragKind : null;
-      const drag = useLongPressDrag(sessionDragKind, onPickUp);
+      // tear-off(长按拆窗)不可用的平台仍要有即移拖拽(移动到项目):
+      // 两者共用这套手势,激活条件取并集。
+      const sessionDragKind = (onPickUp || (dndPayload && !dndDisabled)) ? dragKind : null;
+      // 即移拖拽(项目视图内移动会话):指针路径,不依赖 HTML5 DnD——
+      // WebKitGTK 页内拖放在指针停止移动后不再投递 dragover/drop(悬停后
+      // 松手被静默丢弃),Chromium 之外不可依赖;tear-off(长按 350ms)与
+      // 即移拖拽按移动时机天然互斥。
+      const drag = useLongPressDrag(sessionDragKind, onPickUp, dndPayload && !dndDisabled ? {
+        enabled: true,
+        payload: dndPayload.sessionId,
+        onBegin: (geom) => onDndBegin && onDndBegin({ ...geom, label: chat.title, sessionId: dndPayload.sessionId }),
+        onHover: onDndHover,
+        onDrop: onDndDrop,
+        onEnd: () => onDndEnd && onDndEnd(),
+      } : undefined);
       const dragProps = sessionDragKind ? drag.handlers : {};
       const selectChat = () => onSelect(chat.id);
       function save() { const tx = val.trim(); setEditing(false); if (tx && tx !== chat.title) onRename(chat.id, tx); }
@@ -290,20 +303,7 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
           onContextMenu={openContextMenu}
           data-drag-kind={sessionDragKind || undefined}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
-          style={recentItemRowStyle(dragging, personaTarget, isDark)}
-          draggable={dndPayload && !dndDisabled ? true : undefined}
-          onDragEnd={onDragEnd}
-          onDragStart={dndPayload && !dndDisabled ? (e) => {
-            // 侧栏内 HTML5 拖拽(移动到项目)与 tear-off(长按 350ms)本来
-            // 天然冲突——原生 dragstart 取消 pointer 事件,350ms 定时器照跑,
-            // 中途会误触发拆窗。互斥由 useLongPressDrag 的工程手段提供:
-            // pointerdown 时装 capture 阶段 dragstart 监听({once}) +
-            // pointercancel 兜底,clearPress 幂等,自然竞态被消除;
-            // 该行注释仅描述消费侧,不要因"看起来多余"而删 hook 的联锁。
-            // tear-off 进行中(dndDisabled)不再启动 HTML5 拖拽。
-            e.dataTransfer.setData('application/x-pinvou-session', dndPayload.sessionId);
-            e.dataTransfer.effectAllowed = 'move';
-          } : undefined}
+          style={recentItemRowStyle(drag.moveDragging || dragging, personaTarget, isDark)}
           className={`group flex h-11 items-center rounded-full text-[15px] transition-all
             ${personaTarget ? ''
               : active ? 'bg-[#E1E5EA] text-[#1F1F1F] dark:bg-[#333537] dark:text-white'

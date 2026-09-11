@@ -11,6 +11,7 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { hasProjectWorkspace, needsAddFolderConfirm } from './projectGrouping.js';
 
 const MoveToProjectDialog = ({
+  open,
   session,
   projects,
   currentProjectId,
@@ -43,6 +44,7 @@ const MoveToProjectDialog = ({
   });
 
   useEffect(() => {
+    if (!open) return () => {};
     const onKey = (e) => {
       if (e.key === 'Escape' && !isImeComposing(e)) {
         e.preventDefault();
@@ -70,12 +72,14 @@ const MoveToProjectDialog = ({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [open]);
 
   const projectList = useMemo(
     () => (Array.isArray(projects) ? projects.filter(Boolean) : []),
     [projects],
   );
+  // 搜索框只在项目多到值得过滤时出现;少数项目直接列出来,弹窗更轻。
+  const showSearch = projectList.length > 6;
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return projectList;
@@ -88,7 +92,7 @@ const MoveToProjectDialog = ({
     });
   }, [projectList, query]);
 
-  if (!session || typeof document === 'undefined') return null;
+  if (!open || !session || typeof document === 'undefined') return null;
 
   // 显示用:确认框里向用户展示的目录(侧栏投影),实际添加以命令返回为准。
   const workspacePath = hasProjectWorkspace(session) ? String(session.workspacePath || '') : '';
@@ -144,7 +148,12 @@ const MoveToProjectDialog = ({
       >
         <div className="px-4 pt-4 pb-2 flex items-center justify-between gap-2">
           <div className="min-w-0">
-            <div className="text-[15px] font-semibold truncate">{t.uiProjects.moveToProject}</div>
+            {/* 确认模式(拖拽落点已定)标题点名目标;选择模式保留省略号。 */}
+            <div className="text-[15px] font-semibold truncate">
+              {pendingAddFolder
+                ? t.uiProjects.moveToProjectNamed(pendingAddFolder.name)
+                : t.uiProjects.moveToProject}
+            </div>
             <div className="text-[12px] text-[#8A8F94] dark:text-[#9AA0A6] truncate" title={session.title}>{session.title}</div>
           </div>
           <button
@@ -156,18 +165,25 @@ const MoveToProjectDialog = ({
             <X size={16} />
           </button>
         </div>
-        <div className="px-4 pb-2">
-          <div className="flex h-9 items-center gap-2 rounded-full px-3 bg-[#EAECEF] dark:bg-[#303134]">
-            <Search size={14} className="shrink-0 text-[#5F6368] dark:text-[#9AA0A6]" />
-            {/* biome-ignore lint/a11y/noAutofocus: modal opens for a single purpose; focus belongs in the filter field immediately */}
-            <input autoFocus
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              placeholder={t.uiProjects.searchPlaceholder}
-              className="w-full bg-transparent border-0 outline-none text-[14px] placeholder:text-[#8A8F94] dark:placeholder:text-[#9AA0A6]"
-            />
+        {/*
+          搜索框只属于"列表选择模式"(从会话菜单进入,未带预置目标)。拖拽
+          落点已确定目标项目,弹窗只做"添加文件夹"确认——搜索框在那里没有
+          可解释的意义;项目少(≤6)时同样直接列出。
+        */}
+        {!pendingAddFolder && showSearch && (
+          <div className="px-4 pb-2">
+            <div className="flex h-9 items-center gap-2 rounded-full px-3 bg-[#EAECEF] dark:bg-[#303134]">
+              <Search size={14} className="shrink-0 text-[#5F6368] dark:text-[#9AA0A6]" />
+              {/* biome-ignore lint/a11y/noAutofocus: modal opens for a single purpose; focus belongs in the filter field immediately */}
+              <input autoFocus
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder={t.uiProjects.searchPlaceholder}
+                className="w-full bg-transparent border-0 outline-none text-[14px] placeholder:text-[#8A8F94] dark:placeholder:text-[#9AA0A6]"
+              />
+            </div>
           </div>
-        </div>
+        )}
         {pendingAddFolder ? (
           <div className="px-4 pb-4 pt-1">
             <div className="rounded-2xl bg-[#EAECEF] dark:bg-[#303134] px-3.5 py-3">

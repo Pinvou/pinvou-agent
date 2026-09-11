@@ -79,9 +79,22 @@ pub(crate) fn fail_next_installed_write_for_test() -> InstalledWriteFailureGuard
 static FAIL_NEXT_JOURNAL_REMOVAL: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// 与 installed 写失败注入同款的复位守卫:调用点设置标志后、begin(..) 到达
+/// 前失败(或 panic)时自动清零,不再泄漏到无关用例(评审 #445 P2)。
 #[cfg(test)]
-pub(crate) fn fail_next_journal_removal_for_test() {
+pub(crate) struct JournalRemovalFailureGuard;
+
+#[cfg(test)]
+impl Drop for JournalRemovalFailureGuard {
+    fn drop(&mut self) {
+        FAIL_NEXT_JOURNAL_REMOVAL.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_journal_removal_for_test() -> JournalRemovalFailureGuard {
     FAIL_NEXT_JOURNAL_REMOVAL.store(true, std::sync::atomic::Ordering::SeqCst);
+    JournalRemovalFailureGuard
 }
 
 #[cfg(test)]
@@ -2444,7 +2457,7 @@ mod tests {
     #[test]
     fn transaction_commit_retries_transient_journal_removal_failure() {
         with_temp_home(|| {
-            fail_next_journal_removal_for_test();
+            let _journal_removal_guard = fail_next_journal_removal_for_test();
             let installed_file = paths::pinvou3_home()
                 .join("marketplace")
                 .join("installed.json");
@@ -3428,6 +3441,19 @@ mod tests {
                 vec!["pptx".to_string()]
             );
             assert!(load_disabled_connectors_for(ConnectorScope::Code).is_empty());
+        });
+    }
+
+    /// 旧版双文件时代升级（legacy 文件存在）→ 旧禁用列表迁移进统一文件，
+    /// plain 有效状态保持旧 AllowAll 语义（main 线 plain 默认全开）。
+    #[test]
+    fn migration_from_legacy_files_preserves_disabled_state() {
+        with_temp_home(|| {
+            write_installed_ids(&["weather".to_string()]);
+            let legacy = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
+            std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+            std::fs::write(&legacy, r#"["weather"]"#).unwrap();
+            assert_eq!(load_disabled_connectors(), vec!["weather".to_string()]);
         });
     }
 

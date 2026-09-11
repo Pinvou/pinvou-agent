@@ -319,6 +319,7 @@ pub fn notes_path() -> PathBuf {
 pub fn memory_path() -> PathBuf {
     pinvou3_home().join("memory.md")
 }
+
 pub fn user_memory_dir() -> PathBuf {
     user_root().join("memory")
 }

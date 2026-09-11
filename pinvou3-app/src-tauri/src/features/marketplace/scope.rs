@@ -63,7 +63,8 @@ pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
 }
 
 /// 已持锁读实现。首个版本：文件不存在时从两份旧文件迁移（幂等）；文件存在时按新
-/// 格式解析，防御性剥除 `skill:` 前缀残留（新写路径不会再产生）。
+/// 格式解析，防御性剥除 `skill:` 前缀残留（新写路径不会再产生）；损坏文件先留
+/// `.corrupt.<ts>` 隔离副本再按空状态降级（评审 #445 P2，原始字节可人工找回）。
 fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
     let path = disabled_bundles_path();
     let content = match std::fs::read_to_string(&path) {
@@ -76,12 +77,19 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
             return file;
         }
     };
-    let mut file: DisabledBundlesFile = serde_json::from_str(&content).unwrap_or_default();
+    let mut file: DisabledBundlesFile = match serde_json::from_str(&content) {
+        Ok(file) => file,
+        Err(error) => {
+            quarantine_corrupt_disabled_bundles(&content, &error.to_string());
+            DisabledBundlesFile::default()
+        }
+    };
     if strip_skill_prefixes(&mut file) {
         save_disabled_bundles_file(&file);
     }
     file
 }
+
 
 /// 防御：剥除所有 scope 禁用集与不可见集里的 `skill:` 前缀（旧前端 bug 窗口期
 /// 误写入的带前缀 id；本文件按裸包 id 匹配，读者在此统一归一）。返回是否剥出过前缀。
@@ -696,4 +704,25 @@ mod tests {
     fn load_disabled_bundles_for_plain_for_lock_test() -> Vec<String> {
         load_disabled_bundles_for(ConnectorScope::Plain)
     }
+}
+
+/// 把损坏的 disabled_bundles.json 原始字节隔离成 `.corrupt.<ts>` 副本
+/// （同 `installed.json` 的隔离先例），随后按空状态降级自愈。
+fn quarantine_corrupt_disabled_bundles(content: &str, error: &str) {
+    let path = disabled_bundles_path();
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backup = parent.join(format!("disabled_bundles.json.corrupt.{ts}"));
+    if let Err(write_err) = std::fs::write(&backup, content) {
+        eprintln!("[marketplace] failed to quarantine corrupt disabled_bundles.json: {write_err}");
+    }
+    eprintln!(
+        "[marketplace] disabled_bundles.json was corrupt ({error}); quarantined to {} and reset to defaults",
+        backup.display()
+    );
 }

@@ -1064,6 +1064,7 @@ mod tests {
             .check(ExecPolicyContext {
                 command,
                 cwd: ".",
+                workspace_roots: Vec::new(),
                 tool: Some("exec_shell"),
                 path: None,
                 ask_for_approval: AskForApproval::Never,
@@ -1665,6 +1666,7 @@ mod tests {
                 .check(ExecPolicyContext {
                     command: "",
                     cwd: "/workspace",
+                    workspace_roots: Vec::new(),
                     tool: Some("read_file"),
                     path: Some(path),
                     ask_for_approval: AskForApproval::Never,

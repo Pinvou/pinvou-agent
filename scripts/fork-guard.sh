@@ -6,8 +6,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-EXPECTED_HEAD="1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
-EXPECTED_COMMITS=15
+EXPECTED_HEAD="f2526196c1ea21f35994fbd19bb6e4aed65710f2"
+EXPECTED_COMMITS=25
 FAST_ONLY=0
 
 case "${1:-}" in
@@ -122,6 +122,24 @@ fingerprints=(
   "APP|工具卡隐藏内部 runtime suffix    |pinvou3-app/src/platform/tauri/bridge.js|function stripInternalToolRuntimeSuffix("
   "APP|落盘编辑截断与底座同口径           |pinvou3-app/src-tauri/src/features/sessions/tests.rs|fn forkguard_admitted_display_fallback_edit_cuts_before_trailing_tool_result"
   "APP|不支持的新用户内容不回退旧轮       |pinvou3-app/src-tauri/src/features/sessions/tests.rs|fn forkguard_admitted_display_fallback_does_not_skip_unsupported_user_turn"
+)
+
+# 多根工作区 workspace_roots + 指令 source 相对化(本分支待推送):线程携带
+# cwd(主根)+全量根集合,三层持久化,空集合逐字节等价单根现状;权限在每回合
+# 策略构造点物化;附加根只给访问权不注入指令;指令 source 标签仅文件名。
+fingerprints+=(
+  "T1|协议线程参数携带 workspace_roots   |CodeWhale/crates/protocol/src/lib.rs|pub workspace_roots: Vec<PathBuf>,"
+  "T1|core 归一化根集合 cwd 居首去重     |CodeWhale/crates/core/src/lib.rs|pub fn normalize_workspace_roots("
+  "T1|SQLite threads 表持久化根集合      |CodeWhale/crates/state/src/lib.rs|ADD COLUMN workspace_roots TEXT NOT NULL DEFAULT '[]';"
+  "T1|runtime 线程根集合持久化兼容旧档   |CodeWhale/crates/tui/src/runtime_threads/tests.rs|fn forkguard_workspace_roots_thread_record_persists_and_legacy_defaults_empty"
+  "T2|:workspace_roots 符号每回合物化    |CodeWhale/crates/tui/src/sandbox/policy.rs|WORKSPACE_ROOTS_SYMBOL: &str = \":workspace_roots\""
+  "T2|沙箱物化覆盖全部根且空集等价现状  |CodeWhale/crates/tui/src/core/authority.rs|fn forkguard_workspace_roots_sandbox_materializes_every_root"
+  "T2|写豁免 carve-out 跨根且排除名仍拒 |CodeWhale/crates/tui/src/core/authority.rs|fn forkguard_workspace_roots_carve_out_spans_attached_roots"
+  "T2|resolve_path 跨附加根放行越界仍拒 |CodeWhale/crates/tui/src/tools/spec/tests.rs|fn forkguard_workspace_roots_resolve_path_spans_attached_roots"
+  "T3|项目指令发现仅主根(缓存稳定)     |CodeWhale/crates/tui/src/project_context.rs|fn forkguard_workspace_roots_instructions_stay_primary_root_only"
+  "T3|指令 source 标签统一走文件名 helper |CodeWhale/crates/tui/src/project_context/types.rs|fn project_instructions_source_label("
+  "T3|指令 source 相对化行为锁定         |CodeWhale/crates/tui/src/project_context.rs|fn forkguard_project_instructions_source_is_file_name_not_absolute_path"
+  "T2|turn_meta 列出附加根且单根无此行    |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_workspace_roots_turn_meta_lists_attached_roots"
 )
 
 for fp in "${fingerprints[@]}"; do

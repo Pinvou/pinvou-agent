@@ -947,6 +947,19 @@ pub fn run() {
                     pool.bridge
                         .set_execution_root_resolver(execution_root_resolver.clone());
                     store_for_engine.set_execution_root_resolver(execution_root_resolver);
+                    // 钥匙串快照(§6)解析:代码/ACP 会话读 session-agents 记录,
+                    // 普通绑定会话读 workspace-binding sidecar;均无快照 = 单根。
+                    pool.bridge.set_workspace_roots_resolver(std::sync::Arc::new({
+                        let agents = code_session_agents.clone();
+                        let store = store_for_engine.clone();
+                        move |session_id: &str| {
+                            let roots = agents.session_workspace_roots(session_id);
+                            if !roots.is_empty() {
+                                return roots;
+                            }
+                            store.session_workspace_roots(session_id)
+                        }
+                    }));
                     pool.bridge.set_code_session_predicate(std::sync::Arc::new({
                         let agents = code_session_agents.clone();
                         move |session_id: &str| agents.is_code_session(session_id)
@@ -1289,6 +1302,9 @@ pub fn run() {
             commands::projects::update_project,
             commands::projects::delete_project,
             commands::projects::move_session_to_project,
+            commands::projects::ensure_folder_projects,
+            commands::projects::projects_set_never_materialize,
+            commands::projects::align_session_to_project,
             commands::projects::rebind_workspace_root,
             commands::sessions::list_sessions,
             commands::sessions::create_session,

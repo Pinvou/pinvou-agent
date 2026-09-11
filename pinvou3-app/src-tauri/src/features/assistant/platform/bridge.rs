@@ -169,6 +169,11 @@ fn official_deepseek_model_name(model: &str) -> String {
 /// 此处 re-export 保持既有调用路径不变。
 pub use crate::features::sessions::{ExecutionRootResolver, SessionRoots};
 
+/// 会话钥匙串快照解析闭包(创建时锁定的全量可访问根,§6)。
+/// 注入理由同 [`ExecutionRootResolver`]:bridge 拿不到 SessionStore/AcpPool。
+pub type WorkspaceRootsResolver =
+    std::sync::Arc<dyn Fn(&str) -> Vec<std::path::PathBuf> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct Pinvou3Bridge {
     pub prefs: UserPrefs,
@@ -197,6 +202,9 @@ pub struct Pinvou3Bridge {
     /// 项目绑定，所有会话都用会话私有目录。账本根（附件/审计/产物）不受其影响，
     /// 仍由 `SessionStore::session_roots` 的 `ledger` 字段统一决定。
     pub execution_root_resolver: Option<ExecutionRootResolver>,
+    /// 会话钥匙串快照(§6)解析器:返回创建时锁定的全量可访问根(空 =
+    /// 单根语义)。与执行根解析器同一份注入时机(组合根,AcpPool 就绪后)。
+    pub workspace_roots_resolver: Option<WorkspaceRootsResolver>,
     /// 原生代码会话判定（code_session=true，含临时与绑项目两种）。用于
     /// instructions 的 work/code 分支渲染与工具整形；lib.rs 与执行根解析器
     /// 共用 AcpPool 那份 SessionAgentStore 注入。
@@ -348,6 +356,7 @@ impl Pinvou3Bridge {
             probed_context_tokens: None,
             probed_local_kind: None,
             execution_root_resolver: None,
+            workspace_roots_resolver: None,
             code_session_predicate: None,
             external_acp_session_predicate: None,
             image_analyze_always: false,
@@ -541,6 +550,21 @@ impl Pinvou3Bridge {
     /// 组合根统一装配）；由 app 组合根在 AcpPool 就绪后调用一次。
     pub fn set_execution_root_resolver(&mut self, resolver: ExecutionRootResolver) {
         self.execution_root_resolver = Some(resolver);
+    }
+
+    /// 注入钥匙串快照解析器;由 app 组合根与执行根解析器同点装配。
+    pub fn set_workspace_roots_resolver(&mut self, resolver: WorkspaceRootsResolver) {
+        self.workspace_roots_resolver = Some(resolver);
+    }
+
+    /// 会话创建时锁定的钥匙串快照(§6):全量可访问根;未注入解析器或
+    /// 会话无快照(旧会话/临时会话)返回空 —— 底座归一化后等价 [workspace],
+    /// 单根现状不变。
+    pub fn session_workspace_roots(&self, session_id: &str) -> Vec<std::path::PathBuf> {
+        self.workspace_roots_resolver
+            .as_ref()
+            .map(|resolver| resolver(session_id))
+            .unwrap_or_default()
     }
 
     /// 注入原生代码会话判定（与执行根解析器同一份 SessionAgentStore）。
@@ -1475,6 +1499,10 @@ impl Pinvou3Bridge {
             // —— pinvou3 自定义（destructure 这里 `_`，新结构体里覆盖）——
             model: _,
             workspace: _,
+            // v0.9.12 workspace_roots 底座字段:本阶段仅编译收敛,置空集合
+            // (底座 normalize 后等价旧值 [workspace],单根语义不变);真正的
+            // 多根接线在后续阶段实现。
+            workspace_roots: _,
             session_id: _,
             allow_shell: _,
             trust_mode: _,
@@ -1597,6 +1625,9 @@ impl Pinvou3Bridge {
             // pinvou3 覆盖
             model: self.model(),
             workspace: self.workspace.clone(),
+            // 编译收敛:空集合经底座 normalize 等价 [workspace](单根现状);
+            // 多根(项目钥匙串)接线是后续阶段的任务。
+            workspace_roots: Vec::new(),
             session_id: None,
             allow_shell: self.allow_shell(),
             trust_mode: true,
@@ -1856,8 +1887,12 @@ impl Pinvou3Bridge {
         let _ = std::fs::create_dir_all(&roots.execution);
         let _ = std::fs::create_dir_all(&roots.ledger);
         cfg.workspace = roots.execution;
-        cfg.session_id = Some(session_id.to_string());
         cfg.subagent_state_root = Some(roots.ledger);
+        // 钥匙串快照(§6):创建时锁定的全量根;空 = 单根(底座 normalize
+        // 归一为 [workspace],cwd 居首去重由底座保证)。注:源码契约测试锁定
+        // workspace/subagent_state_root 两行相邻,本行不得插到它们中间。
+        cfg.workspace_roots = self.session_workspace_roots(session_id);
+        cfg.session_id = Some(session_id.to_string());
         cfg.instructions = self.session_instructions(session_id);
         // 技能发现根按会话指向组合目录（skill 双 scope 治理：目录内容 = 该会话
         // scope 的启用技能集）。spawn 前的物化由 EnginePool 负责；此处只注入路径。
@@ -2773,6 +2808,35 @@ mod tests {
         (lock, EnvGuard::new(vars))
     }
 
+    /// 钥匙串快照接线(§6):resolver 命中时 EngineConfig.workspace_roots
+    /// 携带创建时锁定的全量根;未命中(旧会话/临时会话/未注入)为空,
+    /// 底座 normalize 归一为 [workspace] —— 单根现状不变。
+    #[test]
+    fn forkguard_session_workspace_roots_snapshot_reaches_engine_config() {
+        let mut bridge = fixture_bridge();
+        let primary = std::path::PathBuf::from("/tmp/wr-primary");
+        let extra = std::path::PathBuf::from("/tmp/wr-extra");
+        bridge.set_workspace_roots_resolver(std::sync::Arc::new({
+            let primary = primary.clone();
+            let extra = extra.clone();
+            move |session_id: &str| {
+                if session_id == "bound-session" {
+                    vec![primary.clone(), extra.clone()]
+                } else {
+                    Vec::new()
+                }
+            }
+        }));
+        let bound = bridge.build_engine_config_for_session("bound-session");
+        assert_eq!(bound.workspace_roots, vec![primary, extra]);
+        let legacy = bridge.build_engine_config_for_session("legacy-session");
+        assert_eq!(
+            legacy.workspace_roots,
+            Vec::<std::path::PathBuf>::new(),
+            "无快照会话 = 空集合(底座归一为单根)"
+        );
+    }
+
     fn fixture_bridge() -> Pinvou3Bridge {
         Pinvou3Bridge {
             prefs: UserPrefs::default(),
@@ -2783,6 +2847,7 @@ mod tests {
             probed_context_tokens: None,
             probed_local_kind: None,
             execution_root_resolver: None,
+            workspace_roots_resolver: None,
             code_session_predicate: None,
             external_acp_session_predicate: None,
             image_analyze_always: false,
@@ -3459,6 +3524,7 @@ mod tests {
                 .check(codewhale_execpolicy::ExecPolicyContext {
                     command,
                     cwd: ".",
+                    workspace_roots: Vec::new(),
                     tool: Some("exec_shell"),
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
@@ -3510,6 +3576,7 @@ mod tests {
                 .check(codewhale_execpolicy::ExecPolicyContext {
                     command,
                     cwd: ".",
+                    workspace_roots: Vec::new(),
                     tool: Some("exec_shell"),
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
@@ -3569,6 +3636,7 @@ mod tests {
                 .check(codewhale_execpolicy::ExecPolicyContext {
                     command,
                     cwd: ".",
+                    workspace_roots: Vec::new(),
                     tool: Some("exec_shell"),
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
@@ -3765,6 +3833,7 @@ mod tests {
                 .check(codewhale_execpolicy::ExecPolicyContext {
                     command,
                     cwd: ".",
+                    workspace_roots: Vec::new(),
                     // The model-facing `bash` tool reaches the internal
                     // `exec_shell` policy identity before consulting rules.
                     tool: Some("exec_shell"),

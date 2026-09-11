@@ -4069,3 +4069,104 @@ fn rebind_workspace_bindings_moves_plain_bindings_and_stays_idempotent() {
     let _ = std::fs::remove_dir_all(&elsewhere);
     let _ = std::fs::remove_dir_all(&to);
 }
+
+#[test]
+fn workspace_binding_carries_roots_snapshot_and_rebind_translates_them() {
+    let (store, _g) = isolated_store();
+    let main_root = unique_temp_dir("roots-main");
+    let extra_in = main_root.join("shared");
+    let extra_out = unique_temp_dir("roots-outside");
+    std::fs::create_dir_all(&extra_in).expect("create dirs");
+    std::fs::create_dir_all(&extra_out).expect("create outside");
+    let to = unique_temp_dir("roots-to");
+    std::fs::create_dir_all(&to).expect("create to");
+
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id;
+    // 创建时锁定钥匙串:主根 + 主根内附加根 + 主根外附加根。
+    store
+        .bind_session_workspace_with_roots(
+            &id,
+            main_root.clone(),
+            vec![main_root.clone(), extra_in.clone(), extra_out.clone()],
+        )
+        .expect("bind with roots");
+    assert_eq!(
+        store.session_workspace_roots(&id),
+        vec![main_root.clone(), extra_in.clone(), extra_out.clone()],
+        "读取点透出创建时快照"
+    );
+
+    // 重绑定:from 前缀下的根(主根、主根内附加根)平移到 to,外部根原样。
+    store
+        .rebind_workspace_bindings(&main_root, &to)
+        .expect("rebind");
+    assert_eq!(
+        store.session_workspace_roots(&id),
+        vec![to.clone(), to.join("shared"), extra_out.clone()],
+        "钥匙串随绑定平移,from 外的根不动"
+    );
+    assert_eq!(
+        store.session_workspace_binding(&id).as_deref(),
+        Some(to.as_path())
+    );
+}
+
+#[test]
+fn legacy_binding_sidecar_without_roots_reads_empty() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id;
+    let bound = unique_temp_dir("roots-legacy");
+    std::fs::create_dir_all(&bound).expect("create dir");
+    store
+        .bind_session_workspace(&id, bound.clone())
+        .expect("legacy bind");
+    // 旧档(无 workspace_roots 键)语义 = 单根:读取为空,调用方按 cwd 归一。
+    assert_eq!(store.session_workspace_roots(&id), Vec::<std::path::PathBuf>::new());
+    // 会话记录已删的残留 sidecar 按无绑定处理(ghost 语义同路径读取)。
+    store.delete(&id).expect("delete session");
+    assert_eq!(store.session_workspace_roots(&id), Vec::<std::path::PathBuf>::new());
+}
+
+#[test]
+fn set_session_workspace_roots_rewrites_sidecar_preserving_binding() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id;
+    let bound = unique_temp_dir("align-plain");
+    std::fs::create_dir_all(&bound).expect("create dir");
+    store
+        .bind_session_workspace(&id, bound.clone())
+        .expect("bind");
+
+    // 对齐写入:roots 整体替换,绑定路径与 bound_at 保留。
+    let roots = vec![bound.clone(), unique_temp_dir("align-extra")];
+    assert!(store.set_session_workspace_roots(&id, roots.clone()).expect("align"));
+    assert_eq!(store.session_workspace_roots(&id), roots);
+    assert_eq!(store.session_workspace_binding(&id).as_deref(), Some(bound.as_path()));
+    // 直读 sidecar 复核(绕过任何缓存):bound_at 未丢。
+    let sidecar_path = crate::platform::paths::sessions_root()
+        .join(&id)
+        .join("workspace-binding.json");
+    let raw: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&sidecar_path).expect("sidecar")).unwrap();
+    assert!(raw.get("bound_at").is_some(), "bound_at 保留");
+    assert_eq!(raw["workspace_roots"].as_array().unwrap().len(), 2);
+
+    // 无绑定会话(临时)= Ok(false),不产生文件。
+    let temp_session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create temp");
+    assert!(
+        !store
+            .set_session_workspace_roots(&temp_session.metadata.id, roots)
+            .expect("no binding")
+    );
+}

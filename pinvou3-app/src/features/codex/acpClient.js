@@ -56,9 +56,15 @@ export async function pickAcpWorkspace({ title, defaultPath } = {}) {
   return { path, workspaceHandle };
 }
 
-export function createAcpSession({ workspacePath, workspaceHandle, agentId }) {
+export function createAcpSession({ workspacePath, workspaceHandle, agentId, workspaceRoots, projectId }) {
   if (!isWeb) {
-    return invokeTauri('create_codex_acp_session', { workspacePath, agentId });
+    // 钥匙串快照与项目归属(§6/§9.3):仅桌面通道;Web 为单根授权目录(§9.8)。
+    return invokeTauri('create_codex_acp_session', {
+      workspacePath,
+      agentId,
+      workspaceRoots: workspaceRoots && workspaceRoots.length ? workspaceRoots : null,
+      projectId: projectId || null,
+    });
   }
   if (workspacePath && !workspaceHandle) {
     return Promise.reject(acpClientError('web_workspace_authorization_required'));
@@ -67,6 +73,15 @@ export function createAcpSession({ workspacePath, workspaceHandle, agentId }) {
     workspaceHandle: workspaceHandle || null,
     agentId,
   });
+}
+
+// 对齐到项目(§9.7,桌面专属):会话钥匙串替换为归属项目当时的全部根。
+// 类型化错误(ALIGN_BUSY/ALIGN_NO_WORKSPACE)直抛,由调用方按标记映射文案。
+export function alignAcpSession(sessionId) {
+  if (!isWeb) {
+    return invokeTauri('align_session_to_project', { sessionId });
+  }
+  return Promise.reject(acpClientError('workspace_align_desktop_only'));
 }
 
 export function listAcpWorkspace({ sessionId, relativePath, workspacePath }) {

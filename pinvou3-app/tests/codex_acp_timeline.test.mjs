@@ -727,7 +727,7 @@ try {
   'new code sessions must expose the platform-specific directory picker');
   assert.ok(codexView.includes('const requestedWorkspaceHandle = draftWorkspaceHandle')
     && codexView.includes('workspaceHandle: requestedWorkspaceHandle')
-    && acpClient.includes("invokeTauri('create_codex_acp_session', { workspacePath, agentId })")
+    && /invokeTauri\('create_codex_acp_session', \{[\s\S]*?workspacePath,[\s\S]*?agentId,/.test(acpClient)
     && acpClient.includes("invokeRequiredWebCommand('web_access_create_codex_acp_session'"),
   'selected project directories must use native paths on desktop and opaque grants on Web');
   assert.ok(!codexView.includes('data-testid="acp-agent-selector"')

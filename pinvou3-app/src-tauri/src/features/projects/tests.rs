@@ -2,7 +2,7 @@
 //! `PINVOU3_HOME`。
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::ProjectStore;
 
@@ -89,34 +89,39 @@ fn create_rejects_duplicate_and_nested_roots_within_project() {
 }
 
 #[test]
-fn create_rejects_overlap_with_other_projects() {
+fn create_allows_overlap_across_projects() {
+    // §9.9 根重叠合法化:同一物理文件夹(或互相嵌套的目录)允许被多个项目
+    // 引用;自动归组的归属二义由前端按 position 决胜(最靠前者收编),显式
+    // 归属优先不变。后端不再设跨项目互斥。
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    create(&store, "已有项目", &[abs("work")]);
+    let first = create(&store, "已有项目", &[abs("work")]);
 
-    let same = store
-        .create_project("同路径".to_string(), vec![abs("work")])
-        .expect_err("same root across projects rejected");
-    assert!(same.to_string().contains("overlaps project '已有项目'"));
-
-    let nested = store
-        .create_project("子路径".to_string(), vec![abs("work").join("sub")])
-        .expect_err("nested root across projects rejected");
-    assert!(nested.to_string().contains("overlaps project"));
-
-    // 无关路径不受影响;父路径方向同样拦截。
+    let same = create(&store, "同路径", &[abs("work")]);
+    let nested = create(&store, "子路径", &[abs("work").join("sub")]);
+    let parent = create(
+        &store,
+        "父路径",
+        &[abs("work").parent().unwrap().to_path_buf()],
+    );
     create(&store, "无关", &[abs("other")]);
-    let parent = store
-        .create_project(
-            "父路径".to_string(),
-            vec![abs("work").parent().unwrap().to_path_buf()],
-        )
-        .expect_err("parent root across projects rejected");
-    assert!(parent.to_string().contains("overlaps project"));
+
+    let projects = store.list();
+    assert_eq!(projects.len(), 5, "全部共存: {projects:?}");
+    // position 依次递增,前端决胜规则(folders 命中多项目时 position 最小者
+    // 收编)依赖该序。
+    let positions: Vec<i64> = projects.iter().map(|project| project.position).collect();
+    let mut sorted = positions.clone();
+    sorted.sort();
+    assert_eq!(positions, sorted);
+    assert_eq!(store.get(&first.id).unwrap().roots, vec![abs("work")]);
+    assert_eq!(store.get(&same.id).unwrap().roots, vec![abs("work")]);
+    assert_eq!(nested.roots, vec![abs("work").join("sub")]);
+    assert_eq!(parent.roots, vec![abs("work").parent().unwrap()]);
 }
 
 #[test]
-fn canonicalized_real_dirs_catch_overlap_across_projects() {
+fn canonicalized_real_dirs_coexist_across_projects() {
     let temp = tempfile::tempdir().expect("tempdir");
     let parent = temp.path().join("repo");
     let child = parent.join("sub");
@@ -124,10 +129,14 @@ fn canonicalized_real_dirs_catch_overlap_across_projects() {
 
     let store = store_in(&temp);
     create(&store, "父", std::slice::from_ref(&parent));
-    let error = store
-        .create_project("子".to_string(), vec![child])
-        .expect_err("canonical overlap rejected");
-    assert!(error.to_string().contains("overlaps project"));
+    // canonicalize 后入库存展示形态;跨项目嵌套不再拒绝。
+    let child_project = create(&store, "子", std::slice::from_ref(&child));
+    assert_eq!(
+        child_project.roots,
+        vec![child.canonicalize().unwrap()],
+        "真实目录 canonicalize 入库"
+    );
+    assert_eq!(store.list().len(), 2);
 }
 
 #[test]
@@ -169,7 +178,7 @@ fn update_renames_and_replaces_roots() {
 }
 
 #[test]
-fn delete_unassigns_sessions_but_keeps_explicit_move_out() {
+fn delete_expels_all_members_to_ungrouped() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
     let project = create(&store, "待删", &[abs("x")]);
@@ -192,24 +201,31 @@ fn delete_unassigns_sessions_but_keeps_explicit_move_out() {
         .move_session_to_project("s4", Some(&other.id), None)
         .expect("assign s4");
 
-    let report = store.delete_project(&project.id).expect("delete project");
+    // 删除时命令层枚举的自动归组成员(s5:无归属条目)一并传入。
+    let report = store
+        .delete_project(&project.id, &["s5".to_string()])
+        .expect("delete project");
     let mut affected = report.affected_session_ids;
     affected.sort();
-    assert_eq!(affected, vec!["s1", "s2"]);
+    assert_eq!(affected, vec!["s1", "s2", "s5"]);
 
-    assert_eq!(store.assignment_of("s1"), None);
-    assert_eq!(store.assignment_of("s2"), None);
-    // s3 的显式移出条目保留,不被删除项目连带清理。
+    // 显式成员与自动成员一律写成显式移出:留在未分组,不随该文件夹下一次
+    // 自动物化复活。
+    assert_eq!(store.assignment_of("s1"), Some(None));
+    assert_eq!(store.assignment_of("s2"), Some(None));
+    assert_eq!(store.assignment_of("s5"), Some(None));
+    // 既有条目不改写:s3 的移出条目保留,s4 的显式归属幸存。
     assert_eq!(store.assignment_of("s3"), Some(None));
     assert_eq!(store.assignment_of("s4"), Some(Some(other.id.clone())));
     assert!(store.get(&project.id).is_none());
 
-    // 全部项目删除 + 归属清空后,空状态不留文件。
-    store
-        .move_session_to_project("s3", None, None)
-        .expect("re-move s3");
-    store.delete_project(&other.id).expect("delete other");
-    store.forget_session("s3");
+    // 幸存项目删除(无成员)后归属表仍有移出条目,文件保留;条目全部退场
+    // (会话删除钩子)后才回落空状态删文件。
+    store.delete_project(&other.id, &[]).expect("delete other");
+    assert!(temp.path().join("projects.json").exists());
+    for session_id in ["s1", "s2", "s3", "s4", "s5"] {
+        store.forget_session(session_id);
+    }
     assert!(!temp.path().join("projects.json").exists());
 }
 
@@ -276,57 +292,19 @@ fn move_add_workspace_root_atomically_and_idempotently() {
     assert_eq!(again.added_root, None);
     assert_eq!(store.get(&project.id).unwrap().roots.len(), 2);
 
-    // 落在他人领地内的目录必须拦截,且不得污染两个项目。
-    let conflict = store
+    // 落在他人领地内的目录自 §9.9 起合法(重叠合法化),双方各自持有。
+    let shared = store
         .move_session_to_project("s3", Some(&project.id), Some(&foreign.join("deeper")))
-        .map(|_| ())
-        .expect_err("cross-project overlap rejected");
-    assert!(conflict.to_string().contains("overlaps project '他人领地'"));
-    assert_eq!(store.assignment_of("s3"), None);
-    assert_eq!(store.get(&other.id).unwrap().roots.len(), 1);
-    assert_eq!(store.get(&project.id).unwrap().roots.len(), 2);
-}
-
-#[test]
-fn covered_workspace_skip_survives_symlinked_ancestor() {
-    // 评审 #464 MAJOR 3(macOS /var→/private/var 的同型):root 入库时已
-    // canonicalize,而被覆盖判定的工作区路径不存在时,旧的纯词法回退保留
-    // symlink 形态,身份键不再嵌套,会被当成未覆盖重复添加。用 symlink
-    // 祖先在任意平台复现。用 std::env::consts::OS 常量分支而非 cfg 语法:
-    // 平台条件编译不得出现在适配层外(architecture-guard);Windows 的目录
-    // symlink 需要管理员/开发者模式,该机制由 unix/macOS 覆盖。
-    if std::env::consts::OS == "windows" {
-        return;
-    }
-    let temp = tempfile::tempdir().expect("tempdir");
-    let workspace = temp.path().join("real").join("workspace");
-    std::fs::create_dir_all(&workspace).expect("create workspace");
-    let link = temp.path().join("link");
-    let status = std::process::Command::new("ln")
-        .arg("-s")
-        .arg(temp.path().join("real"))
-        .arg(&link)
-        .status()
-        .expect("spawn ln");
-    assert!(status.success(), "ln -s must succeed on unix-likes");
-
-    let store = store_in(&temp);
-    let project = create(
-        &store,
-        "目标",
-        std::slice::from_ref(&link.join("workspace")),
-    );
-
-    // 不存在的嵌套路径经 symlink 祖先书写:covered 判定必须命中已有 root。
-    let covered = link.join("workspace").join("deep");
-    let outcome = store
-        .move_session_to_project("s1", Some(&project.id), Some(&covered))
-        .expect("move with covered workspace");
+        .expect("cross-project overlap legal");
+    // "deeper" 不存在:入库形态 = 最近现存祖先 canonicalize 后拼回缺失后缀。
     assert_eq!(
-        outcome.added_root, None,
-        "symlink 形态不得绕过 covered 跳过"
+        shared.added_root,
+        Some(foreign.canonicalize().unwrap().join("deeper"))
     );
-    assert_eq!(store.get(&project.id).unwrap().roots.len(), 1);
+    assert!(store.get(&other.id).unwrap().roots.contains(&foreign.canonicalize().unwrap()));
+    assert_eq!(store.assignment_of("s3"), Some(Some(project.id.clone())));
+    assert_eq!(store.get(&other.id).unwrap().roots.len(), 1);
+    assert_eq!(store.get(&project.id).unwrap().roots.len(), 3);
 }
 
 #[test]
@@ -418,7 +396,8 @@ fn rebind_roots_rewrites_prefix_and_stays_idempotent() {
 }
 
 #[test]
-fn rebind_roots_rejects_overlap_and_keeps_state() {
+fn rebind_roots_allows_overlap_with_other_projects() {
+    // 平移撞上其它项目的领地不再报错(§9.9 跨项目重叠合法),照常改写落盘。
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
     let from = abs("from2");
@@ -426,15 +405,21 @@ fn rebind_roots_rejects_overlap_and_keeps_state() {
     std::fs::create_dir_all(&occupied).expect("create occupied dir");
 
     let project = create(&store, "待搬", std::slice::from_ref(&from));
-    create(&store, "已有领地", std::slice::from_ref(&occupied));
+    let holder = create(&store, "已有领地", std::slice::from_ref(&occupied));
 
-    let before = store.get(&project.id).unwrap();
-    let error = store
+    let affected = store
         .rebind_roots(&from, &occupied)
-        .expect_err("overlap after rebind rejected");
-    assert!(error.to_string().contains("overlap"));
-    // 报错回滚:内存态未变(未落盘)。
-    assert_eq!(store.get(&project.id).unwrap(), before);
+        .expect("overlap after rebind is legal");
+    assert_eq!(affected, vec![project.id.clone()]);
+    assert_eq!(
+        store.get(&project.id).unwrap().roots,
+        vec![occupied.canonicalize().unwrap()]
+    );
+    assert_eq!(
+        store.get(&holder.id).unwrap().roots,
+        vec![occupied.canonicalize().unwrap()],
+        "双方各自持有同一目录"
+    );
 }
 
 #[test]
@@ -525,4 +510,559 @@ fn root_keys_fold_case_only_on_windows() {
         create(&store, "小写", &[abs("caseprobe")]);
         assert_eq!(store.list().len(), 2);
     }
+}
+
+// ── 文件夹项目自动物化(ensure)──────────────────────────────────────────────
+
+fn ensure(store: &ProjectStore, roots: &[PathBuf]) -> Vec<super::EnsureFolderOutcome> {
+    store.ensure_folder_roots(roots).expect("ensure folder roots")
+}
+
+#[test]
+fn ensure_creates_basename_named_folder_projects_idempotently() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+
+    let outcomes = ensure(&store, &[abs("web"), abs("api")]);
+    assert!(matches!(&outcomes[0], super::EnsureFolderOutcome::Created { project }
+        if project.name == "web" && project.origin.as_deref() == Some("folder")));
+    assert!(matches!(&outcomes[1], super::EnsureFolderOutcome::Created { project }
+        if project.name == "api"));
+    assert_eq!(store.list().len(), 2);
+
+    // 幂等:同批根重放 → 全部 Covered,不新建。
+    let replay = ensure(&store, &[abs("web"), abs("api")]);
+    let ids: Vec<&str> = replay
+        .iter()
+        .filter_map(|o| match o {
+            super::EnsureFolderOutcome::Covered { project_id } => Some(project_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids.len(), 2, "重放全为 Covered: {replay:?}");
+    assert_eq!(store.list().len(), 2);
+
+    // 手工项目引用的文件夹不算锚定覆盖(§9.9):浏览通道一律新建同名物化
+    // 项目,重叠合法并存(详见 ensure_anchor_reuse_only_for_folder_anchored_projects)。
+    let manual = create(&store, "手工", &[abs("manual/root")]);
+    let covered = ensure(&store, &[abs("manual/root")]);
+    assert!(matches!(&covered[0], super::EnsureFolderOutcome::Created { project }
+        if project.origin.as_deref() == Some("folder")));
+    assert_eq!(manual.roots.len(), 1, "手工项目不受影响");
+    assert_eq!(store.list().len(), 4);
+}
+
+#[test]
+fn ensure_input_dedupes_and_reports_relative_roots() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+
+    let outcomes = ensure(&store, &[abs("web"), abs("web"), PathBuf::from("relative/x")]);
+    assert_eq!(outcomes.len(), 2, "重复根折叠为一项: {outcomes:?}");
+    assert!(matches!(outcomes[0], super::EnsureFolderOutcome::Created { .. }));
+    assert!(matches!(&outcomes[1], super::EnsureFolderOutcome::Failed { reason }
+        if reason.contains("absolute")));
+    assert_eq!(store.list().len(), 1);
+}
+
+#[test]
+fn ensure_overlap_with_other_project_does_not_block_the_batch() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    // 既有项目占据 abs("nest/child"):为祖先目录 abs("nest") 建文件夹项目在
+    // 重叠合法化后照常创建(手工项目的引用不等于"以该文件夹为锚",见 B4
+    // 锚定复用),同批其它根不受影响。
+    create(&store, "深根", &[abs("nest/child")]);
+
+    let outcomes = ensure(&store, &[abs("nest"), abs("clean")]);
+    assert!(matches!(outcomes[0], super::EnsureFolderOutcome::Created { .. }));
+    assert!(matches!(outcomes[1], super::EnsureFolderOutcome::Created { .. }));
+    assert_eq!(store.list().len(), 3);
+}
+
+#[test]
+fn ensure_recreates_folder_project_after_delete_for_new_sessions() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+
+    // 首次物化 → 删除(成员写成显式移出)。
+    ensure(&store, &[abs("web")]);
+    let created = store.list()[0].clone();
+    store
+        .delete_project(&created.id, &["s-old".to_string()])
+        .expect("delete");
+    assert_eq!(store.assignment_of("s-old"), Some(None), "成员留未分组");
+
+    // 无墓碑:同一文件夹再次 ensure 即重建(前端由"新会话"驱动触发;旧会话
+    // 的移出条目压住 tier-②,重建项目只收新会话)。
+    let recreate = ensure(&store, &[abs("web")]);
+    assert!(matches!(&recreate[0], super::EnsureFolderOutcome::Created { project }
+        if project.name == "web" && project.origin.as_deref() == Some("folder")));
+    // 移出条目跨删除保留:旧会话不因重建复活。
+    assert_eq!(store.assignment_of("s-old"), Some(None));
+}
+
+#[test]
+fn origin_and_expelled_assignments_persist_across_reopen() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    {
+        let store = store_in(&temp);
+        ensure(&store, &[abs("web"), abs("api")]);
+        let web = store
+            .list()
+            .iter()
+            .find(|project| project.name == "web")
+            .cloned()
+            .expect("web project");
+        store
+            .delete_project(&web.id, &["s-old".to_string()])
+            .expect("delete");
+    }
+    let reopened = store_in(&temp);
+    let projects = reopened.list();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].origin.as_deref(), Some("folder"));
+    assert_eq!(
+        reopened.assignment_of("s-old"),
+        Some(None),
+        "移出条目跨进程存活:旧会话不随重建复活"
+    );
+}
+
+// ── 根重叠合法化(§9.9):手工决策与自动物化共存,不再互相让位 ────────────────
+
+#[test]
+fn manual_add_root_coexists_with_folder_project_root() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    // 文件夹自动项目占住 abs("web");用户把该文件夹的会话移进手工项目并选
+    // "添加文件夹" → 重叠合法:目标获得 root,自动项目原样保留。
+    ensure(&store, &[abs("web")]);
+    let folder_project = store.list()[0].clone();
+    let target = create(&store, "目标", &[abs("other")]);
+
+    let outcome = store
+        .move_session_to_project("s1", Some(&target.id), Some(&abs("web")))
+        .expect("move with add root");
+    assert_eq!(outcome.added_root, Some(abs("web")));
+    assert_eq!(store.get(&target.id).expect("target").roots, vec![abs("other"), abs("web")]);
+    assert_eq!(
+        store.get(&folder_project.id).expect("自动项目保留").roots,
+        vec![abs("web")],
+        "让位机制已退役:自动项目不被摘除"
+    );
+    assert_eq!(store.assignment_of("s1"), Some(Some(target.id.clone())));
+}
+
+#[test]
+fn manual_add_root_allowed_against_manual_project() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let holder = create(&store, "占位", &[abs("web")]);
+    let target = create(&store, "目标", &[abs("other")]);
+
+    let outcome = store
+        .move_session_to_project("s1", Some(&target.id), Some(&abs("web")))
+        .expect("手工项目之间同样允许共享 root");
+    assert_eq!(outcome.added_root, Some(abs("web")));
+    assert_eq!(store.get(&holder.id).expect("holder").roots, vec![abs("web")]);
+    assert_eq!(store.get(&target.id).expect("target").roots.len(), 2);
+    assert_eq!(store.assignment_of("s1"), Some(Some(target.id.clone())));
+}
+
+#[test]
+fn manual_add_root_keeps_ancestor_folder_root() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    // 自动项目占住父目录 abs("web");往手工项目加子目录 abs("web/sub"):
+    // 跨项目任一方向的嵌套都合法,双方各自保留。
+    ensure(&store, &[abs("web")]);
+    let folder_project = store.list()[0].clone();
+    let target = create(&store, "目标", &[abs("other")]);
+
+    store
+        .move_session_to_project("s1", Some(&target.id), Some(&abs("web/sub")))
+        .expect("move with add sub root");
+    assert_eq!(
+        store.get(&target.id).expect("target").roots,
+        vec![abs("other"), abs("web/sub")]
+    );
+    assert_eq!(
+        store.get(&folder_project.id).expect("自动项目保留").roots,
+        vec![abs("web")]
+    );
+}
+
+#[test]
+fn manual_create_and_update_coexist_with_folder_roots() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    // 手工建项目直接携带被自动项目引用的 root(目录视图"转为项目"路径):
+    // 重叠合法,两个项目并存。
+    ensure(&store, &[abs("web")]);
+    let created = create(&store, "转正", &[abs("web")]);
+    assert_eq!(created.roots, vec![abs("web")]);
+    assert_eq!(store.list().len(), 2, "自动项目不再让位退场");
+
+    // update 改 roots 同理:新 roots 引用另一个自动项目的文件夹也合法。
+    ensure(&store, &[abs("api")]);
+    let updated = store
+        .update_project(&created.id, None, Some(vec![abs("web"), abs("api")]))
+        .expect("update roots");
+    assert_eq!(updated.roots, vec![abs("web"), abs("api")]);
+    assert_eq!(store.list().len(), 3);
+}
+
+#[test]
+fn ensure_creates_ancestor_despite_nested_existing_root() {
+    // 重叠合法化后:自动项目引用了子目录,ensure 父目录照常创建(覆盖复用
+    // 的锚定收紧见 B4;此处锁定"不再按嵌套报 Failed")。
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    ensure(&store, &[abs("nest/child")]);
+    let outcomes = ensure(&store, &[abs("nest")]);
+    assert!(matches!(&outcomes[0], super::EnsureFolderOutcome::Created { project }
+        if project.name == "nest"));
+    assert_eq!(store.list().len(), 2, "两个文件夹项目共存");
+    assert_eq!(store.list()[0].roots.len(), 1, "既有 root 不变");
+}
+
+#[test]
+fn covered_workspace_skip_survives_symlinked_ancestor() {
+    // 评审 #464 MAJOR 3(macOS /var→/private/var 的同型):root 入库时已
+    // canonicalize,而被覆盖判定的工作区路径不存在时,旧的纯词法回退保留
+    // symlink 形态,身份键不再嵌套,会被当成未覆盖重复添加。用 symlink
+    // 祖先在任意平台复现。用 std::env::consts::OS 常量分支而非 cfg 语法:
+    // 平台条件编译不得出现在适配层外(architecture-guard);Windows 的目录
+    // symlink 需要管理员/开发者模式,该机制由 unix/macOS 覆盖。
+    if std::env::consts::OS == "windows" {
+        return;
+    }
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("real").join("workspace");
+    std::fs::create_dir_all(&workspace).expect("create workspace");
+    let link = temp.path().join("link");
+    let status = std::process::Command::new("ln")
+        .arg("-s")
+        .arg(temp.path().join("real"))
+        .arg(&link)
+        .status()
+        .expect("spawn ln");
+    assert!(status.success(), "ln -s must succeed on unix-likes");
+
+    let store = store_in(&temp);
+    let project = create(
+        &store,
+        "目标",
+        std::slice::from_ref(&link.join("workspace")),
+    );
+
+    // 不存在的嵌套路径经 symlink 祖先书写:covered 判定必须命中已有 root。
+    let covered = link.join("workspace").join("deep");
+    let outcome = store
+        .move_session_to_project("s1", Some(&project.id), Some(&covered))
+        .expect("move with covered workspace");
+    assert_eq!(
+        outcome.added_root, None,
+        "symlink 形态不得绕过 covered 跳过"
+    );
+    assert_eq!(store.get(&project.id).unwrap().roots.len(), 1);
+}
+
+// ── 移除根的成员移出(§4)────────────────────────────────────────────────────
+
+#[test]
+fn removed_roots_semantics() {
+    let old = vec![abs("keep"), abs("drop")];
+    assert_eq!(
+        super::removed_roots(&old, &[abs("keep")]),
+        vec![abs("drop")],
+        "未被新集合覆盖的旧 root 即移除"
+    );
+    // 新 root 是旧 root 的祖先:旧 root 下的会话仍被项目覆盖,不算移除。
+    let parent = abs("keep").parent().unwrap().to_path_buf();
+    assert!(super::removed_roots(&[abs("keep")], &[parent]).is_empty());
+    // 新 root 是旧 root 的后代:旧 root 不再覆盖其下全部会话,算移除。
+    assert_eq!(
+        super::removed_roots(&[abs("keep")], &[abs("keep/sub")]),
+        vec![abs("keep")]
+    );
+    // 全新集合为空 = 全部移除。
+    assert_eq!(super::removed_roots(&old, &[]), old);
+}
+
+#[test]
+fn expel_unassigned_sessions_writes_move_out_only_for_entryless() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let project = create(&store, "目标", &[abs("web")]);
+    let elsewhere = create(&store, "别处", &[abs("other")]);
+    // s-explicit:显式归属本项目;s-elsewhere:显式归属别的项目;
+    // s-out:已显式移出;s-auto:无条目(自动归组成员)。
+    store
+        .move_session_to_project("s-explicit", Some(&project.id), None)
+        .expect("explicit member");
+    store
+        .move_session_to_project("s-elsewhere", Some(&elsewhere.id), None)
+        .expect("explicit elsewhere");
+    store
+        .move_session_to_project("s-out", None, None)
+        .expect("explicit move-out");
+
+    let expelled = store
+        .expel_unassigned_sessions(&[
+            "s-explicit".to_string(),
+            "s-elsewhere".to_string(),
+            "s-out".to_string(),
+            "s-auto".to_string(),
+        ])
+        .expect("expel");
+    assert_eq!(expelled, 1, "只有无条目者被写显式移出");
+    assert_eq!(store.assignment_of("s-auto"), Some(None));
+    assert_eq!(
+        store.assignment_of("s-explicit"),
+        Some(Some(project.id.clone())),
+        "显式归属本项目不动(移除根不驱逐显式成员)"
+    );
+    assert_eq!(
+        store.assignment_of("s-elsewhere"),
+        Some(Some(elsewhere.id.clone()))
+    );
+    assert_eq!(store.assignment_of("s-out"), Some(None), "已移出保持");
+
+    // 幂等:重跑零变更。
+    assert_eq!(store.expel_unassigned_sessions(&["s-auto".to_string()]).unwrap(), 0);
+}
+
+#[test]
+fn expelled_assignment_survives_ensure_rematerialization() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let project = create(&store, "目标", &[abs("web")]);
+    // 移除 root:其下自动成员(s-auto)被写显式移出。
+    let removed = super::removed_roots(&[abs("web")], &[]);
+    assert_eq!(removed, vec![abs("web")]);
+    store
+        .expel_unassigned_sessions(&["s-auto".to_string()])
+        .expect("expel");
+    store
+        .update_project(&project.id, None, Some(vec![]))
+        .expect("remove root");
+
+    // 之后该文件夹出现新会话 → ensure 重新物化( origin=folder 项目);
+    // 旧会话的移出条目压住 tier-②,重建项目只收新会话。
+    let outcomes = ensure(&store, &[abs("web")]);
+    assert!(matches!(&outcomes[0], super::EnsureFolderOutcome::Created { project }
+        if project.origin.as_deref() == Some("folder")));
+    assert_eq!(
+        store.assignment_of("s-auto"),
+        Some(None),
+        "物化重建不得复活被移除根的旧成员"
+    );
+}
+
+// ── last_primary_root(§9.2 项目记忆主文件夹)─────────────────────────────────
+
+#[test]
+fn last_primary_root_set_validate_and_persist() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    {
+        let store = store_in(&temp);
+        let project = create(&store, "多根", &[abs("web"), abs("api")]);
+
+        // 非 roots 成员拒绝。
+        let error = store
+            .set_last_primary_root(&project.id, &abs("other"))
+            .expect_err("primary root must be a member");
+        assert!(error.to_string().contains("project roots"));
+
+        // 成员接受;重复同值幂等;跨重开存活。
+        let updated = store
+            .set_last_primary_root(&project.id, &abs("api"))
+            .expect("set primary root");
+        assert_eq!(updated.last_primary_root, Some(abs("api")));
+        let again = store
+            .set_last_primary_root(&project.id, &abs("api"))
+            .expect("idempotent");
+        assert_eq!(again.last_primary_root, Some(abs("api")));
+    }
+    let reopened = store_in(&temp);
+    let project = reopened.list().into_iter().next().expect("project");
+    assert_eq!(
+        project.last_primary_root,
+        Some(abs("api")),
+        "旧档缺键读为 None,写入后跨进程存活"
+    );
+}
+
+#[test]
+fn legacy_file_without_last_primary_root_reads_as_none() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let project = create(&store, "旧档", &[abs("web")]);
+    assert_eq!(project.last_primary_root, None, "新字段默认缺省");
+    // 落盘→重开,skip_serializing_if 下旧档无该键,读回 None。
+    let reopened = store_in(&temp);
+    assert_eq!(reopened.list()[0].last_primary_root, None);
+}
+
+// ── 反物化排除列表(§3)与锚定复用(§9.9)─────────────────────────────────────
+
+#[test]
+fn never_materialize_skips_ensure_and_is_revocable() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+
+    // 排除:ensure 跳过(无 outcome,与输入去重同款),不建项目。
+    let listed = store
+        .set_never_materialize(&abs("scratch"), true)
+        .expect("exclude");
+    assert_eq!(listed.len(), 1);
+    let outcomes = ensure(&store, &[abs("scratch"), abs("web")]);
+    assert_eq!(outcomes.len(), 1, "被排除的根无 outcome: {outcomes:?}");
+    assert!(matches!(outcomes[0], super::EnsureFolderOutcome::Created { .. }));
+    assert_eq!(store.list().len(), 1);
+    assert_eq!(store.list()[0].name, "web");
+
+    // 幂等:重复排除零变更;撤销后 ensure 照常物化。
+    let again = store
+        .set_never_materialize(&abs("scratch"), true)
+        .expect("idempotent");
+    assert_eq!(again, listed);
+    let revoked = store
+        .set_never_materialize(&abs("scratch"), false)
+        .expect("revoke");
+    assert!(revoked.is_empty());
+    let outcomes = ensure(&store, &[abs("scratch")]);
+    assert!(matches!(&outcomes[0], super::EnsureFolderOutcome::Created { project }
+        if project.name == "scratch"));
+
+    // 相对路径拒绝。
+    assert!(
+        store
+            .set_never_materialize(Path::new("relative/x"), true)
+            .is_err()
+    );
+}
+
+#[test]
+fn never_materialize_list_persists_and_keeps_file_alive() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    {
+        let store = store_in(&temp);
+        store
+            .set_never_materialize(&abs("scratch"), true)
+            .expect("exclude");
+        // 无项目无归属:排除列表非空时文件必须留存(空状态删文件的惯例
+        // 不能吞掉用户显式表达)。
+        assert!(temp.path().join("projects.json").exists());
+    }
+    let reopened = store_in(&temp);
+    assert_eq!(reopened.never_materialize_roots().len(), 1, "跨进程存活");
+    // 撤销到空 + 无项目无归属 → 文件删除。
+    reopened
+        .set_never_materialize(&abs("scratch"), false)
+        .expect("revoke");
+    assert!(!temp.path().join("projects.json").exists());
+}
+
+#[test]
+fn ensure_anchor_reuse_only_for_folder_anchored_projects() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+
+    // 物化项目以 F 为锚 → 复用(Covered),幂等。
+    ensure(&store, &[abs("web")]);
+    let anchored = store.list()[0].clone();
+    let replay = ensure(&store, &[abs("web")]);
+    assert!(matches!(&replay[0], super::EnsureFolderOutcome::Covered { project_id }
+        if *project_id == anchored.id));
+    assert_eq!(store.list().len(), 1);
+
+    // 手工项目引用 F(哪怕 F 是它的唯一/主根)→ 不算锚定覆盖,浏览通道
+    // 一律创建同名物化项目(§9.9 用户裁定),重叠合法并存。
+    create(&store, "手工", &[abs("docs")]);
+    let outcomes = ensure(&store, &[abs("docs")]);
+    assert!(matches!(&outcomes[0], super::EnsureFolderOutcome::Created { project }
+        if project.name == "docs" && project.origin.as_deref() == Some("folder")));
+    assert_eq!(store.list().len(), 3);
+
+    // 物化项目加过别的根后,其 roots 精确包含的两个路径都锚定 → 都复用
+    // ("以 F 为锚的物化项目"按 roots 成员资格判定)。
+    store
+        .update_project(&anchored.id, None, Some(vec![abs("web"), abs("api")]))
+        .expect("add root");
+    let replay = ensure(&store, &[abs("web")]);
+    assert!(matches!(&replay[0], super::EnsureFolderOutcome::Covered { .. }));
+    let replay = ensure(&store, &[abs("api")]);
+    assert!(matches!(&replay[0], super::EnsureFolderOutcome::Covered { .. }));
+}
+
+// ── 对齐到项目(§6/§9.7):归属解析与钥匙串形态 ───────────────────────────────
+
+#[test]
+fn resolve_session_project_explicit_then_position_tiebreak() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    // 两个项目引用同一目录(§9.9 重叠合法):无归属条目时 position 最小者收编。
+    let first = create(&store, "靠前", &[abs("web")]);
+    let second = create(&store, "靠后", &[abs("web")]);
+    assert!(first.position < second.position);
+    assert_eq!(
+        store
+            .resolve_session_project("s1", &abs("web"))
+            .map(|p| p.id),
+        Some(first.id.clone()),
+        "tier-② 多命中 position 最小者"
+    );
+    // 显式归属优先(哪怕归属靠后的项目)。
+    store
+        .move_session_to_project("s1", Some(&second.id), None)
+        .expect("explicit assign");
+    assert_eq!(
+        store
+            .resolve_session_project("s1", &abs("web"))
+            .map(|p| p.id),
+        Some(second.id.clone())
+    );
+    // 显式移出阻止 tier-②。
+    store
+        .move_session_to_project("s1", None, None)
+        .expect("explicit move-out");
+    assert!(store.resolve_session_project("s1", &abs("web")).is_none());
+    // 陈旧归属 id(项目已删)回退 tier-②。
+    store
+        .move_session_to_project("s2", Some(&first.id), None)
+        .expect("assign");
+    store.delete_project(&first.id, &[]).expect("delete");
+    // delete 把成员写成显式移出:s2 是显式移出条目 → None。
+    assert!(store.resolve_session_project("s2", &abs("web")).is_none());
+    // 无归属且 path 不落任何 root → None;嵌套命中(折叠键前缀)。
+    assert!(store.resolve_session_project("s3", &abs("other")).is_none());
+    assert_eq!(
+        store
+            .resolve_session_project("s3", &abs("web").join("sub/dir"))
+            .map(|p| p.id),
+        Some(second.id.clone()),
+        "嵌套路径命中 root 前缀"
+    );
+}
+
+#[test]
+fn keychain_for_workspace_keeps_cwd_first_and_strips_it_from_project_roots() {
+    // 主根槽位 = 会话 cwd(不换门牌);项目 roots 去掉 cwd 后保序。
+    let chain = super::ProjectStore::keychain_for_workspace(
+        &abs("b"),
+        &[abs("a"), abs("b"), abs("c")],
+    );
+    assert_eq!(chain, vec![abs("b"), abs("a"), abs("c")]);
+    // cwd 不在项目 roots 中(如跨目录会话对齐)→ cwd 居首,roots 全量跟随。
+    let chain = super::ProjectStore::keychain_for_workspace(
+        &abs("elsewhere"),
+        &[abs("a"), abs("b")],
+    );
+    assert_eq!(chain, vec![abs("elsewhere"), abs("a"), abs("b")]);
+    // 空项目(纯标签)→ 仅 cwd。
+    let chain = super::ProjectStore::keychain_for_workspace(&abs("x"), &[]);
+    assert_eq!(chain, vec![abs("x")]);
 }

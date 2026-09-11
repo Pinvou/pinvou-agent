@@ -64,6 +64,10 @@ const SESSION_WORKSPACE_SIDECAR_FILE: &str = "workspace-binding.json";
 struct SessionWorkspaceSidecar {
     version: u32,
     path: PathBuf,
+    /// 创建时锁定的钥匙串快照(§6):全量可访问根(含主根)。旧 sidecar 缺
+    /// 键/空 = 单根语义(仅 path 目录)。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    workspace_roots: Vec<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     bound_at: Option<i64>,
 }
@@ -114,6 +118,17 @@ impl SessionStore {
     /// 落盘失败返回 Err 且不触碰内存缓存——调用方（create_session 命令）
     /// 据此删除刚建的空会话，不留下「看似绑定成功、重启后丢失」的会话。
     pub fn bind_session_workspace(&self, id: &str, path: PathBuf) -> Result<()> {
+        self.bind_session_workspace_with_roots(id, path, Vec::new())
+    }
+
+    /// 绑定 + 钥匙串快照(§6):`workspace_roots` 为全量可访问根(空 = 单根
+    /// 语义,引擎按 cwd 归一)。落盘纪律与 `bind_session_workspace` 相同。
+    pub fn bind_session_workspace_with_roots(
+        &self,
+        id: &str,
+        path: PathBuf,
+        workspace_roots: Vec<PathBuf>,
+    ) -> Result<()> {
         validate_session_id(id)?;
         let record = self.manager.sessions_dir().join(format!("{id}.json"));
         if !record.is_file() {
@@ -122,6 +137,7 @@ impl SessionStore {
         let sidecar = SessionWorkspaceSidecar {
             version: SESSION_WORKSPACE_SIDECAR_VERSION,
             path,
+            workspace_roots,
             bound_at: Some(now_unix_secs()),
         };
         let file = self.session_workspace_sidecar_path(id);
@@ -161,6 +177,50 @@ impl SessionStore {
             .write()
             .insert(id.to_string(), path.clone());
         Some(path)
+    }
+
+    /// 会话创建时锁定的钥匙串快照(§6);无绑定/旧 sidecar/残留目录 = 空
+    /// (单根语义)。冷路径直读 sidecar(引擎 spawn/resume 才调),不进
+    /// `session_workspaces` 路径缓存。
+    pub fn session_workspace_roots(&self, id: &str) -> Vec<PathBuf> {
+        if validate_session_id(id).is_err()
+            || !self
+                .manager
+                .sessions_dir()
+                .join(format!("{id}.json"))
+                .is_file()
+        {
+            return Vec::new();
+        }
+        read_workspace_sidecar(&self.session_workspace_sidecar_path(id))
+            .map(|sidecar| sidecar.workspace_roots)
+            .unwrap_or_default()
+    }
+
+    /// "对齐到项目"(§9.7)的钥匙串替换:整体改写 sidecar 快照(保留绑定
+    /// 路径与 bound_at)。无绑定返回 Ok(false)——临时会话由命令层先行拒绝,
+    /// 这里是双保险。
+    pub fn set_session_workspace_roots(
+        &self,
+        id: &str,
+        workspace_roots: Vec<PathBuf>,
+    ) -> Result<bool> {
+        validate_session_id(id)?;
+        let file = self.session_workspace_sidecar_path(id);
+        let Some(existing) = read_workspace_sidecar(&file) else {
+            return Ok(false);
+        };
+        let updated = SessionWorkspaceSidecar {
+            version: SESSION_WORKSPACE_SIDECAR_VERSION,
+            path: existing.path,
+            workspace_roots,
+            bound_at: existing.bound_at,
+        };
+        let payload =
+            serde_json::to_vec_pretty(&updated).context("serialize session workspace binding")?;
+        crate::platform::filesystem::atomic_write(&file, &payload)
+            .with_context(|| format!("persist session workspace roots to {}", file.display()))?;
+        Ok(true)
     }
 
     /// best-effort 删除绑定 sidecar 文件；NotFound 视为已删除。会话删除
@@ -273,11 +333,31 @@ impl SessionStore {
                 }
             }
             // bound_at 仅元信息:原样保留,与 codex 存储的 rebind 同口径,
-            // 不再重置为 None(评审 #452 finding 3)。
-            let bound_at = read_workspace_sidecar(&sidecar_path).and_then(|s| s.bound_at);
+            // 不再重置为 None(评审 #452 finding 3)。钥匙串快照同步平移:
+            // from 前缀下的根换到 to,其余原样。
+            let previous = read_workspace_sidecar(&sidecar_path);
+            let bound_at = previous.as_ref().and_then(|s| s.bound_at);
+            let rebound_roots: Vec<PathBuf> = previous
+                .map(|s| s.workspace_roots)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|root| {
+                    let suffix: PathBuf = root.components().skip(skip).collect();
+                    if covered(&root) {
+                        if suffix.as_os_str().is_empty() {
+                            to.to_path_buf()
+                        } else {
+                            to.join(suffix)
+                        }
+                    } else {
+                        root
+                    }
+                })
+                .collect();
             let updated = SessionWorkspaceSidecar {
                 version: SESSION_WORKSPACE_SIDECAR_VERSION,
                 path: next.clone(),
+                workspace_roots: rebound_roots,
                 bound_at,
             };
             let write = serde_json::to_vec_pretty(&updated)
@@ -337,6 +417,7 @@ impl SessionStore {
             }
         }
     }
+
 
     /// boot 期存量迁移：全局表 `_session_workspaces.json` → per-session
     /// sidecar（只服务本 PR 中间版本 dev build 的 home，见模块文档）。活会话

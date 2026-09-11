@@ -4,7 +4,7 @@ import {
   invokeObservedPanelSelection,
   isSubagentPanelPublicationCurrent,
 } from './subagent-panel-publication.mjs';
-import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, FolderOpen, Globe, ImageIcon, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Upload, X, Zap } from '../../components/icons.jsx';
+import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -149,7 +149,9 @@ import { ComposerWorkspaceSelector } from './ComposerWorkspaceSelector.jsx';
 import { YoloConfirmCard } from '../../shared/yolo-confirm-card.jsx';
 import { needsYoloConfirmation } from '../codex/code-permission-state.js';
 import { CHAT_YOLO_GATE_UNKNOWN_BINDING, chatYoloGateApplies, shouldShowWorkspaceBindingChip } from './chat-workspace-binding.js';
-import { workspaceName } from '../../shared/workspace-recents.js';
+import { WorkspaceKeychainChip } from '../projects/WorkspaceKeychainChip.jsx';
+import { describeKeychain } from '../projects/workspacePickerState.js';
+import { resolveSessionProjectId } from '../projects/projectGrouping.js';
 import {
   VoiceComposerButton,
   VoiceEditPreview,
@@ -610,7 +612,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
     };
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy main view: session/mode/artifact/browser state is highly cohesive; split refactor tracked separately
-    const ChatView = ({ theme, t, bs, prefill, prefillAppend = false, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode, browserDockAvailable = false, browserDockOpen = false, rightDockActivePanelId = null, onRightDockPanelSelectionChange, onOpenBrowserDock }) => {
+    const ChatView = ({ theme, t, bs, prefill, prefillAppend = false, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode, browserDockAvailable = false, browserDockOpen = false, rightDockActivePanelId = null, onRightDockPanelSelectionChange, onOpenBrowserDock, onOpenWorkspacePicker, onNotify }) => {
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
       const sceneCopy = chatCopy.sceneModes;
@@ -912,9 +914,11 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         personalWorkbenchTemplateIdRef.current = null;
         setPersonalWorkbenchTemplateId(null);
       }, [setInputText]);
+       
       const handlePinvouModeChange = useCallback((mode) => {
         updatePinvouModeState({ type: 'set-mode', mode });
-      }, [updatePinvouModeState]);
+        if (mode !== 'work') clearPersonalWorkbenchTemplateDraft();
+      }, [clearPersonalWorkbenchTemplateDraft, updatePinvouModeState]);
       const handleHomeModeChange = useCallback((mode) => {
         if (mode === 'code') {
           if (onSwitchHomeMode) onSwitchHomeMode(mode);
@@ -2704,22 +2708,54 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                     <ComposerWorkspaceSelector
                       copy={t.uiChatWorkspace}
                       draftWorkspacePath={(bs && bs.draftWorkspacePath) || null}
-                      onPickWorkspace={() => bridge.sessions.pickDraftWorkspace()}
+                      onPickWorkspace={() => (
+                        // 单入口(§2):应用内「选择工作区」选择器;系统目录对话框
+                        // 收敛为选择器内的"浏览其他文件夹"通道。宿主未接选择器时
+                        // 回退旧行为(测试桩/旧宿主)。
+                        onOpenWorkspacePicker
+                          ? onOpenWorkspacePicker({ lane: 'chat', mode: (bs && bs.modeState && bs.modeState.mode) || null })
+                          : bridge.sessions.pickDraftWorkspace()
+                      )}
                       onSelectWorkspace={path => bridge.sessions.setDraftWorkspace(path)}
                     />
                   )}
-                  {/* 活动会话的工作目录绑定指示（只读 chip：目录名 + title 完整路径）；
-                      绑定会话安全姿态对齐 code 模式，样式对齐草稿态选择器。 */}
-                  {shouldShowWorkspaceBindingChip({ activeSessionId, sessionBinding: sessionWorkspaceBinding }) && (
-                    <span
-                      data-testid="chat-workspace-binding"
-                      title={sessionWorkspaceBinding}
-                      className="h-7 max-w-[180px] rounded-lg px-2 inline-flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400"
-                    >
-                      <FolderOpen size={13} className="shrink-0" />
-                      <span className="truncate">{workspaceName(sessionWorkspaceBinding, t.uiChatWorkspace.unknownDirectory)}</span>
-                    </span>
-                  )}
+                  {/* 活动会话的工作区钥匙串 chip(§6):主目录名 + 附加根计数,
+                      菜单列出全量根并提供"对齐到项目"(§9.7 会话级显式动作);
+                      纯文件夹会话(单根)无对齐动作(无归属项目)。绑定会话安全
+                      姿态对齐 code 模式,样式对齐草稿态选择器。 */}
+                  {shouldShowWorkspaceBindingChip({ activeSessionId, sessionBinding: sessionWorkspaceBinding }) && (() => {
+                    const activeItem = ((bs && bs.sessions) || []).find(s => s.id === activeSessionId);
+                    const keychain = describeKeychain(activeItem && activeItem.workspace_roots);
+                    const projectsData = (bs && bs.projectsList) || {};
+                    const owningProjectId = resolveSessionProjectId(
+                      { id: activeSessionId, workspaceKind: 'bound', workspacePath: sessionWorkspaceBinding },
+                      projectsData.projects || [],
+                      projectsData.assignments || {},
+                    );
+                    const align = async () => {
+                      try {
+                        const outcome = await bridge.projects.alignSessionToProject(activeSessionId);
+                        if (outcome && outcome.applied) onNotify && onNotify(t.uiKeychain.alignDone);
+                        else if (outcome && outcome.reason === 'no_change') onNotify && onNotify(t.uiKeychain.alignNoChange);
+                      } catch (error) {
+                        const message = String((error && error.message) || error || '');
+                        if (onNotify) {
+                          onNotify(message.startsWith('ALIGN_BUSY') ? t.uiKeychain.alignBusy : t.uiKeychain.alignFailed);
+                        }
+                      }
+                    };
+                    return (
+                      <WorkspaceKeychainChip
+                        copy={t.uiKeychain}
+                        primary={keychain.primary || sessionWorkspaceBinding}
+                        additionalCount={keychain.primary ? keychain.additional : 0}
+                        roots={keychain.primary ? keychain.roots : [sessionWorkspaceBinding]}
+                        canAlign={!!owningProjectId && !!bridge.projects}
+                        busy={false}
+                        onAlign={align}
+                      />
+                    );
+                  })()}
                   <ComposerModeChip t={t} bs={bs} compact={composerCompact} onSwitch={handleModeChipSwitch} />
                   <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoModelSettings || onGotoSettings} compact={composerCompact} />
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} compact={composerCompact} activeSkill={bs && bs.activeSkill} />
@@ -2823,7 +2859,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               data-testid="artifact-fullscreen-panel">
               <ViewErrorBoundary t={t} variant="panel">
               <PanelSuspense>
-              <LazyArtifactsPanel {...artifactsPanelProps} isFullscreen={true} onToggleFullscreen={() => setArtifactsFullscreen(false)} />
+             <LazyArtifactsPanel {...artifactsPanelProps} isFullscreen={true} onToggleFullscreen={() => setArtifactsFullscreen(false)} />
               </PanelSuspense>
               </ViewErrorBoundary>
             </div>,
@@ -2839,7 +2875,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             >
               <ViewErrorBoundary t={t} variant="panel">
               <PanelSuspense>
-                <LazyArtifactsPanel {...artifactsPanelProps} isFullscreen={false} onToggleFullscreen={() => setArtifactsFullscreen(true)} />
+               <LazyArtifactsPanel {...artifactsPanelProps} isFullscreen={false} onToggleFullscreen={() => setArtifactsFullscreen(true)} />
               </PanelSuspense>
               </ViewErrorBoundary>
             </RightDockPanel>

@@ -28,6 +28,16 @@ pub struct Project {
     pub position: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// 来源标识:`Some("folder")` = 按文件夹自动物化的项目(Codex 客户端式
+    /// 收编);`None` = 用户手工创建。仅作 UI 徽标与测试定位,不参与分组
+    /// 判定与删除语义;用户改名/加根后保留原值,不做名字回写同步。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// 项目记忆的主文件夹(§9.2/§9.3):项目通道新建会话时的默认 cwd。
+    /// 必须是 roots 成员;由创建链路/管理面板显式写入,移除该 root 时不
+    /// 自动清理(下次创建时调用方按 roots 重选并回写)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_primary_root: Option<PathBuf>,
 }
 
 /// 归属映射值:`Some(project_id)` = 显式归属;`None` = 显式移出(跳过自动
@@ -43,11 +53,16 @@ struct ProjectsFile {
     pub projects: Vec<Project>,
     #[serde(default)]
     pub assignments: SessionAssignments,
+    /// 反物化排除列表(§3,canonical 身份键):用户显式表达"别为此文件夹
+    /// 自动建项目";可见、可撤销(管理面板)。旧档缺键 = 空表。
+    #[serde(default)]
+    pub never_materialize_roots: Vec<String>,
 }
 
 const SCHEMA_VERSION: u32 = 1;
 
-/// 删除项目的结果汇报:受影响会话只被解绑(回落隐式分组),永不删除。
+/// 删除项目的结果汇报:受影响会话 = 全体成员(显式归属 + 自动归组),一律写
+/// 成显式移出留在未分组;会话本体永不删除。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeleteProjectReport {
     pub affected_session_ids: Vec<String>,
@@ -61,11 +76,27 @@ pub struct MoveSessionOutcome {
     pub added_root: Option<PathBuf>,
 }
 
+/// `ensure_folder_roots` 的单根结果:前端/调用方据此区分新建、复用与冲突,
+/// 冲突不阻断其余根。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum EnsureFolderOutcome {
+    /// 新建了同名文件夹项目(origin=folder)。
+    Created { project: Project },
+    /// 已有以该文件夹为锚的物化项目(origin=folder 且 roots 精确含此
+    /// 路径),复用不动。
+    Covered { project_id: String },
+    /// 无法创建(非绝对路径等);`reason` 可直接进日志。
+    Failed { reason: String },
+}
+
 #[derive(Debug, Default)]
 struct StoreState {
     /// 恒按 (position, id) 有序,`list` 直接返回快照。
     projects: Vec<Project>,
     assignments: SessionAssignments,
+    /// 反物化排除列表(canonical 身份键,去重);ensure 跳过表内根。
+    never_materialize_roots: Vec<String>,
     /// 读到高于本进程 schema_version 的文件时置位:后续写入全部拒绝,
     /// 防止降级进程把新结构覆盖写坏。
     refuse_writes: bool,
@@ -176,6 +207,22 @@ fn key_is_same_or_nested(key: &str, base: &str) -> bool {
     key.starts_with(base) && key[base.len()..].starts_with('/')
 }
 
+/// 前后 roots 快照对比:旧 root 中未被任何新 root 覆盖(不等于、也不嵌套于
+/// 任一新 root)的条目 = 本次移除的根(§4 移除文件夹语义)。供命令层枚举其
+/// 下的自动归组成员,写成显式移出防止归组/物化立即"翻案"。
+pub fn removed_roots(old: &[PathBuf], new: &[PathBuf]) -> Vec<PathBuf> {
+    let new_keys: Vec<String> = new.iter().map(|root| identity_key_of_display(root)).collect();
+    old.iter()
+        .filter(|root| {
+            let key = identity_key_of_display(root);
+            !new_keys
+                .iter()
+                .any(|new_key| key_is_same_or_nested(&key, new_key))
+        })
+        .cloned()
+        .collect()
+}
+
 /// 不触盘的绝对化:`.` 丢弃、`..` 回退一层、保留前缀(Unix 根 / Windows 盘符)。
 fn lexical_absolute(path: &Path) -> PathBuf {
     let mut stack: Vec<Component<'_>> = Vec::new();
@@ -194,17 +241,14 @@ fn lexical_absolute(path: &Path) -> PathBuf {
     stack.into_iter().collect()
 }
 
-/// 校验一组 roots 并返回展示形态(canonicalized):重的判定与嵌套判定都在
+/// 校验一组 roots 并返回展示形态(canonicalized):重复与嵌套判定都在
 /// 身份键上进行(Windows 折叠大小写/分隔符后可判定)。
 /// - 必须是绝对路径;
-/// - 组内不得重复或互相嵌套;
-/// - 不得与其它项目(skip_project_id 之外)的任何 root 重复或嵌套——自动
-///   归组按 root 前缀匹配,跨项目重叠会让归属二义(Codex #22767 错归组的根源)。
-fn validate_roots(
-    projects: &[Project],
-    skip_project_id: Option<&str>,
-    roots: &[PathBuf],
-) -> Result<Vec<PathBuf>> {
+/// - 组内不得重复或互相嵌套。
+///
+/// 跨项目重叠自 2026-09-11 裁决起合法(§9.9 根重叠合法化):同一物理文件夹
+/// 允许被多个项目引用,自动归组由前端按 position 决胜,后端不再拒绝。
+fn validate_roots(roots: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let mut displays = Vec::with_capacity(roots.len());
     let mut keys = Vec::with_capacity(roots.len());
     for root in roots {
@@ -230,26 +274,6 @@ fn validate_roots(
             }
         }
     }
-    for project in projects {
-        if Some(project.id.as_str()) == skip_project_id {
-            continue;
-        }
-        for existing in &project.roots {
-            let existing_key = identity_key_of_display(existing);
-            for (key, display) in keys.iter().zip(displays.iter()) {
-                if key_is_same_or_nested(key, &existing_key)
-                    || key_is_same_or_nested(&existing_key, key)
-                {
-                    bail!(
-                        "project root overlaps project '{}' ({} vs {})",
-                        project.name,
-                        existing.display(),
-                        display.display()
-                    );
-                }
-            }
-        }
-    }
     Ok(displays)
 }
 
@@ -262,7 +286,10 @@ fn persist_locked(state: &StoreState, path: &Path) -> Result<()> {
             path.display()
         );
     }
-    if state.projects.is_empty() && state.assignments.is_empty() {
+    if state.projects.is_empty()
+        && state.assignments.is_empty()
+        && state.never_materialize_roots.is_empty()
+    {
         return match std::fs::remove_file(path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
@@ -273,6 +300,7 @@ fn persist_locked(state: &StoreState, path: &Path) -> Result<()> {
         schema_version: SCHEMA_VERSION,
         projects: state.projects.clone(),
         assignments: state.assignments.clone(),
+        never_materialize_roots: state.never_materialize_roots.clone(),
     };
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)
@@ -311,6 +339,7 @@ fn load_state(path: &Path) -> Result<StoreState> {
     Ok(StoreState {
         projects,
         assignments: file.assignments,
+        never_materialize_roots: file.never_materialize_roots,
         refuse_writes: false,
     })
 }
@@ -360,6 +389,34 @@ impl ProjectStore {
         self.state.read().assignments.clone()
     }
 
+    /// 反物化排除列表快照(canonical 键;命令层随 list_projects 下发,
+    /// 管理面板据此渲染/撤销)。
+    pub fn never_materialize_roots(&self) -> Vec<String> {
+        self.state.read().never_materialize_roots.clone()
+    }
+
+    /// 显式反物化(§3):`never = true` 把文件夹(canonical 键)加入排除
+    /// 列表,ensure 之后跳过它;`false` 撤销。幂等,返回更新后的列表。
+    /// 只影响未来的自动物化,不动既有项目与会话归属。
+    pub fn set_never_materialize(&self, root: &Path, never: bool) -> Result<Vec<String>> {
+        if !root.is_absolute() {
+            bail!("never-materialize root must be absolute: {}", root.display());
+        }
+        let key = root_key(root);
+        let mut state = self.state.write();
+        let contains = state.never_materialize_roots.contains(&key);
+        if never == contains {
+            return Ok(state.never_materialize_roots.clone());
+        }
+        if never {
+            state.never_materialize_roots.push(key);
+        } else {
+            state.never_materialize_roots.retain(|entry| entry != &key);
+        }
+        persist_locked(&state, &self.path)?;
+        Ok(state.never_materialize_roots.clone())
+    }
+
     /// 显式归属到某项目的会话 id 列表(命令层统计成员数用)。
     pub fn assigned_session_ids(&self, project_id: &str) -> Vec<String> {
         self.state
@@ -372,15 +429,16 @@ impl ProjectStore {
             .collect()
     }
 
-    /// 创建项目。roots 可为空(纯标签项目);非空时逐个过绝对性/重叠校验。
+    /// 创建项目。roots 可为空(纯标签项目);非空时逐个过绝对性/组内嵌套校验
+    /// (跨项目重叠自 §9.9 起合法)。
     ///
     /// 落盘失败时内存态已前进而磁盘滞后(persist 在锁内最后执行,失败向上
-    /// 抛,不回滚内存);同一进程内立即重试 create 会先撞内存重叠校验(磁盘
-    /// 还是旧内容)——已知语义,由下一次成功写盘自愈。
+    /// 抛,不回滚内存);同一进程内立即重试 create 走同一条校验与落盘路径,
+    /// 由下一次成功写盘自愈。
     pub fn create_project(&self, name: String, roots: Vec<PathBuf>) -> Result<Project> {
         let name = validate_name(name)?;
+        let roots = validate_roots(&roots)?;
         let mut state = self.state.write();
-        let roots = validate_roots(&state.projects, None, &roots)?;
         let now = Utc::now();
         let position = state
             .projects
@@ -396,6 +454,8 @@ impl ProjectStore {
             position,
             created_at: now,
             updated_at: now,
+            origin: None,
+            last_primary_root: None,
         };
         state.projects.push(project.clone());
         state
@@ -413,17 +473,22 @@ impl ProjectStore {
     ) -> Result<Project> {
         let name = name.map(validate_name).transpose()?;
         let mut state = self.state.write();
-        let Some(index) = state
+        if !state
+            .projects
+            .iter()
+            .any(|project| project.id == project_id)
+        {
+            bail!("project not found: {project_id}");
+        }
+        let roots = match roots {
+            Some(roots) => Some(validate_roots(&roots)?),
+            None => None,
+        };
+        let index = state
             .projects
             .iter()
             .position(|project| project.id == project_id)
-        else {
-            bail!("project not found: {project_id}");
-        };
-        let roots = match roots {
-            Some(roots) => Some(validate_roots(&state.projects, Some(project_id), &roots)?),
-            None => None,
-        };
+            .expect("existence checked above");
         let project = &mut state.projects[index];
         if let Some(name) = name {
             project.name = name;
@@ -437,32 +502,94 @@ impl ProjectStore {
         Ok(updated)
     }
 
-    pub fn delete_project(&self, project_id: &str) -> Result<DeleteProjectReport> {
+    /// 记录项目记忆的主文件夹(§9.2):仅接受 roots 成员(折叠键比较),
+    /// 拒绝陌生路径——主文件夹必须是项目领地内目录。返回更新后的项目。
+    pub fn set_last_primary_root(&self, project_id: &str, root: &Path) -> Result<Project> {
         let mut state = self.state.write();
-        let Some(index) = state
+        let index = state
             .projects
             .iter()
             .position(|project| project.id == project_id)
-        else {
+            .ok_or_else(|| anyhow::anyhow!("project not found: {project_id}"))?;
+        let display = root_display(root);
+        let key = identity_key_of_display(&display);
+        let is_member = state.projects[index]
+            .roots
+            .iter()
+            .any(|existing| identity_key_of_display(existing) == key);
+        if !is_member {
+            bail!(
+                "primary root must be one of the project roots: {}",
+                root.display()
+            );
+        }
+        let project = &mut state.projects[index];
+        if project.last_primary_root.as_deref() == Some(display.as_path()) {
+            return Ok(project.clone());
+        }
+        project.last_primary_root = Some(display);
+        project.updated_at = Utc::now();
+        let updated = project.clone();
+        persist_locked(&state, &self.path)?;
+        Ok(updated)
+    }
+
+    /// 删除项目:成员会话(显式 Some(pid) + 命令层枚举的自动归组成员
+    /// `expel_session_ids`)一律写成显式移出(None)——它们留在未分组,且不随
+    /// 该文件夹的下一次自动物化复活;之后在该文件夹新建的会话没有归属条目,
+    /// 照常自动归组。已有归属条目的 id(None=已移出/Some(其它)=显式归属它处)
+    /// 不改写,tier-① 语义优先。会话永不删除。
+    pub fn delete_project(
+        &self,
+        project_id: &str,
+        expel_session_ids: &[String],
+    ) -> Result<DeleteProjectReport> {
+        let mut state = self.state.write();
+        if !state.projects.iter().any(|project| project.id == project_id) {
             bail!("project not found: {project_id}");
-        };
-        state.projects.remove(index);
-        // 只清 Some(pid) 条目;显式移出条目(None)的语义是"不进任何项目",
-        // 与项目存亡无关,保留。被清掉的会话回落自动/隐式分组。
-        let affected: Vec<String> = state
+        }
+        state.projects.retain(|project| project.id != project_id);
+        let mut affected: Vec<String> = state
             .assignments
             .iter()
-            .filter_map(|(session_id, assigned)| {
-                (assigned.as_deref() == Some(project_id)).then(|| session_id.clone())
-            })
+            .filter(|(_, assigned)| assigned.as_deref() == Some(project_id))
+            .map(|(session_id, _)| session_id.clone())
             .collect();
+        for session_id in expel_session_ids {
+            if !state.assignments.contains_key(session_id)
+                && !affected.contains(session_id)
+            {
+                affected.push(session_id.clone());
+            }
+        }
         for session_id in &affected {
-            state.assignments.remove(session_id);
+            state
+                .assignments
+                .insert(session_id.clone(), None);
         }
         persist_locked(&state, &self.path)?;
         Ok(DeleteProjectReport {
             affected_session_ids: affected,
         })
+    }
+
+    /// 移除根(§4)的自动成员移出:命令层枚举到的"被移除 root 之下的会话"
+    /// 中,无归属条目的写显式移出(None)——留在未分组,防止 tier-② 归组或
+    /// ensure 物化立即翻案;已有条目(显式归属本/他项目、已显式移出)一律
+    /// 不动,tier-① 语义优先。返回新写入的条目数。
+    pub fn expel_unassigned_sessions(&self, session_ids: &[String]) -> Result<usize> {
+        let mut state = self.state.write();
+        let mut changed = 0usize;
+        for session_id in session_ids {
+            if !state.assignments.contains_key(session_id) {
+                state.assignments.insert(session_id.clone(), None);
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            persist_locked(&state, &self.path)?;
+        }
+        Ok(changed)
     }
 
     /// 移动会话归属(纯逻辑层写;不触碰会话的工作目录绑定)。
@@ -481,13 +608,13 @@ impl ProjectStore {
         let mut state = self.state.write();
         let mut added_root = None;
         if let Some(target_id) = project_id {
-            let Some(index) = state
+            if !state
                 .projects
                 .iter()
-                .position(|project| project.id == target_id)
-            else {
+                .any(|project| project.id == target_id)
+            {
                 bail!("project not found: {target_id}");
-            };
+            }
             if let Some(workspace) = add_workspace_root {
                 if !workspace.is_absolute() {
                     bail!(
@@ -495,18 +622,20 @@ impl ProjectStore {
                         workspace.display()
                     );
                 }
-                // 单元素集组内校验退化为此路径自身的绝对性;跨项目重叠在此
-                // 一并拦截(错误信息指向冲突项目)。
+                // 跨项目重叠已合法化(§9.9),这里只剩绝对性与 canonicalize;
+                // 组内覆盖/收编在下方按既有不变量处理。
                 let owned_root = workspace.to_path_buf();
-                let mut displays = validate_roots(
-                    &state.projects,
-                    Some(target_id),
-                    std::slice::from_ref(&owned_root),
-                )?;
+                let mut displays =
+                    validate_roots(std::slice::from_ref(&owned_root))?;
                 let Some(display) = displays.pop() else {
                     bail!("add_workspace_root produced no canonical key");
                 };
                 let key = identity_key_of_display(&display);
+                let index = state
+                    .projects
+                    .iter()
+                    .position(|project| project.id == target_id)
+                    .expect("existence checked above");
                 let project = &mut state.projects[index];
                 // 组内方向双查:workspace 被现有 root 覆盖 → 幂等跳过;workspace
                 // 是现有 root 的祖先 → 收编被覆盖的后代(镜像自动归组的最长
@@ -563,10 +692,103 @@ impl ProjectStore {
         })
     }
 
+    /// 文件夹项目自动物化(Codex 客户端式收编,幂等):对每个输入文件夹,
+    /// 已有以它为锚的物化项目则复用,否则建 `origin=folder`、名为目录
+    /// basename 的项目(§9.9:被其它项目引用不算覆盖,重叠合法)。排除
+    /// 列表(§3)内的根跳过。非绝对路径逐根 Failed 上报,不阻断其余根。
+    /// 输入按键去重;整批共享一次落盘。分组规则不变——新项目
+    /// 的 roots 让既有 tier-② 根匹配自然收编该文件夹的会话,显式移出条目
+    /// (删除项目时写入)仍压制,故删除后重建的项目只收新会话。
+    pub fn ensure_folder_roots(&self, roots: &[PathBuf]) -> Result<Vec<EnsureFolderOutcome>> {
+        let mut state = self.state.write();
+        let mut outcomes = Vec::with_capacity(roots.len());
+        let mut seen_keys: Vec<String> = Vec::with_capacity(roots.len());
+        let mut created_any = false;
+        for root in roots {
+            if !root.is_absolute() {
+                outcomes.push(EnsureFolderOutcome::Failed {
+                    reason: format!("folder root must be absolute: {}", root.display()),
+                });
+                continue;
+            }
+            let display = root_display(root);
+            let key = identity_key_of_display(&display);
+            if seen_keys.contains(&key) {
+                continue;
+            }
+            seen_keys.push(key.clone());
+            // 排除列表(§3):用户显式表达过"别为此文件夹建项目",跳过且不
+            // 产出 outcome(与输入去重同款),墓碑不复活。
+            if state.never_materialize_roots.contains(&key) {
+                continue;
+            }
+            // 锚定复用(§9.9):仅当已存在**以该文件夹为锚**的物化项目
+            // (origin=folder 且 roots 精确含此路径)才复用;被别的项目当
+            // 附加根/主根引用不算覆盖——浏览通道永远以所选文件夹为家,
+            // 重叠合法,此时应创建新的同名项目。
+            let anchored = state.projects.iter().find(|project| {
+                project.origin.as_deref() == Some("folder")
+                    && project
+                        .roots
+                        .iter()
+                        .any(|existing| identity_key_of_display(existing) == key)
+            });
+            if let Some(project) = anchored {
+                outcomes.push(EnsureFolderOutcome::Covered {
+                    project_id: project.id.clone(),
+                });
+                continue;
+            }
+            let name = display
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| display.to_string_lossy().into_owned());
+            // 同批先建的文件夹项目已在 state.projects 中,后续相同根被
+            // seen_keys 去重;锚定判定按精确路径,嵌套输入各自物化。
+            match validate_roots(std::slice::from_ref(root)) {
+                Ok(displays) => {
+                    let now = Utc::now();
+                    let position = state
+                        .projects
+                        .iter()
+                        .map(|project| project.position)
+                        .max()
+                        .unwrap_or(-1)
+                        + 1;
+                    let project = Project {
+                        id: generate_project_id(),
+                        name,
+                        roots: displays,
+                        position,
+                        created_at: now,
+                        updated_at: now,
+                        origin: Some("folder".to_string()),
+                        last_primary_root: None,
+                    };
+                    state.projects.push(project.clone());
+                    state.projects.sort_by(|a, b| {
+                        (a.position, &a.id).cmp(&(b.position, &b.id))
+                    });
+                    created_any = true;
+                    outcomes.push(EnsureFolderOutcome::Created { project });
+                }
+                Err(error) => outcomes.push(EnsureFolderOutcome::Failed {
+                    reason: format!("{error:#}"),
+                }),
+            }
+        }
+        if created_any {
+            persist_locked(&state, &self.path)?;
+        }
+        Ok(outcomes)
+    }
+
     /// 目录重绑定(修断链通道):把落在 `from` 前缀下的项目 root 平移到 `to`。
     /// `from` 按存储原值匹配(可能已在磁盘上消失),`to` 由命令层校验为存在
-    /// 的 canonical 路径。改写后逐项目复验重叠约束——平移出的 root 可能撞上
-    /// 其它项目的领地,此时整体报错回滚(内存态未落盘)。返回受影响项目 id。
+    /// 的 canonical 路径。改写后逐项目复验组内约束(平移可能造成同项目内
+    /// 嵌套),失败时整体报错回滚(内存态未落盘);跨项目重叠合法(§9.9),不再
+    /// 复验。返回受影响项目 id。
     /// 幂等:无 root 命中即空操作。
     pub fn rebind_roots(&self, from: &Path, to: &Path) -> Result<Vec<String>> {
         let mut state = self.state.write();
@@ -576,8 +798,8 @@ impl ProjectStore {
         // to 由命令层保证存在,这里统一成 canonical 键,与存储形态一致;
         // from 的匹配在折叠键上进行(Windows 折叠大小写/分隔符,仅大小写
         // 改名的目录不再漏配),后缀按组件数从原 root 切回,保留子目录
-        // 原有大小写。改写在副本上进行,复验通过才提交内存态——重叠
-        // 冲突时调用方看到的状态与盘面保持一致。
+        // 原有大小写。改写在副本上进行,复验通过才提交内存态——校验
+        // 失败时调用方看到的状态与盘面保持一致。
         let to_key = root_display(to);
         let from_key = root_key(from);
         let mut candidate = state.projects.clone();
@@ -604,13 +826,58 @@ impl ProjectStore {
         }
         if !affected_projects.is_empty() {
             for project in &candidate {
-                validate_roots(&candidate, Some(&project.id), &project.roots)
-                    .context("rebind produced overlapping project roots")?;
+                validate_roots(&project.roots)
+                    .context("rebind produced invalid project roots")?;
             }
             state.projects = candidate;
             persist_locked(&state, &self.path)?;
         }
         Ok(affected_projects)
+    }
+
+    /// "对齐到项目"(§6/§9.7)的归属解析:tier-① 显式归属(Some);显式移出
+    /// (None 条目)阻止 tier-②;tier-② workspace 折叠键落 root 前缀匹配,
+    /// 多命中按 position 最小者收编(与前端决胜口径一致;projects 恒按
+    /// (position, id) 有序,find 即最小者)。
+    pub fn resolve_session_project(&self, session_id: &str, workspace: &Path) -> Option<Project> {
+        let state = self.state.read();
+        match state.assignments.get(session_id) {
+            Some(Some(project_id)) => {
+                return state
+                    .projects
+                    .iter()
+                    .find(|project| &project.id == project_id)
+                    .cloned();
+            }
+            Some(None) => return None,
+            None => {}
+        }
+        let key = identity_key_of_display(&root_display(workspace));
+        state
+            .projects
+            .iter()
+            .find(|project| {
+                project
+                    .roots
+                    .iter()
+                    .any(|root| key_is_same_or_nested(&key, &identity_key_of_display(root)))
+            })
+            .cloned()
+    }
+
+    /// 对齐的钥匙串形态:主根槽位 = 会话自己的 cwd(不换门牌,§9.2),附加
+    /// 根 = 项目 roots 去掉 cwd 后保序(折叠键比较)。底座 normalize 会再归一,
+    /// 存储层就按此写好,让"读到什么"与"生效什么"一致。
+    pub fn keychain_for_workspace(cwd: &Path, project_roots: &[PathBuf]) -> Vec<PathBuf> {
+        let cwd_display = root_display(cwd);
+        let cwd_key = identity_key_of_display(&cwd_display);
+        let mut out = vec![cwd_display];
+        for root in project_roots {
+            if identity_key_of_display(root) != cwd_key {
+                out.push(root.clone());
+            }
+        }
+        out
     }
 
     /// 会话删除钩子:摘除其归属条目(含显式移出的 None 条目)。返回是否

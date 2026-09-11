@@ -1877,12 +1877,15 @@ impl AppEngine {
     pub async fn sync_session(&self, session_id: String, messages: Vec<Message>) -> Result<()> {
         self.handle
             .send(Op::SyncSession {
-                session_id: Some(session_id),
+                session_id: Some(session_id.clone()),
                 messages,
                 system_prompt: None,
                 system_prompt_override: false,
                 model: self.bridge.model(),
                 workspace: self.workspace.clone(),
+                // 恢复路径钥匙串回填(§6):创建时锁定的全量根,会话重启不丢;
+                // 无快照(旧会话/临时会话)为空 = 单根,底座按 cwd 归一。
+                workspace_roots: self.bridge.session_workspace_roots(&session_id),
                 mode: AppMode::Agent,
             })
             .await?;

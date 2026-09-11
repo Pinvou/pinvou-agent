@@ -243,9 +243,43 @@ test('ensureSession：绑定草稿不套用 work lane 默认（后端按 code la
   rt.api.setDraftWorkspace('/work/project');
   const id = await rt.api.ensureSession();
   assert.equal(id, 'chat-new');
-  assert.deepEqual(rt.invokeArgs('create_session'), [{ workspacePath: '/work/project' }]);
+  assert.deepEqual(rt.invokeArgs('create_session'), [{
+    workspacePath: '/work/project',
+    workspaceRoots: ['/work/project'],
+    projectId: null,
+  }]);
   assert.ok(!rt.invokeNames().includes('set_plan_mode_next'),
     '绑定会话不得把 work lane 默认经 set_plan_mode_next 套用');
+});
+
+test('ensureSession：项目通道草稿下发钥匙串与 projectId，物化后清空暂存', async () => {
+  const rt = loadFeature('sessions');
+  rt.api.setDraftWorkspace('/work/project', {
+    projectId: 'prj-1',
+    workspaceRoots: ['/work/project', '/work/shared'],
+  });
+  const id = await rt.api.ensureSession();
+  assert.equal(id, 'chat-new');
+  assert.deepEqual(rt.invokeArgs('create_session'), [{
+    workspacePath: '/work/project',
+    workspaceRoots: ['/work/project', '/work/shared'],
+    projectId: 'prj-1',
+  }], '项目通道:cwd 居首的钥匙串 + projectId 一并下发(后端写主根记忆)');
+  assert.equal(rt.state.draftWorkspacePath, null);
+  // vm 上下文数组跨 realm,deepStrict 按引用失败——按内容断言。
+  assert.equal((rt.state.draftWorkspaceRoots || []).length, 0);
+  assert.equal(rt.state.draftProjectId, null, '物化后暂存清空');
+});
+
+test('ensureSession：临时草稿不带钥匙串字段(单根现状)', async () => {
+  const rt = loadFeature('sessions');
+  const id = await rt.api.ensureSession();
+  assert.equal(id, 'chat-new');
+  assert.deepEqual(rt.invokeArgs('create_session'), [{
+    workspacePath: null,
+    workspaceRoots: null,
+    projectId: null,
+  }]);
 });
 
 test('ensureSession：未绑定草稿维持 work lane 默认应用（回归保护）', async () => {

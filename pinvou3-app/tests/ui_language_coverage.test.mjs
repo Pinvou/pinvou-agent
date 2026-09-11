@@ -59,7 +59,7 @@ for (const language of ['zh', 'en', 'ja']) {
   assert.ok(dict[language].uiChat.sceneModes.pptDesign, `${language}.uiChat.sceneModes.pptDesign must exist`);
   // The sceneModes keys retired by the design-lane merge into work must
   // stay deleted.
-  for (const deadKey of ['designGeneralPlaceholder']) {
+  for (const deadKey of ['pptUnavailable', 'designGeneralPlaceholder']) {
     assert.equal(dict[language].uiChat.sceneModes[deadKey], undefined, `${language}.uiChat.sceneModes.${deadKey} is retired and must stay deleted`);
   }
   assert.ok(dict[language].uiChatView.placeholderSceneAdjust, `${language}.uiChatView.placeholderSceneAdjust must exist`);

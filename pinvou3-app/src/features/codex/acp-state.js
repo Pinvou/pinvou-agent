@@ -14,6 +14,14 @@ function redactDisplayError(error, language) {
   return helper.redactTechnicalDetail(String(error), language);
 }
 
+export function unifiedConversationUiEnabled() {
+  try {
+    return localStorage.getItem('pinvou_conversation_ui_v2') !== 'false';
+  } catch {
+    return true;
+  }
+}
+
 export function updateAcpAttachmentDraft(drafts, attachmentId, update) {
   for (const [owner, attachments] of Object.entries(drafts || {})) {
     if (attachments.every(attachment => attachment.id !== attachmentId)) continue;

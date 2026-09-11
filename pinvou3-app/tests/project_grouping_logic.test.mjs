@@ -3,15 +3,27 @@ import test from "node:test";
 
 import {
   TEMPORARY_GROUP_KEY,
-  groupSessionsWithProjects,
+  UNGROUPED_GROUP_KEY,
+  groupSessionsByFolder,
+  groupSessionsByProject,
   needsAddFolderConfirm,
   projectCoversPath,
   resolveSessionProjectId,
+  uncoveredWorkspaceRoots,
 } from "../src/features/projects/projectGrouping.js";
 
 const projectItem = (id, path, updatedAt) => ({
   id,
   workspaceKind: "project",
+  workspacePath: path,
+  updatedAt,
+});
+
+const boundItem = (id, path, updatedAt) => ({
+  id,
+  // #445 绑定的普通工作会话:独立 'bound' 形态,与 'project' 同为携带
+  // 真实目录的会话(评审 #452 finding 5)。
+  workspaceKind: "bound",
   workspacePath: path,
   updatedAt,
 });
@@ -30,309 +42,340 @@ const project = (id, name, roots, position) => ({
   position,
 });
 
-test("without projects the behavior matches legacy folder grouping", () => {
-  const groups = groupSessionsWithProjects(
-    [
-      projectItem("a1", "D:/work/alpha", "2026-08-01T08:00:00Z"),
-      projectItem("b1", "D:/work/beta", "2026-08-02T08:00:00Z"),
-      temporaryItem("t1", "2026-08-03T08:00:00Z"),
-    ],
-    [],
-    {},
-  );
+// origin=folder 的物化项目(锚定判定的唯一覆盖来源,§9.9)。
+const folderProject = (id, name, roots, position) => ({ ...project(id, name, roots, position), origin: 'folder' });
+
+// ── 目录视图(纯物理层) ─────────────────────────────────────────────────────
+
+test("folder view buckets by workspace path, activity-sorted, temporary last", () => {
+  const groups = groupSessionsByFolder([
+    projectItem("a1", "D:/work/alpha", "2026-08-01T08:00:00Z"),
+    projectItem("b1", "D:/work/beta", "2026-08-02T08:00:00Z"),
+    projectItem("a2", "D:/work/alpha", "2026-08-03T08:00:00Z"),
+    temporaryItem("t1", "2026-08-19T08:00:00Z"),
+    boundItem("w1", "D:/work/alpha", "2026-08-05T08:00:00Z"),
+  ]);
   assert.deepEqual(groups.map((g) => [g.kind, g.key]), [
-    ["folder", "D:/work/beta"],
     ["folder", "D:/work/alpha"],
+    ["folder", "D:/work/beta"],
     ["temporary", TEMPORARY_GROUP_KEY],
   ]);
+  const alpha = groups[0];
+  assert.deepEqual(alpha.rows.map((r) => r.id), ["w1", "a2", "a1"]);
+  assert.equal(alpha.projectId, null, "目录组与项目无关");
 });
 
-test("tier 2 auto-groups sessions under a project root", () => {
+test("folder view ignores projects and assignments entirely", () => {
   const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
-  const groups = groupSessionsWithProjects(
-    [
-      projectItem("a1", "D:/work/alpha", "2026-08-01T08:00:00Z"),
-      projectItem("a2", "D:/work/alpha/sub", "2026-08-02T08:00:00Z"),
-      projectItem("b1", "D:/work/beta", "2026-08-03T08:00:00Z"),
-    ],
-    projects,
-    {},
-  );
-  const alpha = groups.find((g) => g.kind === "project");
-  assert.equal(alpha.projectId, "p1");
-  assert.deepEqual(alpha.rows.map((r) => r.id).sort((a, b) => a.localeCompare(b)), ["a1", "a2"]);
-  assert.equal(groups.find((g) => g.kind === "folder").key, "D:/work/beta");
-});
-
-test("tier 1 explicit assignment beats tier 2 auto-grouping", () => {
-  const projects = [
-    project("p1", "Alpha", ["D:/work/alpha"], 0),
-    project("p2", "Beta", ["D:/work/beta"], 1),
-  ];
-  const groups = groupSessionsWithProjects(
+  const groups = groupSessionsByFolder(
     [projectItem("a1", "D:/work/alpha", "2026-08-01T08:00:00Z")],
     projects,
-    { a1: "p2" },
+    { a1: "p1" },
   );
-  const beta = groups.find((g) => g.projectId === "p2");
-  assert.deepEqual(beta.rows.map((r) => r.id), ["a1"]);
-  const alpha = groups.find((g) => g.projectId === "p1");
-  assert.equal(alpha.rows.length, 0, "empty projects still render");
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].kind, "folder");
 });
 
-test("tier 1 explicit move-out blocks tier 2 auto revival", () => {
-  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
-  const groups = groupSessionsWithProjects(
-    [projectItem("a1", "D:/work/alpha", "2026-08-01T08:00:00Z")],
-    projects,
-    { a1: null },
-  );
-  assert.equal(groups.find((g) => g.projectId === "p1").rows.length, 0);
-  assert.equal(groups.find((g) => g.kind === "folder").key, "D:/work/alpha");
+test("folder view degrades safely on empty or invalid input", () => {
+  assert.deepEqual(groupSessionsByFolder([]), []);
+  assert.deepEqual(groupSessionsByFolder(null), []);
+  const groups = groupSessionsByFolder([
+    null,
+    { id: "no-path", workspaceKind: "project", workspacePath: "" },
+  ]);
+  assert.deepEqual(groups.map((g) => g.key), [TEMPORARY_GROUP_KEY]);
 });
 
-test("stale assignment ids fall through to auto grouping", () => {
-  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
-  const groups = groupSessionsWithProjects(
-    [projectItem("a1", "D:/work/alpha", "2026-08-01T08:00:00Z")],
-    projects,
-    { a1: "prj-deleted" },
-  );
-  assert.equal(groups.find((g) => g.projectId === "p1").rows.length, 1);
-});
+// ── 项目视图(纯逻辑层 + 未分组桶) ──────────────────────────────────────────
 
-test("longest matching root wins for nested roots", () => {
-  const projects = [
-    project("p1", "Work", ["D:/work"], 0),
-    project("p2", "Deep", ["D:/work/deep"], 1),
-  ];
-  const groups = groupSessionsWithProjects(
-    [
-      projectItem("shallow", "D:/work/other", "2026-08-01T08:00:00Z"),
-      projectItem("deep", "D:/work/deep/x", "2026-08-02T08:00:00Z"),
-    ],
-    projects,
-    {},
-  );
-  assert.deepEqual(groups.find((g) => g.projectId === "p1").rows.map((r) => r.id), ["shallow"]);
-  assert.deepEqual(groups.find((g) => g.projectId === "p2").rows.map((r) => r.id), ["deep"]);
-});
-
-test("project groups sort by manual position, folders by activity, temporary last", () => {
+test("project view auto-groups by root and renders empty projects in position order", () => {
   const projects = [
     project("p2", "Second", ["D:/work/beta"], 1),
     project("p1", "First", ["D:/work/alpha"], 0),
   ];
-  const groups = groupSessionsWithProjects(
+  const groups = groupSessionsByProject(
     [
-      projectItem("old", "D:/work/legacy", "2026-07-01T08:00:00Z"),
-      projectItem("fresh", "D:/work/new", "2026-08-10T08:00:00Z"),
-      temporaryItem("t1", "2026-08-19T08:00:00Z"),
-      projectItem("a1", "D:/work/alpha", "2026-08-02T08:00:00Z"),
+      projectItem("a1", "D:/work/alpha", "2026-08-01T08:00:00Z"),
+      projectItem("b1", "D:/work/beta/sub", "2026-08-02T08:00:00Z"),
+      projectItem("u1", "D:/work/other", "2026-08-03T08:00:00Z"),
     ],
     projects,
     {},
   );
-  assert.deepEqual(groups.map((g) => g.key), [
-    "project:p1",
-    "project:p2",
-    "D:/work/new",
-    "D:/work/legacy",
-    TEMPORARY_GROUP_KEY,
+  assert.deepEqual(groups.map((g) => [g.kind, g.key]), [
+    ["project", "project:p1"],
+    ["project", "project:p2"],
+    ["ungrouped", UNGROUPED_GROUP_KEY],
   ]);
+  assert.deepEqual(groups[0].rows.map((r) => r.id), ["a1"]);
+  assert.deepEqual(groups[1].rows.map((r) => r.id), ["b1"]);
+  assert.deepEqual(groups[2].rows.map((r) => r.id), ["u1"]);
 });
 
-test("root string form is accepted alongside { path } objects", () => {
-  const projects = [{ id: "p1", name: "Alpha", roots: ["D:/work/alpha"], position: 0 }];
-  const groups = groupSessionsWithProjects(
-    [projectItem("a1", "D:/work/alpha", "2026-08-01T08:00:00Z")],
+test("project view: explicit assignment beats root auto-grouping; move-out lands in ungrouped", () => {
+  const projects = [
+    project("p1", "Alpha", ["D:/work/alpha"], 0),
+    project("p2", "Beta", ["D:/work/beta"], 1),
+  ];
+  const groups = groupSessionsByProject(
+    [
+      projectItem("moved", "D:/work/alpha", "2026-08-01T08:00:00Z"),
+      projectItem("out", "D:/work/alpha", "2026-08-02T08:00:00Z"),
+    ],
     projects,
-    {},
+    { moved: "p2", out: null },
   );
-  assert.equal(groups.find((g) => g.kind === "project").rows.length, 1);
+  assert.deepEqual(groups.find((g) => g.key === "project:p2").rows.map((r) => r.id), ["moved"]);
+  assert.equal(groups.find((g) => g.key === "project:p1").rows.length, 0);
+  const ungrouped = groups.find((g) => g.kind === "ungrouped");
+  assert.deepEqual(ungrouped.rows.map((r) => r.id), ["out"], "显式移出不得经 tier 2 复活");
 });
 
-test("temporary sessions never auto-group even under a project root", () => {
+test("project view: temporary sessions join only via explicit assignment", () => {
   const projects = [project("p1", "Alpha", ["C:/Users/x"], 0)];
-  const groups = groupSessionsWithProjects(
+  const groups = groupSessionsByProject(
     [temporaryItem("t1", "2026-08-01T08:00:00Z")],
     projects,
     {},
   );
-  const temporary = groups.find((g) => g.kind === "temporary");
-  assert.deepEqual(temporary.rows.map((r) => r.id), ["t1"]);
+  assert.equal(groups[0].rows.length, 0, "临时会话绝不自动归组");
+  const adopted = groupSessionsByProject(
+    [temporaryItem("t1", "2026-08-01T08:00:00Z")],
+    projects,
+    { t1: "p1" },
+  );
+  assert.deepEqual(adopted[0].rows.map((r) => r.id), ["t1"], "显式归属(转正)有效");
+  assert.equal(adopted.length, 1, "全被认领时无未分组桶");
 });
+
+test("project view: stale assignment ids fall through to auto grouping", () => {
+  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
+  const groups = groupSessionsByProject(
+    [projectItem("a1", "D:/work/alpha", "2026-08-01T08:00:00Z")],
+    projects,
+    { a1: "prj-deleted" },
+  );
+  assert.deepEqual(groups[0].rows.map((r) => r.id), ["a1"]);
+});
+
+test("project view: smallest position claims sessions covered by several projects", () => {
+  // §9.9(2026-09-11 裁定):跨项目重叠/嵌套合法,多命中不再按最长 root,
+  // 由 position 最靠前者收编(侧栏排序是用户可控的决胜旋钮),与后端
+  // resolve_session_project 同口径。
+  const items = [
+    projectItem("shallow", "D:/work/other", "2026-08-01T08:00:00Z"),
+    projectItem("deep", "D:/work/deep/x", "2026-08-02T08:00:00Z"),
+  ];
+  const groups = groupSessionsByProject(
+    items,
+    [project("p1", "Work", ["D:/work"], 0), project("p2", "Deep", ["D:/work/deep"], 1)],
+    {},
+  );
+  assert.deepEqual(groups.find((g) => g.projectId === "p1").rows.map((r) => r.id), ["deep", "shallow"]);
+  assert.equal(groups.find((g) => g.projectId === "p2").rows.length, 0);
+  // position 翻转即翻转归属:用户拖排序即可改判。
+  const flipped = groupSessionsByProject(
+    items,
+    [project("p1", "Work", ["D:/work"], 1), project("p2", "Deep", ["D:/work/deep"], 0)],
+    {},
+  );
+  assert.deepEqual(flipped.find((g) => g.projectId === "p2").rows.map((r) => r.id), ["deep"]);
+  assert.deepEqual(flipped.find((g) => g.projectId === "p1").rows.map((r) => r.id), ["shallow"]);
+  // 输入顺序不影响结果(id 兜底决胜,排序在判定前)。
+  const shuffled = groupSessionsByProject(
+    items,
+    [project("p2", "Deep", ["D:/work/deep"], 1), project("p1", "Work", ["D:/work"], 0)],
+    {},
+  );
+  assert.deepEqual(shuffled.find((g) => g.projectId === "p1").rows.map((r) => r.id), ["deep", "shallow"]);
+});
+
+test("project view: 'bound' work sessions auto-group like code sessions", () => {
+  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
+  const groups = groupSessionsByProject(
+    [boundItem("w1", "D:/work/alpha/sub", "2026-08-01T08:00:00Z")],
+    projects,
+    {},
+  );
+  assert.deepEqual(groups[0].rows.map((r) => r.id), ["w1"]);
+});
+
+test("project view: rows sort by updatedAt descending inside groups", () => {
+  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
+  const groups = groupSessionsByProject(
+    [
+      projectItem("old", "D:/work/alpha", "2026-07-01T08:00:00Z"),
+      projectItem("new", "D:/work/alpha", "2026-08-01T08:00:00Z"),
+      { id: "null-item", workspaceKind: "project", workspacePath: "D:/work/alpha" },
+      null,
+    ],
+    projects,
+    {},
+  );
+  assert.deepEqual(groups[0].rows.map((r) => r.id), ["new", "old", "null-item"]);
+});
+
+test("project view without projects puts everything in ungrouped", () => {
+  const groups = groupSessionsByProject(
+    [projectItem("a1", "D:/w", "x"), temporaryItem("t1", "y")],
+    [],
+    {},
+  );
+  assert.deepEqual(groups.map((g) => g.kind), ["ungrouped"]);
+  assert.equal(groups[0].rows.length, 2);
+});
+
+// ── Move-picker helpers ────────────────────────────────────────────────────
+
+test("resolveSessionProjectId mirrors the project-view tiers", () => {
+  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
+  const item = projectItem("a1", "D:/work/alpha", "2026-08-01T08:00:00Z");
+  assert.equal(resolveSessionProjectId(item, projects, {}), "p1");
+  assert.equal(resolveSessionProjectId(item, projects, { a1: "p1" }), "p1");
+  assert.equal(resolveSessionProjectId(item, projects, { a1: null }), null, "显式移出优先");
+  assert.equal(resolveSessionProjectId(temporaryItem("t1", "x"), projects, { t1: "p1" }), "p1");
+  assert.equal(resolveSessionProjectId(temporaryItem("t1", "x"), projects, {}), null);
+  assert.equal(resolveSessionProjectId(item, [], { a1: "prj-gone" }), null);
+});
+
+test("projectCoversPath and needsAddFolderConfirm share the containment rule", () => {
+  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
+  assert.equal(projectCoversPath(projects[0], "D:/work/alpha"), true);
+  assert.equal(projectCoversPath(projects[0], "D:/work/alpha/sub"), true);
+  assert.equal(projectCoversPath(projects[0], "D:/work/beta"), false);
+  assert.equal(projectCoversPath(null, "D:/work/alpha"), false);
+  assert.equal(needsAddFolderConfirm(projectItem("s", "D:/work/beta"), projects[0]), true);
+  assert.equal(needsAddFolderConfirm(projectItem("s", "D:/work/alpha/x"), projects[0]), false);
+  assert.equal(needsAddFolderConfirm(temporaryItem("t"), projects[0]), false, "临时会话无目录,直移");
+});
+
+// ── Folder-project auto-materialization input ──────────────────────────────
+
+test("uncoveredWorkspaceRoots dedupes and drops anchored/temporary workspaces", () => {
+  // 锚定覆盖(§9.9):只有 origin=folder 且 roots 精确含该路径的项目算覆盖;
+  // "D:/work/alpha" 被锚定 → a1 不驱动;"D:/work/alpha/sub" 未被精确锚定
+  // → a2 驱动(为该子目录物化新项目,重叠合法)。
+  const projects = [folderProject("p1", "Work", ["D:/work/alpha"], 0)];
+  const roots = uncoveredWorkspaceRoots(
+    [
+      projectItem("a1", "D:/work/alpha", "x"),
+      projectItem("a2", "D:/work/alpha/sub", "x"),
+      boundItem("w1", "D:/work/beta", "x"),
+      boundItem("w2", "D:/work/beta", "x"),
+      temporaryItem("t1", "x"),
+      null,
+      { id: "no-path", workspaceKind: "project", workspacePath: "" },
+    ],
+    projects,
+    {},
+  );
+  assert.deepEqual(roots, [
+    { root: "D:/work/alpha/sub", sessionIds: ["a2"] },
+    { root: "D:/work/beta", sessionIds: ["w1", "w2"] },
+  ]);
+});
+
+test("uncoveredWorkspaceRoots skips sessions with any assignment entry", () => {
+  // 删除项目把成员写成显式移出(null):被删文件夹不得因旧会话立刻重建,
+  // 只有无条目的新会话驱动 ensure;显式归属它处(Some)同样不再驱动。
+  const projects = [project("p1", "Elsewhere", ["D:/other"], 0)];
+  const roots = uncoveredWorkspaceRoots(
+    [
+      projectItem("moved-out", "D:/work/beta", "x"),
+      projectItem("filed", "D:/work/beta", "x"),
+      projectItem("fresh", "D:/work/beta", "x"),
+    ],
+    projects,
+    { "moved-out": null, filed: "p1" },
+  );
+  assert.deepEqual(roots, [{ root: "D:/work/beta", sessionIds: ["fresh"] }]);
+});
+
+test("uncoveredWorkspaceRoots: only an exact folder-project anchor covers", () => {
+  // 祖先生效的旧语义已随锚定复用退役(§9.9):物化项目锚定 D:/work 不再
+  // 覆盖其子目录——子目录照常物化(与后端 ensure 的精确锚定一致)。
+  const projects = [folderProject("p1", "Work", ["D:/work"], 0)];
+  assert.deepEqual(
+    uncoveredWorkspaceRoots([projectItem("a1", "D:/work/alpha", "x")], projects, {}),
+    [{ root: "D:/work/alpha", sessionIds: ["a1"] }],
+    "祖先锚定不再覆盖子目录",
+  );
+  assert.deepEqual(
+    uncoveredWorkspaceRoots([projectItem("a2", "D:/work", "x")], projects, {}),
+    [],
+    "精确锚定才覆盖",
+  );
+  // 手工项目(无 origin=folder)引用同一路径不算覆盖,浏览/物化通道仍新建。
+  const manual = [project("p2", "Manual", ["D:/work"], 0)];
+  assert.deepEqual(
+    uncoveredWorkspaceRoots([projectItem("a3", "D:/work", "x")], manual, {}),
+    [{ root: "D:/work", sessionIds: ["a3"] }],
+    "被手工项目引用不锚定",
+  );
+});
+
+test("uncoveredWorkspaceRoots with no projects lists every distinct bound folder", () => {
+  const roots = uncoveredWorkspaceRoots(
+    [
+      projectItem("a1", "D:/one", "x"),
+      boundItem("w1", "D:/two", "x"),
+      temporaryItem("t1", "x"),
+    ],
+    [],
+    {},
+  );
+  assert.deepEqual(roots, [
+    { root: "D:/one", sessionIds: ["a1"] },
+    { root: "D:/two", sessionIds: ["w1"] },
+  ]);
+});
+
+// ── Cases ported from the legacy sidebar-grouping suite ────────────────────
+
+test("folder view: missing updatedAt sorts as oldest without crashing", () => {
+  const groups = groupSessionsByFolder([
+    projectItem("no-time", "D:/work/alpha", ""),
+    projectItem("timed", "D:/work/alpha", "2026-08-01T08:00:00Z"),
+    { id: "null-item", workspaceKind: "project", workspacePath: "D:/work/alpha" },
+    null,
+  ]);
+  assert.equal(groups.length, 1);
+  assert.deepEqual(groups[0].rows.map((r) => r.id), ["timed", "no-time", "null-item"]);
+});
+
+test("folder view: project sessions without a workspace path fall into temporary", () => {
+  const groups = groupSessionsByFolder([
+    { id: "no-path", workspaceKind: "project", workspacePath: "", updatedAt: "2026-08-01T08:00:00Z" },
+  ]);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].key, TEMPORARY_GROUP_KEY);
+});
+
+// ── Review-finding ports from the PR stack lineage ─────────────────────────
 
 test("windows roots match case-insensitively, posix roots stay case-sensitive", () => {
   // The store folds identity keys on Windows (root_keys_fold_case_only_on_windows);
   // the display-side longest-root guard must not let a case-differing workspace
   // path slip past its project (review finding 19).
   const projects = [project("p1", "Alpha", ["D:/Work/Alpha"], 0)];
-  const groups = groupSessionsWithProjects(
+  const groups = groupSessionsByProject(
     [projectItem("a1", "d:/work/alpha/sub", "2026-08-01T08:00:00Z")],
     projects,
     {},
   );
   assert.deepEqual(groups.find((g) => g.projectId === "p1").rows.map((r) => r.id), ["a1"]);
-
-  const posix = [project("p2", "Beta", ["/home/x/Beta"], 0)];
-  const posixGroups = groupSessionsWithProjects(
-    [projectItem("b1", "/home/x/beta/sub", "2026-08-01T08:00:00Z")],
+  const posix = [project("p2", "Posix", ["/home/u/Work"], 0)];
+  const posixGroups = groupSessionsByProject(
+    [projectItem("a2", "/home/u/work/sub", "2026-08-01T08:00:00Z")],
     posix,
     {},
   );
-  assert.equal(posixGroups.find((g) => g.projectId === "p2").rows.length, 0);
-  assert.equal(posixGroups.find((g) => g.kind === "folder").key, "/home/x/beta/sub");
+  assert.equal(posixGroups.find((g) => g.projectId === "p2").rows.length, 0, "posix 路径保持大小写敏感");
+  assert.equal(posixGroups.find((g) => g.kind === "ungrouped").rows.length, 1);
 });
 
-test("windows roots match across separator shapes and trailing separators", () => {
-  // Finding 40: the store's identity key folds `\` -> `/` and strips trailing
-  // separators; a mixed-shape or trailing-separator root must not miss tier 2.
-  const projects = [project("p1", "Alpha", ["D:\\work\\alpha\\"], 0)];
-  const groups = groupSessionsWithProjects(
-    [
-      projectItem("a1", "D:/work/alpha/sub", "2026-08-01T08:00:00Z"),
-      projectItem("a2", "D:\\work\\alpha", "2026-08-02T08:00:00Z"),
-    ],
-    projects,
-    {},
-  );
-  assert.deepEqual(
-    groups.find((g) => g.projectId === "p1").rows.map((r) => r.id).sort((x, y) => x.localeCompare(y)),
-    ["a1", "a2"],
-  );
-});
-
-test("empty and invalid inputs degrade safely", () => {
-  assert.deepEqual(groupSessionsWithProjects([], [], {}), []);
-  assert.deepEqual(groupSessionsWithProjects(null, null, null), []);
-  const groups = groupSessionsWithProjects([null, projectItem("a1", "D:/w", "x")], null, null);
-  assert.equal(groups.length, 1);
-});
-
-// ── Cases ported from the legacy sidebar-grouping suite so the old module
-// can be retired without losing coverage. ──────────────────────────────────
-
-test("missing updatedAt does not crash and sorts as oldest", () => {
-  const groups = groupSessionsWithProjects(
-    [
-      projectItem("no-time", "D:/work/alpha", ""),
-      projectItem("timed", "D:/work/alpha", "2026-08-01T08:00:00Z"),
-      { id: "null-item", workspaceKind: "project", workspacePath: "D:/work/alpha" },
-      null,
-    ],
-    [],
-    {},
-  );
-  assert.equal(groups.length, 1);
-  assert.deepEqual(groups[0].rows.map((r) => r.id), ["timed", "no-time", "null-item"]);
-});
-
-test("project sessions without a workspace path fall into the temporary group", () => {
-  const groups = groupSessionsWithProjects(
-    [{ id: "no-path", workspaceKind: "project", workspacePath: "", updatedAt: "2026-08-01T08:00:00Z" }],
-    [],
-    {},
-  );
-  assert.equal(groups.length, 1);
-  assert.equal(groups[0].key, TEMPORARY_GROUP_KEY);
-});
-
-// ── Move-picker helpers ────────────────────────────────────────────────────
-
-test("resolveSessionProjectId mirrors the grouping tiers", () => {
-  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
-  const item = projectItem("a1", "D:/work/alpha", "2026-08-01T08:00:00Z");
-  assert.equal(resolveSessionProjectId(item, projects, {}), "p1");
-  assert.equal(resolveSessionProjectId(item, projects, { a1: "p1" }), "p1");
-  assert.equal(resolveSessionProjectId(item, projects, { a1: null }), null, "explicit move-out wins");
-  assert.equal(resolveSessionProjectId(temporaryItem("t1", "x"), projects, { t1: "p1" }), "p1");
-  assert.equal(resolveSessionProjectId(temporaryItem("t1", "x"), projects, {}), null, "temp never auto-groups");
-  // The real fork the picker must survive: a stale id does not stick as
-  // "ungrouped" — with a non-empty project list whose root still covers the
-  // path, resolution falls through to tier 2 and returns that project.
-  // (projects=[] would trivially yield null and pin nothing.)
-  assert.equal(resolveSessionProjectId(item, projects, { a1: "prj-gone" }), "p1", "stale id falls through to root matching");
-});
-
-test("projectCoversPath reports root containment for the add-folder prompt", () => {
-  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
-  assert.equal(projectCoversPath(projects[0], "D:/work/alpha"), true);
-  assert.equal(projectCoversPath(projects[0], "D:/work/alpha/sub"), true);
-  assert.equal(projectCoversPath(projects[0], "D:/work/beta"), false);
-  assert.equal(projectCoversPath(null, "D:/work/alpha"), false);
-});
-
-test("rows sort by updatedAt descending within a group", () => {
-  // Ported from the retired sidebar_grouping_logic suite: in-group ordering
-  // with multiple timestamps must survive the project-layer rewrite.
-  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
-  const groups = groupSessionsWithProjects(
-    [
-      projectItem("old", "D:/work/alpha", "2026-07-01T08:00:00Z"),
-      projectItem("new", "D:/work/alpha", "2026-08-01T08:00:00Z"),
-      projectItem("mid", "D:/work/alpha", "2026-07-15T08:00:00Z"),
-    ],
-    projects,
-    {},
-  );
-  assert.deepEqual(groups[0].rows.map((r) => r.id), ["new", "mid", "old"]);
-});
-
-test("temporary group rows sort by recency while the group stays last", () => {
-  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
-  const groups = groupSessionsWithProjects(
-    [
-      temporaryItem("t1", "2026-08-19T08:00:00Z"),
-      projectItem("a1", "D:/work/alpha", "2026-08-02T08:00:00Z"),
-      temporaryItem("t2", "2026-08-18T08:00:00Z"),
-    ],
-    projects,
-    {},
-  );
-  assert.equal(groups[groups.length - 1].key, TEMPORARY_GROUP_KEY);
-  assert.deepEqual(groups[groups.length - 1].rows.map((r) => r.id), ["t1", "t2"]);
-});
-
-test("needsAddFolderConfirm is the shared drop/pick decision", () => {
+test("needsAddFolderConfirm is null-safe on both ends", () => {
   const target = project("p1", "Alpha", ["D:/work/alpha"], 0);
-  assert.equal(
-    needsAddFolderConfirm(projectItem("a1", "D:/work/alpha", "x"), target),
-    false,
-    "covered workspace moves instantly",
-  );
-  assert.equal(
-    needsAddFolderConfirm(projectItem("a1", "D:/work/other", "x"), target),
-    true,
-    "uncovered workspace confirms the add-folder step first",
-  );
-  assert.equal(
-    needsAddFolderConfirm(temporaryItem("t1", "x"), target),
-    false,
-    "temporary sessions have no workspace and move instantly",
-  );
   assert.equal(needsAddFolderConfirm(null, target), false, "missing session is a no-op");
   assert.equal(needsAddFolderConfirm(projectItem("a1", "x", "x"), null), false, "missing target is a no-op");
-});
-
-test("bound plain sessions join tier-2 grouping without masquerading as project kind", () => {
-  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
-  const groups = groupSessionsWithProjects(
-    [
-      { id: "b1", workspaceKind: "bound", workspacePath: "D:/work/alpha", updatedAt: "2026-08-01T08:00:00Z" },
-      { id: "b2", workspaceKind: "bound", workspacePath: "D:/work/alpha/sub", updatedAt: "2026-08-02T08:00:00Z" },
-      { id: "plain", workspaceKind: "", workspacePath: "", updatedAt: "2026-08-03T08:00:00Z" },
-    ],
-    projects,
-    {},
-  );
-  assert.equal(groups.find((g) => g.kind === "project").rows.length, 2);
-  assert.equal(
-    needsAddFolderConfirm(
-      { id: "b1", workspaceKind: "bound", workspacePath: "D:/work/other" },
-      project("p1", "Alpha", ["D:/work/alpha"], 0),
-    ),
-    true,
-    "bound sessions get the add-folder confirm like code sessions",
-  );
 });
