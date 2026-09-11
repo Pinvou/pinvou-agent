@@ -304,23 +304,45 @@ fn voice_rejects_invalid_usage_with_exit_two() {
 fn voice_asr_status_reports_hermetic_zero_state() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = HomeGuard::new("voice-status");
+    // Empty PATH makes the machine-dependent probes deterministic: no ffmpeg
+    // on PATH and no external ASR CLI anywhere. Env writes are safe here
+    // because ENV_LOCK serializes all tests in this process.
+    let saved_path = std::env::var("PATH").ok();
+    unsafe { std::env::set_var("PATH", "") };
     let value = run_json(&["pinvou", "voice", "asr-status"]);
-    // In a fresh sandbox no engine or model can exist; ffmpeg availability is
-    // machine-dependent, so only invariants are asserted.
-    assert_eq!(
-        value["engine"], false,
-        "fresh sandbox has no engine: {value}"
-    );
-    assert_eq!(value["model"], false, "fresh sandbox has no model: {value}");
-    assert_eq!(value["ready"], false);
-    assert_eq!(value["installable"], cfg!(target_os = "linux"));
-    let missing = value["missing"].as_array().expect("missing list");
-    assert!(missing.contains(&serde_json::json!("model")));
-    if value["ffmpeg"] == serde_json::json!(false) {
-        assert!(missing.contains(&serde_json::json!("ffmpeg")));
-    } else {
-        assert!(!missing.contains(&serde_json::json!("ffmpeg")));
+    match saved_path {
+        Some(path) => unsafe { std::env::set_var("PATH", path) },
+        None => unsafe { std::env::remove_var("PATH") },
     }
+    // macOS reports the host Speech runtime (present by definition, exactly
+    // like the GUI status); on other platforms engine and model live under
+    // `$PINVOU3_HOME`, so a fresh sandbox is a zero state.
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            value["engine"], true,
+            "macOS status mirrors the system Speech runtime: {value}"
+        );
+        assert_eq!(value["model"], true);
+        assert_eq!(value["ready"], true);
+    } else {
+        assert_eq!(
+            value["engine"], false,
+            "fresh sandbox has no engine: {value}"
+        );
+        assert_eq!(value["model"], false, "fresh sandbox has no model: {value}");
+        assert_eq!(value["ready"], false);
+        let missing = value["missing"].as_array().expect("missing list");
+        assert!(missing.contains(&serde_json::json!("model")));
+        assert!(missing.contains(&serde_json::json!("ffmpeg")));
+        assert!(missing.contains(&serde_json::json!("engine")));
+    }
+    assert_eq!(value["installable"], cfg!(target_os = "linux"));
+    // Neither lane of the CLI itself can transcribe in this sandbox (the
+    // macOS `ready` flag describes GUI capability, not CLI capability).
+    assert_eq!(
+        value["cli_transcribe_ready"], false,
+        "no engine, model, or external ASR CLI: {value}"
+    );
     assert!(
         value["asr_dir"]
             .as_str()
@@ -328,9 +350,22 @@ fn voice_asr_status_reports_hermetic_zero_state() {
             .starts_with(home.root.to_str().unwrap())
     );
     // The human output mirrors the same fields.
+    let saved_path = std::env::var("PATH").ok();
+    unsafe { std::env::set_var("PATH", "") };
     let outcome = run(&["pinvou", "voice", "asr-status"]).unwrap();
-    assert!(outcome.stdout.contains("Engine: false"));
-    assert!(outcome.stdout.contains("Model: false"));
+    match saved_path {
+        Some(path) => unsafe { std::env::set_var("PATH", path) },
+        None => unsafe { std::env::remove_var("PATH") },
+    }
+    if cfg!(target_os = "macos") {
+        assert!(outcome.stdout.contains("Engine: true"));
+        assert!(outcome.stdout.contains("CliTranscribe: no"));
+        assert!(outcome.stdout.contains("macOS Speech is GUI-only"));
+    } else {
+        assert!(outcome.stdout.contains("Engine: false"));
+        assert!(outcome.stdout.contains("Model: false"));
+        assert!(outcome.stdout.contains("CliTranscribe: no"));
+    }
 }
 
 #[test]
