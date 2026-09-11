@@ -108,13 +108,47 @@ fn validate_name(raw: String) -> Result<String> {
 }
 
 /// root 的展示形态:目录存在时用 fs::canonicalize(消 symlink),不存在时
-/// 退回词法绝对化——目录被移走后 overlap 校验仍需可判定,且形态对已存值
-/// 幂等(canonicalize(canonical p) == p)。再经共享的 `platform_compat_path`
-/// 归一,剥掉 Windows canonicalize 产生的 `\\?\` verbatim 前缀(非 Windows
-/// 为恒等映射),与 `validate_codex_project_workspace` 的既有约定同源。
-fn root_display(path: &Path) -> PathBuf {
-    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| lexical_absolute(path));
+/// 经最深已存在祖先解析(见 `resolve_through_existing_ancestor`)——目录被
+/// 移走后 overlap 校验仍需可判定,且形态对已存值幂等(canonicalize(
+/// canonical p) == p)。再经共享的 `platform_compat_path` 归一,剥掉
+/// Windows canonicalize 产生的 `\\?\` verbatim 前缀(非 Windows 为恒等
+/// 映射),与 `validate_codex_project_workspace` 的既有约定同源。
+pub(super) fn root_display(path: &Path) -> PathBuf {
+    let canonical =
+        std::fs::canonicalize(path).unwrap_or_else(|_| resolve_through_existing_ancestor(path));
     crate::platform::os::platform_compat_path(&canonical.to_string_lossy())
+}
+
+/// canonicalize 不做部分解析:不存在的叶子会让 symlink 化的祖先(macOS 的
+/// `/var` → `/private/var`)保持原写法,与已存 root 的键域错位——covered-skip
+/// 与跨项目重叠拒绝会双双失明(评审 #471 Major)。沿祖先上溯到第一个存在的
+/// 目录,对它 canonicalize,再把不存在的尾巴词法接回,候选由此键入其父目录
+/// 的势力范围;symlink 链同样被 canonicalize 逐级消化。全链不存在(如未挂载
+/// 卷)退回词法绝对化,维持「目录被移走后仍可判定」的原语义。
+fn resolve_through_existing_ancestor(path: &Path) -> PathBuf {
+    let lexical = lexical_absolute(path);
+    let mut missing: Vec<PathBuf> = Vec::new();
+    let mut cursor: &Path = &lexical;
+    loop {
+        if cursor.exists() {
+            if let Ok(mut base) = std::fs::canonicalize(cursor) {
+                for component in missing.iter().rev() {
+                    base.push(component);
+                }
+                return base;
+            }
+            break;
+        }
+        match (cursor.file_name(), cursor.parent()) {
+            (Some(name), Some(parent)) => {
+                missing.push(PathBuf::from(name));
+                cursor = parent;
+            }
+            // 根/前缀等无可剥离的普通组件:保持词法形态。
+            _ => break,
+        }
+    }
+    lexical
 }
 
 /// root 的比较键:展示形态经共享的 `filesystem_path_identity_key` 折叠——

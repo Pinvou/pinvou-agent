@@ -102,7 +102,16 @@ const ProjectGroupHeader = ({
               setEditing(null);
             }
           }}
-          onBlur={commitEdit}
+          onBlur={() => {
+            // convert 的预填值即「默认项目名」,blur 提交会把「点击别处取消」
+            // 变成无确认静默建项目(评审 #471 finding 46);rename 保持
+            // RecentItem 的 blur 提交惯例。
+            if (editing.mode === 'convert') {
+              setEditing(null);
+            } else {
+              commitEdit();
+            }
+          }}
           placeholder={t.uiProjects.projectNamePlaceholder}
           className="w-full h-6 px-3 rounded-full text-[12px] outline-none bg-white text-[#1F1F1F] ring-1 ring-[#0B57D0] dark:bg-[#131314] dark:text-[#E3E3E3] dark:ring-[#A8C7FA]"
         />

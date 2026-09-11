@@ -152,10 +152,16 @@ pub async fn move_session_to_project(
     sessions: State<'_, SessionStore>,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<MoveSessionOutcome, String> {
-    // 先确认会话存在,避免归属表残留无效 id(同 set_session_pinned 惯例);
-    // scheduled-run 会话与兄弟命令同口径拒绝,防止运行记录被写进归属表。
+    // 先确认会话真实存在:session_kind 对未知 id 不触盘、直接返回 Chat,
+    // 单靠它会把无效 id 写进归属表,因此像 set_session_pinned 一样补一次
+    // 真实 load。scheduled-run 的拒绝是归属域自身的产品决策(归属表只收
+    // chat 会话)——兄弟元数据命令(delete/rename/pin)并不拒绝
+    // scheduled-run,此处不与它们同口径。
     ensure_chat_session(&sessions, &session_id, "move_session_to_project")
         .map_err(|e| format!("move_session_to_project({session_id}): {e}"))?;
+    sessions
+        .load(&session_id)
+        .map_err(|e| format!("move_session_to_project({session_id}): {e:#}"))?;
     let workspace_root = if add_workspace_root.unwrap_or(false) {
         if project_id.is_none() {
             return Err(
