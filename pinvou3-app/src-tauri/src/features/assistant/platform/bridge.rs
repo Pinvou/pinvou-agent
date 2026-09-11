@@ -1288,12 +1288,15 @@ impl Pinvou3Bridge {
         let configured_context = saved.and_then(|saved| saved.context_window_tokens);
         let inferred_context = crate::core::model_context::resolved_context_window(model);
         let is_local_vllm = self.provider() == "vllm";
-        let context_tokens = match (configured_context, self.probed_context_tokens) {
-            (Some(configured), Some(probed)) => Some(configured.min(probed)),
-            (Some(configured), None) => Some(configured),
-            (None, Some(probed)) => Some(probed),
-            (None, None) => inferred_context.or_else(|| is_local_vllm.then_some(128_000)),
-        };
+        // 窗口优先级与监控展示共用 core::model_context 的同一函数（声明优先、
+        // 探测取小、推断兜底），防止两条路径各写一份 match 后漂移。探测值只
+        // 对可实地内省的本地 vLLM 存在（云端恒为 None，见 engine_pool 的探测门），
+        // 因此云端声明不会被任何探测值覆盖。
+        let (context_tokens, _) = crate::core::model_context::resolve_context_window(
+            configured_context,
+            self.probed_context_tokens,
+            inferred_context.or_else(|| is_local_vllm.then_some(128_000)),
+        );
         let configured_output = saved.and_then(|saved| saved.max_output_tokens);
         // User-configured openai-compatible endpoints (the `OpenAI-compatible`
         // preset, or provider_kind == "custom") count as operator-owned: the

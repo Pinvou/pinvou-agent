@@ -1,8 +1,9 @@
 //! pinvou3 运行状态与 Engine 路由共用的模型上下文窗口解析。
 //!
 //! 已由 CodeWhale 维护的模型事实优先复用底座；这里只补充 pinvou3 设置页已经提供、
-//! 但当前底座尚未覆盖的云端模型。所有消费者必须走这一入口，避免页面显示窗口与
-//! `active_route_limits` / 压缩阈值使用不同口径。
+//! 但当前底座尚未覆盖的云端模型。窗口事实（按名解析）与窗口优先级（声明 vs
+//! 探测 vs 推断）都以这里为唯一入口，避免页面显示窗口与 `active_route_limits` /
+//! 压缩阈值 / 监控分母使用不同口径。
 
 /// 精确匹配模型名，并容忍 `-` 分隔的日期、快照或服务档位后缀。
 fn model_name_matches(lower: &str, name: &str) -> bool {
@@ -74,6 +75,28 @@ pub fn resolved_context_window(model: &str) -> Option<u32> {
         .map(|(_, window)| *window)
 }
 
+/// 上下文窗口的统一优先级：宿主 `bridge::route_limits_for_model`（决定推理与
+/// 压缩阈值）与监控展示（`model_probe`）必须共用本函数，禁止各自另写一份
+/// match。优先级为：用户在模型表单显式声明的窗口优先，且与实测探测值取小
+/// （探测值是部署实地事实）；声明缺席时用探测值，再缺席才用调用方解析好的
+/// 推断兜底。第二个返回值标记「推断兜底被真正采用」，供监控页标注
+/// `context_window_inferred` 诊断。
+///
+/// 「探测值是否可信/是否参与收紧」由调用方决定：宿主只对可实地内省的本地
+/// vLLM 探测（云端恒为 `probed = None`），监控侧见 `model_probe` 的门控。
+#[must_use]
+pub fn resolve_context_window(
+    configured: Option<u32>,
+    probed: Option<u32>,
+    inferred: Option<u32>,
+) -> (Option<u32>, bool) {
+    match (configured, probed) {
+        (Some(configured), Some(probed)) => (Some(configured.min(probed)), false),
+        (Some(configured), None) => (Some(configured), false),
+        (None, probed) => (probed.or(inferred), probed.is_none() && inferred.is_some()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,5 +137,35 @@ mod tests {
             deepseek_tui::models::context_window_for_model("gpt-5.6-sol")
         );
         assert_eq!(resolved_context_window("unknown-cloud-model"), None);
+    }
+
+    /// 窗口优先级表（单一事实源）：声明+探测取小、声明优先于缺席探测、
+    /// 无声明时探测优先于推断、仅推断被真正采用时置标记。
+    #[test]
+    fn context_window_precedence_is_single_sourced() {
+        // 声明 + 探测 → 取小（本地部署实地收紧；under-declare 同理取声明）。
+        assert_eq!(
+            resolve_context_window(Some(1_048_576), Some(131_072), None),
+            (Some(131_072), false)
+        );
+        assert_eq!(
+            resolve_context_window(Some(32_768), Some(131_072), None),
+            (Some(32_768), false)
+        );
+        // 声明 + 无探测 → 声明原样生效（云端从不被宿主探测；本地探测失败同此）。
+        assert_eq!(
+            resolve_context_window(Some(1_048_576), None, Some(131_072)),
+            (Some(1_048_576), false)
+        );
+        // 无声明 → 探测优先；探测缺席才用推断，且仅此时标记推断被采用。
+        assert_eq!(
+            resolve_context_window(None, Some(262_144), Some(131_072)),
+            (Some(262_144), false)
+        );
+        assert_eq!(
+            resolve_context_window(None, None, Some(1_000_000)),
+            (Some(1_000_000), true)
+        );
+        assert_eq!(resolve_context_window(None, None, None), (None, false));
     }
 }
