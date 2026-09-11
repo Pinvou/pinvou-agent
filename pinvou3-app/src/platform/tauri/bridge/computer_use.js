@@ -228,9 +228,9 @@
       clearConfirmIfCurrent(confirmId, state.activeSessionId);
     }
 
-    // Explicit backend deny: clears the pending confirmation, so the model's
-    // retry gets a definite "user denied" instead of waiting out the backend
-    // TTL (review finding).
+    // Explicit backend deny: clears the pending confirmation so the model's
+    // retry re-screens and raises a fresh confirmation dialog instead of
+    // waiting out the backend TTL (review finding).
     async function deny(confirmId) {
       // Attribute the denial to the session the user is actually looking at,
       // captured BEFORE the IPC round-trip (review finding): a new confirm
