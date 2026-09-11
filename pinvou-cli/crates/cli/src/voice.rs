@@ -358,6 +358,12 @@ fn command_exists(command: &Path) -> bool {
 fn asr_status(output: OutputMode) -> Result<CliOutcome, CliError> {
     let (engine, ffmpeg, model, installable) = asr_components();
     let ready = engine && ffmpeg && model;
+    // `ready` mirrors the GUI's host-capability status (on macOS it reports
+    // the system Speech runtime). The CLI cannot reach that runtime, so this
+    // field answers the question the user actually acts on: can THIS command
+    // transcribe right now (Linux bundled engine, or the external ASR CLI).
+    let cli_transcribe_ready =
+        (cfg!(target_os = "linux") && engine && model) || external_asr_command().is_some();
     let mut missing = Vec::new();
     if !model {
         missing.push("model");
@@ -373,16 +379,18 @@ fn asr_status(output: OutputMode) -> Result<CliOutcome, CliError> {
         "ffmpeg": ffmpeg,
         "model": model,
         "ready": ready,
+        "cli_transcribe_ready": cli_transcribe_ready,
         "installable": installable,
         "missing": missing,
         "asr_dir": asr_dir().display().to_string(),
     });
-    let human = format!(
-        "Engine: {}\nFfmpeg: {}\nModel: {}\nReady: {}\nInstallable: {}\nMissing: {}\nAsrDir: {}",
+    let mut human = format!(
+        "Engine: {}\nFfmpeg: {}\nModel: {}\nReady: {}\nCliTranscribe: {}\nInstallable: {}\nMissing: {}\nAsrDir: {}",
         engine,
         ffmpeg,
         model,
         ready,
+        if cli_transcribe_ready { "yes" } else { "no" },
         installable,
         if missing.is_empty() {
             "none".to_owned()
@@ -391,6 +399,14 @@ fn asr_status(output: OutputMode) -> Result<CliOutcome, CliError> {
         },
         asr_dir().display(),
     );
+    if cfg!(target_os = "macos") && !cli_transcribe_ready {
+        // macOS `ready` reflects the system Speech runtime, which only the
+        // GUI can drive; without the external ASR CLI the CLI cannot
+        // transcribe even though the host reports ready.
+        human.push_str(
+            "\nNote: `voice transcribe` needs the external ASR CLI (PINVOU3_ASR_CMD or `pinvou-asr` on PATH); macOS Speech is GUI-only.",
+        );
+    }
     Ok(success(render(output, human, &value)))
 }
 
@@ -535,8 +551,16 @@ fn run_recognition(wav: &Path) -> Result<(String, &'static str), CliError> {
 fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
     let engine = engine_path().expect("engine checked by caller");
     let model = model_path();
-    let normalized =
-        std::env::temp_dir().join(format!("pinvou-cli-asr-{}.wav", std::process::id()));
+    // The nonce keeps two concurrent transcribes (or a reused pid) from
+    // colliding on the normalized scratch file, same as `write_temp_wav`.
+    let normalized = std::env::temp_dir().join(format!(
+        "pinvou-cli-asr-{}-{}.wav",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
     let input = if ffmpeg_available() {
         let converted = std::process::Command::new("ffmpeg")
             .args(["-y", "-i"])
@@ -990,13 +1014,19 @@ fn postprocess(
             } else {
                 bridge.model()
             };
+            // A floor keeps the first call meaningful when host boot already
+            // consumed most of the budget: a zero timeout would fail
+            // instantly ("model endpoint timeout") instead of trying.
+            const MIN_FIRST_CALL_TIMEOUT: Duration = Duration::from_secs(2);
             let (text, truncated) = call_postprocess_model(
                 &bridge,
                 mode,
                 &raw_text,
                 false,
                 &model_name,
-                budget.saturating_sub(started.elapsed()),
+                budget
+                    .saturating_sub(started.elapsed())
+                    .max(MIN_FIRST_CALL_TIMEOUT),
             )?;
             let needs_retry = text.trim().is_empty()
                 || truncated
