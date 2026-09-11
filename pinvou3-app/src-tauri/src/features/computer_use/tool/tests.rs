@@ -24,8 +24,13 @@ struct MockState {
     focused_error: bool,
     /// 截图捕获的显示器原点（输入坐标空间；默认 (0,0) 即恒等映射）。
     capture_origin: (i32, i32),
-    /// cursor_position 的返回值（设备像素；可配置以驱动筛查定位与光标移动
-    /// 场景）。默认 (7,9)（历史行为）。
+    /// 截图捕获的尺寸（设备物理像素；默认 16x16）。
+    capture_size: (u32, u32),
+    /// 捕获的 device→input 倍率（默认 (1.0, 1.0)；Retina 场景设 0.5）。
+    input_scale: (f64, f64),
+    /// cursor_position 的返回值（**输入坐标空间**——macOS 为点、Windows/X11
+    /// 为物理像素；可配置以驱动筛查定位与光标移动场景）。默认 (7,9)（历史
+    /// 行为）。
     cursor: (i32, i32),
     /// 置位时 cursor_position 返回 Err（光标未知，如 Wayland 首次 move 前）。
     cursor_error: bool,
@@ -58,6 +63,8 @@ impl Default for MockState {
             focused: None,
             focused_error: false,
             capture_origin: (0, 0),
+            capture_size: (16, 16),
+            input_scale: (1.0, 1.0),
             cursor: (7, 9),
             cursor_error: false,
             no_input_cap: false,
@@ -101,18 +108,19 @@ impl ComputerUseBackend for MockBackend {
 
     fn capture(&mut self) -> Result<Capture, ComputerUseError> {
         let state = self.state.lock();
-        let mut rgba = vec![0u8; 16 * 16 * 4];
+        let (width, height) = state.capture_size;
+        let mut rgba = vec![0u8; width as usize * height as usize * 4];
         for (i, byte) in rgba.iter_mut().enumerate() {
             *byte = (i % 253) as u8;
         }
         Ok(Capture {
             rgba,
-            width: 16,
-            height: 16,
+            width,
+            height,
             origin_x: state.capture_origin.0,
             origin_y: state.capture_origin.1,
-            input_scale_x: 1.0,
-            input_scale_y: 1.0,
+            input_scale_x: state.input_scale.0,
+            input_scale_y: state.input_scale.1,
         })
     }
 
@@ -425,6 +433,61 @@ fn accepts_valid_param_combinations() {
 #[test]
 fn hold_key_rejects_modifier_only_chord() {
     assert!(parse_action(&json!({"action": "hold_key", "text": "shift", "ms": 100})).is_err());
+}
+
+/// 评审修复回归（M1）：`key` 的解析失败绝不把模型文本回显进审计日志——
+/// 模型可以用 text 字段携带敏感串探测（`{"action":"key","text":"hunter2"}`
+/// 曾把该串经错误信息写进 JSONL 的 error 字段）。错误串只描述和弦形状，
+/// 模型本来就知道自己的输入，不损失任何信息。
+#[tokio::test]
+async fn parse_failure_audit_record_does_not_echo_the_chord_text() {
+    let (fixture, _restore) = fixture();
+    // Two shape-only rejection paths: "hunter2" is a single unknown token;
+    // "h+u+n+t+e+r" exceeds the chord token limit. Neither error may echo
+    // the model's text.
+    for chord in ["hunter2", "h+u+n+t+e+r"] {
+        let result = fixture
+            .tool
+            .execute(
+                json!({"action": "key", "text": chord}),
+                &context(&fixture.workspace),
+            )
+            .await;
+        let error = match result {
+            Ok(r) => panic!("the secret chord must not parse: {r:?}"),
+            Err(e) => e.to_string(),
+        };
+        // The model still gets a shape-only explanation.
+        assert!(
+            error.contains("key chord"),
+            "expected a shape-only chord error: {error}"
+        );
+        assert!(!error.contains(chord), "error echoed the chord: {error}");
+    }
+
+    let audit_path = fixture.home.join("computer-use").join("audit-s-test.jsonl");
+    let raw = std::fs::read_to_string(&audit_path).expect("audit jsonl exists");
+    assert!(
+        !raw.contains("hunter2") && !raw.contains("h+u+n+t+e+r"),
+        "the secret substring must appear nowhere in the audit log: {raw}"
+    );
+    let records: Vec<serde_json::Value> = raw
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_str(line).expect("valid jsonl line"))
+        .collect();
+    assert_eq!(records.len(), 2, "one record per call: {records:?}");
+    for record in &records {
+        assert_eq!(record["action"], "unparseable", "{records:?}");
+        assert_eq!(record["result"], "rejected", "{records:?}");
+        assert!(
+            record["error"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("parse failed: Failed to validate input: key chord"),
+            "shape-only parse error expected: {records:?}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1469,6 +1532,66 @@ async fn single_char_key_chord_is_audited_as_typed_text() {
     assert!(!raw.contains("keys: h+shift+shift"));
 }
 
+/// 评审修复回归（M2）：多字符字母和弦（≤4 token，如 `p+a+s+s`）是把文本
+/// 按 ≤4 字符块拼写——审计只记非修饰键数（`pressed 4 keys`），绝不记明文
+/// （旧实现只对单字符和弦脱敏，`p+a+s+s` 以 `keys: p+a+s+s` 明文落盘）。
+/// 含命名键的快捷键（`Return`）不是拼写文本，保持可读的 `keys: <chord>`。
+#[tokio::test]
+async fn multi_char_letter_chords_are_audited_as_counts_only() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    for chord in ["p+a+s+s", "h+u+n"] {
+        let result = fixture
+            .tool
+            .execute(
+                json!({"action": "key", "text": chord}),
+                &context(&fixture.workspace),
+            )
+            .await;
+        let result = match result {
+            Ok(r) => r,
+            Err(e) => panic!("execute failed for {chord}: {e}"),
+        };
+        assert!(result.success, "{chord}: {}", result.content);
+    }
+    // A named-key chord is a shortcut/editing action, not spelled text: it
+    // keeps the readable plaintext target.
+    let named = fixture
+        .tool
+        .execute(
+            json!({"action": "key", "text": "Return"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let named = match named {
+        Ok(r) => r,
+        Err(e) => panic!("execute failed for Return: {e}"),
+    };
+    assert!(named.success, "{}", named.content);
+
+    let audit_path = fixture.home.join("computer-use").join("audit-s-test.jsonl");
+    let raw = std::fs::read_to_string(&audit_path).expect("audit jsonl exists");
+    assert!(
+        !raw.contains("p+a+s+s") && !raw.contains("h+u+n"),
+        "letter-chunk chords must never reach the log as plaintext: {raw}"
+    );
+    let records: Vec<serde_json::Value> = raw
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_str(line).expect("valid jsonl line"))
+        .collect();
+    let targets: Vec<&str> = records
+        .iter()
+        .filter(|r| r["action"] == "key")
+        .filter_map(|r| r["target"].as_str())
+        .collect();
+    assert_eq!(
+        targets,
+        vec!["pressed 4 keys", "pressed 3 keys", "keys: Return"],
+        "letter chunks log counts, named keys stay readable: {records:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 审计 fail-open（信息性日志）/ 混合 DPI 出界防护
 // ---------------------------------------------------------------------------
@@ -1482,7 +1605,7 @@ async fn single_char_key_chord_is_audited_as_typed_text() {
 // 解析 PINVOU3_HOME，env 与锁都要活到测试结束（与 fixture() 同一约定）。
 #[allow(clippy::await_holding_lock)]
 async fn audit_unavailable_fails_open_and_actions_still_execute() {
-    let env_lock = crate::platform::paths::tests::ENV_LOCK
+    let _env_lock = crate::platform::paths::tests::ENV_LOCK
         .lock()
         .unwrap_or_else(|p| p.into_inner());
     let previous = std::env::var_os("PINVOU3_HOME");
@@ -1494,6 +1617,11 @@ async fn audit_unavailable_fails_open_and_actions_still_execute() {
     std::fs::write(&blocker, b"not a directory").expect("write blocker file");
     // SAFETY: 持有 platform::paths::tests::ENV_LOCK，进程内 env 写串行。
     unsafe { std::env::set_var("PINVOU3_HOME", &blocker) };
+    // Restore via the fixture's EnvRestore guard: the guard runs even when
+    // an assertion (or the awaits) panic, so the overridden env cannot leak
+    // into other tests. Declared after env_lock, so the env is restored
+    // while the lock is still held.
+    let _env_restore = EnvRestore(previous);
 
     // workspace 与审计目录解耦：放在独立临时目录。
     let workspace = std::env::temp_dir().join(format!(
@@ -1549,22 +1677,14 @@ async fn audit_unavailable_fails_open_and_actions_still_execute() {
     };
     assert!(shot.success, "{}", shot.content);
 
-    // SAFETY: 持有 ENV_LOCK（上面同一把锁未释放）。
-    unsafe {
-        match previous {
-            Some(value) => std::env::set_var("PINVOU3_HOME", value),
-            None => std::env::remove_var("PINVOU3_HOME"),
-        }
-    }
-    drop(env_lock);
     let _ = std::fs::remove_dir_all(&workspace);
     let _ = std::fs::remove_file(&blocker);
 }
 
-/// 混合 DPI 防护：光标在截图显示器之外时，cursor_position 不硬换算，
-/// 回报设备坐标并附警告文本。
+/// 混合 DPI 防护：光标在截图显示器之外时，cursor_position 不做换算，
+/// 回报原始输入坐标并附警告文本。
 #[tokio::test]
-async fn cursor_outside_captured_monitor_reports_device_position_with_warning() {
+async fn cursor_outside_captured_monitor_reports_input_position_with_warning() {
     let (fixture, _restore) = fixture();
     // 截图显示器在 (-1000,-1000)..(0,0)；光标 (7,9) 在另一块屏上。
     fixture.mock.lock().capture_origin = (-1000, -1000);
@@ -1583,7 +1703,10 @@ async fn cursor_outside_captured_monitor_reports_device_position_with_warning() 
         )
         .await;
     let text = result.ok().map(|r| r.content).unwrap_or_default();
-    assert!(text.contains("device position (7, 9)"), "{text}");
+    assert!(
+        text.contains("cursor is at (7, 9) in global input coordinates"),
+        "{text}"
+    );
     assert!(text.contains("outside the captured monitor"), "{text}");
     assert!(text.contains("warning: cursor is outside"), "{text}");
     assert!(!text.contains("in screenshot space"), "{text}");
@@ -1620,6 +1743,120 @@ async fn mouse_down_outside_captured_monitor_executes_without_confirmation() {
             .iter()
             .any(|(name, _)| name == EVENT_CONFIRM_REQUIRED),
         "no confirmation may be requested while the target cannot be located: {events:?}"
+    );
+}
+
+/// Retina 式混合 DPI 回归（M3）：捕获 200x200 设备像素、input_scale 0.5
+/// （即 100x100 点的显示器）。cursor_position 直接回报输入坐标：
+/// - 光标在输入 (60,40)（截图内）→ 无坐标 down 在 (60,40) 处筛查，命中
+///   名单控件被拦；
+/// - 光标在输入 (150,40)（输入矩形 [0,100) 之外）→ 无目标可查，动作照常
+///   执行、零确认事件；cursor_position 回报原始输入坐标并附警告；
+/// - 光标回到 (60,40) → cursor_position 报告精确的截图坐标 (120, 80)
+///   （input_to_shot 的 ×2 逆换算）。
+#[tokio::test]
+async fn retina_input_space_cursor_screens_inside_and_reports_exact_coords() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    {
+        let mut mock = fixture.mock.lock();
+        mock.capture_size = (200, 200);
+        mock.input_scale = (0.5, 0.5);
+    }
+    // 建立映射表（shot 200x200，输入坐标 = 截图坐标 × 0.5）。
+    let _ = fixture
+        .tool
+        .execute(
+            json!({"action": "screenshot"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+
+    // 光标 (60,40) 处是后果性控件：无坐标 down 必须在输入点 (60,40) 筛查。
+    fixture.mock.lock().cursor = (60, 40);
+    fixture.mock.lock().element = Some(ElementInfo {
+        role: "AXButton".to_string(),
+        name: "Buy now".to_string(),
+        x: 50,
+        y: 30,
+        width: 20,
+        height: 20,
+        secure: false,
+    });
+    let blocked = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let blocked_text = blocked.ok().map(|r| r.content).unwrap_or_default();
+    assert!(blocked_text.contains("NOT executed"), "{blocked_text}");
+    assert!(
+        fixture.mock.lock().downed.is_empty(),
+        "a blocked down must not inject"
+    );
+
+    // 光标 (150,40) 在捕获显示器的输入矩形之外：不筛查、执行、零确认。
+    fixture.mock.lock().cursor = (150, 40);
+    let executed = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let executed = match executed {
+        Ok(r) => r,
+        Err(e) => panic!("execute failed: {e}"),
+    };
+    assert!(executed.success, "{}", executed.content);
+    assert_eq!(fixture.mock.lock().downed.len(), 1, "the down executed");
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+            .count(),
+        1,
+        "only the blocked down may raise a confirmation: {events:?}"
+    );
+
+    // 光标在矩形之外时 cursor_position 回报输入坐标 + 警告，不给截图坐标。
+    let outside = fixture
+        .tool
+        .execute(
+            json!({"action": "cursor_position"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let outside_text = outside.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        outside_text.contains("cursor is at (150, 40) in global input coordinates"),
+        "{outside_text}"
+    );
+    assert!(
+        outside_text.contains("outside the captured monitor"),
+        "{outside_text}"
+    );
+    assert!(
+        !outside_text.contains("in screenshot space"),
+        "{outside_text}"
+    );
+
+    // 光标回到 (60,40)：精确换算到截图坐标 (120, 80)。
+    fixture.mock.lock().cursor = (60, 40);
+    let inside = fixture
+        .tool
+        .execute(
+            json!({"action": "cursor_position"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let inside_text = inside.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        inside_text.contains("cursor is at (120, 80) in screenshot space"),
+        "{inside_text}"
     );
 }
 
@@ -1883,12 +2120,13 @@ async fn trimmed_denylist_affirmatives_execute_and_consequences_confirm() {
 // 评审修复回归:撤销/停止必须终止持久 OS 级授权(登记表 → release_os_grant)
 // ---------------------------------------------------------------------------
 
-/// revoke 经登记表触发 emergency release(detached 线程,轮询等待):
-/// 先释放物理左键、再关闭后端持久 OS 级授权(worker 通道串行化保证此
-/// 顺序),并同步注销句柄。Wayland portal 会话由此随用户"停止控制"终止,
-/// 而不是活到进程退出。
+/// revoke 经登记表触发 emergency release（detached 线程，轮询等待）：
+/// 先释放物理左键、再关闭后端持久 OS 级授权（worker 通道串行化保证此
+/// 顺序）。登记保留（清理幂等；被再次授权的会话必须仍可被后续全局停止
+/// 触达）；活着的工具经 Drop 的 `release_and_unregister` 注销。Wayland
+/// portal 会话由此随用户"停止控制"终止，而不是活到进程退出。
 #[tokio::test]
-async fn emergency_release_unregisters_releases_button_then_os_grant() {
+async fn emergency_release_keeps_registration_releases_button_then_os_grant() {
     let (fixture, _restore) = fixture();
     assert!(
         fixture.shared.backends.contains("s-test"),
@@ -1896,8 +2134,8 @@ async fn emergency_release_unregisters_releases_button_then_os_grant() {
     );
     fixture.shared.backends.emergency_release("s-test");
     assert!(
-        !fixture.shared.backends.contains("s-test"),
-        "emergency_release must unregister the handle"
+        fixture.shared.backends.contains("s-test"),
+        "emergency_release must keep the registration (only tool Drop unregisters)"
     );
     // 阶段一：物理左键释放先到达后端。
     let mut upped = false;
@@ -1958,6 +2196,50 @@ async fn dropping_the_tool_unregisters_its_backend_handle() {
     assert!(
         !fixture.shared.backends.contains("s-test"),
         "tool drop must unregister its backend handle"
+    );
+}
+
+/// 评审修复回归（M4）：会话结束 = 引擎回收工具（Drop）。Drop 必须先吊销
+/// 本会话的授权并清空其同意工件（待决确认、已铸令牌）——同意状态不得比
+/// 持有它的工具活得更久；其他会话的授权与工件不受影响。
+#[tokio::test]
+async fn dropping_the_tool_revokes_the_grant_and_consent_artifacts() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.shared.grant_session("s-other");
+    let summary = "left click x1 at Some((5, 5))";
+    let own_token = fixture
+        .shared
+        .new_pending_confirmation("s-test", summary, "Buy now");
+    assert!(fixture.shared.mint_confirmation(&own_token));
+    let other_token = fixture
+        .shared
+        .new_pending_confirmation("s-other", summary, "Buy now");
+    assert!(fixture.shared.mint_confirmation(&other_token));
+
+    drop(fixture.tool);
+
+    // 本会话：授权与同意工件全部清除。
+    assert!(!fixture.shared.has_active_grant("s-test"));
+    assert_eq!(
+        fixture.shared.begin_input_action("s-test"),
+        Err(GuardRejection::GrantRequired)
+    );
+    assert_eq!(
+        fixture
+            .shared
+            .take_confirmation(&own_token, "s-test", summary),
+        ConfirmationCheck::Unknown,
+        "tool drop must wipe the session's minted approval tokens"
+    );
+    // 其他会话：授权与工件原样保留。
+    assert!(fixture.shared.has_active_grant("s-other"));
+    assert_eq!(
+        fixture
+            .shared
+            .take_confirmation(&other_token, "s-other", summary),
+        ConfirmationCheck::Granted,
+        "tool drop must not touch other sessions' consent artifacts"
     );
 }
 
@@ -2139,6 +2421,93 @@ async fn t3_confirmation_error_is_audited_as_stable_code() {
     );
     // The element label must not appear anywhere in the audit record.
     assert!(!raw.contains("Buy now"), "element label leaked to audit");
+}
+
+/// 审计集成（m4 round-6）：一次「铸造 pending → 用户批准铸币 → 带确认执行
+/// （附补拍截图）」的完整批准流之后，会话 JSONL 的已确认记录满足脱敏契约：
+/// consent 含 "t3-confirmed"、target 是 count/coords 形态（只有坐标参数，
+/// 无元素标签文本）、截图记录带 sha256 字段。
+#[tokio::test]
+async fn approved_click_audit_record_meets_the_redaction_contract() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().element = Some(ElementInfo {
+        role: "AXButton".to_string(),
+        name: "Buy now".to_string(),
+        x: 0,
+        y: 0,
+        width: 16,
+        height: 16,
+        secure: false,
+    });
+
+    // Mint: the blocked click raises one pending.
+    let blocked = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        blocked
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("NOT executed")
+    );
+    let confirm_id = latest_confirm_id(&fixture.events);
+    assert!(fixture.shared.mint_confirmation(&confirm_id));
+
+    // Spend: the approved click executes and attaches a fresh screenshot.
+    let approved = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5, "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let approved = match approved {
+        Ok(r) => r,
+        Err(e) => panic!("execute failed: {e}"),
+    };
+    assert!(approved.success, "{}", approved.content);
+
+    let log = AuditLog::for_session("s-test").expect("audit log for session");
+    let raw = std::fs::read_to_string(log.path()).expect("audit jsonl exists");
+    let records: Vec<serde_json::Value> = raw
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_str(line).expect("valid jsonl line"))
+        .collect();
+    let confirmed: Vec<&serde_json::Value> = records
+        .iter()
+        .filter(|r| {
+            r["consent"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("t3-confirmed")
+        })
+        .collect();
+    assert_eq!(
+        confirmed.len(),
+        1,
+        "exactly one t3-confirmed record: {records:?}"
+    );
+    let record = confirmed[0];
+    // The target is the count/coords form: coordinates only, never the
+    // screened element's label text.
+    assert_eq!(
+        record["target"], "left click x1 at Some((5, 5))",
+        "target must be the parameter summary: {record}"
+    );
+    assert_eq!(record["result"], "ok", "{record}");
+    // The attached screenshot rides as sha256 + path, never pixels.
+    let sha = record["screenshot_sha256"].as_str().unwrap_or_default();
+    assert_eq!(sha.len(), 64, "sha256 field must be present: {record}");
+    assert!(record["screenshot_path"].is_string(), "{record}");
+    // The element label (on-screen content) never reached the log at all.
+    assert!(!raw.contains("Buy now"), "element label leaked: {raw}");
 }
 
 // ---------------------------------------------------------------------------

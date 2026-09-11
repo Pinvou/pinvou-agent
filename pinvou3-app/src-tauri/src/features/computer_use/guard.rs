@@ -4,7 +4,7 @@
 //! 唯一的事实来源。集成层（Tauri 命令）通过公开 API 注入用户决定：
 //! `set_enabled` / `grant_session` / `revoke_session` / `stop_all` /
 //! `mint_confirmation`。授权只活于内存，永不落盘；会话授权活到被显式吊销
-//! （revoke / stop / 总开关关闭 / 会话结束），无空闲过期——没有主流产品给
+//! (revoke / stop / master-switch off / session end — session end is the engine reclaiming the tool: its `Drop` calls `revoke_session`), no idle expiry — no mainstream product gives
 //! 会话级授权设空闲时钟。
 //!
 //! Confirmation model (mainstream): a blocked action raises one pending
@@ -144,7 +144,7 @@ impl GuardRejection {
 }
 
 /// 会话授权只记录「本会话是否持有授权」：授权活到被显式吊销（revoke /
-/// stop / 总开关关闭 / 会话结束），无空闲过期——没有主流产品给会话级
+/// stop / master-switch off / session end — session end is the engine reclaiming the tool (the tool's `Drop` revokes), no idle expiry — no mainstream product gives session-level
 /// 授权设空闲时钟（Claude Code 的「本次会话允许」同口径）。
 
 /// 等待用户决定的 T3 确认（pending）。批准令牌由 `computer_use_confirm`
@@ -245,7 +245,7 @@ impl ComputerUseShared {
     }
 
     /// 授予本会话输入控制权（会话授权）。授权活到被显式吊销（revoke /
-    /// stop / 总开关关闭 / 会话结束），无空闲过期——没有主流产品给会话级
+    /// stop / master-switch off / session end — session end is the engine reclaiming the tool (the tool's `Drop` revokes), no idle expiry — no mainstream product gives session-level
     /// 授权设空闲时钟（Claude Code 的「本次会话允许」同口径）。
     pub fn grant_session(&self, session_id: &str) {
         self.sessions.lock().insert(session_id.to_string());

@@ -6,7 +6,9 @@
 //! - **输入空间（input）**：输入注入 API 的坐标。Windows/X11 == 设备物理像素；
 //!   macOS == CGEvent 点 = 设备物理像素 × (1/backing_scale_factor)。
 //!
-//! `ScaleMap` 每次截图生成一份并随会话保存，后续动作坐标一律按最近一次截图换算。
+//! `ScaleMap` 每次截图生成一份并随会话保存，后续动作坐标一律按最近一次截图换算；
+//! 截图空间 ↔ 输入空间双向换算（`shot_to_input` / `input_to_shot`），光标位置
+//! 由后端直接以输入坐标回报。
 
 use xcap::image;
 
@@ -82,22 +84,6 @@ impl ScaleMap {
         f64::from(self.shot_w) / f64::from(self.dev_w)
     }
 
-    /// 输入空间原点 ↔ 设备空间原点。
-    fn origin_device(&self) -> (f64, f64) {
-        (
-            f64::from(self.origin_x) / self.input_scale_x,
-            f64::from(self.origin_y) / self.input_scale_y,
-        )
-    }
-
-    /// 截图坐标 → 全局设备物理像素。
-    pub fn shot_to_device(&self, x: i64, y: i64) -> (i32, i32) {
-        let (ox, oy) = self.origin_device();
-        let dx = ox + x as f64 * f64::from(self.dev_w) / f64::from(self.shot_w);
-        let dy = oy + y as f64 * f64::from(self.dev_h) / f64::from(self.shot_h);
-        (dx.round() as i32, dy.round() as i32)
-    }
-
     /// 截图坐标 → 全局输入注入坐标（发给后端 move/click 的坐标）。
     pub fn shot_to_input(&self, x: i64, y: i64) -> (i32, i32) {
         let ix = f64::from(self.origin_x)
@@ -107,46 +93,14 @@ impl ScaleMap {
         (ix.round() as i32, iy.round() as i32)
     }
 
-    /// 设备物理像素点是否落在截图显示器范围内。混合 DPI 防护：多显示器下
-    /// 光标可能在另一块屏上，此时按本映射换算是无意义的垃圾坐标（评审发现
-    /// 的 `u32 as` 截断同源问题）——调用方必须先检查本方法。
-    pub fn contains_device_point(&self, x: i32, y: i32) -> bool {
-        let (ox, oy) = self.origin_device();
-        let (fx, fy) = (f64::from(x), f64::from(y));
-        ox <= fx && fx < ox + f64::from(self.dev_w) && oy <= fy && fy < oy + f64::from(self.dev_h)
-    }
-
-    /// 全局设备物理像素 → 截图坐标（cursor_position 回报给模型用）。
-    pub fn device_to_shot(&self, x: i32, y: i32) -> (i64, i64) {
-        let (ox, oy) = self.origin_device();
-        let sx = (f64::from(x) - ox) * f64::from(self.shot_w) / f64::from(self.dev_w);
-        let sy = (f64::from(y) - oy) * f64::from(self.shot_h) / f64::from(self.dev_h);
-        (sx.round() as i64, sy.round() as i64)
-    }
-
-    /// 全局设备物理像素 → 全局输入坐标（T3 检测拿当前光标的输入坐标用）。
-    pub fn device_to_input(&self, x: i32, y: i32) -> (i32, i32) {
-        (
-            (f64::from(x) * self.input_scale_x).round() as i32,
-            (f64::from(y) * self.input_scale_y).round() as i32,
-        )
-    }
-
-    /// Whether the point `x`/`y` falls inside this monitor's **input-space**
-    /// rect `[origin_x, origin_x + dev_w * input_scale_x)` (same for `y`).
-    /// Mixed-DPI guard beyond [`Self::contains_device_point`]: on macOS
-    /// `cursor_position` reports `points × cursor-monitor scale`, so with
-    /// mixed monitor scales the per-monitor device rects overlap (a 2x
-    /// built-in at the origin and a 1x external share a device range) and a
-    /// cursor in the overlap passes the wrong monitor's device check, after
-    /// which `device_to_input` is ~scale-times off. Input/points coordinates
-    /// are globally unique per monitor, so input rects stay disjoint. This is
-    /// the input-space image of the device rect checked by
-    /// `contains_device_point` (which starts at `origin_device`): the lower
-    /// bound is the exact integer `origin_x`; the upper bound can be
-    /// fractional for non-integer scales, so ceil it and keep the interval
-    /// half-open (ceil is the identity on integral bounds, keeping edge
-    /// semantics self-consistent with `origin_device`/`shot_to_input`).
+    /// Whether the point `x`/`y` — already expressed in the **input space**
+    /// (as `cursor_position` reports it) — falls inside this monitor's
+    /// input-space rect `[origin_x, origin_x + dev_w * input_scale_x)`
+    /// (same for `y`, half-open). Input/points coordinates are globally
+    /// unique per monitor (unlike device pixels, whose rects overlap when
+    /// monitor scales differ), so per-monitor input rects are disjoint and
+    /// this containment test is exact: the point is on this map's monitor
+    /// or it is not.
     pub fn contains_input_point(&self, x: i32, y: i32) -> bool {
         let (fx, fy) = (f64::from(x), f64::from(y));
         let max_x = (f64::from(self.origin_x) + f64::from(self.dev_w) * self.input_scale_x).ceil();
@@ -154,20 +108,16 @@ impl ScaleMap {
         f64::from(self.origin_x) <= fx && fx < max_x && f64::from(self.origin_y) <= fy && fy < max_y
     }
 
-    /// [`Self::device_to_input`] gated by [`Self::contains_input_point`]:
-    /// returns `Some` only when the point passes the input-space containment
-    /// check. Callers forwarding macOS `cursor_position` output must prefer
-    /// this over the unchecked conversion — on mixed-DPI multi-monitor setups
-    /// the raw device point can belong to a different monitor than this map,
-    /// and converting it anyway yields coordinates ~scale-times off (T3
-    /// screens the wrong location while the injection lands at the real
-    /// cursor, i.e. fail-open).
-    pub fn device_to_input_checked(&self, x: i32, y: i32) -> Option<(i32, i32)> {
-        if self.contains_input_point(x, y) {
-            Some(self.device_to_input(x, y))
-        } else {
-            None
-        }
+    /// 全局输入坐标 → 截图坐标（cursor_position 回报给模型用）。[`Self::shot_to_input`]
+    /// 的精确逆换算：`(ix - origin_x) * shot_w / (dev_w * input_scale_x)`，
+    /// f64 中计算后四舍五入。分母非零由 [`Self::from_capture`]
+    /// 保证（input_scale 必须 > 0 且有限，dev 尺寸下限 1）。
+    pub fn input_to_shot(&self, ix: i32, iy: i32) -> (i64, i64) {
+        let sx = (f64::from(ix) - f64::from(self.origin_x)) * f64::from(self.shot_w)
+            / (f64::from(self.dev_w) * self.input_scale_x);
+        let sy = (f64::from(iy) - f64::from(self.origin_y)) * f64::from(self.shot_h)
+            / (f64::from(self.dev_h) * self.input_scale_y);
+        (sx.round() as i64, sy.round() as i64)
     }
 
     /// 把模型给的坐标钳制到截图范围内；返回 (x, y, 是否被钳制)。
@@ -293,80 +243,39 @@ mod tests {
         assert!(ScaleMap::from_capture(10, 10, &capture(100, 100, 0, 0, 0.5, 0.5)).is_ok());
     }
 
-    /// 评审修复回归：设备点必须落在截图显示器内才允许映射（混合 DPI 防护）。
-    #[test]
-    fn contains_device_point_bounds_multi_monitor() {
-        let map = map(1440, 810, &capture(2560, 1440, -2560, 0, 1.0, 1.0));
-        assert!(map.contains_device_point(-2560, 0));
-        assert!(map.contains_device_point(-1, 1439));
-        // 右边缘开区间：越界一点都算出界。
-        assert!(!map.contains_device_point(0, 0));
-        assert!(!map.contains_device_point(-2561, 0));
-        assert!(!map.contains_device_point(-100, 1440));
-        assert!(!map.contains_device_point(-100, -1));
-    }
-
     /// Mixed-DPI overlap regression (M1-class setups): a 2x Retina built-in
     /// at the origin (points 1440x900 = physical 2880x1800, hence
     /// input_scale 0.5) plus a 1x external at point-origin 1440 (physical
     /// 1920x1080). The device rects overlap in [1440, 2880) while the input
-    /// rects stay disjoint, so only the input-space check can tell which
-    /// monitor the cursor is on.
+    /// rects stay disjoint, so only the input-space containment can tell
+    /// which monitor the cursor is on.
     #[test]
     fn contains_input_point_disambiguates_mixed_dpi_overlap() {
         let builtin = map(1440, 900, &capture(2880, 1800, 0, 0, 0.5, 0.5));
         let external = map(1440, 810, &capture(1920, 1080, 1440, 0, 1.0, 1.0));
 
-        // Cursor on the external screen at points (1500, 400) reports device
-        // (1500, 400): both device-space checks pass, but only the external
-        // map must accept the input-space check (the old path would map
-        // through the built-in map to input ~750, i.e. ~2x off).
-        assert!(builtin.contains_device_point(1500, 400));
-        assert!(external.contains_device_point(1500, 400));
+        // Cursor on the external screen at points (1500, 400): only the
+        // external map accepts it (the built-in input rect is [0, 1440);
+        // the old device-space path would have mapped the cursor through
+        // the built-in map to input ~750, i.e. ~2x off).
         assert!(!builtin.contains_input_point(1500, 400));
-        assert_eq!(builtin.device_to_input_checked(1500, 400), None);
         assert!(external.contains_input_point(1500, 400));
-        assert_eq!(
-            external.device_to_input_checked(1500, 400),
-            Some((1500, 400))
-        );
 
         // Input-rect edges stay half-open on the built-in map (input width
         // 2880 * 0.5 = 1440).
         assert!(builtin.contains_input_point(1439, 400));
         assert!(!builtin.contains_input_point(1440, 400));
 
-        // A cursor genuinely on the built-in screen (points (700, 400) report
-        // device (1400, 800) at 2x) still maps through the built-in map.
+        // A cursor genuinely on the built-in screen (points (700, 400),
+        // device (1400, 800) at 2x) is accepted by the built-in map and
+        // rejected by the external one.
         assert!(builtin.contains_input_point(1400, 800));
         assert!(!external.contains_input_point(1400, 800));
-        assert_eq!(builtin.device_to_input_checked(1400, 800), Some((700, 400)));
-    }
-
-    /// At unit input scale the input rect equals the device rect, so the
-    /// input-space check must agree with `contains_device_point` everywhere.
-    #[test]
-    fn contains_input_point_matches_device_check_at_unit_scale() {
-        let map = map(1440, 810, &capture(2560, 1440, 0, 0, 1.0, 1.0));
-        for x in [-1, 0, 1, 1279, 2559, 2560] {
-            for y in [-1, 0, 1, 719, 1439, 1440] {
-                assert_eq!(
-                    map.contains_input_point(x, y),
-                    map.contains_device_point(x, y),
-                    "unit-scale disagreement at ({x},{y})"
-                );
-                let expected = if map.contains_device_point(x, y) {
-                    Some((x, y))
-                } else {
-                    None
-                };
-                assert_eq!(map.device_to_input_checked(x, y), expected);
-            }
-        }
     }
 
     /// Negative-origin multi-monitor (Windows virtual desktop): the
-    /// input-space check mirrors the existing negative-origin device test.
+    /// input-space check bounds the monitor rect with a half-open right
+    /// edge, mirroring the pre-input-space device test.
     #[test]
     fn contains_input_point_bounds_negative_origin_multi_monitor() {
         let map = map(1440, 810, &capture(2560, 1440, -2560, 0, 1.0, 1.0));
@@ -377,8 +286,48 @@ mod tests {
         assert!(!map.contains_input_point(-2561, 0));
         assert!(!map.contains_input_point(-100, 1440));
         assert!(!map.contains_input_point(-100, -1));
-        assert_eq!(map.device_to_input_checked(-2560, 0), Some((-2560, 0)));
-        assert_eq!(map.device_to_input_checked(0, 0), None);
+    }
+
+    /// Non-integer input scale: `input_to_shot` is the algebraic inverse of
+    /// `shot_to_input` (dev 200x200 device px, input_scale 0.5 → the input
+    /// rect is [0, 100), shot 144x144). Double rounding can shift the round
+    /// trip by at most one shot pixel; well-conditioned points (and every
+    /// multiple of 36, where the intermediate values are exact) invert
+    /// exactly.
+    #[test]
+    fn input_to_shot_inverts_shot_to_input_on_non_integer_scale() {
+        let map = map(144, 144, &capture(200, 200, 0, 0, 0.5, 0.5));
+        for x in [0, 1, 36, 37, 71, 72, 105, 143] {
+            let (ix, iy) = map.shot_to_input(x, x);
+            assert_eq!(
+                map.input_to_shot(ix, iy),
+                (x, x),
+                "shot_to_input -> input_to_shot must invert at {x}"
+            );
+        }
+        for x in 0..=144 {
+            let (ix, iy) = map.shot_to_input(x, x);
+            let (rx, ry) = map.input_to_shot(ix, iy);
+            assert!(
+                (rx - x).abs() <= 1 && (ry - x).abs() <= 1,
+                "round-trip drift beyond one shot pixel at {x}"
+            );
+        }
+    }
+
+    /// `contains_input_point` boundaries on the same non-integer-scale map
+    /// (dev 200x200 at input_scale 0.5 → input rect [0, 100) x [0, 100)).
+    #[test]
+    fn contains_input_point_boundaries_on_non_integer_scale() {
+        let map = map(144, 144, &capture(200, 200, 0, 0, 0.5, 0.5));
+        assert!(map.contains_input_point(0, 0));
+        assert!(map.contains_input_point(99, 99));
+        assert!(map.contains_input_point(50, 30));
+        // Half-open edges: input width/height is exactly 100.
+        assert!(!map.contains_input_point(100, 50));
+        assert!(!map.contains_input_point(50, 100));
+        assert!(!map.contains_input_point(-1, 50));
+        assert!(!map.contains_input_point(50, -1));
     }
 
     #[test]
@@ -395,15 +344,13 @@ mod tests {
     }
 
     #[test]
-    fn shot_device_input_round_trip_windows_style() {
+    fn shot_input_round_trip_windows_style() {
         // Windows：物理像素 2560x1440，input_scale = 1，无缩放截图。
         let map = map(1440, 810, &capture(2560, 1440, 0, 0, 1.0, 1.0));
-        let (dx, dy) = map.shot_to_device(720, 405);
-        assert_eq!((dx, dy), (1280, 720));
         let (ix, iy) = map.shot_to_input(720, 405);
         assert_eq!((ix, iy), (1280, 720));
-        // 设备 → 截图回环。
-        let (sx, sy) = map.device_to_shot(dx, dy);
+        // 输入 → 截图回环。
+        let (sx, sy) = map.input_to_shot(ix, iy);
         assert_eq!((sx, sy), (720, 405));
     }
 
@@ -415,39 +362,32 @@ mod tests {
         let shot_w = (3024.0 * scale_factor(3024, 1964)).round() as u32;
         let shot_h = (1964.0 * scale_factor(3024, 1964)).round() as u32;
         let map = map(shot_w, shot_h, &cap);
-        // 截图中心 → 设备中心（物理像素）→ 输入点 = 物理像素/2。
-        let (dx, dy) = map.shot_to_device(i64::from(shot_w) / 2, i64::from(shot_h) / 2);
-        // 截图像素中心按缩放比还原（整数中心带来 ≤1px 的舍入）。
-        assert!((dx - 1512).abs() <= 1 && (dy - 982).abs() <= 1);
+        // 截图中心 → 输入点 = 物理像素/2。
         let (ix, iy) = map.shot_to_input(i64::from(shot_w) / 2, i64::from(shot_h) / 2);
         assert!((ix - 756).abs() <= 1 && (iy - 491).abs() <= 1);
-        // 输入坐标 ≈ 设备物理像素 / 2（核心 Retina 契约；双重舍入允许 1px 误差）。
-        assert!((ix * 2 - dx).abs() <= 1);
-        assert!((iy * 2 - dy).abs() <= 1);
-        // device → input 同一倍率（±1px 舍入）。
-        let (dix, diy) = map.device_to_input(dx, dy);
-        assert!((dix - ix).abs() <= 1 && (diy - iy).abs() <= 1);
+        // 输入 → 截图回环（整除舍入允许 1px 误差）。
+        let (sx, sy) = map.input_to_shot(ix, iy);
+        assert!((sx - i64::from(shot_w) / 2).abs() <= 1);
+        assert!((sy - i64::from(shot_h) / 2).abs() <= 1);
     }
 
     #[test]
     fn multi_monitor_negative_origin_is_preserved() {
         // 主屏右侧的副屏：Windows 虚拟桌面原点可为负。
         let map = map(1440, 810, &capture(2560, 1440, -2560, 0, 1.0, 1.0));
-        let (dx, dy) = map.shot_to_device(0, 0);
-        assert_eq!((dx, dy), (-2560, 0));
         let (ix, iy) = map.shot_to_input(0, 0);
         assert_eq!((ix, iy), (-2560, 0));
-        let (sx, sy) = map.device_to_shot(dx, dy);
+        let (sx, sy) = map.input_to_shot(ix, iy);
         assert_eq!((sx, sy), (0, 0));
     }
 
     #[test]
     fn non_unit_scale_factor_round_trips_within_one_pixel() {
-        // 奇数尺寸 + 非 1 缩放比：往返误差 ≤ 1 设备像素。
+        // 奇数尺寸 + 非 1 缩放比：往返误差 ≤ 1 输入像素。
         let map = map(1113, 627, &capture(1983, 1117, 0, 0, 1.0, 1.0));
         for (sx, sy) in [(0, 0), (500, 300), (1112, 626), (1, 625)] {
-            let (dx, dy) = map.shot_to_device(sx, sy);
-            let (rx, ry) = map.device_to_shot(dx, dy);
+            let (ix, iy) = map.shot_to_input(sx, sy);
+            let (rx, ry) = map.input_to_shot(ix, iy);
             assert!((rx - sx).abs() <= 1, "x drift {sx} -> {rx}");
             assert!((ry - sy).abs() <= 1, "y drift {sy} -> {ry}");
         }
