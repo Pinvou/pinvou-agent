@@ -93,12 +93,18 @@ impl VendorCliGuard {
             std::process::id()
         ));
         std::fs::create_dir_all(&empty_bin).unwrap();
+        Self::new_at(empty_bin)
+    }
+
+    /// Points `PATH` at a caller-provided directory — the fake-vendor-CLI
+    /// tests stage scripted stand-ins there (unix only).
+    fn new_at(bin: PathBuf) -> Self {
         let previous = std::env::var_os("PATH");
         // SAFETY: the caller holds ENV_LOCK for the whole test.
-        unsafe { std::env::set_var("PATH", &empty_bin) };
+        unsafe { std::env::set_var("PATH", &bin) };
         Self {
             previous,
-            empty_bin,
+            empty_bin: bin,
         }
     }
 }
@@ -454,12 +460,17 @@ fn connectors_logout_and_apply_skills_on_uninstalled_connector_fail_cleanly() {
     assert!(error.to_string().contains("lark-cli"), "{error}");
     assert!(error.to_string().contains("ensure-cli feishu"), "{error}");
 
-    // apply-skills probes the connected state through the vendor CLI first,
-    // so it fails with the same clean error on an uninstalled connector.
-    let error = run(&["pinvou", "connectors", "apply-skills", "feishu"])
-        .expect_err("apply-skills without lark-cli must fail");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
-    assert!(error.to_string().contains("ensure-cli feishu"), "{error}");
+    // apply-skills mirrors the GUI: an unprobeable vendor CLI counts as
+    // "not connected" and the command succeeds with skills hidden (the same
+    // degraded outcome as the GUI's disconnected state).
+    let outcome = run(&["pinvou", "connectors", "apply-skills", "feishu"])
+        .expect("apply-skills treats an uninstalled CLI as not connected");
+    assert_eq!(outcome.exit_code, ExitCode::Success);
+    assert!(outcome.stdout.contains("connected: no"), "{outcome:?}");
+    assert!(
+        outcome.stdout.contains("skills should show: no"),
+        "{outcome:?}"
+    );
 
     // dingtalk/tmeet treat "CLI not installed" as already logged out.
     for id in ["dingtalk", "tmeet"] {
@@ -542,4 +553,172 @@ fn connectors_ima_reports_zero_state_and_missing_client_id_env() {
             .contains("PINVOU_CLI_TEST_IMA_CLIENT_ID_UNSET"),
         "{error}"
     );
+}
+
+// ── fake vendor CLI coverage ────────────────────────────────────────────────
+// The empty-PATH tests above prove the absent-CLI behavior; these tests stage
+// scripted vendor stand-ins so the real spawn paths (argv construction, live
+// login-link surfacing, the wecom QR note) execute against actual child
+// processes. Unix only: the stand-ins are /bin/sh scripts.
+
+#[cfg(unix)]
+fn write_fake_cli(bin: &std::path::Path, name: &str, version: &str, body: &str) {
+    write_fake_cli_logged(bin, name, version, body, None);
+}
+
+/// Writes a scripted vendor CLI stand-in. Every invocation appends its argv
+/// to `args_log` (when given) before dispatching, so tests can pin the exact
+/// argv each spawn receives; `--version` is answered by the prelude.
+#[cfg(unix)]
+fn write_fake_cli_logged(
+    bin: &std::path::Path,
+    name: &str,
+    version: &str,
+    body: &str,
+    args_log: Option<&std::path::Path>,
+) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let log_line = match args_log {
+        Some(path) => format!("printf '%s\\n' \"$@\" >> {}\n", path.display()),
+        None => String::new(),
+    };
+    let script = format!(
+        "#!/bin/sh\n{log_line}if [ \"$1\" = \"--version\" ]; then echo \"{version}\"; exit 0; fi\n{body}\nexit 1\n"
+    );
+    let path = bin.join(name);
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn vendor_cli_argv_is_passed_exactly_once() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("argv-once");
+    let bin = std::env::temp_dir().join(format!(
+        "pinvou-cli-connectors-fake-bin-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&bin).unwrap();
+    let args_file = bin.join("seen-args.txt");
+    // Every spawn appends its argv to the log; doubled argv (the regression
+    // this pins) would repeat entries. The status response reports feishu as
+    // ready so the whole probe chain runs.
+    write_fake_cli_logged(
+        &bin,
+        "lark-cli",
+        "lark-cli 1.2.3",
+        "if [ \"$1\" = \"auth\" ]; then echo '{\"identities\":{\"user\":{\"status\":\"ready\"}}}'; exit 0; fi\n",
+        Some(&args_file),
+    );
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    let outcome = run(&[
+        "pinvou",
+        "connectors",
+        "status",
+        "feishu",
+        "--output",
+        "json",
+    ])
+    .expect("status with a fake vendor CLI must succeed");
+    let status: serde_json::Value =
+        serde_json::from_str(&outcome.stdout).expect("single-line JSON status");
+    assert_eq!(
+        status["connectors"][0]["connected"],
+        serde_json::json!(true)
+    );
+
+    let seen = std::fs::read_to_string(&args_file).unwrap();
+    let arguments: Vec<&str> = seen.lines().collect();
+    assert_eq!(
+        arguments,
+        vec!["--version", "auth", "status", "--json"],
+        "vendor argv must be passed exactly once per spawn"
+    );
+    let _ = std::fs::remove_dir_all(&bin);
+}
+
+#[test]
+#[cfg(unix)]
+fn connect_failure_carries_the_captured_login_link() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("connect-note");
+    let bin = std::env::temp_dir().join(format!(
+        "pinvou-cli-connectors-fake-bin-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&bin).unwrap();
+    // The fake login child prints the authorize link and then blocks (like
+    // the real vendor CLIs, which stay alive until the user authorizes);
+    // the connect budget expires first and the error must carry the link.
+    write_fake_cli(
+        &bin,
+        "dws",
+        "dws version 1.0.0",
+        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo '{\"authenticated\": false}'; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then echo \"visit https://login.dingtalk.com/oauth/authorize?x=1 to continue\"; sleep 30; exit 0; fi\n",
+    );
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    let error = run(&[
+        "pinvou",
+        "connectors",
+        "connect",
+        "dingtalk",
+        "--timeout",
+        "2",
+    ])
+    .expect_err("the fake login never completes");
+    let message = error.to_string();
+    assert!(
+        message.contains("https://login.dingtalk.com/oauth/authorize?x=1"),
+        "the failure must surface the captured login link: {message}"
+    );
+    let _ = std::fs::remove_dir_all(&bin);
+}
+
+#[test]
+#[cfg(unix)]
+fn wecom_connect_surfaces_the_qr_file_while_it_exists() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("wecom-qr");
+    let bin = std::env::temp_dir().join(format!(
+        "pinvou-cli-connectors-fake-bin-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&bin).unwrap();
+    // The vendor writes `qr.png` into its working directory around the time
+    // it prints the (landing-page) URL, then blocks waiting for the scan.
+    write_fake_cli(
+        &bin,
+        "wecom-cli",
+        "wecom-cli 1.9.9 (build 1)",
+        "if [ \"$1\" = \"auth\" ]; then printf 'png' > qr.png; echo \"login at https://work.weixin.qq.com/landing?x=1\"; sleep 30; exit 0; fi\n",
+    );
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    let error = run(&["pinvou", "connectors", "connect", "wecom", "--timeout", "3"])
+        .expect_err("the fake login never completes");
+    let message = error.to_string();
+    assert!(
+        message.contains("scan-qr-file:"),
+        "the failure must surface the QR file path: {message}"
+    );
+    assert!(
+        message.contains("https://work.weixin.qq.com/landing?x=1"),
+        "the failure must surface the captured login link: {message}"
+    );
+    let _ = std::fs::remove_dir_all(&bin);
 }
