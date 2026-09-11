@@ -89,34 +89,39 @@ fn create_rejects_duplicate_and_nested_roots_within_project() {
 }
 
 #[test]
-fn create_rejects_overlap_with_other_projects() {
+fn create_allows_overlap_across_projects() {
+    // §9.9 根重叠合法化:同一物理文件夹(或互相嵌套的目录)允许被多个项目
+    // 引用;自动归组的归属二义由前端按 position 决胜(最靠前者收编),显式
+    // 归属优先不变。后端不再设跨项目互斥。
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    create(&store, "已有项目", &[abs("work")]);
+    let first = create(&store, "已有项目", &[abs("work")]);
 
-    let same = store
-        .create_project("同路径".to_string(), vec![abs("work")])
-        .expect_err("same root across projects rejected");
-    assert!(same.to_string().contains("overlaps project '已有项目'"));
-
-    let nested = store
-        .create_project("子路径".to_string(), vec![abs("work").join("sub")])
-        .expect_err("nested root across projects rejected");
-    assert!(nested.to_string().contains("overlaps project"));
-
-    // 无关路径不受影响;父路径方向同样拦截。
+    let same = create(&store, "同路径", &[abs("work")]);
+    let nested = create(&store, "子路径", &[abs("work").join("sub")]);
+    let parent = create(
+        &store,
+        "父路径",
+        &[abs("work").parent().unwrap().to_path_buf()],
+    );
     create(&store, "无关", &[abs("other")]);
-    let parent = store
-        .create_project(
-            "父路径".to_string(),
-            vec![abs("work").parent().unwrap().to_path_buf()],
-        )
-        .expect_err("parent root across projects rejected");
-    assert!(parent.to_string().contains("overlaps project"));
+
+    let projects = store.list();
+    assert_eq!(projects.len(), 5, "全部共存: {projects:?}");
+    // position 依次递增,前端决胜规则(folders 命中多项目时 position 最小者
+    // 收编)依赖该序。
+    let positions: Vec<i64> = projects.iter().map(|project| project.position).collect();
+    let mut sorted = positions.clone();
+    sorted.sort();
+    assert_eq!(positions, sorted);
+    assert_eq!(store.get(&first.id).unwrap().roots, vec![abs("work")]);
+    assert_eq!(store.get(&same.id).unwrap().roots, vec![abs("work")]);
+    assert_eq!(nested.roots, vec![abs("work").join("sub")]);
+    assert_eq!(parent.roots, vec![abs("work").parent().unwrap()]);
 }
 
 #[test]
-fn canonicalized_real_dirs_catch_overlap_across_projects() {
+fn canonicalized_real_dirs_coexist_across_projects() {
     let temp = tempfile::tempdir().expect("tempdir");
     let parent = temp.path().join("repo");
     let child = parent.join("sub");
@@ -124,10 +129,14 @@ fn canonicalized_real_dirs_catch_overlap_across_projects() {
 
     let store = store_in(&temp);
     create(&store, "父", std::slice::from_ref(&parent));
-    let error = store
-        .create_project("子".to_string(), vec![child])
-        .expect_err("canonical overlap rejected");
-    assert!(error.to_string().contains("overlaps project"));
+    // canonicalize 后入库存展示形态;跨项目嵌套不再拒绝。
+    let child_project = create(&store, "子", std::slice::from_ref(&child));
+    assert_eq!(
+        child_project.roots,
+        vec![child.canonicalize().unwrap()],
+        "真实目录 canonicalize 入库"
+    );
+    assert_eq!(store.list().len(), 2);
 }
 
 #[test]
@@ -283,15 +292,19 @@ fn move_add_workspace_root_atomically_and_idempotently() {
     assert_eq!(again.added_root, None);
     assert_eq!(store.get(&project.id).unwrap().roots.len(), 2);
 
-    // 落在他人领地内的目录必须拦截,且不得污染两个项目。
-    let conflict = store
+    // 落在他人领地内的目录自 §9.9 起合法(重叠合法化),双方各自持有。
+    let shared = store
         .move_session_to_project("s3", Some(&project.id), Some(&foreign.join("deeper")))
-        .map(|_| ())
-        .expect_err("cross-project overlap rejected");
-    assert!(conflict.to_string().contains("overlaps project '他人领地'"));
-    assert_eq!(store.assignment_of("s3"), None);
+        .expect("cross-project overlap legal");
+    // "deeper" 不存在:入库形态 = 最近现存祖先 canonicalize 后拼回缺失后缀。
+    assert_eq!(
+        shared.added_root,
+        Some(foreign.canonicalize().unwrap().join("deeper"))
+    );
+    assert!(store.get(&other.id).unwrap().roots.contains(&foreign.canonicalize().unwrap()));
+    assert_eq!(store.assignment_of("s3"), Some(Some(project.id.clone())));
     assert_eq!(store.get(&other.id).unwrap().roots.len(), 1);
-    assert_eq!(store.get(&project.id).unwrap().roots.len(), 2);
+    assert_eq!(store.get(&project.id).unwrap().roots.len(), 3);
 }
 
 #[test]
@@ -383,7 +396,8 @@ fn rebind_roots_rewrites_prefix_and_stays_idempotent() {
 }
 
 #[test]
-fn rebind_roots_rejects_overlap_and_keeps_state() {
+fn rebind_roots_allows_overlap_with_other_projects() {
+    // 平移撞上其它项目的领地不再报错(§9.9 跨项目重叠合法),照常改写落盘。
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
     let from = abs("from2");
@@ -391,15 +405,21 @@ fn rebind_roots_rejects_overlap_and_keeps_state() {
     std::fs::create_dir_all(&occupied).expect("create occupied dir");
 
     let project = create(&store, "待搬", std::slice::from_ref(&from));
-    create(&store, "已有领地", std::slice::from_ref(&occupied));
+    let holder = create(&store, "已有领地", std::slice::from_ref(&occupied));
 
-    let before = store.get(&project.id).unwrap();
-    let error = store
+    let affected = store
         .rebind_roots(&from, &occupied)
-        .expect_err("overlap after rebind rejected");
-    assert!(error.to_string().contains("overlap"));
-    // 报错回滚:内存态未变(未落盘)。
-    assert_eq!(store.get(&project.id).unwrap(), before);
+        .expect("overlap after rebind is legal");
+    assert_eq!(affected, vec![project.id.clone()]);
+    assert_eq!(
+        store.get(&project.id).unwrap().roots,
+        vec![occupied.canonicalize().unwrap()]
+    );
+    assert_eq!(
+        store.get(&holder.id).unwrap().roots,
+        vec![occupied.canonicalize().unwrap()],
+        "双方各自持有同一目录"
+    );
 }
 
 #[test]
@@ -544,18 +564,18 @@ fn ensure_input_dedupes_and_reports_relative_roots() {
 }
 
 #[test]
-fn ensure_conflicts_report_per_root_without_blocking_the_batch() {
+fn ensure_overlap_with_other_project_does_not_block_the_batch() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    // 既有项目占据 abs("nest/child"):为祖先目录 abs("nest") 建文件夹项目会
-    // 与之嵌套,该根 Failed,同批其它根照常创建。
+    // 既有项目占据 abs("nest/child"):为祖先目录 abs("nest") 建文件夹项目在
+    // 重叠合法化后照常创建(手工项目的引用不等于"以该文件夹为锚",见 B4
+    // 锚定复用),同批其它根不受影响。
     create(&store, "深根", &[abs("nest/child")]);
 
     let outcomes = ensure(&store, &[abs("nest"), abs("clean")]);
-    assert!(matches!(&outcomes[0], super::EnsureFolderOutcome::Failed { reason }
-        if reason.contains("overlaps")));
+    assert!(matches!(outcomes[0], super::EnsureFolderOutcome::Created { .. }));
     assert!(matches!(outcomes[1], super::EnsureFolderOutcome::Created { .. }));
-    assert_eq!(store.list().len(), 2);
+    assert_eq!(store.list().len(), 3);
 }
 
 #[test]
@@ -607,14 +627,14 @@ fn origin_and_expelled_assignments_persist_across_reopen() {
     );
 }
 
-// ── 手工 root 决策对文件夹项目的让位 ────────────────────────────────────────
+// ── 根重叠合法化(§9.9):手工决策与自动物化共存,不再互相让位 ────────────────
 
 #[test]
-fn manual_add_root_takes_over_folder_project_root() {
+fn manual_add_root_coexists_with_folder_project_root() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    // 文件夹自动项目占住 abs("web");用户把该文件夹的会话拖进手工项目并选
-    // "添加并移动" → 让位:root 转移,摘空的自动项目退场。
+    // 文件夹自动项目占住 abs("web");用户把该文件夹的会话移进手工项目并选
+    // "添加文件夹" → 重叠合法:目标获得 root,自动项目原样保留。
     ensure(&store, &[abs("web")]);
     let folder_project = store.list()[0].clone();
     let target = create(&store, "目标", &[abs("other")]);
@@ -624,50 +644,36 @@ fn manual_add_root_takes_over_folder_project_root() {
         .expect("move with add root");
     assert_eq!(outcome.added_root, Some(abs("web")));
     assert_eq!(store.get(&target.id).expect("target").roots, vec![abs("other"), abs("web")]);
-    assert!(store.get(&folder_project.id).is_none(), "摘空的自动项目退场");
+    assert_eq!(
+        store.get(&folder_project.id).expect("自动项目保留").roots,
+        vec![abs("web")],
+        "让位机制已退役:自动项目不被摘除"
+    );
     assert_eq!(store.assignment_of("s1"), Some(Some(target.id.clone())));
 }
 
 #[test]
-fn manual_add_root_keeps_folder_project_with_explicit_members() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let store = store_in(&temp);
-    ensure(&store, &[abs("web")]);
-    let folder_project = store.list()[0].clone();
-    store
-        .move_session_to_project("s9", Some(&folder_project.id), None)
-        .expect("explicit member");
-    let target = create(&store, "目标", &[abs("other")]);
-
-    store
-        .move_session_to_project("s1", Some(&target.id), Some(&abs("web")))
-        .expect("move with add root");
-    let survivor = store.get(&folder_project.id).expect("有显式成员的自动项目保留");
-    assert!(survivor.roots.is_empty(), "root 已让渡,项目降级为标签项目");
-    assert_eq!(store.assignment_of("s9"), Some(Some(folder_project.id.clone())));
-}
-
-#[test]
-fn manual_add_root_still_rejected_against_manual_project() {
+fn manual_add_root_allowed_against_manual_project() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
     let holder = create(&store, "占位", &[abs("web")]);
     let target = create(&store, "目标", &[abs("other")]);
 
-    let error = store
+    let outcome = store
         .move_session_to_project("s1", Some(&target.id), Some(&abs("web")))
-        .expect_err("手工项目之间不得蚕食");
-    assert!(error.to_string().contains("overlaps project"));
-    assert_eq!(store.get(&holder.id).expect("holder").roots.len(), 1, "状态不变");
-    assert_eq!(store.assignment_of("s1"), None, "未归属");
+        .expect("手工项目之间同样允许共享 root");
+    assert_eq!(outcome.added_root, Some(abs("web")));
+    assert_eq!(store.get(&holder.id).expect("holder").roots, vec![abs("web")]);
+    assert_eq!(store.get(&target.id).expect("target").roots.len(), 2);
+    assert_eq!(store.assignment_of("s1"), Some(Some(target.id.clone())));
 }
 
 #[test]
-fn manual_add_root_strips_ancestor_folder_root() {
+fn manual_add_root_keeps_ancestor_folder_root() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    // 自动项目占住父目录 abs("web");用户往手工项目加子目录 abs("web/sub"):
-    // 重叠任一方向都让位(不嵌套不变量),父 root 被摘除。
+    // 自动项目占住父目录 abs("web");往手工项目加子目录 abs("web/sub"):
+    // 跨项目任一方向的嵌套都合法,双方各自保留。
     ensure(&store, &[abs("web")]);
     let folder_project = store.list()[0].clone();
     let target = create(&store, "目标", &[abs("other")]);
@@ -679,39 +685,44 @@ fn manual_add_root_strips_ancestor_folder_root() {
         store.get(&target.id).expect("target").roots,
         vec![abs("other"), abs("web/sub")]
     );
-    assert!(store.get(&folder_project.id).is_none());
+    assert_eq!(
+        store.get(&folder_project.id).expect("自动项目保留").roots,
+        vec![abs("web")]
+    );
 }
 
 #[test]
-fn manual_create_and_update_take_over_folder_roots() {
+fn manual_create_and_update_coexist_with_folder_roots() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
-    // 手工建项目直接携带被自动项目占据的 root(目录视图"转为项目"路径)。
+    // 手工建项目直接携带被自动项目引用的 root(目录视图"转为项目"路径):
+    // 重叠合法,两个项目并存。
     ensure(&store, &[abs("web")]);
     let created = create(&store, "转正", &[abs("web")]);
     assert_eq!(created.roots, vec![abs("web")]);
-    assert_eq!(store.list().len(), 1, "自动项目已让位退场");
+    assert_eq!(store.list().len(), 2, "自动项目不再让位退场");
 
-    // update 改 roots 同理:新 roots 撞上另一个自动项目时让位。
+    // update 改 roots 同理:新 roots 引用另一个自动项目的文件夹也合法。
     ensure(&store, &[abs("api")]);
     let updated = store
         .update_project(&created.id, None, Some(vec![abs("web"), abs("api")]))
         .expect("update roots");
     assert_eq!(updated.roots, vec![abs("web"), abs("api")]);
-    assert_eq!(store.list().len(), 1);
+    assert_eq!(store.list().len(), 3);
 }
 
 #[test]
-fn ensure_never_takes_over_existing_roots() {
-    // 自动决策之间不互相蚕食:自动项目占住子目录后,ensure 父目录仍按冲突
-    // 上报 Failed,不剥离既有 root。
+fn ensure_creates_ancestor_despite_nested_existing_root() {
+    // 重叠合法化后:自动项目引用了子目录,ensure 父目录照常创建(覆盖复用
+    // 的锚定收紧见 B4;此处锁定"不再按嵌套报 Failed")。
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
     ensure(&store, &[abs("nest/child")]);
     let outcomes = ensure(&store, &[abs("nest")]);
-    assert!(matches!(&outcomes[0], super::EnsureFolderOutcome::Failed { reason }
-        if reason.contains("overlaps")));
-    assert_eq!(store.list()[0].roots.len(), 1, "既有 root 未被剥离");
+    assert!(matches!(&outcomes[0], super::EnsureFolderOutcome::Created { project }
+        if project.name == "nest"));
+    assert_eq!(store.list().len(), 2, "两个文件夹项目共存");
+    assert_eq!(store.list()[0].roots.len(), 1, "既有 root 不变");
 }
 
 #[test]

@@ -213,17 +213,14 @@ fn lexical_absolute(path: &Path) -> PathBuf {
     stack.into_iter().collect()
 }
 
-/// 校验一组 roots 并返回展示形态(canonicalized):重的判定与嵌套判定都在
+/// 校验一组 roots 并返回展示形态(canonicalized):重复与嵌套判定都在
 /// 身份键上进行(Windows 折叠大小写/分隔符后可判定)。
 /// - 必须是绝对路径;
-/// - 组内不得重复或互相嵌套;
-/// - 不得与其它项目(skip_project_id 之外)的任何 root 重复或嵌套——自动
-///   归组按 root 前缀匹配,跨项目重叠会让归属二义(Codex #22767 错归组的根源)。
-fn validate_roots(
-    projects: &[Project],
-    skip_project_id: Option<&str>,
-    roots: &[PathBuf],
-) -> Result<Vec<PathBuf>> {
+/// - 组内不得重复或互相嵌套。
+///
+/// 跨项目重叠自 2026-09-11 裁决起合法(§9.9 根重叠合法化):同一物理文件夹
+/// 允许被多个项目引用,自动归组由前端按 position 决胜,后端不再拒绝。
+fn validate_roots(roots: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let mut displays = Vec::with_capacity(roots.len());
     let mut keys = Vec::with_capacity(roots.len());
     for root in roots {
@@ -249,94 +246,7 @@ fn validate_roots(
             }
         }
     }
-    for project in projects {
-        if Some(project.id.as_str()) == skip_project_id {
-            continue;
-        }
-        for existing in &project.roots {
-            let existing_key = identity_key_of_display(existing);
-            for (key, display) in keys.iter().zip(displays.iter()) {
-                if key_is_same_or_nested(key, &existing_key)
-                    || key_is_same_or_nested(&existing_key, key)
-                {
-                    bail!(
-                        "project root overlaps project '{}' ({} vs {})",
-                        project.name,
-                        existing.display(),
-                        display.display()
-                    );
-                }
-            }
-        }
-    }
     Ok(displays)
-}
-
-/// incoming roots 的展示形态与身份键(绝对性在此一并拦截),供让位剥离与
-/// 校验共用同一套 canonicalize 规则。
-fn root_keys_of(roots: &[PathBuf]) -> Result<Vec<String>> {
-    roots
-        .iter()
-        .map(|root| {
-            if !root.is_absolute() {
-                bail!("project root must be absolute: {}", root.display());
-            }
-            Ok(identity_key_of_display(&root_display(root)))
-        })
-        .collect()
-}
-
-/// 手工 root 决策对自动文件夹项目的让位剥离:incoming roots 即将出自用户
-/// 显式意图(手工建项目/改 roots/移动会话加文件夹),先把与其重叠(任一方向)
-/// 的 `origin=folder` 项目 root 摘掉——自动物化是系统给的便利,不敌用户的
-/// 手工决策;项目被摘空且无显式成员时整体退场,有显式成员则留作纯标签
-/// 项目。手工项目的 root 永不让位(重叠仍由 `validate_roots` 拒绝,由用户
-/// 自行重组)。ensure 通道不走此处(自动决策之间不互相蚕食)。就地改写
-/// `projects`,返回是否发生变更。
-fn strip_folder_project_roots(
-    projects: &mut Vec<Project>,
-    assignments: &SessionAssignments,
-    skip_project_id: Option<&str>,
-    incoming_keys: &[String],
-) -> bool {
-    let overlaps = |root_key: &str| {
-        incoming_keys.iter().any(|incoming| {
-            key_is_same_or_nested(root_key, incoming) || key_is_same_or_nested(incoming, root_key)
-        })
-    };
-    let mut changed = false;
-    for project in projects.iter_mut() {
-        if Some(project.id.as_str()) == skip_project_id
-            || project.origin.as_deref() != Some("folder")
-        {
-            continue;
-        }
-        let before = project.roots.len();
-        project
-            .roots
-            .retain(|root| !overlaps(&identity_key_of_display(root)));
-        if project.roots.len() == before {
-            continue;
-        }
-        project.updated_at = Utc::now();
-        changed = true;
-    }
-    let emptied: Vec<String> = projects
-        .iter()
-        .filter(|project| {
-            project.origin.as_deref() == Some("folder")
-                && project.roots.is_empty()
-                && !assignments
-                    .values()
-                    .any(|assigned| assigned.as_deref() == Some(&project.id))
-        })
-        .map(|project| project.id.clone())
-        .collect();
-    if !emptied.is_empty() {
-        projects.retain(|project| !emptied.contains(&project.id));
-        changed = true;
-    }
-    changed
 }
 
 /// 原子落盘(共享 `atomic_write`:fsync + 唯一 tmp 名 + 备份语义)。空状态
@@ -458,22 +368,19 @@ impl ProjectStore {
             .collect()
     }
 
-    /// 创建项目。roots 可为空(纯标签项目);非空时逐个过绝对性/重叠校验。
+    /// 创建项目。roots 可为空(纯标签项目);非空时逐个过绝对性/组内嵌套校验
+    /// (跨项目重叠自 §9.9 起合法)。
     ///
     /// 落盘失败时内存态已前进而磁盘滞后(persist 在锁内最后执行,失败向上
-    /// 抛,不回滚内存);同一进程内立即重试 create 会先撞内存重叠校验(磁盘
-    /// 还是旧内容)——已知语义,由下一次成功写盘自愈。
+    /// 抛,不回滚内存);同一进程内立即重试 create 走同一条校验与落盘路径,
+    /// 由下一次成功写盘自愈。
     pub fn create_project(&self, name: String, roots: Vec<PathBuf>) -> Result<Project> {
         let name = validate_name(name)?;
+        let roots = validate_roots(&roots)?;
         let mut state = self.state.write();
-        // 手工建项目:与文件夹自动项目重叠的 root 先让位(见
-        // strip_folder_project_roots),再过剩余校验(组内/与手工项目重叠)。
-        let incoming_keys = root_keys_of(&roots)?;
-        let mut candidate = state.projects.clone();
-        strip_folder_project_roots(&mut candidate, &state.assignments, None, &incoming_keys);
-        let roots = validate_roots(&candidate, None, &roots)?;
         let now = Utc::now();
-        let position = candidate
+        let position = state
+            .projects
             .iter()
             .map(|project| project.position)
             .max()
@@ -488,9 +395,10 @@ impl ProjectStore {
             updated_at: now,
             origin: None,
         };
-        candidate.push(project.clone());
-        candidate.sort_by(|a, b| (a.position, &a.id).cmp(&(b.position, &b.id)));
-        state.projects = candidate;
+        state.projects.push(project.clone());
+        state
+            .projects
+            .sort_by(|a, b| (a.position, &a.id).cmp(&(b.position, &b.id)));
         persist_locked(&state, &self.path)?;
         Ok(project)
     }
@@ -511,29 +419,14 @@ impl ProjectStore {
             bail!("project not found: {project_id}");
         }
         let roots = match roots {
-            // 手工改 roots:重叠的文件夹自动项目 root 先让位(见
-            // strip_folder_project_roots),再过剩余校验;剥离可能移除项目,
-            // 目标索引以剥离后的列表为准。
-            Some(roots) => {
-                let incoming_keys = root_keys_of(&roots)?;
-                let mut candidate = state.projects.clone();
-                strip_folder_project_roots(
-                    &mut candidate,
-                    &state.assignments,
-                    Some(project_id),
-                    &incoming_keys,
-                );
-                let validated = validate_roots(&candidate, Some(project_id), &roots)?;
-                state.projects = candidate;
-                Some(validated)
-            }
+            Some(roots) => Some(validate_roots(&roots)?),
             None => None,
         };
         let index = state
             .projects
             .iter()
             .position(|project| project.id == project_id)
-            .expect("target retained through folder-root stripping");
+            .expect("existence checked above");
         let project = &mut state.projects[index];
         if let Some(name) = name {
             project.name = name;
@@ -616,36 +509,20 @@ impl ProjectStore {
                         workspace.display()
                     );
                 }
-                // 手工加文件夹:重叠的文件夹自动项目 root 先让位(见
-                // strip_folder_project_roots)——否则自动物化占住所有文件夹
-                // 后,任何跨项目"添加并移动"都必撞跨项目重叠校验。
+                // 跨项目重叠已合法化(§9.9),这里只剩绝对性与 canonicalize;
+                // 组内覆盖/收编在下方按既有不变量处理。
                 let owned_root = workspace.to_path_buf();
-                let incoming_keys =
-                    root_keys_of(std::slice::from_ref(&owned_root))?;
-                let mut candidate = state.projects.clone();
-                strip_folder_project_roots(
-                    &mut candidate,
-                    &state.assignments,
-                    Some(target_id),
-                    &incoming_keys,
-                );
-                // 单元素集组内校验退化为此路径自身的绝对性;跨项目重叠在此
-                // 一并拦截(仅剩手工项目会拦,错误信息指向冲突项目)。
-                let mut displays = validate_roots(
-                    &candidate,
-                    Some(target_id),
-                    std::slice::from_ref(&owned_root),
-                )?;
+                let mut displays =
+                    validate_roots(std::slice::from_ref(&owned_root))?;
                 let Some(display) = displays.pop() else {
                     bail!("add_workspace_root produced no canonical key");
                 };
                 let key = identity_key_of_display(&display);
-                state.projects = candidate;
                 let index = state
                     .projects
                     .iter()
                     .position(|project| project.id == target_id)
-                    .expect("target retained through folder-root stripping");
+                    .expect("existence checked above");
                 let project = &mut state.projects[index];
                 // 组内方向双查:workspace 被现有 root 覆盖 → 幂等跳过;workspace
                 // 是现有 root 的祖先 → 收编被覆盖的后代(镜像自动归组的最长
@@ -745,7 +622,7 @@ impl ProjectStore {
                 .unwrap_or_else(|| display.to_string_lossy().into_owned());
             // 同批先建的文件夹项目已在 state.projects 中,后续根与之重叠会被
             // validate 拦下,保证整批任何顺序执行结果一致。
-            match validate_roots(&state.projects, None, std::slice::from_ref(root)) {
+            match validate_roots(std::slice::from_ref(root)) {
                 Ok(displays) => {
                     let now = Utc::now();
                     let position = state
@@ -784,8 +661,9 @@ impl ProjectStore {
 
     /// 目录重绑定(修断链通道):把落在 `from` 前缀下的项目 root 平移到 `to`。
     /// `from` 按存储原值匹配(可能已在磁盘上消失),`to` 由命令层校验为存在
-    /// 的 canonical 路径。改写后逐项目复验重叠约束——平移出的 root 可能撞上
-    /// 其它项目的领地,此时整体报错回滚(内存态未落盘)。返回受影响项目 id。
+    /// 的 canonical 路径。改写后逐项目复验组内约束(平移可能造成同项目内
+    /// 嵌套),失败时整体报错回滚(内存态未落盘);跨项目重叠合法(§9.9),不再
+    /// 复验。返回受影响项目 id。
     /// 幂等:无 root 命中即空操作。
     pub fn rebind_roots(&self, from: &Path, to: &Path) -> Result<Vec<String>> {
         let mut state = self.state.write();
@@ -795,8 +673,8 @@ impl ProjectStore {
         // to 由命令层保证存在,这里统一成 canonical 键,与存储形态一致;
         // from 的匹配在折叠键上进行(Windows 折叠大小写/分隔符,仅大小写
         // 改名的目录不再漏配),后缀按组件数从原 root 切回,保留子目录
-        // 原有大小写。改写在副本上进行,复验通过才提交内存态——重叠
-        // 冲突时调用方看到的状态与盘面保持一致。
+        // 原有大小写。改写在副本上进行,复验通过才提交内存态——校验
+        // 失败时调用方看到的状态与盘面保持一致。
         let to_key = root_display(to);
         let from_key = root_key(from);
         let mut candidate = state.projects.clone();
@@ -823,8 +701,8 @@ impl ProjectStore {
         }
         if !affected_projects.is_empty() {
             for project in &candidate {
-                validate_roots(&candidate, Some(&project.id), &project.roots)
-                    .context("rebind produced overlapping project roots")?;
+                validate_roots(&project.roots)
+                    .context("rebind produced invalid project roots")?;
             }
             state.projects = candidate;
             persist_locked(&state, &self.path)?;
