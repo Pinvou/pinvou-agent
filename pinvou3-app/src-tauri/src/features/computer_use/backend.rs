@@ -16,20 +16,32 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 
-/// 单次 backend 请求的等待上限。必须覆盖**同一条**懒启动路径的最坏合法
-/// 组合（评审第三轮发现：常数论证要按求和做，不能只看单项）。旧值 190s 的
-/// 论证漏了 portal 每个请求「方法调用 + 应答等待」两个阶段各自受限
-/// （round-6 评审）：CreateSession/SelectDevices/SelectSources 各最坏
-/// 30s+30s，Start 最坏 30s+120s，再加 `hold_key` 30s ⇒ 最坏合法和 330s。
-/// 取 340s 留余量——低于它的懒启动慢路径会假超时：调用方误判失败并重试，
-/// 而已出队不可中断的僵尸请求仍会执行，产生双重注入。此前的历史评审发现
-/// 仍然成立：无上限会让一个挂死的 XTEST/CGEvent/portal 调用让该会话后续
-/// 所有请求永远排队。超时只释放调用方；超时/断连后调用方置位请求的取消
-/// 旗标，worker 在出队后、执行前检查，已取消的请求不再执行。剩余缺口
-/// （固有限制，如实记录）：已进入 OS 调用（XTEST/CGEvent/portal）的请求
-/// 无法中断，只能在请求边界拦截；worker 线程若仍卡在 OS 调用里，后续请求
-/// 会被 in-flight 旗标拒绝而不是排队占线程。
-const BACKEND_CALL_TIMEOUT: Duration = Duration::from_secs(340);
+/// Wait ceiling for a single backend request. It must cover the worst legal
+/// SUM of one lazy-start path, not any single phase: every portal round-trip
+/// has two independently bounded phases (method call + response wait).
+/// Worst legal lazy-start request:
+/// - CreateSession + SelectDevices + SelectSources: 3 x (30s call + 30s
+///   response) = 180s
+/// - Start: 30s call + 120s response = 150s
+/// - OpenPipeWireRemote: +30s (on the same ensure_started chain whenever
+///   the request auto-captures; hold_key always does, T3 screens it)
+/// - the request itself (hold_key): +30s
+/// = 390s worst legal lazy-start request; 400s leaves margin. (The previous
+/// value, 340s, under-counted the OpenPipeWireRemote phase.) Below the true
+/// sum the lazy-start slow path false-times-out: the caller reports failure
+/// and retries while the already-dequeued, un-cancellable zombie request
+/// still executes — the double injection this constant exists to prevent.
+/// The historical findings still hold: an unbounded wait lets one wedged
+/// XTEST/CGEvent/portal call queue every later request of the session
+/// forever. The timeout only frees the caller; on timeout/disconnect it
+/// sets the request's cancel flag and the worker checks it after dequeue,
+/// before execution, so an abandoned request is not executed. Residual gap
+/// (inherent platform limitation, recorded honestly): a request already
+/// inside an OS call (XTEST/CGEvent/portal) cannot be interrupted —
+/// interception is only possible at request boundaries; while the worker
+/// stays wedged in an OS call, later requests are rejected by the in-flight
+/// flag instead of queueing onto the thread.
+const BACKEND_CALL_TIMEOUT: Duration = Duration::from_secs(400);
 
 use super::types::{
     Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
@@ -41,7 +53,12 @@ use super::types::{
 ///
 /// 坐标约定：
 /// - `capture` 返回设备物理像素 + 输入倍率（见 [`Capture`]）。
-/// - `cursor_position` 返回全局设备物理像素。
+/// - `cursor_position` returns global INPUT-space coordinates — the same
+///   space `move_to` / `click` / `drag` take (Windows/X11 physical pixels,
+///   macOS CGEvent points, Wayland stream-logical pixels). A global
+///   device-pixel space is deliberately NOT the contract: on mixed-DPI
+///   macOS the per-monitor device rects overlap, so a well-defined global
+///   device-pixel space does not exist there.
 /// - `move_to` / `click` / `drag` / `scroll` / `element_at_point` 的坐标参数是
 ///   **输入坐标空间**（Windows 物理像素；macOS CGEvent 点）。
 pub trait ComputerUseBackend: Send {
@@ -282,9 +299,12 @@ enum WorkerState {
 
 struct BackendInner {
     state: Mutex<WorkerState>,
-    /// 在途请求旗标（每 handle 一枚，克隆共享）。请求通道无界，worker 卡死时
-    /// 每个新调用都会占一个 blocking 线程等满 190s（评审发现）；compare_exchange
-    /// 获取/释放把并发在途请求钉在 1，超出的调用立即失败、不再排队占线程。
+    /// In-flight flag (one per handle, shared by clones). The request
+    /// channel is unbounded, so with a wedged worker every new call would
+    /// occupy a blocking thread for up to BACKEND_CALL_TIMEOUT; the
+    /// compare_exchange acquire/release pins concurrent in-flight requests
+    /// to 1, and excess calls fail immediately instead of queueing onto
+    /// threads.
     in_flight: AtomicBool,
 }
 
@@ -328,7 +348,9 @@ impl BackendInner {
                         cleanup = Some((tx, thread));
                         Err(error)
                     }
-                    // 超时/启动应答通道断开：工厂 >190s 未返回，或线程已 panic。
+                    // Startup reply timed out (factory did not return within
+                    // BACKEND_CALL_TIMEOUT) or the startup channel dropped
+                    // (worker thread panicked).
                     Err(_) => {
                         *state = WorkerState::StartFailed(
                             "computer use backend thread died during startup".to_string(),
@@ -360,8 +382,9 @@ impl BackendInner {
 
     /// worker 线程已退出/解 unwind（发送端全部失效）但状态机停留 Running：
     /// 迁移为粘性 StartFailed（评审发现），与工厂失败同语义——否则会话剩余
-    /// 生命周期里每个请求都先成功入队、再报误导性的 "did not respond within
-    /// 150s"。已在 Running 之外的状态（并发迁移/Drop 抢先）不覆盖。
+    /// 生命周期里每个请求都先成功入队、再报误导性的
+    /// "did not respond within <BACKEND_CALL_TIMEOUT>"。已在 Running 之外
+    /// 的状态（并发迁移/Drop 抢先）不覆盖。
     fn mark_thread_dead(&self) {
         let mut state = self.state.lock();
         if matches!(&*state, WorkerState::Running { .. }) {
@@ -410,8 +433,9 @@ impl BackendInner {
                 )))
             }
             // 断连 = worker 已退出，与超时是不同故障，分开报错（评审发现：
-            // 此前混报 "did not respond within 150s"）。置位取消旗标仅为防御
-            // （worker 已死不会再消费请求），并让状态机同步落地。
+            // 此前混报 "did not respond within <BACKEND_CALL_TIMEOUT>"）。
+            // 置位取消旗标仅为防御（worker 已死不会再消费请求），并让状态机
+            // 同步落地。
             Err(RecvTimeoutError::Disconnected) => {
                 cancelled.store(true, Ordering::SeqCst);
                 self.mark_thread_dead();
@@ -502,7 +526,8 @@ impl BackendHandle {
         }
     }
 
-    /// 全局设备物理像素。
+    /// Global INPUT-space coordinates — the same space `move_to` / `click`
+    /// / `drag` take (see the [`ComputerUseBackend`] trait contract).
     pub fn cursor_position(&self) -> Result<(i32, i32), ComputerUseError> {
         match self.inner.request(BackendRequestKind::CursorPosition)? {
             BackendReply::CursorPosition(pos) => Ok(pos),
@@ -640,29 +665,39 @@ impl BackendRegistry {
         self.handles.lock().insert(session_id.to_string(), handle);
     }
 
-    // Unregistration has a single entry point, [`Self::emergency_release`]:
-    // it unregisters AND cleans up (physical button + OS grant). A bare
-    // remove was removed on purpose — an unregister-only path lets a dying
-    // session skip the button/grant cleanup while looking successful.
+    // Both release paths funnel into [`emergency_cleanup`] (physical button
+    // up, then OS-grant close). A bare remove with no cleanup was removed on
+    // purpose: an unregister-only path would let a dying session skip the
+    // button/grant cleanup while still looking successful.
 
-    /// Emergency cleanup for one session (revoke / tool drop): on a detached
+    /// Emergency cleanup for one session (per-session revoke): on a detached
     /// thread, first unpress the physical left button (a model that pressed
     /// and died must not leave the machine in button-held drag state), then
     /// close the persistent OS-level grant. Both go through the control
     /// lane, so they are NOT rejected while an action is in flight — they
     /// queue behind it on the serialized worker channel and run once it
     /// resolves. Errors are only logged: the worst case (a leaked grant or
-    /// held button) must never panic or block the caller. The handle is
-    /// unregistered synchronously, so revoke/drop immediately stops the
-    /// registry from tracking the session; the detached thread keeps its own
-    /// handle clone alive until the cleanup finishes.
+    /// a held button) must never panic or block the caller.
     ///
-    /// Known trade-off: a session re-granted after a revoke keeps acting
-    /// through its still-alive tool handle, and the rebuilt OS grant is no
-    /// longer tracked here — it is only closed again by the tool's Drop.
+    /// The registration is KEPT: cleanup is idempotent (the OS-grant close
+    /// is take()-based inside the backend, and a mouse-up on an unpressed
+    /// button is a no-op), and a session re-granted after this revoke must
+    /// stay reachable for a later global stop
+    /// ([`Self::emergency_release_all`]). Live tools leave the registry via
+    /// [`Self::release_and_unregister`] on Drop.
     pub fn emergency_release(&self, session_id: &str) {
-        let handle = self.handles.lock().remove(session_id);
-        let Some(handle) = handle else {
+        let Some(handle) = self.handles.lock().get(session_id).cloned() else {
+            return;
+        };
+        std::thread::spawn(move || emergency_cleanup(handle));
+    }
+
+    /// [`Self::emergency_release`]'s cleanup plus synchronous
+    /// unregistration: the registry entry is removed first, then the same
+    /// cleanup runs on a detached thread. Used by tool Drop so a dropped
+    /// tool cannot leave its worker pinned in the registry.
+    pub fn release_and_unregister(&self, session_id: &str) {
+        let Some(handle) = self.handles.lock().remove(session_id) else {
             return;
         };
         std::thread::spawn(move || emergency_cleanup(handle));
@@ -933,8 +968,10 @@ mod tests {
         worker.join().expect("worker exits when channel closes");
     }
 
-    /// 评审修复回归：请求通道无界，worker 卡死时每个新调用都会占一个
-    /// blocking 线程等满 190s——in-flight 旗标把并发在途请求钉在 1。
+    /// Regression: the request channel is unbounded, so with a wedged
+    /// worker every new call would occupy a blocking thread for up to
+    /// BACKEND_CALL_TIMEOUT — the in-flight flag pins concurrent in-flight
+    /// requests to 1.
     #[test]
     fn concurrent_requests_are_rejected_while_one_is_in_flight() {
         let handle = BackendHandle::lazy(|| {
@@ -1129,5 +1166,106 @@ mod tests {
         let state = state.lock();
         assert_eq!(state.captures, 1);
         assert_eq!(state.mouse_ups, vec![MouseButton::Left]);
+    }
+
+    /// Waits until `predicate` observes the emergency cleanup in `state`
+    /// (cleanup runs on a detached thread, so it is only observable by
+    /// polling); fails the test after ~5s.
+    fn wait_for_cleanup(
+        state: &Arc<Mutex<ProbeState>>,
+        mut predicate: impl FnMut(&ProbeState) -> bool,
+    ) {
+        for _ in 0..500 {
+            if predicate(&state.lock()) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("emergency cleanup did not reach the backend in time");
+    }
+
+    fn probe_handle(state: &Arc<Mutex<ProbeState>>) -> BackendHandle {
+        let state_for_factory = Arc::clone(state);
+        BackendHandle::lazy(move || {
+            Ok(Box::new(ControlProbeBackend {
+                state: state_for_factory,
+            }) as Box<dyn ComputerUseBackend>)
+        })
+    }
+
+    /// Regression (per-session revoke must not orphan the global-stop
+    /// teardown): `emergency_release` runs the cleanup (button up + OS-grant
+    /// close) but KEEPS the registration, so a later `emergency_release_all`
+    /// still reaches a session that was re-granted after the revoke.
+    #[test]
+    fn emergency_release_keeps_registration_and_cleans_up() {
+        let state = Arc::new(Mutex::new(ProbeState::default()));
+        let registry = BackendRegistry::default();
+        registry.insert("s-revoke", probe_handle(&state));
+
+        registry.emergency_release("s-revoke");
+        assert!(
+            registry.contains("s-revoke"),
+            "per-session revoke must keep the registration reachable for a later global stop"
+        );
+        wait_for_cleanup(&state, |s| s.releases > 0 && !s.mouse_ups.is_empty());
+        {
+            let state = state.lock();
+            assert_eq!(state.mouse_ups, vec![MouseButton::Left]);
+            assert_eq!(state.releases, 1);
+        }
+
+        // Simulate the re-grant path: the session is still registered (same
+        // handle keeps acting), a global stop must reach it again.
+        registry.emergency_release_all();
+        assert!(
+            registry.contains("s-revoke"),
+            "emergency_release_all keeps registrations (live tools unregister via Drop)"
+        );
+        wait_for_cleanup(&state, |s| s.releases > 1);
+        let state = state.lock();
+        assert_eq!(state.mouse_ups, vec![MouseButton::Left, MouseButton::Left]);
+        assert_eq!(state.releases, 2);
+    }
+
+    /// `release_and_unregister` (tool-Drop path) removes the registry entry
+    /// synchronously AND still runs the button/grant cleanup on the detached
+    /// thread.
+    #[test]
+    fn release_and_unregister_removes_entry_and_cleans_up() {
+        let state = Arc::new(Mutex::new(ProbeState::default()));
+        let registry = BackendRegistry::default();
+        registry.insert("s-drop", probe_handle(&state));
+
+        registry.release_and_unregister("s-drop");
+        assert!(
+            !registry.contains("s-drop"),
+            "release_and_unregister must remove the registry entry synchronously"
+        );
+        wait_for_cleanup(&state, |s| s.releases > 0 && !s.mouse_ups.is_empty());
+        let state = state.lock();
+        assert_eq!(state.mouse_ups, vec![MouseButton::Left]);
+        assert_eq!(state.releases, 1);
+    }
+
+    /// A global stop must reach a session whose earlier revoke only cleaned
+    /// up without unregistering — the exact orphaning regression.
+    #[test]
+    fn emergency_release_all_reaches_a_revoked_then_re_granted_session() {
+        let state = Arc::new(Mutex::new(ProbeState::default()));
+        let registry = BackendRegistry::default();
+        registry.insert("s-regrant", probe_handle(&state));
+
+        registry.emergency_release("s-regrant");
+        wait_for_cleanup(&state, |s| s.releases > 0);
+        // Re-grant happened meanwhile; no re-insert: the original entry is
+        // still there and must still be reachable.
+        registry.emergency_release_all();
+        wait_for_cleanup(&state, |s| s.releases > 1);
+        let state = state.lock();
+        assert_eq!(
+            state.releases, 2,
+            "global stop must reach the re-granted session"
+        );
     }
 }
