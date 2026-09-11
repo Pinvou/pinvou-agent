@@ -227,7 +227,7 @@ pub fn run_agentic_task_headless(request: AgenticTaskRequest) -> Result<AgenticT
 }
 
 /// Drive one agentic turn: validate the request → bind the execution root →
-/// lift the tool-call cap → pin the model → Yolo/Plan submit → timeout
+/// pin the model → Yolo/Plan submit → timeout
 /// watchdog → collect the report → persist the session (only an explicit
 /// `PINVOU3_AGENT_TASK_KEEP_SESSION=0|false|no|off` deletes it). Once the
 /// turn is submitted, a report is
@@ -275,13 +275,6 @@ pub async fn run_agentic_task(
     let mut pool = pool;
     pool.bridge.set_execution_root_resolver(resolver.clone());
     store.set_execution_root_resolver(resolver);
-    // Long-horizon product work must not inherit the benchmark-hooks build's
-    // per-turn tool-call cap of 8 (the GAIA runaway guard): an agentic run is
-    // unlimited unless the caller pinned an explicit PINVOU3_MAX_TOOL_CALLS.
-    if std::env::var_os("PINVOU3_MAX_TOOL_CALLS").is_none() {
-        pool.bridge
-            .set_session_tool_budget(session_id.clone(), None);
-    }
     let runtime = EnginePoolRuntime::new(Arc::new(pool));
 
     let outcome = run_turn(
