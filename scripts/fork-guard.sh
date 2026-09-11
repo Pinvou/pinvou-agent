@@ -6,8 +6,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TUI="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="853cb707bbcf4f7dc4268fba6d811e0d04083f9c"
-PUBLISHED_HEAD="2db754ecd48a343ef9a84cb4607b8ded3c829860"
-PUBLISHED_COMMITS=45
+PUBLISHED_HEAD="d9431a28f6a750c2c830688c40952a589ab587b8"
+PUBLISHED_COMMITS=47
 FAST_ONLY=0
 [[ "${1:-}" == "--fast" ]] && FAST_ONLY=1
 
@@ -198,6 +198,15 @@ fingerprints+=(
   "T2|写豁免 carve-out 跨根且排除名仍拒    |CodeWhale/crates/tui/src/core/authority.rs|fn forkguard_workspace_roots_carve_out_spans_attached_roots"
   "T2|resolve_path 跨附加根放行越界仍拒    |CodeWhale/crates/tui/src/tools/spec/tests.rs|fn forkguard_workspace_roots_resolve_path_spans_attached_roots"
   "T3|项目指令发现仅主根(缓存稳定)       |CodeWhale/crates/tui/src/project_context.rs|fn forkguard_workspace_roots_instructions_stay_primary_root_only"
+)
+
+# 项目指令 source 标签相对化(2026-09-11):<project_instructions source="…">
+# 由绝对路径改为仅文件名(统一 helper),目录搬移/换主根且指令内容相同者不再
+# 击破 KV 前缀缓存;压缩重注入同源口径由行为测试锁定。
+fingerprints+=(
+  "T3|指令 source 标签统一走文件名 helper  |CodeWhale/crates/tui/src/project_context.rs|fn project_instructions_source_label("
+  "T3|指令 source 相对化行为锁定           |CodeWhale/crates/tui/src/project_context.rs|fn forkguard_project_instructions_source_is_file_name_not_absolute_path"
+  "T3|压缩重注入 source 同口径行为锁定     |CodeWhale/crates/tui/src/compaction.rs|fn forkguard_compaction_reinject_source_is_file_name_not_absolute_path"
 )
 
 for fp in "${fingerprints[@]}"; do

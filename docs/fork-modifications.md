@@ -32,8 +32,15 @@
   3. **权限沙箱**：新增符号常量 `:workspace_roots`（`WORKSPACE_ROOTS_SYMBOL`），在每回合策略构造点物化——`workspace_write_policy` 的 writable_roots = 归一化全集合（空集合逐字节等于旧值 `[workspace]`）；写豁免 carve-out 逐根独立判定（排除名 `.git`/`.env*`/`.codewhale` 等在附加根内仍拒）；`ToolContext::resolve_path` 边界跨附加根放行、真越界仍 `PathEscape`；execpolicy 规则的 path/workspace 锚定逐根匹配，permissions.toml 规则对附加根生效。
   4. **提示词/项目指令**：AGENTS.md 发现刻意保持仅主根（附加根只给访问权不注入指令，防提示词膨胀与 KV 前缀缓存随根集合漂移），代码零改动，由行为测试锁定。
 - 行为变化边界：未配置多根（空集合）时协议帧、策略值、路径判定逐字节等价单根现状；TUI 交互端无多根 UI，根集合只能经 Runtime API/headless 进入。fork 语义暂不继承父线程附加根（空 roots → `[cwd]`），与 codex 的 fork 继承差异留待后续裁决。
-- r14→本主题为 `40 files, +1635/-142`；新增 5 条 `forkguard_workspace_roots_*`（forkguard 总数 63→68）。
+- r14→本主题为 `40 files, +1635/-142`；新增 5 条 `forkguard_workspace_roots_*`。
 - 指纹锚点：`pub workspace_roots: Vec<PathBuf>,`（protocol）、`pub fn normalize_workspace_roots(`（core）、`ADD COLUMN workspace_roots TEXT NOT NULL DEFAULT '[]';`（state）、`WORKSPACE_ROOTS_SYMBOL: &str = ":workspace_roots"`（sandbox/policy）及 5 条 `fn forkguard_workspace_roots_*`。
+
+### 项目指令 source 标签相对化（2026-09-11，并入 workspace-roots 分支线）
+
+- CodeWhale `pinvou3/workspace-roots` 续增 2 提交（head `d9431a28f`）：cherry-pick 本地修复分支 `fix/project-instructions-relative-source` @806460066 + 收口提交。`<project_instructions source="…">` 由绝对路径改为仅文件名（统一 helper `project_instructions_source_label`，fallback `"project"`），`context_report` 同源复用——该标签位于系统提示词 KV 缓存稳定区（块 2 前缀），目录搬移/换主根且指令内容相同者不再击破整段请求的前缀缓存。
+- 勘误与边界：`compaction.rs` 压缩重注入的 source 本就取自固定候选文件名（无绝对路径残留，仅补行为测试锁定）；`merge_global_and_project_instructions` 的 `<!-- global: {path} -->` 为 home 级常量、不随工作区漂移，刻意不动。cherry-pick 带入的 doc 注释顶格瑕疵已修复。
+- 行为变化：模型不再能从 source 标签读到项目绝对路径（目录身份仍可经 shell 运行时获知）；新增 2 条 forkguard 行为测试。forkguard 行为测试 fn 总数 64→71（git grep 口径，含上节 workspace_roots 的 5 条；默认 feature 组运行 65 条，benchmark 门控 6 条另测）。此前登记的"63→68"系误报，以此为准。
+- 指纹锚点：`fn project_instructions_source_label(`、`fn forkguard_project_instructions_source_is_file_name_not_absolute_path`、`fn forkguard_compaction_reinject_source_is_file_name_not_absolute_path`。
 
 ### r12 厂商原生搜索与免 key 兜底 Bing 化（已合入底座）
 
