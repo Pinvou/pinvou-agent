@@ -75,6 +75,15 @@ export function createAcpSession({ workspacePath, workspaceHandle, agentId, work
   });
 }
 
+// 对齐到项目(§9.7,桌面专属):会话钥匙串替换为归属项目当时的全部根。
+// 类型化错误(ALIGN_BUSY/ALIGN_NO_WORKSPACE)直抛,由调用方按标记映射文案。
+export function alignAcpSession(sessionId) {
+  if (!isWeb) {
+    return invokeTauri('align_session_to_project', { sessionId });
+  }
+  return Promise.reject(acpClientError('workspace_align_desktop_only'));
+}
+
 export function listAcpWorkspace({ sessionId, relativePath, workspacePath }) {
   if (!isWeb) {
     return invokeTauri('list_codex_workspace', { sessionId, relativePath, workspacePath });

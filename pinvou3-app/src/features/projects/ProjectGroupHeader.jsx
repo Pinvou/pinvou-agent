@@ -5,7 +5,7 @@
 // hook) to keep sidebar interaction idioms uniform.
 import { useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, ChevronDown, Edit2, FolderPlus, MoreHorizontal, Trash2, X } from '../../components/icons.jsx';
+import { Check, ChevronDown, Edit2, FolderPlus, FolderOpen, MoreHorizontal, Plus, Trash2, X } from '../../components/icons.jsx';
 import { usePortalMenu } from '../../hooks/usePortalMenu.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { groupHeaderHasMenu, resolveGroupHeaderEdit } from './projectGroupHeaderState.js';
@@ -23,6 +23,11 @@ const ProjectGroupHeader = ({
   onConvert,
   onRename,
   onDelete,
+  // 项目通道(§9.9):项目组头的"新建会话"专属入口——cwd = 项目记忆主根,
+  // 钥匙串 = 项目当时全部根;不经选择器。
+  onNewSession,
+  // 管理文件夹面板(§4)入口。
+  onManage,
   // 指针拖拽的落点在分组容器(main.jsx 的 wrapper 带 data-drop-key,组头与
   // 会话行都算命中);这里只渲染高亮环(父级 dropActive 驱动)。
   onRebind,
@@ -71,6 +76,12 @@ const ProjectGroupHeader = ({
         <button type="button" className={menuItemCls} onClick={() => { closeMenu(); startRename(); }}>
           <Edit2 size={15} />
           <span>{t.uiProjects.renameProject}</span>
+        </button>
+      )}
+      {kind === 'project' && onManage && (
+        <button type="button" className={menuItemCls} onClick={() => { closeMenu(); onManage(); }}>
+          <FolderOpen size={15} />
+          <span>{t.uiProjects.manageFolders}</span>
         </button>
       )}
       {kind === 'project' && onDelete && (
@@ -181,6 +192,20 @@ const ProjectGroupHeader = ({
           {t.uiProjects.folderUnavailable} · {t.uiProjects.rebindFolder}
         </button>
       ))}
+      {kind === 'project' && onNewSession && (
+        <div className="hidden group-hover/header:flex max-sm:flex items-center shrink-0">
+          <button
+            type="button"
+            data-testid="project-new-session"
+            title={t.uiProjects.newSessionHere}
+            disabled={busy}
+            onClick={(e) => { e.stopPropagation(); onNewSession(); }}
+            className="w-5 h-5 rounded-full flex items-center justify-center text-[#5F6368] hover:bg-[#D3E7DB] dark:text-[#A8C7FA] dark:hover:bg-[#1F2A3D] disabled:opacity-50"
+          >
+            <Plus size={12} />
+          </button>
+        </div>
+      )}
       {hasMenu && (
         // max-sm keeps the actions reachable without hover (touch, narrow
         // windows) — same contract as RecentItem's action cluster.

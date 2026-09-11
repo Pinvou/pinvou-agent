@@ -140,6 +140,7 @@ import {
 import {
   cancelAcpSession,
   checkoutAcpWorkspaceBranch,
+  alignAcpSession,
   createAcpSession,
   discardAcpAttachment,
   getAcpSessionInfo,
@@ -159,6 +160,9 @@ import {
   submitAcpPrompt,
   uploadAcpDeviceAttachment,
 } from './acpClient.js';
+import { WorkspaceKeychainChip } from '../projects/WorkspaceKeychainChip.jsx';
+import { describeKeychain } from '../projects/workspacePickerState.js';
+import { resolveSessionProjectId } from '../projects/projectGrouping.js';
 import { can, canInvoke, isWeb, onPlatformConnectionChange } from '../../shared/platform.js';
 const invoke = invokeTauri;
 const RECENT_WORKSPACES_KEY = 'pinvou_codex_recent_workspaces';
@@ -656,6 +660,7 @@ export function CodexAcpView({
   // path=null = 临时会话。onOpenWorkspacePicker 打开选择器(宿主 main.jsx 持有)。
   onOpenWorkspacePicker,
   workspacePickerRequest = null,
+  onNotify,
 }) {
   const codexCopy = t.uiCodex;
   const [agents, setAgents] = useState(null); // null=加载中，[] 才允许回退当前 Agent。
@@ -3351,6 +3356,28 @@ export function CodexAcpView({
     }
   }
 
+  // 对齐到项目(§9.7):会话钥匙串替换为归属项目当时的全部根;busy 拒绝按
+  // 标记映射文案,成功后刷新会话列表(chip 的 roots 随列表透出更新)。
+  async function alignKeychainToProject() {
+    if (!activeId) return;
+    try {
+      const outcome = await alignAcpSession(activeId);
+      if (outcome && outcome.applied) {
+        await refreshSessions().catch(() => {});
+        if (onNotify) onNotify(t.uiKeychain.alignDone);
+      } else if (outcome && outcome.reason === 'no_change' && onNotify) {
+        onNotify(t.uiKeychain.alignNoChange);
+      }
+    } catch (error) {
+      const message = String((error && error.message) || error || '');
+      if (message.startsWith('ALIGN_BUSY') && onNotify) {
+        onNotify(t.uiKeychain.alignBusy);
+      } else {
+        showError(error);
+      }
+    }
+  }
+
   return (
     <div className={`relative h-full min-h-0 flex flex-col ${theme === 'dark' ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
         <ComposerAttachmentDropOverlay enabled={deviceFileUploadAvailable || (!isWeb && canInvoke('ingest_draft_file_chunk'))} onFiles={files => uploadDeviceFiles(files, attachmentKey)} dark={theme === 'dark'} variant={isWeb ? 'web' : 'desktop'} copy={t.uiAttachments} />
@@ -3361,7 +3388,31 @@ export function CodexAcpView({
             <div className="text-[14px] font-semibold">{activeSession.title || 'Codex'}</div>
             <div className={`text-[10px] truncate ${activeSession && !activeSession.workspace_available ? 'text-red-500' : 'text-gray-400'}`}
               title={activeSession && activeSession.workspace_path}>
-              {activeAgentName + ' · ' + (activeSession.workspace_kind === 'project' ? activeSession.workspace_path : codexCopy.temporaryWorkspace) + (activeSession.workspace_available ? '' : ' · ' + codexCopy.projectMissing)}
+              {activeAgentName + ' · '}
+              {/* 钥匙串 chip(§6):项目会话显示主目录+N 并可"对齐到项目"
+                  (§9.7);临时会话/失效目录保持原文本行。 */}
+              {activeSession.workspace_kind === 'project' && activeSession.workspace_available !== false ? (
+                <WorkspaceKeychainChip
+                  copy={t.uiKeychain}
+                  primary={describeKeychain(activeSession.workspace_roots).primary || activeSession.workspace_path}
+                  additionalCount={describeKeychain(activeSession.workspace_roots).primary
+                    ? describeKeychain(activeSession.workspace_roots).additional
+                    : 0}
+                  roots={describeKeychain(activeSession.workspace_roots).primary
+                    ? describeKeychain(activeSession.workspace_roots).roots
+                    : [activeSession.workspace_path]}
+                  canAlign={!isWeb && !!resolveSessionProjectId(
+                    { id: activeId, workspaceKind: 'project', workspacePath: activeSession.workspace_path },
+                    (bs && bs.projectsList && bs.projectsList.projects) || [],
+                    (bs && bs.projectsList && bs.projectsList.assignments) || {},
+                  )}
+                  busy={busy}
+                  onAlign={alignKeychainToProject}
+                />
+              ) : (
+                activeSession.workspace_kind === 'project' ? activeSession.workspace_path : codexCopy.temporaryWorkspace
+              )}
+              {activeSession.workspace_available ? '' : ' · ' + codexCopy.projectMissing}
             </div>
           </div>
           {configApplying && <span className="text-[10px] text-blue-500 animate-pulse">{codexCopy.applyingConfig}</span>}

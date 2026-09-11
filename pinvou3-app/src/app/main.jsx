@@ -26,7 +26,9 @@ import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx'
 import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
 import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
 import { WorkspacePickerDialog } from '../features/projects/WorkspacePickerDialog.jsx';
-import { computePickerRows, pickerProjectRoots } from '../features/projects/workspacePickerState.js';
+import { computePickerRows, pickerPrimaryRoot, pickerProjectRoots } from '../features/projects/workspacePickerState.js';
+import { ManageProjectFoldersDialog } from '../features/projects/ManageProjectFoldersDialog.jsx';
+import { removeRootPlan, rootAlreadyPresent } from '../features/projects/manageFoldersState.js';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
@@ -1686,8 +1688,7 @@ function workspaceDisplayName(path) {
         assignments: (projectsListData && projectsListData.assignments) || {},
       }), [projectsListData, boundWorkspaceItems]);
       const closeWorkspacePicker = () => { setWorkspacePicker(null); setPickerExcluded(null); };
-      const applyWorkspaceTarget = ({ path, projectId, roots }) => {
-        const lane = workspacePicker ? workspacePicker.lane : 'chat';
+      const applyWorkspaceTarget = ({ lane, path, projectId, roots }) => {
         if (lane === 'codex') {
           setPickerCodexRequest({ epoch: Date.now(), path: path || null, projectId: projectId || null, roots: roots || [] });
         } else if (bridge.sessions && bridge.sessions.setDraftWorkspace) {
@@ -1697,11 +1698,28 @@ function workspaceDisplayName(path) {
       };
       // 项目通道(§9.3):cwd = 选中根(默认项目记忆主根),钥匙串 = 项目当时
       // 全部根快照;projectId 随创建写 last_primary_root(后端 create 内处理)。
+      const pickerLane = () => (workspacePicker ? workspacePicker.lane : 'chat');
       const handlePickerSelectProject = (project, root) => {
-        applyWorkspaceTarget({ path: root, projectId: project.id, roots: pickerProjectRoots(project) });
+        applyWorkspaceTarget({ lane: pickerLane(), path: root, projectId: project.id, roots: pickerProjectRoots(project) });
       };
       const handlePickerTemporary = () => {
-        applyWorkspaceTarget({ path: null, projectId: null, roots: [] });
+        applyWorkspaceTarget({ lane: pickerLane(), path: null, projectId: null, roots: [] });
+      };
+      // 项目行"新建会话"专属通道(§9.9 项目通道):不经选择器,cwd = 项目
+      // 记忆主根(可改选的记忆由选择器/管理面板写),钥匙串 = 项目当时全部根。
+      // 车道跟随当前所在页(code 页 → codex 草稿,其余 → chat 草稿)。
+      const handleProjectNewSession = (projectId) => {
+        const project = ((sidebarProjectsData && sidebarProjectsData.projects) || [])
+          .find(entry => entry.id === projectId);
+        if (!project) return;
+        const primary = pickerPrimaryRoot(project);
+        if (!primary) return; // 纯标签项目无根可绑定,按钮本不该出现(渲染侧守门)
+        applyWorkspaceTarget({
+          lane: currentView === 'codex' ? 'codex' : 'chat',
+          path: primary,
+          projectId: project.id,
+          roots: pickerProjectRoots(project),
+        });
       };
       // 浏览通道(§9.9 文件夹通道):系统选目录 → ensure(锚定复用/物化;
       // 排除列表跳过) → 以所选文件夹开始,cwd = F、roots = [F]。不带
@@ -1737,7 +1755,86 @@ function workspaceDisplayName(path) {
           setPickerExcluded(folder);
           return;
         }
-        applyWorkspaceTarget({ path: folder, projectId: null, roots: [folder] });
+        applyWorkspaceTarget({ lane: pickerLane(), path: folder, projectId: null, roots: [folder] });
+      };
+
+      // ── 管理文件夹面板(§4)────────────────────────────────────────────
+      // 项目 roots 的查看/添加/移除/主根记忆/重命名 + 排除列表查看撤销。
+      // 移除的成员移出由后端 update_project 完成(B2);添加/移除后桥层
+      // loadProjects 自刷(事件 + 主动双保险)。
+      const [manageFoldersId, setManageFoldersId] = useState(null);
+      // 注:本块位置在 sidebarProjectsData 声明之前,数据用 projectsListData
+      // (同一份 projectsList 快照)。
+      const manageFoldersProject = manageFoldersId
+        ? (((projectsListData && projectsListData.projects) || [])
+            .find(entry => entry.id === manageFoldersId) || null)
+        : null;
+      const closeManageFolders = () => setManageFoldersId(null);
+      // 添加文件夹:系统选目录 → update_project 追加(授权告知在面板"添加"
+      // 入口上,与选择器同重量,§2)。已在项目内的路径跳过并告知。
+      const handleManageAddFolder = async () => {
+        if (!bridge.files || !bridge.files.pickFolders || !manageFoldersProject || projectOpsBusy) return;
+        const picked = await bridge.files.pickFolders()
+          .catch((error) => { console.warn('pick project folder failed', error); return null; });
+        if (!picked) return;
+        const folder = Array.isArray(picked) ? picked[0] : picked;
+        if (!folder) return;
+        if (rootAlreadyPresent(manageFoldersProject, folder)) {
+          setSettingsToast(t.uiManageFolders.addDuplicate);
+          return;
+        }
+        setProjectOpsBusy(true);
+        try {
+          await bridge.projects.updateProjectRoots(
+            manageFoldersProject.id,
+            [...manageFoldersProject.roots.map(root => String(root.path)), folder],
+          );
+        } catch (error) {
+          console.warn('add project folder failed', error);
+          setSettingsToast(t.uiProjects.opFailed);
+        } finally {
+          setProjectOpsBusy(false);
+        }
+      };
+      const handleManageRemoveRoot = async (root) => {
+        if (!manageFoldersProject || projectOpsBusy) return;
+        const plan = removeRootPlan(manageFoldersProject, root);
+        if (!plan.removed || plan.needsNewPrimary) return; // 主根拦截在面板内
+        setProjectOpsBusy(true);
+        try {
+          await bridge.projects.updateProjectRoots(manageFoldersProject.id, plan.roots);
+        } catch (error) {
+          console.warn('remove project folder failed', error);
+          setSettingsToast(t.uiProjects.opFailed);
+        } finally {
+          setProjectOpsBusy(false);
+        }
+      };
+      const handleManageSetPrimary = async (root) => {
+        if (!manageFoldersProject || projectOpsBusy) return;
+        setProjectOpsBusy(true);
+        try {
+          await bridge.projects.setPrimaryRoot(manageFoldersProject.id, root);
+        } catch (error) {
+          console.warn('set primary root failed', error);
+          setSettingsToast(t.uiProjects.opFailed);
+        } finally {
+          setProjectOpsBusy(false);
+        }
+      };
+      // 排除列表(§3):进表 = 不再自动物化(可逆,不动项目/会话);出表 = 撤销。
+      const handleSetNeverMaterialize = async (root, never) => {
+        if (projectOpsBusy) return;
+        setProjectOpsBusy(true);
+        try {
+          await bridge.projects.setNeverMaterialize(root, never);
+          setSettingsToast(t.uiManageFolders.exclusionDone);
+        } catch (error) {
+          console.warn('set never-materialize failed', error);
+          setSettingsToast(t.uiProjects.opFailed);
+        } finally {
+          setProjectOpsBusy(false);
+        }
       };
 
       // Expanded sidebar width: drag the right edge to adjust (220~480px), double-click
@@ -2957,6 +3054,9 @@ function workspaceDisplayName(path) {
       const sidebarGroupHeaderProps = (group) => {
         if (group.kind === 'project') {
           return {
+            // 项目通道(§9.9)与管理面板(§4)入口:仅桌面(bridge.projects 守门)。
+            onNewSession: bridge.projects ? () => handleProjectNewSession(group.projectId) : undefined,
+            onManage: bridge.projects ? () => setManageFoldersId(group.projectId) : undefined,
             onRename: (name) => handleRenameProject(group.projectId, name),
             onDelete: () => handleDeleteProject(group.projectId),
             unavailableRoots: (group.roots || [])
@@ -3074,6 +3174,7 @@ function workspaceDisplayName(path) {
         browserDockOpen: browserPaneOpen,
         onOpenBrowserDock: openBrowserDock,
         onOpenWorkspacePicker: ({ lane, mode }) => { setPickerExcluded(null); setWorkspacePicker({ lane, mode }); },
+        onNotify: (message) => setSettingsToast(message),
       };
       // The three byte-identical empty states in the sidebar task list (task groups / date groups / flat list) share one node.
       const sidebarTaskEmptyNode = (
@@ -3163,9 +3264,27 @@ function workspaceDisplayName(path) {
             onSelectProject={handlePickerSelectProject}
             onTemporary={handlePickerTemporary}
             onBrowse={handlePickerBrowse}
-            onBrowseExcluded={(folder) => applyWorkspaceTarget({ path: folder, projectId: null, roots: [folder] })}
+            onBrowseExcluded={(folder) => applyWorkspaceTarget({ lane: pickerLane(), path: folder, projectId: null, roots: [folder] })}
             onDismissExcluded={() => setPickerExcluded(null)}
           />
+
+          {manageFoldersProject && (
+            <ManageProjectFoldersDialog
+              open={!!manageFoldersProject}
+              project={manageFoldersProject}
+              neverRoots={(sidebarProjectsData && sidebarProjectsData.neverMaterializeRoots) || []}
+              mode={(bs && bs.modeState && bs.modeState.mode) || null}
+              busy={projectOpsBusy}
+              t={t}
+              onClose={closeManageFolders}
+              onAddFolder={handleManageAddFolder}
+              onRemoveRoot={handleManageRemoveRoot}
+              onSetPrimary={handleManageSetPrimary}
+              onRename={(name) => handleRenameProject(manageFoldersProject.id, name)}
+              onExcludeRoot={(root) => handleSetNeverMaterialize(root, true)}
+              onRevokeExclusion={(root) => handleSetNeverMaterialize(root, false)}
+            />
+          )}
 
           {rebindDraft && (
             <RebindFolderDialog
@@ -3847,6 +3966,7 @@ function workspaceDisplayName(path) {
                 onOpenSettingsSection={openSettingsSection}
                 onOpenWorkspacePicker={({ mode }) => { setPickerExcluded(null); setWorkspacePicker({ lane: 'codex', mode }); }}
                 workspacePickerRequest={pickerCodexRequest}
+                onNotify={(message) => setSettingsToast(message)}
                 bs={bs}
                 onGotoModelSettings={() => openSettingsSection('model')}
                 onGotoSettings={() => openSettingsSection('general')}

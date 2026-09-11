@@ -78,3 +78,15 @@ export function pickerProjectRoots(project) {
 export function workspaceNoticeTone(mode) {
   return mode === 'yolo' ? 'visibility' : 'restricted';
 }
+
+// ── 会话钥匙串 chip(§6)──────────────────────────────────────────────────────
+// roots[0] = 主根(创建时 cwd,快照不换门牌),其余为附加根。空/单根 = 现状
+// (chip 只显示主目录名,不显示 "+N")。
+export function describeKeychain(roots) {
+  const list = (Array.isArray(roots) ? roots : []).map(String).filter(Boolean);
+  return {
+    primary: list[0] || null,
+    additional: Math.max(0, list.length - 1),
+    roots: list,
+  };
+}
