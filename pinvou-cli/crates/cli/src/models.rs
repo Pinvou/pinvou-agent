@@ -325,6 +325,7 @@ fn parse_optional_bool(raw: &str) -> Result<Option<bool>, CliError> {
 
 /// Parsed `--flag value` / boolean `--flag` options for one subcommand.
 struct Options {
+    label: String,
     values: BTreeMap<String, String>,
     flags: Vec<String>,
     positionals: Vec<String>,
@@ -368,6 +369,7 @@ fn parse_options(
         }
     }
     Ok(Options {
+        label: format!("pinvou {family} {subcommand}"),
         values,
         flags,
         positionals,
@@ -392,10 +394,12 @@ impl Options {
         match self.positionals.len() {
             1 => Ok(self.positionals[0].clone()),
             0 => Err(CliError::usage(format!(
-                "pinvou models {what} requires an id"
+                "{} {what} requires an id",
+                self.label
             ))),
             n => Err(CliError::usage(format!(
-                "pinvou models {what} takes one id, got {n}"
+                "{} {what} takes one id, got {n}",
+                self.label
             ))),
         }
     }
@@ -511,6 +515,7 @@ fn parse_add(rest: &[String]) -> Result<ModelsCommand, CliError> {
         ],
         &["api-key-stdin", "set-active"],
     )?;
+    ensure_no_positionals(&options, "models add")?;
     if options.value("api-key-env").is_some() && options.has("api-key-stdin") {
         return Err(CliError::usage(
             "use only one of --api-key-env or --api-key-stdin",
@@ -585,6 +590,10 @@ fn parse_search(rest: &[String]) -> Result<ModelsCommand, CliError> {
 }
 
 pub fn execute(command: ModelsCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
+    // Every subcommand reads or writes the settings store / credential store
+    // under the product data root; a relative PINVOU3_HOME would silently
+    // resolve against the cwd.
+    crate::support::sandbox_home()?;
     match command {
         ModelsCommand::List => list(output),
         ModelsCommand::Add {
@@ -1133,6 +1142,10 @@ fn strip_v1_suffix(url: &str) -> String {
 fn probe_client() -> Option<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(3))
+        // Local model servers have no business redirecting; following a 302
+        // would let a loopback service turn the probe into an arbitrary
+        // remote request.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .ok()
 }
@@ -1357,12 +1370,19 @@ fn probe_local(
                     model.base_url
                 )));
             }
-            let bearer = explicit_key.or_else(|| {
-                resolve_saved_model_key(&model)
-                    .ok()
-                    .flatten()
-                    .filter(|key| !key.trim().is_empty())
-            });
+            let bearer = match explicit_key {
+                Some(key) => Some(key),
+                None => {
+                    // Swallowing a keychain failure here would turn every
+                    // signed request into a 401 and classify a working
+                    // server as `generic` — surface it instead.
+                    resolve_saved_model_key(&model)
+                        .map_err(|error| {
+                            CliError::failed(format!("credential_unavailable: {error}"))
+                        })?
+                        .filter(|key| !key.trim().is_empty())
+                }
+            };
             (model.base_url, bearer)
         }
     };
@@ -1629,14 +1649,15 @@ fn search_set(
     clear: bool,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    let secret = resolve_secret(api_key_env, false)?;
-    if provider == SearchProvider::Bing && secret.is_some() {
+    if provider == SearchProvider::Bing && api_key_env.is_some() {
         return Err(CliError::usage(
             "provider bing does not use an api key; it needs no configuration",
         ));
     }
+    let secret = resolve_secret(api_key_env, false)?;
     let stored = if clear { None } else { secret };
-    UserPrefs::update_transaction(|prefs| {
+    let stored_reference = stored.as_ref().map(|_| provider.credential_reference());
+    let transaction = UserPrefs::update_transaction(|prefs| {
         prefs.search.provider = provider;
         if let Some(key) = &stored {
             let reference = provider.credential_reference();
@@ -1656,8 +1677,16 @@ fn search_set(
             }
         }
         Ok(())
-    })
-    .map_err(prefs_error)?;
+    });
+    if let Err(error) = transaction {
+        // The closure may have stored the keyring secret before the save
+        // failed; roll it back so no orphaned entry outlives the prefs
+        // record (same standard as models add).
+        if let Some(reference) = stored_reference {
+            let _ = SystemCredentialStore::new().delete(&reference);
+        }
+        return Err(prefs_error(error));
+    }
     if clear {
         // Only after the prefs save succeeded — deleting first would leave
         // the prefs entry pointing at a credential that no longer exists if
@@ -1689,20 +1718,24 @@ fn search_test(provider: SearchProvider, output: OutputMode) -> Result<CliOutcom
     let probe = if provider == SearchProvider::Bing {
         run_bing_probe()
     } else {
-        let key = resolve_search_key(provider);
-        match key {
-            Some(key) if !key.trim().is_empty() => SearchProbe {
+        match resolve_search_key(provider) {
+            Ok(Some(key)) if !key.trim().is_empty() => SearchProbe {
                 ok: true,
                 code: "configured",
                 detail: Some("credential configured".to_owned()),
             },
-            _ => SearchProbe {
+            Ok(_) => SearchProbe {
                 ok: false,
                 code: "no_api_key",
                 detail: Some(format!(
                     "no api key configured for provider {}; set one with settings search set",
                     provider.as_str()
                 )),
+            },
+            Err(error) => SearchProbe {
+                ok: false,
+                code: "credential_unavailable",
+                detail: Some(error),
             },
         }
     };
@@ -1783,25 +1816,32 @@ fn run_bing_probe() -> SearchProbe {
 
 /// Credential resolution order of the GUI's `resolve_saved_search_key`:
 /// provider-specific environment variables first, then the stored credential.
-fn resolve_search_key(provider: SearchProvider) -> Option<String> {
+fn resolve_search_key(provider: SearchProvider) -> Result<Option<String>, String> {
     for name in provider.env_key_names() {
         if let Ok(value) = std::env::var(name) {
             let trimmed = value.trim();
             if !trimmed.is_empty() {
-                return Some(trimmed.to_owned());
+                return Ok(Some(trimmed.to_owned()));
             }
         }
     }
     let mut prefs = UserPrefs::load();
     prefs.refresh_credential_states_with_store(&SystemCredentialStore::new());
-    let credential = prefs.search.credentials.get(&provider)?;
-    let reference = credential.credential_ref.clone()?;
-    SystemCredentialStore::new()
+    let Some(credential) = prefs.search.credentials.get(&provider) else {
+        return Ok(None);
+    };
+    let Some(reference) = credential.credential_ref.clone() else {
+        return Ok(None);
+    };
+    // A keychain failure is a credential-store problem, not "no key":
+    // swallowing it here would degrade every signed request into a
+    // misleading no_api_key report.
+    let value = SystemCredentialStore::new()
         .get(&reference)
-        .ok()
-        .flatten()
+        .map_err(|error| error.user_message())?
         .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
+        .filter(|value| !value.is_empty());
+    Ok(value)
 }
 
 #[cfg(test)]

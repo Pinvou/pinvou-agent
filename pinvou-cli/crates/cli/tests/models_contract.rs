@@ -804,8 +804,6 @@ fn settings_search_list_reports_defaults() {
 // Network paths: opt-in only, never run by default (AGENTS.md rule).
 // ---------------------------------------------------------------------------
 
-/// Opt-in: `cargo test -p pinvoy-cli --test models_contract -- --ignored models_test_hits_live_endpoint`
-/// Requires network access; probes the saved model like the GUI test button.
 /// Opt-in: `cargo test -p pinvoy-cli --test models_contract -- --ignored bing_probe_hits_live_endpoint`
 /// Requires internet access; mirrors the GUI `test_search_provider("bing")`.
 #[test]
