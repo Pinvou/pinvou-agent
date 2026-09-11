@@ -619,8 +619,11 @@ async fn ui_tree_async(
 }
 
 /// 命中测试。两种结局语义分明(评审发现的 fail-open 修复):
-/// - `Ok(None)`:**确认无元素**——枚举到的每个窗口都明确不覆盖该点,或
-///   覆盖的窗口经 AT-SPI 明确返回空命中(null ObjectRef);
+/// - `Ok(None)`:**无元素**——枚举到的窗口都不覆盖该点、覆盖窗口的 AT-SPI
+///   命中为空(null ObjectRef),**或可达树为空**(注册表应答但没有任何
+///   应用注册——目标应用的 toolkit a11y 未启用时的常态)。空树与「元素
+///   不在该点」在此不可区分,同按主流 None-策略放行(无元素 → 不强制
+///   确认);这只是策略声明,不是筛查证明。
 /// - `Err`:**查询失败**——根/应用/窗口枚举、extents、命中查询任何一环
 ///   挂掉都向上报;工具层 T3 筛查按 Unscreenable 失败关闭,绝不当作
 ///   "无元素"放行。
@@ -794,12 +797,42 @@ fn probe_wayland_screenshot() -> Result<(), String> {
     Ok(())
 }
 
+/// Wayland 探测时限。xcap 的 portal 应答是**无界** D-Bus 等待（内部
+/// `receiver.recv()??`，KDE 还可能每次弹交互式对话框）——一旦在等人，
+/// 探测永远不返回，而 catch_unwind 挡不住挂起：backend worker 会被永久
+/// pin 死，190s 调用方超时后 in-flight 门与控制通道（紧急抬起、授权释放）
+/// 全部堵死（round-6 评审）。超时后放弃并遗弃探测线程（纯捕获、不碰共享
+/// 状态；多次超时至多多遗弃几个线程，好过 worker 卡死）。下一次截屏仍会
+/// 重试探测——粘死探测状态会退回「一次失败永久失去截屏」的旧缺陷。
+const WAYLAND_PROBE_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// xcap 的 Wayland 路径内部有 `.expect(...)`(PNG 重编码),包一层
-/// catch_unwind 把潜在 panic 转成显式错误,避免炸掉 backend worker 线程。
+/// catch_unwind 把潜在 panic 转成显式错误,避免炸掉 backend worker 线程;
+/// 整个探测限时运行（见 [`WAYLAND_PROBE_TIMEOUT`]）。
 fn probe_wayland_screenshot_guarded() -> Result<(), String> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(probe_wayland_screenshot)) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("computer-use-wayland-probe".to_string())
+        .spawn(move || {
+            let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                probe_wayland_screenshot,
+            )) {
+                Ok(inner) => inner,
+                Err(_) => Err("capture panicked inside xcap's Wayland fallback chain".to_string()),
+            };
+            let _ = sender.send(result);
+        })
+        .map_err(|error| format!("capture probe thread spawn failed: {error}"))?;
+    match receiver.recv_timeout(WAYLAND_PROBE_TIMEOUT) {
         Ok(result) => result,
-        Err(_) => Err("capture panicked inside xcap's Wayland fallback chain".to_string()),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(format!(
+            "the Wayland capture probe did not answer within {}s (the portal screenshot \
+             request may be waiting on an interactive dialog)",
+            WAYLAND_PROBE_TIMEOUT.as_secs()
+        )),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err("capture probe thread terminated unexpectedly".to_string())
+        }
     }
 }
 
