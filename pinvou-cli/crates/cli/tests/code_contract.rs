@@ -1409,3 +1409,152 @@ fn run_one_shot_turn_requires_product_host() {
     .unwrap_err();
     assert!(error.to_string().contains("code_run_requires_product_host"));
 }
+
+/// Re-derives the execution-root lock filename (FNV-1a over the canonical
+/// root). This pins the on-disk lock keying: two CLI processes mutating the
+/// same project directory through *different* sessions must collide on the
+/// same lock file.
+fn root_lock_path(canonical_root: &Path) -> PathBuf {
+    fn stable(root: &Path) -> String {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in root.to_string_lossy().as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        format!("{hash:016x}")
+    }
+    std::env::var_os("PINVOU3_HOME")
+        .map(PathBuf::from)
+        .expect("PINVOU3_HOME sandboxed")
+        .join("locks")
+        .join(format!("code-root-{}.lock", stable(canonical_root)))
+}
+
+/// Opens the lock file; the test keeps the write guard in its own frame (the
+/// guard must outlive the command under test or the lock is already free).
+fn open_lock(path: &Path) -> fd_lock::RwLock<std::fs::File> {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .unwrap();
+    fd_lock::RwLock::new(file)
+}
+
+#[test]
+fn session_lock_reports_busy_for_every_mutating_command() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("lock-session-busy");
+    let id = create_code_session_fixture(None);
+    seed_two_turn_transcript(&id);
+
+    // Hold the advisory lock a second CLI process would hold.
+    let lock_path = home
+        .root
+        .join("locks")
+        .join(format!("code-session-{id}.lock"));
+    let mut lock = open_lock(&lock_path);
+    let _guard = lock.try_write().expect("test acquires the contended lock");
+
+    for (arguments, code) in [
+        (
+            vec!["pinvou", "code", "checkpoints", "rewind", &id, "1", "--yes"],
+            "rewind_busy",
+        ),
+        (
+            vec!["pinvou", "code", "checkpoints", "undo", &id],
+            "undo_busy",
+        ),
+        (
+            vec!["pinvou", "code", "checkpoints", "diff", &id, "abc"],
+            "diff_busy",
+        ),
+        (
+            vec![
+                "pinvou",
+                "code",
+                "workspace",
+                "checkout",
+                &id,
+                "main",
+                "--mode",
+                "stash",
+            ],
+            "checkout_busy",
+        ),
+    ] {
+        let error = run(&arguments).expect_err("the held lock must fail the mutation");
+        assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+        assert!(
+            error.to_string().contains(code),
+            "expected {code} in: {error}"
+        );
+    }
+    drop(_guard);
+    drop(lock);
+
+    // With the lock released the mutation passes the busy gate (and fails
+    // later on the empty rewind state) — proving the busy error came from the
+    // lock and that the failed attempts mutated nothing.
+    let error =
+        run(&["pinvou", "code", "checkpoints", "undo", &id]).expect_err("no rewind record exists");
+    assert!(error.to_string().contains("no_undoable_rewind"), "{error}");
+    let store = SessionStore::boot().unwrap();
+    let session = store.load(&id).unwrap();
+    assert_eq!(session.messages.len(), 4, "transcript untouched");
+}
+
+#[test]
+fn execution_root_lock_blocks_a_second_session_on_the_same_project() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("lock-root-busy");
+    let project = home.root.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let id_a = create_code_session_fixture(Some(&project));
+    let id_b = create_code_session_fixture(Some(&project));
+    seed_two_turn_transcript(&id_a);
+    seed_two_turn_transcript(&id_b);
+
+    // Session A's rewind holds the project's root lock while it works. In this
+    // single-process test the lock file is held externally, which is exactly
+    // what a concurrent `pinvou code checkpoints rewind A` looks like to a
+    // second process rewinding session B on the same directory.
+    let canonical = std::fs::canonicalize(&project).unwrap();
+    let mut lock = open_lock(&root_lock_path(&canonical));
+    let _guard = lock.try_write().expect("test acquires the contended lock");
+
+    let error = run(&[
+        "pinvou",
+        "code",
+        "checkpoints",
+        "rewind",
+        &id_b,
+        "1",
+        "--yes",
+    ])
+    .expect_err("the held root lock must fail the rewind");
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    assert!(error.to_string().contains("rewind_busy"), "{error}");
+    assert!(
+        error.to_string().contains("project directory"),
+        "the busy error must name the shared project directory: {error}"
+    );
+
+    // Session A's own lock is free, so the session gate passes and only the
+    // root gate trips — the two locks are independent.
+    drop(_guard);
+    drop(lock);
+    let error = run(&[
+        "pinvou",
+        "code",
+        "checkpoints",
+        "rewind",
+        &id_b,
+        "1",
+        "--yes",
+    ])
+    .expect_err("no checkpoints exist yet");
+    assert!(error.to_string().contains("checkpoint_missing"), "{error}");
+}

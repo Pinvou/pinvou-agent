@@ -60,7 +60,8 @@ const USAGE: &str = "usage: pinvou code <agents|login|logout|providers|sessions|
 
 const AGENTS_USAGE: &str =
     "usage: pinvou code agents <list|status <agent>|install <agent>>  (agent: codex|claude|kimi)";
-const LOGIN_USAGE: &str = "usage: pinvou code login <agent> [--code C]  (agent: codex|claude|kimi)";
+const LOGIN_USAGE: &str = "usage: pinvou code login <agent> [--code-env VAR|--code-stdin]  \
+     (agent: codex|claude|kimi; the claude flow consumes an authorization code)";
 const LOGOUT_USAGE: &str = "usage: pinvou code logout <agent>  (agent: codex|claude|kimi)";
 const PROVIDERS_USAGE: &str = "usage: pinvou code providers <list [--agent A]|add --agent A --name N --base-url U \
      [--wire-api anthropic|openai|kimi] [--model M] [--model-slot SLOT=M]... [--context-window N] \
@@ -86,6 +87,16 @@ const LOGOUT_TIMEOUT_SECS: u64 = 120;
 
 // ── command tree ────────────────────────────────────────────────────────────
 
+/// Where the claude authorization code comes from; plaintext argv exists only
+/// for callers that already hold the code in argv (env/stdin are the
+/// policy-compliant forms, mirroring every other secret in this CLI).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LoginCodeSource {
+    Arg(String),
+    Env(String),
+    Stdin,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CodeCommand {
     AgentsList,
@@ -97,7 +108,7 @@ pub enum CodeCommand {
     },
     Login {
         agent: String,
-        code: Option<String>,
+        code: Option<LoginCodeSource>,
     },
     Logout {
         agent: String,
@@ -236,11 +247,22 @@ pub fn parse(values: &[String]) -> Result<CodeCommand, CliError> {
         "agents" => parse_agents(rest),
         "login" => {
             let agent = require_agent(rest.first().map(String::as_str), LOGIN_USAGE)?;
-            let (options, _, _) = parse_flags(&rest[1..], &["--code"], &[], "login")?;
-            Ok(CodeCommand::Login {
-                agent,
-                code: option(&options, "--code").map(str::to_owned),
-            })
+            let (options, booleans, _) = parse_flags(
+                &rest[1..],
+                &["--code", "--code-env"],
+                &["--code-stdin"],
+                "login",
+            )?;
+            let code = if let Some(raw) = option(&options, "--code") {
+                Some(LoginCodeSource::Arg(raw.to_owned()))
+            } else if let Some(var) = option(&options, "--code-env") {
+                Some(LoginCodeSource::Env(var.to_owned()))
+            } else if booleans.contains(&"--code-stdin") {
+                Some(LoginCodeSource::Stdin)
+            } else {
+                None
+            };
+            Ok(CodeCommand::Login { agent, code })
         }
         "logout" => {
             let agent = require_agent(rest.first().map(String::as_str), LOGOUT_USAGE)?;
@@ -560,13 +582,15 @@ fn parse_workspace(rest: &[String]) -> Result<CodeCommand, CliError> {
     match action {
         "list" => {
             let session = positional(1, "a session id")?;
-            let path = rest.get(2).filter(|value| !value.starts_with("--"));
+            if rest.get(2).is_some_and(|value| value.starts_with("--")) {
+                return Err(CliError::usage("code workspace list accepts no options"));
+            }
             if rest.len() > 3 {
                 return Err(CliError::usage("code workspace list accepts no options"));
             }
             Ok(CodeCommand::WorkspaceList {
                 session,
-                path: path.cloned(),
+                path: rest.get(2).cloned(),
             })
         }
         "search" => {
@@ -594,14 +618,16 @@ fn parse_workspace(rest: &[String]) -> Result<CodeCommand, CliError> {
         }
         "diff" => {
             let session = positional(1, "a session id")?;
-            let file = rest
-                .get(2)
-                .filter(|value| !value.starts_with("--"))
-                .cloned();
+            if rest.get(2).is_some_and(|value| value.starts_with("--")) {
+                return Err(CliError::usage("code workspace diff accepts no options"));
+            }
             if rest.len() > 3 {
                 return Err(CliError::usage("code workspace diff accepts no options"));
             }
-            Ok(CodeCommand::WorkspaceDiff { session, file })
+            Ok(CodeCommand::WorkspaceDiff {
+                session,
+                file: rest.get(2).cloned(),
+            })
         }
         "branches" => {
             let session = positional(1, "a session id")?;
@@ -1063,7 +1089,7 @@ pub fn execute(command: CodeCommand, output: OutputMode) -> Result<CliOutcome, C
             let _mutation_guard =
                 lock_session_for_mutation(&mut mutation_lock, &session, "checkout")?;
             with_workspace(&session, |root| {
-                workspace_checkout(root, &branch, mode, message.as_deref(), output)
+                workspace_checkout(&session, root, &branch, mode, message.as_deref(), output)
             })
         }
         CodeCommand::CheckpointsList { session } => checkpoints_list(&session, output),
@@ -1147,11 +1173,67 @@ fn agent_cli_name(agent: &str) -> &'static str {
     }
 }
 
+/// Windows installs are `.exe` real binaries or npm `.cmd` shims; PATH
+/// scanning must try both because bare names never match.
+#[cfg(target_os = "windows")]
+fn cli_binary_candidates(name: &str) -> [String; 3] {
+    [
+        format!("{name}.exe"),
+        format!("{name}.cmd"),
+        name.to_owned(),
+    ]
+}
+
+#[cfg(not(target_os = "windows"))]
+fn cli_binary_candidates(name: &str) -> [String; 1] {
+    [name.to_owned()]
+}
+
 fn find_in_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
+    let candidates = cli_binary_candidates(name);
     std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
+        .flat_map(|dir| candidates.iter().map(move |candidate| dir.join(candidate)))
         .find(|candidate| candidate.is_file())
+}
+
+/// Mirror of the app's per-agent resolution order (`install::resolve_*`):
+/// explicit override env vars and official install locations win over PATH so
+/// a stale binary earlier in PATH cannot shadow the real one (the app prefers
+/// `~/.kimi-code/bin/kimi` over PATH for exactly that reason). The app's
+/// adapter-beside claude runtime location is app-bundle-specific and not
+/// mirrored here.
+fn resolve_agent_cli(agent: &str, name: &str) -> Option<PathBuf> {
+    let override_var = match agent {
+        "codex" => Some("PINVOU3_CODEX_PATH"),
+        "claude" => Some("PINVOU3_CLAUDE_CLI_PATH"),
+        _ => None,
+    };
+    if let Some(var) = override_var {
+        if let Some(path) = std::env::var_os(var)
+            .map(PathBuf::from)
+            .filter(|path| !path.as_os_str().is_empty() && path.is_file())
+        {
+            return Some(path);
+        }
+    }
+    let home = pinvou3_lib::platform::paths::user_home_dir();
+    let managed_dir = match agent {
+        "kimi" => Some(home.join(".kimi-code").join("bin")),
+        "codex" | "claude" => Some(home.join(".local").join("bin")),
+        _ => None,
+    };
+    if let Some(dir) = managed_dir {
+        let candidates = cli_binary_candidates(name);
+        if let Some(path) = candidates
+            .iter()
+            .map(|candidate| dir.join(candidate))
+            .find(|candidate| candidate.is_file())
+        {
+            return Some(path);
+        }
+    }
+    find_in_path(name)
 }
 
 /// Runs `executable args...` with a hard timeout; returns (success, stdout)
@@ -1161,9 +1243,8 @@ fn command_output_with_timeout(
     args: &[&str],
     timeout: Duration,
 ) -> Option<(bool, String)> {
-    let mut command = std::process::Command::new(executable);
+    let mut command = crate::support::build_command(executable, args);
     command
-        .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
@@ -1227,11 +1308,27 @@ fn cli_version(executable: &Path) -> Option<String> {
     command_output_with_timeout(executable, &["--version"], Duration::from_secs(15))
         .filter(|(ok, _)| *ok)
         .map(|(_, text)| text)
+        // The app treats empty output as a failed probe, not as a version.
+        .filter(|text| !text.trim().is_empty())
+}
+
+/// Mirror of `runtime::parse_codex_version_output`: codex prints a
+/// package-prefixed line ("codex-cli 0.146.0"), so the version is the first
+/// whitespace token whose dot/dash/plus-separated head is all digits.
+fn codex_version_token(version: &str) -> &str {
+    version
+        .split_whitespace()
+        .find(|token| {
+            token
+                .split(['.', '-', '+'])
+                .next()
+                .is_some_and(|head| !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()))
+        })
+        .unwrap_or(version)
 }
 
 /// Mirror of `runtime::parse_version`: only a leading digit-run of
-/// dot/dash/plus-separated parts counts, so prefixed output like
-/// "codex 0.200.0" parses empty — exactly like the GUI gate.
+/// dot/dash/plus-separated parts counts.
 fn parse_version(version: &str) -> Vec<u64> {
     version
         .split(['.', '-', '+'])
@@ -1278,8 +1375,9 @@ fn nonempty_env(name: &str) -> bool {
     std::env::var_os(name).is_some_and(|value| !value.is_empty())
 }
 
-/// Mirrors `codex_authenticated`: env credentials, a relay model_provider with
-/// an env_key in `~/.codex/config.toml`, or `codex login status` success.
+/// Mirrors `codex_authenticated`: env credentials, the active relay
+/// model_provider with an env_key in `~/.codex/config.toml`, or
+/// `codex login status` success.
 fn codex_authenticated(executable: &Path) -> bool {
     if [
         "OPENAI_API_KEY",
@@ -1291,31 +1389,33 @@ fn codex_authenticated(executable: &Path) -> bool {
     {
         return true;
     }
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
+    let home = pinvou3_lib::platform::paths::user_home_dir();
     if let Ok(raw) = std::fs::read_to_string(home.join(".codex").join("config.toml")) {
-        // Same approximation as `providers::codex_config_relay_env_key_present`:
-        // a `[model_providers.*]` table with a non-empty env_key means a relay
-        // provider is active, so codex runs authenticated without login state.
-        let mut in_provider_table = false;
-        for line in raw.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with('[') {
-                in_provider_table = trimmed.starts_with("[model_providers");
-                continue;
-            }
-            if in_provider_table {
-                if let Some(value) = trimmed
-                    .strip_prefix("env_key")
-                    .and_then(|rest| rest.trim().strip_prefix('='))
-                {
-                    let value = value.trim().trim_matches('"');
-                    if !value.is_empty() {
-                        return true;
-                    }
-                }
-            }
+        // Mirror of `providers::codex_config_relay_env_key_present`: the relay
+        // provider counts only while it is the active `model_provider` and its
+        // `env_key` is non-empty — a relay provider that was configured but
+        // switched away from does not make codex authenticated.
+        let active = toml::from_str::<toml::Value>(&raw)
+            .ok()
+            .and_then(|config| {
+                let provider = config
+                    .get("model_provider")
+                    .and_then(toml::Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())?
+                    .to_owned();
+                let env_key_present = config
+                    .get("model_providers")
+                    .and_then(|providers| providers.get(&provider))
+                    .and_then(|provider| provider.get("env_key"))
+                    .and_then(toml::Value::as_str)
+                    .map(str::trim)
+                    .is_some_and(|value| !value.is_empty());
+                Some(env_key_present)
+            })
+            .unwrap_or(false);
+        if active {
+            return true;
         }
     }
     cli_status_success(executable, &["login", "status"])
@@ -1446,20 +1546,18 @@ fn kimi_runtime_config_ready(raw: &str, oauth_credentials_valid: bool) -> bool {
 }
 
 /// Mirror of `introspect::kimi_data_root`: KIMI_CODE_HOME when set, else
-/// `~/.kimi-code`.
+/// `~/.kimi-code` (through the app's `user_home_dir` so Windows USERPROFILE
+/// roots resolve identically).
 fn kimi_data_root() -> PathBuf {
     if let Some(root) = std::env::var_os("KIMI_CODE_HOME").map(PathBuf::from) {
         return root;
     }
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    home.join(".kimi-code")
+    pinvou3_lib::platform::paths::user_home_dir().join(".kimi-code")
 }
 
 fn probe_agent(agent: &str, agent_name: &str) -> AgentProbe {
     let cli_name = agent_cli_name(agent);
-    let cli_path = find_in_path(cli_name);
+    let cli_path = resolve_agent_cli(agent, cli_name);
     let version = cli_path.as_deref().and_then(cli_version);
     let min_version = MIN_VERSIONS
         .iter()
@@ -1469,7 +1567,7 @@ fn probe_agent(agent: &str, agent_name: &str) -> AgentProbe {
     let version_supported = version
         .as_deref()
         .map(|version| match agent {
-            "codex" => version_at_least(version, min_version),
+            "codex" => version_at_least(codex_version_token(version), min_version),
             "claude" => claude_version_supported(version, min_version),
             "kimi" => kimi_version_supported(version, min_version),
             _ => false,
@@ -1646,9 +1744,9 @@ fn extract_device_code(output: &str, login_url: Option<&str>) -> Option<String> 
 }
 
 fn login_executable(agent: &str) -> Result<PathBuf, CliError> {
-    find_in_path(agent_cli_name(agent)).ok_or_else(|| {
+    resolve_agent_cli(agent, agent_cli_name(agent)).ok_or_else(|| {
         CliError::failed(format!(
-            "code_login_cli_missing: {agent} CLI not found on PATH; install it first \
+            "code_login_cli_missing: {agent} CLI not found; install it first \
              (`pinvou code agents status {agent}` shows the probe result)"
         ))
     })
@@ -1665,15 +1763,37 @@ fn login_args(agent: &str) -> &'static [&'static str] {
 /// `code login <agent>`: spawns the same login command the GUI's
 /// `login_acp_agent` runs, streams its output through, extracts the
 /// allow-listed authorization URL / device code, and waits for the flow to
-/// finish (bounded like the GUI: 600s, kimi 1800s). `--code C` (claude only)
-/// writes the authorization code to the child's stdin; the child reads it when
-/// it prompts (the pipe buffers it until then).
-fn login(agent: &str, code: Option<String>, output: OutputMode) -> Result<CliOutcome, CliError> {
+/// finish (bounded like the GUI: 600s, kimi 1800s). The claude authorization
+/// code is accepted via `--code-env VAR` / `--code-stdin` (plaintext argv is
+/// deliberately not offered — argv leaks through shell history and process
+/// listings; `--code C` remains for callers that already hold it in argv) and
+/// is written to the child's stdin; the child reads it when it prompts.
+fn login(
+    agent: &str,
+    code: Option<LoginCodeSource>,
+    output: OutputMode,
+) -> Result<CliOutcome, CliError> {
+    let code = match code {
+        Some(LoginCodeSource::Arg(raw)) => Some(raw),
+        Some(LoginCodeSource::Env(var)) => Some(std::env::var(&var).map_err(|_| {
+            CliError::failed(format!(
+                "code login: authorization code environment variable {var} is not set"
+            ))
+        })?),
+        Some(LoginCodeSource::Stdin) => {
+            let mut raw = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut raw).map_err(|error| {
+                CliError::failed(format!("code login: cannot read code from stdin: {error}"))
+            })?;
+            Some(raw)
+        }
+        None => None,
+    };
     if let Some(code) = code.as_deref() {
         if agent != "claude" {
             return Err(CliError::usage(format!(
-                "code login {agent} does not accept --code; only the claude login flow \
-                 consumes an authorization code"
+                "code login {agent} does not accept an authorization code; only the claude \
+                 login flow consumes one"
             )));
         }
         let trimmed = code.trim();
@@ -1682,8 +1802,8 @@ fn login(agent: &str, code: Option<String>, output: OutputMode) -> Result<CliOut
         }
     }
     let executable = login_executable(agent)?;
-    let mut command = std::process::Command::new(&executable);
-    command.args(login_args(agent));
+    let mut command = crate::support::build_command(&executable, login_args(agent));
+    crate::support::set_process_group(&mut command);
     command
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -1703,8 +1823,8 @@ fn login(agent: &str, code: Option<String>, output: OutputMode) -> Result<CliOut
     }
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let out_reader = std::thread::spawn(move || drain_stream(stdout, true));
-    let err_reader = std::thread::spawn(move || drain_stream(stderr, true));
+    let out_reader = std::thread::spawn(move || drain_stream(stdout, false));
+    let err_reader = std::thread::spawn(move || drain_stream(stderr, false));
     let deadline = Duration::from_secs(if agent == "kimi" { 1800 } else { 600 });
     let started = Instant::now();
     let status = loop {
@@ -1716,8 +1836,7 @@ fn login(agent: &str, code: Option<String>, output: OutputMode) -> Result<CliOut
             }
         }
         if started.elapsed() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
+            crate::support::kill_process_tree(&mut child);
             return Err(CliError::failed(
                 "code_login_timeout: authorization wait timed out; rerun `pinvou code login`",
             ));
@@ -1728,6 +1847,13 @@ fn login(agent: &str, code: Option<String>, output: OutputMode) -> Result<CliOut
     let err_text = err_reader.join().unwrap_or_default();
     let status = status.expect("loop only breaks with a status or returns");
     let combined = format!("{out_text}\n{err_text}");
+    // The vendor login output is echoed once, redacted: live streaming would
+    // bypass redaction, and login transcripts are exactly what users paste
+    // into issues.
+    let echoed = pinvou3_lib::platform::credential_store::redact_secret(&combined);
+    if !echoed.trim().is_empty() {
+        println!("{echoed}");
+    }
     let login_url = extract_login_url(agent, &combined);
     let device_code = extract_device_code(&combined, login_url.as_deref());
     let state = if status.success() {
@@ -1748,6 +1874,22 @@ fn login(agent: &str, code: Option<String>, output: OutputMode) -> Result<CliOut
         device_code.as_deref().unwrap_or("-"),
     );
     if status.success() {
+        // Mirror the GUI's post-login re-check: a successful process exit does
+        // not guarantee a usable credential (kimi can complete OAuth yet fail
+        // to write the model config; codex/claude probes re-run here).
+        let authenticated = match agent {
+            "codex" => codex_authenticated(&executable),
+            "claude" => claude_authenticated(&executable),
+            "kimi" => kimi_authenticated(),
+            _ => false,
+        };
+        if !authenticated {
+            return Err(CliError::failed(format!(
+                "code_login_not_authenticated: {agent} login process completed but the \
+                 authentication probe does not report a usable credential yet; check \
+                 `pinvou code agents status {agent}`"
+            )));
+        }
         Ok(success(render(output, human, &value)))
     } else {
         Err(CliError::failed(format!(
@@ -1777,8 +1919,9 @@ fn logout(agent: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let executable = login_executable(agent)?;
     // Bounded like the login flow (logout is a fast subcommand; a hung
     // vendor CLI must not block the terminal forever).
-    let mut child = std::process::Command::new(&executable)
-        .args(args)
+    let mut command = crate::support::build_command(&executable, args);
+    crate::support::set_process_group(&mut command);
+    let mut child = command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -1790,8 +1933,7 @@ fn logout(agent: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     {
         Some(status) => status,
         None => {
-            let _ = child.kill();
-            let _ = child.wait();
+            crate::support::kill_process_tree(&mut child);
             return Err(CliError::failed(format!(
                 "code_logout_failed: {agent} logout did not finish within \
                  {LOGOUT_TIMEOUT_SECS}s (killed)"
@@ -2404,6 +2546,23 @@ const WALK_LIMIT: usize = 20_000;
 const PREVIEW_LIMIT: usize = 512 * 1024;
 const IMAGE_PREVIEW_LIMIT: u64 = 10 * 1024 * 1024;
 const DIFF_LIMIT: usize = 1024 * 1024;
+/// Upper bound on per-file diffs composed into one whole-workspace diff; each
+/// file costs two git spawns, so this bounds the subprocess fan-out.
+const WORKSPACE_DIFF_FILE_CAP: usize = 500;
+
+/// `String::truncate` panics on a non-char-boundary index; a multi-byte diff
+/// cut near the 1 MiB boundary is the common case, so cut back to the nearest
+/// boundary instead.
+fn truncate_utf8(text: &mut String, limit: usize) {
+    if text.len() <= limit {
+        return;
+    }
+    let mut boundary = limit;
+    while boundary > 0 && !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    text.truncate(boundary);
+}
 
 const IGNORED_DIRECTORIES: &[&str] = &[
     ".git",
@@ -2459,6 +2618,74 @@ fn session_mutation_lock(session: &str) -> Result<fd_lock::RwLock<std::fs::File>
     Ok(fd_lock::RwLock::new(file))
 }
 
+/// Opens the execution-root lock: the GUI's rewind exclusion unit is the
+/// execution root (`begin_execution_root_rewind`), because two native code
+/// sessions bound to the same project directory share one working tree — the
+/// per-session lock above cannot serialize those. This second lock (keyed by
+/// a hash of the canonical execution root) closes the preventable CLI×CLI
+/// half. The GUI-vs-CLI residual (a GUI turn or rewind in the desktop process
+/// takes no CLI lock) remains undetectable and stays documented.
+fn execution_root_lock(root: &Path) -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
+    fn stable(root: &Path) -> String {
+        // FNV-1a over the canonical path: deterministic across processes is
+        // the only requirement (this is a lock key, not a security digest).
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in root.to_string_lossy().as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        format!("{hash:016x}")
+    }
+    let dir = paths::pinvou3_home().join("locks");
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        CliError::failed(format!(
+            "code root lock: cannot create {}: {error}",
+            dir.display()
+        ))
+    })?;
+    let path = dir.join(format!("code-root-{}.lock", stable(root)));
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|error| {
+            CliError::failed(format!(
+                "code root lock: cannot open {}: {error}",
+                path.display()
+            ))
+        })?;
+    Ok(fd_lock::RwLock::new(file))
+}
+
+/// Acquires the execution-root lock or fails fast with a stable busy error.
+fn lock_root_for_mutation<'a>(
+    lock: &'a mut fd_lock::RwLock<std::fs::File>,
+    root: &Path,
+    action: &str,
+    session: &str,
+) -> Result<fd_lock::RwLockWriteGuard<'a, std::fs::File>, CliError> {
+    lock.try_write().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            CliError::failed(format!(
+                "{action}_busy: another pinvou process is mutating the project directory of \
+                 session {session} ({}); retry after it finishes",
+                root.display()
+            ))
+        } else {
+            CliError::failed(format!(
+                "code {action}: cannot lock the project directory of session {session}: {error}"
+            ))
+        }
+    })
+}
+
+/// Canonicalized execution root for lock keying; falls back to the unresolved
+/// path when the directory vanished (the mutation itself will fail anyway).
+fn canonical_execution_root(root: &Path) -> PathBuf {
+    std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
+}
+
 /// Acquires the session mutation lock or fails fast with a stable busy error
 /// (a CLI that silently queued behind another process would race the user's
 /// intent just the same).
@@ -2467,10 +2694,17 @@ fn lock_session_for_mutation<'a>(
     session: &str,
     action: &str,
 ) -> Result<fd_lock::RwLockWriteGuard<'a, std::fs::File>, CliError> {
-    lock.try_write().map_err(|_| {
-        CliError::failed(format!(
-            "{action}_busy: another pinvou process is mutating session {session}; retry after it finishes"
-        ))
+    lock.try_write().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            CliError::failed(format!(
+                "{action}_busy: another pinvou process is mutating session {session}; retry \
+                 after it finishes"
+            ))
+        } else {
+            CliError::failed(format!(
+                "{action}_lock: cannot lock session {session}: {error}"
+            ))
+        }
     })
 }
 
@@ -3005,16 +3239,22 @@ fn git_command(root: &Path, arguments: &[&str]) -> std::process::Command {
         .current_dir(root)
         .args(arguments)
         .stdin(std::process::Stdio::null());
-    // Mirror the GUI's HiddenCommand hygiene: the ambient GIT_* variables must
-    // not redirect the workspace git calls.
-    for variable in [
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_OBJECT_DIRECTORY",
-    ] {
-        command.env_remove(variable);
+    // Checkpoint-grade git isolation — stronger than the GUI's workspace lane
+    // (which inherits ambient GIT_*) and misattributed before: raw-byte prefix
+    // matching (like the app's checkpoint lane) strips every ambient GIT_*
+    // variable without tripping on non-UTF-8 names, and user/system gitconfig
+    // is pinned away so hooks, aliases, and credential helpers cannot inject
+    // themselves into these calls.
+    for (name, _) in std::env::vars_os() {
+        if name.as_encoded_bytes().starts_with(b"GIT_") {
+            command.env_remove(name);
+        }
     }
+    command.env("GIT_CONFIG_NOSYSTEM", "1");
+    #[cfg(unix)]
+    command.env("GIT_CONFIG_GLOBAL", "/dev/null");
+    #[cfg(target_os = "windows")]
+    command.env("GIT_CONFIG_GLOBAL", "NUL");
     command
 }
 
@@ -3029,7 +3269,9 @@ fn git_output(root: &Path, arguments: &[&str]) -> Result<String, CliError> {
         return Err(CliError::failed(format!(
             "code workspace: git {} failed: {}",
             arguments.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
+            pinvou3_lib::platform::credential_store::redact_secret(
+                String::from_utf8_lossy(&output.stderr).trim(),
+            )
         )));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
@@ -3086,7 +3328,9 @@ fn git_status_entries(root: &Path) -> Result<Vec<(String, String, bool)>, CliErr
     if !output.status.success() {
         return Err(CliError::failed(format!(
             "code workspace: git status failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            pinvou3_lib::platform::credential_store::redact_secret(
+                String::from_utf8_lossy(&output.stderr).trim(),
+            )
         )));
     }
     let records = output.stdout.split(|byte| *byte == 0).collect::<Vec<_>>();
@@ -3119,15 +3363,30 @@ fn baseline_path(session_id: &str) -> PathBuf {
         .join("codex-workspace-baseline.json")
 }
 
-fn load_baseline(session_id: &str, root: &Path) -> Option<serde_json::Value> {
-    let bytes = std::fs::read(baseline_path(session_id)).ok()?;
-    let value = serde_json::from_slice::<serde_json::Value>(&bytes).ok()?;
+/// Mirror of the GUI baseline loader: a missing baseline is `Ok(None)`, but
+/// read or parse failures surface instead of silently degrading origin
+/// reporting to "unknown".
+fn load_baseline(session_id: &str, root: &Path) -> Result<Option<serde_json::Value>, CliError> {
+    let bytes = match std::fs::read(baseline_path(session_id)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(CliError::failed(format!(
+                "code workspace: cannot read the workspace baseline: {error}"
+            )));
+        }
+    };
+    let value = serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|error| {
+        CliError::failed(format!(
+            "code workspace: cannot parse the workspace baseline: {error}"
+        ))
+    })?;
     if value.get("workspace_path").and_then(|value| value.as_str())
         != Some(root.to_string_lossy().as_ref())
     {
-        return None;
+        return Ok(None);
     }
-    Some(value)
+    Ok(Some(value))
 }
 
 fn classify_origin(
@@ -3171,7 +3430,10 @@ fn classify_origin(
                 "preexisting_modified".to_owned()
             }
         }
-        (Some(_), None) => "preexisting".to_owned(),
+        // A dirty-at-baseline file deleted during the session compares
+        // unequal in the GUI, so it is "preexisting_modified", not a clean
+        // "preexisting".
+        (Some(_), None) => "preexisting_modified".to_owned(),
         _ => "preexisting_modified".to_owned(),
     }
 }
@@ -3183,7 +3445,7 @@ fn workspace_changes(
 ) -> Result<CliOutcome, CliError> {
     let root = canonical_workspace(root)?;
     let git = git_root(&root).is_some_and(|git_root| git_root == root);
-    let baseline = load_baseline(session_id, &root);
+    let baseline = load_baseline(session_id, &root)?;
     let baseline_available = baseline.is_some();
     let mut changes: Vec<(String, String, bool)> = if git {
         git_status_entries(&root)?
@@ -3344,6 +3606,7 @@ fn stash_head(root: &Path) -> Result<Option<String>, CliError> {
 }
 
 fn workspace_checkout(
+    session: &str,
     root: &Path,
     branch: &str,
     mode: BranchSwitchMode,
@@ -3354,6 +3617,12 @@ fn workspace_checkout(
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let root = canonical_workspace(root)?;
+    // Cross-process root lock (same key as rewind/undo): two CLI processes
+    // checking out different sessions bound to one project directory must not
+    // interleave stash/checkout/pop on one working tree.
+    let canonical_root = canonical_execution_root(&root);
+    let mut root_lock = execution_root_lock(&canonical_root)?;
+    let _root_guard = lock_root_for_mutation(&mut root_lock, &canonical_root, "checkout", session)?;
     let is_git = git_root(&root).is_some_and(|git_root| git_root == root);
     if !is_git {
         return Err(CliError::failed(
@@ -3471,9 +3740,16 @@ fn workspace_diff(
         None => {
             // Whole-workspace diff: concatenate per-file diffs of every change
             // (the GUI shows the per-file list in the changes panel instead).
+            // Capped so a 2,000-file refactor does not turn into thousands of
+            // git spawns; the changes list itself stays uncapped.
             let changes = workspace_changes_value(session_id, &root)?;
             let mut combined = String::new();
+            let mut diffed_files = 0usize;
             for row in changes["changes"].as_array().cloned().unwrap_or_default() {
+                if diffed_files >= WORKSPACE_DIFF_FILE_CAP {
+                    break;
+                }
+                diffed_files += 1;
                 let relative = row["relativePath"].as_str().unwrap_or_default().to_owned();
                 if let Ok((_, text, _)) = workspace_diff_one(&root, &relative) {
                     if !combined.is_empty() {
@@ -3486,7 +3762,7 @@ fn workspace_diff(
             // per-file path below does the same.
             let truncated = combined.len() > DIFF_LIMIT;
             if truncated {
-                combined.truncate(DIFF_LIMIT);
+                truncate_utf8(&mut combined, DIFF_LIMIT);
             }
             let value = serde_json::json!({
                 "relativePath": null,
@@ -3555,8 +3831,21 @@ fn workspace_diff_one(
         }
     } else if path.is_file() {
         match file_kind(&path) {
-            "text" => std::fs::read_to_string(&path)
-                .unwrap_or_else(|_| "this file does not support text preview".to_owned()),
+            // Mirror the GUI preview lane: read at most PREVIEW_LIMIT+1 bytes
+            // and convert lossily instead of loading arbitrary multi-gigabyte
+            // files or failing whole-file on non-UTF-8 content.
+            "text" => {
+                let mut bytes = Vec::new();
+                std::fs::File::open(&path)
+                    .and_then(|mut file| {
+                        use std::io::Read as _;
+                        file.by_ref()
+                            .take(PREVIEW_LIMIT as u64 + 1)
+                            .read_to_end(&mut bytes)
+                    })
+                    .map_err(|error| CliError::failed(format!("code workspace diff: {error}")))?;
+                String::from_utf8_lossy(&bytes).into_owned()
+            }
             "image" => "image file: use `pinvou code workspace preview` for a data URL".to_owned(),
             _ => "binary file: text diff preview is not supported".to_owned(),
         }
@@ -3565,7 +3854,7 @@ fn workspace_diff_one(
     };
     let truncated = text.len() > DIFF_LIMIT;
     if truncated {
-        text.truncate(DIFF_LIMIT);
+        truncate_utf8(&mut text, DIFF_LIMIT);
         text.push_str("\n\n...diff truncated");
     }
     Ok((relative, text, truncated))
@@ -3688,6 +3977,10 @@ fn checkpoints_diff(
     if !valid_checkpoint_id(checkpoint_id) {
         return Err(CliError::usage("invalid checkpoint id"));
     }
+    // `diff_checkpoint` writes the shadow index (`git add -A`), so it takes
+    // the same session mutation lock as rewind/undo.
+    let mut mutation_lock = session_mutation_lock(session)?;
+    let _mutation_guard = lock_session_for_mutation(&mut mutation_lock, session, "diff")?;
     let store = open_store()?;
     let agents = open_agent_store()?;
     let (ledger, execution) = require_native_code_session(&store, &agents, session)?;
@@ -3748,9 +4041,14 @@ fn approx_user_turns(messages: &serde_json::Value) -> u32 {
         .unwrap_or(0)
 }
 
-/// Mirrors `is_runtime_owned_user_message` for the two shapes it recognizes:
-/// a complete `<turn_meta>` envelope as the trailing (or legacy leading)
-/// metadata block.
+/// Mirror of the engine's runtime-owned predicate (`runtime_handoff`):
+/// authority comes only from an engine-shaped `<turn_meta>` block (trailing,
+/// or the legacy leading shape with ordinary trailing text) that carries a
+/// non-authoritative provenance line. A bare composer envelope (date or
+/// workspace metadata without a provenance line) and an authoritative
+/// provenance envelope are real user turns; restored subagent checkpoint
+/// messages carry a non-authoritative provenance line and are covered by the
+/// same check.
 fn is_runtime_owned_user_message(message: &serde_json::Value) -> bool {
     fn text_blocks(message: &serde_json::Value) -> Vec<&str> {
         message
@@ -3772,15 +4070,40 @@ fn is_runtime_owned_user_message(message: &serde_json::Value) -> bool {
     if blocks.len() < 2 {
         return false;
     }
-    if complete(blocks[blocks.len() - 1].trim()) {
-        return true;
+    let last = blocks[blocks.len() - 1].trim();
+    let metadata = if complete(last) {
+        last
+    } else {
+        // Legacy `[metadata, prompt, ...]` shape: complete envelope first and
+        // ordinary text last (a single user-authored metadata block is never
+        // hidden).
+        let first = blocks[0].trim();
+        if complete(first) && !complete(last) {
+            first
+        } else {
+            return false;
+        }
+    };
+    // Mirror of `has_non_authoritative_turn_provenance`.
+    let mut has_provenance = false;
+    let mut condensed_non_authoritative = false;
+    let mut legacy_non_authoritative = false;
+    for line in metadata.lines().map(str::trim) {
+        if let Some(value) = line.strip_prefix("Input provenance: ") {
+            has_provenance = true;
+            condensed_non_authoritative |= value.ends_with(" (non-authoritative)");
+        }
+        legacy_non_authoritative |= line == "Input authority: non_authoritative";
     }
-    complete(blocks[0].trim())
+    condensed_non_authoritative || (has_provenance && legacy_non_authoritative)
 }
 
 fn parse_rfc3339_epoch_secs(value: &str) -> Option<i64> {
     // Minimal RFC3339 parser for the rewind sidecar timestamps
-    // (`chrono::Utc::now().to_rfc3339()`), days-from-civil based.
+    // (`chrono::Utc::now().to_rfc3339()` — the only writer, always `+00:00`),
+    // days-from-civil based; the UTC offset is therefore ignored by design.
+    // Field ranges are validated so a hand-corrupted sidecar degrades to
+    // `None` instead of overflowing the intermediate multiplies.
     let (date, rest) = value.split_once('T')?;
     let mut date_parts = date.split('-');
     let year: i64 = date_parts.next()?.parse().ok()?;
@@ -3794,6 +4117,15 @@ fn parse_rfc3339_epoch_secs(value: &str) -> Option<i64> {
         .next()
         .and_then(|value| value.split('.').next().map(str::to_owned))
         .and_then(|value| value.parse().ok())?;
+    if !(1..=9999).contains(&year)
+        || !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
     // days_from_civil (Howard Hinnant's algorithm).
     let adjusted_year = if month <= 2 { year - 1 } else { year };
     let era = adjusted_year.div_euclid(400);
@@ -3848,6 +4180,12 @@ fn checkpoints_rewind(
     let store = open_store()?;
     let agents = open_agent_store()?;
     let (ledger, execution) = require_native_code_session(&store, &agents, session)?;
+    // Second lock keyed by the (canonical) execution root: two CLI processes
+    // rewinding *different* sessions bound to the same project directory must
+    // not interleave file restores on one working tree.
+    let root = canonical_execution_root(&execution);
+    let mut root_lock = execution_root_lock(&root)?;
+    let _root_guard = lock_root_for_mutation(&mut root_lock, &root, "rewind", session)?;
 
     // Stale Turn snapshot reconciliation (same source of truth as the GUI).
     match store.rewound_turns_records(session) {
@@ -3990,6 +4328,9 @@ fn checkpoints_undo(session: &str, output: OutputMode) -> Result<CliOutcome, Cli
     let store = open_store()?;
     let agents = open_agent_store()?;
     let (ledger, execution) = require_native_code_session(&store, &agents, session)?;
+    let root = canonical_execution_root(&execution);
+    let mut root_lock = execution_root_lock(&root)?;
+    let _root_guard = lock_root_for_mutation(&mut root_lock, &root, "undo", session)?;
     let info = resolve_undo_state(&store, &ledger, session)?.ok_or_else(|| {
         CliError::failed(
             "no_undoable_rewind: nothing to undo (no rewind happened, or new turns were created \
@@ -4002,7 +4343,12 @@ fn checkpoints_undo(session: &str, output: OutputMode) -> Result<CliOutcome, Cli
             .map_err(|error| store_error("checkpoints undo", checkpoint_id, error))?;
     }
     let restored_messages = store.restore_rewound_turns(session).map_err(|error| {
-        CliError::failed(format!("code checkpoints undo({session}): {error:#}"))
+        CliError::failed(format!(
+            "code checkpoints undo({session}): the working tree was already restored to rollback \
+             point {}, but restoring the transcript failed: {error:#}. The rewind record was not \
+             consumed, so `checkpoints undo` can be retried",
+            checkpoint_id.as_deref().unwrap_or("-")
+        ))
     })?;
     let value = serde_json::json!({
         "session": session,
@@ -4053,13 +4399,93 @@ mod tests {
     use super::*;
 
     #[test]
-    fn codex_version_gate_requires_leading_digit_run() {
-        // Mirror of `runtime::parse_version`: prefixed output does not parse,
-        // so the gate rejects it exactly like the GUI.
-        assert!(!version_at_least("codex 0.200.0", "0.144.6"));
-        assert!(version_at_least("0.200.0", "0.144.6"));
-        assert!(version_at_least("1.0", "0.144.6"));
-        assert!(!version_at_least("0.14.9", "0.144.6"));
+    fn codex_version_gate_extracts_the_digit_token_like_the_gui() {
+        // Mirror of `runtime::parse_codex_version_output` + `parse_version`:
+        // package-prefixed output ("codex-cli 0.146.0", the format the app
+        // documents) is accepted; only the digit-headed token counts.
+        assert!(version_at_least(
+            codex_version_token("codex-cli 0.146.0"),
+            "0.144.6"
+        ));
+        assert!(!version_at_least(
+            codex_version_token("codex-cli 0.140.0"),
+            "0.144.6"
+        ));
+        assert!(version_at_least(codex_version_token("0.200.0"), "0.144.6"));
+        assert!(version_at_least(codex_version_token("1.0"), "0.144.6"));
+        assert!(!version_at_least(codex_version_token("0.14.9"), "0.144.6"));
+    }
+
+    #[test]
+    fn runtime_owned_predicate_keys_on_provenance_not_envelope_shape() {
+        let message =
+            |blocks: serde_json::Value| serde_json::json!({ "role": "user", "content": blocks });
+        let text = |body: &str| serde_json::json!({ "type": "text", "text": body });
+        // Bare composer envelope (date metadata, no provenance line): a real
+        // turn, not runtime-owned.
+        assert!(!is_runtime_owned_user_message(&message(serde_json::json!(
+            [
+                text("please fix the bug"),
+                text("<turn_meta>\nCurrent local date: 2026-08-12\n</turn_meta>")
+            ]
+        ))));
+        // Non-authoritative provenance (condensed + legacy + restored
+        // subagent shapes): runtime-owned.
+        assert!(is_runtime_owned_user_message(&message(serde_json::json!(
+            [
+                text("plan"),
+                text(
+                    "<turn_meta>\nInput provenance: tool_output (non-authoritative)\n</turn_meta>"
+                )
+            ]
+        ))));
+        // Legacy pair shape: a provenance line plus the legacy authority line
+        // (the authority line alone is not authority, matching the engine).
+        assert!(is_runtime_owned_user_message(&message(serde_json::json!(
+            [
+                text("plan"),
+                text(
+                    "<turn_meta>\nInput provenance: restored_context\nInput authority: non_authoritative\n</turn_meta>"
+                )
+            ]
+        ))));
+        assert!(!is_runtime_owned_user_message(&message(serde_json::json!(
+            [
+                text("plan"),
+                text("<turn_meta>\nInput authority: non_authoritative\n</turn_meta>")
+            ]
+        ))));
+        assert!(is_runtime_owned_user_message(&message(serde_json::json!(
+            [
+                text("[Codewhale restored sub-agent checkpoint] ..."),
+                text(
+                    "<turn_meta>\nInput provenance: subagent_handoff (non-authoritative)\nRestore projection: subagent_checkpoint_v1\n</turn_meta>"
+                )
+            ]
+        ))));
+        // Authoritative provenance (external current turn): a real turn.
+        assert!(!is_runtime_owned_user_message(&message(serde_json::json!(
+            [
+                text("go on"),
+                text("<turn_meta>\nInput provenance: external_current_turn\n</turn_meta>")
+            ]
+        ))));
+        // Legacy leading envelope with ordinary trailing text and
+        // non-authoritative provenance: runtime-owned.
+        assert!(is_runtime_owned_user_message(&message(serde_json::json!(
+            [
+                text(
+                    "<turn_meta>\nInput provenance: restored_context\nInput authority: non_authoritative\n</turn_meta>"
+                ),
+                text("continue")
+            ]
+        ))));
+        // A single user-authored metadata lookalike block is never hidden.
+        assert!(!is_runtime_owned_user_message(&message(serde_json::json!(
+            [text(
+                "<turn_meta>\nInput authority: non_authoritative\n</turn_meta>"
+            )]
+        ))));
     }
 
     #[test]
