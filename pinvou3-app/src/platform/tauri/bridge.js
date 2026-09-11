@@ -2475,6 +2475,10 @@
   const deleteProject = projectsFeature.deleteProject;
   const moveSessionToProject = projectsFeature.moveSessionToProject;
   const ensureFolderProjects = projectsFeature.ensureFolderProjects;
+  const updateProjectRoots = projectsFeature.updateProjectRoots;
+  const setPrimaryRoot = projectsFeature.setPrimaryRoot;
+  const setNeverMaterialize = projectsFeature.setNeverMaterialize;
+  const alignSessionToProject = projectsFeature.alignSessionToProject;
   const rebindWorkspaceRoot = projectsFeature.rebindWorkspaceRoot;
 
   const multiAgentFeature = installBridgeFeature("multiagent", { state, notify, invoke, listen });
@@ -2676,6 +2680,10 @@
       deleteProject,
       moveSessionToProject,
       ensureFolderProjects,
+      updateProjectRoots,
+      setPrimaryRoot,
+      setNeverMaterialize,
+      alignSessionToProject,
       rebindWorkspaceRoot,
     },
     monitor: {

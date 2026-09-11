@@ -30,6 +30,8 @@
       state.projectsList = {
         projects: snapshot.projects,
         assignments: snapshot.assignments || {},
+        // 反物化排除列表(§3,canonical 键数组;POSIX 恒等即路径)。
+        neverMaterializeRoots: snapshot.never_materialize_roots || [],
         loadedAt: Date.now(),
       };
       notify();
@@ -99,6 +101,33 @@
       return outcomes;
     }
 
+    // 管理面板(§4):roots 整组替换(后端对移除根的自动成员写显式移出)。
+    async function updateProjectRoots(projectId, roots) {
+      const updated = await invoke("update_project", { projectId, roots });
+      await loadProjects();
+      return updated;
+    }
+
+    // 项目记忆主文件夹(§9.2):管理面板"设为主文件夹"入口。
+    async function setPrimaryRoot(projectId, root) {
+      const updated = await invoke("update_project", { projectId, lastPrimaryRoot: root });
+      await loadProjects();
+      return updated;
+    }
+
+    // 反物化排除列表(§3):never=true 不再为此文件夹自动建项目;false 撤销。
+    async function setNeverMaterialize(root, never) {
+      const updated = await invoke("projects_set_never_materialize", { root, never: !!never });
+      await loadProjects();
+      return updated;
+    }
+
+    // 对齐到项目(§6/§9.7):会话钥匙串替换为归属项目当时的全部根;类型化
+    // 错误(ALIGN_BUSY/ALIGN_NO_WORKSPACE)直抛给调用方按标记映射文案。
+    async function alignSessionToProject(sessionId) {
+      return invoke("align_session_to_project", { sessionId });
+    }
+
     // 目录重绑定(修断链):confirmExisting 由前端两阶段控制——先不带确认
     // 调用,后端在旧目录仍存在时报特定错误,前端升级为强确认后重试。
     async function rebindWorkspaceRoot(from, to, confirmExisting) {
@@ -118,6 +147,10 @@
       deleteProject,
       moveSessionToProject,
       ensureFolderProjects,
+      updateProjectRoots,
+      setPrimaryRoot,
+      setNeverMaterialize,
+      alignSessionToProject,
       rebindWorkspaceRoot
     };
   };

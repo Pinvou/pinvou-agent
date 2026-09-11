@@ -143,7 +143,10 @@ const expectedProtocolHashes = {
   // invoke (roots payload) joins the projects domain surface. The in-flight
   // refetch race fix (#448 finding 14) merged in without touching the
   // invoke/listen spans, so the digest is unchanged.
-  projects: '96e2ff59198b4cb27751668b84f5d8fde9975b5626c7ead87733fb7e04daf660',
+  // Recomputed again for the manage-folders panel: update_project roots /
+  // lastPrimaryRoot variants, projects_set_never_materialize and
+  // align_session_to_project invokes join the projects domain surface.
+  projects: 'e229ecfb9dc5406a1af647d699089e00fceda44a7c60fe25da5f94777b4e3a4e',
 };
 
 for (const [domain, files] of Object.entries(protocolSources)) {

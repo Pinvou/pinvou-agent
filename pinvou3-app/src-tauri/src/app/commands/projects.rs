@@ -336,6 +336,7 @@ pub struct AlignOutcome {
 #[tauri::command]
 pub async fn align_session_to_project(
     session_id: String,
+    app: AppHandle,
     store: State<'_, ProjectStore>,
     sessions: State<'_, SessionStore>,
     acp_pool: State<'_, AcpPool>,
@@ -435,6 +436,10 @@ pub async fn align_session_to_project(
             }
         }
     }
+    // 列表透出刷新:workspace_roots 随 list_sessions / 代码会话列表下发,
+    // 经既有 session:list_changed 订阅让 chat 车道桥层重取(代码车道由
+    // 前端 align 调用点自行 refreshSessions)。
+    super::sessions::emit_session_event(&app, "session:list_changed", &session_id, "aligned");
     Ok(AlignOutcome {
         session_id,
         roots: next,
