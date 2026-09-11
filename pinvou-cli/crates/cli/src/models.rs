@@ -65,6 +65,7 @@ pub enum ModelsCommand {
     },
     ProbeLocal {
         url: Option<String>,
+        api_key_env: Option<String>,
     },
     SettingsGet {
         key: Option<SettingsKey>,
@@ -448,10 +449,12 @@ pub fn parse(values: &[String]) -> Result<ModelsCommand, CliError> {
             })
         }
         ("models", "probe-local") => {
-            let options = parse_options("models", "probe-local", rest, &["url"], &[])?;
+            let options =
+                parse_options("models", "probe-local", rest, &["url", "api-key-env"], &[])?;
             ensure_no_positionals(&options, "models probe-local")?;
             Ok(ModelsCommand::ProbeLocal {
                 url: options.value("url").map(str::to_owned),
+                api_key_env: options.value("api-key-env").map(str::to_owned),
             })
         }
         ("settings", "get") => {
@@ -612,7 +615,9 @@ pub fn execute(command: ModelsCommand, output: OutputMode) -> Result<CliOutcome,
         ModelsCommand::Use { id } => use_model(&id, output),
         ModelsCommand::Show { id, reveal_key } => show(&id, reveal_key, output),
         ModelsCommand::Test { id } => test_connection(&id, output),
-        ModelsCommand::ProbeLocal { url } => probe_local(url.as_deref(), output),
+        ModelsCommand::ProbeLocal { url, api_key_env } => {
+            probe_local(url.as_deref(), api_key_env.as_deref(), output)
+        }
         ModelsCommand::SettingsGet { key } => settings_get(key, output),
         ModelsCommand::SettingsSet { key, value } => settings_set(key, value, output),
         ModelsCommand::SearchList => search_list(output),
@@ -1316,7 +1321,19 @@ fn select_local_server_kind(base_url: &str, bearer: Option<&str>) -> &'static st
 /// kind. Defaults to the active model's base_url and reuses its stored
 /// credential (mirroring the GUI's credential resolution). Refuses
 /// non-loopback hosts with a usage error before any request is sent.
-fn probe_local(url: Option<&str>, output: OutputMode) -> Result<CliOutcome, CliError> {
+fn probe_local(
+    url: Option<&str>,
+    api_key_env: Option<&str>,
+    output: OutputMode,
+) -> Result<CliOutcome, CliError> {
+    let explicit_key = match api_key_env {
+        Some(var) => Some(std::env::var(var).map_err(|_| {
+            CliError::failed(format!(
+                "probe-local: api key environment variable {var} is not set"
+            ))
+        })?),
+        None => None,
+    };
     let (target, bearer) = match url {
         Some(url) => {
             if !is_loopback_url(url)? {
@@ -1324,7 +1341,9 @@ fn probe_local(url: Option<&str>, output: OutputMode) -> Result<CliOutcome, CliE
                     "probe-local refuses non-loopback urls; pass a 127.0.0.1, ::1 or localhost endpoint",
                 ));
             }
-            (url.to_owned(), None)
+            // An authenticated local endpoint 401s every signature probe and
+            // misclassifies as generic without this (the GUI form key lane).
+            (url.to_owned(), explicit_key)
         }
         None => {
             let prefs = safe_prefs();
@@ -1338,9 +1357,12 @@ fn probe_local(url: Option<&str>, output: OutputMode) -> Result<CliOutcome, CliE
                     model.base_url
                 )));
             }
-            let bearer = resolve_saved_model_key(&model)
-                .map_err(|error| CliError::failed(format!("credential_unavailable: {error}")))?
-                .filter(|key| !key.trim().is_empty());
+            let bearer = explicit_key.or_else(|| {
+                resolve_saved_model_key(&model)
+                    .ok()
+                    .flatten()
+                    .filter(|key| !key.trim().is_empty())
+            });
             (model.base_url, bearer)
         }
     };
@@ -1503,16 +1525,35 @@ fn settings_set(
         Ok(())
     })
     .map_err(prefs_error)?;
+    // The prefs layer may normalize a request back (the memory-locale policy
+    // reverts `memory_enabled true` under a non-zh-Hans UI language); say so
+    // instead of printing a plain success for a no-op.
+    let note = if let (SettingsKey::MemoryEnabled, SettingsValue::Bool(requested)) = (&key, &value)
+    {
+        let effective = UserPrefs::load().memory_enabled;
+        (effective != *requested).then(|| {
+            format!(
+                "note: the memory locale policy kept memory_enabled = {effective} (memory \
+                 features require the zh-Hans UI language)"
+            )
+        })
+    } else {
+        None
+    };
     let key_name = SettingsKey::ALL
         .iter()
         .find(|(_, candidate)| *candidate == key)
         .map(|(name, _)| *name)
         .unwrap_or_default();
-    let text = render(
-        output,
-        format!("{key_name} updated"),
-        &serde_json::json!({ "updated": key_name }),
-    );
+    let human = match &note {
+        Some(note) => format!("{key_name} updated\n{note}"),
+        None => format!("{key_name} updated"),
+    };
+    let value = match note {
+        Some(note) => serde_json::json!({ "updated": key_name, "note": note }),
+        None => serde_json::json!({ "updated": key_name }),
+    };
+    let text = render(output, human, &value);
     Ok(success(text))
 }
 

@@ -25,5 +25,5 @@ pub(crate) mod scheduled;
 pub mod sessions;
 pub mod shared_knowledge_host;
 pub(crate) mod updater;
-pub mod voice;
+pub(crate) mod voice;
 pub(crate) mod voice_shortcut;

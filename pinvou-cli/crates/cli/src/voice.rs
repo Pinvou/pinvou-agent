@@ -508,7 +508,7 @@ fn download_to(url: &str, dest: &Path) -> Result<(), CliError> {
         .user_agent(concat!("pinvou-cli/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| CliError::failed(format!("voice asr-install: client: {error}")))?;
-    let mut response = client
+    let response = client
         .get(url)
         .send()
         .and_then(|response| response.error_for_status())
