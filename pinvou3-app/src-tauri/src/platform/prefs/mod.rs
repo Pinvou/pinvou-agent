@@ -285,6 +285,16 @@ impl SavedModel {
             // 输出上限不再为 LocalVllm 预设强制 24K：未显式配置时与自定义
             // OpenAI 兼容端点同路，由 route_limits_for_model 按窗口分档统一
             // 声明（>=500K→131072 / >=250K→65536 / 否则 min(window/4, 32768)）。
+            // 旧版本的 24K 曾被机器写入存量配置（这里强制补写 + 设置页预填后
+            // 保存），磁盘上无法与用户显式输入区分；把恰好 24576 的本地模型
+            // 视为“遗留的未配置”归一掉，让窗口分档对升级用户同样生效（持久化
+            // 门禁会在 load 时把该归一写回磁盘）。代价：此后在本地模型上显式
+            // 配置 24576 也会被视为未配置——24576 自此保留为遗留哨兵值，与
+            // 上面 <=0 过滤同类。非 LocalVllm 端点的 24576 一律是显式输入，
+            // 不迁移。
+            if self.max_output_tokens == Some(24_576) {
+                self.max_output_tokens = None;
+            }
         }
         // reasoning_effort 归一为底座 `ReasoningEffort::parse_strict` 认识的规范档位
         // （off/low/medium/high/auto/max）。别名（disabled/minimum/light/ultra 等）
@@ -1248,6 +1258,27 @@ mod tests {
         explicit.max_output_tokens = Some(32_768);
         explicit.normalize_route_limits();
         assert_eq!(explicit.max_output_tokens, Some(32_768));
+
+        // 旧版本机器写入的本地 24K（normalize 强制 + 设置页预填）视为遗留的
+        // 未配置，归一为 None 走窗口分档；非 LocalVllm 的 24576 是显式输入，
+        // 原样保留。
+        let mut legacy = local.clone();
+        legacy.max_output_tokens = Some(24_576);
+        legacy.normalize_route_limits();
+        assert_eq!(
+            legacy.max_output_tokens, None,
+            "存量机器写入的本地 24K 归一为未配置，走窗口分档"
+        );
+        let mut custom_legacy = legacy.clone();
+        custom_legacy.preset = ModelPreset::OpenaiCompatible;
+        custom_legacy.provider_kind = Some("custom".into());
+        custom_legacy.max_output_tokens = Some(24_576);
+        custom_legacy.normalize_route_limits();
+        assert_eq!(
+            custom_legacy.max_output_tokens,
+            Some(24_576),
+            "自定义端点的 24576 是显式输入，不迁移"
+        );
 
         let mut custom = local.clone();
         custom.preset = ModelPreset::OpenaiCompatible;

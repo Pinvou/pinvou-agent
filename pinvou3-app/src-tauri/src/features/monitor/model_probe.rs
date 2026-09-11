@@ -670,6 +670,15 @@ pub async fn resolve_served_model(
     }
 }
 
+/// 探测条目的事实（context window / 自报输出上限）是否可被本路由采纳。
+/// 事实必须属于真正发给端点的模型名：跟随 served name 的路由（vLLM，
+/// 名字会被纠偏到条目本身）恒可采纳；不改名的路由仅当配置名精确命中
+/// 列表时采纳——单条目“借名”场景返回的 served 名与配置名无关，其事实
+/// 属于别家模型，不得用来收紧本路由的窗口/输出上限。
+pub fn adopts_probed_facts(follows_served_name: bool, configured: &str, served: &str) -> bool {
+    follows_served_name || served == configured
+}
+
 /// 当前 monitor/探测应使用的 vLLM base_url。
 /// 优先级：环境变量 `DEEPSEEK_BASE_URL` > settings.json `custom_base_url` > 默认值。
 /// 与 Engine 使用的逻辑保持一致（见 `bridge::Pinvou3Bridge::base_url`）。
@@ -721,7 +730,11 @@ mod tests {
         // 复算 derive_compaction_threshold(bridge 私有,此处内联同公式):
         //   E = W − O − 1024;T = (E−S)/1.5 − 22000, clamp[4096, 0.75W]。
         // O=窗口分档声明(>=250K → 65536)。
-        let o = if window >= 250_000 { 65_536 } else { (window / 4).min(32_768) };
+        let o = if window >= 250_000 {
+            65_536
+        } else {
+            (window / 4).min(32_768)
+        };
         let e = (window as usize)
             .saturating_sub(o as usize)
             .saturating_sub(1_024);
@@ -805,8 +818,7 @@ mod tests {
     #[test]
     fn served_model_follows_single_unknown_name() {
         let entries = vec![served_entry("served-name", Some(65536))];
-        let (name, window, output) =
-            resolve_served_model_from_entries("qwen36_35b_256k", &entries);
+        let (name, window, output) = resolve_served_model_from_entries("qwen36_35b_256k", &entries);
         assert_eq!(name, "served-name");
         assert_eq!(window, Some(65536));
         assert_eq!(output, None);
@@ -833,8 +845,7 @@ mod tests {
     #[test]
     fn served_model_single_entry_equal_to_configured_keeps_name_and_window() {
         let entries = vec![served_entry("qwen36_35b_256k", Some(262_144))];
-        let (name, window, output) =
-            resolve_served_model_from_entries("qwen36_35b_256k", &entries);
+        let (name, window, output) = resolve_served_model_from_entries("qwen36_35b_256k", &entries);
         assert_eq!(name, "qwen36_35b_256k");
         assert_eq!(window, Some(262_144));
         assert_eq!(output, None);
@@ -870,6 +881,27 @@ mod tests {
         // 未匹配 → 不借别的模型的输出上限
         let (_, _, borrowed) = resolve_served_model_from_entries("gone", &entries);
         assert_eq!(borrowed, None);
+    }
+
+    /// 探测事实只属于真正被请求的模型名：跟随 served name 的路由（vLLM，
+    /// 名字被纠偏到条目本身）恒可采纳；不改名的路由仅配置名精确命中时
+    /// 采纳，单条目“借名”场景的事实不得张冠李戴。
+    #[test]
+    fn probed_facts_adoptable_only_on_exact_match_unless_route_follows_served_name() {
+        // vLLM：纠偏后事实与最终请求名同源，恒采纳（含纠偏前后的两种输入）。
+        assert!(adopts_probed_facts(true, "qwen36_35b_256k", "served-name"));
+        assert!(adopts_probed_facts(
+            true,
+            "qwen36_35b_256k",
+            "qwen36_35b_256k"
+        ));
+        // 非 vLLM：精确命中可采纳；单条目借名不可。
+        assert!(adopts_probed_facts(false, "user-picked", "user-picked"));
+        assert!(!adopts_probed_facts(
+            false,
+            "user-picked",
+            "first-downloaded"
+        ));
     }
 
     #[test]

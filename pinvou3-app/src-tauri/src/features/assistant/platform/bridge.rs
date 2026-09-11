@@ -1284,10 +1284,10 @@ impl Pinvou3Bridge {
     /// 模型 catalog，未知本地 vLLM 才使用 128K 保守值。
     /// output_tokens: operator-owned 端点（本地 vLLM、自定义 OpenAI 兼容 / custom，
     /// coding_plan 除外）按窗口分档统一声明 —— >=500K→131072，>=250K→65536，
-    /// 否则 min(window/4, 32768)，无窗口事实按 128K 兜底（→32768）；再被端点
-    /// 自报输出上限（probe）与窗口余量 min 收紧。云端 preset 与 coding_plan
-    /// 一律不声明（SavedModel.max_output_tokens 默认 None），交底座按厂商
-    /// 能力 / 保守猜测兜底。
+    /// 否则 min(window/4, 32768)，无窗口事实按 128K 兜底的 1/4（→32768）；
+    /// 再被端点自报输出上限（probe）与窗口余量 min 收紧。云端 preset 与
+    /// coding_plan 一律不声明（SavedModel.max_output_tokens 默认 None），
+    /// 交底座按厂商能力 / 保守猜测兜底。
     fn route_limits_for_model(&self, model: &str) -> Option<codewhale_config::route::RouteLimits> {
         let saved = self.effective_model().filter(|saved| saved.model == model);
         let configured_context = saved.and_then(|saved| saved.context_window_tokens);
@@ -1305,12 +1305,15 @@ impl Pinvou3Bridge {
         // 语义）对未编目模型 fail-close 到 8192 保守猜测、仅在有显式
         // output_tokens 事实时替换——宿主作为部署者的代理，按窗口分档代为
         // 声明该 route 事实：>=500K→131072，>=250K→65536，否则
-        // min(window/4, 32768)；无窗口事实按底座同款 128K 兜底（→32768）。
+        // min(window/4, 32768)；无窗口事实声明 128K 默认窗口的 1/4（32768，
+        // 非底座自身数值：底座模型级兜底 64000、路由级 fail-close ≤8192，
+        // min(64000, 32768) 后恰好生效 32768）。本地 vLLM 无探测时 128K
+        // 兜底会先成为窗口事实（is_local_vllm 分支），落 32000 而非本兜底。
         // 声明的是端点能力，不是 Pinvou 单轮预算，因此不参与进程级
         // max_output_tokens()（24K）的钳制——与已收录云端模型同权；用户可以
         // 通过 SavedModel.max_output_tokens 显式收紧（configured_output 优先）。
-        let is_operator_owned_endpoint = saved
-            .is_some_and(|saved| saved.is_operator_owned_endpoint());
+        let is_operator_owned_endpoint =
+            saved.is_some_and(|saved| saved.is_operator_owned_endpoint());
         let output_tokens = configured_output
             .map(|tokens| tokens.min(self.max_output_tokens()))
             .or_else(|| {
@@ -4883,7 +4886,8 @@ mod tests {
 
     /// Operator-owned 输出声明的统一窗口分档（本地 vLLM 与自定义 OpenAI 兼容
     /// / custom 同一套）：>=500K→131072，>=250K→65536，否则
-    /// min(window/4, 32768)；无窗口事实按 128K 兜底 → 32768。
+    /// min(window/4, 32768)；无窗口事实按 128K 默认窗口的 1/4 → 32768
+    /// （经底座 min(requested_cap=64000, route_cap) 后恰为生效值）。
     #[test]
     fn operator_owned_output_tiers_by_window() {
         let (_lock, _env) =
@@ -4913,16 +4917,8 @@ mod tests {
             Some(65_536),
             "<500K 落 250K 档"
         );
-        assert_eq!(
-            declared_for(Some(262_144)),
-            Some(65_536),
-            "256K → 65536"
-        );
-        assert_eq!(
-            declared_for(Some(250_000)),
-            Some(65_536),
-            ">=250K 档含边界"
-        );
+        assert_eq!(declared_for(Some(262_144)), Some(65_536), "256K → 65536");
+        assert_eq!(declared_for(Some(250_000)), Some(65_536), ">=250K 档含边界");
         assert_eq!(
             declared_for(Some(249_999)),
             Some(32_768),
@@ -4943,7 +4939,7 @@ mod tests {
         assert_eq!(
             declared_for(None),
             Some(32_768),
-            "无窗口事实按底座 128K 兜底 → 32768"
+            "无窗口事实按 128K 默认窗口的 1/4 声明 → 32768"
         );
     }
 
@@ -4995,6 +4991,41 @@ mod tests {
                 .and_then(|l| l.output_tokens),
             Some(32_768),
             "自报上限只收紧不抬高（131072→32768 不变）"
+        );
+    }
+
+    /// LocalVllm 预设与自定义端点同吃分档 + 自报 min 收紧：默认 262144
+    /// 窗口的分档声明 65536 被自报 32768 收紧；自报高于声明时不抬高。
+    /// （probed_output_tokens 的生产注入在 engine_pool spawn，本测试钉住
+    /// bridge 侧对本地预设的消费语义。）
+    #[test]
+    fn probed_output_limit_tightens_local_vllm_tiers() {
+        let (_lock, _env) =
+            locked_env(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
+        let mut local = fixture_bridge();
+        set_active_model(
+            &mut local,
+            ModelPreset::LocalVllm,
+            ModelPreset::LocalVllm.default_model(),
+            ModelPreset::LocalVllm.default_base_url(),
+            "",
+        );
+        local.probed_output_tokens = Some(32_768);
+        assert_eq!(
+            local
+                .route_limits_for_model(&local.model())
+                .and_then(|l| l.output_tokens),
+            Some(32_768),
+            "本地 vLLM 分档 65536 被端点自报 32768 收紧"
+        );
+        let mut laxer = local;
+        laxer.probed_output_tokens = Some(1_048_576);
+        assert_eq!(
+            laxer
+                .route_limits_for_model(&laxer.model())
+                .and_then(|l| l.output_tokens),
+            Some(65_536),
+            "自报上限只收紧不抬高（本地 262144→65536 不变）"
         );
     }
 

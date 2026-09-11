@@ -1152,8 +1152,10 @@ impl EnginePool {
         // (resolve_served_model)：配置名在服务列表里必须原样保留——LM
         // Studio/Ollama 会列出全部已下载模型，首条与用户选择无关，替换配置名
         // 正是"会话叫 A、引擎载 B"断链的根因；仅单模型服务且不含配置名时才
-        // 跟随 served name。非 vLLM 的 operator-owned 路由不做名字纠偏，
-        // 只取事实。云端 preset 与 coding_plan 不是 operator-owned，不探测。
+        // 跟随 served name。非 vLLM 的 operator-owned 路由不做名字纠偏，也
+        // 仅在配置名精确命中列表时采纳事实（`adopts_probed_facts`）——单条目
+        // "借名"场景的事实属于别家模型，不得张冠李戴。云端 preset 与
+        // coding_plan 不是 operator-owned，不探测。
         let is_vllm_route = bridge.provider() == "vllm";
         if let Some(mut model) = bridge.effective_model_owned() {
             let operator_owned = model.is_operator_owned_endpoint();
@@ -1161,19 +1163,25 @@ impl EnginePool {
                 // 探测与真实推理同源携带凭据（带鉴权的端点 `/v1/models` 无凭据
                 // 会 401；探测失败保留配置值）。
                 let api_key = bridge.api_key();
-                let (served, max_len, max_output) =
-                    crate::features::monitor::resolve_served_model(
-                        &bridge.base_url(),
-                        Some(api_key.as_str()),
-                        &model.model,
-                    )
-                    .await;
+                let (served, max_len, max_output) = crate::features::monitor::resolve_served_model(
+                    &bridge.base_url(),
+                    Some(api_key.as_str()),
+                    &model.model,
+                )
+                .await;
+                let adopts = crate::features::monitor::adopts_probed_facts(
+                    is_vllm_route,
+                    &model.model,
+                    &served,
+                );
                 if is_vllm_route && served != model.model && !pins_scheduled_model {
                     model.model = served;
                     bridge.session_model = Some(model);
                 }
-                bridge.probed_context_tokens = max_len;
-                bridge.probed_output_tokens = max_output;
+                if adopts {
+                    bridge.probed_context_tokens = max_len;
+                    bridge.probed_output_tokens = max_output;
+                }
             }
         }
         bridge

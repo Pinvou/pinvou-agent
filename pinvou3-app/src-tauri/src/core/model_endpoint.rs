@@ -45,6 +45,12 @@ pub struct OpenAiModelsProbe {
     pub models: Vec<OpenAiModelInfo>,
 }
 
+/// u64 JSON 数值 → 正 u32。超出 u32 的自报值一律按未声明处理：`as u32`
+/// 会把 2^32 截成 0、2^32+5 截成 5，让下游把损坏值当真限；非正数同理无效。
+fn parse_positive_u32(v: &serde_json::Value) -> Option<u32> {
+    u32::try_from(v.as_u64()?).ok().filter(|n| *n > 0)
+}
+
 pub(crate) fn parse_models_response_list(v: serde_json::Value) -> Option<Vec<OpenAiModelInfo>> {
     let data = v.get("data")?.as_array()?;
     let models = data
@@ -54,10 +60,7 @@ pub(crate) fn parse_models_response_list(v: serde_json::Value) -> Option<Vec<Ope
             if id.is_empty() {
                 return None;
             }
-            let max_model_len = item
-                .get("max_model_len")
-                .and_then(|v| v.as_u64())
-                .map(|n| n as u32);
+            let max_model_len = item.get("max_model_len").and_then(parse_positive_u32);
             Some(OpenAiModelInfo {
                 id: id.to_string(),
                 max_model_len,
@@ -77,18 +80,11 @@ pub(crate) fn parse_models_response_list(v: serde_json::Value) -> Option<Vec<Ope
 fn parse_entry_output_limit(item: &serde_json::Value) -> Option<u32> {
     let direct = ["max_output_tokens", "max_completion_tokens"]
         .into_iter()
-        .find_map(|key| {
-            item.get(key)
-                .and_then(|v| v.as_u64())
-                .filter(|n| *n > 0)
-                .map(|n| n as u32)
-        });
+        .find_map(|key| item.get(key).and_then(parse_positive_u32));
     direct.or_else(|| {
         item.get("top_provider")?
             .get("max_completion_tokens")
-            .and_then(|v| v.as_u64())
-            .filter(|n| *n > 0)
-            .map(|n| n as u32)
+            .and_then(parse_positive_u32)
     })
 }
 
@@ -990,6 +986,45 @@ mod tests {
         assert_eq!(output_of("zero-invalid"), None);
         // max_model_len 是 context window，不是输出上限
         assert_eq!(output_of("plain-vllm"), None);
+    }
+
+    /// 解析健壮性：超出 u32 的自报值（`as u32` 会截成 0 或小值，让损坏值
+    /// 被当真限）与浮点/负数/字符串形态一律按未声明处理；max_model_len
+    /// 的 0 值与超界值同样拒绝。
+    #[test]
+    fn parse_models_response_list_rejects_out_of_range_and_malformed_values() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"object":"list","data":[
+                {"id":"u64-overflow","max_output_tokens":4294967296},
+                {"id":"u64-overflow-plus","max_completion_tokens":4294967301},
+                {"id":"top-provider-overflow","top_provider":{"max_completion_tokens":4294967296}},
+                {"id":"float-form","max_output_tokens":65536.0},
+                {"id":"negative","max_output_tokens":-1},
+                {"id":"string-form","max_output_tokens":"65536"},
+                {"id":"zero-context","max_model_len":0},
+                {"id":"overflow-context","max_model_len":4294967296}
+            ]}"#,
+        )
+        .unwrap();
+        let models = parse_models_response_list(json).unwrap();
+        for id in [
+            "u64-overflow",
+            "u64-overflow-plus",
+            "top-provider-overflow",
+            "float-form",
+            "negative",
+            "string-form",
+        ] {
+            let model = models.iter().find(|m| m.id == id).unwrap();
+            assert_eq!(model.max_output_tokens, None, "{id} 必须按未声明处理");
+        }
+        let zero_context = models.iter().find(|m| m.id == "zero-context").unwrap();
+        assert_eq!(zero_context.max_model_len, None, "0 窗口不是事实");
+        let overflow_context = models.iter().find(|m| m.id == "overflow-context").unwrap();
+        assert_eq!(
+            overflow_context.max_model_len, None,
+            "超 u32 窗口不得截断成假值"
+        );
     }
 
     #[test]
