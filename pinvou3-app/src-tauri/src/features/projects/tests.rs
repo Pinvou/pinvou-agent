@@ -543,7 +543,7 @@ fn ensure_creates_basename_named_folder_projects_idempotently() {
     assert_eq!(store.list().len(), 2);
 
     // 手工项目引用的文件夹不算锚定覆盖(§9.9):浏览通道一律新建同名物化
-    /// 项目,重叠合法并存(详见 ensure_anchor_reuse_only_for_folder_anchored_projects)。
+    // 项目,重叠合法并存(详见 ensure_anchor_reuse_only_for_folder_anchored_projects)。
     let manual = create(&store, "手工", &[abs("manual/root")]);
     let covered = ensure(&store, &[abs("manual/root")]);
     assert!(matches!(&covered[0], super::EnsureFolderOutcome::Created { project }

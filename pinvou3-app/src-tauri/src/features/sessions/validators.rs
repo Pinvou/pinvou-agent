@@ -100,6 +100,33 @@ pub(crate) fn validate_user_workspace_path(raw: &str) -> Result<PathBuf> {
     ))
 }
 
+/// 钥匙串快照(§6)的入参校验:每个附加根必须绝对路径(硬拒,与 cwd 同闸);
+/// 不存在/非目录只记软警告——参照 rebind 的既有模式,目标目录可能被移走
+/// 后重建,快照如实记录用户当时的选择,引擎侧对不存在根的写豁免自然落空。
+/// canonicalize 成功的用 canonical 形态(消 symlink/verbatim 前缀,与
+/// validate_user_workspace_path 同不变量),失败保留词法原值。
+pub(crate) fn validate_workspace_roots(raw: Vec<String>) -> Result<Vec<PathBuf>, String> {
+    let mut roots = Vec::with_capacity(raw.len());
+    for entry in raw {
+        let path = PathBuf::from(&entry);
+        if !path.is_absolute() {
+            return Err(format!("workspace root must be absolute: {entry}"));
+        }
+        match path.canonicalize() {
+            Ok(canonical) if canonical.is_dir() => {
+                roots.push(crate::platform::os::platform_compat_path(
+                    &canonical.to_string_lossy(),
+                ));
+            }
+            _ => {
+                eprintln!("[sessions] workspace root not an existing directory (kept as-is): {entry}");
+                roots.push(path);
+            }
+        }
+    }
+    Ok(roots)
+}
+
 pub(crate) fn persisted_system_prompt(system_prompt: Option<&SystemPrompt>) -> Option<String> {
     match system_prompt {
         Some(SystemPrompt::Text(text)) => Some(text.clone()),

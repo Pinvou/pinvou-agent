@@ -1,4 +1,5 @@
 use super::prelude::*;
+use crate::features::projects::ProjectStore;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize)]
@@ -369,21 +370,32 @@ pub(super) fn create_session_record(
 pub async fn create_session(
     set_active: Option<bool>,
     workspace_path: Option<String>,
+    workspace_roots: Option<Vec<String>>,
+    project_id: Option<String>,
     app: AppHandle,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
+    projects: State<'_, ProjectStore>,
 ) -> Result<SessionMetadata, String> {
     let workspace = workspace_path
         .as_deref()
         .map(crate::features::sessions::validate_user_workspace_path)
         .transpose()
         .map_err(|e| format!("create_session: invalid workspace_path: {e:#}"))?;
+    // 钥匙串快照(§6):绝对路径硬拒;不存在的目录软警告保留(参照 rebind
+    // 的宽松语义,附加根可能稍后重建)。空/未传 = 单根(仅 cwd)。
+    let roots = crate::features::sessions::validate_workspace_roots(
+        workspace_roots.unwrap_or_default(),
+    )
+    .map_err(|e| format!("create_session: invalid workspace_roots: {e:#}"))?;
     let metadata =
         create_session_record(set_active.unwrap_or(true), &store, &pool, workspace.clone())?;
-    if let Some(workspace) = workspace {
+    if let Some(workspace) = workspace.clone() {
         // 绑定落盘失败不能留下「看似创建成功、重启后 execution 根回退私有目录」
         // 的会话:回滚删除刚建的空 session(参照 create_new 的 rollback 风格)。
-        if let Err(error) = store.bind_session_workspace(&metadata.id, workspace) {
+        if let Err(error) =
+            store.bind_session_workspace_with_roots(&metadata.id, workspace.clone(), roots)
+        {
             let rollback = store.delete(&metadata.id);
             return Err(match rollback {
                 Ok(()) => format!("create_session: bind workspace: {error:#}"),
@@ -392,6 +404,16 @@ pub async fn create_session(
                     metadata.id
                 ),
             });
+        }
+        // 项目通道(§9.3):创建即更新项目记忆主文件夹。后端同命令内写比
+        // 前端补一发 update_project 更原子(免二次 RPC/漏写);记忆写失败
+        // 不影响会话创建本身(下次创建重试),只记日志。
+        if let Some(project_id) = project_id {
+            if let Err(error) = projects.set_last_primary_root(&project_id, &workspace) {
+                eprintln!(
+                    "[sessions] create_session: record last_primary_root failed: {error:#}"
+                );
+            }
         }
     }
     emit_session_event(&app, "session:list_changed", &metadata.id, "created");
