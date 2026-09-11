@@ -272,9 +272,8 @@ fn model_path() -> PathBuf {
     asr_dir().join(model_spec().filename)
 }
 
-/// CLI mirror of `voice_asr::model_file_verified` without the sha256 lane:
-/// the expected byte size is checked, the digest cannot be (no hash
-/// dependency in this crate) — disclosed in the module docs.
+/// Fast availability probe: the expected byte size (the sha256 digest is
+/// verified by the download itself, mirroring `model_file_verified`).
 fn model_available() -> bool {
     std::fs::metadata(model_path())
         .map(|meta| meta.len() == model_spec().expected_size)
@@ -295,7 +294,9 @@ fn ffmpeg_available() -> bool {
 /// reports the system Speech runtime as present (`asr_bundled_runtime_status`
 /// → `Some(true)`), other platforms check engine + ffmpeg + model files.
 fn asr_components() -> (bool, bool, bool, bool) {
-    let installable = cfg!(target_os = "linux");
+    // The app's Windows status reports installable from the same external
+    // tool probe; macOS needs no installation; Linux uses the installer.
+    let installable = cfg!(target_os = "linux") || cfg!(target_os = "windows");
     if cfg!(target_os = "macos") {
         // System Speech needs no engine binary, model file, or ffmpeg.
         return (true, true, true, installable);
@@ -316,8 +317,14 @@ fn external_asr_command() -> Option<PathBuf> {
         "PADDLESPEECH_BIN",
     ] {
         if let Ok(path) = std::env::var(name) {
+            // Mirror `asr_tool_exists`: a configured path counts only when it
+            // exists, otherwise asr-status would report ready for a missing
+            // tool.
             if !path.trim().is_empty() {
-                return Some(PathBuf::from(path));
+                let configured = PathBuf::from(path.trim());
+                if configured.is_file() {
+                    return Some(configured);
+                }
             }
         }
     }
@@ -334,22 +341,26 @@ fn command_exists(command: &Path) -> bool {
     let Some(path_var) = std::env::var_os("PATH") else {
         return false;
     };
+    let name = command.to_string_lossy().into_owned();
+    let candidates = crate::support::binary_candidates(&name);
     std::env::split_paths(&path_var).any(|dir| {
-        let candidate = dir.join(command);
-        if !candidate.is_file() {
-            return false;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::metadata(&candidate)
-                .map(|meta| meta.permissions().mode() & 0o111 != 0)
-                .unwrap_or(false)
-        }
-        #[cfg(not(unix))]
-        {
-            true
-        }
+        candidates.iter().any(|candidate| {
+            let path = dir.join(candidate);
+            if !path.is_file() {
+                return false;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::metadata(&path)
+                    .map(|meta| meta.permissions().mode() & 0o111 != 0)
+                    .unwrap_or(false)
+            }
+            #[cfg(not(unix))]
+            {
+                true
+            }
+        })
     })
 }
 
@@ -413,8 +424,9 @@ fn asr_status(output: OutputMode) -> Result<CliOutcome, CliError> {
 /// Linux install lane: missing ffmpeg goes through the same public
 /// `features::dependencies::install_dependencies` call the GUI platform
 /// adapter makes (pkexec/apt), then the SenseVoice model is downloaded from
-/// the primary URL with the mirror as fallback. The CLI verifies the expected
-/// byte size only (sha256 lane is crate-private; disclosed).
+/// the primary URL with the mirror as fallback (a `PINVOU3_ASR_MODEL_URL`
+/// override wins, like the app's `model_download_urls`). The download is
+/// staged, size-capped, and sha256-verified against the pinned digest.
 fn asr_install(output: OutputMode) -> Result<CliOutcome, CliError> {
     if !cfg!(target_os = "linux") {
         return Err(CliError::failed(
@@ -457,24 +469,43 @@ fn download_asr_model() -> Result<PathBuf, CliError> {
     std::fs::create_dir_all(asr_dir()).map_err(|error| {
         CliError::failed(format!("voice asr-install: cannot create asr dir: {error}"))
     })?;
-    for url in [spec.primary_url, spec.mirror_url] {
-        if download_to(url, &dest).is_ok() {
-            if let Ok(meta) = std::fs::metadata(&dest) {
-                if meta.len() == spec.expected_size {
-                    return Ok(dest);
-                }
-            }
+    // The app's `model_download_urls` honors this override; mirror it.
+    let custom = std::env::var("PINVOU3_ASR_MODEL_URL")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let mut urls: Vec<&str> = Vec::new();
+    if let Some(custom) = custom.as_deref() {
+        urls.push(custom);
+    }
+    urls.push(spec.primary_url);
+    urls.push(spec.mirror_url);
+    for url in urls {
+        if download_to(url, &dest).is_ok() && file_is_sha256(&dest, spec.sha256) {
+            return Ok(dest);
         }
         let _ = std::fs::remove_file(&dest);
     }
     Err(CliError::failed(
-        "voice asr-install: model download failed or size mismatch; verify manually and retry",
+        "voice asr-install: model download failed or checksum mismatch; verify manually and retry",
     ))
 }
 
+fn file_is_sha256(path: &Path, expected: &str) -> bool {
+    pinvou3_lib::platform::connector_lock::file_sha256_hex(path)
+        .map(|actual| actual == expected)
+        .unwrap_or(false)
+}
+
 fn download_to(url: &str, dest: &Path) -> Result<(), CliError> {
+    // Staged through a .part sibling and size-capped: a crashed or hostile
+    // download must never leave a truncated/garbage file at the real path
+    // (the checksum gate below still has final say).
+    let part = dest.with_extension("part");
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(600))
+        .connect_timeout(Duration::from_secs(30))
+        .user_agent(concat!("pinvou-cli/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| CliError::failed(format!("voice asr-install: client: {error}")))?;
     let mut response = client
@@ -482,17 +513,66 @@ fn download_to(url: &str, dest: &Path) -> Result<(), CliError> {
         .send()
         .and_then(|response| response.error_for_status())
         .map_err(|error| CliError::failed(format!("voice asr-install: download: {error}")))?;
-    let mut file = std::fs::File::create(dest).map_err(|error| {
-        CliError::failed(format!("voice asr-install: {}: {error}", dest.display()))
-    })?;
-    std::io::copy(&mut response, &mut file)
-        .map_err(|error| CliError::failed(format!("voice asr-install: write: {error}")))?;
+    let result = (|| -> Result<(), CliError> {
+        use std::io::Read as _;
+        let mut file = std::fs::File::create(&part).map_err(|error| {
+            CliError::failed(format!("voice asr-install: {}: {error}", part.display()))
+        })?;
+        let mut reader = response.take(MAX_DOWNLOAD_BYTES + 1);
+        std::io::copy(&mut reader, &mut file)
+            .map_err(|error| CliError::failed(format!("voice asr-install: write: {error}")))?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = std::fs::remove_file(&part);
+        return Err(error);
+    }
+    let size = std::fs::metadata(&part)
+        .map(|meta| meta.len())
+        .map_err(|error| CliError::failed(format!("voice asr-install: stat: {error}")))?;
+    if size > MAX_DOWNLOAD_BYTES {
+        let _ = std::fs::remove_file(&part);
+        return Err(CliError::failed(
+            "voice asr-install: model exceeds the size cap",
+        ));
+    }
+    std::fs::rename(&part, dest)
+        .map_err(|error| CliError::failed(format!("voice asr-install: finish: {error}")))?;
     Ok(())
 }
 
+/// Hard upper bound for one model download (largest expected model is ~254
+/// MiB; the cap exists so a hostile mirror cannot balloon the disk).
+const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
+
 // ─────────────────────────── transcribe ────────────────────────────────────
 
+/// Mirror of the GUI's decoded-audio cap (`recording_too_long`).
+const MAX_TRANSCRIBE_BYTES: usize = 4 * 1024 * 1024;
+
 fn transcribe(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
+    // Fail fast on missing ASR before loading the file into memory.
+    let (engine, ffmpeg, model, _) = asr_components();
+    if !cfg!(target_os = "macos")
+        && !(engine && ffmpeg && model)
+        && external_asr_command().is_none()
+    {
+        return Err(CliError::failed(
+            "asr_engine_missing: local speech recognition is not installed \
+             (hint: run `pinvou voice asr-status`)",
+        ));
+    }
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        CliError::failed(format!(
+            "voice transcribe: cannot read {}: {error}",
+            path.display()
+        ))
+    })?;
+    if metadata.len() > MAX_TRANSCRIBE_BYTES as u64 {
+        return Err(CliError::failed(
+            "recording_too_long: recording exceeds the 4 MiB transcription cap",
+        ));
+    }
     let audio = std::fs::read(path).map_err(|error| {
         CliError::failed(format!(
             "voice transcribe: cannot read {}: {error}",
@@ -522,7 +602,24 @@ fn write_temp_wav(bytes: &[u8]) -> Result<PathBuf, CliError> {
         "pinvou-cli-voice-{}-{nonce}.wav",
         std::process::id()
     ));
-    std::fs::write(&path, bytes).map_err(|error| {
+    // Private audio: 0600 + exclusive create (the app replaced this exact
+    // hand-built temp pattern with NamedTempFile for the same reason — the
+    // tempfile crate is not available here, so mirror its guarantees).
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|error| {
+            CliError::failed(format!("voice transcribe: cannot stage audio: {error}"))
+        })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(
+            |error| CliError::failed(format!("voice transcribe: cannot stage audio: {error}")),
+        )?;
+    }
+    std::io::Write::write_all(&mut file, bytes).map_err(|error| {
         CliError::failed(format!("voice transcribe: cannot stage audio: {error}"))
     })?;
     Ok(path)
@@ -534,7 +631,11 @@ fn write_temp_wav(bytes: &[u8]) -> Result<PathBuf, CliError> {
 /// the error names `pinvou voice asr-status` as the hint.
 fn run_recognition(wav: &Path) -> Result<(String, &'static str), CliError> {
     if cfg!(target_os = "linux") && engine_path().is_some() && model_available() {
-        return native_engine_transcribe(wav).map(|text| (text, "sensevoice-local"));
+        // GUI parity: a failing native lane falls back to the env-configured
+        // external ASR CLI before giving up.
+        if let Ok(text) = native_engine_transcribe(wav) {
+            return Ok((text, "sensevoice-local"));
+        }
     }
     match external_asr_command() {
         Some(command) => external_cli_transcribe(&command, wav).map(|text| (text, "local_cli")),
@@ -633,7 +734,8 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
         .filter(|secs| *secs > 0)
         .unwrap_or(60);
 
-    let mut child = std::process::Command::new(command)
+    let mut command_line = std::process::Command::new(command);
+    command_line
         .arg("asr")
         .arg("--model")
         .arg(&model)
@@ -643,20 +745,31 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
         .arg(wav)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                CliError::failed(
-                    "asr_engine_missing: local speech recognition is not installed \
+        .stderr(Stdio::piped());
+    // Mirror the GUI: the engine's own model path is passed through the env
+    // when it is installed locally.
+    if model_available() {
+        command_line.env("PINVOU3_SENSEVOICE_MODEL", model_path());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt as _;
+        // CREATE_NO_WINDOW — same console hygiene as the app's spawns.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command_line.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = command_line.spawn().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            CliError::failed(
+                "asr_engine_missing: local speech recognition is not installed \
                      (hint: run `pinvou voice asr-status`)",
-                )
-            } else {
-                CliError::failed(format!(
-                    "asr_engine_start_failed: ASR engine failed to start: {error}"
-                ))
-            }
-        })?;
+            )
+        } else {
+            CliError::failed(format!(
+                "asr_engine_start_failed: ASR engine failed to start: {error}"
+            ))
+        }
+    })?;
 
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
@@ -718,11 +831,11 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
     })
 }
 
-/// Simplified mirror of `features::voice::transcript::parse_asr_transcript`:
-/// recognizes JSON `{"text": …}` lines, `[0.00s → 2.10s] …` timestamped
-/// segments, and plain final text lines; the last usable line wins, stdout is
-/// preferred over stderr. Engine-specific log formats beyond these shapes are
-/// not parsed (disclosed in the module docs).
+/// Mirror of `features::voice::transcript::parse_asr_transcript` (JSON
+/// `{"text": …}` lines, `[0.00s → 2.10s] …` timestamped segments, and plain
+/// final text lines; the last usable line wins, stdout preferred over
+/// stderr) including the GUI's log/status line filters, so engine noise like
+/// `system_info: …` or `Done in 3.2s` is never returned as the transcript.
 fn extract_transcript(stdout: &str, stderr: &str) -> Option<String> {
     let usable = |text: &str| text.chars().any(|ch| ch.is_alphanumeric());
     let clean = |line: &str| -> Option<String> {
@@ -736,16 +849,28 @@ fn extract_transcript(stdout: &str, stderr: &str) -> Option<String> {
             }
             return None;
         }
-        // Timestamped segment shapes: "[0.00s -> 2.10s] text" / "[00:00.000 --> 00:02.100] text".
-        let without_time = if line.starts_with('[') {
-            line.find(']')
-                .map(|end| line[end + 1..].trim())
-                .unwrap_or(line)
+        // Timestamped segment shapes ("[0.00s -> 2.10s] text" /
+        // "[00:00.000 --> 00:02.100] text") are recognized before the log
+        // filters — the GUI parses segments first for the same reason.
+        let bracket = line.starts_with('[');
+        let stamp_end = line.find(']');
+        let is_segment = bracket
+            && stamp_end
+                .map(|end| line[..end].contains("->"))
+                .unwrap_or(false);
+        if !is_segment && (looks_like_log_line(line) || looks_like_plain_status(line)) {
+            return None;
+        }
+        let without_time = if bracket {
+            stamp_end.map(|end| line[end + 1..].trim()).unwrap_or(line)
         } else {
             line
         };
         let candidate = without_time.trim();
-        (usable(candidate) && !candidate.contains("-->")).then(|| candidate.to_owned())
+        if candidate.is_empty() || candidate.contains("-->") {
+            return None;
+        }
+        usable(candidate).then(|| candidate.to_owned())
     };
     for stream in [stdout, stderr] {
         for line in stream.lines().rev() {
@@ -755,6 +880,38 @@ fn extract_transcript(stdout: &str, stderr: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Simplified port of `transcript::looks_like_log_line`: engine/runtime noise
+/// that must never surface as recognized speech.
+fn looks_like_log_line(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("error")
+        || lower.contains("warning")
+        || lower.contains("paddlespeech")
+        || lower.contains("sensevoice")
+        || lower.contains("funasr")
+        || lower.contains("gguf")
+        || lower.contains("python")
+        || lower.contains("download")
+        || lower == "done"
+        || lower.starts_with("done in ")
+        || (lower.starts_with("using ") && lower.contains("thread"))
+        || lower.starts_with("system_info")
+        || lower.starts_with('[')
+}
+
+/// Simplified port of `transcript::looks_like_plain_status`: progress /
+/// loading / subtitle-timing shapes.
+fn looks_like_plain_status(line: &str) -> bool {
+    let trimmed = line.trim().trim_matches(['[', ']', '(', ')']);
+    let lower = trimmed.to_ascii_lowercase();
+    ["progress:", "progress ", "loading:", "loading ", "processed:", "processed "]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+        // Subtitle timing: "00:00:01,000 --> 00:00:04,000" (already excluded
+        // by the --> check for candidates, but the raw line itself is status).
+        || lower.contains("-->")
 }
 
 // ─────────────────────────── postprocess ───────────────────────────────────
@@ -776,7 +933,19 @@ fn postprocess_prompt(mode: PostprocessMode) -> &'static str {
 7. 用户要求替换实体时，只做对应替换。
 8. 如果修改指令为空、纯噪声或无法理解，输出原文。
 9. 只输出最终文本，不解释，不包裹代码块。
-10. 输入用 <<<…>>> 定界符分段：DRAFT_TEXT 是输入框正文，ASR_TEXT 是规则纠错后的修改指令，ASR_RAW（如有）是原始识别；纠错可能有误，可参考原始识别恢复被误纠的内容。"#
+10. 输入用 <<<…>>> 定界符分段：DRAFT_TEXT 是输入框正文，ASR_TEXT 是规则纠错后的修改指令，ASR_RAW（如有）是原始识别；纠错可能有误，可参考原始识别恢复被误纠的内容。
+
+示例：
+当前输入框已有文本：
+帮我整理会议纪要，提取风险和待办，明天发给团队。
+
+ASR 文本：
+把它改成三条要点。
+
+最终文本：
+- 整理会议纪要。
+- 提取风险和待办。
+- 明天发给团队。"#
         }
         PostprocessMode::Task => {
             r#"你是 Pinvou 的语音任务纠错器。你的唯一职责是把 ASR 文本纠正为用户原本想交给 Agent 执行的任务。
@@ -790,11 +959,34 @@ fn postprocess_prompt(mode: PostprocessMode) -> &'static str {
 6. 禁止截断句子；如果不确定，只做最小纠错并保留原句结构。
 7. 英文实体、模型名、产品名和 API 名称要尽量标准化：GPT-5、Claude Sonnet、DeepSeek V3、REST API、PDF、Pinvou。
 8. 只有整句去掉标点后只剩“嗯/啊/呃/额/那个/就是/文”等口头禅或噪声占位，才输出空字符串。
-9. 优先纠正上下文中明显 ASR 错词（例如“进价/惊吓”→“金价”、“图标”→“图表”、“表哥”→“表格”、“截止事件”→“截止时间”、“负责任”→“负责人”）。
-10. 对明显口语断裂做最小顺句。
+9. 优先纠正上下文中明显 ASR 错词：
+   - 行情/价格查询里的“进价/惊吓”通常应修为“金价”
+   - 数据分析可视化里的“图标”通常应修为“图表”
+   - “屁屁提/PPTT”通常应修为“PPT”
+   - “销售暑假”通常应修为“销售数据”
+   - “截止事件”通常应修为“截止时间”
+   - “负责任”通常应修为“负责人”
+   - “风险电”通常应修为“风险点”
+   - “表哥”通常应修为“表格”
+   - “四零一/talken/过期处里”通常应修为“401/token/过期处理”
+   - “批地爱福/pDF”通常应修为“PDF”
+   - “g p t five/GP杠5”通常应修为“GPT-5”，“closonic/克劳德 sonnet”通常应修为“Claude Sonnet”
+   - “deeps V3/deep seek v three”通常应修为“DeepSeek V3”
+   - 搜索“爱新闻/AI新闻”通常应修为“AI 新闻”
+10. 对明显口语断裂做最小顺句，例如“有长方形，的需要联网下的图片”应整理为“是长方形，需要联网下载图片”。
 11. 去掉口头禅、重复词和误识别语气词。
 12. 只输出最终任务文本，不解释，不使用 Markdown。
-13. 输入用 <<<…>>> 定界符分段：ASR_TEXT 是规则纠错后文本，ASR_RAW（如有）是原始识别；纠错可能有误，可参考原始识别恢复被误纠的实体。"#
+13. 输入用 <<<…>>> 定界符分段：ASR_TEXT 是规则纠错后文本，ASR_RAW（如有）是原始识别；纠错可能有误，可参考原始识别恢复被误纠的实体。
+
+示例：
+ASR 文本：查一下今日进价并生成数据分析图标。
+最终文本：查一下今日金价并生成数据分析图表。
+ASR 文本：比较GP杠5mini和deeps V3的调用成本。
+最终文本：比较 GPT-5 mini 和 DeepSeek V3 的调用成本。
+ASR 文本：嗯，做一张海报，这个海报有长方形，的需要联网下的图片。用于公司的下午茶需要有一些文字的内容。
+最终文本：做一张用于公司下午茶的长方形海报，需要联网下载图片，并包含文案内容。
+ASR 文本：文。
+最终文本："#
         }
         PostprocessMode::Dictation => {
             r#"你是 Pinvou 的语音听写整理器。你的唯一职责是把 ASR 文本纠正并整理为用户原本想输入到文本框里的内容。
@@ -810,9 +1002,39 @@ fn postprocess_prompt(mode: PostprocessMode) -> &'static str {
 8. 正常查询、比较、搜索、整理、生成、做、把、帮我等句子都必须保留原请求，不能输出空字符串。
 9. 只有整句去掉标点后只剩“嗯/啊/呃/额/那个/就是/文”等口头禅或噪声占位，才输出空字符串。
 10. 日期、时间、地点按用户原话保留；即使看起来不合理，也不能擅自修正或删除。
-11. 优先纠正上下文中明显 ASR 错词（例如“进价/惊吓”→“金价”、“图标”→“图表”、“g p t five”→“GPT-5”、“克劳德 sonnet”→“Claude Sonnet”、“爱新闻”→“AI 新闻”）。
+11. 优先纠正上下文中明显 ASR 错词：
+   - 行情/价格查询里的“进价/惊吓”通常应修为“金价”
+   - 数据分析可视化里的“图标”通常应修为“图表”
+   - “屁屁提/PPTT”通常应修为“PPT”
+   - “销售暑假”通常应修为“销售数据”
+   - “截止事件”通常应修为“截止时间”
+   - “负责任”通常应修为“负责人”
+   - “风险电”通常应修为“风险点”
+   - “g p t five”通常应修为“GPT-5”，“克劳德 sonnet”通常应修为“Claude Sonnet”
+   - 搜索“爱新闻”通常应修为“AI 新闻”
 12. 只输出最终文本，不解释。
-13. 输入用 <<<…>>> 定界符分段：ASR_TEXT 是规则纠错后文本，ASR_RAW（如有）是原始识别；纠错可能有误，可参考原始识别恢复被误纠的实体。"#
+13. 输入用 <<<…>>> 定界符分段：ASR_TEXT 是规则纠错后文本，ASR_RAW（如有）是原始识别；纠错可能有误，可参考原始识别恢复被误纠的实体。
+
+示例：
+ASR 文本：今天天气怎么样？
+最终文本：今天天气怎么样？
+ASR 文本：嗯。
+最终文本：
+ASR 文本：搜索一下今天的爱新闻，按重要性排序。
+最终文本：搜索一下今天的 AI 新闻，按重要性排序。
+ASR 文本：制作一个个人工作台，用于企业录入工作事项进度，包括截止时间。
+最终文本：
+- 制作一个个人工作台。
+- 用途：用于企业录入工作事项进度。
+- 需要包含截止时间。
+ASR 文本：一张用于公司年会的海报，时间是下午3点，12月36日需要联网下载一张图片，然后这个图片要尽量的好看呃，突出员工协作。这个海报是长方形的，上面需要有一点点文字，然后是红色背景。
+最终文本：
+- 制作一张用于公司年会的长方形海报。
+- 时间：12月36日下午3点。
+- 需要联网下载一张图片。
+- 图片尽量好看，并突出员工协作。
+- 海报需要红色背景。
+- 海报上需要包含少量文字。"#
         }
     }
 }
@@ -1143,7 +1365,7 @@ fn call_postprocess_model(
             .and_then(|response| response.json())
             .map_err(|error| {
                 CliError::failed(format!(
-                    "voice postprocess failed: {}",
+                    "model endpoint request failed: {}",
                     summarize_postprocess_error(&error)
                 ))
             })?;
@@ -1190,7 +1412,7 @@ fn call_postprocess_model(
         .and_then(|response| response.json())
         .map_err(|error| {
             CliError::failed(format!(
-                "voice postprocess failed: {}",
+                "model endpoint request failed: {}",
                 summarize_postprocess_error(&error)
             ))
         })?;
@@ -1254,5 +1476,45 @@ fn apply_postprocess_reasoning_controls(
         || lower.contains("qwen")
     {
         body["enable_thinking"] = serde_json::json!(false);
+    }
+}
+
+#[cfg(test)]
+mod transcript_tests {
+    use super::*;
+
+    #[test]
+    fn extract_transcript_prefers_the_last_usable_line() {
+        let stdout = "loading model\nsystem_info: n_threads = 4\nhello world\n";
+        assert_eq!(
+            extract_transcript(stdout, ""),
+            Some("hello world".to_owned())
+        );
+    }
+
+    #[test]
+    fn extract_transcript_never_returns_engine_log_noise() {
+        // Trailing engine summary / progress lines must not become the
+        // transcript (the GUI filters these shapes in the same lane).
+        assert_eq!(extract_transcript("done in 3.2s", ""), None);
+        assert_eq!(extract_transcript("system_info: n_threads = 4", ""), None);
+        assert_eq!(extract_transcript("loading: model.safetensors", ""), None);
+        assert_eq!(
+            extract_transcript("00:00:01,000 --> 00:00:04,000", ""),
+            None
+        );
+        assert_eq!(extract_transcript("[ffmpeg] download complete", ""), None);
+    }
+
+    #[test]
+    fn extract_transcript_reads_json_and_timestamped_segments() {
+        assert_eq!(
+            extract_transcript("{\"text\": \"你好世界\"}", ""),
+            Some("你好世界".to_owned())
+        );
+        assert_eq!(
+            extract_transcript("[0.00s -> 2.10s] recognized words", ""),
+            Some("recognized words".to_owned())
+        );
     }
 }

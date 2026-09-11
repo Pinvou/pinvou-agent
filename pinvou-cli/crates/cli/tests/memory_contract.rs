@@ -583,3 +583,36 @@ fn memory_organize_is_the_opt_in_host_and_model_path() {
     // No host invocation in tests. This body only documents the contract; the
     // parse-level tests above prove `memory organize` parses and dispatches.
 }
+
+#[test]
+fn memory_add_accepts_ordinary_punctuated_work_context() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("work-context-punctuated");
+
+    // The confirm path stores the punctuation-stripped normalization; the
+    // verification must compare against the same form or this exact input
+    // false-fails with memory_add_not_materialized after storing fine.
+    run_ok(&[
+        "pinvou",
+        "memory",
+        "add",
+        "work-context",
+        "We deploy on Fridays.",
+    ]);
+
+    let json = run_ok(&[
+        "pinvou",
+        "memory",
+        "list",
+        "--store",
+        "work-context",
+        "--output",
+        "json",
+    ]);
+    let text = json.to_string();
+    assert!(
+        text.contains("We deploy on Fridays"),
+        "the item must be materialized: {text}"
+    );
+    let _ = home;
+}
