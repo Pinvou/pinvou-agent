@@ -702,12 +702,25 @@ fn list(store: Option<MemoryStore>, output: OutputMode) -> Result<CliOutcome, Cl
             Ok(success(render(output, lines.join("\n"), &value)))
         }
         None => {
+            // The cleanup warnings the GUI surfaces as
+            // `memory_topic_cleanup_required` are part of the read result;
+            // dropping them would hide a store the GUI keeps complaining
+            // about.
             let preferences = feature::list_preferences_with_cleanup()
-                .map(|read| read.value)
                 .map_err(|error| feature_error("list", error))?;
             let work_context = feature::load_work_context_with_cleanup()
-                .map(|read| read.value)
                 .map_err(|error| feature_error("list", error))?;
+            let mut cleanup_warnings: Vec<(String, String)> = Vec::new();
+            for (topic, warning) in [
+                ("preferences", preferences.cleanup_warning.as_ref()),
+                ("work_context", work_context.cleanup_warning.as_ref()),
+            ] {
+                if let Some(detail) = warning {
+                    cleanup_warnings.push((topic.to_owned(), detail.clone()));
+                }
+            }
+            let preferences = &preferences.value;
+            let work_context = &work_context.value;
             let current_focus =
                 feature::load_current_focus().map_err(|error| feature_error("list", error))?;
             let recent_activity =
@@ -754,7 +767,20 @@ fn list(store: Option<MemoryStore>, output: OutputMode) -> Result<CliOutcome, Cl
                 "pending",
                 &pending.iter().map(render_pending).collect::<Vec<_>>(),
             );
+            for (topic, detail) in &cleanup_warnings {
+                lines.push(format!(
+                    "warning: memory_topic_cleanup_required ({topic}): {detail}"
+                ));
+            }
             let value = serde_json::json!({
+                "cleanup_warnings": cleanup_warnings
+                    .iter()
+                    .map(|(topic, detail)| serde_json::json!({
+                        "topic": topic,
+                        "code": "memory_topic_cleanup_required",
+                        "detail": detail,
+                    }))
+                    .collect::<Vec<_>>(),
                 "preferences": serde_json::to_value(&preferences).unwrap_or_default(),
                 "work_context": serde_json::to_value(&work_context).unwrap_or_default(),
                 "current_focus": serde_json::to_value(&current_focus).unwrap_or_default(),
@@ -773,21 +799,43 @@ fn load_store_items(store: MemoryStore) -> Result<(Vec<String>, serde_json::Valu
     let io_error = |error| feature_error("list", error);
     Ok(match store {
         MemoryStore::Preferences => {
-            let items = feature::list_preferences_with_cleanup()
-                .map(|read| read.value)
-                .map_err(io_error)?;
+            let read = feature::list_preferences_with_cleanup().map_err(io_error)?;
+            let warning = read.cleanup_warning.map(|detail| {
+                serde_json::json!([{
+                    "topic": "preferences",
+                    "code": "memory_topic_cleanup_required",
+                    "detail": detail,
+                }])
+            });
             (
-                items.iter().map(render_preference).collect(),
-                serde_json::to_value(&items).unwrap_or_default(),
+                read.value.iter().map(render_preference).collect(),
+                match warning {
+                    Some(warnings) => serde_json::json!({
+                        "items": serde_json::to_value(&read.value).unwrap_or_default(),
+                        "cleanup_warnings": warnings,
+                    }),
+                    None => serde_json::to_value(&read.value).unwrap_or_default(),
+                },
             )
         }
         MemoryStore::WorkContext => {
-            let items = feature::load_work_context_with_cleanup()
-                .map(|read| read.value)
-                .map_err(io_error)?;
+            let read = feature::load_work_context_with_cleanup().map_err(io_error)?;
+            let warning = read.cleanup_warning.map(|detail| {
+                serde_json::json!([{
+                    "topic": "work_context",
+                    "code": "memory_topic_cleanup_required",
+                    "detail": detail,
+                }])
+            });
             (
-                items.iter().map(render_work_context).collect(),
-                serde_json::to_value(&items).unwrap_or_default(),
+                read.value.iter().map(render_work_context).collect(),
+                match warning {
+                    Some(warnings) => serde_json::json!({
+                        "items": serde_json::to_value(&read.value).unwrap_or_default(),
+                        "cleanup_warnings": warnings,
+                    }),
+                    None => serde_json::to_value(&read.value).unwrap_or_default(),
+                },
             )
         }
         MemoryStore::CurrentFocus => {
