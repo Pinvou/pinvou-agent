@@ -143,7 +143,9 @@ pub async fn list_sessions(
         .into_iter()
         .map(|metadata| {
             let title_attachment_names = session_title_attachment_names(&store, &metadata);
-            // 读缓存 miss 时回读 sidecar;列表 ≤50 条,冷缓存一次 N 读后常驻。
+            // 读缓存 miss 时回读 sidecar;列表 ≤50 条。绑定会话回填后常驻,
+            // 未绑定会话不做负缓存——每次刷新仍有 ≤2 次 syscall × 50 的量级
+            // (成本可接受,评审 #464 nit:注释不得夸大为"一次 N 读后常驻")。
             let workspace_binding = store
                 .session_workspace_binding(&metadata.id)
                 .map(|path| path.display().to_string());

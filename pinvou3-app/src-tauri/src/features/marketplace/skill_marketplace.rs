@@ -175,8 +175,8 @@ pub struct MarketplaceSkillInfo {
 // 开关同构),过滤职责移交
 // **按会话拼的组合 skills_dir**(`features/assistant/skill_materialization.rs`):
 // 组合目录内容 = 该会话 scope 的启用技能集,底座每轮重扫组合目录渲染
-// `## Skills`。全局进程级 `DISABLED_SKILLS` 已退役(`set_disabled_skills(vec![])`,
-// 见 lib.rs 启动段)——组合目录为空时整个块不渲染,路径泄露面随之封闭。
+// `## Skills`。旧的全局进程级 `DISABLED_SKILLS` 通道已退役；组合目录为空时
+// 整个块不渲染,路径泄露面随之封闭。
 // companion 联动(禁用连接器 → 其配套技能一并隐藏)保留,改在组合目录计算时
 // 按 scope 排除(见 `skill_materialization::disabled_skill_names_for`)。
 

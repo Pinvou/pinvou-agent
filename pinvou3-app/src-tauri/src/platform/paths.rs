@@ -352,6 +352,9 @@ pub fn user_memory_runtime_dir() -> PathBuf {
 pub fn user_memory_snapshot() -> PathBuf {
     user_memory_dir().join("snapshot.md")
 }
+pub fn user_memory_organize_history() -> PathBuf {
+    user_memory_dir().join("organize_history.json")
+}
 pub fn user_memory_runtime_prompt(session_id: &str) -> PathBuf {
     user_memory_runtime_dir().join(format!("{}.md", sanitize_memory_runtime_id(session_id)))
 }

@@ -758,6 +758,11 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       const [detectResult, setDetectResult] = useState(null);
       const [localDetecting, setLocalDetecting] = useState(false);
       const [localDetectResult, setLocalDetectResult] = useState(null);
+      // Optional custom port for local-model auto-detection (raw user input; empty = default ports only).
+      const [localPortDraft, setLocalPortDraft] = useState('');
+      // Inline validation message for the custom port. Kept separate from
+      // localDetectResult so a failed validation never hides previous candidates.
+      const [localPortError, setLocalPortError] = useState(null);
       // 图片输入能力三档(pinvou/enabled/disabled)与兜底视觉模型引用(阶段 G 设置页控件)。
       // 已下线的「保存时检测」(auto)档残留值按「自动处理」(pinvou)回显。
       // 未人工钉死(非 enabled/disabled)时按目录视觉能力标注预填:命中已验证
@@ -1177,12 +1182,26 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
       }
       async function handleLocalDetect() {
         if (!bridge.available || !bridge.vllm.discoverLocalVllm || localDetecting) return;
+        // Optional custom port: the draft keeps the raw input as typed; anything
+        // outside 1-65535 (or not plain digits) shows an inline error and issues no probe.
+        const rawPort = localPortDraft.trim();
+        let customPort = null;
+        if (rawPort !== '') {
+          const portNumber = /^\d+$/.test(rawPort) ? Number(rawPort) : NaN;
+          if (!Number.isSafeInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
+            setLocalPortError(settingsCopy.localPortInvalid);
+            return;
+          }
+          customPort = portNumber;
+        }
+        setLocalPortError(null);
         setLocalDetecting(true);
         setLocalDetectResult(null);
         try {
           const result = await bridge.vllm.discoverLocalVllm({
             currentBaseUrl: null,
             savedBaseUrl: null,
+            customPort,
           });
           setLocalDetectResult({ candidates: (result && result.candidates) || [] });
         } catch (error) {
@@ -1402,9 +1421,26 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                     <span className={`block text-[15px] leading-5 font-normal truncate text-[#1C1C1E] dark:text-[#F2F2F7]`}>{settingsCopy.autoDetectLocalModel}</span>
                     <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>{settingsCopy.localDetectionTargets}</span>
                   </span>
+                  {/* Optional custom port: empty scans default ports only; raw input is kept
+                      as typed and validated when Detect runs. */}
+                  <span className={`shrink-0 text-[12px] leading-[17px] ${mutedText}`}>{settingsCopy.localPortLabel}</span>
+                  <input
+                    value={localPortDraft}
+                    onChange={e => { setLocalPortDraft(e.target.value); setLocalPortError(null); }}
+                    placeholder={settingsCopy.localPortPlaceholder}
+                    aria-label={settingsCopy.localPortLabel}
+                    data-testid="local-detect-port"
+                    disabled={localDetecting}
+                    inputMode="numeric"
+                    spellCheck={false}
+                    className={`shrink-0 w-[72px] min-h-8 px-2.5 rounded-lg text-right text-[13px] leading-[32px] outline-none bg-black/[0.04] text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:bg-white/[0.08] dark:text-[#F2F2F7] dark:placeholder:text-[#636366] disabled:opacity-45`}
+                  />
                   <button type="button" disabled={localDetecting} onClick={handleLocalDetect}
                     className={`${actionClass} disabled:opacity-45`}>{localDetecting ? t.detectingLocalVllm : (localDetectResult ? settingsCopy.redetect : settingsCopy.detect)}</button>
                 </div>
+                {localPortError && (
+                  <div className={`px-3.5 py-3 text-[12px] leading-5 border-b last:border-b-0 border-black/[0.10] text-[#C5221F] dark:border-white/[0.10] dark:text-[#F28B82]`}>{localPortError}</div>
+                )}
                 {localDetectResult && localDetectResult.error && (
                   <div className={`px-3.5 py-3 text-[12px] leading-5 border-b last:border-b-0 border-black/[0.10] text-[#C5221F] dark:border-white/[0.10] dark:text-[#F28B82]`}>{localDetectResult.error}</div>
                 )}
@@ -2332,8 +2368,53 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         ...(memory.current_focus || []).filter(item => item.status !== 'archived').map(item => ({ ...item, kind: 'current_focus', type: settingsCopy.memoryTypes.current_focus })),
         ...(memory.recent_activity || []).filter(item => item.status !== 'archived').map(item => ({ ...item, kind: 'recent_activity', type: settingsCopy.memoryTypes.recent_activity })),
       ];
+      const [memoryOrganizing, setMemoryOrganizing] = useState(false);
+      const [memoryOrganizeMessage, setMemoryOrganizeMessage] = useState('');
+      const [memoryLastOrganizedAt, setMemoryLastOrganizedAt] = useState('');
+      // Same app-language relative format as the neighboring memory cards
+      // (formatMemoryTime), not the browser-locale string: the two render side
+      // by side and must not disagree under an OS/app language mismatch.
+      const formatMemoryOrganizedAt = finishedAt => {
+        const time = new Date(finishedAt);
+        return Number.isNaN(time.getTime()) ? '' : formatMemoryTime({ updated_at: finishedAt }, t.uiSettingsView);
+      };
+      const loadMemoryOrganizeHistory = () => {
+        if (!bridge.available || !bridge.memory.loadOrganizeHistory) return;
+        bridge.memory.loadOrganizeHistory().then(history => {
+          if (history && history[0] && history[0].finished_at) {
+            setMemoryLastOrganizedAt(formatMemoryOrganizedAt(history[0].finished_at));
+          }
+        }).catch(() => {});
+      };
+      const organizeMemoryNow = async () => {
+        if (!bridge.available || !bridge.memory.organizeMemory || memoryOrganizing) return;
+        setMemoryOrganizing(true);
+        // Drop the previous run's result/error up front: leaving it rendered
+        // next to the spinner reads as if it described the run in progress.
+        setMemoryOrganizeMessage('');
+        try {
+          const result = await bridge.memory.organizeMemory();
+          const report = (result && result.report) || {};
+          const count = map => Object.values(map || {}).reduce((acc, n) => acc + (n || 0), 0);
+          setMemoryOrganizeMessage(report.no_change
+            ? t.uiSettingsView.memoryOrganizeNoChange
+            : t.uiSettingsView.memoryOrganizeSummary(count(report.merged), count(report.updated), count(report.deleted)));
+          loadMemoryOrganizeHistory();
+        } catch (error) {
+          // organizeMemory failures only throw without writing state: memory.error
+          // is the dedicated load-failure channel (rendered uniformly as the
+          // "加载失败" (load failed) copy, which would mislead about the cause),
+          // so the concrete reason is surfaced right here to the organize result line.
+          const reason = (error && error.message) || String(error);
+          setMemoryOrganizeMessage(t.uiSettingsView.memoryOrganizeFailed(reason));
+        } finally {
+          setMemoryOrganizing(false);
+        }
+      };
       useEffect(() => {
         if (activeSection === 'memory' && memoryEnabled && bridge.available && bridge.memory.loadMemoryOverview) bridge.memory.loadMemoryOverview();
+        if (activeSection === 'memory' && memoryEnabled) loadMemoryOrganizeHistory();
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: history load follows the same gated section-open trigger as the overview load
       }, [activeSection, memoryEnabled]);
       useEffect(() => {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors the backend snapshot into local state once it lands, avoiding first-frame flicker
@@ -2646,10 +2727,30 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
                   {settingsCopy.memorySaveFailed}
                 </div>
               ) : memoryError && (
-                <div data-testid="memory-settings-error" role="alert" aria-live="polite" className="mb-4 rounded-[14px] bg-[#FF3B30]/10 px-4 py-3 text-[13px] leading-5 text-[#FF3B30]">
+                <div data-testid="memory-settings-error" role="alert" aria-live="polite" className={`mb-4 rounded-[14px] bg-[#FF3B30]/10 px-4 py-3 text-[13px] leading-5 text-[#FF3B30]`}>
                   {memoryErrorMessage}
                 </div>
               )}
+              <IOSSection>
+                <IOSRow label={t.uiSettingsView.memoryOrganize} desc={t.uiSettingsView.memoryOrganizeDesc}>
+                  <button
+                    type="button"
+                    data-testid="memory-organize-section"
+                    onClick={organizeMemoryNow}
+                    disabled={!bridge.available || memoryOrganizing}
+                    className={`shrink-0 inline-flex items-center gap-1.5 text-[14px] px-3 py-1.5 rounded-full disabled:opacity-50 ${actionButton('blue')}`}
+                  >
+                    <Sparkles size={13} className={memoryOrganizing ? 'animate-spin' : ''} />
+                    {memoryOrganizing ? t.uiSettingsView.memoryOrganizing : t.uiSettingsView.memoryOrganize}
+                  </button>
+                </IOSRow>
+                {memoryOrganizeMessage && (
+                  <div data-testid="memory-organize-result" className={`px-4 py-2.5 text-[13px] leading-5 text-[#8A8A8E] dark:text-[#98989D]`}>{memoryOrganizeMessage}</div>
+                )}
+                {memoryLastOrganizedAt && (
+                  <div data-testid="memory-last-organized" className={`px-4 py-2.5 text-[13px] leading-5 text-[#8A8A8E] dark:text-[#98989D]`}>{t.uiSettingsView.memoryLastOrganized(memoryLastOrganizedAt)}</div>
+                )}
+              </IOSSection>
               <IOSSection title={settingsCopy.profile}>
                 <div data-testid="memory-profile-call-name">
                   <IOSRow label={settingsCopy.userCallName} desc={settingsCopy.callNameDesc} value={identity.call_name || settingsCopy.notSet} onClick={() => editProfile('call_name')}>

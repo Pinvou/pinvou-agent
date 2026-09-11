@@ -529,7 +529,7 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
     );
 
     uninstall_marketplace_skill_sync("visualizer").unwrap();
-    // 卸载清除两个 scope 禁用集残留（与连接器同语义）。
+    // 卸载清除两个 scope 禁用集残留（与连接器同语义）→ 重装后默认启用。
     assert!(
         !sm::load_disabled_skills_for(ConnectorScope::Plain)
             .iter()
@@ -537,13 +537,11 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
         "卸载应从禁用集清除残留 id"
     );
     install_marketplace_skill_sync("visualizer").unwrap();
-    // 全模式 DenyAll（工具开关默认全关）后，重装视同新装：已初始化的 scope
-    // 默认保持关闭，由用户显式开启（与连接器「新装默认关」语义一致）。
     assert!(
-        sm::load_disabled_skills_for(ConnectorScope::Plain)
+        sm::enabled_skills_for(ConnectorScope::Plain, None)
             .iter()
-            .any(|id| id == "visualizer"),
-        "重装后 plain scope 默认关闭（DenyAll 收敛语义）"
+            .any(|(n, _)| n == "visualizer"),
+        "卸载清除残留后重装默认启用（与连接器卸载语义一致）"
     );
 
     match previous {
@@ -1094,7 +1092,7 @@ fn accept_plan_instruction_embeds_full_plan() {
 }
 
 /// 挂集时 Self-RAG 引导:含知识集名 + 必调 kb_search + 按需 kb_open_source + 禁止二进制
-/// read_file + 无依据说不知道;空名兜底。
+/// canonical read/bash 展开 + 无依据说不知道;空名兜底。
 #[test]
 fn agentic_guide_mentions_collection_and_kb_search() {
     let g = build_kb_agentic_guide(&["硬件资料".to_string(), "团队规范".to_string()]);
@@ -2377,7 +2375,7 @@ fn post_reservation_failure_never_unlinks_the_current_path() {
     let _ = std::fs::remove_dir_all(replacement_workspace);
 }
 
-/// 小附件维持全量内联:内容在代码块里,且明确告知无需 read_file。
+/// 小附件维持全量内联:内容在代码块里,且明确告知无需再次 read。
 #[test]
 fn small_attachment_stays_inline() {
     let ws = mk_test_ws("inline");
@@ -2388,8 +2386,8 @@ fn small_attachment_stays_inline() {
     );
     assert!(prompt.contains("row-10,value-10"), "小附件应全量内联");
     assert!(
-        prompt.contains("不需要再调 `File(action=\"read\")`"),
-        "内联段应声明无需 read_file"
+        prompt.contains("不需要再调 `read` 或 `file_search`"),
+        "内联段应声明无需再次 read"
     );
     assert!(!ws.join("attachments").exists(), "小附件不应落盘");
     let _ = std::fs::remove_dir_all(&ws);
@@ -2413,7 +2411,8 @@ fn large_spreadsheet_goes_path_mode() {
         "应给出落盘 CSV 相对路径"
     );
     assert!(
-        prompt.contains("File(action=\"read\")") && prompt.contains("Bash(action=\"run\")"),
+        prompt.contains("read(path=..., offset=..., limit=...)")
+            && prompt.contains("bash(command=...)"),
         "应引导工具消化"
     );
     assert!(prompt.contains("没有**嵌入"), "应声明未嵌入完整内容");

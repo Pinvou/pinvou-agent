@@ -650,16 +650,25 @@
     return path;
   }
 
+  // Tauri 对未注册命令的拒绝文案（旧后端无此命令的兼容识别）；invoke 本身
+  // 不可用（Web 端桩）同样按"无此命令"处理。
+  function isCommandMissingError(error) {
+    const message = String((error && error.message) || error || "");
+    return /unknown command|command not found|not implemented|invoke is unavailable/i.test(message);
+  }
+
   // 已生成会话的工作目录绑定（普通聊天绑定目录会话，安全姿态对齐 code 模式）：
-  // 返回绑定的完整路径；未绑定 / Web 与远程端无此命令 / 查询失败一律按 null
-  // 处理（UI 不显示绑定指示，YOLO 确认门也不因此误触发）。
+  // 返回绑定的完整路径；未绑定返回 null；旧后端无此命令按 null 处理（UI 不显示
+  // 绑定指示）。其余查询失败（瞬时错误）抛给调用方——YOLO 确认门据此
+  // fail-closed 过量施加确认，而非对已绑定会话静默跳过（评审 #445 R3）。
   async function getSessionWorkspaceBinding(sessionId) {
     if (!sessionId) return null;
     try {
       const binding = await invoke("get_session_workspace_binding", { sessionId });
       return typeof binding === "string" && binding ? binding : null;
-    } catch {
-      return null;
+    } catch (error) {
+      if (isCommandMissingError(error)) return null;
+      throw error;
     }
   }
 
@@ -748,7 +757,7 @@
         await syncModeState();
        if (boundWorkspace) {
           // 绑定工作目录的会话安全姿态对齐 code 模式：后端已为绑定会话按
-          // code lane 全局默认解析 mode，此处不再把 work/design lane 默认经
+          // code lane 全局默认解析 mode，此处不再把 work lane 默认经
           // set_plan_mode_next 套用；仅当用户在草稿态显式暂存过 mode 选择时
           // 按暂存值应用（切 yolo 的一次性确认门在草稿切换时已由 ChatView 过过）。
           if (stagedDraftMode === "plan" || stagedDraftMode === "yolo") {
@@ -766,10 +775,11 @@
             }
           }
         } else {
-        // Two-lane semantics: the backend's plain default is always Yolo and
-        // lanes are only work/code; when the materializing session's lane
-        // global default is plan, apply it right now (the write becomes that
-        // session's own per-session record; the global default is unaffected).
+        // Two-lane semantics (#428 merged design into work): the backend's
+        // plain default is always Yolo and lanes are only work/code; when the
+        // materializing session's lane global default is plan, apply it right
+        // now (the write becomes that session's own per-session record; the
+        // global default is unaffected).
         const laneDefault = state.modeDefaults
           && state.modeDefaults[state.modeLane === "code" ? "code" : "work"];
         // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户

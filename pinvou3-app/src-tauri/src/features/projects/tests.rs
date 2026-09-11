@@ -713,3 +713,45 @@ fn ensure_never_takes_over_existing_roots() {
         if reason.contains("overlaps")));
     assert_eq!(store.list()[0].roots.len(), 1, "既有 root 未被剥离");
 }
+
+#[test]
+fn covered_workspace_skip_survives_symlinked_ancestor() {
+    // 评审 #464 MAJOR 3(macOS /var→/private/var 的同型):root 入库时已
+    // canonicalize,而被覆盖判定的工作区路径不存在时,旧的纯词法回退保留
+    // symlink 形态,身份键不再嵌套,会被当成未覆盖重复添加。用 symlink
+    // 祖先在任意平台复现。用 std::env::consts::OS 常量分支而非 cfg 语法:
+    // 平台条件编译不得出现在适配层外(architecture-guard);Windows 的目录
+    // symlink 需要管理员/开发者模式,该机制由 unix/macOS 覆盖。
+    if std::env::consts::OS == "windows" {
+        return;
+    }
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("real").join("workspace");
+    std::fs::create_dir_all(&workspace).expect("create workspace");
+    let link = temp.path().join("link");
+    let status = std::process::Command::new("ln")
+        .arg("-s")
+        .arg(temp.path().join("real"))
+        .arg(&link)
+        .status()
+        .expect("spawn ln");
+    assert!(status.success(), "ln -s must succeed on unix-likes");
+
+    let store = store_in(&temp);
+    let project = create(
+        &store,
+        "目标",
+        std::slice::from_ref(&link.join("workspace")),
+    );
+
+    // 不存在的嵌套路径经 symlink 祖先书写:covered 判定必须命中已有 root。
+    let covered = link.join("workspace").join("deep");
+    let outcome = store
+        .move_session_to_project("s1", Some(&project.id), Some(&covered))
+        .expect("move with covered workspace");
+    assert_eq!(
+        outcome.added_root, None,
+        "symlink 形态不得绕过 covered 跳过"
+    );
+    assert_eq!(store.get(&project.id).unwrap().roots.len(), 1);
+}

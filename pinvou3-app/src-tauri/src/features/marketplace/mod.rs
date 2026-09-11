@@ -3199,13 +3199,11 @@ mod tests {
         });
     }
 
-    /// 全局禁用列表落盘往返:存→读一致;清空→读空。
-    /// （全模式 DenyAll 后无文件≠读空——未初始化默认全关，故先显式初始化。）
+    /// 全局禁用列表落盘往返:存→读一致;清空→读空;没文件→读空。
     #[test]
     fn disabled_connectors_persist_roundtrip() {
         with_temp_home(|| {
-            save_disabled_connectors(&[]); // 初始化 plain 为空集（全开基线）
-            assert!(load_disabled_connectors().is_empty());
+            assert!(load_disabled_connectors().is_empty()); // 无文件 → 空
             save_disabled_connectors(&["weather".to_string(), "pptx".to_string()]);
             assert_eq!(
                 load_disabled_connectors(),
@@ -3229,8 +3227,8 @@ mod tests {
         with_temp_home(|| {
             // 模拟已装 2 个连接器。
             write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
-            // 未初始化:plain/code 均默认全禁（全模式 DenyAll 收敛）——已装连接器
-            // ∪ 内置 CLI 四连接器 ∪ 已装技能包（scope.rs DenyAll 扩集是有意语义）。
+            // 未初始化:code 默认全禁——已装连接器 ∪ 内置 CLI 四连接器 ∪ 已装技能包
+            // （scope.rs DenyAll 扩集是有意语义）;plain 仍按空处理。
             let deny_all_default = || {
                 vec![
                     "weather".to_string(),
@@ -3241,10 +3239,7 @@ mod tests {
                     "tmeet".to_string(),
                 ]
             };
-            assert_eq!(
-                load_disabled_connectors_for(ConnectorScope::Plain),
-                deny_all_default()
-            );
+            assert!(load_disabled_connectors_for(ConnectorScope::Plain).is_empty());
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
                 deny_all_default()
@@ -3347,8 +3342,8 @@ mod tests {
     }
 
     /// 旧对象 `code_initialized=false` 时,code 数组被忽略、按 DenyAll 默认全禁
-    /// (与迁移前逐字节一致);plain 列表被读时迁移初始化为落盘真相（锁定旧
-    /// AllowAll 语义下的实际开关状态）。
+    /// (与迁移前逐字节一致);plain 列表即使无 initialized 标记也必须生效
+    /// (AllowAll 无兜底,落盘即真相)。
     #[test]
     fn legacy_object_uninitialized_code_keeps_deny_all_default() {
         with_temp_home(|| {

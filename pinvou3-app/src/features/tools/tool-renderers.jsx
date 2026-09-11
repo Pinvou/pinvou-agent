@@ -17,6 +17,7 @@ import { useShellTaskCancel } from '../chat/shell-task-cancel.js';
 import { AcShieldCheck, AcSparkles, DiffView, GrepView, ListDirView, OutputError, OutputPre, ReceiptBlock, ShellTextView, ShellView, StockQuoteCard, TODO_TOOLS, TodoView, WeatherCard, isQuietTool, isReceipt, isStockQuoteTool, isWeatherTool, looksDiff, toolSummary, tryParseJson, tryTailJson } from './tool-common.jsx';
 
 const isShellExecutionTool = name => [
+  'bash',
   'exec_shell',
   'exec_shell_wait',
   'exec_wait',
@@ -549,7 +550,7 @@ const ToolOutput = ({ item, t }) => {
           </div>;
         }
       }
-      else if ((item.name === 'File' && ['write', 'edit'].includes(item.args?.action)) || item.name === 'edit_file' || item.name === 'write_file') { if (looksDiff(out)) return <DiffView text={out} t={t} />; }
+      else if ((item.name === 'File' && ['write', 'edit'].includes(item.args?.action)) || ['edit', 'write', 'edit_file', 'write_file'].includes(item.name)) { if (looksDiff(out)) return <DiffView text={out} t={t} />; }
       else if (TODO_TOOLS.includes(item.name)) { const v = tryTailJson(out); if (v && Array.isArray(v.items)) return <TodoView snap={v} t={t} />; }
       return <OutputPre text={out} />;
     };

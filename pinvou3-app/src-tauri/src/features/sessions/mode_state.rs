@@ -138,7 +138,7 @@ impl Default for SessionModeState {
 #[cfg(test)]
 mod type_tests {
     use super::*;
-    use deepseek_tui::tui::app::AppMode;
+    use deepseek_tui::AppMode;
 
     #[test]
     fn default_is_yolo() {
@@ -154,7 +154,7 @@ mod type_tests {
         ));
         assert!(matches!(
             SerializableMode::Yolo.to_app_mode(),
-            AppMode::Yolo
+            AppMode::Agent
         ));
     }
 
@@ -201,11 +201,12 @@ impl SessionStore {
             .is_some_and(|predicate| predicate(id))
     }
 
-    /// 无条件目时的默认 mode 解析：code 会话、或绑定了用户工作目录的普通 chat
+    /// 无条目时的默认 mode 解析：code 会话、或绑定了用户工作目录的普通 chat
     /// 会话（真实目录 = 误操作与注入面，安全姿态跟绑定不跟模式），回落全局
     /// `code_permission.last_mode`（None = 用户从未用过 → Plan 只读首启）；
     /// 未绑定 plain 会话缺省 Yolo（work lane 的全局默认由前端在会话物化时
-    /// 应用；后端不区分 plain 侧车道——design 已并入 work，见 `set_mode_default`）。
+    /// 应用，后端不再区分 plain 侧 lane——design 已并入 work，见
+    /// `set_mode_default`）。
     pub(crate) fn resolved_default_mode(&self, id: &str) -> SerializableMode {
         if self.is_code_session(id) || self.session_workspace_binding(id).is_some() {
             self.code_permission
@@ -912,15 +913,18 @@ impl SessionStore {
         }
     }
 
-    /// accept 方案（`claim_pending_plan` 切 Yolo）确认提交后，把任务级切换纳入
-    /// per-session 持久化：写 `_session_mode_states.json`（重开/切走切回恢复
-    /// Yolo）。Global lane defaults are **not** updated (two-lane semantics: a
-    /// switch in an already-materialized session writes only that session's
-    /// own record).
+    /// After the accept flow (`claim_pending_plan` switching to Yolo) is
+    /// confirmed and committed, records the task-level switch in per-session
+    /// persistence: writes `_session_mode_states.json` (reopening the session,
+    /// or switching away and back, restores Yolo). Global lane defaults are
+    /// **not** updated (two-lane semantics: a switch in an
+    /// already-materialized session writes only that session's own record).
     ///
-    /// 只在 `PendingPlanClaim::commit`（engine 提交已确认）调用：任务真正开始
-    /// 执行时才记忆，提交失败回滚（`restore_pending_plan_claim`）不碰磁盘，
-    /// 内存回 Plan 与磁盘保持一致。
+    /// Called only from `PendingPlanClaim::commit` (engine commit confirmed):
+    /// the mode is remembered once the task actually starts executing; a
+    /// failed commit rolls back via `restore_pending_plan_claim` without
+    /// touching disk, and the in-memory return to Plan stays consistent with
+    /// disk.
     pub(crate) fn persist_accepted_yolo_mode(&self, id: &str) {
         self.session_mode_states
             .write()

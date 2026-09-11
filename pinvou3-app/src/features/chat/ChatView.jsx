@@ -148,7 +148,7 @@ import {
 import { ComposerWorkspaceSelector } from './ComposerWorkspaceSelector.jsx';
 import { YoloConfirmCard } from '../../shared/yolo-confirm-card.jsx';
 import { needsYoloConfirmation } from '../codex/code-permission-state.js';
-import { chatYoloGateApplies, shouldShowWorkspaceBindingChip } from './chat-workspace-binding.js';
+import { CHAT_YOLO_GATE_UNKNOWN_BINDING, chatYoloGateApplies, shouldShowWorkspaceBindingChip } from './chat-workspace-binding.js';
 import { workspaceName } from '../../shared/workspace-recents.js';
 import {
   VoiceComposerButton,
@@ -1742,6 +1742,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           setSessionWorkspaceBinding(workspaceBindingCacheRef.current[sid]);
           return;
         }
+        // 缓存未命中先同步清空：切换会话后若保留旧值，chip 会短暂显示上一
+        // 会话的目录、YOLO 门也会误用旧绑定裁决（评审 #445 R3）。
+        setSessionWorkspaceBinding(null);
         let cancelled = false;
         bridge.sessions.getSessionWorkspaceBinding(sid)
           .then(binding => {
@@ -1777,7 +1780,11 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             setSessionWorkspaceBinding(normalized);
             return normalized;
           } catch {
-            return null;
+            // 瞬时查询失败（旧后端"无此命令"已在桥层按未绑定返回 null，不
+            // 走到这里）：绑定会话默认 Plan，门控 fail-closed 过量施加一次
+            // 确认，优于对已绑定会话静默跳过（评审 #445 R3）。返回非空哨兵
+            // 表示"未知按绑定处理"；不写缓存，下次点击重试查询。
+            return CHAT_YOLO_GATE_UNKNOWN_BINDING;
           }
         }
         return null;
@@ -2195,8 +2202,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         paddingInline: 'clamp(16px, calc((100% - 800px) / 2), 160px)',
       };
 
-      // The two ArtifactsPanel mounts (fullscreen portal / right Dock) share the same 18-prop
-      // list through this single source; isFullscreen and onToggleFullscreen are passed per
+      // The two ArtifactsPanel mounts (fullscreen portal / right Dock) share the same
+      // prop list through this single source; isFullscreen and onToggleFullscreen are passed per
       // mount point: collapsed (false) in fullscreen, expanded (true) in the Dock.
       const artifactsPanelProps = {
         bs,

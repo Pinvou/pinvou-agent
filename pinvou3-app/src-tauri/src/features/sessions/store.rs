@@ -351,7 +351,10 @@ impl SessionStore {
         (committed, result)
     }
 
-    pub(super) fn durable_session_record_is_absent(&self, id: &str) -> bool {
+    /// 会话 JSON 是否已不在盘上(无效 id 一律按"在场"处理,fail-closed)。
+    /// 除删除路径外,目录重绑定的孤儿分类也用它:只认 NotFound,损坏 JSON
+    /// 不算孤儿(评审 #463:解析失败必须进失败名单可重试,不静默跳过)。
+    pub(crate) fn durable_session_record_is_absent(&self, id: &str) -> bool {
         if validate_session_id(id).is_err() {
             return false;
         }
@@ -466,13 +469,16 @@ impl SessionStore {
             return Ok(SessionRoots {
                 execution: profile.workspace.clone(),
                 ledger: profile.workspace,
+                bound: false,
             });
         }
         if self.is_scheduled_session(id)? {
             bail!("Scheduled-run session '{id}' has no persisted execution profile");
         }
-        // resolver 只解析 codex_acp 原生代码会话的项目绑定;普通 chat 会话的
-        // 用户工作目录绑定由 store 自持有的 sidecar 回退解析。
+        // 生产注入的 resolver（lib.rs）已同时覆盖两类绑定：codex_acp 原生
+        // 代码会话的项目绑定 + 普通 chat 会话的用户工作目录绑定（sidecar）。
+        // 这里的 .or_else 回退是防御性的，只在未注入 resolver 时（测试/启动
+        // 早期）生效——bridge 直接走 resolver（bridge.rs），不会经过本回退。
         let bound_project_root = self
             .execution_root_resolver
             .read()

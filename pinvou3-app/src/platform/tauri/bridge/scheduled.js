@@ -712,8 +712,13 @@
   async function createScheduledTask(input) {
     return runScheduledTaskAction("create", async function () {
       const templateId = input && typeof input.templateId === "string" ? input.templateId.trim() : "";
+      // kind is create-time task metadata (currently only "memory_organize"; the
+      // backend rejects anything else). It deliberately stays out of
+      // SCHEDULED_TASK_WRITABLE_FIELDS so edit flows can never resend it.
+      const kind = input && typeof input.kind === "string" ? input.kind.trim() : "";
       const selectAfterCreate = !input || input.selectAfterCreate !== false;
       const backendInput = scheduledTaskBackendInput(input);
+      if (kind) backendInput.kind = kind;
       const created = await invoke("create_scheduled_task", { input: backendInput });
       if (!created || !created.id) {
         throw new Error(bt("scheduledCreateNoId"));

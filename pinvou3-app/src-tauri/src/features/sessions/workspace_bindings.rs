@@ -13,10 +13,14 @@
 //! `code-session.json` 同一机制——绑定随会话目录存续，删目录即随之消失，
 //! 不再有全局表的 boot 期 ghost 清理。内存 `session_workspaces` 退化为读
 //! 缓存：bind 时写入、读 miss 时从 sidecar 回填（跨进程新绑定同样可见）、
-//! 删除/保留策略清理时清除。存量全局表 `_session_workspaces.json` 由 boot
-//! 期 [`SessionStore::migrate_legacy_session_workspaces`] 收敛：活会话条目
-//! 逐条写成 sidecar 后删除旧文件；写失败的条目留在旧路径继续由旧机制管理
-//! （下次 boot 重试），不阻断启动。
+//! 删除/保留策略清理时清除。
+//!
+//! 存量全局表 `_session_workspaces.json` 是本 PR 开发期的中间格式，从未随
+//! `main` 发布（评审 #445 P2）；boot 期
+//! [`SessionStore::migrate_legacy_session_workspaces`] 只为收敛中间版本
+//! dev build 的 home：活会话条目逐条写成 sidecar 后删除旧文件；写失败的
+//! 条目留在旧文件原样不动（本次运行内由内存表接管解析），下次 boot 重试，
+//! 不阻断启动。中间版本存量迁完后该迁移即成恒 no-op（文件缺失直接返回）。
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -25,11 +29,31 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+/// rebind_workspace_bindings 的结果:已平移 + 逐条目失败隔离(评审 #464
+/// MAJOR 4:非法 id 或单条写失败不再中断整轮,进失败名单由命令层并入报告)。
+#[derive(Debug, Default)]
+pub struct RebindBindingsOutcome {
+    pub rebound: Vec<(String, PathBuf)>,
+    pub failed_session_ids: Vec<String>,
+}
+
+/// 折叠身份键下的「等于或嵌套于」前缀判定:Windows 折叠分隔符与大小写,
+/// 与 store 的 key_is_same_or_nested 同约定;空 from 匹配一切(本文件两处
+/// 候选扫描共用——评审 #464 MINOR 8:同一闭包曾字节级重复且语义已与
+/// 项目层漂移)。
+fn folded_covers(from: &Path, path: &Path) -> bool {
+    let from_key = crate::platform::os::filesystem_path_identity_key(&from.to_string_lossy());
+    let from_trim = from_key.trim_end_matches('/');
+    let key = crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy());
+    let trim = key.trim_end_matches('/');
+    from_trim.is_empty() || trim == from_trim || trim.starts_with(&format!("{from_trim}/"))
+}
+
 use super::{SessionStore, validate_session_id};
 
 /// 绑定 sidecar 的 schema 版本；未来字段演进时用于迁移。
 const SESSION_WORKSPACE_SIDECAR_VERSION: u32 = 1;
-/// 收敛前的存量全局绑定表（boot 期迁移成功后删除）。
+/// 本 PR 中间版本的全局绑定表（从未随 `main` 发布；boot 期迁移成功后删除）。
 const LEGACY_SESSION_WORKSPACES_FILE: &str = "_session_workspaces.json";
 /// per-session 绑定 sidecar 文件名（位于会话私有目录内）。
 const SESSION_WORKSPACE_SIDECAR_FILE: &str = "workspace-binding.json";
@@ -154,39 +178,163 @@ impl SessionStore {
         }
     }
 
-    /// 移除绑定：清内存缓存并删除 sidecar 文件。存量迁移未完成的降级路径
-    /// （旧全局表仍在盘上）下同步重写旧表，防止下次 boot 迁移复活已解绑
-    /// 的条目。
-    pub(crate) fn remove_session_workspace(&self, id: &str) {
-        self.session_workspaces.write().remove(id);
-        self.remove_workspace_sidecar_file(id);
-        if crate::platform::paths::sessions_root()
-            .join(LEGACY_SESSION_WORKSPACES_FILE)
-            .is_file()
-        {
-            self.save_session_workspaces();
+    /// 扫描全部 `workspace-binding.json` sidecar 并并入内存表，列出绑定在
+    /// `from` 前缀下的会话（目录重绑定的栅栏候选集；`from` 通常已消失，
+    /// 匹配在共享折叠键上进行——Windows 折叠分隔符与大小写，与
+    /// SessionAgentStore::sessions_under_workspace 同语义）。不校验
+    /// `<id>.json` 存在——残留 sidecar 同样要被重绑定覆盖，否则旧目录复活。
+    /// 内存表并入是因为存量迁移未完成时，未迁移条目只存在于内存/旧全局表
+    /// （评审 #464 nit：栅栏候选不得漏掉这一组）。
+    pub fn workspace_bindings_under(&self, from: &Path) -> Vec<(String, PathBuf)> {
+        let covered = |path: &Path| folded_covers(from, path);
+        let mut matched = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(self.manager.sessions_dir()) {
+            for entry in entries.flatten() {
+                if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    continue;
+                }
+                let Some(id) = entry.file_name().to_str().map(str::to_string) else {
+                    continue;
+                };
+                let Some(sidecar) =
+                    read_workspace_sidecar(&entry.path().join(SESSION_WORKSPACE_SIDECAR_FILE))
+                else {
+                    continue;
+                };
+                if covered(&sidecar.path) {
+                    matched.push((id, sidecar.path));
+                }
+            }
         }
+        // 内存表并集(去重):覆盖迁移降级路径下未落 sidecar 的条目。
+        for (id, path) in self.session_workspaces.read().iter() {
+            if covered(path) && !matched.iter().any(|(existing_id, _)| existing_id == id) {
+                matched.push((id.clone(), path.clone()));
+            }
+        }
+        matched
     }
 
-    pub(crate) fn persist_session_workspaces(bindings: &HashMap<String, PathBuf>) -> Result<()> {
-        let legacy = crate::platform::paths::sessions_root().join(LEGACY_SESSION_WORKSPACES_FILE);
-        if bindings.is_empty() {
-            return match std::fs::remove_file(&legacy) {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(error).with_context(|| format!("remove {}", legacy.display())),
+    /// 目录重绑定（修断链通道）：把绑定在 `from` 前缀下的普通会话绑定整体
+    /// 平移到 `to`（sidecar 原子重写 + 内存缓存同步）。与
+    /// SessionAgentStore::rebind_workspace_prefix 同语义、同幂等性——
+    /// from→to 重跑无命中即空操作，失败可整体重试。会话元数据
+    /// （metadata.workspace 展示字段）由命令层统一经 set_workspace 改写。
+    ///
+    /// 逐条目隔离（评审 #464 MAJOR 4）：非法 id（boot 迁移会把未校验的失败
+    /// 条目留在内存旧表）与单条写失败不再 `?` 中断整轮——项目 root 与 agent
+    /// 索引此时已平移，中断会让同一条目在每次重试都重复失败；失败进
+    /// `failed_session_ids` 由命令层并入报告。
+    pub fn rebind_workspace_bindings(
+        &self,
+        from: &Path,
+        to: &Path,
+    ) -> Result<RebindBindingsOutcome> {
+        let covered = |path: &Path| folded_covers(from, path);
+        let skip = from.components().count();
+        let mut outcome = RebindBindingsOutcome::default();
+        // 候选 = sidecar 扫描 ∪ 内存旧表:存量迁移未完成的降级路径下,未迁移
+        // 条目只存在于内存/旧全局表,漏配会在下次 boot 迁移时以旧目录复活。
+        let mut candidates: Vec<(String, PathBuf)> = self.workspace_bindings_under(from);
+        for (id, path) in self.session_workspaces.read().iter() {
+            if !candidates.iter().any(|(existing_id, _)| existing_id == id) {
+                candidates.push((id.clone(), path.clone()));
+            }
+        }
+        for (id, path) in candidates {
+            if !covered(&path) {
+                continue;
+            }
+            // id 先过校验再拼路径(与 bind_session_workspace 同闸):遍历形态
+            // 的 id 会写出 sessions_dir 之外。
+            if let Err(error) = validate_session_id(&id) {
+                eprintln!("[sessions] rebind skips invalid session id {id:?}: {error:#}");
+                outcome.failed_session_ids.push(id);
+                continue;
+            }
+            let suffix: PathBuf = path.components().skip(skip).collect();
+            let next = if suffix.as_os_str().is_empty() {
+                to.to_path_buf()
+            } else {
+                to.join(suffix)
             };
+            let sidecar_path = self
+                .manager
+                .sessions_dir()
+                .join(&id)
+                .join(SESSION_WORKSPACE_SIDECAR_FILE);
+            // 内存旧表条目可能没有会话目录(从未写成 sidecar),atomic_write
+            // 不建父目录,先补(与 bind_session_workspace 同)。
+            if let Some(parent) = sidecar_path.parent() {
+                if let Err(error) = std::fs::create_dir_all(parent) {
+                    eprintln!("[sessions] rebind create session dir for {id} failed: {error:#}");
+                    outcome.failed_session_ids.push(id);
+                    continue;
+                }
+            }
+            // bound_at 仅元信息:原样保留,与 codex 存储的 rebind 同口径,
+            // 不再重置为 None(评审 #452 finding 3)。
+            let bound_at = read_workspace_sidecar(&sidecar_path).and_then(|s| s.bound_at);
+            let updated = SessionWorkspaceSidecar {
+                version: SESSION_WORKSPACE_SIDECAR_VERSION,
+                path: next.clone(),
+                bound_at,
+            };
+            let write = serde_json::to_vec_pretty(&updated)
+                .context("serialize session workspace binding")
+                .and_then(|payload| {
+                    crate::platform::filesystem::atomic_write(&sidecar_path, &payload).with_context(
+                        || {
+                            format!(
+                                "rebind session workspace binding {}",
+                                sidecar_path.display()
+                            )
+                        },
+                    )
+                });
+            if let Err(error) = write {
+                eprintln!("[sessions] rebind workspace binding {id} failed: {error:#}");
+                outcome.failed_session_ids.push(id);
+                continue;
+            }
+            self.session_workspaces
+                .write()
+                .insert(id.clone(), next.clone());
+            outcome.rebound.push((id, next));
         }
-        let payload =
-            serde_json::to_vec_pretty(bindings).context("serialize session workspace bindings")?;
-        crate::platform::filesystem::atomic_write(&legacy, &payload)
-            .with_context(|| format!("persist session workspace bindings to {}", legacy.display()))
+        // 降级路径对称(评审 #452 finding 9):旧全局表仍在盘上(存量迁移未
+        // 完成)时同步重写,否则重绑定会在下次 boot 迁移时被旧表复活。
+        self.rewrite_legacy_session_workspaces_if_present();
+        Ok(outcome)
     }
 
-    /// 旧全局表的落盘（仅存量迁移未完成的降级路径使用；写失败只记日志）。
-    pub(crate) fn save_session_workspaces(&self) {
-        if let Err(error) = Self::persist_session_workspaces(&self.session_workspaces.read()) {
-            eprintln!("[sessions] save_session_workspaces failed: {error:#}");
+    /// 旧全局表的最小重写(仅重绑定的降级路径对称使用)。#445 round-2 移除了
+    /// 通用持久化(无其它调用面),这里只保留:表非空则整体原子重写为内存表
+    /// 内容,表空则删文件(没有可复活的条目)。写失败只记日志——内存表与
+    /// sidecar 已是权威,旧表本来就只是迁移残留。
+    fn rewrite_legacy_session_workspaces_if_present(&self) {
+        let legacy = crate::platform::paths::sessions_root().join(LEGACY_SESSION_WORKSPACES_FILE);
+        if !legacy.is_file() {
+            return;
+        }
+        let bindings = self.session_workspaces.read();
+        if bindings.is_empty() {
+            if let Err(error) = std::fs::remove_file(&legacy) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("[sessions] remove legacy session workspaces failed: {error:#}");
+                }
+            }
+            return;
+        }
+        match serde_json::to_vec_pretty(&*bindings) {
+            Ok(payload) => {
+                if let Err(error) = crate::platform::filesystem::atomic_write(&legacy, &payload) {
+                    eprintln!("[sessions] rewrite legacy session workspaces failed: {error:#}");
+                }
+            }
+            Err(error) => {
+                eprintln!("[sessions] serialize legacy session workspaces failed: {error:#}");
+            }
         }
     }
 
@@ -308,10 +456,11 @@ impl SessionStore {
     }
 
     /// boot 期存量迁移：全局表 `_session_workspaces.json` → per-session
-    /// sidecar。活会话条目逐条写成 sidecar（同值重写幂等），全部迁移成功
-    /// 即删除旧文件；任一条目写失败时保留旧文件，未迁移条目接管进内存表
-    /// 继续由旧机制读写（下次 boot 重试），不阻断启动。ghost 条目（对应
-    /// `<id>.json` 已不存在——会话在进程外被删的残留）直接丢弃，不迁移。
+    /// sidecar（只服务本 PR 中间版本 dev build 的 home，见模块文档）。活会话
+    /// 条目逐条写成 sidecar（同值重写幂等），全部迁移成功即删除旧文件；任一
+    /// 条目写失败时旧文件原样保留，未迁移条目接管进内存表继续可解析，下次
+    /// boot 重试，不阻断启动。ghost 条目（对应 `<id>.json` 已不存在——会话在
+    /// 进程外被删的残留）直接丢弃，不迁移。
     pub fn migrate_legacy_session_workspaces(&self) {
         let legacy = crate::platform::paths::sessions_root().join(LEGACY_SESSION_WORKSPACES_FILE);
         let Ok(content) = std::fs::read_to_string(&legacy) else {

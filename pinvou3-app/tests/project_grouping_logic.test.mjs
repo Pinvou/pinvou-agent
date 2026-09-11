@@ -316,3 +316,32 @@ test("folder view: project sessions without a workspace path fall into temporary
   assert.equal(groups.length, 1);
   assert.equal(groups[0].key, TEMPORARY_GROUP_KEY);
 });
+
+// ── Review-finding ports from the PR stack lineage ─────────────────────────
+
+test("windows roots match case-insensitively, posix roots stay case-sensitive", () => {
+  // The store folds identity keys on Windows (root_keys_fold_case_only_on_windows);
+  // the display-side longest-root guard must not let a case-differing workspace
+  // path slip past its project (review finding 19).
+  const projects = [project("p1", "Alpha", ["D:/Work/Alpha"], 0)];
+  const groups = groupSessionsByProject(
+    [projectItem("a1", "d:/work/alpha/sub", "2026-08-01T08:00:00Z")],
+    projects,
+    {},
+  );
+  assert.deepEqual(groups.find((g) => g.projectId === "p1").rows.map((r) => r.id), ["a1"]);
+  const posix = [project("p2", "Posix", ["/home/u/Work"], 0)];
+  const posixGroups = groupSessionsByProject(
+    [projectItem("a2", "/home/u/work/sub", "2026-08-01T08:00:00Z")],
+    posix,
+    {},
+  );
+  assert.equal(posixGroups.find((g) => g.projectId === "p2").rows.length, 0, "posix 路径保持大小写敏感");
+  assert.equal(posixGroups.find((g) => g.kind === "ungrouped").rows.length, 1);
+});
+
+test("needsAddFolderConfirm is null-safe on both ends", () => {
+  const target = project("p1", "Alpha", ["D:/work/alpha"], 0);
+  assert.equal(needsAddFolderConfirm(null, target), false, "missing session is a no-op");
+  assert.equal(needsAddFolderConfirm(projectItem("a1", "x", "x"), null), false, "missing target is a no-op");
+});

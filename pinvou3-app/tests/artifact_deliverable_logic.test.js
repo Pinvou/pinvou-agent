@@ -75,6 +75,8 @@ function evalIsDeliverable(snippet, label) {
     isScheduledRunSession: () => false,
   });
   checkAll(feature.isDeliverable, "tauri artifact-tracker.js");
+  assert.strictEqual(feature.fileMutationAction("write", { path: "report.md" }), "write");
+  assert.strictEqual(feature.fileMutationAction("edit", { path: "report.md" }), "edit");
   assert.strictEqual(feature.fileMutationAction("File", { action: "write" }), "write");
   assert.strictEqual(feature.fileMutationAction("File", { action: "edit" }), "edit");
   assert.strictEqual(feature.fileMutationAction("File", { action: "patch" }), "patch");
@@ -234,7 +236,10 @@ function evalIsDeliverable(snippet, label) {
     extractFunction(webSrc, "findPresentedArtifact"),
     extractFunction(webSrc, "updatePresentedArtifact"),
     "this.updatePresentedArtifact = updatePresentedArtifact;",
+    "this.fileMutationAction = fileMutationAction;",
   ].join("\n"), cardCtx);
+  assert.strictEqual(cardCtx.fileMutationAction("write", { path: "report.md" }), "write");
+  assert.strictEqual(cardCtx.fileMutationAction("edit", { path: "report.md" }), "edit");
   const updatedWebCard = cardCtx.updatePresentedArtifact({
     type: "artifact_card", path: "two.md", title: "Two updated",
   });

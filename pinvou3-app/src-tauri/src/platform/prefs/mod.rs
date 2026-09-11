@@ -447,24 +447,29 @@ impl Default for SidebarPrefs {
     }
 }
 
-/// 品悟原生 code 会话权限模式的全局记忆。产品语义（已拍板）：
-/// - 从未用过 code 模式时，新建 code 会话默认 Plan（只读）；
-/// - 新建 code 会话的默认 mode = code lane 的全局 last_mode；
+/// Global memory of pinvou's native code-session permission mode. Product
+/// semantics (settled in review):
+/// - when code mode has never been used, a new code session defaults to Plan
+///   (read-only);
+/// - a new code session's default mode = the code lane's global last_mode;
 /// - last_mode is written only by an explicit draft-state switch on the code
 ///   page (a switch inside an already-materialized session writes only that
 ///   session's own record and never leaks into globals — the two-lane
 ///   semantics settled in review);
-/// - 首次切 yolo 弹一次性确认卡，确认后全局记住、之后切换不再弹。
+/// - the first switch to yolo shows a one-shot confirmation card; once
+///   confirmed it is remembered globally and later switches do not prompt.
 ///
-/// 不进设置 UI；写入走字段级事务（同 PetPrefs），per-session mode 另存
-/// `sessions/_session_mode_states.json`（见 `features::sessions`）。
+/// Not exposed in the settings UI; writes go through field-level
+/// transactions (same as PetPrefs); per-session mode is stored separately in
+/// `sessions/_session_mode_states.json` (see `features::sessions`).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CodePermissionPrefs {
-    /// code lane 的全局默认 mode（草稿态显式切换时写入）。None = 从未使用过
-    /// code 模式。
+    /// The code lane's global default mode (written on an explicit
+    /// draft-state switch). None = code mode has never been used.
     pub last_mode: Option<SerializableMode>,
-    /// yolo 一次性确认（"全自动读写项目目录、可执行 shell、无逐步审批"）标志。
+    /// One-shot yolo confirmation ("full read/write of the project directory,
+    /// shell execution allowed, no step-by-step approval") flag.
     pub yolo_confirmed: bool,
 }
 

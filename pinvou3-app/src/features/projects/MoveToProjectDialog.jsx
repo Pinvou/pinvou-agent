@@ -35,8 +35,12 @@ const MoveToProjectDialog = ({
   // key listeners subscribed once instead of per render.
   const onCloseRef = useRef(onClose);
   const dialogRef = useRef(null);
+  // Escape 键的确认面板回退读最新 pendingAddFolder;ref 镜像保持 key 监听
+  // 不随每次状态变更重订阅(与 onCloseRef 同范式)。
+  const pendingAddFolderRef = useRef(pendingAddFolder);
   useEffect(() => {
     onCloseRef.current = onClose;
+    pendingAddFolderRef.current = pendingAddFolder;
   });
 
   useEffect(() => {
@@ -44,6 +48,9 @@ const MoveToProjectDialog = ({
     const onKey = (e) => {
       if (e.key === 'Escape' && !isImeComposing(e)) {
         e.preventDefault();
+        // 确认面板态先退回列表,列表态才关窗(评审 #449 finding:确认框
+        // Escape 不该直接关整个弹窗)。
+        if (pendingAddFolderRef.current) { setPendingAddFolder(null); return; }
         onCloseRef.current();
       } else if (e.key === 'Tab' && dialogRef.current) {
         // Minimal focus trap: cycle Tab within the dialog instead of letting
@@ -104,7 +111,8 @@ const MoveToProjectDialog = ({
     // 不预清确认面板:提交后弹窗保持确认态(busy 禁用按钮),成功时由容器
     // 关闭整个对话框(卸载即复位);失败时确认面板留在原处供重试/取消——
     // 若先清 pendingAddFolder,异步进行/失败期间会回落成"选择项目"列表,
-    // 看起来像点击后又弹出了另一个弹窗。
+    // 看起来像点击后又弹出了另一个弹窗(评审 #449 finding:失败清目标后
+    // 用户被迫重新选择,本轮正面修复)。
     if (pendingAddFolder && !busy) onMove(pendingAddFolder.id, false);
   };
 

@@ -8,6 +8,7 @@ import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Edit2, FolderPlus, MoreHorizontal, Trash2, X } from '../../components/icons.jsx';
 import { usePortalMenu } from '../../hooks/usePortalMenu.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
+import { groupHeaderHasMenu, resolveGroupHeaderEdit } from './projectGroupHeaderState.js';
 
 const ProjectGroupHeader = ({
   label,
@@ -34,7 +35,8 @@ const ProjectGroupHeader = ({
 }) => {
   const [editing, setEditing] = useState(null);
   const [confirming, setConfirming] = useState(false);
-  const hasMenu = kind === 'folder' || kind === 'project';
+  // 菜单门控与编辑提交判定在 ./projectGroupHeaderState.js(纯函数,有单测)。
+  const hasMenu = groupHeaderHasMenu(kind, { onConvert, onRename, onDelete });
   const { menuOpen, menuStyle, closeMenu, toggleMenu } = usePortalMenu({
     height: kind === 'project' ? 96 : 48,
   });
@@ -45,10 +47,10 @@ const ProjectGroupHeader = ({
     const draft = editing;
     setEditing(null);
     if (!draft) return;
-    const value = String(draft.value || '').trim();
-    if (!value || value === label || busy) return;
-    if (draft.mode === 'convert' && onConvert) onConvert(value);
-    if (draft.mode === 'rename' && onRename) onRename(value);
+    const edit = resolveGroupHeaderEdit({ mode: draft.mode, value: draft.value, label, busy });
+    if (!edit) return;
+    if (edit.action === 'convert' && onConvert) onConvert(edit.value);
+    if (edit.action === 'rename' && onRename) onRename(edit.value);
   };
 
   const menuItemCls = 'w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] whitespace-nowrap transition-colors text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]';
@@ -122,7 +124,7 @@ const ProjectGroupHeader = ({
             type="button"
             title={t.uiProjects.deleteProject}
             disabled={busy}
-            onClick={(e) => { e.stopPropagation(); onDelete && onDelete(); setConfirming(false); }}
+            onClick={(e) => { e.stopPropagation(); if (onDelete) { onDelete(); } setConfirming(false); }}
             className="w-5 h-5 rounded-full flex items-center justify-center hover:bg-[#FAD2CF] dark:hover:bg-[#5c2b29]"
           >
             <Check size={13} />

@@ -465,7 +465,8 @@
       steerFailed: "Interrupt failed (session unavailable or engine not running); your text was restored to the input",
       interruptQueuedFailed: "Interrupt & send failed; the message was restored to the queue",
       interruptBusy: "Another interrupt is already in progress; the message stays queued — retry in a moment",
-      compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactAuto: " (auto)",
+      compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactCancel: "Context compaction canceled", compactAuto: " (auto)",
+      toolGateDecision: "Permission gate", toolGateAllowed: "allowed", toolGateDenied: "denied", toolGateUnavailable: "could not review and denied", toolGateAgent: "agent", toolGateRisk: "risk",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
       compactInactive: "The session engine is not running yet. Send a message before compacting the context",
       gpuUnavailable: "GPU info unavailable",
@@ -565,7 +566,8 @@
       steerFailed: "割り込みに失敗しました（セッション無効またはエンジン未起動）。内容は入力欄に復元しました",
       interruptQueuedFailed: "割り込み送信に失敗しました。メッセージはキューに復元しました",
       interruptBusy: "別の割り込みが進行中のため実行できません。メッセージはキューに残ります。しばらくしてから再試行してください",
-      compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactAuto: "（自動）",
+      compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactCancel: "コンテキストの圧縮をキャンセルしました", compactAuto: "（自動）",
+      toolGateDecision: "権限ゲート", toolGateAllowed: "許可", toolGateDenied: "拒否", toolGateUnavailable: "レビュー不能のため拒否", toolGateAgent: "エージェント", toolGateRisk: "リスク",
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
       compactInactive: "セッション Engine はまだ起動していません。メッセージを送信してからコンテキストを圧縮してください",
       gpuUnavailable: "GPU 情報を取得できません",
@@ -665,7 +667,8 @@
       steerFailed: "插队失败（会话不可用或引擎未运行），内容已恢复到输入框",
       interruptQueuedFailed: "插队发送失败，消息已恢复到排队区",
       interruptBusy: "已有打断正在进行，消息保留在排队区，请稍后重试",
-      compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactAuto: "（自动）",
+      compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactCancel: "已取消上下文压缩", compactAuto: "（自动）",
+      toolGateDecision: "权限闸门", toolGateAllowed: "允许", toolGateDenied: "拒绝", toolGateUnavailable: "无法审查并拒绝", toolGateAgent: "子智能体", toolGateRisk: "风险",
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
       compactInactive: "会话引擎尚未运行。请先发送一条消息，再压缩上下文",
       gpuUnavailable: "GPU 信息不可用",
@@ -1202,14 +1205,16 @@
 
   // The draft-state (no active session) modeState: take the current lane's
   // global default, falling back to yolo (aligned with the backend's plain
-  // default direction). Two-lane semantics (design merged into work): the
-  // draft display = this lane's global default. Drafts bound to a working
-  // directory align their posture with code mode: show the code lane's
-  // global default, defaulting to plan when unset (read-only is the safe
-  // side, same fallback as the code page draft).
+  // default direction). Two-lane semantics (design merged into work, #428):
+  // the draft display = this lane's global default. A draft bound to a
+  // workspace aligns with the code lane's safety posture: show the code
+  // lane's global default, falling back to plan on first use (read-only is
+  // the safe side, same as the code page's draft fallback).
   function currentDraftModeState() {
     const boundDraft = !!state.draftWorkspacePath;
-    const lane = boundDraft ? "code" : "work";
+    // 绑定草稿恒显示 code lane 默认；未绑定草稿跟随当前 lane（design 已并入
+    // work，#428）。
+    const lane = boundDraft || state.modeLane === "code" ? "code" : "work";
     const d = state.modeDefaults && state.modeDefaults[lane];
     return { mode: d || (boundDraft ? "plan" : "yolo"), multiAgent: false };
   }
@@ -2370,6 +2375,8 @@
   const confirmMemoryCandidate = memoryFeature.confirmMemoryCandidate;
   const ignoreMemoryCandidate = memoryFeature.ignoreMemoryCandidate;
   const neverMemoryCandidate = memoryFeature.neverMemoryCandidate;
+  const organizeMemory = memoryFeature.organizeMemory;
+  const loadOrganizeHistory = memoryFeature.loadOrganizeHistory;
   const artifactsFeature = installBridgeFeature("artifacts", { state, notify, invoke, bt, addSystemItem, dialogOpen, basename, isDeliverable, isAbsPath, sessionStates, discardManagedAttachment });
   const artifactInfo = artifactsFeature.artifactInfo;
   const readArtifactText = artifactsFeature.readArtifactText;
@@ -2801,6 +2808,8 @@
       confirmMemoryCandidate,
       ignoreMemoryCandidate,
       neverMemoryCandidate,
+      organizeMemory,
+      loadOrganizeHistory,
     },
     updater: {
       checkForUpdate,

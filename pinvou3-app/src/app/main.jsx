@@ -1776,7 +1776,7 @@ function workspaceDisplayName(path) {
       const sidebarTaskFilterOptions = [
         { id: 'all', label: t.sidebarTaskFilterAll },
         { id: 'pinned', label: t.sidebarTaskFilterPinned },
-        // code 形态(胶囊选中「代码」)下列表恒为代码会话:「代码会话」筛选等同
+        // 项目形态(胶囊选中「项目」)下列表恒为代码/绑定会话:「代码会话」筛选等同
         // 「全部」、「定时任务」恒为空——两个选项都是死胡同,只在标准形态提供。
         ...(sidebarCodeListActive ? [] : [
           { id: 'code', label: t.sidebarTaskFilterCodeSessions },
@@ -1868,6 +1868,22 @@ function workspaceDisplayName(path) {
         }
         return groupSessionsByFolder(sidebarUnpinnedCodeTasks);
       }, [sidebarCodeListActive, sidebarProjectsViewActive, sidebarUnpinnedCodeTasks, sidebarProjectsData]);
+      // 置顶提升会把成员从组 rows 里摘走,但组头计数(含删除确认)要按提升前
+      // 的全量成员算,否则成员全置顶的组确认删除时显示 (0)(评审 finding 24)。
+      // 置顶项通常很少,单独对它们跑一遍分组拿到每组被摘走的数量即可。
+      const sidebarGroupPinnedCounts = useMemo(() => {
+        if (!sidebarCodeListActive || sidebarFolderPinned.length === 0) return {};
+        const counts = {};
+        const pinnedGroups = sidebarProjectsViewActive
+          ? groupSessionsByProject(
+              sidebarFolderPinned,
+              sidebarProjectsData ? sidebarProjectsData.projects : [],
+              sidebarProjectsData ? sidebarProjectsData.assignments : {},
+            )
+          : groupSessionsByFolder(sidebarFolderPinned);
+        pinnedGroups.forEach((group) => { counts[group.key] = group.rows.length; });
+        return counts;
+      }, [sidebarCodeListActive, sidebarProjectsViewActive, sidebarFolderPinned, sidebarProjectsData]);
 
       // latest-ref mirror: the pet-snapshot broadcast effect only subscribes to bs.sessions/sessionBusy/language,
       // while snapshot contents (id/title/working) are read via refs to reduce effect resubscription.
@@ -2507,7 +2523,9 @@ function workspaceDisplayName(path) {
       // → 确认弹窗。两阶段确认:首调不带 confirmExisting,后端发现旧目录
       // 仍在时拒绝,弹窗升级为强警告后由用户再次确认。
       const startRebindWorkspace = async (fromPath) => {
-        if (!bridge.files || !bridge.files.pickFolders || projectOpsBusy) return;
+        // rebindDraft 已开时不再重复开:焦点留在徽标上时按 Enter 会重复触发
+        // onRebind(评审 #463 minor),projectOpsBusy 守卫管不到这个窗口。
+        if (!bridge.files || !bridge.files.pickFolders || projectOpsBusy || rebindDraft) return;
         try {
           const picked = await bridge.files.pickFolders();
           const to = Array.isArray(picked) ? picked[0] : picked;
@@ -2522,6 +2540,8 @@ function workspaceDisplayName(path) {
       const confirmRebindWorkspace = async (confirmExisting) => {
         if (!bridge.projects || !rebindDraft || projectOpsBusy) return;
         setProjectOpsBusy(true);
+        // 清掉上一次失败的内联错误,避免与本次结果叠显。
+        setRebindDraft(prev => prev && { ...prev, error: null });
         try {
           const report = await bridge.projects.rebindWorkspaceRoot(
             rebindDraft.from, rebindDraft.to, confirmExisting);
@@ -2537,15 +2557,25 @@ function workspaceDisplayName(path) {
           } else {
             setSettingsToast(t.uiProjects.rebindSuccess(rebound));
           }
-          await refreshCodexSessions().catch(() => {});
+          await refreshCodexSessions().catch((error) => {
+            // 失败不吞:会话列表靠 session:list_changed 事件自愈,但显式
+            // 失败的静默间隙要对排查可见(评审 #463 minor)。
+            console.warn('refresh sessions after rebind failed', error);
+          });
         } catch (error) {
           const message = String(error);
           // 类型化标记匹配(finding 11):只认稳定前缀,不匹配人类文案。
           if (message.startsWith('REBIND_OLD_ROOT_EXISTS')) {
-            setRebindDraft(prev => prev && { ...prev, warnExisting: true });
+            setRebindDraft(prev => prev && { ...prev, warnExisting: true, error: null });
+          } else if (message.startsWith('REBIND_NESTED_TARGET')) {
+            // 嵌套目标拒绝:同样类型化标记,映射三语文案而非透传后端散文
+            // (评审 #464 MINOR 9);内联呈现,不toast(遮罩层级见下)。
+            setRebindDraft(prev => prev && { ...prev, error: t.uiProjects.rebindNestedRejected });
           } else {
             console.warn('rebind workspace failed', error);
-            setSettingsToast(t.sessionBatchFailed(1));
+            // 失败保持对话框打开并内联呈现错误(评审 #463 M7):toast 层级
+            // 在对话框遮罩(z-200 + blur)之下,关窗前 toast 用户看不到。
+            setRebindDraft(prev => prev && { ...prev, error: message });
           }
         } finally {
           setProjectOpsBusy(false);
@@ -2767,7 +2797,7 @@ function workspaceDisplayName(path) {
       const mobileTitle = currentView === 'chat'
         ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || 'PINVOU')
         : currentView === 'codex'
-          ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || t.sidebarTaskFilterCode)
+          ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || t.uiCodex.untitledSession)
         : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings, browser: t.browser }[currentView] || 'PINVOU');
       const mobileNavigate = (view, beforeNavigate) => {
         setMobileMoreOpen(false);
@@ -3053,6 +3083,7 @@ function workspaceDisplayName(path) {
               from={rebindDraft.from}
               to={rebindDraft.to}
               warnExisting={rebindDraft.warnExisting}
+              errorMessage={rebindDraft.error}
               t={t}
               busy={projectOpsBusy}
               onCancel={() => setRebindDraft(null)}
@@ -3467,7 +3498,7 @@ function workspaceDisplayName(path) {
                                 <ProjectGroupHeader
                                   label={sidebarGroupLabel(group)}
                                   kind={group.kind}
-                                  count={group.rows.length}
+                                  count={group.rows.length + (sidebarGroupPinnedCounts[group.key] || 0)}
                                   isOpen={isOpen}
                                   onToggle={() => setFolderGroupOpen(prev => ({ ...prev, [group.key]: !isOpen }))}
                                   theme={activeTheme}

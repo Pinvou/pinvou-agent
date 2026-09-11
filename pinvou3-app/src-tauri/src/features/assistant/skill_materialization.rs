@@ -410,9 +410,6 @@ mod tests {
     #[test]
     fn standalone_companion_named_skill_survives_uninstalled_connector() {
         with_temp_home(|| {
-            // 全模式 DenyAll 后 fresh home 默认全关；本测试钉的是条件认领形态
-            // （未装连接器的 companion 保留独立纯技能包），显式初始化 plain 全开。
-            save_disabled_skills_for(ConnectorScope::Plain, &[]);
             write_tool_manifest(
                 "gongwen",
                 r#"{"id":"gongwen","name":"公文写作","description":"d","version":"1.0.0","icon":"file-text","category":"办公","mcp_tools":["mcp_gongwen_make_gongwen"],"command":"python","args":["server.py"],"companion_skills":["government-writing"]}"#,
@@ -471,25 +468,20 @@ mod tests {
         });
     }
 
-    /// plain/code scope 均未初始化时「默认全禁」（全模式 DenyAll 收敛）覆盖 CLI
-    /// 连接器技能：lark-* 不注册在技能市场清单（连接门控直接解包），仍被默认
-    /// 禁用兜住；显式初始化全开后恢复。
+    /// code scope 未初始化「默认全禁」覆盖 CLI 连接器技能：lark-* 不注册在
+    /// 技能市场清单（连接门控直接解包），仍被 code 默认禁用兜住；plain 不受影响。
     #[test]
-    fn uninitialized_scopes_default_disable_cli_connector_skills() {
+    fn code_scope_default_disables_cli_connector_skills() {
         with_temp_home(|| {
             for name in crate::features::marketplace::bundle::LARK_SKILL_DIRS {
                 write_skill(&paths::bundle_skills_dir(), name, "# Lark\n");
             }
 
-            for scope in [ConnectorScope::Code, ConnectorScope::Plain] {
-                let enabled = enabled_skills_for(scope, None);
-                assert!(
-                    !enabled.iter().any(|(n, _)| n.starts_with("lark-")),
-                    "{scope:?} 未初始化时 lark-* 技能应默认全禁"
-                );
-            }
-            // plain 显式初始化全开 → lark-* 恢复。
-            save_disabled_skills_for(ConnectorScope::Plain, &[]);
+            let enabled = enabled_skills_for(ConnectorScope::Code, None);
+            assert!(
+                !enabled.iter().any(|(n, _)| n.starts_with("lark-")),
+                "code 未初始化时 lark-* 技能应默认全禁"
+            );
             let enabled_plain = enabled_skills_for(ConnectorScope::Plain, None);
             assert_eq!(
                 enabled_plain
@@ -497,7 +489,7 @@ mod tests {
                     .filter(|(n, _)| n.starts_with("lark-"))
                     .count(),
                 crate::features::marketplace::bundle::LARK_SKILL_DIRS.len(),
-                "plain 显式全开后 lark-* 技能应恢复"
+                "plain scope 不应受影响"
             );
         });
     }
@@ -587,9 +579,6 @@ mod tests {
     fn enabled_skills_respect_first_wins_and_scope_disabled() {
         with_temp_home(|| {
             seed_sources();
-            // 全模式 DenyAll 后 fresh home 默认全关；本测试聚焦 first-wins 与
-            // 开关语义，显式初始化 plain 为全开。
-            save_disabled_skills_for(ConnectorScope::Plain, &[]);
             // 默认（无禁用）：user 覆盖 bundle 同名 + 手放技能入集
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             let names: HashSet<&str> = enabled.iter().map(|(n, _)| n.as_str()).collect();
@@ -617,9 +606,6 @@ mod tests {
     fn materialize_then_rewrite_is_idempotent() {
         with_temp_home(|| {
             seed_sources();
-            // 全模式 DenyAll 后 fresh home 默认全关；本测试聚焦物化幂等，
-            // 显式初始化 plain 为全开。
-            save_disabled_skills_for(ConnectorScope::Plain, &[]);
             let sid = "session-test-1";
             materialize_session_skills(sid, ConnectorScope::Plain, None).unwrap();
             let dir = paths::session_skills_dir(sid);
@@ -718,10 +704,9 @@ mod tests {
             );
 
             // 本测试聚焦项目技能的门控与优先级覆盖。code scope「未初始化默认全禁」
-            // 语义会把已装技能也排除掉，与测试意图无关——先显式初始化两个 scope
+            // 语义会把已装技能也排除掉，与测试意图无关——先显式初始化 code scope
             // （空禁用集 = 全部启用），让项目技能覆盖链路可被断言。
             save_disabled_skills_for(ConnectorScope::Code, &[]);
-            save_disabled_skills_for(ConnectorScope::Plain, &[]);
 
             // 默认关：code 组合集不含项目技能
             let enabled = enabled_skills_for(ConnectorScope::Code, Some(&project));

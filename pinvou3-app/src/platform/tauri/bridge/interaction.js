@@ -140,10 +140,12 @@
   // 物化时由 ensureSession 把 lane 默认应用到新会话）。
   // 绑定了工作目录的草稿安全姿态对齐 code 模式：切换写 code lane 全局默认
   // （不写 work lane），并把显式选择暂存到 pendingDraftMode，物化时按暂存值
-  // 逐会话应用（后端对绑定会话只解析 code lane 默认，不读 work/design）。
+  // 逐会话应用（后端对绑定会话只解析 code lane 默认，不读 work）。
   async function setDraftMode(target) {
     const boundDraft = !!state.draftWorkspacePath;
-    const lane = boundDraft ? "code" : "work";
+    // 绑定草稿恒写 code lane；未绑定草稿跟随当前 lane（work/code 两 lane，
+    // design 已并入 work，#428）。
+    const lane = boundDraft || state.modeLane === "code" ? "code" : "work";
     try {
       const defaults = await invoke("set_mode_default", { lane, mode: target });
       if (defaults) state.modeDefaults = defaults;

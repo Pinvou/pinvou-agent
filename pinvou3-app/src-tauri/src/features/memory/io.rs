@@ -45,6 +45,13 @@ pub(super) fn write_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Stored-text caps per store, shared by the write path (which re-cleans every
+/// incoming text) and by organize validation (which must validate against the
+/// same cap so a passing action is not silently truncated when stored).
+pub(super) const PREFERENCE_TEXT_MAX_CHARS: usize = 120;
+pub(super) const WORK_CONTEXT_TEXT_MAX_CHARS: usize = 160;
+pub(super) const TIMED_TEXT_MAX_CHARS: usize = 180;
+
 pub(super) fn turn_capture_store() -> &'static Mutex<BTreeMap<String, TurnCapture>> {
     static STORE: OnceLock<Mutex<BTreeMap<String, TurnCapture>>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(BTreeMap::new()))
@@ -76,6 +83,10 @@ pub fn recent_activity_path() -> PathBuf {
 
 pub fn snapshot_path() -> PathBuf {
     paths::user_memory_snapshot()
+}
+
+pub fn organize_history_path() -> PathBuf {
+    paths::user_memory_organize_history()
 }
 
 pub fn pending_memory_path() -> PathBuf {
@@ -526,7 +537,7 @@ pub(super) fn upsert_work_context_unlocked(
         id: id.clone(),
         kind: "work_context".to_string(),
         topic,
-        text: clean_candidate_sentence(&suggestion.content, 160),
+        text: clean_candidate_sentence(&suggestion.content, WORK_CONTEXT_TEXT_MAX_CHARS),
         source: clean_text(&suggestion.source, 40),
         confidence,
         created_at: now.clone(),
@@ -825,6 +836,16 @@ pub fn update_work_context(
     patch: MemoryTextPatch,
 ) -> io::Result<Option<TopicMutation<WorkContextFile>>> {
     let _guard = write_lock().lock();
+    update_work_context_unlocked(id, patch)
+}
+
+/// Caller must hold [`write_lock`]: the read-modify-write against the work
+/// context directory is only atomic together with the other mutation entry
+/// points (organize's apply phase re-checks and mutates under one held lock).
+pub(super) fn update_work_context_unlocked(
+    id: &str,
+    patch: MemoryTextPatch,
+) -> io::Result<Option<TopicMutation<WorkContextFile>>> {
     let _lifecycle = file_lifecycle_lock().lock();
     let id = clean_id(id);
     if id.is_empty() {
@@ -845,7 +866,7 @@ pub fn update_work_context(
     let text = patch
         .text
         .as_deref()
-        .map(|s| clean_candidate_sentence(s, 160))
+        .map(|s| clean_candidate_sentence(s, WORK_CONTEXT_TEXT_MAX_CHARS))
         .unwrap_or_else(|| existing.text.clone());
     if text.is_empty() || looks_sensitive(&text) {
         return Err(io::Error::new(
@@ -880,6 +901,11 @@ pub fn update_work_context(
 
 pub fn delete_work_context(id: &str) -> io::Result<bool> {
     let _guard = write_lock().lock();
+    delete_work_context_unlocked(id)
+}
+
+/// Caller must hold [`write_lock`] (see [`update_work_context_unlocked`]).
+pub(super) fn delete_work_context_unlocked(id: &str) -> io::Result<bool> {
     let id = clean_id(id);
     if id.is_empty() {
         return Ok(false);
@@ -940,7 +966,7 @@ pub(super) fn upsert_timed_memory_unlocked(
         CURRENT_FOCUS_DEFAULT_TTL_DAYS
     };
     let ttl_days = ttl_days.unwrap_or(default_ttl).clamp(1, 90);
-    let text = clean_candidate_sentence(content, 180);
+    let text = clean_candidate_sentence(content, TIMED_TEXT_MAX_CHARS);
     if text.is_empty() || looks_sensitive(&text) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1035,6 +1061,24 @@ pub fn update_timed_memory(
     patch: MemoryTextPatch,
 ) -> io::Result<Option<TimedMemoryItem>> {
     let _guard = write_lock().lock();
+    update_timed_memory_unlocked(kind, id, patch, false)
+}
+
+/// Caller must hold [`write_lock`]: the read-modify-write against the timed
+/// store is only atomic together with the other mutation entry points
+/// (organize's apply phase re-checks and mutates under one held lock).
+///
+/// With `require_active` the variant refuses items whose current status is no
+/// longer `active` (organize-scoped update): an item may be expired or
+/// archived while the organize pass works from its pre-LLM-call snapshot, and
+/// honoring the patch anyway would silently revive it and reset its TTL clock.
+/// Returns `Ok(None)` when the id matches no item, or no active item.
+pub(super) fn update_timed_memory_unlocked(
+    kind: &str,
+    id: &str,
+    patch: MemoryTextPatch,
+    require_active: bool,
+) -> io::Result<Option<TimedMemoryItem>> {
     let kind = normalize_timed_memory_kind(kind);
     let id = clean_id(id);
     if id.is_empty() {
@@ -1045,11 +1089,14 @@ pub fn update_timed_memory(
     let Some(item) = items.iter_mut().find(|item| clean_id(&item.id) == id) else {
         return Ok(None);
     };
+    if require_active && item.status != "active" {
+        return Ok(None);
+    }
     if let Some(topic) = patch.topic.as_deref() {
         item.topic = normalize_timed_memory_topic(&kind, topic);
     }
     if let Some(text) = patch.text.as_deref() {
-        let text = clean_candidate_sentence(text, 180);
+        let text = clean_candidate_sentence(text, TIMED_TEXT_MAX_CHARS);
         if text.is_empty() || looks_sensitive(&text) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -1071,6 +1118,11 @@ pub fn update_timed_memory(
 
 pub fn delete_timed_memory(kind: &str, id: &str) -> io::Result<bool> {
     let _guard = write_lock().lock();
+    delete_timed_memory_unlocked(kind, id)
+}
+
+/// Caller must hold [`write_lock`] (see [`update_timed_memory_unlocked`]).
+pub(super) fn delete_timed_memory_unlocked(kind: &str, id: &str) -> io::Result<bool> {
     let kind = normalize_timed_memory_kind(kind);
     let id = clean_id(id);
     if id.is_empty() {
@@ -1136,6 +1188,28 @@ pub(super) fn write_timed_memory_file(
         lines.push('\n');
     }
     write_text_atomic(path, &lines)
+}
+
+/// Reload and rewrite a single timed store under the write lock: normalize /
+/// dedupe / capacity compaction, then an atomic write. The whole read-modify-write
+/// holds [`write_lock`], mutually exclusive with write entry points like
+/// `update_timed_memory`; organize's apply phase runs
+/// [`compact_timed_memory_store_unlocked`] in the same critical section as its
+/// mutations instead of a bare load+write, so entries the per-turn review just
+/// wrote between the two steps are not overwritten wholesale by the old list.
+pub fn compact_timed_memory_store(kind: &str) -> io::Result<()> {
+    let _guard = write_lock().lock();
+    compact_timed_memory_store_unlocked(kind)
+}
+
+/// Caller must hold [`write_lock`]: organize's apply phase runs this in the
+/// same critical section as its mutations so no writer can slip between the
+/// re-check and the rewrite.
+pub(super) fn compact_timed_memory_store_unlocked(kind: &str) -> io::Result<()> {
+    let kind = normalize_timed_memory_kind(kind);
+    let path = timed_memory_path(&kind);
+    let items = load_timed_memory_file(&path, &kind)?;
+    write_timed_memory_file(&path, &items, &kind)
 }
 
 fn compact_timed_memory_items(mut items: Vec<TimedMemoryItem>, kind: &str) -> Vec<TimedMemoryItem> {
@@ -1418,14 +1492,42 @@ pub fn confirm_pending_memory(id: &str) -> io::Result<Option<MemoryWriteEvent>> 
     Ok(Some(event))
 }
 
-pub fn ignore_pending_memory(id: &str) -> io::Result<Option<MemoryWriteEvent>> {
+/// Outcome of ignoring a pending candidate. `AlreadyDecided` is distinct from
+/// `NotFound` so callers can report the concurrency event the decided-guard
+/// exists for (the user confirmed the candidate while a run was in flight)
+/// instead of a misleading "did not match any item".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingIgnoreOutcome {
+    /// The candidate was marked ignored; carries the write event.
+    Ignored(MemoryWriteEvent),
+    /// The candidate exists but already carries the user's decision
+    /// (confirmed); it is kept as-is.
+    AlreadyDecided,
+    /// No candidate with this id exists.
+    NotFound,
+}
+
+pub fn ignore_pending_memory(id: &str) -> io::Result<PendingIgnoreOutcome> {
     let _guard = write_lock().lock();
+    ignore_pending_memory_unlocked(id)
+}
+
+/// Caller must hold [`write_lock`] (same critical-section contract as the
+/// other `*_unlocked` mutation cores).
+pub(super) fn ignore_pending_memory_unlocked(id: &str) -> io::Result<PendingIgnoreOutcome> {
     let id = clean_id(id);
     let now = Utc::now().to_rfc3339();
     let mut items = load_pending_memory()?;
     let Some(item) = items.iter_mut().find(|item| item.id == id) else {
-        return Ok(None);
+        return Ok(PendingIgnoreOutcome::NotFound);
     };
+    // A confirmed item carries the user's decision and must not be demoted to
+    // ignored — not even by an organize delete acting on a snapshot taken
+    // before the user confirmed (mirror of confirm_pending_memory's decided
+    // short-circuit). Already-ignored items stay idempotent.
+    if item.status == PENDING_STATUS_CONFIRMED {
+        return Ok(PendingIgnoreOutcome::AlreadyDecided);
+    }
     item.status = PENDING_STATUS_IGNORED.to_string();
     item.updated_at = now;
     let event = MemoryWriteEvent {
@@ -1435,7 +1537,7 @@ pub fn ignore_pending_memory(id: &str) -> io::Result<Option<MemoryWriteEvent>> {
         text: item.content.clone(),
     };
     write_pending_memory_unlocked(&items)?;
-    Ok(Some(event))
+    Ok(PendingIgnoreOutcome::Ignored(event))
 }
 
 pub fn never_pending_memory(
@@ -1600,6 +1702,16 @@ pub fn update_preference(
     patch: MemoryTextPatch,
 ) -> io::Result<Option<TopicMutation<PreferenceFile>>> {
     let _guard = write_lock().lock();
+    update_preference_unlocked(id, patch)
+}
+
+/// Caller must hold [`write_lock`]: the read-modify-write against the
+/// preferences directory is only atomic together with the other mutation entry
+/// points (organize's apply phase re-checks and mutates under one held lock).
+pub(super) fn update_preference_unlocked(
+    id: &str,
+    patch: MemoryTextPatch,
+) -> io::Result<Option<TopicMutation<PreferenceFile>>> {
     let _lifecycle = file_lifecycle_lock().lock();
     let id = clean_id(id);
     if id.is_empty() {
@@ -1617,7 +1729,7 @@ pub fn update_preference(
     let text = patch
         .text
         .as_deref()
-        .map(|s| clean_candidate_sentence(s, 120))
+        .map(|s| clean_candidate_sentence(s, PREFERENCE_TEXT_MAX_CHARS))
         .unwrap_or_else(|| existing.text.clone());
     if text.is_empty()
         || looks_sensitive_or_task_like(&text)
@@ -1659,6 +1771,11 @@ pub fn update_preference(
 
 pub fn delete_preference(id: &str) -> io::Result<bool> {
     let _guard = write_lock().lock();
+    delete_preference_unlocked(id)
+}
+
+/// Caller must hold [`write_lock`] (see [`update_preference_unlocked`]).
+pub(super) fn delete_preference_unlocked(id: &str) -> io::Result<bool> {
     let id = clean_id(id);
     if id.is_empty() {
         return Ok(false);

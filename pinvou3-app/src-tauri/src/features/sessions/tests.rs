@@ -81,6 +81,7 @@ fn assistant_tool_use(id: &str) -> Message {
             name: "Bash".into(),
             input: serde_json::json!({"command": "printf still-running"}),
             caller: None,
+            thought_signature: None,
         }],
     }
 }
@@ -509,13 +510,23 @@ fn validate_user_workspace_path_rejects_invalid_and_accepts_directory() {
     let dir = unique_temp_dir("user-workspace-valid");
     std::fs::create_dir_all(&dir).expect("create dir");
     let validated = validate_user_workspace_path(dir.to_str().expect("utf8")).expect("valid dir");
-    assert_eq!(validated, dir.canonicalize().expect("canonicalize"));
+    let expected = crate::platform::os::platform_compat_path(
+        &dir.canonicalize().expect("canonicalize").to_string_lossy(),
+    );
+    assert_eq!(validated, expected);
+    // 回归断言:绑定目录不得携带 Windows verbatim 前缀(评审 #445 P1-1),
+    // 与 validate_codex_project_workspace 的既有约定同源。
+    assert!(
+        !validated.to_string_lossy().starts_with(r"\\?\"),
+        "validated workspace must not keep the verbatim prefix: {}",
+        validated.display()
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn text_message(role: &str, text: &str) -> Message {
     Message {
-        role: role.to_string(),
+        role: role.into(),
         content: vec![ContentBlock::Text {
             text: text.to_string(),
             cache_control: None,
@@ -1187,10 +1198,7 @@ fn scheduled_agent_mode_round_trips_without_collapsing_profile_or_metadata() {
     let id = scheduled.metadata.id.clone();
 
     assert_eq!(scheduled.metadata.mode.as_deref(), Some("agent"));
-    assert_eq!(
-        profile.mode.to_app_mode(),
-        deepseek_tui::tui::app::AppMode::Agent
-    );
+    assert_eq!(profile.mode.to_app_mode(), deepseek_tui::AppMode::Agent);
     let persisted = store
         .persist_scheduled_engine_state(
             &id,
@@ -3372,13 +3380,25 @@ fn legacy_design_default_folds_into_work_on_load() {
     .expect("write legacy settings");
     let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
     assert_eq!(store.mode_defaults().work, Some(SerializableMode::Plan));
-    // The fold is not written back: after boot, settings.json keeps its
-    // legacy shape (work key absent, design value preserved).
-    let on_disk =
-        std::fs::read_to_string(paths::settings_path()).expect("read settings after boot");
+    // The fold is not written back: after boot, the persisted `work` entry
+    // stays unset (absent or null) and the legacy `design` value survives.
+    // The raw shape is no longer assertable: since #416, first load of a
+    // legacy settings.json without `color_scheme` derives it and persists
+    // the normalized whole-preferences file — legitimately adding sibling
+    // keys (including `"work": null`) while the fold semantics hold.
+    let on_disk: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(paths::settings_path()).expect("read settings after boot"),
+    )
+    .expect("settings stay valid JSON after boot");
+    let mode_defaults = on_disk
+        .get("mode_defaults")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let persisted_work = mode_defaults.get("work").and_then(|v| v.as_str());
+    let persisted_design = mode_defaults.get("design").and_then(|v| v.as_str());
     assert!(
-        on_disk.contains("\"design\"") && !on_disk.contains("\"work\""),
-        "fold must not write back to disk: {on_disk}"
+        persisted_design == Some("plan") && persisted_work.is_none(),
+        "fold must not write back: work={persisted_work:?} design={persisted_design:?} (raw: {on_disk})"
     );
 
     // work already set → design does not override.
@@ -3920,6 +3940,30 @@ fn truncate_reports_compaction_summary_residue_in_system_prompt() {
     assert!(!outcome.had_compaction, "普通 system_prompt 不得误报");
 }
 
+/// 目录重绑定的元数据写入路径(评审 #463):set_workspace 只改 workspace
+/// 字段并可重读验证;不存在/损坏 JSON 的分类由命令层据此区分孤儿。
+#[test]
+fn set_workspace_persists_rebound_path() {
+    let (store, _guard) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let target = std::env::temp_dir().join("pinvou3-rebound-workspace");
+    store
+        .set_workspace(&session.metadata.id, target.clone())
+        .expect("set workspace");
+    let reloaded = store.load(&session.metadata.id).expect("reload");
+    assert_eq!(reloaded.metadata.workspace, target);
+    // 同值重复写幂等(重绑定失败重试路径依赖这一点)。
+    store
+        .set_workspace(&session.metadata.id, target.clone())
+        .expect("idempotent rewrite");
+    // 会话 JSON 不存在 = durable 缺席(孤儿分类只认它);在场(哪怕损坏)
+    // 不得被当孤儿静默跳过。
+    assert!(!store.durable_session_record_is_absent(&session.metadata.id));
+    assert!(store.durable_session_record_is_absent("sess-definitely-missing"));
+}
+
 #[test]
 fn rebind_workspace_bindings_moves_plain_bindings_and_stays_idempotent() {
     let (store, _g) = isolated_store();
@@ -3965,7 +4009,8 @@ fn rebind_workspace_bindings_moves_plain_bindings_and_stays_idempotent() {
 
     let affected = store
         .rebind_workspace_bindings(&bound, &to)
-        .expect("rebind plain bindings");
+        .expect("rebind plain bindings")
+        .rebound;
     let mut ids: Vec<&str> = affected.iter().map(|(id, _)| id.as_str()).collect();
     ids.sort_unstable();
     // id 字典序与创建顺序无关(同后缀不同前缀),期望侧同样排序,否则断言
@@ -4008,6 +4053,7 @@ fn rebind_workspace_bindings_moves_plain_bindings_and_stays_idempotent() {
         store
             .rebind_workspace_bindings(&bound, &to)
             .unwrap()
+            .rebound
             .is_empty()
     );
     store.session_workspaces.write().clear();

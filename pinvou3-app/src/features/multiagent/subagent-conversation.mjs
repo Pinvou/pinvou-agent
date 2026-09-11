@@ -78,6 +78,8 @@ export function resolveSubagentSpawnResult(item) {
 }
 
 const FILE_CHANGE_TOOLS = new Set([
+  'write',
+  'edit',
   'write_file',
   'edit_file',
   'append_file',
@@ -85,6 +87,7 @@ const FILE_CHANGE_TOOLS = new Set([
   'fim_edit',
 ]);
 const COMMAND_TOOLS = new Set([
+  'bash',
   'exec_shell',
   'exec_shell_wait',
   'exec_shell_interact',
