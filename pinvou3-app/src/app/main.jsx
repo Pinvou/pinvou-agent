@@ -1046,17 +1046,23 @@ const NAV_PREFETCH = {
       const savedModelConfigRef = useRef(null);
       const savedSearchConfigRef = useRef(null);
 
-      // 各厂商默认配置（前端自动填充用，与 bridge/mod.rs 对齐）
+      // 各厂商默认配置（旧版单模型草稿回填用，镜像 Rust prefs
+      // `ModelPreset::default_base_url/default_model`，与 settings/model-catalog.js
+      // 的 MODEL_PRESET_DEFS 同源；openai_compatible 保留 Rust 的 legacy 迁移兜底值）
       const PRESET_DEFAULTS = {
         local_vllm:  { baseUrl: 'http://127.0.0.1:8000/v1',                model: 'qwen36_35b_256k' },
-        deepseek:    { baseUrl: 'https://api.deepseek.com',                model: 'deepseek-v4-pro' },
+        deepseek:    { baseUrl: 'https://api.deepseek.com',                model: 'deepseek-flash' },
         kimi:        { baseUrl: 'https://api.moonshot.cn/v1',              model: 'kimi-k3' },
         openai_compatible: { baseUrl: 'https://api.openai.com/v1',        model: 'gpt-5.6-terra' },
-        qwen:        { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3.7-plus' },
+        qwen:        { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3.8-max' },
         doubao:      { baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-seed-evolving' },
         minimax:     { baseUrl: 'https://api.minimaxi.com/v1',            model: 'MiniMax-M3' },
-        glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-5.2' },
+        glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-5.3' },
         mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2.5-pro' },
+        openai:      { baseUrl: 'https://api.openai.com/v1',              model: 'gpt-5.6-terra' },
+        anthropic:   { baseUrl: 'https://api.anthropic.com/v1',           model: 'claude-sonnet-5' },
+        gemini:      { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-3.8-flash' },
+        xai:         { baseUrl: 'https://api.x.ai/v1',                    model: 'grok-4.6' },
       };
       function normalizedModelProfile(name, baseUrl, apiKey) {
         const modelName = (name || '').trim();

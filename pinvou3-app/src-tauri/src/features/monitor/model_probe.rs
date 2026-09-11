@@ -897,9 +897,12 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
     #[test]
     fn infer_context_window_cloud_models() {
         let cases: &[(ModelPreset, &str, u32)] = &[
-            // DeepSeek：v4 全系 1M（原 bug：预设固定 128K）
+            // DeepSeek：v4 全系 1M（原 bug：预设固定 128K）；
+            // deepseek-flash（V4.1-Flash）官方 1M，经 core::model_context 覆盖表修正
+            // （底座对无 "v4" 的 deepseek 名按 legacy 128K 启发式，2026-09-11 核对）
             (ModelPreset::Deepseek, "deepseek-v4-pro", 1_000_000),
             (ModelPreset::Deepseek, "deepseek-v4-flash", 1_000_000),
+            (ModelPreset::Deepseek, "deepseek-flash", 1_000_000),
             // Kimi：直连平台 kimi-k3 是 1M；Coding Plan 裸 k3 默认按 256K 安全值
             (ModelPreset::Kimi, "kimi-k3", 1_048_576),
             (ModelPreset::Kimi, "kimi-k2.7-code", 262_144),
@@ -916,8 +919,9 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
             // (binary 256K = 262,144).
             (ModelPreset::OpenaiCompatible, "k3-256k", 262_144),
             (ModelPreset::OpenaiCompatible, "k3", 262_144),
-            // GLM：5.2 是 1M，5.1/5-turbo 是 202,752，4.7 官方 200K
+            // GLM：5.2 / 5.3 是 1M，5.1/5-turbo 是 202,752，4.7 官方 200K
             (ModelPreset::Glm, "glm-5.2", 1_000_000),
+            (ModelPreset::Glm, "glm-5.3", 1_000_000),
             (ModelPreset::Glm, "glm-5.1", 202_752),
             (ModelPreset::Glm, "glm-5-turbo", 202_752),
             (ModelPreset::Glm, "glm-4.7", 204_800),
@@ -945,6 +949,8 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
             (ModelPreset::OpenaiCompatible, "gpt-5.6-terra", 1_050_000),
             (ModelPreset::OpenaiCompatible, "gpt-5.6-luna", 1_050_000),
             (ModelPreset::OpenaiCompatible, "gpt-5.6-sol", 1_050_000),
+            // xAI：底座 known 表收录 grok-4.6 / grok-4.5 500K（2026-09-11 核对）
+            (ModelPreset::Xai, "grok-4.6", 500_000),
             // 底座 catalog 已知（haiku 200K）与 PINVOU_OVERRIDES 覆盖（opus-5 1M）
             // 的 Anthropic 模型走 resolved_context_window，preset 兜底见 prefs 测试。
             (ModelPreset::Anthropic, "claude-haiku-4-5", 200_000),

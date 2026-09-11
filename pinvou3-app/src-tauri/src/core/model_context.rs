@@ -23,6 +23,12 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // 底座对未知名 claude 一律兜底 200K，且未收录 claude-opus-5；
     // 官方口径 Claude 5 系（除 haiku 外）均为 1M 上下文。
     ("claude-opus-5", 1_000_000),
+    // 底座 known 表对 deepseek 系只有含 "v4" 子串的名字给 1M，deepseek-flash
+    // 无 "v4" 会落 128K legacy 启发式（实测返回 Some(128_000) 且先行短路
+    // PINVOU_KNOWN）；V4.1-Flash 官方口径 1M 上下文
+    // （api-docs.deepseek.com/quick_start/pricing，2026-09-11 核对）。
+    // 故必须放本覆盖表而非 PINVOU_KNOWN。
+    ("deepseek-flash", 1_000_000),
 ];
 
 /// 解析 pinvou3 已知模型的上下文窗口。
@@ -100,6 +106,9 @@ mod tests {
     fn pinvou_overrides_take_precedence_over_codewhale_catalog() {
         // 底座 claude 通配兜底 200K 落后于官方口径（opus-5 为 1M），覆盖须先生效。
         assert_eq!(resolved_context_window("claude-opus-5"), Some(1_000_000));
+        // 底座把无 "v4" 的 deepseek 名按 legacy 128K 兜底；V4.1-Flash 官方 1M
+        // 必须由覆盖表先行修正（见 PINVOU_OVERRIDES 注释）。
+        assert_eq!(resolved_context_window("deepseek-flash"), Some(1_000_000));
         // 底座已收录且口径正确的模型不受影响。
         assert_eq!(resolved_context_window("claude-haiku-4-5"), Some(200_000));
         assert_eq!(resolved_context_window("claude-sonnet-5"), Some(1_000_000));

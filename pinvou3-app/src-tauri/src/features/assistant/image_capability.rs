@@ -81,38 +81,66 @@ pub fn moonshot_model_requires_explicit_thinking(model: &str) -> bool {
 }
 
 /// 内置已验证能力表:模型名小写后按子串匹配,命中即 Supported。
-/// 收录原则:仅明确多模态的模型族,且能从仓内 preset 默认模型或公开事实佐证;
-/// 拿不准的一律不收(走 Unknown + 用户 override)。
+/// 收录原则:仅官方文档明确多模态的模型族(2026-09-11 逐厂商按官方文档核对,
+/// 与前端 model-catalog.js 同批同步);拿不准的一律不收(走 Unknown + 用户 override)。
+/// 注意子串匹配跨不过 tier 词:收整族时必须确认族内没有纯文本成员
+/// (如 qwen3.7-max、glm-5.3),否则只能逐条目收。
 const VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     // OpenAI 多模态世代。OpenaiCompatible preset 默认模型 `gpt-5.6-terra`
-    // (prefs.rs `default_model`)即 gpt-5 族。
+    // (prefs `default_model`)即 gpt-5 族。
     "gpt-4o",
     "gpt-4.1",
     "gpt-5",
-    // Anthropic Claude 3/4/5 全系视觉输入。命名两式:claude-4-opus / claude-4-sonnet
-    // 命中 claude-N;新一代 claude-sonnet-5(默认预设)/claude-opus-5 需单独条目
-    // ——子串匹配跨不过 "sonnet"/"opus","claude-5" 命中不了 claude-sonnet-5。
+    // Anthropic:platform.claude.com models overview 明示「All current models
+    // support text and image input」(2026-09-11)。claude-3/4/5 覆盖 claude-N-tier
+    // 两式命名;sonnet-5 / opus-5 / haiku / fable 需单独条目——子串匹配跨不过
+    // tier 词,旧表漏配的 claude-haiku-4-5 既不含 claude-4 也不含 claude-haiku-5,
+    // claude-fable-5(-5-1)则完全无条目(claude-haiku-5 被 claude-haiku 覆盖,
+    // 条目保留仅为延续旧表)。
     "claude-3",
     "claude-4",
     "claude-5",
     "claude-sonnet-5",
     "claude-opus-5",
-    "claude-haiku-5",
+    "claude-haiku",
+    "claude-fable",
     // Google Gemini 全系多模态。
     "gemini",
-    // xAI Grok 全系视觉输入(默认预设 grok-4.3 命中)。
+    // xAI Grok 全系视觉输入(默认预设 grok-4.6 命中)。
     "grok",
-    // 阿里 Qwen VL 系列(qwen-vl / qwen2-vl / qwen2.5-vl / qwen3-vl)。
-    // 裸 qwen 名(qwen3.7-plus 等文本模型)不收——见设计 §7.2。
+    // DeepSeek V4.1-Flash 原生视觉(api-docs.deepseek.com/guides/vision,
+    // 2026-09-11);v4-pro 等其余 deepseek 未列官方 vision 页,不收。
+    "deepseek-flash",
+    // 阿里 Qwen(help.aliyun.com Model Studio vision 文档,2026-09-11):
+    // qwen3.8-max / qwen3.8-flash 全系收;qwen3.7 仅 plus/flash(3.7-max 纯文本,
+    // 不能用 qwen3.7 整体子串);qwen3.6-flash 收。VL 系列保留。
     "qwen-vl",
     "qwen2-vl",
     "qwen2.5-vl",
     "qwen3-vl",
-    // 智谱 GLM-4V 视觉系列;glm-5.x 未经验证不收。
+    "qwen3.8",
+    "qwen3.7-plus",
+    "qwen3.7-flash",
+    "qwen3.6-flash",
+    // 豆包现役 doubao-seed-* 五行能力列均含多模态理解
+    // (volcengine docs 82379/1330310,2026-09-11)。
+    "doubao-seed",
+    // MiniMax 仅 M3 支持图片输入,M2.x 不支持,不能用 minimax 整体子串
+    // (2026-09-11 官方口径)。
+    "minimax-m3",
+    // 智谱 GLM-5.3-Flash 原生多模态;glm-5.3 / glm-5.2 纯文本,不能用 glm-5.3
+    // 整体子串(2026-09-11);GLM-4V 视觉系列保留。
+    "glm-5.3-flash",
     "glm-4v",
-    // Kimi for Coding(Moonshot 编程计划模型):用户实测可原生识图(2026-07)。
-    // 其余 kimi 文本模型(kimi-k3 等)不收。
+    // Kimi(2026-09-11):Kimi 直连 kimi-k3 与 Kimi Code k3 / k3-256k 官方均为
+    // 图片输入,`k3` 子串同时覆盖三者(kimi-k3 名内亦含之,冗余仅为可读);
+    // kimi-k2.7-code 与 kimi-k2.6 官方定价页为文本/图片/视频输入
+    // (platform.kimi.com);kimi-k2.5 等其余文本模型不收。
     "kimi-for-coding",
+    "kimi-k3",
+    "k3",
+    "kimi-k2.7-code",
+    "kimi-k2.6",
 ];
 
 /// 内置表查询:模型名(小写化)是否命中已验证多模态条目。
@@ -264,19 +292,41 @@ mod tests {
         for (preset, name) in [
             (ModelPreset::OpenaiCompatible, "gpt-4o-mini"),
             (ModelPreset::OpenaiCompatible, "gpt-4.1"),
-            // preset 默认模型(prefs.rs)必须命中,否则官方 OpenAI 路由退化成 Unknown。
+            // preset 默认模型(prefs `default_model`)必须命中,否则官方路由退化成 Unknown。
             (ModelPreset::OpenaiCompatible, "gpt-5.6-terra"),
             (ModelPreset::OpenaiCompatible, "claude-3-5-sonnet-20241022"),
             (ModelPreset::OpenaiCompatible, "claude-4-opus"),
-            // 默认预设(claude-sonnet-5 / grok-4.3)必须命中,否则官方路由退化成 Unknown。
+            // 默认预设(claude-sonnet-5 / grok-4.6 / deepseek-flash / qwen3.8-max /
+            // MiniMax-M3 / kimi-k3)必须命中,否则官方路由退化成 Unknown。
             (ModelPreset::OpenaiCompatible, "claude-sonnet-5"),
             (ModelPreset::OpenaiCompatible, "gemini-2.5-pro"),
-            (ModelPreset::OpenaiCompatible, "grok-4.3"),
+            (ModelPreset::OpenaiCompatible, "grok-4.6"),
+            // 旧表漏配修复:claude-haiku-4-5 / claude-fable-5-1 均为现役多模态
+            // (platform.claude.com models overview,2026-09-11)。
+            (ModelPreset::OpenaiCompatible, "claude-haiku-4-5"),
+            (ModelPreset::OpenaiCompatible, "claude-fable-5"),
+            (ModelPreset::OpenaiCompatible, "claude-fable-5-1"),
+            // V4.1-Flash 原生视觉(api-docs.deepseek.com/guides/vision)。
+            (ModelPreset::Deepseek, "deepseek-flash"),
             (ModelPreset::Qwen, "qwen-vl-max"),
             (ModelPreset::Qwen, "Qwen2.5-VL-72B-Instruct"),
+            (ModelPreset::Qwen, "qwen3.8-max"),
+            (ModelPreset::Qwen, "qwen3.8-flash"),
+            (ModelPreset::Qwen, "qwen3.7-plus"),
+            (ModelPreset::Qwen, "qwen3.7-flash"),
+            (ModelPreset::Qwen, "qwen3.6-flash"),
             (ModelPreset::Glm, "glm-4v-plus"),
-            // 用户实测可原生识图(2026-07),与 kimi-k3 等文本模型区分。
+            (ModelPreset::Glm, "glm-5.3-flash"),
+            (ModelPreset::Doubao, "doubao-seed-evolving"),
+            (ModelPreset::Minimax, "MiniMax-M3"),
+            // Kimi 直连 kimi-k3 与 Kimi Code k3 / k3-256k 官方均为图片输入
+            // (2026-09-11);kimi-for-coding 用户实测可识图(2026-07)。
             (ModelPreset::Kimi, "kimi-for-coding"),
+            (ModelPreset::Kimi, "kimi-k3"),
+            (ModelPreset::OpenaiCompatible, "k3"),
+            (ModelPreset::OpenaiCompatible, "k3-256k"),
+            (ModelPreset::Kimi, "kimi-k2.7-code"),
+            (ModelPreset::Kimi, "kimi-k2.6"),
         ] {
             let model = saved_model(preset, name);
             assert_eq!(
@@ -292,16 +342,18 @@ mod tests {
         // Unified matrix for "miss the builtin vetted table → Unknown". Since
         // v0.9.5 the foundation model_catalog is no longer exposed, catalog-level
         // modalities detection is gone, and there is no catalog-based upgrade path.
-        // - No preset's default text model may be misreported as Supported;
+        // - Text-only official models must stay Unknown (qwen3.7-max / glm-5.3 /
+        //   glm-5.2 / MiniMax-M2.x per the 2026-09-11 vendor docs);
+        // - deepseek-v4-pro is not on the official vision page;
         // - mimo-v2.5-pro / muse-spark-1.1 are outside the builtin table and
         //   must also resolve to Unknown.
         for (preset, name) in [
             (ModelPreset::Deepseek, "deepseek-v4-pro"),
-            (ModelPreset::Kimi, "kimi-k3"),
-            (ModelPreset::Qwen, "qwen3.7-plus"),
-            (ModelPreset::Doubao, "doubao-seed-evolving"),
-            (ModelPreset::Minimax, "MiniMax-M3"),
+            (ModelPreset::Qwen, "qwen3.7-max"),
+            (ModelPreset::Glm, "glm-5.3"),
             (ModelPreset::Glm, "glm-5.2"),
+            (ModelPreset::Minimax, "MiniMax-M2.7"),
+            (ModelPreset::Minimax, "MiniMax-M2.7-highspeed"),
             (ModelPreset::Mimo, "mimo-v2.5-pro"),
             (ModelPreset::OpenaiCompatible, "muse-spark-1.1"),
         ] {

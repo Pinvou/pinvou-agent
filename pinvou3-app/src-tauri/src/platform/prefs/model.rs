@@ -171,21 +171,27 @@ impl ModelPreset {
     /// `bridge::tests::default_model_window_recognized` 锁住这个不变量。
     /// ⚠️ ops 同步要求:vLLM 启动也要带 `--served-model-name qwen36_35b_256k`,
     /// 否则 OpenAI-compat API 报 `model_not_found`。
+    ///
+    /// 2026-09-11 按官方文档核对（与前端 model-catalog.js 同批同步）。
     pub fn default_model(&self) -> &'static str {
         match self {
             ModelPreset::LocalVllm => "qwen36_35b_256k",
-            ModelPreset::Deepseek => "deepseek-v4-pro",
+            // V4.1-Flash 为官方主力；v4-pro 自 2026-09-14 起被路由到 V4.1-Flash 计费。
+            ModelPreset::Deepseek => "deepseek-flash",
             ModelPreset::Kimi => "kimi-k3",
             ModelPreset::OpenaiCompatible => "gpt-5.6-terra",
             ModelPreset::Qwen => "qwen3.8-max",
             ModelPreset::Doubao => "doubao-seed-evolving",
             ModelPreset::Minimax => "MiniMax-M3",
-            ModelPreset::Glm => "glm-5.2",
+            // 智谱双站 API enum 默认值。
+            ModelPreset::Glm => "glm-5.3",
             ModelPreset::Mimo => "mimo-v2.5-pro",
             ModelPreset::Openai => "gpt-5.6-terra",
             ModelPreset::Anthropic => "claude-sonnet-5",
-            ModelPreset::Gemini => "gemini-3.6-flash",
-            ModelPreset::Xai => "grok-4.3",
+            // 2026-09-02 发布。
+            ModelPreset::Gemini => "gemini-3.8-flash",
+            // xAI 官方编码/Agent 推荐位。
+            ModelPreset::Xai => "grok-4.6",
         }
     }
 }
@@ -220,11 +226,12 @@ impl ModelPreset {
             },
             // Gemini 全系标称 1M。
             ModelPreset::Gemini => Some(1_048_576),
-            // xAI 官方口径：grok-4.20 系 2M、grok-4.3 1M、grok-4.5 500K、grok-build 256K。
+            // xAI 官方口径：grok-4.20 系 2M、grok-4.3 1M、grok-4.5 / grok-4.6 500K、
+            // grok-build 256K（2026-09-11 核对）。
             ModelPreset::Xai => match model.map(str::to_ascii_lowercase) {
                 Some(m) if m.contains("grok-4.20") => Some(2_000_000),
                 Some(m) if m.contains("grok-4.3") => Some(1_000_000),
-                Some(m) if m.contains("grok-4.5") => Some(500_000),
+                Some(m) if m.contains("grok-4.6") || m.contains("grok-4.5") => Some(500_000),
                 Some(m) if m.contains("grok-build") => Some(256_000),
                 _ => Some(256_000),
             },
@@ -254,7 +261,8 @@ mod tests {
             (ModelPreset::Anthropic, None, 1_000_000),
             // Gemini 全系标称 1M
             (ModelPreset::Gemini, Some("gemini-3.6-flash"), 1_048_576),
-            // xAI 预设兜底：grok-4.20 系 2M、grok-4.3 1M、grok-4.5 500K、grok-build 256K
+            // xAI 预设兜底：grok-4.20 系 2M、grok-4.3 1M、grok-4.5 / grok-4.6 500K、
+            // grok-build 256K
             (
                 ModelPreset::Xai,
                 Some("grok-4.20-0309-reasoning"),
@@ -262,6 +270,7 @@ mod tests {
             ),
             (ModelPreset::Xai, Some("grok-4.3"), 1_000_000),
             (ModelPreset::Xai, Some("grok-4.5"), 500_000),
+            (ModelPreset::Xai, Some("grok-4.6"), 500_000),
             (ModelPreset::Xai, Some("grok-build-0.1"), 256_000),
             (ModelPreset::Xai, Some("grok-future-x"), 256_000),
             (ModelPreset::Xai, None, 256_000),
