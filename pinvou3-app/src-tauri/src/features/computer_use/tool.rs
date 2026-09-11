@@ -21,7 +21,7 @@ use deepseek_tui::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
 
-use super::audit::{self, AuditLog, AuditRecord};
+use super::audit::{AuditLog, AuditRecord};
 use super::backend::BackendHandle;
 use super::guard::{
     ComputerUseShared, ConfirmationCheck, GuardRejection, is_secure_role, matches_t3_denylist,
@@ -581,28 +581,21 @@ enum T3Screening {
 struct T3Hit {
     element_label: String,
     reason: &'static str,
-    /// Geometry of the hit element (input coordinate space x/y/w/h, the same
-    /// space as `element_at_point` arguments); None for chord-semantics hits
-    /// (no concrete element).
-    element_rect: Option<(i32, i32, i32, i32)>,
 }
 
 /// 对一个 a11y 元素做名单/密码字段判定。坐标筛查（screen_point）与键盘焦点
 /// 筛查共用同一套判定，两条路径的安全标准必须一致。
 fn screen_element(element: &ElementInfo) -> T3Screening {
-    let element_rect = Some((element.x, element.y, element.width, element.height));
     if element.secure || is_secure_role(&element.role) {
         return T3Screening::Blocked(T3Hit {
             element_label: format!("{} ({})", element.name, element.role),
             reason: "a password/secure field",
-            element_rect,
         });
     }
     if matches_t3_denylist(&element.name) || matches_t3_denylist(&element.role) {
         return T3Screening::Blocked(T3Hit {
             element_label: format!("{} ({})", element.name, element.role),
             reason: "a consequential control (purchase/payment/send/delete/transfer/submit)",
-            element_rect,
         });
     }
     T3Screening::Clear
@@ -620,15 +613,12 @@ fn screen_point(parts: &Parts, x: i32, y: i32) -> T3Screening {
     };
     match element {
         Some(element) => screen_element(&element),
-        // A successful query with no element at the target = the target
-        // cannot be proven harmless (no label to check, no geometry to
-        // bind): fail closed like a query error and require explicit
-        // confirmation (the old None→Clear was fail-open: an unlabeled
-        // target could be injected with zero confirmation).
-        None => T3Screening::Unscreenable(
-            "no accessibility element exists at the target point, so it cannot be screened"
-                .to_string(),
-        ),
+        // No element at the target point = nothing to check (Clear): unnamed
+        // targets are everywhere on real desktops (canvas, hover targets,
+        // custom widgets) and the denylist is name-based, so an absent name
+        // is not a red flag. Only a query *error* — screening blind — is
+        // fail-closed (Unscreenable → confirmation).
+        None => T3Screening::Clear,
     }
 }
 
@@ -722,10 +712,6 @@ fn t3_screening(parts: &Parts, action: &ComputerUseAction, map: Option<&ScaleMap
             return T3Screening::Blocked(T3Hit {
                 element_label: format!("key chord \"{chord}\""),
                 reason: "a consequential key chord (destructive delete/send semantics on the focused control)",
-                // Chord-semantics hits have no concrete element geometry; the
-                // summary binding (full chord text) already pins the action,
-                // so there is nothing geometry could add.
-                element_rect: None,
             });
         }
         // 键盘类动作：筛查焦点元素（键盘输入的真正落点）。破坏性和弦已在
@@ -811,44 +797,16 @@ fn requires_t3_check(action: &ComputerUseAction) -> bool {
     action.class() == ActionClass::Input
 }
 
-/// Whether the geometry recorded at approval time and the geometry observed
-/// at spend time still describe the same target: center-point drift within
-/// [`RECT_CENTER_TOLERANCE_PX`] on both axes counts as the same element
-/// (tolerates minor relayout/jitter); with no geometry at approval time the
-/// binding falls back to label equality (enforced by the caller); a known
-/// approval rect that no longer reports bounds at spend time is inconsistent
-/// (fail closed).
-fn rects_consistent(
-    approved: Option<(i32, i32, i32, i32)>,
-    current: Option<(i32, i32, i32, i32)>,
-) -> bool {
-    const RECT_CENTER_TOLERANCE_PX: i32 = 12;
-    match (approved, current) {
-        (Some(approved), Some(current)) => {
-            let center = |rect: (i32, i32, i32, i32)| (rect.0 + rect.2 / 2, rect.1 + rect.3 / 2);
-            let (ax, ay) = center(approved);
-            let (cx, cy) = center(current);
-            (ax - cx).abs() <= RECT_CENTER_TOLERANCE_PX
-                && (ay - cy).abs() <= RECT_CENTER_TOLERANCE_PX
-        }
-        // No geometry at approval time either (e.g. a chord-semantics hit):
-        // nothing better is knowable, label equality is the binding.
-        (None, _) => true,
-        // The approved concrete element no longer reports bounds: fail closed.
-        (Some(_), None) => false,
-    }
-}
-
-/// Full typed-text preview for the confirm event (`type_preview_full`), or
-/// `None` when it must not be included. Included ONLY when ALL of:
+/// Whether the full typed text may ride the confirm event
+/// (`type_preview_full`), or `None` when it must not. Included ONLY when
+/// ALL of:
 /// - the action is `Type` (other actions have no typed text),
 /// - the target is NOT secure/masked for this mint — the masked summary
 ///   exists precisely so password text is never revealed in the confirm
 ///   dialog or event stream,
-/// - the text is longer than the 12-char summary preview (otherwise the
-///   summary already shows everything) and at most 4096 chars — the cap
-///   bounds the payload size and thus the XSS/abuse surface that reaches
-///   the dialog; longer texts keep summary + fingerprint only.
+/// - the text is longer than 12 chars (shorter texts need no expander) and
+///   at most 4096 chars — the cap bounds the payload size and thus the
+///   XSS/abuse surface that reaches the dialog.
 fn full_type_preview(action: &ComputerUseAction, secure_type_target: bool) -> Option<String> {
     let ComputerUseAction::Type { text } = action else {
         return None;
@@ -860,35 +818,20 @@ fn full_type_preview(action: &ComputerUseAction, secure_type_target: bool) -> Op
     (count > TYPE_PREVIEW_CHARS && count <= 4096).then(|| text.clone())
 }
 
-/// 铸造待确认请求、发事件并给模型返回「未执行、去要确认」错误。
-/// `element_rect` / `verified_target` record the screening conclusion at
-/// mint time (the denylisted element's geometry, and whether the target was
-/// verifiably screened); they travel with the approval token so the
-/// spend-time re-screen can verify the target on screen is still the one the
-/// user approved.
+/// 铸造待确认请求、发事件并给模型返回「未执行、去要确认」错误。每个会话
+/// 至多一个 pending：新的请求直接替换旧请求（最新胜出，与普通对话框一致）。
 fn request_confirmation(
     parts: &Parts,
     summary: &str,
     element_label: &str,
     reason_phrase: &str,
-    element_rect: Option<(i32, i32, i32, i32)>,
-    verified_target: bool,
     type_preview_full: Option<String>,
 ) -> String {
-    // 确认队列满（大量未决确认）时拒绝并给出可操作的错误——评审发现：旧的
-    // 「逐出最旧 pending」会把用户正在等待的确认弹窗挤掉。
-    let Some(confirm_id) = parts.shared.new_pending_confirmation(
+    let confirm_id = parts.shared.new_pending_confirmation(
         &parts.session_id,
         summary.to_string(),
         element_label.to_string(),
-        element_rect,
-        verified_target,
-    ) else {
-        return "the confirmation queue is full (too many unresolved confirmations). \
-                Do not spam further blocked actions; wait for the user to respond to the \
-                pending prompts first."
-            .to_string();
-    };
+    );
     let mut payload = json!({
         "session_id": parts.session_id,
         "action": summary,
@@ -903,8 +846,9 @@ fn request_confirmation(
     }
     parts.events.emit(EVENT_CONFIRM_REQUIRED, payload);
     // The prefix is [`T3_CONFIRM_REQUIRED_ERROR`]: the error message carries
-    // the element label, so the audit error field holds only the stable code
-    // (see the tail of `run`); the model still receives the full message.
+    // the element label, so the audit record's error field holds only the
+    // stable code (see the tail of `run`); the model still receives the full
+    // message.
     format!(
         "{T3_CONFIRM_REQUIRED_ERROR}: this action targets {reason_phrase}: \
          \"{element_label}\". It was NOT executed. \
@@ -934,96 +878,6 @@ fn consent_label(action: &ComputerUseAction, confirmed: bool) -> String {
 fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
     let started = Instant::now();
     let action = parsed.action;
-    let call_id = audit::new_call_id();
-    // 审计 fail-closed（评审发现：Input 类动作曾可静默无审计执行）。审计
-    // 目录不可用时：Input 类拒绝执行；Observe 类维持 eprintln 降级（只读
-    // 观察没有注入后果，可用性优先）。
-    let audit_log = match AuditLog::for_session(&parts.session_id) {
-        Ok(log) => Some(log),
-        Err(error) => {
-            eprintln!("[computer_use] audit log unavailable: {error}");
-            if action.class() == ActionClass::Input {
-                return ToolResult::error(format!(
-                    "refusing to execute an input action because the audit log is \
-                     unavailable: {error}"
-                ));
-            }
-            None
-        }
-    };
-
-    // begin 记录的 consent 标签保持中性：此刻令牌尚未验证（评审发现：带
-    // confirm_id 的调用曾被预标成 t3-confirmed，伪造 id 会留下失实审计）。
-    let mut record = AuditRecord::begin(
-        call_id,
-        parts.session_id.clone(),
-        action.name(),
-        action.class().as_str(),
-        consent_label(&action, false),
-    );
-    match &action {
-        ComputerUseAction::Type { text } => {
-            record.with_typed_text(text).with_target("keyboard focus");
-        }
-        // 评审发现：`key "p"` 逐字符调用可把密码明文写进审计。Chords that
-        // are effectively typed text (see [`is_typed_text_chord`], including
-        // shift+char and duplicate-modifier permutations) follow the same
-        // policy as type — length + salt || text HMAC only; chords with real
-        // modifier keys are shortcuts with no dictionary risk and keep
-        // plaintext (readability for the user wins).
-        ComputerUseAction::KeyChord { keys, chord }
-        | ComputerUseAction::HoldKey { keys, chord, .. }
-            if is_typed_text_chord(keys) =>
-        {
-            record.with_typed_text(chord).with_target("keyboard focus");
-        }
-        ComputerUseAction::KeyChord { chord, .. } => {
-            record.with_target(&format!("keys: {chord}"));
-        }
-        // hold_key 记录按住时长（评审发现：审计此前答不了"按了多久"）。
-        ComputerUseAction::HoldKey { chord, ms, .. } => {
-            record.with_target(&format!("keys: {chord} held for {ms}ms"));
-        }
-        ComputerUseAction::Click { at, button, count } => {
-            record.with_target(&format!("{} click x{count} at {at:?}", button.as_str()));
-        }
-        // 滚动/按下/释放此前不记参数（评审发现：审计答不了"滚了哪个方向
-        // 几格"）。
-        ComputerUseAction::Scroll {
-            direction,
-            amount,
-            at,
-        } => {
-            record.with_target(&format!(
-                "scroll {} x{amount} at {at:?}",
-                direction.as_str()
-            ));
-        }
-        ComputerUseAction::MouseDown { button } => {
-            record.with_target(&format!("{} mouse button down", button.as_str()));
-        }
-        ComputerUseAction::MouseUp { button } => {
-            record.with_target(&format!("{} mouse button up", button.as_str()));
-        }
-        ComputerUseAction::Drag { start, end } => {
-            record.with_target(&format!("drag {start:?} -> {end:?}"));
-        }
-        ComputerUseAction::MouseMove { x, y } | ComputerUseAction::ElementAtPoint { x, y } => {
-            record.with_target(&format!("({x}, {y})"));
-        }
-        _ => {}
-    }
-    if let Some(log) = &audit_log {
-        if let Err(error) = log.append(&record) {
-            eprintln!("[computer_use] audit begin append failed: {error}");
-            if action.class() == ActionClass::Input {
-                return ToolResult::error(format!(
-                    "refusing to execute an input action because its audit record \
-                     could not be written: {error}"
-                ));
-            }
-        }
-    }
 
     let mut warnings: Vec<String> = Vec::new();
     let mut shot: Option<ShotOutcome> = None;
@@ -1055,100 +909,34 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         // T3 确认令牌：模型回传 confirm_id 且状态里有与之匹配（同会话、同
         // 动作摘要）的批准令牌才放行。
         if requires_t3_check(&action) {
-            // 摘要绑定输入：
-            // - cursor：无坐标 click/down/up/scroll 的落点是执行时刻的光标，
-            //   静态参数绑不住——把铸造/消费时刻的光标位置写进摘要，模型把
-            //   光标移到别的目标上再花令牌时摘要失配被拒（评审发现：用户
-            //   批准的落点与实际执行的落点可能不同）。
-            // - secure_type_target：Type 的目标是密码框时掩码预览（铸造与
-            //   消费都按当时焦点重算，焦点不变即确定一致）。
-            let cursor = parts.backend.cursor_position().ok();
+            // The masked-target decision only shapes the dialog payload
+            // (whether the full typed text may ride the confirm event).
             let secure_type_target =
                 matches!(&action, ComputerUseAction::Type { .. }) && type_target_is_secure(&parts);
-            let summary = action_summary(&action, cursor, secure_type_target);
+            let summary = action_summary(&action);
             // Optional full text for the confirm event's expander, fixed at
             // mint time (never recomputed at spend time).
             let type_preview_full = full_type_preview(&action, secure_type_target);
-            let bypass = match &parsed.confirm_id {
-                Some(id) => Some(
-                    parts
-                        .shared
-                        .take_confirmation(id, &parts.session_id, &summary),
-                ),
-                None => None,
-            };
-            match bypass {
-                Some(ConfirmationCheck::Granted {
-                    approved_element_label,
-                    approved_element_rect,
-                    verified_target,
-                }) => {
-                    // 已获批准不等于可以免检执行：批准到重试之间隔着任意
-                    // 模型调用（可能已重新截图、焦点已移动），摘要绑定的
-                    // 静态参数挡不住"目标处的东西变了"（评审发现：批准会
-                    // 被静默改指向）。重筛一次：
-                    let map = parts.state.lock().last_map.clone();
-                    match t3_screening(&parts, &action, map.as_ref()) {
-                        T3Screening::Blocked(hit) => {
-                            // Pass only when the target on screen is still the
-                            // one the user approved: same label AND the
-                            // recorded geometry still matches. Anything else
-                            // invalidates the (single-use, already consumed)
-                            // token and re-requests confirmation.
-                            if verified_target
-                                && hit.element_label == approved_element_label
-                                && rects_consistent(approved_element_rect, hit.element_rect)
-                            {
-                                confirmed_t3 = true;
-                            } else {
-                                return Err(request_confirmation(
-                                    &parts,
-                                    &summary,
-                                    &hit.element_label,
-                                    hit.reason,
-                                    hit.element_rect,
-                                    true,
-                                    type_preview_full.clone(),
-                                ));
-                            }
-                        }
-                        // The user approved an unverifiable target, so nothing
-                        // better is knowable now: pass. But a verified
-                        // (concretely screened) approval must not survive a
-                        // world where the target no longer reads as itself
-                        // (element gone / changed / screening now blind) —
-                        // fail closed and re-request.
-                        T3Screening::Clear | T3Screening::Unscreenable(_) => {
-                            if !verified_target {
-                                confirmed_t3 = true;
-                            } else {
-                                return Err(request_confirmation(
-                                    &parts,
-                                    &summary,
-                                    &approved_element_label,
-                                    "the approved target, which no longer reads as itself",
-                                    None,
-                                    false,
-                                    type_preview_full.clone(),
-                                ));
-                            }
-                        }
+            match &parsed.confirm_id {
+                Some(id) => match parts
+                    .shared
+                    .take_confirmation(id, &parts.session_id, &summary)
+                {
+                    // A granted token proceeds directly to execution — no
+                    // re-screen, no re-request arms (mainstream model: the
+                    // API confirmation is one per-action id the client
+                    // acknowledges; there is no crypto and no re-verification).
+                    ConfirmationCheck::Granted => {
+                        confirmed_t3 = true;
                     }
-                }
-                Some(ConfirmationCheck::Denied) => {
-                    return Err(
-                        "the user denied this action. Do not retry it; ask the user how to \
-                         proceed."
-                            .to_string(),
-                    );
-                }
-                Some(ConfirmationCheck::Unknown) => {
-                    return Err(
-                        "the confirm_id is invalid, expired, or was already used. Ask the \
-                         user to confirm again."
-                            .to_string(),
-                    );
-                }
+                    ConfirmationCheck::Unknown => {
+                        return Err(
+                            "the confirm_id is invalid, expired, or was already used. Ask the \
+                             user to confirm again."
+                                .to_string(),
+                        );
+                    }
+                },
                 None => {
                     let map = parts.state.lock().last_map.clone();
                     match t3_screening(&parts, &action, map.as_ref()) {
@@ -1159,8 +947,6 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                                 &summary,
                                 &hit.element_label,
                                 hit.reason,
-                                hit.element_rect,
-                                true,
                                 type_preview_full.clone(),
                             ));
                         }
@@ -1171,8 +957,6 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                                 &summary,
                                 &reason,
                                 "an unverifiable target (screening unavailable)",
-                                None,
-                                false,
                                 type_preview_full.clone(),
                             ));
                         }
@@ -1248,18 +1032,86 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
     })();
 
     let duration_ms = started.elapsed().as_millis() as u64;
+    // Single informational audit record per call. Redaction lives here: typed
+    // text is never logged (length only), typing-form chords log a key count,
+    // screenshots log SHA-256 + path. Fail-open: a write failure warns and
+    // NEVER blocks the action, for every action class.
+    let mut record = AuditRecord::new(
+        &parts.session_id,
+        action.name(),
+        consent_label(&action, confirmed_t3),
+    );
+    match &action {
+        // Privacy: never log typed text — length only.
+        ComputerUseAction::Type { text } => {
+            record.with_target(&format!("typed {} characters", text.chars().count()));
+        }
+        // Typing-form chords (single char + shifts, any order) could spell
+        // out a password one call at a time, so only the key count is
+        // logged — never the character; chords with real modifier keys are
+        // shortcuts with no dictionary risk and keep plaintext (readability
+        // for the user wins).
+        ComputerUseAction::KeyChord { keys, .. } | ComputerUseAction::HoldKey { keys, .. }
+            if is_typed_text_chord(keys) =>
+        {
+            record.with_target(&format!("pressed 1 key{}", held_key_suffix(&action)));
+        }
+        ComputerUseAction::KeyChord { chord, .. } => {
+            record.with_target(&format!("keys: {chord}"));
+        }
+        // hold_key 记录按住时长（评审发现：审计此前答不了"按了多久"）。
+        ComputerUseAction::HoldKey { chord, ms, .. } => {
+            record.with_target(&format!("keys: {chord} held for {ms}ms"));
+        }
+        ComputerUseAction::Click { at, button, count } => {
+            record.with_target(&format!("{} click x{count} at {at:?}", button.as_str()));
+        }
+        ComputerUseAction::Scroll {
+            direction,
+            amount,
+            at,
+        } => {
+            record.with_target(&format!(
+                "scroll {} x{amount} at {at:?}",
+                direction.as_str()
+            ));
+        }
+        ComputerUseAction::MouseDown { button } => {
+            record.with_target(&format!("{} mouse button down", button.as_str()));
+        }
+        ComputerUseAction::MouseUp { button } => {
+            record.with_target(&format!("{} mouse button up", button.as_str()));
+        }
+        ComputerUseAction::Drag { start, end } => {
+            record.with_target(&format!("drag {start:?} -> {end:?}"));
+        }
+        ComputerUseAction::MouseMove { x, y } | ComputerUseAction::ElementAtPoint { x, y } => {
+            record.with_target(&format!("({x}, {y})"));
+        }
+        _ => {}
+    }
     if let Some(shot) = &shot {
         record.with_screenshot(&shot.png, &shot.abs_path);
     }
-
-    // 审计 end 记录失败时动作已执行、无法撤销，但绝不能静默吞掉（评审发现
-    // 的 `let _ = append` 路径）：Input 类把失败显式带回给模型与用户。
-    let audit_end_failure = |log: &AuditLog, record: &AuditRecord| {
-        log.append(record).err().map(|error| {
-            eprintln!("[computer_use] audit end append failed: {error}");
-            format!("the audit record for this action could not be written: {error}")
-        })
+    let record = match &body {
+        Ok(_) => record.finish("ok", None, duration_ms),
+        // The full T3 "confirmation required" message carries the element
+        // label, so the audit error field holds only the stable code; every
+        // other error path keeps the full message (the model always receives
+        // the full message).
+        Err(message) => {
+            let audit_error = if message.starts_with(T3_CONFIRM_REQUIRED_ERROR) {
+                Some(T3_CONFIRM_REQUIRED_ERROR.to_string())
+            } else {
+                Some(message.clone())
+            };
+            record.finish("error", audit_error, duration_ms)
+        }
     };
+    if let Err(error) = AuditLog::for_session(&parts.session_id).and_then(|log| log.append(&record))
+    {
+        eprintln!("[computer_use] audit append failed: {error}");
+    }
 
     match body {
         Ok(text) => {
@@ -1267,149 +1119,45 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
             if let Some(shot) = &shot {
                 result = with_image_metadata(result, shot);
             }
-            record.consent = consent_label(&action, confirmed_t3);
-            let record = record.finish("ok", None, duration_ms);
-            if let Some(log) = &audit_log {
-                if let Some(audit_error) = audit_end_failure(log, &record) {
-                    if action.class() == ActionClass::Input {
-                        return ToolResult::error(format!(
-                            "the action was executed, but {audit_error}; \
-                             treat this action as unverified"
-                        ));
-                    }
-                }
-            }
             result
         }
-        Err(message) => {
-            // The full T3 "confirmation required" message carries the element
-            // label, so the audit error field holds only the stable code;
-            // every other error path keeps the full message (the model always
-            // receives the full message).
-            let audit_error = if message.starts_with(T3_CONFIRM_REQUIRED_ERROR) {
-                Some(T3_CONFIRM_REQUIRED_ERROR.to_string())
-            } else {
-                Some(message.clone())
-            };
-            let record = record.finish("error", audit_error, duration_ms);
-            if let Some(log) = &audit_log {
-                if let Some(audit_error) = audit_end_failure(log, &record) {
-                    if action.class() == ActionClass::Input {
-                        return ToolResult::error(format!(
-                            "{message}; additionally, {audit_error}"
-                        ));
-                    }
-                }
-            }
-            ToolResult::error(message)
-        }
+        Err(message) => ToolResult::error(message),
     }
 }
 
-/// Type 摘要预览的最大字符数。
+/// hold_key 的审计目标后缀（按住时长）；非 hold 动作为空串。
+fn held_key_suffix(action: &ComputerUseAction) -> String {
+    match action {
+        ComputerUseAction::HoldKey { ms, .. } => format!(" held for {ms}ms"),
+        _ => String::new(),
+    }
+}
+
+/// Type 摘要预览的字符下界（短于等于该长度的全文已在对话框里，无需
+/// `type_preview_full` expander）。
 const TYPE_PREVIEW_CHARS: usize = 12;
 
-/// Type 摘要的安全预览：最多 [`TYPE_PREVIEW_CHARS`] 个字符，控制字符转义为
-/// `\uXXXX`（预览会进确认对话框/事件与模型结果，不可夹带不可见载荷），
-/// 超长截断加省略号。
-fn type_preview(text: &str) -> String {
-    let mut preview = String::new();
-    let mut chars = text.chars();
-    for _ in 0..TYPE_PREVIEW_CHARS {
-        match chars.next() {
-            None => return preview,
-            Some(c) if c.is_control() => preview.push_str(&format!("\\u{:04x}", c as u32)),
-            Some(c) => preview.push(c),
-        }
-    }
-    if chars.next().is_some() {
-        preview.push('…');
-    }
-    preview
-}
-
-/// 键入文本的全文指纹：SHA-256 前 16 个 hex（64 位）。确认令牌与摘要绑定，
-/// 文本一变指纹即变——同长度的另一段文本不能换用同一令牌。评审发现：8 个
-/// hex（32 位）对有代码执行能力的对抗模型可离线暴力碰撞（同长度+同前缀+
-/// 同指纹的恶意文本分钟级可得），摘要又是字符串全等比较，故加倍到 64 位
-/// （2^64 次SHA-256 在会话时间尺度内不可行）。
-fn text_fingerprint(text: &str) -> String {
-    audit::sha256_hex(text.as_bytes())[..16].to_string()
-}
-
-/// Type 动作摘要：字符数 + 预览 + 指纹。摘要会展示给用户（知情批准）并
-/// 参与 guard 令牌绑定——旧摘要只有 `type N chars`，用户盲批且同长度不同
-/// 文本可换用同一令牌（评审发现）。`secure_target` 为真时预览掩码：向密码
-/// 框键入恰是必然走确认流程的场景，明文预览会把密码前 12 字符送进确认
-/// 弹窗/事件流（评审发现）。
-fn typed_text_summary(verb: &str, text: &str, secure_target: bool) -> String {
-    let preview = if secure_target {
-        "<masked: the typing target is a password/secure field>".to_string()
-    } else {
-        type_preview(text)
-    };
-    format!(
-        "{verb} {} chars: \"{}\" [{}]",
-        text.chars().count(),
-        preview,
-        text_fingerprint(text)
-    )
-}
-
-/// 无坐标点击/down/up 的落点绑定后缀：这类动作的落点 = 执行时刻的光标，
-/// 摘要绑不住静态参数，把**铸造时的光标位置**写进摘要——消费时按当时光标
-/// 重建摘要，光标被移到别的目标上时摘要失配、令牌被拒（评审发现：用户批准
-/// 的落点与实际执行的落点可能不同）。None=光标读不出（保守绑定，消费时
-/// 除非同样读不出否则不放行）。
-fn cursor_binding_suffix(cursor: Option<(i32, i32)>) -> String {
-    format!(" at cursor {cursor:?}")
-}
-
-fn action_summary(
-    action: &ComputerUseAction,
-    cursor: Option<(i32, i32)>,
-    secure_type_target: bool,
-) -> String {
+/// 动作摘要：纯人类可读的参数摘要（`left click x1 at Some((5, 6))`、
+/// `type 3 characters`……）。摘要展示给用户（知情批准）并绑定进批准令牌；
+/// 键入内容永不出现（Type 只记字符数，无预览、无指纹）。
+fn action_summary(action: &ComputerUseAction) -> String {
     match action {
         ComputerUseAction::Click { button, count, at } => {
-            let mut summary = format!("{} click x{count} at {at:?}", button.as_str());
-            if at.is_none() {
-                summary.push_str(&cursor_binding_suffix(cursor));
-            }
-            summary
+            format!("{} click x{count} at {at:?}", button.as_str())
         }
         ComputerUseAction::Drag { start, end } => format!("drag {start:?} -> {end:?}"),
-        ComputerUseAction::Type { text } => typed_text_summary("type", text, secure_type_target),
+        ComputerUseAction::Type { text } => {
+            format!("type {} characters", text.chars().count())
+        }
         ComputerUseAction::KeyChord { chord, .. } => format!("key {chord}"),
         ComputerUseAction::HoldKey { chord, ms, .. } => format!("hold {chord} for {ms}ms"),
         ComputerUseAction::Scroll {
             direction,
             amount,
             at,
-        } => {
-            let mut summary = format!("scroll {} x{amount} at {at:?}", direction.as_str());
-            if at.is_none() {
-                summary.push_str(&cursor_binding_suffix(cursor));
-            }
-            summary
-        }
-        ComputerUseAction::MouseDown { button } => {
-            format!(
-                "{} mouse down{}",
-                button.as_str(),
-                cursor_binding_suffix(cursor)
-            )
-        }
-        ComputerUseAction::MouseUp { button } => {
-            format!(
-                "{} mouse up{}",
-                button.as_str(),
-                cursor_binding_suffix(cursor)
-            )
-        }
-        // mouse_move 带静态坐标，必须绑定进摘要（评审发现：兜底分支只留
-        // 动作名，确认弹窗盲批 "mouse_move"，批准后带任意坐标重试即可
-        // 重建相同摘要）。
+        } => format!("scroll {} x{amount} at {at:?}", direction.as_str()),
+        ComputerUseAction::MouseDown { button } => format!("{} mouse down", button.as_str()),
+        ComputerUseAction::MouseUp { button } => format!("{} mouse up", button.as_str()),
         ComputerUseAction::MouseMove { x, y } => format!("mouse_move to ({x}, {y})"),
         other => other.name().to_string(),
     }
@@ -1616,14 +1364,15 @@ impl ToolSpec for ComputerUseTool {
          Coordinates are ALWAYS in the pixel space of the last screenshot this tool returned \
          (origin top-left); take a screenshot first and reuse its coordinate space. \
          Every action that touches the mouse or keyboard (mouse_move, scroll, clicks, keys, \
-         typing) requires a per-session grant from the user; consequential actions \
-         (purchase/payment/send/delete/submit controls, password fields) additionally \
-         require explicit user confirmation via confirm_id. Consequential-action screening \
-         works from the on-screen names of target controls, so unlabeled or unnamed targets \
-         also require confirmation, and the CONTENT you type is never screened. Screenshots \
-         and ui_tree read on-screen and focused-window content, which may include private \
-         information. After actions that change the screen a fresh screenshot is attached; \
-         if it is not visible, call image_analyze with the returned attachments path."
+         typing) requires a per-session grant from the user. Before an input action runs, \
+         its on-screen target is screened against a consequential-control denylist \
+         (payment/send/delete/credential-class names); actions hitting the denylist, \
+         targets that cannot be read, and destructive key chords require explicit user \
+         confirmation via confirm_id. The CONTENT you type is never screened. Observation \
+         (screenshots, ui_tree) reads on-screen and focused-window content while the \
+         feature is enabled, which may include private information. After actions that \
+         change the screen a fresh screenshot is attached; if it is not visible, call \
+         image_analyze with the returned attachments path."
     }
 
     fn input_schema(&self) -> Value {
@@ -1698,13 +1447,10 @@ impl ToolSpec for ComputerUseTool {
             }
         }
 
-        // 同意门控（同步快速路径，拒绝时发事件）。观察类动作同样过限速记账
-        // （评审发现：screenshot/ui_tree/cursor 此前完全不限速）。
+        // 同意门控（同步快速路径，拒绝时发事件）。观察类动作只需开关开启且
+        // 未停止（check_readonly）。
         let gate = match parsed.action.class() {
-            ActionClass::Observe => self
-                .parts
-                .shared
-                .begin_observe_action(&self.parts.session_id),
+            ActionClass::Observe => self.parts.shared.check_readonly(),
             ActionClass::Input => self.parts.shared.begin_input_action(&self.parts.session_id),
         };
         if let Err(rejection) = gate {
@@ -1740,29 +1486,21 @@ fn rejection_name(rejection: GuardRejection) -> &'static str {
         GuardRejection::Disabled => "disabled",
         GuardRejection::Stopped => "stopped",
         GuardRejection::GrantRequired => "grant-required",
-        GuardRejection::RateLimited => "rate-limited",
-        GuardRejection::ObserveRateLimited => "observe-rate-limited",
-        GuardRejection::BudgetExhausted => "budget-exhausted",
         GuardRejection::InputBusy => "input-busy",
     }
 }
 
 /// 被拒调用（gate 拒绝 / 能力拒绝）的审计：动作未执行、无注入后果，但
-/// 绝不静默吞错（非输入类允许降级为 eprintln）。
+/// 绝不静默吞错（fail-open：append 失败只 eprintln）。
 fn audit_rejected_call(parts: &Parts, action: &ComputerUseAction, reason: &str, message: &str) {
-    let mut record = AuditRecord::begin(
-        audit::new_call_id(),
-        parts.session_id.clone(),
+    let record = AuditRecord::new(
+        &parts.session_id,
         action.name(),
-        action.class().as_str(),
         format!("rejected:{reason}"),
-    );
+    )
+    .finish("rejected", Some(message.to_string()), 0);
     match AuditLog::for_session(&parts.session_id) {
         Ok(log) => {
-            if let Err(error) = log.append(&record) {
-                eprintln!("[computer_use] rejected-call audit append failed: {error}");
-            }
-            record = record.finish("rejected", Some(message.to_string()), 0);
             if let Err(error) = log.append(&record) {
                 eprintln!("[computer_use] rejected-call audit append failed: {error}");
             }

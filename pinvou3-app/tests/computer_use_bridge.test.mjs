@@ -5,7 +5,7 @@
  * invoke/listen. Until the review fixes this module only had a protocol-hash
  * lock on its invoke/listen text and zero behavioral coverage, even though it
  * owns the safety-critical consent projection (staleness guard, per-session
- * pending merge, optimistic rollback, deny cooldown, disabled-gating).
+ * pending merge, optimistic rollback, disabled-gating).
  *
  * The file also pins the computer_use protocol surface (invoke command spans
  * and listen event names, mirroring tests/bridge_domain_protocol.test.mjs's
@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
-import { DENY_SUPPRESSION_MS, computerUseConsentView } from '../src/features/computer-use/computer-use-logic.js';
+import { computerUseConsentView } from '../src/features/computer-use/computer-use-logic.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const bridgeSource = fs.readFileSync(
@@ -108,7 +108,6 @@ function createHarness({ status = {}, failInvoke = null, failMessage = '', initi
   const invoked = [];
   const listeners = {};
   const published = [];
-  let now = 1_000_000;
   const state = {
     activeSessionId: 's1',
     computerUse: { enabled: false, granted: false, stopped: false, platformSupported: true, ...initialState },
@@ -116,13 +115,9 @@ function createHarness({ status = {}, failInvoke = null, failMessage = '', initi
   const harness = {
     invoked, state, listeners,
     published() { return published.map((entry) => entry.slice); },
-    advanceMs(ms) { now += ms; },
   };
   const context = vm.createContext({
     window: {},
-    Date: {
-      now() { return now; },
-    },
     console,
   });
   vm.runInContext(bridgeSource, context, { filename: 'bridge/computer_use.js' });
@@ -199,7 +194,7 @@ function emit(harness, event, payload) {
   assert.ok(last && last.grantRequest, 'after enable, refresh must resurface the pending grant');
 }
 
-// ── 5. Explicit deny: backend command + cooldown on re-prompts ──────
+// ── 5. Explicit deny: backend command + close, new requests re-prompt ──
 {
   const harness = createHarness({ initialState: { enabled: true } });
   emit(harness, 'computer_use:confirm_required', {
@@ -211,41 +206,34 @@ function emit(harness, event, payload) {
   assert.equal(denyCall && denyCall[1] && denyCall[1].confirmId, 'cu-1',
     'deny must reach the backend instead of only closing the dialog locally');
   assert.equal(harness.published().at(-1).confirmRequest, null, 'dialog must close after deny');
-  // Model retries immediately → the re-emitted request must NOT re-open the
-  // modal (consent-fatigue guard), and the backend call still happens.
+  // A genuinely new backend request shows a new dialog immediately: a deny
+  // consumes only the request it answered — no cooldown, no denial memory.
   emit(harness, 'computer_use:confirm_required', {
     session_id: 's1', confirm_id: 'cu-2', action: 'left click', element: 'Buy now',
   });
-  assert.equal(
-    harness.published().at(-1).confirmRequest, null,
-    'a re-prompt inside the deny cooldown must not re-open the dialog',
-  );
-  // After the cooldown the dialog may re-appear.
-  harness.advanceMs(30_001);
-  emit(harness, 'computer_use:confirm_required', {
-    session_id: 's1', confirm_id: 'cu-3', action: 'left click', element: 'Buy now',
-  });
-  assert.ok(harness.published().at(-1).confirmRequest, 'after the cooldown the dialog may re-open');
+  const republished = harness.published().at(-1).confirmRequest;
+  assert.ok(republished, 'a new confirm_required after a deny must re-open the dialog immediately');
+  assert.equal(republished.confirmId, 'cu-2', 'the new dialog must describe the new request');
 }
 
-// ── 6. Grant deny latches too; a successful grant clears the latch ──
+// ── 6. A grant deny only closes the current dialog; re-prompts re-ask ──
 {
   const harness = createHarness({ initialState: { enabled: true } });
   emit(harness, 'computer_use:grant_required', { session_id: 's1' });
   assert.ok(harness.published().at(-1).grantRequest);
   await harness.feature.revoke('s1');
+  assert.equal(harness.published().at(-1).grantRequest, null, 'deny must close the grant dialog');
   emit(harness, 'computer_use:grant_required', { session_id: 's1' });
-  assert.equal(
-    harness.published().at(-1).grantRequest, null,
-    're-denied grant must not re-open the dialog inside the cooldown',
+  assert.ok(
+    harness.published().at(-1).grantRequest,
+    'a new grant_required after a deny must re-open the dialog immediately',
   );
   await harness.feature.grant('s1');
   assert.ok(harness.published().at(-1).granted, 'grant must publish granted=true');
-  // The latch is cleared by a successful grant: a later request re-opens.
   emit(harness, 'computer_use:confirm_required', {
     session_id: 's1', confirm_id: 'cu-9', action: 'a', element: 'e',
   });
-  assert.ok(harness.published().at(-1).confirmRequest, 'latch cleared by grant');
+  assert.ok(harness.published().at(-1).confirmRequest, 'confirm dialog works after granting');
 }
 
 // ── 7. platform_supported flows into the published slice ────────────
@@ -327,33 +315,23 @@ function emit(harness, event, payload) {
   assert.ok(last.grantRequest, 'grant_required must surface the dialog');
 }
 
-// ── 13. refreshStatus must not bypass the deny cooldown (review finding) ─
+// ── 13. deny consumes the pending: no resurface after a session switch ─
 {
   const harness = createHarness({ initialState: { enabled: true } });
   emit(harness, 'computer_use:confirm_required', {
     session_id: 's1', confirm_id: 'cu-1', action: 'left click', element: 'Buy now',
   });
   await harness.feature.deny('cu-1');
-  emit(harness, 'computer_use:confirm_required', {
-    session_id: 's1', confirm_id: 'cu-2', action: 'left click', element: 'Buy now',
-  });
-  assert.equal(harness.published().at(-1).confirmRequest, null, 'the cooldown must hold while the request stays pending');
-  // Switch away and back inside the cooldown: the refresh merge previously
-  // skipped the suppression gate and re-opened the blocking modal.
+  // The deny cleared the pending entry, not just the visible dialog:
+  // switching away and back must not resurrect the denied request.
   harness.state.activeSessionId = 's2';
   await harness.feature.refreshStatus('s2');
   harness.state.activeSessionId = 's1';
-  harness.advanceMs(29_999);
   await harness.feature.refreshStatus('s1');
   assert.equal(
     harness.published().at(-1).confirmRequest, null,
-    'refresh must respect the deny cooldown: pending stays, no dialog',
+    'a denied request must not resurface after a session switch',
   );
-  harness.advanceMs(1); // exactly DENY_SUPPRESSION_MS elapsed
-  await harness.feature.refreshStatus('s1');
-  const last = harness.published().at(-1);
-  assert.ok(last.confirmRequest, 'cooldown expiry lets refresh resurface the pending request');
-  assert.equal(last.confirmRequest.confirmId, 'cu-2', 'the pending request data must survive intact');
 }
 
 // ── 14. confirm on an expired request closes the dead-end modal (review finding) ─
@@ -388,11 +366,12 @@ function emit(harness, event, payload) {
   });
   await assert.rejects(harness.feature.deny('cu-1'), /unknown or expired/i);
   assert.equal(harness.published().at(-1).confirmRequest, null, 'the expired modal must close after deny too');
-  // An expiry is not a user decision: an immediate retry re-opens the dialog.
+  // An expiry is not a user decision: an immediate retry re-opens the dialog
+  // like any genuinely new request.
   emit(harness, 'computer_use:confirm_required', {
     session_id: 's1', confirm_id: 'cu-2', action: 'left click', element: 'Buy now',
   });
-  assert.ok(harness.published().at(-1).confirmRequest, 'expiry must not arm the deny cooldown');
+  assert.ok(harness.published().at(-1).confirmRequest, 'a new request after an expired deny shows a fresh dialog');
 }
 
 // ── 16. session switch clears the stale dialog synchronously, keeps pending ──
@@ -422,14 +401,7 @@ function emit(harness, event, payload) {
   );
 }
 
-// ── 17. the bridge payload mirrors DENY_SUPPRESSION_MS from the logic module ─
-{
-  const declared = Number(bridgeSource.match(/const DENY_SUPPRESSION_MS = (\d+);/)[1]);
-  assert.equal(declared, DENY_SUPPRESSION_MS, 'the classic-script payload must mirror the logic module constant');
-  assert.equal(DENY_SUPPRESSION_MS, 30_000, 'cooldown pinned at 30s; both copies must change together');
-}
-
-// ── 18. stop() clears the per-session pending map (no phantom dialogs) ──
+// ── 17. stop() clears the per-session pending map (no phantom dialogs) ──
 // Review finding: the backend's stop_all wipes every grant/confirm/token,
 // so stale pending entries made a later re-enable + refresh republish
 // dialogs for requests that no longer exist.
@@ -457,7 +429,7 @@ function emit(harness, event, payload) {
   );
 }
 
-// ── 19. setEnabled(false) clears the per-session pending map too ─────
+// ── 18. setEnabled(false) clears the per-session pending map too ─────
 {
   const harness = createHarness({
     initialState: { enabled: true },
@@ -487,7 +459,7 @@ function emit(harness, event, payload) {
   );
 }
 
-// ── 20. session switch clears the banner synchronously (review finding) ─
+// ── 19. session switch clears the banner synchronously (review finding) ─
 // The requests were already dropped pre-await; a stale `granted` kept the
 // previous session's control banner up during the IPC round-trip.
 {
@@ -508,7 +480,7 @@ function emit(harness, event, payload) {
   await refreshing;
 }
 
-// ── 21. grant_required must not wipe a live per-action confirmation ──
+// ── 20. grant_required must not wipe a live per-action confirmation ──
 // Review finding: a grant that idle-expired mid-run re-arms the grant gate
 // while the backend confirm is still pending; wiping pending.confirm left
 // no dialog after Allow.
@@ -533,7 +505,7 @@ function emit(harness, event, payload) {
   );
 }
 
-// ── 22. confirm_required passes typePreviewFull through to the dialog ─
+// ── 21. confirm_required passes typePreviewFull through to the dialog ─
 // Backend contract: the optional full typed-text preview travels with the
 // confirm payload; old payloads must keep their exact shape.
 {
