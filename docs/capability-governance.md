@@ -130,7 +130,8 @@ plain 从 AllowAll 翻为 DenyAll 时的**存量迁移**（读时迁移，见
 相关文件皆无、但家目录存在任何既有状态（`marketplace/installed.json`、
 `settings.json` 或非空 `sessions/` 目录）即视为升级装机——统一文件自
 v0.8.6 起就存在且只在有内容可写时才落盘，老装机 + 从未动过开关的用户可能
-三者皆无，只有全空家目录才算全新。该信号会被应用自身首启行为污染（bridge
+三者皆无。信号只检查这三条特定路径：家目录即使持有无关状态
+（`knowledge/`、`logs/` 等），只要三者皆无仍判全新。该信号会被应用自身首启行为污染（bridge
 boot 自写 `sessions/` 目录项、缺省补写默认 `settings.json`），因此首读被
 上提至各宿主启动钩顶部（GUI setup、headless bridge、dump_system_prompt，
 早于一切首启自写），且判定在**首次读取时无条件落盘**（置
