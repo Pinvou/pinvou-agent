@@ -59,11 +59,13 @@ export function extractComputerUseScreenshotPath(output) {
       const textParts = blocks
         .filter(block => block && block.type === 'text' && typeof block.text === 'string')
         .map(block => block.text);
-      // When an envelope parses, search ONLY its text blocks. Appending the raw
-      // JSON made Windows paths lose: their escaped backslashes (\\) surface
-      // as doubled separators, and being later in the search text they won the
-      // "last match wins" rule (review finding).
-      if (textParts.length > 0) text = textParts.join('\n');
+      // When an envelope parses, search ONLY its text blocks — even when
+      // there are none: falling back to the raw JSON surfaced Windows paths
+      // with their escaped backslashes (\\) as doubled separators, and let
+      // paths from non-text blocks win the "last match wins" rule
+      // (review finding). Empty parts yield '' and the function returns null
+      // via the empty-text path below.
+      text = textParts.join('\n');
     } catch {
       // Not JSON — search the raw text as-is.
     }

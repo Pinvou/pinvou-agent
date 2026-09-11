@@ -48,6 +48,12 @@ pub const MAX_TYPE_TEXT_CHARS: usize = 10_000;
 pub const MAX_UI_TREE_DEPTH: u32 = 64;
 pub const MAX_UI_TREE_NODES: u32 = 10_000;
 
+/// Stable audit code for the T3 "confirmation required" error. The full
+/// error message carries the element label (on-screen content may be
+/// sensitive), so the audit record's error field holds only this code; the
+/// model still receives the full message verbatim.
+const T3_CONFIRM_REQUIRED_ERROR: &str = "t3-confirmation-required";
+
 /// 截图存放的子目录（相对 workspace）：engine 的 image_analyze 回退按
 /// workspace 相对路径解析，`attachments/` 是它的既定根。
 const ATTACHMENTS_DIR: &str = "attachments/computer_use";
@@ -167,7 +173,16 @@ impl Drop for ComputerUseTool {
     fn drop(&mut self) {
         // 注销登记：否则登记表里的句柄会把 worker 线程（及其上的 portal
         // 会话）吊到进程退出。
-        self.parts.shared.backends.remove(&self.parts.session_id);
+        // Emergency release (it also unregisters): a model that pressed the
+        // left button and was dropped mid-drag must not leave the user's
+        // machine in button-held drag state, and the persistent OS-level
+        // grant (Wayland portal session) must close with the tool. The
+        // detached thread keeps its own handle clone, so the worker lives
+        // until the cleanup finishes and only then is torn down.
+        self.parts
+            .shared
+            .backends
+            .emergency_release(&self.parts.session_id);
     }
 }
 
@@ -566,21 +581,28 @@ enum T3Screening {
 struct T3Hit {
     element_label: String,
     reason: &'static str,
+    /// Geometry of the hit element (input coordinate space x/y/w/h, the same
+    /// space as `element_at_point` arguments); None for chord-semantics hits
+    /// (no concrete element).
+    element_rect: Option<(i32, i32, i32, i32)>,
 }
 
 /// 对一个 a11y 元素做名单/密码字段判定。坐标筛查（screen_point）与键盘焦点
 /// 筛查共用同一套判定，两条路径的安全标准必须一致。
 fn screen_element(element: &ElementInfo) -> T3Screening {
+    let element_rect = Some((element.x, element.y, element.width, element.height));
     if element.secure || is_secure_role(&element.role) {
         return T3Screening::Blocked(T3Hit {
             element_label: format!("{} ({})", element.name, element.role),
             reason: "a password/secure field",
+            element_rect,
         });
     }
     if matches_t3_denylist(&element.name) || matches_t3_denylist(&element.role) {
         return T3Screening::Blocked(T3Hit {
             element_label: format!("{} ({})", element.name, element.role),
             reason: "a consequential control (purchase/payment/send/delete/transfer/submit)",
+            element_rect,
         });
     }
     T3Screening::Clear
@@ -598,7 +620,15 @@ fn screen_point(parts: &Parts, x: i32, y: i32) -> T3Screening {
     };
     match element {
         Some(element) => screen_element(&element),
-        None => T3Screening::Clear,
+        // A successful query with no element at the target = the target
+        // cannot be proven harmless (no label to check, no geometry to
+        // bind): fail closed like a query error and require explicit
+        // confirmation (the old None→Clear was fail-open: an unlabeled
+        // target could be injected with zero confirmation).
+        None => T3Screening::Unscreenable(
+            "no accessibility element exists at the target point, so it cannot be screened"
+                .to_string(),
+        ),
     }
 }
 
@@ -620,6 +650,20 @@ fn chord_is_consequential(keys: &[Key]) -> bool {
         .any(|k| matches!(k, Key::Delete | Key::Backspace));
     let enter = keys.iter().any(|k| matches!(k, Key::Enter));
     (destructive && (has_modifier || has_shift)) || (enter && has_modifier)
+}
+
+/// Whether a key chord is effectively typed text: exactly one character key
+/// plus any number of Shift modifiers in any position. Classification must be
+/// content-based, not token-position based — `shift+shift+h` parses to
+/// `[Shift, Shift, Char('h')]`, which positional patterns like
+/// `[Char] | [Shift, Char] | [Char, Shift]` miss while the injection still
+/// types a capital H; `h+shift+shift` types a lowercase h and is a typing
+/// form all the same.
+fn is_typed_text_chord(keys: &[Key]) -> bool {
+    let non_modifiers: Vec<&Key> = keys.iter().filter(|k| !k.is_modifier()).collect();
+    non_modifiers.len() == 1
+        && matches!(non_modifiers[0], Key::Char(_))
+        && keys.iter().all(|k| matches!(k, Key::Char(_) | Key::Shift))
 }
 
 /// Type 动作的目标是否密码/安全字段（确认摘要据此掩码预览）。以焦点元素为
@@ -678,6 +722,10 @@ fn t3_screening(parts: &Parts, action: &ComputerUseAction, map: Option<&ScaleMap
             return T3Screening::Blocked(T3Hit {
                 element_label: format!("key chord \"{chord}\""),
                 reason: "a consequential key chord (destructive delete/send semantics on the focused control)",
+                // Chord-semantics hits have no concrete element geometry; the
+                // summary binding (full chord text) already pins the action,
+                // so there is nothing geometry could add.
+                element_rect: None,
             });
         }
         // 键盘类动作：筛查焦点元素（键盘输入的真正落点）。破坏性和弦已在
@@ -726,16 +774,20 @@ fn t3_screening(parts: &Parts, action: &ComputerUseAction, map: Option<&ScaleMap
                             .to_string(),
                     );
                 };
-                // 混合 DPI 防护：光标不在截图显示器上时 device_to_input 的
-                // 结果对本次动作没有意义（如 mouse_down 在副屏、映射是主屏）。
-                if !m.contains_device_point(dx, dy) {
+                // Mixed-DPI guard: device-space rects of different monitors can
+                // overlap when their scales differ, so containment must be
+                // checked in the input space — otherwise the cursor on one
+                // screen can pass the wrong monitor's map and device_to_input
+                // yields coordinates far from the real cursor (screening the
+                // wrong point while the injection lands on the real one).
+                let Some((ix, iy)) = m.device_to_input_checked(dx, dy) else {
                     return T3Screening::Unscreenable(format!(
                         "cursor at device ({dx}, {dy}) is outside the captured monitor \
                          (origin ({}, {}), {}x{}), so the target cannot be screened",
                         m.origin_x, m.origin_y, m.dev_w, m.dev_h
                     ));
-                }
-                vec![m.device_to_input(dx, dy)]
+                };
+                vec![(ix, iy)]
             }
             Err(error) => {
                 return T3Screening::Unscreenable(format!(
@@ -759,12 +811,69 @@ fn requires_t3_check(action: &ComputerUseAction) -> bool {
     action.class() == ActionClass::Input
 }
 
+/// Whether the geometry recorded at approval time and the geometry observed
+/// at spend time still describe the same target: center-point drift within
+/// [`RECT_CENTER_TOLERANCE_PX`] on both axes counts as the same element
+/// (tolerates minor relayout/jitter); with no geometry at approval time the
+/// binding falls back to label equality (enforced by the caller); a known
+/// approval rect that no longer reports bounds at spend time is inconsistent
+/// (fail closed).
+fn rects_consistent(
+    approved: Option<(i32, i32, i32, i32)>,
+    current: Option<(i32, i32, i32, i32)>,
+) -> bool {
+    const RECT_CENTER_TOLERANCE_PX: i32 = 12;
+    match (approved, current) {
+        (Some(approved), Some(current)) => {
+            let center = |rect: (i32, i32, i32, i32)| (rect.0 + rect.2 / 2, rect.1 + rect.3 / 2);
+            let (ax, ay) = center(approved);
+            let (cx, cy) = center(current);
+            (ax - cx).abs() <= RECT_CENTER_TOLERANCE_PX
+                && (ay - cy).abs() <= RECT_CENTER_TOLERANCE_PX
+        }
+        // No geometry at approval time either (e.g. a chord-semantics hit):
+        // nothing better is knowable, label equality is the binding.
+        (None, _) => true,
+        // The approved concrete element no longer reports bounds: fail closed.
+        (Some(_), None) => false,
+    }
+}
+
+/// Full typed-text preview for the confirm event (`type_preview_full`), or
+/// `None` when it must not be included. Included ONLY when ALL of:
+/// - the action is `Type` (other actions have no typed text),
+/// - the target is NOT secure/masked for this mint — the masked summary
+///   exists precisely so password text is never revealed in the confirm
+///   dialog or event stream,
+/// - the text is longer than the 12-char summary preview (otherwise the
+///   summary already shows everything) and at most 4096 chars — the cap
+///   bounds the payload size and thus the XSS/abuse surface that reaches
+///   the dialog; longer texts keep summary + fingerprint only.
+fn full_type_preview(action: &ComputerUseAction, secure_type_target: bool) -> Option<String> {
+    let ComputerUseAction::Type { text } = action else {
+        return None;
+    };
+    if secure_type_target {
+        return None;
+    }
+    let count = text.chars().count();
+    (count > TYPE_PREVIEW_CHARS && count <= 4096).then(|| text.clone())
+}
+
 /// 铸造待确认请求、发事件并给模型返回「未执行、去要确认」错误。
+/// `element_rect` / `verified_target` record the screening conclusion at
+/// mint time (the denylisted element's geometry, and whether the target was
+/// verifiably screened); they travel with the approval token so the
+/// spend-time re-screen can verify the target on screen is still the one the
+/// user approved.
 fn request_confirmation(
     parts: &Parts,
     summary: &str,
     element_label: &str,
     reason_phrase: &str,
+    element_rect: Option<(i32, i32, i32, i32)>,
+    verified_target: bool,
+    type_preview_full: Option<String>,
 ) -> String {
     // 确认队列满（大量未决确认）时拒绝并给出可操作的错误——评审发现：旧的
     // 「逐出最旧 pending」会把用户正在等待的确认弹窗挤掉。
@@ -772,23 +881,33 @@ fn request_confirmation(
         &parts.session_id,
         summary.to_string(),
         element_label.to_string(),
+        element_rect,
+        verified_target,
     ) else {
         return "the confirmation queue is full (too many unresolved confirmations). \
                 Do not spam further blocked actions; wait for the user to respond to the \
                 pending prompts first."
             .to_string();
     };
-    parts.events.emit(
-        EVENT_CONFIRM_REQUIRED,
-        json!({
-            "session_id": parts.session_id,
-            "action": summary,
-            "element": element_label,
-            "confirm_id": confirm_id,
-        }),
-    );
+    let mut payload = json!({
+        "session_id": parts.session_id,
+        "action": summary,
+        "element": element_label,
+        "confirm_id": confirm_id,
+    });
+    // Optional full typed text for the frontend's "show full text" expander
+    // (absent = old dialog behavior). See `full_type_preview` for when it
+    // may exist (never for secure/masked targets).
+    if let Some(full) = type_preview_full {
+        payload["type_preview_full"] = Value::String(full);
+    }
+    parts.events.emit(EVENT_CONFIRM_REQUIRED, payload);
+    // The prefix is [`T3_CONFIRM_REQUIRED_ERROR`]: the error message carries
+    // the element label, so the audit error field holds only the stable code
+    // (see the tail of `run`); the model still receives the full message.
     format!(
-        "this action targets {reason_phrase}: \"{element_label}\". It was NOT executed. \
+        "{T3_CONFIRM_REQUIRED_ERROR}: this action targets {reason_phrase}: \
+         \"{element_label}\". It was NOT executed. \
          Ask the user to confirm in the app; then retry the same action with \
          confirm_id=\"{confirm_id}\"."
     )
@@ -846,19 +965,15 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         ComputerUseAction::Type { text } => {
             record.with_typed_text(text).with_target("keyboard focus");
         }
-        // 评审发现：`key "p"` 逐字符调用可把密码明文写进审计。仅由单个
-        // Char 组成（无修饰键）的和弦实质是键入文本，与 type 同策略——
-        // 只记长度 + salt || text 的 HMAC；含修饰键的和弦是快捷键，无
-        // 字典风险，保留明文（用户可读性优先）。例外：shift+字符 是
-        // 大写字母/符号的键入形态而非快捷键（评审发现：`key "shift+H"`
-        // 逐字符键入可绕开 HMAC 策略拼出明文），同样只记 HMAC；解析保留
-        // 模型给定的顺序，两种顺序都要覆盖。
+        // 评审发现：`key "p"` 逐字符调用可把密码明文写进审计。Chords that
+        // are effectively typed text (see [`is_typed_text_chord`], including
+        // shift+char and duplicate-modifier permutations) follow the same
+        // policy as type — length + salt || text HMAC only; chords with real
+        // modifier keys are shortcuts with no dictionary risk and keep
+        // plaintext (readability for the user wins).
         ComputerUseAction::KeyChord { keys, chord }
         | ComputerUseAction::HoldKey { keys, chord, .. }
-            if matches!(
-                keys.as_slice(),
-                [Key::Char(_)] | [Key::Shift, Key::Char(_)] | [Key::Char(_), Key::Shift]
-            ) =>
+            if is_typed_text_chord(keys) =>
         {
             record.with_typed_text(chord).with_target("keyboard focus");
         }
@@ -951,6 +1066,9 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
             let secure_type_target =
                 matches!(&action, ComputerUseAction::Type { .. }) && type_target_is_secure(&parts);
             let summary = action_summary(&action, cursor, secure_type_target);
+            // Optional full text for the confirm event's expander, fixed at
+            // mint time (never recomputed at spend time).
+            let type_preview_full = full_type_preview(&action, secure_type_target);
             let bypass = match &parsed.confirm_id {
                 Some(id) => Some(
                     parts
@@ -962,29 +1080,56 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
             match bypass {
                 Some(ConfirmationCheck::Granted {
                     approved_element_label,
+                    approved_element_rect,
+                    verified_target,
                 }) => {
                     // 已获批准不等于可以免检执行：批准到重试之间隔着任意
                     // 模型调用（可能已重新截图、焦点已移动），摘要绑定的
                     // 静态参数挡不住"目标处的东西变了"（评审发现：批准会
                     // 被静默改指向）。重筛一次：
-                    // - Clear / 不可筛 → 放行（后者用户本就是在知情下批准）；
-                    // - 命中后果性名单 → 按用户批准时看到的元素标签绑定：
-                    //   眼前的目标还是批准的那个（标签一致）→ 放行；换了
-                    //   内容（标签不一致）→ 作废本次批准、要求重新确认
-                    //   （令牌单次有效，已消费）。
                     let map = parts.state.lock().last_map.clone();
                     match t3_screening(&parts, &action, map.as_ref()) {
-                        T3Screening::Clear => confirmed_t3 = true,
-                        T3Screening::Unscreenable(_) => confirmed_t3 = true,
                         T3Screening::Blocked(hit) => {
-                            if hit.element_label == approved_element_label {
+                            // Pass only when the target on screen is still the
+                            // one the user approved: same label AND the
+                            // recorded geometry still matches. Anything else
+                            // invalidates the (single-use, already consumed)
+                            // token and re-requests confirmation.
+                            if verified_target
+                                && hit.element_label == approved_element_label
+                                && rects_consistent(approved_element_rect, hit.element_rect)
+                            {
                                 confirmed_t3 = true;
                             } else {
                                 return Err(request_confirmation(
                                     &parts,
                                     &summary,
                                     &hit.element_label,
-                                    &hit.reason,
+                                    hit.reason,
+                                    hit.element_rect,
+                                    true,
+                                    type_preview_full.clone(),
+                                ));
+                            }
+                        }
+                        // The user approved an unverifiable target, so nothing
+                        // better is knowable now: pass. But a verified
+                        // (concretely screened) approval must not survive a
+                        // world where the target no longer reads as itself
+                        // (element gone / changed / screening now blind) —
+                        // fail closed and re-request.
+                        T3Screening::Clear | T3Screening::Unscreenable(_) => {
+                            if !verified_target {
+                                confirmed_t3 = true;
+                            } else {
+                                return Err(request_confirmation(
+                                    &parts,
+                                    &summary,
+                                    &approved_element_label,
+                                    "the approved target, which no longer reads as itself",
+                                    None,
+                                    false,
+                                    type_preview_full.clone(),
                                 ));
                             }
                         }
@@ -1014,6 +1159,9 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                                 &summary,
                                 &hit.element_label,
                                 hit.reason,
+                                hit.element_rect,
+                                true,
+                                type_preview_full.clone(),
                             ));
                         }
                         T3Screening::Unscreenable(reason) => {
@@ -1023,6 +1171,9 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                                 &summary,
                                 &reason,
                                 "an unverifiable target (screening unavailable)",
+                                None,
+                                false,
+                                type_preview_full.clone(),
                             ));
                         }
                     }
@@ -1131,7 +1282,16 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
             result
         }
         Err(message) => {
-            let record = record.finish("error", Some(message.clone()), duration_ms);
+            // The full T3 "confirmation required" message carries the element
+            // label, so the audit error field holds only the stable code;
+            // every other error path keeps the full message (the model always
+            // receives the full message).
+            let audit_error = if message.starts_with(T3_CONFIRM_REQUIRED_ERROR) {
+                Some(T3_CONFIRM_REQUIRED_ERROR.to_string())
+            } else {
+                Some(message.clone())
+            };
+            let record = record.finish("error", audit_error, duration_ms);
             if let Some(log) = &audit_log {
                 if let Some(audit_error) = audit_end_failure(log, &record) {
                     if action.class() == ActionClass::Input {
@@ -1268,9 +1428,11 @@ fn execute_action(
             let (dx, dy) = backend.cursor_position()?;
             match map {
                 Some(m) => {
-                    // 混合 DPI 防护：光标不在截图显示器上时不硬换算（换算结果
-                    // 是跨屏垃圾坐标），回报设备坐标并附警告（评审发现）。
-                    if !m.contains_device_point(dx, dy) {
+                    // Mixed-DPI guard: device-space containment is unsound when
+                    // monitor scales differ (overlapping device rects); gate on
+                    // the input-space check and otherwise report raw device
+                    // coordinates with a warning instead of cross-screen junk.
+                    if m.device_to_input_checked(dx, dy).is_none() {
                         warnings.push(format!(
                             "cursor is outside the captured monitor (origin ({}, {}), {}x{}); \
                              screenshot-space coordinates are unavailable for it this turn",
@@ -1399,7 +1561,26 @@ fn execute_action(
             let (Some(&from), Some(&to)) = (targets.first(), targets.get(1)) else {
                 return Err(ComputerUseError::failed("missing drag targets"));
             };
-            backend.drag(from, to)?;
+            if let Err(error) = backend.drag(from, to) {
+                // Tool-layer safety net: a failed drag must not leave the
+                // physical left button stuck held when this tool pressed it
+                // earlier. Best-effort release (platform backends may clean
+                // up on their own; its error is ignored — if it also fails,
+                // revoke/stop/tool-drop cleanup retries via the control
+                // lane). The note rides on the error message because the
+                // warnings vector is dropped on the error path in `run`.
+                let mut note = String::new();
+                if parts.state.lock().mouse_buttons_held
+                    && backend.mouse_up(MouseButton::Left).is_ok()
+                {
+                    parts.state.lock().mouse_buttons_held = false;
+                    note.push_str(
+                        "\nwarning: the drag failed; a best-effort mouse-button release was \
+                         issued — verify no button is stuck held",
+                    );
+                }
+                return Err(ComputerUseError::failed(format!("{error}{note}")));
+            }
             // 拖拽内部完成按下+释放：无论此前状态如何，左键已不在按下态。
             parts.state.lock().mouse_buttons_held = false;
             Ok(format!("dragged from {start:?} to {end:?}"))
@@ -1435,11 +1616,14 @@ impl ToolSpec for ComputerUseTool {
          Coordinates are ALWAYS in the pixel space of the last screenshot this tool returned \
          (origin top-left); take a screenshot first and reuse its coordinate space. \
          Every action that touches the mouse or keyboard (mouse_move, scroll, clicks, keys, \
-         typing) requires the user's session grant; consequential actions (purchase/payment/ \
-         send/delete/submit controls, password fields) additionally require explicit user \
-         confirmation via confirm_id. After actions that change the screen a fresh screenshot \
-         is attached; if it is not visible, call image_analyze with the returned attachments \
-         path."
+         typing) requires a per-session grant from the user; consequential actions \
+         (purchase/payment/send/delete/submit controls, password fields) additionally \
+         require explicit user confirmation via confirm_id. Consequential-action screening \
+         works from the on-screen names of target controls, so unlabeled or unnamed targets \
+         also require confirmation, and the CONTENT you type is never screened. Screenshots \
+         and ui_tree read on-screen and focused-window content, which may include private \
+         information. After actions that change the screen a fresh screenshot is attached; \
+         if it is not visible, call image_analyze with the returned attachments path."
     }
 
     fn input_schema(&self) -> Value {
