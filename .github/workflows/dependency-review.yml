@@ -23,6 +23,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # Checkout exists only so the shared memory setup script can run; the
+      # dependency review itself works purely through the API.
+      - uses: actions/checkout@v7
+
+      - name: Set up zram and swap
+        run: sudo bash scripts/ci-memory-setup.sh
+
       - name: 确认队列中的 PR 已通过依赖审查
         if: github.event_name == 'merge_group'
         run: echo "依赖审查已在各 PR 入队前验证"

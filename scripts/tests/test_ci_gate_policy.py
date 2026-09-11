@@ -405,15 +405,16 @@ class CiGatePolicyTests(unittest.TestCase):
             rust_test,
         )
         # 16GB runner 失联防护:编译与执行拆成独立 step(失联后日志全丢,按 step
-        # 状态定位阶段),内存看门狗把 runner 失联转化为带日志的 step 失败,CI 关
-        # DWARF 缩小测试二进制降低链接内存峰值。三条腿(push/MQ 编译/MQ 执行)
-        # 都必须挂看门狗。
+        # 状态定位阶段),CI 关 DWARF 缩小测试二进制降低链接内存峰值。有效内存
+        # 由 job 开头的 zram/swap 扩容 step(scripts/ci-memory-setup.sh)提供;
+        # 看门狗已删除,不再抢先杀编译进程。
         self.assertIn(
             "- name: cargo test --lib --no-run（编译链接测试二进制）\n"
             "        if: ${{ github.event_name != 'push' }}",
             rust_test,
         )
-        self.assertEqual(rust_test.count("bash scripts/ci-memguard.sh &"), 3)
+        self.assertIn("sudo bash scripts/ci-memory-setup.sh", rust_test)
+        self.assertNotIn("ci-memguard", self.pr_workflow)
         self.assertIn('CARGO_PROFILE_DEV_DEBUG: "0"', rust_test)
         self.assertIn("timeout-minutes: 120", rust_test)
         self.assertIn(
@@ -422,6 +423,35 @@ class CiGatePolicyTests(unittest.TestCase):
             '-C link-arg=-Wl,--threads=1"',
             rust_test,
         )
+
+    def test_all_linux_jobs_enlarge_runner_memory(self):
+        # Every ubuntu-* job must run the zram/swap memory setup right after
+        # checkout; Windows/macOS jobs are out of scope (hosted images there
+        # have different memory characteristics).
+        # Only split at 2-space-indented `key:` lines (job/trigger boundaries),
+        # not at deeper indentation.
+        setup_step = "- name: Set up zram and swap"
+        blocks = re.split(
+            r"\n  (?=[A-Za-z0-9_-]+:\s*$)", self.pr_workflow, flags=re.MULTILINE
+        )
+        linux_jobs = [
+            block
+            for block in blocks
+            if re.search(r"^    runs-on: ubuntu", block, flags=re.MULTILINE)
+        ]
+        self.assertGreaterEqual(len(linux_jobs), 10)
+        for job in linux_jobs:
+            job_name = job.strip().split(":", maxsplit=1)[0]
+            self.assertIn(
+                setup_step,
+                job,
+                f"ubuntu job '{job_name}' must run scripts/ci-memory-setup.sh",
+            )
+            self.assertIn(
+                "sudo bash scripts/ci-memory-setup.sh",
+                job,
+                f"ubuntu job '{job_name}' must invoke scripts/ci-memory-setup.sh",
+            )
 
     def test_windows_rust_test_cumulative_main_push_is_path_independent(self):
         # Main's Windows regression must remain independent of adjacent diff paths.
