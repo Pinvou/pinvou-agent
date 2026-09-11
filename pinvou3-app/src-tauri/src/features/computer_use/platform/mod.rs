@@ -1,6 +1,9 @@
 //! Computer Use 平台后端选择。三平台各自实现
 //! [`ComputerUseBackend`]；选择只在 `platform/` 适配层用 `cfg(target_os)`。
 
+/// Pure helpers shared by every per-OS backend (no OS handles, unit-tested on
+/// all targets).
+mod helpers;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]

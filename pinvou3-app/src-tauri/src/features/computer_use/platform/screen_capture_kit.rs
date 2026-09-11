@@ -23,7 +23,7 @@
 //! 15.2（见 [`MIN_MACOS_VERSION`] 的注释：类 14.0 引入，类方法 15.2 才有），
 //! 之下由调用方回退 xcap 的 CGWindowList 路径。
 
-use std::sync::mpsc;
+use std::sync::{OnceLock, mpsc};
 use std::time::Duration;
 
 use block2::RcBlock;
@@ -43,14 +43,25 @@ use super::super::types::ComputerUseError;
 /// CGWindowList 回退路径。
 const MIN_MACOS_VERSION: (isize, isize) = (15, 2);
 
-/// 单次截图完成回调的等待上限。远小于调用方的 190s 请求预算；超时按失败
-/// 处理（迟到的回调向已断开的通道发送，静默丢弃）。
+/// Per-capture wait ceiling for the completion callback. Deliberately far
+/// below the backend's per-call budget (`BACKEND_CALL_TIMEOUT` in
+/// `super::super::backend`); on timeout the capture fails (a late callback
+/// sends into a disconnected channel and is silently dropped).
 const CAPTURE_CALLBACK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 运行时判定本系统是否可用 ScreenCaptureKit 静态截图（macOS >= 15.2）。
+///
+/// The OS version is immutable per process, so the verdict is cached in a
+/// `OnceLock`: this avoids a per-capture `NSProcessInfo::processInfo()` call
+/// on the pool-less worker thread — that call returns an autoreleased
+/// shared instance with no autorelease pool in sight, so caching also keeps
+/// the autorelease-pool invariant documented in [`super::macos`] airtight.
 pub(super) fn available() -> bool {
-    let version = NSProcessInfo::processInfo().operatingSystemVersion();
-    satisfies_min_version(version.majorVersion, version.minorVersion)
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        let version = NSProcessInfo::processInfo().operatingSystemVersion();
+        satisfies_min_version(version.majorVersion, version.minorVersion)
+    })
 }
 
 /// 版本比较的纯函数形态（便于对 14.x/15.0/15.1 这类无法在本机构造的边界
