@@ -284,6 +284,10 @@ where
                     output = OutputMode::Json;
                     values.drain(index..=index + 1);
                 }
+                // Not a global-mode value: leave the pair for the subcommand.
+                // `sessions export --output FILE` legitimately takes a path
+                // here; families without such a flag report it themselves.
+                // (A file literally named "json"/"human" needs a ./ prefix.)
                 _ => index += 1,
             }
         } else {

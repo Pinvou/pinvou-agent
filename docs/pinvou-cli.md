@@ -17,9 +17,16 @@ cargo build --manifest-path pinvou-cli/Cargo.toml --bin pinvou
 ## Conventions
 
 - `--output human|json` (global flag): `human` prints short labeled lines;
-  `json` prints a single-line JSON object mirroring the same fields.
-- Exit codes: `0` success, `1` host/runtime failure (stable snake_case code in
-  the stderr message), `2` usage error.
+  `json` prints a single-line JSON object mirroring the same fields. The flag
+  is recognized anywhere; a subcommand that takes its own `--output PATH`
+  (e.g. `sessions export`) accepts any other value as that flag's argument,
+  so a file literally named `json` or `human` must be spelled `./json`.
+- Exit codes: `0` success, `1` host/runtime failure, `2` usage error. Errors
+  print a human-readable stderr message; many messages carry a stable
+  snake_case code prefix (e.g. `product_backend_not_enabled`,
+  `scheduled_task_not_found`), but the prefix is a convention rather than a
+  structurally enforced contract — scripts that need to branch should match on
+  exit codes, not message text.
 - All commands operate on `$PINVOU3_HOME` (or `~/.pinvou3`), the same root the
   desktop app uses. Do not run CLI mutations against a data directory while the
   desktop app is mid-write on the same files.
@@ -27,8 +34,13 @@ cargo build --manifest-path pinvou-cli/Cargo.toml --bin pinvou
   credential flags are `--api-key-env VAR` or `--api-key-stdin`. The only
   command that prints a stored secret is `models show <id> --reveal-key`,
   mirroring the GUI's explicit reveal action.
-- Destructive actions (`delete`, `purge`, `deps install`, checkpoint `rewind`)
-  require an explicit `--yes`.
+- Destructive actions (`delete`, `purge`, `deps install`, `connectors logout`,
+  checkpoint `rewind`) require an explicit `--yes`. Concurrent CLI mutations of
+  one code session (checkpoint `rewind`/`undo`, `workspace checkout`) are
+  serialized through a cross-process lock; a GUI turn on the same session
+  cannot be detected — do not rewind while its GUI Code session may be
+  mid-turn. Similarly, `agent run --session` does not lock the session against
+  concurrent GUI use.
 - Engine/model-backed operations (`memory organize`, `scheduled run`,
   `monitor status|snapshot`, `voice postprocess`, `knowledge remote *`) boot the
   windowless product host, which needs a display (or `xvfb-run`) and a
@@ -40,17 +52,17 @@ cargo build --manifest-path pinvou-cli/Cargo.toml --bin pinvou
 |---|---|---|
 | `pinvou agent run` | `--prompt-file [--workspace] [--timeout-secs] [--session ID] [--mode plan\|agent] [--model ID] [--attach PATH]...` | One product-equivalent agentic turn: unlimited tool-call rounds and a persisted session (GUI parity; `PINVOU3_AGENT_TASK_KEEP_SESSION=0` restores one-shot cleanup). See [agent-task-cli.md](agent-task-cli.md); the session/mode/model/attach flags extend it without changing its defaults or exit contract. |
 | `pinvou benchmark` | `list`, `run smoke`, `run/fetch/verify/score/submission gaia`, `status`, `resume`, `report` | Evaluation harness; see [gaia-benchmark.md](gaia-benchmark.md). |
-| `pinvou sessions` | `list [--archived]`, `show`, `rename`, `pin`, `unpin`, `archive`, `restore`, `delete --yes`, `export [--format markdown\|json]`, `timeline`, `subagents`, `folder` | Same `SessionStore` the GUI uses, including scheduled-run cascades. |
+| `pinvou sessions` | `list [--archived]`, `show`, `rename`, `pin`, `unpin`, `archive`, `restore`, `delete --yes`, `export [--format markdown\|json] [--output PATH]`, `timeline`, `subagents`, `folder` | Same `SessionStore` the GUI uses, including scheduled-run cascades. Any store-opening command (even reads like `list`) runs the shared 50-sessions-per-kind retention, so CLI runs can evict the oldest GUI chat sessions. ACP/code sessions are listed too — the CLI has no live pool to filter them like the GUI does. |
 | `pinvou models` / `pinvou settings` | `models list/add/remove/use/show [--reveal-key]/test/probe-local`; `settings get/set`, `settings search list/set/test` | `settings` is an alias routed to the same module. Settings writes go through the GUI's own prefs transactions (migrations and locale policies included). |
 | `pinvou memory` | `overview`, `profile get/set`, `list`, `add preference/work-context`, `update`, `delete --yes`, `archive`, `pending confirm/ignore/never`, `organize`, `organize-history` | `organize` needs the model host. |
-| `pinvou knowledge` | `scan`, `stats`, `type-counts`, `collections ...`, `documents ...`, `index ...`, `search`, `model status/cancel`, `mounts/mount/unmount`, `remote connections/probe/collections/search`, `host status` | One-shot imports progress only while the process lives; interrupted imports resume on the next invocation (desktop app completes large imports). `model download` stays desktop-only (in-process ONNX verification + progress events). |
-| `pinvou scheduled` | `list`, `show`, `create`, `update`, `pause`, `resume`, `pin`, `unpin`, `delete --yes`, `run`, `runs`, `runs-all`, `mark-viewed`, `chat-prompt` | `run` executes `memory-organize` tasks headless; chat-kind runs need the desktop runtime. |
+| `pinvou knowledge` | `scan`, `stats`, `type-counts`, `collections ...`, `documents ...`, `index ...`, `search`, `model status/cancel`, `mounts/mount/unmount`, `remote connections/probe/collections/search`, `host status` | One-shot imports progress only while the process lives; interrupted imports resume on the next invocation (desktop app completes large imports). `model download`/`cancel` exist but decline headless: the in-process ONNX verification and progress events are GUI-bound. `--before` filters on UTC midnight boundaries. |
+| `pinvou scheduled` | `list`, `show`, `create`, `update`, `pause`, `resume`, `pin`, `unpin`, `delete --yes`, `run`, `runs`, `runs-all`, `mark-viewed`, `chat-prompt` | `run` executes `memory-organize` tasks headless; chat-kind runs need the desktop runtime. `update --mode` mirrors the GUI: accepted but always persisted as `yolo`. |
 | `pinvou plugins` | `tools list/install/uninstall/auth/oauth-*`, `skills list/install/update/uninstall`, `import <PATH>`, `export`, `meta`, `recycle ...`, `readiness`, `enable/disable [--scope]`, `project-skills on\|off` | `import` replaces the GUI's native dialog. OAuth login prints the URL instead of a QR window. |
-| `pinvou connectors` | `status`, `ensure-cli`, `enable`, `disable`, `logout`, `apply-skills`, `connect [--timeout]`, `ima status/connect/logout` | For feishu/wecom/dingtalk/tmeet. `connect` prints the login URL instead of rendering a QR image. |
-| `pinvou personas` | `list`, `show`, `create`, `update`, `delete --yes`, `equip`, `unequip`, `active` | Expert card deck CRUD + per-session equip. |
+| `pinvou connectors` | `status`, `ensure-cli`, `enable`, `disable`, `logout --yes`, `apply-skills`, `connect [--timeout]`, `ima status/connect/logout --yes` | For feishu/wecom/dingtalk/tmeet. `connect` prints the login URL instead of rendering a QR image; `--timeout` bounds every blocking vendor-CLI phase. |
+| `pinvou personas` | `list`, `show`, `create`, `update`, `delete --yes`, `equip`, `unequip`, `active` | Expert card deck CRUD. `equip` records the staged persona for the session sidecar; prompt injection happens in the GUI, so the CLI itself does not deliver it. |
 | `pinvou code` | `agents list/status`, `login/logout`, `providers ...`, `sessions ...`, `workspace list/search/preview/changes/diff/branches/checkout`, `checkpoints ...` | Code-mode (ACP) configuration and read-mostly workspace ops; checkpoints reuse the real shadow-git implementation. Interactive ACP turns and the pending-permission flow are desktop-process-bound. |
 | `pinvou files` | `ingest <PATH> [--output PATH]` | File → markdown extraction (pdf/office/email/archive/text), the GUI attachment pipeline. |
-| `pinvou voice` | `transcribe <audio>`, `postprocess --mode ...`, `asr-status`, `asr-install` | Transcription of an audio file; recording itself is GUI-bound. |
+| `pinvou voice` | `transcribe <audio>`, `postprocess --mode ...`, `asr-status`, `asr-install` | Transcription of an audio file; recording itself is GUI-bound. On macOS, `asr-status` reports the host Speech runtime (`ready: true`), but `transcribe` uses the external ASR CLI lane — the JSON adds `cli_transcribe_ready` for what the CLI itself can do. |
 | `pinvou deps` | `check`, `install <NAME...> --yes` | External dependency detection/installation (apt/Homebrew/bundled). |
 | `pinvou feedback` | `submit --type issue\|suggestion --title T --body-file F [--attach PATH...]` | Writes the feedback bundle locally and prints the GitHub issues URL (GUI opens the browser). |
 | `pinvou monitor` | `status`, `snapshot` | One-shot model/GPU/vLLM sample instead of the live dashboard. |

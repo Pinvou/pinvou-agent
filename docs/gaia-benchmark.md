@@ -83,7 +83,7 @@ GAIA validation Level 1 是当前唯一支持的 split/level 组合。每道题�
 pinvou benchmark run gaia --split validation --level 1
 ```
 
-- 不设题目级墙钟超时：官方 GAIA 评测对运行时长没有要求，运行由引擎自身边界收束（每轮 200 步模型步数上限、每轮 3,600 秒墙钟、取消机制）。
+- 不设题目级墙钟超时：官方 GAIA 评测对运行时长没有要求，运行由引擎自身边界收束（每轮 200 步模型步数上限、每轮 3,600 秒墙钟、取消机制）。注意该边界只覆盖 turn 本身：harness 侧的 `prepare`/`resolve_output`/`close` 阶段没有各自的截止时间，若这些本地阶段挂死，`pinvou benchmark run gaia` 会一直等待直到操作者手动终止（旧的 600 秒题目级 deadline 恰好覆盖过这类失败）。
 - 代理使用 `pinvou-gaia-public-web/v1` 工具策略，可访问公开 web 资源。
 - Office/PDF 附件在 host 侧预解析；XLSX 会同时提供工作表值以及有界的填充色、公式和合并
   区域注释。评测附件提示只声明 profile 实际允许的只读能力。
