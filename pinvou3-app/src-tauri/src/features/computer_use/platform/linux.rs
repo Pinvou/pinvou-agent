@@ -350,8 +350,9 @@ async fn screen_extents(
 }
 
 /// 严格版 extents:命中测试要靠窗口 extents 判定"点是否在此窗口内",
-/// 查询失败必须上抛(工具层 T3 筛查按 Unscreenable 失败关闭),不能
-/// continue 成"窗口不覆盖该点"(评审发现的 fail-open)。
+/// 查询失败必须上抛(与「无元素」Ok(None) 语义分明——Ok(None) 在工具层
+/// 按 None-策略放行),不能 continue 成"窗口不覆盖该点"把查询故障吞成
+/// 放行依据(评审发现)。
 async fn screen_extents_strict(
     conn: &zbus::Connection,
     proxy: &AccessibleProxy<'_>,
@@ -367,9 +368,9 @@ async fn screen_extents_strict(
         })?;
     // 「成功但零尺寸」无法判定覆盖关系:Wayland 上的 AT-SPI 普遍把 extents
     // 报告为全 0(见模块底部 e2e 注释),若放行会让**每个**窗口都被判
-    // 「不覆盖该点」→ Ok(None) → 工具层 Clear,指针类 T3 筛查整体空转
-    // (第二轮评审发现的 fail-open)。按查询失败上抛 → Unscreenable →
-    // 要求确认,方向 fail-closed。
+    // 「不覆盖该点」→ Ok(None),查询故障被吞成放行依据,后端再也答不出
+    // 可信的命中结果(第二轮评审发现)。按查询失败上抛,与「无元素」
+    // 语义分明;筛查对故障的处置(放行执行)由工具层统一裁定。
     if extents.2 <= 0 || extents.3 <= 0 {
         return Err(ComputerUseError::unavailable(format!(
             "AT-SPI window extents are empty ({},{},{},{}); the window exposes no usable \
@@ -625,8 +626,8 @@ async fn ui_tree_async(
 ///   不在该点」在此不可区分,同按主流 None-策略放行(无元素 → 不强制
 ///   确认);这只是策略声明,不是筛查证明。
 /// - `Err`:**查询失败**——根/应用/窗口枚举、extents、命中查询任何一环
-///   挂掉都向上报;工具层 T3 筛查按 Unscreenable 失败关闭,绝不当作
-///   "无元素"放行。
+///   挂掉都向上报,绝不把查询故障吞成 Ok(None) 的"无元素"放行依据;
+///   筛查对故障的处置(放行执行,不设确认)由工具层统一裁定。
 async fn element_at_point_async(
     conn: &zbus::Connection,
     x: i32,
@@ -672,8 +673,8 @@ async fn element_at_point_async(
 /// 在 X11/Wayland 下都可行,不该浪费已有的 AT-SPI 通路)。
 ///
 /// 结局语义:搜完可达树没找到 → `Ok(None)`(确认无焦点元素:部分工具包
-/// 不实现 FOCUSED state);预算耗尽仍无定论 → `Err`(fail-closed,结果
-/// 不确定时不说"没有")。
+/// 不实现 FOCUSED state);预算耗尽仍无定论 → `Err`(结果不确定时绝不
+/// 冒充「没有」——错误与「无元素」语义分明,处置由工具层裁定)。
 async fn focused_element_async(
     conn: &zbus::Connection,
 ) -> Result<Option<ElementInfo>, ComputerUseError> {
@@ -1004,7 +1005,7 @@ impl LinuxComputerUseBackend {
 
     /// a11y 异步操作桥:current-thread runtime `block_on` + 操作级整体
     /// deadline(zbus `method_timeout` 之外的第二层兜底;超时区分不了
-    /// "无结果"与"失败",一律按 unavailable 上报——fail-closed)。
+    /// "无结果"与"失败",一律按 unavailable 上报,绝不冒充「无结果」)。
     fn block_on_a11y<T>(
         &self,
         deadline: Duration,
@@ -2123,9 +2124,11 @@ mod wayland_e2e_tests {
 
 #[cfg(test)]
 mod x11_live_tests {
-    //! Live X11 E2E for the real backend plus the full consent pipeline
-    //! (settings toggle → session grant → fail-closed T3 screening →
-    //! user confirmation token → execute → redacted audit).
+    //! Live X11 E2E for the real backend plus the consent pipeline
+    //! (settings toggle → session grant → best-effort screening →
+    //! execute → redacted audit), with the confirmation-token lifecycle
+    //! (mint / spend / single-use / wipe) driven through the same guard API
+    //! the Tauri commands call.
     //!
     //! WARNING: each test takes over the X server named by `$DISPLAY` and
     //! injects real XTEST input into it — run them ONLY against a sandboxed
@@ -2143,10 +2146,12 @@ mod x11_live_tests {
     //!
     //! The AT-SPI (a11y) stack is intentionally absent under Xvfb: the test
     //! points the D-Bus session bus at a nonexistent socket, so the backend's
-    //! AT-SPI connection fails at init and EVERY input target is unscreenable.
-    //! That exercises the fail-closed screening path end to end: even with a
-    //! session grant, a screened input action must stop and demand a user
-    //! confirmation token against a real X server.
+    //! AT-SPI connection fails at init and screening is unavailable for every
+    //! target. That exercises the best-effort fail-open path end to end: with
+    //! a session grant, input actions execute against a real X server without
+    //! any confirmation prompt (unavailable screening must not produce a
+    //! confirmation storm); confirmation mechanics themselves are covered by
+    //! the guard-level assertions and the mocked tool tests.
     //!
     //! Tests are `#[ignore]` so CI never runs them; each additionally skips
     //! cleanly (early return) unless `$DISPLAY` answers
@@ -2156,7 +2161,7 @@ mod x11_live_tests {
 
     use super::*;
     use crate::features::computer_use::backend::BackendHandle;
-    use crate::features::computer_use::guard::ComputerUseShared;
+    use crate::features::computer_use::guard::{ComputerUseShared, ConfirmationCheck};
     use crate::features::computer_use::tool::{ComputerUseEventSink, ComputerUseTool};
     use crate::features::computer_use::types::{EVENT_CONFIRM_REQUIRED, EVENT_GRANT_REQUIRED};
     use deepseek_tui::tools::spec::{ToolContext, ToolSpec};
@@ -2239,29 +2244,13 @@ mod x11_live_tests {
     // ---- fixture (isolated PINVOU3_HOME + real X11 backend) ---------------
 
     /// Records the Tauri events the tool emits (grant/confirm prompts) so the
-    /// tests can read `confirm_id`s exactly like the frontend does.
+    /// tests can assert which prompts fired.
     #[derive(Clone)]
     struct EventRecorder(Arc<StdMutex<Vec<(String, Value)>>>);
 
     impl EventRecorder {
         fn new() -> Self {
             Self(Arc::new(StdMutex::new(Vec::new())))
-        }
-
-        fn latest_confirm_id(&self) -> String {
-            self.0
-                .lock()
-                .unwrap()
-                .iter()
-                .rev()
-                .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
-                .map(|(_, payload)| {
-                    payload["confirm_id"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string()
-                })
-                .expect("a computer_use:confirm_required event must have been emitted")
         }
 
         fn emitted(&self, event: &str) -> bool {
@@ -2318,7 +2307,8 @@ mod x11_live_tests {
             set("XDG_SESSION_TYPE", Some("x11".into()));
             set("WAYLAND_DISPLAY", None);
             // No a11y bus in the sandbox: the backend's AT-SPI connect must
-            // fail at init so every target is unscreenable (fail closed).
+            // fail at init so screening is genuinely unavailable for every
+            // target (the tool layer then executes without confirmation).
             set(
                 "DBUS_SESSION_BUS_ADDRESS",
                 Some("unix:path=/tmp/pinvou3-cu-x11-live-no-a11y-bus".into()),
@@ -2525,12 +2515,15 @@ mod x11_live_tests {
     }
 
     /// The core consent E2E against a real X server: no grant → nothing
-    /// injected; grant → hover moves execute (deliberately unscreened), but a
-    /// pointer CLICK is T3-screened and, with AT-SPI absent, fails closed to
-    /// a confirmation; mint → execute lands on the X server; replay → spent.
+    /// injected; grant → hover moves execute (deliberately unscreened); a
+    /// pointer CLICK is T3-screened and, with AT-SPI absent, screening is
+    /// unavailable → the click still executes (best-effort fail-open, no
+    /// confirmation storm); the confirmation-token lifecycle (mint → spend →
+    /// single-use) is driven through the live guard exactly as the Tauri
+    /// commands do.
     #[tokio::test]
     #[ignore = "drives the X server named by $DISPLAY (run against a sandboxed Xvfb)"]
-    async fn x11_live_input_requires_grant_then_confirmation_then_executes() {
+    async fn x11_live_input_requires_grant_then_executes() {
         let Some((_, _, display)) = live_display() else {
             eprintln!("SKIP x11_live_input_requires_grant…: $DISPLAY does not answer xdotool");
             return;
@@ -2562,115 +2555,54 @@ mod x11_live_tests {
             "the granted hover must land at (600, 400); xdotool reports {at:?}"
         );
 
-        // (3) A pointer click is a screened action: with the a11y stack
-        // absent the target is unscreenable, so the action must fail CLOSED —
-        // "NOT executed" + a pending confirmation in the guard + a pointer
-        // that provably did not move.
+        // (3) A pointer click is a screened action, but with the a11y stack
+        // absent screening is unavailable — best-effort fail-open: the click
+        // executes and provably no confirmation was requested.
         let click = json!({"action": "left_click", "x": 200, "y": 300});
-        let before = pointer_at(&fx.display).expect("xdotool");
         let (success, text) = fx.execute(click.clone()).await;
-        assert!(!success, "an unscreenable click must not execute: {text}");
-        assert!(text.contains("NOT executed"), "{text}");
-        assert!(text.contains("unverifiable"), "{text}");
-        assert!(text.contains("confirm_id"), "{text}");
-        let confirm_id = fx.events.latest_confirm_id();
         assert!(
-            fx.shared.pending_confirmation(&confirm_id).is_some(),
-            "the pending confirmation must exist in the guard"
+            success,
+            "a granted click must execute while screening is unavailable: {text}"
         );
-        assert_pointer_unchanged(&fx.display, before, "confirmation-required click");
+        assert!(!text.contains("NOT executed"), "{text}");
+        assert!(
+            !fx.events.emitted(EVENT_CONFIRM_REQUIRED),
+            "unavailable screening must not raise a confirmation"
+        );
+        let at = pointer_at(&fx.display).expect("xdotool");
+        assert!(
+            (at.0 - 200).abs() <= 2 && (at.1 - 300).abs() <= 2,
+            "the click must land at (200, 300); xdotool reports {at:?}"
+        );
 
-        // (4) Mint the token (the same guard call computer_use_confirm makes)
-        // and retry the same action WITH the confirm_id: it executes and the
-        // X server reports the injected coordinates.
+        // (4) Token lifecycle on the live guard (the same guard calls
+        // computer_use_confirm / the confirmed-retry path use): mint → spend
+        // → single-use.
+        let summary = "left click x1 at Some((200, 300))";
+        let confirm_id = fx.shared.new_pending_confirmation(SESSION, summary, "Live");
+        assert!(fx.shared.pending_confirmation(&confirm_id).is_some());
+        assert_eq!(
+            fx.shared.take_confirmation(&confirm_id, SESSION, summary),
+            ConfirmationCheck::Unknown,
+            "an un-minted token must not be spendable"
+        );
         assert!(
             fx.shared.mint_confirmation(&confirm_id),
             "minting must succeed while the pending exists"
         );
-        let confirmed_click =
-            json!({"action": "left_click", "x": 200, "y": 300, "confirm_id": confirm_id});
-        let (success, text) = fx.execute(confirmed_click.clone()).await;
-        assert!(success, "the confirmed click must execute: {text}");
-        assert!(!text.contains("NOT executed"), "{text}");
-        let at = pointer_at(&fx.display).expect("xdotool");
-        assert!(
-            (at.0 - 200).abs() <= 2 && (at.1 - 300).abs() <= 2,
-            "the confirmed click must land at (200, 300); xdotool reports {at:?}"
+        assert_eq!(
+            fx.shared.take_confirmation(&confirm_id, SESSION, summary),
+            ConfirmationCheck::Granted,
+            "the minted token must be spendable"
         );
-
-        // (5) The token is single-use: replaying the same confirm_id fails as
-        // invalid/used and injects nothing.
-        let before = pointer_at(&fx.display).expect("xdotool");
-        let (success, text) = fx.execute(confirmed_click).await;
-        assert!(!success, "a spent token must not execute: {text}");
-        assert!(
-            text.contains("invalid, expired, or was already used"),
-            "{text}"
+        assert_eq!(
+            fx.shared.take_confirmation(&confirm_id, SESSION, summary),
+            ConfirmationCheck::Unknown,
+            "the token is single-use"
         );
-        assert_pointer_unchanged(&fx.display, before, "replayed confirm_id");
-    }
-
-    /// Denial has no memory: denying just closes the dialog — the denied id
-    /// reads as invalid/spent on retry, mints nothing, and injects nothing;
-    /// a fresh blocked request mints a NEW confirm_id.
-    #[tokio::test]
-    #[ignore = "drives the X server named by $DISPLAY (run against a sandboxed Xvfb)"]
-    async fn x11_live_deny_blocks_action_without_memory() {
-        let Some((_, _, display)) = live_display() else {
-            eprintln!(
-                "SKIP x11_live_deny_blocks_action_without_memory: $DISPLAY does not answer xdotool"
-            );
-            return;
-        };
-        let fx = fixture(display);
-        fx.shared.grant_session(SESSION);
-
-        let click = json!({"action": "left_click", "x": 500, "y": 450});
-        let before = pointer_at(&fx.display).expect("xdotool");
-        let (success, text) = fx.execute(click.clone()).await;
-        assert!(!success, "{text}");
-        assert!(text.contains("NOT executed"), "{text}");
-        let confirm_id = fx.events.latest_confirm_id();
-
-        // Deny (the same guard call the computer_use_deny command makes).
-        assert!(
-            fx.shared.deny_confirmation(&confirm_id),
-            "denying must consume the pending confirmation"
-        );
-        assert!(
-            fx.shared.pending_confirmation(&confirm_id).is_none(),
-            "the pending must be gone after the denial"
-        );
-
-        // Retrying with the denied id: the token is simply invalid (there is
-        // no remembered denial), it cannot mint again, nothing is injected.
-        let denied_retry = json!({
-            "action": "left_click",
-            "x": 500,
-            "y": 450,
-            "confirm_id": confirm_id.clone()
-        });
-        let (success, text) = fx.execute(denied_retry).await;
-        assert!(!success, "a denied action must not execute: {text}");
-        assert!(
-            text.contains("invalid, expired, or was already used"),
-            "{text}"
-        );
-        assert_pointer_unchanged(&fx.display, before, "denied click retry");
-        assert!(
-            !fx.shared.mint_confirmation(&confirm_id),
-            "a denied confirmation must not mint"
-        );
-
-        // A fresh attempt without a token goes through the confirmation flow
-        // again (the denial must not leak into the no-token path).
-        let (success, text) = fx.execute(click).await;
-        assert!(!success, "{text}");
-        assert!(text.contains("NOT executed"), "{text}");
-        let new_id = fx.events.latest_confirm_id();
-        assert_ne!(new_id, confirm_id, "a NEW pending must be requested");
-        assert!(fx.shared.pending_confirmation(&new_id).is_some());
-        assert_pointer_unchanged(&fx.display, before, "fresh blocked click");
+        // The bookkeeping performs no injection: the pointer must still be
+        // parked at step (3)'s landing point.
+        assert_pointer_unchanged(&fx.display, at, "token bookkeeping");
     }
 
     /// B2 regression, live: typed text (and typing-form chords) must reach
@@ -2689,33 +2621,21 @@ mod x11_live_tests {
 
         let secret = "p@ssw0rd-shift-test";
         let type_call = json!({"action": "type", "text": secret});
-        // Typing target is unverifiable (no AT-SPI): fail closed first.
+        // Typing target screening is unavailable (no AT-SPI) → best-effort
+        // fail-open: the type executes directly, no confirmation round-trip.
         let (success, text) = fx.execute(type_call.clone()).await;
-        assert!(!success, "{text}");
-        assert!(text.contains("NOT executed"), "{text}");
-        let type_id = fx.events.latest_confirm_id();
-        assert!(fx.shared.mint_confirmation(&type_id));
-        let confirmed_type = json!({"action": "type", "text": secret, "confirm_id": type_id});
-        let (success, text) = fx.execute(confirmed_type).await;
-        assert!(success, "the confirmed typing must execute: {text}");
+        assert!(success, "the typing must execute: {text}");
+        assert!(!text.contains("NOT executed"), "{text}");
 
         // A duplicate-modifier typing-form chord goes through the same
-        // pipeline; accepted or rejected at parse, either outcome is reported
-        // (the current parser accepts shift+shift+h and audits it as typed
-        // text, exactly like a bare single character).
+        // pipeline; chords are never gated for destructiveness (the current
+        // parser accepts shift+shift+h and audits it as typed text, exactly
+        // like a bare single character).
         let chord = "shift+shift+h";
         let key_call = json!({"action": "key", "text": chord});
-        let (success, text) = fx.execute(key_call.clone()).await;
-        let chord_needed_confirmation = !success;
-        if chord_needed_confirmation {
-            assert!(text.contains("confirm_id"), "{text}");
-            let key_id = fx.events.latest_confirm_id();
-            assert!(fx.shared.mint_confirmation(&key_id));
-            let confirmed_key = json!({"action": "key", "text": chord, "confirm_id": key_id});
-            let (success, text) = fx.execute(confirmed_key).await;
-            assert!(success, "the confirmed chord must execute: {text}");
-        }
-        println!("x11_live chord {chord:?}: needed confirmation = {chord_needed_confirmation}");
+        let (success, text) = fx.execute(key_call).await;
+        assert!(success, "the chord must execute: {text}");
+        assert!(!text.contains("NOT executed"), "{text}");
 
         // Audit privacy: the plaintexts must appear nowhere in the JSONL;
         // every record carries a redacted target only.
@@ -2744,8 +2664,8 @@ mod x11_live_tests {
             .collect();
         assert_eq!(
             typed.len(),
-            2,
-            "blocked + executed type calls must both audit the redacted count: {records:?}"
+            1,
+            "the executed type call must audit the redacted count: {records:?}"
         );
         let chords: Vec<&Value> = records
             .iter()
@@ -2753,8 +2673,8 @@ mod x11_live_tests {
             .collect();
         assert_eq!(
             chords.len(),
-            2,
-            "blocked + executed chord calls must both audit the key count: {records:?}"
+            1,
+            "the executed chord call must audit the key count: {records:?}"
         );
         // The audit is a plain log: no crypto or begin/end phase fields.
         for absent in ["salt", "text_hmac", "text_len", "phase"] {
@@ -2783,11 +2703,14 @@ mod x11_live_tests {
         let fx = fixture(display);
         fx.shared.grant_session(SESSION);
 
-        let click = json!({"action": "left_click", "x": 300, "y": 200});
-        let (success, text) = fx.execute(click.clone()).await;
-        assert!(!success, "{text}");
-        assert!(text.contains("NOT executed"), "{text}");
-        let confirm_id = fx.events.latest_confirm_id();
+        // A live pending confirmation (raised via the guard exactly as the
+        // tool's blocked-action path raises one; with AT-SPI absent no denylist
+        // element is reachable here, so the guard API is used directly).
+        let confirm_id = fx.shared.new_pending_confirmation(
+            SESSION,
+            "left click x1 at Some((300, 200))",
+            "Live",
+        );
         assert!(fx.shared.pending_confirmation(&confirm_id).is_some());
 
         // The computer_use_stop command path, verbatim.
@@ -2812,7 +2735,9 @@ mod x11_live_tests {
         // grant must still be gone — input is grant-required again.
         fx.shared.reset_stop();
         let before = pointer_at(&fx.display).expect("xdotool");
-        let (success, text) = fx.execute(click).await;
+        let (success, text) = fx
+            .execute(json!({"action": "left_click", "x": 300, "y": 200}))
+            .await;
         assert!(!success, "{text}");
         assert!(text.contains("has not granted control"), "{text}");
         assert_pointer_unchanged(&fx.display, before, "click after stop + reopen");

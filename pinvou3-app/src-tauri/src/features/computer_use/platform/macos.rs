@@ -1515,7 +1515,8 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         let mut errors = AttrErrors::new();
         let info = read_node_info(&element, &names, &mut errors, true);
         // 命中元素 role/subrole/description 全部读不出时按不可读处理
-        // （fail-closed）：不把未知元素当普通元素 Clear 放行。
+        // （fail-closed）：宁可显式报错，也绝不返回一个残缺元素——残缺
+        // 信息会被下游当成可判定的筛查输入。
         ensure_readable(&info)?;
         Ok(Some(element_info_from(info)))
     }

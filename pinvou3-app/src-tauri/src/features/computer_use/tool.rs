@@ -7,7 +7,8 @@
 //! - 输入类与 scroll 动作执行后等待 [`POST_ACTION_SETTLE_MS`] 再补拍截图附上，
 //!   模型始终看到最新状态。
 //! - 同意门控（[`ComputerUseShared`]）在每次注入前检查；命中后果性名单或
-//!   筛查失败的目标必须经用户确认（单次令牌，绑定动作摘要）。
+//!   密码字段的目标必须经用户确认（单次令牌，绑定动作摘要）。筛查是尽力
+//!   而为的类别检测：筛查不可用不阻断执行，键入内容永不筛查。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -110,9 +111,10 @@ impl ComputerUseEventSink for TauriEventSink {
 struct ToolState {
     last_map: Option<ScaleMap>,
     shot_seq: u64,
-    /// 左键是否处于本工具按下的状态(down 成功置位、up/drag 成功清除)。
-    /// 按住期间 mouse_move 实质是拖拽,落点必须过 T3 筛查(评审发现:
-    /// down(无害)→move(不筛查)→up 的拆解可把文件拖进回收站)。
+    /// 本工具是否物理按下了左键（down 成功置位、up/drag 成功清除）。唯一
+    /// 用途是 `left_click_drag` 失败后的兜底松键：只释放**本工具自己按下
+    /// 的**键，绝不松用户物理按住的键。不再作为筛查输入（按住期间的
+    /// mouse_move 与其他 mouse_move 一样不设确认，主流无 held-move 复筛）。
     mouse_buttons_held: bool,
 }
 
@@ -569,14 +571,14 @@ fn resolve_targets(
         .collect()
 }
 
-/// T3 筛查结论。`Unscreenable` 表示无法证明目标无害（a11y 查询故障、光标
-/// 位置未知、缺截图映射等）——按**失败关闭**处理：与命中名单同样要求显式
-/// 用户确认。旧实现把后端错误吞成「无元素」直接放行（评审发现），安全
-/// 筛查绝不能 fail-open。
+/// T3 筛查结论。筛查是尽力而为的类别检测：**无法**筛查（a11y 查询故障、
+/// 光标未知、缺截图映射、光标在截图显示器之外等）一律按 Clear 放行——
+/// 没有主流产品为筛查基础设施故障单独索要确认，fail-closed 只会在
+/// AT-SPI 不可用、多屏等场景制造确认风暴；只有**正面命中**名单/密码
+/// 字段才要求确认。
 enum T3Screening {
     Clear,
     Blocked(T3Hit),
-    Unscreenable(String),
 }
 
 struct T3Hit {
@@ -596,7 +598,7 @@ fn screen_element(element: &ElementInfo) -> T3Screening {
     if matches_t3_denylist(&element.name) || matches_t3_denylist(&element.role) {
         return T3Screening::Blocked(T3Hit {
             element_label: format!("{} ({})", element.name, element.role),
-            reason: "a consequential control (purchase/payment/send/delete/transfer/submit)",
+            reason: "a consequential control (financial/send/delete/submit/consent)",
         });
     }
     T3Screening::Clear
@@ -606,41 +608,19 @@ fn screen_element(element: &ElementInfo) -> T3Screening {
 fn screen_point(parts: &Parts, x: i32, y: i32) -> T3Screening {
     let element = match parts.backend.element_at_point(x, y) {
         Ok(element) => element,
-        Err(error) => {
-            return T3Screening::Unscreenable(format!(
-                "accessibility screening failed at ({x}, {y}): {error}"
-            ));
-        }
+        // 筛查不可用（a11y 查询故障）≠ 命中名单：筛查是尽力而为的类别检测，
+        // 没有主流产品为筛查基础设施故障单独索要确认（AT-SPI 不可用、多屏
+        // 等场景下 fail-closed 只会制造确认风暴）。放行执行。
+        Err(_) => return T3Screening::Clear,
     };
     match element {
         Some(element) => screen_element(&element),
         // No element at the target point = nothing to check (Clear): unnamed
         // targets are everywhere on real desktops (canvas, hover targets,
         // custom widgets) and the denylist is name-based, so an absent name
-        // is not a red flag. Only a query *error* — screening blind — is
-        // fail-closed (Unscreenable → confirmation).
+        // is not a red flag.
         None => T3Screening::Clear,
     }
-}
-
-/// 键盘和弦是否具有后果性语义：Delete/Backspace 与修饰键组合（cmd+delete
-/// 删除文件、ctrl+w 丢失未保存工作）、Enter 与修饰键组合（cmd/ctrl+Enter
-/// 发送/提交）。评审发现：焦点元素的 name 看不出按键会触发的后果——焦点
-/// 在聊天框（name 为空）时 `key "cmd+Enter"` 直接发送消息，焦点元素筛查
-/// 完全拦不住。普通 Enter/Delete（文本编辑最常用）不受影响。
-/// Shift 只参与 Delete/Backspace 的判定：shift+delete/backspace 是绕过
-/// 回收站永久删除级别的语义（评审发现：修饰集漏 Shift）；shift+Enter/
-/// shift+字母 仍是换行、大写等键入形态，不升级为强制确认。
-fn chord_is_consequential(keys: &[Key]) -> bool {
-    let has_modifier = keys
-        .iter()
-        .any(|k| matches!(k, Key::Control | Key::Alt | Key::Meta));
-    let has_shift = keys.iter().any(|k| matches!(k, Key::Shift));
-    let destructive = keys
-        .iter()
-        .any(|k| matches!(k, Key::Delete | Key::Backspace));
-    let enter = keys.iter().any(|k| matches!(k, Key::Enter));
-    (destructive && (has_modifier || has_shift)) || (enter && has_modifier)
 }
 
 /// Whether a key chord is effectively typed text: exactly one character key
@@ -662,108 +642,71 @@ fn is_typed_text_chord(keys: &[Key]) -> bool {
 }
 
 /// Type 动作的目标是否密码/安全字段（确认摘要据此掩码预览）。以焦点元素为
-/// 准；焦点读不出时无法证明不是密码框，保守掩码（评审发现：确认摘要把键入
-/// 文本前 12 字符明文送进确认弹窗/事件流，而「向密码框键入」恰是必然被拦
-/// 走确认流程的场景）。
+/// 准；只有**正面**命中密码/安全角色才算密码框——焦点读不出（Ok(None)=
+/// 无处键入、Err=查询失败）不构成信号，按非密码处理（筛查不可用既不阻断
+/// 执行，也不改变摘要形态；命中密码角色仍会走确认，见 `t3_screening`）。
 fn type_target_is_secure(parts: &Parts) -> bool {
     match parts.backend.focused_element() {
         Ok(Some(element)) => element.secure || is_secure_role(&element.role),
-        // Ok(None)=无处键入（掩码与否无意义）；Err=查询失败，保守掩码。
-        _ => true,
+        _ => false,
     }
 }
 
-/// T3 后果性筛查：Input 类动作执行前查目标处的 a11y 元素。
+/// T3 后果性筛查：只对**激活类** Input 动作执行（见 [`requires_t3_check`]）。
 ///
 /// 筛查点选择：
-/// - 带坐标的点击/滚动查目标点；`left_click_drag` 查**起点与落点**两个点
-///   （拖进回收站/Delete 区是典型后果性动作，只查光标会漏掉终点——评审发现）。
-/// - 键盘类动作（type/key/hold_key）查**焦点元素**：键盘输入落在焦点上而不
-///   是光标处——焦点在密码框、光标在别处时按光标筛查会漏判放行（评审发现，
-///   最重级别）。`focused_element` 返回 Ok(None)=明确无焦点=无处键入，放行；
-///   Err=查询失败/平台不支持 → `Unscreenable` 失败关闭。后端不支持时默认
-///   实现返回 Err，同样失败关闭。此外，破坏性组合键（见
-///   [`chord_is_consequential`]）无论焦点为何都要求确认。
-/// - mouse_move 在左键**未**按下时只悬停、不产生后果，明确不筛查（否则合法
-///   hover 全被拦）；按住期间移动实质是拖拽，落点照常筛查（评审发现：
-///   down(无害)→move(不筛查)→up 的拆解可零确认完成后果性拖拽）。
-/// - 其余输入动作（mouse down/up、无坐标点击/滚动）作用于光标处，查当前
-///   光标；光标必须落在截图显示器范围内（混合 DPI 防护：光标在另一块屏上
-///   时换算结果是垃圾坐标，按 Unscreenable 失败关闭）。
+/// - 带坐标的点击查目标点；`left_click_drag` 查**起点与落点**两个点（拖进
+///   回收站/Delete 区是典型后果性动作，只查光标会漏掉终点）。
+/// - 键盘类动作（type/key/hold_key）查**焦点元素**：键盘输入落在焦点上而
+///   不是光标处——焦点在密码框、光标在别处时按光标筛查会漏判放行（评审
+///   发现，最重级别）。`focused_element` 返回 Ok(None)=明确无焦点=无处键入，
+///   放行；Err=查询失败/平台不支持，同样放行（筛查不可用不阻断执行）。
+///   组合键不再设破坏性确认——和弦编辑可逆，没有主流产品按和弦形态设门；
+///   焦点元素的名单/密码筛查照常生效。
+/// - mouse down/up、无坐标点击作用于光标处，查当前光标；光标必须落在截图
+///   显示器范围内才换算（混合 DPI：光标在另一块屏上时换算结果是垃圾坐标，
+///   查了只会筛错点）；范围外或光标未知时无目标可查，放行。
+/// - mouse_move 与 scroll 根本不进入本函数（悬停/滚动无动作后果，主流对
+///   hover/scroll 一律不设门）。
 ///
-/// 映射缺失（无截图）或光标未知时不再用设备像素硬猜坐标（评审发现：缩放
-/// 屏上会查错位置静默放行），一律 `Unscreenable` 失败关闭。
+/// 所有「筛查不可用」路径一律 Clear（best-effort 类别检测：正面命中才确认，
+/// 筛查基础设施故障不制造确认风暴）。
 fn t3_screening(parts: &Parts, action: &ComputerUseAction, map: Option<&ScaleMap>) -> T3Screening {
-    const NO_MAP: &str = "no screenshot mapping is available to resolve the target point";
-    match action {
-        ComputerUseAction::ElementAtPoint { .. } => return T3Screening::Clear,
-        ComputerUseAction::MouseMove { x, y } => {
-            if !parts.state.lock().mouse_buttons_held {
-                return T3Screening::Clear;
-            }
-            // 按住期间移动=拖拽：筛查落点。
-            let Some(m) = map else {
-                return T3Screening::Unscreenable(NO_MAP.to_string());
-            };
-            let (cx, cy, _) = m.clamp_shot(*x, *y);
-            let (ix, iy) = m.shot_to_input(cx, cy);
-            return screen_point(parts, ix, iy);
-        }
-        // 键盘类动作：筛查焦点元素（键盘输入的真正落点）+ 和弦语义。
-        ComputerUseAction::KeyChord { keys, chord }
-        | ComputerUseAction::HoldKey { keys, chord, .. }
-            if chord_is_consequential(keys) =>
-        {
-            return T3Screening::Blocked(T3Hit {
-                element_label: format!("key chord \"{chord}\""),
-                reason: "a consequential key chord (destructive delete/send semantics on the focused control)",
-            });
-        }
-        // 键盘类动作：筛查焦点元素（键盘输入的真正落点）。破坏性和弦已在
-        // 上面的守卫臂拦截；余下的按焦点元素筛查。
+    // 键盘类动作：筛查焦点元素（键盘输入的真正落点）。
+    if matches!(
+        action,
         ComputerUseAction::Type { .. }
-        | ComputerUseAction::KeyChord { .. }
-        | ComputerUseAction::HoldKey { .. } => {
-            return match parts.backend.focused_element() {
-                Ok(Some(element)) => screen_element(&element),
-                Ok(None) => T3Screening::Clear,
-                Err(error) => T3Screening::Unscreenable(format!(
-                    "the keyboard-focused element cannot be determined, so the typing target \
-                     cannot be screened: {error}"
-                )),
-            };
-        }
-        _ => {}
+            | ComputerUseAction::KeyChord { .. }
+            | ComputerUseAction::HoldKey { .. }
+    ) {
+        return match parts.backend.focused_element() {
+            Ok(Some(element)) => screen_element(&element),
+            Ok(None) | Err(_) => T3Screening::Clear,
+        };
     }
     let points: Vec<(i32, i32)> = match action {
         ComputerUseAction::Click {
             at: Some((x, y)), ..
-        }
-        | ComputerUseAction::Scroll {
-            at: Some((x, y)), ..
         } => {
             let Some(m) = map else {
-                return T3Screening::Unscreenable(NO_MAP.to_string());
+                return T3Screening::Clear;
             };
             let (cx, cy, _) = m.clamp_shot(*x, *y);
             vec![m.shot_to_input(cx, cy)]
         }
         ComputerUseAction::Drag { start, end } => {
             let Some(m) = map else {
-                return T3Screening::Unscreenable(NO_MAP.to_string());
+                return T3Screening::Clear;
             };
             let (sx, sy, _) = m.clamp_shot(start.0, start.1);
             let (ex, ey, _) = m.clamp_shot(end.0, end.1);
             vec![m.shot_to_input(sx, sy), m.shot_to_input(ex, ey)]
         }
+        // mouse down/up 与无坐标点击作用于当前光标处。
         _ => match parts.backend.cursor_position() {
             Ok((dx, dy)) => {
                 let Some(m) = map else {
-                    return T3Screening::Unscreenable(
-                        "cursor position cannot be mapped into the input space without a \
-                         screenshot"
-                            .to_string(),
-                    );
+                    return T3Screening::Clear;
                 };
                 // Mixed-DPI guard: device-space rects of different monitors can
                 // overlap when their scales differ, so containment must be
@@ -772,19 +715,11 @@ fn t3_screening(parts: &Parts, action: &ComputerUseAction, map: Option<&ScaleMap
                 // yields coordinates far from the real cursor (screening the
                 // wrong point while the injection lands on the real one).
                 let Some((ix, iy)) = m.device_to_input_checked(dx, dy) else {
-                    return T3Screening::Unscreenable(format!(
-                        "cursor at device ({dx}, {dy}) is outside the captured monitor \
-                         (origin ({}, {}), {}x{}), so the target cannot be screened",
-                        m.origin_x, m.origin_y, m.dev_w, m.dev_h
-                    ));
+                    return T3Screening::Clear;
                 };
                 vec![(ix, iy)]
             }
-            Err(error) => {
-                return T3Screening::Unscreenable(format!(
-                    "cursor position is unknown, so the target cannot be screened: {error}"
-                ));
-            }
+            Err(_) => return T3Screening::Clear,
         },
     };
     for (x, y) in points {
@@ -796,10 +731,21 @@ fn t3_screening(parts: &Parts, action: &ComputerUseAction, map: Option<&ScaleMap
     T3Screening::Clear
 }
 
-/// T3 筛查覆盖全部 Input 类动作——层级表以 [`ActionClass::class`] 为单一
-/// 来源（评审发现：旧版手抄清单漏掉 MouseDown/Up，点击可被拆解绕过）。
+/// T3 筛查只覆盖**激活类**动作：点击/按下/释放/拖拽/键盘——能触发控件或
+/// 产生输入后果的动作。mouse_move 与 scroll 仍是 Input 类（需要会话授权、
+/// 照常审计），但悬停与滚动不产生动作后果，不设筛查确认——主流产品对
+/// hover/scroll 一律不设门。
 fn requires_t3_check(action: &ComputerUseAction) -> bool {
-    action.class() == ActionClass::Input
+    matches!(
+        action,
+        ComputerUseAction::Click { .. }
+            | ComputerUseAction::MouseDown { .. }
+            | ComputerUseAction::MouseUp { .. }
+            | ComputerUseAction::Drag { .. }
+            | ComputerUseAction::Type { .. }
+            | ComputerUseAction::KeyChord { .. }
+            | ComputerUseAction::HoldKey { .. }
+    )
 }
 
 /// Whether the full typed text may ride the confirm event
@@ -957,16 +903,6 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                                 type_preview_full.clone(),
                             ));
                         }
-                        T3Screening::Unscreenable(reason) => {
-                            // 失败关闭：无法证明目标无害时同样要求用户确认。
-                            return Err(request_confirmation(
-                                &parts,
-                                &summary,
-                                &reason,
-                                "an unverifiable target (screening unavailable)",
-                                type_preview_full.clone(),
-                            ));
-                        }
                     }
                 }
             }
@@ -1010,12 +946,6 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         let map = parts.state.lock().last_map.clone();
         let mut outcome = execute_action(&parts, &action, map.as_ref(), &mut warnings)
             .map_err(|e| backend_error_text(&e))?;
-
-        // 授权活动记账：只在动作真正执行成功后续期（round-6 评审——被拦/
-        // 被拒的调用不应让用户反复拒绝的会话永久续期）。
-        if action.class() == ActionClass::Input {
-            parts.shared.keepalive_input_action(&parts.session_id);
-        }
 
         // 补拍截图。
         if attaches_screenshot(&action) {
@@ -1294,8 +1224,8 @@ fn execute_action(
         }
         ComputerUseAction::MouseDown { button } => {
             backend.mouse_down(*button)?;
-            // 按住状态供 mouse_move 的拖拽筛查使用（失败路径不置位：按下
-            // 失败=物理上没有按住）。
+            // 按住状态只服务于拖拽失败后的兜底松键（失败路径不置位：按下
+            // 失败=物理上没有按住）；筛查不再使用它。
             if *button == MouseButton::Left {
                 parts.state.lock().mouse_buttons_held = true;
             }
@@ -1373,15 +1303,19 @@ impl ToolSpec for ComputerUseTool {
          Coordinates are ALWAYS in the pixel space of the last screenshot this tool returned \
          (origin top-left); take a screenshot first and reuse its coordinate space. \
          Every action that touches the mouse or keyboard (mouse_move, scroll, clicks, keys, \
-         typing) requires a per-session grant from the user. Before an input action runs, \
-         its on-screen target is screened against a consequential-control denylist \
-         (payment/send/delete/credential-class names); actions hitting the denylist, \
-         targets that cannot be read, and destructive key chords require explicit user \
-         confirmation via confirm_id. The CONTENT you type is never screened. Observation \
-         (screenshots, ui_tree) reads on-screen and focused-window content while the \
-         feature is enabled, which may include private information. After actions that \
-         change the screen a fresh screenshot is attached; if it is not visible, call \
-         image_analyze with the returned attachments path."
+         typing) requires a per-session grant from the user; the grant stays valid until \
+         revoked. Before an activation action runs (clicks, drags, mouse down/up, typing, \
+         keys), its target is screened against a consequential-control denylist \
+         (financial/send/delete/submit/consent categories) and password fields; a hit \
+         pauses the action until the user confirms it via confirm_id. Screening is \
+         best-effort category detection over the accessibility tree: when the target \
+         cannot be read or screening is unavailable, the action still executes without \
+         confirmation. The CONTENT you type is never screened, and key chords are not \
+         screened for destructiveness. Observation (screenshots, ui_tree) reads on-screen \
+         and focused-window content while the feature is enabled, which may include \
+         private information. After actions that change the screen a fresh screenshot is \
+         attached; if it is not visible, call image_analyze with the returned attachments \
+         path."
     }
 
     fn input_schema(&self) -> Value {

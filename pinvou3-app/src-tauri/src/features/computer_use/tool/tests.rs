@@ -307,7 +307,8 @@ fn context(workspace: &Path) -> ToolContext {
 
 /// 名单之外的无害元素（T3 筛查 Clear）：place 元素盖住筛查点，让放行路径
 /// 走到执行。Unnamed targets screen Clear (Ok(None) is not a red flag);
-/// only an a11y query *error* fails closed.
+/// a11y query *errors* also screen Clear (best-effort fail-open), but a
+/// positive denylist/secure match still confirms.
 fn benign_element(x: i32, y: i32, width: i32, height: i32) -> ElementInfo {
     ElementInfo {
         role: "AXGroup".to_string(),
@@ -729,7 +730,7 @@ async fn cursor_position_reports_screenshot_space_after_capture() {
 }
 
 // ---------------------------------------------------------------------------
-// 评审修复回归:层级绕过 / fail-open / 令牌绑定 / 能力先行
+// 评审修复回归:层级筛查 / 筛查不可用放行 / 令牌绑定 / 能力先行
 // ---------------------------------------------------------------------------
 
 /// P0 回归:mouse_down/mouse_up 曾不在 T3 清单里,可拆解出零确认点击。
@@ -780,9 +781,11 @@ async fn mouse_down_up_composition_is_t3_screened() {
     );
 }
 
-/// 筛查故障必须失败关闭:无法证明目标无害 = 要求确认,绝不放行。
+/// 筛查不可用不阻断执行（主流口径：筛查是尽力而为的类别检测，没有产品
+/// 为筛查基础设施故障单独索要确认）：a11y 查询故障的目标照常执行、不发
+/// 确认事件；正面命中名单仍会拦截（见其余 T3 测试）。
 #[tokio::test]
-async fn unscreenable_a11y_failure_requires_confirmation() {
+async fn a11y_query_error_executes_without_confirmation() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().element_error = true;
@@ -793,10 +796,24 @@ async fn unscreenable_a11y_failure_requires_confirmation() {
             &context(&fixture.workspace),
         )
         .await;
-    let text = result.ok().map(|r| r.content).unwrap_or_default();
-    assert!(text.contains("NOT executed"), "{text}");
-    assert!(text.contains("unverifiable target"), "{text}");
-    assert!(fixture.mock.lock().clicked.is_empty());
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => panic!("execute failed: {e}"),
+    };
+    assert!(result.success, "{}", result.content);
+    assert!(
+        !result.content.contains("NOT executed"),
+        "an unreadable target must not be gated: {}",
+        result.content
+    );
+    assert_eq!(fixture.mock.lock().clicked.len(), 1, "the click executed");
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    assert!(
+        !events
+            .iter()
+            .any(|(name, _)| name == EVENT_CONFIRM_REQUIRED),
+        "no confirmation may be requested while screening is unavailable: {events:?}"
+    );
 }
 
 /// 评审修复回归（最重）：键盘输入落在**焦点元素**而非光标处——焦点在密码
@@ -850,11 +867,14 @@ async fn focus_on_password_with_cursor_elsewhere_requires_confirmation() {
     assert!(fixture.mock.lock().chords.is_empty(), "must not press");
 }
 
-/// 评审修复回归：焦点查询失败时键盘动作必须失败关闭（Unscreenable → 确认）。
+/// 只有**正面**命中密码/安全角色才确认：焦点读不出（查询故障）不构成
+/// 信号，type 照常执行、不发确认事件；焦点正面命中密码角色时仍拦截
+/// （同一测试两段对照，pin (c)）。
 #[tokio::test]
-async fn focus_query_failure_fails_closed_for_typing() {
+async fn unreadable_type_focus_executes_and_password_focus_confirms() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
+    // 焦点查询失败：不阻断执行、不发确认事件。
     fixture.mock.lock().focused_error = true;
     let result = fixture
         .tool
@@ -863,13 +883,54 @@ async fn focus_query_failure_fails_closed_for_typing() {
             &context(&fixture.workspace),
         )
         .await;
-    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => panic!("execute failed: {e}"),
+    };
+    assert!(result.success, "{}", result.content);
+    assert_eq!(
+        fixture.mock.lock().typed.last().map(String::as_str),
+        Some("hello"),
+        "an unreadable focus must not block typing"
+    );
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    assert!(
+        !events
+            .iter()
+            .any(|(name, _)| name == EVENT_CONFIRM_REQUIRED),
+        "no confirmation may be requested while the focus is unreadable: {events:?}"
+    );
+
+    // 对照：焦点正面命中密码角色 → 拦截确认。
+    fixture.mock.lock().focused_error = false;
+    fixture.mock.lock().focused = Some(ElementInfo {
+        role: "AXSecureTextField".to_string(),
+        name: "Password".to_string(),
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: true,
+    });
+    let blocked = fixture
+        .tool
+        .execute(
+            json!({"action": "type", "text": "hunter2"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = blocked.ok().map(|r| r.content).unwrap_or_default();
     assert!(text.contains("NOT executed"), "{text}");
-    assert!(text.contains("unverifiable target"), "{text}");
-    assert!(fixture.mock.lock().typed.is_empty());
+    assert!(text.contains("password/secure field"), "{text}");
+    assert_eq!(
+        fixture.mock.lock().typed.len(),
+        1,
+        "only the first type ran"
+    );
 }
 
-/// 明确无焦点元素 = 无处键入，type 放行（Ok(None) ≠ Err，不误伤）。
+/// 明确无焦点元素 = 无处键入，type 放行（Ok(None) 与 Err 一样不构成确认
+/// 信号；只有正面命中密码/名单角色才拦截，见其余 T3 测试）。
 #[tokio::test]
 async fn no_focused_element_allows_typing() {
     let (fixture, _restore) = fixture();
@@ -893,7 +954,8 @@ async fn no_focused_element_allows_typing() {
     );
 }
 
-/// drag 的落点(而不只是光标)必须被筛查:起点无元素、终点命中 denylist。
+/// drag 的起点与落点都必须被筛查（pin (f)）：终点命中 denylist（起点良性）
+/// 与起点命中 denylist（终点良性）两个方向都要求确认。
 #[tokio::test]
 async fn drag_drop_target_is_screened() {
     let (fixture, _restore) = fixture();
@@ -921,6 +983,32 @@ async fn drag_drop_target_is_screened() {
     assert!(text.contains("NOT executed"), "{text}");
     assert!(text.contains("Delete"), "{text}");
     // 第三轮评审修复回归：拦截时拖拽不得真的下发。
+    assert!(
+        fixture.mock.lock().drags.is_empty(),
+        "drag must not execute"
+    );
+
+    // 反向：起点命中 denylist（终点良性）同样拦截。
+    fixture.mock.lock().background = vec![ElementInfo {
+        role: "button".to_string(),
+        name: "Delete".to_string(),
+        x: 0,
+        y: 0,
+        width: 3,
+        height: 3,
+        secure: false,
+    }];
+    fixture.mock.lock().element = Some(benign_element(10, 10, 5, 5));
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click_drag", "start_x": 1, "start_y": 1, "x": 12, "y": 12}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("NOT executed"), "{text}");
+    assert!(text.contains("Delete"), "{text}");
     assert!(
         fixture.mock.lock().drags.is_empty(),
         "drag must not execute"
@@ -1501,10 +1589,10 @@ async fn cursor_outside_captured_monitor_reports_device_position_with_warning() 
     assert!(!text.contains("in screenshot space"), "{text}");
 }
 
-/// 混合 DPI 防护：光标在截图显示器之外时 mouse_down 的筛查无法定位目标
-/// ——失败关闭（Unscreenable → 要求确认），绝不拿跨屏垃圾坐标筛查。
+/// 混合 DPI：光标在截图显示器之外时无目标可查（绝不拿跨屏垃圾坐标筛查）
+/// ——筛查不可用不阻断执行，也不索要确认。
 #[tokio::test]
-async fn mouse_down_outside_captured_monitor_fails_closed() {
+async fn mouse_down_outside_captured_monitor_executes_without_confirmation() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().capture_origin = (-1000, -1000);
@@ -1515,29 +1603,38 @@ async fn mouse_down_outside_captured_monitor_fails_closed() {
             &context(&fixture.workspace),
         )
         .await;
-    let text = result.ok().map(|r| r.content).unwrap_or_default();
-    assert!(text.contains("NOT executed"), "{text}");
-    assert!(text.contains("outside the captured monitor"), "{text}");
-    assert!(text.contains("confirm_id"), "{text}");
-    // 第三轮评审修复回归：拦截时按下不得真的下发。
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => panic!("execute failed: {e}"),
+    };
+    assert!(result.success, "{}", result.content);
     assert!(
-        fixture.mock.lock().downed.is_empty(),
-        "down must not execute"
+        !result.content.contains("NOT executed"),
+        "an unlocatable cursor must not be gated: {}",
+        result.content
+    );
+    assert_eq!(fixture.mock.lock().downed.len(), 1, "the down executed");
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    assert!(
+        !events
+            .iter()
+            .any(|(name, _)| name == EVENT_CONFIRM_REQUIRED),
+        "no confirmation may be requested while the target cannot be located: {events:?}"
     );
 }
 
 // ---------------------------------------------------------------------------
-// 第三轮评审修复回归：和弦语义筛查 / 按住拖拽筛查
+// 第三轮评审回归（口径更新后）：和弦不设形态确认 / mouse_move·scroll 不筛查
 // ---------------------------------------------------------------------------
 
-/// 破坏性和弦（修饰键 + Delete/Backspace、修饰键 + Enter）无论焦点元素
-/// 名单判定如何都要求确认：焦点元素的 name 看不出按键会触发的后果
-/// （聊天框 cmd+Enter 发送、Finder cmd+delete 删文件）。
+/// 和弦永不设确认（pin (d)）：和弦编辑可逆，没有主流产品按和弦形态设门。
+/// 无论修饰键组合如何（cmd+delete、ctrl+Enter、shift+delete……），key 都
+/// 直接执行；焦点元素的名单/密码筛查仍然生效（见其余 T3 测试）。
 #[tokio::test]
-async fn destructive_key_chords_require_confirmation() {
+async fn key_chords_never_require_confirmation() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
-    // 焦点是普通文本域（名单判定 Clear）——和弦语义仍须拦截。
+    // 焦点是普通文本域（名单判定 Clear）——旧口径会按和弦语义拦截。
     fixture.mock.lock().focused = Some(ElementInfo {
         role: "AXTextArea".to_string(),
         name: String::new(),
@@ -1552,10 +1649,14 @@ async fn destructive_key_chords_require_confirmation() {
         "ctrl+backspace",
         "meta+Enter",
         "ctrl+Enter",
-        // 评审修复回归：Shift 参与 Delete/Backspace 判定——shift+delete 是
-        // 绕过回收站的永久删除。
+        // Shift 参与过的判定也已移除：shift+delete 直接执行。
         "shift+delete",
         "shift+Backspace",
+        // 普通键（文本编辑主路径）照旧直接执行。
+        "Return",
+        "Delete",
+        "Backspace",
+        "shift+Return",
     ] {
         let result = fixture
             .tool
@@ -1564,51 +1665,103 @@ async fn destructive_key_chords_require_confirmation() {
                 &context(&fixture.workspace),
             )
             .await;
-        let text = result.ok().map(|r| r.content).unwrap_or_default();
-        assert!(text.contains("NOT executed"), "{chord}: {text}");
-        assert!(text.contains("confirm_id"), "{chord}: {text}");
+        let result = match result {
+            Ok(r) => r,
+            Err(e) => panic!("execute failed for {chord}: {e}"),
+        };
+        assert!(result.success, "{chord}: {}", result.content);
+        assert!(
+            !result.content.contains("NOT executed"),
+            "{chord} must not require confirmation: {}",
+            result.content
+        );
     }
-    assert!(fixture.mock.lock().chords.is_empty(), "no chord may inject");
-    // 普通键不受影响：无修饰键的 Enter/Delete 直接放行（文本编辑主路径）；
-    // shift+Enter 是换行等键入形态，不升级为强制确认（Shift 不参与 Enter 判定）。
-    for chord in ["Return", "Delete", "Backspace", "shift+Return"] {
-        let result = fixture
-            .tool
-            .execute(
-                json!({"action": "key", "text": chord}),
-                &context(&fixture.workspace),
-            )
-            .await;
-        let text = result.ok().map(|r| r.content).unwrap_or_default();
-        assert!(!text.contains("NOT executed"), "{chord}: {text}");
-    }
-    assert_eq!(fixture.mock.lock().chords.len(), 4);
+    assert_eq!(
+        fixture.mock.lock().chords.len(),
+        10,
+        "every chord must reach the injection"
+    );
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    assert!(
+        !events
+            .iter()
+            .any(|(name, _)| name == EVENT_CONFIRM_REQUIRED),
+        "no chord may raise a confirmation: {events:?}"
+    );
 }
 
-/// 按住左键期间 mouse_move 实质是拖拽：落点必须过 T3 筛查（拆解
-/// down→move→up 不得零确认把目标拖进后果性位置）。
+/// mouse_move 与 scroll 永不设确认（pin (e)）：悬停/滚动无动作后果，主流
+/// 一致——即使落点/目标压在名单控件上也照常执行；按住左键期间的 move 亦然
+/// （held-move 复筛已移除，drag 的筛查固定在 Drag 动作的起点+终点）。
 #[tokio::test]
-async fn mouse_move_while_button_held_is_screened() {
+async fn mouse_move_and_scroll_never_require_confirmation() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
-    // A benign element covers the cursor (7,9): the down screening point
-    // passes and the held state is set.
-    fixture.mock.lock().element = Some(benign_element(0, 0, 16, 16));
+    // 名单控件 "Pay" 盖住光标 (7,9) 与整个截图：scroll / mouse_move 照常执行。
+    fixture.mock.lock().element = Some(ElementInfo {
+        role: "AXButton".to_string(),
+        name: "Pay".to_string(),
+        x: 0,
+        y: 0,
+        width: 16,
+        height: 16,
+        secure: false,
+    });
+    for input in [
+        json!({"action": "scroll", "direction": "down", "amount": 2}),
+        json!({"action": "scroll", "direction": "down", "amount": 1, "x": 3, "y": 4}),
+    ] {
+        let result = fixture
+            .tool
+            .execute(input, &context(&fixture.workspace))
+            .await;
+        let result = match result {
+            Ok(r) => r,
+            Err(e) => panic!("execute failed: {e}"),
+        };
+        assert!(result.success, "{}", result.content);
+        assert!(
+            !result.content.contains("NOT executed"),
+            "scroll must not require confirmation: {}",
+            result.content
+        );
+    }
+    assert_eq!(
+        fixture.mock.lock().scrolled.len(),
+        2,
+        "both scrolls reached the injection"
+    );
     let result = fixture
+        .tool
+        .execute(
+            json!({"action": "mouse_move", "x": 3, "y": 4}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => panic!("execute failed: {e}"),
+    };
+    assert!(result.success, "{}", result.content);
+    assert!(
+        !result.content.contains("NOT executed"),
+        "mouse_move must not require confirmation: {}",
+        result.content
+    );
+    let moves_before_held = fixture.mock.lock().moved_to.len();
+
+    // 按住左键期间的 move（实质拖拽）同样只走执行——不复筛。down 需要光标点
+    // 筛查 Clear：先放良性元素，再换成名单控件。
+    fixture.mock.lock().element = Some(benign_element(0, 0, 16, 16));
+    let down = fixture
         .tool
         .execute(
             json!({"action": "left_mouse_down"}),
             &context(&fixture.workspace),
         )
         .await;
-    assert!(
-        result
-            .ok()
-            .map(|r| r.content)
-            .unwrap_or_default()
-            .contains("mouse button is down")
-    );
-    // 目标 (12,12) 处是回收站：按住期间的 move 必须被拦截。
+    let down_text = down.ok().map(|r| r.content).unwrap_or_default();
+    assert!(down_text.contains("mouse button is down"), "{down_text}");
     fixture.mock.lock().element = Some(ElementInfo {
         role: "AXButton".to_string(),
         name: "Trash".to_string(),
@@ -1618,164 +1771,112 @@ async fn mouse_move_while_button_held_is_screened() {
         height: 5,
         secure: false,
     });
-    let result = fixture
+    let held_move = fixture
         .tool
         .execute(
             json!({"action": "mouse_move", "x": 12, "y": 12}),
             &context(&fixture.workspace),
         )
         .await;
-    let text = result.ok().map(|r| r.content).unwrap_or_default();
-    assert!(text.contains("NOT executed"), "{text}");
-    assert!(text.contains("confirm_id"), "{text}");
-    // Same move with the button released passes as before (release first:
-    // up at (7,9) has a benign element, so the screening reads Clear).
-    fixture.mock.lock().element = Some(benign_element(0, 0, 16, 16));
-    let result = fixture
+    let held_text = held_move.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        held_text.contains("mouse moved to"),
+        "a held move must execute without confirmation: {held_text}"
+    );
+    // up：光标 (7,9) 不在 Trash 矩形内 → Clear → 执行。
+    let up = fixture
         .tool
         .execute(
             json!({"action": "left_mouse_up"}),
             &context(&fixture.workspace),
         )
         .await;
-    assert!(
-        result
-            .ok()
-            .map(|r| r.content)
-            .unwrap_or_default()
-            .contains("mouse button is up")
-    );
-    let moved: Vec<_> = fixture.mock.lock().moved_to.clone();
-    let result = fixture
-        .tool
-        .execute(
-            json!({"action": "mouse_move", "x": 12, "y": 12}),
-            &context(&fixture.workspace),
-        )
-        .await;
-    let moved_text = result.ok().map(|r| r.content).unwrap_or_default();
-    assert!(
-        moved_text.contains("mouse moved to"),
-        "unheld move must execute: {moved_text}"
-    );
+    let up_text = up.ok().map(|r| r.content).unwrap_or_default();
+    assert!(up_text.contains("mouse button is up"), "{up_text}");
     assert_eq!(
         fixture.mock.lock().moved_to.len(),
-        moved.len() + 1,
-        "exactly one more move after release"
+        moves_before_held + 1,
+        "exactly the held move injected past the first hover"
+    );
+
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    assert!(
+        !events
+            .iter()
+            .any(|(name, _)| name == EVENT_CONFIRM_REQUIRED),
+        "no scroll/move may raise a confirmation: {events:?}"
     );
 }
 
-/// 评审修复回归：mouse_move 的确认摘要必须绑定坐标。旧的兜底摘要只有动作
-/// 名——弹窗盲批 "mouse_move"，且批准后带任意坐标重试都能重建相同摘要。
+/// 名单收敛为后果类别（pin (a)）：泛化肯定词（OK/Continue/Run）不设确认、
+/// 直接执行；后果类别词（Pay/Delete/Submit/Accept）仍拦截并索要确认。
 #[tokio::test]
-async fn held_move_confirmation_binds_coordinates() {
+async fn trimmed_denylist_affirmatives_execute_and_consequences_confirm() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
-    // A benign element covers the cursor (7,9): the down screening point
-    // passes.
-    fixture.mock.lock().element = Some(benign_element(0, 0, 16, 16));
-    let result = fixture
-        .tool
-        .execute(
-            json!({"action": "left_mouse_down"}),
-            &context(&fixture.workspace),
-        )
-        .await;
-    assert!(
-        result
-            .ok()
-            .map(|r| r.content)
-            .unwrap_or_default()
-            .contains("mouse button is down")
-    );
-    // (12,12) 是回收站：按住 move 被拦，确认事件必须带目的地坐标。
-    fixture.mock.lock().element = Some(ElementInfo {
-        role: "AXButton".to_string(),
-        name: "Trash".to_string(),
-        x: 10,
-        y: 10,
-        width: 5,
-        height: 5,
-        secure: false,
-    });
-    let result = fixture
-        .tool
-        .execute(
-            json!({"action": "mouse_move", "x": 12, "y": 12}),
-            &context(&fixture.workspace),
-        )
-        .await;
-    let text = result.ok().map(|r| r.content).unwrap_or_default();
-    assert!(text.contains("NOT executed"), "{text}");
-    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
-    let confirmed = events
-        .iter()
-        .rev()
-        .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
-        .expect("confirm event");
-    let confirm_id = confirmed.1["confirm_id"].as_str().unwrap_or_default();
-    let summary = confirmed.1["action"].as_str().unwrap_or_default();
-    assert!(
-        summary.contains("(12, 12)"),
-        "summary must bind the destination: {summary}"
-    );
-    fixture.shared.mint_confirmation(confirm_id);
-    // 拿 (12,12) 的令牌去 move (2,2)——摘要失配必须被拒。
-    let replay = fixture
-        .tool
-        .execute(
-            json!({"action": "mouse_move", "x": 2, "y": 2, "confirm_id": confirm_id}),
-            &context(&fixture.workspace),
-        )
-        .await;
-    let text = replay.ok().map(|r| r.content).unwrap_or_default();
-    assert!(
-        text.contains("invalid, expired, or was already used"),
-        "{text}"
-    );
-    assert!(
-        fixture.mock.lock().moved_to.is_empty(),
-        "no move may inject"
-    );
-}
 
-/// 不可筛 → 用户批准 → 重试执行 的既有放行语义不得被重筛误伤：
-/// Unscreenable 在批准语境下是"用户已在知情下批准"，不二次索要确认。
-#[tokio::test]
-async fn approved_unscreenable_action_executes_after_confirmation() {
-    let (fixture, _restore) = fixture();
-    fixture.shared.grant_session("s-test");
-    fixture.mock.lock().element_error = true;
-    let result = fixture
-        .tool
-        .execute(
-            json!({"action": "left_click", "x": 5, "y": 5}),
-            &context(&fixture.workspace),
-        )
-        .await;
-    let text = result.ok().map(|r| r.content).unwrap_or_default();
-    assert!(text.contains("NOT executed"), "{text}");
-    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
-    let confirm_id = events
-        .iter()
-        .rev()
-        .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
-        .map(|(_, p)| p["confirm_id"].as_str().unwrap_or_default().to_string())
-        .expect("confirm event");
-    fixture.shared.mint_confirmation(&confirm_id);
-    let replay = fixture
-        .tool
-        .execute(
-            json!({"action": "left_click", "x": 5, "y": 5, "confirm_id": confirm_id}),
-            &context(&fixture.workspace),
-        )
-        .await;
-    let text = replay.ok().map(|r| r.content).unwrap_or_default();
-    assert!(
-        !text.contains("NOT executed"),
-        "user-approved unverifiable action must execute: {text}"
+    // 泛化肯定词：直接执行。
+    for name in ["OK", "Continue", "Run"] {
+        fixture.mock.lock().element = Some(ElementInfo {
+            role: "AXButton".to_string(),
+            name: name.to_string(),
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 16,
+            secure: false,
+        });
+        let result = fixture
+            .tool
+            .execute(
+                json!({"action": "left_click", "x": 5, "y": 5}),
+                &context(&fixture.workspace),
+            )
+            .await;
+        let result = match result {
+            Ok(r) => r,
+            Err(e) => panic!("execute failed for {name}: {e}"),
+        };
+        assert!(result.success, "{name}: {}", result.content);
+        assert!(
+            !result.content.contains("NOT executed"),
+            "\"{name}\" must not require confirmation: {}",
+            result.content
+        );
+    }
+    assert_eq!(
+        fixture.mock.lock().clicked.len(),
+        3,
+        "all affirmative-label clicks executed"
     );
-    assert_eq!(fixture.mock.lock().clicked.len(), 1);
+
+    // 后果类别词：拦截 + 确认事件。
+    for name in ["Pay", "Delete", "Submit", "Accept"] {
+        fixture.mock.lock().element = Some(ElementInfo {
+            role: "AXButton".to_string(),
+            name: name.to_string(),
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 16,
+            secure: false,
+        });
+        let result = fixture
+            .tool
+            .execute(
+                json!({"action": "left_click", "x": 5, "y": 5}),
+                &context(&fixture.workspace),
+            )
+            .await;
+        let text = result.ok().map(|r| r.content).unwrap_or_default();
+        assert!(text.contains("NOT executed"), "{name}: {text}");
+        assert!(text.contains("confirm_id"), "{name}: {text}");
+    }
+    assert_eq!(
+        fixture.mock.lock().clicked.len(),
+        3,
+        "no consequence-labeled click may execute"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1881,8 +1982,8 @@ fn latest_confirm_id(events: &Arc<StdMutex<Vec<(String, Value)>>>) -> String {
 /// Regression: a target point with no a11y element screens Clear — unnamed
 /// targets are everywhere on real desktops (canvas, hover targets, custom
 /// widgets) and the denylist is name-based, so an absent name is not a red
-/// flag. The click executes without any confirmation; only a query *error*
-/// fails closed (see `unscreenable_a11y_failure_requires_confirmation`).
+/// flag. The click executes without any confirmation; a query *error* also
+/// screens Clear (see `a11y_query_error_executes_without_confirmation`).
 #[tokio::test]
 async fn click_without_a11y_element_executes_without_confirmation() {
     let (fixture, _restore) = fixture();
@@ -2087,28 +2188,26 @@ async fn failed_drag_releases_a_held_left_button() {
         "exactly one best-effort left-button release"
     );
 
-    // The held state must be cleared: a held move would be T3-screened (and
-    // blocked at the Trash), while a released move executes.
-    fixture.mock.lock().element = Some(ElementInfo {
-        role: "AXButton".to_string(),
-        name: "Trash".to_string(),
-        x: 10,
-        y: 10,
-        width: 5,
-        height: 5,
-        secure: false,
-    });
-    let result = fixture
+    // The held state must be cleared: a second failing drag must NOT issue
+    // another best-effort release (the safety net only releases a button the
+    // tool itself pressed, and that state was consumed by the first release).
+    fixture.mock.lock().element = None;
+    let again = fixture
         .tool
         .execute(
-            json!({"action": "mouse_move", "x": 12, "y": 12}),
+            json!({"action": "left_click_drag", "start_x": 1, "start_y": 1, "x": 5, "y": 5}),
             &context(&fixture.workspace),
         )
         .await;
-    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    let again_text = again.ok().map(|r| r.content).unwrap_or_default();
     assert!(
-        !text.contains("NOT executed"),
-        "held state must be cleared after the safety-net release: {text}"
+        again_text.contains("drag backend failed"),
+        "the second drag must fail at the backend again: {again_text}"
+    );
+    assert_eq!(
+        fixture.mock.lock().upped,
+        vec![MouseButton::Left],
+        "exactly one best-effort release: the held state was cleared by the first"
     );
 }
 

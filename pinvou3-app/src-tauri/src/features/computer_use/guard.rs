@@ -3,7 +3,9 @@
 //! 引擎当前自动批准所有工具调用，因此同意门控必须内建于工具自身——本模块是
 //! 唯一的事实来源。集成层（Tauri 命令）通过公开 API 注入用户决定：
 //! `set_enabled` / `grant_session` / `revoke_session` / `stop_all` /
-//! `mint_confirmation`。授权只活于内存，永不落盘。
+//! `mint_confirmation`。授权只活于内存，永不落盘；会话授权活到被显式吊销
+//! （revoke / stop / 总开关关闭 / 会话结束），无空闲过期——没有主流产品给
+//! 会话级授权设空闲时钟。
 //!
 //! Confirmation model (mainstream): a blocked action raises one pending
 //! per session (a new request replaces the old one, like a normal dialog);
@@ -15,7 +17,7 @@
 //! mints a fresh pending (decline is model-visible context, not stored
 //! state — the mainstream behavior).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -23,8 +25,6 @@ use parking_lot::Mutex;
 
 use super::backend::BackendRegistry;
 
-/// 输入类会话授权的空闲超时：10 分钟无输入动作即失效，需重新授权。
-pub const GRANT_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// T3 确认的有效期：未答复的 pending 必须自行过期——过期后读取视为不存在，
 /// 也不能再为它铸造批准令牌。
 pub const CONFIRM_TTL: Duration = Duration::from_secs(5 * 60);
@@ -34,76 +34,63 @@ pub const CONFIRM_TTL: Duration = Duration::from_secs(5 * 60);
 /// 等待重试。
 pub const PHYSICAL_INPUT_LOCK_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// T3 后果性动作名单（大小写不敏感子串匹配；中英日）。
-/// 命中即不执行，要求用户显式确认。误伤（如 "bin" 命中 "combine"）方向
-/// 是 fail-closed，代价只是一次额外确认。
+/// T3 后果性动作名单（大小写不敏感子串匹配；中英日繁）。
+///
+/// 只收录**后果类别**词项——主流产品据以设确认的五个类别（Google
+/// computer-use 的 LEGAL_TERMS_AND_AGREEMENTS / USER_CONSENT_MANAGEMENT
+/// 等是同类口径）：金融（购买/支付/结账/转账）、发送、不可逆删除
+/// （含拖拽目的地回收站/废纸篓）、表单/订单提交、条款与同意接受。
+/// 泛化肯定词与泛化动作词（OK/Yes/Continue/Confirm/Run/Execute/Install/
+/// Remove/Empty/Bin 及其 CJK 等价词）**不在任何主流类别清单里**，已全部
+/// 移除；子串匹配下它们的误伤面随之消失（如 "bin" 命中 "combine"）。
 pub const T3_DENYLIST: &[&str] = &[
+    // 金融（financial）。
     "buy",
     "pay",
     "purchase",
-    "send",
-    "delete",
-    "transfer",
-    "submit",
-    // 拖拽/删除的常见目的地（评审发现：把文件拖进回收站/废纸篓零确认完成）。
-    "trash",
-    "bin",
-    // 评审补充覆盖：确认/下单/安装/抹除类语义（此前 "confirm"、"checkout"、
-    // "install"、繁体全域缺席——icon 按钮之外最常被命中的词恰恰是 "Confirm"）。
-    "confirm",
     "checkout",
+    "transfer",
     "place order",
     "order now",
-    "install",
-    "erase",
-    "discard",
-    "回收站",
-    "废纸篓",
-    "ゴミ箱",
     "购买",
+    "購買",
     "支付",
     "付款",
-    "发送",
-    "删除",
     "转账",
-    "提交",
-    "清空",
-    "确认",
-    "安裝",
-    // 繁体（评审发现：繁体界面全域缺席）。
-    "刪除",
-    "購買",
-    "傳送",
-    "轉帳",
-    "確認",
-    "資源回收筒",
-    "廢紙簍",
+    "结算",
     "購入",
     "支払い",
-    "送信",
-    "削除",
     "送金",
-    "提出",
     "注文",
-    // Review follow-up coverage: generic affirmative/action terms that gate
-    // consequential dialogs ("OK", "Yes, continue", "Accept", "Run"...).
-    "ok",
-    "yes",
-    "continue",
+    // 发送（sends）。
+    "send",
+    "发送",
+    "傳送",
+    "送信",
+    // 不可逆删除（irreversible deletion），含拖拽/删除的常见目的地。
+    "delete",
+    "trash",
+    "erase",
+    "discard",
+    "删除",
+    "清空",
+    "回收站",
+    "回收筒",
+    "废纸篓",
+    "刪除",
+    "資源回收筒",
+    "廢紙簍",
+    "ゴミ箱",
+    "削除",
+    // 表单/订单提交（submission）。
+    "submit",
+    "提交",
+    "提出",
+    // 条款/同意接受（ToS & consent acceptance）。
     "accept",
     "agree",
-    "remove",
-    "empty",
-    "run",
-    "execute",
-    // CJK equivalents. The matcher is substring-based, so single-character
-    // CJK terms (是/好) would over-match unrelated labels; only multi-char
-    // terms are safe to list.
-    "继续",
     "同意",
-    "运行",
-    "执行",
-    "删除全部",
+    "接受",
 ];
 
 /// 标签是否命中 T3 后果性名单。
@@ -125,7 +112,7 @@ pub enum GuardRejection {
     Disabled,
     /// 停止旗标已置位（panic stop / stop_all）。
     Stopped,
-    /// 输入类动作缺少有效会话授权（或已空闲过期）。
+    /// 输入类动作缺少有效会话授权。
     GrantRequired,
     /// 跨会话物理输入锁被其他会话持有，有界等待超时（见
     /// [`PHYSICAL_INPUT_LOCK_TIMEOUT`]）。
@@ -156,17 +143,9 @@ impl GuardRejection {
     }
 }
 
-/// 单次会话授权：只有活动时间——10 分钟空闲即失效（idle expiry 是唯一
-/// 的授权寿命机制；无预算、无速率窗口）。
-struct SessionConsent {
-    last_activity: Instant,
-}
-
-impl SessionConsent {
-    fn new(now: Instant) -> Self {
-        Self { last_activity: now }
-    }
-}
+/// 会话授权只记录「本会话是否持有授权」：授权活到被显式吊销（revoke /
+/// stop / 总开关关闭 / 会话结束），无空闲过期——没有主流产品给会话级
+/// 授权设空闲时钟（Claude Code 的「本次会话允许」同口径）。
 
 /// 等待用户决定的 T3 确认（pending）。批准令牌由 `computer_use_confirm`
 /// Tauri 命令通过 [`ComputerUseShared::mint_confirmation`] 铸造；超过
@@ -215,7 +194,8 @@ struct ConsentMaps {
 pub struct ComputerUseShared {
     enabled: AtomicBool,
     stop: AtomicBool,
-    sessions: Mutex<HashMap<String, SessionConsent>>,
+    /// 持有会话授权的会话 id 集合（授权活到显式吊销，见模块顶部的寿命说明）。
+    sessions: Mutex<HashSet<String>>,
     /// 物理鼠标/键盘是全局独占资源，但 backend 是每会话一条 worker——这把
     /// 进程级锁把**跨会话**的输入注入串行化（评审发现：两个并发会话可各持
     /// 有效授权交替打字/点击）。Input 类动作在筛查+执行全程持有。
@@ -241,7 +221,7 @@ impl ComputerUseShared {
         Self {
             enabled: AtomicBool::new(false),
             stop: AtomicBool::new(false),
-            sessions: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(HashSet::new()),
             physical_input_lock: Mutex::new(()),
             consent: Mutex::new(ConsentMaps {
                 pending: HashMap::new(),
@@ -264,14 +244,11 @@ impl ComputerUseShared {
         self.stop.load(Ordering::SeqCst)
     }
 
-    /// 授予本会话输入控制权（一次性会话授权）。顺带清扫已空闲过期的僵尸
-    /// 会话（评审发现：会话删除后条目永不再用也不回收）。
+    /// 授予本会话输入控制权（会话授权）。授权活到被显式吊销（revoke /
+    /// stop / 总开关关闭 / 会话结束），无空闲过期——没有主流产品给会话级
+    /// 授权设空闲时钟（Claude Code 的「本次会话允许」同口径）。
     pub fn grant_session(&self, session_id: &str) {
-        let now = Instant::now();
-        let mut sessions = self.sessions.lock();
-        sessions
-            .retain(|_, consent| now.duration_since(consent.last_activity) <= GRANT_IDLE_TIMEOUT);
-        sessions.insert(session_id.to_string(), SessionConsent::new(now));
+        self.sessions.lock().insert(session_id.to_string());
     }
 
     /// Revoke a single session: besides the grant row, also drop that
@@ -290,13 +267,10 @@ impl ComputerUseShared {
             .retain(|_, token| token.session_id != session_id);
     }
 
-    /// 会话当前是否持有有效授权（未空闲过期）。只读投影，供状态命令使用；
-    /// 门控判定仍以 [`Self::begin_input_action`] 为准。
+    /// 会话当前是否持有有效授权（未被吊销/急停清除）。只读投影，供状态命令
+    /// 使用；门控判定仍以 [`Self::begin_input_action`] 为准。
     pub fn has_active_grant(&self, session_id: &str) -> bool {
-        self.sessions
-            .lock()
-            .get(session_id)
-            .is_some_and(|consent| consent.last_activity.elapsed() <= GRANT_IDLE_TIMEOUT)
+        self.sessions.lock().contains(session_id)
     }
 
     /// 紧急停止：置停止旗标并吊销全部会话授权、清空全部待决/已批确认
@@ -318,8 +292,8 @@ impl ComputerUseShared {
     /// 但**不置**停止旗标——与 [`Self::stop_all`] 的紧急停止语义区分：总开关
     /// 关闭不是急停，重新开启后不应残留停止状态
     /// （`computer_use_set_enabled(false)` 调用）。评审发现：此前关闭开关不清
-    /// 授权与令牌，重开后旧 grant 在 10 分钟空闲窗口内、旧批准令牌在 5 分钟
-    /// TTL 内仍然有效——开关关闭期间的同意状态在重开后不应存活。
+    /// 授权与令牌，重开后旧 grant 与旧批准令牌仍然有效——开关关闭期间的
+    /// 同意状态在重开后不应存活。
     pub fn revoke_all_sessions(&self) {
         self.sessions.lock().clear();
         let mut consent = self.consent.lock();
@@ -338,42 +312,22 @@ impl ComputerUseShared {
         Ok(())
     }
 
-    /// 输入类动作门控：开关开启、未停止、会话持有未空闲过期的授权。**不**
-    /// 刷新活动时间——keepalive 只在动作真正执行成功后记账
-    /// ([`Self::keepalive_input_action`]；round-6 评审：被拦/被拒的调用
-    /// 不应让用户反复拒绝的会话永久续期)。注入前还应再查一次
-    /// [`Self::verify_input_action`]。
+    /// 输入类动作门控：开关开启、未停止、会话持有授权（授权活到显式吊销，
+    /// 无空闲过期）。注入前还应再查一次 [`Self::verify_input_action`]。
     pub fn begin_input_action(&self, session_id: &str) -> Result<(), GuardRejection> {
         self.check_readonly()?;
-        let now = Instant::now();
-        let sessions = self.sessions.lock();
-        let Some(consent) = sessions.get(session_id) else {
-            return Err(GuardRejection::GrantRequired);
-        };
-        if now.duration_since(consent.last_activity) > GRANT_IDLE_TIMEOUT {
+        if !self.sessions.lock().contains(session_id) {
             return Err(GuardRejection::GrantRequired);
         }
         Ok(())
     }
 
-    /// 动作执行成功后的活动记账（唯一的授权续期点）。
-    pub fn keepalive_input_action(&self, session_id: &str) {
-        if let Some(consent) = self.sessions.lock().get_mut(session_id) {
-            consent.last_activity = Instant::now();
-        }
-    }
-
-    /// 只读复检：授权是否仍然有效（开关、停止旗标、授权存在且未空闲过期）。
-    /// 在 `begin_input_action` 与真实注入之间可能隔着自动截图等耗时步骤
+    /// 只读复检：授权是否仍然有效（开关、停止旗标、授权存在）。在
+    /// `begin_input_action` 与真实注入之间可能隔着自动截图等耗时步骤
     /// （评审发现：该窗口内的 revoke 不生效），注入前必须调用。
     pub fn verify_input_action(&self, session_id: &str) -> Result<(), GuardRejection> {
         self.check_readonly()?;
-        let now = Instant::now();
-        let sessions = self.sessions.lock();
-        let Some(consent) = sessions.get(session_id) else {
-            return Err(GuardRejection::GrantRequired);
-        };
-        if now.duration_since(consent.last_activity) > GRANT_IDLE_TIMEOUT {
+        if !self.sessions.lock().contains(session_id) {
             return Err(GuardRejection::GrantRequired);
         }
         Ok(())
@@ -502,7 +456,6 @@ impl ComputerUseShared {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread::sleep;
 
     fn enabled_shared() -> ComputerUseShared {
         let shared = ComputerUseShared::new();
@@ -555,18 +508,8 @@ mod tests {
     }
 
     #[test]
-    fn has_active_grant_reflects_grant_revoke_and_idle_expiry() {
+    fn has_active_grant_reflects_grant_and_revoke() {
         let shared = enabled_shared();
-        assert!(!shared.has_active_grant("s1"));
-        shared.grant_session("s1");
-        assert!(shared.has_active_grant("s1"));
-        {
-            let mut sessions = shared.sessions.lock();
-            if let Some(consent) = sessions.get_mut("s1") {
-                consent.last_activity =
-                    Instant::now() - GRANT_IDLE_TIMEOUT - Duration::from_secs(1);
-            }
-        }
         assert!(!shared.has_active_grant("s1"));
         shared.grant_session("s1");
         assert!(shared.has_active_grant("s1"));
@@ -574,26 +517,31 @@ mod tests {
         assert!(!shared.has_active_grant("s1"));
     }
 
+    /// 会话授权无空闲过期：授权一经授予就活到显式吊销——重复门控/复检、
+    /// 新授权其他会话、再授权本会话都不会清掉它（旧实现的 grant_session
+    /// 会顺带清扫「空闲过期」的会话；该机制已整体移除，此测试钉住不存在
+    /// 隐式失效路径）。
     #[test]
-    fn grant_expires_after_idle_timeout() {
+    fn grant_stays_live_until_revoked() {
         let shared = enabled_shared();
         shared.grant_session("s1");
-        // 手工把 last_activity 拨回超时之前。
-        {
-            let mut sessions = shared.sessions.lock();
-            let consent = sessions.get_mut("s1");
-            if let Some(consent) = consent {
-                consent.last_activity =
-                    Instant::now() - GRANT_IDLE_TIMEOUT - Duration::from_secs(1);
-            }
+        // 反复门控/复检都不产生失效。
+        for _ in 0..10 {
+            assert!(shared.begin_input_action("s1").is_ok());
+            assert!(shared.verify_input_action("s1").is_ok());
+            assert!(shared.has_active_grant("s1"));
         }
+        // 授予/再授予其他会话不清掉 s1（无空闲清扫）。
+        shared.grant_session("s2");
+        shared.grant_session("s1");
+        assert!(shared.has_active_grant("s1"));
+        assert!(shared.begin_input_action("s1").is_ok());
+        // 唯一的失效路径是显式吊销。
+        shared.revoke_session("s1");
         assert_eq!(
             shared.begin_input_action("s1"),
             Err(GuardRejection::GrantRequired)
         );
-        // 过期即吊销：需要重新 grant。
-        shared.grant_session("s1");
-        assert!(shared.begin_input_action("s1").is_ok());
     }
 
     #[test]
@@ -615,71 +563,74 @@ mod tests {
         );
     }
 
+    /// 名单只含后果类别词项（金融/发送/不可逆删除/提交/条款同意，中英日
+    /// 繁），大小写不敏感；泛化肯定词与泛化动作词已全部移除——没有任何
+    /// 主流类别清单包含它们，子串误伤（"bin"→"combine"）随之消失。
     #[test]
-    fn t3_denylist_matches_case_insensitively_in_both_languages() {
+    fn t3_denylist_matches_only_consequence_categories() {
         for label in [
+            // 金融。
             "Buy now",
             "PAY",
             "Complete Purchase",
-            "Send message",
-            "Delete file",
+            "Checkout now",
             "Wire Transfer",
-            "submit form",
+            "Place order",
             "立即购买",
             "确认支付",
             "付款",
-            "发送",
-            "彻底删除",
             "转账",
-            "提交订单",
-            // 日文词项（评审发现：日文界面元素此前完全不在名单内）。
             "カートに追加して購入",
             "お支払い",
-            "メッセージを送信",
-            "ファイルを削除",
             "口座に送金",
-            "フォームを提出",
             "注文を確定",
-            "内容の確認",
-            // 拖拽/删除目的地与简体「确认」（第三轮评审发现：把文件拖进
-            // 回收站可零确认完成；简体「确认」缺席而日文「確認」在列）。
-            "Recycle Bin",
+            "購買",
+            // 发送。
+            "Send message",
+            "发送",
+            "傳送",
+            "メッセージを送信",
+            // 不可逆删除（含拖拽目的地）。
+            "Delete file",
             "Move to Trash",
             "Empty Trash",
+            "Erase disk",
+            "彻底删除",
             "移到废纸篓",
             "拖入回收站",
-            "ゴミ箱に移動",
             "清空列表",
-            "确认订单",
-            // 评审补充覆盖：确认/下单/安装/抹除 + 繁体。
-            "Confirm purchase",
-            "Checkout now",
-            "Place order",
-            "Install updates",
-            "Erase disk",
+            "ゴミ箱に移動",
             "刪除檔案",
-            "購買",
             "資源回收筒",
-            // Review follow-up coverage: generic affirmative/action terms
-            // (the most common dialog button copy).
-            "OK",
-            "yes",
-            "Continue",
+            "ファイルを削除",
+            // 提交。
+            "submit form",
+            "提交订单",
+            "フォームを提出",
+            // 条款/同意接受。
             "Accept all",
             "I agree",
-            "Remove file",
-            "Empty folder",
-            "Run script",
-            "Execute command",
-            "继续操作",
             "同意条款",
-            "运行脚本",
-            "执行命令",
-            "删除全部历史",
         ] {
             assert!(matches_t3_denylist(label), "should match: {label}");
         }
         for label in [
+            // 泛化肯定词/动作词：不在任何主流类别清单里，一律放行。
+            "OK",
+            "Yes",
+            "Continue",
+            "Confirm",
+            "Yes, continue",
+            "Run script",
+            "Execute command",
+            "Install updates",
+            "Remove file",
+            "Combine files",
+            "继续操作",
+            "运行脚本",
+            "执行命令",
+            "安裝更新",
+            // 常见非 T3 控件。
             "Open",
             "Save as",
             "显示更多",
@@ -837,8 +788,8 @@ mod tests {
 
     /// 评审修复回归：总开关关闭吊销全部会话授权与全部同意状态（待决确认、
     /// 已铸令牌），但**不置**停止旗标（与 stop_all 语义区分）——重开后旧
-    /// grant 不得在 10 分钟窗口内复活，disable→enable 循环里旧的已铸令牌
-    /// 也不得被免确认重放（第三轮评审发现）。
+    /// grant 不得复活，disable→enable 循环里旧的已铸令牌也不得被免确认
+    /// 重放（第三轮评审发现）。
     #[test]
     fn revoke_all_sessions_clears_grants_and_pendings_without_stop_flag() {
         let shared = enabled_shared();
@@ -888,55 +839,6 @@ mod tests {
             take(&shared, &id, "s1", "left_click (100,200)"),
             ConfirmationCheck::Unknown
         );
-    }
-
-    /// keepalive 是**唯一**的授权续期点，且只在动作真正执行成功后由工具层
-    /// 调用——`begin_input_action` 门控通过本身不再续期（round-6 评审：
-    /// 被拦/被拒的调用不应让用户反复拒绝的会话永久续期）。
-    #[test]
-    fn keepalive_is_the_only_grant_refresh_and_begin_does_not_extend() {
-        let shared = enabled_shared();
-        shared.grant_session("s1");
-        {
-            let mut sessions = shared.sessions.lock();
-            if let Some(consent) = sessions.get_mut("s1") {
-                consent.last_activity = Instant::now() - GRANT_IDLE_TIMEOUT / 2;
-            }
-        }
-        // 门控通过（仍在窗口内），但**不**续期：时钟仍停在过半位置。
-        assert!(shared.begin_input_action("s1").is_ok());
-        sleep(Duration::from_millis(5));
-        {
-            let sessions = shared.sessions.lock();
-            let stale = sessions
-                .get("s1")
-                .is_some_and(|c| c.last_activity.elapsed() > GRANT_IDLE_TIMEOUT / 2);
-            assert!(stale, "the gate check must not refresh the idle clock");
-        }
-        // 执行成功后的 keepalive 才续期。
-        shared.keepalive_input_action("s1");
-        {
-            let sessions = shared.sessions.lock();
-            let fresh = sessions
-                .get("s1")
-                .is_some_and(|c| c.last_activity.elapsed() < GRANT_IDLE_TIMEOUT / 2);
-            assert!(fresh);
-        }
-    }
-
-    /// keepalive 不会复活已过期/已吊销的会话（不存在的条目不重建）。
-    #[test]
-    fn keepalive_does_not_resurrect_unknown_sessions() {
-        let shared = enabled_shared();
-        shared.keepalive_input_action("never-granted");
-        assert_eq!(
-            shared.begin_input_action("never-granted"),
-            Err(GuardRejection::GrantRequired)
-        );
-        shared.grant_session("s1");
-        shared.revoke_session("s1");
-        shared.keepalive_input_action("s1");
-        assert!(!shared.has_active_grant("s1"));
     }
 
     /// Regression: the T3 denylist must not contain duplicate entries

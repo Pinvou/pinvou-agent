@@ -66,8 +66,9 @@ pub trait ComputerUseBackend: Send {
     fn element_at_point(&mut self, x: i32, y: i32)
     -> Result<Option<ElementInfo>, ComputerUseError>;
     /// 返回当前持有键盘焦点的元素（用于键盘类动作的 T3 筛查）。
-    /// Ok(None) = 明确无焦点元素；Err = 查询失败或平台不支持（调用方按
-    /// fail-closed 处理）。
+    /// Ok(None) = 明确无焦点元素；Err = 查询失败或平台不支持（工具层按
+    /// best-effort 处理：筛查不可用放行执行，只有正面命中密码/名单角色
+    /// 才要求确认）。
     fn focused_element(&mut self) -> Result<Option<ElementInfo>, ComputerUseError> {
         let _ = &mut *self;
         Err(ComputerUseError::unsupported(
@@ -590,7 +591,8 @@ impl BackendHandle {
         }
     }
 
-    /// 当前持有键盘焦点的元素。Err = 后端不支持/查询失败（调用方 fail-closed）。
+    /// 当前持有键盘焦点的元素。Err = 后端不支持/查询失败（工具层 best-effort：
+    /// 筛查不可用放行执行，只有正面命中才确认）。
     pub fn focused_element(&self) -> Result<Option<ElementInfo>, ComputerUseError> {
         match self.inner.request(BackendRequestKind::FocusedElement)? {
             BackendReply::Element(element) => Ok(element),
