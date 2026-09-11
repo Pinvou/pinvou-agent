@@ -275,6 +275,9 @@ fn valid_session_id(id: &str) -> bool {
 }
 
 fn open_store() -> Result<SessionStore, CliError> {
+    // Same absolute-path contract as `sessions folder`: a relative
+    // PINVOU3_HOME would silently resolve against the cwd.
+    crate::support::sandbox_home()?;
     SessionStore::boot()
         .map_err(|error| CliError::failed(format!("sessions store unavailable: {error:#}")))
 }
@@ -631,10 +634,46 @@ fn render_markdown(id: &str, value: &serde_json::Value) -> String {
 /// Per-turn timing/usage events from `timing_events.jsonl`, tolerating
 /// corrupt lines the same way `features::assistant::timing::read_timeline`
 /// does: skip anything that is not a JSON object, sort by `timestamp`.
+/// Event whitelist from `timing::parse_timeline_line` (base events plus the
+/// benchmark observation events the CLI build enables).
+fn is_timeline_event(value: &serde_json::Value) -> bool {
+    const EVENTS: [&str; 12] = [
+        "user_start",
+        "assistant_done",
+        "context_snapshot",
+        "engine_turn_started",
+        "first_message_delta",
+        "first_tool_call_started",
+        "first_tool_call_completed",
+        "turn_started",
+        "first_delta",
+        "tool_call_started",
+        "tool_call_completed",
+        "model_request_metric",
+    ];
+    value.is_object()
+        && value
+            .get("turn_id")
+            .and_then(|v| v.as_str())
+            .is_some_and(|turn| !turn.trim().is_empty())
+        && value
+            .get("event")
+            .and_then(|v| v.as_str())
+            .is_some_and(|event| EVENTS.contains(&event))
+        && value.get("timestamp").and_then(|v| v.as_i64()).is_some()
+        && value
+            .get("ts")
+            .and_then(|v| v.as_str())
+            .is_some_and(|ts| !ts.trim().is_empty())
+}
+
 fn timeline(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     if !valid_session_id(id) {
         return Err(CliError::usage("invalid session id"));
     }
+    // A missing sidecar and a missing session both read as empty output, so
+    // gate on the session like list/show do.
+    require_existing(&open_store()?, id, "timeline")?;
     let path = pinvou3_lib::platform::paths::session_timing_events(id);
     let mut events = Vec::new();
     match std::fs::File::open(&path) {
@@ -674,8 +713,15 @@ fn timeline(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
                          {MAX_TIMING_FILE_BYTES} bytes while reading"
                     )));
                 }
+                // Same line contract as `timing::parse_timeline_line`
+                // (this crate builds pinvou3-lib with benchmark-hooks, so
+                // the observation events are part of the whitelist):
+                // non-empty turn_id, known event, integer timestamp,
+                // non-empty ts. The GUI reader drops anything else, and so
+                // must the CLI — a stray JSON object would otherwise sort to
+                // the front of the timeline.
                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
-                    if value.is_object() {
+                    if is_timeline_event(&value) {
                         events.push(value);
                     }
                 }

@@ -187,6 +187,7 @@ pub enum BenchmarkCommand {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CliCommand {
+    Version,
     Benchmark(BenchmarkCommand),
     Agent(AgentCommand),
     Sessions(sessions::SessionsCommand),
@@ -307,6 +308,17 @@ where
             command: CliCommand::Models(command),
             output,
         });
+    }
+    // `pinvou --version` / `pinvou version`: a product CLI convention the
+    // docs previously could not deliver.
+    if values.first().map(String::as_str) == Some("--version")
+        || values.first().map(String::as_str) == Some("version")
+    {
+        if values.len() > 1 {
+            return Err(CliError::usage("pinvou --version accepts no arguments"));
+        }
+        let command = CliCommand::Version;
+        return Ok(ParsedCli { command, output });
     }
     if values.first().map(String::as_str) == Some("benchmark") {
         let command = parse_benchmark(&values)?;
@@ -529,6 +541,7 @@ pub struct CliOutcome {
 pub fn execute(parsed: ParsedCli) -> Result<CliOutcome, CliError> {
     let output = parsed.output;
     match parsed.command {
+        CliCommand::Version => Ok(success(format!("pinvou {}", env!("CARGO_PKG_VERSION")))),
         CliCommand::Benchmark(BenchmarkCommand::List) => Ok(success(render_list(output))),
         CliCommand::Benchmark(BenchmarkCommand::Status(run_id)) => status(&run_id, output),
         CliCommand::Benchmark(BenchmarkCommand::Report(run_id)) => report(&run_id, output),

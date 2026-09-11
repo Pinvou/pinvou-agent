@@ -477,12 +477,28 @@ fn write(
     if content.len() > MAX_EDITABLE_MARKDOWN_BYTES {
         return Err(CliError::failed("markdown_artifact_is_too_large_to_save"));
     }
-    std::fs::write(&path, &content).map_err(|error| {
-        CliError::failed(format!(
-            "artifact_write_failed({}): {error}",
-            path.display()
-        ))
-    })?;
+    // Temp + rename (the GUI writes atomically under its lifecycle lock): a
+    // crash mid-write must not leave a truncated deliverable behind.
+    {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let tmp = path.with_extension(format!("md.tmp.{}.{}", std::process::id(), nonce));
+        std::fs::write(&tmp, &content).map_err(|error| {
+            CliError::failed(format!(
+                "artifact_write_failed({}): {error}",
+                path.display()
+            ))
+        })?;
+        if let Err(error) = std::fs::rename(&tmp, &path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(CliError::failed(format!(
+                "artifact_write_failed({}): {error}",
+                path.display()
+            )));
+        }
+    }
     let bytes = content.len();
     let value = serde_json::json!({
         "session_id": session_id,

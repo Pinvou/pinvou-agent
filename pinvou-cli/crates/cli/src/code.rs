@@ -1117,6 +1117,9 @@ pub fn execute(command: CodeCommand, output: OutputMode) -> Result<CliOutcome, C
 }
 
 fn open_store() -> Result<SessionStore, CliError> {
+    // Same absolute-path contract as the other families: a relative
+    // PINVOU3_HOME would silently resolve against the cwd.
+    crate::support::sandbox_home()?;
     let store = SessionStore::boot()
         .map_err(|error| CliError::failed(format!("sessions store unavailable: {error:#}")))?;
     // Same two-root wiring as the app startup (pinvou3-app/src-tauri/src/lib.rs):
