@@ -69,7 +69,7 @@ pub struct ProviderRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_slots: Option<std::collections::BTreeMap<String, String>>,
     /// 上下文窗口（可选）：codex 写入模型 catalog 的 context_window、
-    /// kimi 写 models.<id>.max_context_size；claude 无对应配置项（用 [1m] 变体）。
+    /// kimi 写 `models.<id>.max_context_size`；claude 无对应配置项（用 `[1m]` 变体）。
     /// 未填时 writer 用各自默认值（200_000）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<i64>,
