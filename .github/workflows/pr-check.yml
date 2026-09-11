@@ -1148,7 +1148,7 @@ jobs:
             'artifact_read_recovers_an_occupied_1177_layout_after_release' \
             'artifact_writes_never_expose_partial_utf8_to_concurrent_readers' \
             'artifact_public_read_' \
-            'features::voice::platform::windows::tests::closed_temp_wav_can_be_reopened_exclusively_by_asr' \
+            'features::voice::platform::windows::tests::closed_temp_wav_can_be_reopened_when_asr_denies_write_sharing' \
             'features::memory::tests::topic_migration_'; do
             "$test_exe" "$filter" --test-threads=1 2>&1 | tee /tmp/windows_regression.log
             grep -qE 'running [1-9][0-9]* tests?' /tmp/windows_regression.log || {

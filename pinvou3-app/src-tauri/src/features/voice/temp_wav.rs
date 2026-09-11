@@ -15,8 +15,8 @@ impl VoiceTempWav {
     }
 
     /// Finish writing before handing the path to an external recognizer. On
-    /// Windows, keeping the `NamedTempFile` handle alive can prevent a backend
-    /// that requests exclusive access from reopening the WAV file.
+    /// Windows, keeping the `NamedTempFile` write handle alive can prevent a
+    /// backend whose share mode denies write sharing from reopening the WAV.
     pub(crate) fn write_and_close(
         mut self,
         audio_bytes: &[u8],

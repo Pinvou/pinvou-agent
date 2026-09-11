@@ -197,18 +197,21 @@ mod tests {
     use std::os::windows::fs::OpenOptionsExt;
 
     use crate::features::voice::VoiceTempWav;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
 
     #[test]
-    fn closed_temp_wav_can_be_reopened_exclusively_by_asr() {
+    fn closed_temp_wav_can_be_reopened_when_asr_denies_write_sharing() {
         let wav_path = VoiceTempWav::create()
             .expect("create temporary WAV")
             .write_and_close(b"RIFF-test-WAVE")
             .expect("write and close temporary WAV");
         let reopened = std::fs::OpenOptions::new()
             .read(true)
-            .share_mode(0)
+            // Match the bundled ASR backend: concurrent readers are allowed,
+            // but an existing write handle makes this open fail on Windows.
+            .share_mode(FILE_SHARE_READ)
             .open(&wav_path)
-            .expect("ASR backend must be able to reopen the WAV exclusively");
+            .expect("ASR backend must be able to reopen the WAV without write sharing");
 
         drop(reopened);
     }
