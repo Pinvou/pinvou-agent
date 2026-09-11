@@ -76,10 +76,10 @@ fi
 
 export PKG_CONFIG_SYSROOT_DIR="$_local_sysroot_root"
 export PKG_CONFIG_LIBDIR="$_local_sysroot_root/usr/lib/aarch64-linux-gnu/pkgconfig:$_local_sysroot_root/usr/share/pkgconfig"
-# dbus 先例:/tmp/dbus-pkgconfig 存在时并入搜索路径(不存在不报错)
-if [ -d /tmp/dbus-pkgconfig ]; then
-  export PKG_CONFIG_PATH="/tmp/dbus-pkgconfig"
-fi
+# dbus:sysroot 已含 libdbus-1-dev(真实 .pc + libdbus-1.so),不再需要
+# /tmp/dbus-pkgconfig 先例;它的绝对路径 .pc 会被 SYSROOT_DIR 错误加前缀
+# (指向 <sysroot>/tmp/dbus-dev 不存在路径)导致 -ldbus-1 链接失败,勿再并入。
+unset PKG_CONFIG_PATH
 
 # 编译期 rustc 大栈:平台选择唯一真相源 = rustc-stack-wrapper-select.sh
 _local_sysroot_wrapper=$("$_local_sysroot_script_dir/rustc-stack-wrapper-select.sh")
