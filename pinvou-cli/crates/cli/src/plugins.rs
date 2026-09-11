@@ -264,13 +264,16 @@ pub fn parse(values: &[String]) -> Result<PluginsCommand, CliError> {
                 Ok(PluginsCommand::Disable { id, scope })
             }
         }
-        "project-skills" => match rest.first().map(String::as_str) {
-            Some("on") if rest.len() == 1 => Ok(PluginsCommand::ProjectSkills { enabled: true }),
-            Some("off") if rest.len() == 1 => Ok(PluginsCommand::ProjectSkills { enabled: false }),
-            Some(other) => Err(CliError::usage(format!(
-                "plugins project-skills must be on or off (got {other})"
+        "project-skills" => match rest {
+            [value] if value == "on" => Ok(PluginsCommand::ProjectSkills { enabled: true }),
+            [value] if value == "off" => Ok(PluginsCommand::ProjectSkills { enabled: false }),
+            [value] => Err(CliError::usage(format!(
+                "plugins project-skills must be on or off (got {value})"
             ))),
-            None => Err(CliError::usage("plugins project-skills requires on or off")),
+            [_, extra, ..] => Err(CliError::usage(format!(
+                "plugins project-skills accepts one argument (unexpected `{extra}`)"
+            ))),
+            [] => Err(CliError::usage("plugins project-skills requires on or off")),
         },
         _ => Err(CliError::usage(USAGE)),
     }
@@ -690,17 +693,19 @@ fn tools_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome
     Ok(success(render(output, format!("{action} {id}"), &value)))
 }
 
-fn mcp_json_servers() -> Result<Option<serde_json::Value>, CliError> {
+fn mcp_json_servers(context: &str) -> Result<Option<serde_json::Value>, CliError> {
     let path = pinvou3_lib::platform::paths::mcp_config_path();
     if !path.is_file() {
         return Ok(None);
     }
     let content = std::fs::read_to_string(&path).map_err(|error| {
-        CliError::failed(format!("plugins tools auth: cannot read mcp.json: {error}"))
+        CliError::failed(format!(
+            "plugins tools {context}: cannot read mcp.json: {error}"
+        ))
     })?;
     let value: serde_json::Value = serde_json::from_str(&content).map_err(|error| {
         CliError::failed(format!(
-            "plugins tools auth: cannot parse mcp.json: {error}"
+            "plugins tools {context}: cannot parse mcp.json: {error}"
         ))
     })?;
     Ok(value.get("servers").cloned())
@@ -713,7 +718,7 @@ fn tools_auth(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let oauth_required = server_name.is_some();
     let mut mcp_configured = false;
     if let Some(name) = server_name.as_deref() {
-        if let Some(servers) = mcp_json_servers()? {
+        if let Some(servers) = mcp_json_servers("auth")? {
             mcp_configured = servers.get(name).is_some();
         }
     }
@@ -767,7 +772,7 @@ fn tools_oauth_login(
             "plugins tools oauth-login({id}): tool does not declare a remote MCP OAuth login"
         ))
     })?;
-    let configured = mcp_json_servers()?
+    let configured = mcp_json_servers("oauth-login")?
         .and_then(|servers| servers.get(&server_name).cloned())
         .ok_or_else(|| {
             CliError::failed(format!(
@@ -905,7 +910,16 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
                 path.display()
             )));
         }
-        let entries = collect_directory_entries(path)?;
+        let mut entries = collect_directory_entries(path)?;
+        // A SKILL.md without a frontmatter `name` is rejected downstream as
+        // an "empty package"; the .md channel derives a name from the file
+        // name, so the directory channel injects the same fallback here.
+        let skill_md = std::fs::read_to_string(path.join("SKILL.md")).unwrap_or_default();
+        if frontmatter_name(&skill_md).is_none() {
+            let wrapped = wrap_markdown_skill(&skill_md, &sanitize_skill_name(&display));
+            entries.retain(|(name, _)| name != "SKILL.md");
+            entries.push(("SKILL.md".to_owned(), wrapped.into_bytes()));
+        }
         Some((
             temp_zip_path("pinvou-cli-import-dir"),
             build_stored_zip(&entries)?,
@@ -970,6 +984,23 @@ fn export(
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     let dest = destination.unwrap_or_else(|| default_export_name(id));
+    // Existence first: creating the destination directory for an unknown id
+    // would leave an empty tree behind on the failure path.
+    let installed = MarketplaceManager::new()
+        .installed_ids()
+        .iter()
+        .any(|pkg| pkg == id)
+        || SkillMarketplaceManager::new()
+            .installed_skill_ids()
+            .iter()
+            .any(|pkg| pkg == id);
+    if !installed {
+        return Err(feature_error(
+            "export",
+            id,
+            format!("package '{id}' is not installed"),
+        ));
+    }
     if let Some(parent) = dest.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent).map_err(|error| {
