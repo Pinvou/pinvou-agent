@@ -45,8 +45,9 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use wait_timeout::ChildExt;
 
-use crate::support::{render, resolve_secret, sandbox_home, success};
+use crate::support::{render, require_yes, resolve_secret, sandbox_home, success};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::marketplace::skill_marketplace::SkillMarketplaceManager;
 use pinvou3_lib::features::marketplace::store::{BundleRecord, BundleSource, BundleStore};
@@ -54,7 +55,7 @@ use pinvou3_lib::platform::connector_lock::{artifact_pin, executable_name, file_
 use pinvou3_lib::platform::connector_skills::WECOM_SKILL_DIRS;
 use pinvou3_lib::platform::connector_state::skills_visible_for;
 use pinvou3_lib::platform::credential_store::{
-    CredentialReference, CredentialStore, SystemCredentialStore,
+    CredentialReference, CredentialStore, SystemCredentialStore, redact_secret,
 };
 use pinvou3_lib::platform::paths::{
     assets_cli_dir, assets_staging_dir, bundles_root, pinvou3_home,
@@ -227,6 +228,7 @@ pub enum ConnectorsCommand {
     },
     Logout {
         connector: ConnectorKind,
+        yes: bool,
     },
     ApplySkills {
         connector: ConnectorKind,
@@ -246,7 +248,9 @@ pub enum ImaCommand {
         api_key_env: Option<String>,
         api_key_stdin: bool,
     },
-    Logout,
+    Logout {
+        yes: bool,
+    },
 }
 
 /// Flags that carry a value, per subcommand.
@@ -268,7 +272,7 @@ pub fn parse(values: &[String]) -> Result<ConnectorsCommand, CliError> {
             };
             Ok(ConnectorsCommand::Status { connector })
         }
-        "ensure-cli" | "enable" | "disable" | "logout" | "apply-skills" => {
+        "ensure-cli" | "enable" | "disable" | "apply-skills" => {
             let connector = require_connector(rest, subcommand)?;
             if rest.len() > 1 {
                 return Err(CliError::usage(format!(
@@ -279,8 +283,18 @@ pub fn parse(values: &[String]) -> Result<ConnectorsCommand, CliError> {
                 "ensure-cli" => ConnectorsCommand::EnsureCli { connector },
                 "enable" => ConnectorsCommand::Enable { connector },
                 "disable" => ConnectorsCommand::Disable { connector },
-                "logout" => ConnectorsCommand::Logout { connector },
                 _ => ConnectorsCommand::ApplySkills { connector },
+            })
+        }
+        // Logout destroys stored credentials (wecom removes the whole
+        // credential directory), so it follows the destructive-action
+        // convention and requires --yes.
+        "logout" => {
+            let connector = require_connector(rest, subcommand)?;
+            let (_, flags) = parse_flags(&rest[1..], &[], &["--yes"])?;
+            Ok(ConnectorsCommand::Logout {
+                connector,
+                yes: flags.contains(&"--yes"),
             })
         }
         "connect" => {
@@ -327,10 +341,10 @@ pub fn parse(values: &[String]) -> Result<ConnectorsCommand, CliError> {
                     }))
                 }
                 "logout" => {
-                    if !rest.is_empty() {
-                        return Err(CliError::usage("connectors ima logout accepts no options"));
-                    }
-                    Ok(ConnectorsCommand::Ima(ImaCommand::Logout))
+                    let (_, flags) = parse_flags(rest, &[], &["--yes"])?;
+                    Ok(ConnectorsCommand::Ima(ImaCommand::Logout {
+                        yes: flags.contains(&"--yes"),
+                    }))
                 }
                 other => Err(CliError::usage(format!(
                     "unknown ima action '{other}' (valid: status, connect, logout)"
@@ -411,7 +425,9 @@ fn option<'a>(options: &'a [(&'a str, &'a str)], name: &str) -> Option<&'a str> 
 // ─────────────────────── vendor CLI subprocess helpers ───────────────────────
 
 /// Runs `<cli> <args>` capturing `(success, stdout, stderr)` — mirror of
-/// `connector_cli::run` (adds the connector envs from the spec).
+/// `connector_cli::run` (adds the connector envs from the spec). Used for
+/// the short status/version probes, which have no timeout semantics in the
+/// GUI either; long-running flows use [`run_cli_bounded`].
 fn run_cli(spec: &VendorSpec, args: &[&str]) -> Result<(bool, String, String), CliError> {
     let mut cmd = Command::new(spec.cli_bin);
     for (key, value) in spec.envs {
@@ -429,6 +445,69 @@ fn run_cli(spec: &VendorSpec, args: &[&str]) -> Result<(bool, String, String), C
         String::from_utf8_lossy(&outcome.stdout).into_owned(),
         String::from_utf8_lossy(&outcome.stderr).into_owned(),
     ))
+}
+
+/// Runs `<cli> <args>` capturing `(success, stdout, stderr)` — like
+/// [`run_cli`], with a hard kill at `deadline`: the GUI cancels through its
+/// host, so the CLI must enforce the `--timeout` budget itself on every
+/// blocking phase.
+fn run_cli_bounded(
+    spec: &VendorSpec,
+    args: &[&str],
+    deadline: Instant,
+) -> Result<(bool, String, String), CliError> {
+    let mut cmd = Command::new(spec.cli_bin);
+    for (key, value) in spec.envs {
+        cmd.env(key, value);
+    }
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(|error| {
+        CliError::failed(format!(
+            "{} could not be executed: {error} (install it first: pinvou connectors ensure-cli {})",
+            spec.cli_bin, spec.id
+        ))
+    })?;
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+    let stdout_reader = std::thread::spawn(move || {
+        let mut buffer = String::new();
+        if let Some(pipe) = stdout_pipe.as_mut() {
+            let _ = pipe.read_to_string(&mut buffer);
+        }
+        buffer
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut buffer = String::new();
+        if let Some(pipe) = stderr_pipe.as_mut() {
+            let _ = pipe.read_to_string(&mut buffer);
+        }
+        buffer
+    });
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let status = match child.wait_timeout(remaining) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(CliError::failed(format!(
+                "{} {} timed out (connect budget exhausted; retry with a larger --timeout)",
+                spec.cli_bin,
+                args.join(" ")
+            )));
+        }
+        Err(error) => {
+            return Err(CliError::failed(format!(
+                "waiting for {} failed: {error}",
+                spec.cli_bin
+            )));
+        }
+    };
+    let stdout = stdout_reader.join().unwrap_or_default();
+    let stderr = stderr_reader.join().unwrap_or_default();
+    Ok((status.success(), stdout, stderr))
 }
 
 /// First embedded JSON object in mixed CLI output — mirror of
@@ -631,15 +710,20 @@ fn bundle_store_on_disconnected(id: &str) {
 /// clear `degraded`. Mirror-write failures never fail the main operation
 /// (the GUI only logs them).
 fn bundle_store_on_connected(id: &str) {
+    use pinvou3_lib::features::marketplace::bundle::cli_bundle_bin;
     use pinvou3_lib::features::marketplace::store::{ASSET_KIND_CLI, AssetRef};
     let mut record = BundleRecord::installed_now(id, BundleSource::Builtin);
-    if let Some(pin) = artifact_pin(id) {
-        record.assets.push(AssetRef {
-            kind: ASSET_KIND_CLI.to_owned(),
-            name: id.to_owned(),
-            version: pin.version,
-            sha256: pin.binary_sha256,
-        });
+    // The lock table is keyed by CLI binary name ("feishu" → "lark-cli"), the
+    // same resolution `connector_cli::bundle_store_on_connected` performs.
+    if let Some(bin) = cli_bundle_bin(id) {
+        if let Some(pin) = artifact_pin(bin) {
+            record.assets.push(AssetRef {
+                kind: ASSET_KIND_CLI.to_owned(),
+                name: bin.to_owned(),
+                version: pin.version,
+                sha256: pin.binary_sha256,
+            });
+        }
     }
     let _ = BundleStore::new().upsert_preserving(record);
 }
@@ -652,7 +736,7 @@ pub fn execute(command: ConnectorsCommand, output: OutputMode) -> Result<CliOutc
         ConnectorsCommand::EnsureCli { connector } => ensure_cli(connector, output),
         ConnectorsCommand::Enable { connector } => set_enabled(connector, true, output),
         ConnectorsCommand::Disable { connector } => set_enabled(connector, false, output),
-        ConnectorsCommand::Logout { connector } => logout(connector, output),
+        ConnectorsCommand::Logout { connector, yes } => logout(connector, yes, output),
         ConnectorsCommand::ApplySkills { connector } => apply_skills(connector, output),
         ConnectorsCommand::Connect { connector, timeout } => connect(connector, timeout, output),
         ConnectorsCommand::Ima(action) => execute_ima(action, output),
@@ -858,12 +942,14 @@ fn apply_skills(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, C
     Ok(success(render(output, human, &value)))
 }
 
-fn logout(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, CliError> {
+fn logout(kind: ConnectorKind, yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
+    require_yes(yes)?;
     let spec = kind.spec();
+    let logout_deadline = Instant::now() + Duration::from_secs(CONNECT_DEFAULT_TIMEOUT_SECS);
     let value = match spec.id {
         // Mirror `feishu_logout`: `lark-cli auth logout` clears the token.
         "feishu" => {
-            let (ok, _, _) = run_cli(spec, &["auth", "logout"])?;
+            let (ok, _, _) = run_cli_bounded(spec, &["auth", "logout"], logout_deadline)?;
             if !ok {
                 return Err(CliError::failed(format!(
                     "{} CLI logout failed",
@@ -896,7 +982,7 @@ fn logout(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, CliErro
                 bundle_store_on_disconnected(spec.id);
                 json!({ "ok": true, "id": spec.id, "installed": false })
             } else {
-                let (ok, _, _) = run_cli(spec, args)?;
+                let (ok, _, _) = run_cli_bounded(spec, args, logout_deadline)?;
                 if !ok {
                     return Err(CliError::failed(format!(
                         "{} CLI logout failed",
@@ -1288,8 +1374,13 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
     match spec.id {
         "feishu" => {
             // Phase 1 (register app): `config init --new` until exit.
-            let (url, status_ok) =
-                spawn_and_capture_url(spec, &["config", "init", "--new"], &mut notes)?;
+            let (url, status_ok) = spawn_and_capture_url(
+                spec,
+                &["config", "init", "--new"],
+                &mut notes,
+                deadline,
+                None,
+            )?;
             if let Some(url) = url {
                 notes.push(format!("register-url: {url}"));
             }
@@ -1299,9 +1390,10 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 ));
             }
             // Phase 2 (authorize user): device-code login + polling.
-            let (ok, stdout, stderr) = run_cli(
+            let (ok, stdout, stderr) = run_cli_bounded(
                 spec,
                 &["auth", "login", "--no-wait", "--json", "--recommend"],
+                deadline,
             )?;
             if !ok {
                 return Err(CliError::failed("feishu auth login did not return a link"));
@@ -1344,9 +1436,11 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 std::thread::sleep(Duration::from_secs(3));
                 // This call may block until completion or return pending;
                 // readiness is judged by the auth status probe either way.
-                let _ = run_cli(
+                // Bounded so a hung vendor CLI cannot outlive the deadline.
+                let _ = run_cli_bounded(
                     spec,
                     &["auth", "login", "--device-code", &device_code, "--json"],
+                    deadline,
                 );
                 if cli_connected(spec)? {
                     bundle_store_on_connected(spec.id);
@@ -1366,6 +1460,9 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             std::fs::create_dir_all(&qr_dir).map_err(|error| {
                 CliError::failed(format!("cannot create the scan QR temp dir: {error}"))
             })?;
+            // The vendor CLI writes the relative `qr.png` next to its cwd; the
+            // GUI redirects it into a temp dir the same way (`wecom.rs` sets
+            // `current_dir`), so the user's working directory stays clean.
             let flow = spawn_and_capture_url(
                 spec,
                 &[
@@ -1377,6 +1474,8 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                     "qr.png",
                 ],
                 &mut notes,
+                deadline,
+                Some(&qr_dir),
             );
             let outcome = flow.and_then(|(url, status_ok)| {
                 if let Some(url) = url {
@@ -1399,7 +1498,7 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             } else {
                 &["auth", "login", "--no-browser"]
             };
-            let (url, _status_ok) = spawn_and_capture_url(spec, args, &mut notes)?;
+            let (url, _status_ok) = spawn_and_capture_url(spec, args, &mut notes, deadline, None)?;
             if let Some(url) = url {
                 notes.push(format!("authorize-url: {url}"));
             }
@@ -1430,16 +1529,22 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
 
 /// Spawns a long-running login command, captures the first authorization URL
 /// from its output (auth-domain filtered, mirror of `drain_for_url` /
-/// `CliCtx::extract_url`), waits for exit and returns `(url, exit_success)`.
-/// stdin is nulled like the GUI flows.
+/// `CliCtx::extract_url`), waits for exit within `deadline` and returns
+/// `(url, exit_success)`. stdin is nulled like the GUI flows; `work_dir`
+/// keeps relative scratch output (wecom's `qr.png`) out of the user's cwd.
 fn spawn_and_capture_url(
     spec: &VendorSpec,
     args: &[&str],
     notes: &mut Vec<String>,
+    deadline: Instant,
+    work_dir: Option<&Path>,
 ) -> Result<(Option<String>, bool), CliError> {
     let mut cmd = Command::new(spec.cli_bin);
     for (key, value) in spec.envs {
         cmd.env(key, value);
+    }
+    if let Some(dir) = work_dir {
+        cmd.current_dir(dir);
     }
     cmd.args(args)
         .stdin(Stdio::null())
@@ -1461,18 +1566,37 @@ fn spawn_and_capture_url(
         drain_for_url(spec, stderr, tx.clone());
     }
     drop(tx);
-    let url = match rx.recv_timeout(Duration::from_secs(LOGIN_URL_TIMEOUT_SECS)) {
+    let url_wait = Duration::from_secs(LOGIN_URL_TIMEOUT_SECS)
+        .min(deadline.saturating_duration_since(Instant::now()))
+        .max(Duration::from_secs(1));
+    let url = match rx.recv_timeout(url_wait) {
         Ok(url) => Some(url),
         Err(_) => {
             notes.push(format!(
-                "no login link within {LOGIN_URL_TIMEOUT_SECS}s (check network / proxy); still waiting for the CLI to exit"
+                "no login link within {url_wait:?} (check network / proxy); still waiting for the CLI to exit"
             ));
             None
         }
     };
-    let status = child.wait().map_err(|error| {
-        CliError::failed(format!("waiting for {} failed: {error}", spec.cli_bin))
-    })?;
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let status = match child.wait_timeout(remaining) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(CliError::failed(format!(
+                "{} {} timed out (connect budget exhausted; retry with a larger --timeout)",
+                spec.cli_bin,
+                args.join(" ")
+            )));
+        }
+        Err(error) => {
+            return Err(CliError::failed(format!(
+                "waiting for {} failed: {error}",
+                spec.cli_bin
+            )));
+        }
+    };
     Ok((url, status.success()))
 }
 
@@ -1524,7 +1648,7 @@ fn execute_ima(action: ImaCommand, output: OutputMode) -> Result<CliOutcome, Cli
             api_key_env,
             api_key_stdin,
         } => ima_connect(&client_id_env, api_key_env, api_key_stdin, output),
-        ImaCommand::Logout => ima_logout(output),
+        ImaCommand::Logout { yes } => ima_logout(yes, output),
     }
 }
 
@@ -1671,17 +1795,20 @@ fn validate_ima_credentials(client_id: &str, api_key: &str) -> Result<(), CliErr
     if code == 0 {
         return Ok(());
     }
-    Err(CliError::failed(
+    // The server message may echo request material (client id / api key) on
+    // hostile or misbehaving responses; redact like `ima.rs` does.
+    Err(CliError::failed(redact_secret(
         payload
             .get("msg")
             .and_then(Value::as_str)
             .unwrap_or("ima OpenAPI authentication failed; check client id / api key"),
-    ))
+    )))
 }
 
 /// Mirror of `ima_logout`: delete both secrets, uninstall ima-skills and
 /// remove it from the per-scope disabled sets.
-fn ima_logout(output: OutputMode) -> Result<CliOutcome, CliError> {
+fn ima_logout(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
+    require_yes(yes)?;
     let store = SystemCredentialStore::new();
     let client_result = store.delete(&ima_secret_ref("client_id"));
     let api_result = store.delete(&ima_secret_ref("api_key"));

@@ -142,6 +142,8 @@ fn every_connectors_subcommand_parses_and_invalid_usage_exits_two() {
         vec!["pinvou", "connectors", "enable", "wecom"],
         vec!["pinvou", "connectors", "disable", "dingtalk"],
         vec!["pinvou", "connectors", "logout", "tmeet"],
+        vec!["pinvou", "connectors", "logout", "tmeet", "--yes"],
+        vec!["pinvou", "connectors", "ima", "logout", "--yes"],
         vec!["pinvou", "connectors", "apply-skills", "feishu"],
         vec!["pinvou", "connectors", "connect", "feishu"],
         vec![
@@ -435,9 +437,18 @@ fn connectors_logout_and_apply_skills_on_uninstalled_connector_fail_cleanly() {
     let _home = HomeGuard::new("uninstalled-errors");
     let _path = VendorCliGuard::new();
 
-    // feishu logout shells out to `lark-cli auth logout`; without the binary
-    // that is a clean host failure naming the install hint, never a panic.
-    let error = run(&["pinvou", "connectors", "logout", "feishu"])
+    // Logout destroys stored credentials, so it follows the destructive
+    // convention: without --yes it is a usage error before anything runs.
+    for id in ["feishu", "wecom"] {
+        let error = run(&["pinvou", "connectors", "logout", id])
+            .expect_err("logout without --yes must be refused");
+        assert_eq!(error.exit_code(), ExitCode::Usage, "{id}");
+        assert!(error.to_string().contains("--yes"), "{error}");
+    }
+
+    // With --yes, feishu logout shells out to `lark-cli auth logout`; without
+    // the binary that is a clean host failure naming the install hint.
+    let error = run(&["pinvou", "connectors", "logout", "feishu", "--yes"])
         .expect_err("logout without lark-cli must fail");
     assert_eq!(error.exit_code(), ExitCode::Failed);
     assert!(error.to_string().contains("lark-cli"), "{error}");
@@ -452,7 +463,7 @@ fn connectors_logout_and_apply_skills_on_uninstalled_connector_fail_cleanly() {
 
     // dingtalk/tmeet treat "CLI not installed" as already logged out.
     for id in ["dingtalk", "tmeet"] {
-        let value = run_json(&["pinvou", "connectors", "logout", id]);
+        let value = run_json(&["pinvou", "connectors", "logout", id, "--yes"]);
         assert_eq!(value["ok"], true, "{id}");
         assert_eq!(value["id"], id, "{id}");
         assert_eq!(value["installed"], false, "{id}");
