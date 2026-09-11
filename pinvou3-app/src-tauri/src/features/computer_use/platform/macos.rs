@@ -32,6 +32,14 @@
 //! 创建、使用、释放（backend.rs 保证 worker 线程亲和，对象永不离线程），因此
 //! 结构体只靠自动 Send（Enigo 内部已 unsafe impl Send），无需手写 unsafe impl。
 //!
+//! Autorelease-pool invariant: the backend worker thread has no Obj-C
+//! runloop and no autorelease pool. Every ObjC/CF call on the input/capture
+//! paths below (and in [`super::screen_capture_kit`]) must therefore return
+//! +1/CF-typed objects or plain primitives — no autoreleased returns. This
+//! holds today, but one innocent future edit returning an autoreleased object
+//! would start leaking silently; if that ever changes, wrap the call site in
+//! `objc2::rc::autoreleasepool`.
+//!
 //! CF 层说明：AX 属性名常量（kAXRoleAttribute 等）未被
 //! objc2-application-services 0.3.2 的 header-translator 生成，且
 //! CFDictionary/CFArray 的泛型默认参数是 crate 私有类型，外部无法构造——
@@ -1157,7 +1165,7 @@ impl MacosComputerUseBackend {
         release_reverse(&pressed, enigo).map_err(|err| map_input_err("key release", err))
     }
 
-    /// ScreenCaptureKit 截屏（macOS 14+）。captureImageInRect 按显示器原生
+    /// ScreenCaptureKit 截屏（macOS 15.2+）。captureImageInRect 按显示器原生
     /// 倍率返回物理像素，实际倍率从返回图像反推（点 / 实际像素宽）——不信任
     /// scale_factor 估计值，对旋转屏/非整数倍率也成立。
     fn capture_via_screen_capture_kit(
@@ -1360,8 +1368,28 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             Ok(())
         })();
         // 无论路径移动是否出错都必须释放按键，避免鼠标卡在按下状态。
+        // Inspect both results instead of `Result::and`, which keeps only the
+        // first error: when the release fails too, the caller must still
+        // learn that the button may be stranded pressed (mirrors click()'s
+        // stranded-button wording).
         let release = self.post_mouse_event(up, left, to, 1);
-        result.and(release)?;
+        match (result, release) {
+            (Ok(()), Ok(())) => {}
+            // Only the path move failed and the release succeeded: report the
+            // move error unchanged.
+            (Err(move_error), Ok(())) => return Err(move_error),
+            (Ok(()), Err(release)) => {
+                return Err(ComputerUseError::failed(format!(
+                    "drag release failed ({release}); the mouse button may still be pressed"
+                )));
+            }
+            (Err(move_error), Err(release)) => {
+                return Err(ComputerUseError::failed(format!(
+                    "drag move failed ({move_error}); its release also failed ({release}); \
+                     the mouse button may still be pressed"
+                )));
+            }
+        }
         // 拖拽终点即光标落点，刷新可信落点基准（起点 move 不改动）。
         self.pending_move_target = Some(to);
         Ok(())

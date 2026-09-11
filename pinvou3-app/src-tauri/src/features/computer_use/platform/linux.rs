@@ -237,6 +237,29 @@ fn settle() {
     sleep(Duration::from_millis(SETTLE_MS));
 }
 
+/// Wayland 和弦按压失败时的回退(供 `key_chord`/`hold_key` 共用):顺序按下
+/// 全部 keysym;某一次按压失败时,逆序尽力释放已按下的键(释放错误吞掉),
+/// 再上抛原始错误——避免中途失败把修饰键卡在按下状态(与 X11 的
+/// `press_chord` 同款回退)。对注入端泛型,单测可用录制替身驱动。
+fn press_keysyms_unwind(
+    keysyms: &[i32],
+    mut event: impl FnMut(i32, bool) -> Result<(), ComputerUseError>,
+) -> Result<(), ComputerUseError> {
+    for (index, keysym) in keysyms.iter().enumerate() {
+        if let Err(error) = event(*keysym, true) {
+            // Release the already-pressed keysyms in reverse, best-effort
+            // (release errors swallowed): the caller's original press error
+            // is what matters, but stranded modifiers would corrupt every
+            // subsequent input action.
+            for held in keysyms[..index].iter().rev() {
+                let _ = event(*held, false);
+            }
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
 /// 名称清洗:去引号/换行并截断,保证单行输出。
 fn sanitize_name(raw: &str) -> String {
     raw.chars()
@@ -724,7 +747,14 @@ async fn find_focused_in_subtree(
 /// [`LinuxComputerUseBackend::block_on_a11y`] 兜底。)
 async fn a11y_connect() -> Result<zbus::Connection, String> {
     let _ = atspi::connection::set_session_accessibility(true).await;
-    let session = zbus::Connection::session()
+    // The bootstrap session-bus connection needs a deadline too: zbus 5
+    // defaults method_timeout to None, so a wedged session bus would hang
+    // `create_backend` on the worker thread forever. Bound it with the same
+    // 3s method timeout as the self-built a11y bus connection below.
+    let session = zbus::connection::Builder::session()
+        .map_err(|error| format!("session bus builder: {error}"))?
+        .method_timeout(A11Y_METHOD_TIMEOUT)
+        .build()
         .await
         .map_err(|error| format!("session bus: {error}"))?;
     let bus = BusProxy::new(&session)
@@ -1150,6 +1180,15 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 .unwrap_or(0);
             (origin_x, origin_y, 1.0, 1.0)
         };
+        // Keep the stored input scale in sync with the capture actually
+        // returned: portal and xcap-fallback captures live in different
+        // input coordinate spaces, and cursor_position undoes the scale of
+        // the LAST successful capture path (a stale portal scale would
+        // misreport cursor_position once captures alternate portal stream →
+        // xcap fallback, e.g. under KDE fractional scaling).
+        if self.is_wayland() {
+            self.wayland_input_scale = (input_scale_x, input_scale_y);
+        }
         Ok(Capture {
             rgba: image.into_raw(),
             width,
@@ -1277,6 +1316,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             portal.button(wayland_portal::map_button(MouseButton::Left), true)?;
             // 插值移动;无论中途成败,最后都必须释放按键。
             let mut result = Ok(());
+            let mut last_reached = (from.0, from.1);
             for step in 1..=DRAG_STEPS {
                 let t = f64::from(step) / f64::from(DRAG_STEPS);
                 let x = f64::from(from.0) + f64::from(to.0 - from.0) * t;
@@ -1285,10 +1325,19 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                     result = Err(error);
                     break;
                 }
+                last_reached = (x.round() as i32, y.round() as i32);
                 sleep(Duration::from_millis(DRAG_STEP_MS));
             }
             let release = portal.button(wayland_portal::map_button(MouseButton::Left), false);
-            portal.track_pointer(to.0, to.1);
+            // Record the destination only when the interpolated move fully
+            // succeeded; on failure keep the furthest waypoint the pointer
+            // verifiably reached (or the drag start) so cursor_position
+            // never reports a spot the pointer never touched.
+            if result.is_ok() {
+                portal.track_pointer(to.0, to.1);
+            } else {
+                portal.track_pointer(last_reached.0, last_reached.1);
+            }
             combine_drag_errors(result, release)?;
             return Ok(());
         }
@@ -1368,11 +1417,24 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 .map(wayland_portal::char_keysym)
                 .collect::<Result<Vec<_>, _>>()?;
             portal.ensure_started()?;
+            // A failed press aborts (nothing landed for that char); a failed
+            // release must not strand the loop since the press already
+            // landed: remember the first error, keep typing the remaining
+            // chars, and report the first error at the end (same semantics
+            // as the X11 `release_chord` helper).
+            let mut first_err = None;
             for keysym in keysyms {
                 portal.keysym_event(keysym, true)?;
-                portal.keysym_event(keysym, false)?;
+                if let Err(error) = portal.keysym_event(keysym, false) {
+                    if first_err.is_none() {
+                        first_err = Some(error);
+                    }
+                }
             }
-            return Ok(());
+            match first_err {
+                Some(error) => return Err(error),
+                None => return Ok(()),
+            }
         }
         let enigo = self.require_enigo()?;
         // enigo text() 走 Unicode 注入(X11 临时 keycode 重映射,xdotool 同款
@@ -1391,15 +1453,9 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 .map(|key| wayland_portal::map_keysym(*key))
                 .collect::<Result<Vec<_>, _>>()?;
             portal.ensure_started()?;
-            for (index, keysym) in mapped.iter().enumerate() {
-                if let Err(error) = portal.keysym_event(*keysym, true) {
-                    // 错误路径上释放已按下的键,避免修饰键卡死。
-                    for held in mapped[..index].iter().rev() {
-                        let _ = portal.keysym_event(*held, false);
-                    }
-                    return Err(error);
-                }
-            }
+            press_keysyms_unwind(&mapped, |keysym, pressed| {
+                portal.keysym_event(keysym, pressed)
+            })?;
             // 释放阶段中途失败也要尽力释放全部键(避免修饰键卡死),返回
             // 首个错误。
             let mut first_err = None;
@@ -1433,9 +1489,9 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 .map(|key| wayland_portal::map_keysym(*key))
                 .collect::<Result<Vec<_>, _>>()?;
             portal.ensure_started()?;
-            for keysym in &mapped {
-                portal.keysym_event(*keysym, true)?;
-            }
+            press_keysyms_unwind(&mapped, |keysym, pressed| {
+                portal.keysym_event(keysym, pressed)
+            })?;
             sleep(Duration::from_millis(ms));
             // 释放阶段中途失败也要尽力释放全部键(避免修饰键卡死),返回
             // 首个错误。
@@ -1747,6 +1803,56 @@ mod tests {
         // Enabled 缺失 → disabled。
         assert!(state_flags(false, Some(StateSet::empty())).contains(&"disabled"));
     }
+
+    #[test]
+    fn wayland_chord_press_unwinds_held_keysyms_on_failure() {
+        // Recording stand-in: pressing the second keysym fails.
+        let mut events: Vec<(i32, bool)> = Vec::new();
+        let result = press_keysyms_unwind(&[0xffe3, 0x63, 0x64], |keysym, pressed| {
+            let failed = pressed && keysym == 0x63;
+            events.push((keysym, pressed));
+            if failed {
+                Err(ComputerUseError::failed("portal injection failed"))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(result.is_err());
+        // The modifier pressed before the failure is released in reverse;
+        // keysyms after the failing one are never attempted.
+        assert_eq!(events, vec![(0xffe3, true), (0x63, true), (0xffe3, false)]);
+    }
+
+    #[test]
+    fn wayland_chord_press_success_does_not_release_anything() {
+        let mut events: Vec<(i32, bool)> = Vec::new();
+        let result = press_keysyms_unwind(&[0xffe3, 0x63], |keysym, pressed| {
+            events.push((keysym, pressed));
+            Ok(())
+        });
+        assert!(result.is_ok());
+        assert_eq!(events, vec![(0xffe3, true), (0x63, true)]);
+    }
+
+    #[test]
+    fn wayland_chord_press_unwind_release_errors_are_swallowed() {
+        // Release on the unwind failing too must not mask the press error.
+        let mut releases = 0;
+        let result = press_keysyms_unwind(&[0xffe3, 0x63], |keysym, pressed| {
+            if pressed {
+                if keysym == 0x63 {
+                    return Err(ComputerUseError::failed("press failed"));
+                }
+            } else {
+                releases += 1;
+                return Err(ComputerUseError::failed("release failed"));
+            }
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "failed: press failed");
+        assert_eq!(releases, 1);
+    }
 }
 
 #[cfg(test)]
@@ -1802,16 +1908,6 @@ mod wayland_e2e_tests {
             }
         }
         Ok(())
-    }
-
-    /// 临时诊断:把收到的帧存为 PNG(验证环境用)。
-    fn save_debug_png(capture: &Capture, index: i32) {
-        let path = format!("/tmp/pinvou-wl-e2e/frame-{index}.png");
-        let image =
-            xcap::image::RgbaImage::from_raw(capture.width, capture.height, capture.rgba.clone());
-        if let Some(image) = image {
-            let _ = xcap::image::DynamicImage::ImageRgba8(image).save(std::path::Path::new(&path));
-        }
     }
 
     /// 两帧 RGBA 的差分包围盒(无差分返回 None)。步长 4 像素采样,足够定位
@@ -1905,9 +2001,8 @@ mod wayland_e2e_tests {
         backend.click(MouseButton::Left, 1).expect("click");
 
         // 3) 等待比点击新的帧:日历/通知下拉必须出现在屏幕上半部。
-        let dropdown = wait_for_big_change(&mut backend, &shot1, 40, shot_h / 2)
+        wait_for_big_change(&mut backend, &shot1, 40, shot_h / 2)
             .expect("clicking the clock must open the calendar dropdown");
-        println!("calendar dropdown box: {dropdown:?}");
 
         // 4) 键盘链路:Escape 关闭下拉,Super 打开概览(搜索框自动聚焦)。
         backend.key_chord(&[Key::Escape]).expect("escape key chord");
@@ -1937,7 +2032,6 @@ mod wayland_e2e_tests {
                 }
             }
         }
-        println!("search results diff box: {typed_shot:?}");
         assert!(
             typed_shot.is_some(),
             "search results must appear after typing into the overview search"
@@ -1987,5 +2081,796 @@ mod wayland_e2e_tests {
             }
         }
         None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// X11 live E2E: the full consent pipeline against a real X server (Xvfb).
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod x11_live_tests {
+    //! Live X11 E2E for the real backend plus the full consent pipeline
+    //! (settings toggle → session grant → fail-closed T3 screening →
+    //! user confirmation token → execute → HMAC'd audit).
+    //!
+    //! WARNING: each test takes over the X server named by `$DISPLAY` and
+    //! injects real XTEST input into it — run them ONLY against a sandboxed
+    //! Xvfb, never against a desktop someone is using:
+    //!
+    //! ```text
+    //! Xvfb :99 -screen 0 1280x800x24 &
+    //! cd pinvou3-app/src-tauri
+    //! DISPLAY=:99 cargo test --lib computer_use -- --ignored --test-threads=1
+    //! ```
+    //!
+    //! Every injection is verified EXTERNALLY: the X server itself reports the
+    //! pointer position via `xdotool getmouselocation`, so the assertions
+    //! cannot be fooled by anything inside the process.
+    //!
+    //! The AT-SPI (a11y) stack is intentionally absent under Xvfb: the test
+    //! points the D-Bus session bus at a nonexistent socket, so the backend's
+    //! AT-SPI connection fails at init and EVERY input target is unscreenable.
+    //! That exercises the fail-closed screening path end to end: even with a
+    //! session grant, a screened input action must stop and demand a user
+    //! confirmation token against a real X server.
+    //!
+    //! Tests are `#[ignore]` so CI never runs them; each additionally skips
+    //! cleanly (early return) unless `$DISPLAY` answers
+    //! `xdotool getdisplaygeometry`.
+
+    #![allow(clippy::await_holding_lock)]
+
+    use super::*;
+    use crate::features::computer_use::backend::BackendHandle;
+    use crate::features::computer_use::guard::ComputerUseShared;
+    use crate::features::computer_use::tool::{ComputerUseEventSink, ComputerUseTool};
+    use crate::features::computer_use::types::{EVENT_CONFIRM_REQUIRED, EVENT_GRANT_REQUIRED};
+    use deepseek_tui::tools::spec::{ToolContext, ToolSpec};
+    use serde_json::{Value, json};
+    use std::process::Command;
+    use std::sync::{Arc, Mutex as StdMutex};
+    use xcap::image;
+
+    /// Session id used by every test (drives the audit file name too).
+    const SESSION: &str = "s-x11";
+
+    // ---- external X server verification helpers ---------------------------
+
+    /// Run xdotool against `display`; `None` when xdotool is missing or the
+    /// display does not answer (the caller then skips the test).
+    fn xdotool(display: &str, args: &[&str]) -> Option<String> {
+        let output = Command::new("xdotool")
+            .env("DISPLAY", display)
+            .args(args)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    /// The pointer position as reported by the X server itself (external
+    /// ground truth, not anything the backend claims).
+    fn pointer_at(display: &str) -> Option<(i32, i32)> {
+        let out = xdotool(display, &["getmouselocation"])?;
+        let mut x = None;
+        let mut y = None;
+        for token in out.split_whitespace() {
+            if let Some(value) = token.strip_prefix("x:") {
+                x = value.parse().ok();
+            }
+            if let Some(value) = token.strip_prefix("y:") {
+                y = value.parse().ok();
+            }
+        }
+        Some((x?, y?))
+    }
+
+    /// The live-display gate: `Some((width, height, display))` when `$DISPLAY`
+    /// names an X server xdotool can reach, `None` otherwise (tests skip).
+    fn live_display() -> Option<(u32, u32, String)> {
+        let display = std::env::var("DISPLAY").ok()?;
+        let geometry = xdotool(&display, &["getdisplaygeometry"])?;
+        let mut parts = geometry.split_whitespace();
+        let width = parts.next()?.parse().ok()?;
+        let height = parts.next()?.parse().ok()?;
+        Some((width, height, display))
+    }
+
+    fn assert_pointer_unchanged(display: &str, before: (i32, i32), what: &str) {
+        let after = pointer_at(display).expect("xdotool can read the pointer");
+        assert_eq!(
+            after, before,
+            "{what}: the X server pointer must not move (before {before:?}, after {after:?})"
+        );
+    }
+
+    /// Expected PNG dimensions for a `screen` of `size` under the tool's
+    /// scaling cap ([`crate::features::computer_use::scaling::MAX_LONG_EDGE`];
+    /// smaller screens are never upscaled).
+    fn expected_png_size(size: (u32, u32)) -> (u32, u32) {
+        use crate::features::computer_use::scaling::MAX_LONG_EDGE;
+        let long = size.0.max(size.1);
+        if long <= MAX_LONG_EDGE {
+            return size;
+        }
+        let factor = f64::from(MAX_LONG_EDGE) / f64::from(long);
+        (
+            (f64::from(size.0) * factor).round() as u32,
+            (f64::from(size.1) * factor).round() as u32,
+        )
+    }
+
+    // ---- fixture (isolated PINVOU3_HOME + real X11 backend) ---------------
+
+    /// Records the Tauri events the tool emits (grant/confirm prompts) so the
+    /// tests can read `confirm_id`s exactly like the frontend does.
+    #[derive(Clone)]
+    struct EventRecorder(Arc<StdMutex<Vec<(String, Value)>>>);
+
+    impl EventRecorder {
+        fn new() -> Self {
+            Self(Arc::new(StdMutex::new(Vec::new())))
+        }
+
+        fn latest_confirm_id(&self) -> String {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+                .map(|(_, payload)| {
+                    payload["confirm_id"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string()
+                })
+                .expect("a computer_use:confirm_required event must have been emitted")
+        }
+
+        fn emitted(&self, event: &str) -> bool {
+            self.0.lock().unwrap().iter().any(|(name, _)| name == event)
+        }
+    }
+
+    impl ComputerUseEventSink for EventRecorder {
+        fn emit(&self, event: &str, payload: Value) {
+            if let Ok(mut events) = self.0.lock() {
+                events.push((event.to_string(), payload));
+            }
+        }
+    }
+
+    /// Process-env takeover for one test: `$DISPLAY` → the live X server,
+    /// session type forced to X11, the D-Bus session bus pointed at a
+    /// nonexistent socket (the AT-SPI stack is intentionally absent under
+    /// Xvfb — this is what makes the screening genuinely unscreenable),
+    /// `PINVOU3_HOME` → an isolated temp root so the audit JSONL, HMAC key
+    /// and screenshots never touch the developer's real data. Everything is
+    /// restored on drop; the platform env lock is held for the whole test so
+    /// env writes stay serialized in-process.
+    struct LiveEnv {
+        _env_lock: std::sync::MutexGuard<'static, ()>,
+        previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
+        home: std::path::PathBuf,
+    }
+
+    impl LiveEnv {
+        fn take(display: &str) -> Self {
+            let env_lock = crate::platform::paths::tests::ENV_LOCK
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let mut previous: Vec<(&'static str, Option<std::ffi::OsString>)> = Vec::new();
+            let mut set = |key: &'static str, value: Option<std::ffi::OsString>| {
+                previous.push((key, std::env::var_os(key)));
+                // SAFETY: ENV_LOCK is held; env writes are serialized in-process.
+                unsafe {
+                    match value {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            };
+            let home = std::env::temp_dir().join(format!(
+                "pinvou3-cu-x11-live-{}-{}",
+                std::process::id(),
+                crate::platform::paths::tests::unique_suffix()
+            ));
+            set("PINVOU3_HOME", Some(home.clone().into_os_string()));
+            set("DISPLAY", Some(display.into()));
+            // Force X11 detection even when the host session is Wayland.
+            set("XDG_SESSION_TYPE", Some("x11".into()));
+            set("WAYLAND_DISPLAY", None);
+            // No a11y bus in the sandbox: the backend's AT-SPI connect must
+            // fail at init so every target is unscreenable (fail closed).
+            set(
+                "DBUS_SESSION_BUS_ADDRESS",
+                Some("unix:path=/tmp/pinvou3-cu-x11-live-no-a11y-bus".into()),
+            );
+            Self {
+                _env_lock: env_lock,
+                previous,
+                home,
+            }
+        }
+
+        fn audit_path(&self) -> std::path::PathBuf {
+            self.home
+                .join("computer-use")
+                .join(format!("audit-{SESSION}.jsonl"))
+        }
+    }
+
+    impl Drop for LiveEnv {
+        fn drop(&mut self) {
+            for (key, value) in self.previous.drain(..) {
+                // SAFETY: ENV_LOCK is still held by self._env_lock.
+                unsafe {
+                    match value {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
+
+    struct Fixture {
+        tool: ComputerUseTool,
+        shared: Arc<ComputerUseShared>,
+        events: EventRecorder,
+        env: LiveEnv,
+        workspace: std::path::PathBuf,
+        display: String,
+    }
+
+    /// Build the real stack: `platform::create_backend` (xcap capture + enigo
+    /// XTEST on `$DISPLAY`, AT-SPI absent) behind the same lazy BackendHandle
+    /// the production tool uses, with an isolated audit home and a recording
+    /// event sink. Declared field order matters on drop: the tool (which
+    /// triggers the backend emergency release) drops before the env is
+    /// restored.
+    fn fixture(display: String) -> Fixture {
+        let env = LiveEnv::take(&display);
+        let workspace = env.home.join("sessions").join(SESSION).join("workspace");
+        let _ = std::fs::create_dir_all(&workspace);
+        let shared = Arc::new(ComputerUseShared::new());
+        // The settings toggle (computer_use_set_enabled) mirrors here.
+        shared.set_enabled(true);
+        let events = EventRecorder::new();
+        let backend = BackendHandle::lazy(move || create_backend());
+        let tool = ComputerUseTool::with_parts(
+            SESSION.to_string(),
+            Arc::clone(&shared),
+            backend,
+            Arc::new(events.clone()),
+        );
+        Fixture {
+            tool,
+            shared,
+            events,
+            env,
+            workspace,
+            display,
+        }
+    }
+
+    impl Fixture {
+        async fn execute_raw(
+            &self,
+            input: Value,
+        ) -> Result<deepseek_tui::tools::spec::ToolResult, deepseek_tui::tools::spec::ToolError>
+        {
+            self.tool
+                .execute(input, &ToolContext::new(self.workspace.as_path()))
+                .await
+        }
+
+        /// Run a tool call and flatten to (success, model-visible text).
+        async fn execute(&self, input: Value) -> (bool, String) {
+            match self.execute_raw(input).await {
+                Ok(result) => (result.success, result.content),
+                Err(error) => (false, error.to_string()),
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "drives the X server named by $DISPLAY (run against a sandboxed Xvfb)"]
+    async fn x11_live_capabilities_are_reported() {
+        let Some((_, _, display)) = live_display() else {
+            eprintln!("SKIP x11_live_capabilities_are_reported: $DISPLAY does not answer xdotool");
+            return;
+        };
+        let fx = fixture(display);
+
+        // The real backend, asked directly: X11 must report full input and
+        // capture support, and must honestly report the absent AT-SPI stack.
+        let probe = BackendHandle::lazy(create_backend);
+        let caps = probe
+            .capabilities()
+            .expect("the real X11 backend must construct on the live display");
+        println!(
+            "x11_live capabilities: screenshot={} input={} ui_tree={}\n  notes: {}",
+            caps.screenshot, caps.input, caps.ui_tree, caps.notes
+        );
+        assert!(caps.input, "X11 XTEST input must be reported available");
+        assert!(
+            caps.screenshot,
+            "X11 xcap capture must be reported available"
+        );
+        assert!(
+            !caps.ui_tree,
+            "AT-SPI is absent in the sandbox; ui_tree must be reported unavailable: {}",
+            caps.notes
+        );
+
+        // The tool-level ui_tree action must fail with the documented
+        // unavailable error instead of silently returning a tree.
+        let (success, text) = fx.execute(json!({"action": "ui_tree"})).await;
+        println!("x11_live ui_tree action: success={success} text={text}");
+        assert!(!success, "ui_tree must not succeed without AT-SPI: {text}");
+        assert!(
+            text.contains("accessibility tree is unsupported"),
+            "ui_tree must fail with the documented unavailable error: {text}"
+        );
+        assert!(
+            !text.contains("[0]"),
+            "ui_tree must not return any serialized tree: {text}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "drives the X server named by $DISPLAY (run against a sandboxed Xvfb)"]
+    async fn x11_live_capture_returns_screen_image() {
+        let Some((width, height, display)) = live_display() else {
+            eprintln!(
+                "SKIP x11_live_capture_returns_screen_image: $DISPLAY does not answer xdotool"
+            );
+            return;
+        };
+        let fx = fixture(display);
+
+        let result = fx
+            .execute_raw(json!({"action": "screenshot"}))
+            .await
+            .expect("screenshot must not return a tool error");
+        assert!(result.success, "{}", result.content);
+
+        // PNG decodes and matches the externally verified geometry, modulo
+        // the tool's long-edge scaling cap (small screens are not upscaled).
+        let abs_path = result
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("images"))
+            .and_then(Value::as_array)
+            .and_then(|images| images.first())
+            .and_then(Value::as_str)
+            .map(std::path::PathBuf::from)
+            .expect("screenshot must attach an image path");
+        let png = std::fs::read(&abs_path).expect("screenshot file must exist");
+        let decoded = image::load_from_memory(&png).expect("the attachment must be a valid PNG");
+        let (expected_w, expected_h) = expected_png_size((width, height));
+        println!(
+            "x11_live capture: xdotool geometry {width}x{height}, png {}x{} (expected {expected_w}x{expected_h})",
+            decoded.width(),
+            decoded.height()
+        );
+        assert_eq!(
+            (decoded.width(), decoded.height()),
+            (expected_w, expected_h),
+            "capture must match the X server geometry modulo the long-edge cap"
+        );
+        assert!(
+            result
+                .content
+                .contains(&format!("{expected_w}x{expected_h} px")),
+            "the model-visible text must report the real geometry: {}",
+            result.content
+        );
+
+        // Privacy: the screenshot (may contain on-screen secrets) lands 0600
+        // inside a 0700 directory, under the isolated home.
+        use std::os::unix::fs::PermissionsExt;
+        let file_mode = std::fs::metadata(&abs_path)
+            .expect("screenshot metadata")
+            .permissions()
+            .mode();
+        assert_eq!(file_mode & 0o7777, 0o600, "screenshot file must be 0600");
+        let dir_mode = std::fs::metadata(abs_path.parent().expect("screenshot has a parent"))
+            .expect("screenshot dir metadata")
+            .permissions()
+            .mode();
+        assert_eq!(
+            dir_mode & 0o7777,
+            0o700,
+            "screenshot directory must be 0700"
+        );
+    }
+
+    /// The core consent E2E against a real X server: no grant → nothing
+    /// injected; grant → hover moves execute (deliberately unscreened), but a
+    /// pointer CLICK is T3-screened and, with AT-SPI absent, fails closed to
+    /// a confirmation; mint → execute lands on the X server; replay → spent.
+    #[tokio::test]
+    #[ignore = "drives the X server named by $DISPLAY (run against a sandboxed Xvfb)"]
+    async fn x11_live_input_requires_grant_then_confirmation_then_executes() {
+        let Some((_, _, display)) = live_display() else {
+            eprintln!("SKIP x11_live_input_requires_grant…: $DISPLAY does not answer xdotool");
+            return;
+        };
+        let fx = fixture(display);
+
+        // (1) No session grant: the gate rejects before any injection, the
+        // grant_required event fires, and the X server pointer stays put.
+        let before = pointer_at(&fx.display).expect("xdotool can read the pointer");
+        let move_to = json!({"action": "mouse_move", "x": 600, "y": 400});
+        let (success, text) = fx.execute(move_to.clone()).await;
+        assert!(!success, "an ungranted input action must fail: {text}");
+        assert!(text.contains("has not granted control"), "{text}");
+        assert!(
+            fx.events.emitted(EVENT_GRANT_REQUIRED),
+            "the grant_required event must fire for the frontend prompt"
+        );
+        assert_pointer_unchanged(&fx.display, before, "mouse_move without a grant");
+
+        // (2) Grant (the same guard call the computer_use_grant command
+        // makes). A plain mouse_move is a hover — deliberately NOT
+        // T3-screened — so it executes; the X server must report the target.
+        fx.shared.grant_session(SESSION);
+        let (success, text) = fx.execute(move_to).await;
+        assert!(success, "a granted hover move must execute: {text}");
+        let at = pointer_at(&fx.display).expect("xdotool");
+        assert!(
+            (at.0 - 600).abs() <= 2 && (at.1 - 400).abs() <= 2,
+            "the granted hover must land at (600, 400); xdotool reports {at:?}"
+        );
+
+        // (3) A pointer click is a screened action: with the a11y stack
+        // absent the target is unscreenable, so the action must fail CLOSED —
+        // "NOT executed" + a pending confirmation in the guard + a pointer
+        // that provably did not move.
+        let click = json!({"action": "left_click", "x": 200, "y": 300});
+        let before = pointer_at(&fx.display).expect("xdotool");
+        let (success, text) = fx.execute(click.clone()).await;
+        assert!(!success, "an unscreenable click must not execute: {text}");
+        assert!(text.contains("NOT executed"), "{text}");
+        assert!(text.contains("unverifiable"), "{text}");
+        assert!(text.contains("confirm_id"), "{text}");
+        let confirm_id = fx.events.latest_confirm_id();
+        assert!(
+            fx.shared.pending_confirmation(&confirm_id).is_some(),
+            "the pending confirmation must exist in the guard"
+        );
+        assert_pointer_unchanged(&fx.display, before, "confirmation-required click");
+
+        // (4) Mint the token (the same guard call computer_use_confirm makes)
+        // and retry the same action WITH the confirm_id: it executes and the
+        // X server reports the injected coordinates.
+        assert!(
+            fx.shared.mint_confirmation(&confirm_id),
+            "minting must succeed while the pending exists"
+        );
+        let confirmed_click =
+            json!({"action": "left_click", "x": 200, "y": 300, "confirm_id": confirm_id});
+        let (success, text) = fx.execute(confirmed_click.clone()).await;
+        assert!(success, "the confirmed click must execute: {text}");
+        assert!(!text.contains("NOT executed"), "{text}");
+        let at = pointer_at(&fx.display).expect("xdotool");
+        assert!(
+            (at.0 - 200).abs() <= 2 && (at.1 - 300).abs() <= 2,
+            "the confirmed click must land at (200, 300); xdotool reports {at:?}"
+        );
+
+        // (5) The token is single-use: replaying the same confirm_id fails as
+        // invalid/used and injects nothing.
+        let before = pointer_at(&fx.display).expect("xdotool");
+        let (success, text) = fx.execute(confirmed_click).await;
+        assert!(!success, "a spent token must not execute: {text}");
+        assert!(
+            text.contains("invalid, expired, or was already used"),
+            "{text}"
+        );
+        assert_pointer_unchanged(&fx.display, before, "replayed confirm_id");
+    }
+
+    /// A denied confirmation is remembered: retrying with the denied id
+    /// returns the explicit denial, mints nothing, and injects nothing.
+    #[tokio::test]
+    #[ignore = "drives the X server named by $DISPLAY (run against a sandboxed Xvfb)"]
+    async fn x11_live_deny_blocks_action_and_remembers() {
+        let Some((_, _, display)) = live_display() else {
+            eprintln!(
+                "SKIP x11_live_deny_blocks_action_and_remembers: $DISPLAY does not answer xdotool"
+            );
+            return;
+        };
+        let fx = fixture(display);
+        fx.shared.grant_session(SESSION);
+
+        let click = json!({"action": "left_click", "x": 500, "y": 450});
+        let before = pointer_at(&fx.display).expect("xdotool");
+        let (success, text) = fx.execute(click.clone()).await;
+        assert!(!success, "{text}");
+        assert!(text.contains("NOT executed"), "{text}");
+        let confirm_id = fx.events.latest_confirm_id();
+
+        // Deny (the same guard call the computer_use_deny command makes).
+        assert!(
+            fx.shared.deny_confirmation(&confirm_id),
+            "denying must consume the pending confirmation"
+        );
+        assert!(
+            fx.shared.pending_confirmation(&confirm_id).is_none(),
+            "the pending must be gone after the denial"
+        );
+
+        // Retrying with the denied id: the documented denial error, the id is
+        // spent (it cannot mint again), and nothing is injected.
+        let denied_retry = json!({
+            "action": "left_click",
+            "x": 500,
+            "y": 450,
+            "confirm_id": confirm_id.clone()
+        });
+        let (success, text) = fx.execute(denied_retry).await;
+        assert!(!success, "a denied action must not execute: {text}");
+        assert!(text.contains("user denied"), "{text}");
+        assert!(text.contains("Do not retry"), "{text}");
+        assert_pointer_unchanged(&fx.display, before, "denied click retry");
+        assert!(
+            !fx.shared.mint_confirmation(&confirm_id),
+            "a denied confirmation must not mint"
+        );
+
+        // A fresh attempt without a token goes through the confirmation flow
+        // again (the denial must not leak into the no-token path).
+        let (success, text) = fx.execute(click).await;
+        assert!(!success, "{text}");
+        assert!(text.contains("NOT executed"), "{text}");
+        let new_id = fx.events.latest_confirm_id();
+        assert_ne!(new_id, confirm_id, "a NEW pending must be requested");
+        assert!(fx.shared.pending_confirmation(&new_id).is_some());
+        assert_pointer_unchanged(&fx.display, before, "fresh blocked click");
+    }
+
+    /// B2 regression, live: typed text (and typing-form chords) must reach
+    /// the X server but never the audit JSONL in plaintext — length + salt +
+    /// HMAC only — and the audit file itself must be 0600.
+    #[tokio::test]
+    #[ignore = "drives the X server named by $DISPLAY (run against a sandboxed Xvfb)"]
+    async fn x11_live_type_audit_stays_hmac_private() {
+        let Some((_, _, display)) = live_display() else {
+            eprintln!(
+                "SKIP x11_live_type_audit_stays_hmac_private: $DISPLAY does not answer xdotool"
+            );
+            return;
+        };
+        let fx = fixture(display);
+        fx.shared.grant_session(SESSION);
+
+        let secret = "p@ssw0rd-shift-test";
+        let type_call = json!({"action": "type", "text": secret});
+        // Typing target is unverifiable (no AT-SPI): fail closed first.
+        let (success, text) = fx.execute(type_call.clone()).await;
+        assert!(!success, "{text}");
+        assert!(text.contains("NOT executed"), "{text}");
+        let type_id = fx.events.latest_confirm_id();
+        assert!(fx.shared.mint_confirmation(&type_id));
+        let confirmed_type = json!({"action": "type", "text": secret, "confirm_id": type_id});
+        let (success, text) = fx.execute(confirmed_type).await;
+        assert!(success, "the confirmed typing must execute: {text}");
+
+        // A duplicate-modifier typing-form chord goes through the same
+        // pipeline; accepted or rejected at parse, either outcome is reported
+        // (the current parser accepts shift+shift+h and audits it as typed
+        // text, exactly like a bare single character).
+        let chord = "shift+shift+h";
+        let key_call = json!({"action": "key", "text": chord});
+        let (success, text) = fx.execute(key_call.clone()).await;
+        let chord_needed_confirmation = !success;
+        if chord_needed_confirmation {
+            assert!(text.contains("confirm_id"), "{text}");
+            let key_id = fx.events.latest_confirm_id();
+            assert!(fx.shared.mint_confirmation(&key_id));
+            let confirmed_key = json!({"action": "key", "text": chord, "confirm_id": key_id});
+            let (success, text) = fx.execute(confirmed_key).await;
+            assert!(success, "the confirmed chord must execute: {text}");
+        }
+        println!("x11_live chord {chord:?}: needed confirmation = {chord_needed_confirmation}");
+
+        // Audit privacy: the plaintexts must appear nowhere in the JSONL and
+        // typed-text records must carry length + salt + HMAC only.
+        let audit_path = fx.env.audit_path();
+        let raw = std::fs::read_to_string(&audit_path).expect("the audit JSONL must exist");
+        assert!(
+            !raw.contains(secret),
+            "typed plaintext leaked into the audit log"
+        );
+        assert!(
+            !raw.contains(chord),
+            "chord plaintext leaked into the audit log"
+        );
+        assert!(
+            !raw.contains("keys: shift+shift+h"),
+            "a typing-form chord must not be audited as a plaintext keys: shortcut"
+        );
+        let records: Vec<Value> = raw
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_str(line).expect("valid JSONL line"))
+            .collect();
+        let typed: Vec<&Value> = records
+            .iter()
+            .filter(|r| r["phase"] == "begin" && r["target"] == "keyboard focus")
+            .collect();
+        assert_eq!(
+            typed.len(),
+            4,
+            "blocked + executed calls of type and chord must all be audited as typed text: {records:?}"
+        );
+        let mut lengths: Vec<u64> = typed
+            .iter()
+            .map(|r| r["text_len"].as_u64().unwrap_or(0))
+            .collect();
+        lengths.sort();
+        assert_eq!(
+            lengths,
+            vec![13, 13, 19, 19],
+            "audited lengths of {chord:?} (13) and {secret:?} (19)"
+        );
+        for record in &typed {
+            assert_eq!(
+                record["salt"].as_str().unwrap_or_default().len(),
+                32,
+                "per-record salt required: {record}"
+            );
+            assert_eq!(
+                record["text_hmac_sha256"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .len(),
+                64,
+                "a typed-text HMAC record must exist: {record}"
+            );
+        }
+
+        // The audit file itself is private.
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&audit_path)
+            .expect("audit metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o7777, 0o600, "the audit JSONL must be 0600");
+    }
+
+    /// The computer_use_stop path (guard stop_all + registry
+    /// emergency_release_all) wipes grants and consent state on a live
+    /// backend: after stop + reopen, input is grant-required again.
+    #[tokio::test]
+    #[ignore = "drives the X server named by $DISPLAY (run against a sandboxed Xvfb)"]
+    async fn x11_live_stop_releases_and_wipes() {
+        let Some((_, _, display)) = live_display() else {
+            eprintln!("SKIP x11_live_stop_releases_and_wipes: $DISPLAY does not answer xdotool");
+            return;
+        };
+        let fx = fixture(display);
+        fx.shared.grant_session(SESSION);
+
+        let click = json!({"action": "left_click", "x": 300, "y": 200});
+        let (success, text) = fx.execute(click.clone()).await;
+        assert!(!success, "{text}");
+        assert!(text.contains("NOT executed"), "{text}");
+        let confirm_id = fx.events.latest_confirm_id();
+        assert!(fx.shared.pending_confirmation(&confirm_id).is_some());
+
+        // The computer_use_stop command path, verbatim.
+        fx.shared.stop_all();
+        fx.shared.backends.emergency_release_all();
+
+        assert!(
+            !fx.shared.has_active_grant(SESSION),
+            "stop must wipe the session grant"
+        );
+        assert!(
+            fx.shared.pending_confirmation(&confirm_id).is_none(),
+            "stop must wipe the pending confirmation"
+        );
+        assert!(
+            !fx.shared.mint_confirmation(&confirm_id),
+            "minting on a wiped pending must fail"
+        );
+        assert!(fx.shared.is_stopped(), "stop must raise the stop flag");
+
+        // Reopen (computer_use_set_enabled(true) resets the stop flag): the
+        // grant must still be gone — input is grant-required again.
+        fx.shared.reset_stop();
+        let before = pointer_at(&fx.display).expect("xdotool");
+        let (success, text) = fx.execute(click).await;
+        assert!(!success, "{text}");
+        assert!(text.contains("has not granted control"), "{text}");
+        assert_pointer_unchanged(&fx.display, before, "click after stop + reopen");
+
+        // Best-effort check that no XTEST button is left pressed: xdotool has
+        // no button-state query, so this is reported rather than asserted —
+        // the emergency release path (physical button up first, then the OS
+        // grant close) was requested above for every registered backend.
+        eprintln!(
+            "x11_live_stop: XTEST button state is not verifiable via xdotool; \
+             the emergency release (mouse-up + OS grant close) was requested"
+        );
+    }
+
+    /// Boundary rejections through the real stack: overlong/empty/unknown
+    /// chords are rejected at parse, and an out-of-bounds pointer move is
+    /// clamped — the X server must never report an out-of-screen pointer.
+    #[tokio::test]
+    #[ignore = "drives the X server named by $DISPLAY (run against a sandboxed Xvfb)"]
+    async fn x11_live_boundary_rejections() {
+        let Some((width, height, display)) = live_display() else {
+            eprintln!("SKIP x11_live_boundary_rejections: $DISPLAY does not answer xdotool");
+            return;
+        };
+        let fx = fixture(display);
+        fx.shared.grant_session(SESSION);
+
+        // (1) More than 4 chord tokens → rejected at parse (use type instead).
+        let (success, text) = fx
+            .execute(json!({"action": "key", "text": "a+b+c+d+e"}))
+            .await;
+        assert!(!success, "{text}");
+        assert!(
+            text.contains("invalid key chord") && text.contains("more than 4"),
+            "overlong chord must be rejected at parse: {text}"
+        );
+
+        // (2) Empty chord → rejected.
+        let (success, text) = fx.execute(json!({"action": "key", "text": ""})).await;
+        assert!(!success, "{text}");
+        assert!(
+            text.contains("non-empty"),
+            "an empty chord must be rejected: {text}"
+        );
+
+        // (3) Unknown key name → rejected.
+        let (success, text) = fx
+            .execute(json!({"action": "key", "text": "ctrl+nosuchkey"}))
+            .await;
+        assert!(!success, "{text}");
+        assert!(
+            text.contains("unknown key"),
+            "an unknown key name must be rejected: {text}"
+        );
+
+        // (4) Out-of-bounds pointer move: clamped with a warning (a hover is
+        // not T3-screened), and in NO case may the pointer land outside the
+        // screen — verified by the X server itself.
+        let (success, text) = fx
+            .execute(json!({"action": "mouse_move", "x": 99999, "y": 99999}))
+            .await;
+        println!("x11_live out-of-bounds move: success={success} text={text}");
+        assert!(
+            success,
+            "an out-of-bounds move is clamped, not rejected: {text}"
+        );
+        assert!(
+            text.contains("clamped"),
+            "the clamping must be reported as a warning: {text}"
+        );
+        let at = pointer_at(&fx.display).expect("xdotool");
+        println!("x11_live out-of-bounds move landed at {at:?}");
+        assert!(
+            at.0 >= 0 && at.0 <= width as i32 - 1 && at.1 >= 0 && at.1 <= height as i32 - 1,
+            "the pointer must stay on screen ({width}x{height}); xdotool reports {at:?}"
+        );
+        assert!(
+            (at.0 - width as i32 + 1).abs() <= 2 && (at.1 - height as i32 + 1).abs() <= 2,
+            "the move must be clamped to the bottom-right corner ({},{}); xdotool reports {at:?}",
+            width - 1,
+            height - 1
+        );
     }
 }

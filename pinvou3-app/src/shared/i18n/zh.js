@@ -356,6 +356,8 @@ export const dictZh = {
           confirmElementLabel:'目标元素',
           confirmOnce:'确认一次',
           confirmDeny:'拒绝',
+          showFullText:'显示全部文本',
+          fullTextWarning:'代理将原样键入以下文本。',
           screenshotCaption:'屏幕截图',
           screenshotLoading:'正在加载截图…',
           actionFailed:e=>`操作失败：${e}`,

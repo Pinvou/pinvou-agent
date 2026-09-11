@@ -419,12 +419,37 @@ impl BackendInner {
             }
         }
     }
+
+    /// Control lane: identical to [`Self::request`] but it deliberately
+    /// bypasses the in-flight gate (no compare_exchange, `in_flight` is
+    /// never touched). revoke/stop/emergency cleanup must not be rejected
+    /// with "another computer use request is still in flight" while a long
+    /// action runs (e.g. the 120s Wayland auth dialog) — the old routing
+    /// made a user's Stop click close the in-app grant while the OS-level
+    /// portal session survived. This is safe because the worker channel
+    /// serializes execution: a control request enqueued while an action is
+    /// in flight simply runs right after the current request resolves —
+    /// that IS the "queue behind the in-flight action" semantics the old
+    /// comment promised but `request` never delivered.
+    fn request_control(&self, kind: BackendRequestKind) -> Result<BackendReply, ComputerUseError> {
+        self.request_inner(kind)
+    }
 }
 
 impl Drop for BackendInner {
     fn drop(&mut self) {
-        let mut state = self.state.lock();
-        let previous = std::mem::replace(&mut *state, WorkerState::Shutdown);
+        // Transition the state machine to Shutdown under the lock, then
+        // RELEASE the guard before joining: the worker may be wedged in an
+        // OS call indefinitely, and joining while holding the state mutex
+        // would hang the dropping thread (possibly a Tauri/async thread at
+        // teardown) forever while every other caller on the handle blocks
+        // on that mutex. Mirrors ensure_sender's shape: finish the state
+        // write in the lock's critical section, collect what needs
+        // teardown, drop the guard, then join outside the lock.
+        let previous = {
+            let mut state = self.state.lock();
+            std::mem::replace(&mut *state, WorkerState::Shutdown)
+        };
         if let WorkerState::Running { tx, thread } = previous {
             let _ = tx.send(BackendRequest {
                 kind: BackendRequestKind::Shutdown,
@@ -433,6 +458,8 @@ impl Drop for BackendInner {
                 // 永远走不到 Shutdown 分支退出（评审修正）。
                 cancelled: Arc::new(AtomicBool::new(false)),
             });
+            // 先丢弃发送端（worker 的 rx.recv() 得到断连并退出循环），再在
+            // 锁外 join 回收线程。
             drop(tx);
             let _ = thread.join();
         }
@@ -483,6 +510,15 @@ impl BackendHandle {
 
     fn unit(&self, kind: BackendRequestKind) -> Result<(), ComputerUseError> {
         match self.inner.request(kind)? {
+            BackendReply::Unit => Ok(()),
+            _ => Err(ComputerUseError::failed("unexpected backend reply")),
+        }
+    }
+
+    /// Like [`Self::unit`] but over the control lane (bypasses the in-flight
+    /// gate; see `BackendInner::request_control`).
+    fn unit_control(&self, kind: BackendRequestKind) -> Result<(), ComputerUseError> {
+        match self.inner.request_control(kind)? {
             BackendReply::Unit => Ok(()),
             _ => Err(ComputerUseError::failed("unexpected backend reply")),
         }
@@ -564,8 +600,26 @@ impl BackendHandle {
     /// 关闭该会话后端持有的持久 OS 级授权（见 trait 同名方法）。阻塞直到
     /// worker 应答（可能排在在行动作之后）；UI 调用方应经
     /// [`BackendRegistry`] 在 detached 线程里触发，不阻塞事件循环。
+    ///
+    /// Routed through the control lane (`request_control`), NOT the gated
+    /// `request`: revoke/stop can arrive while an action is in flight, and
+    /// the old routing rejected the release with "another computer use
+    /// request is still in flight", silently leaving the OS-level grant
+    /// (Wayland portal session) open. The control request simply queues
+    /// behind the in-flight action on the serialized worker channel.
     pub fn release_os_grant(&self) -> Result<(), ComputerUseError> {
-        self.unit(BackendRequestKind::ReleaseOsGrant)
+        self.unit_control(BackendRequestKind::ReleaseOsGrant)
+    }
+
+    /// Best-effort physical left-button release through the control lane
+    /// (bypasses the in-flight gate, queues behind any in-flight action).
+    /// Emergency cleanup for sessions that may die mid-drag: a model that
+    /// pressed the left button and was stopped/revoked/dropped must not
+    /// leave the user's machine in button-held drag state.
+    pub fn emergency_mouse_up(&self) -> Result<(), ComputerUseError> {
+        self.unit_control(BackendRequestKind::MouseUp {
+            button: MouseButton::Left,
+        })
     }
 }
 
@@ -583,41 +637,61 @@ impl BackendRegistry {
         self.handles.lock().insert(session_id.to_string(), handle);
     }
 
-    /// 工具析构时注销，避免句柄把 worker 线程吊在登记表里。
-    pub fn remove(&self, session_id: &str) {
-        self.handles.lock().remove(session_id);
-    }
+    // Unregistration has a single entry point, [`Self::emergency_release`]:
+    // it unregisters AND cleans up (physical button + OS grant). A bare
+    // remove was removed on purpose — an unregister-only path lets a dying
+    // session skip the button/grant cleanup while looking successful.
 
-    /// 在 detached 线程里触发会话后端的 `release_os_grant`：worker 可能正
-    /// 忙（release 排在在行动作之后），不能阻塞 UI；结果只记日志——授权
-    /// 泄漏的最坏情形回到"活到进程退出"，不产生新的故障面。
-    pub fn release(&self, session_id: &str) {
-        let handle = self.handles.lock().get(session_id).cloned();
+    /// Emergency cleanup for one session (revoke / tool drop): on a detached
+    /// thread, first unpress the physical left button (a model that pressed
+    /// and died must not leave the machine in button-held drag state), then
+    /// close the persistent OS-level grant. Both go through the control
+    /// lane, so they are NOT rejected while an action is in flight — they
+    /// queue behind it on the serialized worker channel and run once it
+    /// resolves. Errors are only logged: the worst case (a leaked grant or
+    /// held button) must never panic or block the caller. The handle is
+    /// unregistered synchronously, so revoke/drop immediately stops the
+    /// registry from tracking the session; the detached thread keeps its own
+    /// handle clone alive until the cleanup finishes.
+    ///
+    /// Known trade-off: a session re-granted after a revoke keeps acting
+    /// through its still-alive tool handle, and the rebuilt OS grant is no
+    /// longer tracked here — it is only closed again by the tool's Drop.
+    pub fn emergency_release(&self, session_id: &str) {
+        let handle = self.handles.lock().remove(session_id);
         let Some(handle) = handle else {
             return;
         };
-        std::thread::spawn(move || {
-            if let Err(error) = handle.release_os_grant() {
-                eprintln!("[computer_use] release_os_grant failed: {error}");
-            }
-        });
+        std::thread::spawn(move || emergency_cleanup(handle));
     }
 
-    /// 对所有登记会话触发 `release_os_grant`（stop / 总开关关闭）。
-    pub fn release_all(&self) {
+    /// [`Self::emergency_release`] for every registered session (stop /
+    /// master-switch off). Registrations are kept: live tools unregister via
+    /// their own Drop, and a session that is re-granted later must still be
+    /// reachable for a subsequent global stop.
+    pub fn emergency_release_all(&self) {
         let handles: Vec<BackendHandle> = self.handles.lock().values().cloned().collect();
         for handle in handles {
-            std::thread::spawn(move || {
-                if let Err(error) = handle.release_os_grant() {
-                    eprintln!("[computer_use] release_os_grant failed: {error}");
-                }
-            });
+            std::thread::spawn(move || emergency_cleanup(handle));
         }
     }
 
     #[cfg(test)]
     pub(crate) fn contains(&self, session_id: &str) -> bool {
         self.handles.lock().contains_key(session_id)
+    }
+}
+
+/// Emergency cleanup for one handle, in the fixed order: unpress the
+/// physical left button first, then close the persistent OS-level grant.
+/// Runs on detached threads (see [`BackendRegistry::emergency_release`]);
+/// errors are only logged with the existing `eprintln!` convention.
+fn emergency_cleanup(handle: BackendHandle) {
+    if let Err(error) = handle.emergency_mouse_up() {
+        eprintln!("[computer_use] emergency_mouse_up failed: {error}");
+    }
+    if let Err(error) = handle.release_os_grant() {
+        eprintln!("[computer_use] release_os_grant failed: {error}");
     }
 }
 
@@ -875,5 +949,182 @@ mod tests {
         );
         handle.inner.in_flight.store(false, Ordering::SeqCst);
         assert!(handle.capabilities().is_ok(), "flag must be released");
+    }
+
+    /// Shared probe state for the control-lane tests: records emergency
+    /// surfaces and can stall one method to simulate a long in-flight
+    /// action (e.g. the 120s Wayland auth dialog).
+    #[derive(Default)]
+    struct ProbeState {
+        stall: Option<Duration>,
+        captures: u64,
+        mouse_ups: Vec<MouseButton>,
+        releases: u64,
+    }
+
+    struct ControlProbeBackend {
+        state: Arc<Mutex<ProbeState>>,
+    }
+
+    impl ComputerUseBackend for ControlProbeBackend {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                screenshot: true,
+                input: true,
+                ui_tree: false,
+                notes: "probe".to_string(),
+            }
+        }
+
+        fn capture(&mut self) -> Result<Capture, ComputerUseError> {
+            let stall = self.state.lock().stall;
+            if let Some(delay) = stall {
+                std::thread::sleep(delay);
+            }
+            self.state.lock().captures += 1;
+            Ok(Capture {
+                rgba: vec![0u8; 4 * 4 * 4],
+                width: 4,
+                height: 4,
+                origin_x: 0,
+                origin_y: 0,
+                input_scale_x: 1.0,
+                input_scale_y: 1.0,
+            })
+        }
+
+        fn cursor_position(&mut self) -> Result<(i32, i32), ComputerUseError> {
+            Ok((0, 0))
+        }
+
+        fn move_to(&mut self, _x: i32, _y: i32) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn click(&mut self, _button: MouseButton, _count: u8) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn mouse_down(&mut self, _button: MouseButton) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn mouse_up(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
+            self.state.lock().mouse_ups.push(button);
+            Ok(())
+        }
+
+        fn drag(&mut self, _from: (i32, i32), _to: (i32, i32)) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn scroll(
+            &mut self,
+            _direction: ScrollDirection,
+            _clicks: u32,
+        ) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn type_text(&mut self, _text: &str) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn key_chord(&mut self, _keys: &[Key]) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn hold_key(&mut self, _keys: &[Key], _ms: u64) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn ui_tree(&mut self, _opts: &UiTreeOptions) -> Result<String, ComputerUseError> {
+            Err(ComputerUseError::unsupported(
+                "ui_tree",
+                "probe has no tree",
+            ))
+        }
+
+        fn element_at_point(
+            &mut self,
+            _x: i32,
+            _y: i32,
+        ) -> Result<Option<ElementInfo>, ComputerUseError> {
+            Ok(None)
+        }
+
+        fn release_os_grant(&mut self) -> Result<(), ComputerUseError> {
+            self.state.lock().releases += 1;
+            Ok(())
+        }
+    }
+
+    /// Spins a slow capture on a helper thread and returns once it provably
+    /// holds the in-flight flag.
+    fn start_in_flight_capture(handle: &BackendHandle) -> std::thread::JoinHandle<()> {
+        let worker = {
+            let handle = handle.clone();
+            std::thread::spawn(move || {
+                handle
+                    .capture()
+                    .expect("slow capture must eventually succeed");
+            })
+        };
+        while !handle.inner.in_flight.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        worker
+    }
+
+    /// Regression (revoke/stop during an in-flight request): the OS-grant
+    /// release must go through the control lane instead of being rejected
+    /// with "another computer use request is still in flight" — the old
+    /// `request` routing silently kept the OS-level portal session alive
+    /// whenever the user clicked Stop during a long action.
+    #[test]
+    fn release_os_grant_succeeds_while_another_request_is_in_flight() {
+        let state = Arc::new(Mutex::new(ProbeState::default()));
+        state.lock().stall = Some(Duration::from_millis(300));
+        let state_for_factory = Arc::clone(&state);
+        let handle = BackendHandle::lazy(move || {
+            Ok(Box::new(ControlProbeBackend {
+                state: state_for_factory,
+            }) as Box<dyn ComputerUseBackend>)
+        });
+        let worker = start_in_flight_capture(&handle);
+        let released = handle.release_os_grant();
+        assert!(
+            released.is_ok(),
+            "control lane must bypass the in-flight gate: {released:?}"
+        );
+        worker.join().expect("capture thread");
+        let state = state.lock();
+        assert_eq!(state.captures, 1);
+        assert_eq!(state.releases, 1, "release must reach the backend");
+    }
+
+    /// Regression (emergency cleanup during an in-flight request): the
+    /// physical left-button release must also ride the control lane and
+    /// reach the backend instead of being rejected by the in-flight gate.
+    #[test]
+    fn emergency_mouse_up_releases_the_left_button_while_in_flight() {
+        let state = Arc::new(Mutex::new(ProbeState::default()));
+        state.lock().stall = Some(Duration::from_millis(300));
+        let state_for_factory = Arc::clone(&state);
+        let handle = BackendHandle::lazy(move || {
+            Ok(Box::new(ControlProbeBackend {
+                state: state_for_factory,
+            }) as Box<dyn ComputerUseBackend>)
+        });
+        let worker = start_in_flight_capture(&handle);
+        let result = handle.emergency_mouse_up();
+        assert!(
+            result.is_ok(),
+            "emergency mouse-up must bypass the in-flight gate: {result:?}"
+        );
+        worker.join().expect("capture thread");
+        let state = state.lock();
+        assert_eq!(state.captures, 1);
+        assert_eq!(state.mouse_ups, vec![MouseButton::Left]);
     }
 }

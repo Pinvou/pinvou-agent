@@ -11,7 +11,11 @@
 //! 缺则随机生成并写入）→ 仍不可用时回退私有文件密钥 `<数据根>/keys/
 //! computer-use-audit-hmac.key`（0700 目录 + 尽力 0600 文件；首次使用时若
 //! 旧布局 `computer-use/audit-hmac.key` 存在则原子 rename 迁移）→ 全部失败
-//! 则**只记长度**（失败不缓存，下次调用重试）。密钥与日志分离是底线：只
+//! 则**只记长度**（失败不缓存，下次调用重试）。Review finding M11: a
+//! transient keyring *read* error (`Err` from `get`) neither mints nor
+//! overwrites — retrieval falls back read-only to the existing file keys and
+//! fails closed (length-only records) when no file key exists, so one
+//! locked-keychain moment cannot silently rotate the audit key. 密钥与日志分离是底线：只
 //! 拿到单条 jsonl 的人不能对键入内容做离线字典恢复（评审发现：无盐 SHA-256
 //! + 明文长度对密码这类小键空间形同明文）。
 
@@ -209,7 +213,10 @@ impl AuditLog {
         // 助手（unix 上 0600 创建、无 umask 暴露窗口；评审发现：此前经普通
         // OpenOptions 按 0644 落盘，纵深不足）。
         let mut file = crate::platform::filesystem::open_private_append_file(&self.path)?;
-        file.write_all(line.as_bytes())
+        file.write_all(line.as_bytes())?;
+        // fsync each record: a crash must not tear the last JSONL line. One
+        // fsync per record is acceptable at audit's per-tool-call frequency.
+        file.sync_data()
     }
 }
 
@@ -277,16 +284,50 @@ fn audit_secrets_backend() -> codewhale_secrets::Secrets {
 
 fn compute_audit_mac_key() -> Option<Vec<u8>> {
     let secrets = audit_secrets_backend();
-    if let Ok(Some(stored)) = secrets.get(AUDIT_HMAC_SECRET_NAME) {
-        if let Some(key) = decode_hex_32(&stored) {
-            return Some(key);
+    compute_audit_mac_key_with(&secrets)
+}
+
+/// Decision kernel of key retrieval over an injected secrets backend
+/// (testable seam; tests drive it with a scripted `KeyringStore`).
+/// Distinguishes three keyring-read outcomes:
+///
+/// 1. `Ok(Some)` with a decodable key → use it;
+/// 2. `Ok(None)` or a stored-but-undecodable value → mint a fresh key and
+///    persist it to the keyring (recovery); on persist failure fall through
+///    to the file key chain, which may mint a file key;
+/// 3. `Err(_)` — transient keyring failure (locked keychain, denied prompt,
+///    D-Bus hiccup) → do NOT mint and do NOT overwrite: writing a fresh
+///    keyring entry here would silently rotate the key and permanently
+///    destroy verifiability of all prior records, and a failed `set` after
+///    that would leave split-brain keys. Fall back READ-ONLY to the file
+///    keys; with no file key either, fail the retrieval (the caller
+///    degrades to length-only, fail-closed) instead of silently creating a
+///    divergent file key.
+fn compute_audit_mac_key_with(secrets: &codewhale_secrets::Secrets) -> Option<Vec<u8>> {
+    match secrets.get(AUDIT_HMAC_SECRET_NAME) {
+        Ok(stored) => {
+            if let Some(key) = stored.as_deref().and_then(decode_hex_32) {
+                return Some(key);
+            }
+            let key: [u8; AUDIT_HMAC_KEY_BYTES] = rand::random();
+            let hex = hex_lower(&key);
+            if secrets.set(AUDIT_HMAC_SECRET_NAME, &hex).is_ok() {
+                return Some(key.to_vec());
+            }
+            audit_file_key_chain()
+        }
+        Err(error) => {
+            eprintln!(
+                "[computer_use] audit keyring read failed; using file keys read-only: {error}"
+            );
+            read_only_audit_file_key()
         }
     }
-    let key: [u8; AUDIT_HMAC_KEY_BYTES] = rand::random();
-    let hex = hex_lower(&key);
-    if secrets.set(AUDIT_HMAC_SECRET_NAME, &hex).is_ok() {
-        return Some(key.to_vec());
-    }
+}
+
+/// File-key fallback chain reachable from the minting path (secrets layer
+/// unusable for writes); unlike the read-only tail it may mint a new key:
+fn audit_file_key_chain() -> Option<Vec<u8>> {
     // secrets 层不可用：回退文件密钥（经 platform 私有文件基座，0700 目录 +
     // 私有 ACL/权限，OS 差异留在 platform 层）。现行位置是
     // `<数据根>/keys/`（与日志分目录）；首次使用时若旧布局（审计目录内
@@ -305,6 +346,20 @@ fn compute_audit_mac_key() -> Option<Vec<u8>> {
             load_or_migrate_key_file(&directory, OsStr::new(AUDIT_HMAC_KEY_FILE), None)
         }),
     }
+}
+
+/// Read-only file-key tail for the keyring-error path: read the existing
+/// key (current `<data root>/keys/` position first, then the legacy
+/// in-audit-dir position) without creating directories, migrating, or
+/// minting. `None` means no file key exists and retrieval fails closed.
+fn read_only_audit_file_key() -> Option<Vec<u8>> {
+    read_audit_key_file_at(&audit_keys_dir().join(AUDIT_HMAC_KEY_V2_FILE))
+        .or_else(|| read_audit_key_file_at(&audit_dir().join(AUDIT_HMAC_KEY_FILE)))
+}
+
+fn read_audit_key_file_at(path: &Path) -> Option<Vec<u8>> {
+    let bytes = crate::platform::filesystem::read_private_file_anchored(path).ok()??;
+    decode_hex_32(&String::from_utf8(bytes).ok()?)
 }
 
 /// 文件密钥回退链（`audit_mac_key` 的可测内核）：
@@ -366,6 +421,7 @@ pub fn new_call_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codewhale_secrets::KeyringStore as _;
     use std::fs;
 
     fn temp_log() -> (PathBuf, AuditLog) {
@@ -650,5 +706,219 @@ mod tests {
             read_audit_key_file_named(&dirs.keys, OsStr::new(AUDIT_HMAC_KEY_V2_FILE)),
             Some(key)
         );
+    }
+
+    /// Scripted keyring lookup outcome for `ScriptedKeyringStore`.
+    enum ScriptedGet {
+        Absent,
+        Stored(String),
+        Fails,
+    }
+
+    /// Fault-injecting in-memory `KeyringStore` for hermetic kernel tests:
+    /// `get` returns the current scripted outcome, `set` records the call
+    /// and (unless forced to fail) updates the stored value so persistence
+    /// round-trips through the trait. Nothing touches the OS keyring or the
+    /// real secrets file.
+    struct ScriptedKeyringStore {
+        stored: std::sync::Mutex<ScriptedGet>,
+        fail_set: bool,
+        set_values: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl ScriptedKeyringStore {
+        fn last_set(&self) -> Option<String> {
+            self.set_values
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .last()
+                .cloned()
+        }
+    }
+
+    impl codewhale_secrets::KeyringStore for ScriptedKeyringStore {
+        fn get(&self, _key: &str) -> Result<Option<String>, codewhale_secrets::SecretsError> {
+            let guard = self.stored.lock().unwrap_or_else(|p| p.into_inner());
+            match &*guard {
+                ScriptedGet::Absent => Ok(None),
+                ScriptedGet::Stored(value) => Ok(Some(value.clone())),
+                ScriptedGet::Fails => Err(codewhale_secrets::SecretsError::Keyring(
+                    "injected transient keyring read failure".to_string(),
+                )),
+            }
+        }
+
+        fn set(&self, key: &str, value: &str) -> Result<(), codewhale_secrets::SecretsError> {
+            if self.fail_set {
+                return Err(codewhale_secrets::SecretsError::Keyring(
+                    "injected keyring write failure".to_string(),
+                ));
+            }
+            *self.stored.lock().unwrap_or_else(|p| p.into_inner()) =
+                ScriptedGet::Stored(value.to_string());
+            self.set_values
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(format!("{key}={value}"));
+            Ok(())
+        }
+
+        fn delete(&self, _key: &str) -> Result<(), codewhale_secrets::SecretsError> {
+            Ok(())
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "scripted (audit tests)"
+        }
+    }
+
+    fn scripted_store(get: ScriptedGet) -> std::sync::Arc<ScriptedKeyringStore> {
+        std::sync::Arc::new(ScriptedKeyringStore {
+            stored: std::sync::Mutex::new(get),
+            fail_set: false,
+            set_values: std::sync::Mutex::new(Vec::new()),
+        })
+    }
+
+    /// Build a `Secrets` facade over a scripted store while keeping the
+    /// concrete `Arc` handle for post-hoc inspection (`last_set`, `get`).
+    fn scripted_secrets(
+        store: &std::sync::Arc<ScriptedKeyringStore>,
+    ) -> codewhale_secrets::Secrets {
+        let coerced: std::sync::Arc<dyn codewhale_secrets::KeyringStore> = store.clone();
+        codewhale_secrets::Secrets::new(coerced)
+    }
+
+    /// Restores the previous `PINVOU3_HOME` on drop (ENV_LOCK must be held).
+    struct EnvRestore(Option<std::ffi::OsString>);
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            match self.0.take() {
+                // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+                Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+                // SAFETY: same as above.
+                None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+            }
+        }
+    }
+
+    /// Fresh temporary `PINVOU3_HOME` for one test, with ENV_LOCK held for
+    /// the whole test duration. Field order matters: the env is restored
+    /// while the lock is still held, and the temp home is removed first.
+    struct IsolatedHome {
+        home: PathBuf,
+        restore: EnvRestore,
+        // Declared last so it is released only after `restore` has run.
+        _env_lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for IsolatedHome {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.home);
+        }
+    }
+
+    fn isolated_home() -> IsolatedHome {
+        let env_lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let previous = std::env::var_os("PINVOU3_HOME");
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-cu-audit-home-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+        IsolatedHome {
+            home,
+            restore: EnvRestore(previous),
+            _env_lock: env_lock,
+        }
+    }
+
+    /// M11 review-fix regression: a transient keyring read error with an
+    /// existing file key uses that file key and never overwrites the
+    /// keyring — no silent rotation, no split-brain keys.
+    #[test]
+    fn keyring_read_error_uses_file_key_without_rotating() {
+        let _home = isolated_home();
+        let stored = "ab".repeat(AUDIT_HMAC_KEY_BYTES);
+        let keys_dir = crate::platform::filesystem::open_private_file_directory(&audit_keys_dir())
+            .expect("keys dir");
+        keys_dir
+            .atomic_write_private_file(OsStr::new(AUDIT_HMAC_KEY_V2_FILE), stored.as_bytes())
+            .expect("write file key");
+
+        let store = scripted_store(ScriptedGet::Fails);
+        let secrets = scripted_secrets(&store);
+        let key = compute_audit_mac_key_with(&secrets).expect("file key must be used");
+
+        assert_eq!(key, decode_hex_32(&stored).expect("valid key hex"));
+        // The keyring was NOT overwritten (no `set` reached the store).
+        assert!(store.last_set().is_none(), "keyring must not be rotated");
+        // The file key was used in place and is unchanged.
+        assert_eq!(
+            read_audit_key_file_named(&keys_dir, OsStr::new(AUDIT_HMAC_KEY_V2_FILE)),
+            Some(key)
+        );
+    }
+
+    /// M11 review-fix regression: keyring read error with no file key either
+    /// → retrieval fails closed; no divergent file key is minted anywhere.
+    #[test]
+    fn keyring_read_error_without_file_key_fails_closed() {
+        let home = isolated_home();
+        fs::create_dir_all(&home.home).expect("empty home");
+
+        let store = scripted_store(ScriptedGet::Fails);
+        let secrets = scripted_secrets(&store);
+        assert!(
+            compute_audit_mac_key_with(&secrets).is_none(),
+            "must fail closed instead of minting a divergent file key"
+        );
+        // No key file was minted in either layout, and the keyring
+        // (scripted store) was not written either.
+        assert!(!audit_keys_dir().join(AUDIT_HMAC_KEY_V2_FILE).exists());
+        assert!(!audit_dir().join(AUDIT_HMAC_KEY_FILE).exists());
+        assert!(store.last_set().is_none());
+    }
+
+    /// Pins current recovery behavior: an absent keyring entry mints a fresh
+    /// key and persists it to the keyring.
+    #[test]
+    fn absent_keyring_entry_mints_and_persists() {
+        let _home = isolated_home();
+        let store = scripted_store(ScriptedGet::Absent);
+        let secrets = scripted_secrets(&store);
+        let key = compute_audit_mac_key_with(&secrets).expect("minted key");
+
+        assert_eq!(key.len(), AUDIT_HMAC_KEY_BYTES);
+        // Persisted: the store now holds the same key as valid 32-byte hex.
+        let saved = store
+            .get(AUDIT_HMAC_SECRET_NAME)
+            .expect("store reachable")
+            .expect("entry persisted");
+        assert_eq!(decode_hex_32(&saved), Some(key));
+    }
+
+    /// Pins current recovery behavior: a stored-but-undecodable keyring
+    /// value still rotates (mint + persist a fresh key).
+    #[test]
+    fn undecodable_keyring_entry_still_rotates() {
+        let _home = isolated_home();
+        let store = scripted_store(ScriptedGet::Stored("not-a-hex-key".to_string()));
+        let secrets = scripted_secrets(&store);
+        let key = compute_audit_mac_key_with(&secrets).expect("rotated key");
+
+        assert_eq!(key.len(), AUDIT_HMAC_KEY_BYTES);
+        // The undecodable entry was replaced by the fresh key's hex.
+        let saved = store
+            .get(AUDIT_HMAC_SECRET_NAME)
+            .expect("store reachable")
+            .expect("entry persisted");
+        assert_ne!(saved, "not-a-hex-key");
+        assert_eq!(decode_hex_32(&saved), Some(key));
     }
 }

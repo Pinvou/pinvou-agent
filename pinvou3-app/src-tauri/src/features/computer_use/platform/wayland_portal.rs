@@ -839,14 +839,21 @@ impl PortalInner {
         match tokio::time::timeout(NOTIFY_TIMEOUT, call).await {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(error)) => {
-                self.reset();
+                // The session may still be alive and authorized on the
+                // compositor side: close it instead of only clearing local
+                // state, or the next input action pops a second authorization
+                // dialog next to the abandoned session.
+                self.reset_closed().await;
                 Err(ComputerUseError::unavailable(format!(
                     "portal {method}: {error} (session reset; the next input action reopens \
                      the authorization dialog)"
                 )))
             }
             Err(_) => {
-                self.reset();
+                // A timeout says nothing about the session itself: it is
+                // probably still live and authorized, which is exactly why it
+                // must be closed here rather than merely dropped locally.
+                self.reset_closed().await;
                 Err(ComputerUseError::unavailable(format!(
                     "portal {method} timed out after {NOTIFY_TIMEOUT:?} (session reset)"
                 )))
@@ -854,10 +861,20 @@ impl PortalInner {
         }
     }
 
-    fn reset(&mut self) {
-        // session 置 None 会连带 drop PwCapture(停流并 join 其线程);
-        // PortalSession 的 Drop 路径在 close/reset 共用。
-        self.session = None;
+    /// Session-invalidated cleanup for the `notify` error paths. The old
+    /// `reset()` only cleared local state; `PortalSession` has no Drop impl,
+    /// so `Session.Close` was never sent and a possibly still-live,
+    /// authorized RemoteDesktop session leaked on the compositor side (the
+    /// next input action then opened a second authorization dialog). Take
+    /// the session and close it via `abandon` (bounded by CLOSE_TIMEOUT,
+    /// close errors swallowed — the caller's original error is what matters),
+    /// then clear the remaining per-session state. Dropping the taken
+    /// `PortalSession` also drops its `PwCapture`, stopping the stream and
+    /// joining its thread.
+    async fn reset_closed(&mut self) {
+        if let Some(session) = self.session.take() {
+            self.abandon(session.path).await;
+        }
         self.capture_error = None;
         self.last_pointer = None;
     }

@@ -11,6 +11,11 @@ struct MockState {
     /// 命中测试按元素 bounds 判定（真实 a11y 语义）：element_at_point 只在
     /// 查询点落入元素矩形内时返回它。
     element: Option<ElementInfo>,
+    /// Secondary element list (tried in order when the primary misses):
+    /// drives multi-element scenarios such as "start point has no on-screen
+    /// element while the drop point hits one" (the mock's primary is a
+    /// single element).
+    background: Vec<ElementInfo>,
     /// 置位时 element_at_point 返回 Err（a11y 故障注入）。
     element_error: bool,
     /// 焦点元素（focused_element 的返回值；None = 明确无焦点）。
@@ -40,12 +45,15 @@ struct MockState {
     /// release_os_grant 被调用次数（评审修复回归：revoke/stop 必须触发
     /// 后端关闭持久 OS 级授权）。
     released: u64,
+    /// 置位时 drag 返回 Err（拖拽后端故障注入，验证失败后的按钮释放兜底）。
+    drag_error: bool,
 }
 
 impl Default for MockState {
     fn default() -> Self {
         Self {
             element: None,
+            background: Vec::new(),
             element_error: false,
             focused: None,
             focused_error: false,
@@ -63,6 +71,7 @@ impl Default for MockState {
             typed: Vec::new(),
             chords: Vec::new(),
             released: 0,
+            drag_error: false,
         }
     }
 }
@@ -139,7 +148,11 @@ impl ComputerUseBackend for MockBackend {
     }
 
     fn drag(&mut self, from: (i32, i32), to: (i32, i32)) -> Result<(), ComputerUseError> {
-        self.state.lock().drags.push((from, to));
+        let mut state = self.state.lock();
+        if state.drag_error {
+            return Err(ComputerUseError::unavailable("mock: drag backend failed"));
+        }
+        state.drags.push((from, to));
         Ok(())
     }
 
@@ -176,14 +189,18 @@ impl ComputerUseBackend for MockBackend {
         if state.element_error {
             return Err(ComputerUseError::unavailable("mock: a11y backend failed"));
         }
-        let Some(element) = &state.element else {
-            return Ok(None);
+        let hit = |element: &ElementInfo| {
+            x >= element.x
+                && x < element.x + element.width
+                && y >= element.y
+                && y < element.y + element.height
         };
-        let hit = x >= element.x
-            && x < element.x + element.width
-            && y >= element.y
-            && y < element.y + element.height;
-        Ok(hit.then(|| element.clone()))
+        if let Some(element) = &state.element {
+            if hit(element) {
+                return Ok(Some(element.clone()));
+            }
+        }
+        Ok(state.background.iter().find(|e| hit(e)).cloned())
     }
 
     fn focused_element(&mut self) -> Result<Option<ElementInfo>, ComputerUseError> {
@@ -286,6 +303,20 @@ fn fixture() -> (TestFixture, EnvRestore) {
 
 fn context(workspace: &Path) -> ToolContext {
     ToolContext::new(workspace)
+}
+
+/// 名单之外的无害元素（T3 筛查 Clear）：place 元素盖住筛查点，让放行路径
+/// 走到执行（评审修复后「目标点无 a11y 元素」会失败关闭要求确认）。
+fn benign_element(x: i32, y: i32, width: i32, height: i32) -> ElementInfo {
+    ElementInfo {
+        role: "AXGroup".to_string(),
+        name: "Workspace".to_string(),
+        x,
+        y,
+        width,
+        height,
+        secure: false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -443,6 +474,9 @@ async fn input_without_grant_emits_event_and_errors() {
 async fn granted_click_executes_and_attaches_screenshot() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
+    // A benign element covers the (5,6) target: an element-free point now
+    // fails closed and demands confirmation.
+    fixture.mock.lock().element = Some(benign_element(0, 0, 16, 16));
     let result = fixture
         .tool
         .execute(
@@ -489,6 +523,9 @@ async fn granted_click_executes_and_attaches_screenshot() {
 async fn out_of_bounds_coordinates_clamp_with_warning() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
+    // A benign element covers the clamped (15,15) point: an element-free
+    // point now fails closed and demands confirmation.
+    fixture.mock.lock().element = Some(benign_element(0, 0, 16, 16));
     let result = fixture
         .tool
         .execute(
@@ -511,6 +548,9 @@ async fn first_coordinate_action_auto_captures() {
     let (fixture, _restore) = fixture();
     // scroll 是 Input 类动作（评审修正）：需要会话授权。
     fixture.shared.grant_session("s-test");
+    // A benign element covers the (3,4) screening point: an element-free
+    // point now fails closed and demands confirmation.
+    fixture.mock.lock().element = Some(benign_element(0, 0, 16, 16));
     let result = fixture
         .tool
         .execute(
@@ -860,6 +900,9 @@ async fn no_focused_element_allows_typing() {
 async fn drag_drop_target_is_screened() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
+    // A benign element covers the (1,1) start point (the start must also be
+    // screened and read Clear); the (12,12) drop point hits the denylist.
+    fixture.mock.lock().background = vec![benign_element(0, 0, 3, 3)];
     fixture.mock.lock().element = Some(ElementInfo {
         role: "button".to_string(),
         name: "Delete".to_string(),
@@ -1266,6 +1309,8 @@ async fn type_summary_masks_preview_for_secure_targets() {
 /// 评审修复回归：`key "p"` 逐字符泄漏密码——单 Char 无修饰键的和弦按
 /// 键入文本审计（长度 + salt || text 的 HMAC），明文不进 JSONL；
 /// `ctrl+s` 等快捷键和弦保留明文。
+/// Duplicate-modifier permutations (shift+shift+h etc.) are classified by
+/// content regardless of token position and are typing forms all the same.
 #[tokio::test]
 async fn single_char_key_chord_is_audited_as_typed_text() {
     let (fixture, _restore) = fixture();
@@ -1273,7 +1318,18 @@ async fn single_char_key_chord_is_audited_as_typed_text() {
     // 评审修复回归：shift+字符（两种顺序，解析保留模型给定顺序）是大写/
     // 符号的键入形态，与裸单字符同策略——只记 HMAC，明文不得进 JSONL
     // （`key "shift+H"` 逐字符可拼出密码）。
-    for chord in ["p", "shift+h", "h+shift", "ctrl+s"] {
+    // Duplicate-modifier chords (regression fix: `shift+shift+h` slipped
+    // past the positional pattern while still typing a capital H;
+    // `h+shift+shift` types a lowercase h) are audited as typed text too.
+    for chord in [
+        "p",
+        "shift+h",
+        "h+shift",
+        "shift+shift+h",
+        "shift+h+shift",
+        "h+shift+shift",
+        "ctrl+s",
+    ] {
         let result = fixture
             .tool
             .execute(
@@ -1299,7 +1355,7 @@ async fn single_char_key_chord_is_audited_as_typed_text() {
         .iter()
         .filter(|r| r["action"] == "key" && r["phase"] == "begin")
         .collect();
-    assert_eq!(begins.len(), 4, "four key calls: {records:?}");
+    assert_eq!(begins.len(), 7, "seven key calls: {records:?}");
 
     let typed: Vec<&serde_json::Value> = begins
         .iter()
@@ -1308,16 +1364,20 @@ async fn single_char_key_chord_is_audited_as_typed_text() {
         .collect();
     assert_eq!(
         typed.len(),
-        3,
-        "single-char and shift+char audited as typed text"
+        6,
+        "typed-text chords (incl. duplicate-modifier ones) audited as typed text"
     );
-    // 长度 = 和弦文本长度（"p"、"shift+h"、"h+shift"）。
+    // Lengths = the chord text lengths.
     let mut lens: Vec<u64> = typed
         .iter()
         .map(|r| r["text_len"].as_u64().unwrap_or_default())
         .collect();
     lens.sort();
-    assert_eq!(lens, vec![1, 7, 7], "typed-text lengths: {typed:?}");
+    assert_eq!(
+        lens,
+        vec![1, 7, 7, 13, 13, 13],
+        "typed-text lengths: {typed:?}"
+    );
     for record in &typed {
         // 与 type 同策略：盐 + HMAC 齐备。
         assert_eq!(record["salt"].as_str().unwrap_or_default().len(), 32);
@@ -1337,10 +1397,14 @@ async fn single_char_key_chord_is_audited_as_typed_text() {
         .expect("modifier chord keeps plaintext target");
     assert!(chorded["text_len"].is_null());
     assert!(chorded["text_hmac_sha256"].is_null());
-    // 单字符明文（含 shift+字符）绝不能以 keys: 形式出现。
+    // Plaintext of typed-text chords (incl. any shift+char permutation)
+    // must never appear in keys: form.
     assert!(!raw.contains("keys: p"));
     assert!(!raw.contains("keys: shift+h"));
     assert!(!raw.contains("keys: h+shift"));
+    assert!(!raw.contains("keys: shift+shift+h"));
+    assert!(!raw.contains("keys: shift+h+shift"));
+    assert!(!raw.contains("keys: h+shift+shift"));
 }
 
 // ---------------------------------------------------------------------------
@@ -1545,7 +1609,10 @@ async fn destructive_key_chords_require_confirmation() {
 async fn mouse_move_while_button_held_is_screened() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
-    // 光标 (7,9) 处是无害位置：down 放行并置按住状态。
+    // A benign element covers the cursor (7,9): the down screening point
+    // passes and the held state is set (an element-free point now fails
+    // closed).
+    fixture.mock.lock().element = Some(benign_element(0, 0, 16, 16));
     let result = fixture
         .tool
         .execute(
@@ -1580,8 +1647,9 @@ async fn mouse_move_while_button_held_is_screened() {
     let text = result.ok().map(|r| r.content).unwrap_or_default();
     assert!(text.contains("NOT executed"), "{text}");
     assert!(text.contains("confirm_id"), "{text}");
-    // 未按住时同样的 move 照常放行（先释放：up 在 (7,9) 处无元素）。
-    fixture.mock.lock().element = None;
+    // Same move with the button released passes as before (release first:
+    // up at (7,9) has a benign element, so the screening reads Clear).
+    fixture.mock.lock().element = Some(benign_element(0, 0, 16, 16));
     let result = fixture
         .tool
         .execute(
@@ -1622,6 +1690,9 @@ async fn mouse_move_while_button_held_is_screened() {
 async fn held_move_confirmation_binds_coordinates() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
+    // A benign element covers the cursor (7,9): the down screening point
+    // passes (an element-free point now fails closed).
+    fixture.mock.lock().element = Some(benign_element(0, 0, 16, 16));
     let result = fixture
         .tool
         .execute(
@@ -1863,16 +1934,34 @@ async fn token_for_coordinateless_click_breaks_when_cursor_moves() {
 // 评审修复回归:撤销/停止必须终止持久 OS 级授权(登记表 → release_os_grant)
 // ---------------------------------------------------------------------------
 
-/// revoke 经登记表触发后端 `release_os_grant`(detached 线程,轮询等待)。
-/// Wayland portal 会话由此随用户"停止控制"终止,而不是活到进程退出。
+/// revoke 经登记表触发 emergency release(detached 线程,轮询等待):
+/// 先释放物理左键、再关闭后端持久 OS 级授权(worker 通道串行化保证此
+/// 顺序),并同步注销句柄。Wayland portal 会话由此随用户"停止控制"终止,
+/// 而不是活到进程退出。
 #[tokio::test]
-async fn revoking_a_session_releases_the_backend_os_grant() {
+async fn emergency_release_unregisters_releases_button_then_os_grant() {
     let (fixture, _restore) = fixture();
     assert!(
         fixture.shared.backends.contains("s-test"),
         "tool construction must register its backend handle"
     );
-    fixture.shared.backends.release("s-test");
+    fixture.shared.backends.emergency_release("s-test");
+    assert!(
+        !fixture.shared.backends.contains("s-test"),
+        "emergency_release must unregister the handle"
+    );
+    // 阶段一：物理左键释放先到达后端。
+    let mut upped = false;
+    for _ in 0..300 {
+        if !fixture.mock.lock().upped.is_empty() {
+            upped = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(upped, "emergency_mouse_up must reach the backend");
+    // 阶段二：OS 级授权关闭在其后到达（通道串行化：released 只能在
+    // mouse_up 请求执行完毕后置数）。
     let mut released = false;
     for _ in 0..300 {
         if fixture.mock.lock().released > 0 {
@@ -1882,6 +1971,32 @@ async fn revoking_a_session_releases_the_backend_os_grant() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert!(released, "release_os_grant must reach the backend");
+    let mock = fixture.mock.lock();
+    assert_eq!(mock.upped, vec![MouseButton::Left]);
+}
+
+/// 工具析构经 emergency release：物理左键与 OS 级授权一并清理（模型按下
+/// 左键后死掉不得把用户机器留在按住拖拽状态），并注销登记。
+#[tokio::test]
+async fn dropping_the_tool_releases_the_button_and_os_grant() {
+    let (fixture, _restore) = fixture();
+    assert!(fixture.shared.backends.contains("s-test"));
+    drop(fixture.tool);
+    let mut done = false;
+    for _ in 0..300 {
+        let mock = fixture.mock.lock();
+        if mock.released > 0 && !mock.upped.is_empty() {
+            done = true;
+            break;
+        }
+        drop(mock);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(done, "tool drop must release button + OS grant");
+    assert!(
+        !fixture.shared.backends.contains("s-test"),
+        "tool drop must unregister its backend handle"
+    );
 }
 
 /// 工具析构注销登记:否则登记表里的句柄把 worker 线程(及其上的 portal
@@ -1894,5 +2009,616 @@ async fn dropping_the_tool_unregisters_its_backend_handle() {
     assert!(
         !fixture.shared.backends.contains("s-test"),
         "tool drop must unregister its backend handle"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Regression: element-free targets fail closed / approvals bind target
+// geometry / stable audit error code
+// ---------------------------------------------------------------------------
+
+/// Latest confirm_id from the most recent confirm_required event.
+fn latest_confirm_id(events: &Arc<StdMutex<Vec<(String, Value)>>>) -> String {
+    events
+        .lock()
+        .map(|e| e.clone())
+        .unwrap_or_default()
+        .iter()
+        .rev()
+        .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+        .map(|(_, p)| p["confirm_id"].as_str().unwrap_or_default().to_string())
+        .expect("confirm event")
+}
+
+/// Regression: a target point with no a11y element = unscreenable (no label
+/// to check, no geometry to bind) — fail closed with a confirmation instead
+/// of silently passing; after the user approves (verified_target=false mint)
+/// the retry executes.
+#[tokio::test]
+async fn click_without_a11y_element_requires_confirmation() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    // No element at all at the (5,5) target.
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("NOT executed"), "{text}");
+    assert!(
+        text.contains("no accessibility element exists at the target point"),
+        "{text}"
+    );
+    assert!(fixture.mock.lock().clicked.is_empty(), "must not click");
+
+    let confirm_id = latest_confirm_id(&fixture.events);
+    assert!(fixture.shared.mint_confirmation(&confirm_id));
+    let retry = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5, "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = retry.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        !text.contains("NOT executed"),
+        "user-approved unverifiable target must execute: {text}"
+    );
+    assert_eq!(fixture.mock.lock().clicked.len(), 1);
+}
+
+/// Regression: an approval token minted from a concrete hit
+/// (verified_target=true) must not take effect silently when, at spend time,
+/// the target reads Clear (element gone / replaced) — fail closed and
+/// re-request confirmation (the token is single-use, already consumed).
+#[tokio::test]
+async fn approved_blocked_target_fails_closed_when_target_reads_clear_at_spend() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().element = Some(ElementInfo {
+        role: "AXButton".to_string(),
+        name: "Buy now".to_string(),
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: false,
+    });
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        result
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("NOT executed")
+    );
+    let confirm_id = latest_confirm_id(&fixture.events);
+    assert!(fixture.shared.mint_confirmation(&confirm_id));
+
+    // The world changed: the target point now holds a benign element (Clear).
+    fixture.mock.lock().element = Some(benign_element(0, 0, 16, 16));
+    let replay = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5, "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = replay.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("NOT executed"), "{text}");
+    assert!(
+        text.contains("no longer reads as itself"),
+        "fail-closed re-request expected: {text}"
+    );
+    assert!(fixture.mock.lock().clicked.is_empty(), "must not click");
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+            .count(),
+        2,
+        "a fresh confirmation must be requested: {events:?}"
+    );
+}
+
+/// Regression: an approval minted from a concrete hit must also fail closed
+/// when the screening goes blind at spend time (Unscreenable) — "the
+/// approved target no longer reads as itself" no longer passes.
+#[tokio::test]
+async fn approved_blocked_target_fails_closed_when_unscreenable_at_spend() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().element = Some(ElementInfo {
+        role: "AXButton".to_string(),
+        name: "Buy now".to_string(),
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: false,
+    });
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        result
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("NOT executed")
+    );
+    let confirm_id = latest_confirm_id(&fixture.events);
+    assert!(fixture.shared.mint_confirmation(&confirm_id));
+
+    fixture.mock.lock().element_error = true;
+    let replay = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5, "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = replay.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("NOT executed"), "{text}");
+    assert!(
+        text.contains("no longer reads as itself"),
+        "fail-closed re-request expected: {text}"
+    );
+    assert!(fixture.mock.lock().clicked.is_empty(), "must not click");
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+            .count(),
+        2,
+        "a fresh confirmation must be requested: {events:?}"
+    );
+}
+
+/// A verified_target=false mint (the user approved in an unscreenable
+/// context) still passes when the target reads Clear at spend time — the
+/// existing semantics must not be broken by the geometry binding.
+#[tokio::test]
+async fn unverified_approval_passes_when_target_reads_clear_at_spend() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    // At mint time the a11y query fails: unscreenable -> manual confirmation.
+    fixture.mock.lock().element_error = true;
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        result
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("NOT executed")
+    );
+    let confirm_id = latest_confirm_id(&fixture.events);
+    assert!(fixture.shared.mint_confirmation(&confirm_id));
+
+    // At spend time the target point reads as a benign element (Clear).
+    fixture.mock.lock().element_error = false;
+    fixture.mock.lock().element = Some(benign_element(0, 0, 16, 16));
+    let replay = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5, "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = replay.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        !text.contains("NOT executed"),
+        "unverified approval must pass on Clear: {text}"
+    );
+    assert_eq!(fixture.mock.lock().clicked.len(), 1);
+}
+
+/// Regression: the approval token binds the element geometry — the same
+/// label moving beyond the tolerance (center drift >12px) counts as a
+/// different target: the approval is invalidated and confirmation is
+/// re-requested.
+#[tokio::test]
+async fn approval_invalidated_when_element_moves_beyond_tolerance() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    // At mint time: "Buy now" spans (0,0,100,100), center (50,50).
+    fixture.mock.lock().element = Some(ElementInfo {
+        role: "AXButton".to_string(),
+        name: "Buy now".to_string(),
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+        secure: false,
+    });
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        result
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("NOT executed")
+    );
+    let confirm_id = latest_confirm_id(&fixture.events);
+    assert!(fixture.shared.mint_confirmation(&confirm_id));
+
+    // At spend time: the same-named element shrank to (5,5,2,2), center
+    // (6,6) — label matches but the geometry drifts far beyond 12px.
+    fixture.mock.lock().element = Some(ElementInfo {
+        role: "AXButton".to_string(),
+        name: "Buy now".to_string(),
+        x: 5,
+        y: 5,
+        width: 2,
+        height: 2,
+        secure: false,
+    });
+    let replay = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5, "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = replay.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("NOT executed"), "{text}");
+    assert!(fixture.mock.lock().clicked.is_empty(), "must not click");
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+            .count(),
+        2,
+        "a fresh confirmation must be requested: {events:?}"
+    );
+}
+
+/// A small shift within the geometry tolerance (≤12px) is not punished:
+/// label match + rect match -> the token spends.
+#[tokio::test]
+async fn approval_survives_small_element_drift() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().element = Some(ElementInfo {
+        role: "AXButton".to_string(),
+        name: "Buy now".to_string(),
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: false,
+    });
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        result
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("NOT executed")
+    );
+    let confirm_id = latest_confirm_id(&fixture.events);
+    assert!(fixture.shared.mint_confirmation(&confirm_id));
+
+    // The same-named element moved by 2px: center (5,5) -> (7,7), within
+    // the tolerance.
+    fixture.mock.lock().element = Some(ElementInfo {
+        role: "AXButton".to_string(),
+        name: "Buy now".to_string(),
+        x: 2,
+        y: 2,
+        width: 10,
+        height: 10,
+        secure: false,
+    });
+    let replay = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5, "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = replay.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        !text.contains("NOT executed"),
+        "label + rect match must spend the token: {text}"
+    );
+    assert_eq!(fixture.mock.lock().clicked.len(), 1);
+}
+
+/// Regression: the T3 "confirmation required" error is audited with only
+/// the stable code in the error field — the element label (on-screen
+/// content) must not reach the audit record; the model still receives the
+/// full message.
+#[tokio::test]
+async fn t3_confirmation_error_is_audited_as_stable_code() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().element = Some(ElementInfo {
+        role: "AXButton".to_string(),
+        name: "Buy now".to_string(),
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: false,
+    });
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 5}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    // The model receives the full message (element label included).
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("Buy now"), "{text}");
+    assert!(text.contains("NOT executed"), "{text}");
+
+    let audit_path = fixture.home.join("computer-use").join("audit-s-test.jsonl");
+    let raw = std::fs::read_to_string(&audit_path).expect("audit jsonl exists");
+    let end_records: Vec<serde_json::Value> = raw
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("valid jsonl line"))
+        .filter(|r| r["phase"] == "end")
+        .collect();
+    assert_eq!(end_records.len(), 1, "one finished call: {end_records:?}");
+    assert_eq!(end_records[0]["result"], "error");
+    assert_eq!(
+        end_records[0]["error"], T3_CONFIRM_REQUIRED_ERROR,
+        "audit error field must be the stable code"
+    );
+    // The element label must not appear anywhere in the audit record.
+    assert!(!raw.contains("Buy now"), "element label leaked to audit");
+}
+
+// ---------------------------------------------------------------------------
+// Regression: failed drag releases a held left button / full type preview
+// in the confirm event
+// ---------------------------------------------------------------------------
+
+/// Regression: a failed drag must not leave the physical left button stuck
+/// held when this tool pressed it earlier — the tool issues a best-effort
+/// release, clears the held state, and tells the model to verify.
+#[tokio::test]
+async fn failed_drag_releases_a_held_left_button() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    // A benign element covers the cursor (7,9): the down executes and the
+    // tool records the held state.
+    fixture.mock.lock().element = Some(benign_element(0, 0, 16, 16));
+    let down = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let down_text = down.ok().map(|r| r.content).unwrap_or_default();
+    assert!(down_text.contains("mouse button is down"), "{down_text}");
+
+    // The drag now fails at the backend.
+    fixture.mock.lock().drag_error = true;
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click_drag", "start_x": 1, "start_y": 1, "x": 5, "y": 5}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("computer use action failed"), "{text}");
+    assert!(text.contains("drag backend failed"), "{text}");
+    assert!(
+        text.contains("best-effort mouse-button release"),
+        "the model must be told about the safety-net release: {text}"
+    );
+    assert_eq!(
+        fixture.mock.lock().upped,
+        vec![MouseButton::Left],
+        "exactly one best-effort left-button release"
+    );
+
+    // The held state must be cleared: a held move would be T3-screened (and
+    // blocked at the Trash), while a released move executes.
+    fixture.mock.lock().element = Some(ElementInfo {
+        role: "AXButton".to_string(),
+        name: "Trash".to_string(),
+        x: 10,
+        y: 10,
+        width: 5,
+        height: 5,
+        secure: false,
+    });
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "mouse_move", "x": 12, "y": 12}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        !text.contains("NOT executed"),
+        "held state must be cleared after the safety-net release: {text}"
+    );
+}
+
+/// The confirm event carries the full typed text (`type_preview_full`) for
+/// long, non-secure type actions so the frontend can offer a "show full
+/// text" expander instead of a blind 12-char preview.
+#[tokio::test]
+async fn confirm_event_carries_full_type_preview_for_long_non_secure_text() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    // Non-secure denylisted focused element: the action is blocked (T3) but
+    // the typing target is NOT a password/secure field.
+    fixture.mock.lock().focused = Some(ElementInfo {
+        role: "AXButton".to_string(),
+        name: "Send message".to_string(),
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: false,
+    });
+    let text = "this paragraph is long enough to be truncated in the summary".to_string();
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "type", "text": text}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        result
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("NOT executed")
+    );
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    let payload = events
+        .iter()
+        .rev()
+        .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+        .map(|(_, p)| p.clone())
+        .expect("confirm event");
+    assert_eq!(
+        payload["type_preview_full"].as_str(),
+        Some(text.as_str()),
+        "full text must ride the confirm event: {payload}"
+    );
+    // The dialog summary stays truncated (the expander is the full view).
+    assert!(
+        payload["action"].as_str().unwrap_or_default().contains('…'),
+        "summary preview must stay truncated: {payload}"
+    );
+}
+
+/// Short type texts must not get `type_preview_full`: the 12-char summary
+/// preview already shows the whole text, so the expander would be noise.
+#[tokio::test]
+async fn confirm_event_omits_full_type_preview_for_short_text() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().focused = Some(ElementInfo {
+        role: "AXButton".to_string(),
+        name: "Send message".to_string(),
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: false,
+    });
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "type", "text": "hi"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        result
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("NOT executed")
+    );
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    let payload = events
+        .iter()
+        .rev()
+        .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+        .map(|(_, p)| p.clone())
+        .expect("confirm event");
+    assert!(
+        payload.get("type_preview_full").is_none(),
+        "short text must not carry the full preview: {payload}"
+    );
+}
+
+/// Secure/masked typing targets must NEVER get `type_preview_full`: the
+/// masked summary exists precisely so password text is not revealed in the
+/// confirm dialog or event stream.
+#[tokio::test]
+async fn confirm_event_never_carries_full_type_preview_for_secure_targets() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().focused = Some(ElementInfo {
+        role: "AXSecureTextField".to_string(),
+        name: "Password".to_string(),
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: true,
+    });
+    let text = "hunter2super-secret-password-value".to_string();
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "type", "text": text}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        result
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("NOT executed")
+    );
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    let payload = events
+        .iter()
+        .rev()
+        .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+        .map(|(_, p)| p.clone())
+        .expect("confirm event");
+    assert!(
+        payload.get("type_preview_full").is_none(),
+        "secure targets must not carry the full preview: {payload}"
+    );
+    assert!(
+        !serde_json::to_string(&payload)
+            .unwrap_or_default()
+            .contains("hunter2"),
+        "password text must not leak anywhere in the payload: {payload}"
     );
 }

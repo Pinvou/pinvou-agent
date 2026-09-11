@@ -1688,6 +1688,11 @@ const formatMemoryTime = (item, copy) => {
         </div>
       </div>
     );
+    // Post-completion grace window (ms) for the settings toggle's synchronous
+    // single-flight guard: it swallows the trailing click of a double-click,
+    // whose second press can land before React commits the disabled state.
+    // Mirrors DOUBLE_CLICK_GUARD_MS in features/computer-use/ComputerUseConsent.jsx.
+    const COMPUTER_USE_TOGGLE_GUARD_MS = 200;
     /**
      * Computer-use settings row as a self-contained component so the failed
      * write can surface an inline error (review finding: the old code did
@@ -1708,6 +1713,12 @@ const formatMemoryTime = (item, copy) => {
       const computerUse = (slice && slice.computerUse) || {};
       const [actionError, setActionError] = useState('');
       const [pending, setPending] = useState(false);
+      // Synchronous single-flight (review finding): the disabled attribute
+      // only updates one render after the click, so a double-click could fire
+      // two concurrent set_enabled calls. This ref is checked inside the
+      // event handler, before React commits anything — same pattern as the
+      // consent dialog's useConsentAction flightRef.
+      const flightRef = useRef({ busy: false, settledAt: 0 });
       const unsupported = computerUse.platformSupported === false;
       return (
         <IOSSection title={t.uiComputerUse.settingsSection}>
@@ -1719,14 +1730,21 @@ const formatMemoryTime = (item, copy) => {
               checked={!!computerUse.enabled}
               disabled={unsupported || pending}
               onChange={(value) => {
+                const flight = flightRef.current;
+                if (flight.busy || Date.now() - flight.settledAt < COMPUTER_USE_TOGGLE_GUARD_MS) return;
                 if (!bridge.available || !bridge.computerUse) return;
+                flight.busy = true;
                 setActionError('');
                 setPending(true);
                 bridge.computerUse.setEnabled(value)
                   .catch((error) => {
                     setActionError(t.uiComputerUse.actionFailed(String(error && error.message ? error.message : error)));
                   })
-                  .finally(() => setPending(false));
+                  .finally(() => {
+                    flight.busy = false;
+                    flight.settledAt = Date.now();
+                    setPending(false);
+                  });
               }}
             />
           </IOSRow>

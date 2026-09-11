@@ -144,7 +144,7 @@ impl Key {
         }
     }
 
-    fn is_modifier(self) -> bool {
+    pub(crate) fn is_modifier(self) -> bool {
         matches!(self, Self::Control | Self::Alt | Self::Shift | Self::Meta)
     }
 }

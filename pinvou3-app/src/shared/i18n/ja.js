@@ -354,6 +354,8 @@ const jaBase = {
           confirmElementLabel:'対象要素',
           confirmOnce:'一度だけ確認',
           confirmDeny:'拒否',
+          showFullText:'全文を表示',
+          fullTextWarning:'エージェントはこのテキストをそのまま入力します。',
           screenshotCaption:'スクリーンショット',
           screenshotLoading:'スクリーンショットを読み込み中…',
           actionFailed:e=>`操作に失敗しました：${e}`,

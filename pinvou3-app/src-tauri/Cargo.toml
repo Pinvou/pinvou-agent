@@ -249,9 +249,9 @@ objc2-application-services = "0.3"
 # 已在 lockfile(0.3.2,objc2 家族传递依赖),此处仅提升为直接依赖,不新增 crate。
 objc2-core-graphics = "0.3"
 # Computer Use 截屏(features/computer_use):ScreenCaptureKit 静态截图
-# (SCScreenshotManager::captureImageInRect,macOS 14+)。CGWindowListCreateImage
+# (SCScreenshotManager::captureImageInRect,macOS 15.2+)。CGWindowListCreateImage
 # (xcap 的 macOS 路径)在 macOS 15 SDK 已 obsoleted 且在 Sequoia+ 触发周期性
-# 录屏再确认;macOS 11-13 仍回退 xcap 的 CGWindowList 路径
+# 录屏再确认;macOS 15.2 以下仍回退 xcap 的 CGWindowList 路径
 # (见 platform/screen_capture_kit.rs)。版本对齐 objc2 0.6 family。
 # Computer Use 截屏(features/computer_use):CGRect/CGSize/CFRetained 等类型
 # 来自 objc2-core-foundation(SCK 调用的坐标参数与 CFData 智能指针)。已在

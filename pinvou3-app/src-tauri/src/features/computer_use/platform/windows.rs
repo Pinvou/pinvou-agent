@@ -98,6 +98,7 @@ const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
 // windows-sys HiDpi 模块逐字一致）。最低要求 Windows 10 1607，在 Tauri 2 /
 // WebView2 的 Win10 基线之上。
 #[allow(non_snake_case)]
+#[link(name = "user32")]
 unsafe extern "system" {
     fn GetThreadDpiAwarenessContext() -> *mut core::ffi::c_void;
     fn GetAwarenessFromDpiAwarenessContext(value: *mut core::ffi::c_void) -> i32;

@@ -43,6 +43,34 @@ assert.equal(
   '/ws/attachments/computer_use/b.png',
   'a multi-step result resolves to the newest (last) screenshot',
 );
+// Envelope with NO text blocks: an envelope that parses must never fall back
+// to searching the raw JSON — its escaped backslashes (\\) normalize into
+// slash-doubled paths and non-text blocks must not surface either
+// (review finding).
+assert.equal(
+  extractComputerUseScreenshotPath('{"content":[{"type":"image","text":"shot C:\\\\Users\\\\u/attachments/computer_use/mixed.png"}]}'),
+  null,
+  'an envelope without text blocks must not resurface the raw JSON as a slash-doubled path',
+);
+assert.equal(
+  extractComputerUseScreenshotPath(JSON.stringify({
+    content: [{ type: 'image', text: 'saved C:\\Users\\u\\attachments\\computer_use\\hidden.png' }],
+  })),
+  null,
+  'a Windows path in a non-text block must not be extracted',
+);
+assert.equal(
+  extractComputerUseScreenshotPath(JSON.stringify({
+    content: [{ type: 'image', text: 'saved /ws/attachments/computer_use/hidden.png' }],
+  })),
+  null,
+  'a forward-slash path in a non-text block must not be extracted either',
+);
+assert.equal(
+  extractComputerUseScreenshotPath(JSON.stringify({ content: [] })),
+  null,
+  'an envelope with an empty content list resolves to no screenshot',
+);
 assert.equal(
   extractComputerUseScreenshotPath('SEE /WS/ATTACHMENTS/COMPUTER_USE/UP.PNG'),
   '/WS/ATTACHMENTS/COMPUTER_USE/UP.PNG',

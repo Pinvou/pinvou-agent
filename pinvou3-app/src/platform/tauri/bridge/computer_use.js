@@ -61,6 +61,13 @@
       return pendingBySession[sid];
     }
 
+    // Drops every per-session pending entry. Backend stop_all and disable are
+    // global: they wipe all grants/pendings/tokens, so keeping the map made a
+    // later re-enable republish dialogs for requests that no longer exist.
+    function clearAllPending() {
+      for (const key of Object.keys(pendingBySession)) delete pendingBySession[key];
+    }
+
     // Drops requests that belong to `sessionId` from the published slice.
     // pendingBySession is intentionally untouched: switching back to the
     // session must resurface them via refreshStatus. Pure state operation
@@ -134,6 +141,12 @@
       if (liveRequestSession && String(liveRequestSession) !== String(sid)) {
         clearSessionRequests(liveRequestSession);
       }
+      // Same synchronous switch guard for the banner: a stale `granted` left
+      // up during the IPC round-trip showed the previous session's control
+      // banner over the session the user just opened (review finding).
+      if (current && current.sessionId && String(current.sessionId) !== String(sid)) {
+        publish(sid, { granted: false });
+      }
       const seq = ++statusRequestSeq;
       let raw;
       try {
@@ -191,6 +204,11 @@
         await refreshStatus(sid);
         throw error;
       }
+      // Backend stop_all is global: every grant/confirm/token is gone, so the
+      // pending map must be dropped too or a later re-enable republished
+      // phantom dialogs from stale entries (review finding).
+      clearAllPending();
+      notify();
     }
 
     function clearPendingConfirm() {
@@ -289,6 +307,11 @@
         // collapsed until the next session switch (review finding). Runs
         // before the macOS permission flow, which can block on an OS dialog.
         await refreshStatus(state.activeSessionId);
+      } else {
+        // Disable wipes the backend state globally, so the pending map must
+        // go too — same phantom-dialog hazard as stop() (review finding).
+        clearAllPending();
+        notify();
       }
       if (target && !permissionsRequested) {
         permissionsRequested = true;
@@ -309,7 +332,11 @@
         if (!sid) return;
         const pending = pendingEntry(sid);
         pending.grant = true;
-        pending.confirm = null;
+        // A live per-action confirmation must survive: a grant that
+        // idle-expired mid-run re-arms the grant gate without killing the
+        // backend's pending confirm, so wiping it here left no dialog after
+        // Allow (review finding). The renderer shows the grant dialog first
+        // when both are pending.
         // Feature toggle off: stay inert (no dialog), the record above still
         // lets a later enable + refresh resurface the request.
         if (!state.computerUse.enabled) return;
@@ -320,7 +347,7 @@
         // flag still latched here is frontend residue (e.g. from a stop that
         // predates a re-enable); clearing it keeps the dialog reachable even
         // if the refresh below has not landed yet (review finding).
-        publish(sid, { stopped: false, grantRequest: { sessionId: sid }, confirmRequest: null });
+        publish(sid, { stopped: false, grantRequest: { sessionId: sid } });
       });
       listen("computer_use:confirm_required", function (event) {
         const payload = (event && event.payload) || {};
@@ -334,6 +361,13 @@
           element: String(payload.element || ""),
           confirmId,
         };
+        // Optional full typed-text preview (backend contract): present only
+        // for non-password Type actions longer than the preview; pass it
+        // through untouched and keep old payloads free of the key.
+        const typePreviewFull = payload.type_preview_full || payload.typePreviewFull;
+        if (typeof typePreviewFull === "string" && typePreviewFull) {
+          pending.confirm.typePreviewFull = typePreviewFull;
+        }
         if (!state.computerUse.enabled) return;
         if (suppressedByDenial(sid)) return;
         publish(sid, { confirmRequest: pending.confirm });
