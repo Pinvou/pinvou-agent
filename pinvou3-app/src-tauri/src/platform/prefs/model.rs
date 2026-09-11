@@ -226,10 +226,10 @@ impl ModelPreset {
             },
             // Gemini 全系标称 1M。
             ModelPreset::Gemini => Some(1_048_576),
-            // xAI 官方口径：grok-4.20 系 2M、grok-4.3 1M、grok-4.5 / grok-4.6 500K、
-            // grok-build 256K（2026-09-11 核对）。
+            // xAI 官方口径：grok-4.20 系 1M、grok-4.3 1M、grok-4.5 / grok-4.6 500K、
+            // grok-build 256K（2026-09-11 按 docs.x.ai 模型详情页复核）。
             ModelPreset::Xai => match model.map(str::to_ascii_lowercase) {
-                Some(m) if m.contains("grok-4.20") => Some(2_000_000),
+                Some(m) if m.contains("grok-4.20") => Some(1_000_000),
                 Some(m) if m.contains("grok-4.3") => Some(1_000_000),
                 Some(m) if m.contains("grok-4.6") || m.contains("grok-4.5") => Some(500_000),
                 Some(m) if m.contains("grok-build") => Some(256_000),
@@ -242,6 +242,30 @@ impl ModelPreset {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 默认模型逐 preset 断言：本表被前端 model-catalog.js / main.jsx 镜像，
+    /// 任何一侧改动都必须显式过这里，防止再出现 qwen 默认值长期漂移。
+    #[test]
+    fn default_model_matches_vendor_docs_2026_09() {
+        let cases: &[(ModelPreset, &str)] = &[
+            (ModelPreset::LocalVllm, "qwen36_35b_256k"),
+            (ModelPreset::Deepseek, "deepseek-flash"),
+            (ModelPreset::Kimi, "kimi-k3"),
+            (ModelPreset::OpenaiCompatible, "gpt-5.6-terra"),
+            (ModelPreset::Qwen, "qwen3.8-max"),
+            (ModelPreset::Doubao, "doubao-seed-evolving"),
+            (ModelPreset::Minimax, "MiniMax-M3"),
+            (ModelPreset::Glm, "glm-5.3"),
+            (ModelPreset::Mimo, "mimo-v2.5-pro"),
+            (ModelPreset::Openai, "gpt-5.6-terra"),
+            (ModelPreset::Anthropic, "claude-sonnet-5"),
+            (ModelPreset::Gemini, "gemini-3.8-flash"),
+            (ModelPreset::Xai, "grok-4.6"),
+        ];
+        for (preset, expected) in cases {
+            assert_eq!(preset.default_model(), *expected, "{preset:?} 默认模型漂移");
+        }
+    }
 
     /// 预设上下文窗口兜底：各厂商官方口径与未知型号的缺省值。
     #[test]
@@ -261,12 +285,12 @@ mod tests {
             (ModelPreset::Anthropic, None, 1_000_000),
             // Gemini 全系标称 1M
             (ModelPreset::Gemini, Some("gemini-3.6-flash"), 1_048_576),
-            // xAI 预设兜底：grok-4.20 系 2M、grok-4.3 1M、grok-4.5 / grok-4.6 500K、
+            // xAI 预设兜底：grok-4.20 系 1M、grok-4.3 1M、grok-4.5 / grok-4.6 500K、
             // grok-build 256K
             (
                 ModelPreset::Xai,
                 Some("grok-4.20-0309-reasoning"),
-                2_000_000,
+                1_000_000,
             ),
             (ModelPreset::Xai, Some("grok-4.3"), 1_000_000),
             (ModelPreset::Xai, Some("grok-4.5"), 500_000),

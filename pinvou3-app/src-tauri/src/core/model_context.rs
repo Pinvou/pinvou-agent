@@ -23,7 +23,7 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // 底座对未知名 claude 一律兜底 200K，且未收录 claude-opus-5；
     // 官方口径 Claude 5 系（除 haiku 外）均为 1M 上下文。
     ("claude-opus-5", 1_000_000),
-    // 底座 known 表对 deepseek 系只有含 "v4" 子串的名字给 1M，deepseek-flash
+    // 底座上下文启发式对 deepseek 系只有含 "v4" 子串的名字给 1M，deepseek-flash
     // 无 "v4" 会落 128K legacy 启发式（实测返回 Some(128_000) 且先行短路
     // PINVOU_KNOWN）；V4.1-Flash 官方口径 1M 上下文
     // （api-docs.deepseek.com/quick_start/pricing，2026-09-11 核对）。

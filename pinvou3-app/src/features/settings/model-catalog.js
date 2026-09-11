@@ -425,6 +425,8 @@ const MODEL_CATALOG = {
       // 2026-09-11 官方口径（mimo.mi.com 模型清单）：mimo-v2.5-pro 纯文本
       // （1M 上下文，默认深度思考）；多模态（图/音/视频理解）在 mimo-v2.5 上。
       // Token Plan 订阅 Key（tp-）须改用 https://token-plan-cn.xiaomimimo.com/v1。
+      // mimo-v2.5 的图片能力后端子串表无法与纯文本的 -pro 区分，故后端表不收，
+      // 该行运行时回退 Unknown + 用户手动覆盖。
       items: [
         { model: 'mimo-v2.5-pro', imageCapable: false, title: 'mimo-v2.5-pro', desc: '最新旗舰，1M 上下文' },
         { model: 'mimo-v2.5', imageCapable: true, title: 'mimo-v2.5', desc: '全模态理解（图片/视频）' },
@@ -474,7 +476,7 @@ const MODEL_CATALOG = {
         { model: 'qwen3.7-max', imageCapable: false, title: 'qwen3.7-max', desc: '上代旗舰推理' },
         { model: 'qwen3.7-plus', imageCapable: true, title: 'qwen3.7-plus', desc: '均衡性价比' },
         { model: 'qwen3.6-flash', imageCapable: true, title: 'qwen3.6-flash', desc: '轻量兼容款，支持图像输入' },
-        { model: 'glm-5.2', title: 'glm-5.2', desc: '最新推荐' },
+        { model: 'glm-5.2', title: 'glm-5.2', desc: '上代旗舰' },
         { model: 'deepseek-v4-pro', title: 'deepseek-v4-pro', desc: '高能力模型' },
         { model: 'deepseek-v4-flash-0731', title: 'deepseek-v4-flash-0731', desc: '快速响应，暂不支持 Responses API' },
         { model: '', title: '自定义 Token Plan 模型', desc: '手动填写 Token Plan 模型 ID', custom: true },
@@ -490,12 +492,15 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'qwen',
       baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
-      // qwen3.7-flash 未见于国际站目录（2026-09-11 核查），不收录。
+      // qwen3.7-flash 在国际站完整模型清单（alibabacloud.com model-studio
+      // text-generation-model 推荐模型区）在列，2026-09-11 复核恢复收录；
+      // 此前删行依据的 models 索引页是每类 3 款的精选页，不等于完整目录。
       items: [
         { model: 'qwen3.8-max', imageCapable: true, title: 'qwen3.8-max', desc: '最新旗舰' },
         { model: 'qwen3.8-flash', imageCapable: true, title: 'qwen3.8-flash', desc: '快速高性价比' },
         { model: 'qwen3.7-max', imageCapable: false, title: 'qwen3.7-max', desc: '上代旗舰推理（纯文本）' },
         { model: 'qwen3.7-plus', imageCapable: true, title: 'qwen3.7-plus', desc: '均衡性价比' },
+        { model: 'qwen3.7-flash', imageCapable: true, title: 'qwen3.7-flash', desc: '上代快速款' },
         { model: '', title: '自定义通义模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -509,14 +514,14 @@ const MODEL_CATALOG = {
       vendor: 'doubao',
       // 2026-09-11 官方口径（volcengine docs 82379/1330310、2549861）：五个
       // 现役行拼写逐字一致、能力列均含多模态理解；doubao-seed-evolving 是一个
-      // Model ID 周级滚动升级的官方首推 Coding/Agent 模型；无 2-2 系。新增
-      // 编程特化预览 doubao-seed-2-0-code-preview-260215（多模态未见明确口径，
-      // 不标图片能力）。思考控制走 thinking.type + reasoning_effort。
+      // Model ID 周级滚动升级的官方首推 Coding/Agent 模型；无 2-2 系。编程特化
+      // 预览 doubao-seed-2-0-code-preview-260215 的能力列同样明示多模态理解，
+      // 标注图片能力。思考控制走 thinking.type + reasoning_effort。
       items: [
         { model: 'doubao-seed-evolving', imageCapable: true, title: 'doubao-seed-evolving', desc: '最新推荐，周级滚动升级' },
         { model: 'doubao-seed-2-1-pro-260628', imageCapable: true, title: 'doubao-seed-2-1-pro-260628', desc: '高能力模型' },
         { model: 'doubao-seed-2-1-turbo-260628', imageCapable: true, title: 'doubao-seed-2-1-turbo-260628', desc: '低成本低时延，效果比肩 2-1-pro' },
-        { model: 'doubao-seed-2-0-code-preview-260215', title: 'doubao-seed-2-0-code-preview-260215', desc: '编程特化（预览）' },
+        { model: 'doubao-seed-2-0-code-preview-260215', imageCapable: true, title: 'doubao-seed-2-0-code-preview-260215', desc: '编程特化（预览）' },
         { model: 'doubao-seed-2-0-pro-260215', imageCapable: true, title: 'doubao-seed-2-0-pro-260215', desc: '稳定通用' },
         { model: 'doubao-seed-2-0-lite-260428', imageCapable: true, title: 'doubao-seed-2-0-lite-260428', desc: '轻量模型' },
         { model: '', title: '自定义豆包模型', desc: '手动填写模型 ID', custom: true },
@@ -704,10 +709,11 @@ function catalogItemMatchesModel(item, model) {
 // Gemini 全系、Grok 全部目录行(含 grok-4.5 / grok-4.20-0309-* 详情页明示
 // text, image → text)、GPT-5.x/6 目录行、kimi-k3 / k2.7-code / k2.6 / Kimi
 // Code 四行、deepseek-flash(V4.1)、MiniMax-M3、qwen3.8-max/3.8-flash/
-// 3.7-plus/3.7-flash/3.6-flash、豆包五行现役模型、glm-5.3-flash、mimo-v2.5
-// 均为官方多模态;qwen3.7-max、glm-5.2/5.3、deepseek-v4-pro、MiniMax-M2.x、
-// mimo-v2.5-pro 官方明示纯文本,标 false。
-// 返回 true/false(条目显式标注)/null(未命中或未标注)。
+// 3.7-plus/3.7-flash/3.6-flash、豆包六行（含编程特化预览）、glm-5.3-flash、
+// mimo-v2.5 均为官方多模态;qwen3.7-max、glm-5.2/5.3、deepseek-v4-pro、
+// MiniMax-M2.x、mimo-v2.5-pro 官方明示纯文本,标 false。
+// 返回扫描序中第一个显式标注(true/false);未标注命中不短路继续扫;
+// 未命中或全部命中项均未标注时返回 null(由「自动处理」链兜底)。
 function catalogImageCapableForModel(model) {
   if (typeof model !== 'string' || !model) return null;
   for (const scope of ['local', 'cloud']) {

@@ -185,6 +185,8 @@ test('2026-09-11 目录新增行归入对应 provider 组(预设识别)', () => 
   assert.strictEqual(isPresetModel(mkCloud('openai', 'openai', 'https://api.openai.com/v1', 'gpt-6-astra')), true);
   assert.strictEqual(isPresetModel(mkCloud('anthropic', 'anthropic', 'https://api.anthropic.com/v1', 'claude-fable-5-1')), true);
   assert.strictEqual(isPresetModel(mkCloud('doubao', 'doubao', 'https://ark.cn-beijing.volces.com/api/v3', 'doubao-seed-2-0-code-preview-260215')), true);
+  // qwen 国际组收录 qwen3.7-flash（国际站完整清单在列，2026-09-11 复核恢复）
+  assert.strictEqual(isPresetModel(mkCloud('qwen', 'qwen', 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', 'qwen3.7-flash')), true);
 });
 test('官方 API 手填 ID -> 自定义', () => {
   assert.strictEqual(isPresetModel(mk({ preset: 'deepseek', provider_kind: 'official_api', vendor: 'deepseek', base_url: 'https://api.deepseek.com', model: 'deepseek-v9-fake' })), false);
@@ -694,6 +696,8 @@ test('normalizeStoredReasoningEffort：存量旧值归一，无档位模型为 n
   const xai46 = { preset: 'xai', vendor: 'xai', model: 'grok-4.6', base_url: 'https://api.x.ai/v1' };
   assert.strictEqual(normalizeStoredReasoningEffort(xai46, 'xhigh'), 'max');
   assert.strictEqual(normalizeStoredReasoningEffort(xai46, null), 'high');
+  // off 不在 grok-4.6 档位表：归一为 high，与底座把 off 发 wire high 一致
+  assert.strictEqual(normalizeStoredReasoningEffort(xai46, 'off'), 'high');
   // 非 xai 官方端点/其余 Grok 型号无档位 → null
   assert.strictEqual(normalizeStoredReasoningEffort({ preset: 'xai', vendor: 'xai', model: 'grok-4.3', base_url: 'https://api.x.ai/v1' }, 'high'), null);
 });

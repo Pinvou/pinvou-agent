@@ -7117,9 +7117,7 @@ mod tests {
     fn deepseeki_typosquat_is_not_official_base_url() {
         assert!(is_official_deepseek_base_url("https://api.deepseek.com/"));
         assert!(is_official_deepseek_base_url("https://api.deepseek.com/v1"));
-        assert!(!is_official_deepseek_base_url(
-            "https://api.deepseeki.com"
-        ));
+        assert!(!is_official_deepseek_base_url("https://api.deepseeki.com"));
         assert!(!is_official_deepseek_base_url(
             "https://api.deepseeki.com/v1"
         ));

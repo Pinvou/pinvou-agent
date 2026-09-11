@@ -91,12 +91,16 @@ const VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     "gpt-4o",
     "gpt-4.1",
     "gpt-5",
+    // gpt-6-astra 官方多模态(models 页 "All latest OpenAI models support
+    // text and image input",2026-09-11);子串 "gpt-5" 覆盖不到它,目录已标注、
+    // 后端须同步,否则官方路由退化成 Unknown。
+    "gpt-6",
     // Anthropic:platform.claude.com models overview 明示「All current models
     // support text and image input」(2026-09-11)。claude-3/4/5 覆盖 claude-N-tier
     // 两式命名;sonnet-5 / opus-5 / haiku / fable 需单独条目——子串匹配跨不过
     // tier 词,旧表漏配的 claude-haiku-4-5 既不含 claude-4 也不含 claude-haiku-5,
-    // claude-fable-5(-5-1)则完全无条目(claude-haiku-5 被 claude-haiku 覆盖,
-    // 条目保留仅为延续旧表)。
+    // 故以 claude-haiku 取代旧条目 claude-haiku-5(顺带覆盖 haiku-5 系);
+    // claude-fable-5(-5-1)则完全无条目,新增 claude-fable。
     "claude-3",
     "claude-4",
     "claude-5",
@@ -109,7 +113,7 @@ const VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     // xAI Grok 全系视觉输入(默认预设 grok-4.6 命中)。
     "grok",
     // DeepSeek V4.1-Flash 原生视觉(api-docs.deepseek.com/guides/vision,
-    // 2026-09-11);v4-pro 等其余 deepseek 未列官方 vision 页,不收。
+    // 2026-09-11);deepseek-v4-pro 官方 pricing 页明示 Vision Not supported,不收。
     "deepseek-flash",
     // 阿里 Qwen(help.aliyun.com Model Studio vision 文档,2026-09-11):
     // qwen3.8-max / qwen3.8-flash 全系收;qwen3.7 仅 plus/flash(3.7-max 纯文本,
@@ -122,14 +126,15 @@ const VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     "qwen3.7-plus",
     "qwen3.7-flash",
     "qwen3.6-flash",
-    // 豆包现役 doubao-seed-* 五行能力列均含多模态理解
-    // (volcengine docs 82379/1330310,2026-09-11)。
+    // 豆包 doubao-seed-* 现役五行与编程特化预览行的官方能力列均含多模态理解
+    // (volcengine docs 82379/1330310,2026-09-11),整族收录成立。
     "doubao-seed",
     // MiniMax 仅 M3 支持图片输入,M2.x 不支持,不能用 minimax 整体子串
     // (2026-09-11 官方口径)。
     "minimax-m3",
     // 智谱 GLM-5.3-Flash 原生多模态;glm-5.3 / glm-5.2 纯文本,不能用 glm-5.3
-    // 整体子串(2026-09-11);GLM-4V 视觉系列保留。
+    // 整体子串(2026-09-11)。glm-4v 条目保留为兼容存量配置:在售仅剩
+    // glm-4v-flash(免费档),glm-4v / glm-4v-plus 已不在在售表与 API enum。
     "glm-5.3-flash",
     "glm-4v",
     // Kimi(2026-09-11):Kimi 直连 kimi-k3 与 Kimi Code k3 / k3-256k 官方均为
@@ -294,6 +299,8 @@ mod tests {
             (ModelPreset::OpenaiCompatible, "gpt-4.1"),
             // preset 默认模型(prefs `default_model`)必须命中,否则官方路由退化成 Unknown。
             (ModelPreset::OpenaiCompatible, "gpt-5.6-terra"),
+            // gpt-6-astra 官方多模态,由 "gpt-6" 条目覆盖("gpt-5" 命中不了)。
+            (ModelPreset::OpenaiCompatible, "gpt-6-astra"),
             (ModelPreset::OpenaiCompatible, "claude-3-5-sonnet-20241022"),
             (ModelPreset::OpenaiCompatible, "claude-4-opus"),
             // 默认预设(claude-sonnet-5 / grok-4.6 / deepseek-flash / qwen3.8-max /
