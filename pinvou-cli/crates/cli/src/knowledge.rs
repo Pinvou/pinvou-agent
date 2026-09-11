@@ -16,7 +16,8 @@
 //! - collections list/create/update/delete → `KnowledgeService::l1()`
 //!   (`L1Store` CRUD). Delete mirrors GUI `kb_collection_delete`:
 //!   `cancel_index_for_collection`, `delete_collection`, then
-//!   `SessionStore::remove_mounted_collection_from_all`.
+//!   `SessionStore::remove_mounted_collection_from_all` (now only reached
+//!   through the desktop app's own surface).
 //! - add-sources → `KnowledgeService::start_index` (non-blocking; returns the
 //!   DB-persisted job state that `index status` polls).
 //! - documents → `L1Store::{list_documents, remove_document}` (`--limit`
@@ -38,13 +39,7 @@
 //! - mounts/mount/unmount → honest refusal (`knowledge_*_requires_product_host`):
 //!   mounted collections live in the desktop app's per-process memory
 //!   (`features::sessions::mode_state`, deliberately not persisted), so a
-//!   one-shot CLI process can neither observe nor durably mutate them
-//!   (app/commands/knowledge.rs) re-expressed over the real service
-//!   (`semantic_ready`, `l1().collection_name`) with the GUI's verbatim
-//!   error strings, then `SessionStore::add_mounted_collection`. A CLI
-//!   process never loads the ~570MB embedding model (the loader is
-//!   GUI/host-bound), so an enabling mount always stops at the GUI's
-//!   not-ready error — the same outcome as the GUI with no model installed.
+//!   one-shot CLI process can neither observe nor durably mutate them.
 //! - remote connections/collections/search → `RemoteKnowledgeService` over
 //!   `~/.pinvou3/knowledge/remote-connections.json`. These are async network
 //!   client calls, so they run through the windowless product host
