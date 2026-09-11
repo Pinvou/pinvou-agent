@@ -206,6 +206,10 @@ struct MockState {
 
 enum BackendBehavior {
     Completed,
+    /// Sleeps 50ms in `run` — proves the `None`-deadline pass-through (the
+    /// harness must not impose its own `task_timeout` for unbounded GAIA
+    /// runs; a `Some` deadline that short would cut it off).
+    SlowRun,
     CloseFailed,
     Failed,
     FailedModelRequestTimeout,
@@ -329,6 +333,9 @@ impl HeadlessAgentBackend for MockBackend {
         _private_inputs: Arc<dyn PrivateInputResolver>,
         observer: Arc<dyn AgentRunObserver>,
     ) -> Result<AgentTaskOutcome, AgentBackendError> {
+        if matches!(self.behavior, BackendBehavior::SlowRun) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         {
             let mut state = self.state.lock().unwrap();
             state.active += 1;
@@ -378,6 +385,7 @@ impl HeadlessAgentBackend for MockBackend {
                     )]))
             }
             BackendBehavior::Completed
+            | BackendBehavior::SlowRun
             | BackendBehavior::PendingPrepare
             | BackendBehavior::PendingResolveOutput
             | BackendBehavior::PendingClose => {
@@ -1115,5 +1123,37 @@ fn report_is_published_without_temporary_files() {
         "# Smoke\n\ncompleted: 0\n"
     );
     assert!(!Path::new(&format!("{}.tmp", artifact.path().display())).exists());
+    fs::remove_dir_all(base).unwrap();
+}
+
+/// `timeout: None` (the GAIA lane) must run the future unbounded: the harness
+/// imposes no `task_timeout` of its own and the run is bounded only by the
+/// engine's own limits. Contrast with the `Some`-deadline tests above, where
+/// the same slow backend is cut off at the deadline.
+#[tokio::test]
+async fn unbounded_deadline_runs_without_a_harness_task_timeout() {
+    let base = temp_base("unbounded-deadline");
+    let backend = Arc::new(MockBackend::with_behavior(BackendBehavior::SlowRun));
+    let runner = NativeAgentRunner::new(backend);
+    let outcome = runner
+        .run_task(
+            &BenchmarkTask::new(
+                "unbounded",
+                None,
+                None,
+                ExecutionRequest::native_turn(
+                    PrivateInputHandle::new("private"),
+                    vec![],
+                    None,
+                    ToolPolicyId::new("smoke/v1"),
+                    OutputContract::new("text/v1"),
+                ),
+                None,
+            ),
+            &RunContext::new("unbounded", base.clone()),
+        )
+        .await
+        .expect("no harness timeout for a None deadline");
+    assert_eq!(outcome.status(), TaskStatus::Completed);
     fs::remove_dir_all(base).unwrap();
 }
