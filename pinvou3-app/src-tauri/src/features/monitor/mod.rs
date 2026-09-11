@@ -24,8 +24,9 @@ mod self_metrics;
 // 以维持外部可见性承诺（无外部调用方，allow 抑制 unused_imports 门禁）。
 #[allow(unused_imports)]
 pub use model_probe::{
-    MonitorDiagnostic, VllmSnapshot, VllmStatus, active_model_snapshot, probe_vllm_model_info,
-    resolve_served_model, vllm_base_url, vllm_configured_model, vllm_snapshot,
+    MonitorDiagnostic, VllmSnapshot, VllmStatus, active_model_snapshot, adopts_probed_facts,
+    probe_vllm_model_info, resolve_served_model, vllm_base_url, vllm_configured_model,
+    vllm_snapshot,
 };
 pub use self_metrics::{SelfMetrics, SelfMetricsDebugSnapshot, SelfPerfSnapshot};
 
