@@ -44,14 +44,15 @@ wait-timeout = "0.2"
 # checkout); already in the dependency graph and used by the app's
 # remote-control owner lock.
 fd-lock = "4"
+# Task/run storage ids; same v4 generator as the foundation's automation
+# manager (already in the graph via pinvou3-tauri). Platform-independent —
+# `scheduled` generates ids on every target.
+uuid = { version = "1", features = ["v4"] }
 
 # Process-group tree kill for timed-out vendor CLI children; Windows uses
 # `taskkill /T` instead (same split as the app's kill_pid_tree).
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-# Task/run storage ids; same v4 generator as the foundation's automation
-# manager (already in the graph via pinvou3-tauri).
-uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 # Contract tests hold the same advisory lock files a second CLI process would

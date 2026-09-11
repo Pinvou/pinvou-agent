@@ -178,15 +178,6 @@ fn open_store() -> Result<SessionStore, CliError> {
         .map_err(|error| CliError::failed(format!("artifacts store unavailable: {error:#}")))
 }
 
-/// Mirrors the GUI `valid_session_id` guard: ids are joined onto filesystem
-/// paths, so anything outside `[A-Za-z0-9_-]` is rejected outright.
-fn valid_session_id(id: &str) -> bool {
-    !id.is_empty()
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-}
-
 /// One row of the cross-session deliverables index (the GUI `DeliverableItem`
 /// shape, flattened to owned fields the CLI can render).
 #[derive(Clone, Debug)]
@@ -315,7 +306,7 @@ fn resolve_session_artifact(
     session_id: &str,
     relative_path: &str,
 ) -> Result<PathBuf, CliError> {
-    if !valid_session_id(session_id) {
+    if !crate::support::valid_session_id(session_id) {
         return Err(CliError::usage("invalid session id"));
     }
     let workspace = store
@@ -375,6 +366,9 @@ fn resolve_session_artifact(
 }
 
 pub fn execute(command: ArtifactsCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
+    // Same absolute-PINVOU3_HOME contract as every other store-opening
+    // family: a relative home would silently resolve against the cwd.
+    crate::support::sandbox_home()?;
     match command {
         ArtifactsCommand::List { session } => list(session, output),
         ArtifactsCommand::Read {

@@ -103,3 +103,18 @@ fn output_flag_still_applies_to_families() {
     let parsed = parse_args(["pinvou", "--output", "json", "sessions", "list"]).unwrap();
     assert_eq!(parsed.output(), OutputMode::Json);
 }
+
+#[test]
+fn version_is_a_usable_subcommand_with_json_output() {
+    let parsed = parse_args(["pinvou", "--version"]).expect("--version parses");
+    let outcome = pinvou_cli::execute(parsed).expect("version executes");
+    assert_eq!(outcome.exit_code, ExitCode::Success);
+    assert!(outcome.stdout.contains("pinvou "), "{}", outcome.stdout);
+
+    let parsed = parse_args(["pinvou", "--version", "--output", "json"])
+        .expect("--version --output json parses");
+    let outcome = pinvou_cli::execute(parsed).expect("version executes");
+    let value: serde_json::Value =
+        serde_json::from_str(&outcome.stdout).expect("json output is a single line");
+    assert!(value["version"].is_string(), "{}", outcome.stdout);
+}

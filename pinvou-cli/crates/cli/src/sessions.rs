@@ -264,16 +264,6 @@ fn parse_positive(options: &[(&str, &str)], name: &str) -> Result<Option<usize>,
     }
 }
 
-/// Mirrors `features::sessions::validate_session_id` (crate-private in the
-/// app): only `[A-Za-z0-9_-]`, so the id can never traverse out of the
-/// sessions root when it is joined onto a path.
-fn valid_session_id(id: &str) -> bool {
-    !id.is_empty()
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-}
-
 fn open_store() -> Result<SessionStore, CliError> {
     // Same absolute-path contract as `sessions folder`: a relative
     // PINVOU3_HOME would silently resolve against the cwd.
@@ -304,23 +294,59 @@ fn kind_label(store: &SessionStore, id: &str) -> &'static str {
 }
 
 pub fn execute(command: SessionsCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
+    // Every id-taking subcommand rejects an invalid id with the same usage
+    // error (exit 2), whether or not the store layer would also catch it.
+    let named_id = |id: &str| crate::support::require_valid_session_id(id, "sessions");
     match command {
         SessionsCommand::List { archived, limit } => list(archived, limit, output),
-        SessionsCommand::Show { id, last, full } => show(&id, last, full, output),
-        SessionsCommand::Rename { id, title } => rename(&id, &title, output),
-        SessionsCommand::Pin { id } => set_pinned(&id, true, output),
-        SessionsCommand::Unpin { id } => set_pinned(&id, false, output),
-        SessionsCommand::Archive { id } => set_hidden(&id, true, output),
-        SessionsCommand::Restore { id } => set_hidden(&id, false, output),
-        SessionsCommand::Delete { id, yes } => delete(&id, yes, output),
+        SessionsCommand::Show { id, last, full } => {
+            named_id(&id)?;
+            show(&id, last, full, output)
+        }
+        SessionsCommand::Rename { id, title } => {
+            named_id(&id)?;
+            rename(&id, &title, output)
+        }
+        SessionsCommand::Pin { id } => {
+            named_id(&id)?;
+            set_pinned(&id, true, output)
+        }
+        SessionsCommand::Unpin { id } => {
+            named_id(&id)?;
+            set_pinned(&id, false, output)
+        }
+        SessionsCommand::Archive { id } => {
+            named_id(&id)?;
+            set_hidden(&id, true, output)
+        }
+        SessionsCommand::Restore { id } => {
+            named_id(&id)?;
+            set_hidden(&id, false, output)
+        }
+        SessionsCommand::Delete { id, yes } => {
+            named_id(&id)?;
+            delete(&id, yes, output)
+        }
         SessionsCommand::Export {
             id,
             format,
             output: destination,
-        } => export(&id, format, destination, output),
-        SessionsCommand::Timeline { id } => timeline(&id, output),
-        SessionsCommand::Subagents { id } => subagents(&id, output),
-        SessionsCommand::Folder { id } => folder(&id, output),
+        } => {
+            named_id(&id)?;
+            export(&id, format, destination, output)
+        }
+        SessionsCommand::Timeline { id } => {
+            named_id(&id)?;
+            timeline(&id, output)
+        }
+        SessionsCommand::Subagents { id } => {
+            named_id(&id)?;
+            subagents(&id, output)
+        }
+        SessionsCommand::Folder { id } => {
+            named_id(&id)?;
+            folder(&id, output)
+        }
     }
 }
 
@@ -445,6 +471,9 @@ fn show(
         .and_then(|value| value.as_array())
         .cloned()
         .unwrap_or_default();
+    // The session log is the source of truth for the total (the metadata
+    // counter can lag behind hand-seeded or replayed transcripts).
+    let total_messages = messages.len();
     if let Some(last) = last {
         let start = messages.len().saturating_sub(last);
         messages.drain(..start);
@@ -492,7 +521,10 @@ fn show(
         "kind": kind,
         "updated_at": value.pointer("/metadata/updated_at"),
         "created_at": value.pointer("/metadata/created_at"),
-        "message_count": rendered.len(),
+        // Session total (GUI `message_count` semantics) — `--last` only
+        // windows the rendered messages below.
+        "message_count": total_messages,
+        "shown_message_count": rendered.len(),
         "messages": rendered,
     });
     Ok(success(render(output, human, &json)))
@@ -668,7 +700,7 @@ fn is_timeline_event(value: &serde_json::Value) -> bool {
 }
 
 fn timeline(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    if !valid_session_id(id) {
+    if !crate::support::valid_session_id(id) {
         return Err(CliError::usage("invalid session id"));
     }
     // A missing sidecar and a missing session both read as empty output, so
@@ -775,7 +807,7 @@ fn timeline(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
 /// `list_subagent_transcripts` command makes, with the session ledger root
 /// (the GUI's `session_state_root`) and no live-engine epoch.
 fn subagents(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    if !valid_session_id(id) {
+    if !crate::support::valid_session_id(id) {
         return Err(CliError::usage("invalid session id"));
     }
     let store = open_store()?;
@@ -790,6 +822,11 @@ fn subagents(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
         .map(|summary| {
             let state = if !summary.has_transcript {
                 "queued"
+            } else if summary.done && summary.failed {
+                // Interrupted projection (both flags set so JSON consumers
+                // see a terminal run); the human column keeps the precise
+                // state instead of overstating every interruption as failed.
+                summary.status.as_deref().unwrap_or("interrupted")
             } else if summary.failed {
                 "failed"
             } else if summary.blocked {
@@ -820,7 +857,7 @@ fn subagents(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
 /// workspace (the ledger root) is the folder; chat sessions map to
 /// `sessions_root()/<id>`.
 fn folder(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    if !valid_session_id(id) {
+    if !crate::support::valid_session_id(id) {
         return Err(CliError::usage("invalid session id"));
     }
     // Validate the sandbox-home contract before touching the store so a bad
