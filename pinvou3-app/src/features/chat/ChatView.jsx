@@ -815,9 +815,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       useEffect(() => {
         if (!COMPUTER_USE_ENABLED || !bridge.available || !bridge.computerUse || !activeSessionId) return;
         bridge.computerUse.refreshStatus(activeSessionId).catch(() => {});
-        // grant 有 10 分钟空闲过期，但后端没有过期事件——横幅只靠
-        // refreshStatus 与后端对账。停在同会话时周期性对账，避免授权
-        // 已过期而「正在控制电脑」横幅长期失真（第三轮评审发现）。
+        // 事件丢失兜底：grant/stop 事件若被前端错过（如刷新或后台窗口期），
+        // 横幅会与真实授权状态失真——这里周期性 refreshStatus 与后端对账，
+        // 找回错过的授权/停止事件，让横幅重新对齐（纯恢复机制，不改变
+        // 授权本身的生命周期）。
         // 最近已知 disabled 时跳过轮询（评审发现：此前对账循环在功能
         // 关闭时也按应用全生命周期运行）；重新启用走 setEnabled，它直接
         // 重读权威状态，不会漏掉状态翻转。

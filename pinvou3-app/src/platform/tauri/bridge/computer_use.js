@@ -304,10 +304,10 @@
         if (!sid) return;
         const pending = pendingEntry(sid);
         pending.grant = true;
-        // A live per-action confirmation must survive: a grant that
-        // idle-expired mid-run re-arms the grant gate without killing the
-        // backend's pending confirm, so wiping it here left no dialog after
-        // Allow (review finding). The renderer shows the grant dialog first
+        // A live per-action confirmation must survive a grant request: the
+        // renderer shows the grant dialog first when both are pending, and
+        // wiping the confirm here left no dialog after Allow (review
+        // finding). The renderer shows the grant dialog first
         // when both are pending.
         // Feature toggle off: stay inert (no dialog), the record above still
         // lets a later enable + refresh resurface the request.
