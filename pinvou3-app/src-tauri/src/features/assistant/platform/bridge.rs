@@ -1740,9 +1740,11 @@ impl Pinvou3Bridge {
                 let n = crate::features::marketplace::disabled_tool_names();
                 if n.is_empty() { None } else { Some(n) }
             },
-            // 工具调用轮数不设上限：上游 `max_tool_calls` 默认 `None`（admission
-            // gate 完全惰性）。防失控由底座自身的 max_steps、每轮墙钟、有界重试
-            // 和取消边界承担，宿主不再叠加任何按调用次数的闸。
+            // No tool-call round limit: upstream `max_tool_calls` defaults to
+            // `None` (the admission gate is fully lazy). Runaway protection
+            // stays with the foundation's own max_steps, per-turn wall clock,
+            // bounded retries, and cancel boundaries — the host adds no
+            // per-call-count gate of its own.
             max_tool_calls,
             // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
             // —— v0.8.65 上游新增字段,透传 default ——
@@ -2358,8 +2360,9 @@ impl Pinvou3Bridge {
             deepseek_tui::core::ops::TurnToolSecurityPolicy::new(Some(Vec::new()), Some(exact))
                 .with_read_only_dispatch();
         #[cfg(feature = "benchmark-hooks")]
-        // 工具调用轮数已不设上限，budget 耗尽后的 final-only 模式永远不会触发，
-        // 不再 arm；missing-read-action repair 与预算无关，继续保留。
+        // With no tool-call round limit, the final-only-after-budget mode can
+        // never trigger, so it is no longer armed; missing-read-action repair
+        // is budget-independent and stays.
         let turn_tool_security = turn_tool_security.with_missing_read_action_repair();
         Ok(Op::SendMessage {
             content,
@@ -5146,10 +5149,11 @@ mod tests {
         );
     }
 
-    /// 工具调用轮数在宿主层不设任何上限：无论 feature 组合如何，
-    /// `build_engine_config` 都不得配置 `max_tool_calls`（上游 `None` = 不限，
-    /// admission gate 惰性）。防失控由底座的 max_steps、每轮墙钟、有界重试和
-    /// 取消边界承担。
+    /// No host-level tool-call round limit under any feature combination:
+    /// `build_engine_config` must not configure `max_tool_calls` (upstream
+    /// `None` = unbounded, admission gate lazy). Runaway protection stays
+    /// with the foundation's max_steps, per-turn wall clock, bounded retries,
+    /// and cancel boundaries.
     #[test]
     fn engine_config_has_no_tool_call_cap() {
         assert_eq!(

@@ -53,7 +53,7 @@ pub use self::io::{
     upsert_recent_work,
 };
 
-// ---- 文本规范化（util）----
+// ---- text normalization (util) ----
 // The CLI `memory add` verification compares against the stored text; the
 // stored form is `clean_candidate_sentence`-normalized, so the CLI needs the
 // exact function to avoid false "not materialized" failures on ordinary
