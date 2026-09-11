@@ -16,6 +16,12 @@ import { computerUseConsentView } from './computer-use-logic.js';
 // second press can land before React has committed the disabled state.
 const DOUBLE_CLICK_GUARD_MS = 200;
 
+// Type previews at or below this length render inline instead of behind the
+// "show full text" reveal step (chars, not bytes): the backend ships the full
+// text for every non-password Type action up to 4096 chars, and hiding a
+// six-character string behind a click-wall made approval effectively blind.
+const INLINE_TYPE_PREVIEW_MAX_CHARS = 200;
+
 function useConsentAction(copy) {
   const [pendingAction, setPendingAction] = useState(null);
   const [actionError, setActionError] = useState('');
@@ -40,7 +46,7 @@ function useConsentAction(copy) {
         setPendingAction(null);
       });
   };
-  return { pendingAction, actionError, run };
+  return { pendingAction, actionError, clearActionError: () => setActionError(''), run };
 }
 
 const dialogButtonBase = 'text-[13px] px-4 py-2 rounded-full font-medium transition-colors disabled:opacity-50';
@@ -80,7 +86,7 @@ export function ComputerUseBanner({ slice, copy }) {
 /** Grant dialog (computer_use:grant_required) + per-action confirm dialog. */
 export function ComputerUseDialogs({ slice, copy }) {
   const view = computerUseConsentView(slice);
-  const { pendingAction, actionError, run } = useConsentAction(copy);
+  const { pendingAction, actionError, clearActionError, run } = useConsentAction(copy);
   const grantRequest = view.grantRequest;
   const confirmRequest = view.confirmRequest;
   // Focus the safe (deny) button of whichever dialog is up; effects may read
@@ -164,6 +170,16 @@ export function ComputerUseDialogs({ slice, copy }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- handler closes over the request/pending state that these deps track
   }, [open, grantRequest, confirmRequest, pendingAction]);
 
+  // A failed action's error belongs to the request it was attempted on: while
+  // no request is pending this component renders null, but the hook state
+  // survives, so without a reset the error leaked into the NEXT, unrelated
+  // dialog as a misleading message about a different confirm_id (review
+  // finding). Declared before the early return to keep hook order stable.
+  useEffect(() => {
+    clearActionError();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- clearActionError is a stable state setter; the surfaced requests are the trigger
+  }, [grantRequest, confirmRequest]);
+
   if (!grantRequest && !confirmRequest) return null;
 
   // The per-action confirmation is the more time-sensitive surface: when both
@@ -208,12 +224,16 @@ export function ComputerUseDialogs({ slice, copy }) {
     );
   }
 
-  // Optional full typed-text preview (backend contract): present only for
-  // non-password Type actions longer than the 12-char preview. The user must
-  // expand it once before "Confirm once" unlocks, so approval always happens
-  // with the exact text visible (M7 review finding).
+  // Optional full typed-text preview (backend contract): present for every
+  // non-password Type action with at most 4096 chars (absent for password and
+  // secure targets). Short texts render inline so approval always happens with
+  // the exact text visible without an extra click; longer texts must be
+  // revealed once before "Confirm once" unlocks (M7 review finding).
   const typePreviewFull = confirmRequest && confirmRequest.typePreviewFull;
   const fullTextRevealed = !!typePreviewFull && revealedConfirmId === confirmRequest.confirmId;
+  const fullTextVisible =
+    fullTextRevealed
+    || (!!typePreviewFull && typePreviewFull.length <= INLINE_TYPE_PREVIEW_MAX_CHARS);
 
   return (
     <div data-testid="computer-use-confirm-dialog" className="fixed inset-0 z-[1200] flex items-center justify-center p-4 bg-black/45">
@@ -240,7 +260,7 @@ export function ComputerUseDialogs({ slice, copy }) {
         {typePreviewFull != null && (
           <div className="mb-4">
             <div className="text-[12px] leading-relaxed text-[#B3261E] dark:text-[#F28B82] mb-2">{copy.fullTextWarning}</div>
-            {fullTextRevealed ? (
+            {fullTextVisible ? (
               <pre
                 data-testid="computer-use-confirm-full-text"
                 className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-xl p-3 text-[12px] font-mono bg-[#F1F3F4] dark:bg-[#2A2B2D] select-text"
@@ -275,7 +295,7 @@ export function ComputerUseDialogs({ slice, copy }) {
           <button
             type="button"
             data-testid="computer-use-confirm-once"
-            disabled={!!pendingAction || (typePreviewFull != null && !fullTextRevealed)}
+            disabled={!!pendingAction || (typePreviewFull != null && !fullTextVisible)}
             onClick={() => run('confirm', () => bridge.computerUse.confirm(confirmRequest.confirmId))}
             className={dialogPrimaryButton}
           >
