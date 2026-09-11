@@ -873,11 +873,17 @@ memory profile instead",
             )
         }
         AddKind::WorkContext => {
+            // The confirm path stores `clean_candidate_sentence(content)` —
+            // leading 请记住-style prefixes and outer punctuation stripped —
+            // so the verification must compare against the same normalized
+            // form, or ordinary punctuated input false-fails after storing
+            // fine.
+            let stored = feature::clean_candidate_sentence(&pending.content, 160);
             let item = feature::load_work_context()
                 .map_err(|error| feature_error("add", error))?
                 .into_iter()
                 .rev()
-                .find(|item| item.text == pending.content)
+                .find(|item| item.text == stored)
                 .ok_or_else(|| {
                     CliError::failed("memory_add_not_materialized: work context was not stored")
                 })?;
@@ -902,25 +908,28 @@ fn update(
         text: Some(content.to_owned()),
         ttl_days: None,
     };
-    let (human, value) = match store {
+    // The feature layer reports topic-directory cleanup warnings
+    // (TopicMutation.cleanup_warning) alongside the write; the GUI surfaces
+    // them, so the CLI must not swallow them.
+    let (human, value, warning) = match store {
         MemoryStore::Preferences => {
-            let item = feature::update_preference(id, patch)
+            let event = feature::update_preference(id, patch)
                 .map_err(|error| feature_error("update", error))?
-                .ok_or_else(|| not_found(store, id))?
-                .value;
+                .ok_or_else(|| not_found(store, id))?;
             (
-                format!("Updated preference: {}", item.id),
-                serde_json::to_value(&item).unwrap_or_default(),
+                format!("Updated preference: {}", event.value.id),
+                serde_json::to_value(&event.value).unwrap_or_default(),
+                event.cleanup_warning,
             )
         }
         MemoryStore::WorkContext => {
-            let item = feature::update_work_context(id, patch)
+            let event = feature::update_work_context(id, patch)
                 .map_err(|error| feature_error("update", error))?
-                .ok_or_else(|| not_found(store, id))?
-                .value;
+                .ok_or_else(|| not_found(store, id))?;
             (
-                format!("Updated work context: {}", item.id),
-                serde_json::to_value(&item).unwrap_or_default(),
+                format!("Updated work context: {}", event.value.id),
+                serde_json::to_value(&event.value).unwrap_or_default(),
+                event.cleanup_warning,
             )
         }
         MemoryStore::CurrentFocus | MemoryStore::RecentActivity => {
@@ -930,6 +939,7 @@ fn update(
             (
                 format!("Updated {}: {}", store.as_str(), item.id),
                 serde_json::to_value(&item).unwrap_or_default(),
+                None,
             )
         }
         MemoryStore::RecentWork | MemoryStore::Pending => {
@@ -939,6 +949,14 @@ work-context, current-focus, recent-activity)",
                 store.as_str()
             )));
         }
+    };
+    let human = match &warning {
+        Some(warning) => format!("{human}\nwarning: {warning}"),
+        None => human,
+    };
+    let value = match warning {
+        Some(warning) => serde_json::json!({ "warning": warning, "item": value }),
+        None => value,
     };
     Ok(success(render(output, human, &value)))
 }
