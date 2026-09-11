@@ -6,7 +6,8 @@
 //! - 每次截图生成新 ScaleMap 存入会话状态；带坐标的动作没有 ScaleMap 时先自动截图。
 //! - 输入类与 scroll 动作执行后等待 [`POST_ACTION_SETTLE_MS`] 再补拍截图附上，
 //!   模型始终看到最新状态。
-//! - 同意门控（[`ComputerUseShared`]）在每次注入前检查；T3 后果性动作一律拦截。
+//! - 同意门控（[`ComputerUseShared`]）在每次注入前检查；命中后果性名单或
+//!   筛查失败的目标必须经用户确认（单次令牌，绑定摘要与光标原点）。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -53,6 +54,13 @@ pub const MAX_UI_TREE_NODES: u32 = 10_000;
 /// sensitive), so the audit record's error field holds only this code; the
 /// model still receives the full message verbatim.
 const T3_CONFIRM_REQUIRED_ERROR: &str = "t3-confirmation-required";
+
+/// Stable audit code for the denied-action loop suppression (same session +
+/// same action summary denied within [`super::guard::CONFIRM_TTL`]). The
+/// message itself carries only the parameter summary (no element labels), so
+/// it could be logged verbatim — the stable code keeps the two T3 refusal
+/// classes uniform in the trail.
+const T3_DENIED_RECENTLY_ERROR: &str = "t3-denied-recently";
 
 /// 截图存放的子目录（相对 workspace）：engine 的 image_analyze 回退按
 /// workspace 相对路径解析，`attachments/` 是它的既定根。
@@ -643,17 +651,21 @@ fn chord_is_consequential(keys: &[Key]) -> bool {
 }
 
 /// Whether a key chord is effectively typed text: exactly one character key
-/// plus any number of Shift modifiers in any position. Classification must be
-/// content-based, not token-position based — `shift+shift+h` parses to
+/// with any modifiers. Classification must be content-based, not
+/// token-position based — `shift+shift+h` parses to
 /// `[Shift, Shift, Char('h')]`, which positional patterns like
 /// `[Char] | [Shift, Char] | [Char, Shift]` miss while the injection still
 /// types a capital H; `h+shift+shift` types a lowercase h and is a typing
-/// form all the same.
+/// form all the same. Modifier choice does not make a character chord a
+/// shortcut: a password spelled one `alt+x` call at a time would otherwise
+/// land in the audit log as plaintext `keys: alt+x` records (round-6
+/// review), so every single-character chord logs the count only.
 fn is_typed_text_chord(keys: &[Key]) -> bool {
-    let non_modifiers: Vec<&Key> = keys.iter().filter(|k| !k.is_modifier()).collect();
-    non_modifiers.len() == 1
-        && matches!(non_modifiers[0], Key::Char(_))
-        && keys.iter().all(|k| matches!(k, Key::Char(_) | Key::Shift))
+    let mut non_modifiers = keys.iter().filter(|k| !k.is_modifier());
+    let (Some(only), None) = (non_modifiers.next(), non_modifiers.next()) else {
+        return false;
+    };
+    matches!(only, Key::Char(_))
 }
 
 /// Type 动作的目标是否密码/安全字段（确认摘要据此掩码预览）。以焦点元素为
@@ -798,15 +810,17 @@ fn requires_t3_check(action: &ComputerUseAction) -> bool {
 }
 
 /// Whether the full typed text may ride the confirm event
-/// (`type_preview_full`), or `None` when it must not. Included ONLY when
-/// ALL of:
+/// (`type_preview_full`), or `None` when it must not. Included ONLY when:
 /// - the action is `Type` (other actions have no typed text),
 /// - the target is NOT secure/masked for this mint — the masked summary
 ///   exists precisely so password text is never revealed in the confirm
 ///   dialog or event stream,
-/// - the text is longer than 12 chars (shorter texts need no expander) and
-///   at most 4096 chars — the cap bounds the payload size and thus the
-///   XSS/abuse surface that reaches the dialog.
+/// - the text is at most 4096 chars — the cap bounds the payload size and
+///   thus the abuse surface that reaches the dialog. Short texts ride along
+///   too: the dialog otherwise shows only "type N characters", and approving
+///   a length with zero visible content is not informed consent (round-6
+///   review; the old 12-char lower bound was stale logic from the removed
+///   inline preview).
 fn full_type_preview(action: &ComputerUseAction, secure_type_target: bool) -> Option<String> {
     let ComputerUseAction::Type { text } = action else {
         return None;
@@ -815,7 +829,7 @@ fn full_type_preview(action: &ComputerUseAction, secure_type_target: bool) -> Op
         return None;
     }
     let count = text.chars().count();
-    (count > TYPE_PREVIEW_CHARS && count <= 4096).then(|| text.clone())
+    (count <= 4096).then(|| text.clone())
 }
 
 /// 铸造待确认请求、发事件并给模型返回「未执行、去要确认」错误。每个会话
@@ -826,11 +840,13 @@ fn request_confirmation(
     element_label: &str,
     reason_phrase: &str,
     type_preview_full: Option<String>,
+    origin: Option<(i32, i32)>,
 ) -> String {
     let confirm_id = parts.shared.new_pending_confirmation(
         &parts.session_id,
         summary.to_string(),
         element_label.to_string(),
+        origin,
     );
     let mut payload = json!({
         "session_id": parts.session_id,
@@ -907,7 +923,7 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         }
 
         // T3 确认令牌：模型回传 confirm_id 且状态里有与之匹配（同会话、同
-        // 动作摘要）的批准令牌才放行。
+        // 动作摘要、光标类动作同光标位）的批准令牌才放行。
         if requires_t3_check(&action) {
             // The masked-target decision only shapes the dialog payload
             // (whether the full typed text may ride the confirm event).
@@ -917,27 +933,68 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
             // Optional full text for the confirm event's expander, fixed at
             // mint time (never recomputed at spend time).
             let type_preview_full = full_type_preview(&action, secure_type_target);
+            // 光标类动作的铸造原点：此刻的光标位置（读不出则为 None——此时
+            // 令牌退化为只绑摘要，与带坐标动作一致）。
+            let origin = if acts_at_cursor(&action) {
+                parts.backend.cursor_position().ok()
+            } else {
+                None
+            };
             match &parsed.confirm_id {
-                Some(id) => match parts
-                    .shared
-                    .take_confirmation(id, &parts.session_id, &summary)
-                {
-                    // A granted token proceeds directly to execution — no
-                    // re-screen, no re-request arms (mainstream model: the
-                    // API confirmation is one per-action id the client
-                    // acknowledges; there is no crypto and no re-verification).
-                    ConfirmationCheck::Granted => {
-                        confirmed_t3 = true;
+                Some(id) => {
+                    // 光标类动作消费时需要当前光标位置与铸造原点比对；
+                    // 读不出视为不匹配（fail-closed）。
+                    let cursor = if acts_at_cursor(&action) {
+                        parts.backend.cursor_position().ok()
+                    } else {
+                        None
+                    };
+                    match parts
+                        .shared
+                        .take_confirmation(id, &parts.session_id, &summary, cursor)
+                    {
+                        // A granted token proceeds directly to execution — no
+                        // re-screen, no re-request arms (mainstream model: the
+                        // API confirmation is one per-action id the client
+                        // acknowledges; there is no crypto and no re-verification).
+                        ConfirmationCheck::Granted => {
+                            confirmed_t3 = true;
+                        }
+                        // The token matches but the cursor has moved since the
+                        // user approved: the approval was for a different
+                        // spot. The token is preserved — only the exact
+                        // approved scenario can spend it.
+                        ConfirmationCheck::Stale => {
+                            return Err(
+                                "the pointer has moved since the user approved this action, so \
+                                 the approval no longer matches the target. Ask the user to \
+                                 confirm again."
+                                    .to_string(),
+                            );
+                        }
+                        ConfirmationCheck::Unknown => {
+                            return Err(
+                                "the confirm_id is invalid, expired, or was already used. Ask the \
+                                 user to confirm again."
+                                    .to_string(),
+                            );
+                        }
                     }
-                    ConfirmationCheck::Unknown => {
-                        return Err(
-                            "the confirm_id is invalid, expired, or was already used. Ask the \
-                             user to confirm again."
-                                .to_string(),
-                        );
-                    }
-                },
+                }
                 None => {
+                    // 循环抑制：用户在 TTL 内明确拒绝过**完全相同摘要**的
+                    // 动作——直接拒绝，不铸造新 pending、不发确认事件。否则
+                    // 模型每次重试都会重开全屏阻塞对话框，唯一应用内出口是
+                    // 批准（consent fatigue，round-6 评审）。摘要不同（换了
+                    // 目标/参数）的照常走确认流程。
+                    if parts.shared.is_recently_denied(&parts.session_id, &summary) {
+                        return Err(format!(
+                            "{T3_DENIED_RECENTLY_ERROR}: the user denied this exact action \
+                             moments ago. Do not repeat it. If you believe they changed their \
+                             mind, ask them directly in chat; a different action will still \
+                             trigger a fresh confirmation."
+                        ));
+                    }
                     let map = parts.state.lock().last_map.clone();
                     match t3_screening(&parts, &action, map.as_ref()) {
                         T3Screening::Clear => {}
@@ -948,6 +1005,7 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                                 &hit.element_label,
                                 hit.reason,
                                 type_preview_full.clone(),
+                                origin,
                             ));
                         }
                         T3Screening::Unscreenable(reason) => {
@@ -958,6 +1016,7 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                                 &reason,
                                 "an unverifiable target (screening unavailable)",
                                 type_preview_full.clone(),
+                                origin,
                             ));
                         }
                     }
@@ -1003,6 +1062,12 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         let map = parts.state.lock().last_map.clone();
         let mut outcome = execute_action(&parts, &action, map.as_ref(), &mut warnings)
             .map_err(|e| backend_error_text(&e))?;
+
+        // 授权活动记账：只在动作真正执行成功后续期（round-6 评审——被拦/
+        // 被拒的调用不应让用户反复拒绝的会话永久续期）。
+        if action.class() == ActionClass::Input {
+            parts.shared.keepalive_input_action(&parts.session_id);
+        }
 
         // 补拍截图。
         if attaches_screenshot(&action) {
@@ -1102,6 +1167,8 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         Err(message) => {
             let audit_error = if message.starts_with(T3_CONFIRM_REQUIRED_ERROR) {
                 Some(T3_CONFIRM_REQUIRED_ERROR.to_string())
+            } else if message.starts_with(T3_DENIED_RECENTLY_ERROR) {
+                Some(T3_DENIED_RECENTLY_ERROR.to_string())
             } else {
                 Some(message.clone())
             };
@@ -1133,13 +1200,22 @@ fn held_key_suffix(action: &ComputerUseAction) -> String {
     }
 }
 
-/// Type 摘要预览的字符下界（短于等于该长度的全文已在对话框里，无需
-/// `type_preview_full` expander）。
-const TYPE_PREVIEW_CHARS: usize = 12;
+/// Type 键入内容的指纹（SHA-256 截断 64 位），绑定进批准令牌。字符数相同
+/// 的两段文本摘要相同——没有指纹时，一次批准可以花在任意同长度文本上
+/// （round-6 评审：same-length replay）。指纹单向且截断，内容不因此出现在
+/// 摘要、事件流或审计里。
+fn content_fingerprint(text: &str) -> u64 {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(text.as_bytes());
+    let mut head = [0u8; 8];
+    head.copy_from_slice(&digest[..8]);
+    u64::from_be_bytes(head)
+}
 
 /// 动作摘要：纯人类可读的参数摘要（`left click x1 at Some((5, 6))`、
-/// `type 3 characters`……）。摘要展示给用户（知情批准）并绑定进批准令牌；
-/// 键入内容永不出现（Type 只记字符数，无预览、无指纹）。
+/// `type 3 characters [fp 0a1b2c3d4e5f60718]`……）。摘要展示给用户（知情
+/// 批准）并绑定进批准令牌；键入内容永不出现（Type 只记字符数 + 单向指纹，
+/// 无明文）。
 fn action_summary(action: &ComputerUseAction) -> String {
     match action {
         ComputerUseAction::Click { button, count, at } => {
@@ -1147,7 +1223,11 @@ fn action_summary(action: &ComputerUseAction) -> String {
         }
         ComputerUseAction::Drag { start, end } => format!("drag {start:?} -> {end:?}"),
         ComputerUseAction::Type { text } => {
-            format!("type {} characters", text.chars().count())
+            format!(
+                "type {} characters [fp {:016x}]",
+                text.chars().count(),
+                content_fingerprint(text)
+            )
         }
         ComputerUseAction::KeyChord { chord, .. } => format!("key {chord}"),
         ComputerUseAction::HoldKey { chord, ms, .. } => format!("hold {chord} for {ms}ms"),
@@ -1161,6 +1241,19 @@ fn action_summary(action: &ComputerUseAction) -> String {
         ComputerUseAction::MouseMove { x, y } => format!("mouse_move to ({x}, {y})"),
         other => other.name().to_string(),
     }
+}
+
+/// 动作是否作用于「当前光标所在处」（无坐标的点击/按下/抬起/滚动）。这类
+/// 动作的批准令牌绑定铸造时光标位置（见 [`PendingConfirmation.origin`] 的
+/// guard 侧文档）；带坐标动作的位置已在摘要里绑定。
+fn acts_at_cursor(action: &ComputerUseAction) -> bool {
+    matches!(
+        action,
+        ComputerUseAction::Click { at: None, .. }
+            | ComputerUseAction::MouseDown { .. }
+            | ComputerUseAction::MouseUp { .. }
+            | ComputerUseAction::Scroll { at: None, .. }
+    )
 }
 
 fn execute_action(
@@ -1416,7 +1509,39 @@ impl ToolSpec for ComputerUseTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let parsed = parse_action(&input)?;
+        // 解析失败同样留痕（round-6 评审：parse 阶段的拒绝此前零审计，模型
+        // 可以无痕迹地探测动作面）。只记截断后的动作名与错误，绝不记录
+        // 调用参数全文（可能含键入文本）。
+        let parsed = match parse_action(&input) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                let action_name = input
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .map(|name| name.chars().take(80).collect::<String>())
+                    .unwrap_or_else(|| "missing".to_string());
+                let error_text = error.to_string();
+                let record = AuditRecord::new(
+                    &self.parts.session_id,
+                    "unparseable",
+                    format!("action:{action_name}"),
+                )
+                .finish(
+                    "rejected",
+                    Some(format!(
+                        "parse failed: {}",
+                        error_text.chars().take(160).collect::<String>()
+                    )),
+                    0,
+                );
+                if let Ok(log) = AuditLog::for_session(&self.parts.session_id) {
+                    if let Err(audit_error) = log.append(&record) {
+                        eprintln!("[computer_use] audit append failed: {audit_error}");
+                    }
+                }
+                return Err(error);
+            }
+        };
 
         // 能力先行（评审发现：先弹授权再报不支持，会诱导用户为一个永远无法
         // 使用的平台授权，还白白消耗一次授权预算）。

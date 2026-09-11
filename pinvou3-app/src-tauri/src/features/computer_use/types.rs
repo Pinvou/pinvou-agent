@@ -28,15 +28,6 @@ pub enum ActionClass {
     Input,
 }
 
-impl ActionClass {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Observe => "observe",
-            Self::Input => "input",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MouseButton {
@@ -535,7 +526,7 @@ mod tests {
     }
 
     /// 评审修复回归：和弦 token 数上限 ≤4，控制字符不是合法键位。
-    /// （更长的序列应改走 type 动作，接受筛查与 HMAC 审计。）
+    /// （更长的序列应改走 type 动作，接受焦点筛查与确认。）
     #[test]
     fn key_chord_rejects_overlong_chords_and_control_characters() {
         assert!(parse_key_chord("ctrl+alt+shift+meta+c").is_err());

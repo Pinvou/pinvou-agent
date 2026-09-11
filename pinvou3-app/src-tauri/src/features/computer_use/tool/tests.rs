@@ -927,11 +927,14 @@ async fn drag_drop_target_is_screened() {
     );
 }
 
-/// Denial has no memory (denial just closes the dialog): the denied id
-/// reads as invalid/spent on retry, mints nothing, and injects nothing; a
-/// fresh blocked request mints a NEW confirm_id.
+/// Denial closes the dialog AND suppresses the identical retry (round-6
+/// review: without suppression, the model's retry re-opens the blocking
+/// modal on every attempt — consent fatigue with approval as the only
+/// in-app exit). The denied id itself reads as invalid/spent on retry and
+/// mints nothing; the SAME action is refused server-side with NO new
+/// confirm event; a DIFFERENT action still goes through the normal flow.
 #[tokio::test]
-async fn denied_confirmation_has_no_memory_retry_is_invalid() {
+async fn denied_action_retry_is_suppressed_without_a_new_dialog() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().element = Some(ElementInfo {
@@ -963,8 +966,8 @@ async fn denied_confirmation_has_no_memory_retry_is_invalid() {
         "deny must consume the pending"
     );
 
-    // Retrying the denied id: the token is simply invalid — there is no
-    // remembered denial — and nothing is injected.
+    // Retrying the denied id: the token is simply invalid and nothing is
+    // injected.
     let retry = fixture
         .tool
         .execute(
@@ -983,8 +986,10 @@ async fn denied_confirmation_has_no_memory_retry_is_invalid() {
         "a denied id must not mint"
     );
 
-    // A fresh blocked request goes through the confirmation flow again with
-    // a NEW confirm_id (the denial must not leak into the no-token path).
+    // A fresh attempt of the SAME action is refused server-side: the error
+    // names the denial, no new confirm event is emitted (the modal must not
+    // re-open), and nothing is injected.
+    let events_before = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
     let again = fixture
         .tool
         .execute(
@@ -992,8 +997,38 @@ async fn denied_confirmation_has_no_memory_retry_is_invalid() {
             &context(&fixture.workspace),
         )
         .await;
+    let again_text = again.ok().map(|r| r.content).unwrap_or_default();
     assert!(
-        again
+        again_text.contains("denied this exact action"),
+        "{again_text}"
+    );
+    assert!(again_text.contains("t3-denied-recently"), "{again_text}");
+    let events_after = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    assert_eq!(
+        events_before
+            .iter()
+            .filter(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+            .count(),
+        events_after
+            .iter()
+            .filter(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+            .count(),
+        "a suppressed retry must not emit a new confirm_required event"
+    );
+    assert!(fixture.mock.lock().clicked.is_empty());
+
+    // A DIFFERENT action (different summary) still goes through the normal
+    // confirmation flow with a NEW confirm_id — suppression is per-summary,
+    // not a blanket gag.
+    let other = fixture
+        .tool
+        .execute(
+            json!({"action": "right_click", "x": 5, "y": 5}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        other
             .ok()
             .map(|r| r.content)
             .unwrap_or_default()
@@ -1139,11 +1174,12 @@ fn minimal_input(action: &str) -> Value {
 // 确认摘要：纯参数摘要（type N characters），全文经 type_preview_full 下发
 // ---------------------------------------------------------------------------
 
-/// The Type summary is a plain human-readable parameter summary
-/// (`type N characters`): no inline preview, no fingerprint, no raw text.
-/// For a non-secure target the eligible full text rides `type_preview_full`
-/// instead; control characters are the frontend's concern, not the
-/// summary's.
+/// The Type summary is the character count plus a truncated SHA-256 content
+/// fingerprint (`type N characters [fp …]`): no raw text, but a minted
+/// approval can no longer be replayed on a different same-length text
+/// (round-6 review). For a non-secure target the eligible full text rides
+/// `type_preview_full` instead; control characters are the frontend's
+/// concern, not the summary's.
 #[tokio::test]
 async fn type_summary_is_a_plain_character_count() {
     let (fixture, _restore) = fixture();
@@ -1159,7 +1195,7 @@ async fn type_summary_is_a_plain_character_count() {
         height: 10,
         secure: false,
     });
-    // 20 chars (> the 12-char expander threshold), including a control char
+    // 20 chars, including a control char
     // the old in-summary preview had to escape.
     let text = "hello\u{7}world123456789".to_string();
     let result = fixture
@@ -1185,7 +1221,14 @@ async fn type_summary_is_a_plain_character_count() {
         .expect("confirm event carries the action summary");
     let summary = payload["action"].as_str().unwrap_or_default();
 
-    assert_eq!(summary, "type 20 characters", "{summary}");
+    assert_eq!(
+        summary,
+        format!(
+            "type 20 characters [fp {:016x}]",
+            content_fingerprint(&text)
+        ),
+        "{summary}"
+    );
     // The raw text never rides the dialog summary.
     assert!(!summary.contains("hello"), "{summary}");
     assert!(!summary.contains('\u{7}'), "{summary:?}");
@@ -1237,8 +1280,15 @@ async fn type_summary_masks_preview_for_secure_targets() {
         .expect("confirm event carries the action summary");
     let summary = payload["action"].as_str().unwrap_or_default();
 
-    // 明文不得出现在摘要；摘要只有字符数。
-    assert_eq!(summary, "type 14 characters", "{summary}");
+    // 明文不得出现在摘要；摘要只有字符数 + 指纹。
+    assert_eq!(
+        summary,
+        format!(
+            "type 14 characters [fp {:016x}]",
+            content_fingerprint(&text)
+        ),
+        "{summary}"
+    );
     assert!(!summary.contains("hunter2"), "{summary}");
     // No full-text preview and no plaintext anywhere in the payload.
     assert!(
@@ -1254,15 +1304,16 @@ async fn type_summary_masks_preview_for_secure_targets() {
 }
 
 // ---------------------------------------------------------------------------
-// 审计脱敏（键入形和弦只记键数；快捷键和弦保留明文）
+// 审计脱敏（单字符和弦只记键数；多键快捷键和弦保留明文）
 // ---------------------------------------------------------------------------
 
-/// Typing-form key chords (single char + shifts, any token order) are
-/// audited redacted as `pressed 1 key` — never the character; shortcut
-/// chords with real modifiers keep the readable `keys: <chord>` target, and
-/// no crypto fields exist anywhere in the JSONL.
-/// Duplicate-modifier chords (regression fix: `shift+shift+h` types a
-/// capital H) are classified by content regardless of token position.
+/// Single-character chords are audited redacted as `pressed 1 key` — never
+/// the character, regardless of the modifier (round-6 review: a password
+/// spelled one `alt+x` call at a time would otherwise land in the log as
+/// plaintext `keys: alt+x` records; classification is by content, not token
+/// position, so duplicate-modifier chords like `shift+shift+h` — which types
+/// a capital H — are covered too). Multi-key shortcut chords keep the
+/// readable `keys: <chord>` target, and no crypto fields exist in the JSONL.
 #[tokio::test]
 async fn single_char_key_chord_is_audited_as_typed_text() {
     let (fixture, _restore) = fixture();
@@ -1325,15 +1376,17 @@ async fn single_char_key_chord_is_audited_as_typed_text() {
         .collect();
     assert_eq!(
         typed.len(),
-        6,
-        "typed-text chords (incl. duplicate-modifier ones) audited as typed text"
+        7,
+        "every single-character chord (any modifier) is audited count-only: {records:?}"
     );
-    // Shortcut chords keep the readable plaintext target.
-    let chorded = keys
-        .iter()
-        .find(|r| r["target"] == "keys: ctrl+s")
-        .expect("modifier chord keeps plaintext target");
-    assert_eq!(chorded["target"], "keys: ctrl+s");
+    // No single-character chord keeps a plaintext target — ctrl+s included.
+    assert!(
+        keys.iter().all(|r| !r["target"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("keys: ")),
+        "single-character chords must never log their character: {records:?}"
+    );
     // The held typing-form chord carries the held-ms suffix, no character.
     assert_eq!(
         holds[0]["target"], "pressed 1 key held for 10ms",
@@ -2129,20 +2182,26 @@ async fn confirm_event_carries_full_type_preview_for_long_non_secure_text() {
         Some(text.as_str()),
         "full text must ride the confirm event: {payload}"
     );
-    // The dialog summary stays a plain character count (the expander is the
-    // full view).
+    // The dialog summary stays a character count plus content fingerprint
+    // (the expander is the full view).
     let summary = payload["action"].as_str().unwrap_or_default();
     assert_eq!(
         summary,
-        format!("type {} characters", text.chars().count()),
-        "summary must be the plain parameter summary: {payload}"
+        format!(
+            "type {} characters [fp {:016x}]",
+            text.chars().count(),
+            content_fingerprint(&text)
+        ),
+        "summary must be the parameter summary: {payload}"
     );
 }
 
-/// Short type texts must not get `type_preview_full`: the 12-char summary
-/// preview already shows the whole text, so the expander would be noise.
+/// Short type texts DO ride `type_preview_full` (round-6 review): the
+/// dialog would otherwise show only "type 2 characters" — approving a
+/// length with zero visible content is not informed consent. The old
+/// 12-char lower bound was stale logic from the removed inline preview.
 #[tokio::test]
-async fn confirm_event_omits_full_type_preview_for_short_text() {
+async fn confirm_event_carries_full_type_preview_even_for_short_text() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().focused = Some(ElementInfo {
@@ -2175,8 +2234,267 @@ async fn confirm_event_omits_full_type_preview_for_short_text() {
         .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
         .map(|(_, p)| p.clone())
         .expect("confirm event");
+    assert_eq!(
+        payload.get("type_preview_full").and_then(|v| v.as_str()),
+        Some("hi"),
+        "short non-secure text must carry the full preview: {payload}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Round-6 回归：光标原点绑定 / 同长文本重放 / 光标未知消费 / 注入面执行断言
+// ---------------------------------------------------------------------------
+
+/// approve-then-move：光标类动作（left_mouse_down）铸造时记录光标原点，
+/// 光标移走后令牌被拒（Stale，令牌保留），移回原位才能消费执行。
+#[tokio::test]
+async fn approve_then_move_breaks_cursor_bound_tokens() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    // 光标默认 (7,9)，其上覆盖一个后果性目标 → down 被拦、铸造 pending。
+    fixture.mock.lock().element = Some(ElementInfo {
+        role: "AXButton".to_string(),
+        name: "Buy now".to_string(),
+        x: 0,
+        y: 0,
+        width: 16,
+        height: 16,
+        secure: false,
+    });
+    let blocked = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down"}),
+            &context(&fixture.workspace),
+        )
+        .await;
     assert!(
-        payload.get("type_preview_full").is_none(),
-        "short text must not carry the full preview: {payload}"
+        blocked
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("NOT executed")
+    );
+    let confirm_id = latest_confirm_id(&fixture.events);
+    assert!(fixture.shared.mint_confirmation(&confirm_id));
+
+    // 光标移走后重放：Stale——批准与目标脱钩的入口被封死。
+    fixture.mock.lock().cursor = (3, 4);
+    let replay = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down", "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = replay.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("the pointer has moved since the user approved"),
+        "{text}"
+    );
+    assert!(
+        fixture.mock.lock().downed.is_empty(),
+        "a moved-pointer replay must not inject"
+    );
+
+    // 光标回到批准时的原位：消费成功，注入执行。
+    fixture.mock.lock().cursor = (7, 9);
+    let spend = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down", "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let spend = match spend {
+        Ok(r) => r,
+        Err(e) => panic!("spend execute failed: {e}"),
+    };
+    assert!(spend.success, "{}", spend.content);
+    assert_eq!(
+        fixture.mock.lock().downed.len(),
+        1,
+        "the approved action executes at the approved origin"
+    );
+}
+
+/// 同长文本重放：type 令牌绑定内容指纹，同为 N 字符的另一段文本花不掉
+/// 批准（round-6 评审：无指纹时一次批准可花在任意同长文本上）。
+#[tokio::test]
+async fn same_length_type_replay_breaks_the_token() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().focused = Some(ElementInfo {
+        role: "AXSecureTextField".to_string(),
+        name: "Password".to_string(),
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: true,
+    });
+    let approved_text = "correct-horse-battery"; // 21 chars
+    let blocked = fixture
+        .tool
+        .execute(
+            json!({"action": "type", "text": approved_text}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        blocked
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("NOT executed")
+    );
+    let confirm_id = latest_confirm_id(&fixture.events);
+    assert!(fixture.shared.mint_confirmation(&confirm_id));
+
+    // 同长不同文：摘要（指纹）失配 → 拒绝且不注入。
+    let swapped = "XXXXXXXXXXXXXXXXXXXXX"; // 21 chars
+    let replay = fixture
+        .tool
+        .execute(
+            json!({"action": "type", "text": swapped, "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = replay.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("invalid, expired, or was already used"),
+        "{text}"
+    );
+    assert!(
+        fixture.mock.lock().typed.is_empty(),
+        "a same-length text swap must not inject"
+    );
+
+    // 原文重放：执行。
+    let spend = fixture
+        .tool
+        .execute(
+            json!({"action": "type", "text": approved_text, "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let spend = match spend {
+        Ok(r) => r,
+        Err(e) => panic!("spend execute failed: {e}"),
+    };
+    assert!(spend.success, "{}", spend.content);
+    assert_eq!(
+        fixture.mock.lock().typed.last().map(String::as_str),
+        Some(approved_text)
+    );
+}
+
+/// 消费时光标位置读不出（Wayland 首次 move 前的常态）：光标类令牌无法
+/// 验证原点 → fail-closed 拒绝，不注入。
+#[tokio::test]
+async fn cursor_unknown_at_spend_fails_closed() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().element = Some(ElementInfo {
+        role: "AXButton".to_string(),
+        name: "Buy now".to_string(),
+        x: 0,
+        y: 0,
+        width: 16,
+        height: 16,
+        secure: false,
+    });
+    let blocked = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        blocked
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("NOT executed")
+    );
+    let confirm_id = latest_confirm_id(&fixture.events);
+    assert!(fixture.shared.mint_confirmation(&confirm_id));
+
+    fixture.mock.lock().cursor_error = true;
+    let spend = fixture
+        .tool
+        .execute(
+            json!({"action": "left_mouse_down", "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = spend.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("the pointer has moved since the user approved"),
+        "an unreadable cursor cannot verify the origin and must be refused: {text}"
+    );
+    assert!(fixture.mock.lock().downed.is_empty());
+}
+
+/// Round-6 评审缺口：drag / scroll / hold_key 的 happy-path 此前从不断言
+/// 「真的执行了」——mock 有记录字段但零断言，静默丢调用的重构照样全绿。
+#[tokio::test]
+async fn drags_scrolls_and_holds_execute_on_granted_actions() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    // 无元素覆盖 → 筛查 Clear，三个动作直接执行。
+    let drag = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click_drag", "start_x": 2, "start_y": 3, "x": 8, "y": 9}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let drag = match drag {
+        Ok(r) => r,
+        Err(e) => panic!("drag execute failed: {e}"),
+    };
+    assert!(drag.success, "{}", drag.content);
+    assert_eq!(
+        fixture.mock.lock().drags.len(),
+        1,
+        "drag must actually reach the backend injection"
+    );
+
+    let scroll = fixture
+        .tool
+        .execute(
+            json!({"action": "scroll", "direction": "down", "amount": 3}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let scroll = match scroll {
+        Ok(r) => r,
+        Err(e) => panic!("scroll execute failed: {e}"),
+    };
+    assert!(scroll.success, "{}", scroll.content);
+    assert_eq!(
+        fixture.mock.lock().scrolled.len(),
+        1,
+        "scroll must actually reach the backend injection"
+    );
+
+    let held = fixture
+        .tool
+        .execute(
+            json!({"action": "hold_key", "text": "shift+p", "ms": 10}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let held = match held {
+        Ok(r) => r,
+        Err(e) => panic!("hold_key execute failed: {e}"),
+    };
+    assert!(held.success, "{}", held.content);
+    assert_eq!(
+        fixture.mock.lock().held.len(),
+        1,
+        "hold_key must actually reach the backend injection"
     );
 }

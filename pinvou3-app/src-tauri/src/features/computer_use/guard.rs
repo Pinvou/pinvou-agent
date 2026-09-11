@@ -7,10 +7,14 @@
 //!
 //! Confirmation model (mainstream): a blocked action raises one pending
 //! per session (a new request replaces the old one, like a normal dialog);
-//! approval mints a single-use token bound to the session and the action
-//! summary; denial just closes the dialog (no denial memory). No budgets,
-//! no rate limits, no caps — the safety floor is the denylist screening
-//! plus explicit user confirmation.
+//! approval mints a single-use token bound to the session, the action
+//! summary and — for actions that act at the cursor — the cursor position
+//! at approval time. No budgets, no rate limits — the safety floor is the
+//! denylist screening plus explicit user confirmation. One narrow denial
+//! record exists (same session + same action summary, [`CONFIRM_TTL`] TTL):
+//! it does not punish retries, it only stops a denied action from
+//! re-raising the blocking dialog on every retry (the consent-fatigue loop
+//! the user explicitly refused; round-6 review).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,9 +30,13 @@ pub const GRANT_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// 也不能再为它铸造批准令牌。
 pub const CONFIRM_TTL: Duration = Duration::from_secs(5 * 60);
 /// 跨会话物理输入锁的有界等待上限。Input 动作从筛查到注入全程持锁（最长
-/// 可达 190s×n），无限挂等会让其他会话静默卡死（评审发现）——超时显式报错，
-/// 由模型自行等待重试。
+/// 可达一个 backend 调用上限，见 backend.rs 的 `BACKEND_CALL_TIMEOUT`），
+/// 无限挂等会让其他会话静默卡死（评审发现）——超时显式报错，由模型自行
+/// 等待重试。
 pub const PHYSICAL_INPUT_LOCK_TIMEOUT: Duration = Duration::from_secs(20);
+/// 每会话保留的「最近被拒动作摘要」条数上限（见 `ConsentMaps::denied`）。
+/// 只服务弹窗循环抑制，不是额度防御——超出即淘汰最旧一条。
+pub const DENIED_SUMMARIES_PER_SESSION: usize = 8;
 
 /// T3 后果性动作名单（大小写不敏感子串匹配；中英日）。
 /// 命中即不执行，要求用户显式确认。误伤（如 "bin" 命中 "combine"）方向
@@ -172,26 +180,38 @@ impl SessionConsent {
 pub struct PendingConfirmation {
     pub session_id: String,
     /// The plain human-readable parameter summary of the blocked action
-    /// (e.g. `left click x1 at Some((5, 6))`); the approval token is bound
-    /// to exactly this summary.
+    /// (e.g. `left click x1 at Some((5, 6))`; type actions carry a content
+    /// fingerprint); the approval token is bound to exactly this summary.
     pub action_summary: String,
     pub element_label: String,
+    /// Device-space cursor position at mint time, captured for actions that
+    /// act wherever the cursor is (`at: None` clicks, mouse down/up, cursor
+    /// scrolls). Spending such a token requires the cursor to still be there
+    /// — otherwise an approval minted over one target can be replayed after
+    /// an unrelated move (round-6 review: approve-then-move).
+    pub origin: Option<(i32, i32)>,
     pub created_at: Instant,
 }
 
-/// 已铸造的批准令牌：绑定会话与动作摘要，[`CONFIRM_TTL`] 内未消费即过期。
+/// 已铸造的批准令牌：绑定会话、动作摘要与（光标类动作的）铸造时光标位置，
+/// [`CONFIRM_TTL`] 内未消费即过期。
 #[derive(Debug, Clone)]
 struct ApprovedToken {
     session_id: String,
     action_summary: String,
+    origin: Option<(i32, i32)>,
     minted_at: Instant,
 }
 
 /// 消费批准令牌的结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfirmationCheck {
-    /// 令牌有效且与会话/动作摘要精确匹配，已消费（单次有效）。
+    /// 令牌有效且与会话/动作摘要/cursor 位置全部匹配，已消费（单次有效）。
     Granted,
+    /// 令牌匹配但铸造时光标所在位置与当前不符（approve-then-move 重放）。
+    /// 令牌**保留**——只有用户批准的原场景（同会话、同摘要、同光标位）能
+    /// 花掉它，误试不烧掉用户的确认。
+    Stale,
     /// 无此令牌（未知 / 已消费 / 已过期 / 会话或动作不匹配）。
     Unknown,
 }
@@ -205,6 +225,13 @@ pub enum ConfirmationCheck {
 struct ConsentMaps {
     pending: HashMap<String, PendingConfirmation>,
     approved_tokens: HashMap<String, ApprovedToken>,
+    /// 最近被用户明确拒绝的动作摘要（键为会话 id，值为 (摘要, 拒绝时间) 的
+    /// 有界队列）。这不是「拒绝记忆」的语义惩罚：被拒动作的**重试**依然会
+    /// 被筛查拦截，只是不再重发确认事件重开全屏对话框——否则模型可以无限
+    /// 循环重开阻塞式 modal 逼用户批准（consent fatigue，round-6 评审）。
+    /// TTL 与 [`CONFIRM_TTL`] 一致；条目超限淘汰最旧；撤销/停止不清理
+    /// （用户拒绝过的动作在其 TTL 内不应因 revoke→re-grant 复活弹窗）。
+    denied: HashMap<String, Vec<(String, Instant)>>,
 }
 
 /// 跨会话共享的同意状态（Arc 由工厂构造注入工具）。
@@ -242,6 +269,7 @@ impl ComputerUseShared {
             consent: Mutex::new(ConsentMaps {
                 pending: HashMap::new(),
                 approved_tokens: HashMap::new(),
+                denied: HashMap::new(),
             }),
             backends: BackendRegistry::default(),
         }
@@ -334,22 +362,29 @@ impl ComputerUseShared {
         Ok(())
     }
 
-    /// 输入类动作门控：开关开启、未停止、会话持有未空闲过期的授权，通过即
-    /// 刷新活动时间（keepalive）。无预算、无速率限制。注入前还应再查一次
+    /// 输入类动作门控：开关开启、未停止、会话持有未空闲过期的授权。**不**
+    /// 刷新活动时间——keepalive 只在动作真正执行成功后记账
+    /// ([`Self::keepalive_input_action`]；round-6 评审：被拦/被拒的调用
+    /// 不应让用户反复拒绝的会话永久续期)。注入前还应再查一次
     /// [`Self::verify_input_action`]。
     pub fn begin_input_action(&self, session_id: &str) -> Result<(), GuardRejection> {
         self.check_readonly()?;
         let now = Instant::now();
-        let mut sessions = self.sessions.lock();
-        let Some(consent) = sessions.get_mut(session_id) else {
+        let sessions = self.sessions.lock();
+        let Some(consent) = sessions.get(session_id) else {
             return Err(GuardRejection::GrantRequired);
         };
         if now.duration_since(consent.last_activity) > GRANT_IDLE_TIMEOUT {
-            sessions.remove(session_id);
             return Err(GuardRejection::GrantRequired);
         }
-        consent.last_activity = now;
         Ok(())
+    }
+
+    /// 动作执行成功后的活动记账（唯一的授权续期点）。
+    pub fn keepalive_input_action(&self, session_id: &str) {
+        if let Some(consent) = self.sessions.lock().get_mut(session_id) {
+            consent.last_activity = Instant::now();
+        }
     }
 
     /// 只读复检：授权是否仍然有效（开关、停止旗标、授权存在且未空闲过期）。
@@ -387,6 +422,7 @@ impl ComputerUseShared {
         session_id: &str,
         action_summary: impl Into<String>,
         element_label: impl Into<String>,
+        origin: Option<(i32, i32)>,
     ) -> String {
         let confirm_id = format!("cu-{:016x}", rand::random::<u64>());
         let now = Instant::now();
@@ -402,6 +438,7 @@ impl ComputerUseShared {
                 session_id: session_id.to_string(),
                 action_summary: action_summary.into(),
                 element_label: element_label.into(),
+                origin,
                 created_at: now,
             },
         );
@@ -418,11 +455,35 @@ impl ComputerUseShared {
         Some(entry.clone())
     }
 
-    /// 用户在前端明确「拒绝」一个被拦截的 T3 动作：消耗 pending 并返回。
-    /// 拒绝没有记忆（与主流产品一致——拒绝只是关掉对话框）：之后用同一
-    /// confirm_id 重试会得到「令牌无效」。未知 id 返回 false。
+    /// 用户在前端明确「拒绝」一个被拦截的 T3 动作：消耗 pending，并把该
+    /// 动作摘要记入该会话的「最近被拒」循环抑制表（见 [`ConsentMaps::denied`]）
+    /// ——被拒动作的重试不再重发确认事件重开对话框（round-6 评审）。未知 id
+    /// 返回 false。
     pub fn deny_confirmation(&self, confirm_id: &str) -> bool {
-        self.consent.lock().pending.remove(confirm_id).is_some()
+        let mut consent = self.consent.lock();
+        let Some(entry) = consent.pending.remove(confirm_id) else {
+            return false;
+        };
+        let now = Instant::now();
+        let record = consent.denied.entry(entry.session_id).or_default();
+        record.retain(|(_, denied_at)| now.duration_since(*denied_at) <= CONFIRM_TTL);
+        while record.len() >= DENIED_SUMMARIES_PER_SESSION {
+            record.remove(0);
+        }
+        record.push((entry.action_summary, now));
+        true
+    }
+
+    /// 该会话是否在 [`CONFIRM_TTL`] 内明确拒绝过**完全相同摘要**的动作。
+    /// 命中时工具层直接拒绝且不铸造新 pending/不发确认事件。
+    pub fn is_recently_denied(&self, session_id: &str, action_summary: &str) -> bool {
+        let now = Instant::now();
+        let mut consent = self.consent.lock();
+        let Some(record) = consent.denied.get_mut(session_id) else {
+            return false;
+        };
+        record.retain(|(_, denied_at)| now.duration_since(*denied_at) <= CONFIRM_TTL);
+        record.iter().any(|(summary, _)| summary == action_summary)
     }
 
     /// 铸造批准令牌。只能由 `computer_use_confirm` Tauri 命令调用——绝不能让
@@ -452,6 +513,7 @@ impl ComputerUseShared {
             ApprovedToken {
                 session_id: entry.session_id,
                 action_summary: entry.action_summary,
+                origin: entry.origin,
                 minted_at: now,
             },
         );
@@ -469,6 +531,7 @@ impl ComputerUseShared {
         confirm_id: &str,
         session_id: &str,
         action_summary: &str,
+        cursor: Option<(i32, i32)>,
     ) -> ConfirmationCheck {
         let now = Instant::now();
         let mut consent = self.consent.lock();
@@ -481,6 +544,14 @@ impl ComputerUseShared {
         }
         if token.session_id != session_id || token.action_summary != action_summary {
             return ConfirmationCheck::Unknown;
+        }
+        // 光标类动作（铸造时记录了 cursor 位置）：只有光标仍在上次批准的
+        // 位置才放行——否则一次批准可以被重定向到任何搬过来的目标
+        // (approve-then-move, round-6 评审)。不匹配时令牌保留。
+        if let Some(origin) = token.origin {
+            if cursor != Some(origin) {
+                return ConfirmationCheck::Stale;
+            }
         }
         consent.approved_tokens.remove(confirm_id);
         ConfirmationCheck::Granted
@@ -496,6 +567,20 @@ mod tests {
         let shared = ComputerUseShared::new();
         shared.set_enabled(true);
         shared
+    }
+
+    /// 测试便捷封装：无光标原点的 pending / 无光标比对的消费。
+    fn new_pending(shared: &ComputerUseShared, session: &str, summary: &str) -> String {
+        shared.new_pending_confirmation(session, summary, "Buy now", None)
+    }
+
+    fn take(
+        shared: &ComputerUseShared,
+        id: &str,
+        session: &str,
+        summary: &str,
+    ) -> ConfirmationCheck {
+        shared.take_confirmation(id, session, summary, None)
     }
 
     #[test]
@@ -672,12 +757,12 @@ mod tests {
     fn confirmation_tokens_are_single_use_and_bound_to_session_and_action() {
         let shared = enabled_shared();
         let summary = "left click x1 at Some((100, 200))";
-        let id = shared.new_pending_confirmation("s1", summary, "Buy now");
+        let id = new_pending(&shared, "s1", summary);
         let pending = shared.pending_confirmation(&id);
         assert!(pending.as_ref().is_some_and(|p| p.session_id == "s1"));
         // 未铸造前不可消费。
         assert_eq!(
-            shared.take_confirmation(&id, "s1", summary),
+            take(&shared, &id, "s1", summary),
             ConfirmationCheck::Unknown
         );
         assert!(
@@ -688,51 +773,133 @@ mod tests {
         assert!(shared.pending_confirmation(&id).is_none());
         // 正确的会话 + 动作摘要才能消费。
         assert_eq!(
-            shared.take_confirmation(&id, "s-other", summary),
+            take(&shared, &id, "s-other", summary),
             ConfirmationCheck::Unknown,
             "token minted for s1 must not be spent by another session"
         );
         assert_eq!(
-            shared.take_confirmation(&id, "s1", "type 5 characters"),
+            take(
+                &shared,
+                &id,
+                "s1",
+                "type 5 characters [fp 0000000000000000]"
+            ),
             ConfirmationCheck::Unknown,
             "token must be bound to the action it approved"
         );
         // 不匹配的误试不销毁令牌(精确绑定下唯一能通过的只有用户批准的原动作)。
         assert_eq!(
-            shared.take_confirmation(&id, "s1", summary),
+            take(&shared, &id, "s1", summary),
             ConfirmationCheck::Granted
         );
         // 单次使用：第二次消费失败。
         assert_eq!(
-            shared.take_confirmation(&id, "s1", summary),
+            take(&shared, &id, "s1", summary),
             ConfirmationCheck::Unknown
         );
     }
 
-    /// Denial has no memory: `deny_confirmation` consumes the pending and
-    /// returns — a later retry with the denied id reads as Unknown (invalid
-    /// or spent), never as a remembered denial.
+    /// 光标类动作（铸造时记录了光标原点）的令牌只有在光标仍在原位时才能
+    /// 消费——approve-then-move 重放被拒（round-6 评审）；原点未记录的
+    /// 令牌（带坐标动作）不受光标比对约束。
     #[test]
-    fn deny_confirmation_consumes_the_pending_without_memory() {
+    fn cursor_origin_tokens_break_when_the_pointer_moved() {
         let shared = enabled_shared();
-        let id = shared.new_pending_confirmation("s1", "left click", "Buy now");
+        // 记录了原点的令牌。
+        let id = shared.new_pending_confirmation("s1", "left mouse down", "Buy now", Some((5, 6)));
+        assert!(shared.mint_confirmation(&id));
+        // 光标还在原位：放行前先验证误试路径——不同光标位 → Stale 且令牌保留。
+        assert_eq!(
+            shared.take_confirmation(&id, "s1", "left mouse down", Some((7, 6))),
+            ConfirmationCheck::Stale,
+            "a moved pointer must not spend the approval"
+        );
+        assert_eq!(
+            shared.take_confirmation(&id, "s1", "left mouse down", None),
+            ConfirmationCheck::Stale,
+            "an unreadable cursor cannot verify the approval either"
+        );
+        // 原位消费成功；单次有效。
+        assert_eq!(
+            shared.take_confirmation(&id, "s1", "left mouse down", Some((5, 6))),
+            ConfirmationCheck::Granted
+        );
+        assert_eq!(
+            shared.take_confirmation(&id, "s1", "left mouse down", Some((5, 6))),
+            ConfirmationCheck::Unknown
+        );
+        // 未记录原点的令牌（带坐标动作）：光标比对不参与。
+        let free = shared.new_pending_confirmation(
+            "s1",
+            "left click x1 at Some((100, 200))",
+            "Buy now",
+            None,
+        );
+        assert!(shared.mint_confirmation(&free));
+        assert_eq!(
+            shared.take_confirmation(
+                &free,
+                "s1",
+                "left click x1 at Some((100, 200))",
+                Some((9, 9))
+            ),
+            ConfirmationCheck::Granted
+        );
+    }
+
+    /// deny 消费 pending，并把摘要记入循环抑制表（同会话同摘要命中）；
+    /// 不同摘要、不同会话不受影响。
+    #[test]
+    fn deny_confirmation_consumes_the_pending_and_suppresses_replay() {
+        let shared = enabled_shared();
+        let id = new_pending(&shared, "s1", "left click");
         assert!(shared.deny_confirmation(&id));
         // deny 清除 pending：不能再为它铸币（mint 返回 false，不再静默 no-op）。
         assert!(shared.pending_confirmation(&id).is_none());
         assert!(!shared.mint_confirmation(&id));
-        // 重试同一 id：令牌无效（不存在拒绝记忆）。
+        // 重试同一 id：令牌无效。
         assert_eq!(
-            shared.take_confirmation(&id, "s1", "left click"),
+            take(&shared, &id, "s1", "left click"),
             ConfirmationCheck::Unknown,
             "a denied id is simply unknown afterwards"
         );
+        // 循环抑制：同会话同摘要命中；其他摘要/其他会话不命中。
+        assert!(shared.is_recently_denied("s1", "left click"));
+        assert!(!shared.is_recently_denied("s1", "right click"));
+        assert!(!shared.is_recently_denied("s2", "left click"));
         // 未知 id 的 deny 失败。
         assert!(!shared.deny_confirmation("cu-unknown"));
         assert_eq!(
-            shared.take_confirmation("cu-unknown", "s1", "x"),
+            take(&shared, "cu-unknown", "s1", "x"),
             ConfirmationCheck::Unknown,
             "unknown id must stay Unknown"
         );
+    }
+
+    /// 循环抑制表按会话有界（DENIED_SUMMARIES_PER_SESSION），超限淘汰最旧；
+    /// 撤销会话授权不清除抑制记录（用户拒绝过的动作不因 re-grant 复活弹窗）。
+    #[test]
+    fn denial_records_are_bounded_and_survive_revoke() {
+        let shared = enabled_shared();
+        for i in 0..(DENIED_SUMMARIES_PER_SESSION + 2) {
+            let id = new_pending(&shared, "s1", &format!("action {i}"));
+            assert!(shared.deny_confirmation(&id));
+        }
+        {
+            let consent = shared.consent.lock();
+            assert_eq!(
+                consent.denied.get("s1").map(Vec::len),
+                Some(DENIED_SUMMARIES_PER_SESSION),
+                "denial records must stay bounded per session"
+            );
+        }
+        // 最旧的被淘汰（容量 8：action 0/1 出局，action 2 是最老幸存者）。
+        assert!(!shared.is_recently_denied("s1", "action 0"));
+        assert!(!shared.is_recently_denied("s1", "action 1"));
+        assert!(shared.is_recently_denied("s1", "action 2"));
+        // revoke 不清除（防复活）；其余会话不受影响。
+        shared.revoke_session("s1");
+        assert!(shared.is_recently_denied("s1", "action 2"));
     }
 
     /// One pending per session: a new request REPLACES the session's
@@ -740,8 +907,8 @@ mod tests {
     #[test]
     fn new_pending_confirmation_replaces_the_sessions_previous_pending() {
         let shared = enabled_shared();
-        let first = shared.new_pending_confirmation("s1", "left click", "Buy now");
-        let second = shared.new_pending_confirmation("s1", "left click 2", "Buy now 2");
+        let first = new_pending(&shared, "s1", "left click");
+        let second = new_pending(&shared, "s1", "left click 2");
         assert_ne!(first, second);
         assert!(
             shared.pending_confirmation(&first).is_none(),
@@ -760,7 +927,7 @@ mod tests {
                 .count(),
             1
         );
-        let other = shared.new_pending_confirmation("s2", "other", "Buy now");
+        let other = new_pending(&shared, "s2", "left click");
         assert!(shared.pending_confirmation(&other).is_some());
     }
 
@@ -808,12 +975,12 @@ mod tests {
     fn revoke_all_sessions_clears_grants_and_pendings_without_stop_flag() {
         let shared = enabled_shared();
         shared.grant_session("s1");
-        let confirm_id = shared.new_pending_confirmation("s1", "left click", "Buy now");
-        let token_id = shared.new_pending_confirmation("s1", "left click 2", "Buy now");
+        let confirm_id = new_pending(&shared, "s1", "left click");
+        let token_id = new_pending(&shared, "s1", "left click 2");
         // new_pending_confirmation replaced the first pending, so mint the
         // token from a separate session-bound request order: re-mint via a
         // fresh pending for s2 to keep the s1 replacement semantics intact.
-        let s2_pending = shared.new_pending_confirmation("s2", "left click 3", "Buy now");
+        let s2_pending = new_pending(&shared, "s2", "left click 3");
         assert!(shared.mint_confirmation(&s2_pending));
         shared.revoke_all_sessions();
         assert!(!shared.has_active_grant("s1"));
@@ -825,7 +992,7 @@ mod tests {
         assert!(shared.pending_confirmation(&token_id).is_none());
         // 已铸令牌一并清除：重新开启+重新授权后不能拿旧令牌免确认重放。
         assert_eq!(
-            shared.take_confirmation(&s2_pending, "s2", "left click 3"),
+            take(&shared, &s2_pending, "s2", "left click 3"),
             ConfirmationCheck::Unknown,
             "a disabled cycle must wipe minted approval tokens"
         );
@@ -837,7 +1004,7 @@ mod tests {
     #[test]
     fn pending_confirmation_expires_after_ttl() {
         let shared = enabled_shared();
-        let id = shared.new_pending_confirmation("s1", "left_click (100,200)", "Buy now");
+        let id = new_pending(&shared, "s1", "left_click (100,200)");
         // 手工把 created_at 拨回 TTL 之前（等真实 5 分钟太慢）。
         {
             let mut consent = shared.consent.lock();
@@ -850,13 +1017,16 @@ mod tests {
         // 过期 pending 不再铸币：令牌不可用，且 mint 显式报告失败。
         assert!(!shared.mint_confirmation(&id));
         assert_eq!(
-            shared.take_confirmation(&id, "s1", "left_click (100,200)"),
+            take(&shared, &id, "s1", "left_click (100,200)"),
             ConfirmationCheck::Unknown
         );
     }
 
+    /// keepalive 是**唯一**的授权续期点，且只在动作真正执行成功后由工具层
+    /// 调用——`begin_input_action` 门控通过本身不再续期（round-6 评审：
+    /// 被拦/被拒的调用不应让用户反复拒绝的会话永久续期）。
     #[test]
-    fn activity_refreshes_grant_idle_clock() {
+    fn keepalive_is_the_only_grant_refresh_and_begin_does_not_extend() {
         let shared = enabled_shared();
         shared.grant_session("s1");
         {
@@ -865,9 +1035,18 @@ mod tests {
                 consent.last_activity = Instant::now() - GRANT_IDLE_TIMEOUT / 2;
             }
         }
+        // 门控通过（仍在窗口内），但**不**续期：时钟仍停在过半位置。
         assert!(shared.begin_input_action("s1").is_ok());
-        // 动作刷新了 last_activity：过半超时仍未过期。
         sleep(Duration::from_millis(5));
+        {
+            let sessions = shared.sessions.lock();
+            let stale = sessions
+                .get("s1")
+                .is_some_and(|c| c.last_activity.elapsed() > GRANT_IDLE_TIMEOUT / 2);
+            assert!(stale, "the gate check must not refresh the idle clock");
+        }
+        // 执行成功后的 keepalive 才续期。
+        shared.keepalive_input_action("s1");
         {
             let sessions = shared.sessions.lock();
             let fresh = sessions
@@ -875,6 +1054,21 @@ mod tests {
                 .is_some_and(|c| c.last_activity.elapsed() < GRANT_IDLE_TIMEOUT / 2);
             assert!(fresh);
         }
+    }
+
+    /// keepalive 不会复活已过期/已吊销的会话（不存在的条目不重建）。
+    #[test]
+    fn keepalive_does_not_resurrect_unknown_sessions() {
+        let shared = enabled_shared();
+        shared.keepalive_input_action("never-granted");
+        assert_eq!(
+            shared.begin_input_action("never-granted"),
+            Err(GuardRejection::GrantRequired)
+        );
+        shared.grant_session("s1");
+        shared.revoke_session("s1");
+        shared.keepalive_input_action("s1");
+        assert!(!shared.has_active_grant("s1"));
     }
 
     /// Regression: the T3 denylist must not contain duplicate entries
@@ -893,19 +1087,19 @@ mod tests {
     fn revoke_session_wipes_that_sessions_minted_tokens() {
         let shared = enabled_shared();
         let summary = "left click x1 at Some((100, 200))";
-        let id = shared.new_pending_confirmation("s1", summary, "Buy now");
+        let id = new_pending(&shared, "s1", summary);
         assert!(shared.mint_confirmation(&id));
         shared.revoke_session("s1");
         // Re-granting (the user changes their mind and grants again) must
         // not resurrect the wiped token.
         shared.grant_session("s1");
         assert_eq!(
-            shared.take_confirmation(&id, "s1", summary),
+            take(&shared, &id, "s1", summary),
             ConfirmationCheck::Unknown,
             "revoking a session must wipe its minted approval tokens"
         );
         // That session's pending confirmations are wiped too.
-        let pending_id = shared.new_pending_confirmation("s1", "left click", "Buy now");
+        let pending_id = new_pending(&shared, "s1", "left click");
         shared.revoke_session("s1");
         assert!(shared.pending_confirmation(&pending_id).is_none());
     }
@@ -916,11 +1110,11 @@ mod tests {
     fn revoke_session_spares_other_sessions_tokens() {
         let shared = enabled_shared();
         let summary = "left click x1 at Some((100, 200))";
-        let other_id = shared.new_pending_confirmation("s2", summary, "Buy now");
+        let other_id = new_pending(&shared, "s2", summary);
         assert!(shared.mint_confirmation(&other_id));
         shared.revoke_session("s1");
         assert_eq!(
-            shared.take_confirmation(&other_id, "s2", summary),
+            take(&shared, &other_id, "s2", summary),
             ConfirmationCheck::Granted,
             "revoking s1 must not touch s2's minted token"
         );
@@ -937,17 +1131,17 @@ mod tests {
             // A distinct session per pending mirrors real usage (one pending
             // per session at a time).
             let session = format!("s{i}");
-            let id = shared.new_pending_confirmation(&session, "left click", "Buy now");
+            let id = new_pending(&shared, &session, "left click");
             assert!(shared.mint_confirmation(&id));
             ids.push((session, id));
         }
         for (session, id) in &ids {
             assert_eq!(
-                shared.take_confirmation(id, session, "left click"),
+                take(&shared, id, session, "left click"),
                 ConfirmationCheck::Granted
             );
             assert_eq!(
-                shared.take_confirmation(id, session, "left click"),
+                take(&shared, id, session, "left click"),
                 ConfirmationCheck::Unknown,
                 "each token is single-use"
             );
