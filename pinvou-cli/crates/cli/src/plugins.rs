@@ -1405,7 +1405,8 @@ fn build_stored_zip(entries: &[(String, Vec<u8>)]) -> Result<Vec<u8>, CliError> 
                 "plugins import: entry name too long: {name}"
             )));
         }
-        let offset = out.len() as u32;
+        let offset = u32::try_from(out.len())
+            .map_err(|_| CliError::failed("plugin package exceeds the 4 GiB archive limit"))?;
         let checksum = crc32(data);
         // Local file header
         push_u32(&mut out, 0x0403_4b50);
@@ -1415,7 +1416,9 @@ fn build_stored_zip(entries: &[(String, Vec<u8>)]) -> Result<Vec<u8>, CliError> 
         push_u16(&mut out, 0); // mod time
         push_u16(&mut out, 0x21); // mod date (1980-01-01)
         push_u32(&mut out, checksum);
-        let size = data.len() as u32;
+        let size = u32::try_from(data.len()).map_err(|_| {
+            CliError::failed("a single plugin file exceeds the 4 GiB archive limit")
+        })?;
         push_u32(&mut out, size); // compressed
         push_u32(&mut out, size); // uncompressed
         push_u16(&mut out, name_bytes.len() as u16);
@@ -1442,15 +1445,18 @@ fn build_stored_zip(entries: &[(String, Vec<u8>)]) -> Result<Vec<u8>, CliError> 
         push_u32(&mut central, offset);
         central.extend_from_slice(name_bytes);
     }
-    let central_offset = out.len() as u32;
+    let central_offset = u32::try_from(out.len())
+        .map_err(|_| CliError::failed("plugin package exceeds the 4 GiB archive limit"))?;
     let central_size = central.len() as u32;
     out.extend_from_slice(&central);
     // End of central directory
     push_u32(&mut out, 0x0605_4b50);
     push_u16(&mut out, 0); // disk number
     push_u16(&mut out, 0); // disk with central directory
-    push_u16(&mut out, entries.len() as u16);
-    push_u16(&mut out, entries.len() as u16);
+    let entry_count = u16::try_from(entries.len())
+        .map_err(|_| CliError::failed("plugin package exceeds the 65535-entry archive limit"))?;
+    push_u16(&mut out, entry_count);
+    push_u16(&mut out, entry_count);
     push_u32(&mut out, central_size);
     push_u32(&mut out, central_offset);
     push_u16(&mut out, 0); // comment length

@@ -595,6 +595,9 @@ fn active(session_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> 
 }
 
 fn open_store() -> Result<SessionStore, CliError> {
+    // Same absolute-path contract as the other families: a relative
+    // PINVOU3_HOME would silently resolve against the cwd.
+    crate::support::sandbox_home()?;
     SessionStore::boot()
         .map_err(|error| CliError::failed(format!("sessions store unavailable: {error:#}")))
 }
