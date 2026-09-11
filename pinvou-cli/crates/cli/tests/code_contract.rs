@@ -44,7 +44,7 @@ impl HomeGuard {
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "pinvoy-cli-code-{label}-{}-{nonce}",
+            "pinvou-cli-code-{label}-{}-{nonce}",
             std::process::id()
         ));
         std::fs::create_dir_all(&root).unwrap();
@@ -347,7 +347,7 @@ fn every_code_subcommand_parses() {
             "in.json",
         ],
         vec![
-            "pinvoy",
+            "pinvou",
             "code",
             "providers",
             "update",
@@ -447,7 +447,7 @@ fn every_code_subcommand_parses() {
     }
 
     // --output json flows through the family dispatch.
-    let parsed = parse_args(["pinvoy", "--output", "json", "code", "agents", "list"].to_vec())
+    let parsed = parse_args(["pinvou", "--output", "json", "code", "agents", "list"].to_vec())
         .expect("global output flag");
     assert_eq!(parsed.output(), OutputMode::Json);
 }
@@ -650,7 +650,7 @@ fn invalid_code_usage_exits_two_and_names_valid_values() {
     }
 
     // The agent error message names the valid agents.
-    let error = usage_error(&["pinvoy", "code", "agents", "status", "gemini"]);
+    let error = usage_error(&["pinvou", "code", "agents", "status", "gemini"]);
     let message = error.to_string();
     assert!(
         message.contains("codex") && message.contains("claude") && message.contains("kimi"),
@@ -658,7 +658,7 @@ fn invalid_code_usage_exits_two_and_names_valid_values() {
     );
     // The checkout mode error names the valid modes.
     let error = usage_error(&[
-        "pinvoy",
+        "pinvou",
         "code",
         "workspace",
         "checkout",
@@ -697,7 +697,7 @@ fn code_sessions_list_zero_state_and_filters_code_sessions() {
     let outcome = run(&["pinvou", "code", "sessions", "list"]).expect("zero-state list");
     assert_eq!(outcome.exit_code, ExitCode::Success);
     assert_eq!(outcome.stdout, "");
-    let value = run_json(&["pinvoy", "code", "sessions", "list"]);
+    let value = run_json(&["pinvou", "code", "sessions", "list"]);
     assert_eq!(value["sessions"].as_array().unwrap().len(), 0);
 
     // A plain chat session and an archived code session are filtered out; the
@@ -710,11 +710,11 @@ fn code_sessions_list_zero_state_and_filters_code_sessions() {
         .id;
     drop(store);
     let code_id = create_code_session_fixture(None);
-    run_json(&["pinvoy", "sessions", "archive", &code_id]);
-    let value = run_json(&["pinvoy", "code", "sessions", "list"]);
+    run_json(&["pinvou", "sessions", "archive", &code_id]);
+    let value = run_json(&["pinvou", "code", "sessions", "list"]);
     assert_eq!(value["sessions"].as_array().unwrap().len(), 0);
-    run_json(&["pinvoy", "sessions", "restore", &code_id]);
-    let value = run_json(&["pinvoy", "code", "sessions", "list"]);
+    run_json(&["pinvou", "sessions", "restore", &code_id]);
+    let value = run_json(&["pinvou", "code", "sessions", "list"]);
     let rows = value["sessions"].as_array().unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["id"], code_id.as_str());
@@ -730,7 +730,7 @@ fn code_sessions_list_zero_state_and_filters_code_sessions() {
     );
 
     // Unknown session ids fail with a host error.
-    let error = run(&["pinvoy", "code", "sessions", "info", "missing-session"]).unwrap_err();
+    let error = run(&["pinvou", "code", "sessions", "info", "missing-session"]).unwrap_err();
     assert_eq!(error.exit_code(), ExitCode::Failed);
 }
 
@@ -742,7 +742,7 @@ fn code_sessions_info_and_timeline_read_persisted_state() {
     std::fs::create_dir_all(&project).unwrap();
     let id = create_acp_session_fixture(&project);
 
-    let value = run_json(&["pinvoy", "code", "sessions", "info", &id]);
+    let value = run_json(&["pinvou", "code", "sessions", "info", &id]);
     assert_eq!(value["agent_id"], "codex");
     assert_eq!(value["agent_name"], "Codex");
     assert_eq!(value["workspace_kind"], "project");
@@ -751,7 +751,7 @@ fn code_sessions_info_and_timeline_read_persisted_state() {
 
     // Timeline reads the same append-only JSONL the GUI's AcpPool writes;
     // a session without one yields an empty listing.
-    let outcome = run(&["pinvoy", "code", "sessions", "timeline", &id]).expect("empty timeline");
+    let outcome = run(&["pinvou", "code", "sessions", "timeline", &id]).expect("empty timeline");
     assert_eq!(outcome.stdout, "");
     let session_dir = home.sessions_root().join(&id);
     std::fs::create_dir_all(&session_dir).unwrap();
@@ -764,7 +764,7 @@ fn code_sessions_info_and_timeline_read_persisted_state() {
         ),
     )
     .unwrap();
-    let value = run_json(&["pinvoy", "code", "sessions", "timeline", &id]);
+    let value = run_json(&["pinvou", "code", "sessions", "timeline", &id]);
     let events = value["events"].as_array().unwrap();
     assert_eq!(events.len(), 2, "malformed lines are skipped");
     assert_eq!(events[0]["seq"], 1);
@@ -773,7 +773,7 @@ fn code_sessions_info_and_timeline_read_persisted_state() {
         events[1].pointer("/event/event_type"),
         Some(&serde_json::json!("turn_finished"))
     );
-    let outcome = run(&["pinvoy", "code", "sessions", "timeline", &id]).expect("human timeline");
+    let outcome = run(&["pinvou", "code", "sessions", "timeline", &id]).expect("human timeline");
     assert!(outcome.stdout.contains("turn_started"));
 }
 
@@ -790,7 +790,7 @@ fn workspace_list_search_preview_round_trip_with_fixture_session() {
     let id = create_code_session_fixture(Some(&project));
 
     // list hides ignored directories and reports entries with kinds.
-    let value = run_json(&["pinvoy", "code", "workspace", "list", &id]);
+    let value = run_json(&["pinvou", "code", "workspace", "list", &id]);
     let entries = value["entries"].as_array().unwrap();
     let names: Vec<&str> = entries
         .iter()
@@ -802,25 +802,25 @@ fn workspace_list_search_preview_round_trip_with_fixture_session() {
     assert_eq!(value["relativePath"], "");
 
     // Sub-directory listing.
-    let value = run_json(&["pinvoy", "code", "workspace", "list", &id, "src"]);
+    let value = run_json(&["pinvou", "code", "workspace", "list", &id, "src"]);
     assert_eq!(value["entries"].as_array().unwrap().len(), 1);
     assert_eq!(value["entries"][0]["name"], "main.rs");
 
     // search matches relative paths case-insensitively.
-    let value = run_json(&["pinvoy", "code", "workspace", "search", &id, "readme"]);
+    let value = run_json(&["pinvou", "code", "workspace", "search", &id, "readme"]);
     assert_eq!(value["results"].as_array().unwrap().len(), 1);
     assert_eq!(value["results"][0]["relativePath"], "README.md");
 
     // preview returns text content for text files.
-    let value = run_json(&["pinvoy", "code", "workspace", "preview", &id, "README.md"]);
+    let value = run_json(&["pinvou", "code", "workspace", "preview", &id, "README.md"]);
     assert_eq!(value["kind"], "text");
     assert_eq!(value["text"], "# fixture\n");
     assert_eq!(value["relativePath"], "README.md");
 
     // Path escapes are refused; missing paths fail with host errors.
-    let error = run(&["pinvoy", "code", "workspace", "list", &id, "../escape"]).unwrap_err();
+    let error = run(&["pinvou", "code", "workspace", "list", &id, "../escape"]).unwrap_err();
     assert_eq!(error.exit_code(), ExitCode::Usage);
-    let error = run(&["pinvoy", "code", "workspace", "preview", &id, "missing.md"]).unwrap_err();
+    let error = run(&["pinvou", "code", "workspace", "preview", &id, "missing.md"]).unwrap_err();
     assert_eq!(error.exit_code(), ExitCode::Failed);
 }
 
@@ -834,7 +834,7 @@ fn workspace_git_changes_diff_branches_against_fixture_repo() {
     let id = create_code_session_fixture(Some(&project));
 
     // branches: both local branches listed, main current, clean tree.
-    let value = run_json(&["pinvoy", "code", "workspace", "branches", &id]);
+    let value = run_json(&["pinvou", "code", "workspace", "branches", &id]);
     assert_eq!(value["git"], true);
     assert_eq!(value["current"], "main");
     let branches: Vec<&str> = value["branches"]
@@ -848,7 +848,7 @@ fn workspace_git_changes_diff_branches_against_fixture_repo() {
 
     // changes: an untracked file shows up with its origin classified.
     std::fs::write(project.join("new.txt"), "added by fixture\n").unwrap();
-    let value = run_json(&["pinvoy", "code", "workspace", "changes", &id]);
+    let value = run_json(&["pinvou", "code", "workspace", "changes", &id]);
     assert_eq!(value["git"], true);
     assert_eq!(value["baselineAvailable"], false);
     let changes = value["changes"].as_array().unwrap();
@@ -858,7 +858,7 @@ fn workspace_git_changes_diff_branches_against_fixture_repo() {
     assert_eq!(changes[0]["staged"], false);
 
     // diff of the untracked file renders the synthetic new-file diff.
-    let value = run_json(&["pinvoy", "code", "workspace", "diff", &id, "new.txt"]);
+    let value = run_json(&["pinvou", "code", "workspace", "diff", &id, "new.txt"]);
     assert!(
         value["text"]
             .as_str()
@@ -871,11 +871,11 @@ fn workspace_git_changes_diff_branches_against_fixture_repo() {
 
     // diff of a modified tracked file contains the '+' hunk.
     std::fs::write(project.join("tracked.txt"), "v2\n").unwrap();
-    let value = run_json(&["pinvoy", "code", "workspace", "diff", &id, "tracked.txt"]);
+    let value = run_json(&["pinvou", "code", "workspace", "diff", &id, "tracked.txt"]);
     assert!(value["text"].as_str().unwrap().contains("+v2"));
 
     // diff without a file concatenates the per-file diffs.
-    let value = run_json(&["pinvoy", "code", "workspace", "diff", &id]);
+    let value = run_json(&["pinvou", "code", "workspace", "diff", &id]);
     let text = value["text"].as_str().unwrap();
     assert!(
         text.contains("+v2") && text.contains("+added by fixture"),
@@ -884,7 +884,7 @@ fn workspace_git_changes_diff_branches_against_fixture_repo() {
 
     // checkout without a dirty tree: carry switches branches cleanly.
     let value = run_json(&[
-        "pinvoy",
+        "pinvou",
         "code",
         "workspace",
         "checkout",
@@ -895,13 +895,13 @@ fn workspace_git_changes_diff_branches_against_fixture_repo() {
     ]);
     assert_eq!(value["checkedOut"], "feature");
     assert_eq!(value["branches"]["current"], "feature");
-    let value = run_json(&["pinvoy", "code", "workspace", "branches", &id]);
+    let value = run_json(&["pinvou", "code", "workspace", "branches", &id]);
     assert_eq!(value["current"], "feature");
 
     // checkout validation: unknown branches fail at execute level.
     for branch in ["missing-branch"] {
         let error = run(&[
-            "pinvoy",
+            "pinvou",
             "code",
             "workspace",
             "checkout",
@@ -916,7 +916,7 @@ fn workspace_git_changes_diff_branches_against_fixture_repo() {
 
     // commit mode requires a non-empty --message (parse-level exit 2).
     let error = usage_error(&[
-        "pinvoy",
+        "pinvou",
         "code",
         "workspace",
         "checkout",
@@ -938,7 +938,7 @@ fn workspace_stash_mode_round_trips_dirty_changes() {
     let id = create_code_session_fixture(Some(&project));
     std::fs::write(project.join("tracked.txt"), "dirty\n").unwrap();
     let value = run_json(&[
-        "pinvoy",
+        "pinvou",
         "code",
         "workspace",
         "checkout",
@@ -967,13 +967,13 @@ fn workspace_requires_a_code_session() {
         .metadata
         .id;
     drop(store);
-    let error = run(&["pinvoy", "code", "workspace", "branches", &plain]).unwrap_err();
+    let error = run(&["pinvou", "code", "workspace", "branches", &plain]).unwrap_err();
     assert!(
         error.to_string().contains("code_session_not_found"),
         "{error}"
     );
     // Missing sessions are refused before any workspace resolution.
-    let error = run(&["pinvoy", "code", "workspace", "branches", "missing-session"]).unwrap_err();
+    let error = run(&["pinvou", "code", "workspace", "branches", "missing-session"]).unwrap_err();
     assert_eq!(error.exit_code(), ExitCode::Failed);
 }
 
@@ -987,9 +987,9 @@ fn checkpoints_list_zero_state_and_full_rewind_undo_round_trip() {
     seed_two_turn_transcript(&id);
 
     // Zero state: no checkpoints yet.
-    let outcome = run(&["pinvoy", "code", "checkpoints", "list", &id]).expect("zero checkpoints");
+    let outcome = run(&["pinvou", "code", "checkpoints", "list", &id]).expect("zero checkpoints");
     assert_eq!(outcome.stdout, "");
-    let value = run_json(&["pinvoy", "code", "checkpoints", "list", &id]);
+    let value = run_json(&["pinvou", "code", "checkpoints", "list", &id]);
     assert_eq!(value["checkpoints"].as_array().unwrap().len(), 0);
 
     // Snapshot the execution root at turn boundaries (the same feature calls
@@ -1026,7 +1026,7 @@ fn checkpoints_list_zero_state_and_full_rewind_undo_round_trip() {
     std::fs::write(project.join("turn-two.txt"), "second\n").unwrap();
     drop(store);
 
-    let value = run_json(&["pinvoy", "code", "checkpoints", "list", &id]);
+    let value = run_json(&["pinvou", "code", "checkpoints", "list", &id]);
     let listed = value["checkpoints"].as_array().unwrap();
     assert_eq!(listed.len(), 2);
     assert_eq!(listed[0]["id"], turn1.id.as_str());
@@ -1034,7 +1034,7 @@ fn checkpoints_list_zero_state_and_full_rewind_undo_round_trip() {
 
     // diff reports what a rewind to the turn-1 snapshot (the pre-turn state)
     // would undo: both turns' files.
-    let value = run_json(&["pinvoy", "code", "checkpoints", "diff", &id, &turn1.id]);
+    let value = run_json(&["pinvou", "code", "checkpoints", "diff", &id, &turn1.id]);
     let diff = &value["diff"];
     assert_eq!(diff["checkpoint"]["id"], turn1.id.as_str());
     let paths: Vec<&str> = diff["changes"]
@@ -1051,7 +1051,7 @@ fn checkpoints_list_zero_state_and_full_rewind_undo_round_trip() {
     // rewind to the end of turn 1: restores the snapshot and truncates the
     // transcript to one user turn. The result carries the forced PreRestore
     // rollback point (undo bookkeeping), not the consumed target snapshot.
-    let value = run_json(&["pinvoy", "code", "checkpoints", "rewind", &id, "1", "--yes"]);
+    let value = run_json(&["pinvou", "code", "checkpoints", "rewind", &id, "1", "--yes"]);
     assert_eq!(value["rewoundTurns"], 1);
     assert_eq!(value["degraded"], false);
     let pre_restore = value["restoredCheckpoint"]["id"]
@@ -1075,7 +1075,7 @@ fn checkpoints_list_zero_state_and_full_rewind_undo_round_trip() {
 
     // The rewind bookkeeping left an undoable record bound to its PreRestore
     // snapshot; undo restores both code and transcript.
-    let value = run_json(&["pinvoy", "code", "checkpoints", "undo", &id]);
+    let value = run_json(&["pinvou", "code", "checkpoints", "undo", &id]);
     assert_eq!(value["restoredMessages"], 2);
     assert_eq!(
         value["restoredCheckpoint"].as_str().map(str::to_string),
@@ -1092,15 +1092,15 @@ fn checkpoints_list_zero_state_and_full_rewind_undo_round_trip() {
     drop(store);
 
     // A second undo is honestly refused: the record was consumed.
-    let error = run(&["pinvoy", "code", "checkpoints", "undo", &id]).unwrap_err();
+    let error = run(&["pinvou", "code", "checkpoints", "undo", &id]).unwrap_err();
     assert!(error.to_string().contains("no_undoable_rewind"), "{error}");
 
     // Rewinding past the current turn count fails before touching anything.
-    let error = run(&["pinvoy", "code", "checkpoints", "rewind", &id, "9", "--yes"]).unwrap_err();
+    let error = run(&["pinvou", "code", "checkpoints", "rewind", &id, "9", "--yes"]).unwrap_err();
     assert!(error.to_string().contains("cannot_rewind"), "{error}");
 
     // Rewinding to a turn without a snapshot fails honestly.
-    let error = run(&["pinvoy", "code", "checkpoints", "rewind", &id, "1", "--yes"]).unwrap_err();
+    let error = run(&["pinvou", "code", "checkpoints", "rewind", &id, "1", "--yes"]).unwrap_err();
     assert!(error.to_string().contains("checkpoint_missing"), "{error}");
 
     let _ = turn2;
@@ -1115,7 +1115,7 @@ fn checkpoints_refuse_non_native_code_sessions() {
         std::env::temp_dir().join(format!("pinvou-cli-code-acp-gate-{}", std::process::id()));
     std::fs::create_dir_all(&project).unwrap();
     let id = create_acp_session_fixture(&project);
-    let error = run(&["pinvoy", "code", "checkpoints", "list", &id]).unwrap_err();
+    let error = run(&["pinvou", "code", "checkpoints", "list", &id]).unwrap_err();
     assert!(
         error
             .to_string()
@@ -1125,7 +1125,7 @@ fn checkpoints_refuse_non_native_code_sessions() {
     // Invalid checkpoint ids are usage errors.
     let native = create_code_session_fixture(None);
     let error = run(&[
-        "pinvoy",
+        "pinvou",
         "code",
         "checkpoints",
         "diff",
@@ -1143,12 +1143,12 @@ fn providers_round_trip_against_temp_home() {
     let store_path = home.root.join("acp-providers.json");
 
     // Zero-state list is valid JSON for every agent.
-    let value = run_json(&["pinvoy", "code", "providers", "list"]);
+    let value = run_json(&["pinvou", "code", "providers", "list"]);
     assert_eq!(value["agents"].as_array().unwrap().len(), 3);
 
     // add persists into acp-providers.json (GUI DTO: id, name, base_url...).
     let value = run_json(&[
-        "pinvoy",
+        "pinvou",
         "code",
         "providers",
         "add",
@@ -1178,7 +1178,7 @@ fn providers_round_trip_against_temp_home() {
     );
 
     // list shows the stored entry.
-    let value = run_json(&["pinvoy", "code", "providers", "list", "--agent", "codex"]);
+    let value = run_json(&["pinvou", "code", "providers", "list", "--agent", "codex"]);
     let providers = value["providers"]["providers"].as_array().unwrap();
     assert_eq!(providers.len(), 1);
     assert_eq!(providers[0]["id"], added_id.as_str());
@@ -1190,7 +1190,7 @@ fn providers_round_trip_against_temp_home() {
 
     // update renames the entry (merge with existing fields).
     let value = run_json(&[
-        "pinvoy",
+        "pinvou",
         "code",
         "providers",
         "update",
@@ -1208,7 +1208,7 @@ fn providers_round_trip_against_temp_home() {
     );
 
     // switch without a stored key fails honestly and leaves the state alone.
-    let error = run(&["pinvoy", "code", "providers", "switch", "codex", &added_id]).unwrap_err();
+    let error = run(&["pinvou", "code", "providers", "switch", "codex", &added_id]).unwrap_err();
     assert_eq!(error.exit_code(), ExitCode::Failed);
     let raw = std::fs::read_to_string(&store_path).unwrap();
     assert!(
@@ -1224,7 +1224,7 @@ fn providers_round_trip_against_temp_home() {
     )
     .unwrap();
     let value = run_json(&[
-        "pinvoy",
+        "pinvou",
         "code",
         "providers",
         "import",
@@ -1239,7 +1239,7 @@ fn providers_round_trip_against_temp_home() {
     // export writes the JSON payload to --output.
     let export_file = home.root.join("export.json");
     let value = run_json(&[
-        "pinvoy",
+        "pinvou",
         "code",
         "providers",
         "export",
@@ -1255,7 +1255,7 @@ fn providers_round_trip_against_temp_home() {
 
     // remove --yes deletes the entry; the store stays parseable.
     let value = run_json(&[
-        "pinvoy",
+        "pinvou",
         "code",
         "providers",
         "remove",
@@ -1265,14 +1265,14 @@ fn providers_round_trip_against_temp_home() {
         "--yes",
     ]);
     assert_eq!(value["removed"], true);
-    let value = run_json(&["pinvoy", "code", "providers", "list", "--agent", "codex"]);
+    let value = run_json(&["pinvou", "code", "providers", "list", "--agent", "codex"]);
     let providers = value["providers"]["providers"].as_array().unwrap();
     assert_eq!(providers.len(), 1, "only the imported entry remains");
     assert_eq!(providers[0]["name"], "Imported");
 
     // remove without --yes is refused before any mutation.
     let error = run(&[
-        "pinvoy",
+        "pinvou",
         "code",
         "providers",
         "remove",
@@ -1291,10 +1291,10 @@ fn providers_switch_official_is_hermetic_without_state() {
     let _home = HomeGuard::new("providers-official");
     // With no provider ever switched, restoring the official login is a
     // stateless no-op against the isolated CLI home (never the developer's).
-    let outcome = run(&["pinvoy", "code", "providers", "switch-official", "codex"])
+    let outcome = run(&["pinvou", "code", "providers", "switch-official", "codex"])
         .expect("switch-official succeeds on a fresh home");
     assert_eq!(outcome.exit_code, ExitCode::Success);
-    let value = run_json(&["pinvoy", "code", "providers", "switch-official", "claude"]);
+    let value = run_json(&["pinvou", "code", "providers", "switch-official", "claude"]);
     assert_eq!(value["action"], "switched_official");
 }
 
@@ -1309,7 +1309,7 @@ fn engine_bound_paths_return_stable_honest_errors() {
     for (arguments, expected_code) in [
         (
             vec![
-                "pinvoy",
+                "pinvou",
                 "code",
                 "run",
                 "codex",
@@ -1321,12 +1321,12 @@ fn engine_bound_paths_return_stable_honest_errors() {
             "code_run_requires_product_host",
         ),
         (
-            vec!["pinvoy", "code", "agents", "install", "codex"],
+            vec!["pinvou", "code", "agents", "install", "codex"],
             "code_install_requires_product_host",
         ),
         (
             vec![
-                "pinvoy",
+                "pinvou",
                 "code",
                 "providers",
                 "probe",
@@ -1337,11 +1337,11 @@ fn engine_bound_paths_return_stable_honest_errors() {
             "code_probe_requires_product_host",
         ),
         (
-            vec!["pinvoy", "code", "permissions", id.as_str()],
+            vec!["pinvou", "code", "permissions", id.as_str()],
             "code_permissions_requires_product_host",
         ),
         (
-            vec!["pinvoy", "code", "respond", id.as_str(), "req-1", "allow"],
+            vec!["pinvou", "code", "respond", id.as_str(), "req-1", "allow"],
             "code_respond_requires_product_host",
         ),
     ] {
@@ -1354,7 +1354,7 @@ fn engine_bound_paths_return_stable_honest_errors() {
     }
 
     // permissions/respond still gate on session existence first.
-    let error = run(&["pinvoy", "code", "permissions", "missing-session"]).unwrap_err();
+    let error = run(&["pinvou", "code", "permissions", "missing-session"]).unwrap_err();
     assert!(
         !error
             .to_string()
@@ -1366,7 +1366,7 @@ fn engine_bound_paths_return_stable_honest_errors() {
 // ── opt-in network/engine paths ─────────────────────────────────────────────
 
 /// Opt-in (requires the real vendor CLI on PATH and network access):
-/// `cargo test -p pinvoy-cli --test code_contract -- --ignored login_streams_vendor_cli_flow`
+/// `cargo test -p pinvou-cli --test code_contract -- --ignored login_streams_vendor_cli_flow`
 /// Spawns the same `codex login`-style command the GUI's login flow runs and
 /// verifies the URL/device-code extraction pipeline against live output.
 #[test]
@@ -1374,7 +1374,7 @@ fn engine_bound_paths_return_stable_honest_errors() {
 fn login_streams_vendor_cli_flow() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("ignored-login");
-    let outcome = run(&["pinvoy", "code", "login", "codex"]);
+    let outcome = run(&["pinvou", "code", "login", "codex"]);
     match outcome {
         Ok(outcome) => assert!(outcome.stdout.contains("login codex")),
         Err(error) => {
@@ -1397,7 +1397,7 @@ fn run_one_shot_turn_requires_product_host() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("ignored-run");
     let error = run(&[
-        "pinvoy",
+        "pinvou",
         "code",
         "run",
         "codex",
