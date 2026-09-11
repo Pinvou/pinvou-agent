@@ -481,7 +481,9 @@ fn connectors_connect_without_vendor_cli_fails_fast_with_install_hint() {
             .expect_err("connect without the vendor CLI must fail immediately");
         assert_eq!(error.exit_code(), ExitCode::Failed, "{id}");
         assert!(
-            error.to_string().contains("failed to start"),
+            // The resolution error fires before spawn: neither a managed
+            // install nor a PATH candidate exists.
+            error.to_string().contains("was not found"),
             "{id}: {error}"
         );
         assert!(

@@ -49,10 +49,16 @@ use wait_timeout::ChildExt;
 
 use crate::support::{render, require_yes, resolve_secret, sandbox_home, success};
 use crate::{CliError, CliOutcome, OutputMode};
+use pinvou3_lib::features::marketplace::bundle::{
+    DINGTALK_SKILL_DIRS, LARK_SKILL_DIRS, TMEET_SKILL_DIRS,
+};
 use pinvou3_lib::features::marketplace::skill_marketplace::SkillMarketplaceManager;
 use pinvou3_lib::features::marketplace::store::{BundleRecord, BundleSource, BundleStore};
-use pinvou3_lib::platform::connector_lock::{artifact_pin, executable_name, file_sha256_hex};
+use pinvou3_lib::platform::connector_lock::{
+    artifact_pin, executable_name, file_sha256_hex, locked_cli_path,
+};
 use pinvou3_lib::platform::connector_skills::WECOM_SKILL_DIRS;
+
 use pinvou3_lib::platform::connector_state::skills_visible_for;
 use pinvou3_lib::platform::credential_store::{
     CredentialReference, CredentialStore, SystemCredentialStore, redact_secret,
@@ -69,24 +75,6 @@ const USAGE: &str =
 const WECOM_MIN_VERSION: (u64, u64, u64) = (1, 1, 0);
 const TMEET_MIN_VERSION: (u64, u64, u64) = (1, 0, 15);
 const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.15";
-
-/// Mirror of `runtime_bundle::platform::LARK_SKILL_DIRS` (crate-private):
-/// the bundle skill directory names whose presence defines "skills applied"
-/// for feishu. wecom comes from the public `platform::connector_skills`
-/// single-source-of-truth table; dingtalk/tmeet are single mono skills.
-const LARK_SKILL_DIRS: &[&str] = &[
-    "lark-shared",
-    "lark-calendar",
-    "lark-doc",
-    "lark-drive",
-    "lark-sheets",
-    "lark-im",
-    "lark-task",
-    "lark-wiki",
-    "lark-base",
-];
-const DINGTALK_SKILL_DIRS: &[&str] = &["dws"];
-const TMEET_SKILL_DIRS: &[&str] = &["tmeet-skill"];
 
 /// ima skill installed by `ima_connect` (mirror of ima.rs `IMA_SKILL_ID`).
 const IMA_SKILL_ID: &str = "ima-skills";
@@ -173,8 +161,10 @@ impl ConnectorKind {
             id: "tmeet",
             display_name: "Tencent Meeting",
             cli_bin: "tmeet",
-            envs: &[],
-            auth_domains: &["tencent", "qq.com"],
+            // Mirror of `TMEET_CTX`, which sets both envs on every tmeet
+            // invocation in the GUI.
+            envs: &[("TMEET_AGENT", "pinvou"), ("TMEET_MODEL", "default")],
+            auth_domains: &["meeting.tencent.com"],
             disabled_filename: "tmeet_disabled",
             min_version: Some(TMEET_MIN_VERSION),
         };
@@ -187,10 +177,10 @@ impl ConnectorKind {
     }
 
     fn skill_dirs(self) -> &'static [&'static str] {
+        // The same tables the runtime bundle gate iterates, imported from the
+        // app's single source of truth so the two surfaces cannot drift.
         match self {
             Self::Feishu => LARK_SKILL_DIRS,
-            // Same 14-directory table the runtime bundle gate iterates; the
-            // app keeps it in `platform::connector_skills` (public).
             Self::Wecom => &WECOM_SKILL_DIRS,
             Self::Dingtalk => DINGTALK_SKILL_DIRS,
             Self::Tmeet => TMEET_SKILL_DIRS,
@@ -267,9 +257,13 @@ pub fn parse(values: &[String]) -> Result<ConnectorsCommand, CliError> {
         "status" => {
             let connector = match rest.first() {
                 None => None,
-                Some(first) if first.starts_with("--") => None,
                 Some(first) => Some(ConnectorKind::parse(first)?),
             };
+            if rest.len() > 1 {
+                return Err(CliError::usage(
+                    "connectors status accepts at most one connector id",
+                ));
+            }
             Ok(ConnectorsCommand::Status { connector })
         }
         "ensure-cli" | "enable" | "disable" | "apply-skills" => {
@@ -424,27 +418,37 @@ fn option<'a>(options: &'a [(&'a str, &'a str)], name: &str) -> Option<&'a str> 
 
 // ─────────────────────── vendor CLI subprocess helpers ───────────────────────
 
-/// Runs `<cli> <args>` capturing `(success, stdout, stderr)` — mirror of
-/// `connector_cli::run` (adds the connector envs from the spec). Used for
-/// the short status/version probes, which have no timeout semantics in the
-/// GUI either; long-running flows use [`run_cli_bounded`].
-fn run_cli(spec: &VendorSpec, args: &[&str]) -> Result<(bool, String, String), CliError> {
-    let mut cmd = Command::new(spec.cli_bin);
-    for (key, value) in spec.envs {
-        cmd.env(key, value);
+/// Resolves the vendor CLI executable: the managed assets install first (the
+/// public single resolution entry `locked_cli_path` — what `ensure-cli`
+/// installs and what the GUI installs both live there), then PATH with the
+/// platform binary-name candidates. Without this, the CLI could never execute
+/// what `ensure-cli` itself installs.
+fn resolve_vendor_cli(spec: &VendorSpec) -> Option<PathBuf> {
+    if let Some(path) = locked_cli_path(spec.cli_bin) {
+        if path.is_file() {
+            return Some(path);
+        }
     }
-    cmd.args(args);
-    let outcome = cmd.output().map_err(|error| {
-        CliError::failed(format!(
-            "{} could not be executed: {error} (install it first: pinvou connectors ensure-cli {})",
-            spec.cli_bin, spec.id
-        ))
-    })?;
-    Ok((
-        outcome.status.success(),
-        String::from_utf8_lossy(&outcome.stdout).into_owned(),
-        String::from_utf8_lossy(&outcome.stderr).into_owned(),
-    ))
+    let path = std::env::var_os("PATH")?;
+    let candidates = crate::support::binary_candidates(spec.cli_bin);
+    std::env::split_paths(&path)
+        .flat_map(|dir| candidates.iter().map(move |candidate| dir.join(candidate)))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Upper bound for one status/version probe (the GUI has no timeout here, but
+/// a hung vendor CLI must not hang the CLI forever).
+const PROBE_TIMEOUT_SECS: u64 = 60;
+
+/// Runs `<cli> <args>` capturing `(success, stdout, stderr)` — mirror of
+/// `connector_cli::run` (adds the connector envs from the spec), bounded so
+/// every blocking vendor-CLI phase honors a timeout.
+fn run_cli(spec: &VendorSpec, args: &[&str]) -> Result<(bool, String, String), CliError> {
+    run_cli_bounded(
+        spec,
+        args,
+        Instant::now() + Duration::from_secs(PROBE_TIMEOUT_SECS),
+    )
 }
 
 /// Runs `<cli> <args>` capturing `(success, stdout, stderr)` — like
@@ -456,7 +460,14 @@ fn run_cli_bounded(
     args: &[&str],
     deadline: Instant,
 ) -> Result<(bool, String, String), CliError> {
-    let mut cmd = Command::new(spec.cli_bin);
+    let Some(executable) = resolve_vendor_cli(spec) else {
+        return Err(CliError::failed(format!(
+            "{} was not found (managed install or PATH); install it first: pinvou connectors \
+             ensure-cli {}",
+            spec.cli_bin, spec.id
+        )));
+    };
+    let mut cmd = crate::support::build_command(&executable, args);
     for (key, value) in spec.envs {
         cmd.env(key, value);
     }
@@ -464,6 +475,7 @@ fn run_cli_bounded(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    crate::support::set_process_group(&mut cmd);
     let mut child = cmd.spawn().map_err(|error| {
         CliError::failed(format!(
             "{} could not be executed: {error} (install it first: pinvou connectors ensure-cli {})",
@@ -490,12 +502,15 @@ fn run_cli_bounded(
     let status = match child.wait_timeout(remaining) {
         Ok(Some(status)) => status,
         Ok(None) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            // The CLI was spawned as a process-group leader, so the group kill
+            // takes its npm/shell/node descendants with it instead of
+            // orphaning them.
+            crate::support::kill_process_tree(&mut child);
             return Err(CliError::failed(format!(
                 "{} {} timed out (connect budget exhausted; retry with a larger --timeout)",
                 spec.cli_bin,
-                args.join(" ")
+                // args can carry pairing/device material; never echo it raw.
+                redact_secret(&args.join(" "))
             )));
         }
         Err(error) => {
@@ -540,11 +555,12 @@ fn parse_semver3(text: &str) -> Option<(u64, u64, u64)> {
 /// - feishu / dingtalk: whole-output three-segment parse, display only (the
 ///   GUI gates them on `--version` success, not on a version number).
 fn cli_semver(spec: &VendorSpec, stdout: &str, stderr: &str) -> Option<(u64, u64, u64)> {
-    let source = if stdout.trim().is_empty() {
-        stderr
-    } else {
-        stdout
-    };
+    // Try stdout first, then stderr (noisy stdout must not hide a stderr
+    // version — the GUI parses both streams in order).
+    semver_from_stream(spec, stdout).or_else(|| semver_from_stream(spec, stderr))
+}
+
+fn semver_from_stream(spec: &VendorSpec, source: &str) -> Option<(u64, u64, u64)> {
     match spec.id {
         "wecom" => {
             let tokens: Vec<&str> = source.split_whitespace().collect();
@@ -1061,6 +1077,11 @@ fn load_lock() -> Result<(String, Vec<LockArtifact>), CliError> {
     }
     let table: Value = serde_json::from_str(LOCK_JSON)
         .map_err(|_| CliError::failed("connector CLI lock table is invalid"))?;
+    if table.get("schemaVersion").and_then(Value::as_i64) != Some(1) {
+        return Err(CliError::failed(
+            "connector CLI lock table schema is not supported",
+        ));
+    }
     let expected = pinvou3_lib::platform::paths::connector_platform_dir(
         std::env::consts::OS,
         std::env::consts::ARCH,
@@ -1154,8 +1175,18 @@ fn run_npm_install(spec: &VendorSpec) -> Result<bool, CliError> {
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let mut cmd = Command::new("npm");
-    cmd.args(["install", "-g", TMEET_NPM_SPEC]);
+    // npm is an npm.cmd shim on Windows; resolve the candidate and wrap the
+    // spawn the same way every other vendor CLI child is wrapped.
+    let npm = crate::support::binary_candidates("npm")
+        .into_iter()
+        .find_map(|candidate| {
+            std::env::split_paths(&std::env::var_os("PATH")?)
+                .map(|dir| dir.join(&candidate))
+                .find(|path| path.is_file())
+        })
+        .ok_or_else(|| CliError::failed("npm was not found on PATH; install Node.js first"))?;
+    let mut cmd = crate::support::build_command(&npm, &["install", "-g", TMEET_NPM_SPEC]);
+    crate::support::set_process_group(&mut cmd);
     for (key, value) in spec.envs {
         cmd.env(key, value);
     }
@@ -1179,7 +1210,7 @@ fn run_npm_install(spec: &VendorSpec) -> Result<bool, CliError> {
             Some(status) => return Ok(status.success()),
             None => {
                 if start.elapsed() > Duration::from_secs(NPM_INSTALL_TIMEOUT_SECS) {
-                    let _ = child.kill();
+                    crate::support::kill_process_tree(&mut child);
                     return Err(CliError::failed(format!(
                         "CLI install timed out after {NPM_INSTALL_TIMEOUT_SECS}s (network or proxy blocked; log at {})",
                         log_path.display()
@@ -1197,6 +1228,26 @@ fn run_npm_install(spec: &VendorSpec) -> Result<bool, CliError> {
 /// side-files the app writes are skipped; both SHA-256 verifications are
 /// identical to the GUI path.
 fn ensure_native_cli(spec: &VendorSpec) -> Result<bool, CliError> {
+    // Serialize concurrent installs (two `ensure-cli` processes would race on
+    // the shared staging archive and destination); blocking wait is fine —
+    // installs are rare and the loser just re-verifies the hash.
+    let install_lock_dir = pinvou3_home().join("locks");
+    std::fs::create_dir_all(&install_lock_dir).map_err(|error| {
+        CliError::failed(format!(
+            "cannot create the connector lock directory: {error}"
+        ))
+    })?;
+    let install_lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(install_lock_dir.join("connector-install.lock"))
+        .map_err(|error| CliError::failed(format!("cannot open the install lock: {error}")))?;
+    let mut install_lock = fd_lock::RwLock::new(install_lock_file);
+    let _install_guard = install_lock
+        .write()
+        .map_err(|error| CliError::failed(format!("cannot acquire the install lock: {error}")))?;
+
     let (platform, artifacts) = load_lock()?;
     let artifact = artifacts
         .iter()
@@ -1211,8 +1262,8 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<bool, CliError> {
     let version_dir = assets_cli_dir(&artifact.name, &artifact.version);
     let destination = version_dir.join(&filename);
     if file_is_sha256(&destination, &artifact.binary_sha256) {
-        // Present on disk (but not resolvable through PATH): the GUI's
-        // `connector_cli_command` resolves this path at spawn time.
+        // Already installed; `resolve_vendor_cli` finds it through the same
+        // public `locked_cli_path` entry the GUI uses at spawn time.
         return Ok(false);
     }
 
@@ -1250,7 +1301,18 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<bool, CliError> {
         let _ = std::fs::remove_dir_all(&extract_dir);
         return Err(error);
     }
-    let extracted = extract_dir.join(&filename);
+    // tar preserves the member's internal directory layout, so the binary
+    // may land in a nested dir; locate it by name before verifying.
+    let extracted = match find_file_by_name(&extract_dir, &filename) {
+        Some(path) => path,
+        None => {
+            let _ = std::fs::remove_dir_all(&extract_dir);
+            return Err(CliError::failed(format!(
+                "{} executable not found in the extracted archive",
+                artifact.name
+            )));
+        }
+    };
     if !file_is_sha256(&extracted, &artifact.binary_sha256) {
         let _ = std::fs::remove_dir_all(&extract_dir);
         return Err(CliError::failed(format!(
@@ -1287,7 +1349,30 @@ fn file_is_sha256(path: &Path, expected: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// HTTPS-only download capped at the app's archive limit.
+/// Finds the first regular file with `name` under `dir` (the walker does not
+/// follow symlinks).
+fn find_file_by_name(dir: &Path, name: &str) -> Option<PathBuf> {
+    if dir.is_file() {
+        return None;
+    }
+    for entry in std::fs::read_dir(dir).ok()? {
+        let entry = entry.ok()?;
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path).ok()?;
+        if metadata.is_dir() {
+            if let Some(found) = find_file_by_name(&path, name) {
+                return Some(found);
+            }
+        } else if path.file_name().map(|n| n == name).unwrap_or(false) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// HTTPS-only download capped at the app's archive limit, staged through a
+/// `.part` sibling so a crashed download never leaves a truncated file at the
+/// real path (rename is atomic on the same filesystem).
 fn download_https(url: &str, destination: &Path) -> Result<(), CliError> {
     let parsed = reqwest::Url::parse(url)
         .map_err(|_| CliError::failed("connector download URL is invalid"))?;
@@ -1296,6 +1381,8 @@ fn download_https(url: &str, destination: &Path) -> Result<(), CliError> {
     }
     let response = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(600))
+        .connect_timeout(Duration::from_secs(30))
+        .user_agent(concat!("pinvou-cli/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| CliError::failed(format!("cannot build download client: {error}")))?
         .get(parsed)
@@ -1307,18 +1394,20 @@ fn download_https(url: &str, destination: &Path) -> Result<(), CliError> {
             response.status()
         )));
     }
+    let part = destination.with_extension("part");
     let mut reader = response.take(MAX_ARCHIVE_BYTES + 1);
-    let mut file = std::fs::File::create(destination)
+    let mut file = std::fs::File::create(&part)
         .map_err(|error| CliError::failed(format!("cannot create archive file: {error}")))?;
-    std::io::copy(&mut reader, &mut file)
+    let copied = std::io::copy(&mut reader, &mut file)
         .map_err(|error| CliError::failed(format!("connector download failed: {error}")))?;
-    let size = file
-        .metadata()
-        .map(|meta| meta.len())
-        .map_err(|error| CliError::failed(format!("cannot stat archive file: {error}")))?;
-    if size > MAX_ARCHIVE_BYTES {
+    if copied > MAX_ARCHIVE_BYTES {
+        let _ = std::fs::remove_file(&part);
         return Err(CliError::failed("connector archive exceeds the size cap"));
     }
+    drop(file);
+    std::fs::rename(&part, destination).map_err(|error| {
+        CliError::failed(format!("cannot finish the archive download: {error}"))
+    })?;
     Ok(())
 }
 
@@ -1374,7 +1463,7 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
     match spec.id {
         "feishu" => {
             // Phase 1 (register app): `config init --new` until exit.
-            let (url, status_ok) = spawn_and_capture_url(
+            let (url, _user_code, status_ok) = spawn_and_capture_url(
                 spec,
                 &["config", "init", "--new"],
                 &mut notes,
@@ -1477,20 +1566,36 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 deadline,
                 Some(&qr_dir),
             );
-            let outcome = flow.and_then(|(url, status_ok)| {
+            // The stdout URL is the landing page (which asks for another
+            // scan); only the qr.png the vendor wrote authorizes in one scan,
+            // so keep it readable and point the user at it, and clean the
+            // temp dir up on every path (spawn failure included).
+            let outcome = flow.and_then(|(url, _user_code, status_ok)| {
                 if let Some(url) = url {
                     notes.push(format!("authorize-url: {url}"));
                 }
-                let _ = std::fs::remove_dir_all(&qr_dir);
                 if !status_ok || !cli_connected(spec)? {
+                    let _ = std::fs::remove_dir_all(&qr_dir);
                     return Err(CliError::failed(
                         "wecom authorization did not complete (cancelled or timed out)",
                     ));
                 }
                 Ok(())
             });
-            outcome?;
+            if let Err(error) = outcome {
+                let _ = std::fs::remove_dir_all(&qr_dir);
+                return Err(error);
+            }
+            let qr_png = qr_dir.join("qr.png");
+            if qr_png.is_file() {
+                notes.push(format!(
+                    "scan-qr-file: {} (the authorize-url above is a landing page; scan this \
+                     PNG to authorize in one step)",
+                    qr_png.display()
+                ));
+            }
             bundle_store_on_connected(spec.id);
+            let _ = std::fs::remove_dir_all(&qr_dir);
         }
         "dingtalk" | "tmeet" => {
             let args: &[&str] = if spec.id == "dingtalk" {
@@ -1498,9 +1603,20 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             } else {
                 &["auth", "login", "--no-browser"]
             };
-            let (url, _status_ok) = spawn_and_capture_url(spec, args, &mut notes, deadline, None)?;
-            if let Some(url) = url {
+            let (url, user_code, status_ok) =
+                spawn_and_capture_url(spec, args, &mut notes, deadline, None)?;
+            if let Some(url) = compose_user_code(&url, user_code.as_deref()) {
                 notes.push(format!("authorize-url: {url}"));
+            }
+            // Mirror the GUI's immediate-failure detection: a vendor CLI that
+            // exits without completing authorization is an error now, not a
+            // timeout five minutes later.
+            if !status_ok && !cli_connected(spec)? {
+                return Err(CliError::failed(format!(
+                    "{} login exited before authorization completed; check the org policy / \
+                     CLI output above",
+                    spec.display_name
+                )));
             }
             loop {
                 if cli_connected(spec)? {
@@ -1538,8 +1654,15 @@ fn spawn_and_capture_url(
     notes: &mut Vec<String>,
     deadline: Instant,
     work_dir: Option<&Path>,
-) -> Result<(Option<String>, bool), CliError> {
-    let mut cmd = Command::new(spec.cli_bin);
+) -> Result<(Option<String>, Option<String>, bool), CliError> {
+    let Some(executable) = resolve_vendor_cli(spec) else {
+        return Err(CliError::failed(format!(
+            "{} was not found (managed install or PATH); install it first: pinvou connectors \
+             ensure-cli {}",
+            spec.cli_bin, spec.id
+        )));
+    };
+    let mut cmd = crate::support::build_command(&executable, args);
     for (key, value) in spec.envs {
         cmd.env(key, value);
     }
@@ -1550,15 +1673,18 @@ fn spawn_and_capture_url(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    crate::support::set_process_group(&mut cmd);
     let mut child = cmd.spawn().map_err(|error| {
         CliError::failed(format!(
-            "{} {} failed to start: {error} (install the connector CLI first: pinvou connectors ensure-cli {})",
-            spec.cli_bin,
-            args.join(" "),
-            spec.id
+            "{} failed to start: {error} (install the connector CLI first: pinvou connectors \
+             ensure-cli {})",
+            spec.cli_bin, spec.id
         ))
     })?;
-    let (tx, rx) = mpsc::channel::<String>();
+    // Two rendezvous slots: first auth-domain URL and first user code. The
+    // GUI composes the code into the URL (`with_user_code_param`) because the
+    // login page asks for a code the raw URL does not carry.
+    let (tx, rx) = mpsc::channel::<LoginStreamEvent>();
     if let Some(stdout) = child.stdout.take() {
         drain_for_url(spec, stdout, tx.clone());
     }
@@ -1569,25 +1695,33 @@ fn spawn_and_capture_url(
     let url_wait = Duration::from_secs(LOGIN_URL_TIMEOUT_SECS)
         .min(deadline.saturating_duration_since(Instant::now()))
         .max(Duration::from_secs(1));
-    let url = match rx.recv_timeout(url_wait) {
-        Ok(url) => Some(url),
-        Err(_) => {
-            notes.push(format!(
-                "no login link within {url_wait:?} (check network / proxy); still waiting for the CLI to exit"
-            ));
-            None
+    let mut url: Option<String> = None;
+    let mut user_code: Option<String> = None;
+    let deadline_wait = Instant::now() + url_wait;
+    while url.is_none() || user_code.is_none() {
+        let remaining = deadline_wait.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
         }
-    };
+        match rx.recv_timeout(remaining) {
+            Ok(LoginStreamEvent::Url(found)) => url = Some(found),
+            Ok(LoginStreamEvent::Code(code)) => user_code = Some(code),
+            Err(_) => break,
+        }
+    }
+    if url.is_none() {
+        notes.push(format!(
+            "no login link within {url_wait:?} (check network / proxy); still waiting for the CLI to exit"
+        ));
+    }
     let remaining = deadline.saturating_duration_since(Instant::now());
     let status = match child.wait_timeout(remaining) {
         Ok(Some(status)) => status,
         Ok(None) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            crate::support::kill_process_tree(&mut child);
             return Err(CliError::failed(format!(
-                "{} {} timed out (connect budget exhausted; retry with a larger --timeout)",
-                spec.cli_bin,
-                args.join(" ")
+                "{} login timed out (connect budget exhausted; retry with a larger --timeout)",
+                spec.cli_bin
             )));
         }
         Err(error) => {
@@ -1597,16 +1731,37 @@ fn spawn_and_capture_url(
             )));
         }
     };
-    Ok((url, status.success()))
+    Ok((url, user_code, status.success()))
+}
+
+/// Stream event collected while a login command runs.
+enum LoginStreamEvent {
+    Url(String),
+    Code(String),
+}
+
+/// Mirror of dingtalk `with_user_code_param`: attach the drained user code to
+/// the login URL when the URL does not already carry it.
+fn compose_user_code(url: &Option<String>, user_code: Option<&str>) -> Option<String> {
+    let url = url.as_deref()?;
+    let Some(code) = user_code else {
+        return Some(url.to_owned());
+    };
+    if url.contains("user_code=") {
+        return Some(url.to_owned());
+    }
+    let sep = if url.contains('?') { '&' } else { '?' };
+    Some(format!("{url}{sep}user_code={code}"))
 }
 
 /// Background pipe drainer capturing the first URL whose host matches the
 /// connector's auth domains — mirror of `connector_cli::drain_for_url` and
-/// `CliCtx::extract_url` (truncate at whitespace, keep query strings).
+/// `CliCtx::extract_url` (truncate at whitespace, keep query strings) — plus
+/// the first `user_code`-style line (mirror of dingtalk `extract_user_code`).
 fn drain_for_url<R: std::io::Read + Send + 'static>(
     spec: &VendorSpec,
     reader: R,
-    tx: mpsc::Sender<String>,
+    tx: mpsc::Sender<LoginStreamEvent>,
 ) -> std::thread::JoinHandle<()> {
     let domains = spec.auth_domains;
     std::thread::spawn(move || {
@@ -1615,6 +1770,11 @@ fn drain_for_url<R: std::io::Read + Send + 'static>(
                 Ok(line) => line,
                 Err(_) => break,
             };
+            if let Some(code) = extract_user_code(&line) {
+                if tx.send(LoginStreamEvent::Code(code)).is_err() {
+                    break;
+                }
+            }
             let Some(index) = line.find("https://") else {
                 continue;
             };
@@ -1622,11 +1782,40 @@ fn drain_for_url<R: std::io::Read + Send + 'static>(
                 .chars()
                 .take_while(|c| !c.is_whitespace())
                 .collect();
-            if domains.iter().any(|domain| url.contains(domain)) && tx.send(url).is_err() {
+            if domains.iter().any(|domain| url.contains(domain))
+                && tx.send(LoginStreamEvent::Url(url)).is_err()
+            {
                 break;
             }
         }
     })
+}
+
+/// Mirror of dingtalk `extract_user_code`: the last 6-32 char uppercase-ish
+/// token on a code-labelled line.
+fn extract_user_code(line: &str) -> Option<String> {
+    let lower = line.to_ascii_lowercase();
+    let has_code_label = lower.contains("user_code")
+        || lower.contains("user code")
+        || lower.contains("device code")
+        || lower.contains("code:")
+        || line.contains("\u{7528}\u{6237}\u{7801}")
+        || line.contains("\u{9a8c}\u{8bc1}\u{7801}")
+        || line.contains("\u{6388}\u{6743}\u{7801}");
+    if !has_code_label {
+        return None;
+    }
+    line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+        .rfind(|token| {
+            (6..=32).contains(&token.len())
+                && token
+                    .chars()
+                    .any(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+                && token
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-')
+        })
+        .map(str::to_owned)
 }
 
 // ─────────────────────────────── ima ───────────────────────────────
@@ -1733,23 +1922,25 @@ fn ima_connect(
     })();
     if let Err(error) = result {
         // Mirror `rollback_secret`: restore the previous credential state
-        // before surfacing the failure.
-        match previous_client_id {
-            Some(value) => {
-                let _ = store.set(&client_ref, &value);
+        // before surfacing the failure, and propagate a failed rollback (a
+        // silently half-written credential state is worse than the original
+        // error).
+        let restore = |reference: &CredentialReference, previous: Option<String>| {
+            let outcome = match previous {
+                Some(value) => store.set(reference, &value).err(),
+                None => store.delete(reference).err(),
+            };
+            if let Some(rollback_error) = outcome {
+                return Err(CliError::failed(format!(
+                    "ima connect failed ({error}) and the credential rollback also failed: \
+                     {}",
+                    rollback_error.user_message()
+                )));
             }
-            None => {
-                let _ = store.delete(&client_ref);
-            }
-        }
-        match previous_api_key {
-            Some(value) => {
-                let _ = store.set(&api_ref, &value);
-            }
-            None => {
-                let _ = store.delete(&api_ref);
-            }
-        }
+            Ok(())
+        };
+        restore(&client_ref, previous_client_id)?;
+        restore(&api_ref, previous_api_key)?;
         return Err(error);
     }
     let value = json!({ "ok": true, "id": "ima", "connected": true });
@@ -1759,6 +1950,9 @@ fn ima_connect(
 /// Mirror of `ima.rs::validate_credentials` + `request_ima`: one POST to the
 /// allowlisted `openapi/check_skill_update` path; `code == 0` means the
 /// credentials are accepted.
+/// Response cap mirroring `ima.rs` (`MAX_RESPONSE_BYTES`).
+const IMA_MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
+
 fn validate_ima_credentials(client_id: &str, api_key: &str) -> Result<(), CliError> {
     let response = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(30))
@@ -1785,8 +1979,18 @@ fn validate_ima_credentials(client_id: &str, api_key: &str) -> Result<(), CliErr
             response.status()
         )));
     }
-    let payload: Value = response
-        .json()
+    // Mirror the GUI's 1 MiB response cap: a hostile or broken server must
+    // not be able to balloon the CLI's memory.
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    response
+        .take(IMA_MAX_RESPONSE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| CliError::failed("cannot read the ima response"))?;
+    if bytes.len() as u64 > IMA_MAX_RESPONSE_BYTES {
+        return Err(CliError::failed("ima response exceeds the 1 MiB cap"));
+    }
+    let payload: Value = serde_json::from_slice(&bytes)
         .map_err(|_| CliError::failed("ima response is not valid JSON"))?;
     let code = payload
         .get("code")

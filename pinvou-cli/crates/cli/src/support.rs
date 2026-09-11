@@ -88,6 +88,25 @@ pub fn success(stdout: String) -> crate::CliOutcome {
     }
 }
 
+/// Platform binary-name candidates for a bare CLI name: Windows installs are
+/// `.exe` real binaries or npm `.cmd` shims, and PATH scanning must try both
+/// because bare names never match there.
+#[allow(dead_code)] // consumed by family implementations as they land
+pub fn binary_candidates(name: &str) -> Vec<String> {
+    #[cfg(target_os = "windows")]
+    {
+        vec![
+            format!("{name}.exe"),
+            format!("{name}.cmd"),
+            name.to_owned(),
+        ]
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        vec![name.to_owned()]
+    }
+}
+
 /// Builds a `Command` for a resolved vendor CLI path. Windows cannot
 /// `CreateProcess` an npm `.cmd` shim directly, so `.cmd` targets run through
 /// `cmd /D /S /C` — the same wrapper the app's platform process helper uses.
