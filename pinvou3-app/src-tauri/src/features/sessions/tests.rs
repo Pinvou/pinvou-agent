@@ -489,6 +489,124 @@ fn migrate_legacy_session_workspaces_converges_to_per_session_sidecars() {
     let _ = std::fs::remove_dir_all(&bound_dir);
 }
 
+/// 迁移部分失败（评审 #445 R7 测试空缺）：失败条目旧文件保留 + 接管进内存
+/// 缓存继续可解析、下次 boot 重试；且缓存是 extend 而非整表替换——不得丢弃
+/// 本 boot 内迁移前已绑定的条目。
+#[test]
+fn migrate_legacy_session_workspaces_partial_failure_retains_and_extends() {
+    let (store, _g) = isolated_store();
+    let ok = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create ok");
+    let blocked = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create blocked");
+    let prebound = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create prebound");
+    let bound_dir = unique_temp_dir("user-workspace-partial");
+    std::fs::create_dir_all(&bound_dir).expect("create bound dir");
+    // 本 boot 迁移前已绑定的条目：partial 失败不得丢弃它。
+    store
+        .bind_session_workspace(&prebound.metadata.id, bound_dir.clone())
+        .expect("prebind");
+    // 让 blocked 会话的 sidecar 写入失败：其会话目录路径被同名文件占据
+    // （记录 <id>.json 仍在，bind 通过记录校验、写在 <id>/ 下失败）。
+    let blocked_dir = paths::sessions_root().join(&blocked.metadata.id);
+    std::fs::write(&blocked_dir, b"not-a-dir").expect("block session dir");
+    let legacy = paths::sessions_root().join("_session_workspaces.json");
+    std::fs::write(
+        &legacy,
+        serde_json::to_string(&std::collections::HashMap::from([
+            (ok.metadata.id.clone(), bound_dir.clone()),
+            (blocked.metadata.id.clone(), bound_dir.clone()),
+        ]))
+        .expect("serialize legacy"),
+    )
+    .expect("write legacy");
+
+    store.migrate_legacy_session_workspaces();
+
+    assert!(
+        paths::sessions_root()
+            .join(&ok.metadata.id)
+            .join("workspace-binding.json")
+            .is_file(),
+        "成功条目已迁移为 sidecar"
+    );
+    assert!(
+        legacy.exists(),
+        "存在未迁移条目时旧文件必须保留（下次 boot 重试）"
+    );
+    assert_eq!(
+        store.session_workspace_binding(&blocked.metadata.id),
+        Some(bound_dir.clone()),
+        "失败条目接管进内存表，读路径仍返回绑定"
+    );
+    assert_eq!(
+        store.session_workspace_binding(&prebound.metadata.id),
+        Some(bound_dir.clone()),
+        "extend 不得丢弃本 boot 已绑定的条目"
+    );
+    // 失败源消除后重试即可完成并删除旧文件。
+    std::fs::remove_file(&blocked_dir).expect("unblock");
+    store.migrate_legacy_session_workspaces();
+    assert!(
+        paths::sessions_root()
+            .join(&blocked.metadata.id)
+            .join("workspace-binding.json")
+            .is_file(),
+        "重试后失败条目完成迁移"
+    );
+    assert!(!legacy.exists(), "全部迁移成功后旧文件删除");
+
+    let _ = std::fs::remove_dir_all(&bound_dir);
+}
+
+/// sidecar 未来高版本与损坏 JSON 都按缺失处理（不静默按当前版本解析），
+/// bind 重写为当前版本即自愈（评审 #445 R7 测试空缺）。
+#[test]
+fn workspace_binding_sidecar_future_version_and_corrupt_json_are_ignored() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let bound_dir = unique_temp_dir("user-workspace-sidecar");
+    std::fs::create_dir_all(&bound_dir).expect("create bound dir");
+    let sidecar_dir = paths::sessions_root().join(&s.metadata.id);
+    std::fs::create_dir_all(&sidecar_dir).expect("create sidecar dir");
+    let sidecar = sidecar_dir.join("workspace-binding.json");
+
+    std::fs::write(
+        &sidecar,
+        serde_json::json!({ "version": 99, "path": bound_dir }).to_string(),
+    )
+    .expect("write future version");
+    assert_eq!(
+        store.session_workspace_binding(&s.metadata.id),
+        None,
+        "未来高版本 sidecar 必须拒读按缺失处理"
+    );
+
+    std::fs::write(&sidecar, b"{not json").expect("write corrupt");
+    assert_eq!(
+        store.session_workspace_binding(&s.metadata.id),
+        None,
+        "损坏 JSON sidecar 必须按缺失处理"
+    );
+
+    store
+        .bind_session_workspace(&s.metadata.id, bound_dir.clone())
+        .expect("rebind heals");
+    assert_eq!(
+        store.session_workspace_binding(&s.metadata.id),
+        Some(bound_dir.clone()),
+        "bind 重写为当前版本即自愈"
+    );
+
+    let _ = std::fs::remove_dir_all(&bound_dir);
+}
+
 #[test]
 fn validate_user_workspace_path_rejects_invalid_and_accepts_directory() {
     use super::validators::validate_user_workspace_path;

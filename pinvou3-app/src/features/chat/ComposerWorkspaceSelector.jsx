@@ -11,6 +11,7 @@ import { loadRecentWorkspaces, workspaceName } from '../../shared/workspace-rece
 export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWorkspace, onSelectWorkspace }) {
   const [open, setOpen] = useState(false);
   const [recentWorkspaces, setRecentWorkspaces] = useState(loadRecentWorkspaces);
+  const [pickError, setPickError] = useState('');
   const triggerRef = useRef(null);
   const panelRef = useRef(null);
   useOutsidePointerClose(open, () => setOpen(false), [panelRef, triggerRef]);
@@ -22,12 +23,16 @@ export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWork
   }
   function chooseDirectory() {
     setOpen(false);
+    setPickError('');
     onPickWorkspace()
       .then(path => { if (path) setRecentWorkspaces(loadRecentWorkspaces()); })
-      .catch(error => console.warn('pick draft workspace failed', error));
+      // 目录对话框失败（含旧后端无此命令）必须可见——静默关闭菜单会让用户
+      // 以为选择已生效（评审 #445 R7；code 车道经页面 error surface 呈现）。
+      .catch(error => setPickError(String((error && error.message) || error || 'error')));
   }
   function select(path) {
     setOpen(false);
+    setPickError('');
     onSelectWorkspace(path);
   }
 
@@ -49,6 +54,11 @@ export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWork
         </span>
         <ChevronDown size={12} className="shrink-0" />
       </button>
+      {pickError && (
+        <div className="absolute z-40 bottom-9 left-0 w-[280px] max-w-[calc(100vw-32px)] rounded-xl border border-red-200 dark:border-red-900/50 bg-white/95 dark:bg-[#202124]/95 shadow-xl px-3 py-2 text-[11px] text-[#C5221F] dark:text-red-400">
+          {pickError}
+        </div>
+      )}
       {open && (
         <div ref={panelRef} className="absolute z-40 bottom-9 left-0 w-[280px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
           <button type="button" onClick={chooseDirectory}

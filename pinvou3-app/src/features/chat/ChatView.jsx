@@ -1761,15 +1761,19 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const [pendingChatYoloSwitch, setPendingChatYoloSwitch] = useState(false);
       const [chatYoloConfirmBusy, setChatYoloConfirmBusy] = useState(false);
       const [chatYoloConfirmError, setChatYoloConfirmError] = useState('');
+      // 确认卡打开时捕获的目标会话：确认往返期间用户切走后，
+      // exitPlanToYolo 不得作用于新 active（评审 #445 R7）。
+      const pendingChatYoloSwitchSidRef = useRef(null);
       // 切换瞬间的绑定解析不能依赖异步 state:查询在飞时点击会看到 null 而
       // 跳过确认门。这里在裁决前同步式解析(缓存 → 桥查询),等待期间点击也
-      // 拿到权威绑定(评审 #445 P2:YOLO gate race)。入参 sid 在点击时捕获：
-      // await 期间用户可能已切走，post-await 写 state/应用裁决前必须比对
-      // 当前 active，否则 chip 被上一会话的目录覆盖、门控对错会话生效
-      // （评审 #445 R5）。
+      // 拿到权威绑定(评审 #445 P2:YOLO gate race)。入参 sid 在点击时捕获，
+      // 每个 await 之后都必须与 activeSessionIdRef.current（最新渲染值）
+      // 比对——闭包里的 activeSessionId 是渲染期常量，自比较永远为真
+      // （评审 #445 R7：R5 的闭包比对是死代码，存在未绑定 A→已绑定 B 的
+      // fail-open 绕过）。
       async function resolveBindingForGate(sid) {
         if (!sid) return null;
-        if (sid === activeSessionId && sessionWorkspaceBinding !== null) return sessionWorkspaceBinding;
+        if (sid === activeSessionIdRef.current && sessionWorkspaceBinding !== null) return sessionWorkspaceBinding;
         if (Object.prototype.hasOwnProperty.call(workspaceBindingCacheRef.current, sid)) {
           return workspaceBindingCacheRef.current[sid];
         }
@@ -1779,7 +1783,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             const normalized = binding || null;
             // 缓存按 sid 键控，写入总是安全；state 只在仍是当前会话时写。
             workspaceBindingCacheRef.current[sid] = normalized;
-            if (sid === activeSessionId) setSessionWorkspaceBinding(normalized);
+            if (sid === activeSessionIdRef.current) setSessionWorkspaceBinding(normalized);
             return normalized;
           } catch {
             // 瞬时查询失败（旧后端"无此命令"已在桥层按未绑定返回 null，不
@@ -1800,17 +1804,20 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         if (target !== 'yolo' || !isPlan) return;
         const gateSid = activeSessionId;
         const sessionBinding = await resolveBindingForGate(gateSid);
-        // 查询往返期间用户已切走：裁决是按点击时的会话算的，对当前 active
-        // 会话套用会改错对象（确认流与 exitPlanToYolo 都作用于 active）。
-        if (gateSid !== activeSessionId) return;
+        // 查询往返期间用户已切走：裁决是按点击时的会话算的，确认流与
+        // exitPlanToYolo 都作用于实时 active——必须放弃本次切换。
+        if (gateSid !== activeSessionIdRef.current) return;
         const boundTarget = chatYoloGateApplies({
-          activeSessionId,
+          activeSessionId: gateSid,
           sessionBinding,
           draftWorkspacePath: bs && bs.draftWorkspacePath,
         });
         if (boundTarget && typeof bridge.interaction.getCodePermissionPrefs === 'function') {
           const prefs = await bridge.interaction.getCodePermissionPrefs();
+          // 第二个 await 之后同样复核（评审 #445 R7）。
+          if (gateSid !== activeSessionIdRef.current) return;
           if (needsYoloConfirmation(prefs)) {
+            pendingChatYoloSwitchSidRef.current = gateSid;
             setPendingChatYoloSwitch(true);
             return;
           }
@@ -1823,6 +1830,11 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         setChatYoloConfirmError('');
         try {
           await bridge.interaction.confirmCodeYolo();
+          if (pendingChatYoloSwitchSidRef.current !== activeSessionIdRef.current) {
+            // 已切走：只收卡（全局确认标志已写，目标会话切回后不再弹卡）。
+            setPendingChatYoloSwitch(false);
+            return;
+          }
           setPendingChatYoloSwitch(false);
           await bridge.interaction.exitPlanToYolo();
         } catch (e) {
@@ -1834,6 +1846,15 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           setChatYoloConfirmBusy(false);
         }
       }
+      // 切换会话即作废旧会话的确认卡与错误文案（评审 #445 R7：卡片曾跨
+      // 会话残留）。
+      useEffect(() => {
+        pendingChatYoloSwitchSidRef.current = null;
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the previous session's confirm card on session switch
+        setPendingChatYoloSwitch(false);
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously clear the previous session's confirm error on session switch
+        setChatYoloConfirmError('');
+      }, [activeSessionId]);
 
       // 普通会话选图即时警告(阶段 G):当前模型图片路由为 unsupported 时在附件区提示,
       // 仅提示不拦截,发送时后端仍按同一路径复核(chat 命令 image_input_unsupported)。
