@@ -109,20 +109,3 @@ export function computerUseConsentView(slice) {
     confirmRequest: stopped ? null : (slice.confirmRequest || null),
   };
 }
-
-/**
- * Cooldown after an explicit user denial. Repeated blocked attempts re-emit
- * grant/confirm events, and re-opening the full-screen modal on every attempt
- * is a consent-fatigue vector (review finding): inside the cooldown window the
- * requests stay pending in the bridge state but no dialog is shown.
- */
-export const DENY_SUPPRESSION_MS = 30_000;
-
-export function isDeniedRequestSuppressed(lastDeniedAt, now, cooldownMs = DENY_SUPPRESSION_MS) {
-  return (
-    typeof lastDeniedAt === 'number' &&
-    typeof now === 'number' &&
-    now >= lastDeniedAt &&
-    now - lastDeniedAt < cooldownMs
-  );
-}

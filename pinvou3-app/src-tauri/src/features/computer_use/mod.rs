@@ -4,8 +4,8 @@
 //! - `types` —— 动作枚举、按键和弦解析、错误与后端结果结构、坐标空间契约
 //! - `scaling` —— 截图缩放（长边 ≤1440）与 截图↔设备↔输入 三层坐标映射
 //! - `backend` —— 后端 trait + 每会话一条专用 worker 线程（xcap/enigo 线程亲和）
-//! - `guard` —— 同意门控：设置开关、会话授权、速率/预算、停止旗标、T3 确认
-//! - `audit` —— append-only JSONL 审计（文本只记长度+SHA-256，永不记明文）
+//! - `guard` —— 同意门控：设置开关、会话授权、停止旗标、T3 确认
+//! - `audit` —— append-only JSONL 审计（脱敏后的纯信息性本地日志，永不记明文）
 //! - `tool` —— `ComputerUseTool` ToolSpec 实现
 //! - `platform` —— 三平台后端与权限引导（`request_permissions`）
 //!

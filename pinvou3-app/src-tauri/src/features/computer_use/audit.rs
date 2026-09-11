@@ -1,46 +1,28 @@
-//! 审计日志：append-only JSONL，每次工具调用执行前写 begin 记录、完成后写
-//! end 记录（同一 call_id 关联，纯追加绝不原地改）。
+//! 审计日志：append-only JSONL，每次工具调用一条记录（纯追加绝不原地改）。
 //!
-//! 隐私契约：键入文本只记**长度 + salt || text 的 HMAC-SHA256**，永不记明文
-//! （可能是密码）；逐记录 16 字节 CSPRNG 盐使同文本的 MAC 互不相同，批量
-//! 「同长度同 MAC」相关性不存在；截图记 SHA-256 + 文件路径；target 字段按
-//! 平台审计约定截到 ≤600 字节。
+//! This is a PLAIN informational local log — no HMAC, no keyring, no salt,
+//! no key files, no verify step (nobody ships crypto in a local audit trail;
+//! mainstream products write plain logs). Privacy is enforced by REDACTION
+//! at the call site: tool.rs never writes typed text (Type logs "typed N
+//! characters"; typing-form key chords log "pressed 1 key"), targets are
+//! parameter summaries only, and screenshots log SHA-256 + path.
 //!
-//! HMAC 密钥获取链（进程级缓存，只缓存成功）：生产构建 OS 钥匙环优先
-//! （codewhale-secrets 直连 keyring，探测失败回退文件库以延续既存密钥；
-//! 缺则随机生成并写入）→ 仍不可用时回退私有文件密钥 `<数据根>/keys/
-//! computer-use-audit-hmac.key`（0700 目录 + 尽力 0600 文件；首次使用时若
-//! 旧布局 `computer-use/audit-hmac.key` 存在则原子 rename 迁移）→ 全部失败
-//! 则**只记长度**（失败不缓存，下次调用重试）。Review finding M11: a
-//! transient keyring *read* error (`Err` from `get`) neither mints nor
-//! overwrites — retrieval falls back read-only to the existing file keys and
-//! fails closed (length-only records) when no file key exists, so one
-//! locked-keychain moment cannot silently rotate the audit key. 密钥与日志分离是底线：只
-//! 拿到单条 jsonl 的人不能对键入内容做离线字典恢复（评审发现：无盐 SHA-256
-//! + 明文长度对密码这类小键空间形同明文）。
+//! Records land in `<pinvou3 data dir>/computer-use/` via the platform
+//! private-file base: 0700 directory + 0600 file (O_APPEND create, no umask
+//! exposure window) + `sync_data` per record so a crash cannot tear the
+//! last JSONL line. Append failures are fail-open: the log is
+//! informational, so the caller warns and continues — an audit write error
+//! never blocks an action.
 
-use std::ffi::OsStr;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 
-use hmac::{KeyInit, Mac};
 use serde::Serialize;
 use sha2::Digest as _;
-type HmacSha256 = hmac::Hmac<sha2::Sha256>;
 
 use crate::platform::encoding::hex_lower;
 use crate::platform::paths;
 use crate::platform::strings::truncate_utf8;
-
-const AUDIT_HMAC_SECRET_NAME: &str = "pinvou3-computer-use-audit-hmac";
-/// 旧版（v1）密钥文件名：与日志同目录（审计目录内）。
-const AUDIT_HMAC_KEY_FILE: &str = "audit-hmac.key";
-/// 现行（v2）密钥文件名：`<数据根>/keys/` 内，与日志分目录。
-const AUDIT_HMAC_KEY_V2_FILE: &str = "computer-use-audit-hmac.key";
-const AUDIT_HMAC_KEY_BYTES: usize = 32;
-/// 键入文本 MAC 的逐记录随机盐长度（CSPRNG，见 `with_typed_text`）。
-const TYPED_TEXT_SALT_BYTES: usize = 16;
 
 /// target / 元素标签字段的字节上限（平台审计字段统一约定）。
 pub const AUDIT_TARGET_MAX_BYTES: usize = 600;
@@ -52,12 +34,6 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 /// `<pinvou3 data dir>/computer-use/`。
 pub fn audit_dir() -> PathBuf {
     paths::pinvou3_home().join("computer-use")
-}
-
-/// `<pinvou3 data dir>/keys/`——审计 HMAC 密钥文件的家（0700 私有目录，
-/// 与日志分目录：拿到日志目录不等于拿到密钥）。
-pub fn audit_keys_dir() -> PathBuf {
-    paths::pinvou3_home().join("keys")
 }
 
 fn sanitize_session_id(raw: &str) -> String {
@@ -78,33 +54,16 @@ fn sanitize_session_id(raw: &str) -> String {
     }
 }
 
-/// 一条审计记录。`phase` 为 "begin"（执行前）或 "end"（完成后）。
+/// 一条审计记录：一次工具调用的纯信息性快照。
 #[derive(Debug, Clone, Serialize)]
 pub struct AuditRecord {
-    pub call_id: String,
-    pub phase: String,
     pub timestamp: String,
     pub session_id: String,
     pub action: String,
-    pub class: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub text_len: Option<usize>,
-    /// 键入文本 MAC 的逐记录随机盐（hex）。与 `text_hmac_sha256` 同时出现；
-    /// 密钥不可用时 MAC 缺省、盐保留（下次密钥恢复也无法重放旧记录的 MAC）。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub salt: Option<String>,
-    /// `salt || text` 的 HMAC-SHA256（密钥见模块文档）；密钥不可用时缺省
-    /// （仅长度）。逐记录随机盐使同文本的 MAC 互不相同。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub text_hmac_sha256: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub screenshot_sha256: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub screenshot_path: Option<String>,
     /// 实际施加的同意层级/结果，如 "observe" / "input:session-grant" /
-    /// "input:confirmed:<id>" / "rejected:grant-required"。
+    /// "input:session-grant+t3-confirmed" / "rejected:grant-required"。
     pub consent: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
@@ -112,55 +71,40 @@ pub struct AuditRecord {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screenshot_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screenshot_path: Option<String>,
 }
 
 impl AuditRecord {
-    pub fn begin(
-        call_id: impl Into<String>,
+    pub fn new(
         session_id: impl Into<String>,
         action: impl Into<String>,
-        class: impl Into<String>,
         consent: impl Into<String>,
     ) -> Self {
         Self {
-            call_id: call_id.into(),
-            phase: "begin".to_string(),
             timestamp: chrono::Utc::now().to_rfc3339(),
             session_id: session_id.into(),
             action: action.into(),
-            class: class.into(),
             target: None,
-            text_len: None,
-            salt: None,
-            text_hmac_sha256: None,
-            screenshot_sha256: None,
-            screenshot_path: None,
             consent: consent.into(),
             result: None,
             error: None,
             duration_ms: None,
+            screenshot_sha256: None,
+            screenshot_path: None,
         }
     }
 
-    /// 记录键入文本：只存长度、逐记录随机盐与 `salt || text` 的 HMAC（密钥
-    /// 不可用时仅长度+盐）。盐使同文本的 MAC 互不相同——「同长度同 MAC」
-    /// 的相关性与同文本的跨记录可关联性一并消除（评审发现）。
-    pub fn with_typed_text(&mut self, text: &str) -> &mut Self {
-        self.text_len = Some(text.chars().count());
-        let salt: [u8; TYPED_TEXT_SALT_BYTES] = rand::random();
-        self.salt = Some(hex_lower(&salt));
-        if let Some(key) = audit_mac_key() {
-            self.text_hmac_sha256 = typed_text_mac(key, &salt, text);
-        }
-        self
-    }
-
-    /// 记录目标（坐标摘要或元素标签），按审计约定截断。
+    /// 记录目标（坐标摘要或元素标签），按审计约定截断。调用方负责脱敏：
+    /// 键入文本永不进此字段（只记长度，见模块文档）。
     pub fn with_target(&mut self, target: &str) -> &mut Self {
         self.target = Some(truncate_utf8(target, AUDIT_TARGET_MAX_BYTES).to_string());
         self
     }
 
+    /// 截图只记 SHA-256 + 文件路径，绝不记像素。
     pub fn with_screenshot(&mut self, png: &[u8], path: &Path) -> &mut Self {
         self.screenshot_sha256 = Some(sha256_hex(png));
         self.screenshot_path = Some(path.to_string_lossy().into_owned());
@@ -168,8 +112,6 @@ impl AuditRecord {
     }
 
     pub fn finish(mut self, result: &str, error: Option<String>, duration_ms: u64) -> Self {
-        self.phase = "end".to_string();
-        self.timestamp = chrono::Utc::now().to_rfc3339();
         self.result = Some(result.to_string());
         self.error = error;
         self.duration_ms = Some(duration_ms);
@@ -204,7 +146,8 @@ impl AuditLog {
         &self.path
     }
 
-    /// 追加一条记录。序列化失败不可能（纯字符串/数字字段），IO 失败向上抛。
+    /// 追加一条记录。序列化失败不可能（纯字符串/数字字段），IO 失败向上抛
+    /// （调用方 fail-open：eprintln 后继续）。
     pub fn append(&self, record: &AuditRecord) -> io::Result<()> {
         let mut line = serde_json::to_string(record)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -220,208 +163,9 @@ impl AuditLog {
     }
 }
 
-fn decode_hex_exact(stored: &str, expected_len: usize) -> Option<Vec<u8>> {
-    let stored = stored.trim();
-    if stored.len() != expected_len * 2 || !stored.chars().all(|c| c.is_ascii_hexdigit()) {
-        return None;
-    }
-    (0..expected_len)
-        .map(|i| u8::from_str_radix(&stored[i * 2..i * 2 + 2], 16).ok())
-        .collect()
-}
-
-fn decode_hex_32(stored: &str) -> Option<Vec<u8>> {
-    decode_hex_exact(stored, AUDIT_HMAC_KEY_BYTES)
-}
-
-/// 键入文本的 MAC：`HMAC(key, salt || text)`。纯函数，便于向量测试。
-fn typed_text_mac(key: &[u8], salt: &[u8], text: &str) -> Option<String> {
-    let mut input = Vec::with_capacity(salt.len() + text.len());
-    input.extend_from_slice(salt);
-    input.extend_from_slice(text.as_bytes());
-    hmac_sha256_hex(key, &input)
-}
-
-/// 审计 HMAC 密钥。获取链见模块文档。进程级缓存**只缓存成功**（评审发现：
-/// 曾用 `OnceLock<Option<_>>` 把钥匙环/密钥目录的瞬时不可用钉死成进程级
-/// 「只记长度」降级，环境恢复也不重试）——失败返回 None，下次调用重试
-/// 全链。检索失败链路本身是有界快速失败（探测/读写），不会拖慢记录。
-fn audit_mac_key() -> Option<&'static Vec<u8>> {
-    static KEY: OnceLock<Vec<u8>> = OnceLock::new();
-    if let Some(key) = KEY.get() {
-        return Some(key);
-    }
-    let key = compute_audit_mac_key()?;
-    let _ = KEY.set(key);
-    KEY.get()
-}
-
-/// secrets 层后端选择。生产构建 OS 钥匙环优先（评审发现：此前用
-/// `Secrets::auto_detect()`——它默认**文件库优先**，与模块文档承诺的
-/// 「OS 钥匙环」相反；改为直连 keyring 并探测，与
-/// `platform/credential_store` 的 `SystemCredentialStore` 同构）。测试构建
-/// 保持 `auto_detect()`（文件库优先）：keyring 是系统级全局资源，`PINVOU3_HOME`
-/// 隔离不了它——单测必须密闭，绝不能在开发者/CI 的真实 Keychain 里写入
-/// 测试密钥。
-fn audit_secrets_backend() -> codewhale_secrets::Secrets {
-    #[cfg(not(test))]
-    {
-        let store = codewhale_secrets::DefaultKeyringStore::new(AUDIT_HMAC_SECRET_NAME);
-        match store.probe() {
-            Ok(()) => {
-                return codewhale_secrets::Secrets::new(std::sync::Arc::new(store));
-            }
-            // 钥匙环不可用（headless/无 D-Bus）：文件库。仍先读取既存密钥
-            // （auto_detect 时代的密钥延续可用，审计 MAC 不因升级换钥匙）。
-            Err(_) => return codewhale_secrets::Secrets::file_backed(),
-        }
-    }
-    #[cfg(test)]
-    {
-        codewhale_secrets::Secrets::auto_detect()
-    }
-}
-
-fn compute_audit_mac_key() -> Option<Vec<u8>> {
-    let secrets = audit_secrets_backend();
-    compute_audit_mac_key_with(&secrets)
-}
-
-/// Decision kernel of key retrieval over an injected secrets backend
-/// (testable seam; tests drive it with a scripted `KeyringStore`).
-/// Distinguishes three keyring-read outcomes:
-///
-/// 1. `Ok(Some)` with a decodable key → use it;
-/// 2. `Ok(None)` or a stored-but-undecodable value → mint a fresh key and
-///    persist it to the keyring (recovery); on persist failure fall through
-///    to the file key chain, which may mint a file key;
-/// 3. `Err(_)` — transient keyring failure (locked keychain, denied prompt,
-///    D-Bus hiccup) → do NOT mint and do NOT overwrite: writing a fresh
-///    keyring entry here would silently rotate the key and permanently
-///    destroy verifiability of all prior records, and a failed `set` after
-///    that would leave split-brain keys. Fall back READ-ONLY to the file
-///    keys; with no file key either, fail the retrieval (the caller
-///    degrades to length-only, fail-closed) instead of silently creating a
-///    divergent file key.
-fn compute_audit_mac_key_with(secrets: &codewhale_secrets::Secrets) -> Option<Vec<u8>> {
-    match secrets.get(AUDIT_HMAC_SECRET_NAME) {
-        Ok(stored) => {
-            if let Some(key) = stored.as_deref().and_then(decode_hex_32) {
-                return Some(key);
-            }
-            let key: [u8; AUDIT_HMAC_KEY_BYTES] = rand::random();
-            let hex = hex_lower(&key);
-            if secrets.set(AUDIT_HMAC_SECRET_NAME, &hex).is_ok() {
-                return Some(key.to_vec());
-            }
-            audit_file_key_chain()
-        }
-        Err(error) => {
-            eprintln!(
-                "[computer_use] audit keyring read failed; using file keys read-only: {error}"
-            );
-            read_only_audit_file_key()
-        }
-    }
-}
-
-/// File-key fallback chain reachable from the minting path (secrets layer
-/// unusable for writes); unlike the read-only tail it may mint a new key:
-fn audit_file_key_chain() -> Option<Vec<u8>> {
-    // secrets 层不可用：回退文件密钥（经 platform 私有文件基座，0700 目录 +
-    // 私有 ACL/权限，OS 差异留在 platform 层）。现行位置是
-    // `<数据根>/keys/`（与日志分目录）；首次使用时若旧布局（审计目录内
-    // 的 audit-hmac.key）存在则原子 rename 迁移，新密钥直接写新位置。
-    // keys/ 目录不可用时退回旧布局位置读写（保持 v1 保障不丢）。
-    let legacy = crate::platform::filesystem::open_private_file_directory(&audit_dir()).ok();
-    match crate::platform::filesystem::open_private_file_directory(&audit_keys_dir()) {
-        Ok(keys_dir) => load_or_migrate_key_file(
-            &keys_dir,
-            OsStr::new(AUDIT_HMAC_KEY_V2_FILE),
-            legacy
-                .as_ref()
-                .map(|directory| (directory, OsStr::new(AUDIT_HMAC_KEY_FILE))),
-        ),
-        Err(_) => legacy.and_then(|directory| {
-            load_or_migrate_key_file(&directory, OsStr::new(AUDIT_HMAC_KEY_FILE), None)
-        }),
-    }
-}
-
-/// Read-only file-key tail for the keyring-error path: read the existing
-/// key (current `<data root>/keys/` position first, then the legacy
-/// in-audit-dir position) without creating directories, migrating, or
-/// minting. `None` means no file key exists and retrieval fails closed.
-fn read_only_audit_file_key() -> Option<Vec<u8>> {
-    read_audit_key_file_at(&audit_keys_dir().join(AUDIT_HMAC_KEY_V2_FILE))
-        .or_else(|| read_audit_key_file_at(&audit_dir().join(AUDIT_HMAC_KEY_FILE)))
-}
-
-fn read_audit_key_file_at(path: &Path) -> Option<Vec<u8>> {
-    let bytes = crate::platform::filesystem::read_private_file_anchored(path).ok()??;
-    decode_hex_32(&String::from_utf8(bytes).ok()?)
-}
-
-/// 文件密钥回退链（`audit_mac_key` 的可测内核）：
-/// 1. 主位置已有合法密钥 → 直接使用；
-/// 2. 旧位置存在密钥 → 原子 rename 迁到主位置后使用（两代路径兼容）；
-/// 3. 都没有 → 生成新密钥并**只写主位置**。
-///
-/// 任一步失败返回 None（调用方降级为只记长度）。
-fn load_or_migrate_key_file(
-    primary: &crate::platform::filesystem::PrivateFileDirectory,
-    primary_name: &OsStr,
-    legacy: Option<(&crate::platform::filesystem::PrivateFileDirectory, &OsStr)>,
-) -> Option<Vec<u8>> {
-    use crate::platform::filesystem::MovePlainFileOutcome;
-
-    if let Some(key) = read_audit_key_file_named(primary, primary_name) {
-        return Some(key);
-    }
-    if let Some((legacy_dir, legacy_name)) = legacy {
-        // 原子 rename：进程崩溃也不会出现「两处都在/两处都不在」的中间态。
-        match legacy_dir.move_plain_file_to(legacy_name, primary, primary_name) {
-            Ok(MovePlainFileOutcome::Moved | MovePlainFileOutcome::AlreadyMoved) => {
-                if let Some(key) = read_audit_key_file_named(primary, primary_name) {
-                    return Some(key);
-                }
-            }
-            // 旧位置无密钥（Missing）或迁移失败：继续生成新密钥。
-            Ok(MovePlainFileOutcome::Missing) | Err(_) => {}
-        }
-    }
-    let key: [u8; AUDIT_HMAC_KEY_BYTES] = rand::random();
-    primary
-        .atomic_write_private_file(primary_name, hex_lower(&key).as_bytes())
-        .ok()?;
-    Some(key.to_vec())
-}
-
-fn read_audit_key_file_named(
-    directory: &crate::platform::filesystem::PrivateFileDirectory,
-    name: &OsStr,
-) -> Option<Vec<u8>> {
-    use std::io::Read as _;
-    let mut file = directory.open_plain_file(name).ok()??;
-    let mut stored = String::new();
-    file.read_to_string(&mut stored).ok()?;
-    decode_hex_32(&stored)
-}
-
-fn hmac_sha256_hex(key: &[u8], data: &[u8]) -> Option<String> {
-    let mut mac = <HmacSha256 as KeyInit>::new_from_slice(key).ok()?;
-    mac.update(data);
-    Some(hex_lower(&mac.finalize().into_bytes()))
-}
-
-pub fn new_call_id() -> String {
-    format!("cu-call-{:016x}", rand::random::<u64>())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codewhale_secrets::KeyringStore as _;
     use std::fs;
 
     fn temp_log() -> (PathBuf, AuditLog) {
@@ -436,391 +180,91 @@ mod tests {
     }
 
     #[test]
-    fn begin_then_end_records_share_call_id_and_never_hold_plaintext() {
-        // 与改写 PINVOU3_HOME 的测试互斥：钥匙环不可用时密钥回退路径按
-        // PINVOU3_HOME 解析，不能在 env 被并发改写时取密钥。
-        let _env_lock = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+    fn record_round_trips_through_jsonl_with_all_fields() {
         let (dir, log) = temp_log();
-        let secret = "hunter2-密码";
-        let mut begin =
-            AuditRecord::begin("cu-call-1", "s1", "type", "input", "input:session-grant");
-        begin.with_typed_text(secret).with_target("password field");
-        log.append(&begin).unwrap_or(());
-        let end = begin.clone().finish("ok", None, 12);
-        log.append(&end).unwrap_or(());
+        let mut record = AuditRecord::new("s1", "left_click", "input:session-grant");
+        record.with_target("left click x1 at Some((5, 6))");
+        let record = record.finish("ok", None, 42);
+        log.append(&record).unwrap_or(());
 
         let raw = fs::read_to_string(log.path()).unwrap_or_default();
         let lines: Vec<&str> = raw.lines().collect();
-        assert_eq!(lines.len(), 2);
-        let first: serde_json::Value =
+        assert_eq!(lines.len(), 1, "one record per call: {raw}");
+        let parsed: serde_json::Value =
             serde_json::from_str(lines[0]).unwrap_or(serde_json::Value::Null);
-        let second: serde_json::Value =
-            serde_json::from_str(lines[1]).unwrap_or(serde_json::Value::Null);
-        assert_eq!(first["phase"], "begin");
-        assert_eq!(second["phase"], "end");
-        assert_eq!(first["call_id"], second["call_id"]);
-        assert_eq!(first["text_len"], secret.chars().count() as u64);
-        assert_eq!(second["result"], "ok");
-        assert_eq!(second["duration_ms"], 12);
-        // 明文绝不进日志（中英文两边都查）。
-        assert!(!raw.contains("hunter2"));
-        assert!(!raw.contains("密码"));
-        // 盐字段存在（16 字节 = 32 hex）。
-        let salt_field = first["salt"].as_str().unwrap_or_default();
-        assert_eq!(salt_field.len(), TYPED_TEXT_SALT_BYTES * 2, "salt hex");
-        // HMAC 字段存在且不等于无盐 SHA-256（密钥参与运算的证据），并与
-        // 记录自身的盐一致（MAC 输入 = salt || text 的证据）。
-        let hmac_field = first["text_hmac_sha256"].as_str().unwrap_or_default();
-        assert_eq!(hmac_field.len(), 64, "hmac hex: {hmac_field}");
-        assert_ne!(hmac_field, sha256_hex(secret.as_bytes()));
-        let salt_bytes = decode_hex_exact(salt_field, TYPED_TEXT_SALT_BYTES).unwrap_or_default();
-        assert_eq!(
-            Some(hmac_field),
-            audit_mac_key()
-                .and_then(|key| typed_text_mac(key, &salt_bytes, secret))
-                .as_deref()
-        );
+        assert_eq!(parsed["session_id"], "s1");
+        assert_eq!(parsed["action"], "left_click");
+        assert_eq!(parsed["target"], "left click x1 at Some((5, 6))");
+        assert_eq!(parsed["consent"], "input:session-grant");
+        assert_eq!(parsed["result"], "ok");
+        assert_eq!(parsed["duration_ms"], 42);
+        assert!(parsed["timestamp"].is_string());
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// 评审修复回归：逐记录随机盐——同文本两条记录的 MAC 互不相同，且各与
-    /// 自身盐一致；盐变更后旧 MAC 无法复算。
+    /// Redaction is the privacy contract: the log stores exactly what the
+    /// caller passes — here redacted length-only targets — and no crypto
+    /// fields exist at all.
     #[test]
-    fn typed_text_mac_is_salted_per_record() {
-        // 与改写 PINVOU3_HOME 的测试互斥（理由见 begin_then_end 测试）。
-        let _env_lock = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let mut a = AuditRecord::begin("c", "s", "type", "input", "input");
-        a.with_typed_text("hunter2");
-        let mut b = AuditRecord::begin("c", "s", "type", "input", "input");
-        b.with_typed_text("hunter2");
-        let Some(key) = audit_mac_key() else {
-            panic!("test environment must provide an audit mac key");
-        };
-        let mac = |record: &AuditRecord| {
-            let salt = decode_hex_exact(
-                record.salt.as_deref().unwrap_or_default(),
-                TYPED_TEXT_SALT_BYTES,
-            )
-            .expect("salt hex");
-            typed_text_mac(key, &salt, "hunter2").expect("mac")
-        };
-        assert_ne!(mac(&a), mac(&b), "random per-record salt must differ");
-        assert_eq!(mac(&a), a.text_hmac_sha256.clone().unwrap_or_default());
-        // 换一个盐，MAC 必须变化（盐确实参与运算）。
-        assert_ne!(
-            typed_text_mac(key, &[0u8; TYPED_TEXT_SALT_BYTES], "hunter2"),
-            typed_text_mac(key, &[1u8; TYPED_TEXT_SALT_BYTES], "hunter2")
-        );
+    fn redacted_targets_round_trip_and_no_crypto_fields_exist() {
+        let (dir, log) = temp_log();
+        let mut typed = AuditRecord::new("s1", "type", "input:session-grant+t3-confirmed");
+        typed.with_target("typed 13 characters");
+        let typed = typed.finish("ok", None, 7);
+        let mut chord = AuditRecord::new("s1", "key", "input:session-grant");
+        chord.with_target("pressed 1 key");
+        let chord = chord.finish("ok", None, 3);
+        log.append(&typed).unwrap_or(());
+        log.append(&chord).unwrap_or(());
+
+        let raw = fs::read_to_string(log.path()).unwrap_or_default();
+        assert!(raw.contains("\"typed 13 characters\""), "{raw}");
+        assert!(raw.contains("\"pressed 1 key\""), "{raw}");
+        for absent in ["text_hmac", "salt", "hmac", "keyring"] {
+            assert!(!raw.to_lowercase().contains(absent), "{absent} in {raw}");
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn hmac_helper_matches_rfc4231_vector() {
-        // RFC 4231 test case 2: key="Jefe", data="what do ya want for nothing?".
-        assert_eq!(
-            hmac_sha256_hex(b"Jefe", b"what do ya want for nothing?").as_deref(),
-            Some("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
-        );
-    }
-
-    /// 加盐后的 MAC 仍是标准 HMAC：空盐时退化为 RFC 4231 原向量。
-    #[test]
-    fn typed_text_mac_matches_rfc4231_vector_with_empty_salt() {
-        assert_eq!(
-            typed_text_mac(b"Jefe", b"", "what do ya want for nothing?").as_deref(),
-            Some("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
-        );
-        // 非空盐 = 数据前缀拼接（salt || text 语义的直接证据）。
-        let expected = hmac_sha256_hex(b"Jefe", b"salwhat do ya want for nothing?");
-        assert_eq!(
-            typed_text_mac(b"Jefe", b"sal", "what do ya want for nothing?"),
-            expected
-        );
-    }
-
-    #[test]
-    fn target_truncates_to_audit_byte_contract() {
-        let long = "删".repeat(500); // 1500 字节
-        let mut record = AuditRecord::begin("c", "s", "left_click", "input", "input");
-        record.with_target(&long);
-        let target = record.target.clone().unwrap_or_default();
-        assert!(target.len() <= AUDIT_TARGET_MAX_BYTES);
-        // 中文不被切成半字符（truncate_utf8 契约）。
-        assert!(target.is_char_boundary(target.len()));
-    }
-
-    #[test]
-    fn screenshot_records_hash_and_path_not_pixels() {
+    fn error_and_screenshot_fields_serialize() {
         let (dir, log) = temp_log();
         let png = b"\x89PNG-fake-bytes";
-        let mut record = AuditRecord::begin("c", "s", "screenshot", "observe", "observe");
+        let mut record = AuditRecord::new("s1", "screenshot", "observe");
         record.with_screenshot(png, Path::new("/tmp/shot.png"));
+        let record = record.finish("error", Some("t3-confirmation-required".to_string()), 9);
         log.append(&record).unwrap_or(());
+
         let raw = fs::read_to_string(log.path()).unwrap_or_default();
-        assert!(raw.contains(&sha256_hex(png)));
-        assert!(raw.contains("/tmp/shot.png"));
+        assert!(raw.contains(&sha256_hex(png)), "{raw}");
+        assert!(raw.contains("/tmp/shot.png"), "{raw}");
+        assert!(raw.contains("t3-confirmation-required"), "{raw}");
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// Append failures surface as Err (the caller warns via eprintln and
+    /// continues — fail-open for every action class); a path inside a plain
+    /// file cannot be created.
     #[test]
-    fn session_id_is_sanitized_for_filename() {
-        assert_eq!(sanitize_session_id("abc-123_def"), "abc-123_def");
-        assert_eq!(sanitize_session_id("../evil/x"), "___evil_x");
-        assert_eq!(sanitize_session_id(""), "unknown");
-    }
-
-    /// 密钥迁移测试基建：隔离的 legacy（审计）目录 + keys 目录。
-    struct KeyDirs {
-        base: PathBuf,
-        legacy: crate::platform::filesystem::PrivateFileDirectory,
-        keys: crate::platform::filesystem::PrivateFileDirectory,
-    }
-
-    impl Drop for KeyDirs {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.base);
-        }
-    }
-
-    fn key_dirs() -> KeyDirs {
-        let base = std::env::temp_dir().join(format!(
-            "pinvou3-cu-keys-{}-{}",
+    fn append_to_an_unwritable_path_returns_err_without_panicking() {
+        let blocker = std::env::temp_dir().join(format!(
+            "pinvou3-cu-audit-blocker-{}-{}",
             std::process::id(),
             crate::platform::paths::tests::unique_suffix()
         ));
-        let legacy =
-            crate::platform::filesystem::open_private_file_directory(&base.join("computer-use"))
-                .expect("legacy audit dir");
-        let keys = crate::platform::filesystem::open_private_file_directory(&base.join("keys"))
-            .expect("keys dir");
-        KeyDirs { base, legacy, keys }
+        fs::write(&blocker, b"not a directory").expect("write blocker file");
+        let log = AuditLog::at_path(blocker.join("audit.jsonl"));
+        let record = AuditRecord::new("s1", "type", "input").finish("ok", None, 1);
+        assert!(log.append(&record).is_err());
+        let _ = fs::remove_file(&blocker);
     }
 
-    /// 评审修复回归：旧布局（审计目录内 audit-hmac.key）首次使用时原子
-    /// rename 迁移到 `<数据根>/keys/computer-use-audit-hmac.key`，旧文件消失。
+    /// Private-data governance: for_session creates a 0700 directory and the
+    /// appended file is 0600.
     #[test]
-    fn legacy_key_file_migrates_atomically_to_keys_directory() {
-        let dirs = key_dirs();
-        let stored = "ab".repeat(AUDIT_HMAC_KEY_BYTES);
-        dirs.legacy
-            .atomic_write_private_file(OsStr::new(AUDIT_HMAC_KEY_FILE), stored.as_bytes())
-            .expect("write legacy key");
-
-        let key = load_or_migrate_key_file(
-            &dirs.keys,
-            OsStr::new(AUDIT_HMAC_KEY_V2_FILE),
-            Some((&dirs.legacy, OsStr::new(AUDIT_HMAC_KEY_FILE))),
-        )
-        .expect("migrated key");
-
-        assert_eq!(key, decode_hex_32(&stored).expect("valid key hex"));
-        // 新位置内容一致，旧位置条目消失（真迁移，不是复制）。
-        assert_eq!(
-            read_audit_key_file_named(&dirs.keys, OsStr::new(AUDIT_HMAC_KEY_V2_FILE)),
-            Some(key)
-        );
-        let legacy_leftover = dirs
-            .legacy
-            .open_plain_file(OsStr::new(AUDIT_HMAC_KEY_FILE))
-            .expect("probe legacy dir");
-        assert!(legacy_leftover.is_none(), "legacy key file must be gone");
-    }
-
-    /// 两代路径兼容：新位置已有合法密钥时直接使用，旧位置原样保留。
-    #[test]
-    fn existing_v2_key_wins_and_legacy_file_is_untouched() {
-        let dirs = key_dirs();
-        let v2 = "cd".repeat(AUDIT_HMAC_KEY_BYTES);
-        let legacy = "ab".repeat(AUDIT_HMAC_KEY_BYTES);
-        dirs.keys
-            .atomic_write_private_file(OsStr::new(AUDIT_HMAC_KEY_V2_FILE), v2.as_bytes())
-            .expect("write v2 key");
-        dirs.legacy
-            .atomic_write_private_file(OsStr::new(AUDIT_HMAC_KEY_FILE), legacy.as_bytes())
-            .expect("write legacy key");
-
-        let key = load_or_migrate_key_file(
-            &dirs.keys,
-            OsStr::new(AUDIT_HMAC_KEY_V2_FILE),
-            Some((&dirs.legacy, OsStr::new(AUDIT_HMAC_KEY_FILE))),
-        )
-        .expect("v2 key");
-
-        assert_eq!(key, decode_hex_32(&v2).expect("valid v2 hex"));
-        assert_eq!(
-            read_audit_key_file_named(&dirs.legacy, OsStr::new(AUDIT_HMAC_KEY_FILE)),
-            Some(decode_hex_32(&legacy).expect("valid legacy hex"))
-        );
-    }
-
-    /// 两代都无密钥：生成新密钥且只写新位置。
-    #[test]
-    fn fresh_key_is_written_to_the_new_location_only() {
-        let dirs = key_dirs();
-        let key = load_or_migrate_key_file(
-            &dirs.keys,
-            OsStr::new(AUDIT_HMAC_KEY_V2_FILE),
-            Some((&dirs.legacy, OsStr::new(AUDIT_HMAC_KEY_FILE))),
-        )
-        .expect("fresh key");
-
-        assert_eq!(key.len(), AUDIT_HMAC_KEY_BYTES);
-        assert_eq!(
-            read_audit_key_file_named(&dirs.keys, OsStr::new(AUDIT_HMAC_KEY_V2_FILE)),
-            Some(key)
-        );
-        let legacy_absent = dirs
-            .legacy
-            .open_plain_file(OsStr::new(AUDIT_HMAC_KEY_FILE))
-            .expect("probe legacy dir");
-        assert!(legacy_absent.is_none());
-    }
-
-    /// 旧位置内容损坏（非 64 hex）：不迁移毒数据，生成新密钥写新位置。
-    #[test]
-    fn corrupt_legacy_key_is_ignored_and_replaced_by_fresh_key() {
-        let dirs = key_dirs();
-        dirs.legacy
-            .atomic_write_private_file(OsStr::new(AUDIT_HMAC_KEY_FILE), b"not-a-key")
-            .expect("write corrupt legacy key");
-        let key = load_or_migrate_key_file(
-            &dirs.keys,
-            OsStr::new(AUDIT_HMAC_KEY_V2_FILE),
-            Some((&dirs.legacy, OsStr::new(AUDIT_HMAC_KEY_FILE))),
-        )
-        .expect("fresh key");
-        assert_eq!(key.len(), AUDIT_HMAC_KEY_BYTES);
-        // 损坏的旧文件被迁移消费，新位置是可用的新密钥（恢复而非卡死）。
-        let legacy_leftover = dirs
-            .legacy
-            .open_plain_file(OsStr::new(AUDIT_HMAC_KEY_FILE))
-            .expect("probe legacy dir");
-        assert!(
-            legacy_leftover.is_none(),
-            "corrupt legacy file must be consumed"
-        );
-        assert_eq!(
-            read_audit_key_file_named(&dirs.keys, OsStr::new(AUDIT_HMAC_KEY_V2_FILE)),
-            Some(key)
-        );
-    }
-
-    /// Scripted keyring lookup outcome for `ScriptedKeyringStore`.
-    enum ScriptedGet {
-        Absent,
-        Stored(String),
-        Fails,
-    }
-
-    /// Fault-injecting in-memory `KeyringStore` for hermetic kernel tests:
-    /// `get` returns the current scripted outcome, `set` records the call
-    /// and (unless forced to fail) updates the stored value so persistence
-    /// round-trips through the trait. Nothing touches the OS keyring or the
-    /// real secrets file.
-    struct ScriptedKeyringStore {
-        stored: std::sync::Mutex<ScriptedGet>,
-        fail_set: bool,
-        set_values: std::sync::Mutex<Vec<String>>,
-    }
-
-    impl ScriptedKeyringStore {
-        fn last_set(&self) -> Option<String> {
-            self.set_values
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .last()
-                .cloned()
-        }
-    }
-
-    impl codewhale_secrets::KeyringStore for ScriptedKeyringStore {
-        fn get(&self, _key: &str) -> Result<Option<String>, codewhale_secrets::SecretsError> {
-            let guard = self.stored.lock().unwrap_or_else(|p| p.into_inner());
-            match &*guard {
-                ScriptedGet::Absent => Ok(None),
-                ScriptedGet::Stored(value) => Ok(Some(value.clone())),
-                ScriptedGet::Fails => Err(codewhale_secrets::SecretsError::Keyring(
-                    "injected transient keyring read failure".to_string(),
-                )),
-            }
-        }
-
-        fn set(&self, key: &str, value: &str) -> Result<(), codewhale_secrets::SecretsError> {
-            if self.fail_set {
-                return Err(codewhale_secrets::SecretsError::Keyring(
-                    "injected keyring write failure".to_string(),
-                ));
-            }
-            *self.stored.lock().unwrap_or_else(|p| p.into_inner()) =
-                ScriptedGet::Stored(value.to_string());
-            self.set_values
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .push(format!("{key}={value}"));
-            Ok(())
-        }
-
-        fn delete(&self, _key: &str) -> Result<(), codewhale_secrets::SecretsError> {
-            Ok(())
-        }
-
-        fn backend_name(&self) -> &'static str {
-            "scripted (audit tests)"
-        }
-    }
-
-    fn scripted_store(get: ScriptedGet) -> std::sync::Arc<ScriptedKeyringStore> {
-        std::sync::Arc::new(ScriptedKeyringStore {
-            stored: std::sync::Mutex::new(get),
-            fail_set: false,
-            set_values: std::sync::Mutex::new(Vec::new()),
-        })
-    }
-
-    /// Build a `Secrets` facade over a scripted store while keeping the
-    /// concrete `Arc` handle for post-hoc inspection (`last_set`, `get`).
-    fn scripted_secrets(
-        store: &std::sync::Arc<ScriptedKeyringStore>,
-    ) -> codewhale_secrets::Secrets {
-        let coerced: std::sync::Arc<dyn codewhale_secrets::KeyringStore> = store.clone();
-        codewhale_secrets::Secrets::new(coerced)
-    }
-
-    /// Restores the previous `PINVOU3_HOME` on drop (ENV_LOCK must be held).
-    struct EnvRestore(Option<std::ffi::OsString>);
-
-    impl Drop for EnvRestore {
-        fn drop(&mut self) {
-            match self.0.take() {
-                // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
-                Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-                // SAFETY: same as above.
-                None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-            }
-        }
-    }
-
-    /// Fresh temporary `PINVOU3_HOME` for one test, with ENV_LOCK held for
-    /// the whole test duration. Field order matters: the env is restored
-    /// while the lock is still held, and the temp home is removed first.
-    struct IsolatedHome {
-        home: PathBuf,
-        restore: EnvRestore,
-        // Declared last so it is released only after `restore` has run.
-        _env_lock: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl Drop for IsolatedHome {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.home);
-        }
-    }
-
-    fn isolated_home() -> IsolatedHome {
-        let env_lock = crate::platform::paths::tests::ENV_LOCK
+    fn for_session_creates_private_dir_and_0600_file() {
+        // 与改写 PINVOU3_HOME 的测试互斥。
+        let _env_lock = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let previous = std::env::var_os("PINVOU3_HOME");
@@ -829,96 +273,47 @@ mod tests {
             std::process::id(),
             crate::platform::paths::tests::unique_suffix()
         ));
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        // SAFETY: holding ENV_LOCK; in-process env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &home) };
-        IsolatedHome {
-            home,
-            restore: EnvRestore(previous),
-            _env_lock: env_lock,
+        let log = AuditLog::for_session("s-private").expect("audit log for session");
+        let record = AuditRecord::new("s-private", "screenshot", "observe").finish("ok", None, 1);
+        log.append(&record).expect("append");
+        use std::os::unix::fs::PermissionsExt;
+        let file_mode = fs::metadata(log.path())
+            .expect("audit file metadata")
+            .permissions()
+            .mode();
+        assert_eq!(file_mode & 0o7777, 0o600, "audit file must be 0600");
+        let dir_mode = fs::metadata(audit_dir())
+            .expect("audit dir metadata")
+            .permissions()
+            .mode();
+        assert_eq!(dir_mode & 0o7777, 0o700, "audit dir must be 0700");
+        // SAFETY: holding ENV_LOCK.
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("PINVOU3_HOME", value),
+                None => std::env::remove_var("PINVOU3_HOME"),
+            }
         }
+        let _ = fs::remove_dir_all(&home);
     }
 
-    /// M11 review-fix regression: a transient keyring read error with an
-    /// existing file key uses that file key and never overwrites the
-    /// keyring — no silent rotation, no split-brain keys.
     #[test]
-    fn keyring_read_error_uses_file_key_without_rotating() {
-        let _home = isolated_home();
-        let stored = "ab".repeat(AUDIT_HMAC_KEY_BYTES);
-        let keys_dir = crate::platform::filesystem::open_private_file_directory(&audit_keys_dir())
-            .expect("keys dir");
-        keys_dir
-            .atomic_write_private_file(OsStr::new(AUDIT_HMAC_KEY_V2_FILE), stored.as_bytes())
-            .expect("write file key");
-
-        let store = scripted_store(ScriptedGet::Fails);
-        let secrets = scripted_secrets(&store);
-        let key = compute_audit_mac_key_with(&secrets).expect("file key must be used");
-
-        assert_eq!(key, decode_hex_32(&stored).expect("valid key hex"));
-        // The keyring was NOT overwritten (no `set` reached the store).
-        assert!(store.last_set().is_none(), "keyring must not be rotated");
-        // The file key was used in place and is unchanged.
-        assert_eq!(
-            read_audit_key_file_named(&keys_dir, OsStr::new(AUDIT_HMAC_KEY_V2_FILE)),
-            Some(key)
-        );
+    fn target_truncates_to_audit_byte_contract() {
+        let long = "删".repeat(500); // 1500 字节
+        let mut record = AuditRecord::new("s", "left_click", "input");
+        record.with_target(&long);
+        let target = record.target.clone().unwrap_or_default();
+        assert!(target.len() <= AUDIT_TARGET_MAX_BYTES);
+        // 中文不被切成半字符（truncate_utf8 契约）。
+        assert!(target.is_char_boundary(target.len()));
     }
 
-    /// M11 review-fix regression: keyring read error with no file key either
-    /// → retrieval fails closed; no divergent file key is minted anywhere.
     #[test]
-    fn keyring_read_error_without_file_key_fails_closed() {
-        let home = isolated_home();
-        fs::create_dir_all(&home.home).expect("empty home");
-
-        let store = scripted_store(ScriptedGet::Fails);
-        let secrets = scripted_secrets(&store);
-        assert!(
-            compute_audit_mac_key_with(&secrets).is_none(),
-            "must fail closed instead of minting a divergent file key"
-        );
-        // No key file was minted in either layout, and the keyring
-        // (scripted store) was not written either.
-        assert!(!audit_keys_dir().join(AUDIT_HMAC_KEY_V2_FILE).exists());
-        assert!(!audit_dir().join(AUDIT_HMAC_KEY_FILE).exists());
-        assert!(store.last_set().is_none());
-    }
-
-    /// Pins current recovery behavior: an absent keyring entry mints a fresh
-    /// key and persists it to the keyring.
-    #[test]
-    fn absent_keyring_entry_mints_and_persists() {
-        let _home = isolated_home();
-        let store = scripted_store(ScriptedGet::Absent);
-        let secrets = scripted_secrets(&store);
-        let key = compute_audit_mac_key_with(&secrets).expect("minted key");
-
-        assert_eq!(key.len(), AUDIT_HMAC_KEY_BYTES);
-        // Persisted: the store now holds the same key as valid 32-byte hex.
-        let saved = store
-            .get(AUDIT_HMAC_SECRET_NAME)
-            .expect("store reachable")
-            .expect("entry persisted");
-        assert_eq!(decode_hex_32(&saved), Some(key));
-    }
-
-    /// Pins current recovery behavior: a stored-but-undecodable keyring
-    /// value still rotates (mint + persist a fresh key).
-    #[test]
-    fn undecodable_keyring_entry_still_rotates() {
-        let _home = isolated_home();
-        let store = scripted_store(ScriptedGet::Stored("not-a-hex-key".to_string()));
-        let secrets = scripted_secrets(&store);
-        let key = compute_audit_mac_key_with(&secrets).expect("rotated key");
-
-        assert_eq!(key.len(), AUDIT_HMAC_KEY_BYTES);
-        // The undecodable entry was replaced by the fresh key's hex.
-        let saved = store
-            .get(AUDIT_HMAC_SECRET_NAME)
-            .expect("store reachable")
-            .expect("entry persisted");
-        assert_ne!(saved, "not-a-hex-key");
-        assert_eq!(decode_hex_32(&saved), Some(key));
+    fn session_id_is_sanitized_for_filename() {
+        assert_eq!(sanitize_session_id("abc-123_def"), "abc-123_def");
+        assert_eq!(sanitize_session_id("../evil/x"), "___evil_x");
+        assert_eq!(sanitize_session_id(""), "unknown");
     }
 }
