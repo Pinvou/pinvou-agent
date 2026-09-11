@@ -37,6 +37,8 @@
 
 use std::path::{Path, PathBuf};
 
+use serde_json::Value;
+
 use pinvou3_lib::features::memory as memory_feature;
 use pinvou3_lib::features::sessions::SessionStore;
 use pinvou3_lib::platform::prefs::UserPrefs;
@@ -1171,9 +1173,9 @@ impl TaskStore {
             }
         }
         sortable.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
-        if let Some(limit) = limit {
-            sortable.truncate(limit);
-        }
+        // No early truncate here: dedup happens after the created_at re-sort
+        // (a legacy duplicate may not be adjacent), so truncating before
+        // reading could drop records that dedup would have kept.
         let mut runs = Vec::new();
         for path in sortable.into_iter().chain(legacy) {
             let raw = std::fs::read_to_string(&path).map_err(|error| {
@@ -1305,11 +1307,15 @@ fn registry_tasks_mut<'a>(
     object
         .entry("schema_version")
         .or_insert_with(|| serde_json::json!(schema_version));
+    // A wrong-shaped `tasks` value normalizes to the default instead of
+    // panicking (same quarantine-then-default behavior as read_registry).
+    if !object.get("tasks").is_some_and(Value::is_object) {
+        object.insert("tasks".to_owned(), serde_json::json!({}));
+    }
     object
-        .entry("tasks")
-        .or_insert_with(|| serde_json::json!({}))
-        .as_object_mut()
-        .expect("tasks is object")
+        .get_mut("tasks")
+        .and_then(Value::as_object_mut)
+        .expect("tasks normalized to an object above")
 }
 
 fn registry_tasks_view<'a>(
@@ -2160,6 +2166,12 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     if !archive.is_object() {
         archive = serde_json::json!({ "schema_version": 2, "tasks": {} });
     }
+    // Missing or wrong-shaped "tasks" normalizes to an empty object so the
+    // snapshot below is never silently dropped (run history would be lost
+    // once the definition and runs are removed).
+    if !archive.get("tasks").is_some_and(Value::is_object) {
+        archive["tasks"] = serde_json::Value::Object(serde_json::Map::new());
+    }
     let snapshot = serde_json::json!({
         "schema_version": 2,
         "tasks": {
@@ -2174,7 +2186,11 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
             }
         },
     });
-    if let Some(existing) = archive.get("tasks").and_then(|value| value.as_object()) {
+    let existing = archive
+        .get("tasks")
+        .and_then(|value| value.as_object())
+        .expect("tasks normalized to an object above");
+    {
         let mut merged = existing.clone();
         if let Some(new_tasks) = snapshot["tasks"].as_object() {
             for (key, value) in new_tasks {
@@ -2289,7 +2305,20 @@ enabled in settings",
     record["started_at"] = serde_json::json!(now);
     record["ended_at"] = serde_json::json!(now_string());
     record["error"] = error;
-    store_holder.save_run(&record)?;
+    store_holder.save_run(&record).map_err(|error| {
+        // Without the terminal record the run would stay queued forever and
+        // `scheduled delete` refuses queued runs — an unrecoverable task.
+        // Surface a message that names the remedy instead.
+        CliError::failed(format!(
+            "scheduled_run_unterminated: the run finished but its terminal record could not be \
+             written ({error}); the task will refuse deletion until the record is repaired or \
+             removed manually at {}",
+            store_holder
+                .runs_dir_for(id)
+                .map(|dir| dir.display().to_string())
+                .unwrap_or_default()
+        ))
+    })?;
     if let Ok(mut latest) = store_holder.read_def(id) {
         latest["updated_at"] = serde_json::json!(now_string());
         latest["last_run_at"] = record["ended_at"].clone();
@@ -2444,20 +2473,28 @@ viewed"
         )));
     }
     let mut read_state = read_registry(&store_holder.read_state_path());
+    // A wrong-shaped but valid payload (hand-edited or partially written
+    // file) normalizes to the default like the parse-failure path instead of
+    // panicking with an exit code outside the 0/1/2 contract.
     if !read_state.is_object() {
         read_state = serde_json::json!({ "schema_version": 2, "viewed_runs": {} });
     }
-    if read_state.get("viewed_runs").is_none() {
+    if !read_state.get("viewed_runs").is_some_and(Value::is_object) {
         read_state["viewed_runs"] = serde_json::json!({});
     }
     {
         let viewed = read_state["viewed_runs"]
             .as_object_mut()
-            .expect("viewed_runs is object");
+            .expect("viewed_runs normalized to an object above");
         let entry = viewed
             .entry(task_id.to_owned())
             .or_insert_with(|| serde_json::json!([]));
-        let list = entry.as_array_mut().expect("viewed list is an array");
+        if !entry.is_array() {
+            *entry = serde_json::json!([]);
+        }
+        let list = entry
+            .as_array_mut()
+            .expect("viewed list normalized to an array above");
         if !list.iter().any(|value| value.as_str() == Some(run_id)) {
             list.push(serde_json::json!(run_id));
         }
