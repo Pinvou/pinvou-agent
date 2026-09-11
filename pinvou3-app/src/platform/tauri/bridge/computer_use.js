@@ -187,6 +187,21 @@
       return sid || state.activeSessionId;
     }
 
+    // Targeted clear shared by confirm() and deny() — success AND "unknown or
+    // expired" cleanup: only the dialog/pending entry for `confirmId` goes
+    // away. A NEWER request that landed during the IPC round-trip keeps its
+    // own dialog and pending entry instead of being wiped by this decision
+    // (review finding): closing a dead prompt must not close a live
+    // replacement that already arrived.
+    function clearConfirmIfCurrent(confirmId, fallbackSid) {
+      const request = state.computerUse && state.computerUse.confirmRequest;
+      const sid = (request && request.sessionId) || fallbackSid || state.activeSessionId;
+      if (request && String(request.confirmId) !== String(confirmId)) return;
+      const pending = pendingBySession[sid];
+      if (pending) pending.confirm = null;
+      publish(sid, { confirmRequest: null });
+    }
+
     // Backend TTL: a confirmation older than its five-minute window is
     // rejected as "unknown or expired". Both buttons then keep failing with
     // no way out of the full-screen modal (review finding), so the caller
@@ -202,20 +217,15 @@
       } catch (error) {
         if (!isExpiredConfirmError(error)) throw error;
         // Expired: the backend already dropped the request, so closing
-        // locally is the only way out of the dead-end modal.
-        publish(clearPendingConfirm(), { confirmRequest: null });
+        // locally is the only way out of the dead-end modal. Targeted clear
+        // (same rule as below): a newer replacement request must survive.
+        clearConfirmIfCurrent(confirmId, state.activeSessionId);
         throw error;
       }
       // Clear only the dialog that was confirmed (review finding): a new
       // request landing during the IPC round-trip keeps its own dialog and
       // pending entry instead of being wiped by this decision.
-      const request = state.computerUse && state.computerUse.confirmRequest;
-      const sid = (request && request.sessionId) || state.activeSessionId;
-      if (!request || String(request.confirmId) === String(confirmId)) {
-        const pending = pendingBySession[sid];
-        if (pending) pending.confirm = null;
-        publish(sid, { confirmRequest: null });
-      }
+      clearConfirmIfCurrent(confirmId, state.activeSessionId);
     }
 
     // Explicit backend deny: clears the pending confirmation, so the model's
@@ -231,16 +241,13 @@
         await invoke("computer_use_deny", { confirmId });
       } catch (error) {
         if (!isExpiredConfirmError(error)) throw error;
-        publish(clearPendingConfirm(), { confirmRequest: null });
+        // Same targeted clear as the success path below: the expiry cleanup
+        // must not close a newer replacement request's dialog.
+        clearConfirmIfCurrent(confirmId, sid);
         throw error;
       }
       // Same targeted clear as confirm(): only the denied dialog goes away.
-      const current = state.computerUse && state.computerUse.confirmRequest;
-      if (!current || String(current.confirmId) === String(confirmId)) {
-        const pending = pendingBySession[sid];
-        if (pending) pending.confirm = null;
-        publish(sid, { confirmRequest: null });
-      }
+      clearConfirmIfCurrent(confirmId, sid);
     }
 
     // Kept for compatibility: dismisses locally without telling the backend
