@@ -4132,3 +4132,41 @@ fn legacy_binding_sidecar_without_roots_reads_empty() {
     store.delete(&id).expect("delete session");
     assert_eq!(store.session_workspace_roots(&id), Vec::<std::path::PathBuf>::new());
 }
+
+#[test]
+fn set_session_workspace_roots_rewrites_sidecar_preserving_binding() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id;
+    let bound = unique_temp_dir("align-plain");
+    std::fs::create_dir_all(&bound).expect("create dir");
+    store
+        .bind_session_workspace(&id, bound.clone())
+        .expect("bind");
+
+    // 对齐写入:roots 整体替换,绑定路径与 bound_at 保留。
+    let roots = vec![bound.clone(), unique_temp_dir("align-extra")];
+    assert!(store.set_session_workspace_roots(&id, roots.clone()).expect("align"));
+    assert_eq!(store.session_workspace_roots(&id), roots);
+    assert_eq!(store.session_workspace_binding(&id).as_deref(), Some(bound.as_path()));
+    // 直读 sidecar 复核(绕过任何缓存):bound_at 未丢。
+    let sidecar_path = crate::platform::paths::sessions_root()
+        .join(&id)
+        .join("workspace-binding.json");
+    let raw: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&sidecar_path).expect("sidecar")).unwrap();
+    assert!(raw.get("bound_at").is_some(), "bound_at 保留");
+    assert_eq!(raw["workspace_roots"].as_array().unwrap().len(), 2);
+
+    // 无绑定会话(临时)= Ok(false),不产生文件。
+    let temp_session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create temp");
+    assert!(
+        !store
+            .set_session_workspace_roots(&temp_session.metadata.id, roots)
+            .expect("no binding")
+    );
+}

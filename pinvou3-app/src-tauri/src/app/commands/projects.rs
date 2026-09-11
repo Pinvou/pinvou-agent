@@ -311,6 +311,138 @@ pub async fn projects_set_never_materialize(
     Ok(roots)
 }
 
+/// `align_session_to_project` 的结果汇报。applied=false 时 reason 区分
+/// `no_project`(无归属)与 `no_change`(钥匙串已与项目一致)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AlignOutcome {
+    pub session_id: String,
+    /// 对齐后(或未变更时的当前)钥匙串快照:主根槽位 = 会话 cwd。
+    pub roots: Vec<PathBuf>,
+    pub applied: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// 对齐到项目(§6/§9.7 显式动作):把会话的钥匙串快照替换为其归属项目
+/// **当时**的全部根——主根槽位 = 会话自己的 cwd(不换门牌,§9.2),附加根 =
+/// 项目 roots 去掉 cwd 后保序。项目解析与前端同口径:显式归属优先,
+/// tier-② 多命中按 position 最小者收编(resolve_session_project)。
+///
+/// 写入双存储(agent 记录 / plain 绑定 sidecar,与 rebind 的双存储平移同款);
+/// 在飞引擎经 Op::SyncSession 推送,下回合生效。栅栏:活动回合(ACP prompt /
+/// 原生 turn / scheduled 轮)拒绝,返回 ALIGN_BUSY 类型化错误;无绑定工作区
+/// 的临时/scheduled 会话报 ALIGN_NO_WORKSPACE。幂等:钥匙串与现状相同则
+/// applied=false, reason=no_change。
+#[tauri::command]
+pub async fn align_session_to_project(
+    session_id: String,
+    store: State<'_, ProjectStore>,
+    sessions: State<'_, SessionStore>,
+    acp_pool: State<'_, AcpPool>,
+    engines: State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<AlignOutcome, String> {
+    let session_roots = sessions
+        .session_roots(&session_id)
+        .map_err(|e| format!("align_session_to_project: {e:#}"))?;
+    if !session_roots.bound {
+        return Err(format!(
+            "ALIGN_NO_WORKSPACE: 临时会话没有绑定工作区，无法对齐到项目 (session has no bound workspace)"
+        ));
+    }
+    let cwd = session_roots.execution;
+
+    // 当前快照:agent 记录(代码/ACP)或 plain 绑定 sidecar。
+    let agent_bound = acp_pool
+        .agents()
+        .get(&session_id)
+        .workspace_path
+        .is_some();
+    let current = if agent_bound {
+        acp_pool.agents().session_workspace_roots(&session_id)
+    } else {
+        sessions.session_workspace_roots(&session_id)
+    };
+    if !agent_bound && sessions.session_workspace_binding(&session_id).is_none() {
+        return Err(format!(
+            "ALIGN_NO_WORKSPACE: 临时会话没有绑定工作区，无法对齐到项目 (session has no bound workspace)"
+        ));
+    }
+
+    let Some(project) = store.resolve_session_project(&session_id, &cwd) else {
+        return Ok(AlignOutcome {
+            session_id,
+            roots: current,
+            applied: false,
+            reason: Some("no_project".to_string()),
+        });
+    };
+    let next = ProjectStore::keychain_for_workspace(&cwd, &project.roots);
+    let same = current.len() == next.len()
+        && current
+            .iter()
+            .zip(next.iter())
+            .all(|(a, b)| a == b);
+    if same {
+        return Ok(AlignOutcome {
+            session_id,
+            roots: next,
+            applied: false,
+            reason: Some("no_change".to_string()),
+        });
+    }
+
+    // 活跃回合栅栏(同 rebind 门口径):在跑 prompt/turn/scheduled 轮即拒绝。
+    if acp_pool.is_turn_active(&session_id).await
+        || engines.is_turn_active(&session_id)
+        || engines.is_scheduled_turn_running(&session_id)
+    {
+        return Err(
+            "ALIGN_BUSY: 会话有活动回合，对齐被拒绝，请空闲后重试 (active turn in progress)"
+                .to_string(),
+        );
+    }
+
+    // 双存储写入:agent 记录(原生代码会话含 sidecar 重写)/ plain sidecar。
+    if agent_bound {
+        acp_pool
+            .agents()
+            .set_session_workspace_roots(&session_id, next.clone())
+            .map_err(|e| format!("align_session_to_project: {e:#}"))?;
+    } else {
+        sessions
+            .set_session_workspace_roots(&session_id, next.clone())
+            .map_err(|e| format!("align_session_to_project: {e:#}"))?;
+    }
+
+    // 在飞引擎推送新根集合(下回合生效);推送失败不阻断——下次 spawn/resume
+    // 从绑定存储回填同一快照。
+    if let Some(engine) = engines.handle_for(&session_id).await {
+        match sessions.load(&session_id) {
+            Ok(saved) => {
+                if let Err(error) = engine
+                    .sync_session(session_id.clone(), saved.messages)
+                    .await
+                {
+                    eprintln!(
+                        "[projects] align_session_to_project: push roots to live engine failed: {error:#}"
+                    );
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "[projects] align_session_to_project: load session for live push failed: {error:#}"
+                );
+            }
+        }
+    }
+    Ok(AlignOutcome {
+        session_id,
+        roots: next,
+        applied: true,
+        reason: None,
+    })
+}
+
 /// rebind_workspace_root 的结果汇报:逐会话结果 + 受影响项目。重绑定幂等,
 /// 失败项可直接重试(候选快照含"已在 to 下但元数据未同步"的重试项,
 /// 已成功的部分重跑为空操作)。

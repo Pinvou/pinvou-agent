@@ -529,6 +529,41 @@ impl SessionAgentStore {
         Ok(())
     }
 
+    /// "对齐到项目"(§9.7)的钥匙串替换:整体改写创建快照(权限只增不减的
+    /// 约束由调用方/命令层按语义保证)。原生代码会话同步重写权威 sidecar
+    /// (保留 bound_at);ACP 会话无 sidecar,只写索引。记录不存在或未绑定
+    /// 工作区(临时会话)返回 Ok(false),调用方按普通绑定通道处理。
+    pub fn set_session_workspace_roots(
+        &self,
+        session_id: &str,
+        workspace_roots: Vec<PathBuf>,
+    ) -> Result<bool> {
+        {
+            let mut records = self.records.write();
+            let Some(record) = records.get_mut(session_id) else {
+                return Ok(false);
+            };
+            if record.workspace_kind != CodexWorkspaceKind::Project
+                || record.workspace_path.is_none()
+            {
+                return Ok(false);
+            }
+            record.workspace_roots = workspace_roots.clone();
+        }
+        self.persist()?;
+        let record = self.get(session_id);
+        if record.mode.is_code() {
+            write_code_session_sidecar(
+                &self.path,
+                session_id,
+                record.workspace_kind,
+                record.workspace_path,
+                workspace_roots,
+            );
+        }
+        Ok(true)
+    }
+
     /// 会话创建时锁定的钥匙串快照(§6):全量可访问根(含主根);旧记录/
     /// 临时会话/无记录 = 空(单根语义,调用方按 cwd 居首归一)。
     pub fn session_workspace_roots(&self, session_id: &str) -> Vec<PathBuf> {
@@ -2164,6 +2199,40 @@ mod tests {
             )
             .unwrap();
         assert_eq!(store.session_workspace_roots("acp-2"), Vec::<PathBuf>::new());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn set_session_workspace_roots_rewrites_record_and_sidecar() {
+        let root =
+            std::env::temp_dir().join(format!("pinvou3-align-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let project_dir = root.join("proj");
+        fs::create_dir_all(&project_dir).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        store
+            .bind_code_native_session(
+                "code-1",
+                CodexWorkspaceKind::Project,
+                Some(project_dir.clone()),
+                vec![project_dir.clone()],
+            )
+            .unwrap();
+        // 原生代码会话:索引 + 权威 sidecar 双写,bound_at 保留。
+        let bound_at = read_code_session_sidecar(&store.path, "code-1").unwrap().bound_at;
+        let extra = root.join("extra");
+        let next = vec![project_dir.clone(), extra.clone()];
+        assert!(store.set_session_workspace_roots("code-1", next.clone()).unwrap());
+        assert_eq!(store.session_workspace_roots("code-1"), next);
+        let sidecar = read_code_session_sidecar(&store.path, "code-1").unwrap();
+        assert_eq!(sidecar.workspace_roots, next);
+        assert_eq!(sidecar.bound_at, bound_at, "对齐不改写首次绑定时间");
+
+        // 临时会话/未知会话 = Ok(false),不写盘。
+        assert!(!store.set_session_workspace_roots("temp-unknown", next).unwrap());
         fs::remove_dir_all(&root).unwrap();
     }
 }

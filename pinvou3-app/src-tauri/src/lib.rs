@@ -1304,6 +1304,7 @@ pub fn run() {
             commands::projects::move_session_to_project,
             commands::projects::ensure_folder_projects,
             commands::projects::projects_set_never_materialize,
+            commands::projects::align_session_to_project,
             commands::projects::rebind_workspace_root,
             commands::sessions::list_sessions,
             commands::sessions::create_session,

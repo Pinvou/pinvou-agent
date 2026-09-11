@@ -197,6 +197,32 @@ impl SessionStore {
             .unwrap_or_default()
     }
 
+    /// "对齐到项目"(§9.7)的钥匙串替换:整体改写 sidecar 快照(保留绑定
+    /// 路径与 bound_at)。无绑定返回 Ok(false)——临时会话由命令层先行拒绝,
+    /// 这里是双保险。
+    pub fn set_session_workspace_roots(
+        &self,
+        id: &str,
+        workspace_roots: Vec<PathBuf>,
+    ) -> Result<bool> {
+        validate_session_id(id)?;
+        let file = self.session_workspace_sidecar_path(id);
+        let Some(existing) = read_workspace_sidecar(&file) else {
+            return Ok(false);
+        };
+        let updated = SessionWorkspaceSidecar {
+            version: SESSION_WORKSPACE_SIDECAR_VERSION,
+            path: existing.path,
+            workspace_roots,
+            bound_at: existing.bound_at,
+        };
+        let payload =
+            serde_json::to_vec_pretty(&updated).context("serialize session workspace binding")?;
+        crate::platform::filesystem::atomic_write(&file, &payload)
+            .with_context(|| format!("persist session workspace roots to {}", file.display()))?;
+        Ok(true)
+    }
+
     /// best-effort 删除绑定 sidecar 文件；NotFound 视为已删除。会话删除
     /// 路径的目录清理通常已把它带走，这里覆盖「会话仍在、仅解绑」与残留
     /// 目录兜底两种情况。

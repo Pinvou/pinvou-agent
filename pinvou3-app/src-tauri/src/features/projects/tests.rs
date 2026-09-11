@@ -997,3 +997,72 @@ fn ensure_anchor_reuse_only_for_folder_anchored_projects() {
     let replay = ensure(&store, &[abs("api")]);
     assert!(matches!(&replay[0], super::EnsureFolderOutcome::Covered { .. }));
 }
+
+// ── 对齐到项目(§6/§9.7):归属解析与钥匙串形态 ───────────────────────────────
+
+#[test]
+fn resolve_session_project_explicit_then_position_tiebreak() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    // 两个项目引用同一目录(§9.9 重叠合法):无归属条目时 position 最小者收编。
+    let first = create(&store, "靠前", &[abs("web")]);
+    let second = create(&store, "靠后", &[abs("web")]);
+    assert!(first.position < second.position);
+    assert_eq!(
+        store
+            .resolve_session_project("s1", &abs("web"))
+            .map(|p| p.id),
+        Some(first.id.clone()),
+        "tier-② 多命中 position 最小者"
+    );
+    // 显式归属优先(哪怕归属靠后的项目)。
+    store
+        .move_session_to_project("s1", Some(&second.id), None)
+        .expect("explicit assign");
+    assert_eq!(
+        store
+            .resolve_session_project("s1", &abs("web"))
+            .map(|p| p.id),
+        Some(second.id.clone())
+    );
+    // 显式移出阻止 tier-②。
+    store
+        .move_session_to_project("s1", None, None)
+        .expect("explicit move-out");
+    assert!(store.resolve_session_project("s1", &abs("web")).is_none());
+    // 陈旧归属 id(项目已删)回退 tier-②。
+    store
+        .move_session_to_project("s2", Some(&first.id), None)
+        .expect("assign");
+    store.delete_project(&first.id, &[]).expect("delete");
+    // delete 把成员写成显式移出:s2 是显式移出条目 → None。
+    assert!(store.resolve_session_project("s2", &abs("web")).is_none());
+    // 无归属且 path 不落任何 root → None;嵌套命中(折叠键前缀)。
+    assert!(store.resolve_session_project("s3", &abs("other")).is_none());
+    assert_eq!(
+        store
+            .resolve_session_project("s3", &abs("web").join("sub/dir"))
+            .map(|p| p.id),
+        Some(second.id.clone()),
+        "嵌套路径命中 root 前缀"
+    );
+}
+
+#[test]
+fn keychain_for_workspace_keeps_cwd_first_and_strips_it_from_project_roots() {
+    // 主根槽位 = 会话 cwd(不换门牌);项目 roots 去掉 cwd 后保序。
+    let chain = super::ProjectStore::keychain_for_workspace(
+        &abs("b"),
+        &[abs("a"), abs("b"), abs("c")],
+    );
+    assert_eq!(chain, vec![abs("b"), abs("a"), abs("c")]);
+    // cwd 不在项目 roots 中(如跨目录会话对齐)→ cwd 居首,roots 全量跟随。
+    let chain = super::ProjectStore::keychain_for_workspace(
+        &abs("elsewhere"),
+        &[abs("a"), abs("b")],
+    );
+    assert_eq!(chain, vec![abs("elsewhere"), abs("a"), abs("b")]);
+    // 空项目(纯标签)→ 仅 cwd。
+    let chain = super::ProjectStore::keychain_for_workspace(&abs("x"), &[]);
+    assert_eq!(chain, vec![abs("x")]);
+}

@@ -835,6 +835,51 @@ impl ProjectStore {
         Ok(affected_projects)
     }
 
+    /// "对齐到项目"(§6/§9.7)的归属解析:tier-① 显式归属(Some);显式移出
+    /// (None 条目)阻止 tier-②;tier-② workspace 折叠键落 root 前缀匹配,
+    /// 多命中按 position 最小者收编(与前端决胜口径一致;projects 恒按
+    /// (position, id) 有序,find 即最小者)。
+    pub fn resolve_session_project(&self, session_id: &str, workspace: &Path) -> Option<Project> {
+        let state = self.state.read();
+        match state.assignments.get(session_id) {
+            Some(Some(project_id)) => {
+                return state
+                    .projects
+                    .iter()
+                    .find(|project| &project.id == project_id)
+                    .cloned();
+            }
+            Some(None) => return None,
+            None => {}
+        }
+        let key = identity_key_of_display(&root_display(workspace));
+        state
+            .projects
+            .iter()
+            .find(|project| {
+                project
+                    .roots
+                    .iter()
+                    .any(|root| key_is_same_or_nested(&key, &identity_key_of_display(root)))
+            })
+            .cloned()
+    }
+
+    /// 对齐的钥匙串形态:主根槽位 = 会话自己的 cwd(不换门牌,§9.2),附加
+    /// 根 = 项目 roots 去掉 cwd 后保序(折叠键比较)。底座 normalize 会再归一,
+    /// 存储层就按此写好,让"读到什么"与"生效什么"一致。
+    pub fn keychain_for_workspace(cwd: &Path, project_roots: &[PathBuf]) -> Vec<PathBuf> {
+        let cwd_display = root_display(cwd);
+        let cwd_key = identity_key_of_display(&cwd_display);
+        let mut out = vec![cwd_display];
+        for root in project_roots {
+            if identity_key_of_display(root) != cwd_key {
+                out.push(root.clone());
+            }
+        }
+        out
+    }
+
     /// 会话删除钩子:摘除其归属条目(含显式移出的 None 条目)。返回是否
     /// 发生变更;落盘失败仅记日志,内存态已前进,下次变更自愈。
     pub fn forget_session(&self, session_id: &str) -> bool {

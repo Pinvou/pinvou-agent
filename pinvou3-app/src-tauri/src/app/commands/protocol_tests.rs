@@ -336,6 +336,7 @@ command_protocol!(
         "move_session_to_project",
         "ensure_folder_projects",
         "projects_set_never_materialize",
+        "align_session_to_project",
         "rebind_workspace_root"
     ]
 );
