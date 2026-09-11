@@ -153,8 +153,9 @@ console.log('computer use logic tests passed');
 // resolve to a minimal hooks runtime (same approach as
 // tests/use_throttled_value.test.mjs) and whose JSX runtime produces plain
 // element trees the assertions walk directly. This keeps the review-critical
-// render behavior (inline short previews, error leakage) covered without a
-// browser while the real component source is exercised unmodified.
+// render behavior (always-inline full-text previews, secure-target omission,
+// error leakage) covered without a browser while the real component source is
+// exercised unmodified.
 
 // Minimal React replacement: only the hooks ComputerUseConsent.jsx and its
 // useBridge import use, with React semantics (Object.is idempotent writes,
@@ -348,7 +349,6 @@ const dialogCopy = {
   confirmElementLabel: 'Target element',
   confirmOnce: 'Confirm once',
   confirmDeny: 'Deny',
-  showFullText: 'Show full text',
   fullTextWarning: 'The agent will type exactly this text.',
   actionFailed: (error) => `Action failed: ${error}`,
 };
@@ -380,39 +380,42 @@ try {
     return tree;
   };
 
-  // ── UI-1. Short typePreviewFull renders inline, approval stays enabled ──
-  // Review finding: short texts (e.g. six characters) hid behind the "show
-  // full text" click-wall, so the user approved without ever seeing the
-  // exact typed text.
+  // ── UI-1. Full typePreviewFull always renders inline, approval stays enabled ──
+  // Review finding: the old reveal gate locked "Confirm once" behind a
+  // "show full text" click. The exact typed text must be visible without any
+  // click (mainstream behavior) and approval must never depend on reveal
+  // state — the preview scrolls instead of gating.
   runtime.reset();
   tree = render(confirmSlice('cu-1', 'Hello 三'));
   const inlinePre = findByTestId(tree, 'computer-use-confirm-full-text');
   assert.ok(inlinePre, 'a short preview must render the full text inline');
   assert.ok(allText(inlinePre).includes('Hello 三'), 'the inline text must be the full preview');
   assert.equal(findByTestId(tree, 'computer-use-confirm-show-full'), null,
-    'a short preview must not require the reveal step');
+    'no reveal step exists anymore');
   assert.equal(findByTestId(tree, 'computer-use-confirm-once').props.disabled, false,
     '"Confirm once" must be enabled while the short text is visible');
   assert.ok(allText(tree).includes(dialogCopy.fullTextWarning),
     'the warning line stays for the inline case');
-  // 200 chars (the threshold) is still inline; 201 keeps the reveal gate.
-  tree = render(confirmSlice('cu-2', 'a'.repeat(200)));
-  assert.ok(findByTestId(tree, 'computer-use-confirm-full-text'), 'the 200-char boundary renders inline');
-  assert.equal(findByTestId(tree, 'computer-use-confirm-show-full'), null);
-  tree = render(confirmSlice('cu-3', 'a'.repeat(201)));
-  assert.ok(findByTestId(tree, 'computer-use-confirm-show-full'),
-    'longer texts keep the reveal button');
-  assert.equal(findByTestId(tree, 'computer-use-confirm-full-text'), null,
-    'longer texts must not render before the reveal');
-  assert.equal(findByTestId(tree, 'computer-use-confirm-once').props.disabled, true,
-    '"Confirm once" stays locked until the long text was revealed');
-  assert.ok(allText(tree).includes(dialogCopy.fullTextWarning),
-    'the warning line stays for the reveal case');
-  findByTestId(tree, 'computer-use-confirm-show-full').props.onClick();
-  tree = render(confirmSlice('cu-3', 'a'.repeat(201)));
-  assert.ok(findByTestId(tree, 'computer-use-confirm-full-text'), 'the reveal unlocks the long text');
+  // Texts beyond the old 200-char inline cap render inline too — visible
+  // without any click and "Confirm once" enabled (no reveal gate).
+  const longText = `${'a'.repeat(200)}b`;
+  tree = render(confirmSlice('cu-2', longText));
+  const longPre = findByTestId(tree, 'computer-use-confirm-full-text');
+  assert.ok(longPre, 'a >200-char preview must render inline without a reveal click');
+  assert.ok(allText(longPre).includes(longText), 'the inline element must contain the full long text');
+  assert.equal(findByTestId(tree, 'computer-use-confirm-show-full'), null,
+    'long texts must not bring back the reveal button');
   assert.equal(findByTestId(tree, 'computer-use-confirm-once').props.disabled, false,
-    'revealing the long text unlocks "Confirm once"');
+    '"Confirm once" must never be disabled by preview visibility');
+  assert.ok(allText(tree).includes(dialogCopy.fullTextWarning),
+    'the warning line stays for the long-text case');
+  // The backend contract caps the preview at 4096 chars; a max-size preview
+  // stays inline as well (the scrollable container keeps the dialog sized).
+  tree = render(confirmSlice('cu-3', 'b'.repeat(4096)));
+  assert.ok(findByTestId(tree, 'computer-use-confirm-full-text'),
+    'a 4096-char preview renders inline in the scrollable container');
+  assert.equal(findByTestId(tree, 'computer-use-confirm-once').props.disabled, false,
+    '"Confirm once" stays enabled for a max-size preview');
 
   // ── UI-2. A failed action's error must not leak into the next dialog ──
   // Review finding: actionError survived after a dialog closed and was then
@@ -439,6 +442,18 @@ try {
   assert.ok(findByTestId(tree, 'computer-use-confirm-deny'), 'the new dialog is up');
   assert.equal(allText(tree).includes('Action failed: backend exploded'), false,
     'the stale error about cu-1 must not leak into the cu-2 dialog');
+
+  // ── UI-3. Secure targets (no typePreviewFull) show no preview at all ──
+  // Backend contract: password/secure Type confirmations ship no preview, so
+  // neither the typed-text block nor its warning may render.
+  runtime.reset();
+  tree = render(confirmSlice('cu-secure'));
+  assert.equal(findByTestId(tree, 'computer-use-confirm-full-text'), null,
+    'a secure target must not render any typed-text preview');
+  assert.equal(allText(tree).includes(dialogCopy.fullTextWarning), false,
+    'the exact-text warning belongs to the preview block and stays hidden for secure targets');
+  assert.equal(findByTestId(tree, 'computer-use-confirm-once').props.disabled, false,
+    'a missing preview must not disable "Confirm once"');
 } finally {
   await vite.close();
   rmSync(stubDir, { recursive: true, force: true });

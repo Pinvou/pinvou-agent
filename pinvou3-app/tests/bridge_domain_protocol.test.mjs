@@ -90,16 +90,14 @@ const expectedProtocolHashes = {
   // "Recomputed for the shared-helper dedup" reflect that relocation only.
   // New domain: computer-use consent commands/events (desktop-only; the web
   // RPC allowlist excludes them, same policy as browser:*).
-  // Recomputed after the deny() method + computer_use_deny invoke were added
-  // (review fix: per-action Deny now reaches the backend instead of relying
-  // on the pending TTL). Recomputed again for the consent review fixes: stop
-  // and disable now clear the per-session pending map, grant_required keeps a
-  // live confirm, refreshStatus clears the banner on session switch, and the
-  // confirm payload gains the optional typePreviewFull pass-through. And
-  // again when the 30s deny-suppression cooldown was removed: a deny now
+  // Recomputed when the 30s deny-suppression cooldown was removed: a deny now
   // only closes its own dialog and fresh requests re-prompt immediately (no
   // invoke/listen call-set change; comment wording is part of the digest).
-  computerUse: 'f69662b6930da9a954045d385af8c64d2637319a93a205c3f03d7cce1d67ba0d',
+  // Recomputed when the deny()/grant_required handler comments were updated
+  // for the mainstream narrowing (no deny-cooldown memory, no idle-expired
+  // grant re-arm; comment wording inside the listen callback span is part of
+  // the digest).
+  computerUse: '6f66cf5a2bd607a1268304a27045d15cc462352b4e2439973709a908caf04f86',
   multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
   // Recomputed for the shared-helper dedup (see batch note above).
   orchestration: '341efb3b1e4a4036269559294c33b76a744bcde7c3903b9ba3525711d6182f6f',
