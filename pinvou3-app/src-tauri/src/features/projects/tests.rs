@@ -20,6 +20,14 @@ fn abs(name: &str) -> PathBuf {
         .join(name)
 }
 
+/// 断言用的期望形态:与 store 的 root_display 同一约定。PathBuf 相等是词法
+/// 比较,拿原始 `canonicalize()`(Windows 带 `\\?\` verbatim 前缀)或原始
+/// 写法(macOS 的 /var 与 canonical 的 /private/var 错位)直接对比会在
+/// 非 Linux 平台假失败(评审 #447-D2)。
+fn display(path: &std::path::Path) -> PathBuf {
+    super::store::root_display(path)
+}
+
 fn create(store: &ProjectStore, name: &str, roots: &[PathBuf]) -> super::Project {
     store
         .create_project(name.to_string(), roots.to_vec())
@@ -144,14 +152,14 @@ fn update_renames_and_replaces_roots() {
         )
         .expect("update project");
     assert_eq!(updated.name, "新名");
-    assert_eq!(updated.roots, vec![abs("new")]);
+    assert_eq!(updated.roots, vec![display(&abs("new"))]);
     assert_eq!(store.get(&project.id).unwrap().name, "新名");
 
     // None = 保持不变;空 roots 合法(项目退化为纯标签)。
     let kept = store
         .update_project(&project.id, None, None)
         .expect("no-op update");
-    assert_eq!(kept.roots, vec![abs("new")]);
+    assert_eq!(kept.roots, vec![display(&abs("new"))]);
     let emptied = store
         .update_project(&project.id, None, Some(vec![]))
         .expect("clear roots");
@@ -255,7 +263,7 @@ fn move_add_workspace_root_atomically_and_idempotently() {
     // 他人领地与 workspace 互不重叠,避免测试自触发跨项目重叠规则。
     let foreign = temp.path().join("foreign").join("nested");
     std::fs::create_dir_all(&foreign).expect("create foreign dirs");
-    let canonical = workspace.canonicalize().expect("canonicalize");
+    let canonical = display(&workspace);
 
     let store = store_in(&temp);
     let project = create(&store, "目标", &[abs("elsewhere")]);
@@ -285,6 +293,26 @@ fn move_add_workspace_root_atomically_and_idempotently() {
     assert_eq!(store.assignment_of("s3"), None);
     assert_eq!(store.get(&other.id).unwrap().roots.len(), 1);
     assert_eq!(store.get(&project.id).unwrap().roots.len(), 2);
+}
+
+#[test]
+fn nonexistent_leaf_resolves_into_existing_ancestors_territory() {
+    // 评审 #471 Major 回归锁:macOS 默认 TMPDIR 位于 /var 下(→ /private/var),
+    // 不存在的叶子必须经最深已存在祖先 canonicalize,与已存在路径键入同一
+    // 键域,否则 covered-skip 与跨项目重叠拒绝双双失明。
+    let temp = tempfile::tempdir().expect("tempdir");
+    let base = temp.path().join("base");
+    std::fs::create_dir_all(&base).expect("create base");
+
+    let leaf = base.join("not-yet").join("deep");
+    assert_eq!(
+        display(&leaf),
+        display(&base).join("not-yet").join("deep"),
+        "non-existent leaf keys into its parent's territory"
+    );
+    // 同一份临时根下的两条不存在路径键域一致(重叠校验可判定)。
+    let dangling = abs("ghost").join("deep");
+    assert_eq!(display(&dangling), display(&abs("ghost")).join("deep"));
 }
 
 #[test]
@@ -393,20 +421,14 @@ fn move_workspace_ancestor_collapses_descendant_roots() {
     let child_outcome = store
         .move_session_to_project("s1", Some(&project.id), Some(&child))
         .expect("move with child root");
-    assert_eq!(
-        child_outcome.added_root,
-        Some(child.canonicalize().expect("canon child"))
-    );
+    assert_eq!(child_outcome.added_root, Some(display(&child)));
     let parent_outcome = store
         .move_session_to_project("s2", Some(&project.id), Some(&parent))
         .expect("move with ancestor root");
-    assert_eq!(
-        parent_outcome.added_root,
-        Some(parent.canonicalize().expect("canon parent"))
-    );
+    assert_eq!(parent_outcome.added_root, Some(display(&parent)));
     let roots = store.get(&project.id).expect("project").roots;
     assert_eq!(roots.len(), 1, "descendant collapsed into the ancestor");
-    assert_eq!(roots[0], parent.canonicalize().expect("canon parent"));
+    assert_eq!(roots[0], display(&parent));
 
     // 反方向保持幂等:现有 root 是祖先时,子目录工作目录不重复添加。
     let nested_again = store
