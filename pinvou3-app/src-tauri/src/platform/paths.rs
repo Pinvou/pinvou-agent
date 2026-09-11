@@ -320,12 +320,6 @@ pub fn memory_path() -> PathBuf {
     pinvou3_home().join("memory.md")
 }
 
-/// `~/.pinvou3/memories/` —— 上下文压缩时导出的 Codex 兼容长期记忆根目录。
-/// 字节格式与 codex-rs/memories 对齐（raw_memories.md + rollout_summaries/），
-/// 独立于应用自身记忆（`user_memory_dir()`），不进任何用户仓库。
-pub fn long_term_memory_root() -> PathBuf {
-    pinvou3_home().join("memories")
-}
 pub fn user_memory_dir() -> PathBuf {
     user_root().join("memory")
 }
