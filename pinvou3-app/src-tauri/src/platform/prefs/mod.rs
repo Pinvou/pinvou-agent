@@ -251,6 +251,18 @@ pub struct SavedModel {
 }
 
 impl SavedModel {
+    /// Operator-owned 端点：本地自托管（LocalVllm）或用户自填的 OpenAI 兼容 /
+    /// custom 端点。这类端点的输出上限是部署者自己的责任，宿主按窗口分档
+    /// 代为声明 route 输出事实（见 `bridge::route_limits_for_model`）。
+    /// `coding_plan` 是官方托管入口，即使套在 `OpenaiCompatible` 预设上也
+    /// 不算 operator-owned——必须保持底座 fail-closed，不得代声明。
+    pub fn is_operator_owned_endpoint(&self) -> bool {
+        (self.preset == ModelPreset::LocalVllm
+            || self.preset == ModelPreset::OpenaiCompatible
+            || self.provider_kind.as_deref() == Some("custom"))
+            && self.provider_kind.as_deref() != Some("coding_plan")
+    }
+
     fn normalize_alias(&mut self) {
         if self.preset == ModelPreset::LocalVllm {
             self.alias = None;
@@ -270,9 +282,9 @@ impl SavedModel {
             if self.context_window_tokens.is_none() && self.model == "qwen36_35b_256k" {
                 self.context_window_tokens = Some(262_144);
             }
-            if self.max_output_tokens.is_none() {
-                self.max_output_tokens = Some(24_576);
-            }
+            // 输出上限不再为 LocalVllm 预设强制 24K：未显式配置时与自定义
+            // OpenAI 兼容端点同路，由 route_limits_for_model 按窗口分档统一
+            // 声明（>=500K→131072 / >=250K→65536 / 否则 min(window/4, 32768)）。
         }
         // reasoning_effort 归一为底座 `ReasoningEffort::parse_strict` 认识的规范档位
         // （off/low/medium/high/auto/max）。别名（disabled/minimum/light/ultra 等）
@@ -1191,6 +1203,66 @@ mod tests {
             // SAFETY: same as above; removal serialized under ENV_LOCK.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
+    }
+
+    /// LocalVllm 不再强制 24K 输出（未显式配置保持 None，由运行时窗口分档
+    /// 统一声明）；operator-owned 判定覆盖本地/自定义两类端点并排除
+    /// coding_plan 官方入口。
+    #[test]
+    fn normalize_keeps_local_output_unset_and_operator_owned_detection() {
+        let mut local = SavedModel {
+            id: "m1".into(),
+            name: "m1".into(),
+            alias: None,
+            preset: ModelPreset::LocalVllm,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            model: "qwen36_35b_256k".into(),
+            base_url: "http://127.0.0.1:8000/v1".into(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: Default::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        };
+        local.normalize_route_limits();
+        assert_eq!(
+            local.context_window_tokens,
+            Some(262_144),
+            "qwen36_35b_256k 的窗口兜底保留"
+        );
+        assert_eq!(
+            local.max_output_tokens, None,
+            "本地模型不再强制 24K 输出，未配置保持 None"
+        );
+        assert!(local.is_operator_owned_endpoint());
+
+        // 用户显式配置的输出上限（含正值过滤）原样保留。
+        let mut explicit = local.clone();
+        explicit.max_output_tokens = Some(32_768);
+        explicit.normalize_route_limits();
+        assert_eq!(explicit.max_output_tokens, Some(32_768));
+
+        let mut custom = local.clone();
+        custom.preset = ModelPreset::OpenaiCompatible;
+        custom.provider_kind = Some("custom".into());
+        assert!(custom.is_operator_owned_endpoint());
+
+        // coding_plan 即使套在 OpenaiCompatible 预设上也不是 operator-owned。
+        let mut plan = custom.clone();
+        plan.provider_kind = Some("coding_plan".into());
+        assert!(!plan.is_operator_owned_endpoint());
+
+        // 官方云端 preset 不是 operator-owned。
+        let mut cloud = local;
+        cloud.preset = ModelPreset::Deepseek;
+        assert!(!cloud.is_operator_owned_endpoint());
     }
 
     /// reasoning_effort 归一为底座 `ReasoningEffort::parse_strict` 认识的规范档位：

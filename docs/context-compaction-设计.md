@@ -77,8 +77,10 @@ served name 变 `qwen3.6-35b` 无 `_Nk` 后缀 → 底座兜底 128,000 窗口�
 3. `SavedModel`：持久化具体部署的 `context_window_tokens` / `max_output_tokens`，与发给服务端
    的 wire model alias 解耦；设置页可为任意 OpenAI-compatible 引擎配置。
 4. `bridge/mod.rs`：声明窗口与 probe 取较小值，生成同时包含 context/output 的
-   `active_route_limits`；默认本地 Qwen 为 262144/24576，未知 vLLM alias 回退
-   128000/24576，其他引擎没有声明时不猜。
+   `active_route_limits`；operator-owned 端点（本地 vLLM、自定义 OpenAI 兼容 /
+   custom，coding_plan 除外）输出按窗口分档统一声明：>=500K→131072 /
+   >=250K→65536 / 否则 min(window/4, 32768)，无窗口事实按 128K 兜底（→32768），
+   再被端点自报输出上限 min 收紧；官方云端 preset 与 coding_plan 不声明时不猜。
 5. v0.9 底座只补最小 embed API：把宿主 limits 附到 resolved route；显式 route output
    优先于未知模型名的 4K 兼容 fallback，未声明 route 的上游行为不变。
 
