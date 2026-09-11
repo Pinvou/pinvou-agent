@@ -196,7 +196,7 @@ pub async fn reset_microphone_permission(window: tauri::WebviewWindow) -> Result
 mod tests {
     use std::os::windows::fs::OpenOptionsExt;
 
-    use super::super::temp_wav::VoiceTempWav;
+    use crate::features::voice::VoiceTempWav;
 
     #[test]
     fn closed_temp_wav_can_be_reopened_exclusively_by_asr() {
