@@ -56,9 +56,15 @@ export async function pickAcpWorkspace({ title, defaultPath } = {}) {
   return { path, workspaceHandle };
 }
 
-export function createAcpSession({ workspacePath, workspaceHandle, agentId }) {
+export function createAcpSession({ workspacePath, workspaceHandle, agentId, workspaceRoots, projectId }) {
   if (!isWeb) {
-    return invokeTauri('create_codex_acp_session', { workspacePath, agentId });
+    // 钥匙串快照与项目归属(§6/§9.3):仅桌面通道;Web 为单根授权目录(§9.8)。
+    return invokeTauri('create_codex_acp_session', {
+      workspacePath,
+      agentId,
+      workspaceRoots: workspaceRoots && workspaceRoots.length ? workspaceRoots : null,
+      projectId: projectId || null,
+    });
   }
   if (workspacePath && !workspaceHandle) {
     return Promise.reject(acpClientError('web_workspace_authorization_required'));

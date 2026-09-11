@@ -610,7 +610,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
     };
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy main view: session/mode/artifact/browser state is highly cohesive; split refactor tracked separately
-    const ChatView = ({ theme, t, bs, prefill, prefillAppend = false, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode, browserDockAvailable = false, browserDockOpen = false, rightDockActivePanelId = null, onRightDockPanelSelectionChange, onOpenBrowserDock }) => {
+    const ChatView = ({ theme, t, bs, prefill, prefillAppend = false, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode, browserDockAvailable = false, browserDockOpen = false, rightDockActivePanelId = null, onRightDockPanelSelectionChange, onOpenBrowserDock, onOpenWorkspacePicker }) => {
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
       const sceneCopy = chatCopy.sceneModes;
@@ -2706,7 +2706,14 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                     <ComposerWorkspaceSelector
                       copy={t.uiChatWorkspace}
                       draftWorkspacePath={(bs && bs.draftWorkspacePath) || null}
-                      onPickWorkspace={() => bridge.sessions.pickDraftWorkspace()}
+                      onPickWorkspace={() => (
+                        // 单入口(§2):应用内「选择工作区」选择器;系统目录对话框
+                        // 收敛为选择器内的"浏览其他文件夹"通道。宿主未接选择器时
+                        // 回退旧行为(测试桩/旧宿主)。
+                        onOpenWorkspacePicker
+                          ? onOpenWorkspacePicker({ lane: 'chat', mode: (bs && bs.modeState && bs.modeState.mode) || null })
+                          : bridge.sessions.pickDraftWorkspace()
+                      )}
                       onSelectWorkspace={path => bridge.sessions.setDraftWorkspace(path)}
                     />
                   )}

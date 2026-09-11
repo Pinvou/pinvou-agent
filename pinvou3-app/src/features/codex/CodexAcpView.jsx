@@ -652,6 +652,10 @@ export function CodexAcpView({
   onGotoModelSettings,
   onGotoSettings,
   fixedSession = false,
+  // 「选择工作区」选择器(§2)的结果经此下发:{ epoch, path, projectId, roots };
+  // path=null = 临时会话。onOpenWorkspacePicker 打开选择器(宿主 main.jsx 持有)。
+  onOpenWorkspacePicker,
+  workspacePickerRequest = null,
 }) {
   const codexCopy = t.uiCodex;
   const [agents, setAgents] = useState(null); // null=加载中，[] 才允许回退当前 Agent。
@@ -809,6 +813,9 @@ export function CodexAcpView({
   }
   const [dismissedFailureKey, setDismissedFailureKey] = useState('');
   const [draftWorkspacePath, setDraftWorkspacePath] = useState(null);
+  // 项目通道(选择器)带入的归属与钥匙串快照(§9.3):随物化时的
+  // createAcpSession 下发;beginDraft 的其它入口(临时/最近目录)清空它。
+  const [draftProjectBinding, setDraftProjectBinding] = useState(null);
   // 会话内用 sessionId 解析工作区；草稿态（会话未创建）直接扫描已选目录。
   const branchWorkspacePath = activeId ? null : draftWorkspacePath;
   // Branch context marker mirrored from activeId/branchWorkspacePath; checkout
@@ -1981,10 +1988,14 @@ export function CodexAcpView({
     const requestedAgentId = draftAgentId;
     setError('');
     setWorkspaceMenuOpen(false);
+    // 钥匙串/项目归属同步捕获(await 期间改选不影响本次创建)。
+    const requestedProjectBinding = draftProjectBinding;
     const metadata = await createAcpSession({
       workspacePath: requestedWorkspacePath,
       workspaceHandle: requestedWorkspaceHandle,
       agentId: requestedAgentId,
+      workspaceRoots: requestedProjectBinding ? requestedProjectBinding.roots : null,
+      projectId: requestedProjectBinding ? requestedProjectBinding.projectId : null,
     });
     // loadSession 用 nativeSessionIdsRef 判定分流；新会话先登记，避免它读到旧 prop。
     if (requestedAgentId === 'pinvou') nativeSessionIdsRef.current.add(metadata.id);
@@ -2019,6 +2030,7 @@ export function CodexAcpView({
     setWorkspaceMenuOpen(false);
     setDraftWorkspacePath(workspacePath);
     setDraftWorkspaceHandle(workspaceHandle);
+    setDraftProjectBinding(null);
     // 选定项目工作区即默认展开工作区面板（无会话也可浏览文件）；临时会话无路径可浏览。
     setWorkspaceOpen(Boolean(workspacePath) && !isWeb);
     if (clearComposer) {
@@ -2069,6 +2081,19 @@ export function CodexAcpView({
     setError('');
     if (onActiveSessionChange) onActiveSessionChange(null);
   }
+
+  // 选择器结果落地:项目/文件夹通道 → beginDraft(path) 并暂存归属与钥匙串;
+  // 临时会话 → beginDraft(null)。effect 依赖 epoch,同一选择重复下发也生效。
+  const pickerRequestEpochRef = useRef(0);
+  useEffect(() => {
+    if (!workspacePickerRequest || workspacePickerRequest.epoch === pickerRequestEpochRef.current) return;
+    pickerRequestEpochRef.current = workspacePickerRequest.epoch;
+    const { path, projectId, roots } = workspacePickerRequest;
+    // 先 beginDraft(内部清空旧绑定暂存),再设目标值——同批后写胜出。
+    beginDraft(path || null, { clearComposer: false });
+    setDraftProjectBinding(projectId ? { projectId, roots: roots || [] } : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- beginDraft 是稳定的本地函数,只按请求 epoch 驱动
+  }, [workspacePickerRequest]);
 
   function recreateUnavailableWorkspaceSession() {
     if (activeSession && activeSession.workspace_path) {
@@ -3726,7 +3751,7 @@ export function CodexAcpView({
                       </button>
                       {workspaceMenuOpen && (
                         <div ref={workspaceMenuPanelRef} className="absolute z-40 bottom-9 left-0 w-[280px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
-                            <button type="button" onClick={() => chooseProjectDraft().catch(showError)}
+                            <button type="button" onClick={() => (isWeb || !onOpenWorkspacePicker) ? chooseProjectDraft().catch(showError) : onOpenWorkspacePicker({ lane: 'codex', mode: nativeDraftControls.mode })}
                               className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
                               <FolderOpen size={16} className="text-blue-500 shrink-0" />
                               <span><span className="block text-[12px] font-semibold">{codexCopy.chooseProject}</span><span className="block text-[10px] text-gray-400 mt-0.5">{codexCopy.chooseProjectDesc}</span></span>

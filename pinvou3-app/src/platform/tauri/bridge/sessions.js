@@ -563,6 +563,8 @@
     state.pendingDraftMode = null;
     // 新草稿回到默认工作区：上一份草稿的目录选择不带入（两个提前返回分支共用此复位）。
     state.draftWorkspacePath = null;
+    state.draftWorkspaceRoots = [];
+    state.draftProjectId = null;
 
     // 已在干净草稿态 → 只 notify(epoch 已自增)。注意要连 chatItems 一起判空:messages 与 chatItems
     // 会背离(persona 气泡 / ensureSession 失败的 system 报错卡只进 chatItems),否则残留卡顶掉「你好」。
@@ -629,9 +631,15 @@
   }
 
   // 仅草稿态生效；path = null 表示回到默认（会话私有目录）。
-  function setDraftWorkspace(path) {
+  // extras（可选）= 项目通道带来的 { projectId, workspaceRoots }：钥匙串快照
+  // 与项目记忆写入随物化时的 create_session 一并下发（§6/§9.3）。
+  function setDraftWorkspace(path, extras) {
     if (state.activeSessionId) return;
     state.draftWorkspacePath = path || null;
+    state.draftProjectId = (extras && extras.projectId) || null;
+    state.draftWorkspaceRoots = (extras && Array.isArray(extras.workspaceRoots))
+      ? extras.workspaceRoots
+      : (path ? [String(path)] : []);
     // 绑定/解绑即切换草稿 mode 显示 lane（绑定 → code lane，解绑 → 回本 lane
     // 默认）；解绑时上一份绑定草稿的显式 mode 暂存一并作废，不带入未绑定草稿。
     if (!state.draftWorkspacePath) state.pendingDraftMode = null;
@@ -677,6 +685,21 @@
   // 并发防护（审计）：草稿态双击发送会并发 create_session，导致两条消息分家到两个新
   // 会话——in-flight 复用同一 promise；create_session await 期间用户切走会物化在错误
   // 会话（导航被劫持）——物化前校验 activeSessionId 仍为空，已切走则只登记后台 buffer。
+  // 物化下发负载(工作区绑定 + 钥匙串快照 + 项目归属)的同步捕获点;独立
+  // 小函数避免 ensureSession 的判定复杂度继续膨胀。
+  function captureDraftWorkspaceBinding() {
+    const boundWorkspace = state.draftWorkspacePath || null;
+    const roots = state.draftWorkspaceRoots || [];
+    return {
+      boundWorkspace,
+      // 钥匙串/项目归属只随绑定草稿下发(临时草稿恒 null);物化失败回退
+      // 路径按原值恢复草稿,所以这里返回原始值而不是只读副本。
+      boundRoots: roots,
+      boundProjectId: state.draftProjectId || null,
+      payloadRoots: boundWorkspace && roots.length ? roots : null,
+      payloadProjectId: boundWorkspace ? (state.draftProjectId || null) : null,
+    };
+  }
   let ensureSessionInFlight = null;
   async function ensureSession() {
     if (state.activeSessionId) return state.activeSessionId;
@@ -689,10 +712,16 @@
       // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
       try {
         // 草稿选定的工作目录随物化一并下发；null = 后端现状（会话私有目录）。
-        // 参数在 invoke 同步求值时捕获，await 期间的后续选择不影响本次创建。
-        // boundWorkspace 同步捕获：物化后的 lane 默认应用以本次创建是否绑定为准。
-        const boundWorkspace = state.draftWorkspacePath || null;
-        const meta = await invoke("create_session", { workspacePath: boundWorkspace });
+        // 参数在 invoke 同步求值时捕获（captureDraftWorkspaceBinding），await
+        // 期间的后续选择不影响本次创建；物化后的 lane 默认应用以本次创建是否
+        // 绑定为准。钥匙串快照与项目归属同一捕获点。
+        const { boundWorkspace, boundRoots, boundProjectId, payloadRoots, payloadProjectId } =
+          captureDraftWorkspaceBinding();
+        const meta = await invoke("create_session", {
+          workspacePath: boundWorkspace,
+          workspaceRoots: payloadRoots,
+          projectId: payloadProjectId,
+        });
         // create_session 等待期间用户可能已发送/清空输入，必须读取最新值，
         // 不能把 await 前的已发送文本带入新 session。
         const composerDraft = state.composerDraft || "";
@@ -719,6 +748,8 @@
         // 物化已提交：目录选择随会话落地，清除草稿选择；create_session 失败
         // （外层 catch 路径）则保留选择以便用户重试。
         state.draftWorkspacePath = null;
+        state.draftWorkspaceRoots = [];
+        state.draftProjectId = null;
         switchActiveTo(meta.id, { fresh: true });
         // 草稿态因首条消息/加卡等实质操作物化为 session 时，输入草稿也要
         // 跟随迁移；这不是用户主动切换到另一个已有会话。
@@ -742,6 +773,8 @@
             // 须按失败前取到的值原样恢复——重试物化不偏离用户显式选择。
             state.pendingDraftMultiAgent = true;
             state.draftWorkspacePath = boundWorkspace;
+            state.draftWorkspaceRoots = boundRoots;
+            state.draftProjectId = boundProjectId;
             state.pendingDraftMode = stagedDraftMode || null;
             state.modeState = {
               mode: stagedDraftMode || currentDraftModeState().mode,

@@ -277,6 +277,10 @@
     // 默认（会话私有目录）；随 create_session 的 workspacePath 参数下发，
     // 物化成功后清除，enterDraft 复位。
     draftWorkspacePath: null,
+    // 项目通道(§9.3)的草稿暂存:钥匙串快照与项目归属,随物化的
+    // create_session 一并下发;null/空 = 纯文件夹或临时草稿。
+    draftWorkspaceRoots: [],
+    draftProjectId: null,
     // 最新 plan/todos 快照（用于 mode header 进度 chip，与 plan_ready 卡解耦）
     planSnapshot: { plan: null, todos: null },
     // 当前 session 产物列表 [{ path, basename }]

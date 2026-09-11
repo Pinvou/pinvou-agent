@@ -25,6 +25,8 @@ import { groupSessionsByFolder, groupSessionsByProject, resolveSessionProjectId,
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
 import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
 import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
+import { WorkspacePickerDialog } from '../features/projects/WorkspacePickerDialog.jsx';
+import { computePickerRows, pickerProjectRoots } from '../features/projects/workspacePickerState.js';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
@@ -1639,10 +1641,10 @@ function workspaceDisplayName(path) {
         if (!bs) return [];
         const regular = (bs.sessions || [])
           .filter(s => s.workspace_binding)
-          .map(s => ({ id: s.id, workspaceKind: 'bound', workspacePath: String(s.workspace_binding) }));
+          .map(s => ({ id: s.id, workspaceKind: 'bound', workspacePath: String(s.workspace_binding), updatedAt: s.updated_at || '' }));
         const codex = (codexSessions || [])
           .filter(s => s.workspace_kind === 'project' && s.workspace_path)
-          .map(s => ({ id: s.id, workspaceKind: 'project', workspacePath: String(s.workspace_path) }));
+          .map(s => ({ id: s.id, workspaceKind: 'project', workspacePath: String(s.workspace_path), updatedAt: s.updated_at || '' }));
         return [...regular, ...codex];
       }, [bs, codexSessions]);
       const pendingFolderRoots = useMemo(() => uncoveredWorkspaceRoots(
@@ -1668,6 +1670,75 @@ function workspaceDisplayName(path) {
         // 重复同一结果;根集合或项目集合变化时自然重算补试。
         ensureFn(fresh).catch(() => {});
       }, [pendingFolderRoots]);
+
+      // ── 「选择工作区」统一选择器(§2 单入口)────────────────────────────
+      // 宿主持有开关与结果落地:chat 车道写 bridge 草稿(物化时 create_session
+      // 带 workspaceRoots/projectId);codex 车道经 workspacePickerRequest 下发
+      // CodexAcpView(beginDraft + 草稿归属暂存,物化时 createAcpSession 下发)。
+      // 选择器本身只读热视图行 + 回调,不碰后端。
+      const [workspacePicker, setWorkspacePicker] = useState(null); // { lane, mode }
+      const [pickerBusy, setPickerBusy] = useState(false);
+      const [pickerExcluded, setPickerExcluded] = useState(null);
+      const [pickerCodexRequest, setPickerCodexRequest] = useState(null);
+      const workspacePickerRows = useMemo(() => computePickerRows({
+        projects: (projectsListData && projectsListData.projects) || [],
+        items: boundWorkspaceItems,
+        assignments: (projectsListData && projectsListData.assignments) || {},
+      }), [projectsListData, boundWorkspaceItems]);
+      const closeWorkspacePicker = () => { setWorkspacePicker(null); setPickerExcluded(null); };
+      const applyWorkspaceTarget = ({ path, projectId, roots }) => {
+        const lane = workspacePicker ? workspacePicker.lane : 'chat';
+        if (lane === 'codex') {
+          setPickerCodexRequest({ epoch: Date.now(), path: path || null, projectId: projectId || null, roots: roots || [] });
+        } else if (bridge.sessions && bridge.sessions.setDraftWorkspace) {
+          bridge.sessions.setDraftWorkspace(path || null, { projectId: projectId || null, workspaceRoots: roots || [] });
+        }
+        closeWorkspacePicker();
+      };
+      // 项目通道(§9.3):cwd = 选中根(默认项目记忆主根),钥匙串 = 项目当时
+      // 全部根快照;projectId 随创建写 last_primary_root(后端 create 内处理)。
+      const handlePickerSelectProject = (project, root) => {
+        applyWorkspaceTarget({ path: root, projectId: project.id, roots: pickerProjectRoots(project) });
+      };
+      const handlePickerTemporary = () => {
+        applyWorkspaceTarget({ path: null, projectId: null, roots: [] });
+      };
+      // 浏览通道(§9.9 文件夹通道):系统选目录 → ensure(锚定复用/物化;
+      // 排除列表跳过) → 以所选文件夹开始,cwd = F、roots = [F]。不带
+      // projectId:浏览是显式物理选择,不更新任何项目的 last_primary_root
+      // 记忆(A 裁决);会话经 tier-② 锚定归组,无需显式归属。
+      const handlePickerBrowse = async () => {
+        if (!bridge.files || !bridge.files.pickFolders || pickerBusy) return;
+        const picked = await bridge.files.pickFolders()
+          .catch((error) => { console.warn('pick workspace folder failed', error); return null; });
+        if (!picked) return;
+        const folder = Array.isArray(picked) ? picked[0] : picked;
+        if (!folder) return;
+        let materialized = false;
+        if (bridge.projects && bridge.projects.ensureFolderProjects) {
+          setPickerBusy(true);
+          try {
+            const outcomes = await bridge.projects.ensureFolderProjects([folder]);
+            const list = Array.isArray(outcomes) ? outcomes : [];
+            materialized = list.some(o => o && (o.status === 'created' || o.status === 'covered'));
+            if (!materialized && list.some(o => o && o.status === 'failed')) {
+              setSettingsToast(t.uiProjects.opFailed);
+            }
+          } catch (error) {
+            console.warn('ensure folder project failed', error);
+            setSettingsToast(t.uiProjects.opFailed);
+          } finally {
+            setPickerBusy(false);
+          }
+        }
+        if (!materialized && bridge.projects) {
+          // 排除列表(§3):后端跳过 → 无 outcome;选择器内如实告知,仍可纯
+          // 文件夹开始(不带 projectId)。
+          setPickerExcluded(folder);
+          return;
+        }
+        applyWorkspaceTarget({ path: folder, projectId: null, roots: [folder] });
+      };
 
       // Expanded sidebar width: drag the right edge to adjust (220~480px), double-click
       // the handle to reset to default; the choice is persisted.
@@ -3002,6 +3073,7 @@ function workspaceDisplayName(path) {
         onGotoTools: () => navigateFromScheduledRun('toolStore'),
         browserDockOpen: browserPaneOpen,
         onOpenBrowserDock: openBrowserDock,
+        onOpenWorkspacePicker: ({ lane, mode }) => { setPickerExcluded(null); setWorkspacePicker({ lane, mode }); },
       };
       // The three byte-identical empty states in the sidebar task list (task groups / date groups / flat list) share one node.
       const sidebarTaskEmptyNode = (
@@ -3077,6 +3149,23 @@ function workspaceDisplayName(path) {
             </div>,
             document.body
           )}
+
+          <WorkspacePickerDialog
+            open={!!workspacePicker}
+            rows={workspacePickerRows}
+            mode={workspacePicker ? workspacePicker.mode : null}
+            language={language}
+            busy={pickerBusy}
+            webOnly={!can('desktopChrome') || !bridge.projects}
+            excludedFolder={pickerExcluded}
+            t={t}
+            onClose={closeWorkspacePicker}
+            onSelectProject={handlePickerSelectProject}
+            onTemporary={handlePickerTemporary}
+            onBrowse={handlePickerBrowse}
+            onBrowseExcluded={(folder) => applyWorkspaceTarget({ path: folder, projectId: null, roots: [folder] })}
+            onDismissExcluded={() => setPickerExcluded(null)}
+          />
 
           {rebindDraft && (
             <RebindFolderDialog
@@ -3756,6 +3845,8 @@ function workspaceDisplayName(path) {
                 onSessionsChange={setCodexSessions}
                 onSwitchHomeMode={handleSwitchHomeMode}
                 onOpenSettingsSection={openSettingsSection}
+                onOpenWorkspacePicker={({ mode }) => { setPickerExcluded(null); setWorkspacePicker({ lane: 'codex', mode }); }}
+                workspacePickerRequest={pickerCodexRequest}
                 bs={bs}
                 onGotoModelSettings={() => openSettingsSection('model')}
                 onGotoSettings={() => openSettingsSection('general')}

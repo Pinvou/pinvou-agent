@@ -129,8 +129,10 @@ const expectedProtocolHashes = {
   // now carries the optional workspacePath payload (bridge/sessions.js).
   // Recomputed again for workspace-bound sessions: get_session_workspace_binding
   // query + bound-draft staged mode application (set_plan_mode_next /
-  // exit_plan_to_yolo) at materialization.
-  sessions: 'b619613998b48112fab4437b7b7f6b70283ead5e0eefa664e823bc2315f115b7',
+  // exit_plan_to_yolo) at materialization. Recomputed for the workspace
+  // picker: create_session's invoke span now also forwards the draft
+  // workspaceRoots/projectId captured at materialization (bridge/sessions.js).
+  sessions: 'b15d026c1edf2b337a34ad9cc9945005745dd4b6b046424e3c42b91993b65df2',
   settings: 'a44929caff59641eb059f28885f1674d4e277412526d31c1d3ddfd75e44d0496',
   updater: '86412d40999a268d3d92dc4fe97e3fe465de08745423be820f38a462d79aaced',
   // Recomputed for the comment-only English translation of the voice bridge
