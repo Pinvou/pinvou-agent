@@ -1157,34 +1157,52 @@ impl EnginePool {
         // "借名"场景的事实属于别家模型，不得张冠李戴。云端 preset 与
         // coding_plan 不是 operator-owned，不探测。
         let is_vllm_route = bridge.provider() == "vllm";
-        if let Some(mut model) = bridge.effective_model_owned() {
-            let operator_owned = model.is_operator_owned_endpoint();
-            if is_vllm_route || operator_owned {
-                // 探测与真实推理同源携带凭据（带鉴权的端点 `/v1/models` 无凭据
-                // 会 401；探测失败保留配置值）。
-                let api_key = bridge.api_key();
-                let (served, max_len, max_output) = crate::features::monitor::resolve_served_model(
-                    &bridge.base_url(),
-                    Some(api_key.as_str()),
-                    &model.model,
-                )
-                .await;
-                let adopts = crate::features::monitor::adopts_probed_facts(
-                    is_vllm_route,
-                    &model.model,
-                    &served,
-                );
-                if is_vllm_route && served != model.model && !pins_scheduled_model {
-                    model.model = served;
-                    bridge.session_model = Some(model);
-                }
-                if adopts {
-                    bridge.probed_context_tokens = max_len;
-                    bridge.probed_output_tokens = max_output;
-                }
-            }
+        if let Some(model) = bridge.effective_model_owned() {
+            Self::adopt_probed_endpoint_facts(
+                &mut bridge,
+                model,
+                is_vllm_route,
+                pins_scheduled_model,
+            )
+            .await;
         }
         bridge
+    }
+
+    /// spawn 探测与事实采纳（`finalize_runtime_bridge` 的可测内核，接线单测见
+    /// 文件尾 `probed_facts_wiring_tests`）：operator-owned 路由（或 vLLM 路由）
+    /// 探测 `/v1/models`，vLLM 顺带纠偏 served name（`pins_scheduled_model` 时
+    /// 保留配置名）；事实是否采纳由 `adopts_probed_facts` 判定，采纳时同时写
+    /// `probed_context_tokens` 与 `probed_output_tokens`。探测失败（端点不可达
+    /// / 名称未匹配）两项事实为 None，路由回退配置值/窗口分档。
+    async fn adopt_probed_endpoint_facts(
+        bridge: &mut Pinvou3Bridge,
+        mut model: SavedModel,
+        is_vllm_route: bool,
+        pins_scheduled_model: bool,
+    ) {
+        if !(is_vllm_route || model.is_operator_owned_endpoint()) {
+            return;
+        }
+        // 探测与真实推理同源携带凭据（带鉴权的端点 `/v1/models` 无凭据
+        // 会 401；探测失败保留配置值）。
+        let api_key = bridge.api_key();
+        let (served, max_len, max_output) = crate::features::monitor::resolve_served_model(
+            &bridge.base_url(),
+            Some(api_key.as_str()),
+            &model.model,
+        )
+        .await;
+        let adopts =
+            crate::features::monitor::adopts_probed_facts(is_vllm_route, &model.model, &served);
+        if is_vllm_route && served != model.model && !pins_scheduled_model {
+            model.model = served;
+            bridge.session_model = Some(model);
+        }
+        if adopts {
+            bridge.probed_context_tokens = max_len;
+            bridge.probed_output_tokens = max_output;
+        }
     }
 
     async fn fresh_bridge_for_policy(
@@ -4837,5 +4855,199 @@ mod scheduled_model_tests {
             );
             assert!(lifecycle.finish_once(|| {}).is_some());
         }
+    }
+}
+
+/// spawn 探测采纳的接线测试：经真实 HTTP mock（127.0.0.1:0）钉死
+/// `EnginePool::adopt_probed_endpoint_facts` 的四条路径——非 vLLM 单条目
+/// "借名"不采纳、精确命中采纳、vLLM 改名 + 采纳、vLLM 钉名不改名仍采纳
+/// （有意取舍，见 `adopts_probed_facts` 文档），以及云端 preset 不探测。
+/// 评审 round-2 发现生产注入点零测试（纯函数级保证无法覆盖 spawn 接线），
+/// 本模块补齐该缺口。
+#[cfg(test)]
+#[allow(clippy::await_holding_lock)]
+mod probed_facts_wiring_tests {
+    use super::{EnginePool, Pinvou3Bridge};
+    use crate::core::model_endpoint::models_mock;
+    use crate::features::runtime_bundle::platform::Pinvou3Bundle;
+    use crate::platform::credential_store::CredentialState;
+    use crate::platform::paths::tests::ENV_LOCK;
+    use crate::platform::prefs::{ImageCapabilityOverride, ModelPreset, SavedModel, UserPrefs};
+
+    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    impl EnvRestore {
+        fn capture(names: &[&'static str]) -> Self {
+            Self(
+                names
+                    .iter()
+                    .map(|name| (*name, std::env::var_os(name)))
+                    .collect(),
+            )
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (name, value) in self.0.drain(..) {
+                match value {
+                    // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+                    Some(value) => unsafe { std::env::set_var(name, value) },
+                    // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+                    None => unsafe { std::env::remove_var(name) },
+                }
+            }
+        }
+    }
+
+    /// 隔离 base_url/api_key 相关 env（`Pinvou3Bridge::base_url`/`api_key` 的
+    /// env 优先级高于 session model），返回的 guard 在测试结束时恢复。
+    fn isolate_model_env() -> EnvRestore {
+        let restore = EnvRestore::capture(&["DEEPSEEK_BASE_URL", "DEEPSEEK_API_KEY"]);
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::remove_var("DEEPSEEK_BASE_URL") };
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+        restore
+    }
+
+    fn saved_model(preset: ModelPreset, model: &str, provider_kind: Option<&str>) -> SavedModel {
+        SavedModel {
+            id: "wiring-model".into(),
+            name: "Wiring".into(),
+            alias: None,
+            preset,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            model: model.into(),
+            base_url: String::new(),
+            provider_kind: provider_kind.map(Into::into),
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        }
+    }
+
+    fn wiring_bridge(model: SavedModel) -> Pinvou3Bridge {
+        Pinvou3Bridge {
+            prefs: UserPrefs::default(),
+            bundle: Pinvou3Bundle::paths(),
+            workspace: std::env::temp_dir(),
+            session_model: Some(model),
+            runtime_model_credential: None,
+            probed_context_tokens: None,
+            probed_output_tokens: None,
+            probed_local_kind: None,
+            execution_root_resolver: None,
+            code_session_predicate: None,
+            external_acp_session_predicate: None,
+            image_analyze_always: false,
+        }
+    }
+
+    fn single_entry_json(id: &str) -> String {
+        format!(
+            r#"{{"data":[{{"id":"{id}","max_model_len":262144,"max_completion_tokens":4096}}]}}"#
+        )
+    }
+
+    #[tokio::test]
+    async fn non_vllm_operator_route_does_not_adopt_borrowed_single_entry() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[("/v1/models", 200, single_entry_json("served-only"))]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, false, false).await;
+        assert_eq!(
+            bridge.probed_context_tokens, None,
+            "单条目借名返回的窗口事实属于别家模型，不得采纳"
+        );
+        assert_eq!(bridge.probed_output_tokens, None, "自报输出上限同理不采纳");
+        assert_eq!(
+            bridge.session_model.as_ref().unwrap().model,
+            "my-model",
+            "非 vLLM 不做 served-name 纠偏"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_vllm_operator_route_adopts_on_exact_name_match() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[("/v1/models", 200, single_entry_json("my-model"))]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, false, false).await;
+        assert_eq!(bridge.probed_context_tokens, Some(262_144));
+        assert_eq!(bridge.probed_output_tokens, Some(4_096));
+        assert_eq!(bridge.session_model.as_ref().unwrap().model, "my-model");
+    }
+
+    #[tokio::test]
+    async fn vllm_route_renames_to_served_name_and_adopts_facts() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[("/v1/models", 200, single_entry_json("served-actual"))]);
+        let mut model = saved_model(ModelPreset::LocalVllm, "my-model", None);
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, true, false).await;
+        assert_eq!(
+            bridge.session_model.as_ref().unwrap().model,
+            "served-actual",
+            "vLLM 单条目跟随 served name"
+        );
+        assert_eq!(bridge.probed_context_tokens, Some(262_144));
+        assert_eq!(bridge.probed_output_tokens, Some(4_096));
+    }
+
+    #[tokio::test]
+    async fn vllm_route_pins_scheduled_model_keeps_name_but_adopts_facts() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[("/v1/models", 200, single_entry_json("served-actual"))]);
+        let mut model = saved_model(ModelPreset::LocalVllm, "my-model", None);
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, true, true).await;
+        assert_eq!(
+            bridge.session_model.as_ref().unwrap().model,
+            "my-model",
+            "定时任务钉名时纠偏被抑制，配置名原样上线"
+        );
+        assert_eq!(
+            bridge.probed_context_tokens,
+            Some(262_144),
+            "钉名 + 单条目借用仍按 vLLM 语义采纳事实（有意取舍，见 adopts_probed_facts 文档）"
+        );
+        assert_eq!(bridge.probed_output_tokens, Some(4_096));
+    }
+
+    #[tokio::test]
+    async fn cloud_route_is_not_probed_at_all() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[("/v1/models", 200, single_entry_json("my-model"))]);
+        let mut model = saved_model(ModelPreset::Deepseek, "my-model", None);
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, false, false).await;
+        assert_eq!(
+            mock.hits_for("/v1/models"),
+            0,
+            "云端 preset 不是 operator-owned，不得发起探测请求"
+        );
+        assert_eq!(bridge.probed_context_tokens, None);
+        assert_eq!(bridge.probed_output_tokens, None);
     }
 }
