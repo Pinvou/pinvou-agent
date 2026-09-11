@@ -26,9 +26,10 @@ import xaiIcon from '../../brand-icons/xai.svg';
 //   默认值即 glm-5.3（docs.bigmodel.cn / docs.z.ai）。
 // - gemini：gemini-3.8-flash 于 2026-09-02 发布接棒（ai.google.dev models 页）。
 // - xai：grok-4.6 为官方「编码/Agent 推荐」位（docs.x.ai models 页）。
-// - openai 保持 gpt-5.6-terra：官方推荐起点虽已是 gpt-6-astra，但其 Chat
-//   Completions 不支持函数调用（工具调用需 Responses 协议），品悟 openai 预设
-//   走 Chat wire，故默认不换。
+// - openai 切换 gpt-6-astra：官方推荐起点已是 gpt-6-astra；官方模型页将
+//   function calling 列为通用支持特性、Chat Completions 端点标记 Supported
+//   （「仅 Responses」的限定只针对页面托管工具列表，不影响函数调用），品悟
+//   openai 预设走 Chat wire 可正常使用，故默认随官方推荐切换。
 const MODEL_PRESET_DEFS = {
   local_vllm:  { baseUrl: 'http://127.0.0.1:8000/v1',                model: 'qwen36_35b_256k' },
   deepseek:    { baseUrl: 'https://api.deepseek.com',                model: 'deepseek-flash' },
@@ -40,7 +41,7 @@ const MODEL_PRESET_DEFS = {
   minimax:     { baseUrl: 'https://api.minimaxi.com/v1',            model: 'MiniMax-M3' },
   glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-5.3' },
   mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2.5-pro' },
-  openai:      { baseUrl: 'https://api.openai.com/v1',              model: 'gpt-5.6-terra' },
+  openai:      { baseUrl: 'https://api.openai.com/v1',              model: 'gpt-6-astra' },
   anthropic:   { baseUrl: 'https://api.anthropic.com/v1',           model: 'claude-sonnet-5' },
   gemini:      { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-3.8-flash' },
   xai:         { baseUrl: 'https://api.x.ai/v1',                    model: 'grok-4.6' },
@@ -544,12 +545,13 @@ const MODEL_CATALOG = {
       vendor: 'openai',
       baseUrl: 'https://api.openai.com/v1',
       // 2026-09-11 官方口径（developers.openai.com/api/docs/models）：gpt-6-astra
-      // 为当前最强旗舰，但其 Chat Completions 不支持函数调用（工具调用需
-      // Responses 协议）——品悟 openai 预设走 Chat wire，故收录但不作默认、
-      // desc 明示限制。gpt-5.6-sol/terra/luna 定位与官方一致；gpt-5.5 /
-      // gpt-5.4-mini 在售未弃用。gpt-5.3-codex 为 Responses 专用，不收录。
+      // 为当前最强旗舰与官方推荐起点；function calling 为通用支持特性、Chat
+      // Completions 端点标记 Supported（「仅 Responses」的限定只针对页面托管
+      // 工具列表，不影响函数调用），故收录并作默认。gpt-5.6-sol/terra/luna
+      // 定位与官方一致；gpt-5.5 / gpt-5.4-mini 在售未弃用。gpt-5.3-codex 为
+      // Responses 专用，不收录。
       items: [
-        { model: 'gpt-6-astra', imageCapable: true, title: 'gpt-6-astra', desc: '最强旗舰；仅 Responses 协议支持函数调用' },
+        { model: 'gpt-6-astra', imageCapable: true, title: 'gpt-6-astra', desc: '官方推荐起点，当前最强旗舰' },
         { model: 'gpt-5.6-sol', imageCapable: true, title: 'gpt-5.6-sol', desc: 'GPT-5.6 家族旗舰，推理与编码' },
         { model: 'gpt-5.6-terra', imageCapable: true, title: 'gpt-5.6-terra', desc: '均衡智能与成本' },
         { model: 'gpt-5.6-luna', imageCapable: true, title: 'gpt-5.6-luna', desc: '低成本高并发' },

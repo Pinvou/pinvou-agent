@@ -115,6 +115,10 @@ const VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     // DeepSeek V4.1-Flash 原生视觉(api-docs.deepseek.com/guides/vision,
     // 2026-09-11);deepseek-v4-pro 官方 pricing 页明示 Vision Not supported,不收。
     "deepseek-flash",
+    // 存量配置仍保存退役别名 deepseek-v4-flash / -vision-exp:官方明示旧名仍被
+    // 接受并路由至 V4.1-Flash(多模态)计费,子串条目同时覆盖两个别名,与前端
+    // 目录的 legacyAliases imageCapable:true 同批同步。
+    "deepseek-v4-flash",
     // 阿里 Qwen(help.aliyun.com Model Studio vision 文档,2026-09-11):
     // qwen3.8-max / qwen3.8-flash 全系收;qwen3.7 仅 plus/flash(3.7-max 纯文本,
     // 不能用 qwen3.7 整体子串);qwen3.6-flash 收。VL 系列保留。"qwen3.8" 为
@@ -325,6 +329,9 @@ mod tests {
             (ModelPreset::OpenaiCompatible, "claude-fable-5-1"),
             // V4.1-Flash 原生视觉(api-docs.deepseek.com/guides/vision)。
             (ModelPreset::Deepseek, "deepseek-flash"),
+            // 退役别名仍路由至 V4.1-Flash,存量配置须同样解析为 Supported。
+            (ModelPreset::Deepseek, "deepseek-v4-flash"),
+            (ModelPreset::Deepseek, "deepseek-v4-flash-vision-exp"),
             (ModelPreset::Qwen, "qwen-vl-max"),
             (ModelPreset::Qwen, "Qwen2.5-VL-72B-Instruct"),
             (ModelPreset::Qwen, "qwen3.8-max"),

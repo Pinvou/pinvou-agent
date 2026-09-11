@@ -26,6 +26,7 @@ vm.runInContext(
   `this.selectorMainLabel = selectorMainLabel;\n` +
   `this.selectorSubLabel = selectorSubLabel;\n` +
   `this.MODEL_CATALOG = MODEL_CATALOG;\n` +
+  `this.MODEL_PRESET_DEFS = MODEL_PRESET_DEFS;\n` +
   `this.findCloudProviderForModel = findCloudProviderForModel;\n` +
   `this.providerLabelForModel = providerLabelForModel;\n` +
   `this.reasoningEffortTiersForModel = reasoningEffortTiersForModel;\n` +
@@ -43,7 +44,7 @@ vm.runInContext(
   { filename: srcPath },
 );
 
-const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort, baseUrlUsesLoopback, baseUrlUsesLocalOrPrivate, localProbeTiersForKind, alwaysThinkingSpecForModel, localReasoningTiers, catalogImageCapableForModel, reasoningEffortDisplayForTiers } = ctx;
+const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, MODEL_PRESET_DEFS, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort, baseUrlUsesLoopback, baseUrlUsesLocalOrPrivate, localProbeTiersForKind, alwaysThinkingSpecForModel, localReasoningTiers, catalogImageCapableForModel, reasoningEffortDisplayForTiers } = ctx;
 
 // i18n 测试替身:复刻实际字典里会用到的字段
 const t = {
@@ -187,6 +188,38 @@ test('2026-09-11 目录新增行归入对应 provider 组(预设识别)', () => 
   assert.strictEqual(isPresetModel(mkCloud('doubao', 'doubao', 'https://ark.cn-beijing.volces.com/api/v3', 'doubao-seed-2-0-code-preview-260215')), true);
   // qwen 国际组收录 qwen3.7-flash（国际站完整清单在列，2026-09-11 复核恢复）
   assert.strictEqual(isPresetModel(mkCloud('qwen', 'qwen', 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', 'qwen3.7-flash')), true);
+  // qwen3.8-flash 进入全部三个 qwen 组（cn / Token Plan / 国际）
+  const qwenGroups = (MODEL_CATALOG.cloud || []).filter(g => (g.key || '').startsWith('qwen'));
+  assert.strictEqual(qwenGroups.length, 3, 'qwen 组数量变化时须同步本断言');
+  for (const g of qwenGroups) {
+    assert.ok(
+      (g.items || []).some(i => i.model === 'qwen3.8-flash'),
+      `${g.key} 组应收录 qwen3.8-flash`,
+    );
+  }
+});
+
+test('MODEL_PRESET_DEFS 默认模型与 Rust prefs 锁定口径一致(default_model_matches_vendor_docs_2026_09)', () => {
+  // prefs/model.rs 的同名测试锁 Rust 侧;本测试锁前端侧,任一侧漂移都会在
+  // 对应测试显式暴露(qwen 默认值曾因无锁长期漂移)。
+  const expected = {
+    local_vllm: 'qwen36_35b_256k',
+    deepseek: 'deepseek-flash',
+    kimi: 'kimi-k3',
+    openai_compatible: '',
+    qwen: 'qwen3.8-max',
+    doubao: 'doubao-seed-evolving',
+    minimax: 'MiniMax-M3',
+    glm: 'glm-5.3',
+    mimo: 'mimo-v2.5-pro',
+    openai: 'gpt-6-astra',
+    anthropic: 'claude-sonnet-5',
+    gemini: 'gemini-3.8-flash',
+    xai: 'grok-4.6',
+  };
+  for (const [key, model] of Object.entries(expected)) {
+    assert.strictEqual(MODEL_PRESET_DEFS[key] && MODEL_PRESET_DEFS[key].model, model, `${key} 默认模型漂移`);
+  }
 });
 test('官方 API 手填 ID -> 自定义', () => {
   assert.strictEqual(isPresetModel(mk({ preset: 'deepseek', provider_kind: 'official_api', vendor: 'deepseek', base_url: 'https://api.deepseek.com', model: 'deepseek-v9-fake' })), false);
