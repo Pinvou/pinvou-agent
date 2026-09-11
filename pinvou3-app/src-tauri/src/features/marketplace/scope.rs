@@ -97,7 +97,7 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
     let path = disabled_bundles_path();
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(_) => {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let home = paths::pinvou3_home();
             let legacy_existed = home.join("disabled_connectors.json").exists()
                 || home.join("disabled_skills.json").exists();
@@ -122,6 +122,23 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
             // 误判为升级装机而翻回全开（评审 #455 阻塞项）。
             save_disabled_bundles_file(&file);
             return file;
+        }
+        Err(error) => {
+            // 文件存在但不可读（权限/占用锁等）：与损坏同口径 fail-closed，
+            // 不得并入上一条迁移分支——升级装机上那会把 plain 初始化为空
+            // （旧 AllowAll 全开）并在无隔离的情况下覆盖原文件，用户的显式
+            // 关闭被静默销毁（评审 #455 R4-B1）。原始字节尽力留副本（读不出
+            // 则以错误占位），降级态覆盖落盘使恢复一次性完成。
+            let salvaged = std::fs::read(&path)
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .unwrap_or_else(|_| format!("<unreadable: {error}>"));
+            quarantine_corrupt_disabled_bundles(&salvaged, &error.to_string());
+            let recovered = DisabledBundlesFile {
+                plain_defaults_migrated: true,
+                ..DisabledBundlesFile::default()
+            };
+            save_disabled_bundles_file(&recovered);
+            return recovered;
         }
     };
     let mut file: DisabledBundlesFile = match serde_json::from_str(&content) {
@@ -503,6 +520,9 @@ pub fn sync_disabled_bundles_for_connector_switch(connector_id: &str, enabled: b
         enable_bundle_in_deny_all_scopes(connector_id);
         return;
     }
+    // 与 enable 臂同口径：入参统一归一为包 id（剥 `skill:` 前缀 +
+    // companion 映射），防御非内置 id 调用方（评审 #455 R4-m1）。
+    let connector_id = &to_package_id(connector_id);
     // 单临界区 RMW（四轮评审 M-6b）：逐 scope 独立 load→save 两次加锁会在跨临界区
     // 窗口丢并发写（lost-update），与文件内其它写方同范式——持锁读 → 改 → 一次落盘。
     let _guard = DISABLED_BUNDLES_FILE_LOCK
@@ -521,7 +541,7 @@ pub fn sync_disabled_bundles_for_connector_switch(connector_id: &str, enabled: b
         if !file.initialized.contains(mode.as_str()) {
             continue;
         }
-        ids.push(connector_id.to_string());
+        ids.push(connector_id.clone());
         let key = mode.as_str().to_string();
         file.scopes.insert(key.clone(), ids);
         file.initialized.insert(key);
