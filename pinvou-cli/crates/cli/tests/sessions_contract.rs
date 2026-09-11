@@ -327,9 +327,11 @@ fn sessions_show_limits_and_exports_transcript() {
     let id = create_session_fixture();
     seed_transcript(&id, "hello", "hi there");
 
-    // --last 1 keeps only the assistant message
+    // --last 1 windows the rendered messages; message_count stays the
+    // session total (GUI semantics) with the window size reported separately
     let value = run_json(&["pinvou", "sessions", "show", &id, "--last", "1"]);
-    assert_eq!(value["message_count"], 1);
+    assert_eq!(value["message_count"], 2);
+    assert_eq!(value["shown_message_count"], 1);
     assert_eq!(value["messages"][0]["role"], "assistant");
     assert_eq!(value["messages"][0]["text"], "hi there");
 

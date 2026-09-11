@@ -15,11 +15,10 @@ use crate::{CliError, ExitCode};
 
 pub const TOP_LEVEL_USAGE: &str = "usage: pinvou benchmark <command> | pinvou agent run | \
      pinvou sessions|models|settings|memory|knowledge|scheduled|plugins|connectors|personas|\
-code|files|voice|deps|feedback|monitor|artifacts <command>";
+code|files|voice|deps|feedback|monitor|artifacts <command> | pinvou --version";
 
 /// `$PINVOU3_HOME` when set (absolute), else `~/.pinvou3` — the same product
 /// data root the benchmark family uses.
-#[allow(dead_code)] // consumed by family implementations as they land
 pub fn sandbox_home() -> Result<PathBuf, CliError> {
     if let Some(home) = std::env::var_os("PINVOU3_HOME") {
         let home = PathBuf::from(home);
@@ -35,9 +34,30 @@ pub fn sandbox_home() -> Result<PathBuf, CliError> {
     Ok(home.join(".pinvou3"))
 }
 
+/// Mirrors `features::sessions::validate_session_id` (crate-private in the
+/// app): only `[A-Za-z0-9_-]`, so an id can never traverse out of the
+/// sessions root when it is joined onto a path. Shared by every family that
+/// accepts a session id so the usage-error contract is uniform.
+pub fn valid_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// Usage error for an id outside the [`valid_session_id`] alphabet.
+pub fn require_valid_session_id(id: &str, action: &str) -> Result<(), CliError> {
+    if valid_session_id(id) {
+        Ok(())
+    } else {
+        Err(CliError::usage(format!(
+            "{action} requires a valid session id ([A-Za-z0-9_-])"
+        )))
+    }
+}
+
 /// Destructive subcommands must opt in explicitly, mirroring the GUI's
 /// confirmation dialogs.
-#[allow(dead_code)] // consumed by family implementations as they land
 pub fn require_yes(confirmed: bool) -> Result<(), CliError> {
     if confirmed {
         Ok(())
@@ -51,7 +71,6 @@ pub fn require_yes(confirmed: bool) -> Result<(), CliError> {
 /// Resolve a secret from `--api-key-env VAR` / `--api-key-stdin`. Plaintext
 /// argv flags are deliberately not offered: argv leaks through shell history
 /// and process listings.
-#[allow(dead_code)] // consumed by family implementations as they land
 pub fn resolve_secret(
     api_key_env: &Option<String>,
     api_key_stdin: bool,
@@ -65,6 +84,13 @@ pub fn resolve_secret(
         let value = std::env::var(var).map_err(|_| {
             CliError::failed(format!("secret environment variable {var} is not set"))
         })?;
+        // A set-but-empty variable is as useless as an empty stdin read;
+        // storing it would report "key-set" while every signed request fails.
+        if value.trim().is_empty() {
+            return Err(CliError::failed(format!(
+                "secret environment variable {var} is empty"
+            )));
+        }
         return Ok(Some(value));
     }
     if api_key_stdin {
@@ -80,7 +106,6 @@ pub fn resolve_secret(
     Ok(None)
 }
 
-#[allow(dead_code)] // consumed by family implementations as they land
 pub fn success(stdout: String) -> crate::CliOutcome {
     crate::CliOutcome {
         exit_code: ExitCode::Success,
@@ -91,7 +116,6 @@ pub fn success(stdout: String) -> crate::CliOutcome {
 /// Platform binary-name candidates for a bare CLI name: Windows installs are
 /// `.exe` real binaries or npm `.cmd` shims, and PATH scanning must try both
 /// because bare names never match there.
-#[allow(dead_code)] // consumed by family implementations as they land
 pub fn binary_candidates(name: &str) -> Vec<String> {
     #[cfg(target_os = "windows")]
     {
@@ -110,7 +134,6 @@ pub fn binary_candidates(name: &str) -> Vec<String> {
 /// Builds a `Command` for a resolved vendor CLI path. Windows cannot
 /// `CreateProcess` an npm `.cmd` shim directly, so `.cmd` targets run through
 /// `cmd /D /S /C` — the same wrapper the app's platform process helper uses.
-#[allow(dead_code)] // consumed by family implementations as they land
 pub fn build_command(executable: &std::path::Path, args: &[&str]) -> std::process::Command {
     #[cfg(target_os = "windows")]
     if executable
@@ -131,7 +154,6 @@ pub fn build_command(executable: &std::path::Path, args: &[&str]) -> std::proces
 /// Puts a long-running vendor CLI child in its own process group so a
 /// timeout kill can take its npm/shell descendants with it instead of
 /// orphaning them (the app sets the same group for connector CLI spawns).
-#[allow(dead_code)] // consumed by family implementations as they land
 pub fn set_process_group(command: &mut std::process::Command) {
     #[cfg(unix)]
     {
@@ -147,7 +169,6 @@ pub fn set_process_group(command: &mut std::process::Command) {
 /// Kills a timed-out vendor CLI child **and its descendants**: unix takes the
 /// whole process group (the child was spawned with [`set_process_group`]);
 /// Windows uses `taskkill /T`, mirroring the app's `kill_pid_tree`.
-#[allow(dead_code)] // consumed by family implementations as they land
 pub fn kill_process_tree(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
@@ -171,7 +192,6 @@ pub fn kill_process_tree(child: &mut std::process::Child) {
 
 /// Serializes `value` for `--output json` (single line) and renders `human`
 /// verbatim otherwise.
-#[allow(dead_code)] // consumed by family implementations as they land
 pub fn render(output: crate::OutputMode, human: String, value: &serde_json::Value) -> String {
     match output {
         crate::OutputMode::Human => human,

@@ -541,7 +541,12 @@ pub struct CliOutcome {
 pub fn execute(parsed: ParsedCli) -> Result<CliOutcome, CliError> {
     let output = parsed.output;
     match parsed.command {
-        CliCommand::Version => Ok(success(format!("pinvou {}", env!("CARGO_PKG_VERSION")))),
+        CliCommand::Version => Ok(success(match output {
+            OutputMode::Human => format!("pinvou {}", env!("CARGO_PKG_VERSION")),
+            OutputMode::Json => {
+                serde_json::json!({ "version": env!("CARGO_PKG_VERSION") }).to_string()
+            }
+        })),
         CliCommand::Benchmark(BenchmarkCommand::List) => Ok(success(render_list(output))),
         CliCommand::Benchmark(BenchmarkCommand::Status(run_id)) => status(&run_id, output),
         CliCommand::Benchmark(BenchmarkCommand::Report(run_id)) => report(&run_id, output),
