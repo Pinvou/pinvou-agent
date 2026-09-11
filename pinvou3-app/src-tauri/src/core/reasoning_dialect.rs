@@ -50,8 +50,8 @@ pub fn reasoning_dialect_from_base_url(base_url: &str, model: &str) -> Reasoning
         .to_ascii_lowercase();
 
     // api.deepseeki.com 曾与官方域名并列嗅探，2026-09-11 移除：官方文档从未
-    // 出现该域名，社区按 typosquat 报告
-    // （github.com/deepseek-ai/awesome-deepseek-agent/issues/311），
+    // 收录该域名，社区报告其为不可解析的非官方域名
+    // （deepseek-ai/awesome-deepseek-agent#311），
     // 不再按 DeepSeek 官方口径强制关闭思考。
     if normalized.contains("api.deepseek.com") {
         ReasoningDialect::ThinkingDisabled
@@ -92,8 +92,8 @@ mod tests {
     }
 
     #[test]
-    fn deepseeki_typosquat_is_not_detected() {
-        // api.deepseeki.com 是 typosquat 域名（非官方，2026-09-11 移除嗅探）：
+    fn deepseeki_unofficial_domain_is_not_detected() {
+        // api.deepseeki.com 是非官方域名（官方文档从未收录，2026-09-11 移除嗅探）：
         // 不得再按 DeepSeek 官方口径返回 ThinkingDisabled，落 None 走模型默认行为。
         assert_eq!(
             reasoning_dialect_from_base_url("https://api.deepseeki.com/chat/completions", ""),

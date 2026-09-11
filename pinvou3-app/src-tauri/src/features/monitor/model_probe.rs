@@ -939,22 +939,30 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
             (ModelPreset::Qwen, "qwen3.7-max", 1_000_000),
             (ModelPreset::Qwen, "qwen3.7-flash", 1_000_000),
             (ModelPreset::Qwen, "qwen3.6-flash", 1_000_000),
-            // 豆包：evolving 已升 1M，2.x 全系 256K
+            // 豆包：evolving 已升 1M，2.x 全系 256K（id 用目录在售 wire id，
+            // 底座无 doubao 行，均落 Doubao 预设兜底 256K）
             (ModelPreset::Doubao, "doubao-seed-evolving", 1_048_576),
-            (ModelPreset::Doubao, "doubao-seed-2.1-pro", 262_144),
-            (ModelPreset::Doubao, "doubao-seed-2.1-turbo", 262_144),
-            (ModelPreset::Doubao, "doubao-seed-2.0-pro", 262_144),
-            (ModelPreset::Doubao, "doubao-seed-2.0-lite", 262_144),
+            (ModelPreset::Doubao, "doubao-seed-2-1-pro-260628", 262_144),
+            (ModelPreset::Doubao, "doubao-seed-2-1-turbo-260628", 262_144),
+            (ModelPreset::Doubao, "doubao-seed-2-0-pro-260215", 262_144),
+            (ModelPreset::Doubao, "doubao-seed-2-0-lite-260428", 262_144),
             // OpenAI 兼容示例：gpt-5.6 全系 1.05M
             (ModelPreset::OpenaiCompatible, "gpt-5.6-terra", 1_050_000),
             (ModelPreset::OpenaiCompatible, "gpt-5.6-luna", 1_050_000),
             (ModelPreset::OpenaiCompatible, "gpt-5.6-sol", 1_050_000),
             // xAI：底座 known 表收录 grok-4.6 / grok-4.5 500K（2026-09-11 核对）
             (ModelPreset::Xai, "grok-4.6", 500_000),
-            // 底座 catalog 已知（haiku 200K）与 PINVOU_OVERRIDES 覆盖（opus-5 1M）
-            // 的 Anthropic 模型走 resolved_context_window，preset 兜底见 prefs 测试。
+            // 底座 known 表仍把 grok-4.20-0309-* 记为 2M；core::model_context
+            // 覆盖表先行修正为 docs.x.ai 2026-09-11 复核的 1M（与目录 desc 一致）。
+            (ModelPreset::Xai, "grok-4.20-0309-reasoning", 1_000_000),
+            (ModelPreset::Xai, "grok-4.20-0309-non-reasoning", 1_000_000),
+            // 底座 catalog 已知（haiku 200K）与 PINVOU_OVERRIDES 覆盖（opus-5 /
+            // fable-5-1 均 1M）的 Anthropic 模型走 resolved_context_window，preset
+            // 兜底见 prefs 测试。fable-5-1 底座 known 表未精确收录（只有 fable-5），
+            // 无覆盖时会落 claude 通配 200K。
             (ModelPreset::Anthropic, "claude-haiku-4-5", 200_000),
             (ModelPreset::Anthropic, "claude-opus-5", 1_000_000),
+            (ModelPreset::Anthropic, "claude-fable-5-1", 1_000_000),
         ];
         for (preset, model, expected) in cases {
             assert_eq!(

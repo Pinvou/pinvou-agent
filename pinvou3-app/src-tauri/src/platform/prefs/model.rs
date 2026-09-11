@@ -172,7 +172,10 @@ impl ModelPreset {
     /// ⚠️ ops 同步要求:vLLM 启动也要带 `--served-model-name qwen36_35b_256k`,
     /// 否则 OpenAI-compat API 报 `model_not_found`。
     ///
-    /// 2026-09-11 按官方文档核对（与前端 model-catalog.js 同批同步）。
+    /// 2026-09-11 按官方文档核对（与前端 model-catalog.js 的 MODEL_PRESET_DEFS
+    /// 同批同步）。前端两处消费点中，main.jsx 旧版草稿回填已改为直接复用
+    /// MODEL_PRESET_DEFS，本表是 Rust 侧唯一手写镜像，由
+    /// `default_model_matches_vendor_docs_2026_09` 锁定。
     pub fn default_model(&self) -> &'static str {
         match self {
             ModelPreset::LocalVllm => "qwen36_35b_256k",
@@ -226,8 +229,11 @@ impl ModelPreset {
             },
             // Gemini 全系标称 1M。
             ModelPreset::Gemini => Some(1_048_576),
-            // xAI 官方口径：grok-4.20 系 1M、grok-4.3 1M、grok-4.5 / grok-4.6 500K、
-            // grok-build 256K（2026-09-11 按 docs.x.ai 模型详情页复核）。
+            // xAI 官方口径：grok-4.20 系 1M（grok-4.20-0309-* 由 core::model_context
+            // 覆盖表先行修正，本兜底只承接底座不认识的其它 4.20 拼写）、grok-4.3 1M、
+            // grok-4.5 / grok-4.6 500K、grok-build-0.1 256K（2026-09-11 按 docs.x.ai
+            // 模型详情页复核；底座 known 表对裸 "grok-build" 另有 512K 旧行，目录
+            // 不收录该拼写，实际 wire id grok-build-0.1 落本兜底 256K）。
             ModelPreset::Xai => match model.map(str::to_ascii_lowercase) {
                 Some(m) if m.contains("grok-4.20") => Some(1_000_000),
                 Some(m) if m.contains("grok-4.3") => Some(1_000_000),

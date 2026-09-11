@@ -166,9 +166,11 @@ const MODEL_CATALOG = {
       endpointAliases: ['https://api.z.ai/api/coding/paas/v4/chat/completions'],
       // z.ai 官方 wire id 为全小写（docs.z.ai API enum，2026-09 核查）；存量
       // 配置可能保存旧大写目录值（GLM-5.2），以 legacyAliases 兼容识别。
-      // GLM-5-Turbo 从未在 z.ai 发布（不在模型总览/定价/API enum），旧行已删；
-      // 存量 GLM-5-Turbo 配置会回落为自定义归类（档位提示不受影响），须自行
-      // 改选 glm-5.3 / glm-5.3-flash。
+      // 旧模型自动路由为 z.ai 官方口径（docs.z.ai/devpack/overview，2026-09-11
+      // 核对）：GLM-5.2/GLM-5.1 请求自动路由至 GLM-5.3，GLM-4.7 自动路由至
+      // GLM-5.3-Flash。GLM-5-Turbo 从未在 z.ai 发布（不在模型总览/定价/API
+      // enum），旧行已删；存量 GLM-5-Turbo 配置会回落为自定义归类（档位提示
+      // 不受影响），须自行改选 glm-5.3 / glm-5.3-flash。
       items: [
         { model: 'glm-5.3', title: 'GLM-5.3', desc: '旗舰编码模型，全套餐支持' },
         { model: 'glm-5.3-flash', imageCapable: true, title: 'GLM-5.3-Flash', desc: '原生多模态编码模型，额度三倍' },
@@ -285,8 +287,11 @@ const MODEL_CATALOG = {
       // （至 V4.1 Pro 发布）；deepseek-v4-flash / -vision-exp 已退役、仅临时
       // 路由，旧行删除并以 legacyAliases 兼容存量配置归类。
       // deepseek-chat / deepseek-reasoner 别名已于 2026-07-24 停用，不再收录。
-      // api.deepseeki.com 非官方域名（官方文档从未出现，社区按 typosquat
-      // 处理），勿加入端点白名单。
+      // api.deepseeki.com 非官方域名（官方文档从未收录，社区报告该域名不可
+      // 解析，deepseek-ai/awesome-deepseek-agent#311），勿加入端点白名单。
+      // ⚠️ deepseek-v4-pro 的 imageCapable:false 按 2026-09-11 官方 pricing 页
+      // 标注；2026-09-14 路由生效后该 id 实际由多模态的 V4.1-Flash 承接，下轮
+      // 刷新必须复核/翻转此标注（未重新显式保存过的存量 pinvou 配置不受影响）。
       items: [
         { model: 'deepseek-flash', imageCapable: true, legacyAliases: ['deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'], title: 'deepseek-flash', desc: 'V4.1-Flash 主力，1M 上下文，支持图片输入' },
         { model: 'deepseek-v4-pro', imageCapable: false, title: 'deepseek-v4-pro', desc: '2026-09-14 起自动路由至 deepseek-flash 计费' },
@@ -362,7 +367,8 @@ const MODEL_CATALOG = {
       vendor: 'glm',
       baseUrl: 'https://api.z.ai/api/paas/v4',
       // z.ai 官方 wire id 全小写；GLM-5-Turbo 不存在于 z.ai（API enum 无此
-      // 行），不收录。
+      // 行），不收录；存量 glm-5-turbo 配置会回落为自定义归类（档位提示
+      // 不受影响），与本文件 glm_coding_plan_global 组的处理一致。
       items: [
         { model: 'glm-5.3', imageCapable: false, title: 'glm-5.3', desc: '最新旗舰，强制思考' },
         { model: 'glm-5.3-flash', imageCapable: true, title: 'glm-5.3-flash', desc: '最新多模态高性价比' },
@@ -890,14 +896,16 @@ function hasOpenaiDateSnapshotSuffix(lower, prefix) {
 //    与 is_exact_*_base_url）。兼容网关/误配同型号时底座 fail-closed（不注入），
 //    前端回落通用档位，与底座行为对齐。
 // 对齐 bridge.rs `is_official_deepseek_base_url`：官方 DeepSeek 端点判定
-// （trim 尾斜杠 + /beta + /v1，小写比较）。api.deepseeki.com 非官方域名
-// （官方文档从未出现，社区按 typosquat 处理，2026-09-11 核查），已移除。
+// （trim 尾斜杠 + 重复的 /beta、/v1 后缀，对齐 Rust trim_end_matches 的重复剥
+// 除语义，小写比较）。api.deepseeki.com 非官方域名（官方文档从未收录，社区
+// 报告该域名不可解析，deepseek-ai/awesome-deepseek-agent#311，2026-09-11
+// 核查），已移除。
 function isOfficialDeepseekBaseUrl(baseUrl) {
   const normalized = String(baseUrl || '')
     .trim()
     .replace(/\/+$/, '') // eslint-disable-line sonarjs/super-linear-regex -- trailing-slash normalization; input is a user-entered URL of bounded length
-    .replace(/\/beta$/, '')
-    .replace(/\/v1$/, '')
+    .replace(/(?:\/beta)+$/, '')
+    .replace(/(?:\/v1)+$/, '')
     .toLowerCase();
   return normalized === 'https://api.deepseek.com';
 }
@@ -1128,7 +1136,9 @@ function alwaysThinkingSpecForModel(modelId) {
 //   GLM-5.1/GLM-5-Turbo 只有 generic thinking 开关（off/high）；中国 open.bigmodel.cn、
 //   兼容网关、未验证模型底座会删除 thinking/reasoning_effort（两档等效）→ 不提供切换。
 //   注意：厂商文档称 GLM-5.3 系 thinking.type 仅接受 enabled（disabled 报错），底座
-//   仍把 off 映射为 thinking disabled，属底座与厂商的分歧，前端按底座实际行为暴露。
+//   仍把 off 映射为 thinking disabled，属底座与厂商的分歧，前端按底座实际行为暴露
+//   （上游修复 Pinvou/CodeWhale#52 已合并、尚未随 pinvou3 的 gitlink 发布；gitlink
+//   前进后须复查此处 off 档暴露与本注释，避免底座停发 disabled 后选项失效）。
 // - moonshot：K3（直连 kimi-k3 / Kimi Code k3、k3-256k，always-thinking）提供 low/high/max
 //   （off 归一为 low）；其余 moonshot 模型按 generic thinking 开关暴露 off/high。
 // - minimax：仅 first-party MiniMax-M3 提供 off（disabled）/high（adaptive）；M2.7/M2.5

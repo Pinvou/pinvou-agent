@@ -117,7 +117,8 @@ const VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     "deepseek-flash",
     // 阿里 Qwen(help.aliyun.com Model Studio vision 文档,2026-09-11):
     // qwen3.8-max / qwen3.8-flash 全系收;qwen3.7 仅 plus/flash(3.7-max 纯文本,
-    // 不能用 qwen3.7 整体子串);qwen3.6-flash 收。VL 系列保留。
+    // 不能用 qwen3.7 整体子串);qwen3.6-flash 收。VL 系列保留。"qwen3.8" 为
+    // 整代条目:若官方未来发布纯文本 3.8 变体(如 coder 系),须拆为逐条目收。
     "qwen-vl",
     "qwen2-vl",
     "qwen2.5-vl",
@@ -138,15 +139,21 @@ const VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     "glm-5.3-flash",
     "glm-4v",
     // Kimi(2026-09-11):Kimi 直连 kimi-k3 与 Kimi Code k3 / k3-256k 官方均为
-    // 图片输入,`k3` 子串同时覆盖三者(kimi-k3 名内亦含之,冗余仅为可读);
+    // 图片输入;kimi-k3 走子串条目,k3 / k3-256k 属短泛型 id,改按
+    // EXACT_VERIFIED_IMAGE_CAPABLE_MODELS 精确收录(见其注释);
     // kimi-k2.7-code 与 kimi-k2.6 官方定价页为文本/图片/视频输入
     // (platform.kimi.com);kimi-k2.5 等其余文本模型不收。
     "kimi-for-coding",
     "kimi-k3",
-    "k3",
     "kimi-k2.7-code",
     "kimi-k2.6",
 ];
+
+/// 精确(小写全等)收录条目:短的泛型 id 子串命中面过宽——裸 "k3" 子串会让任何
+/// 含 "k3" 的自定义名(第三方/聚合器的无关模型等)被判为原生识图并在发送时
+/// 内联图片,违反本表「宁可 Unknown 不可误判 Supported」的收录原则,故只按
+/// 全等收录。未来出现新的 -档位拼写时应在此追加,而不是回退子串。
+const EXACT_VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &["k3", "k3-256k"];
 
 /// 内置表查询:模型名(小写化)是否命中已验证多模态条目。
 fn builtin_verified_supports_image(model: &str) -> bool {
@@ -154,9 +161,12 @@ fn builtin_verified_supports_image(model: &str) -> bool {
     if normalized.is_empty() {
         return false;
     }
-    VERIFIED_IMAGE_CAPABLE_MODELS
+    EXACT_VERIFIED_IMAGE_CAPABLE_MODELS
         .iter()
-        .any(|entry| normalized.contains(entry))
+        .any(|entry| normalized == *entry)
+        || VERIFIED_IMAGE_CAPABLE_MODELS
+            .iter()
+            .any(|entry| normalized.contains(entry))
 }
 
 /// 解析一条 SavedModel 的生效图片输入能力(优先级见模块头注释)。
@@ -353,7 +363,8 @@ mod tests {
         //   glm-5.2 / MiniMax-M2.x per the 2026-09-11 vendor docs);
         // - deepseek-v4-pro is not on the official vision page;
         // - mimo-v2.5-pro / muse-spark-1.1 are outside the builtin table and
-        //   must also resolve to Unknown.
+        //   must also resolve to Unknown;
+        // - 含 "k3" 的无关自定义名不得被子串误判(裸 k3 已改精确收录)。
         for (preset, name) in [
             (ModelPreset::Deepseek, "deepseek-v4-pro"),
             (ModelPreset::Qwen, "qwen3.7-max"),
@@ -363,6 +374,7 @@ mod tests {
             (ModelPreset::Minimax, "MiniMax-M2.7-highspeed"),
             (ModelPreset::Mimo, "mimo-v2.5-pro"),
             (ModelPreset::OpenaiCompatible, "muse-spark-1.1"),
+            (ModelPreset::OpenaiCompatible, "k3s-local-text"),
         ] {
             let model = saved_model(preset, name);
             assert_eq!(

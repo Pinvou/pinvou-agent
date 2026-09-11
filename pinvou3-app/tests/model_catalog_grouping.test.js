@@ -398,11 +398,14 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   // 官方 deepseek base_url 推断：openai_compatible 且无 vendor，但 base_url 指向官方端点 → deepseek 档位
   const deepseekByUrl = { preset: 'openai_compatible', model: 'my-deepseek', base_url: 'https://api.deepseek.com/v1' };
   assert.deepStrictEqual(tiers(deepseekByUrl), ['off', 'low', 'high', 'max']);
-  // /beta 仍为官方端点（对齐 Rust is_official_deepseek_base_url）；
-  // api.deepseeki.com 非官方域名（官方文档从未出现，社区按 typosquat 处理），
-  // 不再视为官方端点 → 不提供 deepseek 四档。
+  // /beta 仍为官方端点（对齐 Rust is_official_deepseek_base_url，含重复后缀
+  // 剥除语义：trim_end_matches 会剥掉连续的 /beta、/v1）；api.deepseeki.com
+  // 非官方域名（官方文档从未收录，社区报告该域名不可解析，
+  // awesome-deepseek-agent#311），不再视为官方端点 → 不提供 deepseek 四档。
   const deepseekBeta = { preset: 'openai_compatible', model: 'my-deepseek', base_url: 'https://api.deepseek.com/beta' };
   assert.deepStrictEqual(tiers(deepseekBeta), ['off', 'low', 'high', 'max']);
+  const deepseekRepeatedSuffix = { preset: 'openai_compatible', model: 'my-deepseek', base_url: 'https://api.deepseek.com/v1/beta/beta' };
+  assert.deepStrictEqual(tiers(deepseekRepeatedSuffix), ['off', 'low', 'high', 'max'], '重复 /beta 后缀须与 Rust trim_end_matches 同判为官方端点');
   const deepseeki = { preset: 'openai_compatible', model: 'my-deepseek', base_url: 'https://api.deepseeki.com' };
   assert.strictEqual(reasoningEffortTiersForModel(deepseeki), null, 'deepseeki.com 非官方域名,不得回落 deepseek 档位');
   // volcengine：底座把 low/medium 归一为 high，仅 off/high/max 有区别
@@ -770,6 +773,58 @@ test('目录视觉能力标注(imageCapable):形状合法且查询只命中已�
   assert.strictEqual(catalogImageCapableForModel('完全不存在的模型'), null);
   assert.strictEqual(catalogImageCapableForModel(''), null);
   assert.strictEqual(catalogImageCapableForModel(null), null);
+});
+
+// --- modelDescriptions i18n 护栏 ---
+// SettingsView 只对非 custom 行查 modelDescriptions(custom 行走 custom*Desc 专键),
+// 缺词条会向 en/ja 用户回退展示中文。目录与词典分属两文件,ui_language_coverage
+// 只做 zh 键位 parity、覆盖不到这里,故直接对源码互查。
+const extractModelDescriptionKeys = file => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'i18n', file), 'utf8');
+  const keys = new Set();
+  for (const m of src.matchAll(/Object\.assign\(\w+\.uiSettingsDetail\.modelDescriptions,\s*\{([\s\S]*?)\n\}\);/g)) {
+    for (const k of m[1].matchAll(/'([^']+)'\s*:/g)) keys.add(k[1]);
+  }
+  for (const m of src.matchAll(/modelDescriptions:\s*\{([^}]*)\}/g)) {
+    for (const k of m[1].matchAll(/'([^']+)'\s*:/g)) keys.add(k[1]);
+  }
+  return keys;
+};
+const collectCatalogDescs = () => {
+  const descs = new Set();
+  for (const scope of ['local', 'cloud']) {
+    for (const group of MODEL_CATALOG[scope] || []) {
+      for (const item of group.items || []) {
+        if (!item.custom && item.desc) descs.add(item.desc);
+      }
+    }
+  }
+  return descs;
+};
+
+test('modelDescriptions i18n 完整性:每个非 custom 目录 desc 在 en/ja 都有词条', () => {
+  const en = extractModelDescriptionKeys('en.js');
+  const ja = extractModelDescriptionKeys('ja.js');
+  const descs = collectCatalogDescs();
+  assert.ok(descs.size > 0, '应从目录提取到非 custom desc');
+  for (const desc of descs) {
+    assert.ok(en.has(desc), `en 缺少目录 desc 词条: ${desc}`);
+    assert.ok(ja.has(desc), `ja 缺少目录 desc 词条: ${desc}`);
+  }
+});
+
+test('modelDescriptions 无刷新遗留死键(desc 改名须同步清理 en/ja/zh 词条)', () => {
+  // 2026-09 刷新把大量 desc 改名,en/ja 遗留死键一度达 25 个。基线遗留的
+  // 6 个登记在 allowlist,后续清理时移除即可;新增死键会让本测试失败。
+  const legacyAllowlist = new Set([
+    '手动填写 Token Plan 模型 ID', 'K3 256K 上下文模型', '旗舰推理',
+    '2.4T 旗舰预览，Token Plan 专属，预览结束将下线或替换', '兼容高速', '兼容端点示例',
+  ]);
+  const descs = collectCatalogDescs();
+  for (const file of ['en.js', 'ja.js']) {
+    const dead = [...extractModelDescriptionKeys(file)].filter(k => !descs.has(k) && !legacyAllowlist.has(k));
+    assert.deepStrictEqual(dead, [], `${file} 存在无人引用的 modelDescriptions 死键: ${dead.join(', ')}`);
+  }
 });
 
 console.log(`\nmodel_catalog_grouping: ${pass} passed, ${fail} failed`);

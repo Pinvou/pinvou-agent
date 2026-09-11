@@ -20,8 +20,9 @@ fn explicit_one_million_hint(lower: &str) -> Option<u32> {
 /// pinvou3 对底座的定向覆盖：底座已收录但数值落后于官方口径的模型。
 /// 优先于底座 catalog 生效；上游修复后应移除对应条目。
 const PINVOU_OVERRIDES: &[(&str, u32)] = &[
-    // 底座对未知名 claude 一律兜底 200K，且未收录 claude-opus-5；
-    // 官方口径 Claude 5 系（除 haiku 外）均为 1M 上下文。
+    // 底座 catalog 与 known 表均已按 1M 收录 claude-opus-5（此注释曾误称底座未收录）。
+    // 条目保留为显式锚点：底座口径未来回退时仍以官方 1M 为准
+    // （Claude 5 系除 haiku 外均为 1M，platform.claude.com models overview）。
     ("claude-opus-5", 1_000_000),
     // 底座上下文启发式对 deepseek 系只有含 "v4" 子串的名字给 1M，deepseek-flash
     // 无 "v4" 会落 128K legacy 启发式（实测返回 Some(128_000) 且先行短路
@@ -29,6 +30,16 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // （api-docs.deepseek.com/quick_start/pricing，2026-09-11 核对）。
     // 故必须放本覆盖表而非 PINVOU_KNOWN。
     ("deepseek-flash", 1_000_000),
+    // 底座 known 表仍把 grok-4.20-0309-* 记为 2M（crates/tui/src/models.rs 旧行），
+    // docs.x.ai 模型详情页 2026-09-11 复核为 1M。known 表命中发生在 prefs
+    // context_window_fallback 之前，故修底座数值必须放本覆盖表（目录 desc 已按 1M 标注）。
+    ("grok-4.20-0309-reasoning", 1_000_000),
+    ("grok-4.20-0309-non-reasoning", 1_000_000),
+    // 底座 known 表只精确收录 claude-fable-5，claude-fable-5-1 未命中会落
+    // 「未知名 claude 通配 200K」兜底；官方口径 fable-5-1 为 1M
+    // （platform.claude.com models overview，2026-09-11）。
+    // model_name_matches 同时容忍未来 -日期/快照后缀。
+    ("claude-fable-5-1", 1_000_000),
 ];
 
 /// 解析 pinvou3 已知模型的上下文窗口。
@@ -104,11 +115,22 @@ mod tests {
 
     #[test]
     fn pinvou_overrides_take_precedence_over_codewhale_catalog() {
-        // 底座 claude 通配兜底 200K 落后于官方口径（opus-5 为 1M），覆盖须先生效。
+        // 底座已按 1M 收录 opus-5，覆盖条目作为显式锚点先行生效并锁定口径。
         assert_eq!(resolved_context_window("claude-opus-5"), Some(1_000_000));
         // 底座把无 "v4" 的 deepseek 名按 legacy 128K 兜底；V4.1-Flash 官方 1M
         // 必须由覆盖表先行修正（见 PINVOU_OVERRIDES 注释）。
         assert_eq!(resolved_context_window("deepseek-flash"), Some(1_000_000));
+        // 底座 known 表仍记 grok-4.20-0309-* 为 2M（落后于 docs.x.ai 2026-09 口径），
+        // 覆盖表须先行修正；fable-5-1 底座未精确收录，否则落 claude 通配 200K。
+        assert_eq!(
+            resolved_context_window("grok-4.20-0309-reasoning"),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            resolved_context_window("grok-4.20-0309-non-reasoning"),
+            Some(1_000_000)
+        );
+        assert_eq!(resolved_context_window("claude-fable-5-1"), Some(1_000_000));
         // 底座已收录且口径正确的模型不受影响。
         assert_eq!(resolved_context_window("claude-haiku-4-5"), Some(200_000));
         assert_eq!(resolved_context_window("claude-sonnet-5"), Some(1_000_000));
