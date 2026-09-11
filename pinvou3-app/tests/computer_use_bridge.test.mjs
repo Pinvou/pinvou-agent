@@ -429,4 +429,133 @@ function emit(harness, event, payload) {
   assert.equal(DENY_SUPPRESSION_MS, 30_000, 'cooldown pinned at 30s; both copies must change together');
 }
 
+// ── 18. stop() clears the per-session pending map (no phantom dialogs) ──
+// Review finding: the backend's stop_all wipes every grant/confirm/token,
+// so stale pending entries made a later re-enable + refresh republish
+// dialogs for requests that no longer exist.
+{
+  const harness = createHarness({
+    initialState: { enabled: true, granted: true },
+    status: { enabled: true, granted: false, stopped: false, platform_supported: true },
+  });
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-1', action: 'left click', element: 'Buy now',
+  });
+  emit(harness, 'computer_use:grant_required', { session_id: 's2' });
+  await harness.feature.stop();
+  // Re-enable (the phantom path: refreshStatus merges the pending map).
+  await harness.feature.setEnabled(true);
+  assert.equal(
+    harness.published().at(-1).confirmRequest, null,
+    'a stopped session confirm must not resurface after stop + re-enable',
+  );
+  harness.state.activeSessionId = 's2';
+  await harness.feature.refreshStatus('s2');
+  assert.equal(
+    harness.published().at(-1).grantRequest, null,
+    'a background grant pending must not resurface after stop',
+  );
+}
+
+// ── 19. setEnabled(false) clears the per-session pending map too ─────
+{
+  const harness = createHarness({
+    initialState: { enabled: true },
+    status: { enabled: true, granted: false, stopped: false, platform_supported: true },
+  });
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-1', action: 'left click', element: 'Buy now',
+  });
+  emit(harness, 'computer_use:grant_required', { session_id: 's2' });
+  await harness.feature.setEnabled(false);
+  assert.ok(
+    harness.invoked.some(([command, args]) => command === 'computer_use_set_enabled' && args && args.enabled === false),
+    'disable must reach the backend',
+  );
+  // Re-enable: the disable already wiped the backend state, so nothing may
+  // resurface from the pending map.
+  await harness.feature.setEnabled(true);
+  assert.equal(
+    harness.published().at(-1).confirmRequest, null,
+    'a confirm pending must not resurface after disable + re-enable',
+  );
+  harness.state.activeSessionId = 's2';
+  await harness.feature.refreshStatus('s2');
+  assert.equal(
+    harness.published().at(-1).grantRequest, null,
+    'a grant pending must not resurface after disable',
+  );
+}
+
+// ── 20. session switch clears the banner synchronously (review finding) ─
+// The requests were already dropped pre-await; a stale `granted` kept the
+// previous session's control banner up during the IPC round-trip.
+{
+  let resolveStatus;
+  const gate = new Promise((resolve) => { resolveStatus = resolve; });
+  const harness = createHarness({
+    initialState: { enabled: true, granted: true, sessionId: 's1' },
+    deferredStatus: gate,
+  });
+  harness.state.activeSessionId = 's2';
+  // No await: the banner flag must clear synchronously, before the IPC lands.
+  const refreshing = harness.feature.refreshStatus('s2');
+  assert.equal(
+    harness.published().at(-1) && harness.published().at(-1).granted, false,
+    'the banner flag must clear synchronously on a session switch',
+  );
+  resolveStatus({ enabled: true, granted: false, stopped: false, platform_supported: true });
+  await refreshing;
+}
+
+// ── 21. grant_required must not wipe a live per-action confirmation ──
+// Review finding: a grant that idle-expired mid-run re-arms the grant gate
+// while the backend confirm is still pending; wiping pending.confirm left
+// no dialog after Allow.
+{
+  const harness = createHarness({ initialState: { enabled: true } });
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-1', action: 'type', element: 'Reply box',
+  });
+  assert.ok(harness.published().at(-1).confirmRequest, 'confirm dialog must be up before the grant expires');
+  emit(harness, 'computer_use:grant_required', { session_id: 's1' });
+  assert.ok(harness.published().at(-1).grantRequest, 'the re-armed grant dialog must show');
+  await harness.feature.grant('s1');
+  const last = harness.published().at(-1);
+  assert.ok(
+    last.confirmRequest && last.confirmRequest.confirmId === 'cu-1',
+    `after Allow, the confirmation must still be available: ${JSON.stringify(last)}`,
+  );
+  await harness.feature.refreshStatus('s1');
+  assert.ok(
+    harness.published().at(-1).confirmRequest,
+    'the confirmation must also survive a status refresh',
+  );
+}
+
+// ── 22. confirm_required passes typePreviewFull through to the dialog ─
+// Backend contract: the optional full typed-text preview travels with the
+// confirm payload; old payloads must keep their exact shape.
+{
+  const harness = createHarness({ initialState: { enabled: true } });
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-1', action: 'type', element: 'Reply box',
+    typePreviewFull: 'line one\nline two',
+  });
+  const request = harness.published().at(-1).confirmRequest;
+  assert.equal(request && request.typePreviewFull, 'line one\nline two',
+    'the full typed-text preview must pass through to the published request');
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-2', action: 'type', element: 'Reply box', type_preview_full: 'snake case',
+  });
+  assert.equal(harness.published().at(-1).confirmRequest.typePreviewFull, 'snake case',
+    'the snake_case spelling is accepted too');
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-3', action: 'type', element: 'Reply box',
+  });
+  const plain = harness.published().at(-1).confirmRequest;
+  assert.equal('typePreviewFull' in plain, false,
+    'a payload without the field must not grow a typePreviewFull key');
+}
+
 console.log('computer use bridge behavior tests passed');

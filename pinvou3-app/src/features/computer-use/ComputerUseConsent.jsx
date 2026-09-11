@@ -90,6 +90,10 @@ export function ComputerUseDialogs({ slice, copy }) {
   const grantDialogRef = useRef(null);
   const confirmDialogRef = useRef(null);
   const restoreFocusRef = useRef(null);
+  // Confirm dialog of the request whose full typed text the user has revealed
+  // once. Tracking the confirmId (instead of a boolean) resets the expander
+  // whenever a new confirmation replaces the current one.
+  const [revealedConfirmId, setRevealedConfirmId] = useState(null);
   const open = !!(grantRequest || confirmRequest);
 
   useEffect(() => {
@@ -204,6 +208,13 @@ export function ComputerUseDialogs({ slice, copy }) {
     );
   }
 
+  // Optional full typed-text preview (backend contract): present only for
+  // non-password Type actions longer than the 12-char preview. The user must
+  // expand it once before "Confirm once" unlocks, so approval always happens
+  // with the exact text visible (M7 review finding).
+  const typePreviewFull = confirmRequest && confirmRequest.typePreviewFull;
+  const fullTextRevealed = !!typePreviewFull && revealedConfirmId === confirmRequest.confirmId;
+
   return (
     <div data-testid="computer-use-confirm-dialog" className="fixed inset-0 z-[1200] flex items-center justify-center p-4 bg-black/45">
       <div
@@ -226,6 +237,29 @@ export function ComputerUseDialogs({ slice, copy }) {
             </div>
           )}
         </div>
+        {typePreviewFull != null && (
+          <div className="mb-4">
+            <div className="text-[12px] leading-relaxed text-[#B3261E] dark:text-[#F28B82] mb-2">{copy.fullTextWarning}</div>
+            {fullTextRevealed ? (
+              <pre
+                data-testid="computer-use-confirm-full-text"
+                className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-xl p-3 text-[12px] font-mono bg-[#F1F3F4] dark:bg-[#2A2B2D] select-text"
+                style={{ userSelect: 'text' }}
+              >
+                {typePreviewFull}
+              </pre>
+            ) : (
+              <button
+                type="button"
+                data-testid="computer-use-confirm-show-full"
+                onClick={() => setRevealedConfirmId(confirmRequest.confirmId)}
+                className={`${dialogButtonBase} bg-[#E1E5EA] hover:bg-[#D3D9E0] dark:bg-[#333537] dark:hover:bg-[#444746]`}
+              >
+                {copy.showFullText}
+              </button>
+            )}
+          </div>
+        )}
         {actionError && <div className="text-[13px] text-[#EA4335] mb-3">{actionError}</div>}
         <div className="flex items-center justify-end gap-2">
           <button
@@ -241,7 +275,7 @@ export function ComputerUseDialogs({ slice, copy }) {
           <button
             type="button"
             data-testid="computer-use-confirm-once"
-            disabled={!!pendingAction}
+            disabled={!!pendingAction || (typePreviewFull != null && !fullTextRevealed)}
             onClick={() => run('confirm', () => bridge.computerUse.confirm(confirmRequest.confirmId))}
             className={dialogPrimaryButton}
           >
