@@ -22,6 +22,8 @@ name: PR Check
 #   欠账由清理 PR(#35 及后续)消化后逐个升 deny。
 # - windows-rust-test: Native Windows coverage runs for ready high-risk paths or
 #   ci:full-rust. Merge Queue does not repeat it; main retains cumulative coverage.
+# - macos-rust-check: Native macOS compile check (check 不链接,无需签名/打包)
+#   mirrors windows-rust-test gating; Linux 腿无法暴露平台专属类型错误。
 # - windows-codex-runtime-test:Relevant PRs exercise the browser-wrapper lifecycle,
 #   prepare Node + ACP Bridge, and verify packaged resources on native Windows.
 # - Benchmarks stay outside product PR/MQ gates and run manually in an isolated environment.
@@ -1165,6 +1167,85 @@ jobs:
             }
           done
 
+  macos-rust-check:
+    name: macos-rust-check
+    needs: changes
+    # Native macOS compile coverage for ready high-risk/explicit PRs and main;
+    # 与 windows-rust-test 同门禁。平台专属代码(如 computer_use/platform/macos.rs)
+    # 的类型错误只有原生 cargo check 能发现,Linux 腿(ubuntu)编译不到 macOS target。
+    # Merge Queue 不重复本腿,Linux rust-test 验证组合树;check 不链接,无需
+    # 签名/打包/前端产物(同 windows-rust-test:2026-08 已在 macOS 实证
+    # cargo check --all-targets 不依赖 node_modules,故不装 node/npm)。
+    if: >-
+      ${{
+        !cancelled() &&
+        (
+          github.event_name == 'push' ||
+          (
+            github.event_name == 'pull_request' &&
+            github.event.pull_request.draft == false &&
+            (
+              needs.changes.outputs.rust_full == 'true' ||
+              (
+                needs.changes.outputs.rust_code == 'true' &&
+                contains(github.event.pull_request.labels.*.name, 'ci:full-rust')
+              )
+            )
+          )
+        )
+      }}
+    runs-on: macos-15
+    # check 冷编译耗时(macOS runner 更慢);与 windows-rust-test 同上限,
+    # 挂死不长期烧 runner 分钟。
+    timeout-minutes: 90
+    env:
+      # 同 mac-build:按平台注入 sh 版栈 wrapper(codewhale-tui O2 编译的
+      # rustc/LLVM 栈溢出 macOS 已实测触发,见 rustc-stack-wrapper 头注释)。
+      # 必须用 ${{ github.workspace }} 绝对路径,避免 Cargo 按进程 cwd 双拼解析。
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - name: 初始化公共底座 submodule
+        run: git submodule update --init --recursive -- CodeWhale
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # 同 rust-test/windows-rust-test:把 src-tauri/rust-toolchain.toml 锁定的
+      # 工具链设为 default,保证从仓库根 --manifest-path 调用 cargo 时与本地
+      # 同一 pinned 版本(单一真相源是文件,版本号不在 workflow 里重复硬编码)。
+      - name: 对齐 rust-toolchain.toml 锁定的工具链
+        working-directory: pinvou3-app/src-tauri
+        run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
+
+      # bge-m3 是 gitignored 大资源(559MB),CI 干净 checkout 没有它;同
+      # mac-build 与 Linux rust-test:造空占位文件骗过 tauri-build 资源校验。
+      - name: bge-m3 占位 (骗过 tauri-build 资源校验)
+        run: |
+          d=pinvou3-app/src-tauri/resources/bge-m3
+          mkdir -p "$d"
+          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
+            : > "$d/$f"
+          done
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou3-app/src-tauri
+          # 独立 key:macOS 产物与 Linux/Windows 互不通用,不与兄弟腿共用。
+          shared-key: macos-rust-check
+          # 只在 main 保存(暖 cache 唯一来源);PR 侧只读,不占 10GB 限额。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: macOS Rust 全目标检查
+        run: >-
+          cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml
+          --all-targets --features dev-tools
+
   windows-codex-runtime-test:
     name: windows-codex-runtime-test
     needs: changes
@@ -1236,6 +1317,7 @@ jobs:
       - rust-lint
       - rust-test
       - windows-rust-test
+      - macos-rust-check
       - macos-codex-runtime-test
       - windows-codex-runtime-test
     if: ${{ always() && ((github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group') }}
@@ -1261,6 +1343,7 @@ jobs:
           RUST_LINT_RESULT: ${{ needs.rust-lint.result }}
           RUST_RESULT: ${{ needs.rust-test.result }}
           WINDOWS_RUST_RESULT: ${{ needs.windows-rust-test.result }}
+          MACOS_RUST_CHECK_RESULT: ${{ needs.macos-rust-check.result }}
           MACOS_CODEX_RESULT: ${{ needs.macos-codex-runtime-test.result }}
           WINDOWS_CODEX_RESULT: ${{ needs.windows-codex-runtime-test.result }}
         run: |
@@ -1285,6 +1368,7 @@ jobs:
             "rust-lint:$RUST_LINT_RESULT" \
             "rust-test:$RUST_RESULT" \
             "windows-rust-test:$WINDOWS_RUST_RESULT" \
+            "macos-rust-check:$MACOS_RUST_CHECK_RESULT" \
             "macos-codex-runtime-test:$MACOS_CODEX_RESULT" \
             "windows-codex-runtime-test:$WINDOWS_CODEX_RESULT"; do
             name="${item%%:*}"
