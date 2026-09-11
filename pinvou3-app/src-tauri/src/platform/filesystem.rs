@@ -341,7 +341,10 @@ pub(crate) fn create_secret_file(path: &Path) -> io::Result<std::fs::File> {
 }
 
 /// Open a private append-only data file without introducing a world-readable
-/// creation window on Unix. Windows relies on the owning profile directory's
+/// creation window on Unix. `mode(0o600)` only applies at creation — an
+/// existing file left loose by an earlier revision or external tooling would
+/// stay group/world-readable forever, so re-tighten the mode on every open
+/// (round-6 review). Windows relies on the owning profile directory's
 /// ACL, consistent with the rest of the application data tree.
 pub(crate) fn open_private_append_file(path: &Path) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
@@ -351,7 +354,17 @@ pub(crate) fn open_private_append_file(path: &Path) -> io::Result<std::fs::File>
         use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
-    options.open(path)
+    let file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let metadata = file.metadata()?;
+        let mode = metadata.permissions().mode();
+        if mode & 0o777 != 0o600 {
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    Ok(file)
 }
 
 #[derive(Clone)]
@@ -2866,5 +2879,41 @@ pub(crate) mod tests {
     #[cfg(not(windows))]
     fn remove_dir_link_impl(link: &Path) {
         let _ = std::fs::remove_file(link);
+    }
+
+    /// Round-6 评审回归：`open_private_append_file` 的 `mode(0o600)` 只作用于
+    /// 创建——已存在的宽松文件必须在每次 open 时重新收紧，否则早期版本或
+    /// 外部工具留下的 0644 文件将永远组/全局可读。
+    #[cfg(unix)]
+    #[test]
+    fn private_append_open_re_tightens_a_loose_existing_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("audit-session.jsonl");
+
+        // 模拟历史遗留的宽松文件。
+        std::fs::write(&path, b"prior revision data").unwrap();
+        let loose = std::fs::Permissions::from_mode(0o644);
+        std::fs::set_permissions(&path, loose).unwrap();
+
+        {
+            let mut file = super::open_private_append_file(&path).expect("append open");
+            std::io::Write::write_all(&mut file, b"\nappended").unwrap();
+        }
+
+        let mode = std::fs::metadata(&path)
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "reopen must re-tighten a loose private file"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"prior revision data\nappended"
+        );
     }
 }
