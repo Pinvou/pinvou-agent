@@ -840,3 +840,120 @@ fn run_executes_a_memory_organize_task_through_the_product_host() {
     assert!(def["last_run_at"].is_string(), "{def}");
     let _ = home;
 }
+
+/// A wrong-shaped but valid read-state payload (hand-edited or partially
+/// written file) must normalize to the default instead of panicking with an
+/// exit code outside the 0/1/2 contract.
+#[test]
+fn mark_viewed_normalizes_wrong_shaped_registry_payloads() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("mark-viewed-bad-shape");
+    let created = create_task(&home, "Bad shape task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    // A completed run bound to a real scheduled-run session, so the run is
+    // actually viewable and the command reaches the registry write.
+    let store = pinvou3_lib::features::sessions::SessionStore::boot().unwrap();
+    let session = store
+        .create_scheduled_run(pinvou3_lib::features::sessions::ScheduledRunProfile {
+            task_id: task_id.clone(),
+            model: "default-model".to_owned(),
+            model_id: None,
+            workspace: home
+                .path()
+                .join("scheduled")
+                .join(&task_id)
+                .join("workspace"),
+            mode: pinvou3_lib::features::sessions::ScheduledRunMode::Agent,
+            allow_shell: false,
+            trust_mode: true,
+            auto_approve: true,
+        })
+        .unwrap();
+    let session_id = session.metadata.id.clone();
+    std::fs::create_dir_all(home.runs_dir(&task_id)).unwrap();
+    std::fs::write(
+        home.runs_dir(&task_id).join("done-1.json"),
+        serde_json::json!({
+            "schema_version": 1,
+            "id": "done-1",
+            "automation_id": task_id,
+            "scheduled_for": "2026-09-10T08:00:00.000Z",
+            "status": "completed",
+            "created_at": "2026-09-10T08:00:00.000Z",
+            "started_at": "2026-09-10T08:00:01.000Z",
+            "ended_at": "2026-09-10T08:05:00.000Z",
+            "task_id": "foundation-task-1",
+            "thread_id": session_id,
+            "turn_id": "turn-1",
+            "error": null
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // `viewed_runs` as an array, and (after normalization) a per-task entry
+    // as a string: both used to hit `expect` and crash the process.
+    std::fs::create_dir_all(home.root.join("scheduled-runs")).unwrap();
+    std::fs::write(
+        home.root.join("scheduled-runs").join("read-state.json"),
+        serde_json::json!({ "schema_version": 2, "viewed_runs": [] }).to_string(),
+    )
+    .unwrap();
+    let outcome = run_json(&["scheduled", "mark-viewed", &task_id, "done-1"]);
+    assert_eq!(outcome["runId"].as_str(), Some("done-1"));
+
+    std::fs::write(
+        home.root.join("scheduled-runs").join("read-state.json"),
+        serde_json::json!({ "schema_version": 2, "viewed_runs": { &task_id: "bogus" } })
+            .to_string(),
+    )
+    .unwrap();
+    let outcome = run_json(&["scheduled", "mark-viewed", &task_id, "done-1"]);
+    assert_eq!(outcome["runId"].as_str(), Some("done-1"));
+    let _ = home;
+}
+
+/// A history archive that is a valid object but lacks the `tasks` key must
+/// still receive the deleted task's run snapshot instead of silently
+/// dropping the history.
+#[test]
+fn delete_archives_run_history_when_archive_tasks_key_is_missing() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("delete-archive-missing-tasks");
+    let created = create_task(&home, "Archive task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    std::fs::create_dir_all(home.runs_dir(&task_id)).unwrap();
+    std::fs::write(
+        home.runs_dir(&task_id).join("old-run.json"),
+        serde_json::json!({
+            "schema_version": 1,
+            "id": "old-run",
+            "automation_id": task_id,
+            "scheduled_for": "2026-09-10T08:00:00.000Z",
+            "status": "completed",
+            "created_at": "2026-09-10T08:00:00.000Z"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    // Valid JSON object, but no `tasks` key.
+    std::fs::create_dir_all(home.root.join("automations")).unwrap();
+    std::fs::write(
+        home.root.join("automations").join("history-archive.json"),
+        serde_json::json!({ "schema_version": 2 }).to_string(),
+    )
+    .unwrap();
+
+    run_json(&["scheduled", "delete", &task_id, "--yes"]);
+
+    let archive: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.root.join("automations").join("history-archive.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    let snapshot = &archive["tasks"][&task_id];
+    assert!(snapshot.is_object(), "deleted task must be archived");
+    assert_eq!(snapshot["runs"].as_array().unwrap().len(), 1);
+    assert!(!home.def_path(&task_id).exists());
+    let _ = home;
+}
