@@ -31,10 +31,6 @@ pub enum AgentCommand {
         /// `--attach <PATH>`, repeatable (`AgenticTaskRequest.attachments`
         /// with `remove_after_ingest: false`).
         attachments: Vec<PathBuf>,
-        /// `--keep-session`: env-var-independent twin of
-        /// `PINVOU3_AGENT_TASK_KEEP_SESSION` (the agentic task API exposes
-        /// keep-session only through that environment variable).
-        keep_session: bool,
     },
 }
 
@@ -60,18 +56,9 @@ pub(crate) fn parse(values: &[String]) -> Result<AgentCommand, CliError> {
             let mut mode = None;
             let mut model = None;
             let mut attachments = Vec::new();
-            let mut keep_session = false;
             let mut index = 2;
             while index < values.len() {
                 let token = values[index].as_str();
-                if token == "--keep-session" {
-                    if keep_session {
-                        return Err(CliError::usage("duplicate agent run option --keep-session"));
-                    }
-                    keep_session = true;
-                    index += 1;
-                    continue;
-                }
                 if !RUN_OPTIONS.contains(&token) {
                     return Err(CliError::usage(format!(
                         "unsupported agent run option: {token}"
@@ -136,7 +123,6 @@ pub(crate) fn parse(values: &[String]) -> Result<AgentCommand, CliError> {
                 mode,
                 model,
                 attachments,
-                keep_session,
             })
         }
         _ => Err(CliError::usage("usage: pinvou agent run")),
@@ -153,7 +139,6 @@ pub(crate) fn execute(command: AgentCommand, output: OutputMode) -> Result<CliOu
             mode,
             model,
             attachments,
-            keep_session,
         } => run_agent(
             &prompt_file,
             workspace.as_deref(),
@@ -162,7 +147,6 @@ pub(crate) fn execute(command: AgentCommand, output: OutputMode) -> Result<CliOu
             mode.as_deref(),
             model,
             attachments,
-            keep_session,
             output,
         ),
     }
@@ -178,7 +162,6 @@ fn run_agent(
     _mode: Option<&str>,
     _model: Option<String>,
     _attachments: Vec<PathBuf>,
-    _keep_session: bool,
     _output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     Err(CliError::failed("product_backend_not_enabled"))
@@ -194,7 +177,6 @@ fn run_agent(
     mode: Option<&str>,
     model: Option<String>,
     attachments: Vec<PathBuf>,
-    keep_session: bool,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     // Consistent with the other read failures in lib.rs (read_to_string ->
@@ -257,16 +239,6 @@ fn run_agent(
         model_id: model,
         attachments,
     };
-    // `--keep-session` mirrors the PINVOU3_AGENT_TASK_KEEP_SESSION cleanup
-    // opt-out, which the agentic task API only exposes as an environment
-    // variable: set it in-process for this invocation, before any thread is
-    // spawned by the host below.
-    if keep_session {
-        // SAFETY: single-threaded at this point (the product host and its
-        // runtime are built inside run_agentic_task below), so no concurrent
-        // env readers can race this write.
-        unsafe { std::env::set_var("PINVOU3_AGENT_TASK_KEEP_SESSION", "1") };
-    }
     let report = pinvou_product_backend::run_agentic_task(request)
         .map_err(|error| CliError::failed(format!("agent_run_failed: {error:#}")))?;
     // TB/harness semantics: exit 0 whenever a report is produced (timeouts and
@@ -333,7 +305,6 @@ mod tests {
             mode: None,
             model: None,
             attachments: Vec::new(),
-            keep_session: false,
         }
     }
 
@@ -464,7 +435,6 @@ mod tests {
             "a.md",
             "--attach",
             "/tmp/b.md",
-            "--keep-session",
         ])
         .unwrap();
         assert_eq!(
@@ -477,7 +447,6 @@ mod tests {
                 mode: Some("plan".into()),
                 model: Some("model-1".into()),
                 attachments: vec![PathBuf::from("a.md"), PathBuf::from("/tmp/b.md")],
-                keep_session: true,
             })
         );
     }
@@ -581,7 +550,6 @@ mod tests {
                 "run",
                 "--prompt-file",
                 "task.txt",
-                "--keep-session",
                 "--keep-session",
             ],
             vec![

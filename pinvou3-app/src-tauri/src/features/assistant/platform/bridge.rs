@@ -195,6 +195,14 @@ pub struct Pinvou3Bridge {
     /// 项目绑定，所有会话都用会话私有目录。账本根（附件/审计/产物）不受其影响，
     /// 仍由 `SessionStore::session_roots` 的 `ledger` 字段统一决定。
     pub execution_root_resolver: Option<ExecutionRootResolver>,
+    /// Per-session `max_tool_calls` override consumed by
+    /// `build_engine_config_for_session_roots`. Registered before the owning
+    /// pool enters an `Arc`（与 `execution_root_resolver` 同一注册窗口）。
+    /// 未登记的会话保持 `build_engine_config` 的默认值（benchmark-hooks 构建
+    /// 钉 8 作为 GAIA runaway guard）；agentic task 运行为自己的会话登记
+    /// `None`（不限）以免长程产品任务被截断——仅当调用方未显式设置
+    /// `PINVOU3_MAX_TOOL_CALLS` 时才登记，显式旋钮仍然生效。
+    session_tool_budgets: std::collections::HashMap<String, Option<u32>>,
     /// 原生代码会话判定（code_session=true，含临时与绑项目两种）。用于
     /// instructions 的 work/code 分支渲染与工具整形；lib.rs 与执行根解析器
     /// 共用 AcpPool 那份 SessionAgentStore 注入。
@@ -226,6 +234,7 @@ impl std::fmt::Debug for Pinvou3Bridge {
                 "execution_root_resolver",
                 &self.execution_root_resolver.as_ref().map(|_| "Some(..)"),
             )
+            .field("session_tool_budgets", &self.session_tool_budgets)
             .field(
                 "code_session_predicate",
                 &self.code_session_predicate.as_ref().map(|_| "Some(..)"),
@@ -346,6 +355,7 @@ impl Pinvou3Bridge {
             probed_context_tokens: None,
             probed_local_kind: None,
             execution_root_resolver: None,
+            session_tool_budgets: std::collections::HashMap::new(),
             code_session_predicate: None,
             external_acp_session_predicate: None,
             image_analyze_always: false,
@@ -522,6 +532,12 @@ impl Pinvou3Bridge {
     /// 注入原生代码会话的执行根解析器；由 app 组合根在 AcpPool 就绪后调用一次。
     pub fn set_execution_root_resolver(&mut self, resolver: ExecutionRootResolver) {
         self.execution_root_resolver = Some(resolver);
+    }
+
+    /// 登记单个会话的 `max_tool_calls` 覆盖（字段文档见
+    /// `session_tool_budgets`）；必须在持有 pool 的 `Arc` 之前调用。
+    pub fn set_session_tool_budget(&mut self, session_id: String, max_tool_calls: Option<u32>) {
+        self.session_tool_budgets.insert(session_id, max_tool_calls);
     }
 
     /// 注入原生代码会话判定（与执行根解析器同一份 SessionAgentStore）。
@@ -1831,6 +1847,11 @@ impl Pinvou3Bridge {
         roots: SessionRoots,
     ) -> EngineConfig {
         let mut cfg = self.build_engine_config();
+        // 登记过的会话按登记值覆盖工具调用上限（agentic task 登记不限；
+        // 显式 PINVOU3_MAX_TOOL_CALLS 的会话不登记，继续走基准钉值）。
+        if let Some(max_tool_calls) = self.session_tool_budgets.get(session_id) {
+            cfg.max_tool_calls = *max_tool_calls;
+        }
         let _ = std::fs::create_dir_all(&roots.execution);
         let _ = std::fs::create_dir_all(&roots.ledger);
         cfg.workspace = roots.execution;
@@ -2759,6 +2780,7 @@ mod tests {
             probed_context_tokens: None,
             probed_local_kind: None,
             execution_root_resolver: None,
+            session_tool_budgets: std::collections::HashMap::new(),
             code_session_predicate: None,
             external_acp_session_predicate: None,
             image_analyze_always: false,
@@ -5237,6 +5259,44 @@ mod tests {
                 "a non-UTF-8 PINVOU3_MAX_TOOL_CALLS must fall back to the default guard of 8"
             );
         }
+    }
+
+    /// Agentic task runs register an unlimited tool budget for their own
+    /// session so long-horizon product work is not truncated by the
+    /// benchmark-hooks guard; every other session keeps the default pin, and
+    /// an explicitly pinned session override is honored verbatim.
+    #[test]
+    fn session_tool_budget_override_scopes_to_one_session() {
+        // The unregistered-session assertion reads the benchmark cap, which
+        // depends on PINVOU3_MAX_TOOL_CALLS — serialize against the env lock.
+        let (_lock, _env) = locked_env(&["PINVOU3_MAX_TOOL_CALLS"]);
+        let mut bridge = fixture_bridge();
+        bridge.set_session_tool_budget("agentic_test_session".to_owned(), None);
+        bridge.set_session_tool_budget("capped_session".to_owned(), Some(16));
+
+        let cfg = bridge.build_engine_config_for_session("agentic_test_session");
+        assert_eq!(
+            cfg.max_tool_calls, None,
+            "a registered unlimited budget must lift the per-turn cap"
+        );
+        let cfg = bridge.build_engine_config_for_session("capped_session");
+        assert_eq!(
+            cfg.max_tool_calls,
+            Some(16),
+            "an explicit registered budget must be honored verbatim"
+        );
+        let cfg = bridge.build_engine_config_for_session("unregistered_session");
+        #[cfg(feature = "benchmark-hooks")]
+        assert_eq!(
+            cfg.max_tool_calls,
+            Some(8),
+            "unregistered sessions must keep the benchmark-hooks guard"
+        );
+        #[cfg(not(feature = "benchmark-hooks"))]
+        assert_eq!(
+            cfg.max_tool_calls, None,
+            "unregistered sessions must keep the default (unlimited) budget"
+        );
     }
 
     /// 安全敏感字段必须固定——这些值改了会让 pinvou3 出现奇怪行为或越权。

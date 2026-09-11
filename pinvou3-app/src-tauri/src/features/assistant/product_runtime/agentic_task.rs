@@ -121,16 +121,14 @@ pub struct AgenticTaskRequest {
     pub workspace: Option<PathBuf>,
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
-    /// Continue an existing chat session instead of creating a temporary one.
+    /// Continue an existing chat session instead of creating a new one.
     /// The session must exist in the `SessionStore` and must be an ordinary
     /// chat session (scheduled-run sessions are rejected; ACP sessions do not
-    /// live in this store and fail the existence check first). A
-    /// caller-provided session is **never** auto-deleted: the
-    /// `PINVOU3_AGENT_TASK_KEEP_SESSION` cleanup semantics only apply to the
-    /// newly-created temporary session, and the caller's session (report,
-    /// transcript, model binding) is left in place after the run.
-    /// Errors: unknown session → `agent_session_not_found`; non-chat session
-    /// → `agent_session_not_chat`.
+    /// live in this store and fail the existence check first). Sessions
+    /// persist by default (see [`keep_session_from_env`]); a caller-provided
+    /// session is additionally **never** auto-deleted regardless of the
+    /// cleanup mode. Errors: unknown session → `agent_session_not_found`;
+    /// non-chat session → `agent_session_not_chat`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     /// Turn mode. `None` = [`AgenticTaskMode::Agent`] = today's behavior.
@@ -229,8 +227,10 @@ pub fn run_agentic_task_headless(request: AgenticTaskRequest) -> Result<AgenticT
 }
 
 /// Drive one agentic turn: validate the request → bind the execution root →
-/// pin the model → Yolo/Plan submit → timeout watchdog → collect the report →
-/// clean up the temporary session. Once the turn is submitted, a report is
+/// lift the tool-call cap → pin the model → Yolo/Plan submit → timeout
+/// watchdog → collect the report → persist the session (only an explicit
+/// `PINVOU3_AGENT_TASK_KEEP_SESSION=0|false|no|off` deletes it). Once the
+/// turn is submitted, a report is
 /// always returned (internal failures land in the `error` field); setup faults
 /// (request validation, model pin, session prepare, submit) propagate as `Err`
 /// instead — the CLI surfaces those as exit 1 without a report.
@@ -275,6 +275,13 @@ pub async fn run_agentic_task(
     let mut pool = pool;
     pool.bridge.set_execution_root_resolver(resolver.clone());
     store.set_execution_root_resolver(resolver);
+    // Long-horizon product work must not inherit the benchmark-hooks build's
+    // per-turn tool-call cap of 8 (the GAIA runaway guard): an agentic run is
+    // unlimited unless the caller pinned an explicit PINVOU3_MAX_TOOL_CALLS.
+    if std::env::var_os("PINVOU3_MAX_TOOL_CALLS").is_none() {
+        pool.bridge
+            .set_session_tool_budget(session_id.clone(), None);
+    }
     let runtime = EnginePoolRuntime::new(Arc::new(pool));
 
     let outcome = run_turn(
@@ -287,30 +294,40 @@ pub async fn run_agentic_task(
     )
     .await;
 
-    // Reclaim regardless of outcome: engine resources go through the eval
-    // cleanup channel, the persisted session is deleted, and the model suite
-    // pin is returned by the guard's Drop. With PINVOU3_AGENT_TASK_KEEP_SESSION
-    // the session artifacts stay under the sessions root for harness-side
-    // debugging (this host is one-shot, so nothing else holds the session).
+    // Session lifecycle after the turn: sessions persist by default (GUI
+    // parity — the 50-session retention cap applies), so the engine is
+    // reclaimed while the transcript, artifacts and timeline stay under the
+    // sessions root for continuation via `--session`. Only an explicit
+    // `PINVOU3_AGENT_TASK_KEEP_SESSION=0|false|no|off` restores the old
+    // one-shot cleanup for harnesses that want a clean sandbox (the legacy
+    // truthy values "1"/"true"/"yes"/"on" keep meaning keep).
     //
     // A caller-provided `session_id` is never auto-deleted and never swept:
     // only this run's eval observation mark is dropped, and the session is
     // left in place for the caller.
-    let keep_session = std::env::var("PINVOU3_AGENT_TASK_KEEP_SESSION")
-        .map(|value| {
-            matches!(
-                value.to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false);
+    let keep_session = keep_session_from_env();
     if existing_session {
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
-    } else if !keep_session {
+    } else if keep_session {
+        crate::features::assistant::timing::unregister_eval_observation(&session_id);
+        runtime.pool.evict(&session_id).await;
+    } else {
         runtime.schedule_eval_cleanup(&session_id);
         let _ = runtime.close_eval_session_result(&session_id).await;
     }
     outcome
+}
+
+/// `PINVOU3_AGENT_TASK_KEEP_SESSION`: sessions are kept by default; only the
+/// explicit falsy values restore the legacy one-shot cleanup.
+fn keep_session_from_env() -> bool {
+    match std::env::var("PINVOU3_AGENT_TASK_KEEP_SESSION") {
+        Ok(value) => !matches!(
+            value.to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => true,
+    }
 }
 
 /// Validate the static attachment limits of an agentic request: at most
@@ -740,7 +757,8 @@ mod tests {
     use super::{
         AgenticTaskAttachment, AgenticTaskMode, AgenticTaskReport, AgenticTaskRequest,
         AgenticToolEvent, DEFAULT_TIMEOUT_SECS, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS,
-        MAX_TIMEOUT_SECS, ensure_existing_chat_session, ensure_model_exists, validate_attachments,
+        MAX_TIMEOUT_SECS, ensure_existing_chat_session, ensure_model_exists, keep_session_from_env,
+        validate_attachments,
     };
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
     use crate::platform::paths::tests::ENV_LOCK;
@@ -756,6 +774,29 @@ mod tests {
             model_id: None,
             attachments: Vec::new(),
         }
+    }
+
+    /// Sessions persist by default; only the explicit falsy values restore
+    /// the legacy one-shot cleanup, and the legacy truthy values still mean
+    /// keep.
+    #[test]
+    fn keep_session_env_defaults_to_keeping() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        // SAFETY: ENV_LOCK held; env writes are serialized across tests.
+        unsafe { std::env::remove_var("PINVOU3_AGENT_TASK_KEEP_SESSION") };
+        assert!(keep_session_from_env(), "absent env must keep the session");
+        for value in ["1", "true", "yes", "on", "anything-else"] {
+            // SAFETY: see above.
+            unsafe { std::env::set_var("PINVOU3_AGENT_TASK_KEEP_SESSION", value) };
+            assert!(keep_session_from_env(), "{value} must keep the session");
+        }
+        for value in ["0", "false", "no", "off", "FALSE", "Off"] {
+            // SAFETY: see above.
+            unsafe { std::env::set_var("PINVOU3_AGENT_TASK_KEEP_SESSION", value) };
+            assert!(!keep_session_from_env(), "{value} must delete the session");
+        }
+        // SAFETY: see above.
+        unsafe { std::env::remove_var("PINVOU3_AGENT_TASK_KEEP_SESSION") };
     }
 
     #[test]
