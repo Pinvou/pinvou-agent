@@ -3458,7 +3458,7 @@ mod tests {
             // 迁移后 plain 保持旧语义（全开），而不是 DenyAll 兜底全关。
             assert_eq!(load_disabled_connectors(), Vec::<String>::new());
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
-            assert!(file.plain_defaults_migrated, "迁移标记应置位: {file:?}");
+            assert!(super::scope::plain_defaults_migrated(&file), "迁移标记应置位: {file:?}");
             assert!(
                 file.initialized.contains("plain"),
                 "plain 应被初始化: {file:?}"
@@ -3530,7 +3530,7 @@ mod tests {
             std::fs::write(&legacy, r#"["weather"]"#).unwrap();
             assert_eq!(load_disabled_connectors(), vec!["weather".to_string()]);
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
-            assert!(file.plain_defaults_migrated);
+            assert!(super::scope::plain_defaults_migrated(&file));
             assert!(file.initialized.contains("plain"));
         });
     }

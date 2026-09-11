@@ -66,7 +66,7 @@ pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
 /// 格式解析，防御性剥除 `skill:` 前缀残留（新写路径不会再产生）。
 ///
 /// plain 默认策略迁移（工具开关全量收敛 DenyAll）：旧版文件（无
-/// `plain_defaults_migrated` 字段）或旧版双文件时代（legacy 文件存在）= 升级
+/// `plain_defaults_migrated` 键）或旧版双文件时代（legacy 文件存在）= 升级
 /// 装机，把 plain 初始化为落盘列表——其有效状态即旧 AllowAll 语义下的真实开关
 /// 状态（缺省空 = 全开），升级后用户无感；全新装机只置标记不初始化，plain 未
 /// 初始化按 DenyAll 兜底（默认全关）。
@@ -99,7 +99,7 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
                 file.initialized
                     .insert(SessionMode::Plain.as_str().to_string());
             }
-            file.plain_defaults_migrated = true;
+            mark_plain_defaults_migrated(&mut file);
             if !file.scopes.is_empty() || file.initialized.iter().any(|k| !k.is_empty()) {
                 save_disabled_bundles_file(&file);
             }
@@ -115,16 +115,31 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
             DisabledBundlesFile::default()
         }
     };
-    if !file.plain_defaults_migrated {
+    if !plain_defaults_migrated(&file) {
         file.initialized
             .insert(SessionMode::Plain.as_str().to_string());
-        file.plain_defaults_migrated = true;
+        mark_plain_defaults_migrated(&mut file);
         save_disabled_bundles_file(&file);
     }
     if strip_skill_prefixes(&mut file) {
         save_disabled_bundles_file(&file);
     }
     file
+}
+
+/// plain 默认收敛迁移标记(#452)经 `extra` 扁平键携带:结构体字段与
+/// unify/main 的 `DisabledBundlesFile` 对齐(不新增显式字段),磁盘键名与
+/// 引入时一致,旧文件原样可读可续写。
+pub(crate) fn plain_defaults_migrated(file: &DisabledBundlesFile) -> bool {
+    file.extra
+        .get("plain_defaults_migrated")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn mark_plain_defaults_migrated(file: &mut DisabledBundlesFile) {
+    file.extra
+        .insert("plain_defaults_migrated".to_string(), serde_json::Value::Bool(true));
 }
 
 /// 防御：剥除所有 scope 禁用集与不可见集里的 `skill:` 前缀（旧前端 bug 窗口期

@@ -228,6 +228,27 @@ pub async fn move_session_to_project(
     Ok(outcome)
 }
 
+/// 文件夹项目自动物化(Codex 客户端式收编):roots 由前端从会话列表的
+/// 工作区聚合(客户端驱动,与 Codex `project/import` 由桌面端发起同构)。
+/// 幂等:覆盖复用 / 冲突逐根上报;有新建才广播列表变更。
+#[tauri::command]
+pub async fn ensure_folder_projects(
+    roots: Vec<PathBuf>,
+    app: AppHandle,
+    store: State<'_, ProjectStore>,
+) -> Result<Vec<EnsureFolderOutcome>, String> {
+    let outcomes = store
+        .ensure_folder_roots(&roots)
+        .map_err(|e| format!("ensure_folder_projects: {e:#}"))?;
+    if outcomes
+        .iter()
+        .any(|outcome| matches!(outcome, EnsureFolderOutcome::Created { .. }))
+    {
+        emit_project_event(&app, "projects:list_changed", "folder_ensured");
+    }
+    Ok(outcomes)
+}
+
 /// rebind_workspace_root 的结果汇报:逐会话结果 + 受影响项目。重绑定幂等,
 /// 失败项可直接重试(候选快照含"已在 to 下但元数据未同步"的重试项,
 /// 已成功的部分重跑为空操作)。
