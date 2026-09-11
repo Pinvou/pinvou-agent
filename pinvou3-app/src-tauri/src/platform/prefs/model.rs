@@ -189,9 +189,12 @@ impl ModelPreset {
             // 智谱双站 API enum 默认值。
             ModelPreset::Glm => "glm-5.3",
             ModelPreset::Mimo => "mimo-v2.5-pro",
-            // OpenAI 官方推荐起点；Chat wire 函数调用为通用支持特性
-            // （developers.openai.com gpt-6-astra 模型页）。
-            ModelPreset::Openai => "gpt-6-astra",
+            // OpenAI 保持 gpt-5.6-terra：官方推荐起点 gpt-6-astra 的工具调用
+            // 仅限 Responses 协议（developers.openai.com function-calling
+            // 指南），本预设走 Chat wire；换默认前必须确认新 id 在 Chat wire
+            // 可用工具调用，且被 core::model_context 解析链识别（见 monitor
+            // `preset_default_models_resolve_engine_context_window`）。
+            ModelPreset::Openai => "gpt-5.6-terra",
             ModelPreset::Anthropic => "claude-sonnet-5",
             // 2026-09-02 发布。
             ModelPreset::Gemini => "gemini-3.8-flash",
@@ -265,7 +268,7 @@ mod tests {
             (ModelPreset::Minimax, "MiniMax-M3"),
             (ModelPreset::Glm, "glm-5.3"),
             (ModelPreset::Mimo, "mimo-v2.5-pro"),
-            (ModelPreset::Openai, "gpt-6-astra"),
+            (ModelPreset::Openai, "gpt-5.6-terra"),
             (ModelPreset::Anthropic, "claude-sonnet-5"),
             (ModelPreset::Gemini, "gemini-3.8-flash"),
             (ModelPreset::Xai, "grok-4.6"),

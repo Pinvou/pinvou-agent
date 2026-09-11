@@ -212,7 +212,7 @@ test('MODEL_PRESET_DEFS 默认模型与 Rust prefs 锁定口径一致(default_mo
     minimax: 'MiniMax-M3',
     glm: 'glm-5.3',
     mimo: 'mimo-v2.5-pro',
-    openai: 'gpt-6-astra',
+    openai: 'gpt-5.6-terra',
     anthropic: 'claude-sonnet-5',
     gemini: 'gemini-3.8-flash',
     xai: 'grok-4.6',
@@ -220,6 +220,55 @@ test('MODEL_PRESET_DEFS 默认模型与 Rust prefs 锁定口径一致(default_mo
   for (const [key, model] of Object.entries(expected)) {
     assert.strictEqual(MODEL_PRESET_DEFS[key] && MODEL_PRESET_DEFS[key].model, model, `${key} 默认模型漂移`);
   }
+});
+
+test('MODEL_PRESET_DEFS 与 Rust default_model 表源码互查(跨语言防一侧有意更新漏改另一侧)', () => {
+  // 两侧各自的锁测试只防「无意改实现忘改测试」;一侧有意更新(改实现+改本侧
+  // 测试)而漏掉另一侧时静默漂移。这里直接解析 prefs/model.rs 的
+  // default_model match 块做真互查,消灭最后一张跨语言镜像。
+  const variantToKey = {
+    LocalVllm: 'local_vllm', Deepseek: 'deepseek', Kimi: 'kimi',
+    OpenaiCompatible: 'openai_compatible', Qwen: 'qwen', Doubao: 'doubao',
+    Minimax: 'minimax', Glm: 'glm', Mimo: 'mimo', Openai: 'openai',
+    Anthropic: 'anthropic', Gemini: 'gemini', Xai: 'xai',
+  };
+  const rustSrc = fs.readFileSync(
+    path.join(__dirname, '..', 'src-tauri', 'src', 'platform', 'prefs', 'model.rs'), 'utf8',
+  );
+  const fnStart = rustSrc.indexOf('pub fn default_model(&self)');
+  const fnEnd = rustSrc.indexOf('pub fn context_window_fallback', fnStart);
+  assert.ok(fnStart > 0 && fnEnd > fnStart, 'prefs/model.rs 应含 default_model 与 context_window_fallback');
+  const rustTable = {};
+  for (const m of rustSrc.slice(fnStart, fnEnd).matchAll(/ModelPreset::(\w+)\s*=>\s*"([^"]*)"/g)) {
+    rustTable[m[1]] = m[2];
+  }
+  assert.deepStrictEqual(
+    Object.keys(rustTable).sort((a, b) => a.localeCompare(b)),
+    Object.keys(variantToKey).sort((a, b) => a.localeCompare(b)),
+    'Rust default_model 变体集变化时须同步 variantToKey 与两侧锁测试',
+  );
+  // 已知且有意的一处差异:openai_compatible 前端刻意留空(纯自定义模板),
+  // Rust 侧是该预设的 legacy 迁移兜底 gpt-5.6-terra;main.jsx 覆盖对由
+  // 独立测试钉住。其余 12 个预设必须逐项相等。
+  assert.strictEqual(rustTable.OpenaiCompatible, 'gpt-5.6-terra');
+  assert.strictEqual(MODEL_PRESET_DEFS.openai_compatible.model, '');
+  for (const [variant, key] of Object.entries(variantToKey)) {
+    if (variant === 'OpenaiCompatible') continue;
+    assert.strictEqual(
+      rustTable[variant], MODEL_PRESET_DEFS[key] && MODEL_PRESET_DEFS[key].model,
+      `${variant} 与前端 ${key} 默认模型漂移`,
+    );
+  }
+});
+
+test('main.jsx PRESET_DEFAULTS 的 openai_compatible 覆盖对钉住 Rust legacy 迁移兜底值', () => {
+  // single-sourcing 后 main.jsx 仅剩这一对手抄值;漂移会让旧版草稿回填与
+  // Rust legacy 迁移落不同模型。
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'app', 'main.jsx'), 'utf8');
+  const m = src.match(/openai_compatible:\s*\{\s*baseUrl:\s*'([^']*)',\s*model:\s*'([^']*)'\s*\}/);
+  assert.ok(m, 'main.jsx 应保留 openai_compatible 覆盖项');
+  assert.strictEqual(m[1], 'https://api.openai.com/v1');
+  assert.strictEqual(m[2], 'gpt-5.6-terra');
 });
 test('官方 API 手填 ID -> 自定义', () => {
   assert.strictEqual(isPresetModel(mk({ preset: 'deepseek', provider_kind: 'official_api', vendor: 'deepseek', base_url: 'https://api.deepseek.com', model: 'deepseek-v9-fake' })), false);
@@ -849,12 +898,14 @@ test('modelDescriptions i18n 完整性:每个非 custom 目录 desc 在 en/ja �
 test('modelDescriptions 无刷新遗留死键(desc 改名须同步清理 en/ja/zh 词条)', () => {
   // 2026-09 刷新把大量 desc 改名,en/ja 遗留死键一度达 25 个。基线遗留的
   // 6 个登记在 allowlist,后续清理时移除即可;新增死键会让本测试失败。
+  // zh 也在扫描范围内(zh 的 modelDescriptions 是可选覆写、键集是 en 的子集,
+  // 但同样会积累死键——兼容高速/兼容端点示例曾漏网)。
   const legacyAllowlist = new Set([
     '手动填写 Token Plan 模型 ID', 'K3 256K 上下文模型', '旗舰推理',
     '2.4T 旗舰预览，Token Plan 专属，预览结束将下线或替换', '兼容高速', '兼容端点示例',
   ]);
   const descs = collectCatalogDescs();
-  for (const file of ['en.js', 'ja.js']) {
+  for (const file of ['en.js', 'ja.js', 'zh.js']) {
     const dead = [...extractModelDescriptionKeys(file)].filter(k => !descs.has(k) && !legacyAllowlist.has(k));
     assert.deepStrictEqual(dead, [], `${file} 存在无人引用的 modelDescriptions 死键: ${dead.join(', ')}`);
   }

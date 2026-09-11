@@ -956,6 +956,13 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
             // 覆盖表先行修正为 docs.x.ai 2026-09-11 复核的 1M（与目录 desc 一致）。
             (ModelPreset::Xai, "grok-4.20-0309-reasoning", 1_000_000),
             (ModelPreset::Xai, "grok-4.20-0309-non-reasoning", 1_000_000),
+            // 底座 known 表只有裸 "grok-build"→512K，命不中 -0.1 wire id；
+            // core::model_context 覆盖表按 docs.x.ai 官方 256K 修正（与目录 desc 一致）。
+            (ModelPreset::Xai, "grok-build-0.1", 256_000),
+            // 底座链对 gpt-6 / gemini-3.8 均无行；core::model_context 覆盖表按
+            // 官方口径补齐（engine 侧 resolved 原为 None → 128K，与监控页兜底分叉）。
+            (ModelPreset::Openai, "gpt-6-astra", 1_050_000),
+            (ModelPreset::Gemini, "gemini-3.8-flash", 1_048_576),
             // 底座 catalog 已知（haiku 200K）与 PINVOU_OVERRIDES 覆盖（opus-5 /
             // fable-5-1 均 1M）的 Anthropic 模型走 resolved_context_window，preset
             // 兜底见 prefs 测试。fable-5-1 底座 known 表未精确收录（只有 fable-5），
@@ -988,5 +995,43 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
             Some(131_072)
         );
         assert_eq!(infer_context_window(ModelPreset::Kimi, None), Some(262_144));
+    }
+
+    /// 每个预设的默认模型必须能被共享解析入口（resolved_context_window）解出
+    /// 上下文窗口：engine 侧 `effective_context_window` 在 resolved 为 None 时
+    /// 直接落 128K，而监控页 `infer_context_window` 还有 prefs 供应商兜底，
+    /// 两侧会分叉（gpt-6-astra / gemini-3.8-flash 曾因此以 128K 推导压缩阈值、
+    /// 页面却显示 1M）。本测试把「换默认必过解析链」变成显式闸门；预期值为
+    /// 厂商官方口径，与 `default_model_matches_vendor_docs_2026_09`、前端
+    /// MODEL_PRESET_DEFS 锁测试共同构成三层默认值防线。
+    #[test]
+    fn preset_default_models_resolve_engine_context_window() {
+        let cases: &[(ModelPreset, u32)] = &[
+            // `_256k` 后缀 hint 按 N×1000 解出 256,000（监控页同源；prefs 的
+            // LocalVllm 兜底 262,144 只在 resolved 为 None 时才轮得到，本默认不会走到）。
+            (ModelPreset::LocalVllm, 256_000),
+            (ModelPreset::Deepseek, 1_000_000),
+            (ModelPreset::Kimi, 1_048_576),
+            (ModelPreset::Qwen, 1_000_000),
+            (ModelPreset::Doubao, 1_048_576),
+            (ModelPreset::Minimax, 1_000_000),
+            (ModelPreset::Glm, 1_000_000),
+            (ModelPreset::Mimo, 1_000_000),
+            (ModelPreset::Openai, 1_050_000),
+            (ModelPreset::Anthropic, 1_000_000),
+            (ModelPreset::Gemini, 1_048_576),
+            (ModelPreset::Xai, 500_000),
+        ];
+        for (preset, expected) in cases {
+            let model = preset.default_model();
+            assert_eq!(
+                crate::core::model_context::resolved_context_window(model),
+                Some(*expected),
+                "{preset:?} 默认模型 {model} 必须在共享解析入口解出官方上下文窗口（engine 侧没有 prefs 兜底）"
+            );
+        }
+        // openai_compatible 的 Rust 侧默认仅服务 legacy 迁移兜底（前端刻意留空，
+        // 由分组测试的 main.jsx 覆盖对钉测试与 Rust↔JS 互查测试共同锁定）。
+        assert_eq!(ModelPreset::OpenaiCompatible.default_model(), "gpt-5.6-terra");
     }
 }

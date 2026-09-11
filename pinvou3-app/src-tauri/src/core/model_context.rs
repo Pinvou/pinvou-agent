@@ -40,6 +40,21 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // （platform.claude.com models overview，2026-09-11）。
     // model_name_matches 同时容忍未来 -日期/快照后缀。
     ("claude-fable-5-1", 1_000_000),
+    // 底座链（bundled catalog/known 表/启发式/claude 通配）均无 gpt-6 系行，
+    // resolved 返回 None：engine 侧落 128K，而监控页还有 Openai 预设兜底
+    // 1.05M，两侧分叉。目录行官方口径 1,050,000
+    // （developers.openai.com/api/docs/models，2026-09-11）。
+    // 注意：该模型工具调用仅限 Responses 协议，故不是 openai 预设默认
+    // （见 prefs::model），但目录行仍可选，engine 侧必须与监控页同源。
+    ("gpt-6-astra", 1_050_000),
+    // Gemini 预设默认模型；底座 known 表 gemini 行止于 3.7，3.8 无行时
+    // engine 落 128K 与监控页 Gemini 兜底 1M 分叉。官方输入上限 1,048,576
+    // （ai.google.dev gemini-3.8-flash 页，2026-09-11）。
+    ("gemini-3.8-flash", 1_048_576),
+    // 目录 desc 标 256K；底座 known 表只有裸 "grok-build"→512K（精确全等
+    // 命不中 -0.1 wire id），engine 解析 None 落 128K。官方 256K
+    // （docs.x.ai grok-build-0.1 页，2026-09-11）。
+    ("grok-build-0.1", 256_000),
 ];
 
 /// 解析 pinvou3 已知模型的上下文窗口。

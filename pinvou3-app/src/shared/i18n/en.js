@@ -1057,7 +1057,7 @@ Object.assign(dictEn.uiSettingsDetail.modelDescriptions, {
   '正式旗舰，夜间 22:00-08:00 五折（个人版）':'GA flagship, 50% off 22:00-08:00 (personal plan)',
   '轻量兼容款，支持图像输入':'Lightweight compatibility option, image input', '快速响应，暂不支持 Responses API':'Fast responses; Responses API not yet supported',
   '最新推荐，周级滚动升级':'Latest recommended, weekly rolling updates', '低成本低时延，效果比肩 2-1-pro':'Low cost, low latency, near 2-1-pro quality',
-  '编程特化（预览）':'Coding-specialized (preview)', '官方推荐起点，当前最强旗舰':'Official recommended starting point; current strongest flagship',
+  '编程特化（预览）':'Coding-specialized (preview)', '最强旗舰；仅 Responses 协议支持函数调用':'Strongest flagship; function calling only via Responses API',
   'GPT-5.6 家族旗舰，推理与编码':'GPT-5.6 family flagship, reasoning and coding',
   '最强旗舰，高难推理与长程 Agent':'Strongest flagship, hard reasoning and long-running agents',
   '上代旗舰，兼容保留':'Previous-generation flagship, kept for compatibility', '复杂 Agent 编码，默认推荐':'Complex agentic coding, recommended default',

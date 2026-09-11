@@ -18,7 +18,8 @@ import xaiIcon from '../../brand-icons/xai.svg';
 // ── 「添加模型」方案:模型快切 chip + 添加/编辑弹窗 ─────────────────
 // 各预设默认 baseUrl/model 模板(与 bridge/prefs.rs 对齐),添加模型时自动填充。
 // openai_compatible 为纯自定义模板,前端刻意不留默认地址/模型,Rust 侧的
-// OpenAI 默认值仅服务 legacy 迁移兜底。
+// OpenAI 默认值仅服务 legacy 迁移兜底(自定义端点身份未知,沿用旧旗舰
+// gpt-5.6-terra 而不随官方推荐位切换,避免暗示官方背书)。
 // 默认模型（2026-09-11 按各厂商官方文档核对）：
 // - deepseek：V4.1-Flash（deepseek-flash）为当前主力；deepseek-v4-pro 将于
 //   2026-09-14 起被官方路由到 V4.1-Flash 计费（api-docs.deepseek.com/updates）。
@@ -26,10 +27,11 @@ import xaiIcon from '../../brand-icons/xai.svg';
 //   默认值即 glm-5.3（docs.bigmodel.cn / docs.z.ai）。
 // - gemini：gemini-3.8-flash 于 2026-09-02 发布接棒（ai.google.dev models 页）。
 // - xai：grok-4.6 为官方「编码/Agent 推荐」位（docs.x.ai models 页）。
-// - openai 切换 gpt-6-astra：官方推荐起点已是 gpt-6-astra；官方模型页将
-//   function calling 列为通用支持特性、Chat Completions 端点标记 Supported
-//   （「仅 Responses」的限定只针对页面托管工具列表，不影响函数调用），品悟
-//   openai 预设走 Chat wire 可正常使用，故默认随官方推荐切换。
+// - openai 保持 gpt-5.6-terra：官方推荐起点虽已是 gpt-6-astra，但其工具调用
+//   仅限 Responses 协议（developers.openai.com function-calling 指南："GPT-6
+//   Astra requires the Responses API for tool calling"；模型页端点表的
+//   Chat Completions "Supported" 只表示端点可用，不拆分函数调用），品悟
+//   openai 预设走 Chat wire，故默认不换。
 const MODEL_PRESET_DEFS = {
   local_vllm:  { baseUrl: 'http://127.0.0.1:8000/v1',                model: 'qwen36_35b_256k' },
   deepseek:    { baseUrl: 'https://api.deepseek.com',                model: 'deepseek-flash' },
@@ -41,7 +43,7 @@ const MODEL_PRESET_DEFS = {
   minimax:     { baseUrl: 'https://api.minimaxi.com/v1',            model: 'MiniMax-M3' },
   glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-5.3' },
   mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2.5-pro' },
-  openai:      { baseUrl: 'https://api.openai.com/v1',              model: 'gpt-6-astra' },
+  openai:      { baseUrl: 'https://api.openai.com/v1',              model: 'gpt-5.6-terra' },
   anthropic:   { baseUrl: 'https://api.anthropic.com/v1',           model: 'claude-sonnet-5' },
   gemini:      { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-3.8-flash' },
   xai:         { baseUrl: 'https://api.x.ai/v1',                    model: 'grok-4.6' },
@@ -169,9 +171,10 @@ const MODEL_CATALOG = {
       // 配置可能保存旧大写目录值（GLM-5.2），以 legacyAliases 兼容识别。
       // 旧模型自动路由为 z.ai 官方口径（docs.z.ai/devpack/overview，2026-09-11
       // 核对）：GLM-5.2/GLM-5.1 请求自动路由至 GLM-5.3，GLM-4.7 自动路由至
-      // GLM-5.3-Flash。GLM-5-Turbo 从未在 z.ai 发布（不在模型总览/定价/API
-      // enum），旧行已删；存量 GLM-5-Turbo 配置会回落为自定义归类（档位提示
-      // 不受影响），须自行改选 glm-5.3 / glm-5.3-flash。
+      // GLM-5.3-Flash。GLM-5-Turbo 不在 z.ai 现行模型总览/定价/API enum
+      // （底座 bundled 资产仍留有该大写历史行，不作为收录依据），旧行已删；
+      // 存量 GLM-5-Turbo 配置会回落为自定义归类（档位提示不受影响），须自行
+      // 改选 glm-5.3 / glm-5.3-flash。
       items: [
         { model: 'glm-5.3', title: 'GLM-5.3', desc: '旗舰编码模型，全套餐支持' },
         { model: 'glm-5.3-flash', imageCapable: true, title: 'GLM-5.3-Flash', desc: '原生多模态编码模型，额度三倍' },
@@ -367,9 +370,10 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'glm',
       baseUrl: 'https://api.z.ai/api/paas/v4',
-      // z.ai 官方 wire id 全小写；GLM-5-Turbo 不存在于 z.ai（API enum 无此
-      // 行），不收录；存量 glm-5-turbo 配置会回落为自定义归类（档位提示
-      // 不受影响），与本文件 glm_coding_plan_global 组的处理一致。
+      // z.ai 官方 wire id 全小写；GLM-5-Turbo 不在 z.ai 现行 API enum
+      // （底座 bundled 资产的历史大写行不作为收录依据），不收录；存量
+      // glm-5-turbo 配置会回落为自定义归类（档位提示不受影响），与本文件
+      // glm_coding_plan_global 组的处理一致。
       items: [
         { model: 'glm-5.3', imageCapable: false, title: 'glm-5.3', desc: '最新旗舰，强制思考' },
         { model: 'glm-5.3-flash', imageCapable: true, title: 'glm-5.3-flash', desc: '最新多模态高性价比' },
@@ -432,8 +436,9 @@ const MODEL_CATALOG = {
       // 2026-09-11 官方口径（mimo.mi.com 模型清单）：mimo-v2.5-pro 纯文本
       // （1M 上下文，默认深度思考）；多模态（图/音/视频理解）在 mimo-v2.5 上。
       // Token Plan 订阅 Key（tp-）须改用 https://token-plan-cn.xiaomimimo.com/v1。
-      // mimo-v2.5 的图片能力后端子串表无法与纯文本的 -pro 区分，故后端表不收，
-      // 该行运行时回退 Unknown + 用户手动覆盖。
+      // mimo-v2.5 的图片能力由后端精确全等表收录（image_capability
+      // EXACT_VERIFIED_IMAGE_CAPABLE_MODELS，与纯文本的 -pro 天然区分），
+      // 未走表单保存的存量配置也按 Supported 处理。
       items: [
         { model: 'mimo-v2.5-pro', imageCapable: false, title: 'mimo-v2.5-pro', desc: '最新旗舰，1M 上下文' },
         { model: 'mimo-v2.5', imageCapable: true, title: 'mimo-v2.5', desc: '全模态理解（图片/视频）' },
@@ -545,13 +550,14 @@ const MODEL_CATALOG = {
       vendor: 'openai',
       baseUrl: 'https://api.openai.com/v1',
       // 2026-09-11 官方口径（developers.openai.com/api/docs/models）：gpt-6-astra
-      // 为当前最强旗舰与官方推荐起点；function calling 为通用支持特性、Chat
-      // Completions 端点标记 Supported（「仅 Responses」的限定只针对页面托管
-      // 工具列表，不影响函数调用），故收录并作默认。gpt-5.6-sol/terra/luna
-      // 定位与官方一致；gpt-5.5 / gpt-5.4-mini 在售未弃用。gpt-5.3-codex 为
-      // Responses 专用，不收录。
+      // 为当前最强旗舰，但其工具调用仅限 Responses 协议（function-calling
+      // 指南原文 "GPT-6 Astra requires the Responses API for tool calling"；
+      // 端点表 Chat Completions "Supported" 只表示端点可用，不拆分函数调用）
+      // ——品悟 openai 预设走 Chat wire，故收录但不作默认、desc 明示限制。
+      // gpt-5.6-sol/terra/luna 定位与官方一致；gpt-5.5 / gpt-5.4-mini 在售
+      // 未弃用。gpt-5.3-codex 为 Responses 专用，不收录。
       items: [
-        { model: 'gpt-6-astra', imageCapable: true, title: 'gpt-6-astra', desc: '官方推荐起点，当前最强旗舰' },
+        { model: 'gpt-6-astra', imageCapable: true, title: 'gpt-6-astra', desc: '最强旗舰；仅 Responses 协议支持函数调用' },
         { model: 'gpt-5.6-sol', imageCapable: true, title: 'gpt-5.6-sol', desc: 'GPT-5.6 家族旗舰，推理与编码' },
         { model: 'gpt-5.6-terra', imageCapable: true, title: 'gpt-5.6-terra', desc: '均衡智能与成本' },
         { model: 'gpt-5.6-luna', imageCapable: true, title: 'gpt-5.6-luna', desc: '低成本高并发' },

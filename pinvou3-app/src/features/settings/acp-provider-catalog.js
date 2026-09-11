@@ -33,7 +33,9 @@ export const ACP_PROVIDER_PRESETS = [
   { key: 'qwen', nameKey: 'presetQwen', name: '通义千问 Qwen', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', wireApi: 'openai', models: ['qwen3.8-max', 'qwen3.8-flash', 'qwen3.7-max', 'qwen3.7-plus', 'qwen3.7-flash', 'qwen3-coder-plus'] },
   { key: 'doubao', nameKey: 'presetDoubao', name: '豆包 Doubao', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', wireApi: 'openai', models: [] },
   { key: 'minimax', nameKey: 'presetMinimax', name: 'MiniMax', baseUrl: 'https://api.minimaxi.com/v1', wireApi: 'openai', models: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'] },
-  { key: 'xai', nameKey: 'presetXai', name: 'xAI Grok', baseUrl: 'https://api.x.ai/v1', wireApi: 'openai', models: ['grok-4.6', 'grok-4.5', 'grok-4.3', 'grok-4.20-reasoning', 'grok-build-0.1'] },
+  // grok-4.20-reasoning 为存量旧拼法（只增不删）；官方 wire id 是 -0309-
+  // 日期拼写（docs.x.ai models 页，2026-09-11），按同一政策增补在侧。
+  { key: 'xai', nameKey: 'presetXai', name: 'xAI Grok', baseUrl: 'https://api.x.ai/v1', wireApi: 'openai', models: ['grok-4.6', 'grok-4.5', 'grok-4.3', 'grok-4.20-reasoning', 'grok-4.20-0309-reasoning', 'grok-4.20-0309-non-reasoning', 'grok-build-0.1'] },
   { key: 'openrouter', nameKey: 'presetOpenrouter', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', wireApi: 'openai', models: [] },
   { key: 'siliconflow', nameKey: 'presetSiliconflow', name: '硅基流动 SiliconFlow', baseUrl: 'https://api.siliconflow.cn/v1', wireApi: 'openai', models: [] },
   { key: 'groq', nameKey: 'presetGroq', name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', wireApi: 'openai', models: [] },

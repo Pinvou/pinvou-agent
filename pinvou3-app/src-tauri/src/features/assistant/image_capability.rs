@@ -153,11 +153,13 @@ const VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     "kimi-k2.6",
 ];
 
-/// 精确(小写全等)收录条目:短的泛型 id 子串命中面过宽——裸 "k3" 子串会让任何
-/// 含 "k3" 的自定义名(第三方/聚合器的无关模型等)被判为原生识图并在发送时
-/// 内联图片,违反本表「宁可 Unknown 不可误判 Supported」的收录原则,故只按
-/// 全等收录。未来出现新的 -档位拼写时应在此追加,而不是回退子串。
-const EXACT_VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &["k3", "k3-256k"];
+/// 精确(小写全等)收录条目:子串命中面过宽的短泛型 id 或「同名纯文本变体」
+/// 只能按全等收录——裸 "k3" 子串会让任何含 "k3" 的自定义名(第三方/聚合器的
+/// 无关模型等)被判为原生识图并在发送时内联图片;mimo-v2.5 若走子串会连带
+/// 纯文本的 mimo-v2.5-pro。两者都违反本表「宁可 Unknown 不可误判 Supported」
+/// 的收录原则,故只按全等收录。未来出现新的 -档位拼写时应在此追加,而不是
+/// 回退子串。
+const EXACT_VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &["k3", "k3-256k", "mimo-v2.5"];
 
 /// 内置表查询:模型名(小写化)是否命中已验证多模态条目。
 fn builtin_verified_supports_image(model: &str) -> bool {
@@ -343,6 +345,9 @@ mod tests {
             (ModelPreset::Glm, "glm-5.3-flash"),
             (ModelPreset::Doubao, "doubao-seed-evolving"),
             (ModelPreset::Minimax, "MiniMax-M3"),
+            // MiMo(2026-09-11):多模态在 mimo-v2.5,纯文本的 mimo-v2.5-pro 不得
+            // 连带命中,故走精确全等表(见 EXACT_VERIFIED_IMAGE_CAPABLE_MODELS)。
+            (ModelPreset::Mimo, "mimo-v2.5"),
             // Kimi 直连 kimi-k3 与 Kimi Code k3 / k3-256k 官方均为图片输入
             // (2026-09-11);kimi-for-coding 用户实测可识图(2026-07)。
             (ModelPreset::Kimi, "kimi-for-coding"),
