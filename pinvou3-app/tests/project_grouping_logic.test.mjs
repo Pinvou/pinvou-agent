@@ -185,6 +185,24 @@ test("windows roots match case-insensitively, posix roots stay case-sensitive", 
   assert.equal(posixGroups.find((g) => g.kind === "folder").key, "/home/x/beta/sub");
 });
 
+test("windows roots match across separator shapes and trailing separators", () => {
+  // Finding 40: the store's identity key folds `\` -> `/` and strips trailing
+  // separators; a mixed-shape or trailing-separator root must not miss tier 2.
+  const projects = [project("p1", "Alpha", ["D:\\work\\alpha\\"], 0)];
+  const groups = groupSessionsWithProjects(
+    [
+      projectItem("a1", "D:/work/alpha/sub", "2026-08-01T08:00:00Z"),
+      projectItem("a2", "D:\\work\\alpha", "2026-08-02T08:00:00Z"),
+    ],
+    projects,
+    {},
+  );
+  assert.deepEqual(
+    groups.find((g) => g.projectId === "p1").rows.map((r) => r.id).sort((x, y) => x.localeCompare(y)),
+    ["a1", "a2"],
+  );
+});
+
 test("empty and invalid inputs degrade safely", () => {
   assert.deepEqual(groupSessionsWithProjects([], [], {}), []);
   assert.deepEqual(groupSessionsWithProjects(null, null, null), []);
@@ -295,4 +313,26 @@ test("needsAddFolderConfirm is the shared drop/pick decision", () => {
   );
   assert.equal(needsAddFolderConfirm(null, target), false, "missing session is a no-op");
   assert.equal(needsAddFolderConfirm(projectItem("a1", "x", "x"), null), false, "missing target is a no-op");
+});
+
+test("bound plain sessions join tier-2 grouping without masquerading as project kind", () => {
+  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
+  const groups = groupSessionsWithProjects(
+    [
+      { id: "b1", workspaceKind: "bound", workspacePath: "D:/work/alpha", updatedAt: "2026-08-01T08:00:00Z" },
+      { id: "b2", workspaceKind: "bound", workspacePath: "D:/work/alpha/sub", updatedAt: "2026-08-02T08:00:00Z" },
+      { id: "plain", workspaceKind: "", workspacePath: "", updatedAt: "2026-08-03T08:00:00Z" },
+    ],
+    projects,
+    {},
+  );
+  assert.equal(groups.find((g) => g.kind === "project").rows.length, 2);
+  assert.equal(
+    needsAddFolderConfirm(
+      { id: "b1", workspaceKind: "bound", workspacePath: "D:/work/other" },
+      project("p1", "Alpha", ["D:/work/alpha"], 0),
+    ),
+    true,
+    "bound sessions get the add-folder confirm like code sessions",
+  );
 });

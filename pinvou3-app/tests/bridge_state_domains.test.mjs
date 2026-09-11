@@ -142,11 +142,24 @@ test('web domain-adapter fields registry covers every subscribed domain', () => 
   }
   // projects 桩必须与桌面快照同形 { projects, assignments, loadedAt }
   // (tauri/bridge/projects.js),分组直接读 .projects/.assignments。
-  const projectsSeed = webBridge.match(/projectsList:\s*\{([^}]*)\}/);
-  assert.ok(projectsSeed, 'web bridge must seed projectsList with the desktop snapshot shape');
-  for (const key of ['projects', 'assignments']) {
+  // 括号计数截取(正则会停在 assignments: {} 的内层闭括号上,finding 43)。
+  const seedAt = webBridge.indexOf('projectsList:');
+  assert.ok(seedAt >= 0, 'web bridge must seed projectsList');
+  const seedOpen = webBridge.indexOf('{', seedAt);
+  assert.ok(seedOpen > seedAt, 'projectsList must seed an object (desktop snapshot shape)');
+  let depth = 0;
+  let seedEnd = seedOpen;
+  for (; seedEnd < webBridge.length; seedEnd += 1) {
+    if (webBridge[seedEnd] === '{') depth += 1;
+    if (webBridge[seedEnd] === '}') {
+      depth -= 1;
+      if (depth === 0) break;
+    }
+  }
+  const projectsSeed = webBridge.slice(seedOpen, seedEnd);
+  for (const key of ['projects', 'assignments', 'loadedAt']) {
     assert.ok(
-      new RegExp(`${key}:`).test(projectsSeed[1]),
+      new RegExp(`${key}:`).test(projectsSeed),
       `projectsList stub must carry "${key}" like the desktop snapshot`,
     );
   }

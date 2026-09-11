@@ -52,10 +52,6 @@ pub(crate) struct ModeCapabilities {
     /// 组合目录为空时是否隐藏 `load_skill`（空态保护，V-5 联动；判定在
     /// bridge 侧做——目录检查是磁盘 I/O，策略对象保持纯数据）。
     pub skills_empty_hides_load_skill: bool,
-    /// 项目级 skills 是否对该模式可选开启（§2.4：项目内文本是 prompt-injection
-    /// 面，显式开启才扫描；全局开关在 disabled_skills.json，这里只声明该模式
-    /// 是否参与）。消费点：skill_materialization 的项目来源门。
-    pub project_skills_opt_in: bool,
 }
 
 /// 模式能力差量静态表：每模式一行，新增模式漏填由穷尽性测试兜底。
@@ -66,7 +62,6 @@ const MODE_TABLE: &[(SessionMode, ModeCapabilities)] = &[
             unavailable_tools: &[],
             unavailable_builtin_skills: &[],
             skills_empty_hides_load_skill: false,
-            project_skills_opt_in: false,
         },
     ),
     (
@@ -75,7 +70,6 @@ const MODE_TABLE: &[(SessionMode, ModeCapabilities)] = &[
             unavailable_tools: &["mcp_pinvou3_present_artifact"],
             unavailable_builtin_skills: &["visual-design"],
             skills_empty_hides_load_skill: true,
-            project_skills_opt_in: true,
         },
     ),
 ];
@@ -92,12 +86,6 @@ fn capabilities_for(mode: SessionMode) -> ModeCapabilities {
         .find(|(m, _)| *m == mode)
         .map(|(_, caps)| *caps)
         .expect("MODE_TABLE 必须覆盖全部 SessionMode（穷尽性测试守护）")
-}
-
-/// 按 scope（即模式）查 `project_skills_opt_in` 表字段。组合目录物化的项目
-/// 来源门用（skill_materialization 拿到的是 scope 不是策略对象）。
-pub(crate) fn project_skills_opt_in_for(scope: SessionMode) -> bool {
-    capabilities_for(scope).project_skills_opt_in
 }
 
 /// 按 scope（即模式）查 `unavailable_builtin_skills` 表字段。技能组合目录物化
@@ -208,7 +196,6 @@ mod tests {
             // skill row is not shown either).
             unavailable_builtin_skills: &'static [&'static str],
             hides_load_skill_when_empty: bool,
-            project_skills_opt_in: bool,
             binds_project: bool,
             uses_code_instructions: bool,
         }
@@ -218,7 +205,6 @@ mod tests {
                 unavailable_tools: &["mcp_pinvou3_present_artifact"],
                 unavailable_builtin_skills: &["visual-design"],
                 hides_load_skill_when_empty: true,
-                project_skills_opt_in: true,
                 binds_project: true,
                 uses_code_instructions: true,
             },
@@ -229,7 +215,6 @@ mod tests {
                 unavailable_tools: &[],
                 unavailable_builtin_skills: &[],
                 hides_load_skill_when_empty: false,
-                project_skills_opt_in: false,
                 binds_project: false,
                 uses_code_instructions: false,
             },
@@ -261,12 +246,6 @@ mod tests {
                 row.mode
             );
             assert_eq!(
-                policy.capabilities().project_skills_opt_in,
-                row.project_skills_opt_in,
-                "{:?} project_skills_opt_in",
-                row.mode
-            );
-            assert_eq!(
                 policy.binds_project(),
                 row.binds_project,
                 "{:?} binds_project",
@@ -290,21 +269,6 @@ mod tests {
             assert!(
                 MODE_TABLE.iter().any(|(m, _)| m == mode),
                 "MODE_TABLE 缺少 {mode:?} 的表项"
-            );
-        }
-    }
-
-    /// 按 scope 查表 helper：组合目录物化拿 scope 不拿策略对象，查到的必须
-    /// 与同一模式的策略对象一致。
-    #[test]
-    fn project_skills_opt_in_for_matches_policy_capabilities() {
-        for mode in SessionMode::ALL {
-            assert_eq!(
-                project_skills_opt_in_for(*mode),
-                SessionPolicy::for_mode(*mode)
-                    .capabilities()
-                    .project_skills_opt_in,
-                "{mode:?}"
             );
         }
     }

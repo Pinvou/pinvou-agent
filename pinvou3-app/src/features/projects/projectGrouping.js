@@ -20,12 +20,14 @@ function itemTime(item) {
   return String((item && (item.updatedAt || item.pinnedAt)) || '');
 }
 
-// True when `path` equals `root` or lives directly under it. Both separators
-// are accepted so canonicalized unix roots still match windows-stored paths.
-// Windows paths fold case for comparison, mirroring the store's
-// filesystem_path_identity_key (Windows identity keys fold case, POSIX does
-// not): the pure module has no host-OS signal, so it keys off path shape —
-// drive-letter/UNC paths only ever come from Windows sessions.
+// True when `path` equals `root` or lives directly under it.
+// Windows-shaped paths (drive letter or UNC) fold case, unify separators and
+// strip a trailing one, mirroring the store's filesystem_path_identity_key /
+// key_is_same_or_nested (windows_path.rs, store.rs) — mixed-shape pairs like
+// root `D:\work` vs path `D:/work/x` must still hit tier 2. The pure module
+// has no host-OS signal, so it keys off path shape — drive-letter/UNC paths
+// only ever come from Windows sessions. POSIX paths stay case-sensitive and
+// keep the loose both-separator match for windows-stored paths.
 function looksWindowsPath(value) {
   return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\');
 }
@@ -35,8 +37,14 @@ function isUnderRoot(path, root) {
   let a = String(path);
   let b = String(root);
   if (looksWindowsPath(a) && looksWindowsPath(b)) {
-    a = a.toLowerCase();
-    b = b.toLowerCase();
+    const fold = (value) => {
+      let v = value.toLowerCase().replaceAll('\\', '/');
+      while (v.endsWith('/')) v = v.slice(0, -1);
+      return v;
+    };
+    a = fold(a);
+    b = fold(b);
+    return a === b || a.startsWith(`${b}/`);
   }
   if (a === b) return true;
   return a.startsWith(`${b}/`) || a.startsWith(`${b}\\`);
@@ -68,12 +76,13 @@ function resolveSessionProjectId(item, projects, assignments) {
   const projectList = Array.isArray(projects) ? projects.filter(Boolean) : [];
   const assignmentMap = assignments && typeof assignments === 'object' ? assignments : {};
   if (!item) return null;
+  // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor and Object.hasOwn is unavailable; this call is already in safe form
   if (Object.prototype.hasOwnProperty.call(assignmentMap, item.id)) {
     const assigned = assignmentMap[item.id];
     if (assigned && projectList.some(project => project.id === assigned)) return assigned;
     if (assigned === null) return null;
   }
-  if (item.workspaceKind !== 'project') return null;
+  if (!hasProjectWorkspace(item)) return null;
   const matched = matchProjectByPath(projectList, item.workspacePath);
   return matched ? matched.id : null;
 }
@@ -87,6 +96,20 @@ function projectCoversPath(project, path) {
     const rootPath = root && typeof root === 'object' ? root.path : root;
     return isUnderRoot(String(path), rootPath ? String(rootPath) : rootPath);
   });
+}
+
+// 携带真实项目工作目录的会话形态:'project'(代码/ACP)与 'bound'(#445
+// 绑定的普通工作会话)。'bound' 独立成 kind,不伪装成 'project'——将来
+// project-kind 获得自有行为(如 baseline 面板)时不会误伤普通绑定会话
+// (评审 #452 finding 5)。
+const WORKSPACE_KINDS_WITH_PROJECT_DIR = ['project', 'bound'];
+
+function hasProjectWorkspace(item) {
+  return (
+    !!item
+    && WORKSPACE_KINDS_WITH_PROJECT_DIR.includes(item.workspaceKind)
+    && !!item.workspacePath
+  );
 }
 
 // Input: items = code sessions [{ id, workspacePath, workspaceKind, updatedAt, ... }],
@@ -106,6 +129,7 @@ function groupSessionsWithProjects(items, projects, assignments) {
     if (!item) return;
     let target = null;
     let autoGroupBlocked = false;
+    // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor and Object.hasOwn is unavailable; this call is already in safe form
     if (Object.prototype.hasOwnProperty.call(assignmentMap, item.id)) {
       const assigned = assignmentMap[item.id];
       if (assigned && byId.has(assigned)) {
@@ -121,7 +145,7 @@ function groupSessionsWithProjects(items, projects, assignments) {
     // Tier 2: auto-group by workspace root containment. Only project-kind
     // sessions participate — temporary sessions enter a project exclusively
     // through explicit assignment (the "adopt" flow), never implicitly.
-    if (!target && !autoGroupBlocked && item.workspaceKind === 'project') {
+    if (!target && !autoGroupBlocked && hasProjectWorkspace(item)) {
       target = matchProjectByPath(projectList, item.workspacePath);
     }
     if (target) {
@@ -129,7 +153,7 @@ function groupSessionsWithProjects(items, projects, assignments) {
       return;
     }
     // Tier 3: legacy folder bucketing.
-    const key = item.workspaceKind === 'project' && item.workspacePath
+    const key = hasProjectWorkspace(item) && item.workspacePath
       ? String(item.workspacePath)
       : TEMPORARY_GROUP_KEY;
     if (!byFolder.has(key)) byFolder.set(key, []);
@@ -179,8 +203,8 @@ function groupSessionsWithProjects(items, projects, assignments) {
 // copies (drag drop handler, dialog initializer, dialog choose).
 function needsAddFolderConfirm(session, target) {
   if (!session || !target) return false;
-  const workspacePath = session.workspaceKind === 'project' ? String(session.workspacePath || '') : '';
+  const workspacePath = hasProjectWorkspace(session) ? String(session.workspacePath || '') : '';
   return !!workspacePath && !projectCoversPath(target, workspacePath);
 }
 
-export { TEMPORARY_GROUP_KEY, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, needsAddFolderConfirm };
+export { TEMPORARY_GROUP_KEY, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, needsAddFolderConfirm, hasProjectWorkspace };

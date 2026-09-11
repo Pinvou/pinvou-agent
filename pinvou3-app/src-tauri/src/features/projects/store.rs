@@ -108,13 +108,41 @@ fn validate_name(raw: String) -> Result<String> {
 }
 
 /// root 的展示形态:目录存在时用 fs::canonicalize(消 symlink),不存在时
-/// 退回词法绝对化——目录被移走后 overlap 校验仍需可判定,且形态对已存值
-/// 幂等(canonicalize(canonical p) == p)。再经共享的 `platform_compat_path`
+/// 退到最近现存祖先 canonicalize 后拼回缺失后缀(见
+/// `canonicalize_via_ancestor`,纯词法回退在 macOS 上会与存储值分叉)——
+/// 目录被移走后 overlap 校验仍需可判定,且形态对已存值幂等
+/// (canonicalize(canonical p) == p)。再经共享的 `platform_compat_path`
 /// 归一,剥掉 Windows canonicalize 产生的 `\\?\` verbatim 前缀(非 Windows
 /// 为恒等映射),与 `validate_codex_project_workspace` 的既有约定同源。
 fn root_display(path: &Path) -> PathBuf {
-    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| lexical_absolute(path));
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| canonicalize_via_ancestor(path));
     crate::platform::os::platform_compat_path(&canonical.to_string_lossy())
+}
+
+/// 路径不存在时的回退:最近现存祖先做 canonicalize,再把缺失后缀按组件
+/// 拼回(评审 #464 MAJOR 3):纯词法绝对化在 macOS 上与已 canonicalize 的
+/// 存储值分叉(/var/folders vs /private/var/folders),折叠身份键不再嵌套,
+/// covered 判定失效。全部祖先都不存在(手工构造的损坏状态)才退回词法形态。
+fn canonicalize_via_ancestor(path: &Path) -> PathBuf {
+    let abs = lexical_absolute(path);
+    let mut missing: Vec<std::ffi::OsString> = Vec::new();
+    let mut cursor = abs.as_path();
+    loop {
+        if let Ok(canonical) = std::fs::canonicalize(cursor) {
+            let mut rebuilt = canonical;
+            for component in missing.iter().rev() {
+                rebuilt.push(component);
+            }
+            return rebuilt;
+        }
+        match (cursor.file_name(), cursor.parent()) {
+            (Some(name), Some(parent)) => {
+                missing.push(name.to_os_string());
+                cursor = parent;
+            }
+            _ => return abs,
+        }
+    }
 }
 
 /// root 的比较键:展示形态经共享的 `filesystem_path_identity_key` 折叠——

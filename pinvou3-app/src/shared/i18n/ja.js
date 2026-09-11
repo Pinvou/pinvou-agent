@@ -53,7 +53,7 @@ const codexJa = {
   relayNoModelHint:'現在の中継プロバイダーにモデルが設定されていません。公式モデルは中継では使えないため、先に設定でこのプロバイダーにモデルを入力してください。',
   configLabels:{ mode:'権限モード', collaboration_mode:'共同作業モード', model:'モデル', reasoning_effort:'推論強度', 'fast-mode':'高速モード' },
   agentCommands:'Agent コマンド',
-  placeholder:'コード Agent にコード編集、コマンド実行、リポジトリ説明を依頼…', temporarySession:'一時セッション',
+  placeholder:'コード Agent にコード編集、コマンド実行、リポジトリ説明を依頼…', temporarySession:'一時セッション', untitledSession:'無題のコードセッション',
   chooseProject:'プロジェクトディレクトリを選択', chooseProjectDesc:'Agent が実際のプロジェクトで直接作業します',
   temporarySessionDesc:'Pinvou が管理する隔離ディレクトリを使用', recentProjects:'最近のプロジェクト',
   nativeBlockedNotice:'危険なコマンドをブロックしました（未実行）',
@@ -174,7 +174,7 @@ const jaBase = {
   ...browserJa,
         langTag: 'ja',
         acpAgent: 'ACP Agent',
-        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', scheduledPlans: '定期タスク', monitor: '稼働状態', workflow: 'ワークフロー', multiAgent: 'マルチエージェント', multiAgentDesktopOnly: 'このマルチエージェント会話は現在デスクトップアプリでのみ利用できます。', toolStore: 'プラグインセンター', cardPool: 'カードプール', recent: '履歴', pinnedTasks: '固定タスク', regularTasks: 'タスク', sidebarTaskList: 'タスク一覧', sidebarTaskFilter: 'フィルター', sidebarTaskFilterAll: 'すべて', sidebarTaskFilterPinned: '固定', sidebarTaskFilterCode: 'コード', sidebarTaskFilterCodeSessions: 'コードセッション', sidebarTaskFilterScheduled: '定期タスク', sidebarTaskSort: '並び替え', sidebarTaskSortPinnedFirst: '固定を優先', sidebarTaskSortRecent: '最近の更新', sidebarTaskEmpty: 'タスクはありません', sidebarViewAll: 'すべて表示', sidebarSection: 'タスクリスト', sidebarDateGrouping: '日付でグループ化', sidebarDateGroupingDesc: 'タスクを日付ごとにまとめ、今日分を既定で展開', sidebarNavExpand: 'ナビゲーションを展開', sidebarNavCollapse: 'ナビゲーションを折りたたむ', sidebarCollapseAll: '折りたたむ', sidebarExpandAll: '展開', sidebarTaskStyle: 'スタイル', sidebarResize: 'ドラッグでサイドバーの幅を調整、ダブルクリックでリセット', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く', tearoffTitle: '切り離し', tearoffHint: '別ウィンドウに切り離す', mobileMore: 'その他',
+        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', scheduledPlans: '定期タスク', monitor: '稼働状態', workflow: 'ワークフロー', multiAgent: 'マルチエージェント', multiAgentDesktopOnly: 'このマルチエージェント会話は現在デスクトップアプリでのみ利用できます。', toolStore: 'プラグインセンター', cardPool: 'カードプール', recent: '履歴', pinnedTasks: '固定タスク', regularTasks: 'タスク', sidebarTaskList: 'タスク一覧', sidebarTaskFilter: 'フィルター', sidebarTaskFilterAll: 'すべて', sidebarTaskFilterPinned: '固定', sidebarTaskFilterCode: 'プロジェクト', sidebarTaskFilterCodeSessions: 'コードセッション', sidebarTaskFilterScheduled: '定期タスク', sidebarTaskSort: '並び替え', sidebarTaskSortPinnedFirst: '固定を優先', sidebarTaskSortRecent: '最近の更新', sidebarTaskEmpty: 'タスクはありません', sidebarViewAll: 'すべて表示', sidebarSection: 'タスクリスト', sidebarDateGrouping: '日付でグループ化', sidebarDateGroupingDesc: 'タスクを日付ごとにまとめ、今日分を既定で展開', sidebarNavExpand: 'ナビゲーションを展開', sidebarNavCollapse: 'ナビゲーションを折りたたむ', sidebarCollapseAll: '折りたたむ', sidebarExpandAll: '展開', sidebarTaskStyle: 'スタイル', sidebarResize: 'ドラッグでサイドバーの幅を調整、ダブルクリックでリセット', settings: '設定', localEnv: 'ローカル環境', megacubeSite: 'MegaCube サイトを開く', tearoffTitle: '切り離し', tearoffHint: '別ウィンドウに切り離す', mobileMore: 'その他',
         previewTaskDailyBrief: 'デイリーブリーフ', previewTaskFollowUp: 'フォローアップ確認', previewTaskSalesWeekly: 'リード週報',
         archiveSession: '隠す', archiveConfirmTitle: 'このタスクを隠しますか？', archiveConfirmMessage: 'このタスクはサイドバーから外れます。', archiveConfirmDetail: '会話と成果物は削除されず、チャット管理ページから戻せます。', archiveConfirmAction: '隠す',
         archiveSuccess: '隠しました', archiveSuccessView: '表示',
@@ -361,7 +361,7 @@ const jaBase = {
         uiAttachments: { parsing:'解析中', failed:'失敗', remove:name=>`添付ファイル ${name} を削除`, dropRelease:'ドロップして添付', dropWebTitle:'あらゆる内容を追加', dropWebHint:'ファイルをここにドロップして会話に追加できます', fileTooLarge:'ファイルが添付上限の 20 MB を超えているため追加できません', archiveTooManyEntries:'圧縮ファイルに 50 件を超える項目が含まれているため追加できません', archiveExpandedTooLarge:'展開後のサイズが 100 MB を超えるため追加できません', archiveUnsafeEntry:'圧縮ファイルに安全でないリンクまたはパスが含まれているため追加できません' },
         uiCodex: codexJa,
         uiAcpProviders: acpProvidersJa,
-        uiProjects: { convertToProject:'プロジェクトに変換', projectNamePlaceholder:'プロジェクト名', renameProject:'プロジェクトの名前を変更', deleteProject:'プロジェクトを削除', deleteConfirmLabel:'このプロジェクトを削除しますか？', deleteProjectHint:'会話は削除されず、未分類に戻ります', moveToProject:'プロジェクトへ移動…', moveOut:'プロジェクトから外す', moveToUngrouped:'未分類へ移動', temporaryBadge:'一時ワークスペース', folderUnavailable:'フォルダー利用不可', rebindFolder:'再バインド', moveConfirmTitle:'このプロジェクトへ会話を移動しますか？', moveConfirmBody:(project, folder)=>`会話は「${project}」に移動します。フォルダー ${folder} はプロジェクトに追加されず、会話のみが整理されます。`, moveConfirm:'移動', searchPlaceholder:'プロジェクトを検索', noProjects:'プロジェクトはまだありません', ungrouped:'未分類', currentProject:'現在のプロジェクト', movedNotice:'会話を移動しました', movedNoticeWithFolder:folder=>`会話を移動し、フォルダー ${folder} を追加しました`, noMatchProject:'一致するプロジェクトがありません', opFailed:'プロジェクト操作に失敗しました', rebindTitle:'プロジェクトフォルダーを再バインド', rebindConfirm:'移動して再バインド', rebindSessionsHint:()=>'このフォルダー配下のすべての会話が新しいディレクトリに切り替わります', rebindSuccess:n=>`${n} 件の会話を再バインドしました`, rebindOldExistsWarn:'元のフォルダーがまだ存在します。切り替えると 2 か所が別々のディレクトリを指します。続行しますか？', rebindPartial:(ok, failed)=>`${ok} 件を再バインドし、${failed} 件が失敗しました。残りは再試行できます`, rebindBusyAfter:n=>`${n} 件の会話が再バインド中に新しいターンを開始しました。異常があればアイドル後に再試行してください` },
+        uiProjects: { convertToProject:'プロジェクトに変換', projectNamePlaceholder:'プロジェクト名', renameProject:'プロジェクトの名前を変更', deleteProject:'プロジェクトを削除', deleteConfirmLabel:'このプロジェクトを削除しますか？', deleteProjectHint:'会話は削除されず、未分類に戻ります', moveToProject:'プロジェクトへ移動…', moveOut:'プロジェクトから外す', moveToUngrouped:'未分類へ移動', temporaryBadge:'一時ワークスペース', folderUnavailable:'フォルダー利用不可', rebindFolder:'再バインド', moveConfirmTitle:'このプロジェクトへ会話を移動しますか？', moveConfirmBody:(project, folder)=>`会話は「${project}」に移動します。フォルダー ${folder} はプロジェクトに追加されず、会話のみが整理されます。`, moveConfirm:'移動', searchPlaceholder:'プロジェクトを検索', noProjects:'プロジェクトはまだありません', ungrouped:'未分類', currentProject:'現在のプロジェクト', movedNotice:'会話を移動しました', movedNoticeWithFolder:folder=>`会話を移動し、フォルダー ${folder} を追加しました`, noMatchProject:'一致するプロジェクトがありません', opFailed:'プロジェクト操作に失敗しました', rebindTitle:'プロジェクトフォルダーを再バインド', rebindConfirm:'移動して再バインド', rebindSessionsHint:()=>'このフォルダー配下のすべての会話が新しいディレクトリに切り替わります', rebindSuccess:n=>`${n} 件の会話を再バインドしました`, rebindOldExistsWarn:'元のフォルダーがまだ存在します。切り替えると 2 か所が別々のディレクトリを指します。続行しますか？', rebindNestedRejected:'新しいフォルダーは旧フォルダーの内部には置けません。別の場所を選んでください', rebindPartial:(ok, failed)=>`${ok} 件を再バインドし、${failed} 件が失敗しました。残りは再試行できます`, rebindBusyAfter:n=>`${n} 件の会話が再バインド中に新しいターンを開始しました。異常があればアイドル後に再試行してください` },
         uiCodexWorkspace: { changes:{added:'追加',modified:'変更',deleted:'削除',renamed:'名前変更',copied:'コピー',conflict:'競合',untracked:'未追跡',unknown:'ファイル'}, origins:{session:'このセッション',preexisting:'セッション前から存在',preexisting_modified:'セッション前から存在 · このセッションで変更',unknown:'出所未記録'}, addedPath:path=>`${path} を追加済み`, addPath:path=>`${path} を会話に追加`, added:'会話に追加済み', add:'会話に追加', back:'ワークスペース一覧に戻る', copyPath:'相対パスをコピー', reveal:'ファイルマネージャーで表示', open:'システムアプリで開く', reading:'読み込み中…', noDiff:'表示できるテキスト差分はありません', tooLarge:'ファイルが大きいため内蔵プレビューを生成できません。', unsupported:'このファイルは内蔵プレビューに対応していません。', openHint:'システムアプリで開くことができます。', truncated:'内容が大きいため、先頭部分のみ表示しています。', resize:'ワークスペースの幅を調整', resizeHint:'ドラッグで幅を調整、ダブルクリックで初期値に戻す', title:'ワークスペース', temporary:'一時ワークスペース', refresh:'ワークスペースを更新', close:'ワークスペースを閉じる', files:'ファイル', changed:'変更', search:'ファイルを検索', noFiles:'一致するファイルはありません', noBaseline:'この古いセッションには作成時の基準がないため、このセッションによる変更かどうか判定できません。', branch:'ブランチ', staged:'ステージ済み', noChanges:'ワークスペースに変更はありません', copyContent:'内容をコピー', copied:'コピーしました', closeViewer:'プレビューを閉じる', loadFailed:'ファイルの読み込みに失敗しました', resizeWidth:'ビューアの幅を調整', resizeHeight:'ビューアの高さを調整', resizeCorner:'ビューアのサイズを調整、ダブルクリックで初期値に戻す', fontDecrease:'文字サイズを小さく', fontIncrease:'文字サイズを大きく', openInNewWindow:'コードリーダーで開く', diffSuffix:'(差分)', readerTitle:'コードリーダー', readerEmpty:'ワークスペースのファイルプレビューから「コードリーダーで開く」を選ぶと、ファイルがここにタブとして追加されます。', closeTab:'タブを閉じる', noSessionChanges:'セッションを作成すると、そのセッションによるプロジェクトの変更がここに表示されます。' },
 
         checkUpdate: '更新を確認', checking: '確認中…', upToDate: '最新バージョンです',
@@ -949,6 +949,20 @@ Object.assign(dictJa, {
   remoteKbUploadSuccess:'アップロード: {count}', remoteKbUploadExistingSummary:'登録済み: {count}', remoteKbUploadProcessingSummary:'処理中: {count}', remoteKbUploadFailedSummary:'失敗: {count}',
   remoteKbFolderSummary:'{count} 件の文書を検出', remoteKbFolderSkipped:'{count} 件をスキップ', remoteKbFolderEmpty:'インポート可能な文書がありません', remoteKbFolderLimitExceeded:'1 回のフォルダインポートは 10,000 件までです',
 });
+
+// 通常チャットの下書き状態で使う作業ディレクトリ選択 UI
+// （features/chat/ComposerWorkspaceSelector.jsx）。code モードの
+// uiCodex 下書きセレクターと文言を揃える。
+dictJa.uiChatWorkspace = {
+  defaultWorkspace:'既定のワークスペース', defaultWorkspaceDesc:'Pinvou が管理するセッション用ディレクトリを使用します',
+  chooseDirectory:'ディレクトリを選択…', chooseDirectoryDesc:'そのディレクトリで Agent を直接作業させます',
+  recentDirectories:'最近使用した項目', unknownDirectory:'不明なディレクトリ',
+  // 作業ディレクトリに紐付けたセッションで初めて YOLO に切り替える際の
+  // 一度きりの確認カード（uiCodex の modeYoloConfirm* と同じ意味だが、
+  // 「プロジェクトディレクトリ」ではなく「作業ディレクトリ」の表現のため別キー）。
+  yoloConfirmTitle:'YOLO モードに切り替えますか？', yoloConfirmBody:'このモードでは、モデルが作業ディレクトリを全自動で読み書きし、shell コマンドを実行できます。段階的な承認はありません。',
+  yoloConfirmHint:'確認後はグローバルに記憶され、今後は表示されません。', yoloConfirmOk:'確認', yoloConfirmCancel:'キャンセル',
+};
 
 dictJa.uiSettingsDetail.memoryLoadFailed = 'メモリプロフィールの読み込みに失敗しました。再試行してください。';
 

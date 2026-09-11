@@ -113,7 +113,7 @@ const expectedProtocolHashes = {
   // canonical v0.9.12 `bash` name while retaining legacy replay aliases.
   chat: '908516b590b380becfc66db8bf9d147547193b95f5d809e3fddb7d4170c7391d',
   dependencies: '2cb185d38dabeb35f48773457c182e1c35951b210f5d0fc853b074eb2eb68626',
-  interaction: '3f275b9c4fc77ebf42a56df1c84d638ca5f1f8a3b80612efebeddf1a39f14efd',
+  interaction: '1623223fb298ff2d959ad24887bd423edc1d39bab63520aafd3e150afc4be12d',
   knowledge: '9105a42c6b69f04d0bc28b6a72e0746648110a44823891ded3261cdcbc99766b',
   // memory recomputed for the memory-maintenance feature: organize_memory +
   // get_memory_organize_history invokes added to bridge/memory.js.
@@ -125,7 +125,12 @@ const expectedProtocolHashes = {
   // the browser lane's trilingual mapping instead of only the message text.
   remoteControl: '0f3bbabae65f0551e335354019de7f97578fde257829505ad74c13196b173fc5',
   scheduled: '7d6ca9783925a5071a364097ebdf0112511f9503b5e4534346b9fda6873ec036',
-  sessions: '7dd63b9cb4ab7b7e03f81abc0822baa9bd1dd61f27fa8b8d2df009126d1c6c60',
+  // Recomputed for the normal-chat draft workspace selector: create_session
+  // now carries the optional workspacePath payload (bridge/sessions.js).
+  // Recomputed again for workspace-bound sessions: get_session_workspace_binding
+  // query + bound-draft staged mode application (set_plan_mode_next /
+  // exit_plan_to_yolo) at materialization.
+  sessions: 'b619613998b48112fab4437b7b7f6b70283ead5e0eefa664e823bc2315f115b7',
   settings: 'a44929caff59641eb059f28885f1674d4e277412526d31c1d3ddfd75e44d0496',
   updater: '86412d40999a268d3d92dc4fe97e3fe465de08745423be820f38a462d79aaced',
   // Recomputed for the comment-only English translation of the voice bridge

@@ -52,7 +52,7 @@ const codexZh = {
   relayNoModelHint:'当前中转 Provider 未配置模型：官方模型无法走中转，请先在设置中为该 Provider 填写模型',
   configLabels:{ mode:'权限模式', collaboration_mode:'协作方式', model:'模型', reasoning_effort:'推理强度', 'fast-mode':'快速模式' },
   agentCommands:'Agent 命令',
-  placeholder:'让代码 Agent 处理代码、运行命令或解释仓库…', temporarySession:'临时会话',
+  placeholder:'让代码 Agent 处理代码、运行命令或解释仓库…', temporarySession:'临时会话', untitledSession:'未命名代码会话',
   chooseProject:'选择项目目录', chooseProjectDesc:'让 Agent 直接在真实项目中工作',
   temporarySessionDesc:'使用 Pinvou 管理的隔离目录', recentProjects:'最近项目',
   nativeBlockedNotice:'已拦截一条危险命令，未执行',
@@ -173,7 +173,7 @@ export const dictZh = {
   ...browserZh,
         langTag: 'zh',
         acpAgent: 'ACP Agent',
-        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', scheduledPlans: '定时任务', monitor: '运行状态', workflow: '工作流', multiAgent: '多智能体', multiAgentDesktopOnly: '此多智能体对话当前仅在桌面端可用。', toolStore: '插件中心', cardPool: '专家池', recent: '历史对话', pinnedTasks: '置顶任务', regularTasks: '任务', sidebarTaskList: '任务列表', sidebarTaskFilter: '筛选', sidebarTaskFilterAll: '全部', sidebarTaskFilterPinned: '置顶', sidebarTaskFilterCode: '代码', sidebarTaskFilterCodeSessions: '代码会话', sidebarTaskFilterScheduled: '定时任务', sidebarTaskSort: '排序', sidebarTaskSortPinnedFirst: '置顶优先', sidebarTaskSortRecent: '最近更新', sidebarTaskEmpty: '暂无任务', sidebarViewAll: '查看全部', sidebarSection: '任务列表', sidebarDateGrouping: '按日期折叠', sidebarDateGroupingDesc: '任务列表按日期分组，今天默认展开', sidebarNavExpand: '展开导航', sidebarNavCollapse: '收起导航', sidebarCollapseAll: '折叠', sidebarExpandAll: '展开', sidebarTaskStyle: '样式', sidebarResize: '拖拽调整边栏宽度，双击复位', settings: '设置', localEnv: '本地环境', megacubeSite: '打开 MegaCube 官网', tearoffTitle: '撕离窗口', tearoffHint: '弹出为独立窗口', mobileMore: '更多',
+        newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', scheduledPlans: '定时任务', monitor: '运行状态', workflow: '工作流', multiAgent: '多智能体', multiAgentDesktopOnly: '此多智能体对话当前仅在桌面端可用。', toolStore: '插件中心', cardPool: '专家池', recent: '历史对话', pinnedTasks: '置顶任务', regularTasks: '任务', sidebarTaskList: '任务列表', sidebarTaskFilter: '筛选', sidebarTaskFilterAll: '全部', sidebarTaskFilterPinned: '置顶', sidebarTaskFilterCode: '项目', sidebarTaskFilterCodeSessions: '代码会话', sidebarTaskFilterScheduled: '定时任务', sidebarTaskSort: '排序', sidebarTaskSortPinnedFirst: '置顶优先', sidebarTaskSortRecent: '最近更新', sidebarTaskEmpty: '暂无任务', sidebarViewAll: '查看全部', sidebarSection: '任务列表', sidebarDateGrouping: '按日期折叠', sidebarDateGroupingDesc: '任务列表按日期分组，今天默认展开', sidebarNavExpand: '展开导航', sidebarNavCollapse: '收起导航', sidebarCollapseAll: '折叠', sidebarExpandAll: '展开', sidebarTaskStyle: '样式', sidebarResize: '拖拽调整边栏宽度，双击复位', settings: '设置', localEnv: '本地环境', megacubeSite: '打开 MegaCube 官网', tearoffTitle: '撕离窗口', tearoffHint: '弹出为独立窗口', mobileMore: '更多',
         previewTaskDailyBrief: '每日早报', previewTaskFollowUp: '事项督办', previewTaskSalesWeekly: '销售线索周报',
         archiveSession: '收纳', archiveConfirmTitle: '确认收纳任务', archiveConfirmMessage: '将该任务移出任务列表，存入【对话管理-已收纳】，需要时可找回。', archiveConfirmDetail: '', archiveConfirmAction: '确认收纳',
         archiveSuccess: '已收纳到【对话管理-已收纳】', archiveSuccessView: '前往查看',
@@ -363,7 +363,7 @@ export const dictZh = {
         uiAttachments: { parsing:'解析中', failed:'失败', remove:name=>`移除附件 ${name}`, dropRelease:'松开即可添加', dropWebTitle:'添加任意内容', dropWebHint:'将任意文件拖放到此处，以将其添加到对话中', fileTooLarge:'文件超过 20 MB 附件上限，无法添加', archiveTooManyEntries:'压缩包包含超过 50 个条目，无法添加', archiveExpandedTooLarge:'压缩包解压后超过 100 MB，无法添加', archiveUnsafeEntry:'压缩包包含不安全的链接或路径，无法添加' },
         uiCodex: codexZh,
         uiAcpProviders: acpProvidersZh,
-        uiProjects: { convertToProject:'转为项目', projectNamePlaceholder:'项目名称', renameProject:'重命名项目', deleteProject:'删除项目', deleteConfirmLabel:'确认删除项目？', deleteProjectHint:'对话不会被删除，将回到未分组', moveToProject:'移动到项目…', moveOut:'移出项目', moveToUngrouped:'移到未分组', temporaryBadge:'临时工作区', folderUnavailable:'文件夹不可用', rebindFolder:'重新绑定', moveConfirmTitle:'移动对话到此项目？', moveConfirmBody:(project, folder)=>`对话将移入「${project}」。其所在文件夹 ${folder} 不会加入项目，仅该对话归档。`, moveConfirm:'移动', searchPlaceholder:'搜索项目', noProjects:'暂无项目', ungrouped:'未分组', currentProject:'当前项目', movedNotice:'已移动对话', movedNoticeWithFolder:folder=>`已移动对话，并加入文件夹 ${folder}`, noMatchProject:'没有匹配的项目', opFailed:'项目操作失败', rebindTitle:'重新绑定项目文件夹', rebindConfirm:'移动并重绑定', rebindSessionsHint:()=>'该文件夹下的所有会话都会改用新目录', rebindSuccess:n=>`已重新绑定 ${n} 个会话`, rebindOldExistsWarn:'原文件夹仍存在，切换后两处将指向不同目录，确认继续？', rebindPartial:(ok, failed)=>`已重新绑定 ${ok} 个会话，${failed} 个失败，可对剩余会话重试`, rebindBusyAfter:n=>`${n} 个会话在重绑定期间开始了新回合，如目录表现异常请让其空闲后重试一次` },
+        uiProjects: { convertToProject:'转为项目', projectNamePlaceholder:'项目名称', renameProject:'重命名项目', deleteProject:'删除项目', deleteConfirmLabel:'确认删除项目？', deleteProjectHint:'对话不会被删除，将回到未分组', moveToProject:'移动到项目…', moveOut:'移出项目', moveToUngrouped:'移到未分组', temporaryBadge:'临时工作区', folderUnavailable:'文件夹不可用', rebindFolder:'重新绑定', moveConfirmTitle:'移动对话到此项目？', moveConfirmBody:(project, folder)=>`对话将移入「${project}」。其所在文件夹 ${folder} 不会加入项目，仅该对话归档。`, moveConfirm:'移动', searchPlaceholder:'搜索项目', noProjects:'暂无项目', ungrouped:'未分组', currentProject:'当前项目', movedNotice:'已移动对话', movedNoticeWithFolder:folder=>`已移动对话，并加入文件夹 ${folder}`, noMatchProject:'没有匹配的项目', opFailed:'项目操作失败', rebindTitle:'重新绑定项目文件夹', rebindConfirm:'移动并重绑定', rebindSessionsHint:()=>'该文件夹下的所有会话都会改用新目录', rebindSuccess:n=>`已重新绑定 ${n} 个会话`, rebindOldExistsWarn:'原文件夹仍存在，切换后两处将指向不同目录，确认继续？', rebindNestedRejected:'新目录不能位于旧目录内部，请换一个位置', rebindPartial:(ok, failed)=>`已重新绑定 ${ok} 个会话，${failed} 个失败，可对剩余会话重试`, rebindBusyAfter:n=>`${n} 个会话在重绑定期间开始了新回合，如目录表现异常请让其空闲后重试一次` },
         uiCodexWorkspace: { changes:{added:'新增',modified:'修改',deleted:'删除',renamed:'重命名',copied:'复制',conflict:'冲突',untracked:'未跟踪',unknown:'文件'}, origins:{session:'本会话',preexisting:'会话前已有',preexisting_modified:'会话前已有 · 本会话继续修改',unknown:'来源未记录'}, addedPath:path=>`已添加 ${path}`, addPath:path=>`添加 ${path} 到对话`, added:'已添加到对话', add:'添加到对话', back:'返回工作区列表', copyPath:'复制相对路径', reveal:'在文件管理器中显示', open:'用系统应用打开', reading:'正在读取…', noDiff:'没有可显示的文本差异', tooLarge:'文件过大，未生成内置预览。', unsupported:'该文件不支持内置预览。', openHint:'可以用系统应用打开。', truncated:'内容过大，当前只显示前一部分。', resize:'调整工作区宽度', resizeHint:'拖拽调整宽度，双击恢复默认', title:'工作区', temporary:'临时工作区', refresh:'刷新工作区', close:'关闭工作区', files:'文件', changed:'更改', search:'搜索文件', noFiles:'没有匹配文件', noBaseline:'该旧会话没有创建时基线，因此无法判断更改是否由本会话产生。', branch:'分支', staged:'已暂存', noChanges:'工作区没有更改', copyContent:'复制内容', copied:'已复制', closeViewer:'关闭预览', loadFailed:'文件读取失败', resizeWidth:'调整弹窗宽度', resizeHeight:'调整弹窗高度', resizeCorner:'调整弹窗大小，双击恢复默认', fontDecrease:'减小字号', fontIncrease:'增大字号', openInNewWindow:'使用代码阅读器打开', diffSuffix:'(差异)', readerTitle:'代码阅读器', readerEmpty:'从工作区文件弹窗选择「使用代码阅读器打开」，文件会在此以标签页累积。', closeTab:'关闭标签页', noSessionChanges:'创建会话后，这里会列出本会话对项目的更改。' },
 
         checkUpdate: '检查更新', checking: '检查中…', upToDate: '已是最新版本',
@@ -985,6 +985,19 @@ Object.assign(dictZh, {
   remoteKbUploadSuccess:'已上传 {count}', remoteKbUploadExistingSummary:'已存在 {count}', remoteKbUploadProcessingSummary:'处理中 {count}', remoteKbUploadFailedSummary:'失败 {count}',
   remoteKbFolderSummary:'找到 {count} 份文档', remoteKbFolderSkipped:'已跳过 {count} 个', remoteKbFolderEmpty:'文件夹中没有可导入的文档', remoteKbFolderLimitExceeded:'单次最多从文件夹导入 10000 份文档',
 });
+
+// 普通聊天草稿态工作目录选择器（features/chat/ComposerWorkspaceSelector.jsx；
+// 措辞对齐 code 模式 uiCodex 的草稿选择器）。系统目录对话框标题经桥内
+// pickFolderTitle 提供（死键 chooseDirectoryDialog 已随 #445 评审移除）。
+dictZh.uiChatWorkspace = {
+  defaultWorkspace:'默认工作区', defaultWorkspaceDesc:'使用 Pinvou 管理的会话目录',
+  chooseDirectory:'选择目录…', chooseDirectoryDesc:'让 Agent 直接在该目录中工作',
+  recentDirectories:'最近使用', unknownDirectory:'未知目录',
+  // 绑定工作目录会话首切 YOLO 的一次性确认卡（语义对齐 code 模式 uiCodex 的
+  // modeYoloConfirm*，但措辞是「工作目录」而非「项目目录」，故独立成键）。
+  yoloConfirmTitle:'切换到 YOLO 模式？', yoloConfirmBody:'该模式下模型将对你的工作目录全自动读写、可执行 shell 命令，无逐步审批。',
+  yoloConfirmHint:'确认后全局记住，以后切换不再提示。', yoloConfirmOk:'确认切换', yoloConfirmCancel:'取消',
+};
 
 // 静态桥脚本（vite 原样拷贝，不能 ES import）经此读取共享词典，
 // personas-i18n.js 的 window.PERSONA_I18N 同款模式。唯一可译源在本文件。

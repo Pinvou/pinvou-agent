@@ -1440,6 +1440,12 @@ function workspaceDisplayName(path) {
           pinned: !!s.pinned,
           pinnedAt: s.pinned_at || '',
           working: !!sessionBusy[s.id], // 多 session 并发:该 session 是否正在后台生成
+          // #445 绑定:绑定工作会话携带 workspacePath/Kind,项目分组跟随绑定
+          // (与安全姿态同一条信号),未绑定会话两个值为空、维持日期视图。
+          workspacePath: s.workspace_binding || '',
+          // 独立 'bound' kind:与代码/ACP 的 'project' 同享三层分组,但不是
+          // 伪装的 project-kind(评审 #452 finding 5)。
+          workspaceKind: s.workspace_binding ? 'bound' : '',
           leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
           testId: 'regular-sidebar-item',
           menuTestId: 'regular-sidebar-menu',
@@ -1725,7 +1731,7 @@ function workspaceDisplayName(path) {
       const sidebarTaskFilterOptions = [
         { id: 'all', label: t.sidebarTaskFilterAll },
         { id: 'pinned', label: t.sidebarTaskFilterPinned },
-        // code 形态(胶囊选中「代码」)下列表恒为代码会话:「代码会话」筛选等同
+        // 项目形态(胶囊选中「项目」)下列表恒为代码/绑定会话:「代码会话」筛选等同
         // 「全部」、「定时任务」恒为空——两个选项都是死胡同,只在标准形态提供。
         ...(sidebarCodeListActive ? [] : [
           { id: 'code', label: t.sidebarTaskFilterCodeSessions },
@@ -1791,17 +1797,15 @@ function workspaceDisplayName(path) {
         });
       }
 
-      // Code-style sidebar: lists only code sessions. Project layer resolves
-      // each session through three deterministic tiers (explicit assignment /
-      // project-root auto-grouping / implicit folder bucketing); without any
-      // created project the result is byte-identical to the legacy folder
-      // grouping. With "pinned first", pinned code sessions hoist above groups.
-      // Note: the upstream history chain (chatHistory/codexHistory/…) rebuilds
-      // on every App render, so these memos currently re-run each render too —
-      // end-to-end memoization of that legacy chain is deferred (finding 22);
-      // tier-2 grouping is O(sessions × projects × roots) (#448 finding 8).
+      // 项目视图(原「代码」形态):所有绑定真实目录的会话——代码/ACP 会话
+      // 与 #445 的绑定工作会话——统一按项目层三层分组;未绑定普通会话留在
+      // 「全部」的日期视图。分组跟随绑定,与安全姿态同一条信号。
+      // 说明:上游历史链(chatHistory/codexHistory/…)每次 render 重建,这些
+      // memo 目前也随之每轮重算——端到端记忆化留作后续(评审 finding 22);
+      // tier-2 分组是 O(sessions × projects × roots)(#448 finding 8)。
       const sidebarCodeTasks = useMemo(() => (sidebarCodeListActive
-        ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex')
+        ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex'
+            || (chat.taskKind === 'regular' && chat.workspacePath))
         : []), [sidebarCodeListActive, sidebarTaskHistory]);
       const sidebarFolderPinned = useMemo(() => (taskListSort === 'pinned_first'
         ? sidebarCodeTasks.filter(chat => !!chat.pinned)
@@ -2465,6 +2469,10 @@ function workspaceDisplayName(path) {
           // 类型化标记匹配(finding 11):只认稳定前缀,不匹配人类文案。
           if (message.startsWith('REBIND_OLD_ROOT_EXISTS')) {
             setRebindDraft(prev => prev && { ...prev, warnExisting: true, error: null });
+          } else if (message.startsWith('REBIND_NESTED_TARGET')) {
+            // 嵌套目标拒绝:同样类型化标记,映射三语文案而非透传后端散文
+            // (评审 #464 MINOR 9);内联呈现,不toast(遮罩层级见下)。
+            setRebindDraft(prev => prev && { ...prev, error: t.uiProjects.rebindNestedRejected });
           } else {
             console.warn('rebind workspace failed', error);
             // 失败保持对话框打开并内联呈现错误(评审 #463 M7):toast 层级
@@ -2691,7 +2699,7 @@ function workspaceDisplayName(path) {
       const mobileTitle = currentView === 'chat'
         ? ((((chatHistory || []).find(c => c.id === activeChat)) || {}).title || 'PINVOU')
         : currentView === 'codex'
-          ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || t.sidebarTaskFilterCode)
+          ? ((((codexHistory || []).find(c => c.id === activeCodexId)) || {}).title || t.uiCodex.untitledSession)
         : ({ search: t.searchChats, scheduled: t.scheduledPlans, monitor: t.monitor, cardpool: t.cardPool, toolStore: t.toolStore, outputs: t.outputs, knowledge: t.knowledge, settings: t.settings, browser: t.browser }[currentView] || 'PINVOU');
       const mobileNavigate = (view, beforeNavigate) => {
         setMobileMoreOpen(false);
@@ -2751,8 +2759,12 @@ function workspaceDisplayName(path) {
             onTogglePinned={handleToggleSessionPinned}
             onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
             onArchive={handleArchiveSession}
-            onMoveToProject={chat.taskKind === 'codex' && bridge.projects ? (target) => { setMoveToPresetProject(null); setMoveToProjectSession(target); } : undefined}
-            dndPayload={chat.taskKind === 'codex' && bridge.projects && sidebarCodeListActive ? { sessionId: chat.id } : undefined}
+            onMoveToProject={bridge.projects && (chat.taskKind === 'codex' || !!chat.workspacePath)
+              ? (target) => { setMoveToPresetProject(null); setMoveToProjectSession(target); }
+              : undefined}
+            dndPayload={bridge.projects && (chat.taskKind === 'codex' || !!chat.workspacePath) && sidebarCodeListActive
+              ? { sessionId: chat.id }
+              : undefined}
             dndDisabled={!!dragAvatar}
             onDragEnd={() => setDropTargetGroupKey(null)}
             dragKind={detachKind}

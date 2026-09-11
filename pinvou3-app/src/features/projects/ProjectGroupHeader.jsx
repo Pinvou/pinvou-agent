@@ -8,6 +8,7 @@ import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Edit2, FolderPlus, MoreHorizontal, Trash2, X } from '../../components/icons.jsx';
 import { usePortalMenu } from '../../hooks/usePortalMenu.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
+import { groupHeaderHasMenu, resolveGroupHeaderEdit } from './projectGroupHeaderState.js';
 
 const PROJECT_DROP_TYPE = 'application/x-pinvou-session';
 
@@ -39,10 +40,8 @@ const ProjectGroupHeader = ({
 }) => {
   const [editing, setEditing] = useState(null);
   const [confirming, setConfirming] = useState(false);
-  // 菜单按实际可用的动作渲染:web 没有 projects 后端,onConvert 等为
-  // undefined,此时整个组不渲染「更多」按钮,避免点开一个空菜单。
-  const hasMenu = (kind === 'folder' && !!onConvert)
-    || (kind === 'project' && (!!onRename || !!onDelete));
+  // 菜单门控与编辑提交判定在 ./projectGroupHeaderState.js(纯函数,有单测)。
+  const hasMenu = groupHeaderHasMenu(kind, { onConvert, onRename, onDelete });
   const { menuOpen, menuStyle, closeMenu, toggleMenu } = usePortalMenu({
     height: kind === 'project' ? 96 : 48,
   });
@@ -74,13 +73,10 @@ const ProjectGroupHeader = ({
     const draft = editing;
     setEditing(null);
     if (!draft) return;
-    const value = String(draft.value || '').trim();
-    if (!value || busy) return;
-    // 「值未变 = 取消」只对重命名成立:convert 把目录名预填为默认项目名,
-    // 直接回车必须按预填值创建,否则默认路径静默无操作(评审 finding 16)。
-    if (draft.mode === 'rename' && value === label) return;
-    if (draft.mode === 'convert' && onConvert) onConvert(value);
-    if (draft.mode === 'rename' && onRename) onRename(value);
+    const edit = resolveGroupHeaderEdit({ mode: draft.mode, value: draft.value, label, busy });
+    if (!edit) return;
+    if (edit.action === 'convert' && onConvert) onConvert(edit.value);
+    if (edit.action === 'rename' && onRename) onRename(edit.value);
   };
 
   const menuItemCls = 'w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] whitespace-nowrap transition-colors text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]';
