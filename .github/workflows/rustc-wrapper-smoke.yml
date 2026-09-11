@@ -56,7 +56,7 @@ jobs:
           fetch-depth: 0
 
       - name: Set up zram and swap
-        run: sudo bash scripts/ci-memory-setup.sh
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - uses: dorny/paths-filter@v4
         id: filter
@@ -83,7 +83,7 @@ jobs:
 
       - name: Set up zram and swap
         if: runner.os == 'Linux'
-        run: sudo bash scripts/ci-memory-setup.sh
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
