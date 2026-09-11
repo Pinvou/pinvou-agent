@@ -413,7 +413,10 @@ class CiGatePolicyTests(unittest.TestCase):
             "        if: ${{ github.event_name != 'push' }}",
             rust_test,
         )
-        self.assertIn("sudo bash scripts/ci-memory-setup.sh", rust_test)
+        self.assertIn(
+            'sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"',
+            rust_test,
+        )
         self.assertNotIn("ci-memguard", self.pr_workflow)
         self.assertIn('CARGO_PROFILE_DEV_DEBUG: "0"', rust_test)
         self.assertIn("timeout-minutes: 120", rust_test)
@@ -448,9 +451,10 @@ class CiGatePolicyTests(unittest.TestCase):
                 f"ubuntu job '{job_name}' must run scripts/ci-memory-setup.sh",
             )
             self.assertIn(
-                "sudo bash scripts/ci-memory-setup.sh",
+                '"${{ github.workspace }}/scripts/ci-memory-setup.sh"',
                 job,
-                f"ubuntu job '{job_name}' must invoke scripts/ci-memory-setup.sh",
+                f"ubuntu job '{job_name}' must invoke scripts/ci-memory-setup.sh"
+                " via an absolute path (some jobs set a run working-directory)",
             )
 
     def test_windows_rust_test_cumulative_main_push_is_path_independent(self):

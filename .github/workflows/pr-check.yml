@@ -85,7 +85,7 @@ jobs:
           fetch-depth: 0
 
       - name: Set up zram and swap
-        run: sudo bash scripts/ci-memory-setup.sh
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - name: Validate commit messages
         run: |
@@ -106,7 +106,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up zram and swap
-        run: sudo bash scripts/ci-memory-setup.sh
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - name: Node.js
         uses: actions/setup-node@v7
@@ -150,7 +150,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Set up zram and swap
-        run: sudo bash scripts/ci-memory-setup.sh
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
       - uses: dorny/paths-filter@v4
         id: filter
         with:
@@ -331,7 +331,7 @@ jobs:
           fetch-depth: 0
 
       - name: Set up zram and swap
-        run: sudo bash scripts/ci-memory-setup.sh
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - name: 架构边界门禁
         run: |
@@ -399,7 +399,7 @@ jobs:
           fetch-depth: 0
 
       - name: Set up zram and swap
-        run: sudo bash scripts/ci-memory-setup.sh
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - uses: actions/setup-node@v7
         with:
@@ -501,7 +501,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up zram and swap
-        run: sudo bash scripts/ci-memory-setup.sh
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - uses: actions/setup-node@v7
         with:
@@ -527,7 +527,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up zram and swap
-        run: sudo bash scripts/ci-memory-setup.sh
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - uses: actions/setup-node@v7
         with:
@@ -561,7 +561,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up zram and swap
-        run: sudo bash scripts/ci-memory-setup.sh
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -634,7 +634,7 @@ jobs:
           submodules: false
 
       - name: Set up zram and swap
-        run: sudo bash scripts/ci-memory-setup.sh
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - name: 初始化公共底座 submodule
         run: git submodule update --init --recursive -- CodeWhale
@@ -836,7 +836,7 @@ jobs:
           submodules: false
 
       - name: Set up zram and swap
-        run: sudo bash scripts/ci-memory-setup.sh
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - name: 初始化公共底座 submodule
         run: git submodule update --init --recursive -- CodeWhale
@@ -1237,7 +1237,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up zram and swap
-        run: sudo bash scripts/ci-memory-setup.sh
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - name: 汇总所有适用检查
         env:

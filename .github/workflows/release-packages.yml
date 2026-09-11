@@ -56,7 +56,7 @@ jobs:
           fetch-depth: 0
 
       - name: Set up zram and swap
-        run: sudo bash scripts/ci-memory-setup.sh
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - name: Node.js
         uses: actions/setup-node@v7
@@ -112,7 +112,7 @@ jobs:
           submodules: recursive
 
       - name: Set up zram and swap
-        run: sudo bash scripts/ci-memory-setup.sh
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -236,7 +236,7 @@ jobs:
           submodules: recursive
 
       - name: Set up zram and swap
-        run: sudo bash scripts/ci-memory-setup.sh
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

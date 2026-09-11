@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up zram and swap
-        run: sudo bash scripts/ci-memory-setup.sh
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - name: 确认队列中的 PR 已通过依赖审查
         if: github.event_name == 'merge_group'
