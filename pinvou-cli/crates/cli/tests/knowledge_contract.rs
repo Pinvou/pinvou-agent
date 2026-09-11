@@ -10,7 +10,8 @@
 //! installed and degrades to full-text. The L0 search round-trip seeds rows
 //! through a completed `scan start` (still offline) and asserts the NL-rule
 //! merge ("上周的 pdf" → ext + mtime filter + residual text) indirectly.
-//! The session-mount surface runs against a real `SessionStore`
+//! The session-mount surface refuses honestly (per-process app memory); the
+//! remaining families run against real stores. A real `SessionStore`
 //! fixture and freezes the GUI's verbatim gate errors. Paths that need the
 //! network, a model download, a configured remote server or the windowless
 //! product host stay behind `#[ignore]` with their opt-in command named
@@ -451,47 +452,27 @@ fn mounts_reject_unknown_sessions() {
 }
 
 #[test]
-fn mount_surfaces_the_gui_gate_errors_verbatim() {
+fn mount_family_refuses_honestly_as_product_host_bound() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = TempHome::new("mount-gate");
     let session_id = create_session(&home);
 
-    // GUI gate step 1: invalid collection id, exact GUI message.
-    let error = execute_error(&["pinvou", "knowledge", "mount", &session_id, "0"]);
-    assert_eq!(error.exit_code(), ExitCode::Failed);
-    assert_eq!(error.to_string(), "知识集 id 无效");
-
-    // GUI gate step 2: semantic readiness. A CLI process never has the
-    // embedding model loaded, so the GUI's not-ready message is the faithful
-    // outcome (verbatim, per the GUI gate in app/commands/knowledge.rs).
-    let error = execute_error(&["pinvou", "knowledge", "mount", &session_id, "7"]);
-    assert_eq!(error.exit_code(), ExitCode::Failed);
-    assert_eq!(error.to_string(), "embedding 模型未就绪,知识库暂不可用");
-}
-
-#[test]
-fn mounts_and_unmount_round_trip_on_an_existing_session() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("mount-roundtrip");
-    let session_id = create_session(&home);
-
-    let snapshot = run_json(&["pinvou", "knowledge", "mounts", &session_id]);
-    assert_eq!(snapshot["session_id"], serde_json::json!(session_id));
-    assert_eq!(snapshot["revision"], serde_json::json!(0));
-    assert_eq!(snapshot["collections"], serde_json::json!([]));
-
-    // Removal of an absent mount is a no-op that still reports the fresh,
-    // revision-bumped snapshot (GUI session_remove_mounted_collection
-    // semantics; the GUI store keeps mount mutations in process memory and
-    // persists them through other mode-state saves, so a later CLI invocation
-    // starts from the persisted state again).
-    let snapshot = run_json(&["pinvou", "knowledge", "unmount", &session_id, "42"]);
-    assert_eq!(snapshot["session_id"], serde_json::json!(session_id));
-    assert_eq!(snapshot["collections"], serde_json::json!([]));
-    let revision = snapshot["revision"].as_u64().expect("revision");
-    assert!(revision >= 1, "revision must bump after a mutation");
-    let snapshot = run_json(&["pinvou", "knowledge", "mounts", &session_id]);
-    assert_eq!(snapshot["collections"], serde_json::json!([]));
+    // Mounted collections live in the desktop app's per-process memory and
+    // are deliberately not persisted, so every CLI mount-surface command
+    // refuses instead of reporting success that changes nothing.
+    for arguments in [
+        vec!["pinvou", "knowledge", "mounts", &session_id],
+        vec!["pinvou", "knowledge", "mount", &session_id, "7"],
+        vec!["pinvou", "knowledge", "unmount", &session_id, "42"],
+    ] {
+        let error = execute_error(&arguments);
+        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
+        let message = error.to_string();
+        assert!(
+            message.contains("_requires_product_host") && message.contains("process memory"),
+            "{arguments:?}: {message}"
+        );
+    }
 }
 
 /// `model download` keeps its stable unavailable code: the orchestration and
