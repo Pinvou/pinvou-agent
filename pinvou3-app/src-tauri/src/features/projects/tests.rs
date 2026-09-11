@@ -2,7 +2,7 @@
 //! `PINVOU3_HOME`。
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::ProjectStore;
 
@@ -542,12 +542,14 @@ fn ensure_creates_basename_named_folder_projects_idempotently() {
     assert_eq!(ids.len(), 2, "重放全为 Covered: {replay:?}");
     assert_eq!(store.list().len(), 2);
 
-    // 既有手工项目已覆盖的文件夹同样只复用,不产生第二个项目。
+    // 手工项目引用的文件夹不算锚定覆盖(§9.9):浏览通道一律新建同名物化
+    /// 项目,重叠合法并存(详见 ensure_anchor_reuse_only_for_folder_anchored_projects)。
     let manual = create(&store, "手工", &[abs("manual/root")]);
-    let covered = ensure(&store, &[abs("manual/root/sub")]);
-    assert!(matches!(&covered[0], super::EnsureFolderOutcome::Covered { project_id }
-        if *project_id == manual.id));
-    assert_eq!(store.list().len(), 3);
+    let covered = ensure(&store, &[abs("manual/root")]);
+    assert!(matches!(&covered[0], super::EnsureFolderOutcome::Created { project }
+        if project.origin.as_deref() == Some("folder")));
+    assert_eq!(manual.roots.len(), 1, "手工项目不受影响");
+    assert_eq!(store.list().len(), 4);
 }
 
 #[test]
@@ -902,4 +904,96 @@ fn legacy_file_without_last_primary_root_reads_as_none() {
     // 落盘→重开,skip_serializing_if 下旧档无该键,读回 None。
     let reopened = store_in(&temp);
     assert_eq!(reopened.list()[0].last_primary_root, None);
+}
+
+// ── 反物化排除列表(§3)与锚定复用(§9.9)─────────────────────────────────────
+
+#[test]
+fn never_materialize_skips_ensure_and_is_revocable() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+
+    // 排除:ensure 跳过(无 outcome,与输入去重同款),不建项目。
+    let listed = store
+        .set_never_materialize(&abs("scratch"), true)
+        .expect("exclude");
+    assert_eq!(listed.len(), 1);
+    let outcomes = ensure(&store, &[abs("scratch"), abs("web")]);
+    assert_eq!(outcomes.len(), 1, "被排除的根无 outcome: {outcomes:?}");
+    assert!(matches!(outcomes[0], super::EnsureFolderOutcome::Created { .. }));
+    assert_eq!(store.list().len(), 1);
+    assert_eq!(store.list()[0].name, "web");
+
+    // 幂等:重复排除零变更;撤销后 ensure 照常物化。
+    let again = store
+        .set_never_materialize(&abs("scratch"), true)
+        .expect("idempotent");
+    assert_eq!(again, listed);
+    let revoked = store
+        .set_never_materialize(&abs("scratch"), false)
+        .expect("revoke");
+    assert!(revoked.is_empty());
+    let outcomes = ensure(&store, &[abs("scratch")]);
+    assert!(matches!(&outcomes[0], super::EnsureFolderOutcome::Created { project }
+        if project.name == "scratch"));
+
+    // 相对路径拒绝。
+    assert!(
+        store
+            .set_never_materialize(Path::new("relative/x"), true)
+            .is_err()
+    );
+}
+
+#[test]
+fn never_materialize_list_persists_and_keeps_file_alive() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    {
+        let store = store_in(&temp);
+        store
+            .set_never_materialize(&abs("scratch"), true)
+            .expect("exclude");
+        // 无项目无归属:排除列表非空时文件必须留存(空状态删文件的惯例
+        // 不能吞掉用户显式表达)。
+        assert!(temp.path().join("projects.json").exists());
+    }
+    let reopened = store_in(&temp);
+    assert_eq!(reopened.never_materialize_roots().len(), 1, "跨进程存活");
+    // 撤销到空 + 无项目无归属 → 文件删除。
+    reopened
+        .set_never_materialize(&abs("scratch"), false)
+        .expect("revoke");
+    assert!(!temp.path().join("projects.json").exists());
+}
+
+#[test]
+fn ensure_anchor_reuse_only_for_folder_anchored_projects() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+
+    // 物化项目以 F 为锚 → 复用(Covered),幂等。
+    ensure(&store, &[abs("web")]);
+    let anchored = store.list()[0].clone();
+    let replay = ensure(&store, &[abs("web")]);
+    assert!(matches!(&replay[0], super::EnsureFolderOutcome::Covered { project_id }
+        if *project_id == anchored.id));
+    assert_eq!(store.list().len(), 1);
+
+    // 手工项目引用 F(哪怕 F 是它的唯一/主根)→ 不算锚定覆盖,浏览通道
+    // 一律创建同名物化项目(§9.9 用户裁定),重叠合法并存。
+    create(&store, "手工", &[abs("docs")]);
+    let outcomes = ensure(&store, &[abs("docs")]);
+    assert!(matches!(&outcomes[0], super::EnsureFolderOutcome::Created { project }
+        if project.name == "docs" && project.origin.as_deref() == Some("folder")));
+    assert_eq!(store.list().len(), 3);
+
+    // 物化项目加过别的根后,其 roots 精确包含的两个路径都锚定 → 都复用
+    // ("以 F 为锚的物化项目"按 roots 成员资格判定)。
+    store
+        .update_project(&anchored.id, None, Some(vec![abs("web"), abs("api")]))
+        .expect("add root");
+    let replay = ensure(&store, &[abs("web")]);
+    assert!(matches!(&replay[0], super::EnsureFolderOutcome::Covered { .. }));
+    let replay = ensure(&store, &[abs("api")]);
+    assert!(matches!(&replay[0], super::EnsureFolderOutcome::Covered { .. }));
 }

@@ -79,11 +79,13 @@ impl ProjectListItem {
 }
 
 /// list_projects 响应:项目列表 + 全量归属映射(前端三层分组解析的原料,
-/// null 归属 = 显式移出)。
+/// null 归属 = 显式移出) + 反物化排除列表(§3,canonical 键;管理面板
+/// 查看/撤销用)。
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectListResponse {
     pub projects: Vec<ProjectListItem>,
     pub assignments: SessionAssignments,
+    pub never_materialize_roots: Vec<String>,
 }
 
 /// 项目列表,按 position 有序,含每个 root 的可用性、显式成员数与归属映射。
@@ -100,6 +102,7 @@ pub async fn list_projects(store: State<'_, ProjectStore>) -> Result<ProjectList
     Ok(ProjectListResponse {
         projects,
         assignments,
+        never_materialize_roots: store.never_materialize_roots(),
     })
 }
 
@@ -289,6 +292,23 @@ pub async fn ensure_folder_projects(
         emit_project_event(&app, "projects:list_changed", "folder_ensured");
     }
     Ok(outcomes)
+}
+
+/// 反物化排除列表(§3):`never = true` 表示"不再为此文件夹自动建项目",
+/// `false` 撤销。可见、可撤销、幂等;只影响未来的自动物化,不动既有项目。
+/// 返回更新后的排除列表;经 projects:list_changed 让面板/侧栏刷新。
+#[tauri::command]
+pub async fn projects_set_never_materialize(
+    root: PathBuf,
+    never: bool,
+    app: AppHandle,
+    store: State<'_, ProjectStore>,
+) -> Result<Vec<String>, String> {
+    let roots = store
+        .set_never_materialize(&root, never)
+        .map_err(|e| format!("projects_set_never_materialize: {e:#}"))?;
+    emit_project_event(&app, "projects:list_changed", "never_materialize_changed");
+    Ok(roots)
 }
 
 /// rebind_workspace_root 的结果汇报:逐会话结果 + 受影响项目。重绑定幂等,
@@ -545,17 +565,20 @@ mod tests {
     use super::*;
 
     /// 线缆形状锁:bridge 的 applySnapshot 按 projects/assignments 键消费
-    /// 快照,serde 改名会让每次快照被静默丢弃(评审 finding 41)。
+    /// 快照,serde 改名会让每次快照被静默丢弃(评审 finding 41);
+    /// never_materialize_roots(§3 排除列表)同在快照内。
     #[test]
     fn project_list_response_wire_keys_are_stable() {
         let value = serde_json::to_value(ProjectListResponse {
             projects: Vec::new(),
             assignments: SessionAssignments::default(),
+            never_materialize_roots: Vec::new(),
         })
         .expect("serialize ProjectListResponse");
         let object = value.as_object().expect("response serializes as an object");
         assert!(object.contains_key("projects"));
         assert!(object.contains_key("assignments"));
+        assert!(object.contains_key("never_materialize_roots"));
     }
 
     #[test]

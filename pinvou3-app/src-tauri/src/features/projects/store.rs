@@ -53,6 +53,10 @@ struct ProjectsFile {
     pub projects: Vec<Project>,
     #[serde(default)]
     pub assignments: SessionAssignments,
+    /// 反物化排除列表(§3,canonical 身份键):用户显式表达"别为此文件夹
+    /// 自动建项目";可见、可撤销(管理面板)。旧档缺键 = 空表。
+    #[serde(default)]
+    pub never_materialize_roots: Vec<String>,
 }
 
 const SCHEMA_VERSION: u32 = 1;
@@ -79,9 +83,10 @@ pub struct MoveSessionOutcome {
 pub enum EnsureFolderOutcome {
     /// 新建了同名文件夹项目(origin=folder)。
     Created { project: Project },
-    /// 已有项目 root 覆盖该文件夹(等于或祖先),复用不动。
+    /// 已有以该文件夹为锚的物化项目(origin=folder 且 roots 精确含此
+    /// 路径),复用不动。
     Covered { project_id: String },
-    /// 无法创建(非绝对路径、与既有 root 嵌套等);`reason` 可直接进日志。
+    /// 无法创建(非绝对路径等);`reason` 可直接进日志。
     Failed { reason: String },
 }
 
@@ -90,6 +95,8 @@ struct StoreState {
     /// 恒按 (position, id) 有序,`list` 直接返回快照。
     projects: Vec<Project>,
     assignments: SessionAssignments,
+    /// 反物化排除列表(canonical 身份键,去重);ensure 跳过表内根。
+    never_materialize_roots: Vec<String>,
     /// 读到高于本进程 schema_version 的文件时置位:后续写入全部拒绝,
     /// 防止降级进程把新结构覆盖写坏。
     refuse_writes: bool,
@@ -279,7 +286,10 @@ fn persist_locked(state: &StoreState, path: &Path) -> Result<()> {
             path.display()
         );
     }
-    if state.projects.is_empty() && state.assignments.is_empty() {
+    if state.projects.is_empty()
+        && state.assignments.is_empty()
+        && state.never_materialize_roots.is_empty()
+    {
         return match std::fs::remove_file(path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
@@ -290,6 +300,7 @@ fn persist_locked(state: &StoreState, path: &Path) -> Result<()> {
         schema_version: SCHEMA_VERSION,
         projects: state.projects.clone(),
         assignments: state.assignments.clone(),
+        never_materialize_roots: state.never_materialize_roots.clone(),
     };
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)
@@ -328,6 +339,7 @@ fn load_state(path: &Path) -> Result<StoreState> {
     Ok(StoreState {
         projects,
         assignments: file.assignments,
+        never_materialize_roots: file.never_materialize_roots,
         refuse_writes: false,
     })
 }
@@ -375,6 +387,34 @@ impl ProjectStore {
     /// 全量归属快照(命令层随 list_projects 一并下发,前端分组解析用)。
     pub fn assignments_snapshot(&self) -> SessionAssignments {
         self.state.read().assignments.clone()
+    }
+
+    /// 反物化排除列表快照(canonical 键;命令层随 list_projects 下发,
+    /// 管理面板据此渲染/撤销)。
+    pub fn never_materialize_roots(&self) -> Vec<String> {
+        self.state.read().never_materialize_roots.clone()
+    }
+
+    /// 显式反物化(§3):`never = true` 把文件夹(canonical 键)加入排除
+    /// 列表,ensure 之后跳过它;`false` 撤销。幂等,返回更新后的列表。
+    /// 只影响未来的自动物化,不动既有项目与会话归属。
+    pub fn set_never_materialize(&self, root: &Path, never: bool) -> Result<Vec<String>> {
+        if !root.is_absolute() {
+            bail!("never-materialize root must be absolute: {}", root.display());
+        }
+        let key = root_key(root);
+        let mut state = self.state.write();
+        let contains = state.never_materialize_roots.contains(&key);
+        if never == contains {
+            return Ok(state.never_materialize_roots.clone());
+        }
+        if never {
+            state.never_materialize_roots.push(key);
+        } else {
+            state.never_materialize_roots.retain(|entry| entry != &key);
+        }
+        persist_locked(&state, &self.path)?;
+        Ok(state.never_materialize_roots.clone())
     }
 
     /// 显式归属到某项目的会话 id 列表(命令层统计成员数用)。
@@ -653,9 +693,10 @@ impl ProjectStore {
     }
 
     /// 文件夹项目自动物化(Codex 客户端式收编,幂等):对每个输入文件夹,
-    /// 已有项目 root 覆盖(等于或祖先)则复用,否则建 `origin=folder`、
-    /// 名为目录 basename 的项目。与既有项目 root 嵌套等冲突逐根 Failed 上报,
-    /// 不阻断其余根。输入按键去重;整批共享一次落盘。分组规则不变——新项目
+    /// 已有以它为锚的物化项目则复用,否则建 `origin=folder`、名为目录
+    /// basename 的项目(§9.9:被其它项目引用不算覆盖,重叠合法)。排除
+    /// 列表(§3)内的根跳过。非绝对路径逐根 Failed 上报,不阻断其余根。
+    /// 输入按键去重;整批共享一次落盘。分组规则不变——新项目
     /// 的 roots 让既有 tier-② 根匹配自然收编该文件夹的会话,显式移出条目
     /// (删除项目时写入)仍压制,故删除后重建的项目只收新会话。
     pub fn ensure_folder_roots(&self, roots: &[PathBuf]) -> Result<Vec<EnsureFolderOutcome>> {
@@ -676,13 +717,23 @@ impl ProjectStore {
                 continue;
             }
             seen_keys.push(key.clone());
-            let covered = state.projects.iter().find(|project| {
-                project
-                    .roots
-                    .iter()
-                    .any(|existing| key_is_same_or_nested(&key, &identity_key_of_display(existing)))
+            // 排除列表(§3):用户显式表达过"别为此文件夹建项目",跳过且不
+            // 产出 outcome(与输入去重同款),墓碑不复活。
+            if state.never_materialize_roots.contains(&key) {
+                continue;
+            }
+            // 锚定复用(§9.9):仅当已存在**以该文件夹为锚**的物化项目
+            // (origin=folder 且 roots 精确含此路径)才复用;被别的项目当
+            // 附加根/主根引用不算覆盖——浏览通道永远以所选文件夹为家,
+            // 重叠合法,此时应创建新的同名项目。
+            let anchored = state.projects.iter().find(|project| {
+                project.origin.as_deref() == Some("folder")
+                    && project
+                        .roots
+                        .iter()
+                        .any(|existing| identity_key_of_display(existing) == key)
             });
-            if let Some(project) = covered {
+            if let Some(project) = anchored {
                 outcomes.push(EnsureFolderOutcome::Covered {
                     project_id: project.id.clone(),
                 });
@@ -693,8 +744,8 @@ impl ProjectStore {
                 .map(|name| name.to_string_lossy().into_owned())
                 .filter(|name| !name.is_empty())
                 .unwrap_or_else(|| display.to_string_lossy().into_owned());
-            // 同批先建的文件夹项目已在 state.projects 中,后续根与之重叠会被
-            // validate 拦下,保证整批任何顺序执行结果一致。
+            // 同批先建的文件夹项目已在 state.projects 中,后续相同根被
+            // seen_keys 去重;锚定判定按精确路径,嵌套输入各自物化。
             match validate_roots(std::slice::from_ref(root)) {
                 Ok(displays) => {
                     let now = Utc::now();

@@ -333,6 +333,7 @@ command_protocol!(
         "delete_project",
         "move_session_to_project",
         "ensure_folder_projects",
+        "projects_set_never_materialize",
         "rebind_workspace_root"
     ]
 );
