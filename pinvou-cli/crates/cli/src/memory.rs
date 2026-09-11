@@ -856,6 +856,10 @@ fn add(kind: AddKind, source: AddSource, output: OutputMode) -> Result<CliOutcom
             let item = feature::list_preferences()
                 .map_err(|error| feature_error("add", error))?
                 .into_iter()
+                // Newly materialized items are appended, so scan backwards:
+                // with a pre-existing identical text the first match would
+                // report the older item's id.
+                .rev()
                 .find(|item| item.text == pending.content)
                 .ok_or_else(|| {
                     CliError::failed(
@@ -872,6 +876,7 @@ memory profile instead",
             let item = feature::load_work_context()
                 .map_err(|error| feature_error("add", error))?
                 .into_iter()
+                .rev()
                 .find(|item| item.text == pending.content)
                 .ok_or_else(|| {
                     CliError::failed("memory_add_not_materialized: work context was not stored")
