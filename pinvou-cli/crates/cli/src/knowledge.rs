@@ -560,11 +560,20 @@ fn require_session_id(value: &str) -> Result<String, CliError> {
 }
 
 fn parse_id(value: &str, label: &str) -> Result<i64, CliError> {
-    value.parse::<i64>().map_err(|_| {
+    let id = value.parse::<i64>().map_err(|_| {
         CliError::usage(format!(
             "knowledge {label} id must be an integer (got {value})"
         ))
-    })
+    })?;
+    // Non-positive ids are GUI-internal sentinels (id <= 0 lists across all
+    // collections in some internal helpers); the CLI only addresses real
+    // collections.
+    if id <= 0 {
+        return Err(CliError::usage(format!(
+            "knowledge {label} id must be a positive integer (got {value})"
+        )));
+    }
+    Ok(id)
 }
 
 /// Mirrors the pair-based `named_options` helper in lib.rs (extended with
@@ -790,8 +799,9 @@ fn scan_cancel(output: OutputMode) -> Result<CliOutcome, CliError> {
     // incremental `scan start` re-runs).
     Ok(success(render(
         output,
-        "scan cancel signalled".to_owned(),
-        &serde_json::json!({ "cancelled": true }),
+        "scan cancel signalled (process-local: the CLI can only signal cancels inside          its own process; use the desktop app to cancel an app-side scan)"
+            .to_owned(),
+        &serde_json::json!({ "cancelled": true, "scope": "process-local" }),
     )))
 }
 
@@ -1107,6 +1117,15 @@ fn collections_add_sources(
         Err(error) => return Err(feature_error("collections add-sources", error)),
     }
     let state = service.start_index(id, paths);
+    // Upstream quirk: any resumable job short-circuits start_index and the
+    // requested sources are silently dropped. Reporting the unrelated job as
+    // success would hide files that were never enqueued.
+    if state.collection_id != id {
+        return Err(CliError::failed(format!(
+            "knowledge collections add-sources: collection {id} has an unfinished index job              for collection {} (check `pinvou knowledge index status`, resume or cancel it              first)",
+            state.collection_id
+        )));
+    }
     index_started("index job", Ok(state), output)
 }
 
