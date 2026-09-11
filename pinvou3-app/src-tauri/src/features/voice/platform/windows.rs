@@ -191,3 +191,25 @@ pub async fn reset_microphone_permission(window: tauri::WebviewWindow) -> Result
         .map_err(|_| "麦克风权限重置任务被取消".to_string())??;
     Ok(true)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    use super::super::temp_wav::VoiceTempWav;
+
+    #[test]
+    fn closed_temp_wav_can_be_reopened_exclusively_by_asr() {
+        let wav_path = VoiceTempWav::create()
+            .expect("create temporary WAV")
+            .write_and_close(b"RIFF-test-WAVE")
+            .expect("write and close temporary WAV");
+        let reopened = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&wav_path)
+            .expect("ASR backend must be able to reopen the WAV exclusively");
+
+        drop(reopened);
+    }
+}
