@@ -2764,6 +2764,14 @@ function workspaceDisplayName(path) {
         }
       }
 
+      // 压缩时导出 Codex 兼容长期记忆（~/.pinvou3/memories/）。写盘后按 MVP
+      // 限制在下一次引擎拉起时生效。
+      function handleSetMemoryExportEnabled(enabled) {
+        if (bridge.available) {
+          bridge.settings.saveSettings({ memory_export_enabled: !!enabled });
+        }
+      }
+
       function handleSetPetEnabled(enabled) {
         if (!can('pet') || !bridge.available) return;
         // 单一路径:set_pet_enabled 负责持久化 + 窗口显隐 + 广播
@@ -3706,6 +3714,7 @@ function workspaceDisplayName(path) {
                   onSaveSearchConfig={handleSaveSearchConfig}
                   onConfirmSearchConfig={handleConfirmSearchConfig}
                   onMemoryEnabledChange={handleSetMemoryEnabled}
+                  onMemoryExportEnabledChange={handleSetMemoryExportEnabled}
                   onPetEnabledChange={handleSetPetEnabled}
                   searchNeedsRestart={searchNeedsRestart}
                   languageNeedsRestart={languageNeedsRestart}

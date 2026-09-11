@@ -2086,7 +2086,7 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
     );
 
     // eslint-disable-next-line no-unused-vars, sonarjs/cognitive-complexity -- contract slot parameters kept; the settings page aggregates many form branches, splitting needs a dedicated design
-    const SettingsView = ({ activeTheme, colorScheme, onColorSchemeChange, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders = DEFAULT_ENABLED_SEARCH_PROVIDERS, onAddSearchProvider, onDeleteSearchProvider, _searchApiKey, setSearchApiKey, _searchHasSavedKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, _searchNeedsRestart, _languageNeedsRestart, bs, t, sidebarDateGrouping = true, onSidebarDateGroupingChange, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
+    const SettingsView = ({ activeTheme, colorScheme, onColorSchemeChange, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders = DEFAULT_ENABLED_SEARCH_PROVIDERS, onAddSearchProvider, onDeleteSearchProvider, _searchApiKey, setSearchApiKey, _searchHasSavedKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onMemoryExportEnabledChange, onPetEnabledChange, _searchNeedsRestart, _languageNeedsRestart, bs, t, sidebarDateGrouping = true, onSidebarDateGroupingChange, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
       const settingsCopy = t.uiSettingsDetail;
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
       const showSuperPermissionSettings = !!platformCapabilities.showSuperPermissionSettings;
@@ -2544,6 +2544,14 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           <IOSSection title={t.sidebarSection}>
             <IOSRow label={t.sidebarDateGrouping} desc={t.sidebarDateGroupingDesc}>
               <IOSSwitch checked={sidebarDateGrouping} onChange={onSidebarDateGroupingChange} />
+            </IOSRow>
+          </IOSSection>
+          <IOSSection title={t.uiSettings.memoryExportSection}>
+            <IOSRow label={t.uiSettings.memoryExport} desc={t.uiSettings.memoryExportDesc}>
+              <IOSSwitch
+                checked={bs && bs.settings ? bs.settings.memory_export_enabled !== false : true}
+                onChange={onMemoryExportEnabledChange}
+              />
             </IOSRow>
           </IOSSection>
           {canConfigureDesktopNotifications && (
