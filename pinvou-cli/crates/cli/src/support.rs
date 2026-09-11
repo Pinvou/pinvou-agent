@@ -88,6 +88,68 @@ pub fn success(stdout: String) -> crate::CliOutcome {
     }
 }
 
+/// Builds a `Command` for a resolved vendor CLI path. Windows cannot
+/// `CreateProcess` an npm `.cmd` shim directly, so `.cmd` targets run through
+/// `cmd /D /S /C` — the same wrapper the app's platform process helper uses.
+#[allow(dead_code)] // consumed by family implementations as they land
+pub fn build_command(executable: &std::path::Path, args: &[&str]) -> std::process::Command {
+    #[cfg(target_os = "windows")]
+    if executable
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd"))
+    {
+        let mut command = std::process::Command::new("cmd");
+        command.arg("/D").arg("/S").arg("/C");
+        command.arg(executable);
+        command.args(args);
+        return command;
+    }
+    let mut command = std::process::Command::new(executable);
+    command.args(args);
+    command
+}
+
+/// Puts a long-running vendor CLI child in its own process group so a
+/// timeout kill can take its npm/shell descendants with it instead of
+/// orphaning them (the app sets the same group for connector CLI spawns).
+#[allow(dead_code)] // consumed by family implementations as they land
+pub fn set_process_group(command: &mut std::process::Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = command;
+    }
+}
+
+/// Kills a timed-out vendor CLI child **and its descendants**: unix takes the
+/// whole process group (the child was spawned with [`set_process_group`]);
+/// Windows uses `taskkill /T`, mirroring the app's `kill_pid_tree`.
+#[allow(dead_code)] // consumed by family implementations as they land
+pub fn kill_process_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        // Safety: `kill` with a negative pid signals the process group; the
+        // child was put in its own group at spawn time. ESRCH (already gone)
+        // is fine to ignore.
+        let group = -(child.id() as i32);
+        unsafe {
+            libc::kill(group, libc::SIGKILL);
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .output();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// Serializes `value` for `--output json` (single line) and renders `human`
 /// verbatim otherwise.
 #[allow(dead_code)] // consumed by family implementations as they land
