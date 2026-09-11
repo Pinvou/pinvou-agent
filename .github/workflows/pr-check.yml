@@ -137,6 +137,7 @@ jobs:
       rust_code: ${{ steps.filter.outputs.rust_code }}
       rust_dependencies: ${{ steps.filter.outputs.rust_dependencies }}
       rust_full: ${{ steps.filter.outputs.rust_full }}
+      cli_rust: ${{ steps.filter.outputs.cli_rust }}
       knowledge_rust: ${{ steps.filter.outputs.knowledge_rust }}
       knowledge_dependencies: ${{ steps.filter.outputs.knowledge_dependencies }}
       release_contract: ${{ steps.filter.outputs.release_contract }}
@@ -189,6 +190,12 @@ jobs:
               - '!pinvou3-app/src-tauri/src/features/feedback/**'
               - '!pinvou3-app/src-tauri/src/features/personas/**'
               - '!pinvou3-app/src-tauri/src/features/pet/**'
+            cli_rust:
+              - 'pinvou-cli/**/*.rs'
+              - 'pinvou-cli/**/Cargo.toml'
+              - 'pinvou-cli/**/Cargo.lock'
+              - 'CodeWhale'
+              - '.github/workflows/pr-check.yml'
             knowledge_rust:
               - 'pinvou-knowledge/**/*.rs'
               - 'pinvou-knowledge/Cargo.toml'
@@ -955,6 +962,71 @@ jobs:
         if: ${{ github.event_name == 'push' }}
         run: /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --features benchmark-hooks --locked --no-run
 
+  # pinvou-cli contract tests: since PR #478 the product CLI surface (~20k
+  # lines + ~340 contract tests) has no other automated execution leg (the
+  # remaining jobs only cargo check pinvou-product-backend). Separate
+  # workspace/target dir, runs in parallel with rust-test.
+  cli-test:
+    name: cli-test
+    needs: changes
+    if: >-
+      ${{
+        !cancelled() &&
+        github.event.action != 'closed' &&
+        (
+          github.event_name == 'push' ||
+          needs.changes.outputs.cli_rust == 'true' ||
+          needs.changes.outputs.rust_full == 'true'
+        )
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - name: Init CodeWhale submodule
+        run: git submodule update --init --recursive -- CodeWhale
+
+      # pinvou-cli compiles pinvou3-tauri as a path dependency
+      # (default-features=false): same tauri_build resource check and system
+      # library requirements as the rust-test job.
+      - name: Install Tauri Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends             libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev             librsvg2-dev libssl-dev             libx11-dev libxi-dev libxtst-dev             libayatana-appindicator3-dev             build-essential pkg-config cmake             time
+
+      - name: bge-m3 placeholder (tauri-build resource check)
+        run: |
+          d=pinvou3-app/src-tauri/resources/bge-m3
+          mkdir -p "$d"
+          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
+            : > "$d/$f"
+          done
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.0
+
+      - name: Align pinned toolchain
+        run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou-cli
+          shared-key: cli-test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo fmt --check
+        run: cargo fmt --manifest-path pinvou-cli/Cargo.toml -- --check
+
+      - name: cargo test (all targets, no-fail-fast)
+        run: cargo test --manifest-path pinvou-cli/Cargo.toml --locked --no-fail-fast
+
   windows-rust-test:
     name: windows-rust-test
     needs: changes
@@ -1043,6 +1115,14 @@ jobs:
         run: >-
           cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml
           --all-targets --features dev-tools
+
+      # The pinvou-cli Windows branches (exe/cmd candidates, cmd /D /S /C
+      # shims, taskkill tree kill, CREATE_NO_WINDOW) only compile-check on a
+      # Windows runner.
+      - name: pinvou-cli Windows compile check
+        run: >-
+          cargo check --manifest-path pinvou-cli/Cargo.toml
+          --workspace --all-targets --locked
 
       - name: Windows Rust 单元测试链接检查
         shell: pwsh
