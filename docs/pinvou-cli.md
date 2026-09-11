@@ -33,11 +33,15 @@ cargo build --manifest-path pinvou-cli/Cargo.toml --bin pinvou
   desktop app is mid-write on the same files.
 - Secrets are never accepted as plaintext argv (shell history/process lists):
   credential flags are `--api-key-env VAR` or `--api-key-stdin` (`code login
-  claude` also keeps a literal `--code C` for callers that already hold the
-  authorization code in argv). The only command that prints a stored secret is
-  `models show <id> --reveal-key`, mirroring the GUI's explicit reveal action.
-- Destructive actions (`delete`, `purge`, `deps install`, `connectors logout`,
-  checkpoint `rewind`) require an explicit `--yes`. Concurrent CLI mutations
+  claude` also accepts the code via `--code-env VAR` / `--code-stdin`, and
+  keeps a literal `--code C` for callers that already hold it in argv). Two
+  commands expose stored secrets, both explicitly: `models show <id>
+  --reveal-key` (mirrors the GUI reveal action) prints the key, and `code
+  providers export` writes/prints the provider JSON with plaintext API keys
+  (warns on stderr; a file destination is written 0600).
+- Destructive actions require an explicit `--yes` (family `delete`/`remove`
+  commands, `purge`, `deps install`, `connectors logout`, checkpoint
+  `rewind`; the usage error names the flag). Concurrent CLI mutations
   are serialized through two cross-process locks: a per-session lock (checkpoint
   `rewind`/`undo`/`diff`, `workspace checkout`) and a per-execution-root lock
   (`rewind`/`undo`, `checkout`) so two different sessions bound to the same
@@ -62,10 +66,10 @@ cargo build --manifest-path pinvou-cli/Cargo.toml --bin pinvou
 | `pinvou sessions` | `list [--archived]`, `show`, `rename`, `pin`, `unpin`, `archive`, `restore`, `delete --yes`, `export [--format markdown\|json] [--output PATH]`, `timeline`, `subagents`, `folder` | Same `SessionStore` the GUI uses, including scheduled-run cascades. Any store-opening command (even reads like `list`) runs the shared 50-sessions-per-kind retention, so CLI runs can evict the oldest GUI chat sessions. ACP/code sessions are listed too — the CLI has no live pool to filter them like the GUI does. |
 | `pinvou models` / `pinvou settings` | `models list/add/remove/use/show [--reveal-key]/test/probe-local`; `settings get/set`, `settings search list/set/test` | `settings` is an alias routed to the same module. Settings writes go through the GUI's own prefs transactions (migrations and locale policies included). |
 | `pinvou memory` | `overview`, `profile get/set`, `list`, `add preference/work-context`, `update`, `delete --yes`, `archive`, `pending confirm/ignore/never`, `organize`, `organize-history` | `organize` needs the model host. |
-| `pinvou knowledge` | `scan`, `stats`, `type-counts`, `collections ...`, `documents ...`, `index ...`, `search`, `model status/download/cancel`, `mounts/mount/unmount`, `remote connections/probe/collections/search`, `host status` | One-shot imports progress only while the process lives; an import interrupted at exit is marked resumable and continues only after an explicit `index resume <job-id>` (desktop app completes large imports). `model download` declines headless (the in-process ONNX verification and progress events are GUI-bound); `model cancel` executes but can only signal cancels inside the CLI's own process. `mounts/mount/unmount` refuse with `knowledge_*_requires_product_host`: mounted collections live in the desktop app's process memory and are not persisted, so a one-shot process can neither observe nor change them. `--before` filters on UTC midnight boundaries. |
+| `pinvou knowledge` | `scan`, `stats`, `type-counts`, `collections ...`, `documents ...`, `index ...`, `search`, `model status/download/cancel`, `mounts/mount/unmount`, `remote connections/probe/collections/search`, `host status` | One-shot imports progress only while the process lives; an import interrupted at exit is marked resumable and continues only after an explicit `index resume <job-id>` (desktop app completes large imports). `model download` declines headless (the in-process ONNX verification and progress events are GUI-bound); `model cancel` and `scan cancel` execute but can only signal cancels inside the CLI's own process (an app-side scan needs the desktop app). `mounts/mount/unmount` refuse with `knowledge_*_requires_product_host`: mounted collections live in the desktop app's process memory and are not persisted, so a one-shot process can neither observe nor change them. `--before` filters on UTC midnight boundaries. |
 | `pinvou scheduled` | `list`, `show`, `create`, `update`, `pause`, `resume`, `pin`, `unpin`, `delete --yes`, `run`, `runs`, `runs-all`, `mark-viewed`, `chat-prompt` | `run` executes `memory-organize` tasks headless; chat-kind runs need the desktop runtime. `update --kind/--mode` are rejected (creation-time properties; every run is forced to `yolo` like the GUI). `run` reconciles stranded CLI queued records (no foundation task id) to a terminal failed record on the next run, and `delete` only refuses GUI-owned active runs — a CLI process killed mid-run cannot wedge a task. Created tasks default to the GUI's `allow_shell`/`auto_approve` settings. |
 | `pinvou plugins` | `tools list/install/uninstall/auth/oauth-*`, `skills list/install/update/uninstall`, `import <PATH>`, `export`, `meta`, `recycle ...`, `readiness`, `enable/disable [--scope]`, `project-skills on\|off` | `import` replaces the GUI's native dialog. OAuth login declines headless (`oauth_login_unavailable_in_cli`): the interactive grant happens in the desktop app. `readiness` reads credential presence from the OS keyring, which can prompt for access on macOS. |
-| `pinvou connectors` | `status`, `ensure-cli`, `enable`, `disable`, `logout --yes`, `apply-skills`, `connect [--timeout]`, `ima status/connect/logout --yes` | For feishu/wecom/dingtalk/tmeet. Vendor CLIs resolve through the managed assets install (what `ensure-cli` and the GUI install) before PATH. `connect` prints the login URL instead of rendering a QR image (wecom also keeps the scanned `qr.png` and prints its path — the stdout URL alone is a landing page); `--timeout` bounds every blocking vendor-CLI phase. |
+| `pinvou connectors` | `status`, `ensure-cli`, `enable`, `disable`, `logout --yes`, `apply-skills`, `connect [--timeout]`, `ima status/connect/logout --yes` | For feishu/wecom/dingtalk/tmeet. Vendor CLIs resolve through the managed assets install (what `ensure-cli` and the GUI install) before PATH. `connect` prints the login URL to stderr as soon as the vendor CLI emits it (and again in the final/error summary — a timeout keeps the captured link); wecom prints the one-scan `qr.png` path the same way (the stdout URL alone is a landing page). `--timeout` bounds every blocking vendor-CLI phase. |
 | `pinvou personas` | `list`, `show`, `create`, `update`, `delete --yes`, `equip`, `unequip`, `active` | Expert card deck CRUD. `equip` records the staged persona for the session sidecar; prompt injection happens in the GUI, so the CLI itself does not deliver it. |
 | `pinvou code` | `agents list/status`, `login/logout`, `providers ...`, `sessions ...`, `workspace list/search/preview/changes/diff/branches/checkout`, `checkpoints ...` | Code-mode (ACP) configuration and read-mostly workspace ops; checkpoints reuse the real shadow-git implementation; agent CLIs resolve like the GUI (override env var → official install dir → PATH; Windows `.exe`/`.cmd` aware). Interactive ACP turns and the pending-permission flow are desktop-process-bound. |
 | `pinvou files` | `ingest <PATH> [--output PATH]` | File → markdown extraction (pdf/office/email/archive/text), the GUI attachment pipeline. |
@@ -88,8 +92,11 @@ super-permission pkexec toggle.
 ## Implementation map
 
 - `pinvou-cli/crates/cli/src/<family>.rs` — one module per family
-  (`parse`/`execute`, human+json rendering, contract tests in
-  `crates/cli/tests/<family>_contract.rs`).
+  (`parse`/`execute`, human+json rendering). Contract tests live in
+  `crates/cli/tests/<family>_contract.rs` where present
+  (code/connectors/knowledge/memory/models/personas/plugins/scheduled/sessions);
+  the remaining families are covered by `misc_contract.rs`, the dispatch
+  contract, and inline unit tests.
 - `pinvou-cli/crates/cli/src/support.rs` — shared helpers (sandbox home,
   secret resolution, output rendering, `--yes` gating).
 - Product capabilities are reused from the app crate (`pinvou3-tauri`, depended
