@@ -149,7 +149,11 @@ pub enum ExecutionRequest {
     NativeTurn {
         prompt_handle: PrivateInputHandle,
         attachments: Vec<AttachmentHandle>,
-        timeout: Duration,
+        /// Harness-side wall-clock deadline. `None` = no harness deadline: the
+        /// run is bounded only by the engine's own limits (model steps,
+        /// per-turn wall clock, cancellation). The official GAIA evaluation
+        /// imposes no runtime limit, so the GAIA adapter uses `None`.
+        timeout: Option<Duration>,
         tool_policy: ToolPolicyId,
         output_contract: OutputContract,
     },
@@ -165,7 +169,7 @@ impl ExecutionRequest {
     pub fn native_turn(
         prompt_handle: PrivateInputHandle,
         attachments: Vec<AttachmentHandle>,
-        timeout: Duration,
+        timeout: Option<Duration>,
         tool_policy: ToolPolicyId,
         output_contract: OutputContract,
     ) -> Self {

@@ -10,7 +10,6 @@ use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use agent_backend_api::{AttachmentHandle, PrivateInputHandle};
 use benchmark_core::{
@@ -41,7 +40,6 @@ pub const GAIA_PARQUET_SHA256: &str =
 
 const GAIA_TOOL_POLICY: &str = "pinvou-gaia-public-web/v1";
 const GAIA_OUTPUT_CONTRACT: &str = "gaia-final/v1";
-const GAIA_TASK_TIMEOUT: Duration = Duration::from_secs(600);
 
 pub struct GaiaAdapter {
     descriptor: BenchmarkDescriptor,
@@ -104,10 +102,14 @@ impl GaiaAdapter {
                     task_id,
                     Some("gaia".into()),
                     Some(GAIA_LEVEL.to_string()),
+                    // No harness wall-clock deadline: the official GAIA
+                    // evaluation imposes no runtime limit, so the run is
+                    // bounded only by the engine's own limits (model steps
+                    // per turn, per-turn wall clock, cancellation).
                     ExecutionRequest::native_turn(
                         PrivateInputHandle::new(format!("gaia:{task_id}:prompt")),
                         attachments,
-                        GAIA_TASK_TIMEOUT,
+                        None,
                         ToolPolicyId::new(GAIA_TOOL_POLICY),
                         OutputContract::new(GAIA_OUTPUT_CONTRACT),
                     ),

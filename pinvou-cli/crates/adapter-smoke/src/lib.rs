@@ -51,10 +51,12 @@ impl SmokeCase {
             self.id,
             Some("smoke".to_string()),
             None,
+            // The smoke suite is an internal determinism check, so it keeps
+            // its own per-case harness deadlines (unlike GAIA).
             ExecutionRequest::native_turn(
                 PrivateInputHandle::new(format!("smoke:{}", self.id)),
                 vec![],
-                self.timeout,
+                Some(self.timeout),
                 ToolPolicyId::new("pinvou-product/v1"),
                 OutputContract::new("smoke-private-output/v1"),
             ),

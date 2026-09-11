@@ -57,7 +57,7 @@ fn task(id: &str) -> BenchmarkTask {
         ExecutionRequest::native_turn(
             PrivateInputHandle::new(format!("private-{id}")),
             vec![],
-            Duration::from_secs(5),
+            Some(Duration::from_secs(5)),
             ToolPolicyId::new("smoke/v1"),
             OutputContract::new("text/v1"),
         ),
@@ -73,7 +73,7 @@ fn attachment_task(id: &str) -> BenchmarkTask {
         ExecutionRequest::native_turn(
             PrivateInputHandle::new(format!("private-{id}")),
             vec![AttachmentHandle::new(format!("attachment-{id}"))],
-            Duration::from_secs(5),
+            Some(Duration::from_secs(5)),
             ToolPolicyId::new("smoke/v1"),
             OutputContract::new("text/v1"),
         ),
@@ -514,7 +514,7 @@ async fn unsafe_native_tool_policy_is_rejected_before_backend_or_outcome_process
         ExecutionRequest::native_turn(
             PrivateInputHandle::new("private-unsafe-policy"),
             vec![],
-            Duration::from_secs(5),
+            Some(Duration::from_secs(5)),
             ToolPolicyId::new("api_key=PRIVATE_SENTINEL"),
             OutputContract::new("text/v1"),
         ),
@@ -625,7 +625,7 @@ async fn attachment_resolution_consumes_the_same_task_deadline() {
                 ExecutionRequest::native_turn(
                     PrivateInputHandle::new("private"),
                     vec![AttachmentHandle::new("attachment")],
-                    Duration::from_millis(5),
+                    Some(Duration::from_millis(5)),
                     ToolPolicyId::new("smoke/v1"),
                     OutputContract::new("text/v1"),
                 ),
@@ -706,7 +706,7 @@ fn short_task(id: &str) -> BenchmarkTask {
         ExecutionRequest::native_turn(
             PrivateInputHandle::new(format!("private-{id}")),
             vec![],
-            Duration::from_millis(5),
+            Some(Duration::from_millis(5)),
             ToolPolicyId::new("smoke/v1"),
             OutputContract::new("text/v1"),
         ),
