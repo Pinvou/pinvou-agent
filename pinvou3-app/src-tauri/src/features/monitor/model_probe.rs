@@ -60,7 +60,7 @@ pub struct VllmSnapshot {
     pub prompt_tokens_total: Option<f64>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VllmStatus {
     Offline,
@@ -376,16 +376,16 @@ async fn snapshot_for_model_config(
     } else {
         Vec::new()
     };
-    // 展示窗口优先级与 Engine `route_limits_for_model` 同口径(用户显式声明
-    // 优先,探测值只对本地部署收紧);云端探测值(常来自代理/网关的列表首条,
-    // 与配置模型无关甚至过时)不得覆盖用户声明,否则保存 1M 后进度条被打回
+    // 展示窗口走统一优先级（见 display_context_window）：用户显式声明优先，
+    // 本地部署的探测值做 min 收紧；云端探测值（常来自代理/网关的列表条目，
+    // 与配置模型无关甚至过时）不得覆盖用户声明，否则保存 1M 后进度条被打回
     // 131K。探测与目录/预设兜底只在无声明时补位。
     let inferred = infer_context_window(
         preset,
         configured_model.as_deref().or(served_model.as_deref()),
     );
     let (max_model_len, window_from_inference) =
-        resolve_display_context_window(target_kind, configured_context, max_model_len, inferred);
+        display_context_window(configured_context, target_kind, max_model_len, inferred);
     if window_from_inference {
         metric_diagnostics.push(MonitorDiagnostic {
             code: "context_window_inferred".to_string(),
@@ -426,13 +426,11 @@ async fn snapshot_for_model_config(
     // 如果用户配置了模型名，但和 vLLM 实际返回的不一致，降级为 Mismatch。
     // 这样监控台不会显示绿色 READY，聊天 live dot 也会变红。
     if metrics_applicable {
-        if let Some(ref cfg) = configured_model {
-            if let Some(ref actual) = served_model {
-                if cfg.trim() != actual.trim() {
-                    status = VllmStatus::Mismatch;
-                }
-            }
-        }
+        status = mismatch_if_served_differs(
+            status,
+            configured_model.as_deref(),
+            served_model.as_deref(),
+        );
     }
     let health_status = match status {
         VllmStatus::Mismatch => "mismatch",
@@ -502,9 +500,13 @@ fn parse_models_response(
     configured: Option<&str>,
 ) -> Option<(Option<String>, Option<u32>)> {
     let entries = crate::core::model_endpoint::parse_models_response_list(v)?;
-    // 云端 /models 往往一次列出全部模型，首条的 max_model_len 未必属于配置的
-    // 模型：优先取配置名自身的条目（大小写不敏感兜底），无匹配才退回首条
-    // （与 resolve_served_model_from_entries 的「先匹配、后单条」同一取向）。
+    // 云端 /models 往往一次列出全部模型：优先取配置模型自身条目（精确命中，
+    // ASCII 大小写不敏感兜底；配置名先 trim，与 Mismatch 判定的双侧 trim 同口径）。
+    // 首条回退仅供 served 名展示——其 max_model_len 属于别的模型，不得借给配置
+    // 模型（与 `resolve_served_model_from_entries` 的「窗口不借自别的模型」同一
+    // 原则）。两者回退取向不同是有意的：推理路径未命中时保留配置名，让
+    // model_not_found 显式暴露；展示路径回退首条名字仅是诊断信息。
+    let configured = configured.map(str::trim).filter(|name| !name.is_empty());
     let matched = configured.and_then(|name| {
         entries.iter().find(|entry| entry.id == name).or_else(|| {
             entries
@@ -513,32 +515,54 @@ fn parse_models_response(
         })
     });
     let entry = matched.or_else(|| entries.first())?;
-    Some((Some(entry.id.clone()), entry.max_model_len))
+    let window = if matched.is_some() || configured.is_none() {
+        entry.max_model_len
+    } else {
+        None
+    };
+    Some((Some(entry.id.clone()), window))
 }
 
-/// 展示侧上下文窗口优先级（监控卡 + `get_backend_status` 的进度条分母）。
-/// 与 Engine `route_limits_for_model` 对齐：用户显式声明优先；探测值仅对
-/// 本地部署(可实地内省的 vLLM)做 min 收紧——云端探测值不覆盖声明，避免
-/// 网关/代理的列表首条窗口(常见 131072)打回用户保存的 1M。声明与探测都
-/// 缺席时回落到模型名/供应商预设推断，此时第二个返回值为 true 供诊断标注。
-fn resolve_display_context_window(
-    target_kind: &str,
+/// 展示侧上下文窗口（监控卡 + `get_backend_status` 的进度条分母）。优先级
+/// 本体在 `core::model_context::resolve_context_window`，与宿主
+/// `bridge::route_limits_for_model`（决定推理与压缩阈值）共用同一函数；本
+/// wrapper 只负责「探测值是否可信」的门控：本地部署（环回/私有 IP，可实地
+/// 内省）的探测值交给统一口径做 min 收紧；云端探测值来自网关/代理的列表
+/// 条目，不是部署实地事实，故在用户已声明窗口时整体不参与（声明优先且无
+/// 收紧依据），仅在无声明时作展示补位。
+fn display_context_window(
     configured: Option<u32>,
+    target_kind: &str,
     probed: Option<u32>,
     inferred: Option<u32>,
 ) -> (Option<u32>, bool) {
-    match (configured, probed) {
-        (Some(configured), Some(probed)) if target_kind == "local" => {
-            (Some(configured.min(probed)), false)
-        }
-        (Some(configured), _) => (Some(configured), false),
-        (None, probed) => (probed.or(inferred), probed.is_none() && inferred.is_some()),
+    let probed = match (configured, target_kind) {
+        (Some(_), "local") | (None, _) => probed,
+        (Some(_), _) => None,
+    };
+    crate::core::model_context::resolve_context_window(configured, probed, inferred)
+}
+
+/// 配置模型名与实际 served 名不一致时降级为 `Mismatch`（仅本地部署调用方启用，
+/// 见 `snapshot_for_model_config`）。抽成纯函数以便单测锁住比较语义：双侧
+/// trim 后精确比较（大小写敏感，与推理路径 `resolve_served_model_from_entries`
+/// 的精确匹配同口径——网关把 id 统一成小写而配置名带大写时，Engine 发送配置
+/// 原名会 model_not_found，监控红点是真实信号而非误报）。
+fn mismatch_if_served_differs(
+    status: VllmStatus,
+    configured: Option<&str>,
+    served: Option<&str>,
+) -> VllmStatus {
+    match (configured, served) {
+        (Some(cfg), Some(actual)) if cfg.trim() != actual.trim() => VllmStatus::Mismatch,
+        _ => status,
     }
 }
 
 fn infer_context_window(preset: ModelPreset, model: Option<&str>) -> Option<u32> {
-    // 模型名事实与 Engine route_limits 共用同一入口，避免页面显示 1M、实际仍按
-    // 128K 压缩。底座与补充表都无法识别时按供应商预设兜底（表在 prefs::model_preset）。
+    // 模型名事实经 core::model_context 单一入口解析，宿主 route_limits 的推断
+    // 兜底同源，避免页面显示 1M、实际仍按 128K 压缩。底座与补充表都无法识别时
+    // 按供应商预设兜底（表在 prefs::model_preset）。
     if let Some(window) = model.and_then(crate::core::model_context::resolved_context_window) {
         return Some(window);
     }
@@ -826,40 +850,86 @@ mod tests {
         assert_eq!(max, Some(131_072));
     }
 
-    /// 配置名不在列表（网关只回部分名单）：保持首条回退，行为与修复前一致。
+    /// 配置名不在列表（网关只回部分名单）：首条回退仅供 served 名展示，其
+    /// max_model_len 属于别的模型，不得借给配置模型（与推理路径
+    /// resolve_served_model_from_entries 的「窗口不借自别的模型」同一原则）。
     #[test]
-    fn parse_models_response_falls_back_to_first_entry_when_absent() {
+    fn parse_models_response_first_entry_fallback_lends_name_not_window() {
         let json = models_list_json(&[("a", Some(4096)), ("b", Some(8192))]);
         let (id, max) = parse_models_response(json, Some("gone")).unwrap();
         assert_eq!(id.as_deref(), Some("a"));
-        assert_eq!(max, Some(4096));
+        assert_eq!(max, None);
+    }
+
+    /// 大小写不敏感兜底命中时窗口同样归属配置模型（网关把 id 统一成小写是
+    /// 常见形态，窗口确属同一模型）。
+    #[test]
+    fn parse_models_response_matches_case_insensitively_and_keeps_window() {
+        let json = models_list_json(&[("other", Some(4096)), ("glm-5.3-flash", Some(131_072))]);
+        let (id, max) = parse_models_response(json, Some("GLM-5.3-Flash")).unwrap();
+        assert_eq!(id.as_deref(), Some("glm-5.3-flash"));
+        assert_eq!(max, Some(131_072));
+    }
+
+    /// 配置名先 trim 再匹配（与 Mismatch 判定的双侧 trim 同口径），带首尾
+    /// 空格的配置名不再永远无法命中。
+    #[test]
+    fn parse_models_response_trims_configured_name() {
+        let json = models_list_json(&[("glm-5.3-flash", Some(131_072))]);
+        let (id, max) = parse_models_response(json, Some("  glm-5.3-flash\t")).unwrap();
+        assert_eq!(id.as_deref(), Some("glm-5.3-flash"));
+        assert_eq!(max, Some(131_072));
+    }
+
+    /// 命中条目但服务端未带 max_model_len：窗口保持 None，交由声明/推断兜底，
+    /// 绝不伪造（与 resolve_served_model_from_entries 的同名原则一致）。
+    #[test]
+    fn parse_models_response_matched_entry_without_window_propagates_none() {
+        let json = models_list_json(&[("user-picked", None)]);
+        let (id, max) = parse_models_response(json, Some("user-picked")).unwrap();
+        assert_eq!(id.as_deref(), Some("user-picked"));
+        assert_eq!(max, None);
     }
 
     /// 用户显式声明的窗口（云端，探测值 131072 来自网关列表）：声明必须原样
     /// 胜出——回归本次「保存 1048576 后进度条仍显示 131.1K」的根因。
     #[test]
     fn display_window_remote_configured_declaration_beats_probe() {
-        let (window, inferred) = resolve_display_context_window(
-            "remote",
-            Some(1_048_576),
-            Some(131_072),
-            Some(1_000_000),
-        );
+        let (window, inferred) =
+            display_context_window(Some(1_048_576), "remote", Some(131_072), Some(1_000_000));
         assert_eq!(window, Some(1_048_576));
         assert!(!inferred);
     }
 
-    /// 本地部署探测值是实地事实：与 Engine route_limits 同款 min 收紧。
+    /// 本地部署探测值是实地事实：与宿主 route_limits 同款 min 收紧。
     #[test]
     fn display_window_local_min_clamps_declaration_with_probe() {
         let (window, inferred) =
-            resolve_display_context_window("local", Some(1_048_576), Some(131_072), None);
+            display_context_window(Some(1_048_576), "local", Some(131_072), None);
         assert_eq!(window, Some(131_072));
         assert!(!inferred);
         // 反向：声明 32K、实机 128K → 按声明收紧（与 route_limits 一致）。
-        let (window, _) =
-            resolve_display_context_window("local", Some(32_768), Some(131_072), None);
+        let (window, _) = display_context_window(Some(32_768), "local", Some(131_072), None);
         assert_eq!(window, Some(32_768));
+    }
+
+    /// 本地声明但探测缺席（/models 解析失败等）：声明原样生效——与宿主
+    /// route_limits 的 (Some, None) 臂一致，探测缺席不产生任何收紧。
+    #[test]
+    fn display_window_local_declared_without_probe_uses_declaration() {
+        let (window, inferred) =
+            display_context_window(Some(1_048_576), "local", None, Some(131_072));
+        assert_eq!(window, Some(1_048_576));
+        assert!(!inferred);
+    }
+
+    /// target_kind 异常（URL 解析失败）时有声明仍按声明展示，探测值不覆盖。
+    #[test]
+    fn display_window_declared_on_nonlocal_target_ignores_probe() {
+        let (window, inferred) =
+            display_context_window(Some(262_144), "invalid", Some(131_072), None);
+        assert_eq!(window, Some(262_144));
+        assert!(!inferred);
     }
 
     /// 无声明时保持既有口径：探测值优先，探测缺席才用推断；推断被真正采用时
@@ -867,16 +937,39 @@ mod tests {
     #[test]
     fn display_window_without_declaration_keeps_probe_then_infer() {
         let (window, inferred) =
-            resolve_display_context_window("remote", None, Some(262_144), Some(131_072));
+            display_context_window(None, "remote", Some(262_144), Some(131_072));
         assert_eq!(window, Some(262_144));
         assert!(!inferred);
-        let (window, inferred) =
-            resolve_display_context_window("remote", None, None, Some(1_000_000));
+        let (window, inferred) = display_context_window(None, "remote", None, Some(1_000_000));
         assert_eq!(window, Some(1_000_000));
         assert!(inferred);
-        let (window, inferred) = resolve_display_context_window("remote", None, None, None);
+        let (window, inferred) = display_context_window(None, "remote", None, None);
         assert_eq!(window, None);
         assert!(!inferred);
+    }
+
+    /// Mismatch 判定语义（抽出的纯函数）：双侧 trim、精确比较（大小写敏感）、
+    /// 任一侧缺席不降级、原状态非 Ready 时只降级不升级。
+    #[test]
+    fn mismatch_detection_trims_and_is_case_sensitive() {
+        use VllmStatus::{Busy, Ready};
+        assert_eq!(
+            mismatch_if_served_differs(Ready, Some(" qwen "), Some("qwen")),
+            Ready
+        );
+        // 大小写不同 → Mismatch：Engine 发送配置原名会 model_not_found，红点是
+        // 真实信号（与 resolve_served_model_from_entries 的精确匹配同口径）。
+        assert_eq!(
+            mismatch_if_served_differs(Ready, Some("Qwen"), Some("qwen")),
+            VllmStatus::Mismatch
+        );
+        assert_eq!(
+            mismatch_if_served_differs(Busy, Some("a"), Some("b")),
+            VllmStatus::Mismatch
+        );
+        assert_eq!(mismatch_if_served_differs(Ready, None, Some("b")), Ready);
+        assert_eq!(mismatch_if_served_differs(Ready, Some("a"), None), Ready);
+        assert_eq!(mismatch_if_served_differs(Ready, None, None), Ready);
     }
 
     fn served_entry(
