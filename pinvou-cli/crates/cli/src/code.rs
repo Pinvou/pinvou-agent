@@ -23,6 +23,12 @@
 //!   is a documented JSON approximation of `code_checkpoints::count_user_turns`
 //!   (`pub(crate)`); the store re-validates with the exact predicate inside
 //!   `truncate_to_user_turn` / `restore_rewound_turns`.
+//!
+//! Concurrency: `checkpoints rewind` / `undo` and `workspace checkout`
+//! serialize through a cross-process advisory lock under
+//! `~/.pinvou3/locks/` (CLI×CLI). The GUI's busy guards are process-local
+//! and cannot be observed from the CLI, so a GUI turn running on the same
+//! session is not detectable — see the `checkpoints rewind` doc comment.
 //! - run/permissions/respond → stable honest errors: driving the ACP adapter
 //!   (async protocol client, adapter process, pending-permission store) is
 //!   bound to the product host; the pending-permission store is process-local
@@ -32,6 +38,7 @@
 //! single serde_json line mirroring the GUI DTOs (camelCase fields).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
@@ -47,6 +54,7 @@ use pinvou3_lib::features::codex_acp::{
 use pinvou3_lib::features::sessions::{SessionKind, SessionStore};
 use pinvou3_lib::platform::credential_store::{CredentialEditAction, SystemCredentialStore};
 use pinvou3_lib::platform::paths;
+use wait_timeout::ChildExt;
 
 const USAGE: &str = "usage: pinvou code <agents|login|logout|providers|sessions|workspace|checkpoints|run|permissions|respond> <subcommand>";
 
@@ -60,7 +68,7 @@ const PROVIDERS_USAGE: &str = "usage: pinvou code providers <list [--agent A]|ad
      |switch <agent> <provider-id>|switch-official <agent>|export --agent A [--output PATH] \
      |import --agent A <PATH>|probe <provider-id> --agent A>";
 const SESSIONS_USAGE: &str = "usage: pinvou code sessions <list|info <id>|timeline <id>>";
-const WORKSPACE_USAGE: &str = "usage: pinvoy code workspace <list <session> [path]|search <session> Q|preview <session> FILE|changes <session>|diff <session> [FILE]|branches <session>|checkout <session> BRANCH --mode carry|stash|commit [--message M]>";
+const WORKSPACE_USAGE: &str = "usage: pinvou code workspace <list <session> [path]|search <session> Q|preview <session> FILE|changes <session>|diff <session> [FILE]|branches <session>|checkout <session> BRANCH --mode carry|stash|commit [--message M]>";
 const CHECKPOINTS_USAGE: &str = "usage: pinvou code checkpoints <list <session>|diff <session> <checkpoint-id>|rewind <session> <turn> --yes|undo <session>>";
 const RUN_USAGE: &str = "usage: pinvou code run <agent> --workspace DIR (--prompt-file F|--prompt S) [--timeout-secs N]";
 const PERMISSIONS_USAGE: &str = "usage: pinvou code permissions <session>";
@@ -71,6 +79,10 @@ const RESPOND_USAGE: &str = "usage: pinvou code respond <session> <request-id> <
 /// `MIN_CLAUDE_VERSION` / `MIN_KIMI_VERSION`.
 const MIN_VERSIONS: [(&str, &str); 3] =
     [("codex", "0.144.6"), ("claude", "2.0.0"), ("kimi", "0.9.0")];
+
+/// Hard deadline for the vendor logout subcommand (login uses 600/1800s
+/// because it waits for the user; logout is a fast local call).
+const LOGOUT_TIMEOUT_SECS: u64 = 120;
 
 // ── command tree ────────────────────────────────────────────────────────────
 
@@ -1046,9 +1058,14 @@ pub fn execute(command: CodeCommand, output: OutputMode) -> Result<CliOutcome, C
             branch,
             mode,
             message,
-        } => with_workspace(&session, |root| {
-            workspace_checkout(root, &branch, mode, message.as_deref(), output)
-        }),
+        } => {
+            let mut mutation_lock = session_mutation_lock(&session)?;
+            let _mutation_guard =
+                lock_session_for_mutation(&mut mutation_lock, &session, "checkout")?;
+            with_workspace(&session, |root| {
+                workspace_checkout(root, &branch, mode, message.as_deref(), output)
+            })
+        }
         CodeCommand::CheckpointsList { session } => checkpoints_list(&session, output),
         CodeCommand::CheckpointsDiff {
             session,
@@ -1212,32 +1229,43 @@ fn cli_version(executable: &Path) -> Option<String> {
         .map(|(_, text)| text)
 }
 
-/// Mirrors `runtime::version_at_least` + `parse_version`: compares the first
-/// dotted numeric run inside `version` against the minimum.
+/// Mirror of `runtime::parse_version`: only a leading digit-run of
+/// dot/dash/plus-separated parts counts, so prefixed output like
+/// "codex 0.200.0" parses empty — exactly like the GUI gate.
+fn parse_version(version: &str) -> Vec<u64> {
+    version
+        .split(['.', '-', '+'])
+        .take_while(|part| part.chars().all(|character| character.is_ascii_digit()))
+        .map(|part| part.parse().unwrap_or(0))
+        .collect()
+}
+
 fn version_at_least(version: &str, minimum: &str) -> bool {
-    let parse = |text: &str| -> Vec<u64> {
-        let numeric = |word: &str| -> Vec<u64> {
-            word.split('.')
-                .map(|part| {
-                    part.chars()
-                        .take_while(|character| character.is_ascii_digit())
-                        .collect::<String>()
-                        .parse::<u64>()
-                        .unwrap_or(0)
-                })
-                .collect()
-        };
-        text.split_whitespace()
-            .map(numeric)
-            .find(|parts| !parts.is_empty() && parts.iter().any(|part| *part > 0))
-            .unwrap_or_default()
-    };
-    let mut left = parse(version);
-    let mut right = parse(minimum);
-    let length = left.len().max(right.len());
-    left.resize(length, 0);
-    right.resize(length, 0);
-    left >= right
+    parse_version(version).cmp(&parse_version(minimum)) != std::cmp::Ordering::Less
+}
+
+/// Mirror of `install::is_bare_semver`: exactly three all-digit parts.
+fn is_bare_semver(version: &str) -> bool {
+    let parts: Vec<&str> = version.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Mirror of `install::claude_version_supported`: the first whitespace token
+/// of `--version` output ("2.1.163 (Claude Code)") must be a bare semver.
+fn claude_version_supported(version: &str, minimum: &str) -> bool {
+    version
+        .split_whitespace()
+        .next()
+        .is_some_and(|token| is_bare_semver(token) && version_at_least(token, minimum))
+}
+
+/// Mirror of `install::kimi_version_supported`: the whole output must be a
+/// bare semver (non-standard kimi-cli output is always unsupported).
+fn kimi_version_supported(version: &str, minimum: &str) -> bool {
+    is_bare_semver(version) && version_at_least(version, minimum)
 }
 
 fn cli_status_success(executable: &Path, args: &[&str]) -> bool {
@@ -1308,42 +1336,125 @@ fn claude_authenticated(executable: &Path) -> bool {
     cli_status_success(executable, &["auth", "status"])
 }
 
-/// Mirrors `kimi_authenticated`: paired KIMI_MODEL_* overrides, or a valid
-/// OAuth credential file plus a resolvable default model in the kimi config.
+/// Mirrors `introspect::kimi_authenticated`: paired KIMI_MODEL_* overrides,
+/// or a valid OAuth credential file plus a fully resolvable default model
+/// (model → provider → type → api_key/env/oauth chain) in the kimi config.
 fn kimi_authenticated() -> bool {
     if nonempty_env("KIMI_MODEL_NAME") && nonempty_env("KIMI_MODEL_API_KEY") {
         return true;
     }
     let root = kimi_data_root();
-    let credentials_ok = std::fs::read_to_string(root.join("credentials").join("kimi-code.json"))
-        .is_ok_and(|raw| raw.contains("access_token") || raw.contains("refresh_token"));
+    let oauth_credentials_valid =
+        std::fs::read_to_string(root.join("credentials").join("kimi-code.json"))
+            .is_ok_and(|raw| kimi_credentials_valid(&raw));
     let Ok(config) = std::fs::read_to_string(root.join("config.toml")) else {
         return false;
     };
-    // `kimi_runtime_config_ready` approximation: a default_model that resolves
-    // to an existing provider entry.
-    let default_model = config.lines().find_map(|line| {
-        let value = line
-            .trim()
-            .strip_prefix("default_model")?
-            .trim()
-            .strip_prefix('=')?;
-        let value = value.trim().trim_matches('"');
-        (!value.is_empty()).then_some(value.to_string())
-    });
-    default_model.is_some() && credentials_ok
+    kimi_runtime_config_ready(&config, oauth_credentials_valid)
 }
 
+/// Mirror of `introspect::kimi_credentials_valid`: both tokens must be
+/// non-empty strings and `expires_at` a positive timestamp. Expiry itself is
+/// not disqualifying — the kimi CLI refreshes access tokens automatically —
+/// it only identifies a corrupted credential file.
+fn kimi_credentials_valid(raw: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return false;
+    };
+    let token_present = ["access_token", "refresh_token"].into_iter().all(|key| {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|token| !token.trim().is_empty())
+    });
+    let expiry_valid = value
+        .get("expires_at")
+        .and_then(serde_json::Value::as_i64)
+        .is_some_and(|expiry| expiry > 0);
+    token_present && expiry_valid
+}
+
+/// Faithful mirror of `introspect::kimi_runtime_config_ready`: a default
+/// model that resolves through an existing provider entry to a usable
+/// credential (direct api_key, a `*_API_KEY` env entry, or OAuth state).
+fn kimi_runtime_config_ready(raw: &str, oauth_credentials_valid: bool) -> bool {
+    let Ok(config) = toml::from_str::<toml::Value>(raw) else {
+        return false;
+    };
+    let Some(default_model) = config
+        .get("default_model")
+        .and_then(toml::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return false;
+    };
+    let Some(model) = config
+        .get("models")
+        .and_then(|models| models.get(default_model))
+        .and_then(toml::Value::as_table)
+    else {
+        return false;
+    };
+    let Some(provider) = model
+        .get("provider")
+        .and_then(toml::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return false;
+    };
+    let model_ready = model
+        .get("model")
+        .and_then(toml::Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+        && model
+            .get("max_context_size")
+            .and_then(toml::Value::as_integer)
+            .is_some_and(|value| value > 0);
+    if !model_ready {
+        return false;
+    }
+    let Some(provider) = config
+        .get("providers")
+        .and_then(|providers| providers.get(provider))
+        .and_then(toml::Value::as_table)
+    else {
+        return false;
+    };
+    if provider
+        .get("type")
+        .and_then(toml::Value::as_str)
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        return false;
+    }
+    let direct_api_key = provider
+        .get("api_key")
+        .and_then(toml::Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+    let configured_env_api_key = provider
+        .get("env")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|env| {
+            env.iter().any(|(name, value)| {
+                name.ends_with("_API_KEY")
+                    && value.as_str().is_some_and(|value| !value.trim().is_empty())
+            })
+        });
+    let oauth_ready =
+        provider.get("oauth").is_some_and(toml::Value::is_table) && oauth_credentials_valid;
+    direct_api_key || configured_env_api_key || oauth_ready
+}
+
+/// Mirror of `introspect::kimi_data_root`: KIMI_CODE_HOME when set, else
+/// `~/.kimi-code`.
 fn kimi_data_root() -> PathBuf {
-    // `introspect::kimi_data_root` mirror: CODEWHALE_HOME when set, else the
-    // platform config home (~/.config on Linux).
-    if let Some(home) = std::env::var_os("CODEWHALE_HOME").map(PathBuf::from) {
-        return home.join("kimi");
+    if let Some(root) = std::env::var_os("KIMI_CODE_HOME").map(PathBuf::from) {
+        return root;
     }
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    home.join(".config").join("kimi")
+    home.join(".kimi-code")
 }
 
 fn probe_agent(agent: &str, agent_name: &str) -> AgentProbe {
@@ -1357,7 +1468,12 @@ fn probe_agent(agent: &str, agent_name: &str) -> AgentProbe {
         .unwrap_or("0.0.0");
     let version_supported = version
         .as_deref()
-        .map(|version| version_at_least(version, min_version))
+        .map(|version| match agent {
+            "codex" => version_at_least(version, min_version),
+            "claude" => claude_version_supported(version, min_version),
+            "kimi" => kimi_version_supported(version, min_version),
+            _ => false,
+        })
         .unwrap_or(false);
     let authenticated = match cli_path.as_deref() {
         Some(path) => match agent {
@@ -1659,15 +1775,29 @@ fn logout(agent: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
         }
     };
     let executable = login_executable(agent)?;
-    let mut command = std::process::Command::new(&executable);
-    command
+    // Bounded like the login flow (logout is a fast subcommand; a hung
+    // vendor CLI must not block the terminal forever).
+    let mut child = std::process::Command::new(&executable)
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    let status = command
-        .status()
+        .stderr(std::process::Stdio::null())
+        .spawn()
         .map_err(|error| CliError::failed(format!("code logout({agent}): {error}")))?;
+    let status = match child
+        .wait_timeout(Duration::from_secs(LOGOUT_TIMEOUT_SECS))
+        .map_err(|error| CliError::failed(format!("code logout({agent}): {error}")))?
+    {
+        Some(status) => status,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(CliError::failed(format!(
+                "code_logout_failed: {agent} logout did not finish within \
+                 {LOGOUT_TIMEOUT_SECS}s (killed)"
+            )));
+        }
+    };
     if !status.success() {
         return Err(CliError::failed(format!(
             "code_logout_failed: {agent} logout command exited with {}",
@@ -2293,6 +2423,56 @@ const IGNORED_DIRECTORIES: &[&str] = &[
 /// Same process-local serialization as `workspace::CHECKOUT_LOCK`: concurrent
 /// checkouts must not interleave stash push/checkout/pop sequences.
 static CHECKOUT_LOCK: Mutex<()> = Mutex::new(());
+
+/// Cross-process advisory lock (fd-lock, the same OS primitive the app's
+/// remote-control owner lock uses) serializing mutations of one code session
+/// — `checkpoints rewind` / `undo` and `workspace checkout`. The GUI's
+/// guards (`is_turn_active`, `begin_execution_root_rewind`,
+/// `busy_peer_on_same_execution_root`) are process-local and therefore
+/// invisible to the CLI; this lock closes the CLI×CLI race, while a
+/// concurrent GUI turn on the same session remains undetectable here
+/// (documented in the command docs and `docs/pinvou-cli.md`).
+/// Callers must keep the returned lock alive alongside its write guard.
+fn session_mutation_lock(session: &str) -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
+    if !valid_session_id(session) {
+        return Err(CliError::usage("invalid session id"));
+    }
+    let dir = paths::pinvou3_home().join("locks");
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        CliError::failed(format!(
+            "code session lock: cannot create {}: {error}",
+            dir.display()
+        ))
+    })?;
+    let path = dir.join(format!("code-session-{session}.lock"));
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|error| {
+            CliError::failed(format!(
+                "code session lock: cannot open {}: {error}",
+                path.display()
+            ))
+        })?;
+    Ok(fd_lock::RwLock::new(file))
+}
+
+/// Acquires the session mutation lock or fails fast with a stable busy error
+/// (a CLI that silently queued behind another process would race the user's
+/// intent just the same).
+fn lock_session_for_mutation<'a>(
+    lock: &'a mut fd_lock::RwLock<std::fs::File>,
+    session: &str,
+    action: &str,
+) -> Result<fd_lock::RwLockWriteGuard<'a, std::fs::File>, CliError> {
+    lock.try_write().map_err(|_| {
+        CliError::failed(format!(
+            "{action}_busy: another pinvou process is mutating session {session}; retry after it finishes"
+        ))
+    })
+}
 
 fn canonical_workspace(root: &Path) -> Result<PathBuf, CliError> {
     let canonical = std::fs::canonicalize(root).map_err(|error| {
@@ -3302,10 +3482,16 @@ fn workspace_diff(
                     combined.push_str(&text);
                 }
             }
+            // Actually cut the payload when reporting truncation — the
+            // per-file path below does the same.
+            let truncated = combined.len() > DIFF_LIMIT;
+            if truncated {
+                combined.truncate(DIFF_LIMIT);
+            }
             let value = serde_json::json!({
                 "relativePath": null,
                 "text": combined,
-                "truncated": combined.len() > DIFF_LIMIT,
+                "truncated": truncated,
                 "changes": changes["changes"],
             });
             Ok(success(render(output, combined, &value)))
@@ -3646,7 +3832,10 @@ fn resolve_rewind_plan(
 /// checkpoint restore (auto PreRestore), transcript truncation with the
 /// sidecar backup, and invalidation of the abandoned branch snapshots.
 /// The GUI's busy gates (EnginePool turn reservation, execution-root mutex)
-/// only exist inside the running app; headless rewind requires no active host.
+/// only exist inside the running app; the cross-process advisory lock
+/// serializes CLI×CLI mutations, but a GUI turn running on the same session
+/// cannot be detected here — do not rewind a session whose GUI Code session
+/// may be mid-turn.
 fn checkpoints_rewind(
     session: &str,
     keep_turns: u32,
@@ -3654,6 +3843,8 @@ fn checkpoints_rewind(
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     require_yes(yes)?;
+    let mut mutation_lock = session_mutation_lock(session)?;
+    let _mutation_guard = lock_session_for_mutation(&mut mutation_lock, session, "rewind")?;
     let store = open_store()?;
     let agents = open_agent_store()?;
     let (ledger, execution) = require_native_code_session(&store, &agents, session)?;
@@ -3794,6 +3985,8 @@ fn resolve_undo_state(
 
 /// `code checkpoints undo <session>`: headless mirror of `undo_last_rewind`.
 fn checkpoints_undo(session: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
+    let mut mutation_lock = session_mutation_lock(session)?;
+    let _mutation_guard = lock_session_for_mutation(&mut mutation_lock, session, "undo")?;
     let store = open_store()?;
     let agents = open_agent_store()?;
     let (ledger, execution) = require_native_code_session(&store, &agents, session)?;
@@ -3853,4 +4046,94 @@ fn respond(
          that owns the ACP connection (the GUI host); the pending store is process-local, so \
          request {request_id} cannot be answered from the CLI"
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_version_gate_requires_leading_digit_run() {
+        // Mirror of `runtime::parse_version`: prefixed output does not parse,
+        // so the gate rejects it exactly like the GUI.
+        assert!(!version_at_least("codex 0.200.0", "0.144.6"));
+        assert!(version_at_least("0.200.0", "0.144.6"));
+        assert!(version_at_least("1.0", "0.144.6"));
+        assert!(!version_at_least("0.14.9", "0.144.6"));
+    }
+
+    #[test]
+    fn claude_version_gate_takes_first_bare_semver_token() {
+        assert!(claude_version_supported("2.1.163 (Claude Code)", "2.0.0"));
+        assert!(!claude_version_supported("1.9.0 (Claude Code)", "2.0.0"));
+        assert!(!claude_version_supported(
+            "2.1.163-rc (Claude Code)",
+            "2.0.0"
+        ));
+        assert!(!claude_version_supported("", "2.0.0"));
+    }
+
+    #[test]
+    fn kimi_version_gate_requires_bare_semver_output() {
+        assert!(kimi_version_supported("0.31.1", "0.9.0"));
+        assert!(!kimi_version_supported("kimi 0.31.1", "0.9.0"));
+        assert!(!kimi_version_supported("0.31", "0.9.0"));
+    }
+
+    #[test]
+    fn kimi_credentials_gate_requires_both_tokens_and_positive_expiry() {
+        let valid = r#"{"access_token":"a","refresh_token":"r","expires_at":123}"#;
+        assert!(kimi_credentials_valid(valid));
+        // Either token missing, corrupted JSON, or a negative timestamp.
+        assert!(!kimi_credentials_valid(r#"{"access_token":"a"}"#));
+        assert!(!kimi_credentials_valid(
+            r#"{"access_token":"a","refresh_token":"r","expires_at":-1}"#
+        ));
+        assert!(!kimi_credentials_valid("access_token refresh_token"));
+    }
+
+    #[test]
+    fn kimi_config_gate_mirrors_the_gui_resolution_chain() {
+        let config = "\
+default_model = \"m2\"
+
+[providers.kimi]
+type = \"kimi\"
+api_key = \"sk\"
+
+[models.m2]
+provider = \"kimi\"
+model = \"kimi-k2\"
+max_context_size = 1000
+";
+        // Direct api_key / env api_key / valid OAuth each satisfy the gate.
+        assert!(kimi_runtime_config_ready(config, false));
+        let with_env = config.replace(
+            "type = \"kimi\"",
+            "type = \"kimi\"\nenv = { KIMI_API_KEY = \"sk\" }",
+        );
+        assert!(kimi_runtime_config_ready(&with_env, false));
+        let oauth = config.replace(
+            "type = \"kimi\"",
+            "type = \"kimi\"\n[providers.kimi.oauth]\naccount = \"a\"",
+        );
+        assert!(kimi_runtime_config_ready(&oauth, true));
+        assert!(!kimi_runtime_config_ready(&oauth, false));
+        // No provider credential at all: not ready even with valid credentials.
+        let no_key = config.replace("api_key = \"sk\"", "api_key = \"\"");
+        assert!(!kimi_runtime_config_ready(&no_key, true));
+        // Broken chains: unknown default model, unknown provider, bad context.
+        assert!(!kimi_runtime_config_ready(
+            &config.replace("default_model = \"m2\"", "default_model = \"missing\""),
+            false
+        ));
+        assert!(!kimi_runtime_config_ready(
+            &config.replace("provider = \"kimi\"", "provider = \"ghost\""),
+            false
+        ));
+        assert!(!kimi_runtime_config_ready(
+            &config.replace("max_context_size = 1000", "max_context_size = 0"),
+            false
+        ));
+    }
 }
