@@ -180,8 +180,36 @@ impl VoiceTempWav {
         Ok(Self { file })
     }
 
-    fn path(&self) -> &std::path::Path {
-        self.file.path()
+    /// Finish writing before handing the path to an external recognizer. On
+    /// Windows, keeping the `NamedTempFile` handle alive can prevent a backend
+    /// that requests exclusive access from reopening the WAV file.
+    fn write_and_close(mut self, audio_bytes: &[u8]) -> std::io::Result<tempfile::TempPath> {
+        use std::io::Write;
+
+        self.file.write_all(audio_bytes)?;
+        self.file.flush()?;
+        Ok(self.file.into_temp_path())
+    }
+}
+
+#[cfg(test)]
+mod voice_temp_wav_tests {
+    use super::VoiceTempWav;
+
+    #[test]
+    fn closed_temp_wav_keeps_contents_and_cleans_up_on_drop() {
+        let wav_path = VoiceTempWav::create()
+            .expect("create temporary WAV")
+            .write_and_close(b"RIFF-test-WAVE")
+            .expect("write and close temporary WAV");
+        let path = wav_path.to_path_buf();
+
+        assert_eq!(
+            std::fs::read(&path).expect("read temporary WAV"),
+            b"RIFF-test-WAVE"
+        );
+        drop(wav_path);
+        assert!(!path.exists(), "temporary WAV must be removed on drop");
     }
 }
 
@@ -433,7 +461,7 @@ pub(crate) async fn transcribe_voice_audio_bytes(
                 "Could not create temporary audio file; please retry",
             )
         })?;
-        std::fs::write(wav_file.path(), &audio_bytes).map_err(|e| {
+        let wav_path = wav_file.write_and_close(&audio_bytes).map_err(|e| {
             log::warn!(
                 target: "pinvou.voice",
                 "[voice_transcribe] write temp wav failed: {e}"
@@ -460,7 +488,7 @@ pub(crate) async fn transcribe_voice_audio_bytes(
             let locale_tag = crate::platform::prefs::UserPrefs::load()
                 .language
                 .speech_recognition_locale();
-            let native = crate::features::voice::recognize_native(wav_file.path(), locale_tag);
+            let native = crate::features::voice::recognize_native(&wav_path, locale_tag);
             match native {
                 Some(Ok(text)) => Ok(LocalAsrOutput {
                     text,
@@ -468,7 +496,7 @@ pub(crate) async fn transcribe_voice_audio_bytes(
                 }),
                 Some(Err(e)) => {
                     if has_explicit_asr_cli_fallback() {
-                        run_local_asr_cli(wav_file.path())
+                        run_local_asr_cli(&wav_path)
                     } else {
                         Err(VoiceCommandError::new(
                             "asr_engine_error",
@@ -478,7 +506,7 @@ pub(crate) async fn transcribe_voice_audio_bytes(
                         ))
                     }
                 }
-                None => run_local_asr_cli(wav_file.path()),
+                None => run_local_asr_cli(&wav_path),
             }
         };
         result
