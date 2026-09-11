@@ -100,13 +100,16 @@ const MoveToProjectDialog = ({
     }
     onMove(project.id, false);
   };
-  const commitPending = (addFolder) => {
+  const commitPending = () => {
+    // "仅移动"语义:确认框只确认这一笔移动,绝不加 root("添加文件夹"会
+    // 占住项目领地、改变项目内后续会话的自动归组,与仅移动不等价,当前
+    // 版本收敛;争议点见 .luzeyang/projects-layer-plan.md)。
     // 不预清确认面板:提交后弹窗保持确认态(busy 禁用按钮),成功时由容器
     // 关闭整个对话框(卸载即复位);失败时确认面板留在原处供重试/取消——
     // 若先清 pendingAddFolder,异步进行/失败期间会回落成"选择项目"列表,
     // 看起来像点击后又弹出了另一个弹窗(评审 #449 finding:失败清目标后
     // 用户被迫重新选择,本轮正面修复)。
-    if (pendingAddFolder && !busy) onMove(pendingAddFolder.id, addFolder);
+    if (pendingAddFolder && !busy) onMove(pendingAddFolder.id, false);
   };
 
   const rowCls = 'w-full px-3.5 py-2.5 flex items-center gap-2.5 text-left text-[14px] rounded-2xl transition-colors text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]';
@@ -168,24 +171,26 @@ const MoveToProjectDialog = ({
         {pendingAddFolder ? (
           <div className="px-4 pb-4 pt-1">
             <div className="rounded-2xl bg-[#EAECEF] dark:bg-[#303134] px-3.5 py-3">
-              <div className="text-[13px] font-semibold mb-1">{t.uiProjects.addFolderTitle}</div>
-              <div className="text-[12px] text-[#5F6368] dark:text-[#C4C7C5] mb-3 break-all">{t.uiProjects.addFolderBody(workspacePath)}</div>
+              <div className="text-[13px] font-semibold mb-1">{t.uiProjects.moveConfirmTitle}</div>
+              <div className="text-[12px] text-[#5F6368] dark:text-[#C4C7C5] mb-3 break-all">
+                {t.uiProjects.moveConfirmBody(pendingAddFolder.name, workspacePath)}
+              </div>
               <div className="flex gap-2">
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={() => commitPending(true)}
+                  onClick={() => commitPending()}
                   className="flex-1 h-9 rounded-full bg-[#0B57D0] text-white text-[13px] font-medium hover:bg-[#0A4CB8] disabled:opacity-50"
                 >
-                  {t.uiProjects.addFolderConfirm}
+                  {t.uiProjects.moveConfirm}
                 </button>
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={() => commitPending(false)}
+                  onClick={onClose}
                   className="flex-1 h-9 rounded-full bg-[#D3D7DB] dark:bg-[#444746] text-[#1F1F1F] dark:text-[#E3E3E3] text-[13px] font-medium hover:opacity-90 disabled:opacity-50"
                 >
-                  {t.uiProjects.moveOnly}
+                  {t.cpCancel}
                 </button>
               </div>
             </div>
