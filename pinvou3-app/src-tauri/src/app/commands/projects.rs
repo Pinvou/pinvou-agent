@@ -115,6 +115,11 @@ pub async fn create_project(
 }
 
 /// 更新项目:名称与 roots 均为可选补丁,None 保持不变。
+///
+/// 移除 root 的成员移出(§4):被移除根之下、尚无归属条目的会话写成显式
+/// 移出(None),进未分组并留住——防止 tier-② 归组或 ensure 物化立即翻案;
+/// 已有条目(显式归属本/他项目、已移出)不动。移除不影响在飞会话(快照
+/// 语义 §6/§9.5),这里只写逻辑层归属,不触碰任何会话的工作目录绑定。
 #[tauri::command]
 pub async fn update_project(
     project_id: String,
@@ -122,10 +127,35 @@ pub async fn update_project(
     roots: Option<Vec<PathBuf>>,
     app: AppHandle,
     store: State<'_, ProjectStore>,
+    sessions: State<'_, SessionStore>,
+    acp_pool: State<'_, AcpPool>,
 ) -> Result<ProjectListItem, String> {
+    let previous_roots = roots
+        .as_ref()
+        .and_then(|_| store.get(&project_id))
+        .map(|project| project.roots);
     let project = store
-        .update_project(&project_id, name, roots)
+        .update_project(&project_id, name, roots.clone())
         .map_err(|e| format!("update_project({project_id}): {e:#}"))?;
+    if let (Some(previous), Some(new_roots)) = (previous_roots, roots) {
+        let removed = crate::features::projects::removed_roots(&previous, &new_roots);
+        if !removed.is_empty() {
+            // 与 delete_project 同款枚举:两类绑定存储里落在被移除 root 之下
+            // 的会话;store 侧按 tier-① 语义跳过已有归属条目。
+            let mut expel_session_ids = Vec::new();
+            for root in &removed {
+                for (session_id, _) in acp_pool.agents().sessions_under_workspace(root) {
+                    expel_session_ids.push(session_id);
+                }
+                for (session_id, _) in sessions.workspace_bindings_under(root) {
+                    expel_session_ids.push(session_id);
+                }
+            }
+            store
+                .expel_unassigned_sessions(&expel_session_ids)
+                .map_err(|e| format!("update_project({project_id}) expel members: {e:#}"))?;
+        }
+    }
     let count = store.assigned_session_ids(&project_id).len();
     emit_project_event(&app, "projects:list_changed", "updated");
     Ok(ProjectListItem::from_project(&project, count))

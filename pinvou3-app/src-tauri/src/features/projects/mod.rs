@@ -22,5 +22,5 @@ mod tests;
 
 pub use store::{
     DeleteProjectReport, EnsureFolderOutcome, MoveSessionOutcome, Project, ProjectStore,
-    SessionAssignments,
+    SessionAssignments, removed_roots,
 };

@@ -766,3 +766,95 @@ fn covered_workspace_skip_survives_symlinked_ancestor() {
     );
     assert_eq!(store.get(&project.id).unwrap().roots.len(), 1);
 }
+
+// ── 移除根的成员移出(§4)────────────────────────────────────────────────────
+
+#[test]
+fn removed_roots_semantics() {
+    let old = vec![abs("keep"), abs("drop")];
+    assert_eq!(
+        super::removed_roots(&old, &[abs("keep")]),
+        vec![abs("drop")],
+        "未被新集合覆盖的旧 root 即移除"
+    );
+    // 新 root 是旧 root 的祖先:旧 root 下的会话仍被项目覆盖,不算移除。
+    let parent = abs("keep").parent().unwrap().to_path_buf();
+    assert!(super::removed_roots(&[abs("keep")], &[parent]).is_empty());
+    // 新 root 是旧 root 的后代:旧 root 不再覆盖其下全部会话,算移除。
+    assert_eq!(
+        super::removed_roots(&[abs("keep")], &[abs("keep/sub")]),
+        vec![abs("keep")]
+    );
+    // 全新集合为空 = 全部移除。
+    assert_eq!(super::removed_roots(&old, &[]), old);
+}
+
+#[test]
+fn expel_unassigned_sessions_writes_move_out_only_for_entryless() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let project = create(&store, "目标", &[abs("web")]);
+    let elsewhere = create(&store, "别处", &[abs("other")]);
+    // s-explicit:显式归属本项目;s-elsewhere:显式归属别的项目;
+    // s-out:已显式移出;s-auto:无条目(自动归组成员)。
+    store
+        .move_session_to_project("s-explicit", Some(&project.id), None)
+        .expect("explicit member");
+    store
+        .move_session_to_project("s-elsewhere", Some(&elsewhere.id), None)
+        .expect("explicit elsewhere");
+    store
+        .move_session_to_project("s-out", None, None)
+        .expect("explicit move-out");
+
+    let expelled = store
+        .expel_unassigned_sessions(&[
+            "s-explicit".to_string(),
+            "s-elsewhere".to_string(),
+            "s-out".to_string(),
+            "s-auto".to_string(),
+        ])
+        .expect("expel");
+    assert_eq!(expelled, 1, "只有无条目者被写显式移出");
+    assert_eq!(store.assignment_of("s-auto"), Some(None));
+    assert_eq!(
+        store.assignment_of("s-explicit"),
+        Some(Some(project.id.clone())),
+        "显式归属本项目不动(移除根不驱逐显式成员)"
+    );
+    assert_eq!(
+        store.assignment_of("s-elsewhere"),
+        Some(Some(elsewhere.id.clone()))
+    );
+    assert_eq!(store.assignment_of("s-out"), Some(None), "已移出保持");
+
+    // 幂等:重跑零变更。
+    assert_eq!(store.expel_unassigned_sessions(&["s-auto".to_string()]).unwrap(), 0);
+}
+
+#[test]
+fn expelled_assignment_survives_ensure_rematerialization() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let project = create(&store, "目标", &[abs("web")]);
+    // 移除 root:其下自动成员(s-auto)被写显式移出。
+    let removed = super::removed_roots(&[abs("web")], &[]);
+    assert_eq!(removed, vec![abs("web")]);
+    store
+        .expel_unassigned_sessions(&["s-auto".to_string()])
+        .expect("expel");
+    store
+        .update_project(&project.id, None, Some(vec![]))
+        .expect("remove root");
+
+    // 之后该文件夹出现新会话 → ensure 重新物化( origin=folder 项目);
+    // 旧会话的移出条目压住 tier-②,重建项目只收新会话。
+    let outcomes = ensure(&store, &[abs("web")]);
+    assert!(matches!(&outcomes[0], super::EnsureFolderOutcome::Created { project }
+        if project.origin.as_deref() == Some("folder")));
+    assert_eq!(
+        store.assignment_of("s-auto"),
+        Some(None),
+        "物化重建不得复活被移除根的旧成员"
+    );
+}

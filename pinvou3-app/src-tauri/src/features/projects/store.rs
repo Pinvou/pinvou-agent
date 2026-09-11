@@ -195,6 +195,22 @@ fn key_is_same_or_nested(key: &str, base: &str) -> bool {
     key.starts_with(base) && key[base.len()..].starts_with('/')
 }
 
+/// 前后 roots 快照对比:旧 root 中未被任何新 root 覆盖(不等于、也不嵌套于
+/// 任一新 root)的条目 = 本次移除的根(§4 移除文件夹语义)。供命令层枚举其
+/// 下的自动归组成员,写成显式移出防止归组/物化立即"翻案"。
+pub fn removed_roots(old: &[PathBuf], new: &[PathBuf]) -> Vec<PathBuf> {
+    let new_keys: Vec<String> = new.iter().map(|root| identity_key_of_display(root)).collect();
+    old.iter()
+        .filter(|root| {
+            let key = identity_key_of_display(root);
+            !new_keys
+                .iter()
+                .any(|new_key| key_is_same_or_nested(&key, new_key))
+        })
+        .cloned()
+        .collect()
+}
+
 /// 不触盘的绝对化:`.` 丢弃、`..` 回退一层、保留前缀(Unix 根 / Windows 盘符)。
 fn lexical_absolute(path: &Path) -> PathBuf {
     let mut stack: Vec<Component<'_>> = Vec::new();
@@ -477,6 +493,25 @@ impl ProjectStore {
         Ok(DeleteProjectReport {
             affected_session_ids: affected,
         })
+    }
+
+    /// 移除根(§4)的自动成员移出:命令层枚举到的"被移除 root 之下的会话"
+    /// 中,无归属条目的写显式移出(None)——留在未分组,防止 tier-② 归组或
+    /// ensure 物化立即翻案;已有条目(显式归属本/他项目、已显式移出)一律
+    /// 不动,tier-① 语义优先。返回新写入的条目数。
+    pub fn expel_unassigned_sessions(&self, session_ids: &[String]) -> Result<usize> {
+        let mut state = self.state.write();
+        let mut changed = 0usize;
+        for session_id in session_ids {
+            if !state.assignments.contains_key(session_id) {
+                state.assignments.insert(session_id.clone(), None);
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            persist_locked(&state, &self.path)?;
+        }
+        Ok(changed)
     }
 
     /// 移动会话归属(纯逻辑层写;不触碰会话的工作目录绑定)。
