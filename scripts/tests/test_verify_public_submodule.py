@@ -11,6 +11,9 @@ VERIFIER = ROOT / "scripts/verify-public-submodule.sh"
 GITLINK = "1111111111111111111111111111111111111111"
 OTHER_COMMIT = "2222222222222222222222222222222222222222"
 TAG_OBJECT = "3333333333333333333333333333333333333333"
+# 与 verify-public-submodule.sh 的 TRANSITION_BASELINE 保持一致：过渡期内
+# 不可变 tag 钉在 r1 收口，gitlink 沿维护分支领先，直至 r2 收口恢复三方相等。
+TAG_CLOSURE = "1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
 
 
 @unittest.skipIf(os.name == "nt", "shell verifier requires a Unix-compatible bash host")
@@ -64,17 +67,19 @@ class PublicSubmoduleVerifierTests(unittest.TestCase):
                         esac
 
                         branch='{GITLINK}'
-                        tag='{GITLINK}'
+                        tag='{TAG_CLOSURE}'
                         case "$PINVOU_FAKE_GIT_SCENARIO" in
                           branch_mismatch) branch='{OTHER_COMMIT}' ;;
                           annotated) tag='{TAG_OBJECT}' ;;
+                          tag_drifted) tag='{OTHER_COMMIT}' ;;
+                          retagged_at_head) tag='{GITLINK}' ;;
                         esac
                         printf '%s\trefs/heads/pinvou3-clean\n' "$branch"
                         if [[ "$PINVOU_FAKE_GIT_SCENARIO" != "missing_tag" ]]; then
                           printf '%s\trefs/tags/pinvou-v0.9.12-r1\n' "$tag"
                         fi
                         if [[ "$PINVOU_FAKE_GIT_SCENARIO" == "annotated" ]]; then
-                          printf '%s\trefs/tags/pinvou-v0.9.12-r1^{{}}\n' '{GITLINK}'
+                          printf '%s\trefs/tags/pinvou-v0.9.12-r1^{{}}\n' '{TAG_CLOSURE}'
                         fi
                         ;;
                       *)
@@ -100,19 +105,22 @@ class PublicSubmoduleVerifierTests(unittest.TestCase):
                 cwd=ROOT,
                 env=env,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 capture_output=True,
                 check=False,
             )
             attempts = int(state_file.read_text(encoding="utf-8").strip())
             return result, attempts
 
-    def test_branch_tag_and_gitlink_must_match_exactly(self):
+    def test_transition_gitlink_matches_branch_and_tag_stays_pinned(self):
         result, attempts = self._run("aligned")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(attempts, 1)
         self.assertIn(
-            f"pinvou3-clean = pinvou-v0.9.12-r1 = {GITLINK}", result.stdout
+            f"pinvou3-clean = gitlink = {GITLINK}", result.stdout
         )
+        self.assertIn(f"pinvou-v0.9.12-r1 钉在收口 {TAG_CLOSURE}", result.stdout)
 
     def test_annotated_tag_is_compared_after_peeling(self):
         result, attempts = self._run("annotated")
@@ -131,6 +139,19 @@ class PublicSubmoduleVerifierTests(unittest.TestCase):
         self.assertEqual(attempts, 1)
         self.assertIn("pinvou-v0.9.12-r1", result.stderr)
         self.assertIn("<不存在>", result.stderr)
+
+    def test_tag_drifting_off_the_closure_fails_closed(self):
+        result, attempts = self._run("tag_drifted")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(attempts, 1)
+        self.assertIn("应钉在收口", result.stderr)
+        self.assertIn(OTHER_COMMIT, result.stderr)
+
+    def test_retagging_r1_at_the_new_head_fails_closed(self):
+        result, attempts = self._run("retagged_at_head")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(attempts, 1)
+        self.assertIn("不得移动已发布的不可变 tag", result.stderr)
 
     def test_remote_transport_is_retried_with_a_finite_limit(self):
         result, attempts = self._run("retry_then_aligned")
