@@ -505,16 +505,32 @@ fn persist_equipped_persona(
     let bytes = serde_json::to_vec(&payload).map_err(|error| {
         CliError::failed(format!("cannot serialize session persona sidecar: {error}"))
     })?;
-    std::fs::write(&path, bytes).map_err(|error| {
+    // Temp + rename (same discipline as the app's atomic writes): a
+    // concurrent `active` read must never observe a torn sidecar.
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = path.with_extension(format!("json.tmp.{}.{}", std::process::id(), nonce));
+    std::fs::write(&tmp, &bytes).map_err(|error| {
         CliError::failed(format!("cannot save session persona sidecar: {error}"))
     })?;
+    if let Err(error) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(CliError::failed(format!(
+            "cannot save session persona sidecar: {error}"
+        )));
+    }
     Ok(())
 }
 
-/// Mirror of `equip_persona`: resolve the card, stage the full body for a
-/// one-shot injection on the session's next turn, persist the active id (the
-/// sidecar — the in-memory store entries would die with this process), and
-/// return the summary (the GUI renders it as the session widget).
+/// Mirror of `equip_persona`: resolve the card, persist the equipped state on
+/// the session sidecar and return the summary. Honest scope: the pending-body
+/// injection store is process memory — only the desktop app's turn loop
+/// consumes it — so a CLI equip records intent on the sidecar; no turn (GUI
+/// or CLI) reads that file today, and a GUI equip is invisible to this
+/// command. Revealed in the output below so the command cannot be mistaken
+/// for live persona injection.
 fn equip(session_id: &str, persona_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let card = get(persona_id)
         .ok_or_else(|| CliError::failed(format!("unknown persona: {persona_id}")))?;
@@ -524,10 +540,18 @@ fn equip(session_id: &str, persona_id: &str, output: OutputMode) -> Result<CliOu
     store.set_pending_persona_body(session_id, Some(injection.clone()));
     store.set_active_persona(session_id, Some(persona_id.to_owned()));
     persist_equipped_persona(session_id, persona_id, &injection)?;
-    let value = serde_json::to_value(&summary).unwrap_or_else(|_| serde_json::json!({}));
+    let mut value = serde_json::to_value(&summary).unwrap_or_else(|_| serde_json::json!({}));
+    value["session_id"] = serde_json::json!(session_id);
+    value["applies_to_next_turn"] = serde_json::json!(false);
+    value["note"] = serde_json::json!(
+        "equip state is recorded on the session sidecar; persona injection into turns happens          only inside the running desktop app — equip the session there for live injection"
+    );
     Ok(success(render(
         output,
-        format!("equipped {persona_id} on {session_id}"),
+        format!(
+            "equipped {persona_id} on {session_id} (recorded; injection happens in the \
+             desktop app's turns)"
+        ),
         &value,
     )))
 }
