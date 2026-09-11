@@ -274,6 +274,10 @@ impl SessionStore {
     /// `deepseek_tui::session_export`。归档含完整上下文（system prompt、
     /// 全部轮次消息、工具调用与结果）与 portable container JSON，默认
     /// 连同 artifacts 目录一起打包；`include_artifacts=false` 只导出记录。
+    ///
+    /// 边界：打包的是 `sessions/<id>/artifacts` 产物目录的字节；产物面板
+    /// 还会列出的 ledger/workspace 文件不在归档内——它们的"记录"随
+    /// `session.json` 走，文件字节本身不随归档分发。
     pub(crate) fn export_archive(
         &self,
         id: &str,

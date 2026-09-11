@@ -226,8 +226,9 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
       const selectChat = () => onSelect(chat.id);
       function save() { const tx = val.trim(); setEditing(false); if (tx && tx !== chat.title) onRename(chat.id, tx); }
       // Portal "more" menu placement/close lives in the shared hook (same
-      // plumbing as the project-group header menu).
-      const { menuOpen, menuStyle, closeMenu, toggleMenu, openMenuAt } = usePortalMenu({ height: 184 });
+      // plumbing as the project-group header menu). Height covers the 7-item
+      // session menu (6 个菜单项 × h-9(36px) + 分隔线 9px + 竖向 padding 8px ≈ 233)。
+      const { menuOpen, menuStyle, closeMenu, toggleMenu, openMenuAt } = usePortalMenu({ height: 233 });
       const openContextMenu = openMenuAt;
       const menuItemCls = `w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] whitespace-nowrap transition-colors text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]`;
       const menu = menuOpen && menuStyle && typeof document !== 'undefined' ? createPortal(
