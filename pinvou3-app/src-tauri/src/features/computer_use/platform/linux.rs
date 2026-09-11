@@ -2092,7 +2092,7 @@ mod wayland_e2e_tests {
 mod x11_live_tests {
     //! Live X11 E2E for the real backend plus the full consent pipeline
     //! (settings toggle → session grant → fail-closed T3 screening →
-    //! user confirmation token → execute → HMAC'd audit).
+    //! user confirmation token → execute → redacted audit).
     //!
     //! WARNING: each test takes over the X server named by `$DISPLAY` and
     //! injects real XTEST input into it — run them ONLY against a sandboxed
@@ -2248,8 +2248,8 @@ mod x11_live_tests {
     /// session type forced to X11, the D-Bus session bus pointed at a
     /// nonexistent socket (the AT-SPI stack is intentionally absent under
     /// Xvfb — this is what makes the screening genuinely unscreenable),
-    /// `PINVOU3_HOME` → an isolated temp root so the audit JSONL, HMAC key
-    /// and screenshots never touch the developer's real data. Everything is
+    /// `PINVOU3_HOME` → an isolated temp root so the audit JSONL and
+    /// screenshots never touch the developer's real data. Everything is
     /// restored on drop; the platform env lock is held for the whole test so
     /// env writes stay serialized in-process.
     struct LiveEnv {
@@ -2577,14 +2577,15 @@ mod x11_live_tests {
         assert_pointer_unchanged(&fx.display, before, "replayed confirm_id");
     }
 
-    /// A denied confirmation is remembered: retrying with the denied id
-    /// returns the explicit denial, mints nothing, and injects nothing.
+    /// Denial has no memory: denying just closes the dialog — the denied id
+    /// reads as invalid/spent on retry, mints nothing, and injects nothing;
+    /// a fresh blocked request mints a NEW confirm_id.
     #[tokio::test]
     #[ignore = "drives the X server named by $DISPLAY (run against a sandboxed Xvfb)"]
-    async fn x11_live_deny_blocks_action_and_remembers() {
+    async fn x11_live_deny_blocks_action_without_memory() {
         let Some((_, _, display)) = live_display() else {
             eprintln!(
-                "SKIP x11_live_deny_blocks_action_and_remembers: $DISPLAY does not answer xdotool"
+                "SKIP x11_live_deny_blocks_action_without_memory: $DISPLAY does not answer xdotool"
             );
             return;
         };
@@ -2608,8 +2609,8 @@ mod x11_live_tests {
             "the pending must be gone after the denial"
         );
 
-        // Retrying with the denied id: the documented denial error, the id is
-        // spent (it cannot mint again), and nothing is injected.
+        // Retrying with the denied id: the token is simply invalid (there is
+        // no remembered denial), it cannot mint again, nothing is injected.
         let denied_retry = json!({
             "action": "left_click",
             "x": 500,
@@ -2618,8 +2619,10 @@ mod x11_live_tests {
         });
         let (success, text) = fx.execute(denied_retry).await;
         assert!(!success, "a denied action must not execute: {text}");
-        assert!(text.contains("user denied"), "{text}");
-        assert!(text.contains("Do not retry"), "{text}");
+        assert!(
+            text.contains("invalid, expired, or was already used"),
+            "{text}"
+        );
         assert_pointer_unchanged(&fx.display, before, "denied click retry");
         assert!(
             !fx.shared.mint_confirmation(&confirm_id),
@@ -2638,15 +2641,14 @@ mod x11_live_tests {
     }
 
     /// B2 regression, live: typed text (and typing-form chords) must reach
-    /// the X server but never the audit JSONL in plaintext — length + salt +
-    /// HMAC only — and the audit file itself must be 0600.
+    /// the X server but never the audit JSONL in plaintext — the audit
+    /// stores redacted targets only (`typed N characters` / `pressed 1
+    /// key`), and the audit file itself must be 0600.
     #[tokio::test]
     #[ignore = "drives the X server named by $DISPLAY (run against a sandboxed Xvfb)"]
-    async fn x11_live_type_audit_stays_hmac_private() {
+    async fn x11_live_type_audit_stays_redacted() {
         let Some((_, _, display)) = live_display() else {
-            eprintln!(
-                "SKIP x11_live_type_audit_stays_hmac_private: $DISPLAY does not answer xdotool"
-            );
+            eprintln!("SKIP x11_live_type_audit_stays_redacted: $DISPLAY does not answer xdotool");
             return;
         };
         let fx = fixture(display);
@@ -2682,8 +2684,8 @@ mod x11_live_tests {
         }
         println!("x11_live chord {chord:?}: needed confirmation = {chord_needed_confirmation}");
 
-        // Audit privacy: the plaintexts must appear nowhere in the JSONL and
-        // typed-text records must carry length + salt + HMAC only.
+        // Audit privacy: the plaintexts must appear nowhere in the JSONL;
+        // every record carries a redacted target only.
         let audit_path = fx.env.audit_path();
         let raw = std::fs::read_to_string(&audit_path).expect("the audit JSONL must exist");
         assert!(
@@ -2705,37 +2707,25 @@ mod x11_live_tests {
             .collect();
         let typed: Vec<&Value> = records
             .iter()
-            .filter(|r| r["phase"] == "begin" && r["target"] == "keyboard focus")
+            .filter(|r| r["action"] == "type" && r["target"] == "typed 19 characters")
             .collect();
         assert_eq!(
             typed.len(),
-            4,
-            "blocked + executed calls of type and chord must all be audited as typed text: {records:?}"
+            2,
+            "blocked + executed type calls must both audit the redacted count: {records:?}"
         );
-        let mut lengths: Vec<u64> = typed
+        let chords: Vec<&Value> = records
             .iter()
-            .map(|r| r["text_len"].as_u64().unwrap_or(0))
+            .filter(|r| r["action"] == "key" && r["target"] == "pressed 1 key")
             .collect();
-        lengths.sort();
         assert_eq!(
-            lengths,
-            vec![13, 13, 19, 19],
-            "audited lengths of {chord:?} (13) and {secret:?} (19)"
+            chords.len(),
+            2,
+            "blocked + executed chord calls must both audit the key count: {records:?}"
         );
-        for record in &typed {
-            assert_eq!(
-                record["salt"].as_str().unwrap_or_default().len(),
-                32,
-                "per-record salt required: {record}"
-            );
-            assert_eq!(
-                record["text_hmac_sha256"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .len(),
-                64,
-                "a typed-text HMAC record must exist: {record}"
-            );
+        // The audit is a plain log: no crypto or begin/end phase fields.
+        for absent in ["salt", "text_hmac", "text_len", "phase"] {
+            assert!(!raw.contains(absent), "{absent} in {raw}");
         }
 
         // The audit file itself is private.
