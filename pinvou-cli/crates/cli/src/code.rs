@@ -253,11 +253,27 @@ pub fn parse(values: &[String]) -> Result<CodeCommand, CliError> {
                 &["--code-stdin"],
                 "login",
             )?;
-            let code = if let Some(raw) = option(&options, "--code") {
-                Some(LoginCodeSource::Arg(raw.to_owned()))
-            } else if let Some(var) = option(&options, "--code-env") {
-                Some(LoginCodeSource::Env(var.to_owned()))
-            } else if booleans.contains(&"--code-stdin") {
+            let sources = [
+                option(&options, "--code").is_some(),
+                option(&options, "--code-env").is_some(),
+                booleans.iter().any(|flag| *flag == "--code-stdin"),
+            ];
+            if sources.iter().filter(|present| **present).count() > 1 {
+                return Err(CliError::usage(
+                    "use only one of --code, --code-env, or --code-stdin",
+                ));
+            }
+            let code = if sources[0] {
+                Some(LoginCodeSource::Arg(
+                    option(&options, "--code").unwrap_or_default().to_owned(),
+                ))
+            } else if sources[1] {
+                Some(LoginCodeSource::Env(
+                    option(&options, "--code-env")
+                        .unwrap_or_default()
+                        .to_owned(),
+                ))
+            } else if sources[2] {
                 Some(LoginCodeSource::Stdin)
             } else {
                 None
@@ -910,19 +926,10 @@ fn require_session_id(value: Option<&String>) -> Result<String, CliError> {
         .map(String::as_str)
         .filter(|id| !id.is_empty())
         .ok_or_else(|| CliError::usage("code command requires a session id"))?;
-    if !valid_session_id(id) {
+    if !crate::support::valid_session_id(id) {
         return Err(CliError::usage("invalid session id"));
     }
     Ok(id.to_owned())
-}
-
-/// Mirrors `features::sessions::validate_session_id`: only `[A-Za-z0-9_-]`, so
-/// the id can never traverse out of the sessions root when joined onto a path.
-fn valid_session_id(id: &str) -> bool {
-    !id.is_empty()
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// Converts repeated `--model-slot SLOT=MODEL` pairs collected by
@@ -1184,16 +1191,20 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// Mirror of the app's per-agent resolution order (`install::resolve_*`):
-/// explicit override env vars and official install locations win over PATH so
-/// a stale binary earlier in PATH cannot shadow the real one (the app prefers
-/// `~/.kimi-code/bin/kimi` over PATH for exactly that reason). The app's
-/// adapter-beside claude runtime location is app-bundle-specific and not
-/// mirrored here.
+/// Mirror of the app's per-agent resolution order (`install::resolve_*` /
+/// `runtime::probe_codex_runtime`): explicit override env vars and official
+/// install locations win over PATH so a stale binary earlier in PATH cannot
+/// shadow the real one (the app prefers `~/.kimi-code/bin/kimi` over PATH for
+/// exactly that reason). An override that fails the compatibility gate falls
+/// through to the later candidates, like the GUI. The app's adapter-beside
+/// claude runtime location is app-bundle-specific and not mirrored here.
 fn resolve_agent_cli(agent: &str, name: &str) -> Option<PathBuf> {
     let override_var = match agent {
         "codex" => Some("PINVOU3_CODEX_PATH"),
         "claude" => Some("PINVOU3_CLAUDE_CLI_PATH"),
+        // Mirror of `install::resolve_kimi_path`, which checks the override
+        // first.
+        "kimi" => Some("PINVOU3_KIMI_ACP_BIN"),
         _ => None,
     };
     if let Some(var) = override_var {
@@ -1201,7 +1212,12 @@ fn resolve_agent_cli(agent: &str, name: &str) -> Option<PathBuf> {
             .map(PathBuf::from)
             .filter(|path| !path.as_os_str().is_empty() && path.is_file())
         {
-            return Some(path);
+            // Mirror the GUI: an explicit override cannot bypass the
+            // compatibility gate; a too-old or unprobing binary loses to the
+            // managed/PATH candidates.
+            if override_passes_version_gate(agent, &path) {
+                return Some(path);
+            }
         }
     }
     let home = pinvou3_lib::platform::paths::user_home_dir();
@@ -1218,6 +1234,28 @@ fn resolve_agent_cli(agent: &str, name: &str) -> Option<PathBuf> {
             .find(|candidate| candidate.is_file())
         {
             return Some(path);
+        }
+    }
+    #[cfg(target_os = "windows")]
+    if agent == "codex" {
+        // Mirror of `codex_official_install_path` (windows.rs): the official
+        // Windows install lives under LOCALAPPDATA and is deliberately not
+        // PATH-dependent, so a script-installed codex is found without a
+        // shell restart.
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let dir = PathBuf::from(local)
+                .join("Programs")
+                .join("OpenAI")
+                .join("Codex")
+                .join("bin");
+            let candidates = crate::support::binary_candidates(name);
+            if let Some(path) = candidates
+                .iter()
+                .map(|candidate| dir.join(candidate))
+                .find(|candidate| candidate.is_file())
+            {
+                return Some(path);
+            }
         }
     }
     find_in_path(name)
@@ -1245,7 +1283,7 @@ fn command_output_with_timeout(
     }
     let mut child = command.spawn().ok()?;
     let stdout = child.stdout.take();
-    let reader = std::thread::spawn(move || drain_stream(stdout, false));
+    let reader = std::thread::spawn(move || drain_stream(stdout));
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
@@ -1264,9 +1302,9 @@ fn command_output_with_timeout(
     Some((status.success(), text.trim().to_string()))
 }
 
-/// Drains a byte stream into a string, optionally echoing it to our stdout
-/// (used by the interactive login flow so the user sees the CLI's prompts).
-fn drain_stream<R: Read>(mut pipe: Option<R>, echo: bool) -> String {
+/// Drains a byte stream into a string (bounded tail: the buffer keeps the
+/// last 64 KiB so a chatty vendor CLI cannot grow it without limit).
+fn drain_stream<R: Read>(mut pipe: Option<R>) -> String {
     let mut buffer = String::new();
     let Some(pipe) = pipe.as_mut() else {
         return buffer;
@@ -1277,13 +1315,16 @@ fn drain_stream<R: Read>(mut pipe: Option<R>, echo: bool) -> String {
             Ok(0) | Err(_) => break,
             Ok(read) => {
                 let text = String::from_utf8_lossy(&chunk[..read]).into_owned();
-                if echo {
-                    print!("{text}");
-                }
                 buffer.push_str(&text);
                 if buffer.len() > 65_536 {
-                    let overflow = buffer.len() - 65_536;
-                    buffer.drain(..overflow);
+                    // Byte-count eviction can land inside a multi-byte
+                    // character; advance to the next boundary so `drain`
+                    // cannot panic mid-character.
+                    let mut cut = buffer.len() - 65_536;
+                    while cut < buffer.len() && !buffer.is_char_boundary(cut) {
+                        cut += 1;
+                    }
+                    buffer.drain(..cut);
                 }
             }
         }
@@ -1326,6 +1367,34 @@ fn parse_version(version: &str) -> Vec<u64> {
 
 fn version_at_least(version: &str, minimum: &str) -> bool {
     parse_version(version).cmp(&parse_version(minimum)) != std::cmp::Ordering::Less
+}
+
+/// Per-agent compatibility gate over probed version output — the single
+/// comparison used by `agents status` and by the override resolution.
+fn version_supported_for(agent: &str, version: &str, minimum: &str) -> bool {
+    match agent {
+        "codex" => version_at_least(codex_version_token(version), minimum),
+        "claude" => claude_version_supported(version, minimum),
+        "kimi" => kimi_version_supported(version, minimum),
+        _ => false,
+    }
+}
+
+/// An override binary must clear the same compatibility gate as any other
+/// candidate (mirror of the GUI's `runtime_version_is_compatible` filter on
+/// overrides).
+fn override_passes_version_gate(agent: &str, path: &Path) -> bool {
+    let Some(version) = cli_version(path) else {
+        return false;
+    };
+    let minimum = MIN_VERSIONS
+        .iter()
+        .find(|(id, _)| *id == agent)
+        .map(|(_, min)| *min);
+    match minimum {
+        Some(minimum) => version_supported_for(agent, &version, minimum),
+        None => true,
+    }
 }
 
 /// Mirror of `install::is_bare_semver`: exactly three all-digit parts.
@@ -1553,12 +1622,7 @@ fn probe_agent(agent: &str, agent_name: &str) -> AgentProbe {
         .unwrap_or("0.0.0");
     let version_supported = version
         .as_deref()
-        .map(|version| match agent {
-            "codex" => version_at_least(codex_version_token(version), min_version),
-            "claude" => claude_version_supported(version, min_version),
-            "kimi" => kimi_version_supported(version, min_version),
-            _ => false,
-        })
+        .map(|version| version_supported_for(agent, version, min_version))
         .unwrap_or(false);
     let authenticated = match cli_path.as_deref() {
         Some(path) => match agent {
@@ -1748,9 +1812,11 @@ fn login_args(agent: &str) -> &'static [&'static str] {
 }
 
 /// `code login <agent>`: spawns the same login command the GUI's
-/// `login_acp_agent` runs, streams its output through, extracts the
-/// allow-listed authorization URL / device code, and waits for the flow to
-/// finish (bounded like the GUI: 600s, kimi 1800s). The claude authorization
+/// `login_acp_agent` runs, buffers its output, extracts the allow-listed
+/// authorization URL / device code, and waits for the flow to finish
+/// (bounded like the GUI: 600s, kimi 1800s). A timeout still surfaces the
+/// login link captured so far — the URL is the only actionable part of the
+/// transcript. The claude authorization
 /// code is accepted via `--code-env VAR` / `--code-stdin` (plaintext argv is
 /// deliberately not offered — argv leaks through shell history and process
 /// listings; `--code C` remains for callers that already hold it in argv) and
@@ -1810,10 +1876,11 @@ fn login(
     }
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let out_reader = std::thread::spawn(move || drain_stream(stdout, false));
-    let err_reader = std::thread::spawn(move || drain_stream(stderr, false));
+    let out_reader = std::thread::spawn(move || drain_stream(stdout));
+    let err_reader = std::thread::spawn(move || drain_stream(stderr));
     let deadline = Duration::from_secs(if agent == "kimi" { 1800 } else { 600 });
     let started = Instant::now();
+    let mut timed_out = false;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
@@ -1824,22 +1891,43 @@ fn login(
         }
         if started.elapsed() > deadline {
             crate::support::kill_process_tree(&mut child);
-            return Err(CliError::failed(
-                "code_login_timeout: authorization wait timed out; rerun `pinvou code login`",
-            ));
+            timed_out = true;
+            break None;
         }
         std::thread::sleep(Duration::from_millis(100));
     };
+    // The killed child's pipes close, so the readers finish promptly in the
+    // timeout case too.
     let out_text = out_reader.join().unwrap_or_default();
     let err_text = err_reader.join().unwrap_or_default();
-    let status = status.expect("loop only breaks with a status or returns");
     let combined = format!("{out_text}\n{err_text}");
+    if timed_out {
+        // The buffered transcript would die with this error otherwise, and
+        // its login link is exactly what the user needs to finish the flow.
+        let login_url = extract_login_url(agent, &combined);
+        if let Some(url) = &login_url {
+            eprintln!("login link: {url}");
+        }
+        let echoed = pinvou3_lib::platform::credential_store::redact_secret(&combined);
+        if !echoed.trim().is_empty() {
+            eprintln!("{echoed}");
+        }
+        let link_hint = match &login_url {
+            Some(url) => format!("; last login link: {url}"),
+            None => String::new(),
+        };
+        return Err(CliError::failed(format!(
+            "code_login_timeout: authorization wait timed out; rerun `pinvou code login`{link_hint}"
+        )));
+    }
+    let status = status.expect("loop only breaks with a status or returns");
     // The vendor login output is echoed once, redacted: live streaming would
     // bypass redaction, and login transcripts are exactly what users paste
-    // into issues.
+    // into issues. It goes to stderr and only in human mode, so `--output
+    // json` stdout stays a single serde_json line.
     let echoed = pinvou3_lib::platform::credential_store::redact_secret(&combined);
-    if !echoed.trim().is_empty() {
-        println!("{echoed}");
+    if output == OutputMode::Human && !echoed.trim().is_empty() {
+        eprintln!("{echoed}");
     }
     let login_url = extract_login_url(agent, &combined);
     let device_code = extract_device_code(&combined, login_url.as_deref());
@@ -2221,20 +2309,41 @@ fn providers_export(
             // readable by every local user).
             #[cfg(unix)]
             {
-                use std::os::unix::fs::OpenOptionsExt as _;
-                std::fs::OpenOptions::new()
+                use std::os::unix::fs::PermissionsExt as _;
+                // Plaintext keys land in a 0600 file (the GUI hands the same
+                // content to a save dialog; a default-permission file would
+                // be readable by every local user). `OpenOptions::mode` only
+                // applies at create time, so a pre-existing (world-readable)
+                // file is tightened explicitly before the keys are written.
+                // The open follows a symlinked destination like any std write
+                // would — exporting onto a path the user controls is the
+                // documented contract, not an attack surface.
+                match std::fs::OpenOptions::new()
                     .write(true)
                     .create(true)
                     .truncate(true)
-                    .mode(0o600)
                     .open(&path)
-                    .and_then(|mut file| std::io::Write::write_all(&mut file, content.as_bytes()))
-                    .map_err(|error| {
-                        CliError::failed(format!(
+                {
+                    Ok(mut file) => {
+                        let result = file
+                            .set_permissions(std::fs::Permissions::from_mode(0o600))
+                            .and_then(|()| {
+                                std::io::Write::write_all(&mut file, content.as_bytes())
+                            });
+                        result.map_err(|error| {
+                            CliError::failed(format!(
+                                "code providers export: cannot write {}: {error}",
+                                path.display()
+                            ))
+                        })?;
+                    }
+                    Err(error) => {
+                        return Err(CliError::failed(format!(
                             "code providers export: cannot write {}: {error}",
                             path.display()
-                        ))
-                    })?;
+                        )));
+                    }
+                }
             }
             #[cfg(not(unix))]
             std::fs::write(&path, &content).map_err(|error| {
@@ -2601,7 +2710,7 @@ static CHECKOUT_LOCK: Mutex<()> = Mutex::new(());
 /// (documented in the command docs and `docs/pinvou-cli.md`).
 /// Callers must keep the returned lock alive alongside its write guard.
 fn session_mutation_lock(session: &str) -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
-    if !valid_session_id(session) {
+    if !crate::support::valid_session_id(session) {
         return Err(CliError::usage("invalid session id"));
     }
     let dir = paths::pinvou3_home().join("locks");
@@ -3241,6 +3350,61 @@ fn workspace_preview(
     Ok(success(render(output, human, &value)))
 }
 
+/// `git commit` arguments for the user-visible `workspace checkout --mode
+/// commit`. `git_command` pins the ambient gitconfig away (checkpoint-grade
+/// isolation against hooks, aliases, and credential helpers), which would
+/// otherwise let git fabricate a `user@hostname` identity; the user's real
+/// identity is passed explicitly instead, and with none configured the
+/// commit fails honestly (`user.useConfigOnly`) rather than committing a
+/// fabricated one.
+fn commit_command_args(root: &Path, message: &str) -> Result<Vec<String>, CliError> {
+    let mut args = vec!["-c".to_owned(), "commit.gpgsign=false".to_owned()];
+    match ambient_git_identity(root) {
+        Some((name, email)) => {
+            args.push("-c".to_owned());
+            args.push(format!("user.name={name}"));
+            args.push("-c".to_owned());
+            args.push(format!("user.email={email}"));
+        }
+        None => {
+            args.push("-c".to_owned());
+            args.push("user.useConfigOnly=true".to_owned());
+        }
+    }
+    args.push("commit".to_owned());
+    args.push("-m".to_owned());
+    args.push(message.to_owned());
+    Ok(args)
+}
+
+/// The ambient `user.name`/`user.email` the GUI's workspace lane would commit
+/// with (repo-local first, then global/system). A read-only `git config`
+/// probe: it runs no hooks, so the checkpoint-grade isolation does not apply.
+fn ambient_git_identity(root: &Path) -> Option<(String, String)> {
+    let output = std::process::Command::new("git")
+        .current_dir(root)
+        .args(["config", "--null", "--get-regexp", r"^user\.(name|email)$"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut name = None;
+    let mut email = None;
+    for record in text.split('\0') {
+        let Some((key, value)) = record.split_once('\n') else {
+            continue;
+        };
+        match key.trim() {
+            "user.name" => name = Some(value.trim().to_owned()),
+            "user.email" => email = Some(value.trim().to_owned()),
+            _ => {}
+        }
+    }
+    Some((name?, email?))
+}
+
 fn git_command(root: &Path, arguments: &[&str]) -> std::process::Command {
     let mut command = std::process::Command::new("git");
     command
@@ -3708,7 +3872,9 @@ fn workspace_checkout(
                 ));
             }
             git_output(&root, &["add", "-A"])?;
-            git_output(&root, &["commit", "-m", message])?;
+            let commit_args = commit_command_args(&root, message)?;
+            let commit_refs: Vec<&str> = commit_args.iter().map(String::as_str).collect();
+            git_output(&root, &commit_refs)?;
             git_output(&root, &["checkout", branch])?;
         }
     }
@@ -4020,6 +4186,11 @@ fn valid_checkpoint_id(id: &str) -> bool {
 /// crate cannot reach): user messages that carry no tool-result blocks and are
 /// not runtime `<turn_meta>` envelopes. The authoritative count is re-checked
 /// inside `truncate_to_user_turn` / `restore_rewound_turns`.
+/// Approximation of the engine's turn count: every non-tool-result,
+/// non-runtime-owned user message counts, including content shapes the
+/// engine's `is_user_turn_prompt` treats as non-prompt (image-only turns).
+/// The authoritative count is re-derived at truncate time; this only
+/// loosens the `cannot_rewind` pre-check and the undo report.
 fn approx_user_turns(messages: &serde_json::Value) -> u32 {
     messages
         .as_array()

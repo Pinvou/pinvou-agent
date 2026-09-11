@@ -1110,7 +1110,7 @@ fn checkpoints_list_zero_state_and_full_rewind_undo_round_trip() {
 fn checkpoints_refuse_non_native_code_sessions() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("checkpoints-gate");
-    // ACP sessions have no native checkpoints (design: ACP不做).
+    // ACP sessions have no native checkpoints (by design in ACP).
     let project =
         std::env::temp_dir().join(format!("pinvou-cli-code-acp-gate-{}", std::process::id()));
     std::fs::create_dir_all(&project).unwrap();
@@ -1557,4 +1557,109 @@ fn execution_root_lock_blocks_a_second_session_on_the_same_project() {
     ])
     .expect_err("no checkpoints exist yet");
     assert!(error.to_string().contains("checkpoint_missing"), "{error}");
+}
+
+// ---- round-3 fixes: export permissions, login code-source guards ----
+
+#[test]
+#[cfg(unix)]
+fn providers_export_tightens_permissions_on_an_existing_file() {
+    use std::os::unix::fs::PermissionsExt;
+    struct KeyVar(Option<std::ffi::OsString>);
+    impl Drop for KeyVar {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => unsafe { std::env::set_var("PINVOU_CLI_TEST_EXPORT_KEY", value) },
+                None => unsafe { std::env::remove_var("PINVOU_CLI_TEST_EXPORT_KEY") },
+            }
+        }
+    }
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("export-perms");
+    let _key = KeyVar(std::env::var_os("PINVOU_CLI_TEST_EXPORT_KEY"));
+    unsafe {
+        std::env::set_var(
+            "PINVOU_CLI_TEST_EXPORT_KEY",
+            "sk-test-export-key-1234567890",
+        );
+    }
+
+    let value = run_json(&[
+        "pinvou",
+        "code",
+        "providers",
+        "add",
+        "--agent",
+        "codex",
+        "--name",
+        "Exported relay",
+        "--base-url",
+        "https://api.example.com/v1/",
+        "--wire-api",
+        "openai",
+        "--model",
+        "gpt-test",
+        "--api-key-env",
+        "PINVOU_CLI_TEST_EXPORT_KEY",
+    ]);
+    assert_eq!(value["action"], "added");
+
+    // A pre-existing world-readable destination (an earlier 0644 export, a
+    // shell redirect) must be tightened before plaintext keys land in it —
+    // `OpenOptions::mode` alone only applies at create time.
+    let target = _home.root.join("pre-existing-export.json");
+    std::fs::write(&target, "stale").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let value = run_json(&[
+        "pinvou",
+        "code",
+        "providers",
+        "export",
+        "--agent",
+        "codex",
+        "--output",
+        target.to_str().unwrap(),
+    ]);
+    assert_eq!(value["containsPlaintextKeys"], true);
+    let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600, "exported key file must be 0600");
+}
+
+#[test]
+fn code_login_rejects_conflicting_code_sources() {
+    let error = parse_args([
+        "pinvou",
+        "code",
+        "login",
+        "claude",
+        "--code",
+        "C",
+        "--code-stdin",
+    ])
+    .expect_err("conflicting code sources must be a usage error");
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert!(error.to_string().contains("only one of"), "{error}");
+}
+
+#[test]
+fn code_login_rejects_a_missing_code_env_and_non_claude_codes() {
+    let error = parse_args([
+        "pinvou",
+        "code",
+        "login",
+        "claude",
+        "--code-env",
+        "PINVOU_CLI_TEST_UNSET_CODE_VAR",
+    ])
+    .expect("parse accepts --code-env");
+    let error = pinvou_cli::execute(error)
+        .expect_err("an unset env var must fail before spawning anything");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(error.to_string().contains("is not set"), "{error}");
+
+    let error = parse_args(["pinvou", "code", "login", "codex", "--code", "C"])
+        .expect("parse accepts --code for any agent");
+    let error = pinvou_cli::execute(error)
+        .expect_err("only the claude flow consumes an authorization code");
+    assert_eq!(error.exit_code(), ExitCode::Usage);
 }
