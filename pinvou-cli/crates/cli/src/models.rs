@@ -760,6 +760,7 @@ fn add(
     // Resolved before any prefs mutation so a missing environment variable is
     // reported without side effects.
     let secret = resolve_secret(api_key_env, api_key_stdin)?;
+    let stores_secret = secret.is_some();
     let id = new_model_id();
     let saved = SavedModel {
         id: id.clone(),
@@ -783,7 +784,7 @@ fn add(
         credential_action: None,
     };
     let active_id = id.clone();
-    UserPrefs::update_transaction(|prefs| {
+    let transaction = UserPrefs::update_transaction(|prefs| {
         let saved = apply_new_model_credential(saved.clone())
             .map_err(|error| format!("credential store unavailable: {error}"))?;
         prefs.upsert_model(saved);
@@ -791,8 +792,16 @@ fn add(
             prefs.advanced.active_model_id = Some(active_id.clone());
         }
         Ok(())
-    })
-    .map_err(prefs_error)?;
+    });
+    if let Err(error) = transaction {
+        // The closure may have stored the keyring secret before the save
+        // failed; roll it back so no orphaned entry outlives the model.
+        if stores_secret {
+            let reference = saved.credential_reference();
+            let _ = SystemCredentialStore::new().delete(&reference);
+        }
+        return Err(prefs_error(error));
+    }
     let text = render(
         output,
         format!("id: {id}"),
@@ -1096,9 +1105,15 @@ fn is_loopback_url(raw: &str) -> Result<bool, CliError> {
         return Err(CliError::usage("probe-local url has no host"));
     };
     let host = host.trim_start_matches('[').trim_end_matches(']');
-    Ok(host.eq_ignore_ascii_case("localhost")
-        || host.starts_with("127.")
-        || host.eq_ignore_ascii_case("::1"))
+    if host.eq_ignore_ascii_case("localhost") {
+        return Ok(true);
+    }
+    // Parse as an IP instead of string-prefix matching: "127.evil.com"
+    // starts with "127." but resolves to a remote host.
+    let Ok(address) = host.parse::<std::net::IpAddr>() else {
+        return Ok(false);
+    };
+    Ok(address.is_loopback())
 }
 
 /// Strips a trailing `/v1` so native endpoints (`/api/tags`, `/props`, ...)
@@ -1579,16 +1594,7 @@ fn search_set(
             "provider bing does not use an api key; it needs no configuration",
         ));
     }
-    let stored = if clear {
-        // Mirror the GUI CredentialEditAction::Delete path: remove the stored
-        // credential, then clear the prefs entry.
-        SystemCredentialStore::new()
-            .delete(&provider.credential_reference())
-            .map_err(|error| CliError::failed(error.user_message()))?;
-        None
-    } else {
-        secret
-    };
+    let stored = if clear { None } else { secret };
     UserPrefs::update_transaction(|prefs| {
         prefs.search.provider = provider;
         if let Some(key) = &stored {
@@ -1611,6 +1617,14 @@ fn search_set(
         Ok(())
     })
     .map_err(prefs_error)?;
+    if clear {
+        // Only after the prefs save succeeded — deleting first would leave
+        // the prefs entry pointing at a credential that no longer exists if
+        // the save fails (a leftover keyring entry is the benign direction).
+        SystemCredentialStore::new()
+            .delete(&provider.credential_reference())
+            .map_err(|error| CliError::failed(error.user_message()))?;
+    }
     let action = if clear {
         "cleared"
     } else if stored.is_some() {
@@ -1747,4 +1761,34 @@ fn resolve_search_key(provider: SearchProvider) -> Option<String> {
         .flatten()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loopback_guard_parses_ips_instead_of_prefix_matching() {
+        for url in [
+            "http://localhost:11434",
+            "http://127.0.0.1:8080/v1",
+            "http://[::1]:11434",
+            "http://127.0.0.2:8000",
+        ] {
+            assert!(is_loopback_url(url).unwrap_or(false), "{url} is loopback");
+        }
+        // A hostname starting with "127." resolves remotely and must be
+        // refused — the guard exists so a typo can never probe off-host.
+        for url in [
+            "http://127.evil.com:8000/v1",
+            "http://example.com",
+            "http://0.0.0.0:8000",
+            "not a url",
+        ] {
+            assert!(
+                !is_loopback_url(url).unwrap_or(false),
+                "{url} is not loopback"
+            );
+        }
+    }
 }
