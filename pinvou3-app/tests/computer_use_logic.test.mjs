@@ -1,9 +1,7 @@
 import assert from 'node:assert/strict';
 import {
-  DENY_SUPPRESSION_MS,
   computerUseConsentView,
   extractComputerUseScreenshotPath,
-  isDeniedRequestSuppressed,
 } from '../src/features/computer-use/computer-use-logic.js';
 
 // ── 截图路径提取 ──────────────────────────────────────────────────
@@ -142,22 +140,5 @@ assert.deepEqual(
   { enabled: true, stopped: false, showBanner: true, grantRequest: null, confirmRequest: null },
   'granted and not stopped keeps the non-dismissible banner visible',
 );
-
-// ── 明确拒绝后的弹窗频控（评审修复）──────────────────────────────
-// 数值等值断言：computer_use.js 的 classic-script 载荷镜像此常量
-//（bridge 行为测试同时断言两份相等），调整冷却窗口必须同步改动。
-assert.equal(DENY_SUPPRESSION_MS, 30_000, 'deny cooldown pinned at 30s');
-assert.equal(
-  isDeniedRequestSuppressed(Date.now() - 1000, Date.now()),
-  true,
-  'a request within the cooldown of an explicit deny must be suppressed',
-);
-assert.equal(
-  isDeniedRequestSuppressed(Date.now() - DENY_SUPPRESSION_MS - 1, Date.now()),
-  false,
-  'after the cooldown a fresh dialog may be shown again',
-);
-assert.equal(isDeniedRequestSuppressed(undefined, Date.now()), false, 'no deny recorded → never suppressed');
-assert.equal(isDeniedRequestSuppressed(Date.now() + 5_000, Date.now()), false, 'clock skew must not suppress forever');
 
 console.log('computer use logic tests passed');

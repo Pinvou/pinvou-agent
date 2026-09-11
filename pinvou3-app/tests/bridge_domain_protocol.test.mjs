@@ -87,9 +87,11 @@ const expectedProtocolHashes = {
   // on the pending TTL). Recomputed again for the consent review fixes: stop
   // and disable now clear the per-session pending map, grant_required keeps a
   // live confirm, refreshStatus clears the banner on session switch, and the
-  // confirm payload gains the optional typePreviewFull pass-through (no
+  // confirm payload gains the optional typePreviewFull pass-through. And
+  // again when the 30s deny-suppression cooldown was removed: a deny now
+  // only closes its own dialog and fresh requests re-prompt immediately (no
   // invoke/listen call-set change; comment wording is part of the digest).
-  computerUse: '4a54bbc0618a83729eaa2c66249c0b28b6196c912f72d0780b01e6de17d2be90',
+  computerUse: 'f69662b6930da9a954045d385af8c64d2637319a93a205c3f03d7cce1d67ba0d',
   multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
   orchestration: '0f6d0ff37a357fe9dab1873879d98ebf5e0e1c176c02c431452f5b5dc48b7e22',
   artifacts: '37ca694534c7e6cf44b6d262c40e388999c3ba136faca0d6f57821d5b9b3df53',

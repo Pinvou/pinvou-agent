@@ -30,29 +30,6 @@
     // macOS permission prompts (screen recording / accessibility) fire once per
     // app run, on the first enable; elsewhere the command is a no-op.
     let permissionsRequested = false;
-    // Per-session timestamp of the last explicit user denial (grant revoke or
-    // confirm deny). Repeated blocked attempts re-emit events; re-opening the
-    // blocking modal on each one is a consent-fatigue vector, so inside
-    // DENY_SUPPRESSION_MS the request stays pending but no dialog is shown.
-    const deniedAtBySession = Object.create(null);
-    // Mirrors DENY_SUPPRESSION_MS in features/computer-use/computer-use-logic.js
-    // (classic scripts cannot import it; the logic test pins both copies).
-    const DENY_SUPPRESSION_MS = 30000;
-
-    function markDenied(sessionId) {
-      const sid = String(sessionId || "");
-      if (sid) deniedAtBySession[sid] = Date.now();
-    }
-
-    function clearDenial(sessionId) {
-      const sid = String(sessionId || "");
-      if (sid) delete deniedAtBySession[sid];
-    }
-
-    function suppressedByDenial(sessionId) {
-      const at = deniedAtBySession[String(sessionId || "")];
-      return typeof at === "number" && Date.now() - at < DENY_SUPPRESSION_MS;
-    }
 
     function pendingEntry(sessionId) {
       const sid = String(sessionId || "");
@@ -156,20 +133,14 @@
       }
       if (seq !== statusRequestSeq) return raw;
       const pending = pendingBySession[sid] || null;
-      // A fresh denial suppresses the dialogs for DENY_SUPPRESSION_MS; the
-      // requests stay pending, so refreshStatus must apply the same gate as
-      // the event handlers — otherwise switching sessions back and forth
-      // bypassed the cooldown and re-opened the blocking modal (review
-      // finding).
-      const suppressDialogs = suppressedByDenial(sid);
       publish(sid, {
         sessionId: sid,
         enabled: !!(raw && raw.enabled),
         granted: !!(raw && raw.granted),
         stopped: !!(raw && raw.stopped),
         platformSupported: !!(raw && (raw.platform_supported || raw.platformSupported)),
-        grantRequest: pending && pending.grant && !suppressDialogs ? { sessionId: sid } : null,
-        confirmRequest: pending && pending.confirm && !suppressDialogs ? pending.confirm : null,
+        grantRequest: pending && pending.grant ? { sessionId: sid } : null,
+        confirmRequest: pending && pending.confirm ? pending.confirm : null,
       });
       return raw;
     }
@@ -177,7 +148,6 @@
     async function grant(sessionId) {
       const sid = sessionId || state.activeSessionId;
       await invoke("computer_use_grant", { sessionId: sid });
-      clearDenial(sid);
       const pending = pendingEntry(sid);
       if (pending) pending.grant = false;
       publish(sid, { granted: true, stopped: false, grantRequest: null });
@@ -186,8 +156,6 @@
     async function revoke(sessionId) {
       const sid = sessionId || state.activeSessionId;
       await invoke("computer_use_revoke", { sessionId: sid });
-      // An explicit deny starts the dialog cooldown for this session.
-      markDenied(sid);
       const pending = pendingEntry(sid);
       if (pending) pending.grant = false;
       publish(sid, { granted: false, grantRequest: null });
@@ -233,8 +201,8 @@
         await invoke("computer_use_confirm", { confirmId });
       } catch (error) {
         if (!isExpiredConfirmError(error)) throw error;
-        // Expired: the backend already dropped the request; closing locally
-        // must not record a denial (an expiry is not a user decision).
+        // Expired: the backend already dropped the request, so closing
+        // locally is the only way out of the dead-end modal.
         publish(clearPendingConfirm(), { confirmRequest: null });
         throw error;
       }
@@ -243,7 +211,6 @@
       // pending entry instead of being wiped by this decision.
       const request = state.computerUse && state.computerUse.confirmRequest;
       const sid = (request && request.sessionId) || state.activeSessionId;
-      clearDenial(sid);
       if (!request || String(request.confirmId) === String(confirmId)) {
         const pending = pendingBySession[sid];
         if (pending) pending.confirm = null;
@@ -251,14 +218,13 @@
       }
     }
 
-    // Explicit backend deny: clears the pending confirmation and records the
-    // decision, so the model's retry gets a definite "user denied" instead of
-    // waiting out the backend TTL (review finding).
+    // Explicit backend deny: clears the pending confirmation, so the model's
+    // retry gets a definite "user denied" instead of waiting out the backend
+    // TTL (review finding).
     async function deny(confirmId) {
       // Attribute the denial to the session the user is actually looking at,
       // captured BEFORE the IPC round-trip (review finding): a new confirm
-      // request landing mid-flight must not be wiped, and its session must
-      // not inherit a cooldown armed by a decision about another request.
+      // request landing mid-flight must not be wiped.
       const request = state.computerUse && state.computerUse.confirmRequest;
       const sid = (request && request.sessionId) || state.activeSessionId;
       try {
@@ -268,7 +234,6 @@
         publish(clearPendingConfirm(), { confirmRequest: null });
         throw error;
       }
-      markDenied(sid);
       // Same targeted clear as confirm(): only the denied dialog goes away.
       const current = state.computerUse && state.computerUse.confirmRequest;
       if (!current || String(current.confirmId) === String(confirmId)) {
@@ -340,9 +305,6 @@
         // Feature toggle off: stay inert (no dialog), the record above still
         // lets a later enable + refresh resurface the request.
         if (!state.computerUse.enabled) return;
-        // Fresh user denial: the request stays pending but the blocking modal
-        // must not re-open on every retry (consent-fatigue guard).
-        if (suppressedByDenial(sid)) return;
         // The backend never emits this event while stopped, so a `stopped`
         // flag still latched here is frontend residue (e.g. from a stop that
         // predates a re-enable); clearing it keeps the dialog reachable even
@@ -369,7 +331,6 @@
           pending.confirm.typePreviewFull = typePreviewFull;
         }
         if (!state.computerUse.enabled) return;
-        if (suppressedByDenial(sid)) return;
         publish(sid, { confirmRequest: pending.confirm });
       });
     }
