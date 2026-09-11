@@ -32,6 +32,10 @@ pub const DENIED_TTL: Duration = Duration::from_secs(60);
 /// pending，无上限会随进程寿命无界增长（评审发现）；超限逐出最旧条目。
 pub const MAX_PENDING_CONFIRMATIONS: usize = 100;
 pub const MAX_APPROVED_TOKENS: usize = 100;
+/// Denied-confirmation memory cap, mirroring [`MAX_APPROVED_TOKENS`]: a
+/// runaway model must not grow the map unboundedly for the process lifetime;
+/// over the cap the oldest entry is evicted.
+pub const MAX_DENIED_CONFIRMATIONS: usize = 200;
 /// 单个会话的待决确认子上限：全局上限是跨会话共享资源，无子上限时一个
 /// 失控会话可把全局队列填满，其他会话的确认通道被 DoS 掉约一个 TTL
 /// （评审发现）。正常交互单会话同时只有一枚用户可见弹窗，10 已远超需要。
@@ -80,12 +84,9 @@ pub const T3_DENYLIST: &[&str] = &[
     // 繁体（评审发现：繁体界面全域缺席）。
     "刪除",
     "購買",
-    "支付",
     "傳送",
     "轉帳",
-    "提交",
     "確認",
-    "清空",
     "資源回收筒",
     "廢紙簍",
     "購入",
@@ -95,7 +96,25 @@ pub const T3_DENYLIST: &[&str] = &[
     "送金",
     "提出",
     "注文",
-    "確認",
+    // Review follow-up coverage: generic affirmative/action terms that gate
+    // consequential dialogs ("OK", "Yes, continue", "Accept", "Run"...).
+    "ok",
+    "yes",
+    "continue",
+    "accept",
+    "agree",
+    "remove",
+    "empty",
+    "run",
+    "execute",
+    // CJK equivalents. The matcher is substring-based, so single-character
+    // CJK terms (是/好) would over-match unrelated labels; only multi-char
+    // terms are safe to list.
+    "继续",
+    "同意",
+    "运行",
+    "执行",
+    "删除全部",
 ];
 
 /// 标签是否命中 T3 后果性名单。
@@ -212,6 +231,14 @@ pub struct PendingConfirmation {
     pub session_id: String,
     pub action_summary: String,
     pub element_label: String,
+    /// Geometry of the denylisted element recorded at mint time (input
+    /// coordinate space x/y/w/h); None for Unscreenable mints and chord
+    /// semantics hits.
+    pub element_rect: Option<(i32, i32, i32, i32)>,
+    /// Whether the target passed verifiable screening at mint time:
+    /// Blocked=true; Unscreenable=false (the user approved a target that
+    /// could not be proven harmless).
+    pub verified_target: bool,
     pub created_at: Instant,
 }
 
@@ -222,6 +249,11 @@ struct ApprovedToken {
     session_id: String,
     action_summary: String,
     element_label: String,
+    /// Element geometry at approval time (input space x/y/w/h); see
+    /// [`PendingConfirmation::element_rect`].
+    element_rect: Option<(i32, i32, i32, i32)>,
+    /// Whether the target passed verifiable screening at mint time.
+    verified_target: bool,
     minted_at: Instant,
 }
 
@@ -231,11 +263,32 @@ pub enum ConfirmationCheck {
     /// 令牌有效且与会话/动作匹配，已消费（单次有效）。携带用户批准时
     /// 看到的元素标签——工具层重筛时用它判定"眼前的目标还是用户批准
     /// 的那个"（评审发现：批准到重试之间目标可能被换内容）。
-    Granted { approved_element_label: String },
+    /// `approved_element_rect` carries the element geometry recorded at
+    /// approval time (input space x/y/w/h) so the tool layer can bind the
+    /// approval to the target's geometry, not just its label text;
+    /// `verified_target` says whether the target passed verifiable screening
+    /// at mint time (Blocked=true, Unscreenable=false).
+    Granted {
+        approved_element_label: String,
+        approved_element_rect: Option<(i32, i32, i32, i32)>,
+        verified_target: bool,
+    },
     /// 无此令牌（未知 / 已消费 / 已过期 / 会话或动作不匹配）。
     Unknown,
     /// 用户明确拒绝了该确认（[`DENIED_TTL`] 内）——模型不应重试同一动作。
     Denied,
+}
+
+/// The three consent maps (pending confirmations, approved tokens, denied
+/// memory) share one mutex: the wholesale clears in `stop_all` /
+/// `revoke_all_sessions` and the pending→token transition in
+/// `mint_confirmation` are atomic with respect to each other — with three
+/// independent locks, a mint interleaved with a disable/revoke could leave
+/// behind a token that survived the disable.
+struct ConsentMaps {
+    pending: HashMap<String, PendingConfirmation>,
+    approved_tokens: HashMap<String, ApprovedToken>,
+    denied_confirmations: HashMap<String, Instant>,
 }
 
 /// 跨会话共享的同意状态（Arc 由工厂构造注入工具）。
@@ -249,9 +302,8 @@ pub struct ComputerUseShared {
     /// 进程级锁把**跨会话**的输入注入串行化（评审发现：两个并发会话可各持
     /// 有效授权交替打字/点击）。Input 类动作在筛查+执行全程持有。
     physical_input_lock: Mutex<()>,
-    pending_confirmations: Mutex<HashMap<String, PendingConfirmation>>,
-    approved_tokens: Mutex<HashMap<String, ApprovedToken>>,
-    denied_confirmations: Mutex<HashMap<String, Instant>>,
+    /// The three consent maps under a single mutex (see [`ConsentMaps`]).
+    consent: Mutex<ConsentMaps>,
     /// 会话 → 后端句柄登记表（构造登记/析构注销）。撤销授权、全局停止或
     /// 总开关关闭时，命令层经此触发后端关闭持久 OS 级授权（如 Wayland
     /// portal 会话）——授权语义的应用侧事实来源在本模块，OS 侧的终止
@@ -274,9 +326,11 @@ impl ComputerUseShared {
             sessions: Mutex::new(HashMap::new()),
             observe_windows: Mutex::new(HashMap::new()),
             physical_input_lock: Mutex::new(()),
-            pending_confirmations: Mutex::new(HashMap::new()),
-            approved_tokens: Mutex::new(HashMap::new()),
-            denied_confirmations: Mutex::new(HashMap::new()),
+            consent: Mutex::new(ConsentMaps {
+                pending: HashMap::new(),
+                approved_tokens: HashMap::new(),
+                denied_confirmations: HashMap::new(),
+            }),
             backends: BackendRegistry::default(),
         }
     }
@@ -304,8 +358,24 @@ impl ComputerUseShared {
         sessions.insert(session_id.to_string(), SessionConsent::new(now));
     }
 
+    /// Revoke a single session: besides the grant row, also drop that
+    /// session's pending confirmations and minted approval tokens (all under
+    /// the single consent lock). After the user withdraws control, this
+    /// session's consent artifacts for previously blocked actions must not
+    /// survive; other sessions' artifacts are untouched. The denied memory is
+    /// keyed by confirm_id with an `Instant` value and carries no session
+    /// attribution, so a per-session subset cannot be identified safely — it
+    /// is left untouched here (wholesale clears happen only in `stop_all` /
+    /// `revoke_all_sessions`).
     pub fn revoke_session(&self, session_id: &str) {
         self.sessions.lock().remove(session_id);
+        let mut consent = self.consent.lock();
+        consent
+            .pending
+            .retain(|_, entry| entry.session_id != session_id);
+        consent
+            .approved_tokens
+            .retain(|_, token| token.session_id != session_id);
     }
 
     /// 会话当前是否持有有效授权（未空闲过期）。只读投影，供状态命令使用；
@@ -323,9 +393,10 @@ impl ComputerUseShared {
         self.stop.store(true, Ordering::SeqCst);
         self.sessions.lock().clear();
         self.observe_windows.lock().clear();
-        self.pending_confirmations.lock().clear();
-        self.approved_tokens.lock().clear();
-        self.denied_confirmations.lock().clear();
+        let mut consent = self.consent.lock();
+        consent.pending.clear();
+        consent.approved_tokens.clear();
+        consent.denied_confirmations.clear();
     }
 
     /// 用户重新开启后清除停止旗标（不恢复任何授权）。
@@ -341,9 +412,10 @@ impl ComputerUseShared {
     /// TTL 内仍然有效——开关关闭期间的同意状态在重开后不应存活。
     pub fn revoke_all_sessions(&self) {
         self.sessions.lock().clear();
-        self.pending_confirmations.lock().clear();
-        self.approved_tokens.lock().clear();
-        self.denied_confirmations.lock().clear();
+        let mut consent = self.consent.lock();
+        consent.pending.clear();
+        consent.approved_tokens.clear();
+        consent.denied_confirmations.clear();
     }
 
     /// 观察/被动类动作门控：只需总开关开启且未停止。
@@ -445,10 +517,13 @@ impl ComputerUseShared {
         session_id: &str,
         action_summary: impl Into<String>,
         element_label: impl Into<String>,
+        element_rect: Option<(i32, i32, i32, i32)>,
+        verified_target: bool,
     ) -> Option<String> {
         let confirm_id = format!("cu-{:016x}", rand::random::<u64>());
         let now = Instant::now();
-        let mut pending = self.pending_confirmations.lock();
+        let mut consent = self.consent.lock();
+        let pending = &mut consent.pending;
         pending.retain(|_, entry| now.duration_since(entry.created_at) <= CONFIRM_TTL);
         if pending.len() >= MAX_PENDING_CONFIRMATIONS {
             return None;
@@ -467,6 +542,8 @@ impl ComputerUseShared {
                 session_id: session_id.to_string(),
                 action_summary: action_summary.into(),
                 element_label: element_label.into(),
+                element_rect,
+                verified_target,
                 created_at: now,
             },
         );
@@ -474,10 +551,10 @@ impl ComputerUseShared {
     }
 
     pub fn pending_confirmation(&self, confirm_id: &str) -> Option<PendingConfirmation> {
-        let mut pending = self.pending_confirmations.lock();
-        let entry = pending.get(confirm_id)?;
+        let mut consent = self.consent.lock();
+        let entry = consent.pending.get(confirm_id)?;
         if entry.created_at.elapsed() > CONFIRM_TTL {
-            pending.remove(confirm_id);
+            consent.pending.remove(confirm_id);
             return None;
         }
         Some(entry.clone())
@@ -488,13 +565,24 @@ impl ComputerUseShared {
     /// 未知 id 返回 false 且**不写** denied 表——模型自造/过期的 id 不应能向
     /// 拒绝记忆投毒，把未来合法的 confirm_id 变成「已被拒绝」（评审发现）。
     pub fn deny_confirmation(&self, confirm_id: &str) -> bool {
-        let removed = self.pending_confirmations.lock().remove(confirm_id);
-        if removed.is_none() {
+        let mut consent = self.consent.lock();
+        if consent.pending.remove(confirm_id).is_none() {
             return false;
         }
         let now = Instant::now();
-        let mut denied = self.denied_confirmations.lock();
+        let denied = &mut consent.denied_confirmations;
         denied.retain(|_, at| now.duration_since(*at) <= DENIED_TTL);
+        // Capacity cap: evict the oldest (mirrors the approved-tokens cap).
+        while denied.len() >= MAX_DENIED_CONFIRMATIONS {
+            let oldest = denied
+                .iter()
+                .min_by_key(|(_, at)| **at)
+                .map(|(id, _)| id.clone());
+            match oldest {
+                Some(id) => denied.remove(&id),
+                None => break,
+            };
+        }
         denied.insert(confirm_id.to_string(), now);
         true
     }
@@ -505,7 +593,11 @@ impl ComputerUseShared {
     /// 失败显示为成功（评审发现）。令牌继承该 pending 的会话与动作摘要
     /// （消费时逐项比对）。
     pub fn mint_confirmation(&self, confirm_id: &str) -> bool {
-        let entry = self.pending_confirmations.lock().remove(confirm_id);
+        // pending removal + token insertion in one lock: a mint cannot
+        // interleave with a revoke/clear and leave a token that outlives the
+        // disable.
+        let mut consent = self.consent.lock();
+        let entry = consent.pending.remove(confirm_id);
         let Some(entry) = entry else {
             return false;
         };
@@ -513,7 +605,7 @@ impl ComputerUseShared {
             return false;
         }
         let now = Instant::now();
-        let mut tokens = self.approved_tokens.lock();
+        let tokens = &mut consent.approved_tokens;
         tokens.retain(|_, token| now.duration_since(token.minted_at) <= CONFIRM_TTL);
         while tokens.len() >= MAX_APPROVED_TOKENS {
             let oldest = tokens
@@ -531,6 +623,8 @@ impl ComputerUseShared {
                 session_id: entry.session_id,
                 action_summary: entry.action_summary,
                 element_label: entry.element_label,
+                element_rect: entry.element_rect,
+                verified_target: entry.verified_target,
                 minted_at: now,
             },
         );
@@ -547,19 +641,18 @@ impl ComputerUseShared {
         action_summary: &str,
     ) -> ConfirmationCheck {
         let now = Instant::now();
-        {
-            let mut denied = self.denied_confirmations.lock();
-            denied.retain(|_, at| now.duration_since(*at) <= DENIED_TTL);
-            if denied.contains_key(confirm_id) {
-                return ConfirmationCheck::Denied;
-            }
+        let mut consent = self.consent.lock();
+        consent
+            .denied_confirmations
+            .retain(|_, at| now.duration_since(*at) <= DENIED_TTL);
+        if consent.denied_confirmations.contains_key(confirm_id) {
+            return ConfirmationCheck::Denied;
         }
-        let mut tokens = self.approved_tokens.lock();
-        let Some(token) = tokens.get(confirm_id) else {
+        let Some(token) = consent.approved_tokens.get(confirm_id) else {
             return ConfirmationCheck::Unknown;
         };
         if now.duration_since(token.minted_at) > CONFIRM_TTL {
-            tokens.remove(confirm_id);
+            consent.approved_tokens.remove(confirm_id);
             return ConfirmationCheck::Unknown;
         }
         if token.session_id != session_id || token.action_summary != action_summary {
@@ -569,9 +662,13 @@ impl ComputerUseShared {
             return ConfirmationCheck::Unknown;
         }
         let approved_element_label = token.element_label.clone();
-        tokens.remove(confirm_id);
+        let approved_element_rect = token.element_rect;
+        let verified_target = token.verified_target;
+        consent.approved_tokens.remove(confirm_id);
         ConfirmationCheck::Granted {
             approved_element_label,
+            approved_element_rect,
+            verified_target,
         }
     }
 }
@@ -756,6 +853,22 @@ mod tests {
             "刪除檔案",
             "購買",
             "資源回收筒",
+            // Review follow-up coverage: generic affirmative/action terms
+            // (the most common dialog button copy).
+            "OK",
+            "yes",
+            "Continue",
+            "Accept all",
+            "I agree",
+            "Remove file",
+            "Empty folder",
+            "Run script",
+            "Execute command",
+            "继续操作",
+            "同意条款",
+            "运行脚本",
+            "执行命令",
+            "删除全部历史",
         ] {
             assert!(matches_t3_denylist(label), "should match: {label}");
         }
@@ -779,7 +892,7 @@ mod tests {
         let shared = enabled_shared();
         let summary = "left click x1 at Some((100, 200))";
         let id = shared
-            .new_pending_confirmation("s1", summary, "Buy now")
+            .new_pending_confirmation("s1", summary, "Buy now", Some((100, 200, 10, 10)), true)
             .expect("pending below cap");
         let pending = shared.pending_confirmation(&id);
         assert!(pending.as_ref().is_some_and(|p| p.session_id == "s1"));
@@ -809,7 +922,9 @@ mod tests {
         assert_eq!(
             shared.take_confirmation(&id, "s1", summary),
             ConfirmationCheck::Granted {
-                approved_element_label: "Buy now".to_string()
+                approved_element_label: "Buy now".to_string(),
+                approved_element_rect: Some((100, 200, 10, 10)),
+                verified_target: true,
             }
         );
         // 单次使用：第二次消费失败。
@@ -817,13 +932,27 @@ mod tests {
             shared.take_confirmation(&id, "s1", summary),
             ConfirmationCheck::Unknown
         );
+        // Tokens minted from an Unscreenable screening carry
+        // verified_target=false and no geometry.
+        let id = shared
+            .new_pending_confirmation("s1", "left click x1", "unscreenable", None, false)
+            .expect("pending below cap");
+        assert!(shared.mint_confirmation(&id));
+        assert_eq!(
+            shared.take_confirmation(&id, "s1", "left click x1"),
+            ConfirmationCheck::Granted {
+                approved_element_label: "unscreenable".to_string(),
+                approved_element_rect: None,
+                verified_target: false,
+            }
+        );
     }
 
     #[test]
     fn deny_marks_confirmation_denied_and_forgets_after_ttl() {
         let shared = enabled_shared();
         let id = shared
-            .new_pending_confirmation("s1", "left click", "Buy now")
+            .new_pending_confirmation("s1", "left click", "Buy now", None, true)
             .expect("pending below cap");
         assert!(shared.deny_confirmation(&id));
         // deny 清除 pending：不能再为它铸币（mint 返回 false，不再静默 no-op）。
@@ -881,18 +1010,19 @@ mod tests {
         let shared = enabled_shared();
         // 每会话子上限：s1 第 MAX_PENDING_PER_SESSION+1 个被拒；s2 预算独立。
         for i in 0..MAX_PENDING_PER_SESSION {
-            let id = shared.new_pending_confirmation("s1", format!("action {i}"), "Buy now");
+            let id =
+                shared.new_pending_confirmation("s1", format!("action {i}"), "Buy now", None, true);
             assert!(id.is_some(), "request {i} must be admitted below the cap");
         }
         assert!(
             shared
-                .new_pending_confirmation("s1", "one more", "Buy now")
+                .new_pending_confirmation("s1", "one more", "Buy now", None, true)
                 .is_none(),
             "a session at its per-session cap must be rejected"
         );
         assert!(
             shared
-                .new_pending_confirmation("s2", "other session", "Buy now")
+                .new_pending_confirmation("s2", "other session", "Buy now", None, true)
                 .is_some(),
             "another session must keep its own confirmation budget"
         );
@@ -900,13 +1030,19 @@ mod tests {
         // 旧令牌不影响用户正在看的弹窗）。铸造会移除 pending，用独立会话
         // 循环避免被上面的子上限/全局上限卡住。
         for i in 0..(MAX_APPROVED_TOKENS + 20) {
-            let id = shared.new_pending_confirmation(&format!("t{i}"), format!("m {i}"), "Buy now");
+            let id = shared.new_pending_confirmation(
+                &format!("t{i}"),
+                format!("m {i}"),
+                "Buy now",
+                None,
+                true,
+            );
             if let Some(id) = id {
                 let _ = shared.mint_confirmation(&id);
             }
         }
         assert_eq!(
-            shared.approved_tokens.lock().len(),
+            shared.consent.lock().approved_tokens.len(),
             MAX_APPROVED_TOKENS,
             "token cap is enforced by evicting the oldest"
         );
@@ -916,7 +1052,7 @@ mod tests {
         'fill: for s in 3.. {
             let session = format!("s{s}");
             for _ in 0..MAX_PENDING_PER_SESSION {
-                match shared.new_pending_confirmation(&session, "fill", "Buy now") {
+                match shared.new_pending_confirmation(&session, "fill", "Buy now", None, true) {
                     Some(_) => admitted += 1,
                     None => break 'fill,
                 }
@@ -928,7 +1064,7 @@ mod tests {
         );
         assert!(
             shared
-                .new_pending_confirmation("s-final", "one more", "Buy now")
+                .new_pending_confirmation("s-final", "one more", "Buy now", None, true)
                 .is_none(),
             "a full queue must reject new pending requests"
         );
@@ -979,10 +1115,10 @@ mod tests {
         let shared = enabled_shared();
         shared.grant_session("s1");
         let confirm_id = shared
-            .new_pending_confirmation("s1", "left click", "Buy now")
+            .new_pending_confirmation("s1", "left click", "Buy now", None, true)
             .expect("pending below cap");
         let token_id = shared
-            .new_pending_confirmation("s1", "left click 2", "Buy now")
+            .new_pending_confirmation("s1", "left click 2", "Buy now", None, true)
             .expect("pending below cap");
         assert!(shared.mint_confirmation(&token_id));
         shared.revoke_all_sessions();
@@ -1007,12 +1143,12 @@ mod tests {
     fn pending_confirmation_expires_after_ttl() {
         let shared = enabled_shared();
         let id = shared
-            .new_pending_confirmation("s1", "left_click (100,200)", "Buy now")
+            .new_pending_confirmation("s1", "left_click (100,200)", "Buy now", None, true)
             .expect("pending below cap");
         // 手工把 created_at 拨回 TTL 之前（等真实 5 分钟太慢）。
         {
-            let mut pending = shared.pending_confirmations.lock();
-            if let Some(entry) = pending.get_mut(&id) {
+            let mut consent = shared.consent.lock();
+            if let Some(entry) = consent.pending.get_mut(&id) {
                 entry.created_at = Instant::now() - CONFIRM_TTL - Duration::from_secs(1);
             }
         }
@@ -1046,5 +1182,81 @@ mod tests {
                 .is_some_and(|c| c.last_activity.elapsed() < GRANT_IDLE_TIMEOUT / 2);
             assert!(fresh);
         }
+    }
+
+    /// Regression: the T3 denylist must not contain duplicate entries
+    /// ("支付"/"提交"/"清空"/"確認" each appeared twice).
+    #[test]
+    fn t3_denylist_has_no_duplicate_entries() {
+        let mut seen = std::collections::HashSet::new();
+        for term in T3_DENYLIST {
+            assert!(seen.insert(*term), "duplicate denylist entry: {term}");
+        }
+    }
+
+    /// Regression: the denied memory is capped by evicting the oldest entry
+    /// instead of growing unboundedly for the process lifetime (mirrors the
+    /// approved-tokens cap).
+    #[test]
+    fn denied_map_is_capped_and_evicts_oldest() {
+        let shared = enabled_shared();
+        for i in 0..(MAX_DENIED_CONFIRMATIONS + 20) {
+            let id = shared
+                .new_pending_confirmation("s1", format!("action {i}"), "Buy now", None, true)
+                .expect("pending below cap");
+            assert!(shared.deny_confirmation(&id));
+        }
+        assert_eq!(
+            shared.consent.lock().denied_confirmations.len(),
+            MAX_DENIED_CONFIRMATIONS,
+            "denied cap is enforced by evicting the oldest"
+        );
+    }
+
+    /// Regression: revoking a session must also wipe that session's minted
+    /// approval tokens — re-granting must not resurrect them.
+    #[test]
+    fn revoke_session_wipes_that_sessions_minted_tokens() {
+        let shared = enabled_shared();
+        let summary = "left click x1 at Some((100, 200))";
+        let id = shared
+            .new_pending_confirmation("s1", summary, "Buy now", Some((100, 200, 10, 10)), true)
+            .expect("pending below cap");
+        assert!(shared.mint_confirmation(&id));
+        shared.revoke_session("s1");
+        // Re-granting (the user changes their mind and grants again) must
+        // not resurrect the wiped token.
+        shared.grant_session("s1");
+        assert_eq!(
+            shared.take_confirmation(&id, "s1", summary),
+            ConfirmationCheck::Unknown,
+            "revoking a session must wipe its minted approval tokens"
+        );
+        // That session's pending confirmations are wiped too.
+        let pending_id = shared
+            .new_pending_confirmation("s1", "left click", "Buy now", None, true)
+            .expect("pending below cap");
+        shared.revoke_session("s1");
+        assert!(shared.pending_confirmation(&pending_id).is_none());
+    }
+
+    /// Regression: revoking one session must not touch another session's
+    /// consent artifacts.
+    #[test]
+    fn revoke_session_spares_other_sessions_tokens() {
+        let shared = enabled_shared();
+        let summary = "left click x1 at Some((100, 200))";
+        let other_id = shared
+            .new_pending_confirmation("s2", summary, "Buy now", Some((100, 200, 10, 10)), true)
+            .expect("pending below cap");
+        assert!(shared.mint_confirmation(&other_id));
+        shared.revoke_session("s1");
+        assert!(
+            matches!(
+                shared.take_confirmation(&other_id, "s2", summary),
+                ConfirmationCheck::Granted { .. }
+            ),
+            "revoking s1 must not touch s2's minted token"
+        );
     }
 }

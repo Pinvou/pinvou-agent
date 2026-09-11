@@ -92,8 +92,12 @@ const expectedProtocolHashes = {
   // RPC allowlist excludes them, same policy as browser:*).
   // Recomputed after the deny() method + computer_use_deny invoke were added
   // (review fix: per-action Deny now reaches the backend instead of relying
-  // on the pending TTL).
-  computerUse: 'cb9e84b8e9de07671bc8384ad17b0ef602ef6e2d27380ba9fa12b9e3a293ac6d',
+  // on the pending TTL). Recomputed again for the consent review fixes: stop
+  // and disable now clear the per-session pending map, grant_required keeps a
+  // live confirm, refreshStatus clears the banner on session switch, and the
+  // confirm payload gains the optional typePreviewFull pass-through (no
+  // invoke/listen call-set change; comment wording is part of the digest).
+  computerUse: '4a54bbc0618a83729eaa2c66249c0b28b6196c912f72d0780b01e6de17d2be90',
   multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
   // Recomputed for the shared-helper dedup (see batch note above).
   orchestration: '341efb3b1e4a4036269559294c33b76a744bcde7c3903b9ba3525711d6182f6f',

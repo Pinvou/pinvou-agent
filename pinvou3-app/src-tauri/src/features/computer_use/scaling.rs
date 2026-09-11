@@ -132,6 +132,44 @@ impl ScaleMap {
         )
     }
 
+    /// Whether the point `x`/`y` falls inside this monitor's **input-space**
+    /// rect `[origin_x, origin_x + dev_w * input_scale_x)` (same for `y`).
+    /// Mixed-DPI guard beyond [`Self::contains_device_point`]: on macOS
+    /// `cursor_position` reports `points × cursor-monitor scale`, so with
+    /// mixed monitor scales the per-monitor device rects overlap (a 2x
+    /// built-in at the origin and a 1x external share a device range) and a
+    /// cursor in the overlap passes the wrong monitor's device check, after
+    /// which `device_to_input` is ~scale-times off. Input/points coordinates
+    /// are globally unique per monitor, so input rects stay disjoint. This is
+    /// the input-space image of the device rect checked by
+    /// `contains_device_point` (which starts at `origin_device`): the lower
+    /// bound is the exact integer `origin_x`; the upper bound can be
+    /// fractional for non-integer scales, so ceil it and keep the interval
+    /// half-open (ceil is the identity on integral bounds, keeping edge
+    /// semantics self-consistent with `origin_device`/`shot_to_input`).
+    pub fn contains_input_point(&self, x: i32, y: i32) -> bool {
+        let (fx, fy) = (f64::from(x), f64::from(y));
+        let max_x = (f64::from(self.origin_x) + f64::from(self.dev_w) * self.input_scale_x).ceil();
+        let max_y = (f64::from(self.origin_y) + f64::from(self.dev_h) * self.input_scale_y).ceil();
+        f64::from(self.origin_x) <= fx && fx < max_x && f64::from(self.origin_y) <= fy && fy < max_y
+    }
+
+    /// [`Self::device_to_input`] gated by [`Self::contains_input_point`]:
+    /// returns `Some` only when the point passes the input-space containment
+    /// check. Callers forwarding macOS `cursor_position` output must prefer
+    /// this over the unchecked conversion — on mixed-DPI multi-monitor setups
+    /// the raw device point can belong to a different monitor than this map,
+    /// and converting it anyway yields coordinates ~scale-times off (T3
+    /// screens the wrong location while the injection lands at the real
+    /// cursor, i.e. fail-open).
+    pub fn device_to_input_checked(&self, x: i32, y: i32) -> Option<(i32, i32)> {
+        if self.contains_input_point(x, y) {
+            Some(self.device_to_input(x, y))
+        } else {
+            None
+        }
+    }
+
     /// 把模型给的坐标钳制到截图范围内；返回 (x, y, 是否被钳制)。
     /// 模型经常发出越界坐标——钳制并在结果里警告，而不是失败。
     pub fn clamp_shot(&self, x: i64, y: i64) -> (i64, i64, bool) {
@@ -266,6 +304,81 @@ mod tests {
         assert!(!map.contains_device_point(-2561, 0));
         assert!(!map.contains_device_point(-100, 1440));
         assert!(!map.contains_device_point(-100, -1));
+    }
+
+    /// Mixed-DPI overlap regression (M1-class setups): a 2x Retina built-in
+    /// at the origin (points 1440x900 = physical 2880x1800, hence
+    /// input_scale 0.5) plus a 1x external at point-origin 1440 (physical
+    /// 1920x1080). The device rects overlap in [1440, 2880) while the input
+    /// rects stay disjoint, so only the input-space check can tell which
+    /// monitor the cursor is on.
+    #[test]
+    fn contains_input_point_disambiguates_mixed_dpi_overlap() {
+        let builtin = map(1440, 900, &capture(2880, 1800, 0, 0, 0.5, 0.5));
+        let external = map(1440, 810, &capture(1920, 1080, 1440, 0, 1.0, 1.0));
+
+        // Cursor on the external screen at points (1500, 400) reports device
+        // (1500, 400): both device-space checks pass, but only the external
+        // map must accept the input-space check (the old path would map
+        // through the built-in map to input ~750, i.e. ~2x off).
+        assert!(builtin.contains_device_point(1500, 400));
+        assert!(external.contains_device_point(1500, 400));
+        assert!(!builtin.contains_input_point(1500, 400));
+        assert_eq!(builtin.device_to_input_checked(1500, 400), None);
+        assert!(external.contains_input_point(1500, 400));
+        assert_eq!(
+            external.device_to_input_checked(1500, 400),
+            Some((1500, 400))
+        );
+
+        // Input-rect edges stay half-open on the built-in map (input width
+        // 2880 * 0.5 = 1440).
+        assert!(builtin.contains_input_point(1439, 400));
+        assert!(!builtin.contains_input_point(1440, 400));
+
+        // A cursor genuinely on the built-in screen (points (700, 400) report
+        // device (1400, 800) at 2x) still maps through the built-in map.
+        assert!(builtin.contains_input_point(1400, 800));
+        assert!(!external.contains_input_point(1400, 800));
+        assert_eq!(builtin.device_to_input_checked(1400, 800), Some((700, 400)));
+    }
+
+    /// At unit input scale the input rect equals the device rect, so the
+    /// input-space check must agree with `contains_device_point` everywhere.
+    #[test]
+    fn contains_input_point_matches_device_check_at_unit_scale() {
+        let map = map(1440, 810, &capture(2560, 1440, 0, 0, 1.0, 1.0));
+        for x in [-1, 0, 1, 1279, 2559, 2560] {
+            for y in [-1, 0, 1, 719, 1439, 1440] {
+                assert_eq!(
+                    map.contains_input_point(x, y),
+                    map.contains_device_point(x, y),
+                    "unit-scale disagreement at ({x},{y})"
+                );
+                let expected = if map.contains_device_point(x, y) {
+                    Some((x, y))
+                } else {
+                    None
+                };
+                assert_eq!(map.device_to_input_checked(x, y), expected);
+            }
+        }
+    }
+
+    /// Negative-origin multi-monitor (Windows virtual desktop): the
+    /// input-space check mirrors the existing negative-origin device test.
+    #[test]
+    fn contains_input_point_bounds_negative_origin_multi_monitor() {
+        let map = map(1440, 810, &capture(2560, 1440, -2560, 0, 1.0, 1.0));
+        assert!(map.contains_input_point(-2560, 0));
+        assert!(map.contains_input_point(-1, 1439));
+        // Right edge is half-open: one pixel out is already outside.
+        assert!(!map.contains_input_point(0, 0));
+        assert!(!map.contains_input_point(-2561, 0));
+        assert!(!map.contains_input_point(-100, 1440));
+        assert!(!map.contains_input_point(-100, -1));
+        assert_eq!(map.device_to_input_checked(-2560, 0), Some((-2560, 0)));
+        assert_eq!(map.device_to_input_checked(0, 0), None);
     }
 
     #[test]

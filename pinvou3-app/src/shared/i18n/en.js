@@ -344,6 +344,8 @@ export const dictEn = {
           confirmElementLabel:'Target element',
           confirmOnce:'Confirm once',
           confirmDeny:'Deny',
+          showFullText:'Show full text',
+          fullTextWarning:'The agent will type exactly this text.',
           screenshotCaption:'Screenshot',
           screenshotLoading:'Loading screenshot…',
           actionFailed:e=>`Action failed: ${e}`,
