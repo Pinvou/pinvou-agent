@@ -25,6 +25,13 @@ static PROBE_KIND_CACHE: std::sync::OnceLock<
 pub struct OpenAiModelInfo {
     pub id: String,
     pub max_model_len: Option<u32>,
+    /// 条目自报的单轮输出上限（tokens）。`None` = 端点未声明（绝大多数本地
+    /// 引擎的 `/v1/models` 没有、Ollama/LM Studio 列表也没有）。best-effort
+    /// 解析 `max_output_tokens` / `max_completion_tokens` /
+    /// `top_provider.max_completion_tokens`（OpenRouter 网关形状；unlimited
+    /// 时是 null，按未声明处理）。只作 route 声明的 min 收紧依据，
+    /// 永不抬高任何上限。
+    pub max_output_tokens: Option<u32>,
     /// 是否已加载到内存。`None` = 未知（通用 OpenAI 兼容端点不区分）。
     /// Ollama（/api/ps vs /api/tags）与 LM Studio（/api/v0/models 的 state）
     /// 的列表接口返回全部已下载模型，二者都是 JIT 加载——任何推理请求引用
@@ -54,11 +61,35 @@ pub(crate) fn parse_models_response_list(v: serde_json::Value) -> Option<Vec<Ope
             Some(OpenAiModelInfo {
                 id: id.to_string(),
                 max_model_len,
+                max_output_tokens: parse_entry_output_limit(item),
                 loaded: None,
             })
         })
         .collect::<Vec<_>>();
     (!models.is_empty()).then_some(models)
+}
+
+/// 从 `/v1/models` 条目里 best-effort 抽自报的单轮输出上限。
+/// 覆盖三种已知形状：直挂 `max_output_tokens` / `max_completion_tokens`，
+/// 以及 OpenRouter 网关的 `top_provider.max_completion_tokens`（unlimited
+/// 是 null，`as_u64()` 落空即按未声明处理）。值必须为正；本地引擎普遍
+/// 不提供该字段 → None，调用方不得据此编造上限。
+fn parse_entry_output_limit(item: &serde_json::Value) -> Option<u32> {
+    let direct = ["max_output_tokens", "max_completion_tokens"]
+        .into_iter()
+        .find_map(|key| {
+            item.get(key)
+                .and_then(|v| v.as_u64())
+                .filter(|n| *n > 0)
+                .map(|n| n as u32)
+        });
+    direct.or_else(|| {
+        item.get("top_provider")?
+            .get("max_completion_tokens")
+            .and_then(|v| v.as_u64())
+            .filter(|n| *n > 0)
+            .map(|n| n as u32)
+    })
 }
 
 /// 通用 OpenAI 兼容 `/models` 探测。探测地址与云端 probe / 连接测试同一口径
@@ -134,6 +165,7 @@ fn parse_lmstudio_v0_models(v: &serde_json::Value) -> Option<Vec<OpenAiModelInfo
             Some(OpenAiModelInfo {
                 id: id.to_string(),
                 max_model_len: None,
+                max_output_tokens: None,
                 loaded,
             })
         })
@@ -216,6 +248,7 @@ pub async fn probe_ollama_models(
                 OpenAiModelInfo {
                     id: name,
                     max_model_len: None,
+                    max_output_tokens: None,
                     loaded: Some(loaded),
                 }
             })
@@ -924,6 +957,39 @@ mod tests {
         assert_eq!(models[0].max_model_len, None);
         assert_eq!(models[1].id, "deepseek-r1:14b");
         assert_eq!(models[1].max_model_len, Some(32768));
+    }
+
+    /// `/v1/models` 条目自报输出上限的三种形状 + 非法值拒绝。
+    /// 本地引擎（vLLM/Ollama）普遍不提供该字段 → None，不得编造。
+    #[test]
+    fn parse_models_response_list_extracts_output_limits() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"object":"list","data":[
+                {"id":"direct-max-output","max_output_tokens":65536},
+                {"id":"direct-max-completion","max_completion_tokens":8192},
+                {"id":"openrouter-shape","top_provider":{"max_completion_tokens":131072,"context_length":1000000}},
+                {"id":"unlimited-null","top_provider":{"max_completion_tokens":null}},
+                {"id":"zero-invalid","max_output_tokens":0},
+                {"id":"plain-vllm","max_model_len":262144}
+            ]}"#,
+        )
+        .unwrap();
+        let models = parse_models_response_list(json).unwrap();
+        let output_of = |id: &str| {
+            models
+                .iter()
+                .find(|m| m.id == id)
+                .unwrap()
+                .max_output_tokens
+        };
+        assert_eq!(output_of("direct-max-output"), Some(65536));
+        assert_eq!(output_of("direct-max-completion"), Some(8192));
+        assert_eq!(output_of("openrouter-shape"), Some(131072));
+        // unlimited（null）与 0 都按未声明处理
+        assert_eq!(output_of("unlimited-null"), None);
+        assert_eq!(output_of("zero-invalid"), None);
+        // max_model_len 是 context window，不是输出上限
+        assert_eq!(output_of("plain-vllm"), None);
     }
 
     #[test]

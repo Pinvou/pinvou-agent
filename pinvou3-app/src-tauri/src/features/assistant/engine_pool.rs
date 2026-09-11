@@ -1144,34 +1144,36 @@ impl EnginePool {
                 .await,
             );
         }
-        // Local vLLM: correct the request model name against the server's
-        // actual served list (resolve_served_model). A configured name the
-        // server lists must be kept verbatim — LM Studio/Ollama list every
-        // downloaded model in /v1/models, so the first entry is unrelated to
-        // the user's pick, and substituting it is exactly the reported
-        // "conversation names A, engine loads B" chain break. Only follow the
-        // served name on a single-model server that does not expose the
-        // configured name. On probe failure (vLLM down) keep the configured
-        // value; cloud providers are not probed. OpenAI-compatible endpoints
-        // detected as vLLM take the same path (provider() maps them to
-        // "vllm").
-        if bridge.provider() == "vllm" {
-            // The served-name probe carries the same inference-same-origin
-            // credential (authenticated vLLM 401s on /v1/models; on probe
-            // failure the configured model name is kept).
-            let api_key = bridge.api_key();
-            if let Some(mut model) = bridge.effective_model_owned() {
-                let (served, max_len) = crate::features::monitor::resolve_served_model(
-                    &bridge.base_url(),
-                    Some(api_key.as_str()),
-                    &model.model,
-                )
-                .await;
-                if served != model.model && !pins_scheduled_model {
+        // Operator-owned 路由（本地 vLLM + 自定义 OpenAI 兼容 / custom，见
+        // `SavedModel::is_operator_owned_endpoint`）在 spawn 时探测一次
+        // `/v1/models`，带回匹配条目自己的 context window 与自报输出上限，
+        // 供 `route_limits_for_model` 做 min 收紧（probe 失败两项皆为 None，
+        // 回退配置值/窗口分档）。vLLM 路由顺带做 served-name 纠偏
+        // (resolve_served_model)：配置名在服务列表里必须原样保留——LM
+        // Studio/Ollama 会列出全部已下载模型，首条与用户选择无关，替换配置名
+        // 正是"会话叫 A、引擎载 B"断链的根因；仅单模型服务且不含配置名时才
+        // 跟随 served name。非 vLLM 的 operator-owned 路由不做名字纠偏，
+        // 只取事实。云端 preset 与 coding_plan 不是 operator-owned，不探测。
+        let is_vllm_route = bridge.provider() == "vllm";
+        if let Some(mut model) = bridge.effective_model_owned() {
+            let operator_owned = model.is_operator_owned_endpoint();
+            if is_vllm_route || operator_owned {
+                // 探测与真实推理同源携带凭据（带鉴权的端点 `/v1/models` 无凭据
+                // 会 401；探测失败保留配置值）。
+                let api_key = bridge.api_key();
+                let (served, max_len, max_output) =
+                    crate::features::monitor::resolve_served_model(
+                        &bridge.base_url(),
+                        Some(api_key.as_str()),
+                        &model.model,
+                    )
+                    .await;
+                if is_vllm_route && served != model.model && !pins_scheduled_model {
                     model.model = served;
                     bridge.session_model = Some(model);
                 }
                 bridge.probed_context_tokens = max_len;
+                bridge.probed_output_tokens = max_output;
             }
         }
         bridge
