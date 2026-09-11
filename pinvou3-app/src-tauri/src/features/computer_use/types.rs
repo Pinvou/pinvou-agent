@@ -198,6 +198,12 @@ fn parse_key_token(token: &str) -> Option<Key> {
 /// 解析 xdotool 风格和弦："ctrl+s"、"Return"、"alt+Tab"、"shift+f5"。
 /// 大小写不敏感；同义词表见 `parse_key_token`。token 数上限
 /// [`MAX_KEY_CHORD_TOKENS`]。
+///
+/// Parse errors describe the chord's SHAPE only and never echo the input
+/// text: the error string is written into the audit log's parse-failure
+/// record, and a chord can carry secret content (a model probing
+/// `{"action":"key","text":"hunter2"}` must not write that string into the
+/// JSONL). The model knows its own input, so nothing is lost.
 pub fn parse_key_chord(text: &str) -> Result<Vec<Key>, String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -207,24 +213,23 @@ pub fn parse_key_chord(text: &str) -> Result<Vec<Key>, String> {
     for token in trimmed.split('+') {
         if keys.len() >= MAX_KEY_CHORD_TOKENS {
             return Err(format!(
-                "invalid key chord '{text}': more than {MAX_KEY_CHORD_TOKENS} keys; \
+                "key chord has more than {MAX_KEY_CHORD_TOKENS} keys; \
                  use the type action for text input"
             ));
         }
         let token = token.trim();
         if token.is_empty() {
-            return Err(format!(
-                "invalid key chord '{text}': empty key between '+' separators"
-            ));
+            return Err("key chord has an empty segment between '+' separators".to_string());
         }
-        let key = parse_key_token(token)
-            .ok_or_else(|| format!("invalid key chord '{text}': unknown key '{token}'"))?;
+        let key = parse_key_token(token).ok_or_else(|| {
+            "key chord contains an unknown key name \
+             (tokens must be modifiers, key names, or f1..f12)"
+                .to_string()
+        })?;
         keys.push(key);
     }
     if keys.iter().all(|key| key.is_modifier()) {
-        return Err(format!(
-            "invalid key chord '{text}': a chord needs at least one non-modifier key"
-        ));
+        return Err("key chord needs at least one non-modifier key".to_string());
     }
     Ok(keys)
 }
@@ -523,6 +528,17 @@ mod tests {
         assert!(parse_key_chord("ctrl+shift").is_err());
         // 多字符且不在同义词表。
         assert!(parse_key_chord("ctrl+ab").is_err());
+    }
+
+    /// 评审修复回归：解析失败的错误串只描述和弦的**形状**，绝不回显输入
+    /// 文本——错误串会写进审计日志的 parse-failure 记录，模型可以用 text
+    /// 字段携带敏感内容探测（M1）。
+    #[test]
+    fn key_chord_errors_do_not_echo_the_input_text() {
+        for input in ["hunter2", "ctrl+secret", "a+b+c+d+e", "ctrl+", "ctrl+shift"] {
+            let error = parse_key_chord(input).expect_err("chord must be rejected");
+            assert!(!error.contains(input), "error echoed the input: {error}");
+        }
     }
 
     /// 评审修复回归：和弦 token 数上限 ≤4，控制字符不是合法键位。
