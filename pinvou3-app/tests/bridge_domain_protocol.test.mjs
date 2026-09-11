@@ -96,8 +96,10 @@ const expectedProtocolHashes = {
   // Recomputed when the deny()/grant_required handler comments were updated
   // for the mainstream narrowing (no deny-cooldown memory, no idle-expired
   // grant re-arm; comment wording inside the listen callback span is part of
-  // the digest).
-  computerUse: '6f66cf5a2bd607a1268304a27045d15cc462352b4e2439973709a908caf04f86',
+  // the digest). Recomputed again when the confirm_required handler's
+  // type-preview comment was corrected to the shipped contract (full text
+  // rides for every non-password Type action, short texts included).
+  computerUse: '6602b46d3951e444f11818fd4bdbde1495d130c4d6d26778826845715c7247c3',
   multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
   // Recomputed for the shared-helper dedup (see batch note above).
   orchestration: '341efb3b1e4a4036269559294c33b76a744bcde7c3903b9ba3525711d6182f6f',

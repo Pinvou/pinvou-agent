@@ -156,9 +156,16 @@
     async function revoke(sessionId) {
       const sid = sessionId || state.activeSessionId;
       await invoke("computer_use_revoke", { sessionId: sid });
+      // Backend revoke wipes the session's grant AND its pending confirmations
+      // AND tokens, so a same-session confirm dialog must collapse too — it
+      // would otherwise linger as a dead modal after the explicit revoke
+      // (review finding).
       const pending = pendingEntry(sid);
-      if (pending) pending.grant = false;
-      publish(sid, { granted: false, grantRequest: null });
+      if (pending) {
+        pending.grant = false;
+        pending.confirm = null;
+      }
+      publish(sid, { granted: false, grantRequest: null, confirmRequest: null });
     }
 
     async function stop() {
@@ -189,17 +196,32 @@
 
     // Targeted clear shared by confirm() and deny() — success AND "unknown or
     // expired" cleanup: only the dialog/pending entry for `confirmId` goes
-    // away. A NEWER request that landed during the IPC round-trip keeps its
-    // own dialog and pending entry instead of being wiped by this decision
-    // (review finding): closing a dead prompt must not close a live
-    // replacement that already arrived.
-    function clearConfirmIfCurrent(confirmId, fallbackSid) {
+    // away. Two independent concerns (review finding):
+    // (a) The pending-map cleanup for the captured `sid` runs whenever the
+    // map's own entry still holds THIS confirmId — even when a different
+    // session's dialog was published mid-IPC. The old published-slice
+    // early-return skipped it, so switching back resurfaced a phantom
+    // dialog. A same-session newer replacement still survives: the map only
+    // clears on an id match.
+    // (b) The published-slice clearing stays gated on the published request
+    // for THAT sid matching the confirmId, so a newer replacement's dialog
+    // is never closed by this decision.
+    function clearConfirmIfCurrent(confirmId, sid) {
+      const target = String(sid || state.activeSessionId);
+      const pending = pendingBySession[target];
+      if (
+        pending && pending.confirm &&
+        String(pending.confirm.confirmId) === String(confirmId)
+      ) {
+        pending.confirm = null;
+      }
       const request = state.computerUse && state.computerUse.confirmRequest;
-      const sid = (request && request.sessionId) || fallbackSid || state.activeSessionId;
-      if (request && String(request.confirmId) !== String(confirmId)) return;
-      const pending = pendingBySession[sid];
-      if (pending) pending.confirm = null;
-      publish(sid, { confirmRequest: null });
+      const published = !!(
+        request &&
+        String(request.sessionId || "") === target &&
+        String(request.confirmId) === String(confirmId)
+      );
+      if (published) publish(target, { confirmRequest: null });
     }
 
     // Backend TTL: a confirmation older than its five-minute window is
@@ -212,6 +234,11 @@
     }
 
     async function confirm(confirmId) {
+      // Attribute the decision to the session the dialog belongs to, captured
+      // BEFORE the IPC round-trip (same rule as deny()): a session switch
+      // mid-flight must not redirect the cleanup.
+      const request = state.computerUse && state.computerUse.confirmRequest;
+      const sid = (request && request.sessionId) || state.activeSessionId;
       try {
         await invoke("computer_use_confirm", { confirmId });
       } catch (error) {
@@ -219,13 +246,13 @@
         // Expired: the backend already dropped the request, so closing
         // locally is the only way out of the dead-end modal. Targeted clear
         // (same rule as below): a newer replacement request must survive.
-        clearConfirmIfCurrent(confirmId, state.activeSessionId);
+        clearConfirmIfCurrent(confirmId, sid);
         throw error;
       }
       // Clear only the dialog that was confirmed (review finding): a new
       // request landing during the IPC round-trip keeps its own dialog and
       // pending entry instead of being wiped by this decision.
-      clearConfirmIfCurrent(confirmId, state.activeSessionId);
+      clearConfirmIfCurrent(confirmId, sid);
     }
 
     // Explicit backend deny: clears the pending confirmation so the model's
@@ -330,9 +357,9 @@
           element: String(payload.element || ""),
           confirmId,
         };
-        // Optional full typed-text preview (backend contract): present only
-        // for non-password Type actions longer than the preview; pass it
-        // through untouched and keep old payloads free of the key.
+        // Full typed-text preview (backend contract): rides along with every
+        // non-password Type action up to 4096 chars, short texts included;
+        // pass it through untouched and keep old payloads free of the key.
         const typePreviewFull = payload.type_preview_full || payload.typePreviewFull;
         if (typeof typePreviewFull === "string" && typePreviewFull) {
           pending.confirm.typePreviewFull = typePreviewFull;
