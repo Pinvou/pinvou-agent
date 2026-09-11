@@ -33,6 +33,11 @@ pub struct Project {
     /// 判定与删除语义;用户改名/加根后保留原值,不做名字回写同步。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// 项目记忆的主文件夹(§9.2/§9.3):项目通道新建会话时的默认 cwd。
+    /// 必须是 roots 成员;由创建链路/管理面板显式写入,移除该 root 时不
+    /// 自动清理(下次创建时调用方按 roots 重选并回写)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_primary_root: Option<PathBuf>,
 }
 
 /// 归属映射值:`Some(project_id)` = 显式归属;`None` = 显式移出(跳过自动
@@ -410,6 +415,7 @@ impl ProjectStore {
             created_at: now,
             updated_at: now,
             origin: None,
+            last_primary_root: None,
         };
         state.projects.push(project.clone());
         state
@@ -450,6 +456,38 @@ impl ProjectStore {
         if let Some(roots) = roots {
             project.roots = roots;
         }
+        project.updated_at = Utc::now();
+        let updated = project.clone();
+        persist_locked(&state, &self.path)?;
+        Ok(updated)
+    }
+
+    /// 记录项目记忆的主文件夹(§9.2):仅接受 roots 成员(折叠键比较),
+    /// 拒绝陌生路径——主文件夹必须是项目领地内目录。返回更新后的项目。
+    pub fn set_last_primary_root(&self, project_id: &str, root: &Path) -> Result<Project> {
+        let mut state = self.state.write();
+        let index = state
+            .projects
+            .iter()
+            .position(|project| project.id == project_id)
+            .ok_or_else(|| anyhow::anyhow!("project not found: {project_id}"))?;
+        let display = root_display(root);
+        let key = identity_key_of_display(&display);
+        let is_member = state.projects[index]
+            .roots
+            .iter()
+            .any(|existing| identity_key_of_display(existing) == key);
+        if !is_member {
+            bail!(
+                "primary root must be one of the project roots: {}",
+                root.display()
+            );
+        }
+        let project = &mut state.projects[index];
+        if project.last_primary_root.as_deref() == Some(display.as_path()) {
+            return Ok(project.clone());
+        }
+        project.last_primary_root = Some(display);
         project.updated_at = Utc::now();
         let updated = project.clone();
         persist_locked(&state, &self.path)?;
@@ -675,6 +713,7 @@ impl ProjectStore {
                         created_at: now,
                         updated_at: now,
                         origin: Some("folder".to_string()),
+                        last_primary_root: None,
                     };
                     state.projects.push(project.clone());
                     state.projects.sort_by(|a, b| {

@@ -48,6 +48,9 @@ pub struct ProjectListItem {
     /// `Some("folder")` = 按文件夹自动物化的项目(前端徽标);None = 手工。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// 项目记忆的主文件夹(§9.3 项目通道新建会话的默认 cwd);None = 未记。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_primary_root: Option<PathBuf>,
     /// 显式归属的会话数;自动归组的成员数由前端分组解析计算(Phase 1)。
     pub assigned_session_count: usize,
 }
@@ -69,6 +72,7 @@ impl ProjectListItem {
             created_at: project.created_at,
             updated_at: project.updated_at,
             origin: project.origin.clone(),
+            last_primary_root: project.last_primary_root.clone(),
             assigned_session_count,
         }
     }
@@ -125,6 +129,7 @@ pub async fn update_project(
     project_id: String,
     name: Option<String>,
     roots: Option<Vec<PathBuf>>,
+    last_primary_root: Option<PathBuf>,
     app: AppHandle,
     store: State<'_, ProjectStore>,
     sessions: State<'_, SessionStore>,
@@ -156,6 +161,13 @@ pub async fn update_project(
                 .map_err(|e| format!("update_project({project_id}) expel members: {e:#}"))?;
         }
     }
+    // 主文件夹记忆(§9.2):显式补丁,必须是 roots 成员(store 校验)。
+    let project = match last_primary_root {
+        Some(root) => store
+            .set_last_primary_root(&project_id, &root)
+            .map_err(|e| format!("update_project({project_id}) primary root: {e:#}"))?,
+        None => project,
+    };
     let count = store.assigned_session_ids(&project_id).len();
     emit_project_event(&app, "projects:list_changed", "updated");
     Ok(ProjectListItem::from_project(&project, count))

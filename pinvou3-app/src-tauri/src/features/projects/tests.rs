@@ -858,3 +858,48 @@ fn expelled_assignment_survives_ensure_rematerialization() {
         "物化重建不得复活被移除根的旧成员"
     );
 }
+
+// ── last_primary_root(§9.2 项目记忆主文件夹)─────────────────────────────────
+
+#[test]
+fn last_primary_root_set_validate_and_persist() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    {
+        let store = store_in(&temp);
+        let project = create(&store, "多根", &[abs("web"), abs("api")]);
+
+        // 非 roots 成员拒绝。
+        let error = store
+            .set_last_primary_root(&project.id, &abs("other"))
+            .expect_err("primary root must be a member");
+        assert!(error.to_string().contains("project roots"));
+
+        // 成员接受;重复同值幂等;跨重开存活。
+        let updated = store
+            .set_last_primary_root(&project.id, &abs("api"))
+            .expect("set primary root");
+        assert_eq!(updated.last_primary_root, Some(abs("api")));
+        let again = store
+            .set_last_primary_root(&project.id, &abs("api"))
+            .expect("idempotent");
+        assert_eq!(again.last_primary_root, Some(abs("api")));
+    }
+    let reopened = store_in(&temp);
+    let project = reopened.list().into_iter().next().expect("project");
+    assert_eq!(
+        project.last_primary_root,
+        Some(abs("api")),
+        "旧档缺键读为 None,写入后跨进程存活"
+    );
+}
+
+#[test]
+fn legacy_file_without_last_primary_root_reads_as_none() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let project = create(&store, "旧档", &[abs("web")]);
+    assert_eq!(project.last_primary_root, None, "新字段默认缺省");
+    // 落盘→重开,skip_serializing_if 下旧档无该键,读回 None。
+    let reopened = store_in(&temp);
+    assert_eq!(reopened.list()[0].last_primary_root, None);
+}
