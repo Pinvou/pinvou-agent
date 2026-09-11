@@ -174,18 +174,24 @@ impl ComputerUseTool {
 
 impl Drop for ComputerUseTool {
     fn drop(&mut self) {
-        // 注销登记：否则登记表里的句柄会把 worker 线程（及其上的 portal
-        // 会话）吊到进程退出。
-        // Emergency release (it also unregisters): a model that pressed the
-        // left button and was dropped mid-drag must not leave the user's
-        // machine in button-held drag state, and the persistent OS-level
-        // grant (Wayland portal session) must close with the tool. The
-        // detached thread keeps its own handle clone, so the worker lives
-        // until the cleanup finishes and only then is torn down.
+        // Session end: dropping the tool is the engine reclaiming it, which
+        // is one of the documented grant-lifetime ends (guard.rs). Revoke
+        // FIRST — the grant, this session's pending confirmations and its
+        // minted approval tokens must not outlive the tool that held them;
+        // other sessions are untouched.
+        self.parts.shared.revoke_session(&self.parts.session_id);
+        // Unregister + emergency cleanup: otherwise the registry entry would
+        // pin the worker thread (and its persistent portal session) until
+        // process exit. A model that pressed the left button and was dropped
+        // mid-drag must not leave the user's machine in button-held drag
+        // state, and the persistent OS-level grant (Wayland portal session)
+        // must close with the tool. The detached thread keeps its own handle
+        // clone, so the worker lives until the cleanup finishes and only
+        // then is torn down.
         self.parts
             .shared
             .backends
-            .emergency_release(&self.parts.session_id);
+            .release_and_unregister(&self.parts.session_id);
     }
 }
 
@@ -623,32 +629,26 @@ fn screen_point(parts: &Parts, x: i32, y: i32) -> T3Screening {
     }
 }
 
-/// Whether a key chord is effectively typed text: exactly one character key
-/// with any modifiers. Classification must be content-based, not
-/// token-position based — `shift+shift+h` parses to
-/// `[Shift, Shift, Char('h')]`, which positional patterns like
-/// `[Char] | [Shift, Char] | [Char, Shift]` miss while the injection still
-/// types a capital H; `h+shift+shift` types a lowercase h and is a typing
-/// form all the same. Modifier choice does not make a character chord a
-/// shortcut: a password spelled one `alt+x` call at a time would otherwise
-/// land in the audit log as plaintext `keys: alt+x` records (round-6
-/// review), so every single-character chord logs the count only.
+/// Whether a key chord is effectively typed text: at least one non-modifier
+/// key, and EVERY non-modifier key is a plain character. Chords made only of
+/// character keys (with or without modifiers) type literal text, so they log
+/// a key count only — a password can be spelled in chunks of up to
+/// [`MAX_KEY_CHORD_TOKENS`] characters per call (`p+a+s+s`), and each chunk
+/// would otherwise land in the audit log as plaintext `keys: p+a+s+s`
+/// records. Classification must be content-based, not token-position based —
+/// `shift+shift+h` parses to `[Shift, Shift, Char('h')]`, which positional
+/// patterns miss while the injection still types a capital H. Chords
+/// containing at least one NAMED key (Return, Tab, F5, …) are shortcuts or
+/// editing actions rather than spelled text and keep the readable
+/// `keys: <chord>` target.
 fn is_typed_text_chord(keys: &[Key]) -> bool {
     let mut non_modifiers = keys.iter().filter(|k| !k.is_modifier());
-    let (Some(only), None) = (non_modifiers.next(), non_modifiers.next()) else {
-        return false;
-    };
-    matches!(only, Key::Char(_))
-}
-
-/// Type 动作的目标是否密码/安全字段（确认摘要据此掩码预览）。以焦点元素为
-/// 准；只有**正面**命中密码/安全角色才算密码框——焦点读不出（Ok(None)=
-/// 无处键入、Err=查询失败）不构成信号，按非密码处理（筛查不可用既不阻断
-/// 执行，也不改变摘要形态；命中密码角色仍会走确认，见 `t3_screening`）。
-fn type_target_is_secure(parts: &Parts) -> bool {
-    match parts.backend.focused_element() {
-        Ok(Some(element)) => element.secure || is_secure_role(&element.role),
-        _ => false,
+    match non_modifiers.next() {
+        Some(first) => match first {
+            Key::Char(_) => non_modifiers.all(|k| matches!(k, Key::Char(_))),
+            _ => false,
+        },
+        None => false,
     }
 }
 
@@ -657,21 +657,35 @@ fn type_target_is_secure(parts: &Parts) -> bool {
 /// 筛查点选择：
 /// - 带坐标的点击查目标点；`left_click_drag` 查**起点与落点**两个点（拖进
 ///   回收站/Delete 区是典型后果性动作，只查光标会漏掉终点）。
-/// - 键盘类动作（type/key/hold_key）查**焦点元素**：键盘输入落在焦点上而
-///   不是光标处——焦点在密码框、光标在别处时按光标筛查会漏判放行（评审
-///   发现，最重级别）。`focused_element` 返回 Ok(None)=明确无焦点=无处键入，
-///   放行；Err=查询失败/平台不支持，同样放行（筛查不可用不阻断执行）。
-///   组合键不再设破坏性确认——和弦编辑可逆，没有主流产品按和弦形态设门；
-///   焦点元素的名单/密码筛查照常生效。
-/// - mouse down/up、无坐标点击作用于光标处，查当前光标；光标必须落在截图
-///   显示器范围内才换算（混合 DPI：光标在另一块屏上时换算结果是垃圾坐标，
-///   查了只会筛错点）；范围外或光标未知时无目标可查，放行。
+/// - Keyboard actions (type/key/hold_key) screen the focused element passed
+///   in by `run` — keyboard input lands on the focus, not at the cursor, so
+///   screening the cursor would miss a password field under focus. `run`
+///   queries the focused element exactly once and passes it here; the same
+///   read also decides the masked type preview, so a focus change between
+///   two queries cannot put a password field's full text into the confirm
+///   event. `None` = no focus or the query failed: screening is unavailable
+///   and clears (fail-open). Chords never get a form-based confirmation —
+///   chord editing is reversible; the focused element's denylist/password
+///   screening still applies.
+/// - Mouse down/up and coordinate-less clicks act at the current cursor.
+///   `cursor_position` reports input coordinates directly (points on macOS,
+///   physical pixels on Windows/X11); the raw value is gated with
+///   `contains_input_point`. Input rects are disjoint per monitor (unlike
+///   device pixels on mixed-DPI setups), so containment is exact and a hit
+///   screens the real cursor location; a point outside this map's rect
+///   belongs to another monitor and mapping it here would screen a location
+///   far from the real cursor — no target, Clear.
 /// - mouse_move 与 scroll 根本不进入本函数（悬停/滚动无动作后果，主流对
 ///   hover/scroll 一律不设门）。
 ///
 /// 所有「筛查不可用」路径一律 Clear（best-effort 类别检测：正面命中才确认，
 /// 筛查基础设施故障不制造确认风暴）。
-fn t3_screening(parts: &Parts, action: &ComputerUseAction, map: Option<&ScaleMap>) -> T3Screening {
+fn t3_screening(
+    parts: &Parts,
+    action: &ComputerUseAction,
+    map: Option<&ScaleMap>,
+    focused: Option<&ElementInfo>,
+) -> T3Screening {
     // 键盘类动作：筛查焦点元素（键盘输入的真正落点）。
     if matches!(
         action,
@@ -679,9 +693,9 @@ fn t3_screening(parts: &Parts, action: &ComputerUseAction, map: Option<&ScaleMap
             | ComputerUseAction::KeyChord { .. }
             | ComputerUseAction::HoldKey { .. }
     ) {
-        return match parts.backend.focused_element() {
-            Ok(Some(element)) => screen_element(&element),
-            Ok(None) | Err(_) => T3Screening::Clear,
+        return match focused {
+            Some(element) => screen_element(element),
+            None => T3Screening::Clear,
         };
     }
     let points: Vec<(i32, i32)> = match action {
@@ -704,19 +718,13 @@ fn t3_screening(parts: &Parts, action: &ComputerUseAction, map: Option<&ScaleMap
         }
         // mouse down/up 与无坐标点击作用于当前光标处。
         _ => match parts.backend.cursor_position() {
-            Ok((dx, dy)) => {
+            Ok((ix, iy)) => {
                 let Some(m) = map else {
                     return T3Screening::Clear;
                 };
-                // Mixed-DPI guard: device-space rects of different monitors can
-                // overlap when their scales differ, so containment must be
-                // checked in the input space — otherwise the cursor on one
-                // screen can pass the wrong monitor's map and device_to_input
-                // yields coordinates far from the real cursor (screening the
-                // wrong point while the injection lands on the real one).
-                let Some((ix, iy)) = m.device_to_input_checked(dx, dy) else {
+                if !m.contains_input_point(ix, iy) {
                     return T3Screening::Clear;
-                };
+                }
                 vec![(ix, iy)]
             }
             Err(_) => return T3Screening::Clear,
@@ -791,9 +799,10 @@ fn request_confirmation(
         "element": element_label,
         "confirm_id": confirm_id,
     });
-    // Optional full typed text for the frontend's "show full text" expander
-    // (absent = old dialog behavior). See `full_type_preview` for when it
-    // may exist (never for secure/masked targets).
+    // Optional full typed text for the confirm dialog, rendered inline
+    // (absent = the dialog shows the count-only summary). See
+    // `full_type_preview` for when it may exist (never for secure/masked
+    // targets).
     if let Some(full) = type_preview_full {
         payload["type_preview_full"] = Value::String(full);
     }
@@ -862,14 +871,7 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         // T3 确认令牌：模型回传 confirm_id 且状态里有与之匹配（同会话、同
         // 动作摘要）的批准令牌才放行。
         if requires_t3_check(&action) {
-            // The masked-target decision only shapes the dialog payload
-            // (whether the full typed text may ride the confirm event).
-            let secure_type_target =
-                matches!(&action, ComputerUseAction::Type { .. }) && type_target_is_secure(&parts);
             let summary = action_summary(&action);
-            // Optional full text for the confirm event's expander, fixed at
-            // mint time (never recomputed at spend time).
-            let type_preview_full = full_type_preview(&action, secure_type_target);
             match &parsed.confirm_id {
                 Some(id) => match parts
                     .shared
@@ -879,6 +881,7 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                     // re-screen, no re-request arms (mainstream model: the
                     // API confirmation is one per-action id the client
                     // acknowledges; there is no crypto and no re-verification).
+                    // No a11y query happens on this path at all.
                     ConfirmationCheck::Granted => {
                         confirmed_t3 = true;
                     }
@@ -891,8 +894,32 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                     }
                 },
                 None => {
+                    // One focused-element read feeds BOTH the masked-preview
+                    // decision and keyboard screening below: two separate
+                    // queries could race a focus change onto a password field
+                    // and leak its full text into the confirm event.
+                    let focused = if matches!(
+                        &action,
+                        ComputerUseAction::Type { .. }
+                            | ComputerUseAction::KeyChord { .. }
+                            | ComputerUseAction::HoldKey { .. }
+                    ) {
+                        parts.backend.focused_element().ok().flatten()
+                    } else {
+                        None
+                    };
+                    // The masked-target decision only shapes the dialog
+                    // payload (whether the full typed text may ride the
+                    // confirm event).
+                    let secure_type_target = matches!(&action, ComputerUseAction::Type { .. })
+                        && focused
+                            .as_ref()
+                            .is_some_and(|element| element.secure || is_secure_role(&element.role));
+                    // Optional full text for the confirm event, fixed at mint
+                    // time (never recomputed at spend time).
+                    let type_preview_full = full_type_preview(&action, secure_type_target);
                     let map = parts.state.lock().last_map.clone();
-                    match t3_screening(&parts, &action, map.as_ref()) {
+                    match t3_screening(&parts, &action, map.as_ref(), focused.as_ref()) {
                         T3Screening::Clear => {}
                         T3Screening::Blocked(hit) => {
                             return Err(request_confirmation(
@@ -989,15 +1016,21 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         ComputerUseAction::Type { text } => {
             record.with_target(&format!("typed {} characters", text.chars().count()));
         }
-        // Typing-form chords (single char + shifts, any order) could spell
-        // out a password one call at a time, so only the key count is
-        // logged — never the character; chords with real modifier keys are
-        // shortcuts with no dictionary risk and keep plaintext (readability
-        // for the user wins).
+        // Typing-form chords (only character keys among the non-modifiers,
+        // any modifier/order arrangement) could spell out a password in
+        // <=4-character chunks, so only the non-modifier key count is
+        // logged — never the characters themselves. Chords containing a
+        // named key (Return, Tab, F5, …) are shortcuts with no dictionary
+        // risk and keep plaintext (readability for the user wins).
         ComputerUseAction::KeyChord { keys, .. } | ComputerUseAction::HoldKey { keys, .. }
             if is_typed_text_chord(keys) =>
         {
-            record.with_target(&format!("pressed 1 key{}", held_key_suffix(&action)));
+            let count = keys.iter().filter(|key| !key.is_modifier()).count();
+            let plural = if count == 1 { "" } else { "s" };
+            record.with_target(&format!(
+                "pressed {count} key{plural}{}",
+                held_key_suffix(&action)
+            ));
         }
         ComputerUseAction::KeyChord { chord, .. } => {
             record.with_target(&format!("keys: {chord}"));
@@ -1112,29 +1145,33 @@ fn execute_action(
     match action {
         ComputerUseAction::Screenshot => Ok(String::new()),
         ComputerUseAction::CursorPosition => {
-            let (dx, dy) = backend.cursor_position()?;
+            // cursor_position reports input coordinates directly (points on
+            // macOS, physical pixels on Windows/X11) — no device round trip.
+            let (ix, iy) = backend.cursor_position()?;
             match map {
                 Some(m) => {
-                    // Mixed-DPI guard: device-space containment is unsound when
-                    // monitor scales differ (overlapping device rects); gate on
-                    // the input-space check and otherwise report raw device
-                    // coordinates with a warning instead of cross-screen junk.
-                    if m.device_to_input_checked(dx, dy).is_none() {
+                    // Input rects are disjoint per monitor, so this
+                    // containment gate is exact even on mixed-DPI setups; a
+                    // point outside the rect belongs to another monitor and
+                    // mapping it through this map would report junk, so the
+                    // raw input coordinates are returned with a warning
+                    // instead of a screenshot-space conversion.
+                    if !m.contains_input_point(ix, iy) {
                         warnings.push(format!(
                             "cursor is outside the captured monitor (origin ({}, {}), {}x{}); \
                              screenshot-space coordinates are unavailable for it this turn",
                             m.origin_x, m.origin_y, m.dev_w, m.dev_h
                         ));
                         return Ok(format!(
-                            "cursor is at device position ({dx}, {dy}), which is outside the \
-                             captured monitor"
+                            "cursor is at ({ix}, {iy}) in global input coordinates, which is \
+                             outside the captured monitor"
                         ));
                     }
-                    let (sx, sy) = m.device_to_shot(dx, dy);
+                    let (sx, sy) = m.input_to_shot(ix, iy);
                     Ok(format!("cursor is at ({sx}, {sy}) in screenshot space"))
                 }
                 None => Ok(format!(
-                    "cursor is at device position ({dx}, {dy}); no screenshot has been taken this session, so screenshot-space coordinates are unavailable"
+                    "cursor is at ({ix}, {iy}) in global input coordinates; no screenshot has been taken this session, so screenshot-space coordinates are unavailable"
                 )),
             }
         }
