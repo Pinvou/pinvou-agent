@@ -230,7 +230,8 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
       const placeMenu = (target) => {
         const rect = target.getBoundingClientRect();
         const width = 176;
-        const height = 184;
+        // 6 个菜单项 × h-9(36px) + 分隔线 9px + 竖向 padding 8px ≈ 233。
+        const height = 233;
         const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
         const top = rect.bottom + 6 + height > window.innerHeight
           ? Math.max(8, rect.top - height - 6)

@@ -177,7 +177,7 @@ export const dictZh = {
         previewTaskDailyBrief: '每日早报', previewTaskFollowUp: '事项督办', previewTaskSalesWeekly: '销售线索周报',
         archiveSession: '收纳', archiveConfirmTitle: '确认收纳任务', archiveConfirmMessage: '将该任务移出任务列表，存入【对话管理-已收纳】，需要时可找回。', archiveConfirmDetail: '', archiveConfirmAction: '确认收纳',
         archiveSuccess: '已收纳到【对话管理-已收纳】', archiveSuccessView: '前往查看',
-        exportSessionArchive: '导出会话日志', exportSessionDone: '会话日志已导出', exportSessionFailed: '会话日志导出失败',
+        exportSessionArchive: '导出会话日志', exportSessionDone: path => `会话日志已导出：${path}`, exportSessionFailed: '会话日志导出失败',
         sessionBatchFailed: n => `${n} 个任务操作失败，请重试`,
         archivedTasks: '任务收纳', archivedTasksDesc: '', archivedEmpty: '暂无收纳任务', restoreArchived: '恢复到任务列表',
         archivedDeleteTitle: '删除收纳任务？', archivedDeleteMessage: '此操作会永久删除该任务及其内容，无法撤销。', archivedDeleteAction: '删除',

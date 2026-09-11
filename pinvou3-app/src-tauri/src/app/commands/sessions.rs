@@ -483,13 +483,18 @@ pub struct ExportedSessionArchive {
 }
 
 /// 归档默认文件名净化：只保留基本文件名、剥离已有扩展名、拒绝控制字符与
-/// 路径敏感字符；异常输入回退到 `pinvou-session.tar.xz`。与
+/// 路径敏感字符；异常输入回退到 `pinvou-session-<id 前 8 位>.tar.xz`（回退
+/// 词干只保留 `[A-Za-z0-9_-]`，与会话 id 的上游合法字符集一致）。与
 /// `assistant_response` 的导出命名防线同构，但保留多段扩展名 `.tar.xz`。
 fn normalized_archive_name(default_name: &str, session_id: &str) -> String {
     const EXTENSION: &str = "tar.xz";
     let fallback_stem = format!(
         "pinvou-session-{}",
-        session_id.chars().take(8).collect::<String>()
+        session_id
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+            .take(8)
+            .collect::<String>()
     );
     let Some(name) = Path::new(default_name)
         .file_name()
@@ -517,6 +522,11 @@ fn normalized_archive_name(default_name: &str, session_id: &str) -> String {
 /// （system prompt、全部轮次、工具调用与结果）连同 artifacts 打包为
 /// `.tar.xz`。打包复用底座 `deepseek_tui::session_export`，在
 /// spawn_blocking 中执行避免阻塞主线程。用户取消返回 `Ok(None)`。
+///
+/// 按只读语义接受任意持久化会话 id（与 `load_session` 一致，不调
+/// `ensure_chat_session`）：定时运行会话同样可导出；外部 ACP 会话无本地
+/// 持久化记录，`store.export_archive` 会自然报"未找到"。菜单入口只出现
+/// 在聊天会话上。
 #[tauri::command]
 pub async fn export_session(
     app: AppHandle,
