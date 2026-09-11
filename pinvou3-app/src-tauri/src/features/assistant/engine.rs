@@ -1883,6 +1883,8 @@ impl AppEngine {
                 system_prompt_override: false,
                 model: self.bridge.model(),
                 workspace: self.workspace.clone(),
+                // 编译收敛:空集合 = 仅主根(现状单根语义);多根接线留给后续阶段。
+                workspace_roots: Vec::new(),
                 mode: AppMode::Agent,
             })
             .await?;

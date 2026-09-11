@@ -1475,6 +1475,10 @@ impl Pinvou3Bridge {
             // —— pinvou3 自定义（destructure 这里 `_`，新结构体里覆盖）——
             model: _,
             workspace: _,
+            // v0.9.12 workspace_roots 底座字段:本阶段仅编译收敛,置空集合
+            // (底座 normalize 后等价旧值 [workspace],单根语义不变);真正的
+            // 多根接线在后续阶段实现。
+            workspace_roots: _,
             session_id: _,
             allow_shell: _,
             trust_mode: _,
@@ -1597,6 +1601,9 @@ impl Pinvou3Bridge {
             // pinvou3 覆盖
             model: self.model(),
             workspace: self.workspace.clone(),
+            // 编译收敛:空集合经底座 normalize 等价 [workspace](单根现状);
+            // 多根(项目钥匙串)接线是后续阶段的任务。
+            workspace_roots: Vec::new(),
             session_id: None,
             allow_shell: self.allow_shell(),
             trust_mode: true,
@@ -3459,6 +3466,7 @@ mod tests {
                 .check(codewhale_execpolicy::ExecPolicyContext {
                     command,
                     cwd: ".",
+                    workspace_roots: Vec::new(),
                     tool: Some("exec_shell"),
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
@@ -3510,6 +3518,7 @@ mod tests {
                 .check(codewhale_execpolicy::ExecPolicyContext {
                     command,
                     cwd: ".",
+                    workspace_roots: Vec::new(),
                     tool: Some("exec_shell"),
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
@@ -3569,6 +3578,7 @@ mod tests {
                 .check(codewhale_execpolicy::ExecPolicyContext {
                     command,
                     cwd: ".",
+                    workspace_roots: Vec::new(),
                     tool: Some("exec_shell"),
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
@@ -3765,6 +3775,7 @@ mod tests {
                 .check(codewhale_execpolicy::ExecPolicyContext {
                     command,
                     cwd: ".",
+                    workspace_roots: Vec::new(),
                     // The model-facing `bash` tool reaches the internal
                     // `exec_shell` policy identity before consulting rules.
                     tool: Some("exec_shell"),
