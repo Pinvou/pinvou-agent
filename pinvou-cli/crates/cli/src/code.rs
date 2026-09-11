@@ -1173,25 +1173,9 @@ fn agent_cli_name(agent: &str) -> &'static str {
     }
 }
 
-/// Windows installs are `.exe` real binaries or npm `.cmd` shims; PATH
-/// scanning must try both because bare names never match.
-#[cfg(target_os = "windows")]
-fn cli_binary_candidates(name: &str) -> [String; 3] {
-    [
-        format!("{name}.exe"),
-        format!("{name}.cmd"),
-        name.to_owned(),
-    ]
-}
-
-#[cfg(not(target_os = "windows"))]
-fn cli_binary_candidates(name: &str) -> [String; 1] {
-    [name.to_owned()]
-}
-
 fn find_in_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    let candidates = cli_binary_candidates(name);
+    let candidates = crate::support::binary_candidates(name);
     std::env::split_paths(&path)
         .flat_map(|dir| candidates.iter().map(move |candidate| dir.join(candidate)))
         .find(|candidate| candidate.is_file())
@@ -1224,7 +1208,7 @@ fn resolve_agent_cli(agent: &str, name: &str) -> Option<PathBuf> {
         _ => None,
     };
     if let Some(dir) = managed_dir {
-        let candidates = cli_binary_candidates(name);
+        let candidates = crate::support::binary_candidates(name);
         if let Some(path) = candidates
             .iter()
             .map(|candidate| dir.join(candidate))
