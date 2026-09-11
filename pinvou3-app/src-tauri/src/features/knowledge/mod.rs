@@ -928,10 +928,17 @@ mod tests {
     use super::*;
 
     fn service() -> KnowledgeService {
+        // One unique directory per CALL: `line!()` is constant inside this
+        // helper, so every caller used to share one index.db — a parallel
+        // test's recovery pass could then wipe another test's seeded records
+        // (flaky `total_files == 1`). The sequence number keeps every
+        // KnowledgeService fully isolated.
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
             "pinvou3_kb_import_reload_{}_{}",
             std::process::id(),
-            line!()
+            seq
         ));
         KnowledgeService::new(&dir.join("index.db")).expect("KnowledgeService::new")
     }
