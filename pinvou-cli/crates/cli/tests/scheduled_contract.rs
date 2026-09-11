@@ -592,9 +592,9 @@ fn delete_refuses_while_a_run_is_active() {
     let home = TempHome::new("delete-active");
     let created = create_task(&home, "Busy task");
     let task_id = created["id"].as_str().unwrap().to_owned();
-    // A queued run left by the (GUI-owned) runtime blocks deletion, matching
-    // the GUI's cancel-then-delete contract: headless, there is nothing to
-    // cancel with, so the CLI refuses.
+    // A queued/running run left by the GUI-owned runtime (it carries the
+    // foundation task id) blocks deletion, matching the GUI's
+    // cancel-then-delete contract: headless, there is nothing to cancel with.
     std::fs::create_dir_all(home.runs_dir(&task_id)).unwrap();
     std::fs::write(
         home.runs_dir(&task_id).join("active-run.json"),
@@ -602,6 +602,7 @@ fn delete_refuses_while_a_run_is_active() {
             "schema_version": 1,
             "id": "active-run",
             "automation_id": task_id,
+            "task_id": "foundation-task-1",
             "scheduled_for": "2026-09-10T08:00:00.000Z",
             "status": "running",
             "created_at": "2026-09-10T08:00:00.000Z"
@@ -612,7 +613,113 @@ fn delete_refuses_while_a_run_is_active() {
     let error = expect_failed(&["scheduled", "delete", &task_id, "--yes"]);
     assert!(error.starts_with("scheduled_delete_blocked"), "{error}");
     assert!(home.def_path(&task_id).exists());
+
+    // A queued record with no task id is CLI bookkeeping (a CLI process
+    // killed mid-run) that no runtime can cancel; it must not wedge the task
+    // forever, so delete proceeds past it.
+    std::fs::write(
+        home.runs_dir(&task_id).join("stranded-run.json"),
+        serde_json::json!({
+            "schema_version": 1,
+            "id": "stranded-run",
+            "automation_id": task_id,
+            "task_id": serde_json::Value::Null,
+            "scheduled_for": "2026-09-10T08:00:00.000Z",
+            "status": "queued",
+            "created_at": "2026-09-10T08:00:00.000Z"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::remove_file(home.runs_dir(&task_id).join("active-run.json")).unwrap();
+    let value = run_json(&["scheduled", "delete", &task_id, "--yes"]);
+    assert_eq!(value["id"], task_id.as_str());
+    assert!(!home.def_path(&task_id).exists());
     let _ = home;
+}
+
+#[test]
+fn run_reconciles_a_stranded_queued_record_before_running() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("run-reconcile");
+    let created = create_task(&home, "Reconciled task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+
+    // A CLI process killed mid-run leaves a queued record with no task id.
+    std::fs::create_dir_all(home.runs_dir(&task_id)).unwrap();
+    std::fs::write(
+        home.runs_dir(&task_id)
+            .join("20260910T080000000Z-stranded.json"),
+        serde_json::json!({
+            "schema_version": 1,
+            "id": "stranded",
+            "automation_id": task_id,
+            "task_id": serde_json::Value::Null,
+            "scheduled_for": "2026-09-10T08:00:00.000Z",
+            "status": "queued",
+            "created_at": "2026-09-10T08:00:00.000Z"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // The next run reconciles it to a terminal failed record instead of
+    // accumulating undeletable state (this environment has no display/model,
+    // so the new run itself then fails honestly; the runs list still shows
+    // the reconciled record).
+    let error = expect_failed(&["scheduled", "run", &task_id]);
+    assert!(!error.is_empty(), "{error}");
+    let reconciled = std::fs::read_to_string(
+        home.runs_dir(&task_id)
+            .join("20260910T080000000Z-stranded.json"),
+    )
+    .unwrap();
+    assert!(
+        reconciled.contains("\"failed\""),
+        "stranded record must become terminal: {reconciled}"
+    );
+    let _ = home;
+}
+
+#[test]
+fn once_at_rejects_calendar_overflow_like_the_foundation() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("once-at-calendar");
+    let prompt = write_prompt_file(&home, "once.md", "Summarize the reports.");
+    // 2026-02-30 cannot exist; the foundation parser rejects it and one such
+    // record would fail the GUI scheduler's whole sweep.
+    for bad in [
+        "FREQ=ONCE;AT=2026-02-30T08:30",
+        "FREQ=ONCE;AT=2025-02-29T08:30",
+    ] {
+        let error = assert_validation_fail(&[
+            "scheduled",
+            "create",
+            "--name",
+            "bad once",
+            "--prompt-file",
+            prompt.to_str().unwrap(),
+            "--rrule",
+            bad,
+        ]);
+        assert!(error.contains("calendar"), "{error}");
+    }
+    // A real date passes validation (the create then proceeds to the
+    // next-run recompute).
+    let _ = home;
+}
+
+fn assert_validation_fail(arguments: &[&str]) -> String {
+    let mut owned: Vec<String> = std::iter::once("pinvou".to_owned())
+        .chain(arguments.iter().map(|value| value.to_string()))
+        .collect();
+    match parse_args(owned.drain(..)) {
+        Err(error) => error.to_string(),
+        Ok(parsed) => {
+            let error = execute(parsed).expect_err("expected validation failure");
+            error.to_string()
+        }
+    }
 }
 
 #[test]

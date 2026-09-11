@@ -324,16 +324,21 @@ fn parse_create(rest: &[String]) -> Result<ScheduledCommand, CliError> {
 
 fn parse_update(rest: &[String]) -> Result<ScheduledCommand, CliError> {
     let id = require_id(rest.first(), "scheduled update")?;
-    // The kind is a one-time creation property (the GUI's UpdateScheduledTaskInput
-    // has no such field); reject it with the reason before the generic parser.
-    if rest[1..].iter().any(|token| token == "--kind") {
-        return Err(CliError::usage(
-            "scheduled update does not accept --kind: kind is settable only at create time",
-        ));
+    // The kind and mode are one-time creation properties (the GUI's
+    // UpdateScheduledTaskInput has no such fields and always persists yolo
+    // mode); reject them with the reason before the generic parser instead of
+    // silently discarding the user's flag.
+    for rejected in ["--kind", "--mode"] {
+        if rest[1..].iter().any(|token| token == rejected) {
+            return Err(CliError::usage(format!(
+                "scheduled update does not accept {rejected}: it is settable only at create \
+                 time and every run is forced to yolo like the GUI"
+            )));
+        }
     }
     let (options, _) = parse_flags(
         &rest[1..],
-        &["--name", "--prompt-file", "--rrule", "--model-id", "--mode"],
+        &["--name", "--prompt-file", "--rrule", "--model-id"],
         &[],
     )?;
     let name = option(&options, "--name").map(str::to_owned);
@@ -626,9 +631,10 @@ fn parse_byday(value: &str) -> Result<Vec<&'static str>, CliError> {
 }
 
 /// Structural mirror of `parse_once_at`: RFC3339 with offset, or a naive
-/// local `YYYY-MM-DDTHH:MM[:SS]` stamp. Calendar-overflow checks (leap days,
-/// month lengths) stay with the foundation's datetime parser; the scheduler
-/// sweep re-validates every record it touches.
+/// local `YYYY-MM-DDTHH:MM[:SS]` stamp. Day-in-month is validated here too:
+/// the foundation parser rejects calendar-overflow stamps, and the GUI
+/// scheduler's whole sweep fails while even one unparseable record exists —
+/// the CLI must not be able to create such a record.
 fn validate_once_at(at: &str) -> Result<(), CliError> {
     if parse_rfc3339(at).is_some() {
         return Ok(());
@@ -663,16 +669,18 @@ fn validate_once_at(at: &str) -> Result<(), CliError> {
             "failed to parse ONCE AT '{at}'. Use local YYYY-MM-DDTHH:MM[:SS] or RFC3339"
         )));
     }
+    let year = digits(0..4).unwrap_or(0) as i64;
     let month = digits(5..7).unwrap_or(0);
     let day = digits(8..10).unwrap_or(0);
     let hour = digits(11..13).unwrap_or(0);
     let minute = digits(14..16).unwrap_or(0);
     let second = digits(17..19).unwrap_or(0);
     if !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
         || hour > 23
         || minute > 59
         || second > 59
+        || day == 0
+        || day > days_in_month(year, month)
     {
         return Err(CliError::usage(format!(
             "ONCE AT '{at}' is not a valid calendar time"
@@ -722,7 +730,7 @@ fn validate_cron_expr(expr: &str) -> Result<(), CliError> {
         (fields[4], 0, 7, WEEKDAY_NAMES, "day-of-week"),
     ];
     let mut day_of_month_wildcard = false;
-    let mut day_of_month_max = 0u32;
+    let mut day_of_month_values: Vec<u32> = Vec::new();
     let mut month_values = Vec::new();
     for (index, (raw, min, max, names, field)) in specs.iter().enumerate() {
         let mut values = Vec::new();
@@ -786,19 +794,23 @@ fn validate_cron_expr(expr: &str) -> Result<(), CliError> {
             }
         }
         if index == 2 {
-            day_of_month_max = values.iter().copied().max().unwrap_or(0);
+            day_of_month_values = values.clone();
         }
         if index == 3 {
             month_values = values;
         }
     }
-    // Mirror of validate_date_space: reject day-of-month values no month can
-    // ever produce (leap February included via the 2024 probe).
+    // Mirror of validate_date_space: the day/month combination must be able
+    // to produce at least one realizable date (leap February included via the
+    // 2024 probe) — per value, so `15,31 2 *` (valid on Feb 15) is accepted
+    // exactly like the foundation.
     if !day_of_month_wildcard {
         let valid = month_values.iter().any(|month| {
             let common = days_in_month(2025, *month);
             let leap = days_in_month(2024, *month);
-            day_of_month_max > 0 && (day_of_month_max <= common || day_of_month_max <= leap)
+            day_of_month_values
+                .iter()
+                .any(|day| *day <= common || *day <= leap)
         });
         if !valid {
             return Err(CliError::usage(
@@ -964,6 +976,9 @@ fn parse_rfc3339(value: &str) -> Option<(i64, u32)> {
             let sign: i64 = if offset[0] == b'-' { -1 } else { 1 };
             let hours: i64 = std::str::from_utf8(&offset[1..3]).ok()?.parse().ok()?;
             let minutes: i64 = std::str::from_utf8(&offset[4..6]).ok()?.parse().ok()?;
+            if hours > 23 || minutes > 59 {
+                return None;
+            }
             sign * (hours * 3600 + minutes * 60)
         }
     };
@@ -1269,7 +1284,13 @@ fn write_json_atomic(path: &Path, value: &serde_json::Value) -> Result<(), CliEr
     let content = serde_json::to_string_pretty(value).map_err(|error| {
         CliError::failed(format!("scheduled_storage_unavailable: serialize: {error}"))
     })?;
-    let tmp = path.with_extension("json.tmp");
+    // Unique tmp suffix: two concurrent writers sharing the fixed
+    // `*.json.tmp` name could rename each other's content.
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = path.with_extension(format!("json.tmp.{}.{}", std::process::id(), nonce));
     std::fs::write(&tmp, content).map_err(|error| {
         CliError::failed(format!(
             "scheduled_storage_unavailable: cannot write {}: {error}",
@@ -1334,29 +1355,10 @@ fn now_string() -> String {
     format_rfc3339_millis(secs, nanos)
 }
 
-/// Random UUIDv4-shaped task/run id (hex, hyphens, safe as a single path
-/// component), standing in for the foundation's `Uuid::new_v4`.
+/// Random task/run id — the same UUIDv4 generator as the foundation's
+/// automation manager (hex, hyphens, safe as a single path component).
 fn new_storage_id() -> String {
-    let mut bytes = [0u8; 16];
-    let random = std::fs::File::open("/dev/urandom")
-        .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut bytes))
-        .is_ok();
-    if !random {
-        let (secs, nanos) = now_epoch();
-        let seed = (secs as u128) << 64 | nanos as u128 | u128::from(std::process::id());
-        bytes = seed.to_be_bytes();
-    }
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex: Vec<String> = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-    format!(
-        "{}-{}-{}-{}-{}",
-        hex[0..4].concat(),
-        hex[4..6].concat(),
-        hex[6..8].concat(),
-        hex[8..10].concat(),
-        hex[10..16].concat()
-    )
+    uuid::Uuid::new_v4().to_string()
 }
 
 // ---- DTO mapping (mirrors ScheduledTaskDto / ScheduledRunDto, camelCase) ----
@@ -2143,15 +2145,25 @@ fn set_pinned(id: &str, pinned: bool, output: OutputMode) -> Result<CliOutcome, 
 fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     require_yes(yes)?;
     let store_holder = TaskStore::new()?;
-    let def = store_holder.read_def(id)?;
+    let mut def = store_holder.read_def(id)?;
+    // Pause first, exactly like the GUI's destructive sequence: a concurrent
+    // GUI scheduler tick must not enqueue a run between the active-run check
+    // below and the removal.
+    def["paused"] = serde_json::Value::Bool(true);
+    store_holder.write_def(&def)?;
     let runs = store_holder.list_runs(id, None)?;
     // The GUI cancels queued/running runs through the foundation TaskManager
     // before deleting; headlessly there is no engine runtime to cancel with,
-    // so deletion refuses instead of stranding an active run.
-    if let Some(active) = runs
-        .iter()
-        .find(|run| matches!(str_field(run, "status").unwrap_or(""), "queued" | "running"))
-    {
+    // so GUI-runtime-owned active runs refuse deletion. A `queued` record
+    // with no task id is CLI-created bookkeeping (a CLI process killed
+    // mid-run) that the GUI cannot cancel either — it must not wedge the
+    // task forever, so it does not block deletion.
+    if let Some(active) = runs.iter().find(|run| {
+        // Records with no task id are CLI bookkeeping no runtime can cancel;
+        // only GUI-runtime-owned active runs block deletion.
+        !str_field(run, "task_id").unwrap_or("").is_empty()
+            && matches!(str_field(run, "status").unwrap_or(""), "queued" | "running")
+    }) {
         return Err(CliError::failed(format!(
             "scheduled_delete_blocked: run {} is {} for task {id}; wait for it to finish \
 (only the GUI runtime can cancel a scheduled run)",
@@ -2186,10 +2198,12 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
             }
         },
     });
-    let existing = archive
+    let existing_snapshot = archive
         .get("tasks")
         .and_then(|value| value.as_object())
-        .expect("tasks normalized to an object above");
+        .expect("tasks normalized to an object above")
+        .clone();
+    let existing = &existing_snapshot;
     {
         let mut merged = existing.clone();
         if let Some(new_tasks) = snapshot["tasks"].as_object() {
@@ -2200,11 +2214,20 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         archive["tasks"] = serde_json::Value::Object(merged);
     }
     write_json_atomic(&store_holder.history_archive_path(), &archive)?;
+    // If the removal below fails, roll the archive entry back so the task is
+    // not left in the GUI's "live + archived" mixed state (mirror of the GUI
+    // delete's archive rollback).
+    let archive_rollback = {
+        let mut rolled = archive.clone();
+        rolled["tasks"] = serde_json::Value::Object(existing_snapshot);
+        rolled
+    };
     let def_path = store_holder.def_path(id)?;
     match std::fs::remove_file(&def_path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
+            let _ = write_json_atomic(&store_holder.history_archive_path(), &archive_rollback);
             return Err(CliError::failed(format!(
                 "scheduled_delete_failed: cannot remove {}: {error}",
                 def_path.display()
@@ -2260,6 +2283,24 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
 fn run(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store_holder = TaskStore::new()?;
     let def = store_holder.read_def(id)?;
+    // Reconcile stranded bookkeeping first: a previous CLI process killed
+    // mid-run leaves a queued record with no task id that no runtime can
+    // cancel or complete (the foundation persists runs only after the
+    // enqueue, so a persisted queued record is a CLI-only state). Mark it
+    // failed/interrupted so list/delete/mark-viewed see a terminal record.
+    let stranded = store_holder.list_runs(id, None)?;
+    for mut stale in stranded {
+        if str_field(&stale, "status") == Some("queued")
+            && str_field(&stale, "task_id").unwrap_or("").is_empty()
+        {
+            stale["status"] = serde_json::json!("failed");
+            stale["error"] = serde_json::json!(
+                "interrupted: the pinvou CLI process was terminated before this run finished"
+            );
+            stale["ended_at"] = serde_json::json!(now_string());
+            let _ = store_holder.save_run(&stale);
+        }
+    }
     let kind = kind_for(&read_registry(&store_holder.task_kinds_path()), id);
     if kind.as_deref() != Some("memory_organize") {
         // Chat-kind run-now drives the GUI's ScheduledChatExecutor +
@@ -2276,8 +2317,9 @@ task; {RUN_HELP_HOST_REQUIREMENT} (run it from the Pinvou app)"
 enabled in settings",
         ));
     }
-    // Run-record bookkeeping first: the run exists on disk before the work,
-    // mirroring run_now_shared's persist-then-execute ordering.
+    // Run-record bookkeeping: the CLI persists a queued record before the
+    // work so a killed process leaves a visible trail. The reconcile above
+    // makes that state self-healing on the next run.
     let run_id = new_storage_id();
     let (secs, nanos) = now_epoch();
     let now = format_rfc3339_millis(secs, nanos);
@@ -2436,21 +2478,25 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
 fn mark_viewed(task_id: &str, run_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store_holder = TaskStore::new()?;
     let sessions = open_sessions()?;
-    // Active runs first, then the deleted-task history archive, exactly like
-    // the GUI mark command's lookup order.
-    let runs = match store_holder.list_runs(task_id, None) {
-        Ok(runs) => runs,
-        Err(error) => {
-            let archive = read_registry(&store_holder.history_archive_path());
-            let archived = archive
-                .get("tasks")
-                .and_then(|value| value.get(task_id))
-                .and_then(|task| task.get("runs"))
-                .and_then(|value| value.as_array())
-                .cloned()
-                .ok_or_else(|| error)?;
-            archived
-        }
+    // Active runs first, then the deleted-task history archive — keyed like
+    // the GUI on whether the task definition still exists (a deleted task's
+    // runs directory is simply absent, which list_runs reports as empty, so
+    // existence — not a read error — is the discriminator).
+    let runs = if store_holder.read_def(task_id).is_ok() {
+        store_holder.list_runs(task_id, None)?
+    } else {
+        let archive = read_registry(&store_holder.history_archive_path());
+        archive
+            .get("tasks")
+            .and_then(|value| value.get(task_id))
+            .and_then(|task| task.get("runs"))
+            .and_then(|value| value.as_array())
+            .cloned()
+            .ok_or_else(|| {
+                CliError::failed(format!(
+                    "scheduled_task_not_found: task {task_id} does not exist"
+                ))
+            })?
     };
     let run = runs
         .iter()
