@@ -2216,6 +2216,27 @@ fn providers_export(
         "warning: the export contains plaintext API keys; store the file in a safe place";
     match destination {
         Some(path) => {
+            // Plaintext keys land in a 0600 file (the GUI hands the same
+            // content to a save dialog; a default-permission file would be
+            // readable by every local user).
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&path)
+                    .and_then(|mut file| std::io::Write::write_all(&mut file, content.as_bytes()))
+                    .map_err(|error| {
+                        CliError::failed(format!(
+                            "code providers export: cannot write {}: {error}",
+                            path.display()
+                        ))
+                    })?;
+            }
+            #[cfg(not(unix))]
             std::fs::write(&path, &content).map_err(|error| {
                 CliError::failed(format!(
                     "code providers export({agent}): cannot write {}: {error}",
