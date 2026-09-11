@@ -161,9 +161,9 @@ impl ConnectorKind {
             id: "tmeet",
             display_name: "Tencent Meeting",
             cli_bin: "tmeet",
-            // Mirror of `TMEET_CTX`, which sets both envs on every tmeet
-            // invocation in the GUI.
-            envs: &[("TMEET_AGENT", "pinvou"), ("TMEET_MODEL", "default")],
+            // Mirror of the GUI's `TMEET_CTX` (features/connectors/tmeet.rs),
+            // which sets both envs on every tmeet invocation.
+            envs: &[("TMEET_AGENT", "Pinvou"), ("TMEET_MODEL", "Pinvou")],
             auth_domains: &["meeting.tencent.com"],
             disabled_filename: "tmeet_disabled",
             min_version: Some(TMEET_MIN_VERSION),
@@ -467,12 +467,13 @@ fn run_cli_bounded(
             spec.cli_bin, spec.id
         )));
     };
+    // `build_command` already carries `args`; `Command::args` appends, so a
+    // second call here would double the argv and break every vendor parser.
     let mut cmd = crate::support::build_command(&executable, args);
     for (key, value) in spec.envs {
         cmd.env(key, value);
     }
-    cmd.args(args)
-        .stdin(Stdio::null())
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     crate::support::set_process_group(&mut cmd);
@@ -507,7 +508,7 @@ fn run_cli_bounded(
             // orphaning them.
             crate::support::kill_process_tree(&mut child);
             return Err(CliError::failed(format!(
-                "{} {} timed out (connect budget exhausted; retry with a larger --timeout)",
+                "{} {} timed out",
                 spec.cli_bin,
                 // args can carry pairing/device material; never echo it raw.
                 redact_secret(&args.join(" "))
@@ -586,13 +587,16 @@ fn semver_from_stream(spec: &VendorSpec, source: &str) -> Option<(u64, u64, u64)
     }
 }
 
-/// `(semver, first non-empty version line)` from one `--version` invocation.
-fn probe_cli_version(spec: &VendorSpec) -> Option<((u64, u64, u64), String)> {
+/// `(semver if parseable, first non-empty version line)` from one
+/// `--version` invocation. Presence is judged by the exit status only (the
+/// GUI's `*_cli_present`); a version line without a parseable number means
+/// "installed, version unknown" for the connectors that do not gate on one.
+fn probe_cli_version(spec: &VendorSpec) -> Option<(Option<(u64, u64, u64)>, String)> {
     let (ok, stdout, stderr) = run_cli(spec, &["--version"]).ok()?;
     if !ok {
         return None;
     }
-    let semver = cli_semver(spec, &stdout, &stderr)?;
+    let semver = cli_semver(spec, &stdout, &stderr);
     let raw = if stdout.trim().is_empty() {
         stderr
     } else {
@@ -607,14 +611,32 @@ fn probe_cli_version(spec: &VendorSpec) -> Option<((u64, u64, u64), String)> {
     Some((semver, raw))
 }
 
-/// Installation gate per connector, mirroring `*_cli_present`:
-/// feishu/dingtalk count any working `--version`; wecom/tmeet also require
-/// the minimum version (older installs must be replaced, not used).
-fn cli_installed(spec: &VendorSpec) -> bool {
+/// Installation gate per connector, mirroring `*_cli_present` plus the
+/// wecom/tmeet minimum-version replacement gate:
+/// - feishu/dingtalk count any working `--version` (an unparseable version
+///   line must not turn an installed CLI into a reinstall loop or, worse,
+///   make `logout` skip the real logout and claim success);
+/// - wecom/tmeet also require the minimum version (older or unparseable
+///   installs must be replaced, not used).
+enum VersionGate {
+    Missing,
+    Upgrade { raw: String },
+    Usable { raw: String },
+}
+
+fn version_gate(spec: &VendorSpec) -> VersionGate {
     match probe_cli_version(spec) {
-        Some((semver, _)) => spec.min_version.map_or(true, |min| semver >= min),
-        None => false,
+        None => VersionGate::Missing,
+        Some((semver, raw)) => match (spec.min_version, semver) {
+            (Some(min), Some(found)) if found < min => VersionGate::Upgrade { raw },
+            (Some(_), None) => VersionGate::Missing,
+            _ => VersionGate::Usable { raw },
+        },
     }
+}
+
+fn cli_installed(spec: &VendorSpec) -> bool {
+    matches!(version_gate(spec), VersionGate::Usable { .. })
 }
 
 /// Runs the connector's status subcommand and returns `(exit_ok, stdout,
@@ -747,6 +769,10 @@ fn bundle_store_on_connected(id: &str) {
 // ─────────────────────────────── execute ───────────────────────────────
 
 pub fn execute(command: ConnectorsCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
+    // Connector state (bundle mirror, disabled markers, install locks/logs)
+    // lives under the product data root; a relative PINVOU3_HOME would
+    // silently resolve against the cwd.
+    crate::support::sandbox_home()?;
     match command {
         ConnectorsCommand::Status { connector } => status(connector, output),
         ConnectorsCommand::EnsureCli { connector } => ensure_cli(connector, output),
@@ -841,8 +867,8 @@ fn vendor_status_entry(kind: ConnectorKind) -> Result<Value, CliError> {
         "enabled": !is_disabled(kind),
         "skills_applied": skills_applied(kind),
     });
-    match probe_cli_version(spec) {
-        None => {
+    match version_gate(spec) {
+        VersionGate::Missing => {
             entry["ok"] = json!(false);
             entry["connected"] = json!(false);
             entry["installed"] = json!(false);
@@ -850,7 +876,7 @@ fn vendor_status_entry(kind: ConnectorKind) -> Result<Value, CliError> {
                 entry["upgrade_required"] = json!(false);
             }
         }
-        Some((semver, raw)) if spec.min_version.map_or(false, |min| semver < min) => {
+        VersionGate::Upgrade { raw } => {
             // Installed but below the command-model baseline: mirror the
             // `upgrade_required` three-state the wecom/tmeet DTOs report.
             entry["ok"] = json!(false);
@@ -859,7 +885,7 @@ fn vendor_status_entry(kind: ConnectorKind) -> Result<Value, CliError> {
             entry["upgrade_required"] = json!(true);
             entry["version"] = json!(raw);
         }
-        Some((_, raw)) => {
+        VersionGate::Usable { raw } => {
             entry["installed"] = json!(true);
             entry["upgrade_required"] = json!(false);
             entry["version"] = json!(raw);
@@ -937,7 +963,10 @@ fn set_enabled(
 /// ruleset hot-refresh (live engine pool) are app-side.
 fn apply_skills(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, CliError> {
     let spec = kind.spec();
-    let connected = cli_connected(spec)?;
+    // Mirror the GUI: a vendor CLI that cannot even be probed counts as
+    // "not connected" (the visible outcome is the same: skills stay hidden),
+    // instead of failing the whole command on a missing binary.
+    let connected = cli_connected(spec).unwrap_or(false);
     let visible = connected && !is_disabled(kind);
     if visible {
         pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(spec.id);
@@ -994,7 +1023,7 @@ fn logout(kind: ConnectorKind, yes: bool, output: OutputMode) -> Result<CliOutco
             } else {
                 &["auth", "logout"]
             };
-            if probe_cli_version(spec).is_none() {
+            if !cli_installed(spec) {
                 bundle_store_on_disconnected(spec.id);
                 json!({ "ok": true, "id": spec.id, "installed": false })
             } else {
@@ -1398,16 +1427,26 @@ fn download_https(url: &str, destination: &Path) -> Result<(), CliError> {
     let mut reader = response.take(MAX_ARCHIVE_BYTES + 1);
     let mut file = std::fs::File::create(&part)
         .map_err(|error| CliError::failed(format!("cannot create archive file: {error}")))?;
-    let copied = std::io::copy(&mut reader, &mut file)
-        .map_err(|error| CliError::failed(format!("connector download failed: {error}")))?;
+    let copied = match std::io::copy(&mut reader, &mut file) {
+        Ok(copied) => copied,
+        Err(error) => {
+            let _ = std::fs::remove_file(&part);
+            return Err(CliError::failed(format!(
+                "connector download failed: {error}"
+            )));
+        }
+    };
     if copied > MAX_ARCHIVE_BYTES {
         let _ = std::fs::remove_file(&part);
         return Err(CliError::failed("connector archive exceeds the size cap"));
     }
     drop(file);
-    std::fs::rename(&part, destination).map_err(|error| {
-        CliError::failed(format!("cannot finish the archive download: {error}"))
-    })?;
+    if let Err(error) = std::fs::rename(&part, destination) {
+        let _ = std::fs::remove_file(&part);
+        return Err(CliError::failed(format!(
+            "cannot finish the archive download: {error}"
+        )));
+    }
     Ok(())
 }
 
@@ -1462,7 +1501,9 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
     let mut notes: Vec<String> = Vec::new();
     match spec.id {
         "feishu" => {
-            // Phase 1 (register app): `config init --new` until exit.
+            // Phase 1 (register app): `config init --new` until exit. The
+            // register link is printed and noted live by
+            // `spawn_and_capture_url` while the vendor CLI runs.
             let (url, _user_code, status_ok) = spawn_and_capture_url(
                 spec,
                 &["config", "init", "--new"],
@@ -1470,14 +1511,13 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 deadline,
                 None,
             )?;
-            if let Some(url) = url {
-                notes.push(format!("register-url: {url}"));
-            }
             if !status_ok {
-                return Err(CliError::failed(
-                    "feishu app registration did not complete (cancelled or timed out)",
-                ));
+                return Err(CliError::failed(format!(
+                    "feishu app registration did not complete (cancelled or timed out){}",
+                    captured_notes(&notes)
+                )));
             }
+            let _ = url;
             // Phase 2 (authorize user): device-code login + polling.
             let (ok, stdout, stderr) = run_cli_bounded(
                 spec,
@@ -1516,11 +1556,13 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                     CliError::failed("feishu auth login did not return a device code")
                 })?;
             notes.push(format!("authorize-url: {url}"));
+            eprintln!("lark-cli authorize-url: {url}");
             loop {
                 if Instant::now() >= deadline {
-                    return Err(CliError::failed(
-                        "feishu authorization timed out before the scan completed",
-                    ));
+                    return Err(CliError::failed(format!(
+                        "feishu authorization timed out before the scan completed{}",
+                        captured_notes(&notes)
+                    )));
                 }
                 std::thread::sleep(Duration::from_secs(3));
                 // This call may block until completion or return pending;
@@ -1567,32 +1609,22 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 Some(&qr_dir),
             );
             // The stdout URL is the landing page (which asks for another
-            // scan); only the qr.png the vendor wrote authorizes in one scan,
-            // so keep it readable and point the user at it, and clean the
-            // temp dir up on every path (spawn failure included).
-            let outcome = flow.and_then(|(url, _user_code, status_ok)| {
-                if let Some(url) = url {
-                    notes.push(format!("authorize-url: {url}"));
-                }
+            // scan); the live `scan-qr-file` note from
+            // `spawn_and_capture_url` points at the PNG that authorizes in
+            // one scan, and the temp dir is cleaned up on every path (spawn
+            // failure included).
+            let outcome = flow.and_then(|(_url, _user_code, status_ok)| {
                 if !status_ok || !cli_connected(spec)? {
-                    let _ = std::fs::remove_dir_all(&qr_dir);
-                    return Err(CliError::failed(
-                        "wecom authorization did not complete (cancelled or timed out)",
-                    ));
+                    return Err(CliError::failed(format!(
+                        "wecom authorization did not complete (cancelled or timed out){}",
+                        captured_notes(&notes)
+                    )));
                 }
                 Ok(())
             });
             if let Err(error) = outcome {
                 let _ = std::fs::remove_dir_all(&qr_dir);
                 return Err(error);
-            }
-            let qr_png = qr_dir.join("qr.png");
-            if qr_png.is_file() {
-                notes.push(format!(
-                    "scan-qr-file: {} (the authorize-url above is a landing page; scan this \
-                     PNG to authorize in one step)",
-                    qr_png.display()
-                ));
             }
             bundle_store_on_connected(spec.id);
             let _ = std::fs::remove_dir_all(&qr_dir);
@@ -1603,19 +1635,22 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             } else {
                 &["auth", "login", "--no-browser"]
             };
-            let (url, user_code, status_ok) =
+            let (url, user_code, _status_ok) =
                 spawn_and_capture_url(spec, args, &mut notes, deadline, None)?;
             if let Some(url) = compose_user_code(&url, user_code.as_deref()) {
                 notes.push(format!("authorize-url: {url}"));
             }
-            // Mirror the GUI's immediate-failure detection: a vendor CLI that
-            // exits without completing authorization is an error now, not a
-            // timeout five minutes later.
-            if !status_ok && !cli_connected(spec)? {
+            // Mirror the GUI's exit handling: judge by the auth probe alone,
+            // whatever exit code the vendor CLI used — an exit-0 logout that
+            // never authenticated must fail here too, not five minutes later.
+            // Vendor output was piped (not shown), so the error carries the
+            // login material captured so far instead of pointing at a
+            // terminal that never saw it.
+            if !cli_connected(spec)? {
                 return Err(CliError::failed(format!(
-                    "{} login exited before authorization completed; check the org policy / \
-                     CLI output above",
-                    spec.display_name
+                    "{} login exited before authorization completed{}",
+                    spec.display_name,
+                    captured_notes(&notes)
                 )));
             }
             loop {
@@ -1625,8 +1660,9 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 }
                 if Instant::now() >= deadline {
                     return Err(CliError::failed(format!(
-                        "{} authorization timed out before login completed",
-                        spec.display_name
+                        "{} authorization timed out before login completed{}",
+                        spec.display_name,
+                        captured_notes(&notes)
                     )));
                 }
                 std::thread::sleep(Duration::from_millis(400));
@@ -1662,6 +1698,8 @@ fn spawn_and_capture_url(
             spec.cli_bin, spec.id
         )));
     };
+    // `build_command` already carries `args`; `Command::args` appends, so a
+    // second call here would double the argv and break every vendor parser.
     let mut cmd = crate::support::build_command(&executable, args);
     for (key, value) in spec.envs {
         cmd.env(key, value);
@@ -1669,8 +1707,7 @@ fn spawn_and_capture_url(
     if let Some(dir) = work_dir {
         cmd.current_dir(dir);
     }
-    cmd.args(args)
-        .stdin(Stdio::null())
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     crate::support::set_process_group(&mut cmd);
@@ -1704,9 +1741,46 @@ fn spawn_and_capture_url(
             break;
         }
         match rx.recv_timeout(remaining) {
-            Ok(LoginStreamEvent::Url(found)) => url = Some(found),
-            Ok(LoginStreamEvent::Code(code)) => user_code = Some(code),
+            Ok(LoginStreamEvent::Url(found)) => {
+                // The vendor CLI stays alive until the user authorizes, so
+                // this is the only moment the link is actionable — surface
+                // it immediately (stderr keeps `--output json` stdout
+                // single-line) and record it for the final summary and any
+                // later error.
+                eprintln!("{} login link: {found}", spec.cli_bin);
+                notes.push(format!("login link: {found}"));
+                url = Some(found);
+            }
+            Ok(LoginStreamEvent::Code(code)) => {
+                eprintln!("{} user code: {code}", spec.cli_bin);
+                notes.push(format!("user code: {code}"));
+                user_code = Some(code);
+            }
             Err(_) => break,
+        }
+    }
+    // wecom writes the one-scan `qr.png` around the time it prints the
+    // landing-page URL; give it a short window so the path is visible while
+    // the login process still runs (the final notes render only after exit).
+    if let Some(dir) = work_dir {
+        let qr_png = dir.join("qr.png");
+        for _ in 0..15 {
+            if qr_png.is_file() {
+                eprintln!(
+                    "wecom scan-qr-file: {} (scan this PNG to authorize in one step)",
+                    qr_png.display()
+                );
+                notes.push(format!(
+                    "scan-qr-file: {} (the login link is a landing page; scan this PNG to \
+                     authorize in one step)",
+                    qr_png.display()
+                ));
+                break;
+            }
+            if qr_png.exists() && !qr_png.is_file() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
         }
     }
     if url.is_none() {
@@ -1720,8 +1794,9 @@ fn spawn_and_capture_url(
         Ok(None) => {
             crate::support::kill_process_tree(&mut child);
             return Err(CliError::failed(format!(
-                "{} login timed out (connect budget exhausted; retry with a larger --timeout)",
-                spec.cli_bin
+                "{} login timed out (connect budget exhausted; retry with a larger --timeout){}",
+                spec.cli_bin,
+                captured_notes(notes),
             )));
         }
         Err(error) => {
@@ -1732,6 +1807,17 @@ fn spawn_and_capture_url(
         }
     };
     Ok((url, user_code, status.success()))
+}
+
+/// Suffix for connect errors that carries the login material captured so far
+/// — after a timeout the notes are often all the user has (the vendor CLI is
+/// gone and its output was piped, not printed).
+fn captured_notes(notes: &[String]) -> String {
+    if notes.is_empty() {
+        String::new()
+    } else {
+        format!("; captured so far: {}", notes.join(" | "))
+    }
 }
 
 /// Stream event collected while a login command runs.
