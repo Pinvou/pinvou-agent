@@ -1064,3 +1064,101 @@ fn delete_archives_run_history_when_archive_tasks_key_is_missing() {
     assert!(!home.def_path(&task_id).exists());
     let _ = home;
 }
+
+// ---- round-3 fixes: RFC3339 ONCE AT calendar truth, delete pause semantics ----
+
+#[test]
+fn once_at_rejects_calendar_overflow_on_the_rfc3339_channel_too() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("once-at-rfc3339");
+    let prompt = write_prompt_file(&home, "task.md", "Do the thing.");
+    // The foundation parser (chrono) rejects these on both channels, and one
+    // unparseable record stalls the GUI scheduler's whole sweep. Validation
+    // happens at parse time, so the rejection is a usage error (exit 2).
+    for bad_at in [
+        "FREQ=ONCE;AT=2026-02-30T08:30:00Z",
+        "FREQ=ONCE;AT=2025-02-29T08:30:00Z",
+        "FREQ=ONCE;AT=2026-04-31T08:30:00+08:00",
+    ] {
+        let mut owned: Vec<String> = std::iter::once("pinvou".to_owned())
+            .chain(
+                [
+                    "scheduled",
+                    "create",
+                    "--name",
+                    "Overflow",
+                    "--prompt-file",
+                    prompt.to_str().unwrap(),
+                    "--rrule",
+                    bad_at,
+                ]
+                .iter()
+                .map(|value| value.to_string()),
+            )
+            .collect();
+        let error = match parse_args(owned.drain(..)) {
+            Err(error) => error,
+            Ok(parsed) => execute(parsed).expect_err("calendar overflow must be rejected"),
+        };
+        assert_eq!(error.exit_code(), ExitCode::Usage, "{bad_at}: {error}");
+        assert!(
+            error.to_string().contains("is not a valid calendar time"),
+            "{bad_at}: {error}"
+        );
+    }
+    // A real RFC3339 stamp on the same channels is still accepted.
+    let value = run_json(&[
+        "scheduled",
+        "create",
+        "--name",
+        "Real date",
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+        "--rrule",
+        "FREQ=ONCE;AT=2026-02-28T08:30:00Z",
+    ]);
+    assert_eq!(value["name"], "Real date");
+}
+
+#[test]
+fn delete_blocked_restores_the_previous_status() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("delete-restore");
+    let created = create_task(&home, "Restore task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    std::fs::create_dir_all(home.runs_dir(&task_id)).unwrap();
+    std::fs::write(
+        home.runs_dir(&task_id).join("active-run.json"),
+        serde_json::json!({
+            "schema_version": 1,
+            "id": "active-run",
+            "automation_id": task_id,
+            "task_id": "foundation-task-1",
+            "scheduled_for": "2026-09-10T08:00:00.000Z",
+            "status": "queued",
+            "created_at": "2026-09-10T08:00:00.000Z"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let error = expect_failed(&["scheduled", "delete", &task_id, "--yes"]);
+    assert!(error.starts_with("scheduled_delete_blocked"), "{error}");
+    // The pause applied for the deletion check is rolled back: the sweep
+    // field (`status`) is back to its previous value and no stray `paused`
+    // bool is left behind.
+    let def: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
+    assert_eq!(def["status"], "active");
+    assert!(def.get("paused").is_none());
+}
+
+#[test]
+fn delete_on_a_non_object_definition_fails_instead_of_panicking() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("delete-non-object");
+    let created = create_task(&home, "Malformed task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    std::fs::write(home.def_path(&task_id), "5").unwrap();
+    let error = expect_failed(&["scheduled", "delete", &task_id, "--yes"]);
+    assert!(error.contains("malformed"), "{error}");
+}

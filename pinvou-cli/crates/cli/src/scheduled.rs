@@ -130,7 +130,6 @@ pub enum ScheduledCommand {
         prompt_file: Option<PathBuf>,
         rrule: Option<String>,
         model_id: Option<String>,
-        mode: Option<TaskMode>,
     },
     Pause {
         id: String,
@@ -324,15 +323,16 @@ fn parse_create(rest: &[String]) -> Result<ScheduledCommand, CliError> {
 
 fn parse_update(rest: &[String]) -> Result<ScheduledCommand, CliError> {
     let id = require_id(rest.first(), "scheduled update")?;
-    // The kind and mode are one-time creation properties (the GUI's
-    // UpdateScheduledTaskInput has no such fields and always persists yolo
-    // mode); reject them with the reason before the generic parser instead of
-    // silently discarding the user's flag.
+    // `--kind` is a create-time property and `--mode` is forced to `yolo`
+    // for every run (the GUI validates it and still persists yolo, so an
+    // update can never change the effective value); reject them with the
+    // reason before the generic parser instead of silently discarding the
+    // user's flag.
     for rejected in ["--kind", "--mode"] {
         if rest[1..].iter().any(|token| token == rejected) {
             return Err(CliError::usage(format!(
-                "scheduled update does not accept {rejected}: it is settable only at create \
-                 time and every run is forced to yolo like the GUI"
+                "scheduled update does not accept {rejected}: kind is settable only at \
+                 create time, and every run is forced to yolo like the GUI"
             )));
         }
     }
@@ -351,19 +351,10 @@ fn parse_update(rest: &[String]) -> Result<ScheduledCommand, CliError> {
         None => None,
     };
     let model_id = option(&options, "--model-id").map(str::to_owned);
-    let mode = match option(&options, "--mode") {
-        Some(value) => Some(TaskMode::parse_value(value)?),
-        None => None,
-    };
-    if name.is_none()
-        && prompt_file.is_none()
-        && rrule.is_none()
-        && model_id.is_none()
-        && mode.is_none()
-    {
+    if name.is_none() && prompt_file.is_none() && rrule.is_none() && model_id.is_none() {
         return Err(CliError::usage(
             "scheduled update requires at least one of --name, --prompt-file, --rrule, \
---model-id, --mode (kind is settable only at create time)",
+--model-id",
         ));
     }
     Ok(ScheduledCommand::Update {
@@ -372,7 +363,6 @@ fn parse_update(rest: &[String]) -> Result<ScheduledCommand, CliError> {
         prompt_file,
         rrule,
         model_id,
-        mode,
     })
 }
 
@@ -636,9 +626,6 @@ fn parse_byday(value: &str) -> Result<Vec<&'static str>, CliError> {
 /// scheduler's whole sweep fails while even one unparseable record exists —
 /// the CLI must not be able to create such a record.
 fn validate_once_at(at: &str) -> Result<(), CliError> {
-    if parse_rfc3339(at).is_some() {
-        return Ok(());
-    }
     let bytes = at.as_bytes();
     let digits = |range: std::ops::Range<usize>| {
         bytes
@@ -648,6 +635,22 @@ fn validate_once_at(at: &str) -> Result<(), CliError> {
             .parse::<u32>()
             .ok()
     };
+    if parse_rfc3339(at).is_some() {
+        // `parse_rfc3339` range-checks every field but only bounds the day
+        // at 31; the foundation parser (chrono) rejects day-overflows like
+        // `02-30` on both channels, and one unparseable record stalls the
+        // GUI scheduler's whole sweep — so the RFC3339 channel applies the
+        // same day-in-month rule as the naive channel below.
+        let year = digits(0..4).unwrap_or(0) as i64;
+        let month = digits(5..7).unwrap_or(0);
+        let day = digits(8..10).unwrap_or(0);
+        if month == 0 || month > 12 || day == 0 || day > days_in_month(year, month) {
+            return Err(CliError::usage(format!(
+                "ONCE AT '{at}' is not a valid calendar time"
+            )));
+        }
+        return Ok(());
+    }
     let numeric = |range: std::ops::Range<usize>| digits(range).is_some();
     let shape_ok = bytes.len() == 16 || bytes.len() == 19;
     let separators = bytes.len() > 15
@@ -1298,6 +1301,9 @@ fn write_json_atomic(path: &Path, value: &serde_json::Value) -> Result<(), CliEr
         ))
     })?;
     std::fs::rename(&tmp, path).map_err(|error| {
+        // The staging file is garbage once the move fails; leaving it behind
+        // would accumulate (mirror of the personas writer's cleanup).
+        let _ = std::fs::remove_file(&tmp);
         CliError::failed(format!(
             "scheduled_storage_unavailable: cannot move {} to {}: {error}",
             tmp.display(),
@@ -1714,8 +1720,7 @@ pub fn execute(command: ScheduledCommand, output: OutputMode) -> Result<CliOutco
             prompt_file,
             rrule,
             model_id,
-            mode,
-        } => update(&id, name, prompt_file, rrule, model_id, mode, output),
+        } => update(&id, name, prompt_file, rrule, model_id, output),
         ScheduledCommand::Pause { id } => pause_or_resume(&id, true, output),
         ScheduledCommand::Resume { id } => pause_or_resume(&id, false, output),
         ScheduledCommand::Pin { id } => set_pinned(&id, true, output),
@@ -1948,7 +1953,6 @@ fn update(
     prompt_file: Option<PathBuf>,
     rrule: Option<String>,
     model_id: Option<String>,
-    mode: Option<TaskMode>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     let store_holder = TaskStore::new()?;
@@ -1982,7 +1986,6 @@ fn update(
         def["rrule"] = serde_json::json!(rrule.trim().to_ascii_uppercase());
         schedule_changed = true;
     }
-    let _ = mode;
     if schedule_changed {
         // Active or paused, the next slot is recomputed by the foundation
         // scheduler sweep (paused tasks keep it unset, like the GUI).
@@ -2146,10 +2149,26 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     require_yes(yes)?;
     let store_holder = TaskStore::new()?;
     let mut def = store_holder.read_def(id)?;
+    // The pause below mutates the object in place; a non-object definition
+    // (hand-edited store) must fail honestly instead of panicking on the
+    // IndexMut.
+    if !def.is_object() {
+        return Err(CliError::failed(format!(
+            "scheduled task {id} is malformed (not a JSON object); fix or remove its \
+             definition file manually"
+        )));
+    }
     // Pause first, exactly like the GUI's destructive sequence: a concurrent
     // GUI scheduler tick must not enqueue a run between the active-run check
-    // below and the removal.
-    def["paused"] = serde_json::Value::Bool(true);
+    // below and the removal. The pause lives in `status` — the field the
+    // foundation sweep actually reads; a `paused` bool would be silently
+    // ignored by serde and pause nothing.
+    let previous_status = def
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("active")
+        .to_owned();
+    def["status"] = Value::String("paused".into());
     store_holder.write_def(&def)?;
     let runs = store_holder.list_runs(id, None)?;
     // The GUI cancels queued/running runs through the foundation TaskManager
@@ -2164,6 +2183,10 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         !str_field(run, "task_id").unwrap_or("").is_empty()
             && matches!(str_field(run, "status").unwrap_or(""), "queued" | "running")
     }) {
+        // Mirror the GUI's restore-on-blocked path: the task stays exactly
+        // as it was, paused only for the duration of this check.
+        def["status"] = Value::String(previous_status);
+        store_holder.write_def(&def)?;
         return Err(CliError::failed(format!(
             "scheduled_delete_blocked: run {} is {} for task {id}; wait for it to finish \
 (only the GUI runtime can cancel a scheduled run)",
@@ -2673,7 +2696,6 @@ mod tests {
                 prompt_file: None,
                 rrule: None,
                 model_id: None,
-                mode: None,
             }
         );
         for (name, expected) in [
