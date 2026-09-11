@@ -300,10 +300,50 @@ fn voice_rejects_invalid_usage_with_exit_two() {
     }
 }
 
+/// The ASR env overrides (like `PINVOU3_ASR_CMD`) configure engines without
+/// PATH; a hermetic voice test must clear them for the duration and restore
+/// them after. Caller holds ENV_LOCK.
+struct AsrEnvGuard {
+    saved: Vec<(String, Option<std::ffi::OsString>)>,
+}
+
+impl AsrEnvGuard {
+    const NAMES: [&str; 3] = [
+        "PINVOU3_ASR_CMD",
+        "PINVOU3_DEEPSPEECH2_CMD",
+        "PADDLESPEECH_BIN",
+    ];
+
+    fn new() -> Self {
+        let mut saved: Vec<(String, Option<std::ffi::OsString>)> = Vec::new();
+        for name in Self::NAMES {
+            saved.push((name.to_owned(), std::env::var_os(name)));
+            // SAFETY: ENV_LOCK is held by the owning test.
+            unsafe { std::env::remove_var(name) };
+        }
+        Self { saved }
+    }
+}
+
+impl Drop for AsrEnvGuard {
+    fn drop(&mut self) {
+        for (name, value) in &self.saved {
+            // SAFETY: ENV_LOCK is held by the owning test.
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn voice_asr_status_reports_hermetic_zero_state() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = HomeGuard::new("voice-status");
+    let _asr_env = AsrEnvGuard::new();
     // Empty PATH makes the machine-dependent probes deterministic: no ffmpeg
     // on PATH and no external ASR CLI anywhere. Env writes are safe here
     // because ENV_LOCK serializes all tests in this process.
@@ -336,7 +376,10 @@ fn voice_asr_status_reports_hermetic_zero_state() {
         assert!(missing.contains(&serde_json::json!("ffmpeg")));
         assert!(missing.contains(&serde_json::json!("engine")));
     }
-    assert_eq!(value["installable"], cfg!(target_os = "linux"));
+    assert_eq!(
+        value["installable"],
+        cfg!(target_os = "linux") || cfg!(target_os = "windows")
+    );
     // Neither lane of the CLI itself can transcribe in this sandbox (the
     // macOS `ready` flag describes GUI capability, not CLI capability).
     assert_eq!(
@@ -372,11 +415,20 @@ fn voice_asr_status_reports_hermetic_zero_state() {
 fn voice_transcribe_reports_missing_engine_cleanly_without_asr() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = HomeGuard::new("voice-transcribe");
+    let _asr_env = AsrEnvGuard::new();
+    // Empty PATH too: a developer with a real `pinvou-asr` on PATH must not
+    // have an arbitrary external binary executed by a default test run.
+    let saved_path = std::env::var("PATH").ok();
+    unsafe { std::env::set_var("PATH", "") };
     let wav = home.root.join("capture.wav");
     // 44-byte header-only WAV: large enough to pass the empty-audio gate.
     std::fs::write(&wav, vec![0u8; 44]).unwrap();
     let error = run(&["pinvou", "voice", "transcribe", wav.to_str().unwrap()])
         .expect_err("no ASR runtime exists in the sandbox");
+    match saved_path {
+        Some(path) => unsafe { std::env::set_var("PATH", path) },
+        None => unsafe { std::env::remove_var("PATH") },
+    }
     assert_eq!(error.exit_code(), ExitCode::Failed);
     let message = error.to_string();
     assert!(
