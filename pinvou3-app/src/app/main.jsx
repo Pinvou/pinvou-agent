@@ -24,6 +24,7 @@ import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared
 import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfirm } from '../features/projects/projectGrouping.js';
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
 import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
+import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
@@ -1606,6 +1607,7 @@ function workspaceDisplayName(path) {
       const [projectOpsBusy, setProjectOpsBusy] = useState(false);
       const [moveToProjectSession, setMoveToProjectSession] = useState(null);
       const [moveToPresetProject, setMoveToPresetProject] = useState(null);
+      const [rebindDraft, setRebindDraft] = useState(null);
       // 拖拽高亮的唯一所有者:源行 dragend 无条件清除,webview 丢 dragleave
       // 事件时高亮也不会卡死(评审 #450 finding 5)。
       const [dropTargetGroupKey, setDropTargetGroupKey] = useState(null);
@@ -2415,6 +2417,64 @@ function workspaceDisplayName(path) {
         // 内部同样有 busy 守卫),不额外打断。
         handleMoveSessionToProject(sessionId, projectId, false);
       };
+      // 目录重绑定(修断链):失效 root 的项目头上点"重新绑定" → 系统选目录
+      // → 确认弹窗。两阶段确认:首调不带 confirmExisting,后端发现旧目录
+      // 仍在时拒绝,弹窗升级为强警告后由用户再次确认。
+      const startRebindWorkspace = async (fromPath) => {
+        // rebindDraft 已开时不再重复开:焦点留在徽标上时按 Enter 会重复触发
+        // onRebind(评审 #463 minor),projectOpsBusy 守卫管不到这个窗口。
+        if (!bridge.files || !bridge.files.pickFolders || projectOpsBusy || rebindDraft) return;
+        try {
+          const picked = await bridge.files.pickFolders();
+          const to = Array.isArray(picked) ? picked[0] : picked;
+          if (!to) return;
+          // 不带会话数:命令实际重绑定 from 之下的一切会话,侧栏组渲染数
+          // 只是子集,数字承诺会与 RebindWorkspaceReport 对不上(finding 10)。
+          setRebindDraft({ from: fromPath, to, warnExisting: false });
+        } catch (error) {
+          console.warn('pick rebind folder failed', error);
+        }
+      };
+      const confirmRebindWorkspace = async (confirmExisting) => {
+        if (!bridge.projects || !rebindDraft || projectOpsBusy) return;
+        setProjectOpsBusy(true);
+        // 清掉上一次失败的内联错误,避免与本次结果叠显。
+        setRebindDraft(prev => prev && { ...prev, error: null });
+        try {
+          const report = await bridge.projects.rebindWorkspaceRoot(
+            rebindDraft.from, rebindDraft.to, confirmExisting);
+          setRebindDraft(null);
+          const rebound = (report && report.rebound_session_ids) ? report.rebound_session_ids.length : 0;
+          const failed = (report && report.failed_session_ids) ? report.failed_session_ids.length : 0;
+          const postBusy = (report && report.post_busy_session_ids) ? report.post_busy_session_ids.length : 0;
+          // 部分失败不再吞掉(finding 3):数据迁移的半成功必须如实呈现。
+          if (failed > 0) {
+            setSettingsToast(t.uiProjects.rebindPartial(rebound, failed));
+          } else if (postBusy > 0) {
+            setSettingsToast(t.uiProjects.rebindBusyAfter(postBusy));
+          } else {
+            setSettingsToast(t.uiProjects.rebindSuccess(rebound));
+          }
+          await refreshCodexSessions().catch((error) => {
+            // 失败不吞:会话列表靠 session:list_changed 事件自愈,但显式
+            // 失败的静默间隙要对排查可见(评审 #463 minor)。
+            console.warn('refresh sessions after rebind failed', error);
+          });
+        } catch (error) {
+          const message = String(error);
+          // 类型化标记匹配(finding 11):只认稳定前缀,不匹配人类文案。
+          if (message.startsWith('REBIND_OLD_ROOT_EXISTS')) {
+            setRebindDraft(prev => prev && { ...prev, warnExisting: true, error: null });
+          } else {
+            console.warn('rebind workspace failed', error);
+            // 失败保持对话框打开并内联呈现错误(评审 #463 M7):toast 层级
+            // 在对话框遮罩(z-200 + blur)之下,关窗前 toast 用户看不到。
+            setRebindDraft(prev => prev && { ...prev, error: message });
+          }
+        } finally {
+          setProjectOpsBusy(false);
+        }
+      };
 
       function sessionRowsForIds(ids) {
         const byId = new Map(allSidebarTasks.map(item => [item.id, item]));
@@ -2863,6 +2923,19 @@ function workspaceDisplayName(path) {
             document.body
           )}
 
+          {rebindDraft && (
+            <RebindFolderDialog
+              from={rebindDraft.from}
+              to={rebindDraft.to}
+              warnExisting={rebindDraft.warnExisting}
+              errorMessage={rebindDraft.error}
+              t={t}
+              busy={projectOpsBusy}
+              onCancel={() => setRebindDraft(null)}
+              onConfirm={confirmRebindWorkspace}
+            />
+          )}
+
           {moveToProjectSession && (
             <MoveToProjectDialog
               session={moveToProjectSession}
@@ -3265,6 +3338,12 @@ function workspaceDisplayName(path) {
                                   onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
                                   onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
                                   onDropSession={bridge.projects && group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
+                                  unavailableRoots={group.kind === 'project'
+                                    ? (group.roots || [])
+                                        .filter(root => !(root && typeof root === 'object' ? root.available : root))
+                                        .map(root => String(typeof root === 'object' ? root.path : root))
+                                    : []}
+                                  onRebind={bridge.projects && group.kind === 'project' ? (rootPath) => startRebindWorkspace(rootPath) : undefined}
                                   dropActive={dropTargetGroupKey === group.key}
                                   onDropActive={(active) => setDropTargetGroupKey(active ? group.key : null)}
                                 />

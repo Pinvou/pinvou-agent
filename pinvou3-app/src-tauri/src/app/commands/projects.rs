@@ -5,12 +5,12 @@
 //! (`rebind_workspace_root`)属 Phase 4,其栅栏(活跃回合拒绝、baseline
 //! 重采集)需要 AcpPool 写路径集成,不随本层首发。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::features::codex_acp::{AcpPool, CodexWorkspaceKind};
+use crate::features::codex_acp::{AcpPool, CodexWorkspaceKind, SessionAgentStore};
 use crate::features::projects::{
     DeleteProjectReport, MoveSessionOutcome, Project, ProjectStore, SessionAssignments,
 };
@@ -23,6 +23,9 @@ use super::sessions::ensure_chat_session;
 /// 刷一条拒绝日志(评审 #447 finding 11:在消费方出现前不转发)。
 fn emit_project_event(app: &AppHandle, event: &str, action: &str) {
     let _ = app.emit(event, serde_json::json!({ "action": action }));
+    // 只走桌面 webview 通道。projects 域桌面独占(Web 桥整域缺席),远程端
+    // 正式支持项目列表之前不转发——与 remote_control 对代码会话事件的
+    // 同类裁决一致;转发不在 RUST_FORWARDED_EVENTS 白名单内会被拒并刷日志。
 }
 
 /// root 的可用性(目录是否仍在磁盘上)——前端据此渲染"文件夹不可用·重新绑定",
@@ -187,4 +190,283 @@ pub async fn move_session_to_project(
         .map_err(|e| format!("move_session_to_project({session_id}): {e:#}"))?;
     emit_project_event(&app, "projects:list_changed", "moved");
     Ok(outcome)
+}
+
+/// rebind_workspace_root 的结果汇报:逐会话结果 + 受影响项目。重绑定幂等,
+/// 失败项可直接重试(候选快照含"已在 to 下但元数据未同步"的重试项,
+/// 已成功的部分重跑为空操作)。
+#[derive(Debug, Clone, Serialize)]
+pub struct RebindWorkspaceReport {
+    pub rebound_session_ids: Vec<String>,
+    pub failed_session_ids: Vec<String>,
+    pub affected_project_ids: Vec<String>,
+    /// 迁移完成后复查发现已进入活跃回合的会话:它们的绑定已平移,但回合
+    /// 可能仍对着旧目录执行,前端据此提示必要时空闲后重试一次。
+    #[serde(default)]
+    pub post_busy_session_ids: Vec<String>,
+}
+
+/// `from` 入参校验:空串与文件系统根(Unix `/`、Windows 盘符根——两者都
+/// 没有 parent)拒绝。空前缀经折叠键匹配会命中一切记录——`from=""` 是全量
+/// 重写,`from="/"` 配合 confirm-existing 是全量重安置,都不是重绑定语义
+/// (评审 #463 minor)。
+fn validate_rebind_from(from: &Path) -> Result<(), String> {
+    if from.as_os_str().is_empty() || from.parent().is_none() {
+        return Err(format!(
+            "rebind_workspace_root: from 必须是非根目录的路径，收到 {}",
+            from.display()
+        ));
+    }
+    Ok(())
+}
+
+/// `to` 不得位于 `from` 之内(相等由调用方先行处理):重绑定按前缀平移,
+/// 目标在旧目录内部时重跑会不断加深 (/a/x → /a/x/new/x → …),幂等性被
+/// 破坏(评审 #451 finding 6)。折叠键比较,大小写/分隔符差异不能逃避。
+fn reject_nested_rebind_target(from: &Path, to_key: &Path) -> Result<(), String> {
+    let from_canon = std::fs::canonicalize(from).unwrap_or_else(|_| from.to_path_buf());
+    let from_key = crate::platform::os::filesystem_path_identity_key(
+        &crate::platform::os::platform_compat_path(&from_canon.to_string_lossy()).to_string_lossy(),
+    );
+    let to_key_str = crate::platform::os::filesystem_path_identity_key(&to_key.to_string_lossy());
+    let from_trim = from_key.trim_end_matches('/');
+    let to_trim = to_key_str.trim_end_matches('/');
+    if !from_trim.is_empty()
+        && (to_trim == from_trim || to_trim.starts_with(&format!("{from_trim}/")))
+    {
+        return Err(
+            "rebind_workspace_root: 新目录不能位于旧目录内部（会造成递归加深）".to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// 旧目录仍在磁盘上 = 非断链场景,要求显式强确认。错误以稳定标记前缀
+/// 表达类型,前端据此升级强警告,不匹配人类文案(finding 11)。
+fn require_confirm_existing(from: &Path, confirm_existing: Option<bool>) -> Result<(), String> {
+    if from.is_dir() && !confirm_existing.unwrap_or(false) {
+        return Err(
+            "REBIND_OLD_ROOT_EXISTS: 原目录仍存在，需在界面确认后重试 (original folder still exists)"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// 目录重绑定(修断链):项目文件夹被物理移走/删除后,把一切以 `from` 为
+/// 前缀的绑定——项目 root、会话工作区(索引/sidecar/元数据三处)、归属
+/// 派生——整体平移到 `to`。与"移动归属"不同,这是物理层写操作,故有栅栏:
+/// - `to` 必须存在且是目录(经 validate_codex_project_workspace 校验);
+/// - 旧目录 `from` 仍存在时须 `confirm_existing = true`(前端已强确认);
+/// - 受影响会话任一有活跃回合(ACP prompt、原生 Engine turn 或 scheduled
+///   轮)即整体拒绝;
+/// - 平移后项目 root 不得与其它项目重叠,违者整体报错回滚。
+/// transcript 里的历史路径不改写;workspace baseline 逐会话重采集(失败仅
+/// 记日志,baseline 可再派生)。
+#[tauri::command]
+pub async fn rebind_workspace_root(
+    from: PathBuf,
+    to: PathBuf,
+    confirm_existing: Option<bool>,
+    app: AppHandle,
+    store: State<'_, ProjectStore>,
+    sessions: State<'_, SessionStore>,
+    acp_pool: State<'_, AcpPool>,
+    engines: State<'_, crate::features::assistant::engine_pool::EnginePool>,
+) -> Result<RebindWorkspaceReport, String> {
+    let to_key = crate::features::codex_acp::validate_codex_project_workspace(&to)
+        .map_err(|e| format!("rebind_workspace_root: 目标目录不可用: {e:#}"))?;
+    if from == to_key {
+        return Ok(RebindWorkspaceReport {
+            rebound_session_ids: Vec::new(),
+            failed_session_ids: Vec::new(),
+            affected_project_ids: Vec::new(),
+            post_busy_session_ids: Vec::new(),
+        });
+    }
+    validate_rebind_from(&from)?;
+    reject_nested_rebind_target(&from, &to_key)?;
+    require_confirm_existing(&from, confirm_existing)?;
+
+    // 受影响集合快照(活跃回合栅栏与元数据重放共用),必须在重写之前取
+    // (评审 #463 M1):rebind_workspace_prefix 的返回只是本跑改写的集合,
+    // 上一跑已平移而 set_workspace 失败的会话不再匹配 `from`,不快照就
+    // 永远无法重试。sessions_under_workspace 含索引外孤儿 sidecar(M6);
+    // 另纳入"已在 to 下但元数据未同步"的重试候选,失败重跑即可收敛。
+    let mut affected = acp_pool.agents().sessions_under_workspace(&from);
+    for (session_id, path) in acp_pool.agents().sessions_under_workspace(&to_key) {
+        if affected.iter().any(|(sid, _)| *sid == session_id) {
+            continue;
+        }
+        // 元数据与绑定一致的是正常会话;读不出元数据(孤儿/损坏)也按候选
+        // 处理,元数据循环里自会分类。
+        let needs_metadata_sync = match sessions.load(&session_id) {
+            Ok(session) => session.metadata.workspace != path,
+            Err(_) => true,
+        };
+        if needs_metadata_sync {
+            affected.push((session_id, path));
+        }
+    }
+
+    // 活跃回合栅栏:受影响会话任一在跑 prompt/turn/scheduled 轮就拒绝,
+    // 等空闲后重试。scheduled 轮只记在 scheduled_running_sessions,不算
+    // 进去会漏掉 spawn→submit 窗口里的在途轮(同 rewind 门口径,M5)。
+    let mut busy_ids = Vec::new();
+    for (session_id, _) in &affected {
+        if acp_pool.is_turn_active(session_id).await
+            || engines.is_turn_active(session_id)
+            || engines.is_scheduled_turn_running(session_id)
+        {
+            busy_ids.push(session_id.clone());
+        }
+    }
+    if !busy_ids.is_empty() {
+        return Err(format!(
+            "rebind_workspace_root: 会话正在运行，稍后重试: {}",
+            busy_ids.join(", ")
+        ));
+    }
+
+    // 顺序:项目 root → 会话绑定(索引+sidecar) → 元数据 → baseline。
+    // 每步幂等,失败重试只补未完成部分。元数据循环驱动自上面的快照,
+    // 逐候选算目标路径(from 前缀下平移;已在 to 下的重试候选原样)。
+    let affected_project_ids = store
+        .rebind_roots(&from, &to_key)
+        .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
+    acp_pool
+        .agents()
+        .rebind_workspace_prefix(&from, &to_key)
+        .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
+    let mut rebound_session_ids = Vec::new();
+    let mut failed_session_ids = Vec::new();
+    for (session_id, bound_path) in &affected {
+        let Some(new_path) = SessionAgentStore::rebind_target_path(bound_path, &from, &to_key)
+        else {
+            continue;
+        };
+        // 孤儿(会话 JSON 已不存在)没有元数据可写,按成功计;损坏 JSON
+        // 不是孤儿——set_workspace 的 load 解析失败会进 failed,可重试
+        // (评审 #463 minor:孤儿分类只认 NotFound,不认一切 load 错误)。
+        if sessions.durable_session_record_is_absent(session_id) {
+            rebound_session_ids.push(session_id.clone());
+            continue;
+        }
+        match sessions.set_workspace(session_id, new_path.clone()) {
+            Ok(()) => rebound_session_ids.push(session_id.clone()),
+            Err(error) => {
+                eprintln!("[projects] rebind set_workspace({session_id}) failed: {error:#}");
+                failed_session_ids.push(session_id.clone());
+            }
+        }
+        // baseline 重采集:best-effort,git 指纹可再派生,失败不阻断重绑定。
+        // 走 spawn_blocking:非 git 目录会同步遍历上万条目,不能在 async
+        // 命令线程上串行跑(同 codex.rs 建会话时的既有 idiom)。
+        let baseline_session_id = session_id.clone();
+        let baseline_root = new_path.clone();
+        match tauri::async_runtime::spawn_blocking(move || {
+            crate::features::codex_acp::workspace::capture_baseline(
+                &baseline_session_id,
+                &baseline_root,
+            )
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                eprintln!("[projects] rebind capture_baseline({session_id}) failed: {error:#}")
+            }
+            Err(error) => {
+                eprintln!("[projects] rebind capture_baseline({session_id}) task failed: {error}")
+            }
+        }
+    }
+
+    emit_project_event(&app, "projects:list_changed", "rebound");
+    for session_id in &rebound_session_ids {
+        super::sessions::emit_session_event(
+            &app,
+            "session:list_changed",
+            session_id,
+            "workspace_rebound",
+        );
+    }
+    // 迁移后忙碌复查(finding 5):入口栅栏与多文件迁移不是互斥区,回合可能
+    // 在迁移期间启动、对着旧目录执行。绑定已平移,这里只如实上报,前端提示
+    // 必要时空闲后重试一次。scheduled 轮同入口栅栏口径(M5)。
+    let mut post_busy_session_ids = Vec::new();
+    for (session_id, _) in &affected {
+        if acp_pool.is_turn_active(session_id).await
+            || engines.is_turn_active(session_id)
+            || engines.is_scheduled_turn_running(session_id)
+        {
+            post_busy_session_ids.push(session_id.clone());
+        }
+    }
+    Ok(RebindWorkspaceReport {
+        rebound_session_ids,
+        failed_session_ids,
+        affected_project_ids,
+        post_busy_session_ids,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rebind_from_rejects_empty_and_root() {
+        assert!(
+            validate_rebind_from(Path::new("")).is_err(),
+            "空串是全量重写"
+        );
+        // 平台根(Unix `/`、Windows 盘符根)没有 parent,必须拒绝。
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .ok()
+            .and_then(|p| p.ancestors().last().map(|a| a.to_path_buf()))
+            .expect("temp dir must have a root ancestor");
+        assert!(
+            validate_rebind_from(&root).is_err(),
+            "文件系统根 {root:?} 配合 confirm-existing 是全量重安置"
+        );
+        let normal = std::env::temp_dir().join("pinvou3-rebind-from-check");
+        assert!(validate_rebind_from(&normal).is_ok());
+    }
+
+    #[test]
+    fn rebind_rejects_target_nested_inside_from() {
+        let from = Path::new("/a/b");
+        assert!(reject_nested_rebind_target(from, Path::new("/a/b/c")).is_err());
+        assert!(reject_nested_rebind_target(from, Path::new("/a/b")).is_err());
+        assert!(
+            reject_nested_rebind_target(from, Path::new("/a/bc")).is_ok(),
+            "目录边界:sibling 前缀不得误命中"
+        );
+        assert!(reject_nested_rebind_target(from, Path::new("/a")).is_ok());
+    }
+
+    #[test]
+    fn rebind_requires_confirm_when_old_root_exists() {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-rebind-confirm-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let error = require_confirm_existing(&dir, None).unwrap_err();
+        assert!(
+            error.starts_with("REBIND_OLD_ROOT_EXISTS"),
+            "稳定标记前缀:前端据此升级强警告,不匹配人类文案"
+        );
+        assert!(require_confirm_existing(&dir, Some(false)).is_err());
+        assert!(require_confirm_existing(&dir, Some(true)).is_ok());
+        let missing = dir.join("gone");
+        assert!(
+            require_confirm_existing(&missing, None).is_ok(),
+            "断链场景(目录已不在盘上)无需确认"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

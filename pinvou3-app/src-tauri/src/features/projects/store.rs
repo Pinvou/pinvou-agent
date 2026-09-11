@@ -535,6 +535,56 @@ impl ProjectStore {
         })
     }
 
+    /// 目录重绑定(修断链通道):把落在 `from` 前缀下的项目 root 平移到 `to`。
+    /// `from` 按存储原值匹配(可能已在磁盘上消失),`to` 由命令层校验为存在
+    /// 的 canonical 路径。改写后逐项目复验重叠约束——平移出的 root 可能撞上
+    /// 其它项目的领地,此时整体报错回滚(内存态未落盘)。返回受影响项目 id。
+    /// 幂等:无 root 命中即空操作。
+    pub fn rebind_roots(&self, from: &Path, to: &Path) -> Result<Vec<String>> {
+        let mut state = self.state.write();
+        if from == to {
+            return Ok(Vec::new());
+        }
+        // to 由命令层保证存在,这里统一成 canonical 键,与存储形态一致;
+        // from 的匹配在折叠键上进行(Windows 折叠大小写/分隔符,仅大小写
+        // 改名的目录不再漏配),后缀按组件数从原 root 切回,保留子目录
+        // 原有大小写。改写在副本上进行,复验通过才提交内存态——重叠
+        // 冲突时调用方看到的状态与盘面保持一致。
+        let to_key = root_display(to);
+        let from_key = root_key(from);
+        let mut candidate = state.projects.clone();
+        let mut affected_projects = Vec::new();
+        for project in candidate.iter_mut() {
+            let mut changed = false;
+            for root in project.roots.iter_mut() {
+                let root_key_str = identity_key_of_display(root);
+                if !key_is_same_or_nested(&root_key_str, &from_key) {
+                    continue;
+                }
+                let suffix: PathBuf = root.components().skip(from.components().count()).collect();
+                *root = if suffix.as_os_str().is_empty() {
+                    to_key.clone()
+                } else {
+                    to_key.join(suffix)
+                };
+                changed = true;
+            }
+            if changed {
+                project.updated_at = Utc::now();
+                affected_projects.push(project.id.clone());
+            }
+        }
+        if !affected_projects.is_empty() {
+            for project in &candidate {
+                validate_roots(&candidate, Some(&project.id), &project.roots)
+                    .context("rebind produced overlapping project roots")?;
+            }
+            state.projects = candidate;
+            persist_locked(&state, &self.path)?;
+        }
+        Ok(affected_projects)
+    }
+
     /// 会话删除钩子:摘除其归属条目(含显式移出的 None 条目)。返回是否
     /// 发生变更;落盘失败仅记日志,内存态已前进,下次变更自愈。
     pub fn forget_session(&self, session_id: &str) -> bool {
