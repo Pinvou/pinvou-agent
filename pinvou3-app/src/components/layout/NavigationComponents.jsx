@@ -206,7 +206,7 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
         color: isDark ? '#fff' : '#1F1F1F',
       };
     };
-    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, onMoveToProject, dragKind = 'session', dragging, onPickUp }) => {
+    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, onMoveToProject, dragKind = 'session', dragging, onPickUp, dndPayload, dndDisabled, onDragEnd }) => {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
@@ -291,6 +291,19 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
           data-drag-kind={sessionDragKind || undefined}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
           style={recentItemRowStyle(dragging, personaTarget, isDark)}
+          draggable={dndPayload && !dndDisabled ? true : undefined}
+          onDragEnd={onDragEnd}
+          onDragStart={dndPayload && !dndDisabled ? (e) => {
+            // 侧栏内 HTML5 拖拽(移动到项目)与 tear-off(长按 350ms)本来
+            // 天然冲突——原生 dragstart 取消 pointer 事件,350ms 定时器照跑,
+            // 中途会误触发拆窗。互斥由 useLongPressDrag 的工程手段提供:
+            // pointerdown 时装 capture 阶段 dragstart 监听({once}) +
+            // pointercancel 兜底,clearPress 幂等,自然竞态被消除;
+            // 该行注释仅描述消费侧,不要因"看起来多余"而删 hook 的联锁。
+            // tear-off 进行中(dndDisabled)不再启动 HTML5 拖拽。
+            e.dataTransfer.setData('application/x-pinvou-session', dndPayload.sessionId);
+            e.dataTransfer.effectAllowed = 'move';
+          } : undefined}
           className={`group flex h-11 items-center rounded-full text-[15px] transition-all
             ${personaTarget ? ''
               : active ? 'bg-[#E1E5EA] text-[#1F1F1F] dark:bg-[#333537] dark:text-white'

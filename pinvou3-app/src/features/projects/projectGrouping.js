@@ -172,4 +172,15 @@ function groupSessionsWithProjects(items, projects, assignments) {
   return groups;
 }
 
-export { TEMPORARY_GROUP_KEY, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId };
+// Shared drop/pick decision: does moving `session` onto project `target` need
+// the add-folder confirmation first (target's roots do not cover the session's
+// workspace), or can it move instantly? Temporary sessions have no workspace
+// and always move instantly. One predicate instead of three hand-mirrored
+// copies (drag drop handler, dialog initializer, dialog choose).
+function needsAddFolderConfirm(session, target) {
+  if (!session || !target) return false;
+  const workspacePath = session.workspaceKind === 'project' ? String(session.workspacePath || '') : '';
+  return !!workspacePath && !projectCoversPath(target, workspacePath);
+}
+
+export { TEMPORARY_GROUP_KEY, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, needsAddFolderConfirm };
