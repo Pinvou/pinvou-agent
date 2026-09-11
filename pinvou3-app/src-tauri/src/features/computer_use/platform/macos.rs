@@ -518,7 +518,8 @@ impl CfObject {
         // SAFETY: self.0 指向存活的 CFString（本 guard 持有 +1，所有权随
         // from_raw 移入 Retained）；CFString 与 NSString toll-free bridged、
         // 为同一 Obj-C 对象，Retained 析构的 objc_release 与 CFRelease 等价。
-        let text = unsafe { Retained::from_raw(self.0.as_ptr().cast::<NSString>()) };
+        // 经 NonNull::cast 保住 *mut：Retained::from_raw 只收 *mut。
+        let text = unsafe { Retained::from_raw(self.0.cast::<NSString>().as_ptr()) };
         // +1 已移交 Retained：抑制 CfObject::drop，避免双重释放。
         std::mem::forget(self);
         text
