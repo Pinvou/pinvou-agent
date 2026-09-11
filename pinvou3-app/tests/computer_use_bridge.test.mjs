@@ -507,7 +507,9 @@ function emit(harness, event, payload) {
 
 // ── 21. confirm_required passes typePreviewFull through to the dialog ─
 // Backend contract: the optional full typed-text preview travels with the
-// confirm payload; old payloads must keep their exact shape.
+// confirm payload for every non-password Type action up to 4096 chars —
+// including very short texts, which the UI must show inline; old payloads
+// must keep their exact shape.
 {
   const harness = createHarness({ initialState: { enabled: true } });
   emit(harness, 'computer_use:confirm_required', {
@@ -522,12 +524,103 @@ function emit(harness, event, payload) {
   });
   assert.equal(harness.published().at(-1).confirmRequest.typePreviewFull, 'snake case',
     'the snake_case spelling is accepted too');
+  // The new backend contract: short texts ride the payload too (previously
+  // only texts beyond the 12-char preview did).
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-4', action: 'type', element: 'Reply box', typePreviewFull: 'hi',
+  });
+  assert.equal(harness.published().at(-1).confirmRequest.typePreviewFull, 'hi',
+    'a short preview must pass through to the published request too');
   emit(harness, 'computer_use:confirm_required', {
     session_id: 's1', confirm_id: 'cu-3', action: 'type', element: 'Reply box',
   });
   const plain = harness.published().at(-1).confirmRequest;
   assert.equal('typePreviewFull' in plain, false,
     'a payload without the field must not grow a typePreviewFull key');
+}
+
+// ── 22. expired confirm() cleanup must not wipe a NEWER dialog ──────
+// Review finding: the catch path cleared unconditionally, so a newer request
+// that arrived mid-IPC lost its dialog. It must survive, while the matching
+// request still clears (dialog + pending entry).
+{
+  const harness = createHarness({
+    initialState: { enabled: true },
+    failInvoke: (command) => command === 'computer_use_confirm',
+    failMessage: 'computer_use_confirm: confirm request unknown or expired',
+  });
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-1', action: 'left click', element: 'Buy now',
+  });
+  // cu-2 replaces the slice while confirm('cu-1') is in flight.
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-2', action: 'left click', element: 'Checkout',
+  });
+  await assert.rejects(harness.feature.confirm('cu-1'), /unknown or expired/i);
+  const survivor = harness.published().at(-1).confirmRequest;
+  assert.ok(survivor && String(survivor.confirmId) === 'cu-2',
+    `the expired cleanup must not wipe the newer cu-2 dialog: ${JSON.stringify(survivor)}`);
+  // The newer request's pending entry survives too: switching away and back
+  // must resurface cu-2, not nothing.
+  harness.state.activeSessionId = 's2';
+  await harness.feature.refreshStatus('s2');
+  harness.state.activeSessionId = 's1';
+  await harness.feature.refreshStatus('s1');
+  const resurfaced = harness.published().at(-1).confirmRequest;
+  assert.ok(resurfaced && String(resurfaced.confirmId) === 'cu-2',
+    `the newer request must resurface from the pending map: ${JSON.stringify(resurfaced)}`);
+}
+
+// ── 23. expired confirm() cleanup still clears the MATCHING request ──
+{
+  const harness = createHarness({
+    initialState: { enabled: true },
+    failInvoke: (command) => command === 'computer_use_confirm',
+    failMessage: 'computer_use_confirm: confirm request unknown or expired',
+  });
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-1', action: 'left click', element: 'Buy now',
+  });
+  await assert.rejects(harness.feature.confirm('cu-1'), /unknown or expired/i);
+  assert.equal(harness.published().at(-1).confirmRequest, null,
+    'the matching expired dialog must still close');
+  harness.state.activeSessionId = 's2';
+  await harness.feature.refreshStatus('s2');
+  harness.state.activeSessionId = 's1';
+  await harness.feature.refreshStatus('s1');
+  assert.equal(harness.published().at(-1).confirmRequest, null,
+    'the matching expired request must not resurface from the pending map');
+}
+
+// ── 24. expired deny() cleanup must not wipe a NEWER dialog ─────────
+{
+  const harness = createHarness({
+    initialState: { enabled: true },
+    failInvoke: (command) => command === 'computer_use_deny',
+    failMessage: 'computer_use_deny: confirm request unknown or expired',
+  });
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-1', action: 'left click', element: 'Buy now',
+  });
+  // cu-2 replaces the slice while deny('cu-1') is in flight.
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-2', action: 'left click', element: 'Checkout',
+  });
+  await assert.rejects(harness.feature.deny('cu-1'), /unknown or expired/i);
+  const survivor = harness.published().at(-1).confirmRequest;
+  assert.ok(survivor && String(survivor.confirmId) === 'cu-2',
+    `the expired deny cleanup must not wipe the newer cu-2 dialog: ${JSON.stringify(survivor)}`);
+  harness.state.activeSessionId = 's2';
+  await harness.feature.refreshStatus('s2');
+  harness.state.activeSessionId = 's1';
+  await harness.feature.refreshStatus('s1');
+  const resurfaced = harness.published().at(-1).confirmRequest;
+  assert.ok(resurfaced && String(resurfaced.confirmId) === 'cu-2',
+    `the newer request must resurface from the pending map: ${JSON.stringify(resurfaced)}`);
+  // And the matching request still clears when denied with an expiry.
+  await assert.rejects(harness.feature.deny('cu-2'), /unknown or expired/i);
+  assert.equal(harness.published().at(-1).confirmRequest, null,
+    'the matching expired dialog must still close after deny');
 }
 
 console.log('computer use bridge behavior tests passed');
