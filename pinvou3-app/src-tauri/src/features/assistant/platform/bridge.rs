@@ -195,14 +195,6 @@ pub struct Pinvou3Bridge {
     /// 项目绑定，所有会话都用会话私有目录。账本根（附件/审计/产物）不受其影响，
     /// 仍由 `SessionStore::session_roots` 的 `ledger` 字段统一决定。
     pub execution_root_resolver: Option<ExecutionRootResolver>,
-    /// Per-session `max_tool_calls` override consumed by
-    /// `build_engine_config_for_session_roots`. Registered before the owning
-    /// pool enters an `Arc`（与 `execution_root_resolver` 同一注册窗口）。
-    /// 未登记的会话保持 `build_engine_config` 的默认值（benchmark-hooks 构建
-    /// 钉 8 作为 GAIA runaway guard）；agentic task 运行为自己的会话登记
-    /// `None`（不限）以免长程产品任务被截断——仅当调用方未显式设置
-    /// `PINVOU3_MAX_TOOL_CALLS` 时才登记，显式旋钮仍然生效。
-    session_tool_budgets: std::collections::HashMap<String, Option<u32>>,
     /// 原生代码会话判定（code_session=true，含临时与绑项目两种）。用于
     /// instructions 的 work/code 分支渲染与工具整形；lib.rs 与执行根解析器
     /// 共用 AcpPool 那份 SessionAgentStore 注入。
@@ -234,7 +226,6 @@ impl std::fmt::Debug for Pinvou3Bridge {
                 "execution_root_resolver",
                 &self.execution_root_resolver.as_ref().map(|_| "Some(..)"),
             )
-            .field("session_tool_budgets", &self.session_tool_budgets)
             .field(
                 "code_session_predicate",
                 &self.code_session_predicate.as_ref().map(|_| "Some(..)"),
@@ -355,7 +346,6 @@ impl Pinvou3Bridge {
             probed_context_tokens: None,
             probed_local_kind: None,
             execution_root_resolver: None,
-            session_tool_budgets: std::collections::HashMap::new(),
             code_session_predicate: None,
             external_acp_session_predicate: None,
             image_analyze_always: false,
@@ -532,12 +522,6 @@ impl Pinvou3Bridge {
     /// 注入原生代码会话的执行根解析器；由 app 组合根在 AcpPool 就绪后调用一次。
     pub fn set_execution_root_resolver(&mut self, resolver: ExecutionRootResolver) {
         self.execution_root_resolver = Some(resolver);
-    }
-
-    /// 登记单个会话的 `max_tool_calls` 覆盖（字段文档见
-    /// `session_tool_budgets`）；必须在持有 pool 的 `Arc` 之前调用。
-    pub fn set_session_tool_budget(&mut self, session_id: String, max_tool_calls: Option<u32>) {
-        self.session_tool_budgets.insert(session_id, max_tool_calls);
     }
 
     /// 注入原生代码会话判定（与执行根解析器同一份 SessionAgentStore）。
@@ -1756,49 +1740,10 @@ impl Pinvou3Bridge {
                 let n = crate::features::marketplace::disabled_tool_names();
                 if n.is_empty() { None } else { Some(n) }
             },
-            max_tool_calls: {
-                #[cfg(feature = "benchmark-hooks")]
-                {
-                    // Eval builds pin 8 tool calls per turn by default (the
-                    // GAIA runaway guard). Long-horizon agentic scenarios such
-                    // as Terminal-Bench raise it explicitly via
-                    // PINVOU3_MAX_TOOL_CALLS, same env convention as
-                    // PINVOU3_ALLOW_SHELL/PINVOU3_MAX_OUTPUT_TOKENS; unset
-                    // keeps the behavior bit-identical.
-                    let cap = match std::env::var("PINVOU3_MAX_TOOL_CALLS") {
-                        Ok(value) => match value.parse::<u32>() {
-                            // A zero cap would disable every tool call, which
-                            // is never a useful configuration: reject it like
-                            // any other invalid value.
-                            Ok(0) => {
-                                eprintln!(
-                                    "[pinvou3-app] ignoring PINVOU3_MAX_TOOL_CALLS=0 (a zero per-turn cap would disable every tool); falling back to the default cap of 8"
-                                );
-                                8
-                            }
-                            Ok(cap) => cap,
-                            Err(_) => {
-                                eprintln!(
-                                    "[pinvou3-app] ignoring invalid PINVOU3_MAX_TOOL_CALLS={value:?}; falling back to the default cap of 8"
-                                );
-                                8
-                            }
-                        },
-                        Err(std::env::VarError::NotUnicode(value)) => {
-                            eprintln!(
-                                "[pinvou3-app] ignoring invalid PINVOU3_MAX_TOOL_CALLS={value:?}; falling back to the default cap of 8"
-                            );
-                            8
-                        }
-                        Err(std::env::VarError::NotPresent) => 8,
-                    };
-                    Some(max_tool_calls.unwrap_or(cap).min(cap))
-                }
-                #[cfg(not(feature = "benchmark-hooks"))]
-                {
-                    max_tool_calls
-                }
-            },
+            // 工具调用轮数不设上限：上游 `max_tool_calls` 默认 `None`（admission
+            // gate 完全惰性）。防失控由底座自身的 max_steps、每轮墙钟、有界重试
+            // 和取消边界承担，宿主不再叠加任何按调用次数的闸。
+            max_tool_calls,
             // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
             // —— v0.8.65 上游新增字段,透传 default ——
             //   subagents_enabled: default true（通用多智能体委派需要 SpawnSubAgent）。
@@ -1847,11 +1792,6 @@ impl Pinvou3Bridge {
         roots: SessionRoots,
     ) -> EngineConfig {
         let mut cfg = self.build_engine_config();
-        // 登记过的会话按登记值覆盖工具调用上限（agentic task 登记不限；
-        // 显式 PINVOU3_MAX_TOOL_CALLS 的会话不登记，继续走基准钉值）。
-        if let Some(max_tool_calls) = self.session_tool_budgets.get(session_id) {
-            cfg.max_tool_calls = *max_tool_calls;
-        }
         let _ = std::fs::create_dir_all(&roots.execution);
         let _ = std::fs::create_dir_all(&roots.ledger);
         cfg.workspace = roots.execution;
@@ -2418,9 +2358,9 @@ impl Pinvou3Bridge {
             deepseek_tui::core::ops::TurnToolSecurityPolicy::new(Some(Vec::new()), Some(exact))
                 .with_read_only_dispatch();
         #[cfg(feature = "benchmark-hooks")]
-        let turn_tool_security = turn_tool_security
-            .with_final_only_after_tool_budget()
-            .with_missing_read_action_repair();
+        // 工具调用轮数已不设上限，budget 耗尽后的 final-only 模式永远不会触发，
+        // 不再 arm；missing-read-action repair 与预算无关，继续保留。
+        let turn_tool_security = turn_tool_security.with_missing_read_action_repair();
         Ok(Op::SendMessage {
             content,
             mode: AppMode::Agent,
@@ -2780,7 +2720,6 @@ mod tests {
             probed_context_tokens: None,
             probed_local_kind: None,
             execution_root_resolver: None,
-            session_tool_budgets: std::collections::HashMap::new(),
             code_session_predicate: None,
             external_acp_session_predicate: None,
             image_analyze_always: false,
@@ -5207,95 +5146,21 @@ mod tests {
         );
     }
 
-    /// Tool-call guard of benchmark-hooks builds: the default 8 calls/turn
-    /// stays, PINVOU3_MAX_TOOL_CALLS raises it explicitly (Terminal-Bench and
-    /// similar agentic scenarios).
-    #[cfg(feature = "benchmark-hooks")]
+    /// 工具调用轮数在宿主层不设任何上限：无论 feature 组合如何，
+    /// `build_engine_config` 都不得配置 `max_tool_calls`（上游 `None` = 不限，
+    /// admission gate 惰性）。防失控由底座的 max_steps、每轮墙钟、有界重试和
+    /// 取消边界承担。
     #[test]
-    fn engine_config_tool_call_cap_respects_env_override() {
-        let (_lock, _env) = locked_env(&["PINVOU3_MAX_TOOL_CALLS"]);
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::remove_var("PINVOU3_MAX_TOOL_CALLS") };
+    fn engine_config_has_no_tool_call_cap() {
         assert_eq!(
             fixture_bridge().build_engine_config().max_tool_calls,
-            Some(8),
-            "eval builds must keep the default guard of 8 tool calls per turn"
+            None,
+            "the host must not configure a per-turn tool-call cap"
         );
-
-        // SAFETY: see above.
-        unsafe { std::env::set_var("PINVOU3_MAX_TOOL_CALLS", "512") };
-        assert_eq!(
-            fixture_bridge().build_engine_config().max_tool_calls,
-            Some(512),
-            "PINVOU3_MAX_TOOL_CALLS must be able to raise the guard"
-        );
-
-        // A zero cap would disable every tool call; it must be rejected like
-        // any other invalid value instead of silently disabling all tools.
-        // SAFETY: see above.
-        unsafe { std::env::set_var("PINVOU3_MAX_TOOL_CALLS", "0") };
-        assert_eq!(
-            fixture_bridge().build_engine_config().max_tool_calls,
-            Some(8),
-            "PINVOU3_MAX_TOOL_CALLS=0 must fall back to the default guard of 8"
-        );
-
-        // Non-UTF-8 values cannot parse; they must fall back to the default
-        // instead of panicking or corrupting the cap. Unix-only: only Unix
-        // can build a non-UTF-8 OsStr from raw bytes.
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStrExt;
-            // SAFETY: see above.
-            unsafe {
-                std::env::set_var(
-                    "PINVOU3_MAX_TOOL_CALLS",
-                    std::ffi::OsStr::from_bytes(&[0xff]),
-                );
-            }
-            assert_eq!(
-                fixture_bridge().build_engine_config().max_tool_calls,
-                Some(8),
-                "a non-UTF-8 PINVOU3_MAX_TOOL_CALLS must fall back to the default guard of 8"
-            );
-        }
-    }
-
-    /// Agentic task runs register an unlimited tool budget for their own
-    /// session so long-horizon product work is not truncated by the
-    /// benchmark-hooks guard; every other session keeps the default pin, and
-    /// an explicitly pinned session override is honored verbatim.
-    #[test]
-    fn session_tool_budget_override_scopes_to_one_session() {
-        // The unregistered-session assertion reads the benchmark cap, which
-        // depends on PINVOU3_MAX_TOOL_CALLS — serialize against the env lock.
-        let (_lock, _env) = locked_env(&["PINVOU3_MAX_TOOL_CALLS"]);
-        let mut bridge = fixture_bridge();
-        bridge.set_session_tool_budget("agentic_test_session".to_owned(), None);
-        bridge.set_session_tool_budget("capped_session".to_owned(), Some(16));
-
-        let cfg = bridge.build_engine_config_for_session("agentic_test_session");
+        let cfg = fixture_bridge().build_engine_config_for_session("any_session");
         assert_eq!(
             cfg.max_tool_calls, None,
-            "a registered unlimited budget must lift the per-turn cap"
-        );
-        let cfg = bridge.build_engine_config_for_session("capped_session");
-        assert_eq!(
-            cfg.max_tool_calls,
-            Some(16),
-            "an explicit registered budget must be honored verbatim"
-        );
-        let cfg = bridge.build_engine_config_for_session("unregistered_session");
-        #[cfg(feature = "benchmark-hooks")]
-        assert_eq!(
-            cfg.max_tool_calls,
-            Some(8),
-            "unregistered sessions must keep the benchmark-hooks guard"
-        );
-        #[cfg(not(feature = "benchmark-hooks"))]
-        assert_eq!(
-            cfg.max_tool_calls, None,
-            "unregistered sessions must keep the default (unlimited) budget"
+            "per-session configs must not grow a tool-call cap either"
         );
     }
 
