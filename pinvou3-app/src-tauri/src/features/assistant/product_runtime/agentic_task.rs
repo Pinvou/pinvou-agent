@@ -335,6 +335,7 @@ fn validate_attachments(attachments: &[AgenticTaskAttachment]) -> Result<()> {
             attachments.len()
         );
     }
+    let mut total_bytes = 0_u64;
     for attachment in attachments {
         let metadata = std::fs::metadata(&attachment.path).with_context(|| {
             format!(
@@ -355,6 +356,17 @@ fn validate_attachments(attachments: &[AgenticTaskAttachment]) -> Result<()> {
                 metadata.len()
             );
         }
+        total_bytes += metadata.len();
+    }
+    // Same aggregate budget as `ProductHeadlessBackend`
+    // (MAX_STAGED_ATTACHMENTS_TOTAL_BYTES = 100 MiB) — the per-file cap alone
+    // allowed 320 MiB of staged attachments.
+    const MAX_ATTACHMENTS_TOTAL_BYTES: u64 = 100 * 1024 * 1024;
+    if total_bytes > MAX_ATTACHMENTS_TOTAL_BYTES {
+        anyhow::bail!(
+            "agent_attachment_too_large: attachments total {total_bytes} bytes (limit \
+             {MAX_ATTACHMENTS_TOTAL_BYTES})"
+        );
     }
     Ok(())
 }
@@ -647,38 +659,53 @@ async fn prompt_with_attachments(
     let staging_root = ledger_root.clone();
     let ingested = tokio::task::spawn_blocking(move || -> Result<Vec<IngestResult>> {
         let mut results = Vec::with_capacity(attachments.len());
-        for attachment in attachments {
-            let basename = attachment
-                .path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(str::to_owned)
-                .context(anyhow::anyhow!(
-                    "agent_attachment_invalid_name: {}",
-                    attachment.path.display()
-                ))?;
-            let relative = stage_file_in_workspace(
-                &attachment.path.to_string_lossy(),
-                &basename,
-                &staging_root,
-                "attachments",
-            )
-            .context("agent_attachment_stage_failed: staging into the session workspace failed")?;
-            let result = crate::features::files::file_ingest::ingest_attachment(
-                &staging_root.join(&relative),
-            )
-            .map_err(|code| anyhow::anyhow!("agent_attachment_ingest_failed: {code}"))?;
-            if attachment.remove_after_ingest {
-                if let Err(error) = std::fs::remove_file(&attachment.path) {
-                    eprintln!(
-                        "[pinvou agent run] remove_after_ingest could not delete {}: {error}",
+        // Sources marked remove_after_ingest are deleted only after the whole
+        // batch ingests successfully — deleting per-attachment would destroy
+        // a caller file and then abort the run on a later failure.
+        let mut consumed_sources: Vec<std::path::PathBuf> = Vec::new();
+        let batch = (|| -> Result<Vec<IngestResult>> {
+            for attachment in attachments {
+                let basename = attachment
+                    .path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_owned)
+                    .context(anyhow::anyhow!(
+                        "agent_attachment_invalid_name: {}",
                         attachment.path.display()
-                    );
+                    ))?;
+                let relative = stage_file_in_workspace(
+                    &attachment.path.to_string_lossy(),
+                    &basename,
+                    &staging_root,
+                    "attachments",
+                )
+                .context(
+                    "agent_attachment_stage_failed: staging into the session workspace failed",
+                )?;
+                let result = crate::features::files::file_ingest::ingest_attachment(
+                    &staging_root.join(&relative),
+                )
+                .map_err(|code| anyhow::anyhow!("agent_attachment_ingest_failed: {code}"))?;
+                if attachment.remove_after_ingest {
+                    consumed_sources.push(attachment.path.clone());
                 }
+                results.push(result);
             }
-            results.push(result);
+            Ok(results)
+        })();
+        if batch.is_err() {
+            return batch;
         }
-        Ok(results)
+        for source in &consumed_sources {
+            if let Err(error) = std::fs::remove_file(source) {
+                eprintln!(
+                    "[pinvou agent run] remove_after_ingest could not delete {}: {error}",
+                    source.display()
+                );
+            }
+        }
+        Ok(batch?)
     })
     .await
     .context("attachment staging task")??;

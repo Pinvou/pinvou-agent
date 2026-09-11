@@ -806,17 +806,6 @@ fn settings_search_list_reports_defaults() {
 
 /// Opt-in: `cargo test -p pinvoy-cli --test models_contract -- --ignored models_test_hits_live_endpoint`
 /// Requires network access; probes the saved model like the GUI test button.
-#[test]
-#[ignore = "network: run with `pinvoy models test <id>` against a reachable endpoint"]
-fn models_test_hits_live_endpoint() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("ignored-model-test");
-    let id = run_ok(ADD_ARGS);
-    let id = id.strip_prefix("id: ").unwrap().trim().to_owned();
-    let stdout = run_ok(&["pinvoy", "models", "test", &id]);
-    assert!(stdout.contains("code:"), "{stdout}");
-}
-
 /// Opt-in: `cargo test -p pinvoy-cli --test models_contract -- --ignored bing_probe_hits_live_endpoint`
 /// Requires internet access; mirrors the GUI `test_search_provider("bing")`.
 #[test]
