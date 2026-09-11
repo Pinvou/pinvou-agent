@@ -623,4 +623,86 @@ function emit(harness, event, payload) {
     'the matching expired dialog must still close after deny');
 }
 
+// ── 25. revoke() collapses a same-session confirm dialog (review finding) ─
+// Backend revoke wipes the session's grant AND its pending confirmations, so
+// a pending confirm dialog must not linger as a dead modal after revoke.
+{
+  const harness = createHarness({ initialState: { enabled: true } });
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-1', action: 'type', element: 'Reply box',
+  });
+  assert.ok(harness.published().at(-1).confirmRequest, 'confirm dialog must be up before revoke');
+  await harness.feature.revoke('s1');
+  const last = harness.published().at(-1);
+  assert.equal(last.grantRequest, null, 'revoke must close the grant dialog');
+  assert.equal(last.confirmRequest, null, 'revoke must collapse the same-session confirm dialog');
+  // No stale pending entry: switching away and back must not resurface
+  // either request.
+  harness.state.activeSessionId = 's2';
+  await harness.feature.refreshStatus('s2');
+  harness.state.activeSessionId = 's1';
+  await harness.feature.refreshStatus('s1');
+  const resurfaced = harness.published().at(-1);
+  assert.equal(resurfaced.confirmRequest, null,
+    'a revoked session must not resurface the confirm from the pending map');
+  assert.equal(resurfaced.grantRequest, null,
+    'a revoked session must not resurface the grant from the pending map');
+}
+
+// ── 26. late cleanup clears the ORIGINAL session's map across a switch ──
+// Review finding: the published-slice early-return skipped the pending-map
+// cleanup when a different session's dialog was published mid-IPC, so
+// switching back resurfaced a phantom dialog for the decided request.
+{
+  const harness = createHarness({ initialState: { enabled: true } });
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-1', action: 'left click', element: 'Buy now',
+  });
+  assert.ok(harness.published().at(-1).confirmRequest, 's1 dialog must be up');
+  // deny() attributes the decision to s1 before the IPC; the user switches
+  // to s2 mid-flight and a fresh s2 dialog is published.
+  const denying = harness.feature.deny('cu-1');
+  harness.state.activeSessionId = 's2';
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's2', confirm_id: 'cu-2', action: 'left click', element: 'Checkout',
+  });
+  assert.equal(String(harness.published().at(-1).confirmRequest.confirmId), 'cu-2',
+    'the s2 dialog must be published mid-IPC');
+  await denying;
+  assert.equal(String(harness.published().at(-1).confirmRequest.confirmId), 'cu-2',
+    'the cross-session cleanup must not close session B\'s dialog');
+  // Switching back to s1 must not resurrect the denied cu-1 request.
+  await harness.feature.refreshStatus('s2');
+  harness.state.activeSessionId = 's1';
+  await harness.feature.refreshStatus('s1');
+  assert.equal(harness.published().at(-1).confirmRequest, null,
+    'session A pending entry must clear despite the mid-IPC session switch');
+}
+
+// ── 27. a newer same-session dialog survives the late cleanup ───────
+// The success-path cleanup of an older id must keep both the replacement's
+// dialog and its pending entry (same rule as the expired path in #22/#24).
+{
+  const harness = createHarness({ initialState: { enabled: true } });
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-1', action: 'left click', element: 'Buy now',
+  });
+  const approving = harness.feature.confirm('cu-1');
+  // cu-2 replaces the dialog while confirm('cu-1') is in flight.
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-2', action: 'left click', element: 'Checkout',
+  });
+  await approving;
+  const survivor = harness.published().at(-1).confirmRequest;
+  assert.ok(survivor && String(survivor.confirmId) === 'cu-2',
+    `the late cleanup of cu-1 must not wipe the newer cu-2 dialog: ${JSON.stringify(survivor)}`);
+  harness.state.activeSessionId = 's2';
+  await harness.feature.refreshStatus('s2');
+  harness.state.activeSessionId = 's1';
+  await harness.feature.refreshStatus('s1');
+  const resurfaced = harness.published().at(-1).confirmRequest;
+  assert.ok(resurfaced && String(resurfaced.confirmId) === 'cu-2',
+    `the newer request must resurface from the pending map: ${JSON.stringify(resurfaced)}`);
+}
+
 console.log('computer use bridge behavior tests passed');
