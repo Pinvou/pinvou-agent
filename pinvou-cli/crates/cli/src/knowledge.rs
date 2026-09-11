@@ -35,7 +35,10 @@
 //!   `--after`/`--before` take UTC `YYYY-MM-DD` dates (the GUI frontend sends
 //!   epoch seconds directly); `--limit` omitted keeps the store's default
 //!   page of 200.
-//! - mount → the GUI gate `validate_collection_mountable`
+//! - mounts/mount/unmount → honest refusal (`knowledge_*_requires_product_host`):
+//!   mounted collections live in the desktop app's per-process memory
+//!   (`features::sessions::mode_state`, deliberately not persisted), so a
+//!   one-shot CLI process can neither observe nor durably mutate them
 //!   (app/commands/knowledge.rs) re-expressed over the real service
 //!   (`semantic_ready`, `l1().collection_name`) with the GUI's verbatim
 //!   error strings, then `SessionStore::add_mounted_collection`. A CLI
@@ -98,7 +101,7 @@ use pinvou3_lib::features::knowledge::{
     IndexState, KnowledgeService, ScanState, SearchQueryDto, default_db_path, model_dir,
 };
 use pinvou3_lib::features::remote_knowledge::RemoteKnowledgeService;
-use pinvou3_lib::features::sessions::{MountedCollectionsSnapshot, SessionStore};
+use pinvou3_lib::features::sessions::SessionStore;
 
 const USAGE: &str = "usage: pinvou knowledge <scan|stats|type-counts|collections|documents|index|search|model|mounts|mount|unmount|remote|host>";
 const SCAN_USAGE: &str = "usage: pinvou knowledge scan <start [--root DIR]|status|cancel>";
@@ -941,7 +944,12 @@ fn parse_date_epoch(value: &str, flag: &str) -> Result<i64, CliError> {
     let year: i64 = year.parse().map_err(|_| invalid())?;
     let month: u32 = month.parse().map_err(|_| invalid())?;
     let day: u32 = day.parse().map_err(|_| invalid())?;
-    if month == 0 || month > 12 || day == 0 || day > days_in_month(year, month) {
+    if !(1..=9999).contains(&year)
+        || month == 0
+        || month > 12
+        || day == 0
+        || day > days_in_month(year, month)
+    {
         return Err(invalid());
     }
     Ok(days_from_civil(year, month, day) * 86_400)
@@ -1186,13 +1194,22 @@ fn index_status(job_id: Option<&str>, output: OutputMode) -> Result<CliOutcome, 
 fn index_cancel(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let service = open_service()?;
     let latest = service.index_status();
-    if let Some(active) = &latest.job_id
-        && active != job_id
-    {
-        return Err(CliError::failed(format!(
-            "knowledge index cancel({job_id}): job is not the active/latest index \
-             job (latest: {active})"
-        )));
+    match &latest.job_id {
+        Some(active) if active == job_id => {}
+        Some(active) => {
+            return Err(CliError::failed(format!(
+                "knowledge index cancel({job_id}): job is not the active/latest index \
+                 job (latest: {active})"
+            )));
+        }
+        // No job exists at all: claiming a cancel was signalled would be a
+        // false success.
+        None => {
+            return Err(CliError::failed(format!(
+                "knowledge_index_job_not_found: no index job exists (nothing to cancel for \
+                 {job_id})"
+            )));
+        }
     }
     service
         .cancel_index()
@@ -1655,100 +1672,49 @@ fn require_session(store: &SessionStore, session_id: &str, action: &str) -> Resu
     })
 }
 
-/// GUI mount gate (`validate_collection_mountable` in
-/// app/commands/knowledge.rs), over the real service: id validity, then
-/// embedding-model readiness, then collection existence, with the GUI's
-/// verbatim error strings. A CLI process never has the embedding model
-/// loaded (its loader is GUI/host-bound, see module docs), so an enabling
-/// mount always stops at the not-ready error.
-fn ensure_collection_mountable(
-    service: &KnowledgeService,
-    collection_id: i64,
-) -> Result<(), CliError> {
-    if collection_id <= 0 {
-        return Err(CliError::failed("知识集 id 无效"));
-    }
-    if !service.semantic_ready() {
-        return Err(CliError::failed("embedding 模型未就绪,知识库暂不可用"));
-    }
-    match service.l1().collection_name(collection_id) {
-        Ok(Some(_)) => Ok(()),
-        Ok(None) => Err(CliError::failed("知识集不存在或已删除")),
-        Err(error) => Err(CliError::failed(format!("knowledge mount: {error}"))),
-    }
+/// The mount surface refuses honestly, same pattern as `model download`:
+/// mounted collections live in the desktop app's per-process memory
+/// (`features::sessions::mode_state` — deliberately not persisted), so a
+/// one-shot CLI process can neither observe nor durably mutate them. A
+/// command that printed success here would change nothing.
+fn mount_requires_product_host(action: &str, session_id: &str) -> CliError {
+    CliError::failed(format!(
+        "knowledge_{action}_requires_product_host: mounted collections live in the running \
+         desktop app's process memory and are deliberately not persisted, so a CLI process \
+         can neither read nor change session {session_id}'s mounts; mount collections in the \
+         app's session knowledge panel"
+    ))
 }
 
 /// GUI `session_mounted_collections_snapshot`: the revisioned source of truth
 /// for one session's mounts. Unknown sessions are rejected first (CLI
 /// convention); an existing session without mounts is an empty snapshot, not
 /// an error.
-fn mounts(session_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
+fn mounts(session_id: &str, _output: OutputMode) -> Result<CliOutcome, CliError> {
     sandbox_home()?;
     let store = open_store()?;
     require_session(&store, session_id, "mounts")?;
-    let snapshot = store.mounted_collections_snapshot(session_id);
-    let value = snapshot_json(session_id, &snapshot);
-    let human = if snapshot.collections.is_empty() {
-        format!("no collections mounted for {session_id}")
-    } else {
-        snapshot
-            .collections
-            .iter()
-            .map(|collection| {
-                format!(
-                    "{}\t{}",
-                    collection.collection_id,
-                    if collection.enabled {
-                        "enabled"
-                    } else {
-                        "disabled"
-                    }
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    Ok(success(render(output, human, &value)))
+    Err(mount_requires_product_host("mounts", session_id))
 }
 
-/// GUI `session_add_mounted_collection`: the mount gate first, then the
-/// atomic `SessionStore::add_mounted_collection` write it guards.
-fn mount(session_id: &str, collection_id: i64, output: OutputMode) -> Result<CliOutcome, CliError> {
+fn mount(
+    session_id: &str,
+    _collection_id: i64,
+    _output: OutputMode,
+) -> Result<CliOutcome, CliError> {
     sandbox_home()?;
     let store = open_store()?;
     require_session(&store, session_id, "mount")?;
-    let service = open_service()?;
-    ensure_collection_mountable(&service, collection_id)?;
-    let snapshot = store.add_mounted_collection(session_id, collection_id);
-    let value = snapshot_json(session_id, &snapshot);
-    Ok(success(render(
-        output,
-        format!("mounted {collection_id} to {session_id}"),
-        &value,
-    )))
+    Err(mount_requires_product_host("mount", session_id))
 }
 
-/// GUI `session_remove_mounted_collection`: no model or existence gate, so
-/// stale mounts can always be cleaned up; removal of an absent id is a
-/// no-op that still returns the fresh snapshot.
 fn unmount(
     session_id: &str,
-    collection_id: i64,
-    output: OutputMode,
+    _collection_id: i64,
+    _output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     sandbox_home()?;
     let store = open_store()?;
     require_session(&store, session_id, "unmount")?;
-    let snapshot = store.remove_mounted_collection(session_id, collection_id);
-    let value = snapshot_json(session_id, &snapshot);
-    let human = format!("unmounted {collection_id} from {session_id}");
-    Ok(success(render(output, human, &value)))
-}
-
-fn snapshot_json(session_id: &str, snapshot: &MountedCollectionsSnapshot) -> serde_json::Value {
-    serde_json::json!({
-        "session_id": session_id,
-        "revision": snapshot.revision,
-        "collections": snapshot.collections,
-    })
+    Err(mount_requires_product_host("unmount", session_id))
 }
