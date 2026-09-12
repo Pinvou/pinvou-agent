@@ -272,12 +272,18 @@ fn model_path() -> PathBuf {
     asr_dir().join(model_spec().filename)
 }
 
-/// Fast availability probe: the expected byte size (the sha256 digest is
-/// verified by the download itself, mirroring `model_file_verified`).
+/// Availability probe, mirroring the app's `model_file_verified`: the
+/// expected byte size AND the pinned sha256. A size-matching corrupted or
+/// tampered model is rejected here instead of being served as a transcript
+/// oracle forever; a one-shot CLI pays the hash on every run (the app
+/// caches by mtime) rather than trusting install-time verification alone.
 fn model_available() -> bool {
-    std::fs::metadata(model_path())
-        .map(|meta| meta.len() == model_spec().expected_size)
+    let spec = model_spec();
+    let path = model_path();
+    std::fs::metadata(&path)
+        .map(|meta| meta.len() == spec.expected_size)
         .unwrap_or(false)
+        && file_is_sha256(&path, spec.sha256)
 }
 
 fn ffmpeg_available() -> bool {
@@ -326,6 +332,14 @@ fn external_asr_command() -> Option<PathBuf> {
                     return Some(configured);
                 }
             }
+        }
+    }
+    // Mirror the app's macOS `asr_tool_path`: the managed ASR dir counts as
+    // a fallback before the bare PATH name.
+    if cfg!(target_os = "macos") {
+        let managed = asr_dir().join(engine_binary_name());
+        if managed.is_file() {
+            return Some(managed);
         }
     }
     let default = PathBuf::from("pinvou-asr");
@@ -474,14 +488,20 @@ fn download_asr_model() -> Result<PathBuf, CliError> {
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
-    let mut urls: Vec<&str> = Vec::new();
     if let Some(custom) = custom.as_deref() {
-        urls.push(custom);
+        // The app's `model_download_urls` tries ONLY the override: a broken
+        // custom URL must fail the install instead of silently installing
+        // the public model behind the operator's back.
+        if download_to(custom, &dest, spec.sha256).is_ok() {
+            return Ok(dest);
+        }
+        let _ = std::fs::remove_file(&dest);
+        return Err(CliError::failed(
+            "voice asr-install: the PINVOU3_ASR_MODEL_URL download failed the checksum gate;              fix or unset the override and retry",
+        ));
     }
-    urls.push(spec.primary_url);
-    urls.push(spec.mirror_url);
-    for url in urls {
-        if download_to(url, &dest).is_ok() && file_is_sha256(&dest, spec.sha256) {
+    for url in [spec.primary_url, spec.mirror_url] {
+        if download_to(url, &dest, spec.sha256).is_ok() {
             return Ok(dest);
         }
         let _ = std::fs::remove_file(&dest);
@@ -497,10 +517,12 @@ fn file_is_sha256(path: &Path, expected: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn download_to(url: &str, dest: &Path) -> Result<(), CliError> {
+fn download_to(url: &str, dest: &Path, expected_sha256: &str) -> Result<(), CliError> {
     // Staged through a .part sibling and size-capped: a crashed or hostile
-    // download must never leave a truncated/garbage file at the real path
-    // (the checksum gate below still has final say).
+    // download must never leave a truncated/garbage file at the real path.
+    // The checksum is verified on the .part BEFORE the rename (the app's
+    // download helper order), so no window exists where an unverified model
+    // sits at the canonical path.
     let part = dest.with_extension("part");
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(600))
@@ -534,6 +556,12 @@ fn download_to(url: &str, dest: &Path) -> Result<(), CliError> {
         let _ = std::fs::remove_file(&part);
         return Err(CliError::failed(
             "voice asr-install: model exceeds the size cap",
+        ));
+    }
+    if !file_is_sha256(&part, expected_sha256) {
+        let _ = std::fs::remove_file(&part);
+        return Err(CliError::failed(
+            "voice asr-install: model checksum mismatch; verify manually and retry",
         ));
     }
     std::fs::rename(&part, dest)
