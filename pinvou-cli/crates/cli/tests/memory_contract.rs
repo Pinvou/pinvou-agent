@@ -616,3 +616,58 @@ fn memory_add_accepts_ordinary_punctuated_work_context() {
     );
     let _ = home;
 }
+
+#[test]
+fn memory_add_preference_reports_the_replaced_item() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("preference-replacement");
+
+    let first = run_ok(&[
+        "pinvou",
+        "memory",
+        "add",
+        "preference",
+        "--content",
+        "Prefer concise answers",
+        "--output",
+        "json",
+    ]);
+    let first: serde_json::Value = serde_json::from_str(&first).unwrap();
+    let first_id = first["id"].as_str().unwrap().to_owned();
+    assert!(
+        first.get("replaced").is_none(),
+        "a first add replaces nothing: {first}"
+    );
+
+    // The preference store is replace-per-topic: the CLI adds without a
+    // topic, so every add targets the same bucket and the write deletes the
+    // previous item. The second add must say so instead of presenting the
+    // store as append-only.
+    let second = run_ok(&[
+        "pinvou",
+        "memory",
+        "add",
+        "preference",
+        "--content",
+        "Prefer bullet answers",
+        "--output",
+        "json",
+    ]);
+    let second: serde_json::Value = serde_json::from_str(&second).unwrap();
+    assert_eq!(second["replaced"], serde_json::json!([first_id]));
+    let stored = pinvou3_lib::features::memory::list_preferences().unwrap();
+    assert_eq!(stored.len(), 1, "the replaced item is gone");
+
+    let human = run_ok(&[
+        "pinvou",
+        "memory",
+        "add",
+        "preference",
+        "--content",
+        "Prefer tables in reports",
+    ]);
+    assert!(
+        human.contains("replaced 1 earlier item"),
+        "human output must surface the replacement: {human}"
+    );
+}
