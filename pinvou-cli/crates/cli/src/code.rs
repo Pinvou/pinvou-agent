@@ -1170,6 +1170,10 @@ struct AgentProbe {
     agent_name: String,
     cli_path: Option<PathBuf>,
     version: Option<String>,
+    /// Why `version` is None even though a binary was found — a genuinely
+    /// too-old version is a different state from a probe that never
+    /// returned.
+    version_probe_failed: bool,
     version_supported: bool,
     min_version: &'static str,
     authenticated: bool,
@@ -1209,7 +1213,7 @@ fn find_in_path(agent: &str, name: &str) -> Option<PathBuf> {
         let candidate = PathBuf::from(candidate.as_ref());
         if let Some(found) = std::env::split_paths(&path)
             .map(|dir| dir.join(&candidate))
-            .find(|candidate| candidate.is_file())
+            .find(|candidate| nonempty_file(candidate))
         {
             return Some(found);
         }
@@ -1221,9 +1225,10 @@ fn find_in_path(agent: &str, name: &str) -> Option<PathBuf> {
 /// `runtime::probe_codex_runtime`): explicit override env vars and official
 /// install locations win over PATH so a stale binary earlier in PATH cannot
 /// shadow the real one (the app prefers `~/.kimi-code/bin/kimi` over PATH for
-/// exactly that reason). An override that fails the compatibility gate falls
-/// through to the later candidates, like the GUI. The app's adapter-beside
-/// claude runtime location is app-bundle-specific and not mirrored here.
+/// exactly that reason). Only codex gates its override through the
+/// compatibility gate; claude/kimi overrides win unconditionally, like the
+/// GUI. The app's adapter-beside claude runtime location is app-bundle-specific
+/// and not mirrored here.
 fn resolve_agent_cli(agent: &str, name: &str) -> Option<PathBuf> {
     let override_var = match agent {
         "codex" => Some("PINVOU3_CODEX_PATH"),
@@ -1236,12 +1241,17 @@ fn resolve_agent_cli(agent: &str, name: &str) -> Option<PathBuf> {
     if let Some(var) = override_var {
         if let Some(path) = std::env::var_os(var)
             .map(PathBuf::from)
-            .filter(|path| !path.as_os_str().is_empty() && path.is_file())
+            .filter(|path| nonempty_file(&path))
         {
-            // Mirror the GUI: an explicit override cannot bypass the
-            // compatibility gate; a too-old or unprobing binary loses to the
-            // managed/PATH candidates.
-            if override_passes_version_gate(agent, &path) {
+            // Codex is the only agent whose GUI resolution gates the
+            // override through the compatibility check
+            // (`runtime::probe_codex_runtime`); claude
+            // (`PINVOU3_CLAUDE_CLI_PATH`) and kimi (`PINVOU3_KIMI_ACP_BIN`)
+            // honor a nonempty override file unconditionally
+            // (`install::resolve_claude_cli`/`resolve_kimi_path`). Gating
+            // them here made the CLI silently fall back to a different
+            // binary than the GUI operates.
+            if agent != "codex" || override_passes_version_gate(agent, &path) {
                 return Some(path);
             }
         }
@@ -1249,15 +1259,20 @@ fn resolve_agent_cli(agent: &str, name: &str) -> Option<PathBuf> {
     let home = pinvou3_lib::platform::paths::user_home_dir();
     // Script-installed managed dirs before PATH, per agent, like the GUI's
     // resolve_* functions. `~/.local/bin` is the Unix codex/claude installer
-    // default; on Windows codex resolves through the official install below
-    // and claude has no managed dir.
+    // default and `~\.local\bin` the Windows claude installer default
+    // (install.rs checks it there on Windows too); codex on Windows resolves
+    // through the official install below.
     let managed_dir: Option<PathBuf> = if agent == "kimi" {
         Some(home.join(".kimi-code").join("bin"))
     } else if agent == "codex" || agent == "claude" {
         {
             #[cfg(target_os = "windows")]
             {
-                None
+                if agent == "claude" {
+                    Some(home.join(".local").join("bin"))
+                } else {
+                    None
+                }
             }
             #[cfg(not(target_os = "windows"))]
             {
@@ -1271,7 +1286,7 @@ fn resolve_agent_cli(agent: &str, name: &str) -> Option<PathBuf> {
         if let Some(path) = agent_cli_names(agent, name)
             .iter()
             .map(|candidate| dir.join(candidate.as_ref()))
-            .find(|candidate| candidate.is_file())
+            .find(|candidate| nonempty_file(candidate))
         {
             return Some(path);
         }
@@ -1292,20 +1307,21 @@ fn resolve_agent_cli(agent: &str, name: &str) -> Option<PathBuf> {
             .join("Codex")
             .join("bin")
             .join("codex.exe");
-        if path.is_file() {
+        if nonempty_file(&path) {
             return Some(path);
         }
     }
     find_in_path(agent, name)
 }
 
-/// Runs `executable args...` with a hard timeout; returns (success, stdout)
-/// when the process exits within the budget, `None` on timeout/spawn failure.
+/// Runs `executable args...` with a hard timeout. `Err` = the process could
+/// not be spawned at all; `Ok(None)` = no exit within the budget;
+/// `Ok(Some(..))` = exited, with its trimmed stdout.
 fn command_output_with_timeout(
     executable: &Path,
     args: &[&str],
     timeout: Duration,
-) -> Option<(bool, String)> {
+) -> Result<Option<(bool, String)>, std::io::Error> {
     let mut command = crate::support::build_command(executable, args);
     command
         .stdin(std::process::Stdio::null())
@@ -1319,7 +1335,7 @@ fn command_output_with_timeout(
     ] {
         command.env_remove(variable);
     }
-    let mut child = command.spawn().ok()?;
+    let mut child = command.spawn()?;
     let stdout = child.stdout.take();
     let reader = std::thread::spawn(move || drain_stream(stdout));
     let deadline = Instant::now() + timeout;
@@ -1327,17 +1343,17 @@ fn command_output_with_timeout(
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {}
-            Err(_) => return None,
+            Err(_) => return Ok(None),
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return None;
+            return Ok(None);
         }
         std::thread::sleep(Duration::from_millis(20));
     };
     let text = reader.join().unwrap_or_default();
-    Some((status.success(), text.trim().to_string()))
+    Ok(Some((status.success(), text.trim().to_string())))
 }
 
 /// Drains a byte stream into a string (bounded tail: the buffer keeps the
@@ -1370,12 +1386,26 @@ fn drain_stream<R: Read>(mut pipe: Option<R>) -> String {
     buffer
 }
 
-fn cli_version(executable: &Path) -> Option<String> {
-    command_output_with_timeout(executable, &["--version"], Duration::from_secs(15))
-        .filter(|(ok, _)| *ok)
-        .map(|(_, text)| text)
+/// Outcome of a `--version` probe: a parsed version, or the reason there is
+/// none. The GUI distinguishes probe failure/timeout from a genuinely
+/// too-old version (and retries timeouts); the CLI at least must not label
+/// a cold or hanging binary "version-too-old".
+enum VersionProbe {
+    Version(String),
+    /// The binary exited non-zero, could not be spawned, or produced no
+    /// usable output.
+    Failed,
+    /// The binary did not finish within the probe budget.
+    TimedOut,
+}
+
+fn probe_cli_version(executable: &Path) -> VersionProbe {
+    match command_output_with_timeout(executable, &["--version"], Duration::from_secs(15)) {
         // The app treats empty output as a failed probe, not as a version.
-        .filter(|text| !text.trim().is_empty())
+        Ok(Some((true, text))) if !text.trim().is_empty() => VersionProbe::Version(text),
+        Ok(Some(_)) | Err(_) => VersionProbe::Failed,
+        Ok(None) => VersionProbe::TimedOut,
+    }
 }
 
 /// Mirror of `runtime::parse_codex_version_output`: codex prints a
@@ -1421,9 +1451,19 @@ fn version_supported_for(agent: &str, version: &str, minimum: &str) -> bool {
 /// An override binary must clear the same compatibility gate as any other
 /// candidate (mirror of the GUI's `runtime_version_is_compatible` filter on
 /// overrides).
+/// Mirror of `install::nonempty_file`: the GUI's candidate checks require a
+/// readable file with content, not mere existence (a 0-byte stub is not a
+/// usable binary).
+fn nonempty_file(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .map(|metadata| metadata.is_file() && metadata.len() > 0)
+        .unwrap_or(false)
+}
+
 fn override_passes_version_gate(agent: &str, path: &Path) -> bool {
-    let Some(version) = cli_version(path) else {
-        return false;
+    let version = match probe_cli_version(path) {
+        VersionProbe::Version(version) => version,
+        VersionProbe::Failed | VersionProbe::TimedOut => return false,
     };
     let minimum = MIN_VERSIONS
         .iter()
@@ -1460,9 +1500,10 @@ fn kimi_version_supported(version: &str, minimum: &str) -> bool {
 }
 
 fn cli_status_success(executable: &Path, args: &[&str]) -> bool {
-    command_output_with_timeout(executable, args, Duration::from_secs(15))
-        .map(|(ok, _)| ok)
-        .unwrap_or(false)
+    matches!(
+        command_output_with_timeout(executable, args, Duration::from_secs(15)),
+        Ok(Some((true, _)))
+    )
 }
 
 fn nonempty_env(name: &str) -> bool {
@@ -1652,7 +1693,11 @@ fn kimi_data_root() -> PathBuf {
 fn probe_agent(agent: &str, agent_name: &str) -> AgentProbe {
     let cli_name = agent_cli_name(agent);
     let cli_path = resolve_agent_cli(agent, cli_name);
-    let version = cli_path.as_deref().and_then(cli_version);
+    let probe = cli_path.as_deref().map(probe_cli_version);
+    let version = match &probe {
+        Some(VersionProbe::Version(text)) => Some(text.clone()),
+        _ => None,
+    };
     let min_version = MIN_VERSIONS
         .iter()
         .find(|(id, _)| *id == agent)
@@ -1676,6 +1721,10 @@ fn probe_agent(agent: &str, agent_name: &str) -> AgentProbe {
         agent_name: agent_name.to_owned(),
         cli_path,
         version,
+        version_probe_failed: matches!(
+            probe,
+            Some(VersionProbe::Failed) | Some(VersionProbe::TimedOut)
+        ),
         version_supported,
         min_version,
         authenticated,
@@ -1714,6 +1763,11 @@ fn agents_list(output: OutputMode) -> Result<CliOutcome, CliError> {
                 probe.agent_name,
                 if probe.cli_path.is_some() && probe.version_supported {
                     "installed"
+                } else if probe.cli_path.is_some() && probe.version_probe_failed {
+                    // A cold binary, an unprobing one, or a hang is not the
+                    // same fact as a too-old version (the GUI distinguishes
+                    // TimedOut/Failed from Found and retries timeouts).
+                    "probe-failed"
                 } else if probe.cli_path.is_some() {
                     "version-too-old"
                 } else {
@@ -1872,10 +1926,22 @@ fn login(
             ))
         })?),
         Some(LoginCodeSource::Stdin) => {
+            // Bounded like `resolve_secret`: an unbounded stdin read lets
+            // `yes | pinvou code login --code-stdin` exhaust memory before
+            // the 4096-byte validity check ever runs.
             let mut raw = String::new();
-            std::io::Read::read_to_string(&mut std::io::stdin(), &mut raw).map_err(|error| {
-                CliError::failed(format!("code login: cannot read code from stdin: {error}"))
-            })?;
+            {
+                use std::io::Read;
+                let mut bounded = std::io::stdin().take(64 * 1024 + 1);
+                bounded.read_to_string(&mut raw).map_err(|error| {
+                    CliError::failed(format!("code login: cannot read code from stdin: {error}"))
+                })?;
+            }
+            if raw.len() > 64 * 1024 {
+                return Err(CliError::usage(
+                    "code login: stdin authorization code exceeds the 64 KiB read cap",
+                ));
+            }
             Some(raw)
         }
         None => None,
@@ -1946,8 +2012,10 @@ fn login(
         if let Some(url) = &login_url {
             eprintln!("login link: {url}");
         }
+        // Same mode gate as the non-timeout echo below: `--output json`
+        // keeps stderr free of the multi-line transcript dump.
         let echoed = pinvou3_lib::platform::credential_store::redact_secret(&combined);
-        if !echoed.trim().is_empty() {
+        if output == OutputMode::Human && !echoed.trim().is_empty() {
             eprintln!("{echoed}");
         }
         let link_hint = match &login_url {
@@ -3618,8 +3686,15 @@ fn classify_origin(
     let Some(baseline) = baseline else {
         return "unknown".to_owned();
     };
-    let dirty = baseline
-        .get("dirtyPaths")
+    // The GUI's WorkspaceBaseline derives Serialize WITHOUT
+    // rename_all = "camelCase", so the on-disk key is the snake_case
+    // `dirty_paths`; accept the camelCase spelling too for robustness
+    // against hand-written baselines. Reading only the wrong-case key made
+    // every file classify as "session" — the opposite of the truth.
+    let dirty_paths = baseline
+        .get("dirty_paths")
+        .or_else(|| baseline.get("dirtyPaths"));
+    let dirty = dirty_paths
         .and_then(|value| value.as_array())
         .map(|paths| {
             paths
