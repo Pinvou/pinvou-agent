@@ -4490,11 +4490,12 @@
       // once per poll from the pre-poll timeline: the synthetic card of a
       // running job from this same batch (the manager lists running jobs
       // first) would otherwise disarm the guard for the jobs after it.
-      // Accepted limits until stable origin identity lands: a start tool can
-      // still race with a very short detached job whose first snapshot is
-      // terminal (the guard is off when the latest card is a start tool), and
-      // a brand-new subagent job started after the wait card is conservatively
-      // hidden like retained older work.
+      // Accepted limits when no card binds: a start tool can still race with
+      // a very short detached job whose first snapshot is terminal (the guard
+      // is off when the latest card is a start tool; origin identity shields
+      // root jobs there, but subagent-owned and legacy origin-less jobs can
+      // still append), and a brand-new subagent job started after the wait
+      // card is conservatively hidden like retained older work.
       const suppressUnmatchedTerminal = latestShellToolIsWaitObserver();
       (jobs || []).forEach(function (job) {
         const status = String(job.status || "").toLowerCase();
@@ -4503,7 +4504,19 @@
         let item = state.chatItems.find(function (it) {
           return it.type === "tool" && it.taskId === job.id;
         });
-        if (!item && running) {
+        if (!item && job.origin_tool_call_id) {
+          // Never steal a card already bound to another job: origins are
+          // unique per root job on the current engine, and if an engine ever
+          // shares one, the later job must fall through to a synthetic card
+          // or the terminal suppression guard instead of redirecting output.
+          item = state.chatItems.find(function (it) {
+            return it.type === "tool" && it.toolId === job.origin_tool_call_id &&
+              (!it.taskId || it.taskId === job.id);
+          });
+        }
+        // Only legacy snapshots without an origin may match by command or
+        // output. A missing origin card must not redirect another tool call.
+        if (!item && running && !job.origin_tool_call_id) {
           const command = String(job.command || "");
           const candidates = state.chatItems.filter(function (it) {
             return it.type === "tool" && isShellExecutionTool(it.name) && !it.taskId &&
@@ -4513,13 +4526,18 @@
           // task id. Never guess when identical commands are concurrent.
           if (runningCommandCounts[command] === 1 && candidates.length === 1) item = candidates[0];
         }
-        if (!item && !running) {
+        if (!item && !running && !job.origin_tool_call_id) {
           item = state.chatItems.find(function (it) {
             return terminalShellHistoryMatch(it, job);
           });
           if (item) item.shellHistoryReconciled = true;
         }
         if (!item && !running && suppressUnmatchedTerminal) return;
+        // An identified completed root job must only update its origin card.
+        // If compaction or reload removed that card, do not append historical
+        // output at the current tail. Keep running jobs visible through a
+        // synthetic card; their live status must not disappear after reload.
+        if (!item && !running && job.origin_tool_call_id && !job.owner_agent_id) return;
         if (!item) {
           item = {
             type: "tool", toolId: "shell-task:" + job.id, name: "bash",
@@ -4534,6 +4552,8 @@
         item.taskId = job.id;
         item.sessionId = sid;
         item.shellStatus = job.status;
+        item.originToolCallId = job.origin_tool_call_id || null;
+        item.originTurnId = job.origin_turn_id || null;
         item.exitCode = job.exit_code;
         item.elapsedMs = job.elapsed_ms;
         if (!item.shellHistoryReconciled || item.output == null || running) {
