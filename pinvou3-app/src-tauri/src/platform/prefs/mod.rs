@@ -251,6 +251,18 @@ pub struct SavedModel {
 }
 
 impl SavedModel {
+    /// Operator-owned 端点：本地自托管（LocalVllm）或用户自填的 OpenAI 兼容 /
+    /// custom 端点。这类端点的输出上限是部署者自己的责任，宿主按窗口分档
+    /// 代为声明 route 输出事实（见 `bridge::route_limits_for_model`）。
+    /// `coding_plan` 是官方托管入口，即使套在 `OpenaiCompatible` 预设上也
+    /// 不算 operator-owned——必须保持底座 fail-closed，不得代声明。
+    pub fn is_operator_owned_endpoint(&self) -> bool {
+        (self.preset == ModelPreset::LocalVllm
+            || self.preset == ModelPreset::OpenaiCompatible
+            || self.provider_kind.as_deref() == Some("custom"))
+            && self.provider_kind.as_deref() != Some("coding_plan")
+    }
+
     fn normalize_alias(&mut self) {
         if self.preset == ModelPreset::LocalVllm {
             self.alias = None;
@@ -270,8 +282,18 @@ impl SavedModel {
             if self.context_window_tokens.is_none() && self.model == "qwen36_35b_256k" {
                 self.context_window_tokens = Some(262_144);
             }
-            if self.max_output_tokens.is_none() {
-                self.max_output_tokens = Some(24_576);
+            // 输出上限不再为 LocalVllm 预设强制 24K：未显式配置时与自定义
+            // OpenAI 兼容端点同路，由 route_limits_for_model 按窗口分档统一
+            // 声明（>=500K→131072 / >=250K→65536 / 否则 min(window/4, 32768)）。
+            // 旧版本的 24K 曾被机器写入存量配置（这里强制补写 + 设置页预填后
+            // 保存），磁盘上无法与用户显式输入区分；把恰好 24576 的本地模型
+            // 视为“遗留的未配置”归一掉，让窗口分档对升级用户同样生效（持久化
+            // 门禁会在 load 时把该归一写回磁盘）。代价：此后在本地模型上显式
+            // 配置 24576 也会被视为未配置——24576 自此保留为遗留哨兵值，与
+            // 上面 <=0 过滤同类。非 LocalVllm 端点的 24576 一律是显式输入，
+            // 不迁移。
+            if self.max_output_tokens == Some(24_576) {
+                self.max_output_tokens = None;
             }
         }
         // reasoning_effort 归一为底座 `ReasoningEffort::parse_strict` 认识的规范档位
@@ -651,12 +673,19 @@ impl UserPrefs {
             .saved_models
             .iter()
             .any(|model| model.preset == ModelPreset::LocalVllm && model.alias.is_some());
+        // 本地 24576 遗留哨兵迁移（`normalize_route_limits` 把机器写入的 24K 归一为
+        // 未配置）同理：必须在 migrate/normalize 改写前记录，否则 save gate 看不到
+        // 变化，存量 settings.json 里的 24K 会永久留在磁盘上。
+        let local_output_sentinel_changed = prefs.advanced.saved_models.iter().any(|model| {
+            model.preset == ModelPreset::LocalVllm && model.max_output_tokens == Some(24_576)
+        });
         prefs.migrate_models();
         prefs.normalize_saved_model_metadata();
         let migration = prefs.migrate_plaintext_api_keys_with_store(&SystemCredentialStore::new());
         let memory_policy_changed = prefs.enforce_memory_locale_policy();
         let normalization_changed = minimax_endpoint_changed
             || local_model_alias_changed
+            || local_output_sentinel_changed
             || migration.settings_sanitized
             || memory_policy_changed
             || color_scheme_derived;
@@ -1193,6 +1222,87 @@ mod tests {
         }
     }
 
+    /// LocalVllm 不再强制 24K 输出（未显式配置保持 None，由运行时窗口分档
+    /// 统一声明）；operator-owned 判定覆盖本地/自定义两类端点并排除
+    /// coding_plan 官方入口。
+    #[test]
+    fn normalize_keeps_local_output_unset_and_operator_owned_detection() {
+        let mut local = SavedModel {
+            id: "m1".into(),
+            name: "m1".into(),
+            alias: None,
+            preset: ModelPreset::LocalVllm,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            model: "qwen36_35b_256k".into(),
+            base_url: "http://127.0.0.1:8000/v1".into(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: Default::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        };
+        local.normalize_route_limits();
+        assert_eq!(
+            local.context_window_tokens,
+            Some(262_144),
+            "qwen36_35b_256k 的窗口兜底保留"
+        );
+        assert_eq!(
+            local.max_output_tokens, None,
+            "本地模型不再强制 24K 输出，未配置保持 None"
+        );
+        assert!(local.is_operator_owned_endpoint());
+
+        // 用户显式配置的输出上限（含正值过滤）原样保留。
+        let mut explicit = local.clone();
+        explicit.max_output_tokens = Some(32_768);
+        explicit.normalize_route_limits();
+        assert_eq!(explicit.max_output_tokens, Some(32_768));
+
+        // 旧版本机器写入的本地 24K（normalize 强制 + 设置页预填）视为遗留的
+        // 未配置，归一为 None 走窗口分档；非 LocalVllm 的 24576 是显式输入，
+        // 原样保留。
+        let mut legacy = local.clone();
+        legacy.max_output_tokens = Some(24_576);
+        legacy.normalize_route_limits();
+        assert_eq!(
+            legacy.max_output_tokens, None,
+            "存量机器写入的本地 24K 归一为未配置，走窗口分档"
+        );
+        let mut custom_legacy = legacy.clone();
+        custom_legacy.preset = ModelPreset::OpenaiCompatible;
+        custom_legacy.provider_kind = Some("custom".into());
+        custom_legacy.max_output_tokens = Some(24_576);
+        custom_legacy.normalize_route_limits();
+        assert_eq!(
+            custom_legacy.max_output_tokens,
+            Some(24_576),
+            "自定义端点的 24576 是显式输入，不迁移"
+        );
+
+        let mut custom = local.clone();
+        custom.preset = ModelPreset::OpenaiCompatible;
+        custom.provider_kind = Some("custom".into());
+        assert!(custom.is_operator_owned_endpoint());
+
+        // coding_plan 即使套在 OpenaiCompatible 预设上也不是 operator-owned。
+        let mut plan = custom.clone();
+        plan.provider_kind = Some("coding_plan".into());
+        assert!(!plan.is_operator_owned_endpoint());
+
+        // 官方云端 preset 不是 operator-owned。
+        let mut cloud = local;
+        cloud.preset = ModelPreset::Deepseek;
+        assert!(!cloud.is_operator_owned_endpoint());
+    }
+
     /// reasoning_effort 归一为底座 `ReasoningEffort::parse_strict` 认识的规范档位：
     /// 非法值置 None（避免被底座静默回退成 Max），合法别名规范化为对应档位
     /// （对齐 `as_setting()`，避免 wire 层 `apply_reasoning_effort` 静默丢弃）。
@@ -1478,6 +1588,121 @@ mod tests {
         let persisted = std::fs::read_to_string(&path).expect("read migrated prefs");
         assert!(!persisted.contains("api.minimax.chat"));
         assert!(persisted.contains("api.minimaxi.com"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        match old_home {
+            // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: same as above; restore-side removal serialized under ENV_LOCK.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+    }
+
+    /// 本地 24576 遗留哨兵迁移必须在 load 时落盘（round-2 评审 MAJOR：曾只改内存，
+    /// save gate 看不到变化，机器写入的 24K 永久留在 settings.json）。同时钉住：
+    /// 非 LocalVllm 端点的 24576 是显式输入，迁移不得碰它。
+    #[test]
+    fn load_persists_legacy_local_output_sentinel_migration() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let old_home = std::env::var_os("PINVOU3_HOME");
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-prefs-local-output-sentinel-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("create temporary prefs home");
+        // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let mut prefs = UserPrefs::default();
+        prefs.advanced.saved_models.push(SavedModel {
+            id: "legacy-local".into(),
+            name: "Legacy Local".into(),
+            alias: None,
+            preset: ModelPreset::LocalVllm,
+            context_window_tokens: Some(262_144),
+            // 旧版本 normalize + 设置页预填机器写入的 24K：应被迁移清除并落盘。
+            max_output_tokens: Some(24_576),
+            reasoning_effort: None,
+            model: "qwen36_35b_256k".into(),
+            base_url: "http://127.0.0.1:8000/v1".into(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        });
+        prefs.advanced.saved_models.push(SavedModel {
+            id: "custom-explicit".into(),
+            name: "Custom Explicit".into(),
+            alias: None,
+            preset: ModelPreset::OpenaiCompatible,
+            context_window_tokens: None,
+            // 自定义端点的 24576 是显式输入：必须原样保留。
+            max_output_tokens: Some(24_576),
+            reasoning_effort: None,
+            model: "custom-model".into(),
+            base_url: "https://gateway.example.com/v1".into(),
+            provider_kind: Some(MODEL_PROVIDER_KIND_CUSTOM.into()),
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        });
+        prefs.advanced.active_model_id = Some("legacy-local".into());
+        let path = super::super::paths::settings_path();
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&prefs).expect("serialize legacy prefs"),
+        )
+        .expect("write legacy prefs");
+
+        let loaded = UserPrefs::load();
+        let legacy_local = loaded
+            .model_by_id("legacy-local")
+            .expect("legacy local model");
+        assert_eq!(
+            legacy_local.max_output_tokens, None,
+            "内存中的遗留 24K 应已归一为未配置"
+        );
+        let custom = loaded.model_by_id("custom-explicit").expect("custom model");
+        assert_eq!(
+            custom.max_output_tokens,
+            Some(24_576),
+            "自定义端点的显式 24576 不得被迁移"
+        );
+
+        // 关键断言：归一已写回磁盘（而不仅改内存）。
+        let persisted: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read migrated prefs"))
+                .expect("parse migrated prefs");
+        let models = persisted["advanced"]["saved_models"]
+            .as_array()
+            .expect("saved_models array");
+        let legacy_on_disk = models
+            .iter()
+            .find(|model| model["id"] == "legacy-local")
+            .expect("legacy local on disk");
+        assert!(
+            legacy_on_disk["max_output_tokens"].is_null(),
+            "磁盘上的遗留 24K 应已清除，实得 {}",
+            legacy_on_disk["max_output_tokens"]
+        );
+        let custom_on_disk = models
+            .iter()
+            .find(|model| model["id"] == "custom-explicit")
+            .expect("custom on disk");
+        assert_eq!(custom_on_disk["max_output_tokens"], 24_576);
 
         let _ = std::fs::remove_dir_all(&tmp);
         match old_home {

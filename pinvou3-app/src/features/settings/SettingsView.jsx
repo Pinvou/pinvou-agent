@@ -890,7 +890,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
         if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(nextModel));
         if (!nameTouched) setName(p === 'local_vllm' ? settingsCopy.localModelName(nextModel) : (item.custom ? group.title : item.title));
         setContextWindow(p === 'local_vllm' ? '262144' : '');
-        setMaxOutput(p === 'local_vllm' ? '24576' : '');
+        // 输出上限不再预填 24K：与云端/自定义同路留空，由运行时按窗口分档统一声明。
+        setMaxOutput('');
         // 换目录项时重置思考深度到该模型的默认档位（vllm→off，其余→high；
         // 无档位模型置 null = 未显式设置）。带上 nextBaseUrl 以按新 route 判定档位。
         setReasoningEffort(reasoningEffortForModelSwitch({ preset: p, model: nextModel, vendor: group.vendor || vendor, base_url: nextBaseUrl }));
@@ -2338,7 +2339,8 @@ const SCard = React.forwardRef( // eslint-disable-line react/display-name -- for
           name: preset === 'local_vllm' ? settingsCopy.localDefaultName : presetProviderLabel(preset, t),
           preset,
           context_window_tokens: preset === 'local_vllm' ? 262144 : null,
-          max_output_tokens: preset === 'local_vllm' ? 24576 : null,
+          // 输出上限不预填：运行时按窗口分档统一声明（route_limits_for_model）。
+          max_output_tokens: null,
           model: defs.model,
           base_url: defs.baseUrl,
           api_key: '',

@@ -25,6 +25,13 @@ static PROBE_KIND_CACHE: std::sync::OnceLock<
 pub struct OpenAiModelInfo {
     pub id: String,
     pub max_model_len: Option<u32>,
+    /// 条目自报的单轮输出上限（tokens）。`None` = 端点未声明（绝大多数本地
+    /// 引擎的 `/v1/models` 没有、Ollama/LM Studio 列表也没有）。best-effort
+    /// 解析 `max_output_tokens` / `max_completion_tokens` /
+    /// `top_provider.max_completion_tokens`（OpenRouter 网关形状；unlimited
+    /// 时是 null，按未声明处理）。只作 route 声明的 min 收紧依据，
+    /// 永不抬高任何上限。
+    pub max_output_tokens: Option<u32>,
     /// 是否已加载到内存。`None` = 未知（通用 OpenAI 兼容端点不区分）。
     /// Ollama（/api/ps vs /api/tags）与 LM Studio（/api/v0/models 的 state）
     /// 的列表接口返回全部已下载模型，二者都是 JIT 加载——任何推理请求引用
@@ -38,6 +45,12 @@ pub struct OpenAiModelsProbe {
     pub models: Vec<OpenAiModelInfo>,
 }
 
+/// u64 JSON 数值 → 正 u32。超出 u32 的自报值一律按未声明处理：`as u32`
+/// 会把 2^32 截成 0、2^32+5 截成 5，让下游把损坏值当真限；非正数同理无效。
+fn parse_positive_u32(v: &serde_json::Value) -> Option<u32> {
+    u32::try_from(v.as_u64()?).ok().filter(|n| *n > 0)
+}
+
 pub(crate) fn parse_models_response_list(v: serde_json::Value) -> Option<Vec<OpenAiModelInfo>> {
     let data = v.get("data")?.as_array()?;
     let models = data
@@ -47,18 +60,32 @@ pub(crate) fn parse_models_response_list(v: serde_json::Value) -> Option<Vec<Ope
             if id.is_empty() {
                 return None;
             }
-            let max_model_len = item
-                .get("max_model_len")
-                .and_then(|v| v.as_u64())
-                .map(|n| n as u32);
+            let max_model_len = item.get("max_model_len").and_then(parse_positive_u32);
             Some(OpenAiModelInfo {
                 id: id.to_string(),
                 max_model_len,
+                max_output_tokens: parse_entry_output_limit(item),
                 loaded: None,
             })
         })
         .collect::<Vec<_>>();
     (!models.is_empty()).then_some(models)
+}
+
+/// 从 `/v1/models` 条目里 best-effort 抽自报的单轮输出上限。
+/// 覆盖三种已知形状：直挂 `max_output_tokens` / `max_completion_tokens`，
+/// 以及 OpenRouter 网关的 `top_provider.max_completion_tokens`（unlimited
+/// 是 null，`as_u64()` 落空即按未声明处理）。值必须为正；本地引擎普遍
+/// 不提供该字段 → None，调用方不得据此编造上限。
+fn parse_entry_output_limit(item: &serde_json::Value) -> Option<u32> {
+    let direct = ["max_output_tokens", "max_completion_tokens"]
+        .into_iter()
+        .find_map(|key| item.get(key).and_then(parse_positive_u32));
+    direct.or_else(|| {
+        item.get("top_provider")?
+            .get("max_completion_tokens")
+            .and_then(parse_positive_u32)
+    })
 }
 
 /// 通用 OpenAI 兼容 `/models` 探测。探测地址与云端 probe / 连接测试同一口径
@@ -134,6 +161,7 @@ fn parse_lmstudio_v0_models(v: &serde_json::Value) -> Option<Vec<OpenAiModelInfo
             Some(OpenAiModelInfo {
                 id: id.to_string(),
                 max_model_len: None,
+                max_output_tokens: None,
                 loaded,
             })
         })
@@ -216,6 +244,7 @@ pub async fn probe_ollama_models(
                 OpenAiModelInfo {
                     id: name,
                     max_model_len: None,
+                    max_output_tokens: None,
                     loaded: Some(loaded),
                 }
             })
@@ -639,10 +668,14 @@ async fn probe_lmstudio_v0_only(base_url: &str, bearer: Option<&str>) -> Option<
     })
 }
 
-/// 抓取 OpenAI 兼容 `/v1/models` 响应体。探测地址口径与
-/// `features::monitor::probe_vllm_model_info` 一致：upstream 带 `/v1` 直接拼
-/// `/models`，不带则补 `/v1/models`。失败/非 2xx/解析失败返回 `None`，调用方
-/// treated as probe failure. Shared with the kind-probe chain
+/// 抓取 OpenAI 兼容模型列表响应体。地址口径：配置根已带 `/v1` 直接拼
+/// `/models`（与 `features::monitor` 的 `models_probe_url` 同一口径）；裸主机
+/// 形态（本地 vLLM 常见）先补 `/v1/models`。对非 `/v1` 的版本根（glm
+/// `/api/paas/v4`、火山方舟 `/api/v3` 等——它们的模型列表在 `{base}/models`，
+/// 补 `/v1` 反而 404），仅当主候选明确“路径不存在”（404/405）时回退重试一次
+/// `{base}/models`；鉴权失败（401/403）换路径无济于事，超时/拒连说明主机
+/// 不可达，同样不重试——保守回退到无事实。失败/非 2xx/解析失败返回 `None`，
+/// 调用方 treated as probe failure. Shared with the kind-probe chain
 /// (`probe_local_server_kind_uncached` fetches once for the LMDeploy/vLLM
 /// owned_by decisions) and monitor's vLLM served-name
 /// probe, so the `/v1/models` URL assembly stays consistent in both places.
@@ -655,17 +688,33 @@ pub(crate) async fn fetch_v1_models(
     let Some(client) = shared_probe_client() else {
         return None;
     };
-    let url = if base_url.trim_end_matches('/').ends_with("/v1") {
-        format!("{}/models", base_url.trim_end_matches('/'))
+    let trimmed = base_url.trim_end_matches('/');
+    let (primary, fallback) = if trimmed.ends_with("/v1") {
+        (format!("{trimmed}/models"), None)
     } else {
-        format!("{}/v1/models", base_url.trim_end_matches('/'))
+        (
+            format!("{trimmed}/v1/models"),
+            Some(format!("{trimmed}/models")),
+        )
     };
-    let Ok(resp) = apply_bearer(client.get(url), bearer).send().await else {
-        return None;
+    let resp = apply_bearer(client.get(primary), bearer)
+        .send()
+        .await
+        .ok()?;
+    // 仅当主候选明确"路径不存在"（404/405）且存在回退候选时重试一次；
+    // 鉴权失败（401/403）换路径无济于事，超时/拒连说明主机不可达，
+    // 同样不重试——保守回退到无事实。
+    let resp = match (resp.status().as_u16(), fallback) {
+        (200..=299, _) => resp,
+        (404 | 405, Some(url)) => {
+            let resp = apply_bearer(client.get(url), bearer).send().await.ok()?;
+            if !resp.status().is_success() {
+                return None;
+            }
+            resp
+        }
+        _ => return None,
     };
-    if !resp.status().is_success() {
-        return None;
-    }
     resp.json::<serde_json::Value>().await.ok()
 }
 
@@ -908,6 +957,96 @@ pub async fn post_anthropic_messages(
     anthropic_messages_text(&value).context("no text block in anthropic messages response")
 }
 
+/// 仅测试用：最小模型列表 mock 服务器。按路径返回可配状态码与响应体并记录
+/// 命中数——`fetch_v1_models` 的回退口径测试与 engine_pool spawn 采纳接线测试
+/// 共用，断言“探测打到了哪条路径、打了几次”。
+#[cfg(test)]
+pub(crate) mod models_mock {
+    use std::collections::HashMap;
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    pub(crate) struct ModelsMock {
+        pub base_url: String,
+        hits: Arc<Mutex<HashMap<String, usize>>>,
+    }
+
+    impl ModelsMock {
+        pub(crate) fn hits_for(&self, path: &str) -> usize {
+            self.hits
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(path)
+                .copied()
+                .unwrap_or(0)
+        }
+    }
+
+    pub(crate) fn spawn(routes: &[(&str, u16, String)]) -> ModelsMock {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock listener");
+        let addr = listener.local_addr().expect("mock listener addr");
+        let routes: Vec<(String, u16, String)> = routes
+            .iter()
+            .map(|(path, status, body)| ((*path).to_string(), *status, body.clone()))
+            .collect();
+        let hits: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+        let hits_thread = hits.clone();
+        std::thread::spawn(move || {
+            // 最多伺服 8 个连接：测试的确定性请求序列远用不满，兜底防线程泄漏。
+            for stream in listener.incoming().take(8) {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let Ok(n) = std::io::Read::read(&mut stream, &mut chunk) else {
+                        break;
+                    };
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&buf);
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("")
+                    .split('?')
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                *hits_thread
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .entry(path.clone())
+                    .or_insert(0) += 1;
+                let matched = routes.iter().find(|(route, _, _)| path == *route);
+                let (status, body) = matched
+                    .map(|(_, status, body)| (*status, body.clone()))
+                    .unwrap_or((404, "{}".to_string()));
+                let reason = match status {
+                    200 => "OK",
+                    401 => "Unauthorized",
+                    404 => "Not Found",
+                    _ => "OK",
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+            }
+        });
+        ModelsMock {
+            base_url: format!("http://{addr}"),
+            hits,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -924,6 +1063,78 @@ mod tests {
         assert_eq!(models[0].max_model_len, None);
         assert_eq!(models[1].id, "deepseek-r1:14b");
         assert_eq!(models[1].max_model_len, Some(32768));
+    }
+
+    /// `/v1/models` 条目自报输出上限的三种形状 + 非法值拒绝。
+    /// 本地引擎（vLLM/Ollama）普遍不提供该字段 → None，不得编造。
+    #[test]
+    fn parse_models_response_list_extracts_output_limits() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"object":"list","data":[
+                {"id":"direct-max-output","max_output_tokens":65536},
+                {"id":"direct-max-completion","max_completion_tokens":8192},
+                {"id":"openrouter-shape","top_provider":{"max_completion_tokens":131072,"context_length":1000000}},
+                {"id":"unlimited-null","top_provider":{"max_completion_tokens":null}},
+                {"id":"zero-invalid","max_output_tokens":0},
+                {"id":"plain-vllm","max_model_len":262144}
+            ]}"#,
+        )
+        .unwrap();
+        let models = parse_models_response_list(json).unwrap();
+        let output_of = |id: &str| {
+            models
+                .iter()
+                .find(|m| m.id == id)
+                .unwrap()
+                .max_output_tokens
+        };
+        assert_eq!(output_of("direct-max-output"), Some(65536));
+        assert_eq!(output_of("direct-max-completion"), Some(8192));
+        assert_eq!(output_of("openrouter-shape"), Some(131072));
+        // unlimited（null）与 0 都按未声明处理
+        assert_eq!(output_of("unlimited-null"), None);
+        assert_eq!(output_of("zero-invalid"), None);
+        // max_model_len 是 context window，不是输出上限
+        assert_eq!(output_of("plain-vllm"), None);
+    }
+
+    /// 解析健壮性：超出 u32 的自报值（`as u32` 会截成 0 或小值，让损坏值
+    /// 被当真限）与浮点/负数/字符串形态一律按未声明处理；max_model_len
+    /// 的 0 值与超界值同样拒绝。
+    #[test]
+    fn parse_models_response_list_rejects_out_of_range_and_malformed_values() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"object":"list","data":[
+                {"id":"u64-overflow","max_output_tokens":4294967296},
+                {"id":"u64-overflow-plus","max_completion_tokens":4294967301},
+                {"id":"top-provider-overflow","top_provider":{"max_completion_tokens":4294967296}},
+                {"id":"float-form","max_output_tokens":65536.0},
+                {"id":"negative","max_output_tokens":-1},
+                {"id":"string-form","max_output_tokens":"65536"},
+                {"id":"zero-context","max_model_len":0},
+                {"id":"overflow-context","max_model_len":4294967296}
+            ]}"#,
+        )
+        .unwrap();
+        let models = parse_models_response_list(json).unwrap();
+        for id in [
+            "u64-overflow",
+            "u64-overflow-plus",
+            "top-provider-overflow",
+            "float-form",
+            "negative",
+            "string-form",
+        ] {
+            let model = models.iter().find(|m| m.id == id).unwrap();
+            assert_eq!(model.max_output_tokens, None, "{id} 必须按未声明处理");
+        }
+        let zero_context = models.iter().find(|m| m.id == "zero-context").unwrap();
+        assert_eq!(zero_context.max_model_len, None, "0 窗口不是事实");
+        let overflow_context = models.iter().find(|m| m.id == "overflow-context").unwrap();
+        assert_eq!(
+            overflow_context.max_model_len, None,
+            "超 u32 窗口不得截断成假值"
+        );
     }
 
     #[test]
@@ -1912,5 +2123,64 @@ mod tests {
 
         task.abort();
         clear_probe_kind_cache();
+    }
+
+    #[tokio::test]
+    async fn fetch_v1_models_prefers_v1_root_and_does_not_fall_back_on_success() {
+        let mock = models_mock::spawn(&[
+            ("/v1/models", 200, r#"{"data":[{"id":"served-a"}]}"#.into()),
+            ("/models", 200, r#"{"data":[{"id":"root-b"}]}"#.into()),
+        ]);
+        let value = fetch_v1_models(&mock.base_url, None)
+            .await
+            .expect("裸主机形态主候选 /v1/models 应命中");
+        assert_eq!(parse_models_response_list(value).unwrap()[0].id, "served-a");
+        assert_eq!(mock.hits_for("/v1/models"), 1);
+        assert_eq!(mock.hits_for("/models"), 0, "主候选成功不得再打回退路径");
+    }
+
+    #[tokio::test]
+    async fn fetch_v1_models_falls_back_to_root_models_on_404() {
+        // glm /api/paas/v4、方舟 /api/v3 这类非 v1 版本根：补 /v1 必 404，
+        // 模型列表在 {base}/models——回退一次必须命中。
+        let mock = models_mock::spawn(&[
+            ("/v1/models", 404, "{}".into()),
+            ("/models", 200, r#"{"data":[{"id":"glm-4.7"}]}"#.into()),
+        ]);
+        let value = fetch_v1_models(&mock.base_url, None)
+            .await
+            .expect("404 后应回退 {base}/models");
+        assert_eq!(parse_models_response_list(value).unwrap()[0].id, "glm-4.7");
+        assert_eq!(mock.hits_for("/v1/models"), 1);
+        assert_eq!(mock.hits_for("/models"), 1);
+    }
+
+    #[tokio::test]
+    async fn fetch_v1_models_auth_failure_does_not_retry_alt_path() {
+        let mock = models_mock::spawn(&[
+            ("/v1/models", 401, "{}".into()),
+            ("/models", 200, r#"{"data":[{"id":"x"}]}"#.into()),
+        ]);
+        assert!(fetch_v1_models(&mock.base_url, None).await.is_none());
+        assert_eq!(
+            mock.hits_for("/models"),
+            0,
+            "401 是鉴权问题，换路径无济于事，不得重试"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_v1_models_v1_shaped_base_has_no_alt_path() {
+        // /v1 结尾的配置根：主候选是 {base}/models == mock 的 "/v1/models"；
+        // 404 时不得再出现任何第二条路径（无 /v1/models 之外的回退）。
+        let mock = models_mock::spawn(&[("/v1/models", 404, "{}".into())]);
+        let base = format!("{}/v1", mock.base_url);
+        assert!(fetch_v1_models(&base, None).await.is_none());
+        assert_eq!(mock.hits_for("/v1/models"), 1);
+        assert_eq!(
+            mock.hits_for("/models"),
+            0,
+            "/v1 结尾的配置根只有一个候选，无回退路径"
+        );
     }
 }
