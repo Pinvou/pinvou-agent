@@ -186,6 +186,7 @@ class CiGatePolicyTests(unittest.TestCase):
             "rust_code",
             "rust_dependencies",
             "rust_full",
+            "cli_rust",
             "knowledge_rust",
             "knowledge_dependencies",
             "release_contract",
@@ -255,6 +256,55 @@ class CiGatePolicyTests(unittest.TestCase):
         )[1]
         self.assertIn("- knowledge-rust", required_gate)
         self.assertIn('"knowledge-rust:$KNOWLEDGE_RUST_RESULT"', required_gate)
+
+    def test_cli_crate_has_its_own_required_gate(self):
+        changes = _without_yaml_comments(
+            self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
+                "\n  fast-gate:", maxsplit=1
+            )[0]
+        )
+        self.assertIn("cli_rust:", changes)
+        cli_paths = changes.split("            cli_rust:", maxsplit=1)[1].split(
+            "            knowledge_rust:", maxsplit=1
+        )[0]
+        self.assertIn(
+            "- 'pinvou-cli/**/*.rs'",
+            cli_paths,
+            "cli_rust must match the real crate directory (pinvou-cli)",
+        )
+        self.assertIn("- 'pinvou-cli/**/Cargo.toml'", cli_paths)
+        self.assertIn("- 'CodeWhale'", cli_paths)
+
+        cli_test = _without_yaml_comments(
+            self.pr_workflow.split("\n  cli-test:", maxsplit=1)[1].split(
+                "\n  windows-rust-test:", maxsplit=1
+            )[0]
+        )
+        self.assertIn("needs.changes.outputs.cli_rust == 'true'", cli_test)
+        self.assertIn(
+            "github.event.pull_request.draft == false",
+            cli_test,
+            "draft PRs must skip the heavy CLI leg like the other rust jobs",
+        )
+        self.assertIn("- name: Set up zram and swap", cli_test)
+        self.assertIn("scripts/ci-memory-setup.sh", cli_test)
+        self.assertIn(
+            "cargo fmt --all --check --manifest-path pinvou-cli/Cargo.toml",
+            cli_test,
+            "pinvou-cli is a virtual workspace: plain --manifest-path fmt fails "
+            "with 'Failed to find targets', --all is required",
+        )
+        self.assertIn(
+            "cargo test --manifest-path pinvou-cli/Cargo.toml --locked --no-fail-fast",
+            cli_test,
+        )
+        self.assertIn("cache-targets: false", cli_test)
+
+        required_gate = self.pr_workflow.split(
+            "\n  required-gate:", maxsplit=1
+        )[1]
+        self.assertIn("- cli-test", required_gate)
+        self.assertIn('"cli-test:$CLI_TEST_RESULT"', required_gate)
 
     def test_benchmark_jobs_stay_out_of_product_pr_workflow(self):
         self.assertNotIn("\n  benchmark-contract:", self.pr_workflow)
