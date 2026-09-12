@@ -83,7 +83,8 @@ GAIA validation Level 1 是当前唯一支持的 split/level 组合。每道题�
 pinvou benchmark run gaia --split validation --level 1
 ```
 
-- 每道题有 600 秒超时限制。
+- 不设题目级墙钟超时：官方 GAIA 评测对运行时长没有要求，运行由引擎自身边界收束（每轮 200 步模型步数上限、每轮 3,600 秒墙钟、取消机制；两者均可被配置调大)。注意该边界只覆盖 turn 本身：harness 侧的 `prepare`/`resolve_output`/`close` 阶段没有各自的截止时间，若这些本地阶段挂死，`pinvou benchmark run gaia` 会一直等待直到操作者手动终止（旧的 600 秒题目级 deadline 恰好覆盖过这类失败）。
+- 与旧版本运行记录不可比：本版本同时移除了题目级 600 秒墙钟与 eval 构建的每轮 8 次工具调用护栏（及 GAIA prompt 中对应的提示句），本版本之前产生的跑分记录与新版本不可直接比较。
 - 代理使用 `pinvou-gaia-public-web/v1` 工具策略，可访问公开 web 资源。
 - Office/PDF 附件在 host 侧预解析；XLSX 会同时提供工作表值以及有界的填充色、公式和合并
   区域注释。评测附件提示只声明 profile 实际允许的只读能力。
@@ -173,7 +174,7 @@ pinvou benchmark submission gaia --run-id <run-id> --destination ./output.jsonl
 
 - **product-backend 依赖**：运行评测需要 product-backend 能力（真实代理执行）。社区版或未配置 product-backend 的构建中，`run gaia` 返回 `product_backend_not_enabled`。
 - **附件平台支持**：Windows headless 附件执行当前固定返回 `attachments_platform_security_unsupported`；因此 Windows 不能宣称支持完整 GAIA 评测。Unix 等平台仍需以实际 product-backend 验证结果为准。
-- **网络访问**：运行期间代理可访问公开 web（`pinvou-gaia-public-web/v1` 策略），但不保证特定网站可用性；网络故障导致的超时由 600 秒限制处理。
+- **网络访问**：运行期间代理可访问公开 web（`pinvou-gaia-public-web/v1` 策略），但不保证特定网站可用性；网络故障由引擎自身边界处理（不会无限重试：有界流重试加上每轮步数/墙钟上限）。
 - **HF gated 访问**：数据集访问权限由 Hugging Face 平台管理，可能因审批延迟或拒绝而无法下载。
 - **磁盘占用**：完整数据集快照约 40 KB Parquet + 附件（附件大小取决于题目）；下载阶段有流式大小限制，超限中止。
 - **评分等价性边界**：Rust 评分器固定实现和 golden contract 不是逐题等价证明；真实 Python scorer cross-check 未完成，Python/Unicode 运行时差异也可能导致结果不同。以固定 revision 的官方 Python scorer 为最终真相。

@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use agent_backend_api::{
     AttachmentHandle, PrivateInputHandle, ResolvedAttachmentSource, SecretOutput, SecretText,
@@ -397,7 +396,9 @@ fn default_unit_contract_covers_selection_native_turn_and_privacy() {
     else {
         panic!("GAIA must use NativeTurn");
     };
-    assert_eq!(*timeout, Duration::from_secs(600));
+    // The official GAIA evaluation imposes no runtime limit, so the adapter
+    // must not declare a harness wall-clock deadline.
+    assert_eq!(*timeout, None);
     assert_eq!(tool_policy.as_str(), "pinvou-gaia-public-web/v1");
     assert_eq!(output_contract.as_str(), "gaia-final/v1");
     assert_eq!(attachments.len(), 1);

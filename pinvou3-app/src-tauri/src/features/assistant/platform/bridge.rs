@@ -1740,49 +1740,12 @@ impl Pinvou3Bridge {
                 let n = crate::features::marketplace::disabled_tool_names();
                 if n.is_empty() { None } else { Some(n) }
             },
-            max_tool_calls: {
-                #[cfg(feature = "benchmark-hooks")]
-                {
-                    // Eval builds pin 8 tool calls per turn by default (the
-                    // GAIA runaway guard). Long-horizon agentic scenarios such
-                    // as Terminal-Bench raise it explicitly via
-                    // PINVOU3_MAX_TOOL_CALLS, same env convention as
-                    // PINVOU3_ALLOW_SHELL/PINVOU3_MAX_OUTPUT_TOKENS; unset
-                    // keeps the behavior bit-identical.
-                    let cap = match std::env::var("PINVOU3_MAX_TOOL_CALLS") {
-                        Ok(value) => match value.parse::<u32>() {
-                            // A zero cap would disable every tool call, which
-                            // is never a useful configuration: reject it like
-                            // any other invalid value.
-                            Ok(0) => {
-                                eprintln!(
-                                    "[pinvou3-app] ignoring PINVOU3_MAX_TOOL_CALLS=0 (a zero per-turn cap would disable every tool); falling back to the default cap of 8"
-                                );
-                                8
-                            }
-                            Ok(cap) => cap,
-                            Err(_) => {
-                                eprintln!(
-                                    "[pinvou3-app] ignoring invalid PINVOU3_MAX_TOOL_CALLS={value:?}; falling back to the default cap of 8"
-                                );
-                                8
-                            }
-                        },
-                        Err(std::env::VarError::NotUnicode(value)) => {
-                            eprintln!(
-                                "[pinvou3-app] ignoring invalid PINVOU3_MAX_TOOL_CALLS={value:?}; falling back to the default cap of 8"
-                            );
-                            8
-                        }
-                        Err(std::env::VarError::NotPresent) => 8,
-                    };
-                    Some(max_tool_calls.unwrap_or(cap).min(cap))
-                }
-                #[cfg(not(feature = "benchmark-hooks"))]
-                {
-                    max_tool_calls
-                }
-            },
+            // No tool-call round limit: upstream `max_tool_calls` defaults to
+            // `None` (the admission gate is fully lazy). Runaway protection
+            // stays with the foundation's own max_steps, per-turn wall clock,
+            // bounded retries, and cancel boundaries — the host adds no
+            // per-call-count gate of its own.
+            max_tool_calls,
             // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
             // —— v0.8.65 上游新增字段,透传 default ——
             //   subagents_enabled: default true（通用多智能体委派需要 SpawnSubAgent）。
@@ -2397,9 +2360,10 @@ impl Pinvou3Bridge {
             deepseek_tui::core::ops::TurnToolSecurityPolicy::new(Some(Vec::new()), Some(exact))
                 .with_read_only_dispatch();
         #[cfg(feature = "benchmark-hooks")]
-        let turn_tool_security = turn_tool_security
-            .with_final_only_after_tool_budget()
-            .with_missing_read_action_repair();
+        // With no tool-call round limit, the final-only-after-budget mode can
+        // never trigger, so it is no longer armed; missing-read-action repair
+        // is budget-independent and stays.
+        let turn_tool_security = turn_tool_security.with_missing_read_action_repair();
         Ok(Op::SendMessage {
             content,
             mode: AppMode::Agent,
@@ -5185,58 +5149,23 @@ mod tests {
         );
     }
 
-    /// Tool-call guard of benchmark-hooks builds: the default 8 calls/turn
-    /// stays, PINVOU3_MAX_TOOL_CALLS raises it explicitly (Terminal-Bench and
-    /// similar agentic scenarios).
-    #[cfg(feature = "benchmark-hooks")]
+    /// No host-level tool-call round limit under any feature combination:
+    /// `build_engine_config` must not configure `max_tool_calls` (upstream
+    /// `None` = unbounded, admission gate lazy). Runaway protection stays
+    /// with the foundation's max_steps, per-turn wall clock, bounded retries,
+    /// and cancel boundaries.
     #[test]
-    fn engine_config_tool_call_cap_respects_env_override() {
-        let (_lock, _env) = locked_env(&["PINVOU3_MAX_TOOL_CALLS"]);
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::remove_var("PINVOU3_MAX_TOOL_CALLS") };
+    fn engine_config_has_no_tool_call_cap() {
         assert_eq!(
             fixture_bridge().build_engine_config().max_tool_calls,
-            Some(8),
-            "eval builds must keep the default guard of 8 tool calls per turn"
+            None,
+            "the host must not configure a per-turn tool-call cap"
         );
-
-        // SAFETY: see above.
-        unsafe { std::env::set_var("PINVOU3_MAX_TOOL_CALLS", "512") };
+        let cfg = fixture_bridge().build_engine_config_for_session("any_session");
         assert_eq!(
-            fixture_bridge().build_engine_config().max_tool_calls,
-            Some(512),
-            "PINVOU3_MAX_TOOL_CALLS must be able to raise the guard"
+            cfg.max_tool_calls, None,
+            "per-session configs must not grow a tool-call cap either"
         );
-
-        // A zero cap would disable every tool call; it must be rejected like
-        // any other invalid value instead of silently disabling all tools.
-        // SAFETY: see above.
-        unsafe { std::env::set_var("PINVOU3_MAX_TOOL_CALLS", "0") };
-        assert_eq!(
-            fixture_bridge().build_engine_config().max_tool_calls,
-            Some(8),
-            "PINVOU3_MAX_TOOL_CALLS=0 must fall back to the default guard of 8"
-        );
-
-        // Non-UTF-8 values cannot parse; they must fall back to the default
-        // instead of panicking or corrupting the cap. Unix-only: only Unix
-        // can build a non-UTF-8 OsStr from raw bytes.
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStrExt;
-            // SAFETY: see above.
-            unsafe {
-                std::env::set_var(
-                    "PINVOU3_MAX_TOOL_CALLS",
-                    std::ffi::OsStr::from_bytes(&[0xff]),
-                );
-            }
-            assert_eq!(
-                fixture_bridge().build_engine_config().max_tool_calls,
-                Some(8),
-                "a non-UTF-8 PINVOU3_MAX_TOOL_CALLS must fall back to the default guard of 8"
-            );
-        }
     }
 
     /// 安全敏感字段必须固定——这些值改了会让 pinvou3 出现奇怪行为或越权。

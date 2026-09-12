@@ -40,9 +40,9 @@ The old r13 changed 110 files. Upstream v0.9.12 also changed 104 of those files,
 | Drop fork patch, use upstream | Session snapshot/recovery, edit-last-turn, compaction tokens, strict-direct model matching, route budgets, schema normalization, native search, Windows shell decoding, and provider pin improvements |
 | Semantic migration | `Yolo`/`Auto` become `Agent` plus approval/trust policy; reasoning is per `SendMessage`; host tools use `ExtraTools`; explicit Skill roots replace global disable shims |
 | Rebuild in fork | Host facade and route limits, reliable steer, bulk child cancel, MCP secret resolver, raw worker ledger, per-turn/final-dispatch safety, 64 KiB File cap, prompt ownership, and Automation ownership/schema/lifecycle |
-| Preserve, default off | Rebuild r13 benchmark eval controls on the v0.9.12 architecture: final-only-after-tool-budget and unambiguous missing-read-action repair are explicitly feature-gated, off on the desktop default path, and orchestrated/observed through the parent's `benchmark-hooks` surface |
+| Preserve, default off | Rebuild r13 benchmark eval controls on the v0.9.12 architecture: unambiguous missing-read-action repair is explicitly feature-gated, off on the desktop default path. Since 2026-09-11 the host no longer arms final-only-after-tool-budget (per-turn tool-call caps were removed entirely, so a budget can never be exhausted and arming it is dead code); the foundation-side mechanism and its forkguard tests remain, as a candidate for a future upstream-or-remove decision |
 | Preserve | The #35 direct Bing tail for configured API search chains. DuckDuckGo's internal Bing fallback only covers empty/challenge responses, not connection failures; using DuckDuckGo as the outer tail therefore returns early on networks where it is unreachable. API providers now fall directly through to keyless Bing, locked by a result-level test |
-| Use upstream removal | Stuck/read-repeat/coaching guards removed by upstream `b39cf5650`: the old stuck fingerprint omitted result state and could kill live-job polling. Do not restore the old guard or its environment knobs; finite `max_steps`, tool budgets, and cancellation remain the limits |
+| Use upstream removal | Stuck/read-repeat/coaching guards removed by upstream `b39cf5650`: the old stuck fingerprint omitted result state and could kill live-job polling. Do not restore the old guard or its environment knobs; finite `max_steps`, the per-turn wall clock, and cancellation remain the limits (the host sets no per-turn tool-call budget since 2026-09-11) |
 
 ### Upstream test disposition notes
 
@@ -156,7 +156,7 @@ Tests: `forkguard_rate_limit_governor_pauses_and_time_recovers_after_window_drai
 
 ## Parent boundary and drift reduction
 
-`pinvou3-app` owns product tool policy, AppMode-to-approval/trust mapping, reasoning effort, owner-event filtering, and scheduled-session creation. Its bridge retains v0.9.12 finite turn/tool limits, read denylist, bubblewrap, MCP OAuth, goal-loop, and telemetry-safe defaults.
+`pinvou3-app` owns product tool policy, AppMode-to-approval/trust mapping, reasoning effort, owner-event filtering, and scheduled-session creation. Its bridge retains the v0.9.12 read denylist, bubblewrap, MCP OAuth, goal-loop, and telemetry-safe defaults; product builds no longer stack the benchmark-only per-turn tool cap on top (see the 2026-09-11 rows in the register).
 
 Shell task reconciliation prefers the stable `origin_tool_call_id` carried by snapshots and completion events (an upstream v0.9.12 behavior, Hmbown/CodeWhale #5869): the host monitor and the Tauri/Web bridges rewrite the originating tool card first and fall back to command-text matching only for legacy origin-less jobs. An identified terminal root job whose origin card was compacted or reloaded away never appends to the current timeline tail, while running jobs keep a visible synthetic status card (`shell_task_projection.test.mjs`, `forkguard_shell_monitor_assigns_identical_commands_by_stable_origin`).
 

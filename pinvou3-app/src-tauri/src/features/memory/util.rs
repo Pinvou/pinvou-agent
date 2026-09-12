@@ -413,7 +413,7 @@ pub(super) fn invalid_data(err: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, err.to_string())
 }
 
-pub(super) fn clean_candidate_sentence(value: &str, max_chars: usize) -> String {
+pub fn clean_candidate_sentence(value: &str, max_chars: usize) -> String {
     let cleaned = value
         .trim()
         .trim_start_matches("请记住")

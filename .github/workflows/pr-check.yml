@@ -15,6 +15,9 @@ name: PR Check
 #   binary. Ready high-risk PRs and their combined Merge Queue tree run Linux
 #   regressions; Windows runs once on the ready PR. main push 无条件累计编译
 #   验证并写暖 cache(--no-run,不执行测试;MQ 已对同一组合树跑过全量测试)。
+# - cli-test: pinvou-cli workspace contract suite (fmt + all-target tests),
+#   triggered by cli_rust/rust_full changes; follows the rust-test push and
+#   cache policies (memory setup, --no-run on push, ~/.cargo-only cache).
 # - rust-lint:Draft 只跑 fmt；Ready/Queue/main 跑 clippy；cargo-deny 仅在依赖
 #   或策略路径变化时追加，三项均无 continue-on-error。
 #   与 rust-test 并行,各自独立 cache。clippy 规则见 Cargo.toml [lints] 表:
@@ -137,6 +140,7 @@ jobs:
       rust_code: ${{ steps.filter.outputs.rust_code }}
       rust_dependencies: ${{ steps.filter.outputs.rust_dependencies }}
       rust_full: ${{ steps.filter.outputs.rust_full }}
+      cli_rust: ${{ steps.filter.outputs.cli_rust }}
       knowledge_rust: ${{ steps.filter.outputs.knowledge_rust }}
       knowledge_dependencies: ${{ steps.filter.outputs.knowledge_dependencies }}
       release_contract: ${{ steps.filter.outputs.release_contract }}
@@ -189,6 +193,11 @@ jobs:
               - '!pinvou3-app/src-tauri/src/features/feedback/**'
               - '!pinvou3-app/src-tauri/src/features/personas/**'
               - '!pinvou3-app/src-tauri/src/features/pet/**'
+            cli_rust:
+              - 'pinvou-cli/**/*.rs'
+              - 'pinvou-cli/**/Cargo.toml'
+              - 'pinvou-cli/**/Cargo.lock'
+              - 'CodeWhale'
             knowledge_rust:
               - 'pinvou-knowledge/**/*.rs'
               - 'pinvou-knowledge/Cargo.toml'
@@ -960,6 +969,111 @@ jobs:
         if: ${{ github.event_name == 'push' }}
         run: /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --features benchmark-hooks --locked --no-run
 
+  # pinvou-cli contract tests: since PR #478 the product CLI surface (~20k
+  # lines + ~340 contract tests) has no other automated execution leg (the
+  # remaining jobs only cargo check pinvou-product-backend). Separate
+  # workspace/target dir, runs in parallel with rust-test.
+  cli-test:
+    name: cli-test
+    needs: changes
+    if: >-
+      ${{
+        !cancelled() &&
+        github.event.action != 'closed' &&
+        (
+          github.event_name == 'push' ||
+          (
+            github.event_name == 'merge_group' &&
+            (
+              needs.changes.outputs.cli_rust == 'true' ||
+              needs.changes.outputs.rust_full == 'true'
+            )
+          ) ||
+          (
+            github.event_name == 'pull_request' &&
+            github.event.pull_request.draft == false &&
+            (
+              needs.changes.outputs.cli_rust == 'true' ||
+              needs.changes.outputs.rust_full == 'true'
+            )
+          )
+        )
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      # 与 rust-test 同策略:Linux Rust job 必须先做内存扩容(gate policy 强制)。
+      - name: Set up zram and swap
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+
+      - name: Init CodeWhale submodule
+        run: git submodule update --init --recursive -- CodeWhale
+
+      # pinvou-cli compiles pinvou3-tauri as a path dependency
+      # (default-features=false): same tauri_build resource check and system
+      # library requirements as the rust-test job.
+      - name: Install Tauri Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends             libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev             librsvg2-dev libssl-dev             libx11-dev libxi-dev libxtst-dev             libayatana-appindicator3-dev             build-essential pkg-config cmake             time
+
+      - name: bge-m3 placeholder (tauri-build resource check)
+        run: |
+          d=pinvou3-app/src-tauri/resources/bge-m3
+          mkdir -p "$d"
+          for f in config.json model.onnx tokenizer.json tokenizer_config.json special_tokens_map.json; do
+            : > "$d/$f"
+          done
+
+      # Follows the repo's pinned toolchain single source
+      # (pinvou3-app/src-tauri/rust-toolchain.toml); rustfmt is required by
+      # the `cargo fmt --check` step below (minimal profile otherwise).
+      #
+      # No RUSTC_WRAPPER/rustc-stack-wrapper here (unlike rust-test): that
+      # wrapper only exists because src-tauri's own [profile.dev] raises
+      # dependencies to opt-level 2 (codewhale-tui rustc stack overflow).
+      # Profiles are chosen by the top-level workspace, and the pinvou-cli
+      # workspace has no [profile] section, so the same crate compiles at O0
+      # in this job and the overflow trigger is absent.
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.0
+          components: rustfmt
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pinvou-cli
+          # Same standing incident directive as rust-test (see its Cargo cache
+          # comment): target/ caches took runners down with the root cause
+          # still unidentified - cache ~/.cargo only until then.
+          cache-targets: false
+          shared-key: cli-test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # --all is required: pinvou-cli is a virtual workspace (no [package]),
+      # and plain `cargo fmt --manifest-path` fails with "Failed to find
+      # targets" on it.
+      - name: cargo fmt --check
+        run: cargo fmt --all --check --manifest-path pinvou-cli/Cargo.toml
+
+      # main push only warms the dependency cache and proves compilation: the
+      # merge queue already executed the combined tree (same --no-run policy
+      # as rust-test).
+      - name: cargo test (all targets, no-fail-fast)
+        if: github.event_name != 'push'
+        run: cargo test --manifest-path pinvou-cli/Cargo.toml --locked --no-fail-fast
+
+      - name: cargo compile check (push)
+        if: github.event_name == 'push'
+        run: cargo test --manifest-path pinvou-cli/Cargo.toml --locked --no-run
+
   windows-rust-test:
     name: windows-rust-test
     needs: changes
@@ -975,6 +1089,7 @@ jobs:
             github.event.pull_request.draft == false &&
             (
               needs.changes.outputs.rust_full == 'true' ||
+              needs.changes.outputs.cli_rust == 'true' ||
               (
                 needs.changes.outputs.rust_code == 'true' &&
                 contains(github.event.pull_request.labels.*.name, 'ci:full-rust')
@@ -1048,6 +1163,14 @@ jobs:
         run: >-
           cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml
           --all-targets --features dev-tools
+
+      # The pinvou-cli Windows branches (exe/cmd candidates, cmd /D /S /C
+      # shims, taskkill tree kill, CREATE_NO_WINDOW) only compile-check on a
+      # Windows runner.
+      - name: pinvou-cli Windows compile check
+        run: >-
+          cargo check --manifest-path pinvou-cli/Cargo.toml
+          --workspace --all-targets --locked
 
       - name: Windows Rust 单元测试链接检查
         shell: pwsh
@@ -1233,6 +1356,7 @@ jobs:
       - knowledge-rust
       - rust-lint
       - rust-test
+      - cli-test
       - windows-rust-test
       - macos-codex-runtime-test
       - windows-codex-runtime-test
@@ -1258,6 +1382,7 @@ jobs:
           KNOWLEDGE_RUST_RESULT: ${{ needs.knowledge-rust.result }}
           RUST_LINT_RESULT: ${{ needs.rust-lint.result }}
           RUST_RESULT: ${{ needs.rust-test.result }}
+          CLI_TEST_RESULT: ${{ needs.cli-test.result }}
           WINDOWS_RUST_RESULT: ${{ needs.windows-rust-test.result }}
           MACOS_CODEX_RESULT: ${{ needs.macos-codex-runtime-test.result }}
           WINDOWS_CODEX_RESULT: ${{ needs.windows-codex-runtime-test.result }}
@@ -1282,6 +1407,7 @@ jobs:
             "knowledge-rust:$KNOWLEDGE_RUST_RESULT" \
             "rust-lint:$RUST_LINT_RESULT" \
             "rust-test:$RUST_RESULT" \
+            "cli-test:$CLI_TEST_RESULT" \
             "windows-rust-test:$WINDOWS_RUST_RESULT" \
             "macos-codex-runtime-test:$MACOS_CODEX_RESULT" \
             "windows-codex-runtime-test:$WINDOWS_CODEX_RESULT"; do
