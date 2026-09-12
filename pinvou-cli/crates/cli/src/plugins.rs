@@ -660,6 +660,11 @@ fn tools_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome
     // OAuth tools; that store is not reachable headless (disclosed in the
     // module docs), so a reinstalled OAuth tool may still be authorized.
     let mgr = MarketplaceManager::new();
+    // Captured before the uninstall: the foundation token store is not
+    // reachable headless, so an OAuth tool's stored remote tokens survive
+    // the uninstall — say so at the point of action, not only in the module
+    // docs.
+    let keeps_oauth_tokens = mgr.oauth_remote_server_name(id).is_some();
     let companions = mgr.companion_skills(id);
     let recycles_with_package = BundleStore::new()
         .get(id)
@@ -688,9 +693,18 @@ fn tools_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome
     } else {
         "uninstalled"
     };
+    let oauth_note = if keeps_oauth_tokens {
+        "\nnote: stored OAuth tokens for this tool were kept; a reinstall stays authorized"
+    } else {
+        ""
+    };
     let value =
         serde_json::json!({ "id": id, "action": "uninstalled", "recycled": recycles_with_package });
-    Ok(success(render(output, format!("{action} {id}"), &value)))
+    Ok(success(render(
+        output,
+        format!("{action} {id}{oauth_note}"),
+        &value,
+    )))
 }
 
 fn mcp_json_servers(context: &str) -> Result<Option<serde_json::Value>, CliError> {
@@ -913,8 +927,16 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
         let mut entries = collect_directory_entries(path)?;
         // A SKILL.md without a frontmatter `name` is rejected downstream as
         // an "empty package"; the .md channel derives a name from the file
-        // name, so the directory channel injects the same fallback here.
-        let skill_md = std::fs::read_to_string(path.join("SKILL.md")).unwrap_or_default();
+        // name, so the directory channel injects the same fallback here. A
+        // READ failure (permissions, non-UTF-8 body) must surface like the
+        // .md channel's error instead of degrading to an empty string — that
+        // would silently replace the user's skill body with a stub.
+        let skill_md = std::fs::read_to_string(path.join("SKILL.md")).map_err(|error| {
+            CliError::failed(format!(
+                "plugins import({}): cannot read SKILL.md: {error}",
+                path.display()
+            ))
+        })?;
         if frontmatter_name(&skill_md).is_none() {
             let wrapped = wrap_markdown_skill(&skill_md, &sanitize_skill_name(&display));
             entries.retain(|(name, _)| name != "SKILL.md");
@@ -945,7 +967,21 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
     };
     let import_path;
     if let Some((tmp, bytes)) = &wrapper {
-        std::fs::write(tmp, bytes).map_err(|error| {
+        // Exclusive create + write through the same handle: the path lives
+        // in the shared temp directory, so a pre-planted symlink or file
+        // must not be followed (the wrapper zip holds the user's skill body
+        // in transit).
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(tmp)
+            .map_err(|error| {
+                CliError::failed(format!(
+                    "plugins import: cannot create temporary zip {}: {error}",
+                    tmp.display()
+                ))
+            })?;
+        std::io::Write::write_all(&mut file, bytes).map_err(|error| {
             CliError::failed(format!(
                 "plugins import: cannot write temporary zip: {error}"
             ))
@@ -1229,6 +1265,16 @@ fn set_enabled(
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     let action = if enabled { "enabled" } else { "disabled" };
+    // The id is matched against what the CLI can see installed (tool
+    // packages + installed skills). `skill:`-prefixed or companion-owned
+    // skills remap to a package id inside the storage layer, so this is a
+    // warning, not a gate — but `enable some-unknown-id` no longer reports
+    // unverified success.
+    let installed = known_installed_ids();
+    let stripped = id.strip_prefix("skill:").unwrap_or(id);
+    let known = installed.iter().any(|existing| existing == id)
+        || installed.iter().any(|existing| existing == stripped);
+    let mut unverified = Vec::new();
     for connector_scope in scope.scopes() {
         let mut ids =
             pinvou3_lib::features::marketplace::load_disabled_bundles_for(connector_scope);
@@ -1238,25 +1284,71 @@ fn set_enabled(
             ids.push(id.to_owned());
         }
         // save_disabled_bundles_for marks the scope initialized — the same
-        // storage effect the GUI's set_disabled_skills toggle produces.
+        // storage effect the GUI's set_disabled_skills toggle produces. It
+        // swallows write failures internally, so persistence is verified by
+        // reading the scope back: an enable must have removed the id, and a
+        // disable must have recorded it (a missing entry can also mean the
+        // id was remapped to its owner package, which the CLI cannot
+        // compute — that case is reported as unverified, not as success).
         pinvou3_lib::features::marketplace::save_disabled_bundles_for(connector_scope, &ids);
+        let reloaded =
+            pinvou3_lib::features::marketplace::load_disabled_bundles_for(connector_scope);
+        let present = reloaded.iter().any(|existing| existing == id);
+        if enabled {
+            if present {
+                return Err(CliError::failed(format!(
+                    "plugins {action}: could not persist {id} for scope {} (the storage \
+                     write failed or was dropped; the id is still active)",
+                    connector_scope.as_str()
+                )));
+            }
+        } else if !present && !unverified.contains(&connector_scope.as_str().to_owned()) {
+            unverified.push(connector_scope.as_str().to_owned());
+        }
     }
-    let value = serde_json::json!({
+    let mut value = serde_json::json!({
         "id": id,
         "action": action,
         "scope": scope.label(),
+        "known_id": known,
     });
-    Ok(success(render(
-        output,
-        format!("{action} {id} (scope={})", scope.label()),
-        &value,
-    )))
+    let mut human = format!("{action} {id} (scope={})", scope.label());
+    if !known {
+        human.push_str(
+            "\nwarning: id not found in the installed catalog; the toggle was recorded anyway",
+        );
+    }
+    if !unverified.is_empty() {
+        value["persistence_verified"] = serde_json::json!(false);
+        human.push_str(&format!(
+            "\nwarning: could not verify persistence for scope(s) {} (the id may map to an \
+             owner package)",
+            unverified.join(", ")
+        ));
+    } else {
+        value["persistence_verified"] = serde_json::json!(true);
+    }
+    Ok(success(render(output, human, &value)))
+}
+
+/// The installed ids the CLI can see: tool packages plus installed skills.
+fn known_installed_ids() -> Vec<String> {
+    let mut ids = MarketplaceManager::new().installed_ids();
+    ids.extend(SkillMarketplaceManager::new().installed_skill_ids());
+    ids
 }
 
 fn project_skills(enabled: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     // `skill_scope::set_project_skills_enabled` (alias of the scope.rs
-    // storage the GUI set_project_skills_enabled command writes).
+    // storage the GUI set_project_skills_enabled command writes). The write
+    // swallows failures internally; the getter verifies the persisted value.
     skill_scope::set_project_skills_enabled(enabled);
+    if skill_scope::project_skills_enabled() != enabled {
+        return Err(CliError::failed(
+            "plugins project-skills: could not persist the new value (the storage write \
+             failed or was dropped)",
+        ));
+    }
     let value = serde_json::json!({ "project_skills_enabled": enabled });
     let human = if enabled {
         "project skills enabled".to_owned()
@@ -1493,7 +1585,8 @@ fn build_stored_zip(entries: &[(String, Vec<u8>)]) -> Result<Vec<u8>, CliError> 
     }
     let central_offset = u32::try_from(out.len())
         .map_err(|_| CliError::failed("plugin package exceeds the 4 GiB archive limit"))?;
-    let central_size = central.len() as u32;
+    let central_size = u32::try_from(central.len())
+        .map_err(|_| CliError::failed("plugin package exceeds the 4 GiB archive limit"))?;
     out.extend_from_slice(&central);
     // End of central directory
     push_u32(&mut out, 0x0605_4b50);
