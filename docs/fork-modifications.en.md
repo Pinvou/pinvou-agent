@@ -142,7 +142,7 @@ Tests: `forkguard_rate_limit_governor_pauses_and_time_recovers_after_window_drai
 
 ## Parent boundary and drift reduction
 
-`pinvou3-app` owns product tool policy, AppMode-to-approval/trust mapping, reasoning effort, owner-event filtering, and scheduled-session creation. Its bridge retains v0.9.12 finite turn/tool limits, read denylist, bubblewrap, MCP OAuth, goal-loop, and telemetry-safe defaults.
+`pinvou3-app` owns product tool policy, AppMode-to-approval/trust mapping, reasoning effort, owner-event filtering, and scheduled-session creation. Its bridge retains the v0.9.12 read denylist, bubblewrap, MCP OAuth, goal-loop, and telemetry-safe defaults; product builds no longer stack the benchmark-only per-turn tool cap on top (see the 2026-09-11 rows in the register).
 
 The baseline's net +8,736 lines exceed the +1,500 soft limit, chiefly in Engine state, final dispatch, child-only host profiles, explicit-Skill-root boundaries, and review-requested result-level safety coverage where an app-side mirror would create two unsafe sources of truth. Reduction order is: upstream generic steer and per-turn dispatch policy; upstream Automation ownership/misfire behavior; upstream the execpolicy phase-2 expressiveness and subagent wiring; upstream the T5 archive export as a unit; upstream the T6 rate-limit governor; upstream the GLM-5.3 forced-thinking dialect and BigModel route predicate; make the 100 KiB `FragmentId::Permissions` host budget a configurable upstream fragment limit; migrate the parent to explicit re-export APIs and then narrow the 18-module compatibility facade; finally replace T3 once upstream provides complete static-composer, explicit-Skill-root, and host-profile contracts.
 
