@@ -98,6 +98,9 @@ impl SessionStore {
     /// Open the process-owned session store and recover tool histories left
     /// incomplete by a previous process, before any Engine is started.
     pub fn boot_for_process_startup() -> Result<Self> {
+        // 顺序约束（评审 #455）：本 boot 会创建 sessions/ 目录项（首启自写
+        // 痕迹），disabled_bundles 迁移判定必须先于此完成——lib.rs
+        // `startup_order_contract` 以源码位置断言钉住该顺序。
         Self::boot_inner(true)
     }
 
