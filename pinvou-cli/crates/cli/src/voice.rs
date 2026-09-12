@@ -386,9 +386,10 @@ fn asr_status(output: OutputMode) -> Result<CliOutcome, CliError> {
     // `ready` mirrors the GUI's host-capability status (on macOS it reports
     // the system Speech runtime). The CLI cannot reach that runtime, so this
     // field answers the question the user actually acts on: can THIS command
-    // transcribe right now (Linux bundled engine, or the external ASR CLI).
-    let cli_transcribe_ready =
-        (cfg!(target_os = "linux") && engine && model) || external_asr_command().is_some();
+    // transcribe right now (Linux bundled engine lane — which needs ffmpeg
+    // too, same gate `voice transcribe` applies — or the external ASR CLI).
+    let cli_transcribe_ready = (cfg!(target_os = "linux") && engine && ffmpeg && model)
+        || external_asr_command().is_some();
     let mut missing = Vec::new();
     if !model {
         missing.push("model");
@@ -497,7 +498,8 @@ fn download_asr_model() -> Result<PathBuf, CliError> {
         }
         let _ = std::fs::remove_file(&dest);
         return Err(CliError::failed(
-            "voice asr-install: the PINVOU3_ASR_MODEL_URL download failed the checksum gate;              fix or unset the override and retry",
+            "voice asr-install: the PINVOU3_ASR_MODEL_URL download failed the checksum \
+             gate; fix or unset the override and retry",
         ));
     }
     for url in [spec.primary_url, spec.mirror_url] {
@@ -549,9 +551,18 @@ fn download_to(url: &str, dest: &Path, expected_sha256: &str) -> Result<(), CliE
         let _ = std::fs::remove_file(&part);
         return Err(error);
     }
-    let size = std::fs::metadata(&part)
-        .map(|meta| meta.len())
-        .map_err(|error| CliError::failed(format!("voice asr-install: stat: {error}")))?;
+    let size = match std::fs::metadata(&part).map(|meta| meta.len()) {
+        Ok(size) => size,
+        Err(error) => {
+            // Same cleanup guarantee as every other failure path: the stat
+            // of a file this code just wrote should not fail, but if it
+            // does the staged part must not leak.
+            let _ = std::fs::remove_file(&part);
+            return Err(CliError::failed(format!(
+                "voice asr-install: stat: {error}"
+            )));
+        }
+    };
     if size > MAX_DOWNLOAD_BYTES {
         let _ = std::fs::remove_file(&part);
         return Err(CliError::failed(
@@ -665,7 +676,9 @@ fn write_temp_wav(bytes: &[u8]) -> Result<PathBuf, CliError> {
 /// reachable from the CLI), then the external ASR CLI. Without either lane
 /// the error names `pinvou voice asr-status` as the hint.
 fn run_recognition(wav: &Path) -> Result<(String, &'static str), CliError> {
-    if cfg!(target_os = "linux") && engine_path().is_some() && model_available() {
+    let native_attempted =
+        cfg!(target_os = "linux") && engine_path().is_some() && model_available();
+    if native_attempted {
         // GUI parity: a failing native lane falls back to the env-configured
         // external ASR CLI before giving up.
         if let Ok(text) = native_engine_transcribe(wav) {
@@ -674,6 +687,13 @@ fn run_recognition(wav: &Path) -> Result<(String, &'static str), CliError> {
     }
     match external_asr_command() {
         Some(command) => external_cli_transcribe(&command, wav).map(|text| (text, "local_cli")),
+        // An attempted-but-failed engine is a different fact from a missing
+        // one (the GUI reports `asr_engine_error` here); "not installed"
+        // would send the user reinstalling a model that exists.
+        None if native_attempted => Err(CliError::failed(
+            "asr_engine_error: the local recognition engine failed and no external ASR CLI \
+             is configured (hint: run `pinvou voice asr-status`)",
+        )),
         None => Err(CliError::failed(
             "asr_engine_missing: local speech recognition is not installed \
              (hint: run `pinvou voice asr-status`)",
@@ -710,7 +730,18 @@ fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&normalized, std::fs::Permissions::from_mode(0o600));
+        // The chmod must hold before ffmpeg writes audio into the file; a
+        // silent failure would leave a world-readable copy of private audio
+        // in the shared temp dir.
+        if let Err(error) =
+            std::fs::set_permissions(&normalized, std::fs::Permissions::from_mode(0o600))
+        {
+            drop(normalized_file);
+            let _ = std::fs::remove_file(&normalized);
+            return Err(CliError::failed(format!(
+                "voice transcribe: cannot restrict the staging file: {error}"
+            )));
+        }
     }
     drop(normalized_file);
     let input = if ffmpeg_available() {
