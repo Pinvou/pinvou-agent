@@ -164,27 +164,6 @@ pub(super) fn apply_local_asr_model_env(
     }
 }
 
-/// Temporary WAV file: `NamedTempFile` generates an unpredictable file name
-/// with 0600 permissions on Unix (the old hand-built pid+millisecond name was
-/// predictable and world-readable at 0644); the file is deleted on drop.
-struct VoiceTempWav {
-    file: tempfile::NamedTempFile,
-}
-
-impl VoiceTempWav {
-    fn create() -> std::io::Result<Self> {
-        let file = tempfile::Builder::new()
-            .prefix("pinvou3-voice-")
-            .suffix(".wav")
-            .tempfile()?;
-        Ok(Self { file })
-    }
-
-    fn path(&self) -> &std::path::Path {
-        self.file.path()
-    }
-}
-
 struct LocalAsrOutput {
     text: String,
     /// Recognition backend source (system_speech /
@@ -421,7 +400,7 @@ pub(crate) async fn transcribe_voice_audio_bytes(
     }
 
     let asr_output = tokio::task::spawn_blocking(move || {
-        let wav_file = VoiceTempWav::create().map_err(|e| {
+        let wav_file = crate::features::voice::VoiceTempWav::create().map_err(|e| {
             log::warn!(
                 target: "pinvou.voice",
                 "[voice_transcribe] create temp wav failed: {e}"
@@ -433,7 +412,7 @@ pub(crate) async fn transcribe_voice_audio_bytes(
                 "Could not create temporary audio file; please retry",
             )
         })?;
-        std::fs::write(wav_file.path(), &audio_bytes).map_err(|e| {
+        let wav_path = wav_file.write_and_close(&audio_bytes).map_err(|e| {
             log::warn!(
                 target: "pinvou.voice",
                 "[voice_transcribe] write temp wav failed: {e}"
@@ -460,7 +439,7 @@ pub(crate) async fn transcribe_voice_audio_bytes(
             let locale_tag = crate::platform::prefs::UserPrefs::load()
                 .language
                 .speech_recognition_locale();
-            let native = crate::features::voice::recognize_native(wav_file.path(), locale_tag);
+            let native = crate::features::voice::recognize_native(&wav_path, locale_tag);
             match native {
                 Some(Ok(text)) => Ok(LocalAsrOutput {
                     text,
@@ -468,7 +447,7 @@ pub(crate) async fn transcribe_voice_audio_bytes(
                 }),
                 Some(Err(e)) => {
                     if has_explicit_asr_cli_fallback() {
-                        run_local_asr_cli(wav_file.path())
+                        run_local_asr_cli(&wav_path)
                     } else {
                         Err(VoiceCommandError::new(
                             "asr_engine_error",
@@ -478,7 +457,7 @@ pub(crate) async fn transcribe_voice_audio_bytes(
                         ))
                     }
                 }
-                None => run_local_asr_cli(wav_file.path()),
+                None => run_local_asr_cli(&wav_path),
             }
         };
         result
