@@ -162,8 +162,8 @@ test('多智能体能力门禁与会话策略契约（multiagent_desktop_scope �
   );
   assert.match(
     toolRenderersSource,
-    /if \(typeof window === 'undefined' \|\| !agentId\) return;/,
-    '子智能体面板轮询必须有宿主与 agentId 双守卫',
+    /if \(typeof window === 'undefined'\) return;\s*\/\/ agentId === null is a valid request: open the panel's list state \(the\s*\/\/ swarm count row's entry point\)\.\s*if \(!agentId && agentId !== null\) return;/,
+    'the subagent panel poll must guard on both the host and agentId; agentId=null is allowed to open the panel list state (the swarm count row entry point)',
   );
   assert.match(
     toolRenderersSource,
@@ -299,19 +299,27 @@ test('停止按钮与引擎回收都级联取消子智能体', () => {
 // ── 会话级开关 + 每轮委派提醒（Rust 源结构契约） ─────────────────────────────
 
 test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委派提醒', () => {
-  assert.match(commandSource, /fn delegation_reminder_with_roles\(roles: Vec<String>, limits: &DelegationLimits\)/, 'Work and native Code multi-agent sessions generate the delegation reminder from the same per-turn candidate roster');
-  // Per-turn reminder numbers must come from the session tier (DelegationLimits),
-  // not from hardcoded literals: Work sessions run 4 concurrent / 8 admitted,
-  // native Code sessions 6 / 12 (same constants the engine config installs).
+  // Swarm rework: reminder generation still runs off the same per-turn
+  // candidate roster; the numeric caps lift with the swarm switch.
+  assert.match(commandSource, /fn delegation_reminder_with_roles\(roles: Vec<String>, limits: Option<&DelegationLimits>\)/, 'Work and native Code multi-agent sessions generate the delegation reminder from the same per-turn candidate roster');
+  // Reminder numbers must come from DelegationLimits, not hardcoded literals:
+  // swarm off = the shared 4/8 tier sourced from the bridge constants (the
+  // same values the engine config installs); swarm on = None (caps lifted,
+  // the reminder states no number).
   assert.match(
     commandSource,
-    /pub\(crate\) struct DelegationLimits \{[\s\S]{0,160}pub max_concurrent: usize,[\s\S]{0,160}pub max_admitted: usize,[\s\S]{0,160}\}/,
-    'reminder numbers are carried by DelegationLimits so both tiers can be asserted',
+    /pub\(crate\) struct DelegationLimits \{[\s\S]{0,300}pub max_concurrent: usize,[\s\S]{0,300}pub max_admitted: usize,[\s\S]{0,300}\}/,
+    'reminder numbers are carried by DelegationLimits so both regimes can be asserted',
   );
   assert.match(
     commandSource,
-    /pub\(crate\) fn delegation_limits_for\(pool: &EnginePool, session_id: &str\) -> DelegationLimits \{[\s\S]{0,400}pool\.is_code_session\(session_id\)/,
-    'tier selection must reuse the same is_code_session predicate as the engine config',
+    /pub\(crate\) fn delegation_limits_for\(swarm: bool\) -> Option<DelegationLimits> \{[\s\S]{0,500}MULTI_AGENT_MAX_CONCURRENT[\s\S]{0,300}MULTI_AGENT_MAX_ADMITTED/,
+    'tier numbers must reuse the bridge constants the engine config installs; swarm on yields None',
+  );
+  assert.match(
+    commandSource,
+    /match limits \{[\s\S]{0,400}None =>/,
+    'swarm-on reminder must not state any concurrency number (caps are lifted)',
   );
   assert.match(commandSource, /pub\(crate\) fn prepare_delegation_turn\(/, '普通发送与方案接受必须复用同一轮提醒/名册快照组装');
   assert.match(commandSource, /snapshot\.available_role_lines\(task\)/, '候选提醒必须从本轮名册快照筛选，避免提示与实际派工错位');
@@ -410,11 +418,11 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   assert.match(assistantBridgeSource, /MULTI_AGENT_MAX_SPAWN_DEPTH:\s*u32\s*=\s*2/);
   // Tier constants are pub(crate): the per-turn delegation reminder reads the
   // same single source of truth as build_engine_config_for_multi_agent.
-  // Work tier runs 4 concurrent / 8 admitted; native Code tier 6 / 12.
-  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_WORK_MAX_CONCURRENT: usize = 4;/, 'Work tier direct-child concurrency is 4');
-  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_WORK_MAX_ADMITTED: usize = 8;/, 'Work tier tree-wide admission is 8');
-  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_CODE_MAX_CONCURRENT: usize = 6;/, 'Code tier direct-child concurrency is 6');
-  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_CODE_MAX_ADMITTED: usize = 12;/, 'Code tier tree-wide admission is 12');
+  // Swarm rework: Work and native Code merge into one shared 4/8 tier; with
+  // swarm on the engine config pins the foundation hard caps (the reminder
+  // states no number), and with swarm off it falls back to this tier.
+  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_MAX_CONCURRENT: usize = 4;/, 'Shared tier direct-child concurrency is 4');
+  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_MAX_ADMITTED: usize = 8;/, 'Shared tier tree-wide admission is 8');
   assert.match(
     assistantBridgeSource,
     /build_multi_agent_send_message_op[\s\S]{0,700}build_multi_agent_hook_executor/,
@@ -1033,10 +1041,24 @@ test('agent 工具调用渲染成行内专家卡，点击打开只读面板', ()
     /function ToolItem[\s\S]*?const custom = renderToolItem && renderToolItem\(item\)/,
     '独立工具项与工具组必须共用产品级工具渲染器',
   );
+  // Swarm rework: spawn-type delegations no longer render the expert card
+  // banner directly; they go through the aggregated count row
+  // (AgentSpawnCountRow). Coordination operations (status/wait/cancel) still
+  // use the expert card's quiet row.
   assert.match(
     toolRenderersSource,
-    /if \(EXPERT_CARD_ENABLED && \(item\.name === 'agent' \|\| isAgentWaitCall\(item\.name, item\.args\)\)\) \{\s*return <ExpertAgentCard/,
-    'agent 委派与新旧 wait 调用共用产品级展示，并按 capability 门禁（Web 无 multiAgent bridge）',
+    /const delegation = isExpertDelegationCall\(item\.name, item\.args\);\s*if \(delegation\) \{[\s\S]{0,600}return \(\s*<AgentSpawnCountRow/,
+    'spawn-type delegations render the aggregated count row behind the capability gate (Web without a multiAgent bridge falls back to the generic tool card)',
+  );
+  assert.match(
+    toolRenderersSource,
+    /if \(hidden\) return null;/,
+    'non-first spawns of one aggregated sequence do not repeat the text row (the count increments in place)',
+  );
+  assert.match(
+    toolRenderersSource,
+    /return <ExpertAgentCard item=\{item\} t=\{t\} sessionId=\{sessionId\} \/>;/,
+    'status/wait/cancel coordination operations still use the expert card quiet single row, never posing as a new delegation',
   );
   assert.match(
     toolRenderersSource,

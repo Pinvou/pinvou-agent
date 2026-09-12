@@ -60,15 +60,23 @@ const SEPARATE_REASONING_FIELD: &str = "separate_field";
 // Multi-agent is an agent cluster where the main session stays the overall
 // coordinator and complex tasks nest at most one extra level — not an unbounded
 // recursive tree. Plain conversations keep the original CodeWhale caps; only
-// sessions with multi-agent enabled get a tighter resource budget. The tier
-// constants are pub(crate) so the per-turn delegation reminder
-// (app/commands/multiagent.rs) reads the same numbers and cannot drift from the
-// engine's actual caps.
+// sessions with multi-agent enabled get a resource budget. The constants are
+// pub(crate) so the per-turn delegation reminder (app/commands/multiagent.rs)
+// reads the same numbers and cannot drift from the engine's actual caps.
+//
+// Two regimes: swarm mode (multi_agent on) lifts the count caps entirely —
+// expressed by pinning the engine config to the base's own hard ceilings
+// (`config::MAX_SUBAGENTS` / `config::MAX_SUBAGENT_ADMISSION`), which the base
+// re-clamps to anyway, so App and base stay consistent without touching
+// CodeWhale. With swarm off there is one shared tier (Work and Code sessions
+// alike): 4 concurrent direct children, 8 tree-wide admitted — the extra
+// admitted slots form a small queue buffer so a bursty fanout queues instead
+// of being rejected outright. (The swarm-off tier is not reachable from
+// production wiring today — multi-agent engine configs are only built for
+// sessions with the switch on; it is the defensive regime pinned by tests.)
 const MULTI_AGENT_MAX_SPAWN_DEPTH: u32 = 2;
-pub(crate) const MULTI_AGENT_WORK_MAX_CONCURRENT: usize = 4;
-pub(crate) const MULTI_AGENT_WORK_MAX_ADMITTED: usize = 8;
-pub(crate) const MULTI_AGENT_CODE_MAX_CONCURRENT: usize = 6;
-pub(crate) const MULTI_AGENT_CODE_MAX_ADMITTED: usize = 12;
+pub(crate) const MULTI_AGENT_MAX_CONCURRENT: usize = 4;
+pub(crate) const MULTI_AGENT_MAX_ADMITTED: usize = 8;
 
 fn configure_provider(
     config: &mut ProviderConfig,
@@ -1996,14 +2004,17 @@ impl Pinvou3Bridge {
     /// 被派中的子智能体。没有相关候选时模型自拟任务说明裸派。**工具目录与普通会话完全一致**
     /// ——禁用列表只来自连接器开关，`workflow` 与主线一样保持可用（委派
     /// 提醒不教学不推荐）。默认直属实例为叶子；复杂任务允许直属实例再拆一层，
-    /// 第二层不得继续派生。Work 直属并行 4 / 全树准入 8，原生 Code 直属并行
-    /// 6 / 全树准入 12。更深后代为避免父子互等死锁不占直属 launch gate，
-    /// 但仍受整棵树的准入上限约束。
+    /// 第二层不得继续派生。Swarm on lifts the caps: the app pins concurrent /
+    /// admitted to the foundation hard ceilings (`config::MAX_SUBAGENTS` /
+    /// `MAX_SUBAGENT_ADMISSION`). Swarm off: one shared tier, 4 direct / 8
+    /// tree-admitted. Deeper descendants skip the direct launch gate but
+    /// count against tree admission. `swarm` is `mode_state.multi_agent`.
     pub(crate) fn build_engine_config_for_multi_agent(
         &self,
         session_id: &str,
         roots: SessionRoots,
         snapshot: &ExpertRosterSnapshot,
+        swarm: bool,
     ) -> EngineConfig {
         let mut cfg = self.build_engine_config_for_session_roots(session_id, roots);
         // 主会话是总协调者：直属子智能体处于 depth=1，复杂任务可再派生
@@ -2011,32 +2022,35 @@ impl Pinvou3Bridge {
         // 嵌套层的工具调用不经过 ToolCallBefore，靠继承上限（省略参数即
         // 收窄）与全局准入/并发额度兜底。
         cfg.max_spawn_depth = cfg.max_spawn_depth.min(MULTI_AGENT_MAX_SPAWN_DEPTH);
-        let (max_concurrent, max_admitted) = if self.is_code_session(session_id) {
-            (
-                MULTI_AGENT_CODE_MAX_CONCURRENT,
-                MULTI_AGENT_CODE_MAX_ADMITTED,
-            )
+        if swarm {
+            // Swarm mode: caps lifted — the foundation's 128/1024 are the
+            // system-wide hard caps. Enabling swarm means "no limit", so this
+            // overrides (not mins) the user config, even an explicit 0.
+            cfg.max_subagents = deepseek_tui::config::MAX_SUBAGENTS;
+            cfg.max_admitted_subagents = deepseek_tui::config::MAX_SUBAGENT_ADMISSION;
+            cfg.launch_concurrency = deepseek_tui::config::MAX_SUBAGENTS;
         } else {
-            (
-                MULTI_AGENT_WORK_MAX_CONCURRENT,
-                MULTI_AGENT_WORK_MAX_ADMITTED,
-            )
-        };
-        // 显式用户配置只做上限，不抬高更保守的值（包括 0 = 禁用）；未配置时
-        // 使用当前会话模式的产品默认。
-        cfg.max_subagents = self
-            .prefs
-            .advanced
-            .max_subagents
-            .map_or(max_admitted, |configured| configured.min(max_admitted));
-        cfg.max_admitted_subagents = cfg
-            .max_admitted_subagents
-            .min(max_admitted)
-            .max(cfg.max_subagents);
-        cfg.launch_concurrency = cfg
-            .launch_concurrency
-            .min(max_concurrent)
-            .min(cfg.max_subagents);
+            // Swarm-off tier: unreachable in production wiring (see
+            // `delegation_limits_for` and the expert_snapshot condition);
+            // tests/defensive calls only. A user config only caps; note "0 =
+            // disable" is not a runtime fact — Some(0) acts as one usable
+            // slot after the manager constructor clamp.
+            cfg.max_subagents = self
+                .prefs
+                .advanced
+                .max_subagents
+                .map_or(MULTI_AGENT_MAX_ADMITTED, |configured| {
+                    configured.min(MULTI_AGENT_MAX_ADMITTED)
+                });
+            cfg.max_admitted_subagents = cfg
+                .max_admitted_subagents
+                .min(MULTI_AGENT_MAX_ADMITTED)
+                .max(cfg.max_subagents);
+            cfg.launch_concurrency = cfg
+                .launch_concurrency
+                .min(MULTI_AGENT_MAX_CONCURRENT)
+                .min(cfg.max_subagents);
+        }
         cfg.hook_executor = Some(self.build_multi_agent_hook_executor(&cfg.workspace));
         cfg.fleet_roster = std::sync::Arc::new(deepseek_tui::FleetRoster::load(
             snapshot.fleet_config(),
@@ -7370,7 +7384,8 @@ mod tests {
         );
 
         let snapshot = ExpertRosterSnapshot::capture();
-        let code = bridge.build_engine_config_for_multi_agent("code-session", roots, &snapshot);
+        let code =
+            bridge.build_engine_config_for_multi_agent("code-session", roots, &snapshot, false);
 
         assert!(
             code.subagents_enabled,
@@ -7392,9 +7407,9 @@ mod tests {
             code_has_multi_agent_guard,
             "Code 多智能体会话必须装配资源护栏"
         );
-        assert_eq!(code.max_subagents, MULTI_AGENT_CODE_MAX_ADMITTED);
-        assert_eq!(code.max_admitted_subagents, MULTI_AGENT_CODE_MAX_ADMITTED);
-        assert_eq!(code.launch_concurrency, MULTI_AGENT_CODE_MAX_CONCURRENT);
+        assert_eq!(code.max_subagents, MULTI_AGENT_MAX_ADMITTED);
+        assert_eq!(code.max_admitted_subagents, MULTI_AGENT_MAX_ADMITTED);
+        assert_eq!(code.launch_concurrency, MULTI_AGENT_MAX_CONCURRENT);
         assert!(
             !code_workspace.join(".codewhale").exists(),
             "Code 会话不得向用户项目写状态或专家名册"
@@ -7440,7 +7455,8 @@ mod tests {
         );
 
         let snapshot = ExpertRosterSnapshot::capture();
-        let multi_agent = bridge.build_engine_config_for_multi_agent("sched-run", roots, &snapshot);
+        let multi_agent =
+            bridge.build_engine_config_for_multi_agent("sched-run", roots, &snapshot, true);
         assert_eq!(multi_agent.workspace, automation);
         assert_eq!(
             multi_agent.subagent_state_root.as_deref(),
@@ -7468,16 +7484,23 @@ mod tests {
             ledger: workspace.clone(),
         };
         let snapshot = ExpertRosterSnapshot::capture();
-        let cfg = bridge.build_engine_config_for_multi_agent("ma-test", roots.clone(), &snapshot);
+        let cfg =
+            bridge.build_engine_config_for_multi_agent("ma-test", roots.clone(), &snapshot, true);
 
         assert_eq!(
             cfg.disallowed_tools, ordinary.disallowed_tools,
             "多智能体会话的禁用列表必须与普通对话一字不差"
         );
         assert_eq!(cfg.max_spawn_depth, MULTI_AGENT_MAX_SPAWN_DEPTH);
-        assert_eq!(cfg.max_subagents, MULTI_AGENT_WORK_MAX_ADMITTED);
-        assert_eq!(cfg.max_admitted_subagents, MULTI_AGENT_WORK_MAX_ADMITTED);
-        assert_eq!(cfg.launch_concurrency, MULTI_AGENT_WORK_MAX_CONCURRENT);
+        // Swarm on: the numeric caps are lifted — pinned to the foundation's
+        // own hard ceilings (the foundation clamps again to the same constant
+        // set; both ends agree).
+        assert_eq!(cfg.max_subagents, deepseek_tui::config::MAX_SUBAGENTS);
+        assert_eq!(
+            cfg.max_admitted_subagents,
+            deepseek_tui::config::MAX_SUBAGENT_ADMISSION
+        );
+        assert_eq!(cfg.launch_concurrency, deepseek_tui::config::MAX_SUBAGENTS);
         assert_ne!(
             ordinary.max_spawn_depth, cfg.max_spawn_depth,
             "普通对话应保持底座原有深度，只收紧多智能体会话"
@@ -7514,12 +7537,56 @@ mod tests {
             "底座内置成员应保持可用"
         );
 
+        // Swarm off: Work and Code share one tier (4 direct-concurrent / 8 tree-admitted).
+        let capped_bridge = fixture_bridge();
+        let capped = capped_bridge.build_engine_config_for_multi_agent(
+            "ma-capped",
+            roots.clone(),
+            &snapshot,
+            false,
+        );
+        assert_eq!(capped.max_subagents, MULTI_AGENT_MAX_ADMITTED);
+        assert_eq!(capped.max_admitted_subagents, MULTI_AGENT_MAX_ADMITTED);
+        assert_eq!(capped.launch_concurrency, MULTI_AGENT_MAX_CONCURRENT);
+
         let mut disabled_bridge = fixture_bridge();
         disabled_bridge.prefs.advanced.max_subagents = Some(0);
-        let disabled =
-            disabled_bridge.build_engine_config_for_multi_agent("ma-disabled", roots, &snapshot);
-        assert_eq!(disabled.max_subagents, 0, "不得抬高用户原本的禁用配置");
+        let disabled = disabled_bridge.build_engine_config_for_multi_agent(
+            "ma-disabled",
+            roots.clone(),
+            &snapshot,
+            false,
+        );
+        assert_eq!(
+            disabled.max_subagents, 0,
+            "must not raise the user's original disable configuration"
+        );
         assert_eq!(disabled.launch_concurrency, 0);
+
+        // With swarm on, the user's conservative configuration (including
+        // explicit 0) is pinned to the foundation hard caps as well: enabling
+        // swarm expresses "no limit", so the override semantics must also
+        // cover a 0 value.
+        let mut zero_bridge = fixture_bridge();
+        zero_bridge.prefs.advanced.max_subagents = Some(0);
+        let zero_swarm = zero_bridge.build_engine_config_for_multi_agent(
+            "ma-swarm-zero",
+            roots,
+            &snapshot,
+            true,
+        );
+        assert_eq!(
+            zero_swarm.max_subagents,
+            deepseek_tui::config::MAX_SUBAGENTS
+        );
+        assert_eq!(
+            zero_swarm.max_admitted_subagents,
+            deepseek_tui::config::MAX_SUBAGENT_ADMISSION
+        );
+        assert_eq!(
+            zero_swarm.launch_concurrency,
+            deepseek_tui::config::MAX_SUBAGENTS
+        );
 
         let _ = std::fs::remove_dir_all(&workspace);
     }

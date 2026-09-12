@@ -961,7 +961,11 @@ assert.match(
   desktopBridgeSource,
   /if \(item\.turnErrorNotice && !item\.legacyConversationOnly\) return false/,
 );
-assert.match(chatViewSource, /conversationItemsForMode\(visibleChatItems\)/);
+// Swarm rework: the projection input first goes through the spawn aggregation
+// annotation (annotateAgentSpawnGroups), then conversationItemsForMode; the
+// error-isolation items must stay visible on both lanes.
+assert.match(chatViewSource, /annotateAgentSpawnGroups\(visibleChatItems\)/);
+assert.match(chatViewSource, /conversationItemsForMode\(spawnAnnotatedItems\)/);
 
 assert.match(webBridgeSource, /turnErrorNotice && item\.text === notice/);
 assert.match(

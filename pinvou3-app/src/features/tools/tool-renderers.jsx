@@ -158,11 +158,61 @@ function watchExpertCard(sessionId, agentId) {
 }
 
 function openSubagentTranscript(agentId, sessionId) {
-  if (typeof window === 'undefined' || !agentId) return;
+  if (typeof window === 'undefined') return;
+  // agentId === null is a valid request: open the panel's list state (the
+  // swarm count row's entry point).
+  if (!agentId && agentId !== null) return;
   window.dispatchEvent(new CustomEvent('pinvou:open-subagent', {
     detail: { agentId, sessionId: sessionId || null },
   }));
 }
+
+// Read-only mirror of the swarm mode switch (same source as composer-shared:
+// modeState.multiAgent). Decorative border color only; the authoritative state
+// and the switch interaction live on the composer / bridge side.
+function swarmModeOn() {
+  if (!bridge.available || !bridge.state || typeof bridge.state.get !== 'function') return false;
+  const chat = bridge.state.get('chat') || {};
+  return !!(chat.modeState && chat.modeState.multiAgent);
+}
+
+/**
+ * Swarm spawn count row: consecutive spawn calls within one message aggregate
+ * into a single small row ("Pinvou created x agents"); a new spawn only
+ * increments x in place. The count comes from spawn-aggregation's result over
+ * the message item sequence and updates incrementally with the session flow.
+ * Clicking dispatches `pinvou:open-subagent` (agentId=null → panel list state).
+ */
+const AgentSpawnCountRow = ({ count, failed = 0, sessionId, t }) => {
+  const copy = t.uiMultiAgent;
+  const on = swarmModeOn();
+  const clickable = !!sessionId;
+  const accent = on
+    ? 'bg-[#7C3AED] dark:bg-[#A78BFA]'
+    : 'bg-[#0B57D0] dark:bg-[#A8C7FA]';
+  return (
+    <button
+      type="button"
+      data-testid="agent-spawn-count-row"
+      disabled={!clickable}
+      onClick={clickable ? () => openSubagentTranscript(null, sessionId) : undefined}
+      title={clickable ? copy.spawnedAgentsRowHint : undefined}
+      className={`my-1 flex max-w-[520px] items-center gap-2 rounded-full px-2 py-1 text-[11.5px] text-[#8E8E93] ${
+        clickable ? 'cursor-pointer hover:bg-black/[0.04] dark:hover:bg-white/[0.06]' : 'cursor-default'
+      }`}
+    >
+      <span
+        className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${accent} ${failed ? '' : 'animate-pulse'}`}
+      />
+      <span className="truncate">{copy.spawnedAgentsRow(count)}</span>
+      {failed > 0 && (
+        <span className="shrink-0 text-[#C5221F] dark:text-[#F28B82]">
+          {copy.agentCard.spawnFailed} × {failed}
+        </span>
+      )}
+    </button>
+  );
+};
 
 // eslint-disable-next-line sonarjs/cognitive-complexity -- expert card status derives from many sources (realtime events/ledger/fallback) with dense branches;legacy view; tracked separately
 function expertStatusPresentation({ summary, failedSpawn = false, itemState, copy }) {
@@ -214,6 +264,9 @@ function expertStatusPresentation({ summary, failedSpawn = false, itemState, cop
  * 轮询广播的落盘权威快照，终态 ratchet 保证落盘赢），点击整卡派发
  * `pinvou:open-subagent`，由 ChatView 打开只读执行记录面板。
  * status/wait/cancel 等协调操作渲染成安静的单行，不冒充新委派。
+ * After the swarm rework this component only serves the coordination rows:
+ * spawn-type calls are aggregated by AgentSpawnCountRow instead and never
+ * enter this card.
  */
 const ExpertAgentCard = ({ item, t, sessionId: sessionIdProp }) => {
   const copy = t.uiMultiAgent;
@@ -555,12 +608,34 @@ const ToolOutput = ({ item, t }) => {
       return <OutputPre text={out} />;
     };
 
+    // Swarm rework (ADR-0006): spawn-type `agent` calls no longer render the
+    // space-hogging expert card banner; they become one aggregated count row.
+    // Coordination operations (status/wait/cancel) still go through
+    // ExpertAgentCard's quiet coordination row. The early return happens
+    // before any Hook of this component, and item.name never changes for a
+    // given instance, so each instance's Hook count stays constant.
     // eslint-disable-next-line sonarjs/cognitive-complexity -- tool card rendering contains many inline branches;legacy view; tracked separately
     const ToolCard = ({ item, t, variant = 'legacy', sessionId }) => {
-      // 委派实例不走通用工具卡：专家卡是多智能体的第一公民展示（ADR-0006）。
-      // 提前返回发生在本组件任何 Hook 之前，且 item.name 对一个实例终生不变，
-      // 因此每个实例的 Hook 数量恒定，不触犯 Hook 规则。
       if (EXPERT_CARD_ENABLED && (item.name === 'agent' || isAgentWaitCall(item.name, item.args))) {
+        const delegation = isExpertDelegationCall(item.name, item.args);
+        if (delegation) {
+          // Items of both lanes (legacy bubbles and the unified timeline) are
+          // annotated uniformly on the projection input, so the count row can
+          // read the item's own fields directly.
+          const group = item.spawnGroup;
+          const hidden = item.spawnGroupHidden;
+          // Non-first spawns of an aggregated sequence do not repeat the text row.
+          if (hidden) return null;
+          const resolved = group || { count: 1, failed: item.success === false || item.state === 'failed' ? 1 : 0 };
+          return (
+            <AgentSpawnCountRow
+              count={resolved.count}
+              failed={resolved.failed || 0}
+              sessionId={sessionId}
+              t={t}
+            />
+          );
+        }
         return <ExpertAgentCard item={item} t={t} sessionId={sessionId} />;
       }
       const isTimeline = variant === 'timeline';

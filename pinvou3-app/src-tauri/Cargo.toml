@@ -438,3 +438,11 @@ overflow-checks = true
 # 依赖在 dev 下也做轻量优化(否则全 debug 编译,运行太慢影响本地调试体验)。
 [profile.dev.package."*"]
 opt-level = 2
+# codewhale-tui is huge; at the O2 above a single rustc peaked at 14.3GB and
+# tripped ci-memguard on the 16GB hosted runner (rust-test exit 137, PR #444)
+# once the gitlink candidate added ~1k lines to crates/tui. O1 keeps the basic
+# optimization passes with a much smaller LLVM memory peak and a faster dev
+# compile; runtime cost for test execution is negligible. Revisit O2 only
+# together with a link/codegen-level mitigation for this crate.
+[profile.dev.package.codewhale-tui]
+opt-level = 1
