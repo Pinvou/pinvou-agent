@@ -21,8 +21,9 @@ import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
 import { COLOR_SCHEME_STORAGE_KEY, normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
 import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
-import { groupSessionsWithProjects } from '../features/projects/projectGrouping.js';
+import { groupSessionsWithProjects, resolveSessionProjectId } from '../features/projects/projectGrouping.js';
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
+import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
@@ -1603,6 +1604,7 @@ function workspaceDisplayName(path) {
       const [archiveToast, setArchiveToast] = useState(false);
       const [settingsToast, setSettingsToast] = useState('');
       const [projectOpsBusy, setProjectOpsBusy] = useState(false);
+      const [moveToProjectSession, setMoveToProjectSession] = useState(null);
       // 桥完成首次状态同步(bs 就绪)后拉一次项目快照;后续变更由
       // projects:list_changed 事件驱动桥内刷新(bridge/projects.js)。
       const projectsBootstrapReady = !!bs;
@@ -2373,6 +2375,20 @@ function workspaceDisplayName(path) {
       const handleConvertFolderToProject = (path, name) => runProjectOp(p => p.createProject(name, [path]));
       const handleRenameProject = (projectId, name) => runProjectOp(p => p.renameProject(projectId, name));
       const handleDeleteProject = (projectId) => runProjectOp(p => p.deleteProject(projectId));
+      // 移动归属:纯归档操作(工作目录绑定不动);目标 root 不覆盖会话目录时由
+      // 选择器先走"添加文件夹"确认,再带着 addFolder 标记落到这里。
+      // 确认框展示的是侧栏投影的目录,命令实际加的是后端活记录——outcomes
+      // 里的 added_root 是权威答案,有值时在 toast 里如实呈现(评审 #449
+      // finding 9:两侧不得静默分叉)。
+      const handleMoveSessionToProject = (sessionId, projectId, addWorkspaceRoot) => runProjectOp(async (p) => {
+        const outcome = await p.moveSessionToProject(sessionId, projectId, addWorkspaceRoot);
+        setMoveToProjectSession(null);
+        setSettingsToast(
+          outcome && outcome.added_root
+            ? t.uiProjects.movedNoticeWithFolder(outcome.added_root)
+            : t.uiProjects.movedNotice,
+        );
+      });
 
       function sessionRowsForIds(ids) {
         const byId = new Map(allSidebarTasks.map(item => [item.id, item]));
@@ -2649,6 +2665,7 @@ function workspaceDisplayName(path) {
             onTogglePinned={handleToggleSessionPinned}
             onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
             onArchive={handleArchiveSession}
+            onMoveToProject={chat.taskKind === 'codex' && bridge.projects ? (target) => setMoveToProjectSession(target) : undefined}
             dragKind={detachKind}
             dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
             onPickUp={canDetachWindows ? ((geom) => beginTearOff(detachKind, chat.id, chat.title, geom)) : undefined}
@@ -2815,6 +2832,23 @@ function workspaceDisplayName(path) {
               {settingsToast}
             </div>,
             document.body
+          )}
+
+          {moveToProjectSession && (
+            <MoveToProjectDialog
+              session={moveToProjectSession}
+              projects={sidebarProjectsData ? sidebarProjectsData.projects : []}
+              currentProjectId={resolveSessionProjectId(
+                moveToProjectSession,
+                sidebarProjectsData ? sidebarProjectsData.projects : [],
+                sidebarProjectsData ? sidebarProjectsData.assignments : {},
+              )}
+              t={t}
+              busy={projectOpsBusy}
+              onClose={() => setMoveToProjectSession(null)}
+              onMove={(projectId, addWorkspaceRoot) => handleMoveSessionToProject(
+                moveToProjectSession.id, projectId, addWorkspaceRoot)}
+            />
           )}
 
           {searchOverlayOpen && browserOverlayPublicationReady && createPortal(
