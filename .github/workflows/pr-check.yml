@@ -3,7 +3,7 @@ name: PR Check
 # Jobs:
 # - commit-message: enforce the Git commit convention on pull requests and pushes.
 # - version-consistency:强制校验 VERSION 单一事实来源与 SemVer 规则。
-# - fast-gate(秒级,每 PR 都跑):fork-guard 指纹 + fork 合规联动 + Python 确定性测试。
+# - fast-gate(秒级,每 PR 都跑):fork-guard 指纹 + fork 合规联动 + actionlint + Python 确定性测试。
 # - changes:检测本 PR 有没有 Rust 代码、发布契约或前端改动,给后续 job 做 paths filter。
 # - frontend-test: Draft runs lint/build/logic tests. Ready PRs and Merge Queue
 #   select browser smokes from their actual base/head diff and fail closed for
