@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use agent_backend_api::{
     AttachmentHandle, PrivateInputHandle, ResolvedAttachmentSource, SecretOutput, SecretText,
