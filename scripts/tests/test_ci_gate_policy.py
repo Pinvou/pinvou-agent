@@ -674,6 +674,26 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertNotIn("github.event.merge_group.base_sha", dependency_review)
         self.assertNotIn("github.event.merge_group.head_sha", dependency_review)
 
+    def test_secret_scan_guard_and_cutoff_are_load_bearing(self):
+        # 空扫描守卫依赖 tee 落盘的真实日志:gitleaks 的日志走 stderr,若丢失
+        # 2>&1,tee 写出的是空文件,守卫 grep 永远不命中,"0 commits scanned"
+        # 的空转回归会再次绿灯。扫描范围必须与 commit-message 门禁共用同一
+        # LEGACY_HISTORY_CUTOFF,两侧任一单独漂移都会让密钥扫描与提交规范
+        # 的信任边界错开。
+        secret_scan = (
+            ROOT / ".github/workflows/secret-scan.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn('HEAD" 2>&1', secret_scan)
+        self.assertIn('grep -q "0 commits scanned"', secret_scan)
+        validator = (ROOT / "scripts/validate-commit-msg.py").read_text(
+            encoding="utf-8"
+        )
+        match = re.search(r'LEGACY_HISTORY_CUTOFF = "([0-9a-f]{40})"', validator)
+        self.assertIsNotNone(
+            match, "validate-commit-msg.py 缺少 LEGACY_HISTORY_CUTOFF 常量"
+        )
+        self.assertIn(match.group(1), secret_scan)
+
     def test_mac_bundle_chain_paths_are_reachable_by_workflow_trigger(self):
         # mac-build 的 bundle_chain filter 决定何时追加 universal bundle smoke。
         # filter 只在该 workflow 被触发后才有机会匹配,因此 bundle_chain 的每条
