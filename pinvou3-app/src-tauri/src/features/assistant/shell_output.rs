@@ -547,8 +547,8 @@ mod tests {
                 command: command.to_string(),
                 order,
                 task_id: None,
-                emitted_stdout: String::new(),
-                emitted_stderr: String::new(),
+                stdout: StreamMirror::default(),
+                stderr: StreamMirror::default(),
                 keep_after_tool_end: false,
             },
         );
