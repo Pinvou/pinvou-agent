@@ -19,7 +19,7 @@ export function ensurePersonaI18nOverlay(onLoaded) {
     return;
   }
   const s = document.createElement('script');
-  s.setAttribute('data-personas-i18n', '1');
+  s.dataset.personasI18n = '1';
   s.src = resolveAppAssetUrl('features/personas/personas-i18n.js');
   s.onload = onLoaded;
   s.onerror = () => s.remove();

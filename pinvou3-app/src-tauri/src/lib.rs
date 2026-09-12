@@ -782,6 +782,40 @@ pub fn run() {
             if let Some(store) = session_store.clone() {
                 app.handle().manage(store);
             }
+            // 项目层(会话逻辑归档分组):纯偏好数据,boot 永不失败,损坏按空
+            // 状态降级。与 session store 的两处接线:
+            // 1) 启动对账——保留策略可能在删除钩子注册前已淘汰会话,剔除孤儿
+            //    归属条目,防映射表膨胀;
+            // 2) 删除钩子——运行期删除会话时同步摘除归属条目。
+            let projects_store = features::projects::ProjectStore::boot();
+            if let Some(store) = session_store.as_ref() {
+                if let Ok(all_sessions) = store.list_sessions_cached() {
+                    let existing: std::collections::HashSet<String> =
+                        all_sessions.iter().map(|metadata| metadata.id.clone()).collect();
+                    let pruned = projects_store.retain_sessions(&existing);
+                    if pruned > 0 {
+                        eprintln!(
+                            "[pinvou3-app] projects store pruned {pruned} orphan assignments"
+                        );
+                    }
+                }
+                let hook_store = projects_store.clone();
+                // 钩子驱动的归属变更也发 list_changed:否则会话删除后项目组的
+                // 成员计数在下次项目操作/整表刷新前是陈旧的(评审 #447 finding 12)。
+                // boot 对账(上文 retain_sessions)不发——前端尚未启动,启动后
+                // 首次拉取即最新。
+                let hook_app = app.handle().clone();
+                store.register_session_deleted_hook(std::sync::Arc::new(move |session_id: &str| {
+                    if hook_store.forget_session(session_id) {
+                        use tauri::Emitter;
+                        let _ = hook_app.emit(
+                            "projects:list_changed",
+                            serde_json::json!({ "action": "session_forgotten" }),
+                        );
+                    }
+                }));
+            }
+            app.handle().manage(projects_store);
             let remote_control_manager = RemoteControlManager::new(app.handle().clone());
             let remote_event_transport = remote_control_manager.clone();
             let remote_event_endpoint = remote_control_manager.clone();
@@ -1241,6 +1275,11 @@ pub fn run() {
             commands::voice::cancel_voice_asr,
             commands::voice::set_voice_shortcut_enabled,
             commands::voice::set_voice_shortcut_recording,
+            commands::projects::list_projects,
+            commands::projects::create_project,
+            commands::projects::update_project,
+            commands::projects::delete_project,
+            commands::projects::move_session_to_project,
             commands::sessions::list_sessions,
             commands::sessions::create_session,
             commands::sessions::load_session,

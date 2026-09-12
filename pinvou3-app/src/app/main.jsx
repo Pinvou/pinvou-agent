@@ -1,4 +1,4 @@
-import { lazy, startTransition as scheduleViewTransition, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { lazy, startTransition as scheduleViewTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import '../styles/base.css';
@@ -21,7 +21,8 @@ import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
 import { COLOR_SCHEME_STORAGE_KEY, normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
 import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
-import { TEMPORARY_GROUP_KEY, groupSessionsByFolder } from '../shared/sidebar-grouping.js';
+import { groupSessionsWithProjects } from '../features/projects/projectGrouping.js';
+import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
@@ -126,7 +127,7 @@ let appFirstRenderMarked = false;
 const APP_BRIDGE_STATE_DOMAINS = [
   'platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'monitor',
   'settings', 'models', 'vllm', 'interaction', 'personas',
-  'memory', 'remoteControl', 'updater', 'dependencies',
+  'memory', 'remoteControl', 'updater', 'dependencies', 'projects',
 ];
 
 function emitPetEvent(ev, name, payload) {
@@ -156,6 +157,49 @@ function workspaceDisplayName(path) {
   return parts[parts.length - 1] || String(path || '');
 }
 
+// Per-item callback cache behind the RecentItem memo: sidebar task items
+// (item) are derived by useMemo and keep stable references while the
+// underlying data is unchanged, so caching the onPickUp / scheduled-run
+// onSelect closures keyed by item keeps RecentItem props shallow-equal
+// across unrelated re-renders (local UI state, pure chat streaming tokens)
+// and skips the row re-render. Every captured handler is a stable useCallback
+// reference, and whenever a dependency (t etc.) changes the item is rebuilt
+// too (the derived memo depends on the same state), so the cache can never
+// hand out a stale closure; old item keys are garbage-collected along with
+// their closures.
+function cachedItemCallback(cache, item, build) {
+  let fn = cache.get(item);
+  if (!fn) {
+    fn = build(item);
+    cache.set(item, fn);
+  }
+  return fn;
+}
+const sidebarPickUpCallbacks = new WeakMap();
+const sidebarScheduledSelectCallbacks = new WeakMap();
+
+// Static icon elements for the sidebar main nav: module-level constants keep
+// the element references stable so the NavItem memo can hit.
+const NAV_ICON_NEW_CHAT = <Edit2 size={18} />;
+const NAV_ICON_SEARCH = <Search size={18} />;
+const NAV_ICON_SCHEDULED = <Clock size={18} />;
+const NAV_ICON_OUTPUTS = <Package size={18} />;
+const NAV_ICON_MONITOR = <BarChart2 size={18} />;
+const NAV_ICON_TOOL_STORE = <Puzzle size={18} />;
+const NAV_ICON_CARD_POOL = <Layers size={18} />;
+const NAV_ICON_KNOWLEDGE = <BookOpen size={18} />;
+const NAV_ICON_CURRENT_CHAT = <MessageSquare size={18} />;
+
+// Hover/focus prefetch callbacks (prefetchView is a module function):
+// constant references for the NavItem memo comparison.
+const NAV_PREFETCH = {
+  scheduled: () => prefetchView('scheduled'),
+  knowledge: () => prefetchView('knowledge'),
+  monitor: () => prefetchView('monitor'),
+  toolStore: () => prefetchView('toolStore'),
+  cardpool: () => prefetchView('cardpool'),
+};
+
     // App root component: aggregates bridge state, routing, and all sidebar/overlay UI. Size and complexity are historical
     // evolution; splitting requires a dedicated refactor task (involving a hundred-plus closure handlers and test contracts);
     // only lint fixes here, no behavior change.
@@ -167,6 +211,12 @@ function workspaceDisplayName(path) {
         window.__PINVOU_STARTUP__.mark('react:app_render_start');
       }
       const bs = useBridgeState(APP_BRIDGE_STATE_DOMAINS);
+      // latest-ref mirror: stable useCallbacks (e.g. navigateFromScheduledRun)
+      // read the latest bridge snapshot when the event fires instead of
+      // depending on bs, which would change the callback identity on every
+      // notify and defeat the memo.
+      const bsRef = useRef(bs);
+      bsRef.current = bs;
       useLayoutEffect(() => {
         window.__PINVOU_STARTUP__.mark('react:first_commit');
         window.__PINVOU_STARTUP__.flush();
@@ -1128,7 +1178,11 @@ function workspaceDisplayName(path) {
       // dragAvatar = 被拎起的标签副本(跟随光标的 DOM 元素);null=没在拖。原生只判落点,视觉全在这。
       const [dragAvatar, setDragAvatar] = useState(null); // {key,label,dx,dy,w,h,x,y}
       const dragOffsetRef = useRef({ dx: 0, dy: 0 });
-      const beginTearOff = (kind, id, label, info) => {
+      // Stable useCallback: the per-item onPickUp closure caches of
+      // RecentItem/NavItem (see renderSidebarTaskItem) rely on this reference
+      // staying constant across renders so fresh callbacks per render cannot
+      // defeat the memo.
+      const beginTearOff = useCallback((kind, id, label, info) => {
         const inv = isTauriAvailable() ? invokeTauri : null;
         if (!inv || !info) return;
         inv('begin_detach_drag', { kind, id: id == null ? null : id });
@@ -1138,7 +1192,7 @@ function workspaceDisplayName(path) {
           w: info.w, h: info.h, x: info.startX - info.dx, y: info.startY - info.dy,
         });
         if (window.getSelection) { const s = window.getSelection(); if (s && s.removeAllRanges) s.removeAllRanges(); }
-      };
+      }, []);
       // 拖拽中:光标移动 → 更新 avatar 位置(光标 - 抓取偏移,相对位置锁定);禁选 + 抓手光标。
       const dragAvatarActive = !!dragAvatar;
       useEffect(() => {
@@ -1160,9 +1214,15 @@ function workspaceDisplayName(path) {
       // 原生拖拽结束(松手/取消)→ 收起 avatar。
       useEffect(() => {
         if (!isTauriAvailable()) return;
+        // If unmount happens after listen() resolves, unlisten immediately
+        // to avoid a leak (same policy as browser:activated).
+        let disposed = false;
         let un;
-        tauriEvents.listen('detach:drag-ended', () => setDragAvatar(null)).then(f => { un = f; });
-        return () => { if (un) un(); };
+        tauriEvents.listen('detach:drag-ended', () => setDragAvatar(null)).then(f => {
+          if (disposed) f();
+          else un = f;
+        });
+        return () => { disposed = true; if (un) un(); };
       }, []);
 
       // 兜底 zh:词典 chunk 装载失败时按 zh 渲染而非白屏(与 PetWindow/ReaderApp 同口径)。
@@ -1418,31 +1478,53 @@ function workspaceDisplayName(path) {
       // 语言已即时写盘+切 UI,但 LLM 的 locale_tag 要重启 engine 才生效 → 偏离启动语言就提示。
       const languageNeedsRestart = !!bootedLanguageRef.current && language !== bootedLanguageRef.current;
 
+      // Scheduled-run status copy (depends on the current language
+      // dictionary); defined before the derived useMemos below so they can
+      // depend on it.
+      const scheduledRunLabel = useCallback((value) => {
+        return (t.uiScheduled.runStatus[value] || value || t.uiScheduled.unknown);
+      }, [t]);
+
+      // App re-renders in full on every bridge notify (including local UI
+      // state changes unrelated to the sidebar). Every O(sessions) derivation
+      // below is a useMemo over the real data slices: bridge subscription
+      // snapshots are persistent projections whose unchanged slices keep
+      // their references (pure chat streaming tokens only touch the chat
+      // domain and keep the sessions domain identical), so these memos are
+      // what let the sidebar derivations and the RecentItem memo actually
+      // skip recomputation.
+
       // Build chat history from sessions
-      const sessionBusy = (bs && bs.sessionBusy) || {};
-      const chatHistory = bs && bs.sessions ? bs.sessions.map(s => {
-        const isPlaceholder = !s.title || isDefaultChatTitle(s.title);
-        const titlePresentation = isPlaceholder
-          ? { text: t.newChat, attachments: [] }
-          : sessionTitlePresentation(s.title, s.title_attachment_names);
-        return {
-          id: s.id,
-          // 后端默认标题是三语哨兵之一(见 isDefaultChatTitle;bridge 以此判断是否自动改名)——显示层映射成当前语言
-          title: sessionTitlePlainText(titlePresentation),
-          titleContent: titlePresentation.attachments.length
-            ? <SessionAttachmentTitle presentation={titlePresentation} />
-            : null,
-          date: formatSessionDate(s.updated_at || s.created_at, language),
-          updatedAt: s.updated_at || s.created_at || '',
-          pinned: !!s.pinned,
-          pinnedAt: s.pinned_at || '',
-          working: !!sessionBusy[s.id], // 多 session 并发:该 session 是否正在后台生成
-          leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
-          testId: 'regular-sidebar-item',
-          menuTestId: 'regular-sidebar-menu',
-        };
-      }) : [];
-      const codexHistory = codexSessions.map(session => ({
+      const bridgeSessions = bs && bs.sessions;
+      const bridgeSessionBusy = bs && bs.sessionBusy;
+      const chatHistory = useMemo(() => {
+        const sessionBusy = bridgeSessionBusy || {};
+        return bridgeSessions ? bridgeSessions.map(s => {
+          const isPlaceholder = !s.title || isDefaultChatTitle(s.title);
+          const titlePresentation = isPlaceholder
+            ? { text: t.newChat, attachments: [] }
+            : sessionTitlePresentation(s.title, s.title_attachment_names);
+          return {
+            id: s.id,
+            // The backend default title is one of the trilingual sentinels
+            // (see isDefaultChatTitle; the bridge uses it to decide whether to
+            // auto-rename) — map it to the current language at the display layer
+            title: sessionTitlePlainText(titlePresentation),
+            titleContent: titlePresentation.attachments.length
+              ? <SessionAttachmentTitle presentation={titlePresentation} />
+              : null,
+            date: formatSessionDate(s.updated_at || s.created_at, language),
+            updatedAt: s.updated_at || s.created_at || '',
+            pinned: !!s.pinned,
+            pinnedAt: s.pinned_at || '',
+            working: !!sessionBusy[s.id], // concurrent sessions: is this session generating in the background
+            leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
+            testId: 'regular-sidebar-item',
+            menuTestId: 'regular-sidebar-menu',
+          };
+        }) : [];
+      }, [bridgeSessions, bridgeSessionBusy, t, language]);
+      const codexHistory = useMemo(() => codexSessions.map(session => ({
         id: session.id,
         title: (!session.title || isDefaultChatTitle(session.title))
           ? t.newChat
@@ -1463,26 +1545,33 @@ function workspaceDisplayName(path) {
         testId: 'codex-sidebar-item',
         menuTestId: 'codex-sidebar-menu',
         codexSession: session,
-      }));
-      const pinnedChatHistory = chatHistory
+      })), [codexSessions, codexBusyBySession, codexWaitingInputBySession, t, language]);
+      const pinnedChatHistory = useMemo(() => chatHistory
         .filter(chat => chat.pinned)
-        .sort((a, b) => String(b.pinnedAt || b.updatedAt).localeCompare(String(a.pinnedAt || a.updatedAt)));
-      const scheduledRunShortcuts = (bs && bs.scheduledTaskRecentRuns && bs.scheduledTaskRecentRuns.length)
-        ? bs.scheduledTaskRecentRuns
-        : (bridge.available ? [] : PREVIEW_SCHEDULED_RUN_SHORTCUTS.map(run => ({ ...run, taskName: t[run.taskNameKey] || run.taskNameKey })));
-      const scheduledRunSessionIds = new Set(
+        .sort((a, b) => String(b.pinnedAt || b.updatedAt).localeCompare(String(a.pinnedAt || a.updatedAt))), [chatHistory]);
+      const bridgeScheduledTaskRecentRuns = bs && bs.scheduledTaskRecentRuns;
+      // bridge.available is deliberately not a dependency: the flag is assigned
+      // once when the bridge script installs window.TauriBridge and never
+      // reassigned, so the preview branch below cannot go stale afterwards.
+      const scheduledRunShortcuts = useMemo(() => (bridgeScheduledTaskRecentRuns && bridgeScheduledTaskRecentRuns.length)
+        ? bridgeScheduledTaskRecentRuns
+        : (bridge.available ? [] : PREVIEW_SCHEDULED_RUN_SHORTCUTS.map(run => ({ ...run, taskName: t[run.taskNameKey] || run.taskNameKey }))), [bridgeScheduledTaskRecentRuns, t]);
+      const scheduledRunSessionIds = useMemo(() => new Set(
         scheduledRunShortcuts
           .map(run => run && run.sessionId)
           .filter(Boolean)
-      );
-      const scheduledRunBySessionId = Object.create(null);
-      scheduledRunShortcuts.forEach(run => {
-        if (run && run.sessionId) scheduledRunBySessionId[run.sessionId] = run;
-      });
-      const regularHistory = chatHistory
+      ), [scheduledRunShortcuts]);
+      const scheduledRunBySessionId = useMemo(() => {
+        const byId = Object.create(null);
+        scheduledRunShortcuts.forEach(run => {
+          if (run && run.sessionId) byId[run.sessionId] = run;
+        });
+        return byId;
+      }, [scheduledRunShortcuts]);
+      const regularHistory = useMemo(() => chatHistory
         .filter(chat => !chat.pinned && !scheduledRunSessionIds.has(chat.id))
-        .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
-      const scheduledRunItems = scheduledRunShortcuts
+        .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))), [chatHistory, scheduledRunSessionIds]);
+      const scheduledRunItems = useMemo(() => scheduledRunShortcuts
         .filter(run => run && run.sessionId)
         .map(run => {
           // 定时运行会话不进 bs.sessions(list_sessions 隔离 sched-*),标题/置顶
@@ -1513,12 +1602,12 @@ function workspaceDisplayName(path) {
             menuTestId: 'scheduled-run-sidebar-menu',
             scheduledRun: run,
           };
-        });
-      const scheduledRunHistory = scheduledRunItems.filter(chat => !chat.pinned);
-      const pinnedHistory = [...pinnedChatHistory, ...scheduledRunItems.filter(chat => chat.pinned)]
-        .sort((a, b) => String(b.pinnedAt || b.updatedAt).localeCompare(String(a.pinnedAt || a.updatedAt)));
+        }), [scheduledRunShortcuts, scheduledRunLabel, t, language, activeTheme]);
+      const scheduledRunHistory = useMemo(() => scheduledRunItems.filter(chat => !chat.pinned), [scheduledRunItems]);
+      const pinnedHistory = useMemo(() => [...pinnedChatHistory, ...scheduledRunItems.filter(chat => chat.pinned)]
+        .sort((a, b) => String(b.pinnedAt || b.updatedAt).localeCompare(String(a.pinnedAt || a.updatedAt))), [pinnedChatHistory, scheduledRunItems]);
 
-      function decorateScheduledRunChat(chat, run) {
+      const decorateScheduledRunChat = useCallback((chat, run) => {
         if (!run) return chat;
         const title = (!chat.title || isDefaultChatTitle(chat.title))
           ? (run.taskName || t.scheduledPlans)
@@ -1539,7 +1628,7 @@ function workspaceDisplayName(path) {
           menuTestId: 'scheduled-run-sidebar-menu',
           scheduledRun: run,
         });
-      }
+      }, [t, language, activeTheme, scheduledRunLabel]);
 
       const [justInstalledTool, setJustInstalledTool] = useState(null);
       const [taskListFilter, setTaskListFilter] = useState('all');
@@ -1601,6 +1690,13 @@ function workspaceDisplayName(path) {
       const [archiveConfirm, setArchiveConfirm] = useState(null);
       const [archiveToast, setArchiveToast] = useState(false);
       const [settingsToast, setSettingsToast] = useState('');
+      const [projectOpsBusy, setProjectOpsBusy] = useState(false);
+      // 桥完成首次状态同步(bs 就绪)后拉一次项目快照;后续变更由
+      // projects:list_changed 事件驱动桥内刷新(bridge/projects.js)。
+      const projectsBootstrapReady = !!bs;
+      useEffect(() => {
+        if (projectsBootstrapReady && bridge.projects) bridge.projects.loadProjects();
+      }, [projectsBootstrapReady]);
 
       // Expanded sidebar width: drag the right edge to adjust (220~480px), double-click
       // the handle to reset to default; the choice is persisted.
@@ -1720,7 +1816,7 @@ function workspaceDisplayName(path) {
         { id: 'pinned_first', label: t.sidebarTaskSortPinnedFirst },
         { id: 'recent', label: t.sidebarTaskSortRecent },
       ];
-      const allSidebarTasks = [
+      const allSidebarTasks = useMemo(() => [
         ...pinnedHistory.map((chat) => {
           const run = chat.scheduledRun || scheduledRunBySessionId[chat.id];
           const item = decorateScheduledRunChat(chat, run);
@@ -1729,8 +1825,13 @@ function workspaceDisplayName(path) {
         ...regularHistory.map(chat => ({ ...chat, taskKind: 'regular' })),
         ...scheduledRunHistory.map(chat => ({ ...chat, taskKind: 'scheduled' })),
         ...codexHistory,
-      ];
-      const sidebarTaskHistory = allSidebarTasks
+      ], [pinnedHistory, regularHistory, scheduledRunHistory, scheduledRunBySessionId, codexHistory, decorateScheduledRunChat]);
+      // latest-ref mirror: handleArchiveSession (a stable useCallback) reads
+      // the latest task list for the session title at call time, instead of
+      // changing the callback identity per render just to read a value.
+      const allSidebarTasksRef = useRef(allSidebarTasks);
+      allSidebarTasksRef.current = allSidebarTasks;
+      const sidebarTaskHistory = useMemo(() => allSidebarTasks
         .filter((chat) => {
           if (taskListFilter === 'pinned') return !!chat.pinned;
           if (taskListFilter === 'code') return chat.taskKind === 'codex';
@@ -1748,18 +1849,18 @@ function workspaceDisplayName(path) {
             ? (b.pinnedAt || b.updatedAt)
             : (b.updatedAt || b.pinnedAt);
           return String(bTime || '').localeCompare(String(aTime || ''));
-        });
+        }), [allSidebarTasks, taskListFilter, taskListSort]);
 
       // 任务列表按日期堆叠:今天默认展开、以往默认折叠;组内顺序沿用上面的筛选+排序结果,
       // 组间按日期倒序,无时间戳的落 'unknown' 组沉底。
       // 「置顶优先」排序下置顶项提升到所有日期组之上,否则旧会话会埋进默认折叠的以往分组,
       // 只剩置顶标志、没有置顶效果。
       const todayDateKey = localDateKey(Date.now());
-      const sidebarPinnedHoisted = taskListSort === 'pinned_first'
+      const sidebarPinnedHoisted = useMemo(() => (taskListSort === 'pinned_first'
         ? sidebarTaskHistory.filter(chat => !!chat.pinned)
-        : [];
-      const sidebarTaskGroups = [];
-      {
+        : []), [taskListSort, sidebarTaskHistory]);
+      const sidebarTaskGroups = useMemo(() => {
+        const groups = [];
         const byDate = new Map();
         sidebarTaskHistory.forEach(chat => {
           if (sidebarPinnedHoisted.length && chat.pinned) return;
@@ -1767,36 +1868,60 @@ function workspaceDisplayName(path) {
           if (!byDate.has(key)) byDate.set(key, []);
           byDate.get(key).push(chat);
         });
-        byDate.forEach((rows, key) => { sidebarTaskGroups.push({ key, rows }); });
-        sidebarTaskGroups.sort((a, b) => {
+        byDate.forEach((rows, key) => { groups.push({ key, rows }); });
+        groups.sort((a, b) => {
           if (a.key === 'unknown') return 1;
           if (b.key === 'unknown') return -1;
           return b.key.localeCompare(a.key);
         });
-      }
+        return groups;
+      }, [sidebarTaskHistory, sidebarPinnedHoisted]);
 
-      // Code-style sidebar: lists only code sessions, grouped by folder (workspace);
-      // groups and rows both sort by latest activity descending, temporary sessions merge
-      // into one bottom group; with "pinned first", pinned code sessions hoist above the
-      // folder groups.
-      const sidebarCodeTasks = sidebarCodeListActive
+      // Code-style sidebar: lists only code sessions. Project layer resolves
+      // each session through three deterministic tiers (explicit assignment /
+      // project-root auto-grouping / implicit folder bucketing); without any
+      // created project the result is byte-identical to the legacy folder
+      // grouping. With "pinned first", pinned code sessions hoist above groups.
+      // Note: the upstream history chain (chatHistory/codexHistory/…) rebuilds
+      // on every App render, so these memos currently re-run each render too —
+      // end-to-end memoization of that legacy chain is deferred (finding 22);
+      // tier-2 grouping is O(sessions × projects × roots) (#448 finding 8).
+      const sidebarCodeTasks = useMemo(() => (sidebarCodeListActive
         ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex')
-        : [];
-      const sidebarFolderPinned = taskListSort === 'pinned_first'
+        : []), [sidebarCodeListActive, sidebarTaskHistory]);
+      const sidebarFolderPinned = useMemo(() => (taskListSort === 'pinned_first'
         ? sidebarCodeTasks.filter(chat => !!chat.pinned)
-        : [];
-      const sidebarFolderGroups = sidebarCodeListActive
-        ? groupSessionsByFolder(
-            sidebarCodeTasks.filter(chat => !(sidebarFolderPinned.length && chat.pinned)))
-        : [];
+        : []), [taskListSort, sidebarCodeTasks]);
+      const sidebarUnpinnedCodeTasks = useMemo(() => sidebarCodeTasks.filter(chat => !(sidebarFolderPinned.length && chat.pinned)), [sidebarCodeTasks, sidebarFolderPinned]);
+      const sidebarProjectsData = bs && bs.projectsList;
+      const sidebarFolderGroups = useMemo(() => (sidebarCodeListActive
+        ? groupSessionsWithProjects(
+            sidebarUnpinnedCodeTasks,
+            sidebarProjectsData ? sidebarProjectsData.projects : [],
+            sidebarProjectsData ? sidebarProjectsData.assignments : {},
+          )
+        : []), [sidebarCodeListActive, sidebarUnpinnedCodeTasks, sidebarProjectsData]);
+      // 置顶提升会把成员从组 rows 里摘走,但组头计数(含删除确认)要按提升前
+      // 的全量成员算,否则成员全置顶的组确认删除时显示 (0)(评审 finding 24)。
+      // 置顶项通常很少,单独对它们跑一遍分组拿到每组被摘走的数量即可。
+      const sidebarGroupPinnedCounts = useMemo(() => {
+        if (!sidebarCodeListActive || sidebarFolderPinned.length === 0) return {};
+        const counts = {};
+        groupSessionsWithProjects(
+          sidebarFolderPinned,
+          sidebarProjectsData ? sidebarProjectsData.projects : [],
+          sidebarProjectsData ? sidebarProjectsData.assignments : {},
+        ).forEach((group) => { counts[group.key] = group.rows.length; });
+        return counts;
+      }, [sidebarCodeListActive, sidebarFolderPinned, sidebarProjectsData]);
 
       // latest-ref mirror: the pet-snapshot broadcast effect only subscribes to bs.sessions/sessionBusy/language,
       // while snapshot contents (id/title/working) are read via refs to reduce effect resubscription.
-      petSnapshotRef.current = chatHistory.map(chat => ({
+      petSnapshotRef.current = useMemo(() => chatHistory.map(chat => ({
         id: chat.id,
         title: chat.title,
         working: chat.working,
-      }));
+      })), [chatHistory]);
       const petSessions = bs && bs.sessions;
       const petSessionBusy = bs && bs.sessionBusy;
       useEffect(() => {
@@ -1834,7 +1959,18 @@ function workspaceDisplayName(path) {
         };
       }, [petSessions, petSessionBusy, language]);
 
-      async function navigateFromScheduledRun(nextView, beforeNavigate) {
+      const closeMobileSidebar = useCallback(() => {
+        if (!isWeb || typeof window === 'undefined') return;
+        if (window.matchMedia && window.matchMedia('(max-width: 639px)').matches) {
+          setIsSidebarOpen(false);
+        }
+      }, []);
+
+      // Stable useCallback: the sidebar NavItem memo depends on this callback
+      // identity. bs is read through a latest-ref — a click sees the most
+      // recently rendered snapshot, matching closure-capture semantics.
+      const navigateFromScheduledRun = useCallback(async (nextView, beforeNavigate) => {
+        const bs = bsRef.current;
         const context = browserSurfaceTransitionContextRef.current;
         const keepsDesktopBrowserVisible = !context.compact && (
           nextView === 'chat'
@@ -1857,7 +1993,7 @@ function workspaceDisplayName(path) {
             ? 'workspace'
             : keepsDesktopBrowserVisible ? 'none' : 'visible',
         });
-      }
+      }, [closeMobileSidebar, runBrowserUiTransition, setCurrentView]);
 
       function openSettingsSection(section = 'general') {
         // 记录进入设置前的页面（代码页齿轮等深链入口），关闭设置时原路返回，
@@ -1867,18 +2003,10 @@ function workspaceDisplayName(path) {
         return navigateFromScheduledRun('settings');
       }
 
-      const closeMobileSidebar = useCallback(() => {
-        if (!isWeb || typeof window === 'undefined') return;
-        if (window.matchMedia && window.matchMedia('(max-width: 639px)').matches) {
-          setIsSidebarOpen(false);
-        }
-      }, []);
-
-      function scheduledRunLabel(value) {
-        return (t.uiScheduled.runStatus[value] || value || t.uiScheduled.unknown);
-      }
-
-      async function handleOpenScheduledRunShortcut(run) {
+      // Stable useCallbacks: the LazySearchView/RecentItem memos depend on
+      // these callback identities; rebuilding them per render would defeat
+      // the memo (the dependencies are the real semantic dependencies).
+      const handleOpenScheduledRunShortcut = useCallback(async (run) => {
         if (!run || !run.sessionId) return;
         // A scheduled-run session is a normal chat: both the fallback and the
         // successful-open branches land on the scheduled view, so each branch
@@ -1909,9 +2037,11 @@ function workspaceDisplayName(path) {
           serialize: true,
           sessionTarget: run.sessionId,
         });
-      }
+      }, [t, closeMobileSidebar, runBrowserUiTransition, setCurrentView]);
 
-      function handleNewChat(installedToolId, forceMode) {
+      // Stable useCallback: the sidebar "new chat" NavItems memo depends on
+      // its identity (wrapped in handleNavNewChat).
+      const handleNewChat = useCallback((installedToolId, forceMode) => {
         // 类型守卫:installedToolId 必须是字符串 toolId。侧边栏按钮 onClick={() => handleNewChat()}
         // 本不传参,但若哪天有调用点写成 onClick={handleNewChat},React 会把事件对象当首参塞进来——
         // 那是 truthy 的 SyntheticEvent,会被当成 toolId 置进 welcomeToolId → ToolWelcomeCard 查不到
@@ -1957,7 +2087,7 @@ function workspaceDisplayName(path) {
           serialize: true,
           sessionTarget: null,
         });
-      }
+      }, [codeModeOn, codexAcpSupported, closeMobileSidebar, runBrowserUiTransition, updateActiveCodexSession, setCurrentView]);
 
       function handleSwitchHomeMode(mode) {
         if (mode === 'code' && codexAcpSupported) {
@@ -2024,12 +2154,14 @@ function workspaceDisplayName(path) {
         setSearchOverlayOpen(false);
       }
 
-      function handleSwitchCodexSession(id) {
+      // Stable useCallback: passed directly as the RecentItem memo's onSelect
+      // (codex branch).
+      const handleSwitchCodexSession = useCallback((id) => {
         setCodeModeOn(true);
         updateActiveCodexSession(id);
         setCurrentView('codex');
         closeMobileSidebar();
-      }
+      }, [updateActiveCodexSession, closeMobileSidebar, setCurrentView]);
 
       // 用户在主窗口里亲眼看着完成的会话，公仔的活动卡属于冗余提醒——
       // 完成瞬间若该会话正处于前台聊天视图且窗口有焦点，直接标记已读，
@@ -2270,31 +2402,44 @@ function workspaceDisplayName(path) {
         };
       }, []);
 
-      async function handleDeleteSession(id) {
+      // The four session-action callbacks below are all stable useCallbacks:
+      // the RecentItem/search management memos depend on their identities and
+      // their dependency arrays list exactly the state they read.
+      const handleDeleteSession = useCallback(async (id) => {
         const isCodexSession = codexSessions.some(session => session.id === id);
         if (bridge.available) await bridge.sessions.deleteSession(id);
         if (isCodexSession) {
           if (activeCodexId === id) updateActiveCodexSession(null);
           await refreshCodexSessions().catch(() => {});
         }
-      }
+      }, [codexSessions, activeCodexId, updateActiveCodexSession, refreshCodexSessions]);
 
-      async function handleRenameSession(id, title) {
+      const handleRenameSession = useCallback(async (id, title) => {
         const isCodexSession = codexSessions.some(session => session.id === id);
         if (bridge.available) await bridge.sessions.renameSession(id, title);
         if (isCodexSession) await refreshCodexSessions().catch(() => {});
-      }
+      }, [codexSessions, refreshCodexSessions]);
 
-      async function handleToggleSessionPinned(id, pinned) {
+      const handleToggleSessionPinned = useCallback(async (id, pinned) => {
         const isCodexSession = codexSessions.some(session => session.id === id);
         if (bridge.available) await bridge.sessions.toggleSessionPinned(id, pinned);
         if (isCodexSession) await refreshCodexSessions().catch(() => {});
-      }
+      }, [codexSessions, refreshCodexSessions]);
 
-      function handleArchiveSession(id) {
-        const chat = allSidebarTasks.find(c => c.id === id);
+      // The archive confirmation needs the session title: read through a
+      // latest-ref so the callback itself stays stable and the RecentItem
+      // memo is not defeated by this prop on every render.
+      const handleArchiveSession = useCallback((id) => {
+        const chat = (allSidebarTasksRef.current || []).find(c => c.id === id);
         setArchiveConfirm(chat || { id, title: t.newChat });
-      }
+      }, [t]);
+
+      // "Open session folder": shared by RecentItem and the conversation
+      // management page; the bridge is a module singleton, so its dependency
+      // is constant.
+      const handleRevealSessionFolder = useCallback((id) => {
+        if (bridge.artifacts.revealSessionFolder) bridge.artifacts.revealSessionFolder(id);
+      }, []);
 
       async function confirmArchiveSession() {
         const id = archiveConfirm && archiveConfirm.id;
@@ -2323,6 +2468,25 @@ function workspaceDisplayName(path) {
         if (bridge.available) await bridge.sessions.restoreArchivedSession(id);
         await refreshCodexSessions().catch(() => {});
       }
+
+      // ── 项目层:分组归档是纯逻辑层操作,永不触碰会话的工作目录绑定。──
+      // 失败走专用的 opFailed toast(借用会话批处理文案会让报错指向错误
+      // 的操作对象);bridge.projects 仅桌面存在。
+      async function runProjectOp(op) {
+        if (!bridge.available || !bridge.projects || projectOpsBusy) return;
+        setProjectOpsBusy(true);
+        try {
+          await op(bridge.projects);
+        } catch (error) {
+          console.warn('project operation failed', error);
+          setSettingsToast(t.uiProjects.opFailed);
+        } finally {
+          setProjectOpsBusy(false);
+        }
+      }
+      const handleConvertFolderToProject = (path, name) => runProjectOp(p => p.createProject(name, [path]));
+      const handleRenameProject = (projectId, name) => runProjectOp(p => p.renameProject(projectId, name));
+      const handleDeleteProject = (projectId) => runProjectOp(p => p.deleteProject(projectId));
 
       function sessionRowsForIds(ids) {
         const byId = new Map(allSidebarTasks.map(item => [item.id, item]));
@@ -2592,20 +2756,48 @@ function workspaceDisplayName(path) {
             onSelect={chat.taskKind === 'codex'
               ? handleSwitchCodexSession
               : chat.scheduledRun
-                ? () => handleOpenScheduledRunShortcut(chat.scheduledRun)
+                ? cachedItemCallback(sidebarScheduledSelectCallbacks, chat, (c) => () => handleOpenScheduledRunShortcut(c.scheduledRun))
                 : handleSwitchSession}
             onRename={handleRenameSession}
             onDelete={handleDeleteSession}
             onTogglePinned={handleToggleSessionPinned}
-            onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
+            onOpenFolder={can('externalSystemOpen') ? handleRevealSessionFolder : undefined}
             onArchive={handleArchiveSession}
             dragKind={detachKind}
             dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
-            onPickUp={canDetachWindows ? ((geom) => beginTearOff(detachKind, chat.id, chat.title, geom)) : undefined}
+            onPickUp={canDetachWindows
+              ? cachedItemCallback(sidebarPickUpCallbacks, chat, (c) => (geom) => beginTearOff(detachKind, c.id, c.title, geom))
+              : undefined}
           />
         );
       };
 
+      // Sidebar main nav callback set (stable references): with NavItem
+      // memoized, onClick/onPickUp must be reference-stable or the memo never
+      // hits. Navigation goes through navigateFromScheduledRun (reads bsRef
+      // internally); the tear-off closure depends only on beginTearOff
+      // (stable) and the current language dictionary t.
+      const navNavigateHandlers = useMemo(() => ({
+        scheduled: () => navigateFromScheduledRun('scheduled'),
+        outputs: () => navigateFromScheduledRun('outputs'),
+        monitor: () => navigateFromScheduledRun('monitor', () => {
+          const liveBridge = window.TauriBridge || bridge;
+          if (liveBridge?.monitor && typeof liveBridge.monitor.startMonitorPolling === 'function') liveBridge.monitor.startMonitorPolling();
+        }),
+        toolStore: () => navigateFromScheduledRun('toolStore'),
+        cardpool: () => navigateFromScheduledRun('cardpool', () => setPoolMyOnly(false)),
+        knowledge: () => navigateFromScheduledRun('knowledge'),
+        chat: () => navigateFromScheduledRun('chat'),
+      }), [navigateFromScheduledRun]);
+      const navPickUpHandlers = useMemo(() => ({
+        outputs: (geom) => beginTearOff('outputs', undefined, t.outputs, geom),
+        monitor: (geom) => beginTearOff('monitor', undefined, t.monitor, geom),
+        toolstore: (geom) => beginTearOff('toolstore', undefined, t.toolStore, geom),
+        cardpool: (geom) => beginTearOff('cardpool', undefined, t.cardPool, geom),
+        knowledge: (geom) => beginTearOff('knowledge', undefined, t.knowledge, geom),
+      }), [t, beginTearOff]);
+      const openSearchOverlay = useCallback(() => setSearchOverlayOpen(true), []);
+      const handleNavNewChat = useCallback(() => { handleNewChat(); }, [handleNewChat]);
       const apiKeyGateOpen = shouldShowApiKeyGate(bs, currentView, bridge.available);
       const vllmSetupModalOpen = !!(
         can('localModelSetup')
@@ -2864,20 +3056,20 @@ function workspaceDisplayName(path) {
                 the bottom after expanding. */}
             <div data-testid="sidebar-primary-nav" className={`shrink-0 flex flex-col gap-0.5 mt-1.5 max-sm:gap-0 max-sm:mt-1 ${isSidebarOpen ? 'px-3' : 'px-2 items-center'}`}>
               <NavItem
-                icon={<Edit2 size={18} />} label={t.newChat}
+                icon={NAV_ICON_NEW_CHAT} label={t.newChat}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onClick={() => handleNewChat()}
+                onClick={handleNavNewChat}
               />
               {/* On the compact shell search is only reachable from the nav, so it must
                   stay pinned even when collapsed */}
               {(!isSidebarOpen || isCompactShell) && (
                 <NavItem
-                  icon={<Search size={18} />} label={t.searchChats}
+                  icon={NAV_ICON_SEARCH} label={t.searchChats}
                   active={searchOverlayOpen}
                   theme={activeTheme}
                   isSidebarOpen={isSidebarOpen}
-                  onClick={() => setSearchOverlayOpen(true)}
+                  onClick={openSearchOverlay}
                 />
               )}
               {codeStyleActive && isSidebarOpen && !codeNavExpanded ? (
@@ -2895,74 +3087,69 @@ function workspaceDisplayName(path) {
               <>
               {SCHEDULED_TASKS_ENTRY_ENABLED && (
                 <NavItem
-                  icon={<Clock size={18} />} label={t.scheduledPlans}
+                  icon={NAV_ICON_SCHEDULED} label={t.scheduledPlans}
                   active={currentView === 'scheduled'}
                   unread={!!(bs && ((bs.scheduledTasks || []).some(task => task.hasUnreadRuns) || (bs.scheduledTaskRecentRuns || []).some(run => run && run.unread)))}
                   theme={activeTheme}
                   t={t}
                   isSidebarOpen={isSidebarOpen}
-                  onClick={() => navigateFromScheduledRun('scheduled')}
-                  onPointerEnter={() => prefetchView('scheduled')} onFocus={() => prefetchView('scheduled')}
+                  onClick={navNavigateHandlers.scheduled}
+                  onPointerEnter={NAV_PREFETCH.scheduled} onFocus={NAV_PREFETCH.scheduled}
                 />
               )}
               <NavItem
-                icon={<Package size={18} />} label={t.outputs}
+                icon={NAV_ICON_OUTPUTS} label={t.outputs}
                 active={currentView === 'outputs'}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onClick={() => navigateFromScheduledRun('outputs')}
-                onPointerEnter={() => prefetchView('knowledge')} onFocus={() => prefetchView('knowledge')}
-                dragKind={canDetachWindows ? 'outputs' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'outputs:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('outputs', undefined, t.outputs, geom) : undefined}
+                onClick={navNavigateHandlers.outputs}
+                onPointerEnter={NAV_PREFETCH.knowledge} onFocus={NAV_PREFETCH.knowledge}
+                dragKind={canDetachWindows ? 'outputs' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'outputs:'} onPickUp={canDetachWindows ? navPickUpHandlers.outputs : undefined}
               />
               <NavItem
-                icon={<BarChart2 size={18} />} label={t.monitor}
+                icon={NAV_ICON_MONITOR} label={t.monitor}
                 active={currentView === 'monitor'}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onPointerEnter={() => prefetchView('monitor')} onFocus={() => prefetchView('monitor')}
-                onClick={() => {
-                  navigateFromScheduledRun('monitor', () => {
-                    const liveBridge = window.TauriBridge || bridge;
-                    if (liveBridge?.monitor && typeof liveBridge.monitor.startMonitorPolling === 'function') liveBridge.monitor.startMonitorPolling();
-                  });
-                }}
-                dragKind={canDetachWindows ? 'monitor' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'monitor:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('monitor', undefined, t.monitor, geom) : undefined}
+                onPointerEnter={NAV_PREFETCH.monitor} onFocus={NAV_PREFETCH.monitor}
+                onClick={navNavigateHandlers.monitor}
+                dragKind={canDetachWindows ? 'monitor' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'monitor:'} onPickUp={canDetachWindows ? navPickUpHandlers.monitor : undefined}
               />
               <NavItem
-                icon={<Puzzle size={18} />} label={t.toolStore}
+                icon={NAV_ICON_TOOL_STORE} label={t.toolStore}
                 active={currentView === 'toolStore'}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onClick={() => navigateFromScheduledRun('toolStore')}
-                onPointerEnter={() => prefetchView('toolStore')} onFocus={() => prefetchView('toolStore')}
-                dragKind={canDetachWindows ? 'toolstore' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'toolstore:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('toolstore', undefined, t.toolStore, geom) : undefined}
+                onClick={navNavigateHandlers.toolStore}
+                onPointerEnter={NAV_PREFETCH.toolStore} onFocus={NAV_PREFETCH.toolStore}
+                dragKind={canDetachWindows ? 'toolstore' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'toolstore:'} onPickUp={canDetachWindows ? navPickUpHandlers.toolstore : undefined}
               />
               <NavItem
-                icon={<Layers size={18} />} label={t.cardPool}
+                icon={NAV_ICON_CARD_POOL} label={t.cardPool}
                 active={currentView === 'cardpool'}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onClick={() => navigateFromScheduledRun('cardpool', () => setPoolMyOnly(false))}
-                onPointerEnter={() => prefetchView('cardpool')} onFocus={() => prefetchView('cardpool')}
-                dragKind={canDetachWindows ? 'cardpool' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'cardpool:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('cardpool', undefined, t.cardPool, geom) : undefined}
+                onClick={navNavigateHandlers.cardpool}
+                onPointerEnter={NAV_PREFETCH.cardpool} onFocus={NAV_PREFETCH.cardpool}
+                dragKind={canDetachWindows ? 'cardpool' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'cardpool:'} onPickUp={canDetachWindows ? navPickUpHandlers.cardpool : undefined}
               />
               <NavItem
-                icon={<BookOpen size={18} />} label={t.knowledge}
+                icon={NAV_ICON_KNOWLEDGE} label={t.knowledge}
                 active={currentView === 'knowledge'}
                 theme={activeTheme}
                 isSidebarOpen={isSidebarOpen}
-                onClick={() => navigateFromScheduledRun('knowledge')}
-                onPointerEnter={() => prefetchView('knowledge')} onFocus={() => prefetchView('knowledge')}
-                dragKind={canDetachWindows ? 'knowledge' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'knowledge:'} onPickUp={canDetachWindows ? (geom) => beginTearOff('knowledge', undefined, t.knowledge, geom) : undefined}
+                onClick={navNavigateHandlers.knowledge}
+                onPointerEnter={NAV_PREFETCH.knowledge} onFocus={NAV_PREFETCH.knowledge}
+                dragKind={canDetachWindows ? 'knowledge' : undefined} dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === 'knowledge:'} onPickUp={canDetachWindows ? navPickUpHandlers.knowledge : undefined}
               />
               {/* 收起态专属:展开态近期列表的高亮项就是回会话入口,不重复渲染 */}
               {!isSidebarOpen && (
                 <NavItem
-                  icon={<MessageSquare size={18} />} label={t.currentChat}
+                  icon={NAV_ICON_CURRENT_CHAT} label={t.currentChat}
                   active={currentView === 'chat'}
                   theme={activeTheme}
                   isSidebarOpen={isSidebarOpen}
-                  onClick={() => navigateFromScheduledRun('chat')}
+                  onClick={navNavigateHandlers.chat}
                 />
               )}
               {codeStyleActive && isSidebarOpen && codeNavExpanded && (
@@ -3127,21 +3314,30 @@ function workspaceDisplayName(path) {
                           )}
                           {sidebarFolderGroups.map((group) => {
                             const isOpen = folderGroupOpen[group.key] ?? true;
-                            const label = group.key === TEMPORARY_GROUP_KEY
-                              ? t.uiCodex.temporarySession
-                              : workspaceDisplayName(group.key);
+                            const label = group.kind === 'project'
+                              ? group.name
+                              : group.kind === 'temporary'
+                                ? t.uiCodex.temporarySession
+                                : workspaceDisplayName(group.path);
                             return (
                               <div key={group.key}>
-                                <button
-                                  type="button"
-                                  data-testid="sidebar-folder-group"
-                                  title={group.key === TEMPORARY_GROUP_KEY ? undefined : group.key}
-                                  onClick={() => setFolderGroupOpen(prev => ({ ...prev, [group.key]: !isOpen }))}
-                                  className={`w-full h-7 px-4 flex items-center justify-between rounded-full text-[12px] transition-colors ${activeTheme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
-                                >
-                                  <span className="truncate">{label} ({group.rows.length})</span>
-                                  <ChevronDown size={14} className={`shrink-0 transition-transform ${isOpen ? '' : '-rotate-90'}`} />
-                                </button>
+                                <ProjectGroupHeader
+                                  label={label}
+                                  kind={group.kind}
+                                  count={group.rows.length + (sidebarGroupPinnedCounts[group.key] || 0)}
+                                  isOpen={isOpen}
+                                  onToggle={() => setFolderGroupOpen(prev => ({ ...prev, [group.key]: !isOpen }))}
+                                  theme={activeTheme}
+                                  t={t}
+                                  title={group.kind === 'folder' ? group.path : undefined}
+                                  busy={projectOpsBusy}
+                                  testId="sidebar-folder-group"
+                                  // bridge.projects 仅桌面存在:web 上目录组不渲染
+                                  // 死入口(点击无反馈违反显式不支持约定)。
+                                  onConvert={bridge.projects && group.kind === 'folder' ? (name) => handleConvertFolderToProject(group.path, name) : undefined}
+                                  onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
+                                  onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
+                                />
                                 {isOpen && (
                                   <div className="mt-1 space-y-0.5">
                                     {group.rows.map(renderSidebarTaskItem)}
@@ -3422,7 +3618,7 @@ function workspaceDisplayName(path) {
                 onRename={handleRenameSession}
                 onDelete={handleDeleteSession}
                 onTogglePinned={handleToggleSessionPinned}
-                onOpenFolder={can('externalSystemOpen') ? ((id) => bridge.artifacts.revealSessionFolder && bridge.artifacts.revealSessionFolder(id)) : undefined}
+                onOpenFolder={can('externalSystemOpen') ? handleRevealSessionFolder : undefined}
                 onArchive={handleArchiveSession}
                 onArchiveMany={handleBatchArchiveSessions}
                 onDeleteMany={handleBatchDeleteSessions}

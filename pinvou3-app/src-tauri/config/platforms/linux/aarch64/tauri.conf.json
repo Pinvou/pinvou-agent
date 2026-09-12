@@ -1,0 +1,8 @@
+{
+  "$schema": "../../../../../node_modules/@tauri-apps/cli/config.schema.json",
+  "bundle": {
+    "resources": {
+      "target/linux-asr-runtime/aarch64/sense-voice-main": "runtime/asr/sense-voice-main"
+    }
+  }
+}

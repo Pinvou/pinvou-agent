@@ -3,6 +3,20 @@
 > This is the current-state register for Pinvou's CodeWhale fork.
 > See [`fork-policy.md`](fork-policy.md) for policy and [`codewhale-upgrade-0.9.5-to-0.9.12.md`](codewhale-upgrade-0.9.5-to-0.9.12.md) for upgrade evidence. The Chinese register is authoritative.
 
+## T2: shell environment guidance (integrated upstream as CodeWhale #50)
+
+- Integration status: resolved by the 2026-09-11 backlog batch. [CodeWhale PR #50](https://github.com/Pinvou/CodeWhale/pull/50) merged the re-ported candidate as `1d9ee26e6` (a re-port of [fork PR #42](https://github.com/Pinvou/CodeWhale/pull/42) onto v0.9.12 r1), and parent PR #482 advanced the parent gitlink to `ae7e3fb36f89486f30d41b28ae0eaaa516ae4740`, which includes it. The public-submodule gate passes in transition mode: the immutable `pinvou-v0.9.12-r1` tag stays at `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf` while the gitlink rides the public maintenance branch ahead of it, so this PR no longer pins a separate candidate ref.
+- Review: [Pinvou/CodeWhale#42](https://github.com/Pinvou/CodeWhale/pull/42), from `zhuowp/CodeWhale:fix/shell-environment-guidance`. The reusable upstream contribution is [Hmbown/CodeWhale#5900](https://github.com/Hmbown/CodeWhale/pull/5900); its source review and compiled verification are separate from the fork integration that has now landed.
+
+- The `Bash` tool description and `command` parameter now share guidance from the existing execution dispatcher. PowerShell, cmd, POSIX sh, Bash, zsh, and other custom shells receive matching syntax guidance. Tool names, permissions, execution, aliases, and read-only argv behavior remain compatible. On the v0.9.12 re-port, the model-visible lowercase `bash` contract surface is unchanged; extending the aligned guidance to that surface is a separate scope decision for review.
+- The shell guidance fix is one of the registered post-r1 commits (CodeWhale PR #50, `1d9ee26e6`) inside parent gitlink `ae7e3fb36f89486f30d41b28ae0eaaa516ae4740`; at review time the candidate drifted 3 files, +207/-2 above the r1 head. Upstream main still contained the login-shell-only description when inspected on 2026-09-05.
+- Coverage: `shell_guidance_matches_each_interpreter`, `forkguard_shell_catalog_guidance_matches_execution`, and the opt-in `export_shell_guidance_eval_fixture` for live model comparisons. The application removes Unix-specific default examples from shared instructions, browser HTTP verification, and attachment analysis guidance.
+- Live-model methodology, measured results, and verification limits: [shell guidance evaluation](shell-guidance-evaluation.md).
+- Review follow-up: preserve zsh's `=command` warning and provide Bash/POSIX quoting, pipelines, heredocs or syntax exclusions, and utility-portability guidance. Unix `$SHELL` paths represented as `Custom` receive the same guidance as built-in Bash/sh variants; cmd and fish have their own syntax notes. Covered by `shell_guidance_preserves_unix_shell_contracts`.
+- Guidance selection uses one `match`, with a PowerShell-family guard shared with execution and a dedicated text constant. This structural refactor preserves custom PowerShell detection and model-visible wording.
+- All shell-specific guidance now lives in named constants, including cmd, fish, and the shared fallback. A before/after comparison across 14 shell cases confirmed identical output after constant extraction.
+- Following the 40-call curl ablation, remove the tool-level curl alias reminder only. Preserve the other PowerShell guidance and application instructions used in that experiment; both arms achieved 19/20 correct executions with no shell mismatch errors.
+
 ## Current state (2026-09-11: r1 baseline plus 13 registered commits, r2 tag pending)
 
 | Item | Value |
@@ -143,6 +157,10 @@ Tests: `forkguard_rate_limit_governor_pauses_and_time_recovers_after_window_drai
 ## Parent boundary and drift reduction
 
 `pinvou3-app` owns product tool policy, AppMode-to-approval/trust mapping, reasoning effort, owner-event filtering, and scheduled-session creation. Its bridge retains the v0.9.12 read denylist, bubblewrap, MCP OAuth, goal-loop, and telemetry-safe defaults; product builds no longer stack the benchmark-only per-turn tool cap on top (see the 2026-09-11 rows in the register).
+
+Shell task reconciliation prefers the stable `origin_tool_call_id` carried by snapshots and completion events (an upstream v0.9.12 behavior, Hmbown/CodeWhale #5869): the host monitor and the Tauri/Web bridges rewrite the originating tool card first and fall back to command-text matching only for legacy origin-less jobs. An identified terminal root job whose origin card was compacted or reloaded away never appends to the current timeline tail, while running jobs keep a visible synthetic status card (`shell_task_projection.test.mjs`, `forkguard_shell_monitor_assigns_identical_commands_by_stable_origin`).
+
+Origin scope: a shell job's `origin_tool_call_id` is the unique root turn-loop tool call that spawned it; subagent jobs carry only `owner_agent_id` with a null origin and take the origin-less reconciliation paths. Read-only `multi_tool_use.parallel` sub-calls share the wrapper call's origin, but shell tools have `ExecutesCode` and cannot enter read-only parallel, so that sharing never applies to shell jobs. Consumers must preserve the owner distinction and never let one job adopt a card already bound to another job.
 
 The baseline's net +8,736 lines exceed the +1,500 soft limit, chiefly in Engine state, final dispatch, child-only host profiles, explicit-Skill-root boundaries, and review-requested result-level safety coverage where an app-side mirror would create two unsafe sources of truth. Reduction order is: upstream generic steer and per-turn dispatch policy; upstream Automation ownership/misfire behavior; upstream the execpolicy phase-2 expressiveness and subagent wiring; upstream the T5 archive export as a unit; upstream the T6 rate-limit governor; upstream the GLM-5.3 forced-thinking dialect and BigModel route predicate; make the 100 KiB `FragmentId::Permissions` host budget a configurable upstream fragment limit; migrate the parent to explicit re-export APIs and then narrow the 18-module compatibility facade; finally replace T3 once upstream provides complete static-composer, explicit-Skill-root, and host-profile contracts.
 

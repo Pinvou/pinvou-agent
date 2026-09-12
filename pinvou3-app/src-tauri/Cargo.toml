@@ -82,7 +82,8 @@ uuid = { version = "1.11", features = ["v4"] }
 # Codex/Claude/Kimi 各自的 ACP 实现提供，pinvou3 不复制其会话/工具循环。
 # unstable_elicitation is load-bearing (codex_acp CreateElicitation flow);
 # unstable_session_fork only gates the ForkSession API (zero app references), so the phase-4 audit drops it.
-agent-client-protocol = { version = "2", features = ["unstable_elicitation"] }
+# Pinned: 2.1.0 removes the unstable_elicitation feature (and a plain "2" would let cargo update pick it).
+agent-client-protocol = { version = "=2.0.0", features = ["unstable_elicitation"] }
 
 # 底层 Agent —— CodeWhale 提供 LLM 调用 + 工具循环 + 流式事件。
 # 上游 v0.8.45 起 rebrand：库 crate 改名 codewhale-tui。用 Cargo 的 `package`
@@ -160,7 +161,7 @@ walkdir = "2"
 # 模型(bge-m3 ONNX)用户本地下载，UserDefinedEmbeddingModel 从目录加载，不走 HF 自动下载。
 # 电子表格解析（file_ingest 用）：读 xlsx/xls/ods 的全部工作表。
 # 0.36 拉入 quick-xml 0.41+,修 RUSTSEC-2026-0194/0195 ReDoS。
-# 剩余 quick-xml 0.39.4 由 plist/tauri 传递,等上游。
+# The quick-xml pulled in transitively by plist/tauri is unified to 0.41 too; no stale version remains in the graph.
 calamine = "0.36"
 # XLSX structure preservation: inspect OOXML cell styles, formulas, and merged
 # ranges that calamine's value-only Range intentionally does not expose.

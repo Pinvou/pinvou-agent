@@ -69,7 +69,7 @@
     "test:assistant-message-actions": "node tests/assistant_message_actions.test.mjs",
     "test:chat-error-isolation": "node tests/chat_turn_error_isolation.test.mjs",
     "test:attachment-drop": "node tests/attachment_drop_logic.test.mjs && node tests/attachment_drop_bridge.test.mjs && node tests/acp_native_attachment_client.test.mjs && node tests/attachment_bubble_logic.test.mjs",
-    "test:voice-input": "node tests/voice_input_error_logic.test.js && node tests/voice_shortcut_state.test.mjs && node tests/voice_shortcut_settings.test.mjs && node tests/voice_target_registry.test.mjs && node tests/voice_entry_policy.test.mjs",
+    "test:voice-input": "node tests/voice_input_error_logic.test.js && node tests/voice_shortcut_state.test.mjs && node tests/voice_shortcut_router.test.mjs && node tests/voice_shortcut_settings.test.mjs && node tests/voice_target_registry.test.mjs && node tests/voice_entry_policy.test.mjs",
     "eval:voice-normalize": "node scripts/voice-normalize-eval.mjs",
     "test:voice-asr-cancel": "node tests/voice_asr_cancel_logic.test.js",
     "test:bridge-protocol": "node tests/bridge_domain_protocol.test.mjs && node tests/web_bridge_domain_contract.test.mjs && node tests/monitor_bridge_format.test.mjs",
@@ -113,6 +113,7 @@
     "test:acp-providers-ui": "node tests/acp_providers_ui_smoke.js",
     "test:kb-smoke": "node tests/kb_smoke.js",
     "test:knowledge-host-packaging": "node --test tests/knowledge_host_packaging.test.mjs",
+    "test:linux-asr-runtime": "node tests/linux_asr_runtime_packaging.test.js",
     "test:composer-tools-smoke": "node tests/composer_tools_smoke.js",
     "test:composer-pending-enable-smoke": "node tests/composer_pending_enable_smoke.js",
     "test:tool-store": "node tests/tool_store_smoke.js",
@@ -147,7 +148,7 @@
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-sonarjs": "^4.2.0",
-    "eslint-plugin-unicorn": "^73.0.0",
+    "eslint-plugin-unicorn": "^74.0.0",
     "globals": "^17.11.0",
     "jscpd": "^5.0.16",
     "knip": "^6.32.2",
@@ -170,5 +171,8 @@
     "eslint-plugin-react": {
       "eslint": "$eslint"
     }
+  },
+  "allowScripts": {
+    "unrs-resolver@1.12.2": true
   }
 }

@@ -138,8 +138,15 @@ fn transcript_is_blocked(path: &Path) -> bool {
     let mut guard = cache
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // When full, evict a single entry instead of clearing the whole table:
+    // burst-style invalidation would make the next inventory poll re-read
+    // every transcript from scratch (a cache avalanche). Hash maps are
+    // unordered, so evicting any one entry converges.
     if guard.len() >= BLOCKED_CACHE_LIMIT && !guard.contains_key(path) {
-        guard.clear();
+        if let Some((evicted, _)) = guard.iter().next() {
+            let evicted = evicted.clone();
+            guard.remove(&evicted);
+        }
     }
     guard.insert(path.to_path_buf(), (stamp, blocked));
     blocked

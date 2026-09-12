@@ -5,7 +5,10 @@
 ```text
 config/
 └─ platforms/
-   ├─ linux/tauri.conf.json
+   ├─ linux/
+   │  ├─ tauri.conf.json
+   │  ├─ x86_64/tauri.conf.json
+   │  └─ aarch64/tauri.conf.json
    ├─ macos/tauri.conf.json
    └─ windows/
       ├─ tauri.conf.json
@@ -13,6 +16,8 @@ config/
 ```
 
 - `tauri.conf.json`：对应平台的安装包目标、资源映射和安装器参数；macOS 额外把主窗口覆盖为原生顶栏（`decorations: true` + `titleBarStyle: "Overlay"` + `hiddenTitle`，系统红绿灯替代前端自绘三键）。
+- Linux 的架构 overlay 把统一入口从固定 SenseVoice.cpp commit 构建到
+  `target/linux-asr-runtime/<arch>/` 的当前架构 ELF 映射到 `runtime/asr/`；源码树不存放预编译 ELF。
 - `windows/runtime/x86_64.lock.json`：锁定 Windows 独立 runtime 的 submodule commit、manifest 与目标架构；实际资源映射由 staging 后生成的 overlay 提供。
 
 `--config` overlay 按 JSON Merge Patch 合并：对象合并、**数组整体替换**。

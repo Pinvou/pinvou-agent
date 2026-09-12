@@ -220,6 +220,57 @@ function renderLegacyMarkdownCached(item, syntaxVersion) {
   return html;
 }
 
+// Same idea as legacyMarkdownCache: every composer keystroke, streaming
+// delta, and clock tick re-renders the full view, and each render of an
+// assistant bubble ran three rounds of pre/code regex parsing (persona
+// draft, scheduled-task draft, card-question follow-up) plus the streaming
+// fold. The whole chain is a pure function of
+// (html, streaming, allowScheduledTaskDraft, streamingDraftLabel), cached
+// per item and reused while the tuple is unchanged; while streaming, the
+// item gets a new reference per delta so the cache invalidates naturally —
+// behavior unchanged.
+const assistantParseCache = new WeakMap();
+function parseAssistantBubblesCached(item, html, streaming, allowScheduledTaskDraft, streamingDraftLabel) {
+  const cached = assistantParseCache.get(item);
+  if (cached
+    && cached.html === html
+    && cached.streaming === streaming
+    && cached.allowScheduledTaskDraft === allowScheduledTaskDraft
+    && cached.streamingDraftLabel === streamingDraftLabel) {
+    return cached.parsed;
+  }
+  const pd = streaming ? { draft: null, html: hideStreamingDraft(html, streamingDraftLabel) } : parsePersonaDraft(html);
+  const sd = (streaming || !allowScheduledTaskDraft) ? { draft: null, html: pd.html } : parseScheduledTaskDraft(pd.html);
+  const cq = streaming ? { q: null, html: sd.html } : parseCardQuestion(sd.html);
+  const parsed = { pd, sd, cq };
+  assistantParseCache.set(item, { html, streaming, allowScheduledTaskDraft, streamingDraftLabel, parsed });
+  return parsed;
+}
+
+// The memory status label map depends only on the current language
+// dictionary t (a module singleton); caching per t avoids rebuilding the
+// same map on every render of every bubble.
+const memoryStatusLabelsCache = new WeakMap();
+function getMemoryStatusLabels(t) {
+  let labels = memoryStatusLabelsCache.get(t);
+  if (!labels) {
+    const chatCopy = t.uiChat;
+    const chatViewCopy = t.uiChatView;
+    labels = {
+      '已忽略': chatCopy.ignoreOnce,
+      '不再提示': chatCopy.neverAsk,
+      '已记住': chatViewCopy.memStatusRemembered,
+      '已归档': chatViewCopy.memStatusArchived,
+      '已删除': chatViewCopy.memStatusDeleted,
+      '记忆已更新': chatCopy.memoryUpdated,
+      '记忆已归档': chatViewCopy.memStatusArchivedNotice,
+      '记忆已删除': chatViewCopy.memStatusDeletedNotice,
+    };
+    memoryStatusLabelsCache.set(t, labels);
+  }
+  return labels;
+}
+
 function localizeSceneTabs(items, copy) {
   return items.map(item => ({
     ...item,
@@ -2262,7 +2313,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   .slice(-2)
                   .map((item) => (
                     <div key={item.id} className="pointer-events-auto w-full flex justify-end">
-                      <ChatBubble item={item} sessionId={activeSessionId} theme={theme} t={t} onPrefill={(txt) => setInputText(txt)} onSend={sendChatMessage} editable={false} onOpenEditor={onOpenEditor} isLatestArtifact={false} />
+                      <ChatBubble item={item} sessionId={activeSessionId} theme={theme} t={t} onPrefill={setInputText} onSend={sendChatMessage} editable={false} onOpenEditor={onOpenEditor} isLatestArtifact={false} />
                     </div>
                 ))}
               </div>
@@ -3202,20 +3253,10 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
     }
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bubble dispatches rendering by message type; split refactor tracked separately
-    const ChatBubble = ({ item, sessionId, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant, showAssistantActions = true }) => {
+    const ChatBubble = React.memo(function ChatBubble({ item, sessionId, theme, onPrefill, onSend, editable, onOpenEditor, t, isLatestArtifact, allowScheduledTaskDraft, conversationVariant, showAssistantActions = true }) {
       const chatCopy = t.uiChat;
-      const chatViewCopy = t.uiChatView;
       // 后端持久化的记忆状态值是固定中文数据，仅在 UI 边界映射为当前语言；未识别值原样透传
-      const memoryStatusLabels = {
-        '已忽略': chatCopy.ignoreOnce,
-        '不再提示': chatCopy.neverAsk,
-        '已记住': chatViewCopy.memStatusRemembered,
-        '已归档': chatViewCopy.memStatusArchived,
-        '已删除': chatViewCopy.memStatusDeleted,
-        '记忆已更新': chatCopy.memoryUpdated,
-        '记忆已归档': chatViewCopy.memStatusArchivedNotice,
-        '记忆已删除': chatViewCopy.memStatusDeletedNotice,
-      };
+      const memoryStatusLabels = getMemoryStatusLabels(t);
       const localizedMemoryStatus = (label) => memoryStatusLabels[label] || label;
       const assistantSelectionHostRef = useRef(null);
       const assistantSelectionTargetRef = useRef(null);
@@ -3252,9 +3293,11 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
           ? renderLegacyMarkdownCached(item, syntaxVersion)
           : (item.html || '');
         const streamingDraftLabel = /scheduled-task-draft/.test(html) ? t.uiChatExtra.draftingScheduled : (t && t.cpDesigning);
-        const pd = item.streaming ? { draft: null, html: hideStreamingDraft(html, streamingDraftLabel) } : parsePersonaDraft(html);
-        const sd = (item.streaming || !allowScheduledTaskDraft) ? { draft: null, html: pd.html } : parseScheduledTaskDraft(pd.html);
-        const cq = item.streaming ? { q: null, html: sd.html } : parseCardQuestion(sd.html);
+        // The three-pass parse chain is a pure function cached per item (see
+        // parseAssistantBubblesCached): even when the memo is defeated
+        // (streaming delta / syntaxVersion bump) only bubbles that actually
+        // changed reparse.
+        const { pd, cq } = parseAssistantBubblesCached(item, html, !!item.streaming, allowScheduledTaskDraft, streamingDraftLabel);
         const assistantCopyAvailable = !item.streaming
           && [item.text, item.html].some(value => String(value || '').trim());
         // 草稿是否已存入(按名字在已加载的卡池里找同名自制卡 → 派生"已存入",免单独持久化)
@@ -3470,7 +3513,15 @@ const UserBubble = ({ item, sessionId, _theme, editable, t, conversationVariant 
       }
 
       return null;
-    };
+    });
+    // ChatBubble memoization: inputText lives at the ChatView top level, so
+    // every keystroke re-renders the whole view; the legacy bubble list is
+    // O(n), and after memoization unchanged bubbles only pay a shallow prop
+    // compare. Callbacks at call sites are stable references
+    // (setInputText/sendChatMessage/onOpenEditor) and items keep stable
+    // references from the bridge session data; the syntaxVersion subscription
+    // lives inside the component, so the memo cannot block the re-render
+    // after lazy language registration.
 
     // ==========================================
     // Artifact Card — present_artifact 成品卡（点击打开预览）

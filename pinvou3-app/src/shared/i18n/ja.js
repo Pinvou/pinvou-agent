@@ -361,6 +361,7 @@ const jaBase = {
         uiAttachments: { parsing:'解析中', failed:'失敗', remove:name=>`添付ファイル ${name} を削除`, dropRelease:'ドロップして添付', dropWebTitle:'あらゆる内容を追加', dropWebHint:'ファイルをここにドロップして会話に追加できます', fileTooLarge:'ファイルが添付上限の 20 MB を超えているため追加できません', archiveTooManyEntries:'圧縮ファイルに 50 件を超える項目が含まれているため追加できません', archiveExpandedTooLarge:'展開後のサイズが 100 MB を超えるため追加できません', archiveUnsafeEntry:'圧縮ファイルに安全でないリンクまたはパスが含まれているため追加できません' },
         uiCodex: codexJa,
         uiAcpProviders: acpProvidersJa,
+        uiProjects: { convertToProject:'プロジェクトに変換', projectNamePlaceholder:'プロジェクト名', renameProject:'プロジェクトの名前を変更', deleteProject:'プロジェクトを削除', deleteConfirmLabel:'このプロジェクトを削除しますか？', deleteProjectHint:'会話は削除されず、未分類に戻ります', moveToProject:'プロジェクトへ移動…', moveOut:'プロジェクトから外す', moveToUngrouped:'未分類へ移動', temporaryBadge:'一時ワークスペース', folderUnavailable:'フォルダー利用不可', rebindFolder:'再バインド', addFolderTitle:'フォルダーをプロジェクトに追加しますか？', addFolderBody:folder=>`プロジェクトにフォルダー ${folder} が含まれ、そこで新規作成した会話は自動的にこのプロジェクトに入ります。`, searchPlaceholder:'プロジェクトを検索', noProjects:'プロジェクトはまだありません', ungrouped:'未分類', currentProject:'現在のプロジェクト', movedNotice:'会話を移動しました', opFailed:'プロジェクト操作に失敗しました' },
 
         uiCodexWorkspace: { changes:{added:'追加',modified:'変更',deleted:'削除',renamed:'名前変更',copied:'コピー',conflict:'競合',untracked:'未追跡',unknown:'ファイル'}, origins:{session:'このセッション',preexisting:'セッション前から存在',preexisting_modified:'セッション前から存在 · このセッションで変更',unknown:'出所未記録'}, addedPath:path=>`${path} を追加済み`, addPath:path=>`${path} を会話に追加`, added:'会話に追加済み', add:'会話に追加', back:'ワークスペース一覧に戻る', copyPath:'相対パスをコピー', reveal:'ファイルマネージャーで表示', open:'システムアプリで開く', reading:'読み込み中…', noDiff:'表示できるテキスト差分はありません', tooLarge:'ファイルが大きいため内蔵プレビューを生成できません。', unsupported:'このファイルは内蔵プレビューに対応していません。', openHint:'システムアプリで開くことができます。', truncated:'内容が大きいため、先頭部分のみ表示しています。', resize:'ワークスペースの幅を調整', resizeHint:'ドラッグで幅を調整、ダブルクリックで初期値に戻す', title:'ワークスペース', temporary:'一時ワークスペース', refresh:'ワークスペースを更新', close:'ワークスペースを閉じる', files:'ファイル', changed:'変更', search:'ファイルを検索', noFiles:'一致するファイルはありません', noBaseline:'この古いセッションには作成時の基準がないため、このセッションによる変更かどうか判定できません。', branch:'ブランチ', staged:'ステージ済み', noChanges:'ワークスペースに変更はありません', copyContent:'内容をコピー', copied:'コピーしました', closeViewer:'プレビューを閉じる', loadFailed:'ファイルの読み込みに失敗しました', resizeWidth:'ビューアの幅を調整', resizeHeight:'ビューアの高さを調整', resizeCorner:'ビューアのサイズを調整、ダブルクリックで初期値に戻す', fontDecrease:'文字サイズを小さく', fontIncrease:'文字サイズを大きく', openInNewWindow:'コードリーダーで開く', diffSuffix:'(差分)', readerTitle:'コードリーダー', readerEmpty:'ワークスペースのファイルプレビューから「コードリーダーで開く」を選ぶと、ファイルがここにタブとして追加されます。', closeTab:'タブを閉じる', noSessionChanges:'セッションを作成すると、そのセッションによるプロジェクトの変更がここに表示されます。' },
 
@@ -404,7 +405,7 @@ const jaBase = {
         feedbackAttachmentHint: 'png、jpg、jpeg、gif、webp、mp4、mov、webm に対応。最大 5 件。',
         feedbackPrivacy: '入力内容、選択した添付、非機密の環境概要を送信します。チャット履歴やキーは自動添付しません。',
         feedbackSubmit: '送信', feedbackSubmitting: '送信中…', feedbackSubmitted: '送信しました。ありがとうございます。',
-        feedbackRetry: '再試行', feedbackCloseConfirm: '未送信の内容があります。閉じますか？',
+        feedbackRetry: '再試行', feedbackCloseConfirm: '未送信の内容があります。閉じますか？', feedbackCloseAnyway: '閉じる',
         feedbackBodyRequired: '内容を入力してください。', feedbackUnsupportedFile: '対応していない添付形式です。',
         feedbackTooManyFiles: '添付は最大 5 件です。', feedbackPickUnavailable: 'ファイル選択を利用できません。',
         chatGreeting: 'こんにちは、今日は何をしましょうか？', artifacts: '成果物とコード', placeholder: 'PINVOU に質問またはコマンドを入力', disclaimer: 'PINVOU は不正確な情報を生成する可能性があります。必ずご確認ください。', ctxUsage: 'コンテキスト',
@@ -461,7 +462,7 @@ const jaBase = {
         cpDescLabel: '説明',
         cpEquipBubbleNote: '能力プロファイルを注入しました。AI はこのエキスパートの方法論でタスクを担当します。',
         cpTargetMarkTitle: '装備先 · カードプールで選んだエキスパートがこの会話に注入されます',
-        riGenerating: '生成中…', riDelQ: '削除?', riDelConfirm: '削除を確認', riRename: '名前を変更', riPin: 'ピン留め', riUnpin: 'ピン留め解除', riOpenFolder: 'フォルダを開く', riAwaitingInput: 'あなたの入力を待っています',
+        riGenerating: '生成中…', riDelQ: '削除?', riDelConfirm: '削除を確認', riRename: '名前を変更', riPin: 'ピン留め', riUnpin: 'ピン留め解除', riOpenFolder: 'フォルダを開く', riAwaitingInput: 'あなたの入力を待っています', riMore: 'その他',
         // —— チャット/グローバル chrome ——
         appTitle: 'PINVOU アシスタント（ベータ版）', winMin: '最小化', winMax: '最大化', winClose: '閉じる',
         sidebarCollapse: 'サイドバーを折りたたむ', sidebarExpand: 'サイドバーを展開',
@@ -953,6 +954,8 @@ Object.assign(dictJa, {
 dictJa.uiSettingsDetail.memoryLoadFailed = 'メモリプロフィールの読み込みに失敗しました。再試行してください。';
 
 dictJa.uiSettingsDetail.memorySaveFailed = 'メモリプロフィールの保存に失敗しました。再試行してください。';
+
+dictJa.uiSettingsDetail.memoryDeleteFailed = 'メモリの削除に失敗しました。再試行してください。';
 
 dictJa.uiSettingsDetail.memorySourceUnavailable = '一部のメモリ情報を一時的に利用できません。前回正常に読み込んだ内容を保持しています。';
 

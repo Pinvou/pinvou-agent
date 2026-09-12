@@ -824,7 +824,7 @@ function ConversationTurnView({
   const c = conversationCopy(copy);
   const running = turn.status === 'running';
   // The per-second tick is scoped to the running turn itself: the parent may still pass a ticking `now`
-  // (CodexAcpView keeps its original behavior via `now || tickNow` prop precedence); when omitted, an
+  // (`now || tickNow` precedence keeps an external ticker working); when omitted or 0, an
   // internal clock drives elapsed time, re-rendering only this one turn subtree per second.
   const tickNow = useConversationSecondClock(running);
   const effectiveNow = now || tickNow;

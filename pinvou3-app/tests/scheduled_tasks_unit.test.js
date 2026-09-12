@@ -20,11 +20,13 @@ const indexHtml = [
   'features/scheduled/ScheduledTasksView.jsx',
   'features/conversation/ConversationTimeline.jsx' // second-level countdown tick has been consolidated into useConversationSecondClock
 ].map(file => fs.readFileSync(path.join(__dirname, '..', 'src', file), 'utf8')).join('\n');
-const tauriBridgeFeatureNames = [
-  'artifact-tracker', 'chat', 'chat-events', 'sessions', 'terminal', 'scheduled', 'monitor', 'settings', 'memory', 'artifacts', 'personas', 'updater',
-  'remote-control', 'dependencies', 'voice', 'knowledge-model', 'interaction',
-  'multiagent'
-];
+// Derived from the bridge feature directory so a new feature file cannot be
+// forgotten here again (a missing entry makes bridge.js throw
+// "Tauri bridge feature not loaded" inside the harness).
+const tauriBridgeFeatureNames = fs.readdirSync(path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge'))
+  .filter(name => name.endsWith('.js'))
+  .map(name => name.slice(0, -3))
+  .sort((a, b) => a.localeCompare(b));
 const bridgeMessages = fs.readFileSync(
   path.join(__dirname, '..', 'src', 'shared', 'bridge-messages.js'),
   'utf8'
@@ -153,7 +155,7 @@ assert.ok(
   'ordinary session navigation must hide the native browser before publishing the chat route and loading the remote session'
 );
 assert.ok(
-  /async function navigateFromScheduledRun\(nextView[\s\S]{0,520}runBrowserUiTransition[\s\S]{0,260}await bridge\.scheduled\.exitScheduledRunChat\(\)[\s\S]{0,160}!exited \|\| !isCurrent\(\)[\s\S]{0,200}setCurrentView\(nextView\)[\s\S]{0,360}hideMode: bs && bs\.scheduledRunContext[\s\S]{0,80}'workspace'/.test(indexHtml),
+  /const navigateFromScheduledRun = useCallback\(async \(nextView[\s\S]{0,520}runBrowserUiTransition[\s\S]{0,260}await bridge\.scheduled\.exitScheduledRunChat\(\)[\s\S]{0,160}!exited \|\| !isCurrent\(\)[\s\S]{0,260}setCurrentView\(nextView\)[\s\S]{0,360}hideMode: bs && bs\.scheduledRunContext[\s\S]{0,80}'workspace'/.test(indexHtml),
   'leaving a scheduled run must hide the native browser before restoring its return session and publishing the next route'
 );
 assert.ok(
@@ -420,7 +422,7 @@ assert.ok(
     !/data-testid="scheduled-task-action-menu"/.test(indexHtml) &&
     !/data-testid="scheduled-detail-actions"/.test(indexHtml) &&
     /scheduledRunHistory\.map/.test(indexHtml) &&
-    /<RecentItem[\s\S]{0,900}chat=\{chat\}[\s\S]{0,900}handleOpenScheduledRunShortcut\(chat\.scheduledRun\)/.test(indexHtml) &&
+    /<RecentItem[\s\S]{0,900}chat=\{chat\}[\s\S]{0,900}handleOpenScheduledRunShortcut\(c\.scheduledRun\)/.test(indexHtml) &&
     /onContextMenu=\{openContextMenu\}/.test(indexHtml) &&
     /onTogglePinned && onTogglePinned\(chat\.id, !chat\.pinned\)/.test(indexHtml) &&
     /setConfirming\(true\)/.test(indexHtml) &&
@@ -1305,11 +1307,18 @@ async function longSessionStreamingAvoidsPerDeltaDeepClone() {
   }
   await tick();
 
-  assert.strictEqual(updates, 1001, "stream boundaries and deltas should remain immediately observable");
-  assert.strictEqual(secondSubscriberUpdates, 1001,
+  // Throttle contract (perf/memory-footprint-optimization): every delta
+  // still notifies immediately (the floor of 1001 preserves the original
+  // regression direction "streaming boundaries and deltas are immediately
+  // observable"); on top of that, the chat:delta streaming markdown
+  // trailing-edge throttle timer (~180ms) may insert a few extra render
+  // snapshots during a long stream (≤ duration/180ms) — expected, not
+  // dropped coalescing.
+  assert.ok(updates >= 1001, "stream boundaries and deltas should remain immediately observable");
+  assert.ok(secondSubscriberUpdates >= 1001,
     "all subscribers should receive one immediate update per stream boundary and delta");
-  assert.strictEqual(snapshots.length, 1001, "the regression must retain every persistent snapshot");
-  assert.strictEqual(secondSubscriberSnapshots.length, 1001,
+  assert.ok(snapshots.length >= 1001, "the regression must retain every persistent snapshot");
+  assert.ok(secondSubscriberSnapshots.length >= 1001,
     "the second subscriber must retain every same-round snapshot for identity checks");
   assert.strictEqual(
     harness.getStructuredCloneCalls(),

@@ -363,6 +363,7 @@ export const dictEn = {
         uiAttachments: { parsing:'Parsing', failed:'Failed', remove:name=>`Remove attachment ${name}`, dropRelease:'Drop to attach', dropWebTitle:'Add anything', dropWebHint:'Drop any file here to add it to the conversation', fileTooLarge:'The file exceeds the 20 MB attachment limit and cannot be added', archiveTooManyEntries:'The archive contains more than 50 entries and cannot be added', archiveExpandedTooLarge:'The archive expands beyond 100 MB and cannot be added', archiveUnsafeEntry:'The archive contains unsafe links or paths and cannot be added' },
         uiCodex: codexEn,
         uiAcpProviders: acpProvidersEn,
+        uiProjects: { convertToProject:'Convert to project', projectNamePlaceholder:'Project name', renameProject:'Rename project', deleteProject:'Delete project', deleteConfirmLabel:'Delete this project?', deleteProjectHint:'Conversations are kept and return to ungrouped', moveToProject:'Move to project…', moveOut:'Remove from project', moveToUngrouped:'Move to ungrouped', temporaryBadge:'Temporary workspace', folderUnavailable:'Folder unavailable', rebindFolder:'Rebind', addFolderTitle:'Add folder to project?', addFolderBody:folder=>`The project will include folder ${folder}; new sessions created there will join this project automatically.`, searchPlaceholder:'Search projects', noProjects:'No projects yet', ungrouped:'Ungrouped', currentProject:'Current project', movedNotice:'Conversation moved', opFailed:'Project operation failed' },
 
         uiCodexWorkspace: { changes:{added:'Added',modified:'Modified',deleted:'Deleted',renamed:'Renamed',copied:'Copied',conflict:'Conflict',untracked:'Untracked',unknown:'File'}, origins:{session:'This session',preexisting:'Existed before session',preexisting_modified:'Existed before session · modified in this session',unknown:'Source not recorded'}, addedPath:path=>`Added ${path}`, addPath:path=>`Add ${path} to conversation`, added:'Added to conversation', add:'Add to conversation', back:'Back to workspace list', copyPath:'Copy relative path', reveal:'Show in file manager', open:'Open with system application', reading:'Reading…', noDiff:'No text diff to display', tooLarge:'The file is too large for an embedded preview.', unsupported:'This file does not support embedded preview.', openHint:'You can open it with a system application.', truncated:'Content is too large; only the beginning is shown.', resize:'Resize workspace', resizeHint:'Drag to resize; double-click to restore default', title:'Workspace', temporary:'Temporary workspace', refresh:'Refresh workspace', close:'Close workspace', files:'Files', changed:'Changes', search:'Search files', noFiles:'No matching files', noBaseline:'This older session has no creation baseline, so changes made by this session cannot be determined.', branch:'Branch', staged:'Staged', noChanges:'No workspace changes', copyContent:'Copy content', copied:'Copied', closeViewer:'Close preview', loadFailed:'Failed to load file', resizeWidth:'Resize viewer width', resizeHeight:'Resize viewer height', resizeCorner:'Resize viewer; double-click to restore default', fontDecrease:'Decrease font size', fontIncrease:'Increase font size', openInNewWindow:'Open in code reader', diffSuffix:'(diff)', readerTitle:'Code Reader', readerEmpty:'Choose "Open in code reader" from a workspace file preview; files accumulate here as tabs.', closeTab:'Close tab', noSessionChanges:'Once a session is created, changes made by the session will be listed here.' },
 
@@ -406,7 +407,7 @@ export const dictEn = {
         feedbackAttachmentHint: 'Supports png, jpg, jpeg, gif, webp, mp4, mov, webm; up to 5 files.',
         feedbackPrivacy: 'This sends your text, selected files, and non-sensitive app context. Chats and keys are not attached automatically.',
         feedbackSubmit: 'Submit', feedbackSubmitting: 'Submitting…', feedbackSubmitted: 'Feedback submitted. Thank you.',
-        feedbackRetry: 'Retry', feedbackCloseConfirm: 'Feedback draft has not been submitted. Close it?',
+        feedbackRetry: 'Retry', feedbackCloseConfirm: 'Feedback draft has not been submitted. Close it?', feedbackCloseAnyway: 'Close anyway',
         feedbackBodyRequired: 'Please enter feedback details.', feedbackUnsupportedFile: 'Unsupported attachment format.',
         feedbackTooManyFiles: 'You can attach up to 5 files.', feedbackPickUnavailable: 'File picker is unavailable.',
         chatGreeting: 'Hi — what would you like to work on today?', artifacts: 'Artifacts', placeholder: 'Ask PINVOU or enter a command', disclaimer: 'PINVOU may display inaccurate info, so double-check.', ctxUsage: 'Context',
@@ -463,7 +464,7 @@ export const dictEn = {
         cpDescLabel: 'Description',
         cpEquipBubbleNote: "Full capability profile injected — the AI will handle following tasks with this expert's methodology.",
         cpTargetMarkTitle: 'Equip target · experts picked in the card deck are injected into this chat',
-        riGenerating: 'Generating…', riDelQ: 'Delete?', riDelConfirm: 'Confirm delete', riRename: 'Rename', riPin: 'Pin', riUnpin: 'Unpin', riOpenFolder: 'Open folder', riAwaitingInput: 'Awaiting your input',
+        riGenerating: 'Generating…', riDelQ: 'Delete?', riDelConfirm: 'Confirm delete', riRename: 'Rename', riPin: 'Pin', riUnpin: 'Unpin', riOpenFolder: 'Open folder', riAwaitingInput: 'Awaiting your input', riMore: 'More',
         // —— Chat & global chrome ——
         appTitle: 'PINVOU AI Assistant (Beta)', winMin: 'Minimize', winMax: 'Maximize', winClose: 'Close',
         sidebarCollapse: 'Collapse sidebar', sidebarExpand: 'Expand sidebar',
@@ -952,6 +953,8 @@ Object.assign(dictEn, {
 dictEn.uiSettingsDetail.memoryLoadFailed = 'Failed to load memory profile. Please try again.';
 
 dictEn.uiSettingsDetail.memorySaveFailed = 'Failed to save memory profile. Please try again.';
+
+dictEn.uiSettingsDetail.memoryDeleteFailed = 'Failed to delete memory. Please try again.';
 
 dictEn.uiSettingsDetail.memorySourceUnavailable = 'Some memory sources are temporarily unavailable. The last successfully loaded content is preserved.';
 
