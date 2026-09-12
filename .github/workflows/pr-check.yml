@@ -204,6 +204,9 @@ jobs:
               - 'VERSION'
               - 'scripts/sync-version.mjs'
               - 'scripts/check-linux-glibc-floor.sh'
+              - 'scripts/check-linux-elf-policy.sh'
+              - 'scripts/asr/build-sensevoice-runtime.sh'
+              - 'scripts/asr/sensevoice-source.env'
               - 'scripts/tests/sync-version.test.mjs'
               - 'scripts/tests/test_ci_gate_policy.py'
               - 'scripts/tests/test_release_arm64_policy.py'
@@ -224,6 +227,7 @@ jobs:
               - 'pinvou3-app/tests/knowledge_host_packaging.test.mjs'
               - 'pinvou3-app/tests/codex_acp_windows_*'
               - 'pinvou3-app/tests/windows_runtime_packaging_contract.test.js'
+              - 'pinvou3-app/tests/linux_asr_runtime_packaging.test.js'
               - 'pinvou3-app/tests/macos_phase2_contract.test.js'
             pet:
               - 'pinvou3-app/src/assets/pet/**'
@@ -546,6 +550,7 @@ jobs:
           npm --prefix pinvou3-app run test:tauri-effective-config
           npm --prefix pinvou3-app run test:macos-phase2
           npm --prefix pinvou3-app run test:knowledge-host-packaging
+          npm --prefix pinvou3-app run test:linux-asr-runtime
 
   # pinvou-knowledge 是可单独部署的 crate，必须直接验证自己的默认 feature 图、
   # 测试与部署入口，而不只依赖 Tauri 作为 client-only path dependency 的间接编译。

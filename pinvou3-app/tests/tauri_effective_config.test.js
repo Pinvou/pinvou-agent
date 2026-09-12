@@ -187,12 +187,13 @@ assert.doesNotThrow(() => requireWrapper({ [WRAPPER_ENV]: "1" }));
 const linuxStartupOverlay = linuxStartupWindowConfigSpec();
 const buildArgs = prepareTauriArgs(
   ["--verbose", "build", "--bundles", "deb"],
-  { platform: "linux" },
+  { platform: "linux", architecture: "x64" },
 );
 assert.equal(tauriCommandIndex(buildArgs), 1, "build command may follow global options");
 assert.deepEqual(configSpecs(buildArgs), [
   platformConfigPath("linux"),
   linuxStartupOverlay,
+  platformArchitectureConfigPath("linux", "x64"),
 ]);
 const linuxArmArgs = prepareTauriArgs(
   ["build", "--bundles", "deb"],
@@ -201,6 +202,7 @@ const linuxArmArgs = prepareTauriArgs(
 assert.deepEqual(configSpecs(linuxArmArgs), [
   platformConfigPath("linux"),
   linuxStartupOverlay,
+  platformArchitectureConfigPath("linux", "arm64"),
 ]);
 
 const explicitOverlay = "custom-signing.json";
@@ -420,7 +422,14 @@ assert.ok(
   "Linux resource manifest must exclude chrome-devtools-mcp",
 );
 
-assert.equal(platformArchitectureConfigPath("linux", "arm64"), null);
+assert.match(
+  platformArchitectureConfigPath("linux", "x64").replaceAll("\\", "/"),
+  /platforms\/linux\/x86_64\/tauri\.conf\.json$/u,
+);
+assert.match(
+  platformArchitectureConfigPath("linux", "arm64").replaceAll("\\", "/"),
+  /platforms\/linux\/aarch64\/tauri\.conf\.json$/u,
+);
 
 const linuxDev = composeEffectiveConfig([linuxStartupOverlay]).effectiveConfig;
 assert.equal(linuxDev.app.windows[0].visible, false);

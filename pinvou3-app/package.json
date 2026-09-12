@@ -113,6 +113,7 @@
     "test:acp-providers-ui": "node tests/acp_providers_ui_smoke.js",
     "test:kb-smoke": "node tests/kb_smoke.js",
     "test:knowledge-host-packaging": "node --test tests/knowledge_host_packaging.test.mjs",
+    "test:linux-asr-runtime": "node tests/linux_asr_runtime_packaging.test.js",
     "test:composer-tools-smoke": "node tests/composer_tools_smoke.js",
     "test:composer-pending-enable-smoke": "node tests/composer_pending_enable_smoke.js",
     "test:tool-store": "node tests/tool_store_smoke.js",
