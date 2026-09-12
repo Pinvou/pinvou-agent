@@ -1,10 +1,10 @@
 //! `voice` family: local ASR status/transcription/install and voice
 //! post-processing, mirroring `pinvou3-app/src-tauri/src/app/commands/voice.rs`.
 //!
-//! Visibility disclosure: the entire `pinvou3_lib::features::voice` surface
-//! (status, engine transcription, transcript parsing, platform adapters) is
-//! `pub(crate)` to the app crate, so the CLI *mirrors* its semantics over the
-//! exact same paths and environment variables instead of calling it:
+//! Visibility disclosure: most of the `pinvou3_lib::features::voice` surface
+//! (status, engine transcription, platform adapters) is `pub(crate)` to the
+//! app crate, so the CLI *mirrors* its semantics over the exact same paths
+//! and environment variables instead of calling it:
 //! - data root `$PINVOU3_HOME/asr` (`features::voice::voice_asr::asr_dir`),
 //!   engine binary per platform adapter (`sense-voice-main` on Linux,
 //!   `pinvou-asr` elsewhere), model `sense-voice-small-q4_k.gguf` (Linux/
@@ -16,10 +16,9 @@
 //! - the app verifies downloaded models by size **and** sha256; the CLI
 //!   mirrors both (sha256 through the shared
 //!   `platform::connector_lock::file_sha256_hex`).
-//! - the app's transcript parser (`features::voice::transcript`) handles
-//!   several engine log protocols; the CLI mirrors the common shapes (JSON
-//!   `{"text": …}` lines, `[0.00s → 2.10s] …` segments, plain final lines)
-//!   and discloses the simplification.
+//! - the app's transcript parser (`features::voice::transcript`) is shared
+//!   verbatim: the CLI calls `parse_asr_transcript` so engine protocols and
+//!   noise filters cannot drift between the two surfaces.
 //! - macOS transcription uses the system Speech framework through a
 //!   crate-private adapter; the CLI cannot reach it, so on macOS it reports
 //!   the Speech runtime as ready (same as the GUI status) but performs
@@ -855,87 +854,13 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
     })
 }
 
-/// Mirror of `features::voice::transcript::parse_asr_transcript` (JSON
-/// `{"text": …}` lines, `[0.00s → 2.10s] …` timestamped segments, and plain
-/// final text lines; the last usable line wins, stdout preferred over
-/// stderr) including the GUI's log/status line filters, so engine noise like
-/// `system_info: …` or `Done in 3.2s` is never returned as the transcript.
+/// The GUI's transcript parser, shared verbatim: JSON `{"text": …}` lines,
+/// `[0.00s → 2.10s] …` timestamped segments (all segments are joined, in
+/// order, like the GUI), and plain final text lines, with the GUI's log and
+/// status filters so engine noise like `system_info: …` or `Done in 3.2s` is
+/// never returned as the transcript.
 fn extract_transcript(stdout: &str, stderr: &str) -> Option<String> {
-    let usable = |text: &str| text.chars().any(|ch| ch.is_alphanumeric());
-    let clean = |line: &str| -> Option<String> {
-        let line = line.trim();
-        if line.is_empty() {
-            return None;
-        }
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
-            if let Some(text) = value.get("text").and_then(|text| text.as_str()) {
-                return usable(text).then(|| text.trim().to_owned());
-            }
-            return None;
-        }
-        // Timestamped segment shapes ("[0.00s -> 2.10s] text" /
-        // "[00:00.000 --> 00:02.100] text") are recognized before the log
-        // filters — the GUI parses segments first for the same reason.
-        let bracket = line.starts_with('[');
-        let stamp_end = line.find(']');
-        let is_segment = bracket
-            && stamp_end
-                .map(|end| line[..end].contains("->"))
-                .unwrap_or(false);
-        if !is_segment && (looks_like_log_line(line) || looks_like_plain_status(line)) {
-            return None;
-        }
-        let without_time = if bracket {
-            stamp_end.map(|end| line[end + 1..].trim()).unwrap_or(line)
-        } else {
-            line
-        };
-        let candidate = without_time.trim();
-        if candidate.is_empty() || candidate.contains("-->") {
-            return None;
-        }
-        usable(candidate).then(|| candidate.to_owned())
-    };
-    for stream in [stdout, stderr] {
-        for line in stream.lines().rev() {
-            if let Some(text) = clean(line) {
-                return Some(text);
-            }
-        }
-    }
-    None
-}
-
-/// Simplified port of `transcript::looks_like_log_line`: engine/runtime noise
-/// that must never surface as recognized speech.
-fn looks_like_log_line(line: &str) -> bool {
-    let lower = line.to_ascii_lowercase();
-    lower.contains("error")
-        || lower.contains("warning")
-        || lower.contains("paddlespeech")
-        || lower.contains("sensevoice")
-        || lower.contains("funasr")
-        || lower.contains("gguf")
-        || lower.contains("python")
-        || lower.contains("download")
-        || lower == "done"
-        || lower.starts_with("done in ")
-        || (lower.starts_with("using ") && lower.contains("thread"))
-        || lower.starts_with("system_info")
-        || lower.starts_with('[')
-}
-
-/// Simplified port of `transcript::looks_like_plain_status`: progress /
-/// loading / subtitle-timing shapes.
-fn looks_like_plain_status(line: &str) -> bool {
-    let trimmed = line.trim().trim_matches(['[', ']', '(', ')']);
-    let lower = trimmed.to_ascii_lowercase();
-    ["progress:", "progress ", "loading:", "loading ", "processed:", "processed "]
-        .iter()
-        .any(|prefix| lower.starts_with(prefix))
-        // Subtitle timing: "00:00:01,000 --> 00:00:04,000" (already excluded
-        // by the --> check for candidates, but the raw line itself is status).
-        || lower.contains("-->")
+    pinvou3_lib::features::voice::transcript::parse_asr_transcript(stdout, stderr)
 }
 
 // ─────────────────────────── postprocess ───────────────────────────────────
@@ -1508,11 +1433,24 @@ mod transcript_tests {
     use super::*;
 
     #[test]
-    fn extract_transcript_prefers_the_last_usable_line() {
-        let stdout = "loading model\nsystem_info: n_threads = 4\nhello world\n";
+    fn extract_transcript_joins_all_timed_segments_in_order() {
+        // The bundled SenseVoice protocol emits one line per timed segment;
+        // the transcript is every segment joined, not just the final one.
         assert_eq!(
-            extract_transcript(stdout, ""),
-            Some("hello world".to_owned())
+            extract_transcript("[0.00-0.50] hello\n[0.50-1.00] wide world\n", ""),
+            Some("hello wide world".to_owned())
+        );
+        assert_eq!(
+            extract_transcript("[0.00-0.50] １２\n[0.50-1.00] ３\n", ""),
+            Some("１２３".to_owned())
+        );
+    }
+
+    #[test]
+    fn extract_transcript_strips_sensevoice_control_markers() {
+        assert_eq!(
+            extract_transcript("[0.00-0.50] <|zh|><|NEUTRAL|>你好\n", ""),
+            Some("你好".to_owned())
         );
     }
 
@@ -1521,13 +1459,19 @@ mod transcript_tests {
         // Trailing engine summary / progress lines must not become the
         // transcript (the GUI filters these shapes in the same lane).
         assert_eq!(extract_transcript("done in 3.2s", ""), None);
-        assert_eq!(extract_transcript("system_info: n_threads = 4", ""), None);
+        assert_eq!(extract_transcript("using 4 threads", ""), None);
         assert_eq!(extract_transcript("loading: model.safetensors", ""), None);
         assert_eq!(
             extract_transcript("00:00:01,000 --> 00:00:04,000", ""),
             None
         );
         assert_eq!(extract_transcript("[ffmpeg] download complete", ""), None);
+        assert_eq!(extract_transcript("progress: 50", ""), None);
+        // A JSON log object is diagnostics even when it carries a text field.
+        assert_eq!(
+            extract_transcript("{\"level\":\"info\",\"text\":\"loading\"}", ""),
+            None
+        );
     }
 
     #[test]
@@ -1537,7 +1481,7 @@ mod transcript_tests {
             Some("你好世界".to_owned())
         );
         assert_eq!(
-            extract_transcript("[0.00s -> 2.10s] recognized words", ""),
+            extract_transcript("[0.00-2.10] recognized words", ""),
             Some("recognized words".to_owned())
         );
     }
