@@ -418,15 +418,35 @@ fn option<'a>(options: &'a [(&'a str, &'a str)], name: &str) -> Option<&'a str> 
 
 // ─────────────────────── vendor CLI subprocess helpers ───────────────────────
 
-/// Resolves the vendor CLI executable: the managed assets install first (the
-/// public single resolution entry `locked_cli_path` — what `ensure-cli`
-/// installs and what the GUI installs both live there), then PATH with the
-/// platform binary-name candidates. Without this, the CLI could never execute
-/// what `ensure-cli` itself installs.
+/// Resolves the vendor CLI executable in the GUI's per-platform order
+/// (`connector_cli_program` / `windows_npm_shim`): the managed assets install
+/// (`locked_cli_path` — what `ensure-cli` installs and what the GUI installs
+/// both live there), the legacy managed bin dir, the npm global prefixes
+/// `npm install -g` writes into (where a GUI-installed tmeet lands), and only
+/// then PATH with the platform binary-name candidates. Skipping the npm
+/// prefixes would make CLI-installed and GUI-installed npm CLIs invisible to
+/// each other.
 fn resolve_vendor_cli(spec: &VendorSpec) -> Option<PathBuf> {
     if let Some(path) = locked_cli_path(spec.cli_bin) {
         if path.is_file() {
             return Some(path);
+        }
+    }
+    if let Some(bin_dir) = pinvou3_lib::platform::paths::managed_connector_bin_dir() {
+        let candidate = if cfg!(windows) {
+            bin_dir.join(pinvou3_lib::platform::connector_lock::executable_name(
+                spec.cli_bin,
+            ))
+        } else {
+            bin_dir.join(&spec.cli_bin)
+        };
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    for candidate in npm_prefix_candidates(spec.cli_bin) {
+        if candidate.is_file() {
+            return Some(candidate);
         }
     }
     let path = std::env::var_os("PATH")?;
@@ -434,6 +454,95 @@ fn resolve_vendor_cli(spec: &VendorSpec) -> Option<PathBuf> {
     std::env::split_paths(&path)
         .flat_map(|dir| candidates.iter().map(move |candidate| dir.join(candidate)))
         .find(|candidate| candidate.is_file())
+}
+
+/// The npm global prefixes a GUI/CLI `npm install -g` writes binaries into,
+/// in the GUI's order: `$NPM_CONFIG_PREFIX`/`npm_config_prefix` first, then
+/// the platform default prefix (`~/.npm-global` on Unix, `%APPDATA%\npm` on
+/// Windows), plus the GUI's `~/.local/bin` Unix candidate. Unix layout is
+/// `<prefix>/bin/<program>`; Windows npm shims live at the prefix root.
+fn npm_prefix_candidates(program: &str) -> Vec<PathBuf> {
+    let mut prefixes: Vec<PathBuf> = Vec::new();
+    for key in ["NPM_CONFIG_PREFIX", "npm_config_prefix"] {
+        if let Some(prefix) = std::env::var_os(key) {
+            let prefix = PathBuf::from(&prefix);
+            if !prefix.as_os_str().is_empty() && !prefixes.contains(&prefix) {
+                prefixes.push(prefix);
+            }
+        }
+    }
+    let default_prefix = if cfg!(windows) {
+        std::env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join("npm"))
+    } else {
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".npm-global"))
+    };
+    if let Some(prefix) = default_prefix {
+        if !prefixes.contains(&prefix) {
+            prefixes.push(prefix);
+        }
+    }
+    let mut candidates = Vec::new();
+    for prefix in &prefixes {
+        if cfg!(windows) {
+            candidates.push(prefix.join(format!("{program}.cmd")));
+        } else {
+            candidates.push(prefix.join("bin").join(program));
+        }
+    }
+    if !cfg!(windows) {
+        if let Some(home) = std::env::var_os("HOME") {
+            candidates.push(PathBuf::from(home).join(".local").join("bin").join(program));
+        }
+    }
+    candidates
+}
+
+/// Mirrors the GUI's `apply_user_npm_prefix`: an `npm install -g` without an
+/// explicit prefix writes into the global npm prefix (`/usr/local` on stock
+/// macOS), which fails without sudo. Default the prefix to the user-writable
+/// `~/.npm-global` (Unix) / `%APPDATA%\npm` (Windows, with a local npm cache)
+/// and prepend its bin directory to the child's PATH.
+fn apply_user_npm_prefix(cmd: &mut std::process::Command) {
+    let prefix_from_env = ["NPM_CONFIG_PREFIX", "npm_config_prefix"]
+        .into_iter()
+        .find_map(std::env::var_os)
+        .filter(|value| !value.is_empty());
+    let prefix = prefix_from_env.clone().map(PathBuf::from).or_else(|| {
+        if cfg!(windows) {
+            std::env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join("npm"))
+        } else {
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".npm-global"))
+        }
+    });
+    let Some(prefix) = prefix else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&prefix);
+    if prefix_from_env.is_none() {
+        cmd.env("NPM_CONFIG_PREFIX", &prefix)
+            .env("npm_config_prefix", &prefix);
+    }
+    if cfg!(windows) {
+        // The GUI also keeps npm's cache out of the shared default on
+        // Windows (npm otherwise writes to the roaming profile).
+        if std::env::var_os("NPM_CONFIG_CACHE").is_none()
+            && std::env::var_os("npm_config_cache").is_none()
+        {
+            if let Some(cache) = std::env::var_os("LOCALAPPDATA") {
+                let cache = PathBuf::from(cache).join("pinvou3").join("npm-cache");
+                let _ = std::fs::create_dir_all(&cache);
+                cmd.env("NPM_CONFIG_CACHE", &cache)
+                    .env("npm_config_cache", &cache);
+            }
+        }
+    }
+    let mut paths = vec![prefix];
+    if let Some(current) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&current));
+    }
+    if let Ok(joined) = std::env::join_paths(&paths) {
+        cmd.env("PATH", joined);
+    }
 }
 
 /// Upper bound for one status/version probe (the GUI has no timeout here, but
@@ -1216,6 +1325,10 @@ fn run_npm_install(spec: &VendorSpec) -> Result<bool, CliError> {
         .ok_or_else(|| CliError::failed("npm was not found on PATH; install Node.js first"))?;
     let mut cmd = crate::support::build_command(&npm, &["install", "-g", TMEET_NPM_SPEC]);
     crate::support::set_process_group(&mut cmd);
+    // The GUI's tmeet install applies the user npm prefix (the shared
+    // apply_user_npm_prefix helper), so `ensure-cli tmeet` must not try to
+    // write /usr/local without sudo.
+    apply_user_npm_prefix(&mut cmd);
     for (key, value) in spec.envs {
         cmd.env(key, value);
     }
