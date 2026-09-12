@@ -81,10 +81,15 @@
 //! `scan start`. Every CLI invocation constructs the service fresh; read-only
 //! commands open it WITHOUT the GUI's startup recovery, so inspecting the
 //! store cannot degrade an import a live desktop-app process is still
-//! running, while the write/maintenance commands (scan start, collection
-//! mutations, resume/retry/cancel) keep recovery: a job orphaned by a killed
-//! process is recovered to interrupted/resumable, which `index resume`
-//! re-arms. Because a one-shot
+//! running. The write/maintenance commands (scan start, collection
+//! mutations, add-sources, resume/retry/cancel) keep recovery, which
+//! converts `preparing`/`running` jobs to interrupted/resumable — including
+//! a job that a live desktop-app process is executing RIGHT NOW (there is
+//! no cross-process owner heartbeat in the job store). Recovery itself is
+//! transaction-safe (per-item staged-chunk checkpoints, so no index
+//! corruption and no duplicated work), but it wedges the app's live job
+//! into interrupted and needs a manual `index resume`; do not run CLI
+//! write commands while the desktop app is mid-import. Because a one-shot
 //! process kills its background thread at exit, `add-sources`/`resume`/
 //! `retry` only make progress while the process lives — completing a large
 //! import needs the desktop app (or a future long-lived daemon); the CLI
@@ -809,7 +814,13 @@ fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, C
     let service = open_service_recovering()?;
     let roots = vec![root.unwrap_or_else(pinvou3_lib::platform::paths::user_home_dir)];
     let state = service.start_scan(roots);
-    scan_out("scan started", state, output)
+    // Same process-local disclosure as `scan cancel`: the scan thread dies
+    // with this process, so the printed progress is the whole story.
+    scan_out(
+        "scan started (process-local: progress is only live inside this invocation)",
+        state,
+        output,
+    )
 }
 
 fn scan_status(output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -1103,6 +1114,19 @@ fn collections_update(
 /// delete it, then clear every session mount.
 fn collections_delete(id: i64, output: OutputMode) -> Result<CliOutcome, CliError> {
     let service = open_service_recovering()?;
+    // `delete_collection` is plain DELETEs and succeeds for unknown ids
+    // (0 rows affected); like `update`/`add-sources`, an existence check
+    // turns the silent no-op into an honest error instead of a false
+    // "deleted collection 999".
+    match service.l1().collection_name(id) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return Err(CliError::failed(format!(
+                "knowledge collections delete: collection {id} not found"
+            )));
+        }
+        Err(error) => return Err(feature_error("collections delete", error)),
+    }
     service
         .cancel_index_for_collection(id)
         .map_err(|error| feature_error("collections delete", error))?;
@@ -1110,11 +1134,20 @@ fn collections_delete(id: i64, output: OutputMode) -> Result<CliOutcome, CliErro
         .l1()
         .delete_collection(id)
         .map_err(|error| feature_error("collections delete", error))?;
+    // The mount table lives in the app's in-process session memory, so this
+    // store-level sweep is empty in a one-shot CLI process; mounted
+    // collections in a running desktop app are cleaned up on its next mode
+    // load, not here.
     let store = open_store()?;
     let unmounted = store.remove_mounted_collection_from_all(id);
     let mut human = format!("deleted collection {id}");
     if !unmounted.is_empty() {
         human.push_str(&format!("\nunmounted from {} session(s)", unmounted.len()));
+    } else {
+        human.push_str(
+            "\nnote: mounts held in a running desktop app session are unaffected by this \
+             process",
+        );
     }
     Ok(success(render(
         output,
@@ -1145,13 +1178,18 @@ fn collections_add_sources(
     }
     let state = service.start_index(id, paths);
     // Upstream quirk: any resumable job short-circuits start_index and the
-    // requested sources are silently dropped. Reporting the unrelated job as
-    // success would hide files that were never enqueued.
-    if state.collection_id != id {
+    // requested sources are silently dropped — a fresh job reports
+    // preparing/running with resumable=false, so resumable here always
+    // means a PRE-EXISTING job won. Reporting it as success would hide
+    // files that were never enqueued, for a different collection and for
+    // this one alike (the one-shot CLI process leaves its previous job
+    // interrupted, so a plain second add-sources hits exactly this).
+    if state.resumable || state.collection_id != id {
         return Err(CliError::failed(format!(
             "knowledge collections add-sources: an unfinished index job for collection {} \
-             blocks collection {id} (check `pinvou knowledge index status`, resume or cancel \
-             it first)",
+             blocks collection {id} and the requested sources were NOT enqueued (check \
+             `pinvoy knowledge index status`, resume or cancel it first, then re-run this \
+             command)",
             state.collection_id
         )));
     }
@@ -1258,10 +1296,17 @@ fn index_cancel(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError
         .cancel_index()
         .map_err(|error| feature_error("index cancel", error))?;
     let state = service.index_status();
-    let human = format!(
-        "index cancel signalled for job {job_id}\n{}",
-        render_index_state(&state)
-    );
+    // A finished job (done/cancelled) takes the same cancel call, but
+    // nothing was signalled — say so instead of claiming a signal landed.
+    let header = if state.running {
+        format!("index cancel signalled for job {job_id}")
+    } else {
+        format!(
+            "index cancel: job {job_id} is not active (phase: {}); nothing was signalled",
+            state.phase
+        )
+    };
+    let human = format!("{header}\n{}", render_index_state(&state));
     let value = serde_json::to_value(&state).unwrap_or_default();
     Ok(success(render(output, human, &value)))
 }

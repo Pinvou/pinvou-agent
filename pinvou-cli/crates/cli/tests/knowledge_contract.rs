@@ -704,6 +704,89 @@ fn add_sources_indexes_a_text_file_end_to_end() {
     assert_eq!(error.exit_code(), ExitCode::Failed);
 }
 
+/// A second `add-sources` behind an unfinished job for the SAME collection
+/// must refuse instead of reporting the stale job as success: the one-shot
+/// CLI process exits right after printing, which leaves its import job
+/// mid-flight, and the next invocation's startup recovery turns that job
+/// `interrupted` (= resumable) — exactly the upstream short-circuit that
+/// silently drops the newly requested sources. Driven through the real
+/// binary because the in-process helpers keep the import thread alive and
+/// would complete the first job instead of stranding it.
+#[test]
+fn add_sources_refuses_to_drop_sources_behind_a_resumable_job() {
+    let bin = env!("CARGO_BIN_EXE_pinvou");
+    let root = std::env::temp_dir().join(format!(
+        "pinvou-cli-knowledge-resumable-guard-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let run = |args: &[&str]| {
+        let mut command = std::process::Command::new(bin);
+        command
+            .args(args)
+            .env("PINVOU3_HOME", &root)
+            .env("PINVOU_NO_COLOR", "1");
+        command.output().expect("binary runs")
+    };
+    let created = run(&[
+        "knowledge",
+        "collections",
+        "create",
+        "--name",
+        "guarded",
+        "--output",
+        "json",
+    ]);
+    assert!(created.status.success(), "{created:?}");
+    let created: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let id = created["id"].as_i64().expect("created collection id");
+
+    let first = root.join("first.txt");
+    std::fs::write(
+        &first,
+        "Pinvou knowledge guards the first enqueued source.".repeat(64),
+    )
+    .unwrap();
+    let second = root.join("second.txt");
+    std::fs::write(
+        &second,
+        "Pinvou knowledge must not silently drop this source.",
+    )
+    .unwrap();
+
+    let started = run(&[
+        "knowledge",
+        "collections",
+        "add-sources",
+        &id.to_string(),
+        first.to_str().unwrap(),
+        "--output",
+        "json",
+    ]);
+    assert!(started.status.success(), "{started:?}");
+
+    // The one-shot process of the first add-sources killed its import
+    // thread mid-flight; this invocation's recovery marks the job
+    // resumable, so the second batch must be refused loudly — the stale
+    // "success" used to hide files that were never enqueued.
+    let blocked = run(&[
+        "knowledge",
+        "collections",
+        "add-sources",
+        &id.to_string(),
+        second.to_str().unwrap(),
+    ]);
+    assert!(!blocked.status.success(), "second add-sources must fail");
+    let stderr = String::from_utf8_lossy(&blocked.stderr);
+    assert!(stderr.contains("NOT enqueued"), "{stderr}");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// The scan state is in-process, but its completion marker
 /// (`last_scan_finished_at`) persists in `index.db` — so `scan status` from a
 /// fresh CLI invocation converges to `done` once the background scan thread
