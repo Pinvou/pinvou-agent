@@ -1106,6 +1106,21 @@ fn recycle_export(
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     let dest = destination.unwrap_or_else(|| default_export_name(id));
+    // Existence first (same ordering as `export`): creating the destination
+    // directory for an unknown id would leave an empty tree behind on the
+    // failure path.
+    let known = recycle_bin::RecycleBin::new()
+        .list()
+        .map_err(|error| feature_error("recycle export", id, error))?
+        .iter()
+        .any(|entry| entry.id == id);
+    if !known {
+        return Err(feature_error(
+            "recycle export",
+            id,
+            format!("recycled package '{id}' does not exist"),
+        ));
+    }
     if let Some(parent) = dest.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent).map_err(|error| {

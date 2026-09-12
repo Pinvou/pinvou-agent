@@ -577,11 +577,19 @@ fn memory_organize_history_is_empty_on_fresh_state() {
 /// Linux) and a configured, active model. Default tests never call the host or
 /// a model (AGENTS.md rule); the wiring itself is intentionally not invoked
 /// here — run the real command manually to exercise it.
-#[ignore = "requires a display (xvfb) and a configured model; run `pinvou memory organize` instead"]
 #[test]
-fn memory_organize_is_the_opt_in_host_and_model_path() {
-    // No host invocation in tests. This body only documents the contract; the
-    // parse-level tests above prove `memory organize` parses and dispatches.
+fn memory_organize_refuses_when_memory_is_disabled() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("organize-disabled");
+    // Memory is disabled in a fresh home, so the refusal fires before any
+    // host boot (display and model remain the opt-in part exercised
+    // manually); this pins the honest error instead of a vacuous pass.
+    let error = expect_usage_error(&["pinvou", "memory", "organize"]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("memory_organize_disabled"),
+        "{error}"
+    );
 }
 
 #[test]

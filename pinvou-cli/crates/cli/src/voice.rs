@@ -430,7 +430,7 @@ fn asr_status(output: OutputMode) -> Result<CliOutcome, CliError> {
 fn asr_install(output: OutputMode) -> Result<CliOutcome, CliError> {
     if !cfg!(target_os = "linux") {
         return Err(CliError::failed(
-            "voice asr-install is only supported on Linux; on Windows repair/ reinstall pinvou, \
+            "voice asr-install is only supported on Linux; on Windows repair/reinstall pinvou, \
              on macOS system speech needs no installation",
         ));
     }

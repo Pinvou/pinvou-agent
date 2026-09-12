@@ -327,7 +327,35 @@ pub fn execute(command: PersonasCommand, output: OutputMode) -> Result<CliOutcom
 }
 
 fn persona_error(context: &str, error: impl std::fmt::Display) -> CliError {
-    CliError::failed(format!("personas {context}: {error}"))
+    CliError::failed(format!(
+        "personas {context}: {}",
+        translate_persona_error(&error.to_string())
+    ))
+}
+
+/// The feature layer's error strings are Chinese (GUI copy); the CLI is an
+/// English tool, so the known messages are translated at this boundary and
+/// anything unrecognized passes through unchanged rather than being dropped.
+fn translate_persona_error(message: &str) -> String {
+    match message {
+        "只能删除自制卡" => "only self-made personas can be deleted".to_owned(),
+        "只能编辑自制卡" => "only self-made personas can be edited".to_owned(),
+        "卡牌名称不能为空" => "the persona name must not be empty".to_owned(),
+        "卡牌不存在" => "the persona does not exist".to_owned(),
+        other => {
+            for (prefix, english) in [
+                ("非法卡 id: ", "invalid persona id: "),
+                ("建目录失败: ", "cannot create the personas directory: "),
+                ("序列化失败: ", "cannot serialize the persona: "),
+                ("写卡失败: ", "cannot write the persona: "),
+            ] {
+                if let Some(rest) = other.strip_prefix(prefix) {
+                    return format!("{english}{rest}");
+                }
+            }
+            other.to_owned()
+        }
+    }
 }
 
 fn list(source: SourceFilter, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -453,10 +481,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
 /// `[A-Za-z0-9_-]` restriction the sessions family enforces before any path
 /// use; anything else is a usage error, never a traversal.
 fn valid_session_id(id: &str) -> bool {
-    !id.is_empty()
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    crate::support::valid_session_id(id)
 }
 
 /// Per-session equip state file; see the module-level equip-state note for
@@ -544,7 +569,7 @@ fn equip(session_id: &str, persona_id: &str, output: OutputMode) -> Result<CliOu
     value["session_id"] = serde_json::json!(session_id);
     value["applies_to_next_turn"] = serde_json::json!(false);
     value["note"] = serde_json::json!(
-        "equip state is recorded on the session sidecar; persona injection into turns happens          only inside the running desktop app — equip the session there for live injection"
+        "equip state is recorded on the session sidecar; persona injection into turns happen only inside the running desktop app — equip the session there for live injection"
     );
     Ok(success(render(
         output,
@@ -613,12 +638,26 @@ fn read_body(source: &BodySource, subcommand: &str) -> Result<String, CliError> 
             ))
         })?,
         BodySource::Stdin => {
+            // Bounded read: unbounded stdin (`yes | ...`) would exhaust
+            // memory before any validation ran. Reading one byte past the
+            // cap distinguishes "at the cap" from "over it".
+            const MAX_BODY_BYTES: u64 = 4 * 1024 * 1024;
             let mut content = String::new();
-            std::io::Read::read_to_string(&mut std::io::stdin(), &mut content).map_err(
-                |error| {
-                    CliError::failed(format!("personas {subcommand}: cannot read stdin: {error}"))
-                },
-            )?;
+            let stdin = std::io::stdin();
+            let mut handle = stdin.lock();
+            if let Err(error) = std::io::Read::read_to_string(
+                &mut std::io::Read::take(&mut handle, MAX_BODY_BYTES + 1),
+                &mut content,
+            ) {
+                return Err(CliError::failed(format!(
+                    "personas {subcommand}: cannot read stdin: {error}"
+                )));
+            }
+            if content.len() as u64 > MAX_BODY_BYTES {
+                return Err(CliError::usage(format!(
+                    "personas {subcommand}: the persona body exceeds the 4 MiB stdin limit"
+                )));
+            }
             content
         }
     };

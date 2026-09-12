@@ -199,9 +199,12 @@ fn parse_preset(raw: &str) -> Result<ModelPreset, CliError> {
 
 fn parse_reasoning_effort(raw: &str) -> Result<String, CliError> {
     match raw {
-        "off" | "low" | "medium" | "high" | "max" => Ok(raw.to_owned()),
+        // `auto` is a value the GUI can legitimately hold (the prefs
+        // normalizer maps automatic/auto to "auto"); rejecting it would make
+        // GUI-created configurations unrepresentable from the CLI.
+        "off" | "low" | "medium" | "high" | "max" | "auto" | "automatic" => Ok(raw.to_owned()),
         other => Err(CliError::usage(format!(
-            "invalid reasoning effort {other:?}; valid values: off, low, medium, high, max"
+            "invalid reasoning effort {other:?}; valid values: off, low, medium, high, max, auto"
         ))),
     }
 }

@@ -562,21 +562,18 @@ fn deps_check_reports_the_platform_capability_table() {
     assert!(outcome.stdout.contains("voice_asr\t"));
 }
 
-/// OPT-IN: `deps install` runs the system package manager (Linux: pkexec apt)
-/// with real root authorization. Run with: cargo test -p pinvou-cli --test
-/// misc_contract -- --ignored deps_install
+/// `deps install` refuses packages outside every platform allowlist before
+/// any system mutation (the whitelist gate precedes pkexec/brew/installer
+/// spawn on all platforms), so this execute-level refusal is hermetic and
+/// guards the install path's failure shape.
 #[test]
-#[ignore = "runs the system package manager via pkexec: cargo test --test misc_contract -- --ignored"]
-fn deps_install_runs_the_system_package_manager() {
+fn deps_install_rejects_packages_outside_the_allowlist() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("deps-install");
-    let outcome = run(&["pinvou", "deps", "install", "cowsay", "--yes"]);
-    // Already-installed or unknown-package outcomes are both valid OS-level
-    // results; the command must not exit with a usage error.
-    if let Ok(outcome) = outcome {
-        assert_eq!(outcome.exit_code, ExitCode::Success);
-        assert!(outcome.stdout.contains("Installed: cowsay"));
-    }
+    let _home = HomeGuard::new("deps-install-refusal");
+    let error = run(&["pinvou", "deps", "install", "cowsay", "--yes"])
+        .expect_err("a package outside every allowlist must fail");
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    assert!(error.to_string().contains("deps install failed"), "{error}");
 }
 
 // ── feedback ────────────────────────────────────────────────────────────────
