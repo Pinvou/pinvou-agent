@@ -277,3 +277,77 @@ test('web: 会话切回的 presentation-sync 不得被在途旧 sync 覆盖（�
   assert.equal(rt.view().activePersona && rt.view().activePersona.id, 'persona-prime',
     '在途旧 sync 的陈旧快照不得覆盖 presentation-sync 写回的权威挂件');
 });
+
+
+test('web: successful deletion clears the equipped card before pool refresh', async () => {
+  const rt = bootWebBridge();
+  await primeSessionA(rt);
+  const refresh = rt.defer('list_personas');
+  const pending = rt.personas.deletePersona('persona-prime');
+  await new Promise(resolve => { setTimeout(resolve, 0); });
+  assert.equal(rt.view().activePersona, null);
+  refresh.resolve([]);
+  await pending;
+});
+
+test('web: successful deletion clears the cached session selection', async () => {
+  const rt = bootWebBridge();
+  await primeSessionA(rt);
+  rt.leave();
+  await rt.personas.deletePersona('persona-prime');
+  const switching = rt.sessions.switchToSession('chat-a');
+  assert.equal(rt.view().activePersona, null, 'cached presentation must be clear before backend sync');
+  await switching;
+});
+
+test('web: failed deletion leaves the equipped card intact', async () => {
+  const rt = bootWebBridge();
+  await primeSessionA(rt);
+  rt.setHandler('delete_persona', () => Promise.reject(new Error('delete failed')));
+  await assert.rejects(rt.personas.deletePersona('persona-prime'), /delete failed/);
+  assert.equal(rt.view().activePersona.id, 'persona-prime');
+});
+
+test('web: late persona read cannot restore a deleted card', async () => {
+  const rt = bootWebBridge();
+  await primeSessionA(rt);
+  const get = rt.defer('get_active_persona');
+  rt.emit('session:persona_changed', { id: 'chat-a' });
+  await rt.personas.deletePersona('persona-prime');
+  get.resolve({ id: 'persona-prime', name: 'Card A' });
+  await new Promise(resolve => { setTimeout(resolve, 0); });
+  assert.equal(rt.view().activePersona, null);
+});
+
+test('web: in-flight equip cannot restore a deleted card', async () => {
+  const rt = bootWebBridge();
+  await primeSessionA(rt);
+  const equip = rt.defer('equip_persona');
+  const pending = rt.personas.equipPersona('persona-prime');
+  await rt.personas.deletePersona('persona-prime');
+  equip.resolve({ id: 'persona-prime', name: 'Card A' });
+  assert.equal(await pending, null);
+  assert.equal(rt.view().activePersona, null);
+});
+
+test('web: in-flight update cannot restore a deleted card', async () => {
+  const rt = bootWebBridge();
+  await primeSessionA(rt);
+  const update = rt.defer('update_persona');
+  const pending = rt.personas.updatePersona('persona-prime', { name: 'Updated card' });
+  await rt.personas.deletePersona('persona-prime');
+  update.resolve({ id: 'persona-prime', name: 'Updated card' });
+  assert.equal(await pending, null);
+  assert.equal(rt.view().activePersona, null);
+});
+
+
+test('web: recreated persona IDs can be equipped after deletion', async () => {
+  const rt = bootWebBridge();
+  await primeSessionA(rt);
+  await rt.personas.deletePersona('persona-prime');
+  rt.setHandler('create_persona', async () => ({ id: 'persona-prime', name: 'Card A' }));
+  await rt.personas.createPersona({ name: 'Card A' });
+  await rt.personas.equipPersona('persona-prime');
+  assert.equal(rt.view().activePersona.id, 'persona-prime');
+});

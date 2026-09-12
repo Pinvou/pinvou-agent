@@ -33,6 +33,7 @@ function loadFeature(fileName, state, contextOverrides) {
   const calls = { invoke: [] };
   const api = factory(Object.assign({
     state,
+    sessionStates: {},
     notify() { calls.notify = (calls.notify || 0) + 1; },
     bt(key) { return key; },
     addSystemItem(text) { state.chatItems.push({ type: 'system', text, id: 'sys-' + (state.chatItems.length + 1) }); },
@@ -325,4 +326,98 @@ test('equip 挂起期间 unequip 先完成：不重复播报入口捕获的旧�
   assert.equal(unequips.length, 1, '只播报一次卸下(陈旧入口 prev 会重复播报)');
   assert.equal(unequips[0].name, 'A专家');
   assert.equal(rt.state.activePersona.id, 'persona-x', '最后完成的 equip 为终态');
+});
+
+
+test('deletePersona clears matching live and cached selections after success', async () => {
+  const card = { id: 'user-a', name: 'Card A' };
+  const other = { id: 'user-b', name: 'Card B' };
+  const state = { activePersona: card, personaPool: {}, personaEvents: [{ kind: 'equip', card }] };
+  const sessionStates = { a: { activePersona: card }, b: { activePersona: other } };
+  const rt = loadFeature('personas.js', state, { sessionStates });
+  const deletion = rt.defer('delete_persona');
+  const refresh = rt.defer('list_personas');
+  const pending = rt.api.deletePersona(card.id);
+  assert.equal(state.activePersona, card, 'pending deletion must preserve selection');
+  deletion.resolve();
+  await new Promise(resolve => { setTimeout(resolve, 0); });
+  assert.equal(state.activePersona, null, 'clear before the list refresh completes');
+  assert.equal(sessionStates.a.activePersona, null);
+  assert.equal(sessionStates.b.activePersona, other);
+  assert.equal(state.personaEvents.length, 1, 'historical equip events are preserved');
+  refresh.resolve([other]);
+  await pending;
+});
+
+test('deletePersona failure preserves live and cached selections', async () => {
+  const card = { id: 'user-a' };
+  const state = { activePersona: card, personaPool: {} };
+  const sessionStates = { a: { activePersona: card } };
+  const rt = loadFeature('personas.js', state, { sessionStates });
+  const deletion = rt.defer('delete_persona');
+  const pending = rt.api.deletePersona(card.id);
+  deletion.reject(new Error('delete failed'));
+  await assert.rejects(pending, /delete failed/);
+  assert.equal(state.activePersona, card);
+  assert.equal(sessionStates.a.activePersona, card);
+  assert.equal(rt.calls.notify || 0, 0);
+});
+
+test('deletePersona does not clear a replacement selected while deletion is pending', async () => {
+  const rt = loadPersonasFeature();
+  rt.state.activePersona = { id: 'user-a' };
+  const deletion = rt.defer('delete_persona');
+  const pending = rt.api.deletePersona('user-a');
+  rt.state.activeSessionId = 'chat-b';
+  rt.state.activePersona = { id: 'user-b' };
+  deletion.resolve();
+  await pending;
+  assert.equal(rt.state.activePersona.id, 'user-b');
+});
+
+test('deletePersona blocks a late active-persona read from restoring the deleted card', async () => {
+  const rt = loadPersonasFeature();
+  const get = rt.defer('get_active_persona');
+  const sync = rt.api.syncActivePersona();
+  await rt.api.deletePersona('user-a');
+  get.resolve({ id: 'user-a' });
+  await sync;
+  assert.equal(rt.state.activePersona, null);
+});
+
+test('deletePersona blocks an in-flight equip response for the deleted card', async () => {
+  const rt = loadPersonasFeature();
+  const equip = rt.defer('equip_persona');
+  const pending = rt.api.equipPersona('user-a');
+  await rt.api.deletePersona('user-a');
+  equip.resolve({ id: 'user-a', name: 'Card A' });
+  assert.equal(await pending, null);
+  assert.equal(rt.state.activePersona, null);
+  assert.equal(rt.state.chatItems.length, 0);
+});
+
+test('deletePersona blocks an in-flight update response for the deleted card', async () => {
+  const rt = loadPersonasFeature();
+  rt.state.activePersona = { id: 'user-a', name: 'Old card' };
+  const update = rt.defer('update_persona');
+  const pending = rt.api.updatePersona('user-a', { name: 'Updated card' });
+  await rt.api.deletePersona('user-a');
+  update.resolve({ id: 'user-a', name: 'Updated card' });
+  assert.equal(await pending, null);
+  assert.equal(rt.state.activePersona, null);
+});
+
+
+test('recreated persona IDs can be equipped after deletion', async () => {
+  const rt = loadPersonasFeature();
+  await rt.api.deletePersona('user-a');
+  const create = rt.defer('create_persona');
+  const pending = rt.api.createPersona({ name: 'Card A' });
+  create.resolve({ id: 'user-a', name: 'Card A' });
+  await pending;
+  const equip = rt.defer('equip_persona');
+  const equipped = rt.api.equipPersona('user-a');
+  equip.resolve({ id: 'user-a', name: 'Card A' });
+  await equipped;
+  assert.equal(rt.state.activePersona.id, 'user-a');
 });

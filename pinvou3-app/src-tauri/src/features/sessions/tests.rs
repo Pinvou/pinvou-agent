@@ -2483,6 +2483,36 @@ fn pending_turn_injections_restore_on_drop_and_commit_only_after_submission() {
 }
 
 #[test]
+fn deleting_persona_clears_all_session_state_and_blocks_pending_restore() {
+    let (store, _g) = isolated_store();
+    for (session_id, persona_id, body) in [
+        ("session-a", "persona-a", "BODY A"),
+        ("session-b", "persona-a", "BODY B"),
+        ("session-c", "persona-b", "BODY C"),
+    ] {
+        store.set_active_persona(session_id, Some(persona_id.into()));
+        store.set_pending_persona_body(session_id, Some(body.into()));
+    }
+
+    let pending = store.take_pending_turn_injections("session-a");
+    assert_eq!(pending.persona_body(), Some("BODY A"));
+    assert_eq!(
+        store.remove_persona_from_all("persona-a"),
+        vec!["session-a".to_string(), "session-b".to_string()]
+    );
+    drop(pending);
+
+    for session_id in ["session-a", "session-b"] {
+        let state = store.mode_state(session_id);
+        assert!(state.active_persona.is_none());
+        assert!(state.pending_persona_body.is_none());
+    }
+    let untouched = store.mode_state("session-c");
+    assert_eq!(untouched.active_persona.as_deref(), Some("persona-b"));
+    assert_eq!(untouched.pending_persona_body.as_deref(), Some("BODY C"));
+}
+
+#[test]
 fn mounted_collections_are_ordered_deduplicated_and_legacy_compatible() {
     let (store, _g) = isolated_store();
     let sid = "s-multi-kb";
