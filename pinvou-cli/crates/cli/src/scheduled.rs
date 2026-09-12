@@ -2628,7 +2628,9 @@ mod tests {
         owned.insert(0, "pinvou".to_owned());
         match crate::parse_args(owned)?.command() {
             crate::CliCommand::Scheduled(command) => Ok(command.clone()),
-            other => panic!("unexpected command: {other:?}"),
+            other => panic!(
+                "parsed an unexpected command family; the fixture argv does not match the test"
+            ),
         }
     }
 

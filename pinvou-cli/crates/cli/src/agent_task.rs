@@ -467,7 +467,9 @@ mod tests {
             CliCommand::Agent(AgentCommand::Run { mode, .. }) => {
                 assert_eq!(mode.as_deref(), Some("agent"));
             }
-            other => panic!("unexpected command: {other:?}"),
+            other => panic!(
+                "parsed an unexpected command family; the fixture argv does not match the test"
+            ),
         }
     }
 

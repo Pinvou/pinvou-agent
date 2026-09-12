@@ -893,7 +893,9 @@ mod tests {
     fn sessions_parse(values: &[String]) -> Result<SessionsCommand, CliError> {
         match parse_args(values)?.command() {
             CliCommand::Sessions(command) => Ok(command.clone()),
-            other => panic!("unexpected command: {other:?}"),
+            other => panic!(
+                "parsed an unexpected command family; the fixture argv does not match the test"
+            ),
         }
     }
 
