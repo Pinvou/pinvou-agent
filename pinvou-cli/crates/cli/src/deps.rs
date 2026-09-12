@@ -101,12 +101,72 @@ fn check(output: OutputMode) -> Result<CliOutcome, CliError> {
 
 fn install(packages: &[String], yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     require_yes(yes)?;
-    pinvou3_lib::features::dependencies::install_dependencies(packages.to_vec(), None)
-        .map_err(|error| CliError::failed(format!("deps install failed: {error}")))?;
+    pinvou3_lib::features::dependencies::install_dependencies(packages.to_vec(), None).map_err(
+        |error| {
+            CliError::failed(format!(
+                "deps install failed: {}",
+                translate_deps_error(&error)
+            ))
+        },
+    )?;
     let value = serde_json::json!({ "installed": packages });
     Ok(success(render(
         output,
         format!("Installed: {}", packages.join(", ")),
         &value,
     )))
+}
+
+/// The per-platform dependency installers surface Chinese GUI copy; the CLI
+/// is an English tool, so the known messages are translated at this boundary
+/// and anything unrecognized passes through unchanged rather than being
+/// dropped.
+fn translate_deps_error(message: &str) -> String {
+    for (needle, english) in [
+        ("用户取消授权", "authorization was cancelled by the user"),
+        (
+            "未授权或 pkexec 不可用",
+            "not authorized, or pkexec is unavailable",
+        ),
+        ("没有需要安装的依赖", "nothing to install"),
+        ("非法包名", "package is not in the dependency allowlist"),
+        (
+            "未检测到 Homebrew",
+            "Homebrew was not found; one-click dependency installation requires Homebrew (https://brew.sh)",
+        ),
+        (
+            "brew 启动失败",
+            "brew failed to start (confirm Homebrew is installed: https://brew.sh)",
+        ),
+        (
+            "当前系统不支持一键安装依赖",
+            "one-click dependency installation is not supported on this platform; install the missing tools manually",
+        ),
+    ] {
+        if message.contains(needle) {
+            return english.to_owned();
+        }
+    }
+    for (prefix, english) in [
+        ("pkexec 启动失败: ", "pkexec failed to start: "),
+        ("安装失败 (exit ", "install failed (exit "),
+        (
+            "启动 LibreOffice 安装器失败: ",
+            "failed to start the LibreOffice installer: ",
+        ),
+        (
+            "Windows 当前仅支持一键安装 LibreOffice，无法安装: ",
+            "Windows only supports one-click LibreOffice installation; cannot install: ",
+        ),
+    ] {
+        if let Some(rest) = message.strip_prefix(prefix) {
+            return format!("{english}{rest}");
+        }
+    }
+    if message.contains("soffice.exe") && message.contains("安装器已结束") {
+        return "the LibreOffice installer finished, but soffice.exe was not found; \
+                reopen the app or verify LibreOffice is installed"
+            .to_owned();
+    }
+    message.to_owned()
 }

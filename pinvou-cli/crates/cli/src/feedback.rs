@@ -160,8 +160,12 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
         attachments,
         privacy_notice_version: "community-v1".to_owned(),
     };
-    pinvou3_lib::features::feedback::validate_feedback_request(&request)
-        .map_err(|error| CliError::failed(format!("feedback submit: {error}")))?;
+    pinvou3_lib::features::feedback::validate_feedback_request(&request).map_err(|error| {
+        CliError::failed(format!(
+            "feedback submit: {}",
+            translate_feedback_text(&error.to_string())
+        ))
+    })?;
     let feedback_id = new_feedback_id();
     let pending_dir = pinvou3_lib::platform::paths::feedback_pending_dir();
     let receipts_dir = pinvou3_lib::platform::paths::feedback_receipts_dir();
@@ -177,15 +181,24 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
     // The community `submit_feedback` body is validation + a fixed receipt
     // (no awaits); poll the real future once on this thread. If a future
     // version ever awaits (e.g. an upload path), this fails cleanly instead
-    // of hanging or guessing at the receipt.
-    let receipt = poll_once(pinvou3_lib::features::feedback::submit_feedback(request))
-        .and_then(|result| result.ok())
-        .ok_or_else(|| {
-            CliError::failed(
+    // of hanging or guessing at the receipt. A feature-level `Err` is a real
+    // failure (validation) and must surface its message instead of being
+    // collapsed into the generic not-synchronous error.
+    let receipt = match poll_once(pinvou3_lib::features::feedback::submit_feedback(request)) {
+        Some(Ok(receipt)) => receipt,
+        Some(Err(error)) => {
+            return Err(CliError::failed(format!(
+                "feedback submit failed: {}",
+                translate_feedback_text(&error.to_string())
+            )));
+        }
+        None => {
+            return Err(CliError::failed(
                 "feedback submit: the feature did not complete synchronously; \
                  use the GitHub issue tracker directly",
-            )
-        })?;
+            ));
+        }
+    };
     write_json(
         &receipt_path,
         serde_json::to_value(&receipt)
@@ -193,20 +206,58 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
     )?;
 
     let status = status_label(receipt.status);
+    let message = translate_feedback_text(&receipt.message);
     let value = serde_json::json!({
         "feedback_id": feedback_id,
         "status": status,
         "pending_path": pending_path.display().to_string(),
         "receipt_path": receipt_path.display().to_string(),
         "issue_url": COMMUNITY_ISSUES_URL,
-        "message": receipt.message,
+        "message": message,
     });
-    let human = format!(
+    let mut human = format!(
         "Feedback: {feedback_id}\nStatus: {status}\nPending: {}\nReceipt: {}\nCommunity edition does not upload feedback. Submit at: {COMMUNITY_ISSUES_URL}",
         pending_path.display(),
         receipt_path.display(),
     );
+    // The community build's only receipt is `failed_validation` carrying the
+    // no-upload notice — that is the designed success path here (validate
+    // locally, persist the bundle, point at the tracker), not a caller
+    // error, so it keeps exit 0. A genuine feature `Err` is rejected above.
+    if receipt.status == FeedbackStatus::FailedValidation {
+        human.push_str(&format!("\n{message}"));
+    }
     Ok(success(render(output, human, &value)))
+}
+
+/// The feature layer's user-facing strings are Chinese (GUI copy); the CLI is
+/// an English tool, so the known messages are translated at this boundary and
+/// anything unrecognized passes through unchanged rather than being dropped.
+fn translate_feedback_text(text: &str) -> String {
+    if text.contains("请填写反馈说明") {
+        "a feedback description is required".to_owned()
+    } else if text.contains("反馈说明最多") {
+        // The character count is embedded in the original message.
+        let count = text
+            .chars()
+            .filter(char::is_ascii_digit)
+            .collect::<String>();
+        format!("the feedback description allows at most {count} characters")
+    } else if text.contains("反馈标题最多") {
+        let count = text
+            .chars()
+            .filter(char::is_ascii_digit)
+            .collect::<String>();
+        format!("the feedback title allows at most {count} characters")
+    } else if text.contains("反馈入口来源无效") {
+        "invalid feedback entry point".to_owned()
+    } else if text.contains("社区版不会上传反馈") {
+        format!(
+            "The community edition does not upload feedback, logs, or attachments. Submit an issue at {COMMUNITY_ISSUES_URL}."
+        )
+    } else {
+        text.to_owned()
+    }
 }
 
 fn status_label(status: FeedbackStatus) -> &'static str {

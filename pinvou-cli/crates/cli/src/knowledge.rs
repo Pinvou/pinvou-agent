@@ -553,8 +553,13 @@ fn optional_single<'a>(head: &'a [String], what: &str) -> Result<Option<&'a Stri
 }
 
 fn require_session_id(value: &str) -> Result<String, CliError> {
-    if value.is_empty() {
-        return Err(CliError::usage("knowledge requires a session id"));
+    // Same charset gate as every other session-id family: an id the store
+    // would reject is a usage error (exit 2), not a host failure, and a
+    // traversal-shaped id is refused before any path is derived from it.
+    if !crate::support::valid_session_id(value) {
+        return Err(CliError::usage(
+            "knowledge requires a valid session id ([A-Za-z0-9_-])",
+        ));
     }
     Ok(value.to_owned())
 }
@@ -799,7 +804,7 @@ fn scan_cancel(output: OutputMode) -> Result<CliOutcome, CliError> {
     // incremental `scan start` re-runs).
     Ok(success(render(
         output,
-        "scan cancel signalled (process-local: the CLI can only signal cancels inside          its own process; use the desktop app to cancel an app-side scan)"
+        "scan cancel signalled (process-local: the CLI can only signal cancels inside its own process; use the desktop app to cancel an app-side scan)"
             .to_owned(),
         &serde_json::json!({ "cancelled": true, "scope": "process-local" }),
     )))
@@ -1122,7 +1127,9 @@ fn collections_add_sources(
     // success would hide files that were never enqueued.
     if state.collection_id != id {
         return Err(CliError::failed(format!(
-            "knowledge collections add-sources: collection {id} has an unfinished index job              for collection {} (check `pinvou knowledge index status`, resume or cancel it              first)",
+            "knowledge collections add-sources: an unfinished index job for collection {} \
+             blocks collection {id} (check `pinvou knowledge index status`, resume or cancel \
+             it first)",
             state.collection_id
         )));
     }

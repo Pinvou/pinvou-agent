@@ -99,7 +99,17 @@ pub(crate) fn parse(values: &[String]) -> Result<AgentCommand, CliError> {
                             ))
                         })?);
                     }
-                    "--session" => session = Some(value.clone()),
+                    "--session" => {
+                        // Same charset gate as the sessions family: an id the
+                        // store would reject is a usage error, not a
+                        // not-found host failure after the fact.
+                        if !crate::support::valid_session_id(value) {
+                            return Err(CliError::usage(
+                                "agent run --session requires a valid session id ([A-Za-z0-9_-])",
+                            ));
+                        }
+                        session = Some(value.clone());
+                    }
                     "--mode" => match value.as_str() {
                         "plan" | "agent" => mode = Some(value.clone()),
                         other => {

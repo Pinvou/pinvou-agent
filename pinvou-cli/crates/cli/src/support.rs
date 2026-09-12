@@ -94,9 +94,24 @@ pub fn resolve_secret(
         return Ok(Some(value));
     }
     if api_key_stdin {
+        // Bounded read: unbounded stdin (`yes | pinvou ... --api-key-stdin`)
+        // would exhaust memory before the empty check ran. Reading one byte
+        // past the cap distinguishes "at the cap" from "over it".
+        const MAX_SECRET_BYTES: u64 = 64 * 1024;
         let mut value = String::new();
-        std::io::Read::read_to_string(&mut std::io::stdin(), &mut value)
-            .map_err(|error| CliError::failed(format!("cannot read secret from stdin: {error}")))?;
+        let stdin = std::io::stdin();
+        let mut handle = stdin.lock();
+        if let Err(error) = std::io::Read::read_to_string(
+            &mut std::io::Read::take(&mut handle, MAX_SECRET_BYTES + 1),
+            &mut value,
+        ) {
+            return Err(CliError::failed(format!(
+                "cannot read secret from stdin: {error}"
+            )));
+        }
+        if value.len() as u64 > MAX_SECRET_BYTES {
+            return Err(CliError::usage("the stdin secret exceeds the 64 KiB limit"));
+        }
         let trimmed = value.trim().to_owned();
         if trimmed.is_empty() {
             return Err(CliError::failed("no secret provided on stdin"));

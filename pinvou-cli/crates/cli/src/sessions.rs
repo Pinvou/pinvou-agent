@@ -130,6 +130,13 @@ pub fn parse(values: &[String]) -> Result<SessionsCommand, CliError> {
             if title.trim().is_empty() {
                 return Err(CliError::usage("sessions rename requires a title"));
             }
+            // A flag-shaped token (`--limit 5`) would otherwise be swallowed
+            // into the title while every other subcommand rejects it.
+            if title.contains("--") || title.starts_with('-') {
+                return Err(CliError::usage(format!(
+                    "sessions rename takes a plain title (quote it if it starts with '-'); got '{title}'"
+                )));
+            }
             Ok(SessionsCommand::Rename { id, title })
         }
         "pin" | "unpin" | "archive" | "restore" => {
