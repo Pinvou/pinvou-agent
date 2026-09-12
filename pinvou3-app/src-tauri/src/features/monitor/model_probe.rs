@@ -939,11 +939,17 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
             (ModelPreset::Qwen, "qwen3.7-max", 1_000_000),
             (ModelPreset::Qwen, "qwen3.7-flash", 1_000_000),
             (ModelPreset::Qwen, "qwen3.6-flash", 1_000_000),
-            // 豆包：evolving 已升 1M，2.x 全系 256K（id 用目录在售 wire id，
-            // 底座无 doubao 行，均落 Doubao 预设兜底 256K）
+            // 豆包：evolving 已升 1M；2.x 系官方标称 256k（volcengine 1330310，
+            // 2026-09-12 核对），由 core::model_context 补充表承接——底座无
+            // doubao 行，无补充表时 engine 侧落 128K 与监控页分叉
             (ModelPreset::Doubao, "doubao-seed-evolving", 1_048_576),
             (ModelPreset::Doubao, "doubao-seed-2-1-pro-260628", 262_144),
             (ModelPreset::Doubao, "doubao-seed-2-1-turbo-260628", 262_144),
+            (
+                ModelPreset::Doubao,
+                "doubao-seed-2-0-code-preview-260215",
+                262_144,
+            ),
             (ModelPreset::Doubao, "doubao-seed-2-0-pro-260215", 262_144),
             (ModelPreset::Doubao, "doubao-seed-2-0-lite-260428", 262_144),
             // OpenAI 兼容示例：gpt-5.6 全系 1.05M
@@ -1021,6 +1027,10 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
             (ModelPreset::Anthropic, 1_000_000),
             (ModelPreset::Gemini, 1_048_576),
             (ModelPreset::Xai, 500_000),
+            // openai_compatible 的 Rust 默认 gpt-5.6-terra 仅服务 legacy 迁移
+            // 兜底（前端刻意留空），但既然是 default_model() 的产出，同样必须
+            // 过共享解析入口（底座 gpt-5.6 精确列表 → 1.05M）。
+            (ModelPreset::OpenaiCompatible, 1_050_000),
         ];
         for (preset, expected) in cases {
             let model = preset.default_model();
@@ -1030,11 +1040,5 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
                 "{preset:?} 默认模型 {model} 必须在共享解析入口解出官方上下文窗口（engine 侧没有 prefs 兜底）"
             );
         }
-        // openai_compatible 的 Rust 侧默认仅服务 legacy 迁移兜底（前端刻意留空，
-        // 由分组测试的 main.jsx 覆盖对钉测试与 Rust↔JS 互查测试共同锁定）。
-        assert_eq!(
-            ModelPreset::OpenaiCompatible.default_model(),
-            "gpt-5.6-terra"
-        );
     }
 }

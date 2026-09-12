@@ -261,6 +261,44 @@ test('MODEL_PRESET_DEFS 与 Rust default_model 表源码互查(跨语言防一�
   }
 });
 
+test('MODEL_PRESET_DEFS 与 Rust default_base_url 表源码互查(跨语言防 baseUrl 漂移)', () => {
+  // 与 default_model 互查同型:default_model 已有三重守卫,而 13 条
+  // default_base_url 字面量此前无任何跨语言核对——minimax 域名迁移一类
+  // 改动最容易只改一侧并静默漂移。
+  const variantToKey = {
+    LocalVllm: 'local_vllm', Deepseek: 'deepseek', Kimi: 'kimi',
+    OpenaiCompatible: 'openai_compatible', Qwen: 'qwen', Doubao: 'doubao',
+    Minimax: 'minimax', Glm: 'glm', Mimo: 'mimo', Openai: 'openai',
+    Anthropic: 'anthropic', Gemini: 'gemini', Xai: 'xai',
+  };
+  const rustSrc = fs.readFileSync(
+    path.join(__dirname, '..', 'src-tauri', 'src', 'platform', 'prefs', 'model.rs'), 'utf8',
+  );
+  const fnStart = rustSrc.indexOf('pub fn default_base_url(&self)');
+  const fnEnd = rustSrc.indexOf('pub fn default_model(&self)', fnStart);
+  assert.ok(fnStart > 0 && fnEnd > fnStart, 'prefs/model.rs 应含 default_base_url 与 default_model');
+  const rustTable = {};
+  for (const m of rustSrc.slice(fnStart, fnEnd).matchAll(/ModelPreset::(\w+)\s*=>\s*"([^"]*)"/g)) {
+    rustTable[m[1]] = m[2];
+  }
+  assert.deepStrictEqual(
+    Object.keys(rustTable).sort((a, b) => a.localeCompare(b)),
+    Object.keys(variantToKey).sort((a, b) => a.localeCompare(b)),
+    'Rust default_base_url 变体集变化时须同步 variantToKey',
+  );
+  // 已知且有意的一处差异:openai_compatible 前端刻意留空(纯自定义模板),
+  // Rust 侧是该预设的 legacy 迁移兜底 https://api.openai.com/v1;main.jsx
+  // 覆盖对由独立测试钉住。其余 12 个预设必须逐项相等。
+  assert.strictEqual(rustTable.OpenaiCompatible, 'https://api.openai.com/v1');
+  assert.strictEqual(MODEL_PRESET_DEFS.openai_compatible.baseUrl, '');
+  for (const [variant, key] of Object.entries(variantToKey)) {
+    if (variant === 'OpenaiCompatible') continue;
+    assert.strictEqual(
+      rustTable[variant], MODEL_PRESET_DEFS[key] && MODEL_PRESET_DEFS[key].baseUrl,
+      `${variant} 与前端 ${key} 默认 baseUrl 漂移`,
+    );
+  }
+});
 test('main.jsx PRESET_DEFAULTS 的 openai_compatible 覆盖对钉住 Rust legacy 迁移兜底值', () => {
   // single-sourcing 后 main.jsx 仅剩这一对手抄值;漂移会让旧版草稿回填与
   // Rust legacy 迁移落不同模型。
@@ -410,6 +448,18 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   // GLM-5.3-Flash 同入 z.ai tiered effort 路由（off/high/max）
   const zai53Flash = { preset: 'glm', vendor: 'glm', model: 'glm-5.3-flash', base_url: 'https://api.z.ai/api/paas/v4' };
   assert.deepStrictEqual(tiers(zai53Flash), ['off', 'high', 'max']);
+  // open.bigmodel.cn/api/paas/v4 自底座 #53 起同为 first-party tiered 路由
+  // （is_exact_zai_chat_route 第三 host，glm 预设默认端点即该 host）：档位须与
+  // api.z.ai 同源，否则引擎吃 tiered effort 而 UI 无开关。
+  const bigmodel53 = { preset: 'glm', vendor: 'glm', model: 'glm-5.3', base_url: 'https://open.bigmodel.cn/api/paas/v4' };
+  assert.deepStrictEqual(tiers(bigmodel53), ['off', 'high', 'max']);
+  const bigmodel53Flash = { preset: 'glm', vendor: 'glm', model: 'glm-5.3-flash', base_url: 'https://open.bigmodel.cn/api/paas/v4' };
+  assert.deepStrictEqual(tiers(bigmodel53Flash), ['off', 'high', 'max']);
+  const bigmodel52 = { preset: 'glm', vendor: 'glm', model: 'glm-5.2', base_url: 'https://open.bigmodel.cn/api/paas/v4' };
+  assert.deepStrictEqual(tiers(bigmodel52), ['off', 'high', 'max']);
+  // bigmodel coding host（自动切换语义）底座明确排除，两侧一致不提供档位
+  const bigmodelCoding = { preset: 'glm', vendor: 'glm', model: 'glm-5.3', base_url: 'https://open.bigmodel.cn/api/coding/paas/v4' };
+  assert.strictEqual(reasoningEffortTiersForModel(bigmodelCoding), null);
   const kimiCodeK3 = { preset: 'openai_compatible', vendor: 'kimi', model: 'k3', base_url: 'https://api.kimi.com/coding/v1' };
   assert.deepStrictEqual(tiers(kimiCodeK3), ['low', 'high', 'max']);
   // 底座 is_exact_kimi_code_k3_route 同时收录 k3-256k：Kimi Code 端点上同为 tiered low/high/max
@@ -461,9 +511,9 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   assert.deepStrictEqual(tiers(k3OnGateway), ['off', 'high']);
   const zaiCodingPlanGlobal = { preset: 'openai_compatible', vendor: 'glm', model: 'glm-5.2', base_url: 'https://api.z.ai/api/coding/paas/v4' };
   assert.deepStrictEqual(tiers(zaiCodingPlanGlobal), ['off', 'high', 'max']);
-  // zai：中国端点 / 兼容网关 / 未验证模型底座删除 thinking/reasoning_effort，off 与 high 等效 → 不提供切换
-  const zaiCn = { preset: 'glm', vendor: 'glm', model: 'glm-5.2', base_url: 'https://open.bigmodel.cn/api/paas/v4' };
-  assert.strictEqual(reasoningEffortTiersForModel(zaiCn), null);
+  // zai：兼容网关 / 未验证模型底座删除 thinking/reasoning_effort → 不提供切换；
+  // open.bigmodel.cn/api/paas/v4 自 #53 起是 first-party tiered 路由（见上方
+  // bigmodel53 行），不再属于「中国端点无档位」的例外。
   const zaiGateway = { preset: 'glm', vendor: 'glm', model: 'glm-5.2', base_url: 'https://gateway.example.com/v1' };
   assert.strictEqual(reasoningEffortTiersForModel(zaiGateway), null);
   const zaiUnknownModel = { preset: 'glm', vendor: 'glm', model: 'glm-4.7', base_url: 'https://api.z.ai/api/paas/v4' };
@@ -556,9 +606,10 @@ test('reasoningEffortForModelSwitch：K2.6(off) → K3 重置为 high', () => {
   // 无档位模型切换置 null（未显式设置）；vllm 切回 off
   assert.strictEqual(reasoningEffortForModelSwitch({ preset: 'xai', vendor: 'xai', model: 'grok-4.3' }), null);
   assert.strictEqual(reasoningEffortForModelSwitch({ preset: 'local_vllm', model: 'qwen36_35b_256k' }), 'off');
-  // z.ai glm-5.2 切换默认 high；中国端点 glm-5.2 无档位 → null
+  // z.ai glm-5.2 切换默认 high；bigmodel paas host（#53 起 tiered 路由）同为
+  // high；兼容网关 glm-5.2 无档位 → null
   assert.strictEqual(reasoningEffortForModelSwitch({ preset: 'glm', vendor: 'glm', model: 'glm-5.2', base_url: 'https://api.z.ai/api/paas/v4' }), 'high');
-  assert.strictEqual(reasoningEffortForModelSwitch({ preset: 'glm', vendor: 'glm', model: 'glm-5.2', base_url: 'https://open.bigmodel.cn/api/paas/v4' }), null);
+  assert.strictEqual(reasoningEffortForModelSwitch({ preset: 'glm', vendor: 'glm', model: 'glm-5.2', base_url: 'https://open.bigmodel.cn/api/paas/v4' }), 'high');
 });
 
 test('baseUrlUsesLoopback 与 Rust bridge.rs 判定对齐', () => {
@@ -850,11 +901,58 @@ test('目录视觉能力标注(imageCapable):形状合法且查询只命中已�
   assert.strictEqual(catalogImageCapableForModel('deepseek-v4-pro'), false);
   assert.strictEqual(catalogImageCapableForModel('glm-5.2'), false, 'glm 组 glm-5.2 显式标注纯文本');
   assert.strictEqual(catalogImageCapableForModel('qwen3.7-max'), false);
-  // bigmodel/z.ai coding 组的 glm-5.2 行未标注,查询不应被未标注命中项短路
+  // coding/Token Plan 组的 glm-5.3 行也已显式标 false,不再依赖跨组扫描顺序
   assert.strictEqual(catalogImageCapableForModel('glm-5.3'), false);
+  // Tencent 小写 wire 拼写命中同组 false 标注(此前大小写失配只能落 null→auto)
+  assert.strictEqual(catalogImageCapableForModel('minimax-m2.7'), false);
+  assert.strictEqual(catalogImageCapableForModel('minimax-m-2-7'), false);
   assert.strictEqual(catalogImageCapableForModel('完全不存在的模型'), null);
   assert.strictEqual(catalogImageCapableForModel(''), null);
   assert.strictEqual(catalogImageCapableForModel(null), null);
+});
+
+test('imageCapable 标注与 Rust 内置已验证表源码互查(前端标注不得与后端解析分叉)', () => {
+  // 前端 imageCapable 与后端 image_capability.rs 是最后一对无守卫镜像:FE true
+  // 而 BE Unknown 会让官方路由图片输入静默退化(表单显示「支持」、发送判
+  // Unknown);FE false 而 BE 命中会让纯文本行在发送时内联图片。这里解析 Rust
+  // 两个表(子串 VERIFIED + 精确 EXACT),在 JS 侧复算 builtin_verified_supports_image
+  // 并与前端显式标注做双向 parity;未标注(null)不约束——两侧都落「自动」链。
+  const rustSrc = fs.readFileSync(
+    path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'assistant', 'image_capability.rs'), 'utf8',
+  );
+  const extractTable = prefix => {
+    const start = rustSrc.indexOf(prefix);
+    assert.ok(start > 0, `image_capability.rs 应含 ${prefix}(表结构变化时须同步本互查)`);
+    const end = rustSrc.indexOf('];', start);
+    assert.ok(end > start, 'Rust 表未正常闭合,须同步本互查提取器');
+    // 去掉表内注释行再取字符串字面量,避免注释里的示例拼写污染条目集。
+    return [...rustSrc.slice(start, end).replace(/\/\/[^\n]*/g, '').matchAll(/"([^"]+)"/g)].map(m => m[1]);
+  };
+  const substrings = extractTable('const VERIFIED_IMAGE_CAPABLE_MODELS');
+  const exacts = extractTable('const EXACT_VERIFIED_IMAGE_CAPABLE_MODELS');
+  assert.ok(substrings.length > 0, 'VERIFIED 表解析为空即格式漂移,须修本提取器');
+  assert.ok(exacts.length > 0, 'EXACT 表解析为空即格式漂移,须修本提取器');
+  const backendSupports = id => exacts.includes(id) || substrings.some(entry => id.includes(entry));
+  let checked = 0;
+  for (const scope of ['local', 'cloud']) {
+    for (const group of MODEL_CATALOG[scope] || []) {
+      for (const item of group.items || []) {
+        if (item.custom || item.imageCapable === undefined) continue;
+        for (const id of [item.model, ...(item.legacyAliases || [])]) {
+          const fe = catalogImageCapableForModel(id);
+          if (fe !== true && fe !== false) continue;
+          checked += 1;
+          const be = backendSupports(String(id).toLowerCase());
+          if (fe === true) {
+            assert.ok(be, `前端标注支持图片但后端解析 Unknown:${group.key}/${id}`);
+          } else {
+            assert.ok(!be, `前端标注纯文本但后端判为支持(发送时会内联图片):${group.key}/${id}`);
+          }
+        }
+      }
+    }
+  }
+  assert.ok(checked >= 60, `parity 检查覆盖面异常(仅 ${checked} 项),目录标注或别名结构疑似漂移`);
 });
 
 // --- modelDescriptions i18n 护栏 ---
@@ -896,17 +994,13 @@ test('modelDescriptions i18n 完整性:每个非 custom 目录 desc 在 en/ja �
 });
 
 test('modelDescriptions 无刷新遗留死键(desc 改名须同步清理 en/ja/zh 词条)', () => {
-  // 2026-09 刷新把大量 desc 改名,en/ja 遗留死键一度达 25 个。基线遗留的
-  // 6 个登记在 allowlist,后续清理时移除即可;新增死键会让本测试失败。
+  // 2026-09 刷新把大量 desc 改名,en/ja 遗留死键一度达 25 个。曾经的 6 个
+  // 基线遗留键已全部清空(allowlist 已移除),再出现任何死键本测试即红。
   // zh 也在扫描范围内(zh 的 modelDescriptions 是可选覆写、键集是 en 的子集,
   // 但同样会积累死键——兼容高速/兼容端点示例曾漏网)。
-  const legacyAllowlist = new Set([
-    '手动填写 Token Plan 模型 ID', 'K3 256K 上下文模型', '旗舰推理',
-    '2.4T 旗舰预览，Token Plan 专属，预览结束将下线或替换', '兼容高速', '兼容端点示例',
-  ]);
   const descs = collectCatalogDescs();
   for (const file of ['en.js', 'ja.js', 'zh.js']) {
-    const dead = [...extractModelDescriptionKeys(file)].filter(k => !descs.has(k) && !legacyAllowlist.has(k));
+    const dead = [...extractModelDescriptionKeys(file)].filter(k => !descs.has(k));
     assert.deepStrictEqual(dead, [], `${file} 存在无人引用的 modelDescriptions 死键: ${dead.join(', ')}`);
   }
 });

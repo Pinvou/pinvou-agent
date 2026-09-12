@@ -148,9 +148,9 @@ const MODEL_CATALOG = {
       // 调用自动切换至 GLM-5.3，GLM-5-Turbo/GLM-4.7 自动切换至 GLM-5.3-Flash，
       // 故旧模型行保留为「历史模型」入口而非删除。
       items: [
-        { model: 'glm-5.3', title: 'GLM-5.3', desc: '旗舰编码模型，全套餐支持' },
+        { model: 'glm-5.3', imageCapable: false, title: 'GLM-5.3', desc: '旗舰编码模型，全套餐支持' },
         { model: 'glm-5.3-flash', imageCapable: true, title: 'GLM-5.3-Flash', desc: '原生多模态编码模型，额度三倍' },
-        { model: 'glm-5.2', title: 'GLM-5.2', desc: '历史模型，请求自动切换至 GLM-5.3' },
+        { model: 'glm-5.2', imageCapable: false, title: 'GLM-5.2', desc: '历史模型，请求自动切换至 GLM-5.3' },
         { model: 'glm-5-turbo', title: 'GLM-5-Turbo', desc: '历史模型，自动切换至 GLM-5.3-Flash' },
         { model: 'glm-4.7', title: 'GLM-4.7', desc: '历史模型，自动切换至 GLM-5.3-Flash' },
         { model: '', title: '自定义 GLM Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
@@ -176,9 +176,9 @@ const MODEL_CATALOG = {
       // 存量 GLM-5-Turbo 配置会回落为自定义归类（档位提示不受影响），须自行
       // 改选 glm-5.3 / glm-5.3-flash。
       items: [
-        { model: 'glm-5.3', title: 'GLM-5.3', desc: '旗舰编码模型，全套餐支持' },
+        { model: 'glm-5.3', imageCapable: false, title: 'GLM-5.3', desc: '旗舰编码模型，全套餐支持' },
         { model: 'glm-5.3-flash', imageCapable: true, title: 'GLM-5.3-Flash', desc: '原生多模态编码模型，额度三倍' },
-        { model: 'glm-5.2', legacyAliases: ['GLM-5.2'], title: 'GLM-5.2', desc: '历史模型，请求自动路由至 GLM-5.3' },
+        { model: 'glm-5.2', legacyAliases: ['GLM-5.2'], imageCapable: false, title: 'GLM-5.2', desc: '历史模型，请求自动路由至 GLM-5.3' },
         { model: 'glm-4.7', title: 'GLM-4.7', desc: '历史模型，自动路由至 GLM-5.3-Flash' },
         { model: '', title: '自定义 GLM Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
       ],
@@ -241,9 +241,9 @@ const MODEL_CATALOG = {
       // flagged by Tencent as high-load (may be rate-limited at peak).
       items: [
         { model: 'tc-code-latest', title: 'tc-code-latest', desc: '自动模型，智能路由' },
-        { model: 'glm-5.3', legacyAliases: ['glm-5-3'], title: 'glm-5.3', desc: '旗舰推理与编码' },
+        { model: 'glm-5.3', legacyAliases: ['glm-5-3'], imageCapable: false, title: 'glm-5.3', desc: '旗舰推理与编码' },
         { model: 'glm-5.3-flash', imageCapable: true, title: 'glm-5.3-flash', desc: '多模态高性价比' },
-        { model: 'glm-5.2', legacyAliases: ['glm-5-2'], title: 'glm-5.2', desc: '上代旗舰推理' },
+        { model: 'glm-5.2', legacyAliases: ['glm-5-2'], imageCapable: false, title: 'glm-5.2', desc: '上代旗舰推理' },
         { model: 'glm-5.1', legacyAliases: ['glm-5-1'], title: 'glm-5.1', desc: '官方将于 2026-10-09 下线' },
         { model: 'glm-5', legacyAliases: ['glm-5-0'], title: 'glm-5', desc: '通用推理，官方将于 2026-10-09 下线' },
         { model: 'kimi-k3', imageCapable: true, title: 'kimi-k3', desc: 'Kimi 最新旗舰' },
@@ -251,7 +251,7 @@ const MODEL_CATALOG = {
         { model: 'deepseek-v4-pro-202606', legacyAliases: ['deepseek/deepseek-v4-pro-0813', 'deepseek/deepseek-v4-pro'], title: 'deepseek-v4-pro-202606', desc: '高能力模型' },
         { model: 'deepseek-v4-flash-202605', legacyAliases: ['deepseek/deepseek-v4-flash-0731', 'deepseek/deepseek-v4-flash'], title: 'deepseek-v4-flash-202605', desc: '快速响应' },
         { model: 'minimax-m3', legacyAliases: ['minimax-m-3-0'], imageCapable: true, title: 'minimax-m3', desc: 'MiniMax 最新旗舰' },
-        { model: 'minimax-m2.7', legacyAliases: ['minimax-m-2-7'], title: 'minimax-m2.7', desc: '通用能力' },
+        { model: 'minimax-m2.7', legacyAliases: ['minimax-m-2-7'], imageCapable: false, title: 'minimax-m2.7', desc: '通用能力' },
         { model: 'hy3', legacyAliases: ['hy3-preview', 'hy3-202608'], title: 'hy3', desc: 'Hy 套餐专属模型' },
         { model: 'hy4-preview', title: 'hy4-preview', desc: 'Hy4 预览，高峰期可能限频' },
         { model: '', title: '自定义腾讯云 Token Plan 模型', desc: '手动填写 Token Plan 模型 ID', custom: true },
@@ -296,6 +296,10 @@ const MODEL_CATALOG = {
       // ⚠️ deepseek-v4-pro 的 imageCapable:false 按 2026-09-11 官方 pricing 页
       // 标注；2026-09-14 路由生效后该 id 实际由多模态的 V4.1-Flash 承接，下轮
       // 刷新必须复核/翻转此标注（未重新显式保存过的存量 pinvou 配置不受影响）。
+      // 另注：官方两页口径互相矛盾——changelog（api-docs.deepseek.com/updates，
+      // 2026-09-10 条目）称应用户需求 09-14 后将继续提供 V4 Pro 服务且计费方式
+      // 不变，公告页（news260910）称自动路由至 V4.1-Flash 并按其计费；本目录
+      // 暂按公告页口径，下轮刷新一并复核。
       items: [
         { model: 'deepseek-flash', imageCapable: true, legacyAliases: ['deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'], title: 'deepseek-flash', desc: 'V4.1-Flash 主力，1M 上下文，支持图片输入' },
         { model: 'deepseek-v4-pro', imageCapable: false, title: 'deepseek-v4-pro', desc: '2026-09-14 起自动路由至 deepseek-flash 计费' },
@@ -705,9 +709,10 @@ function isCodingPlanModel(model) {
 // 分类判据:模型是否命中其实际 provider 的非 custom 目录项。自定义兼容接口即使
 // 使用目录中已有的模型 ID,也必须保持为自定义,避免多个聚合服务模型再次同名。
 // 目录命中默认精确比较:本地 vLLM 等服务的模型 ID 是不透明字符串、可能区分
-// 大小写,case-only 的自定义 ID 必须保持自定义。大小写兼容只对发生过「目录
-// 拼写迁移」的目录项生效,且以 legacyAliases 显式列出历史拼写(存量值只能
-// 来自旧目录行的精确值,精确别名即可覆盖),不做全量 case-insensitive。
+// 大小写,case-only 的自定义 ID 必须保持自定义。大小写兼容只对 legacyAliases
+// 显式列出的拼写生效——存量值只能来自旧目录行的精确值,或官方同页并行的
+// 其它官方拼写(如 Tencent 的 glm-5-3 / minimax-m-3-0 连字符形式),
+// 不做全量 case-insensitive。
 function catalogItemMatchesModel(item, model) {
   if (typeof item.model !== 'string' || typeof model !== 'string') return false;
   return item.model === model || (item.legacyAliases || []).includes(model);
@@ -951,10 +956,14 @@ function isExactMoonshotPlatformBaseUrl(baseUrl) {
 function isExactKimiCodeBaseUrl(baseUrl) {
   return isExactHttpsRoute(baseUrl, 'api.kimi.com', 'coding/v1');
 }
-// z.ai first-party Chat 端点（Coding Plan / 普通平台）。
+// z.ai first-party Chat 端点（Coding Plan / 普通平台 / 智谱开放平台普通 host）。
+// 与底座 provider.rs is_exact_zai_chat_route 的三 host 对齐（#53 起
+// open.bigmodel.cn/api/paas/v4 同为 first-party tiered 路由）；bigmodel 的
+// /api/coding/paas/v4（自动切换语义）底座明确排除，两侧一致不提供档位。
 function isExactZaiChatBaseUrl(baseUrl) {
   return isExactHttpsRoute(baseUrl, 'api.z.ai', 'api/paas/v4')
-    || isExactHttpsRoute(baseUrl, 'api.z.ai', 'api/coding/paas/v4');
+    || isExactHttpsRoute(baseUrl, 'api.z.ai', 'api/coding/paas/v4')
+    || isExactHttpsRoute(baseUrl, 'open.bigmodel.cn', 'api/paas/v4');
 }
 // MiniMax first-party OpenAI Chat 端点（国际 api.minimax.io / 国内 api.minimaxi.com）。
 function isExactMinimaxChatBaseUrl(baseUrl) {
@@ -1140,13 +1149,16 @@ function alwaysThinkingSpecForModel(modelId) {
 
 // 该模型可切换的思考深度档位（无则 null = 不提供切换）。
 // 路由/模型级细分（仅品悟目录收录的模型）：
-// - zai：first-party z.ai 端点上 GLM-5.2/5.3/5.3-Flash 提供 tiered effort（off/high/max），
-//   GLM-5.1/GLM-5-Turbo 只有 generic thinking 开关（off/high）；中国 open.bigmodel.cn、
-//   兼容网关、未验证模型底座会删除 thinking/reasoning_effort（两档等效）→ 不提供切换。
-//   注意：厂商文档称 GLM-5.3 系 thinking.type 仅接受 enabled（disabled 报错），底座
-//   仍把 off 映射为 thinking disabled，属底座与厂商的分歧，前端按底座实际行为暴露
-//   （上游修复 Pinvou/CodeWhale#52 已合并、尚未随 pinvou3 的 gitlink 发布；gitlink
-//   前进后须复查此处 off 档暴露与本注释，避免底座停发 disabled 后选项失效）。
+// - zai：first-party Chat 端点（api.z.ai 两个路径 + open.bigmodel.cn/api/paas/v4，
+//   见 isExactZaiChatBaseUrl）上 GLM-5.2/5.3/5.3-Flash 提供 tiered effort
+//   （off/high/max），GLM-5.1/GLM-5-Turbo 只有 generic thinking 开关（off/high）；
+//   兼容网关、未验证模型与 bigmodel 的 coding host（底座明确排除）底座会删除
+//   thinking/reasoning_effort（两档等效）→ 不提供切换。
+//   off 档的 wire 语义：厂商文档称 GLM-5.3 系 thinking.type 仅接受 enabled
+//   （disabled 报错）；底座 #52（已随当前 gitlink 发布，6ae5b1734 是 ae7e3fb36
+//   的直接父）在 forced-thinking 路由（GLM-5.3/5.3-Flash）上把 disabled 重写为
+//   enabled + clear_thinking:false 且 effort 归一 low，off 档在 wire 上即
+//   「enabled + low」，与厂商口径一致，无须随 gitlink 前进复查。
 // - moonshot：K3（直连 kimi-k3 / Kimi Code k3、k3-256k，always-thinking）提供 low/high/max
 //   （off 归一为 low）；其余 moonshot 模型按 generic thinking 开关暴露 off/high。
 // - minimax：仅 first-party MiniMax-M3 提供 off（disabled）/high（adaptive）；M2.7/M2.5

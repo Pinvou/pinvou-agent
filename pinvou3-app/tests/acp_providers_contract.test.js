@@ -580,6 +580,32 @@ assert.doesNotMatch(
   '不得使用原生 datalist（字符过滤会隐藏候选，造成「只有几个模型可选」的误解）'
 );
 
+// 模型名单「只增不删」政策的内容钉：各家当前旗舰/现役 id 一旦被静默删除，
+// 中转站用户会失去官方型号建议。删除任何一条都视为有意收缩，必须显式改本清单。
+const ACP_REQUIRED_MODELS = {
+  anthropic: ['claude-fable-5-1', 'claude-haiku-4-5'],
+  openai: ['gpt-6-astra', 'gpt-5.6-terra'],
+  moonshot: ['kimi-k3', 'kimi-k2.7-code'],
+  'kimi-code': ['k3', 'k3-256k'],
+  deepseek: ['deepseek-flash', 'deepseek-v4-flash'],
+  zhipu: ['glm-5.3', 'glm-5.3-flash'],
+  qwen: ['qwen3.8-max', 'qwen3.8-flash'],
+  minimax: ['MiniMax-M3'],
+  xai: ['grok-4.6', 'grok-4.20-reasoning', 'grok-4.20-0309-reasoning', 'grok-4.20-0309-non-reasoning'],
+};
+for (const [presetKey, required] of Object.entries(ACP_REQUIRED_MODELS)) {
+  const presetRe = new RegExp(`\\{ key: '${presetKey}',[\\s\\S]*?models: \\[([^\\]]*)\\]`);
+  const m = CATALOG.match(presetRe);
+  assert.ok(m, `ACP 目录缺少预设 ${presetKey}（结构变化时须同步本清单提取器）`);
+  const listed = [...m[1].matchAll(/'([^']+)'/g)].map(x => x[1]);
+  for (const id of required) {
+    assert.ok(
+      listed.includes(id),
+      `ACP 预设 ${presetKey} 缺少现役模型 ${id}（名单只增不删；有意收缩须同步改本清单）`
+    );
+  }
+}
+
 // 切换/删除 Provider 后必须重写草稿配置快照（否则对话页模型显示旧 Provider；
 // 直接删除快照会让选择器整排消失——必须 reseed 而非仅失效）
 assert.match(

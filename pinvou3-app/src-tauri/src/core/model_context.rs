@@ -97,6 +97,17 @@ pub fn resolved_context_window(model: &str) -> Option<u32> {
         ("qwen3.6-flash", 1_000_000),
         // 2026-07 火山引擎公告：doubao-seed-evolving 升为 1M 上下文。
         ("doubao-seed-evolving", 1_048_576),
+        // 豆包 2.x 现役行：底座链（catalog/known 表/启发式）无任何 doubao 行，
+        // resolved 返回 None → engine 落 128K，而监控页落 Doubao 预设兜底
+        // 262,144，两侧分叉。官方模型列表 2.x 系上下文窗口均标称 256k、最大输入
+        // 224k（volcengine docs 82379/1330310，2026-09-12 核对），与预设兜底的
+        // 二进制 256K 同口径。底座对此无行、无冲突值，故放本补充表而非
+        // PINVOU_OVERRIDES。
+        ("doubao-seed-2-1-pro-260628", 262_144),
+        ("doubao-seed-2-1-turbo-260628", 262_144),
+        ("doubao-seed-2-0-code-preview-260215", 262_144),
+        ("doubao-seed-2-0-pro-260215", 262_144),
+        ("doubao-seed-2-0-lite-260428", 262_144),
         // 智谱官方标称 GLM-4.7 为 200K；沿用设置页二进制 K 展示口径。
         ("glm-4.7", 204_800),
     ];
@@ -122,6 +133,11 @@ mod tests {
             ("qwen3.8-max", 1_000_000),
             ("qwen3.8-max-preview", 1_000_000),
             ("doubao-seed-evolving", 1_048_576),
+            ("doubao-seed-2-1-pro-260628", 262_144),
+            ("doubao-seed-2-1-turbo-260628", 262_144),
+            ("doubao-seed-2-0-code-preview-260215", 262_144),
+            ("doubao-seed-2-0-pro-260215", 262_144),
+            ("doubao-seed-2-0-lite-260428", 262_144),
             ("glm-4.7", 204_800),
         ] {
             assert_eq!(resolved_context_window(model), Some(expected), "{model}");
@@ -146,6 +162,11 @@ mod tests {
             Some(1_000_000)
         );
         assert_eq!(resolved_context_window("claude-fable-5-1"), Some(1_000_000));
+        // gpt-6-astra / grok-build-0.1 的覆盖条目此前无共享入口断言：监控页
+        // prefs 兜底数值恰好相同，删条目所有测试仍绿，而 engine 侧无兜底会
+        // 静默退回 128K 分叉——在此钉死，删任一条目即红。
+        assert_eq!(resolved_context_window("gpt-6-astra"), Some(1_050_000));
+        assert_eq!(resolved_context_window("grok-build-0.1"), Some(256_000));
         // 底座已收录且口径正确的模型不受影响。
         assert_eq!(resolved_context_window("claude-haiku-4-5"), Some(200_000));
         assert_eq!(resolved_context_window("claude-sonnet-5"), Some(1_000_000));

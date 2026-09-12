@@ -116,9 +116,11 @@ const VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     // 2026-09-11);deepseek-v4-pro 官方 pricing 页明示 Vision Not supported,不收。
     "deepseek-flash",
     // 存量配置仍保存退役别名 deepseek-v4-flash / -vision-exp:官方明示旧名仍被
-    // 接受并路由至 V4.1-Flash(多模态)计费,子串条目同时覆盖两个别名,与前端
-    // 目录的 legacyAliases imageCapable:true 同批同步。
-    "deepseek-v4-flash",
+    // 接受并路由至 V4.1-Flash(多模态)计费,按精确全等收录在
+    // EXACT_VERIFIED_IMAGE_CAPABLE_MODELS,与前端目录的 legacyAliases
+    // imageCapable:true 同批同步。不放子串表:子串会连带命中第三方网关的
+    // 快照拼写(deepseek-v4-flash-0731 / -202605 / deepseek/deepseek-v4-*),
+    // 这些部署未经官方多模态验证,前端目录刻意未标注,应落 Unknown。
     // 阿里 Qwen(help.aliyun.com Model Studio vision 文档,2026-09-11):
     // qwen3.8-max / qwen3.8-flash 全系收;qwen3.7 仅 plus/flash(3.7-max 纯文本,
     // 不能用 qwen3.7 整体子串);qwen3.6-flash 收。VL 系列保留。"qwen3.8" 为
@@ -153,13 +155,26 @@ const VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     "kimi-k2.6",
 ];
 
-/// 精确(小写全等)收录条目:子串命中面过宽的短泛型 id 或「同名纯文本变体」
-/// 只能按全等收录——裸 "k3" 子串会让任何含 "k3" 的自定义名(第三方/聚合器的
-/// 无关模型等)被判为原生识图并在发送时内联图片;mimo-v2.5 若走子串会连带
-/// 纯文本的 mimo-v2.5-pro。两者都违反本表「宁可 Unknown 不可误判 Supported」
-/// 的收录原则,故只按全等收录。未来出现新的 -档位拼写时应在此追加,而不是
-/// 回退子串。
-const EXACT_VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &["k3", "k3-256k", "mimo-v2.5"];
+/// 精确(小写全等)收录条目:子串命中面过宽的短泛型 id、「同名纯文本变体」
+/// 或官方并行拼写只能按全等收录——裸 "k3" 子串会让任何含 "k3" 的自定义名
+/// (第三方/聚合器的无关模型等)被判为原生识图并在发送时内联图片;mimo-v2.5
+/// 若走子串会连带纯文本的 mimo-v2.5-pro;deepseek-v4-flash(-vision-exp) 为
+/// 官方退役别名,子串会连带未经多模态验证的第三方网关快照拼写。均违反本表
+/// 「宁可 Unknown 不可误判 Supported」的收录原则,故只按全等收录。未来出现
+/// 新的 -档位拼写时应在此追加,而不是回退子串。
+const EXACT_VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
+    "k3",
+    "k3-256k",
+    "mimo-v2.5",
+    // Tencent Token Plan 官方连字符并行拼写(前端 minimax-m3 行的
+    // legacyAliases 同款):不含 "minimax-m3" 子串,缺条目会让存量配置在
+    // 发送时解析 Unknown,与表单预填的「支持」分叉。
+    "minimax-m-3-0",
+    // DeepSeek 官方退役别名,官方明示仍被接受并路由至多模态 V4.1-Flash 计费
+    // (api-docs.deepseek.com/news260910,2026-09-11 核对)。
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-vision-exp",
+];
 
 /// 内置表查询:模型名(小写化)是否命中已验证多模态条目。
 fn builtin_verified_supports_image(model: &str) -> bool {
@@ -345,6 +360,9 @@ mod tests {
             (ModelPreset::Glm, "glm-5.3-flash"),
             (ModelPreset::Doubao, "doubao-seed-evolving"),
             (ModelPreset::Minimax, "MiniMax-M3"),
+            // Tencent Token Plan 官方连字符并行拼写(前端 legacyAliases 同款),
+            // 须经精确表同样 Supported,否则存量配置发送时退化 Unknown。
+            (ModelPreset::OpenaiCompatible, "minimax-m-3-0"),
             // MiMo(2026-09-11):多模态在 mimo-v2.5,纯文本的 mimo-v2.5-pro 不得
             // 连带命中,故走精确全等表(见 EXACT_VERIFIED_IMAGE_CAPABLE_MODELS)。
             (ModelPreset::Mimo, "mimo-v2.5"),
@@ -376,9 +394,12 @@ mod tests {
         // - deepseek-v4-pro is not on the official vision page;
         // - mimo-v2.5-pro / muse-spark-1.1 are outside the builtin table and
         //   must also resolve to Unknown;
-        // - 含 "k3" 的无关自定义名不得被子串误判(裸 k3 已改精确收录)。
+        // - 含 "k3" 的无关自定义名不得被子串误判(裸 k3 已改精确收录);
+        // - 第三方网关快照拼写(deepseek-v4-flash-202605 等)未经官方多模态
+        //   验证,退役别名的精确条目不得连带命中(前端目录同样未标注)。
         for (preset, name) in [
             (ModelPreset::Deepseek, "deepseek-v4-pro"),
+            (ModelPreset::OpenaiCompatible, "deepseek-v4-flash-202605"),
             (ModelPreset::Qwen, "qwen3.7-max"),
             (ModelPreset::Glm, "glm-5.3"),
             (ModelPreset::Glm, "glm-5.2"),
