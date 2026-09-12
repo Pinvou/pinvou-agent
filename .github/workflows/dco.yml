@@ -25,6 +25,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # Checkout exists only so the shared memory setup script can run; DCO
+      # verification itself works purely through the API.
+      - uses: actions/checkout@v7
+
+      - name: Set up zram and swap
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+
       # 进入 Merge Queue 前，每个 PR 已通过本 required check。merge_group 中只包含
       # GitHub 生成的组合提交，此处复用同名 check 上报成功，避免队列等待缺失上下文。
       - name: 确认队列中的 PR 已通过 DCO

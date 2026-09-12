@@ -84,6 +84,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up zram and swap
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+
       - name: Validate commit messages
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -101,6 +104,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Set up zram and swap
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - name: Node.js
         uses: actions/setup-node@v7
@@ -143,6 +149,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - name: Set up zram and swap
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
       - uses: dorny/paths-filter@v4
         id: filter
         with:
@@ -322,6 +330,9 @@ jobs:
           submodules: false
           fetch-depth: 0
 
+      - name: Set up zram and swap
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+
       - name: 架构边界门禁
         run: |
           base_ref="${{ github.event_name == 'merge_group' && github.event.merge_group.base_ref || github.base_ref }}"
@@ -329,7 +340,8 @@ jobs:
           python3 scripts/architecture-guard.py --base-ref "origin/$base_ref"
 
       - name: 公开底座 gitlink 可达性
-        # Fail closed: PRs and merge-queue commits must match the current immutable public tag.
+        # Fail closed: gitlink 必须等于公开维护分支头；过渡期（fork-policy 第 0 节豁免）
+        # 内不可变 tag 钉在其收口 commit，rN 收口后恢复三方相等。
         run: ./scripts/verify-public-submodule.sh
 
       - name: 初始化公共底座 submodule
@@ -385,6 +397,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Set up zram and swap
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - uses: actions/setup-node@v7
         with:
@@ -485,6 +500,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Set up zram and swap
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
@@ -507,6 +525,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+
+      - name: Set up zram and swap
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - uses: actions/setup-node@v7
         with:
@@ -538,6 +559,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Set up zram and swap
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -585,7 +609,7 @@ jobs:
   # 不接入 sccache:clippy 产物与 test 不通用,接入会使 sccache 写入量翻倍并
   # 挤压 10GB 配额。benchmark/product backend 只在此做 cargo check；需要链接的
   # headless 合同放在 rust-test 的 lib harness，与全量单测只链接一个大型
-  # Tauri 测试二进制，并复用其 lld/内存防护。
+  # Tauri 测试二进制，并复用其 lld/内存扩容配置。
   rust-lint:
     name: rust-lint
     needs: changes
@@ -608,6 +632,9 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: false
+
+      - name: Set up zram and swap
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - name: 初始化公共底座 submodule
         run: git submodule update --init --recursive -- CodeWhale
@@ -808,6 +835,9 @@ jobs:
         with:
           submodules: false
 
+      - name: Set up zram and swap
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+
       - name: 初始化公共底座 submodule
         run: git submodule update --init --recursive -- CodeWhale
 
@@ -889,11 +919,10 @@ jobs:
 
       # High-risk/explicit PRs and matching merge groups run all lib tests
       # (含真实 relay/Chrome e2e)。
-      # 编译链接与测试执行拆成两个 step:该 job 在 16GB hosted runner 上多次在
+      # 编译链接与测试执行拆成两个 step:该 job 曾在 16GB hosted runner 上多次在
       # 本环节被打到 runner 失联(日志全丢,只剩 step 状态可查),拆开后失联时
-      # 能定位是编译/链接期还是测试执行期。ci-memguard.sh 每 5s 输出内存/磁盘
-      # 时间序列,并在可用内存跌破阈值时抢先杀掉 cargo/rustc/lld,把 runner
-      # 失联转化为带完整日志的 step 失败。
+      # 能定位是编译/链接期还是测试执行期。内存压力现由 job 开头的
+      # "Set up zram and swap" step(scripts/ci-memory-setup.sh)扩大有效内存吸收。
       # 保留 --test-threads=1:虽已把 env 写测试收敛到 crate 级唯一锁
       # (bridge::paths::tests::ENV_LOCK),但进程级 env 对未持锁的读取者仍全局可见，
       # 多线程测试仍可能观察到其他测试的临时值。Mutex poison 后通过 into_inner()
@@ -904,15 +933,7 @@ jobs:
       # 编译与链接，避免第二个 integration-test 二进制超过 16GB runner 边界。
       - name: cargo test --lib --no-run（编译链接测试二进制）
         if: ${{ github.event_name != 'push' }}
-        run: |
-          bash scripts/ci-memguard.sh &
-          guard_pid=$!
-          set +e
-          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --features benchmark-hooks --locked --no-run
-          status=$?
-          set -e
-          kill "$guard_pid" 2>/dev/null || true
-          exit "$status"
+        run: /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --features benchmark-hooks --locked --no-run
 
       - name: cargo test --lib（含 strict_mode 回归；真 bge-m3/vLLM 测试已 #[ignore]）
         if: ${{ github.event_name != 'push' }}
@@ -920,14 +941,7 @@ jobs:
           chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
           export CHROME="$chrome"
           export PINVOU_REQUIRE_REMOTE_E2E=1
-          bash scripts/ci-memguard.sh &
-          guard_pid=$!
-          set +e
           cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --features benchmark-hooks --locked -- --test-threads=1
-          status=$?
-          set -e
-          kill "$guard_pid" 2>/dev/null || true
-          exit "$status"
 
       # push(main) 唯一目的是暖 cache(Swatinem/rust-cache save-if main)。
       # MQ 已对同一代码跑过完整 lib 测试,squash 合并后的 push 不再重复执行测试;
@@ -939,15 +953,7 @@ jobs:
       # 故恢复只编译设计;不要在 push 上重新打开测试执行。
       - name: cargo test --lib --no-run (push main 仅编译暖 cache)
         if: ${{ github.event_name == 'push' }}
-        run: |
-          bash scripts/ci-memguard.sh &
-          guard_pid=$!
-          set +e
-          /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --features benchmark-hooks --locked --no-run
-          status=$?
-          set -e
-          kill "$guard_pid" 2>/dev/null || true
-          exit "$status"
+        run: /usr/bin/time -v cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --features benchmark-hooks --locked --no-run
 
   windows-rust-test:
     name: windows-rust-test
@@ -1227,6 +1233,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up zram and swap
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+
       - name: 汇总所有适用检查
         env:
           COMMIT_MESSAGE_RESULT: ${{ needs.commit-message.result }}
