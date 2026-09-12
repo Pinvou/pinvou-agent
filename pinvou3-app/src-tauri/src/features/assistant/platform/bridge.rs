@@ -1288,10 +1288,12 @@ impl Pinvou3Bridge {
         let configured_context = saved.and_then(|saved| saved.context_window_tokens);
         let inferred_context = crate::core::model_context::resolved_context_window(model);
         let is_local_vllm = self.provider() == "vllm";
-        // 窗口优先级与监控展示共用 core::model_context 的同一函数（声明优先、
-        // 探测取小、推断兜底），防止两条路径各写一份 match 后漂移。探测值只
-        // 对可实地内省的本地 vLLM 存在（云端恒为 None，见 engine_pool 的探测门），
-        // 因此云端声明不会被任何探测值覆盖。
+        // The window precedence shares core::model_context's single function
+        // with the monitor display (declaration wins, probe min-clamps,
+        // inference fills in), so the two paths cannot drift apart by each
+        // keeping their own match. The probed value only exists for locally
+        // introspectable vLLM (cloud is always None, see the probe gate in
+        // engine_pool), so a cloud declaration is never overridden by any probe.
         let (context_tokens, _) = crate::core::model_context::resolve_context_window(
             configured_context,
             self.probed_context_tokens,

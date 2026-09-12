@@ -144,8 +144,10 @@ pub async fn active_model_snapshot() -> Option<VllmSnapshot> {
     let api_key = model.as_ref().and_then(model_api_key);
     let model_id = model.as_ref().map(|m| m.id.clone());
     let provider = preset.as_str().to_string();
-    // 用户在模型表单显式声明的上下文窗口必须参与监控/Live-dot 展示口径，
-    // 否则保存 1M 后聊天页(chat:usage 分母)与监控页/进度条分母各说各话。
+    // The context window the user explicitly declares in the model form must
+    // join the monitor / live-dot display scale; otherwise after saving 1M the
+    // chat page (chat:usage denominator) and the monitor page / progress-bar
+    // denominator each tell their own story.
     let configured_context = model.as_ref().and_then(|m| m.context_window_tokens);
     snapshot_for_model_config(
         &upstream,
@@ -376,10 +378,13 @@ async fn snapshot_for_model_config(
     } else {
         Vec::new()
     };
-    // 展示窗口走统一优先级（见 display_context_window）：用户显式声明优先，
-    // 本地部署的探测值做 min 收紧；云端探测值（常来自代理/网关的列表条目，
-    // 与配置模型无关甚至过时）不得覆盖用户声明，否则保存 1M 后进度条被打回
-    // 131K。探测与目录/预设兜底只在无声明时补位。
+    // The display window goes through the unified precedence (see
+    // display_context_window): an explicit user declaration wins first, a local
+    // deployment's probe value min-clamps; a cloud probe value (usually a list
+    // entry from a proxy/gateway, unrelated to or stale for the configured
+    // model) must not override the user declaration, otherwise saving 1M gets
+    // the progress bar knocked back to 131K. Probe and catalog/preset fallbacks
+    // only fill in when no declaration exists.
     let inferred = infer_context_window(
         preset,
         configured_model.as_deref().or(served_model.as_deref()),
@@ -500,12 +505,17 @@ fn parse_models_response(
     configured: Option<&str>,
 ) -> Option<(Option<String>, Option<u32>)> {
     let entries = crate::core::model_endpoint::parse_models_response_list(v)?;
-    // 云端 /models 往往一次列出全部模型：优先取配置模型自身条目（精确命中，
-    // ASCII 大小写不敏感兜底；配置名先 trim，与 Mismatch 判定的双侧 trim 同口径）。
-    // 首条回退仅供 served 名展示——其 max_model_len 属于别的模型，不得借给配置
-    // 模型（与 `resolve_served_model_from_entries` 的「窗口不借自别的模型」同一
-    // 原则）。两者回退取向不同是有意的：推理路径未命中时保留配置名，让
-    // model_not_found 显式暴露；展示路径回退首条名字仅是诊断信息。
+    // Cloud /models often lists every model at once: prefer the configured
+    // model's own entry (exact hit, ASCII case-insensitive fallback; the
+    // configured name is trimmed first, matching the double-sided trim of the
+    // Mismatch check). The first-entry fallback only serves the served-name
+    // display — its max_model_len belongs to another model and must not be lent
+    // to the configured model (the same "a window is never borrowed from another
+    // model" principle as `resolve_served_model_from_entries`). The two paths
+    // falling back differently is intentional: the inference path keeps the
+    // configured name on a miss so model_not_found surfaces explicitly; the
+    // display path falling back to the first entry's name is diagnostic info
+    // only.
     let configured = configured.map(str::trim).filter(|name| !name.is_empty());
     let matched = configured.and_then(|name| {
         entries.iter().find(|entry| entry.id == name).or_else(|| {
@@ -523,13 +533,17 @@ fn parse_models_response(
     Some((Some(entry.id.clone()), window))
 }
 
-/// 展示侧上下文窗口（监控卡 + `get_backend_status` 的进度条分母）。优先级
-/// 本体在 `core::model_context::resolve_context_window`，与宿主
-/// `bridge::route_limits_for_model`（决定推理与压缩阈值）共用同一函数；本
-/// wrapper 只负责「探测值是否可信」的门控：本地部署（环回/私有 IP，可实地
-/// 内省）的探测值交给统一口径做 min 收紧；云端探测值来自网关/代理的列表
-/// 条目，不是部署实地事实，故在用户已声明窗口时整体不参与（声明优先且无
-/// 收紧依据），仅在无声明时作展示补位。
+/// Display-side context window (the monitor card + the progress-bar denominator
+/// of `get_backend_status`). The precedence itself lives in
+/// `core::model_context::resolve_context_window`, shared with the host
+/// `bridge::route_limits_for_model` (which decides inference and compaction
+/// thresholds); this wrapper only owns the "is the probe trustworthy" gate: a
+/// local deployment's (loopback/private IP, locally introspectable) probe value
+/// is handed to the unified scale for min-clamping; a cloud probe value comes
+/// from gateway/proxy list entries and is not deployment ground truth, so when
+/// the user already declared a window it does not participate at all (the
+/// declaration wins and there is no clamping basis) and only fills the display
+/// when no declaration exists.
 fn display_context_window(
     configured: Option<u32>,
     target_kind: &str,
@@ -543,11 +557,15 @@ fn display_context_window(
     crate::core::model_context::resolve_context_window(configured, probed, inferred)
 }
 
-/// 配置模型名与实际 served 名不一致时降级为 `Mismatch`（仅本地部署调用方启用，
-/// 见 `snapshot_for_model_config`）。抽成纯函数以便单测锁住比较语义：双侧
-/// trim 后精确比较（大小写敏感，与推理路径 `resolve_served_model_from_entries`
-/// 的精确匹配同口径——网关把 id 统一成小写而配置名带大写时，Engine 发送配置
-/// 原名会 model_not_found，监控红点是真实信号而非误报）。
+/// Downgrade to `Mismatch` when the configured model name differs from the
+/// actual served name (only local-deployment callers enable it, see
+/// `snapshot_for_model_config`). Extracted as a pure function so unit tests can
+/// pin the comparison semantics: exact comparison after trimming both sides
+/// (case-sensitive, the same scale as the inference path
+/// `resolve_served_model_from_entries`' exact match — when a gateway normalizes
+/// ids to lowercase while the configured name has uppercase, the Engine sending
+/// the configured original name gets model_not_found, so the monitor red dot is
+/// a real signal, not a false positive).
 fn mismatch_if_served_differs(
     status: VllmStatus,
     configured: Option<&str>,
@@ -560,9 +578,11 @@ fn mismatch_if_served_differs(
 }
 
 fn infer_context_window(preset: ModelPreset, model: Option<&str>) -> Option<u32> {
-    // 模型名事实经 core::model_context 单一入口解析，宿主 route_limits 的推断
-    // 兜底同源，避免页面显示 1M、实际仍按 128K 压缩。底座与补充表都无法识别时
-    // 按供应商预设兜底（表在 prefs::model_preset）。
+    // Model-name facts resolve through the core::model_context single entry, the
+    // same source as the host route_limits inference fallback, so the page never
+    // displays 1M while compaction still runs on 128K. When neither the base nor
+    // the supplemental table recognizes the name, fall back to the vendor preset
+    // (table in prefs::model_preset).
     if let Some(window) = model.and_then(crate::core::model_context::resolved_context_window) {
         return Some(window);
     }
@@ -837,8 +857,9 @@ mod tests {
         .unwrap()
     }
 
-    /// 云端 /models 一次列出全部模型：max_model_len 必须取配置模型自身的条目，
-    /// 不能借首条（往往是别的模型甚至网关默认 131072）的窗口。
+    /// Cloud /models often lists every model at once: max_model_len must come
+    /// from the configured model's own entry, never borrowed from the first
+    /// entry (often another model, or a gateway default of 131072).
     #[test]
     fn parse_models_response_matches_configured_model_entry() {
         let json = models_list_json(&[
@@ -850,9 +871,11 @@ mod tests {
         assert_eq!(max, Some(131_072));
     }
 
-    /// 配置名不在列表（网关只回部分名单）：首条回退仅供 served 名展示，其
-    /// max_model_len 属于别的模型，不得借给配置模型（与推理路径
-    /// resolve_served_model_from_entries 的「窗口不借自别的模型」同一原则）。
+    /// Configured name not in the list (gateway returns a partial roster): the
+    /// first-entry fallback only serves the served-name display; its
+    /// max_model_len belongs to another model and must not be lent to the
+    /// configured model (the inference path resolve_served_model_from_entries
+    /// follows the same "window never borrowed" principle).
     #[test]
     fn parse_models_response_first_entry_fallback_lends_name_not_window() {
         let json = models_list_json(&[("a", Some(4096)), ("b", Some(8192))]);
@@ -861,8 +884,9 @@ mod tests {
         assert_eq!(max, None);
     }
 
-    /// 大小写不敏感兜底命中时窗口同样归属配置模型（网关把 id 统一成小写是
-    /// 常见形态，窗口确属同一模型）。
+    /// When the case-insensitive fallback hits, the window likewise belongs to
+    /// the configured model (gateways normalizing ids to lowercase are a common
+    /// shape, and the window does belong to the same model).
     #[test]
     fn parse_models_response_matches_case_insensitively_and_keeps_window() {
         let json = models_list_json(&[("other", Some(4096)), ("glm-5.3-flash", Some(131_072))]);
@@ -871,8 +895,9 @@ mod tests {
         assert_eq!(max, Some(131_072));
     }
 
-    /// 配置名先 trim 再匹配（与 Mismatch 判定的双侧 trim 同口径），带首尾
-    /// 空格的配置名不再永远无法命中。
+    /// The configured name is trimmed before matching (the same scale as the
+    /// double-sided trim of the Mismatch check), so a name with leading or
+    /// trailing whitespace can finally match.
     #[test]
     fn parse_models_response_trims_configured_name() {
         let json = models_list_json(&[("glm-5.3-flash", Some(131_072))]);
@@ -881,8 +906,9 @@ mod tests {
         assert_eq!(max, Some(131_072));
     }
 
-    /// 命中条目但服务端未带 max_model_len：窗口保持 None，交由声明/推断兜底，
-    /// 绝不伪造（与 resolve_served_model_from_entries 的同名原则一致）。
+    /// Matched entry but the server carries no max_model_len: the window stays
+    /// None and is left to the declaration/inference fallbacks — never
+    /// fabricated (the same principle as resolve_served_model_from_entries).
     #[test]
     fn parse_models_response_matched_entry_without_window_propagates_none() {
         let json = models_list_json(&[("user-picked", None)]);
@@ -891,8 +917,9 @@ mod tests {
         assert_eq!(max, None);
     }
 
-    /// 用户显式声明的窗口（云端，探测值 131072 来自网关列表）：声明必须原样
-    /// 胜出——回归本次「保存 1048576 后进度条仍显示 131.1K」的根因。
+    /// A user-declared window (cloud; probe value 131072 from a gateway list):
+    /// the declaration must win as-is — regression pin for the reported bug
+    /// (after saving 1048576 the progress bar still showed 131.1K).
     #[test]
     fn display_window_remote_configured_declaration_beats_probe() {
         let (window, inferred) =
@@ -901,20 +928,23 @@ mod tests {
         assert!(!inferred);
     }
 
-    /// 本地部署探测值是实地事实：与宿主 route_limits 同款 min 收紧。
+    /// A local deployment's probe is ground truth: the same min-clamp as the
+    /// host route_limits.
     #[test]
     fn display_window_local_min_clamps_declaration_with_probe() {
         let (window, inferred) =
             display_context_window(Some(1_048_576), "local", Some(131_072), None);
         assert_eq!(window, Some(131_072));
         assert!(!inferred);
-        // 反向：声明 32K、实机 128K → 按声明收紧（与 route_limits 一致）。
+        // Reverse: declared 32K, machine at 128K → clamped to the declaration
+        // (consistent with route_limits).
         let (window, _) = display_context_window(Some(32_768), "local", Some(131_072), None);
         assert_eq!(window, Some(32_768));
     }
 
-    /// 本地声明但探测缺席（/models 解析失败等）：声明原样生效——与宿主
-    /// route_limits 的 (Some, None) 臂一致，探测缺席不产生任何收紧。
+    /// Local declaration but probe absent (/models parse failure etc.): the
+    /// declaration applies as-is — matching the host route_limits (Some, None)
+    /// arm; an absent probe produces no clamping.
     #[test]
     fn display_window_local_declared_without_probe_uses_declaration() {
         let (window, inferred) =
@@ -923,7 +953,8 @@ mod tests {
         assert!(!inferred);
     }
 
-    /// target_kind 异常（URL 解析失败）时有声明仍按声明展示，探测值不覆盖。
+    /// Abnormal target_kind (URL parse failure): a declaration still displays
+    /// as declared, and the probe value does not override it.
     #[test]
     fn display_window_declared_on_nonlocal_target_ignores_probe() {
         let (window, inferred) =
@@ -932,8 +963,9 @@ mod tests {
         assert!(!inferred);
     }
 
-    /// 无声明时保持既有口径：探测值优先，探测缺席才用推断；推断被真正采用时
-    /// 才置诊断标记。
+    /// Without a declaration the existing scale holds: the probe wins first and
+    /// inference only fills in when the probe is absent; the diagnostic flag is
+    /// set only when inference is truly adopted.
     #[test]
     fn display_window_without_declaration_keeps_probe_then_infer() {
         let (window, inferred) =
@@ -948,8 +980,9 @@ mod tests {
         assert!(!inferred);
     }
 
-    /// Mismatch 判定语义（抽出的纯函数）：双侧 trim、精确比较（大小写敏感）、
-    /// 任一侧缺席不降级、原状态非 Ready 时只降级不升级。
+    /// Mismatch detection semantics (extracted pure function): double-sided
+    /// trim, exact comparison (case-sensitive), a missing side never downgrades,
+    /// and a non-Ready original status can only be downgraded, never upgraded.
     #[test]
     fn mismatch_detection_trims_and_is_case_sensitive() {
         use VllmStatus::{Busy, Ready};
@@ -957,8 +990,9 @@ mod tests {
             mismatch_if_served_differs(Ready, Some(" qwen "), Some("qwen")),
             Ready
         );
-        // 大小写不同 → Mismatch：Engine 发送配置原名会 model_not_found，红点是
-        // 真实信号（与 resolve_served_model_from_entries 的精确匹配同口径）。
+        // Case difference → Mismatch: the Engine sending the configured original
+        // name would get model_not_found, so the red dot is a real signal (the
+        // same scale as resolve_served_model_from_entries' exact match).
         assert_eq!(
             mismatch_if_served_differs(Ready, Some("Qwen"), Some("qwen")),
             VllmStatus::Mismatch
