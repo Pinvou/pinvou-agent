@@ -119,12 +119,29 @@ impl KnowledgeService {
     /// 只用磁盘库初始化（`~/.pinvou3/knowledge/index.db`）。embedding 模型必须在首帧后
     /// 通过后台 blocking 线程加载，避免读取/构建大型 ONNX 模型阻塞 Tauri setup 和首屏。
     pub fn new(db_path: &Path) -> rusqlite::Result<Self> {
+        Self::open(db_path, true)
+    }
+
+    /// Like [`Self::new`], but a crashed import is NOT reconciled at boot.
+    /// Read-only consumers (the headless CLI) must be able to open the store
+    /// without degrading an import a live app process is still running:
+    /// recovery flips that job to terminal state, which would wedge the
+    /// owner's bookkeeping. Write paths keep [`Self::new`].
+    pub fn new_without_recovery(db_path: &Path) -> rusqlite::Result<Self> {
+        Self::open(db_path, false)
+    }
+
+    fn open(db_path: &Path, recover: bool) -> rusqlite::Result<Self> {
         let store = Store::open(db_path)?;
         let last_scan_finished_at = store.last_scan_finished_at().unwrap_or(0);
         let conn = store.conn_arc();
         let l1 = l1::L1Store::new(conn.clone(), None);
         let imports = import_jobs::ImportJobStore::new(conn);
-        let interrupted = imports.recover_interrupted()?;
+        let interrupted = if recover {
+            imports.recover_interrupted()?
+        } else {
+            None
+        };
         if let Some(job) = &interrupted {
             if job.resumable {
                 l1.set_collection_status(job.collection_id, "pending");
