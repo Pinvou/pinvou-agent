@@ -3584,6 +3584,18 @@ mod tests {
                     && r.command.as_deref().is_some_and(|c| c.starts_with("mkfs"))),
             "safety-net command rules should always be present"
         );
+        // The same ruleset must also carry the safety face on the promoted
+        // (denied_prefixes) channel — the channel that actually matches the
+        // wildcard/flag rules at runtime. Pins rule presence AND promotion
+        // independently, so a promotion regression gets its own signal here.
+        assert!(
+            bridge
+                .scope_deny_ruleset("sess-plain")
+                .denied_prefixes
+                .iter()
+                .any(|p| p.starts_with("mkfs")),
+            "safety-net rules should be promoted into denied_prefixes"
+        );
 
         // plain disables my-skill → contains a deny rule pointing at the script
         crate::features::marketplace::skill_scope::save_disabled_skills_for(
@@ -3658,10 +3670,11 @@ mod tests {
     /// Falsified-dead-path regression for the hook → execpolicy migration:
     /// since foundation v0.9.3 the model only calls `Bash` (the hook received
     /// `Bash`, so its exec_shell*-gated segments silently passed). The
-    /// composed session-engine ruleset must deny `sudo rm` (the measured dead
-    /// samples of former hook segments 3/4) plus the surviving hard-deny
+    /// composed session-engine ruleset must deny `sudo rm` (the one measured
+    /// dead sample of former hook segments 3/4) plus the surviving hard-deny
     /// faces — persistence writes, catastrophic destruction, bare-root
-    /// destroy — under Never/YOLO semantics, with the rotation/config
+    /// destroy, and the v3.1 direct-upload face — under Never/YOLO
+    /// semantics, with the rotation/config
     /// allowances and the v2.2/v3 rolled-back reader/exfil shapes kept open.
     #[test]
     fn session_exec_policy_denies_migrated_hook_targets_under_bash_tool() {

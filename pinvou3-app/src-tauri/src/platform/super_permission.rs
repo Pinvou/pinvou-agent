@@ -15,8 +15,9 @@
 //! 维护：卸载 .deb 时由 `prerm` 删 `/etc/sudoers.d/pinvou3`，避免遗留授权。
 
 /// Process-wide toggle mutex: the full super-permission toggle sequence
-/// (`is_enabled()` disk read → pkexec write/remove of the sudoers file →
-/// engine ruleset rebuild + broadcast) must run as a whole under the lock.
+/// (pkexec write/remove of the sudoers file → the engine ruleset rebuild +
+/// broadcast, which re-reads the sudo state from disk, → the effective-state
+/// read-back) must run as a whole under the lock.
 ///
 /// Without serialization, two concurrent toggles interleave the pkexec write
 /// with the sudo-state snapshot, and the later `refresh_permission_rulesets`
