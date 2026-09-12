@@ -123,8 +123,22 @@ pub(crate) fn spawn_event_forwarder(
                         continue;
                     }
                     if let Some((_, mode)) = pending_cancel {
-                        approve_handle
-                            .cancel_with_mode(deepseek_tui::core::engine::CancelReason::User, mode);
+                        // Replay bound to the engine slot's turn identity
+                        // (issue #254): by the time `TurnStarted` arrives the
+                        // engine has installed this turn's fresh token, so
+                        // the replay hits exactly this turn's active token.
+                        // If the engine self-started yet another turn inside
+                        // this narrow window (a self-started continuation
+                        // chain), the slot identity no longer matches,
+                        // `cancel_turn` returns false and the replay is
+                        // dropped wholesale — the old turn's stop does not
+                        // chase the newer turn, and no steer disposition or
+                        // cancel reason is published for it either.
+                        let _replayed = approve_handle.cancel_turn(
+                            &turn_id,
+                            deepseek_tui::core::engine::CancelReason::User,
+                            mode,
+                        );
                     }
                     active_transcript_seen = false;
                     active_operation_rejected = false;

@@ -110,12 +110,14 @@ struct TurnLifecycleState {
     ///
     /// 此标记由 [`arm_pending_cancel`] 在 cancel 路径设置（仅当 turn 尚未
     /// started），由事件转发器在收到 `TurnStarted` 后通过
-    /// [`take_pending_cancel`] atomically takes it and replays
-    /// `cancel_with_mode` with the stored mode — by then
-    /// `reset_cancel_token()` has already run, so the cancel hits the current
-    /// turn's active token. The mode must be saved together with the flag: a
-    /// replay that falls back to the mode-less `cancel()` (hard-coded
-    /// StopDropInbox) would make a ⚡ (InterruptKeepInbox) interrupt in the
+    /// [`take_pending_cancel`] atomically takes it and replays the cancel
+    /// turn-bound (`EngineHandle::cancel_turn(turn_id, …)`) with the stored
+    /// mode — by then `reset_cancel_token()` has already run, so the replay
+    /// fires exactly the named turn's own token, and the foundation drops it
+    /// wholesale if the slot has already moved on to a newer turn (issue
+    /// #254). The mode must be saved together with the flag: a replay that
+    /// falls back to the mode-less `cancel()` (hard-coded StopDropInbox)
+    /// would make a ⚡ (InterruptKeepInbox) interrupt in the
     /// submit→TurnStarted window wrongly clear un-injected queued steers.
     ///
     /// 携带 arming 时的 [`turn_epoch`]：并发取消请求（C1/C2）中，排队较晚的
@@ -345,6 +347,134 @@ impl Drop for TurnReservation {
     fn drop(&mut self) {
         if !self.submitted {
             self.lifecycle.on_reservation_failed(self.reservation_id);
+        }
+    }
+}
+
+/// Same-source turn identity captured under the lifecycle state lock and
+/// handed to the cancel closure by
+/// [`TurnLifecycle::arm_pending_cancel_and_cancel`]. The closure runs inside
+/// that same critical section, so the snapshot cannot interleave with a turn
+/// switch (epoch from one turn, turn id from another) and cannot go stale
+/// between snapshot and dispatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TurnIdentity {
+    pub(crate) epoch: u64,
+    /// Turn id observed by the forwarder via `TurnStarted`. `None` covers
+    /// both the submit→TurnStarted window and the terminal-closing window
+    /// (where the claim already took the id into the terminal payload).
+    pub(crate) turn_id: Option<String>,
+    /// Terminal-closing window (`terminal_closing`): the target turn already
+    /// ended. Same shape as reserved-but-unstarted `(epoch, None)` but the
+    /// opposite meaning — neither may fire a token (issue #254), and the
+    /// discriminator keeps the two documented apart in the dispatch.
+    pub(crate) closing: bool,
+}
+
+/// What the cancel closure may do to the engine for a given identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TurnBoundCancelAction {
+    /// The engine slot names the target turn: cancel exactly that turn via
+    /// the foundation's turn-bound `cancel_turn`. If the slot has already
+    /// moved on, the foundation skips wholesale — the target turn is over and
+    /// the newer turn is not this stop's object.
+    BoundTurn(String),
+    /// Reserved but not yet observed as started (submit→TurnStarted window).
+    /// The slot can hold anything: the previous turn's dead token, this
+    /// turn's freshly installed token, or — when a delayed forwarder has not
+    /// yet observed this turn's lifecycle — a runtime self-started follow-up
+    /// turn's live token (issue #254). The app cannot tell those apart, so
+    /// no token may fire here: the stop publishes its disposition only, and
+    /// the genuinely pending target is cancelled by the forwarder's
+    /// turn-bound `pending_cancel` replay once its `TurnStarted` is observed
+    /// (the replay is armed in the same critical section that produced this
+    /// verdict, and the foundation's identity check drops the replay if the
+    /// slot has since moved on).
+    Unbound,
+    /// Terminal closing (or the defensive no-identity case): the target turn
+    /// already ended, so there is nothing legitimate to cancel while the slot
+    /// may hold a self-started follow-up's live token — publish the stop
+    /// disposition (drop parked steers, latch the cancel reason) and never
+    /// fire (issue #254).
+    DispositionOnly,
+}
+
+/// Map a same-source identity snapshot to the cancel closure's verdict.
+/// Pure function so every interleaving can be exhaustively unit-tested; the
+/// actual firing goes through [`TurnBoundCancelOps`].
+pub(crate) fn turn_bound_cancel_action(identity: Option<&TurnIdentity>) -> TurnBoundCancelAction {
+    match identity {
+        Some(TurnIdentity {
+            turn_id: Some(turn_id),
+            closing: false,
+            ..
+        }) => TurnBoundCancelAction::BoundTurn(turn_id.clone()),
+        // Reserved but unstarted: never fire blind — the replay carries the
+        // cancel (see the Unbound docs).
+        Some(TurnIdentity { closing: false, .. }) => TurnBoundCancelAction::Unbound,
+        // Terminal closing / no identity: disposition only, never fire.
+        Some(TurnIdentity { closing: true, .. }) | None => TurnBoundCancelAction::DispositionOnly,
+    }
+}
+
+/// Engine-facing operations the turn-bound stop dispatch needs. `AppEngine`
+/// implements it with the foundation's turn-bound entries; the wiring tests
+/// implement it against a fake of the foundation slot contract so the shared
+/// dispatch itself is exercised (issue #254 review round).
+pub(crate) trait TurnBoundCancelOps {
+    /// Cancel exactly `turn_id` while it still holds the engine slot
+    /// (foundation `cancel_turn`). `false` = the slot moved on: the
+    /// foundation cancelled nothing and published no disposition — the target
+    /// turn is already gone, which is the arbitration working as designed.
+    fn cancel_bound_turn(
+        &self,
+        turn_id: &str,
+        mode: deepseek_tui::core::engine::CancelMode,
+    ) -> bool;
+
+    /// Publish the stop disposition (drop parked steers, latch the cancel
+    /// reason) without firing any token (foundation
+    /// `publish_stop_disposition`).
+    fn publish_stop_disposition_only(&self, mode: deepseek_tui::core::engine::CancelMode);
+}
+
+impl TurnBoundCancelOps for AppEngine {
+    fn cancel_bound_turn(
+        &self,
+        turn_id: &str,
+        mode: deepseek_tui::core::engine::CancelMode,
+    ) -> bool {
+        self.cancel_turn_with_mode(turn_id, mode)
+    }
+
+    fn publish_stop_disposition_only(&self, mode: deepseek_tui::core::engine::CancelMode) {
+        self.publish_stop_disposition(mode)
+    }
+}
+
+/// Dispatch a stop onto the engine according to the identity snapshot.
+/// Shared verbatim by `EnginePool::cancel`'s production closure and the
+/// wiring tests so the two cannot drift (issue #254 review round).
+///
+/// The no-fire invariant: whenever the identity cannot prove the slot still
+/// belongs to the intended target — unobserved submit→TurnStarted window,
+/// terminal closing, or no identity at all — only the disposition is
+/// published. A delayed forwarder means the slot may already hold a runtime
+/// self-started follow-up turn's live token, and firing it would resurrect
+/// exactly the #254 wrong-turn cancellation this dispatch exists to close.
+pub(crate) fn dispatch_turn_bound_cancel<E: TurnBoundCancelOps + ?Sized>(
+    engine: &E,
+    identity: Option<&TurnIdentity>,
+    mode: deepseek_tui::core::engine::CancelMode,
+) {
+    match turn_bound_cancel_action(identity) {
+        TurnBoundCancelAction::BoundTurn(turn_id) => {
+            engine.cancel_bound_turn(&turn_id, mode);
+        }
+        // Unbound and terminal closing converge on purpose: neither identity
+        // proves what the slot holds, so neither may fire a token.
+        TurnBoundCancelAction::Unbound | TurnBoundCancelAction::DispositionOnly => {
+            engine.publish_stop_disposition_only(mode);
         }
     }
 }
@@ -847,7 +977,7 @@ impl TurnLifecycle {
     }
 
     #[cfg(test)]
-    fn on_started(&self, turn_id: String) {
+    pub(crate) fn on_started(&self, turn_id: String) {
         let _ = self.on_started_transition(turn_id);
     }
 
@@ -964,7 +1094,10 @@ impl TurnLifecycle {
         Some(emitted)
     }
 
-    fn finish_terminal_emission(&self) {
+    /// Crate-visible so the engine-pool wiring tests can drive the closing
+    /// window end to end; the authoritative forwarder path (engine's own
+    /// child module) remains the only production caller.
+    pub(crate) fn finish_terminal_emission(&self) {
         self.state.lock().terminal_closing = false;
         self.last_terminal_epoch_ms.store(
             std::time::SystemTime::now()
@@ -1153,8 +1286,9 @@ impl TurnLifecycle {
     ///   `chat:done` 使 reservation 失效，而不是挂成 pending——否则空闲 engine 仍
     ///   存在时 cancel 不发终态、reservation 仍有效，原 chat future 后续照常提交，
     ///   前端 busy 在 cancel 后到 TurnStarted 之间无法复位。
-    /// - 若 `turn_id` 已有值说明 TurnStarted 已被转发器消费，`cancel_current()`
-    ///   直接命中当前活跃 token，无需补打。
+    /// - A set `turn_id` means the forwarder already consumed `TurnStarted`:
+    ///   the cancel closure dispatches turn-bound under that identity and
+    ///   hits exactly this turn's own token, with no replay needed.
     /// - 必须 `turn_epoch == epoch`：并发取消请求（C1/C2）中，排队较晚的 C2 在
     ///   持锁恢复后读到的是「当前 lifecycle」。cancel 已在取 `turn_lock` 前后比对
     ///   过 epoch（见 [`current_turn_generation`]/cancel 路径），此处传入**当前**
@@ -1208,15 +1342,24 @@ impl TurnLifecycle {
     /// `cancel` 必须同步、不 panic（panic 会使 Mutex 中毒），且不得再次获取
     /// 本 lifecycle 的 state 锁。
     ///
+    /// `cancel` receives the same-lock [`TurnIdentity`] snapshot
+    /// (epoch + observed turn id + closing) so the turn-bound dispatch can
+    /// never act on a stale cross-turn view — see
+    /// `dispatch_turn_bound_cancel` (issue #254 review round).
+    ///
     /// 其余语义与 [`arm_pending_cancel`] 一致：epoch 匹配则设置 pending（条件
     /// 满足时）并执行 `cancel` 后返回 `true`；epoch 不匹配返回 `false` 且
     /// **不执行** `cancel`，调用方必须整体 no-op。
     ///
-    /// pending records `(epoch, mode)`: on replay the forwarder re-runs
-    /// `cancel_with_mode` with the steer disposition mode
-    /// (`InterruptKeepInbox`/`StopDropInbox`) the caller passed at arming
-    /// time, not the mode-less `cancel()` (hard-coded StopDropInbox) —
-    /// otherwise ⚡'s keepInbox semantics would be lost on the replay path.
+    /// pending records `(epoch, mode)`: on replay the forwarder re-runs the
+    /// cancel turn-bound (`EngineHandle::cancel_turn(turn_id, …)`) with the
+    /// steer disposition mode (`InterruptKeepInbox`/`StopDropInbox`) the
+    /// caller passed at arming time, not the mode-less `cancel()`
+    /// (hard-coded StopDropInbox) — otherwise ⚡'s keepInbox semantics would
+    /// be lost on the replay path. The turn-bound form also means a replay
+    /// can never fire a token the named turn does not own: if the slot has
+    /// already moved on (a runtime self-started follow-up turn), the
+    /// foundation skips the replay wholesale, issue #254.
     ///
     /// [`arm_pending_cancel`]: Self::arm_pending_cancel_and_cancel
     pub(crate) fn arm_pending_cancel_and_cancel<F>(
@@ -1226,7 +1369,7 @@ impl TurnLifecycle {
         cancel: F,
     ) -> bool
     where
-        F: FnOnce(),
+        F: FnOnce(Option<TurnIdentity>),
     {
         let mut state = self.state.lock();
         if state.turn_epoch != epoch {
@@ -1241,21 +1384,35 @@ impl TurnLifecycle {
             // 级联取消只清 engine 遗留子代理，不误伤尚未启动的轮。
             return true;
         }
+        // Same-source identity snapshot for the closure, taken under this
+        // same state lock immediately before the dispatch (issue #254
+        // review round): the closure runs inside the critical section, so
+        // the verdict can never act on a stale cross-turn view. In
+        // particular, a `TurnStarted` that arrived while the cancel was
+        // still awaiting shows up here as a known turn id and is cancelled
+        // bound; an unobserved id keeps the stop to disposition-only with
+        // the replay armed below as the delivery path.
+        let identity = Some(TurnIdentity {
+            epoch: state.turn_epoch,
+            turn_id: state.turn_id.clone(),
+            closing: state.terminal_closing,
+        });
         if state.submitted && state.turn_id.is_none() && state.active {
             state.pending_cancel = Some((epoch, mode));
         }
         // 持锁执行同步取消：reserve_turn 需要同一把 state 锁，无法在
         // 「校验/arm」与「取消」之间插入轮次切换，旧 cancel 不可能命中新轮。
-        cancel();
+        cancel(identity);
         true
     }
 
     /// 原子取出并清除 `pending_cancel` 标记。
     ///
     /// 由事件转发器在收到 `TurnStarted` 后调用：此时 CodeWhale 的
-    /// `reset_cancel_token()` 已执行完毕（它在 `TurnStarted` 之前），
-    /// Re-running `cancel_with_mode` with the taken mode hits exactly this
-    /// turn's active token.
+    /// `reset_cancel_token()` has already run (it executes before `TurnStarted`).
+    /// The turn-bound replay (`EngineHandle::cancel_turn(turn_id, …)`) fires
+    /// exactly the named turn's own token, and is dropped wholesale if the
+    /// slot has already moved on to a newer turn (issue #254).
     ///
     /// 仅当记录的 epoch 仍是 `current_epoch`（仍是 arming 时的那一轮）时才取出
     /// 并返回 `Some`，否则清空并返回 `None`：跨轮泄漏的 stale pending（cancel
@@ -1703,6 +1860,38 @@ impl AppEngine {
             .cancel_with_mode(deepseek_tui::core::engine::CancelReason::User, mode);
     }
 
+    /// Cancel only the turn that still owns the engine slot under `turn_id`
+    /// (foundation r13+ turn-bound cancel). Returns `false` when the slot has
+    /// already moved on — typically because the engine self-started a
+    /// follow-up turn (idle sub-agent completion / background shell wake /
+    /// goal continuation) whose token was swapped in before the app observed
+    /// its `TurnStarted`; the old turn's stop must never hit that newer turn
+    /// (issue #254). On `false` the foundation publishes no steer disposition
+    /// and no cancel reason either.
+    pub(crate) fn cancel_turn_with_mode(
+        &self,
+        turn_id: &str,
+        mode: deepseek_tui::core::engine::CancelMode,
+    ) -> bool {
+        self.handle.cancel_turn(
+            turn_id,
+            deepseek_tui::core::engine::CancelReason::User,
+            mode,
+        )
+    }
+
+    /// Publish the stop disposition only (drop parked steers, latch the
+    /// cancel reason) and never fire any cancel token (foundation r13+
+    /// disposition-only entry). Used for stops whose target turn has already
+    /// ended, and for identities that cannot prove what the slot holds: the
+    /// steer-loss contract must be preserved, but the slot may hold a
+    /// self-started follow-up turn's live token and any fire would replay
+    /// issue #254.
+    pub(crate) fn publish_stop_disposition(&self, mode: deepseek_tui::core::engine::CancelMode) {
+        self.handle
+            .publish_stop_disposition(deepseek_tui::core::engine::CancelReason::User, mode);
+    }
+
     async fn send_turn_op(&self, op: Op) -> Result<()> {
         let activated = self.turn_lifecycle.on_submitted();
         if !activated {
@@ -1964,7 +2153,10 @@ mod tool_result_projection_tests {
 
 #[cfg(test)]
 mod turn_lifecycle_tests {
-    use super::{EmittedTerminal, TranscriptOperation, TurnAdmissionMetadata, TurnLifecycle};
+    use super::{
+        EmittedTerminal, TranscriptOperation, TurnAdmissionMetadata, TurnBoundCancelAction,
+        TurnIdentity, TurnLifecycle, turn_bound_cancel_action,
+    };
     use crate::features::sessions::SessionModeState;
     use deepseek_tui::models::{ContentBlock, Message};
     use std::cell::Cell;
@@ -2191,7 +2383,7 @@ mod turn_lifecycle_tests {
         lifecycle.arm_pending_cancel_and_cancel(
             epoch,
             deepseek_tui::core::engine::CancelMode::StopDropInbox,
-            || {},
+            |_identity: Option<TurnIdentity>| {},
         );
         assert!(
             lifecycle.take_pending_cancel(epoch).is_none(),
@@ -2204,7 +2396,7 @@ mod turn_lifecycle_tests {
         lifecycle.arm_pending_cancel_and_cancel(
             epoch,
             deepseek_tui::core::engine::CancelMode::StopDropInbox,
-            || {},
+            |_identity: Option<TurnIdentity>| {},
         );
         assert!(
             lifecycle.take_pending_cancel(epoch).is_some(),
@@ -2258,7 +2450,7 @@ mod turn_lifecycle_tests {
         lifecycle.arm_pending_cancel_and_cancel(
             epoch_a,
             deepseek_tui::core::engine::CancelMode::StopDropInbox,
-            || {},
+            |_identity: Option<TurnIdentity>| {},
         );
         assert!(
             lifecycle.take_pending_cancel(epoch_a).is_some(),
@@ -2276,7 +2468,7 @@ mod turn_lifecycle_tests {
         lifecycle.arm_pending_cancel_and_cancel(
             epoch_b,
             deepseek_tui::core::engine::CancelMode::StopDropInbox,
-            || {},
+            |_identity: Option<TurnIdentity>| {},
         );
         assert!(
             lifecycle.take_pending_cancel(epoch_b).is_none(),
@@ -2313,7 +2505,7 @@ mod turn_lifecycle_tests {
         assert!(!lifecycle.arm_pending_cancel_and_cancel(
             target,
             deepseek_tui::core::engine::CancelMode::StopDropInbox,
-            || {}
+            |_identity: Option<TurnIdentity>| {}
         ));
         assert!(
             lifecycle.take_pending_cancel(epoch2).is_none(),
@@ -2324,7 +2516,7 @@ mod turn_lifecycle_tests {
         assert!(lifecycle.arm_pending_cancel_and_cancel(
             epoch2,
             deepseek_tui::core::engine::CancelMode::StopDropInbox,
-            || {}
+            |_identity: Option<TurnIdentity>| {}
         ));
         assert!(
             lifecycle.take_pending_cancel(epoch2).is_some(),
@@ -2361,7 +2553,7 @@ mod turn_lifecycle_tests {
             let ok = lc_for_cancel.arm_pending_cancel_and_cancel(
                 target,
                 deepseek_tui::core::engine::CancelMode::StopDropInbox,
-                || {
+                |_identity: Option<TurnIdentity>| {
                     entered_tx.send(()).expect("entered");
                     release_rx.recv().expect("release");
                 },
@@ -2426,7 +2618,7 @@ mod turn_lifecycle_tests {
             !lifecycle.arm_pending_cancel_and_cancel(
                 target,
                 deepseek_tui::core::engine::CancelMode::StopDropInbox,
-                move || {
+                move |_identity: Option<TurnIdentity>| {
                     probe.store(true, Ordering::Release);
                 }
             ),
@@ -2470,7 +2662,7 @@ mod turn_lifecycle_tests {
             lifecycle.arm_pending_cancel_and_cancel(
                 0,
                 deepseek_tui::core::engine::CancelMode::StopDropInbox,
-                move || {
+                move |_identity: Option<TurnIdentity>| {
                     probe.store(true, Ordering::Release);
                 }
             ),
@@ -2483,6 +2675,117 @@ mod turn_lifecycle_tests {
         assert!(
             lifecycle.take_pending_cancel(0).is_none(),
             "idle must not arm pending_cancel"
+        );
+    }
+
+    #[test]
+    fn arm_pending_cancel_and_cancel_passes_the_same_lock_identity_to_the_closure() {
+        // issue #254 review round: the turn-bound dispatch must see the
+        // identity of the turn that holds the state lock at dispatch time —
+        // not a snapshot taken earlier outside the lock (a `TurnStarted`
+        // that lands between an outer snapshot and the closure would be
+        // missed by an Unbound verdict and the stop would be lost). The
+        // closure receives the same-lock identity in every lifecycle state.
+        let lifecycle = Arc::new(TurnLifecycle::default());
+
+        // Reserved + submitted, TurnStarted not yet observed: the closure
+        // sees (epoch, None, not closing) — the Unbound verdict whose
+        // pending replay is armed in the same critical section.
+        assert!(lifecycle.on_submitted());
+        let epoch = lifecycle.current_turn_generation().expect("active epoch");
+        let mut seen: Option<TurnIdentity> = None;
+        lifecycle.arm_pending_cancel_and_cancel(
+            epoch,
+            deepseek_tui::core::engine::CancelMode::StopDropInbox,
+            |identity| seen = identity,
+        );
+        let unbound = seen.expect("identity passed to the closure");
+        assert_eq!(unbound.epoch, epoch);
+        assert_eq!(
+            unbound.turn_id, None,
+            "reserved turn has not observed TurnStarted"
+        );
+        assert!(!unbound.closing, "reserved-but-unstarted is not closing");
+
+        // TurnStarted observed: the same epoch now carries the turn id, so
+        // the dispatch binds the cancel to that id instead of relying on the
+        // stale outer view.
+        lifecycle.on_started("turn-1".to_string());
+        let mut started_seen: Option<TurnIdentity> = None;
+        lifecycle.arm_pending_cancel_and_cancel(
+            epoch,
+            deepseek_tui::core::engine::CancelMode::StopDropInbox,
+            |identity| started_seen = identity,
+        );
+        let started = started_seen.expect("identity passed to the closure");
+        assert_eq!(started.epoch, epoch, "TurnStarted keeps the reserved epoch");
+        assert_eq!(started.turn_id.as_deref(), Some("turn-1"));
+        assert!(!started.closing);
+
+        // Terminal closing: the claim took the turn id into the terminal
+        // payload; the closing bit is what keeps this shape distinguishable
+        // from reserved-but-unstarted — both must never fire a token
+        // (issue #254).
+        lifecycle.claim_terminal().expect("claim terminal");
+        let mut closing_seen: Option<TurnIdentity> = None;
+        lifecycle.arm_pending_cancel_and_cancel(
+            epoch,
+            deepseek_tui::core::engine::CancelMode::StopDropInbox,
+            |identity| closing_seen = identity,
+        );
+        let closing = closing_seen.expect("identity passed to the closure");
+        assert_eq!(closing.epoch, epoch);
+        assert_eq!(
+            closing.turn_id, None,
+            "terminal claim takes the turn_id into the terminal payload"
+        );
+        assert!(
+            closing.closing,
+            "terminal closing must carry the discriminator"
+        );
+    }
+
+    #[test]
+    fn turn_bound_cancel_action_covers_every_identity_interleaving() {
+        // issue #254 verdict exhaustion: identity → cancel closure action.
+        // Slot names the target turn: turn-bound cancel.
+        assert_eq!(
+            turn_bound_cancel_action(Some(&TurnIdentity {
+                epoch: 3,
+                turn_id: Some("turn-3".to_string()),
+                closing: false,
+            })),
+            TurnBoundCancelAction::BoundTurn("turn-3".to_string()),
+        );
+        // Reserved but unstarted (submit→TurnStarted window): never fire —
+        // the slot can already hold a self-started follow-up turn's live
+        // token when the forwarder is delayed; the stop publishes its
+        // disposition and the turn-bound pending_cancel replay carries the
+        // cancel.
+        assert_eq!(
+            turn_bound_cancel_action(Some(&TurnIdentity {
+                epoch: 3,
+                turn_id: None,
+                closing: false,
+            })),
+            TurnBoundCancelAction::Unbound,
+        );
+        // Terminal closing: disposition only, never fire — the slot can hold
+        // a self-started follow-up turn's live token (#254 residual shape).
+        assert_eq!(
+            turn_bound_cancel_action(Some(&TurnIdentity {
+                epoch: 3,
+                turn_id: None,
+                closing: true,
+            })),
+            TurnBoundCancelAction::DispositionOnly,
+        );
+        // Defensive None (the closure only runs under active||closing, so
+        // this is unreachable in production): same as closing — prefer not
+        // firing.
+        assert_eq!(
+            turn_bound_cancel_action(None),
+            TurnBoundCancelAction::DispositionOnly,
         );
     }
 
@@ -2548,7 +2851,7 @@ mod turn_lifecycle_tests {
         lifecycle.arm_pending_cancel_and_cancel(
             epoch,
             deepseek_tui::core::engine::CancelMode::StopDropInbox,
-            || {},
+            |_identity: Option<TurnIdentity>| {},
         );
 
         // Engine 执行 reset_cancel_token + 发 TurnStarted → 转发器先
@@ -2580,7 +2883,7 @@ mod turn_lifecycle_tests {
         lifecycle.arm_pending_cancel_and_cancel(
             epoch,
             deepseek_tui::core::engine::CancelMode::InterruptKeepInbox,
-            || {},
+            |_identity: Option<TurnIdentity>| {},
         );
         lifecycle.on_started("turn-zap".to_string());
         assert_eq!(
@@ -2654,7 +2957,7 @@ mod turn_lifecycle_tests {
         lifecycle.arm_pending_cancel_and_cancel(
             epoch_old,
             deepseek_tui::core::engine::CancelMode::StopDropInbox,
-            || {},
+            |_identity: Option<TurnIdentity>| {},
         );
 
         // 结束旧轮，新一轮 reserve（epoch=2）。
