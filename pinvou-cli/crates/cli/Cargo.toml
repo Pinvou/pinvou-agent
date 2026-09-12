@@ -14,8 +14,8 @@ adapter-gaia = { path = "../adapter-gaia" }
 adapter-smoke = { path = "../adapter-smoke" }
 agent-backend-api = { path = "../agent-backend-api" }
 benchmark-core = { path = "../benchmark-core" }
-serde_json = "1"
-anyhow = { version = "1.0", optional = true }
+serde_json.workspace = true
+anyhow = { workspace = true, optional = true }
 async-trait = { workspace = true, optional = true }
 pinvou-product-backend = { path = "../pinvou-product-backend", optional = true }
 
