@@ -305,7 +305,9 @@ try {
       && view.includes(': Boolean(nativeDraftControlsHandoff?.multiAgent)'),
     'knowledge and multi-agent display must keep the same activation handoff as model/mode',
   );
-  assert.match(view, /data-testid="native-yolo-confirm"/, 'yolo 确认卡渲染');
+  const yoloCard = readFileSync(path.join(root, 'src', 'shared', 'yolo-confirm-card.jsx'), 'utf8');
+  assert.match(view, /<YoloConfirmCard/, 'CodexAcpView 复用共享 yolo 确认卡');
+  assert.match(yoloCard, /data-testid="native-yolo-confirm"/, 'yolo 确认卡渲染');
   assert.match(view, /needsYoloConfirmation\(prefs\)/, '切 yolo 前过确认门');
   assert.doesNotMatch(view, /mountedId: null, mode: 'yolo'/, '不再写死 yolo 初始 mode');
   assert.doesNotMatch(view, /\|\| 'yolo'/, '不再有 || yolo 兜底');

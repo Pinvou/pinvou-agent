@@ -949,6 +949,20 @@ Object.assign(dictEn, {
   remoteKbFolderSummary:'{count} documents found', remoteKbFolderSkipped:'{count} skipped', remoteKbFolderEmpty:'No supported documents were found in this folder', remoteKbFolderLimitExceeded:'A folder import can contain at most 10,000 documents',
 });
 
+// Draft-state working directory selector for normal chat
+// (features/chat/ComposerWorkspaceSelector.jsx), mirroring the code-mode
+// draft selector copy in uiCodex.
+dictEn.uiChatWorkspace = {
+  defaultWorkspace:'Default workspace', defaultWorkspaceDesc:'Use a Pinvou-managed session directory',
+  chooseDirectory:'Choose directory…', chooseDirectoryDesc:'Let the Agent work directly in that directory',
+  recentDirectories:'Recent', unknownDirectory:'Unknown directory',
+  // One-time confirmation card for the first YOLO switch on a session bound to
+  // a working directory (mirrors uiCodex modeYoloConfirm*, but says "working
+  // directory" instead of "project directory", hence separate keys).
+  yoloConfirmTitle:'Switch to YOLO mode?', yoloConfirmBody:'In this mode the model reads and writes your working directory fully automatically and can run shell commands, without step-by-step approvals.',
+  yoloConfirmHint:'Remembered globally once confirmed — you will not be asked again.', yoloConfirmOk:'Confirm', yoloConfirmCancel:'Cancel',
+};
+
 dictEn.uiSettingsDetail.memoryLoadFailed = 'Failed to load memory profile. Please try again.';
 
 dictEn.uiSettingsDetail.memorySaveFailed = 'Failed to save memory profile. Please try again.';

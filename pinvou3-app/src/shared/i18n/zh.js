@@ -986,6 +986,19 @@ Object.assign(dictZh, {
   remoteKbFolderSummary:'找到 {count} 份文档', remoteKbFolderSkipped:'已跳过 {count} 个', remoteKbFolderEmpty:'文件夹中没有可导入的文档', remoteKbFolderLimitExceeded:'单次最多从文件夹导入 10000 份文档',
 });
 
+// 普通聊天草稿态工作目录选择器（features/chat/ComposerWorkspaceSelector.jsx；
+// 措辞对齐 code 模式 uiCodex 的草稿选择器）。系统目录对话框标题经桥内
+// pickFolderTitle 提供（死键 chooseDirectoryDialog 已随 #445 评审移除）。
+dictZh.uiChatWorkspace = {
+  defaultWorkspace:'默认工作区', defaultWorkspaceDesc:'使用 Pinvou 管理的会话目录',
+  chooseDirectory:'选择目录…', chooseDirectoryDesc:'让 Agent 直接在该目录中工作',
+  recentDirectories:'最近使用', unknownDirectory:'未知目录',
+  // 绑定工作目录会话首切 YOLO 的一次性确认卡（语义对齐 code 模式 uiCodex 的
+  // modeYoloConfirm*，但措辞是「工作目录」而非「项目目录」，故独立成键）。
+  yoloConfirmTitle:'切换到 YOLO 模式？', yoloConfirmBody:'该模式下模型将对你的工作目录全自动读写、可执行 shell 命令，无逐步审批。',
+  yoloConfirmHint:'确认后全局记住，以后切换不再提示。', yoloConfirmOk:'确认切换', yoloConfirmCancel:'取消',
+};
+
 // 静态桥脚本（vite 原样拷贝，不能 ES import）经此读取共享词典，
 // personas-i18n.js 的 window.PERSONA_I18N 同款模式。唯一可译源在本文件。
 dictZh.uiSettingsDetail.memoryLoadFailed = '记忆资料加载失败，请重试';

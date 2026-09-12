@@ -16,6 +16,10 @@
     const invoke = context.invoke;
     const listen = context.listen;
     const notify = context.notify;
+    // 系统目录选择对话框（bridge.js 注入 TAURI.dialog.open；React 不得直接
+    // 触碰 Tauri 全局，草稿工作区选择由此封装）。不可用时为 undefined，
+    // pickDraftWorkspace 以 null 早退。
+    const dialogOpen = context.dialogOpen || null;
     const sessionStates = context.sessionStates;
     const scheduledRunSessionOwners = context.scheduledRunSessionOwners;
     const personaPlaceholderTitles = context.personaPlaceholderTitles;
@@ -555,6 +559,10 @@
     state.scheduledTaskPendingGuide = null; // 换了对话,未发送的定时任务引导词作废
     // 新草稿从关闭状态开始：寄存意图作废，开关行显示同步复位。
     state.pendingDraftMultiAgent = false;
+    // 绑定草稿的显式 mode 暂存同属寄存意图，随草稿一并作废。
+    state.pendingDraftMode = null;
+    // 新草稿回到默认工作区：上一份草稿的目录选择不带入（两个提前返回分支共用此复位）。
+    state.draftWorkspacePath = null;
 
     // 已在干净草稿态 → 只 notify(epoch 已自增)。注意要连 chatItems 一起判空:messages 与 chatItems
     // 会背离(persona 气泡 / ensureSession 失败的 system 报错卡只进 chatItems),否则残留卡顶掉「你好」。
@@ -578,6 +586,102 @@
   // 公开「新建对话」入口(侧边栏按钮)= 进草稿态。名字保留以兼容前端调用。
   async function createNewSession() { enterDraft(); }
 
+  // ── 草稿态工作目录选择（普通聊天，对齐 code 模式草稿选择器）────────────
+  // 最近列表与 src/shared/workspace-recents.js 同 key 同语义：本文件是
+  // <script src> 经典脚本，无法 import 该 ES 模块，下面是它的逐字镜像，
+  // 改动任一侧必须同步另一侧（tests/chat_draft_workspace_logic.test.mjs
+  // 锁定桥侧行为，tests/workspace_recents_logic.test.mjs 锁定共享模块）。
+  const DRAFT_WORKSPACE_RECENTS_KEY = "pinvou_codex_recent_workspaces";
+  function rememberDraftWorkspaceRecent(path) {
+    let list;
+    try {
+      const value = JSON.parse(localStorage.getItem(DRAFT_WORKSPACE_RECENTS_KEY) || "[]");
+      list = Array.isArray(value) ? value.filter(function (item) { return typeof item === "string"; }).slice(0, 6) : [];
+    } catch {
+      list = [];
+    }
+    const next = [path, ...list.filter(function (item) { return item !== path; })].slice(0, 6);
+    try {
+      localStorage.setItem(DRAFT_WORKSPACE_RECENTS_KEY, JSON.stringify(next));
+    } catch {
+      // localStorage 不可用时仅本次不记忆，不影响选目录本身。
+    }
+  }
+
+  // create_session 失败后按既定口径清理最近列表：仅后端明确拒绝路径
+  // （invalid workspace_path，目录已失效/被删）才清，瞬时错误不得误伤有效
+  // 条目；按物化时捕获的 boundWorkspace 而非实时 draftWorkspacePath——X1
+  // 创建在飞时用户改选 X2，失败的是 X1，不能清掉有效的 X2（评审 #445 R5）。
+  function maybePruneFailedWorkspaceRecent(boundWorkspace, error) {
+    if (!boundWorkspace) return;
+    if (!/invalid workspace_path/.test(String((error && error.message) || error || ''))) return;
+    forgetDraftWorkspaceRecent(boundWorkspace);
+  }
+
+  // 从最近列表移除单个目录（workspace-recents.js forgetWorkspace 的镜像）：
+  // 物化失败（目录已被删/改名）时由 ensureSession 失败路径调用，坏条目不再
+  // 永久残留（评审 #445 P2）。shared 模块与经典脚本无法互 import，改任一侧
+  // 须同步另一侧。
+  function forgetDraftWorkspaceRecent(path) {
+    let list;
+    try {
+      const value = JSON.parse(localStorage.getItem(DRAFT_WORKSPACE_RECENTS_KEY) || "[]");
+      list = Array.isArray(value) ? value.filter(function (item) { return typeof item === "string"; }) : [];
+    } catch {
+      list = [];
+    }
+    const next = list.filter(function (item) { return item !== path; });
+    try {
+      localStorage.setItem(DRAFT_WORKSPACE_RECENTS_KEY, JSON.stringify(next));
+    } catch {
+      // localStorage 不可用时仅本次不记忆，不影响选目录本身。
+    }
+  }
+
+  // 仅草稿态生效；path = null 表示回到默认（会话私有目录）。
+  function setDraftWorkspace(path) {
+    if (state.activeSessionId) return;
+    state.draftWorkspacePath = path || null;
+    // 绑定/解绑即切换草稿 mode 显示 lane（绑定 → code lane，解绑 → 回本 lane
+    // 默认）；解绑时上一份绑定草稿的显式 mode 暂存一并作废，不带入未绑定草稿。
+    if (!state.draftWorkspacePath) state.pendingDraftMode = null;
+    state.modeState = currentDraftModeState();
+    notify();
+  }
+  // 系统目录选择对话框：选中后记入最近列表并写回草稿选择，返回选中的 path；
+  // 用户取消（或对话框不可用/非草稿态）返回 null，不改变现有选择。
+  async function pickDraftWorkspace() {
+    if (state.activeSessionId || !dialogOpen) return null;
+    const selected = await dialogOpen({ directory: true, multiple: false, title: bt("pickFolderTitle") });
+    const path = Array.isArray(selected) ? selected[0] : selected;
+    if (!path) return null;
+    rememberDraftWorkspaceRecent(path);
+    setDraftWorkspace(path);
+    return path;
+  }
+
+  // Tauri 对未注册命令的拒绝文案（旧后端无此命令的兼容识别）；invoke 本身
+  // 不可用（Web 端桩）同样按"无此命令"处理。
+  function isCommandMissingError(error) {
+    const message = String((error && error.message) || error || "");
+    return /unknown command|command not found|not implemented|invoke is unavailable/i.test(message);
+  }
+
+  // 已生成会话的工作目录绑定（普通聊天绑定目录会话，安全姿态对齐 code 模式）：
+  // 返回绑定的完整路径；未绑定返回 null；旧后端无此命令按 null 处理（UI 不显示
+  // 绑定指示）。其余查询失败（瞬时错误）抛给调用方——YOLO 确认门据此
+  // fail-closed 过量施加确认，而非对已绑定会话静默跳过（评审 #445 R3）。
+  async function getSessionWorkspaceBinding(sessionId) {
+    if (!sessionId) return null;
+    try {
+      const binding = await invoke("get_session_workspace_binding", { sessionId });
+      return typeof binding === "string" && binding ? binding : null;
+    } catch (error) {
+      if (isCommandMissingError(error)) return null;
+      throw error;
+    }
+  }
+
   // 草稿态首次有实质内容时真正向后端创建 session 并切为 active;已有 active 直接返回。
   // 返回新 session id,创建失败返回 null。调用方:sendMessage(首条消息) / equipPersona(加卡)。
   // 并发防护（审计）：草稿态双击发送会并发 create_session，导致两条消息分家到两个新
@@ -591,10 +695,16 @@
     // 只推进 token 不改 activeSessionId（仍为 null），在途 create_session 返回
     // 后必须连同 token 一起校验，否则会劫持用户新进的草稿（三审 P1）。
     const navToken = sessionSwitchRequestToken;
+    // boundWorkspace 在 try 外捕获：catch 的最近列表清理也要以本次物化绑定
+    // 的目录为准（而非实时的 draftWorkspacePath，评审 #445 R5）。
+    const boundWorkspace = state.draftWorkspacePath || null;
     const p = (async function () {
       // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
       try {
-        const meta = await invoke("create_session");
+        // 草稿选定的工作目录随物化一并下发；null = 后端现状（会话私有目录）。
+        // 参数在 invoke 同步求值时捕获，await 期间的后续选择不影响本次创建。
+        // 物化后的 lane 默认应用也以本次创建是否绑定为准。
+        const meta = await invoke("create_session", { workspacePath: boundWorkspace });
         // create_session 等待期间用户可能已发送/清空输入，必须读取最新值，
         // 不能把 await 前的已发送文本带入新 session。
         const composerDraft = state.composerDraft || "";
@@ -605,6 +715,7 @@
         // 仍为 null 但导航 token 已前移——两种导航都中止物化（三审 P1）。
         if (state.activeSessionId || navToken !== sessionSwitchRequestToken) {
           state.pendingDraftMultiAgent = false;
+          state.pendingDraftMode = null;
           sessionStates[meta.id] = freshBuffer();
           sessionStates[meta.id].loadedFromDisk = true;
           return null;
@@ -613,6 +724,13 @@
         // 清：switchActiveTo 会把寄存意图当作已消费。
         const pendingMultiAgent = state.pendingDraftMultiAgent === true;
         state.pendingDraftMultiAgent = false;
+        // 绑定草稿的显式 mode 暂存同样先取后清（读取最新值：await 期间的
+        // 显式切换也算用户意图，与 pendingMultiAgent 同一约定）。
+        const stagedDraftMode = state.pendingDraftMode;
+        state.pendingDraftMode = null;
+        // 物化已提交：目录选择随会话落地，清除草稿选择；create_session 失败
+        // （外层 catch 路径）则保留选择以便用户重试。
+        state.draftWorkspacePath = null;
         switchActiveTo(meta.id, { fresh: true });
         // 草稿态因首条消息/加卡等实质操作物化为 session 时，输入草稿也要
         // 跟随迁移；这不是用户主动切换到另一个已有会话。
@@ -632,9 +750,13 @@
               // 空会话残留可手动删除，不掩盖主错误。
             }
             enterDraft();
+            // 回退草稿保留寄存意图：绑定与显式 mode 暂存被 enterDraft 复位，
+            // 须按失败前取到的值原样恢复——重试物化不偏离用户显式选择。
             state.pendingDraftMultiAgent = true;
+            state.draftWorkspacePath = boundWorkspace;
+            state.pendingDraftMode = stagedDraftMode || null;
             state.modeState = {
-              mode: (state.modeState && state.modeState.mode) || "yolo",
+              mode: stagedDraftMode || currentDraftModeState().mode,
               multiAgent: true,
             };
             addSystemItem(bt("switchModeFailed") + toggleError);
@@ -645,11 +767,31 @@
         }
         await refreshHistoryList();
         await syncModeState();
-        // Two-lane semantics: the backend's plain default is always Yolo and
-        // lanes are only work/code; when the materializing session's lane
-        // global default is plan, apply it right now (the write becomes that
-        // session's own per-session record; the global default is
-        // unaffected).
+        if (boundWorkspace) {
+          // 绑定工作目录的会话安全姿态对齐 code 模式：后端已为绑定会话按
+          // code lane 全局默认解析 mode，此处不再把 work lane 默认经
+          // set_plan_mode_next 套用；仅当用户在草稿态显式暂存过 mode 选择时
+          // 按暂存值应用（切 yolo 的一次性确认门在草稿切换时已由 ChatView 过过）。
+          if (stagedDraftMode === "plan" || stagedDraftMode === "yolo") {
+            // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间
+            // 用户可能已切走，对当前 active 会话执行 mode 命令会改错对象。
+            try {
+              const stagedModeState = stagedDraftMode === "plan"
+                ? await invoke("set_plan_mode_next", { sessionId: meta.id })
+                : await invoke("exit_plan_to_yolo", { sessionId: meta.id });
+              applyAuthoritativeModeState(meta.id, stagedModeState);
+            } catch (stagedModeError) {
+              runSyncOnSession(meta.id, function () {
+                addSystemItem(bt("switchModeFailed") + stagedModeError);
+              });
+            }
+          }
+        } else {
+        // Two-lane semantics (#428 merged design into work): the backend's
+        // plain default is always Yolo and lanes are only work/code; when the
+        // materializing session's lane global default is plan, apply it right
+        // now (the write becomes that session's own per-session record; the
+        // global default is unaffected).
         const laneDefault = state.modeDefaults
           && state.modeDefaults[state.modeLane === "code" ? "code" : "work"];
         // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户
@@ -664,6 +806,7 @@
             });
           }
         }
+        }
         await syncActivePersona();
         await syncMountedCollection();
         notify();
@@ -677,6 +820,10 @@
           && state.activeSessionId === meta.id ? meta.id : null;
       } catch (e) {
         addSystemItem(bt("newChatFailed") + e);
+        // 最近列表清理口径收敛在 maybePruneFailedWorkspaceRecent（仅路径失效
+        // 才清、按捕获的绑定目录清，评审 #445 R5）。草稿选择本身按既有契约
+        // 保留,便于用户修复目录后重试。
+        maybePruneFailedWorkspaceRecent(boundWorkspace, e);
         return null;
       }
     })();
@@ -1376,6 +1523,9 @@
       refreshHistoryList,
       enterDraft,
       createNewSession,
+      setDraftWorkspace,
+      pickDraftWorkspace,
+      getSessionWorkspaceBinding,
       ensureSession,
       reportSessionSwitchFailure,
       hydratedMessageKey,

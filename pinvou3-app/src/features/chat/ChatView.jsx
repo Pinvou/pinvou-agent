@@ -4,7 +4,7 @@ import {
   invokeObservedPanelSelection,
   isSubagentPanelPublicationCurrent,
 } from './subagent-panel-publication.mjs';
-import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Upload, X, Zap } from '../../components/icons.jsx';
+import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, FolderOpen, Globe, ImageIcon, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -145,6 +145,11 @@ import {
   ComposerKbSelector,
   ComposerModeChip,
 } from './composer-controls.jsx';
+import { ComposerWorkspaceSelector } from './ComposerWorkspaceSelector.jsx';
+import { YoloConfirmCard } from '../../shared/yolo-confirm-card.jsx';
+import { needsYoloConfirmation } from '../codex/code-permission-state.js';
+import { CHAT_YOLO_GATE_UNKNOWN_BINDING, chatYoloGateApplies, shouldShowWorkspaceBindingChip } from './chat-workspace-binding.js';
+import { workspaceName } from '../../shared/workspace-recents.js';
 import {
   VoiceComposerButton,
   VoiceEditPreview,
@@ -1769,6 +1774,139 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         if (bridge.available) bridge.models.loadSessionModel(activeSessionId);
       }, [activeSessionId]);
 
+      // 活动会话的工作目录绑定指示：绑定会话安全姿态对齐 code 模式，composer
+      // 旁显示只读 chip。经 bridge.sessions 查询（方法存在性守卫，Web 端桩返回
+      // null），按会话缓存结果；查询失败/无绑定 → 不显示。
+      const [sessionWorkspaceBinding, setSessionWorkspaceBinding] = useState(null);
+      const workspaceBindingCacheRef = useRef({});
+      useEffect(() => {
+        if (!activeSessionId || !bridge.available || !bridge.sessions
+          || typeof bridge.sessions.getSessionWorkspaceBinding !== 'function') {
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously clear the binding chip when leaving a bound session
+          setSessionWorkspaceBinding(null);
+          return;
+        }
+        const sid = activeSessionId;
+        if (Object.prototype.hasOwnProperty.call(workspaceBindingCacheRef.current, sid)) {
+          setSessionWorkspaceBinding(workspaceBindingCacheRef.current[sid]);
+          return;
+        }
+        // 缓存未命中先同步清空：切换会话后若保留旧值，chip 会短暂显示上一
+        // 会话的目录、YOLO 门也会误用旧绑定裁决（评审 #445 R3）。
+        setSessionWorkspaceBinding(null);
+        let cancelled = false;
+        bridge.sessions.getSessionWorkspaceBinding(sid)
+          .then(binding => {
+            const normalized = binding || null;
+            workspaceBindingCacheRef.current[sid] = normalized;
+            if (!cancelled) setSessionWorkspaceBinding(normalized);
+          })
+          // 查询失败（旧后端无此命令等）按无绑定处理，绝不误报。
+          .catch(() => { if (!cancelled) setSessionWorkspaceBinding(null); });
+        return () => { cancelled = true; };
+      }, [activeSessionId]);
+
+      // 绑定工作目录的会话/草稿首切 YOLO 的一次性确认门（对齐 code 模式）：
+      // 确认写全局标志后继续原切换（exitPlanToYolo 对草稿即暂存 mode 选择），
+      // 取消留在 Plan。未绑定对象走原路径不弹卡。
+      const [pendingChatYoloSwitch, setPendingChatYoloSwitch] = useState(false);
+      const [chatYoloConfirmBusy, setChatYoloConfirmBusy] = useState(false);
+      const [chatYoloConfirmError, setChatYoloConfirmError] = useState('');
+      // 确认卡打开时捕获的目标会话：确认往返期间用户切走后，
+      // exitPlanToYolo 不得作用于新 active（评审 #445 R7）。
+      const pendingChatYoloSwitchSidRef = useRef(null);
+      // 切换瞬间的绑定解析不能依赖异步 state:查询在飞时点击会看到 null 而
+      // 跳过确认门。这里在裁决前同步式解析(缓存 → 桥查询),等待期间点击也
+      // 拿到权威绑定(评审 #445 P2:YOLO gate race)。入参 sid 在点击时捕获，
+      // 每个 await 之后都必须与 activeSessionIdRef.current（最新渲染值）
+      // 比对——闭包里的 activeSessionId 是渲染期常量，自比较永远为真
+      // （评审 #445 R7：R5 的闭包比对是死代码，存在未绑定 A→已绑定 B 的
+      // fail-open 绕过）。
+      async function resolveBindingForGate(sid) {
+        if (!sid) return null;
+        if (sid === activeSessionIdRef.current && sessionWorkspaceBinding !== null) return sessionWorkspaceBinding;
+        if (Object.prototype.hasOwnProperty.call(workspaceBindingCacheRef.current, sid)) {
+          return workspaceBindingCacheRef.current[sid];
+        }
+        if (bridge.available && bridge.sessions && typeof bridge.sessions.getSessionWorkspaceBinding === 'function') {
+          try {
+            const binding = await bridge.sessions.getSessionWorkspaceBinding(sid);
+            const normalized = binding || null;
+            // 缓存按 sid 键控，写入总是安全；state 只在仍是当前会话时写。
+            workspaceBindingCacheRef.current[sid] = normalized;
+            if (sid === activeSessionIdRef.current) setSessionWorkspaceBinding(normalized);
+            return normalized;
+          } catch {
+            // 瞬时查询失败（旧后端"无此命令"已在桥层按未绑定返回 null，不
+            // 走到这里）：绑定会话默认 Plan，门控 fail-closed 过量施加一次
+            // 确认，优于对已绑定会话静默跳过（评审 #445 R3）。返回非空哨兵
+            // 表示"未知按绑定处理"；不写缓存，下次点击重试查询。
+            return CHAT_YOLO_GATE_UNKNOWN_BINDING;
+          }
+        }
+        return null;
+      }
+      async function handleModeChipSwitch(target, { isPlan }) {
+        if (!bridge.available || !bridge.interaction) return;
+        if (target === 'plan' && !isPlan) {
+          await bridge.interaction.setPlanModeNext();
+          return;
+        }
+        if (target !== 'yolo' || !isPlan) return;
+        const gateSid = activeSessionId;
+        const sessionBinding = await resolveBindingForGate(gateSid);
+        // 查询往返期间用户已切走：裁决是按点击时的会话算的，确认流与
+        // exitPlanToYolo 都作用于实时 active——必须放弃本次切换。
+        if (gateSid !== activeSessionIdRef.current) return;
+        const boundTarget = chatYoloGateApplies({
+          activeSessionId: gateSid,
+          sessionBinding,
+          draftWorkspacePath: bs && bs.draftWorkspacePath,
+        });
+        if (boundTarget && typeof bridge.interaction.getCodePermissionPrefs === 'function') {
+          const prefs = await bridge.interaction.getCodePermissionPrefs();
+          // 第二个 await 之后同样复核（评审 #445 R7）。
+          if (gateSid !== activeSessionIdRef.current) return;
+          if (needsYoloConfirmation(prefs)) {
+            pendingChatYoloSwitchSidRef.current = gateSid;
+            setPendingChatYoloSwitch(true);
+            return;
+          }
+        }
+        await bridge.interaction.exitPlanToYolo();
+      }
+      async function confirmChatYoloSwitch() {
+        if (chatYoloConfirmBusy) return;
+        setChatYoloConfirmBusy(true);
+        setChatYoloConfirmError('');
+        try {
+          await bridge.interaction.confirmCodeYolo();
+          if (pendingChatYoloSwitchSidRef.current !== activeSessionIdRef.current) {
+            // 已切走：只收卡（全局确认标志已写，目标会话切回后不再弹卡）。
+            setPendingChatYoloSwitch(false);
+            return;
+          }
+          setPendingChatYoloSwitch(false);
+          await bridge.interaction.exitPlanToYolo();
+        } catch (e) {
+          // 失败不再静默:卡片保持打开并就地显示原因(与 code 车道一致,
+          // 评审 #445 P2:旧后端缺 confirmCodeYolo 时用户不能毫无反馈)。
+          console.warn('confirm chat yolo switch failed', e);
+          setChatYoloConfirmError(String(e && e.message || e || 'error'));
+        } finally {
+          setChatYoloConfirmBusy(false);
+        }
+      }
+      // 切换会话即作废旧会话的确认卡与错误文案（评审 #445 R7：卡片曾跨
+      // 会话残留）。
+      useEffect(() => {
+        pendingChatYoloSwitchSidRef.current = null;
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the previous session's confirm card on session switch
+        setPendingChatYoloSwitch(false);
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously clear the previous session's confirm error on session switch
+        setChatYoloConfirmError('');
+      }, [activeSessionId]);
+
       // 普通会话选图即时警告(阶段 G):当前模型图片路由为 unsupported 时在附件区提示,
       // 仅提示不拦截,发送时后端仍按同一路径复核(chat 命令 image_input_unsupported)。
       // scheduled 会话发送时不做图片路由(固定工具兜底),这里同样不提示。
@@ -2639,7 +2777,30 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               <div className="flex items-center justify-between mt-1.5 gap-2">
                 <div className="flex items-center gap-1.5 min-w-0 flex-1">
                   <ComposerAttachButton t={t} compact={composerCompact} />
-                                    <ComposerModeChip t={t} bs={bs} compact={composerCompact} />
+                  {/* 草稿态工作目录选择（对齐 code 模式草稿选择器）：仅桌面端 + 草稿态；
+                      Web bridge 无 sessions.setDraftWorkspace/pickDraftWorkspace，方法存在性守卫兜底。
+                      bs.draftWorkspacePath 在 Web 快照里不存在，|| null 兜底。 */}
+                  {!activeSessionId && can('desktopChrome') && bridge.sessions && typeof bridge.sessions.pickDraftWorkspace === 'function' && (
+                    <ComposerWorkspaceSelector
+                      copy={t.uiChatWorkspace}
+                      draftWorkspacePath={(bs && bs.draftWorkspacePath) || null}
+                      onPickWorkspace={() => bridge.sessions.pickDraftWorkspace()}
+                      onSelectWorkspace={path => bridge.sessions.setDraftWorkspace(path)}
+                    />
+                  )}
+                  {/* 活动会话的工作目录绑定指示（只读 chip：目录名 + title 完整路径）；
+                      绑定会话安全姿态对齐 code 模式，样式对齐草稿态选择器。 */}
+                  {shouldShowWorkspaceBindingChip({ activeSessionId, sessionBinding: sessionWorkspaceBinding }) && (
+                    <span
+                      data-testid="chat-workspace-binding"
+                      title={sessionWorkspaceBinding}
+                      className="h-7 max-w-[180px] rounded-lg px-2 inline-flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400"
+                    >
+                      <FolderOpen size={13} className="shrink-0" />
+                      <span className="truncate">{workspaceName(sessionWorkspaceBinding, t.uiChatWorkspace.unknownDirectory)}</span>
+                    </span>
+                  )}
+                  <ComposerModeChip t={t} bs={bs} compact={composerCompact} onSwitch={handleModeChipSwitch} />
                   <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoModelSettings || onGotoSettings} compact={composerCompact} />
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} compact={composerCompact} activeSkill={bs && bs.activeSkill} />
                   <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
@@ -2713,6 +2874,26 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             </div>
           </div>
           </div>{/* /对话列 */}
+
+          {pendingChatYoloSwitch && (
+            // 绑定工作目录会话/草稿首切 YOLO 的一次性确认卡（全局记忆）；确认后
+            // 继续切换，取消留在 Plan。挂在对话列外（卡片自身 portal 到 body，
+            // 不受 composer 容器 backdrop-blur 的 fixed 包含块影响——同 code 页约定）。
+            <YoloConfirmCard
+              theme={theme}
+              copy={{
+                title: t.uiChatWorkspace.yoloConfirmTitle,
+                body: t.uiChatWorkspace.yoloConfirmBody,
+                hint: t.uiChatWorkspace.yoloConfirmHint,
+                ok: t.uiChatWorkspace.yoloConfirmOk,
+                cancel: t.uiChatWorkspace.yoloConfirmCancel,
+              }}
+              error={chatYoloConfirmError}
+              busy={chatYoloConfirmBusy}
+              onConfirm={confirmChatYoloSwitch}
+              onCancel={() => setPendingChatYoloSwitch(false)}
+            />
+          )}
 
           {artifactsVisible && artifactsFullscreen && artifactFullscreenPublicationReady && createPortal(
             <div

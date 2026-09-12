@@ -19,7 +19,7 @@ const FILE_LIST_LIMIT = 8;
 // focusing a detached element is a spec-permitted no-op). When initialFocusRef is provided it is
 // focused first (e.g. a text box needing immediate input) — this runs after React commits autoFocus
 // and overrides it, so initial focus must go through this path instead of the autoFocus attribute.
-// Shared by the two confirm dialogs, NativeYoloConfirmCard, and CodexAcpView's branch-switch dialog.
+// Shared by the two confirm dialogs, the shared YoloConfirmCard (shared/yolo-confirm-card.jsx), and CodexAcpView's branch-switch dialog.
 export function useDialogFocusRestore(dialogRef, initialFocusRef) {
   useEffect(() => {
     const previous = document.activeElement;
@@ -30,7 +30,7 @@ export function useDialogFocusRestore(dialogRef, initialFocusRef) {
   }, [dialogRef, initialFocusRef]);
 }
 
-// Escape to close (disabled while busy). Shared by the two confirm dialogs, NativeYoloConfirmCard,
+// Escape to close (disabled while busy). Shared by the two confirm dialogs, the shared YoloConfirmCard,
 // and CodexAcpView's branch-switch dialog.
 export function useDialogEscapeKey(busy, onCancel) {
   useEffect(() => {
@@ -143,7 +143,7 @@ export function RewindUndoChip({ state, disabled, copy, onOpen }) {
 }
 
 // 确认弹窗三要素（设计 §7）：将撤销的变更摘要、对话将截断到的位置、错误如实展示
-// （跨会话忙碌/恢复失败等后端文案原样上屏）。portal 到 <body> 与 NativeYoloConfirmCard
+// （跨会话忙碌/恢复失败等后端文案原样上屏）。portal 到 <body> 与 YoloConfirmCard
 // 同款：避免 composer 容器的 backdrop-blur 成为 fixed 包含块。
 export function RewindConfirmDialog({ entry, previewState, error, busy, theme, copy, onCancel, onConfirm }) {
   const isDark = theme === 'dark';
