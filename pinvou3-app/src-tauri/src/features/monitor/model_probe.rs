@@ -1032,6 +1032,9 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
         }
         // openai_compatible 的 Rust 侧默认仅服务 legacy 迁移兜底（前端刻意留空，
         // 由分组测试的 main.jsx 覆盖对钉测试与 Rust↔JS 互查测试共同锁定）。
-        assert_eq!(ModelPreset::OpenaiCompatible.default_model(), "gpt-5.6-terra");
+        assert_eq!(
+            ModelPreset::OpenaiCompatible.default_model(),
+            "gpt-5.6-terra"
+        );
     }
 }
