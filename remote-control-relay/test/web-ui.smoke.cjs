@@ -582,15 +582,18 @@ async function main() {
         && !Object.hasOwn(message, 'session_id')
         && !Object.hasOwn(message, 'room_id')
     )));
+  // The web build strips platform/tauri/ bridge scripts at build time
+  // (conditional platform scripts in vite.config.mjs), so the page must load
+  // the web bridge set and must not request any tauri-side script at all.
   const exactFixedAssets = [
     `${basePath}/platform/web/bootstrap.js`,
-    `${basePath}/platform/tauri/bridge.js`,
     `${basePath}/platform/web/access-policy.json`,
   ];
   record('extensionless SPA 深链仍连接固定 base WebSocket 并加载固定资源',
     browserWebSocketUrls.length >= 2
       && browserWebSocketUrls.every(url => url === wsUrl)
       && exactFixedAssets.every(target => relayHttpRequestTargets.includes(target))
+      && !relayHttpRequestTargets.some(target => target.includes('/platform/tauri/'))
       && !relayHttpRequestTargets.some(target => target.includes('/conversations/current/web-')),
     `${browserWebSocketUrls.join(', ')} | ${exactFixedAssets.join(', ')}`);
 

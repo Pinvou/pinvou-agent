@@ -426,6 +426,25 @@ function CodexComposerConfigSelect({
   );
 }
 
+// The 1Hz clock used to live in CodexAcpView top-level state (re-rendering
+// the whole 4000+ line view every second while busy); it now sinks down with
+// the same pattern as ChatView's LiveConversationActivityIndicator: only the
+// running indicator that actually shows "elapsed" owns a clock, so each tick
+// re-renders just that small subtree.
+function LiveConversationActivityIndicator({ turn, onRequestAttention, className, copy }) {
+  const running = !!turn && turn.status === 'running';
+  const now = useConversationSecondClock(running);
+  return (
+    <ConversationActivityIndicator
+      turn={turn}
+      now={now}
+      onRequestAttention={onRequestAttention}
+      className={className}
+      copy={copy}
+    />
+  );
+}
+
 function ElicitationCard({ elicitation, pending, onRespond, responding, copy, conversationCopy }) {
   const request = elicitation.request || {};
   const schema = request.requestedSchema || {};
@@ -1143,9 +1162,9 @@ export function CodexAcpView({
   const busy = isNativeAgent
     ? Boolean(activeNativeLane && activeNativeLane.busy)
     : projection.turns.some(turn => turn.status === 'running');
-  // Per-second clock shared with ChatView: on busy activation the baseline is synced before the
-  // interval starts; no timer while inactive; cleared on unmount (consolidates the old top ticker).
-  const now = useConversationSecondClock(busy);
+  // The per-second clock lives in the display subtrees (ConversationTurnView's internal
+  // useConversationSecondClock, LiveConversationActivityIndicator below), so busy no longer
+  // re-renders the whole view at 1Hz; no top-level `now` is passed down.
   // 「回退到第 N 轮」入口（仅原生代码车道）：checkpoint 列表 + turn 边界对齐。
   // 回退编排（rewind_to_turn）由 confirmRewind 发起；成功后走既有 loadSession
   // 重载（磁盘对话已截断、engine 已被后端回收重注水）。refreshKey 含 busy 边沿：
@@ -2507,6 +2526,16 @@ export function CodexAcpView({
 
   // 原生（品悟）会话的 engine 事件：按 session 推进对应 lane，仅当前会话 bump 渲染；
   // turn 边界顺手刷新会话列表（标题/时间戳），与 acp:event 的 turn_completed 处理对齐。
+  // Note: nativeLaneTick is a view-wide version counter — lane is a mutable
+  // ref object, and beyond the timeline projection, the memory popover /
+  // bottom-bar controls (reading lane fields directly) and the auto-scroll
+  // effect below all rely on this bump. Confining "re-render the
+  // whole view per token" to a per-lane subscription component would require
+  // sinking visibleTurns and all of its callbacks (respond/renderNativeItem/
+  // pendingByTool/the rewind family etc.) into a child — a contract surface
+  // too wide for the risk this item justifies; the timeline already has the
+  // ConversationTurn deep compare as a backstop, so unchanged turns do not
+  // re-render.
   useEffect(() => {
     let disposed = false;
     let unlisteners = [];
@@ -3556,7 +3585,6 @@ export function CodexAcpView({
                     )}
                     <ConversationTurn
                       turn={turn}
-                      now={now}
                       copy={t.uiConversation}
                       pendingByTool={pendingByTool}
                       onRespond={respond}
@@ -3686,9 +3714,8 @@ export function CodexAcpView({
                 onApplyAndSend={() => nativeVoice.applyVoiceEditPreview({ send: true })}
                 onCancel={nativeVoice.cancelVoiceEditPreview}
               />
-              <ConversationActivityIndicator
+              <LiveConversationActivityIndicator
                 turn={activeConversationTurn}
-                now={now}
                 onRequestAttention={scrollConversationToBottom}
                 className="mb-0.5"
                 copy={t.uiConversation}

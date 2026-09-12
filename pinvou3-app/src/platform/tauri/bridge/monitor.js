@@ -129,12 +129,57 @@
     return { running, waiting };
   }
 
+  // MonitorView only consumes state.monitor._fmt (plus one level of vllmRaw
+  // nesting), so shallow equality means display equivalence. The poll runs
+  // once per second; when a snapshot is display-equivalent, skip the
+  // assignment + notify to avoid a full App re-render every second while the
+  // monitor page is open. Numeric values jitter naturally (cpu/gpu
+  // percentages etc.), so comparisons allow a 0.5 tolerance (prefer one
+  // extra notify over ever getting stuck); counters are mostly strings after
+  // toFixed/round and compare exactly. updatedAt is a poll-tick marker (never
+  // rendered, only a sampling trigger) and must be excluded, otherwise every
+  // second counts as "changed"; the page clock is driven by MonitorView's
+  // local 1s timer and does not depend on it.
+  function monitorFmtEqual(prev, next) {
+    if (prev === next) return true;
+    if (!prev || !next) return false;
+    const numEq = function (a, b) {
+      if (a === b) return true;
+      return typeof a === "number" && typeof b === "number"
+        && Number.isFinite(a) && Number.isFinite(b)
+        && Math.abs(a - b) <= 0.5;
+    };
+    const keys = Object.keys(next);
+    if (keys.length !== Object.keys(prev).length) return false;
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      if (key === "updatedAt") continue;
+      const a = prev[key];
+      const b = next[key];
+      if (a && b && typeof a === "object" && typeof b === "object") {
+        const inner = Object.keys(b);
+        if (inner.length !== Object.keys(a).length) return false;
+        let same = true;
+        for (let j = 0; j < inner.length; j++) {
+          if (!numEq(a[inner[j]], b[inner[j]])) { same = false; break; }
+        }
+        if (!same) return false;
+        continue;
+      }
+      if (!numEq(a, b)) return false;
+    }
+    return true;
+  }
+
   // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
   async function pollMonitor() {
     if (monitorPollInFlight) return;
     monitorPollInFlight = true;
     try {
       const snap = await invoke("get_monitor_snapshot");
+      // The previous round errored → this round must notify once so the
+      // "read failed" banner switches back to the normal panel.
+      const hadMonitorError = !!state.monitorError;
       state.monitorError = null;
       // GPU util sliding window
       if (snap.gpu) {
@@ -249,8 +294,13 @@
         maxModelLen = snap.vllm.max_model_len;
         state.tokens.max = maxModelLen;
       }
-      state.monitor = snap;
-      notify();
+      // Display-equivalent snapshots neither overwrite state.monitor nor
+      // notify (must send on the first frame or after an errored round).
+      const prevFmt = state.monitor && state.monitor._fmt;
+      if (hadMonitorError || !prevFmt || !monitorFmtEqual(prevFmt, snap._fmt)) {
+        state.monitor = snap;
+        notify();
+      }
     } catch (e) {
       state.monitorError = e && e.message ? e.message : String(e || "monitor poll failed");
       console.warn("monitor poll failed", e);

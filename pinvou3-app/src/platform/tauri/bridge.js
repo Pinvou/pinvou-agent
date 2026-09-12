@@ -1080,6 +1080,16 @@
       if (id && typeof chatFeature.purgeSteerState === "function") {
         chatFeature.purgeSteerState(id);
       }
+      // The streaming markdown render trailing-edge timers are recorded per
+      // sid in a chat-events internal table; cancel them when the buffer is
+      // evicted/deleted so a timer cannot fire after the buffer is rebuilt
+      // (the callback has a currentStreamId guard, but clearing the entry is
+      // what avoids leaving a dangling timer across lifecycles).
+      // chatEventsFeature is initialized further down this file; purge only
+      // happens at runtime, so there is no TDZ concern.
+      if (id && chatEventsFeature && typeof chatEventsFeature.cancelStreamRenderTimers === "function") {
+        chatEventsFeature.cancelStreamRenderTimers(id);
+      }
     },
     runSyncOnSession, persistMessagesFor,
     resetPendingAssistant: function (...args) { return resetPendingAssistant(...args); },
@@ -1877,15 +1887,13 @@
   function rerenderFromMessages(opts) {
     state.chatItems = [];
     itemIdSeq = 0;
-    // Replay re-adds every historical tool_use's metadata (including
-    // write/patch's large args) to toolMeta for tool_result backfill and
-    // never deletes after backfill — the residue resides in the buffer
-    // with the working set, and memory is bounded by the 32-entry
-    // all-session LRU cap. Durable replay clears first (when not live
-    // hydrating), reclaiming only orphan entries left by interrupted
-    // turns (the live event path itself stays insert/delete balanced);
-    // the replay then rebuilds the needed entries for the historical
-    // tool_uses inside messages.
+    // Replay rebuilds toolMeta only for historical tool_uses that still have a
+    // matching tool_result to backfill (write/patch's large args otherwise
+    // duplicate the whole transcript inside the 32-entry all-session LRU).
+    // Durable replay clears first (when not live hydrating), reclaiming only
+    // orphan entries left by interrupted turns (the live event path itself
+    // stays insert/delete balanced); entries are deleted again right after
+    // their tool_result backfill lookup — nothing reads them afterwards.
     if (!(opts && opts.keepLiveToolMeta)) toolMeta = {};
     // 卡牌事件按 pos 插回原位(pos=事件发生时的 messages 数)。让重载历史不割裂。
     const pe = Array.isArray(state.personaEvents) ? state.personaEvents : [];
@@ -1996,6 +2004,11 @@
               updateToolItem(c.tool_use_id, contentForCard, !c.is_error);
             }
           }
+          // Delete after backfill: the meta serves exactly this one
+          // tool_result restoration (a late duplicate tool_end exits early
+          // via toolCallAlreadyFinished); leftovers would keep historical
+          // args resident in the session buffer.
+          delete toolMeta[c.tool_use_id];
         }
         continue;
       }
@@ -2023,7 +2036,15 @@
             addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
             textBuf = "";
           }
-          toolMeta[b.id] = { name: b.name, args: b.input };
+          // Rebuild meta only for historical tool_use entries that still
+          // have a tool_result pending backfill (the backfill loop above
+          // deletes them right after consuming); leftovers from interrupted
+          // turns with no result have no consumer and are no longer inserted.
+          // live hydration exception (keepLiveToolMeta): the tool_end event
+          // of an in-flight tool still needs the meta.
+          if (resultById[b.id] || (opts && opts.keepLiveToolMeta)) {
+            toolMeta[b.id] = { name: b.name, args: b.input };
+          }
           // request_user_input → 还原只读选择卡（问题来自 input，选项高亮来自 result）
           if (b.name === "request_user_input") {
             const qs = (b.input && b.input.questions) || [];
@@ -2172,7 +2193,7 @@
     return invoke("cancel_shell_task", { sessionId, taskId });
   }
 
-  installBridgeFeature("chat-events", {
+  const chatEventsFeature = installBridgeFeature("chat-events", {
     state, listen, invoke, turnUsageDirty,
     sessionStates, renderMarkdown, bt,
     notify, onSessionEvent, runSyncOnSession,

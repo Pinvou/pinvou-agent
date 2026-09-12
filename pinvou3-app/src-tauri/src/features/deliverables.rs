@@ -4,24 +4,28 @@
 //! `app::commands::artifacts`，本模块只根据会话磁盘真相装配交付物索引。
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 
 /// 「产出物」跨会话索引:遍历 `~/.pinvou3/sessions/*.json`,把每个会话跟踪的
 /// artifacts 汇成一张扁平表(供「产出物」一级入口用)。只走磁盘真相:
 /// 文件已被删则跳过;mtime/size 现取 fs。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct DvSessionView {
     metadata: DvMeta,
     #[serde(default)]
     artifacts: Vec<DvArtifact>,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct DvMeta {
     #[serde(default)]
     id: String,
     #[serde(default)]
     title: String,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct DvArtifact {
     storage_path: std::path::PathBuf,
     #[serde(default)]
@@ -46,6 +50,24 @@ const DELIVERABLE_EXTS: &[&str] = &[
     "jpeg", "svg", "gif", "webp", "zip",
 ];
 
+/// Entry limit of the session JSON parse cache. One entry holds only
+/// metadata+artifacts and is tiny; when full, a single entry is evicted (in
+/// hash-map order) instead of clearing the whole table, avoiding a cache
+/// avalanche on inventory refreshes.
+const DV_VIEW_CACHE_LIMIT: usize = 512;
+
+/// Cache of the index view (metadata+artifacts) parsed out of each session
+/// JSON, keyed by (mtime, len). Session files are rewritten whole every
+/// turn, so the mtime always changes; the cache only saves the redundant
+/// full read+parse of unchanged files — exactly the common case during
+/// high-frequency "deliverables" list refreshes. The view's remaining
+/// derived data (artifact file mtime/size read live from the fs, extension
+/// filtering, sorting) is recomputed on every call. Parsing is a pure read
+/// with no side effects, so the cached value is safe to reuse.
+static DV_VIEW_CACHE: OnceLock<
+    Mutex<HashMap<PathBuf, ((Option<SystemTime>, u64), DvSessionView)>>,
+> = OnceLock::new();
+
 fn deliverable_category(ext: &str) -> &'static str {
     match ext {
         "html" | "htm" | "mhtml" | "mht" => "web",
@@ -68,14 +90,49 @@ pub(crate) fn list_deliverable_index_impl() -> Vec<DeliverableItem> {
 
     for entry in entries.flatten() {
         let file = entry.path();
-        if !file.is_file() || file.extension().and_then(|s| s.to_str()) != Some("json") {
+        if file.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
-        let Ok(raw) = std::fs::read_to_string(&file) else {
+        let Ok(meta) = std::fs::metadata(&file) else {
             continue;
         };
-        let Ok(view) = serde_json::from_str::<DvSessionView>(&raw) else {
+        if !meta.is_file() {
             continue;
+        }
+        let stamp = (meta.modified().ok(), meta.len());
+        let cache = DV_VIEW_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let cached = {
+            let guard = cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard
+                .get(&file)
+                .filter(|(cached_stamp, _)| *cached_stamp == stamp)
+                .map(|(_, view)| view.clone())
+        };
+        let view = match cached {
+            Some(view) => view,
+            None => {
+                let Ok(raw) = std::fs::read_to_string(&file) else {
+                    continue;
+                };
+                let Ok(view) = serde_json::from_str::<DvSessionView>(&raw) else {
+                    continue;
+                };
+                let mut guard = cache
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                // When full, evict a single entry (rationale in
+                // DV_VIEW_CACHE_LIMIT); entries with mismatched signatures
+                // expire naturally via (mtime, len).
+                if guard.len() >= DV_VIEW_CACHE_LIMIT && !guard.contains_key(&file) {
+                    if let Some(evicted) = guard.keys().next().cloned() {
+                        guard.remove(&evicted);
+                    }
+                }
+                guard.insert(file.clone(), (stamp, view.clone()));
+                view
+            }
         };
 
         for art in view.artifacts {

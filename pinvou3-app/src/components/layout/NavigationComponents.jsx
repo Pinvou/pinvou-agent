@@ -1,10 +1,14 @@
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Archive, Check, Edit2, FolderOpen, MoreHorizontal, PinIcon, PinOffIcon, Sparkles, Trash2, X } from '../icons.jsx';
 import { useLongPressDrag } from '../../hooks/useLongPressDrag.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 
-const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, onClick, dragKind, dragging, onPickUp, nativeButton = false, t, onPointerEnter, onFocus }) => {
+    // NavItem memoization: the main nav re-renders on every App bridge
+    // notify (including background streaming tokens); when the props are
+    // reference stable (see NAV_ICON_*/NAV_PREFETCH/navNavigateHandlers in
+    // main.jsx) the whole nav item can skip the re-render.
+    const NavItem = memo(function NavItem({ icon, label, active, unread = false, isSidebarOpen = true, onClick, dragKind, dragging, onPickUp, nativeButton = false, t, onPointerEnter, onFocus }) {
       const drag = useLongPressDrag(dragKind, onPickUp);
       const dragProps = dragKind ? drag.handlers : {};
       const clickH = dragKind ? drag.guardClick(onClick) : onClick;
@@ -35,7 +39,7 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
           {isSidebarOpen && <span className="whitespace-nowrap">{label}</span>}
         </Root>
       );
-    };
+    });
 
     const ArchiveConfirmDialog = ({ theme, t, onCancel, onConfirm }) => {
       const isDark = theme === 'dark';
@@ -205,7 +209,12 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
         color: isDark ? '#fff' : '#1F1F1F',
       };
     };
-    const RecentItem = ({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, dragKind = 'session', dragging, onPickUp }) => {
+    // RecentItem memoization: the O(sessions) sidebar list is the dominant
+    // token-rate re-render cost. Props must be reference stable — chat is
+    // derived by the parent's useMemo and callbacks come from the parent's
+    // useCallback / per-item closure cache (see renderSidebarTaskItem in
+    // main.jsx); the default shallow compare then skips correctly.
+    const RecentItem = memo(function RecentItem({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, dragKind = 'session', dragging, onPickUp }) {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
@@ -392,6 +401,6 @@ const NavItem = ({ icon, label, active, unread = false, isSidebarOpen = true, on
           {menu}
         </div>
       );
-    };
+    });
 
 export { NavItem, ArchiveConfirmDialog, ArchivedDeleteConfirmDialog, ArchiveToast, RecentItem };

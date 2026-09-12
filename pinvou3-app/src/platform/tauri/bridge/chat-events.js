@@ -236,6 +236,35 @@
       context.pendingAssistantText = "";
       context.pendingAssistantBlocks = [];
     }
+    // chat:done terminal sweep: delete toolMeta entries that never got a
+    // paired tool_result. The forwarder delivers mailbox events for a session
+    // in order, and after done this turn sees no more chat:tool_end (the next
+    // turn's tools use fresh ids), so in-flight entries from interrupted /
+    // errored turns (args can reach tens of KB) would never find a consumer
+    // and would stay resident in the session buffer. Must run after
+    // preserveInterruptedAssistantPresentation /
+    // flushAssistantMessageToHistory: by then pendingAssistant Blocks are
+    // cleared or archived, state.messages is the final authority, and the
+    // tool_result pairing can be decided.
+    function sweepUnpairedToolMeta() {
+      const meta = context.toolMeta;
+      const ids = Object.keys(meta || {});
+      if (!ids.length) return;
+      const paired = Object.create(null);
+      for (let i = 0; i < state.messages.length; i++) {
+        const blocks = state.messages[i] && state.messages[i].content;
+        if (!Array.isArray(blocks)) continue;
+        for (let j = 0; j < blocks.length; j++) {
+          const block = blocks[j];
+          if (block && block.type === "tool_result" && block.tool_use_id) {
+            paired[block.tool_use_id] = true;
+          }
+        }
+      }
+      ids.forEach(function (id) {
+        if (!paired[id]) delete meta[id];
+      });
+    }
     const markTurnDirtyArtifact = context.markTurnDirtyArtifact;
     const trackArtifact = context.trackArtifact;
     const untrackArtifact = context.untrackArtifact;
@@ -333,12 +362,18 @@
               break;
             }
           }
+          // Stream throttle invariant: the flush must precede the stream
+          // state reset. The old streaming bubble was already removed by the
+          // splice above, so the flush has no render target and only cancels
+          // the session's trailing-edge timer.
+          flushPendingStreamRender();
           resetPendingAssistant();
         }
         addChatItem({ type: "user", text: content, time: timeStr() });
       }
       state.busy = true;
       if (!state.thinking.active) startThinking();
+      flushPendingStreamRender(); // the old streaming bubble gets its final html before the new turn resets stream state
       context.currentStreamText = "";
       context.currentStreamId = 0;
     });
@@ -566,7 +601,82 @@
     }
   }
 
+  // ── Streaming markdown render throttle ────────────────────────────
+  // Rust emits one chat:delta per engine delta (the forwarder does not
+  // coalesce), and every delta used to reparse the ENTIRE accumulated text
+  // with marked+DOMPurify+hljs → O(n²) over a long reply. While streaming,
+  // re-render once per ~180ms trailing edge instead (the trailing-edge timer
+  // guarantees a render after the last delta, so the tail frame is never
+  // lost); the first delta (new bubble or still-empty html) still renders
+  // immediately.
+  // Invariant: every path that terminates or migrates the streaming bubble
+  // (chat:done/error/interrupt, chat:tool_start, chat:tool_end, switching to
+  // reasoning, a new user message reset, session buffer eviction) must call
+  // flushPendingStreamRender first to synchronously produce the final html —
+  // otherwise the trailing-edge timer fires after the bubble terminated and
+  // overwrites authoritative text with a stale snapshot. Timers are isolated
+  // per session: active and background sessions can stream simultaneously,
+  // and a shared timer would render the wrong working set.
+  const STREAM_RENDER_THROTTLE_MS = 180;
+  const streamRenderTimers = Object.create(null); // sid → trailing-edge render timer
+
+  function renderStreamItemHtml() {
+    const item = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
+    if (!item) return false;
+    item.text = context.currentStreamText;
+    item.html = renderMarkdown(context.currentStreamText);
+    return true;
+  }
+
+  // Only callable inside the synchronous body of
+  // onSessionEvent/runSyncOnSession: state.activeSessionId has been routed
+  // to the event's session there, making it a valid timer-table key that
+  // maps one-to-one onto the working set.
+  function flushPendingStreamRender() {
+    const sid = state.activeSessionId;
+    if (sid && streamRenderTimers[sid]) {
+      clearTimeout(streamRenderTimers[sid]);
+      delete streamRenderTimers[sid];
+    }
+    // Do not render while the stream text is empty: preserves the existing
+    // behavior where an empty streaming bubble (optimistic empty html) is
+    // removed by terminal paths, and avoids fabricating html for an empty
+    // bubble.
+    if (!context.currentStreamId || !context.currentStreamText) return false;
+    return renderStreamItemHtml();
+  }
+
+  function scheduleStreamRender(sid) {
+    // Without a sid, or when the host has no timers (some test sandboxes),
+    // fall back to the old render-per-delta behavior.
+    if (!sid || typeof setTimeout !== "function") {
+      if (context.currentStreamId && context.currentStreamText) renderStreamItemHtml();
+      return;
+    }
+    if (streamRenderTimers[sid]) return; // a trailing edge is already pending: this delta only accumulates text
+    streamRenderTimers[sid] = setTimeout(function () {
+      delete streamRenderTimers[sid];
+      let rendered = false;
+      // The timer fires at an event-loop idle point, so it must re-enter the
+      // session's working set before rendering; a terminated stream
+      // (currentStreamId reset) means a terminal path already flushed
+      // synchronously — skip.
+      runSyncOnSession(sid, function () {
+        if (!context.currentStreamId || !context.currentStreamText) return;
+        rendered = renderStreamItemHtml();
+      });
+      if (rendered) notify(); // background sessions are suppressed inside runSyncOnSession; notify once more
+    }, STREAM_RENDER_THROTTLE_MS);
+  }
+
+  function cancelStreamRenderTimers(purgedSid) {
+    if (!purgedSid || !streamRenderTimers[purgedSid]) return;
+    clearTimeout(streamRenderTimers[purgedSid]);
+    delete streamRenderTimers[purgedSid];
+  }
+
   function finalizeAssistantStreamBeforeReasoning() {
+    flushPendingStreamRender();
     flushPendingTextBlock();
     const item = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
     if (item) {
@@ -644,7 +754,10 @@
     const item = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
     if (item) {
       item.text = context.currentStreamText;
-      item.html = renderMarkdown(context.currentStreamText);
+      // The bubble's first delta (html still empty) renders immediately;
+      // later deltas only accumulate text and leave the html to the
+      // throttle's trailing edge
+      if (!item.html) item.html = renderMarkdown(context.currentStreamText);
       item.streaming = true;
     } else {
       // New bubble needed (after tool card)
@@ -658,6 +771,7 @@
         streaming: true,
       });
     }
+    scheduleStreamRender(e.payload && e.payload.session_id || state.activeSessionId);
     notify();
   }); });
 
@@ -683,6 +797,7 @@
     context.pendingAssistantBlocks.push({ type: "tool_use", id: p.id, name: p.name, input: p.args || {} });
 
     // Finalize current streaming bubble
+    flushPendingStreamRender(); // synchronously produce the final html before the tool card takes over, and cancel the pending trailing edge
     const streamItem = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
     if (streamItem) {
       streamItem.streaming = false;
@@ -756,6 +871,7 @@
     if (meta && ["bash", "exec_shell", "Bash"].includes(meta.name) && backgroundTaskId) {
       markBackgroundToolItem(p.id, p.session_id, backgroundTaskId, p.output);
       delete context.toolMeta[p.id];
+      flushPendingStreamRender(); // terminal path: emit final html before the reset
       context.currentStreamText = ""; context.currentStreamId = 0;
       notify();
       return;
@@ -768,6 +884,7 @@
         { resolved: true, cardState: p.success ? "submitted" : "cancelled" }
       );
       delete context.toolMeta[p.id];
+      flushPendingStreamRender(); // terminal path: emit final html before the reset
       context.currentStreamText = ""; context.currentStreamId = 0;
       notify();
       return;
@@ -796,6 +913,7 @@
         // 不走 write_file 的工具(如 make_pptx)→ 卡有、面板无」。trackArtifact 已去重。
         if (presentedPath) trackArtifact(presentedPath);
         delete context.toolMeta[p.id];
+        flushPendingStreamRender(); // terminal path: emit final html before the reset
         context.currentStreamText = ""; context.currentStreamId = 0;
         notify();
         // Card identity and panel presentation are separate concerns: updating an
@@ -818,6 +936,7 @@
         output: p.output, success: false, state: "done",
       });
       delete context.toolMeta[p.id];
+      flushPendingStreamRender(); // terminal path: emit final html before the reset
       context.currentStreamText = ""; context.currentStreamId = 0;
       notify();
       return;
@@ -901,6 +1020,7 @@
       }
 
     delete context.toolMeta[p.id];
+    flushPendingStreamRender(); // terminal path: emit final html before the reset
     context.currentStreamText = "";
     context.currentStreamId = 0;
     notify();
@@ -996,10 +1116,15 @@
       if (typeof shellMessages.showShellCleanupFailure === "function") {
         shellMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
       }
+      // Terminal states synchronously flush the streaming bubble's final
+      // html first (including the interrupted retention display) and cancel
+      // the pending trailing edge
+      flushPendingStreamRender();
       const terminalStatus = String(e.payload && e.payload.status || "").toLowerCase();
       const interrupted = ["interrupted", "cancelled", "canceled"].includes(terminalStatus);
       if (interrupted) preserveInterruptedAssistantPresentation();
       else flushAssistantMessageToHistory();
+      sweepUnpairedToolMeta();
       // Refresh artifacts written in this turn in place when already presented.
       // Add only the first card for artifacts the model did not present, and
       // skip artifacts already presented in this turn or changed repeatedly.
@@ -1438,6 +1563,9 @@
       latestTimelineCompletion,
       authoritativeTimelineMissesKnownCompletion,
       refreshAuthoritativeTurnTimeline,
+      // Called from bridge.js on session buffer eviction/deletion to cancel
+      // the pending trailing edge for that sid
+      cancelStreamRenderTimers,
     };
   };
 })();

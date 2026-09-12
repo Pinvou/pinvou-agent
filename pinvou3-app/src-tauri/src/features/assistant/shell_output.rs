@@ -16,7 +16,21 @@ use parking_lot::Mutex;
 use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter};
 
-const POLL_INTERVAL: Duration = Duration::from_millis(80);
+// The poll interval partially mitigates the engine's missing cursor API:
+// every tick `inspect_job` clones and decodes a job's entire output (a real
+// fix needs a cursor read in CodeWhale, which cannot change here), so a
+// longer period amortizes that constant cost. Paired with the byte-length
+// short-circuit in `observe_jobs` and the bounded emission mirror below.
+const POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Tail of already-emitted output kept per tracked stream. The tail acts as
+/// the reconciliation cursor: delta computation runs against the last
+/// `EMITTED_TAIL_KEEP_BYTES` bytes of emitted text plus the byte offset
+/// where that tail starts inside the job's full output buffer, so memory
+/// and per-tick compare costs stay bounded while live deltas keep flowing
+/// for arbitrarily verbose jobs. A cursor read API upstream remains the
+/// real fix for the per-tick full clone+decode.
+const EMITTED_TAIL_KEEP_BYTES: usize = 64 * 1024;
 
 #[derive(Clone)]
 pub(crate) struct ShellOutputMonitor {
@@ -28,9 +42,57 @@ struct TrackedTool {
     command: String,
     order: u64,
     task_id: Option<String>,
-    emitted_stdout: String,
-    emitted_stderr: String,
+    stdout: StreamMirror,
+    stderr: StreamMirror,
     keep_after_tool_end: bool,
+}
+
+/// Bounded tail of one stream's already-emitted text plus the byte offset
+/// where that tail starts inside the job's full output buffer.
+#[derive(Debug, Default)]
+struct StreamMirror {
+    /// Bytes of the full stream output before `text` begins.
+    skip: usize,
+    /// Already-emitted tail, at most `EMITTED_TAIL_KEEP_BYTES` bytes.
+    text: String,
+}
+
+impl StreamMirror {
+    /// Return the not-yet-emitted suffix of `current`, or `None` when
+    /// `current` does not extend the already-emitted text (hold the mirror
+    /// and retry on the next snapshot). While `running`, a trailing U+FFFD
+    /// is held back so a code point split across reader chunks is emitted
+    /// exactly once (`inspect_job` lossily decodes the whole buffer every
+    /// observation, so an incomplete trailing code point shows up as a
+    /// temporary replacement character).
+    fn delta(&mut self, current: &str, running: bool) -> Option<String> {
+        let stable = if running {
+            current.trim_end_matches('\u{fffd}')
+        } else {
+            current
+        };
+        let emitted_tail = stable.get(self.skip..)?;
+        let delta = emitted_tail.strip_prefix(self.text.as_str())?;
+        if emitted_tail.len() <= EMITTED_TAIL_KEEP_BYTES {
+            self.text.push_str(delta);
+        } else {
+            // `text + delta == emitted_tail`, so the bounded mirror is the
+            // last keep-window bytes of `emitted_tail`. Rebuild from that
+            // suffix instead of push+drain: `drain` shortens the string
+            // without releasing capacity, so one large observation would
+            // keep a whole-delta allocation resident for the job's
+            // lifetime. `skip` advances with the dropped head to keep
+            // `text` aligned with `stable[self.skip..]`, cutting only at
+            // char boundaries.
+            let mut trim = emitted_tail.len() - EMITTED_TAIL_KEEP_BYTES;
+            while !emitted_tail.is_char_boundary(trim) {
+                trim += 1;
+            }
+            self.skip += trim;
+            self.text = String::from(&emitted_tail[trim..]);
+        }
+        Some(delta.to_string())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -38,6 +100,12 @@ struct MonitorState {
     tools: HashMap<String, TrackedTool>,
     claimed_tasks: HashSet<String>,
     next_order: u64,
+    /// task_id -> cumulative output bytes (snapshot stdout_len+stderr_len)
+    /// observed last round. While a job is running and the byte count is
+    /// unchanged, the decoded output must equal the previous round and the
+    /// delta must be empty, so the full clone+decode in `inspect_job` is
+    /// skipped entirely.
+    last_output_bytes: HashMap<String, usize>,
 }
 
 #[derive(Debug)]
@@ -116,8 +184,8 @@ impl ShellOutputMonitor {
                 command: command.to_string(),
                 order,
                 task_id: None,
-                emitted_stdout: String::new(),
-                emitted_stderr: String::new(),
+                stdout: StreamMirror::default(),
+                stderr: StreamMirror::default(),
                 keep_after_tool_end: false,
             },
         );
@@ -129,7 +197,9 @@ impl ShellOutputMonitor {
     pub(crate) fn tool_completed(&self, tool_id: &str, background_task_id: Option<&str>) {
         let mut state = self.state.lock();
         let Some(task_id) = background_task_id else {
-            state.tools.remove(tool_id);
+            if let Some(task_id) = state.tools.remove(tool_id).and_then(|tool| tool.task_id) {
+                state.last_output_bytes.remove(&task_id);
+            }
             return;
         };
         state.claimed_tasks.insert(task_id.to_string());
@@ -192,8 +262,31 @@ fn observe_jobs(
         .collect::<Vec<_>>();
     Ok(tracked
         .into_iter()
-        .filter_map(|task_id| manager.inspect_job(&task_id).ok())
-        .map(ObservedJob::from)
+        .filter_map(|task_id| {
+            // `inspect_job` clones and decodes a job's entire output on every
+            // call (the engine has no cursor API). `list_jobs` snapshots
+            // carry cumulative byte counts and were already polled within
+            // this call: while a job is running and its total byte count is
+            // unchanged, the decoded output must equal the previous round
+            // and the delta must be empty, so skip the full read. Terminal
+            // snapshots are never short-circuited so the closing event is
+            // always emitted.
+            if let Some(snapshot) = snapshots.iter().find(|job| job.id == task_id) {
+                let total = snapshot.stdout_len.saturating_add(snapshot.stderr_len);
+                if snapshot.status == ShellStatus::Running
+                    && state.last_output_bytes.get(&task_id) == Some(&total)
+                {
+                    return None;
+                }
+            }
+            let detail = manager.inspect_job(&task_id).ok()?;
+            let total = detail
+                .snapshot
+                .stdout_len
+                .saturating_add(detail.snapshot.stderr_len);
+            state.last_output_bytes.insert(task_id, total);
+            Some(ObservedJob::from(detail))
+        })
         .collect())
 }
 
@@ -243,12 +336,10 @@ impl MonitorState {
                 continue;
             };
 
-            if let Some(delta) = appended_stable_delta(
-                &tool.emitted_stdout,
-                &job.stdout,
-                job.status == ShellStatus::Running,
-            ) {
-                tool.emitted_stdout.push_str(&delta);
+            if let Some(delta) = tool
+                .stdout
+                .delta(&job.stdout, job.status == ShellStatus::Running)
+            {
                 if !delta.is_empty() {
                     emissions.push(MonitorEmission::Delta {
                         tool_id: tool_id.clone(),
@@ -257,12 +348,10 @@ impl MonitorState {
                     });
                 }
             }
-            if let Some(delta) = appended_stable_delta(
-                &tool.emitted_stderr,
-                &job.stderr,
-                job.status == ShellStatus::Running,
-            ) {
-                tool.emitted_stderr.push_str(&delta);
+            if let Some(delta) = tool
+                .stderr
+                .delta(&job.stderr, job.status == ShellStatus::Running)
+            {
                 if !delta.is_empty() {
                     emissions.push(MonitorEmission::Delta {
                         tool_id: tool_id.clone(),
@@ -285,7 +374,9 @@ impl MonitorState {
             }
         }
         for tool_id in finished {
-            self.tools.remove(&tool_id);
+            if let Some(task_id) = self.tools.remove(&tool_id).and_then(|tool| tool.task_id) {
+                self.last_output_bytes.remove(&task_id);
+            }
         }
         emissions
     }
@@ -306,20 +397,6 @@ impl From<ShellJobDetail> for ObservedJob {
             stderr_tail: detail.snapshot.stderr_tail,
         }
     }
-}
-
-/// `inspect_job` converts the complete byte buffer on every observation.  An
-/// incomplete UTF-8 code point can therefore appear temporarily as a trailing
-/// replacement character.  Hold that final marker until the next snapshot so
-/// a Chinese character split across reader chunks is emitted exactly once.
-fn appended_stable_delta(previous: &str, current: &str, running: bool) -> Option<String> {
-    let mut stable = current;
-    if running {
-        stable = stable.trim_end_matches('\u{fffd}');
-    }
-    stable
-        .strip_prefix(previous)
-        .map(std::string::ToString::to_string)
 }
 
 fn emit_monitor_event(app: &AppHandle, session_id: &str, emission: MonitorEmission) {
@@ -370,6 +447,7 @@ fn emit_owner_reclaimed(app: &AppHandle, session_id: &str, state: &mut MonitorSt
         })
         .collect::<Vec<_>>();
     state.tools.clear();
+    state.last_output_bytes.clear();
     for (tool_id, task_id) in background {
         emit_shell_task_status(
             app,
@@ -469,8 +547,8 @@ mod tests {
                 command: "cargo check".to_string(),
                 order: 0,
                 task_id: None,
-                emitted_stdout: String::new(),
-                emitted_stderr: String::new(),
+                stdout: StreamMirror::default(),
+                stderr: StreamMirror::default(),
                 keep_after_tool_end: false,
             },
         );
@@ -501,11 +579,9 @@ mod tests {
 
     #[test]
     fn holds_incomplete_utf8_replacement_until_a_stable_snapshot() {
-        assert_eq!(
-            appended_stable_delta("", "中\u{fffd}", true),
-            Some("中".into())
-        );
-        assert_eq!(appended_stable_delta("中", "中文", true), Some("文".into()));
+        let mut mirror = StreamMirror::default();
+        assert_eq!(mirror.delta("中\u{fffd}", true).as_deref(), Some("中"));
+        assert_eq!(mirror.delta("中文", true).as_deref(), Some("文"));
     }
 
     #[test]
@@ -532,8 +608,8 @@ mod tests {
                 command: "same".to_string(),
                 order: 0,
                 task_id: None,
-                emitted_stdout: String::new(),
-                emitted_stderr: String::new(),
+                stdout: StreamMirror::default(),
+                stderr: StreamMirror::default(),
                 keep_after_tool_end: false,
             },
         );
@@ -548,6 +624,112 @@ mod tests {
     }
 
     #[test]
+    fn bounded_mirror_keeps_streaming_after_the_window_overflows() {
+        let mut state = MonitorState::default();
+        state.tools.insert(
+            "tool-1".to_string(),
+            TrackedTool {
+                command: "build".to_string(),
+                order: 0,
+                task_id: Some("job-1".to_string()),
+                stdout: StreamMirror::default(),
+                stderr: StreamMirror::default(),
+                keep_after_tool_end: true,
+            },
+        );
+        // The first observation coalesces the whole backlog into one delta;
+        // the mirror then trims to the keep window.
+        let backlog = "x".repeat(EMITTED_TAIL_KEEP_BYTES + 4096);
+        assert_eq!(
+            state.reconcile(vec![observed("job-1", ShellStatus::Running, &backlog)]),
+            vec![MonitorEmission::Delta {
+                tool_id: "tool-1".to_string(),
+                stream: "stdout",
+                content: backlog.clone(),
+            }]
+        );
+        assert_eq!(state.tools["tool-1"].stdout.skip, 4096);
+        assert_eq!(
+            state.tools["tool-1"].stdout.text.len(),
+            EMITTED_TAIL_KEEP_BYTES
+        );
+
+        // Progress appended after the window overflowed still reaches the
+        // display while the job keeps running.
+        let progressed = backlog + "still alive\n";
+        assert_eq!(
+            state.reconcile(vec![observed("job-1", ShellStatus::Running, &progressed)]),
+            vec![MonitorEmission::Delta {
+                tool_id: "tool-1".to_string(),
+                stream: "stdout",
+                content: "still alive\n".to_string(),
+            }]
+        );
+        assert_eq!(
+            state.tools["tool-1"].stdout.text.len(),
+            EMITTED_TAIL_KEEP_BYTES
+        );
+
+        // The terminal snapshot still fires the closing event with the
+        // authoritative tails.
+        let completed = progressed + "done\n";
+        assert_eq!(
+            state.reconcile(vec![observed("job-1", ShellStatus::Completed, &completed)]),
+            vec![
+                MonitorEmission::Delta {
+                    tool_id: "tool-1".to_string(),
+                    stream: "stdout",
+                    content: "done\n".to_string(),
+                },
+                MonitorEmission::BackgroundFinished {
+                    tool_id: "tool-1".to_string(),
+                    task_id: "job-1".to_string(),
+                    status: ShellStatus::Completed,
+                    exit_code: Some(0),
+                    stdout_tail: completed.clone(),
+                    stderr_tail: String::new(),
+                }
+            ]
+        );
+        assert!(!state.tools.contains_key("tool-1"));
+    }
+
+    #[test]
+    fn large_burst_trims_without_retaining_the_whole_allocation() {
+        let mut mirror = StreamMirror::default();
+        // A first observation after substantial output accumulation: the
+        // burst crosses the keep window with a multibyte code point
+        // straddling the trim cut, so the trim must advance to the next
+        // char boundary.
+        let burst = format!(
+            "{}中{}",
+            "x".repeat(EMITTED_TAIL_KEEP_BYTES),
+            "y".repeat(EMITTED_TAIL_KEEP_BYTES - 2)
+        );
+        assert_eq!(mirror.delta(&burst, true).as_deref(), Some(burst.as_str()));
+        // The mirror keeps only the bounded suffix and, unlike push+drain,
+        // does not retain the whole-burst capacity afterwards.
+        assert_eq!(mirror.text, "y".repeat(EMITTED_TAIL_KEEP_BYTES - 2));
+        assert_eq!(mirror.skip, EMITTED_TAIL_KEEP_BYTES + 3);
+        assert!(mirror.text.capacity() <= EMITTED_TAIL_KEEP_BYTES);
+
+        // Progress after the burst still reaches the display while the
+        // job keeps running, and retained capacity stays bounded.
+        let progressed = format!("{burst}still alive\n");
+        assert_eq!(
+            mirror.delta(&progressed, true).as_deref(),
+            Some("still alive\n")
+        );
+        assert!(mirror.text.capacity() <= EMITTED_TAIL_KEEP_BYTES);
+
+        // Completion emits the remainder, still without growing the
+        // retained allocation.
+        let completed = format!("{progressed}done\n");
+        assert_eq!(mirror.delta(&completed, false).as_deref(), Some("done\n"));
+        assert!(mirror.text.capacity() <= EMITTED_TAIL_KEEP_BYTES);
+    }
+
+    #[test]
     fn reports_detached_completion_after_the_engine_tool_has_returned() {
         let mut state = MonitorState::default();
         state.tools.insert(
@@ -556,8 +738,11 @@ mod tests {
                 command: "build".to_string(),
                 order: 0,
                 task_id: Some("job-1".to_string()),
-                emitted_stdout: "building\n".to_string(),
-                emitted_stderr: String::new(),
+                stdout: StreamMirror {
+                    skip: 0,
+                    text: "building\n".to_string(),
+                },
+                stderr: StreamMirror::default(),
                 keep_after_tool_end: true,
             },
         );
