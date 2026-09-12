@@ -6437,6 +6437,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "benchmark-core",
+ "chrono",
  "fd-lock",
  "libc",
  "pinvou-product-backend",

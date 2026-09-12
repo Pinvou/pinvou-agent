@@ -48,6 +48,11 @@ fd-lock = "4"
 # manager (already in the graph via pinvou3-tauri). Platform-independent —
 # `scheduled` generates ids on every target.
 uuid = { version = "1", features = ["v4"] }
+# ONCE AT validation resolves naive local stamps through the system timezone
+# exactly like the foundation's `parse_once_at` (same major as pinvou3-tauri,
+# already in the graph), so a spring-forward gap is rejected at the CLI
+# instead of wedging the GUI scheduler sweep with an unparseable record.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 # Process-group tree kill for timed-out vendor CLI children; Windows uses
 # `taskkill /T` instead (same split as the app's kill_pid_tree).

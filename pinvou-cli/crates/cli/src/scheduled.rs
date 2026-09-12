@@ -458,8 +458,10 @@ fn parse_limit(options: &[(&str, &str)], name: &str) -> Result<Option<usize>, Cl
 /// FREQ=ONCE (AT), FREQ=HOURLY (INTERVAL, BYDAY, BYHOUR, BYMINUTE),
 /// FREQ=WEEKLY (BYDAY, BYHOUR, BYMINUTE), FREQ=CRON (EXPR, 5 fields).
 /// Minute-level recurrences have no FREQ and are rejected here, exactly like
-/// the GUI. Full next-run evaluation (local timezone, DST) stays with the
-/// foundation's scheduler sweep.
+/// the GUI. ONCE AT stamps are additionally resolved through the local
+/// timezone so a DST gap is rejected here (the foundation sweep would fail
+/// on the record every tick); the remaining next-run evaluation stays with
+/// the foundation's scheduler sweep.
 fn validate_rrule(rrule: &str) -> Result<(), CliError> {
     let mut parts: Vec<(String, String)> = Vec::new();
     for raw in rrule.split(';') {
@@ -687,6 +689,26 @@ fn validate_once_at(at: &str) -> Result<(), CliError> {
     {
         return Err(CliError::usage(format!(
             "ONCE AT '{at}' is not a valid calendar time"
+        )));
+    }
+    // The foundation resolves naive stamps through the system timezone and
+    // fails on spring-forward gaps ("ONCE local time does not exist"); one
+    // unparseable record stalls the GUI scheduler's whole sweep. Resolve the
+    // same way (`Local.from_local_datetime(...).earliest()` is None exactly
+    // for a nonexistent local time) so the CLI refuses to create such a
+    // record.
+    let naive = chrono::NaiveDate::from_ymd_opt(year as i32, month, day)
+        .and_then(|date| date.and_hms_opt(hour, minute, second));
+    let resolves = naive.is_some_and(|naive| {
+        use chrono::TimeZone as _;
+        chrono::Local
+            .from_local_datetime(&naive)
+            .earliest()
+            .is_some()
+    });
+    if !resolves {
+        return Err(CliError::usage(format!(
+            "ONCE AT '{at}' does not exist in the local timezone (DST gap)"
         )));
     }
     Ok(())
@@ -1260,6 +1282,20 @@ fn ensure_supported_schema(value: &serde_json::Value, supported: u32) -> Result<
     Ok(())
 }
 
+/// A definition file that is valid JSON but not an object (hand-edited
+/// store) must fail honestly instead of panicking on the `IndexMut` writes
+/// below it, which would exit 101 and break the CLI's exit-code contract.
+fn require_object_definition(id: &str, def: &serde_json::Value) -> Result<(), CliError> {
+    if def.is_object() {
+        Ok(())
+    } else {
+        Err(CliError::failed(format!(
+            "scheduled task {id} is malformed (not a JSON object); fix or remove its \
+             definition file manually"
+        )))
+    }
+}
+
 fn has_sortable_run_stem(stem: &str) -> bool {
     const RUN_STAMP_LEN: usize = "20260705T142530123Z".len();
     let Some((stamp, rest)) = stem.split_at_checked(RUN_STAMP_LEN) else {
@@ -1314,12 +1350,35 @@ fn write_json_atomic(path: &Path, value: &serde_json::Value) -> Result<(), CliEr
 
 /// Reads a versioned sidecar registry (model bindings, task kinds, UI
 /// metadata, read state, history archive); a missing file is the empty
-/// default and an unreadable payload degrades to the default for this
-/// process, mirroring the GUI stores' quarantine-then-default behavior.
+/// default. An unreadable payload is quarantined next to the original
+/// (`<name>.invalid-<timestamp>`, the GUI `VersionedJsonStore` convention)
+/// before degrading to the default for this process — otherwise the next
+/// write through this process would silently destroy the only copy of the
+/// other tasks' data.
 fn read_registry(path: &Path) -> serde_json::Value {
     match std::fs::read_to_string(path) {
-        Ok(raw) => serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null),
+        Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
+            Ok(value) => value,
+            Err(_) => {
+                quarantine_unreadable(path);
+                serde_json::Value::Null
+            }
+        },
         Err(_) => serde_json::Value::Null,
+    }
+}
+
+/// Best-effort `.invalid-<timestamp>` copy of a registry that failed to
+/// parse; failure to quarantine is ignored (the write path still refuses to
+/// treat the file as data — degrading to the default loses only the
+/// malformed file's own content, as before).
+fn quarantine_unreadable(path: &Path) {
+    let (secs, nanos) = now_epoch();
+    let stamp = format_rfc3339_millis(secs, nanos).replace([':', '.'], "-");
+    let mut target = path.as_os_str().to_owned();
+    target.push(format!(".invalid-{stamp}"));
+    if path.is_file() {
+        let _ = std::fs::copy(path, PathBuf::from(target));
     }
 }
 
@@ -1957,6 +2016,7 @@ fn update(
 ) -> Result<CliOutcome, CliError> {
     let store_holder = TaskStore::new()?;
     let mut def = store_holder.read_def(id)?;
+    require_object_definition(id, &def)?;
     let mut schedule_changed = false;
     if let Some(name) = name {
         let name = name.trim();
@@ -2091,6 +2151,7 @@ fn persist_task_kind(
 fn pause_or_resume(id: &str, pause: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store_holder = TaskStore::new()?;
     let mut def = store_holder.read_def(id)?;
+    require_object_definition(id, &def)?;
     let action = if pause { "paused" } else { "resumed" };
     def["status"] = serde_json::json!(if pause { "paused" } else { "active" });
     // Both branches clear the next slot: pause must not fire, and resume lets
@@ -2152,12 +2213,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     // The pause below mutates the object in place; a non-object definition
     // (hand-edited store) must fail honestly instead of panicking on the
     // IndexMut.
-    if !def.is_object() {
-        return Err(CliError::failed(format!(
-            "scheduled task {id} is malformed (not a JSON object); fix or remove its \
-             definition file manually"
-        )));
-    }
+    require_object_definition(id, &def)?;
     // Pause first, exactly like the GUI's destructive sequence: a concurrent
     // GUI scheduler tick must not enqueue a run between the active-run check
     // below and the removal. The pause lives in `status` — the field the
@@ -2197,6 +2253,14 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     // Archive first (commit before removal), then delete the definition and
     // its runs, then drop the sidecar entries — the GUI delete order minus
     // the engine-task cancellation step.
+    // Every failure below restores the pre-delete status like the GUI
+    // (`restore_task_status_if_present` runs on every failed delete): a
+    // caller retrying after fixing the cause must not find the task paused.
+    let restore_status = |def: &Value, status: &str| {
+        let mut restored = def.clone();
+        restored["status"] = Value::String(status.to_owned());
+        let _ = store_holder.write_def(&restored);
+    };
     let mut archive = read_registry(&store_holder.history_archive_path());
     if !archive.is_object() {
         archive = serde_json::json!({ "schema_version": 2, "tasks": {} });
@@ -2236,7 +2300,10 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         }
         archive["tasks"] = serde_json::Value::Object(merged);
     }
-    write_json_atomic(&store_holder.history_archive_path(), &archive)?;
+    if let Err(error) = write_json_atomic(&store_holder.history_archive_path(), &archive) {
+        restore_status(&def, &previous_status);
+        return Err(error);
+    }
     // If the removal below fails, roll the archive entry back so the task is
     // not left in the GUI's "live + archived" mixed state (mirror of the GUI
     // delete's archive rollback).
@@ -2251,6 +2318,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
             let _ = write_json_atomic(&store_holder.history_archive_path(), &archive_rollback);
+            restore_status(&def, &previous_status);
             return Err(CliError::failed(format!(
                 "scheduled_delete_failed: cannot remove {}: {error}",
                 def_path.display()
@@ -2259,12 +2327,13 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     }
     let runs_dir = store_holder.runs_dir_for(id)?;
     if runs_dir.exists() {
-        std::fs::remove_dir_all(&runs_dir).map_err(|error| {
-            CliError::failed(format!(
+        if let Err(error) = std::fs::remove_dir_all(&runs_dir) {
+            restore_status(&def, &previous_status);
+            return Err(CliError::failed(format!(
                 "scheduled_delete_failed: cannot remove {}: {error}",
                 runs_dir.display()
-            ))
-        })?;
+            )));
+        }
     }
     for path in [
         store_holder.model_bindings_path(),
@@ -2340,54 +2409,51 @@ task; {RUN_HELP_HOST_REQUIREMENT} (run it from the Pinvou app)"
 enabled in settings",
         ));
     }
-    // Run-record bookkeeping: the CLI persists a queued record before the
-    // work so a killed process leaves a visible trail. The reconcile above
-    // makes that state self-healing on the next run.
+    // Run-record bookkeeping: only the terminal record is persisted. A
+    // pre-work `queued` record with no task id is a state the GUI runtime can
+    // neither cancel nor complete nor delete (its reconcile filters on
+    // task_id and its delete errors on active runs without one), so a CLI
+    // process killed mid-work would wedge the task for the GUI forever — the
+    // same reason the foundation persists runs only after the enqueue. A
+    // killed CLI therefore leaves no record; the reconcile above remains for
+    // records written by earlier builds.
     let run_id = new_storage_id();
     let (secs, nanos) = now_epoch();
     let now = format_rfc3339_millis(secs, nanos);
-    let mut record = serde_json::json!({
-        "schema_version": 1,
-        "id": run_id,
-        "automation_id": id,
-        "scheduled_for": now,
-        "status": "queued",
-        "created_at": now,
-        "started_at": serde_json::Value::Null,
-        "ended_at": serde_json::Value::Null,
-        "task_id": serde_json::Value::Null,
-        "thread_id": serde_json::Value::Null,
-        "turn_id": serde_json::Value::Null,
-        "error": serde_json::Value::Null,
-    });
-    store_holder.save_run(&record)?;
     let organize = organize_headless();
     let (status, error) = match &organize {
         Ok(_) => ("completed", serde_json::Value::Null),
         Err(error) => ("failed", serde_json::json!(error)),
     };
-    record["status"] = serde_json::json!(status);
-    record["started_at"] = serde_json::json!(now);
-    record["ended_at"] = serde_json::json!(now_string());
-    record["error"] = error;
+    let record = serde_json::json!({
+        "schema_version": 1,
+        "id": run_id,
+        "automation_id": id,
+        "scheduled_for": now,
+        "status": status,
+        "created_at": now,
+        "started_at": now,
+        "ended_at": serde_json::json!(now_string()),
+        "task_id": serde_json::Value::Null,
+        "thread_id": serde_json::Value::Null,
+        "turn_id": serde_json::Value::Null,
+        "error": error,
+    });
     store_holder.save_run(&record).map_err(|error| {
-        // Without the terminal record the run would stay queued forever and
-        // `scheduled delete` refuses queued runs — an unrecoverable task.
-        // Surface a message that names the remedy instead.
+        // Without the record the run has no history trail; unlike a stranded
+        // queued record it cannot wedge deletion or the GUI sweep. Surface
+        // the loss honestly instead.
         CliError::failed(format!(
-            "scheduled_run_unterminated: the run finished but its terminal record could not be \
-             written ({error}); the task will refuse deletion until the record is repaired or \
-             removed manually at {}",
-            store_holder
-                .runs_dir_for(id)
-                .map(|dir| dir.display().to_string())
-                .unwrap_or_default()
+            "scheduled_run_unrecorded: the run finished but its record could not be \
+             written ({error}); the run history for task {id} is not persisted"
         ))
     })?;
     if let Ok(mut latest) = store_holder.read_def(id) {
-        latest["updated_at"] = serde_json::json!(now_string());
-        latest["last_run_at"] = record["ended_at"].clone();
-        let _ = store_holder.write_def(&latest);
+        if latest.is_object() {
+            latest["updated_at"] = serde_json::json!(now_string());
+            latest["last_run_at"] = record["ended_at"].clone();
+            let _ = store_holder.write_def(&latest);
+        }
     }
     let sessions = open_sessions()?;
     let value = map_run(

@@ -1162,3 +1162,155 @@ fn delete_on_a_non_object_definition_fails_instead_of_panicking() {
     let error = expect_failed(&["scheduled", "delete", &task_id, "--yes"]);
     assert!(error.contains("malformed"), "{error}");
 }
+
+#[test]
+fn once_at_rejects_dst_gap_times_like_the_foundation() {
+    // The foundation resolves naive stamps through the system timezone and a
+    // nonexistent local time fails its sweep every tick, so the CLI must
+    // reject one at creation. chrono caches the local zone at first use, so
+    // a runtime TZ switch inside this test process is unreliable — drive the
+    // real binary with a pinned timezone instead (UTC runners have no gap,
+    // so the zone must be pinned regardless).
+    let bin = env!("CARGO_BIN_EXE_pinvou");
+    let root = std::env::temp_dir().join(format!(
+        "pinvou-cli-scheduled-once-at-dst-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let prompt = root.join("dst.md");
+    std::fs::write(&prompt, "Summarize the reports.").unwrap();
+    let run = |rrule: &str| {
+        let mut command = std::process::Command::new(bin);
+        command
+            .args([
+                "scheduled",
+                "create",
+                "--name",
+                "DST task",
+                "--prompt-file",
+                prompt.to_str().unwrap(),
+                "--rrule",
+                rrule,
+            ])
+            .env("PINVOU3_HOME", &root)
+            .env("TZ", "America/New_York");
+        command.output().expect("binary runs")
+    };
+    // 2027-03-14 02:30 does not exist in America/New_York (clocks jump
+    // 02:00 -> 03:00); the foundation's `resolve_local_datetime` returns
+    // None for it.
+    let gap = run("FREQ=ONCE;AT=2027-03-14T02:30");
+    assert!(!gap.status.success(), "gap time must be rejected");
+    assert!(
+        String::from_utf8_lossy(&gap.stderr).contains("does not exist"),
+        "gap rejection must name the cause: {}",
+        String::from_utf8_lossy(&gap.stderr)
+    );
+    // Ordinary and ambiguous (fall-back) times still resolve — the
+    // foundation picks the earliest occurrence for ambiguous stamps.
+    for good in [
+        "FREQ=ONCE;AT=2027-01-15T02:30",
+        "FREQ=ONCE;AT=2027-11-07T01:30",
+    ] {
+        let output = run(good);
+        assert!(
+            output.status.success(),
+            "{good} must be accepted: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn mutations_fail_honestly_on_non_object_definitions() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    for label in ["update", "pause", "resume"] {
+        let home = TempHome::new(&format!("non-object-{label}"));
+        let created = create_task(&home, "Malformed task");
+        let task_id = created["id"].as_str().unwrap().to_owned();
+        std::fs::write(home.def_path(&task_id), "[]").unwrap();
+        let arguments: Vec<&str> = match label {
+            "update" => vec!["scheduled", "update", &task_id, "--name", "Renamed"],
+            "pause" => vec!["scheduled", "pause", &task_id],
+            _ => vec!["scheduled", "resume", &task_id],
+        };
+        let error = expect_failed(&arguments);
+        assert!(error.contains("malformed"), "{label}: {error}");
+        let _ = home;
+    }
+}
+
+#[test]
+fn run_writes_only_terminal_records() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("run-terminal-only");
+    let created = create_task(&home, "Terminal task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    // No display/model here, so the run fails honestly — but it must never
+    // leave a persisted `queued` record behind: the GUI cannot cancel,
+    // complete, reconcile or delete around a queued record with no task id.
+    let _ = expect_failed(&["scheduled", "run", &task_id]);
+    let mut queued = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(home.runs_dir(&task_id)) {
+        for entry in entries.flatten() {
+            let raw = std::fs::read_to_string(entry.path()).unwrap();
+            if raw.contains("\"queued\"") {
+                queued.push(entry.path());
+            }
+        }
+    }
+    assert!(
+        queued.is_empty(),
+        "no run record may persist in queued state: {queued:?}"
+    );
+}
+
+#[test]
+fn failed_delete_restores_the_previous_status() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("delete-restore");
+    let created = create_task(&home, "Blocked task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    // Make the archive commit fail: a directory at the archive path makes
+    // every write fail. Delete must restore the pre-delete status instead of
+    // leaving the task paused.
+    let archive = home.path().join("automations").join("history-archive.json");
+    std::fs::create_dir_all(&archive).unwrap();
+    let error = expect_failed(&["scheduled", "delete", &task_id, "--yes"]);
+    assert!(!error.is_empty(), "{error}");
+    let def: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
+    assert_eq!(
+        def["status"], "active",
+        "a failed delete must leave the task as it was"
+    );
+}
+
+#[test]
+fn unreadable_registries_are_quarantined_before_the_default_is_used() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("registry-quarantine");
+    let created = create_task(&home, "Quarantine task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    let bindings = home.path().join("automations").join("model-bindings.json");
+    std::fs::write(&bindings, "{not json").unwrap();
+    // A command reading the registry must not silently destroy the
+    // malformed file on the next write: it is quarantined next to the
+    // original first. (`show` degrades to the default and succeeds.)
+    let _ = run_human(&["scheduled", "show", &task_id]);
+    let quarantined = std::fs::read_dir(bindings.parent().unwrap())
+        .unwrap()
+        .flatten()
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("model-bindings.json.invalid-")
+        });
+    assert!(quarantined, "the malformed registry must be quarantined");
+}
