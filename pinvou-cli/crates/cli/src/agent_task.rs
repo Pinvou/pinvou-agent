@@ -265,6 +265,26 @@ fn run_agent(
         if let Ok(store) = store {
             let _ = store.set_title(&report.session_id, format!("CLI agent run <{stamp}>"));
         }
+        // The persisted session now consumes a slot in the SAME 50-session
+        // retention store the GUI reads. When the store is at the cap, this
+        // run just caused the oldest chat session(s) — pinned ones included,
+        // with no warning in the app — to be evicted. Surface that once,
+        // best-effort, instead of leaving it silent.
+        if keep_session_enabled() && session.is_none() {
+            if let Ok(store) = pinvou3_lib::features::sessions::SessionStore::boot() {
+                if let Ok(sessions) = store.list()
+                    && sessions.len() >= 50
+                {
+                    eprintln!(
+                        "pinvou: warning: the session store holds {} sessions at the \
+                         50-session retention cap; this run's persisted session evicted the \
+                         oldest chat session(s), pinned ones included. Point PINVOU3_HOME at \
+                         a sandbox or set PINVOU3_AGENT_TASK_KEEP_SESSION=0 for batch runs.",
+                        sessions.len()
+                    );
+                }
+            }
+        }
     }
     // TB/harness semantics: exit 0 whenever a report is produced (timeouts and
     // in-turn errors live in the report fields and are settled by the
@@ -276,6 +296,19 @@ fn run_agent(
         exit_code: ExitCode::Success,
         stdout: render_agent_report(&report, output)?,
     })
+}
+
+/// Mirrors the app-side `keep_session_from_env` parsing so the eviction
+/// warning only fires when this run actually persisted a session.
+#[cfg(feature = "product-backend")]
+fn keep_session_enabled() -> bool {
+    match std::env::var("PINVOU3_AGENT_TASK_KEEP_SESSION") {
+        Ok(value) => !matches!(
+            value.to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => true,
+    }
 }
 
 #[cfg(feature = "product-backend")]

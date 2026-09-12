@@ -295,8 +295,10 @@ pub async fn run_agentic_task(
     // one-shot cleanup for harnesses that want a clean sandbox (the legacy
     // truthy values "1"/"true"/"yes"/"on" keep meaning keep).
     //
-    // A caller-provided `session_id` is never auto-deleted and never swept:
-    // only this run's eval observation mark is dropped, and the session is
+    // A caller-provided `session_id` is never auto-deleted by THIS run, but
+    // it is an ordinary chat session in the store: the 50-session retention
+    // sweep can still evict it later exactly like any GUI chat session.
+    // Only this run's eval observation mark is dropped, and the session is
     // left in place for the caller.
     let keep_session = keep_session_from_env();
     if existing_session {
@@ -312,7 +314,10 @@ pub async fn run_agentic_task(
 }
 
 /// `PINVOU3_AGENT_TASK_KEEP_SESSION`: sessions are kept by default; only the
-/// explicit falsy values restore the legacy one-shot cleanup.
+/// explicit falsy values restore the legacy one-shot cleanup. An unset or
+/// empty variable both mean keep; values are compared ASCII
+/// case-insensitively without trimming (so `"0 "` with trailing whitespace
+/// counts as keep).
 fn keep_session_from_env() -> bool {
     match std::env::var("PINVOU3_AGENT_TASK_KEEP_SESSION") {
         Ok(value) => !matches!(
