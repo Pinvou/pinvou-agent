@@ -886,6 +886,15 @@ fn add(kind: AddKind, source: AddSource, output: OutputMode) -> Result<CliOutcom
     if content.trim().is_empty() {
         return Err(CliError::usage("memory add requires non-empty content"));
     }
+    // The preference and work-context stores are replace-per-topic: a new
+    // item lands in a fixed topic bucket (the CLI adds without a topic, so
+    // every add targets the same bucket) and the write deletes that bucket's
+    // previous item. Bucket ids are topic-derived, so the replacement keeps
+    // the old id for the new text — detection must compare (id, text)
+    // entries. The replace semantics are correct feature behavior, but they
+    // must not present as append-only: what this add removed is reported in
+    // the output below.
+    let existing = store_entries(kind).map_err(|error| feature_error("add", error))?;
     let suggestion = MemorySuggestion {
         kind: kind.feature_kind().to_owned(),
         topic: String::new(),
@@ -899,14 +908,11 @@ fn add(kind: AddKind, source: AddSource, output: OutputMode) -> Result<CliOutcom
         .ok_or_else(|| {
             CliError::failed("memory_add_failed: pending candidate disappeared before confirm")
         })?;
-    let (human, value) = match kind {
+    let (mut human, mut value, replaced) = match kind {
         AddKind::Preference => {
-            let item = feature::list_preferences()
-                .map_err(|error| feature_error("add", error))?
-                .into_iter()
-                // Newly materialized items are appended, so scan backwards:
-                // with a pre-existing identical text the first match would
-                // report the older item's id.
+            let items = feature::list_preferences().map_err(|error| feature_error("add", error))?;
+            let item = items
+                .iter()
                 .rev()
                 .find(|item| item.text == pending.content)
                 .ok_or_else(|| {
@@ -915,9 +921,14 @@ fn add(kind: AddKind, source: AddSource, output: OutputMode) -> Result<CliOutcom
 memory profile instead",
                     )
                 })?;
+            let after = items
+                .iter()
+                .map(|item| (item.id.clone(), item.text.clone()))
+                .collect::<Vec<_>>();
             (
                 format!("Remembered preference: {}", item.id),
-                serde_json::to_value(&item).unwrap_or_default(),
+                serde_json::to_value(item).unwrap_or_default(),
+                replaced_entries(&existing, &after),
             )
         }
         AddKind::WorkContext => {
@@ -927,21 +938,64 @@ memory profile instead",
             // form, or ordinary punctuated input false-fails after storing
             // fine.
             let stored = feature::clean_candidate_sentence(&pending.content, 160);
-            let item = feature::load_work_context()
-                .map_err(|error| feature_error("add", error))?
-                .into_iter()
+            let items =
+                feature::load_work_context().map_err(|error| feature_error("add", error))?;
+            let item = items
+                .iter()
                 .rev()
                 .find(|item| item.text == stored)
                 .ok_or_else(|| {
                     CliError::failed("memory_add_not_materialized: work context was not stored")
                 })?;
+            let after = items
+                .iter()
+                .map(|item| (item.id.clone(), item.text.clone()))
+                .collect::<Vec<_>>();
             (
                 format!("Remembered work context: {}", item.id),
-                serde_json::to_value(&item).unwrap_or_default(),
+                serde_json::to_value(item).unwrap_or_default(),
+                replaced_entries(&existing, &after),
             )
         }
     };
+    if !replaced.is_empty() {
+        if let Some(object) = value.as_object_mut() {
+            object.insert("replaced".to_owned(), serde_json::json!(replaced));
+        }
+        human.push_str(&format!(
+            "\nNote: this replaced {} earlier item(s) in the same topic bucket: {}",
+            replaced.len(),
+            replaced.join(", ")
+        ));
+    }
     Ok(success(render(output, human, &value)))
+}
+
+/// (id, text) snapshot of the store an add targets, for replacement
+/// detection (ids are topic-derived, so (id, text) identifies a concrete
+/// stored entry).
+fn store_entries(kind: AddKind) -> Result<Vec<(String, String)>, std::io::Error> {
+    let entries = match kind {
+        AddKind::Preference => feature::list_preferences()?
+            .into_iter()
+            .map(|item| (item.id, item.text))
+            .collect::<Vec<_>>(),
+        AddKind::WorkContext => feature::load_work_context()?
+            .into_iter()
+            .map(|item| (item.id, item.text))
+            .collect::<Vec<_>>(),
+    };
+    Ok(entries)
+}
+
+/// Entries that were present before an add but are gone after it — the
+/// replace-per-topic write's collateral, reported by id.
+fn replaced_entries(before: &[(String, String)], after: &[(String, String)]) -> Vec<String> {
+    before
+        .iter()
+        .filter(|entry| !after.contains(entry))
+        .map(|(id, _)| id.clone())
+        .collect()
 }
 
 fn update(
