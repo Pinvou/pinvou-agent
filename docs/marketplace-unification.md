@@ -179,6 +179,34 @@ CLI 无专属生命周期词汇："连接"= connect 动作，"断开"= 删授权
 companion 声明与 MCP 的 `companion_skills` 同机制，`BUILTIN_CLI_BUNDLES`
 常量表 manifest 化后退役。检验标准：新增 CLI 连接器 = 加一个 manifest + lock 条目。
 
+### 5.4 Model discovery of installed MCP applications
+
+Each new native bridge submission carries a fresh marketplace MCP inventory
+containing only installed application IDs, display names, and the current
+conversation mode's enabled flags. This metadata remains visible when an application's toggle is off;
+it does not expose credentials, server configuration, or disabled tool schemas.
+The latest snapshot supersedes previous snapshots, including an empty list after
+all MCP applications have been uninstalled. The interpretation rules live in the
+static session prompt, while each turn repeats only the compact JSON snapshot.
+Plan turns receive the same snapshot so users can inspect installation and
+mode-scoped toggle state while planning.
+
+A disabled application exists but cannot be invoked. The assistant should explain
+that it is not enabled and direct the user to the chat tool menu. An enabled flag
+only reports the toggle; authentication, connectivity, and other tool policies
+still determine whether a tool is callable. Empty tool-search or MCP-resource
+results are not proof that an application is uninstalled. Existing tool gates
+continue to enforce invocation restrictions.
+
+This disclosure is deliberately limited to marketplace MCP packages. Disabled
+skill-based connectors retain the existing concealment policy enforced by
+`deny_sensitive_paths.sh`; the two connector sets do not overlap. Native submit
+rereads the installed registry and scope toggle file on every turn, accepting the
+marketplace list path's existing corrupt-registry repair behavior so live sessions
+converge on the same source of truth. Edit/resend operations that replay existing
+Engine history do not synthesize a snapshot; the next native bridge submission
+refreshes it.
+
 ## 6. 统一安装管线
 
 四条写路径（MCP / 预置技能 / 上传 zip / CLI 连接）收编为一条管线的阶段组合，
