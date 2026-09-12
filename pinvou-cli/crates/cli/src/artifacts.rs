@@ -297,14 +297,20 @@ fn deliverable_index() -> Vec<DeliverableRow> {
     out
 }
 
-/// Resolves `<session-id> <relative-path>` to a canonical artifact file
-/// under `sessions_root()/<session-id>/{artifacts,workspace}`, mirroring
-/// `resolve_artifact_path_in_workspace` (relative against the ledger
-/// workspace) plus `ensure_editable_artifact_path` containment checks.
+/// Resolves `<session-id> <relative-path>` to a canonical artifact file,
+/// mirroring `resolve_artifact_path_in_workspace` (relative against the
+/// ledger workspace) plus containment checks. Read and write differ like
+/// the GUI: reads accept the whole session ledger tree — which for
+/// `sched-*` sessions lives under `~/.pinvou3/scheduled/<task>/workspace`,
+/// outside `sessions_root()` — while writes stay confined to
+/// `sessions_root()/<session-id>/{artifacts,workspace}`
+/// (`ensure_editable_artifact_path`). Collapsing both into the write
+/// containment made scheduled-run artifacts listable but never readable.
 fn resolve_session_artifact(
     store: &SessionStore,
     session_id: &str,
     relative_path: &str,
+    writable: bool,
 ) -> Result<PathBuf, CliError> {
     if !crate::support::valid_session_id(session_id) {
         return Err(CliError::usage("invalid session id"));
@@ -333,9 +339,28 @@ fn resolve_session_artifact(
             sessions_root.display()
         ))
     })?;
-    let relative = canonical
-        .strip_prefix(&sessions_root)
-        .map_err(|_| CliError::failed("artifact_outside_session_storage"))?;
+    let relative = match canonical.strip_prefix(&sessions_root) {
+        Ok(relative) => relative,
+        Err(_) => {
+            // Outside sessions storage: readable only when it lives inside
+            // this session's ledger tree (the scheduled-run workspace
+            // case); writes refuse — matching the GUI, where the write
+            // command is sessions-root confined and scheduled-run
+            // deliverables are read-only.
+            if !writable {
+                let workspace_canonical = std::fs::canonicalize(&workspace).map_err(|error| {
+                    CliError::failed(format!(
+                        "artifact_outside_session_storage: cannot resolve workspace {}: {error}",
+                        workspace.display()
+                    ))
+                })?;
+                if canonical.strip_prefix(&workspace_canonical).is_ok() {
+                    return Ok(canonical);
+                }
+            }
+            return Err(CliError::failed("artifact_outside_session_storage"));
+        }
+    };
     let mut components = relative.components();
     let session = components
         .next()
@@ -416,7 +441,9 @@ fn list(session: Option<String>, output: OutputMode) -> Result<CliOutcome, CliEr
 
 fn read(session_id: &str, relative_path: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store = open_store()?;
-    let path = resolve_session_artifact(&store, session_id, relative_path)?;
+    // Read lane: the ledger-tree containment applies (scheduled-run
+    // workspaces readable), matching the GUI's read path.
+    let path = resolve_session_artifact(&store, session_id, relative_path, false)?;
     let content = std::fs::read_to_string(&path).map_err(|error| {
         CliError::failed(format!("artifact_read_failed({}): {error}", path.display()))
     })?;
@@ -457,7 +484,9 @@ fn write(
         }
     };
     let store = open_store()?;
-    let path = resolve_session_artifact(&store, session_id, relative_path)?;
+    // Write lane: sessions-root confinement only (scheduled-run artifacts
+    // are read-only here, like the GUI).
+    let path = resolve_session_artifact(&store, session_id, relative_path, true)?;
     // Same md-only overwrite rule as the GUI `write_artifact_text`: only
     // existing .md/.markdown files inside a session may be edited.
     let ext = path

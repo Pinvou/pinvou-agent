@@ -555,6 +555,76 @@ fn artifacts_read_rejects_escape_outside_the_session() {
     assert_eq!(error.exit_code(), ExitCode::Usage);
 }
 
+/// Scheduled-run sessions ledger OUTSIDE `sessions_root()` — their
+/// workspace lives under `~/.pinvou3/scheduled/<task>/workspace`. Reads
+/// must resolve through the session profile's ledger root (the GUI read
+/// path reads these fine); writes stay sessions-root confined.
+#[test]
+fn artifacts_read_reaches_scheduled_run_workspace_artifacts() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("artifacts-sched");
+    let session_id = "sched-artifactfix1";
+    let task_workspace = home
+        .root
+        .join("scheduled")
+        .join("artifact-task")
+        .join("workspace");
+    std::fs::create_dir_all(task_workspace.join("artifacts")).unwrap();
+    let artifact = task_workspace.join("artifacts").join("weekly.md");
+    std::fs::write(&artifact, "# Weekly report\n\nrun output\n").unwrap();
+
+    // The profile registry the GUI writes for every scheduled session; the
+    // store boots from it and maps the sched session to its workspace.
+    // The store's boot reconciliation prunes profiles whose session JSON is
+    // gone, so the transcript file must exist for the profile to survive.
+    std::fs::create_dir_all(home.sessions_root()).unwrap();
+    std::fs::write(home.sessions_root().join(format!("{session_id}.json")), "{}").unwrap();
+
+    let profiles = home.root.join("scheduled-runs");
+    std::fs::create_dir_all(&profiles).unwrap();
+    std::fs::write(
+        profiles.join("session-profiles.json"),
+        serde_json::json!({
+            "schema_version": 1,
+            "sessions": {
+                session_id: {
+                    "task_id": "artifact-task",
+                    "model": "test-model",
+                    "workspace": task_workspace.display().to_string(),
+                    "mode": "agent",
+                    "allow_shell": true,
+                    "trust_mode": true,
+                    "auto_approve": true,
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let value = run_json(&[
+        "pinvou",
+        "artifacts",
+        "read",
+        session_id,
+        "artifacts/weekly.md",
+    ]);
+    assert_eq!(value["content"], "# Weekly report\n\nrun output\n");
+
+    // Writing back stays refused: the deliverable lives outside
+    // sessions_root, exactly like the GUI's write confinement.
+    let error = run(&[
+        "pinvou",
+        "artifacts",
+        "write",
+        session_id,
+        "artifacts/weekly.md",
+        "--stdin",
+    ])
+    .expect_err("scheduled-run artifact write must stay refused");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+}
+
 #[test]
 fn json_output_mode_flows_through_every_session_subcommand() {
     // Parse-level assertion only: no PINVOU3_HOME mutation needed here.
