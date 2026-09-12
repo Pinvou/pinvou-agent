@@ -171,21 +171,35 @@ impl ModelPreset {
     /// `bridge::tests::default_model_window_recognized` 锁住这个不变量。
     /// ⚠️ ops 同步要求:vLLM 启动也要带 `--served-model-name qwen36_35b_256k`,
     /// 否则 OpenAI-compat API 报 `model_not_found`。
+    ///
+    /// 2026-09-11 按官方文档核对（与前端 model-catalog.js 的 MODEL_PRESET_DEFS
+    /// 同批同步）。前端两处消费点中，main.jsx 旧版草稿回填已改为直接复用
+    /// MODEL_PRESET_DEFS，本表是 Rust 侧唯一手写镜像，由
+    /// `default_model_matches_vendor_docs_2026_09` 锁定。
     pub fn default_model(&self) -> &'static str {
         match self {
             ModelPreset::LocalVllm => "qwen36_35b_256k",
-            ModelPreset::Deepseek => "deepseek-v4-pro",
+            // V4.1-Flash 为官方主力；v4-pro 自 2026-09-14 起被路由到 V4.1-Flash 计费。
+            ModelPreset::Deepseek => "deepseek-flash",
             ModelPreset::Kimi => "kimi-k3",
             ModelPreset::OpenaiCompatible => "gpt-5.6-terra",
             ModelPreset::Qwen => "qwen3.8-max",
             ModelPreset::Doubao => "doubao-seed-evolving",
             ModelPreset::Minimax => "MiniMax-M3",
-            ModelPreset::Glm => "glm-5.2",
+            // 智谱双站 API enum 默认值。
+            ModelPreset::Glm => "glm-5.3",
             ModelPreset::Mimo => "mimo-v2.5-pro",
+            // OpenAI 保持 gpt-5.6-terra：官方推荐起点 gpt-6-astra 的工具调用
+            // 仅限 Responses 协议（developers.openai.com function-calling
+            // 指南），本预设走 Chat wire；换默认前必须确认新 id 在 Chat wire
+            // 可用工具调用，且被 core::model_context 解析链识别（见 monitor
+            // `preset_default_models_resolve_engine_context_window`）。
             ModelPreset::Openai => "gpt-5.6-terra",
             ModelPreset::Anthropic => "claude-sonnet-5",
-            ModelPreset::Gemini => "gemini-3.6-flash",
-            ModelPreset::Xai => "grok-4.3",
+            // 2026-09-02 发布。
+            ModelPreset::Gemini => "gemini-3.8-flash",
+            // xAI 官方编码/Agent 推荐位。
+            ModelPreset::Xai => "grok-4.6",
         }
     }
 }
@@ -220,11 +234,15 @@ impl ModelPreset {
             },
             // Gemini 全系标称 1M。
             ModelPreset::Gemini => Some(1_048_576),
-            // xAI 官方口径：grok-4.20 系 2M、grok-4.3 1M、grok-4.5 500K、grok-build 256K。
+            // xAI 官方口径：grok-4.20 系 1M（grok-4.20-0309-* 由 core::model_context
+            // 覆盖表先行修正，本兜底只承接底座不认识的其它 4.20 拼写）、grok-4.3 1M、
+            // grok-4.5 / grok-4.6 500K、grok-build-0.1 256K（2026-09-11 按 docs.x.ai
+            // 模型详情页复核；底座 known 表对裸 "grok-build" 另有 512K 旧行，目录
+            // 不收录该拼写，实际 wire id grok-build-0.1 落本兜底 256K）。
             ModelPreset::Xai => match model.map(str::to_ascii_lowercase) {
-                Some(m) if m.contains("grok-4.20") => Some(2_000_000),
+                Some(m) if m.contains("grok-4.20") => Some(1_000_000),
                 Some(m) if m.contains("grok-4.3") => Some(1_000_000),
-                Some(m) if m.contains("grok-4.5") => Some(500_000),
+                Some(m) if m.contains("grok-4.6") || m.contains("grok-4.5") => Some(500_000),
                 Some(m) if m.contains("grok-build") => Some(256_000),
                 _ => Some(256_000),
             },
@@ -235,6 +253,30 @@ impl ModelPreset {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 默认模型逐 preset 断言：本表被前端 model-catalog.js / main.jsx 镜像，
+    /// 任何一侧改动都必须显式过这里，防止再出现 qwen 默认值长期漂移。
+    #[test]
+    fn default_model_matches_vendor_docs_2026_09() {
+        let cases: &[(ModelPreset, &str)] = &[
+            (ModelPreset::LocalVllm, "qwen36_35b_256k"),
+            (ModelPreset::Deepseek, "deepseek-flash"),
+            (ModelPreset::Kimi, "kimi-k3"),
+            (ModelPreset::OpenaiCompatible, "gpt-5.6-terra"),
+            (ModelPreset::Qwen, "qwen3.8-max"),
+            (ModelPreset::Doubao, "doubao-seed-evolving"),
+            (ModelPreset::Minimax, "MiniMax-M3"),
+            (ModelPreset::Glm, "glm-5.3"),
+            (ModelPreset::Mimo, "mimo-v2.5-pro"),
+            (ModelPreset::Openai, "gpt-5.6-terra"),
+            (ModelPreset::Anthropic, "claude-sonnet-5"),
+            (ModelPreset::Gemini, "gemini-3.8-flash"),
+            (ModelPreset::Xai, "grok-4.6"),
+        ];
+        for (preset, expected) in cases {
+            assert_eq!(preset.default_model(), *expected, "{preset:?} 默认模型漂移");
+        }
+    }
 
     /// 预设上下文窗口兜底：各厂商官方口径与未知型号的缺省值。
     #[test]
@@ -254,14 +296,16 @@ mod tests {
             (ModelPreset::Anthropic, None, 1_000_000),
             // Gemini 全系标称 1M
             (ModelPreset::Gemini, Some("gemini-3.6-flash"), 1_048_576),
-            // xAI 预设兜底：grok-4.20 系 2M、grok-4.3 1M、grok-4.5 500K、grok-build 256K
+            // xAI 预设兜底：grok-4.20 系 1M、grok-4.3 1M、grok-4.5 / grok-4.6 500K、
+            // grok-build 256K
             (
                 ModelPreset::Xai,
                 Some("grok-4.20-0309-reasoning"),
-                2_000_000,
+                1_000_000,
             ),
             (ModelPreset::Xai, Some("grok-4.3"), 1_000_000),
             (ModelPreset::Xai, Some("grok-4.5"), 500_000),
+            (ModelPreset::Xai, Some("grok-4.6"), 500_000),
             (ModelPreset::Xai, Some("grok-build-0.1"), 256_000),
             (ModelPreset::Xai, Some("grok-future-x"), 256_000),
             (ModelPreset::Xai, None, 256_000),

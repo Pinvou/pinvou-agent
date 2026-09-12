@@ -897,9 +897,12 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
     #[test]
     fn infer_context_window_cloud_models() {
         let cases: &[(ModelPreset, &str, u32)] = &[
-            // DeepSeek：v4 全系 1M（原 bug：预设固定 128K）
+            // DeepSeek：v4 全系 1M（原 bug：预设固定 128K）；
+            // deepseek-flash（V4.1-Flash）官方 1M，经 core::model_context 覆盖表修正
+            // （底座对无 "v4" 的 deepseek 名按 legacy 128K 启发式，2026-09-11 核对）
             (ModelPreset::Deepseek, "deepseek-v4-pro", 1_000_000),
             (ModelPreset::Deepseek, "deepseek-v4-flash", 1_000_000),
+            (ModelPreset::Deepseek, "deepseek-flash", 1_000_000),
             // Kimi：直连平台 kimi-k3 是 1M；Coding Plan 裸 k3 默认按 256K 安全值
             (ModelPreset::Kimi, "kimi-k3", 1_048_576),
             (ModelPreset::Kimi, "kimi-k2.7-code", 262_144),
@@ -916,8 +919,9 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
             // (binary 256K = 262,144).
             (ModelPreset::OpenaiCompatible, "k3-256k", 262_144),
             (ModelPreset::OpenaiCompatible, "k3", 262_144),
-            // GLM：5.2 是 1M，5.1/5-turbo 是 202,752，4.7 官方 200K
+            // GLM：5.2 / 5.3 是 1M，5.1/5-turbo 是 202,752，4.7 官方 200K
             (ModelPreset::Glm, "glm-5.2", 1_000_000),
+            (ModelPreset::Glm, "glm-5.3", 1_000_000),
             (ModelPreset::Glm, "glm-5.1", 202_752),
             (ModelPreset::Glm, "glm-5-turbo", 202_752),
             (ModelPreset::Glm, "glm-4.7", 204_800),
@@ -935,20 +939,43 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
             (ModelPreset::Qwen, "qwen3.7-max", 1_000_000),
             (ModelPreset::Qwen, "qwen3.7-flash", 1_000_000),
             (ModelPreset::Qwen, "qwen3.6-flash", 1_000_000),
-            // 豆包：evolving 已升 1M，2.x 全系 256K
+            // 豆包：evolving 已升 1M；2.x 系官方标称 256k（volcengine 1330310，
+            // 2026-09-12 核对），由 core::model_context 补充表承接——底座无
+            // doubao 行，无补充表时 engine 侧落 128K 与监控页分叉
             (ModelPreset::Doubao, "doubao-seed-evolving", 1_048_576),
-            (ModelPreset::Doubao, "doubao-seed-2.1-pro", 262_144),
-            (ModelPreset::Doubao, "doubao-seed-2.1-turbo", 262_144),
-            (ModelPreset::Doubao, "doubao-seed-2.0-pro", 262_144),
-            (ModelPreset::Doubao, "doubao-seed-2.0-lite", 262_144),
+            (ModelPreset::Doubao, "doubao-seed-2-1-pro-260628", 262_144),
+            (ModelPreset::Doubao, "doubao-seed-2-1-turbo-260628", 262_144),
+            (
+                ModelPreset::Doubao,
+                "doubao-seed-2-0-code-preview-260215",
+                262_144,
+            ),
+            (ModelPreset::Doubao, "doubao-seed-2-0-pro-260215", 262_144),
+            (ModelPreset::Doubao, "doubao-seed-2-0-lite-260428", 262_144),
             // OpenAI 兼容示例：gpt-5.6 全系 1.05M
             (ModelPreset::OpenaiCompatible, "gpt-5.6-terra", 1_050_000),
             (ModelPreset::OpenaiCompatible, "gpt-5.6-luna", 1_050_000),
             (ModelPreset::OpenaiCompatible, "gpt-5.6-sol", 1_050_000),
-            // 底座 catalog 已知（haiku 200K）与 PINVOU_OVERRIDES 覆盖（opus-5 1M）
-            // 的 Anthropic 模型走 resolved_context_window，preset 兜底见 prefs 测试。
+            // xAI：底座 known 表收录 grok-4.6 / grok-4.5 500K（2026-09-11 核对）
+            (ModelPreset::Xai, "grok-4.6", 500_000),
+            // 底座 known 表仍把 grok-4.20-0309-* 记为 2M；core::model_context
+            // 覆盖表先行修正为 docs.x.ai 2026-09-11 复核的 1M（与目录 desc 一致）。
+            (ModelPreset::Xai, "grok-4.20-0309-reasoning", 1_000_000),
+            (ModelPreset::Xai, "grok-4.20-0309-non-reasoning", 1_000_000),
+            // 底座 known 表只有裸 "grok-build"→512K，命不中 -0.1 wire id；
+            // core::model_context 覆盖表按 docs.x.ai 官方 256K 修正（与目录 desc 一致）。
+            (ModelPreset::Xai, "grok-build-0.1", 256_000),
+            // 底座链对 gpt-6 / gemini-3.8 均无行；core::model_context 覆盖表按
+            // 官方口径补齐（engine 侧 resolved 原为 None → 128K，与监控页兜底分叉）。
+            (ModelPreset::Openai, "gpt-6-astra", 1_050_000),
+            (ModelPreset::Gemini, "gemini-3.8-flash", 1_048_576),
+            // 底座 catalog 已知（haiku 200K）与 PINVOU_OVERRIDES 覆盖（opus-5 /
+            // fable-5-1 均 1M）的 Anthropic 模型走 resolved_context_window，preset
+            // 兜底见 prefs 测试。fable-5-1 底座 known 表未精确收录（只有 fable-5），
+            // 无覆盖时会落 claude 通配 200K。
             (ModelPreset::Anthropic, "claude-haiku-4-5", 200_000),
             (ModelPreset::Anthropic, "claude-opus-5", 1_000_000),
+            (ModelPreset::Anthropic, "claude-fable-5-1", 1_000_000),
         ];
         for (preset, model, expected) in cases {
             assert_eq!(
@@ -974,5 +1001,44 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
             Some(131_072)
         );
         assert_eq!(infer_context_window(ModelPreset::Kimi, None), Some(262_144));
+    }
+
+    /// 每个预设的默认模型必须能被共享解析入口（resolved_context_window）解出
+    /// 上下文窗口：engine 侧 `effective_context_window` 在 resolved 为 None 时
+    /// 直接落 128K，而监控页 `infer_context_window` 还有 prefs 供应商兜底，
+    /// 两侧会分叉（gpt-6-astra / gemini-3.8-flash 曾因此以 128K 推导压缩阈值、
+    /// 页面却显示 1M）。本测试把「换默认必过解析链」变成显式闸门；预期值为
+    /// 厂商官方口径，与 `default_model_matches_vendor_docs_2026_09`、前端
+    /// MODEL_PRESET_DEFS 锁测试共同构成三层默认值防线。
+    #[test]
+    fn preset_default_models_resolve_engine_context_window() {
+        let cases: &[(ModelPreset, u32)] = &[
+            // `_256k` 后缀 hint 按 N×1000 解出 256,000（监控页同源；prefs 的
+            // LocalVllm 兜底 262,144 只在 resolved 为 None 时才轮得到，本默认不会走到）。
+            (ModelPreset::LocalVllm, 256_000),
+            (ModelPreset::Deepseek, 1_000_000),
+            (ModelPreset::Kimi, 1_048_576),
+            (ModelPreset::Qwen, 1_000_000),
+            (ModelPreset::Doubao, 1_048_576),
+            (ModelPreset::Minimax, 1_000_000),
+            (ModelPreset::Glm, 1_000_000),
+            (ModelPreset::Mimo, 1_000_000),
+            (ModelPreset::Openai, 1_050_000),
+            (ModelPreset::Anthropic, 1_000_000),
+            (ModelPreset::Gemini, 1_048_576),
+            (ModelPreset::Xai, 500_000),
+            // openai_compatible 的 Rust 默认 gpt-5.6-terra 仅服务 legacy 迁移
+            // 兜底（前端刻意留空），但既然是 default_model() 的产出，同样必须
+            // 过共享解析入口（底座 gpt-5.6 精确列表 → 1.05M）。
+            (ModelPreset::OpenaiCompatible, 1_050_000),
+        ];
+        for (preset, expected) in cases {
+            let model = preset.default_model();
+            assert_eq!(
+                crate::core::model_context::resolved_context_window(model),
+                Some(*expected),
+                "{preset:?} 默认模型 {model} 必须在共享解析入口解出官方上下文窗口（engine 侧没有 prefs 兜底）"
+            );
+        }
     }
 }

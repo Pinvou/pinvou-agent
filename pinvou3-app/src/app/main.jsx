@@ -55,6 +55,7 @@ import { ChatView } from '../features/chat/ChatView.jsx';
 import { createPinvouModeScopeKey, savePinvouModeState } from '../features/chat/pinvou-mode-state.js';
 import { WebConnectionStatus } from '../features/web/WebConnectionStatus.jsx';
 import { VoiceShortcutRouter } from '../features/voice-composer/VoiceShortcutRouter.jsx';
+import { MODEL_PRESET_DEFS } from '../features/settings/model-catalog.js';
 import { createPetActivationGuard } from '../features/pet/activation-guard.js';
 import { SessionAttachmentTitle } from '../features/attachments/SessionAttachmentTitle.jsx';
 import {
@@ -1047,17 +1048,15 @@ const NAV_PREFETCH = {
       const savedModelConfigRef = useRef(null);
       const savedSearchConfigRef = useRef(null);
 
-      // 各厂商默认配置（前端自动填充用，与 bridge/mod.rs 对齐）
+      // 各厂商默认配置（旧版单模型草稿回填用）：直接复用
+      // settings/model-catalog.js 的 MODEL_PRESET_DEFS（其与 Rust prefs
+      // `ModelPreset::default_base_url/default_model` 对齐），不再手抄第二份，
+      // 避免 qwen 曾发生过的镜像漂移。唯一覆盖 openai_compatible：添加目录
+      // 刻意不留默认地址/模型，而本表回填的是 Rust legacy 迁移兜底会实际
+      // 解析出的值（prefs default_base_url/default_model）。
       const PRESET_DEFAULTS = {
-        local_vllm:  { baseUrl: 'http://127.0.0.1:8000/v1',                model: 'qwen36_35b_256k' },
-        deepseek:    { baseUrl: 'https://api.deepseek.com',                model: 'deepseek-v4-pro' },
-        kimi:        { baseUrl: 'https://api.moonshot.cn/v1',              model: 'kimi-k3' },
-        openai_compatible: { baseUrl: 'https://api.openai.com/v1',        model: 'gpt-5.6-terra' },
-        qwen:        { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3.7-plus' },
-        doubao:      { baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-seed-evolving' },
-        minimax:     { baseUrl: 'https://api.minimaxi.com/v1',            model: 'MiniMax-M3' },
-        glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-5.2' },
-        mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2.5-pro' },
+        ...MODEL_PRESET_DEFS,
+        openai_compatible: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.6-terra' },
       };
       function normalizedModelProfile(name, baseUrl, apiKey) {
         const modelName = (name || '').trim();

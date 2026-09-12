@@ -18,36 +18,49 @@ import xaiIcon from '../../brand-icons/xai.svg';
 // ── 「添加模型」方案:模型快切 chip + 添加/编辑弹窗 ─────────────────
 // 各预设默认 baseUrl/model 模板(与 bridge/prefs.rs 对齐),添加模型时自动填充。
 // openai_compatible 为纯自定义模板,前端刻意不留默认地址/模型,Rust 侧的
-// OpenAI 默认值仅服务 legacy 迁移兜底。
+// OpenAI 默认值仅服务 legacy 迁移兜底(自定义端点身份未知,沿用旧旗舰
+// gpt-5.6-terra 而不随官方推荐位切换,避免暗示官方背书)。
+// 默认模型（2026-09-11 按各厂商官方文档核对）：
+// - deepseek：V4.1-Flash（deepseek-flash）为当前主力；deepseek-v4-pro 将于
+//   2026-09-14 起被官方路由到 V4.1-Flash 计费（api-docs.deepseek.com/updates）。
+// - glm：GLM-5.3 已于 2026-08-19（中国）/2026-08-18（z.ai）上线，双站 API enum
+//   默认值即 glm-5.3（docs.bigmodel.cn / docs.z.ai）。
+// - gemini：gemini-3.8-flash 于 2026-09-02 发布接棒（ai.google.dev models 页）。
+// - xai：grok-4.6 为官方「编码/Agent 推荐」位（docs.x.ai models 页）。
+// - openai 保持 gpt-5.6-terra：官方推荐起点虽已是 gpt-6-astra，但其工具调用
+//   仅限 Responses 协议（developers.openai.com function-calling 指南："GPT-6
+//   Astra requires the Responses API for tool calling"；模型页端点表的
+//   Chat Completions "Supported" 只表示端点可用，不拆分函数调用），品悟
+//   openai 预设走 Chat wire，故默认不换。
 const MODEL_PRESET_DEFS = {
   local_vllm:  { baseUrl: 'http://127.0.0.1:8000/v1',                model: 'qwen36_35b_256k' },
-  deepseek:    { baseUrl: 'https://api.deepseek.com',                model: 'deepseek-v4-pro' },
+  deepseek:    { baseUrl: 'https://api.deepseek.com',                model: 'deepseek-flash' },
   kimi:        { baseUrl: 'https://api.moonshot.cn/v1',              model: 'kimi-k3' },
   // 自定义兼容接口:地址与模型完全由用户填写,不再预填 OpenAI 官方样板。
   openai_compatible: { baseUrl: '',                                 model: '' },
   qwen:        { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3.8-max' },
   doubao:      { baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-seed-evolving' },
   minimax:     { baseUrl: 'https://api.minimaxi.com/v1',            model: 'MiniMax-M3' },
-  glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-5.2' },
+  glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-5.3' },
   mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2.5-pro' },
   openai:      { baseUrl: 'https://api.openai.com/v1',              model: 'gpt-5.6-terra' },
   anthropic:   { baseUrl: 'https://api.anthropic.com/v1',           model: 'claude-sonnet-5' },
-  gemini:      { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-3.6-flash' },
-  xai:         { baseUrl: 'https://api.x.ai/v1',                    model: 'grok-4.3' },
+  gemini:      { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-3.8-flash' },
+  xai:         { baseUrl: 'https://api.x.ai/v1',                    model: 'grok-4.6' },
 };
 const PROVIDER_KIND_CODING_PLAN = 'coding_plan';
 const PROVIDER_KIND_OFFICIAL_API = 'official_api';
 const PROVIDER_KIND_CUSTOM = 'custom';
 // 模型拼写约定：凡底座（CodeWhale）route 目录收录的模型，列表项 `model` 一律
-// 使用底座 models_dev.bundled.json 目录行的原样拼写——z.ai 直连（GLM Coding
-// Plan 国际版）当前为 `GLM-5.2` / `GLM-5-Turbo` / `glm-5.1`，资产自身大小写
-// 不统一（agent 层 ModelInfo 目录行则统一大写），新增条目须逐行核对资产行拼写，
-// 不可套用大小写规律；自定义兼容端点（bigmodel.cn Coding Plan、开放平台）与
-// modelstudio 目录（qwen_token_plan）保持各自的小写 wire id。resolver 目录匹配
-// 是精确比较，拼写偏离目录行的 id（如小写 glm-5.2）会命中其他 provider 的裸
-// wire id 而被严格直连误拒——大小写不敏感回退已回馈上游审核、未随当前 gitlink
-// 发布，故新保存配置必须用目录行原样拼写；凡目录行拼写发生变更（含大小写），
-// 旧拼写须登记到该项 legacyAliases 以兼容存量配置，其余情况保持精确比较。
+// 优先使用底座 models_dev.bundled.json 目录行的原样拼写，不可套用大小写规律；
+// 自定义兼容端点（bigmodel.cn Coding Plan、开放平台、腾讯/阿里 Plan）与
+// modelstudio 目录（qwen_token_plan）保持各自的小写 wire id。z.ai 直连的官方
+// wire id 已确认为全小写（docs.z.ai API enum，2026-09 核查），目录行据此改用
+// 小写并留大写 legacy；底座 bundled 资产里仍是大写行（GLM-5.2 等），但 resolver
+// 自 c0f749731（2026-08-17，已随当前 gitlink 发布）起对 StrictDirect + Deepseek/Zai
+// 提供大小写折叠回退（精确优先、provider 内唯一命中），小写保存配置可安全命中。
+// 凡目录行拼写发生变更（含大小写），旧拼写仍须登记到该项 legacyAliases 以兼容
+// 存量配置的目录归类；其余情况保持精确比较。
 const MODEL_CATALOG_SECTIONS = {
   coding_plan: 'Coding Plan',
   official_api: '官方 API',
@@ -130,11 +143,16 @@ const MODEL_CATALOG = {
       baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
       endpointAliases: ['https://open.bigmodel.cn/api/coding/paas/v4/chat/completions'],
       // bigmodel 是底座 zai kind 的自定义端点：模型名原样透传，必须用厂商
-      // 文档的小写 wire id（glm-5.2），不要对齐 z.ai 直连目录的大写拼写。
+      // 文档的小写 wire id。2026-09 官方口径（docs.bigmodel.cn/cn/coding-plan/
+      // overview）：GLM-5.3 / GLM-5.3-Flash 为全套餐原生模型；GLM-5.2/GLM-5.1
+      // 调用自动切换至 GLM-5.3，GLM-5-Turbo/GLM-4.7 自动切换至 GLM-5.3-Flash，
+      // 故旧模型行保留为「历史模型」入口而非删除。
       items: [
-        { model: 'glm-5.2', title: 'GLM-5.2', desc: '旗舰编码模型' },
-        { model: 'glm-5-turbo', title: 'GLM-5-Turbo', desc: '高性能编码模型' },
-        { model: 'glm-4.7', title: 'GLM-4.7', desc: '日常编码模型' },
+        { model: 'glm-5.3', imageCapable: false, title: 'GLM-5.3', desc: '旗舰编码模型，全套餐支持' },
+        { model: 'glm-5.3-flash', imageCapable: true, title: 'GLM-5.3-Flash', desc: '原生多模态编码模型，额度三倍' },
+        { model: 'glm-5.2', imageCapable: false, title: 'GLM-5.2', desc: '历史模型，请求自动切换至 GLM-5.3' },
+        { model: 'glm-5-turbo', title: 'GLM-5-Turbo', desc: '历史模型，自动切换至 GLM-5.3-Flash' },
+        { model: 'glm-4.7', title: 'GLM-4.7', desc: '历史模型，自动切换至 GLM-5.3-Flash' },
         { model: '', title: '自定义 GLM Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
       ],
     },
@@ -149,34 +167,47 @@ const MODEL_CATALOG = {
       vendor: 'glm',
       baseUrl: 'https://api.z.ai/api/coding/paas/v4',
       endpointAliases: ['https://api.z.ai/api/coding/paas/v4/chat/completions'],
-      // legacyAliases：本组目录行曾是旧小写拼写（glm-5.2 / glm-5-turbo），存量
-      // 配置可能保存旧值，目录命中时兼容识别；其余目录项一律精确比较。
+      // z.ai 官方 wire id 为全小写（docs.z.ai API enum，2026-09 核查）；存量
+      // 配置可能保存旧大写目录值（GLM-5.2），以 legacyAliases 兼容识别。
+      // 旧模型自动路由为 z.ai 官方口径（docs.z.ai/devpack/overview，2026-09-11
+      // 核对）：GLM-5.2/GLM-5.1 请求自动路由至 GLM-5.3，GLM-4.7 自动路由至
+      // GLM-5.3-Flash。GLM-5-Turbo 不在 z.ai 现行模型总览/定价/API enum
+      // （底座 bundled 资产仍留有该大写历史行，不作为收录依据），旧行已删；
+      // 存量 GLM-5-Turbo 配置会回落为自定义归类（档位提示不受影响），须自行
+      // 改选 glm-5.3 / glm-5.3-flash。
       items: [
-        { model: 'GLM-5.2', legacyAliases: ['glm-5.2'], title: 'GLM-5.2', desc: '旗舰编码模型' },
-        { model: 'GLM-5-Turbo', legacyAliases: ['glm-5-turbo'], title: 'GLM-5-Turbo', desc: '高性能编码模型' },
-        { model: 'glm-4.7', title: 'GLM-4.7', desc: '日常编码模型' },
+        { model: 'glm-5.3', imageCapable: false, title: 'GLM-5.3', desc: '旗舰编码模型，全套餐支持' },
+        { model: 'glm-5.3-flash', imageCapable: true, title: 'GLM-5.3-Flash', desc: '原生多模态编码模型，额度三倍' },
+        { model: 'glm-5.2', legacyAliases: ['GLM-5.2'], imageCapable: false, title: 'GLM-5.2', desc: '历史模型，请求自动路由至 GLM-5.3' },
+        { model: 'glm-4.7', title: 'GLM-4.7', desc: '历史模型，自动路由至 GLM-5.3-Flash' },
         { model: '', title: '自定义 GLM Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
       ],
     },
     // The two Tencent Cloud subscription tiers are modeled separately per the
     // official docs (TokenHub product 1823):
     // - Coding Plan: https://cloud.tencent.com/document/product/1823/130092
-    //   (checked 2026-08-21) OpenAI-compatible base URL /coding/v3; the catalog
-    //   lists all three of its model rows. The same page also offers an
-    //   Anthropic-compatible /coding/anthropic endpoint for Claude Code-style
-    //   tools; this repo's OpenAI route does not use it.
+    //   (checked 2026-09-11) OpenAI-compatible base URL /coding/v3; the catalog
+    //   lists all of its model rows (Auto + GLM-5). GLM-5 retires 2026-10-09
+    //   (130092 / 130060). The same page also offers an Anthropic-compatible
+    //   /coding/anthropic endpoint for Claude Code-style tools; this repo's
+    //   OpenAI route does not use it. Per 130092, Coding Plan models do not
+    //   support multimodal (image) input, so no imageCapable flags here.
     // - Token Plan: https://cloud.tencent.com/document/product/1823/130119
-    //   (checked 2026-08-27) OpenAI-compatible base URL /plan/v3 (access guide
-    //   in 130075); its general and Hy tiers have different lineups, and it is
-    //   a different subscription from Coding Plan.
+    //   (checked 2026-09-11) OpenAI-compatible base URL /plan/v3 (access guide
+    //   in 130075, plan overview in 130060); its general and Hy tiers have
+    //   different lineups, and it is a different subscription from Coding Plan
+    //   (plan keys are sk-tp-*, coding keys sk-sp-*, not interchangeable).
     // Both endpoints are identified as vendor=tencent coding_plan by
     // identify_coding_plan_endpoint on the Rust side, so both groups must keep
     // providerKind=CODING_PLAN to stay consistent with the metadata read back
     // after saving. Model names pass through the generic OpenAI-compatible
     // route verbatim and must use the official lowercase wire ids; the other
-    // parallel official spellings on the same page (e.g. kimi-k-2-5 and the
-    // deepseek/deepseek-v4-* forms) are registered in legacyAliases so stored
-    // configs match with any of them.
+    // parallel official spellings on the same page (e.g. glm-5-3, the
+    // deepseek/deepseek-v4-* forms, minimax-m-3-0) are registered in
+    // legacyAliases so stored configs match with any of them.
+    // kimi-k2.5 was removed from both groups: Tencent announce 2414 retired it
+    // platform-wide on 2026-08-31 00:00 (plan users auto-switch to Auto /
+    // tc-code-latest), verified against the live 130092/130119 tables.
     {
       key: 'tencent_coding_plan',
       section: 'coding_plan',
@@ -190,8 +221,7 @@ const MODEL_CATALOG = {
       endpointAliases: ['https://api.lkeap.cloud.tencent.com/coding/v3/chat/completions'],
       items: [
         { model: 'tc-code-latest', title: 'tc-code-latest', desc: 'Coding Plan 自动模型' },
-        { model: 'glm-5', legacyAliases: ['glm-5-0'], title: 'glm-5', desc: '旗舰编码模型' },
-        { model: 'kimi-k2.5', legacyAliases: ['kimi-k-2-5'], title: 'kimi-k2.5', desc: '官方将于 2026-08-31 下线' },
+        { model: 'glm-5', legacyAliases: ['glm-5-0'], title: 'glm-5', desc: '旗舰编码模型，官方将于 2026-10-09 下线' },
         { model: '', title: '自定义腾讯云 Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
       ],
     },
@@ -206,19 +236,24 @@ const MODEL_CATALOG = {
       vendor: 'tencent',
       baseUrl: 'https://api.lkeap.cloud.tencent.com/plan/v3',
       endpointAliases: ['https://api.lkeap.cloud.tencent.com/plan/v3/chat/completions'],
-      // kimi-k2.5 is still listed in the general tier (2026-08-27 revision,
-      // retiring 2026-08-31, now agreeing with the Coding Plan page); drop the
-      // row once the retirement takes effect.
+      // Row lineup mirrors the live 130119 general-tier table (checked
+      // 2026-09-11); GLM-5/GLM-5.1 retire 2026-10-09 per 130060. hy4-preview is
+      // flagged by Tencent as high-load (may be rate-limited at peak).
       items: [
         { model: 'tc-code-latest', title: 'tc-code-latest', desc: '自动模型，智能路由' },
-        { model: 'glm-5.2', legacyAliases: ['glm-5-2'], title: 'glm-5.2', desc: '旗舰推理与编码' },
-        { model: 'glm-5.1', legacyAliases: ['glm-5-1'], title: 'glm-5.1', desc: '均衡智能与成本' },
-        { model: 'glm-5', legacyAliases: ['glm-5-0'], title: 'glm-5', desc: '通用推理，默认推荐' },
+        { model: 'glm-5.3', legacyAliases: ['glm-5-3'], imageCapable: false, title: 'glm-5.3', desc: '旗舰推理与编码' },
+        { model: 'glm-5.3-flash', imageCapable: true, title: 'glm-5.3-flash', desc: '多模态高性价比' },
+        { model: 'glm-5.2', legacyAliases: ['glm-5-2'], imageCapable: false, title: 'glm-5.2', desc: '上代旗舰推理' },
+        { model: 'glm-5.1', legacyAliases: ['glm-5-1'], title: 'glm-5.1', desc: '官方将于 2026-10-09 下线' },
+        { model: 'glm-5', legacyAliases: ['glm-5-0'], title: 'glm-5', desc: '通用推理，官方将于 2026-10-09 下线' },
+        { model: 'kimi-k3', imageCapable: true, title: 'kimi-k3', desc: 'Kimi 最新旗舰' },
+        { model: 'kimi-k2.7-code', imageCapable: true, title: 'kimi-k2.7-code', desc: 'Kimi 编码模型' },
         { model: 'deepseek-v4-pro-202606', legacyAliases: ['deepseek/deepseek-v4-pro-0813', 'deepseek/deepseek-v4-pro'], title: 'deepseek-v4-pro-202606', desc: '高能力模型' },
         { model: 'deepseek-v4-flash-202605', legacyAliases: ['deepseek/deepseek-v4-flash-0731', 'deepseek/deepseek-v4-flash'], title: 'deepseek-v4-flash-202605', desc: '快速响应' },
-        { model: 'minimax-m2.7', legacyAliases: ['minimax-m-2-7'], title: 'minimax-m2.7', desc: '最新推荐' },
-        { model: 'kimi-k2.5', legacyAliases: ['kimi-k-2-5'], title: 'kimi-k2.5', desc: '官方将于 2026-08-31 下线' },
-        { model: 'hy3', legacyAliases: ['hy3-preview'], title: 'hy3', desc: 'Hy 套餐专属模型' },
+        { model: 'minimax-m3', legacyAliases: ['minimax-m-3-0'], imageCapable: true, title: 'minimax-m3', desc: 'MiniMax 最新旗舰' },
+        { model: 'minimax-m2.7', legacyAliases: ['minimax-m-2-7'], imageCapable: false, title: 'minimax-m2.7', desc: '通用能力' },
+        { model: 'hy3', legacyAliases: ['hy3-preview', 'hy3-202608'], title: 'hy3', desc: 'Hy 套餐专属模型' },
+        { model: 'hy4-preview', title: 'hy4-preview', desc: 'Hy4 预览，高峰期可能限频' },
         { model: '', title: '自定义腾讯云 Token Plan 模型', desc: '手动填写 Token Plan 模型 ID', custom: true },
       ],
     },
@@ -250,9 +285,24 @@ const MODEL_CATALOG = {
       preset: 'deepseek',
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'deepseek',
+      // 2026-09-11 官方口径（api-docs.deepseek.com/updates 与 pricing）：
+      // V4.1-Flash（deepseek-flash）为当前主力，原生图片输入、1M 上下文；
+      // deepseek-v4-pro 自 2026-09-14 12:00 起被路由到 V4.1-Flash 并按其计费
+      // （至 V4.1 Pro 发布）；deepseek-v4-flash / -vision-exp 已退役、仅临时
+      // 路由，旧行删除并以 legacyAliases 兼容存量配置归类。
+      // deepseek-chat / deepseek-reasoner 别名已于 2026-07-24 停用，不再收录。
+      // api.deepseeki.com 非官方域名（官方文档从未收录，社区报告该域名不可
+      // 解析，deepseek-ai/awesome-deepseek-agent#311），勿加入端点白名单。
+      // ⚠️ deepseek-v4-pro 的 imageCapable:false 按 2026-09-11 官方 pricing 页
+      // 标注；2026-09-14 路由生效后该 id 实际由多模态的 V4.1-Flash 承接，下轮
+      // 刷新必须复核/翻转此标注（未重新显式保存过的存量 pinvou 配置不受影响）。
+      // 另注：官方两页口径互相矛盾——changelog（api-docs.deepseek.com/updates，
+      // 2026-09-10 条目）称应用户需求 09-14 后将继续提供 V4 Pro 服务且计费方式
+      // 不变，公告页（news260910）称自动路由至 V4.1-Flash 并按其计费；本目录
+      // 暂按公告页口径，下轮刷新一并复核。
       items: [
-        { model: 'deepseek-v4-pro', title: 'deepseek-v4-pro', desc: '高能力模型' },
-        { model: 'deepseek-v4-flash', title: 'deepseek-v4-flash', desc: '快速响应' },
+        { model: 'deepseek-flash', imageCapable: true, legacyAliases: ['deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'], title: 'deepseek-flash', desc: 'V4.1-Flash 主力，1M 上下文，支持图片输入' },
+        { model: 'deepseek-v4-pro', imageCapable: false, title: 'deepseek-v4-pro', desc: '2026-09-14 起自动路由至 deepseek-flash 计费' },
         { model: '', title: '自定义 DeepSeek 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -300,8 +350,14 @@ const MODEL_CATALOG = {
       preset: 'glm',
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'glm',
+      // 2026-09-11 官方口径（docs.bigmodel.cn API enum / 定价页）：glm-5.3 为
+      // 当前旗舰（API enum 默认值），强制思考（disabled 会报错），effort 仅
+      // low/high/max；glm-5.3-flash 为多模态高性价比档。GLM-5.2 降为上代旗舰，
+      // 其余行均在售。GLM-5.1 / 5-Turbo / 4.7 不支持 reasoning_effort。
       items: [
-        { model: 'glm-5.2', title: 'glm-5.2', desc: '最新推荐' },
+        { model: 'glm-5.3', imageCapable: false, title: 'glm-5.3', desc: '最新旗舰，强制思考' },
+        { model: 'glm-5.3-flash', imageCapable: true, title: 'glm-5.3-flash', desc: '最新多模态高性价比' },
+        { model: 'glm-5.2', imageCapable: false, title: 'glm-5.2', desc: '上代旗舰' },
         { model: 'glm-5.1', title: 'glm-5.1', desc: '兼容保留' },
         { model: 'glm-5-turbo', title: 'glm-5-turbo', desc: '高性价比' },
         { model: 'glm-4.7', title: 'glm-4.7', desc: '通用能力' },
@@ -318,10 +374,15 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'glm',
       baseUrl: 'https://api.z.ai/api/paas/v4',
+      // z.ai 官方 wire id 全小写；GLM-5-Turbo 不在 z.ai 现行 API enum
+      // （底座 bundled 资产的历史大写行不作为收录依据），不收录；存量
+      // glm-5-turbo 配置会回落为自定义归类（档位提示不受影响），与本文件
+      // glm_coding_plan_global 组的处理一致。
       items: [
-        { model: 'glm-5.2', title: 'glm-5.2', desc: '最新推荐' },
+        { model: 'glm-5.3', imageCapable: false, title: 'glm-5.3', desc: '最新旗舰，强制思考' },
+        { model: 'glm-5.3-flash', imageCapable: true, title: 'glm-5.3-flash', desc: '最新多模态高性价比' },
+        { model: 'glm-5.2', imageCapable: false, title: 'glm-5.2', desc: '上代旗舰' },
         { model: 'glm-5.1', title: 'glm-5.1', desc: '兼容保留' },
-        { model: 'glm-5-turbo', title: 'glm-5-turbo', desc: '高性价比' },
         { model: 'glm-4.7', title: 'glm-4.7', desc: '通用能力' },
         { model: '', title: '自定义 GLM 模型', desc: '手动填写模型 ID', custom: true },
       ],
@@ -335,12 +396,17 @@ const MODEL_CATALOG = {
       preset: 'minimax',
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'minimax',
+      // 2026-09-11 官方口径（platform.minimaxi.com / platform.minimax.io）：
+      // M3 为当前旗舰（1M 上下文、原生多模态）；M2.x 全系纯文本且思考不可关。
+      // 官方文档现行中国域名为 api.minimax.cn/v1，api.minimaxi.com 仍存活
+      // （同构 401 探活，2026-09-11），保持现状并在此备注；国际站 api.minimax.io
+      // 与国内为两套独立账号/Key 体系。
       items: [
-        { model: 'MiniMax-M3', imageCapable: true, title: 'MiniMax-M3', desc: '最新推荐' },
-        { model: 'MiniMax-M2.7', title: 'MiniMax-M2.7', desc: '通用能力' },
-        { model: 'MiniMax-M2.7-highspeed', title: 'MiniMax-M2.7-highspeed', desc: '高速响应' },
-        { model: 'MiniMax-M2.5', title: 'MiniMax-M2.5', desc: '官方已转 Legacy，兼容保留' },
-        { model: 'MiniMax-M2.5-highspeed', title: 'MiniMax-M2.5-highspeed', desc: '官方已转 Legacy，兼容高速' },
+        { model: 'MiniMax-M3', imageCapable: true, title: 'MiniMax-M3', desc: '最新旗舰，1M 上下文多模态' },
+        { model: 'MiniMax-M2.7', imageCapable: false, title: 'MiniMax-M2.7', desc: '通用能力' },
+        { model: 'MiniMax-M2.7-highspeed', imageCapable: false, title: 'MiniMax-M2.7-highspeed', desc: '高速响应' },
+        { model: 'MiniMax-M2.5', imageCapable: false, title: 'MiniMax-M2.5', desc: '官方已转 Legacy，兼容保留' },
+        { model: 'MiniMax-M2.5-highspeed', imageCapable: false, title: 'MiniMax-M2.5-highspeed', desc: '官方已转 Legacy，兼容高速' },
         { model: '', title: '自定义 MiniMax 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -355,11 +421,11 @@ const MODEL_CATALOG = {
       vendor: 'minimax',
       baseUrl: 'https://api.minimax.io/v1',
       items: [
-        { model: 'MiniMax-M3', imageCapable: true, title: 'MiniMax-M3', desc: '最新推荐' },
-        { model: 'MiniMax-M2.7', title: 'MiniMax-M2.7', desc: '通用能力' },
-        { model: 'MiniMax-M2.7-highspeed', title: 'MiniMax-M2.7-highspeed', desc: '高速响应' },
-        { model: 'MiniMax-M2.5', title: 'MiniMax-M2.5', desc: '官方已转 Legacy，兼容保留' },
-        { model: 'MiniMax-M2.5-highspeed', title: 'MiniMax-M2.5-highspeed', desc: '官方已转 Legacy，兼容高速' },
+        { model: 'MiniMax-M3', imageCapable: true, title: 'MiniMax-M3', desc: '最新旗舰，1M 上下文多模态' },
+        { model: 'MiniMax-M2.7', imageCapable: false, title: 'MiniMax-M2.7', desc: '通用能力' },
+        { model: 'MiniMax-M2.7-highspeed', imageCapable: false, title: 'MiniMax-M2.7-highspeed', desc: '高速响应' },
+        { model: 'MiniMax-M2.5', imageCapable: false, title: 'MiniMax-M2.5', desc: '官方已转 Legacy，兼容保留' },
+        { model: 'MiniMax-M2.5-highspeed', imageCapable: false, title: 'MiniMax-M2.5-highspeed', desc: '官方已转 Legacy，兼容高速' },
         { model: '', title: '自定义 MiniMax 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -371,9 +437,15 @@ const MODEL_CATALOG = {
       preset: 'mimo',
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'mimo',
+      // 2026-09-11 官方口径（mimo.mi.com 模型清单）：mimo-v2.5-pro 纯文本
+      // （1M 上下文，默认深度思考）；多模态（图/音/视频理解）在 mimo-v2.5 上。
+      // Token Plan 订阅 Key（tp-）须改用 https://token-plan-cn.xiaomimimo.com/v1。
+      // mimo-v2.5 的图片能力由后端精确全等表收录（image_capability
+      // EXACT_VERIFIED_IMAGE_CAPABLE_MODELS，与纯文本的 -pro 天然区分），
+      // 未走表单保存的存量配置也按 Supported 处理。
       items: [
-        { model: 'mimo-v2.5-pro', title: 'mimo-v2.5-pro', desc: '最新推荐' },
-        { model: 'mimo-v2.5', title: 'mimo-v2.5', desc: '通用能力' },
+        { model: 'mimo-v2.5-pro', imageCapable: false, title: 'mimo-v2.5-pro', desc: '最新旗舰，1M 上下文' },
+        { model: 'mimo-v2.5', imageCapable: true, title: 'mimo-v2.5', desc: '全模态理解（图片/视频）' },
         { model: '', title: '自定义 MiMo 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -385,11 +457,17 @@ const MODEL_CATALOG = {
       preset: 'qwen',
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'qwen',
+      // 2026-09-11 官方口径（help.aliyun.com/zh/model-studio）：qwen3.8-max 为
+      // 当前旗舰（1M，混合思考默认开启）；qwen3.8-flash 为当前快速主力。
+      // qwen3.7-max 已归旧版分区且纯文本（不支持图像）；qwen3.7-flash 仍可调
+      // 但主推位已由 qwen3.8-flash 接棒。qwen3.8-max-preview 已下线请求自动
+      // 路由至正式版，不收录。
       items: [
         { model: 'qwen3.8-max', imageCapable: true, title: 'qwen3.8-max', desc: '最新旗舰' },
-        { model: 'qwen3.7-max', title: 'qwen3.7-max', desc: '上代旗舰推理' },
+        { model: 'qwen3.8-flash', imageCapable: true, title: 'qwen3.8-flash', desc: '快速高性价比' },
+        { model: 'qwen3.7-max', imageCapable: false, title: 'qwen3.7-max', desc: '上代旗舰推理（纯文本）' },
         { model: 'qwen3.7-plus', imageCapable: true, title: 'qwen3.7-plus', desc: '均衡性价比' },
-        { model: 'qwen3.7-flash', title: 'qwen3.7-flash', desc: '快速高性价比' },
+        { model: 'qwen3.7-flash', imageCapable: true, title: 'qwen3.7-flash', desc: '上代快速款' },
         { model: '', title: '自定义通义模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -404,14 +482,19 @@ const MODEL_CATALOG = {
       vendor: 'qwen',
       baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
       endpointAliases: ['https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1'],
+      // ap-southeast-1 端点属于国际站 Token Plan（仅新加坡地域），与中国版是
+      // 独立订阅、Key（sk-sp-）不互通。行单按 2026-09-11 个人版/团队版白名单
+      // 核对；「夜间五折」（22:00–次日 08:00）为个人版文档口径，团队版当前
+      // 仅列 DeepSeek 两款。deepseek-v4-flash-0731 暂不支持 Responses API。
       items: [
-        { model: 'qwen3.8-max', imageCapable: true, title: 'qwen3.8-max', desc: '正式旗舰，夜间五折' },
-        { model: 'qwen3.7-max', title: 'qwen3.7-max', desc: '上代旗舰推理' },
+        { model: 'qwen3.8-max', imageCapable: true, title: 'qwen3.8-max', desc: '正式旗舰，夜间 22:00-08:00 五折（个人版）' },
+        { model: 'qwen3.8-flash', imageCapable: true, title: 'qwen3.8-flash', desc: '快速高性价比' },
+        { model: 'qwen3.7-max', imageCapable: false, title: 'qwen3.7-max', desc: '上代旗舰推理' },
         { model: 'qwen3.7-plus', imageCapable: true, title: 'qwen3.7-plus', desc: '均衡性价比' },
-        { model: 'qwen3.6-flash', title: 'qwen3.6-flash', desc: '兼容保留' },
-        { model: 'glm-5.2', title: 'glm-5.2', desc: '最新推荐' },
+        { model: 'qwen3.6-flash', imageCapable: true, title: 'qwen3.6-flash', desc: '轻量兼容款，支持图像输入' },
+        { model: 'glm-5.2', title: 'glm-5.2', desc: '上代旗舰' },
         { model: 'deepseek-v4-pro', title: 'deepseek-v4-pro', desc: '高能力模型' },
-        { model: 'deepseek-v4-flash-0731', title: 'deepseek-v4-flash-0731', desc: '快速响应' },
+        { model: 'deepseek-v4-flash-0731', title: 'deepseek-v4-flash-0731', desc: '快速响应，暂不支持 Responses API' },
         { model: '', title: '自定义 Token Plan 模型', desc: '手动填写 Token Plan 模型 ID', custom: true },
       ],
     },
@@ -425,11 +508,15 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'qwen',
       baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+      // qwen3.7-flash 在国际站完整模型清单（alibabacloud.com model-studio
+      // text-generation-model 推荐模型区）在列，2026-09-11 复核恢复收录；
+      // 此前删行依据的 models 索引页是每类 3 款的精选页，不等于完整目录。
       items: [
         { model: 'qwen3.8-max', imageCapable: true, title: 'qwen3.8-max', desc: '最新旗舰' },
-        { model: 'qwen3.7-max', title: 'qwen3.7-max', desc: '上代旗舰推理' },
+        { model: 'qwen3.8-flash', imageCapable: true, title: 'qwen3.8-flash', desc: '快速高性价比' },
+        { model: 'qwen3.7-max', imageCapable: false, title: 'qwen3.7-max', desc: '上代旗舰推理（纯文本）' },
         { model: 'qwen3.7-plus', imageCapable: true, title: 'qwen3.7-plus', desc: '均衡性价比' },
-        { model: 'qwen3.7-flash', title: 'qwen3.7-flash', desc: '快速高性价比' },
+        { model: 'qwen3.7-flash', imageCapable: true, title: 'qwen3.7-flash', desc: '上代快速款' },
         { model: '', title: '自定义通义模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -441,10 +528,16 @@ const MODEL_CATALOG = {
       preset: 'doubao',
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'doubao',
+      // 2026-09-11 官方口径（volcengine docs 82379/1330310、2549861）：五个
+      // 现役行拼写逐字一致、能力列均含多模态理解；doubao-seed-evolving 是一个
+      // Model ID 周级滚动升级的官方首推 Coding/Agent 模型；无 2-2 系。编程特化
+      // 预览 doubao-seed-2-0-code-preview-260215 的能力列同样明示多模态理解，
+      // 标注图片能力。思考控制走 thinking.type + reasoning_effort。
       items: [
-        { model: 'doubao-seed-evolving', imageCapable: true, title: 'doubao-seed-evolving', desc: '最新推荐' },
+        { model: 'doubao-seed-evolving', imageCapable: true, title: 'doubao-seed-evolving', desc: '最新推荐，周级滚动升级' },
         { model: 'doubao-seed-2-1-pro-260628', imageCapable: true, title: 'doubao-seed-2-1-pro-260628', desc: '高能力模型' },
-        { model: 'doubao-seed-2-1-turbo-260628', imageCapable: true, title: 'doubao-seed-2-1-turbo-260628', desc: '快速响应' },
+        { model: 'doubao-seed-2-1-turbo-260628', imageCapable: true, title: 'doubao-seed-2-1-turbo-260628', desc: '低成本低时延，效果比肩 2-1-pro' },
+        { model: 'doubao-seed-2-0-code-preview-260215', imageCapable: true, title: 'doubao-seed-2-0-code-preview-260215', desc: '编程特化（预览）' },
         { model: 'doubao-seed-2-0-pro-260215', imageCapable: true, title: 'doubao-seed-2-0-pro-260215', desc: '稳定通用' },
         { model: 'doubao-seed-2-0-lite-260428', imageCapable: true, title: 'doubao-seed-2-0-lite-260428', desc: '轻量模型' },
         { model: '', title: '自定义豆包模型', desc: '手动填写模型 ID', custom: true },
@@ -460,8 +553,16 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'openai',
       baseUrl: 'https://api.openai.com/v1',
+      // 2026-09-11 官方口径（developers.openai.com/api/docs/models）：gpt-6-astra
+      // 为当前最强旗舰，但其工具调用仅限 Responses 协议（function-calling
+      // 指南原文 "GPT-6 Astra requires the Responses API for tool calling"；
+      // 端点表 Chat Completions "Supported" 只表示端点可用，不拆分函数调用）
+      // ——品悟 openai 预设走 Chat wire，故收录但不作默认、desc 明示限制。
+      // gpt-5.6-sol/terra/luna 定位与官方一致；gpt-5.5 / gpt-5.4-mini 在售
+      // 未弃用。gpt-5.3-codex 为 Responses 专用，不收录。
       items: [
-        { model: 'gpt-5.6-sol', imageCapable: true, title: 'gpt-5.6-sol', desc: '旗舰推理与编码' },
+        { model: 'gpt-6-astra', imageCapable: true, title: 'gpt-6-astra', desc: '最强旗舰；仅 Responses 协议支持函数调用' },
+        { model: 'gpt-5.6-sol', imageCapable: true, title: 'gpt-5.6-sol', desc: 'GPT-5.6 家族旗舰，推理与编码' },
         { model: 'gpt-5.6-terra', imageCapable: true, title: 'gpt-5.6-terra', desc: '均衡智能与成本' },
         { model: 'gpt-5.6-luna', imageCapable: true, title: 'gpt-5.6-luna', desc: '低成本高并发' },
         { model: 'gpt-5.5', imageCapable: true, title: 'gpt-5.5', desc: '上代旗舰' },
@@ -479,11 +580,17 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'anthropic',
       baseUrl: 'https://api.anthropic.com/v1',
+      // 2026-09-11 官方口径（platform.claude.com models overview）：
+      // claude-fable-5-1 为当前最高旗舰，claude-fable-5 降为上代（在售至少到
+      // 2027-06）；全部现役模型支持图片输入（底座 bundled 离线种子记为纯文本
+      // 属过时，以官方为准）。4.6 代起无日期 ID 即固定快照；haiku-4-5 仍是
+      // 200K 上下文、不支持 effort（仅 extended thinking）。
       items: [
-        { model: 'claude-fable-5', imageCapable: true, title: 'claude-fable-5', desc: '最强旗舰，长程 Agent' },
-        { model: 'claude-opus-5', imageCapable: true, title: 'claude-opus-5', desc: '复杂 Agent 编码' },
+        { model: 'claude-fable-5-1', imageCapable: true, title: 'claude-fable-5-1', desc: '最强旗舰，高难推理与长程 Agent' },
+        { model: 'claude-fable-5', imageCapable: true, title: 'claude-fable-5', desc: '上代旗舰，兼容保留' },
+        { model: 'claude-opus-5', imageCapable: true, title: 'claude-opus-5', desc: '复杂 Agent 编码，默认推荐' },
         { model: 'claude-sonnet-5', imageCapable: true, title: 'claude-sonnet-5', desc: '速度与智能均衡' },
-        { model: 'claude-haiku-4-5', imageCapable: true, title: 'claude-haiku-4-5', desc: '最快，接近旗舰' },
+        { model: 'claude-haiku-4-5', imageCapable: true, title: 'claude-haiku-4-5', desc: '最快，200K 上下文' },
         { model: '', title: '自定义 Claude 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -497,9 +604,16 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'gemini',
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      // 2026-09-11 官方口径（ai.google.dev models / deprecations）：
+      // gemini-3.8-flash（2026-09-02）为最新 Flash；3.7（2026-08-13）/3.6/3.5
+      // 均 Stable 在售，3.5 已被官方称为 legacy 基线；gemini-3.1-pro-preview
+      // 仍是旗舰 Pro 且 ID 未 GA 化（gemini-3-pro-preview 已于 2026-03-09 下线）。
+      // Gemini 3 系在 OpenAI 兼容层不能关思考。
       items: [
-        { model: 'gemini-3.6-flash', imageCapable: true, title: 'gemini-3.6-flash', desc: '最新 Flash，均衡高性价比' },
-        { model: 'gemini-3.5-flash', imageCapable: true, title: 'gemini-3.5-flash', desc: '均衡' },
+        { model: 'gemini-3.8-flash', imageCapable: true, title: 'gemini-3.8-flash', desc: '最新 Flash，均衡高性价比' },
+        { model: 'gemini-3.7-flash', imageCapable: true, title: 'gemini-3.7-flash', desc: '上一代 Flash' },
+        { model: 'gemini-3.6-flash', imageCapable: true, title: 'gemini-3.6-flash', desc: '兼容保留' },
+        { model: 'gemini-3.5-flash', imageCapable: true, title: 'gemini-3.5-flash', desc: '基线速度，兼容保留' },
         { model: 'gemini-3.5-flash-lite', imageCapable: true, title: 'gemini-3.5-flash-lite', desc: '快速经济' },
         { model: 'gemini-3.1-pro-preview', imageCapable: true, title: 'gemini-3.1-pro-preview', desc: '旗舰推理（预览）' },
         { model: '', title: '自定义 Gemini 模型', desc: '手动填写模型 ID', custom: true },
@@ -515,12 +629,17 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'xai',
       baseUrl: 'https://api.x.ai/v1',
+      // 2026-09-11 官方口径（docs.x.ai models 与各模型详情页）：grok-4.6 为
+      // 「包括代码在内的一切」推荐旗舰（500K，effort low/medium/high/xhigh，
+      // 推理不可关）；grok-4.5 降为上代；grok-4.20-0309-* 与 grok-build-0.1
+      // 详情页均明示 text, image → text，图片能力可标。
       items: [
-        { model: 'grok-4.20-0309-reasoning', title: 'grok-4.20-0309-reasoning', desc: '4.20 推理' },
-        { model: 'grok-4.20-0309-non-reasoning', title: 'grok-4.20-0309-non-reasoning', desc: '4.20 非推理' },
-        { model: 'grok-4.5', title: 'grok-4.5', desc: '旗舰编码与 Agent' },
-        { model: 'grok-4.3', imageCapable: true, title: 'grok-4.3', desc: '通用推理，默认推荐' },
-        { model: 'grok-build-0.1', imageCapable: true, title: 'grok-build-0.1', desc: '代码 Agent' },
+        { model: 'grok-4.6', imageCapable: true, title: 'grok-4.6', desc: '旗舰，编码与 Agent 默认推荐' },
+        { model: 'grok-4.5', imageCapable: true, title: 'grok-4.5', desc: '上代旗舰，编码与 Agent' },
+        { model: 'grok-4.20-0309-reasoning', imageCapable: true, title: 'grok-4.20-0309-reasoning', desc: '4.20 推理，1M 上下文' },
+        { model: 'grok-4.20-0309-non-reasoning', imageCapable: true, title: 'grok-4.20-0309-non-reasoning', desc: '4.20 非推理，1M 上下文' },
+        { model: 'grok-4.3', imageCapable: true, title: 'grok-4.3', desc: '快速可靠，强工具调用' },
+        { model: 'grok-build-0.1', imageCapable: true, title: 'grok-build-0.1', desc: '代码 Agent，256K 上下文' },
         { model: '', title: '自定义 Grok 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -590,25 +709,30 @@ function isCodingPlanModel(model) {
 // 分类判据:模型是否命中其实际 provider 的非 custom 目录项。自定义兼容接口即使
 // 使用目录中已有的模型 ID,也必须保持为自定义,避免多个聚合服务模型再次同名。
 // 目录命中默认精确比较:本地 vLLM 等服务的模型 ID 是不透明字符串、可能区分
-// 大小写,case-only 的自定义 ID 必须保持自定义。大小写兼容只对发生过「目录
-// 拼写迁移」的目录项生效,且以 legacyAliases 显式列出历史拼写(存量值只能
-// 来自旧目录行的精确值,精确别名即可覆盖),不做全量 case-insensitive。
+// 大小写,case-only 的自定义 ID 必须保持自定义。大小写兼容只对 legacyAliases
+// 显式列出的拼写生效——存量值只能来自旧目录行的精确值,或官方同页并行的
+// 其它官方拼写(如 Tencent 的 glm-5-3 / minimax-m-3-0 连字符形式),
+// 不做全量 case-insensitive。
 function catalogItemMatchesModel(item, model) {
   if (typeof item.model !== 'string' || typeof model !== 'string') return false;
   return item.model === model || (item.legacyAliases || []).includes(model);
 }
 
-// 目录项视觉能力标注(imageCapable):已验证多模态的条目标注 true,模型表单按
-// 此预填「图片输入能力」。收录原则与后端内置已验证表(image_capability.rs
-// VERIFIED_IMAGE_CAPABLE_MODELS)一致:只标有仓内 preset/公开事实/实测佐证的
-// 明确多模态模型;拿不准的不标——未标注不等于「不支持」,只是回退「自动处理」
-// 链(内置表→Unknown)。新增目录条目时请同步评估是否需要标注。
-// 现有标注于 2026-08 按各厂商官方文档/发布信息逐条联网核查;kimi-k3 等
-// Kimi 官方已宣布视觉能力的模型以 platform.kimi.com 视觉文档为准(晚于
-// 后端内置表「kimi 文本模型不收」的旧口径,内置表仅作非目录模型的兜底)。
-// grok-4.3/grok-build-0.1 有 OpenRouter 输入模态与 AWS Bedrock 模型卡佐证;
-// grok-4.5/grok-4.20-0309-* 未找到可复现的官方口径,按「拿不准不标」回退。
-// 返回 true/false(条目显式标注)/null(未命中或未标注)。
+// 目录项视觉能力标注(imageCapable):已验证多模态的条目标注 true,官方明示纯
+// 文本的旗舰行标注 false,模型表单按此预填「图片输入能力」。收录原则与后端
+// 内置已验证表(image_capability.rs VERIFIED_IMAGE_CAPABLE_MODELS)一致:只标
+// 有仓内 preset/公开事实/实测佐证的明确口径;拿不准的不标——未标注不等于
+// 「不支持」,只是回退「自动处理」链(内置表→Unknown)。新增目录条目时请同步
+// 评估是否需要标注。
+// 现有标注于 2026-09-11 按各厂商官方文档逐条联网核查:Claude 现役全系、
+// Gemini 全系、Grok 全部目录行(含 grok-4.5 / grok-4.20-0309-* 详情页明示
+// text, image → text)、GPT-5.x/6 目录行、kimi-k3 / k2.7-code / k2.6 / Kimi
+// Code 四行、deepseek-flash(V4.1)、MiniMax-M3、qwen3.8-max/3.8-flash/
+// 3.7-plus/3.7-flash/3.6-flash、豆包六行（含编程特化预览）、glm-5.3-flash、
+// mimo-v2.5 均为官方多模态;qwen3.7-max、glm-5.2/5.3、deepseek-v4-pro、
+// MiniMax-M2.x、mimo-v2.5-pro 官方明示纯文本,标 false。
+// 返回扫描序中第一个显式标注(true/false);未标注命中不短路继续扫;
+// 未命中或全部命中项均未标注时返回 null(由「自动处理」链兜底)。
 function catalogImageCapableForModel(model) {
   if (typeof model !== 'string' || !model) return null;
   for (const scope of ['local', 'cloud']) {
@@ -706,8 +830,15 @@ const REASONING_EFFORT_TIERS = {
   'xiaomi-mimo': ['off', 'high'],
   // anthropic native：off 不注入（等价默认），暴露 low/medium/high/max。
   anthropic: ['low', 'medium', 'high', 'max'],
-  // openai：仅 gpt-5.x reasoning 系模型底座会注入，off=none。
+  // openai：仅 gpt-5.x reasoning 系模型底座会注入，off=none。max 档在 gpt-5.6
+  // 系发 "max"，gpt-5.5 / codex 系被底座降级为 "xhigh"（chat.rs
+  // openai_compatible_reasoning_effort），前端统一以 max 标签暴露。
   openai: ['off', 'low', 'medium', 'high', 'max'],
+  // xai：底座 apply_xai_grok_4_6_reasoning_effort 仅对精确 api.x.ai/v1 的
+  // grok-4.6 / grok-4.5 注入 reasoning_effort；Grok 推理不可关（off 被归一为
+  // high），故不暴露 off。基础三档，grok-4.6 另加 max（wire 发 xhigh），见
+  // reasoningEffortTiersForModel。
+  xai: ['low', 'medium', 'high'],
 };
 
 // OpenAI 官方 API 支持「自定义模型」手输模型 ID，因此 reasoning 家族判定必须
@@ -765,34 +896,39 @@ function hasOpenaiDateSnapshotSuffix(lower, prefix) {
 // provider」的刻意裁剪）：
 // 1. env(DEEPSEEK_PROVIDER)：Rust 支持环境变量覆盖 provider；前端无 env 概念
 //    （GUI 场景极少使用该 env，视为等价）。
-// 2. xai 返回：Rust 返回 "xai"（底座有 provider 身份，wire 层需要）；前端返回
-//    null——底座对 xai 的 reasoning_effort 是空操作，无档位可切。
+// 2. xai 返回：Rust 与前端都返回 "xai"；底座只对精确 api.x.ai/v1 的 grok-4.6 /
+//    grok-4.5 注入档位（chat.rs apply_xai_grok_4_6_reasoning_effort），其余
+//    Grok 型号与非官方端点前端回落 null（不提供切换）。
 // 3. qwen/gemini 归类：Rust 将 qwen/tencent/openai/gemini/google 归入 "openai"
 //    （wire route 身份）；前端对 qwen/tencent/gemini/google 返回 null（底座无档位），
 //    仅 openai vendor 的 reasoning 家族返回 "openai"（对齐底座
 //    `model_is_openai_reasoning_family`）。
-// 4. zai/moonshot 路由级档位：底座按「精确 first-party base_url + 模型名」判定
-//    tiered effort（zai GLM-5.2/5.3、moonshot K3）；前端同样按精确端点身份判定
-//    （见 reasoningEffortTiersForModel 与 is_exact_*_base_url）。兼容网关/中国端点
-//    误配同型号时底座 fail-closed（不注入），前端回落通用档位，与底座行为对齐。
+// 4. zai/moonshot/minimax 路由级档位：底座按「精确 first-party base_url + 模型名」
+//    判定 tiered effort（zai GLM-5.2/5.3/5.3-Flash、moonshot K3 含 k3-256k、
+//    MiniMax-M3）；前端同样按精确端点身份判定（见 reasoningEffortTiersForModel
+//    与 is_exact_*_base_url）。兼容网关/误配同型号时底座 fail-closed（不注入），
+//    前端回落通用档位，与底座行为对齐。
 // 对齐 bridge.rs `is_official_deepseek_base_url`：官方 DeepSeek 端点判定
-// （trim 尾斜杠 + /beta + /v1，小写比较）。
+// （trim 尾斜杠 + 重复的 /beta、/v1 后缀，对齐 Rust trim_end_matches 的重复剥
+// 除语义，小写比较）。api.deepseeki.com 非官方域名（官方文档从未收录，社区
+// 报告该域名不可解析，deepseek-ai/awesome-deepseek-agent#311，2026-09-11
+// 核查），已移除。
 function isOfficialDeepseekBaseUrl(baseUrl) {
   const normalized = String(baseUrl || '')
     .trim()
     .replace(/\/+$/, '') // eslint-disable-line sonarjs/super-linear-regex -- trailing-slash normalization; input is a user-entered URL of bounded length
-    .replace(/\/beta$/, '')
-    .replace(/\/v1$/, '')
+    .replace(/(?:\/beta)+$/, '')
+    .replace(/(?:\/v1)+$/, '')
     .toLowerCase();
-  return ['https://api.deepseek.com', 'https://api.deepseeki.com'].includes(normalized);
+  return normalized === 'https://api.deepseek.com';
 }
 
-// 底座对 moonshot/zai/minimax 的 tiered effort 只按「精确 first-party base_url + 模型名」
+// 底座对 moonshot/zai/minimax/xai 的 tiered effort 只按「精确 first-party base_url + 模型名」
 // 路由（CodeWhale config::is_exact_direct_moonshot_k3_route / is_exact_kimi_code_k3_route /
-// is_exact_zai_tiered_effort_route / is_exact_minimax_m3_route）。复刻底座 `is_exact_https_route`
-// 的比较语义：scheme/host ASCII 大小写不敏感、path 大小写敏感、只容忍一个尾斜杠——不多删
-// 斜杠、也不整段转小写（不同大小写的 path 是相邻路由，不是官方端点）。中国端点 / 兼容网关
-// 误配同型号时底座 fail-closed（不注入），前端据此收窄档位暴露。
+// is_exact_zai_tiered_effort_route / is_exact_minimax_m3_route / is_exact_xai_grok_4_6_route）。
+// 复刻底座 `is_exact_https_route` 的比较语义：scheme/host ASCII 大小写不敏感、path 大小写
+// 敏感、只容忍一个尾斜杠——不多删斜杠、也不整段转小写（不同大小写的 path 是相邻路由，
+// 不是官方端点）。兼容网关误配同型号时底座 fail-closed（不注入），前端据此收窄档位暴露。
 function isExactHttpsRoute(baseUrl, expectedAuthority, expectedPath) {
   const trimmed = String(baseUrl || '').trim();
   // 对齐底座 strip_suffix('/')：只去掉一个尾斜杠，剩下的斜杠仍参与 path 比较。
@@ -809,23 +945,34 @@ function isExactHttpsRoute(baseUrl, expectedAuthority, expectedPath) {
     && authority.toLowerCase() === expectedAuthority.toLowerCase()
     && path === expectedPath;
 }
-// Moonshot 直连平台（国际站）端点：https://api.moonshot.ai/v1
+// Moonshot 直连平台端点：底座 provider.rs is_exact_moonshot_platform_route 同时
+// 接受国际站 https://api.moonshot.ai/v1 与中国站 https://api.moonshot.cn/v1
+//（品悟「Kimi 中国版」组默认端点即后者）。
 function isExactMoonshotPlatformBaseUrl(baseUrl) {
-  return isExactHttpsRoute(baseUrl, 'api.moonshot.ai', 'v1');
+  return isExactHttpsRoute(baseUrl, 'api.moonshot.ai', 'v1')
+    || isExactHttpsRoute(baseUrl, 'api.moonshot.cn', 'v1');
 }
-// Kimi Code 会员计划端点：https://api.kimi.com/coding/v1（裸 k3）
+// Kimi Code 会员计划端点：https://api.kimi.com/coding/v1（裸 k3 / k3-256k）
 function isExactKimiCodeBaseUrl(baseUrl) {
   return isExactHttpsRoute(baseUrl, 'api.kimi.com', 'coding/v1');
 }
-// z.ai first-party Chat 端点（Coding Plan / 普通平台）。
+// z.ai first-party Chat 端点（Coding Plan / 普通平台 / 智谱开放平台普通 host）。
+// 与底座 provider.rs is_exact_zai_chat_route 的三 host 对齐（#53 起
+// open.bigmodel.cn/api/paas/v4 同为 first-party tiered 路由）；bigmodel 的
+// /api/coding/paas/v4（自动切换语义）底座明确排除，两侧一致不提供档位。
 function isExactZaiChatBaseUrl(baseUrl) {
   return isExactHttpsRoute(baseUrl, 'api.z.ai', 'api/paas/v4')
-    || isExactHttpsRoute(baseUrl, 'api.z.ai', 'api/coding/paas/v4');
+    || isExactHttpsRoute(baseUrl, 'api.z.ai', 'api/coding/paas/v4')
+    || isExactHttpsRoute(baseUrl, 'open.bigmodel.cn', 'api/paas/v4');
 }
 // MiniMax first-party OpenAI Chat 端点（国际 api.minimax.io / 国内 api.minimaxi.com）。
 function isExactMinimaxChatBaseUrl(baseUrl) {
   return isExactHttpsRoute(baseUrl, 'api.minimax.io', 'v1')
     || isExactHttpsRoute(baseUrl, 'api.minimaxi.com', 'v1');
+}
+// xAI 官方端点（底座 provider.rs is_exact_xai_platform_route）：https://api.x.ai/v1
+function isExactXaiPlatformBaseUrl(baseUrl) {
+  return isExactHttpsRoute(baseUrl, 'api.x.ai', 'v1');
 }
 
 // vendor 在已知列表 → 返回其 provider（可能为 null = 底座无档位）；
@@ -842,7 +989,7 @@ function vendorReasoningProvider(vendor, model) {
   if (['mimo', 'xiaomi', 'xiaomi-mimo'].includes(vendor)) return 'xiaomi-mimo';
   if (vendor === 'doubao' || vendor === 'volcengine') return 'volcengine';
   if (vendor === 'anthropic' || vendor === 'claude') return 'anthropic';
-  if (vendor === 'xai' || vendor === 'grok') return null; // 底座空操作，不提供切换
+  if (vendor === 'xai' || vendor === 'grok') return 'xai'; // 精确路由细分见 reasoningEffortTiersForModel
   if (vendor === 'openai') return isOpenaiReasoningFamilyModel(model) ? 'openai' : null;
   if (['qwen', 'tencent', 'gemini', 'google'].includes(vendor)) {
     return null; // 底座无档位
@@ -951,6 +1098,7 @@ function reasoningProviderForModel(model) {
     case 'mimo': return 'xiaomi-mimo';
     case 'doubao': return 'volcengine';
     case 'anthropic': return 'anthropic';
+    case 'xai': return 'xai';
     case 'openai': return isOpenaiReasoningFamilyModel(model) ? 'openai' : null;
     case 'openai_compatible':
       // 本地/私网端点（loopback、RFC1918、host.docker.internal 等）：Rust
@@ -1001,16 +1149,26 @@ function alwaysThinkingSpecForModel(modelId) {
 
 // 该模型可切换的思考深度档位（无则 null = 不提供切换）。
 // 路由/模型级细分（仅品悟目录收录的模型）：
-// - zai：first-party z.ai 端点上 GLM-5.2/5.3 提供 tiered effort（off/high/max），
-//   GLM-5.1/GLM-5-Turbo 只有 generic thinking 开关（off/high）；中国 open.bigmodel.cn、
-//   兼容网关、未验证模型底座会删除 thinking/reasoning_effort（两档等效）→ 不提供切换。
-// - moonshot：K3（kimi-k3 / k3，always-thinking）提供 low/high/max（off 归一为 low）；
-//   其余 moonshot 模型按 generic thinking 开关暴露 off/high。
+// - zai：first-party Chat 端点（api.z.ai 两个路径 + open.bigmodel.cn/api/paas/v4，
+//   见 isExactZaiChatBaseUrl）上 GLM-5.2/5.3/5.3-Flash 提供 tiered effort
+//   （off/high/max），GLM-5.1/GLM-5-Turbo 只有 generic thinking 开关（off/high）；
+//   兼容网关、未验证模型与 bigmodel 的 coding host（底座明确排除）底座会删除
+//   thinking/reasoning_effort（两档等效）→ 不提供切换。
+//   off 档的 wire 语义：厂商文档称 GLM-5.3 系 thinking.type 仅接受 enabled
+//   （disabled 报错）；底座 #52（已随当前 gitlink 发布，6ae5b1734 是 ae7e3fb36
+//   的直接父）在 forced-thinking 路由（GLM-5.3/5.3-Flash）上把 disabled 重写为
+//   enabled + clear_thinking:false 且 effort 归一 low，off 档在 wire 上即
+//   「enabled + low」，与厂商口径一致，无须随 gitlink 前进复查。
+// - moonshot：K3（直连 kimi-k3 / Kimi Code k3、k3-256k，always-thinking）提供 low/high/max
+//   （off 归一为 low）；其余 moonshot 模型按 generic thinking 开关暴露 off/high。
 // - minimax：仅 first-party MiniMax-M3 提供 off（disabled）/high（adaptive）；M2.7/M2.5
 //   与兼容网关底座清空控制字段（两档等效）→ 不提供切换。
+// - xai：仅精确 api.x.ai/v1 的 grok-4.6（low/medium/high/max，max 在 wire 上发 xhigh）
+//   与 grok-4.5（low/medium/high，xhigh/max 被底座降级为 high 故不暴露）提供档位；
+//   Grok 推理不可关（底座把 off 归一为 high），不暴露 off；其余型号与非官方端点 → null。
 // 与底座 `is_exact_zai_tiered_effort_route` / `is_exact_direct_moonshot_k3_route` /
-// `is_exact_kimi_code_k3_route` / `is_exact_minimax_m3_route` 对齐：中国端点 / 兼容网关
-// 误配同型号时底座 fail-closed，前端不再暴露无效或彼此等效的选项。
+// `is_exact_kimi_code_k3_route` / `is_exact_minimax_m3_route` / `is_exact_xai_grok_4_6_route`
+// 对齐：兼容网关误配同型号时底座 fail-closed，前端不再暴露无效或彼此等效的选项。
 function reasoningEffortTiersForModel(model) {
   const provider = reasoningProviderForModel(model);
   if (!provider) return null;
@@ -1031,7 +1189,9 @@ function reasoningEffortTiersForModel(model) {
   if (localSpec) return localSpec.noControl ? null : localSpec.tiers;
   if (provider === 'zai') {
     if (!isExactZaiChatBaseUrl(baseUrl)) return null;
-    if (modelName === 'glm-5.2' || modelName === 'glm-5.3') return ['off', 'high', 'max'];
+    if (['glm-5.2', 'glm-5.3', 'glm-5.3-flash'].includes(modelName)) {
+      return ['off', 'high', 'max'];
+    }
     if (modelName === 'glm-5.1' || modelName === 'glm-5-turbo') return ['off', 'high'];
     return null;
   }
@@ -1043,15 +1203,22 @@ function reasoningEffortTiersForModel(model) {
     if (modelName !== 'minimax-m3') return null;
     return ['off', 'high'];
   }
+  if (provider === 'xai') {
+    if (!isExactXaiPlatformBaseUrl(baseUrl)) return null;
+    if (modelName === 'grok-4.6') return [...tiers, 'max'];
+    if (modelName === 'grok-4.5') return tiers;
+    return null;
+  }
   return tiers;
 }
 
-// 底座 K3（always-thinking）精确路由：直连平台 kimi-k3 与 Kimi Code 裸 k3。
-// 仅这两个「精确端点 + 模型名」组合会进入 tiered low/high/max 路由。
+// 底座 K3（always-thinking）精确路由：直连平台 kimi-k3（api.moonshot.ai / .cn）与
+// Kimi Code 的 k3 / k3-256k（底座 is_exact_kimi_code_k3_route 同时收录两者）。
+// 仅这些「精确端点 + 模型名」组合会进入 tiered low/high/max 路由。
 function isExactMoonshotK3Route(model, modelName) {
   const baseUrl = (model && model.base_url) || '';
   if (modelName === 'kimi-k3') return isExactMoonshotPlatformBaseUrl(baseUrl);
-  if (modelName === 'k3') return isExactKimiCodeBaseUrl(baseUrl);
+  if (modelName === 'k3' || modelName === 'k3-256k') return isExactKimiCodeBaseUrl(baseUrl);
   return false;
 }
 

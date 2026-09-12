@@ -731,7 +731,9 @@ async function modalWidth(page, headingText) {
   await sleep(250);
   const sameProviderPicker = await page.evaluate(() => {
     const text = document.body.innerText;
-    return text.includes('deepseek-v4-pro') && text.includes('deepseek-v4-flash') && !text.includes('kimi-k3') && !text.includes('glm-5.2');
+    // DeepSeek 组现只列 deepseek-flash（新主力）+ deepseek-v4-pro；已删行
+    // deepseek-v4-flash 仅作为 legacyAliases 存量兼容,不再出现在可点目录里。
+    return text.includes('deepseek-flash') && text.includes('deepseek-v4-pro') && !text.includes('kimi-k3') && !text.includes('glm-5.2');
   });
   rec('④ 编辑模型默认掩码显示已保存 Key，显示后回显且只允许同厂商更换', Object.values(maskedSavedKey).every(Boolean) && Object.values(editModelBehavior).every(Boolean) && sameProviderPicker, JSON.stringify({ ...maskedSavedKey, ...editModelBehavior, sameProviderPicker }));
   await clickExact(page, '取消');
@@ -841,6 +843,7 @@ async function modalWidth(page, headingText) {
     const lines = (root ? root.innerText : '').split('\n').map(line => line.trim());
     return {
       hasGa: lines.includes('qwen3.8-max'),
+      hasFlash38: lines.includes('qwen3.8-flash'),
       hasFlash: lines.includes('qwen3.6-flash'),
       noPreview: !lines.includes('qwen3.8-max-preview'),
     };
@@ -877,7 +880,8 @@ async function modalWidth(page, headingText) {
     const text = root ? root.innerText : '';
     return {
       title: text.includes('添加 智谱 Coding Plan'),
-      defaultModel: text.includes('GLM-5.2'),
+      // 2026-09 目录默认首项改为旗舰 GLM-5.3;GLM-5-Turbo 保留为「历史模型」入口。
+      defaultModel: text.includes('GLM-5.3'),
       noDisplayNameField: !text.includes('显示名'),
       noServiceUrlField: !text.includes('服务地址') && !(root && [...root.querySelectorAll('input')].some(input => input.value === 'https://open.bigmodel.cn/api/coding/paas/v4')),
       noNativeSelect: document.querySelectorAll('[data-testid="model-form-dialog"] select').length === 0,
@@ -1333,7 +1337,8 @@ async function modalWidth(page, headingText) {
     return {
       noAdvancedCollapse: !text.includes('高级设置'),
       noServiceUrlField: !text.includes('服务地址'),
-      hasModelPicker: text.includes('模型') && text.includes('deepseek-v4-pro'),
+      // 2026-09 目录 DeepSeek 组默认首项改为新主力 deepseek-flash
+      hasModelPicker: text.includes('模型') && text.includes('deepseek-flash'),
       hasOptionalAlias: text.includes('别名') && !!document.querySelector('[data-testid="model-form-alias"]'),
       saveDisabled: !!save && save.disabled,
       hasSingleKeyInput: document.querySelectorAll('input[placeholder="输入 API Key"]').length === 1,
@@ -1347,6 +1352,11 @@ async function modalWidth(page, headingText) {
     && addModelBeforeKey.saveDisabled
     && addModelBeforeKey.hasSingleKeyInput;
   rec('⑥.6 添加预置云模型表单精简且 API Key 前禁用保存', addModelBeforeKeyPass, JSON.stringify({ cloudPickerWidth, ...addModelBeforeKey }));
+  // 显式选 deepseek-v4-pro 条目再保存,后续 ⑦/⑦.img 断言沿用的仍是该模型。
+  await clickModalExact(page, '模型');
+  await sleep(200);
+  await clickModalExact(page, 'deepseek-v4-pro');
+  await sleep(200);
   const apiInput = await page.$('input[placeholder="输入 API Key"]');
   const aliasInput = await page.$('[data-testid="model-form-alias"]');
   await aliasInput.type('Daily assistant');
@@ -1389,14 +1399,15 @@ async function modalWidth(page, headingText) {
     const capabilityToggle = root && root.querySelector('[data-testid="image-capability-toggle"]');
     const visionToggle = root && root.querySelector('[data-testid="vision-model-toggle"]');
     return {
-      hasCapabilityRow: !!capabilityToggle && (capabilityToggle.textContent || '').includes('自动处理'),
+      // deepseek-v4-pro 目录显式标注纯文本(false),编辑回显按目录标注为「不支持图片」。
+      hasCapabilityRow: !!capabilityToggle && (capabilityToggle.textContent || '').includes('不支持图片'),
       hasVisionRow: !!visionToggle && (visionToggle.textContent || '').includes('无'),
       hasHelpText: text.includes('当前模型不能看图时，用该模型分析图片'),
       // §11.8/§11.9 静态隐私说明:云端外发/本地不离机。
       hasPrivacyText: text.includes('使用云端模型时，图片会发送给你选择的模型服务商') && text.includes('本地模型图片不离开本机'),
     };
   });
-  rec('⑦.img.1 编辑模型展示图片输入能力/视觉模型控件、默认自动处理/无及静态隐私说明', Object.values(imageSectionDefault).every(Boolean), JSON.stringify(imageSectionDefault));
+  rec('⑦.img.1 编辑模型展示图片输入能力/视觉模型控件、按目录标注回显不支持图片/无及静态隐私说明', Object.values(imageSectionDefault).every(Boolean), JSON.stringify(imageSectionDefault));
   // 图片能力三档:自动处理/支持图片/不支持图片(「保存时检测」档已下线)。
   await page.click('[data-testid="image-capability-toggle"]');
   await sleep(200);
@@ -1685,9 +1696,12 @@ async function modalWidth(page, headingText) {
     savedPinvou.dialogClosed && savedPinvou.noProbeArg && savedPinvou.savedWithPinvou,
     JSON.stringify(savedPinvou));
   const echoPinvou = await echoOverride();
-  rec('⑦.img.12b 重开表单回显「自动处理」', echoPinvou.includes('自动处理'), echoPinvou);
+  // pinvou(未钉死)保存后重开:deepseek-v4-pro 目录显式标注 false,按目录标注回显
+  // 「不支持图片」(目录未标注的模型才回退「自动处理」)。
+  rec('⑦.img.12b 重开表单按目录标注回显「不支持图片」', echoPinvou.includes('不支持图片'), echoPinvou);
 
-  // 存量「保存时检测」(auto)档残留:重开表单按「自动处理」回显。生产链路里
+  // 存量「保存时检测」(auto)档残留:重开表单不得渲染已下线的「保存时检测」档,
+  // 未钉死档按目录标注回显(该模型标注 false →「不支持图片」)。生产链路里
   // "auto" 由 Rust serde 迁移为 pinvou 后前端才收到,此处直灌 auto 只测前端
   // 防御层(serde 迁移另有 settings 单测覆盖);mock 改档后必须 loadModels()
   // 刷新 bridge state,React 才会以新 savedModels 渲染(同 ⑦.img.2b)。
@@ -1696,8 +1710,8 @@ async function modalWidth(page, headingText) {
   await page.evaluate(() => window.TauriBridge.models.loadModels());
   await sleep(200);
   const echoLegacyAuto = await echoOverride();
-  rec('⑦.img.12c 存量 auto 档残留按「自动处理」回显',
-    echoLegacyAuto.includes('自动处理') && !echoLegacyAuto.includes('保存时检测'),
+  rec('⑦.img.12c 存量 auto 档残留不渲染已下线的「保存时检测」,按目录标注回显',
+    echoLegacyAuto.includes('不支持图片') && !echoLegacyAuto.includes('保存时检测'),
     echoLegacyAuto);
 
   // 保存失败(连接/写盘错误):弹窗保持 + 行内错误提示,表单输入不丢弃;
@@ -1724,9 +1738,9 @@ async function modalWidth(page, headingText) {
   const retrySaved = await page.evaluate(() => !document.querySelector('[data-testid="model-form-dialog"]'));
   rec('⑦.img.13b 修正后重试保存成功关闭弹窗', retrySaved, String(retrySaved));
 
-  // ⑦.img.14 目录视觉能力标注自动填写「图片输入能力」:Kimi 系已标注,组默认
-  // 首项 k3 即预填「支持图片」;DeepSeek 组未标注保持「自动处理」;手动改档后
-  // 再换条目不再跟随。
+  // ⑦.img.14 目录视觉能力标注自动填写「图片输入能力」:Kimi 系与 DeepSeek 组
+  // 首项（k3 / deepseek-flash）均已标注,打开即预填「支持图片」;手动改档后
+  // 再换条目不再跟随目录标注（切到标注 false 的 deepseek-v4-pro 仍保留手动值）。
   const capabilityToggleText = () => page.evaluate(() => {
     const toggle = document.querySelector('[data-testid="model-form-dialog"] [data-testid="image-capability-toggle"]');
     return toggle ? (toggle.textContent || '') : '';
@@ -1742,21 +1756,21 @@ async function modalWidth(page, headingText) {
   await sleep(250);
   await clickExact(page, '深度求索 / DeepSeek');
   await sleep(300);
-  const capUnannotated = await capabilityToggleText();
+  const capDeepseekDefault = await capabilityToggleText();
   await page.click('[data-testid="image-capability-toggle"]');
   await sleep(200);
-  await page.click('[data-testid="image-capability-option-disabled"]');
+  await page.click('[data-testid="image-capability-option-pinvou"]');
   await sleep(200);
   await clickModalExact(page, '模型');
   await sleep(250);
-  await clickModalExact(page, 'deepseek-v4-flash');
+  await clickModalExact(page, 'deepseek-v4-pro');
   await sleep(250);
   const capAfterTouched = await capabilityToggleText();
   rec('⑦.img.14 目录视觉能力标注自动填写,手动改档后不再跟随',
     capGroupDefault.includes('支持图片')
-      && capUnannotated.includes('自动处理')
-      && capAfterTouched.includes('不支持图片'),
-    JSON.stringify({ capGroupDefault, capUnannotated, capAfterTouched }));
+      && capDeepseekDefault.includes('支持图片')
+      && capAfterTouched.includes('自动处理'),
+    JSON.stringify({ capGroupDefault, capDeepseekDefault, capAfterTouched }));
   await clickExact(page, '取消');
   await sleep(200);
 
