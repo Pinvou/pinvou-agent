@@ -672,7 +672,7 @@ fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    let mut normalized_file = std::fs::OpenOptions::new()
+    let normalized_file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&normalized)
