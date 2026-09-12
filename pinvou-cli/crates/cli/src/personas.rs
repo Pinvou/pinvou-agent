@@ -359,6 +359,7 @@ fn translate_persona_error(message: &str) -> String {
 }
 
 fn list(source: SourceFilter, output: OutputMode) -> Result<CliOutcome, CliError> {
+    sandbox_home()?;
     let mut summaries: Vec<PersonaSummary> = all_summaries();
     if source != SourceFilter::All {
         let wanted = source.as_str();
@@ -395,6 +396,7 @@ fn json_entries(personas: serde_json::Value, source: SourceFilter) -> serde_json
 /// Mirror of `read_persona_body`: the full card body for the detail view.
 /// Unknown ids exit 1 (GUI: "未知专家面具: {id}").
 fn show(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
+    sandbox_home()?;
     let card = get(id).ok_or_else(|| CliError::failed(format!("unknown persona: {id}")))?;
     let human = card.body.clone();
     let value = serde_json::json!({
@@ -560,6 +562,16 @@ fn equip(session_id: &str, persona_id: &str, output: OutputMode) -> Result<CliOu
     let card = get(persona_id)
         .ok_or_else(|| CliError::failed(format!("unknown persona: {persona_id}")))?;
     let store = open_store()?;
+    // Character validation first (a traversal id is a usage error, via the
+    // sidecar-path check below), then existence: an unknown but well-formed
+    // session id must fail instead of materializing a stray
+    // `sessions/<bogus-id>/` directory for a session that does not exist.
+    equip_state_path(session_id)?;
+    store.load(session_id).map_err(|error| {
+        CliError::failed(format!(
+            "personas equip: session {session_id} does not exist ({error})"
+        ))
+    })?;
     let summary = card.summary();
     let injection = equip_body_injection(&card);
     store.set_pending_persona_body(session_id, Some(injection.clone()));

@@ -279,6 +279,7 @@ fn parse_update(values: &[String]) -> Result<MemoryCommand, CliError> {
         .cloned()
         .ok_or_else(|| CliError::usage("memory update requires <store> <id>"))?;
     let options = parse_options(&values[2..], &["--content"], &[])?;
+    options.ensure_no_positionals("memory update")?;
     let content = options
         .value("--content")
         .ok_or_else(|| CliError::usage("memory update requires --content S"))?
@@ -296,6 +297,7 @@ fn parse_delete(values: &[String]) -> Result<MemoryCommand, CliError> {
         .cloned()
         .ok_or_else(|| CliError::usage("memory delete requires <store> <id>"))?;
     let options = parse_options(&values[2..], &[], &["--yes"])?;
+    options.ensure_no_positionals("memory delete")?;
     Ok(MemoryCommand::Delete {
         store,
         id,
@@ -370,6 +372,18 @@ struct ParsedOptions {
 }
 
 impl ParsedOptions {
+    /// Option-only commands must not silently drop stray tokens.
+    fn ensure_no_positionals(&self, usage: &str) -> Result<(), CliError> {
+        if self.positional.is_empty() {
+            Ok(())
+        } else {
+            Err(CliError::usage(format!(
+                "{usage} takes no positional arguments (got {})",
+                self.positional.join(" ")
+            )))
+        }
+    }
+
     fn value(&self, name: &str) -> Option<&str> {
         self.valued
             .iter()
