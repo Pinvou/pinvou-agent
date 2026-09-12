@@ -438,6 +438,24 @@
     @keyframes tsAlertIn { from { opacity:0; transform:scale(1.05); } to { opacity:1; transform:scale(1); } }
     @keyframes tsSpinner { to { transform: rotate(360deg); } }
 
+    /* Voice popups (recording pill, ASR popover): enter/exit transitions.
+       Runtime Tailwind here has no tailwindcss-animate plugin, so these are
+       plain CSS classes (same approach as ts-modal-in). .voice-pop-out must
+       stay after .voice-pop-in so an exit interrupting an enter still wins. */
+    @keyframes voicePopIn { from { opacity:0; transform:translateY(8px) scale(0.94); } to { opacity:1; transform:translateY(0) scale(1); } }
+    .voice-pop-in { animation: voicePopIn 0.18s ease-out both; }
+    @keyframes voicePopOut { from { opacity:1; transform:translateY(0) scale(1); } to { opacity:0; transform:translateY(8px) scale(0.94); } }
+    .voice-pop-out { animation: voicePopOut 0.14s ease-in both; }
+    /* Recording state: breathing halo, a ping-style expanding ring on ::after
+       that inherits the pill's rounded shape. */
+    @keyframes voicePillLive { 0% { box-shadow:0 0 0 0 rgba(124,77,255,0.42); } 100% { box-shadow:0 0 0 14px rgba(124,77,255,0); } }
+    .voice-pill-live { position:relative; }
+    .voice-pill-live::after { content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none; animation:voicePillLive 1.8s ease-out infinite; }
+    @media (prefers-reduced-motion: reduce) {
+      .voice-pop-in, .voice-pop-out { animation:none; }
+      .voice-pill-live::after { animation:none; content:none; }
+    }
+
     /* ===== 卡片池: tilt / spotlight / borderglow / 挂件 ===== */
     .ap-card { transform-style: preserve-3d; transition: transform .18s cubic-bezier(.2,.8,.2,1), box-shadow .25s, border-color .25s; will-change: transform; position: relative; }
     /* 鼠标跟随高光(--mx/--my 由 JS 注入) */

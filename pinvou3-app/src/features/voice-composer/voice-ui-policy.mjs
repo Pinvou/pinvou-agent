@@ -4,13 +4,6 @@ function normalizeVoiceMode(mode) {
   return 'dictation';
 }
 
-function voiceModeLabel(mode, copy) {
-  const voiceMode = normalizeVoiceMode(mode);
-  if (voiceMode === 'task') return copy.voiceTaskMode;
-  if (voiceMode === 'edit') return copy.voiceEditMode || copy.voiceDictationMode;
-  return copy.voiceDictationMode;
-}
-
 function voicePostprocessingLabel(mode, copy) {
   const voiceMode = normalizeVoiceMode(mode);
   if (voiceMode === 'task') return copy.voiceTaskPostprocessing;
@@ -104,7 +97,6 @@ export {
   shouldShowVoiceNotice,
   shouldShowVoicePill,
   voiceAsrBusyState,
-  voiceModeLabel,
   voicePostprocessingLabel,
   voiceAsrProgressPercent,
   voiceStatusLabel,

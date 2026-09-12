@@ -475,7 +475,7 @@ const jaBase = {
         attachmentOpen: '既定のアプリで開く', attachmentDownload: '添付ファイルをダウンロード', attachmentCopyAddress: 'パスをコピー',
         attachmentCopyName: 'ファイル名をコピー', attachmentReveal: 'ファイルマネージャーで表示',
         voiceStart: '音声入力', voiceStop: '録音を終了', voiceCancel: '音声入力をキャンセル', voiceCancelShort: 'キャンセル', voiceRetry: '再試行', voiceRetryAgain: 'もう一度試す',
-        voiceRequesting: 'マイク権限を確認中…', voiceRecording: '録音中。もう一度押すと終了', voiceTranscribing: '音声を認識中…',
+        voiceRequesting: 'マイク権限を確認中…', voiceRecording: '録音中。もう一度押すと終了', voiceTranscribing: '音声を認識中…', voiceStopHint: 'もう一度 Alt（Option）で停止',
         voicePostprocessing: '音声テキストを整えています…', voiceTaskPostprocessing: '音声タスクを整理しています…',
         voiceCompleted: '音声テキストを追加しました', voiceTaskSent: '音声タスクを送信しました', voiceClose: '音声通知を閉じる', voiceGotoDeps: '依存関係チェックへ',
         voiceDictationMode: '入力欄に挿入', voiceTaskMode: 'タスク送信', voiceInputFailed: '音声入力に失敗しました',
