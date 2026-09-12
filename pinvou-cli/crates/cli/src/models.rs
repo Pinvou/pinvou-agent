@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use pinvou3_lib::features::sessions::SerializableMode;
 use pinvou3_lib::platform::credential_store::{
-    CredentialState, CredentialStore, SystemCredentialStore, redact_secret,
+    CredentialReference, CredentialState, CredentialStore, SystemCredentialStore, redact_secret,
 };
 use pinvou3_lib::platform::prefs::{
     ColorScheme, Language, ModelPreset, SavedModel, SearchProvider, Theme, UserPrefs,
@@ -352,6 +352,14 @@ fn parse_options(
                 let value = rest
                     .get(index + 1)
                     .ok_or_else(|| CliError::usage(format!("--{name} requires a value")))?;
+                if value.starts_with("--") {
+                    // `--api-key-env --set-active` would otherwise consume
+                    // the flag name as its value and fail later with a
+                    // confusing host error.
+                    return Err(CliError::usage(format!(
+                        "--{name} requires a value (got the flag {value})"
+                    )));
+                }
                 if values.insert(name.to_owned(), value.clone()).is_some() {
                     return Err(CliError::usage(format!(
                         "--{name} was given more than once"
@@ -393,17 +401,31 @@ impl Options {
             .ok_or_else(|| CliError::usage(format!("--{name} is required")))
     }
 
-    fn exactly_one_positional(&self, what: &str) -> Result<String, CliError> {
+    fn exactly_one_positional(&self) -> Result<String, CliError> {
         match self.positionals.len() {
+            // `label` already names the subcommand ("pinvoy models remove"),
+            // so the message needs no extra noun.
             1 => Ok(self.positionals[0].clone()),
-            0 => Err(CliError::usage(format!(
-                "{} {what} requires an id",
-                self.label
-            ))),
+            0 => Err(CliError::usage(format!("{} requires an id", self.label))),
             n => Err(CliError::usage(format!(
-                "{} {what} takes one id, got {n}",
+                "{} takes one id, got {n}",
                 self.label
             ))),
+        }
+    }
+
+    /// Option-only subcommands must not silently drop stray tokens
+    /// (`settings search set junk --provider metaso` is a typo, not a
+    /// value).
+    fn reject_stray_positionals(&self) -> Result<(), CliError> {
+        if self.positionals.is_empty() {
+            Ok(())
+        } else {
+            Err(CliError::usage(format!(
+                "{} takes no positional arguments (got {})",
+                self.label,
+                self.positionals.join(" ")
+            )))
         }
     }
 }
@@ -432,27 +454,27 @@ pub fn parse(values: &[String]) -> Result<ModelsCommand, CliError> {
         ("models", "remove") => {
             let options = parse_options("models", "remove", rest, &[], &["yes"])?;
             Ok(ModelsCommand::Remove {
-                id: options.exactly_one_positional("remove")?,
+                id: options.exactly_one_positional()?,
                 yes: options.has("yes"),
             })
         }
         ("models", "use") => {
             let options = parse_options("models", "use", rest, &[], &[])?;
             Ok(ModelsCommand::Use {
-                id: options.exactly_one_positional("use")?,
+                id: options.exactly_one_positional()?,
             })
         }
         ("models", "show") => {
             let options = parse_options("models", "show", rest, &[], &["reveal-key"])?;
             Ok(ModelsCommand::Show {
-                id: options.exactly_one_positional("show")?,
+                id: options.exactly_one_positional()?,
                 reveal_key: options.has("reveal-key"),
             })
         }
         ("models", "test") => {
             let options = parse_options("models", "test", rest, &[], &[])?;
             Ok(ModelsCommand::Test {
-                id: options.exactly_one_positional("test")?,
+                id: options.exactly_one_positional()?,
             })
         }
         ("models", "probe-local") => {
@@ -570,6 +592,7 @@ fn parse_search(rest: &[String]) -> Result<ModelsCommand, CliError> {
                 &["provider", "api-key-env"],
                 &["clear"],
             )?;
+            options.reject_stray_positionals()?;
             if options.has("clear") && options.value("api-key-env").is_some() {
                 return Err(CliError::usage("use only one of --api-key-env or --clear"));
             }
@@ -581,7 +604,7 @@ fn parse_search(rest: &[String]) -> Result<ModelsCommand, CliError> {
         }
         "test" => {
             let options = parse_options("settings", "search test", rest, &[], &[])?;
-            let provider = options.exactly_one_positional("search test <provider>")?;
+            let provider = options.exactly_one_positional()?;
             Ok(ModelsCommand::SearchTest {
                 provider: parse_search_provider(&provider)?,
             })
@@ -841,6 +864,12 @@ fn prefs_error(error: String) -> CliError {
 
 fn remove(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     require_yes(yes)?;
+    // The keyring delete moves AFTER the prefs save (the ordering this
+    // file's own `search set --clear` comment states): deleting first left
+    // a save failure with a model that is still configured but secretless.
+    // A secret left behind by a failed post-save delete is the benign
+    // direction — the prefs record no longer references it.
+    let mut reference_to_delete: Option<CredentialReference> = None;
     UserPrefs::update_transaction(|prefs| {
         if prefs.model_by_id(id).is_none() {
             return Err(format!("model not found: {id}"));
@@ -854,14 +883,21 @@ fn remove(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
             .model_by_id(id)
             .and_then(|model| model.credential_ref.clone())
         {
-            SystemCredentialStore::new()
-                .delete(&reference)
-                .map_err(|error| error.user_message())?;
+            reference_to_delete = Some(reference);
         }
         prefs.remove_model(id);
         Ok(())
     })
     .map_err(prefs_error)?;
+    if let Some(reference) = reference_to_delete {
+        if let Err(error) = SystemCredentialStore::new().delete(&reference) {
+            eprintln!(
+                "pinvou: warning: model {id} removed, but its keyring secret could not be \
+                 deleted: {}",
+                error.user_message()
+            );
+        }
+    }
     let text = render(
         output,
         format!("removed: {id}"),
@@ -1054,10 +1090,27 @@ fn connection_error_result(error: &reqwest::Error) -> ConnectionProbe {
 fn test_connection(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let prefs = safe_prefs();
     let model = find_model(&prefs, id)?;
-    let key = resolve_saved_model_key(&model)
-        .map_err(|error| CliError::failed(format!("credential_unavailable: {error}")))?
-        .unwrap_or_default();
+    // A keychain failure is a probe RESULT, not a crash: like every other
+    // `models test` outcome it renders a single-line JSON row on stdout
+    // (with `credential_unavailable`), so scripts can branch on it instead
+    // of parsing stderr text.
+    let key = match resolve_saved_model_key(&model) {
+        Ok(key) => key.unwrap_or_default(),
+        Err(error) => {
+            let probe = connection_result(
+                false,
+                "credential_unavailable",
+                Some(error.to_string()),
+                None,
+            );
+            return Ok(render_probe_outcome(&probe, output));
+        }
+    };
     let probe = run_connection_probe(&model.base_url, &key);
+    Ok(render_probe_outcome(&probe, output))
+}
+
+fn render_probe_outcome(probe: &ConnectionProbe, output: OutputMode) -> CliOutcome {
     let json = serde_json::json!({
         "ok": probe.ok,
         "code": probe.code,
@@ -1070,15 +1123,14 @@ fn test_connection(id: &str, output: OutputMode) -> Result<CliOutcome, CliError>
     }
     // A completed probe reports its result; the exit code reflects whether
     // the endpoint accepted the request (scripts branch on it).
-    let outcome = CliOutcome {
+    CliOutcome {
         exit_code: if probe.ok {
             ExitCode::Success
         } else {
             ExitCode::Failed
         },
         stdout: render(output, human, &json),
-    };
-    Ok(outcome)
+    }
 }
 
 fn run_connection_probe(base_url: &str, key: &str) -> ConnectionProbe {
@@ -1343,11 +1395,23 @@ fn probe_local(
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     let explicit_key = match api_key_env {
-        Some(var) => Some(std::env::var(var).map_err(|_| {
-            CliError::failed(format!(
-                "probe-local: api key environment variable {var} is not set"
-            ))
-        })?),
+        Some(var) => {
+            let value = std::env::var(var).map_err(|_| {
+                CliError::failed(format!(
+                    "probe-local: api key environment variable {var} is not set"
+                ))
+            })?;
+            // A set-but-empty variable would be filtered out by apply_bearer
+            // and silently downgrade to an unauthenticated probe, which then
+            // misclassifies an authenticated local server as `generic` —
+            // exactly what the explicit-key lane exists to prevent.
+            if value.trim().is_empty() {
+                return Err(CliError::failed(format!(
+                    "probe-local: api key environment variable {var} is set but empty"
+                )));
+            }
+            Some(value)
+        }
         None => None,
     };
     let (target, bearer) = match url {
@@ -1660,6 +1724,13 @@ fn search_set(
     let secret = resolve_secret(api_key_env, false)?;
     let stored = if clear { None } else { secret };
     let stored_reference = stored.as_ref().map(|_| provider.credential_reference());
+    // Replacing an existing key OVERWRITES it in the keyring, so the
+    // rollback below must restore the previous value — deleting would
+    // destroy the old secret while prefs still references it (strictly
+    // worse than not rolling back). Snapshot it before the transaction.
+    let previous_secret = stored_reference
+        .as_ref()
+        .map(|reference| SystemCredentialStore::new().get(reference).ok().flatten());
     let transaction = UserPrefs::update_transaction(|prefs| {
         prefs.search.provider = provider;
         if let Some(key) = &stored {
@@ -1683,10 +1754,22 @@ fn search_set(
     });
     if let Err(error) = transaction {
         // The closure may have stored the keyring secret before the save
-        // failed; roll it back so no orphaned entry outlives the prefs
-        // record (same standard as models add).
-        if let Some(reference) = stored_reference {
-            let _ = SystemCredentialStore::new().delete(&reference);
+        // failed; restore the pre-transaction state so no orphaned entry
+        // outlives the prefs record (same standard as models add). An
+        // overwrite restores the previous secret; a fresh store deletes.
+        if let Some(reference) = stored_reference.as_ref() {
+            let store = SystemCredentialStore::new();
+            match previous_secret {
+                // A previous secret existed: the overwrite destroyed it, so
+                // the rollback must put it back.
+                Some(Some(old)) => {
+                    let _ = store.set(reference, old.as_str());
+                }
+                // No previous secret: remove the just-stored one.
+                Some(None) | None => {
+                    let _ = store.delete(reference);
+                }
+            }
         }
         return Err(prefs_error(error));
     }
