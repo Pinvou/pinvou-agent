@@ -943,9 +943,12 @@ fn run_file_stamp(secs: i64, nanos: u32) -> String {
     )
 }
 
-/// Parses `YYYY-MM-DDTHH:MM:SS[.fff][Z|±HH:MM]` into epoch seconds plus
-/// subsecond nanos; returns None for anything else. Used only to order
-/// records, mirroring the foundation's chrono-based sorts.
+/// Parses `YYYY-MM-DDTHH:MM:SS[.fff](Z|±HH:MM)` into epoch seconds plus
+/// subsecond nanos; returns None for anything else — including a stamp
+/// without an offset, because the foundation's chrono parser requires one
+/// and only then falls back to the naive-local channel. Used to order
+/// records and to pick the ONCE AT channel, mirroring the foundation's
+/// chrono-based sorts.
 fn parse_rfc3339(value: &str) -> Option<(i64, u32)> {
     let trimmed = value.trim();
     let bytes = trimmed.as_bytes();
@@ -992,7 +995,13 @@ fn parse_rfc3339(value: &str) -> Option<(i64, u32)> {
         rest = &fractional[digits_end..];
     }
     let offset_secs = match rest {
-        "" | "Z" | "z" => 0,
+        // RFC3339 requires an offset. An offset-less stamp must fall through
+        // to the naive-local channel (validate_once_at), where the DST-gap
+        // rule applies — the foundation parses such stamps as local time,
+        // never as UTC, and one unresolvable record stalls the GUI
+        // scheduler's whole sweep.
+        "Z" | "z" => 0,
+        "" => return None,
         offset => {
             let offset = offset.as_bytes();
             if offset.len() != 6 || (offset[0] != b'+' && offset[0] != b'-') || offset[3] != b':' {
@@ -1265,7 +1274,21 @@ impl TaskStore {
         })?;
         let (secs, nanos) = record_time(run, "created_at");
         let path = dir.join(format!("{}-{id}.json", run_file_stamp(secs, nanos)));
-        write_json_atomic(&path, run)
+        write_json_atomic(&path, run)?;
+        // Mirror the foundation: rewrites of a legacy-named run migrate it
+        // to the sortable name; drop the old file so the run never exists
+        // twice on disk (list dedups by id, but the twin still leaks stale
+        // content to direct readers).
+        let legacy = dir.join(format!("{id}.json"));
+        if legacy != path && legacy.exists() {
+            std::fs::remove_file(&legacy).map_err(|error| {
+                CliError::failed(format!(
+                    "scheduled_storage_unavailable: cannot remove legacy run {}: {error}",
+                    legacy.display()
+                ))
+            })?;
+        }
+        Ok(())
     }
 }
 
@@ -1971,14 +1994,20 @@ enabled in settings",
         "last_run_at": serde_json::Value::Null,
     });
     store_holder.write_def(&def)?;
-    if let Err(error) = persist_model_binding(&store_holder, &id, model_id.as_deref()) {
-        // Roll back the just-created task so no kind-less/binding-less task
-        // lingers, mirroring the GUI create rollback.
-        if let Ok(path) = store_holder.def_path(&id) {
-            let _ = std::fs::remove_file(path);
+    // Only touch the shared bindings sidecar when a binding was actually
+    // requested: an unconditional write widens the last-writer-wins window
+    // against a concurrently persisting GUI and turns a sidecar-write
+    // failure into a failed create where the GUI would succeed.
+    if model_id.as_deref().is_some() {
+        if let Err(error) = persist_model_binding(&store_holder, &id, model_id.as_deref()) {
+            // Roll back the just-created task so no kind-less/binding-less task
+            // lingers, mirroring the GUI create rollback.
+            if let Ok(path) = store_holder.def_path(&id) {
+                let _ = std::fs::remove_file(path);
+            }
+            let _ = std::fs::remove_dir_all(store_holder.workspace_dir(&id));
+            return Err(error);
         }
-        let _ = std::fs::remove_dir_all(store_holder.workspace_dir(&id));
-        return Err(error);
     }
     if let Some(stored_kind) = kind.stored_kind() {
         if let Err(error) = persist_task_kind(&store_holder, &id, Some(stored_kind)) {
@@ -2328,11 +2357,19 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     let runs_dir = store_holder.runs_dir_for(id)?;
     if runs_dir.exists() {
         if let Err(error) = std::fs::remove_dir_all(&runs_dir) {
-            restore_status(&def, &previous_status);
-            return Err(CliError::failed(format!(
-                "scheduled_delete_failed: cannot remove {}: {error}",
-                runs_dir.display()
-            )));
+            // The definition file is already removed — the delete is
+            // committed, exactly like the GUI, whose
+            // `restore_task_status_if_present` refuses to recreate a missing
+            // definition ("a missing definition is a committed delete") and
+            // whose own delete logs a warning and keeps the durable archive
+            // snapshot. Restoring here would resurrect a live task whose
+            // runs are gone AND leave it in the history archive, so the next
+            // delete would overwrite the only history snapshot with an empty
+            // run list.
+            eprintln!(
+                "pinvou: warning: scheduled task {id} was deleted, but its run directory \
+                 could not be removed: {error}; the history archive snapshot is kept"
+            );
         }
     }
     for path in [
@@ -2570,22 +2607,24 @@ fn mark_viewed(task_id: &str, run_id: &str, output: OutputMode) -> Result<CliOut
     // Active runs first, then the deleted-task history archive — keyed like
     // the GUI on whether the task definition still exists (a deleted task's
     // runs directory is simply absent, which list_runs reports as empty, so
-    // existence — not a read error — is the discriminator).
-    let runs = if store_holder.read_def(task_id).is_ok() {
-        store_holder.list_runs(task_id, None)?
-    } else {
-        let archive = read_registry(&store_holder.history_archive_path());
-        archive
-            .get("tasks")
-            .and_then(|value| value.get(task_id))
-            .and_then(|task| task.get("runs"))
-            .and_then(|value| value.as_array())
-            .cloned()
-            .ok_or_else(|| {
-                CliError::failed(format!(
-                    "scheduled_task_not_found: task {task_id} does not exist"
-                ))
-            })?
+    // existence — not a read error — is the discriminator). A definition
+    // that exists but cannot be read (corrupt JSON, unreadable file,
+    // unsupported schema) is a storage failure, not a missing task: surface
+    // it honestly instead of misreporting "task does not exist" from the
+    // archive branch.
+    let runs = match store_holder.read_def(task_id) {
+        Ok(_) => store_holder.list_runs(task_id, None)?,
+        Err(error) if error.to_string().starts_with("scheduled_task_not_found") => {
+            let archive = read_registry(&store_holder.history_archive_path());
+            archive
+                .get("tasks")
+                .and_then(|value| value.get(task_id))
+                .and_then(|task| task.get("runs"))
+                .and_then(|value| value.as_array())
+                .cloned()
+                .ok_or(error)?
+        }
+        Err(error) => return Err(error),
     };
     let run = runs
         .iter()
@@ -2883,6 +2922,10 @@ mod tests {
         assert!(later > (secs, nanos));
         assert!(parse_rfc3339("not-a-date").is_none());
         assert!(parse_rfc3339("2026-09-10 12:34:56").is_none());
+        // RFC3339 requires an offset; an offset-less stamp is the
+        // foundation's naive-local channel, not a UTC instant.
+        assert!(parse_rfc3339("2026-09-10T12:34:56").is_none());
+        assert!(parse_rfc3339("2026-09-10T12:34:56.123").is_none());
     }
 
     #[test]

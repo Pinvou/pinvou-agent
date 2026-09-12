@@ -1202,19 +1202,24 @@ fn once_at_rejects_dst_gap_times_like_the_foundation() {
     };
     // 2027-03-14 02:30 does not exist in America/New_York (clocks jump
     // 02:00 -> 03:00); the foundation's `resolve_local_datetime` returns
-    // None for it.
-    let gap = run("FREQ=ONCE;AT=2027-03-14T02:30");
-    assert!(!gap.status.success(), "gap time must be rejected");
-    assert!(
-        String::from_utf8_lossy(&gap.stderr).contains("does not exist"),
-        "gap rejection must name the cause: {}",
-        String::from_utf8_lossy(&gap.stderr)
-    );
+    // None for it. Both foundation naive shapes — `HH:MM` and `HH:MM:SS` —
+    // must take that channel; an offset-less `HH:MM:SS` stamp used to fall
+    // into the offset-free parse and skip the gap check entirely.
+    for gap_stamp in ["2027-03-14T02:30", "2027-03-14T02:30:00"] {
+        let gap = run(&format!("FREQ=ONCE;AT={gap_stamp}"));
+        assert!(!gap.status.success(), "{gap_stamp} must be rejected");
+        assert!(
+            String::from_utf8_lossy(&gap.stderr).contains("does not exist"),
+            "gap rejection must name the cause: {}",
+            String::from_utf8_lossy(&gap.stderr)
+        );
+    }
     // Ordinary and ambiguous (fall-back) times still resolve — the
     // foundation picks the earliest occurrence for ambiguous stamps.
     for good in [
         "FREQ=ONCE;AT=2027-01-15T02:30",
         "FREQ=ONCE;AT=2027-11-07T01:30",
+        "FREQ=ONCE;AT=2027-01-15T02:30:00",
     ] {
         let output = run(good);
         assert!(
