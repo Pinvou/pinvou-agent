@@ -346,9 +346,11 @@ pub async fn get_super_permission_status() -> Result<bool, String> {
 /// Returns the real effective state (unchanged when pkexec fails/is cancelled).
 ///
 /// Holds the process-wide [`crate::platform::super_permission::TOGGLE_LOCK`]
-/// for the whole sequence: disk-state read → pkexec write/remove →
-/// `refresh_permission_rulesets` rebuild + broadcast run serialized as one
-/// unit, so concurrent toggles no longer interleave and the sudo hard-deny
+/// for the whole sequence: pkexec write/remove → `refresh_permission_rulesets`
+/// rebuild + broadcast (the rebuild re-reads the sudo state from disk inside
+/// `safety_deny_rules`) → the effective-state read-back for the return
+/// value. All of it runs serialized as one unit, so concurrent toggles no
+/// longer interleave and the sudo hard-deny
 /// ruleset is never rebuilt from a stale sudo snapshot (the narrow
 /// stale-snapshot window registered in safety_deny_rules is closed).
 /// Toggling is a low-frequency user action, so holding the lock across the
