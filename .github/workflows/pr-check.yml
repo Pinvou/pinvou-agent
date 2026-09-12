@@ -200,6 +200,11 @@ jobs:
               - 'pinvou-cli/**/Cargo.toml'
               - 'pinvou-cli/**/Cargo.lock'
               - 'CodeWhale'
+              # The CLI path-depends on the app crate: leaf features exempt
+              # from the full app suite still gate through the CLI suite, so
+              # a consumer-breaking change cannot escape pre-merge CI.
+              - 'pinvou3-app/src-tauri/src/features/feedback/**'
+              - 'pinvou3-app/src-tauri/src/features/personas/**'
             knowledge_rust:
               - 'pinvou-knowledge/**/*.rs'
               - 'pinvou-knowledge/Cargo.toml'

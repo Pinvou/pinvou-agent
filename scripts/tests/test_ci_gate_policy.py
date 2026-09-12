@@ -302,6 +302,12 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         self.assertIn("- 'pinvou-cli/**/Cargo.toml'", cli_paths)
         self.assertIn("- 'CodeWhale'", cli_paths)
+        # The CLI path-depends on the app crate, so the leaf features that
+        # rust_full exempts still gate through the CLI suite (a change confined
+        # to features/feedback or features/personas would otherwise run NO rust
+        # gate at all).
+        self.assertIn("- 'pinvou3-app/src-tauri/src/features/feedback/**'", cli_paths)
+        self.assertIn("- 'pinvou3-app/src-tauri/src/features/personas/**'", cli_paths)
 
         cli_test = _without_yaml_comments(
             self.pr_workflow.split("\n  cli-test:", maxsplit=1)[1].split(
