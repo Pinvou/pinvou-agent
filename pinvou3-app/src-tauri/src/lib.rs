@@ -852,9 +852,22 @@ pub fn run() {
                     }
                 };
             startup::mark("engine_pool:start");
-            let tool_factory: crate::features::assistant::engine_pool::EngineToolFactory =
-                std::sync::Arc::new(|app, session_id| {
-                    vec![
+            // Computer Use 同意状态：全局单例。EngineToolFactory 按会话把它注入
+            // ComputerUseTool，Tauri 命令（app::commands::computer_use）经 .manage()
+            // 的 State 到达同一实例。settings.json 的 computer_use.enabled 是开关的
+            // 唯一事实来源，启动时回放进 AtomicBool（computer_use_set_enabled 命令
+            // 负责后续的 写盘→翻旗标）。
+            let computer_use_shared =
+                std::sync::Arc::new(features::computer_use::ComputerUseShared::new());
+            computer_use_shared
+                .set_enabled(crate::platform::prefs::UserPrefs::load().computer_use.enabled);
+            app.manage(computer_use_shared.clone());
+            let tool_factory: crate::features::assistant::engine_pool::EngineToolFactory = {
+                let computer_use_shared = computer_use_shared.clone();
+                std::sync::Arc::new(move |app, session_id| {
+                    let mut tools: Vec<
+                        std::sync::Arc<dyn deepseek_tui::tools::spec::ToolSpec>,
+                    > = vec![
                         std::sync::Arc::new(knowledge::KbSearchTool::new(
                             app.clone(),
                             session_id.to_string(),
@@ -863,10 +876,23 @@ pub fn run() {
                             app.clone(),
                             session_id.to_string(),
                         )),
-                    ]
-                });
-            let tool_policy: crate::features::assistant::engine_pool::ToolPolicy =
-                std::sync::Arc::new(|app| {
+                    ];
+                    // 设置开关关闭时模型连 schema 都看不到：工具根本不构造。
+                    if computer_use_shared.is_enabled() {
+                        tools.push(std::sync::Arc::new(
+                            features::computer_use::ComputerUseTool::new(
+                                app.clone(),
+                                session_id.to_string(),
+                                computer_use_shared.clone(),
+                            ),
+                        ));
+                    }
+                    tools
+                })
+            };
+            let tool_policy: crate::features::assistant::engine_pool::ToolPolicy = {
+                let computer_use_shared = computer_use_shared.clone();
+                std::sync::Arc::new(move |app| {
                     let mut tools = crate::features::marketplace::disabled_tool_names();
                     // 语义与单一真相源见 KnowledgeService::kb_tools_usable:
                     // 只看有没有内容,不看模型在位状态(可见性随模型波动会让
@@ -883,8 +909,18 @@ pub fn run() {
                         tools.push("kb_search".to_string());
                         tools.push("kb_open_source".to_string());
                     }
+                    // 设置开关动态禁用 computer_use：与工厂侧「不构造工具」互为
+                    // 双保险。本闭包只在 refresh_disallowed_tools 被调用时重算；
+                    // computer_use_set_enabled 命令翻转开关后会立即调用该刷新
+                    // （见 app/commands/computer_use.rs），已在跑的存量引擎目录
+                    // 随之即时更新；其余触发刷新的路径（连接器/市场/知识库变化）
+                    // 重算时取到的同样是当前开关状态。
+                    if !computer_use_shared.is_enabled() {
+                        tools.push(features::computer_use::TOOL_NAME.to_string());
+                    }
                     tools
-                });
+                })
+            };
             match EnginePool::new_with_dependencies(
                 handle.clone(),
                 store_for_engine.clone(),
@@ -1121,6 +1157,14 @@ pub fn run() {
             commands::startup::report_frontend_startup,
             commands::diagnostics::record_authority_sync_diagnostics,
             commands::startup::reveal_startup_window,
+            commands::computer_use::computer_use_get_status,
+            commands::computer_use::computer_use_grant,
+            commands::computer_use::computer_use_revoke,
+            commands::computer_use::computer_use_stop,
+            commands::computer_use::computer_use_deny,
+            commands::computer_use::computer_use_confirm,
+            commands::computer_use::computer_use_set_enabled,
+            commands::computer_use::computer_use_request_permissions,
             commands::connectors::refresh_connector_auth_gates,
             commands::connectors::feishu_ensure_cli,
             commands::connectors::feishu_status,

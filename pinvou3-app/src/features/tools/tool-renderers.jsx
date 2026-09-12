@@ -14,6 +14,7 @@ import {
 import { AppIcon } from '../personas/persona-shared.jsx';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
 import { useShellTaskCancel } from '../chat/shell-task-cancel.js';
+import { extractComputerUseScreenshotPath } from '../computer-use/computer-use-logic.js';
 import { AcShieldCheck, AcSparkles, DiffView, GrepView, ListDirView, OutputError, OutputPre, ReceiptBlock, ShellTextView, ShellView, StockQuoteCard, TODO_TOOLS, TodoView, WeatherCard, isQuietTool, isReceipt, isStockQuoteTool, isWeatherTool, looksDiff, toolSummary, tryParseJson, tryTailJson } from './tool-common.jsx';
 
 const isShellExecutionTool = name => [
@@ -480,10 +481,78 @@ const ExpertAgentCard = ({ item, t, sessionId: sessionIdProp }) => {
   );
 };
 
+// ── computer_use 截图卡 ───────────────────────────────────────────
+// 工具把截图存进会话工作区 attachments/computer_use/*.png，文本输出带绝对路径。
+// 功能开关关闭时一律回退默认工具卡（特性不可见）；输出里没有截图路径时同样回退。
+function computerUseToolCardEnabled() {
+  if (!bridge.available || !bridge.state || typeof bridge.state.get !== 'function') return false;
+  try {
+    const slice = bridge.state.get('computerUse');
+    return !!(slice && slice.computerUse && slice.computerUse.enabled);
+  } catch {
+    return false;
+  }
+}
+
+function computerUseScreenshotForItem(item) {
+  if (!item || item.name !== 'computer_use' || item.state !== 'done') return null;
+  if (!computerUseToolCardEnabled()) return null;
+  return extractComputerUseScreenshotPath(item.output);
+}
+
+const ComputerUseScreenshotCard = ({ item, path, t }) => {
+  const copy = t.uiComputerUse;
+  const [imageUrl, setImageUrl] = useState(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    setImageUrl(null); // eslint-disable-line react-hooks/set-state-in-effect -- a new screenshot path starts a fresh load; synchronously clearing the previous image avoids a stale frame flash
+    setLoadFailed(false);
+    if (!bridge.available || !bridge.artifacts || !bridge.artifacts.readArtifactImageB64) {
+      setLoadFailed(true);
+      return;
+    }
+    bridge.artifacts.readArtifactImageB64(path)
+      .then((url) => { if (!cancelled) { setImageUrl(url || null); if (!url) setLoadFailed(true); } })
+      .catch(() => { if (!cancelled) setLoadFailed(true); });
+    return () => { cancelled = true; };
+  }, [path]);
+  if (loadFailed) return <OutputPre text={item.output} />;
+  const openFull = () => {
+    if (bridge.available && bridge.artifacts && bridge.artifacts.openArtifactExternal) {
+      bridge.artifacts.openArtifactExternal(path, item.sessionId);
+    }
+  };
+  return (
+    <div data-testid="computer-use-screenshot-card" className="my-1">
+      <div className="text-[11px] mb-1 text-[#757575] dark:text-[#8E8E8E]">{copy.screenshotCaption}</div>
+      {imageUrl ? (
+        <button
+          type="button"
+          onClick={openFull}
+          title={path}
+          className="block max-w-[360px] rounded-[12px] overflow-hidden border border-black/10 dark:border-white/10 hover:opacity-90 transition-opacity"
+        >
+          <img src={imageUrl} alt={copy.screenshotCaption} className="block w-full h-auto" />
+        </button>
+      ) : (
+        <div className="text-[12px] text-[#757575] dark:text-[#8E8E8E]">{copy.screenshotLoading}</div>
+      )}
+    </div>
+  );
+};
+
 // eslint-disable-next-line sonarjs/cognitive-complexity -- per-tool output view routing; splitting by tool has low payoff;legacy view; tracked separately
 const ToolOutput = ({ item, t }) => {
       const out = item.output;
       if (item.success === false) return <OutputError text={out} />;
+      // computer_use：输出引用 attachments/computer_use/*.png 时渲染截图卡；
+      // 无截图或功能关闭时落回默认 <OutputPre>。
+      if (item.name === 'computer_use') {
+        const screenshotPath = computerUseScreenshotForItem(item);
+        if (screenshotPath) return <ComputerUseScreenshotCard item={item} path={screenshotPath} t={t} />;
+        return <OutputPre text={out} />;
+      }
       if (isWeatherTool(item.name)) {
         let raw = out;
         const envelope = tryParseJson(out);
@@ -567,8 +636,9 @@ const ToolOutput = ({ item, t }) => {
       const isRunning = item.state === 'running';
       // eslint-disable-next-line react-hooks/rules-of-hooks -- the early-return branch is constant for an instance's lifetime (see the comment above); the per-instance Hook count is stable
       const { cancelling, cancelError: shellCancelError, cancel: cancelShellTask } = useShellTaskCancel(t);
-      // 有可视化卡片的工具(天气/股票)完成后直接展开,不折叠
-      const hasCard = (isWeatherTool(item.name) || isStockQuoteTool(item.name)) && item.state === 'done';
+      // 有可视化卡片的工具(天气/股票/computer_use 截图)完成后直接展开,不折叠
+      const hasCard = ((isWeatherTool(item.name) || isStockQuoteTool(item.name)) && item.state === 'done')
+        || !!computerUseScreenshotForItem(item);
       const hasLiveShellOutput = isShellExecutionTool(item.name)
         && isRunning
         && (item.liveOutput || item.output != null);

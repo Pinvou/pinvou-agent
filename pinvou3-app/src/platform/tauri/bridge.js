@@ -256,6 +256,21 @@
     activeModelId: null,
     currentSessionModelId: null, // 当前 active session 显式绑定的模型;null=跟随全局默认
     superPermEnabled: false,
+    // Computer use（截屏 + 键鼠控制）授权状态。enabled 是全局开关（默认关）；
+    // granted/stopped/sessionId/grantRequest/confirmRequest 描述当前 active
+    // 会话的授权与待决请求，由 bridge/computer_use.js 维护。
+    computerUse: {
+      enabled: false,
+      granted: false,
+      stopped: false,
+      // Whether this OS has a computer_use backend at all (from
+      // computer_use_get_status.platform_supported); lets settings disable the
+      // toggle instead of letting users enable something that cannot work.
+      platformSupported: true,
+      sessionId: null,
+      grantRequest: null,
+      confirmRequest: null,
+    },
     modeState: { mode: "yolo" },
     // Per-lane (work/code) global default modes (null = the lane was never
     // explicitly chosen; defaults code→plan, work→yolo). Source of truth for
@@ -1539,6 +1554,7 @@
     models: ["activeModelId", "currentSessionModelId", "effectiveModelConfig", "savedModels"],
     vllm: ["vllmBootstrapDone", "vllmBootstrapError", "vllmBootstrapping", "vllmSetup", "vllmSetupAttempt", "vllmSetupDismissed", "vllmSetupPhase"],
     interaction: ["pinvouModal", "pinvouReviews", "pinvouSummoning", "superPermEnabled"],
+    computerUse: ["computerUse"],
     personas: ["activePersona", "personaEvents", "personaPool"],
     memory: ["memory"],
     remoteControl: ["webAccess"],
@@ -2462,6 +2478,7 @@
   const multiAgentFeature = installBridgeFeature("multiagent", { state, notify, invoke, listen });
   const listMultiAgentSubagents = multiAgentFeature.listSubagentTranscripts;
   const readMultiAgentSubagent = multiAgentFeature.readSubagentTranscript;
+  const computerUseFeature = installBridgeFeature("computer_use", { state, notify, invoke, listen });
   async function pickFiles() {
     if (!dialogOpen) return [];
     const selected = await dialogOpen({ multiple: true });
@@ -2748,6 +2765,18 @@
     multiAgent: {
       listSubagentTranscripts: listMultiAgentSubagents,
       readSubagentTranscript: readMultiAgentSubagent,
+    },
+    computerUse: {
+      getStatus: computerUseFeature.getStatus,
+      refreshStatus: computerUseFeature.refreshStatus,
+      grant: computerUseFeature.grant,
+      revoke: computerUseFeature.revoke,
+      stop: computerUseFeature.stop,
+      confirm: computerUseFeature.confirm,
+      deny: computerUseFeature.deny,
+      dismissConfirm: computerUseFeature.dismissConfirm,
+      setEnabled: computerUseFeature.setEnabled,
+      requestPermissions: computerUseFeature.requestPermissions,
     },
     files: {
       pickFiles,

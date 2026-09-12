@@ -35,6 +35,14 @@
   async function loadSettings() {
     try {
       state.settings = await invoke("get_settings");
+      // computer_use 总开关由专用命令经 prefs 落盘（不走 update_settings 补丁）；
+      // 冷启动尚无会话时 computer_use_get_status 不可达，设置页开关以落盘值为初始态。
+      // 注意：这里的镜像只在加载时写入一次——运行时开关走 bridge/computer_use.js
+      // 的专用命令，本切片不回写（两份表示按设计只在冷启动对齐）。
+      const persistedEnabled = !!(state.settings && state.settings.computer_use && state.settings.computer_use.enabled);
+      if (state.computerUse && state.computerUse.enabled !== persistedEnabled) {
+        state.computerUse = Object.assign({}, state.computerUse, { enabled: persistedEnabled });
+      }
     } catch {
       // Backend unreachable = nothing to judge; fall back to following the
       // system for the color scheme (color_scheme: system).

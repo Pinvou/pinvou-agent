@@ -19,6 +19,7 @@ import { ViewErrorBoundary } from '../../shared/ViewErrorBoundary.jsx';
 import { ArtifactCard, localizeTool, tsToolsData, tsToolWelcomeData } from '../tools/tool-common.jsx';
 import { RightDockPanel, useRightDockOcclusion } from '../../components/layout/RightDock.jsx';
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
+import { ComputerUseBanner, ComputerUseDialogs } from '../computer-use/ComputerUseConsent.jsx';
 import {
   ConversationActivityIndicator,
   ConversationTimeline,
@@ -160,6 +161,10 @@ import {
 import { useComposerVoiceInput } from '../voice-composer/useComposerVoiceInput.js';
 
 const MULTI_AGENT_ENABLED = can('multiAgent');
+
+// Computer use（截屏 + 键鼠控制）是桌面专属能力：Web 端 can() 恒 false，
+// 授权条/授权弹窗整体不渲染，工具卡也回退默认卡片。
+const COMPUTER_USE_ENABLED = can('computerUse');
 
 // Enter-to-submit guard (shared by the main input, queued-message edit, and in-bubble edit):
 // Shift+Enter still inserts a newline; Enter during IME composition confirms the candidate text
@@ -800,6 +805,35 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const activeSessionIdRef = useRef(activeSessionId);
       // eslint-disable-next-line react-hooks/refs -- latest-session mirror for non-reactive reads; legacy pattern surfaced by compiler lint after floating-ball removal
       activeSessionIdRef.current = activeSessionId;
+      const computerUseCopy = t.uiComputerUse;
+      const computerUseSlice = (bs && bs.computerUse) || null;
+      // 会话挂载/切换时拉取 computer-use 权威状态：横幅与授权弹窗只对
+      // active 会话生效，后台会话的待决请求由 bridge 端按会话寄存，
+      // 切回时随本次 refresh 重新浮出。refreshStatus 在发起 IPC 前会同步
+      // 调 clearSessionRequests 清掉上一个会话遗留的待决弹窗（纯状态操作），
+      // 异步刷新窗口期内旧会话的授权弹窗不可再点击。
+      useEffect(() => {
+        if (!COMPUTER_USE_ENABLED || !bridge.available || !bridge.computerUse || !activeSessionId) return;
+        bridge.computerUse.refreshStatus(activeSessionId).catch(() => {});
+        // 事件丢失兜底：grant/stop 事件若被前端错过（如刷新或后台窗口期），
+        // 横幅会与真实授权状态失真——这里周期性 refreshStatus 与后端对账，
+        // 找回错过的授权/停止事件，让横幅重新对齐（纯恢复机制，不改变
+        // 授权本身的生命周期）。
+        // 最近已知 disabled 时跳过轮询（评审发现：此前对账循环在功能
+        // 关闭时也按应用全生命周期运行）；重新启用走 setEnabled，它直接
+        // 重读权威状态，不会漏掉状态翻转。
+        const reconciler = setInterval(() => {
+          try {
+            const snapshot = bridge.state.get("computerUse");
+            const slice = snapshot && snapshot.computerUse;
+            if (slice && slice.enabled === false) return;
+          } catch {
+            /* state.get 不可用：保持轮询 */
+          }
+          bridge.computerUse.refreshStatus(activeSessionId).catch(() => {});
+        }, 30_000);
+        return () => clearInterval(reconciler);
+      }, [activeSessionId]);
       const busy = bs ? bs.busy : false;
       // 停止按钮 single-flight:busy 在首次 cancel_generation 返回前就复位,
       // 双击会发第二个并发取消请求。cancellingSessionIds 在 invoke 完成前禁用
@@ -2327,6 +2361,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               onToggleShortcut={handleVoiceIntroToggleShortcut}
             />
           )}
+          {COMPUTER_USE_ENABLED && (
+            <ComputerUseDialogs slice={computerUseSlice} copy={computerUseCopy} />
+          )}
           {/* Floating Input Area */}
           <div
             ref={composerWrapRef}
@@ -2335,6 +2372,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             style={responsiveGutterStyle}
           >
             <div className="max-w-[800px] w-full mx-auto">
+              {COMPUTER_USE_ENABLED && (
+                <ComputerUseBanner slice={computerUseSlice} copy={computerUseCopy} />
+              )}
               {!scheduledRunContext && !conversationStarted && (
                 <HomeModeSwitcher
                   mode={pinvouMode}

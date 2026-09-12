@@ -24,6 +24,10 @@ export const desktopBridgeApi = {
   memory: ['archiveRecentWorkMemory', 'confirmMemoryCandidate', 'deleteMemoryItem', 'deleteMemoryPreference', 'ignoreMemoryCandidate', 'loadMemoryOverview', 'loadOrganizeHistory', 'neverMemoryCandidate', 'organizeMemory', 'saveMemoryProfilePatch', 'updateMemoryItem'],
   updater: ['cancelUpdate', 'checkForUpdate', 'downloadAndInstallUpdate', 'restartApp'],
   dependencies: ['checkDependencies', 'installDependencies'],
+  // Computer use drives the local machine: the desktop backend exposes it, the
+  // web surface carries only rejecting stubs (the RPC allowlist excludes the
+  // commands entirely, same policy as browser:*).
+  computerUse: ['confirm', 'deny', 'dismissConfirm', 'getStatus', 'grant', 'refreshStatus', 'requestPermissions', 'revoke', 'setEnabled', 'stop'],
 };
 
 // These methods intentionally depend on desktop lifecycle or local machine

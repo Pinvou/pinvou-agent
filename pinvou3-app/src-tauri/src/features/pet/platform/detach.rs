@@ -146,13 +146,10 @@ fn poll_global_mouse(_dev: &()) -> GlobalMouse {
 #[cfg(target_os = "macos")]
 mod macos_mouse {
     use super::GlobalMouse;
-
-    #[repr(C)]
-    #[derive(Default, Clone, Copy)]
-    struct CGPoint {
-        x: f64,
-        y: f64,
-    }
+    // 返回类型必须与 features/computer_use/platform/macos.rs 对同一 CoreGraphics
+    // 符号的声明逐类型一致（同 crate 内 extern 重复声明签名不一致会触发
+    // clashing_extern_declarations 警告，且本项目以 -D warnings 作为本地门禁）。
+    use objc2_foundation::NSPoint;
 
     /// CGEventSourceStateID:kCGEventSourceStateHIDSystemState = 1。
     /// 取 HID 硬件状态(而非本 app 会话状态),确保拖拽时光标按下态不被 app 捕获掩盖。
@@ -162,19 +159,20 @@ mod macos_mouse {
 
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {
-        fn CGEventCreate(source: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
-        fn CGEventGetLocation(event: *mut std::ffi::c_void) -> CGPoint;
+        fn CGEventCreate(source: *const std::ffi::c_void) -> *const std::ffi::c_void;
+        fn CGEventGetLocation(event: *const std::ffi::c_void) -> NSPoint;
         // CGEventSourceButtonState 第一参数是 CGEventSourceStateID(int32 枚举值,如
         // kCGEventSourceStateHIDSystemState = 1),**不是** CGEventSourceRef 指针。
         // 此前误声明为 *mut c_void 并先 CGEventSourceCreate 再传入,arm64 ABI 下
         // 堆指针低 32 位被当作 stateID 读取(非法枚举值),导致恒返回 false →
         // macOS 撕离拖拽 100% 失效。直接传整数枚举值即可,无需分配 source 对象。
-        fn CGEventSourceButtonState(state_id: i32, button: u32) -> bool;
+        // C 原型返回 Boolean(unsigned char),按逐类型一致声明为 u8。
+        fn CGEventSourceButtonState(state_id: i32, button: u32) -> u8;
     }
 
     #[link(name = "CoreFoundation", kind = "framework")]
     unsafe extern "C" {
-        fn CFRelease(cf: *mut std::ffi::c_void);
+        fn CFRelease(cf: *const std::ffi::c_void);
     }
 
     /// 同步读全局鼠标位置 + 左键按下态。任意线程可调,免授权。任一 CG 调用失败(罕见,
@@ -188,7 +186,7 @@ mod macos_mouse {
         // (HID_SYSTEM_STATE), not a pointer. All three are callable on any
         // thread without authorization.
         unsafe {
-            let event = CGEventCreate(core::ptr::null_mut());
+            let event = CGEventCreate(core::ptr::null());
             if event.is_null() {
                 return GlobalMouse {
                     x: 0,
@@ -202,7 +200,7 @@ mod macos_mouse {
             // CGEventCreate 返回的位置反映当前光标;按键态直接从 HID 源读。
             // CGEventSourceButtonState 吃 CGEventSourceStateID(int32 枚举值),
             // 无需 CGEventSourceCreate 分配/释放 source 对象。
-            let left_down = CGEventSourceButtonState(HID_SYSTEM_STATE, MOUSE_BUTTON_LEFT);
+            let left_down = CGEventSourceButtonState(HID_SYSTEM_STATE, MOUSE_BUTTON_LEFT) != 0;
             GlobalMouse {
                 x: if loc.x.is_finite() {
                     loc.x.round() as i32

@@ -189,6 +189,8 @@ done
 
 forkguard_count="$(grep -Rho --include='*.rs' 'forkguard_[A-Za-z0-9_]*' "$CODEWHALE/crates" 2>/dev/null | sort -u | wc -l | tr -d ' ')"
 if [[ "$forkguard_count" -ge 54 ]]; then
+  # 全角括号紧贴 $forkguard_count 会被 macOS 自带 bash 3.2 并进变量名
+  # （set -u 下报 unbound variable），用 ${...} 显式定界。
   green "  ✓ CodeWhale 至少保留 54 条独立 forkguard 行为名（实际 ${forkguard_count}）"
 else
   red "  ✗ CodeWhale forkguard 行为名仅 ${forkguard_count:-0}，登记下限为 54"
