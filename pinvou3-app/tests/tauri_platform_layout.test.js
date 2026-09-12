@@ -173,6 +173,7 @@ assert.doesNotMatch(workflow, /frontend-test:[\s\S]{0,300}\n\s*if:\s*\$\{\{\s*fa
 for (const stalePath of [
   "pinvou3-app/src-tauri/src/app/bridge",
   "pinvou3-app/src-tauri/src/features/assistant/harness.rs",
+  "pinvou3-app/src-tauri/src/platform/prefs.rs",
   "resources/common/bundle/connectors/linux-arm64",
 ]) {
   assert.equal(workflow.includes(stalePath), false, `PR workflow still references migrated path: ${stalePath}`);
@@ -180,7 +181,8 @@ for (const stalePath of [
 }
 // l1 filter 已随 strict_mode 测试并入 lib 单测删除;这些 Rust 路径的 CI 触发
 // 由 rust_code filter 的 **/*.rs 通配覆盖,不再逐路径断言。
-assert.match(workflow, /src\/platform\/prefs\.rs/);
+// prefs 已随 #142 拆为 platform/prefs/ 目录,pet filter 按目录锚定。
+assert.match(workflow, /src\/platform\/prefs\//);
 assert.match(connectorWorkflow, /resources\/platforms\/\*\*\/bundle\/connectors\/\*\*/);
 for (const resources of ["linux/aarch64", "linux/x86_64", "macos/aarch64", "macos/x86_64", "windows/x86_64"]) {
   assert.ok(
