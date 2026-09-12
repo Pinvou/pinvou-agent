@@ -153,6 +153,9 @@ O 是具体 route 的单轮输出上限，不再从 wire model 名字猜。opera
 > 剩余:GUI 长会话人工观察 banner（需桌面环境）+ ops 补 served-name（下方，113 机）——待用户。
 > 注：O 按窗口分档(≥500K→262144,否则 max_output_tokens);云端拿不到真实窗口的模型
 > (gpt-4o/qwen-max 等)退 128k 兜底(与底座同源不倒置),准确值靠二期手动配置。
+> （⚠️ 本块为 v0.8 期历史记录:此处「≥500K→262144」的 O 分档口径已被 §3「O 来源」的
+> operator-owned 窗口分档声明取代——≥500K→131072 / ≥250K→65536 / 否则 min(W/4, 32768);
+> `compaction_cloud_large_window_models` 现亦直取底座公开预算链,不再镜像分档常数。）
 
 > **v0.9 更新（2026-07-17）**：上面的“零 fork”是当时基线的历史结论。v0.9 resolved
 > route 会对未知 wire alias 采用 4K output 兼容 fallback，因此现方案在 T6 增加了最小

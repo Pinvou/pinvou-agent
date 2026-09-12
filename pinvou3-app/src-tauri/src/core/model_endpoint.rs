@@ -620,7 +620,9 @@ fn select_local_server_kind(hits: ProbeCandidateHits) -> LocalServerKind {
 /// The actual probe without cache (a TTL cache hit returns directly; see
 /// `probe_local_server_kind`). All candidate probes are issued in parallel
 /// via `tokio::join!` (each shares `shared_probe_client`'s 3s timeout, so a
-/// hung endpoint costs ~3s at worst instead of accumulating serially);
+/// hung endpoint costs ~3s at worst instead of accumulating serially;
+/// `fetch_v1_models`'s 404/405 root fallback adds at most one more request
+/// window — a hung primary times out once and is not retried);
 /// `/v1/models` is fetched only once, shared by the LMDeploy and vLLM
 /// `owned_by` decisions. Once all complete, the result is picked by
 /// signature-exclusivity priority.
@@ -958,8 +960,8 @@ pub async fn post_anthropic_messages(
 }
 
 /// 仅测试用：最小模型列表 mock 服务器。按路径返回可配状态码与响应体并记录
-/// 命中数——`fetch_v1_models` 的回退口径测试与 engine_pool spawn 采纳接线测试
-/// 共用，断言“探测打到了哪条路径、打了几次”。
+/// 命中数与 Authorization 头——`fetch_v1_models` 的回退口径测试与 engine_pool
+/// spawn 采纳接线测试共用，断言“探测打到了哪条路径、打了几次、是否携带凭据”。
 #[cfg(test)]
 pub(crate) mod models_mock {
     use std::collections::HashMap;
@@ -969,6 +971,7 @@ pub(crate) mod models_mock {
     pub(crate) struct ModelsMock {
         pub base_url: String,
         hits: Arc<Mutex<HashMap<String, usize>>>,
+        auth: Arc<Mutex<HashMap<String, String>>>,
     }
 
     impl ModelsMock {
@@ -979,6 +982,15 @@ pub(crate) mod models_mock {
                 .get(path)
                 .copied()
                 .unwrap_or(0)
+        }
+
+        /// 该路径最后一次请求携带的 Authorization 头（未携带则 None）。
+        pub(crate) fn auth_for(&self, path: &str) -> Option<String> {
+            self.auth
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(path)
+                .cloned()
         }
     }
 
@@ -991,9 +1003,12 @@ pub(crate) mod models_mock {
             .collect();
         let hits: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
         let hits_thread = hits.clone();
+        let auth: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+        let auth_thread = auth.clone();
         std::thread::spawn(move || {
-            // 最多伺服 8 个连接：测试的确定性请求序列远用不满，兜底防线程泄漏。
-            for stream in listener.incoming().take(8) {
+            // 最多伺服 32 个连接：内核测试各发 1–2 个请求，finalize 接线测试
+            // 还要经过 kind 探测（7 个并行候选），留足余量；兜底防线程泄漏。
+            for stream in listener.incoming().take(32) {
                 let Ok(mut stream) = stream else { continue };
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 1024];
@@ -1023,6 +1038,24 @@ pub(crate) mod models_mock {
                     .unwrap_or_else(|p| p.into_inner())
                     .entry(path.clone())
                     .or_insert(0) += 1;
+                let authorization = request
+                    .lines()
+                    .skip(1)
+                    .take_while(|line| !line.is_empty())
+                    .find(|line| line.to_ascii_lowercase().starts_with("authorization:"))
+                    .map(|line| {
+                        line.split_once(':')
+                            .unwrap_or((":", ""))
+                            .1
+                            .trim()
+                            .to_string()
+                    });
+                if let Some(value) = authorization {
+                    auth_thread
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .insert(path.clone(), value);
+                }
                 let matched = routes.iter().find(|(route, _, _)| path == *route);
                 let (status, body) = matched
                     .map(|(_, status, body)| (*status, body.clone()))
@@ -1043,6 +1076,7 @@ pub(crate) mod models_mock {
         ModelsMock {
             base_url: format!("http://{addr}"),
             hits,
+            auth,
         }
     }
 }
@@ -2147,12 +2181,17 @@ mod tests {
             ("/v1/models", 404, "{}".into()),
             ("/models", 200, r#"{"data":[{"id":"glm-4.7"}]}"#.into()),
         ]);
-        let value = fetch_v1_models(&mock.base_url, None)
+        let value = fetch_v1_models(&mock.base_url, Some("route-key"))
             .await
             .expect("404 后应回退 {base}/models");
         assert_eq!(parse_models_response_list(value).unwrap()[0].id, "glm-4.7");
         assert_eq!(mock.hits_for("/v1/models"), 1);
         assert_eq!(mock.hits_for("/models"), 1);
+        assert_eq!(
+            mock.auth_for("/models").as_deref(),
+            Some("Bearer route-key"),
+            "回退请求必须携带同源凭据，不得静默降级为匿名请求"
+        );
     }
 
     #[tokio::test]

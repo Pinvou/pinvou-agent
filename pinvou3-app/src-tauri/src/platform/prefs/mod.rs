@@ -1604,15 +1604,41 @@ mod tests {
     #[test]
     fn load_persists_legacy_local_output_sentinel_migration() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let old_home = std::env::var_os("PINVOU3_HOME");
-        let tmp = std::env::temp_dir().join(format!(
-            "pinvou3-prefs-local-output-sentinel-{}",
-            std::process::id()
+        // RAII 清理：断言/panic 时 PINVOU3_HOME 与临时 home 也须回收——此前恢复
+        // 只写在正常结尾，中途失败会泄漏 env + 目录并污染同进程后续测试
+        // （同 bridge 测试 TempDirGuard 配方；目录名叠加 pid + 进程内原子后缀，
+        // 双终端并发 cargo test 不碰撞）。
+        struct PrefsHomeGuard {
+            previous: Option<std::ffi::OsString>,
+            home: std::path::PathBuf,
+        }
+        impl PrefsHomeGuard {
+            fn set(home: std::path::PathBuf) -> Self {
+                let previous = std::env::var_os("PINVOU3_HOME");
+                // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
+                unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+                Self { previous, home }
+            }
+        }
+        impl Drop for PrefsHomeGuard {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.home);
+                match self.previous.take() {
+                    // SAFETY: holding ENV_LOCK (first line of this test); restore-side writes serialized.
+                    Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+                    // SAFETY: same as above; restore-side removal serialized under ENV_LOCK.
+                    None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+                }
+            }
+        }
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-prefs-local-output-sentinel-{}-{}",
+            std::process::id(),
+            super::super::paths::tests::unique_suffix()
         ));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).expect("create temporary prefs home");
-        // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("create temporary prefs home");
+        let _prefs_home = PrefsHomeGuard::set(home);
 
         let mut prefs = UserPrefs::default();
         prefs.advanced.saved_models.push(SavedModel {
@@ -1703,14 +1729,8 @@ mod tests {
             .find(|model| model["id"] == "custom-explicit")
             .expect("custom on disk");
         assert_eq!(custom_on_disk["max_output_tokens"], 24_576);
-
-        let _ = std::fs::remove_dir_all(&tmp);
-        match old_home {
-            // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: same as above; restore-side removal serialized under ENV_LOCK.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
+        // PINVOU3_HOME 恢复与临时 home 回收由 PrefsHomeGuard 的 Drop 接管
+        // （断言/panic 路径同样生效），此处不再手写恢复块。
     }
 
     #[test]

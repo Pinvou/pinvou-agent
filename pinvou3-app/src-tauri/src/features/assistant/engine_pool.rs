@@ -1117,8 +1117,10 @@ impl EnginePool {
         Ok((bridge, prepared, pins_scheduled_model))
     }
 
+    /// 无 `&self`：本函数不读池状态，只做 spawn 收尾编排。提为关联函数使
+    /// 单测能直接驱动真实注入块（真实 EnginePool 不可在单测构造，接线覆盖见
+    /// `probed_facts_wiring_tests`）。
     async fn finalize_runtime_bridge(
-        &self,
         mut bridge: Pinvou3Bridge,
         prepared: &PreparedRuntimeModel,
         pins_scheduled_model: bool,
@@ -1217,9 +1219,7 @@ impl EnginePool {
         let (bridge, prepared, pins_scheduled_model) = self
             .prepare_runtime_model(session_id, scheduled_unattended, eval_model)
             .await?;
-        Ok(self
-            .finalize_runtime_bridge(bridge, &prepared, pins_scheduled_model)
-            .await)
+        Ok(Self::finalize_runtime_bridge(bridge, &prepared, pins_scheduled_model).await)
     }
 
     /// 取该 session 的 engine,没有就 spawn 一个。spawn 后若该 session 有磁盘历史
@@ -1265,9 +1265,8 @@ impl EnginePool {
         }
 
         let is_scheduled = self.store.scheduled_profile(session_id).is_some();
-        let bridge = self
-            .finalize_runtime_bridge(bridge, &prepared.prepared, pins_scheduled_model)
-            .await;
+        let bridge =
+            Self::finalize_runtime_bridge(bridge, &prepared.prepared, pins_scheduled_model).await;
         // shell 执行目录与 engine cwd 同源：统一走 SessionStore::session_roots
         // （scheduled = automation workspace，原生代码绑项目会话 = 项目目录）。
         // 解析失败（如 scheduled 会话缺 profile）时维持原回退：bridge 侧解析。
@@ -4858,17 +4857,19 @@ mod scheduled_model_tests {
     }
 }
 
-/// spawn 探测采纳的接线测试：经真实 HTTP mock（127.0.0.1:0）钉死
-/// `EnginePool::adopt_probed_endpoint_facts` 的四条路径——非 vLLM 单条目
-/// "借名"不采纳、精确命中采纳、vLLM 改名 + 采纳、vLLM 钉名不改名仍采纳
-/// （有意取舍，见 `adopts_probed_facts` 文档），以及云端 preset 不探测。
-/// 评审 round-2 发现生产注入点零测试（纯函数级保证无法覆盖 spawn 接线），
-/// 本模块补齐该缺口。
+/// spawn 探测采纳的接线测试，两层覆盖：`finalize_runtime_bridge`（真实生产
+/// 注入块，关联函数可直接驱动）钉住 provider() 推导、effective_model_owned
+/// 门控与 adopt 调用本身；`adopt_probed_endpoint_facts`（可测内核）经真实
+/// HTTP mock（127.0.0.1:0）钉死四条路径——非 vLLM 单条目"借名"不采纳、
+/// 精确命中采纳、vLLM 改名 + 采纳、vLLM 钉名不改名仍采纳（有意取舍，见
+/// `adopts_probed_facts` 文档），以及云端 preset 不探测。评审 round-2 发现
+/// 生产注入点零测试（纯函数级保证无法覆盖 spawn 接线），round-3 补齐
+/// finalize 层——此前仅内核有测试，删掉 finalize 里的注入块零测试会失败。
 #[cfg(test)]
 #[allow(clippy::await_holding_lock)]
 mod probed_facts_wiring_tests {
-    use super::{EnginePool, Pinvou3Bridge};
-    use crate::core::model_endpoint::models_mock;
+    use super::{EnginePool, Pinvou3Bridge, PreparedRuntimeModel};
+    use crate::core::model_endpoint::{LocalServerKind, models_mock};
     use crate::features::runtime_bundle::platform::Pinvou3Bundle;
     use crate::platform::credential_store::CredentialState;
     use crate::platform::paths::tests::ENV_LOCK;
@@ -5049,5 +5050,54 @@ mod probed_facts_wiring_tests {
         );
         assert_eq!(bridge.probed_context_tokens, None);
         assert_eq!(bridge.probed_output_tokens, None);
+    }
+
+    /// finalize_runtime_bridge 真实注入块（非 vLLM 侧）：OpenaiCompatible +
+    /// custom 路由经 provider() 推导（本地 mock URL → kind 探测跑完落
+    /// Generic → "openai"）与 effective_model_owned 门控走到 adopt，精确
+    /// 命中采纳事实、不改名；kind 探测共存（TTL 缓存按 base_url 隔离）。
+    #[tokio::test]
+    async fn finalize_runtime_bridge_injects_probed_facts_into_custom_route() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[("/v1/models", 200, single_entry_json("my-model"))]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        let bridge = wiring_bridge(model.clone());
+        let prepared = PreparedRuntimeModel::unchanged(model);
+        let bridge = EnginePool::finalize_runtime_bridge(bridge, &prepared, false).await;
+        assert_eq!(
+            bridge.probed_local_kind,
+            Some(LocalServerKind::Generic),
+            "openai 路由的 kind 探测共存落 Generic（mock 无 kind 签名）"
+        );
+        assert_eq!(bridge.probed_context_tokens, Some(262_144));
+        assert_eq!(bridge.probed_output_tokens, Some(4_096));
+        assert_eq!(
+            bridge.session_model.as_ref().unwrap().model,
+            "my-model",
+            "非 vLLM 路由不做 served-name 纠偏"
+        );
+    }
+
+    /// finalize_runtime_bridge 真实注入块（vLLM 侧）：provider() 推导出
+    /// "vllm"（跳过 kind 探测），单条目跟随 served name 改名并采纳事实。
+    #[tokio::test]
+    async fn finalize_runtime_bridge_renames_and_injects_vllm_route() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[("/v1/models", 200, single_entry_json("served-actual"))]);
+        let mut model = saved_model(ModelPreset::LocalVllm, "my-model", None);
+        model.base_url = mock.base_url.clone();
+        let bridge = wiring_bridge(model.clone());
+        let prepared = PreparedRuntimeModel::unchanged(model);
+        let bridge = EnginePool::finalize_runtime_bridge(bridge, &prepared, false).await;
+        assert_eq!(
+            bridge.session_model.as_ref().unwrap().model,
+            "served-actual",
+            "vLLM 单条目跟随 served name"
+        );
+        assert_eq!(bridge.probed_context_tokens, Some(262_144));
+        assert_eq!(bridge.probed_output_tokens, Some(4_096));
     }
 }
