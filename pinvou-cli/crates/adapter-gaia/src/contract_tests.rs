@@ -396,8 +396,8 @@ fn default_unit_contract_covers_selection_native_turn_and_privacy() {
     else {
         panic!("GAIA must use NativeTurn");
     };
-    // The official GAIA evaluation imposes no runtime limit, so the adapter
-    // must not declare a harness wall-clock deadline.
+    // The official GAIA protocol is not known to define a runtime limit, so
+    // the adapter must default to no harness wall-clock deadline.
     assert_eq!(*timeout, None);
     assert_eq!(tool_policy.as_str(), "pinvou-gaia-public-web/v1");
     assert_eq!(output_contract.as_str(), "gaia-final/v1");

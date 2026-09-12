@@ -103,9 +103,11 @@ impl GaiaAdapter {
                     Some("gaia".into()),
                     Some(GAIA_LEVEL.to_string()),
                     // No harness wall-clock deadline: the official GAIA
-                    // evaluation imposes no runtime limit, so the run is
+                    // protocol is not known to define one, so the run is
                     // bounded only by the engine's own limits (model steps
-                    // per turn, per-turn wall clock, cancellation).
+                    // per turn, per-turn wall clock, cancellation). A
+                    // harness-side deadline is a deliberate operator
+                    // decision, not an adapter default.
                     ExecutionRequest::native_turn(
                         PrivateInputHandle::new(format!("gaia:{task_id}:prompt")),
                         attachments,

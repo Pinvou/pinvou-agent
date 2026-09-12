@@ -1126,10 +1126,10 @@ fn report_is_published_without_temporary_files() {
     fs::remove_dir_all(base).unwrap();
 }
 
-/// `timeout: None` (the GAIA lane) must run the future unbounded: the harness
-/// imposes no `task_timeout` of its own and the run is bounded only by the
-/// engine's own limits. Contrast with the `Some`-deadline tests above, where
-/// the same slow backend is cut off at the deadline.
+/// `timeout: None` (the GAIA lane default) must run the future unbounded: the
+/// harness imposes no `task_timeout` of its own and the run is bounded only by
+/// the engine's own limits. Contrast with the `Some`-deadline tests above,
+/// where the same slow backend is cut off at the deadline.
 #[tokio::test]
 async fn unbounded_deadline_runs_without_a_harness_task_timeout() {
     let base = temp_base("unbounded-deadline");
