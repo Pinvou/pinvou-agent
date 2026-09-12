@@ -21,7 +21,7 @@ cargo build --manifest-path pinvou-cli/Cargo.toml --bin pinvou
   is recognized anywhere; a subcommand that takes its own `--output PATH`
   (e.g. `sessions export`) accepts any other value as that flag's argument,
   so a file literally named `json` or `human` must be spelled `./json`.
-- `pinvou --version` prints the CLI version.
+- `pinvou --version` (or `pinvou version`) prints the CLI version.
 - Exit codes: `0` success, `1` host/runtime failure, `2` usage error. Errors
   print a human-readable stderr message; many messages carry a stable
   snake_case code prefix (e.g. `product_backend_not_enabled`,
@@ -51,7 +51,11 @@ cargo build --manifest-path pinvou-cli/Cargo.toml --bin pinvou
   --session` does not lock the session against concurrent GUI use. Other shared
   stores (plugins `installed.json`, scheduled sidecars, memory JSONL files)
   have no cross-process lock in either surface: last writer wins, so avoid CLI
-  mutations while the desktop app is running.
+  mutations while the desktop app is running. `sessions rename` is the one to
+  treat with real care: it rewrites the whole transcript JSON from a snapshot
+  read moments earlier, so renaming a session the GUI is ACTIVELY streaming
+  can drop the engine's newest messages — metadata mutations belong to idle
+  sessions.
 - Engine/model-backed operations (`memory organize`, `scheduled run`,
   `monitor status|snapshot`, `voice postprocess`, `knowledge remote *`) boot the
   windowless product host, which needs a display (or `xvfb-run`) and a
@@ -63,7 +67,7 @@ cargo build --manifest-path pinvou-cli/Cargo.toml --bin pinvou
 |---|---|---|
 | `pinvou agent run` | `--prompt-file [--workspace] [--timeout-secs] [--session ID] [--mode plan\|agent] [--model ID] [--attach PATH]...` | One product-equivalent agentic turn: unlimited tool-call rounds and a persisted session (GUI parity; `PINVOU3_AGENT_TASK_KEEP_SESSION=0` restores one-shot cleanup). See [agent-task-cli.md](agent-task-cli.md); the session/mode/model/attach flags extend it without changing its defaults or exit contract. |
 | `pinvou benchmark` | `list`, `run smoke`, `run/fetch/verify/score/submission gaia`, `status`, `resume`, `report` | Evaluation harness; see [gaia-benchmark.md](gaia-benchmark.md). |
-| `pinvou sessions` | `list [--archived]`, `show`, `rename`, `pin`, `unpin`, `archive`, `restore`, `delete --yes`, `export [--format markdown\|json] [--output PATH]`, `timeline`, `subagents`, `folder` | Same `SessionStore` the GUI uses, including scheduled-run cascades. Any store-opening command (even reads like `list`) runs the shared 50-sessions-per-kind retention, so CLI runs can evict the oldest GUI chat sessions. ACP/code sessions are listed too — the CLI has no live pool to filter them like the GUI does. |
+| `pinvou sessions` | `list [--archived] [--limit N]`, `show`, `rename`, `pin`, `unpin`, `archive`, `restore`, `delete --yes`, `export [--format markdown\|json] [--output PATH]`, `timeline`, `subagents`, `folder` | Same `SessionStore` the GUI uses, including scheduled-run cascades. Any store-opening command (even reads like `list`) runs the shared 50-sessions-per-kind retention, so CLI runs can evict the oldest GUI chat sessions. ACP/code sessions are listed too — the CLI has no live pool to filter them like the GUI does. |
 | `pinvou models` / `pinvou settings` | `models list/add/remove/use/show [--reveal-key]/test/probe-local`; `settings get/set`, `settings search list/set/test` | `settings` is an alias routed to the same module. Settings writes go through the GUI's own prefs transactions (migrations and locale policies included). |
 | `pinvou memory` | `overview`, `profile get/set`, `list`, `add preference/work-context`, `update`, `delete --yes`, `archive`, `pending confirm/ignore/never`, `organize`, `organize-history` | `organize` needs the model host. |
 | `pinvou knowledge` | `scan`, `stats`, `type-counts`, `collections ...`, `documents ...`, `index ...`, `search`, `model status/download/cancel`, `mounts/mount/unmount`, `remote connections/probe/collections/search`, `host status` | One-shot imports progress only while the process lives; an import interrupted at exit is marked resumable and continues only after an explicit `index resume <job-id>` (desktop app completes large imports). `model download` declines headless (the in-process ONNX verification and progress events are GUI-bound); `model cancel` and `scan cancel` execute but can only signal cancels inside the CLI's own process (an app-side scan needs the desktop app). `mounts/mount/unmount` refuse with `knowledge_*_requires_product_host`: mounted collections live in the desktop app's process memory and are not persisted, so a one-shot process can neither observe nor change them. `--before` filters on UTC midnight boundaries. |
@@ -106,10 +110,12 @@ super-permission pkexec toggle.
   `features::memory`, `features::monitor`, `features::dependencies`,
   `features::feedback`, `features::files`, `platform::prefs`,
   `platform::credential_store` (plus `platform::connector_lock` for vendor-CLI
-  resolution and integrity verification). `features::scheduled`,
-  `features::connectors`, and `features::voice` are `pub(crate)` to the app
-  crate and therefore mirrored at the store/protocol level with their
-  deviations disclosed in the module headers.
+  resolution and integrity verification). `features::scheduled`
+  and `features::connectors` are `pub(crate)` to the app crate and therefore
+  mirrored at the store/protocol level with their deviations disclosed in the
+  module headers; `features::voice` is `pub` (the CLI shares the GUI's
+  transcript parser directly), with its remaining mirrors disclosed in the
+  module header.
 - Engine/model-backed paths boot through `features::assistant::product_runtime`
   (`run_windowless_host` / `run_agentic_task_headless`), the same windowless
   host the benchmark family uses.

@@ -578,7 +578,11 @@ fn artifacts_read_reaches_scheduled_run_workspace_artifacts() {
     // The store's boot reconciliation prunes profiles whose session JSON is
     // gone, so the transcript file must exist for the profile to survive.
     std::fs::create_dir_all(home.sessions_root()).unwrap();
-    std::fs::write(home.sessions_root().join(format!("{session_id}.json")), "{}").unwrap();
+    std::fs::write(
+        home.sessions_root().join(format!("{session_id}.json")),
+        "{}",
+    )
+    .unwrap();
 
     let profiles = home.root.join("scheduled-runs");
     std::fs::create_dir_all(&profiles).unwrap();

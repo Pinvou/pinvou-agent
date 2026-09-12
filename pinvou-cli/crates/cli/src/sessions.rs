@@ -21,6 +21,15 @@
 //!   command, with the session ledger root and `engine_epoch_ms = None`
 //!   (the CLI never owns a live engine, so non-terminal workers report as
 //!   interrupted, matching a stopped GUI process).
+//!
+//! Cross-process caveat: the GUI serializes its mutations behind in-process
+//! locks that a separate CLI process cannot see. A CLI `rename`/`pin` on a
+//! session the GUI is ACTIVELY streaming rewrites the whole transcript JSON
+//! from a snapshot read moments earlier, so the engine's newest messages
+//! can be lost (the store's own `set_title` comment names this hazard).
+//! Avoid metadata mutations on a session the desktop app is currently
+//! writing; the last-writer-wins windows on the sidecar registries
+//! (viewed/pinned state) are cosmetic by comparison.
 
 use std::io::BufRead;
 use std::path::PathBuf;
