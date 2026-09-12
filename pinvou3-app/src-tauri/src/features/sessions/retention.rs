@@ -69,12 +69,31 @@ impl SessionStore {
             // Scheduled sessions own additional records outside sessions/.
             // Generic chat cleanup must not delete only the transcript and
             // strand the other half of their history.
-            if metadata.id.starts_with("sched-") {
+            // 辅助对话(aux-)的生命周期由主会话级联/discard 拥有(同 sched-
+            // 先例):不进淘汰候选,也不占用可见会话的保留预算。
+            if metadata.id.starts_with("sched-") || metadata.id.starts_with("aux-") {
                 continue;
             }
             chat_count += 1;
             if chat_count > MAX_SESSIONS_PER_KIND {
                 let id = metadata.id;
+                // 淘汰主会话时级联淘汰其辅助会话:先解析映射(主记录提交后
+                // purge_session_side_maps 会摘掉它),aux 记录与主记录进入
+                // 同一个 deleted_ids 集合,统一做 side-map 清理。
+                if let Some(aux_id) = self.aux_session_id(&id) {
+                    let (aux_committed, aux_result) = self.delete_session_record(&aux_id);
+                    if aux_committed {
+                        deleted_ids.push(aux_id.clone());
+                    }
+                    if let Err(error) = aux_result {
+                        if error.kind() != ErrorKind::NotFound && delete_error.is_none() {
+                            delete_error = Some(
+                                anyhow::anyhow!(error)
+                                    .context(format!("delete retained aux session {aux_id}")),
+                            );
+                        }
+                    }
+                }
                 let (committed, result) = self.delete_session_record(&id);
                 if committed {
                     deleted_ids.push(id.clone());
@@ -254,6 +273,20 @@ impl SessionStore {
             self.save_hidden_sessions();
         }
 
+        let removed_aux = {
+            let mut aux_sessions = self.aux_sessions.write();
+            let before = aux_sessions.len();
+            // 双向清理:键(主会话)或值(辅助会话)命中被删集合都移除——删主会话
+            // 与单独删辅助会话两条路径都不得留下幽灵映射。
+            aux_sessions.retain(|main_id, aux_id| {
+                !contains(main_id.as_str()) && !contains(aux_id.as_str())
+            });
+            aux_sessions.len() != before
+        };
+        if removed_aux {
+            self.save_aux_sessions();
+        }
+
         // Keys of process-level turn-state maps (timing/pending_user_input)
         // accumulate per session id and are cleaned by the purge hook
         // registered by the app composition root (see SessionPurgedHook;
@@ -266,6 +299,71 @@ impl SessionStore {
         }
         // 回退备份 sidecar 同样随会话清理（best-effort，见其实现注释）。
         Self::purge_rewound_turns_backups(ids);
+    }
+
+    /// 辅助对话(`aux-` 前缀)孤儿对账,与 `purge_all_scheduled_side_maps` 同款
+    /// 启动回收语义:进程崩溃在「落 aux 记录」与「落 `_aux_sessions.json` 映射」
+    /// 之间、或映射 sidecar 损坏,都会留下不进会话列表、retention 又无条件跳过
+    /// (`aux-` 前缀,见 enforce_session_retention_locked)的隐形孤儿;主会话先死
+    /// (外部清理/中断的级联删除)同理,没有对账就越积越多。
+    ///
+    /// 判据 = 没有任何映射指向该 aux 记录,或映射的主会话记录已不在盘上。回收 =
+    /// 删记录 + `purge_session_side_maps` 双向清理(顺带摘掉主死辅孤的幽灵映射)。
+    ///
+    /// 只在启动路径调用(同 sched- 侧表对账):此刻没有在途的 get-or-create,
+    /// 「记录已落、映射未落」的合法创建窗口不可能与对账重叠——因此本函数**不得**
+    /// 接进 enforce_session_retention_locked(create_aux_session 内部 save 会触发
+    /// enforce,把新生儿当孤儿误删)。
+    pub(crate) fn reconcile_aux_sessions(&self) -> Result<()> {
+        let aux_ids: Vec<String> = self
+            .list_sessions_cached()
+            .context("list sessions for aux session reconciliation")?
+            .iter()
+            .filter(|metadata| metadata.id.starts_with("aux-"))
+            .map(|metadata| metadata.id.clone())
+            .collect();
+        if aux_ids.is_empty() {
+            return Ok(());
+        }
+        let mappings = self.aux_sessions.read().clone();
+        let orphan_ids: Vec<String> = aux_ids
+            .into_iter()
+            .filter(|aux_id| {
+                match mappings.iter().find(|(_, mapped)| *mapped == aux_id) {
+                    // 映射缺失:崩溃在创建窗口 / sidecar 损坏 → 孤儿。
+                    None => true,
+                    // 映射在,但主会话记录已不在盘上 → 主死辅孤。
+                    Some((main_id, _)) => {
+                        !chat_session_file(&self.manager, main_id).is_ok_and(|path| path.exists())
+                    }
+                }
+            })
+            .collect();
+        let mut deleted_ids = Vec::new();
+        let mut delete_error = None;
+        for id in &orphan_ids {
+            let (committed, result) = self.delete_session_record(id);
+            if committed {
+                deleted_ids.push(id.clone());
+            }
+            if let Err(error) = result {
+                if error.kind() != ErrorKind::NotFound && delete_error.is_none() {
+                    delete_error = Some(
+                        anyhow::anyhow!(error).context(format!("delete orphan aux session {id}")),
+                    );
+                }
+            }
+        }
+        if !deleted_ids.is_empty() {
+            // 与 retention 淘汰同款收尾:列表快照过期 + 侧表双向 purge(值命中
+            // 的 主→辅 幽灵映射一并摘除并落盘)。
+            self.invalidate_list_cache();
+            self.purge_session_side_maps(&deleted_ids);
+        }
+        match delete_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     pub(crate) fn purge_all_scheduled_side_maps(&self) {

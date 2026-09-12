@@ -4,7 +4,7 @@ import {
   invokeObservedPanelSelection,
   isSubagentPanelPublicationCurrent,
 } from './subagent-panel-publication.mjs';
-import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Upload, X, Zap } from '../../components/icons.jsx';
+import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, MessageSquare, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -74,9 +74,11 @@ import { AssistantMessageActions, AssistantMessageFooter } from '../conversation
 const CHAT_PANEL_LOADERS = Object.freeze({
   artifacts: () => import('../artifacts/ArtifactsPanel.jsx'),
   subagent: () => import('../multiagent/SubagentTranscriptPanel.jsx'),
+  auxChat: () => import('../aux-chat/AuxChatPanel.jsx'),
 });
 const LazyArtifactsPanel = React.lazy(() => CHAT_PANEL_LOADERS.artifacts().then((m) => ({ default: m.ArtifactsPanel })));
 const LazySubagentTranscriptPanel = React.lazy(() => CHAT_PANEL_LOADERS.subagent().then((m) => ({ default: m.SubagentTranscriptPanel })));
+const LazyAuxChatPanel = React.lazy(() => CHAT_PANEL_LOADERS.auxChat().then((m) => ({ default: m.AuxChatPanel })));
 const prefetchChatPanel = (key) => {
   const loader = CHAT_PANEL_LOADERS[key];
   if (loader) loader().catch(() => {});
@@ -1399,6 +1401,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // detail -> list -> same parent card a new selection even when agentId is unchanged.
       const [subagentPanel, setSubagentPanel] = useState(null);
       const subagentPanelRequestRef = useRef(0);
+      // 辅助对话面板的挂载态提前声明：下面的滚动恢复 useLayoutEffect 依赖它
+      //（面板开合改变右侧 dock 布局，须恢复主会话滚动位置，与 CodexAcpView 一致）。
+      const [auxChatPanel, setAuxChatPanel] = useState(null);
+      const auxChatPanelRequestRef = useRef(0);
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the sub-agent panel on session switch
       useEffect(() => { setSubagentPanel(null); }, [activeSessionId]);
       const rememberScrollBeforeSubagentPanelChange = useCallback(() => {
@@ -1452,7 +1458,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           autoScrollRef.current = true;
           setShowScrollBottom(false);
         }
-      }, [subagentPanel]);
+      }, [subagentPanel, auxChatPanel]);
       useEffect(() => {
         if (typeof window === 'undefined') return;
         const onOpen = (event) => {
@@ -1506,6 +1512,50 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         rememberScrollBeforeSubagentPanelChange,
         rightDockActivePanelId,
       ]);
+      // 辅助对话面板（右侧 dock 的独立纯问答会话，不经子代理体系）。与
+      // subagentPanel 不同：主会话切换时**不关闭**，把新 sessionId 传入换绑。
+      // 开合前记录主会话滚动位置（subagentPanelScrollRef），由上面的恢复
+      // useLayoutEffect 统一回放，与 CodexAcpView 的 aux 入口行为一致。
+      const openAuxChatPanel = useCallback(() => {
+        const requestedSessionId = activeSessionId;
+        if (!requestedSessionId) return;
+        const requestId = auxChatPanelRequestRef.current + 1;
+        auxChatPanelRequestRef.current = requestId;
+        prefetchChatPanel('auxChat');
+        const publishOpen = ({ isCurrent = () => true } = {}) => {
+          if (!isSubagentPanelPublicationCurrent({
+            transitionCurrent: isCurrent(),
+            requestId,
+            currentRequestId: auxChatPanelRequestRef.current,
+            sessionId: requestedSessionId,
+            currentSessionId: activeSessionIdRef.current,
+          })) return false;
+          rememberScrollBeforeSubagentPanelChange();
+          setAuxChatPanel((current) => ({ openTick: (current?.openTick || 0) + 1 }));
+          return true;
+        };
+        if (onRightDockPanelSelectionChange) {
+          void invokeObservedPanelSelection(
+            onRightDockPanelSelectionChange,
+            ['aux-chat', requestedSessionId, publishOpen],
+            reportRightDockSelectionFailure,
+          );
+        } else {
+          publishOpen();
+        }
+      }, [activeSessionId, onRightDockPanelSelectionChange, rememberScrollBeforeSubagentPanelChange]);
+      const closeAuxChatPanel = useCallback(() => {
+        auxChatPanelRequestRef.current += 1;
+        rememberScrollBeforeSubagentPanelChange();
+        setAuxChatPanel(null);
+        if (browserDockOpen) {
+          void invokeObservedPanelSelection(
+            onRightDockPanelSelectionChange,
+            ['browser', activeSessionId],
+            reportRightDockSelectionFailure,
+          );
+        }
+      }, [activeSessionId, browserDockOpen, onRightDockPanelSelectionChange, rememberScrollBeforeSubagentPanelChange]);
       const handlePreviewArtifact = useCallback((artifact) => {
         setActiveArtifactPath(artifact && artifact.path ? artifact.path : null);
         setArtifactDockActivation((value) => value + 1);
@@ -2193,6 +2243,25 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               )}
             </div>
             <div className="flex items-center gap-2">
+              {activeSessionId && !activeSessionId.startsWith('sched-') && bridge.available && bridge.auxChat && (
+                <button
+                  type="button"
+                  data-testid="aux-chat-open"
+                  aria-label={t.uiAuxChat.openLabel}
+                  title={t.uiAuxChat.openLabel}
+                  onMouseEnter={() => prefetchChatPanel('auxChat')}
+                  onFocus={() => prefetchChatPanel('auxChat')}
+                  onClick={openAuxChatPanel}
+                  className={`pointer-events-auto flex h-10 shrink-0 items-center gap-2 rounded-full border px-3 text-[14px] font-medium shadow-sm transition-colors ${
+                    theme === 'dark'
+                      ? 'border-white/10 bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]'
+                      : 'border-black/10 bg-white text-[#1F1F1F] hover:bg-[#F0F4F9]'
+                  }`}
+                >
+                  <MessageSquare size={16} />
+                  <span className="max-sm:hidden">{t.uiAuxChat.openLabel}</span>
+                </button>
+              )}
               {activeSessionId && (
                 <ChatRightDockSwitcher
                   theme={theme}
@@ -2755,6 +2824,21 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               language={modelServiceLanguage}
               modelServiceState={chatModelServiceState}
               onClose={closeSubagentPanel}
+            />
+            </PanelSuspense>
+            </ViewErrorBoundary>
+          )}
+          {/* sched- 运行会话无辅助对话（入口按钮同样隐藏）：切到 sched- 时
+              面板随挂载条件卸载，切回普通会话后自动重挂并重新 ensure。 */}
+          {auxChatPanel && activeSessionId && !activeSessionId.startsWith('sched-') && (
+            <ViewErrorBoundary t={t} variant="panel">
+            <PanelSuspense>
+            <LazyAuxChatPanel
+              sessionId={activeSessionId}
+              activationKey={auxChatPanel.openTick}
+              t={t}
+              theme={theme}
+              onClose={closeAuxChatPanel}
             />
             </PanelSuspense>
             </ViewErrorBoundary>

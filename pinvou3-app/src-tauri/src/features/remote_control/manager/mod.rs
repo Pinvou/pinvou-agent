@@ -3527,6 +3527,15 @@ mod tests {
                 "{command} must be Web-scoped"
             );
         }
+        // 辅助对话(aux session)两命令:WebUI auxChat 域(bridge.js auxChatEnsure/
+        // auxChatDiscard)直接依赖;放行后由 central validator 的
+        // Required("sessionId") 作用域约束显式会话。
+        for command in ["get_or_create_aux_session", "discard_aux_session"] {
+            assert!(
+                policy.commands.contains(command),
+                "{command} must be allowed on Web (aux chat)"
+            );
+        }
         assert!(!policy.commands.contains("list_sessions"));
         assert!(!policy.commands.contains("list_archived_sessions"));
         assert!(
@@ -3843,6 +3852,8 @@ mod tests {
             ("cancel_user_input", "sessionId"),
             ("cancel_generation", "sessionId"),
             ("web_access_chat", "sessionId"),
+            ("get_or_create_aux_session", "sessionId"),
+            ("discard_aux_session", "sessionId"),
             ("delete_session", "id"),
             ("rename_session", "id"),
             ("set_session_model", "sessionId"),

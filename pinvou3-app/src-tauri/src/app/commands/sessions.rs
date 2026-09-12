@@ -437,6 +437,22 @@ pub async fn delete_session(
     {
         SessionKind::Chat => {
             acp_pool.evict(&id).await;
+            // 辅助会话级联必须先走 gated 删除(turn gate + 引擎回收 + late
+            // sweep,与 discard_aux_session 同链路):store.delete 的级联只删
+            // 盘上记录,会把仍在运行的 aux 引擎留成无句柄孤儿。
+            if let Some(aux_id) = store.aux_session_id(&id) {
+                pool.delete_chat_session(&aux_id).await.map_err(|error| {
+                    format!("delete_session({id}): 级联删除辅助会话 {aux_id}: {error:#}")
+                })?;
+                pool.forget_session(&aux_id);
+                let payload = serde_json::json!({ "id": &aux_id });
+                let _ = app.emit("session:deleted", payload.clone());
+                crate::features::remote_control::forward_app_event(
+                    &app,
+                    "session:deleted",
+                    payload,
+                );
+            }
             let result = pool
                 .delete_chat_session(&id)
                 .await
@@ -518,6 +534,52 @@ pub async fn set_session_archived(
     store.set_hidden(&id, archived);
     let action = if archived { "archived" } else { "restored" };
     emit_session_event(&app, "session:list_changed", &id, action);
+    Ok(())
+}
+
+// ===================== 辅助对话(aux session) =====================
+
+/// 获取(不存在则创建)主会话的辅助对话。辅助会话以 `aux-` 前缀落盘、不进
+/// 普通会话列表,因此创建时**不发** `session:list_changed`;前端辅助对话
+/// 面板直接用返回的 metadata 打开。
+#[tauri::command]
+pub async fn get_or_create_aux_session(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<SessionMetadata, String> {
+    // 辅助对话只挂在普通 chat 会话上:scheduled 会话走自己的删除链路
+    // (delete_scheduled_run 只清映射不级联删会话),挂上去会泄漏孤儿 aux 会话。
+    ensure_chat_session(&store, &session_id, "get_or_create_aux_session")?;
+    store
+        .load(&session_id)
+        .map_err(|e| format!("get_or_create_aux_session({session_id}): 主会话不存在: {e:#}"))?;
+    store
+        .get_or_create_aux_session(&session_id)
+        .map_err(|e| format!("get_or_create_aux_session({session_id}): {e:#}"))
+}
+
+/// 丢弃主会话的辅助对话:回收引擎、删除 aux 会话并清映射。重复调用幂等
+/// (无映射即视为已丢弃)。
+#[tauri::command]
+pub async fn discard_aux_session(
+    session_id: String,
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+) -> Result<(), String> {
+    let Some(aux_id) = store.aux_session_id(&session_id) else {
+        return Ok(());
+    };
+    // 与 delete_session 的 Chat 分支同链路:delete_chat_session 在 turn gate
+    // 内回收引擎并调 store.delete;store.delete 的 purge 双向清理会摘掉
+    // 主→辅 映射,这里不得再清一次(并发重建时可能误删新映射)。
+    pool.delete_chat_session(&aux_id)
+        .await
+        .map_err(|error| format!("discard_aux_session({session_id}): {error:#}"))?;
+    pool.forget_session(&aux_id);
+    let payload = serde_json::json!({ "id": &aux_id });
+    let _ = app.emit("session:deleted", payload.clone());
+    crate::features::remote_control::forward_app_event(&app, "session:deleted", payload);
     Ok(())
 }
 

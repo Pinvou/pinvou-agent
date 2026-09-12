@@ -1853,6 +1853,15 @@ impl Pinvou3Bridge {
         cfg.exec_policy_engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
             self.scope_deny_ruleset(session_id),
         ]);
+        // 辅助对话(aux- 前缀)是纯问答会话:spawn 配置即钉死零工具(空
+        // allowed_tools)。底座 Op::EditLastTurn 重发不携带工具面、直接沿用
+        // engine config 的 allowed_tools,SendMessage 的逐轮白名单管不到它——
+        // 「重启/空闲回收后首个操作就是编辑重发」的窗口只能靠这里兜底;常规
+        // 发送的逐轮强制见 EnginePool::send_reserved_user_message
+        // (turn_restrict_tools),两处同规则、互为冗余。
+        if session_id.starts_with("aux-") {
+            cfg.allowed_tools = Some(Vec::new());
+        }
         // Native Code-mode and external ACP sessions do not expose Browser MCP tools. They
         // fall back to global mcp.json, which has no browser entry. System instructions and
         // tool registration share this gate.
@@ -5090,6 +5099,58 @@ mod tests {
             Some(crate::features::assistant::tool_policy::allowed_tool_names()),
             "code 会话未限制时必须恢复 Pinvou 基础白名单"
         );
+    }
+
+    /// PR #433 评审(MAJOR):aux 会话零工具的两条服务端强制路径必须同时成立——
+    /// ① spawn 配置 `allowed_tools=Some(空表)`:底座 `Op::EditLastTurn` 重发不带
+    /// 工具面、直接沿用 engine config,这是编辑重发(含「重启/回收后首个操作
+    /// 就是编辑」窗口)的工具面来源;② 逐轮发送经 `turn_restrict_tools`(与
+    /// `EnginePool::send_reserved_user_message` 同一决策函数),调用方
+    /// `restrict_tools=false` 也被 `aux-` 前缀压成空白名单。普通会话两侧都不受强制。
+    #[test]
+    fn aux_session_is_tool_free_on_spawn_config_and_send_op() {
+        let bridge = fixture_bridge();
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-aux-tool-free-{}-{:p}",
+            std::process::id(),
+            &bridge
+        ));
+        let roots = |name: &str| SessionRoots {
+            execution: root.join(format!("{name}-exec")),
+            ledger: root.join(format!("{name}-ledger")),
+        };
+
+        // ① spawn 配置:edit_last_turn 重发沿用这份 allowed_tools。
+        let aux_cfg = bridge.build_engine_config_for_session_roots("aux-xyz", roots("aux"));
+        assert_eq!(
+            aux_cfg.allowed_tools,
+            Some(Vec::new()),
+            "aux 会话 spawn 配置必须零工具(空 allowed_tools),兜住 edit_last_turn 重发"
+        );
+
+        // ② 逐轮发送:调用方 restrict=false 也被强制为空表(web_access_chat 绕过面)。
+        let restrict =
+            crate::features::assistant::engine_pool::turn_restrict_tools("aux-xyz", false, false);
+        let op = bridge
+            .build_send_message_op("aux-xyz", "hi".to_string(), AppMode::Agent, None, restrict)
+            .expect("resolve test route");
+        match op {
+            Op::SendMessage { allowed_tools, .. } => assert_eq!(
+                allowed_tools,
+                Some(Vec::new()),
+                "aux 轮必须零工具(空白名单),与调用方传值无关"
+            ),
+            other => panic!("期望 SendMessage,得到 {other:?}"),
+        }
+
+        // 对照:普通会话 spawn 配置保持 Pinvou 白名单,不被 aux 规则误伤。
+        let normal_cfg = bridge.build_engine_config_for_session_roots("sess-plain", roots("plain"));
+        assert_eq!(
+            normal_cfg.allowed_tools,
+            Some(crate::features::assistant::tool_policy::allowed_tool_names()),
+            "普通会话 spawn 配置必须保持 Pinvou 基础白名单"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(feature = "benchmark-hooks")]

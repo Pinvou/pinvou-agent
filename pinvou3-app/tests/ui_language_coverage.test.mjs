@@ -27,8 +27,15 @@ for (const language of ['zh', 'en', 'ja']) {
     'uiAcpProviders',
     'uiArtifacts',
     'uiToolDetails',
+    'uiAuxChat',
   ]) {
     assert.ok(dict[language][section], `${language}.${section} must exist`);
+  }
+  for (const key of [
+    'openLabel', 'panelTitle', 'landingHint', 'emptyState', 'inputPlaceholder',
+    'send', 'busyHint', 'newTopic', 'newTopicConfirm', 'sendFailed', 'ensureFailed', 'close',
+  ]) {
+    assert.ok(dict[language].uiAuxChat[key], `${language}.uiAuxChat.${key} must exist`);
   }
   assert.ok(dict[language].uiSettings.providers, `${language}.uiSettings.providers must exist`);
   for (const key of [
@@ -180,6 +187,10 @@ assert.doesNotMatch(chat, /label:\s*'数据可视化'/);
 assert.doesNotMatch(chat, /`取消\$\{scene\.label\}`/);
 assert.doesNotMatch(chat, /:\s*'描述你想生成或调整的内容'/);
 assert.doesNotMatch(chat, />下载语音识别模型</);
+assert.match(chat, /data-testid="aux-chat-open"/);
+const auxChatPanel = source('features/aux-chat/AuxChatPanel.jsx');
+assert.match(auxChatPanel, /const copy = t\.uiAuxChat/);
+assert.match(auxChatPanel, /copy=\{conversationCopy\}/);
 assert.match(source('features/pet/PetSettingsSection.jsx'), /t\.uiPetSettings/);
 const conversation = source('features/conversation/ConversationTimeline.jsx');
 assert.match(conversation, /conversationCopy\(copy\)/);
@@ -188,6 +199,9 @@ const codex = source('features/codex/CodexAcpView.jsx');
 assert.match(codex, /const codexCopy = t\.uiCodex/);
 assert.match(codex, /copy=\{t\.uiConversation\}/);
 assert.match(codex, /copy=\{t\.uiCodexWorkspace\}/);
+assert.match(codex, /data-testid="aux-chat-open"/);
+assert.match(codex, /t\.uiAuxChat\.openLabel/);
+assert.match(codex, /<AuxChatPanel/);
 const workspace = source('features/codex/CodexWorkspacePanel.jsx');
 assert.match(workspace, /\{copy\.title\}/);
 assert.doesNotMatch(workspace, />工作区</);

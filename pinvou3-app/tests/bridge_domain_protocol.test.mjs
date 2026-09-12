@@ -62,6 +62,7 @@ function extractCalls(source, callee) {
 const protocolSources = {
   orchestration: ['bridge.js'],
   artifacts: ['bridge/artifact-tracker.js', 'bridge/artifacts.js'],
+  auxChat: ['bridge/aux-chat.js'],
   chat: ['bridge/chat.js', 'bridge/chat-events.js', 'bridge/terminal.js'],
   dependencies: ['bridge/dependencies.js'],
   interaction: ['bridge/interaction.js'],
@@ -79,6 +80,10 @@ const protocolSources = {
 };
 
 const expectedProtocolHashes = {
+  // 辅助对话域首发：get_or_create_aux_session / discard_aux_session /
+  // chat(restrictTools:true) 三条命令；buffer 加载复用 sessions 域注入的
+  // ensureSessionBufferLoaded（load_session 的 hash 记在 sessions 域）。
+  auxChat: 'f82a39c964d1049ffe0f77f895d0ec690b424ee7d52bfd7a66fdf70c7de14eab',
   multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
   orchestration: '0f6d0ff37a357fe9dab1873879d98ebf5e0e1c176c02c431452f5b5dc48b7e22',
   artifacts: '37ca694534c7e6cf44b6d262c40e388999c3ba136faca0d6f57821d5b9b3df53',

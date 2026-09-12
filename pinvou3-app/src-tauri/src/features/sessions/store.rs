@@ -44,6 +44,10 @@ static POST_RECORD_DELETE_FAULTS: LazyLock<Mutex<HashMap<String, ErrorKind>>> =
 /// oldest is evicted by [`super::retention::SessionStore::enforce_session_retention_locked`].
 pub(crate) const MAX_SESSIONS_PER_KIND: usize = 50;
 
+/// 辅助对话的内部默认标题(中文常量):辅助会话不进普通会话列表,该标题只
+/// 用于详情视图与落盘记录,不随 UI 语言切换。
+pub(crate) const AUX_SESSION_TITLE: &str = "辅助对话";
+
 impl SessionStore {
     /// Repair persisted tool histories only at process boot, before any
     /// session engine can own an in-flight tool call. Runtime reads use the
@@ -115,6 +119,7 @@ impl SessionStore {
         store.load_session_models();
         store.load_pinned_sessions();
         store.load_hidden_sessions();
+        store.load_aux_sessions();
         store.load_session_mode_states();
         {
             let _mutation = store.scheduled_mutation.lock();
@@ -124,6 +129,11 @@ impl SessionStore {
             store.enforce_session_retention_locked()?;
         }
         store.purge_all_scheduled_side_maps();
+        // aux 孤儿对账与 sched- 侧表对账同点接入(判据与为何不能进 enforce
+        // 见 reconcile_aux_sessions 注释);失败不阻塞启动,下一次启动再收尾。
+        if let Err(error) = store.reconcile_aux_sessions() {
+            eprintln!("[sessions] startup aux session reconciliation failed: {error:#}");
+        }
         Ok(store)
     }
 
@@ -145,12 +155,17 @@ impl SessionStore {
         store.load_session_models();
         store.load_pinned_sessions();
         store.load_hidden_sessions();
+        store.load_aux_sessions();
         store.load_session_mode_states();
         {
             let _mutation = store.scheduled_mutation.lock();
             store.enforce_session_retention_locked()?;
         }
         store.purge_all_scheduled_side_maps();
+        // 同 boot_inner:aux 孤儿对账,失败不阻塞启动。
+        if let Err(error) = store.reconcile_aux_sessions() {
+            eprintln!("[sessions] startup aux session reconciliation failed: {error:#}");
+        }
         Ok(store)
     }
 
@@ -191,6 +206,8 @@ impl SessionStore {
             session_models: Arc::new(RwLock::new(HashMap::new())),
             pinned_sessions: Arc::new(RwLock::new(HashMap::new())),
             hidden_sessions: Arc::new(RwLock::new(HashMap::new())),
+            aux_sessions: Arc::new(RwLock::new(HashMap::new())),
+            aux_sessions_io: Arc::new(Mutex::new(())),
             execution_root_resolver: Arc::new(RwLock::new(None)),
             code_session_predicate: Arc::new(RwLock::new(None)),
             session_mode_states: Arc::new(RwLock::new(HashMap::new())),
@@ -254,10 +271,14 @@ impl SessionStore {
         // load them normally, but remain owned by the Scheduled Tasks surface.
         // 多智能体是普通会话的持久开关，不是独立会话类型；这里只隔离定时
         // 会话，其余历史统一进入普通列表。
+        // 辅助对话(aux- 前缀)同样共享 durable store 以便详情/历史正常加载,
+        // 但它依附于主会话、由辅助对话面板单独打开,不进普通会话列表。
         // benchmark 构建中,评测会话(eval_ 前缀,含 GAIA 私有题目)不进用户历史:
         // 正常路径由评测运行器清理,崩溃残留也不能把私密题目带进会话列表。
         // 默认桌面构建不保留这项前缀语义,避免 benchmark 未启用时改变普通会话列表。
-        out.retain(|metadata| !metadata.id.starts_with("sched-"));
+        out.retain(|metadata| {
+            !metadata.id.starts_with("sched-") && !metadata.id.starts_with("aux-")
+        });
         #[cfg(feature = "benchmark-hooks")]
         out.retain(|metadata| !metadata.id.starts_with("eval_"));
         out.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
@@ -287,8 +308,17 @@ impl SessionStore {
     }
 
     pub fn delete(&self, id: &str) -> Result<()> {
+        // 辅助会话不是 scheduled 会话,这里的拒删守卫对级联目标天然生效、
+        // 也不会被辅助对话路径绕过。
         if self.is_scheduled_session(id)? {
             bail!("Scheduled-run sessions are deleted through their automation");
+        }
+        // 辅助对话级联:删主会话时先删其辅助会话。映射的键恒为主会话 id、
+        // 辅助会话自身不再持有映射,故递归深度恒为 1;辅助会话删除提交后,
+        // purge_session_side_maps 的双向清理会顺带摘掉这条 主→辅 映射。
+        if let Some(aux_id) = self.aux_session_id(id) {
+            self.delete(&aux_id)
+                .with_context(|| format!("delete aux session {aux_id} of {id}"))?;
         }
         // 上游 delete_session 先删会话 JSON 再清目录:目录清理失败时 JSON 已
         // 不在盘上但错误会向上传播——按「已发起删除即可能变更盘面」失效快照,
@@ -536,6 +566,78 @@ impl SessionStore {
             });
         }
         Ok(session)
+    }
+
+    /// 创建 `parent_id` 的辅助对话(`aux-` 前缀 id,与 sched- 先例同款带前缀
+    /// 创建路径):标题固定为「辅助对话」的内部默认标题,模型与工作区继承主会话
+    /// (含 `_session_models.json` 里的 per-session 模型绑定),`parent_session_id`
+    /// 回指主会话,最后把 主→辅 映射落入 `_aux_sessions.json`。
+    /// 任一步失败都回滚已落盘的会话 JSON,避免留下重启后无法回收的孤儿 aux 会话。
+    /// 复用语义(已有映射且目标仍在盘上时直接复用)由 [`Self::get_or_create_aux_session`]
+    /// 决定,不在本函数内。
+    pub fn create_aux_session(&self, parent_id: &str) -> Result<SessionMetadata> {
+        let parent = self
+            .load(parent_id)
+            .with_context(|| format!("load parent session {parent_id} for aux creation"))?;
+        let id = format!("aux-{}", generate_session_id());
+        let mut session = create_saved_session_with_id_and_mode(
+            id.clone(),
+            &[],
+            &parent.metadata.model,
+            &parent.metadata.workspace,
+            0,
+            None,
+            None,
+        );
+        session.metadata.title = AUX_SESSION_TITLE.to_string();
+        session.metadata.parent_session_id = Some(parent_id.to_string());
+        // per-session 模型绑定存在 `_session_models.json` sidecar、不在
+        // metadata.model 里:与 create_new 同款顺序——先落 sidecar 再公开
+        // Session JSON;后续步骤失败回滚删除会话时 purge_session_side_maps
+        // 会顺带清掉这条绑定。
+        if let Some(model_id) = self.session_model_override(parent_id) {
+            self.set_session_model_id(&id, Some(model_id))?;
+        }
+        if let Err(error) = self.save(&session) {
+            let rollback = self.delete(&id);
+            return Err(match rollback {
+                Ok(()) => error,
+                Err(rollback_error) => {
+                    anyhow::anyhow!("{error:#}; rollback aux Session {id}: {rollback_error:#}")
+                }
+            });
+        }
+        if let Err(error) = self.set_aux_session(parent_id, Some(id.clone())) {
+            let rollback = self.delete(&id);
+            return Err(match rollback {
+                Ok(()) => error,
+                Err(rollback_error) => {
+                    anyhow::anyhow!("{error:#}; rollback aux Session {id}: {rollback_error:#}")
+                }
+            });
+        }
+        Ok(session.metadata)
+    }
+
+    /// 原子版 get-or-create:映射查询(含幽灵映射摘除)与创建在同一把 aux 创建
+    /// 锁内完成,两个并发调用不会各自创建、后写覆盖映射而留下孤儿 aux 会话。
+    /// 辅助对话不能再挂辅助对话(aux-of-aux):aux 会话自身也是 Chat kind,命令层
+    /// 的 `ensure_chat_session` 拦不住,必须在唯一创建入口显式拒绝。
+    pub fn get_or_create_aux_session(&self, parent_id: &str) -> Result<SessionMetadata> {
+        if parent_id.starts_with("aux-") {
+            bail!("Auxiliary session '{parent_id}' cannot own an aux session");
+        }
+        let _create = self.aux_sessions_io.lock();
+        if let Some(aux_id) = self.aux_session_id(parent_id) {
+            if let Ok(aux) = self.load(&aux_id) {
+                return Ok(aux.metadata);
+            }
+            // 映射目标已不在盘上(外部清理删掉了 aux 会话):先摘幽灵映射再
+            // 重建,避免把失效 id 返回给前端。
+            self.set_aux_session(parent_id, None)
+                .with_context(|| format!("clear stale aux mapping for {parent_id}"))?;
+        }
+        self.create_aux_session(parent_id)
     }
 
     pub fn update_messages(&self, id: &str, messages: Vec<Message>) -> Result<()> {
