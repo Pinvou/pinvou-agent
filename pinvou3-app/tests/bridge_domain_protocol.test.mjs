@@ -135,7 +135,10 @@ const expectedProtocolHashes = {
   // the browser lane's trilingual mapping instead of only the message text.
   remoteControl: '0f3bbabae65f0551e335354019de7f97578fde257829505ad74c13196b173fc5',
   scheduled: '7d6ca9783925a5071a364097ebdf0112511f9503b5e4534346b9fda6873ec036',
-  sessions: '7dd63b9cb4ab7b7e03f81abc0822baa9bd1dd61f27fa8b8d2df009126d1c6c60',
+  // Recomputed for one-click full-fidelity session log export: the tauri
+  // sessions bridge gains the export_session_archive invoke wrapping the
+  // export_session command (web lane intentionally has no such backend).
+  sessions: '4abdde9c3ee3e1b241ffacf9d6cf4d100a0e0cb0d9de6ca84facafd8586f2133',
   settings: 'a44929caff59641eb059f28885f1674d4e277412526d31c1d3ddfd75e44d0496',
   updater: '86412d40999a268d3d92dc4fe97e3fe465de08745423be820f38a462d79aaced',
   // Recomputed for the comment-only English translation of the voice bridge

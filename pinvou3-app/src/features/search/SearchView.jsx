@@ -34,7 +34,7 @@ const CircleCheck = ({ checked, size }) => (
 );
 
 // eslint-disable-next-line sonarjs/cognitive-complexity -- session management page: filter/sort/group/batch-select form one cohesive pipeline; splitting it would introduce a lot of pass-through state
-export const SearchView = ({ theme, history, t, language, archived = EMPTY_ARCHIVED, showArchived: showArchivedProp, onShowArchivedConsumed, onSelect, onOpenCodex, onOpenScheduledRun, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, onArchiveMany, onDeleteMany, onRestoreArchived, onRestoreMany }) => {
+export const SearchView = ({ theme, history, t, language, archived = EMPTY_ARCHIVED, showArchived: showArchivedProp, onShowArchivedConsumed, onSelect, onOpenCodex, onOpenScheduledRun, onRename, onDelete, onTogglePinned, onOpenFolder, onExportArchive, onArchive, onArchiveMany, onDeleteMany, onRestoreArchived, onRestoreMany }) => {
   const [query, setQuery] = useState('');
   const [selectedDate, setSelectedDate] = useState(null);
   const [showArchived, setShowArchived] = useState(false);
@@ -246,6 +246,7 @@ export const SearchView = ({ theme, history, t, language, archived = EMPTY_ARCHI
         onDelete={onDelete}
         onTogglePinned={onTogglePinned}
         onOpenFolder={onOpenFolder}
+        onExportArchive={route === 'codex' ? undefined : onExportArchive}
         onArchive={onArchive}
       />
     );

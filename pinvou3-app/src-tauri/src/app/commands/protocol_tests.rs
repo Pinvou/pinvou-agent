@@ -423,6 +423,7 @@ command_protocol!(
         "create_session",
         "load_session",
         "delete_session",
+        "export_session",
         "rename_session",
         "set_session_pinned",
         "set_session_archived",

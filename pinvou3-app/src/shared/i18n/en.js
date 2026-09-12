@@ -178,6 +178,7 @@ export const dictEn = {
         previewTaskDailyBrief: 'Daily Briefing', previewTaskFollowUp: 'Follow-up Monitor', previewTaskSalesWeekly: 'Sales Leads Weekly',
         archiveSession: 'Archive', archiveConfirmTitle: 'Archive this task?', archiveConfirmMessage: 'This task will leave the sidebar.', archiveConfirmDetail: 'The conversation and artifacts stay saved, and can be restored on the chat manager page.', archiveConfirmAction: 'Archive',
         archiveSuccess: 'Archived', archiveSuccessView: 'View',
+        exportSessionArchive: 'Export session log', exportSessionDone: path => `Session log exported to ${path}`, exportSessionFailed: 'Failed to export the session log',
         sessionBatchFailed: n => `${n} task operation${n === 1 ? '' : 's'} failed. Please retry.`,
         archivedTasks: 'Tasks archived in Settings', archivedTasksDesc: '', archivedEmpty: 'No archived tasks yet', restoreArchived: 'Restore to list',
         archivedDeleteTitle: 'Delete archived task?', archivedDeleteMessage: 'This permanently deletes the task and its contents. This cannot be undone.', archivedDeleteAction: 'Delete',
