@@ -78,10 +78,13 @@
 //! threads. The CLI prints the start state and exits; import jobs are
 //! DB-persisted and come back as interrupted/resumable (`index resume`),
 //! while an in-flight scan is incremental and simply re-runs on the next
-//! `scan start`. Every CLI invocation constructs the service fresh and thus
-//! runs the same startup recovery as the GUI: a job still live inside another
-//! process (or killed with its process) is recovered to
-//! interrupted/resumable, which `index resume` re-arms. Because a one-shot
+//! `scan start`. Every CLI invocation constructs the service fresh; read-only
+//! commands open it WITHOUT the GUI's startup recovery, so inspecting the
+//! store cannot degrade an import a live desktop-app process is still
+//! running, while the write/maintenance commands (scan start, collection
+//! mutations, resume/retry/cancel) keep recovery: a job orphaned by a killed
+//! process is recovered to interrupted/resumable, which `index resume`
+//! re-arms. Because a one-shot
 //! process kills its background thread at exit, `add-sources`/`resume`/
 //! `retry` only make progress while the process lives — completing a large
 //! import needs the desktop app (or a future long-lived daemon); the CLI
@@ -674,7 +677,26 @@ fn model_download_unavailable() -> CliError {
 /// `~/.pinvou3/knowledge/index.db` (temp-`PINVOU3_HOME` aware); the
 /// constructor also performs the GUI's startup recovery of interrupted
 /// imports.
+/// Opens the store WITHOUT boot-time recovery. Read-only commands must not
+/// degrade an import a live desktop-app process is still running: the
+/// upstream recovery flips any preparing/running job to terminal state, and
+/// `index resume` could then re-arm it under the still-alive owner. Recovery
+/// stays with the write commands ([`open_service_recovering`]).
 fn open_service() -> Result<KnowledgeService, CliError> {
+    sandbox_home()?;
+    let db = default_db_path();
+    KnowledgeService::new_without_recovery(&db).map_err(|error| {
+        CliError::failed(format!(
+            "knowledge index store unavailable at {}: {error}",
+            db.display()
+        ))
+    })
+}
+
+/// Opens the store WITH boot-time recovery of jobs orphaned by a crashed
+/// process — the write/maintenance commands that legitimately own the
+/// reconciliation.
+fn open_service_recovering() -> Result<KnowledgeService, CliError> {
     sandbox_home()?;
     let db = default_db_path();
     KnowledgeService::new(&db).map_err(|error| {
@@ -738,12 +760,12 @@ pub fn execute(command: KnowledgeCommand, output: OutputMode) -> Result<CliOutco
         KnowledgeCommand::IndexCancel { job_id } => index_cancel(&job_id, output),
         KnowledgeCommand::IndexResume { job_id } => index_started(
             "index resumed",
-            open_service()?.resume_index(job_id),
+            open_service_recovering()?.resume_index(job_id),
             output,
         ),
         KnowledgeCommand::IndexRetry { job_id, item_id } => index_started(
             "index retry queued",
-            open_service()?.retry_index_item(job_id, item_id),
+            open_service_recovering()?.retry_index_item(job_id, item_id),
             output,
         ),
         KnowledgeCommand::IndexFailed {
@@ -784,7 +806,7 @@ pub fn execute(command: KnowledgeCommand, output: OutputMode) -> Result<CliOutco
 /// thread) and returns immediately; `--root` omitted defaults to the user
 /// home like the GUI.
 fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let service = open_service()?;
+    let service = open_service_recovering()?;
     let roots = vec![root.unwrap_or_else(pinvou3_lib::platform::paths::user_home_dir)];
     let state = service.start_scan(roots);
     scan_out("scan started", state, output)
@@ -1026,7 +1048,7 @@ fn collections_create(
     description: Option<&str>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    let service = open_service()?;
+    let service = open_service_recovering()?;
     let id = service
         .l1()
         .create_collection(name, category, description)
@@ -1048,7 +1070,7 @@ fn collections_update(
     description: Option<String>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    let service = open_service()?;
+    let service = open_service_recovering()?;
     let collections = service
         .l1()
         .list_collections()
@@ -1080,7 +1102,7 @@ fn collections_update(
 /// GUI `kb_collection_delete`: cancel a running import for the collection,
 /// delete it, then clear every session mount.
 fn collections_delete(id: i64, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let service = open_service()?;
+    let service = open_service_recovering()?;
     service
         .cancel_index_for_collection(id)
         .map_err(|error| feature_error("collections delete", error))?;
@@ -1111,7 +1133,7 @@ fn collections_add_sources(
     paths: Vec<PathBuf>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    let service = open_service()?;
+    let service = open_service_recovering()?;
     match service.l1().collection_name(id) {
         Ok(Some(_)) => {}
         Ok(None) => {
@@ -1178,7 +1200,7 @@ fn documents(
 /// GUI `kb_remove_document`: removing an unknown id is a no-op like the
 /// GUI's delete (no existence check upstream).
 fn documents_remove(doc_id: i64, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let service = open_service()?;
+    let service = open_service_recovering()?;
     service
         .l1()
         .remove_document(doc_id)
@@ -1213,7 +1235,7 @@ fn index_status(job_id: Option<&str>, output: OutputMode) -> Result<CliOutcome, 
 /// GUI `kb_index_cancel` targets the active/latest job; refuse when the
 /// caller named a different one so the CLI never cancels the wrong job.
 fn index_cancel(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let service = open_service()?;
+    let service = open_service_recovering()?;
     let latest = service.index_status();
     match &latest.job_id {
         Some(active) if active == job_id => {}
