@@ -1183,12 +1183,38 @@ fn agent_cli_name(agent: &str) -> &'static str {
     }
 }
 
-fn find_in_path(name: &str) -> Option<PathBuf> {
+/// Mirror of `install::agent_cli_names`: the per-agent Windows candidate
+/// order — codex's npm `.cmd` shim wins there, the native runtimes prefer
+/// their `.exe`; Unix installs a single unadorned name.
+fn agent_cli_names<'a>(agent: &str, name: &'a str) -> Vec<std::borrow::Cow<'a, str>> {
+    if cfg!(windows) {
+        match agent {
+            "codex" => vec!["codex.cmd".into(), "codex.exe".into()],
+            "claude" => vec!["claude.exe".into(), "claude.cmd".into()],
+            "kimi" => vec!["kimi.exe".into(), "kimi.cmd".into()],
+            _ => vec![name.into()],
+        }
+    } else {
+        vec![name.into()]
+    }
+}
+
+/// Candidate-major PATH scan (each candidate name across every PATH dir
+/// before the next), matching `install::find_agent_cli_in_path` — a
+/// dir-major scan would pick dir1/codex.exe where the GUI picks dir2's
+/// codex.cmd.
+fn find_in_path(agent: &str, name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    let candidates = crate::support::binary_candidates(name);
-    std::env::split_paths(&path)
-        .flat_map(|dir| candidates.iter().map(move |candidate| dir.join(candidate)))
-        .find(|candidate| candidate.is_file())
+    for candidate in agent_cli_names(agent, name) {
+        let candidate = PathBuf::from(candidate.as_ref());
+        if let Some(found) = std::env::split_paths(&path)
+            .map(|dir| dir.join(&candidate))
+            .find(|candidate| candidate.is_file())
+        {
+            return Some(found);
+        }
+    }
+    None
 }
 
 /// Mirror of the app's per-agent resolution order (`install::resolve_*` /
@@ -1221,16 +1247,30 @@ fn resolve_agent_cli(agent: &str, name: &str) -> Option<PathBuf> {
         }
     }
     let home = pinvou3_lib::platform::paths::user_home_dir();
-    let managed_dir = match agent {
-        "kimi" => Some(home.join(".kimi-code").join("bin")),
-        "codex" | "claude" => Some(home.join(".local").join("bin")),
-        _ => None,
+    // Script-installed managed dirs before PATH, per agent, like the GUI's
+    // resolve_* functions. `~/.local/bin` is the Unix codex/claude installer
+    // default; on Windows codex resolves through the official install below
+    // and claude has no managed dir.
+    let managed_dir: Option<PathBuf> = if agent == "kimi" {
+        Some(home.join(".kimi-code").join("bin"))
+    } else if agent == "codex" || agent == "claude" {
+        {
+            #[cfg(target_os = "windows")]
+            {
+                None
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Some(home.join(".local").join("bin"))
+            }
+        }
+    } else {
+        None
     };
     if let Some(dir) = managed_dir {
-        let candidates = crate::support::binary_candidates(name);
-        if let Some(path) = candidates
+        if let Some(path) = agent_cli_names(agent, name)
             .iter()
-            .map(|candidate| dir.join(candidate))
+            .map(|candidate| dir.join(candidate.as_ref()))
             .find(|candidate| candidate.is_file())
         {
             return Some(path);
@@ -1239,26 +1279,24 @@ fn resolve_agent_cli(agent: &str, name: &str) -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     if agent == "codex" {
         // Mirror of `codex_official_install_path` (windows.rs): the official
-        // Windows install lives under LOCALAPPDATA and is deliberately not
-        // PATH-dependent, so a script-installed codex is found without a
-        // shell restart.
-        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-            let dir = PathBuf::from(local)
-                .join("Programs")
-                .join("OpenAI")
-                .join("Codex")
-                .join("bin");
-            let candidates = crate::support::binary_candidates(name);
-            if let Some(path) = candidates
-                .iter()
-                .map(|candidate| dir.join(candidate))
-                .find(|candidate| candidate.is_file())
-            {
-                return Some(path);
-            }
+        // Windows install lives under %LOCALAPPDATA% (falling back to
+        // ~\AppData\Local) and is deliberately not PATH-dependent, so a
+        // script-installed codex is found without a shell restart. The
+        // installer writes a fixed codex.exe there.
+        let local = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("AppData").join("Local"));
+        let path = local
+            .join("Programs")
+            .join("OpenAI")
+            .join("Codex")
+            .join("bin")
+            .join("codex.exe");
+        if path.is_file() {
+            return Some(path);
         }
     }
-    find_in_path(name)
+    find_in_path(agent, name)
 }
 
 /// Runs `executable args...` with a hard timeout; returns (success, stdout)
@@ -3381,11 +3419,22 @@ fn commit_command_args(root: &Path, message: &str) -> Result<Vec<String>, CliErr
 /// with (repo-local first, then global/system). A read-only `git config`
 /// probe: it runs no hooks, so the checkpoint-grade isolation does not apply.
 fn ambient_git_identity(root: &Path) -> Option<(String, String)> {
-    let output = std::process::Command::new("git")
+    // The commit this identity feeds runs with checkpoint-grade isolation
+    // (every ambient GIT_* variable stripped), so the probe must see the
+    // same effective repository: an ambient GIT_DIR/GIT_WORK_TREE/GIT_CONFIG_*
+    // would otherwise read a different repo's (or no) identity and fail an
+    // otherwise-valid commit with user.useConfigOnly. The user's real global
+    // config is deliberately NOT pinned away here — reading it is the point.
+    let mut command = std::process::Command::new("git");
+    command
         .current_dir(root)
-        .args(["config", "--null", "--get-regexp", r"^user\.(name|email)$"])
-        .output()
-        .ok()?;
+        .args(["config", "--null", "--get-regexp", r"^user\.(name|email)$"]);
+    for (name, _) in std::env::vars_os() {
+        if name.as_encoded_bytes().starts_with(b"GIT_") {
+            command.env_remove(name);
+        }
+    }
+    let output = command.output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -4152,12 +4201,19 @@ fn checkpoints_diff(
         return Err(CliError::usage("invalid checkpoint id"));
     }
     // `diff_checkpoint` writes the shadow index (`git add -A`), so it takes
-    // the same session mutation lock as rewind/undo.
+    // the same session mutation lock as rewind/undo, plus the execution-root
+    // lock: a concurrent CLI rewind of a *different* session bound to the
+    // same project directory would otherwise be diffed against a
+    // half-restored tree (the GUI gates diff on busy same-root peers the
+    // same way).
     let mut mutation_lock = session_mutation_lock(session)?;
     let _mutation_guard = lock_session_for_mutation(&mut mutation_lock, session, "diff")?;
     let store = open_store()?;
     let agents = open_agent_store()?;
     let (ledger, execution) = require_native_code_session(&store, &agents, session)?;
+    let root = canonical_execution_root(&execution);
+    let mut root_lock = execution_root_lock(&root)?;
+    let _root_guard = lock_root_for_mutation(&mut root_lock, &root, "diff", session)?;
     let diff = checkpoints::diff_checkpoint(&ledger, &execution, checkpoint_id)
         .map_err(|error| store_error("checkpoints diff", checkpoint_id, error))?;
     let value = serde_json::to_value(&diff)
@@ -4279,16 +4335,26 @@ fn is_runtime_owned_user_message(message: &serde_json::Value) -> bool {
 
 fn parse_rfc3339_epoch_secs(value: &str) -> Option<i64> {
     // Minimal RFC3339 parser for the rewind sidecar timestamps
-    // (`chrono::Utc::now().to_rfc3339()` — the only writer, always `+00:00`),
-    // days-from-civil based; the UTC offset is therefore ignored by design.
-    // Field ranges are validated so a hand-corrupted sidecar degrades to
-    // `None` instead of overflowing the intermediate multiplies.
+    // (`chrono::Utc::now().to_rfc3339()` — the current writer, always
+    // `+00:00`), days-from-civil based. An offset-bearing stamp from a future
+    // writer is honored rather than silently shifting the stale-checkpoint
+    // cutoff: UTC = naive - offset. Field ranges are validated so a
+    // hand-corrupted sidecar degrades to `None` instead of overflowing the
+    // intermediate multiplies.
     let (date, rest) = value.split_once('T')?;
     let mut date_parts = date.split('-');
     let year: i64 = date_parts.next()?.parse().ok()?;
     let month: i64 = date_parts.next()?.parse().ok()?;
     let day: i64 = date_parts.next()?.parse().ok()?;
-    let time = rest.split(['+', '-', 'Z']).next()?;
+    let (time, offset) = if let Some(naive) = rest.strip_suffix('Z') {
+        (naive, 0)
+    } else if let Some((naive, offset)) = rest.split_once('+') {
+        (naive, offset_seconds(offset, 1)?)
+    } else if let Some((naive, offset)) = rest.rsplit_once('-') {
+        (naive, offset_seconds(offset, -1)?)
+    } else {
+        (rest, 0)
+    };
     let mut time_parts = time.split(':');
     let hour: i64 = time_parts.next()?.parse().ok()?;
     let minute: i64 = time_parts.next()?.parse().ok()?;
@@ -4312,7 +4378,19 @@ fn parse_rfc3339_epoch_secs(value: &str) -> Option<i64> {
     let day_of_year = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     let days = era * 146_097 + day_of_era - 719_468;
-    Some(days * 86_400 + hour * 3600 + minute * 60 + second)
+    Some(days * 86_400 + hour * 3600 + minute * 60 + second - offset)
+}
+
+/// Signed `±HH:MM` RFC3339 offset in seconds (`sign` is 1 or -1); `None` on a
+/// malformed or out-of-range offset so a corrupt stamp degrades to `None`.
+fn offset_seconds(offset: &str, sign: i64) -> Option<i64> {
+    let (hours, minutes) = offset.split_once(':')?;
+    let hours: i64 = hours.parse().ok()?;
+    let minutes: i64 = minutes.parse().ok()?;
+    if hours > 23 || minutes > 59 {
+        return None;
+    }
+    Some(sign * (hours * 3600 + minutes * 60))
 }
 
 /// Mirrors `resolve_rewind_plan`: "rewind to turn N" restores the first-created

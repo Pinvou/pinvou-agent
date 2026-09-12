@@ -1663,3 +1663,73 @@ fn code_login_rejects_a_missing_code_env_and_non_claude_codes() {
         .expect_err("only the claude flow consumes an authorization code");
     assert_eq!(error.exit_code(), ExitCode::Usage);
 }
+
+#[test]
+#[cfg(unix)]
+fn login_drives_the_real_vendor_spawn_path() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("fake-login");
+    // A scripted codex stand-in driven through the real override-resolution
+    // and spawn path: the override must pass the version gate (a real
+    // `--version` probe), the login child must receive its argv exactly once
+    // (the doubled-argv regression was invisible to empty-PATH tests), and
+    // the allow-listed login URL must be captured into the JSON result.
+    let bin = std::env::temp_dir().join(format!(
+        "pinvou-cli-code-fake-codex-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&bin).unwrap();
+    let args_file = bin.join("seen-args.txt");
+    use std::os::unix::fs::PermissionsExt as _;
+    let script = bin.join("codex");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\nif [ \"$1\" = \"--version\" ]; then echo \"codex 1.2.0\"; exit 0; fi\nif [ \"$1\" = \"login\" ]; then echo \"signin with this URL:\"; echo \"https://auth.openai.com/authorize?o=fake\"; echo \"user code: ABCD-EFGH\"; exit 0; fi\nexit 1\n",
+            args_file.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let previous = std::env::var_os("PINVOU3_CODEX_PATH");
+    unsafe { std::env::set_var("PINVOU3_CODEX_PATH", &script) };
+
+    let outcome = run(&["pinvou", "code", "login", "codex", "--output", "json"])
+        .expect("login against the fake codex must succeed");
+    let value: serde_json::Value =
+        serde_json::from_str(&outcome.stdout).expect("single-line JSON login result");
+    assert_eq!(value["status"], "completed", "{value}");
+    assert_eq!(
+        value["login_url"], "https://auth.openai.com/authorize?o=fake",
+        "the allow-listed login URL must be captured"
+    );
+
+    // The version-gate probe and the post-login authenticated probe are
+    // separate spawns; a doubled argv (Command::args appends, so a second
+    // .args call would double every argument) would repeat each spawn's
+    // arguments: the gate probe would log "--version" twice and the login
+    // and probe spawns would log "login" three times instead of two.
+    let seen = std::fs::read_to_string(&args_file).unwrap();
+    let count = |needle: &str| seen.lines().filter(|line| *line == needle).count();
+    assert_eq!(
+        count("--version"),
+        1,
+        "gate probe argv must not double: {seen}"
+    );
+    assert_eq!(
+        count("login"),
+        2,
+        "login argv must be passed exactly once: {seen}"
+    );
+    assert_eq!(count("status"), 1, "probe argv must not double: {seen}");
+
+    match previous {
+        Some(value) => unsafe { std::env::set_var("PINVOU3_CODEX_PATH", value) },
+        None => unsafe { std::env::remove_var("PINVOU3_CODEX_PATH") },
+    }
+    let _ = std::fs::remove_dir_all(&bin);
+}
