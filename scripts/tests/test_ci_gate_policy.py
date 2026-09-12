@@ -239,6 +239,13 @@ class CiGatePolicyTests(unittest.TestCase):
             "cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --all-targets --all-features --no-deps",
             knowledge,
         )
+        # The -D-warnings hard gate must stay in this job (single shared
+        # cache); rust-lint must not compile the workspace a second time.
+        self.assertIn(
+            "cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --lib --bins --no-deps --features server -- -D warnings",
+            knowledge,
+        )
+        self.assertNotIn("cargo clippy pinvou-knowledge", self.pr_workflow)
         self.assertIn(
             "cargo test --manifest-path pinvou-knowledge/Cargo.toml --all-features",
             knowledge,
@@ -598,13 +605,21 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         release_contract_paths = changes.split(
             "            release_contract:", maxsplit=1
-        )[1].split("            l1:", maxsplit=1)[0]
+        )[1].split("            pet:", maxsplit=1)[0]
         self.assertIn(
             "- 'pinvou3-app/src-tauri/resources/**'",
             release_contract_paths,
         )
         self.assertIn(
             "- 'pinvou3-app/tests/knowledge_host_packaging.test.mjs'",
+            release_contract_paths,
+        )
+        # The section boundary above must stay load-bearing: if the split
+        # anchor stops matching (e.g. a filter rename), the slice silently
+        # grows to the end of the changes block and these assertions
+        # degrade into no-ops. This bit us once with a stale "l1:" anchor.
+        self.assertNotIn(
+            "- 'pinvou3-app/src/app/pet-main.jsx'",
             release_contract_paths,
         )
 
