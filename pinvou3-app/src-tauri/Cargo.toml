@@ -403,20 +403,45 @@ get_unwrap = "deny"
 # =============================================================================
 # panic="unwind"(非 abort):底座 CodeWhale 用 catch_unwind 做工具调用 panic 隔离,
 # 改 abort 会破坏「单次工具 panic 不拖垮整个会话」的设计。
+# Per-platform state of identical-code folding (ICF) / dead-code elimination
+# (none of them needs a linker flag in this file):
+# - Linux: the release jobs inject lld + -Wl,--icf=safe (RUSTFLAGS, see
+#   release-packages.yml); dead-code section elimination is handled by
+#   rustc's default --gc-sections.
+# - Windows MSVC: rustc already passes /OPT:REF,ICF automatically when
+#   opt-level>0, so there is nothing to repeat.
+# - macOS: Apple ld/ld-prime has no ICF capability; rustc already passes
+#   -dead_strip by default.
 [profile.release]
 opt-level = 3
 # Thin LTO 替代 fat:fat 在 ubuntu 16GB runner 上编译 codewhale-tui + tauri 全图
 # 会 link 越线被 SIGTERM(merge_group run 实证)。thin 内存峰值与耗时远低于 fat,
 # 运行时优化损失可忽略(官方:大型项目 thin 常优于 fat)。
-# 注:cargo 在 lto="thin" 时给依赖 crate 传 -C linker-plugin-lto(生成 LLVM bitcode,
-# 把跨 crate LTO 推迟到 link 阶段),故 release 构建 link 阶段必须用支持 LLVM bitcode
-# 的链接器(lld);release-packages 的 Linux 发布 job 已注入 -fuse-ld=lld。
+# Mechanism clarification (verified with cargo 1.98 verbose output + rustc
+# docs): the final bin unit gets -C lto=thin — ThinLTO is executed by rustc
+# itself; dependency crates get -C linker-plugin-lto and their .o files are
+# pure LLVM bitcode (not even recognized as Mach-O by Apple's objdump), which
+# rustc reads back for LTO. That flag does not require linker plugin support
+# (rustc docs: "rustc can also read its own object files produced with
+# -Clinker-plugin-lto"). So thin LTO genuinely takes effect on all three
+# platforms (Apple ld / MSVC link.exe / lld), independent of linker identity.
+# The real reason the Linux release jobs inject -fuse-ld=lld: BFD ld links
+# large binaries with poor memory efficiency (proven OOM) and has no --icf,
+# so it cannot do identical-code folding (see the ICF comment).
 lto = "thin"
 codegen-units = 1
-# macOS 27+ 发布链路会注入 CARGO_PROFILE_RELEASE_STRIP=none 绕过 dyld 对齐 bug,
-# 本设置主要作用于 Linux deb / Windows MSI 产物。
+# Zero-debug-info set for shipped artifacts: debug=false (rustc emits no
+# DWARF/line tables) + strip="symbols" (link-time --strip-all on ELF; a no-op
+# on MSVC, where the debug info lives in the PDB that is never packaged).
+# 1.98.0 already contains the Mach-O __LINKEDIT 8-byte alignment fix
+# (rust#157750, LLVM backport #158410), so macOS is back to the same strip
+# policy as Linux/Windows and no longer needs the macOS 27+ strip=none
+# injection (the workflow step was removed).
+# When symbolized crashes are needed: macOS can emit a dSYM via
+# split-debuginfo="packed", Linux a .dwp, Windows the PDB under target/ — all
+# are separate debug artifacts and never enter any shipped package.
 strip = "symbols"
-debug = "line-tables-only"
+debug = false
 panic = "unwind"
 incremental = false
 
@@ -429,7 +454,15 @@ inherits = "release"
 lto = false
 codegen-units = 16
 incremental = true
-# debug 不再重复声明:release 已是 line-tables-only,继承即同值。
+# Smoke builds never enter shipped artifacts: keep line tables explicitly so
+# a panic backtrace from a failed CI smoke run resolves to line numbers
+# (release is now debug=false, so nothing is inherited implicitly). strip
+# must be relaxed back to none explicitly: the inherited strip="symbols"
+# would strip the line tables together with the symbol table at link time
+# (symbols is a superset of debuginfo in rustc semantics), so the line tables
+# would never actually reach the smoke binaries.
+debug = "line-tables-only"
+strip = "none"
 
 # Dev profile:line-tables-only 编译提速、overflow-checks 在调试期暴露整数回绕。
 [profile.dev]

@@ -46,6 +46,12 @@ if [ ! -f "$SOURCE" ]; then
   exit 1
 fi
 
+# Same compression upgrade as release-packages.yml via the shared helper
+# (tauri dmg is UDZO at hdiutil's default zlib level 1; ULMO=LZMA usually
+# saves another 20-40%; a failed conversion degrades to keeping the original
+# dmg) — see scripts/convert-dmg-ulmo.sh.
+"$REPO_ROOT/scripts/convert-dmg-ulmo.sh" "$SOURCE"
+
 cp "$SOURCE" "$ASSET"
 shasum -a 256 "$ASSET" > "$ASSET.sha256"
 gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
