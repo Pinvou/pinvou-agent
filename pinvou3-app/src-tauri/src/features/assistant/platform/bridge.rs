@@ -1288,12 +1288,17 @@ impl Pinvou3Bridge {
         let configured_context = saved.and_then(|saved| saved.context_window_tokens);
         let inferred_context = crate::core::model_context::resolved_context_window(model);
         let is_local_vllm = self.provider() == "vllm";
-        let context_tokens = match (configured_context, self.probed_context_tokens) {
-            (Some(configured), Some(probed)) => Some(configured.min(probed)),
-            (Some(configured), None) => Some(configured),
-            (None, Some(probed)) => Some(probed),
-            (None, None) => inferred_context.or_else(|| is_local_vllm.then_some(128_000)),
-        };
+        // The window precedence shares core::model_context's single function
+        // with the monitor display (declaration wins, probe min-clamps,
+        // inference fills in), so the two paths cannot drift apart by each
+        // keeping their own match. The probed value only exists for locally
+        // introspectable vLLM (cloud is always None, see the probe gate in
+        // engine_pool), so a cloud declaration is never overridden by any probe.
+        let (context_tokens, _) = crate::core::model_context::resolve_context_window(
+            configured_context,
+            self.probed_context_tokens,
+            inferred_context.or_else(|| is_local_vllm.then_some(128_000)),
+        );
         let configured_output = saved.and_then(|saved| saved.max_output_tokens);
         // User-configured openai-compatible endpoints (the `OpenAI-compatible`
         // preset, or provider_kind == "custom") count as operator-owned: the
