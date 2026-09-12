@@ -3,8 +3,8 @@ name: PR Check
 # Jobs:
 # - commit-message: enforce the Git commit convention on pull requests and pushes.
 # - version-consistency:强制校验 VERSION 单一事实来源与 SemVer 规则。
-# - fast-gate(秒级,每 PR 都跑):fork-guard 指纹 + fork 合规联动 + Python 确定性测试。
-# - changes:检测本 PR 有没有 Rust 代码、发布契约、L1 harness 或前端改动,给后续 job 做 paths filter。
+# - fast-gate(秒级,每 PR 都跑):fork-guard 指纹 + fork 合规联动 + actionlint + Python 确定性测试。
+# - changes:检测本 PR 有没有 Rust 代码、发布契约或前端改动,给后续 job 做 paths filter。
 # - frontend-test: Draft runs lint/build/logic tests. Ready PRs and Merge Queue
 #   select browser smokes from their actual base/head diff and fail closed for
 #   unknown or shared paths.
@@ -88,9 +88,21 @@ jobs:
         run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - name: Validate commit messages
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             python3 scripts/validate-commit-msg.py --range "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
+            # The squash subject GitHub generates on merge is "<PR title> (#N)",
+            # and merge-queue merges never run this job. The PR title is the
+            # only point where the squash subject can still be enforced before
+            # it lands on main; otherwise the push leg below can only flag the
+            # merged commit after the fact (e.g. #482 kept failing later main
+            # pushes with a 53-character subject). A title edited after the
+            # last synchronize/labeled event can still slip through; the push
+            # leg remains the backstop for that residual case.
+            printf '%s\n' "$PR_TITLE" > "$RUNNER_TEMP/pr-title"
+            python3 scripts/validate-commit-msg.py "$RUNNER_TEMP/pr-title"
           else
             before="${{ github.event.before }}"
             python3 scripts/validate-commit-msg.py --range "$before" "${{ github.sha }}"
@@ -181,7 +193,7 @@ jobs:
               - '**/Cargo.lock'
               - '**/deny.toml'
               - '**/build.rs'
-              - '.cargo/**'
+              - 'pinvou3-app/src-tauri/.cargo/**'
               - '.gitmodules'
               - 'CodeWhale'
               - 'pinvou3-app/src-tauri/rust-toolchain.toml'
@@ -225,8 +237,6 @@ jobs:
               - 'pinvou3-app/src-tauri/packaging/**'
               - 'pinvou3-app/src-tauri/resources/**'
               - 'pinvou3-app/tests/knowledge_host_packaging.test.mjs'
-              - 'pinvou3-app/tests/codex_acp_windows_*'
-              - 'pinvou3-app/tests/windows_runtime_packaging_contract.test.js'
               - 'pinvou3-app/tests/linux_asr_runtime_packaging.test.js'
               - 'pinvou3-app/tests/macos_phase2_contract.test.js'
             pet:
@@ -242,7 +252,7 @@ jobs:
               - 'pinvou3-app/tests/pet_*'
               - 'pinvou3-app/src/platform/tauri/bridge.js'
               - 'pinvou3-app/src-tauri/capabilities/default.json'
-              - 'pinvou3-app/src-tauri/src/platform/prefs.rs'
+              - 'pinvou3-app/src-tauri/src/platform/prefs/**'
               - 'pinvou3-app/src-tauri/src/lib.rs'
               - 'pinvou3-app/src-tauri/src/features/pet/pet_window.rs'
               - 'pinvou3-app/src-tauri/src/features/pet/selected_pet.rs'
@@ -337,6 +347,15 @@ jobs:
       - name: Set up zram and swap
         run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
+      # Workflow 自己的门禁:YAML 结构、表达式拼写、matrix/runner 标签、cron
+      # 语法在进 runner 之前就在这里失败,而不是把坏配置推到三平台跑挂。
+      # shellcheck 集成显式关闭:其告警随 shellcheck 版本漂移,不适合做确定性
+      # 门禁(SC2034/SC2209 已知会对本仓合法写法误报)。
+      - name: workflow lint (actionlint)
+        run: |
+          bash <(curl --retry 3 -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint -shellcheck= .github/workflows/*.yml
+
       - name: 架构边界门禁
         run: |
           base_ref="${{ github.event_name == 'merge_group' && github.event.merge_group.base_ref || github.base_ref }}"
@@ -391,7 +410,7 @@ jobs:
     # Draft runs lint/build/logic tests. Ready PRs and merge groups select browser
     # smokes from their actual base/head diff. Shared, unknown, test-infrastructure,
     # and empty diffs fail closed to the complete smoke set.
-    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && (needs.changes.outputs.frontend == 'true' || needs.changes.outputs.pet == 'true') }}
+    if: ${{ !cancelled() && github.event.action != 'closed' && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && (needs.changes.outputs.frontend == 'true' || needs.changes.outputs.pet == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -587,6 +606,18 @@ jobs:
       - name: cargo clippy (all targets, all features)
         run: cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --all-targets --all-features --no-deps
 
+      # Same hard gate rust-lint applies to src-tauri: deny every warning on
+      # lib/bins/tests with the server feature, only outside Drafts. This lives
+      # here instead of rust-lint so the standalone workspace is compiled once
+      # per knowledge change in one job and one shared cache (-D warnings on
+      # --all-targets --all-features is not viable: test code legitimately uses
+      # unwrap/expect beyond the [lints] table).
+      - name: cargo clippy (hard gate, lib/bins/tests + server)
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+        run: |
+          cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --lib --bins --no-deps --features server -- -D warnings
+          cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --lib --bins --tests --no-deps --features server
+
       - name: cargo test
         run: cargo test --manifest-path pinvou-knowledge/Cargo.toml --all-features
 
@@ -699,15 +730,10 @@ jobs:
           cargo clippy --lib --bins --no-deps --features dev-tools -- -D warnings
           cargo clippy --lib --bins --tests --no-deps --features dev-tools
 
-      # pinvou-knowledge is a standalone workspace (outside src-tauri), linted
-      # separately; its [lints] table follows the app policy (testing
-      # conventions as above — warn-level lints not enforced on --tests).
-      - name: cargo clippy pinvou-knowledge (hard gate)
-        if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
-        working-directory: pinvou-knowledge
-        run: |
-          cargo clippy --lib --bins --no-deps --features server -- -D warnings
-          cargo clippy --lib --bins --tests --no-deps --features server
+      # pinvou-knowledge clippy hard gate lives in the knowledge-rust job: the
+      # standalone workspace is compiled and linted there in a single shared
+      # cache instead of once more here (cargo shear below still covers both
+      # workspaces statically).
 
       # rustdoc hard gate: the module-level documentation map once accumulated 46
       # rustdoc warnings (private_intra_doc_links / broken_intra_doc_links /

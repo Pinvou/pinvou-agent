@@ -239,6 +239,13 @@ class CiGatePolicyTests(unittest.TestCase):
             "cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --all-targets --all-features --no-deps",
             knowledge,
         )
+        # The -D-warnings hard gate must stay in this job (single shared
+        # cache); rust-lint must not compile the workspace a second time.
+        self.assertIn(
+            "cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --lib --bins --no-deps --features server -- -D warnings",
+            knowledge,
+        )
+        self.assertNotIn("cargo clippy pinvou-knowledge", self.pr_workflow)
         self.assertIn(
             "cargo test --manifest-path pinvou-knowledge/Cargo.toml --all-features",
             knowledge,
@@ -598,13 +605,21 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         release_contract_paths = changes.split(
             "            release_contract:", maxsplit=1
-        )[1].split("            l1:", maxsplit=1)[0]
+        )[1].split("            pet:", maxsplit=1)[0]
         self.assertIn(
             "- 'pinvou3-app/src-tauri/resources/**'",
             release_contract_paths,
         )
         self.assertIn(
             "- 'pinvou3-app/tests/knowledge_host_packaging.test.mjs'",
+            release_contract_paths,
+        )
+        # The section boundary above must stay load-bearing: if the split
+        # anchor stops matching (e.g. a filter rename), the slice silently
+        # grows to the end of the changes block and these assertions
+        # degrade into no-ops. This bit us once with a stale "l1:" anchor.
+        self.assertNotIn(
+            "- 'pinvou3-app/src/app/pet-main.jsx'",
             release_contract_paths,
         )
 
@@ -658,6 +673,26 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertNotIn("完整门禁已在 PR 入队前验证", self.pr_workflow)
         self.assertNotIn("github.event.merge_group.base_sha", dependency_review)
         self.assertNotIn("github.event.merge_group.head_sha", dependency_review)
+
+    def test_secret_scan_guard_and_cutoff_are_load_bearing(self):
+        # 空扫描守卫依赖 tee 落盘的真实日志:gitleaks 的日志走 stderr,若丢失
+        # 2>&1,tee 写出的是空文件,守卫 grep 永远不命中,"0 commits scanned"
+        # 的空转回归会再次绿灯。扫描范围必须与 commit-message 门禁共用同一
+        # LEGACY_HISTORY_CUTOFF,两侧任一单独漂移都会让密钥扫描与提交规范
+        # 的信任边界错开。
+        secret_scan = (
+            ROOT / ".github/workflows/secret-scan.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn('HEAD" 2>&1', secret_scan)
+        self.assertIn('grep -q "0 commits scanned"', secret_scan)
+        validator = (ROOT / "scripts/validate-commit-msg.py").read_text(
+            encoding="utf-8"
+        )
+        match = re.search(r'LEGACY_HISTORY_CUTOFF = "([0-9a-f]{40})"', validator)
+        self.assertIsNotNone(
+            match, "validate-commit-msg.py 缺少 LEGACY_HISTORY_CUTOFF 常量"
+        )
+        self.assertIn(match.group(1), secret_scan)
 
     def test_mac_bundle_chain_paths_are_reachable_by_workflow_trigger(self):
         # mac-build 的 bundle_chain filter 决定何时追加 universal bundle smoke。
