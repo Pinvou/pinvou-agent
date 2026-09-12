@@ -167,6 +167,12 @@ fn official_deepseek_model_name(model: &str) -> String {
 /// 此处 re-export 保持既有调用路径不变。
 pub use crate::features::sessions::{ExecutionRootResolver, SessionRoots};
 
+/// 宿主统一的每轮模型步数预算：主轮默认值与子代理默认值（`[subagents]
+/// default_max_steps`）都是 2 000，后者与底座子代理硬上限（`MAX_SUBAGENT_STEPS`
+/// = 2 000）对齐。GUI、CLI 与 benchmark 共用 `build_engine_config` /
+/// `build_dt_config`，三面自动一致；`advanced.max_steps` 仍可显式覆盖主轮。
+const HOST_STEP_BUDGET: u32 = 2_000;
+
 #[derive(Clone)]
 pub struct Pinvou3Bridge {
     pub prefs: UserPrefs,
@@ -1464,8 +1470,9 @@ impl Pinvou3Bridge {
             plugin_registry: _,
             instructions: _,
             project_context_pack_enabled: _,
-            // advanced.max_steps 显式配置时覆盖；未配置则复用底座默认值。
-            max_steps: default_max_steps,
+            // advanced.max_steps 显式配置时覆盖；未配置则用宿主统一预算
+            // （2000，不再跟随底座默认）。
+            max_steps: _,
             max_subagents: _,
             snapshots_enabled: _,
             memory_enabled: _,
@@ -1592,7 +1599,7 @@ impl Pinvou3Bridge {
             plugin_registry: None,
             instructions: self.instructions(),
             project_context_pack_enabled: false,
-            max_steps: self.prefs.advanced.max_steps.unwrap_or(default_max_steps),
+            max_steps: self.prefs.advanced.max_steps.unwrap_or(HOST_STEP_BUDGET),
             // 默认 10，为会话级多智能体 fan-out 场景预留。
             // 原始锁定 2026-05-19 是避免 multi-subagent 并发在弱模型 + 单 vLLM 下 timeout。
             // 实测 single subagent + 串行 2-3 subagent 都可用,fan-out 4+ 仍有 timeout 风险,
@@ -2113,6 +2120,11 @@ impl Pinvou3Bridge {
         cfg.default_text_model = Some(model);
         // 本地模型（vLLM / 探测出的 Ollama）默认关 thinking（防 SSE timeout）；其余默认 high。
         cfg.reasoning_effort = self.request_reasoning_effort();
+        // 统一轮数预算：子代理默认步数与主轮一致（2000，即底座硬上限）。未显式
+        // 传 max_steps 的 `agent` 调用不再回落到底座角色默认（0 = 不限）。
+        cfg.subagents
+            .get_or_insert_with(Default::default)
+            .default_max_steps = Some(HOST_STEP_BUDGET);
         cfg
     }
 
@@ -5128,24 +5140,30 @@ mod tests {
         ));
     }
 
-    /// 主 agent 步数预算:未显式配置时必须复用底座 `EngineConfig::default()` 的
-    /// max_steps(跟随上游调整),显式配置时 settings.json 优先。
+    /// 主 agent 步数预算:未显式配置时使用宿主统一预算 2000(不再跟随底座
+    /// 默认 200),显式配置时 settings.json 优先。子代理默认步数经
+    /// `build_dt_config` 注入同一预算,未显式传 max_steps 的 `agent` 调用
+    /// 不再是不限(0)。
     #[test]
-    fn engine_config_reuses_base_max_steps_default_and_respects_override() {
+    fn engine_config_defaults_to_unified_step_budget_and_respects_override() {
         let mut bridge = fixture_bridge();
-        let base_default = EngineConfig::default().max_steps;
 
         assert_eq!(
             bridge.build_engine_config().max_steps,
-            base_default,
-            "未显式配置时，主 agent 必须复用 CodeWhale 的 max_steps 默认值"
+            HOST_STEP_BUDGET,
+            "未显式配置时，主 agent 步数预算必须是宿主统一值 2000"
+        );
+        assert_eq!(
+            bridge.build_dt_config().subagent_default_max_steps(),
+            Some(HOST_STEP_BUDGET),
+            "子代理默认步数预算必须经 [subagents] default_max_steps 注入 2000"
         );
 
         bridge.prefs.advanced.max_steps = Some(321);
         assert_eq!(
             bridge.build_engine_config().max_steps,
             321,
-            "settings.json 中的 advanced.max_steps 必须继续覆盖底座默认值"
+            "settings.json 中的 advanced.max_steps 必须继续覆盖宿主默认值"
         );
     }
 
