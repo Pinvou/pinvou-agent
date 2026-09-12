@@ -156,7 +156,7 @@ Tests: `forkguard_rate_limit_governor_pauses_and_time_recovers_after_window_drai
 
 ## Parent boundary and drift reduction
 
-`pinvou3-app` owns product tool policy, AppMode-to-approval/trust mapping, reasoning effort, owner-event filtering, and scheduled-session creation. Its bridge retains v0.9.12 finite turn/tool limits, read denylist, bubblewrap, MCP OAuth, goal-loop, and telemetry-safe defaults.
+`pinvou3-app` owns product tool policy, AppMode-to-approval/trust mapping, reasoning effort, owner-event filtering, and scheduled-session creation. Its bridge retains the v0.9.12 read denylist, bubblewrap, MCP OAuth, goal-loop, and telemetry-safe defaults; product builds no longer stack the benchmark-only per-turn tool cap on top (see the 2026-09-11 rows in the register).
 
 Shell task reconciliation prefers the stable `origin_tool_call_id` carried by snapshots and completion events (an upstream v0.9.12 behavior, Hmbown/CodeWhale #5869): the host monitor and the Tauri/Web bridges rewrite the originating tool card first and fall back to command-text matching only for legacy origin-less jobs. An identified terminal root job whose origin card was compacted or reloaded away never appends to the current timeline tail, while running jobs keep a visible synthetic status card (`shell_task_projection.test.mjs`, `forkguard_shell_monitor_assigns_identical_commands_by_stable_origin`).
 

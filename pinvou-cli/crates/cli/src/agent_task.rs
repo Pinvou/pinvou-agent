@@ -251,6 +251,21 @@ fn run_agent(
     };
     let report = pinvou_product_backend::run_agentic_task(request)
         .map_err(|error| CliError::failed(format!("agent_run_failed: {error:#}")))?;
+    // A fresh run persists its session under the eval-session factory title
+    // ("临时评测"), which then reads as a stray user chat in the GUI's
+    // session list. Give CLI-created sessions an honest label; best-effort —
+    // a failed rename is cosmetic and must not fail the report. A
+    // caller-provided session keeps its own title.
+    if session.is_none() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let store = pinvou3_lib::features::sessions::SessionStore::boot();
+        if let Ok(store) = store {
+            let _ = store.set_title(&report.session_id, format!("CLI agent run <{stamp}>"));
+        }
+    }
     // TB/harness semantics: exit 0 whenever a report is produced (timeouts and
     // in-turn errors live in the report fields and are settled by the
     // harness grader); non-zero exit codes are reserved for host-level
