@@ -1,12 +1,20 @@
 [extend]
 useDefault = true
 
+# Allowlists are scoped as tightly as possible: a specific file (or test-tree
+# path) AND a specific synthetic value pattern on the matched line. Each group
+# documents why the flagged content is not a real credential. The CI scan runs
+# with --log-opts starting at the same legacy cutoff as
+# scripts/validate-commit-msg.py (LEGACY_HISTORY_CUTOFF), so pre-baseline
+# history is out of scope here by design.
+
 [[allowlists]]
 description = "Pinned upstream connector documentation uses synthetic IDs and tokens"
 targetRules = ["generic-api-key"]
 paths = [
   '''^pinvou3-app/src-tauri/resources/common/bundle/dingtalk-skills/dws/references/products/doc(?:/doc-info)?\.md$''',
-  '''^pinvou3-app/src-tauri/resources/common/bundle/lark-skills/lark-im/references/lark-im-reactions\.md$''',
+  '''^pinvou3-app/src-tauri/resources/common/bundle/(?:lark-skills/lark-im|skills/lark-im)/references/lark-im-reactions\.md$''',
+  '''^pinvou3-app/src-tauri/resources/common/bundle/skills/lark-base/references/lark-base-app-block-data-config\.md$''',
 ]
 
 [[allowlists]]
@@ -14,7 +22,7 @@ description = "Credential persistence tests use explicit non-production test key
 targetRules = ["generic-api-key"]
 condition = "AND"
 regexTarget = "line"
-paths = ['''^pinvou3-app/src-tauri/src/platform/prefs\.rs$''']
+paths = ['''^pinvou3-app/src-tauri/src/(?:platform/)?prefs(?:/.+)?\.rs$''']
 regexes = ['''sk-(?:test|legacy|custom|once)-secret-1234567890''']
 
 [[allowlists]]
@@ -22,5 +30,53 @@ description = "File-ingest tests and detectors intentionally contain private-key
 targetRules = ["private-key"]
 condition = "AND"
 regexTarget = "line"
-paths = ['''^pinvou3-app/src-tauri/src/features/files/file_ingest\.rs$''']
+paths = [
+  '''^pinvou3-app/src-tauri/src/features/files/file_ingest\.rs$''',
+  '''^pinvou3-app/src-tauri/src/features/files/text_decode\.rs$''',
+  '''^pinvou-knowledge/src/lib\.rs$''',
+]
 regexes = ['''b?"-----BEGIN (?:RSA |DSA |EC |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----''']
+
+[[allowlists]]
+description = "Browser wrapper tests and browser-feature test constants use sequential hex tokens"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''^pinvou3-app/src-tauri/src/features/browser/.*\.rs$''',
+  '''^pinvou3-app/tests/browser_wrapper_.*\.test\.mjs$''',
+]
+regexes = ['''(?:0123456789abcdef|fedcba9876543210)''']
+
+[[allowlists]]
+description = "Redaction unit-test corpus uses deliberately realistic but synthetic credential shapes"
+targetRules = ["generic-api-key", "jwt"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''^pinvou3-app/tests/chat_turn_error_isolation\.test\.mjs$''']
+regexes = [
+  '''rt_live_abc123def456ghi789|pat_abcdefgh1234|GOCSPX-abcdef1234567890''',
+  '''AIzaSyB3dEfGhIjKlMnOpQrStUvWxYz012345|1234-5678-abcd-ef01''',
+  '''1a2b3c4d5e6f7g8h9i0j|abc123def456ghijkl|1//0abcDEFghiJKL''',
+  '''dXNlcjpwYXNz|sk-abcdef1234567890|sk-proj-secret123XYZ|sk-abcdefghijklmnopqrstuvwxyz''',
+  '''eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c''',
+]
+
+[[allowlists]]
+description = "localStorage key name, not a credential"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''^pinvou3-app/src/features/chat/ChatView\.jsx$''',
+  '''^pinvou3-app/src/features/codex/CodexAcpView\.jsx$''',
+]
+regexes = ['''pinvou_conversation_ui_v2''']
+
+[[allowlists]]
+description = "Code comment documenting the redaction regex with an example value"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''^pinvou3-app/src/shared/model-service-errors\.js$''']
+regexes = ['''abc123def456''']
