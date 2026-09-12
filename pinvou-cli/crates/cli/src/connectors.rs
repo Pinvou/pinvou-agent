@@ -86,12 +86,13 @@ const DISCONNECTED_REASON: &str = "已断开授权：配套技能已随断开移
 
 /// Archive size cap, mirroring `native_installer::MAX_ARCHIVE_BYTES`.
 const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
-/// Per-process wait for the vendor CLI to produce a login URL, mirroring the
-/// 40s `rx.recv_timeout` in the GUI connect flows.
-const LOGIN_URL_TIMEOUT_SECS: u64 = 40;
 /// Default overall connect timeout, mirroring feishu's 5-minute authorize
 /// window; `connect --timeout SECS` overrides it.
 const CONNECT_DEFAULT_TIMEOUT_SECS: u64 = 300;
+/// Upper bound for `connect --timeout`: bounds the deadline arithmetic
+/// (`Instant + Duration` would panic on absurd values) at one week — the
+/// same ceiling the agent family enforces.
+const CONNECT_MAX_TIMEOUT_SECS: u64 = 7 * 24 * 60 * 60;
 /// npm install timeout for tmeet, mirroring `install_tmeet_cli`.
 const NPM_INSTALL_TIMEOUT_SECS: u64 = 180;
 
@@ -138,6 +139,7 @@ impl ConnectorKind {
             auth_domains: &["feishu", "larksuite"],
             disabled_filename: "feishu_disabled",
             min_version: None,
+            login_url_wait_secs: 40,
         };
         const WECOM: VendorSpec = VendorSpec {
             id: "wecom",
@@ -147,15 +149,22 @@ impl ConnectorKind {
             auth_domains: &["work.weixin.qq.com", "weixin.qq.com"],
             disabled_filename: "wecom_disabled",
             min_version: Some(WECOM_MIN_VERSION),
+            login_url_wait_secs: 40,
         };
         const DINGTALK: VendorSpec = VendorSpec {
             id: "dingtalk",
             display_name: "DingTalk",
             cli_bin: "dws",
             envs: &[],
-            auth_domains: &["dingtalk.com", "login.dingtalk.com", "oauth.dingtalk.com"],
+            auth_domains: &[
+                "dingtalk.com",
+                "login.dingtalk.com",
+                "oauth.dingtalk.com",
+                "open.dingtalk.com",
+            ],
             disabled_filename: "dingtalk_disabled",
             min_version: None,
+            login_url_wait_secs: 60,
         };
         const TMEET: VendorSpec = VendorSpec {
             id: "tmeet",
@@ -167,6 +176,7 @@ impl ConnectorKind {
             auth_domains: &["meeting.tencent.com"],
             disabled_filename: "tmeet_disabled",
             min_version: Some(TMEET_MIN_VERSION),
+            login_url_wait_secs: 60,
         };
         match self {
             Self::Feishu => &FEISHU,
@@ -198,6 +208,9 @@ struct VendorSpec {
     /// `Some(min)` = installs below this version count as not-installed and
     /// `status` reports `upgrade_required` (wecom/tmeet version gates).
     min_version: Option<(u64, u64, u64)>,
+    /// Per-connector wait for the first login URL, mirroring the GUI
+    /// (feishu/wecom `rx.recv_timeout(40s)`, dingtalk/tmeet 60s).
+    login_url_wait_secs: u64,
 }
 
 // ─────────────────────────────── commands ───────────────────────────────
@@ -299,9 +312,11 @@ pub fn parse(values: &[String]) -> Result<ConnectorsCommand, CliError> {
                 Some(value) => value
                     .parse::<u64>()
                     .ok()
-                    .filter(|secs| *secs > 0)
+                    .filter(|secs| *secs > 0 && *secs <= CONNECT_MAX_TIMEOUT_SECS)
                     .ok_or_else(|| {
-                        CliError::usage("connectors connect --timeout must be a positive integer")
+                        CliError::usage(
+                            "connectors connect --timeout must be between 1 and 604800 seconds",
+                        )
                     })?,
             };
             Ok(ConnectorsCommand::Connect { connector, timeout })
@@ -594,19 +609,24 @@ fn run_cli_bounded(
     })?;
     let mut stdout_pipe = child.stdout.take();
     let mut stderr_pipe = child.stderr.take();
+    // Lossy like the GUI's `String::from_utf8_lossy`: vendor CLIs (wecom /
+    // dingtalk / tmeet on Windows especially) can emit non-UTF-8 output, and
+    // a strict `read_to_string` errors on the first bad byte and discards
+    // the ENTIRE stream — status reads then lie "not connected" and logout
+    // claims success without running. Read bytes and decode lossily.
     let stdout_reader = std::thread::spawn(move || {
-        let mut buffer = String::new();
+        let mut bytes = Vec::new();
         if let Some(pipe) = stdout_pipe.as_mut() {
-            let _ = pipe.read_to_string(&mut buffer);
+            let _ = pipe.read_to_end(&mut bytes);
         }
-        buffer
+        String::from_utf8_lossy(&bytes).into_owned()
     });
     let stderr_reader = std::thread::spawn(move || {
-        let mut buffer = String::new();
+        let mut bytes = Vec::new();
         if let Some(pipe) = stderr_pipe.as_mut() {
-            let _ = pipe.read_to_string(&mut buffer);
+            let _ = pipe.read_to_end(&mut bytes);
         }
-        buffer
+        String::from_utf8_lossy(&bytes).into_owned()
     });
     let remaining = deadline.saturating_duration_since(Instant::now());
     let status = match child.wait_timeout(remaining) {
@@ -619,7 +639,11 @@ fn run_cli_bounded(
             return Err(CliError::failed(format!(
                 "{} {} timed out",
                 spec.cli_bin,
-                // args can carry pairing/device material; never echo it raw.
+                // args can carry pairing/device material; redact heuristically
+                // (prefix-known or 24+-char mixed tokens pass through the
+                // shared redactor — a short unprefixed device code may
+                // survive, which is why the device flow never needs one in
+                // argv).
                 redact_secret(&args.join(" "))
             )));
         }
@@ -981,6 +1005,12 @@ fn vendor_status_entry(kind: ConnectorKind) -> Result<Value, CliError> {
             entry["ok"] = json!(false);
             entry["connected"] = json!(false);
             entry["installed"] = json!(false);
+            // The GUI's uninstalled feishu DTO reports `configured: false`
+            // rather than omitting the field (feishu.rs); JSON consumers
+            // read booleans, not absent keys.
+            if spec.id == "feishu" {
+                entry["configured"] = json!(false);
+            }
             if spec.min_version.is_some() {
                 entry["upgrade_required"] = json!(false);
             }
@@ -1724,10 +1754,16 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             // The stdout URL is the landing page (which asks for another
             // scan); the live `scan-qr-file` note from
             // `spawn_and_capture_url` points at the PNG that authorizes in
-            // one scan, and the temp dir is cleaned up on every path (spawn
-            // failure included).
-            let outcome = flow.and_then(|(_url, _user_code, status_ok)| {
-                if !status_ok || !cli_connected(spec)? {
+            // one scan. On failure the QR dir is deliberately KEPT: the
+            // error's captured notes point at the PNG, and deleting it
+            // before returning would erase the one artifact the user can
+            // still act on.
+            let outcome = flow.and_then(|(_url, _user_code, _status_ok)| {
+                // Judge by the auth probe alone like the GUI (`wecom.rs`
+                // binds the child exit status to `_`): a wecom-cli that
+                // authorizes successfully but exits non-zero connects in
+                // the GUI and must not fail here.
+                if !cli_connected(spec)? {
                     return Err(CliError::failed(format!(
                         "wecom authorization did not complete (cancelled or timed out){}",
                         captured_notes(&notes)
@@ -1736,7 +1772,6 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 Ok(())
             });
             if let Err(error) = outcome {
-                let _ = std::fs::remove_dir_all(&qr_dir);
                 return Err(error);
             }
             bundle_store_on_connected(spec.id);
@@ -1842,18 +1877,38 @@ fn spawn_and_capture_url(
         drain_for_url(spec, stderr, tx.clone());
     }
     drop(tx);
-    let url_wait = Duration::from_secs(LOGIN_URL_TIMEOUT_SECS)
+    let url_wait = Duration::from_secs(spec.login_url_wait_secs)
         .min(deadline.saturating_duration_since(Instant::now()))
         .max(Duration::from_secs(1));
     let mut url: Option<String> = None;
     let mut user_code: Option<String> = None;
+    // wecom writes the one-scan `qr.png` around the time it prints the
+    // landing-page URL. Poll it on the same tick as the login events: the
+    // path is the actionable artifact and must be visible while the login
+    // process runs, not 40s later when the URL window expires.
+    let qr_png = work_dir.map(|dir| dir.join("qr.png"));
+    let mut qr_announced = false;
     let deadline_wait = Instant::now() + url_wait;
     while url.is_none() || user_code.is_none() {
         let remaining = deadline_wait.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             break;
         }
-        match rx.recv_timeout(remaining) {
+        if let Some(qr) = &qr_png {
+            if !qr_announced && qr.is_file() {
+                eprintln!(
+                    "wecom scan-qr-file: {} (scan this PNG to authorize in one step)",
+                    qr.display()
+                );
+                notes.push(format!(
+                    "scan-qr-file: {} (the login link is a landing page; scan this PNG to \
+                     authorize in one step)",
+                    qr.display()
+                ));
+                qr_announced = true;
+            }
+        }
+        match rx.recv_timeout(Duration::from_millis(200).min(remaining)) {
             Ok(LoginStreamEvent::Url(found)) => {
                 // The vendor CLI stays alive until the user authorizes, so
                 // this is the only moment the link is actionable — surface
@@ -1869,31 +1924,8 @@ fn spawn_and_capture_url(
                 notes.push(format!("user code: {code}"));
                 user_code = Some(code);
             }
-            Err(_) => break,
-        }
-    }
-    // wecom writes the one-scan `qr.png` around the time it prints the
-    // landing-page URL; give it a short window so the path is visible while
-    // the login process still runs (the final notes render only after exit).
-    if let Some(dir) = work_dir {
-        let qr_png = dir.join("qr.png");
-        for _ in 0..15 {
-            if qr_png.is_file() {
-                eprintln!(
-                    "wecom scan-qr-file: {} (scan this PNG to authorize in one step)",
-                    qr_png.display()
-                );
-                notes.push(format!(
-                    "scan-qr-file: {} (the login link is a landing page; scan this PNG to \
-                     authorize in one step)",
-                    qr_png.display()
-                ));
-                break;
-            }
-            if qr_png.exists() && !qr_png.is_file() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(200));
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
     if url.is_none() {
