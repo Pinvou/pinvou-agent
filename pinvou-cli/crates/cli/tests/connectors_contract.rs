@@ -80,6 +80,10 @@ impl Drop for HomeGuard {
 struct VendorCliGuard {
     previous: Option<OsString>,
     empty_bin: PathBuf,
+    /// The extra process-global state `new()` isolates (npm prefixes resolve
+    /// through these); `None` for the PATH-only `new_at` form.
+    isolated: Option<Vec<(&'static str, Option<OsString>)>>,
+    empty_home: Option<PathBuf>,
 }
 
 impl VendorCliGuard {
@@ -93,7 +97,37 @@ impl VendorCliGuard {
             std::process::id()
         ));
         std::fs::create_dir_all(&empty_bin).unwrap();
-        Self::new_at(empty_bin)
+        // Resolution also consults the npm global prefixes outside PATH: a
+        // real ~/.npm-global/bin/tmeet on the dev machine would defeat the
+        // "not installed" premise, so HOME and the prefix envs are isolated
+        // too.
+        let empty_home = std::env::temp_dir().join(format!(
+            "pinvou-cli-connectors-empty-home-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&empty_home).unwrap();
+        let isolated = vec![
+            ("HOME", Some(empty_home.clone().into_os_string())),
+            ("NPM_CONFIG_PREFIX", None),
+            ("npm_config_prefix", None),
+        ];
+        for (key, value) in &isolated {
+            match value {
+                // SAFETY: the caller holds ENV_LOCK for the whole test.
+                Some(value) => unsafe { std::env::set_var(key, value) },
+                // SAFETY: the caller holds ENV_LOCK for the whole test.
+                None => unsafe { std::env::remove_var(key) },
+            }
+        }
+        let previous = std::env::var_os("PATH");
+        // SAFETY: the caller holds ENV_LOCK for the whole test.
+        unsafe { std::env::set_var("PATH", &empty_bin) };
+        Self {
+            previous,
+            empty_bin,
+            isolated: Some(isolated),
+            empty_home: Some(empty_home),
+        }
     }
 
     /// Points `PATH` at a caller-provided directory — the fake-vendor-CLI
@@ -105,6 +139,8 @@ impl VendorCliGuard {
         Self {
             previous,
             empty_bin: bin,
+            isolated: None,
+            empty_home: None,
         }
     }
 }
@@ -116,6 +152,19 @@ impl Drop for VendorCliGuard {
             Some(value) => unsafe { std::env::set_var("PATH", value) },
             // SAFETY: ENV_LOCK is held by the owning test.
             None => unsafe { std::env::remove_var("PATH") },
+        }
+        if let Some(isolated) = self.isolated.take() {
+            for (key, value) in isolated {
+                match value {
+                    // SAFETY: ENV_LOCK is held by the owning test.
+                    Some(value) => unsafe { std::env::set_var(key, value) },
+                    // SAFETY: ENV_LOCK is held by the owning test.
+                    None => unsafe { std::env::remove_var(key) },
+                }
+            }
+        }
+        if let Some(home) = self.empty_home.take() {
+            let _ = std::fs::remove_dir_all(&home);
         }
         let _ = std::fs::remove_dir_all(&self.empty_bin);
     }
@@ -705,7 +754,7 @@ fn wecom_connect_surfaces_the_qr_file_while_it_exists() {
         &bin,
         "wecom-cli",
         "wecom-cli 1.9.9 (build 1)",
-        "if [ \"$1\" = \"auth\" ]; then printf 'png' > qr.png; echo \"login at https://work.weixin.qq.com/landing?x=1\"; sleep 30; exit 0; fi\n",
+        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"init\" ]; then printf 'png' > qr.png; echo \"login at https://work.weixin.qq.com/landing?x=1\"; sleep 30; exit 0; fi\n",
     );
     let _path = VendorCliGuard::new_at(bin.clone());
 
@@ -721,4 +770,56 @@ fn wecom_connect_surfaces_the_qr_file_while_it_exists() {
         "the failure must surface the captured login link: {message}"
     );
     let _ = std::fs::remove_dir_all(&bin);
+}
+
+#[test]
+#[cfg(unix)]
+fn status_finds_a_gui_installed_npm_prefix_cli() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("npm-prefix");
+    // The GUI's tmeet install applies the user npm prefix, so a GUI-installed
+    // tmeet lives in <prefix>/bin/tmeet — typically not on PATH. Resolution
+    // must find it there exactly like the GUI's connector_cli_program.
+    let prefix = std::env::temp_dir().join(format!(
+        "pinvoy-cli-connectors-npm-prefix-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(prefix.join("bin")).unwrap();
+    let script = prefix.join("bin").join("tmeet");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"1.0.15\"; exit 0; fi\nif [ \"$1\" = \"auth\" ]; then echo \"Logged in as someone@example.com\"; exit 0; fi\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let previous = std::env::var_os("NPM_CONFIG_PREFIX");
+    unsafe { std::env::set_var("NPM_CONFIG_PREFIX", &prefix) };
+
+    let outcome = run(&[
+        "pinvou",
+        "connectors",
+        "status",
+        "tmeet",
+        "--output",
+        "json",
+    ])
+    .expect("status must resolve the npm-prefix install");
+    let status: serde_json::Value =
+        serde_json::from_str(&outcome.stdout).expect("single-line JSON status");
+    assert_eq!(
+        status["connectors"][0]["connected"],
+        serde_json::json!(true),
+        "a GUI-installed npm-prefix CLI must be visible to the CLI: {status}"
+    );
+
+    match previous {
+        Some(value) => unsafe { std::env::set_var("NPM_CONFIG_PREFIX", value) },
+        None => unsafe { std::env::remove_var("NPM_CONFIG_PREFIX") },
+    }
+    let _ = std::fs::remove_dir_all(&prefix);
 }
