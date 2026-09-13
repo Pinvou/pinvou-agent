@@ -44,8 +44,9 @@
 //!   dingtalk/tmeet `*_status`) and ima credential status need the connector
 //!   runtime; the CLI reports the registry's conservative readiness and
 //!   defers live probes to the `connectors` family. Credential presence is
-//!   consulted in the system credential store only for installed bundles so
-//!   read-only CLI usage never touches the OS keyring.
+//!   consulted in the system credential store for every installed bundle, so
+//!   a read-only CLI run CAN touch the OS keyring (macOS may prompt) — only
+//!   a run with nothing installed never does.
 //! - enable/disable/project-skills → `scope::load_disabled_bundles_for` /
 //!   `save_disabled_bundles_for` / `set_project_skills_enabled` (the storage
 //!   behind `set_disabled_skills` / `set_project_skills_enabled`).

@@ -3,10 +3,11 @@
 The `pinvou` binary is the headless counterpart of the Pinvou Agent desktop app
 (`pinvou3-app`). It exposes the product's business capabilities as scriptable
 subcommands so the same data under `~/.pinvou3/` (relocatable via
-`PINVOU3_HOME`) can be driven from a terminal, CI, or another program. It does
-not replace the GUI: anything that is inherently visual (windows, QR codes,
-voice capture, the embedded browser, artifact previews) stays in the desktop
-app and is deliberately absent here.
+`PINVOU3_HOME`, which must be an absolute path) can be driven from a terminal,
+CI, or another program. It does not replace the GUI: anything that is
+inherently visual (windows, QR-code *rendering* — the wecom connector still
+writes a `qr.png` the CLI points at, voice capture, the embedded browser,
+artifact previews) stays in the desktop app and is deliberately absent here.
 
 Build:
 
@@ -77,7 +78,7 @@ cargo build --manifest-path pinvou-cli/Cargo.toml --bin pinvou
 | `pinvou personas` | `list`, `show`, `create`, `update`, `delete --yes`, `equip`, `unequip`, `active` | Expert card deck CRUD. `equip` records the staged persona for the session sidecar; prompt injection happens in the GUI, so the CLI itself does not deliver it. |
 | `pinvou code` | `agents list/status`, `login/logout`, `providers ...`, `sessions ...`, `workspace list/search/preview/changes/diff/branches/checkout`, `checkpoints ...` | Code-mode (ACP) configuration and read-mostly workspace ops; checkpoints reuse the real shadow-git implementation; agent CLIs resolve like the GUI (override env var → official install dir → PATH; Windows `.exe`/`.cmd` aware). Interactive ACP turns and the pending-permission flow are desktop-process-bound. |
 | `pinvou files` | `ingest <PATH> [--output PATH]` | File → markdown extraction (pdf/office/email/archive/text), the GUI attachment pipeline. |
-| `pinvou voice` | `transcribe <audio>`, `postprocess --mode ...`, `asr-status`, `asr-install` | Transcription of an audio file up to 4 MiB (GUI `recording_too_long` bound); recording itself is GUI-bound. `asr-install` verifies the model download by sha256. On macOS, `asr-status` reports the host Speech runtime (`ready: true`), but `transcribe` uses the external ASR CLI lane — the JSON adds `cli_transcribe_ready` for what the CLI itself can do. |
+| `pinvou voice` | `transcribe <audio>`, `postprocess --mode ...`, `asr-status`, `asr-install` | Transcription of an audio file up to 4 MiB (GUI `recording_too_long` bound); recording itself is GUI-bound. `asr-install` verifies the model download by sha256. On macOS, `asr-status` reports the host Speech runtime (`ready: true`), but `transcribe` uses the external ASR CLI lane — the JSON adds `cli_transcribe_ready` for what the CLI itself can do. On Windows, the CLI probes the real engine/ffmpeg state instead of trusting the GUI's MSI-bundled-runtime branch, so its `asr-status` can disagree with the GUI's; `asr-install` itself is Linux-only. |
 | `pinvou deps` | `check`, `install <NAME...> --yes` | External dependency detection/installation (apt/Homebrew/bundled). |
 | `pinvou feedback` | `submit --type issue\|suggestion --title T --body-file F [--attach PATH...]` | Writes the feedback bundle locally and prints the GitHub issues URL (GUI opens the browser). |
 | `pinvou monitor` | `status`, `snapshot` | One-shot model/GPU/vLLM sample instead of the live dashboard. |
