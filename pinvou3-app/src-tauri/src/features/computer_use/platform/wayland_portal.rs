@@ -216,14 +216,16 @@ fn request_object_path(
     Ok(OwnedObjectPath::from(path))
 }
 
-/// 授权对话框被取消(1)或异常结束(其他)时的错误。
+/// 授权对话框被取消(1)或异常结束(其他)时的错误。响应码 1 也可能出现在
+/// 无对话框的阶段(CreateSession 等),文案不假定对话框一定出现过。
 fn response_error(code: u32) -> ComputerUseError {
     match code {
         1 => ComputerUseError::unavailable(
-            "the system authorization dialog was dismissed; the action was not granted",
+            "the portal request was cancelled (response code 1; if an authorization dialog \
+             was shown, it was dismissed) — the action was not granted",
         ),
         code => ComputerUseError::unavailable(format!(
-            "the system authorization dialog ended unexpectedly (portal response code {code})"
+            "the system authorization flow ended unexpectedly (portal response code {code})"
         )),
     }
 }
@@ -529,9 +531,8 @@ impl PortalInner {
     }
 
     /// `parent_window` 为 `Some` 时方法签名是 `(o session_handle,
-    /// s parent_window, a{sv} options)`:实测 xdg-desktop-portal 1.18 的
-    /// Start 是 session 在前、父窗口字符串(空串 = 无父窗)在后,与规范
-    /// 文档的顺序相反,以 introspection 为准。缺参数会被 InvalidArgs 拒绝。
+    /// s parent_window, a{sv} options)`:与规范 XML 的参数顺序一致(实测
+    /// xdg-desktop-portal 1.18 亦然)。缺参数会被 InvalidArgs 拒绝。
     #[allow(clippy::too_many_arguments)]
     async fn request_impl(
         &mut self,
@@ -586,7 +587,8 @@ impl PortalInner {
         // REQUEST_TIMEOUT;授权对话框的等待发生在 Response 信号(下一段)——
         // 两段各自配完整 timeout 的旧写法会让 Start 最坏等待成倍叠加、击穿
         // backend 层调用预算(评审发现)。
-        tokio::time::timeout(timeout.min(REQUEST_TIMEOUT), async {
+        let call_deadline = timeout.min(REQUEST_TIMEOUT);
+        tokio::time::timeout(call_deadline, async {
             match session {
                 Some(path) if parent_window.is_some() => {
                     self.conn
@@ -625,7 +627,11 @@ impl PortalInner {
         })
         .await
         .map_err(|_| {
-            ComputerUseError::unavailable(format!("portal {method} timed out after {timeout:?}"))
+            // 报告实际生效的方法相位上限(timeout.min(REQUEST_TIMEOUT)),
+            // 不然 Start 会谎报 "timed out after 120s"(实际 30s 触发)。
+            ComputerUseError::unavailable(format!(
+                "portal {method} timed out after {call_deadline:?}"
+            ))
         })?
         .map_err(|error| ComputerUseError::unavailable(format!("portal {method}: {error}")))?;
 

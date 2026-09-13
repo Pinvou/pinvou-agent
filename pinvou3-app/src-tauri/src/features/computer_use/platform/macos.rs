@@ -898,7 +898,9 @@ fn format_tree_line(index: u32, depth: u32, info: &AxNodeInfo) -> String {
         line,
         "{indent}[{index}] {role} \"{title}\" ({x},{y},{w},{h}){flags}",
         indent = "  ".repeat(depth as usize),
-        role = info.role,
+        // AXRole/AXSubrole 是目标应用提供的自由字符串,不消毒会破坏
+        // 一行一节点的不变式(伪造树行/换行注入)(round-10 评审 m6)。
+        role = sanitize_name(&info.role, MAX_NODE_NAME_CHARS),
         title = sanitize_name(display_title, MAX_NODE_NAME_CHARS),
         x = info.x,
         y = info.y,
@@ -1169,8 +1171,12 @@ impl ComputerUseBackend for MacosComputerUseBackend {
                     macOS 26 (Tahoe) may filter synthetic modifier-key events aimed at global \
                     hotkey listeners; multi-click recognition does not verify that repeated \
                     clicks land on the same point; key-chord characters outside the safe \
-                    keyboard-layout set are rejected with an explicit error instead of \
-                    injecting a wrong key; T3 target screening relies on the AX tree — \
+                    (US-layout-defined) keyboard set are rejected with an explicit error \
+                    instead of injecting a wrong key, but on non-US layouts an in-set \
+                    character can still resolve to a different key; typed text is \
+                    delivered in 20-character chunks and the OS can silently truncate a \
+                    chunk containing many non-BMP characters (e.g. emoji); T3 target \
+                    screening relies on the AX tree — \
                     windows that expose no accessibility data (some Electron/web-contents \
                     windows) report no element at the target point, so consequential targets \
                     inside them cannot be recognized and are NOT confirmation-screened"
