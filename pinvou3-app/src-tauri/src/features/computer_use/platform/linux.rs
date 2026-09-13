@@ -43,6 +43,9 @@ use enigo::{Button, Coordinate, Direction, Enigo, Keyboard, Mouse, Settings};
 use xcap::Monitor;
 use zbus::proxy::CacheProperties;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use super::super::backend::ComputerUseBackend;
 use super::super::types::{
     Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
@@ -756,7 +759,14 @@ async fn find_focused_in_subtree(
 /// 设置点;操作级整体 deadline 由
 /// [`LinuxComputerUseBackend::block_on_a11y`] 兜底。)
 async fn a11y_connect() -> Result<zbus::Connection, String> {
-    let _ = atspi::connection::set_session_accessibility(true).await;
+    // round-10 评审 M4:这个调用走 zbus 默认连接(method_timeout 为 None,
+    // 正是下方注释描述的危害),必须整体限时——接受连接但不应答的总线会把
+    // create_backend 永久钉死在 worker 线程上。失败本就按非致命处理。
+    let _ = tokio::time::timeout(
+        2 * A11Y_METHOD_TIMEOUT,
+        atspi::connection::set_session_accessibility(true),
+    )
+    .await;
     // The bootstrap session-bus connection needs a deadline too: zbus 5
     // defaults method_timeout to None, so a wedged session bus would hang
     // `create_backend` on the worker thread forever. Bound it with the same
@@ -863,6 +873,10 @@ pub(super) struct LinuxComputerUseBackend {
     /// 最近一次输入动作的开始时刻:同会话截屏流是 damage 驱动的,补拍
     /// 截图要等比它新的帧,才能看到动作后的画面(无视觉变化时沿用现有帧)。
     last_input_at: Option<Instant>,
+    /// 当前请求的取消旗标(worker 在派发前设置、派发后清除,见
+    /// [`ComputerUseBackend::set_cancel_flag`]):type 的逐事件注入在事件间
+    /// 检查,调用方已超时放弃的请求立即停止注入(round-10 评审 M3)。
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl LinuxComputerUseBackend {
@@ -1065,6 +1079,10 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
         Ok(())
     }
 
+    fn set_cancel_flag(&mut self, flag: Option<Arc<AtomicBool>>) {
+        self.cancel = flag;
+    }
+
     fn capabilities(&self) -> Capabilities {
         let ui_tree = self.a11y.is_some();
         if self.is_wayland() {
@@ -1123,7 +1141,8 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 input: self.input.is_some(),
                 ui_tree,
                 notes: format!(
-                    "X11 session ({}): full support (xcap capture, {input_note}, AT-SPI tree{})",
+                    "X11 session ({}): full support (xcap capture, {input_note}, AT-SPI \
+                     tree{})",
                     self.session.desktop_label(),
                     if ui_tree { "" } else { " unavailable" },
                 ),
@@ -1420,6 +1439,9 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
         let text = normalize_line_breaks(text);
         if self.is_wayland() {
             self.note_input();
+            // 旗标 Arc 在 require_portal 前克隆:portal 是 self 的可变借用且
+            // 活过整个注入循环,不能再经 &self 读旗标。
+            let cancel = self.cancel.clone();
             let portal = self.require_portal()?;
             // 逐字符 keysym 注入(\n→Return、\t→Tab)。映射先行:非 Latin-1
             // 字符(中文等)显式报错(fail-closed)——mutter 对 keymap 外
@@ -1437,6 +1459,18 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             // as the X11 `release_chord` helper).
             let mut first_err = None;
             for keysym in keysyms {
+                // 调用方已放弃的请求停止注入(round-10 评审 M3:逐字符两次有
+                // 界 portal 通知,长文本在降级总线上远超调用预算,出队检查拦
+                // 不住,僵尸请求会与重试双重注入)。
+                if cancel
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(Ordering::SeqCst))
+                {
+                    return Err(ComputerUseError::unavailable(
+                        "type text was cancelled after the caller timed out; characters \
+                         already injected are not undone",
+                    ));
+                }
                 portal.keysym_event(keysym, true)?;
                 if let Err(error) = portal.keysym_event(keysym, false) {
                     if first_err.is_none() {
@@ -1449,6 +1483,9 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 None => return Ok(()),
             }
         }
+        // 旗标 Arc 在 require_enigo 前克隆:enigo 是 self 的可变借用且活过
+        // 整个注入循环,循环内(及克隆点)不能再经 &self 读旗标。
+        let cancel = self.cancel.clone();
         let enigo = self.require_enigo()?;
         // enigo's text() types a run via per-char Unicode injection (a
         // temporary keycode remap on X11, the xdotool trick), so CJK etc.
@@ -1460,6 +1497,16 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
         // submits).
         let enter = map_enigo_key(Key::Enter)?;
         for (index, run) in x11_type_runs(&text).into_iter().enumerate() {
+            // 调用方已放弃的请求停止注入(与 Wayland 逐字符路径同一保证)。
+            if cancel
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::SeqCst))
+            {
+                return Err(ComputerUseError::unavailable(
+                    "type text was cancelled after the caller timed out; characters \
+                     already injected are not undone",
+                ));
+            }
             if index > 0 {
                 Self::press_chord(enigo, &[enter])?;
                 Self::release_chord(enigo, &[enter])?;
@@ -1673,6 +1720,7 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
         wayland_screenshot_error,
         wayland_portal_capture_error: None,
         last_input_at: None,
+        cancel: None,
     }))
 }
 
