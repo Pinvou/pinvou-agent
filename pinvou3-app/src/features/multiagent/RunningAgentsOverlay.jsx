@@ -161,11 +161,23 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
   const [, setRecentTick] = useState(0);
   // eslint-disable-next-line react-hooks/purity -- the success-state window is judged on the real clock; recompute once when the tick fires
   const { active, recent } = overlayVisibleEntries(sessionEntries, Date.now());
+  // The wake-up is armed on the earliest pending expiry, not on the window's
+  // size: a completion landing near another entry's expiry can leave
+  // recent.length unchanged, and a length-keyed timer would miss the re-arm.
+  // When the earliest entry fades, the recomputed minimum moves forward and
+  // re-runs this effect for the next entry. A primitive dep keeps the effect
+  // from re-arming on unrelated re-renders.
+  let nextRecentExpiry = Infinity;
+  for (const entry of recent) {
+    if (entry.completedAt != null && entry.completedAt < nextRecentExpiry) nextRecentExpiry = entry.completedAt;
+  }
   useEffect(() => {
-    if (recent.length === 0) return;
-    const timer = setTimeout(() => setRecentTick(value => value + 1), RECENT_TERMINAL_MS + 100);
+    if (!Number.isFinite(nextRecentExpiry)) return;
+    // eslint-disable-next-line react-hooks/purity -- the delay is measured on the real clock, matching the render-phase window judgment above
+    const delay = Math.max(0, nextRecentExpiry + RECENT_TERMINAL_MS + 100 - Date.now());
+    const timer = setTimeout(() => setRecentTick(value => value + 1), delay);
     return () => clearTimeout(timer);
-  }, [recent.length]);
+  }, [nextRecentExpiry]);
   const visible = enabled && sessionId && (active.length > 0 || recent.length > 0);
 
   const toggleExpanded = useCallback(() => {
@@ -251,26 +263,35 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
                   </li>
                 );
               })}
-              {recent.map(entry => (
-                <li key={entryKey(entry.sessionId, entry.agentId)}>
-                  <button
-                    type="button"
-                    data-testid="running-agents-entry-done"
-                    onClick={() => openAgent(entry.agentId, entry.sessionId)}
-                    className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] transition-colors ${
-                      isDark ? 'hover:bg-white/[0.06]' : 'hover:bg-black/[0.04]'
-                    }`}
-                  >
-                    <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dotClass.done}`} />
-                    <span className="min-w-0 flex-1 truncate font-medium opacity-70">
-                      {entry.role || entry.agentId}
-                    </span>
-                    <span className={`shrink-0 text-[10.5px] ${isDark ? 'text-[#93D5A6]' : 'text-[#137333]'}`}>
-                      {copy.agentCard.completed}
-                    </span>
-                  </button>
-                </li>
-              ))}
+              {recent.map(entry => {
+                // Recent entries carry their real terminal status: a failed
+                // agent must not borrow the success styling of the window.
+                const status = statusPresentation(entry, copy);
+                return (
+                  <li key={entryKey(entry.sessionId, entry.agentId)}>
+                    <button
+                      type="button"
+                      data-testid="running-agents-entry-done"
+                      onClick={() => openAgent(entry.agentId, entry.sessionId)}
+                      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] transition-colors ${
+                        isDark ? 'hover:bg-white/[0.06]' : 'hover:bg-black/[0.04]'
+                      }`}
+                    >
+                      <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dotClass[status.dot]}`} />
+                      <span className="min-w-0 flex-1 truncate font-medium opacity-70">
+                        {entry.role || entry.agentId}
+                      </span>
+                      <span className={`shrink-0 text-[10.5px] ${
+                        status.dot === 'failed'
+                          ? (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]')
+                          : (isDark ? 'text-[#93D5A6]' : 'text-[#137333]')
+                      }`}>
+                        {status.text}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>
