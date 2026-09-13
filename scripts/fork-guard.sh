@@ -76,7 +76,6 @@ fingerprints=(
   "T1|陈旧取消不误杀自主续跑轮回归        |CodeWhale/crates/tui/src/core/engine/tests.rs|forkguard_cancel_turn_binding_spares_unnamed_turns_and_hits_the_observed_turn"
   "T1|自启续轮陈旧 stop 端到端回归        |CodeWhale/crates/tui/src/core/engine/tests.rs|forkguard_idle_subagent_completion_self_start_ignores_a_stale_previous_turn_cancel"
   "T1|处置入口不触发任何 token 回归      |CodeWhale/crates/tui/src/core/engine/tests.rs|engine_handle_stop_disposition_publishes_without_firing_any_token"
-  "T1|处置入口不触发任何 token 回归      |CodeWhale/crates/tui/src/core/engine/tests.rs|engine_handle_stop_disposition_publishes_without_firing_any_token"
 
   "T1|GLM-5.3 强制思考改写禁用 payload    |CodeWhale/crates/tui/src/client/chat.rs|fn apply_zai_forced_thinking_effort"
   "T1|BigModel host 纳入第一方 Chat 路由  |CodeWhale/crates/config/src/provider.rs|is_exact_https_route(base_url, \"open.bigmodel.cn\", \"api/paas/v4\")"
