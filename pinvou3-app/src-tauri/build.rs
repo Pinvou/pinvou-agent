@@ -23,11 +23,9 @@ fn main() {
     // weak so dyld skips it on older systems instead of refusing to launch;
     // the capture path gates on the runtime OS version and falls back to
     // xcap/CGWindowList there (see computer_use/platform/screen_capture_kit.rs).
+    // The bare `rustc-link-arg` instruction already applies to bins, tests
+    // and cdylibs; a bins/tests loop on top would pass the flag twice.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
-        for kind in ["bins", "tests"] {
-            println!("cargo:rustc-link-arg-{kind}=-weak_framework");
-            println!("cargo:rustc-link-arg-{kind}=ScreenCaptureKit");
-        }
         println!("cargo:rustc-link-arg=-weak_framework");
         println!("cargo:rustc-link-arg=ScreenCaptureKit");
     }
