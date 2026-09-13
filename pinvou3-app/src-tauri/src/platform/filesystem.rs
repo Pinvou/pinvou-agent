@@ -2160,6 +2160,26 @@ fn reserved_target_is_unchanged_impl(_file: &File, path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
 }
 
+/// 测试辅助（round-10 评审 m12）：断言文件权限为 0600。tool 层的 CI 测试
+/// 经此检查 capture_and_store 落盘的截图——目标 cfg 留在本适配层
+/// （architecture guard 规则）。Windows 无 POSIX 权限位，恒通过。
+#[cfg(test)]
+pub(crate) fn assert_private_file_mode(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(path)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "{} must be 0600", path.display());
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use std::path::Path;
