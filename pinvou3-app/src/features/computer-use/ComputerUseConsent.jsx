@@ -18,29 +18,38 @@ const DOUBLE_CLICK_GUARD_MS = 200;
 
 function useConsentAction(copy) {
   const [pendingAction, setPendingAction] = useState(null);
-  const [actionError, setActionError] = useState('');
+  // { stamp, message }: the stamp is the request id the failed click was
+  // decided on. The dialog renders the error only while THAT request is
+  // still displayed — a late rejection resolving after a replacement request
+  // landed mid-IPC would otherwise paint "action failed" onto an unrelated,
+  // newer dialog (review finding; the request-change reset below cannot
+  // cover this, it runs before the rejection lands).
+  const [actionError, setActionError] = useState(null);
   // Synchronous single-flight (review finding): the disabled attribute only
   // updates one render after the click, so a double-click could fire two
   // concurrent backend calls. This ref is checked inside the event handler,
   // before React commits anything, and also ignores re-clicks within a short
   // window after an action settles.
   const flightRef = useRef({ busy: false, settledAt: 0 });
-  const run = (key, action) => {
+  const run = (key, action, stamp) => {
     const flight = flightRef.current;
     if (flight.busy || Date.now() - flight.settledAt < DOUBLE_CLICK_GUARD_MS) return;
     flight.busy = true;
     setPendingAction(key);
-    setActionError('');
+    setActionError(null);
     Promise.resolve()
       .then(action)
-      .catch((error) => setActionError(copy.actionFailed(String(error && error.message ? error.message : error))))
+      .catch((error) => setActionError({
+        stamp: stamp || null,
+        message: copy.actionFailed(String(error && error.message ? error.message : error)),
+      }))
       .finally(() => {
         flight.busy = false;
         flight.settledAt = Date.now();
         setPendingAction(null);
       });
   };
-  return { pendingAction, actionError, clearActionError: () => setActionError(''), run };
+  return { pendingAction, actionError, clearActionError: () => setActionError(null), run };
 }
 
 const dialogButtonBase = 'text-[13px] px-4 py-2 rounded-full font-medium transition-colors disabled:opacity-50';
@@ -66,13 +75,13 @@ export function ComputerUseBanner({ slice, copy }) {
           type="button"
           data-testid="computer-use-stop"
           disabled={!!pendingAction}
-          onClick={() => run('stop', () => bridge.computerUse.stop())}
+          onClick={() => run('stop', () => bridge.computerUse.stop(), 'stop')}
           className="shrink-0 px-3 py-1.5 rounded-full font-semibold bg-[#C5221F] text-white hover:bg-[#A50E0E] disabled:opacity-50"
         >
           {copy.bannerStop}
         </button>
       </div>
-      {actionError && <div className="mt-1 px-3 text-[11px] text-[#C5221F] dark:text-[#F28B82]">{actionError}</div>}
+      {actionError && <div className="mt-1 px-3 text-[11px] text-[#C5221F] dark:text-[#F28B82]">{actionError.message}</div>}
     </div>
   );
 }
@@ -187,14 +196,16 @@ export function ComputerUseDialogs({ slice, copy }) {
         >
           <h3 id="computer-use-grant-title" className="text-[16px] font-semibold mb-2">{copy.grantTitle}</h3>
           <p className="text-[13px] leading-relaxed opacity-80 mb-4">{copy.grantDesc}</p>
-          {actionError && <div className="text-[13px] text-[#EA4335] mb-3">{actionError}</div>}
+          {actionError && actionError.stamp === grantRequest.sessionId && (
+            <div className="text-[13px] text-[#EA4335] mb-3">{actionError.message}</div>
+          )}
           <div className="flex items-center justify-end gap-2">
             <button
               type="button"
               ref={grantDenyRef}
               data-testid="computer-use-grant-deny"
               disabled={!!pendingAction}
-              onClick={() => run('deny', () => bridge.computerUse.revoke(grantRequest.sessionId))}
+              onClick={() => run('deny', () => bridge.computerUse.revoke(grantRequest.sessionId), grantRequest.sessionId)}
               className={dialogSecondaryButton}
             >
               {copy.grantDeny}
@@ -203,7 +214,7 @@ export function ComputerUseDialogs({ slice, copy }) {
               type="button"
               data-testid="computer-use-grant-allow"
               disabled={!!pendingAction}
-              onClick={() => run('grant', () => bridge.computerUse.grant(grantRequest.sessionId))}
+              onClick={() => run('grant', () => bridge.computerUse.grant(grantRequest.sessionId), grantRequest.sessionId)}
               className={dialogPrimaryButton}
             >
               {copy.grantAllow}
@@ -255,14 +266,16 @@ export function ComputerUseDialogs({ slice, copy }) {
             </pre>
           </div>
         )}
-        {actionError && <div className="text-[13px] text-[#EA4335] mb-3">{actionError}</div>}
+        {actionError && actionError.stamp === confirmRequest.confirmId && (
+          <div className="text-[13px] text-[#EA4335] mb-3">{actionError.message}</div>
+        )}
         <div className="flex items-center justify-end gap-2">
           <button
             type="button"
             ref={confirmDenyRef}
             data-testid="computer-use-confirm-deny"
             disabled={!!pendingAction}
-            onClick={() => run('deny', () => bridge.computerUse.deny(confirmRequest.confirmId))}
+            onClick={() => run('deny', () => bridge.computerUse.deny(confirmRequest.confirmId), confirmRequest.confirmId)}
             className={dialogSecondaryButton}
           >
             {copy.confirmDeny}
@@ -271,7 +284,7 @@ export function ComputerUseDialogs({ slice, copy }) {
             type="button"
             data-testid="computer-use-confirm-once"
             disabled={!!pendingAction}
-            onClick={() => run('confirm', () => bridge.computerUse.confirm(confirmRequest.confirmId))}
+            onClick={() => run('confirm', () => bridge.computerUse.confirm(confirmRequest.confirmId), confirmRequest.confirmId)}
             className={dialogPrimaryButton}
           >
             {copy.confirmOnce}
