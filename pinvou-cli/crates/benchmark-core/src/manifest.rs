@@ -45,6 +45,15 @@ pub struct RunManifest {
     concurrency: u16,
     pass: u16,
     created_at_ms: u64,
+    /// Machine-readable harness-deadline mode (`None` = tasks run without a
+    /// harness wall-clock deadline; `Some(secs)` = bounded). Scores from
+    /// runs with different modes are not comparable. Absent in manifests
+    /// written before the field existed (serde default), which is why it is
+    /// deliberately NOT part of `matches_expected`: resuming an older run
+    /// must keep working, and the information for those runs is genuinely
+    /// unrecoverable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    harness_deadline_secs: Option<u64>,
 }
 
 impl RunManifest {
@@ -72,6 +81,7 @@ impl RunManifest {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,
+            harness_deadline_secs: descriptor.harness_deadline_secs(),
         };
         manifest.validate()?;
         Ok(manifest)
@@ -101,6 +111,10 @@ impl RunManifest {
 
     pub fn concurrency(&self) -> u16 {
         self.concurrency
+    }
+
+    pub fn harness_deadline_secs(&self) -> Option<u64> {
+        self.harness_deadline_secs
     }
 
     pub(crate) fn matches_expected(&self, expected: &Self) -> bool {

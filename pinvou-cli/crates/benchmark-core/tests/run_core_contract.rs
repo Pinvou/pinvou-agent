@@ -49,6 +49,55 @@ fn manifest(run_id: &str) -> RunManifest {
     .unwrap()
 }
 
+#[test]
+fn manifest_records_the_harness_deadline_mode_and_reads_old_manifests() {
+    // The mode is machine-readable in the manifest so a submission can tell
+    // an unbounded run (no harness wall-clock deadline) from a bounded one —
+    // the two are not score-comparable.
+    let bounded = RunManifest::new(
+        "run-bounded",
+        &descriptor().with_harness_deadline_secs(Some(600)),
+        Split::new("smoke"),
+        ModelIdentity::new("fixture", "mock-model").unwrap(),
+        ToolPolicyId::new("smoke/v1"),
+        1,
+    )
+    .unwrap();
+    assert_eq!(bounded.harness_deadline_secs(), Some(600));
+    let json = serde_json::to_value(&bounded).unwrap();
+    assert_eq!(json["harness_deadline_secs"], 600);
+
+    let unbounded = RunManifest::new(
+        "run-unbounded",
+        &descriptor(), // BenchmarkDescriptor::new defaults to None
+        Split::new("smoke"),
+        ModelIdentity::new("fixture", "mock-model").unwrap(),
+        ToolPolicyId::new("smoke/v1"),
+        1,
+    )
+    .unwrap();
+    assert_eq!(unbounded.harness_deadline_secs(), None);
+    // None is skipped entirely, so an unbounded run's manifest does not
+    // carry a marker that could be misread as a bounded 0-second deadline.
+    let json = serde_json::to_value(&unbounded).unwrap();
+    assert!(json.get("harness_deadline_secs").is_none());
+
+    // Manifests written before the field existed keep deserializing (serde
+    // default) so resuming an older run stays possible.
+    let legacy: RunManifest = serde_json::from_str(
+        r#"{
+            "schema_version": 1, "run_id": "run-legacy", "benchmark": "smoke",
+            "adapter_version": "smoke-adapter/v1", "dataset_revision": "r",
+            "scorer_revision": "r", "split": "smoke",
+            "model": {"provider": "fixture", "model": "mock-model"},
+            "tool_policy": "smoke/v1", "concurrency": 1, "pass": 1,
+            "created_at_ms": 0
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(legacy.harness_deadline_secs(), None);
+}
+
 fn task(id: &str) -> BenchmarkTask {
     BenchmarkTask::new(
         id,

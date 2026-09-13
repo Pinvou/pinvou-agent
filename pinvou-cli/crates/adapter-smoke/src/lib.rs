@@ -167,7 +167,10 @@ impl SmokeAdapter {
                 PRODUCT_SCORE_VERSION,
                 vec![Split::new("smoke")],
                 ExecutionKind::NativeTurn,
-            ),
+            )
+            // Per-case deadlines are 30/60s; the manifest records the upper
+            // bound so the harness-deadline mode is machine-readable.
+            .with_harness_deadline_secs(Some(60)),
         }
     }
 }

@@ -49,6 +49,9 @@ pub struct GaiaAdapter {
 impl GaiaAdapter {
     pub fn new() -> Self {
         Self {
+            // `with_harness_deadline_secs(None)` keeps the unbounded mode
+            // machine-readable in the run manifest (the default is also
+            // None; spelled out so the adapter's mode is explicit here).
             descriptor: BenchmarkDescriptor::new(
                 BenchmarkId::new("gaia"),
                 GAIA_ADAPTER_VERSION,
@@ -56,7 +59,10 @@ impl GaiaAdapter {
                 GAIA_SCORER_REVISION,
                 vec![Split::new(GAIA_SPLIT)],
                 ExecutionKind::NativeTurn,
-            ),
+            )
+            // `None` (unbounded) is the default; spelled out so the
+            // adapter's machine-readable manifest mode is explicit here.
+            .with_harness_deadline_secs(None),
             scoring_dataset: None,
         }
     }
