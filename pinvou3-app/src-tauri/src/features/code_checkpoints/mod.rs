@@ -360,27 +360,22 @@ fn canonical_execution_root(execution_root: &Path) -> Result<PathBuf> {
 /// 与签名/钩子以外的正常行为需要）。
 fn isolated_git_command() -> std::process::Command {
     let mut command = crate::platform::process::HiddenCommand::new("git");
-    // vars_os 而非 vars：POSIX 允许环境变量取任意字节，vars 遇非 UTF-8 键/值会
-    // 直接 panic（lib.rs EnvSnapshot 同坑在先），一个这样的变量就会废掉该用户
-    // 全部快照能力；前缀按原始字节匹配，key 无需转 String。
-    for (key, _) in std::env::vars_os() {
-        if key.as_encoded_bytes().starts_with(b"GIT_") {
-            command.env_remove(&key);
-        }
-    }
+    // 固定键名列表剥离（platform::process::strip_all_git_env），不得遍历
+    // process env 找 GIT_*：并行测试里其他线程的 setenv 与遍历并发会漏键，
+    // 隔离偶尔整体失效（2026-09-12 抖动族根因）。
+    crate::platform::process::strip_all_git_env(&mut command);
     command.env("GIT_CONFIG_NOSYSTEM", "1");
     command.env("GIT_CONFIG_GLOBAL", crate::platform::os::null_device());
     command
 }
 
 fn git(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<std::process::Output> {
-    let output = isolated_git_command()
+    isolated_git_command()
         .arg(format!("--git-dir={}", repo.display()))
         .arg(format!("--work-tree={}", work_tree.display()))
         .args(arguments)
         .output()
-        .with_context(|| format!("执行 git {} 失败（Git 不可用？）", arguments.join(" ")))?;
-    Ok(output)
+        .with_context(|| format!("执行 git {} 失败（Git 不可用？）", arguments.join(" ")))
 }
 
 fn git_ok(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<String> {

@@ -1173,7 +1173,9 @@ fn filesystem_changes(
 }
 
 fn git_root(root: &Path) -> Option<PathBuf> {
-    let output = crate::platform::process::HiddenCommand::new("git")
+    let mut command = crate::platform::process::HiddenCommand::new("git");
+    crate::platform::process::strip_git_override_env(&mut command);
+    let output = command
         .current_dir(root)
         .args(["rev-parse", "--show-toplevel"])
         .output()
@@ -1191,7 +1193,9 @@ fn git_branch(root: &Path) -> Option<String> {
 }
 
 fn git_status_entries(root: &Path) -> Result<Vec<WorkspaceChange>> {
-    let output = crate::platform::process::HiddenCommand::new("git")
+    let mut command = crate::platform::process::HiddenCommand::new("git");
+    crate::platform::process::strip_git_override_env(&mut command);
+    let output = command
         .current_dir(root)
         .args([
             "status",
@@ -1253,7 +1257,9 @@ fn git_status_label(x: char, y: char) -> &'static str {
 }
 
 fn git_output(root: &Path, arguments: &[&str]) -> Result<String> {
-    let output = crate::platform::process::HiddenCommand::new("git")
+    let mut command = crate::platform::process::HiddenCommand::new("git");
+    crate::platform::process::strip_git_override_env(&mut command);
+    let output = command
         .current_dir(root)
         .args(arguments)
         .output()
@@ -1547,7 +1553,9 @@ mod tests {
     fn init_git_repo(label: &str) -> Option<TestDir> {
         let root = TestDir::new(label);
         let run = |args: &[&str]| {
-            crate::platform::process::HiddenCommand::new("git")
+            let mut command = crate::platform::process::HiddenCommand::new("git");
+            crate::platform::process::strip_git_override_env(&mut command);
+            command
                 .current_dir(root.path())
                 .args(args)
                 .output()
@@ -1812,7 +1820,9 @@ mod tests {
         // 本地子模块仓库（file 协议克隆在新版 git 默认拒绝，需显式允许）。
         let sub = TestDir::new("stash-noop-push-sub");
         let sub_run = |args: &[&str]| {
-            crate::platform::process::HiddenCommand::new("git")
+            let mut command = crate::platform::process::HiddenCommand::new("git");
+            crate::platform::process::strip_git_override_env(&mut command);
+            command
                 .current_dir(sub.path())
                 .args(args)
                 .output()
@@ -1950,5 +1960,58 @@ mod tests {
             classify_origin(root.path(), Some(&baseline), "new.txt").unwrap(),
             "session"
         );
+    }
+
+    /// GIT_* 环境隔离：宿主 shell（或并发持有 ENV_LOCK 写环境的测试）注入的
+    /// GIT_INDEX_FILE/GIT_OBJECT_DIRECTORY 不得把 workspace 的分支/暂存操作
+    /// 重定向到无关位置。回归背景：全量并行时该污染真实发生，曾让 git 子进程
+    /// 用例逐轮随机失败（串行全绿）。
+    #[test]
+    fn workspace_git_operations_ignore_host_git_environment() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let bogus = TestDir::new("bogus-git-env");
+        // SAFETY: ENV_LOCK 序列化进程环境写（crate 级唯一约定）；workspace 的
+        // git 子进程自身剥离 GIT_* 覆盖变量，不受本写影响。
+        unsafe {
+            std::env::set_var("GIT_INDEX_FILE", bogus.path().join("index"));
+            std::env::set_var("GIT_OBJECT_DIRECTORY", bogus.path().join("objects"));
+        }
+        let result = std::panic::catch_unwind(|| {
+            let Some(root) = init_git_repo("env-isolation") else {
+                return;
+            };
+            fs::write(root.path().join("file.txt"), "v1-dirty").unwrap();
+            // 提交对象必须落在本仓库对象库，分支切换与 stash 恢复全链路照常。
+            checkout_workspace_branch(root.path(), "feature", BranchSwitchMode::Stash, None)
+                .unwrap();
+            assert_eq!(git_branch(root.path()).as_deref(), Some("feature"));
+            assert_eq!(
+                fs::read_to_string(root.path().join("file.txt")).unwrap(),
+                "v1-dirty"
+            );
+            let stash_list = git_output(root.path(), &["stash", "list"]).unwrap();
+            assert!(stash_list.trim().is_empty());
+            // 污染目标保持干净：索引与对象都没有被重定向。
+            assert!(
+                !bogus.path().join("index").exists(),
+                "GIT_INDEX_FILE 必须被剥离"
+            );
+            assert!(
+                bogus
+                    .path()
+                    .read_dir()
+                    .map(|entries| entries.count() == 0)
+                    .unwrap_or(true),
+                "GIT_OBJECT_DIRECTORY 必须被剥离"
+            );
+        });
+        // SAFETY: 同 ENV_LOCK 序列化，恢复污染前的环境。
+        unsafe {
+            std::env::remove_var("GIT_INDEX_FILE");
+            std::env::remove_var("GIT_OBJECT_DIRECTORY");
+        }
+        result.unwrap();
     }
 }

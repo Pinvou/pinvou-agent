@@ -898,10 +898,15 @@ mod tests {
     use super::*;
 
     fn service() -> KnowledgeService {
+        // 路径必须每次调用唯一：line!() 在辅助函数内展开对所有调用者是同一个
+        // 值，并行测试会共用同一 SQLite 文件——Store::open 的 stale 检测并发
+        // 读到中间态 user_version 就会整库删除重建，另一测试随即 "no such
+        // table"。曾以此真实抖动（2026-09-12 全量并行复现）。
+        static SERVICE_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
             "pinvou3_kb_import_reload_{}_{}",
             std::process::id(),
-            line!()
+            SERVICE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         KnowledgeService::new(&dir.join("index.db")).expect("KnowledgeService::new")
     }
