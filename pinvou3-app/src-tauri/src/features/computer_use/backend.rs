@@ -18,30 +18,32 @@ use parking_lot::Mutex;
 
 /// Wait ceiling for a single backend request. It must cover the worst legal
 /// SUM of one lazy-start path, not any single phase: every portal round-trip
-/// has two independently bounded phases (method call + response wait).
-/// Worst legal lazy-start request:
-/// - CreateSession + SelectDevices + SelectSources: 3 x (30s call + 30s
-///   response) = 180s
-/// - Start: 30s call + 120s response = 150s
+/// has THREE independently bounded phases (AddMatch subscription + method
+/// call + response wait). Worst legal lazy-start request:
+/// - CreateSession + SelectDevices + SelectSources: 3 x (30s subscribe +
+///   30s call + 30s response) = 270s
+/// - Start: 30s subscribe + 30s call + 120s response = 180s
 /// - OpenPipeWireRemote: +30s (on the same ensure_started chain whenever
 ///   the request auto-captures; hold_key always does, T3 screens it)
-/// - the request itself (hold_key): +30s
-/// = 390s worst legal lazy-start request; 400s leaves margin. (The previous
-/// value, 340s, under-counted the OpenPipeWireRemote phase.) Below the true
-/// sum the lazy-start slow path false-times-out: the caller reports failure
-/// and retries while the already-dequeued, un-cancellable zombie request
-/// still executes — the double injection this constant exists to prevent.
-/// The historical findings still hold: an unbounded wait lets one wedged
-/// XTEST/CGEvent/portal call queue every later request of the session
-/// forever. The timeout only frees the caller; on timeout/disconnect it
-/// sets the request's cancel flag and the worker checks it after dequeue,
-/// before execution, so an abandoned request is not executed. Residual gap
-/// (inherent platform limitation, recorded honestly): a request already
-/// inside an OS call (XTEST/CGEvent/portal) cannot be interrupted —
-/// interception is only possible at request boundaries; while the worker
-/// stays wedged in an OS call, later requests are rejected by the in-flight
-/// flag instead of queueing onto the thread.
-const BACKEND_CALL_TIMEOUT: Duration = Duration::from_secs(400);
+/// - the request itself (hold_key): press 10s + hold 30s + release 10s
+/// = 530s worst legal lazy-start request; 600s leaves margin. (The previous
+/// value, 400s, under-counted the per-round-trip AddMatch subscription
+/// phase and the press/release notify bounds; 340s before that under-counted
+/// OpenPipeWireRemote.) Below the true sum the lazy-start slow path
+/// false-times-out: the caller reports failure and retries while the
+/// already-dequeued zombie request still executes — the double injection
+/// this constant exists to prevent. The historical findings still hold: an
+/// unbounded wait lets one wedged XTEST/CGEvent/portal call queue every
+/// later request of the session forever. The timeout only frees the caller;
+/// on timeout/disconnect it sets the request's cancel flag and the worker
+/// checks it after dequeue, before execution, and — for the multi-event
+/// request kinds (type/scroll) — again between injected events, so an
+/// abandoned request stops early instead of running to completion. Residual
+/// gap (inherent platform limitation, recorded honestly): a request already
+/// inside a single OS call (XTEST/CGEvent/portal notify) cannot be
+/// interrupted; while the worker stays wedged in an OS call, later requests
+/// are rejected by the in-flight flag instead of queueing onto the thread.
+const BACKEND_CALL_TIMEOUT: Duration = Duration::from_secs(600);
 
 use super::types::{
     Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
@@ -102,6 +104,17 @@ pub trait ComputerUseBackend: Send {
     fn release_os_grant(&mut self) -> Result<(), ComputerUseError> {
         let _ = &mut *self;
         Ok(())
+    }
+    /// 请求级取消旗标（见 [`BackendRequest::cancelled`]）：worker 在派发每个
+    /// 请求前设置、派发后清除。多事件请求的实现（type 的逐字符/逐段注入）
+    /// 在事件间检查它，调用方已超时放弃的请求立即停止注入——出队时的一次性
+    /// 检查拦不住合法超过调用预算的长请求（round-10 评审 M3：Wayland 逐字符
+    /// 注入每字符两次有界 portal 通知，10k 字符在降级总线上远超调用预算，
+    /// 调用方超时后僵尸请求会与重试双重注入）。默认 no-op：单事件后端
+    /// （XTEST/CGEvent/SendInput 批量注入、UIA 查询、单次 portal notify）
+    /// 本来就是一次 OS 调用，没有事件间检查点。
+    fn set_cancel_flag(&mut self, flag: Option<Arc<AtomicBool>>) {
+        let _ = flag;
     }
 }
 
@@ -264,16 +277,25 @@ fn worker_loop(
         }
     };
     while let Ok(request) = rx.recv() {
-        // 出队后、执行前检查取消旗标：调用方已放弃的请求不再执行。剩余缺口
-        // （平台 API 层面的固有限制，如实记录）：已进入 OS 调用的请求无法
-        // 中断，只能在请求边界拦截。
+        // 出队后、执行前检查取消旗标：调用方已放弃的请求不再执行。多事件
+        // 注入（type）还会在事件间检查旗标（见 `set_cancel_flag`）。剩余缺口
+        // （平台 API 层面的固有限制，如实记录）：已进入单次 OS 调用的请求
+        // 无法中断，只能在调用边界拦截。
         if request.cancelled.load(Ordering::SeqCst) {
             let _ = request.reply.send(Err(ComputerUseError::unavailable(
                 "request was cancelled after the caller timed out",
             )));
             continue;
         }
-        match dispatch(backend.as_mut(), request.kind) {
+        // 派发前把取消旗标交给 backend：多事件注入（type）在事件间检查它，
+        // 调用方已放弃的请求不再继续注入（评审发现 M3）。派发后清除，避免
+        // 陈旧旗标影响后续请求。
+        backend
+            .as_mut()
+            .set_cancel_flag(Some(Arc::clone(&request.cancelled)));
+        let dispatched = dispatch(backend.as_mut(), request.kind);
+        backend.as_mut().set_cancel_flag(None);
+        match dispatched {
             Some(result) => {
                 let _ = request.reply.send(result);
             }
@@ -679,6 +701,16 @@ impl BackendRegistry {
     /// resolves. Errors are only logged: the worst case (a leaked grant or
     /// a held button) must never panic or block the caller.
     ///
+    /// Known trade-off (round-10 m1, acknowledged rather than gated): the
+    /// synthetic mouse-up is machine-global and the control lane does not
+    /// hold the physical-input lock, so session B's cleanup releases the
+    /// button even while session A (or the user) is mid-drag. Tracking
+    /// per-session pressed state to gate this was rejected: the cleanup
+    /// exists precisely because state may be inconsistent, and a wrong
+    /// "we never pressed" bookkeeping would strand a real held button —
+    /// the worse failure. The tool-layer fallback (tool.rs) releases only
+    /// what the tool itself pressed; this path is the safety net.
+    ///
     /// The registration is KEPT: cleanup is idempotent (the OS-grant close
     /// is take()-based inside the backend, and a mouse-up on an unpressed
     /// button is a no-op), and a session re-granted after this revoke must
@@ -935,6 +967,104 @@ mod tests {
         }
         // Drop 后 worker 线程收到 Shutdown 并析构 backend 对象。
         assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    /// 评审修复回归（round-10 M3）：worker 在派发请求前把取消旗标交给
+    /// backend、派发后清除——多事件注入（type）才能在事件间检查旗标并停止
+    /// 注入；派发结束后旗标必须复位，避免陈旧旗标影响后续请求。
+    #[test]
+    fn cancel_flag_reaches_the_backend_during_dispatch_only() {
+        use std::sync::Mutex;
+        // 记录 set_cancel_flag 的每次调用参数（派发前置位、派发后清除）。
+        let seen: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+        struct FlagRecordingBackend {
+            seen: Arc<Mutex<Vec<bool>>>,
+        }
+        impl ComputerUseBackend for FlagRecordingBackend {
+            fn capabilities(&self) -> Capabilities {
+                Capabilities {
+                    screenshot: false,
+                    input: true,
+                    ui_tree: false,
+                    notes: "test".to_string(),
+                }
+            }
+            fn set_cancel_flag(&mut self, flag: Option<Arc<AtomicBool>>) {
+                self.seen.lock().unwrap().push(flag.is_some());
+            }
+            fn capture(&mut self) -> Result<Capture, ComputerUseError> {
+                Err(ComputerUseError::unsupported("capture", "test"))
+            }
+            fn cursor_position(&mut self) -> Result<(i32, i32), ComputerUseError> {
+                Err(ComputerUseError::unsupported("cursor_position", "test"))
+            }
+            fn move_to(&mut self, _x: i32, _y: i32) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("move_to", "test"))
+            }
+            fn click(&mut self, _b: MouseButton, _c: u8) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("click", "test"))
+            }
+            fn mouse_down(&mut self, _b: MouseButton) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("mouse_down", "test"))
+            }
+            fn mouse_up(&mut self, _b: MouseButton) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("mouse_up", "test"))
+            }
+            fn drag(&mut self, _from: (i32, i32), _to: (i32, i32)) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("drag", "test"))
+            }
+            fn scroll(&mut self, _d: ScrollDirection, _c: u32) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("scroll", "test"))
+            }
+            fn type_text(&mut self, _t: &str) -> Result<(), ComputerUseError> {
+                Ok(())
+            }
+            fn key_chord(&mut self, _k: &[Key]) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("key_chord", "test"))
+            }
+            fn hold_key(&mut self, _k: &[Key], _ms: u64) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("hold_key", "test"))
+            }
+            fn ui_tree(&mut self, _o: &UiTreeOptions) -> Result<String, ComputerUseError> {
+                Err(ComputerUseError::unsupported("ui_tree", "test"))
+            }
+            fn element_at_point(
+                &mut self,
+                _x: i32,
+                _y: i32,
+            ) -> Result<Option<ElementInfo>, ComputerUseError> {
+                Err(ComputerUseError::unsupported("element_at_point", "test"))
+            }
+        }
+        let (req_tx, req_rx) = channel::<BackendRequest>();
+        let (startup_tx, startup_rx) = channel::<Result<(), ComputerUseError>>();
+        let seen_for_worker = Arc::clone(&seen);
+        let factory: BackendFactory = Box::new(move || {
+            Ok(Box::new(FlagRecordingBackend {
+                seen: seen_for_worker,
+            }) as Box<dyn ComputerUseBackend>)
+        });
+        let worker = std::thread::spawn(move || worker_loop(factory, req_rx, startup_tx));
+        assert!(startup_rx.recv().expect("startup channel alive").is_ok());
+        for _ in 0..2 {
+            let (reply_tx, reply_rx) = channel::<BackendResult>();
+            req_tx
+                .send(BackendRequest {
+                    kind: BackendRequestKind::TypeText { text: "hi".into() },
+                    reply: reply_tx,
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                })
+                .expect("worker alive");
+            let _ = reply_rx.recv().expect("worker must reply");
+        }
+        drop(req_tx);
+        worker.join().expect("worker exits when channel closes");
+        // 每次派发恰好一次置位 + 一次清除（即使请求之间旗标从未被置位）。
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![true, false, true, false],
+            "cancel flag must be handed to the backend before dispatch and cleared after"
+        );
     }
 
     /// 评审修复回归：调用方已放弃（超时/断连置位旗标）的请求在 worker 出队
