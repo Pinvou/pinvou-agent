@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   annotateAgentSpawnGroups,
   isAgentSpawnChatItem,
+  spawnGroupOf,
 } from '../src/features/multiagent/spawn-aggregation.mjs';
 
 const spawnItem = (id, extra = {}) => ({
@@ -87,4 +88,50 @@ test('items without spawns are returned by reference (new array, same item refer
   const annotated = annotateAgentSpawnGroups(items);
   assert.notEqual(annotated, items, 'the array is always newly built');
   assert.equal(annotated[0], plain, 'items keep their references');
+});
+
+test('degenerate inputs: empty array yields an empty array, non-arrays pass through by reference', () => {
+  assert.deepEqual(annotateAgentSpawnGroups([]), []);
+  const notAnArray = { length: 1 };
+  assert.equal(annotateAgentSpawnGroups(notAnArray), notAnArray, 'non-array input is returned untouched');
+  assert.equal(annotateAgentSpawnGroups(null), null);
+});
+
+test('the canonical `agents/wait` coordination tool breaks the spawn sequence', () => {
+  const items = [
+    spawnItem('aaaa0001'),
+    { type: 'tool', id: 'w1', name: 'agents/wait', args: {}, state: 'done', success: true },
+    spawnItem('aaaa0002'),
+  ];
+  const annotated = annotateAgentSpawnGroups(items);
+  assert.equal(annotated[0].spawnGroup.count, 1);
+  assert.ok(!annotated[1].spawnGroupHidden && !annotated[1].spawnGroup, 'wait rows render untouched');
+  assert.equal(annotated[2].spawnGroup.count, 1, 'a spawn after agents/wait belongs to a new sequence');
+});
+
+test('state === "failed" alone (without success === false) counts toward failed', () => {
+  const items = [
+    spawnItem('aaaa0001', { state: 'failed' }),
+    spawnItem('aaaa0002'),
+  ];
+  const annotated = annotateAgentSpawnGroups(items);
+  assert.equal(annotated[0].spawnGroup.count, 2);
+  assert.equal(annotated[0].spawnGroup.failed, 1);
+});
+
+test('annotation never mutates the input items: group members are shallow copies', () => {
+  const first = spawnItem('aaaa0001');
+  const second = spawnItem('aaaa0002', { success: false });
+  const items = [first, second];
+  const annotated = annotateAgentSpawnGroups(items);
+  assert.equal(annotated.length, items.length);
+  assert.ok(!('spawnGroup' in first), 'the original first spawn gains no annotation fields');
+  assert.ok(!('spawnGroupHidden' in second), 'the original hidden spawn gains no annotation fields');
+  assert.ok(!('spawnGroup' in items[0]) && !('spawnGroupHidden' in items[1]), 'the input array items stay clean');
+});
+
+test('spawnGroupOf: degenerate group shape for a single unannotated spawn item', () => {
+  assert.deepEqual(spawnGroupOf(spawnItem('aaaa0001')), { count: 1, failed: 0 });
+  assert.deepEqual(spawnGroupOf(spawnItem('aaaa0002', { success: false })), { count: 1, failed: 1 });
+  assert.deepEqual(spawnGroupOf(spawnItem('aaaa0003', { state: 'failed' })), { count: 1, failed: 1 });
 });
