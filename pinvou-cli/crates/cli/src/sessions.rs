@@ -139,9 +139,12 @@ pub fn parse(values: &[String]) -> Result<SessionsCommand, CliError> {
             if title.trim().is_empty() {
                 return Err(CliError::usage("sessions rename requires a title"));
             }
-            // A flag-shaped token (`--limit 5`) would otherwise be swallowed
-            // into the title while every other subcommand rejects it.
-            if title.contains("--") || title.starts_with('-') {
+            // A flag-shaped title ("--limit") would be swallowed as a flag
+            // by every other subcommand, so reject titles that LOOK like
+            // flags; a title that merely CONTAINS "--" ("War and Peace --
+            // annotated") is legitimate text — the shell has already
+            // stripped any quotes by the time the CLI sees the token.
+            if title.starts_with('-') {
                 return Err(CliError::usage(format!(
                     "sessions rename takes a plain title (quote it if it starts with '-'); got '{title}'"
                 )));
@@ -582,6 +585,11 @@ fn set_hidden(id: &str, hidden: bool, output: OutputMode) -> Result<CliOutcome, 
 fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     require_yes(yes)?;
     let store = open_store()?;
+    // Unknown ids exit 1 like every other sessions command (show/export/
+    // rename gate on existence): the store's own delete treats NotFound as
+    // success for the GUI cascade, but a CLI caller asking to delete a
+    // session that is not there must not be told "deleted".
+    require_existing(&store, id, "delete")?;
     // The store delete path mirrors the GUI chat-session cascade (session
     // JSON + artifacts directory) and refuses scheduled-run sessions, which
     // the GUI deletes through their automation only.

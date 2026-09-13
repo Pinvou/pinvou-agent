@@ -474,6 +474,11 @@ fn update(
 fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     require_yes(yes)?;
     sandbox_home()?;
+    // The feature delete ignores remove-file errors (the GUI cascade treats
+    // a missing card as already-deleted), but a CLI caller deleting an id
+    // that is not there must not be told "deleted" — gate on existence like
+    // `personas show` does.
+    get(id).ok_or_else(|| CliError::failed(format!("unknown persona: {id}")))?;
     delete_user_persona(id).map_err(|error| persona_error("delete", error))?;
     let value = serde_json::json!({ "id": id, "action": "deleted" });
     Ok(success(render(output, format!("deleted {id}"), &value)))
