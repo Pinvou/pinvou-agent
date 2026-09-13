@@ -14,9 +14,25 @@ const LEFT_STOP = /[\s"'`<>|]/;
 const RIGHT_STOP = /["'`<>|\n\r]/;
 
 function screenshotSpanAtMarker(normalized, markerIndex) {
+  // Walk left to the first stop boundary; if the head does not reach an
+  // absolute anchor, keep extending past earlier boundaries (bounded) and
+  // retry the anchor test. A space INSIDE the path (e.g.
+  // `C:/Users/John Smith/.pinvou3/...` — Windows account names with spaces
+  // are common) is otherwise indistinguishable from prose before the path,
+  // and the extraction silently lost the screenshot card for that whole
+  // class of users (review finding). The anchor requirement itself is what
+  // blocks relative-path trickery: a head only wins when it genuinely
+  // reaches '/' or '<drive>:/', so prose + a relative mention still fails
+  // no matter how far the walk extends.
   let start = markerIndex;
-  while (start > 0 && !LEFT_STOP.test(normalized[start - 1])) start -= 1;
-  const head = normalized.slice(start, markerIndex + 1);
+  let head = normalized.slice(start, markerIndex + 1);
+  for (let attempts = 0; attempts < 4; attempts += 1) {
+    while (start > 0 && !LEFT_STOP.test(normalized[start - 1])) start -= 1;
+    head = normalized.slice(start, markerIndex + 1);
+    if (head.startsWith('/') || /^[A-Za-z]:\//.test(head)) break;
+    if (start === 0) break;
+    start -= 1;
+  }
   if (!(head.startsWith('/') || /^[A-Za-z]:\//.test(head))) return null;
   const tail = markerIndex + SCREENSHOT_DIR_MARKER.length;
   let end = tail;

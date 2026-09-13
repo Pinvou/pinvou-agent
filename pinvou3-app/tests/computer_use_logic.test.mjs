@@ -20,6 +20,23 @@ assert.equal(
   'windows drive paths with backslash separators must be extracted',
 );
 assert.equal(
+  extractComputerUseScreenshotPath('shot saved C:\\Users\\John Smith\\.pinvou3\\sessions\\s1\\attachments\\computer_use\\shot.png'),
+  'C:\\Users\\John Smith\\.pinvou3\\sessions\\s1\\attachments\\computer_use\\shot.png',
+  'a space INSIDE the path (walk-back extends past inner boundaries) must not lose the card (review finding)',
+);
+assert.equal(
+  extractComputerUseScreenshotPath('saved /mnt/John Smith/.pinvou3/sessions/s1/attachments/computer_use/shot.png'),
+  '/mnt/John Smith/.pinvou3/sessions/s1/attachments/computer_use/shot.png',
+  'unix absolute paths with inner spaces must be extracted too',
+);
+// Relative mentions stay rejected no matter how far the walk-back extends:
+// only a head genuinely reaching '/' or '<drive>:/' wins.
+assert.equal(
+  extractComputerUseScreenshotPath('evil src/attachments/computer_use/shot.png'),
+  null,
+  'a relative mention after prose must still be rejected',
+);
+assert.equal(
   extractComputerUseScreenshotPath('saved /ws/attachments/computer_use/shot.png.png and more'),
   '/ws/attachments/computer_use/shot.png.png',
   'a basename ending in .png.png must not be truncated at the first .png',
