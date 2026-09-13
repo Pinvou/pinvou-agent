@@ -598,6 +598,17 @@
 //!   EVERY tool (fetch/rlm/tasks/Git/MCP…). The ruleset keys only on
 //!   `exec_shell` (Bash family) commands since the v3 rollback removed the
 //!   last File read-family path rules.
+//! - The write file tools (`write`/`edit`) key on NOTHING here: every
+//!   destroy/persistence face this ruleset hard-denies on the shell channel
+//!   (`rm ~/.ssh/id_rsa`, `tee payload ~/.bashrc`, …) is reachable with a
+//!   single typed-path `write` call, and the Bypass-folded approval posture
+//!   shows no prompt. The foundation read denylist covers reads only, so the
+//!   credential/persistence WRITE faces have prompt-level red lines
+//!   (instructions "red lines" section) as their only control — registered
+//!   here as a real asymmetry, not an allowance. Closing it means typed
+//!   path rules for
+//!   `write`/`edit` (the foundation keeps that capability) or a posture
+//!   change; both are decisions above this ruleset's rollback scope.
 //! - Heredoc / multi-line command bodies can over-block: the foundation's
 //!   segment scan splits on real newlines and prefers over-blocking; a script
 //!   containing a literal `rm -rf ~` or `tee payload ~/.bashrc` line is
@@ -2196,6 +2207,11 @@ mod tests {
         // No File-tool path rules at all: the v1 workspace-relative face
         // was removed with the read faces in v3 (the foundation's built-in
         // read denylist covers the file tools on every platform).
+        // Known registered asymmetry (see the Non-Bash tool surfaces residue):
+        // with zero typed path rules, the `write`/`edit` channel has no
+        // mechanical coverage for the credential/persistence faces the shell
+        // channel hard-denies. If typed write-path rules ever land, this
+        // assertion and that residue entry must be updated together.
         assert!(
             rules.iter().all(|r| r.path.is_none()),
             "File-tool path rules must stay rolled back (v3 scope decision)"
