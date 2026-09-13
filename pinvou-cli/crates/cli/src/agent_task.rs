@@ -249,6 +249,18 @@ fn run_agent(
         model_id: model,
         attachments,
     };
+    // The persisted session will consume a slot in the SAME 50-session
+    // retention store the GUI reads, and a fresh save at the cap evicts the
+    // oldest chat session(s) — pinned ones included, with no warning in the
+    // app. Sample the store size BEFORE the run: retention trims to exactly
+    // 50, so a pre-run count >= 50 is what makes this run evict; a post-run
+    // count would also fire when 49 grew to 50 with nothing evicted.
+    let evicts_gui_sessions = keep_session_enabled()
+        && session.is_none()
+        && pinvou3_lib::features::sessions::SessionStore::boot()
+            .ok()
+            .and_then(|store| store.list().ok())
+            .is_some_and(|sessions| sessions.len() >= 50);
     let report = pinvou_product_backend::run_agentic_task(request)
         .map_err(|error| CliError::failed(format!("agent_run_failed: {error:#}")))?;
     // A fresh run persists its session under the eval-session factory title
@@ -265,25 +277,13 @@ fn run_agent(
         if let Ok(store) = store {
             let _ = store.set_title(&report.session_id, format!("CLI agent run <{stamp}>"));
         }
-        // The persisted session now consumes a slot in the SAME 50-session
-        // retention store the GUI reads. When the store is at the cap, this
-        // run just caused the oldest chat session(s) — pinned ones included,
-        // with no warning in the app — to be evicted. Surface that once,
-        // best-effort, instead of leaving it silent.
-        if keep_session_enabled() && session.is_none() {
-            if let Ok(store) = pinvou3_lib::features::sessions::SessionStore::boot() {
-                if let Ok(sessions) = store.list()
-                    && sessions.len() >= 50
-                {
-                    eprintln!(
-                        "pinvou: warning: the session store holds {} sessions at the \
-                         50-session retention cap; this run's persisted session evicted the \
-                         oldest chat session(s), pinned ones included. Point PINVOU3_HOME at \
-                         a sandbox or set PINVOU3_AGENT_TASK_KEEP_SESSION=0 for batch runs.",
-                        sessions.len()
-                    );
-                }
-            }
+        if evicts_gui_sessions {
+            eprintln!(
+                "pinvou: warning: the session store was already at the 50-session retention \
+                 cap before this run; persisting this run's session evicted the oldest chat \
+                 session(s), pinned ones included. Point PINVOU3_HOME at a sandbox or set \
+                 PINVOU3_AGENT_TASK_KEEP_SESSION=0 for batch runs."
+            );
         }
     }
     // TB/harness semantics: exit 0 whenever a report is produced (timeouts and
