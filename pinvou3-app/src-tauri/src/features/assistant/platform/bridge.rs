@@ -3577,21 +3577,17 @@ mod tests {
         // rules (`run.py` style). Safety-net rules (command-only since the
         // v3 rollback removed the File path face) are always present;
         // covered by the safety_deny_rules tests.
+        let plain_ruleset = bridge.scope_deny_ruleset("sess-plain");
         assert!(
-            bridge
-                .scope_deny_ruleset("sess-plain")
+            plain_ruleset
                 .ask_rules
                 .iter()
                 .all(|r| !r.command.as_deref().is_some_and(|c| c.contains("run.py")))
         );
         assert!(
-            bridge
-                .scope_deny_ruleset("sess-plain")
-                .ask_rules
-                .iter()
-                .any(|r| r.path.is_none()
-                    && r.action == codewhale_execpolicy::PermissionAction::Deny
-                    && r.command.as_deref().is_some_and(|c| c.starts_with("mkfs"))),
+            plain_ruleset.ask_rules.iter().any(|r| r.path.is_none()
+                && r.action == codewhale_execpolicy::PermissionAction::Deny
+                && r.command.as_deref().is_some_and(|c| c.starts_with("mkfs"))),
             "safety-net command rules should always be present"
         );
         // The same ruleset must also carry the safety face on the promoted
@@ -3599,8 +3595,7 @@ mod tests {
         // wildcard/flag rules at runtime. Pins rule presence AND promotion
         // independently, so a promotion regression gets its own signal here.
         assert!(
-            bridge
-                .scope_deny_ruleset("sess-plain")
+            plain_ruleset
                 .denied_prefixes
                 .iter()
                 .any(|p| p.starts_with("mkfs")),

@@ -350,9 +350,11 @@ pub async fn get_super_permission_status() -> Result<bool, String> {
 /// rebuild + broadcast (the rebuild re-reads the sudo state from disk inside
 /// `safety_deny_rules`) → the effective-state read-back for the return
 /// value. All of it runs serialized as one unit, so concurrent toggles no
-/// longer interleave and the sudo hard-deny
-/// ruleset is never rebuilt from a stale sudo snapshot (the narrow
-/// stale-snapshot window registered in safety_deny_rules is closed).
+/// longer interleave and the sudo hard-deny ruleset is never rebuilt from a
+/// snapshot older than the toggle itself (the toggle-vs-toggle
+/// stale-snapshot window registered in safety_deny_rules is closed;
+/// the connector/marketplace-vs-toggle refresh windows remain registered
+/// there as transient residues — this lock does not cover them).
 /// Toggling is a low-frequency user action, so holding the lock across the
 /// slow pkexec call is acceptable; the lock is held only here, the guard is
 /// scoped to the function, and an early pkexec error return releases it
