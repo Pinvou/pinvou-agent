@@ -1136,13 +1136,23 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                     self.input_init_error.as_deref().unwrap_or("unknown error")
                 )
             };
+            // 如实披露(round-10 评审 m10):X11 会话里设置了 WAYLAND_DISPLAY
+            // 时,xcap 自己的探测优先走 Wayland 链——截屏与 XTEST 输入会跑在
+            // 不同平面;此前只向 stderr 警告,模型与用户都看不到。
+            let mismatch = if self.session.has_wayland_display {
+                "; WARNING: WAYLAND_DISPLAY is set in this X11 session, so capture may be \
+                 routed through the Wayland portal chain while input targets X11 (unset \
+                 WAYLAND_DISPLAY for consistent behavior)"
+            } else {
+                ""
+            };
             Capabilities {
                 screenshot: true,
                 input: self.input.is_some(),
                 ui_tree,
                 notes: format!(
                     "X11 session ({}): full support (xcap capture, {input_note}, AT-SPI \
-                     tree{})",
+                     tree{}){mismatch}",
                     self.session.desktop_label(),
                     if ui_tree { "" } else { " unavailable" },
                 ),
@@ -1197,19 +1207,40 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             .ok_or_else(|| {
                 ComputerUseError::unavailable("no monitors reported by the display server")
             })?;
-        let image = monitor.capture_image().map_err(|error| {
-            if self.is_wayland() {
-                ComputerUseError::unsupported(
-                    "screenshot",
-                    format!(
-                        "screenshot on Wayland compositor {}: capture failed: {error}",
-                        self.session.desktop_label()
-                    ),
-                )
-            } else {
-                ComputerUseError::unavailable(format!("monitor capture failed: {error}"))
+        // xcap 的 Wayland 链内部有 `.expect(...)`(PNG 重编码,见探测处的
+        // 同类包裹):逐帧捕获同样包一层 catch_unwind,把潜在 panic 转成显式
+        // 错误,避免炸掉 backend worker 线程(round-10 评审 m10)。
+        let captured =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| monitor.capture_image()));
+        let image = match captured {
+            Ok(result) => result.map_err(|error| {
+                if self.is_wayland() {
+                    ComputerUseError::unsupported(
+                        "screenshot",
+                        format!(
+                            "screenshot on Wayland compositor {}: capture failed: {error}",
+                            self.session.desktop_label()
+                        ),
+                    )
+                } else {
+                    ComputerUseError::unavailable(format!("monitor capture failed: {error}"))
+                }
+            })?,
+            Err(_) => {
+                return Err(if self.is_wayland() {
+                    ComputerUseError::unsupported(
+                        "screenshot",
+                        format!(
+                            "screenshot on Wayland compositor {}: capture panicked inside \
+                             xcap's fallback chain",
+                            self.session.desktop_label()
+                        ),
+                    )
+                } else {
+                    ComputerUseError::unavailable("monitor capture panicked")
+                });
             }
-        })?;
+        };
         let width = image.width();
         let height = image.height();
         // X11:xcap 报告逻辑原点,乘回 scale 得根窗口物理像素(=输入空间,
