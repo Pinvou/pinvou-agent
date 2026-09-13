@@ -328,6 +328,8 @@ pub const MODE_EXECUTE_MD: &str = "\
 
 Tools run without per-call approval — the user has already authorized
 execution. Produce files and run commands now, then verify and report.
+If a gated write call is rejected, do not retry it: present the change
+in your reply and wait for the user to decide.
 Follow each message's `<system-reminder>`.";
 
 /// pinvou3 版静态层 composer：接管底座全部编译期静态文案
@@ -360,10 +362,24 @@ pub const AUTHORITY_RECAP: &str = "";
 /// 上游 v0.8.49 起 `set_*_override` 返回 `Result<(), String>`(首次 Ok,重复 Err)。
 pub fn install_prompt_overrides() {
     let _ = deepseek_tui::prompts::set_base_prompt_override(BASE_PROMPT_MD.to_string());
+    // locale 前导/收尾换成瘦身版(见 `LOCALE_PREAMBLE_*` 常量注释):底座长版
+    // 为防 thinking 漂英文而写,pinvou3 生产 reasoning_effort=off 没有该 failure
+    // mode,长版却仍带底座品牌词并逐轮消耗 token。zh-Hans / ja 各接一对;
+    // en 底座本就留空,由 prefs 的 `extra_language_directive` 补。
+    let _ = deepseek_tui::prompts::set_locale_preamble_zh_hans_override(
+        LOCALE_PREAMBLE_ZH_HANS.to_string(),
+    );
+    let _ = deepseek_tui::prompts::set_locale_closer_zh_hans_override(
+        LOCALE_CLOSER_ZH_HANS.to_string(),
+    );
+    let _ = deepseek_tui::prompts::set_locale_preamble_ja_override(LOCALE_PREAMBLE_JA.to_string());
+    let _ = deepseek_tui::prompts::set_locale_closer_ja_override(LOCALE_CLOSER_JA.to_string());
     // 静态层全量接管(fork patch: set_static_prompt_composer_override)。
     // 设置后底座的 Personality/Mode/Approval/ContextMgmt/COMPACT_TEMPLATE/
-    // taxonomy 常量全部不进 prompt,由 compose_static_layers 输出替代;
-    // base override 仍保留——composer 的 ctx.default_layers 引用它。
+    // taxonomy 常量全部不进 prompt,由 compose_static_layers 输出替代。
+    // base override 的现存效果只剩:占住 base 槽位、压掉底座 bundled-headless
+    // 精简宪法分支;compose_static_layers 不读 ctx,base.md 正文(纯注释壳)
+    // 永不进 prompt。
     let _ = deepseek_tui::prompts::set_static_prompt_composer_override(Box::new(|ctx| {
         compose_static_layers(ctx)
     }));
@@ -1851,6 +1867,32 @@ mod tests {
                 "宪法层应已折叠出静态层(并入 instructions): {folded}"
             );
         }
+    }
+
+    /// forkguard(locale): 瘦身版 locale 前导/收尾必须随 composer 一起接进底座
+    /// (install_prompt_overrides 的四个 set_locale_*_override)。上游 sync 后此
+    /// 测试失败 = 四个 override 调用被合丢,zh/ja 会话会重新吃进底座长版
+    /// (底座品牌词 + reasoning 防漂教学,生产无 thinking,属死重)。
+    /// 断言方式:底座用 OnceLock 存 override,首次 set 生效、后续 set 被拒——
+    /// install 之后槽位必须已被瘦身版占住(再设不同值返回 Err)。
+    #[test]
+    fn forkguard_locale_bookend_overrides_are_wired() {
+        install_prompt_overrides(); // OnceLock 幂等,谁先调都一样
+
+        assert!(deepseek_tui::prompts::static_prompt_composer_installed());
+        let reject = |r: Result<(), String>| r.is_err();
+        assert!(reject(
+            deepseek_tui::prompts::set_locale_preamble_zh_hans_override("probe".into())
+        ));
+        assert!(reject(
+            deepseek_tui::prompts::set_locale_closer_zh_hans_override("probe".into())
+        ));
+        assert!(reject(
+            deepseek_tui::prompts::set_locale_preamble_ja_override("probe".into())
+        ));
+        assert!(reject(
+            deepseek_tui::prompts::set_locale_closer_ja_override("probe".into())
+        ));
     }
 
     /// forkguard(composer): 完整合成路径上,底座在 compose 之外追加的

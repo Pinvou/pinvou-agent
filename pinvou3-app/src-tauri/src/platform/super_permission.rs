@@ -4,8 +4,9 @@
 //! 设计要点：
 //! - **源真相是文件系统**：`/etc/sudoers.d/pinvou3` 存在 = 开；不存在 = 关。不在 settings.json 里冗余存。
 //! - **写/删都走 pkexec**：用户拨开关 → 系统密码框 → root 写文件，零终端命令。
-//! - **不动 careful hook**：CodeWhale shell.rs 的 5 条硬拦（`rm -rf /` 等）跨所有模式默认开启，
-//!   sudo 也过不去。本开关只是把「sudo 卡密码」变成「sudo 直接跑」。
+//! - **不依赖 careful hook**：底座 shell.rs 的 5 条硬拦（`rm -rf /` 等）只在非 YOLO
+//!   姿态生效；品悟生产会话恒自动批准（等价 YOLO），该兜底会被跳过，不能当作
+//!   机械拦截层。本开关只是把「sudo 卡密码」变成「sudo 直接跑」。
 //!
 //! pkexec 退出码约定：
 //! - 0  成功
@@ -18,7 +19,7 @@ pub fn is_enabled() -> bool {
     crate::platform::os::super_permission_is_enabled()
 }
 
-/// 静态 system prompt 的 §7 占位段。**不含开关状态**。
+/// 静态 system prompt 的超级权限占位段。**不含开关状态**。
 ///
 /// 状态是动态的:静态 prompt 在 engine spawn 时只渲染一次,之后切开关无法热刷
 /// (`refresh_all_instructions` 是 no-op —— 见 `engine_pool.rs`)。把状态写进
@@ -26,7 +27,7 @@ pub fn is_enabled() -> bool {
 /// 真正的开/关指令由 [`turn_reminder`] 每 turn 注入(`build_send_message_op`),
 /// 始终实时。这里只留一句指引,把状态判断交给 per-turn reminder。
 pub fn instruction_block() -> &'static str {
-    "\n## 7. 超级权限(sudo)\n\n当前是否开启、以及对应该怎么做,见每轮对话顶部的 `<system-reminder>`(实时,以那里为准)。"
+    "\n## 超级权限(sudo)\n\n当前是否开启、以及对应该怎么做,见每轮对话顶部的 `<system-reminder>`(实时,以那里为准)。"
 }
 
 /// 每 turn 注入 `<system-reminder>` 的超级权限状态指令。

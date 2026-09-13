@@ -127,10 +127,10 @@ impl Language {
             Language::En => Some(
                 "## Language\n\n\
                  Respond in English by default, and mirror the language of the \
-                 user's latest message. Keep code, file paths, tool names \
-                 (e.g. `File`, `Bash`), environment variables, \
-                 command-line flags, and URLs verbatim — only natural-language \
-                 prose follows the language rule.",
+                 user's latest message. Keep code, file paths, tool names, \
+                 environment variables, command-line flags, and URLs \
+                 verbatim — only natural-language prose follows the language \
+                 rule.",
             ),
             // 底座已注入对应 bookend,避免重复。
             Language::ZhHans | Language::Ja => None,
