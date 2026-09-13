@@ -397,6 +397,14 @@ impl PortalInput {
         self.runtime.block_on(self.inner.ensure_started())
     }
 
+    /// 当前是否有**健康**的已建立会话（已建立且未毒化）。查询本身绝不懒
+    /// 启动：调用方（如紧急 mouse_up 的释放路径）用它避免在无会话/毒化
+    /// 会话上触发完整建立流程——那会弹出新的系统授权对话框（评审发现：
+    /// 撤销/急停的紧急释放反向索权）。
+    pub(super) fn is_active(&self) -> bool {
+        self.inner.session.is_some() && !self.inner.poisoned
+    }
+
     pub(super) fn motion_absolute(&mut self, x: i32, y: i32) -> Result<(), ComputerUseError> {
         self.runtime.block_on(self.inner.motion_absolute(x, y))
     }
@@ -484,6 +492,11 @@ struct PortalInner {
     request_counter: u32,
     /// CreateSession 的 session_handle_token 计数(路由器用它命名 session)。
     session_counter: u32,
+    /// 上一动作中途 notify 失败/超时:会话**可能**仍存活并已授权,但已不可
+    /// 信。毒化会话在动作的必要释放送达之后才关闭(见 `button` 的动作边界
+    /// 回收),并由下一次 `ensure_started` 回收重建——先关后放会让拖拽卡键
+    /// 的强制释放永远送不出去(评审发现)。
+    poisoned: bool,
 }
 
 impl PortalInner {
@@ -498,6 +511,7 @@ impl PortalInner {
             last_pointer: None,
             request_counter: 0,
             session_counter: 0,
+            poisoned: false,
         })
     }
 
@@ -662,6 +676,11 @@ impl PortalInner {
     /// 步骤失败(请求错误/超时/用户取消/授权不含设备/无 stream)都必须
     /// 关闭已创建的会话对象再返回(评审发现的泄漏路径,见 [`PortalInner::abandon`])。
     async fn ensure_started(&mut self) -> Result<(), ComputerUseError> {
+        // 毒化会话回收：上一动作失败后被推迟的关闭在这里补上（有界尽力而
+        // 为），再走完整建立流程——不与残留会话并存，也不弹第二个授权框。
+        if self.poisoned {
+            self.reset_closed().await;
+        }
         if self.session.is_some() {
             return Ok(());
         }
@@ -864,51 +883,64 @@ impl PortalInner {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(error)) => {
                 // The session may still be alive and authorized on the
-                // compositor side: close it instead of only clearing local
-                // state, or the next input action pops a second authorization
-                // dialog next to the abandoned session.
-                self.reset_closed().await;
+                // compositor side, so it must eventually be closed — but
+                // closing it right now would also strand the mandatory
+                // release that follows within the same action (a drag's
+                // interpolated move fails → the drag's button-up could no
+                // longer be delivered, leaving the button held at the
+                // compositor). Mark the session poisoned instead: the
+                // in-flight action's release is still delivered against the
+                // open session, and the next `ensure_started` recycles it
+                // (close + fresh start), so no second authorization dialog
+                // stacks up beside an abandoned session.
+                self.poisoned = true;
                 Err(ComputerUseError::unavailable(format!(
-                    "portal {method}: {error} (session reset; the next input action reopens \
-                     the authorization dialog)"
+                    "portal {method}: {error} (session poisoned; it is closed after the \
+                     in-flight action's release, and the next input action reopens the \
+                     authorization dialog)"
                 )))
             }
             Err(_) => {
-                // A timeout says nothing about the session itself: it is
-                // probably still live and authorized, which is exactly why it
-                // must be closed here rather than merely dropped locally.
-                self.reset_closed().await;
+                // Same reasoning as the error branch: a timeout says nothing
+                // about the session itself (it is probably still live and
+                // authorized), which is exactly why it must be closed after
+                // the action's release rather than immediately.
+                self.poisoned = true;
                 Err(ComputerUseError::unavailable(format!(
-                    "portal {method} timed out after {NOTIFY_TIMEOUT:?} (session reset)"
+                    "portal {method} timed out after {NOTIFY_TIMEOUT:?} (session poisoned; \
+                     closed after the in-flight action's release)"
                 )))
             }
         }
     }
 
-    /// Session-invalidated cleanup for the `notify` error paths. The old
-    /// `reset()` only cleared local state; `PortalSession` has no Drop impl,
-    /// so `Session.Close` was never sent and a possibly still-live,
-    /// authorized RemoteDesktop session leaked on the compositor side (the
-    /// next input action then opened a second authorization dialog). Take
-    /// the session and close it via `abandon` (bounded by CLOSE_TIMEOUT,
-    /// close errors swallowed — the caller's original error is what matters),
-    /// then clear the remaining per-session state. Dropping the taken
-    /// `PortalSession` also drops its `PwCapture`, stopping the stream and
-    /// joining its thread.
+    /// 关闭并清空当前会话的会话级状态。调用时机：`ensure_started` 的毒化
+    /// 回收（notify 失败/超时把会话标记为 poisoned，推迟到动作的必要释放
+    /// 送达之后——评审发现：立即关闭会让拖拽卡键的强制释放永远送不出去）、
+    /// `button` 释放后的动作边界回收。`PortalSession` has no Drop impl, so
+    /// `Session.Close` must be sent explicitly: take the session and close
+    /// it via `abandon` (bounded by CLOSE_TIMEOUT, close errors logged — the
+    /// caller's original error is what matters), then clear the remaining
+    /// per-session state. Dropping the taken `PortalSession` also drops its
+    /// `PwCapture`, stopping the stream and joining its thread.
     async fn reset_closed(&mut self) {
         if let Some(session) = self.session.take() {
             self.abandon(session.path).await;
         }
         self.capture_error = None;
         self.last_pointer = None;
+        self.poisoned = false;
     }
 
     /// 关闭一个已创建但尚未入册(`self.session`)或正在销毁的 portal 会话:
-    /// 尽力 `Session.Close`(短超时,关闭自身的错误被吞——调用方的原始错误
-    /// 照常向上抛),并清掉指针跟踪。评审发现:CreateSession 成功后的失败
-    /// 路径若只 reset 本地状态,半授权会话会在合成器侧泄漏。
+    /// 尽力 `Session.Close`(短超时),并清掉指针跟踪。评审发现:CreateSession
+    /// 成功后的失败路径若只 reset 本地状态,半授权会话会在合成器侧泄漏。
+    /// 关闭自身的失败/超时会被记录(评审发现:revoke 报成功而 OS 级授权
+    /// 实际残留时,用户与日志都不再有任何线索;portal 断连时合成器侧会随
+    /// 之兜底,所以只记日志不重试)。
     async fn abandon(&mut self, session_path: OwnedObjectPath) {
-        let _ = tokio::time::timeout(
+        let path = session_path.as_str().to_owned();
+        let closed = tokio::time::timeout(
             CLOSE_TIMEOUT,
             self.conn.call_method(
                 Some(PORTAL_DEST),
@@ -919,6 +951,15 @@ impl PortalInner {
             ),
         )
         .await;
+        match closed {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                eprintln!("[computer_use] portal Session.Close failed for {path}: {error}")
+            }
+            Err(_) => eprintln!(
+                "[computer_use] portal Session.Close timed out after {CLOSE_TIMEOUT:?} for {path}"
+            ),
+        }
         self.last_pointer = None;
     }
 
@@ -967,7 +1008,15 @@ impl PortalInner {
         let path = self.session_path()?;
         let options: HashMap<&str, OwnedValue> = HashMap::new();
         let body = (&path, &options, evdev_button, state);
-        self.notify("NotifyPointerButton", body).await
+        let result = self.notify("NotifyPointerButton", body).await;
+        // 动作边界回收：释放（pressed=false）成功后毒化会话的历史使命已经
+        // 完成，在这里关闭——不在释放前关（评审发现：先关后放会让拖拽的
+        // 强制释放以 "portal session not started" 失败，按键滞留在合成器
+        // 侧）。释放失败时保持毒化，下一次 ensure_started 兜底回收。
+        if !pressed && self.poisoned && result.is_ok() {
+            self.reset_closed().await;
+        }
+        result
     }
 
     async fn axis_discrete(&mut self, axis: u32, steps: i32) -> Result<(), ComputerUseError> {
