@@ -337,10 +337,7 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) {
 /// toggle 时 CLI 的一次 disable 可被整个丢掉），CLI 的 enable/disable 与
 /// 持锁写方共用此入口。入参闭包拿到的是含 DenyAll 默认兜底的有效列表，
 /// 与 `load_disabled_bundles_for` 口径一致。
-pub fn update_disabled_bundles_for(
-    scope: ConnectorScope,
-    update: impl FnOnce(&mut Vec<String>),
-) {
+pub fn update_disabled_bundles_for(scope: ConnectorScope, update: impl FnOnce(&mut Vec<String>)) {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());

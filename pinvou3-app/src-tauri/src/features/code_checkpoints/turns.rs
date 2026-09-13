@@ -25,9 +25,7 @@ pub(crate) fn count_user_turns(messages: &[Message]) -> u32 {
 /// 形状近似，image-only 等引擎不视为 prompt 的消息会被多算，可能卡住
 /// `checkpoints rewind` 的预检。逐条反序列化后走与 `count_user_turns`
 /// 完全相同的谓词，两边口径不再可能分叉。
-pub fn count_user_turns_in_json(
-    messages: &[serde_json::Value],
-) -> Result<u32, serde_json::Error> {
+pub fn count_user_turns_in_json(messages: &[serde_json::Value]) -> Result<u32, serde_json::Error> {
     let mut total = 0u32;
     for value in messages {
         let message: Message = serde_json::from_value(value.clone())?;

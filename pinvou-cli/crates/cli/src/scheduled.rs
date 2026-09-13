@@ -2857,9 +2857,9 @@ mod tests {
             "freq=hourly",
             "FREQ=HOURLY;BYDAY=MO,WE;INTERVAL=2",
             "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30",
-            "FREQ=ONCE;AT=2026-09-10T08:30",
-            "FREQ=ONCE;AT=2026-09-10T08:30:00Z",
-            "FREQ=ONCE;AT=2026-09-10T08:30:00+02:00",
+            "FREQ=ONCE;AT=2035-09-10T08:30",
+            "FREQ=ONCE;AT=2035-09-10T08:30:00Z",
+            "FREQ=ONCE;AT=2035-09-10T08:30:00+02:00",
             "FREQ=CRON;EXPR=30 8 * * MON-FRI",
             "FREQ=CRON;EXPR=*/15 0 * JAN,DEC SUN",
         ] {
@@ -2884,7 +2884,7 @@ mod tests {
             "FREQ=WEEKLY;WEEKDAY=MO;BYHOUR=9;BYMINUTE=30",
             "FREQ=ONCE;AT=never",
             "FREQ=ONCE;AT=2026-13-01T08:30",
-            "FREQ=ONCE;AT=2026-09-10T08:30:00;BYDAY=MO",
+            "FREQ=ONCE;AT=2035-09-10T08:30:00;BYDAY=MO",
             "FREQ=CRON;EXPR=* * * *",
             "FREQ=CRON;EXPR=61 * * * *",
             "FREQ=CRON;EXPR=* 25 * * *",
@@ -2935,8 +2935,8 @@ mod tests {
             "workdays 09:30"
         );
         assert_eq!(
-            humanize_rrule("FREQ=ONCE;AT=2026-09-10T08:30"),
-            "FREQ=ONCE;AT=2026-09-10T08:30"
+            humanize_rrule("FREQ=ONCE;AT=2035-09-10T08:30"),
+            "FREQ=ONCE;AT=2035-09-10T08:30"
         );
         assert!(has_sortable_run_stem("20260910T123456123Z-run-1"));
         assert!(!has_sortable_run_stem("run-1"));
