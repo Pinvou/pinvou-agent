@@ -5407,7 +5407,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rustversion",
- "syn 3.0.3",
+ "syn 3.0.5",
 ]
 
 [[package]]
@@ -8917,7 +8917,7 @@ dependencies = [
  "cfg-expr 0.20.9",
  "heck 0.5.0",
  "pkg-config",
- "toml 1.1.4+spec-1.1.0",
+ "toml 1.1.5+spec-1.1.0",
  "version-compare",
 ]
 
