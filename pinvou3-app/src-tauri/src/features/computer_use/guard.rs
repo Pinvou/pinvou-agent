@@ -388,7 +388,15 @@ impl ComputerUseShared {
     /// pending、重发确认事件（主流模型：拒绝只是模型可见的上下文，不是
     /// 存储的惩罚状态）。未知 id 返回 false。
     pub fn deny_confirmation(&self, confirm_id: &str) -> bool {
-        self.consent.lock().pending.remove(confirm_id).is_some()
+        let mut consent = self.consent.lock();
+        if consent.pending.remove(confirm_id).is_some() {
+            return true;
+        }
+        // 批准之后的「拒绝」是反悔：同一 confirm_id 的已铸令牌若尚未消费，
+        // 一并撤回（评审发现：此前 deny 只清 pending，"批准→反悔"的令牌
+        // 活到 TTL，拒绝按钮在竞态窗口内静默失效）。令牌不存在（已消费/
+        // 已过期/已被 revoke 清除）时返回 false，与未知 id 同口径。
+        consent.approved_tokens.remove(confirm_id).is_some()
     }
 
     /// 铸造批准令牌。只能由 `computer_use_confirm` Tauri 命令调用——绝不能让
@@ -719,6 +727,25 @@ mod tests {
             ConfirmationCheck::Unknown,
             "unknown id must stay Unknown"
         );
+    }
+
+    /// 评审修复回归：铸币后的「拒绝」是反悔——同一 confirm_id 的未消费
+    /// 令牌必须一并撤回，而不是活到 TTL（此前 deny 只清 pending，铸币后
+    /// 的 deny 静默失效，前端也拿这个错误口径回 false）。
+    #[test]
+    fn deny_after_mint_retracts_the_unspent_token() {
+        let shared = enabled_shared();
+        let id = new_pending(&shared, "s1", "left click x1 at Some((5, 6))");
+        assert!(shared.mint_confirmation(&id));
+        // 反悔：撤回未消费的令牌。
+        assert!(shared.deny_confirmation(&id));
+        assert_eq!(
+            take(&shared, &id, "s1", "left click x1 at Some((5, 6))"),
+            ConfirmationCheck::Unknown,
+            "a retracted token must not grant anything"
+        );
+        // 已消费（或未知）的 id 再 deny 仍报 false——与"未知/已决定"同口径。
+        assert!(!shared.deny_confirmation(&id));
     }
 
     /// One pending per session: a new request REPLACES the session's

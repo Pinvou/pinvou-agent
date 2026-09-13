@@ -37,8 +37,10 @@ use parking_lot::Mutex;
 /// later request of the session forever. The timeout only frees the caller;
 /// on timeout/disconnect it sets the request's cancel flag and the worker
 /// checks it after dequeue, before execution, and — for the multi-event
-/// request kinds (type/scroll) — again between injected events, so an
-/// abandoned request stops early instead of running to completion. Residual
+/// request kinds (type) — again between injected events, so an abandoned
+/// request stops early instead of running to completion. (scroll is a
+/// bounded ≤100-click loop, seconds at worst, and is not checked
+/// between clicks — documented residual.) Residual
 /// gap (inherent platform limitation, recorded honestly): a request already
 /// inside a single OS call (XTEST/CGEvent/portal notify) cannot be
 /// interrupted; while the worker stays wedged in an OS call, later requests
@@ -293,13 +295,28 @@ fn worker_loop(
         backend
             .as_mut()
             .set_cancel_flag(Some(Arc::clone(&request.cancelled)));
-        let dispatched = dispatch(backend.as_mut(), request.kind);
+        // dispatch 整体在 catch_unwind 内：此前只有部分平台的截屏路径有
+        // panic 防护，其余任何 panic（enigo/UIA/portal 层）都会 unwinding
+        // 杀死 worker 线程，把整个会话粘死在 StartFailed（评审发现：安全
+        // 方向是无注入，但整会话永久禁用过了头）。panic 转成一条 Failed
+        // 应答，worker 继续服务后续请求；panic 详情由默认 hook 打到 stderr
+        // （可能内嵌输入内容，不进应答/审计）。
+        let dispatched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dispatch(backend.as_mut(), request.kind)
+        }));
         backend.as_mut().set_cancel_flag(None);
         match dispatched {
-            Some(result) => {
+            Ok(Some(result)) => {
                 let _ = request.reply.send(result);
             }
-            None => return,
+            Ok(None) => return,
+            Err(panic) => {
+                eprintln!("[computer_use] backend worker panicked: {panic:?}");
+                let _ = request.reply.send(Err(ComputerUseError::failed(
+                    "the computer use backend panicked while handling the request; \
+                     the action may have partially executed",
+                )));
+            }
         }
     }
 }
@@ -661,15 +678,27 @@ impl BackendHandle {
         self.unit_control(BackendRequestKind::ReleaseOsGrant)
     }
 
-    /// Best-effort physical left-button release through the control lane
+    /// Best-effort physical button release through the control lane
     /// (bypasses the in-flight gate, queues behind any in-flight action).
     /// Emergency cleanup for sessions that may die mid-drag: a model that
-    /// pressed the left button and was stopped/revoked/dropped must not
-    /// leave the user's machine in button-held drag state.
+    /// pressed a button and was stopped/revoked/dropped must not leave the
+    /// user's machine in button-held state.
     pub fn emergency_mouse_up(&self) -> Result<(), ComputerUseError> {
-        self.unit_control(BackendRequestKind::MouseUp {
-            button: MouseButton::Left,
-        })
+        // 三键逐一释放（评审发现：右/中键的合成按下同样会因 stop/drop 滞留
+        // ——此前只释放左键）。对未按下的键，各后端的释放语义都是无害
+        // no-op（与下文 cleanup 注释的既定口径一致），宁多勿卡。
+        let mut first_err = None;
+        for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
+            if let Err(error) = self.unit_control(BackendRequestKind::MouseUp { button }) {
+                if first_err.is_none() {
+                    first_err = Some(error);
+                }
+            }
+        }
+        match first_err {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 }
 
@@ -728,11 +757,25 @@ impl BackendRegistry {
     /// unregistration: the registry entry is removed first, then the same
     /// cleanup runs on a detached thread. Used by tool Drop so a dropped
     /// tool cannot leave its worker pinned in the registry.
-    pub fn release_and_unregister(&self, session_id: &str) {
-        let Some(handle) = self.handles.lock().remove(session_id) else {
+    ///
+    /// Identity-checked: the entry is removed only when it still holds *this*
+    /// tool's handle (Arc identity). Same-session factory re-invocation can
+    /// let a new tool register before the old one drops; a blind remove-by-id
+    /// would unregister the NEW tool, and its own Drop would then early-return,
+    /// skipping the button/portal cleanup entirely (评审发现).
+    pub fn release_and_unregister(&self, session_id: &str, handle: &BackendHandle) {
+        let stored = { self.handles.lock().remove(session_id) };
+        let Some(stored) = stored else {
             return;
         };
-        std::thread::spawn(move || emergency_cleanup(handle));
+        if !Arc::ptr_eq(&stored.inner, &handle.inner) {
+            // 条目已被同会话的新工具顶替：恢复它，只清理自己的句柄。
+            self.handles.lock().insert(session_id.to_string(), stored);
+            let stale = handle.clone();
+            std::thread::spawn(move || emergency_cleanup(stale));
+            return;
+        }
+        std::thread::spawn(move || emergency_cleanup(stored));
     }
 
     /// [`Self::emergency_release`] for every registered session (stop /
@@ -1295,7 +1338,11 @@ mod tests {
         worker.join().expect("capture thread");
         let state = state.lock();
         assert_eq!(state.captures, 1);
-        assert_eq!(state.mouse_ups, vec![MouseButton::Left]);
+        // 三键逐一释放（emergency_mouse_up 的既定契约，见其文档）。
+        assert_eq!(
+            state.mouse_ups,
+            vec![MouseButton::Left, MouseButton::Right, MouseButton::Middle]
+        );
     }
 
     /// Waits until `predicate` observes the emergency cleanup in `state`
@@ -1341,7 +1388,10 @@ mod tests {
         wait_for_cleanup(&state, |s| s.releases > 0 && !s.mouse_ups.is_empty());
         {
             let state = state.lock();
-            assert_eq!(state.mouse_ups, vec![MouseButton::Left]);
+            assert_eq!(
+                state.mouse_ups,
+                vec![MouseButton::Left, MouseButton::Right, MouseButton::Middle]
+            );
             assert_eq!(state.releases, 1);
         }
 
@@ -1354,7 +1404,17 @@ mod tests {
         );
         wait_for_cleanup(&state, |s| s.releases > 1);
         let state = state.lock();
-        assert_eq!(state.mouse_ups, vec![MouseButton::Left, MouseButton::Left]);
+        assert_eq!(
+            state.mouse_ups,
+            vec![
+                MouseButton::Left,
+                MouseButton::Right,
+                MouseButton::Middle,
+                MouseButton::Left,
+                MouseButton::Right,
+                MouseButton::Middle
+            ]
+        );
         assert_eq!(state.releases, 2);
     }
 
@@ -1365,17 +1425,56 @@ mod tests {
     fn release_and_unregister_removes_entry_and_cleans_up() {
         let state = Arc::new(Mutex::new(ProbeState::default()));
         let registry = BackendRegistry::default();
-        registry.insert("s-drop", probe_handle(&state));
+        let handle = probe_handle(&state);
+        registry.insert("s-drop", handle.clone());
 
-        registry.release_and_unregister("s-drop");
+        registry.release_and_unregister("s-drop", &handle);
         assert!(
             !registry.contains("s-drop"),
             "release_and_unregister must remove the registry entry synchronously"
         );
         wait_for_cleanup(&state, |s| s.releases > 0 && !s.mouse_ups.is_empty());
         let state = state.lock();
-        assert_eq!(state.mouse_ups, vec![MouseButton::Left]);
+        assert_eq!(
+            state.mouse_ups,
+            vec![MouseButton::Left, MouseButton::Right, MouseButton::Middle]
+        );
         assert_eq!(state.releases, 1);
+    }
+
+    /// Identity check (评审发现): a same-session re-registration means the
+    /// registry entry belongs to the NEW tool's handle. An old tool's Drop
+    /// must not unregister it — the stale entry is restored, and only the
+    /// old tool's own backend gets the emergency cleanup.
+    #[test]
+    fn release_and_unregister_keeps_a_re_registered_successor() {
+        let old_state = Arc::new(Mutex::new(ProbeState::default()));
+        let new_state = Arc::new(Mutex::new(ProbeState::default()));
+        let registry = BackendRegistry::default();
+        let old_handle = probe_handle(&old_state);
+        let new_handle = probe_handle(&new_state);
+        registry.insert("s-rereg", old_handle.clone());
+        // The new tool registered before the old tool dropped: the entry is
+        // now the new handle.
+        registry.insert("s-rereg", new_handle.clone());
+
+        registry.release_and_unregister("s-rereg", &old_handle);
+        assert!(
+            registry.contains("s-rereg"),
+            "the successor's registration must survive a stale tool's Drop"
+        );
+        wait_for_cleanup(&old_state, |s| s.releases > 0);
+        assert_eq!(
+            new_state.lock().releases,
+            0,
+            "the successor's backend must not be cleaned up by the stale Drop"
+        );
+        // The successor's own Drop removes the entry for real.
+        registry.release_and_unregister("s-rereg", &new_handle);
+        assert!(
+            !registry.contains("s-rereg"),
+            "the successor's Drop must remove its own registration"
+        );
     }
 
     /// A global stop must reach a session whose earlier revoke only cleaned

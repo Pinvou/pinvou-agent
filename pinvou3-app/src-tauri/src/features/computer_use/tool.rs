@@ -46,6 +46,11 @@ pub const MAX_SCROLL_AMOUNT: u32 = 100;
 /// `type` 文本长度上限（字符数）。超限显式拒绝——失控的超长注入既会拖死
 /// 输入循环，也会让确认摘要失去可读性。
 pub const MAX_TYPE_TEXT_CHARS: usize = 10_000;
+/// `key`/`hold_key` 和弦原文长度上限（字符数）。解析后的和弦本身已被限到
+/// ≤4 个键名，但原文在摘要/确认事件/结果里原样携带：无上限时模型可用
+/// 空白把任意体量的字符串走私进事件负载（评审发现）。合法和弦
+/// （如 "ctrl+shift+alt+delete"）远低于该值；超限按解析错误拒绝。
+pub const MAX_KEY_CHORD_TEXT_CHARS: usize = 128;
 /// `ui_tree` 参数上限。
 pub const MAX_UI_TREE_DEPTH: u32 = 64;
 pub const MAX_UI_TREE_NODES: u32 = 10_000;
@@ -191,7 +196,7 @@ impl Drop for ComputerUseTool {
         self.parts
             .shared
             .backends
-            .release_and_unregister(&self.parts.session_id);
+            .release_and_unregister(&self.parts.session_id, &self.parts.backend);
     }
 }
 
@@ -450,12 +455,22 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
         "key" => {
             reject_unexpected(input, action_name, &["text"])?;
             let text = req_text(input, action_name)?;
+            if text.chars().count() > MAX_KEY_CHORD_TEXT_CHARS {
+                return Err(invalid(format!(
+                    "text is too long for key (max {MAX_KEY_CHORD_TEXT_CHARS} characters)"
+                )));
+            }
             let keys = parse_key_chord(&text).map_err(invalid)?;
             ComputerUseAction::KeyChord { keys, chord: text }
         }
         "hold_key" => {
             reject_unexpected(input, action_name, &["text", "ms"])?;
             let text = req_text(input, action_name)?;
+            if text.chars().count() > MAX_KEY_CHORD_TEXT_CHARS {
+                return Err(invalid(format!(
+                    "text is too long for hold_key (max {MAX_KEY_CHORD_TEXT_CHARS} characters)"
+                )));
+            }
             let keys = parse_key_chord(&text).map_err(invalid)?;
             let ms = ms.ok_or_else(|| invalid("ms is required for hold_key"))?;
             if ms == 0 || ms > MAX_HOLD_KEY_MS {
@@ -1213,7 +1228,17 @@ fn execute_action(
             }
         }
         ComputerUseAction::Wait { ms } => Ok(format!("waited {ms} ms")),
-        ComputerUseAction::UiTree { opts } => backend.ui_tree(*opts),
+        ComputerUseAction::UiTree { opts } => backend.ui_tree(*opts).map(|tree| {
+            // a11y 矩形是后端的输入/屏幕坐标，不是本工具契约的截图像素空间
+            // （评审发现：长边超 1440px 的截图会被降采样，两套坐标按比例因子
+            // 静默错位——cursor_position 有转换，树输出此前没有）。无法在工具
+            // 层解析后端文本，先显式声明空间，别让模型拿矩形当截图坐标。
+            format!(
+                "{tree}\n(bounds above are global input/screen coordinates, not screenshot \
+                 pixel space; use element_at_point on the screenshot to resolve screenshot-space \
+                 positions)"
+            )
+        }),
         ComputerUseAction::ElementAtPoint { x, y } => {
             let Some(m) = map else {
                 return Err(ComputerUseError::failed(
@@ -1225,16 +1250,23 @@ fn execute_action(
                 return Err(ComputerUseError::failed("missing element target"));
             };
             match backend.element_at_point(ix, iy)? {
-                Some(element) => Ok(format!(
-                    "element at ({x}, {y}): role=\"{}\" name=\"{}\" bounds=({}, {}, {}x{}) secure={}",
-                    element.role,
-                    element.name,
-                    element.x,
-                    element.y,
-                    element.width,
-                    element.height,
-                    element.secure
-                )),
+                Some(element) => {
+                    // 矩形按两角转换后取包围盒：bounds 是后端的输入/屏幕坐标，
+                    // 必须先转回截图像素空间再交给模型（契约一致性，评审发现
+                    // ——否则模型拿 bounds 当截图坐标点击会按比例因子偏移）。
+                    let (ax, ay) = m.input_to_shot(element.x, element.y);
+                    let (bx, by) = m.input_to_shot(
+                        element.x.saturating_add(element.width),
+                        element.y.saturating_add(element.height),
+                    );
+                    let (rx, ry) = (ax.min(bx), ay.min(by));
+                    let (rw, rh) = (ax.abs_diff(bx), ay.abs_diff(by));
+                    Ok(format!(
+                        "element at ({x}, {y}): role=\"{}\" name=\"{}\" bounds=({rx}, {ry}, \
+                         {rw}x{rh}) in screenshot space secure={}",
+                        element.role, element.name, element.secure
+                    ))
+                }
                 None => Ok(format!("no accessibility element found at ({x}, {y})")),
             }
         }
@@ -1533,9 +1565,26 @@ impl ToolSpec for ComputerUseTool {
 
         let workspace = resolve_workspace(context, &self.parts.session_id);
         let parts = self.parts.clone();
+        let audit_session = self.parts.session_id.clone();
+        let audit_action = parsed.action.name();
         tauri::async_runtime::spawn_blocking(move || run(parts, parsed, workspace))
             .await
             .map_err(|error| {
+                // worker join 失败 = run 在注入可能已发生后 panic：这是唯一
+                // 一个"动作可能已执行"却不留审计记录的路径（评审发现）。
+                // 审计 error 字段用固定文案——JoinError 携带的 panic 文本可能
+                // 内嵌输入内容（如 char boundary panic 的 chord 片段），不得
+                // 回显进 JSONL；完整错误只给模型。
+                let record = AuditRecord::new(&audit_session, audit_action, "input").finish(
+                    "error",
+                    Some("worker join failed".to_string()),
+                    0,
+                );
+                if let Err(audit_error) =
+                    AuditLog::for_session(&audit_session).and_then(|log| log.append(&record))
+                {
+                    eprintln!("[computer_use] audit append failed: {audit_error}");
+                }
                 ToolError::execution_failed(format!("computer use worker join failed: {error}"))
             })
     }

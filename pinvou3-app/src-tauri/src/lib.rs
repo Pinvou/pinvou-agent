@@ -947,9 +947,13 @@ pub fn run() {
                     // 设置开关动态禁用 computer_use：与工厂侧「不构造工具」互为
                     // 双保险。本闭包只在 refresh_disallowed_tools 被调用时重算；
                     // computer_use_set_enabled 命令翻转开关后会立即调用该刷新
-                    // （见 app/commands/computer_use.rs），已在跑的存量引擎目录
-                    // 随之即时更新；其余触发刷新的路径（连接器/市场/知识库变化）
-                    // 重算时取到的同样是当前开关状态。
+                    // （见 app/commands/computer_use.rs）。注意两个方向的时效
+                    // 不对称（评审发现）：**关闭**即时生效——已构造的工具在存量
+                    // 引擎目录里被动态禁用；**开启**不回溯——开关关闭期间
+                    // spawn 的引擎根本没构造过该工具，刷新也变不出它，要等
+                    // 任意引擎重建（新会话/换模型等）才可见。其余触发刷新的
+                    // 路径（连接器/市场/知识库变化）重算时取到的同样是当前
+                    // 开关状态。
                     if !computer_use_shared.is_enabled() {
                         tools.push(features::computer_use::TOOL_NAME.to_string());
                     }
