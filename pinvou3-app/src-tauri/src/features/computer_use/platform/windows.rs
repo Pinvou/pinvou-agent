@@ -120,6 +120,9 @@ fn thread_is_pmv2(awareness: i32, context_is_pmv2: bool) -> bool {
 
 /// 读取当前线程的 DPI 感知是否为 PMv2（见 `thread_is_pmv2`）。
 fn thread_dpi_is_pmv2() -> bool {
+    // SAFETY: GetThreadDpiAwarenessContext/GetAwarenessFromDpiAwarenessContext
+    // are thread-info queries with no lifetime or ownership constraints; a
+    // null context is explicitly checked below.
     unsafe {
         let ctx = GetThreadDpiAwarenessContext();
         if ctx.is_null() {
@@ -174,6 +177,9 @@ fn char_injection(c: char) -> CharInjection {
         // BMP 外字符（代理对）无法映射为单个 VK。
         return CharInjection::NotInLayout;
     }
+    // SAFETY: GetForegroundWindow/GetWindowThreadProcessId/GetKeyboardLayout
+    // are read-only queries; a null hwnd falls back to the thread's layout,
+    // and the null_mut pointer arg is the documented "no pid out" form.
     let layout: HKL = unsafe {
         let hwnd = GetForegroundWindow();
         if hwnd.is_null() {
@@ -182,6 +188,8 @@ fn char_injection(c: char) -> CharInjection {
             GetKeyboardLayout(GetWindowThreadProcessId(hwnd, std::ptr::null_mut()))
         }
     };
+    // SAFETY: VkKeyScanExW only reads the layout handle and the single
+    // UTF-16 code unit produced above.
     char_injection_from_scan(unsafe { VkKeyScanExW(utf16[0], layout) })
 }
 
@@ -202,6 +210,8 @@ fn normalize_abs_axis(value: i32, origin: i32, extent: i32) -> i32 {
 
 /// 读取虚拟桌面度量：(原点 x, 原点 y, 宽, 高)，覆盖全部显示器（原点可为负）。
 fn virtual_desktop_metrics() -> (i32, i32, i32, i32) {
+    // SAFETY: GetSystemMetrics with SM_*VIRTUALSCREEN indices are pure
+    // metric queries returning i32 values; no pointers involved.
     unsafe {
         (
             GetSystemMetrics(SM_XVIRTUALSCREEN),
@@ -670,6 +680,8 @@ impl WindowsComputerUseBackend {
                 },
             },
         };
+        // SAFETY: SendInput copies the single fully-initialized INPUT by
+        // value from a valid reference; the size matches the pointed-to type.
         let sent = unsafe { SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) };
         check_injection("mouse move", 1, sent)
     }
