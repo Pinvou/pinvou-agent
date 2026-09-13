@@ -47,13 +47,24 @@ pub fn computer_use_get_status(
 
 /// 授予本会话鼠标/键盘控制权（会话授权）。授权活到被显式吊销（revoke /
 /// stop / 总开关关闭），无空闲过期——没有主流产品给会话级授权设空闲时钟
-/// （Claude Code 的「本次会话允许」同口径）。
+/// （Claude Code 的「本次会话允许」同口径）。总开关关闭或急停中拒绝授权：
+/// 此时授予的授权会静默休眠到开关重开/急停复位才生效，等于陈旧前端的一次
+/// 点击越过用户当下的全局意图（评审发现；前端在禁用态本就不渲染授权按钮，
+/// 这是对陈旧/失同步前端的防线）。
 #[tauri::command]
 pub fn computer_use_grant(
     session_id: String,
     shared: State<'_, Arc<ComputerUseShared>>,
 ) -> Result<(), String> {
     ensure_non_empty("session_id", &session_id)?;
+    if !shared.is_enabled() {
+        return Err(
+            "computer use is disabled; enable it in settings before granting control".into(),
+        );
+    }
+    if shared.is_stopped() {
+        return Err("computer use is stopped; resume it before granting control".into());
+    }
     shared.grant_session(&session_id);
     Ok(())
 }
