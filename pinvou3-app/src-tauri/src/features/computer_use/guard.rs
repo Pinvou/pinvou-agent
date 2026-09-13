@@ -841,6 +841,35 @@ mod tests {
         );
     }
 
+    /// Regression (round-10 评审 m12): a MINTED approval token past
+    /// [`CONFIRM_TTL`] must be refused at spend time — previously only the
+    /// pending side of the TTL had test coverage, so the spend-path expiry
+    /// branch (the only defense against a token minted then spent minutes
+    /// later) was untested.
+    #[test]
+    fn minted_token_expires_at_spend() {
+        let shared = enabled_shared();
+        let summary = "left click x1 at Some((100, 200))";
+        let id = new_pending(&shared, "s1", summary);
+        assert!(shared.mint_confirmation(&id), "fresh pending must mint");
+        // 手工把 minted_at 拨回 TTL 之前（等真实 5 分钟太慢）。
+        {
+            let mut consent = shared.consent.lock();
+            if let Some(token) = consent.approved_tokens.get_mut(&id) {
+                token.minted_at = Instant::now() - CONFIRM_TTL - Duration::from_secs(1);
+            }
+        }
+        // 过期令牌在花费处报 Unknown，且被移除（重放同样 Unknown）。
+        assert_eq!(
+            take(&shared, &id, "s1", summary),
+            ConfirmationCheck::Unknown
+        );
+        assert_eq!(
+            take(&shared, &id, "s1", summary),
+            ConfirmationCheck::Unknown
+        );
+    }
+
     /// Regression: the T3 denylist must not contain duplicate entries
     /// ("支付"/"提交"/"清空"/"確認" each appeared twice).
     #[test]
