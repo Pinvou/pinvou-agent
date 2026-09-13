@@ -2259,7 +2259,11 @@ async fn emergency_release_keeps_registration_releases_button_then_os_grant() {
     }
     assert!(released, "release_os_grant must reach the backend");
     let mock = fixture.mock.lock();
-    assert_eq!(mock.upped, vec![MouseButton::Left]);
+    // 三键逐一释放（emergency_mouse_up 的既定契约，见 backend.rs）。
+    assert_eq!(
+        mock.upped,
+        vec![MouseButton::Left, MouseButton::Right, MouseButton::Middle]
+    );
 }
 
 /// 工具析构经 emergency release：物理左键与 OS 级授权一并清理（模型按下
@@ -3039,5 +3043,161 @@ async fn drags_scrolls_and_holds_execute_on_granted_actions() {
         fixture.mock.lock().held.len(),
         1,
         "hold_key must actually reach the backend injection"
+    );
+}
+
+/// 评审修复回归（审阅 round-11）：`type` 成功路径的"键入文本绝不落审计"
+/// 契约此前只有构造侧单测，没有任何测试执行一次成功 type 并核对真实
+/// JSONL 文件——重构若把 text 写进 target 也能全绿。钉死：文件里只有
+/// 计数（"typed 5 characters"），原文字节不出现。
+#[tokio::test]
+async fn type_success_audit_record_carries_counts_never_text() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().focused = None;
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "type", "text": "hello"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => panic!("execute failed: {e}"),
+    };
+    assert!(result.success, "{}", result.content);
+
+    let audit_path = fixture.home.join("computer-use").join("audit-s-test.jsonl");
+    let raw = std::fs::read_to_string(&audit_path).expect("audit jsonl exists");
+    assert!(
+        !raw.contains("hello"),
+        "typed text must never reach the audit log: {raw}"
+    );
+    assert!(
+        raw.contains("typed 5 characters"),
+        "the audit target must carry the redacted count: {raw}"
+    );
+}
+
+/// 评审修复回归（审阅 round-11）：`stop_all` 的同意态清扫此前只有 grant
+/// 断言——pending 与已铸令牌的清除路径没有直接钉。急停后：pending 消失、
+/// 未消费令牌一律 Unknown。
+#[test]
+fn stop_all_wipes_pending_confirmations_and_approved_tokens() {
+    let shared = ComputerUseShared::new();
+    shared.set_enabled(true);
+    shared.grant_session("s1");
+    // 两个会话：同一会话的第二个 pending 会按"最新胜出"顶掉第一个，
+    // 跨会话才能同时持有一个 pending 和一个已铸令牌。
+    shared.grant_session("s2");
+    let pending_id = shared.new_pending_confirmation("s1", "left click", "Buy now");
+    let token_id = shared.new_pending_confirmation("s2", "type 3 characters", "secret-field");
+    assert!(shared.pending_confirmation(&pending_id).is_some());
+    assert!(shared.mint_confirmation(&token_id));
+
+    shared.stop_all();
+
+    assert!(
+        shared.pending_confirmation(&pending_id).is_none(),
+        "stop must clear pending confirmations"
+    );
+    assert_eq!(
+        shared.take_confirmation(&token_id, "s2", "type 3 characters"),
+        ConfirmationCheck::Unknown,
+        "stop must wipe minted approval tokens"
+    );
+}
+
+/// 评审修复回归（审阅 round-11）：`key`/`hold_key` 的 text 原文此前无长度
+/// 上限——合法和弦解析后有 ≤4 键名的约束，但原文会原样进入确认事件/结果
+/// 负载，空白即可走私任意体量的字符串。>128 字符拒绝；错误文案不回显。
+#[tokio::test]
+async fn key_chord_text_length_is_capped() {
+    let (fixture, _restore) = fixture();
+    // 129 个 'a'（含分隔符的形状也会超限——这里直接构造超长原文）。
+    let oversized = "a".repeat(MAX_KEY_CHORD_TEXT_CHARS + 1);
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "key", "text": oversized}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let error = match result {
+        Ok(r) => panic!("an oversized chord text must not parse: {r:?}"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        error.contains("too long for key"),
+        "expected the length-cap error: {error}"
+    );
+    // hold_key 同口径。
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "hold_key", "text": "a".repeat(MAX_KEY_CHORD_TEXT_CHARS + 1), "ms": 10}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(result.is_err(), "an oversized hold_key text must not parse");
+}
+
+/// 评审修复回归（审阅 round-11 P1）：`element_at_point` 返回的 bounds 必须
+/// 是**截图像素空间**——a11y 元素矩形是输入/屏幕坐标，截图超长边被降采样
+/// 时两套坐标按比例因子错位，模型拿 bounds 当截图坐标点击会静默偏移。
+/// Retina 场景（shot 200x200，input = shot × 0.5）下：输入矩形
+/// (50,30,20x20) 必须报告为截图矩形 (100,60,40x40)。
+#[tokio::test]
+async fn element_at_point_reports_bounds_in_screenshot_space() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    {
+        let mut mock = fixture.mock.lock();
+        mock.capture_size = (200, 200);
+        mock.input_scale = (0.5, 0.5);
+        mock.element = Some(ElementInfo {
+            role: "AXButton".to_string(),
+            name: "Buy now".to_string(),
+            x: 50,
+            y: 30,
+            width: 20,
+            height: 20,
+            secure: false,
+        });
+    }
+    // 建立映射表。
+    let _ = fixture
+        .tool
+        .execute(
+            json!({"action": "screenshot"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+
+    // 查询点 (120, 80) 在截图像素空间 → 输入 (60, 40) → 命中元素。
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "element_at_point", "x": 120, "y": 80}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => panic!("execute failed: {e}"),
+    };
+    assert!(result.success, "{}", result.content);
+    assert!(
+        result
+            .content
+            .contains("bounds=(100, 60, 40x40) in screenshot space"),
+        "bounds must be converted to screenshot space: {}",
+        result.content
+    );
+    assert!(
+        !result.content.contains("(50, 30, 20x20)"),
+        "raw input-space bounds must not leak into the output: {}",
+        result.content
     );
 }
