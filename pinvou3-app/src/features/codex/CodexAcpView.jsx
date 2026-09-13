@@ -3533,6 +3533,11 @@ export function CodexAcpView({
                               <ToolCard
                                 item={{ ...item.legacyItem, sessionId: activeId }}
                                 sessionId={activeId}
+                                // The codex native host has no subagent list
+                                // view: its `pinvou:open-subagent` handler only
+                                // accepts a concrete agentId, so the null-
+                                // agentId count-row click would be a no-op.
+                                spawnRowInteractive={false}
                                 theme={theme}
                                 t={t}
                                 variant="timeline"
