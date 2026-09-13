@@ -1195,12 +1195,9 @@ fn postprocess(
     sandbox_home()?;
     let raw_input = match (text, text_file) {
         (Some(text), _) => text,
-        (None, Some(file)) => std::fs::read_to_string(&file).map_err(|error| {
-            CliError::failed(format!(
-                "voice postprocess: cannot read {}: {error}",
-                file.display()
-            ))
-        })?,
+        (None, Some(file)) => {
+            crate::support::read_text_file_capped(&file, 64 * 1024, "voice postprocess")?
+        }
         (None, None) => unreachable!("parse enforces exactly one text source"),
     };
     let raw_text = truncate_postprocess_input(raw_input.trim());

@@ -796,6 +796,31 @@ fn feedback_submit_fails_cleanly_on_missing_body_file() {
     assert_eq!(error.exit_code(), ExitCode::Failed);
 }
 
+#[test]
+fn feedback_submit_refuses_a_body_file_over_the_read_limit() {
+    // The 64 KiB read cap exists so a multi-GB file or an endless device
+    // cannot be loaded into memory before the 5000-char validation runs;
+    // an over-cap file must be a clean CLI failure, not an OOM.
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("feedback-oversize");
+    let body = home.root.join("huge.md");
+    std::fs::write(&body, vec![b'a'; 64 * 1024 + 1]).unwrap();
+    let error = run(&[
+        "pinvou",
+        "feedback",
+        "submit",
+        "--type",
+        "issue",
+        "--title",
+        "t",
+        "--body-file",
+        body.to_str().unwrap(),
+    ])
+    .expect_err("over-cap body file must fail");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(error.to_string().contains("read limit"), "{error}");
+}
+
 // ── monitor ─────────────────────────────────────────────────────────────────
 
 #[test]

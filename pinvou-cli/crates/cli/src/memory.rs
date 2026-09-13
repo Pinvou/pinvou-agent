@@ -889,12 +889,9 @@ fn add(kind: AddKind, source: AddSource, output: OutputMode) -> Result<CliOutcom
     support::sandbox_home()?;
     let content = match source {
         AddSource::Inline(content) => content,
-        AddSource::File(path) => std::fs::read_to_string(&path).map_err(|error| {
-            CliError::failed(format!(
-                "memory_content_file_unreadable: {}: {error}",
-                path.display()
-            ))
-        })?,
+        AddSource::File(path) => {
+            support::read_text_file_capped(&path, 64 * 1024, "memory_content_file_unreadable")?
+        }
     };
     if content.trim().is_empty() {
         return Err(CliError::usage("memory add requires non-empty content"));

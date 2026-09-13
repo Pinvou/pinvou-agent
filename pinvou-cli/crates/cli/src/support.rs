@@ -9,7 +9,8 @@
 //! Exit codes: 0 success, 1 host failure, 2 usage error. JSON output is a
 //! single serde_json line.
 
-use std::path::PathBuf;
+use std::io::Read as _;
+use std::path::{Path, PathBuf};
 
 use crate::{CliError, ExitCode};
 
@@ -32,6 +33,37 @@ pub fn sandbox_home() -> Result<PathBuf, CliError> {
         .map(PathBuf::from)
         .ok_or_else(|| CliError::failed("cannot resolve home directory"))?;
     Ok(home.join(".pinvou3"))
+}
+
+/// Reads a UTF-8 text file with a byte cap so `--*-file` arguments cannot
+/// load an unbounded source (a multi-GB log, a character device like
+/// /dev/zero) into memory before the family's own truncation runs. The read
+/// itself is bounded (`Read::take`), so the failure is a clean CLI error
+/// rather than an OOM or a hang.
+pub fn read_text_file_capped(
+    path: &Path,
+    max_bytes: usize,
+    action: &str,
+) -> Result<String, CliError> {
+    let file = std::fs::File::open(path).map_err(|error| {
+        CliError::failed(format!("{action}: cannot read {}: {error}", path.display()))
+    })?;
+    let mut bytes = Vec::new();
+    file.take(max_bytes as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            CliError::failed(format!("{action}: cannot read {}: {error}", path.display()))
+        })?;
+    if bytes.len() > max_bytes {
+        return Err(CliError::failed(format!(
+            "{action}: {} exceeds the {max_bytes}-byte read limit",
+            path.display()
+        )));
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| {
+            CliError::failed(format!("{action}: {} is not valid UTF-8", path.display()))
+        })
 }
 
 /// Mirrors `features::sessions::validate_session_id` (crate-private in the

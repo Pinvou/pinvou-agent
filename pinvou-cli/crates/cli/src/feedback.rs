@@ -122,12 +122,10 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
     // feedback paths are resolved.
     sandbox_home()?;
     let submit = command.submit;
-    let description = std::fs::read_to_string(&submit.body_file).map_err(|error| {
-        CliError::failed(format!(
-            "feedback submit: cannot read body file {}: {error}",
-            submit.body_file.display()
-        ))
-    })?;
+    // The body is validated/truncated further down; the cap only stops an
+    // unbounded file from being loaded in the first place.
+    let description =
+        crate::support::read_text_file_capped(&submit.body_file, 64 * 1024, "feedback submit")?;
     let mut attachments = Vec::new();
     for path in &submit.attachments {
         let size = std::fs::metadata(path)
