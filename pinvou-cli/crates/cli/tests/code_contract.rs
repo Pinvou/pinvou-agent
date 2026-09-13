@@ -686,6 +686,27 @@ fn rewind_without_yes_is_a_usage_error() {
     assert!(error.to_string().contains("--yes"));
 }
 
+#[test]
+fn logout_and_undo_without_yes_are_usage_errors() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("logout-undo-need-yes");
+    let id = create_code_session_fixture(None);
+
+    // logout erases the vendor CLI's stored credentials, so it gates on --yes.
+    let parsed = parse_args(["pinvou", "code", "logout", "codex"].to_vec())
+        .expect("logout parses without --yes");
+    let error = execute(parsed).expect_err("logout without --yes must refuse");
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert!(error.to_string().contains("--yes"));
+
+    // undo restores the working tree and rewrites the transcript, like rewind.
+    let parsed = parse_args(["pinvou", "code", "checkpoints", "undo", &id].to_vec())
+        .expect("undo parses without --yes");
+    let error = execute(parsed).expect_err("undo without --yes must refuse");
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert!(error.to_string().contains("--yes"));
+}
+
 // ── execute-level coverage (pure storage, temp PINVOU3_HOME) ────────────────
 
 #[test]
@@ -755,26 +776,41 @@ fn code_sessions_info_and_timeline_read_persisted_state() {
     assert_eq!(outcome.stdout, "");
     let session_dir = home.sessions_root().join(&id);
     std::fs::create_dir_all(&session_dir).unwrap();
+    // The first two lines use the exact envelope the GUI's AcpPool journal
+    // writes (AcpEventEnvelope: camelCase fields, `event.type`); the last
+    // event uses the legacy snake_case spelling so the human renderer's
+    // fallback is pinned too.
     std::fs::write(
         session_dir.join("acp-timeline.jsonl"),
         format!(
-            "{{\"version\":1,\"session_id\":\"{id}\",\"seq\":2,\"timestamp\":\"t2\",\"event\":{{\"event_type\":\"turn_finished\",\"data\":{{}}}}}}\n\
-             {{\"version\":1,\"session_id\":\"{id}\",\"seq\":1,\"timestamp\":\"t1\",\"turn_id\":\"turn-1\",\"event\":{{\"event_type\":\"turn_started\",\"data\":{{}}}}}}\n\
+            "{{\"version\":1,\"sessionId\":\"{id}\",\"seq\":2,\"timestamp\":\"t2\",\"event\":{{\"type\":\"turn_finished\",\"data\":{{}}}}}}\n\
+             {{\"version\":1,\"sessionId\":\"{id}\",\"seq\":1,\"timestamp\":\"t1\",\"turnId\":\"turn-1\",\"event\":{{\"type\":\"turn_started\",\"data\":{{}}}}}}\n\
+             {{\"version\":1,\"session_id\":\"{id}\",\"seq\":3,\"timestamp\":\"t3\",\"turn_id\":\"turn-2\",\"event\":{{\"event_type\":\"turn_finished\",\"data\":{{}}}}}}\n\
              not-json-at-all\n"
         ),
     )
     .unwrap();
     let value = run_json(&["pinvou", "code", "sessions", "timeline", &id]);
     let events = value["events"].as_array().unwrap();
-    assert_eq!(events.len(), 2, "malformed lines are skipped");
+    assert_eq!(events.len(), 3, "malformed lines are skipped");
     assert_eq!(events[0]["seq"], 1);
-    assert_eq!(events[0]["turn_id"], "turn-1");
+    assert_eq!(events[0]["turnId"], "turn-1");
     assert_eq!(
-        events[1].pointer("/event/event_type"),
+        events[1].pointer("/event/type"),
         Some(&serde_json::json!("turn_finished"))
     );
     let outcome = run(&["pinvou", "code", "sessions", "timeline", &id]).expect("human timeline");
-    assert!(outcome.stdout.contains("turn_started"));
+    // Both the event-type and turn-id columns render for the camelCase
+    // envelope and the legacy snake_case spelling (a missing turnId renders
+    // "-" — envelopes without an active turn exist).
+    assert_eq!(outcome.stdout.lines().count(), 3);
+    assert!(outcome.stdout.contains("turn_started"), "{outcome:?}");
+    assert!(outcome.stdout.contains("turn-1"), "{outcome:?}");
+    assert!(outcome
+        .stdout
+        .lines()
+        .all(|line| line.split('\t').nth(2).is_some_and(|kind| !kind.is_empty())),
+        "event-type column must never be silently empty: {outcome:?}");
 }
 
 #[test]
@@ -1075,7 +1111,7 @@ fn checkpoints_list_zero_state_and_full_rewind_undo_round_trip() {
 
     // The rewind bookkeeping left an undoable record bound to its PreRestore
     // snapshot; undo restores both code and transcript.
-    let value = run_json(&["pinvou", "code", "checkpoints", "undo", &id]);
+    let value = run_json(&["pinvou", "code", "checkpoints", "undo", &id, "--yes"]);
     assert_eq!(value["restoredMessages"], 2);
     assert_eq!(
         value["restoredCheckpoint"].as_str().map(str::to_string),
@@ -1092,7 +1128,7 @@ fn checkpoints_list_zero_state_and_full_rewind_undo_round_trip() {
     drop(store);
 
     // A second undo is honestly refused: the record was consumed.
-    let error = run(&["pinvou", "code", "checkpoints", "undo", &id]).unwrap_err();
+    let error = run(&["pinvou", "code", "checkpoints", "undo", &id, "--yes"]).unwrap_err();
     assert!(error.to_string().contains("no_undoable_rewind"), "{error}");
 
     // Rewinding past the current turn count fails before touching anything.
@@ -1464,7 +1500,7 @@ fn session_lock_reports_busy_for_every_mutating_command() {
             "rewind_busy",
         ),
         (
-            vec!["pinvou", "code", "checkpoints", "undo", &id],
+            vec!["pinvou", "code", "checkpoints", "undo", &id, "--yes"],
             "undo_busy",
         ),
         (
@@ -1498,8 +1534,8 @@ fn session_lock_reports_busy_for_every_mutating_command() {
     // With the lock released the mutation passes the busy gate (and fails
     // later on the empty rewind state) — proving the busy error came from the
     // lock and that the failed attempts mutated nothing.
-    let error =
-        run(&["pinvou", "code", "checkpoints", "undo", &id]).expect_err("no rewind record exists");
+    let error = run(&["pinvou", "code", "checkpoints", "undo", &id, "--yes"])
+        .expect_err("no rewind record exists");
     assert!(error.to_string().contains("no_undoable_rewind"), "{error}");
     let store = SessionStore::boot().unwrap();
     let session = store.load(&id).unwrap();

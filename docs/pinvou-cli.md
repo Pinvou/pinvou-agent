@@ -40,8 +40,8 @@ cargo build --manifest-path pinvou-cli/Cargo.toml --bin pinvou
   providers export` writes/prints the provider JSON with plaintext API keys
   (warns on stderr; a file destination is written 0600).
 - Destructive actions require an explicit `--yes` (family `delete`/`remove`
-  commands, `purge`, `deps install`, `connectors logout`, checkpoint
-  `rewind`; the usage error names the flag). Concurrent CLI mutations
+  commands, `purge`, `deps install`, `connectors logout`, `code logout`,
+  checkpoint `rewind`/`undo`; the usage error names the flag). Concurrent CLI mutations
   are serialized through two cross-process locks: a per-session lock (checkpoint
   `rewind`/`undo`/`diff`, `workspace checkout`) and a per-execution-root lock
   (`rewind`/`undo`, `checkout`) so two different sessions bound to the same

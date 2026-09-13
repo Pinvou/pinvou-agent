@@ -62,7 +62,7 @@ const AGENTS_USAGE: &str =
     "usage: pinvou code agents <list|status <agent>|install <agent>>  (agent: codex|claude|kimi)";
 const LOGIN_USAGE: &str = "usage: pinvou code login <agent> [--code-env VAR|--code-stdin]  \
      (agent: codex|claude|kimi; the claude flow consumes an authorization code)";
-const LOGOUT_USAGE: &str = "usage: pinvou code logout <agent>  (agent: codex|claude|kimi)";
+const LOGOUT_USAGE: &str = "usage: pinvou code logout <agent> --yes  (agent: codex|claude|kimi)";
 const PROVIDERS_USAGE: &str = "usage: pinvou code providers <list [--agent A]|add --agent A --name N --base-url U \
      [--wire-api anthropic|openai|kimi] [--model M] [--model-slot SLOT=M]... [--context-window N] \
      (--api-key-env V|--api-key-stdin)|update <id> --agent A [...] |remove <id> --agent A --yes \
@@ -70,7 +70,7 @@ const PROVIDERS_USAGE: &str = "usage: pinvou code providers <list [--agent A]|ad
      |import --agent A <PATH>|probe <provider-id> --agent A>";
 const SESSIONS_USAGE: &str = "usage: pinvou code sessions <list|info <id>|timeline <id>>";
 const WORKSPACE_USAGE: &str = "usage: pinvou code workspace <list <session> [path]|search <session> Q|preview <session> FILE|changes <session>|diff <session> [FILE]|branches <session>|checkout <session> BRANCH --mode carry|stash|commit [--message M]>";
-const CHECKPOINTS_USAGE: &str = "usage: pinvou code checkpoints <list <session>|diff <session> <checkpoint-id>|rewind <session> <turn> --yes|undo <session>>";
+const CHECKPOINTS_USAGE: &str = "usage: pinvou code checkpoints <list <session>|diff <session> <checkpoint-id>|rewind <session> <turn> --yes|undo <session> --yes>";
 const RUN_USAGE: &str = "usage: pinvou code run <agent> --workspace DIR (--prompt-file F|--prompt S) [--timeout-secs N]";
 const PERMISSIONS_USAGE: &str = "usage: pinvou code permissions <session>";
 const RESPOND_USAGE: &str = "usage: pinvou code respond <session> <request-id> <allow|deny>";
@@ -112,6 +112,7 @@ pub enum CodeCommand {
     },
     Logout {
         agent: String,
+        yes: bool,
     },
     ProvidersList {
         agent: Option<String>,
@@ -213,6 +214,7 @@ pub enum CodeCommand {
     },
     CheckpointsUndo {
         session: String,
+        yes: bool,
     },
     Run {
         agent: String,
@@ -282,10 +284,11 @@ pub fn parse(values: &[String]) -> Result<CodeCommand, CliError> {
         }
         "logout" => {
             let agent = require_agent(rest.first().map(String::as_str), LOGOUT_USAGE)?;
-            if rest.len() > 1 {
-                return Err(CliError::usage("code logout accepts no options"));
-            }
-            Ok(CodeCommand::Logout { agent })
+            let (_, flags, _) = parse_flags(&rest[1..], &[], &["--yes"], "logout")?;
+            Ok(CodeCommand::Logout {
+                agent,
+                yes: flags.contains(&"--yes"),
+            })
         }
         "providers" => parse_providers(rest),
         "sessions" => parse_sessions(rest),
@@ -738,10 +741,11 @@ fn parse_checkpoints(rest: &[String]) -> Result<CodeCommand, CliError> {
         }
         "undo" => {
             let session = require_session_id(rest.get(1))?;
-            if rest.len() > 2 {
-                return Err(CliError::usage("code checkpoints undo accepts no options"));
-            }
-            Ok(CodeCommand::CheckpointsUndo { session })
+            let (_, flags, _) = parse_flags(&rest[2..], &[], &["--yes"], "checkpoints undo")?;
+            Ok(CodeCommand::CheckpointsUndo {
+                session,
+                yes: flags.contains(&"--yes"),
+            })
         }
         _ => Err(CliError::usage(CHECKPOINTS_USAGE)),
     }
@@ -987,7 +991,7 @@ pub fn execute(command: CodeCommand, output: OutputMode) -> Result<CliOutcome, C
              repair); install the CLI manually or use the desktop app"
         ))),
         CodeCommand::Login { agent, code } => login(&agent, code, output),
-        CodeCommand::Logout { agent } => logout(&agent, output),
+        CodeCommand::Logout { agent, yes } => logout(&agent, yes, output),
         CodeCommand::ProvidersList { agent } => providers_list(agent.as_deref(), output),
         CodeCommand::ProvidersAdd {
             agent,
@@ -1107,7 +1111,9 @@ pub fn execute(command: CodeCommand, output: OutputMode) -> Result<CliOutcome, C
         CodeCommand::CheckpointsRewind { session, turn, yes } => {
             checkpoints_rewind(&session, turn, yes, output)
         }
-        CodeCommand::CheckpointsUndo { session } => checkpoints_undo(&session, output),
+        CodeCommand::CheckpointsUndo { session, yes } => {
+            checkpoints_undo(&session, yes, output)
+        }
         CodeCommand::Run { .. } => Err(CliError::failed(
             "code_run_requires_product_host: a one-shot ACP turn needs the product host's \
              adapter process and async protocol client (AcpPool + agent-client-protocol), \
@@ -2085,8 +2091,10 @@ fn login(
 
 /// `code logout <agent>`: runs the same non-interactive logout subcommand the
 /// GUI's `logout_acp_agent` uses (`codex logout` / `claude auth logout` /
-/// `kimi provider remove managed:kimi-code`).
-fn logout(agent: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
+/// `kimi provider remove managed:kimi-code`). Erases the vendor CLI's stored
+/// credentials, so it requires `--yes` like every other destructive action.
+fn logout(agent: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
+    require_yes(yes)?;
     let args: &[&str] = match agent {
         "codex" => &["logout"],
         "claude" => &["auth", "logout"],
@@ -2735,6 +2743,10 @@ fn code_sessions_timeline(id: &str, output: OutputMode) -> Result<CliOutcome, Cl
     let human = events
         .iter()
         .map(|event| {
+            // AcpEventEnvelope serializes camelCase with `AcpEvent::event_type`
+            // renamed to "type" (features/codex_acp/events.rs); the older
+            // snake_case spellings are accepted so journals written by
+            // intermediate builds still render.
             format!(
                 "{}\t{}\t{}\t{}",
                 event
@@ -2746,11 +2758,13 @@ fn code_sessions_timeline(id: &str, output: OutputMode) -> Result<CliOutcome, Cl
                     .and_then(|value| value.as_str())
                     .unwrap_or(""),
                 event
-                    .pointer("/event/event_type")
+                    .pointer("/event/type")
+                    .or_else(|| event.pointer("/event/event_type"))
                     .and_then(|value| value.as_str())
                     .unwrap_or(""),
                 event
-                    .get("turn_id")
+                    .get("turnId")
+                    .or_else(|| event.get("turn_id"))
                     .and_then(|value| value.as_str())
                     .unwrap_or("-"),
             )
@@ -4654,7 +4668,14 @@ fn resolve_undo_state(
 }
 
 /// `code checkpoints undo <session>`: headless mirror of `undo_last_rewind`.
-fn checkpoints_undo(session: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
+/// Restores the working tree and rewrites the transcript, so it requires
+/// `--yes` like `rewind`.
+fn checkpoints_undo(
+    session: &str,
+    yes: bool,
+    output: OutputMode,
+) -> Result<CliOutcome, CliError> {
+    require_yes(yes)?;
     let mut mutation_lock = session_mutation_lock(session)?;
     let _mutation_guard = lock_session_for_mutation(&mut mutation_lock, session, "undo")?;
     let store = open_store()?;
