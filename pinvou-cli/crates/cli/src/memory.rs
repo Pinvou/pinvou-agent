@@ -809,54 +809,49 @@ fn list(store: Option<MemoryStore>, output: OutputMode) -> Result<CliOutcome, Cl
 
 /// Loads one store for `memory list --store`, returning the human item lines
 /// and the JSON DTO array mirroring the GUI shapes.
+///
+/// Every store returns the same `{items, cleanup_warnings}` envelope so a
+/// `--output json` consumer never has to branch on the shape per store;
+/// stores without a cleanup sweep report an empty `cleanup_warnings` array.
 fn load_store_items(store: MemoryStore) -> Result<(Vec<String>, serde_json::Value), CliError> {
     let io_error = |error| feature_error("list", error);
-    Ok(match store {
+    let (items, value, cleanup_warnings) = match store {
         MemoryStore::Preferences => {
             let read = feature::list_preferences_with_cleanup().map_err(io_error)?;
-            let warning = read.cleanup_warning.map(|detail| {
-                serde_json::json!([{
-                    "topic": "preferences",
-                    "code": "memory_topic_cleanup_required",
-                    "detail": detail,
-                }])
-            });
-            (
-                read.value.iter().map(render_preference).collect(),
-                match warning {
-                    Some(warnings) => serde_json::json!({
-                        "items": serde_json::to_value(&read.value).unwrap_or_default(),
-                        "cleanup_warnings": warnings,
-                    }),
-                    None => serde_json::to_value(&read.value).unwrap_or_default(),
-                },
-            )
+            let lines: Vec<String> = read.value.iter().map(render_preference).collect();
+            let warnings = read
+                .cleanup_warning
+                .map(|detail| {
+                    vec![serde_json::json!({
+                        "topic": "preferences",
+                        "code": "memory_topic_cleanup_required",
+                        "detail": detail,
+                    })]
+                })
+                .unwrap_or_default();
+            (lines, serde_json::to_value(&read.value).unwrap_or_default(), warnings)
         }
         MemoryStore::WorkContext => {
             let read = feature::load_work_context_with_cleanup().map_err(io_error)?;
-            let warning = read.cleanup_warning.map(|detail| {
-                serde_json::json!([{
-                    "topic": "work_context",
-                    "code": "memory_topic_cleanup_required",
-                    "detail": detail,
-                }])
-            });
-            (
-                read.value.iter().map(render_work_context).collect(),
-                match warning {
-                    Some(warnings) => serde_json::json!({
-                        "items": serde_json::to_value(&read.value).unwrap_or_default(),
-                        "cleanup_warnings": warnings,
-                    }),
-                    None => serde_json::to_value(&read.value).unwrap_or_default(),
-                },
-            )
+            let lines: Vec<String> = read.value.iter().map(render_work_context).collect();
+            let warnings = read
+                .cleanup_warning
+                .map(|detail| {
+                    vec![serde_json::json!({
+                        "topic": "work_context",
+                        "code": "memory_topic_cleanup_required",
+                        "detail": detail,
+                    })]
+                })
+                .unwrap_or_default();
+            (lines, serde_json::to_value(&read.value).unwrap_or_default(), warnings)
         }
         MemoryStore::CurrentFocus => {
             let items = feature::load_current_focus().map_err(io_error)?;
             (
                 items.iter().map(render_timed).collect(),
                 serde_json::to_value(&items).unwrap_or_default(),
+                Vec::new(),
             )
         }
         MemoryStore::RecentActivity => {
@@ -864,6 +859,7 @@ fn load_store_items(store: MemoryStore) -> Result<(Vec<String>, serde_json::Valu
             (
                 items.iter().map(render_timed).collect(),
                 serde_json::to_value(&items).unwrap_or_default(),
+                Vec::new(),
             )
         }
         MemoryStore::RecentWork => {
@@ -871,6 +867,7 @@ fn load_store_items(store: MemoryStore) -> Result<(Vec<String>, serde_json::Valu
             (
                 items.iter().map(render_recent_work).collect(),
                 serde_json::to_value(&items).unwrap_or_default(),
+                Vec::new(),
             )
         }
         MemoryStore::Pending => {
@@ -878,9 +875,11 @@ fn load_store_items(store: MemoryStore) -> Result<(Vec<String>, serde_json::Valu
             (
                 items.iter().map(render_pending).collect(),
                 serde_json::to_value(&items).unwrap_or_default(),
+                Vec::new(),
             )
         }
-    })
+    };
+    Ok((items, serde_json::json!({ "items": value, "cleanup_warnings": cleanup_warnings })))
 }
 
 /// Adds a memory item through the same pipeline the GUI uses: enqueue the
@@ -951,7 +950,10 @@ memory profile instead",
             // so the verification must compare against the same normalized
             // form, or ordinary punctuated input false-fails after storing
             // fine.
-            let stored = feature::clean_candidate_sentence(&pending.content, 160);
+            let stored = feature::clean_candidate_sentence(
+                &pending.content,
+                feature::WORK_CONTEXT_TEXT_MAX_CHARS,
+            );
             let items =
                 feature::load_work_context().map_err(|error| feature_error("add", error))?;
             let item = items

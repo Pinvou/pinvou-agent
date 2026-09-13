@@ -58,6 +58,7 @@ pub use self::io::{
 // stored form is `clean_candidate_sentence`-normalized, so the CLI needs the
 // exact function to avoid false "not materialized" failures on ordinary
 // punctuated input.
+pub use self::io::WORK_CONTEXT_TEXT_MAX_CHARS;
 pub use self::util::clean_candidate_sentence;
 
 // ---- LLM 后台复盘（llm_review）----

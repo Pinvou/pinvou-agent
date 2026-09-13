@@ -342,8 +342,12 @@ fn memory_add_preference_shows_up_in_list_and_supports_update_delete() {
         "--output",
         "json",
     ]);
-    let items: serde_json::Value = serde_json::from_str(&json).unwrap();
-    let items = items.as_array().expect("json array of preferences");
+    let envelope: serde_json::Value = serde_json::from_str(&json).unwrap();
+    // Every `list --store` JSON shape is the same {items, cleanup_warnings}
+    // envelope; preferences may carry a cleanup warning, the others always
+    // report an empty array.
+    assert_eq!(envelope["cleanup_warnings"], serde_json::json!([]));
+    let items = envelope["items"].as_array().expect("json array of preferences");
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["text"], "Prefer concise answers");
     let id = items[0]["id"].as_str().unwrap().to_owned();
@@ -419,7 +423,7 @@ fn memory_add_work_context_from_file_and_positional_arguments() {
         "json",
     ]);
     let items: serde_json::Value = serde_json::from_str(&json).unwrap();
-    let items = items.as_array().unwrap();
+    let items = items["items"].as_array().expect("envelope items array");
     // The feature upserts work context by topic; the CLI adds without a topic
     // share the default topic, so the second add rewrites the first entry.
     assert_eq!(items.len(), 1);

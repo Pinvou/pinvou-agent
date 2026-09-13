@@ -1727,10 +1727,13 @@ fn search_set(
     // Replacing an existing key OVERWRITES it in the keyring, so the
     // rollback below must restore the previous value — deleting would
     // destroy the old secret while prefs still references it (strictly
-    // worse than not rolling back). Snapshot it before the transaction.
+    // worse than not rolling back). Snapshot it before the transaction,
+    // keeping a snapshot READ ERROR distinct from "no previous secret":
+    // rolling back on unknown state must not delete a key that may still
+    // exist and still be referenced by prefs.
     let previous_secret = stored_reference
         .as_ref()
-        .map(|reference| SystemCredentialStore::new().get(reference).ok().flatten());
+        .map(|reference| SystemCredentialStore::new().get(reference));
     let transaction = UserPrefs::update_transaction(|prefs| {
         prefs.search.provider = provider;
         if let Some(key) = &stored {
@@ -1762,13 +1765,20 @@ fn search_set(
             match previous_secret {
                 // A previous secret existed: the overwrite destroyed it, so
                 // the rollback must put it back.
-                Some(Some(old)) => {
+                Some(Ok(Some(old))) => {
                     let _ = store.set(reference, old.as_str());
                 }
-                // No previous secret: remove the just-stored one.
-                Some(None) | None => {
+                // No previous secret existed: remove the just-stored one.
+                Some(Ok(None)) => {
                     let _ = store.delete(reference);
                 }
+                // The pre-transaction state is unknown (keychain read
+                // failed): leave the keyring untouched. Deleting could
+                // destroy a secret prefs still references; a stale orphaned
+                // entry is the benign direction.
+                Some(Err(_)) => {}
+                // No write happened (nothing to store), so no rollback.
+                None => {}
             }
         }
         return Err(prefs_error(error));
