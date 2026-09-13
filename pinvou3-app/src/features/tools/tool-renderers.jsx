@@ -4,6 +4,7 @@ import { StatusDot } from '../../components/StatusDot.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { can } from '../../shared/platform.js';
 import { expertDelegationText, isAgentWaitCall, isExpertDelegationCall } from '../conversation/conversation-model.js';
+import { spawnGroupOf } from '../multiagent/spawn-aggregation.mjs';
 import {
   resolveSubagentPresentation,
   resolveSubagentSpawnResult,
@@ -183,10 +184,13 @@ function swarmModeOn() {
  * the message item sequence and updates incrementally with the session flow.
  * Clicking dispatches `pinvou:open-subagent` (agentId=null → panel list state).
  */
-const AgentSpawnCountRow = ({ count, failed = 0, sessionId, t }) => {
+const AgentSpawnCountRow = ({ count, failed = 0, sessionId, t, interactive = true }) => {
   const copy = t.uiMultiAgent;
   const on = swarmModeOn();
-  const clickable = !!sessionId;
+  // The null-agentId click opens the subagent panel's list state, which only
+  // the main chat host implements; hosts without that view render the row
+  // honestly non-interactive instead of dispatching into a no-op handler.
+  const clickable = interactive && !!sessionId;
   const accent = on
     ? 'bg-[#7C3AED] dark:bg-[#A78BFA]'
     : 'bg-[#0B57D0] dark:bg-[#A8C7FA]';
@@ -615,23 +619,27 @@ const ToolOutput = ({ item, t }) => {
     // before any Hook of this component, and item.name never changes for a
     // given instance, so each instance's Hook count stays constant.
     // eslint-disable-next-line sonarjs/cognitive-complexity -- tool card rendering contains many inline branches;legacy view; tracked separately
-    const ToolCard = ({ item, t, variant = 'legacy', sessionId }) => {
+    const ToolCard = ({ item, t, variant = 'legacy', sessionId, spawnRowInteractive = true }) => {
       if (EXPERT_CARD_ENABLED && (item.name === 'agent' || isAgentWaitCall(item.name, item.args))) {
         const delegation = isExpertDelegationCall(item.name, item.args);
         if (delegation) {
-          // Items of both lanes (legacy bubbles and the unified timeline) are
-          // annotated uniformly on the projection input, so the count row can
-          // read the item's own fields directly.
+          // Spawn items arrive pre-annotated: each lane's projection input is
+          // annotated exactly once (ChatView for the main chat, projectNativeLane
+          // for the codex native lane), so the count row reads the item's own
+          // fields directly. The codex native host has no subagent list view,
+          // so its rows render non-interactive instead of dispatching into a
+          // no-op `pinvou:open-subagent` handler.
           const group = item.spawnGroup;
           const hidden = item.spawnGroupHidden;
           // Non-first spawns of an aggregated sequence do not repeat the text row.
           if (hidden) return null;
-          const resolved = group || { count: 1, failed: item.success === false || item.state === 'failed' ? 1 : 0 };
+          const resolved = group || spawnGroupOf(item);
           return (
             <AgentSpawnCountRow
               count={resolved.count}
               failed={resolved.failed || 0}
               sessionId={sessionId}
+              interactive={spawnRowInteractive}
               t={t}
             />
           );

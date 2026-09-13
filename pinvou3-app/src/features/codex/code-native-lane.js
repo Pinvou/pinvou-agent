@@ -13,6 +13,7 @@
 // 三语文案在渲染层按 key 组装（与 compactPhase 同一约定）。
 
 import { projectDeepSeekConversation, conversationItemsForMode } from '../conversation/deepseek-conversation.js';
+import { annotateAgentSpawnGroups } from '../multiagent/spawn-aggregation.mjs';
 import { isInternalRuntimeEnvelopeText, isInternalUserMessage } from '../../shared/internal-message.mjs';
 
 export function createNativeLane() {
@@ -908,8 +909,11 @@ export function projectNativeLane(lane, sessionId, options = {}) {
   // native lane has no legacy mode and is always filtered as unified -
   // otherwise a terminal-upgraded error would show both the bubble and
   // the timeline error card.
+  // Spawn annotation runs on the projection input, mirroring ChatView:
+  // without it the timeline's ToolCard would render one degenerate
+  // "spawned 1 agent" count row per spawn call.
   return projectDeepSeekConversation({
-    chatItems: conversationItemsForMode(lane ? lane.items : [], true),
+    chatItems: conversationItemsForMode(annotateAgentSpawnGroups(lane ? lane.items : []), true),
     busy: Boolean(lane && lane.busy),
     thinking: lane ? lane.thinking : null,
     tokens: lane ? lane.tokens : null,

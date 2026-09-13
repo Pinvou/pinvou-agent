@@ -1047,7 +1047,7 @@ test('agent 工具调用渲染成行内专家卡，点击打开只读面板', ()
   // use the expert card's quiet row.
   assert.match(
     toolRenderersSource,
-    /const delegation = isExpertDelegationCall\(item\.name, item\.args\);\s*if \(delegation\) \{[\s\S]{0,600}return \(\s*<AgentSpawnCountRow/,
+    /const delegation = isExpertDelegationCall\(item\.name, item\.args\);\s*if \(delegation\) \{[\s\S]{0,900}return \(\s*<AgentSpawnCountRow/,
     'spawn-type delegations render the aggregated count row behind the capability gate (Web without a multiAgent bridge falls back to the generic tool card)',
   );
   assert.match(

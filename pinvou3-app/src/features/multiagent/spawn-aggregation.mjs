@@ -10,14 +10,14 @@
  * other content block between spawns naturally breaks the group and starts a
  * new row.
  *
- * Annotation happens exactly once: `annotateAgentSpawnGroups` runs on the
- * projection input (the visible chatItems). Both lanes read its result — the
- * legacy ChatBubble lane reads spawnGroup / spawnGroupHidden straight off the
- * item, and the unified ConversationTimeline lane's projected items carry the
- * whole chat item on `legacyItem` (deepseek-conversation's projectItem), so
- * ToolCard reads `item.legacyItem.spawnGroup`. Do not annotate again on the
- * projected turns: turn.presentation holds the unannotated original projected
- * items, so a second pass never reaches the render layer.
+ * Annotation happens exactly once per lane, on the projection input:
+ * ChatView annotates the main chat's visible chatItems, and the codex native
+ * lane annotates its lane.items inside projectNativeLane. The projected
+ * timeline items carry the whole chat item on `legacyItem` (deepseek-
+ * conversation's projectItem), so ToolCard reads the annotation straight off
+ * the item (`item.spawnGroup` / `item.spawnGroupHidden`). Do not annotate
+ * again on the projected turns: turn.presentation holds the unannotated
+ * original projected items, so a second pass never reaches the render layer.
  *
  * The predicate mirrors the conversation layer's `isExpertDelegationCall`:
  * coordination operations such as status/wait/cancel are not spawns and never
@@ -33,7 +33,13 @@ export function isAgentSpawnChatItem(item) {
   return isExpertDelegationCall(item.name, item.args);
 }
 
-function spawnGroupOf(item) {
+/**
+ * Degenerate group shape for a single unannotated spawn item: the render
+ * layer's fallback when an item somehow bypasses annotation (kept here so
+ * the failure predicate stays in one place).
+ * @returns {{count: number, failed: number}}
+ */
+export function spawnGroupOf(item) {
   return {
     count: 1,
     failed: item.success === false || item.state === 'failed' ? 1 : 0,
