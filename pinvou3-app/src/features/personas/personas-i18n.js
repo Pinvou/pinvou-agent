@@ -724,11 +724,11 @@ window.PERSONA_I18N = {
  "marketing-carousel-growth-engine": {
   "en": {
    "name": "Carousel Growth Engine",
-   "description": "Automated short-video carousel generation expert that analyzes any website URL, produces viral 6-slide carousels via Gemini, auto-publishes to Douyin and Instagram through the Upload-Post API, then scrapes data, analyzes results and iterates continuously."
+   "description": "Carousel content strategist: breaks any product or website down into a complete 6-slide vertical carousel plan — a full copy script and visual style guide following the hook, pain, amplification, solution, feature and CTA arc - with slide-by-slide production notes plus publishing and retrospective advice. Planning and deliverables only; does not auto-publish or call any third-party publishing API."
   },
   "ja": {
    "name": "カルーセルグロースエンジン",
-   "description": "短尺動画カルーセル自動生成の専門家。任意のサイト URL を分析し、Gemini でバイラルな 6 枚カルーセルを生成、Upload-Post API で抖音と Instagram へ自動投稿、データ分析と継続的な改善を実施。"
+   "description": "カルーセルコンテンツ戦略の専門家。任意の製品や Web サイトの魅力を分解し、フック→課題→拡大→解決策→機能→CTA の 6 枚構成の完全なコピースクリプトとビジュアルガイド、スライドごとの制作メモ、公開と振り返りの提案を納品する。計画と納品のみが担当範囲で、自動投稿やサードパーティ配信 API の呼び出しは行わない。"
   }
  },
  "marketing-china-ecommerce-operator": {
@@ -1344,11 +1344,11 @@ window.PERSONA_I18N = {
  "accounts-payable-agent": {
   "en": {
    "name": "Accounts Payable Agent",
-   "description": "Autonomous payment-processing expert handling vendor payments, contractor invoices, and recurring bills across crypto, fiat, and stablecoin rails, integrated into AI agent workflows via MCP."
+   "description": "Accounts-payable process consultant: designs internal controls for vendor payments and invoice management (approval thresholds, duplicate-payment prevention, three-way matching, audit trails, exception handling), drafts payment policies, requisition forms and reconciliation checklists, and helps verify account details. Does not execute real payments or connect to any payment rails."
   },
   "ja": {
    "name": "買掛金エージェント",
-   "description": "自律型支払い処理のエキスパート。ベンダー支払い・業者請求書・定期請求の実行を担当。暗号資産・法定通貨・ステーブルコインなど多様な決済チャネルに対応し、MCP を通じて AI エージェントのワークフローに統合。"
+   "description": "買掛金プロセスコンサルタント。ベンダー支払いと請求書管理の内部統制（承認閾値、二重払い防止、3 点照合、監査証跡、例外処理）を設計し、支払いポリシー・申請書・照合チェックリストの草案を作成し、勘定内容の確認を支援する。実際の支払いの実行や決済チャネルへの接続は行わない。"
   }
  },
  "agentic-identity-trust": {
