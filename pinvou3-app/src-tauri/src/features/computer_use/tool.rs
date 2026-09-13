@@ -293,7 +293,9 @@ fn reject_unexpected(input: &Value, action: &str, allowed: &[&str]) -> Result<()
         }
         let label = match key.as_str() {
             "x" | "y" => "coordinate",
-            other => other,
+            // 错误字符串会进入审计日志的 error 字段,未知的字段名(模型输入)
+            // 不回显;action 此处必然匹配过字面量分支,是安全的已知动作名。
+            _ => "unexpected field",
         };
         return Err(invalid(format!("{label} is not accepted for {action}")));
     }
@@ -467,9 +469,12 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
                 ms,
             }
         }
-        other => {
+        _ => {
+            // 错误字符串会进入审计日志的 error 字段,不回显模型输入的动作名
+            // (模型把自己的输入放进动作名即可向日志走私文本;它自己知道发过
+            // 什么,回显没有信息量)。
             return Err(invalid(format!(
-                "unknown action '{other}'; supported: {}",
+                "unknown action; supported: {}",
                 SUPPORTED_ACTIONS.join(", ")
             )));
         }
@@ -629,27 +634,20 @@ fn screen_point(parts: &Parts, x: i32, y: i32) -> T3Screening {
     }
 }
 
-/// Whether a key chord is effectively typed text: at least one non-modifier
-/// key, and EVERY non-modifier key is a plain character. Chords made only of
-/// character keys (with or without modifiers) type literal text, so they log
-/// a key count only — a password can be spelled in chunks of up to
-/// [`MAX_KEY_CHORD_TOKENS`] characters per call (`p+a+s+s`), and each chunk
-/// would otherwise land in the audit log as plaintext `keys: p+a+s+s`
-/// records. Classification must be content-based, not token-position based —
+/// Whether a key chord is effectively typed text: it contains at least one
+/// plain character key. Character keys are injected as literal keystrokes
+/// even when the chord mixes in named keys (`p+a+s+Return` types `pas`
+/// followed by Enter), so ANY chord carrying a character key logs a key
+/// count only — a password can be spelled in chunks of up to
+/// [`MAX_KEY_CHORD_TOKENS`] characters per call, and each chunk would
+/// otherwise land in the audit log as plaintext `keys: …` records.
+/// Classification must be content-based, not token-position based —
 /// `shift+shift+h` parses to `[Shift, Shift, Char('h')]`, which positional
-/// patterns miss while the injection still types a capital H. Chords
-/// containing at least one NAMED key (Return, Tab, F5, …) are shortcuts or
-/// editing actions rather than spelled text and keep the readable
-/// `keys: <chord>` target.
+/// patterns miss while the injection still types a capital H. Chords made
+/// only of named keys (Return, Tab, ctrl+Delete, F5, …) inject no characters
+/// and keep the readable `keys: <chord>` target.
 fn is_typed_text_chord(keys: &[Key]) -> bool {
-    let mut non_modifiers = keys.iter().filter(|k| !k.is_modifier());
-    match non_modifiers.next() {
-        Some(first) => match first {
-            Key::Char(_) => non_modifiers.all(|k| matches!(k, Key::Char(_))),
-            _ => false,
-        },
-        None => false,
-    }
+    keys.iter().any(|k| matches!(k, Key::Char(_)))
 }
 
 /// T3 后果性筛查：只对**激活类** Input 动作执行（见 [`requires_t3_check`]）。
@@ -1016,12 +1014,13 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         ComputerUseAction::Type { text } => {
             record.with_target(&format!("typed {} characters", text.chars().count()));
         }
-        // Typing-form chords (only character keys among the non-modifiers,
-        // any modifier/order arrangement) could spell out a password in
-        // <=4-character chunks, so only the non-modifier key count is
-        // logged — never the characters themselves. Chords containing a
-        // named key (Return, Tab, F5, …) are shortcuts with no dictionary
-        // risk and keep plaintext (readability for the user wins).
+        // Typing-form chords (any character key among the keys, any
+        // modifier/order arrangement) could spell out a password in
+        // <=4-character chunks — mixed chords like `p+a+s+Return` type their
+        // characters too — so only the key count is logged, never the
+        // characters themselves. Chords made only of named keys (Return,
+        // ctrl+Delete, F5, …) inject no characters and keep plaintext
+        // (readability for the user wins).
         ComputerUseAction::KeyChord { keys, .. } | ComputerUseAction::HoldKey { keys, .. }
             if is_typed_text_chord(keys) =>
         {
@@ -1109,9 +1108,41 @@ fn held_key_suffix(action: &ComputerUseAction) -> String {
     }
 }
 
+/// 键盘动作摘要里的和弦渲染。含字符键的和弦是"打字"（可拼出密码块），
+/// 字符永不进入摘要/确认事件——只渲染修饰键与命名键，字符以计数表达
+/// （`ctrl+s` → `ctrl + 1 character`、`esc+h+u+n` → `esc + 3
+/// characters`）；纯命名键和弦保持可读原文（`ctrl+Delete`）。与审计的
+/// 计数规则（[`is_typed_text_chord`]）同一分类边界。摘要会绑定进批准令牌
+/// （mint 与 spend 都经 [`action_summary`]），因此必须只依赖动作本身、
+/// 与焦点状态无关。
+fn summarize_chord(keys: &[Key], chord: &str) -> String {
+    let chars = keys
+        .iter()
+        .filter(|key| matches!(key, Key::Char(_)))
+        .count();
+    if chars == 0 {
+        return chord.to_string();
+    }
+    let named: Vec<String> = keys
+        .iter()
+        .filter_map(|key| (!matches!(key, Key::Char(_))).then(|| key.canonical_name()))
+        .collect();
+    let unit = if chars == 1 {
+        "character"
+    } else {
+        "characters"
+    };
+    if named.is_empty() {
+        format!("{chars} {unit}")
+    } else {
+        format!("{} + {chars} {unit}", named.join(" + "))
+    }
+}
+
 /// 动作摘要：纯人类可读的参数摘要（`left click x1 at Some((5, 6))`、
 /// `type 3 characters`……）。摘要展示给用户（知情批准）并绑定进批准令牌；
-/// 键入内容永不出现（Type 只记字符数，无明文）。
+/// 键入内容永不出现（Type 只记字符数；和弦经 [`summarize_chord`] 只记
+/// 命名键与字符数）。
 fn action_summary(action: &ComputerUseAction) -> String {
     match action {
         ComputerUseAction::Click { button, count, at } => {
@@ -1121,8 +1152,14 @@ fn action_summary(action: &ComputerUseAction) -> String {
         ComputerUseAction::Type { text } => {
             format!("type {} characters", text.chars().count())
         }
-        ComputerUseAction::KeyChord { chord, .. } => format!("key {chord}"),
-        ComputerUseAction::HoldKey { chord, ms, .. } => format!("hold {chord} for {ms}ms"),
+        ComputerUseAction::KeyChord { chord, keys, .. } => {
+            format!("key {}", summarize_chord(keys, chord))
+        }
+        ComputerUseAction::HoldKey {
+            chord, keys, ms, ..
+        } => {
+            format!("hold {} for {ms}ms", summarize_chord(keys, chord))
+        }
         ComputerUseAction::Scroll {
             direction,
             amount,
@@ -1402,28 +1439,39 @@ impl ToolSpec for ComputerUseTool {
         let parsed = match parse_action(&input) {
             Ok(parsed) => parsed,
             Err(error) => {
-                let action_name = input
-                    .get("action")
-                    .and_then(Value::as_str)
-                    .map(|name| name.chars().take(80).collect::<String>())
-                    .unwrap_or_else(|| "missing".to_string());
+                // 审计记录只含稳定的形状信息:动作名未知的按 "unknown" 记录
+                // (模型可控文本不进日志),错误文本本身经 parse 层保证不回显
+                // 模型输入(见 parse_action 的 unknown-action / not-accepted
+                // 分支与 parse_key_chord 的形状错误)。
+                let raw_action = input.get("action").and_then(Value::as_str);
+                let audit_target = match raw_action {
+                    Some(name) if SUPPORTED_ACTIONS.contains(&name) => {
+                        format!("action:{name}")
+                    }
+                    Some(_) => "action:unknown".to_string(),
+                    None => "action:missing".to_string(),
+                };
                 let error_text = error.to_string();
-                let record = AuditRecord::new(
-                    &self.parts.session_id,
-                    "unparseable",
-                    format!("action:{action_name}"),
-                )
-                .finish(
-                    "rejected",
-                    Some(format!(
-                        "parse failed: {}",
-                        error_text.chars().take(160).collect::<String>()
-                    )),
-                    0,
-                );
-                if let Ok(log) = AuditLog::for_session(&self.parts.session_id) {
-                    if let Err(audit_error) = log.append(&record) {
-                        eprintln!("[computer_use] audit append failed: {audit_error}");
+                let record = AuditRecord::new(&self.parts.session_id, "unparseable", audit_target)
+                    .finish(
+                        "rejected",
+                        Some(format!(
+                            "parse failed: {}",
+                            error_text.chars().take(160).collect::<String>()
+                        )),
+                        0,
+                    );
+                match AuditLog::for_session(&self.parts.session_id) {
+                    Ok(log) => {
+                        if let Err(audit_error) = log.append(&record) {
+                            eprintln!("[computer_use] audit append failed: {audit_error}");
+                        }
+                    }
+                    Err(log_error) => {
+                        eprintln!(
+                            "[computer_use] audit log unavailable for unparseable call: \
+                             {log_error}"
+                        );
                     }
                 }
                 return Err(error);

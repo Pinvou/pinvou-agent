@@ -3,6 +3,53 @@ use crate::features::computer_use::backend::ComputerUseBackend;
 use crate::features::computer_use::types::{Capabilities, Capture, ElementInfo, Key};
 use std::sync::Mutex as StdMutex;
 
+/// 评审修复回归（round-10 m3）：含字符键的和弦摘要在确认对话框/事件流里
+/// 只出现命名键与字符数——密码焦点下的 `key "shift+h"` 之类不再把打出的
+/// 字符送进对话框与远程事件流（Type 动作的既有语义）。摘要同时绑定批准
+/// 令牌（mint/spend 都调 [`action_summary`]），因此必须是动作的纯函数。
+#[test]
+fn chord_summaries_mask_typed_characters() {
+    let summary_of = |input: serde_json::Value| {
+        let parsed = parse_action(&input).expect("chord parses");
+        action_summary(&parsed.action)
+    };
+    // 纯命名键和弦保持可读原文。
+    assert_eq!(
+        summary_of(json!({"action": "key", "text": "ctrl+Delete"})),
+        "key ctrl+Delete"
+    );
+    assert_eq!(
+        summary_of(json!({"action": "key", "text": "Return"})),
+        "key Return"
+    );
+    // 含字符键的和弦只渲染修饰键/命名键 + 字符计数。
+    assert_eq!(
+        summary_of(json!({"action": "key", "text": "ctrl+s"})),
+        "key ctrl + 1 character"
+    );
+    assert_eq!(
+        summary_of(json!({"action": "key", "text": "shift+h"})),
+        "key shift + 1 character"
+    );
+    assert_eq!(
+        summary_of(json!({"action": "key", "text": "esc+h+u+n"})),
+        "key esc + 3 characters"
+    );
+    assert_eq!(
+        summary_of(json!({"action": "key", "text": "p+a+Return"})),
+        "key enter + 2 characters"
+    );
+    // hold_key 同一规则，保留按住时长。
+    assert_eq!(
+        summary_of(json!({"action": "hold_key", "text": "ctrl+s", "ms": 500})),
+        "hold ctrl + 1 character for 500ms"
+    );
+    assert_eq!(
+        summary_of(json!({"action": "hold_key", "text": "Return", "ms": 500})),
+        "hold Return for 500ms"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 测试替身
 // ---------------------------------------------------------------------------
@@ -533,6 +580,25 @@ async fn input_without_grant_emits_event_and_errors() {
     );
     // 未授权时绝不能触碰后端。
     assert!(fixture.mock.lock().clicked.is_empty());
+    // 被拒调用必须留痕（round-4 一致性修复 + round-10 m12 回归）：审计里
+    // 有 result:"rejected"、consent:"rejected:grant-required" 的记录。
+    let audit_path = fixture.home.join("computer-use").join("audit-s-test.jsonl");
+    let raw = std::fs::read_to_string(&audit_path).expect("audit jsonl exists");
+    let records: Vec<serde_json::Value> = raw
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_str(line).expect("valid jsonl line"))
+        .collect();
+    let rejected: Vec<&serde_json::Value> = records
+        .iter()
+        .filter(|r| r["result"] == "rejected" && r["action"] == "left_click")
+        .collect();
+    assert_eq!(
+        rejected.len(),
+        1,
+        "the grant-rejected click must leave exactly one audit record: {records:?}"
+    );
+    assert_eq!(rejected[0]["consent"], "rejected:grant-required");
 }
 
 #[tokio::test]
@@ -571,6 +637,9 @@ async fn granted_click_executes_and_attaches_screenshot() {
     let path = images[0].as_str().unwrap_or_default().to_string();
     assert!(path.ends_with(".png"), "{path}");
     assert!(Path::new(&path).is_file(), "{path} should exist");
+    // 截图文件必须 0600（round-10 评审 m12：此前只在 ignored live 套件里
+    // 断言；CI 里 capture_and_store 若退化为普通 write 无人拦截）。
+    crate::platform::filesystem::assert_private_file_mode(Path::new(&path));
     assert!(
         result.content.contains("attachments/computer_use/"),
         "{}",
@@ -1263,6 +1332,27 @@ async fn unsupported_input_platform_is_rejected_before_grant_prompt() {
         !events.iter().any(|(name, _)| name == EVENT_GRANT_REQUIRED),
         "no grant prompt expected, got {events:?}"
     );
+    // 能力拒绝必须留痕（round-4 一致性修复 + round-10 m12 回归）。
+    let audit_path = fixture.home.join("computer-use").join("audit-s-test.jsonl");
+    let raw = std::fs::read_to_string(&audit_path).expect("audit jsonl exists");
+    let records: Vec<serde_json::Value> = raw
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_str(line).expect("valid jsonl line"))
+        .collect();
+    let rejected: Vec<&serde_json::Value> = records
+        .iter()
+        .filter(|r| r["result"] == "rejected" && r["action"] == "left_click")
+        .collect();
+    assert_eq!(
+        rejected.len(),
+        1,
+        "the capability-rejected click must leave exactly one audit record: {records:?}"
+    );
+    assert_eq!(
+        rejected[0]["consent"],
+        "rejected:capability:input-unsupported"
+    );
 }
 
 /// schema enum、未知动作错误文案与 parse_action 分发三者一致。
@@ -1532,15 +1622,16 @@ async fn single_char_key_chord_is_audited_as_typed_text() {
     assert!(!raw.contains("keys: h+shift+shift"));
 }
 
-/// 评审修复回归（M2）：多字符字母和弦（≤4 token，如 `p+a+s+s`）是把文本
-/// 按 ≤4 字符块拼写——审计只记非修饰键数（`pressed 4 keys`），绝不记明文
-/// （旧实现只对单字符和弦脱敏，`p+a+s+s` 以 `keys: p+a+s+s` 明文落盘）。
-/// 含命名键的快捷键（`Return`）不是拼写文本，保持可读的 `keys: <chord>`。
+/// 评审修复回归（M2 + round-10 B1）：含字符键的和弦（≤4 token）是把文本
+/// 按 ≤4 字符块拼写——审计只记键数（`pressed 4 keys`），绝不记明文。混合
+/// 和弦（`p+a+Return`、`esc+h+u+n`）的字符键同样被注入，旧实现只要混入
+/// 命名键就整体按 `keys: <chord>` 明文落盘。纯命名键和弦（`Return`）不注
+/// 入字符，保持可读的 `keys: <chord>`。
 #[tokio::test]
 async fn multi_char_letter_chords_are_audited_as_counts_only() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
-    for chord in ["p+a+s+s", "h+u+n"] {
+    for chord in ["p+a+s+s", "h+u+n", "p+a+Return", "esc+h+u+n"] {
         let result = fixture
             .tool
             .execute(
@@ -1572,8 +1663,11 @@ async fn multi_char_letter_chords_are_audited_as_counts_only() {
     let audit_path = fixture.home.join("computer-use").join("audit-s-test.jsonl");
     let raw = std::fs::read_to_string(&audit_path).expect("audit jsonl exists");
     assert!(
-        !raw.contains("p+a+s+s") && !raw.contains("h+u+n"),
-        "letter-chunk chords must never reach the log as plaintext: {raw}"
+        !raw.contains("p+a+s+s")
+            && !raw.contains("h+u+n")
+            && !raw.contains("p+a+Return")
+            && !raw.contains("esc+h+u+n"),
+        "letter chunks (mixed with named keys or not) must never reach the log as plaintext: {raw}"
     );
     let records: Vec<serde_json::Value> = raw
         .lines()
@@ -1587,8 +1681,14 @@ async fn multi_char_letter_chords_are_audited_as_counts_only() {
         .collect();
     assert_eq!(
         targets,
-        vec!["pressed 4 keys", "pressed 3 keys", "keys: Return"],
-        "letter chunks log counts, named keys stay readable: {records:?}"
+        vec![
+            "pressed 4 keys",
+            "pressed 3 keys",
+            "pressed 3 keys",
+            "pressed 4 keys",
+            "keys: Return",
+        ],
+        "any chord carrying a character key logs counts, named keys stay readable: {records:?}"
     );
 }
 
