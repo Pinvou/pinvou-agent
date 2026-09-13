@@ -1058,9 +1058,8 @@ jobs:
             : > "$d/$f"
           done
 
-      # Follows the repo's pinned toolchain single source
-      # (pinvou3-app/src-tauri/rust-toolchain.toml); rustfmt is required by
-      # the `cargo fmt --check` step below (minimal profile otherwise).
+      # rustfmt is required by the `cargo fmt --check` step below (minimal
+      # profile otherwise).
       #
       # No RUSTC_WRAPPER/rustc-stack-wrapper here (unlike rust-test): that
       # wrapper only exists because src-tauri's own [profile.dev] raises
@@ -1071,8 +1070,14 @@ jobs:
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.98.0
           components: rustfmt
+
+      # rust-toolchain.toml 在 src-tauri 下,对从仓库根用 --manifest-path 调用的
+      # cargo 不生效;与 rust-test 同步把 pinned 版本设为 default。单一真相源是
+      # 该文件——硬编码 toolchain 版本会在未来升级时把本 leg 静默甩在旧版本上。
+      - name: 对齐 rust-toolchain.toml 锁定的工具链
+        working-directory: pinvou3-app/src-tauri
+        run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
@@ -1101,6 +1106,17 @@ jobs:
       - name: cargo compile check (push)
         if: github.event_name == 'push'
         run: cargo test --manifest-path pinvou-cli/Cargo.toml --locked --no-run
+
+      # dataset_contract is gated behind `required-features = ["test-support"]`
+      # and is silently skipped by the workspace-wide run above; the gaia
+      # timeout pins edited by this PR live there, so the leg must execute it.
+      - name: cargo test (adapter-gaia test-support)
+        if: github.event_name != 'push'
+        run: cargo test -p adapter-gaia --features test-support --locked --no-fail-fast
+
+      - name: cargo compile check (push, adapter-gaia test-support)
+        if: github.event_name == 'push'
+        run: cargo test -p adapter-gaia --features test-support --locked --no-run
 
   windows-rust-test:
     name: windows-rust-test

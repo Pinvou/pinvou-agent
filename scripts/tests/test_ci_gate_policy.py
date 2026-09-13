@@ -332,6 +332,12 @@ class CiGatePolicyTests(unittest.TestCase):
             "cargo test --manifest-path pinvou-cli/Cargo.toml --locked --no-fail-fast",
             cli_test,
         )
+        self.assertIn(
+            "cargo test -p adapter-gaia --features test-support --locked --no-fail-fast",
+            cli_test,
+            "dataset_contract is required-features-gated and silently skipped by "
+            "the workspace run; the gaia timeout pins live there",
+        )
         self.assertIn("cache-targets: false", cli_test)
 
         required_gate = self.pr_workflow.split(
