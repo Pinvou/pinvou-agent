@@ -43,6 +43,7 @@ use serde::{Deserialize, Serialize};
 pub(crate) mod turns;
 
 pub(crate) use turns::count_user_turns;
+pub use turns::count_user_turns_in_json;
 
 /// 每会话保留的 checkpoint 上限（LRU，超出裁掉最老条目）。
 const MAX_CHECKPOINTS: usize = 20;

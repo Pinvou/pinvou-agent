@@ -20,6 +20,22 @@ pub(crate) fn count_user_turns(messages: &[Message]) -> u32 {
         .count() as u32
 }
 
+/// JSON 入口的精确 user-turn 计数。headless 调用方（CLI）不依赖底座 crate，
+/// 拿到的是反序列化前的 JSON 消息数组；此前 CLI 只能按 role + tool_result
+/// 形状近似，image-only 等引擎不视为 prompt 的消息会被多算，可能卡住
+/// `checkpoints rewind` 的预检。逐条反序列化后走与 `count_user_turns`
+/// 完全相同的谓词，两边口径不再可能分叉。
+pub fn count_user_turns_in_json(
+    messages: &[serde_json::Value],
+) -> Result<u32, serde_json::Error> {
+    let mut total = 0u32;
+    for value in messages {
+        let message: Message = serde_json::from_value(value.clone())?;
+        total += count_user_turns(std::slice::from_ref(&message));
+    }
+    Ok(total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

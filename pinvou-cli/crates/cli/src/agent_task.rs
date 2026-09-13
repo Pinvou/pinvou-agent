@@ -193,8 +193,7 @@ fn run_agent(
     // failed): an unreadable file is a host-level failure (exit 1), not an
     // argument usage error — the documented exit-code contract also lists
     // read failures under host-level.
-    let prompt =
-        crate::support::read_text_file_capped(prompt_file, 4 * 1024 * 1024, "agent run")?;
+    let prompt = crate::support::read_text_file_capped(prompt_file, 4 * 1024 * 1024, "agent run")?;
     // Canonicalize so the engine receives an absolute path regardless of cwd
     // changes, and fail fast on a missing/non-directory workspace instead of
     // letting a typo'd path get silently created deeper in the stack.

@@ -20,9 +20,11 @@
 //! - checkpoints → `features::code_checkpoints` public functions plus the
 //!   `SessionStore` rewind sidecar methods, mirroring the
 //!   `rewind_to_turn` / `undo_last_rewind` orchestration. User-turn counting
-//!   is a documented JSON approximation of `code_checkpoints::count_user_turns`
-//!   (`pub(crate)`); the store re-validates with the exact predicate inside
-//!   `truncate_to_user_turn` / `restore_rewound_turns`.
+//!   goes through `code_checkpoints::count_user_turns_in_json`, which runs
+//!   the engine's exact `is_user_turn_prompt` predicate over the transcript
+//!   JSON (the CLI cannot depend on the foundation crate directly, so the
+//!   shared entry point lives in the app crate — no local approximation to
+//!   drift).
 //!
 //! Concurrency: `checkpoints rewind` / `undo` and `workspace checkout`
 //! serialize through a cross-process advisory lock under
@@ -1111,9 +1113,7 @@ pub fn execute(command: CodeCommand, output: OutputMode) -> Result<CliOutcome, C
         CodeCommand::CheckpointsRewind { session, turn, yes } => {
             checkpoints_rewind(&session, turn, yes, output)
         }
-        CodeCommand::CheckpointsUndo { session, yes } => {
-            checkpoints_undo(&session, yes, output)
-        }
+        CodeCommand::CheckpointsUndo { session, yes } => checkpoints_undo(&session, yes, output),
         CodeCommand::Run { .. } => Err(CliError::failed(
             "code_run_requires_product_host: a one-shot ACP turn needs the product host's \
              adapter process and async protocol client (AcpPool + agent-client-protocol), \
@@ -4326,100 +4326,19 @@ fn valid_checkpoint_id(id: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || character == '-')
 }
 
-/// JSON-level approximation of `code_checkpoints::count_user_turns` (the exact
-/// predicate lives behind `deepseek_tui::is_user_turn_prompt`, which the CLI
-/// crate cannot reach): user messages that carry no tool-result blocks and are
-/// not runtime `<turn_meta>` envelopes. The authoritative count is re-checked
-/// inside `truncate_to_user_turn` / `restore_rewound_turns`.
-/// Approximation of the engine's turn count: every non-tool-result,
-/// non-runtime-owned user message counts, including content shapes the
-/// engine's `is_user_turn_prompt` treats as non-prompt (image-only turns).
-/// The authoritative count is re-derived at truncate time; this only
-/// loosens the `cannot_rewind` pre-check and the undo report.
-fn approx_user_turns(messages: &serde_json::Value) -> u32 {
-    messages
-        .as_array()
-        .map(|messages| {
-            messages
-                .iter()
-                .filter(|message| {
-                    message.get("role").and_then(|value| value.as_str()) == Some("user")
-                        && !message
-                            .get("content")
-                            .and_then(|value| value.as_array())
-                            .map(|blocks| {
-                                blocks.iter().any(|block| {
-                                    matches!(
-                                        block.get("type").and_then(|value| value.as_str()),
-                                        Some("tool_result")
-                                            | Some("tool_search_tool_result")
-                                            | Some("code_execution_tool_result")
-                                    )
-                                })
-                            })
-                            .unwrap_or(false)
-                        && !is_runtime_owned_user_message(message)
-                })
-                .count() as u32
-        })
-        .unwrap_or(0)
-}
-
-/// Mirror of the engine's runtime-owned predicate (`runtime_handoff`):
-/// authority comes only from an engine-shaped `<turn_meta>` block (trailing,
-/// or the legacy leading shape with ordinary trailing text) that carries a
-/// non-authoritative provenance line. A bare composer envelope (date or
-/// workspace metadata without a provenance line) and an authoritative
-/// provenance envelope are real user turns; restored subagent checkpoint
-/// messages carry a non-authoritative provenance line and are covered by the
-/// same check.
-fn is_runtime_owned_user_message(message: &serde_json::Value) -> bool {
-    fn text_blocks(message: &serde_json::Value) -> Vec<&str> {
-        message
-            .get("content")
-            .and_then(|value| value.as_array())
-            .map(|blocks| {
-                blocks
-                    .iter()
-                    .filter(|block| {
-                        block.get("type").and_then(|value| value.as_str()) == Some("text")
-                    })
-                    .filter_map(|block| block.get("text").and_then(|value| value.as_str()))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-    let complete = |text: &str| text.starts_with("<turn_meta>") && text.ends_with("</turn_meta>");
-    let blocks = text_blocks(message);
-    if blocks.len() < 2 {
-        return false;
-    }
-    let last = blocks[blocks.len() - 1].trim();
-    let metadata = if complete(last) {
-        last
-    } else {
-        // Legacy `[metadata, prompt, ...]` shape: complete envelope first and
-        // ordinary text last (a single user-authored metadata block is never
-        // hidden).
-        let first = blocks[0].trim();
-        if complete(first) && !complete(last) {
-            first
-        } else {
-            return false;
-        }
-    };
-    // Mirror of `has_non_authoritative_turn_provenance`.
-    let mut has_provenance = false;
-    let mut condensed_non_authoritative = false;
-    let mut legacy_non_authoritative = false;
-    for line in metadata.lines().map(str::trim) {
-        if let Some(value) = line.strip_prefix("Input provenance: ") {
-            has_provenance = true;
-            condensed_non_authoritative |= value.ends_with(" (non-authoritative)");
-        }
-        legacy_non_authoritative |= line == "Input authority: non_authoritative";
-    }
-    condensed_non_authoritative || (has_provenance && legacy_non_authoritative)
+/// Exact user-turn count over transcript JSON, via the app-side entry point
+/// that runs the engine's own predicate (`is_user_turn_prompt`). This
+/// replaces a JSON approximation that counted image-only turns the engine
+/// treats as non-prompt and could wedge `checkpoints rewind` in a
+/// code-restored state (the CLI pre-check passed, the store's authoritative
+/// recount refused, and nothing changed on retry). The values were just
+/// serialized from typed messages, so a deserialization failure is a
+/// transcript-integrity error, not a parse hiccup.
+fn count_user_turns_exact(messages: &serde_json::Value) -> Result<u32, CliError> {
+    let empty = Vec::new();
+    let array = messages.as_array().unwrap_or(&empty);
+    checkpoints::count_user_turns_in_json(array)
+        .map_err(|error| CliError::failed(format!("code session transcript is malformed: {error}")))
 }
 
 fn parse_rfc3339_epoch_secs(value: &str) -> Option<i64> {
@@ -4566,7 +4485,7 @@ fn checkpoints_rewind(
         .map_err(|error| store_error("checkpoints rewind", session, error))?;
     let messages = serde_json::to_value(&loaded.messages)
         .map_err(|error| CliError::failed(format!("code checkpoints rewind: {error}")))?;
-    let total_turns = approx_user_turns(&messages);
+    let total_turns = count_user_turns_exact(&messages)?;
     if keep_turns >= total_turns {
         return Err(CliError::failed(format!(
             "cannot_rewind: the session currently has {total_turns} turns; cannot rewind past \
@@ -4633,7 +4552,7 @@ fn resolve_undo_state(
         .map_err(|error| store_error("checkpoints undo", session, error))?;
     let messages = serde_json::to_value(&loaded.messages)
         .map_err(|error| CliError::failed(format!("code checkpoints undo: {error}")))?;
-    if approx_user_turns(&messages) != record.kept_turns {
+    if count_user_turns_exact(&messages)? != record.kept_turns {
         return Ok(None);
     }
     if !record.truncated_revision.is_empty() {
@@ -4662,7 +4581,7 @@ fn resolve_undo_state(
     Ok(Some(serde_json::json!({
         "checkpointId": checkpoint_id,
         "keptTurns": record.kept_turns,
-        "rewoundTurns": approx_user_turns(&removed),
+        "rewoundTurns": count_user_turns_exact(&removed)?,
         "rewoundAt": record.rewound_at,
     })))
 }
@@ -4670,11 +4589,7 @@ fn resolve_undo_state(
 /// `code checkpoints undo <session>`: headless mirror of `undo_last_rewind`.
 /// Restores the working tree and rewrites the transcript, so it requires
 /// `--yes` like `rewind`.
-fn checkpoints_undo(
-    session: &str,
-    yes: bool,
-    output: OutputMode,
-) -> Result<CliOutcome, CliError> {
+fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     require_yes(yes)?;
     let mut mutation_lock = session_mutation_lock(session)?;
     let _mutation_guard = lock_session_for_mutation(&mut mutation_lock, session, "undo")?;
@@ -4767,78 +4682,6 @@ mod tests {
         assert!(version_at_least(codex_version_token("0.200.0"), "0.144.6"));
         assert!(version_at_least(codex_version_token("1.0"), "0.144.6"));
         assert!(!version_at_least(codex_version_token("0.14.9"), "0.144.6"));
-    }
-
-    #[test]
-    fn runtime_owned_predicate_keys_on_provenance_not_envelope_shape() {
-        let message =
-            |blocks: serde_json::Value| serde_json::json!({ "role": "user", "content": blocks });
-        let text = |body: &str| serde_json::json!({ "type": "text", "text": body });
-        // Bare composer envelope (date metadata, no provenance line): a real
-        // turn, not runtime-owned.
-        assert!(!is_runtime_owned_user_message(&message(serde_json::json!(
-            [
-                text("please fix the bug"),
-                text("<turn_meta>\nCurrent local date: 2026-08-12\n</turn_meta>")
-            ]
-        ))));
-        // Non-authoritative provenance (condensed + legacy + restored
-        // subagent shapes): runtime-owned.
-        assert!(is_runtime_owned_user_message(&message(serde_json::json!(
-            [
-                text("plan"),
-                text(
-                    "<turn_meta>\nInput provenance: tool_output (non-authoritative)\n</turn_meta>"
-                )
-            ]
-        ))));
-        // Legacy pair shape: a provenance line plus the legacy authority line
-        // (the authority line alone is not authority, matching the engine).
-        assert!(is_runtime_owned_user_message(&message(serde_json::json!(
-            [
-                text("plan"),
-                text(
-                    "<turn_meta>\nInput provenance: restored_context\nInput authority: non_authoritative\n</turn_meta>"
-                )
-            ]
-        ))));
-        assert!(!is_runtime_owned_user_message(&message(serde_json::json!(
-            [
-                text("plan"),
-                text("<turn_meta>\nInput authority: non_authoritative\n</turn_meta>")
-            ]
-        ))));
-        assert!(is_runtime_owned_user_message(&message(serde_json::json!(
-            [
-                text("[Codewhale restored sub-agent checkpoint] ..."),
-                text(
-                    "<turn_meta>\nInput provenance: subagent_handoff (non-authoritative)\nRestore projection: subagent_checkpoint_v1\n</turn_meta>"
-                )
-            ]
-        ))));
-        // Authoritative provenance (external current turn): a real turn.
-        assert!(!is_runtime_owned_user_message(&message(serde_json::json!(
-            [
-                text("go on"),
-                text("<turn_meta>\nInput provenance: external_current_turn\n</turn_meta>")
-            ]
-        ))));
-        // Legacy leading envelope with ordinary trailing text and
-        // non-authoritative provenance: runtime-owned.
-        assert!(is_runtime_owned_user_message(&message(serde_json::json!(
-            [
-                text(
-                    "<turn_meta>\nInput provenance: restored_context\nInput authority: non_authoritative\n</turn_meta>"
-                ),
-                text("continue")
-            ]
-        ))));
-        // A single user-authored metadata lookalike block is never hidden.
-        assert!(!is_runtime_owned_user_message(&message(serde_json::json!(
-            [text(
-                "<turn_meta>\nInput authority: non_authoritative\n</turn_meta>"
-            )]
-        ))));
     }
 
     #[test]

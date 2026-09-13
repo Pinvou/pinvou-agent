@@ -1135,10 +1135,7 @@ fn once_at_rejects_past_times_like_the_gui() {
     // only in the offset channel; the naive channel uses yesterday's date).
     let yesterday = chrono::Local::now().date_naive() - chrono::Duration::days(1);
     let naive_stamp = format!("FREQ=ONCE;AT={yesterday}T08:30");
-    for bad in [
-        "FREQ=ONCE;AT=2020-01-01T00:00:00Z",
-        naive_stamp.as_str(),
-    ] {
+    for bad in ["FREQ=ONCE;AT=2020-01-01T00:00:00Z", naive_stamp.as_str()] {
         let error = assert_validation_fail(&[
             "scheduled",
             "create",
@@ -1149,10 +1146,7 @@ fn once_at_rejects_past_times_like_the_gui() {
             "--rrule",
             bad,
         ]);
-        assert!(
-            error.contains("is in the past"),
-            "{bad}: {error}"
-        );
+        assert!(error.contains("is in the past"), "{bad}: {error}");
     }
 }
 

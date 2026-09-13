@@ -61,9 +61,7 @@ pub fn read_text_file_capped(
         )));
     }
     String::from_utf8(bytes)
-        .map_err(|_| {
-            CliError::failed(format!("{action}: {} is not valid UTF-8", path.display()))
-        })
+        .map_err(|_| CliError::failed(format!("{action}: {} is not valid UTF-8", path.display())))
 }
 
 /// Mirrors `features::sessions::validate_session_id` (crate-private in the

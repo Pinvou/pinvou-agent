@@ -829,7 +829,11 @@ fn load_store_items(store: MemoryStore) -> Result<(Vec<String>, serde_json::Valu
                     })]
                 })
                 .unwrap_or_default();
-            (lines, serde_json::to_value(&read.value).unwrap_or_default(), warnings)
+            (
+                lines,
+                serde_json::to_value(&read.value).unwrap_or_default(),
+                warnings,
+            )
         }
         MemoryStore::WorkContext => {
             let read = feature::load_work_context_with_cleanup().map_err(io_error)?;
@@ -844,7 +848,11 @@ fn load_store_items(store: MemoryStore) -> Result<(Vec<String>, serde_json::Valu
                     })]
                 })
                 .unwrap_or_default();
-            (lines, serde_json::to_value(&read.value).unwrap_or_default(), warnings)
+            (
+                lines,
+                serde_json::to_value(&read.value).unwrap_or_default(),
+                warnings,
+            )
         }
         MemoryStore::CurrentFocus => {
             let items = feature::load_current_focus().map_err(io_error)?;
@@ -879,7 +887,10 @@ fn load_store_items(store: MemoryStore) -> Result<(Vec<String>, serde_json::Valu
             )
         }
     };
-    Ok((items, serde_json::json!({ "items": value, "cleanup_warnings": cleanup_warnings })))
+    Ok((
+        items,
+        serde_json::json!({ "items": value, "cleanup_warnings": cleanup_warnings }),
+    ))
 }
 
 /// Adds a memory item through the same pipeline the GUI uses: enqueue the

@@ -347,7 +347,9 @@ fn memory_add_preference_shows_up_in_list_and_supports_update_delete() {
     // envelope; preferences may carry a cleanup warning, the others always
     // report an empty array.
     assert_eq!(envelope["cleanup_warnings"], serde_json::json!([]));
-    let items = envelope["items"].as_array().expect("json array of preferences");
+    let items = envelope["items"]
+        .as_array()
+        .expect("json array of preferences");
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["text"], "Prefer concise answers");
     let id = items[0]["id"].as_str().unwrap().to_owned();

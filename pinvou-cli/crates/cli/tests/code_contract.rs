@@ -806,11 +806,13 @@ fn code_sessions_info_and_timeline_read_persisted_state() {
     assert_eq!(outcome.stdout.lines().count(), 3);
     assert!(outcome.stdout.contains("turn_started"), "{outcome:?}");
     assert!(outcome.stdout.contains("turn-1"), "{outcome:?}");
-    assert!(outcome
-        .stdout
-        .lines()
-        .all(|line| line.split('\t').nth(2).is_some_and(|kind| !kind.is_empty())),
-        "event-type column must never be silently empty: {outcome:?}");
+    assert!(
+        outcome
+            .stdout
+            .lines()
+            .all(|line| line.split('\t').nth(2).is_some_and(|kind| !kind.is_empty())),
+        "event-type column must never be silently empty: {outcome:?}"
+    );
 }
 
 #[test]

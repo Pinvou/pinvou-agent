@@ -664,17 +664,16 @@ fn run_cli_bounded(
     // kill the process group again to force the pipes closed instead of
     // hanging the CLI.
     const DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
-    let drain = |rx: std::sync::mpsc::Receiver<String>,
-                 child: &mut std::process::Child|
-     -> String {
-        match rx.recv_timeout(DRAIN_GRACE) {
-            Ok(text) => text,
-            Err(_) => {
-                crate::support::kill_process_tree(child);
-                rx.recv_timeout(DRAIN_GRACE).unwrap_or_default()
+    let drain =
+        |rx: std::sync::mpsc::Receiver<String>, child: &mut std::process::Child| -> String {
+            match rx.recv_timeout(DRAIN_GRACE) {
+                Ok(text) => text,
+                Err(_) => {
+                    crate::support::kill_process_tree(child);
+                    rx.recv_timeout(DRAIN_GRACE).unwrap_or_default()
+                }
             }
-        }
-    };
+        };
     let stdout = drain(stdout_rx, &mut child);
     let stderr = drain(stderr_rx, &mut child);
     Ok((status.success(), stdout, stderr))

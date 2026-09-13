@@ -711,9 +711,7 @@ fn validate_once_at(at: &str) -> Result<(), CliError> {
         .and_then(|date| date.and_hms_opt(hour, minute, second));
     let resolved = naive.and_then(|naive| {
         use chrono::TimeZone as _;
-        chrono::Local
-            .from_local_datetime(&naive)
-            .earliest()
+        chrono::Local.from_local_datetime(&naive).earliest()
     });
     let resolved = match resolved {
         Some(resolved) => resolved,
