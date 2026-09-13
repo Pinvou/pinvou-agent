@@ -651,6 +651,16 @@ fn validate_once_at(at: &str) -> Result<(), CliError> {
                 "ONCE AT '{at}' is not a valid calendar time"
             )));
         }
+        // The GUI resolves ONCE through `next_after_with_anchor(now, now)`
+        // and refuses a stamp with no future run; mirror that so a
+        // CLI-created task does not linger until the first sweep tick pauses
+        // it instead.
+        let (secs, nanos) = parse_rfc3339(at).expect("parse_rfc3339 checked above");
+        if (secs, nanos) <= now_epoch() {
+            return Err(CliError::usage(format!(
+                "ONCE AT '{at}' is in the past; a one-shot needs a future run"
+            )));
+        }
         return Ok(());
     }
     let numeric = |range: std::ops::Range<usize>| digits(range).is_some();
@@ -699,16 +709,23 @@ fn validate_once_at(at: &str) -> Result<(), CliError> {
     // record.
     let naive = chrono::NaiveDate::from_ymd_opt(year as i32, month, day)
         .and_then(|date| date.and_hms_opt(hour, minute, second));
-    let resolves = naive.is_some_and(|naive| {
+    let resolved = naive.and_then(|naive| {
         use chrono::TimeZone as _;
         chrono::Local
             .from_local_datetime(&naive)
             .earliest()
-            .is_some()
     });
-    if !resolves {
+    let resolved = match resolved {
+        Some(resolved) => resolved,
+        None => {
+            return Err(CliError::usage(format!(
+                "ONCE AT '{at}' does not exist in the local timezone (DST gap)"
+            )));
+        }
+    };
+    if (resolved.timestamp(), resolved.timestamp_subsec_nanos()) <= now_epoch() {
         return Err(CliError::usage(format!(
-            "ONCE AT '{at}' does not exist in the local timezone (DST gap)"
+            "ONCE AT '{at}' is in the past; a one-shot needs a future run"
         )));
     }
     Ok(())
@@ -1122,7 +1139,7 @@ impl TaskStore {
                 path.display()
             ))
         })?;
-        ensure_supported_schema(&value, 2)?;
+        ensure_supported_schema(&value, 2, "record")?;
         Ok(value)
     }
 
@@ -1165,7 +1182,7 @@ impl TaskStore {
                     path.display()
                 ))
             })?;
-            ensure_supported_schema(&value, 2)?;
+            ensure_supported_schema(&value, 2, "record")?;
             defs.push(value);
         }
         defs.sort_by(|a, b| record_time(b, "updated_at").cmp(&record_time(a, "updated_at")));
@@ -1239,7 +1256,7 @@ impl TaskStore {
                     path.display()
                 ))
             })?;
-            ensure_supported_schema(&run, 1)?;
+            ensure_supported_schema(&run, 1, "run record")?;
             runs.push(run);
         }
         runs.sort_by(|a, b| record_time(b, "created_at").cmp(&record_time(a, "created_at")));
@@ -1292,14 +1309,19 @@ impl TaskStore {
     }
 }
 
-fn ensure_supported_schema(value: &serde_json::Value, supported: u32) -> Result<(), CliError> {
+fn ensure_supported_schema(
+    value: &serde_json::Value,
+    supported: u32,
+    what: &str,
+) -> Result<(), CliError> {
     let version = value
         .get("schema_version")
         .and_then(|value| value.as_u64())
         .unwrap_or(0);
     if version > u64::from(supported) {
         return Err(CliError::failed(format!(
-            "scheduled_storage_unavailable: record schema v{version} is newer than supported v{supported}"
+            "scheduled_storage_unavailable: {what} schema v{version} is newer than supported \
+             v{supported}; upgrade pinvoy to edit it"
         )));
     }
     Ok(())
@@ -1408,7 +1430,13 @@ fn quarantine_unreadable(path: &Path) {
 fn registry_tasks_mut<'a>(
     registry: &'a mut serde_json::Value,
     schema_version: u32,
-) -> &'a mut serde_json::Map<String, serde_json::Value> {
+) -> Result<&'a mut serde_json::Map<String, serde_json::Value>, CliError> {
+    // A registry written by a newer app version must be refused, never
+    // merged and written back (the GUI's VersionedJsonStore quarantines the
+    // same situation); the version check only gates objects that carry one.
+    if registry.is_object() {
+        ensure_supported_schema(registry, schema_version, "registry")?;
+    }
     if !registry.is_object() {
         *registry = serde_json::json!({ "schema_version": schema_version, "tasks": {} });
     }
@@ -1421,10 +1449,10 @@ fn registry_tasks_mut<'a>(
     if !object.get("tasks").is_some_and(Value::is_object) {
         object.insert("tasks".to_owned(), serde_json::json!({}));
     }
-    object
+    Ok(object
         .get_mut("tasks")
         .and_then(Value::as_object_mut)
-        .expect("tasks normalized to an object above")
+        .expect("tasks normalized to an object above"))
 }
 
 fn registry_tasks_view<'a>(
@@ -2129,7 +2157,7 @@ fn persist_model_binding(
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
     let mut registry = read_registry(&store_holder.model_bindings_path());
-    let tasks = registry_tasks_mut(&mut registry, 1);
+    let tasks = registry_tasks_mut(&mut registry, 1)?;
     match model_id {
         Some(model_id) => {
             let model = store_holder
@@ -2162,7 +2190,7 @@ fn persist_task_kind(
     kind: Option<&str>,
 ) -> Result<(), CliError> {
     let mut registry = read_registry(&store_holder.task_kinds_path());
-    let tasks = registry_tasks_mut(&mut registry, 1);
+    let tasks = registry_tasks_mut(&mut registry, 1)?;
     match kind {
         Some(kind) => {
             tasks.insert(
@@ -2215,7 +2243,7 @@ fn set_pinned(id: &str, pinned: bool, output: OutputMode) -> Result<CliOutcome, 
     // task.
     store_holder.read_def(id)?;
     let mut registry = read_registry(&store_holder.ui_metadata_path());
-    let tasks = registry_tasks_mut(&mut registry, 1);
+    let tasks = registry_tasks_mut(&mut registry, 1)?;
     if pinned {
         let now = now_string();
         tasks.insert(
@@ -2291,6 +2319,11 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         let _ = store_holder.write_def(&restored);
     };
     let mut archive = read_registry(&store_holder.history_archive_path());
+    // Same newer-schema refusal as registry_tasks_mut: an archive written by
+    // a newer app version must not be merged and written back.
+    if archive.is_object() {
+        ensure_supported_schema(&archive, 2, "history archive")?;
+    }
     if !archive.is_object() {
         archive = serde_json::json!({ "schema_version": 2, "tasks": {} });
     }
@@ -2647,6 +2680,11 @@ viewed"
         )));
     }
     let mut read_state = read_registry(&store_holder.read_state_path());
+    // Same newer-schema refusal as registry_tasks_mut: a read-state file
+    // written by a newer app version must not be merged and written back.
+    if read_state.is_object() {
+        ensure_supported_schema(&read_state, 2, "read-state")?;
+    }
     // A wrong-shaped but valid payload (hand-edited or partially written
     // file) normalizes to the default like the parse-failure path instead of
     // panicking with an exit code outside the 0/1/2 contract.

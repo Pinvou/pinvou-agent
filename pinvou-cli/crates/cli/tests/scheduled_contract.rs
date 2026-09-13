@@ -1106,7 +1106,8 @@ fn once_at_rejects_calendar_overflow_on_the_rfc3339_channel_too() {
             "{bad_at}: {error}"
         );
     }
-    // A real RFC3339 stamp on the same channels is still accepted.
+    // A real RFC3339 stamp on the same channels is still accepted (it must
+    // also be in the future — see once_at_rejects_past_times_like_the_gui).
     let value = run_json(&[
         "scheduled",
         "create",
@@ -1115,9 +1116,73 @@ fn once_at_rejects_calendar_overflow_on_the_rfc3339_channel_too() {
         "--prompt-file",
         prompt.to_str().unwrap(),
         "--rrule",
-        "FREQ=ONCE;AT=2026-02-28T08:30:00Z",
+        "FREQ=ONCE;AT=2030-02-28T08:30:00Z",
     ]);
     assert_eq!(value["name"], "Real date");
+}
+
+#[test]
+fn once_at_rejects_past_times_like_the_gui() {
+    // The GUI's create/update resolves ONCE through
+    // `next_after_with_anchor(now, now)` and fails with "no future run" for
+    // a past stamp; the CLI used to accept it and let the first sweep tick
+    // pause the task instead. Both channels must refuse up front.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("once-at-past");
+    let prompt = write_prompt_file(&home, "past.md", "Summarize the reports.");
+    // An old absolute stamp (RFC3339 with offset) and a naive local stamp
+    // that is unambiguously over (the test env's clock is well past 2030
+    // only in the offset channel; the naive channel uses yesterday's date).
+    let yesterday = chrono::Local::now().date_naive() - chrono::Duration::days(1);
+    let naive_stamp = format!("FREQ=ONCE;AT={yesterday}T08:30");
+    for bad in [
+        "FREQ=ONCE;AT=2020-01-01T00:00:00Z",
+        naive_stamp.as_str(),
+    ] {
+        let error = assert_validation_fail(&[
+            "scheduled",
+            "create",
+            "--name",
+            "past once",
+            "--prompt-file",
+            prompt.to_str().unwrap(),
+            "--rrule",
+            bad,
+        ]);
+        assert!(
+            error.contains("is in the past"),
+            "{bad}: {error}"
+        );
+    }
+}
+
+#[test]
+fn newer_schema_sidecars_are_refused_not_merged_and_written_back() {
+    // The GUI's VersionedJsonStore quarantines a registry whose
+    // schema_version is newer than supported; the CLI must refuse to
+    // read-modify-write it instead of silently writing a hybrid format the
+    // GUI would misread.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("sidecar-newer-schema");
+    let created = create_task(&home, "Pinned task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+
+    let ui_metadata = home
+        .path()
+        .join("automations")
+        .join("task-ui-metadata.json");
+    std::fs::create_dir_all(ui_metadata.parent().unwrap()).unwrap();
+    let future_format = r#"{"schema_version": 99, "tasks": {"future": {}}}"#;
+    std::fs::write(&ui_metadata, future_format).unwrap();
+
+    let error = expect_failed(&["scheduled", "pin", &task_id]);
+    assert!(error.contains("scheduled_storage_unavailable"), "{error}");
+    assert!(error.contains("newer than supported"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(&ui_metadata).unwrap(),
+        future_format,
+        "the refused write must leave the future-format file untouched"
+    );
 }
 
 #[test]
