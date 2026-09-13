@@ -59,7 +59,9 @@ use std::time::{Duration, Instant};
 use enigo::{Direction, Enigo, Keyboard, Mouse, Settings};
 use objc2::rc::Retained;
 use objc2_application_services::{AXError, AXIsProcessTrusted, AXUIElement, AXValue, AXValueType};
-use objc2_core_foundation::CFRetained;
+use objc2_core_foundation::{
+    CFRetained, kCFTypeDictionaryKeyCallBacks, kCFTypeDictionaryValueCallBacks,
+};
 use objc2_core_graphics::{CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess};
 use objc2_foundation::{NSPoint, NSSize, NSString};
 use xcap::Monitor;
@@ -211,16 +213,26 @@ pub fn request_permissions() {
     // SAFETY: kCFBooleanTrue 是 CoreFoundation 导出的有效 CFBoolean 单例，
     // 进程生命周期内恒定有效；此处只把它的地址借给临时字典。
     let values = [unsafe { kCFBooleanTrue }];
-    // SAFETY: keys/values 指向本函数栈上等长（1）数组，回调传 NULL（字典不
-    // retain 键值，键值在本调用期间存活）；返回的 +1 字典在本函数内 CFRelease。
+    // kCFType 回调是正确性的关键（评审发现：NULL 回调让键按指针身份比较，
+    // HIServices 用自己的 kAXTrustedCheckOptionPrompt 全局实例做值查找永远
+    // 匹配不上——Accessibility 系统弹窗静默不触发，用户永远停在
+    // accessibility_denied）。kCFTypeDictionary*CallBacks 经 CFEqual 按内容
+    // 比较（CFString/NSString 值相等）并 retain 键值；enigo 与其余生态调用
+    // 方同此口径。SAFETY: 两个 static 由 CoreFoundation 导出、进程内恒定
+    // 有效，只借其地址。
+    let key_callbacks = unsafe { &kCFTypeDictionaryKeyCallBacks };
+    let value_callbacks = unsafe { &kCFTypeDictionaryValueCallBacks };
+    // SAFETY: keys/values 指向本函数栈上等长（1）数组，kCFType 回调在创建
+    // 时 retain 键值，随后键值存活与否不再影响字典；返回的 +1 字典在本函数
+    // 内 CFRelease。
     let options = unsafe {
         CFDictionaryCreate(
             std::ptr::null(),
             keys.as_ptr(),
             values.as_ptr(),
             1,
-            std::ptr::null(),
-            std::ptr::null(),
+            std::ptr::from_ref(key_callbacks).cast::<c_void>(),
+            std::ptr::from_ref(value_callbacks).cast::<c_void>(),
         )
     };
     if options.is_null() {
@@ -1109,15 +1121,22 @@ impl MacosComputerUseBackend {
 
     /// 按下全部键（出错时回滚已按下的），停顿，再逆序释放。
     fn chord(&mut self, keys: &[Key], hold: Duration) -> Result<(), ComputerUseError> {
+        // 先整组映射再按压（评审发现：map_key 的 `?` 提前返回会跳过下方
+        // enigo 出错路径的回滚——`cmd+plus` 这类和弦先按下 Meta、随后 '+'
+        // 被布局安全集拒绝，Meta 滞留并污染 enigo 后续全部注入。模块自述
+        // 不变量是"即使中途出错也尽力释放全部"，映射失败同样适用）。
+        let mapped = keys
+            .iter()
+            .map(|key| map_key(*key))
+            .collect::<Result<Vec<_>, _>>()?;
         let enigo = self.enigo()?;
-        let mut pressed: Vec<enigo::Key> = Vec::with_capacity(keys.len());
-        for key in keys {
-            let mapped = map_key(*key)?;
-            if let Err(err) = enigo.key(mapped, Direction::Press) {
+        let mut pressed: Vec<enigo::Key> = Vec::with_capacity(mapped.len());
+        for key in mapped {
+            if let Err(err) = enigo.key(key, Direction::Press) {
                 let _ = release_reverse(&pressed, enigo);
                 return Err(map_input_err("key press", err));
             }
-            pressed.push(mapped);
+            pressed.push(key);
         }
         sleep(hold);
         release_reverse(&pressed, enigo).map_err(|err| map_input_err("key release", err))
@@ -1145,15 +1164,19 @@ impl MacosComputerUseBackend {
         for pixel in rgba.chunks_exact_mut(4) {
             pixel[3] = 255;
         }
-        let actual_scale = width_points / shot.width.max(1) as f64;
+        // 倍率按轴各自反推（评审发现：单一 width 派生把"图像宽高比等于
+        // 点宽高比"当成了前提；SCK/CGWindowList 实践中倍率均匀，但按轴
+        // 派生零成本且对该假设不敏感）。
+        let input_scale_x = width_points / shot.width.max(1) as f64;
+        let input_scale_y = height_points / shot.height.max(1) as f64;
         Ok(Capture {
             rgba,
             width: shot.width as u32,
             height: shot.height as u32,
             origin_x,
             origin_y,
-            input_scale_x: actual_scale,
-            input_scale_y: actual_scale,
+            input_scale_x,
+            input_scale_y,
         })
     }
 }
@@ -1225,7 +1248,10 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             .map_err(|err| map_xcap_err("screen capture", err))?;
         let width = image.width();
         let height = image.height();
-        let actual_scale = width_points / f64::from(width.max(1));
+        // 倍率按轴各自反推（与 SCK 路径同一评审修正：不假设图像宽高比
+        // 恰等于点宽高比）。
+        let input_scale_x = width_points / f64::from(width.max(1));
+        let input_scale_y = height_points / f64::from(height.max(1));
         let mut rgba = image.into_raw();
         // CGWindowListCreateImage 的 alpha 通道依内容而定；单趟置不透明，
         // 避免下游 PNG 编码透出无意义 alpha。
@@ -1238,8 +1264,8 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             height,
             origin_x,
             origin_y,
-            input_scale_x: actual_scale,
-            input_scale_y: actual_scale,
+            input_scale_x,
+            input_scale_y,
         })
     }
 
