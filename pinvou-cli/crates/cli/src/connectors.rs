@@ -613,20 +613,24 @@ fn run_cli_bounded(
     // dingtalk / tmeet on Windows especially) can emit non-UTF-8 output, and
     // a strict `read_to_string` errors on the first bad byte and discards
     // the ENTIRE stream — status reads then lie "not connected" and logout
-    // claims success without running. Read bytes and decode lossily.
-    let stdout_reader = std::thread::spawn(move || {
+    // claims success without running. Read bytes and decode lossily. The
+    // results come back through channels so the drain can be bounded (see
+    // below) instead of joined unconditionally.
+    let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
+    let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut bytes = Vec::new();
         if let Some(pipe) = stdout_pipe.as_mut() {
             let _ = pipe.read_to_end(&mut bytes);
         }
-        String::from_utf8_lossy(&bytes).into_owned()
+        let _ = stdout_tx.send(String::from_utf8_lossy(&bytes).into_owned());
     });
-    let stderr_reader = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         let mut bytes = Vec::new();
         if let Some(pipe) = stderr_pipe.as_mut() {
             let _ = pipe.read_to_end(&mut bytes);
         }
-        String::from_utf8_lossy(&bytes).into_owned()
+        let _ = stderr_tx.send(String::from_utf8_lossy(&bytes).into_owned());
     });
     let remaining = deadline.saturating_duration_since(Instant::now());
     let status = match child.wait_timeout(remaining) {
@@ -654,8 +658,25 @@ fn run_cli_bounded(
             )));
         }
     };
-    let stdout = stdout_reader.join().unwrap_or_default();
-    let stderr = stderr_reader.join().unwrap_or_default();
+    // The child exited, but a descendant that inherited the pipes can keep
+    // them open forever — the deadline above only bounds the direct child.
+    // Bound the drain too: if EOF does not arrive within the grace period,
+    // kill the process group again to force the pipes closed instead of
+    // hanging the CLI.
+    const DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+    let drain = |rx: std::sync::mpsc::Receiver<String>,
+                 child: &mut std::process::Child|
+     -> String {
+        match rx.recv_timeout(DRAIN_GRACE) {
+            Ok(text) => text,
+            Err(_) => {
+                crate::support::kill_process_tree(child);
+                rx.recv_timeout(DRAIN_GRACE).unwrap_or_default()
+            }
+        }
+    };
+    let stdout = drain(stdout_rx, &mut child);
+    let stderr = drain(stderr_rx, &mut child);
     Ok((status.success(), stdout, stderr))
 }
 
@@ -1772,6 +1793,13 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 Ok(())
             });
             if let Err(error) = outcome {
+                // Kept on authorization failure: the notes point at the QR
+                // PNG the user can still scan. A spawn/capture failure
+                // produced no artifact — an empty dir would litter $TMPDIR
+                // forever, so clean it up.
+                if !qr_dir.join("qr.png").is_file() {
+                    let _ = std::fs::remove_dir_all(&qr_dir);
+                }
                 return Err(error);
             }
             bundle_store_on_connected(spec.id);
@@ -1794,6 +1822,12 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             // Vendor output was piped (not shown), so the error carries the
             // login material captured so far instead of pointing at a
             // terminal that never saw it.
+            // Judge by the auth probe alone like the GUI: a CLI that
+            // authorizes successfully but exits non-zero connects there and
+            // must connect here too. This single probe after exit is the
+            // whole wait — the vendor CLI itself blocks until authorization
+            // (or its own timeout), and the spawn deadline above already
+            // bounds the process.
             if !cli_connected(spec)? {
                 return Err(CliError::failed(format!(
                     "{} login exited before authorization completed{}",
@@ -1801,20 +1835,7 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                     captured_notes(&notes)
                 )));
             }
-            loop {
-                if cli_connected(spec)? {
-                    bundle_store_on_connected(spec.id);
-                    break;
-                }
-                if Instant::now() >= deadline {
-                    return Err(CliError::failed(format!(
-                        "{} authorization timed out before login completed{}",
-                        spec.display_name,
-                        captured_notes(&notes)
-                    )));
-                }
-                std::thread::sleep(Duration::from_millis(400));
-            }
+            bundle_store_on_connected(spec.id);
         }
         _ => return Err(CliError::usage("unknown connector")),
     }

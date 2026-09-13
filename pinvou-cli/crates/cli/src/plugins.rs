@@ -448,7 +448,10 @@ fn require_id(value: Option<&String>) -> Result<String, CliError> {
     let id = value
         .ok_or_else(|| CliError::usage("plugins command requires an id"))?
         .clone();
-    if id.is_empty() {
+    // A `--`-prefixed id is a mistyped flag (e.g. `plugins disable --scope`);
+    // recording it into disabled_bundles.json would disable nothing and
+    // confuse the next list read.
+    if id.is_empty() || id.starts_with("--") {
         return Err(CliError::usage("plugins command requires an id"));
     }
     Ok(id)
@@ -1276,21 +1279,25 @@ fn set_enabled(
         || installed.iter().any(|existing| existing == stripped);
     let mut unverified = Vec::new();
     for connector_scope in scope.scopes() {
-        let mut ids =
-            pinvou3_lib::features::marketplace::load_disabled_bundles_for(connector_scope);
-        if enabled {
-            ids.retain(|existing| existing != id);
-        } else if !ids.iter().any(|existing| existing == id) {
-            ids.push(id.to_owned());
-        }
-        // save_disabled_bundles_for marks the scope initialized — the same
-        // storage effect the GUI's set_disabled_skills toggle produces. It
-        // swallows write failures internally, so persistence is verified by
+        // Single-critical-section read-modify-write: loading and saving in
+        // two separate lock acquisitions let a concurrent GUI toggle between
+        // them be silently dropped (the same lost-update window the app
+        // layer documented and fixed for its own RMW). Write failures are
+        // swallowed by the storage layer, so persistence is verified by
         // reading the scope back: an enable must have removed the id, and a
         // disable must have recorded it (a missing entry can also mean the
         // id was remapped to its owner package, which the CLI cannot
         // compute — that case is reported as unverified, not as success).
-        pinvou3_lib::features::marketplace::save_disabled_bundles_for(connector_scope, &ids);
+        pinvou3_lib::features::marketplace::update_disabled_bundles_for(
+            connector_scope,
+            |ids: &mut Vec<String>| {
+                if enabled {
+                    ids.retain(|existing| existing != id);
+                } else if !ids.iter().any(|existing| existing == id) {
+                    ids.push(id.to_owned());
+                }
+            },
+        );
         let reloaded =
             pinvou3_lib::features::marketplace::load_disabled_bundles_for(connector_scope);
         let present = reloaded.iter().any(|existing| existing == id);

@@ -341,6 +341,7 @@ pub use crate::features::marketplace::scope::{
     remove_bundle_from_disabled_scopes, save_disabled_bundles, save_disabled_bundles_for,
     save_hidden_bundles_for, sync_deny_all_scopes_after_install,
     sync_disabled_bundles_for_connector_switch, unavailable_bundles_for,
+    update_disabled_bundles_for,
 };
 // 兼容旧名（原「连接器开关」调用方）：语义已收敛为包 id，旧名仅作别名过渡。
 pub use crate::features::marketplace::scope::{

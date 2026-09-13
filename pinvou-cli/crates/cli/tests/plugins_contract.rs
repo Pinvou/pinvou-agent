@@ -1031,3 +1031,14 @@ fn readiness_zero_state_reports_uninstalled_catalog() {
         .expect("canva-mcp listed");
     assert_eq!(canva["ready"], serde_json::json!(true));
 }
+
+#[test]
+fn plugins_reject_a_flag_looking_id() {
+    // A `--`-prefixed "id" is a mistyped flag (e.g. `plugins disable --scope
+    // <scope>` with the id forgotten); recording it into
+    // disabled_bundles.json would disable nothing and confuse later reads.
+    // Same guard as the connectors family's require_connector.
+    let error = parse_args(["pinvou", "plugins", "disable", "--scope", "all"].to_vec())
+        .expect_err("a flag-looking id must be a usage error");
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+}

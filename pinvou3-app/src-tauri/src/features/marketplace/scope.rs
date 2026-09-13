@@ -332,6 +332,29 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) {
     save_disabled_bundles_file(&file);
 }
 
+/// 单临界区 read-modify-write 某 scope 的禁用包 id 列表。逐 scope 独立
+/// load→save 两次加锁会在跨临界区窗口丢失并发写（M-6b 同款；GUI 互斥地
+/// toggle 时 CLI 的一次 disable 可被整个丢掉），CLI 的 enable/disable 与
+/// 持锁写方共用此入口。入参闭包拿到的是含 DenyAll 默认兜底的有效列表，
+/// 与 `load_disabled_bundles_for` 口径一致。
+pub fn update_disabled_bundles_for(
+    scope: ConnectorScope,
+    update: impl FnOnce(&mut Vec<String>),
+) {
+    let _guard = DISABLED_BUNDLES_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let file = load_disabled_bundles_file_locked();
+    let mut ids = resolve_scope_disabled_ids(&file, scope);
+    update(&mut ids);
+    let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
+    let mut file = file;
+    let key = scope.as_str().to_string();
+    file.scopes.insert(key.clone(), normalized);
+    file.initialized.insert(key);
+    save_disabled_bundles_file(&file);
+}
+
 /// 读某 scope 被「不可见」（可见性过滤）的包 id 列表。缺省空 = 全可见。
 /// 与 `load_disabled_bundles_for`（开关）正交：可见性只决定是否出现在 composer 列表，
 /// 不决定 on/off。
