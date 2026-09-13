@@ -28,9 +28,14 @@ import { dict, ensureLanguage, initialSystemLanguage, TAG_TO_LANG } from '../sha
 import { ensurePersonaI18nOverlay } from './personas-overlay.js';
 
 function useDetachedBase() {
+  // `computerUse` is required: ChatView renders the grant/confirm consent
+  // surfaces from that slice, and a detached chat window without it shows no
+  // banner and no dialog while the agent controls the machine (round-10 M1).
+  // Web-safe: the web domain-adapter declares the domain and ChatView
+  // double-gates on `can('computerUse')`.
   const bs = useBridgeState([
     'platform', 'sessions', 'chat', 'voice', 'knowledge', 'scheduled', 'monitor',
-    'settings', 'personas',
+    'settings', 'personas', 'computerUse',
   ]);
   const [language, setLanguage] = useState(initialSystemLanguage);
   // Same color-scheme semantics as the main window: `system` follows the OS
