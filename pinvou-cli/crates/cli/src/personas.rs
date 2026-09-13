@@ -248,55 +248,18 @@ fn require_id(value: Option<&String>, subcommand: &str) -> Result<String, CliErr
     Ok(id)
 }
 
-/// Mirrors the pair-based flag parser used by the sessions family.
+/// Shared implementation in `support::parse_family_flags`; `family`
+/// only names this family in error messages.
 fn parse_flags<'a>(
     values: &'a [String],
     value_flags: &[&str],
     boolean_flags: &[&str],
 ) -> Result<(Vec<(&'a str, &'a str)>, Vec<&'a str>), CliError> {
-    let mut options = Vec::new();
-    let mut flags = Vec::new();
-    let mut index = 0;
-    while index < values.len() {
-        let token = values[index].as_str();
-        if boolean_flags.contains(&token) {
-            if flags.contains(&token) {
-                return Err(CliError::usage(format!(
-                    "duplicate personas option {token}"
-                )));
-            }
-            flags.push(token);
-            index += 1;
-            continue;
-        }
-        if !value_flags.contains(&token) {
-            return Err(CliError::usage(format!(
-                "unsupported personas option: {token}"
-            )));
-        }
-        if options.iter().any(|(name, _)| *name == token) {
-            return Err(CliError::usage(format!(
-                "duplicate personas option {token}"
-            )));
-        }
-        let value = values
-            .get(index + 1)
-            .ok_or_else(|| CliError::usage(format!("personas option {token} requires a value")))?;
-        if value.is_empty() || value.starts_with("--") {
-            return Err(CliError::usage(format!(
-                "personas option {token} requires a value"
-            )));
-        }
-        options.push((token, value.as_str()));
-        index += 2;
-    }
-    Ok((options, flags))
+    crate::support::parse_family_flags(values, value_flags, boolean_flags, "personas")
 }
 
 fn option<'a>(options: &'a [(&'a str, &'a str)], name: &str) -> Option<&'a str> {
-    options
-        .iter()
-        .find_map(|(candidate, value)| (*candidate == name).then_some(*value))
+    crate::support::family_option(options, name)
 }
 
 // ─────────────────────────────── execute ───────────────────────────────
@@ -547,6 +510,7 @@ fn persist_equipped_persona(
     std::fs::write(&tmp, &bytes).map_err(|error| {
         CliError::failed(format!("cannot save session persona sidecar: {error}"))
     })?;
+    let _ = std::fs::File::open(&tmp).and_then(|file| file.sync_all());
     if let Err(error) = std::fs::rename(&tmp, &path) {
         let _ = std::fs::remove_file(&tmp);
         return Err(CliError::failed(format!(

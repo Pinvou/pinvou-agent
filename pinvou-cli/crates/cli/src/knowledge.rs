@@ -589,70 +589,22 @@ fn parse_id(value: &str, label: &str) -> Result<i64, CliError> {
     Ok(id)
 }
 
-/// Mirrors the pair-based `named_options` helper in lib.rs (extended with
-/// valueless boolean flags, as in `sessions.rs`): every token must be a known
-/// value flag (followed by a non-empty value), a known boolean flag, or
-/// nothing.
+/// Shared implementation in `support::parse_family_flags`; `family`
+/// only names this family in error messages.
 fn parse_flags<'a>(
     values: &'a [String],
     value_flags: &[&str],
     boolean_flags: &[&str],
 ) -> Result<(Vec<(&'a str, &'a str)>, Vec<&'a str>), CliError> {
-    let mut options = Vec::new();
-    let mut flags = Vec::new();
-    let mut index = 0;
-    while index < values.len() {
-        let token = values[index].as_str();
-        if boolean_flags.contains(&token) {
-            if flags.contains(&token) {
-                return Err(CliError::usage(format!(
-                    "duplicate knowledge option {token}"
-                )));
-            }
-            flags.push(token);
-            index += 1;
-            continue;
-        }
-        if !value_flags.contains(&token) {
-            return Err(CliError::usage(format!(
-                "unsupported knowledge option: {token}"
-            )));
-        }
-        if options.iter().any(|(name, _)| *name == token) {
-            return Err(CliError::usage(format!(
-                "duplicate knowledge option {token}"
-            )));
-        }
-        let value = values
-            .get(index + 1)
-            .ok_or_else(|| CliError::usage(format!("knowledge option {token} requires a value")))?;
-        if value.is_empty() || value.starts_with("--") {
-            return Err(CliError::usage(format!(
-                "knowledge option {token} requires a value"
-            )));
-        }
-        options.push((token, value.as_str()));
-        index += 2;
-    }
-    Ok((options, flags))
+    crate::support::parse_family_flags(values, value_flags, boolean_flags, "knowledge")
 }
 
 fn option<'a>(options: &'a [(&'a str, &'a str)], name: &str) -> Option<&'a str> {
-    options
-        .iter()
-        .find_map(|(candidate, value)| (*candidate == name).then_some(*value))
+    crate::support::family_option(options, name)
 }
 
 fn parse_positive(options: &[(&str, &str)], name: &str) -> Result<Option<usize>, CliError> {
-    match option(options, name) {
-        None => Ok(None),
-        Some(value) => value
-            .parse::<usize>()
-            .ok()
-            .filter(|count| *count > 0)
-            .map(Some)
-            .ok_or_else(|| CliError::usage(format!("knowledge {name} must be a positive integer"))),
-    }
+    crate::support::parse_family_positive::<usize>(options, name, "knowledge")
 }
 
 fn parse_non_negative(value: &str, name: &str) -> Result<usize, CliError> {

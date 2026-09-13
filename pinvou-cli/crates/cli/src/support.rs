@@ -86,6 +86,86 @@ pub fn require_valid_session_id(id: &str, action: &str) -> Result<(), CliError> 
     }
 }
 
+/// Family flag parser shared by the sessions/scheduled/knowledge/plugins/
+/// personas/connectors families (mirrors the pair-based `named_options`
+/// helper in lib.rs, extended with valueless boolean flags): every token
+/// must be a known value flag (followed by a non-empty, non-flag-looking
+/// value) or a known boolean flag; unknown, duplicate, or valueless flags
+/// are usage errors and everything else collects as positionals. `family`
+/// names the family in error messages.
+pub fn parse_family_flags<'a>(
+    values: &'a [String],
+    value_flags: &[&str],
+    boolean_flags: &[&str],
+    family: &str,
+) -> Result<(Vec<(&'a str, &'a str)>, Vec<&'a str>), CliError> {
+    let mut options = Vec::new();
+    let mut flags = Vec::new();
+    let mut index = 0;
+    while index < values.len() {
+        let token = values[index].as_str();
+        if boolean_flags.contains(&token) {
+            if flags.contains(&token) {
+                return Err(CliError::usage(format!(
+                    "duplicate {family} option {token}"
+                )));
+            }
+            flags.push(token);
+            index += 1;
+            continue;
+        }
+        if !value_flags.contains(&token) {
+            return Err(CliError::usage(format!(
+                "unsupported {family} option: {token}"
+            )));
+        }
+        if options.iter().any(|(name, _)| *name == token) {
+            return Err(CliError::usage(format!(
+                "duplicate {family} option {token}"
+            )));
+        }
+        let value = values
+            .get(index + 1)
+            .ok_or_else(|| CliError::usage(format!("{family} option {token} requires a value")))?;
+        if value.is_empty() || value.starts_with("--") {
+            return Err(CliError::usage(format!(
+                "{family} option {token} requires a value"
+            )));
+        }
+        options.push((token, value.as_str()));
+        index += 2;
+    }
+    Ok((options, flags))
+}
+
+/// First value filed under `name` in a [`parse_family_flags`] option list.
+pub fn family_option<'a>(options: &'a [(&'a str, &'a str)], name: &str) -> Option<&'a str> {
+    options
+        .iter()
+        .find_map(|(candidate, value)| (*candidate == name).then_some(*value))
+}
+
+/// Positive-integer option shared by the families (`--limit`, `--max-*`):
+/// absent flag = `None`; present but zero/non-numeric = usage error.
+pub fn parse_family_positive<T>(
+    options: &[(&str, &str)],
+    name: &str,
+    family: &str,
+) -> Result<Option<T>, CliError>
+where
+    T: std::str::FromStr + std::cmp::PartialOrd + Default,
+{
+    match family_option(options, name) {
+        None => Ok(None),
+        Some(value) => value
+            .parse::<T>()
+            .ok()
+            .filter(|count| *count > T::default())
+            .map(Some)
+            .ok_or_else(|| CliError::usage(format!("{family} {name} must be a positive integer"))),
+    }
+}
+
 /// Destructive subcommands must opt in explicitly, mirroring the GUI's
 /// confirmation dialogs.
 pub fn require_yes(confirmed: bool) -> Result<(), CliError> {

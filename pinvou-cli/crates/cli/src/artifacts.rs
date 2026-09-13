@@ -514,6 +514,9 @@ fn write(
                 path.display()
             ))
         })?;
+        // The GUI's atomic writes fsync before the rename; without it a
+        // power loss can rename through an empty/truncated page.
+        let _ = std::fs::File::open(&tmp).and_then(|file| file.sync_all());
         if let Err(error) = std::fs::rename(&tmp, &path) {
             let _ = std::fs::remove_file(&tmp);
             return Err(CliError::failed(format!(

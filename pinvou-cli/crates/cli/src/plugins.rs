@@ -457,64 +457,22 @@ fn require_id(value: Option<&String>) -> Result<String, CliError> {
     Ok(id)
 }
 
-/// Mirrors the sessions-family flag parser: every token must be a known value
-/// flag (followed by a non-empty value) or a known boolean flag.
+/// Shared implementation in `support::parse_family_flags`; `family`
+/// only names this family in error messages.
 fn parse_flags<'a>(
     values: &'a [String],
     value_flags: &[&str],
     boolean_flags: &[&str],
 ) -> Result<(Vec<(&'a str, &'a str)>, Vec<&'a str>), CliError> {
-    let mut options = Vec::new();
-    let mut flags = Vec::new();
-    let mut index = 0;
-    while index < values.len() {
-        let token = values[index].as_str();
-        if boolean_flags.contains(&token) {
-            if flags.contains(&token) {
-                return Err(CliError::usage(format!("duplicate plugins option {token}")));
-            }
-            flags.push(token);
-            index += 1;
-            continue;
-        }
-        if !value_flags.contains(&token) {
-            return Err(CliError::usage(format!(
-                "unsupported plugins option: {token}"
-            )));
-        }
-        if options.iter().any(|(name, _)| *name == token) {
-            return Err(CliError::usage(format!("duplicate plugins option {token}")));
-        }
-        let value = values
-            .get(index + 1)
-            .ok_or_else(|| CliError::usage(format!("plugins option {token} requires a value")))?;
-        if value.is_empty() || value.starts_with("--") {
-            return Err(CliError::usage(format!(
-                "plugins option {token} requires a value"
-            )));
-        }
-        options.push((token, value.as_str()));
-        index += 2;
-    }
-    Ok((options, flags))
+    crate::support::parse_family_flags(values, value_flags, boolean_flags, "plugins")
 }
 
 fn option<'a>(options: &'a [(&'a str, &'a str)], name: &str) -> Option<&'a str> {
-    options
-        .iter()
-        .find_map(|(candidate, value)| (*candidate == name).then_some(*value))
+    crate::support::family_option(options, name)
 }
 
 fn parse_positive(options: &[(&str, &str)], name: &str) -> Result<Option<u64>, CliError> {
-    match option(options, name) {
-        None => Ok(None),
-        Some(value) => value
-            .parse::<u64>()
-            .ok()
-            .filter(|count| *count > 0)
-            .map(Some)
-            .ok_or_else(|| CliError::usage(format!("plugins {name} must be a positive integer"))),
-    }
+    crate::support::parse_family_positive::<u64>(options, name, "plugins")
 }
 
 fn feature_error(action: &str, id: &str, error: impl std::fmt::Display) -> CliError {

@@ -387,69 +387,22 @@ fn require_id(value: Option<&String>, command: &str) -> Result<String, CliError>
     Ok(id)
 }
 
-/// Mirrors the pair-based option parser used by the other families: valued
-/// `--name value` pairs (each at most once), bare flags, and positional
-/// arguments; unknown options are rejected.
+/// Shared implementation in `support::parse_family_flags`; `family`
+/// only names this family in error messages.
 fn parse_flags<'a>(
     values: &'a [String],
     value_flags: &[&str],
     boolean_flags: &[&str],
 ) -> Result<(Vec<(&'a str, &'a str)>, Vec<&'a str>), CliError> {
-    let mut options = Vec::new();
-    let mut flags = Vec::new();
-    let mut index = 0;
-    while index < values.len() {
-        let token = values[index].as_str();
-        if boolean_flags.contains(&token) {
-            if flags.contains(&token) {
-                return Err(CliError::usage(format!(
-                    "duplicate scheduled option {token}"
-                )));
-            }
-            flags.push(token);
-            index += 1;
-            continue;
-        }
-        if !value_flags.contains(&token) {
-            return Err(CliError::usage(format!(
-                "unsupported scheduled option: {token}"
-            )));
-        }
-        if options.iter().any(|(name, _)| *name == token) {
-            return Err(CliError::usage(format!(
-                "duplicate scheduled option {token}"
-            )));
-        }
-        let value = values
-            .get(index + 1)
-            .ok_or_else(|| CliError::usage(format!("scheduled option {token} requires a value")))?;
-        if value.is_empty() || value.starts_with("--") {
-            return Err(CliError::usage(format!(
-                "scheduled option {token} requires a value"
-            )));
-        }
-        options.push((token, value.as_str()));
-        index += 2;
-    }
-    Ok((options, flags))
+    crate::support::parse_family_flags(values, value_flags, boolean_flags, "scheduled")
 }
 
 fn option<'a>(options: &'a [(&'a str, &'a str)], name: &str) -> Option<&'a str> {
-    options
-        .iter()
-        .find_map(|(candidate, value)| (*candidate == name).then_some(*value))
+    crate::support::family_option(options, name)
 }
 
 fn parse_limit(options: &[(&str, &str)], name: &str) -> Result<Option<usize>, CliError> {
-    match option(options, name) {
-        None => Ok(None),
-        Some(value) => value
-            .parse::<usize>()
-            .ok()
-            .filter(|count| *count > 0)
-            .map(Some)
-            .ok_or_else(|| CliError::usage(format!("scheduled {name} must be a positive integer"))),
-    }
+    crate::support::parse_family_positive::<usize>(options, name, "scheduled")
 }
 
 // ---- rrule validation (mirror of codewhale-tui AutomationSchedule::parse_rrule) ----
@@ -1379,6 +1332,9 @@ fn write_json_atomic(path: &Path, value: &serde_json::Value) -> Result<(), CliEr
             tmp.display()
         ))
     })?;
+    // Best-effort fsync: a power loss must not rename through an
+    // empty/truncated staging file into the registry.
+    let _ = std::fs::File::open(&tmp).and_then(|file| file.sync_all());
     std::fs::rename(&tmp, path).map_err(|error| {
         // The staging file is garbage once the move fails; leaving it behind
         // would accumulate (mirror of the personas writer's cleanup).
