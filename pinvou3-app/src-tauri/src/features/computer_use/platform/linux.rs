@@ -1152,7 +1152,9 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 ui_tree,
                 notes: format!(
                     "X11 session ({}): full support (xcap capture, {input_note}, AT-SPI \
-                     tree{}){mismatch}",
+                     tree{}){mismatch}; capture is cursor-anchored, so on multi-monitor setups \
+                     only the monitor holding the cursor is visible/clickable this turn \
+                     (move the pointer there via an initial screenshot on that monitor)",
                     self.session.desktop_label(),
                     if ui_tree { "" } else { " unavailable" },
                 ),
@@ -1364,8 +1366,15 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
         if self.is_wayland() {
             self.note_input();
             let portal = self.require_portal()?;
-            portal.ensure_started()?;
-            return portal.button(wayland_portal::map_button(button), false);
+            // 仅在既有健康会话上释放（评审发现）：无会话/毒化会话时绝不
+            // 懒启动——ensure_started 的完整建立流程会弹系统授权对话框，
+            // 撤销/急停/会话结束的紧急 mouse_up 变成反向索权。本后端经
+            // portal 按下的键其会话必然已建立，跳过即无滞留风险；毒化
+            // 会话由下一次 ensure_started 回收，backend Drop 由 close() 兜底。
+            if portal.is_active() {
+                return portal.button(wayland_portal::map_button(button), false);
+            }
+            return Ok(());
         }
         let enigo = self.require_enigo()?;
         enigo
@@ -1542,10 +1551,27 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 Self::press_chord(enigo, &[enter])?;
                 Self::release_chord(enigo, &[enter])?;
             }
+            // 逐字符注入而不是整段 text()：enigo 的 text() 在 X11 内部本来
+            // 就是逐字符 Unicode 注入(每字符一次重映射 + 服务器同步)，整段
+            // 调用会把取消检查的粒度放大到整段 run——降级总线上一个被放弃
+            // 的单行长文本会继续注入数分钟并与重试双重注入(评审发现)。
+            // text(&c) 与 text 内部的 per-char 路径逐字符等价，语义不变。
             if !run.is_empty() {
-                enigo
-                    .text(&run)
-                    .map_err(|error| input_failed("type text", error))?;
+                for ch in run.chars() {
+                    if cancel
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(Ordering::SeqCst))
+                    {
+                        return Err(ComputerUseError::unavailable(
+                            "type text was cancelled after the caller timed out; characters \
+                             already injected are not undone",
+                        ));
+                    }
+                    let mut buf = [0u8; 4];
+                    enigo
+                        .text(ch.encode_utf8(&mut buf))
+                        .map_err(|error| input_failed("type text", error))?;
+                }
             }
         }
         Ok(())
@@ -1678,11 +1704,15 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
     // prefers WAYLAND_DISPLAY over XDG_SESSION_TYPE=x11, so capture can be
     // routed through the Wayland portal chain while XTEST input targets
     // X11. The classification itself is deliberate (pinned by tests) — warn
-    // once so the split is diagnosable instead of silent.
+    // once so the split is diagnosable instead of silent. Predicate matches
+    // capabilities() notes (any non-empty value): socket names like "wl-0"
+    // or "sway-1" route capture through the Wayland chain just as well as
+    // "wayland-0", and the warning must not be narrower than the behavior it
+    // diagnoses (评审发现).
     if session.kind == SessionKind::X11
         && std::env::var("WAYLAND_DISPLAY")
             .ok()
-            .is_some_and(|value| !value.trim().is_empty() && value.contains("wayland"))
+            .is_some_and(|value| !value.trim().is_empty())
     {
         eprintln!(
             "[computer_use] XDG_SESSION_TYPE=x11 but WAYLAND_DISPLAY is set: capture may be \
@@ -1699,9 +1729,24 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
                 "cannot create tokio runtime for AT-SPI: {error}"
             ))
         })?;
-    let (a11y, a11y_init_error) = match runtime.block_on(a11y_connect()) {
-        Ok(conn) => (Some(conn), None),
-        Err(error) => (None, Some(error)),
+    let (a11y, a11y_init_error) = match runtime.block_on(tokio::time::timeout(
+        // 连接建立整体封顶（SASL/Hello 握手不受 zbus 的 method_timeout 约束
+        // ——评审发现：接受连接却不应答的僵死 a11y bus 会把 create_backend
+        // 无期挂起，启动超时的清理 thread.join() 随之永久阻塞首个调用者；
+        // 与下方 set_session_accessibility / 两个 bus builder 的有界化同一
+        // 主题）。a11y 失败本就非致命（降级为 a11y_init_error），超时同路。
+        4 * A11Y_METHOD_TIMEOUT,
+        a11y_connect(),
+    )) {
+        Ok(Ok(conn)) => (Some(conn), None),
+        Ok(Err(error)) => (None, Some(error)),
+        Err(_) => (
+            None,
+            Some(ComputerUseError::unavailable(format!(
+                "a11y bus connection did not finish within {:?}",
+                4 * A11Y_METHOD_TIMEOUT
+            ))),
+        ),
     };
 
     // Wayland 不构造 enigo:XTEST 经 XWayland 只能触达 X11 客户端,且
@@ -2262,12 +2307,15 @@ mod x11_live_tests {
     //!
     //! WARNING: each test takes over the X server named by `$DISPLAY` and
     //! injects real XTEST input into it — run them ONLY against a sandboxed
-    //! Xvfb, never against a desktop someone is using:
+    //! Xvfb, never against a desktop someone is using. As a hard guard (not
+    //! just this warning), every live test also requires an explicit opt-in
+    //! environment variable:
     //!
     //! ```text
     //! Xvfb :99 -screen 0 1280x800x24 &
     //! cd pinvou3-app/src-tauri
-    //! DISPLAY=:99 cargo test --lib computer_use -- --ignored --test-threads=1
+    //! DISPLAY=:99 PINVOU3_CU_X11_LIVE=1 \
+    //!     cargo test --lib computer_use -- --ignored --test-threads=1
     //! ```
     //!
     //! Every injection is verified EXTERNALLY: the X server itself reports the
@@ -2339,6 +2387,13 @@ mod x11_live_tests {
     /// The live-display gate: `Some((width, height, display))` when `$DISPLAY`
     /// names an X server xdotool can reach, `None` otherwise (tests skip).
     fn live_display() -> Option<(u32, u32, String)> {
+        // 双重 opt-in（评审发现：`#[ignore]` 只是约定式防护，文档里的
+        // `--ignored` 命令在带真实桌面会话的 Linux 开发机上会把真实指针
+        // 移动、点击并键入测试文本）。测试套件的 CI/无头用法显式导出该
+        // 变量；普通开发机的 DISPLAY 一律跳过。
+        std::env::var("PINVOU3_CU_X11_LIVE")
+            .ok()
+            .filter(|v| v == "1")?;
         let display = std::env::var("DISPLAY").ok()?;
         let geometry = xdotool(&display, &["getdisplaygeometry"])?;
         let mut parts = geometry.split_whitespace();
