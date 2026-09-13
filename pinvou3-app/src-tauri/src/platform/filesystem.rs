@@ -2141,6 +2141,26 @@ pub(crate) fn assert_private_file_mode(path: &Path) {
     }
 }
 
+/// 测试辅助（审阅 round-11）：断言目录权限为 0700。computer_use 的审计
+/// 日志目录经此检查——目标 cfg 留在本适配层（architecture guard 规则，
+/// 同 [`assert_private_file_mode`]）。Windows 无 POSIX 权限位，恒通过。
+#[cfg(test)]
+pub(crate) fn assert_private_dir_mode(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(path)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700, "{} must be 0700", path.display());
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use std::path::Path;

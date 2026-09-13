@@ -260,7 +260,12 @@ mod tests {
     }
 
     /// Private-data governance: for_session creates a 0700 directory and the
-    /// appended file is 0600.
+    /// appended file is 0600. Mode assertions go through the platform
+    /// adapter's cfg(test) helpers so the target cfg stays in the adapter
+    /// layer (architecture guard rule: no target cfg outside adapters — the
+    /// previous inline `use std::os::unix` broke the Windows test build).
+    /// Windows has no POSIX mode bits, so the helpers pass through trivially
+    /// while the private-directory layout is still exercised.
     #[test]
     fn for_session_creates_private_dir_and_0600_file() {
         // 与改写 PINVOU3_HOME 的测试互斥。
@@ -278,17 +283,8 @@ mod tests {
         let log = AuditLog::for_session("s-private").expect("audit log for session");
         let record = AuditRecord::new("s-private", "screenshot", "observe").finish("ok", None, 1);
         log.append(&record).expect("append");
-        use std::os::unix::fs::PermissionsExt;
-        let file_mode = fs::metadata(log.path())
-            .expect("audit file metadata")
-            .permissions()
-            .mode();
-        assert_eq!(file_mode & 0o7777, 0o600, "audit file must be 0600");
-        let dir_mode = fs::metadata(audit_dir())
-            .expect("audit dir metadata")
-            .permissions()
-            .mode();
-        assert_eq!(dir_mode & 0o7777, 0o700, "audit dir must be 0700");
+        crate::platform::filesystem::assert_private_file_mode(log.path());
+        crate::platform::filesystem::assert_private_dir_mode(&audit_dir());
         // SAFETY: holding ENV_LOCK.
         unsafe {
             match previous {
