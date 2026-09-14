@@ -65,8 +65,19 @@ pub(crate) fn spawn_event_forwarder(
         let mut turn_tracker = TurnCompletionTracker::default();
         let mut scheduled_engine_total_tokens = 0_u64;
         let mut scheduled_persistence_error: Option<String> = None;
-        let mut latest_chat_engine_state: Option<ChatEngineState> = None;
+        // The snapshot is Arc-shared: the full transcript carried by the
+        // SessionUpdated event is no longer deep-copied just to retain the
+        // terminal snapshot; TurnComplete only clones the Arc.
+        let mut latest_chat_engine_state: Option<Arc<ChatEngineState>> = None;
         let mut chat_persistence_error: Option<String> = None;
+        // Transcript revision cache of the last successfully persisted
+        // snapshot: Some only while "the latest snapshot persisted cleanly
+        // and no newer snapshot has arrived since". The terminal arm uses it
+        // to detect that the terminal persist would write content identical
+        // to the last per-message persist, skip the duplicate write, and
+        // reuse the revision (see the TurnComplete arm); any newer snapshot,
+        // persist failure, or hash failure clears it.
+        let mut last_persisted_chat_revision: Option<String> = None;
         let mut active_transcript_seen = false;
         // A typed preflight rejection completes the admitted lifecycle without
         // changing engine history. Preserve that distinction through
@@ -459,23 +470,36 @@ pub(crate) fn spawn_event_forwarder(
                         let (messages, matched_active_rule) =
                             turn_lifecycle.sanitize_messages(messages);
                         active_transcript_seen |= matched_active_rule;
-                        let state = ChatEngineState {
+                        let state = Arc::new(ChatEngineState {
                             messages,
                             system_prompt,
                             model,
                             workspace,
-                        };
-                        latest_chat_engine_state = Some(state.clone());
+                        });
+                        // Invalidate the revision cache before persisting:
+                        // the latest content is not durable yet, and the
+                        // stale cache must not let the terminal arm mistake
+                        // it for "the latest snapshot is already persisted".
+                        last_persisted_chat_revision = None;
+                        latest_chat_engine_state = Some(Arc::clone(&state));
                         let store_for_save = store.clone();
                         let session_for_save = session_id.clone();
                         match tokio::task::spawn_blocking(move || {
-                            store_for_save.persist_chat_engine_state(&session_for_save, state)
+                            store_for_save.persist_chat_engine_state(&session_for_save, &state)
                         })
                         .await
                         {
                             Ok(Ok(saved)) => {
                                 chat_persistence_error = None;
-                                if let Ok(revision) = transcript_revision(&saved.messages) {
+                                // The revision is computed once for this
+                                // persist and cached for the terminal arm to
+                                // reuse (on Err the cache stays None and the
+                                // terminal arm falls back to the original
+                                // persist path), so identical content is not
+                                // hashed a second time.
+                                let revision = transcript_revision(&saved.messages).ok();
+                                last_persisted_chat_revision = revision.clone();
+                                if let Some(revision) = revision {
                                     emit_transcript_committed(
                                         &app,
                                         &session_id,
@@ -801,14 +825,41 @@ pub(crate) fn spawn_event_forwarder(
                             // and the optimistic admission fallback.
                             None
                         } else if active_transcript_seen {
-                            latest_chat_engine_state.clone().map(|state| {
-                                let store_for_save = store.clone();
-                                let session_for_save = session_id.clone();
-                                tokio::task::spawn_blocking(move || {
-                                    store_for_save
-                                        .persist_chat_engine_state(&session_for_save, state)
-                                })
-                            })
+                            // The terminal snapshot shares one Arc with the
+                            // last SessionUpdated persist, so its content can
+                            // no longer change; a revision-cache hit means
+                            // this exact content already persisted cleanly and
+                            // another load→serialize→write would be pure
+                            // duplication. Skip the write and re-emit the
+                            // terminal_fallback event with the cached revision
+                            // (payload identical to the original path, event
+                            // sequence unchanged); on a cache miss (the last
+                            // persist/hash failed) keep the original terminal
+                            // persist retry, still mapping a failure to the
+                            // Failed terminal state.
+                            match last_persisted_chat_revision.take() {
+                                Some(revision) => {
+                                    let message_count = latest_chat_engine_state
+                                        .as_ref()
+                                        .map_or(0, |state| state.messages.len());
+                                    emit_transcript_committed(
+                                        &app,
+                                        &session_id,
+                                        revision,
+                                        "terminal_fallback",
+                                        message_count,
+                                    );
+                                    None
+                                }
+                                None => latest_chat_engine_state.clone().map(|state| {
+                                    let store_for_save = store.clone();
+                                    let session_for_save = session_id.clone();
+                                    tokio::task::spawn_blocking(move || {
+                                        store_for_save
+                                            .persist_chat_engine_state(&session_for_save, &state)
+                                    })
+                                }),
+                            }
                         } else {
                             turn_lifecycle.active_transcript_fallback().map(|fallback| {
                                 let store_for_save = store.clone();
@@ -865,6 +916,11 @@ pub(crate) fn spawn_event_forwarder(
                     // rejection repersist a stale snapshot.
                     active_transcript_seen = false;
                     latest_chat_engine_state = None;
+                    // The revision cache belongs to the same turn's
+                    // ownership window as the snapshot; clear it together so
+                    // a later turn cannot misread "the latest snapshot is
+                    // already persisted".
+                    last_persisted_chat_revision = None;
                     // Keep the shell scope cancellable throughout persistence.
                     // Final cleanup runs before terminal admission is claimed;
                     // Engine reclaim can therefore still win an await race and

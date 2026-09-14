@@ -16,6 +16,7 @@ pub(crate) mod monitor;
 pub mod multiagent;
 pub mod personas;
 pub(crate) mod pet;
+pub(crate) mod projects;
 pub(crate) mod remote_control;
 pub(crate) mod remote_knowledge;
 pub(crate) mod retirement;

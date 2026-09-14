@@ -4,8 +4,6 @@ import { Marked } from 'marked';
 export const MARKDOWN_OPTIONS = Object.freeze({
   gfm: true,
   breaks: true,
-  headerIds: false,
-  mangle: false,
 });
 const markdownLexer = new Marked(MARKDOWN_OPTIONS);
 

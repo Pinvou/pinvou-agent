@@ -148,7 +148,7 @@ function buildDesignRuntimeScript() {
 
     function makeLabel() {
       const label = document.createElement('div');
-      label.setAttribute('data-pinvou-design-label', 'true');
+      label.dataset.pinvouDesignLabel = 'true';
       label.style.cssText = [
         'position:fixed',
         'z-index:2147483647',
@@ -167,7 +167,7 @@ function buildDesignRuntimeScript() {
 
     function makeHandleLayer() {
       const layer = document.createElement('div');
-      layer.setAttribute('data-pinvou-design-handles', 'true');
+      layer.dataset.pinvouDesignHandles = 'true';
       // No inset shorthand: the string reaches the bundle verbatim, Safari 14.0 cannot parse it, and the handle layer would lose its full-screen base.
       layer.style.cssText = 'position:fixed;top:0;right:0;bottom:0;left:0;z-index:2147483647;pointer-events:none;display:none';
       document.documentElement.append(layer);
@@ -273,7 +273,7 @@ function buildDesignRuntimeScript() {
         const dir = item[0], cursor = item[1];
         const p = handlePoint(rect, dir);
         const dot = document.createElement('div');
-        dot.setAttribute('data-pinvou-design-handle', dir);
+        dot.dataset.pinvouDesignHandle = dir;
         dot.style.cssText = [
           'position:fixed',
           'left:' + Math.round(p.x) + 'px',

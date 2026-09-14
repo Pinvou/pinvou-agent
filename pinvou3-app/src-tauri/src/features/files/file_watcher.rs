@@ -15,16 +15,29 @@
 //! 不在 workspace/artifacts 子目录下的事件(如 `sessions/<id>.json` session 元数据本身)忽略。
 //!
 //! Debouncing：notify 后端(inotify)对单个文件写入可能 fire 多次事件
-//! (Create + 多次 Modify(Data) + 最后 Modify(Metadata))。watcher 端不 debounce,
-//! 由前端按 path 去重(trackArtifact 已经处理重复 path)。
+//! (Create + several Modify(Data) + a final Modify(Metadata)). Artifact
+//! events (artifact:disk) are not debounced watcher-side; the frontend
+//! deduplicates by path (trackArtifact already handles repeated paths).
+//! Exception: top-level `sched-*.json` files are rewritten whole with every
+//! message of a scheduled run, and that burst of events should produce a
+//! single refresh, so they get a 400ms trailing-edge debounce per path
+//! (scheduled_task:run_updated only drives a frontend refresh and no
+//! consumer reads the payload's event field, so emitting late keeps the
+//! semantics intact).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
+
+/// Trailing-edge debounce window for top-level `sched-*.json` events: emit
+/// once the stream has stayed quiet for a full window after the last event.
+const SCHED_DEBOUNCE: Duration = Duration::from_millis(400);
 
 /// 启动后台 watcher 线程。spawn 后 return,watcher 自己跑直到 app 退出。
 pub fn spawn(app: AppHandle, sessions_root: PathBuf) {
@@ -55,16 +68,57 @@ pub fn spawn(app: AppHandle, sessions_root: PathBuf) {
         }
         eprintln!("[file_watcher] watching {}", sessions_root.display());
 
-        for result in rx {
-            match result {
-                Ok(event) => handle_event(&app, &event, &sessions_root),
-                Err(e) => eprintln!("[file_watcher] event error: {e}"),
+        // Pending emission table for sched-*.json: session_id -> (path, time
+        // of the last event). The main loop recv_timeouts between waiting for
+        // the next event and waiting for the earliest deadline; due entries
+        // are emitted first.
+        let mut pending_sched: HashMap<String, (PathBuf, Instant)> = HashMap::new();
+        loop {
+            let now = Instant::now();
+            let due: Vec<String> = pending_sched
+                .iter()
+                .filter(|(_, (_, at))| now.duration_since(*at) >= SCHED_DEBOUNCE)
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in due {
+                if let Some((path, _)) = pending_sched.remove(&id) {
+                    emit_scheduled_run_updated(&app, &id, path.exists());
+                }
+            }
+            let deadline = pending_sched
+                .values()
+                .map(|(_, at)| *at + SCHED_DEBOUNCE)
+                .min();
+            let event = match deadline {
+                Some(deadline) => {
+                    match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                        Ok(result) => Some(result),
+                        Err(mpsc::RecvTimeoutError::Timeout) => None,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+                None => match rx.recv() {
+                    Ok(result) => Some(result),
+                    Err(_) => break,
+                },
+            };
+            match event {
+                Some(Ok(event)) => {
+                    handle_event(&app, &event, &sessions_root, &mut pending_sched);
+                }
+                Some(Err(e)) => eprintln!("[file_watcher] event error: {e}"),
+                None => continue,
             }
         }
     });
 }
 
-fn handle_event(app: &AppHandle, ev: &Event, root: &Path) {
+fn handle_event(
+    app: &AppHandle,
+    ev: &Event,
+    root: &Path,
+    pending_sched: &mut HashMap<String, (PathBuf, Instant)>,
+) {
     // 只处理这几类事件:
     // - Create        → 新文件
     // - Modify(Data)  → 文件写入
@@ -79,16 +133,11 @@ fn handle_event(app: &AppHandle, ev: &Event, root: &Path) {
     }
     for path in &ev.paths {
         if let Some(session_id) = scheduled_session_id(path, root) {
-            let payload = json!({
-                "sessionId": session_id,
-                "event": if path.exists() { "upsert" } else { "removed" },
-            });
-            let _ = app.emit("scheduled_task:run_updated", payload.clone());
-            crate::platform::app_events::forward_app_event(
-                app,
-                "scheduled_task:run_updated",
-                payload,
-            );
+            // Record only, do not emit immediately: the main loop emits
+            // after the trailing-edge debounce; the event semantics
+            // (upsert/removed) are decided at emit time from the path's
+            // existence.
+            pending_sched.insert(session_id, (path.clone(), Instant::now()));
             continue;
         }
         let Some((session_id, rel)) = parse_session_relative(path, root) else {
@@ -138,6 +187,19 @@ fn handle_event(app: &AppHandle, ev: &Event, root: &Path) {
     }
 }
 
+/// Emit one scheduled-run refresh event. `exists` is determined at emit time
+/// from the path, preserving the original upsert/removed semantics (both
+/// current frontend listeners only trigger a refresh from it and never read
+/// the event field).
+fn emit_scheduled_run_updated(app: &AppHandle, session_id: &str, exists: bool) {
+    let payload = json!({
+        "sessionId": session_id,
+        "event": if exists { "upsert" } else { "removed" },
+    });
+    let _ = app.emit("scheduled_task:run_updated", payload.clone());
+    crate::platform::app_events::forward_app_event(app, "scheduled_task:run_updated", payload);
+}
+
 /// Match only the top-level persisted JSON for a scheduled conversation.
 /// Sidecars and workspace files are deliberately excluded.
 fn scheduled_session_id(path: &Path, root: &Path) -> Option<String> {
@@ -170,6 +232,13 @@ fn should_skip(basename: &str) -> bool {
         return true;
     }
     if basename.ends_with(".tmp") || basename.ends_with(".bak") {
+        return true;
+    }
+    // The workflow-internal audit journal (assistant/audit.rs, one
+    // TokenUsage appended per entry) is pure infrastructure with zero
+    // frontend consumers; without the skip, every subagent event would
+    // refresh the artifact panel.
+    if basename == "workflow_audit.jsonl" {
         return true;
     }
     false
@@ -217,6 +286,7 @@ mod tests {
         assert!(should_skip(".hidden")); // 通用 dot file
         assert!(should_skip(".bashrc.swp")); // vim swap
         assert!(should_skip("draft.tmp"));
+        assert!(should_skip("workflow_audit.jsonl")); // workflow-internal audit journal
         assert!(!should_skip("report.docx"));
         assert!(!should_skip("人类文档.docx")); // 正常中文文件名
         assert!(!should_skip("plan.md"));

@@ -388,6 +388,17 @@ pub fn scheduled_run_profiles_path() -> PathBuf {
     scheduled_runs_root().join("session-profiles.json")
 }
 
+/// `~/.pinvou3/projects/` —— 项目层(会话逻辑归档分组)落盘根目录。
+pub fn projects_root() -> PathBuf {
+    pinvou3_home().join("projects")
+}
+
+/// 项目层唯一持久化文件:项目定义 + 会话归属映射同文件落盘,
+/// 一次原子写覆盖两个视图,避免半提交状态。
+pub fn projects_store_path() -> PathBuf {
+    projects_root().join("projects.json")
+}
+
 /// App-owned viewed state for independent scheduled-run conversations.
 pub fn scheduled_run_read_state_path() -> PathBuf {
     scheduled_runs_root().join("read-state.json")

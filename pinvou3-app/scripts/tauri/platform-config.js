@@ -6,7 +6,12 @@ const PLATFORM_CONFIG_NAMES = {
   linux: path.join("platforms", "linux", "tauri.conf.json"),
   win32: path.join("platforms", "windows", "tauri.conf.json"),
 };
-const ARCHITECTURE_CONFIG_NAMES = {};
+const ARCHITECTURE_CONFIG_NAMES = {
+  linux: {
+    arm64: path.join("platforms", "linux", "aarch64", "tauri.conf.json"),
+    x64: path.join("platforms", "linux", "x86_64", "tauri.conf.json"),
+  },
+};
 
 function platformConfigPath(platform = process.platform) {
   const configName = PLATFORM_CONFIG_NAMES[platform];

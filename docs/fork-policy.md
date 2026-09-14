@@ -1,24 +1,27 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
-> 最后更新：2026-09-09（上游 `v0.9.12` r1；受保护维护分支、不可变标签与父仓 gitlink 已发布并对齐）
+> 最后更新：2026-09-11（上游 `v0.9.12` r1 之后过渡期：gitlink 沿维护分支领先 r1 tag 至 `ae7e3fb36`，待 r2 收口对齐）
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
 ## 0. 当前基线
 
 - 上游：`Hmbown/CodeWhale` tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5`。
-- 当前 fork 基线：`Pinvou/CodeWhale:pinvou3-clean` 与不可变 tag `pinvou-v0.9.12-r1`，head `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`，共 15 个带 DCO sign-off 的提交；由 CodeWhale PR #44 与 fast-follow PR #46 形成。
+- 当前 fork 基线：`Pinvou/CodeWhale:pinvou3-clean`，head `ae7e3fb36f89486f30d41b28ae0eaaa516ae4740`，共 28 个带 DCO sign-off 的提交；不可变 tag `pinvou-v0.9.12-r1` 钉在 r1 收口 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`（15 个提交，由 CodeWhale PR #44 与 fast-follow PR #46 形成），其后 13 个提交为 2026-09-10/11 backlog 批次经 PR squash 合入。
 - 升级前公开回退点是不可变 tag `pinvou-v0.9.5-r13`，head `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 branch `backup/pre-v0.9.12-sync` 只作便利引用。
-- r1 已成为可消费的受保护基线；父仓 gitlink、维护分支和不可变 tag 必须持续指向同一 commit。
+- r1 已成为可消费的受保护基线；rN 收口时父仓 gitlink、维护分支和不可变 tag 指向同一 commit。
+- 过渡期豁免（2026-09-11 起）：两次 rN 收口之间，父仓 gitlink 可沿 `pinvou3-clean` 领先不可变 tag 前进；期间 `scripts/verify-public-submodule.sh` 断言 gitlink 等于公开维护分支头、不可变 tag 仍钉在其收口 commit，rN 收口时在合并头切新不可变 tag 并恢复三方相等。
 - `.gitmodules` 不配置浮动 `branch`；发布后父仓 gitlink、维护分支和不可变标签必须指向同一 commit。
-- 当前只维护 4 个长期主题：
+- 当前维护 4 个长期主题与 2 个追加减量主题：
 
   1. 宿主嵌入与路由边界
   2. 工具兼容与命令执行安全
   3. 嵌入上下文与技能来源
   4. 定时任务与运行生命周期
+  5. 会话归档导出（T5，追加减量）
+  6. 蜂群限流治理（T6，追加减量）
 
-精确 commit、文件、理由和验证见 `docs/fork-modifications.md`。新增需求优先归入这 4 个主题；只有形成新的稳定状态、验证和回退边界时才增加主题。
+精确 commit、文件、理由和验证见 `docs/fork-modifications.md`。新增需求优先归入既有主题；只有形成新的稳定状态、验证和回退边界时才增加主题。
 
 ## 1. 核心原则
 

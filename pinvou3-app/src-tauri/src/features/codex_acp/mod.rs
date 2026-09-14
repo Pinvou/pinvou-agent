@@ -3088,6 +3088,15 @@ impl AcpPool {
     pub async fn evict(&self, session_id: &str) {
         self.cancel_pending_permissions(session_id).await;
         self.cancel_pending_elicitations(session_id).await;
+        // The helper index map previously only grew: entries of truly
+        // deleted sessions were retained forever. Removing them together
+        // with the eviction is safe — `is_acp_metadata` rebuilds the entry
+        // on demand from persisted metadata during list() (the agents index
+        // or the `* (ACP)` model string), and startup rebuilds the whole map
+        // from session metadata. Surviving sessions (upgrade restarts, model
+        // probes) self-heal on the next list(); idle eviction goes through
+        // `evict_if_idle`, never through this path, so its map entries stay.
+        self.acp_metadata_backends.write().remove(session_id);
         if let Some(runtime) = self.sessions.lock().await.remove(session_id) {
             runtime.shutdown().await;
         }
@@ -3272,14 +3281,15 @@ impl AcpPool {
         result
     }
 
-    pub fn timeline(&self, session_id: &str) -> Result<Vec<AcpEventEnvelope>> {
+    pub async fn timeline(&self, session_id: &str) -> Result<Vec<AcpEventEnvelope>> {
         if !self.is_acp(session_id) {
             bail!("当前会话不是 ACP 会话");
         }
+        self.flush_session_journal(session_id).await;
         load_timeline(session_id)
     }
 
-    pub(crate) fn web_timeline_page(
+    pub(crate) async fn web_timeline_page(
         &self,
         session_id: &str,
         after_seq: u64,
@@ -3291,6 +3301,7 @@ impl AcpPool {
         if !self.is_acp(session_id) {
             bail!("当前会话不是 ACP 会话");
         }
+        self.flush_session_journal(session_id).await;
         load_web_timeline_page(
             session_id,
             after_seq,
@@ -3299,6 +3310,26 @@ impl AcpPool {
             max_page_bytes,
             max_event_bytes,
         )
+    }
+
+    // Best-effort drain of the session journal's buffer window before
+    // reading from disk: outside turn boundaries, up to 64KB of an active
+    // turn's chunk events can sit in the BufWriter; without a flush first,
+    // reconnect replays / timeline reads would briefly observe a view
+    // lagging behind the in-memory projection. Only the bridge (Arc) is
+    // cloned under the lock; the flush happens outside it. A session not in
+    // the runtime (historical journal only) needs no flush — everything
+    // already lives on disk.
+    async fn flush_session_journal(&self, session_id: &str) {
+        let bridge = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .map(|session| session.bridge.clone());
+        if let Some(bridge) = bridge {
+            bridge.flush_journal();
+        }
     }
 
     pub async fn pending_permissions_for(

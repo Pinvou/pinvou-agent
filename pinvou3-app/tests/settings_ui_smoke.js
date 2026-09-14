@@ -86,6 +86,25 @@ for (const settingsI18nSource of settingsI18nSources) {
     'local model port validation message must be provided in every UI language',
   );
 }
+// Memory delete / feedback close must route through in-app confirm dialogs
+// (the native window.confirm does not render in Tauri WebView2; see
+// tests/settings_window_confirm.test.mjs).
+assert.doesNotMatch(
+  settingsViewSource,
+  /window\.confirm\s*\(/,
+  'settings page must not call window.confirm (does not render in Tauri WebView2; use in-app confirm dialogs)',
+);
+for (const confirmTestId of [
+  'memory-delete-confirm',
+  'memory-delete-confirm-ok',
+  'feedback-close-confirm',
+  'feedback-close-confirm-ok',
+]) {
+  assert.ok(
+    settingsViewSource.includes(`data-testid="${confirmTestId}"`),
+    `missing in-app confirm dialog testid: ${confirmTestId}`,
+  );
+}
 
 function loadPuppeteer() {
   try { return require('puppeteer-core'); } catch { /* fall through */ }
@@ -186,7 +205,11 @@ function injectSource() {
     var dependencyCheckResponse = [];
     var memoryOverview = {
       profile: { version: 1, revision: 3, identity: { call_name: '升级前称呼', assistant_alias: 'PINVOU' }, conventions: {} },
-      preferences: [], work_context: [], current_focus: [], recent_activity: [], recent_work: [], pending: [], never: [],
+      preferences: [
+        { id: 'pref-to-delete', text: '待删除的偏好记忆', status: 'active' },
+        { id: 'pref-to-keep', text: '保留的偏好记忆', status: 'active' },
+      ],
+      work_context: [{ id: 'wc-to-delete', text: '待删除的工作上下文', status: 'active' }], current_focus: [], recent_activity: [], recent_work: [], pending: [], never: [],
       runtime: null, snapshot_path: '', warnings: [],
       sources: {
         profile: { available: true }, preferences: { available: true }, work_context: { available: true },
@@ -198,8 +221,12 @@ function injectSource() {
     var failMemoryUpdate = false;
     var pendingDownloadResolve = null;
     function record(cmd, args) { calls.push({ cmd: cmd, args: args || null }); }
+    // Deliberately not stubbing window.confirm here. SettingsView now routes
+    // everything through in-app confirm dialogs (the native confirm does not
+    // render in Tauri WebView2); if someone reintroduces a native confirm,
+    // headless auto-dismiss makes the flow assertions fail loudly instead of
+    // being masked by a fake stub.
     window.alert = function (message) { record('window_alert', { message: message }); };
-    window.confirm = function (message) { record('window_confirm', { message: message }); return true; };
     function emit(name, payload) {
       return Promise.all((handlers[name] || []).slice().map(function (handler) {
         return handler({ payload: payload || {} });
@@ -305,6 +332,16 @@ function injectSource() {
             runtime: null,
             warnings: [{ code: 'runtime_refresh_failed', source: 'runtime', detail: 'runtime cache locked' }],
           });
+        case 'delete_memory_preference':
+          memoryOverview = Object.assign({}, memoryOverview, {
+            preferences: (memoryOverview.preferences || []).filter(function (item) { return item.id !== args.id; }),
+          });
+          return Promise.resolve(null);
+        case 'delete_work_context_memory':
+          memoryOverview = Object.assign({}, memoryOverview, {
+            work_context: (memoryOverview.work_context || []).filter(function (item) { return item.id !== args.id; }),
+          });
+          return Promise.resolve(null);
         default: return Promise.resolve(null);
       }
     }
@@ -539,6 +576,36 @@ async function modalWidth(page, headingText) {
     const buttons = dialog ? [...dialog.querySelectorAll('button')] : [];
     if (buttons.length) buttons[0].click();
   });
+
+  // ①e memory delete: row delete button → in-app confirm dialog (no native
+  // confirm in WebView2) → confirming really invokes the delete command and
+  // removes the row, leaving the sibling item untouched.
+  await page.waitForFunction(() => !!document.querySelector('[data-testid="memory-item-delete"]'));
+  await page.click('[data-testid="memory-item-delete"]');
+  await page.waitForFunction(() => !!document.querySelector('[data-testid="memory-delete-confirm"]'));
+  await page.click('[data-testid="memory-delete-confirm-ok"]');
+  await page.waitForFunction(() => !document.querySelector('[data-testid="memory-delete-confirm"]'));
+  await page.waitForFunction(() => !document.body.innerText.includes('待删除的偏好记忆'), { timeout: 5000 });
+  rec('①e memory delete removes the item after in-app confirmation', await page.evaluate(() =>
+    !document.body.innerText.includes('待删除的偏好记忆')
+      && document.body.innerText.includes('保留的偏好记忆')
+      && window.__SETTINGS_TEST__.calls.some(function (item) { return item.cmd === 'delete_memory_preference'; })));
+
+  // ①f the work-context row delete goes through the same confirm path (the
+  // bridge maps the kind to delete_work_context_memory). ①e already removed the
+  // first preference row, so the last remaining delete button in the long-term
+  // memory list belongs to the work-context row.
+  await page.evaluate(() => {
+    const buttons = [...document.querySelectorAll('[data-testid="memory-item-delete"]')];
+    if (buttons.length) buttons[buttons.length - 1].click();
+  });
+  await page.waitForFunction(() => !!document.querySelector('[data-testid="memory-delete-confirm"]'));
+  await page.click('[data-testid="memory-delete-confirm-ok"]');
+  await page.waitForFunction(() => !document.body.innerText.includes('待删除的工作上下文'), { timeout: 5000 });
+  rec('①f work-context delete goes through the same confirm path', await page.evaluate(() =>
+    !document.body.innerText.includes('待删除的工作上下文')
+      && document.body.innerText.includes('保留的偏好记忆')
+      && window.__SETTINGS_TEST__.calls.some(function (item) { return item.cmd === 'delete_work_context_memory'; })));
 
   await clickSettingsSection(page, '更新');
   await page.evaluate(async () => {
@@ -1938,6 +2005,48 @@ async function modalWidth(page, headingText) {
     dialogClosed: !document.querySelector('[data-feedback-dialog="true"]'),
   }));
   rec('⑰ 提交反馈成功使用应用内 toast，不弹系统 alert', feedbackTyped === '反馈弹窗测试' && feedbackSubmit.nativeAlertCalls === 0 && feedbackSubmit.submitCalls === 1 && feedbackSubmit.toast && feedbackSubmit.dialogClosed, JSON.stringify({ feedbackTyped, ...feedbackSubmit }));
+  await sleep(200);
+
+  // ⑰.5 dirty-draft close: goes through the in-app confirm layer (no native
+  // confirm in Tauri WebView2); cancel keeps the draft and the panel, confirm
+  // truly closes, and nothing is submitted along the way.
+  await clickExact(page, '提交反馈');
+  await sleep(250);
+  await page.evaluate(() => {
+    const textarea = document.querySelector('[data-feedback-dialog="true"] textarea[placeholder*="请描述"]');
+    if (!textarea) return;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+    textarea.focus();
+    setter.call(textarea, '关闭确认测试');
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.evaluate(() => {
+    const modal = document.querySelector('[data-feedback-dialog="true"]');
+    const button = modal && [...modal.querySelectorAll('button')].find(node => (node.textContent || '').trim() === '取消');
+    if (button) button.click();
+  });
+  await page.waitForFunction(() => !!document.querySelector('[data-testid="feedback-close-confirm"]'));
+  await page.evaluate(() => {
+    const layer = document.querySelector('[data-testid="feedback-close-confirm"]');
+    const button = layer && [...layer.querySelectorAll('button')].find(node => (node.textContent || '').trim() === '取消');
+    if (button) button.click();
+  });
+  await page.waitForFunction(() => !document.querySelector('[data-testid="feedback-close-confirm"]'));
+  const feedbackCloseGuard = await page.evaluate(() => ({
+    panelStillOpen: !!document.querySelector('[data-feedback-dialog="true"]'),
+    draftKept: (document.querySelector('[data-feedback-dialog="true"] textarea[placeholder*="请描述"]')?.value || '') === '关闭确认测试',
+  }));
+  await page.evaluate(() => {
+    const modal = document.querySelector('[data-feedback-dialog="true"]');
+    const button = modal && [...modal.querySelectorAll('button')].find(node => (node.textContent || '').trim() === '取消');
+    if (button) button.click();
+  });
+  await page.waitForFunction(() => !!document.querySelector('[data-testid="feedback-close-confirm"]'));
+  await page.click('[data-testid="feedback-close-confirm-ok"]');
+  await page.waitForFunction(() => !document.querySelector('[data-testid="feedback-close-confirm"]') && !document.querySelector('[data-feedback-dialog="true"]'));
+  const feedbackCloseSubmitCalls = await page.evaluate(() =>
+    window.__SETTINGS_TEST__.calls.filter(call => call.cmd === 'submit_feedback').length);
+  rec('⑰.5 dirty-draft close uses the in-app confirm layer: cancel keeps the draft, confirm truly closes without submitting', feedbackCloseGuard.panelStillOpen && feedbackCloseGuard.draftKept && feedbackCloseSubmitCalls === 1, JSON.stringify({ ...feedbackCloseGuard, submitCalls: feedbackCloseSubmitCalls }));
   await sleep(200);
 
   await page.setViewport({ width: 760, height: 620 });

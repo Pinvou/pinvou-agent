@@ -74,6 +74,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Set up zram and swap
+        if: runner.os == 'Linux'
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+
       - name: Download pinned connector binaries
         # windows runner 默认 pwsh 无法直接执行 .sh,必须显式走 bash。
         shell: bash

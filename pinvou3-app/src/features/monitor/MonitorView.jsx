@@ -233,7 +233,6 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
         };
       }, []);
 
-      const updatedAt = fmt ? fmt.updatedAt : loadingValue;
       const gpuName = fmt ? fmt.gpuName : loadingValue;
       const gpuAvailable = fmt ? fmt.gpuAvailable : false;
       const gpuHasVram = fmt ? fmt.gpuHasVram : false;
@@ -323,8 +322,12 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
           Object.assign(getMonitorHistoryStore(), next);
           return next;
         });
+      // The bridge suppresses notify for display-equal snapshots (memory-footprint
+      // gate), so fmt.updatedAt can freeze while polling continues; the local 1s
+      // page clock keeps the ring history advancing at the polling cadence
+      // instead (same one-sample-per-second behavior as an ungated poll).
       // eslint-disable-next-line react-hooks/exhaustive-deps -- fmt mirrors the polling object and the sampled values are already in deps; adding fmt would re-sample on every poll object change
-      }, [vllmMaxLen, vllmQueue, vllmTtft, vllmTps, vllmKv, clearOverride, updatedAt]);
+      }, [vllmMaxLen, vllmQueue, vllmTtft, vllmTps, vllmKv, clearOverride, clockNow]);
       const handleModelClearStart = () => {
         setIsModelClearing(true);
         if (modelClearTimerRef.current) clearTimeout(modelClearTimerRef.current);

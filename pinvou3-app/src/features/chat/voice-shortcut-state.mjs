@@ -8,11 +8,12 @@ function normalizeVoiceShortcutMode(mode) {
 function isPlainAltKey(event) {
   return event
     && event.key === 'Alt'
-    // Right Alt matches the Rust hook's policy (VK_RMENU classified as Other): reserved for
-    // AltGr/IME, does not trigger the voice shortcut. location 2 = DOM_KEY_LOCATION_RIGHT;
-    // fall back to code in environments where location is missing.
-    && event.location !== 2
-    && event.code !== 'AltRight'
+    // Both physical Alt/Option keys trigger: the Rust hook classifies VK_LMENU
+    // and VK_RMENU as Alt (right Alt kept in sync there), and on macOS this
+    // in-window fallback is the only channel, so right Option must work too.
+    // AltGr (Ctrl+right Alt on European layouts) stays inert via the ctrlKey
+    // guard, matching the hook where the layout-synthesized left-Ctrl passes
+    // unswallowed and no gesture arms.
     && !event.ctrlKey
     && !event.shiftKey
     && !event.metaKey;
@@ -68,10 +69,13 @@ function voiceShortcutActionForKeyDown(event, current) {
   }
 
   // While an Alt gesture is pending, any other key (including Esc) is a combo member:
-  // clear pending, neither trigger nor cancel. Otherwise the Esc inside the passthrough
-  // batch of Alt+Esc (system window cycling) would cancel an active recording too,
-  // inconsistent with Alt+Tab (Other keys only clear pending).
-  if (state.pendingAlt) return { type: 'clear_pending' };
+  // clear pending, neither trigger nor cancel. swallow:false tells the router to pass
+  // the keydown through unswallowed so it keeps its own behavior (macOS Option
+  // symbols, app menu keys) — the keyup lane already passes combo tails through.
+  // Otherwise the Esc inside the passthrough batch of Alt+Esc (system window
+  // cycling) would cancel an active recording too, inconsistent with Alt+Tab
+  // (Other keys only clear pending).
+  if (state.pendingAlt) return { type: 'clear_pending', swallow: false };
 
   if (event && event.key === 'Escape') {
     return isActiveVoiceShortcutStatus(status) ? { type: 'cancel' } : { type: 'none' };

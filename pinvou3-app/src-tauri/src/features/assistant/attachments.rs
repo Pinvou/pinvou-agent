@@ -351,7 +351,7 @@ fn push_large_attachment_section(
         );
     } else {
         out.push_str(
-            "- 统计/筛选/聚合(尤其表格数据):优先用 `bash(command=...)` 写 awk 或 python 一次算出结果,不要逐页通读\n\
+            "- 统计/筛选/聚合(尤其表格数据):优先用 `bash(command=...)` 写 awk 或 python,按工具声明的实际 shell 使用可用的解释器或原生命令,一次算出结果,不要逐页通读\n\
              - 通读/定位:用 `read(path=..., offset=..., limit=...)` 分页;输出截断时增加 offset 续读\n",
         );
     }
