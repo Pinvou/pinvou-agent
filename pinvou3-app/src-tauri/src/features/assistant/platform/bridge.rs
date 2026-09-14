@@ -502,8 +502,13 @@ impl Pinvou3Bridge {
                 "{{PINVOU3_TITLE_LANG}}",
                 self.prefs.language.title_language_name(),
             );
-        rendered.push_str("\n\n");
-        rendered.push_str(crate::features::assistant::mcp_inventory::instruction_block());
+        // Only native Engine sessions receive the per-turn inventory snapshot. External ACP
+        // submissions bypass build_send_message_op, so advertising snapshot semantics in
+        // their static prompt would describe context they never receive.
+        if !self.is_external_acp_session(session_id) {
+            rendered.push_str("\n\n");
+            rendered.push_str(crate::features::assistant::mcp_inventory::instruction_block());
+        }
         // [pinvou3] 非中文 locale 的语言指令补丁:底座 locale_reinforcement_preamble
         // 对 en 返回 None,而 pinvou3 整份 system prompt 是中文,会把回复语言拽回中文。
         // 这里给底座留空的 locale 补一段 mirror 指令(zh-Hans/ja 已有底座 bookend,返回
@@ -592,13 +597,16 @@ impl Pinvou3Bridge {
             .is_some_and(|predicate| predicate(session_id))
     }
 
+    fn is_external_acp_session(&self, session_id: &str) -> bool {
+        self.external_acp_session_predicate
+            .as_ref()
+            .is_some_and(|predicate| predicate(session_id))
+    }
+
     /// 产品多智能体可用性同时受产品模式与运行时后端约束。SessionPolicy 只描述
     /// plain/code 轴；外部 ACP 虽然也是 plain，却不由 Pinvou Engine 执行。
     pub fn multi_agent_mode_available(&self, session_id: &str) -> bool {
-        let external_acp = self
-            .external_acp_session_predicate
-            .as_ref()
-            .is_some_and(|predicate| predicate(session_id));
+        let external_acp = self.is_external_acp_session(session_id);
         !external_acp && self.session_policy(session_id).supports_multi_agent_mode()
     }
 
@@ -606,11 +614,8 @@ impl Pinvou3Bridge {
     /// but not sufficient: external ACP sessions are also Plain, yet do not execute through
     /// the Pinvou Engine and must be excluded on the runtime axis.
     pub fn exposes_browser_mcp(&self, session_id: &str) -> bool {
-        let external_acp = self
-            .external_acp_session_predicate
-            .as_ref()
-            .is_some_and(|predicate| predicate(session_id));
-        !external_acp && self.session_policy(session_id).exposes_browser_mcp()
+        !self.is_external_acp_session(session_id)
+            && self.session_policy(session_id).exposes_browser_mcp()
     }
 
     /// 该 session 的会话模式策略：共享链路（发送 op 构造、工具整形、session
@@ -6613,6 +6618,18 @@ mod tests {
                 .build_session_system_prompt("sess-acp-1")
                 .contains("## Browser capabilities unavailable"),
             "external ACP sessions must not receive the browser-unavailable message"
+        );
+        assert!(
+            !bridge
+                .build_session_system_prompt("sess-acp-1")
+                .contains("## 市场 MCP 应用发现"),
+            "external ACP sessions must not receive inventory rules without per-turn snapshots"
+        );
+        assert!(
+            bridge
+                .build_session_system_prompt("native-work")
+                .contains("## 市场 MCP 应用发现"),
+            "native Engine sessions must continue to receive inventory rules"
         );
 
         let _ = std::fs::remove_dir_all(&root);

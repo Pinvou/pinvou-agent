@@ -23,9 +23,12 @@ $argsText = if ($env:DEEPSEEK_TOOL_ARGS) { $env:DEEPSEEK_TOOL_ARGS } else { "" }
 # (disable-awareness audit, leak surface 2).
 # This concealment applies only to skill-based connectors. Marketplace MCP
 # packages deliberately expose installed/enabled metadata to the model; see
-# docs/marketplace-unification.md section 5.4. The sets do not overlap.
+# docs/marketplace-unification.md section 5.4. Match complete JSON string values
+# so marketplace packages such as `wecom-bot` are not caught merely because an
+# ID or display name contains a skill-connector alias.
 if ($toolName -eq "list_mcp_resources" -or $toolName -eq "list_mcp_resource_templates") {
-    if ($argsText -match "wecom|weixin|wework|feishu|lark|dingtalk|dingding|dws|tmeet|tencent[\s_\-]?meeting|企微|企业微信|微信|飞书|钉钉|腾讯会议") {
+    $skillConnectorNamePattern = '"(?:wecom|weixin|wework|feishu|lark|dingtalk|dingding|dws|tmeet|tencent[\s_\-]?meeting|企微|企业微信|微信|飞书|钉钉|腾讯会议)"'
+    if ($argsText -match $skillConnectorNamePattern) {
         $denyJson = '{"decision":"deny","reason":"该名称不是 MCP server（无 MCP schema），无法用 list_mcp_resources 自省。若它是技能型连接器，请用 load_skill 加载其对应技能后按技能说明使用。连接状态以工具面板为准，自省失败不代表未连接。"}'
         # 经标准输出流写 UTF-8 无 BOM：上游按 UTF-8 解码 stdout 且 serde_json 拒绝
         # BOM 前缀；PS 5.1 控制台默认 ANSI(GBK)，WriteLine 会把中文转成乱码。

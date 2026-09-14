@@ -181,7 +181,7 @@ companion 声明与 MCP 的 `companion_skills` 同机制，`BUILTIN_CLI_BUNDLES`
 
 ### 5.4 Model discovery of installed MCP applications
 
-Each new native bridge submission carries a fresh marketplace MCP inventory
+Each new native Engine `SendMessage` submission carries a fresh marketplace MCP inventory
 containing only installed application IDs, display names, and the current
 conversation mode's enabled flags. This metadata remains visible when an application's toggle is off;
 it does not expose credentials, server configuration, or disabled tool schemas.
@@ -200,12 +200,15 @@ continue to enforce invocation restrictions.
 
 This disclosure is deliberately limited to marketplace MCP packages. Disabled
 skill-based connectors retain the existing concealment policy enforced by
-`deny_sensitive_paths.sh`; the two connector sets do not overlap. Native submit
+`deny_sensitive_paths.sh`. That hook matches only complete skill-connector names,
+so marketplace IDs or display names that contain such a name remain introspectable. Native submit
 rereads the installed registry and scope toggle file on every turn, accepting the
 marketplace list path's existing corrupt-registry repair behavior so live sessions
-converge on the same source of truth. Edit/resend operations that replay existing
-Engine history do not synthesize a snapshot; the next native bridge submission
-refreshes it.
+converge on the same source of truth. External ACP sessions do not receive these
+instructions because their submissions bypass the native snapshot path. Edit/resend
+operations that replay existing Engine history do not synthesize a snapshot. Mid-turn
+steering also bypasses `SendMessage` and therefore continues under the current turn's
+latest snapshot; the next native Engine submission refreshes it.
 
 ## 6. 统一安装管线
 
