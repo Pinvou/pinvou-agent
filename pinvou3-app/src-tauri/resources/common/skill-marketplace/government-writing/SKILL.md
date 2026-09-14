@@ -17,13 +17,13 @@ metadata:
 3. **填正文** —— 按模板骨架 + 层级序号体系撰写。
 4. **套话术** —— 主送/承启/结尾/落款/公开方式用固定话术库。
 5. **自检** —— 过"立账核账"清单逐项打勾。
-6. **出件** —— 按**公文字段契约**（见下方）调 `mcp_gongwen_make_gongwen` 渲染合规 .docx → 拿到 path **必须再 `present_artifact(path, title)`** 上产物卡。
+6. **出件** —— 按**公文字段契约**（见下方）调 `mcp_gongwen_make_gongwen` 渲染合规 .docx → 拿到 path **必须再 `mcp_pinvou3_present_artifact(path, title)`** 上产物卡（若你的工具列表里没有这个工具，说明产物卡后端本轮不可用——直接交付并在回复里说明产物卡不可用）。
    - **依赖检查**：本技能靠『公文写作』MCP 出件。若 `mcp_gongwen_make_gongwen` 不存在/不可用，**别硬拼纯文本冒充成品**——提示用户去插件中心·连接器页安装『公文写作』引擎，装好再出件。
    - `make_gongwen` 出件前自带立账核账：若返回 `ok:false` 且 `blocked_by_validate`，说明有 error 级硬伤（正文为空 / 缺主送 / 缺成文日期等），**按 `issues` 补全字段后重调**，绝不跳过、绝不拿空壳去 present。
-   - .docx 是**二进制成品**：要改内容就改字段重调 `make_gongwen`，**绝不用 `read_file`/`edit_file` 去读写 .docx**（读不出文本是正常的）。
+   - .docx 是**二进制成品**：要改内容就改字段重调 `make_gongwen`，**绝不用 `read`/`edit` 去读写 .docx**（读不出文本是正常的）。
    - **不要自己拼 markdown 当公文成品**——内容你写进字段，套版交给渲染器。
    - **正文是纯文本、不是 JSON**：`body` / `attachment_body` 直接写多行纯文本（一段一行），每个字段都是独立的字符串参数——**别再自己拼 JSON、`JSON.stringify`、或写临时文件验证**。
-   - **路径以返回值为准**：`make_gongwen` 返回里就有 `path`，**直接拿它调 `present_artifact`，绝不自己 `ls`/`find`/`read_file` 满磁盘找 .docx**。
+   - **路径以返回值为准**：`make_gongwen` 返回里就有 `path`，**直接拿它调 `mcp_pinvou3_present_artifact`，绝不自己 `ls`/`find`/`read` 满磁盘找 .docx**。
 
 ## 文种分派
 | 用户要写 | 文种 | 读模板 | 典型 |

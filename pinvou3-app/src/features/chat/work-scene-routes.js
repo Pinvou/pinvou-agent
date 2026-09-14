@@ -43,13 +43,13 @@ const PPT_DESIGN_CONTEXT = `Pinvou PPT 设计场景路由：
 - 必须优先加载并使用 PPT 生成技能，技能 id/name 使用 pptx / PPT 生成。
 - 交付目标是可编辑的 .pptx 文件：先列一版大纲（章节 + 每页要点）给用户确认，确认后产结构化 deck。
 - deck 必须调 PPT 工具生成，工具 id/name 使用 pptx / PPT 生成（mcp_pptx_make_pptx），slides 数组每页一个对象并按版式填正文字段；按 PPT 内容自动选主题并一句话说明理由。
-- 拿到产物路径后必须调用 present_artifact 上产物卡，不要只给文件路径文字。
+- 拿到产物路径后必须调用 mcp_pinvou3_present_artifact 上产物卡（若工具列表里没有 mcp_pinvou3_present_artifact，说明产物卡后端不可用，交付文件并明确告知用户），不要只给文件路径文字。
 - 全程不要用 HTML 幻灯片代替 .pptx；没点名在线平台时本地生成，不要用飞书/在线文档代替。
 - 如果 pptx 技能或工具不可用，不要静默降级为普通回答或 HTML，应明确提示所需能力不可用。`;
 
 const PPT_DESIGN_AUDIT = `生成完成前执行 PPT 自检：
 1. 是否已使用 pptx PPT 生成技能并先给出大纲。
-2. 是否已调 mcp_pptx_make_pptx 生成 .pptx 并用 present_artifact 上卡。
+2. 是否已调 mcp_pptx_make_pptx 生成 .pptx 并用 mcp_pinvou3_present_artifact 上卡（工具列表里没有 mcp_pinvou3_present_artifact 时是否已明确告知产物卡不可用）。
 3. 每页是否按版式填了真实正文内容，而不是只有标题。
 4. 是否避免用 HTML 或在线文档代替本地 .pptx 产物。
 如有问题，先自行修正再交付，并在回复中用简短「PPT 自检」说明结果。`;
