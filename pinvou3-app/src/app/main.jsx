@@ -2970,7 +2970,10 @@ const NAV_PREFETCH = {
           )}
 
           {settingsToast && createPortal(
-            <div className="fixed left-1/2 bottom-8 z-[120] -translate-x-1/2 rounded-full bg-black/80 px-4 py-2 text-[13px] font-medium text-white shadow-2xl">
+            // Layer sits above modal overlays (picker backdrop is z-[200]) so a
+            // failure raised under an open dialog stays visible; a filesystem
+            // path in the message must not push the pill past the viewport.
+            <div className="fixed left-1/2 bottom-8 z-[210] -translate-x-1/2 max-w-[80vw] truncate rounded-full bg-black/80 px-4 py-2 text-[13px] font-medium text-white shadow-2xl">
               {settingsToast}
             </div>,
             document.body
