@@ -36,6 +36,10 @@
 //!   `import_skill_md_content`), and SKILL.md directories (zipped the same
 //!   way; the GUI has no directory input). Single-file fallback id derivation
 //!   mirrors the GUI's `sanitize_skill_name` + FNV-1a `stable_stem_hash`.
+//!   The pre-pipeline wrap reads are bounded per file and cumulatively by the
+//!   pipeline's own package limit; non-regular inputs (FIFOs, devices) are
+//!   rejected before any read (opening a FIFO would block until an unrelated
+//!   writer appears).
 //! - export → `package_export::export_installed_plugin`; recycle →
 //!   `recycle_bin::{RecycleBin, restore_plugin}`; meta →
 //!   `SkillMarketplaceManager::update_display_meta`.
@@ -56,6 +60,7 @@
 //! Pure storage only: no Tauri host, no engine, no async runtime.
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::support::{render, require_yes, success};
@@ -888,16 +893,20 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
                 path.display()
             )));
         }
-        let mut entries = collect_directory_entries(path)?;
+        let mut cumulative = 0u64;
+        let mut entries = collect_directory_entries(path, &display, &mut cumulative)?;
         // A SKILL.md without a frontmatter `name` is rejected downstream as
         // an "empty package"; the .md channel derives a name from the file
         // name, so the directory channel injects the same fallback here. A
         // READ failure (permissions, non-UTF-8 body) must surface like the
         // .md channel's error instead of degrading to an empty string — that
         // would silently replace the user's skill body with a stub.
-        let skill_md = std::fs::read_to_string(path.join("SKILL.md")).map_err(|error| {
+        let skill_md_path = path.join("SKILL.md");
+        let skill_md_bytes =
+            read_import_file_capped(&skill_md_path, "SKILL.md", &display, &mut cumulative)?;
+        let skill_md = String::from_utf8(skill_md_bytes).map_err(|_| {
             CliError::failed(format!(
-                "plugins import({}): cannot read SKILL.md: {error}",
+                "plugins import({}): SKILL.md is not valid UTF-8",
                 path.display()
             ))
         })?;
@@ -911,9 +920,11 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
             build_stored_zip(&entries)?,
         ))
     } else if extension.as_deref() == Some("md") || extension.as_deref() == Some("markdown") {
-        let content = std::fs::read_to_string(path).map_err(|error| {
+        let mut cumulative = 0u64;
+        let bytes = read_import_file_capped(path, "skill file", &display, &mut cumulative)?;
+        let content = String::from_utf8(bytes).map_err(|_| {
             CliError::failed(format!(
-                "plugins import({}): cannot read skill file: {error}",
+                "plugins import({}): skill file is not valid UTF-8",
                 path.display()
             ))
         })?;
@@ -1348,10 +1359,77 @@ fn temp_zip_path(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{label}-{}-{nanos}.zip", std::process::id()))
 }
 
+/// Reads one input file for the pre-import wrap under the unified import
+/// pipeline's own package limit (`plugin_import::MAX_PLUGIN_SIZE_BYTES`,
+/// imported directly so a change breaks this crate's build), tracked against
+/// `cumulative` so a directory cannot exceed the limit file by file. The
+/// size check runs before any allocation and again while reading, so a file
+/// that grows (or lies about its size) between stat and read is still
+/// bounded. Non-regular inputs (FIFOs, devices) are rejected before any
+/// read — opening a FIFO would otherwise block until an unrelated writer
+/// appears.
+fn read_import_file_capped(
+    path: &Path,
+    what: &str,
+    display: &str,
+    cumulative: &mut u64,
+) -> Result<Vec<u8>, CliError> {
+    let limit = plugin_import::MAX_PLUGIN_SIZE_BYTES;
+    let over_limit = |file: &Path| {
+        CliError::failed(format!(
+            "plugins import({}): import input exceeds the {} MiB import limit: {}",
+            display,
+            limit / 1024 / 1024,
+            file.display()
+        ))
+    };
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        CliError::failed(format!(
+            "plugins import({}): cannot read {what}: {error}",
+            display
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(CliError::failed(format!(
+            "plugins import({}): {what} is not a regular file: {}",
+            display,
+            path.display()
+        )));
+    }
+    if metadata.len() > limit || *cumulative + metadata.len() > limit {
+        return Err(over_limit(path));
+    }
+    let file = std::fs::File::open(path).map_err(|error| {
+        CliError::failed(format!(
+            "plugins import({}): cannot read {what}: {error}",
+            display
+        ))
+    })?;
+    let remaining = limit - *cumulative;
+    let mut reader = file.take(remaining + 1);
+    let mut bytes = Vec::with_capacity(metadata.len().min(remaining) as usize);
+    reader.read_to_end(&mut bytes).map_err(|error| {
+        CliError::failed(format!(
+            "plugins import({}): cannot read {what}: {error}",
+            display
+        ))
+    })?;
+    if bytes.len() as u64 > remaining {
+        return Err(over_limit(path));
+    }
+    *cumulative += bytes.len() as u64;
+    Ok(bytes)
+}
+
 /// Recursively collects regular, non-hidden files under `root` as
 /// (zip-relative, bytes) entries with `/` separators, in sorted order so the
-/// produced archive is deterministic.
-fn collect_directory_entries(root: &Path) -> Result<Vec<(String, Vec<u8>)>, CliError> {
+/// produced archive is deterministic. Total bytes read are bounded through
+/// `cumulative` by the import pipeline's package limit.
+fn collect_directory_entries(
+    root: &Path,
+    display: &str,
+    cumulative: &mut u64,
+) -> Result<Vec<(String, Vec<u8>)>, CliError> {
     let mut entries = Vec::new();
     let mut stack = vec![(root.to_path_buf(), String::new())];
     while let Some((dir, prefix)) = stack.pop() {
@@ -1385,12 +1463,7 @@ fn collect_directory_entries(root: &Path) -> Result<Vec<(String, Vec<u8>)>, CliE
             if path.is_dir() {
                 stack.push((path, rel));
             } else if path.is_file() {
-                let bytes = std::fs::read(&path).map_err(|error| {
-                    CliError::failed(format!(
-                        "plugins import({}): cannot read file: {error}",
-                        path.display()
-                    ))
-                })?;
+                let bytes = read_import_file_capped(&path, "file", display, cumulative)?;
                 entries.push((rel, bytes));
             }
         }

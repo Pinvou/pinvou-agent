@@ -482,6 +482,84 @@ fn import_rejects_missing_path_and_unsupported_extension() {
     assert!(message.contains("SKILL.md"), "message: {message}");
 }
 
+/// Creates a sparse file of exactly `len` bytes (no data is written, so the
+/// 200 MiB-scale fixtures below cost no disk space and no read time unless
+/// the import actually reads them).
+fn write_sparse(path: &Path, len: u64) {
+    let file = std::fs::File::create(path).expect("create sparse fixture");
+    file.set_len(len).expect("set sparse fixture length");
+}
+
+fn import_package_limit() -> u64 {
+    pinvou3_lib::features::marketplace::plugin_import::MAX_PLUGIN_SIZE_BYTES
+}
+
+/// A single `.md` skill file over the product import limit is rejected by the
+/// CLI's pre-wrap read (the unified pipeline would enforce the same limit
+/// later, but only after the whole file had been read into memory and
+/// re-copied into the wrapper zip). One byte over the limit is rejected; the
+/// boundary itself (`== limit`) is the pipeline's `>` comparison and would
+/// import a 200 MiB package, which is too heavy to execute in a contract
+/// test.
+#[test]
+fn import_rejects_oversize_markdown_file() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("import-oversize-md");
+
+    let oversized = home.path().join("oversize.md");
+    write_sparse(&oversized, import_package_limit() + 1);
+    let (message, code) = run_err(&["pinvoy", "plugins", "import", oversized.to_str().unwrap()]);
+    assert_eq!(code, ExitCode::Failed);
+    assert!(
+        message.contains("exceeds the 200 MiB import limit"),
+        "message: {message}"
+    );
+}
+
+/// The cumulative cap cannot be dodged by splitting the payload across files
+/// that are each under the per-file limit: a directory whose files sum over
+/// the product import limit is rejected during the walk.
+#[test]
+fn import_rejects_directory_over_cumulative_limit() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("import-oversize-dir");
+    let dir = home.path().join("oversize-dir");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("SKILL.md"), "---\nname: oversize-dir\n---\nbody").unwrap();
+    // The first file reads fully (sparse, so it is fast) and stays under the
+    // per-file limit; the second trips the cumulative check from metadata
+    // alone.
+    write_sparse(&dir.join("a.bin"), import_package_limit() - 1024);
+    write_sparse(&dir.join("b.bin"), 2048);
+    let (message, code) = run_err(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
+    assert_eq!(code, ExitCode::Failed);
+    assert!(
+        message.contains("exceeds the 200 MiB import limit"),
+        "message: {message}"
+    );
+}
+
+/// A FIFO shaped like a skill file is rejected from its metadata, before any
+/// read: the old `read_to_string` path would block on `open` until an
+/// unrelated writer appeared (a hang, not an error). Unix-only because FIFOs
+/// are a unix special file type.
+#[cfg(unix)]
+#[test]
+fn import_rejects_fifo_skill_file_without_reading() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("import-fifo");
+
+    let fifo = home.path().join("pipe.md");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("run mkfifo");
+    assert!(status.success(), "mkfifo failed");
+    let (message, code) = run_err(&["pinvoy", "plugins", "import", fifo.to_str().unwrap()]);
+    assert_eq!(code, ExitCode::Failed);
+    assert!(message.contains("not a regular file"), "message: {message}");
+}
+
 #[test]
 fn meta_updates_upload_package_and_rejects_preset() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
