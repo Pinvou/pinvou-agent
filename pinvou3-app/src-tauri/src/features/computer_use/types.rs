@@ -322,6 +322,20 @@ impl ComputerUseError {
             detail: detail.into(),
         }
     }
+
+    /// 保留错误类别、改写明细（round-12 评审：拖拽收尾的错误合并此前把
+    /// Unavailable 一律重包成 Failed，"以管理员身份运行"之类**基于类别**
+    /// 的上游处置随之丢失——文本线索还在，分类没了）。
+    pub fn same_kind(&self, detail: impl Into<String>) -> Self {
+        match self {
+            Self::Unsupported { capability, .. } => Self::Unsupported {
+                capability,
+                detail: detail.into(),
+            },
+            Self::Unavailable { .. } => Self::unavailable(detail),
+            Self::Failed { .. } => Self::failed(detail),
+        }
+    }
 }
 
 impl std::fmt::Display for ComputerUseError {
