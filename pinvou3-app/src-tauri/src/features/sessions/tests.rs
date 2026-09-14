@@ -3729,11 +3729,13 @@ fn truncate_reports_compaction_summary_residue_in_system_prompt() {
     assert!(!outcome.had_compaction, "普通 system_prompt 不得误报");
 }
 
-/// GUI 导出走 store → 底座 `deepseek_tui::session_export` 的接线必须产出
-/// 全保真归档：记录（session.json）与 portable container（container.json）
-/// 齐备，artifacts 目录按参数包含/排除。归档内容级的 roundtrip（system
-/// prompt、tool_use/tool_result 还原）由底座 `session_export` 测试锁定，
-/// 这里锁 app 侧的参数传递与成员清单契约。
+/// The GUI export wiring store → base `deepseek_tui::session_export` must
+/// produce a full-fidelity archive: the record (session.json) and the
+/// portable container (container.json) are both present, and the artifacts
+/// directory is included or excluded per the parameter. Content-level
+/// archive roundtrip (system prompt, tool_use/tool_result restoration) is
+/// locked by the base `session_export` tests; this locks the app-side
+/// parameter passing and member list contract.
 #[test]
 fn forkguard_session_archive_export_via_store_keeps_full_context() {
     let (store, _g) = isolated_store();
@@ -3768,7 +3770,8 @@ fn forkguard_session_archive_export_via_store_keeps_full_context() {
         )
         .expect("seed transcript with tool call");
 
-    // 造一个 artifacts 文件，验证默认打包与 skip 两档行为。
+    // Create an artifacts file to verify both the default-pack and skip
+    // behaviors.
     let artifacts_dir = store
         .manager
         .sessions_dir()
@@ -3814,7 +3817,8 @@ fn forkguard_session_archive_export_via_store_keeps_full_context() {
             .all(|m| !m.name.starts_with("artifacts/"))
     );
 
-    // 非法 session id 在 store 入口即被拒绝，不落盘任何文件。
+    // An invalid session id is rejected at the store entry without writing
+    // any file to disk.
     let escape = output_dir.join("escape.tar.xz");
     assert!(store.export_archive("../escape", &escape, true).is_err());
     assert!(!escape.exists());

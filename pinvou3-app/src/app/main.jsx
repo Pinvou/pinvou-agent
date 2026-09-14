@@ -1699,8 +1699,9 @@ const NAV_PREFETCH = {
       useEffect(() => {
         if (projectsBootstrapReady && bridge.projects) bridge.projects.loadProjects();
       }, [projectsBootstrapReady]);
-      // 正在导出归档的会话 id 集合：handler 内早退防并发重复导出，
-      // 侧栏据此隐藏对应菜单项作为进行中反馈。
+      // Set of session ids whose archive export is in flight: the handler
+      // exits early to prevent concurrent duplicate exports, and the sidebar
+      // hides the matching menu item as in-progress feedback.
       const [exportingSessionIds, setExportingSessionIds] = useState(() => new Set());
       // latest-ref mirror: the stable export callback reads the in-flight set
       // here instead of changing identity whenever the set changes.
@@ -2429,12 +2430,18 @@ const NAV_PREFETCH = {
         if (isCodexSession) await refreshCodexSessions().catch(() => {});
       }, [codexSessions, refreshCodexSessions]);
 
-      // 一键导出完整会话日志（.tar.xz，全保真上下文）。后端弹原生保存对话框：
-      // 用户取消返回 null；成功 toast 带保存路径，失败用设置页 toast 提示。
-      // 导出中的会话早退（防并发重复导出），侧栏菜单项同步隐藏作为进行中反馈。
-      // 默认文件名带会话标题（按码点截断，避免拆散代理对）与短 id，
-      // 最终命名由后端净化（防路径穿越/非法字符）。任务列表经 allSidebarTasksRef、
-      // 导出中集合经 exportingSessionIdsRef 读取，以保持回调引用稳定（RecentItem 已 memo 化）。
+      // One-click full session log export (.tar.xz, full-fidelity context).
+      // The backend opens the native save dialog: cancellation resolves to
+      // null; the success toast carries the save path and failures surface
+      // through the settings-page toast. Sessions already exporting exit
+      // early (preventing concurrent duplicate exports) and their sidebar
+      // menu items are hidden at the same time as in-progress feedback. The
+      // default file name carries the session title (truncated by code
+      // points so surrogate pairs are not split) and a short id; the final
+      // name is sanitized by the backend (against path traversal and invalid
+      // characters). The task list is read via allSidebarTasksRef and the
+      // in-flight set via exportingSessionIdsRef so the callback identity
+      // stays stable (RecentItem is memoized).
       const handleExportSessionArchive = useCallback(async (id) => {
         if (!bridge.available || !bridge.sessions.exportSessionArchive) return;
         if (exportingSessionIdsRef.current.has(id)) return;

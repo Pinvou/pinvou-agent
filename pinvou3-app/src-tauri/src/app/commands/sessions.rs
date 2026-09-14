@@ -470,8 +470,9 @@ pub async fn delete_session(
     result
 }
 
-/// `export_session` 的返回载荷：保存路径（用户在原生对话框里确认的位置）
-/// 与归档规模摘要，前端据此提示成功文案。
+/// Payload returned by `export_session`: the save path (the location the
+/// user confirmed in the native dialog) plus an archive size summary that
+/// the frontend uses to render the success message.
 #[derive(Debug, Clone, Serialize)]
 pub struct ExportedSessionArchive {
     pub path: String,
@@ -482,10 +483,13 @@ pub struct ExportedSessionArchive {
     pub compressed_bytes: u64,
 }
 
-/// 归档默认文件名净化：只保留基本文件名、剥离已有扩展名、拒绝控制字符与
-/// 路径敏感字符；异常输入回退到 `pinvou-session-<id 前 8 位>.tar.xz`（回退
-/// 词干只保留 `[A-Za-z0-9_-]`，与会话 id 的上游合法字符集一致）。与
-/// `assistant_response` 的导出命名防线同构，但保留多段扩展名 `.tar.xz`。
+/// Sanitize the archive default file name: keep only the base file name,
+/// strip any existing extension, and reject control and path-sensitive
+/// characters; abnormal input falls back to
+/// `pinvou-session-<first 8 chars of id>.tar.xz` (the fallback stem keeps
+/// only `[A-Za-z0-9_-]`, matching the upstream valid character set of
+/// session ids). Mirrors the `assistant_response` export naming guard, but
+/// keeps the multi-segment `.tar.xz` extension.
 fn normalized_archive_name(default_name: &str, session_id: &str) -> String {
     const EXTENSION: &str = "tar.xz";
     let fallback_stem = format!(
@@ -518,15 +522,18 @@ fn normalized_archive_name(default_name: &str, session_id: &str) -> String {
     }
 }
 
-/// 一键导出完整会话日志：弹出原生保存对话框，把该会话的全保真记录
-/// （system prompt、全部轮次、工具调用与结果）连同 artifacts 打包为
-/// `.tar.xz`。打包复用底座 `deepseek_tui::session_export`，在
-/// spawn_blocking 中执行避免阻塞主线程。用户取消返回 `Ok(None)`。
+/// One-click full session log export: open the native save dialog and pack
+/// the session's full-fidelity record (system prompt, all turns, tool calls
+/// and results) together with artifacts into a `.tar.xz` archive. Packing
+/// reuses the base `deepseek_tui::session_export` and runs inside
+/// spawn_blocking so the main thread is not blocked. Returns `Ok(None)` when
+/// the user cancels.
 ///
-/// 按只读语义接受任意持久化会话 id（与 `load_session` 一致，不调
-/// `ensure_chat_session`）：定时运行会话同样可导出；外部 ACP 会话无本地
-/// 持久化记录，`store.export_archive` 会自然报"未找到"。菜单入口只出现
-/// 在聊天会话上。
+/// Accepts any persisted session id under read-only semantics (same as
+/// `load_session`, without calling `ensure_chat_session`): scheduled run
+/// sessions can be exported too; external ACP sessions have no local
+/// persisted record, and `store.export_archive` naturally reports "not
+/// found". The menu entry only appears on chat sessions.
 #[tauri::command]
 pub async fn export_session(
     app: AppHandle,
@@ -962,7 +969,8 @@ pub(super) fn list_workspace_files_for_session(
     Ok(out)
 }
 use super::prelude::*;
-// `export_session` 的原生保存对话框；其余会话命令不需要与对话框插件交互。
+// Native save dialog support for `export_session`; the other session
+// commands do not interact with the dialog plugin.
 use std::path::Path;
 use tauri_plugin_dialog::DialogExt;
 
@@ -1040,7 +1048,8 @@ mod session_archive_name_tests {
             normalized_archive_name("会话 demo.tar.xz", "abcd1234-0000"),
             "会话 demo.tar.xz"
         );
-        // 与 assistant 导出同语义：保留原始词干、统一追加 .tar.xz。
+        // Same semantics as the assistant export: keep the original stem and
+        // always append .tar.xz.
         assert_eq!(
             normalized_archive_name("chat.txt", "abcd1234-0000"),
             "chat.txt.tar.xz"
