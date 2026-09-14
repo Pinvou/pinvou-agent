@@ -408,6 +408,9 @@ pub struct AdvancedPrefs {
     pub allow_shell: Option<bool>,
     pub model_preset: Option<ModelPreset>,
     pub max_output_tokens: Option<u32>,
+    /// 子智能体数量上限。注意：蜂群模式（多智能体开关开启）下被覆盖为
+    /// 底座硬顶（128 直属并发 / 1024 全树准入），显式 0 也不例外——
+    /// 0 从来不是运行时的"禁用"（底座自身也会钳到至少 1）。
     pub max_subagents: Option<usize>,
     pub max_steps: Option<u32>,
     /// 自定义模型 ID（CustomLocal / Remote* 生效）
