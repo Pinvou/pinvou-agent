@@ -63,7 +63,9 @@ pub const PINVOU3_ALLOWED_TOOLS: &[&str] = &[
 /// policies tell the model to call directly — if any of them is missing from
 /// the first-turn tool list, the model gets stuck on "the description says it
 /// exists, the list says it does not". The base first turn always carries
-/// read/write/edit/bash/agent/todo_write; everything else is deferred.
+/// read/write/edit/bash/agent/todo_write; every other native tool is
+/// deferred by default (`tool_search` stays active so the model can
+/// re-activate deferred tools).
 ///
 /// - `load_skill`: the Usage line of the base-rendered skills index teaches
 ///   the model to call `load_skill` directly.
