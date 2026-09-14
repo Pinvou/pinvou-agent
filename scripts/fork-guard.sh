@@ -168,6 +168,7 @@ fingerprints=(
   "APP|定时任务复用 shared run API      |pinvou3-app/src-tauri/src/features/scheduled/tasks.rs|run_now_shared(&self.automations"
   "APP|多智能体面板只读 live worker     |pinvou3-app/src-tauri/src/features/multiagent/transcripts.rs|read_persisted_agent_worker_records(workspace)"
   "APP|静态 prompt composer 由应用安装   |pinvou3-app/src-tauri/src/features/runtime_bundle/platform/mod.rs|set_static_prompt_composer_override"
+  "APP|locale bookend slim wiring, reply-language only |pinvou3-app/src-tauri/src/features/runtime_bundle/platform/mod.rs|fn forkguard_locale_bookends_never_mandate_thinking_language"
   "APP|运行时读取不修复在途工具调用       |pinvou3-app/src-tauri/src/features/sessions/tests.rs|fn forkguard_runtime_snapshot_load_does_not_repair_in_flight_tool_call"
   "APP|进程启动恢复中断调用且幂等         |pinvou3-app/src-tauri/src/features/sessions/tests.rs|fn forkguard_boot_repairs_interrupted_tool_call_once"
   "APP|仅进程启动入口触发历史恢复         |pinvou3-app/src-tauri/src/lib.rs|SessionStore::boot_for_process_startup()"
