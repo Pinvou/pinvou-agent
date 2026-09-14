@@ -8,7 +8,7 @@ import {
   extractComputerUseScreenshotPath,
 } from '../src/features/computer-use/computer-use-logic.js';
 
-// ── 截图路径提取 ──────────────────────────────────────────────────
+// ── Screenshot path extraction ──────────────────────────────────────────────────
 assert.equal(
   extractComputerUseScreenshotPath('已截图，保存至 /home/u/.pinvou3/sessions/s1/attachments/computer_use/shot_1.png'),
   '/home/u/.pinvou3/sessions/s1/attachments/computer_use/shot_1.png',
@@ -118,7 +118,7 @@ assert.equal(
   'object outputs are searched via their JSON serialization',
 );
 
-// ── 授权界面可见性状态机 ──────────────────────────────────────────
+// ── Consent UI visibility state machine ─────────────────────────────────────────────────────
 assert.deepEqual(
   computerUseConsentView(null),
   { enabled: false, stopped: false, showBanner: false, grantRequest: null, confirmRequest: null },

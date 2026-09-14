@@ -1,66 +1,73 @@
-//! Wayland 输入注入与同会话截屏:xdg-desktop-portal RemoteDesktop(+ScreenCast)。
+//! Wayland input injection and same-session screen capture: xdg-desktop-portal RemoteDesktop
+//! (+ScreenCast).
 //!
-//! enigo 没有 Wayland 后端,XTest-through-XWayland 只能触达 X11 客户端,故
-//! Wayland 输入合成的规范路径是 RemoteDesktop portal(GNOME/KDE 均有实现;
-//! `AvailableDeviceTypes` 不含键盘/指针的合成器在探测阶段即显式不可用,不会
-//! 静默退化)。portal 的系统授权对话框是独立于应用内同意流之外的第二层用户
-//! 同意。
+//! enigo has no Wayland backend, and XTest-through-XWayland can only reach X11 clients, so the
+//! canonical path for Wayland input synthesis is the RemoteDesktop portal (implemented by both
+//! GNOME and KDE; compositors whose `AvailableDeviceTypes` lacks keyboard/pointer are explicitly
+//! unavailable at probe time and never degrade silently). The portal's system authorization
+//! dialog is a second layer of user consent, independent of the in-app consent flow.
 //!
-//! **为何手写 portal 客户端而不用 `ashpd`**(round-12 评审:该取舍此前无
-//! 记录,下一个维护者必然重新追问):ashpd 是官方推荐的 Rust portal 客户端,
-//! 但本模块需要对每个 portal 往返的**三个独立阶段**(AddMatch 订阅、方法
-//! 调用、Response 信号等待)分别施加有界超时,而 ashpd 的等待 API 不暴露
-//! 分阶段超时、也不暴露 handle_token 驱动的 Request/Response 信号的显式
-//! 订阅时序(subscribe-before-call,防 Response 先到竞态)。这两点正是
-//! `BACKEND_CALL_TIMEOUT` 推导(见 backend.rs)赖以成立的基础:无界或粗
-//! 粒度的等待会让"最坏合法懒启动总和"失去意义,僵尸请求与双重注入随之
-//! 回来。若 ashpd 未来提供分阶段超时,迁移应当重新评估。
+//! **Why a hand-written portal client instead of `ashpd`** (round-12 review: this trade-off was
+//! previously undocumented, and the next maintainer would inevitably ask again): ashpd is the
+//! officially recommended Rust portal client, but this module needs to impose bounded timeouts
+//! separately on the **three independent phases** of every portal round-trip (AddMatch
+//! subscription, method call, Response signal wait), while ashpd's wait APIs expose neither
+//! per-phase timeouts nor explicit subscription ordering for the handle_token-driven
+//! Request/Response signals (subscribe-before-call, guarding against the Response-arrives-first
+//! race). These two points are exactly what the `BACKEND_CALL_TIMEOUT` derivation (see
+//! backend.rs) relies on: unbounded or coarse-grained waits would rob the "worst-case legitimate
+//! lazy-start sum" of meaning, and zombie requests plus double injection would come back. If
+//! ashpd ever provides per-phase timeouts, the migration should be re-evaluated.
 //!
-//! 已知未覆盖(需真机 portal 验证,round-10 起披露):
-//! - `AvailableCursorModes` 未探测:SelectSources 固定请求 cursor_mode=
-//!   hidden,合成器若不支持该模式的行为(拒绝 vs 降级)未验证;
-//! - `CreateSession` 的 **Response 等待超时**分支:portal 侧可能仍在
-//!   创建会话,而我方既拿不到 handle 也无法关闭——半创建会话可能在
-//!   合成器侧滞留到其自身超时([`PortalInner::abandon`] 只覆盖已拿到
-//!   handle 的失败路径)。
+//! Known gaps (need real-machine portal verification, disclosed since round-10):
+//! - `AvailableCursorModes` is not probed: SelectSources always requests cursor_mode=hidden,
+//!   and compositor behavior when that mode is unsupported (reject vs degrade) is unverified;
+//! - the **Response wait timeout** branch of `CreateSession`: the portal side may still be
+//!   creating the session while we can neither obtain the handle nor close it — a half-created
+//!   session may linger on the compositor side until its own timeout
+//!   ([`PortalInner::abandon`] only covers failure paths that already obtained the handle).
 //!
-//! 会话流程(懒启动,首次输入动作或截屏才触发,全程 `handle_token` 驱动
-//! Request/Response 信号往返):
-//! 1. `CreateSession` → Response 结果取 `session_handle`(返回值本身是
-//!    Request 对象,历史包袱);
-//! 2. `RemoteDesktop.SelectDevices`(types = KEYBOARD|POINTER);
-//! 3. `ScreenCast.SelectSources`(monitor,multiple=false,cursor_mode=hidden)
-//!    ——绝对移动的坐标系是绑定 stream 的逻辑空间,没有 stream 就没有绝对
-//!    移动(mutter 对未知 stream 直接报错);
-//! 4. `RemoteDesktop.Start`(弹系统授权对话框,用户决定后 Response 携带
-//!    `devices` 与 `streams`);
-//! 5. `ScreenCast.OpenPipeWireRemote`:用同一会话换取截屏流的 PipeWire fd,
-//!    交给 [`super::wayland_capture`] 建帧接收器——截屏与输入共用这一个
-//!    会话/授权,不再依赖 xcap 的旧截屏链(见 `linux.rs` 的回退说明);
-//! 6. 输入全部走 `Notify*`;`Session.Close` 在 backend 析构时尽力调用——
-//!    CreateSession 成功后的任何失败路径(请求错误/超时/用户取消/授权不含
-//!    设备/无 stream)同样尽力关闭,不让半授权会话在合成器侧泄漏
-//!    (见 [`PortalInner::abandon`])。
+//! Session flow (lazy start, triggered by the first input action or screen capture, driven
+//! throughout by `handle_token` Request/Response signal round-trips):
+//! 1. `CreateSession` → take `session_handle` from the Response result (the return value itself
+//!    is a Request object, historical baggage);
+//! 2. `RemoteDesktop.SelectDevices` (types = KEYBOARD|POINTER);
+//! 3. `ScreenCast.SelectSources` (monitor, multiple=false, cursor_mode=hidden)
+//!    — the coordinate space for absolute motion is the logical space bound to the stream;
+//!    without a stream there is no absolute motion (mutter errors out on unknown streams);
+//! 4. `RemoteDesktop.Start` (pops the system authorization dialog; once the user decides, the
+//!    Response carries `devices` and `streams`);
+//! 5. `ScreenCast.OpenPipeWireRemote`: trade the same session for the capture stream's PipeWire
+//!    fd and hand it to [`super::wayland_capture`] to build the frame receiver — capture and
+//!    input share this one session/authorization, no longer relying on xcap's legacy capture
+//!    chain (see the fallback note in `linux.rs`);
+//! 6. all input goes through `Notify*`; `Session.Close` is best-effort called when the backend
+//!    is dropped — any failure path after CreateSession succeeds (request error/timeout/user
+//!    cancel/authorization without devices/no stream) likewise best-effort closes, so a
+//!    half-authorized session does not leak on the compositor side
+//!    (see [`PortalInner::abandon`]).
 //!
-//! 语义以 mutter `meta-remote-desktop-session.c` 为准:
-//! - `NotifyPointerMotionAbsolute` 的 x/y(oa{sv}udd 的 d)是**流本地像素**
-//!   (mutter `transform_position`:全局逻辑 = 显示器布局原点 + x/scale;
-//!   KDE 由 portal 层补流的逻辑原点,scale=1 时两者一致)。流本地像素即
-//!   PipeWire 协商的缓冲像素,故截屏(`linux.rs` 用协商尺寸构造 Capture)
-//!   与输入共用同一坐标空间,origin 恒 (0,0)。
-//! - `NotifyPointerAxisDiscrete`(oa{sv}ui):axis 0=垂直 1=水平;steps 正=
-//!   下/右、负=上/左(`discrete_steps_to_scroll_direction`),一次可带多格;
-//!   steps=0 会被 mutter 报 Invalid 并触发会话重置,调用方须先行挡下
-//!   (见 `linux.rs` scroll 的 clicks=0 no-op)。
-//! - 按键用 `NotifyKeyboardKeysym`(X keysym;仅命名键与 Latin-1 区——其余
-//!   Unicode 虽有 `0x01000000 | 码点` 编码,但 mutter 对**不在当前 keymap
-//!   内**的 keysym 静默丢弃,注入"成功"却无输入,故 [`char_keysym`] 对超出
-//!   Latin-1 的字符显式报错,fail-closed)。
-//! - 指针按钮为 evdev 按钮码;按下/释放 state=1/0。
+//! Semantics follow mutter's `meta-remote-desktop-session.c`:
+//! - `NotifyPointerMotionAbsolute` x/y (the d of oa{sv}udd) is **stream-local pixels**
+//!   (mutter `transform_position`: global logical = display layout origin + x/scale; KDE's
+//!   portal layer adds the stream's logical origin, and at scale=1 the two coincide).
+//!   Stream-local pixels are the PipeWire-negotiated buffer pixels, so capture (`linux.rs`
+//!   builds Capture with the negotiated size) and input share the same coordinate space, and
+//!   the origin is always (0,0).
+//! - `NotifyPointerAxisDiscrete` (oa{sv}ui): axis 0=vertical 1=horizontal; steps positive=
+//!   down/right, negative=up/left (`discrete_steps_to_scroll_direction`); one call may carry
+//!   multiple steps; steps=0 makes mutter report Invalid and trigger a session reset, so the
+//!   caller must block it beforehand (see the clicks=0 no-op in `linux.rs` scroll).
+//! - Keys use `NotifyKeyboardKeysym` (X keysyms; only named keys and the Latin-1 range — other
+//!   Unicode does have a `0x01000000 | code point` encoding, but mutter silently drops keysyms
+//!   **not in the current keymap**, so injection "succeeds" with no input; therefore
+//!   [`char_keysym`] errors explicitly for characters beyond Latin-1, fail-closed).
+//! - Pointer buttons are evdev button codes; pressed/released state=1/0.
 //!
-//! 线程约定:对象在 computer_use 专用 worker 线程构造/使用;对外是同步方法,
-//! 内部经自持的 current-thread runtime `block_on` 驱动 async zbus(与
-//! linux.rs 对 AT-SPI 的处理同一模式,无嵌套运行时)。
+//! Threading contract: objects are constructed/used on the computer_use dedicated worker
+//! thread; externally they are synchronous methods, internally driving async zbus via a
+//! self-held current-thread runtime `block_on` (the same pattern as linux.rs's AT-SPI
+//! handling, no nested runtime).
 
 use std::collections::HashMap;
 use std::future::poll_fn;
@@ -82,42 +89,44 @@ const SCREEN_CAST_IFACE: &str = "org.freedesktop.portal.ScreenCast";
 const REQUEST_IFACE: &str = "org.freedesktop.portal.Request";
 const SESSION_IFACE: &str = "org.freedesktop.portal.Session";
 
-/// 设备类型位(SelectDevices `types`、Start 响应 `devices` 共用)。
+/// Device type bits (shared by SelectDevices `types` and the Start response `devices`).
 const DEVICE_KEYBOARD: u32 = 1;
 const DEVICE_POINTER: u32 = 2;
-/// ScreenCast 源类型:monitor。
+/// ScreenCast source type: monitor.
 const SOURCE_MONITOR: u32 = 1;
-/// ScreenCast cursor_mode:hidden(输入合成不需要把光标编进流)。
+/// ScreenCast cursor_mode: hidden (input synthesis does not need the cursor baked into the stream).
 const CURSOR_MODE_HIDDEN: u32 = 1;
-/// 按下/释放的 portal state 值(指针按钮与键盘共用)。
+/// Portal state values for press/release (shared by pointer buttons and keyboard).
 const STATE_RELEASED: u32 = 0;
 const STATE_PRESSED: u32 = 1;
 
-/// 常规 portal 请求往返超时(授权对话框在 Start,不在这些步骤上)。
+/// Timeout for regular portal request round-trips (the authorization dialog is on Start,
+/// not on these steps).
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-/// Start 会弹系统授权对话框,用户可能离开座位;超时后关闭会话、下次重试。
+/// Start pops the system authorization dialog and the user may step away; on timeout close
+/// the session and retry next time.
 const START_TIMEOUT: Duration = Duration::from_secs(120);
-/// Notify* 事件注入超时(会话被合成器撤销等异常时不能挂死 worker)。
+/// Timeout for Notify* event injection (a revoked session or similar must not hang the worker).
 const NOTIFY_TIMEOUT: Duration = Duration::from_secs(10);
-/// `Session.Close` 的尽力超时(析构/失败清理路径,不阻塞太久)。
+/// Best-effort timeout for `Session.Close` (drop/failure cleanup paths; must not block long).
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
-/// portal 探测/建连的整体超时。zbus 对 session bus 的默认 method_timeout
-/// 很宽,挂死的 portal 服务不得把 backend 构造无期挂起(评审发现:无界的
-/// 属性查询会钉死 worker)。
+/// Overall timeout for portal probe/connection setup. zbus's default method_timeout for the
+/// session bus is very generous; a hung portal service must not suspend backend construction
+/// indefinitely (review finding: unbounded property queries would pin the worker).
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// evdev 按钮码(portal 规范:Linux evdev button codes)。
+/// evdev button codes (portal spec: Linux evdev button codes).
 const EVDEV_BTN_LEFT: i32 = 0x110;
 const EVDEV_BTN_RIGHT: i32 = 0x111;
 const EVDEV_BTN_MIDDLE: i32 = 0x112;
 
-/// types 的归一化按键 → X keysym(NotifyKeyboardKeysym 的编码空间)。
+/// Normalized key from types → X keysym (the encoding space of NotifyKeyboardKeysym).
 pub(super) fn map_keysym(key: Key) -> Result<i32, ComputerUseError> {
     let keysym: i32 = match key {
         Key::Control => 0xffe3, // Control_L
         Key::Alt => 0xffe9,     // Alt_L
         Key::Shift => 0xffe1,   // Shift_L
-        // macOS Cmd / Windows Win / Linux Super。
+        // macOS Cmd / Windows Win / Linux Super.
         Key::Meta => 0xffeb,
         Key::Enter => 0xff0d,
         Key::Escape => 0xff1b,
@@ -135,7 +144,7 @@ pub(super) fn map_keysym(key: Key) -> Result<i32, ComputerUseError> {
         Key::PageUp => 0xff55,
         Key::PageDown => 0xff56,
         Key::Function(n) => match n {
-            1..=12 => (0xffbe + u32::from(n) - 1) as i32, // F1..F12 连续段
+            1..=12 => (0xffbe + u32::from(n) - 1) as i32, // contiguous F1..F12 range
             _ => {
                 return Err(ComputerUseError::unsupported(
                     "input",
@@ -148,13 +157,14 @@ pub(super) fn map_keysym(key: Key) -> Result<i32, ComputerUseError> {
     Ok(keysym)
 }
 
-/// type_text 逐字符注入与 `Key::Char` 共用的单字符 keysym(\n→Return、
-/// \t→Tab;Latin-1 区 keysym 与码点一致)。
+/// Single-character keysym shared by type_text's per-character injection and `Key::Char`
+/// (\n → Return, \t → Tab; in the Latin-1 range the keysym equals the code point).
 ///
-/// 超出 Latin-1 的字符**显式报错**(fail-closed):它们在 X keysym 里有
-/// `0x01000000 | 码点` 编码,但 mutter 对**不在当前 keymap 内**的 keysym
-/// 静默丢弃——逐字符调用全部"成功"、中文一个都进不去(评审发现的静默
-/// 丢失)。宁可显式失败,也不假成功。
+/// Characters beyond Latin-1 **error out explicitly** (fail-closed): X keysyms do have a
+/// `0x01000000 | code point` encoding for them, but mutter silently drops keysyms **not in
+/// the current keymap** — every per-character call "succeeds" yet not a single Chinese
+/// character gets in (the silent loss found in review). Prefer explicit failure over fake
+/// success.
 pub(super) fn char_keysym(c: char) -> Result<i32, ComputerUseError> {
     let keysym = keysym_for_char(c).ok_or_else(|| {
         if u32::from(c) > 0xff {
@@ -208,8 +218,8 @@ pub(super) fn map_button(button: MouseButton) -> i32 {
     }
 }
 
-/// 滚动方向 → (portal axis, steps)。符号与 mutter 的
-/// `discrete_steps_to_scroll_direction` 一致:正=下/右。
+/// Scroll direction → (portal axis, steps). Signs match mutter's
+/// `discrete_steps_to_scroll_direction`: positive = down/right.
 pub(super) fn map_discrete_scroll(direction: ScrollDirection, clicks: u32) -> (u32, i32) {
     let steps = i32::try_from(clicks).unwrap_or(i32::MAX);
     match direction {
@@ -220,8 +230,8 @@ pub(super) fn map_discrete_scroll(direction: ScrollDirection, clicks: u32) -> (u
     }
 }
 
-/// portal request 对象路径:`/org/freedesktop/portal/desktop/request/
-/// <发送端唯一名去冒号、点变下划线>/<handle_token>`。
+/// Portal request object path: `/org/freedesktop/portal/desktop/request/
+/// <sender unique name minus the colon, dots to underscores>/<handle_token>`.
 fn request_object_path(
     unique_name: &str,
     token: &str,
@@ -234,8 +244,9 @@ fn request_object_path(
     Ok(OwnedObjectPath::from(path))
 }
 
-/// 授权对话框被取消(1)或异常结束(其他)时的错误。响应码 1 也可能出现在
-/// 无对话框的阶段(CreateSession 等),文案不假定对话框一定出现过。
+/// Error for when the authorization dialog is cancelled (1) or ends abnormally (other codes).
+/// Response code 1 can also occur in phases that show no dialog (CreateSession etc.), so the
+/// message does not assume a dialog was ever shown.
 fn response_error(code: u32) -> ComputerUseError {
     match code {
         1 => ComputerUseError::unavailable(
@@ -248,7 +259,7 @@ fn response_error(code: u32) -> ComputerUseError {
     }
 }
 
-/// 从 Value 取 u32(OwnedValue Deref 到 Value,调用点直接享受强制解引用)。
+/// Extract a u32 from a Value (OwnedValue derefs to Value, so call sites get auto-deref for free).
 fn value_u32(value: &Value<'_>) -> Option<u32> {
     match value {
         Value::U32(value) => Some(*value),
@@ -256,13 +267,13 @@ fn value_u32(value: &Value<'_>) -> Option<u32> {
     }
 }
 
-/// MessageStream 只实现 `futures_core::Stream`(经 `zbus::export` 再导出),
-/// 不引新依赖,用 `poll_fn` 手写 `next`。
+/// MessageStream only implements `futures_core::Stream` (re-exported via `zbus::export`);
+/// without pulling in a new dependency, hand-write `next` with `poll_fn`.
 async fn next_message(stream: &mut zbus::MessageStream) -> Option<zbus::Result<zbus::Message>> {
     poll_fn(|cx| futures_core::stream::Stream::poll_next(Pin::new(stream), cx)).await
 }
 
-/// 剥掉任意层 variant 包裹(zvariant 对 a{sv} 的值可能存成 Value::Value)。
+/// Strip any number of variant wrappers (zvariant may store a{sv} values as Value::Value).
 fn unwrap_variant<'a>(value: &'a Value<'a>) -> &'a Value<'a> {
     let mut value = value;
     while let Value::Value(inner) = value {
@@ -271,7 +282,7 @@ fn unwrap_variant<'a>(value: &'a Value<'a>) -> &'a Value<'a> {
     value
 }
 
-/// a{sv} 里取 (i32, i32)(结构或两元素数组都接受)。
+/// Extract an (i32, i32) from an a{sv} (accepts either a struct or a two-element array).
 fn dict_i32_pair(dict: &zbus::zvariant::Dict<'_, '_>, key: &str) -> Option<(i32, i32)> {
     let entry = dict
         .iter()
@@ -279,7 +290,7 @@ fn dict_i32_pair(dict: &zbus::zvariant::Dict<'_, '_>, key: &str) -> Option<(i32,
             matches!(unwrap_variant(dict_key), Value::Str(name) if name.as_str() == key)
         })
         .map(|(_, value)| value)?;
-    // 字典值还可能是 variant 包裹,统一剥掉。
+    // The dict value may also be variant-wrapped; strip that uniformly.
     let value = unwrap_variant(entry);
     let ints = |fields: &[Value<'_>]| -> Option<(i32, i32)> {
         match fields {
@@ -297,9 +308,10 @@ fn dict_i32_pair(dict: &zbus::zvariant::Dict<'_, '_>, key: &str) -> Option<(i32,
     }
 }
 
-/// Start 响应的 streams (a(ua{sv})):取首个 stream 的 PipeWire node id 与
-/// 合成器报告的流逻辑尺寸(`size`,KDE 输入倍率换算用;合成器不填时为
-/// None,输入倍率按 1.0 处理)。vardict 的值都可能是 variant 包裹的。
+/// The Start response's streams (a(ua{sv})): take the first stream's PipeWire node id and the
+/// stream logical size reported by the compositor (`size`, used for the KDE input scale
+/// conversion; None when the compositor leaves it unset, in which case the input scale is
+/// treated as 1.0). vardict values may all be variant-wrapped.
 fn first_stream_info(results: &HashMap<String, OwnedValue>) -> Option<(u32, Option<(i32, i32)>)> {
     let Value::Array(array) = unwrap_variant(&**results.get("streams")?) else {
         return None;
@@ -317,34 +329,38 @@ fn first_stream_info(results: &HashMap<String, OwnedValue>) -> Option<(u32, Opti
     Some((node, logical))
 }
 
-/// 已启动的 portal 会话状态。
+/// State of a started portal session.
 struct PortalSession {
     path: OwnedObjectPath,
-    /// 用户在授权对话框里实际授予的设备位掩码。
+    /// Device bitmask actually granted by the user in the authorization dialog.
     devices: u32,
-    /// 绑定的 ScreenCast stream(PipeWire node id),绝对移动的坐标参照。
+    /// Bound ScreenCast stream (PipeWire node id), the coordinate reference for absolute motion.
     stream: u32,
-    /// 合成器报告的流逻辑尺寸(诊断与 KDE 输入倍率换算用;可缺省)。
+    /// Stream logical size reported by the compositor (for diagnostics and KDE input scale
+    /// conversion; optional).
     stream_logical: Option<(i32, i32)>,
-    /// 同会话截屏的 PipeWire 帧接收器(OpenPipeWireRemote 失败时为 None,
-    /// 截屏回退 xcap 链,输入不受影响)。
+    /// PipeWire frame receiver for same-session capture (None when OpenPipeWireRemote fails;
+    /// capture falls back to the xcap chain, input is unaffected).
     capture: Option<PwCapture>,
 }
 
-/// Wayland portal 输入后端(同步外观)。懒启动:首次输入动作或截屏才走
-/// 会话建立与系统授权对话框;之后会话复用,失效自动重建。
+/// Wayland portal input backend (synchronous facade). Lazy start: session establishment and
+/// the system authorization dialog only happen on the first input action or screen capture;
+/// the session is then reused and rebuilt automatically when it becomes invalid.
 pub(super) struct PortalInput {
-    /// 专用 current-thread runtime:同步方法内驱动 async zbus(同 AT-SPI)。
+    /// Dedicated current-thread runtime: drives async zbus inside synchronous methods (same as AT-SPI).
     runtime: tokio::runtime::Runtime,
     inner: PortalInner,
 }
 
 impl PortalInput {
-    /// 探测 portal 与 RemoteDesktop 输入支持(纯属性查询,不弹任何对话框)。
-    /// 失败时返回人类可读原因,由调用方存为粘性错误。
+    /// Probe the portal and RemoteDesktop input support (pure property queries, no dialogs
+    /// popped). On failure returns a human-readable reason, which the caller stores as a
+    /// sticky error.
     ///
-    /// 整体受 [`PROBE_TIMEOUT`] 约束:zbus 默认 method_timeout 很宽,挂死的
-    /// portal 服务不得把 backend 构造无期挂起(评审发现)。
+    /// Bounded overall by [`PROBE_TIMEOUT`]: zbus's default method_timeout is very generous,
+    /// and a hung portal service must not suspend backend construction indefinitely (review
+    /// finding).
     pub(super) fn probe() -> Result<(), String> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -398,7 +414,7 @@ impl PortalInput {
             .map_err(|error| {
                 ComputerUseError::unavailable(format!("cannot create portal runtime: {error}"))
             })?;
-        // 建连同样受 PROBE_TIMEOUT 约束(session bus 连接握手可能挂死)。
+        // Connection setup is likewise bounded by PROBE_TIMEOUT (the session bus handshake may hang).
         let inner = runtime.block_on(async {
             match tokio::time::timeout(PROBE_TIMEOUT, PortalInner::new()).await {
                 Ok(result) => result,
@@ -410,18 +426,22 @@ impl PortalInput {
         Ok(Self { runtime, inner })
     }
 
-    /// 会话已启动则直接返回;否则走完整建立流程(弹系统授权对话框)。
+    /// Return directly if the session is already started; otherwise run the full establishment
+    /// flow (pops the system authorization dialog).
     pub(super) fn ensure_started(&mut self) -> Result<(), ComputerUseError> {
         self.runtime.block_on(self.inner.ensure_started())
     }
 
-    /// 会话对象是否仍开启（含毒化未回收的会话）。查询本身绝不懒启动。
-    /// 毒化只是我方标记：会话在合成器侧仍然存活，Notify 仍可投递（notify
-    /// 不短路毒化）。紧急 mouse_up 用它而非"健康"判定——mutter 的
-    /// Session.Close 只销毁虚拟设备、不合成释放，跳过毒化会话会把已按下
-    /// 的按键永久滞留（round-12 评审 M1）；无会话时调用方必须直接返回，
-    /// 不得触发完整建立流程（那会弹出新的系统授权对话框——评审发现：
-    /// 撤销/急停的紧急释放反向索权）。
+    /// Whether the session object is still open (including poisoned, not-yet-recycled
+    /// sessions). The query itself never lazy-starts. Poisoning is only our own marker: the
+    /// session is still alive on the compositor side and Notify can still be delivered (notify
+    /// does not short-circuit on poison). The emergency mouse_up uses this rather than a
+    /// "healthy" check — mutter's Session.Close only destroys the virtual device and does not
+    /// synthesize releases, so skipping poisoned sessions would strand already-pressed buttons
+    /// forever (round-12 review M1); with no session the caller must return directly and must
+    /// not trigger the full establishment flow (that would pop a new system authorization
+    /// dialog — review finding: the revoke/emergency-stop's emergency release demanding
+    /// authorization in reverse).
     pub(super) fn has_open_session(&self) -> bool {
         self.inner.session.is_some()
     }
@@ -452,12 +472,14 @@ impl PortalInput {
             .block_on(self.inner.keysym_event(keysym, pressed))
     }
 
-    /// backend 析构时尽力关闭 portal 会话(授权授予的会话不应泄漏)。
+    /// Best-effort close of the portal session when the backend is dropped (an authorized
+    /// session must not leak).
     pub(super) fn close(&mut self) {
         self.runtime.block_on(self.inner.close());
     }
 
-    /// 我方注入产生的光标位置(逻辑全局坐标);无 Wayland 查询 API,仅跟踪。
+    /// Cursor position produced by our own injections (logical global coordinates); Wayland
+    /// has no query API, so this is tracking only.
     pub(super) fn last_pointer(&self) -> Option<(i32, i32)> {
         self.inner.last_pointer
     }
@@ -466,8 +488,9 @@ impl PortalInput {
         self.inner.last_pointer = Some((x, y));
     }
 
-    /// 同会话截屏:会话未启动则启动(可能弹系统授权对话框),再从绑定的
-    /// ScreenCast 流取最新帧。`not_before` 语义见 [`PwCapture::latest_frame`]。
+    /// Same-session capture: start the session if not started (may pop the system
+    /// authorization dialog), then take the latest frame from the bound ScreenCast stream.
+    /// See [`PwCapture::latest_frame`] for `not_before` semantics.
     pub(super) fn capture_frame(
         &mut self,
         not_before: Option<Instant>,
@@ -492,7 +515,7 @@ impl PortalInput {
         })
     }
 
-    /// 合成器报告的流逻辑尺寸(KDE 输入倍率换算用;可缺省)。
+    /// Stream logical size reported by the compositor (for KDE input scale conversion; optional).
     pub(super) fn stream_logical_size(&self) -> Option<(i32, i32)> {
         self.inner
             .session
@@ -501,22 +524,26 @@ impl PortalInput {
     }
 }
 
-/// portal 会话的 async 主体(状态与 D-Bus 连接;`PortalInput` 的 runtime 与
-/// 此处分野,保证 `block_on` 与未来体借用互不相交)。
+/// The async body of the portal session (state and D-Bus connection; `PortalInput`'s runtime
+/// is kept separate here so the `block_on` borrow and the future body borrow never overlap).
 struct PortalInner {
     conn: zbus::Connection,
     session: Option<PortalSession>,
-    /// 当前会话的截屏初始化失败原因(输入不受影响;截屏回退 xcap 链)。
+    /// Why capture initialization failed for the current session (input unaffected; capture
+    /// falls back to the xcap chain).
     capture_error: Option<String>,
-    /// 我方注入产生的光标位置(逻辑全局坐标)。Wayland 无查询 API,只能跟踪。
+    /// Cursor position produced by our own injections (logical global coordinates). Wayland
+    /// has no query API, so this can only be tracked.
     last_pointer: Option<(i32, i32)>,
     request_counter: u32,
-    /// CreateSession 的 session_handle_token 计数(路由器用它命名 session)。
+    /// Counter for CreateSession's session_handle_token (the router uses it to name the session).
     session_counter: u32,
-    /// 上一动作中途 notify 失败/超时:会话**可能**仍存活并已授权,但已不可
-    /// 信。毒化会话在动作的必要释放送达之后才关闭(见 `button` 的动作边界
-    /// 回收),并由下一次 `ensure_started` 回收重建——先关后放会让拖拽卡键
-    /// 的强制释放永远送不出去(评审发现)。
+    /// A notify failure/timeout midway through the previous action: the session **may** still
+    /// be alive and authorized, but is no longer trustworthy. A poisoned session is closed
+    /// only after the action's mandatory release is delivered (see `button`'s action-boundary
+    /// recycling) and is recycled/rebuilt by the next `ensure_started` — closing before
+    /// releasing would make the forced release of a stuck drag key impossible to deliver
+    /// (review finding).
     poisoned: bool,
 }
 
@@ -548,11 +575,12 @@ impl PortalInner {
             .ok_or_else(|| ComputerUseError::unavailable("portal connection has no unique name"))
     }
 
-    /// 发起一次 portal 请求并等待对应 Request 对象上的 Response 信号。
-    /// 先订阅再调用,避免 Response 先于订阅到达的竞态。
+    /// Issue one portal request and wait for the Response signal on the corresponding Request
+    /// object. Subscribe before calling, to avoid the race where the Response arrives before
+    /// the subscription does.
     ///
-    /// `session` 为 `Some` 时方法签名是 `(o session_handle, a{sv} options)`
-    /// (CreateSession 之外全是);为 `None` 时是 `(a{sv} options)`。
+    /// When `session` is `Some` the method signature is `(o session_handle, a{sv} options)`
+    /// (everything except CreateSession); when `None` it is `(a{sv} options)`.
     async fn request(
         &mut self,
         interface: &str,
@@ -565,9 +593,10 @@ impl PortalInner {
             .await
     }
 
-    /// `parent_window` 为 `Some` 时方法签名是 `(o session_handle,
-    /// s parent_window, a{sv} options)`:与规范 XML 的参数顺序一致(实测
-    /// xdg-desktop-portal 1.18 亦然)。缺参数会被 InvalidArgs 拒绝。
+    /// When `parent_window` is `Some` the method signature is `(o session_handle,
+    /// s parent_window, a{sv} options)`: matches the parameter order of the spec XML
+    /// (verified in practice against xdg-desktop-portal 1.18 too). Missing arguments are
+    /// rejected with InvalidArgs.
     #[allow(clippy::too_many_arguments)]
     async fn request_impl(
         &mut self,
@@ -617,11 +646,12 @@ impl PortalInner {
             options.insert(key, value);
         }
 
-        // 两个分支的 call_method 产出不同 opaque future 类型,各自 await 到
-        // 完成后统一为 Result<Message>。方法调用本身应当毫秒级返回,封顶在
-        // REQUEST_TIMEOUT;授权对话框的等待发生在 Response 信号(下一段)——
-        // 两段各自配完整 timeout 的旧写法会让 Start 最坏等待成倍叠加、击穿
-        // backend 层调用预算(评审发现)。
+        // The two branches' call_method produce different opaque future types; each is awaited
+        // to completion and then unified into Result<Message>. The method call itself should
+        // return in milliseconds, capped at REQUEST_TIMEOUT; the authorization-dialog wait
+        // happens on the Response signal (next phase) — the old shape of giving each phase its
+        // own full timeout made Start's worst-case waits stack up multiplicatively and blow
+        // through the backend layer's call budget (review finding).
         let call_deadline = timeout.min(REQUEST_TIMEOUT);
         tokio::time::timeout(call_deadline, async {
             match session {
@@ -662,8 +692,8 @@ impl PortalInner {
         })
         .await
         .map_err(|_| {
-            // 报告实际生效的方法相位上限(timeout.min(REQUEST_TIMEOUT)),
-            // 不然 Start 会谎报 "timed out after 120s"(实际 30s 触发)。
+            // Report the actually effective method-phase cap (timeout.min(REQUEST_TIMEOUT)),
+            // otherwise Start would falsely claim "timed out after 120s" (it actually fires at 30s).
             ComputerUseError::unavailable(format!(
                 "portal {method} timed out after {call_deadline:?}"
             ))
@@ -693,12 +723,14 @@ impl PortalInner {
         Ok(results)
     }
 
-    /// 完整建立流程(弹系统授权对话框)。CreateSession 成功后,任何后续
-    /// 步骤失败(请求错误/超时/用户取消/授权不含设备/无 stream)都必须
-    /// 关闭已创建的会话对象再返回(评审发现的泄漏路径,见 [`PortalInner::abandon`])。
+    /// Full establishment flow (pops the system authorization dialog). After CreateSession
+    /// succeeds, any later step failing (request error/timeout/user cancel/authorization
+    /// without devices/no stream) must close the created session object before returning
+    /// (the leak path found in review, see [`PortalInner::abandon`]).
     async fn ensure_started(&mut self) -> Result<(), ComputerUseError> {
-        // 毒化会话回收：上一动作失败后被推迟的关闭在这里补上（有界尽力而
-        // 为），再走完整建立流程——不与残留会话并存，也不弹第二个授权框。
+        // Poisoned-session recycling: the close deferred after the previous action's failure
+        // is made up here (bounded best-effort) before the full establishment flow — never
+        // coexist with the leftover session, and never pop a second authorization dialog.
         if self.poisoned {
             self.reset_closed().await;
         }
@@ -706,8 +738,8 @@ impl PortalInner {
             return Ok(());
         }
 
-        // 1) CreateSession。`session_handle_token` 是路由器命名 session 对象
-        //    的依据,xdg-desktop-portal ≥1.17 缺失即拒绝("Missing token")。
+        // 1) CreateSession. `session_handle_token` is what the router uses to name the session
+        //    object; xdg-desktop-portal >= 1.17 rejects the call without it ("Missing token").
         self.session_counter = self.session_counter.wrapping_add(1);
         let results = self
             .request(
@@ -725,9 +757,10 @@ impl PortalInner {
                 REQUEST_TIMEOUT,
             )
             .await?;
-        // 实测 xdg-desktop-portal 1.18 把 session_handle 作为字符串放进响应
-        // (规范写的是 o);两种形式都接受。解析不出有效 handle 时无从关闭,
-        // 响应畸形本身即错误(直接抛出)。
+        // Verified in practice: xdg-desktop-portal 1.18 puts session_handle into the response
+        // as a string (the spec says o); accept both forms. When no valid handle can be parsed
+        // there is nothing to close, and the malformed response is itself an error (raised
+        // directly).
         let session_path = match results
             .get("session_handle")
             .map(|owned| unwrap_variant(owned))
@@ -748,7 +781,7 @@ impl PortalInner {
             }
         };
 
-        // 2) SelectDevices:keyboard + pointer。
+        // 2) SelectDevices: keyboard + pointer.
         if let Err(error) = self
             .request(
                 REMOTE_DESKTOP_IFACE,
@@ -763,7 +796,8 @@ impl PortalInner {
             return Err(error);
         }
 
-        // 3) ScreenCast.SelectSources:绑定一个显示器流,绝对移动坐标才有参照。
+        // 3) ScreenCast.SelectSources: bind one monitor stream, otherwise absolute-motion
+        // coordinates have no reference.
         if let Err(error) = self
             .request(
                 SCREEN_CAST_IFACE,
@@ -782,8 +816,8 @@ impl PortalInner {
             return Err(error);
         }
 
-        // 4) Start:系统授权对话框(用户可见的第二层同意)。签名含父窗口;
-        //    取消/超时同样要关闭会话。
+        // 4) Start: system authorization dialog (the second, user-visible layer of consent).
+        //    The signature includes the parent window; cancel/timeout must also close the session.
         let results = match self
             .request_impl(
                 REMOTE_DESKTOP_IFACE,
@@ -819,8 +853,9 @@ impl PortalInner {
             ));
         };
 
-        // 5) 同会话截屏:OpenPipeWireRemote 换 PipeWire fd 并建帧接收器。
-        //    失败不放弃会话:输入仍可用,截屏回退 xcap 链。
+        // 5) Same-session capture: OpenPipeWireRemote trades for the PipeWire fd and builds
+        //    the frame receiver. Failure does not give up the session: input stays usable,
+        //    capture falls back to the xcap chain.
         let (capture, capture_error) = match self.open_pipewire_remote(&session_path).await {
             Ok(fd) => match PwCapture::spawn(stream, fd) {
                 Ok(capture) => (Some(capture), None),
@@ -841,8 +876,9 @@ impl PortalInner {
         Ok(())
     }
 
-    /// `ScreenCast.OpenPipeWireRemote`:用当前会话换取截屏流的 PipeWire
-    /// 私有连接 fd(同步快速方法,非 Request 往返)。
+    /// `ScreenCast.OpenPipeWireRemote`: trade the current session for a private PipeWire
+    /// connection fd to the capture stream (a synchronous quick method, not a Request
+    /// round-trip).
     async fn open_pipewire_remote(
         &self,
         session_path: &OwnedObjectPath,
@@ -871,14 +907,15 @@ impl PortalInner {
                     "portal OpenPipeWireRemote returned no fd: {error}"
                 ))
             })?;
-        // portal 侧 fd 复制一份给 PipeWire 线程,zvariant 包装随消息释放。
+        // Duplicate the portal-side fd for the PipeWire thread; the zvariant wrapper is freed
+        // with the message.
         fd.as_fd()
             .try_clone_to_owned()
             .map_err(|error| ComputerUseError::unavailable(format!("fd clone: {error}")))
     }
 
-    /// 解析并克隆会话路径(借用不能横跨 `notify` 的 `&mut self`:调用体里
-    /// 还要再借 self.conn 发起方法调用)。
+    /// Resolve and clone the session path (the borrow cannot span `notify`'s `&mut self`:
+    /// the call body also borrows self.conn again to issue the method call).
     fn session_path(&self) -> Result<OwnedObjectPath, ComputerUseError> {
         self.session
             .as_ref()
@@ -886,8 +923,9 @@ impl PortalInner {
             .ok_or_else(|| ComputerUseError::unavailable("portal session not started"))
     }
 
-    /// Notify* 事件注入(无 Response 往返,方法返回即送达)。会话中途失效
-    /// (合成器撤销、portal 重启)时清空会话状态,下次动作重建并重新授权。
+    /// Notify* event injection (no Response round-trip; the method returning means delivered).
+    /// When the session becomes invalid midway (compositor revoke, portal restart), clear the
+    /// session state; the next action rebuilds it and re-authorizes.
     async fn notify(
         &mut self,
         method: &'static str,
@@ -935,10 +973,11 @@ impl PortalInner {
         }
     }
 
-    /// 关闭并清空当前会话的会话级状态。调用时机：`ensure_started` 的毒化
-    /// 回收（notify 失败/超时把会话标记为 poisoned，推迟到动作的必要释放
-    /// 送达之后——评审发现：立即关闭会让拖拽卡键的强制释放永远送不出去）、
-    /// `button` 释放后的动作边界回收。`PortalSession` has no Drop impl, so
+    /// Close and clear the current session's session-level state. Called from: `ensure_started`'s
+    /// poisoned-session recycling (notify failure/timeout marks the session poisoned, deferred
+    /// until after the action's mandatory release is delivered — review finding: closing
+    /// immediately would make the forced release of a stuck drag key impossible to deliver),
+    /// and `button`'s action-boundary recycling after release. `PortalSession` has no Drop impl, so
     /// `Session.Close` must be sent explicitly: take the session and close
     /// it via `abandon` (bounded by CLOSE_TIMEOUT, close errors logged — the
     /// caller's original error is what matters), then clear the remaining
@@ -953,12 +992,14 @@ impl PortalInner {
         self.poisoned = false;
     }
 
-    /// 关闭一个已创建但尚未入册(`self.session`)或正在销毁的 portal 会话:
-    /// 尽力 `Session.Close`(短超时),并清掉指针跟踪。评审发现:CreateSession
-    /// 成功后的失败路径若只 reset 本地状态,半授权会话会在合成器侧泄漏。
-    /// 关闭自身的失败/超时会被记录(评审发现:revoke 报成功而 OS 级授权
-    /// 实际残留时,用户与日志都不再有任何线索;portal 断连时合成器侧会随
-    /// 之兜底,所以只记日志不重试)。
+    /// Close a portal session that was created but not yet registered (`self.session`) or is
+    /// being destroyed: best-effort `Session.Close` (short timeout), and clear pointer
+    /// tracking. Review finding: if a failure path after CreateSession succeeds only resets
+    /// local state, the half-authorized session leaks on the compositor side. Failures/
+    /// timeouts of the close itself are logged (review finding: when revoke reports success
+    /// but OS-level authorization actually lingers, neither the user nor the logs have any
+    /// clue; when the portal disconnects, the compositor side cleans up as a fallback, so
+    /// only log, no retry).
     async fn abandon(&mut self, session_path: OwnedObjectPath) {
         let path = session_path.as_str().to_owned();
         let closed = tokio::time::timeout(
@@ -984,7 +1025,7 @@ impl PortalInner {
         self.last_pointer = None;
     }
 
-    /// 尽力关闭 portal 会话(backend 析构时)。
+    /// Best-effort close of the portal session (when the backend is dropped).
     async fn close(&mut self) {
         let Some(session) = self.session.take() else {
             return;
@@ -992,13 +1033,15 @@ impl PortalInner {
         self.abandon(session.path).await;
     }
 
-    /// 会话已启动时校验用户实际授予的设备位（评审发现：GNOME 授权对话框
-    /// 有逐设备开关，只查并集会让 pointer-only 授权的键盘动作在
-    /// `NotifyKeyboardKeysym` 上报错 → reset → 下次动作再弹授权对话框，
-    /// 用户被对话框循环纠缠；在注入前显式报错即可打破循环）。
+    /// When the session is started, verify the device bits the user actually granted (review
+    /// finding: GNOME's authorization dialog has per-device toggles; checking only the union
+    /// makes a pointer-only authorization's keyboard action error on `NotifyKeyboardKeysym` →
+    /// reset → the next action pops the authorization dialog again, trapping the user in a
+    /// dialog loop; erroring explicitly before injection breaks the loop).
     fn require_device(&self, device: u32, what: &str) -> Result<(), ComputerUseError> {
         let Some(session) = self.session.as_ref() else {
-            // 未启动由调用链的 ensure_started 保证，不在此重复报错。
+            // Not-started is guaranteed by ensure_started up the call chain; do not duplicate
+            // the error here.
             return Ok(());
         };
         if session.devices & device == 0 {
@@ -1030,10 +1073,11 @@ impl PortalInner {
         let options: HashMap<&str, OwnedValue> = HashMap::new();
         let body = (&path, &options, evdev_button, state);
         let result = self.notify("NotifyPointerButton", body).await;
-        // 动作边界回收：释放（pressed=false）成功后毒化会话的历史使命已经
-        // 完成，在这里关闭——不在释放前关（评审发现：先关后放会让拖拽的
-        // 强制释放以 "portal session not started" 失败，按键滞留在合成器
-        // 侧）。释放失败时保持毒化，下一次 ensure_started 兜底回收。
+        // Action-boundary recycling: once the release (pressed=false) succeeds, the poisoned
+        // session has served its purpose; close it here — not before the release (review
+        // finding: closing first would make the drag's forced release fail with "portal
+        // session not started", leaving the button stuck on the compositor side). On release
+        // failure stay poisoned; the next ensure_started recycles as a fallback.
         if !pressed && self.poisoned && result.is_ok() {
             self.reset_closed().await;
         }
@@ -1078,13 +1122,14 @@ mod tests {
 
     #[test]
     fn latin1_chars_map_and_non_latin1_fail_closed() {
-        // Latin-1 区:keysym 与码点一致,维持注入。
+        // Latin-1 range: keysym equals the code point, injection kept.
         assert_eq!(map_keysym(Key::Char('s')).ok(), Some(0x73));
         assert_eq!(map_keysym(Key::Char('S')).ok(), Some(0x53));
         assert_eq!(map_keysym(Key::Char('+')).ok(), Some(0x2b));
-        // U+4E2D 中:旧实现编码为 0x01000000|码点照发,但 mutter 对 keymap 外
-        // keysym 静默丢弃——逐字符"成功"却无输入(评审发现的 CJK 静默丢失)。
-        // 现显式报错,错误文案说明 Wayland 限制。
+        // U+4E2D: the old implementation encoded it as 0x01000000|code point and sent it
+        // anyway, but mutter silently drops keysyms outside the keymap — per-character
+        // "success" with no input (the silent CJK loss found in review). It now errors
+        // explicitly, with the error text explaining the Wayland limitation.
         let error = map_keysym(Key::Char('中')).unwrap_err().to_string();
         assert!(error.contains("Wayland"), "{error}");
         assert!(error.contains("drops keysyms"), "{error}");
@@ -1096,7 +1141,7 @@ mod tests {
         let error = char_keysym('\u{1F600}').unwrap_err().to_string();
         assert!(error.contains("drops keysyms"), "{error}");
         assert!(!error.contains("\u{1F600}"), "{error}");
-        // 换行/制表映射为命名键;NUL 与 DEL 无 keysym。
+        // Newline/tab map to named keys; NUL and DEL have no keysym.
         assert_eq!(keysym_for_char('\n'), Some(0xff0d));
         assert_eq!(keysym_for_char('\t'), Some(0xff09));
         assert_eq!(keysym_for_char('\0'), None);
@@ -1113,7 +1158,7 @@ mod tests {
         assert_eq!(keysym_for_char('\u{7e}'), Some(0x7e));
         assert_eq!(keysym_for_char('\u{a0}'), Some(0xa0));
         assert_eq!(keysym_for_char('\u{ff}'), Some(0xff));
-        // Latin-1 边界:0xFF(ÿ)可注入,0x100(Ā)报错。
+        // Latin-1 boundary: 0xFF (ÿ) is injectable, 0x100 (Ā) errors.
         assert_eq!(char_keysym('\u{FF}').ok(), Some(0xff));
         assert!(char_keysym('\u{100}').is_err());
     }
@@ -1135,13 +1180,14 @@ mod tests {
 
     #[test]
     fn discrete_scroll_signs_match_mutter() {
-        // mutter discrete_steps_to_scroll_direction:正=下/右,负=上/左。
+        // mutter discrete_steps_to_scroll_direction: positive=down/right, negative=up/left.
         assert_eq!(map_discrete_scroll(ScrollDirection::Up, 3), (0, -3));
         assert_eq!(map_discrete_scroll(ScrollDirection::Down, 3), (0, 3));
         assert_eq!(map_discrete_scroll(ScrollDirection::Left, 1), (1, -1));
         assert_eq!(map_discrete_scroll(ScrollDirection::Right, 1), (1, 1));
-        // amount=0 映射为 0 步:调用方(linux.rs)须在 portal 分支先行 no-op,
-        // 否则 mutter 对 steps=0 报 Invalid,notify() 会重置整个会话。
+        // amount=0 maps to 0 steps: the caller (linux.rs) must no-op first in the portal
+        // branch, otherwise mutter reports Invalid for steps=0 and notify() resets the whole
+        // session.
         assert_eq!(map_discrete_scroll(ScrollDirection::Up, 0), (0, 0));
         assert_eq!(map_discrete_scroll(ScrollDirection::Right, 0), (1, 0));
     }
@@ -1165,13 +1211,13 @@ mod tests {
 
     #[test]
     fn stream_info_is_extracted_from_start_results() {
-        // 真实 Start 响应的 streams 是 a(ua{sv}):元素为 (node u, a{sv}) 结构。
-        // 注意不能经 Value::from(Vec<Value>) 构造——那会把每个元素再包一层
-        // variant(Value::Value),形状变成 a(v)。
+        // A real Start response's streams is a(ua{sv}): elements are (node u, a{sv}) structs.
+        // Note it must not be built via Value::from(Vec<Value>) — that wraps every element in
+        // another variant (Value::Value), turning the shape into a(v).
         let element_signature = zbus::zvariant::Signature::try_from("(ua{sv})").expect("sig");
         let mut array = zbus::zvariant::Array::new(&element_signature);
         let mut stream_props: HashMap<String, Value<'static>> = HashMap::new();
-        // vardict 值按线上格式是 variant 包裹的:Value::Value((i32,i32))。
+        // vardict values are variant-wrapped on the wire: Value::Value((i32,i32)).
         stream_props.insert(
             "size".to_string(),
             Value::Value(Box::new(Value::from((1920, 1080)))),
@@ -1183,7 +1229,7 @@ mod tests {
             ))))
             .expect("append");
         let mut results: HashMap<String, OwnedValue> = HashMap::new();
-        // Response 响应字典的值同样是 variant 包裹:Value::Value(a(ua{sv}))。
+        // The Response result dict's values are likewise variant-wrapped: Value::Value(a(ua{sv})).
         results.insert(
             "streams".to_string(),
             Value::Value(Box::new(Value::Array(array)))
@@ -1193,13 +1239,13 @@ mod tests {
         let (node, logical) = first_stream_info(&results).expect("stream info");
         assert_eq!(node, 7);
         assert_eq!(logical, Some((1920, 1080)));
-        // 无 size 属性(合成器不填)时 node 仍可用。
+        // Without a size property (the compositor leaves it unset) the node is still usable.
         let bare = first_stream_info(&empty_streams(7, true));
         assert_eq!(bare.map(|(node, _)| node), Some(7));
         assert_eq!(first_stream_info(&HashMap::new()), None);
     }
 
-    /// 构造只有 node id、(可选)空属性字典的 streams 响应。
+    /// Build a streams response holding only a node id and an (optional) empty property dict.
     fn empty_streams(node: u32, with_props: bool) -> HashMap<String, OwnedValue> {
         let element_signature = zbus::zvariant::Signature::try_from("(ua{sv})").expect("sig");
         let mut array = zbus::zvariant::Array::new(&element_signature);
@@ -1218,8 +1264,9 @@ mod tests {
         results
     }
 
-    /// 真机验证:portal RemoteDesktop 可达且声明键盘/指针支持(只读属性,
-    /// 不建会话不弹窗)。CI 无用户会话总线,仅在本地跑:
+    /// Live verification: the portal RemoteDesktop is reachable and advertises keyboard/
+    /// pointer support (read-only properties; no session created, no dialogs). CI has no user
+    /// session bus, so run locally only:
     /// `cargo test --lib computer_use::platform::wayland_portal -- --ignored`
     #[test]
     #[ignore = "needs a desktop session bus with xdg-desktop-portal"]

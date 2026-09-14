@@ -1,35 +1,50 @@
-//! Linux 后端:X11 全功能;Wayland 截屏走 portal RemoteDesktop 会话绑定的
-//! ScreenCast 流(PipeWire,见 [`super::wayland_portal`]/[`super::wayland_capture`]),
-//! 输入走 xdg-desktop-portal RemoteDesktop。
+//! Linux backend: full support on X11; on Wayland, screenshots come from the
+//! ScreenCast stream bound to a portal RemoteDesktop session (PipeWire, see
+//! [`super::wayland_portal`]/[`super::wayland_capture`]) and input goes
+//! through xdg-desktop-portal RemoteDesktop.
 //!
-//! 会话探测决定能力面(`detect_session` 为纯函数,便于单测):
-//! - 主信号 `XDG_SESSION_TYPE`(`x11`/`wayland`/`tty`),`WAYLAND_DISPLAY` +
-//!   `XDG_RUNTIME_DIR` 佐证;`DISPLAY` 绝不单独作为 X11 判据(XWayland 下也会
-//!   设置)。两者都不可达 → 构造时显式 `unsupported`。
-//! - X11:截屏 `xcap::Monitor`(xcb/XGetImage,根窗口物理像素);输入 `enigo`
-//!   (x11rb XTEST,坐标同为根窗口像素,`Capture.input_scale_x/y = 1.0`)。
-//!   注意 xcap 在 X11 下把 RandR 几何除以 Xft.dpi/96 报告(逻辑坐标),而
-//!   `capture_image` 按根窗口像素截图、XTEST 也注入根窗口像素,故
-//!   `origin_x/y` 需把 xcap 的逻辑原点乘回 `scale_factor`,输入倍率恒为 1.0。
-//! - Wayland:截屏与输入共用 portal RemoteDesktop 会话(懒启动,首次截屏或
-//!   输入动作弹一次系统授权对话框):截屏取 `OpenPipewireRemote` 的 PipeWire
-//!   流帧(输入坐标 = 流本地像素,origin (0,0);KDE 的输入单位是流逻辑像素,
-//!   按合成器报告的流尺寸折算倍率)。会话内的截屏流不可用时回退 xcap 的
-//!   GNOME-Shell/portal/wlroots 链(构造时探测,portal 路径可能每次弹授权
-//!   对话框,`capabilities().notes` 注明);两条路都失败则显式 `unsupported`。
-//!   输入合成走 portal RemoteDesktop;探测不到 portal 时输入显式不可用。
-//! - 无障碍树:`atspi`(AT-SPI over D-Bus,独立 a11y 总线,X11/Wayland 均可)。
-//!   a11y 总线连接由本模块自建(`zbus::connection::Builder` +
-//!   `method_timeout`):atspi 的 `AccessibilityConnection` 不允许注入自建
-//!   connection(`new`/`from_address` 内部各自 build,无超时设置点),而 zbus
-//!   默认超时很宽,树遍历每节点多次调用,一个挂死的 app 曾能永久钉死
-//!   worker——故绕开该薄封装,直接用 atspi 的 proxy 类型 + 自管连接,并在
-//!   操作层再加一道整体 deadline 兜底。trait 为同步而 atspi 为 async:
-//!   backend 持有一个专用 current-thread tokio runtime,在 worker 线程(普通
-//!   std::thread,不含引擎主 runtime)上 `block_on`,无嵌套运行时死锁风险。
-//!   Wayland 下 Component extents 为尽力而为(合成器/工具包相关),ui_tree
-//!   输出头部注明。
-//! - 线程约定同其他平台:对象于 worker 线程构造,不得跨线程移动。
+//! Session detection decides the capability surface (`detect_session` is a
+//! pure function, easy to unit-test):
+//! - Primary signal `XDG_SESSION_TYPE` (`x11`/`wayland`/`tty`), corroborated
+//!   by `WAYLAND_DISPLAY` + `XDG_RUNTIME_DIR`; `DISPLAY` is never used alone
+//!   as the X11 criterion (it is also set under XWayland). If neither is
+//!   reachable → explicit `unsupported` at construction.
+//! - X11: screenshots via `xcap::Monitor` (xcb/XGetImage, root-window
+//!   physical pixels); input via `enigo` (x11rb XTEST, coordinates also in
+//!   root-window pixels, `Capture.input_scale_x/y = 1.0`). Note that on X11
+//!   xcap reports RandR geometry divided by Xft.dpi/96 (logical coordinates),
+//!   while `capture_image` captures in root-window pixels and XTEST also
+//!   injects root-window pixels, so `origin_x/y` must multiply xcap's logical
+//!   origin back by `scale_factor`; the input scale stays 1.0.
+//! - Wayland: screenshots and input share a portal RemoteDesktop session
+//!   (lazily started; the first screenshot or input action opens the system
+//!   authorization dialog once): screenshots take frames from the PipeWire
+//!   stream of `OpenPipewireRemote` (input coordinates = stream-local pixels,
+//!   origin (0,0); KDE's input unit is stream-logical pixels, with the scale
+//!   derived from the stream size reported by the compositor). When the
+//!   in-session screenshot stream is unavailable, fall back to xcap's
+//!   GNOME-Shell/portal/wlroots chain (probed at construction; the portal
+//!   path may show an authorization dialog per capture, noted in
+//!   `capabilities().notes`); if both paths fail, explicit `unsupported`.
+//!   Input synthesis goes through portal RemoteDesktop; when no portal can be
+//!   found, input is explicitly unavailable.
+//! - Accessibility tree: `atspi` (AT-SPI over D-Bus, separate a11y bus, works
+//!   on both X11/Wayland). The a11y bus connection is built by this module
+//!   itself (`zbus::connection::Builder` + `method_timeout`): atspi's
+//!   `AccessibilityConnection` does not allow injecting a self-built
+//!   connection (`new`/`from_address` each build internally, with no timeout
+//!   setting point), while zbus's default timeout is very generous and tree
+//!   traversal makes several calls per node — a hung app could permanently
+//!   pin the worker. So the thin wrapper is bypassed and atspi's proxy types
+//!   are used with a self-managed connection, plus an operation-level overall
+//!   deadline as a second backstop. The trait is synchronous while atspi is
+//!   async: the backend holds a dedicated current-thread tokio runtime and
+//!   `block_on`s on the worker thread (an ordinary std::thread, not the
+//!   engine's main runtime), so there is no nested-runtime deadlock risk.
+//!   On Wayland, Component extents are best-effort (compositor/toolkit
+//!   dependent); the ui_tree output header says so.
+//! - Threading contract as on the other platforms: objects are constructed
+//!   on the worker thread and must not be moved across threads.
 
 use std::future::Future;
 use std::thread::sleep;
@@ -58,47 +73,57 @@ use super::wayland_portal::{self, PortalInput};
 /// `click` and at drag start; `mouse_down` does not settle) — a race buffer
 /// between injection and compositor processing.
 const SETTLE_MS: u64 = 40;
-/// 多次点击(双击/三击)之间的间隔。
+/// Gap between multiple clicks (double/triple click).
 const CLICK_GAP_MS: u64 = 40;
-/// 拖拽插值步数与每步间隔(过快的瞬时移动会被部分应用识别为非拖拽)。
+/// Interpolated drag steps and per-step delay (instantaneous moves that are
+/// too fast are recognized as non-drags by some apps).
 const DRAG_STEPS: usize = 12;
 const DRAG_STEP_MS: u64 = 10;
-/// 滚动每格之间的间隔。
+/// Delay between scroll clicks.
 const SCROLL_GAP_MS: u64 = 15;
-/// ui_tree 默认抓取上限。
+/// ui_tree default capture caps.
 const DEFAULT_MAX_DEPTH: u32 = 8;
 const DEFAULT_MAX_NODES: usize = 200;
-/// 单节点名称最长保留字符数(防止超大文本撑爆工具结果)。
+/// Maximum characters kept for a single node name (keeps oversized text from
+/// blowing up the tool result).
 const MAX_NAME_CHARS: usize = 80;
-/// a11y D-Bus 单次方法调用的超时(zbus connection 级 `method_timeout`)。
-/// 评审发现:zbus 默认超时很宽,树遍历每节点 4-5 次调用,一个挂死的 app
-/// 即可让 worker 永久 pending。
+/// Timeout for a single a11y D-Bus method call (zbus connection-level
+/// `method_timeout`).
+/// Review finding: zbus's default timeout is very generous, tree traversal
+/// makes 4-5 calls per node, and a single hung app can leave the worker
+/// pending forever.
 const A11Y_METHOD_TIMEOUT: Duration = Duration::from_secs(3);
-/// 单点 a11y 查询(`element_at_point`/`focused_element`)的操作级 deadline:
-/// 方法级 3s 之上的第二层兜底,防"每步都快但总时长失控"。
+/// Operation-level deadline for single-point a11y queries
+/// (`element_at_point`/`focused_element`): a second backstop on top of the
+/// method-level 3s, guarding against "every step is fast but the total runs
+/// away".
 const A11Y_POINT_DEADLINE: Duration = Duration::from_secs(6);
-/// ui_tree 全树遍历的操作级 deadline(节点数有上限但每节点多次调用;20s
-/// 覆盖健康桌面,挂死环境快速失败,保持 worker 响应)。
+/// Operation-level deadline for the whole ui_tree traversal (the node count
+/// is capped but each node takes several calls; 20s covers a healthy desktop
+/// and fails fast in hung environments, keeping the worker responsive).
 const A11Y_TREE_DEADLINE: Duration = Duration::from_secs(20);
-/// focused_element 树搜索的节点预算(与操作级 deadline 双约束)。
+/// Node budget for the focused_element tree search (dual constraint with the
+/// operation-level deadline).
 const FOCUSED_SEARCH_MAX_NODES: usize = 300;
 
-/// 会话类型(探测结果)。纯数据,供 `detect_session` 单测断言。
+/// Session type (detection result). Pure data, for `detect_session` unit-test
+/// assertions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SessionKind {
     X11,
     Wayland,
-    /// tty/无任何图形会话信号。
+    /// tty / no graphical-session signal at all.
     NoDisplay,
 }
 
-/// 会话探测结果(含诊断信息,用于错误与 capabilities 文案)。
+/// Session detection result (with diagnostics, used in errors and
+/// capabilities copy).
 #[derive(Debug, Clone)]
 struct SessionInfo {
     kind: SessionKind,
-    /// 原始 `XDG_SESSION_TYPE`(小写化),未设置/无法识别时为 None。
+    /// Raw `XDG_SESSION_TYPE` (lowercased); None when unset/unrecognized.
     session_type: Option<String>,
-    /// `XDG_CURRENT_DESKTOP`(诊断用,如 "GNOME"/"KDE"/"sway")。
+    /// `XDG_CURRENT_DESKTOP` (for diagnostics, e.g. "GNOME"/"KDE"/"sway").
     desktop: Option<String>,
     has_wayland_display: bool,
     has_display: bool,
@@ -110,11 +135,13 @@ impl SessionInfo {
     }
 }
 
-/// 纯函数会话探测:从环境变量映射判定 X11 / Wayland / 无显示。
+/// Pure-function session detection: maps the environment variables to X11 /
+/// Wayland / no display.
 ///
-/// 规则:主信号 `XDG_SESSION_TYPE`;未设置或无法识别时回退到
-/// `WAYLAND_DISPLAY`(+`XDG_RUNTIME_DIR` 佐证);`DISPLAY` 只在没有任何
-/// Wayland 信号时才算 X11 判据(它在 XWayland 会话里同样存在)。
+/// Rules: the primary signal is `XDG_SESSION_TYPE`; when unset or
+/// unrecognized, fall back to `WAYLAND_DISPLAY` (corroborated by
+/// `XDG_RUNTIME_DIR`); `DISPLAY` counts as the X11 criterion only when there
+/// is no Wayland signal at all (it also exists in XWayland sessions).
 fn detect_session(env: &dyn Fn(&str) -> Option<String>) -> SessionInfo {
     let nonempty = |key: &str| env(key).filter(|value| !value.trim().is_empty());
     let session_type = nonempty("XDG_SESSION_TYPE").map(|value| value.trim().to_ascii_lowercase());
@@ -129,11 +156,13 @@ fn detect_session(env: &dyn Fn(&str) -> Option<String>) -> SessionInfo {
         Some("tty") => SessionKind::NoDisplay,
         _ => {
             if wayland_display.is_some() && runtime_dir.is_some() {
-                // 强佐证:Wayland socket 名 + runtime 目录都在。
+                // Strong corroboration: both the Wayland socket name and the
+                // runtime dir are present.
                 SessionKind::Wayland
             } else if wayland_display.is_some() {
-                // 弱佐证(缺 XDG_RUNTIME_DIR)仍按 Wayland 处理:
-                // 截屏探测与显式 unsupported 路径会兜底。
+                // Weak corroboration (XDG_RUNTIME_DIR missing) is still
+                // treated as Wayland: the screenshot probe and the explicit
+                // unsupported path backstop it.
                 SessionKind::Wayland
             } else if display.is_some() {
                 SessionKind::X11
@@ -152,9 +181,9 @@ fn detect_session(env: &dyn Fn(&str) -> Option<String>) -> SessionInfo {
     }
 }
 
-/// types 的归一化按键 → enigo 按键。`Char` 走 Unicode(enigo 在 X11 上
-/// 用临时 keycode 重映射注入,中文等任意字符可用)。F13-F20 可映射,
-/// 超出 F20 显式报错。
+/// types' normalized key → enigo key. `Char` goes through Unicode (enigo
+/// injects via a temporary keycode remap on X11, so arbitrary characters like
+/// CJK work). F13-F20 are mappable; beyond F20 fails explicitly.
 fn map_enigo_key(key: Key) -> Result<enigo::Key, ComputerUseError> {
     let mapped = match key {
         Key::Control => enigo::Key::Control,
@@ -221,9 +250,10 @@ fn input_failed(context: &str, error: impl std::fmt::Display) -> ComputerUseErro
     ComputerUseError::failed(format!("{context}: {error}"))
 }
 
-/// 拖拽收尾错误合并（评审发现：移动与释放**双双失败**时，旧实现只向上报
-/// 移动错误——调用方永远不知道左键还卡在按下状态）。两败俱伤时显式指出
-/// 按键可能未释放。
+/// Merges drag-finalization errors (review finding: when the move and the
+/// release **both fail**, the old implementation only surfaced the move error
+/// — the caller never learned the left button was still stuck pressed). When
+/// both fail, explicitly note the button may not have been released.
 fn combine_drag_errors(
     move_result: Result<(), ComputerUseError>,
     release_result: Result<(), ComputerUseError>,
@@ -243,10 +273,12 @@ fn settle() {
     sleep(Duration::from_millis(SETTLE_MS));
 }
 
-/// Wayland 和弦按压失败时的回退(供 `key_chord`/`hold_key` 共用):顺序按下
-/// 全部 keysym;某一次按压失败时,逆序尽力释放已按下的键(释放错误吞掉),
-/// 再上抛原始错误——避免中途失败把修饰键卡在按下状态(与 X11 的
-/// `press_chord` 同款回退)。对注入端泛型,单测可用录制替身驱动。
+/// Fallback for a failed Wayland chord press (shared by `key_chord`/
+/// `hold_key`): press all keysyms in order; when a press fails, best-effort
+/// release the already-pressed keysyms in reverse (release errors swallowed),
+/// then propagate the original error — so a mid-way failure cannot strand
+/// modifiers pressed (same fallback as X11's `press_chord`). Generic over the
+/// injection side so unit tests can drive it with a recording stand-in.
 fn press_keysyms_unwind(
     keysyms: &[i32],
     mut event: impl FnMut(i32, bool) -> Result<(), ComputerUseError>,
@@ -257,7 +289,7 @@ fn press_keysyms_unwind(
             // (release errors swallowed): the caller's original press error
             // is what matters, but stranded modifiers would corrupt every
             // subsequent input action. The *failing* keysym is included: a
-            // timed-out notify "says nothing" (评审发现) — the press may
+            // timed-out notify "says nothing" (review finding) — the press may
             // still have been delivered, and releasing an un-landed key is
             // a compositor-side no-op.
             for held in keysyms[..=index].iter().rev() {
@@ -284,15 +316,18 @@ fn x11_type_runs(text: &str) -> Vec<String> {
     text.split('\n').map(str::to_string).collect()
 }
 
-/// secure 判定(纯函数):`PasswordText` 直接判定;**角色查询失败**
-/// (`role_unknown`)保守兜底为 secure——无法证明不是密码框,宁可让工具层
-/// 多要一次确认,也不能把密码框当普通元素放行(评审发现)。
+/// secure determination (pure function): `PasswordText` decides directly; a
+/// **failed role query** (`role_unknown`) conservatively falls back to secure
+/// — unable to prove it is not a password field, prefer making the tool layer
+/// ask for one more confirmation over letting a password field through as a
+/// normal element (review finding).
 fn is_secure_role(role: Role, role_unknown: bool) -> bool {
     role == Role::PasswordText || role_unknown
 }
 
-/// 节点标志位(紧凑单行输出用)。`secure` 由调用方按 [`is_secure_role`]
-/// 给出;此时调用方须同时抹除 name(见 `write_node`/`element_info_of`)。
+/// Node flag bits (for the compact single-line output). `secure` is supplied
+/// by the caller per [`is_secure_role`]; in that case the caller must also
+/// erase the name (see `write_node`/`element_info_of`).
 fn state_flags(secure: bool, state: Option<StateSet>) -> Vec<&'static str> {
     let mut flags = Vec::new();
     if secure {
@@ -318,9 +353,11 @@ fn state_flags(secure: bool, state: Option<StateSet>) -> Vec<&'static str> {
     flags
 }
 
-/// a11y 注册表根的 AccessibleProxy。复制 atspi
-/// `AccessibilityConnection::root_accessible_on_registry` 的构造要点:
-/// registry 对 DBus 属性接口实现不完整,属性缓存必须显式关闭。
+/// The AccessibleProxy of the a11y registry root. Copies the construction
+/// essentials of atspi's
+/// `AccessibilityConnection::root_accessible_on_registry`: the registry's
+/// DBus property interface is incompletely implemented, so property caching
+/// must be explicitly disabled.
 async fn root_accessible(conn: &zbus::Connection) -> Result<AccessibleProxy<'_>, ComputerUseError> {
     AccessibleProxy::builder(conn)
         .destination("org.a11y.atspi.Registry")
@@ -333,9 +370,10 @@ async fn root_accessible(conn: &zbus::Connection) -> Result<AccessibleProxy<'_>,
         .map_err(|error| ComputerUseError::unavailable(format!("AT-SPI registry root: {error}")))
 }
 
-/// 由 AccessibleProxy 盲建同对象的 ComponentProxy(不对每个节点先查
-/// GetInterfaces,避免一次额外 D-Bus 往返;不支持 Component 的对象在
-/// get_extents 时报错,按"无 bounds"处理)。
+/// Blindly builds a ComponentProxy for the same object from an
+/// AccessibleProxy (does not check GetInterfaces per node first, avoiding an
+/// extra D-Bus round trip; objects without Component support fail at
+/// get_extents, treated as "no bounds").
 async fn component_of<'c>(
     conn: &'c zbus::Connection,
     proxy: &AccessibleProxy<'_>,
@@ -361,10 +399,12 @@ async fn screen_extents(
         .ok()
 }
 
-/// 严格版 extents:命中测试要靠窗口 extents 判定"点是否在此窗口内",
-/// 查询失败必须上抛(与「无元素」Ok(None) 语义分明——Ok(None) 在工具层
-/// 按 None-策略放行),不能 continue 成"窗口不覆盖该点"把查询故障吞成
-/// 放行依据(评审发现)。
+/// Strict extents: hit-testing relies on window extents to decide "is the
+/// point inside this window", so a query failure must be propagated (clearly
+/// distinct from the "no element" Ok(None) — Ok(None) is let through by the
+/// tool layer under the None policy); it must not continue as "the window
+/// does not cover the point", swallowing a query failure into a pass
+/// justification (review finding).
 async fn screen_extents_strict(
     conn: &zbus::Connection,
     proxy: &AccessibleProxy<'_>,
@@ -378,11 +418,14 @@ async fn screen_extents_strict(
         .map_err(|error| {
             ComputerUseError::unavailable(format!("AT-SPI window extents: {error}"))
         })?;
-    // 「成功但零尺寸」无法判定覆盖关系:Wayland 上的 AT-SPI 普遍把 extents
-    // 报告为全 0(见模块底部 e2e 注释),若放行会让**每个**窗口都被判
-    // 「不覆盖该点」→ Ok(None),查询故障被吞成放行依据,后端再也答不出
-    // 可信的命中结果(第二轮评审发现)。按查询失败上抛,与「无元素」
-    // 语义分明;筛查对故障的处置(放行执行)由工具层统一裁定。
+    // "Success but zero size" cannot decide containment: on Wayland AT-SPI
+    // commonly reports all-zero extents (see the e2e comment at the bottom of
+    // this module); letting it through would judge **every** window as "does
+    // not cover the point" → Ok(None), swallowing a query failure into a pass
+    // justification, and the backend could never answer a trustworthy hit
+    // result again (second-round review finding). Raise it as a query
+    // failure, clearly distinct from "no element"; how screening handles
+    // faults (let the action execute) is decided uniformly by the tool layer.
     if extents.2 <= 0 || extents.3 <= 0 {
         return Err(ComputerUseError::unavailable(format!(
             "AT-SPI window extents are empty ({},{},{},{}); the window exposes no usable \
@@ -393,17 +436,21 @@ async fn screen_extents_strict(
     Ok(extents)
 }
 
-/// 点是否落在窗口 extents 内(右/下边开区间)。纯函数,便于单元测试。
+/// Whether a point falls inside window extents (right/bottom edges
+/// exclusive). Pure function, easy to unit-test.
 fn extents_contain(extents: (i32, i32, i32, i32), x: i32, y: i32) -> bool {
     let (wx, wy, ww, wh) = extents;
     x >= wx && x < wx + ww && y >= wy && y < wy + wh
 }
 
-/// 注册表根的全部应用顶层窗口(不区分活动与否)。
+/// All application top-level windows under the registry root (active or
+/// not).
 ///
-/// `strict = true`(element_at_point / focused_element 等筛查路径)时任何
-/// 一层查询失败都向上报,绝不静默吞成"没有窗口";`strict = false`(ui_tree
-/// 观察路径)保持尽力而为:单个 app 挂了就跳过,不拖垮整棵树。
+/// With `strict = true` (screening paths like element_at_point /
+/// focused_element), a query failure at any level is propagated — never
+/// silently swallowed into "no windows"; with `strict = false` (the ui_tree
+/// observation path) it stays best-effort: a single hung app is skipped
+/// without dragging down the whole tree.
 async fn app_windows<'a>(
     conn: &'a zbus::Connection,
     root: &AccessibleProxy<'_>,
@@ -418,7 +465,8 @@ async fn app_windows<'a>(
                     "AT-SPI registry root children: {error}"
                 )));
             }
-            // 尽力而为路径:根 children 失败 → 空窗口表(树退化为浅层根)。
+            // Best-effort path: root children failure → empty window list
+            // (the tree degrades to a shallow root).
             return Ok(windows);
         }
     };
@@ -467,7 +515,8 @@ async fn app_windows<'a>(
     Ok(windows)
 }
 
-/// 把带 `State::Active` 的窗口排到最前(命中测试优先活动窗口)。
+/// Moves the window with `State::Active` to the front (hit-testing prefers
+/// the active window).
 async fn active_first(windows: &mut [AccessibleProxy<'_>]) {
     for (index, window) in windows.iter().enumerate() {
         if let Ok(state) = window.get_state().await {
@@ -479,13 +528,16 @@ async fn active_first(windows: &mut [AccessibleProxy<'_>]) {
     }
 }
 
-/// 由 AccessibleProxy 构造 [`ElementInfo`]。
+/// Builds an [`ElementInfo`] from an AccessibleProxy.
 ///
-/// secure 判定:PasswordText 直接判定;**角色查询失败**时保守兜底为 secure
-/// ——无法证明不是密码框,宁可让工具层多要一次确认,也不能把密码框当普通
-/// 元素放行;此时 name 一并抹除,避免密码内容经 ElementInfo 泄露。
-/// `fallback_bounds`:extents 查询失败时的兜底 bounds(命中路径传命中点,
-/// 搜索路径传 0;bounds 仅展示用,命中已完成)。
+/// secure determination: `PasswordText` decides directly; a **failed role
+/// query** conservatively falls back to secure — unable to prove it is not a
+/// password field, prefer making the tool layer ask for one more confirmation
+/// over letting a password field through as a normal element; the name is
+/// erased as well, so password content cannot leak via ElementInfo.
+/// `fallback_bounds`: the bounds used when the extents query fails (the hit
+/// path passes the hit point, the search path passes 0; bounds are display
+/// only, the hit already happened).
 async fn element_info_of(
     conn: &zbus::Connection,
     proxy: &AccessibleProxy<'_>,
@@ -513,7 +565,8 @@ async fn element_info_of(
     }
 }
 
-/// 紧凑文本树写出器:`[i] role "name" (x,y,w,h) flags`,深度/节点数双上限。
+/// Compact text-tree writer: `[i] role "name" (x,y,w,h) flags`, dual caps on
+/// depth and node count.
 struct TreeWriter<'c> {
     conn: &'c zbus::Connection,
     out: String,
@@ -534,15 +587,17 @@ impl TreeWriter<'_> {
         let index = self.next_index;
         self.next_index += 1;
 
-        // 角色查询失败按 Unknown 保守处理:secure 兜底 + name 抹除(评审
-        // 发现:Unknown 角色无法证明不是密码框)。
+        // A failed role query is handled conservatively as Unknown: secure
+        // fallback + name erasure (review finding: an Unknown role cannot
+        // prove it is not a password field).
         let (role, role_unknown) = match proxy.get_role().await {
             Ok(role) => (role, false),
             Err(_) => (Role::Unknown, true),
         };
         let secure = is_secure_role(role, role_unknown);
-        // 密码框与角色不明的节点不在树里输出 name(评审发现:name 可能
-        // 就是密码内容本身);顺带省一次 D-Bus 属性查询。
+        // Nodes that are password fields or of unknown role do not output a
+        // name in the tree (review finding: the name may be the password
+        // content itself); this also saves one D-Bus property query.
         let name = if secure {
             String::new()
         } else {
@@ -593,8 +648,9 @@ async fn ui_tree_async(
     let root = root_accessible(conn).await?;
 
     let session = if wayland { "wayland" } else { "x11" };
-    // Wayland 没有全局坐标系,AT-SPI Component extents 是尽力而为
-    // (Qt 已知有偏差;X11/XWayland 下是可靠的全局根窗口像素)。
+    // Wayland has no global coordinate space; AT-SPI Component extents are
+    // best-effort (Qt is known to be off; on X11/XWayland they are reliable
+    // global root-window pixels).
     let extents_note = if wayland {
         "best-effort (wayland: no global coordinate space)"
     } else {
@@ -608,13 +664,14 @@ async fn ui_tree_async(
         max_depth: opts.max_depth.unwrap_or(DEFAULT_MAX_DEPTH),
     };
 
-    // 观察路径:尽力而为枚举(单个 app 挂了就跳过)。
+    // Observation path: best-effort enumeration (a single hung app is
+    // skipped).
     let mut windows = app_windows(conn, &root, false).await?;
     active_first(&mut windows).await;
     if let Some(active) = windows.first() {
         if let Ok(state) = active.get_state().await {
             if state.contains(State::Active) {
-                // 常规路径:只序列化活动窗口子树。
+                // Regular path: serialize only the active window subtree.
                 writer.write_node(active, 0).await;
                 if writer.is_full() {
                     writer.out.push_str("# truncated: node cap reached\n");
@@ -623,7 +680,8 @@ async fn ui_tree_async(
             }
         }
     }
-    // 无活动窗口(全屏锁屏/空桌面等):退化为注册表根的浅层树(应用列表)。
+    // No active window (fullscreen lock screen / empty desktop etc.):
+    // degrade to a shallow tree of the registry root (the app list).
     writer.write_node(&root, 0).await;
     if writer.is_full() {
         writer.out.push_str("# truncated: node cap reached\n");
@@ -631,15 +689,21 @@ async fn ui_tree_async(
     Ok(writer.out)
 }
 
-/// 命中测试。两种结局语义分明(评审发现的 fail-open 修复):
-/// - `Ok(None)`:**无元素**——枚举到的窗口都不覆盖该点、覆盖窗口的 AT-SPI
-///   命中为空(null ObjectRef),**或可达树为空**(注册表应答但没有任何
-///   应用注册——目标应用的 toolkit a11y 未启用时的常态)。空树与「元素
-///   不在该点」在此不可区分,同按主流 None-策略放行(无元素 → 不强制
-///   确认);这只是策略声明,不是筛查证明。
-/// - `Err`:**查询失败**——根/应用/窗口枚举、extents、命中查询任何一环
-///   挂掉都向上报,绝不把查询故障吞成 Ok(None) 的"无元素"放行依据;
-///   筛查对故障的处置(放行执行,不设确认)由工具层统一裁定。
+/// Hit test. The two outcomes have clearly distinct semantics (the review's
+/// fail-open fix):
+/// - `Ok(None)`: **no element** — none of the enumerated windows covers the
+///   point, the AT-SPI hit inside the covering window is empty (null
+///   ObjectRef), **or the reachable tree is empty** (the registry answers but
+///   no application registered — the normal state when the target app's
+///   toolkit a11y is disabled). An empty tree and "the element is not at this
+///   point" are indistinguishable here; both are let through under the
+///   mainstream None policy (no element → no forced confirmation); this is a
+///   policy statement, not a screening proof.
+/// - `Err`: **query failure** — a breakdown in any link of root/app/window
+///   enumeration, extents, or the hit query is propagated; a query fault is
+///   never swallowed into Ok(None)'s "no element" pass justification; how
+///   screening handles faults (let it execute, no confirmation) is decided
+///   uniformly by the tool layer.
 async fn element_at_point_async(
     conn: &zbus::Connection,
     x: i32,
@@ -649,10 +713,11 @@ async fn element_at_point_async(
     let mut windows = app_windows(conn, &root, true).await?;
     active_first(&mut windows).await;
     for window in &windows {
-        // extents 失败 → 无法判定覆盖关系 → 查询失败(不 continue)。
+        // extents failure → containment undecidable → query failure (no
+        // continue).
         let extents = screen_extents_strict(conn, window).await?;
         if !extents_contain(extents, x, y) {
-            continue; // 明确不覆盖该点。
+            continue; // definitively does not cover the point.
         }
         let component = component_of(conn, window).await.ok_or_else(|| {
             ComputerUseError::unavailable("AT-SPI Component proxy unavailable for window")
@@ -664,7 +729,7 @@ async fn element_at_point_async(
                 ComputerUseError::unavailable(format!("AT-SPI hit test at ({x}, {y}): {error}"))
             })?;
         if target_ref.is_null() {
-            continue; // AT-SPI 明确空结果:该窗口内确认无元素。
+            continue; // AT-SPI explicitly returned empty: no element inside this window.
         }
         let target = target_ref
             .into_accessible_proxy(conn)
@@ -678,24 +743,35 @@ async fn element_at_point_async(
     Ok(None)
 }
 
-/// 焦点元素。atspi 0.30 的 proxy 层没有 GetFocusedObject 类查询(焦点只能
-/// 从事件流异步积累),故退而求其次:**在活动窗口的可达树上找 state 含
-/// FOCUSED 的最深节点**,受 [`FOCUSED_SEARCH_MAX_NODES`] 节点预算与操作级
-/// deadline 双约束(选择此路线而非返回 `Err(unsupported)`:树搜索在
-/// X11/Wayland 下都可行,不该浪费已有的 AT-SPI 通路)。
+/// Focused element. atspi 0.30's proxy layer has no GetFocusedObject-style
+/// query (focus can only be accumulated asynchronously from the event
+/// stream), so the next best thing is used: **find the deepest node whose
+/// state contains FOCUSED in the reachable tree of the active window**, under
+/// the dual constraint of the [`FOCUSED_SEARCH_MAX_NODES`] node budget and
+/// the operation-level deadline (this route is chosen over returning
+/// `Err(unsupported)`: tree search works on both X11 and Wayland, and the
+/// existing AT-SPI channel should not go to waste).
 ///
-/// round-12 评审 M2 的两条修正,直接关系密码框承诺的成立性:
-/// - **只在活动窗口内找**。键盘输入必然落在活动窗口;后台窗口里残留的
-///   FOCUSED(部分工具包从不清除该 state)会让查询"成功"但答错——筛查
-///   评估一个死节点,输入却落在活动窗口的密码框里。
-/// - **窗口/容器节点自身不作为答案,取最深 FOCUSED**。部分工具包(如
-///   Qt 顶层持焦时)把 FOCUSED 挂在顶层容器上,返回容器会让键盘筛查与
-///   密码判定评估整个窗口而非真实输入焦点所在的组件。
+/// Two round-12 review M2 corrections that bear directly on whether the
+/// password field promise holds:
+/// - **Search only inside the active window.** Keyboard input necessarily
+///   lands in the active window; a stale FOCUSED in a background window
+///   (some toolkits never clear that state) would make the query "succeed"
+///   but answer wrong — screening would evaluate a dead node while the input
+///   lands in the active window's password field.
+/// - **Window/container nodes themselves are not answers; take the deepest
+///   FOCUSED.** Some toolkits (e.g. Qt with a top-level holding focus) put
+///   FOCUSED on the top-level container; returning the container would make
+///   keyboard screening and password determination evaluate the whole window
+///   instead of the component where the input focus really is.
 ///
-/// 结局语义:活动窗口内没找到 → `Ok(None)`(确认无焦点元素:部分工具包
-/// 不实现 FOCUSED state;工具层按筛查不可用走 fail-open,与既定语义一致);
-/// 预算耗尽仍无定论 → `Err`(结果不确定时绝不冒充「没有」——错误与
-/// 「无元素」语义分明,处置由工具层裁定)。
+/// Outcome semantics: not found in the active window → `Ok(None)`
+/// (confirmed no focused element: some toolkits do not implement the FOCUSED
+/// state; the tool layer treats screening as unavailable and fails open,
+/// consistent with the established semantics); budget exhausted without a
+/// verdict → `Err` (when the result is uncertain, never masquerade as
+/// "none" — the error is clearly distinct from "no element", disposition is
+/// decided by the tool layer).
 async fn focused_element_async(
     conn: &zbus::Connection,
 ) -> Result<Option<ElementInfo>, ComputerUseError> {
@@ -726,9 +802,10 @@ async fn focused_element_async(
     Ok(found)
 }
 
-/// 在子树内 DFS 找 state 含 FOCUSED 的**最深**节点;`budget` 限制访问节点数。
-/// `is_root` 标记窗口根调用:窗口节点自身的 FOCUSED 不作为答案(见
-/// [`focused_element_async`] 的 M2 说明)。
+/// DFS through the subtree for the **deepest** node whose state contains
+/// FOCUSED; `budget` limits the number of visited nodes. `is_root` marks the
+/// window-root call: the window node's own FOCUSED is not an answer (see the
+/// M2 notes in [`focused_element_async`]).
 async fn find_focused_in_subtree(
     conn: &zbus::Connection,
     proxy: &AccessibleProxy<'_>,
@@ -746,9 +823,11 @@ async fn find_focused_in_subtree(
     if !state.contains(State::Focused) {
         return find_focused_among_children(conn, proxy, budget).await;
     }
-    // 自身带 FOCUSED:先向深处确认有无更深的焦点(容器与其焦点子孙可能
-    // 同时带 FOCUSED,最深的才是真实输入焦点);没有更深的,本节点即答案
-    // ——但窗口根自身除外(容器级 FOCUSED 定位不到密码框,M2)。
+    // FOCUSED on this node: first look deeper to confirm whether a deeper
+    // focus exists (a container and its focused descendants may both carry
+    // FOCUSED; the deepest one is the real input focus); without a deeper
+    // one, this node is the answer — except the window root itself
+    // (container-level FOCUSED cannot locate a password field, M2).
     if let Some(found) = find_focused_among_children(conn, proxy, budget).await? {
         return Ok(Some(found));
     }
@@ -758,7 +837,8 @@ async fn find_focused_in_subtree(
     Ok(Some(element_info_of(conn, proxy, (0, 0, 0, 0)).await))
 }
 
-/// 遍历直接子节点,返回第一个子树内找到的 FOCUSED 节点。
+/// Iterates the direct children, returning the first FOCUSED node found
+/// within a subtree.
 async fn find_focused_among_children(
     conn: &zbus::Connection,
     proxy: &AccessibleProxy<'_>,
@@ -788,23 +868,30 @@ async fn find_focused_among_children(
     Ok(None)
 }
 
-/// AT-SPI 初始化:先打开会话 a11y 开关(Electron/Chromium 只在有 AT 注册后
-/// 才构建无障碍树;该调用失败非致命),再**自建** a11y 总线连接。
+/// AT-SPI init: first turn on the session a11y switch (Electron/Chromium
+/// only build the accessibility tree once an AT has registered; this call
+/// failing is non-fatal), then **self-build** the a11y bus connection.
 ///
-/// 连接用 `zbus::connection::Builder` 构造并设 `method_timeout`(3s)。评审
-/// 发现:zbus 默认超时很宽,而 atspi 的 `AccessibilityConnection` 不允许
-/// 注入自建 connection——故按 atspi `AccessibilityConnection::new` 同款流程
-/// 自行拿总线地址(`org.a11y.Bus.GetAddress`)建连接,直接使用 atspi 的
-/// proxy 类型。(zbus 5 的 connection::Builder 只有 method_timeout 一个超时
-/// 设置点;操作级整体 deadline 由
-/// [`LinuxComputerUseBackend::block_on_a11y`] 兜底。)
+/// The connection is built with `zbus::connection::Builder` and gets a
+/// `method_timeout` (3s). Review finding: zbus's default timeout is very
+/// generous, and atspi's `AccessibilityConnection` does not allow injecting
+/// a self-built connection — so, following the same flow as atspi's
+/// `AccessibilityConnection::new`, the bus address is fetched ourselves
+/// (`org.a11y.Bus.GetAddress`) and the connection built, using atspi's proxy
+/// types directly. (zbus 5's connection::Builder only has method_timeout as
+/// a timeout setting point; the operation-level overall deadline is
+/// backstopped by [`LinuxComputerUseBackend::block_on_a11y`].)
 async fn a11y_connect() -> Result<zbus::Connection, String> {
-    // round-10 评审 M4:这个调用走 zbus 默认连接(method_timeout 为 None,
-    // 正是下方注释描述的危害),必须整体限时——接受连接但不应答的总线会把
-    // create_backend 永久钉死在 worker 线程上。失败本就按非致命处理。
-    // 有意不在 teardown 时回调 set_session_accessibility(false)(round-12
-    // 评审:该开关是会话级全局状态,真实读屏用户可能正在依赖它——撤掉会
-    // 直接打断其辅助技术;留下的代价只是桌面应用继续维护 a11y 树)。
+    // round-10 review M4: this call goes over zbus's default connection
+    // (method_timeout None — exactly the hazard described in the comment
+    // below), so it must be time-bounded overall — a bus that accepts the
+    // connection but never answers would pin create_backend on the worker
+    // thread forever. Failure is already handled as non-fatal.
+    // Deliberately not calling set_session_accessibility(false) at teardown
+    // (round-12 review: the switch is session-global state that a real
+    // screen reader user may be relying on — removing it would directly
+    // break their assistive technology; the cost of leaving it on is only
+    // that desktop apps keep maintaining their a11y trees).
     let _ = tokio::time::timeout(
         2 * A11Y_METHOD_TIMEOUT,
         atspi::connection::set_session_accessibility(true),
@@ -837,9 +924,11 @@ async fn a11y_connect() -> Result<zbus::Connection, String> {
         .map_err(|error| format!("a11y bus connection: {error}"))
 }
 
-/// Wayland 截屏探测:枚举显示器并对主屏(兜底首个)实际抓一帧。
-/// xcap 的 Wayland 链路(GNOME Shell D-Bus → portal Screenshot → wlroots
-/// wayshot)任一可用即成功;portal 路径可能向用户弹授权对话框。
+/// Wayland screenshot probe: enumerates monitors and actually grabs a frame
+/// from the primary (fallback first) monitor. Any link of xcap's Wayland
+/// chain (GNOME Shell D-Bus → portal Screenshot → wlroots wayshot) being
+/// available means success; the portal path may show an authorization dialog
+/// to the user.
 fn probe_wayland_screenshot() -> Result<(), String> {
     let monitors =
         Monitor::all().map_err(|error| format!("monitor enumeration failed: {error}"))?;
@@ -857,18 +946,23 @@ fn probe_wayland_screenshot() -> Result<(), String> {
     Ok(())
 }
 
-/// Wayland 探测时限。xcap 的 portal 应答是**无界** D-Bus 等待（内部
-/// `receiver.recv()??`，KDE 还可能每次弹交互式对话框）——一旦在等人，
-/// 探测永远不返回，而 catch_unwind 挡不住挂起：backend worker 会被永久
-/// pin 死，backend 层调用预算耗尽后 in-flight 门与控制通道（紧急抬起、授权释放）
-/// 全部堵死（round-6 评审）。超时后放弃并遗弃探测线程（纯捕获、不碰共享
-/// 状态；多次超时至多多遗弃几个线程，好过 worker 卡死）。下一次截屏仍会
-/// 重试探测——粘死探测状态会退回「一次失败永久失去截屏」的旧缺陷。
+/// Wayland probe time limit. xcap's portal answer is an **unbounded** D-Bus
+/// wait (internally `receiver.recv()??`, and KDE may pop an interactive
+/// dialog each time) — once it is waiting on a human, the probe never
+/// returns, and catch_unwind cannot stop a hang: the backend worker would be
+/// pinned forever, and once the backend layer's call budget is exhausted the
+/// in-flight gate and the control channel (emergency release, grant release)
+/// all jam (round-6 review). On timeout, give up and abandon the probe
+/// thread (pure capture, no shared state touched; repeated timeouts leak a
+/// few threads at worst — better than a stuck worker). The next screenshot
+/// retries the probe — a sticky failed-probe state would regress to the old
+/// defect of "one failure loses screenshots forever".
 const WAYLAND_PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// xcap 的 Wayland 路径内部有 `.expect(...)`(PNG 重编码),包一层
-/// catch_unwind 把潜在 panic 转成显式错误,避免炸掉 backend worker 线程;
-/// 整个探测限时运行（见 [`WAYLAND_PROBE_TIMEOUT`]）。
+/// xcap's Wayland path contains `.expect(...)` internally (PNG re-encode);
+/// wrapping it in catch_unwind turns a potential panic into an explicit
+/// error instead of blowing up the backend worker thread; the whole probe
+/// runs under a time limit (see [`WAYLAND_PROBE_TIMEOUT`]).
 fn probe_wayland_screenshot_guarded() -> Result<(), String> {
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::Builder::new()
@@ -898,27 +992,35 @@ fn probe_wayland_screenshot_guarded() -> Result<(), String> {
 
 pub(super) struct LinuxComputerUseBackend {
     session: SessionInfo,
-    /// 专用 current-thread runtime:atspi(async/zbus)在同步 trait 内的桥。
+    /// Dedicated current-thread runtime: the bridge for atspi (async/zbus)
+    /// inside the synchronous trait.
     runtime: tokio::runtime::Runtime,
-    /// 自建 a11y 总线连接(带 method_timeout,见 [`a11y_connect`])。
+    /// Self-built a11y bus connection (with method_timeout, see
+    /// [`a11y_connect`]).
     a11y: Option<zbus::Connection>,
     a11y_init_error: Option<String>,
-    /// 仅 X11 构造;Wayland 输入走 `wayland_portal`。
+    /// Constructed on X11 only; Wayland input goes through `wayland_portal`.
     input: Option<Enigo>,
     input_init_error: Option<String>,
-    /// 仅 Wayland 构造(portal RemoteDesktop,懒启动会话)。
+    /// Constructed on Wayland only (portal RemoteDesktop, lazily started
+    /// session).
     wayland_portal: Option<PortalInput>,
     wayland_portal_error: Option<String>,
     wayland_screenshot_ok: bool,
     wayland_screenshot_error: Option<String>,
-    /// 同会话截屏流最近一次失败原因(回退 xcap 链后随错误透出)。
+    /// The most recent failure reason of the same-session screenshot stream
+    /// (surfaced alongside the error after falling back to the xcap chain).
     wayland_portal_capture_error: Option<String>,
-    /// 最近一次输入动作的开始时刻:同会话截屏流是 damage 驱动的,补拍
-    /// 截图要等比它新的帧,才能看到动作后的画面(无视觉变化时沿用现有帧)。
+    /// When the most recent input action started: the same-session
+    /// screenshot stream is damage-driven, so a follow-up screenshot must
+    /// wait for a frame newer than it to see the post-action picture (when
+    /// nothing changed visually, the existing frame is reused).
     last_input_at: Option<Instant>,
-    /// 当前请求的取消旗标(worker 在派发前设置、派发后清除,见
-    /// [`ComputerUseBackend::set_cancel_flag`]):type 的逐事件注入在事件间
-    /// 检查,调用方已超时放弃的请求立即停止注入(round-10 评审 M3)。
+    /// Cancel flag of the current request (set by the worker before
+    /// dispatching, cleared after; see
+    /// [`ComputerUseBackend::set_cancel_flag`]): type's per-event injection
+    /// checks it between events, so a request the caller already abandoned
+    /// after its timeout stops injecting immediately (round-10 review M3).
     cancel: Option<Arc<AtomicBool>>,
 }
 
@@ -927,14 +1029,18 @@ impl LinuxComputerUseBackend {
         self.session.kind == SessionKind::Wayland
     }
 
-    /// 输入动作入口打点(补拍截图等比它新的帧)。
+    /// Timestamps the entry of an input action (a follow-up screenshot waits
+    /// for frames newer than it).
     fn note_input(&mut self) {
         self.last_input_at = Some(Instant::now());
     }
 
-    /// Wayland 首选截屏:portal 同会话 ScreenCast 流(PipeWire)。会话未启动
-    /// 则启动(首次截屏弹一次系统授权对话框,与输入共用)。失败返回 None 并
-    /// 记录原因(`wayland_portal_capture_error`,回退 xcap 链后随错误透出)。
+    /// Wayland's preferred capture: the portal same-session ScreenCast
+    /// stream (PipeWire). Starts the session if not started (the first
+    /// screenshot opens the system authorization dialog once, shared with
+    /// input). On failure, returns None and records the reason
+    /// (`wayland_portal_capture_error`, surfaced alongside the error after
+    /// falling back to the xcap chain).
     fn wayland_portal_capture(&mut self) -> Option<Capture> {
         let portal = self.wayland_portal.as_mut()?;
         let frame = match portal.capture_frame(self.last_input_at) {
@@ -944,9 +1050,12 @@ impl LinuxComputerUseBackend {
                 return None;
             }
         };
-        // 输入坐标 = 流本地像素(mutter 语义;origin 由合成器/portal 层内部
-        // 处理)。KDE 的输入单位是流本地逻辑像素而其缓冲是物理像素,按合成器
-        // 报告的流尺寸折算;其余合成器(含 scale=1 的 KDE)倍率为 1。
+        // Input coordinates = stream-local pixels (mutter semantics; the
+        // origin is handled inside the compositor/portal layer). KDE's input
+        // unit is stream-local logical pixels while its buffer is physical
+        // pixels, so the scale is derived from the stream size reported by
+        // the compositor; other compositors (including KDE at scale=1) use a
+        // scale of 1.
         let input_scale = if self
             .session
             .desktop
@@ -996,10 +1105,12 @@ impl LinuxComputerUseBackend {
         }
     }
 
-    /// Wayland portal 输入后端(探测失败的粘性错误在 `wayland_portal_error`)。
-    /// Wayland 截屏探测失败后在下一次 capture 时重试（评审发现：旧实现一次
-    /// 探测失败就粘死整个 backend 生命周期——portal 对话框被用户误关、合成器
-    /// 短暂抖动都会永久失去截屏，且无任何重试入口）。
+    /// Wayland portal input backend (the sticky probe-failure error lives in
+    /// `wayland_portal_error`). After a failed Wayland screenshot probe,
+    /// retry on the next capture (review finding: the old implementation let
+    /// a single probe failure stick for the whole backend lifetime — a
+    /// portal dialog accidentally dismissed by the user or a brief compositor
+    /// hiccup lost screenshots permanently, with no retry entry point).
     fn ensure_wayland_capture(&mut self) -> Result<(), ComputerUseError> {
         if !self.is_wayland() || self.wayland_screenshot_ok {
             return Ok(());
@@ -1059,9 +1170,11 @@ impl LinuxComputerUseBackend {
         }
     }
 
-    /// a11y 异步操作桥:current-thread runtime `block_on` + 操作级整体
-    /// deadline(zbus `method_timeout` 之外的第二层兜底;超时区分不了
-    /// "无结果"与"失败",一律按 unavailable 上报,绝不冒充「无结果」)。
+    /// Bridge for a11y async operations: current-thread runtime `block_on` +
+    /// an operation-level overall deadline (a second backstop beyond zbus's
+    /// `method_timeout`; a timeout cannot distinguish "no result" from
+    /// "failure", so it is always reported as unavailable and never
+    /// masquerades as "no result").
     fn block_on_a11y<T>(
         &self,
         deadline: Duration,
@@ -1081,7 +1194,8 @@ impl LinuxComputerUseBackend {
     fn press_chord(enigo: &mut Enigo, keys: &[enigo::Key]) -> Result<(), ComputerUseError> {
         for (index, key) in keys.iter().enumerate() {
             if let Err(error) = enigo.key(*key, Direction::Press) {
-                // 错误路径上释放已按下的键,避免修饰键卡死。
+                // On the error path, release the already-pressed keys so
+                // modifiers cannot strand pressed.
                 for held in keys[..index].iter().rev() {
                     let _ = enigo.key(*held, Direction::Release);
                 }
@@ -1092,8 +1206,9 @@ impl LinuxComputerUseBackend {
     }
 
     fn release_chord(enigo: &mut Enigo, keys: &[enigo::Key]) -> Result<(), ComputerUseError> {
-        // 中途失败也要尽力释放全部键,否则修饰键卡死影响后续所有输入;
-        // 返回首个错误供上层感知。
+        // Even on a mid-way failure, best-effort release every key, otherwise
+        // stranded modifiers corrupt all subsequent input; the first error is
+        // returned so the upper layer can notice.
         let mut first_err = None;
         for key in keys.iter().rev() {
             if let Err(error) = enigo.key(*key, Direction::Release) {
@@ -1110,11 +1225,14 @@ impl LinuxComputerUseBackend {
 }
 
 impl ComputerUseBackend for LinuxComputerUseBackend {
-    /// 用户撤销授权/全局停止/总开关关闭时由命令层经登记表（BackendRegistry）
-    /// `release_os_grant` 请求触发：关闭 portal 会话并保留后端可用（`close`
-    /// 后 `session` 为 None，下次输入动作按既有路径懒重建，需要时用户会
-    /// 重新看到系统授权对话框）。X11 会话本就无持久授权，`wayland_portal`
-    /// 为 None 时此为 no-op。
+    /// Triggered by the command layer via the registry's (BackendRegistry)
+    /// `release_os_grant` request when the user revokes the grant / global
+    /// stop / master switch off: closes the portal session while keeping the
+    /// backend usable (after `close`, `session` is None and the next input
+    /// action lazily rebuilds through the existing path; if needed the user
+    /// will see the system authorization dialog again). X11 sessions have no
+    /// persistent grant to begin with; this is a no-op when `wayland_portal`
+    /// is None.
     fn release_os_grant(&mut self) -> Result<(), ComputerUseError> {
         if let Some(portal) = self.wayland_portal.as_mut() {
             portal.close();
@@ -1154,17 +1272,23 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 (None, Some(error)) => format!("input unavailable: {error}"),
                 (None, None) => "input unavailable".to_string(),
             };
-            // 如实披露(评审发现):Wayland 输入整体按 experimental 对待
-            // (合成器实现差异);非 Latin-1 文本注入显式拒绝(mutter 对
-            // keymap 外 keysym 静默丢弃,见 wayland_portal::char_keysym)。
+            // Honest disclosure (review finding): Wayland input is treated as
+            // experimental overall (compositor implementation differences);
+            // injection of non-Latin-1 text is explicitly rejected (mutter
+            // silently drops keysyms outside the keymap, see
+            // wayland_portal::char_keysym).
             let experimental = "Wayland input is experimental (compositor implementations \
                  differ), and typing non-Latin-1 text (CJK etc.) is explicitly rejected: \
                  mutter silently drops keysyms outside the active keymap";
-            // 如实披露(round-12 评审:此前只在 PR 描述里说,模型/维护者在代码
-            // 与能力说明里看不到):portal 流不可用时的 xcap 回退走 XCB/XWayland
-            // 或 compositor 截图协议,多显示器下的坐标系与输入(流逻辑坐标)
-            // 未对齐;且回退路径固定抓主屏(self.input 恒为 None → 光标锚定
-            // 不可用),模型不会被告知其余屏幕不可见。
+            // Honest disclosure (round-12 review: previously stated only in
+            // the PR description, invisible to the model/maintainers in code
+            // and capability notes): when the portal stream is unavailable,
+            // the xcap fallback goes through XCB/XWayland or a compositor
+            // screenshot protocol, whose multi-monitor coordinate system is
+            // not aligned with input (stream-logical coordinates); the
+            // fallback path also always captures the primary monitor
+            // (self.input is always None → cursor anchoring unavailable), so
+            // the model is never told the other screens are invisible.
             let fallback_note = if self.wayland_screenshot_ok && !portal_ok {
                 "; capture is on the xcap fallback: multi-monitor coordinate alignment with \
                  input is best-effort, only the PRIMARY monitor is captured/input-able, and \
@@ -1192,9 +1316,11 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                     self.input_init_error.as_deref().unwrap_or("unknown error")
                 )
             };
-            // 如实披露(round-10 评审 m10):X11 会话里设置了 WAYLAND_DISPLAY
-            // 时,xcap 自己的探测优先走 Wayland 链——截屏与 XTEST 输入会跑在
-            // 不同平面;此前只向 stderr 警告,模型与用户都看不到。
+            // Honest disclosure (round-10 review m10): when WAYLAND_DISPLAY
+            // is set in an X11 session, xcap's own detection prefers the
+            // Wayland chain — capture and XTEST input would run on different
+            // planes; previously only a stderr warning was emitted, invisible
+            // to both the model and the user.
             let mismatch = if self.session.has_wayland_display {
                 "; WARNING: WAYLAND_DISPLAY is set in this X11 session, so capture may be \
                  routed through the Wayland portal chain while input targets X11 (unset \
@@ -1219,21 +1345,27 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
     }
 
     fn capture(&mut self) -> Result<Capture, ComputerUseError> {
-        // Wayland 首选:portal 同会话截屏流(与输入共用一次授权,无逐次弹窗)。
+        // Wayland preference: the portal same-session screenshot stream
+        // (shares one authorization with input, no per-capture dialogs).
         if self.is_wayland() {
             if let Some(capture) = self.wayland_portal_capture() {
                 return Ok(capture);
             }
         }
-        // 回退:xcap 链(X11 主路径;Wayland 上探测失败可在后续截屏时重试,
-        // 评审发现:旧实现一次探测失败就粘死整个 backend 生命周期——portal
-        // 对话框被用户误关、合成器短暂抖动都会永久失去截屏,且无任何重试入口)。
+        // Fallback: the xcap chain (the X11 main path; on Wayland a failed
+        // probe can retry on a later capture — review finding: the old
+        // implementation let a single probe failure stick for the whole
+        // backend lifetime — a portal dialog accidentally dismissed by the
+        // user or a brief compositor hiccup lost screenshots permanently,
+        // with no retry entry point).
         self.ensure_wayland_capture()?;
         let monitors = Monitor::all().map_err(|error| {
             ComputerUseError::unavailable(format!("monitor enumeration: {error}"))
         })?;
-        // X11 下 xcap 用 Xft.dpi/96 作 scale 并把 RandR 几何除以它;截图与
-        // XTEST 都在根窗口物理像素平面,故输入倍率恒 1.0,origin 乘回 scale。
+        // On X11 xcap uses Xft.dpi/96 as the scale and divides RandR geometry
+        // by it; capture and XTEST both operate on the root-window physical
+        // pixel plane, so the input scale is always 1.0 and the origin is
+        // multiplied back by the scale.
         let scale = monitors
             .iter()
             .find_map(|m| m.scale_factor().ok())
@@ -1250,7 +1382,8 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
         };
         let monitor = cursor
             .and_then(|(cx, cy)| {
-                // 游标为根窗口像素;换算到 xcap 的逻辑坐标再做包含测试。
+                // The cursor is in root-window pixels; convert to xcap's
+                // logical coordinates before the containment test.
                 let lx = (cx as f32 / scale) as i32;
                 let ly = (cy as f32 / scale) as i32;
                 monitors.iter().find(|m| contains(m, lx, ly)).cloned()
@@ -1265,9 +1398,11 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             .ok_or_else(|| {
                 ComputerUseError::unavailable("no monitors reported by the display server")
             })?;
-        // xcap 的 Wayland 链内部有 `.expect(...)`(PNG 重编码,见探测处的
-        // 同类包裹):逐帧捕获同样包一层 catch_unwind,把潜在 panic 转成显式
-        // 错误,避免炸掉 backend worker 线程(round-10 评审 m10)。
+        // xcap's Wayland chain contains `.expect(...)` internally (PNG
+        // re-encode, see the same wrapping at the probe): per-frame capture is
+        // likewise wrapped in catch_unwind, turning a potential panic into an
+        // explicit error instead of blowing up the backend worker thread
+        // (round-10 review m10).
         let captured =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| monitor.capture_image()));
         let image = match captured {
@@ -1301,10 +1436,12 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
         };
         let width = image.width();
         let height = image.height();
-        // X11:xcap 报告逻辑原点,乘回 scale 得根窗口物理像素(=输入空间,
-        // 输入倍率 1.0)。Wayland:portal 输入在 stream 逻辑坐标空间,与 xcap
-        // 的逻辑几何同空间,origin 不乘 scale,输入倍率取 1/scale(见
-        // wayland_portal 模块文档)。
+        // X11: xcap reports a logical origin; multiplying back by the scale
+        // gives root-window physical pixels (= the input space, input scale
+        // 1.0). Wayland: portal input lives in the stream's logical
+        // coordinate space, the same space as xcap's logical geometry; the
+        // origin is not multiplied by the scale and the input scale is
+        // 1/scale (see the wayland_portal module docs).
         let (origin_x, origin_y, input_scale_x, input_scale_y) = if self.is_wayland() {
             let scale = f64::from(scale);
             let origin_x = monitor.x().unwrap_or(0);
@@ -1379,14 +1516,18 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             let portal = self.require_portal()?;
             portal.ensure_started()?;
             let evdev = wayland_portal::map_button(button);
-            // 移动与点击之间留静置窗口(与 XTEST 同样的注入竞态缓冲)。
+            // Leave a settle window between the move and the click (the same
+            // injection race buffer as XTEST).
             settle();
             for i in 0..count {
                 if let Err(error) = portal.button(evdev, true) {
-                    // 按压失败≠未送达（超时对送达性只字未提，评审发现）：
-                    // 对仍开启的毒化会话尽力补一次释放——未落地的释放是
-                    // 合成器侧 no-op，已落地的避免按键滞留（mutter 关闭
-                    // 会话不合成释放事件）。
+                    // A failed press ≠ not delivered (the timeout says
+                    // nothing about delivery, review finding): best-effort
+                    // issue one extra release on the still-open poisoned
+                    // session — a release that did not land is a
+                    // compositor-side no-op, and one that did land avoids a
+                    // stranded button (mutter does not synthesize release
+                    // events when closing a session).
                     let _ = portal.button(evdev, false);
                     return Err(error);
                 }
@@ -1399,7 +1540,8 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
         }
         let enigo = self.require_enigo()?;
         let button = map_enigo_button(button);
-        // 移动与点击之间留静置窗口,降低 XTEST 注入竞态。
+        // Leave a settle window between the move and the click, reducing the
+        // XTEST injection race.
         settle();
         for i in 0..count {
             enigo
@@ -1418,7 +1560,8 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             let portal = self.require_portal()?;
             portal.ensure_started()?;
             if let Err(error) = portal.button(wayland_portal::map_button(button), true) {
-                // 按压失败≠未送达（同 click 的理由）：尽力补一次释放。
+                // A failed press ≠ not delivered (same reason as click):
+                // best-effort issue one extra release.
                 let _ = portal.button(wayland_portal::map_button(button), false);
                 return Err(error);
             }
@@ -1434,13 +1577,17 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
         if self.is_wayland() {
             self.note_input();
             let portal = self.require_portal()?;
-            // 仅在仍开启的会话上释放（评审发现）：无会话时绝不懒启动——
-            // ensure_started 的完整建立流程会弹系统授权对话框，撤销/急停/
-            // 会话结束的紧急 mouse_up 变成反向索权。毒化但未关闭的会话
-            // 也在此列（has_open_session 而非 is_active）：其上的 Notify
-            // 仍可投递，而 mutter 的 Session.Close 只销毁虚拟设备、不合成
-            // 释放——按 is_active 跳过会把真实按下的按键滞留在合成器侧，
-            // 直到下一次 ensure_started 之外再无任何释放路径。
+            // Release only on a still-open session (review finding): never
+            // lazily start when there is no session — ensure_started's full
+            // establishment flow would pop the system authorization dialog,
+            // turning the emergency mouse_up of a revoke/emergency-stop/
+            // session end into a reverse permission grab. A poisoned but not
+            // closed session is included too (has_open_session rather than
+            // is_active): Notify can still be delivered on it, while mutter's
+            // Session.Close only destroys the virtual device and does not
+            // synthesize releases — skipping on is_active would strand a
+            // genuinely pressed button on the compositor side, with no
+            // release path left until the next ensure_started.
             if portal.has_open_session() {
                 return portal.button(wayland_portal::map_button(button), false);
             }
@@ -1460,12 +1607,14 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             portal.motion_absolute(from.0, from.1)?;
             settle();
             if let Err(error) = portal.button(wayland_portal::map_button(MouseButton::Left), true) {
-                // 按压失败≠未送达（同 click 的理由）：下面的"无论中途成败
-                // 最后都必须释放"保证同样适用于按压失败本身。
+                // A failed press ≠ not delivered (same reason as click): the
+                // "release at the end no matter what happened midway"
+                // guarantee below applies to the press failing as well.
                 let _ = portal.button(wayland_portal::map_button(MouseButton::Left), false);
                 return Err(error);
             }
-            // 插值移动;无论中途成败,最后都必须释放按键。
+            // Interpolated movement; the button must be released at the end
+            // no matter what happened midway.
             let mut result = Ok(());
             let mut last_reached = (from.0, from.1);
             for (x, y) in drag_waypoints(from, to, DRAG_STEPS) {
@@ -1497,7 +1646,8 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
         enigo
             .button(Button::Left, Direction::Press)
             .map_err(|error| input_failed("drag: button press", error))?;
-        // 插值移动;无论中途成败,最后都必须释放按键。
+        // Interpolated movement; the button must be released at the end no
+        // matter what happened midway.
         let mut result = Ok(());
         for (x, y) in drag_waypoints(from, to, DRAG_STEPS) {
             if let Err(error) = enigo.move_mouse(x, y, Coordinate::Abs) {
@@ -1514,24 +1664,30 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
 
     fn scroll(&mut self, direction: ScrollDirection, clicks: u32) -> Result<(), ComputerUseError> {
         if self.is_wayland() {
-            // amount=0 直接 no-op:mutter 对 axis steps=0 报 Invalid,而
-            // notify() 的错误路径会把会话标记 poisoned(下次动作回收重建、
-            // 重新弹授权对话框)——不能为一次空滚动付出会话重建的代价。
+            // amount=0 is a straight no-op: mutter reports Invalid for axis
+            // steps=0, and notify()'s error path marks the session poisoned
+            // (the next action reclaims and rebuilds it, popping the
+            // authorization dialog again) — an empty scroll must not cost a
+            // session rebuild.
             if clicks == 0 {
                 return Ok(());
             }
             self.note_input();
             let portal = self.require_portal()?;
             portal.ensure_started()?;
-            // 一次离散滚轮事件可携带多格(合成器内部逐格注入)。
+            // One discrete scroll event can carry multiple clicks (the
+            // compositor injects them click by click internally).
             let (axis, steps) = wayland_portal::map_discrete_scroll(direction, clicks);
             return portal.axis_discrete(axis, steps);
         }
         let enigo = self.require_enigo()?;
-        // 显式用滚轮按钮而非 Mouse::scroll()/helpers::map_scroll():轴滚动的
-        // 符号约定因平台而异(x11rb 正数=向下),按钮循环语义无歧义。与
-        // map_scroll 的分叉是有意的(按钮机制 vs 轴机制),但钳制同样适用:
-        // 工具层已限 100,这里对直连 Backend 的调用方兜底(round-12 评审)。
+        // Use scroll-wheel buttons explicitly rather than Mouse::scroll()/
+        // helpers::map_scroll(): the sign convention of axis scrolling varies
+        // by platform (x11rb positive = down), while button cycling is
+        // unambiguous. The divergence from map_scroll is intentional (button
+        // mechanism vs axis mechanism), but the clamp applies all the same:
+        // the tool layer already caps at 100; this backstops callers that
+        // reach the Backend directly (round-12 review).
         let clicks = clicks.min(MAX_SCROLL_CLICKS);
         let button = match direction {
             ScrollDirection::Up => Button::ScrollUp,
@@ -1557,14 +1713,17 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
         let text = normalize_line_breaks(text);
         if self.is_wayland() {
             self.note_input();
-            // 旗标 Arc 在 require_portal 前克隆:portal 是 self 的可变借用且
-            // 活过整个注入循环,不能再经 &self 读旗标。
+            // The flag Arc is cloned before require_portal: portal is a
+            // mutable borrow of self that outlives the whole injection loop,
+            // so the flag cannot be read through &self again.
             let cancel = self.cancel.clone();
             let portal = self.require_portal()?;
-            // 逐字符 keysym 注入(\n→Return、\t→Tab)。映射先行:非 Latin-1
-            // 字符(中文等)显式报错(fail-closed)——mutter 对 keymap 外
-            // keysym 静默丢弃,照发就是"成功"却无输入;报错时不应已经弹出
-            // 授权对话框。
+            // Per-character keysym injection (\n→Return, \t→Tab). Mapping
+            // happens first: non-Latin-1 characters (CJK etc.) fail
+            // explicitly (fail-closed) — mutter silently drops keysyms
+            // outside the keymap, so sending anyway would "succeed" with no
+            // input; by the time we error, the authorization dialog must not
+            // already have been shown.
             let keysyms = text
                 .chars()
                 .map(wayland_portal::char_keysym)
@@ -1577,9 +1736,11 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             // as the X11 `release_chord` helper).
             let mut first_err = None;
             for keysym in keysyms {
-                // 调用方已放弃的请求停止注入(round-10 评审 M3:逐字符两次有
-                // 界 portal 通知,长文本在降级总线上远超调用预算,出队检查拦
-                // 不住,僵尸请求会与重试双重注入)。
+                // Stop injecting for a request the caller already abandoned
+                // (round-10 review M3: two bounded portal notifications per
+                // character; long text on a degraded bus far exceeds the call
+                // budget, and dequeue-time checks cannot stop it — a zombie
+                // request would double-inject alongside the retry).
                 if cancel
                     .as_ref()
                     .is_some_and(|flag| flag.load(Ordering::SeqCst))
@@ -1590,10 +1751,13 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                     ));
                 }
                 if let Err(error) = portal.keysym_event(keysym, true) {
-                    // 按压失败≠未送达（超时对送达性只字未提，评审发现）：对
-                    // 仍开启的毒化会话尽力补一次释放——未落地的释放是合成器
-                    // 侧 no-op，已落地的避免按键滞留（mutter 关闭会话不合成
-                    // 释放）。
+                    // A failed press ≠ not delivered (the timeout says
+                    // nothing about delivery, review finding): best-effort
+                    // issue one extra release on the still-open poisoned
+                    // session — a release that did not land is a
+                    // compositor-side no-op, and one that did land avoids a
+                    // stranded button (mutter does not synthesize releases
+                    // when closing a session).
                     let _ = portal.keysym_event(keysym, false);
                     return Err(error);
                 }
@@ -1608,8 +1772,10 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 None => return Ok(()),
             }
         }
-        // 旗标 Arc 在 require_enigo 前克隆:enigo 是 self 的可变借用且活过
-        // 整个注入循环,循环内(及克隆点)不能再经 &self 读旗标。
+        // The flag Arc is cloned before require_enigo: enigo is a mutable
+        // borrow of self that outlives the whole injection loop, so the flag
+        // cannot be read through &self inside the loop (nor at the clone
+        // point).
         let cancel = self.cancel.clone();
         let enigo = self.require_enigo()?;
         // enigo's text() types a run via per-char Unicode injection (a
@@ -1622,7 +1788,8 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
         // submits).
         let enter = map_enigo_key(Key::Enter)?;
         for (index, run) in x11_type_runs(&text).into_iter().enumerate() {
-            // 调用方已放弃的请求停止注入(与 Wayland 逐字符路径同一保证)。
+            // Stop injecting for a request the caller already abandoned (the
+            // same guarantee as the Wayland per-character path).
             if cancel
                 .as_ref()
                 .is_some_and(|flag| flag.load(Ordering::SeqCst))
@@ -1636,11 +1803,15 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 Self::press_chord(enigo, &[enter])?;
                 Self::release_chord(enigo, &[enter])?;
             }
-            // 逐字符注入而不是整段 text()：enigo 的 text() 在 X11 内部本来
-            // 就是逐字符 Unicode 注入(每字符一次重映射 + 服务器同步)，整段
-            // 调用会把取消检查的粒度放大到整段 run——降级总线上一个被放弃
-            // 的单行长文本会继续注入数分钟并与重试双重注入(评审发现)。
-            // text(&c) 与 text 内部的 per-char 路径逐字符等价，语义不变。
+            // Inject per character instead of one whole text(): enigo's
+            // text() on X11 is already per-character Unicode injection
+            // internally (one remap + server sync per character); calling it
+            // with the whole run would widen the cancel check's granularity
+            // to the entire run — a single-line abandoned long text on a
+            // degraded bus would keep injecting for minutes and double-inject
+            // alongside the retry (review finding).
+            // text(&c) is per-character equivalent to text's internal per-char
+            // path; semantics unchanged.
             if !run.is_empty() {
                 for ch in run.chars() {
                     if cancel
@@ -1674,8 +1845,9 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             press_keysyms_unwind(&mapped, |keysym, pressed| {
                 portal.keysym_event(keysym, pressed)
             })?;
-            // 释放阶段中途失败也要尽力释放全部键(避免修饰键卡死),返回
-            // 首个错误。
+            // Even if the release phase fails midway, best-effort release
+            // every key (so modifiers cannot strand), returning the first
+            // error.
             let mut first_err = None;
             for keysym in mapped.iter().rev() {
                 if let Err(error) = portal.keysym_event(*keysym, false) {
@@ -1711,8 +1883,9 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 portal.keysym_event(keysym, pressed)
             })?;
             sleep(Duration::from_millis(ms));
-            // 释放阶段中途失败也要尽力释放全部键(避免修饰键卡死),返回
-            // 首个错误。
+            // Even if the release phase fails midway, best-effort release
+            // every key (so modifiers cannot strand), returning the first
+            // error.
             let mut first_err = None;
             for keysym in mapped.iter().rev() {
                 if let Err(error) = portal.keysym_event(*keysym, false) {
@@ -1761,7 +1934,8 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
     }
 
     fn focused_element(&mut self) -> Result<Option<ElementInfo>, ComputerUseError> {
-        // portal/Wayland 分支同 X11:AT-SPI 是跨会话类型的通路。
+        // The portal/Wayland branch is the same as X11: AT-SPI is the path
+        // that works across session types.
         let a11y = self.require_a11y()?;
         self.block_on_a11y(
             A11Y_POINT_DEADLINE,
@@ -1796,7 +1970,7 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
     // non-X11 socket name signals a Wayland-colored environment whose
     // behavior the user should double-check; over-warning is the safe
     // direction, and the warning must not be narrower than the behavior it
-    // diagnoses (评审发现).
+    // diagnoses (review finding).
     if session.kind == SessionKind::X11
         && std::env::var("WAYLAND_DISPLAY")
             .ok()
@@ -1818,11 +1992,14 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
             ))
         })?;
     let (a11y, a11y_init_error) = match runtime.block_on(tokio::time::timeout(
-        // 连接建立整体封顶（SASL/Hello 握手不受 zbus 的 method_timeout 约束
-        // ——评审发现：接受连接却不应答的僵死 a11y bus 会把 create_backend
-        // 无期挂起，启动超时的清理 thread.join() 随之永久阻塞首个调用者；
-        // 与下方 set_session_accessibility / 两个 bus builder 的有界化同一
-        // 主题）。a11y 失败本就非致命（降级为 a11y_init_error），超时同路。
+        // Overall cap on connection establishment (the SASL/Hello handshake
+        // is not covered by zbus's method_timeout — review finding: a wedged
+        // a11y bus that accepts the connection but never answers would hang
+        // create_backend indefinitely, and the startup-timeout cleanup
+        // thread.join() would then block the first caller forever; same
+        // theme as the bounding of set_session_accessibility / the two bus
+        // builders below). An a11y failure is non-fatal anyway (degrades to
+        // a11y_init_error); a timeout takes the same path.
         4 * A11Y_METHOD_TIMEOUT,
         a11y_connect(),
     )) {
@@ -1837,8 +2014,9 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
         ),
     };
 
-    // Wayland 不构造 enigo:XTEST 经 XWayland 只能触达 X11 客户端,且
-    // enigo 的 wayland/libei 后端均为实验性——输入走 portal RemoteDesktop。
+    // On Wayland, enigo is not constructed: XTEST through XWayland can only
+    // reach X11 clients, and enigo's wayland/libei backends are both
+    // experimental — input goes through portal RemoteDesktop.
     let (input, input_init_error) = if wayland {
         (None, None)
     } else {
@@ -1848,8 +2026,9 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
         }
     };
 
-    // Wayland 输入:探测 portal 的 RemoteDesktop 支持(纯属性查询,不弹窗);
-    // 探测失败记为粘性错误,输入动作显式不可用。
+    // Wayland input: probe the portal's RemoteDesktop support (a pure
+    // property query, no dialog); a failed probe is recorded as a sticky
+    // error and input actions are explicitly unavailable.
     let (wayland_portal, wayland_portal_error) = if wayland {
         match PortalInput::probe() {
             Ok(()) => match PortalInput::new() {
@@ -1888,8 +2067,9 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
     }))
 }
 
-/// backend 在 worker 线程上析构(Shutdown):portal 授权授予的会话在这里
-/// 尽力关闭,不跨进程泄漏。
+/// The backend is dropped on the worker thread (Shutdown): the portal
+/// session created by the granted authorization is best-effort closed here so
+/// it does not leak across processes.
 impl Drop for LinuxComputerUseBackend {
     fn drop(&mut self) {
         if let Some(portal) = self.wayland_portal.as_mut() {
@@ -1913,7 +2093,8 @@ mod tests {
 
     #[test]
     fn session_type_wayland_wins_over_display() {
-        // DISPLAY 在 XWayland 下同样设置,绝不能把 Wayland 会话误判成 X11。
+        // DISPLAY is also set under XWayland; a Wayland session must never be
+        // misjudged as X11.
         let session = detect(&[
             ("XDG_SESSION_TYPE", "wayland"),
             ("DISPLAY", ":0"),
@@ -2056,18 +2237,21 @@ mod tests {
 
     #[test]
     fn secure_role_decision_is_conservative() {
-        // PasswordText 直接判定。
+        // PasswordText decides directly.
         assert!(is_secure_role(Role::PasswordText, false));
-        // 角色查询失败(未知)保守兜底:无法证明不是密码框。
+        // A failed role query (unknown) falls back conservatively: unable to
+        // prove it is not a password field.
         assert!(is_secure_role(Role::Unknown, true));
-        // 对象真实报告 Unknown(非查询失败)不算 secure;普通按钮角色同样不算。
+        // An object genuinely reporting Unknown (not a query failure) does
+        // not count as secure; an ordinary button role does not either.
         assert!(!is_secure_role(Role::Unknown, false));
         assert!(!is_secure_role(Role::Button, false));
     }
 
     #[test]
     fn extents_contain_is_half_open_and_rejects_zero_sized() {
-        // 常规包含:原点、内部点;右/下边开区间(恰在边上不算覆盖)。
+        // Regular containment: the origin, interior points; right/bottom
+        // edges exclusive (a point exactly on the edge is not covered).
         let extents = (10, 20, 100, 50);
         assert!(extents_contain(extents, 10, 20));
         assert!(extents_contain(extents, 109, 69));
@@ -2075,12 +2259,14 @@ mod tests {
         assert!(!extents_contain(extents, 109, 70));
         assert!(!extents_contain(extents, 9, 20));
         assert!(!extents_contain(extents, 10, 19));
-        // 负原点(多显示器布局,副屏在左侧/上方)。
+        // Negative origins (multi-monitor layout, secondary screen to the
+        // left/above).
         let negative = (-1920, -400, 1920, 1080);
         assert!(extents_contain(negative, -1, -1));
         assert!(!extents_contain(negative, -1921, 0));
-        // 零尺寸 extents 不包含任何点(screen_extents_strict 已对它报错,
-        // 这里保证即使漏进循环也不会被误判为覆盖)。
+        // Zero-sized extents contain no point (screen_extents_strict already
+        // errors on them; this guarantees that even if one slipped into the
+        // loop it would not be misjudged as covering).
         let zero = (0, 0, 0, 0);
         assert!(!extents_contain(zero, 0, 0));
         assert!(!extents_contain(zero, i32::MAX, i32::MAX));
@@ -2088,16 +2274,16 @@ mod tests {
 
     #[test]
     fn state_flags_mark_secure_and_states() {
-        // secure 标志由调用方按 is_secure_role 给出。
+        // The secure flag is supplied by the caller per is_secure_role.
         assert!(state_flags(true, None).contains(&"secure"));
         assert!(!state_flags(false, None).contains(&"secure"));
-        // 常规状态位不受 secure 判定影响。
+        // Regular state bits are unaffected by the secure determination.
         let flags = state_flags(false, Some(StateSet::new(State::Focused)));
         assert!(flags.contains(&"focused"));
         assert!(!flags.contains(&"secure"));
         let flags = state_flags(true, Some(StateSet::new(State::Active | State::Editable)));
         assert!(flags.contains(&"active") && flags.contains(&"editable"));
-        // Enabled 缺失 → disabled。
+        // Enabled missing → disabled.
         assert!(state_flags(false, Some(StateSet::empty())).contains(&"disabled"));
     }
 
@@ -2162,22 +2348,28 @@ mod tests {
 
 #[cfg(test)]
 mod wayland_e2e_tests {
-    //! 真机 Wayland E2E(dialog → grant → 同会话截屏 → move/click/type)。
-    //! 需要真实 Wayland 会话 + xdg-desktop-portal(RemoteDesktop/ScreenCast),
-    //! 且系统授权对话框须被确认——验证环境用 root 的 uinput 脚本模拟用户按
-    //! Enter(见 PR 描述的验证章节)。默认 ignored:
+    //! Live Wayland E2E (dialog → grant → same-session capture →
+    //! move/click/type).
+    //! Needs a real Wayland session + xdg-desktop-portal
+    //! (RemoteDesktop/ScreenCast), and the system authorization dialog must be
+    //! confirmed — the verification environment uses a root uinput script to
+    //! simulate the user pressing Enter (see the verification section of the
+    //! PR description). Ignored by default:
     //! `PINVOU3_CU_WAYLAND_LIVE=1 cargo test --lib computer_use::platform::linux::wayland_e2e_tests -- --ignored --nocapture`
     //!
-    //! 与 X11 live 套件同一双重 opt-in(round-12 评审:X11 套件在上一轮正是
-    //! 因 `--ignored` 只是约定式防护而加的显式环境门禁——裸 `--ignored` 在
-    //! 带真实桌面会话的 Wayland 开发机上会移动真实指针、点击并键入测试
-    //! 文本;同一发现此前只落在了 X11 一侧)。
+    //! Same double opt-in as the X11 live suite (round-12 review: the X11
+    //! suite got its explicit environment gate in the previous round precisely
+    //! because `--ignored` is only a conventional guard — a bare `--ignored`
+    //! on a Wayland dev machine with a real desktop session would move the
+    //! real pointer, click, and type test text; the same finding had
+    //! previously only landed on the X11 side).
 
     use super::*;
     use atspi::proxy::text::TextProxy;
 
-    /// 与 X11 `live_display()` 同款的环境门禁:未显式导出
-    /// `PINVOU3_CU_WAYLAND_LIVE=1` 时返回 None,所有用例首行跳过。
+    /// The same environment gate as X11's `live_display()`: returns None
+    /// unless `PINVOU3_CU_WAYLAND_LIVE=1` is explicitly exported, so every
+    /// case skips on its first line.
     fn live_wayland() -> Option<()> {
         std::env::var("PINVOU3_CU_WAYLAND_LIVE")
             .ok()
@@ -2185,7 +2377,8 @@ mod wayland_e2e_tests {
             .map(|_| ())
     }
 
-    /// DFS 收集所有 role=Text 节点的文本(a11y 验证打字结果)。
+    /// DFS-collects the text of all role=Text nodes (a11y verification of the
+    /// typed result).
     async fn read_texts_via_a11y(conn: &zbus::Connection) -> Result<Vec<String>, ComputerUseError> {
         let mut texts = Vec::new();
         walk_texts(conn, root_accessible(conn).await?, 18, &mut texts).await?;
@@ -2229,8 +2422,9 @@ mod wayland_e2e_tests {
         Ok(())
     }
 
-    /// 两帧 RGBA 的差分包围盒(无差分返回 None)。步长 4 像素采样,足够定位
-    /// 窗口级包围盒且省时。
+    /// Difference bounding box of two RGBA frames (None when there is no
+    /// difference). Samples every 4 pixels — enough to locate a window-level
+    /// bounding box while saving time.
     fn diff_bounding_box(a: &[u8], b: &[u8]) -> Option<(i32, i32, u32, u32)> {
         assert_eq!(a.len(), b.len());
         let width = ((a.len() / 4) as f64).sqrt() as usize;
@@ -2276,8 +2470,9 @@ mod wayland_e2e_tests {
             "run inside a live Wayland session"
         );
 
-        // backend 构造即建立 AT-SPI 连接(a11y 总线),之后启动的目标应用才
-        // 能注册到 a11y 树上。
+        // Backend construction establishes the AT-SPI connection (a11y bus)
+        // so that target apps started afterwards can register on the a11y
+        // tree.
         let mut backend = create_backend().expect("backend on a live Wayland session");
         let caps = backend.capabilities();
         println!(
@@ -2290,8 +2485,10 @@ mod wayland_e2e_tests {
         );
         assert!(caps.input, "portal input must be available");
 
-        // 1) 首次截屏:建立 portal 会话并弹系统授权对话框(由验证环境的
-        //    对话框脚本确认),截屏帧来自同会话 ScreenCast 流。
+        // 1) First capture: establishes the portal session and pops the
+        //    system authorization dialog (confirmed by the verification
+        //    environment's dialog script); the frame comes from the
+        //    same-session ScreenCast stream.
         let shot1 = backend
             .capture()
             .expect("first capture establishes the portal session (dialog must be granted)");
@@ -2307,9 +2504,11 @@ mod wayland_e2e_tests {
         );
         assert!(shot1.rgba.iter().any(|byte| *byte != 0), "frame not blank");
 
-        // 2) 输入目标:GNOME Shell 顶栏时钟(位置已知:顶栏中央)。
-        //    Wayland 下 AT-SPI extents 不可靠(全 0),computer-use 的正路就是
-        //    看截图:点击后用像素差分验证 UI 真的响应了。
+        // 2) Input target: the GNOME Shell top-bar clock (known position:
+        //    center of the top bar).
+        //    On Wayland AT-SPI extents are unreliable (all 0); computer-use's
+        //    proper path is to look at screenshots: after clicking, verify
+        //    with a pixel diff that the UI really responded.
         let shot_w = shot1.width;
         let shot_h = shot1.height;
         let clock = (i64::from(shot_w) / 2, 8);
@@ -2323,19 +2522,22 @@ mod wayland_e2e_tests {
         );
         backend.click(MouseButton::Left, 1).expect("click");
 
-        // 3) 等待比点击新的帧:日历/通知下拉必须出现在屏幕上半部。
+        // 3) Wait for frames newer than the click: the calendar/notification
+        // dropdown must appear in the top half of the screen.
         wait_for_big_change(&mut backend, &shot1, 40, shot_h / 2)
             .expect("clicking the clock must open the calendar dropdown");
 
-        // 4) 键盘链路:Escape 关闭下拉,Super 打开概览(搜索框自动聚焦)。
+        // 4) Keyboard path: Escape closes the dropdown, Super opens the
+        // overview (the search box auto-focuses).
         backend.key_chord(&[Key::Escape]).expect("escape key chord");
         std::thread::sleep(Duration::from_millis(600));
         let baseline = backend.capture().expect("capture before overview");
         backend.key_chord(&[Key::Meta]).expect("super key chord");
 
-        // 5) 打字进 shell 搜索框:概览稳定后输入 "fire",搜索结果(Firefox)
-        //    出现 = 按键注入真实到达 shell 搜索框(相对概览基线的第二次
-        //    窗口级差分)。
+        // 5) Type into the shell search box: after the overview settles,
+        // type "fire"; the search results (Firefox) appearing = the key
+        // injection really reached the shell search box (a second
+        // window-level diff against the overview baseline).
         let typed = "fire";
         let mut typed_shot = None;
         for i in 0..40 {
@@ -2360,8 +2562,9 @@ mod wayland_e2e_tests {
             "search results must appear after typing into the overview search"
         );
 
-        // 6) a11y 文本读回(嵌套 shell 的 cally 桥在启动时未开,树可能很浅,
-        //    仅作诊断输出,不作断言)。
+        // 6) a11y text read-back (the cally bridge of the nested shell is not
+        // enabled at startup, so the tree may be shallow; diagnostic output
+        // only, no assertions).
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2381,8 +2584,9 @@ mod wayland_e2e_tests {
         );
     }
 
-    /// 反复截图直到与 `baseline` 出现窗口级差分(忽略 `ignore_prefixes` 里
-    /// 以这些前缀开头的固定小变化区域),返回差分包围盒。
+    /// Captures repeatedly until a window-level diff against `baseline`
+    /// appears (ignoring the fixed small-change regions with prefixes in
+    /// `ignore_prefixes`), returning the diff bounding box.
     fn wait_for_big_change(
         backend: &mut Box<dyn ComputerUseBackend>,
         baseline: &Capture,
@@ -2501,10 +2705,11 @@ mod x11_live_tests {
     /// The live-display gate: `Some((width, height, display))` when `$DISPLAY`
     /// names an X server xdotool can reach, `None` otherwise (tests skip).
     fn live_display() -> Option<(u32, u32, String)> {
-        // 双重 opt-in（评审发现：`#[ignore]` 只是约定式防护，文档里的
-        // `--ignored` 命令在带真实桌面会话的 Linux 开发机上会把真实指针
-        // 移动、点击并键入测试文本）。测试套件的 CI/无头用法显式导出该
-        // 变量；普通开发机的 DISPLAY 一律跳过。
+        // Double opt-in (review finding: `#[ignore]` is only a conventional
+        // guard; the documented `--ignored` command on a Linux dev machine
+        // with a real desktop session would move the real pointer, click, and
+        // type test text). CI/headless usage of the test suite exports the
+        // variable explicitly; any ordinary dev machine's DISPLAY skips.
         std::env::var("PINVOU3_CU_X11_LIVE")
             .ok()
             .filter(|v| v == "1")?;

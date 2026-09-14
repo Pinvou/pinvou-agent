@@ -511,10 +511,12 @@ pub struct PetPrefs {
     pub enabled: bool,
 }
 
-/// Computer Use 偏好。只存总开关：默认关闭，用户显式开启后模型才能看到
-/// `computer_use` 工具。开关由 `computer_use_set_enabled` 专用命令经字段级
-/// 事务写入（同 PetPrefs，不进通用设置补丁），启动时由 lib.rs 回放进
-/// `ComputerUseShared` 的 AtomicBool；会话授权永不落盘（只活于内存）。
+/// Computer Use preferences. Only the master switch is stored: off by default; only after
+/// the user explicitly enables it can the model see the `computer_use` tool. The switch is
+/// written by the dedicated `computer_use_set_enabled` command via a field-level
+/// transaction (same as PetPrefs, not part of the generic settings patch), and replayed at
+/// startup by lib.rs into `ComputerUseShared`'s AtomicBool; session grants are never
+/// persisted (they live only in memory).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ComputerUsePrefs {

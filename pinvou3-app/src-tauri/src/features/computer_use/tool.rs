@@ -1,14 +1,22 @@
-//! `computer_use` 工具：单一 ToolSpec，`action` 字段区分动作
-//! （Anthropic computer_20250124 动作集 + a11y 扩展 ui_tree / element_at_point）。
+//! The `computer_use` tool: a single ToolSpec; the `action` field selects the
+//! action (the Anthropic computer_20250124 action set plus the a11y
+//! extensions ui_tree / element_at_point).
 //!
-//! 关键不变量：
-//! - 模型坐标永远是「截图空间」（最近一次返回 PNG 的像素，原点左上）。
-//! - 每次截图生成新 ScaleMap 存入会话状态；带坐标的动作没有 ScaleMap 时先自动截图。
-//! - 输入类与 scroll 动作执行后等待 [`POST_ACTION_SETTLE_MS`] 再补拍截图附上，
-//!   模型始终看到最新状态。
-//! - 同意门控（[`ComputerUseShared`]）在每次注入前检查；命中后果性名单或
-//!   密码字段的目标必须经用户确认（单次令牌，绑定动作摘要）。筛查是尽力
-//!   而为的类别检测：筛查不可用不阻断执行，键入内容永不筛查。
+//! Key invariants:
+//! - Model coordinates are always "screenshot space" (the pixels of the most
+//!   recently returned PNG, top-left origin).
+//! - Every screenshot generates a new ScaleMap stored in session state; a
+//!   coordinate-carrying action without a ScaleMap captures one automatically
+//!   first.
+//! - After input-class and scroll actions, wait [`POST_ACTION_SETTLE_MS`],
+//!   take a fresh screenshot and attach it, so the model always sees the
+//!   latest state.
+//! - Consent gating ([`ComputerUseShared`]) is checked before every
+//!   injection; a target hitting the consequential denylist or a password
+//!   field must be confirmed by the user (a single-use token bound to the
+//!   action summary). Screening is best-effort category detection: screening
+//!   being unavailable does not block execution, and typed content is never
+//!   screened.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -35,23 +43,27 @@ use super::types::{
     ElementInfo, Key, MouseButton, ScrollDirection, TOOL_NAME, UiTreeOptions, parse_key_chord,
 };
 
-/// 输入/scroll 动作执行后的界面稳定等待（唯一的 settle 常数定义点）。
+/// UI settle wait after input/scroll actions execute (the single definition
+/// point of the settle constant).
 pub const POST_ACTION_SETTLE_MS: u64 = 350;
-/// `wait` 上限 30 秒。
+/// `wait` cap: 30 seconds.
 pub const MAX_WAIT_MS: u64 = 30_000;
-/// `hold_key` 上限 30 秒。
+/// `hold_key` cap: 30 seconds.
 pub const MAX_HOLD_KEY_MS: u64 = 30_000;
-/// 单次 scroll 格数上限。
+/// Scroll clicks per call cap.
 pub const MAX_SCROLL_AMOUNT: u32 = 100;
-/// `type` 文本长度上限（字符数）。超限显式拒绝——失控的超长注入既会拖死
-/// 输入循环，也会让确认摘要失去可读性。
+/// `type` text length cap (characters). Over the cap is rejected explicitly —
+/// an out-of-control oversized injection would both drag down the input loop
+/// and make the confirmation summary unreadable.
 pub const MAX_TYPE_TEXT_CHARS: usize = 10_000;
-/// `key`/`hold_key` 和弦原文长度上限（字符数）。解析后的和弦本身已被限到
-/// ≤4 个键名，但原文在摘要/确认事件/结果里原样携带：无上限时模型可用
-/// 空白把任意体量的字符串走私进事件负载（评审发现）。合法和弦
-/// （如 "ctrl+shift+alt+delete"）远低于该值；超限按解析错误拒绝。
+/// `key`/`hold_key` chord raw-text length cap (characters). The parsed chord
+/// itself is already limited to ≤4 key names, but the raw text rides verbatim
+/// into the summary/confirm event/result: without a cap, the model could use
+/// whitespace to smuggle a string of any size into the event payload (review
+/// finding). Legal chords (e.g. "ctrl+shift+alt+delete") are far below this
+/// value; over the cap is rejected as a parse error.
 pub const MAX_KEY_CHORD_TEXT_CHARS: usize = 128;
-/// `ui_tree` 参数上限。
+/// `ui_tree` argument caps.
 pub const MAX_UI_TREE_DEPTH: u32 = 64;
 pub const MAX_UI_TREE_NODES: u32 = 10_000;
 
@@ -61,13 +73,15 @@ pub const MAX_UI_TREE_NODES: u32 = 10_000;
 /// model still receives the full message verbatim.
 const T3_CONFIRM_REQUIRED_ERROR: &str = "t3-confirmation-required";
 
-/// 截图存放的子目录（相对 workspace）：engine 的 image_analyze 回退按
-/// workspace 相对路径解析，`attachments/` 是它的既定根。
+/// Subdirectory where screenshots are stored (relative to the workspace): the
+/// engine's image_analyze fallback resolves workspace-relative paths, and
+/// `attachments/` is its established root.
 const ATTACHMENTS_DIR: &str = "attachments/computer_use";
 
-/// 工具 schema 暴露的动作全集。单一来源：schema 的 enum、未知动作的错误
-/// 文案与 `parse_action` 的分发必须一致——parity 测试（tool/tests.rs）钉住
-/// 三者，防止新增动作时只改一处。
+/// The full action set exposed by the tool schema. Single source of truth:
+/// the schema's enum, the unknown-action error text, and `parse_action`'s
+/// dispatch must agree — the parity test (tool/tests.rs) pins all three so
+/// adding an action cannot change only one of them.
 pub const SUPPORTED_ACTIONS: &[&str] = &[
     "screenshot",
     "cursor_position",
@@ -89,7 +103,7 @@ pub const SUPPORTED_ACTIONS: &[&str] = &[
     "hold_key",
 ];
 
-/// Tauri 事件出口（测试注入记录器替代）。
+/// The Tauri event sink (tests inject a recorder in its place).
 pub trait ComputerUseEventSink: Send + Sync {
     fn emit(&self, event: &str, payload: Value);
 }
@@ -106,7 +120,8 @@ impl TauriEventSink {
 
 impl ComputerUseEventSink for TauriEventSink {
     fn emit(&self, event: &str, payload: Value) {
-        // Tauri UI 发射 + 可选远控传输转发。
+        // Emit to the Tauri UI + forward to the optional remote-control
+        // transport.
         let _ = self.app.emit(event, payload.clone());
         crate::platform::app_events::forward_app_event(&self.app, event, payload);
     }
@@ -116,15 +131,19 @@ impl ComputerUseEventSink for TauriEventSink {
 struct ToolState {
     last_map: Option<ScaleMap>,
     shot_seq: u64,
-    /// 本工具是否物理按下了左键（down 成功置位、up/drag 成功清除）。唯一
-    /// 用途是 `left_click_drag` 失败后的兜底松键：只释放**本工具自己按下
-    /// 的**键，绝不松用户物理按住的键。不再作为筛查输入（按住期间的
-    /// mouse_move 与其他 mouse_move 一样不设确认，主流无 held-move 复筛）。
+    /// Whether this tool physically pressed the left button (set on a
+    /// successful down, cleared on a successful up/drag). Its only purpose is
+    /// the fallback release after a failed `left_click_drag`: only the button
+    /// **this tool itself pressed** is released, never a button the user is
+    /// physically holding. No longer a screening input (a mouse_move while
+    /// held gets no confirmation just like any other mouse_move; mainstream
+    /// products have no held-move re-screening).
     mouse_buttons_held: bool,
 }
 
-/// 可克隆的执行部件（execute 是 async，后端调用全同步，整体移入
-/// `spawn_blocking`；测试用 `with_parts` 注入 mock 后端与事件记录器）。
+/// The cloneable execution parts (execute is async while backend calls are
+/// all synchronous, so the whole thing moves into `spawn_blocking`; tests
+/// inject a mock backend and an event recorder via `with_parts`).
 #[derive(Clone)]
 struct Parts {
     session_id: String,
@@ -139,11 +158,14 @@ pub struct ComputerUseTool {
 }
 
 impl ComputerUseTool {
-    /// 生产构造：后端懒启动（首个请求才 spawn worker 线程）。
+    /// Production constructor: the backend starts lazily (the worker thread
+    /// is spawned on the first request).
     pub fn new(app: AppHandle, session_id: String, shared: Arc<ComputerUseShared>) -> Self {
         let backend = BackendHandle::lazy(platform::create_backend);
-        // 登记句柄：revoke/stop/总开关关闭时命令层经 shared.backends 触发
-        // 后端关闭持久 OS 级授权（Wayland portal 会话）；Drop 注销。
+        // Register the handle: on revoke/stop/master-switch off, the command
+        // layer goes through shared.backends to have the backend close its
+        // persistent OS-level grant (the Wayland portal session); Drop
+        // unregisters.
         shared.backends.insert(&session_id, backend.clone());
         Self {
             parts: Parts {
@@ -156,7 +178,7 @@ impl ComputerUseTool {
         }
     }
 
-    /// 测试构造：注入 mock 后端与事件出口。
+    /// Test constructor: injects a mock backend and an event sink.
     #[cfg(test)]
     pub(crate) fn with_parts(
         session_id: String,
@@ -217,7 +239,8 @@ impl Drop for ComputerUseTool {
 }
 
 // ---------------------------------------------------------------------------
-// 输入校验（Anthropic 风格：非法参数组合给描述性错误，模型据此自我修复）
+// Input validation (Anthropic style: descriptive errors for invalid argument
+// combinations so the model can self-correct)
 // ---------------------------------------------------------------------------
 
 struct ParsedCall {
@@ -258,9 +281,11 @@ fn opt_i64(input: &Value, field: &str) -> Result<Option<i64>, ToolError> {
     }
 }
 
-/// `Option<u64>` 参数收窄到 `Option<u32>`：`opt_u64` 的 max 已把取值钉在
-/// u32 范围内，这里仍用 `try_from` 显式拒绝而不是 `as u32` 静默截断
-/// （评审发现：截断会让 max_nodes/max_depth 参数静默变成别的值）。
+/// Narrows an `Option<u64>` argument to `Option<u32>`: `opt_u64`'s max
+/// already pins the value inside the u32 range, but `try_from` is still used
+/// here to reject explicitly instead of `as u32` silently truncating (review
+/// finding: truncation would silently turn max_nodes/max_depth into different
+/// values).
 fn opt_u32_bounded(input: &Value, field: &str, max: u32) -> Result<Option<u32>, ToolError> {
     match opt_u64(input, field, u64::from(max))? {
         None => Ok(None),
@@ -270,7 +295,7 @@ fn opt_u32_bounded(input: &Value, field: &str, max: u32) -> Result<Option<u32>, 
     }
 }
 
-/// x/y 成对出现、非负（截图空间坐标）。
+/// x/y appear as a pair and are non-negative (screenshot-space coordinates).
 fn opt_coord(input: &Value) -> Result<Option<(i64, i64)>, ToolError> {
     let x = opt_i64(input, "x")?;
     let y = opt_i64(input, "y")?;
@@ -301,9 +326,11 @@ fn req_text(input: &Value, action: &str) -> Result<String, ToolError> {
     }
 }
 
-/// 拒绝该动作不接受的字段（`action`/`confirm_id` 全局通用，不计）。显式
-/// `null` 同样拒绝——schema 未定义的字段即使值为 null 也是模型幻觉/协议
-/// 漂移的信号，静默放行会让 schema 漂移不可观测（评审发现）。
+/// Rejects fields the action does not accept (`action`/`confirm_id` are
+/// globally common and not counted). An explicit `null` is rejected too — a
+/// field the schema does not define is a signal of model hallucination /
+/// protocol drift even when its value is null; letting it through silently
+/// would make schema drift unobservable (review finding).
 fn reject_unexpected(input: &Value, action: &str, allowed: &[&str]) -> Result<(), ToolError> {
     let Some(object) = input.as_object() else {
         return Err(invalid("input must be a JSON object"));
@@ -314,8 +341,10 @@ fn reject_unexpected(input: &Value, action: &str, allowed: &[&str]) -> Result<()
         }
         let label = match key.as_str() {
             "x" | "y" => "coordinate",
-            // 错误字符串会进入审计日志的 error 字段,未知的字段名(模型输入)
-            // 不回显;action 此处必然匹配过字面量分支,是安全的已知动作名。
+            // The error string goes into the audit log's error field; unknown
+            // field names (model input) are not echoed. The action here has
+            // necessarily matched a literal branch, so it is a safe known
+            // action name.
             _ => "unexpected field",
         };
         return Err(invalid(format!("{label} is not accepted for {action}")));
@@ -393,7 +422,8 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
                     .as_u64()
                     .ok_or_else(|| field_type_error("amount", "a non-negative integer"))?,
             };
-            // 下限 1：滚动 0 格是模型错误，显式拒绝而不是静默 no-op。
+            // Lower bound 1: scrolling 0 clicks is a model error; reject
+            // explicitly rather than silently no-op.
             if amount == 0 {
                 return Err(invalid("amount must be >= 1 for scroll"));
             }
@@ -455,7 +485,8 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
         "type" => {
             reject_unexpected(input, action_name, &["text"])?;
             let text = req_text(input, action_name)?;
-            // NUL 无法有意义地键入，且会污染下游的长度/审计统计：显式拒绝。
+            // NUL cannot be typed meaningfully and would pollute downstream
+            // length / audit statistics: reject explicitly.
             if text.contains('\0') {
                 return Err(invalid("text must not contain NUL characters for type"));
             }
@@ -501,9 +532,10 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
             }
         }
         _ => {
-            // 错误字符串会进入审计日志的 error 字段,不回显模型输入的动作名
-            // (模型把自己的输入放进动作名即可向日志走私文本;它自己知道发过
-            // 什么,回显没有信息量)。
+            // The error string goes into the audit log's error field; the
+            // model-supplied action name is not echoed (a model could smuggle
+            // text into the log by putting its input into the action name; it
+            // already knows what it sent, so echoing adds no information).
             return Err(invalid(format!(
                 "unknown action; supported: {}",
                 SUPPORTED_ACTIONS.join(", ")
@@ -514,10 +546,10 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
 }
 
 // ---------------------------------------------------------------------------
-// 执行
+// Execution
 // ---------------------------------------------------------------------------
 
-/// 截图产物（已落盘 PNG + 映射表）。
+/// Screenshot artifacts (the persisted PNG + the scale map).
 struct ShotOutcome {
     abs_path: PathBuf,
     rel_path: String,
@@ -537,10 +569,12 @@ fn capture_and_store(parts: &Parts, workspace: &Path) -> Result<ShotOutcome, Com
     let capture = parts.backend.capture()?;
     let scaled: ScaledScreenshot = scaling::downscale_and_encode(&capture)?;
     let dir = workspace.join(ATTACHMENTS_DIR);
-    // 私有文件基座落盘（评审发现：此前 `std::fs::write` 按 umask 默认权限
-    // 落盘，屏幕内容可能含密码，而审计记录本身是 0600——隐私口径自相
-    // 矛盾）。0700 目录 + 0600 文件（Windows 为 profile ACL 语义），
-    // 前端 `openArtifactExternal` 同用户读取不受影响。
+    // Persist on the private-file foundation (review finding: `std::fs::write`
+    // used to write with umask default permissions while screen content may
+    // contain passwords and the audit record itself is 0600 — a
+    // self-contradictory privacy position). A 0700 directory + a 0600 file
+    // (profile ACL semantics on Windows); the frontend's same-user
+    // `openArtifactExternal` reads are unaffected.
     let directory =
         crate::platform::filesystem::open_private_file_directory(&dir).map_err(|error| {
             ComputerUseError::failed(format!("cannot create {ATTACHMENTS_DIR}: {error}"))
@@ -592,7 +626,9 @@ fn backend_error_text(error: &ComputerUseError) -> String {
     format!("computer use action failed: {error}")
 }
 
-/// 解析带坐标动作的目标：钳制到截图范围（越界给警告不失败）→ 输入坐标。
+/// Resolves the target of a coordinate-carrying action: clamps to the
+/// screenshot range (out-of-bounds gives a warning, not a failure) → input
+/// coordinates.
 fn resolve_targets(
     map: &ScaleMap,
     coords: &[(i64, i64)],
@@ -613,11 +649,14 @@ fn resolve_targets(
         .collect()
 }
 
-/// T3 筛查结论。筛查是尽力而为的类别检测：**无法**筛查（a11y 查询故障、
-/// 光标未知、缺截图映射、光标在截图显示器之外等）一律按 Clear 放行——
-/// 没有主流产品为筛查基础设施故障单独索要确认，fail-closed 只会在
-/// AT-SPI 不可用、多屏等场景制造确认风暴；只有**正面命中**名单/密码
-/// 字段才要求确认。
+/// The T3 screening verdict. Screening is best-effort category detection:
+/// when screening is **impossible** (a11y query failure, unknown cursor,
+/// missing screenshot map, cursor outside the captured monitor, etc.), it is
+/// always treated as Clear — no mainstream product asks for a confirmation
+/// over a screening infrastructure failure, and fail-closed would only cause
+/// confirmation storms in AT-SPI-unavailable, multi-monitor and similar
+/// scenarios; only a **positive hit** on the denylist/a password field asks
+/// for confirmation.
 enum T3Screening {
     Clear,
     Blocked(T3Hit),
@@ -628,8 +667,9 @@ struct T3Hit {
     reason: &'static str,
 }
 
-/// 对一个 a11y 元素做名单/密码字段判定。坐标筛查（screen_point）与键盘焦点
-/// 筛查共用同一套判定，两条路径的安全标准必须一致。
+/// Runs the denylist/password-field determination on one a11y element.
+/// Coordinate screening (screen_point) and keyboard focus screening share the
+/// same determination; the safety standard must be identical on both paths.
 fn screen_element(element: &ElementInfo) -> T3Screening {
     if element.secure || is_secure_role(&element.role) {
         return T3Screening::Blocked(T3Hit {
@@ -646,13 +686,16 @@ fn screen_element(element: &ElementInfo) -> T3Screening {
     T3Screening::Clear
 }
 
-/// 对一个输入坐标处的 a11y 元素做名单/密码字段筛查。
+/// Screens the a11y element at one input coordinate against the
+/// denylist/password fields.
 fn screen_point(parts: &Parts, x: i32, y: i32) -> T3Screening {
     let element = match parts.backend.element_at_point(x, y) {
         Ok(element) => element,
-        // 筛查不可用（a11y 查询故障）≠ 命中名单：筛查是尽力而为的类别检测，
-        // 没有主流产品为筛查基础设施故障单独索要确认（AT-SPI 不可用、多屏
-        // 等场景下 fail-closed 只会制造确认风暴）。放行执行。
+        // Screening unavailable (a11y query failure) ≠ a denylist hit:
+        // screening is best-effort category detection, and no mainstream
+        // product asks for a confirmation over a screening infrastructure
+        // failure (in AT-SPI-unavailable, multi-monitor and similar scenarios,
+        // fail-closed would only cause confirmation storms). Let it execute.
         Err(_) => return T3Screening::Clear,
     };
     match element {
@@ -681,11 +724,14 @@ fn is_typed_text_chord(keys: &[Key]) -> bool {
     keys.iter().any(|k| matches!(k, Key::Char(_)))
 }
 
-/// T3 后果性筛查：只对**激活类** Input 动作执行（见 [`requires_t3_check`]）。
+/// T3 consequential screening: runs only for **activation-class** Input
+/// actions (see [`requires_t3_check`]).
 ///
-/// 筛查点选择：
-/// - 带坐标的点击查目标点；`left_click_drag` 查**起点与落点**两个点（拖进
-///   回收站/Delete 区是典型后果性动作，只查光标会漏掉终点）。
+/// Screening point selection:
+/// - Coordinate-carrying clicks check the target point; `left_click_drag`
+///   checks **both the start and the drop point** (dragging into the recycle
+///   bin/Delete area is a typical consequential action; checking only the
+///   cursor would miss the endpoint).
 /// - Keyboard actions (type/key/hold_key) screen the focused element passed
 ///   in by `run` — keyboard input lands on the focus, not at the cursor, so
 ///   screening the cursor would miss a password field under focus. `run`
@@ -704,18 +750,21 @@ fn is_typed_text_chord(keys: &[Key]) -> bool {
 ///   screens the real cursor location; a point outside this map's rect
 ///   belongs to another monitor and mapping it here would screen a location
 ///   far from the real cursor — no target, Clear.
-/// - mouse_move 与 scroll 根本不进入本函数（悬停/滚动无动作后果，主流对
-///   hover/scroll 一律不设门）。
+/// - mouse_move and scroll never enter this function at all (hover/scroll
+///   have no action consequences; mainstream products put no gate on
+///   hover/scroll).
 ///
-/// 所有「筛查不可用」路径一律 Clear（best-effort 类别检测：正面命中才确认，
-/// 筛查基础设施故障不制造确认风暴）。
+/// Every "screening unavailable" path is Clear (best-effort category
+/// detection: only a positive hit confirms; screening infrastructure failures
+/// do not cause confirmation storms).
 fn t3_screening(
     parts: &Parts,
     action: &ComputerUseAction,
     map: Option<&ScaleMap>,
     focused: Option<&ElementInfo>,
 ) -> T3Screening {
-    // 键盘类动作：筛查焦点元素（键盘输入的真正落点）。
+    // Keyboard-class actions: screen the focused element (where keyboard
+    // input really lands).
     if matches!(
         action,
         ComputerUseAction::Type { .. }
@@ -745,7 +794,7 @@ fn t3_screening(
             let (ex, ey, _) = m.clamp_shot(end.0, end.1);
             vec![m.shot_to_input(sx, sy), m.shot_to_input(ex, ey)]
         }
-        // mouse down/up 与无坐标点击作用于当前光标处。
+        // mouse down/up and coordinate-less clicks act at the current cursor.
         _ => match parts.backend.cursor_position() {
             Ok((ix, iy)) => {
                 let Some(m) = map else {
@@ -768,10 +817,12 @@ fn t3_screening(
     T3Screening::Clear
 }
 
-/// T3 筛查只覆盖**激活类**动作：点击/按下/释放/拖拽/键盘——能触发控件或
-/// 产生输入后果的动作。mouse_move 与 scroll 仍是 Input 类（需要会话授权、
-/// 照常审计），但悬停与滚动不产生动作后果，不设筛查确认——主流产品对
-/// hover/scroll 一律不设门。
+/// T3 screening covers only **activation-class** actions: clicks/press/
+/// release/drag/keyboard — actions that can trigger a control or produce an
+/// input consequence. mouse_move and scroll are still Input class (they need
+/// a session grant and are audited as usual), but hover and scroll produce no
+/// action consequence and get no screening confirmation — mainstream products
+/// put no gate on hover/scroll.
 fn requires_t3_check(action: &ComputerUseAction) -> bool {
     matches!(
         action,
@@ -806,12 +857,15 @@ fn full_type_preview(action: &ComputerUseAction, secure_type_target: bool) -> Op
             let count = text.chars().count();
             (count <= 4096).then(|| text.clone())
         }
-        // 键位形式的和弦同样是打字（round-12 评审）：`key "h+a+c+k"` 在
-        // 带标签的非安全目标上原本只显示 "4 characters"，用户在逐块盲签
-        // ——同为打字输入，type 显示全文而 key 不显示，透明度不一致。
-        // 非安全目标上把字符键序列原样展示（同一 4096 上限）；纯命名键
-        // 和弦（ctrl+s、Return）注入的不是字符，不产预览。密码等安全
-        // 目标在调用点已被 secure_type_target 拦下。
+        // Character-key chords are typing too (round-12 review): `key
+        // "h+a+c+k"` on a labeled non-secure target used to show only
+        // "4 characters", leaving the user blind-signing chunk by chunk —
+        // both are typing input, yet type showed the full text while key did
+        // not, an inconsistency in transparency. On non-secure targets, show
+        // the character-key sequence verbatim (the same 4096 cap); pure
+        // named-key chords (ctrl+s, Return) inject no characters and produce
+        // no preview. Password and other secure targets are already caught by
+        // secure_type_target at the call site.
         ComputerUseAction::KeyChord { keys, .. } | ComputerUseAction::HoldKey { keys, .. }
             if is_typed_text_chord(keys) =>
         {
@@ -829,8 +883,10 @@ fn full_type_preview(action: &ComputerUseAction, secure_type_target: bool) -> Op
     }
 }
 
-/// 铸造待确认请求、发事件并给模型返回「未执行、去要确认」错误。每个会话
-/// 至多一个 pending：新的请求直接替换旧请求（最新胜出，与普通对话框一致）。
+/// Mints a pending confirmation request, emits the event, and returns the
+/// "not executed, go ask for confirmation" error to the model. At most one
+/// pending per session: a new request replaces the old one directly (newest
+/// wins, like an ordinary dialog).
 fn request_confirmation(
     parts: &Parts,
     summary: &str,
@@ -869,7 +925,8 @@ fn request_confirmation(
     )
 }
 
-/// 动作是否附截图（单一事实来源在 [`ComputerUseAction::attaches_screenshot`]）。
+/// Whether the action attaches a screenshot (the single source of truth is
+/// [`ComputerUseAction::attaches_screenshot`]).
 fn attaches_screenshot(action: &ComputerUseAction) -> bool {
     action.attaches_screenshot()
 }
@@ -896,17 +953,22 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
     let mut confirmed_t3 = false;
 
     let body: Result<String, String> = (|| {
-        // 物理输入是全局独占资源：Input 类动作从筛查到注入全程持有进程级
-        // 互斥，两个并发会话不能交替打字/点击（评审发现）。获取改为有界等待：
-        // 锁被其他会话持有时超时显式报错（InputBusy），而不是无限挂等把其他
-        // 会话静默卡死（评审发现）。
+        // Physical input is a globally exclusive resource: Input-class actions
+        // hold the process-level mutex from screening through injection, so
+        // two concurrent sessions cannot interleave typing/clicks (review
+        // finding). Acquisition is a bounded wait: when the lock is held by
+        // another session, it times out with an explicit error (InputBusy)
+        // instead of waiting unboundedly and silently wedging other sessions
+        // (review finding).
         let _input_guard = (action.class() == ActionClass::Input)
             .then(|| parts.shared.lock_physical_input())
             .transpose()
             .map_err(|rejection| rejection.message())?;
 
-        // 带坐标动作没有 ScaleMap 时先自动截图（会话首次）；T3 动作同样需要
-        // 映射——筛查点的坐标换算和光标映射都依赖它。
+        // Coordinate-carrying actions auto-capture first when there is no
+        // ScaleMap (session's first); T3 actions need the map too — the
+        // screening point's coordinate conversion and cursor mapping both
+        // depend on it.
         if (action.needs_scale_map() || requires_t3_check(&action))
             && parts.state.lock().last_map.is_none()
         {
@@ -918,8 +980,9 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
             shot = Some(auto);
         }
 
-        // T3 确认令牌：模型回传 confirm_id 且状态里有与之匹配（同会话、同
-        // 动作摘要）的批准令牌才放行。
+        // T3 confirmation token: proceed only when the model passes back a
+        // confirm_id and the state holds a matching approval token (same
+        // session, same action summary).
         if requires_t3_check(&action) {
             let summary = action_summary(&action);
             match &parsed.confirm_id {
@@ -991,15 +1054,17 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
             }
         }
 
-        // 注入前最后一刻只读复检（停止旗标 + 授权仍有效）：gate 之后可能隔
-        // 着自动截图等耗时步骤，期间用户可能 revoke/stop（评审发现）。
+        // Last-moment read-only re-check before injection (stop flag + grant
+        // still valid): after the gate there can be time-consuming steps such
+        // as an automatic screenshot, during which the user may revoke/stop
+        // (review finding).
         if action.class() == ActionClass::Input {
             if let Err(rejection) = parts.shared.verify_input_action(&parts.session_id) {
                 return Err(rejection.message());
             }
         }
 
-        // 能力检查。
+        // Capability check.
         let capabilities = parts
             .backend
             .capabilities()
@@ -1022,9 +1087,10 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                     capabilities.notes
                 ));
             }
-            // 截图能力位此前从未被检查（round-12 评审 M6）：不支持捕获的
-            // 平台上 screenshot 会一路走到补拍降级 warning，模型拿到
-            // success=true 却没有图。
+            // The screenshot capability bit was never checked before (round-12
+            // review M6): on a platform without capture, screenshot would run
+            // all the way to the post-capture degraded warning, and the model
+            // would get success=true with no image.
             ActionClass::Observe
                 if matches!(action, ComputerUseAction::Screenshot) && !capabilities.screenshot =>
             {
@@ -1036,12 +1102,12 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
             _ => {}
         }
 
-        // 执行动作。
+        // Execute the action.
         let map = parts.state.lock().last_map.clone();
         let mut outcome = execute_action(&parts, &action, map.as_ref(), &mut warnings)
             .map_err(|e| backend_error_text(&e))?;
 
-        // 补拍截图。
+        // Follow-up screenshot.
         if attaches_screenshot(&action) {
             match &action {
                 ComputerUseAction::Screenshot => {}
@@ -1059,10 +1125,13 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                     shot = Some(fresh);
                 }
                 Err(error) if matches!(action, ComputerUseAction::Screenshot) => {
-                    // Screenshot 的截图就是动作本身（round-12 评审 M6）：失败
-                    // 必须上抛。降级成 warning 会让模型拿到 success 与空结果、
-                    // 审计记 ok——与自动补拍路径（硬失败，不执行动作）口径
-                    // 分裂，捕获不可用这一平台状态也对模型不可见。
+                    // For Screenshot, the capture IS the action (round-12
+                    // review M6): a failure must propagate. Degrading to a
+                    // warning would give the model success with an empty
+                    // result and an ok audit record — diverging from the
+                    // auto-capture path (hard failure, the action does not
+                    // run) and leaving the "capture unavailable" platform
+                    // state invisible to the model.
                     return Err(backend_error_text(&error));
                 }
                 Err(error) => warnings.push(format!("post-action capture failed: {error}")),
@@ -1110,7 +1179,8 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         ComputerUseAction::KeyChord { chord, .. } => {
             record.with_target(&format!("keys: {chord}"));
         }
-        // hold_key 记录按住时长（评审发现：审计此前答不了"按了多久"）。
+        // hold_key logs the held duration (review finding: the audit could
+        // not previously answer "how long was it held").
         ComputerUseAction::HoldKey { chord, ms, .. } => {
             record.with_target(&format!("keys: {chord} held for {ms}ms"));
         }
@@ -1176,7 +1246,8 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
     }
 }
 
-/// hold_key 的审计目标后缀（按住时长）；非 hold 动作为空串。
+/// The audit target suffix for hold_key (held duration); empty for non-hold
+/// actions.
 fn held_key_suffix(action: &ComputerUseAction) -> String {
     match action {
         ComputerUseAction::HoldKey { ms, .. } => format!(" held for {ms}ms"),
@@ -1184,13 +1255,16 @@ fn held_key_suffix(action: &ComputerUseAction) -> String {
     }
 }
 
-/// 键盘动作摘要里的和弦渲染。含字符键的和弦是"打字"（可拼出密码块），
-/// 字符永不进入摘要/确认事件——只渲染修饰键与命名键，字符以计数表达
-/// （`ctrl+s` → `ctrl + 1 character`、`esc+h+u+n` → `esc + 3
-/// characters`）；纯命名键和弦保持可读原文（`ctrl+Delete`）。与审计的
-/// 计数规则（[`is_typed_text_chord`]）同一分类边界。摘要会绑定进批准令牌
-/// （mint 与 spend 都经 [`action_summary`]），因此必须只依赖动作本身、
-/// 与焦点状态无关。
+/// Chord rendering in keyboard action summaries. A chord containing
+/// character keys is "typing" (it can spell out password chunks); characters
+/// never enter the summary/confirm event — only modifiers and named keys are
+/// rendered, with characters expressed as a count (`ctrl+s` →
+/// `ctrl + 1 character`, `esc+h+u+n` → `esc + 3 characters`); pure named-key
+/// chords keep the readable original (`ctrl+Delete`). Same classification
+/// boundary as the audit's counting rule ([`is_typed_text_chord`]). The
+/// summary is bound into the approval token (both mint and spend go through
+/// [`action_summary`]), so it must depend only on the action itself and never
+/// on focus state.
 fn summarize_chord(keys: &[Key], chord: &str) -> String {
     let chars = keys
         .iter()
@@ -1215,10 +1289,11 @@ fn summarize_chord(keys: &[Key], chord: &str) -> String {
     }
 }
 
-/// 动作摘要：纯人类可读的参数摘要（`left click x1 at Some((5, 6))`、
-/// `type 3 characters`……）。摘要展示给用户（知情批准）并绑定进批准令牌；
-/// 键入内容永不出现（Type 只记字符数；和弦经 [`summarize_chord`] 只记
-/// 命名键与字符数）。
+/// Action summary: a purely human-readable parameter summary
+/// (`left click x1 at Some((5, 6))`, `type 3 characters`, …). The summary is
+/// shown to the user (informed approval) and bound into the approval token;
+/// typed content never appears (Type records only the character count; chords
+/// record only named keys and a character count via [`summarize_chord`]).
 fn action_summary(action: &ComputerUseAction) -> String {
     match action {
         ComputerUseAction::Click { button, count, at } => {
@@ -1290,10 +1365,14 @@ fn execute_action(
         }
         ComputerUseAction::Wait { ms } => Ok(format!("waited {ms} ms")),
         ComputerUseAction::UiTree { opts } => backend.ui_tree(*opts).map(|tree| {
-            // a11y 矩形是后端的输入/屏幕坐标，不是本工具契约的截图像素空间
-            // （评审发现：长边超 1440px 的截图会被降采样，两套坐标按比例因子
-            // 静默错位——cursor_position 有转换，树输出此前没有）。无法在工具
-            // 层解析后端文本，先显式声明空间，别让模型拿矩形当截图坐标。
+            // a11y rectangles are the backend's input/screen coordinates, not
+            // this tool contract's screenshot pixel space (review finding:
+            // screenshots with a long edge over 1440px get downsampled and
+            // the two coordinate sets silently drift by the scale factor —
+            // cursor_position has a conversion, the tree output did not). The
+            // tool layer cannot parse the backend text, so declare the space
+            // explicitly and keep the model from treating the rectangles as
+            // screenshot coordinates.
             format!(
                 "{tree}\n(bounds above are global input/screen coordinates, not screenshot \
                  pixel space; use element_at_point on the screenshot to resolve screenshot-space \
@@ -1312,9 +1391,12 @@ fn execute_action(
             };
             match backend.element_at_point(ix, iy)? {
                 Some(element) => {
-                    // 矩形按两角转换后取包围盒：bounds 是后端的输入/屏幕坐标，
-                    // 必须先转回截图像素空间再交给模型（契约一致性，评审发现
-                    // ——否则模型拿 bounds 当截图坐标点击会按比例因子偏移）。
+                    // Convert both corners and take the bounding box: bounds
+                    // are the backend's input/screen coordinates and must be
+                    // converted back to screenshot pixel space before being
+                    // handed to the model (contract consistency, review
+                    // finding — otherwise a click using bounds as screenshot
+                    // coordinates would land offset by the scale factor).
                     let (ax, ay) = m.input_to_shot(element.x, element.y);
                     let (bx, by) = m.input_to_shot(
                         element.x.saturating_add(element.width),
@@ -1391,8 +1473,9 @@ fn execute_action(
         }
         ComputerUseAction::MouseDown { button } => {
             backend.mouse_down(*button)?;
-            // 按住状态只服务于拖拽失败后的兜底松键（失败路径不置位：按下
-            // 失败=物理上没有按住）；筛查不再使用它。
+            // The held state serves only the fallback release after a failed
+            // drag (the failure path does not set it: a failed press =
+            // physically not held); screening no longer uses it.
             if *button == MouseButton::Left {
                 parts.state.lock().mouse_buttons_held = true;
             }
@@ -1435,7 +1518,8 @@ fn execute_action(
                 }
                 return Err(ComputerUseError::failed(format!("{error}{note}")));
             }
-            // 拖拽内部完成按下+释放：无论此前状态如何，左键已不在按下态。
+            // A drag completes press + release internally: regardless of
+            // prior state, the left button is no longer held.
             parts.state.lock().mouse_buttons_held = false;
             Ok(format!("dragged from {start:?} to {end:?}"))
         }
@@ -1515,27 +1599,33 @@ impl ToolSpec for ComputerUseTool {
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
-        // 引擎当前忽略该元数据、同意门控在工具内部执行；标 Required 供未来引擎
-        // 支持时组合。
+        // The engine currently ignores this metadata and consent gating runs
+        // inside the tool; marked Required so it composes when a future
+        // engine supports it.
         ApprovalRequirement::Required
     }
 
     fn supports_parallel(&self) -> bool {
-        // 鼠标/键盘是全局独占资源：绝不与其他工具并行。
+        // The mouse/keyboard is a globally exclusive resource: never parallel
+        // with other tools.
         false
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        // 解析失败同样留痕（round-6 评审：parse 阶段的拒绝此前零审计，模型
-        // 可以无痕迹地探测动作面）。只记截断后的动作名与错误，绝不记录
-        // 调用参数全文（可能含键入文本）。
+        // Parse failures leave a trace too (round-6 review: rejections at the
+        // parse stage had zero audit, so the model could probe the action
+        // surface without a trace). Only the truncated action name and error
+        // are recorded; the full call arguments (which may contain typed
+        // text) are never recorded.
         let parsed = match parse_action(&input) {
             Ok(parsed) => parsed,
             Err(error) => {
-                // 审计记录只含稳定的形状信息:动作名未知的按 "unknown" 记录
-                // (模型可控文本不进日志),错误文本本身经 parse 层保证不回显
-                // 模型输入(见 parse_action 的 unknown-action / not-accepted
-                // 分支与 parse_key_chord 的形状错误)。
+                // The audit record holds only stable shape information: an
+                // unknown action name is recorded as "unknown"
+                // (model-controlled text does not enter the log), and the
+                // error text itself is guaranteed by the parse layer not to
+                // echo model input (see parse_action's unknown-action /
+                // not-accepted branches and parse_key_chord's shape errors).
                 let raw_action = input.get("action").and_then(Value::as_str);
                 let audit_target = match raw_action {
                     Some(name) if SUPPORTED_ACTIONS.contains(&name) => {
@@ -1571,8 +1661,10 @@ impl ToolSpec for ComputerUseTool {
             }
         };
 
-        // 能力先行（评审发现：先弹授权再报不支持，会诱导用户为一个永远无法
-        // 使用的平台授权，还白白消耗一次授权预算）。
+        // Capabilities first (review finding: prompting for the grant before
+        // reporting the platform unsupported would induce the user to
+        // authorize a platform that can never be used, while burning a grant
+        // budget for nothing).
         if parsed.action.class() == ActionClass::Input {
             let backend = self.parts.backend.clone();
             let capabilities = tauri::async_runtime::spawn_blocking(move || backend.capabilities())
@@ -1582,8 +1674,9 @@ impl ToolSpec for ComputerUseTool {
                 })?
                 .map_err(|error| ToolError::execution_failed(backend_error_text(&error)))?;
             if !capabilities.input {
-                // 审计被拒调用（评审发现：能力拒绝此前无任何痕迹，与 gate
-                // 拒绝的既有审计口径不一致）。
+                // Audit the rejected call (review finding: capability
+                // rejections had no trace at all, inconsistent with the
+                // established audit treatment of gate rejections).
                 audit_rejected_call(
                     &self.parts,
                     &parsed.action,
@@ -1600,8 +1693,9 @@ impl ToolSpec for ComputerUseTool {
             }
         }
 
-        // 同意门控（同步快速路径，拒绝时发事件）。观察类动作只需开关开启且
-        // 未停止（check_readonly）。
+        // Consent gate (synchronous fast path; emits an event on rejection).
+        // Observe-class actions only need the switch on and no stop
+        // (check_readonly).
         let gate = match parsed.action.class() {
             ActionClass::Observe => self.parts.shared.check_readonly(),
             ActionClass::Input => self.parts.shared.begin_input_action(&self.parts.session_id),
@@ -1613,8 +1707,10 @@ impl ToolSpec for ComputerUseTool {
                     json!({ "session_id": self.parts.session_id }),
                 );
             }
-            // 审计被拒调用（非输入类允许降级为 eprintln；动作未执行，无注入
-            // 后果，但绝不静默吞错——评审发现）。
+            // Audit the rejected call (non-input classes may degrade to
+            // eprintln; the action did not run and there is no injection
+            // consequence, but the error is never swallowed silently —
+            // review finding).
             audit_rejected_call(
                 &self.parts,
                 &parsed.action,
@@ -1631,11 +1727,13 @@ impl ToolSpec for ComputerUseTool {
         tauri::async_runtime::spawn_blocking(move || run(parts, parsed, workspace))
             .await
             .map_err(|error| {
-                // worker join 失败 = run 在注入可能已发生后 panic：这是唯一
-                // 一个"动作可能已执行"却不留审计记录的路径（评审发现）。
-                // 审计 error 字段用固定文案——JoinError 携带的 panic 文本可能
-                // 内嵌输入内容（如 char boundary panic 的 chord 片段），不得
-                // 回显进 JSONL；完整错误只给模型。
+                // Worker join failure = run panicked, possibly after injection
+                // happened: this is the only "action may have executed" path
+                // with no audit record (review finding). The audit error
+                // field uses fixed copy — the panic text carried by JoinError
+                // may embed input content (e.g. a chord fragment from a char
+                // boundary panic) and must not be echoed into the JSONL; the
+                // full error goes only to the model.
                 let record = AuditRecord::new(&audit_session, audit_action, "input").finish(
                     "error",
                     Some("worker join failed".to_string()),
@@ -1660,8 +1758,9 @@ fn rejection_name(rejection: GuardRejection) -> &'static str {
     }
 }
 
-/// 被拒调用（gate 拒绝 / 能力拒绝）的审计：动作未执行、无注入后果，但
-/// 绝不静默吞错（fail-open：append 失败只 eprintln）。
+/// Audit for rejected calls (gate rejection / capability rejection): the
+/// action did not run and there is no injection consequence, but the error is
+/// never swallowed silently (fail-open: an append failure only eprintlns).
 fn audit_rejected_call(parts: &Parts, action: &ComputerUseAction, reason: &str, message: &str) {
     let record = AuditRecord::new(
         &parts.session_id,

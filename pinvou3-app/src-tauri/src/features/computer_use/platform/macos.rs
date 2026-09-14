@@ -1,36 +1,51 @@
-//! macOS 后端：xcap（CGWindowListCreateImage）/ScreenCaptureKit 截屏 + 鼠标
-//! 事件原生 CGEvent 直发、键盘/滚轮经 enigo + ApplicationServices AXUIElement
-//! 无障碍树。
+//! macOS backend: screenshots via xcap (CGWindowListCreateImage) /
+//! ScreenCaptureKit; mouse events posted natively as CGEvents; keyboard and
+//! wheel go through enigo; the accessibility tree comes from
+//! ApplicationServices AXUIElement.
 //!
-//! 坐标约定（types.rs 契约的 macOS 具体化）：
-//! - 输入坐标空间 = CGEvent 全局**点**（左上角原点，多显示器可为负）。
-//! - `Capture.origin_x/y` 直接用 xcap 报告的显示器原点（macOS 上
-//!   CGDisplayBounds 返回点）；`Capture.input_scale_x/y` 从返回图像反推
-//!   （点宽 / 实际像素宽，Retina 2x → 0.5），不信任 scale_factor 估计值；
-//!   截图为物理像素。
+//! Coordinate conventions (the macOS concretization of the types.rs contract):
+//! - The input coordinate space = CGEvent global **points** (top-left origin,
+//!   negative on multi-monitor layouts).
+//! - `Capture.origin_x/y` uses the monitor origins reported by xcap directly
+//!   (on macOS CGDisplayBounds returns points); `Capture.input_scale_x/y` is
+//!   derived backwards from the returned image (points / actual pixel width,
+//!   Retina 2x → 0.5) and never trusts the scale_factor estimate; screenshots
+//!   are physical pixels.
 //! - `cursor_position` returns global input-space coordinates (CGEvent
 //!   points), the same space the action coordinates use.
-//! - AX 返回的元素位置/尺寸同为屏幕点坐标，与输入坐标空间一致。
+//! - Element positions/sizes returned by AX are also screen point
+//!   coordinates, consistent with the input coordinate space.
 //!
-//! 截屏实现：macOS 15.2+ 走 ScreenCaptureKit（[`super::screen_capture_kit`]，
-//! `SCScreenshotManager::captureImageInRect`——该类方法 15.2 才可用）；14.x 及
-//! 更早回退 xcap 的 CGWindowListCreateImage 路径（该 API 在 macOS 15 SDK 已
-//! obsoleted，且在 Sequoia+ 会触发周期性"继续允许录屏"系统确认，但对旧系统
-//! 仍是唯一选择）。应用最低支持 macOS 11：ScreenCaptureKit.framework 为弱
-//! 链接（见 build.rs），12.3 之前的系统由 dyld 跳过并走回退。
+//! Screenshot implementation: on macOS 15.2+ ScreenCaptureKit is used
+//! ([`super::screen_capture_kit`], `SCScreenshotManager::captureImageInRect`
+//! — that class method is only available from 15.2); on 14.x and earlier we
+//! fall back to xcap's CGWindowListCreateImage path (that API is obsoleted in
+//! the macOS 15 SDK and on Sequoia+ triggers the periodic "keep allowing
+//! screen recording" system confirmation, but on older systems it remains the
+//! only option). The app supports macOS 11 at minimum:
+//! ScreenCaptureKit.framework is weakly linked (see build.rs); systems before
+//! 12.3 are skipped by dyld and take the fallback.
 //!
-//! 权限（TCC，两条独立授权，授权后通常都需要重启本应用才生效）：
-//! - Screen Recording：截屏前用 CGPreflightScreenCaptureAccess 预检，缺失返回
-//!   显式 `screen_recording_denied` 错误；工具路径**不**主动触发系统弹窗。
-//! - Accessibility：输入注入与 AX 树前用 AXIsProcessTrusted 预检，缺失返回显式
-//!   `accessibility_denied` 错误——CGEventPost 未授权时被 WindowServer **静默
-//!   丢弃**（无错误返回），不预检会出现"点击成功但什么都没发生"。
-//! 授权引导由 [`request_permissions`] 提供，供集成层在设置页/引导流程调用。
+//! Permissions (TCC, two independent grants; after granting, both usually
+//! need an app restart to take effect):
+//! - Screen Recording: CGPreflightScreenCaptureAccess is preflighted before
+//!   capture; when missing, an explicit `screen_recording_denied` error is
+//!   returned; the tool path does **not** proactively trigger the system
+//!   dialog.
+//! - Accessibility: AXIsProcessTrusted is preflighted before input injection
+//!   and AX tree access; when missing, an explicit `accessibility_denied`
+//!   error is returned — unauthorized CGEventPost is **silently dropped** by
+//!   WindowServer (no error return); without the preflight you get "the click
+//!   succeeded but nothing happened".
+//! Grant onboarding is provided by [`request_permissions`] for the
+//! integration layer to call from the settings page / onboarding flow.
 //!
-//! 线程约定：AXUIElement 是 CFType（!Send/!Sync）。本后端不跨调用持有任何 AX
-//! 对象——所有 AXUIElement/AXValue 都在单次方法调用内于 backend worker 线程
-//! 创建、使用、释放（backend.rs 保证 worker 线程亲和，对象永不离线程），因此
-//! 结构体只靠自动 Send（Enigo 内部已 unsafe impl Send），无需手写 unsafe impl。
+//! Threading contract: AXUIElement is a CFType (!Send/!Sync). This backend
+//! holds no AX objects across calls — every AXUIElement/AXValue is created,
+//! used, and released within a single method call on the backend worker
+//! thread (backend.rs guarantees worker-thread affinity; objects never leave
+//! the thread), so the struct relies on auto Send alone (Enigo already has an
+//! internal unsafe impl Send); no hand-written unsafe impl is needed.
 //!
 //! Autorelease-pool invariant: the backend worker thread has no Obj-C
 //! runloop and no autorelease pool. Every ObjC/CF call on the input/capture
@@ -40,15 +55,18 @@
 //! would start leaking silently; if that ever changes, wrap the call site in
 //! `objc2::rc::autoreleasepool`.
 //!
-//! CF 层说明：AX 属性名常量（kAXRoleAttribute 等）未被
-//! objc2-application-services 0.3.2 的 header-translator 生成，且
-//! CFDictionary/CFArray 的泛型默认参数是 crate 私有类型，外部无法构造——
-//! 因此属性名用 NSString（toll-free bridged 即 CFString）、数组/字典/布尔/
-//! 释放用少量 CoreFoundation extern "C"（同 detach.rs 的 FFI 先例）。
-//! AX「Copy 规则」返回的对象经 GetTypeID 前置校验后一律转入类型化智能指针
-//! （`CFRetained<AXUIElement>` / `CFRetained<AXValue>` / `Retained<NSString>`）
-//! 使用，本模块不对裸指针做解引用（CodeQL invalid-pointer-dereference 的
-//! 根治：裸 `&*(ptr as *const T)` 桥接转型已全部移除）。
+//! CF layer notes: the AX attribute-name constants (kAXRoleAttribute etc.)
+//! are not generated by objc2-application-services 0.3.2's header-translator,
+//! and CFDictionary/CFArray's generic default parameters are crate-private
+//! types that cannot be constructed externally — hence attribute names use
+//! NSString (toll-free bridged to CFString) and a small set of
+//! CoreFoundation extern "C" functions for array/dictionary/boolean/release
+//! (the same FFI precedent as detach.rs). Objects returned by the AX "Copy
+//! rule" are always converted into typed smart pointers
+//! (`CFRetained<AXUIElement>` / `CFRetained<AXValue>` / `Retained<NSString>`)
+//! after a GetTypeID precheck; this module never dereferences raw pointers
+//! (the definitive fix for CodeQL invalid-pointer-dereference: the bare
+//! `&*(ptr as *const T)` bridging casts have all been removed).
 
 use std::ffi::c_void;
 use std::fmt::Write as _;
@@ -75,45 +93,59 @@ use super::super::types::{
 };
 use super::helpers::{TYPE_CHUNK_CHARS, char_chunks, drag_waypoints, map_scroll, sanitize_name};
 
-/// 点击前等待先前 move 落位（目标进程消费鼠标移动事件）。
+/// Wait before a click so the preceding move settles (the target process
+/// consumes the mouse-moved event).
 const CLICK_SETTLE_MS: u64 = 30;
-/// 双击/三击中相邻两次点击的间隔（远小于系统双击时限；enigo 内部按
-/// NSEvent.doubleClickInterval 维护 clickState，双/三击由它识别）。
+/// Gap between consecutive clicks in a double/triple click (far below the
+/// system double-click threshold; enigo maintains clickState internally per
+/// NSEvent.doubleClickInterval, and double/triple clicks are recognized from
+/// it).
 const MULTI_CLICK_INTERVAL_MS: u64 = 40;
-/// 拖拽按下后、开始移动前的停顿，给目标窗口进入拖拽识别状态的时间。
+/// Pause after the drag press and before movement starts, giving the target
+/// window time to enter drag-recognition state.
 const DRAG_PRESS_SETTLE_MS: u64 = 60;
-/// 拖拽路径插值步数（部分应用只有收到足够多 motion 事件才识别拖拽）。
+/// Number of interpolated drag path steps (some apps only recognize a drag
+/// after receiving enough motion events).
 const DRAG_STEPS: usize = 8;
-/// 拖拽相邻两点的间隔。
+/// Delay between adjacent drag waypoints.
 const DRAG_STEP_DELAY_MS: u64 = 12;
-/// 按下全部键与逆序释放之间的停顿，提高修饰键和弦（cmd+Tab 等）命中率。
+/// Pause between pressing all keys and releasing them in reverse; improves
+/// the hit rate of modifier chords (cmd+Tab etc.).
 const CHORD_HOLD_MS: u64 = 20;
 
-/// `ui_tree` 默认/上限：深度与节点数（防止巨型树拖垮 worker 线程与文本预算）。
+/// `ui_tree` defaults/caps: depth and node count (keeps giant trees from
+/// overwhelming the worker thread and the text budget).
 const DEFAULT_TREE_MAX_DEPTH: u32 = 8;
 const DEFAULT_TREE_MAX_NODES: u32 = 400;
 const MAX_TREE_DEPTH: u32 = 24;
 const MAX_TREE_NODES: u32 = 2000;
-/// 单行 name 的字符上限。
+/// Character cap for a single-line name.
 const MAX_NODE_NAME_CHARS: usize = 80;
-/// AX 同步跨进程 IPC 的全局消息超时（秒）。默认约 6s，重型应用
-/// （浏览器/Electron）属性读可能挂住，收紧到 2s 保护 worker 线程。
+/// Global message timeout (seconds) for AX's synchronous cross-process IPC.
+/// The default is about 6s; heavy apps (browsers/Electron) can hang on
+/// attribute reads, so it is tightened to 2s to protect the worker thread.
 const AX_MESSAGING_TIMEOUT_SECS: f32 = 2.0;
-/// `ui_tree` 整体遍历时限。单次 AX 调用有 [`AX_MESSAGING_TIMEOUT_SECS`] 兜底，
-/// 但整棵树（默认 400 节点 × 每节点最多 7 次属性读）的最坏总耗时没有上界
-/// （可把 worker 线程钉死约 1.5 小时）；到点即中止遍历并置 truncated，
-/// 已生成的部分树仍然有效。
+/// Overall traversal time limit for `ui_tree`. A single AX call is bounded by
+/// [`AX_MESSAGING_TIMEOUT_SECS`], but the worst-case total for a whole tree
+/// (default 400 nodes × up to 7 attribute reads per node) has no upper bound
+/// (it can pin the worker thread for about 1.5 hours); when the limit hits,
+/// traversal aborts and sets truncated — the partially generated tree remains
+/// valid.
 const AX_TREE_TIME_LIMIT: Duration = Duration::from_secs(10);
-/// 连续 `AXError::CannotComplete`（目标进程无响应/挂死）的中止阈值。正常树里
-/// 该错误不应连续出现；连续出现说明目标已挂死，继续遍历只会每属性白耗 2s。
+/// Abort threshold for consecutive `AXError::CannotComplete` (the target
+/// process is unresponsive/hung). This error should not occur consecutively
+/// in a healthy tree; consecutive occurrences mean the target is hung, and
+/// continuing would just burn 2s per attribute.
 const AX_CANNOT_COMPLETE_LIMIT: u32 = 3;
-/// 点击落点防护的容差（点）：光标实际位置与最近一次合成移动目标的偏差超过
-/// 该值时，点击/按下前先重新移动到目标。
+/// Tolerance (points) for the click landing guard: when the actual cursor
+/// position deviates from the most recent synthetic move target by more than
+/// this, click/press re-moves to the target first.
 const CLICK_POSITION_TOLERANCE_PT: i32 = 2;
 
-/// Screen Recording 拒绝时的显式错误（授权后需重启应用才生效，错误里说明）。
+/// Explicit error when Screen Recording is denied (the grant needs an app
+/// restart to take effect; the error says so).
 const SCREEN_RECORDING_DENIED: &str = "screen_recording_denied: enable in System Settings → Privacy & Security → Screen Recording, then restart the app";
-/// Accessibility 拒绝时的显式错误。
+/// Explicit error when Accessibility is denied.
 const ACCESSIBILITY_DENIED: &str = "accessibility_denied: enable in System Settings → Privacy & Security → Accessibility, then restart the app";
 
 #[link(name = "CoreGraphics", kind = "framework")]
@@ -121,16 +153,17 @@ unsafe extern "C" {
     fn CGEventCreate(source: *const c_void) -> *const c_void;
     fn CGEventGetLocation(event: *const c_void) -> NSPoint;
     /// CGEventRef CGEventCreateMouseEvent(CGEventSourceRef, CGEventType,
-    /// CGPoint, CGMouseButton)。类型按 SDK 原型自行声明：枚举是 u32。
+    /// CGPoint, CGMouseButton). Types declared manually per the SDK prototype:
+    /// the enums are u32.
     fn CGEventCreateMouseEvent(
         source: *const c_void,
         mouse_type: u32,
         at: NSPoint,
         button: u32,
     ) -> *const c_void;
-    /// void CGEventSetIntegerValueField(CGEventRef, CGEventField, int64_t)。
+    /// void CGEventSetIntegerValueField(CGEventRef, CGEventField, int64_t).
     fn CGEventSetIntegerValueField(event: *const c_void, field: u32, value: i64);
-    /// void CGEventPost(CGEventTapLocation, CGEventRef)。
+    /// void CGEventPost(CGEventTapLocation, CGEventRef).
     fn CGEventPost(tap: u32, event: *const c_void);
 }
 
@@ -140,8 +173,9 @@ unsafe extern "C" {
     fn CFGetTypeID(cf: *const c_void) -> usize;
     fn CFStringGetTypeID() -> usize;
     fn CFBooleanGetTypeID() -> usize;
-    /// C 原型返回 `Boolean`（unsigned char），按逐类型一致原则声明为 u8
-    /// 再判 `!= 0`（Rust `bool` 的 ABI 虽然实践中兼容，但不依赖它）。
+    /// The C prototype returns `Boolean` (unsigned char); declared as u8 per
+    /// the per-type consistency rule and checked with `!= 0` (Rust `bool`'s
+    /// ABI happens to be compatible in practice, but we do not rely on it).
     fn CFBooleanGetValue(boolean: *const c_void) -> u8;
     fn CFArrayGetTypeID() -> usize;
     fn CFArrayGetCount(array: *const c_void) -> isize;
@@ -159,13 +193,16 @@ unsafe extern "C" {
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
-    /// 带选项的 Accessibility 查询（kAXTrustedCheckOptionPrompt 可触发系统授权
-    /// 弹窗）。签名自行声明为 *const c_void：crate 里的版本参数是
-    /// Option<&CFDictionary>，而 CFDictionary 的泛型默认参数是 crate 私有类型，
-    /// 外部构造不出该引用。C 原型返回 `Boolean`（unsigned char）→ u8。
+    /// Accessibility query with options (kAXTrustedCheckOptionPrompt can
+    /// trigger the system grant dialog). The signature is declared manually
+    /// as *const c_void: the crate's version takes Option<&CFDictionary>, and
+    /// CFDictionary's generic default parameters are crate-private types, so
+    /// the reference cannot be constructed externally. The C prototype
+    /// returns `Boolean` (unsigned char) → u8.
     fn AXIsProcessTrustedWithOptions(options: *const c_void) -> u8;
-    /// objc2-application-services 只经 crate 私有的 ConcreteType trait 暴露
-    /// type_id；此处直接声明 C 符号用于 AX 对象的类型校验。
+    /// objc2-application-services only exposes type_id through a crate-private
+    /// ConcreteType trait; the C symbols are declared directly here for AX
+    /// object type checks.
     fn AXUIElementGetTypeID() -> usize;
     fn AXValueGetTypeID() -> usize;
 }
@@ -183,7 +220,8 @@ fn screen_recording_granted() -> bool {
 }
 
 fn accessibility_granted() -> bool {
-    // SAFETY: 无参数、纯查询本进程 TCC 授权态，不弹窗，任意线程可调。
+    // SAFETY: no arguments, purely queries this process's TCC grant state,
+    // shows no dialog, callable on any thread.
     unsafe { AXIsProcessTrusted() }
 }
 
@@ -195,38 +233,48 @@ fn accessibility_error() -> ComputerUseError {
     ComputerUseError::unavailable(ACCESSIBILITY_DENIED)
 }
 
-/// 焦点链（focused_element）单级属性读取失败（fail-closed）。
+/// A single-level attribute read along the focus chain (focused_element)
+/// failed (fail-closed).
 fn focused_chain_error(attribute: &str, err: AXError) -> ComputerUseError {
     ComputerUseError::failed(format!("reading {attribute} failed: AXError({})", err.0))
 }
 
-/// 触发两条 TCC 授权的系统弹窗（Screen Recording + Accessibility）。
-/// 由 `computer_use_request_permissions` Tauri 命令经 `platform::request_permissions`
-/// 调用；**工具路径不得调用**（工具只返回显式错误）。
-/// 两个弹窗各自每会话最多出现一次；授权后通常需要重启本应用才生效。
+/// Triggers the system dialogs for both TCC grants (Screen Recording +
+/// Accessibility). Called by the `computer_use_request_permissions` Tauri
+/// command via `platform::request_permissions`; the **tool path must not call
+/// it** (tools only return explicit errors).
+/// Each dialog appears at most once per session; after granting, an app
+/// restart is usually required for it to take effect.
 pub fn request_permissions() {
-    // 返回值是调用时的授权态；这里只为触发弹窗，忽略之。
+    // The return value is the grant state at call time; it is ignored here —
+    // the call is only made to trigger the dialog.
     let _ = CGRequestScreenCaptureAccess();
-    // AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: true})。
-    // kAXTrustedCheckOptionPrompt 的字符串值恒为 "AXTrustedCheckOptionPrompt"；
-    // 用 toll-free bridged 的 NSString 当键，绕开 crate 未生成该 static 的限制。
+    // AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: true}).
+    // The string value of kAXTrustedCheckOptionPrompt is always
+    // "AXTrustedCheckOptionPrompt"; a toll-free bridged NSString is used as
+    // the key, working around the crate not generating that static.
     let key = NSString::from_str("AXTrustedCheckOptionPrompt");
     let keys = [Retained::as_ptr(&key).cast::<c_void>()];
-    // SAFETY: kCFBooleanTrue 是 CoreFoundation 导出的有效 CFBoolean 单例，
-    // 进程生命周期内恒定有效；此处只把它的地址借给临时字典。
+    // SAFETY: kCFBooleanTrue is a valid CFBoolean singleton exported by
+    // CoreFoundation, valid for the lifetime of the process; only its address
+    // is lent to the temporary dictionary here.
     let values = [unsafe { kCFBooleanTrue }];
-    // kCFType 回调是正确性的关键（评审发现：NULL 回调让键按指针身份比较，
-    // HIServices 用自己的 kAXTrustedCheckOptionPrompt 全局实例做值查找永远
-    // 匹配不上——Accessibility 系统弹窗静默不触发，用户永远停在
-    // accessibility_denied）。kCFTypeDictionary*CallBacks 经 CFEqual 按内容
-    // 比较（CFString/NSString 值相等）并 retain 键值；enigo 与其余生态调用
-    // 方同此口径。SAFETY: 两个 static 由 CoreFoundation 导出、进程内恒定
-    // 有效，只借其地址。
+    // The kCFType callbacks are the crux of correctness (review finding: with
+    // NULL callbacks the key is compared by pointer identity, so HIServices'
+    // value lookup against its own global kAXTrustedCheckOptionPrompt
+    // instance never matches — the Accessibility system dialog silently never
+    // triggers and the user stays stuck at accessibility_denied).
+    // kCFTypeDictionary*CallBacks compare by content via CFEqual
+    // (CFString/NSString value equality) and retain the key/value; enigo and
+    // the rest of the ecosystem follow the same rule. SAFETY: both statics
+    // are exported by CoreFoundation and valid for the process lifetime; only
+    // their addresses are borrowed.
     let key_callbacks = unsafe { &kCFTypeDictionaryKeyCallBacks };
     let value_callbacks = unsafe { &kCFTypeDictionaryValueCallBacks };
-    // SAFETY: keys/values 指向本函数栈上等长（1）数组，kCFType 回调在创建
-    // 时 retain 键值，随后键值存活与否不再影响字典；返回的 +1 字典在本函数
-    // 内 CFRelease。
+    // SAFETY: keys/values point at equal-length (1) arrays on this function's
+    // stack; the kCFType callbacks retain the key/value at creation, after
+    // which the dictionary no longer depends on their lifetime; the returned
+    // +1 dictionary is CFReleased within this function.
     let options = unsafe {
         CFDictionaryCreate(
             std::ptr::null(),
@@ -240,19 +288,22 @@ pub fn request_permissions() {
     if options.is_null() {
         return;
     }
-    // SAFETY: options 是上面成功创建的有效 CFDictionaryRef；
-    // AXIsProcessTrustedWithOptions 只读它并异步弹窗；CFRelease 精确释放一次。
+    // SAFETY: options is the valid CFDictionaryRef successfully created
+    // above; AXIsProcessTrustedWithOptions only reads it and shows the dialog
+    // asynchronously; CFRelease releases it exactly once.
     unsafe {
         let _ = AXIsProcessTrustedWithOptions(options) != 0;
         CFRelease(options);
     }
 }
 
-/// CGEvent 全局点坐标读光标位置（左上角原点）。免授权（仅事件合成才需
-/// Accessibility），任意线程可调——与 detach.rs 的 macos_mouse 同一做法。
+/// Reads the cursor position in CGEvent global point coordinates (top-left
+/// origin). Grant-free (only event synthesis requires Accessibility),
+/// callable on any thread — same approach as detach.rs's macos_mouse.
 fn cursor_points() -> Result<(i32, i32), ComputerUseError> {
-    // SAFETY: CGEventCreate 接受 NULL（默认事件源）；返回事件判空后只读坐标；
-    // CFRelease 对成功创建的对象精确释放一次。
+    // SAFETY: CGEventCreate accepts NULL (the default event source); after a
+    // null check the returned event is only read for its coordinates;
+    // CFRelease releases the successfully created object exactly once.
     unsafe {
         let event = CGEventCreate(std::ptr::null());
         if event.is_null() {
@@ -271,8 +322,9 @@ fn cursor_points() -> Result<(i32, i32), ComputerUseError> {
     }
 }
 
-/// 截屏目标显示器：光标所在屏（macOS 上 from_point 吃点坐标），取不到时
-/// 回退主屏，再退化为第一块屏。
+/// Monitor to capture: the one holding the cursor (on macOS from_point takes
+/// point coordinates); falls back to the primary monitor, then to the first
+/// monitor.
 fn pick_monitor(cursor: Option<(i32, i32)>) -> Result<Monitor, ComputerUseError> {
     if let Some((x, y)) = cursor {
         if let Ok(monitor) = Monitor::from_point(x, y) {
@@ -293,15 +345,19 @@ fn pick_monitor(cursor: Option<(i32, i32)>) -> Result<Monitor, ComputerUseError>
         .ok_or_else(|| ComputerUseError::unavailable("no monitor available for screen capture"))
 }
 
-/// 本 crate `Key` → enigo 按键。macOS 差异：
-/// - `Char` 走 `Unicode`：enigo macOS 经当前键盘布局反查 keycode。反查不中
-///   （布局外字符）时 enigo 返回初始值 keycode 0——即 ANSI 'a'，会**静默
-///   注入错误的键**而非报错。因此安全集合（[`is_layout_safe_char`]）之外的
-///   字符在此显式失败（fail-closed）；任意文本应改走 `type_text`（Unicode
-///   直注，绕过布局反查）。
-/// - `Insert`：enigo 的 `Key::Insert` 变体在 macOS 上被 cfg 排除（不存在）；
-///   映射到 `Help`——ANSI HELP keycode(0x72) 即 Mac 扩展键盘上 Insert 位置的
-///   键，RDP/VNC/虚拟机场景均按此约定透传为 Insert。
+/// This crate's `Key` → enigo key. macOS differences:
+/// - `Char` goes through `Unicode`: enigo on macOS reverse-maps the keycode
+///   via the current keyboard layout. When the reverse lookup misses (a
+///   character outside the layout), enigo returns the initial keycode 0 —
+///   i.e. ANSI 'a' — **silently injecting the wrong key** instead of erroring.
+///   Characters outside the safe set ([`is_layout_safe_char`]) therefore fail
+///   explicitly here (fail-closed); arbitrary text should go through
+///   `type_text` instead (direct Unicode injection, bypassing the layout
+///   reverse lookup).
+/// - `Insert`: enigo's `Key::Insert` variant is cfg-excluded on macOS (it
+///   does not exist); it maps to `Help` — the ANSI HELP keycode (0x72) is the
+///   key at the Insert position on extended Mac keyboards, and RDP/VNC/VM
+///   scenarios pass it through as Insert by this convention.
 fn map_key(key: Key) -> Result<enigo::Key, ComputerUseError> {
     use enigo::Key as EK;
     let mapped = match key {
@@ -345,9 +401,11 @@ fn map_key(key: Key) -> Result<enigo::Key, ComputerUseError> {
         },
         Key::Char(c) => {
             if !is_layout_safe_char(c) {
-                // enigo 对布局外字符返回 keycode 0（= ANSI 'a'）、对 Shift 态
-                // 字符只返回基础 keycode——两种情况都会静默注入错误的键，
-                // 必须在此显式失败，不能交给 enigo。
+                // enigo returns keycode 0 (= ANSI 'a') for out-of-layout
+                // characters and only the base keycode for Shift-state
+                // characters — both silently inject the wrong key, so this
+                // must fail explicitly here rather than being handed to
+                // enigo.
                 // No echo of the offending character: this string lands in
                 // the audit log's error field verbatim.
                 return Err(ComputerUseError::failed(
@@ -361,14 +419,19 @@ fn map_key(key: Key) -> Result<enigo::Key, ComputerUseError> {
     Ok(mapped)
 }
 
-/// enigo macOS 能把 `Key::Unicode(c)` 反查并**原样**注入的安全字符集合：
-/// 无需 Shift 即可打出的美式布局字符（小写字母、数字、空格与不加 Shift 的
-/// 标点）。集合外一律拒绝，原因有二（见 enigo `get_layoutdependent_keycode`
-/// 与 `add_event_flag` 的实现）：
-/// 1. 布局外字符（CJK、emoji、控制字符等）反查不中，enigo 返回初始值
-///    keycode 0 = ANSI 'a'，静默注入 'a'；
-/// 2. Shift 态字符（大写字母、`+`/`!` 等组合标点）即使反查命中，enigo 也只
-///    取基础 keycode 而不附带 Shift 事件标志，注入的是未加 Shift 的错字。
+/// The safe character set that enigo on macOS can reverse-map from
+/// `Key::Unicode(c)` and inject **verbatim**: US-layout characters typeable
+/// without Shift (lowercase letters, digits, space, and unshifted
+/// punctuation). Anything outside the set is rejected, for two reasons (see
+/// enigo's `get_layoutdependent_keycode` and `add_event_flag`
+/// implementations):
+/// 1. Out-of-layout characters (CJK, emoji, control characters, etc.) miss
+///    the reverse lookup; enigo returns the initial keycode 0 = ANSI 'a',
+///    silently injecting 'a';
+/// 2. Shift-state characters (uppercase letters, combined punctuation like
+///    `+`/`!`) may hit the reverse lookup, but enigo takes only the base
+///    keycode without the Shift event flag, injecting the unshifted wrong
+///    character.
 fn is_layout_safe_char(c: char) -> bool {
     c.is_ascii_lowercase()
         || c.is_ascii_digit()
@@ -379,7 +442,8 @@ fn is_layout_safe_char(c: char) -> bool {
         )
 }
 
-/// CGEventType 中的鼠标事件类型（`CGEventType` 枚举的原始值）。
+/// Mouse event types from CGEventType (raw values of the `CGEventType`
+/// enum).
 const CG_EVENT_LEFT_MOUSE_DOWN: u32 = 1;
 const CG_EVENT_LEFT_MOUSE_UP: u32 = 2;
 const CG_EVENT_RIGHT_MOUSE_DOWN: u32 = 3;
@@ -394,14 +458,15 @@ const CG_EVENT_RIGHT_MOUSE_DRAGGED: u32 = 7;
 const CG_EVENT_OTHER_MOUSE_DOWN: u32 = 25;
 const CG_EVENT_OTHER_MOUSE_UP: u32 = 26;
 const CG_EVENT_OTHER_MOUSE_DRAGGED: u32 = 27;
-/// CGMouseButton 枚举原始值。
+/// Raw values of the CGMouseButton enum.
 const CG_MOUSE_BUTTON_LEFT: u32 = 0;
 const CG_MOUSE_BUTTON_RIGHT: u32 = 1;
 const CG_MOUSE_BUTTON_CENTER: u32 = 2;
-/// kCGHIDEventTap：事件注入的 tap 位置（与 enigo 的 CGEventTapLocation::HID
-/// 一致）。
+/// kCGHIDEventTap: the tap location for event injection (consistent with
+/// enigo's CGEventTapLocation::HID).
 const CG_EVENT_TAP_HID: u32 = 0;
-/// kCGMouseEventClickState：单击计数事件字段（双击/三击识别依据）。
+/// kCGMouseEventClickState: the click-count event field (the basis for
+/// double/triple-click recognition).
 const CG_EVENT_FIELD_CLICK_STATE: u32 = 1;
 
 fn cg_mouse_button(button: MouseButton) -> u32 {
@@ -412,7 +477,7 @@ fn cg_mouse_button(button: MouseButton) -> u32 {
     }
 }
 
-/// 该鼠标键对应的 (down, up, dragged) CGEventType。
+/// The (down, up, dragged) CGEventType values for this mouse button.
 fn cg_mouse_event_types(button: MouseButton) -> (u32, u32, u32) {
     match button {
         MouseButton::Left => (
@@ -433,13 +498,15 @@ fn cg_mouse_event_types(button: MouseButton) -> (u32, u32, u32) {
     }
 }
 
-/// 密码框判定：权威信号是 subrole AXSecureTextField（AppKit/Safari/Chrome 均
-/// 暴露）；少数应用把安全字段直接报为 role AXSecureTextField。
+/// Password field detection: the authoritative signal is subrole
+/// AXSecureTextField (exposed by AppKit/Safari/Chrome); a few apps report
+/// secure fields directly as role AXSecureTextField.
 fn is_secure_text(role: &str, subrole: &str) -> bool {
     subrole == "AXSecureTextField" || role == "AXSecureTextField"
 }
 
-/// 逆序释放已按下的键；即使中途出错也尽力释放全部，返回首个错误。
+/// Releases pressed keys in reverse; even on a mid-way error, best-effort
+/// releases all of them and returns the first error.
 fn release_reverse(pressed: &[enigo::Key], enigo: &mut Enigo) -> Result<(), enigo::InputError> {
     let mut first_err = None;
     for key in pressed.iter().rev() {
@@ -456,69 +523,79 @@ fn release_reverse(pressed: &[enigo::Key], enigo: &mut Enigo) -> Result<(), enig
 }
 
 // ---------------------------------------------------------------------------
-// Accessibility（AX）层
+// Accessibility (AX) layer
 // ---------------------------------------------------------------------------
 
-/// AX「Copy 规则」返回的 +1 CF 对象的 RAII 释放（构造时已判非空）。类型经
-/// [`CfObject::type_id`] 前置校验后可用 `into_*` 转为 objc2/CF 的类型化智能
-/// 指针——本模块不保留任何裸指针解引用（CodeQL invalid-pointer-dereference
-/// 的根治手段，同时把类型校验收敛到单一位置）。
+/// RAII release for the +1 CF objects returned by the AX "Copy rule" (checked
+/// non-null at construction). After a type precheck via
+/// [`CfObject::type_id`], the `into_*` methods convert it into objc2/CF typed
+/// smart pointers — this module keeps no raw-pointer dereferences at all (the
+/// definitive fix for CodeQL invalid-pointer-dereference, which also
+/// concentrates type checking in a single place).
 struct CfObject(NonNull<c_void>);
 
 impl CfObject {
-    /// 底层指针（供 CFArray/CFBoolean 的 extern 只读调用使用，不解引用）。
+    /// The underlying pointer (for read-only extern calls on
+    /// CFArray/CFBoolean; never dereferenced).
     fn inner(&self) -> NonNull<c_void> {
         self.0
     }
 
     fn type_id(&self) -> usize {
-        // SAFETY: self.0 非空且指向存活的 CF 对象（本 guard 持有 +1）；
-        // CFGetTypeID 是纯类型查询。
+        // SAFETY: self.0 is non-null and points at a live CF object (this
+        // guard holds the +1); CFGetTypeID is a pure type query.
         unsafe { CFGetTypeID(self.0.as_ptr()) }
     }
 
-    /// 校验为 CFString 后转为 +1 `Retained<NSString>`（toll-free bridged）。
-    /// 类型不符返回 None（guard 照常 Drop 释放）。
+    /// Converts to a +1 `Retained<NSString>` (toll-free bridged) after
+    /// verifying the type is CFString. Returns None on a type mismatch (the
+    /// guard still releases via Drop).
     fn into_ns_string(self) -> Option<Retained<NSString>> {
-        // SAFETY: CFStringGetTypeID 是纯类型查询。
+        // SAFETY: CFStringGetTypeID is a pure type query.
         if self.type_id() != unsafe { CFStringGetTypeID() } {
             return None;
         }
-        // SAFETY: self.0 指向存活的 CFString（本 guard 持有 +1，所有权随
-        // from_raw 移入 Retained）；CFString 与 NSString toll-free bridged、
-        // 为同一 Obj-C 对象，Retained 析构的 objc_release 与 CFRelease 等价。
-        // 经 NonNull::cast 保住 *mut：Retained::from_raw 只收 *mut。
+        // SAFETY: self.0 points at a live CFString (this guard holds the +1;
+        // ownership moves into Retained via from_raw); CFString and NSString
+        // are toll-free bridged — the same Obj-C object — and Retained's
+        // objc_release on drop is equivalent to CFRelease.
+        // NonNull::cast preserves *mut: Retained::from_raw only accepts *mut.
         let text = unsafe { Retained::from_raw(self.0.cast::<NSString>().as_ptr()) };
-        // +1 已移交 Retained：抑制 CfObject::drop，避免双重释放。
+        // The +1 has been handed to Retained: suppress CfObject::drop to
+        // avoid a double release.
         std::mem::forget(self);
         text
     }
 
-    /// 校验为 AXUIElement 后转为 +1 `CFRetained<AXUIElement>`。
-    /// 类型不符返回 None（guard 照常 Drop 释放）。
+    /// Converts to a +1 `CFRetained<AXUIElement>` after verifying the type.
+    /// Returns None on a type mismatch (the guard still releases via Drop).
     fn into_ui_element(self) -> Option<CFRetained<AXUIElement>> {
-        // SAFETY: AXUIElementGetTypeID 是纯类型查询。
+        // SAFETY: AXUIElementGetTypeID is a pure type query.
         if self.type_id() != unsafe { AXUIElementGetTypeID() } {
             return None;
         }
-        // SAFETY: 已校验 AXUIElement；+1 所有权随 from_raw 移入 CFRetained
-        // （析构 CFRelease，与原先的手动释放等价）。
+        // SAFETY: verified as AXUIElement; the +1 ownership moves into
+        // CFRetained via from_raw (CFRelease on drop, equivalent to the
+        // previous manual release).
         let element = unsafe { CFRetained::from_raw(self.0.cast::<AXUIElement>()) };
-        // +1 已移交 CFRetained：抑制 CfObject::drop，避免双重释放。
+        // The +1 has been handed to CFRetained: suppress CfObject::drop to
+        // avoid a double release.
         std::mem::forget(self);
         Some(element)
     }
 
-    /// 校验为 AXValue 后转为 +1 `CFRetained<AXValue>`。
-    /// 类型不符返回 None（guard 照常 Drop 释放）。
+    /// Converts to a +1 `CFRetained<AXValue>` after verifying the type.
+    /// Returns None on a type mismatch (the guard still releases via Drop).
     fn into_ax_value(self) -> Option<CFRetained<AXValue>> {
-        // SAFETY: AXValueGetTypeID 是纯类型查询。
+        // SAFETY: AXValueGetTypeID is a pure type query.
         if self.type_id() != unsafe { AXValueGetTypeID() } {
             return None;
         }
-        // SAFETY: 已校验 AXValue；+1 所有权随 from_raw 移入 CFRetained。
+        // SAFETY: verified as AXValue; the +1 ownership moves into CFRetained
+        // via from_raw.
         let value = unsafe { CFRetained::from_raw(self.0.cast::<AXValue>()) };
-        // +1 已移交 CFRetained：抑制 CfObject::drop，避免双重释放。
+        // The +1 has been handed to CFRetained: suppress CfObject::drop to
+        // avoid a double release.
         std::mem::forget(self);
         Some(value)
     }
@@ -526,21 +603,26 @@ impl CfObject {
 
 impl Drop for CfObject {
     fn drop(&mut self) {
-        // SAFETY: self.0 是 AX Copy 规则返回的 +1 对象（构造时判过非空）；
-        // 未经 into_* 移交所有权时在此恰好释放一次，释放后不再使用。
+        // SAFETY: self.0 is the +1 object returned by the AX Copy rule
+        // (checked non-null at construction); when ownership was not handed
+        // over via into_*, it is released exactly once here and not used
+        // afterwards.
         unsafe { CFRelease(self.0.as_ptr()) };
     }
 }
 
-/// AX 属性名集合。kAX*Attribute 字符串常量未被 objc2-application-services
-/// 0.3.2 生成，用 NSString 字面量（值稳定且文档化；toll-free bridged 即
-/// CFString，可直接传给 AX API）。每次 ui_tree/element_at_point/
-/// focused_element 调用构造一次，遍历内所有节点复用。
+/// AX attribute-name set. The kAX*Attribute string constants are not
+/// generated by objc2-application-services 0.3.2, so NSString literals are
+/// used (the values are stable and documented; toll-free bridged to CFString,
+/// directly usable with the AX APIs). Constructed once per
+/// ui_tree/element_at_point/focused_element call and reused by all nodes in
+/// the traversal.
 struct AxNames {
     role: Retained<NSString>,
     title: Retained<NSString>,
-    /// 描述：浏览器/Electron 内 Web 内容的可访问名通常只挂在 AXDescription
-    /// （AXTitle 为空），T3 词表匹配依赖它（评审缺陷 T3-Web）。
+    /// description: the accessible name of web content in browsers/Electron
+    /// usually lives only on AXDescription (AXTitle is empty); T3 denylist
+    /// matching depends on it (review defect T3-Web).
     description: Retained<NSString>,
     subrole: Retained<NSString>,
     position: Retained<NSString>,
@@ -572,23 +654,27 @@ impl AxNames {
     }
 }
 
-/// 读单个 AX 属性（Copy 规则 +1）。返回：
-/// - `Ok(Some)`：属性有值，+1 对象由 [`CfObject`] 托管释放；
-/// - `Ok(None)`：调用成功但属性无值（NoValue）或返回空对象；
-/// - `Err`：AX 调用失败——`AttributeUnsupported`（属性不支持）、
-///   `CannotComplete`（目标进程无响应/挂死）等。树遍历按此记账中止（见
-///   [`AttrErrors`]），单元素路径据此 fail-closed。
+/// Reads a single AX attribute (Copy rule, +1). Returns:
+/// - `Ok(Some)`: the attribute has a value; the +1 object is released under
+///   [`CfObject`] management;
+/// - `Ok(None)`: the call succeeded but the attribute has no value (NoValue)
+///   or returned an empty object;
+/// - `Err`: the AX call failed — `AttributeUnsupported` (attribute
+///   unsupported), `CannotComplete` (target process unresponsive/hung), etc.
+///   Tree traversal books these errors and aborts on them (see
+///   [`AttrErrors`]); the single-element path fails closed on them.
 fn copy_attr(element: &AXUIElement, attribute: &NSString) -> Result<Option<CfObject>, AXError> {
     let mut raw = std::ptr::null();
     let Some(out) = NonNull::new(&mut raw) else {
-        return Ok(None); // &mut 局部变量地址永不 null，此处仅避免 unwrap
+        return Ok(None); // the address of a &mut local is never null; this only avoids unwrap
     };
-    // SAFETY: `out` 指向本函数栈上有效的 out 指针（NonNull<*const CFType>）；
-    // attribute 是 NSString，toll-free bridged 即 CFString；仅当返回 Success
-    // 且输出非空才使用输出值。
+    // SAFETY: `out` points at a valid out pointer on this function's stack
+    // (NonNull<*const CFType>); attribute is an NSString, toll-free bridged
+    // to CFString; the output value is used only when Success is returned and
+    // the output is non-null.
     let err = unsafe { element.copy_attribute_value(attribute.as_ref(), out) };
     match err {
-        // Success 但输出空指针：按无值处理。
+        // Success with a null output pointer: treated as no value.
         AXError::Success => Ok(NonNull::new(raw.cast_mut()).map(|ptr| CfObject(ptr.cast()))),
         other => Err(other),
     }
@@ -598,8 +684,9 @@ fn ax_string(element: &AXUIElement, attribute: &NSString) -> Result<Option<Strin
     let Some(obj) = copy_attr(element, attribute)? else {
         return Ok(None);
     };
-    // 类型不符（非 CFString）按缺失处理：树遍历不容错中断，单元素路径由
-    // ensure_readable 的全空判定兜底。
+    // A type mismatch (not a CFString) is treated as missing: the tree
+    // traversal does not hard-fail, and the single-element path is
+    // backstopped by ensure_readable's all-empty check.
     Ok(obj.into_ns_string().map(|text| text.to_string()))
 }
 
@@ -607,17 +694,18 @@ fn ax_bool(element: &AXUIElement, attribute: &NSString) -> Result<Option<bool>, 
     let Some(obj) = copy_attr(element, attribute)? else {
         return Ok(None);
     };
-    // SAFETY: CFBooleanGetTypeID 是纯类型查询。
+    // SAFETY: CFBooleanGetTypeID is a pure type query.
     if obj.type_id() != unsafe { CFBooleanGetTypeID() } {
         return Ok(None);
     }
-    // SAFETY: 已校验 CFBoolean；纯读取，指针只作参数传入不解引用。
+    // SAFETY: verified as CFBoolean; pure read, the pointer is only passed as
+    // an argument, never dereferenced.
     Ok(Some(
         unsafe { CFBooleanGetValue(obj.inner().as_ptr()) } != 0,
     ))
 }
 
-/// 读一个 AXUIElement 类型属性（Copy 规则 +1，CFRetained 托管）。
+/// Reads an AXUIElement-typed attribute (Copy rule +1, managed by CFRetained).
 fn ax_ui_element(
     element: &AXUIElement,
     attribute: &NSString,
@@ -635,8 +723,9 @@ fn ax_point(element: &AXUIElement, attribute: &NSString) -> Result<Option<NSPoin
     let Some(value) = obj.into_ax_value() else {
         return Ok(None);
     };
-    // SAFETY: point 是栈上有效 out buffer；value() 仅在类型匹配时写它并返回
-    // true，此时读取才有效。
+    // SAFETY: point is a valid out buffer on the stack; value() only writes
+    // it and returns true when the type matches, and only then is the read
+    // valid.
     unsafe {
         if value.r#type() != AXValueType::CGPoint {
             return Ok(None);
@@ -657,8 +746,9 @@ fn ax_size(element: &AXUIElement, attribute: &NSString) -> Result<Option<NSSize>
     let Some(value) = obj.into_ax_value() else {
         return Ok(None);
     };
-    // SAFETY: size 是栈上有效 out buffer；value() 仅在类型匹配时写它并返回
-    // true，此时读取才有效。
+    // SAFETY: size is a valid out buffer on the stack; value() only writes it
+    // and returns true when the type matches, and only then is the read
+    // valid.
     unsafe {
         if value.r#type() != AXValueType::CGSize {
             return Ok(None);
@@ -672,7 +762,8 @@ fn ax_size(element: &AXUIElement, attribute: &NSString) -> Result<Option<NSSize>
     }
 }
 
-/// 读数组型属性（AXChildren/AXWindows）：返回 (数组 guard, 元素数)。
+/// Reads an array-typed attribute (AXChildren/AXWindows): returns (array
+/// guard, element count).
 fn ax_array(
     element: &AXUIElement,
     attribute: &NSString,
@@ -680,11 +771,11 @@ fn ax_array(
     let Some(obj) = copy_attr(element, attribute)? else {
         return Ok(None);
     };
-    // SAFETY: CFArrayGetTypeID 是纯类型查询。
+    // SAFETY: CFArrayGetTypeID is a pure type query.
     if obj.type_id() != unsafe { CFArrayGetTypeID() } {
         return Ok(None);
     }
-    // SAFETY: 已校验 CFArray；纯计数查询。
+    // SAFETY: verified as CFArray; pure count query.
     let count = unsafe { CFArrayGetCount(obj.inner().as_ptr()) };
     if count <= 0 {
         return Ok(None);
@@ -692,29 +783,36 @@ fn ax_array(
     Ok(Some((obj, count as usize)))
 }
 
-/// 取数组第 index 个元素并 retain 为 `CFRetained`（Get 规则指针由数组持有；
-/// 额外 CFRetain 让元素可越过数组 guard 的生命周期独立使用，取代原先借用
-/// 数组内部的裸解引用）。
+/// Takes the array's index-th element and retains it as `CFRetained` (under
+/// the Get rule the pointer is owned by the array; the extra CFRetain lets
+/// the element outlive the array guard and be used independently, replacing
+/// the previous bare dereference into the array's internals).
 fn array_element_at(array: &CfObject, index: usize) -> Option<CFRetained<AXUIElement>> {
-    // SAFETY: array 已经 CFArrayGetTypeID 校验；index < count 由调用方保证
-    // （count 来自同一数组的 CFArrayGetCount，数组不可变）；AXChildren/
-    // AXWindows 契约元素为 AXUIElement；Get 规则返回的指针在数组存活期间有效。
+    // SAFETY: array has passed the CFArrayGetTypeID check; index < count is
+    // guaranteed by the caller (count comes from CFArrayGetCount on the same
+    // array, which is immutable); per the AXChildren/AXWindows contract the
+    // elements are AXUIElement; under the Get rule the returned pointer is
+    // valid while the array is alive.
     let raw = unsafe { CFArrayGetValueAtIndex(array.inner().as_ptr(), index as isize) };
     let ptr = NonNull::new(raw.cast::<AXUIElement>().cast_mut())?;
-    // SAFETY: 元素由数组 guard 持有存活；AXUIElement toll-free bridged，
-    // CFRetain/CFRelease 与其 Obj-C retain/release 等价；额外的 +1 由返回的
-    // CFRetained 在 drop 时释放。
+    // SAFETY: the element is kept alive by the array guard; AXUIElement is
+    // toll-free bridged, and CFRetain/CFRelease are equivalent to its Obj-C
+    // retain/release; the extra +1 is released by the returned CFRetained on
+    // drop.
     Some(unsafe { CFRetained::retain(ptr) })
 }
 
-/// 树节点的单行信息（位置/尺寸为屏幕点坐标，与输入坐标空间一致）。
+/// Single-line info for a tree node (position/size are screen point
+/// coordinates, consistent with the input coordinate space).
 #[derive(Clone)]
 struct AxNodeInfo {
     role: String,
     title: String,
-    /// 子角色：AXSecureTextField 判定信号；保留原文以支持「不可读」判定。
+    /// subrole: the AXSecureTextField detection signal; kept verbatim to
+    /// support the "unreadable" determination.
     subrole: String,
-    /// 描述：Web 内容的可访问名通常在此（title 为空时的显示回退）。
+    /// description: the accessible name of web content usually lives here
+    /// (the display fallback when title is empty).
     description: String,
     x: i32,
     y: i32,
@@ -725,10 +823,12 @@ struct AxNodeInfo {
     secure: bool,
 }
 
-/// AX 属性读错误记账：连续 [`AX_CANNOT_COMPLETE_LIMIT`] 次
-/// `AXError::CannotComplete`（目标进程无响应/挂死）置 poisoned，请求中止
-/// 整棵树。任何其他读取结果（成功、属性缺失或其他错误码）都重置计数——
-/// 正常树里 CannotComplete 不应连续出现，普通应用不支持某属性很常见。
+/// Accounting for AX attribute read errors: [`AX_CANNOT_COMPLETE_LIMIT`]
+/// consecutive `AXError::CannotComplete` (target process unresponsive/hung)
+/// sets poisoned, requesting an abort of the whole tree. Any other read
+/// outcome (success, missing attribute, or another error code) resets the
+/// counter — CannotComplete should not occur consecutively in a healthy tree,
+/// and ordinary apps commonly do not support some attribute.
 struct AttrErrors {
     cannot_complete_streak: u32,
     poisoned: bool,
@@ -758,8 +858,9 @@ impl AttrErrors {
     }
 }
 
-/// 树遍历的单属性读取：错误记入记账并把值降级为 None（树不因单个属性
-/// 失败中断），成功则重置连续 CannotComplete 计数。
+/// Single-attribute read for tree traversal: errors are booked and the value
+/// degrades to None (the tree is never interrupted by a single attribute
+/// failure); success resets the consecutive CannotComplete counter.
 fn tree_attr<T>(
     errors: &mut AttrErrors,
     read: impl FnOnce() -> Result<Option<T>, AXError>,
@@ -776,15 +877,20 @@ fn tree_attr<T>(
     }
 }
 
-/// 读一个节点的展示字段。属性逐条读取：批读 API
-/// AXUIElementCopyMultipleAttributeValues 需要构造 CFArray<CFString>，其泛型
-/// 默认参数为 crate 私有类型，外部无法构造，故绑定层面不支持批读（性能代价由
-/// 2s 消息超时 + 聚合时限 + 深度/节点预算收敛）。读取错误经 `errors` 记账后
-/// 按默认值降级——树遍历不因单个属性失败中断（连续 CannotComplete 除外）。
+/// Reads a node's display fields. Attributes are read one by one: the
+/// batch-read API AXUIElementCopyMultipleAttributeValues requires
+/// constructing a CFArray<CFString> whose generic default parameters are
+/// crate-private types that cannot be constructed externally, so the binding
+/// layer does not support batch reads (the performance cost is bounded by the
+/// 2s message timeout + the aggregate deadline + the depth/node budgets).
+/// Read errors are booked via `errors` and degrade to default values — the
+/// tree traversal is never interrupted by a single attribute failure (except
+/// consecutive CannotComplete).
 ///
-/// `with_geometry` 为 false 时跳过位置/尺寸/启用/焦点四次读取（用于深度已
-/// 达上限、不再下钻的节点：这些字段只影响该行展示，行内坐标显示为 0，
-/// 省下 4 次跨进程 IPC）。
+/// With `with_geometry` false, the four position/size/enabled/focused reads
+/// are skipped (for nodes already at the depth limit that will not be drilled
+/// into: those fields only affect that row's display, the row shows 0
+/// coordinates, saving 4 cross-process IPCs).
 fn read_node_info(
     element: &AXUIElement,
     names: &AxNames,
@@ -821,10 +927,13 @@ fn read_node_info(
     }
 }
 
-/// 命中/焦点元素的 role、subrole、description 全部读不出时按「节点不可读」
-/// 处理（fail-closed）：正常无障碍节点至少暴露 role；把属性完全读不出的
-/// 元素当普通元素放行，会让 T3 词表与安全判定基于空信息放行（评审缺陷 3：
-/// ax_string 失败曾被 unwrap_or_default 静默抹平）。
+/// When role, subrole, and description of a hit/focused element are all
+/// unreadable, it is treated as an "unreadable node" (fail-closed): a healthy
+/// accessibility node exposes at least role; letting an element whose
+/// attributes are completely unreadable through as a normal element would let
+/// the T3 denylist and safety decisions pass on empty information (review
+/// defect 3: an ax_string failure used to be silently flattened by
+/// unwrap_or_default).
 fn ensure_readable(info: &AxNodeInfo) -> Result<(), ComputerUseError> {
     if info.role.is_empty() && info.subrole.is_empty() && info.description.is_empty() {
         return Err(ComputerUseError::failed(
@@ -834,8 +943,9 @@ fn ensure_readable(info: &AxNodeInfo) -> Result<(), ComputerUseError> {
     Ok(())
 }
 
-/// `AxNodeInfo` → `ElementInfo`。name 取 title，为空时回退 description——
-/// 浏览器 Web 内容的可访问名通常只挂在 AXDescription 上。
+/// `AxNodeInfo` → `ElementInfo`. name takes title, falling back to
+/// description when empty — the accessible name of browser web content
+/// usually lives only on AXDescription.
 fn element_info_from(info: AxNodeInfo) -> ElementInfo {
     let name = if info.title.is_empty() {
         info.description
@@ -853,20 +963,25 @@ fn element_info_from(info: AxNodeInfo) -> ElementInfo {
     }
 }
 
-/// 树序列化的节点预算、整体时限与错误记账。
+/// Node budget, overall deadline, and error bookkeeping for tree
+/// serialization.
 struct TreeWriter {
     next_index: u32,
     remaining: u32,
     truncated: bool,
-    /// 整体遍历时限（绝对时点）。单次 AX 调用的消息超时只约束单次 IPC，
-    /// 数百节点的总耗时必须另有上界，否则可把 worker 线程钉死极久。
+    /// Overall traversal deadline (absolute instant). The per-call message
+    /// timeout only bounds a single IPC; the total for hundreds of nodes
+    /// needs its own bound, otherwise the worker thread can be pinned for a
+    /// very long time.
     deadline: Instant,
-    /// AX 属性读错误记账（连续 CannotComplete 中止）。
+    /// AX attribute read error bookkeeping (aborts on consecutive
+    /// CannotComplete).
     errors: AttrErrors,
 }
 
 impl TreeWriter {
-    /// 分配下一个节点序号；节点预算耗尽时置 truncated 并返回 None。
+    /// Allocates the next node index; sets truncated and returns None when
+    /// the node budget is exhausted.
     fn take_node(&mut self) -> Option<u32> {
         if self.remaining == 0 {
             self.truncated = true;
@@ -878,7 +993,8 @@ impl TreeWriter {
         Some(index)
     }
 
-    /// 整体时限是否已到；到点置 truncated（中止信号由 truncated 传递）。
+    /// Whether the overall deadline has passed; sets truncated when it has
+    /// (the abort signal is carried by truncated).
     fn past_deadline(&mut self) -> bool {
         let past = Instant::now() >= self.deadline;
         if past {
@@ -888,7 +1004,8 @@ impl TreeWriter {
     }
 }
 
-/// 单行格式：`[i] role "title" (x,y,w,h) flags`，flags 省略时为无。
+/// Single-line format: `[i] role "title" (x,y,w,h) flags`; flags omitted when
+/// none.
 fn format_tree_line(index: u32, depth: u32, info: &AxNodeInfo) -> String {
     let mut flags = String::new();
     if info.disabled {
@@ -900,8 +1017,9 @@ fn format_tree_line(index: u32, depth: u32, info: &AxNodeInfo) -> String {
     if info.secure {
         flags.push_str(" password");
     }
-    // Web 内容（浏览器/Electron）的可访问名通常挂在 AXDescription：title 为
-    // 空时显示 description，行格式保持不变（评审缺陷 T3-Web）。
+    // The accessible name of web content (browsers/Electron) usually lives
+    // on AXDescription: when title is empty, display description and keep the
+    // line format unchanged (review defect T3-Web).
     let display_title = if info.title.is_empty() {
         &info.description
     } else {
@@ -912,8 +1030,9 @@ fn format_tree_line(index: u32, depth: u32, info: &AxNodeInfo) -> String {
         line,
         "{indent}[{index}] {role} \"{title}\" ({x},{y},{w},{h}){flags}",
         indent = "  ".repeat(depth as usize),
-        // AXRole/AXSubrole 是目标应用提供的自由字符串,不消毒会破坏
-        // 一行一节点的不变式(伪造树行/换行注入)(round-10 评审 m6)。
+        // AXRole/AXSubrole are free-form strings supplied by the target app;
+        // without sanitizing they could break the one-node-per-line invariant
+        // (forged tree lines / newline injection) (round-10 review m6).
         role = sanitize_name(&info.role, MAX_NODE_NAME_CHARS),
         title = sanitize_name(display_title, MAX_NODE_NAME_CHARS),
         x = info.x,
@@ -932,19 +1051,21 @@ fn write_tree_node(
     writer: &mut TreeWriter,
     out: &mut String,
 ) {
-    // 聚合时限：到点即中止（past_deadline 已置 truncated），已输出的子树
-    // 保持有效。
+    // Aggregate deadline: abort as soon as it is reached (past_deadline
+    // already set truncated); the subtree written so far remains valid.
     if writer.past_deadline() {
         return;
     }
     let Some(index) = writer.take_node() else {
         return;
     };
-    // 深度已达上限的节点不再下钻，跳过位置/尺寸/启用/焦点四次读取。
+    // Nodes at the depth limit are not drilled into; the four
+    // position/size/enabled/focused reads are skipped.
     let info = read_node_info(element, names, &mut writer.errors, depth < max_depth);
     let _ = writeln!(out, "{}", format_tree_line(index, depth, &info));
-    // 连续 CannotComplete 判定目标进程挂死：中止整棵树并置 truncated，
-    // 避免在无响应应用上每属性白耗一个消息超时。
+    // Consecutive CannotComplete means the target process is hung: abort the
+    // whole tree and set truncated, avoiding burning a message timeout per
+    // attribute on an unresponsive app.
     if writer.errors.poisoned {
         writer.truncated = true;
         return;
@@ -958,16 +1079,20 @@ fn write_tree_node(
                 let Some(child) = array_element_at(&children, i) else {
                     continue;
                 };
-                // 元素可能在遍历中途销毁或属性读取失败：由 truncated 统一
-                // 传递中止信号（预算耗尽/超时/连续 CannotComplete）。
+                // The element may be destroyed mid-traversal or its attribute
+                // reads may fail: truncated carries the abort signal
+                // uniformly (budget exhausted / deadline / consecutive
+                // CannotComplete).
                 write_tree_node(&child, depth + 1, max_depth, names, writer, out);
                 if writer.truncated {
                     break;
                 }
             }
         }
-        // 无子节点（叶子或属性缺失）：按「该分支结束」处理；children 读取
-        // 连续 CannotComplete 达到阈值时立即置 truncated 中止整棵树。
+        // No children (a leaf or the attribute is missing): treat as "this
+        // branch ends"; when the children read hits the consecutive
+        // CannotComplete threshold, truncated is set immediately, aborting
+        // the whole tree.
         Ok(None) => {}
         Err(err) => {
             writer.errors.record(err);
@@ -978,12 +1103,14 @@ fn write_tree_node(
     }
 }
 
-/// 树的根：焦点应用的焦点窗口；应用无焦点窗口（隐藏/仅菜单栏）或读取失败
-/// 时退化为应用根（含菜单栏等，由深度/节点预算收敛）。
+/// The tree root: the focused application's focused window; when the app has
+/// no focused window (hidden/menu-bar-only) or the read fails, degrade to the
+/// application root (including the menu bar etc., bounded by the depth/node
+/// budgets).
 fn focused_window_root(system: &AXUIElement, names: &AxNames) -> Option<CFRetained<AXUIElement>> {
     let app = match ax_ui_element(system, &names.focused_application) {
         Ok(Some(app)) => app,
-        // 无焦点应用：树不可用。
+        // No focused application: the tree is unavailable.
         _ => return None,
     };
     match ax_ui_element(&app, &names.focused_window) {
@@ -993,21 +1120,28 @@ fn focused_window_root(system: &AXUIElement, names: &AxNames) -> Option<CFRetain
 }
 
 pub(super) struct MacosComputerUseBackend {
-    /// 懒构造：Accessibility 未授权时 Enigo::new 会直接失败，延迟到首个键盘/
-    /// 滚轮操作再构造——截屏/光标等免授权能力在权限缺失时仍可用，也避免权限
-    /// 后补授权后整个 backend 粘性失败（backend 工厂失败是粘性的）。
-    /// **只承载键盘（key/text）与滚轮**：鼠标事件（移动/点击/拖拽）全部经
-    /// [`Self::post_mouse_event`] 直发 CGEvent——enigo 0.6.1 的
-    /// `button()`/`move_mouse()` 依赖 `location()`，而后者把 NSEvent 的
-    /// **点**坐标用 CGDisplay 的**物理像素**高翻转，Retina/多显示器上结果
-    /// 落在屏幕外（点错位置），crates.io 最新发布版（0.6.1）无修复。
+    /// Lazy construction: without an Accessibility grant, Enigo::new fails
+    /// outright, so construction is deferred to the first keyboard/wheel
+    /// action — grant-free capabilities like screenshot/cursor remain usable
+    /// while the permission is missing, and a late grant does not leave the
+    /// whole backend sticky-failed (backend factory failures are sticky).
+    /// **Carries only the keyboard (key/text) and the wheel**: mouse events
+    /// (move/click/drag) are all posted as native CGEvents via
+    /// [`Self::post_mouse_event`] — enigo 0.6.1's `button()`/`move_mouse()`
+    /// depend on `location()`, which flips NSEvent **point** coordinates by
+    /// the CGDisplay **physical pixel** height, landing off-screen (clicking
+    /// the wrong spot) on Retina/multi-monitor; the latest crates.io release
+    /// (0.6.1) has no fix.
     enigo: Option<Enigo>,
-    /// 最近一次合成移动落定的目标点（点坐标），作为 click/mouse_down 的落点
-    /// 与落点防护的基准。点击落在系统当前鼠标位置：用户物理移动鼠标与
-    /// 我们的合成移动存在竞态（评审缺陷 6），点击前据此校验并重定位。
+    /// The target point (point coordinates) where the most recent synthetic
+    /// move settled; the basis for click/mouse_down landing and the landing
+    /// guard. Clicks land at the system's current mouse position: the user
+    /// physically moving the mouse races our synthetic move (review defect
+    /// 6), so the position is verified and re-located before clicking.
     pending_move_target: Option<(i32, i32)>,
-    /// 调用方超时后置位的取消旗标（round-12 评审 M5）：type 分块注入在
-    /// 块间检查它，被放弃的请求不再继续注入。
+    /// Cancel flag set after the caller times out (round-12 review M5):
+    /// chunked type injection checks it between chunks, so abandoned requests
+    /// stop injecting.
     cancel: Option<Arc<AtomicBool>>,
 }
 
@@ -1020,15 +1154,17 @@ impl MacosComputerUseBackend {
         }
     }
 
-    /// 取输入注入器。Accessibility 未授权时返回显式错误——CGEventPost 未授权
-    /// 时被 WindowServer 静默丢弃，预检是正确性的必要部分。
+    /// Gets the input injector. Returns an explicit error without an
+    /// Accessibility grant — unauthorized CGEventPost is silently dropped by
+    /// WindowServer, so the preflight is a required part of correctness.
     fn enigo(&mut self) -> Result<&mut Enigo, ComputerUseError> {
         if !accessibility_granted() {
             return Err(accessibility_error());
         }
         if self.enigo.is_none() {
-            // open_prompt_to_get_permissions=false：权限引导统一走
-            // request_permissions()，工具路径只返回显式错误，不弹系统窗。
+            // open_prompt_to_get_permissions=false: permission onboarding
+            // goes through request_permissions() uniformly; the tool path
+            // only returns explicit errors and never shows a system dialog.
             let settings = Settings {
                 open_prompt_to_get_permissions: false,
                 ..Settings::default()
@@ -1047,11 +1183,14 @@ impl MacosComputerUseBackend {
         }
     }
 
-    /// 点击/按下前的落点防护：读系统光标实际位置，与最近一次合成移动目标
-    /// 偏差超过 [`CLICK_POSITION_TOLERANCE_PT`] 时先重新移动到目标再继续——
-    /// 点击落在系统当前鼠标位置，用户物理移动鼠标会与之竞态。没有
-    /// 可信目标（尚未 move_to）时维持现状；光标位置读不出时显式失败
-    /// （fail-closed：不知道落点的点击不可放行）。
+    /// Landing guard before click/press: reads the system cursor's actual
+    /// position and, if it deviates from the most recent synthetic move
+    /// target by more than [`CLICK_POSITION_TOLERANCE_PT`], re-moves to the
+    /// target first — clicks land at the system's current mouse position,
+    /// which races the user physically moving the mouse. When there is no
+    /// trusted target (no move_to yet), the status quo is kept; when the
+    /// cursor position cannot be read, it fails explicitly (fail-closed: a
+    /// click whose landing spot is unknown must not proceed).
     fn guard_click_position(&mut self) -> Result<(), ComputerUseError> {
         let Some(target) = self.pending_move_target else {
             return Ok(());
@@ -1067,8 +1206,9 @@ impl MacosComputerUseBackend {
         Ok(())
     }
 
-    /// 无坐标点击/按下/释放的落点：优先最近一次合成移动目标（可信），否则
-    /// 用系统光标实际位置（免授权可读）。
+    /// Landing spot for coordinate-less click/press/release: prefer the most
+    /// recent synthetic move target (trusted), otherwise use the system
+    /// cursor's actual position (readable without a grant).
     fn click_destination(&self) -> Result<(i32, i32), ComputerUseError> {
         match self.pending_move_target {
             Some(target) => Ok(target),
@@ -1076,9 +1216,11 @@ impl MacosComputerUseBackend {
         }
     }
 
-    /// 合成一个鼠标事件（CGEventPost at kCGHIDEventTap，与 enigo 的注入
-    /// 位置一致）。`click_state > 0` 时附带 kCGMouseEventClickState——双击/
-    /// 三击识别的依据。Accessibility 缺失时 CGEventPost 被静默丢弃，先预检。
+    /// Synthesizes one mouse event (CGEventPost at kCGHIDEventTap, the same
+    /// injection location as enigo). With `click_state > 0`,
+    /// kCGMouseEventClickState is attached — the basis for double/triple-click
+    /// recognition. Without Accessibility, CGEventPost is silently dropped, so
+    /// preflight first.
     fn post_mouse_event(
         &mut self,
         event_type: u32,
@@ -1089,9 +1231,10 @@ impl MacosComputerUseBackend {
         if !accessibility_granted() {
             return Err(accessibility_error());
         }
-        // SAFETY: CGEventCreateMouseEvent 接受 NULL source（默认事件源）；
-        // 返回 +1 事件判空后使用，CGEventPost 只消费不持有，CFRelease 精确
-        // 释放一次；at 是纯值参数。
+        // SAFETY: CGEventCreateMouseEvent accepts a NULL source (the default
+        // event source); the returned +1 event is used after a null check,
+        // CGEventPost consumes without retaining, CFRelease releases exactly
+        // once; at is a pure by-value parameter.
         let event = unsafe {
             CGEventCreateMouseEvent(
                 std::ptr::null(),
@@ -1108,8 +1251,9 @@ impl MacosComputerUseBackend {
                 "CGEventCreateMouseEvent returned null for event type {event_type}"
             )));
         }
-        // SAFETY: event 是上面成功创建的有效 CGEventRef；click_state 字段按
-        // CG 文档写入（多击计数）。
+        // SAFETY: event is the valid CGEventRef successfully created above;
+        // the click_state field is written per the CG documentation
+        // (multi-click count).
         unsafe {
             if click_state > 0 {
                 CGEventSetIntegerValueField(event, CG_EVENT_FIELD_CLICK_STATE, click_state);
@@ -1120,17 +1264,21 @@ impl MacosComputerUseBackend {
         Ok(())
     }
 
-    /// 合成一次鼠标移动（MouseMoved，不带 clickState）。
+    /// Synthesizes one mouse move (MouseMoved, without clickState).
     fn post_move(&mut self, at: (i32, i32)) -> Result<(), ComputerUseError> {
         self.post_mouse_event(CG_EVENT_MOUSE_MOVED, CG_MOUSE_BUTTON_LEFT, at, 0)
     }
 
-    /// 按下全部键（出错时回滚已按下的），停顿，再逆序释放。
+    /// Presses all keys (rolling back the pressed ones on error), pauses,
+    /// then releases in reverse.
     fn chord(&mut self, keys: &[Key], hold: Duration) -> Result<(), ComputerUseError> {
-        // 先整组映射再按压（评审发现：map_key 的 `?` 提前返回会跳过下方
-        // enigo 出错路径的回滚——`cmd+plus` 这类和弦先按下 Meta、随后 '+'
-        // 被布局安全集拒绝，Meta 滞留并污染 enigo 后续全部注入。模块自述
-        // 不变量是"即使中途出错也尽力释放全部"，映射失败同样适用）。
+        // Map the whole chord first, then press (review finding: map_key's
+        // `?` early return used to skip the rollback on enigo's error path
+        // below — for chords like `cmd+plus`, Meta was pressed first and then
+        // '+' was rejected by the layout-safe set, stranding Meta and
+        // polluting all of enigo's subsequent injections. The module's stated
+        // invariant is "best-effort release everything even on a mid-way
+        // error", which applies equally to mapping failures).
         let mapped = keys
             .iter()
             .map(|key| map_key(*key))
@@ -1148,9 +1296,11 @@ impl MacosComputerUseBackend {
         release_reverse(&pressed, enigo).map_err(|err| map_input_err("key release", err))
     }
 
-    /// ScreenCaptureKit 截屏（macOS 15.2+）。captureImageInRect 按显示器原生
-    /// 倍率返回物理像素，实际倍率从返回图像反推（点 / 实际像素宽）——不信任
-    /// scale_factor 估计值，对旋转屏/非整数倍率也成立。
+    /// ScreenCaptureKit capture (macOS 15.2+). captureImageInRect returns
+    /// physical pixels at the monitor's native scale; the actual scale is
+    /// derived backwards from the returned image (points / actual pixel
+    /// width) — never trusting the scale_factor estimate, which also holds
+    /// for rotated screens/non-integer scales.
     fn capture_via_screen_capture_kit(
         &mut self,
         origin_x: i32,
@@ -1165,14 +1315,16 @@ impl MacosComputerUseBackend {
             height_points.round() as i32,
         )?;
         let mut rgba = shot.rgba;
-        // ScreenCaptureKit 输出预乘 alpha；单趟置不透明，避免下游 PNG 编码
-        // 透出无意义 alpha（与 xcap 回退路径同一约定）。
+        // ScreenCaptureKit outputs premultiplied alpha; a single pass forces
+        // it opaque so downstream PNG encoding does not leak meaningless
+        // alpha (the same convention as the xcap fallback path).
         for pixel in rgba.chunks_exact_mut(4) {
             pixel[3] = 255;
         }
-        // 倍率按轴各自反推（评审发现：单一 width 派生把"图像宽高比等于
-        // 点宽高比"当成了前提；SCK/CGWindowList 实践中倍率均匀，但按轴
-        // 派生零成本且对该假设不敏感）。
+        // The scale is derived per axis (review finding: deriving from width
+        // alone assumed "the image aspect ratio equals the point aspect
+        // ratio"; in SCK/CGWindowList practice the scale is uniform, but
+        // per-axis derivation is free and insensitive to that assumption).
         let input_scale_x = width_points / shot.width.max(1) as f64;
         let input_scale_y = height_points / shot.height.max(1) as f64;
         Ok(Capture {
@@ -1219,8 +1371,8 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         }
         let cursor = cursor_points().ok();
         let monitor = pick_monitor(cursor)?;
-        // 显示器原点是 CGDisplayBounds = 点（输入坐标空间）；width/height
-        // 同为点。
+        // The monitor origin is CGDisplayBounds = points (the input
+        // coordinate space); width/height are points too.
         let origin_x = monitor
             .x()
             .map_err(|err| map_xcap_err("monitor origin", err))?;
@@ -1245,22 +1397,26 @@ impl ComputerUseBackend for MacosComputerUseBackend {
                 height_points,
             );
         }
-        // macOS 15.2 以下回退：xcap 的 CGWindowListCreateImage 路径。截图为
-        // 设备物理像素（xcap 已做 BGRA→RGBA 行修复）。实际倍率从返回图像
-        // 反推（点 / 实际像素宽）——不信任 scale_factor 估计值，与 SCK 路径
-        // 同一策略，对旋转屏/非整数倍率也成立。
+        // Fallback below macOS 15.2: xcap's CGWindowListCreateImage path. The
+        // screenshot is device physical pixels (xcap already applies the
+        // BGRA→RGBA row fix). The actual scale is derived backwards from the
+        // returned image (points / actual pixel width) — never trusting the
+        // scale_factor estimate, the same policy as the SCK path, which also
+        // holds for rotated screens/non-integer scales.
         let image = monitor
             .capture_image()
             .map_err(|err| map_xcap_err("screen capture", err))?;
         let width = image.width();
         let height = image.height();
-        // 倍率按轴各自反推（与 SCK 路径同一评审修正：不假设图像宽高比
-        // 恰等于点宽高比）。
+        // The scale is derived per axis (the same review fix as the SCK
+        // path: do not assume the image aspect ratio equals the point aspect
+        // ratio).
         let input_scale_x = width_points / f64::from(width.max(1));
         let input_scale_y = height_points / f64::from(height.max(1));
         let mut rgba = image.into_raw();
-        // CGWindowListCreateImage 的 alpha 通道依内容而定；单趟置不透明，
-        // 避免下游 PNG 编码透出无意义 alpha。
+        // CGWindowListCreateImage's alpha channel depends on the content; a
+        // single pass forces it opaque so downstream PNG encoding does not
+        // leak meaningless alpha.
         for pixel in rgba.chunks_exact_mut(4) {
             pixel[3] = 255;
         }
@@ -1286,32 +1442,39 @@ impl ComputerUseBackend for MacosComputerUseBackend {
     }
 
     fn move_to(&mut self, x: i32, y: i32) -> Result<(), ComputerUseError> {
-        // x/y 是 CGEvent 全局点坐标（工具层已按 input_scale 换算）。原生直发
-        // MouseMoved：enigo 的 move_mouse 在 Retina 上以坏掉的 location() 计算
-        // delta 字段。
+        // x/y are CGEvent global point coordinates (the tool layer already
+        // converted them by input_scale). MouseMoved is posted natively:
+        // enigo's move_mouse computes the delta field from a broken
+        // location() on Retina.
         self.post_move((x, y))?;
-        // 记录可信落点，供后续 click/mouse_down 的落点防护与落点选择使用。
+        // Records the trusted landing point, used by the landing guard and
+        // landing selection of subsequent click/mouse_down.
         self.pending_move_target = Some((x, y));
         Ok(())
     }
 
     fn click(&mut self, button: MouseButton, count: u8) -> Result<(), ComputerUseError> {
-        // 落点防护先行：用户物理移动鼠标与合成移动竞态时，点击会落在用户
-        // 光标处（评审缺陷 6）。
+        // Landing guard first: when the user physically moving the mouse
+        // races the synthetic move, the click would land at the user's cursor
+        // (review defect 6).
         self.guard_click_position()?;
         let dest = self.click_destination()?;
-        // 让先前的 move 落位再点击，避免点在旧光标位置。
+        // Let the earlier move settle before clicking, so the click does not
+        // land at the old cursor position.
         sleep(Duration::from_millis(CLICK_SETTLE_MS));
         let (down, up, _) = cg_mouse_event_types(button);
         let cg_button = cg_mouse_button(button);
         let rounds = u32::from(count.max(1));
         for i in 0..rounds {
-            // clickState 从 1 递增：系统/应用据此识别双击与三击。
+            // clickState increments from 1: the system/app recognizes double
+            // and triple clicks from it.
             let click_state = i64::from(i) + 1;
             self.post_mouse_event(down, cg_button, dest, click_state)?;
-            // down 成功、up 失败（TCC 中途吊销、事件分配失败）会让物理按键
-            // 卡在按下状态，劫持用户的下一次物理点击（评审发现）——释放
-            // 失败重试一次，仍失败则上报"按键可能未释放"而不是静默返回。
+            // A successful down with a failed up (TCC revoked mid-way, event
+            // allocation failure) would strand the physical button pressed,
+            // hijacking the user's next physical click (review finding) —
+            // retry the release once; if it still fails, report "the button
+            // may still be pressed" instead of returning silently.
             if let Err(error) = self.post_mouse_event(up, cg_button, dest, click_state) {
                 sleep(Duration::from_millis(MULTI_CLICK_INTERVAL_MS));
                 self.post_mouse_event(up, cg_button, dest, click_state)
@@ -1330,7 +1493,8 @@ impl ComputerUseBackend for MacosComputerUseBackend {
     }
 
     fn mouse_down(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
-        // 落点防护同 click：按下位置错了，后续拖拽/选择全错。
+        // Same landing guard as click: if the press lands in the wrong place,
+        // everything downstream (drag/selection) is wrong.
         self.guard_click_position()?;
         let dest = self.click_destination()?;
         sleep(Duration::from_millis(CLICK_SETTLE_MS));
@@ -1339,7 +1503,8 @@ impl ComputerUseBackend for MacosComputerUseBackend {
     }
 
     fn mouse_up(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
-        // 释放不做落点防护/重定位（down→move→up 的 up 必须落在拖拽终点）。
+        // Release does no landing guard/re-location (the up of down→move→up
+        // must land at the drag endpoint).
         let dest = self.click_destination()?;
         let (_, up, _) = cg_mouse_event_types(button);
         self.post_mouse_event(up, cg_mouse_button(button), dest, 1)
@@ -1354,13 +1519,15 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         sleep(Duration::from_millis(DRAG_PRESS_SETTLE_MS));
         let result = (|| {
             for (x, y) in drag_waypoints(from, to, DRAG_STEPS) {
-                // 按住期间发 LeftMouseDragged（部分应用只识别 dragged 类型）。
+                // Send LeftMouseDragged while held (some apps only recognize
+                // the dragged type).
                 self.post_mouse_event(dragged, left, (x, y), 1)?;
                 sleep(Duration::from_millis(DRAG_STEP_DELAY_MS));
             }
             Ok(())
         })();
-        // 无论路径移动是否出错都必须释放按键，避免鼠标卡在按下状态。
+        // The button must be released regardless of whether the path
+        // movement errored, so the mouse is not left stuck pressed.
         // Inspect both results instead of `Result::and`, which keeps only the
         // first error: when the release fails too, the caller must still
         // learn that the button may be stranded pressed (mirrors click()'s
@@ -1383,7 +1550,8 @@ impl ComputerUseBackend for MacosComputerUseBackend {
                 )));
             }
         }
-        // 拖拽终点即光标落点，刷新可信落点基准（起点 move 不改动）。
+        // The drag endpoint is where the cursor lands; refresh the trusted
+        // landing point (the start move does not change it).
         self.pending_move_target = Some(to);
         Ok(())
     }
@@ -1396,11 +1564,14 @@ impl ComputerUseBackend for MacosComputerUseBackend {
     }
 
     fn type_text(&mut self, text: &str) -> Result<(), ComputerUseError> {
-        // Unicode 直注（CGEventKeyboardSetUnicodeString，enigo 内部按 20 字符
-        // 分块），绕过 IME——中文直接落进焦点字段。外层再按 64 字符分块
-        // （round-12 评审 M5）：低级事件钩子对每个事件同步处理，长文本可
-        // 合法超过调用预算——块间取消检查把调用方超时后僵尸注入的上界从
-        // 整段压到一个块。
+        // Direct Unicode injection (CGEventKeyboardSetUnicodeString; enigo
+        // chunks internally at 20 characters), bypassing the IME — text lands
+        // directly in the focused field. An outer 64-character chunking
+        // (round-12 review M5): low-level event hooks process each event
+        // synchronously, so long text can legitimately exceed the call
+        // budget — the between-chunks cancel check shrinks the upper bound
+        // of zombie injection after a caller timeout from the whole text to
+        // one chunk.
         for chunk in char_chunks(text, TYPE_CHUNK_CHARS) {
             if let Some(flag) = &self.cancel {
                 if flag.load(Ordering::SeqCst) {
@@ -1442,11 +1613,14 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             .unwrap_or(DEFAULT_TREE_MAX_NODES)
             .min(MAX_TREE_NODES);
         let names = AxNames::new();
-        // SAFETY: AXUIElementCreateSystemWide 任意线程可调；crate 保证返回非
-        // null，retain 计数由 CFRetained 管理；对象不离本调用/本线程。
+        // SAFETY: AXUIElementCreateSystemWide is callable on any thread; the
+        // crate guarantees a non-null return, the retain count is managed by
+        // CFRetained; the object never leaves this call/thread.
         let system = unsafe { AXUIElement::new_system_wide() };
-        // SAFETY: system 是有效的系统级 AXUIElement；设置全局消息超时防止重型
-        // 应用的同步 IPC 拖死 worker 线程。失败忽略（退回默认超时）。
+        // SAFETY: system is a valid system-wide AXUIElement; setting the
+        // global message timeout keeps heavy apps' synchronous IPC from
+        // dragging down the worker thread. Failures are ignored (falls back
+        // to the default timeout).
         let _ = unsafe { system.set_messaging_timeout(AX_MESSAGING_TIMEOUT_SECS) };
         let Some(root) = focused_window_root(&system, &names) else {
             return Err(ComputerUseError::unavailable(
@@ -1458,14 +1632,16 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             next_index: 0,
             remaining: max_nodes,
             truncated: false,
-            // 聚合时限：数百节点 × 多次属性读的最坏总耗时远超单次消息超时。
+            // Aggregate deadline: hundreds of nodes × multiple attribute
+            // reads have a worst-case total far beyond a single message
+            // timeout.
             deadline: Instant::now() + AX_TREE_TIME_LIMIT,
             errors: AttrErrors::new(),
         };
         write_tree_node(&root, 0, max_depth, &names, &mut writer, &mut out);
         if writer.truncated {
-            // 如实标注中止原因：目标挂死（连续 CannotComplete）/ 超时 / 节点
-            // 预算耗尽。
+            // Label the abort reason faithfully: the target hung (consecutive
+            // CannotComplete) / timeout / node budget exhausted.
             let reason = if writer.errors.poisoned {
                 "the focused application stopped responding"
             } else if Instant::now() >= writer.deadline {
@@ -1491,9 +1667,9 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             return Err(accessibility_error());
         }
         let names = AxNames::new();
-        // SAFETY: 同 ui_tree。
+        // SAFETY: same as ui_tree.
         let system = unsafe { AXUIElement::new_system_wide() };
-        // SAFETY: 同 ui_tree。
+        // SAFETY: same as ui_tree.
         let _ = unsafe { system.set_messaging_timeout(AX_MESSAGING_TIMEOUT_SECS) };
         let mut raw: *const AXUIElement = std::ptr::null();
         let Some(out) = NonNull::new(&mut raw) else {
@@ -1501,13 +1677,15 @@ impl ComputerUseBackend for MacosComputerUseBackend {
                 "cannot create out pointer for element hit-test",
             ));
         };
-        // SAFETY: out 指向本函数栈上有效 out 指针；x/y 是 CGEvent 全局点坐标，
-        // 与 AXUIElementCopyElementAtPosition 期望的 top-left 屏幕点坐标一致
-        // （该 API 内部按窗口 z-order 命中）；仅当 Success 且输出非空才使用。
+        // SAFETY: out points at a valid out pointer on this function's stack;
+        // x/y are CGEvent global point coordinates, matching the top-left
+        // screen point coordinates AXUIElementCopyElementAtPosition expects
+        // (that API hit-tests by window z-order internally); use the output
+        // only when Success is returned and it is non-null.
         let err = unsafe { system.copy_element_at_position(x as f32, y as f32, out) };
         match err {
             AXError::Success => {}
-            // 该点无任何 AX 对象（桌面空隙等）。
+            // No AX object at that point (desktop gaps etc.).
             AXError::NoValue => return Ok(None),
             other => {
                 return Err(ComputerUseError::failed(format!(
@@ -1518,15 +1696,18 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         }
         let ptr = NonNull::new(raw.cast::<c_void>().cast_mut())
             .ok_or_else(|| ComputerUseError::failed("element hit-test returned a null element"))?;
-        // 类型校验后转入类型化 CFRetained（不再对裸指针解引用）。
+        // After type verification, convert into a typed CFRetained (no more
+        // raw-pointer dereferences).
         let element = CfObject(ptr).into_ui_element().ok_or_else(|| {
             ComputerUseError::failed("element hit-test returned an unexpected CF type")
         })?;
         let mut errors = AttrErrors::new();
         let info = read_node_info(&element, &names, &mut errors, true);
-        // 命中元素 role/subrole/description 全部读不出时按不可读处理
-        // （fail-closed）：宁可显式报错，也绝不返回一个残缺元素——残缺
-        // 信息会被下游当成可判定的筛查输入。
+        // When role/subrole/description of the hit element are all
+        // unreadable, treat it as unreadable (fail-closed): prefer an
+        // explicit error over ever returning a partial element — partial
+        // information would be treated downstream as decidable screening
+        // input.
         ensure_readable(&info)?;
         Ok(Some(element_info_from(info)))
     }
@@ -1536,13 +1717,15 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             return Err(accessibility_error());
         }
         let names = AxNames::new();
-        // SAFETY: 同 ui_tree。
+        // SAFETY: same as ui_tree.
         let system = unsafe { AXUIElement::new_system_wide() };
-        // SAFETY: 同 ui_tree。
+        // SAFETY: same as ui_tree.
         let _ = unsafe { system.set_messaging_timeout(AX_MESSAGING_TIMEOUT_SECS) };
-        // 焦点链逐级下钻：system → AXFocusedApplication → AXFocusedWindow →
-        // AXFocusedUIElement。无焦点应用/窗口/元素返回 Ok(None)；任何一级 AX
-        // 错误显式失败（fail-closed），绝不猜测一个「大概是焦点」的元素。
+        // Walk down the focus chain level by level: system →
+        // AXFocusedApplication → AXFocusedWindow → AXFocusedUIElement. Return
+        // Ok(None) when there is no focused application/window/element; any
+        // AX error at any level fails explicitly (fail-closed) — never guess
+        // an element that is "probably the focus".
         let app = match ax_ui_element(&system, &names.focused_application) {
             Ok(Some(app)) => app,
             Ok(None) => return Ok(None),
@@ -1560,7 +1743,8 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         };
         let mut errors = AttrErrors::new();
         let info = read_node_info(&element, &names, &mut errors, true);
-        // 与 element_at_point 同一不可读判定：全空属性不构造 ElementInfo。
+        // The same unreadable determination as element_at_point: all-empty
+        // attributes never construct an ElementInfo.
         ensure_readable(&info)?;
         Ok(Some(element_info_from(info)))
     }
@@ -1588,7 +1772,8 @@ mod tests {
             (Key::Space, EK::Space),
             (Key::Backspace, EK::Backspace),
             (Key::Delete, EK::Delete),
-            // macOS 无 Insert 变体，映射到 HELP keycode（Insert 位置的键）。
+            // macOS has no Insert variant; maps to the HELP keycode (the key
+            // at the Insert position).
             (Key::Insert, EK::Help),
             (Key::Up, EK::UpArrow),
             (Key::Down, EK::DownArrow),
@@ -1606,14 +1791,16 @@ mod tests {
             assert_eq!(map_key(*input).ok(), Some(*expected), "mapping {input:?}");
         }
         assert_eq!(map_key(Key::Char('s')).ok(), Some(EK::Unicode('s')));
-        // 布局外字符显式报错（enigo 会退化为 keycode 0 = ANSI 'a'，注入错键）。
+        // Out-of-layout characters fail explicitly (enigo would degrade to
+        // keycode 0 = ANSI 'a' and inject the wrong key).
         assert!(map_key(Key::Char('中')).is_err());
         assert!(map_key(Key::Char('\u{1F600}')).is_err());
-        // Shift 态字符同样拒绝：enigo 反查后不附带 Shift 标志，注入的是
-        // 未加 Shift 的错字（'+' 实际打出 '='）。
+        // Shift-state characters are rejected too: after the reverse lookup
+        // enigo omits the Shift flag and injects the unshifted wrong
+        // character ('+' would actually type '=').
         assert!(map_key(Key::Char('+')).is_err());
         assert!(map_key(Key::Char('A')).is_err());
-        // 无需 Shift 的美式布局字符仍直接映射。
+        // US-layout characters that need no Shift still map directly.
         assert_eq!(map_key(Key::Char('/')).ok(), Some(EK::Unicode('/')));
         assert_eq!(map_key(Key::Char('-')).ok(), Some(EK::Unicode('-')));
         assert!(map_key(Key::Function(0)).is_err());
@@ -1622,12 +1809,13 @@ mod tests {
 
     #[test]
     fn layout_safe_chars_match_unshifted_us_keys() {
-        // 无需 Shift 的美式布局字符全部放行。
+        // Every US-layout character typeable without Shift is allowed.
         for c in "az09 `-=[]\\;',./".chars() {
             assert!(is_layout_safe_char(c), "{c:?} must be layout-safe");
         }
         assert!(is_layout_safe_char(' '));
-        // 大写字母、Shift 组合标点与非 ASCII 一律拒绝。
+        // Uppercase letters, Shift-combined punctuation, and non-ASCII are
+        // all rejected.
         for c in [
             'A', 'Z', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '{', '}', '|',
             ':', '"', '<', '>', '?', '~', '中', '\n',
@@ -1642,7 +1830,8 @@ mod tests {
         errors.record(AXError::CannotComplete);
         errors.record(AXError::CannotComplete);
         assert!(!errors.poisoned);
-        // 其他结果（成功/普通错误码）重置连续计数。
+        // Other outcomes (success/ordinary error codes) reset the consecutive
+        // counter.
         errors.record(AXError::AttributeUnsupported);
         errors.record_ok();
         errors.record(AXError::CannotComplete);
@@ -1667,7 +1856,8 @@ mod tests {
         assert!(!writer.past_deadline());
         assert_eq!(writer.take_node(), Some(0));
         assert_eq!(writer.take_node(), Some(1));
-        // 节点预算耗尽：置 truncated 且不再分配序号。
+        // Node budget exhausted: truncated is set and no further indices are
+        // allocated.
         assert_eq!(writer.take_node(), None);
         assert!(writer.truncated);
 
@@ -1675,7 +1865,8 @@ mod tests {
             next_index: 0,
             remaining: 10,
             truncated: false,
-            // Instant 不支持减法溢出，用 checked_sub 构造过去时点。
+            // Instant subtraction panics on overflow instead of wrapping, so
+            // checked_sub builds the past instant.
             deadline: Instant::now()
                 .checked_sub(Duration::from_secs(1))
                 .expect("a past instant exists on any platform with a clock"),
@@ -1691,7 +1882,7 @@ mod tests {
             role: "AXButton".to_string(),
             title: String::new(),
             subrole: String::new(),
-            // Web 内容：可访问名只在 description。
+            // Web content: the accessible name lives only in description.
             description: "Submit search".to_string(),
             x: 1,
             y: 2,
@@ -1710,7 +1901,7 @@ mod tests {
             ..base.clone()
         };
         assert_eq!(element_info_from(titled).name, "确定");
-        // role/subrole/description 全空 → 不可读，fail-closed。
+        // role/subrole/description all empty → unreadable, fail-closed.
         let unreadable = AxNodeInfo {
             role: String::new(),
             title: String::new(),
@@ -1741,7 +1932,7 @@ mod tests {
             line.contains("[7] AXButton \"Search the web\" (10,20,100,24) focused"),
             "unexpected line: {line}"
         );
-        // title 非空时仍显示 title，格式不变。
+        // When title is non-empty it is still displayed, format unchanged.
         let titled = AxNodeInfo {
             title: "Native".to_string(),
             ..web_button
