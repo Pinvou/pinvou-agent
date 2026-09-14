@@ -1,4 +1,5 @@
 use super::prelude::*;
+use crate::platform::credential_store::{CredentialReference, CredentialStore};
 
 /// 从 disk 读最新 UserPrefs。
 /// 注意走 disk 而非 engine.bridge.prefs——如果用户手改 settings.json，
@@ -27,11 +28,11 @@ fn refresh_safe_prefs(mut prefs: UserPrefs) -> UserPrefs {
     prefs
 }
 
-fn apply_model_credential(
+pub(super) fn apply_model_credential(
     mut model: SavedModel,
     old: Option<&SavedModel>,
-) -> Result<SavedModel, String> {
-    let store = SystemCredentialStore::new();
+    store: &dyn CredentialStore,
+) -> Result<(SavedModel, Option<CredentialReference>), String> {
     let action = model.credential_action.unwrap_or_else(|| {
         if model.api_key.trim().is_empty() {
             CredentialEditAction::KeepExisting
@@ -40,6 +41,11 @@ fn apply_model_credential(
         }
     });
 
+    // The returned reference, when set, is a DEFERRED keyring delete: the
+    // caller must run it only after the prefs save has committed. Deleting
+    // inside the transaction would leave the model configured-but-secretless
+    // when the save then fails — the same defect class `delete_model` fixed.
+    let mut deferred_delete: Option<CredentialReference> = None;
     match action {
         CredentialEditAction::KeepExisting => {
             if let Some(old) = old {
@@ -72,12 +78,12 @@ fn apply_model_credential(
                 .clone()
                 .or_else(|| old.and_then(|m| m.credential_ref.clone()))
                 .unwrap_or_else(|| model.credential_reference());
-            store.delete(&reference).map_err(|e| e.user_message())?;
             model.mark_missing();
+            deferred_delete = Some(reference);
         }
     }
     model.clear_plaintext_key();
-    Ok(model)
+    Ok((model, deferred_delete))
 }
 
 /// 探测用凭据解析的模型选择规则:指定了 id 却查不到(如前端即时生成、
@@ -338,38 +344,78 @@ pub async fn reveal_model_api_key(id: String) -> Result<Option<String>, String> 
 #[tauri::command]
 pub async fn save_model(model: SavedModel, pool: State<'_, EnginePool>) -> Result<(), String> {
     let model_id = model.id.clone();
+    save_model_inner(model, &SystemCredentialStore::new())?;
+    pool.mark_model_updated(&model_id);
+    Ok(())
+}
+
+/// Testable core of [`save_model`]: the engine-pool notification stays with
+/// the command, mirroring [`delete_model_inner`].
+pub(super) fn save_model_inner(
+    model: SavedModel,
+    store: &dyn CredentialStore,
+) -> Result<(), String> {
+    let model_id = model.id.clone();
+    // Same ordering contract as `delete_model`: the destructive keyring
+    // delete returned by `apply_model_credential` runs only after the prefs
+    // save has committed; a failed delete then only leaves an orphaned
+    // credential (the benign direction).
+    let mut deferred_delete: Option<CredentialReference> = None;
     UserPrefs::update_transaction(|prefs| {
         let old = prefs.model_by_id(&model.id).cloned();
-        let model = apply_model_credential(model, old.as_ref())
+        let (model, deferred) = apply_model_credential(model, old.as_ref(), store)
             .map_err(|e| sanitize_command_error("save_model", e))?;
+        deferred_delete = deferred;
         prefs.upsert_model(model);
         Ok(())
     })
     .map_err(|e| sanitize_command_error("save_model", e))?;
-    pool.mark_model_updated(&model_id);
+    if let Some(reference) = deferred_delete {
+        if let Err(error) = store.delete(&reference) {
+            log::warn!(
+                "save_model: model {model_id} saved without its keyring secret (the delete \
+                 failed): {}",
+                error.user_message()
+            );
+        }
+    }
     Ok(())
 }
 
 /// 删一条模型。至少保留一条;删到当前 active 会自动回退列表首条。
 #[tauri::command]
 pub async fn delete_model(id: String) -> Result<(), String> {
+    delete_model_inner(&id, &SystemCredentialStore::new())
+}
+
+pub(super) fn delete_model_inner(id: &str, store: &dyn CredentialStore) -> Result<(), String> {
+    // The keyring delete runs after the prefs save has succeeded: deleting
+    // first would leave a configured-but-secretless model when the save then
+    // fails; after a successful save, a failed delete only leaves an orphaned
+    // credential (the benign direction).
+    let mut reference_to_delete: Option<CredentialReference> = None;
     UserPrefs::update_transaction(|prefs| {
         if prefs.advanced.saved_models.len() <= 1 {
             return Err("至少保留一个模型".to_string());
         }
-        if let Some(reference) = prefs
-            .model_by_id(&id)
-            .and_then(|m| m.credential_ref.clone())
-        {
-            SystemCredentialStore::new()
-                .delete(&reference)
-                .map_err(|e| sanitize_command_error("delete_model", e.user_message()))?;
+        if let Some(reference) = prefs.model_by_id(id).and_then(|m| m.credential_ref.clone()) {
+            reference_to_delete = Some(reference);
         }
-        prefs.remove_model(&id);
+        prefs.remove_model(id);
         Ok(())
     })
     .map(|_| ())
-    .map_err(|e| sanitize_command_error("delete_model", e))
+    .map_err(|e| sanitize_command_error("delete_model", e))?;
+    if let Some(reference) = reference_to_delete {
+        if let Err(error) = store.delete(&reference) {
+            log::warn!(
+                "delete_model: model {id} removed, but its keyring secret could not be \
+                 deleted: {}",
+                error.user_message()
+            );
+        }
+    }
+    Ok(())
 }
 
 /// 设全局默认模型(新建会话继承它)。不打断已在用的会话——它们各自保持 spawn
