@@ -1037,18 +1037,36 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
           .map(key => `${key}=${fields[key]}`).join(';');
       }
 
+      // The backend stores AT verbatim and also accepts RFC3339, so a stored
+      // rule may carry a UTC offset. Resolve it to the local wall clock — the
+      // same moment humanize_rrule shows — so the editor never displays a
+      // foreign wall time and time edits re-anchor locally instead of
+      // silently dropping the offset. Returns null when AT is unusable.
+      function onceScheduleParts(rawAt) {
+        const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2})?(Z|[+-]\d{2}:\d{2})?$/.exec(String(rawAt || ''));
+        if (!match) return null;
+        if (!match[3]) return { date: match[1], time: match[2] };
+        const instant = new Date(match[0]);
+        if (Number.isNaN(instant.getTime())) return null;
+        const pad = part => String(part).padStart(2, '0');
+        return {
+          date: `${instant.getFullYear()}-${pad(instant.getMonth() + 1)}-${pad(instant.getDate())}`,
+          time: `${pad(instant.getHours())}:${pad(instant.getMinutes())}`,
+        };
+      }
+
       function scheduleEditorValue(rrule) {
         const fields = parseScheduleFields(rrule);
         if (fields.FREQ === 'ONCE') {
           // One-shot rules have no recurring fields; derive the editor state
           // from AT so the recurring fallback below cannot misread them.
-          const timeMatch = String(fields.AT || '').match(/T(\d{2}:\d{2})/);
+          const once = onceScheduleParts(fields.AT);
           return {
             repeat: 'once',
             days: [],
             day: 'MO',
             interval: 1,
-            time: timeMatch ? timeMatch[1] : '',
+            time: once ? once.time : '',
             hasTimeAnchor: true,
           };
         }
@@ -1089,11 +1107,12 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         if (fields.FREQ === 'ONCE') {
           if (key === 'time') {
             // Rewrite AT instead of appending BYHOUR/BYMINUTE, which the ONCE
-            // parser rejects; bail out unchanged on unrecognized AT formats.
-            const at = String(fields.AT || '');
-            if (!/^\d{4}-\d{2}-\d{2}T/.test(at)) return currentRrule;
+            // parser rejects; bail out unchanged when AT cannot be resolved
+            // to a local date, e.g. a malformed RFC3339 offset.
+            const once = onceScheduleParts(fields.AT);
+            if (!once) return currentRrule;
             const [onceHour, onceMinute] = String(value || '').split(':');
-            fields.AT = `${at.slice(0, 10)}T${String(Number(onceHour || 0)).padStart(2, '0')}:${String(Number(onceMinute || 0)).padStart(2, '0')}`;
+            fields.AT = `${once.date}T${String(Number(onceHour || 0)).padStart(2, '0')}:${String(Number(onceMinute || 0)).padStart(2, '0')}`;
             return serializeScheduleFields(fields);
           }
           if (key === 'repeat' && value === 'once') return currentRrule;

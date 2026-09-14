@@ -239,7 +239,7 @@ const SCHEDULED_TASK_CHAT_PROMPT: &str = r#"我想创建一个 Pinvou 定时任�
 
 请一次只问我一个问题，并依次确认这些信息：
 1. 任务要做什么。
-2. 什么时候运行。支持每 N 小时（可指定起始时间）、每天指定时间、每周指定星期和时间，以及一次性定时（在指定时刻运行一次后自动结束，适合“明天 9 点提醒我一次”这类需求）。如果用户指定的一次性时刻已经过去，必须先和用户确认改成未来的时刻，不要输出草稿。不支持分钟级规则；如果用户要求“每 5 分钟”等分钟级频率，必须询问用户改成每 N 小时、每天指定时间或每周指定时间，不要输出草稿。
+2. 什么时候运行。支持每 N 小时（可指定起始时间）、每天指定时间、每周指定星期和时间，以及一次性定时（在指定时刻运行一次后自动结束，适合“明天 9 点提醒我一次”这类需求）。一次性定时的 AT 只用本地时刻 YYYY-MM-DDTHH:MM，不要带 Z 或时区偏移后缀。如果用户指定的一次性时刻已经过去，必须先和用户确认改成未来的时刻，不要输出草稿。不支持分钟级规则；如果用户要求“每 5 分钟”等分钟级频率，必须询问用户改成每 N 小时、每天指定时间或每周指定时间，不要输出草稿。
 
 每次运行创建独立对话；同一个定时任务的所有运行对话共享该任务的专属工作间，不同任务互不共享。产物仍归属各次运行对话。不需要询问工作目录或权限设置。
 
@@ -3009,6 +3009,9 @@ mod tests {
         // display pass it through, so the prompt must teach it; otherwise
         // "remind me once at 9 tomorrow" gets forced into a recurrence rule.
         assert!(prompt.contains("FREQ=ONCE;AT=2027-06-01T09:30"));
+        // Offset-suffixed AT (RFC3339) persists a foreign wall clock that the
+        // editor cannot safely rewrite; pin the local-time-only format.
+        assert!(prompt.contains("不要带 Z 或时区偏移后缀"));
         assert!(prompt.contains("create_scheduled_task"));
         assert!(prompt.contains("schtasks"));
         assert!(prompt.contains("Windows Task Scheduler"));
