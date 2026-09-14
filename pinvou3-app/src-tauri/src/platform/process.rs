@@ -14,6 +14,85 @@ impl HiddenCommand {
     }
 }
 
+/// Strips `GIT_*` override variables (redirection/config-injection classes)
+/// injected by the host environment. `GIT_DIR`/`GIT_WORK_TREE`/
+/// `GIT_INDEX_FILE`/`GIT_OBJECT_DIRECTORY` exported by the launching shell
+/// redirect the module's internal git operations to unrelated repositories,
+/// indexes, or object stores; `GIT_CONFIG*` injection overrides the target
+/// repository's own configuration; `GIT_CEILING_DIRECTORIES` and friends alter
+/// repository discovery — these variables really exist when the GUI is
+/// launched from a development shell. Features that spawn git internally
+/// (code_checkpoints shadow repositories, codex_acp workspace branch/diff
+/// operations) must call this before spawning.
+///
+/// **Must remove keys one by one from a fixed key list; do not iterate
+/// `env::vars_os()` first and delete matches**: iterating `environ` while other
+/// threads run `setenv`/`remove_var` concurrently can miss keys (glibc environ
+/// mutation is not thread-safe); parallel tests have occasionally lost
+/// isolation entirely this way (the 2026-09-12 flaky family). Once
+/// `GIT_CONFIG_COUNT` is removed, git ignores the `GIT_CONFIG_KEY_n`/
+/// `GIT_CONFIG_VALUE_n` numbered pairs, so they need no enumeration.
+///
+/// Non-redirection variables such as `GIT_AUTHOR_*`/`GIT_COMMITTER_*`/
+/// `GIT_SSH*` are kept: operations on the user's real worktree should follow
+/// the behavior of the user's own git; code_checkpoints shadow repositories
+/// need stronger isolation (identity and global config pinned too) and should
+/// use [`strip_all_git_env`] instead.
+pub(crate) fn strip_git_override_env(command: &mut Command) {
+    for key in GIT_OVERRIDE_KEYS {
+        command.env_remove(key);
+    }
+}
+
+/// Shadow-repository hardened variant of [`strip_git_override_env`]: also
+/// removes identity/date variables. The shadow repository's commit identity is
+/// provided explicitly via `-c` by the caller; `GIT_AUTHOR_*` exported by the
+/// host shell must not leak into snapshot commits.
+pub(crate) fn strip_all_git_env(command: &mut Command) {
+    for key in GIT_OVERRIDE_KEYS.iter().copied().chain(GIT_IDENTITY_KEYS) {
+        command.env_remove(key);
+    }
+}
+
+/// Once `GIT_CONFIG_COUNT` is removed, the `GIT_CONFIG_KEY_n`/
+/// `GIT_CONFIG_VALUE_n` numbered pairs become ineffective, so the numbered
+/// keys need no enumeration.
+const GIT_OVERRIDE_KEYS: [&str; 20] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_GRAFT_FILE",
+    "GIT_SHALLOW_FILE",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_NAMESPACE",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_CONFIG",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_NOSYSTEM",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    // GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n pairs are gated by
+    // GIT_CONFIG_COUNT: removing COUNT disables the whole group. Key/value 0
+    // is still removed to guard against extreme host injections that bypass
+    // COUNT.
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_VALUE_0",
+];
+
+const GIT_IDENTITY_KEYS: [&str; 6] = [
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_COMMITTER_DATE",
+];
+
 fn is_windows_command_script(executable: &Path) -> bool {
     executable
         .extension()
@@ -339,6 +418,68 @@ pub(crate) fn hide_tokio_console(_command: &mut tokio::process::Command) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_override_keys_cover_redirection_and_config_injection_without_identity() {
+        // Redirection and config-injection keys must be on the strip list.
+        for key in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_COMMON_DIR",
+            "GIT_GRAFT_FILE",
+            "GIT_SHALLOW_FILE",
+            "GIT_REPLACE_REF_BASE",
+            "GIT_NAMESPACE",
+            "GIT_CEILING_DIRECTORIES",
+            "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+            "GIT_CONFIG",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_NOSYSTEM",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_PARAMETERS",
+        ] {
+            assert!(
+                GIT_OVERRIDE_KEYS.contains(&key),
+                "override keys must cover {key}"
+            );
+        }
+        // Identity, transport, and terminal-behavior variables are not on the
+        // subset list: operations on the user's real worktree follow the
+        // behavior of the user's own git (the shadow-repository hardened list
+        // covers identity separately).
+        for key in [
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_DATE",
+            "GIT_SSH_COMMAND",
+            "GIT_ASKPASS",
+            "GIT_TERMINAL_PROMPT",
+            "GIT_EDITOR",
+            "GIT_PAGER",
+            "GIT_TRACE",
+            "HOME",
+            "GITHUB_TOKEN",
+        ] {
+            assert!(
+                !GIT_OVERRIDE_KEYS.contains(&key),
+                "override keys must not contain {key}"
+            );
+        }
+        // Shadow-repository hardened list = subset list + identity keys, and
+        // the identity keys must actually take effect in the hardened list.
+        let strengthened: std::collections::BTreeSet<&str> = GIT_OVERRIDE_KEYS
+            .iter()
+            .copied()
+            .chain(GIT_IDENTITY_KEYS)
+            .collect();
+        for key in GIT_IDENTITY_KEYS {
+            assert!(strengthened.contains(key), "full strip must cover {key}");
+        }
+        assert!(!GIT_OVERRIDE_KEYS.contains(&"GIT_AUTHOR_NAME"));
+    }
 
     #[test]
     fn windows_command_shims_use_command_interpreter() {
