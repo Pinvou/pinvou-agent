@@ -384,7 +384,7 @@ assert.ok(
   'Scheduled model and frequency controls should use the themed keyboard-dismissible popover'
 );
 assert.ok(
-  !/testId="scheduled-live-(?:model|repeat|day)"[\s\S]{0,320}?\/>\s*<ChevronRight\b/.test(scheduledViewSource),
+  !/<ScheduledSelect\b(?:(?!<ScheduledSelect\b)[\s\S])*?(?:testId="scheduled-live-model"|testId=\{`\$\{prefix\}-(?:repeat|day)`\})[\s\S]*?\/>\s*<ChevronRight\b/.test(scheduledViewSource),
   'scheduled selectors should not render a second inert chevron outside their trigger'
 );
 assert.ok(
