@@ -2450,6 +2450,9 @@ impl Pinvou3Bridge {
             dynamic_tools: Vec::new(),
             provenance: deepseek_tui::core::ops::UserInputProvenance::ImportedTranscript,
             turn_tool_security: Some(Arc::new(turn_tool_security)),
+            // Eval replays submit through the same lifecycle and stop path,
+            // so their submit→TurnStarted window needs the same correlation.
+            submission_id: Some(self.next_submission_id()),
         })
     }
 
@@ -2475,6 +2478,16 @@ impl Pinvou3Bridge {
             self.build_multi_agent_hook_executor(workspace),
             Some(snapshot),
         )
+    }
+
+    /// Fresh host submission correlation token (`Op::SendMessage` /
+    /// `Op::EditLastTurn` `submission_id`). The foundation echoes it verbatim
+    /// on the started turn's `TurnStarted`, and `None` on every runtime
+    /// self-started turn, so the forwarder can bind the deferred
+    /// submit→`TurnStarted` stop replay to the submitted turn and refuse an
+    /// overtaking self-started follow-up (issue #254).
+    pub(crate) fn next_submission_id(&self) -> String {
+        format!("sub-{}", uuid::Uuid::new_v4())
     }
 
     fn ensure_session_skills_for_send(&self, session_id: &str) {
@@ -2593,6 +2606,12 @@ impl Pinvou3Bridge {
             // provenance: 消息来源。build_send_message_op 是用户内容 → ExternalUser。
             provenance: deepseek_tui::core::ops::UserInputProvenance::ExternalUser,
             turn_tool_security: None,
+            // Host submission correlation token, echoed by the foundation on
+            // this turn's `TurnStarted`; the forwarder only consumes the
+            // deferred submit-window stop replay on the matching echo, so an
+            // overtaking self-started follow-up can neither consume nor be
+            // killed by the replay (issue #254).
+            submission_id: Some(self.next_submission_id()),
         })
     }
 }
