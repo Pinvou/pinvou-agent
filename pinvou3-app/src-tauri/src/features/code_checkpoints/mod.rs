@@ -4,8 +4,9 @@
 //! `code_sessions/checkpoints.rs`（设计文档 `docs/code-mode-改动随对话回退-设计.md`
 //! §3），砍掉 ACP 钩子、仅保留品悟原生 code 车道。与 feat 分支的差异：
 //! - 模块落位改为 `features/code_checkpoints`（main 无 `code_sessions` 拆分）；
-//! - turn 计数口径修正：feat 分支按 `role == "user"` 计数会把 tool_result 计入，
-//!   改用 [`turns`] 中与 fork `8cc61b609` `is_user_turn_prompt` 同口径的谓词。
+//! - turn-count predicate fix: the feat branch counted by `role == "user"`,
+//!   which pulls tool_result envelopes into the count; use the predicate from
+//!   the `turns` module that shares fork `8cc61b609`'s `is_user_turn_prompt`.
 //!
 //! 快照策略：**每会话一个影子 git 仓库**（shadow git-dir 落账本根
 //! `checkpoints/repo`，`--work-tree` 指向执行根）。
@@ -43,6 +44,7 @@ use serde::{Deserialize, Serialize};
 pub(crate) mod turns;
 
 pub(crate) use turns::count_user_turns;
+pub use turns::count_user_turns_in_json;
 
 /// 每会话保留的 checkpoint 上限（LRU，超出裁掉最老条目）。
 const MAX_CHECKPOINTS: usize = 20;
@@ -690,8 +692,10 @@ fn save_index(ledger_root: &Path, index: &CheckpointIndex) -> Result<()> {
 /// 快照执行根当前状态并登记为新的 checkpoint。
 ///
 /// `turn` 为该快照对应的用户 turn 序号（1-based，UI 按它把入口对齐到 turn 边界）；
-/// 内容与上一条 checkpoint 相同（本轮之前无任何变更）时复用上一条 commit，不产生
-/// 冗余对象。完成后按 LRU 裁剪到 [`MAX_CHECKPOINTS`]。
+/// When the content matches the previous checkpoint (no change happened
+/// before this turn), the previous commit is reused instead of creating a
+/// redundant object. Afterwards the list is trimmed to `MAX_CHECKPOINTS` by
+/// LRU.
 pub fn create_checkpoint(
     ledger_root: &Path,
     execution_root: &Path,

@@ -32,8 +32,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::features::marketplace::bundle::BundleKind;
 
-/// 插件包解压累计上限（自带运行时可能较大，放宽到 200 MiB）。
-pub(crate) const MAX_PLUGIN_SIZE_BYTES: u64 = 200 * 1024 * 1024;
+/// 插件包解压累计上限（自带运行时可能较大，放宽到 200 MiB）。`pub`: headless
+/// callers (the CLI's plugins-import pre-wrap reads) bound themselves by the
+/// same limit and reference this constant directly, so the two sides cannot
+/// drift (same pattern as the pub `codex_acp::workspace` limits).
+pub const MAX_PLUGIN_SIZE_BYTES: u64 = 200 * 1024 * 1024;
 
 /// plugin.json 清单（插件包的权威声明）。未知字段 flatten 保留（前向兼容）。
 /// 不再有「spanner 独立组件」入口；skill 包的 `tools[]` + `runtime` 可执行协议
