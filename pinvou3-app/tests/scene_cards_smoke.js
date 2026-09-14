@@ -657,7 +657,7 @@ async function clickExactButton(page, text) {
       /PPT 设计场景路由/.test(pptPayload.payload || '') &&
       /pptx/.test(pptPayload.payload || '') &&
       /mcp_pptx_make_pptx/.test(pptPayload.payload || '') &&
-      /present_artifact/.test(pptPayload.payload || '') &&
+      /mcp_pinvou3_present_artifact/.test(pptPayload.payload || '') &&
       /PPT 自检/.test(pptPayload.payload || ''),
     JSON.stringify({ pptSceneState, pptPayload }));
   await page.click('[data-testid="scene-card-ppt"]');

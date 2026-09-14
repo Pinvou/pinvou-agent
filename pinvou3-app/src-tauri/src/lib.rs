@@ -1708,6 +1708,12 @@ mod tool_allowlist_contract {
             "kb_search",
             "kb_open_source",
             "mcp_weather_get_weather",
+            // Tools named by the base registry-first policy: the instruction
+            // says "call these first", so the allowlist must admit them
+            // (capability is governed by the allowlist, not by deleting
+            // descriptions).
+            "registry_sync",
+            "start_registry_mcp_server",
         ] {
             assert!(is_pinvou3_allowed(core), "核心工具 {core} 应在白名单");
         }
@@ -1738,7 +1744,14 @@ mod tool_allowlist_contract {
 
         assert_eq!(
             PINVOU3_ALWAYS_LOADED_TOOLS,
-            &["request_user_input", "image_analyze"]
+            &[
+                "request_user_input",
+                "image_analyze",
+                "load_skill",
+                "file_search",
+                "registry_sync",
+                "start_registry_mcp_server",
+            ]
         );
         // `is_pinvou3_allowed` is deliberately case-insensitive, so the
         // legacy `Bash` spelling remains executable when replaying an old

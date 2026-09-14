@@ -32,7 +32,7 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 
 除上述 9 条外，仓库对 `dws/` 另有两处已登记于 git 历史的本地修改，同步时同样重放：
 
-- `references/products/attendance.md`、`references/products/minutes.md`：将宿主已退役的工具名 `read_file` 改为 `File(action="read")`（CodeWhale v0.9.5 canonical 工具族适配，PR #231）。（2026-09-15 注：该条工具名写法已由下方「同步记录（2026-09-15 → 1.0.61）」更新为小写 `read`，以此为准；重放时勿再沿用本条的 `File(action=` 旧形态。）
+- `references/products/attendance.md`、`references/products/minutes.md`：将宿主已退役的工具名 `read_file` 改为 `read`（CodeWhale v0.9.5 canonical 工具族适配，PR #231）。
 - `scripts/attendance_report_common.py`：图片缓存文件名的 URL 哈希由 MD5 改为 SHA-256（CodeQL py/weak-sensitive-data-hashing，PR #54）。
 
 ## 同步记录（2026-08-16 → 1.0.58）
@@ -58,14 +58,14 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 8. MUST DO 参数格式括号注压缩 — 已重放（沿用「参数与参数值之间用空格隔开」）。
 9. best_practices 逐文件枚举压缩为单行汇总、aitable 两行合并 — 已重放（1.0.58 上游改为 14 行逐文件枚举，压缩回单行汇总；新增的 pat.md 参考行保留独立行）。
 
-另重放 git 历史登记的两处修改：`read_file` → `File(action="read")`（attendance.md 6 处、minutes.md 6 处，与 PR #231 一致）；`attendance_report_common.py` 缓存哈希 md5 → sha256（与 PR #54 一致）。1.0.51 导入时的 4 个文件尾随空白差异（07-minutes.md/08-directory.md/calendar.md/oa.md）不再重放，跟随上游原文；对账注（2026-08-16，对账基线为 HEAD `77c19912`）：calendar.md 与 oa.md 在该基线上与上游逐字节一致；07-minutes.md 与 08-directory.md 因后续真实性审查补录的正文修改重新分叉（diff 实测差异均为内容行，无空白-only 行）。对账期间（2026-08-16 15:2x）工作区另出现一批未提交的尾随空白清理（07-minutes.md/08-directory.md/minutes.md/oa.md），不属于四轮登记范围——若保留须随提交另行登记，否则下次 sync 按本登记跟随上游原文。
-  （第六轮核验注 2026-08-16，基线 HEAD `4a42fdb9`、工作区 clean：该批尾随空白清理已不在工作区——上述 4 文件当前与上游的尾随空白行数一致（07/08/oa/minutes 分别 1/1/3/5 行，与上游同），oa.md 与上游逐字节一致，07/08/minutes 的差异均为正文行（08-directory 为 File(action="read") + aisearch 链接化；07-minutes 为「开源版未引入」标注删除；minutes.md 为 read_file → File(action="read")）。本对账注的「未提交清理」悬念已消除，下次 sync 直接跟随上游原文重放各登记条目即可。）
+另重放 git 历史登记的两处修改：`read_file` → `read`（attendance.md 6 处、minutes.md 6 处，与 PR #231 一致）；`attendance_report_common.py` 缓存哈希 md5 → sha256（与 PR #54 一致）。1.0.51 导入时的 4 个文件尾随空白差异（07-minutes.md/08-directory.md/calendar.md/oa.md）不再重放，跟随上游原文；对账注（2026-08-16，对账基线为 HEAD `77c19912`）：calendar.md 与 oa.md 在该基线上与上游逐字节一致；07-minutes.md 与 08-directory.md 因后续真实性审查补录的正文修改重新分叉（diff 实测差异均为内容行，无空白-only 行）。对账期间（2026-08-16 15:2x）工作区另出现一批未提交的尾随空白清理（07-minutes.md/08-directory.md/minutes.md/oa.md），不属于四轮登记范围——若保留须随提交另行登记，否则下次 sync 按本登记跟随上游原文。
+  （第六轮核验注 2026-08-16，基线 HEAD `4a42fdb9`、工作区 clean：该批尾随空白清理已不在工作区——上述 4 文件当前与上游的尾随空白行数一致（07/08/oa/minutes 分别 1/1/3/5 行，与上游同），oa.md 与上游逐字节一致，07/08/minutes 的差异均为正文行（08-directory 为 read + aisearch 链接化；07-minutes 为「开源版未引入」标注删除；minutes.md 为 read_file → read）。本对账注的「未提交清理」悬念已消除，下次 sync 直接跟随上游原文重放各登记条目即可。）
 
 ## 真实性审查补录（2026-08-16，同轮次复审）
 
 同步后复审发现并修复的机械迁移问题（均在 `dws/` 内，CLI 1.0.58 实测核对）：
 
-1. `File(action="read")` 工具名漏网修复 12 处：`doc/` 下 10 个子文档与 `doc/style/doc-create-workflow.md`、`sheet/sheet-comment.md` 的「必须先用 Read 工具读取」前置块（上轮仅重放了 attendance.md/minutes.md，doc/sheet 子文档漏改）。
+1. `read` 工具名漏网修复 12 处：`doc/` 下 10 个子文档与 `doc/style/doc-create-workflow.md`、`sheet/sheet-comment.md` 的「必须先用 Read 工具读取」前置块（上轮仅重放了 attendance.md/minutes.md，doc/sheet 子文档漏改）。
 2. `SKILL.md` Shortcut 总览表删除「multi skill」列（`dingtalk-aitable`/`dingtalk-misc` 等 16 处 multi 形态子 skill 名，mono 收录形态不存在这些入口）；shortcut 计数经 `dws shortcut list --service <svc>` 逐一实测与 1.0.58 一致，保留。
 3. `SKILL.md` 意图决策树 aiapp 行删除「multi 布局见 `dingtalk-misc` 的 `unsupported-scripts.md`」尾注（mono 包内无该文件）。
 4. `references/products/calendar.md`：3 个脚本链接 `../scripts/` → `../../scripts/`（路径错误导致悬空）；「相关产品」中 `../../dingtalk-contact/references/contact.md` 悬空链接改为 `./contact.md`（mono 包内实际路径 `references/products/contact.md`）。
@@ -104,7 +104,7 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 7. `references/products/event.md`：删除末尾 Full reference 节的 3 条 multi 形态断链（`skills/multi/dingtalk-event/…`），改为「命令级入参用 `dws event consume --help`、`dws event +listen-im --help` 查看；事件目录 `dws event list`（可加 `--category oa`）；单事件字段 `dws event schema <event_key> --flatten`」（mono 收录形态无 multi 目录）。
 8. `references/products/doc.md` 导出格式口径 3 处（2026-08-17 评审补充，第 6 条同源修正的传播；`dws doc export --help` 实测为 docx（默认）/markdown (.md)/pdf）：`--export-format` flag 说明行「当前仅支持 docx (默认)」改「导出格式: docx (默认) / markdown (或 md) / pdf」；「用户说下载/导出」路由条「格式转换后导出为 docx，未迁移」与末尾「严禁路由到 drive download」提示条「导出为 docx」均改为「按 `--export-format` 导出为 docx（默认）/ markdown / pdf」并指向 `./doc/doc-export.md`。
 9. （2026-08-17 第十轮独立复审补充，第 5 条 `--user` 修正的两处传播漏网）`references/products/doc.md` 权限路由摘要行「`permission add`（需 `--node` + `--user` + `--role`）」改 `--users`；`references/best_practices/04-document.md` grant-doc-access 行「`doc permission add --node <nodeId> --user <UID1,UID2> --role EDITOR`」改 `--users`。另注：`chat message list --user`、`calendar acl add --user` 等处的 `--user` 是各自命令的实名 flag，**不要**随本条误改。
-10. （2026-08-17 第十轮复审勘误）第 1 条「minutes.md 6 处」实为 7 行：`references/products/minutes.md` 的 `Read 工具`/`read_file` → `File(action="read")` 共 5 处标准形态 + 2 处 `File.read` 简写（R4 行与速查表行，简写一并改写为完整形态）。
+10. （2026-08-17 第十轮复审勘误）第 1 条「minutes.md 6 处」实为 7 行：`references/products/minutes.md` 的 `Read 工具`/`read_file` → `read` 共 5 处标准形态 + 2 处 `File.read` 简写（R4 行与速查表行，简写一并改写为完整形态）。
 11. （2026-08-17 第十一轮复审补充，第 6/8 条导出口径的同族传播漏网 + 二进制实测修正）`doc-export.md`「关键说明」区「当前仅支持…导出为 `docx`，在线表格导出请使用其他命令」改为「仅作用于 alidocs 文档、`--export-format` 决定 docx/markdown/pdf，axls 走 `dws sheet export`」，`--output` 目录扩展名同步改三格式口径；`doc.md` 注意事项区同款「仅支持 docx」+「当前开源 CLI 未暴露在线表格导出命令」（失实：`dws sheet export` 存在且 sheet.md/url-patterns.md 已文档化）一并改写。
 12. （2026-08-17 第十一轮复审，失效 flag 修正）`best_practices/04-document.md` export-doc-as-docx 行的 `--timeout-sec 600` 删除（实测 `unknown flag`；`doc export` 无 timeout flag，轮询窗口内置约 5 分钟）；`best_practices/06-data-analytics.md` export-aitable-to-xlsx 行「加 `--timeout-sec 900`」改写为「`--timeout-ms` 默认且上限 30000、超时返回 taskId 续等」（与 aitable-export-import.md「大表/长任务超时续等」节口径对齐，实测一致）。脚本自身的 `--timeout-sec`（aitable_export/import_via_task.py argparse 参数）不受影响，勿随本条误删。
 
