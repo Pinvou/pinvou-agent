@@ -3728,6 +3728,51 @@ fn aux_session_sidecar_round_trips_across_restart() {
     assert!(!sidecar.exists(), "映射清空后 _aux_sessions.json 不得残留");
 }
 
+/// 损坏但可解析的 sidecar 条目(键非法 / 值不带 aux- 前缀)必须在加载时丢弃:
+/// 否则 get_or_create 会把主会话自身当作辅助会话返回,旁路问题写进主上下文。
+/// 合法条目不受影响,照常恢复。
+#[test]
+fn load_aux_sessions_drops_invalid_but_parseable_entries() {
+    let (store, _g) = isolated_store();
+    let sidecar = paths::sessions_root().join("_aux_sessions.json");
+    std::fs::write(
+        &sidecar,
+        serde_json::json!({
+            "main-good": "aux-good",
+            "main-self": "main-self",
+            "main-nonaux": "01JOTHERSESSIONID",
+            "bad key with spaces": "aux-orphan-key",
+            "main-auxvalue": "aux id with spaces"
+        })
+        .to_string(),
+    )
+    .expect("write parseable-but-invalid sidecar");
+
+    let reopened = reopen_store(&store).expect("reboot");
+
+    assert_eq!(
+        reopened.aux_session_id("main-good").as_deref(),
+        Some("aux-good"),
+        "合法映射必须照常恢复"
+    );
+    assert!(
+        reopened.aux_session_id("main-self").is_none(),
+        "mainId -> mainId 的自映射必须丢弃"
+    );
+    assert!(
+        reopened.aux_session_id("main-nonaux").is_none(),
+        "值不带 aux- 前缀的映射必须丢弃"
+    );
+    assert!(
+        reopened.aux_session_id("bad key with spaces").is_none(),
+        "键不是合法会话 id 的映射必须丢弃"
+    );
+    assert!(
+        reopened.aux_session_id("main-auxvalue").is_none(),
+        "值不是合法会话 id 的映射必须丢弃"
+    );
+}
+
 /// 落盘失败必须回滚内存(与 session_model 同款事务语义),不留内存-only 映射。
 #[test]
 fn aux_session_update_rolls_back_memory_when_sidecar_write_fails() {

@@ -60,6 +60,22 @@ test('subagent selection and its first render share the App ACK-gated publicatio
   assert.match(chatView, /restorePanelId: current[\s\S]*?current\.restorePanelId/);
 });
 
+test('closing the aux chat panel restores the dock panel recorded at open', () => {
+  // 与 subagent 面板同款 parity：首开记录 restorePanelId（重复打开保留首开
+  // 记录），关闭时回跳记录的面板而非无条件落 browser。
+  const openBlock = chatView.slice(
+    chatView.indexOf('const openAuxChatPanel'),
+    chatView.indexOf('const closeAuxChatPanel'),
+  );
+  const closeBlock = chatView.slice(
+    chatView.indexOf('const closeAuxChatPanel'),
+    chatView.indexOf('const handlePreviewArtifact'),
+  );
+  assert.match(openBlock, /restorePanelId: current[\s\S]*?current\.restorePanelId[\s\S]*?rightDockActivePanelId/);
+  assert.match(closeBlock, /const restorePanelId = auxChatPanel\?\.restorePanelId \|\| null/);
+  assert.match(closeBlock, /\[restorePanelId \|\| 'browser', activeSessionId\]/);
+});
+
 test('a newer subagent open invalidates a delayed close across same-session ABA', () => {
   const sessionId = 'session-a';
   const delayedCloseRequestId = 2;

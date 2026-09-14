@@ -336,6 +336,21 @@ impl SessionStore {
         };
         match serde_json::from_str::<HashMap<String, String>>(&content) {
             Ok(map) => {
+                // 损坏但可解析的条目必须丢弃:键/值不是合法会话 id、值不带
+                // aux- 前缀的映射会让 get_or_create 把主会话自身当作辅助会话
+                // 返回,旁路问题直接写进主上下文(与 sched- 侧 load 校验同款防线)。
+                let map: HashMap<String, String> = map
+                    .into_iter()
+                    .filter(|(main_id, aux_id)| {
+                        let valid = super::validators::validate_session_id(main_id).is_ok()
+                            && super::validators::validate_session_id(aux_id).is_ok()
+                            && aux_id.starts_with("aux-");
+                        if !valid {
+                            eprintln!("[sessions] drop invalid aux mapping {main_id} -> {aux_id}");
+                        }
+                        valid
+                    })
+                    .collect();
                 *self.aux_sessions.write() = map;
             }
             Err(e) => eprintln!("[sessions] load_aux_sessions failed: {e}"),

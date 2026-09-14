@@ -1531,7 +1531,14 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             currentSessionId: activeSessionIdRef.current,
           })) return false;
           rememberScrollBeforeSubagentPanelChange();
-          setAuxChatPanel((current) => ({ openTick: (current?.openTick || 0) + 1 }));
+          setAuxChatPanel((current) => ({
+            openTick: (current?.openTick || 0) + 1,
+            // 首开时记住此前的 dock 面板，关闭时回跳（与 subagent 面板同款；
+            // 重复打开须保留首开记录，否则恢复目标被自身覆盖）。
+            restorePanelId: current
+              ? current.restorePanelId
+              : browserDockOpen ? rightDockActivePanelId : null,
+          }));
           return true;
         };
         if (onRightDockPanelSelectionChange) {
@@ -1543,19 +1550,20 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         } else {
           publishOpen();
         }
-      }, [activeSessionId, onRightDockPanelSelectionChange, rememberScrollBeforeSubagentPanelChange]);
+      }, [activeSessionId, browserDockOpen, onRightDockPanelSelectionChange, rememberScrollBeforeSubagentPanelChange, rightDockActivePanelId]);
       const closeAuxChatPanel = useCallback(() => {
         auxChatPanelRequestRef.current += 1;
         rememberScrollBeforeSubagentPanelChange();
+        const restorePanelId = auxChatPanel?.restorePanelId || null;
         setAuxChatPanel(null);
-        if (browserDockOpen) {
+        if (browserDockOpen && onRightDockPanelSelectionChange) {
           void invokeObservedPanelSelection(
             onRightDockPanelSelectionChange,
-            ['browser', activeSessionId],
+            [restorePanelId || 'browser', activeSessionId],
             reportRightDockSelectionFailure,
           );
         }
-      }, [activeSessionId, browserDockOpen, onRightDockPanelSelectionChange, rememberScrollBeforeSubagentPanelChange]);
+      }, [activeSessionId, auxChatPanel, browserDockOpen, onRightDockPanelSelectionChange, rememberScrollBeforeSubagentPanelChange]);
       const handlePreviewArtifact = useCallback((artifact) => {
         setActiveArtifactPath(artifact && artifact.path ? artifact.path : null);
         setArtifactDockActivation((value) => value + 1);

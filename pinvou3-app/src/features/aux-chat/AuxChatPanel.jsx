@@ -144,6 +144,9 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     const generation = generationRef.current;
     try {
       await auxChat.discard(sessionId);
+      // discard 往返期间可能已换绑：此时绝不能对旧 sessionId 发 ensure，
+      // 否则后端幂等重建刚被丢弃的辅助会话（UI 拒绝绑定，但记录已落盘）。
+      if (generationRef.current !== generation) return;
       const nextAuxId = await auxChat.ensure(sessionId);
       if (generationRef.current !== generation) return;
       auxIdRef.current = nextAuxId;
@@ -156,11 +159,12 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       console.warn('[pinvou3][aux-chat] restart failed', error);
       if (generationRef.current !== generation) return;
       // discard 成功而 ensure 重建失败时，旧 auxId 已指向被删会话：必须清掉
-      // 绑定让 composer 如实禁用，否则之后每次发送都必然失败。
+      // 绑定让 composer 如实禁用；此时展示 ensureFailed（"重开话题可恢复"），
+      // 而不是 sendFailed 的"重试发送"——发送动作已无可能成功。
       auxIdRef.current = null;
       setAuxId(null);
       setSnapshot(normalizeAuxSnapshot(null));
-      setSendFailed(true);
+      setEnsureFailed(true);
     } finally {
       setRestarting(false);
     }

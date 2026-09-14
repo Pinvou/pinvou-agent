@@ -192,6 +192,15 @@ assert.match(chat, /data-testid="aux-chat-open"/);
 const auxChatPanel = source('features/aux-chat/AuxChatPanel.jsx');
 assert.match(auxChatPanel, /const copy = t\.uiAuxChat/);
 assert.match(auxChatPanel, /copy=\{conversationCopy\}/);
+// 重开话题竞态守卫：discard 往返后必须复查 generation 再 ensure，否则换绑会
+// 在后端幂等重建刚被丢弃的辅助会话；重建失败必须展示 ensureFailed（composer
+// 已禁用，sendFailed 的"重试发送"文案误导）。
+const restartBlock = auxChatPanel.slice(
+  auxChatPanel.indexOf('const handleRestart'),
+);
+assert.match(restartBlock, /await auxChat\.discard\(sessionId\);\s*\/\/[\s\S]*?generationRef\.current !== generation\) return;\s*const nextAuxId = await auxChat\.ensure\(sessionId\)/);
+assert.match(restartBlock, /setEnsureFailed\(true\)/);
+assert.doesNotMatch(restartBlock, /setSendFailed\(true\)/);
 assert.match(source('features/pet/PetSettingsSection.jsx'), /t\.uiPetSettings/);
 const conversation = source('features/conversation/ConversationTimeline.jsx');
 assert.match(conversation, /conversationCopy\(copy\)/);
