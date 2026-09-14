@@ -305,8 +305,14 @@ fn memory_profile_set_get_round_trips_through_feature_io() {
         "--assistant-alias",
         "Pin",
     ]);
-    assert!(human.contains("Alice"), "{human}");
-    assert!(human.contains("Pin"), "{human}");
+    assert!(
+        human.contains("Alice"),
+        "profile set output should confirm the call name"
+    );
+    assert!(
+        human.contains("Pin"),
+        "profile set output should confirm the assistant alias"
+    );
 
     // assert through the same feature io the GUI reads
     let profile = pinvou3_lib::features::memory::load_profile().unwrap();
@@ -558,9 +564,18 @@ fn memory_overview_counts_match_fixtures_and_write_snapshot() {
     assert_eq!(value["warnings"].as_array().unwrap().len(), 0);
 
     let human = run_ok(&["pinvou", "memory", "overview"]);
-    assert!(human.contains("Preferences: 1"), "{human}");
-    assert!(human.contains("Pending: 2"), "{human}");
-    assert!(human.contains("Recent work: 1"), "{human}");
+    assert!(
+        human.contains("Preferences: 1"),
+        "overview should count preferences sources"
+    );
+    assert!(
+        human.contains("Pending: 2"),
+        "overview should count pending sources"
+    );
+    assert!(
+        human.contains("Recent work: 1"),
+        "overview should count recent work sources"
+    );
 }
 
 #[test]

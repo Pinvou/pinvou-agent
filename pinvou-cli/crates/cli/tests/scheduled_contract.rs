@@ -898,7 +898,11 @@ fn runs_all_merges_active_and_archived_runs_with_limit() {
 
     let all = run_json(&["scheduled", "runs-all"]);
     let runs = all["runs"].as_array().unwrap();
-    assert_eq!(runs.len(), 3, "{all}");
+    assert_eq!(
+        runs.len(),
+        3,
+        "runs-all should contain the three seeded runs"
+    );
     assert_eq!(runs[0]["id"].as_str(), Some("run-1"));
     assert_eq!(runs[0]["taskName"].as_str(), Some("Feed task"));
     assert_eq!(runs[1]["id"].as_str(), Some("run-0"));

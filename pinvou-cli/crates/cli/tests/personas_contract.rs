@@ -258,7 +258,7 @@ fn personas_list_shows_builtin_catalog_and_source_filters() {
     // Human rows are id/source/name/dept/description, tab separated.
     let first = outcome.stdout.lines().next().unwrap_or_default();
     let columns: Vec<&str> = first.split('\t').collect();
-    assert!(columns.len() >= 4, "row layout changed: {first:?}");
+    assert!(columns.len() >= 4, "personas list row layout changed");
     assert!(columns[0].starts_with("pinvou-") || columns[1] == "builtin");
 
     // The whole catalog: builtin cards only for a fresh home, and every

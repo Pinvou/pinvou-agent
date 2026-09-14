@@ -800,14 +800,20 @@ fn code_sessions_info_and_timeline_read_persisted_state() {
     // envelope and the legacy snake_case spelling (a missing turnId renders
     // "-" — envelopes without an active turn exist).
     assert_eq!(outcome.stdout.lines().count(), 3);
-    assert!(outcome.stdout.contains("turn_started"), "{outcome:?}");
-    assert!(outcome.stdout.contains("turn-1"), "{outcome:?}");
+    assert!(
+        outcome.stdout.contains("turn_started"),
+        "timeline should contain the turn_started event"
+    );
+    assert!(
+        outcome.stdout.contains("turn-1"),
+        "timeline should contain the turn id column"
+    );
     assert!(
         outcome
             .stdout
             .lines()
             .all(|line| line.split('\t').nth(2).is_some_and(|kind| !kind.is_empty())),
-        "event-type column must never be silently empty: {outcome:?}"
+        "timeline event-type column must never be silently empty"
     );
 }
 
@@ -1225,7 +1231,10 @@ fn providers_round_trip_against_temp_home() {
     ]);
     assert_eq!(value["action"], "added");
     let added_id = value["provider"]["id"].as_str().unwrap().to_owned();
-    assert!(added_id.starts_with("pv-"), "GUI id scheme: {added_id}");
+    assert!(
+        added_id.starts_with("pv-"),
+        "code providers add should print a pv_-prefixed GUI id"
+    );
     assert_eq!(value["provider"]["name"], "Relay A");
     assert_eq!(value["provider"]["base_url"], "https://api.example.com/v1");
     let raw = std::fs::read_to_string(&store_path).unwrap();

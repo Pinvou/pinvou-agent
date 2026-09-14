@@ -504,7 +504,10 @@ fn models_list_reports_fresh_default_model() {
     );
 
     let human = run_ok(&["pinvoy", "models", "list"]);
-    assert!(human.contains("*default"), "active marker line: {human}");
+    assert!(
+        human.contains("*default"),
+        "models list should mark the active model"
+    );
 }
 
 fn default_preset_str() -> String {
@@ -621,7 +624,10 @@ fn models_add_use_show_remove_round_trip_without_secrets() {
         .expect("prints the new id")
         .trim()
         .to_owned();
-    assert!(added_id.starts_with("m_"), "GUI id scheme: {added_id}");
+    assert!(
+        added_id.starts_with("m_"),
+        "models add should print an m_-prefixed GUI id"
+    );
 
     // list shows the entry with the requested limits.
     let json = run_ok(&["pinvoy", "--output", "json", "models", "list"]);
@@ -649,12 +655,21 @@ fn models_add_use_show_remove_round_trip_without_secrets() {
         Some(added_id.as_str())
     );
     let json = run_ok(&["pinvoy", "--output", "json", "models", "list"]);
-    assert!(json.contains(&format!(r#""active":true"#)), "{json}");
+    assert!(
+        json.contains(&format!(r#""active":true"#)),
+        "models list json should mark the model active"
+    );
 
     // show prints config, never a key.
     let human = run_ok(&["pinvoy", "models", "show", &added_id]);
-    assert!(human.contains("preset: deepseek"), "{human}");
-    assert!(human.contains("has_secret: false"), "{human}");
+    assert!(
+        human.contains("preset: deepseek"),
+        "models show should print the preset line"
+    );
+    assert!(
+        human.contains("has_secret: false"),
+        "models show should report has_secret: false"
+    );
     assert!(
         !human.contains("api_key"),
         "no api_key line without --reveal-key"
@@ -795,7 +810,10 @@ fn settings_search_list_reports_defaults() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("search-list");
     let human = run_ok(&["pinvoy", "settings", "search", "list"]);
-    assert!(human.contains("provider: bing"), "{human}");
+    assert!(
+        human.contains("provider: bing"),
+        "search list should default to provider bing"
+    );
     let json = run_ok(&["pinvoy", "--output", "json", "settings", "search", "list"]);
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["provider"], "bing");
@@ -814,7 +832,10 @@ fn bing_probe_hits_live_endpoint() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("ignored-bing-test");
     let stdout = run_ok(&["pinvoy", "settings", "search", "test", "bing"]);
-    assert!(stdout.contains("ok: true"), "{stdout}");
+    assert!(
+        stdout.contains("ok: true"),
+        "search test should report ok: true"
+    );
 }
 
 /// Opt-in against a local vLLM/Ollama/LM Studio server:
@@ -831,7 +852,10 @@ fn probe_local_identifies_local_server() {
         "--url",
         "http://127.0.0.1:8000/v1",
     ]);
-    assert!(stdout.contains("kind:"), "{stdout}");
+    assert!(
+        stdout.contains("kind:"),
+        "probe-local output should include a kind line"
+    );
 }
 
 /// The search provider enum surface the CLI validates against must stay the

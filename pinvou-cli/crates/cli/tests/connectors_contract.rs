@@ -409,11 +409,20 @@ fn connectors_status_zero_state_reports_every_connector_uninstalled_and_enabled(
         .collect();
     assert_eq!(ids, ["feishu", "wecom", "dingtalk", "tmeet", "ima"]);
     for entry in &entries[..4] {
-        assert_eq!(entry["installed"], false, "{entry}");
-        assert_eq!(entry["connected"], false, "{entry}");
-        assert_eq!(entry["enabled"], true, "{entry}");
-        assert_eq!(entry["skills_applied"], false, "{entry}");
-        assert_eq!(entry["ok"], false, "{entry}");
+        assert_eq!(
+            entry["installed"], false,
+            "uninstalled entries report installed: false"
+        );
+        assert_eq!(
+            entry["connected"], false,
+            "uninstalled entries report connected: false"
+        );
+        assert_eq!(entry["enabled"], true, "catalog entries default to enabled");
+        assert_eq!(
+            entry["skills_applied"], false,
+            "uninstalled entries report skills_applied: false"
+        );
+        assert_eq!(entry["ok"], false, "uninstalled entries report ok: false");
     }
     // wecom/tmeet carry the upgrade_required three-state even uninstalled.
     assert_eq!(entries[1]["upgrade_required"], false);
@@ -515,10 +524,13 @@ fn connectors_logout_and_apply_skills_on_uninstalled_connector_fail_cleanly() {
     let outcome = run(&["pinvou", "connectors", "apply-skills", "feishu"])
         .expect("apply-skills treats an uninstalled CLI as not connected");
     assert_eq!(outcome.exit_code, ExitCode::Success);
-    assert!(outcome.stdout.contains("connected: no"), "{outcome:?}");
+    assert!(
+        outcome.stdout.contains("connected: no"),
+        "apply-skills should report the vendor CLI as not connected"
+    );
     assert!(
         outcome.stdout.contains("skills should show: no"),
-        "{outcome:?}"
+        "apply-skills should hide skills when not connected"
     );
 
     // dingtalk/tmeet treat "CLI not installed" as already logged out.

@@ -73,7 +73,11 @@ fn usage_error(args: &[&str]) -> String {
 fn run_ok(args: &[&str]) -> String {
     let parsed = parse_args(args.to_vec()).expect("valid command");
     let outcome = execute(parsed).expect("execute succeeds");
-    assert_eq!(outcome.exit_code, ExitCode::Success, "stdout: {outcome:?}");
+    // Diagnostic messages deliberately stay free of command output: the
+    // shared CliOutcome can carry command-shaped strings (session ids,
+    // credential echoes), so tests report only the exit codes — assert_eq!
+    // already prints both sides on failure.
+    assert_eq!(outcome.exit_code, ExitCode::Success);
     outcome.stdout
 }
 
@@ -90,7 +94,8 @@ fn run_json(args: &[&str]) -> serde_json::Value {
     owned.insert(1, "--output");
     owned.insert(2, "json");
     let stdout = run_ok(&owned);
-    serde_json::from_str(&stdout).unwrap_or_else(|error| panic!("json output: {error}: {stdout}"))
+    serde_json::from_str(&stdout)
+        .unwrap_or_else(|error| panic!("json output did not parse: {error}"))
 }
 
 fn disabled_bundles_json(home: &Path) -> serde_json::Value {
@@ -413,17 +418,29 @@ fn import_directory_and_zip_show_up_in_skills_list() {
     let home = SandboxHome::new("import-list");
     let dir = fixture_skill_dir(home.path());
     let stdout = run_ok(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
-    assert!(stdout.contains(FIXTURE_DIR_SKILL), "stdout: {stdout}");
-    assert!(stdout.contains("kind=skill"), "stdout: {stdout}");
+    assert!(
+        stdout.contains(FIXTURE_DIR_SKILL),
+        "skills list should mention the imported directory skill"
+    );
+    assert!(
+        stdout.contains("kind=skill"),
+        "skills list should mark the entry kind=skill"
+    );
 
     let zip = fixture_skill_zip(home.path());
     let stdout = run_ok(&["pinvoy", "plugins", "import", zip.to_str().unwrap()]);
-    assert!(stdout.contains(FIXTURE_ZIP_SKILL), "stdout: {stdout}");
+    assert!(
+        stdout.contains(FIXTURE_ZIP_SKILL),
+        "skills list should mention the imported zip skill"
+    );
 
     let human = run_ok(&["pinvoy", "plugins", "skills", "list"]);
     assert!(human.contains(FIXTURE_DIR_SKILL));
     assert!(human.contains(FIXTURE_ZIP_SKILL));
-    assert!(human.contains("uploaded"), "human: {human}");
+    assert!(
+        human.contains("uploaded"),
+        "skills list should mark imported skills uploaded"
+    );
 
     let installed_only = run_ok(&["pinvoy", "plugins", "skills", "list", "--installed-only"]);
     assert!(installed_only.contains(FIXTURE_DIR_SKILL));
@@ -447,7 +464,10 @@ fn import_md_file_with_and_without_frontmatter() {
     let named = home.path().join("contract-md-skill.md");
     std::fs::write(&named, "---\nname: contract-md-skill\n---\nbody").unwrap();
     let stdout = run_ok(&["pinvoy", "plugins", "import", named.to_str().unwrap()]);
-    assert!(stdout.contains("contract-md-skill"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("contract-md-skill"),
+        "import output should mention the skill id from the file name"
+    );
 
     // No frontmatter name: the stem is sanitized into the fallback id
     // ("plain notes" → "plain-notes"); import without an injected name would
@@ -455,7 +475,10 @@ fn import_md_file_with_and_without_frontmatter() {
     let plain = home.path().join("plain notes.md");
     std::fs::write(&plain, "just some body text").unwrap();
     let stdout = run_ok(&["pinvoy", "plugins", "import", plain.to_str().unwrap()]);
-    assert!(stdout.contains("plain-notes"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("plain-notes"),
+        "import output should mention the sanitized fallback id"
+    );
 }
 
 #[test]
@@ -570,7 +593,7 @@ fn import_directory_counts_root_skill_md_once() {
         .expect("valid command");
     match execute(parsed) {
         Ok(outcome) => {
-            assert_eq!(outcome.exit_code, ExitCode::Success, "stdout: {outcome:?}");
+            assert_eq!(outcome.exit_code, ExitCode::Success);
         }
         Err(error) => assert!(
             !error
@@ -657,7 +680,10 @@ fn import_directory_skips_fifo_entries() {
     assert!(status.success(), "mkfifo failed");
 
     let stdout = run_ok(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
-    assert!(stdout.contains("fifo-dir-skill"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("fifo-dir-skill"),
+        "import output should mention the skill from the fifo dir"
+    );
 }
 
 #[test]
@@ -677,7 +703,10 @@ fn meta_updates_upload_package_and_rejects_preset() {
         "--description",
         "Updated description",
     ]);
-    assert!(stdout.contains("display meta"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("display meta"),
+        "meta output should confirm the display meta update"
+    );
 
     let bundles: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(home.path().join("marketplace/bundles.json")).unwrap(),
@@ -745,7 +774,10 @@ fn disable_enable_scope_round_trip_persists_disabled_bundles_json() {
     assert!(plain.contains(&serde_json::json!("obsidian")));
 
     let stdout = run_ok(&["pinvoy", "plugins", "enable", "obsidian", "--scope", "code"]);
-    assert!(stdout.contains("scope=code"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("scope=code"),
+        "enable output should confirm scope=code"
+    );
 }
 
 // `ima-skills` is claimed by the `ima` package inside the storage layer, so
@@ -804,7 +836,10 @@ fn project_skills_round_trip() {
 
     assert!(!disabled_bundles_json_exists(home.path()));
     let stdout = run_ok(&["pinvoy", "plugins", "project-skills", "on"]);
-    assert!(stdout.contains("enabled"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("enabled"),
+        "project-skills on should confirm enabled"
+    );
     assert_eq!(
         disabled_bundles_json(home.path())["project_skills_enabled"],
         serde_json::json!(true)
@@ -873,10 +908,16 @@ fn tools_install_uninstall_round_trip_is_hermetic_for_manifest_only_packages() {
     let home = SandboxHome::new("tools-roundtrip");
 
     let stdout = run_ok(&["pinvoy", "plugins", "tools", "install", "qcc"]);
-    assert!(stdout.contains("installed qcc"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("installed qcc"),
+        "tools install output should confirm installed qcc"
+    );
 
     let installed_only = run_ok(&["pinvoy", "plugins", "tools", "list", "--installed-only"]);
-    assert!(installed_only.contains("qcc"), "{installed_only}");
+    assert!(
+        installed_only.contains("qcc"),
+        "tools list should include installed qcc"
+    );
 
     // Destructive uninstall requires --yes (exit 2 before touching state).
     let (message, code) = run_err(&["pinvoy", "plugins", "tools", "uninstall", "qcc"]);
@@ -885,7 +926,10 @@ fn tools_install_uninstall_round_trip_is_hermetic_for_manifest_only_packages() {
 
     run_ok(&["pinvoy", "plugins", "tools", "uninstall", "qcc", "--yes"]);
     let installed_only = run_ok(&["pinvoy", "plugins", "tools", "list", "--installed-only"]);
-    assert!(!installed_only.contains("qcc"), "{installed_only}");
+    assert!(
+        !installed_only.contains("qcc"),
+        "tools list --installed-only should drop uninstalled qcc"
+    );
     assert!(!home.path().join("bundles").join("qcc").exists());
 }
 
@@ -967,7 +1011,10 @@ fn oauth_login_guards_and_cancel_behaviour() {
 
     // Cancel: a CLI process never owns an in-flight login.
     let stdout = run_ok(&["pinvoy", "plugins", "tools", "oauth-cancel", "qcc"]);
-    assert!(stdout.contains("no active oauth login"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("no active oauth login"),
+        "oauth-cancel output should report no active login"
+    );
 }
 
 /// OPT-IN (network + system credential store): `tools install weather` reads
@@ -989,7 +1036,10 @@ fn tools_install_with_secret_persists_credential() {
         "--secret",
         "AMAP_KEY=PINVOU_CLI_TEST_AMAP_KEY",
     ]);
-    assert!(stdout.contains("installed weather"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("installed weather"),
+        "tools install output should confirm installed weather"
+    );
 
     let (message, code) = run_err(&["pinvoy", "plugins", "tools", "install", "iwencai"]);
     assert_eq!(code, ExitCode::Failed);
@@ -1021,9 +1071,12 @@ fn tools_install_warns_when_remote_validation_is_skipped() {
     ]);
     assert!(
         stdout.contains("installed patsnap-search"),
-        "stdout: {stdout}"
+        "tools install output should confirm installed patsnap-search"
     );
-    assert!(stdout.contains("validation skipped"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("validation skipped"),
+        "tools install output should report validation skipped"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1075,7 +1128,10 @@ fn skills_preset_install_update_uninstall_round_trip() {
         "--yes",
     ]);
     let installed_only = run_ok(&["pinvoy", "plugins", "skills", "list", "--installed-only"]);
-    assert!(!installed_only.contains("visualizer"), "{installed_only}");
+    assert!(
+        !installed_only.contains("visualizer"),
+        "tools list --installed-only should drop uninstalled visualizer"
+    );
 }
 
 #[test]
@@ -1095,7 +1151,10 @@ fn export_installed_package_writes_zip_and_preset_is_rejected() {
         "--output",
         dest.to_str().unwrap(),
     ]);
-    assert!(stdout.contains("exported"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("exported"),
+        "export output should confirm the export"
+    );
     assert!(dest.is_file());
     assert!(std::fs::metadata(&dest).unwrap().len() > 0);
 
@@ -1215,7 +1274,10 @@ fn readiness_zero_state_reports_uninstalled_catalog() {
     let _home = SandboxHome::new("readiness");
 
     let human = run_ok(&["pinvoy", "plugins", "readiness"]);
-    assert!(human.contains("weather"), "human: {human}");
+    assert!(
+        human.contains("weather"),
+        "readiness output should mention the weather tool"
+    );
 
     let value = run_json(&["pinvoy", "plugins", "readiness"]);
     let bundles = value["bundles"].as_array().expect("bundles array");
