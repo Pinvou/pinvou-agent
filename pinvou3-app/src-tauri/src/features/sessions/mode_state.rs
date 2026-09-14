@@ -464,6 +464,15 @@ impl SessionStore {
             persona_id;
     }
 
+    /// Publish the selected persona and its one-shot body as one state change.
+    pub fn set_persona(&self, id: &str, persona_id: Option<String>, pending_body: Option<String>) {
+        let default_mode = self.resolved_default_mode(id);
+        let mut states = self.mode_states.write();
+        let state = Self::mode_state_entry(&mut states, id, default_mode);
+        state.active_persona = persona_id;
+        state.pending_persona_body = pending_body;
+    }
+
     pub fn active_persona_id(&self, id: &str) -> Option<String> {
         self.mode_states.read().get(id)?.active_persona.clone()
     }
