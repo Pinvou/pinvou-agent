@@ -148,24 +148,29 @@ fn marketplace_transaction_journal() -> PathBuf {
 /// 把损坏的状态文件原始字节隔离成 `<name>.corrupt.<ts>` 旁路副本（不删原文件），
 /// 供人工找回；随后调用方按各自策略降级自愈。installed.json 与
 /// disabled_bundles.json 共用本入口（评审 #455：两处曾近乎逐字重复）。
-pub(crate) fn quarantine_corrupt_state_file(path: &Path, content: &str) {
+/// 隔离失败按 Err 传播：调用方不得继续覆盖原文件——ENOSPC 等场景下「隔离
+/// 失败但仍覆盖」会把可人工找回的损坏字节彻底销毁（评审 #455 R5-m4）。
+pub(crate) fn quarantine_corrupt_state_file(path: &Path, content: &str) -> Result<(), String> {
     let Some(parent) = path.parent() else {
-        return;
+        return Err(format!("quarantine target has no parent: {}", path.display()));
     };
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-        return;
+        return Err(format!(
+            "quarantine target has no valid file name: {}",
+            path.display()
+        ));
     };
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let backup = parent.join(format!("{name}.corrupt.{ts}"));
-    if let Err(error) = std::fs::write(&backup, content) {
-        eprintln!(
-            "[marketplace] failed to quarantine corrupt {name} to {}: {error}",
+    std::fs::write(&backup, content).map_err(|error| {
+        format!(
+            "failed to quarantine corrupt {name} to {}: {error}",
             backup.display()
-        );
-    }
+        )
+    })
 }
 
 fn read_optional_file(path: &Path) -> Result<Option<Vec<u8>>, String> {
@@ -650,22 +655,48 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 
     /// 已安装的工具 ID 列表
     pub fn installed_ids(&self) -> Vec<String> {
+        match self.try_installed_ids() {
+            Ok(ids) => ids,
+            Err(error) => {
+                eprintln!("[marketplace] {error}");
+                Vec::new()
+            }
+        }
+    }
+
+    /// 可区分读错误的 `installed_ids`：NotFound 与损坏恢复（隔离 + 按 mcp.json
+    /// 重建）按 Ok 返回；文件存在但读不出（权限/占用锁等）按 Err 返回且不动
+    /// 原文件——「已安装集合未知」由调用方决定口径，DenyAll 门控消费方据此
+    /// fail-closed（评审 #455 R5-B2）。
+    pub(crate) fn try_installed_ids(&self) -> Result<Vec<String>, String> {
         let content = match std::fs::read_to_string(&self.installed_file) {
             Ok(c) => c,
-            Err(_) => return Vec::new(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(format!(
+                    "installed.json exists but is unreadable: {error}; installed set unknown, leaving the file untouched"
+                ));
+            }
         };
         match serde_json::from_str::<Vec<String>>(&content) {
-            Ok(ids) => ids,
+            Ok(ids) => Ok(ids),
             Err(e) => {
+                // 隔离失败（ENOSPC 等）时不得覆盖原文件：损坏字节就此不可
+                // 找回（评审 #455 R5-m4）。按「已安装集合未知」fail-closed 返回
+                // Err，内存态已正确，下次读取重试隔离+恢复。
+                if let Err(quarantine_err) = self.backup_corrupt_installed(&content) {
+                    return Err(format!(
+                        "installed.json is invalid: {e}; {quarantine_err}; installed set unknown, leaving the corrupt file untouched"
+                    ));
+                }
                 eprintln!(
-                    "[marketplace] installed.json is invalid: {e}; backing up and rebuilding from mcp.json"
+                    "[marketplace] installed.json is invalid: {e}; quarantined, rebuilding from mcp.json"
                 );
-                self.backup_corrupt_installed(&content);
                 let recovered = self.recover_installed_ids_from_mcp();
                 if let Err(write_err) = self.save_installed(&recovered) {
                     eprintln!("[marketplace] failed to rewrite installed.json: {write_err}");
                 }
-                recovered
+                Ok(recovered)
             }
         }
     }
@@ -1578,8 +1609,8 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         write_atomic_file(&self.installed_file, json.as_bytes())
     }
 
-    fn backup_corrupt_installed(&self, content: &str) {
-        quarantine_corrupt_state_file(&self.installed_file, content);
+    fn backup_corrupt_installed(&self, content: &str) -> Result<(), String> {
+        quarantine_corrupt_state_file(&self.installed_file, content)
     }
 
     fn recover_installed_ids_from_mcp(&self) -> Vec<String> {
@@ -3886,8 +3917,7 @@ mod tests {
     /// 存在但不可读的 disabled_bundles.json（权限/占用锁等，非 NotFound）：
     /// 不得走迁移分支（升级装机上那会把 plain 初始化为空 = 旧 AllowAll 全开
     /// 并无隔离覆盖原文件），必须与损坏同口径——隔离 + fail-closed 降级落盘
-    /// （评审 #455 R4-B1）。
-    #[cfg(unix)]
+    /// （评审 #455 R4-B1）。权限位操作走平台适配层，平台无关。
     #[test]
     fn unreadable_disabled_bundles_recovers_fail_closed_via_quarantine() {
         with_temp_home(|| {
@@ -3899,23 +3929,22 @@ mod tests {
             .unwrap();
             let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
             std::fs::write(&path, "{\"plain_defaults_migrated\":true}").unwrap();
-            // chmod 000：存在但不可读。
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            // 0o000：存在但不可读。无法构造不可读文件的平台（Windows ACL）跳过本测试。
+            if !crate::platform::os::set_file_mode(&path, 0o000).unwrap() {
+                return;
+            }
 
             let disabled = load_disabled_connectors();
 
             // 恢复权限，便于断言落盘与清理。
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap_or_else(
-                |_| {
-                    // 恢复态已覆盖落盘（tmp+rename 只需目录写权限），新文件可读。
-                    std::fs::set_permissions(
-                        crate::platform::paths::pinvou3_home().join("disabled_bundles.json"),
-                        std::fs::Permissions::from_mode(0o644),
-                    )
-                    .unwrap()
-                },
-            );
+            crate::platform::os::set_file_mode(&path, 0o644).unwrap_or_else(|_| {
+                // 恢复态已覆盖落盘（tmp+rename 只需目录写权限），新文件可读。
+                crate::platform::os::set_file_mode(
+                    &crate::platform::paths::pinvou3_home().join("disabled_bundles.json"),
+                    0o644,
+                )
+                .unwrap()
+            });
             assert_eq!(
                 disabled,
                 vec![
@@ -3942,6 +3971,68 @@ mod tests {
                 })
                 .collect();
             assert_eq!(backups.len(), 1, "不可读同样留隔离副本");
+        });
+    }
+
+    /// 存在但不可读的 installed.json（权限/占用锁等，非 NotFound）：DenyAll 现算
+    /// 扩集必须 fail-closed 退化为「全部可装包 ∪ 内置 CLI」，不得按空已装集放行
+    /// （评审 #455 R5-B2）——否则未初始化 scope 的有效禁用集丢失全部已装包，
+    /// plain 会话零同意放行已装连接器（本 PR 承诺永不产生的全开翻转）。
+    /// 原文件保持原样（不隔离、不覆盖），恢复后按真实已装集计算。
+    #[test]
+    fn unreadable_installed_json_deny_all_expansion_fails_closed() {
+        with_temp_home(|| {
+            let dir = crate::platform::paths::pinvou3_home().join("marketplace");
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("installed.json");
+            std::fs::write(&path, "[\"feishu\"]").unwrap();
+            // 0o000：存在但不可读。无法构造不可读文件的平台（Windows ACL）跳过。
+            if !crate::platform::os::set_file_mode(&path, 0o000).unwrap() {
+                return;
+            }
+
+            // 「已安装集合未知」按 Err 区分，原文件不动。
+            let manager = MarketplaceManager::new();
+            assert!(
+                manager.try_installed_ids().is_err(),
+                "不可读必须按错误区分（不得静默按空已装集）"
+            );
+            let disabled = load_disabled_connectors();
+            let builtin = bundle::builtin_cli_bundle_ids()
+                .next()
+                .expect("至少一个内置 CLI 包");
+            assert!(
+                disabled.iter().any(|id| id == builtin),
+                "fail-closed 扩集必须含内置 CLI 包: {disabled:?}"
+            );
+            // 全量目录含内嵌预置（mcp_catalog），非空即可证明 fail-closed 分支生效
+            // （空已装集口径下扩集只剩内置 CLI ∪ 已装技能）。
+            assert!(
+                disabled.len() > 4,
+                "fail-closed 扩集必须覆盖全部可装包，而非只剩内置 CLI: {disabled:?}"
+            );
+            // 文件原样保留、不产生隔离副本。
+            crate::platform::os::set_file_mode(&path, 0o644).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "[\"feishu\"]",
+                "不可读不得动原文件"
+            );
+            let quarantined: Vec<_> = std::fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with("installed.json.corrupt.")
+                })
+                .collect();
+            assert!(quarantined.is_empty(), "不可读不属于损坏，不得隔离");
+            // 恢复后按真实已装集计算（损坏 JSON 路径的隔离重建不受影响）。
+            assert_eq!(
+                MarketplaceManager::new().installed_ids(),
+                vec!["feishu".to_string()]
+            );
         });
     }
 
