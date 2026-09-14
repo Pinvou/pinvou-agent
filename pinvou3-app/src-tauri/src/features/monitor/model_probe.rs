@@ -1150,9 +1150,13 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
     #[test]
     fn infer_context_window_cloud_models() {
         let cases: &[(ModelPreset, &str, u32)] = &[
-            // DeepSeek：v4 全系 1M（原 bug：预设固定 128K）
+            // DeepSeek: every v4 model is 1M (original bug: preset fixed 128K);
+            // deepseek-flash (V4.1-Flash) is officially 1M, corrected via the
+            // core::model_context override table (the base applies the legacy
+            // 128K heuristic to deepseek names without "v4", checked 2026-09-11)
             (ModelPreset::Deepseek, "deepseek-v4-pro", 1_000_000),
             (ModelPreset::Deepseek, "deepseek-v4-flash", 1_000_000),
+            (ModelPreset::Deepseek, "deepseek-flash", 1_000_000),
             // Kimi：直连平台 kimi-k3 是 1M；Coding Plan 裸 k3 默认按 256K 安全值
             (ModelPreset::Kimi, "kimi-k3", 1_048_576),
             (ModelPreset::Kimi, "kimi-k2.7-code", 262_144),
@@ -1169,8 +1173,9 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
             // (binary 256K = 262,144).
             (ModelPreset::OpenaiCompatible, "k3-256k", 262_144),
             (ModelPreset::OpenaiCompatible, "k3", 262_144),
-            // GLM：5.2 是 1M，5.1/5-turbo 是 202,752，4.7 官方 200K
+            // GLM: 5.2 / 5.3 are 1M, 5.1/5-turbo are 202,752, 4.7 is officially 200K
             (ModelPreset::Glm, "glm-5.2", 1_000_000),
+            (ModelPreset::Glm, "glm-5.3", 1_000_000),
             (ModelPreset::Glm, "glm-5.1", 202_752),
             (ModelPreset::Glm, "glm-5-turbo", 202_752),
             (ModelPreset::Glm, "glm-4.7", 204_800),
@@ -1188,20 +1193,56 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
             (ModelPreset::Qwen, "qwen3.7-max", 1_000_000),
             (ModelPreset::Qwen, "qwen3.7-flash", 1_000_000),
             (ModelPreset::Qwen, "qwen3.6-flash", 1_000_000),
-            // 豆包：evolving 已升 1M，2.x 全系 256K
+            // Doubao: evolving is already 1M; the 2.x family is officially 256k
+            // (volcengine 1330310, checked 2026-09-12), carried by the
+            // core::model_context supplemental table — the base has no doubao
+            // rows, and without the supplemental table the engine side falls to
+            // 128K, diverging from the monitor page
             (ModelPreset::Doubao, "doubao-seed-evolving", 1_048_576),
-            (ModelPreset::Doubao, "doubao-seed-2.1-pro", 262_144),
-            (ModelPreset::Doubao, "doubao-seed-2.1-turbo", 262_144),
-            (ModelPreset::Doubao, "doubao-seed-2.0-pro", 262_144),
-            (ModelPreset::Doubao, "doubao-seed-2.0-lite", 262_144),
+            (ModelPreset::Doubao, "doubao-seed-2-1-pro-260628", 262_144),
+            (ModelPreset::Doubao, "doubao-seed-2-1-turbo-260628", 262_144),
+            (
+                ModelPreset::Doubao,
+                "doubao-seed-2-0-code-preview-260215",
+                262_144,
+            ),
+            (ModelPreset::Doubao, "doubao-seed-2-0-pro-260215", 262_144),
+            (ModelPreset::Doubao, "doubao-seed-2-0-lite-260428", 262_144),
             // OpenAI 兼容示例：gpt-5.6 全系 1.05M
             (ModelPreset::OpenaiCompatible, "gpt-5.6-terra", 1_050_000),
             (ModelPreset::OpenaiCompatible, "gpt-5.6-luna", 1_050_000),
             (ModelPreset::OpenaiCompatible, "gpt-5.6-sol", 1_050_000),
-            // 底座 catalog 已知（haiku 200K）与 PINVOU_OVERRIDES 覆盖（opus-5 1M）
-            // 的 Anthropic 模型走 resolved_context_window，preset 兜底见 prefs 测试。
+            // xAI: the base known table lists grok-4.6 / grok-4.5 at 500K (checked 2026-09-11)
+            (ModelPreset::Xai, "grok-4.6", 500_000),
+            // The base known table still records grok-4.20-0309-* as 2M; the
+            // core::model_context override table corrects it first to the 1M
+            // re-checked from docs.x.ai on 2026-09-11 (matching the catalog desc).
+            (ModelPreset::Xai, "grok-4.20-0309-reasoning", 1_000_000),
+            (ModelPreset::Xai, "grok-4.20-0309-non-reasoning", 1_000_000),
+            // The pre-retirement legacy spelling kept by the ACP preset: the
+            // base has no row and relies on the core::model_context override
+            // table correcting it to 1M, otherwise the engine falls to 128K
+            // and diverges from the monitor page's prefs substring fallback.
+            (ModelPreset::Xai, "grok-4.20-reasoning", 1_000_000),
+            // The base known table only has bare "grok-build" → 512K, which
+            // misses the -0.1 wire id; the core::model_context override table
+            // corrects it to the official docs.x.ai 256K (matching the catalog desc).
+            (ModelPreset::Xai, "grok-build-0.1", 256_000),
+            // The base chain has no rows for gpt-6 / gemini-3.8; the
+            // core::model_context override table fills them in per the official
+            // figures (the engine-side resolved was None → 128K, diverging from
+            // the monitor page fallback).
+            (ModelPreset::Openai, "gpt-6-astra", 1_050_000),
+            (ModelPreset::Gemini, "gemini-3.8-flash", 1_048_576),
+            // Anthropic models covered by the base catalog (haiku 200K) and the
+            // PINVOU_OVERRIDES entries (opus-5 / fable-5-1 both 1M) go through
+            // resolved_context_window; preset fallbacks are covered by the prefs
+            // tests. The base known table does not list fable-5-1 exactly (only
+            // fable-5), so without the override it would fall to the claude
+            // wildcard 200K.
             (ModelPreset::Anthropic, "claude-haiku-4-5", 200_000),
             (ModelPreset::Anthropic, "claude-opus-5", 1_000_000),
+            (ModelPreset::Anthropic, "claude-fable-5-1", 1_000_000),
         ];
         for (preset, model, expected) in cases {
             assert_eq!(
@@ -1227,5 +1268,51 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
             Some(131_072)
         );
         assert_eq!(infer_context_window(ModelPreset::Kimi, None), Some(262_144));
+    }
+
+    /// Every preset's default model must resolve a context window through the
+    /// shared resolution entry point (resolved_context_window): the engine-side
+    /// `effective_context_window` falls straight to 128K when resolved is None,
+    /// while the monitor page's `infer_context_window` still has the prefs
+    /// vendor fallback, so the two sides diverge (gpt-6-astra /
+    /// gemini-3.8-flash once derived compaction thresholds from 128K while the
+    /// page displayed 1M for exactly this reason). This test turns "changing a
+    /// default must pass the resolution chain" into an explicit gate; the
+    /// expected values are the vendor official figures and, together with
+    /// `default_model_matches_vendor_docs_2026_09` and the frontend
+    /// MODEL_PRESET_DEFS lock tests, form a three-layer default-value defense.
+    #[test]
+    fn preset_default_models_resolve_engine_context_window() {
+        let cases: &[(ModelPreset, u32)] = &[
+            // The `_256k` suffix hint resolves to 256,000 via N×1000 (same
+            // source as the monitor page; the prefs LocalVllm fallback of
+            // 262,144 only applies when resolved is None, which this default
+            // never reaches).
+            (ModelPreset::LocalVllm, 256_000),
+            (ModelPreset::Deepseek, 1_000_000),
+            (ModelPreset::Kimi, 1_048_576),
+            (ModelPreset::Qwen, 1_000_000),
+            (ModelPreset::Doubao, 1_048_576),
+            (ModelPreset::Minimax, 1_000_000),
+            (ModelPreset::Glm, 1_000_000),
+            (ModelPreset::Mimo, 1_000_000),
+            (ModelPreset::Openai, 1_050_000),
+            (ModelPreset::Anthropic, 1_000_000),
+            (ModelPreset::Gemini, 1_048_576),
+            (ModelPreset::Xai, 500_000),
+            // The openai_compatible Rust default gpt-5.6-terra only serves as
+            // the legacy migration fallback (deliberately left empty on the
+            // frontend), but as a default_model() output it must likewise pass
+            // the shared resolution entry (base gpt-5.6 exact list → 1.05M).
+            (ModelPreset::OpenaiCompatible, 1_050_000),
+        ];
+        for (preset, expected) in cases {
+            let model = preset.default_model();
+            assert_eq!(
+                crate::core::model_context::resolved_context_window(model),
+                Some(*expected),
+                "{preset:?} default model {model} must resolve an official context window via the shared resolution entry (the engine side has no prefs fallback)"
+            );
+        }
     }
 }

@@ -90,10 +90,13 @@ fn is_official_deepseek_base_url(base_url: &str) -> bool {
         .trim_end_matches("/beta")
         .trim_end_matches("/v1")
         .to_ascii_lowercase();
-    matches!(
-        normalized.as_str(),
-        "https://api.deepseek.com" | "https://api.deepseeki.com"
-    )
+    // api.deepseeki.com used to be in this list; removed on 2026-09-11: the
+    // official documentation never listed the domain, and the community
+    // reported it as a non-resolvable unofficial domain
+    // (deepseek-ai/awesome-deepseek-agent#311),
+    // so it must not trigger the official DeepSeek provider/model-name
+    // rewriting.
+    matches!(normalized.as_str(), "https://api.deepseek.com")
 }
 
 pub(crate) fn base_url_uses_loopback(base_url: &str) -> bool {
@@ -993,7 +996,9 @@ impl Pinvou3Bridge {
             return m.model.clone();
         }
         if is_official_deepseek {
-            return "deepseek-v4-pro".to_string();
+            // Single source of truth: prefs `ModelPreset::Deepseek::default_model`;
+            // do not fall back to a hand-written literal here.
+            return ModelPreset::Deepseek.default_model().to_string();
         }
         self.default_model_for_preset()
     }
@@ -7110,8 +7115,23 @@ mod tests {
         let mut bridge = fixture_bridge();
         bridge.prefs.advanced.model_preset = Some(ModelPreset::Deepseek);
         assert_eq!(bridge.provider(), "deepseek");
-        assert_eq!(bridge.model(), "deepseek-v4-pro");
+        assert_eq!(bridge.model(), "deepseek-flash");
         assert_eq!(bridge.base_url(), "https://api.deepseek.com");
+    }
+
+    /// `api.deepseeki.com` is an unofficial domain (never listed in the
+    /// official documentation; the community awesome-deepseek-agent#311 report
+    /// says the domain does not resolve; checked 2026-09-11): it must no
+    /// longer be treated as an official DeepSeek endpoint triggering
+    /// provider/model-name rewriting.
+    #[test]
+    fn deepseeki_unofficial_domain_is_not_official_base_url() {
+        assert!(is_official_deepseek_base_url("https://api.deepseek.com/"));
+        assert!(is_official_deepseek_base_url("https://api.deepseek.com/v1"));
+        assert!(!is_official_deepseek_base_url("https://api.deepseeki.com"));
+        assert!(!is_official_deepseek_base_url(
+            "https://api.deepseeki.com/v1"
+        ));
     }
 
     /// 官方 DeepSeek API 只能接收裸模型名。若用户手动把 API 地址改成
@@ -7303,7 +7323,7 @@ mod tests {
         bridge.prefs.advanced.saved_models[0].vendor = Some("gemini".to_string());
 
         assert_eq!(bridge.provider(), "openai");
-        assert_eq!(bridge.model(), "gemini-3.6-flash");
+        assert_eq!(bridge.model(), "gemini-3.8-flash");
         let cfg = bridge.build_dt_config();
         let providers = cfg.providers.as_ref().expect("providers config");
         assert_eq!(
