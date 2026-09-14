@@ -963,7 +963,7 @@ jobs:
     name: windows-rust-test
     needs: changes
     # Native Windows coverage runs once on ready high-risk/explicit PRs and on main.
-    # Merge Queue does not repeat this 20+ minute leg; Linux validates the combined tree.
+    # Merge Queue does not repeat this up-to-90-minute leg; Linux validates the combined tree.
     if: >-
       ${{
         !cancelled() &&
@@ -988,9 +988,13 @@ jobs:
     defaults:
       run:
         shell: bash
-    # 全量 cargo check --all-targets + lib 链接检查,无暖 cache,挂死会长时间烧 runner 分钟。
-    # 移除 sccache 后冷编译更长,放宽到 90min(aws-lc-sys NASM 预生成对象冷编译更久)。
-    timeout-minutes: 90
+    # Full cargo check --all-targets plus the lib link check runs without a
+    # warm cache, and a hung build burns runner minutes. Cold compile grew
+    # after sccache removal (aws-lc-sys prebuilt NASM objects compile even
+    # slower). Since 2026-09 several runs died at the 90-minute cap during
+    # the link step while passing runs already took 85-87 minutes, so the
+    # cap is raised to 180 minutes.
+    timeout-minutes: 180
     env:
       # reqwest 0.13 → aws-lc-sys(非 FIPS)。Windows x86_64 需 NASM 汇编;runner 默认无 NASM,
       # 用预生成 NASM 对象规避(aws-lc-rs 官方支持,无需额外装 NASM)。
