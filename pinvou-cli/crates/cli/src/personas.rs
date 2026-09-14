@@ -609,32 +609,32 @@ fn open_store() -> Result<SessionStore, CliError> {
 }
 
 /// Read the persona body from `--file` or stdin; bodies are multi-KB
-/// markdown, so argv delivery is deliberately not offered.
+/// markdown, so argv delivery is deliberately not offered. Both lanes are
+/// capped at 4 MiB: an unbounded file (`--file /dev/zero`) or stdin
+/// (`yes | ...`) would exhaust memory before any validation ran.
 fn read_body(source: &BodySource, subcommand: &str) -> Result<String, CliError> {
+    const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
     let content = match source {
-        BodySource::File(path) => std::fs::read_to_string(path).map_err(|error| {
-            CliError::failed(format!(
-                "personas {subcommand}: cannot read {}: {error}",
-                path.display()
-            ))
-        })?,
+        BodySource::File(path) => crate::support::read_text_file_capped(
+            path,
+            MAX_BODY_BYTES,
+            &format!("personas {subcommand}"),
+        )?,
         BodySource::Stdin => {
-            // Bounded read: unbounded stdin (`yes | ...`) would exhaust
-            // memory before any validation ran. Reading one byte past the
-            // cap distinguishes "at the cap" from "over it".
-            const MAX_BODY_BYTES: u64 = 4 * 1024 * 1024;
+            // Reading one byte past the cap distinguishes "at the cap" from
+            // "over it".
             let mut content = String::new();
             let stdin = std::io::stdin();
             let mut handle = stdin.lock();
             if let Err(error) = std::io::Read::read_to_string(
-                &mut std::io::Read::take(&mut handle, MAX_BODY_BYTES + 1),
+                &mut std::io::Read::take(&mut handle, MAX_BODY_BYTES as u64 + 1),
                 &mut content,
             ) {
                 return Err(CliError::failed(format!(
                     "personas {subcommand}: cannot read stdin: {error}"
                 )));
             }
-            if content.len() as u64 > MAX_BODY_BYTES {
+            if content.len() > MAX_BODY_BYTES {
                 return Err(CliError::usage(format!(
                     "personas {subcommand}: the persona body exceeds the 4 MiB stdin limit"
                 )));

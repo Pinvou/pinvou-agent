@@ -462,18 +462,31 @@ fn write(
     stdin: bool,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
+    // Both lanes are capped at the save limit BEFORE the read: an unbounded
+    // file (`--file /dev/zero`) or stdin (`yes | ...`) would load into memory
+    // and only then hit the size check. Reading one byte past the cap
+    // distinguishes "at the cap" from "over it".
     let content = match (file, stdin) {
-        (Some(file), false) => std::fs::read_to_string(file).map_err(|error| {
-            CliError::failed(format!(
-                "artifacts write cannot read --file {}: {error}",
-                file.display()
-            ))
-        })?,
+        (Some(file), false) => crate::support::read_text_file_capped(
+            file,
+            MAX_EDITABLE_MARKDOWN_BYTES,
+            "artifacts write",
+        )?,
         (None, true) => {
             let mut content = String::new();
-            std::io::Read::read_to_string(&mut std::io::stdin(), &mut content).map_err(
-                |error| CliError::failed(format!("artifacts write cannot read stdin: {error}")),
-            )?;
+            std::io::Read::read_to_string(
+                &mut std::io::Read::take(
+                    std::io::stdin().lock(),
+                    MAX_EDITABLE_MARKDOWN_BYTES as u64 + 1,
+                ),
+                &mut content,
+            )
+            .map_err(|error| {
+                CliError::failed(format!("artifacts write cannot read stdin: {error}"))
+            })?;
+            if content.len() > MAX_EDITABLE_MARKDOWN_BYTES {
+                return Err(CliError::failed("markdown_artifact_is_too_large_to_save"));
+            }
             content
         }
         // Unreachable via parse; kept total so execute stays total too.
