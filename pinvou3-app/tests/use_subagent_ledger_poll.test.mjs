@@ -5,7 +5,7 @@
 // review finding "initially empty → later ledger child with no real-time
 // event": the loop used to stop on the first empty read and never wake up).
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -13,6 +13,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dir = mkdtempSync(path.join(tmpdir(), 'pinvou3-ledger-poll-'));
+// Shared by every test below: the hook copy and the react stub must outlive
+// all imports (ESM caches by resolved path), so cleanup is file-level, not
+// per-test.
+after(() => rmSync(dir, { recursive: true, force: true }));
 // The hook source is copied byte-for-byte and imported for real; its only
 // dependency 'react' resolves through a temp node_modules stub (node --test
 // has no React renderer and the repo has no jsdom).
@@ -147,7 +151,73 @@ test('idle heartbeat discovers a later ledger child with no real-time event', as
   } finally {
     timers.restore();
     delete globalThis.__pinvouReactHooks;
-    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('kickRef triggers an immediate read and is in-flight safe', async () => {
+  const timers = installFakeTimers();
+  const runtime = createRuntime();
+  globalThis.__pinvouReactHooks = runtime;
+  try {
+    const { useSubagentLedgerPoll } = await import(pathToFileURL(hookTmp).href);
+
+    let reads = 0;
+    const kickRef = { current: null };
+    const readLedger = () => { reads += 1; return Promise.resolve([]); };
+    const render = () => {
+      runtime.reset();
+      useSubagentLedgerPoll({
+        enabled: true, sessionId: 's1', hasActive: false, readLedger, onSummaries: () => {}, kickRef,
+      });
+    };
+
+    render();
+    assert.equal(typeof kickRef.current, 'function', 'the hook publishes the kick on mount');
+    timers.fireAll();
+    await flushQueue();
+    assert.equal(reads, 1, 'the initial immediate read ran');
+    assert.deepEqual(timers.delays(), [15000], 'idle heartbeat armed');
+
+    // Kick: cancels the pending tick and reads immediately (the read itself is
+    // a direct async call, not a new timer).
+    kickRef.current();
+    assert.deepEqual(timers.delays(), [], 'the kick cancels the pending heartbeat tick');
+    await flushQueue();
+    assert.equal(reads, 2, 'the kick read ran');
+    assert.deepEqual(timers.delays(), [15000], 'the loop re-arms after the kick read');
+
+    // Kick while a read is in flight is a no-op: the in-flight delivery is
+    // already the fresh snapshot, and no second loop may be started.
+    let resolveRead;
+    let inFlightReads = 0;
+    const blockingRead = () => {
+      inFlightReads += 1;
+      return new Promise(resolve => { resolveRead = resolve; });
+    };
+    runtime.reset();
+    useSubagentLedgerPoll({
+      enabled: true, sessionId: 's1', hasActive: false,
+      readLedger: blockingRead, onSummaries: () => {}, kickRef,
+    });
+    timers.fireAll();
+    await flushQueue();
+    assert.equal(inFlightReads, 1, 'the new generation started one read');
+    kickRef.current();
+    await flushQueue();
+    assert.equal(inFlightReads, 1, 'a kick during an in-flight read starts no second read');
+    resolveRead([]);
+    await flushQueue();
+    assert.deepEqual(timers.delays(), [15000], 'the in-flight read re-arms the loop once');
+
+    // Unmount clears the kick.
+    runtime.reset();
+    useSubagentLedgerPoll({
+      enabled: false, sessionId: null, hasActive: false, readLedger, onSummaries: () => {}, kickRef,
+    });
+    assert.equal(kickRef.current, null, 'unmount clears the published kick');
+  } finally {
+    timers.restore();
+    delete globalThis.__pinvouReactHooks;
   }
 });
 
