@@ -134,11 +134,20 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
             let salvaged = std::fs::read(&path)
                 .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
                 .unwrap_or_else(|_| format!("<unreadable: {error}>"));
-            quarantine_corrupt_disabled_bundles(&salvaged, &error.to_string());
             let recovered = DisabledBundlesFile {
                 plain_defaults_migrated: true,
                 ..DisabledBundlesFile::default()
             };
+            if let Err(quarantine_err) =
+                quarantine_corrupt_disabled_bundles(&salvaged, &error.to_string())
+            {
+                // 隔离失败不覆盖原文件：内存 fail-closed 态已正确，下次读取
+                // 重试（评审 #455 R5-m4）。
+                eprintln!(
+                    "[marketplace] {quarantine_err}; skipping disabled_bundles.json overwrite this read"
+                );
+                return recovered;
+            }
             save_disabled_bundles_file(&recovered);
             return recovered;
         }
@@ -153,11 +162,18 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
             // （用户可能显式关过包）恢复成全开；安全收敛特性宁可恢复全关——
             // 只置迁移标记（冻结为全新装机判定）、不初始化任何 scope，未初始化
             // scope 按 DenyAll 兜底（评审 #455）。
-            quarantine_corrupt_disabled_bundles(&content, &error.to_string());
             let recovered = DisabledBundlesFile {
                 plain_defaults_migrated: true,
                 ..DisabledBundlesFile::default()
             };
+            if let Err(quarantine_err) =
+                quarantine_corrupt_disabled_bundles(&content, &error.to_string())
+            {
+                eprintln!(
+                    "[marketplace] {quarantine_err}; skipping disabled_bundles.json overwrite this read"
+                );
+                return recovered;
+            }
             save_disabled_bundles_file(&recovered);
             recovered
         }
@@ -404,7 +420,32 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
         }
         PackDefaultPolicy::DenyAll => {
             // 现算分支：已按当前认领推导包 id，无需再归一。
-            let mut ids: Vec<String> = MarketplaceManager::new().installed_ids();
+            // installed.json 存在但读不出（权限/占用锁）时「已安装集合未知」：
+            // 必须 fail-closed 按全部可装包禁用——若按空集合处理，未初始化 scope
+            // 的有效禁用集丢失全部已装包（plain 会话零同意放行，fail-open 翻转），
+            // 且此刻的 enable 物化会把缩水的扩集固化为永久 opt-in（评审 #455
+            // R5-B2）。多禁未装包无害：包后装仍默认关，与本分支语义一致。
+            let manager = MarketplaceManager::new();
+            let mut ids: Vec<String> = match manager.try_installed_ids() {
+                Ok(ids) => ids,
+                Err(error) => {
+                    eprintln!(
+                        "[scope] {error}; DenyAll expansion falls back to the full available catalog (fail-closed)"
+                    );
+                    let mut catalog: Vec<String> = manager
+                        .available_tools()
+                        .into_iter()
+                        .map(|manifest| manifest.id)
+                        .collect();
+                    for info in SkillMarketplaceManager::new().list_skills() {
+                        let pkg = skill_owner_package(&info.id);
+                        if !catalog.iter().any(|id| id == &pkg) {
+                            catalog.push(pkg);
+                        }
+                    }
+                    catalog
+                }
+            };
             ids.extend(builtin_cli_bundle_ids().map(str::to_string));
             for skill_id in SkillMarketplaceManager::new().installed_skill_ids() {
                 let pkg = skill_owner_package(&skill_id);
@@ -864,11 +905,13 @@ mod tests {
 
 /// 把损坏的 disabled_bundles.json 原始字节隔离成 `.corrupt.<ts>` 副本
 /// （与 installed.json 共用 `quarantine_corrupt_state_file`），随后由读路径
-/// fail-closed 降级自愈。
-fn quarantine_corrupt_disabled_bundles(content: &str, error: &str) {
+/// fail-closed 降级自愈。隔离失败按 Err 传播——调用方据此放弃覆盖原文件，
+/// 避免隔离没写成却把可找回的原始字节冲掉（评审 #455 R5-m4）。
+fn quarantine_corrupt_disabled_bundles(content: &str, error: &str) -> Result<(), String> {
     let path = disabled_bundles_path();
-    super::quarantine_corrupt_state_file(&path, content);
+    super::quarantine_corrupt_state_file(&path, content)?;
     eprintln!(
         "[marketplace] disabled_bundles.json was corrupt ({error}); quarantined and reset to fail-closed defaults"
     );
+    Ok(())
 }
