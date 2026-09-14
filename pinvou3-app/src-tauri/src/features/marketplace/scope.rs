@@ -111,6 +111,14 @@ fn to_package_id(raw: &str) -> String {
     skill_owner_package(stripped)
 }
 
+/// Maps a user-supplied raw id to the package id the persisted list stores,
+/// for headless callers (the CLI's toggle read-back verification). A raw
+/// skill id is conditionally re-claimed to its owner package, so verifying
+/// against the raw id yields false positives.
+pub fn package_id_for(raw: &str) -> String {
+    to_package_id(raw)
+}
+
 /// 读时归一：存储条目按**当前**认领状态重映射为包 id 并去重（保序）。
 /// 认领（`skill_owner_package`）随安装态时变：条目可能在 companion MCP 未装时
 /// 按独立技能 id 落库，MCP 后装则认领翻转到包 id——只在写时归一会让用户的
@@ -328,6 +336,28 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
     let mut file = load_disabled_bundles_file_locked();
+    let key = scope.as_str().to_string();
+    file.scopes.insert(key.clone(), normalized);
+    file.initialized.insert(key);
+    save_disabled_bundles_file(&file);
+}
+
+/// Single-critical-section read-modify-write of one scope's disabled package
+/// id list. A per-scope load→save across two lock acquisitions loses
+/// concurrent writes in the inter-lock window (same shape as M-6b: while the
+/// GUI toggles exclusively, a whole CLI disable can be dropped); the CLI's
+/// enable/disable and the lock-holding writers share this entry point. The
+/// closure receives the effective list including the DenyAll fallback,
+/// matching `load_disabled_bundles_for`.
+pub fn update_disabled_bundles_for(scope: ConnectorScope, update: impl FnOnce(&mut Vec<String>)) {
+    let _guard = DISABLED_BUNDLES_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let file = load_disabled_bundles_file_locked();
+    let mut ids = resolve_scope_disabled_ids(&file, scope);
+    update(&mut ids);
+    let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
+    let mut file = file;
     let key = scope.as_str().to_string();
     file.scopes.insert(key.clone(), normalized);
     file.initialized.insert(key);

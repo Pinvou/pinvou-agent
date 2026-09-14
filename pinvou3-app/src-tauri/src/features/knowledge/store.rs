@@ -271,10 +271,18 @@ impl Store {
             );
         }
         let w = Connection::open(db_path)?;
+        // The desktop app and the headless CLI are a supported two-process
+        // scenario over this file. Every open writes `user_version`, which
+        // takes a brief write lock — without a busy timeout an open landing
+        // inside the other process's write transaction fails immediately
+        // with "database is locked". WAL keeps readers non-blocking; this
+        // only makes the short open-time writes wait instead of failing.
+        w.busy_timeout(std::time::Duration::from_millis(5_000))?;
         w.execute_batch(SCHEMA)?;
         w.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
         // 独立只读连接：WAL 下与写连接并发，扫描写锁不堵前端查询。
         let r = Connection::open(db_path)?;
+        r.busy_timeout(std::time::Duration::from_millis(5_000))?;
         r.execute_batch("PRAGMA query_only = ON;")?;
         Ok(Self {
             conn: Arc::new(Mutex::new(w)),

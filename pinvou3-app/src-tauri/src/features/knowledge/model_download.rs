@@ -1,9 +1,12 @@
 //! 知识库 embedding 模型（bge-m3）按需下载 + 校验 + 部署 + 热加载。
 //!
-//! 模型不再随安装包打包；用户在知识库页主动下载到 [`super::model_dir`]
-//! （`~/.pinvou3/knowledge/models/bge-m3`）。固定 revision 的五个文件由
-//! `pinvou-knowledge` 统一流式下载并逐文件校验。候选目录通过真实
-//! embedding 加载后才带回滚地替换托管模型并刷新工具门控，**免重启**即可建库/入库/检索。
+//! Models are no longer shipped with the installer; the user downloads them
+//! proactively from the knowledge page into `super::model_dir`
+//! (`~/.pinvou3/knowledge/models/bge-m3`). The five files of a fixed revision
+//! are streamed and verified file-by-file by `pinvou-knowledge`. Only after
+//! a candidate directory passes a real embedding load does it replace the
+//! managed model with rollback and refresh the tool gating — library
+//! creation, ingestion, and search work **without a restart**.
 //!
 //! 进度事件 `kb_model:progress`：`{ stage: download|verify|prepare|done, downloaded, total, ready }`。
 
