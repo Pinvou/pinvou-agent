@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { bridge } from '../../hooks/useBridge.js';
 import { can } from '../../shared/platform.js';
 import {
@@ -57,6 +57,15 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
   const isDark = theme === 'dark';
   const enabled = can('multiAgent') && bridge.available && !!bridge.multiAgent;
   const [entries, setEntries] = useState({});
+  // Mirror of `entries` for synchronous merge decisions (the terminal ratchet
+  // must reject or accept a real-time event without waiting for a state
+  // update). Every write goes through commitEntries.
+  const entriesRef = useRef({});
+  const kickPollRef = useRef(null);
+  const commitEntries = useCallback(next => {
+    entriesRef.current = next;
+    setEntries(next);
+  }, []);
   const [expanded, setExpanded] = useState(() => {
     if (typeof localStorage === 'undefined') return false;
     try {
@@ -69,16 +78,15 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
   });
 
   const mergeEntry = useCallback((sessionIdIn, detail) => {
-    if (!detail || !detail.agentId) return;
+    if (!detail || !detail.agentId) return false;
     const key = entryKey(sessionIdIn, detail.agentId);
-    setEntries(previous => {
-      const next = mergeOverlayEntry(previous[key], detail, sessionIdIn, Date.now());
-      if (!next) return previous;
-      const merged = { ...previous, [key]: next };
-      const pruned = pruneOverlayEntries(merged);
-      return pruned || merged;
-    });
-  }, []);
+    const previous = entriesRef.current;
+    const next = mergeOverlayEntry(previous[key], detail, sessionIdIn, Date.now());
+    if (!next) return false;
+    const merged = { ...previous, [key]: next };
+    commitEntries(pruneOverlayEntries(merged) || merged);
+    return true;
+  }, [commitEntries]);
 
   // Real-time event subscription.
   useEffect(() => {
@@ -86,7 +94,14 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
     const onUpdate = event => {
       const detail = event && event.detail;
       if (!detail || (sessionId && detail.sessionId && detail.sessionId !== sessionId)) return;
-      mergeEntry(detail.sessionId || sessionId, detail);
+      const applied = mergeEntry(detail.sessionId || sessionId, detail);
+      // Revival: a live non-terminal event rejected by the terminal ratchet
+      // means the persisted state likely moved (a parent follow-up re-awakened
+      // the agent). Kick an immediate authoritative read instead of waiting
+      // for the next heartbeat — same pattern the retired expert card used.
+      if (!applied && !detail.done && detail.source !== 'ledger' && kickPollRef.current) {
+        kickPollRef.current();
+      }
     };
     window.addEventListener('pinvou:subagent-update', onUpdate);
     return () => {
@@ -111,9 +126,15 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
   );
 
   const mergeLedgerSummaries = useCallback(summaries => {
+    // One commit per batch: merging each summary with its own setEntries would
+    // shallow-clone the whole cache per entry (O(n²) per tick at swarm scale).
+    const previous = entriesRef.current;
+    let changed = false;
+    const merged = { ...previous };
     for (const summary of summaries) {
       if (!summary || !summary.agent_id) continue;
-      mergeEntry(sessionId, {
+      const key = entryKey(sessionId, summary.agent_id);
+      const next = mergeOverlayEntry(previous[key], {
         sessionId,
         agentId: summary.agent_id,
         role: summary.role || null,
@@ -122,9 +143,14 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
         failed: !!summary.failed,
         blocked: !!summary.blocked,
         source: 'ledger',
-      });
+      }, sessionId, Date.now());
+      if (!next) continue;
+      merged[key] = next;
+      changed = true;
     }
-  }, [mergeEntry, sessionId]);
+    if (!changed) return;
+    commitEntries(pruneOverlayEntries(merged) || merged);
+  }, [commitEntries, sessionId]);
 
   // Ledger fallback poll. The loop never stops while mounted: it reads the
   // authoritative persisted projection at 3s while something is non-terminal
@@ -139,22 +165,23 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
     hasActive: sessionHasActive,
     readLedger,
     onSummaries: mergeLedgerSummaries,
+    kickRef: kickPollRef,
   });
 
   // Drop entries of other sessions on a session switch to avoid cross-talk.
   useEffect(() => {
     if (!sessionId) return;
+    const previous = entriesRef.current;
+    let next = null;
+    for (const [key, entry] of Object.entries(previous)) {
+      if (entry.sessionId === sessionId) continue;
+      if (!next) next = { ...previous };
+      delete next[key];
+    }
+    if (!next) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time cleanup of the previous session's cache on sessionId change, unrelated to the render cascade
-    setEntries(previous => {
-      const next = {};
-      let changed = false;
-      for (const [key, entry] of Object.entries(previous)) {
-        if (entry.sessionId === sessionId) next[key] = entry;
-        else changed = true;
-      }
-      return changed ? next : previous;
-    });
-  }, [sessionId]);
+    commitEntries(next);
+  }, [commitEntries, sessionId]);
 
   // Wake once when the success-state display window expires so finished
   // terminal entries fade out of the list.
