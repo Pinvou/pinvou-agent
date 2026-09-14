@@ -780,11 +780,13 @@ mod tests {
             crate::features::marketplace::ConnectorScope::Plain,
             &["my-skill-rr".to_string()],
         );
-        assert!(crate::features::marketplace::scope::load_disabled_bundles_for(
-            crate::features::marketplace::ConnectorScope::Plain
-        )
-        .iter()
-        .any(|id| id == "my-skill-rr"));
+        assert!(
+            crate::features::marketplace::scope::load_disabled_bundles_for(
+                crate::features::marketplace::ConnectorScope::Plain
+            )
+            .iter()
+            .any(|id| id == "my-skill-rr")
+        );
 
         // 模拟完整卸载：登记移除 + 整包回收 + 命令层的禁用集清理。
         let record = store.get("my-skill-rr").unwrap().unwrap();
@@ -794,9 +796,11 @@ mod tests {
             .unwrap();
         crate::features::marketplace::scope::remove_bundle_from_disabled_scopes("my-skill-rr");
         assert!(
-            !crate::features::marketplace::scope::load_disabled_bundles_for(crate::features::marketplace::ConnectorScope::Plain)
-                .iter()
-                .any(|id| id == "my-skill-rr"),
+            !crate::features::marketplace::scope::load_disabled_bundles_for(
+                crate::features::marketplace::ConnectorScope::Plain
+            )
+            .iter()
+            .any(|id| id == "my-skill-rr"),
             "卸载后禁用条目应被清理"
         );
 
@@ -805,9 +809,11 @@ mod tests {
         // 恢复后必须重新禁用：plain 已初始化，落盘列表重新含该包 id——
         // DenyAll「显式开启」同意门对恢复路径依然成立。
         assert!(
-            crate::features::marketplace::scope::load_disabled_bundles_for(crate::features::marketplace::ConnectorScope::Plain)
-                .iter()
-                .any(|id| id == "my-skill-rr"),
+            crate::features::marketplace::scope::load_disabled_bundles_for(
+                crate::features::marketplace::ConnectorScope::Plain
+            )
+            .iter()
+            .any(|id| id == "my-skill-rr"),
             "恢复后已初始化 scope 必须回到禁用态（同意门）"
         );
         // 未初始化 scope（code）不被写入：DenyAll 现算扩集本就覆盖，不固化用户状态。

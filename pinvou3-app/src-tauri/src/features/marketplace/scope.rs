@@ -204,9 +204,7 @@ fn normalize_stored_lists(file: &mut DisabledBundlesFile) -> bool {
         .chain(file.hidden_scopes.values_mut())
     {
         let normalized = normalize_stored_pkg_ids(ids);
-        if normalized.len() != ids.len()
-            || normalized.iter().zip(ids.iter()).any(|(a, b)| a != b)
-        {
+        if normalized.len() != ids.len() || normalized.iter().zip(ids.iter()).any(|(a, b)| a != b) {
             *ids = normalized;
             changed = true;
         }
