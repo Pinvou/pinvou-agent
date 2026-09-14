@@ -594,6 +594,15 @@ fn parse_workspace(rest: &[String]) -> Result<CodeCommand, CliError> {
         .first()
         .ok_or_else(|| CliError::usage(WORKSPACE_USAGE))?;
     let action = action.as_str();
+    // Every workspace subcommand addresses one session first; enforce the
+    // shared id shape here so an invalid id is a usage error (exit 2), the
+    // same contract `require_session_id` enforces everywhere else. Deep
+    // existence validation stays with the store.
+    if let Some(session) = rest.get(1) {
+        if !crate::support::valid_session_id(session) {
+            return Err(CliError::usage("invalid session id"));
+        }
+    }
     let positional = |index: usize, what: &str| -> Result<String, CliError> {
         rest.get(index)
             .filter(|value| !value.is_empty() && !value.starts_with("--"))
@@ -1162,6 +1171,10 @@ fn require_existing(store: &SessionStore, id: &str, action: &str) -> Result<(), 
 }
 
 fn open_providers() -> Result<ProviderManager, CliError> {
+    // Same absolute-path contract as `open_store`: the provider store
+    // resolves through `pinvou3_home()` and would silently land in a
+    // cwd-relative directory.
+    crate::support::sandbox_home()?;
     ProviderManager::new(SystemCredentialStore::new())
         .map_err(|error| CliError::failed(format!("providers unavailable: {error:#}")))
 }
@@ -1363,33 +1376,35 @@ fn command_output_with_timeout(
 }
 
 /// Drains a byte stream into a string (bounded tail: the buffer keeps the
-/// last 64 KiB so a chatty vendor CLI cannot grow it without limit).
+/// last 64 KiB so a chatty vendor CLI cannot grow it without limit). The
+/// bytes are decoded once at the end: converting per chunk mangles a
+/// multi-byte character split across a 2 KiB read boundary into U+FFFD.
 fn drain_stream<R: Read>(mut pipe: Option<R>) -> String {
-    let mut buffer = String::new();
+    let mut bytes: Vec<u8> = Vec::new();
     let Some(pipe) = pipe.as_mut() else {
-        return buffer;
+        return String::new();
     };
     let mut chunk = [0u8; 2048];
     loop {
         match pipe.read(&mut chunk) {
             Ok(0) | Err(_) => break,
             Ok(read) => {
-                let text = String::from_utf8_lossy(&chunk[..read]).into_owned();
-                buffer.push_str(&text);
-                if buffer.len() > 65_536 {
+                bytes.extend_from_slice(&chunk[..read]);
+                if bytes.len() > 65_536 {
                     // Byte-count eviction can land inside a multi-byte
-                    // character; advance to the next boundary so `drain`
-                    // cannot panic mid-character.
-                    let mut cut = buffer.len() - 65_536;
-                    while cut < buffer.len() && !buffer.is_char_boundary(cut) {
+                    // character; advance to the next UTF-8 boundary (any
+                    // non-continuation byte starts a character) so the
+                    // buffer never starts mid-character.
+                    let mut cut = bytes.len() - 65_536;
+                    while cut < bytes.len() && (bytes[cut] & 0xC0) == 0x80 {
                         cut += 1;
                     }
-                    buffer.drain(..cut);
+                    bytes.drain(..cut);
                 }
             }
         }
     }
-    buffer
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// Outcome of a `--version` probe: a parsed version, or the reason there is
@@ -2105,7 +2120,15 @@ fn logout(agent: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliE
             )));
         }
     };
-    let executable = login_executable(agent)?;
+    // Logout resolves the same binary as login but reports its own error: a
+    // missing CLI on a logout action is "nothing to log out", not a
+    // login-flow failure.
+    let executable = resolve_agent_cli(agent, agent_cli_name(agent)).ok_or_else(|| {
+        CliError::failed(format!(
+            "code_logout_cli_missing: {agent} CLI not found; there is nothing to log \
+                 out (`pinvou code agents status {agent}` shows the probe result)"
+        ))
+    })?;
     // Bounded like the login flow (logout is a fast subcommand; a hung
     // vendor CLI must not block the terminal forever).
     let mut command = crate::support::build_command(&executable, args);
@@ -2833,6 +2856,10 @@ fn session_mutation_lock(session: &str) -> Result<fd_lock::RwLock<std::fs::File>
     if !crate::support::valid_session_id(session) {
         return Err(CliError::usage("invalid session id"));
     }
+    // Same absolute-path contract as `open_store`: the lock file is created
+    // before `open_store` runs on some paths, and a relative PINVOU3_HOME
+    // would put it in a cwd-relative directory.
+    crate::support::sandbox_home()?;
     let dir = paths::pinvou3_home().join("locks");
     std::fs::create_dir_all(&dir).map_err(|error| {
         CliError::failed(format!(
@@ -2873,6 +2900,9 @@ fn execution_root_lock(root: &Path) -> Result<fd_lock::RwLock<std::fs::File>, Cl
         }
         format!("{hash:016x}")
     }
+    // Same absolute-path contract as `open_store`: this lock is acquired
+    // before `open_store` runs on some paths.
+    crate::support::sandbox_home()?;
     let dir = paths::pinvou3_home().join("locks");
     std::fs::create_dir_all(&dir).map_err(|error| {
         CliError::failed(format!(
@@ -4176,8 +4206,20 @@ fn untracked_diff(path: &Path, relative: &str) -> Result<String, CliError> {
     if file_kind(path) != "text" {
         return Ok("untracked binary files do not support diff preview".to_owned());
     }
-    let content = std::fs::read_to_string(path)
+    // The output is truncated at DIFF_LIMIT, but the read itself must also be
+    // bounded: a multi-GB text file would be loaded whole just to be cut.
+    // Reading DIFF_LIMIT + 1 bytes keeps the truncation marker exact (the
+    // loop's final iteration overshoots by one line at most, which the loop
+    // already tolerates); a torn multi-byte tail is lossy-decoded away.
+    const READ_CAP: u64 = DIFF_LIMIT as u64 + 1024;
+    let file = std::fs::File::open(path)
         .map_err(|error| CliError::failed(format!("code workspace diff: {error}")))?;
+    let mut capped = std::io::Read::take(file, READ_CAP);
+    let mut raw = Vec::new();
+    capped
+        .read_to_end(&mut raw)
+        .map_err(|error| CliError::failed(format!("code workspace diff: {error}")))?;
+    let content = String::from_utf8_lossy(&raw);
     let mut output_text = format!(
         "diff --git a/{0} b/{0}\nnew file mode 100644\n--- /dev/null\n+++ b/{0}\n",
         relative
