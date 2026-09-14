@@ -723,11 +723,11 @@ window.PERSONA_I18N = {
  },
  "marketing-carousel-growth-engine": {
   "en": {
-   "name": "Carousel Growth Engine",
-   "description": "Carousel content strategist: breaks any product or website down into a complete 6-slide vertical carousel plan — a full copy script and visual style guide following the hook, pain, amplification, solution, feature and CTA arc - with slide-by-slide production notes plus publishing and retrospective advice. Planning and deliverables only; does not auto-publish or call any third-party publishing API."
+   "name": "Carousel Content Strategist",
+   "description": "Carousel content strategist: breaks any product or website down into a complete 6-slide vertical carousel plan — a full copy script and visual style guide following the hook, pain, amplification, solution, feature and CTA arc, with slide-by-slide production notes plus publishing and retrospective advice. Planning and deliverables only; does not auto-publish or call any third-party publishing API."
   },
   "ja": {
-   "name": "カルーセルグロースエンジン",
+   "name": "カルーセルコンテンツストラテジスト",
    "description": "カルーセルコンテンツ戦略の専門家。任意の製品や Web サイトの魅力を分解し、フック→課題→拡大→解決策→機能→CTA の 6 枚構成の完全なコピースクリプトとビジュアルガイド、スライドごとの制作メモ、公開と振り返りの提案を納品する。計画と納品のみが担当範囲で、自動投稿やサードパーティ配信 API の呼び出しは行わない。"
   }
  },
@@ -1343,11 +1343,11 @@ window.PERSONA_I18N = {
  },
  "accounts-payable-agent": {
   "en": {
-   "name": "Accounts Payable Agent",
+   "name": "Accounts Payable Process Consultant",
    "description": "Accounts-payable process consultant: designs internal controls for vendor payments and invoice management (approval thresholds, duplicate-payment prevention, three-way matching, audit trails, exception handling), drafts payment policies, requisition forms and reconciliation checklists, and helps verify account details. Does not execute real payments or connect to any payment rails."
   },
   "ja": {
-   "name": "買掛金エージェント",
+   "name": "買掛金プロセスコンサルタント",
    "description": "買掛金プロセスコンサルタント。ベンダー支払いと請求書管理の内部統制（承認閾値、二重払い防止、3 点照合、監査証跡、例外処理）を設計し、支払いポリシー・申請書・照合チェックリストの草案を作成し、勘定内容の確認を支援する。実際の支払いの実行や決済チャネルへの接続は行わない。"
   }
  },
@@ -2413,12 +2413,12 @@ window.PERSONA_I18N = {
  },
  "marketing-multi-platform-publisher": {
   "en": {
-   "name": "Multi-Platform Publishing Orchestrator",
-   "description": "Expert orchestrator for one-click Chinese blog publishing — routing the same article via Wechatsync (primary channel) to Zhihu, Xiaohongshu, CSDN, Bilibili, WeChat Official Accounts, and Juejin, with xhs-mcp and biliup as dedicated fallbacks. Handles per-platform content adaptation, draft-first publishing, frequency control, and risk avoidance — never auto-publishes, always stopping at drafts for human review."
+   "name": "Multi-Platform Content Adaptation Consultant",
+   "description": "Multi-platform content adaptation consultant: adapts one article into native drafts for Zhihu, Xiaohongshu, CSDN, Bilibili, WeChat Official Accounts and more (titles, body copy, tags, cover suggestions and licensing notes), with platform-fit, posting cadence and cross-posting dedup advice. Produces adapted drafts and checklists only; does not publish on the user's behalf or operate any publishing tools."
   },
   "ja": {
-   "name": "マルチプラットフォーム公開オーケストレーター",
-   "description": "中国語ブログのワンクリック公開を専門とするオーケストレーター——同一記事を Wechatsync（主チャネル）で知乎・小紅書・CSDN・Bilibili・微信公衆号・掘金へルーティングし、xhs-mcp と biliup を専用フォールバックとする。プラットフォーム別コンテンツ適応・ドラフト優先公開・頻度制御・リスク回避を担当——自動公開は絶対せず、常にドラフト段階で止めて人間のレビューに委ねる。"
+   "name": "マルチプラットフォームコンテンツ調整コンサルタント",
+   "description": "マルチプラットフォームコンテンツ調整コンサルタント。1 本の記事を知乎・小紅書・CSDN・Bilibili・微信公衆号など各プラットフォーム向けのネイティブ下書き（タイトル・本文・タグ・カバー・ライセンス表記）に適応させ、適合度・投稿頻度・クロス投稿の重複回避の助言を行う。適応済みの下書きとチェックリストの納品のみが担当範囲で、代理投稿や配信ツールの操作は行わない。"
   }
  },
  "marketing-pr-communications-manager": {
