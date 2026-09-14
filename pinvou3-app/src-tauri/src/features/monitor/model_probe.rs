@@ -759,16 +759,23 @@ pub async fn resolve_served_model(
     }
 }
 
-/// 探测条目的事实（context window / 自报输出上限）是否可被本路由采纳。
-/// 事实必须属于真正发给端点的模型名：跟随 served name 的路由（vLLM，
-/// 名字通常被纠偏到条目本身）恒可采纳；不改名的路由仅当配置名精确命中
-/// 列表时采纳——单条目“借名”场景返回的 served 名与配置名无关，其事实
-/// 属于别家模型，不得用来收紧本路由的窗口/输出上限。
+/// Whether a probed entry's facts (context window / self-reported output
+/// limit) may be adopted by this route. The facts must belong to the model
+/// name actually sent to the endpoint: routes that follow the served name
+/// (vLLM, whose name is usually corrected to the entry itself) may always
+/// adopt; routes that do not rename adopt only when the configured name
+/// exactly hits the list — in the single-entry "borrowed name" scenario the
+/// returned served name is unrelated to the configured one and its facts
+/// belong to another model, so they must not tighten this route's
+/// window/output caps.
 ///
-/// 已知例外（有意取舍）：vLLM + `pins_scheduled_model` 时 served-name 纠偏
-/// 被抑制、配置名原样上线，但 `follows_served_name` 仍按路由类型恒真——
-/// 此时单条目事实会被采纳。宽松的单模型服务确实在服务该条目（事实正确）；
-/// 严格的服务会对配置名 404（事实无影响），故不为此角增加条件复杂度。
+/// Known exception (intentional trade-off): with vLLM +
+/// `pins_scheduled_model` the served-name correction is suppressed and the
+/// configured name goes live verbatim, but `follows_served_name` is still
+/// true by route type — the single-entry facts are then adopted. A lenient
+/// single-model server is genuinely serving that entry (facts correct); a
+/// strict one 404s on the configured name (facts have no effect), so no
+/// extra condition complexity is added for that corner.
 pub fn adopts_probed_facts(follows_served_name: bool, configured: &str, served: &str) -> bool {
     follows_served_name || served == configured
 }
@@ -822,11 +829,12 @@ mod tests {
         );
         // 端到端佐证:探测窗口喂进 derive 公式应得按窗口缩放的 T(非写死 190K)。
         // 复算 derive_compaction_threshold(bridge 私有,此处内联同公式):
-        //   E = W − O − 1024;T = (E−S)/1.5 − 22000, clamp[4096, 0.75W]。
-        // O=窗口分档声明——与生产同源取自
-        // core::model_context::operator_owned_output_declaration,禁止再内联副本。
+        //   E = W − O − 1024; T = (E−S)/1.5 − 22000, clamp[4096, 0.75W].
+        // O = the window-tier declaration — taken from the same source as
+        // production, core::model_context::operator_owned_output_declaration;
+        // do not inline a copy again.
         let o = crate::core::model_context::operator_owned_output_declaration(Some(window))
-            .expect("真机窗口 >=100K,分档声明必然成立");
+            .expect("a real-machine window >=100K always yields a tier declaration");
         let e = (window as usize)
             .saturating_sub(o as usize)
             .saturating_sub(1_024);
@@ -1134,24 +1142,28 @@ mod tests {
         let (name, _, output) = resolve_served_model_from_entries("user-picked", &entries);
         assert_eq!(name, "user-picked");
         assert_eq!(output, Some(65_536));
-        // 未匹配 → 不借别的模型的输出上限
+        // No match → never borrow another model's output limit
         let (_, _, borrowed) = resolve_served_model_from_entries("gone", &entries);
         assert_eq!(borrowed, None);
     }
 
-    /// 探测事实只属于真正被请求的模型名：跟随 served name 的路由（vLLM，
-    /// 名字被纠偏到条目本身）恒可采纳；不改名的路由仅配置名精确命中时
-    /// 采纳，单条目“借名”场景的事实不得张冠李戴。
+    /// Probed facts belong only to the model name actually requested:
+    /// routes that follow the served name (vLLM, whose name is corrected to
+    /// the entry itself) always adopt; routes that do not rename adopt only
+    /// on an exact configured-name match, and single-entry "borrowed name"
+    /// facts must not be misattributed.
     #[test]
     fn probed_facts_adoptable_only_on_exact_match_unless_route_follows_served_name() {
-        // vLLM：纠偏后事实与最终请求名同源，恒采纳（含纠偏前后的两种输入）。
+        // vLLM: after correction the facts share the same origin as the
+        // final request name; always adopt (both inputs, before and after
+        // correction).
         assert!(adopts_probed_facts(true, "qwen36_35b_256k", "served-name"));
         assert!(adopts_probed_facts(
             true,
             "qwen36_35b_256k",
             "qwen36_35b_256k"
         ));
-        // 非 vLLM：精确命中可采纳；单条目借名不可。
+        // Non-vLLM: exact match adopts; a single-entry borrowed name does not.
         assert!(adopts_probed_facts(false, "user-picked", "user-picked"));
         assert!(!adopts_probed_facts(
             false,

@@ -31,7 +31,7 @@
 | 量 | 谁算 | 含义 | 公式 |
 |---|---|---|---|
 | **W** 窗口 | app 探测 | vLLM `max_model_len` | probe → `RouteLimits.context_tokens`；失败 → 名字 hint → 128,000 兜底 |
-| **O** 输出预留 | app 派生 | 单次回复留的空间 | operator-owned endpoints declare by window tier (`core::model_context::operator_owned_output_declaration`: ≥500K→131,072 / ≥250K→65,536 / otherwise min(W/4, 32,768); no window fact→32,768; <4K not declared), then min-tightened by the endpoint's self-reported limit and explicit configuration |
+| **O** output reservation | app-derived | headroom reserved for a single reply | operator-owned endpoints declare by window tier (`core::model_context::operator_owned_output_declaration`: ≥500K→131,072 / ≥250K→65,536 / otherwise min(W/4, 32,768); no window fact→32,768; <4K not declared), then min-tightened by the endpoint's self-reported limit and explicit configuration |
 | **E** 紧急线 | 底座，**不要自己算** | 全量输入硬天花板 | `W − O − 1,024`（入口为底座 `context_input_budget_for_route`，`crates/tui/src/core/engine/context.rs`） |
 | **T** 正常线 | app 推导后填 `token_threshold` | 温和摘要触发点 | 见 §3 |
 
@@ -115,23 +115,24 @@ T = clamp(T, floor=4,096, 上界=0.75·W)
 
 | W | E | T（实测公式） | T/W | 触发顺序实证 |
 |---|---|---|---|---|
-| 262,144 | 195,584 | **~106K**（105,722） | 40% | T=130K：nice 在 N=174 先于 emergency N=198 ✅（2026-07-02, measured in the O=24K era） |
-| 131,072 | 97,280 | **~40K** | 31% | T=45K：nice 在 N=60 先于 emergency N=84 ✅（same as above） |
+| 262,144 | 195,584 | **~106K** (105,722) | 40% | T=130K: nice fires at N=174 before emergency N=198 ✅ (2026-07-02, measured in the O=24K era) |
+| 131,072 | 97,280 | **~40K** | 31% | T=45K: nice fires at N=60 before emergency N=84 ✅ (same as above) |
 | 65,536 | 48,128 | **~7K** | 11% | 贴近 floor，正常线仍先（压缩频繁） |
 | < ~20,000 | 很小 | floor 4,096 | — | prompt 吃光窗口，floor 防风暴 + UI 告警 |
 
 > Before the 2026-09 tiered declaration O was constant 24,576 (262,144→E 236,544 /
 > T ~133K; 131,072→E 105,472 / T ~46K); the trigger-order-evidence column
-> (「触发顺序实证」) holds the historical measurements from that era, with the E/T
+> ("trigger-order evidence") holds the historical measurements from that era, with the E/T
 > values recomputed under the post-tier O — the ordering relationship (normal
 > line before emergency line) is unchanged.
 
 小窗口 T 贴 floor 是**数学结论不是设计旋钮**——固定开销在小窗口占大头。C/D 档不花精力
 调参，只保证「floor 防压缩风暴 + 设置页/chip 告警不崩」。
 
-### O 来源（v0.9；window-tiered declaration since v0.9.3）
+### O source (v0.9; window-tiered declaration since v0.9.3)
 
-O 是具体 route 的单轮输出上限，不再从 wire model 名字猜。Operator-owned endpoints
+O is the per-route single-turn output cap; it is no longer guessed from the wire
+model name. Operator-owned endpoints
 (local vLLM, custom OpenAI-compatible / custom; coding_plan and official cloud
 presets stay undeclared) are declared uniformly by window tier on their behalf:
 ≥500K→131,072 / ≥250K→65,536 / otherwise min(W/4, 32,768), with no window fact
@@ -164,8 +165,8 @@ does not declare O (the 4K fallback applies only to the Codex OAuth route).
 > 剩余:GUI 长会话人工观察 banner（需桌面环境）+ ops 补 served-name（下方，113 机）——待用户。
 > 注：O 按窗口分档(≥500K→262144,否则 max_output_tokens);云端拿不到真实窗口的模型
 > (gpt-4o/qwen-max 等)退 128k 兜底(与底座同源不倒置),准确值靠二期手动配置。
-> （⚠️ This block is a v0.8-era historical record: the「≥500K→262144」O-tier
-> convention here has been superseded by §3 "O 来源" 's operator-owned
+> (⚠️ This block is a v0.8-era historical record: the "≥500K→262144" O-tier
+> convention here has been superseded by §3 "O source"'s operator-owned
 > window-tier declaration——≥500K→131072 / ≥250K→65536 / otherwise
 > min(W/4, 32768); `compaction_cloud_large_window_models` now also reads the
 > base's public budget chain directly and no longer mirrors the tier
