@@ -9,7 +9,7 @@ import { createPortal } from 'react-dom';
 import { Check, Layers, Search, X } from '../../components/icons.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { useDialogFocusRestore } from '../../hooks/useDialogFocusRestore.js';
-import { projectCoversPath } from './projectGrouping.js';
+import { projectCoversPath, rootPath } from './projectGrouping.js';
 
 const MoveToProjectDialog = ({
   session,
@@ -88,7 +88,7 @@ const MoveToProjectDialog = ({
     return projectList.filter((project) => {
       const name = String(project.name || '').toLowerCase();
       const roots = (project.roots || [])
-        .map((root) => String((root && typeof root === 'object' ? root.path : root) || ''))
+        .map((root) => String(rootPath(root) || ''))
         .join(' ');
       return name.includes(q) || roots.toLowerCase().includes(q);
     });
@@ -146,7 +146,7 @@ const MoveToProjectDialog = ({
   const rowCls = 'w-full px-3.5 py-2.5 flex items-center gap-2.5 text-left text-[14px] rounded-2xl transition-colors text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]';
   const projectLabel = (project) => {
     const firstRoot = (project.roots || [])[0];
-    const path = firstRoot ? String(typeof firstRoot === 'object' ? firstRoot.path : firstRoot) : '';
+    const path = firstRoot ? String(rootPath(firstRoot) || '') : '';
     return (
       <span className="min-w-0 flex-1">
         <span className="block truncate">{project.name}</span>

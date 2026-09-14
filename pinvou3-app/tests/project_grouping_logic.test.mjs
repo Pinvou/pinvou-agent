@@ -274,3 +274,53 @@ test("temporary group rows sort by recency while the group stays last", () => {
   assert.equal(groups[groups.length - 1].key, TEMPORARY_GROUP_KEY);
   assert.deepEqual(groups[groups.length - 1].rows.map((r) => r.id), ["t1", "t2"]);
 });
+
+test("projectCoversPath accepts raw string roots and empty paths", () => {
+  // The project() helper normalizes roots to { path } objects like the bridge
+  // sends them; hand-edited state can still carry raw strings, so the raw
+  // branch must satisfy the same containment rule.
+  const rawRoots = { id: "p1", name: "Alpha", roots: ["D:/work/alpha"] };
+  assert.equal(projectCoversPath(rawRoots, "D:/work/alpha"), true);
+  assert.equal(projectCoversPath(rawRoots, "D:/work/alpha/sub"), true);
+  assert.equal(projectCoversPath(rawRoots, "D:/work/alpha-beta"), false);
+  assert.equal(projectCoversPath(rawRoots, ""), false);
+});
+
+test("resolveSessionProjectId degrades safely on invalid inputs", () => {
+  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
+  const item = projectItem("a1", "D:/work/alpha", "2026-08-01T08:00:00Z");
+  assert.equal(resolveSessionProjectId(null, projects, {}), null);
+  assert.equal(resolveSessionProjectId(undefined, projects, {}), null);
+  // Non-object assignments must not throw and fall through to tier 2.
+  assert.equal(resolveSessionProjectId(item, projects, "garbage"), "p1");
+  assert.equal(resolveSessionProjectId(item, projects, null), "p1");
+});
+
+test("containment honors separator boundaries and mirrors the store rule", () => {
+  // key_is_same_or_nested's reason to exist: a bare startsWith would file
+  // D:/work/alpha-beta under D:/work/alpha. Pin that boundary on all three
+  // public helpers (mutation guard for isUnderRoot).
+  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
+  const sibling = projectItem("s1", "D:/work/alpha-beta", "2026-08-01T08:00:00Z");
+  assert.equal(projectCoversPath(projects[0], "D:/work/alpha-beta"), false);
+  assert.equal(resolveSessionProjectId(sibling, projects, {}), null);
+  const groups = groupSessionsWithProjects([sibling], projects, {});
+  // Empty project groups still render; the point is that the sibling lands
+  // in its own folder bucket instead of the project's rows.
+  assert.deepEqual(groups.find((g) => g.projectId === "p1")?.rows, []);
+
+  // Mixed separators fold for Windows-shaped paths (store identity keys fold
+  // separators and case); a trailing separator on the root still lets children
+  // match while the exact path keeps comparing unequal before the strip, and
+  // a bare separator root covers every absolute path on that side — all
+  // mirroring key_is_same_or_nested.
+  const backslash = { id: "p2", name: "Win", roots: ["D:\\work\\alpha"] };
+  assert.equal(projectCoversPath(backslash, "D:/Work/Alpha"), true);
+  assert.equal(projectCoversPath(backslash, "D:/Work/Alpha/deep"), true);
+  const trailing = { id: "p3", name: "Trail", roots: ["D:/work/alpha/"] };
+  assert.equal(projectCoversPath(trailing, "D:/work/alpha"), false);
+  assert.equal(projectCoversPath(trailing, "D:/work/alpha/deep"), true);
+  const posixRoot = { id: "p4", name: "Posix", roots: ["/"] };
+  assert.equal(projectCoversPath(posixRoot, "/home/x/anything"), true);
+});
+

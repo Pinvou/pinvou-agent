@@ -30,16 +30,36 @@ function looksWindowsPath(value) {
   return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\');
 }
 
+// Component-aware "same or nested", mirroring the store's key_is_same_or_nested
+// (features/projects/store.rs) line for line — including comparing full
+// equality before stripping the root's trailing separator — so the display
+// side and the store can never disagree about which sessions belong where. A
+// bare startsWith would file /a/bc under /a/b: the character right past the
+// base must be a separator, and a bare-separator root ("/") covers every
+// absolute path, matching the store's empty-base rule. Windows-shaped paths
+// fold separators and case on both sides, mirroring filesystem_path_identity_key
+// (Windows identity keys fold case and separators, POSIX does not): the pure
+// module has no host-OS signal, so it keys off path shape — drive-letter/UNC
+// paths only ever come from Windows sessions.
 function isUnderRoot(path, root) {
   if (!path || !root) return false;
   let a = String(path);
   let b = String(root);
-  if (looksWindowsPath(a) && looksWindowsPath(b)) {
-    a = a.toLowerCase();
-    b = b.toLowerCase();
+  const windowsShape = looksWindowsPath(a) && looksWindowsPath(b);
+  if (windowsShape) {
+    a = a.toLowerCase().replaceAll('\\', '/');
+    b = b.toLowerCase().replaceAll('\\', '/');
   }
   if (a === b) return true;
-  return a.startsWith(`${b}/`) || a.startsWith(`${b}\\`);
+  b = windowsShape ? b.replace(/[\\/]$/, '') : b.replace(/\/$/, '');
+  if (!b) return a.startsWith('/');
+  return a.startsWith(b) && a[b.length] === '/';
+}
+
+// Roots arrive either as raw strings (hand-edited state, tests) or as the
+// bridge's { path, available } objects — one accessor for both shapes.
+function rootPath(root) {
+  return root && typeof root === 'object' ? root.path : root;
 }
 
 // Longest root wins so nested project roots cannot steal sessions from a
@@ -50,10 +70,9 @@ function matchProjectByPath(projects, workspacePath) {
   let bestRoot = '';
   projects.forEach((project) => {
     (project && project.roots ? project.roots : []).forEach((root) => {
-      const rootPath = root && typeof root === 'object' ? root.path : root;
-      if (isUnderRoot(workspacePath, rootPath) && String(rootPath).length > bestRoot.length) {
+      if (isUnderRoot(workspacePath, rootPath(root)) && String(rootPath(root)).length > bestRoot.length) {
         best = project;
-        bestRoot = String(rootPath);
+        bestRoot = String(rootPath(root));
       }
     });
   });
@@ -83,10 +102,7 @@ function resolveSessionProjectId(item, projects, assignments) {
 // session's folder to the target project).
 function projectCoversPath(project, path) {
   if (!project || !path) return false;
-  return (project.roots || []).some((root) => {
-    const rootPath = root && typeof root === 'object' ? root.path : root;
-    return isUnderRoot(String(path), rootPath ? String(rootPath) : rootPath);
-  });
+  return (project.roots || []).some((root) => isUnderRoot(String(path), rootPath(root)));
 }
 
 // Input: items = code sessions [{ id, workspacePath, workspaceKind, updatedAt, ... }],
@@ -172,4 +188,4 @@ function groupSessionsWithProjects(items, projects, assignments) {
   return groups;
 }
 
-export { TEMPORARY_GROUP_KEY, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId };
+export { TEMPORARY_GROUP_KEY, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath };
