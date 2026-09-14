@@ -528,19 +528,22 @@ fn persist_equipped_persona(
 /// command. Revealed in the output below so the command cannot be mistaken
 /// for live persona injection.
 fn equip(session_id: &str, persona_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let card = get(persona_id)
-        .ok_or_else(|| CliError::failed(format!("unknown persona: {persona_id}")))?;
     let store = open_store()?;
-    // Character validation first (a traversal id is a usage error, via the
-    // sidecar-path check below), then existence: an unknown but well-formed
-    // session id must fail instead of materializing a stray
-    // `sessions/<bogus-id>/` directory for a session that does not exist.
+    // Usage before Failed: character validation first (a traversal id is a
+    // usage error, via the sidecar-path check below), then session
+    // existence, then the persona lookup — so a malformed session id reports
+    // the usage error (exit 2) even when the persona id is unknown too, and
+    // an unknown but well-formed session id fails instead of materializing a
+    // stray `sessions/<bogus-id>/` directory for a session that does not
+    // exist.
     equip_state_path(session_id)?;
     store.load(session_id).map_err(|error| {
         CliError::failed(format!(
             "personas equip: session {session_id} does not exist ({error})"
         ))
     })?;
+    let card = get(persona_id)
+        .ok_or_else(|| CliError::failed(format!("unknown persona: {persona_id}")))?;
     let summary = card.summary();
     let injection = equip_body_injection(&card);
     store.set_pending_persona_body(session_id, Some(injection.clone()));

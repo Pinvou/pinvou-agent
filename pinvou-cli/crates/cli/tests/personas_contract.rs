@@ -513,13 +513,32 @@ fn personas_equip_unequip_active_round_trip_with_fixture_session() {
     assert!(error.to_string().contains("unknown persona"), "{error}");
 
     // Session ids join onto the sidecar path, so traversal attempts are
-    // usage errors, never writes outside the sessions root.
+    // usage errors, never writes outside the sessions root. Usage wins over
+    // Failed: even with an unknown persona id, the malformed session id
+    // reports the usage error.
     let error = run(&["pinvou", "personas", "equip", "../escape", &persona_id])
+        .expect_err("path traversal session id must be rejected");
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    let error = run(&["pinvou", "personas", "equip", "../escape", "user-missing"])
         .expect_err("path traversal session id must be rejected");
     assert_eq!(error.exit_code(), ExitCode::Usage);
     let error = run(&["pinvou", "personas", "active", "../escape"])
         .expect_err("path traversal session id must be rejected");
     assert_eq!(error.exit_code(), ExitCode::Usage);
+
+    // A well-formed but nonexistent session id is a failed lookup (exit 1),
+    // and must not materialize a stray sessions/<id>/ directory.
+    let error = run(&[
+        "pinvou",
+        "personas",
+        "equip",
+        "no-such-session",
+        &persona_id,
+    ])
+    .expect_err("unknown session must fail");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(error.to_string().contains("does not exist"), "{error}");
+    assert!(!home.sessions_root().join("no-such-session").exists());
 
     // unequip clears the persisted state; active falls back to none.
     let value = run_json(&["pinvou", "personas", "unequip", &session_id]);
