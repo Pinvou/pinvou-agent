@@ -55,6 +55,7 @@ import { ChatView } from '../features/chat/ChatView.jsx';
 import { createPinvouModeScopeKey, savePinvouModeState } from '../features/chat/pinvou-mode-state.js';
 import { WebConnectionStatus } from '../features/web/WebConnectionStatus.jsx';
 import { VoiceShortcutRouter } from '../features/voice-composer/VoiceShortcutRouter.jsx';
+import { MODEL_PRESET_DEFS } from '../features/settings/model-catalog.js';
 import { createPetActivationGuard } from '../features/pet/activation-guard.js';
 import { SessionAttachmentTitle } from '../features/attachments/SessionAttachmentTitle.jsx';
 import {
@@ -1047,17 +1048,18 @@ const NAV_PREFETCH = {
       const savedModelConfigRef = useRef(null);
       const savedSearchConfigRef = useRef(null);
 
-      // 各厂商默认配置（前端自动填充用，与 bridge/mod.rs 对齐）
+      // Per-vendor default configs (used to backfill the legacy single-model
+      // draft): reuse settings/model-catalog.js MODEL_PRESET_DEFS directly
+      // (which is aligned with the Rust prefs
+      // `ModelPreset::default_base_url/default_model`) instead of hand-copying
+      // a second copy, avoiding the mirror drift qwen once suffered. The only
+      // override is openai_compatible: the add-model catalog deliberately has
+      // no default address/model, while this table backfills the values the
+      // Rust legacy migration fallback actually resolves
+      // (prefs default_base_url/default_model).
       const PRESET_DEFAULTS = {
-        local_vllm:  { baseUrl: 'http://127.0.0.1:8000/v1',                model: 'qwen36_35b_256k' },
-        deepseek:    { baseUrl: 'https://api.deepseek.com',                model: 'deepseek-v4-pro' },
-        kimi:        { baseUrl: 'https://api.moonshot.cn/v1',              model: 'kimi-k3' },
-        openai_compatible: { baseUrl: 'https://api.openai.com/v1',        model: 'gpt-5.6-terra' },
-        qwen:        { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3.7-plus' },
-        doubao:      { baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-seed-evolving' },
-        minimax:     { baseUrl: 'https://api.minimaxi.com/v1',            model: 'MiniMax-M3' },
-        glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-5.2' },
-        mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2.5-pro' },
+        ...MODEL_PRESET_DEFS,
+        openai_compatible: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.6-terra' },
       };
       function normalizedModelProfile(name, baseUrl, apiKey) {
         const modelName = (name || '').trim();

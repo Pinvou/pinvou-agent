@@ -49,7 +49,13 @@ pub fn reasoning_dialect_from_base_url(base_url: &str, model: &str) -> Reasoning
         .trim_end_matches("/v1")
         .to_ascii_lowercase();
 
-    if normalized.contains("api.deepseek.com") || normalized.contains("api.deepseeki.com") {
+    // api.deepseeki.com used to be sniffed alongside the official domain; it
+    // was removed on 2026-09-11: the official documentation never listed the
+    // domain, and the community reported it as a non-resolvable unofficial
+    // domain (deepseek-ai/awesome-deepseek-agent#311),
+    // so it must no longer force thinking off the way the official DeepSeek
+    // endpoint does.
+    if normalized.contains("api.deepseek.com") {
         ReasoningDialect::ThinkingDisabled
     } else if normalized.contains("dashscope.aliyuncs.com") {
         ReasoningDialect::QwenEnableThinking
@@ -88,10 +94,14 @@ mod tests {
     }
 
     #[test]
-    fn deepseeki_variant_detected() {
+    fn deepseeki_unofficial_domain_is_not_detected() {
+        // api.deepseeki.com is an unofficial domain (never listed in the
+        // official documentation; sniffing removed on 2026-09-11): it must no
+        // longer return ThinkingDisabled as the official DeepSeek endpoint
+        // would; fall through to None so the model default applies.
         assert_eq!(
             reasoning_dialect_from_base_url("https://api.deepseeki.com/chat/completions", ""),
-            ReasoningDialect::ThinkingDisabled
+            ReasoningDialect::None
         );
     }
 
