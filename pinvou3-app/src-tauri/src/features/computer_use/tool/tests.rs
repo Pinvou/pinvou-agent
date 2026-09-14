@@ -575,6 +575,47 @@ async fn disabled_returns_clear_error() {
 }
 
 #[tokio::test]
+async fn enabling_toggle_serves_existing_tool_instance_without_rebuild() {
+    // Audit-round regression: engines spawned while the settings toggle is
+    // off hold a ComputerUseTool instance (tool_factory construction is
+    // unconditional; visibility comes from the disallow list). Flipping the
+    // toggle on — everything computer_use_set_enabled does on the tool
+    // side — must make THAT already-constructed instance serviceable, so a
+    // live session does not have to wait for an engine rebuild. This pins
+    // the tool half of that contract: the guard reads the live flag and
+    // never a snapshot taken at construction time.
+    let (fixture, _restore) = fixture();
+    fixture.shared.set_enabled(false);
+    let rejected = fixture
+        .tool
+        .execute(
+            json!({"action": "screenshot"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = rejected.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("computer use is disabled in settings"),
+        "{text}"
+    );
+
+    fixture.shared.set_enabled(true);
+    let served = fixture
+        .tool
+        .execute(
+            json!({"action": "screenshot"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let served = match served {
+        Ok(r) => r,
+        Err(e) => panic!("execute failed after enabling: {e}"),
+    };
+    assert!(served.success, "{}", served.content);
+    assert!(served.content.contains("16x16 px"), "{}", served.content);
+}
+
+#[tokio::test]
 async fn input_without_grant_emits_event_and_errors() {
     let (fixture, _restore) = fixture();
     let result = fixture

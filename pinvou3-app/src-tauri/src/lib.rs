@@ -887,11 +887,14 @@ pub fn run() {
                     }
                 };
             startup::mark("engine_pool:start");
-            // Computer Use 同意状态：全局单例。EngineToolFactory 按会话把它注入
-            // ComputerUseTool，Tauri 命令（app::commands::computer_use）经 .manage()
-            // 的 State 到达同一实例。settings.json 的 computer_use.enabled 是开关的
-            // 唯一事实来源，启动时回放进 AtomicBool（computer_use_set_enabled 命令
-            // 负责后续的 写盘→翻旗标）。
+            // Computer Use consent state: a global singleton. The
+            // EngineToolFactory injects it into every per-session
+            // ComputerUseTool, and the Tauri commands
+            // (app::commands::computer_use) reach the same instance through
+            // the .manage()'d State. settings.json's computer_use.enabled is
+            // the single source of truth for the toggle; it is replayed into
+            // the AtomicBool at startup (the computer_use_set_enabled command
+            // owns the later persist-to-disk → flip-flag flow).
             let computer_use_shared =
                 std::sync::Arc::new(features::computer_use::ComputerUseShared::new());
             computer_use_shared
@@ -912,16 +915,23 @@ pub fn run() {
                             session_id.to_string(),
                         )),
                     ];
-                    // 设置开关关闭时模型连 schema 都看不到：工具根本不构造。
-                    if computer_use_shared.is_enabled() {
-                        tools.push(std::sync::Arc::new(
-                            features::computer_use::ComputerUseTool::new(
-                                app.clone(),
-                                session_id.to_string(),
-                                computer_use_shared.clone(),
-                            ),
-                        ));
-                    }
+                    // ComputerUseTool is constructed unconditionally: the
+                    // settings toggle governs visibility through the
+                    // disallowed list in tool_policy below, not through
+                    // construction. This keeps both toggle directions
+                    // immediate on already-running engines — a tool instance
+                    // held by an engine spawned while disabled becomes
+                    // reachable on the next turn after enabling, with no
+                    // engine rebuild needed. Defense in depth while
+                    // disabled: the schema hides the tool (disallow list)
+                    // and the consent guard rejects every call.
+                    tools.push(std::sync::Arc::new(
+                        features::computer_use::ComputerUseTool::new(
+                            app.clone(),
+                            session_id.to_string(),
+                            computer_use_shared.clone(),
+                        ),
+                    ));
                     tools
                 })
             };
@@ -944,16 +954,16 @@ pub fn run() {
                         tools.push("kb_search".to_string());
                         tools.push("kb_open_source".to_string());
                     }
-                    // 设置开关动态禁用 computer_use：与工厂侧「不构造工具」互为
-                    // 双保险。本闭包只在 refresh_disallowed_tools 被调用时重算；
-                    // computer_use_set_enabled 命令翻转开关后会立即调用该刷新
-                    // （见 app/commands/computer_use.rs）。注意两个方向的时效
-                    // 不对称（评审发现）：**关闭**即时生效——已构造的工具在存量
-                    // 引擎目录里被动态禁用；**开启**不回溯——开关关闭期间
-                    // spawn 的引擎根本没构造过该工具，刷新也变不出它，要等
-                    // 任意引擎重建（新会话/换模型等）才可见。其余触发刷新的
-                    // 路径（连接器/市场/知识库变化）重算时取到的同样是当前
-                    // 开关状态。
+                    // Dynamic visibility for computer_use. The disallowed
+                    // list is the only toggle→engine channel; this closure
+                    // re-evaluates whenever refresh_disallowed_tools runs.
+                    // computer_use_set_enabled flips the flag and refreshes
+                    // immediately (see app/commands/computer_use.rs), so both
+                    // toggle directions take effect on every live engine on
+                    // the next turn — construction is unconditional on the
+                    // factory side. Other refresh triggers (connector /
+                    // marketplace / knowledge changes) recompute against the
+                    // same current flag state.
                     if !computer_use_shared.is_enabled() {
                         tools.push(features::computer_use::TOOL_NAME.to_string());
                     }
