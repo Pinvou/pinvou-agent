@@ -575,7 +575,7 @@ dictZh.uiToolDetails.flow = {
   openBrowser:'在浏览器打开 ↗', connectionIncomplete:'连接未完成', close:'关闭', retry:'重试',
 };
 
-dictZh.uiToolDetails.actions = { connectedTmeet:'已连接腾讯会议', enabled:'官方技能已启用，可新建对话直接用', disconnectedTmeet:'已断开腾讯会议', connectingIma:'正在连接「腾讯 ima」', validatingIma:'正在校验 OpenAPI 凭证并启用 Skill…', connectedIma:'已连接「腾讯 ima」', imaEnabled:'IMA OpenAPI Skill 已启用，可新建对话直接使用。', imaFailed:'IMA 连接失败', disconnectedIma:'已断开「腾讯 ima」', operationFailed:'操作失败，请重试' };
+dictZh.uiToolDetails.actions = { connectedTmeet:'已连接腾讯会议', enabled:'已连接。工具开关默认关闭，可在输入框工具列表中开启', disconnectedTmeet:'已断开腾讯会议', connectingIma:'正在连接「腾讯 ima」', validatingIma:'正在校验 OpenAPI 凭证并启用 Skill…', connectedIma:'已连接「腾讯 ima」', imaEnabled:'IMA 已连接。工具开关默认关闭，可在输入框工具列表中开启。', imaFailed:'IMA 连接失败', disconnectedIma:'已断开「腾讯 ima」', operationFailed:'操作失败，请重试' };
 
 dictZh.uiToolDetails.tmeetSteps = [{key:'runtime',label:'准备运行时',sub:'使用应用自带 Node'},{key:'cli',label:'安装连接组件',sub:'tmeet · 首次约 40 秒'},{key:'qr',label:'扫码登录',sub:'腾讯会议授权页'}];
 
@@ -884,7 +884,7 @@ Object.assign(dictZh.uiToolStore, {
   toolNames:{ feishu:'飞书', wecom:'企业微信', dingtalk:'钉钉', tmeet:'腾讯会议', ima:'腾讯 ima' },
   connected:'已连接', installed:'已安装', builtin:'内置', internalDirect:'内网直连', keyRequired:'需密钥', localLatency:'本地',
   cancel:'取消', ok:'知道了', newChat:'新建会话',
-  installHint:'新工具需要在新会话中生效', removeHint:'已移除，新会话将不再加载该工具', firstUseOnlineInstall:'首次连接会联网下载并校验官方 CLI',
+  installHint:'新工具开关默认关闭，请在输入框工具列表中开启后使用', removeHint:'已移除，新会话将不再加载该工具', firstUseOnlineInstall:'首次连接会联网下载并校验官方 CLI',
   configTitle:name=>`配置「${name}」`, configConnect:'连接', configInstall:'安装', configDocDefault:'查看配置说明', configHelpFeishu:'不会建应用？去飞书开放平台建一个 →',
   obsidianGuide:{
 not_installed:{ title:'需要先安装 Obsidian', body:'「Obsidian 知识库」需配合 Obsidian 使用。检测到你尚未安装，安装并创建一个库后即可连接。', primary:'下载 Obsidian', retry:'我已安装，重新检测' },
