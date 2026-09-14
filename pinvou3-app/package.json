@@ -105,7 +105,7 @@
     "test:pinvou-scene-sidecar": "node tests/pinvou_scene_sidecar.test.js",
     "test:design-runtime": "node tests/design_runtime_logic.test.js",
     "test:design-changes": "node tests/design_changes_logic.test.js",
-    "test:scene-capabilities": "node tests/scene_capabilities_logic.test.js",
+    "test:scene-capabilities": "node tests/scene_capabilities_logic.test.mjs",
     "test": "npm run test:node && npm run validate:pet-assets",
     "test:node": "node --test --test-concurrency=4",
     "test:ui-smoke": "node tests/ui_smoke.js",

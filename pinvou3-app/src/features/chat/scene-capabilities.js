@@ -8,6 +8,20 @@ function isInstalled(items, id) {
   return (items || []).some((item) => itemId(item) === wanted && item.installed !== false);
 }
 
+// 开关默认全关（DenyAll）后，安装不再等于可用：场景流程必须读取 plain
+// scope 的有效禁用集，把场景包显式移出（用户发起场景动作本身就是 opt-in，
+// 评审 #455 R5-B3），否则模型收不到工具、场景静默降级而 UI 谎称已启用。
+async function listDisabledConnectors(invoke) {
+  const disabled = await invoke('get_disabled_connectors', { scope: 'plain' });
+  return new Set(Array.isArray(disabled) ? disabled.map((id) => String(id || '').trim()) : []);
+}
+
+async function enablePackageInPlainScope(invoke, disabledIds, packageId) {
+  if (!disabledIds.has(packageId)) return;
+  disabledIds.delete(packageId);
+  await invoke('set_disabled_connectors', { connectorIds: [...disabledIds], scope: 'plain' });
+}
+
 async function listMarketplaceTools(invoke) {
   const tools = await invoke('list_marketplace_tools');
   return Array.isArray(tools) ? tools : [];
@@ -93,7 +107,30 @@ async function prepareSceneCapabilities(meta, invoke) {
     };
   }
 
-  return { ok: true, requirements, installed };
+  // 安装完成 ≠ 开关打开：plain scope 有效禁用集含场景包时，用户发起的场景
+  // 动作即显式 opt-in——移出禁用集并落盘（set_disabled_connectors 落盘后
+  // 热刷在跑会话的工具白名单与技能组合目录，本轮即生效）。
+  const requiredPackages = [...requirements.tools, ...requirements.skills];
+  let enabled = false;
+  try {
+    const disabledIds = await listDisabledConnectors(invoke);
+    for (const packageId of requiredPackages) {
+      if (!disabledIds.has(packageId)) continue;
+      await enablePackageInPlainScope(invoke, disabledIds, packageId);
+      enabled = true;
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      requirements,
+      installed,
+      missing: [],
+      enableFailed: true,
+      error: String((error && error.message) || error || ''),
+    };
+  }
+
+  return { ok: true, requirements, installed, enabled };
 }
 
 export {
