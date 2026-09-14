@@ -204,6 +204,16 @@ pub fn discover_folder_files(roots: &[String]) -> Result<RemoteFolderDiscovery, 
     })
 }
 
+/// Shared-knowledge private-identity probe: the same TLS-pinned handshake
+/// underneath the GUI's `remote_kb_probe_private_endpoint`. Exposed as a free
+/// function because the headless caller (pinvou-cli) does not depend on the
+/// `pinvou_knowledge` crate, while `RemoteKnowledgeProbe` is already part of
+/// this module's public surface (the `request_join_confirmed` input) — the
+/// wrapper introduces no new public types.
+pub async fn probe_private_identity(source: &str) -> Result<RemoteKnowledgeProbe, String> {
+    KnowledgeClient::probe_private_identity(source).await
+}
+
 fn keep_folder_entry(entry: &DirEntry) -> bool {
     if entry.depth() == 0 || !entry.file_type().is_dir() {
         return true;

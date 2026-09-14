@@ -19,7 +19,7 @@ mod providers;
 pub(crate) mod reader_window;
 mod runtime;
 mod store;
-pub(crate) mod workspace;
+pub mod workspace;
 
 // 纯提取：连接池自身仍是本 facade 的 impl 块；安装、登录与 Kimi 内省的
 // 无副作用自由函数已迁入对应子模块，这里 glob 引入以保持调用点不变。
