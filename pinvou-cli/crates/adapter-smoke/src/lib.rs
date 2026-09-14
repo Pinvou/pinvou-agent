@@ -64,10 +64,12 @@ impl SmokeCase {
             self.id,
             Some("smoke".to_string()),
             None,
+            // The smoke suite is an internal determinism check, so it keeps
+            // its own per-case harness deadlines (unlike GAIA).
             ExecutionRequest::native_turn(
                 PrivateInputHandle::new(format!("smoke:{}", self.id)),
                 vec![],
-                self.timeout,
+                Some(self.timeout),
                 ToolPolicyId::new(SMOKE_TOOL_POLICY_ID),
                 OutputContract::new("smoke-private-output/v1"),
             ),
@@ -177,7 +179,10 @@ impl SmokeAdapter {
                 PRODUCT_SCORE_VERSION,
                 vec![Split::new("smoke")],
                 ExecutionKind::NativeTurn,
-            ),
+            )
+            // Per-case deadlines are 30/60s; the manifest records the upper
+            // bound so the harness-deadline mode is machine-readable.
+            .with_harness_deadline_secs(Some(60)),
         }
     }
 }

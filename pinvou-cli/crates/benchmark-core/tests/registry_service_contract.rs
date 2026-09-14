@@ -75,7 +75,7 @@ impl BenchmarkAdapter for FixtureAdapter {
             ExecutionRequest::native_turn(
                 PrivateInputHandle::new("private-input"),
                 vec![],
-                Duration::from_secs(1),
+                Some(Duration::from_secs(1)),
                 ToolPolicyId::new("fixture/v1"),
                 OutputContract::new("fixture/v1"),
             ),

@@ -65,7 +65,7 @@ fn native_task() -> BenchmarkTask {
         ExecutionRequest::native_turn(
             PrivateInputHandle::new("private-prompt-1"),
             vec![AttachmentHandle::new("attachment-1")],
-            Duration::from_secs(30),
+            Some(Duration::from_secs(30)),
             ToolPolicyId::new("gaia/v1"),
             OutputContract::new("final-answer/v1"),
         ),

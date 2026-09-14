@@ -271,6 +271,19 @@ where
     }
 }
 
+/// Bound a future by the request's harness deadline, if it declares one.
+/// `None` (unbounded) runs the future as-is: the run is then bounded only by
+/// the engine's own limits (model steps, per-turn wall clock, cancellation).
+async fn bound_by_deadline<T>(
+    deadline: Option<tokio::time::Instant>,
+    future: impl std::future::Future<Output = T>,
+) -> std::result::Result<T, tokio::time::error::Elapsed> {
+    match deadline {
+        Some(deadline) => tokio::time::timeout_at(deadline, future).await,
+        None => Ok(future.await),
+    }
+}
+
 struct UnavailablePrivateInputs;
 
 #[async_trait]
@@ -314,19 +327,17 @@ where
             .map_err(|_| BenchmarkError::coded("unsupported_tool_policy"))?;
         let output_contract = AgentOutputContractId::new(output_contract)
             .map_err(|_| BenchmarkError::coded("unsupported_output_contract"))?;
-        let deadline = tokio::time::Instant::now() + timeout_duration;
+        let deadline = timeout_duration.map(|timeout| tokio::time::Instant::now() + timeout);
         let mut resolved_attachments = Vec::with_capacity(attachments.len());
         for attachment in &attachments {
-            let resolved = tokio::time::timeout_at(
-                deadline,
-                self.private_inputs.resolve_attachment(attachment),
-            )
-            .await
-            .map_err(|_| BenchmarkError::coded("task_timeout"))?
-            .map_err(|_| BenchmarkError::coded("attachment_resolution_failed"))?;
+            let resolved =
+                bound_by_deadline(deadline, self.private_inputs.resolve_attachment(attachment))
+                    .await
+                    .map_err(|_| BenchmarkError::coded("task_timeout"))?
+                    .map_err(|_| BenchmarkError::coded("attachment_resolution_failed"))?;
             resolved_attachments.push(resolved);
         }
-        let session = tokio::time::timeout_at(
+        let session = bound_by_deadline(
             deadline,
             self.backend.prepare(
                 PrepareRequest::new(task.task_id(), attachments)
@@ -339,7 +350,7 @@ where
         .map_err(|_| BenchmarkError::coded("backend_prepare_failed"))?;
         let observer = Arc::new(CollectingObserver::default());
         let run_started = Instant::now();
-        let result = tokio::time::timeout_at(
+        let result = bound_by_deadline(
             deadline,
             self.backend.run(
                 &session,
@@ -363,9 +374,7 @@ where
         let private_output = match &result {
             Ok(outcome) => match outcome.output_handle() {
                 Some(handle) => {
-                    match tokio::time::timeout_at(deadline, self.backend.resolve_output(handle))
-                        .await
-                    {
+                    match bound_by_deadline(deadline, self.backend.resolve_output(handle)).await {
                         Ok(resolved) => Some(resolved),
                         Err(_) => {
                             let elapsed = run_started.elapsed().as_millis() as u64;
@@ -385,7 +394,7 @@ where
             Err(_) => None,
         };
         let close_result =
-            match tokio::time::timeout_at(deadline, self.backend.close(session.clone())).await {
+            match bound_by_deadline(deadline, self.backend.close(session.clone())).await {
                 Ok(result) => result,
                 Err(_) => {
                     let elapsed = run_started.elapsed().as_millis() as u64;

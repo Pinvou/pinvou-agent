@@ -22,4 +22,6 @@ pub fn run_agentic_task(
     pinvou3_lib::agentic_task::run_agentic_task_headless(request)
 }
 
-pub use pinvou3_lib::agentic_task::{AgenticTaskReport, AgenticTaskRequest, MAX_TIMEOUT_SECS};
+pub use pinvou3_lib::agentic_task::{
+    AgenticTaskAttachment, AgenticTaskMode, AgenticTaskReport, AgenticTaskRequest, MAX_TIMEOUT_SECS,
+};
