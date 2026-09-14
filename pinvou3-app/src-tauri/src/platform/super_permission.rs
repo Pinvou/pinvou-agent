@@ -22,7 +22,7 @@ pub fn is_enabled() -> bool {
     crate::platform::os::super_permission_is_enabled()
 }
 
-/// 静态 system prompt 的超级权限占位段。**不含开关状态**。
+/// Super-permission placeholder block in the static system prompt. **No switch state included.**
 ///
 /// 状态是动态的:静态 prompt 在 engine spawn 时只渲染一次,之后切开关无法热刷
 /// (`refresh_all_instructions` 是 no-op —— 见 `engine_pool.rs`)。把状态写进

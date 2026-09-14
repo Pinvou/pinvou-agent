@@ -1892,7 +1892,7 @@ mod tests {
     /// occupied by the slim text (setting a different value returns Err).
     #[test]
     fn forkguard_locale_bookend_overrides_are_wired() {
-        install_prompt_overrides(); // OnceLock 幂等,谁先调都一样
+        install_prompt_overrides(); // idempotent: OnceLock slots, first setter wins
 
         assert!(deepseek_tui::prompts::static_prompt_composer_installed());
         let reject = |r: Result<(), String>| r.is_err();
