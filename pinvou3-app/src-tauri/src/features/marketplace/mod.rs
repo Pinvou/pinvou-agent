@@ -152,7 +152,10 @@ fn marketplace_transaction_journal() -> PathBuf {
 /// 失败但仍覆盖」会把可人工找回的损坏字节彻底销毁（评审 #455 R5-m4）。
 pub(crate) fn quarantine_corrupt_state_file(path: &Path, content: &str) -> Result<(), String> {
     let Some(parent) = path.parent() else {
-        return Err(format!("quarantine target has no parent: {}", path.display()));
+        return Err(format!(
+            "quarantine target has no parent: {}",
+            path.display()
+        ));
     };
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         return Err(format!(
