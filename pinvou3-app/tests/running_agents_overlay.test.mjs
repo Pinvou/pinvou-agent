@@ -60,6 +60,12 @@ test('statusPresentation: terminal first; ledger English tokens map to i18n copy
   assert.equal(statusPresentation(entry({ status: 'running' }), copy).text, '运行中');
   assert.equal(statusPresentation(entry({ status: 'RUNNING' }), copy).text, '运行中');
   assert.equal(statusPresentation(entry({ status: 'queued' }), copy).text, '等待中');
+  // The remaining ledger tokens must not leak raw snake_case either: a worker
+  // executes tools under running_tool, throttles under model_wait, and parks
+  // at a resumable checkpoint under waiting_for_user.
+  assert.equal(statusPresentation(entry({ status: 'running_tool' }), copy).text, '运行中');
+  assert.equal(statusPresentation(entry({ status: 'model_wait' }), copy).text, '等待中');
+  assert.equal(statusPresentation(entry({ status: 'waiting_for_user' }), copy).text, '等待中');
   // A non-whitelisted single token is treated as a real-time progress phrase
   // and shown verbatim; a blank phrase falls back to working.
   assert.equal(statusPresentation(entry({ status: 'reading files' }), copy).text, '运行中');
