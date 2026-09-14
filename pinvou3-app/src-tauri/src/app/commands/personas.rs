@@ -138,6 +138,7 @@ pub async fn delete_persona(
     Ok(())
 }
 
+#[cfg(test)]
 fn delete_persona_state(store: &SessionStore, persona_id: &str) -> Result<Vec<String>, String> {
     delete_persona_state_with(store, persona_id, |_| {})
 }
