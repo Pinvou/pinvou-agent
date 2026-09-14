@@ -667,6 +667,36 @@ pub fn remove_bundle_from_disabled_scopes(raw_id: &str) {
     }
 }
 
+/// 回收站恢复专用：把包 id 重新加回**已初始化** scope 的落盘禁用集。
+/// 卸载已把该包从落盘列表抹掉，恢复侧只清不写会让「卸载前被用户显式关掉的
+/// 包」在恢复后于所有已初始化 scope 重新启用——经恢复按钮绕过 DenyAll
+/// 「显式开启」同意门（评审 #455 R5-m5）。未初始化 scope 不写（其 DenyAll
+/// 现算扩集本就覆盖该包，与 disable 臂的非固化口径一致：不把当前扩集
+/// 固化为用户状态）。
+pub fn redisable_bundle_in_initialized_scopes(raw_id: &str) {
+    let package_id = to_package_id(raw_id);
+    let _guard = DISABLED_BUNDLES_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut file = load_disabled_bundles_file_locked();
+    let mut changed = false;
+    for mode in SessionMode::ALL {
+        let key = mode.as_str();
+        if !file.initialized.contains(key) {
+            continue;
+        }
+        let ids = file.scopes.entry(key.to_string()).or_default();
+        if ids.iter().any(|id| id == &package_id) {
+            continue;
+        }
+        ids.push(package_id.clone());
+        changed = true;
+    }
+    if changed {
+        save_disabled_bundles_file(&file);
+    }
+}
+
 /// 项目级 skills 开关（默认关）。
 pub fn project_skills_enabled() -> bool {
     load_disabled_bundles_file().project_skills_enabled
