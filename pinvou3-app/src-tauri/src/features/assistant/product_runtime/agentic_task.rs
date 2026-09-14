@@ -787,7 +787,53 @@ mod tests {
     };
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
     use crate::platform::paths::tests::ENV_LOCK;
+    use std::ffi::OsString;
     use std::path::PathBuf;
+
+    /// RAII restore for the process-level env vars a test mutates: original
+    /// values are captured as `OsString` (non-Unicode values survive) and
+    /// rewritten on drop, which runs on both normal return and panic unwind.
+    /// Like bridge.rs's guard, this holds no lock itself — borrow
+    /// [`ENV_LOCK`] first, via [`locked_env`].
+    struct EnvGuard {
+        vars: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl EnvGuard {
+        fn new(vars: &[&'static str]) -> Self {
+            Self {
+                vars: vars
+                    .iter()
+                    .map(|&name| (name, std::env::var_os(name)))
+                    .collect(),
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (name, value) in &self.vars {
+                // SAFETY: the paired lock guard held ENV_LOCK for this
+                // guard's whole life; env writes stay serialized across tests.
+                unsafe {
+                    if let Some(value) = value {
+                        std::env::set_var(name, value);
+                    } else {
+                        std::env::remove_var(name);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Acquire the crate-wide [`ENV_LOCK`] plus an [`EnvGuard`] restoring
+    /// `vars` on scope exit (normal or panic):
+    /// `let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);`
+    /// Never call this while already holding ENV_LOCK (not reentrant).
+    fn locked_env(vars: &[&'static str]) -> (std::sync::MutexGuard<'static, ()>, EnvGuard) {
+        let lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        (lock, EnvGuard::new(vars))
+    }
 
     fn default_request(prompt: &str) -> AgenticTaskRequest {
         AgenticTaskRequest {
@@ -806,7 +852,7 @@ mod tests {
     /// keep.
     #[test]
     fn keep_session_env_defaults_to_keeping() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let (_lock, _env) = locked_env(&["PINVOU3_AGENT_TASK_KEEP_SESSION"]);
         // SAFETY: ENV_LOCK held; env writes are serialized across tests.
         unsafe { std::env::remove_var("PINVOU3_AGENT_TASK_KEEP_SESSION") };
         assert!(keep_session_from_env(), "absent env must keep the session");
@@ -820,8 +866,7 @@ mod tests {
             unsafe { std::env::set_var("PINVOU3_AGENT_TASK_KEEP_SESSION", value) };
             assert!(!keep_session_from_env(), "{value} must delete the session");
         }
-        // SAFETY: see above.
-        unsafe { std::env::remove_var("PINVOU3_AGENT_TASK_KEEP_SESSION") };
+        // `_env` restores the captured value on return or panic.
     }
 
     #[test]
@@ -959,7 +1004,7 @@ mod tests {
 
     #[test]
     fn ensure_model_exists_rejects_unknown_model() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
         let tmp = std::env::temp_dir().join(format!(
             "pinvou3-agentic-model-test-{}",
             std::time::SystemTime::now()
@@ -967,15 +1012,16 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        // SAFETY: ENV_LOCK held; env writes are serialized across tests.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let error = ensure_model_exists("definitely-missing-model").unwrap_err();
         assert!(error.to_string().contains("agent_model_not_found"));
+        // `_env` restores the captured PINVOU3_HOME on return or panic.
     }
 
     #[test]
     fn ensure_existing_chat_session_accepts_chat_rejects_unknown_and_scheduled() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
         let tmp = std::env::temp_dir().join(format!(
             "pinvou3-agentic-session-test-{}",
             std::time::SystemTime::now()
@@ -983,7 +1029,7 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        // SAFETY: ENV_LOCK held; env writes are serialized across tests.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
 
@@ -1013,6 +1059,7 @@ mod tests {
         );
         let error = ensure_existing_chat_session(&store, &chat.metadata.id).unwrap_err();
         assert!(error.to_string().contains("agent_session_not_chat"));
+        // `_env` restores the captured PINVOU3_HOME on return or panic.
     }
 
     #[test]
