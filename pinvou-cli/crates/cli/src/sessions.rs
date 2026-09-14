@@ -146,7 +146,9 @@ pub fn parse(values: &[String]) -> Result<SessionsCommand, CliError> {
             // stripped any quotes by the time the CLI sees the token.
             if title.starts_with('-') {
                 return Err(CliError::usage(format!(
-                    "sessions rename takes a plain title (quote it if it starts with '-'); got '{title}'"
+                    "sessions rename takes a plain title and cannot accept one that looks \
+                     like a flag; rename the session from the desktop app instead (got \
+                     '{title}')"
                 )));
             }
             Ok(SessionsCommand::Rename { id, title })
@@ -874,6 +876,24 @@ mod tests {
                 "parsed an unexpected command family; the fixture argv does not match the test"
             ),
         }
+    }
+
+    #[test]
+    fn rename_accepts_titles_containing_flags_but_not_flag_shaped_ones() {
+        // A title that merely CONTAINS "--" is legitimate text; this
+        // acceptance previously existed only as a comment — pin it.
+        assert_eq!(
+            parse(&["rename", "s-1", "War", "and", "Peace --", "annotated"]).unwrap(),
+            SessionsCommand::Rename {
+                id: "s-1".into(),
+                title: "War and Peace -- annotated".into(),
+            }
+        );
+        // A title that LOOKS like a flag is rejected as a usage error; the
+        // message must not pretend quoting could help (the shell strips
+        // quotes before argv).
+        let error = parse(&["rename", "s-1", "--limit"]).unwrap_err();
+        assert!(error.to_string().contains("plain title"), "{error}");
     }
 
     #[test]
