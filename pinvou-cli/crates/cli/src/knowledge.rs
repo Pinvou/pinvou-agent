@@ -1147,7 +1147,7 @@ fn collections_add_sources(
         return Err(CliError::failed(format!(
             "knowledge collections add-sources: an unfinished index job for collection {} \
              blocks collection {id} and the requested sources were NOT enqueued (check \
-             `pinvoy knowledge index status`, resume or cancel it first, then re-run this \
+             `pinvou knowledge index status`, resume or cancel it first, then re-run this \
              command)",
             state.collection_id
         )));
@@ -1194,10 +1194,20 @@ fn documents(
     Ok(success(render(output, human, &value)))
 }
 
-/// GUI `kb_remove_document`: removing an unknown id is a no-op like the
-/// GUI's delete (no existence check upstream).
+/// GUI `kb_remove_document` with the existence check the rest of this family
+/// adds: the upstream delete is a silent no-op for unknown ids, which would
+/// report success for a document that was never there.
 fn documents_remove(doc_id: i64, output: OutputMode) -> Result<CliOutcome, CliError> {
     let service = open_service_recovering()?;
+    let exists = service
+        .l1()
+        .document_exists(doc_id)
+        .map_err(|error| feature_error("documents remove", error))?;
+    if !exists {
+        return Err(CliError::failed(format!(
+            "knowledge_document_not_found: document {doc_id} does not exist"
+        )));
+    }
     service
         .l1()
         .remove_document(doc_id)

@@ -608,9 +608,14 @@ fn documents_zero_state_and_remove_no_op() {
     assert_eq!(documents["collection_id"], serde_json::json!(id));
     assert_eq!(documents["documents"], serde_json::json!([]));
 
-    // Removing an unknown document is a no-op like the GUI delete.
-    let removed = run_json(&["pinvou", "knowledge", "documents", "remove", "123", "--yes"]);
-    assert_eq!(removed["id"], serde_json::json!(123));
+    // Unlike the GUI's silent no-op delete, removing an unknown document
+    // refuses with exit 1 like every other unknown-id command in the CLI.
+    let error = execute_error(&["pinvou", "knowledge", "documents", "remove", "123", "--yes"]);
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    assert!(
+        error.to_string().contains("knowledge_document_not_found"),
+        "{error}"
+    );
 }
 
 /// Index jobs are DB-persisted and polled (`kb_index_status`), so the
