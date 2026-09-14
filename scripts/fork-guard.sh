@@ -11,6 +11,16 @@ EXPECTED_COMMITS=37
 # 过渡期锚点：不可变 r1 tag 的收口 commit。层 0 断言它是当前 head 的祖先，
 # 即 gitlink 沿维护分支领先 tag 而非另起分叉；r2 收口后随 TAG 常量一起退役。
 R1_CLOSURE="1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
+# Candidate registration: the skills phantom-tool text candidate (review
+# branch fix/skills-phantom-tool-text, paired CodeWhale PR #56) is one
+# commit above the registered maintenance head while its CodeWhale PR is
+# open. Layer 0 accepts the registered head or this candidate; re-pin the
+# entry when the candidate rebases and retire it once the commit lands on
+# pinvou3-clean (see docs/fork-modifications.md, the T3 section).
+# verify-public-submodule.sh stays red for the pinned candidate: that is
+# the registered candidate-period state, not a regression.
+CANDIDATE_HEAD="c34c3a4309c03ca6308b422848e95e9000b1d7c9"
+CANDIDATE_COMMITS=29
 FAST_ONLY=0
 
 case "${1:-}" in
@@ -27,10 +37,14 @@ fail=0
 
 bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 22 个登记提交，r2 收口未切 tag）──"
 actual_head="$(git -C "$CODEWHALE" rev-parse HEAD 2>/dev/null || true)"
+registered_commits="$EXPECTED_COMMITS"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
   green "  ✓ CodeWhale gitlink 指向登记 head ${EXPECTED_HEAD}（过渡期：gitlink 领先 r1 tag，见 fork-policy 第 0 节豁免）"
+elif [[ -n "$CANDIDATE_HEAD" && "$actual_head" == "$CANDIDATE_HEAD" ]]; then
+  registered_commits="$CANDIDATE_COMMITS"
+  green "  ✓ CodeWhale gitlink pinned to the registered candidate ${CANDIDATE_HEAD} (registered head + $((CANDIDATE_COMMITS - EXPECTED_COMMITS)) candidate commit(s))"
 else
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，登记 head 为 $EXPECTED_HEAD"
+  red "  ✗ CodeWhale HEAD is ${actual_head:-<unreadable>}; expected the registered head $EXPECTED_HEAD or the registered candidate ${CANDIDATE_HEAD:-<none>}"
   fail=1
 fi
 
@@ -49,10 +63,10 @@ else
 fi
 
 commit_count="$(git -C "$CODEWHALE" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev/null || true)"
-if [[ "$commit_count" == "$EXPECTED_COMMITS" ]]; then
-  green "  ✓ v0.9.12 之上 $EXPECTED_COMMITS 个登记提交"
+if [[ "$commit_count" == "$registered_commits" ]]; then
+  green "  ✓ v0.9.12 之上 $commit_count 个登记提交"
 else
-  red "  ✗ v0.9.12 之上有 ${commit_count:-<unreadable>} 个 commit，登记值为 $EXPECTED_COMMITS"
+  red "  ✗ v0.9.12 之上有 ${commit_count:-<unreadable>} 个 commit，登记值为 $registered_commits"
   fail=1
 fi
 
@@ -130,6 +144,12 @@ fingerprints=(
   "T3|静态 prompt composer              |CodeWhale/crates/tui/src/prompts.rs|pub fn set_static_prompt_composer_override("
   "T3|ambient project authority 密封     |CodeWhale/crates/tui/src/project_context.rs|forkguard_runtime_loader_ignores_ambient_project_authority"
   "T3|显式 Skills 根排除 ambient 来源    |CodeWhale/crates/tui/src/skills/tests.rs|forkguard_explicit_skills_dir_excludes_ambient_workspace_sources"
+  "T3|技能索引 Usage 补 tool_search 激活兜底|CodeWhale/crates/tui/src/skills/mod.rs|first to activate it"
+  "T3|技能索引 Usage 回归                 |CodeWhale/crates/tui/src/skills/tests.rs|fn forkguard_skill_index_usage_names_tool_search_activation"
+  "T3|子代理技能段走 tool_search 发现        |CodeWhale/crates/tui/src/tools/subagent/mod.rs|then call it with an exact name before applying a Skill"
+  "T3|子代理技能目录回归                  |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_subagent_skill_catalog_uses_tool_search_discovery"
+  "T3|发现技能幻影命令自条件             |CodeWhale/crates/tui/assets/skills/mcp-discovery/SKILL.md|MCP Registry access is unavailable in"
+  "T3|registry-first 指令与注册名互钉       |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_registry_first_instruction_names_registered_tool_specs"
   "T3|Permissions 窄 100 KiB 预算       |CodeWhale/crates/tui/src/prompts.rs|forkguard_instruction_fragment_preserves_explicit_host_budget"
   "T3|内部 reminder 不污染 working set  |CodeWhale/crates/tui/src/working_set.rs|forkguard_working_set_ignores_leading_system_reminder_paths"
 
@@ -213,10 +233,10 @@ for fp in "${fingerprints[@]}"; do
 done
 
 forkguard_count="$(grep -Rho --include='*.rs' 'forkguard_[A-Za-z0-9_]*' "$CODEWHALE/crates" 2>/dev/null | sort -u | wc -l | tr -d ' ')"
-if [[ "$forkguard_count" -ge 54 ]]; then
-  green "  ✓ CodeWhale 至少保留 54 条独立 forkguard 行为名（实际 ${forkguard_count}）"
+if [[ "$forkguard_count" -ge 57 ]]; then
+  green "  ✓ CodeWhale 至少保留 57 条独立 forkguard 行为名（实际 ${forkguard_count}）"
 else
-  red "  ✗ CodeWhale forkguard 行为名仅 ${forkguard_count:-0}，登记下限为 54"
+  red "  ✗ CodeWhale forkguard 行为名仅 ${forkguard_count:-0}，登记下限为 57"
   fail=1
 fi
 
