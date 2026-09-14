@@ -867,7 +867,10 @@ fn days_in_month(year: i64, month: u32) -> u32 {
     }
 }
 
-// ---- wall-clock helpers (no chrono in the CLI crate) ----
+// ---- wall-clock helpers ----
+// Hand-rolled (chrono IS a dependency) so record ordering and past-checks
+// reproduce the foundation's chrono-based arithmetic on GUI-written stamps
+// exactly, independent of chrono's parse-mode changes.
 
 fn now_epoch() -> (i64, u32) {
     let now = std::time::SystemTime::now()
@@ -2013,12 +2016,13 @@ fn create(
             "scheduled create requires a non-empty --name",
         ));
     }
-    let prompt = std::fs::read_to_string(prompt_file).map_err(|error| {
-        CliError::failed(format!(
-            "scheduled_prompt_file_unreadable: {}: {error}",
-            prompt_file.display()
-        ))
-    })?;
+    // Same 4 MiB cap as the agent prompt read: `--prompt-file /dev/zero`
+    // must fail cleanly instead of reading forever.
+    let prompt = crate::support::read_text_file_capped(
+        &prompt_file,
+        4 * 1024 * 1024,
+        "scheduled create --prompt-file",
+    )?;
     let prompt = prompt.trim();
     if prompt.is_empty() {
         return Err(CliError::usage(
@@ -2129,12 +2133,11 @@ fn update(
         def["name"] = serde_json::json!(name);
     }
     if let Some(prompt_file) = prompt_file {
-        let prompt = std::fs::read_to_string(&prompt_file).map_err(|error| {
-            CliError::failed(format!(
-                "scheduled_prompt_file_unreadable: {}: {error}",
-                prompt_file.display()
-            ))
-        })?;
+        let prompt = crate::support::read_text_file_capped(
+            &prompt_file,
+            4 * 1024 * 1024,
+            "scheduled update --prompt-file",
+        )?;
         let prompt = prompt.trim();
         if prompt.is_empty() {
             return Err(CliError::usage(
@@ -2333,33 +2336,6 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     def["status"] = Value::String("paused".into());
     def["next_run_at"] = Value::Null;
     store_holder.write_def(&def)?;
-    let runs = store_holder.list_runs(id, None)?;
-    // The GUI cancels queued/running runs through the foundation TaskManager
-    // before deleting; headlessly there is no engine runtime to cancel with,
-    // so GUI-runtime-owned active runs refuse deletion. A `queued` record
-    // with no task id is CLI-created bookkeeping (a CLI process killed
-    // mid-run) that the GUI cannot cancel either — it must not wedge the
-    // task forever, so it does not block deletion.
-    if let Some(active) = runs.iter().find(|run| {
-        // Records with no task id are CLI bookkeeping no runtime can cancel;
-        // only GUI-runtime-owned active runs block deletion.
-        !str_field(run, "task_id").unwrap_or("").is_empty()
-            && matches!(str_field(run, "status").unwrap_or(""), "queued" | "running")
-    }) {
-        // Mirror the GUI's restore-on-blocked path: the task stays exactly
-        // as it was, paused only for the duration of this check.
-        def["status"] = Value::String(previous_status);
-        store_holder.write_def(&def)?;
-        return Err(CliError::failed(format!(
-            "scheduled_delete_blocked: run {} is {} for task {id}; wait for it to finish \
-(only the GUI runtime can cancel a scheduled run)",
-            str_field(active, "id").unwrap_or(""),
-            str_field(active, "status").unwrap_or(""),
-        )));
-    }
-    // Archive first (commit before removal), then delete the definition and
-    // its runs, then drop the sidecar entries — the GUI delete order minus
-    // the engine-task cancellation step.
     // Every failure below restores the pre-delete status like the GUI
     // (`restore_task_status_if_present` runs on every failed delete): a
     // caller retrying after fixing the cause must not find the task paused.
@@ -2376,6 +2352,32 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         }
         let _ = store_holder.write_def(&restored);
     };
+    let runs = store_holder.list_runs(id, None)?;
+    // The GUI cancels queued/running runs through the foundation TaskManager
+    // before deleting; headlessly there is no engine runtime to cancel with,
+    // so GUI-runtime-owned active runs refuse deletion. A `queued` record
+    // with no task id is CLI-created bookkeeping (a CLI process killed
+    // mid-run) that the GUI cannot cancel either — it must not wedge the
+    // task forever, so it does not block deletion.
+    if let Some(active) = runs.iter().find(|run| {
+        // Records with no task id are CLI bookkeeping no runtime can cancel;
+        // only GUI-runtime-owned active runs block deletion.
+        !str_field(run, "task_id").unwrap_or("").is_empty()
+            && matches!(str_field(run, "status").unwrap_or(""), "queued" | "running")
+    }) {
+        // Mirror the GUI's restore-on-blocked path: the task stays exactly
+        // as it was, paused only for the duration of this check.
+        restore_status(&def, &previous_status);
+        return Err(CliError::failed(format!(
+            "scheduled_delete_blocked: run {} is {} for task {id}; wait for it to finish \
+(only the GUI runtime can cancel a scheduled run)",
+            str_field(active, "id").unwrap_or(""),
+            str_field(active, "status").unwrap_or(""),
+        )));
+    }
+    // Archive first (commit before removal), then delete the definition and
+    // its runs, then drop the sidecar entries — the GUI delete order minus
+    // the engine-task cancellation step.
     let mut archive = read_registry(&store_holder.history_archive_path());
     // Same newer-schema refusal as registry_tasks_mut: an archive written by
     // a newer app version must not be merged and written back. The refusal
@@ -2852,7 +2854,7 @@ mod tests {
         owned.insert(0, "pinvou".to_owned());
         match crate::parse_args(owned)?.command() {
             crate::CliCommand::Scheduled(command) => Ok(command.clone()),
-            other => panic!(
+            _other => panic!(
                 "parsed an unexpected command family; the fixture argv does not match the test"
             ),
         }

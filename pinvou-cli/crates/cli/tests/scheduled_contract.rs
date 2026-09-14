@@ -135,6 +135,29 @@ fn write_prompt_file(home: &TempHome, name: &str, prompt: &str) -> PathBuf {
 
 const VALID_RRULE: &str = "FREQ=WEEKLY;BYDAY=MO,FR;BYHOUR=9;BYMINUTE=30";
 
+// Bounded read: an over-cap prompt file must fail cleanly (the reason
+// `--prompt-file /dev/zero` cannot hang the CLI).
+#[test]
+fn create_refuses_an_oversized_prompt_file() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("prompt-cap");
+    let prompt = write_prompt_file(&home, "big.md", &"x".repeat(4 * 1024 * 1024 + 1));
+    let message = expect_failed(&[
+        "scheduled",
+        "create",
+        "--name",
+        "cap",
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+        "--rrule",
+        VALID_RRULE,
+    ]);
+    assert!(
+        message.contains("exceeds the 4194304-byte read limit"),
+        "{message}"
+    );
+}
+
 fn create_task(home: &TempHome, name: &str) -> serde_json::Value {
     let prompt = write_prompt_file(home, &format!("{name}.md"), "Summarize the reports.");
     run_json(&[
