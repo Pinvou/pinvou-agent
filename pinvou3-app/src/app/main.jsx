@@ -2535,14 +2535,15 @@ const NAV_PREFETCH = {
       const handleConvertFolderToProject = (path, name) => runProjectOp(p => p.createProject(name, [path]));
       const handleRenameProject = (projectId, name) => runProjectOp(p => p.renameProject(projectId, name));
       const handleDeleteProject = (projectId) => runProjectOp(p => p.deleteProject(projectId));
-      // 移动归属:纯归档操作(工作目录绑定不动);目标 root 不覆盖会话目录时由
-      // 选择器先走"添加文件夹"确认,再带着 addFolder 标记落到这里。
-      // 确认框展示的是侧栏投影的目录,命令实际加的是后端活记录——outcomes
-      // 里的 added_root 是权威答案,有值时在 toast 里如实呈现(评审 #449
-      // finding 9:两侧不得静默分叉)。
+      // 移动归属:纯归档操作(工作目录绑定不动)。目标 root 不覆盖会话目录时
+      // 由选择器先弹"仅移动"确认,确认后也只移动、不带 add_workspace_root。
+      // 成功 toast 只在 store 真返回 added_root 时带路径(当前移动语义下是
+      // 防御分支,见 commands 侧契约);失败走 runProjectOp 的 opFailed。
+      // 成功只关"这一笔"的弹窗:异步落地期间用户可能已把选择器换到另一个
+      // 会话上,无条件清 slot 会把别人的弹窗关掉。
       const handleMoveSessionToProject = (sessionId, projectId, addWorkspaceRoot) => runProjectOp(async (p) => {
         const outcome = await p.moveSessionToProject(sessionId, projectId, addWorkspaceRoot);
-        setMoveToProjectSession(null);
+        setMoveToProjectSession(current => (current && current.id === sessionId) ? null : current);
         setSettingsToast(
           outcome && outcome.added_root
             ? t.uiProjects.movedNoticeWithFolder(outcome.added_root)
@@ -2826,7 +2827,9 @@ const NAV_PREFETCH = {
             onOpenFolder={can('externalSystemOpen') ? handleRevealSessionFolder : undefined}
             onExportArchive={chat.taskKind !== 'codex' && !exportingSessionIds.has(chat.id) && bridge.sessions.exportSessionArchive ? handleExportSessionArchive : undefined}
             onArchive={handleArchiveSession}
-            onMoveToProject={chat.taskKind === 'codex' && bridge.projects ? (target) => setMoveToProjectSession(target) : undefined}
+            onMoveToProject={chat.taskKind === 'codex' && bridge.projects && sidebarProjectsData?.projects?.length
+              ? (target) => setMoveToProjectSession(target)
+              : undefined}
             dragKind={detachKind}
             dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
             onPickUp={canDetachWindows
