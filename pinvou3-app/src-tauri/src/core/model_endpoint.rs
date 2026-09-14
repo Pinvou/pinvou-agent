@@ -30,7 +30,8 @@ pub struct OpenAiModelInfo {
     /// `/v1/models`; Ollama/LM Studio listings do too). Best-effort parse of
     /// `max_output_tokens` / `max_completion_tokens` /
     /// `top_provider.max_completion_tokens` (OpenRouter gateway shape;
-    /// unlimited is null, treated as undeclared). Only used to min-tighten
+    /// unlimited is null, treated as undeclared); when an entry reports
+    /// several shapes the tightest value wins. Only used to min-tighten
     /// route declarations, never to raise any limit.
     pub max_output_tokens: Option<u32>,
     /// 是否已加载到内存。`None` = 未知（通用 OpenAI 兼容端点不区分）。
@@ -79,18 +80,21 @@ pub(crate) fn parse_models_response_list(v: serde_json::Value) -> Option<Vec<Ope
 /// limit from a `/v1/models` entry. Covers three known shapes: direct
 /// `max_output_tokens` / `max_completion_tokens`, and the OpenRouter
 /// gateway's `top_provider.max_completion_tokens` (unlimited is null;
-/// `as_u64()` missing means undeclared). The value must be positive; local
-/// engines usually omit the field → None, and callers must not fabricate a
+/// `as_u64()` missing means undeclared). Every value must be positive,
+/// and when several shapes coexist the tightest one wins: preferring a
+/// shape by priority could adopt a cap larger than another cap the same
+/// entry reported, breaking the only-tighten contract. Local engines
+/// usually omit the field → None, and callers must not fabricate a
 /// limit from it.
 fn parse_entry_output_limit(item: &serde_json::Value) -> Option<u32> {
     let direct = ["max_output_tokens", "max_completion_tokens"]
         .into_iter()
-        .find_map(|key| item.get(key).and_then(parse_positive_u32));
-    direct.or_else(|| {
-        item.get("top_provider")?
-            .get("max_completion_tokens")
-            .and_then(parse_positive_u32)
-    })
+        .filter_map(|key| item.get(key).and_then(parse_positive_u32));
+    let top_provider = item
+        .get("top_provider")
+        .and_then(|provider| provider.get("max_completion_tokens"))
+        .and_then(parse_positive_u32);
+    direct.chain(top_provider).min()
 }
 
 /// 通用 OpenAI 兼容 `/models` 探测。探测地址与云端 probe / 连接测试同一口径
@@ -1147,6 +1151,36 @@ mod tests {
         assert_eq!(output_of("zero-invalid"), None);
         // max_model_len is a context window, not an output limit
         assert_eq!(output_of("plain-vllm"), None);
+    }
+
+    /// A single entry may report several output-cap shapes at once (a
+    /// gateway mirroring both the OpenAI and OpenRouter fields). The
+    /// adopted limit is the minimum of every valid value, so it never
+    /// exceeds any cap the endpoint declared; invalid shapes are ignored
+    /// and must not shadow the remaining valid one.
+    #[test]
+    fn parse_models_response_list_conflicting_output_caps_takes_the_tightest() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"object":"list","data":[
+                {"id":"all-three","max_output_tokens":65536,"max_completion_tokens":4096,
+                 "top_provider":{"max_completion_tokens":8192}},
+                {"id":"direct-and-null-provider","max_output_tokens":16384,
+                 "top_provider":{"max_completion_tokens":null}},
+                {"id":"invalid-plus-valid","max_output_tokens":0,"max_completion_tokens":2048}
+            ]}"#,
+        )
+        .unwrap();
+        let models = parse_models_response_list(json).unwrap();
+        let output_of = |id: &str| {
+            models
+                .iter()
+                .find(|m| m.id == id)
+                .unwrap()
+                .max_output_tokens
+        };
+        assert_eq!(output_of("all-three"), Some(4096));
+        assert_eq!(output_of("direct-and-null-provider"), Some(16384));
+        assert_eq!(output_of("invalid-plus-valid"), Some(2048));
     }
 
     /// Parse robustness: self-reported values beyond u32 (`as u32` would
