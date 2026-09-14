@@ -83,9 +83,11 @@ pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
 ///
 /// 「全新装机」的判定不能只看本文件与两份 legacy 文件：统一文件自 v0.8.6
 /// 起就存在、且只在有内容可写时才落盘——老装机 + 从未动过开关的用户可能
-/// 三者皆无。因此升级信号放宽为「任何既有 pinvou3_home 痕迹」：
-/// marketplace/installed.json、settings.json 或已有会话目录，任一存在即视
-/// 为升级装机并保留旧 AllowAll 语义（评审 #445 P1-2）。全空家目录才算全新。
+/// 三者皆无。因此升级信号放宽为三条具体路径：marketplace/installed.json、
+/// settings.json 或非空 sessions/ 目录，任一存在即视为升级装机并保留旧
+/// AllowAll 语义（评审 #445 P1-2）。注意这是白名单式信号而非「任何家目录
+/// 痕迹」——其余文件（日志、缓存等）不构成升级证据，三者皆无才算全新；
+/// 不得按本注释以外的口径放宽（评审 #455 R5-m1）。
 ///
 /// 该宽口径信号会被应用自身的首启行为污染（bridge boot 的 ensure_dirs 自写
 /// sessions/default/artifacts/、缺省补写默认 settings.json），因此首读被

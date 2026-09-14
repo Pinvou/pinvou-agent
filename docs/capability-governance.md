@@ -6,7 +6,7 @@
 
 > **落地状态**（2026-08-14）：§1、§2 为现状（能力档案已退役，模式能力差量
 > 已收敛为静态表 `MODE_TABLE`）；§3 的存储已收敛为**单一 `disabled_bundles.json`**
-> （`{scopes, hidden_scopes, initialized, project_skills_enabled}`，键 = 包 id，见 §3.2），取代原
+> （`{scopes, hidden_scopes, initialized, project_skills_enabled, plain_defaults_migrated}`，键 = 包 id，见 §3.2），取代原
 > `disabled_connectors.json` + `disabled_skills.json` 双文件与 `skill:` 前缀跨文件借道；
 > companion 联动排除改由包模型现算（`bundle::skill_owner_package`）。§3.1 的
 > 统一包模型与「一个包 = 一个开关」已部分落地（`BundleStore` + `bundle_readiness`），
@@ -88,7 +88,7 @@ Bundle = { id, name, mcp_servers: [], skills: [], cli: [] }
 存储：`~/.pinvou3/disabled_bundles.json` 单一文件（包 id × 模式键控 map）：
 
 ```json
-{ "scopes": { "<mode>": ["<包 id>"] }, "hidden_scopes": { "<mode>": ["<包 id>"] }, "initialized": ["<mode>"], "project_skills_enabled": false }
+{ "scopes": { "<mode>": ["<包 id>"] }, "hidden_scopes": { "<mode>": ["<包 id>"] }, "initialized": ["<mode>"], "project_skills_enabled": false, "plain_defaults_migrated": true }
 ```
 
 scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
@@ -110,8 +110,9 @@ scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
   CLI 连接器「断开」（logout，删授权不删记录）不走该入口，两个集合均不动；
 - 能力开关写路径（`save_disabled_bundles_for`）只写 `scopes`，不动 hidden；
 - 连接器开关（`sync_disabled_bundles_for_connector_switch`）：关闭只写
-  disabled、不动 hidden；**开回复用卸载清理入口，会连带清 hidden**——即
-  开关开回后该包在所有 scope 恢复可见。
+  disabled、不动 hidden；**开回（`enable_bundle_in_deny_all_scopes`）会连带
+  清 hidden**——即开关开回后该包在所有 scope 恢复可见（行为同卸载清理，
+  实现上为未初始化 scope 物化 opt-in + 各集合内联剔除）。
 
 每个模式的默认策略显式声明为**模式身份**（`core/session_mode.rs` 的
 `SessionMode::pack_default_policy()`），不再是存储层的硬编码分支：
