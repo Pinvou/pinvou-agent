@@ -586,6 +586,18 @@ jobs:
       - name: cargo clippy (all targets, all features)
         run: cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --all-targets --all-features --no-deps
 
+      # Same hard gate rust-lint applies to src-tauri: deny every warning on
+      # lib/bins/tests with the server feature, only outside Drafts. This lives
+      # here instead of rust-lint so the standalone workspace is compiled once
+      # per knowledge change in one job and one shared cache (-D warnings on
+      # --all-targets --all-features is not viable: test code legitimately uses
+      # unwrap/expect beyond the [lints] table).
+      - name: cargo clippy (hard gate, lib/bins/tests + server)
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+        run: |
+          cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --lib --bins --no-deps --features server -- -D warnings
+          cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --lib --bins --tests --no-deps --features server
+
       - name: cargo test
         run: cargo test --manifest-path pinvou-knowledge/Cargo.toml --all-features
 
@@ -698,15 +710,10 @@ jobs:
           cargo clippy --lib --bins --no-deps --features dev-tools -- -D warnings
           cargo clippy --lib --bins --tests --no-deps --features dev-tools
 
-      # pinvou-knowledge is a standalone workspace (outside src-tauri), linted
-      # separately; its [lints] table follows the app policy (testing
-      # conventions as above — warn-level lints not enforced on --tests).
-      - name: cargo clippy pinvou-knowledge (hard gate)
-        if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' }}
-        working-directory: pinvou-knowledge
-        run: |
-          cargo clippy --lib --bins --no-deps --features server -- -D warnings
-          cargo clippy --lib --bins --tests --no-deps --features server
+      # pinvou-knowledge clippy hard gate lives in the knowledge-rust job: the
+      # standalone workspace is compiled and linted there in a single shared
+      # cache instead of once more here (cargo shear below still covers both
+      # workspaces statically).
 
       # rustdoc hard gate: the module-level documentation map once accumulated 46
       # rustdoc warnings (private_intra_doc_links / broken_intra_doc_links /

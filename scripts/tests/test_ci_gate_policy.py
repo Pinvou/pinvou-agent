@@ -239,6 +239,13 @@ class CiGatePolicyTests(unittest.TestCase):
             "cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --all-targets --all-features --no-deps",
             knowledge,
         )
+        # The -D-warnings hard gate must stay in this job (single shared
+        # cache); rust-lint must not compile the workspace a second time.
+        self.assertIn(
+            "cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --lib --bins --no-deps --features server -- -D warnings",
+            knowledge,
+        )
+        self.assertNotIn("cargo clippy pinvou-knowledge", self.pr_workflow)
         self.assertIn(
             "cargo test --manifest-path pinvou-knowledge/Cargo.toml --all-features",
             knowledge,
