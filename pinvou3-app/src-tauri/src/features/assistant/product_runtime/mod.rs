@@ -339,7 +339,7 @@ impl ProductChatRuntime for EnginePoolRuntime {
         if let Some(policy_id) = input.eval_tool_policy {
             let policy = match policy_id {
                 eval_tool_policy::EvalToolPolicy::ProductV1 => {
-                    eval_tool_policy::resolve_eval_policy("pinvou-product/v1")?
+                    eval_tool_policy::resolve_eval_policy("pinvou-read-only-web/v1")?
                 }
                 eval_tool_policy::EvalToolPolicy::GaiaPublicWebV1 => {
                     eval_tool_policy::resolve_eval_policy("pinvou-gaia-public-web/v1")?

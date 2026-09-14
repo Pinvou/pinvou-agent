@@ -12,6 +12,10 @@ pub(crate) const GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS: &[&str] = &[
 pub(crate) const GAIA_OFFLINE_V1_ALLOWED_TOOLS: &[&str] =
     &["read", "list_dir", "file_search", "grep_files"];
 
+/// The headless read-only-web face: the same 6 tools as the GAIA public-web
+/// policy. Deliberately NOT named "product" — the real product surface is
+/// `tool_policy::PINVOU3_ALLOWED_TOOLS`; a headless task that wants the full
+/// product face passes no eval policy at all (see `product_runtime::mod`).
 pub(crate) const PRODUCT_V1_ALLOWED_TOOLS: &[&str] = GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +118,13 @@ pub(crate) fn resolve_eval_policy(
     policy_id: &str,
 ) -> Result<&'static EvalTurnPolicy, EvalToolPolicyError> {
     match policy_id {
+        // Canonical id. The face is the 6-tool read-only web set, not the
+        // 28-tool product surface; the former "pinvou-product" name made
+        // benchmark scores read as product capability. The full-product
+        // equivalent is running without an eval policy.
+        "pinvou-read-only-web/v1" => Ok(&PRODUCT_V1),
+        // Deprecated alias: kept resolving so stored pinvou-cli smoke/resume
+        // state and older benchmark configs keep working. Do not new-use it.
         "pinvou-product/v1" => Ok(&PRODUCT_V1),
         "pinvou-gaia-public-web/v1" => Ok(&GAIA_PUBLIC_WEB_V1),
         "pinvou-gaia-offline/v1" => Ok(&GAIA_OFFLINE_V1),
@@ -159,8 +170,13 @@ mod tests {
     #[test]
     fn resolves_registered_eval_profiles() {
         assert_eq!(
-            resolve_eval_policy("pinvou-product/v1").unwrap().id,
+            resolve_eval_policy("pinvou-read-only-web/v1").unwrap().id,
             EvalToolPolicy::ProductV1
+        );
+        // Deprecated alias must keep resolving to the same policy.
+        assert_eq!(
+            resolve_eval_policy("pinvou-product/v1").unwrap(),
+            resolve_eval_policy("pinvou-read-only-web/v1").unwrap()
         );
         assert_eq!(
             resolve_eval_policy("pinvou-gaia-public-web/v1").unwrap().id,
@@ -184,7 +200,7 @@ mod tests {
 
     #[test]
     fn profiles_have_exact_network_separation() {
-        let product = resolve_eval_policy("pinvou-product/v1").unwrap();
+        let product = resolve_eval_policy("pinvou-read-only-web/v1").unwrap();
         let public = resolve_eval_policy("pinvou-gaia-public-web/v1").unwrap();
         let offline = resolve_eval_policy("pinvou-gaia-offline/v1").unwrap();
 
