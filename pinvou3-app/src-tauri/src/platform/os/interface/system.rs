@@ -193,6 +193,14 @@ pub fn make_private_dir(path: &Path) {
     super::super::platform::make_private_dir(path)
 }
 
+/// Sets file permission bits through the active OS adapter so feature tests
+/// can build readable/unreadable fixtures without inlining `PermissionsExt`
+/// outside the adapter layer. Returns whether the file stays readable for
+/// the current user after the call.
+pub fn set_file_mode(path: &Path, mode: u32) -> std::io::Result<bool> {
+    super::super::platform::set_file_mode(path, mode)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
