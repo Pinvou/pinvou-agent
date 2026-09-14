@@ -560,6 +560,64 @@ fn import_rejects_fifo_skill_file_without_reading() {
     assert!(message.contains("not a regular file"), "message: {message}");
 }
 
+/// The `.zip` channel gets the same pre-flight: the shared importer's
+/// `File::open` would block on a FIFO exactly like the wrap reads, and its
+/// budget bounds decompressed content only, so an oversized package file is
+/// rejected from metadata (matching the GUI upload path's cap on the
+/// package file itself) instead of after a full open.
+#[test]
+fn import_rejects_oversize_zip_package() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("import-oversize-zip");
+
+    let oversized = home.path().join("oversize.zip");
+    write_sparse(&oversized, import_package_limit() + 1);
+    let (message, code) = run_err(&["pinvoy", "plugins", "import", oversized.to_str().unwrap()]);
+    assert_eq!(code, ExitCode::Failed);
+    assert!(
+        message.contains("exceeds the 200 MiB import limit"),
+        "message: {message}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn import_rejects_fifo_zip_package_without_opening() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("import-fifo-zip");
+
+    let fifo = home.path().join("pipe.zip");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("run mkfifo");
+    assert!(status.success(), "mkfifo failed");
+    let (message, code) = run_err(&["pinvoy", "plugins", "import", fifo.to_str().unwrap()]);
+    assert_eq!(code, ExitCode::Failed);
+    assert!(message.contains("not a regular file"), "message: {message}");
+}
+
+/// Non-regular entries inside a directory tree stay skipped (only regular,
+/// non-hidden files feed the wrapper zip), so a stray socket or FIFO in the
+/// skill directory neither hangs the import nor fails it.
+#[cfg(unix)]
+#[test]
+fn import_directory_skips_fifo_entries() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("import-fifo-dir");
+    let dir = home.path().join("fifo-dir");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("SKILL.md"), "---\nname: fifo-dir-skill\n---\nbody").unwrap();
+    let status = std::process::Command::new("mkfifo")
+        .arg(dir.join("pipe"))
+        .status()
+        .expect("run mkfifo");
+    assert!(status.success(), "mkfifo failed");
+
+    let stdout = run_ok(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
+    assert!(stdout.contains("fifo-dir-skill"), "stdout: {stdout}");
+}
+
 #[test]
 fn meta_updates_upload_package_and_rejects_preset() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

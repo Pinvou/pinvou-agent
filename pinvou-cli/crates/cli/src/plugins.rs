@@ -37,9 +37,11 @@
 //!   way; the GUI has no directory input). Single-file fallback id derivation
 //!   mirrors the GUI's `sanitize_skill_name` + FNV-1a `stable_stem_hash`.
 //!   The pre-pipeline wrap reads are bounded per file and cumulatively by the
-//!   pipeline's own package limit; non-regular inputs (FIFOs, devices) are
-//!   rejected before any read (opening a FIFO would block until an unrelated
-//!   writer appears).
+//!   pipeline's own package limit, and the `.zip` channel pre-flights the
+//!   same limit before handoff (the importer bounds only what it extracts,
+//!   after the fact); non-regular inputs (FIFOs, devices) are rejected
+//!   before any open (opening a FIFO would block until an unrelated writer
+//!   appears).
 //! - export → `package_export::export_installed_plugin`; recycle →
 //!   `recycle_bin::{RecycleBin, restore_plugin}`; meta →
 //!   `SkillMarketplaceManager::update_display_meta`.
@@ -934,6 +936,14 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
             build_stored_zip(&[("SKILL.md".to_owned(), wrapped.into_bytes())])?,
         ))
     } else if extension.as_deref() == Some("zip") {
+        // The importer streams zip entries and bounds decompressed content
+        // only — its File::open would still block on a FIFO, and the GUI
+        // upload path rejects oversized package files up front. Pre-flight
+        // the package file so a handoff can only succeed or fail, not hang.
+        let declared = import_file_meta(path, "plugin package", &display)?;
+        if declared > plugin_import::MAX_PLUGIN_SIZE_BYTES {
+            return Err(import_over_limit(&display, path));
+        }
         None
     } else {
         return Err(CliError::usage(
@@ -1359,30 +1369,20 @@ fn temp_zip_path(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{label}-{}-{nanos}.zip", std::process::id()))
 }
 
-/// Reads one input file for the pre-import wrap under the unified import
-/// pipeline's own package limit (`plugin_import::MAX_PLUGIN_SIZE_BYTES`,
-/// imported directly so a change breaks this crate's build), tracked against
-/// `cumulative` so a directory cannot exceed the limit file by file. The
-/// size check runs before any allocation and again while reading, so a file
-/// that grows (or lies about its size) between stat and read is still
-/// bounded. Non-regular inputs (FIFOs, devices) are rejected before any
-/// read — opening a FIFO would otherwise block until an unrelated writer
-/// appears.
-fn read_import_file_capped(
-    path: &Path,
-    what: &str,
-    display: &str,
-    cumulative: &mut u64,
-) -> Result<Vec<u8>, CliError> {
-    let limit = plugin_import::MAX_PLUGIN_SIZE_BYTES;
-    let over_limit = |file: &Path| {
-        CliError::failed(format!(
-            "plugins import({}): import input exceeds the {} MiB import limit: {}",
-            display,
-            limit / 1024 / 1024,
-            file.display()
-        ))
-    };
+/// The import-limit rejection every import input shares.
+fn import_over_limit(display: &str, file: &Path) -> CliError {
+    CliError::failed(format!(
+        "plugins import({}): import input exceeds the {} MiB import limit: {}",
+        display,
+        plugin_import::MAX_PLUGIN_SIZE_BYTES / 1024 / 1024,
+        file.display()
+    ))
+}
+
+/// Stats one import input and rejects non-regular files from metadata:
+/// opening a FIFO (or device) would block until an unrelated writer appears,
+/// so it must fail before any open. Returns the declared file length.
+fn import_file_meta(path: &Path, what: &str, display: &str) -> Result<u64, CliError> {
     let metadata = std::fs::metadata(path).map_err(|error| {
         CliError::failed(format!(
             "plugins import({}): cannot read {what}: {error}",
@@ -1396,8 +1396,26 @@ fn read_import_file_capped(
             path.display()
         )));
     }
-    if metadata.len() > limit || *cumulative + metadata.len() > limit {
-        return Err(over_limit(path));
+    Ok(metadata.len())
+}
+
+/// Reads one input file for the pre-import wrap under the unified import
+/// pipeline's own package limit (`plugin_import::MAX_PLUGIN_SIZE_BYTES`,
+/// imported directly so a change breaks this crate's build), tracked against
+/// `cumulative` so a directory cannot exceed the limit file by file. The
+/// size check runs before any allocation and again while reading, so a file
+/// that grows (or lies about its size) between stat and read is still
+/// bounded.
+fn read_import_file_capped(
+    path: &Path,
+    what: &str,
+    display: &str,
+    cumulative: &mut u64,
+) -> Result<Vec<u8>, CliError> {
+    let limit = plugin_import::MAX_PLUGIN_SIZE_BYTES;
+    let declared = import_file_meta(path, what, display)?;
+    if declared > limit || *cumulative + declared > limit {
+        return Err(import_over_limit(display, path));
     }
     let file = std::fs::File::open(path).map_err(|error| {
         CliError::failed(format!(
@@ -1407,7 +1425,7 @@ fn read_import_file_capped(
     })?;
     let remaining = limit - *cumulative;
     let mut reader = file.take(remaining + 1);
-    let mut bytes = Vec::with_capacity(metadata.len().min(remaining) as usize);
+    let mut bytes = Vec::with_capacity(declared.min(remaining) as usize);
     reader.read_to_end(&mut bytes).map_err(|error| {
         CliError::failed(format!(
             "plugins import({}): cannot read {what}: {error}",
@@ -1415,7 +1433,7 @@ fn read_import_file_capped(
         ))
     })?;
     if bytes.len() as u64 > remaining {
-        return Err(over_limit(path));
+        return Err(import_over_limit(display, path));
     }
     *cumulative += bytes.len() as u64;
     Ok(bytes)
