@@ -99,6 +99,12 @@ struct MockState {
     released: u64,
     /// 置位时 drag 返回 Err（拖拽后端故障注入，验证失败后的按钮释放兜底）。
     drag_error: bool,
+    /// 置位时 capture 返回 Err（截屏后端故障注入；round-12 评审 M6：钉死
+    /// screenshot 动作失败必须上抛而非降级 warning）。
+    capture_error: bool,
+    /// 非空时 type_text 返回该错误文本（执行错误路径的审计脱敏钉子：
+    /// 错误进审计，键入的内容仍不得出现）。
+    type_error: Option<String>,
 }
 
 impl Default for MockState {
@@ -126,6 +132,8 @@ impl Default for MockState {
             chords: Vec::new(),
             released: 0,
             drag_error: false,
+            capture_error: false,
+            type_error: None,
         }
     }
 }
@@ -155,6 +163,9 @@ impl ComputerUseBackend for MockBackend {
 
     fn capture(&mut self) -> Result<Capture, ComputerUseError> {
         let state = self.state.lock();
+        if state.capture_error {
+            return Err(ComputerUseError::unavailable("mock: capture denied"));
+        }
         let (width, height) = state.capture_size;
         let mut rgba = vec![0u8; width as usize * height as usize * 4];
         for (i, byte) in rgba.iter_mut().enumerate() {
@@ -217,7 +228,11 @@ impl ComputerUseBackend for MockBackend {
     }
 
     fn type_text(&mut self, text: &str) -> Result<(), ComputerUseError> {
-        self.state.lock().typed.push(text.to_string());
+        let mut state = self.state.lock();
+        if let Some(error) = &state.type_error {
+            return Err(ComputerUseError::unavailable(error.clone()));
+        }
+        state.typed.push(text.to_string());
         Ok(())
     }
 
@@ -1460,6 +1475,11 @@ async fn type_summary_is_a_plain_character_count() {
         payload["type_preview_full"].as_str(),
         Some(text.as_str()),
         "the expander payload carries the full text: {payload}"
+    );
+    // Non-execution pin (round-12 review): see the preview tests below.
+    assert!(
+        fixture.mock.lock().typed.is_empty(),
+        "the blocked type must not reach the injection surface"
     );
 }
 
@@ -2737,6 +2757,13 @@ async fn confirm_event_carries_full_type_preview_for_long_non_secure_text() {
         format!("type {} characters", text.chars().count()),
         "summary must be the parameter summary: {payload}"
     );
+    // Blocked-type non-execution is pinned here too (round-12 review): the
+    // event assertions alone would stay green if the blocked path began
+    // injecting before raising the confirmation.
+    assert!(
+        fixture.mock.lock().typed.is_empty(),
+        "the blocked type must not reach the injection surface"
+    );
 }
 
 /// Short type texts DO ride `type_preview_full` (round-6 review): the
@@ -3199,5 +3226,330 @@ async fn element_at_point_reports_bounds_in_screenshot_space() {
         !result.content.contains("(50, 30, 20x20)"),
         "raw input-space bounds must not leak into the output: {}",
         result.content
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Round-12 评审回归
+// ---------------------------------------------------------------------------
+
+/// round-12 评审 M6：`screenshot` 动作的截图就是动作本身——捕获失败必须
+/// 上抛为失败结果（success=false），而不是降级成 success+warning 且审计记
+/// ok（旧行为让"截屏不可用"这一平台状态对模型和审计都不可见）。
+#[tokio::test]
+async fn screenshot_failure_fails_the_action_instead_of_warning() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().capture_error = true;
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "screenshot"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => panic!("execute failed: {e}"),
+    };
+    assert!(
+        !result.success,
+        "a failed capture must fail the screenshot action: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("capture denied"),
+        "the capture error must reach the model: {}",
+        result.content
+    );
+    let audit_path = fixture.home.join("computer-use").join("audit-s-test.jsonl");
+    let raw = std::fs::read_to_string(&audit_path).expect("audit jsonl exists");
+    assert!(
+        raw.contains("\"result\":\"error\""),
+        "the audit record must carry the failure, not ok: {raw}"
+    );
+    assert!(
+        !raw.contains("\"result\":\"ok\""),
+        "no ok record may exist for the failed screenshot: {raw}"
+    );
+}
+
+/// round-12 评审：执行错误路径的审计脱敏此前只在构造侧验证过——没有任何
+/// 测试真正执行一次带错误的 type 并核对文件字节。钉死：错误消息进审计
+/// （后端错误构造器保证不含输入内容），但键入文本绝不出现。
+#[tokio::test]
+async fn type_execution_error_audits_the_error_never_the_text() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().type_error = Some("mock: type injection failed".to_string());
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "type", "text": "hunter2"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => panic!("execute failed: {e}"),
+    };
+    assert!(!result.success, "{}", result.content);
+
+    let audit_path = fixture.home.join("computer-use").join("audit-s-test.jsonl");
+    let raw = std::fs::read_to_string(&audit_path).expect("audit jsonl exists");
+    assert!(
+        !raw.contains("hunter2"),
+        "typed text must never reach the audit log, even on execution errors: {raw}"
+    );
+    assert!(
+        raw.contains("mock: type injection failed"),
+        "the execution error itself is audited: {raw}"
+    );
+}
+
+/// round-12 评审：`type_preview_full` 的 4096 截断此前没有事件级测试——
+/// 4097 字符的非安全 type 不得携带全文预览（对话框回退到字符数摘要）。
+#[tokio::test]
+async fn confirm_event_drops_full_preview_above_4096_chars() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    fixture.mock.lock().focused = Some(ElementInfo {
+        role: "AXButton".to_string(),
+        name: "Send message".to_string(),
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: false,
+    });
+    let text = "x".repeat(4097);
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "type", "text": text}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(
+        result
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("NOT executed")
+    );
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    let payload = events
+        .iter()
+        .rev()
+        .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+        .map(|(_, p)| p.clone())
+        .expect("confirm event");
+    assert!(
+        payload["type_preview_full"].is_null(),
+        "preview must be dropped above the 4096 cap: {}",
+        payload["type_preview_full"]
+    );
+}
+
+/// round-12 评审：键位形式的和弦同样是打字——非安全目标上的 `key
+/// "h+a+c+k"` 确认事件必须携带字符序列预览（与 type 同一透明度、同一
+/// 4096 上限），否则用户在逐块盲签。安全目标仍然只给计数。
+#[tokio::test]
+async fn char_carrying_chord_confirm_carries_preview_on_non_secure_target() {
+    let (fixture_plain, _restore_plain) = fixture();
+    fixture_plain.shared.grant_session("s-test");
+    fixture_plain.mock.lock().focused = Some(ElementInfo {
+        role: "AXButton".to_string(),
+        name: "Send message".to_string(),
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: false,
+    });
+    let result = fixture_plain
+        .tool
+        .execute(
+            json!({"action": "key", "text": "h+a+c+k"}),
+            &context(&fixture_plain.workspace),
+        )
+        .await;
+    assert!(
+        result
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("NOT executed")
+    );
+    let events = fixture_plain
+        .events
+        .lock()
+        .map(|e| e.clone())
+        .unwrap_or_default();
+    let payload = events
+        .iter()
+        .rev()
+        .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+        .map(|(_, p)| p.clone())
+        .expect("confirm event");
+    assert_eq!(
+        payload["type_preview_full"].as_str(),
+        Some("hack"),
+        "the typed characters must ride the confirm event: {payload}"
+    );
+}
+
+/// 同一契约的安全目标侧：密码框上的和弦打字只给计数，预览绝不出现
+/// （masking 契约不变）。独立测试：同一 fn 内二次 `fixture()` 会对
+/// ENV_LOCK 自死锁（std Mutex 不可重入，第一阶段的守卫仍存活）。
+#[tokio::test]
+async fn char_carrying_chord_confirm_stays_masked_on_secure_target() {
+    let (fixture_secure, _restore_secure) = fixture();
+    fixture_secure.shared.grant_session("s-test");
+    fixture_secure.mock.lock().focused = Some(ElementInfo {
+        role: "AXTextField".to_string(),
+        name: "Password".to_string(),
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        secure: true,
+    });
+    let result = fixture_secure
+        .tool
+        .execute(
+            json!({"action": "key", "text": "h+a+c+k"}),
+            &context(&fixture_secure.workspace),
+        )
+        .await;
+    assert!(
+        result
+            .ok()
+            .map(|r| r.content)
+            .unwrap_or_default()
+            .contains("NOT executed")
+    );
+    let events = fixture_secure
+        .events
+        .lock()
+        .map(|e| e.clone())
+        .unwrap_or_default();
+    let payload = events
+        .iter()
+        .rev()
+        .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
+        .map(|(_, p)| p.clone())
+        .expect("confirm event");
+    assert!(
+        payload["type_preview_full"].is_null(),
+        "secure targets never carry the preview: {payload}"
+    );
+}
+
+/// round-12 评审：跨会话物理输入锁此前只在裸 mutex 上有单测——把 run()
+/// 里的 `lock_physical_input()` 调用删掉，整个套件仍然全绿。钉死端到端
+/// 契约：会话 A 持锁期间，会话 B 的输入动作被 InputBusy 拒绝且绝不注入
+/// （代价：拒绝路径本身要等满 20s 有界超时）。
+#[tokio::test]
+async fn held_input_lock_rejects_other_sessions_to_inject() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    let mock2 = Arc::new(Mutex::new(MockState::default()));
+    let events2 = Arc::new(StdMutex::new(Vec::new()));
+    let mock2_for_factory = Arc::clone(&mock2);
+    let backend2 = BackendHandle::lazy(move || {
+        Ok(Box::new(MockBackend {
+            state: mock2_for_factory,
+        }) as Box<dyn ComputerUseBackend>)
+    });
+    let tool2 = ComputerUseTool::with_parts(
+        "s-other".to_string(),
+        Arc::clone(&fixture.shared),
+        backend2,
+        Arc::new(RecordingSink(Arc::clone(&events2))),
+    );
+    fixture.shared.grant_session("s-other");
+
+    // 会话 1 持锁（模拟一个在行的注入动作）。
+    let guard = fixture
+        .shared
+        .lock_physical_input()
+        .expect("lock is free at test start");
+    let result = tool2
+        .execute(
+            json!({"action": "left_click", "x": 1, "y": 2}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    drop(guard);
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => panic!("execute failed: {e}"),
+    };
+    assert!(
+        !result.success,
+        "the blocked session must not report success: {}",
+        result.content
+    );
+    assert!(
+        result
+            .content
+            .contains("another session is performing a physical input action"),
+        "the rejection must be the explicit InputBusy message: {}",
+        result.content
+    );
+    assert!(
+        mock2.lock().clicked.is_empty(),
+        "the blocked session must never reach the injection surface"
+    );
+}
+
+/// round-12 评审：同会话工厂重入时，迟到的旧工具 Drop 此前会无条件撤销
+/// 该会话的授权——把注册表侧的身份检查延伸到 consent 撤销。新工具注册
+/// 之后旧工具 Drop，新工具的授权与对话框必须原样保留。
+#[test]
+fn stale_tool_drop_keeps_a_same_session_successors_grant() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+
+    // 后继工具：同会话注册（with_parts 内部 insert 顶替旧条目）。
+    let mock2 = Arc::new(Mutex::new(MockState::default()));
+    let events2 = Arc::new(StdMutex::new(Vec::new()));
+    let mock2_for_factory = Arc::clone(&mock2);
+    let backend2 = BackendHandle::lazy(move || {
+        Ok(Box::new(MockBackend {
+            state: mock2_for_factory,
+        }) as Box<dyn ComputerUseBackend>)
+    });
+    let tool2 = ComputerUseTool::with_parts(
+        "s-test".to_string(),
+        Arc::clone(&fixture.shared),
+        backend2,
+        Arc::new(RecordingSink(Arc::clone(&events2))),
+    );
+
+    // 旧工具此刻 Drop：不得撤掉 s-test 的授权（后继已在注册表中）。
+    drop(fixture.tool);
+
+    assert!(
+        fixture.shared.has_active_grant("s-test"),
+        "the successor's grant must survive the stale tool's Drop"
+    );
+    // 后继工具仍可实际注入（授权可用且后端注册未被破坏）。
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let result = rt
+        .block_on(tool2.execute(
+            json!({"action": "left_click", "x": 3, "y": 4}),
+            &context(&fixture.workspace),
+        ))
+        .expect("execute on the successor tool");
+    assert!(result.success, "{}", result.content);
+    assert_eq!(
+        mock2.lock().clicked.len(),
+        1,
+        "the successor must still reach the injection surface"
     );
 }

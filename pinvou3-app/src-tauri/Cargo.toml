@@ -123,7 +123,7 @@ rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] 
 
 # Updater 用：sha256 校验；产物卡封面读 .pptx 里的 thumbnail。
 # 0.11 与 CodeWhale 子模块对齐。digest 的 Output 不实现 LowerHex,统一用 hex_lower 编码
-# (见 src/platform/encoding.rs)。computer_use 的 type 确认令牌内容指纹同用本 crate。
+# (见 src/platform/encoding.rs)。computer_use 的截图审计按内容寻址(SHA-256)同用本 crate。
 sha2 = "0.11"
 # 8.x 与 calamine 传递引入的 zip 8.6.0 收敛为单一版本（消除旧 zip 2.x + 连带传递依赖）。
 # 仅 deflate（读 .pptx / 写技能 zip 包），关默认 feature 去掉 bzip2/lzma/zstd 等。

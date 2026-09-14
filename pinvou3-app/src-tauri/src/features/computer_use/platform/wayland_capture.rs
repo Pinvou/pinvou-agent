@@ -151,7 +151,15 @@ impl PwCapture {
         }
     }
 
-    /// 停流并 join 线程(backend 析构时调用;幂等)。
+    /// 停流(backend 析构/会话回收时调用;幂等)。
+    ///
+    /// 丢弃 JoinHandle 让线程 detach 而非 join(round-12 评审 M4):正常路径上
+    /// control(false) 会让主循环退出;但若 PipeWire 线程卡死在 control_rx
+    /// attach 之前的连接阶段(对端 portal/pipewire 已死),它永远看不到退出
+    /// 信号——在 worker 线程上 join 会把整个会话后端永久钉死(后续每个
+    /// 请求,包括紧急清理,全部超时,只能重启应用)。detach 的代价是至多
+    /// 滞留一条卡死线程(与 capture probe 的弃线同款、且有界的权衡),
+    /// 换来 shutdown 永不阻塞。
     pub(super) fn shutdown(&mut self) {
         self.shared
             .lock()
@@ -159,7 +167,7 @@ impl PwCapture {
             .stopped = true;
         let _ = self.control.send(false);
         if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+            drop(worker);
         }
     }
 }

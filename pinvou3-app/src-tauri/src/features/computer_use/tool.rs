@@ -181,10 +181,25 @@ impl Drop for ComputerUseTool {
     fn drop(&mut self) {
         // Session end: dropping the tool is the engine reclaiming it, which
         // is one of the documented grant-lifetime ends (guard.rs). Revoke
-        // FIRST — the grant, this session's pending confirmations and its
-        // minted approval tokens must not outlive the tool that held them;
-        // other sessions are untouched.
-        self.parts.shared.revoke_session(&self.parts.session_id);
+        // the grant, this session's pending confirmations and its minted
+        // approval tokens — but ONLY when this tool is still the session's
+        // active one (round-12 review): the same-session factory race is
+        // identity-checked on the registry side below, and a late stale
+        // tool's Drop must not wipe the grant and dialogs of a same-session
+        // successor the user just approved. An absent registry entry still
+        // revokes (defensive cleanup; nothing else owns the session's
+        // consent state at that point).
+        let registered = self
+            .parts
+            .shared
+            .backends
+            .registered_handle(&self.parts.session_id);
+        if registered
+            .as_ref()
+            .is_none_or(|current| current.is_same_backend(&self.parts.backend))
+        {
+            self.parts.shared.revoke_session(&self.parts.session_id);
+        }
         // Unregister + emergency cleanup: otherwise the registry entry would
         // pin the worker thread (and its persistent portal session) until
         // process exit. A model that pressed the left button and was dropped
@@ -192,7 +207,8 @@ impl Drop for ComputerUseTool {
         // state, and the persistent OS-level grant (Wayland portal session)
         // must close with the tool. The detached thread keeps its own handle
         // clone, so the worker lives until the cleanup finishes and only
-        // then is torn down.
+        // then is torn down. Identity-checked: a successor's registry entry
+        // is restored, only this tool's handle is cleaned up.
         self.parts
             .shared
             .backends
@@ -782,14 +798,35 @@ fn requires_t3_check(action: &ComputerUseAction) -> bool {
 ///   review; the old 12-char lower bound was stale logic from the removed
 ///   inline preview).
 fn full_type_preview(action: &ComputerUseAction, secure_type_target: bool) -> Option<String> {
-    let ComputerUseAction::Type { text } = action else {
-        return None;
-    };
     if secure_type_target {
         return None;
     }
-    let count = text.chars().count();
-    (count <= 4096).then(|| text.clone())
+    match action {
+        ComputerUseAction::Type { text } => {
+            let count = text.chars().count();
+            (count <= 4096).then(|| text.clone())
+        }
+        // 键位形式的和弦同样是打字（round-12 评审）：`key "h+a+c+k"` 在
+        // 带标签的非安全目标上原本只显示 "4 characters"，用户在逐块盲签
+        // ——同为打字输入，type 显示全文而 key 不显示，透明度不一致。
+        // 非安全目标上把字符键序列原样展示（同一 4096 上限）；纯命名键
+        // 和弦（ctrl+s、Return）注入的不是字符，不产预览。密码等安全
+        // 目标在调用点已被 secure_type_target 拦下。
+        ComputerUseAction::KeyChord { keys, .. } | ComputerUseAction::HoldKey { keys, .. }
+            if is_typed_text_chord(keys) =>
+        {
+            let text: String = keys
+                .iter()
+                .filter_map(|key| match key {
+                    Key::Char(c) => Some(*c),
+                    _ => None,
+                })
+                .collect();
+            let count = text.chars().count();
+            (count <= 4096).then_some(text)
+        }
+        _ => None,
+    }
 }
 
 /// 铸造待确认请求、发事件并给模型返回「未执行、去要确认」错误。每个会话
@@ -923,11 +960,17 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                     };
                     // The masked-target decision only shapes the dialog
                     // payload (whether the full typed text may ride the
-                    // confirm event).
-                    let secure_type_target = matches!(&action, ComputerUseAction::Type { .. })
-                        && focused
-                            .as_ref()
-                            .is_some_and(|element| element.secure || is_secure_role(&element.role));
+                    // confirm event). Keyboard chords that carry character
+                    // keys type their characters too, so the secure-target
+                    // check covers them just like type (round-12 review).
+                    let secure_type_target = matches!(
+                        &action,
+                        ComputerUseAction::Type { .. }
+                            | ComputerUseAction::KeyChord { .. }
+                            | ComputerUseAction::HoldKey { .. }
+                    ) && focused
+                        .as_ref()
+                        .is_some_and(|element| element.secure || is_secure_role(&element.role));
                     // Optional full text for the confirm event, fixed at mint
                     // time (never recomputed at spend time).
                     let type_preview_full = full_type_preview(&action, secure_type_target);
@@ -979,6 +1022,17 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                     capabilities.notes
                 ));
             }
+            // 截图能力位此前从未被检查（round-12 评审 M6）：不支持捕获的
+            // 平台上 screenshot 会一路走到补拍降级 warning，模型拿到
+            // success=true 却没有图。
+            ActionClass::Observe
+                if matches!(action, ComputerUseAction::Screenshot) && !capabilities.screenshot =>
+            {
+                return Err(format!(
+                    "screen capture is unsupported on this platform/session ({})",
+                    capabilities.notes
+                ));
+            }
             _ => {}
         }
 
@@ -1003,6 +1057,13 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                     }
                     outcome.push_str(&shot_result_text(&fresh));
                     shot = Some(fresh);
+                }
+                Err(error) if matches!(action, ComputerUseAction::Screenshot) => {
+                    // Screenshot 的截图就是动作本身（round-12 评审 M6）：失败
+                    // 必须上抛。降级成 warning 会让模型拿到 success 与空结果、
+                    // 审计记 ok——与自动补拍路径（硬失败，不执行动作）口径
+                    // 分裂，捕获不可用这一平台状态也对模型不可见。
+                    return Err(backend_error_text(&error));
                 }
                 Err(error) => warnings.push(format!("post-action capture failed: {error}")),
             }

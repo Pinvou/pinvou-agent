@@ -64,6 +64,35 @@ pub(crate) fn sanitize_name(name: &str, max_chars: usize) -> String {
     cleaned.trim().to_string()
 }
 
+/// type 注入的分块粒度（字符数）：单事件后端（Windows SendInput 批量、
+/// macOS CGEvent 批量）没有事件间取消检查点，整段 `enigo.text()` 在低级
+/// 键盘钩子（AV/反键盘记录产品对每个事件同步处理）下可合法超过调用预算
+/// ——分块 + 块间取消检查把调用方超时后僵尸注入的上界从整段文本压到一个
+/// 块（round-12 评审 M5）。64 字符块在 50ms/事件的最慢合理钩子下约 6s，
+/// 相对 700s 预算可忽略。
+pub(crate) const TYPE_CHUNK_CHARS: usize = 64;
+
+/// 按字符（而非字节）把文本切成至多 `chunk_chars` 字符的块。空输入产生
+/// 空向量（调用方循环体不执行，与 enigo 对空文本的 no-op 一致）。
+pub(crate) fn char_chunks(text: &str, chunk_chars: usize) -> Vec<&str> {
+    debug_assert!(chunk_chars > 0);
+    let mut chunks = Vec::new();
+    let mut start = 0usize;
+    let mut count = 0usize;
+    for (index, _) in text.char_indices() {
+        if count == chunk_chars {
+            chunks.push(&text[start..index]);
+            start = index;
+            count = 0;
+        }
+        count += 1;
+    }
+    if start < text.len() {
+        chunks.push(&text[start..]);
+    }
+    chunks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,5 +126,15 @@ mod tests {
         assert_eq!(sanitize_name("a\"b\nc\td\u{1}e ", 20), "a'b c d e");
         assert_eq!(sanitize_name("abcdef", 3), "abc");
         assert_eq!(sanitize_name("  \n x", 10), "x");
+    }
+
+    #[test]
+    fn char_chunks_splits_on_char_boundaries() {
+        assert!(char_chunks("", 4).is_empty());
+        assert_eq!(char_chunks("ab", 4), vec!["ab"]);
+        assert_eq!(char_chunks("abcd", 2), vec!["ab", "cd"]);
+        assert_eq!(char_chunks("abcde", 2), vec!["ab", "cd", "e"]);
+        // 多字节字符不可被切开：3 字符块对 4 字节 CJK 同样安全。
+        assert_eq!(char_chunks("中文测试", 3), vec!["中文测", "试"]);
     }
 }

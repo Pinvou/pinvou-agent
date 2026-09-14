@@ -6,6 +6,24 @@
 //! 静默退化)。portal 的系统授权对话框是独立于应用内同意流之外的第二层用户
 //! 同意。
 //!
+//! **为何手写 portal 客户端而不用 `ashpd`**(round-12 评审:该取舍此前无
+//! 记录,下一个维护者必然重新追问):ashpd 是官方推荐的 Rust portal 客户端,
+//! 但本模块需要对每个 portal 往返的**三个独立阶段**(AddMatch 订阅、方法
+//! 调用、Response 信号等待)分别施加有界超时,而 ashpd 的等待 API 不暴露
+//! 分阶段超时、也不暴露 handle_token 驱动的 Request/Response 信号的显式
+//! 订阅时序(subscribe-before-call,防 Response 先到竞态)。这两点正是
+//! `BACKEND_CALL_TIMEOUT` 推导(见 backend.rs)赖以成立的基础:无界或粗
+//! 粒度的等待会让"最坏合法懒启动总和"失去意义,僵尸请求与双重注入随之
+//! 回来。若 ashpd 未来提供分阶段超时,迁移应当重新评估。
+//!
+//! 已知未覆盖(需真机 portal 验证,round-10 起披露):
+//! - `AvailableCursorModes` 未探测:SelectSources 固定请求 cursor_mode=
+//!   hidden,合成器若不支持该模式的行为(拒绝 vs 降级)未验证;
+//! - `CreateSession` 的 **Response 等待超时**分支:portal 侧可能仍在
+//!   创建会话,而我方既拿不到 handle 也无法关闭——半创建会话可能在
+//!   合成器侧滞留到其自身超时([`PortalInner::abandon`] 只覆盖已拿到
+//!   handle 的失败路径)。
+//!
 //! 会话流程(懒启动,首次输入动作或截屏才触发,全程 `handle_token` 驱动
 //! Request/Response 信号往返):
 //! 1. `CreateSession` → Response 结果取 `session_handle`(返回值本身是
@@ -397,12 +415,15 @@ impl PortalInput {
         self.runtime.block_on(self.inner.ensure_started())
     }
 
-    /// 当前是否有**健康**的已建立会话（已建立且未毒化）。查询本身绝不懒
-    /// 启动：调用方（如紧急 mouse_up 的释放路径）用它避免在无会话/毒化
-    /// 会话上触发完整建立流程——那会弹出新的系统授权对话框（评审发现：
+    /// 会话对象是否仍开启（含毒化未回收的会话）。查询本身绝不懒启动。
+    /// 毒化只是我方标记：会话在合成器侧仍然存活，Notify 仍可投递（notify
+    /// 不短路毒化）。紧急 mouse_up 用它而非"健康"判定——mutter 的
+    /// Session.Close 只销毁虚拟设备、不合成释放，跳过毒化会话会把已按下
+    /// 的按键永久滞留（round-12 评审 M1）；无会话时调用方必须直接返回，
+    /// 不得触发完整建立流程（那会弹出新的系统授权对话框——评审发现：
     /// 撤销/急停的紧急释放反向索权）。
-    pub(super) fn is_active(&self) -> bool {
-        self.inner.session.is_some() && !self.inner.poisoned
+    pub(super) fn has_open_session(&self) -> bool {
+        self.inner.session.is_some()
     }
 
     pub(super) fn motion_absolute(&mut self, x: i32, y: i32) -> Result<(), ComputerUseError> {

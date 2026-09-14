@@ -53,6 +53,8 @@
 use std::ffi::c_void;
 use std::fmt::Write as _;
 use std::ptr::NonNull;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -71,7 +73,7 @@ use super::super::types::{
     Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
     UiTreeOptions,
 };
-use super::helpers::{drag_waypoints, map_scroll, sanitize_name};
+use super::helpers::{TYPE_CHUNK_CHARS, char_chunks, drag_waypoints, map_scroll, sanitize_name};
 
 /// 点击前等待先前 move 落位（目标进程消费鼠标移动事件）。
 const CLICK_SETTLE_MS: u64 = 30;
@@ -1004,6 +1006,9 @@ pub(super) struct MacosComputerUseBackend {
     /// 与落点防护的基准。点击落在系统当前鼠标位置：用户物理移动鼠标与
     /// 我们的合成移动存在竞态（评审缺陷 6），点击前据此校验并重定位。
     pending_move_target: Option<(i32, i32)>,
+    /// 调用方超时后置位的取消旗标（round-12 评审 M5）：type 分块注入在
+    /// 块间检查它，被放弃的请求不再继续注入。
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl MacosComputerUseBackend {
@@ -1011,6 +1016,7 @@ impl MacosComputerUseBackend {
         Self {
             enigo: None,
             pending_move_target: None,
+            cancel: None,
         }
     }
 
@@ -1391,10 +1397,28 @@ impl ComputerUseBackend for MacosComputerUseBackend {
 
     fn type_text(&mut self, text: &str) -> Result<(), ComputerUseError> {
         // Unicode 直注（CGEventKeyboardSetUnicodeString，enigo 内部按 20 字符
-        // 分块），绕过 IME——中文直接落进焦点字段。
-        self.enigo()?
-            .text(text)
-            .map_err(|err| map_input_err("type text", err))
+        // 分块），绕过 IME——中文直接落进焦点字段。外层再按 64 字符分块
+        // （round-12 评审 M5）：低级事件钩子对每个事件同步处理，长文本可
+        // 合法超过调用预算——块间取消检查把调用方超时后僵尸注入的上界从
+        // 整段压到一个块。
+        for chunk in char_chunks(text, TYPE_CHUNK_CHARS) {
+            if let Some(flag) = &self.cancel {
+                if flag.load(Ordering::SeqCst) {
+                    return Err(ComputerUseError::unavailable(
+                        "type text was cancelled after the caller timed out; characters \
+                         already injected are not undone",
+                    ));
+                }
+            }
+            self.enigo()?
+                .text(chunk)
+                .map_err(|err| map_input_err("type text", err))?;
+        }
+        Ok(())
+    }
+
+    fn set_cancel_flag(&mut self, flag: Option<Arc<AtomicBool>>) {
+        self.cancel = flag;
     }
 
     fn key_chord(&mut self, keys: &[Key]) -> Result<(), ComputerUseError> {

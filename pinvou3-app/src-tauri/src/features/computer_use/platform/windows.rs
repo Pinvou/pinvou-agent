@@ -38,6 +38,8 @@
 //!   呈现为黑块，属系统预期行为。
 
 use std::fmt::Write as _;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -59,7 +61,7 @@ use super::super::types::{
     Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
     UiTreeOptions,
 };
-use super::helpers::{drag_waypoints, map_scroll, sanitize_name};
+use super::helpers::{TYPE_CHUNK_CHARS, char_chunks, drag_waypoints, map_scroll, sanitize_name};
 
 /// 点击前等待先前 move 落位（目标进程消费鼠标移动事件）。
 const CLICK_SETTLE_MS: u64 = 30;
@@ -477,10 +479,14 @@ fn combine_drag_errors(
         // Only the path move failed and the release succeeded: report the
         // move error unchanged.
         (Err(move_error), Ok(())) => Err(move_error),
-        (Ok(()), Err(release)) => Err(ComputerUseError::failed(format!(
-            "{release}; the mouse button may still be pressed"
-        ))),
-        (Err(move_error), Err(release)) => Err(ComputerUseError::failed(format!(
+        // Single-failure cases keep the ORIGINAL error kind (same_kind,
+        // round-12 review): a UIPI-blocked release is `unavailable` — the
+        // "run elevated" classification upstreams rely on must survive the
+        // stranded-button annotation.
+        (Ok(()), Err(release)) => {
+            Err(release.same_kind(format!("{release}; the mouse button may still be pressed")))
+        }
+        (Err(move_error), Err(release)) => Err(move_error.same_kind(format!(
             "drag move failed ({move_error}); its release also failed ({release}); \
              the mouse button may still be pressed"
         ))),
@@ -492,6 +498,9 @@ pub(super) struct WindowsComputerUseBackend {
     /// `new()` 时读一次的线程 DPI 感知结论：非 Per-Monitor-V2 时在
     /// `capabilities().notes` 声明坐标假设存疑（不做硬失败）。
     dpi_pmv2: bool,
+    /// 调用方超时后置位的取消旗标（round-12 评审 M5）：type 分块注入在
+    /// 块间检查它，被放弃的请求不再继续注入。
+    cancel: Option<Arc<AtomicBool>>,
     // 注意：不持有 uiautomation::UIAutomation——windows-rs 的 COM 接口类型是
     // !Send（IUIAutomation 内含 NonNull），而 ComputerUseBackend 要求 Send。
     // 改为在 new() 里于 worker 线程初始化 COM MTA 一次，之后每次 UIA 调用经
@@ -513,7 +522,11 @@ impl WindowsComputerUseBackend {
         // 坐标契约的前提是进程 Per-Monitor-V2 DPI aware（tao 置位）。此处读一次
         // 线程感知核对，非 PMv2 时仅在 capabilities notes 声明（不做硬失败）。
         let dpi_pmv2 = thread_dpi_is_pmv2();
-        Ok(Self { enigo, dpi_pmv2 })
+        Ok(Self {
+            enigo,
+            dpi_pmv2,
+            cancel: None,
+        })
     }
 
     /// 现建一个 UIA 客户端。要求 COM 已在当前线程初始化（new() 保证）。
@@ -823,9 +836,29 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
 
     fn type_text(&mut self, text: &str) -> Result<(), ComputerUseError> {
         // Unicode 直注（KEYEVENTF_UNICODE），绕过 IME——中文直接落进焦点字段。
-        self.enigo
-            .text(text)
-            .map_err(|err| map_input_err("type text", err))
+        // 分块注入（round-12 评审 M5）：enigo 的 text() 把整段文本建成一次
+        // SendInput，但低级键盘钩子（AV/反键盘记录产品）对每个事件同步处理，
+        // 长文本在如此环境下可合法超过调用预算——分块 + 块间取消检查把调用方
+        // 超时后僵尸注入的上界从整段压到一个块。块内语义与整段调用逐字符
+        // 等价（'\n'/'\t' 的队列行为不随分块改变）。
+        for chunk in char_chunks(text, TYPE_CHUNK_CHARS) {
+            if let Some(flag) = &self.cancel {
+                if flag.load(Ordering::SeqCst) {
+                    return Err(ComputerUseError::unavailable(
+                        "type text was cancelled after the caller timed out; characters \
+                         already injected are not undone",
+                    ));
+                }
+            }
+            self.enigo
+                .text(chunk)
+                .map_err(|err| map_input_err("type text", err))?;
+        }
+        Ok(())
+    }
+
+    fn set_cancel_flag(&mut self, flag: Option<Arc<AtomicBool>>) {
+        self.cancel = flag;
     }
 
     fn key_chord(&mut self, keys: &[Key]) -> Result<(), ComputerUseError> {
