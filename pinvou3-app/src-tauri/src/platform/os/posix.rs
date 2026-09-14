@@ -102,6 +102,17 @@ pub fn make_private_dir(path: &Path) {
         );
     }
 }
+
+/// Sets POSIX permission bits on an existing file. `Ok(false)` reports a
+/// permission-mode that is still unreadable for the caller, letting tests
+/// build unreadable fixtures without inlining `PermissionsExt` outside the
+/// adapter layer.
+pub fn set_file_mode(path: &Path, mode: u32) -> std::io::Result<bool> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+    Ok(mode & 0o444 != 0)
+}
 /// 探测 PATH 中第一个可用的 python 解释器名。
 /// 优先 `python3`，回退 `python`，最终默认 `python3`。
 pub fn python_command() -> String {

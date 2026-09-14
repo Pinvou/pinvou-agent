@@ -66,6 +66,12 @@ pub fn process_alive(pid: u32) -> bool {
 /// Windows user-profile ACLs provide the directory privacy boundary.
 pub fn make_private_dir(_path: &Path) {}
 
+/// Windows file ACLs have no POSIX mode bits; every regular file stays
+/// readable through its ACL, so the readable probe always passes.
+pub fn set_file_mode(_path: &Path, _mode: u32) -> std::io::Result<bool> {
+    Ok(true)
+}
+
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     HiddenCommand::new("cmd")
         .args(["/C", "start", ""])

@@ -50,3 +50,9 @@ pub use interface::{
     startup_platform_env, super_permission_is_enabled, super_permission_turn_reminder,
     system_default_open_supported, user_home_dir, validate_upload_location,
 };
+
+// 文件权限位原语目前仅测试消费（features 层测试构造不可读夹具，替代
+// `PermissionsExt` 内联）：生产路径无调用方，单独按 cfg(test) 再导出，
+// 避免 lib 构建触发 unused_imports。
+#[cfg(test)]
+pub use interface::set_file_mode;
