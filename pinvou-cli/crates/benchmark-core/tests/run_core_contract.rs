@@ -49,6 +49,55 @@ fn manifest(run_id: &str) -> RunManifest {
     .unwrap()
 }
 
+#[test]
+fn manifest_records_the_harness_deadline_mode_and_reads_old_manifests() {
+    // The mode is machine-readable in the manifest so a submission can tell
+    // an unbounded run (no harness wall-clock deadline) from a bounded one —
+    // the two are not score-comparable.
+    let bounded = RunManifest::new(
+        "run-bounded",
+        &descriptor().with_harness_deadline_secs(Some(600)),
+        Split::new("smoke"),
+        ModelIdentity::new("fixture", "mock-model").unwrap(),
+        ToolPolicyId::new("smoke/v1"),
+        1,
+    )
+    .unwrap();
+    assert_eq!(bounded.harness_deadline_secs(), Some(600));
+    let json = serde_json::to_value(&bounded).unwrap();
+    assert_eq!(json["harness_deadline_secs"], 600);
+
+    let unbounded = RunManifest::new(
+        "run-unbounded",
+        &descriptor(), // BenchmarkDescriptor::new defaults to None
+        Split::new("smoke"),
+        ModelIdentity::new("fixture", "mock-model").unwrap(),
+        ToolPolicyId::new("smoke/v1"),
+        1,
+    )
+    .unwrap();
+    assert_eq!(unbounded.harness_deadline_secs(), None);
+    // None is skipped entirely, so an unbounded run's manifest does not
+    // carry a marker that could be misread as a bounded 0-second deadline.
+    let json = serde_json::to_value(&unbounded).unwrap();
+    assert!(json.get("harness_deadline_secs").is_none());
+
+    // Manifests written before the field existed keep deserializing (serde
+    // default) so resuming an older run stays possible.
+    let legacy: RunManifest = serde_json::from_str(
+        r#"{
+            "schema_version": 1, "run_id": "run-legacy", "benchmark": "smoke",
+            "adapter_version": "smoke-adapter/v1", "dataset_revision": "r",
+            "scorer_revision": "r", "split": "smoke",
+            "model": {"provider": "fixture", "model": "mock-model"},
+            "tool_policy": "smoke/v1", "concurrency": 1, "pass": 1,
+            "created_at_ms": 0
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(legacy.harness_deadline_secs(), None);
+}
+
 fn task(id: &str) -> BenchmarkTask {
     BenchmarkTask::new(
         id,
@@ -57,7 +106,7 @@ fn task(id: &str) -> BenchmarkTask {
         ExecutionRequest::native_turn(
             PrivateInputHandle::new(format!("private-{id}")),
             vec![],
-            Duration::from_secs(5),
+            Some(Duration::from_secs(5)),
             ToolPolicyId::new("smoke/v1"),
             OutputContract::new("text/v1"),
         ),
@@ -72,7 +121,7 @@ fn attachment_task(id: &str) -> BenchmarkTask {
         ExecutionRequest::native_turn(
             PrivateInputHandle::new(format!("private-{id}")),
             vec![AttachmentHandle::new(format!("attachment-{id}"))],
-            Duration::from_secs(5),
+            Some(Duration::from_secs(5)),
             ToolPolicyId::new("smoke/v1"),
             OutputContract::new("text/v1"),
         ),
@@ -204,6 +253,10 @@ struct MockState {
 
 enum BackendBehavior {
     Completed,
+    /// Sleeps 50ms in `run` — proves the `None`-deadline pass-through (the
+    /// harness must not impose its own `task_timeout` for unbounded GAIA
+    /// runs; a `Some` deadline that short would cut it off).
+    SlowRun,
     CloseFailed,
     Failed,
     FailedModelRequestTimeout,
@@ -327,6 +380,9 @@ impl HeadlessAgentBackend for MockBackend {
         _private_inputs: Arc<dyn PrivateInputResolver>,
         observer: Arc<dyn AgentRunObserver>,
     ) -> Result<AgentTaskOutcome, AgentBackendError> {
+        if matches!(self.behavior, BackendBehavior::SlowRun) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         {
             let mut state = self.state.lock().unwrap();
             state.active += 1;
@@ -376,6 +432,7 @@ impl HeadlessAgentBackend for MockBackend {
                     )]))
             }
             BackendBehavior::Completed
+            | BackendBehavior::SlowRun
             | BackendBehavior::PendingPrepare
             | BackendBehavior::PendingResolveOutput
             | BackendBehavior::PendingClose => {
@@ -509,7 +566,7 @@ async fn unsafe_native_tool_policy_is_rejected_before_backend_or_outcome_process
         ExecutionRequest::native_turn(
             PrivateInputHandle::new("private-unsafe-policy"),
             vec![],
-            Duration::from_secs(5),
+            Some(Duration::from_secs(5)),
             ToolPolicyId::new("api_key=PRIVATE_SENTINEL"),
             OutputContract::new("text/v1"),
         ),
@@ -610,7 +667,7 @@ async fn attachment_resolution_consumes_the_same_task_deadline() {
                 ExecutionRequest::native_turn(
                     PrivateInputHandle::new("private"),
                     vec![AttachmentHandle::new("attachment")],
-                    Duration::from_millis(5),
+                    Some(Duration::from_millis(5)),
                     ToolPolicyId::new("smoke/v1"),
                     OutputContract::new("text/v1"),
                 ),
@@ -690,7 +747,7 @@ fn short_task(id: &str) -> BenchmarkTask {
         ExecutionRequest::native_turn(
             PrivateInputHandle::new(format!("private-{id}")),
             vec![],
-            Duration::from_millis(5),
+            Some(Duration::from_millis(5)),
             ToolPolicyId::new("smoke/v1"),
             OutputContract::new("text/v1"),
         ),
@@ -1097,5 +1154,68 @@ fn report_is_published_without_temporary_files() {
         "# Smoke\n\ncompleted: 0\n"
     );
     assert!(!Path::new(&format!("{}.tmp", artifact.path().display())).exists());
+    fs::remove_dir_all(base).unwrap();
+}
+
+/// `timeout: None` (the GAIA lane default) must run the future unbounded: the
+/// harness imposes no `task_timeout` of its own and the run is bounded only by
+/// the engine's own limits. Contrast with the `Some`-deadline tests above,
+/// where the same slow backend is cut off at the deadline.
+#[tokio::test]
+async fn unbounded_deadline_runs_without_a_harness_task_timeout() {
+    let base = temp_base("unbounded-deadline");
+    let backend = Arc::new(MockBackend::with_behavior(BackendBehavior::SlowRun));
+    let runner = NativeAgentRunner::new(backend);
+    let outcome = runner
+        .run_task(
+            &BenchmarkTask::new(
+                "unbounded",
+                None,
+                None,
+                ExecutionRequest::native_turn(
+                    PrivateInputHandle::new("private"),
+                    vec![],
+                    None,
+                    ToolPolicyId::new("smoke/v1"),
+                    OutputContract::new("text/v1"),
+                ),
+                None,
+            ),
+            &RunContext::new("unbounded", base.clone()),
+        )
+        .await
+        .expect("no harness timeout for a None deadline");
+    assert_eq!(outcome.status(), TaskStatus::Completed);
+    fs::remove_dir_all(base).unwrap();
+}
+
+/// The contrast the None-lane pin claims: the SAME slow backend cut off by a
+/// finite deadline does time out. Without this, `None` silently acquiring a
+/// default deadline longer than the sleep would pass both tests.
+#[tokio::test]
+async fn some_deadline_cuts_off_the_same_slow_backend() {
+    let base = temp_base("some-deadline-slow");
+    let backend = Arc::new(MockBackend::with_behavior(BackendBehavior::SlowRun));
+    let runner = NativeAgentRunner::new(backend);
+    let outcome = runner
+        .run_task(
+            &BenchmarkTask::new(
+                "some-deadline-slow",
+                None,
+                None,
+                ExecutionRequest::native_turn(
+                    PrivateInputHandle::new("private"),
+                    vec![],
+                    Some(Duration::from_millis(10)),
+                    ToolPolicyId::new("smoke/v1"),
+                    OutputContract::new("text/v1"),
+                ),
+                None,
+            ),
+            &RunContext::new("some-deadline-slow", base.clone()),
+        )
+        .await
+        .expect("the harness machinery itself must not fail");
+    assert_eq!(outcome.status(), TaskStatus::Timeout);
     fs::remove_dir_all(base).unwrap();
 }

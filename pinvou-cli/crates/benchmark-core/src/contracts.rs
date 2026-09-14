@@ -61,6 +61,12 @@ pub struct BenchmarkDescriptor {
     scorer_revision: String,
     supported_splits: Vec<Split>,
     execution_kind: ExecutionKind,
+    /// Machine-readable harness-deadline mode recorded into the run
+    /// manifest: `None` = tasks run without a harness wall-clock deadline
+    /// (bounded only by the engine), `Some(secs)` = tasks carry a harness
+    /// deadline. Scores from runs with different modes are not comparable;
+    /// without this marker a submission could not tell the two apart.
+    harness_deadline_secs: Option<u64>,
 }
 
 impl BenchmarkDescriptor {
@@ -79,7 +85,18 @@ impl BenchmarkDescriptor {
             scorer_revision: scorer_revision.into(),
             supported_splits,
             execution_kind,
+            harness_deadline_secs: None,
         }
+    }
+
+    /// Declares the adapter's harness-deadline mode (see the field doc).
+    pub fn with_harness_deadline_secs(mut self, secs: Option<u64>) -> Self {
+        self.harness_deadline_secs = secs;
+        self
+    }
+
+    pub fn harness_deadline_secs(&self) -> Option<u64> {
+        self.harness_deadline_secs
     }
     pub fn id(&self) -> &BenchmarkId {
         &self.id
@@ -142,7 +159,12 @@ pub enum ExecutionRequest {
     NativeTurn {
         prompt_handle: PrivateInputHandle,
         attachments: Vec<AttachmentHandle>,
-        timeout: Duration,
+        /// Harness-side wall-clock deadline. `None` = no harness deadline: the
+        /// run is bounded only by the engine's own limits (model steps,
+        /// per-turn wall clock, cancellation). The official GAIA protocol is
+        /// not known to define a runtime limit, so the GAIA adapter defaults
+        /// to `None`.
+        timeout: Option<Duration>,
         tool_policy: ToolPolicyId,
         output_contract: OutputContract,
     },
@@ -158,7 +180,7 @@ impl ExecutionRequest {
     pub fn native_turn(
         prompt_handle: PrivateInputHandle,
         attachments: Vec<AttachmentHandle>,
-        timeout: Duration,
+        timeout: Option<Duration>,
         tool_policy: ToolPolicyId,
         output_contract: OutputContract,
     ) -> Self {
