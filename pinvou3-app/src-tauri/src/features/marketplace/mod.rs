@@ -3919,10 +3919,13 @@ mod tests {
 
     /// 存在但不可读的 disabled_bundles.json（权限/占用锁等，非 NotFound）：
     /// 不得走迁移分支（升级装机上那会把 plain 初始化为空 = 旧 AllowAll 全开
-    /// 并无隔离覆盖原文件），必须与损坏同口径——隔离 + fail-closed 降级落盘
-    /// （评审 #455 R4-B1）。权限位操作走平台适配层，平台无关。
+    /// 并无隔离覆盖原文件），且 salvage 读本身必然失败——占位符「隔离」保不住
+    /// 任何原始字节，此时覆盖原文件会把「不可读但可恢复」变成「永久丢失」
+    /// （评审 #455 R6-B1）。期望：内存 fail-closed 生效、原文件字节原样、零
+    /// 隔离副本、零落盘；权限恢复后按原内容正常解析。权限位操作走平台适配层，
+    /// 平台无关。
     #[test]
-    fn unreadable_disabled_bundles_recovers_fail_closed_via_quarantine() {
+    fn unreadable_disabled_bundles_stays_untouched_fail_closed_in_memory() {
         with_temp_home(|| {
             // 升级装机痕迹：settings.json 存在（旧版首启自写）。
             std::fs::write(
@@ -3931,7 +3934,8 @@ mod tests {
             )
             .unwrap();
             let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
-            std::fs::write(&path, "{\"plain_defaults_migrated\":true}").unwrap();
+            let original = "{\"plain_defaults_migrated\":true}";
+            std::fs::write(&path, original).unwrap();
             // 0o000：存在但不可读。无法构造不可读文件的平台（Windows ACL）跳过本测试。
             if !crate::platform::os::set_file_mode(&path, 0o000).unwrap() {
                 return;
@@ -3939,15 +3943,6 @@ mod tests {
 
             let disabled = load_disabled_connectors();
 
-            // 恢复权限，便于断言落盘与清理。
-            crate::platform::os::set_file_mode(&path, 0o644).unwrap_or_else(|_| {
-                // 恢复态已覆盖落盘（tmp+rename 只需目录写权限），新文件可读。
-                crate::platform::os::set_file_mode(
-                    &crate::platform::paths::pinvou3_home().join("disabled_bundles.json"),
-                    0o644,
-                )
-                .unwrap()
-            });
             assert_eq!(
                 disabled,
                 vec![
@@ -3956,13 +3951,14 @@ mod tests {
                     "dingtalk".to_string(),
                     "tmeet".to_string(),
                 ],
-                "不可读必须 fail-closed（不得按升级迁移初始化 plain 为全开）"
+                "不可读必须内存 fail-closed（不得按升级迁移初始化 plain 为全开）"
             );
-            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
-            assert!(file.plain_defaults_migrated, "降级态标记落盘: {file:?}");
-            assert!(
-                !file.initialized.contains("plain"),
-                "不可读不得初始化 plain（那是旧 AllowAll 全开语义）: {file:?}"
+            // 恢复权限断言：原文件字节原样、无隔离副本、无降级态覆盖落盘。
+            crate::platform::os::set_file_mode(&path, 0o644).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                original,
+                "salvage 读失败时不得覆盖原文件（R6-B1）"
             );
             let backups: Vec<_> = std::fs::read_dir(path.parent().unwrap())
                 .unwrap()
@@ -3973,7 +3969,17 @@ mod tests {
                         .starts_with("disabled_bundles.json.corrupt.")
                 })
                 .collect();
-            assert_eq!(backups.len(), 1, "不可读同样留隔离副本");
+            assert!(
+                backups.is_empty(),
+                "占位符隔离不落地：不可读不得产生隔离副本"
+            );
+            // 权限恢复后按原内容正常解析（marker 来自文件本身，非降级态）。
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(file.plain_defaults_migrated, "原内容含 marker: {file:?}");
+            assert!(
+                !file.initialized.contains("plain"),
+                "不得初始化 plain（那是旧 AllowAll 全开语义）: {file:?}"
+            );
         });
     }
 
