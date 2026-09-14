@@ -236,7 +236,7 @@ test("resolveSessionProjectId mirrors the grouping tiers", () => {
   assert.equal(resolveSessionProjectId(item, projects, { a1: "prj-gone" }), "p1", "stale id falls through to root matching");
 });
 
-test("projectCoversPath reports root containment for the add-folder prompt", () => {
+test("projectCoversPath gates the move-only confirm prompt", () => {
   const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
   assert.equal(projectCoversPath(projects[0], "D:/work/alpha"), true);
   assert.equal(projectCoversPath(projects[0], "D:/work/alpha/sub"), true);
@@ -322,5 +322,11 @@ test("containment honors separator boundaries and mirrors the store rule", () =>
   assert.equal(projectCoversPath(trailing, "D:/work/alpha/deep"), true);
   const posixRoot = { id: "p4", name: "Posix", roots: ["/"] };
   assert.equal(projectCoversPath(posixRoot, "/home/x/anything"), true);
+
+  // The UNC branch of the shape heuristic: backslash-UNC root against a
+  // case-differing and a separator-differing UNC path beneath it.
+  const unc = { id: "p5", name: "Unc", roots: ["\\\\Server\\Share\\Alpha"] };
+  assert.equal(projectCoversPath(unc, "\\\\server\\share\\alpha\\sub"), true);
+  assert.equal(projectCoversPath(unc, "\\\\server/share/alpha/sub"), true);
 });
 

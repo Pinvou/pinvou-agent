@@ -98,8 +98,8 @@ function resolveSessionProjectId(item, projects, assignments) {
 }
 
 // True when any of the project roots covers `path` (same containment rule as
-// tier 2; the move picker uses it to decide whether to offer adding the
-// session's folder to the target project).
+// tier 2; the move picker uses it to gate the move-only confirm panel for a
+// target whose roots do not already cover the session's workspace).
 function projectCoversPath(project, path) {
   if (!project || !path) return false;
   return (project.roots || []).some((root) => isUnderRoot(String(path), rootPath(root)));
