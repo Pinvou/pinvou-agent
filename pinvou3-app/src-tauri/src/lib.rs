@@ -1676,13 +1676,20 @@ mod startup_order_contract {
 
     #[test]
     fn disabled_bundles_migration_read_precedes_first_boot_writes() {
-        // GUI 宿主：setup 钩顶部迁移读取早于 SessionStore boot。针尖取调用点
-        // 旁唯一的 startup mark 字面量，并以分片拼接构造——本测试与生产调用点
-        // 同处 lib.rs，include_str! 会连测试模块一并扫描，完整针尖若以字面量
-        // 出现在测试里会退化成自匹配（评审 #455 R4-S1 指出的自证漏洞）。
+        // GUI 宿主：setup 钩顶部迁移读取早于 SessionStore boot。针尖钉 hoist
+        // 调用本身（分片拼接防自匹配——本测试与生产调用点同处 lib.rs，
+        // include_str! 会连测试模块一并扫描，完整针尖若以字面量出现在测试里
+        // 会退化成自匹配，评审 #455 R4-S1）。旧版钉两侧 startup mark 的腿
+        // 只保 mark 三明治：删掉/移走两 mark 间的 hoist 调用仍通过（评审
+        // #455 R5-S1）。`find` 取首次出现：唯一更早的出现（L1012 幂等重读）
+        // 在 session_store:start（L777）之后，hoist 被删即失败而非自匹配。
         assert_migration_read_precedes(
             include_str!("lib.rs"),
-            &["startup::mark(\"disabled_bundles_migration:start", "\")"].concat(),
+            &[
+                "crate::features::assistant::skill_materialization::",
+                "load_disabled_skills()",
+            ]
+            .concat(),
             &["startup::mark(\"session_store:start", "\")"].concat(),
             "lib.rs",
         );
