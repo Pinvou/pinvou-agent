@@ -1112,10 +1112,12 @@ jobs:
       # timeout pins edited by this PR live there, so the leg must execute it.
       - name: cargo test (adapter-gaia test-support)
         if: github.event_name != 'push'
+        working-directory: pinvou-cli
         run: cargo test -p adapter-gaia --features test-support --locked --no-fail-fast
 
       - name: cargo compile check (push, adapter-gaia test-support)
         if: github.event_name == 'push'
+        working-directory: pinvou-cli
         run: cargo test -p adapter-gaia --features test-support --locked --no-run
 
   windows-rust-test:
