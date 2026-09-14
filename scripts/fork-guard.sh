@@ -19,8 +19,8 @@ R1_CLOSURE="1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
 # pinvou3-clean (see docs/fork-modifications.md, the T3 section).
 # verify-public-submodule.sh stays red for the pinned candidate: that is
 # the registered candidate-period state, not a regression.
-CANDIDATE_HEAD="c34c3a4309c03ca6308b422848e95e9000b1d7c9"
-CANDIDATE_COMMITS=29
+CANDIDATE_HEAD="f81528358d684bc311a2859b4e928adfe14b0e6d"
+CANDIDATE_COMMITS=30
 FAST_ONLY=0
 
 case "${1:-}" in
@@ -148,6 +148,13 @@ fingerprints=(
   "T3|子代理技能目录回归                  |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_subagent_skill_catalog_uses_tool_search_discovery"
   "T3|发现技能幻影命令自条件             |CodeWhale/crates/tui/assets/skills/mcp-discovery/SKILL.md|MCP Registry access is unavailable in"
   "T3|registry-first 指令与注册名互钉       |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_registry_first_instruction_names_registered_tool_specs"
+  "T3|技能省略尾行回归                  |CodeWhale/crates/tui/src/skills/tests.rs|fn forkguard_omitted_skills_line_carries_tool_search_fallback"
+  "T3|mcp-discovery 命令自条件回归        |CodeWhale/crates/tui/src/skills/tests.rs|fn forkguard_mcp_discovery_skill_conditions_registry_commands"
+  "T3|tool_search 缺失态诚实兜底          |CodeWhale/crates/tui/src/skills/mod.rs|if \`tool_search\` is also unavailable"
+  "T3|捆绑技能退役名清扫回归             |CodeWhale/crates/tui/src/skills/system/tests.rs|fn forkguard_bundled_skills_cite_no_hidden_or_retired_tool_names"
+  "T3|best-of-n 目标工具自条件回归        |CodeWhale/crates/tui/src/skills/system/tests.rs|fn forkguard_best_of_n_goal_tool_is_availability_gated"
+  "T3|pdf 技能改引 read 活工具           |CodeWhale/crates/tui/assets/skills/pdf/SKILL.md|built-in \`read\` tool"
+  "T3|best-of-n 目标门控文案             |CodeWhale/crates/tui/assets/skills/best-of-n/SKILL.md|\`create_goal\` is in your tool list"
   "T3|Permissions 窄 100 KiB 预算       |CodeWhale/crates/tui/src/prompts.rs|forkguard_instruction_fragment_preserves_explicit_host_budget"
   "T3|内部 reminder 不污染 working set  |CodeWhale/crates/tui/src/working_set.rs|forkguard_working_set_ignores_leading_system_reminder_paths"
 
