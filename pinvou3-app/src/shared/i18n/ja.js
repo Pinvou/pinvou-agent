@@ -369,6 +369,7 @@ const jaBase = {
           newTopicConfirm:'もう一度クリックで確定：現在の補助会話を破棄して再開します',
           sendFailed:'送信に失敗しました。もう一度お試しください。',
           ensureFailed:'補助セッションの初期化に失敗しました。話題を再開するか、しばらくしてからもう一度お試しください。',
+          discardFailed:'以前の補助チャットの破棄に失敗しました。現在のトピックはそのまま使えます。再試行してください。',
           close:'閉じる',
         },
         uiHomeMode: { work:'作業', code:'コード', providerSettings:'プロバイダー設定' },

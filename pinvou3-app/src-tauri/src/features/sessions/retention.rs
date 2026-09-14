@@ -307,7 +307,11 @@ impl SessionStore {
     /// (`aux-` 前缀,见 enforce_session_retention_locked)的隐形孤儿;主会话先死
     /// (外部清理/中断的级联删除)同理,没有对账就越积越多。
     ///
-    /// 判据 = 没有任何映射指向该 aux 记录,或映射的主会话记录已不在盘上。回收 =
+    /// 判据与处置分两类:映射缺失但记录在盘时,**先按记录回指的
+    /// `parent_session_id` 重建映射**(主会话还活着就不丢用户的问答内容;崩溃
+    /// 窗口残留的记录是空的,复活它与新建等价;与 sched- 侧「保留 transcript
+    /// 优先」的保全姿态一致)。无法重建(主已死 / 记录读不出 / 主已被另一条
+    /// aux 占用的歧义重复)或映射在但主会话记录已不在盘上,才按孤儿回收:
     /// 删记录 + `purge_session_side_maps` 双向清理(顺带摘掉主死辅孤的幽灵映射)。
     ///
     /// 只在启动路径调用(同 sched- 侧表对账):此刻没有在途的 get-or-create,
@@ -326,19 +330,23 @@ impl SessionStore {
             return Ok(());
         }
         let mappings = self.aux_sessions.read().clone();
-        let orphan_ids: Vec<String> = aux_ids
-            .into_iter()
-            .filter(|aux_id| {
-                match mappings.iter().find(|(_, mapped)| *mapped == aux_id) {
-                    // 映射缺失:崩溃在创建窗口 / sidecar 损坏 → 孤儿。
-                    None => true,
-                    // 映射在,但主会话记录已不在盘上 → 主死辅孤。
-                    Some((main_id, _)) => {
-                        !chat_session_file(&self.manager, main_id).is_ok_and(|path| path.exists())
+        let mut orphan_ids = Vec::new();
+        for aux_id in aux_ids {
+            match mappings.iter().find(|(_, mapped)| *mapped == &aux_id) {
+                // 映射在,但主会话记录已不在盘上 → 主死辅孤。
+                Some((main_id, _)) => {
+                    if !chat_session_file(&self.manager, main_id).is_ok_and(|path| path.exists()) {
+                        orphan_ids.push(aux_id);
                     }
                 }
-            })
-            .collect();
+                // 映射缺失:崩溃在创建窗口 / sidecar 损坏 → 先修后删。
+                None => {
+                    if !self.rebuild_aux_mapping_from_record(&aux_id)? {
+                        orphan_ids.push(aux_id);
+                    }
+                }
+            }
+        }
         let mut deleted_ids = Vec::new();
         let mut delete_error = None;
         for id in &orphan_ids {
@@ -364,6 +372,32 @@ impl SessionStore {
             Some(error) => Err(error),
             None => Ok(()),
         }
+    }
+
+    /// 映射缺失的 aux 记录:按记录回指的 `parent_session_id` 重建 主→辅 映射
+    /// 并落盘。主会话必须真实在盘、自身无映射(已被另一条 aux 占用 = 歧义
+    /// 重复,保既有绑定)、且不是 aux-/sched- 前缀(aux-of-aux / 定时记录不配
+    /// 拥有辅助对话)。返回 Ok(true) = 已重建;Ok(false) = 无法重建,调用方按
+    /// 孤儿回收。
+    fn rebuild_aux_mapping_from_record(&self, aux_id: &str) -> Result<bool> {
+        let parent_id = match self.load(aux_id) {
+            Ok(session) => session.metadata.parent_session_id,
+            Err(_) => return Ok(false),
+        };
+        let Some(parent_id) = parent_id else {
+            return Ok(false);
+        };
+        if parent_id.starts_with("aux-") || parent_id.starts_with("sched-") {
+            return Ok(false);
+        }
+        if self.aux_session_id(&parent_id).is_some()
+            || !chat_session_file(&self.manager, &parent_id).is_ok_and(|path| path.exists())
+        {
+            return Ok(false);
+        }
+        self.set_aux_session(&parent_id, Some(aux_id.to_string()))
+            .with_context(|| format!("rebuild aux mapping {parent_id} -> {aux_id}"))?;
+        Ok(true)
     }
 
     pub(crate) fn purge_all_scheduled_side_maps(&self) {

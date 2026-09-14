@@ -313,6 +313,17 @@ impl SessionStore {
         if self.is_scheduled_session(id)? {
             bail!("Scheduled-run sessions are deleted through their automation");
         }
+        // 主会话删除全程持有 aux 创建锁:映射解析与级联删除对并发的
+        // get_or_create_aux_session 原子,创建不会插在「读到无映射」与
+        // 「记录已删」之间留下刚建好的孤儿。递归的级联目标恒为 aux- id、
+        // 直接跳过加锁(外层已持有;std Mutex 不可重入)。锁序仍为
+        // aux_sessions_io → scheduled_mutation,无反向持锁路径(retention
+        // 淘汰走 delete_session_record,不进本函数)。
+        let _aux_io_guard = if id.starts_with("aux-") {
+            None
+        } else {
+            Some(self.aux_sessions_io.lock())
+        };
         // 辅助对话级联:删主会话时先删其辅助会话。映射的键恒为主会话 id、
         // 辅助会话自身不再持有映射,故递归深度恒为 1;辅助会话删除提交后,
         // purge_session_side_maps 的双向清理会顺带摘掉这条 主→辅 映射。
@@ -576,6 +587,12 @@ impl SessionStore {
     /// 复用语义(已有映射且目标仍在盘上时直接复用)由 [`Self::get_or_create_aux_session`]
     /// 决定,不在本函数内。
     pub fn create_aux_session(&self, parent_id: &str) -> Result<SessionMetadata> {
+        // aux-of-aux 在创建路径本体拒绝(不只靠 get_or_create 包装层):辅助
+        // 对话不能再挂辅助对话——aux 会话自身也是 Chat kind,命令层的
+        // `ensure_chat_session` 拦不住。
+        if parent_id.starts_with("aux-") {
+            bail!("Auxiliary session '{parent_id}' cannot own an aux session");
+        }
         let parent = self
             .load(parent_id)
             .with_context(|| format!("load parent session {parent_id} for aux creation"))?;

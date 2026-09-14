@@ -62,16 +62,23 @@
       return invoke("chat", { message, attachments: [], sessionId: sid, restrictTools: true });
     }
 
-    // 同步快照：未加载（无 buffer）返回空结构，不抛错、不触发加载。数组浅拷贝防
-    // 调用方改穿内部 buffer。
+    // 同步快照：未加载（无 buffer）返回空结构，不抛错、不触发加载。条目逐个
+    // 浅拷贝：流式 delta 会原地改写 buffer 里的条目（chat-events 的
+    // item.text/html 赋值），只拷数组会共享对象引用，调用方逐字段比较就
+    // 检测不到变更；拷贝后每次轮询拿到新引用，字段比较即真实内容比较。
+    function snapshotItems(items) {
+      return (Array.isArray(items) ? items : []).map(function (item) {
+        return item && typeof item === "object" ? Object.assign({}, item) : item;
+      });
+    }
     function snapshot(auxId) {
       const sid = String(auxId || "").trim();
       if (!sid) return emptySnapshot();
       if (sid === state.activeSessionId) {
         return {
-          chatItems: [...(state.chatItems || [])],
+          chatItems: snapshotItems(state.chatItems),
           busy: !!state.busy,
-          queued: [...(state.queued || [])],
+          queued: snapshotItems(state.queued),
         };
       }
       const buf = sessionStates[sid];
@@ -80,9 +87,9 @@
       // LRU 新近度，否则 32+ 次切会话后 buffer 被容量回收，面板误显空态。
       touchSessionBuffer(sid, buf, false);
       return {
-        chatItems: Array.isArray(buf.chatItems) ? [...buf.chatItems] : [],
+        chatItems: snapshotItems(buf.chatItems),
         busy: !!buf.busy,
-        queued: Array.isArray(buf.queued) ? [...buf.queued] : [],
+        queued: snapshotItems(buf.queued),
       };
     }
 

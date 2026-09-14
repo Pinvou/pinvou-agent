@@ -371,6 +371,7 @@ export const dictEn = {
           newTopicConfirm:'Click again to confirm: discard this auxiliary conversation and start over',
           sendFailed:'Failed to send. Please try again.',
           ensureFailed:'Failed to start the auxiliary session. Start a new topic or try again later.',
+          discardFailed:'Failed to discard the previous auxiliary chat; the current topic is still usable. Please retry.',
           close:'Close',
         },
         uiHomeMode: { work:'Work', code:'Code', providerSettings:'Provider settings' },

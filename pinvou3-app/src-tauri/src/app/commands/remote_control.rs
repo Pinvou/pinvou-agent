@@ -1900,8 +1900,11 @@ mod tests {
         );
         // web_access_chat_for_session 的三道会话门槛逐一通过:
         crate::features::sessions::validate_session_id(&aux.id).expect("aux id charset");
-        ensure_web_chat_session_supported(store.mode_state(&aux.id).multi_agent)
-            .expect("aux sessions are never multi-agent");
+        ensure_web_chat_session_supported(store.mode_state(&aux.id).multi_agent).expect(
+            "fresh aux sessions default to single-agent mode (set_multi_agent_mode does \
+                     not reject aux- ids; the zero-tools invariant rests on the spawn pin + the \
+                     per-turn gate, not on this flag)",
+        );
         store.load(&aux.id).expect("aux session loads by id");
 
         match previous {

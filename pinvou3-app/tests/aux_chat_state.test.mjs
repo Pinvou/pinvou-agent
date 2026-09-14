@@ -76,29 +76,27 @@ test('projectAuxChatTurns 对空快照返回空 turns', () => {
 
 test('auxSnapshotsEqual 对内容相同的重拉快照判定相等', () => {
   const item = { id: 1, type: 'user', text: 'q' };
-  const prev = normalizeAuxSnapshot({ chatItems: [item], busy: false, queued: [] });
-  // 桥每次 snapshot() 都返回浅拷贝的新数组，条目引用不变（主会话流式 tick
-  // 不碰辅助会话 buffer）：必须判等，面板才能跳过重渲染。
-  const next = normalizeAuxSnapshot({ chatItems: [item], busy: false, queued: [] });
+  const prev = normalizeAuxSnapshot({ chatItems: [{ ...item }], busy: false, queued: [] });
+  // 桥每次 snapshot() 都对条目逐个浅拷贝（streaming delta 原地改 buffer 条目，
+  // 拷贝后字段比较才是真实内容比较）：内容没变的重拉快照条目引用不同、字段
+  // 相同——必须判等，面板才能跳过重渲染。
+  const next = normalizeAuxSnapshot({ chatItems: [{ ...item }], busy: false, queued: [] });
   assert.equal(auxSnapshotsEqual(prev, next), true);
+  assert.notEqual(prev.chatItems[0], next.chatItems[0]);
   assert.equal(auxSnapshotsEqual(prev, prev), true);
   assert.equal(auxSnapshotsEqual(null, null), true);
   assert.equal(auxSnapshotsEqual(null, { chatItems: [] }), true);
 });
 
 test('auxSnapshotsEqual 捕捉流式原地修改与 busy/排队变化', () => {
-  const prev = normalizeAuxSnapshot({
-    chatItems: [{ id: 1, type: 'assistant', text: '流式', streaming: true }],
-    busy: true,
-    queued: [],
-  });
-  // 流式 delta 是原地改条目字段（bridge 对 item 做 Object.assign / text 追加），
-  // 新快照拿到的是字段已变的同名条目：必须判不等，否则面板冻结。
-  const streamed = normalizeAuxSnapshot({
-    chatItems: [{ id: 1, type: 'assistant', text: '流式中', streaming: true }],
-    busy: true,
-    queued: [],
-  });
+  // 真实 buffer 语义：同一份条目对象被流式 delta 原地改写，两次 pull 各自经
+  // 桥的逐条拷贝得到内容不同的新对象——必须判不等，否则面板冻结在首帧。
+  // （桥内不拷贝时两次 pull 是同一引用，auxItemsEqual 的引用短路会误判相等
+  // ——这正是 session_buffer_eviction 里"桥必须逐条拷贝"行为测试钉住的点。）
+  const bufferItem = { id: 1, type: 'assistant', text: '流式', streaming: true };
+  const prev = normalizeAuxSnapshot({ chatItems: [{ ...bufferItem }], busy: true, queued: [] });
+  bufferItem.text = '流式中';
+  const streamed = normalizeAuxSnapshot({ chatItems: [{ ...bufferItem }], busy: true, queued: [] });
   assert.equal(auxSnapshotsEqual(prev, streamed), false);
   assert.equal(auxSnapshotsEqual(prev, normalizeAuxSnapshot({
     chatItems: [{ id: 1, type: 'assistant', text: '流式', streaming: true }],

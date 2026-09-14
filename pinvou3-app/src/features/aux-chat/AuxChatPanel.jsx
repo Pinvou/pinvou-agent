@@ -34,6 +34,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
   const [draft, setDraft] = useState('');
   const [sendFailed, setSendFailed] = useState(false);
   const [ensureFailed, setEnsureFailed] = useState(false);
+  const [discardFailed, setDiscardFailed] = useState(false);
   const [restartArmed, setRestartArmed] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const generationRef = useRef(0);
@@ -61,6 +62,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     setSnapshot(normalizeAuxSnapshot(null));
     setSendFailed(false);
     setEnsureFailed(false);
+    setDiscardFailed(false);
     setRestartArmed(false);
     setDraft('');
     if (!auxChat || !sessionId) return;
@@ -141,12 +143,22 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     }
     setRestartArmed(false);
     setRestarting(true);
+    setDiscardFailed(false);
     const generation = generationRef.current;
     try {
       await auxChat.discard(sessionId);
-      // discard 往返期间可能已换绑：此时绝不能对旧 sessionId 发 ensure，
-      // 否则后端幂等重建刚被丢弃的辅助会话（UI 拒绝绑定，但记录已落盘）。
+    } catch (error) {
+      console.warn('[pinvou3][aux-chat] restart discard failed', error);
+      // discard 失败：旧辅助会话仍完整可用，绑定与快照原样保留，只提示重试
+      // （区分于 ensure 失败——那才是绑定已丢、必须重开话题恢复的局面）。
       if (generationRef.current !== generation) return;
+      setDiscardFailed(true);
+      return;
+    }
+    // discard 往返期间可能已换绑：此时绝不能对旧 sessionId 发 ensure，
+    // 否则后端幂等重建刚被丢弃的辅助会话（UI 拒绝绑定，但记录已落盘）。
+    if (generationRef.current !== generation) return;
+    try {
       const nextAuxId = await auxChat.ensure(sessionId);
       if (generationRef.current !== generation) return;
       auxIdRef.current = nextAuxId;
@@ -156,7 +168,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       setSendFailed(false);
       setEnsureFailed(false);
     } catch (error) {
-      console.warn('[pinvou3][aux-chat] restart failed', error);
+      console.warn('[pinvou3][aux-chat] restart ensure failed', error);
       if (generationRef.current !== generation) return;
       // discard 成功而 ensure 重建失败时，旧 auxId 已指向被删会话：必须清掉
       // 绑定让 composer 如实禁用；此时展示 ensureFailed（"重开话题可恢复"），
@@ -236,6 +248,9 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         )}
         {ensureFailed && (
           <div className="mb-2 text-[11px] text-red-600 dark:text-red-400" role="alert">{copy.ensureFailed}</div>
+        )}
+        {discardFailed && (
+          <div className="mb-2 text-[11px] text-red-600 dark:text-red-400" role="alert">{copy.discardFailed}</div>
         )}
         <div className={`flex items-end gap-2 rounded-xl border px-3 py-2 ${
           theme === 'dark' ? 'border-white/[0.08] bg-white/[0.03]' : 'border-black/[0.08] bg-white/60'

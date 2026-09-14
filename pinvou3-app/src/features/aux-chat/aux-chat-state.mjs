@@ -22,7 +22,9 @@ export function normalizeAuxSnapshot(raw) {
 
 // chat 域 notify 也会携主会话的流式 tick 进来；辅助会话的快照没变时跳过
 // setSnapshot，避免每个 token 都触发面板重渲染与 turns 重投影。逐条浅比较
-// 条目字段（不能只看引用：流式 delta 是原地修改条目的 text/streaming 字段）。
+// 条目字段：bridge 的 snapshot() 对条目逐个浅拷贝，流式 delta 原地改写
+// buffer 条目后，两次拉取拿到的是内容不同的新对象，字段比较即真实内容
+// 比较——相等才真正意味着内容没变。
 function auxItemsEqual(left, right) {
   if (left === right) return true;
   if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;

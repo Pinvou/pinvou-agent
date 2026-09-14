@@ -371,6 +371,7 @@ export const dictZh = {
           newTopicConfirm:'再点一次确认：丢弃当前辅助对话并重开',
           sendFailed:'发送失败，请重试。',
           ensureFailed:'辅助会话初始化失败，请重开话题或稍后再试。',
+          discardFailed:'丢弃旧辅助会话失败，当前话题仍可继续使用，请重试。',
           close:'关闭',
         },
         uiHomeMode: { work:'工作', code:'代码', providerSettings:'Provider 配置' },

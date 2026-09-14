@@ -40,6 +40,7 @@ import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import { auxSnapshotsEqual } from '../src/features/aux-chat/aux-chat-state.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const bridgeDir = path.join(here, '..', 'src', 'platform', 'tauri', 'bridge');
@@ -694,4 +695,71 @@ test('web aux buffer without snapshot polling is evicted and rehydrated on re-en
   await rt.flat.auxChatEnsure('task-1');
   assert.equal(rt.calls.chunkLoads.filter(id => id === auxId).length, 2,
     'control: without the recency touch the idle aux buffer is evicted and rehydrates');
+});
+
+// ── aux-chat: snapshot() must copy items, not share buffer references ──
+//
+// Streaming deltas mutate buffer items in place (item.text/html assignments),
+// so a snapshot that only shallow-copies the array shares item objects across
+// pulls: the panel's field-wise auxSnapshotsEqual short-circuits on reference
+// equality and the live stream freezes on the first rendered frame. Both
+// bridges must copy each item per pull so field comparison tracks real
+// content, while unchanged content still compares equal (no per-token
+// re-render of idle panels).
+
+test('tauri aux snapshot() copies items so in-place streaming deltas stay visible', () => {
+  const boot = loadTauriSessionsFeature();
+  const auxChat = loadTauriAuxChatFeature(boot);
+  const buf = boot.api.getBuffer('aux-1');
+  buf.loadedFromDisk = true;
+  const bufferItem = { id: 1, type: 'assistant', text: '流式', streaming: true };
+  buf.chatItems.push(bufferItem);
+
+  const first = auxChat.snapshot('aux-1');
+  // Streaming delta mutates the buffer item in place (same object).
+  bufferItem.text = '流式中';
+  bufferItem.html = '<p>流式中</p>';
+  const second = auxChat.snapshot('aux-1');
+
+  assert.equal(second.chatItems[0].text, '流式中',
+    'the second pull must observe the in-place mutation');
+  assert.notEqual(first.chatItems[0], second.chatItems[0],
+    'each pull must hand out its own item copy, never the shared buffer object');
+  assert.equal(auxSnapshotsEqual(first, second), false,
+    'field comparison must flag the streamed change so the panel re-renders');
+  assert.equal(auxSnapshotsEqual(second, auxChat.snapshot('aux-1')), true,
+    'unchanged content between pulls must still compare equal (no per-token re-render)');
+
+  // Copy-on-out: mutating a returned snapshot must not write through to the buffer.
+  second.chatItems[0].text = 'caller tamper';
+  assert.equal(bufferItem.text, '流式中');
+  assert.equal(auxChat.snapshot('aux-1').chatItems[0].text, '流式中');
+});
+
+test('web aux snapshot() copies items so in-place streaming deltas stay visible', async () => {
+  const rt = bootWebBridge();
+  rt.handlers.get_or_create_aux_session = args => ({ id: `aux-${args.sessionId}` });
+  const auxId = await rt.flat.auxChatEnsure('task-1');
+  // Drive the production streaming path: chat:delta routed to the background
+  // aux session mutates its buffer item in place (item.text assignment).
+  const fireDelta = text => {
+    for (const fn of rt.listeners['chat:delta'] || []) {
+      fn({ event: 'chat:delta', payload: { session_id: auxId, text } });
+    }
+  };
+  fireDelta('流式');
+  const first = rt.flat.auxChatSnapshot(auxId);
+  fireDelta('中');
+  const second = rt.flat.auxChatSnapshot(auxId);
+
+  const streamedItem = second.chatItems.find(item => item.id === first.chatItems[0].id);
+  assert.ok(streamedItem, 'the streamed item must keep its id across pulls');
+  assert.equal(streamedItem.text, '流式中', 'the second pull must observe the in-place mutation');
+  assert.notEqual(first.chatItems[0], second.chatItems[0],
+    'each pull must hand out its own item copy, never the shared buffer object');
+  assert.equal(auxSnapshotsEqual(first, second), false,
+    'field comparison must flag the streamed change so the panel re-renders');
+  const third = rt.flat.auxChatSnapshot(auxId);
+  assert.equal(auxSnapshotsEqual(second, third), true,
+    'unchanged content between pulls must still compare equal (no per-token re-render)');
 });

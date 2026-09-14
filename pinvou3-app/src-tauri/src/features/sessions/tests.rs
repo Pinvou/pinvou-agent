@@ -3728,9 +3728,10 @@ fn aux_session_sidecar_round_trips_across_restart() {
     assert!(!sidecar.exists(), "映射清空后 _aux_sessions.json 不得残留");
 }
 
-/// 损坏但可解析的 sidecar 条目(键非法 / 值不带 aux- 前缀)必须在加载时丢弃:
-/// 否则 get_or_create 会把主会话自身当作辅助会话返回,旁路问题写进主上下文。
-/// 合法条目不受影响,照常恢复。
+/// 损坏但可解析的 sidecar 条目(键非法 / 值不带 aux- 前缀 / 键带 aux-、sched-
+/// 前缀 / 自映射)必须在加载时丢弃:值非法会让 get_or_create 把主会话自身当
+/// 作辅助会话返回,旁路问题写进主上下文;键为 aux-/sched- 或自映射会让 delete
+/// 的级联递归失去"主→辅一层"的深度上界(栈溢出)。合法条目不受影响,照常恢复。
 #[test]
 fn load_aux_sessions_drops_invalid_but_parseable_entries() {
     let (store, _g) = isolated_store();
@@ -3742,7 +3743,11 @@ fn load_aux_sessions_drops_invalid_but_parseable_entries() {
             "main-self": "main-self",
             "main-nonaux": "01JOTHERSESSIONID",
             "bad key with spaces": "aux-orphan-key",
-            "main-auxvalue": "aux id with spaces"
+            "main-auxvalue": "aux id with spaces",
+            "aux-a": "aux-a",
+            "aux-cycle": "aux-b",
+            "aux-b": "aux-a",
+            "sched-x": "aux-for-sched"
         })
         .to_string(),
     )
@@ -3770,6 +3775,19 @@ fn load_aux_sessions_drops_invalid_but_parseable_entries() {
     assert!(
         reopened.aux_session_id("main-auxvalue").is_none(),
         "值不是合法会话 id 的映射必须丢弃"
+    );
+    assert!(
+        reopened.aux_session_id("aux-a").is_none(),
+        "键带 aux- 前缀(aux-of-aux 自环)的映射必须丢弃"
+    );
+    assert!(
+        reopened.aux_session_id("aux-cycle").is_none()
+            && reopened.aux_session_id("aux-b").is_none(),
+        "aux- 键的环映射必须整环丢弃"
+    );
+    assert!(
+        reopened.aux_session_id("sched-x").is_none(),
+        "键带 sched- 前缀的映射必须丢弃"
     );
 }
 
@@ -4092,10 +4110,11 @@ fn aux_sessions_do_not_consume_chat_retention_budget() {
     }
 }
 
-/// 孤儿 aux 对账(评审 MINOR):映射缺失的 aux 记录(崩溃在「记录已落、映射
-/// 未落」窗口)必须被回收;主会话不受影响。
+/// 孤儿 aux 对账(先修后删):映射缺失但记录在盘、主会话仍活着(崩溃在
+/// 「记录已落、映射未落」窗口)→ 按记录回指的 parent_session_id 重建映射,
+/// 用户的问答内容不丢;主会话不受影响。
 #[test]
-fn reconcile_aux_sessions_reclaims_orphan_with_missing_mapping() {
+fn reconcile_aux_sessions_rebuilds_missing_mapping_from_parent_backlink() {
     let (store, _g) = isolated_store();
     let main = store
         .create_new("/model".into(), None, std::env::temp_dir())
@@ -4110,21 +4129,67 @@ fn reconcile_aux_sessions_reclaims_orphan_with_missing_mapping() {
         .expect("drop aux mapping");
     store.reconcile_aux_sessions().expect("reconcile aux");
 
+    assert_eq!(
+        store.aux_session_id(&main.metadata.id).as_deref(),
+        Some(aux.id.as_str()),
+        "主会话活着时缺失的映射必须按 parent_session_id 回指重建"
+    );
     assert!(
-        store.load(&aux.id).is_err(),
-        "无映射的 aux 孤儿记录必须被对账回收"
+        store.load(&aux.id).is_ok(),
+        "成功重建映射的 aux 记录不得被回收"
     );
     assert!(
         store.load(&main.metadata.id).is_ok(),
         "主会话不得受对账影响"
     );
+    let sidecar = paths::sessions_root().join("_aux_sessions.json");
+    assert!(sidecar.is_file(), "重建出的映射必须落盘");
 }
 
-/// `_aux_sessions.json` 损坏时,重启后映射为空表,启动路径的 aux 对账必须把
-/// 失去映射的 aux 孤儿记录回收(评审 MINOR 的 corruption 场景,走
-/// boot_with_scheduled_root 真实启动接线)。
+/// 孤儿 aux 对账(先修后删的歧义边界):主会话已绑定另一条 aux 时,无映射的
+/// 重复记录无法无歧义重建,按孤儿回收,既有绑定不动。
 #[test]
-fn startup_reconcile_reclaims_orphan_after_aux_sidecar_corruption() {
+fn reconcile_aux_sessions_deletes_ambiguous_duplicate_when_parent_already_bound() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let first = store
+        .create_aux_session(&main.metadata.id)
+        .expect("create first aux");
+    // 直接走创建入口造出第二条:映射被覆盖成 main -> second,first 成了
+    // 无映射记录(主被占用 = 歧义重复)。
+    let second = store
+        .create_aux_session(&main.metadata.id)
+        .expect("create second aux");
+    assert_ne!(first.id, second.id);
+    assert_eq!(
+        store.aux_session_id(&main.metadata.id).as_deref(),
+        Some(second.id.as_str())
+    );
+
+    store.reconcile_aux_sessions().expect("reconcile aux");
+
+    assert!(
+        store.load(&first.id).is_err(),
+        "主会话已绑定另一条 aux 的无映射重复记录必须被回收"
+    );
+    assert!(
+        store.load(&second.id).is_ok(),
+        "既有绑定指向的 aux 记录不得被回收"
+    );
+    assert_eq!(
+        store.aux_session_id(&main.metadata.id).as_deref(),
+        Some(second.id.as_str()),
+        "既有绑定必须原样保留"
+    );
+}
+
+/// `_aux_sessions.json` 损坏时,重启后映射为空表,启动路径的 aux 对账按记录
+/// 回指重建映射(corruption 场景,走 boot_with_scheduled_root 真实启动接线):
+/// 用户的问答内容保住,不被连坐删除。
+#[test]
+fn startup_reconcile_rebuilds_mapping_after_aux_sidecar_corruption() {
     let (store, _g) = isolated_store();
     let main = store
         .create_new("/model".into(), None, std::env::temp_dir())
@@ -4136,16 +4201,17 @@ fn startup_reconcile_reclaims_orphan_after_aux_sidecar_corruption() {
     let sidecar = paths::sessions_root().join("_aux_sessions.json");
     std::fs::write(&sidecar, b"{ not json").expect("corrupt aux sidecar");
 
-    // 重启:损坏的 sidecar 加载失败 → 映射空表;启动对账回收孤儿。
+    // 重启:损坏的 sidecar 加载失败 → 映射空表;启动对账按回指重建。
     let rebooted = SessionStore::boot_with_scheduled_root(scheduled_root).expect("reboot");
 
-    assert!(
-        rebooted.aux_session_id(&main.metadata.id).is_none(),
-        "损坏的 sidecar 不得恢复出映射"
+    assert_eq!(
+        rebooted.aux_session_id(&main.metadata.id).as_deref(),
+        Some(aux.id.as_str()),
+        "损坏的 sidecar 启动后必须按 parent_session_id 回指重建映射"
     );
     assert!(
-        rebooted.load(&aux.id).is_err(),
-        "启动对账必须回收映射丢失的 aux 孤儿记录"
+        rebooted.load(&aux.id).is_ok(),
+        "映射重建成功的 aux 记录不得被回收"
     );
     assert!(
         rebooted.load(&main.metadata.id).is_ok(),

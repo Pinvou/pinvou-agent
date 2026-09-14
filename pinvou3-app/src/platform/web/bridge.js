@@ -5200,16 +5200,22 @@
       ? invoke("web_access_chat", { message, attachmentHandles: [], sessionId: sid, restrictTools: true })
       : invoke("chat", { message, attachments: [], sessionId: sid, restrictTools: true });
   }
-  // 同步快照：未加载（无 buffer）返回空结构，不抛错、不触发加载。数组浅拷贝防
-  // 调用方改穿内部 buffer。
+  // 同步快照：未加载（无 buffer）返回空结构，不抛错、不触发加载。条目逐个
+  // 浅拷贝（与桌面端 aux-chat.js 同形）：流式 delta 会原地改写 buffer 里的
+  // 条目，只拷数组会共享对象引用，调用方逐字段比较检测不到变更。
+  function auxChatSnapshotItems(items) {
+    return (Array.isArray(items) ? items : []).map(function (item) {
+      return item && typeof item === "object" ? Object.assign({}, item) : item;
+    });
+  }
   function auxChatSnapshot(auxId) {
     const sid = String(auxId || "").trim();
     if (!sid) return auxChatEmptySnapshot();
     if (sid === state.activeSessionId) {
       return {
-        chatItems: [...(state.chatItems || [])],
+        chatItems: auxChatSnapshotItems(state.chatItems),
         busy: !!state.busy,
-        queued: [...(state.queued || [])],
+        queued: auxChatSnapshotItems(state.queued),
       };
     }
     const buf = sessionStates[sid];
@@ -5218,9 +5224,9 @@
     // LRU 新近度，否则 32+ 次切会话后 buffer 被容量回收，面板误显空态。
     touchSessionBuffer(sid, buf, false);
     return {
-      chatItems: Array.isArray(buf.chatItems) ? [...buf.chatItems] : [],
+      chatItems: auxChatSnapshotItems(buf.chatItems),
       busy: !!buf.busy,
-      queued: Array.isArray(buf.queued) ? [...buf.queued] : [],
+      queued: auxChatSnapshotItems(buf.queued),
     };
   }
   async function auxChatDiscard(taskId) {
