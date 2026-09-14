@@ -32,7 +32,7 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 
 除上述 9 条外，仓库对 `dws/` 另有两处已登记于 git 历史的本地修改，同步时同样重放：
 
-- `references/products/attendance.md`、`references/products/minutes.md`：将宿主已退役的工具名 `read_file` 改为 `read`（CodeWhale v0.9.5 canonical 工具族适配，PR #231）。
+- `references/products/attendance.md`、`references/products/minutes.md`：将宿主已退役的工具名 `read_file` 改写（PR #231 时记作 `File(action="read")`，历史事实；CodeWhale v0.9.12 升级 PR #453 起 canonical 名为 `read`），下次 sync 一律使用 `read`。
 - `scripts/attendance_report_common.py`：图片缓存文件名的 URL 哈希由 MD5 改为 SHA-256（CodeQL py/weak-sensitive-data-hashing，PR #54）。
 
 ## 同步记录（2026-08-16 → 1.0.58）
@@ -58,7 +58,7 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 8. MUST DO 参数格式括号注压缩 — 已重放（沿用「参数与参数值之间用空格隔开」）。
 9. best_practices 逐文件枚举压缩为单行汇总、aitable 两行合并 — 已重放（1.0.58 上游改为 14 行逐文件枚举，压缩回单行汇总；新增的 pat.md 参考行保留独立行）。
 
-另重放 git 历史登记的两处修改：`read_file` → `read`（attendance.md 6 处、minutes.md 6 处，与 PR #231 一致）；`attendance_report_common.py` 缓存哈希 md5 → sha256（与 PR #54 一致）。1.0.51 导入时的 4 个文件尾随空白差异（07-minutes.md/08-directory.md/calendar.md/oa.md）不再重放，跟随上游原文；对账注（2026-08-16，对账基线为 HEAD `77c19912`）：calendar.md 与 oa.md 在该基线上与上游逐字节一致；07-minutes.md 与 08-directory.md 因后续真实性审查补录的正文修改重新分叉（diff 实测差异均为内容行，无空白-only 行）。对账期间（2026-08-16 15:2x）工作区另出现一批未提交的尾随空白清理（07-minutes.md/08-directory.md/minutes.md/oa.md），不属于四轮登记范围——若保留须随提交另行登记，否则下次 sync 按本登记跟随上游原文。
+另重放 git 历史登记的两处修改：`read_file`/`File(action="read")` → `read`（attendance.md 6 处、minutes.md 7 行；PR #231 时记作 `File(action="read")`（历史事实），#453/v0.9.12 起一律 `read`，与 lark/wecom/tmeet 各 NOTICE 对账注口径一致）；`attendance_report_common.py` 缓存哈希 md5 → sha256（与 PR #54 一致）。1.0.51 导入时的 4 个文件尾随空白差异（07-minutes.md/08-directory.md/calendar.md/oa.md）不再重放，跟随上游原文；对账注（2026-08-16，对账基线为 HEAD `77c19912`）：calendar.md 与 oa.md 在该基线上与上游逐字节一致；07-minutes.md 与 08-directory.md 因后续真实性审查补录的正文修改重新分叉（diff 实测差异均为内容行，无空白-only 行）。对账期间（2026-08-16 15:2x）工作区另出现一批未提交的尾随空白清理（07-minutes.md/08-directory.md/minutes.md/oa.md），不属于四轮登记范围——若保留须随提交另行登记，否则下次 sync 按本登记跟随上游原文。
   （第六轮核验注 2026-08-16，基线 HEAD `4a42fdb9`、工作区 clean：该批尾随空白清理已不在工作区——上述 4 文件当前与上游的尾随空白行数一致（07/08/oa/minutes 分别 1/1/3/5 行，与上游同），oa.md 与上游逐字节一致，07/08/minutes 的差异均为正文行（08-directory 为 read + aisearch 链接化；07-minutes 为「开源版未引入」标注删除；minutes.md 为 read_file → read）。本对账注的「未提交清理」悬念已消除，下次 sync 直接跟随上游原文重放各登记条目即可。）
 
 ## 真实性审查补录（2026-08-16，同轮次复审）
