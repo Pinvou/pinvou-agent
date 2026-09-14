@@ -1155,7 +1155,11 @@ jobs:
     # after sccache removal (aws-lc-sys prebuilt NASM objects compile even
     # slower). Since 2026-09 several runs died at the 90-minute cap during
     # the link step while passing runs already took 85-87 minutes, so the
-    # cap is raised to 180 minutes.
+    # cap is raised to 180 minutes. PR #478 additionally compiles the whole
+    # pinvou-cli workspace on this Windows-only leg, and lockfile changes
+    # miss the rust-cache key (full cold compile); a 90-minute run was
+    # cancelled mid-build (run 34802015051), so 180 minutes leaves headroom
+    # for two cold workspaces.
     timeout-minutes: 180
     env:
       # reqwest 0.13 → aws-lc-sys(非 FIPS)。Windows x86_64 需 NASM 汇编;runner 默认无 NASM,
