@@ -52,17 +52,18 @@ export function mergeOverlayEntry(previous, detail, sessionIdIn, now) {
 
 /**
  * Status presentation: terminal first; non-terminal entries map the ledger's
- * English status tokens to i18n copy (queued/pending/starting → pending,
- * running → working, same set as tool-renderers' LEDGER_STATUS_TOKENS);
- * anything else is treated as a real-time progress phrase and shown verbatim.
+ * English status tokens to i18n copy (queued/pending/starting, plus the
+ * waiting tokens waiting_for_user/model_wait → pending; running and the
+ * executing-tools token running_tool → working); anything else is treated as
+ * a real-time progress phrase and shown verbatim.
  */
 export function statusPresentation(entry, copy) {
   const statusToken = String(entry && entry.status || '').toLowerCase();
   if (entry && entry.done && entry.failed) return { text: copy.agentCard.failed, dot: 'failed' };
   if (entry && entry.done && entry.blocked) return { text: copy.blockedTag, dot: 'blocked' };
   if (entry && entry.done) return { text: copy.agentCard.completed, dot: 'done' };
-  if (['queued', 'pending', 'starting'].includes(statusToken)) return { text: copy.pendingTag, dot: 'running' };
-  if (statusToken === 'running') return { text: copy.agentCard.working, dot: 'running' };
+  if (['queued', 'pending', 'starting', 'waiting_for_user', 'model_wait'].includes(statusToken)) return { text: copy.pendingTag, dot: 'running' };
+  if (statusToken === 'running' || statusToken === 'running_tool') return { text: copy.agentCard.working, dot: 'running' };
   return { text: entry && entry.status && !/\s/.test(String(entry.status)) ? entry.status : copy.agentCard.working, dot: 'running' };
 }
 
