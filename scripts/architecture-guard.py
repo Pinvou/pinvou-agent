@@ -313,7 +313,7 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]]]:
         "rust_tauri_commands_outside_app": Counter(),
         "rust_tauri_handler_outside_app": Counter(),
         "rust_external_group_kill_spawn": Counter(),
-        "rust_cli_reaches_past_pinvoy3_lib": Counter(),
+        "rust_cli_reaches_past_pinvou3_lib": Counter(),
     }
     aliases = rust_aliases(root)
     rust_root = root / "pinvou3-app/src-tauri/src"
@@ -399,7 +399,7 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]]]:
                     "crate::app::commands::"
                 ):
                     rules["rust_tauri_handler_outside_app"][f"{relative}:{entry}"] += 1
-    # The CLI crates reach the app through the pinvoy3_lib surface only: no
+    # The CLI crates reach the app through the pinvou3_lib surface only: no
     # direct foundation (deepseek_tui) or Tauri references, so the headless
     # build cannot silently couple to the GUI stack or skip the app's own
     # layering. Comment lines are ignored (docs may name the crates).
@@ -416,7 +416,7 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]]]:
             len(pattern.findall(code_lines)) for pattern in cli_reference_patterns
         )
         if reference_count:
-            rules["rust_cli_reaches_past_pinvoy3_lib"][normalize(path, root)] += (
+            rules["rust_cli_reaches_past_pinvou3_lib"][normalize(path, root)] += (
                 reference_count
             )
 
