@@ -1,6 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Sparkles, X } from '../../components/icons.jsx';
+import { useDialogFocusRestore } from '../../hooks/useDialogFocusRestore.js';
+import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap.js';
 import { isWeb } from '../../shared/platform.js';
 import { setVoiceShortcutIntroOpen } from '../chat/voice-shortcut-state.mjs';
 
@@ -14,6 +16,7 @@ function VoiceShortcutIntroModal({
   primaryLabel,
 }) {
   const dialogRef = useRef(null);
+  const primaryButtonRef = useRef(null);
   const onCloseRef = useRef(onClose);
   // The web lane is web_asr_only: no smart post-processing, and Alt with text silently
   // downgrades to append dictation, so the voice-edit card is no longer shown — avoid
@@ -31,49 +34,27 @@ function VoiceShortcutIntroModal({
     onCloseRef.current = onClose;
   });
 
-  // While the modal is open: flag it for the shortcut router (Esc yields to the modal),
-  // auto-focus the primary button, capture Esc to close plus Tab focus cycling, and restore
-  // focus on unmount. Runs once per mount/unmount only.
+  // Shared modal-dismiss recipe: initial focus lands on the primary button
+  // and focus returns to the trigger on unmount; Tab cycling comes from the
+  // shared trap. This effect only flags the modal for the shortcut router
+  // (Esc yields to the modal) and owns the Esc-to-close capture listener.
+  useDialogFocusRestore(dialogRef, primaryButtonRef);
+  useDialogFocusTrap(dialogRef);
   useEffect(() => {
     setVoiceShortcutIntroOpen(true);
-    const dialog = dialogRef.current;
-    const previouslyFocused = document.activeElement;
-    const focusableSelector = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
-    const focusables = () => (dialog ? [...dialog.querySelectorAll(focusableSelector)]
-      .filter(el => !el.disabled) : []);
-    const initial = (dialog && dialog.querySelector('[data-autofocus]')) || focusables()[0];
-    if (initial && typeof initial.focus === 'function') initial.focus();
-    function handleKeyDown(event) {
+    const handleKeyDown = (event) => {
       if (!event || event.defaultPrevented) return;
       if (event.key === 'Escape') {
         if (event.repeat) return;
         event.preventDefault();
         event.stopPropagation();
         onCloseRef.current();
-        return;
       }
-      if (event.key !== 'Tab' || !dialog) return;
-      const items = focusables();
-      if (!items.length) return;
-      const first = items[0];
-      const last = items[items.length - 1];
-      const activeElement = document.activeElement;
-      if (event.shiftKey && (activeElement === first || !dialog.contains(activeElement))) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && (activeElement === last || !dialog.contains(activeElement))) {
-        event.preventDefault();
-        first.focus();
-      }
-    }
+    };
     document.addEventListener('keydown', handleKeyDown, true);
     return () => {
       setVoiceShortcutIntroOpen(false);
       document.removeEventListener('keydown', handleKeyDown, true);
-      if (previouslyFocused && previouslyFocused !== document.body
-        && typeof previouslyFocused.focus === 'function') {
-        previouslyFocused.focus();
-      }
     };
   }, []);
 
@@ -186,8 +167,8 @@ function VoiceShortcutIntroModal({
               </button>
             )}
             <button
+              ref={primaryButtonRef}
               type="button"
-              data-autofocus
               onClick={() => {
                 if (canEnable) {
                   onToggleShortcut(true);

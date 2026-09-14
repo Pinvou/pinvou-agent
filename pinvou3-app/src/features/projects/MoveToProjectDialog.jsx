@@ -9,6 +9,7 @@ import { createPortal } from 'react-dom';
 import { Check, Layers, Search, X } from '../../components/icons.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { useDialogFocusRestore } from '../../hooks/useDialogFocusRestore.js';
+import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap.js';
 import { projectCoversPath, rootPath } from './projectGrouping.js';
 
 const MoveToProjectDialog = ({
@@ -39,10 +40,13 @@ const MoveToProjectDialog = ({
     busyRef.current = busy;
   });
   // Initial focus goes to the filter field; on unmount focus returns to the
-  // row's persistent menu button, which the move menu item focuses before the
-  // portal unmounts (see NavigationComponents) so a live element is captured
-  // (shared modal-dismiss recipe).
+  // row's always-rendered label button, which the move menu item focuses
+  // before the portal unmounts (see NavigationComponents) so a live element
+  // is captured (shared modal-dismiss recipe).
   useDialogFocusRestore(dialogRef, searchInputRef);
+  // Tab 循环走共享陷阱(含 busy 全禁用时的按住与 IME 守卫);这里只保留
+  // Escape 的分级(确认面板先退回列表)。
+  useDialogFocusTrap(dialogRef);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -55,28 +59,6 @@ const MoveToProjectDialog = ({
         // 静默吞掉。
         if (pendingProjectRef.current) { setPendingMove(null); return; }
         onCloseRef.current();
-      } else if (e.key === 'Tab' && !isImeComposing(e) && dialogRef.current) {
-        // Minimal focus trap: cycle Tab within the dialog instead of letting
-        // it escape into the page behind the modal. Focus legitimately sits
-        // outside the dialog on body (non-focusable backdrop click, the
-        // subview swap unmounting the focused row, an Escape step-back), so
-        // any outside focus wraps like the edge rows do.
-        const focusables = dialogRef.current.querySelectorAll(
-          'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        );
-        // 提交中的 busy 态会把所有可聚焦元素禁用:此时必须按住焦点,不能
-        // 让 Tab 走到 aria-modal 背板后的页面里。
-        if (!focusables.length) { e.preventDefault(); return; }
-        const first = focusables[0];
-        const last = focusables[focusables.length - 1];
-        const contained = dialogRef.current.contains(document.activeElement);
-        if (e.shiftKey && (!contained || document.activeElement === first)) {
-          e.preventDefault();
-          last.focus();
-        } else if (!e.shiftKey && (!contained || document.activeElement === last)) {
-          e.preventDefault();
-          first.focus();
-        }
       }
     };
     window.addEventListener('keydown', onKey);
