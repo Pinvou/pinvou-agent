@@ -1,3 +1,5 @@
+use crate::platform::credential_store::CredentialReference;
+
 /// 从 disk 读最新 UserPrefs。
 /// 注意走 disk 而非 engine.bridge.prefs——如果用户手改 settings.json，
 /// `get_settings()` 能立刻拿到，不需要 reload bridge。
@@ -360,6 +362,11 @@ pub async fn save_model(model: SavedModel, pool: State<'_, EnginePool>) -> Resul
 /// 删一条模型。至少保留一条;删到当前 active 会自动回退列表首条。
 #[tauri::command]
 pub async fn delete_model(id: String) -> Result<(), String> {
+    // The keyring delete runs after the prefs save has succeeded: deleting
+    // first would leave a configured-but-secretless model when the save then
+    // fails; after a successful save, a failed delete only leaves an orphaned
+    // credential (the benign direction).
+    let mut reference_to_delete: Option<CredentialReference> = None;
     UserPrefs::update_transaction(|prefs| {
         if prefs.advanced.saved_models.len() <= 1 {
             return Err("至少保留一个模型".to_string());
@@ -368,15 +375,23 @@ pub async fn delete_model(id: String) -> Result<(), String> {
             .model_by_id(&id)
             .and_then(|m| m.credential_ref.clone())
         {
-            SystemCredentialStore::new()
-                .delete(&reference)
-                .map_err(|e| sanitize_command_error("delete_model", e.user_message()))?;
+            reference_to_delete = Some(reference);
         }
         prefs.remove_model(&id);
         Ok(())
     })
     .map(|_| ())
-    .map_err(|e| sanitize_command_error("delete_model", e))
+    .map_err(|e| sanitize_command_error("delete_model", e))?;
+    if let Some(reference) = reference_to_delete {
+        if let Err(error) = SystemCredentialStore::new().delete(&reference) {
+            log::warn!(
+                "delete_model: model {id} removed, but its keyring secret could not be \
+                 deleted: {}",
+                error.user_message()
+            );
+        }
+    }
+    Ok(())
 }
 
 /// 设全局默认模型(新建会话继承它)。不打断已在用的会话——它们各自保持 spawn
