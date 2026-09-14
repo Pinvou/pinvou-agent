@@ -21,7 +21,7 @@ const MoveToProjectDialog = ({
   onMove,
 }) => {
   const [query, setQuery] = useState('');
-  const [pendingAddFolder, setPendingAddFolder] = useState(null);
+  const [pendingMove, setPendingMove] = useState(null);
   // onClose is an inline arrow at the call site; keeping it in a ref keeps the
   // key listeners subscribed once instead of per render.
   const onCloseRef = useRef(onClose);
@@ -29,18 +29,19 @@ const MoveToProjectDialog = ({
   const searchInputRef = useRef(null);
   const confirmPanelRef = useRef(null);
   const backdropPressRef = useRef(false);
-  // Escape 键的确认面板回退读最新 pendingAddFolder;busy 同理(提交中关闭会
-  // 毁掉「确认面板原地重试」刻意保留的上下文)。ref 镜像保持 key 监听不随
-  // 每次状态变更重订阅(与 onCloseRef 同范式)。
-  const pendingAddFolderRef = useRef(pendingAddFolder);
+  const pendingProjectRef = useRef(null);
+  // Escape 的确认面板回退与 busy 门控读 ref 镜像,保持 key 监听不随每次
+  // 状态变更重订阅(与 onCloseRef 同范式);busy 时关闭会毁掉「确认面板
+  // 原地重试」刻意保留的上下文。
   const busyRef = useRef(busy);
   useEffect(() => {
     onCloseRef.current = onClose;
-    pendingAddFolderRef.current = pendingAddFolder;
     busyRef.current = busy;
   });
-  // Initial focus goes to the filter field and the triggering row is focused
-  // again on unmount (shared modal-dismiss recipe).
+  // Initial focus goes to the filter field; on unmount focus returns to the
+  // row's persistent menu button, which the move menu item focuses before the
+  // portal unmounts (see NavigationComponents) so a live element is captured
+  // (shared modal-dismiss recipe).
   useDialogFocusRestore(dialogRef, searchInputRef);
 
   useEffect(() => {
@@ -49,8 +50,10 @@ const MoveToProjectDialog = ({
         e.preventDefault();
         if (busyRef.current) return;
         // 确认面板态先退回列表,列表态才关窗(评审 #449 finding:确认框
-        // Escape 不该直接关整个弹窗)。
-        if (pendingAddFolderRef.current) { setPendingAddFolder(null); return; }
+        // Escape 不该直接关整个弹窗)。按派生值门控:目标项目在打开期间被删
+        // 时视图已回落列表,原始 state 仍为真——若读它,第一次 Escape 会被
+        // 静默吞掉。
+        if (pendingProjectRef.current) { setPendingMove(null); return; }
         onCloseRef.current();
       } else if (e.key === 'Tab' && !isImeComposing(e) && dialogRef.current) {
         // Minimal focus trap: cycle Tab within the dialog instead of letting
@@ -61,7 +64,9 @@ const MoveToProjectDialog = ({
         const focusables = dialogRef.current.querySelectorAll(
           'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
         );
-        if (!focusables.length) return;
+        // 提交中的 busy 态会把所有可聚焦元素禁用:此时必须按住焦点,不能
+        // 让 Tab 走到 aria-modal 背板后的页面里。
+        if (!focusables.length) { e.preventDefault(); return; }
         const first = focusables[0];
         const last = focusables[focusables.length - 1];
         const contained = dialogRef.current.contains(document.activeElement);
@@ -97,13 +102,15 @@ const MoveToProjectDialog = ({
   // 确认态以活列表为准:目标项目在子视图打开期间被删(如另一窗口)时,快照
   // 会把一个已死 id 反复送进 store 的 project not found,失败 toast + 面板
   // 重试构成死循环;从活列表派生,项目消失即回落列表视图。
-  const pendingProject = pendingAddFolder
-    ? projectList.find(project => project.id === pendingAddFolder.id) || null
+  const pendingProject = pendingMove
+    ? projectList.find(project => project.id === pendingMove.id) || null
     : null;
 
   // 子视图进出都把焦点带到位:进入确认面板读出其标签,退回列表回到过滤框;
-  // 否则被卸载的行把焦点丢在 body,只能靠 Tab 陷阱兜底。
+  // 否则被卸载的行把焦点丢在 body,只能靠 Tab 陷阱兜底。Escape 的门控读
+  // 这里的派生值(ref 镜像),不读原始 state。
   useEffect(() => {
+    pendingProjectRef.current = pendingProject;
     if (pendingProject) {
       confirmPanelRef.current?.focus();
     } else {
@@ -117,18 +124,18 @@ const MoveToProjectDialog = ({
   const choose = (project) => {
     if (busy || project.id === currentProjectId) return;
     if (workspacePath && !projectCoversPath(project, workspacePath)) {
-      setPendingAddFolder(project);
+      setPendingMove(project);
       return;
     }
     onMove(project.id, false);
   };
   const commitPending = () => {
-    // "仅移动"语义:确认框只确认这一笔移动,绝不加 root("添加文件夹"会
-    // 占住项目领地、改变项目内后续会话的自动归组,与仅移动不等价,当前
-    // 版本收敛;争议点见 .luzeyang/projects-layer-plan.md)。
+    // "仅移动"语义:确认框只确认这一笔移动,绝不加 root——加 root 是
+    // 领地扩张:它占住目录、改变该项目内后续会话的自动归组,影响面超出
+    // 这一笔移动本身,不该由一次看似只移动的确认顺带完成。
     // 不预清确认面板:提交后弹窗保持确认态(busy 禁用按钮),成功时由容器
     // 关闭整个对话框(卸载即复位);失败时确认面板留在原处供重试/取消——
-    // 若先清 pendingAddFolder,异步进行/失败期间会回落成"选择项目"列表,
+    // 若先清 pendingMove,异步进行/失败期间会回落成"选择项目"列表,
     // 看起来像点击后又弹出了另一个弹窗(评审 #449 finding:失败清目标后
     // 用户被迫重新选择,本轮正面修复)。
     if (pendingProject && !busy) onMove(pendingProject.id, false);
