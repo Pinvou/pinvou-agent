@@ -11,14 +11,17 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use walkdir::{DirEntry, WalkDir};
 
-const LIST_LIMIT: usize = 500;
-const SEARCH_LIMIT: usize = 300;
-const WALK_LIMIT: usize = 20_000;
-const PREVIEW_LIMIT: usize = 512 * 1024;
-const IMAGE_PREVIEW_LIMIT: u64 = 10 * 1024 * 1024;
-const DIFF_LIMIT: usize = 1024 * 1024;
+// `pub`: the CLI's workspace mirror differentially pins these (the mirror
+// is deleted only when the CLI adopts the real calls, and until then a drift
+// here must break the CLI build, not silently diverge).
+pub const LIST_LIMIT: usize = 500;
+pub const SEARCH_LIMIT: usize = 300;
+pub const WALK_LIMIT: usize = 20_000;
+pub const PREVIEW_LIMIT: usize = 512 * 1024;
+pub const IMAGE_PREVIEW_LIMIT: u64 = 10 * 1024 * 1024;
+pub const DIFF_LIMIT: usize = 1024 * 1024;
 
-const IGNORED_DIRECTORIES: &[&str] = &[
+pub const IGNORED_DIRECTORIES: &[&str] = &[
     ".git",
     ".hg",
     ".svn",

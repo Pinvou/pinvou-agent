@@ -1,6 +1,6 @@
 mod platform;
 mod temp_wav;
-mod transcript;
+pub mod transcript;
 pub(crate) mod voice_asr;
 
 pub(crate) use platform::reset_microphone_permission;

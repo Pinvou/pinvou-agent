@@ -20,6 +20,23 @@ pub(crate) fn count_user_turns(messages: &[Message]) -> u32 {
         .count() as u32
 }
 
+/// Exact user-turn count over raw JSON messages. Headless callers (the CLI)
+/// do not link the foundation crate and only hold the JSON message array
+/// before deserialization; the CLI previously approximated the count from
+/// the role + tool_result shape, which over-counts messages the engine does
+/// not treat as prompts (image-only turns) and could wedge the
+/// `checkpoints rewind` precheck. Each message is deserialized and run
+/// through the exact same predicate as `count_user_turns`, so the two sides
+/// can no longer drift.
+pub fn count_user_turns_in_json(messages: &[serde_json::Value]) -> Result<u32, serde_json::Error> {
+    let mut total = 0u32;
+    for value in messages {
+        let message: Message = serde_json::from_value(value.clone())?;
+        total += count_user_turns(std::slice::from_ref(&message));
+    }
+    Ok(total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
