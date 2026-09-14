@@ -319,6 +319,20 @@ test('web: late persona read cannot restore a deleted card', async () => {
   assert.equal(rt.view().activePersona, null);
 });
 
+test('web: session presentation sync cannot restore a persona deleted while its read is pending', async () => {
+  const rt = bootWebBridge();
+  await primeSessionA(rt);
+  rt.leave();
+  const get = rt.defer('get_active_persona');
+  const switching = rt.sessions.switchToSession('chat-a');
+  await new Promise(resolve => { setTimeout(resolve, 0); });
+  assert.ok(rt.calls.invoke.includes('get_active_persona'), 'precondition: presentation sync read started');
+  await rt.personas.deletePersona('persona-prime');
+  get.resolve({ id: 'persona-prime', name: 'Card A' });
+  assert.equal(await switching, true);
+  assert.equal(rt.view().activePersona, null);
+});
+
 test('web: in-flight equip cannot restore a deleted card', async () => {
   const rt = bootWebBridge();
   await primeSessionA(rt);

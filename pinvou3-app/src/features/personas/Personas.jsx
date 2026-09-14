@@ -407,7 +407,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
           {editor ? createPortal((
             <PersonaEditorModal initial={editor.initial} t={t}
               onClose={()=>setEditor(null)}
-              onSaved={(sum)=>setToast((editor.initial && editor.initial.id ? t.cpToastSaved : t.cpToastCreated)(sum.name))}
+              onSaved={(sum)=>{ if (sum) setToast((editor.initial && editor.initial.id ? t.cpToastSaved : t.cpToastCreated)(sum.name)); }}
               onDeleted={(card)=>setToast(t.cpToastDeleted(card.name))} />
           ), document.body) : null}
 
