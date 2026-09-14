@@ -7,6 +7,7 @@ import { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Edit2, FolderPlus, MoreHorizontal, Trash2, X } from '../../components/icons.jsx';
 import { usePortalMenu } from '../../hooks/usePortalMenu.js';
+import { capUnavailableRootsForDisplay } from './projectGrouping.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 
 const PROJECT_DROP_TYPE = 'application/x-pinvou-session';
@@ -39,6 +40,9 @@ const ProjectGroupHeader = ({
 }) => {
   const [editing, setEditing] = useState(null);
   const [confirming, setConfirming] = useState(false);
+  // 多个失效 root 时折叠为"首徽标 + N":28px 头部行放不下多个 shrink-0
+  // 徽标(评审 #463 m3),展开后平铺并允许换行。
+  const [showAllUnavailableRoots, setShowAllUnavailableRoots] = useState(false);
   // 菜单按实际可用的动作渲染:web 没有 projects 后端,onConvert 等为
   // undefined,此时整个组不渲染「更多」按钮,避免点开一个空菜单。
   const hasMenu = (kind === 'folder' && !!onConvert)
@@ -186,11 +190,14 @@ const ProjectGroupHeader = ({
   // another ARIA button. Project headers double as HTML5 drop targets for the
   // sidebar session drag; role="presentation" declares the div
   // non-interactive to the a11y tree while it carries the drag handlers.
+  const unavailableRootList = kind === 'project' ? unavailableRoots || [] : [];
+  const { visibleRoots, hiddenCount } = capUnavailableRootsForDisplay(unavailableRootList, showAllUnavailableRoots);
+  const wrapUnavailable = visibleRoots.length > 1;
   return (
     <div
       role="presentation"
       {...dropHandlers}
-      className={`group/header w-full h-7 flex items-center rounded-full text-[12px] transition-colors ${dropActive
+      className={`group/header ${wrapUnavailable ? 'w-full min-h-7 h-auto flex-wrap' : 'w-full h-7'} flex items-center rounded-full text-[12px] transition-colors ${dropActive
         ? 'ring-1 ring-[#0B57D0] bg-[#E8F0FE] dark:ring-[#A8C7FA] dark:bg-[#1F2A3D]'
         : theme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
       data-drop-target={onDropSession ? 'project' : undefined}
@@ -208,8 +215,9 @@ const ProjectGroupHeader = ({
       </button>
       {/* 失效 root 逐根徽标 + 一键重绑定。不自动删项目——归属与历史仍在,
           目录接骨是唯一修复路径。徽标是切换按钮的真实兄弟 <button>(不再
-          嵌在 <button> 内部),每根一个,重绑一根其余入口保留。 */}
-      {(kind === 'project' ? unavailableRoots || [] : []).map((rootPath) => (
+          嵌在 <button> 内部),每根一个,重绑一根其余入口保留;多根时折叠
+          进 +N 展开(m3),展开态容器换行不再溢出。 */}
+      {visibleRoots.map((rootPath) => (
         <button
           key={rootPath}
           type="button"
@@ -222,6 +230,18 @@ const ProjectGroupHeader = ({
           {t.uiProjects.folderUnavailable} · {t.uiProjects.rebindFolder}
         </button>
       ))}
+      {hiddenCount > 0 && (
+        <button
+          type="button"
+          data-testid="project-folder-unavailable-more"
+          title={unavailableRootList.slice(visibleRoots.length).join('\n')}
+          disabled={busy}
+          onClick={(e) => { e.stopPropagation(); setShowAllUnavailableRoots(true); }}
+          className="mr-2 shrink-0 rounded-full bg-[#FCE8E6] dark:bg-[#3C2A29] px-2 py-0.5 text-[11px] font-medium text-[#C5221F] dark:text-[#F28B82] hover:opacity-80 disabled:opacity-50"
+        >
+          +{hiddenCount}
+        </button>
+      )}
       {hasMenu && (
         // max-sm keeps the actions reachable without hover (touch, narrow
         // windows) — same contract as RecentItem's action cluster.

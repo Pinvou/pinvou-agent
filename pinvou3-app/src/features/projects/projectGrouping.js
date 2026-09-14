@@ -199,4 +199,14 @@ function needsAddFolderConfirm(session, target) {
   return !!workspacePath && !projectCoversPath(target, workspacePath);
 }
 
-export { TEMPORARY_GROUP_KEY, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath, needsAddFolderConfirm };
+// 失效 root 徽标的展示裁剪(评审 #463 m3):头部行固定 28px,一个完整徽标
+// (Folder unavailable · Rebind)已接近上限,多个 shrink-0 徽标会把折叠按钮
+// 挤到零宽并横向溢出。折叠时只保留第一个徽标(首入口),其余计数进 +N;
+// expanded 为 true 时全部平铺(容器换行)。返回 { visibleRoots, hiddenCount }。
+function capUnavailableRootsForDisplay(roots, expanded) {
+  const list = Array.isArray(roots) ? roots : [];
+  if (expanded) return { visibleRoots: list, hiddenCount: 0 };
+  return { visibleRoots: list.slice(0, 1), hiddenCount: Math.max(0, list.length - 1) };
+}
+
+export { TEMPORARY_GROUP_KEY, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath, needsAddFolderConfirm, capUnavailableRootsForDisplay };

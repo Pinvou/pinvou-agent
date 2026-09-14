@@ -269,6 +269,13 @@ fn require_confirm_existing(from: &Path, confirm_existing: Option<bool>) -> Resu
 /// - 平移后项目 root 不得与其它项目重叠,违者整体报错回滚。
 /// transcript 里的历史路径不改写;workspace baseline 逐会话重采集(失败仅
 /// 记日志,baseline 可再派生)。
+///
+/// 存储形式不变量(评审 #463 m1):`from` 必须与存储形态同源——项目 root
+/// 存 `root_display`(canonical),会话绑定存绑定当时经 canonical 化的目录。
+/// `from` 指向已消失目录时无法 canonical 化,路径别名(macOS `/tmp` 与
+/// `/private/tmp`)在此不可分辨,折叠键匹配会静默半改写。命令层不改写入参
+/// (canonicalize 失败回退原值对消失目录是空操作),前端一律传项目 store 的
+/// root 展示串;`rebind_workspace_root` 是公开命令,这一约定即其入参契约。
 #[tauri::command]
 pub async fn rebind_workspace_root(
     from: PathBuf,
@@ -340,7 +347,9 @@ pub async fn rebind_workspace_root(
     let affected_project_ids = store
         .rebind_roots(&from, &to_key)
         .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
-    acp_pool
+    // sidecar 写失败名单:m2 修复后孤儿不再被静默计入成功——孤儿以 sidecar
+    // 为唯一权威载体,落盘失败时重启恢复会复活旧目录,必须如实进 failed。
+    let prefix_outcome = acp_pool
         .agents()
         .rebind_workspace_prefix(&from, &to_key)
         .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
@@ -351,11 +360,21 @@ pub async fn rebind_workspace_root(
         else {
             continue;
         };
-        // 孤儿(会话 JSON 已不存在)没有元数据可写,按成功计;损坏 JSON
-        // 不是孤儿——set_workspace 的 load 解析失败会进 failed,可重试
-        // (评审 #463 minor:孤儿分类只认 NotFound,不认一切 load 错误)。
+        // 孤儿(会话 JSON 已不存在)没有元数据可写;损坏 JSON 不是孤儿——
+        // set_workspace 的 load 解析失败会进 failed,可重试(评审 #463
+        // minor:孤儿分类只认 NotFound,不认一切 load 错误)。
         if sessions.durable_session_record_is_absent(session_id) {
-            rebound_session_ids.push(session_id.clone());
+            if prefix_outcome
+                .sidecar_write_failed
+                .iter()
+                .any(|sid| sid == session_id)
+            {
+                // 孤儿 sidecar 落盘失败:重启会复活旧目录,按失败上报,
+                // 重跑即重试同一 sidecar(m2)。
+                failed_session_ids.push(session_id.clone());
+            } else {
+                rebound_session_ids.push(session_id.clone());
+            }
             continue;
         }
         match sessions.set_workspace(session_id, new_path.clone()) {

@@ -2565,17 +2565,31 @@ const NAV_PREFETCH = {
         try {
           const report = await bridge.projects.rebindWorkspaceRoot(
             rebindDraft.from, rebindDraft.to, confirmExisting);
-          setRebindDraft(null);
           const rebound = (report && report.rebound_session_ids) ? report.rebound_session_ids.length : 0;
           const failed = (report && report.failed_session_ids) ? report.failed_session_ids.length : 0;
           const postBusy = (report && report.post_busy_session_ids) ? report.post_busy_session_ids.length : 0;
-          // 部分失败不再吞掉(finding 3):数据迁移的半成功必须如实呈现。
+          // 部分失败不再吞掉(finding 3),也不再关窗:root 已平移,loadProjects
+          // 刷新后失效徽标(唯一重绑入口)随之消失,toast 承诺的"重试剩余"
+          // 就不可达(评审 #463 M1)。窗内转入部分报告态,展示失败会话并给出
+          // 重试;后端按同 from/to 重跑即收敛(快照含未同步会话,已成功项为
+          // 空操作),成功路径照旧关窗 + toast。
           if (failed > 0) {
-            setSettingsToast(t.uiProjects.rebindPartial(rebound, failed));
-          } else if (postBusy > 0) {
-            setSettingsToast(t.uiProjects.rebindBusyAfter(postBusy));
+            setRebindDraft(prev => prev && {
+              ...prev,
+              partial: {
+                rebound,
+                failed,
+                failedIds: (report && report.failed_session_ids) || [],
+                postBusy,
+              },
+            });
           } else {
-            setSettingsToast(t.uiProjects.rebindSuccess(rebound));
+            setRebindDraft(null);
+            if (postBusy > 0) {
+              setSettingsToast(t.uiProjects.rebindBusyAfter(postBusy));
+            } else {
+              setSettingsToast(t.uiProjects.rebindSuccess(rebound));
+            }
           }
           await refreshCodexSessions().catch((error) => {
             // 失败不吞:会话列表靠 session:list_changed 事件自愈,但显式
@@ -3084,6 +3098,7 @@ const NAV_PREFETCH = {
               to={rebindDraft.to}
               warnExisting={rebindDraft.warnExisting}
               errorMessage={rebindDraft.error}
+              partial={rebindDraft.partial || null}
               t={t}
               busy={projectOpsBusy}
               onCancel={() => setRebindDraft(null)}
