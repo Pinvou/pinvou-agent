@@ -12,8 +12,8 @@ EXPECTED_COMMITS=36
 # 即 gitlink 沿维护分支领先 tag 而非另起分叉；r2 收口后随 TAG 常量一起退役。
 R1_CLOSURE="1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
 # Candidate registration: the skills phantom-tool text candidate (review
-# branch fix/skills-phantom-tool-text, paired CodeWhale PR #56) is one
-# commit above the registered maintenance head while its CodeWhale PR is
+# branch fix/skills-phantom-tool-text, paired CodeWhale PR #56) is five
+# commits above the registered maintenance head while its CodeWhale PR is
 # open. Layer 0 accepts the registered head or this candidate; re-pin the
 # entry when the candidate rebases and retire it once the commit lands on
 # pinvou3-clean (see docs/fork-modifications.md, the T3 section).
