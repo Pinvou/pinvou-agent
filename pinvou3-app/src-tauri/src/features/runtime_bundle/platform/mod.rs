@@ -291,9 +291,14 @@ static BUILTIN_SKILLS_DIR: Dir<'_> =
 pub const BASE_PROMPT_MD: &str = include_str!("../../../../resources/common/bundle/base.md");
 
 /// pinvou3 版简体中文 locale 前导段（替换底座 `LOCALE_PREAMBLE_ZH_HANS`）。
-/// 瘦身依据:底座原文的动机是防 thinking 漂英文(上游 #1118)——pinvou3 生产
-/// `reasoning_effort=off` 无 thinking,该 failure mode 不存在;回复语言由
-/// 用户消息驱动,这里只补"判断不了时的默认语言"。closer 同理。
+/// Slimming rationale: the upstream text guards against thinking drifting to
+/// English (#1118) by mandating "think (reasoning_content) in Chinese" —
+/// dropped per product decision: mandating a thinking language hurts
+/// reasoning quality, and the thinking stream's language brings no
+/// user-perceivable benefit (production cloud routes default to
+/// `reasoning_effort=high`, thinking on — not "off" as an earlier comment
+/// claimed). Reply language follows the user's messages; this constant only
+/// adds the fallback for when the language is ambiguous. Same for the closer.
 pub const LOCALE_PREAMBLE_ZH_HANS: &str = "## 语言要求\n\n\
 pinvou3 界面语言为简体中文。跟随用户消息的语言回复;无法判断时用简体中文。\
 代码、路径、工具名、URL 保持原样。";
@@ -362,10 +367,15 @@ pub const AUTHORITY_RECAP: &str = "";
 /// 上游 v0.8.49 起 `set_*_override` 返回 `Result<(), String>`(首次 Ok,重复 Err)。
 pub fn install_prompt_overrides() {
     let _ = deepseek_tui::prompts::set_base_prompt_override(BASE_PROMPT_MD.to_string());
-    // locale 前导/收尾换成瘦身版(见 `LOCALE_PREAMBLE_*` 常量注释):底座长版
-    // 为防 thinking 漂英文而写,pinvou3 生产 reasoning_effort=off 没有该 failure
-    // mode,长版却仍带底座品牌词并逐轮消耗 token。zh-Hans / ja 各接一对;
-    // en 底座本就留空,由 prefs 的 `extra_language_directive` 补。
+    // Swap in the slim locale preamble/closer (see the `LOCALE_PREAMBLE_*`
+    // constant docs): the upstream long-form teaches "think in Chinese too",
+    // which is dropped per product decision (mandating a thinking language
+    // hurts reasoning quality, and the thinking stream's language brings no
+    // user-perceivable benefit; production cloud routes default to
+    // `reasoning_effort=high`, thinking on — not "off" as an earlier comment
+    // claimed), and the long-form still carries base branding while costing
+    // context every turn. Wire one pair each for zh-Hans / ja; the base
+    // leaves en empty, and prefs fills it via `extra_language_directive`.
     let _ = deepseek_tui::prompts::set_locale_preamble_zh_hans_override(
         LOCALE_PREAMBLE_ZH_HANS.to_string(),
     );
@@ -374,12 +384,14 @@ pub fn install_prompt_overrides() {
     );
     let _ = deepseek_tui::prompts::set_locale_preamble_ja_override(LOCALE_PREAMBLE_JA.to_string());
     let _ = deepseek_tui::prompts::set_locale_closer_ja_override(LOCALE_CLOSER_JA.to_string());
-    // 静态层全量接管(fork patch: set_static_prompt_composer_override)。
-    // 设置后底座的 Personality/Mode/Approval/ContextMgmt/COMPACT_TEMPLATE/
-    // taxonomy 常量全部不进 prompt,由 compose_static_layers 输出替代。
-    // base override 的现存效果只剩:占住 base 槽位、压掉底座 bundled-headless
-    // 精简宪法分支;compose_static_layers 不读 ctx,base.md 正文(纯注释壳)
-    // 永不进 prompt。
+    // Full takeover of the static layer (fork patch:
+    // set_static_prompt_composer_override). Once set, the base's
+    // Personality/Mode/Approval/ContextMgmt/COMPACT_TEMPLATE/taxonomy
+    // constants never reach the prompt; compose_static_layers emits the
+    // replacement instead. The base override's remaining effect is only to
+    // occupy the base slot and suppress the base's bundled-headless compact
+    // constitution branch; compose_static_layers ignores ctx, and the base.md
+    // body (a pure comment shell) never enters the prompt.
     let _ = deepseek_tui::prompts::set_static_prompt_composer_override(Box::new(|ctx| {
         compose_static_layers(ctx)
     }));
@@ -1869,12 +1881,15 @@ mod tests {
         }
     }
 
-    /// forkguard(locale): 瘦身版 locale 前导/收尾必须随 composer 一起接进底座
-    /// (install_prompt_overrides 的四个 set_locale_*_override)。上游 sync 后此
-    /// 测试失败 = 四个 override 调用被合丢,zh/ja 会话会重新吃进底座长版
-    /// (底座品牌词 + reasoning 防漂教学,生产无 thinking,属死重)。
-    /// 断言方式:底座用 OnceLock 存 override,首次 set 生效、后续 set 被拒——
-    /// install 之后槽位必须已被瘦身版占住(再设不同值返回 Err)。
+    /// forkguard(locale): the slim locale preamble/closer must be wired into
+    /// the base alongside the composer (the four set_locale_*_override calls
+    /// in install_prompt_overrides). After an upstream sync this test failing
+    /// means the four override calls were merge-dropped and zh/ja sessions
+    /// would eat the upstream long-form again (base branding plus the "think
+    /// in Chinese" teaching, which is dropped per product decision).
+    /// Mechanism: the base stores overrides in OnceLocks — first set wins,
+    /// later sets are rejected — so after install the slots must already be
+    /// occupied by the slim text (setting a different value returns Err).
     #[test]
     fn forkguard_locale_bookend_overrides_are_wired() {
         install_prompt_overrides(); // OnceLock 幂等,谁先调都一样
@@ -1893,6 +1908,37 @@ mod tests {
         assert!(reject(
             deepseek_tui::prompts::set_locale_closer_ja_override("probe".into())
         ));
+    }
+
+    /// forkguard(locale): product decision — locale bookends constrain the
+    /// reply language only and must never mandate a thinking language
+    /// (forcing a model to think in a given language hurts reasoning
+    /// quality, and the thinking stream's language brings no user-perceivable
+    /// benefit). Assert that the four wired constants carry no thinking-
+    /// language teaching; an upstream sync pointing the overrides back at the
+    /// base long-form (its `reasoning_content` teaching, see the base
+    /// `LOCALE_PREAMBLE_ZH_HANS`/`LOCALE_CLOSER_ZH_HANS`) turns this red.
+    #[test]
+    fn forkguard_locale_bookends_never_mandate_thinking_language() {
+        for text in [
+            LOCALE_PREAMBLE_ZH_HANS,
+            LOCALE_CLOSER_ZH_HANS,
+            LOCALE_PREAMBLE_JA,
+            LOCALE_CLOSER_JA,
+        ] {
+            assert!(
+                !text.contains("reasoning_content"),
+                "locale bookend must not mandate a thinking language: {text}"
+            );
+            assert!(
+                !text.contains("思考"),
+                "locale bookend must not mandate a thinking language: {text}"
+            );
+            assert!(
+                !text.to_lowercase().contains("think"),
+                "locale bookend must not mandate a thinking language: {text}"
+            );
+        }
     }
 
     /// forkguard(composer): 完整合成路径上,底座在 compose 之外追加的

@@ -4,9 +4,12 @@
 //! 设计要点：
 //! - **源真相是文件系统**：`/etc/sudoers.d/pinvou3` 存在 = 开；不存在 = 关。不在 settings.json 里冗余存。
 //! - **写/删都走 pkexec**：用户拨开关 → 系统密码框 → root 写文件，零终端命令。
-//! - **不依赖 careful hook**：底座 shell.rs 的 5 条硬拦（`rm -rf /` 等）只在非 YOLO
-//!   姿态生效；品悟生产会话恒自动批准（等价 YOLO），该兜底会被跳过，不能当作
-//!   机械拦截层。本开关只是把「sudo 卡密码」变成「sudo 直接跑」。
+//! - **No reliance on the careful hook**: the base's 5 hard blocks in
+//!   command_safety.rs (`rm -rf /` etc., consumed by the shell tool) only
+//!   fire outside the YOLO posture; pinvou3 production sessions always
+//!   auto-approve (equivalent to YOLO), so that backstop is skipped and must
+//!   not be treated as a mechanical gate. This switch only turns "sudo
+//!   stalls on a password prompt" into "sudo runs directly".
 //!
 //! pkexec 退出码约定：
 //! - 0  成功
