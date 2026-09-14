@@ -1695,6 +1695,11 @@ const NAV_PREFETCH = {
       const [settingsToast, setSettingsToast] = useState('');
       const [projectOpsBusy, setProjectOpsBusy] = useState(false);
       const [moveToProjectSession, setMoveToProjectSession] = useState(null);
+      // 稳定入口:RecentItem 的 memo 依赖 prop 引用稳定(NavigationComponents
+      // 内注释),内联箭头会让每个 App 重渲染(每个流式 token 批次)重渲染
+      // 全部 codex 侧栏行;identity 只在门控布尔翻转(项目从无到有/反之)时
+      // 变化。RecentItem 自己传 chat,无需逐行捕获。
+      const openMovePicker = useCallback((target) => setMoveToProjectSession(target), []);
       // 桥完成首次状态同步(bs 就绪)后拉一次项目快照;后续变更由
       // projects:list_changed 事件驱动桥内刷新(bridge/projects.js)。
       const projectsBootstrapReady = !!bs;
@@ -2828,7 +2833,7 @@ const NAV_PREFETCH = {
             onExportArchive={chat.taskKind !== 'codex' && !exportingSessionIds.has(chat.id) && bridge.sessions.exportSessionArchive ? handleExportSessionArchive : undefined}
             onArchive={handleArchiveSession}
             onMoveToProject={chat.taskKind === 'codex' && bridge.projects && sidebarProjectsData?.projects?.length
-              ? (target) => setMoveToProjectSession(target)
+              ? openMovePicker
               : undefined}
             dragKind={detachKind}
             dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
