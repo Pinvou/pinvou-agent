@@ -440,13 +440,19 @@ pub use types::{
 // scope.rs 统一落盘单一 `disabled_bundles.json`(取代 `disabled_connectors.json` /
 // `disabled_skills.json` 双文件)。这里 re-export 保留调用路径;连接器/技能/CLI 开关
 // 统一按包 id 落盘,`skill:` 前缀跨文件借道清除。
-// `save_disabled_bundles`（plain 快捷写）仅测试在用，随实现一并 cfg(test)。
-#[cfg(test)]
-pub use crate::features::marketplace::scope::save_disabled_bundles;
 pub use crate::features::marketplace::scope::{
-    load_disabled_bundles, load_disabled_bundles_for, load_hidden_bundles_for,
-    remove_bundle_from_disabled_scopes, save_disabled_bundles_for, save_hidden_bundles_for,
-    sync_deny_all_scopes_after_install, unavailable_bundles_for,
+    load_disabled_bundles, load_disabled_bundles_for, load_hidden_bundles_for, package_id_for,
+    remove_bundle_from_disabled_scopes, save_disabled_bundles, save_disabled_bundles_for,
+    save_hidden_bundles_for, sync_deny_all_scopes_after_install, unavailable_bundles_for,
+    update_disabled_bundles_for,
+};
+// 兼容旧名（原「连接器开关」调用方）：语义已收敛为包 id，旧名仅作别名过渡。
+pub use crate::features::marketplace::scope::{
+    load_disabled_bundles as load_disabled_connectors,
+    load_disabled_bundles_for as load_disabled_connectors_for,
+    remove_bundle_from_disabled_scopes as remove_connector_from_disabled_scopes,
+    save_disabled_bundles as save_disabled_connectors,
+    save_disabled_bundles_for as save_disabled_connectors_for,
 };
 
 /// 按会话类型 scope 持久化连接器禁用列表并刷新技能目录。
