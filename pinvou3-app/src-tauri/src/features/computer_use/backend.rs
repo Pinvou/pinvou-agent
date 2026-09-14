@@ -1,11 +1,13 @@
-//! 后端 trait 与专用 worker 线程。
+//! The backend trait and the dedicated worker thread.
 //!
-//! xcap/enigo/平台 a11y 对象全部同步且有线程亲和性（且内部含 unsafe FFI），
-//! 因此所有后端工作跑在**每个会话一条**的专用 worker 线程上：backend 对象在该
-//! 线程上构造、使用、析构，永不跨线程移动。`BackendHandle` 是可克隆的通道封装，
-//! 工具层（async）用 `spawn_blocking` 调它的同步方法。
+//! xcap/enigo/platform a11y objects are all synchronous with thread affinity (and contain
+//! unsafe FFI internally), so all backend work runs on **one dedicated worker thread per
+//! session**: the backend object is constructed, used, and dropped on that thread, never
+//! moving across threads. `BackendHandle` is a cloneable channel wrapper; the tool layer
+//! (async) calls its synchronous methods via `spawn_blocking`.
 //!
-//! 线程通过 `BackendHandle` 全部析构时的 Drop 发送 `Shutdown` 并 join 退出。
+//! When all `BackendHandle` clones are dropped, the thread's Drop sends `Shutdown` and joins
+//! the exit.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -55,44 +57,48 @@ use super::types::{
     UiTreeOptions,
 };
 
-/// 平台后端契约。所有方法同步、`Result` 驱动；平台缺少能力时返回
-/// `ComputerUseError::unsupported`，不得静默降级或复用其他平台实现。
+/// Platform backend contract. All methods are synchronous and `Result`-driven; when the
+/// platform lacks a capability, return `ComputerUseError::unsupported` — never degrade
+/// silently or reuse another platform's implementation.
 ///
-/// 坐标约定：
-/// - `capture` 返回设备物理像素 + 输入倍率（见 [`Capture`]）。
+/// Coordinate contract:
+/// - `capture` returns device physical pixels plus an input scale factor (see [`Capture`]).
 /// - `cursor_position` returns global INPUT-space coordinates — the same
 ///   space `move_to` / `click` / `drag` take (Windows/X11 physical pixels,
 ///   macOS CGEvent points, Wayland stream-logical pixels). A global
 ///   device-pixel space is deliberately NOT the contract: on mixed-DPI
 ///   macOS the per-monitor device rects overlap, so a well-defined global
 ///   device-pixel space does not exist there.
-/// - `move_to` / `click` / `drag` / `scroll` / `element_at_point` 的坐标参数是
-///   **输入坐标空间**（Windows 物理像素；macOS CGEvent 点）。
+/// - The coordinate arguments of `move_to` / `click` / `drag` / `scroll` / `element_at_point`
+///   are **input coordinate space** (Windows physical pixels; macOS CGEvent points).
 pub trait ComputerUseBackend: Send {
     fn capabilities(&self) -> Capabilities;
     fn capture(&mut self) -> Result<Capture, ComputerUseError>;
     fn cursor_position(&mut self) -> Result<(i32, i32), ComputerUseError>;
     fn move_to(&mut self, x: i32, y: i32) -> Result<(), ComputerUseError>;
-    /// count: 1=单击 2=双击 3=三击。
+    /// count: 1 = single click, 2 = double click, 3 = triple click.
     fn click(&mut self, button: MouseButton, count: u8) -> Result<(), ComputerUseError>;
     fn mouse_down(&mut self, button: MouseButton) -> Result<(), ComputerUseError>;
     fn mouse_up(&mut self, button: MouseButton) -> Result<(), ComputerUseError>;
     fn drag(&mut self, from: (i32, i32), to: (i32, i32)) -> Result<(), ComputerUseError>;
-    /// clicks: 滚轮格数（正数，方向由 direction 给出）。
+    /// clicks: wheel detents (positive; the direction is given by `direction`).
     fn scroll(&mut self, direction: ScrollDirection, clicks: u32) -> Result<(), ComputerUseError>;
     fn type_text(&mut self, text: &str) -> Result<(), ComputerUseError>;
-    /// 按下全部键再逆序释放（和弦）。
+    /// Press all keys then release them in reverse (a chord).
     fn key_chord(&mut self, keys: &[Key]) -> Result<(), ComputerUseError>;
-    /// 按住和弦 ms 毫秒后释放。
+    /// Hold the chord for `ms` milliseconds, then release.
     fn hold_key(&mut self, keys: &[Key], ms: u64) -> Result<(), ComputerUseError>;
-    /// 无障碍树序列化文本（格式由后端定，建议缩进文本树）。
+    /// Serialized accessibility tree text (format is backend-defined; an indented text tree
+    /// is recommended).
     fn ui_tree(&mut self, opts: &UiTreeOptions) -> Result<String, ComputerUseError>;
     fn element_at_point(&mut self, x: i32, y: i32)
     -> Result<Option<ElementInfo>, ComputerUseError>;
-    /// 返回当前持有键盘焦点的元素（用于键盘类动作的 T3 筛查）。
-    /// Ok(None) = 明确无焦点元素；Err = 查询失败或平台不支持（工具层按
-    /// best-effort 处理：筛查不可用放行执行，只有正面命中密码/名单角色
-    /// 才要求确认）。
+    /// Returns the element currently holding keyboard focus (used for the T3 screening of
+    /// keyboard actions).
+    /// Ok(None) = definitively no focused element; Err = the query failed or the platform
+    /// does not support it (the tool layer treats it best-effort: when screening is
+    /// unavailable the action proceeds, and only a positive hit on a password/listed role
+    /// requires confirmation).
     fn focused_element(&mut self) -> Result<Option<ElementInfo>, ComputerUseError> {
         let _ = &mut *self;
         Err(ComputerUseError::unsupported(
@@ -100,26 +106,33 @@ pub trait ComputerUseBackend: Send {
             "this backend cannot query the keyboard-focused element",
         ))
     }
-    /// 用户撤销会话授权 / 全局停止 / 总开关关闭时调用：关闭该后端持有的
-    /// **持久性 OS 级授权**（评审发现：Wayland RemoteDesktop 的 portal 会话
-    /// 是系统级输入授权，revoke/stop 只清应用内状态会让它活到进程退出，
-    /// 与"可随时停止"的用户可见承诺不符）。X11 XTEST、Windows SendInput、
-    /// macOS CGEvent 无持久授权，默认 no-op。调用后后端必须保持可用：
-    /// 下次动作按既有路径懒重建授权（需要时用户会看到系统授权对话框）。
+    /// Called when the user revokes session authorization / global stop / the master switch
+    /// turns off: closes the **persistent OS-level authorization** held by this backend
+    /// (review finding: the Wayland RemoteDesktop portal session is a system-level input
+    /// authorization; if revoke/stop only cleared in-app state it would live until process
+    /// exit, contradicting the user-visible "can be stopped at any time" promise). X11 XTEST,
+    /// Windows SendInput, and macOS CGEvent have no persistent grant, so the default is a
+    /// no-op. After the call the backend must remain usable: the next action lazily rebuilds
+    /// the grant via the existing path (the user will see the system authorization dialog
+    /// when needed).
     fn release_os_grant(&mut self) -> Result<(), ComputerUseError> {
         let _ = &mut *self;
         Ok(())
     }
-    /// 请求级取消旗标（见 [`BackendRequest::cancelled`]）：worker 在派发每个
-    /// 请求前设置、派发后清除。多事件请求的实现（type 的逐字符/逐段注入）
-    /// 在事件间检查它，调用方已超时放弃的请求立即停止注入——出队时的一次性
-    /// 检查拦不住合法超过调用预算的长请求（round-10 评审 M3：Wayland 逐字符
-    /// 注入每字符两次有界 portal 通知，10k 字符在降级总线上远超调用预算，
-    /// 调用方超时后僵尸请求会与重试双重注入）。type 在全部三个平台上分块
-    /// 检查（X11 逐字符重映射；Wayland 逐字符 portal 通知；Windows/macOS
-    /// 64 字符块——round-12 评审 M5：低级事件钩子对每个事件同步处理，整段
-    /// 批量注入可合法超过调用预算）。滚动/拖拽的多事件循环不检查（秒级
-    /// 有界，见 BACKEND_CALL_TIMEOUT 注释的残余记录）。
+    /// Request-scoped cancel flag (see [`BackendRequest::cancelled`]): the worker sets it
+    /// before dispatching each request and clears it afterwards. Implementations of
+    /// multi-event requests (type's per-character/per-chunk injection) check it between
+    /// events, so a request the caller has already abandoned on timeout stops injecting
+    /// immediately — the one-shot check at dequeue cannot stop long requests that legitimately
+    /// exceed the call budget (round-10 review M3: Wayland per-character injection costs two
+    /// bounded portal notifications per character; 10k characters on a degraded bus far
+    /// exceeds the call budget, and after the caller times out, the zombie request would
+    /// double-inject alongside the retry). type checks in chunks on all three platforms
+    /// (X11 per-character remapping; Wayland per-character portal notifications; Windows/macOS
+    /// 64-character chunks — round-12 review M5: low-level event hooks process each event
+    /// synchronously, so a whole-text batch injection can legitimately exceed the call
+    /// budget). The multi-event loops of scroll/drag do not check (seconds-bounded, see the
+    /// residual notes in the BACKEND_CALL_TIMEOUT comment).
     fn set_cancel_flag(&mut self, flag: Option<Arc<AtomicBool>>) {
         let _ = flag;
     }
@@ -187,17 +200,21 @@ type BackendResult = Result<BackendReply, ComputerUseError>;
 struct BackendRequest {
     kind: BackendRequestKind,
     reply: Sender<BackendResult>,
-    /// 取消旗标：caller 与请求各持一半 `Arc`。调用方超时/通道断开放弃后
-    /// 置位；worker 在出队后、执行前检查，已取消的请求不再执行（评审发现：
-    /// 调用方超时返回后请求仍被照常执行——此刻物理输入锁已释放、guard 不会
-    /// 复检，其他会话可能同时在注入，击穿跨会话全程串行化保证，且模型已被
-    /// 误导「动作失败」）。
+    /// Cancel flag: the caller and the request each hold half of an `Arc`. It is set once the
+    /// caller gives up on timeout/channel disconnect; the worker checks it after dequeue and
+    /// before execution, and a cancelled request is not executed (review finding: after the
+    /// caller returned on timeout the request was still executed as usual — by then the
+    /// physical input lock was released and the guard would not re-check, other sessions
+    /// could be injecting at the same time, breaking the cross-session full-serialization
+    /// guarantee, and the model had already been told "the action failed").
     cancelled: Arc<AtomicBool>,
-    /// 控制车道请求（急停的按钮释放 / OS 授权关闭 / Shutdown）：**豁免出队
-    /// 跳过**（round-12 评审）。动作请求被取消后晚执行是二次注入，必须拦；
-    /// 控制请求恰恰相反——worker 卡死后恢复时，迟到的释放严格优于永不执行
-    /// （跳过会让已按下的按键滞留、portal 会话滞留，即使 worker 已恢复
-    /// 健康）。取消旗标对控制请求仍然置位，仅不再据此跳过。
+    /// Control-lane request (emergency-stop button release / OS-grant close / Shutdown):
+    /// **exempt from the dequeue skip** (round-12 review). An action request executing late
+    /// after cancellation is a double injection and must be blocked; control requests are the
+    /// exact opposite — when a wedged worker recovers, a late release is strictly better than
+    /// never executing (skipping would strand pressed buttons and portal sessions even though
+    /// the worker has recovered). The cancel flag is still set for control requests; it is
+    /// simply no longer used to skip them.
     control: bool,
 }
 
@@ -290,29 +307,33 @@ fn worker_loop(
         }
     };
     while let Ok(request) = rx.recv() {
-        // 出队后、执行前检查取消旗标：调用方已放弃的请求不再执行。多事件
-        // 注入（type）还会在事件间检查旗标（见 `set_cancel_flag`）。剩余缺口
-        // （平台 API 层面的固有限制，如实记录）：已进入单次 OS 调用的请求
-        // 无法中断，只能在调用边界拦截。控制车道请求（control=true）豁免：
-        // 晚到的急停释放必须执行而非跳过（见 `BackendRequest::control`）。
+        // Check the cancel flag after dequeue and before execution: a request the caller has
+        // already abandoned is not executed. Multi-event injection (type) also checks the
+        // flag between events (see `set_cancel_flag`). Residual gap (an inherent limitation
+        // at the platform API level, recorded honestly): a request already inside a single
+        // OS call cannot be interrupted; it can only be intercepted at call boundaries.
+        // Control-lane requests (control=true) are exempt: a late emergency-stop release
+        // must execute rather than be skipped (see `BackendRequest::control`).
         if !request.control && request.cancelled.load(Ordering::SeqCst) {
             let _ = request.reply.send(Err(ComputerUseError::unavailable(
                 "request was cancelled after the caller timed out",
             )));
             continue;
         }
-        // 派发前把取消旗标交给 backend：多事件注入（type）在事件间检查它，
-        // 调用方已放弃的请求不再继续注入（评审发现 M3）。派发后清除，避免
-        // 陈旧旗标影响后续请求。
+        // Hand the cancel flag to the backend before dispatch: multi-event injection (type)
+        // checks it between events so a request the caller has abandoned stops injecting
+        // (review finding M3). Cleared after dispatch so a stale flag does not affect later
+        // requests.
         backend
             .as_mut()
             .set_cancel_flag(Some(Arc::clone(&request.cancelled)));
-        // dispatch 整体在 catch_unwind 内：此前只有部分平台的截屏路径有
-        // panic 防护，其余任何 panic（enigo/UIA/portal 层）都会 unwinding
-        // 杀死 worker 线程，把整个会话粘死在 StartFailed（评审发现：安全
-        // 方向是无注入，但整会话永久禁用过了头）。panic 转成一条 Failed
-        // 应答，worker 继续服务后续请求；panic 详情由默认 hook 打到 stderr
-        // （可能内嵌输入内容，不进应答/审计）。
+        // dispatch as a whole runs inside catch_unwind: previously only some platforms'
+        // capture paths had panic protection, and any other panic (enigo/UIA/portal layers)
+        // would unwind-kill the worker thread, sticking the whole session at StartFailed
+        // (review finding: the safe direction is no injection, but disabling the entire
+        // session forever overshot). A panic becomes one Failed reply and the worker keeps
+        // serving later requests; panic details go to stderr via the default hook (they may
+        // embed input content, so they do not enter the reply/audit).
         let dispatched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             dispatch(backend.as_mut(), request.kind)
         }));
@@ -337,13 +358,15 @@ type BackendFactory =
     Box<dyn FnOnce() -> Result<Box<dyn ComputerUseBackend>, ComputerUseError> + Send>;
 
 enum WorkerState {
-    /// 懒启动：工厂已存，首个请求到来时才 spawn 线程构造 backend。
+    /// Lazy start: the factory is stored; the thread spawning the backend only happens when
+    /// the first request arrives.
     Pending(Option<BackendFactory>),
     Running {
         tx: Sender<BackendRequest>,
         thread: JoinHandle<()>,
     },
-    /// 启动失败（粘性）：权限未授予等，避免每请求重建线程刷屏。
+    /// Startup failed (sticky): e.g. permission not granted; avoids rebuilding the thread per
+    /// request and spamming.
     StartFailed(String),
     Shutdown,
 }
@@ -380,10 +403,12 @@ impl BackendInner {
                         ))
                     })?;
                 let startup = startup_rx.recv_timeout(BACKEND_CALL_TIMEOUT);
-                // 失败分支暂存 (发送端, 线程)：先在锁内写状态、释放 state 锁，
-                // 再在锁外收尾。评审发现：此前超时分支在 state 锁临界区内
-                // `thread.join()`，而局部 tx 仍存活、worker 阻塞在 rx.recv()
-                // 永不退出 → join 永久挂起且持有 state 锁，全会话卡死。
+                // On the failure branches, stash (sender, thread): write the state under the
+                // lock first and release the state lock, then finish up outside the lock.
+                // Review finding: the previous timeout branch called `thread.join()` inside
+                // the state-lock critical section while the local tx was still alive and the
+                // worker blocked in rx.recv() forever → join hung permanently while holding
+                // the state lock, deadlocking the whole session.
                 let mut cleanup: Option<(Sender<BackendRequest>, JoinHandle<()>)> = None;
                 let result = match startup {
                     Ok(Ok(())) => {
@@ -414,12 +439,13 @@ impl BackendInner {
                 };
                 drop(state);
                 if let Some((tx, thread)) = cleanup {
-                    // 对齐 Drop impl 的做法：先丢弃发送端（worker 的 rx.recv()
-                    // 得到断连并退出循环），随后丢弃 JoinHandle 让线程
-                    // detach（round-12 评审 M4：启动超时分支的 worker 可能
-                    // 仍卡在工厂调用里，join 会把本调用方的 spawn_blocking
-                    // 线程永久钉死）；卡死的工厂返回后 worker 自行看到断连
-                    // 退出，detach 只滞留线程，不再阻塞任何人。
+                    // Mirror the Drop impl: drop the sender first (the worker's rx.recv()
+                    // sees the disconnect and exits the loop), then drop the JoinHandle so
+                    // the thread detaches (round-12 review M4: in the startup-timeout branch
+                    // the worker may still be stuck inside the factory call, and join would
+                    // pin this caller's spawn_blocking thread forever); once the wedged
+                    // factory returns, the worker sees the disconnect and exits on its own,
+                    // and detaching only leaves a lingering thread without blocking anyone.
                     drop(tx);
                     drop(thread);
                 }
@@ -435,11 +461,12 @@ impl BackendInner {
         }
     }
 
-    /// worker 线程已退出/解 unwind（发送端全部失效）但状态机停留 Running：
-    /// 迁移为粘性 StartFailed（评审发现），与工厂失败同语义——否则会话剩余
-    /// 生命周期里每个请求都先成功入队、再报误导性的
-    /// "did not respond within <BACKEND_CALL_TIMEOUT>"。已在 Running 之外
-    /// 的状态（并发迁移/Drop 抢先）不覆盖。
+    /// The worker thread has exited / unwound (all senders dead) but the state machine is
+    /// stuck at Running: migrate to sticky StartFailed (review finding), same semantics as a
+    /// factory failure — otherwise every request for the rest of the session's lifetime would
+    /// first enqueue successfully and then fail with the misleading
+    /// "did not respond within <BACKEND_CALL_TIMEOUT>". States outside Running (concurrent
+    /// migration / a racing Drop) are not overwritten.
     fn mark_thread_dead(&self) {
         let mut state = self.state.lock();
         if matches!(&*state, WorkerState::Running { .. }) {
@@ -477,17 +504,19 @@ impl BackendInner {
             control,
         })
         .map_err(|_| {
-            // 全部发送端失效即 worker 线程已死：状态机从 Running 迁移为粘性
-            // StartFailed，本请求与后续请求都得到明确错误（评审发现）。
+            // All senders dead means the worker thread is dead: migrate the state machine
+            // from Running to sticky StartFailed so this request and all later ones get a
+            // clear error (review finding).
             self.mark_thread_dead();
             ComputerUseError::unavailable("computer use backend thread died")
         })?;
         match reply_rx.recv_timeout(BACKEND_CALL_TIMEOUT) {
             Ok(result) => result,
-            // 超时：置位取消旗标，worker 出队后不再执行该请求（已进入 OS
-            // 调用的请求无法中断，见 worker_loop 处注释）。措辞如实披露
-            // 残余不确定性（round-12 评审：审计里的 error 记录必须承认
-            // 动作仍可能完成/部分完成，与 panic 路径同一口径）。
+            // Timeout: set the cancel flag so the worker skips the request after dequeue (a
+            // request already inside an OS call cannot be interrupted, see the worker_loop
+            // comment). The wording honestly discloses the residual uncertainty (round-12
+            // review: the audit's error record must admit the action may still complete or
+            // have partially completed, same as the panic path).
             Err(RecvTimeoutError::Timeout) => {
                 cancelled.store(true, Ordering::SeqCst);
                 Err(ComputerUseError::unavailable(format!(
@@ -495,10 +524,11 @@ impl BackendInner {
                      the action may still execute or has partially executed"
                 )))
             }
-            // 断连 = worker 已退出，与超时是不同故障，分开报错（评审发现：
-            // 此前混报 "did not respond within <BACKEND_CALL_TIMEOUT>"）。
-            // 置位取消旗标仅为防御（worker 已死不会再消费请求），并让状态机
-            // 同步落地。
+            // Disconnect = the worker has exited, a different failure from a timeout, so it
+            // is reported separately (review finding: both used to be lumped together as
+            // "did not respond within <BACKEND_CALL_TIMEOUT>"). Setting the cancel flag here
+            // is purely defensive (the dead worker will not consume requests anymore) and
+            // lets the state machine settle in sync.
             Err(RecvTimeoutError::Disconnected) => {
                 cancelled.store(true, Ordering::SeqCst);
                 self.mark_thread_dead();
@@ -544,36 +574,39 @@ impl Drop for BackendInner {
             let _ = tx.send(BackendRequest {
                 kind: BackendRequestKind::Shutdown,
                 reply: channel::<BackendResult>().0,
-                // Shutdown 请求绝不能带取消旗标：worker 会先检查旗标并跳过，
-                // 永远走不到 Shutdown 分支退出（评审修正）。control=true 双保险。
+                // The Shutdown request must never carry a set cancel flag: the worker would
+                // check the flag and skip first, never reaching the Shutdown branch to exit
+                // (review correction). control=true as a second line of defense.
                 cancelled: Arc::new(AtomicBool::new(false)),
                 control: true,
             });
-            // 先丢弃发送端（worker 的 rx.recv() 得到断连并退出循环），随后
-            // 丢弃 JoinHandle 让线程 detach 而非 join（round-12 评审 M4 同类）：
-            // worker 卡死在单次 OS 调用里时 join 会把执行 Drop 的清理线程
-            // 永久挂起——卡死的 worker 在调用返回后仍会自行看到断连并退出，
-            // detach 至多多滞留一条线程，不会阻塞任何调用者。
+            // Drop the sender first (the worker's rx.recv() sees the disconnect and exits the
+            // loop), then drop the JoinHandle so the thread detaches instead of joining
+            // (same class as round-12 review M4): when the worker is wedged inside a single
+            // OS call, join would hang the cleanup thread executing Drop forever — after the
+            // call returns, the wedged worker still sees the disconnect and exits on its own;
+            // detach at worst leaves one lingering thread and never blocks any caller.
             drop(tx);
             drop(thread);
         }
     }
 }
 
-/// 可克隆的后端句柄（通道封装）。所有方法同步阻塞；async 调用方应包
-/// `tauri::async_runtime::spawn_blocking`。
+/// The cloneable backend handle (a channel wrapper). All methods block synchronously;
+/// async callers should wrap in `tauri::async_runtime::spawn_blocking`.
 #[derive(Clone)]
 pub struct BackendHandle {
     inner: Arc<BackendInner>,
 }
 
 impl BackendHandle {
-    /// Arc 同一性比较：两个句柄是否指向同一个 backend 实例。
+    /// Arc identity comparison: whether the two handles point at the same backend instance.
     pub fn is_same_backend(&self, other: &BackendHandle) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
-    /// 懒启动：工厂在首个请求时才于 worker 线程上执行（构造 xcap/enigo 对象）。
+    /// Lazy start: the factory executes on the worker thread only at the first request
+    /// (constructing xcap/enigo objects).
     pub fn lazy(
         factory: impl FnOnce() -> Result<Box<dyn ComputerUseBackend>, ComputerUseError> + Send + 'static,
     ) -> Self {
@@ -674,7 +707,7 @@ impl BackendHandle {
         }
     }
 
-    /// 坐标为输入坐标空间。
+    /// Coordinates are in input coordinate space.
     pub fn element_at_point(
         &self,
         x: i32,
@@ -689,8 +722,9 @@ impl BackendHandle {
         }
     }
 
-    /// 当前持有键盘焦点的元素。Err = 后端不支持/查询失败（工具层 best-effort：
-    /// 筛查不可用放行执行，只有正面命中才确认）。
+    /// The element currently holding keyboard focus. Err = backend unsupported/query failed
+    /// (tool layer is best-effort: when screening is unavailable the action proceeds, and
+    /// only a positive hit requires confirmation).
     pub fn focused_element(&self) -> Result<Option<ElementInfo>, ComputerUseError> {
         match self.inner.request(BackendRequestKind::FocusedElement)? {
             BackendReply::Element(element) => Ok(element),
@@ -698,9 +732,10 @@ impl BackendHandle {
         }
     }
 
-    /// 关闭该会话后端持有的持久 OS 级授权（见 trait 同名方法）。阻塞直到
-    /// worker 应答（可能排在在行动作之后）；UI 调用方应经
-    /// [`BackendRegistry`] 在 detached 线程里触发，不阻塞事件循环。
+    /// Close the persistent OS-level authorization held by this session's backend (see the
+    /// trait method of the same name). Blocks until the worker answers (it may queue behind
+    /// an in-flight action); UI callers should trigger it on a detached thread via
+    /// [`BackendRegistry`] and not block the event loop.
     ///
     /// Routed through the control lane (`request_control`), NOT the gated
     /// `request`: revoke/stop can arrive while an action is in flight, and
@@ -718,9 +753,11 @@ impl BackendHandle {
     /// pressed a button and was stopped/revoked/dropped must not leave the
     /// user's machine in button-held state.
     pub fn emergency_mouse_up(&self) -> Result<(), ComputerUseError> {
-        // 三键逐一释放（评审发现：右/中键的合成按下同样会因 stop/drop 滞留
-        // ——此前只释放左键）。对未按下的键，各后端的释放语义都是无害
-        // no-op（与下文 cleanup 注释的既定口径一致），宁多勿卡。
+        // Release the three buttons one by one (review finding: synthetic presses of the
+        // right/middle buttons also strand on stop/drop — previously only the left button
+        // was released). For unpressed buttons, every backend's release semantics is a
+        // harmless no-op (consistent with the established line in the cleanup comment
+        // below); better one release too many than a stuck button.
         let mut first_err = None;
         for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
             if let Err(error) = self.unit_control(BackendRequestKind::MouseUp { button }) {
@@ -736,16 +773,18 @@ impl BackendHandle {
     }
 }
 
-/// 会话 → 后端句柄登记表。工具构造时登记、析构时注销；revoke/stop/总开关
-/// 关闭时由命令层触发对应会话的 `release_os_grant`（评审发现：用户"停止
-/// 控制"后，OS 级 portal 授权必须随之终止而不是活到进程退出）。
+/// Session → backend-handle registry. Registered when a tool is constructed, unregistered on
+/// drop; on revoke/stop/master-switch off the command layer triggers `release_os_grant` for
+/// the corresponding session (review finding: after the user "stops control", the OS-level
+/// portal grant must terminate with it instead of living until process exit).
 #[derive(Default)]
 pub struct BackendRegistry {
     handles: Mutex<HashMap<String, BackendHandle>>,
 }
 
 impl BackendRegistry {
-    /// 工具构造时登记会话句柄（同会话重复登记以最新为准）。
+    /// Register the session handle at tool construction (a duplicate registration for the
+    /// same session keeps the newest).
     pub fn insert(&self, session_id: &str, handle: BackendHandle) {
         self.handles.lock().insert(session_id.to_string(), handle);
     }
@@ -796,7 +835,7 @@ impl BackendRegistry {
     /// tool's handle (Arc identity). Same-session factory re-invocation can
     /// let a new tool register before the old one drops; a blind remove-by-id
     /// would unregister the NEW tool, and its own Drop would then early-return,
-    /// skipping the button/portal cleanup entirely (评审发现).
+    /// skipping the button/portal cleanup entirely (review finding).
     pub fn release_and_unregister(&self, session_id: &str, handle: &BackendHandle) {
         // Identity check and remove/reinsert happen under ONE lock
         // acquisition (round-12 review M3): the previous remove-then-
@@ -810,7 +849,8 @@ impl BackendRegistry {
             let mut handles = self.handles.lock();
             match handles.remove(session_id) {
                 Some(stored) if Arc::ptr_eq(&stored.inner, &handle.inner) => Some(stored),
-                // 条目已被同会话的新工具顶替：恢复它，只清理自己的句柄。
+                // The entry was already replaced by a new tool of the same session: restore
+                // it and clean up only our own handle.
                 other => {
                     if let Some(stored) = other {
                         handles.insert(session_id.to_string(), stored);
@@ -835,10 +875,11 @@ impl BackendRegistry {
         }
     }
 
-    /// 当前注册的同会话句柄（若存在）。tool Drop 用它判断自己是否仍是
-    /// 该会话的活跃工具（round-12 评审：同会话工厂重入时，迟到的旧工具
-    /// Drop 不得撤销新工具刚拿到的会话授权——注册表侧的身份检查必须
-    /// 延伸到 guard 侧的 consent 撤销）。
+    /// The currently registered handle for the same session, if any. tool Drop uses it to
+    /// decide whether it is still the session's active tool (round-12 review: when a
+    /// same-session factory re-enters, a late old tool's Drop must not revoke the session
+    /// grant the new tool just obtained — the registry-side identity check must extend to
+    /// the guard-side consent revocation).
     pub fn registered_handle(&self, session_id: &str) -> Option<BackendHandle> {
         self.handles.lock().get(session_id).cloned()
     }
@@ -990,7 +1031,7 @@ mod tests {
         });
         assert!(handle.capture().is_err());
         assert!(handle.capture().is_err());
-        // 第二次请求不重建线程（粘性失败）。
+        // The second request does not rebuild the thread (sticky failure).
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 
@@ -1064,9 +1105,10 @@ mod tests {
             });
             assert!(handle.capabilities().is_ok());
         }
-        // Drop 后 worker 线程收到 Shutdown 并析构 backend 对象。detach 语义
-        // （round-12 评审 M4：worker 卡死时 join 会永久钉死清理线程）下析构
-        // 异步完成——有界等待而非立即断言。
+        // After the Drop, the worker thread receives Shutdown and drops the backend object.
+        // Under the detach semantics (round-12 review M4: when the worker is wedged, join
+        // would pin the cleanup thread forever) the teardown completes asynchronously —
+        // wait with a bound instead of asserting immediately.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !dropped.load(Ordering::SeqCst) {
             assert!(
@@ -1077,13 +1119,14 @@ mod tests {
         }
     }
 
-    /// 评审修复回归（round-10 M3）：worker 在派发请求前把取消旗标交给
-    /// backend、派发后清除——多事件注入（type）才能在事件间检查旗标并停止
-    /// 注入；派发结束后旗标必须复位，避免陈旧旗标影响后续请求。
+    /// Review-fix regression (round-10 M3): the worker hands the cancel flag to the backend
+    /// before dispatching the request and clears it afterwards — only then can multi-event
+    /// injection (type) check the flag between events and stop injecting; the flag must be
+    /// reset after dispatch ends so a stale flag does not affect later requests.
     #[test]
     fn cancel_flag_reaches_the_backend_during_dispatch_only() {
         use std::sync::Mutex;
-        // 记录 set_cancel_flag 的每次调用参数（派发前置位、派发后清除）。
+        // Record every set_cancel_flag argument (set before dispatch, cleared after).
         let seen: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
         struct FlagRecordingBackend {
             seen: Arc<Mutex<Vec<bool>>>,
@@ -1168,7 +1211,8 @@ mod tests {
         }
         drop(req_tx);
         worker.join().expect("worker exits when channel closes");
-        // 每次派发恰好一次置位 + 一次清除（即使请求之间旗标从未被置位）。
+        // Exactly one set plus one clear per dispatch (even though the flag is never set
+        // between requests).
         assert_eq!(
             *seen.lock().unwrap(),
             vec![true, false, true, false],
@@ -1176,8 +1220,10 @@ mod tests {
         );
     }
 
-    /// 评审修复回归：调用方已放弃（超时/断连置位旗标）的请求在 worker 出队
-    /// 后、执行前被跳过，并回明确的取消错误——不能照常执行击穿跨会话串行化。
+    /// Review-fix regression: a request the caller has abandoned (flag set on timeout/
+    /// disconnect) is skipped after the worker dequeues it and before execution, replying
+    /// with a clear cancellation error — executing it as usual would break cross-session
+    /// serialization.
     #[test]
     fn worker_skips_requests_cancelled_before_dequeue() {
         let (req_tx, req_rx) = channel::<BackendRequest>();
@@ -1230,8 +1276,9 @@ mod tests {
                     button: MouseButton::Left,
                 },
                 reply: reply_tx,
-                // 模拟：控制请求在卡死的 worker 身后等满调用预算，调用方
-                // （emergency cleanup）先一步超时放弃并置位旗标。
+                // Simulate: the control request waited out the whole call budget behind a
+                // wedged worker, and the caller (emergency cleanup) gave up on timeout one
+                // step earlier and set the flag.
                 cancelled: Arc::new(AtomicBool::new(true)),
                 control: true,
             })
@@ -1253,7 +1300,8 @@ mod tests {
         let handle = BackendHandle::lazy(|| {
             Ok(Box::new(MockBackend { clicks: 0, ups: 0 }) as Box<dyn ComputerUseBackend>)
         });
-        // 直接置位旗标模拟「已有在途请求」（真实路径由 request 获取/释放）。
+        // Set the flag directly to simulate "a request already in flight" (the real path
+        // acquires/releases it in `request`).
         handle.inner.in_flight.store(true, Ordering::SeqCst);
         let error = handle
             .capabilities()
@@ -1386,8 +1434,9 @@ mod tests {
                     .expect("slow capture must eventually succeed");
             })
         };
-        // 有界等待（round-12 评审）：helper 线程若在置位前死亡（expect panic），
-        // 无界 yield 自旋会把快速失败变成挂到测试超时。
+        // Bounded wait (round-12 review): if the helper thread dies before setting the flag
+        // (expect panic), an unbounded yield spin would turn the fast failure into hanging
+        // until the test times out.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !handle.inner.in_flight.load(Ordering::SeqCst) {
             assert!(
@@ -1448,7 +1497,8 @@ mod tests {
         worker.join().expect("capture thread");
         let state = state.lock();
         assert_eq!(state.captures, 1);
-        // 三键逐一释放（emergency_mouse_up 的既定契约，见其文档）。
+        // Three buttons released one by one (the established contract of emergency_mouse_up,
+        // see its docs).
         assert_eq!(
             state.mouse_ups,
             vec![MouseButton::Left, MouseButton::Right, MouseButton::Middle]
@@ -1552,7 +1602,7 @@ mod tests {
         assert_eq!(state.releases, 1);
     }
 
-    /// Identity check (评审发现): a same-session re-registration means the
+    /// Identity check (review finding): a same-session re-registration means the
     /// registry entry belongs to the NEW tool's handle. An old tool's Drop
     /// must not unregister it — the stale entry is restored, and only the
     /// old tool's own backend gets the emergency cleanup.

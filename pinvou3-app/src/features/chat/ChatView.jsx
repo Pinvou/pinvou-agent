@@ -169,8 +169,9 @@ import { useComposerVoiceInput } from '../voice-composer/useComposerVoiceInput.j
 
 const MULTI_AGENT_ENABLED = can('multiAgent');
 
-// Computer use（截屏 + 键鼠控制）是桌面专属能力：Web 端 can() 恒 false，
-// 授权条/授权弹窗整体不渲染，工具卡也回退默认卡片。
+// Computer use (screenshot + keyboard/mouse control) is a desktop-only capability: on Web
+// can() is always false, so the consent banner/dialogs render not at all and tool cards
+// fall back to the default card.
 const COMPUTER_USE_ENABLED = can('computerUse');
 
 // Enter-to-submit guard (shared by the main input, queued-message edit, and in-bubble edit):
@@ -813,28 +814,32 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       activeSessionIdRef.current = activeSessionId;
       const computerUseCopy = t.uiComputerUse;
       const computerUseSlice = (bs && bs.computerUse) || null;
-      // 会话挂载/切换时拉取 computer-use 权威状态：横幅与授权弹窗只对
-      // active 会话生效，后台会话的待决请求由 bridge 端按会话寄存，
-      // 切回时随本次 refresh 重新浮出。refreshStatus 在发起 IPC 前会同步
-      // 调 clearSessionRequests 清掉上一个会话遗留的待决弹窗（纯状态操作），
-      // 异步刷新窗口期内旧会话的授权弹窗不可再点击。
+      // Fetch the authoritative computer-use state on session mount/switch: the banner and
+      // consent dialogs apply only to the active session; pending requests of background
+      // sessions are parked per session on the bridge side and resurface with this refresh
+      // when switching back. Before issuing the IPC, refreshStatus synchronously calls
+      // clearSessionRequests to drop pending dialogs left by the previous session (a pure
+      // state operation), so during the async refresh window the old session's consent
+      // dialogs are no longer clickable.
       useEffect(() => {
         if (!COMPUTER_USE_ENABLED || !bridge.available || !bridge.computerUse || !activeSessionId) return;
         bridge.computerUse.refreshStatus(activeSessionId).catch(() => {});
-        // 事件丢失兜底：grant/stop 事件若被前端错过（如刷新或后台窗口期），
-        // 横幅会与真实授权状态失真——这里周期性 refreshStatus 与后端对账，
-        // 找回错过的授权/停止事件，让横幅重新对齐（纯恢复机制，不改变
-        // 授权本身的生命周期）。
-        // 最近已知 disabled 时跳过轮询（评审发现：此前对账循环在功能
-        // 关闭时也按应用全生命周期运行）；重新启用走 setEnabled，它直接
-        // 重读权威状态，不会漏掉状态翻转。
+        // Missed-event fallback: if grant/stop events were missed by the frontend (e.g. a
+        // refresh or a backgrounded window), the banner would drift from the real
+        // authorization state — this periodic refreshStatus reconciles with the backend,
+        // recovering missed grant/stop events so the banner realigns (a pure recovery
+        // mechanism; it does not change the authorization's own lifecycle).
+        // Skip polling while the last known state is disabled (review finding: the
+        // reconciliation loop previously ran for the app's whole lifetime even when the
+        // feature was off); re-enabling goes through setEnabled, which re-reads the
+        // authoritative state directly and cannot miss the state flip.
         const reconciler = setInterval(() => {
           try {
             const snapshot = bridge.state.get("computerUse");
             const slice = snapshot && snapshot.computerUse;
             if (slice && slice.enabled === false) return;
           } catch {
-            /* state.get 不可用：保持轮询 */
+            /* state.get unavailable: keep polling */
           }
           bridge.computerUse.refreshStatus(activeSessionId).catch(() => {});
         }, 30_000);

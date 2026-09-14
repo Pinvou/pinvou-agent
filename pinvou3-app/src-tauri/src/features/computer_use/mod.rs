@@ -1,21 +1,30 @@
-//! Computer Use：模型经单一 `computer_use` 工具观察并操作用户桌面。
+//! Computer Use: the model observes and operates the user's desktop through the single
+//! `computer_use` tool.
 //!
-//! 模块结构：
-//! - `types` —— 动作枚举、按键和弦解析、错误与后端结果结构、坐标空间契约
-//! - `scaling` —— 截图缩放（长边 ≤1440）与 截图↔设备↔输入 三层坐标映射
-//! - `backend` —— 后端 trait + 每会话一条专用 worker 线程（xcap/enigo 线程亲和）
-//! - `guard` —— 同意门控：设置开关、会话授权、停止旗标、T3 确认
-//! - `audit` —— append-only JSONL 审计（脱敏后的纯信息性本地日志，永不记明文）
-//! - `tool` —— `ComputerUseTool` ToolSpec 实现
-//! - `platform` —— 三平台后端与权限引导（`request_permissions`）
+//! Module structure:
+//! - `types` — action enums, key chord parsing, errors and backend result structs, the
+//!   coordinate space contract
+//! - `scaling` — screenshot scaling (long edge ≤1440) and the screenshot↔device↔input
+//!   three-layer coordinate mapping
+//! - `backend` — the backend trait + one dedicated worker thread per session (xcap/enigo
+//!   have thread affinity)
+//! - `guard` — consent gating: the settings switch, session grant, stop flag, T3 confirmation
+//! - `audit` — append-only JSONL audit (a sanitized, purely informational local log that
+//!   never records plaintext)
+//! - `tool` — the `ComputerUseTool` ToolSpec implementation
+//! - `platform` — the three platform backends and permission onboarding
+//!   (`request_permissions`)
 //!
-//! 集成（composition root：lib.rs 装配 / app::commands 命令面）：
-//! - 工厂按会话构造 `ComputerUseTool::new(app_handle, session_id, shared.clone())`，
-//!   仅当 `ComputerUseShared::is_enabled()` 为真（设置开关关闭时模型看不到 schema）；
-//! - `ComputerUseShared` 全局单例（Arc，经 `.manage()` 共享），设置开关接
-//!   `set_enabled`，授权/吊销/急停接 `grant_session` / `revoke_session` / `stop_all`，
-//!   T3 确认命令接 `mint_confirmation`；
-//! - 前端监听 `computer_use:grant_required` 与 `computer_use:confirm_required`。
+//! Integration (composition root: lib.rs assembly / app::commands command surface):
+//! - the factory constructs `ComputerUseTool::new(app_handle, session_id, shared.clone())`
+//!   per session, only when `ComputerUseShared::is_enabled()` is true (the model never sees
+//!   the schema while the settings switch is off);
+//! - `ComputerUseShared` is the global singleton (Arc, shared via `.manage()`); the settings
+//!   switch wires to `set_enabled`, grant/revoke/emergency-stop wire to `grant_session` /
+//!   `revoke_session` / `stop_all`, and the T3 confirmation command wires to
+//!   `mint_confirmation`;
+//! - the frontend listens to `computer_use:grant_required` and
+//!   `computer_use:confirm_required`.
 
 mod audit;
 mod backend;
@@ -25,12 +34,12 @@ mod scaling;
 mod tool;
 mod types;
 
-// ---- 工具与共享状态（tool / guard）：composition root 与 Tauri 命令消费 ----
+// ---- Tool and shared state (tool / guard): consumed by the composition root and Tauri commands ----
 pub use self::guard::ComputerUseShared;
 pub use self::tool::ComputerUseTool;
 
-// ---- 工具名（types）：ToolPolicy 动态禁用与命令面共用 ----
+// ---- Tool name (types): shared by ToolPolicy dynamic disabling and the command surface ----
 pub use self::types::TOOL_NAME;
 
-// ---- 平台能力入口（platform）：Tauri 命令消费 ----
+// ---- Platform capability entry points (platform): consumed by Tauri commands ----
 pub(crate) use self::platform::{backend_supported, request_permissions};

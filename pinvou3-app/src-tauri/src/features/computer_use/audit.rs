@@ -1,4 +1,5 @@
-//! 审计日志：append-only JSONL，每次工具调用一条记录（纯追加绝不原地改）。
+//! Audit log: append-only JSONL, one record per tool call (pure append, never rewritten in
+//! place).
 //!
 //! This is a PLAIN informational local log — no HMAC, no keyring, no salt,
 //! no key files, no verify step (nobody ships crypto in a local audit trail;
@@ -24,7 +25,8 @@ use crate::platform::encoding::hex_lower;
 use crate::platform::paths;
 use crate::platform::strings::truncate_utf8;
 
-/// target / 元素标签字段的字节上限（平台审计字段统一约定）。
+/// Byte cap for the target / element-label fields (the unified platform audit field
+/// convention).
 pub const AUDIT_TARGET_MAX_BYTES: usize = 600;
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -54,7 +56,7 @@ fn sanitize_session_id(raw: &str) -> String {
     }
 }
 
-/// 一条审计记录：一次工具调用的纯信息性快照。
+/// One audit record: a purely informational snapshot of one tool call.
 #[derive(Debug, Clone, Serialize)]
 pub struct AuditRecord {
     pub timestamp: String,
@@ -62,8 +64,8 @@ pub struct AuditRecord {
     pub action: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
-    /// 实际施加的同意层级/结果，如 "observe" / "input:session-grant" /
-    /// "input:session-grant+t3-confirmed" / "rejected:grant-required"。
+    /// The consent tier/result actually applied, e.g. "observe" / "input:session-grant" /
+    /// "input:session-grant+t3-confirmed" / "rejected:grant-required".
     pub consent: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
@@ -97,14 +99,15 @@ impl AuditRecord {
         }
     }
 
-    /// 记录目标（坐标摘要或元素标签），按审计约定截断。调用方负责脱敏：
-    /// 键入文本永不进此字段（只记长度，见模块文档）。
+    /// Record the target (coordinate summary or element label), truncated per the audit
+    /// convention. The caller is responsible for redaction: typed text never enters this
+    /// field (only lengths are recorded, see the module docs).
     pub fn with_target(&mut self, target: &str) -> &mut Self {
         self.target = Some(truncate_utf8(target, AUDIT_TARGET_MAX_BYTES).to_string());
         self
     }
 
-    /// 截图只记 SHA-256 + 文件路径，绝不记像素。
+    /// Screenshots record only the SHA-256 + file path, never the pixels.
     pub fn with_screenshot(&mut self, png: &[u8], path: &Path) -> &mut Self {
         self.screenshot_sha256 = Some(sha256_hex(png));
         self.screenshot_path = Some(path.to_string_lossy().into_owned());
@@ -119,24 +122,24 @@ impl AuditRecord {
     }
 }
 
-/// 单会话审计日志（append-only）。
+/// Per-session audit log (append-only).
 pub struct AuditLog {
     path: PathBuf,
 }
 
 impl AuditLog {
-    /// `<pinvou3 data dir>/computer-use/audit-<session_id>.jsonl`，
-    /// 目录以私有权限创建。
+    /// `<pinvou3 data dir>/computer-use/audit-<session_id>.jsonl`,
+    /// with the directory created under private permissions.
     pub fn for_session(session_id: &str) -> io::Result<Self> {
         let dir = audit_dir();
-        // 私有权限目录助手：创建/校验 0700（Windows 等价 ACL）。
+        // Private-permission directory helper: create/verify 0700 (Windows-equivalent ACL).
         crate::platform::filesystem::open_private_file_directory(&dir)?;
         Ok(Self {
             path: dir.join(format!("audit-{}.jsonl", sanitize_session_id(session_id))),
         })
     }
 
-    /// 测试用：指定任意路径（不建私有目录）。
+    /// Test-only: an arbitrary path (no private directory created).
     #[cfg(test)]
     pub(crate) fn at_path(path: PathBuf) -> Self {
         Self { path }
@@ -146,15 +149,16 @@ impl AuditLog {
         &self.path
     }
 
-    /// 追加一条记录。序列化失败不可能（纯字符串/数字字段），IO 失败向上抛
-    /// （调用方 fail-open：eprintln 后继续）。
+    /// Append one record. Serialization cannot fail (pure string/number fields); IO failures
+    /// propagate up (the caller is fail-open: eprintln then continue).
     pub fn append(&self, record: &AuditRecord) -> io::Result<()> {
         let mut line = serde_json::to_string(record)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         line.push('\n');
-        // 审计记录（即使已脱敏）属私有数据治理范畴：走平台层的私有追加文件
-        // 助手（unix 上 0600 创建、无 umask 暴露窗口；评审发现：此前经普通
-        // OpenOptions 按 0644 落盘，纵深不足）。
+        // Audit records (even when sanitized) fall under private-data governance: go through
+        // the platform layer's private append-file helper (0600 creation on unix, no umask
+        // exposure window; review finding: previously written via plain OpenOptions at 0644
+        // — insufficient defense in depth).
         let mut file = crate::platform::filesystem::open_private_append_file(&self.path)?;
         file.write_all(line.as_bytes())?;
         // fsync each record: a crash must not tear the last JSONL line. One
@@ -268,7 +272,7 @@ mod tests {
     /// while the private-directory layout is still exercised.
     #[test]
     fn for_session_creates_private_dir_and_0600_file() {
-        // 与改写 PINVOU3_HOME 的测试互斥。
+        // Mutually exclusive with tests that rewrite PINVOU3_HOME.
         let _env_lock = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
@@ -297,12 +301,12 @@ mod tests {
 
     #[test]
     fn target_truncates_to_audit_byte_contract() {
-        let long = "删".repeat(500); // 1500 字节
+        let long = "删".repeat(500); // 1500 bytes
         let mut record = AuditRecord::new("s", "left_click", "input");
         record.with_target(&long);
         let target = record.target.clone().unwrap_or_default();
         assert!(target.len() <= AUDIT_TARGET_MAX_BYTES);
-        // 中文不被切成半字符（truncate_utf8 契约）。
+        // CJK is never cut mid-character (the truncate_utf8 contract).
         assert!(target.is_char_boundary(target.len()));
     }
 

@@ -1,11 +1,15 @@
-//! 同意守卫：设置开关、会话授权、停止旗标、T3 确认。
+//! Consent guard: the settings toggle, session grants, the stop flag, T3
+//! confirmation.
 //!
-//! 引擎当前自动批准所有工具调用，因此同意门控必须内建于工具自身——本模块是
-//! 唯一的事实来源。集成层（Tauri 命令）通过公开 API 注入用户决定：
-//! `set_enabled` / `grant_session` / `revoke_session` / `stop_all` /
-//! `mint_confirmation`。授权只活于内存，永不落盘；会话授权活到被显式吊销
-//! (revoke / stop / master-switch off / session end — session end is the engine reclaiming the tool: its `Drop` calls `revoke_session`), no idle expiry — no mainstream product gives
-//! 会话级授权设空闲时钟。
+//! The engine currently auto-approves all tool calls, so consent gating must
+//! be built into the tool itself — this module is the single source of truth.
+//! The integration layer (Tauri commands) injects the user's decisions through
+//! the public API: `set_enabled` / `grant_session` / `revoke_session` /
+//! `stop_all` / `mint_confirmation`. Grants live only in memory and are never
+//! persisted; a session grant lives until it is explicitly revoked (revoke /
+//! stop / master-switch off / session end — session end is the engine
+//! reclaiming the tool: its `Drop` calls `revoke_session`), no idle expiry —
+//! no mainstream product puts an idle clock on session-level grants.
 //!
 //! Confirmation model (mainstream): a blocked action raises one pending
 //! per session (a new request replaces the old one, like a normal dialog);
@@ -25,26 +29,32 @@ use parking_lot::Mutex;
 
 use super::backend::BackendRegistry;
 
-/// T3 确认的有效期：未答复的 pending 必须自行过期——过期后读取视为不存在，
-/// 也不能再为它铸造批准令牌。
+/// The validity window of a T3 confirmation: an unanswered pending must
+/// expire on its own — after expiry it reads as nonexistent and can no longer
+/// mint an approval token.
 pub const CONFIRM_TTL: Duration = Duration::from_secs(5 * 60);
-/// 跨会话物理输入锁的有界等待上限。Input 动作从筛查到注入全程持锁（最长
-/// 可达一个 backend 调用上限，见 backend.rs 的 `BACKEND_CALL_TIMEOUT`），
-/// 无限挂等会让其他会话静默卡死（评审发现）——超时显式报错，由模型自行
-/// 等待重试。
+/// Bounded-wait cap for the cross-session physical input lock. Input actions
+/// hold the lock from screening through injection (up to a full backend call
+/// cap, see backend.rs's `BACKEND_CALL_TIMEOUT`); waiting unboundedly would
+/// silently wedge other sessions (review finding) — on timeout, fail
+/// explicitly and let the model wait and retry.
 pub const PHYSICAL_INPUT_LOCK_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// T3 后果性动作名单（大小写不敏感子串匹配；中英日繁）。
+/// The T3 consequential-action denylist (case-insensitive substring match;
+/// Chinese/English/Japanese/Traditional Chinese).
 ///
-/// 只收录**后果类别**词项——主流产品据以设确认的五个类别（Google
-/// computer-use 的 LEGAL_TERMS_AND_AGREEMENTS / USER_CONSENT_MANAGEMENT
-/// 等是同类口径）：金融（购买/支付/结账/转账）、发送、不可逆删除
-/// （含拖拽目的地回收站/废纸篓）、表单/订单提交、条款与同意接受。
-/// 泛化肯定词与泛化动作词（OK/Yes/Continue/Confirm/Run/Execute/Install/
-/// Remove/Empty/Bin 及其 CJK 等价词）**不在任何主流类别清单里**，已全部
-/// 移除；子串匹配下它们的误伤面随之消失（如 "bin" 命中 "combine"）。
+/// Only **consequence category** terms are listed — the five categories
+/// mainstream products confirm on (the same position as Google computer-use's
+/// LEGAL_TERMS_AND_AGREEMENTS / USER_CONSENT_MANAGEMENT etc.): financial
+/// (buy/pay/checkout/transfer), send, irreversible deletion (including the
+/// drag destinations recycle bin/trash), form/order submission, and terms &
+/// consent acceptance. Generic affirmatives and generic action words
+/// (OK/Yes/Continue/Confirm/Run/Execute/Install/Remove/Empty/Bin and their
+/// CJK equivalents) are **in no mainstream category list** and have all been
+/// removed; under substring matching their false-positive surface disappears
+/// with them (e.g. "bin" matching "combine").
 pub const T3_DENYLIST: &[&str] = &[
-    // 金融（financial）。
+    // Financial.
     "buy",
     "pay",
     "purchase",
@@ -65,12 +75,12 @@ pub const T3_DENYLIST: &[&str] = &[
     "支払い",
     "送金",
     "注文",
-    // 发送（sends）。
+    // Sends.
     "send",
     "发送",
     "傳送",
     "送信",
-    // 不可逆删除（irreversible deletion），含拖拽/删除的常见目的地。
+    // Irreversible deletion, including common drag/delete destinations.
     "delete",
     "trash",
     "erase",
@@ -85,45 +95,47 @@ pub const T3_DENYLIST: &[&str] = &[
     "廢紙簍",
     "ゴミ箱",
     "削除",
-    // 表单/订单提交（submission）。
+    // Form/order submission.
     "submit",
     "提交",
     "提出",
-    // 条款/同意接受（ToS & consent acceptance）。
+    // Terms/consent acceptance.
     "accept",
     "agree",
     "同意",
     "接受",
 ];
 
-/// 标签是否命中 T3 后果性名单。
+/// Whether a label hits the T3 consequential denylist.
 pub fn matches_t3_denylist(label: &str) -> bool {
     let lower = label.to_lowercase();
     T3_DENYLIST.iter().any(|term| lower.contains(term))
 }
 
-/// 元素角色是否是密码/安全文本字段（T3 信号；对应 Operator 的 takeover 场景）。
+/// Whether the element role is a password/secure text field (a T3 signal;
+/// corresponds to Operator's takeover scenario).
 pub fn is_secure_role(role: &str) -> bool {
     let lower = role.to_lowercase();
     lower.contains("password") || lower.contains("secure")
 }
 
-/// 守卫拒绝原因。
+/// Guard rejection reasons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuardRejection {
-    /// 设置里 computer use 总开关关闭。
+    /// The computer use master switch is off in settings.
     Disabled,
-    /// 停止旗标已置位（panic stop / stop_all）。
+    /// The stop flag is raised (panic stop / stop_all).
     Stopped,
-    /// 输入类动作缺少有效会话授权。
+    /// An input-class action lacks a valid session grant.
     GrantRequired,
-    /// 跨会话物理输入锁被其他会话持有，有界等待超时（见
-    /// [`PHYSICAL_INPUT_LOCK_TIMEOUT`]）。
+    /// The cross-session physical input lock is held by another session and
+    /// the bounded wait timed out (see
+    /// [`PHYSICAL_INPUT_LOCK_TIMEOUT`]).
     InputBusy,
 }
 
 impl GuardRejection {
-    /// 给模型看的错误文本（模型可据此 replan）。
+    /// The error text shown to the model (the model can replan from it).
     pub fn message(self) -> String {
         match self {
             Self::Disabled => {
@@ -146,14 +158,19 @@ impl GuardRejection {
     }
 }
 
-/// 会话授权只记录「本会话是否持有授权」：授权活到被显式吊销（revoke /
-/// stop / master-switch off / session end — session end is the engine reclaiming the tool (the tool's `Drop` revokes), no idle expiry — no mainstream product gives session-level
-/// 授权设空闲时钟（Claude Code 的「本次会话允许」同口径）。
+/// A session grant records only "whether this session holds a grant": the
+/// grant lives until explicitly revoked (revoke / stop / master-switch off /
+/// session end — session end is the engine reclaiming the tool (the tool's
+/// `Drop` revokes)), no idle expiry — no mainstream product puts an idle
+/// clock on session-level grants (Claude Code's "allow for this session" is
+/// the same position).
 
-/// 等待用户决定的 T3 确认（pending）。批准令牌由 `computer_use_confirm`
-/// Tauri 命令通过 [`ComputerUseShared::mint_confirmation`] 铸造；超过
-/// [`CONFIRM_TTL`] 未答复即过期。每个会话同时至多一个 pending——新请求
-/// 直接替换旧请求（与普通对话框一致，最新胜出）。
+/// A T3 confirmation (pending) waiting for the user's decision. The approval
+/// token is minted by the `computer_use_confirm` Tauri command via
+/// [`ComputerUseShared::mint_confirmation`]; unanswered past
+/// [`CONFIRM_TTL`] it expires. At most one pending per session at a time — a
+/// new request replaces the old one directly (like an ordinary dialog; newest
+/// wins).
 #[derive(Debug, Clone)]
 pub struct PendingConfirmation {
     pub session_id: String,
@@ -165,7 +182,8 @@ pub struct PendingConfirmation {
     pub created_at: Instant,
 }
 
-/// 已铸造的批准令牌：绑定会话与动作摘要，[`CONFIRM_TTL`] 内未消费即过期。
+/// A minted approval token: bound to the session and the action summary;
+/// expires if not spent within [`CONFIRM_TTL`].
 #[derive(Debug, Clone)]
 struct ApprovedToken {
     session_id: String,
@@ -173,12 +191,14 @@ struct ApprovedToken {
     minted_at: Instant,
 }
 
-/// 消费批准令牌的结果。
+/// The result of spending an approval token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfirmationCheck {
-    /// 令牌有效且与会话/动作摘要全部匹配，已消费（单次有效）。
+    /// The token is valid and matches both the session and the action
+    /// summary; it has been consumed (single-use).
     Granted,
-    /// 无此令牌（未知 / 已消费 / 已过期 / 会话或动作不匹配）。
+    /// No such token (unknown / already spent / expired / session or action
+    /// mismatch).
     Unknown,
 }
 
@@ -193,22 +213,30 @@ struct ConsentMaps {
     approved_tokens: HashMap<String, ApprovedToken>,
 }
 
-/// 跨会话共享的同意状态（Arc 由工厂构造注入工具）。
+/// Consent state shared across sessions (an Arc, injected into the tool at
+/// factory construction).
 pub struct ComputerUseShared {
     enabled: AtomicBool,
     stop: AtomicBool,
-    /// 持有会话授权的会话 id 集合（授权活到显式吊销，见模块顶部的寿命说明）。
+    /// The set of session ids holding a session grant (a grant lives until
+    /// explicitly revoked, see the lifetime note at the top of this module).
     sessions: Mutex<HashSet<String>>,
-    /// 物理鼠标/键盘是全局独占资源，但 backend 是每会话一条 worker——这把
-    /// 进程级锁把**跨会话**的输入注入串行化（评审发现：两个并发会话可各持
-    /// 有效授权交替打字/点击）。Input 类动作在筛查+执行全程持有。
+    /// The physical mouse/keyboard is a globally exclusive resource, but the
+    /// backend has one worker per session — this process-level lock
+    /// serializes input injection **across sessions** (review finding: two
+    /// concurrent sessions could each hold a valid grant and interleave
+    /// typing/clicks). Input-class actions hold it for the whole screening +
+    /// execution.
     physical_input_lock: Mutex<()>,
     /// The two consent maps under a single mutex (see [`ConsentMaps`]).
     consent: Mutex<ConsentMaps>,
-    /// 会话 → 后端句柄登记表（构造登记/析构注销）。撤销授权、全局停止或
-    /// 总开关关闭时，命令层经此触发后端关闭持久 OS 级授权（如 Wayland
-    /// portal 会话）——授权语义的应用侧事实来源在本模块，OS 侧的终止
-    /// 动作经这里转交后端。
+    /// Session → backend handle registry (registered at construction,
+    /// unregistered on drop). When a grant is revoked, on global stop, or
+    /// when the master switch goes off, the command layer goes through it to
+    /// have the backend close its persistent OS-level grant (e.g. a Wayland
+    /// portal session) — the app-side source of truth for grant semantics
+    /// lives in this module; the OS-side termination action is forwarded to
+    /// the backend here.
     pub backends: BackendRegistry,
 }
 
@@ -219,7 +247,8 @@ impl Default for ComputerUseShared {
 }
 
 impl ComputerUseShared {
-    /// `enabled` 默认 false——工具在设置开启前一律拒绝。
+    /// `enabled` defaults to false — the tool rejects everything until the
+    /// setting is turned on.
     pub fn new() -> Self {
         Self {
             enabled: AtomicBool::new(false),
@@ -238,7 +267,8 @@ impl ComputerUseShared {
         self.enabled.load(Ordering::SeqCst)
     }
 
-    /// 设置开关（由集成层的设置命令调用）。
+    /// The settings toggle (called by the integration layer's settings
+    /// command).
     pub fn set_enabled(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::SeqCst);
     }
@@ -247,9 +277,12 @@ impl ComputerUseShared {
         self.stop.load(Ordering::SeqCst)
     }
 
-    /// 授予本会话输入控制权（会话授权）。授权活到被显式吊销（revoke /
-    /// stop / master-switch off / session end — session end is the engine reclaiming the tool (the tool's `Drop` revokes), no idle expiry — no mainstream product gives session-level
-    /// 授权设空闲时钟（Claude Code 的「本次会话允许」同口径）。
+    /// Grants this session input control (a session grant). The grant lives
+    /// until explicitly revoked (revoke / stop / master-switch off / session
+    /// end — session end is the engine reclaiming the tool (the tool's `Drop`
+    /// revokes)), no idle expiry — no mainstream product puts an idle clock on
+    /// session-level grants (Claude Code's "allow for this session" is the
+    /// same position).
     pub fn grant_session(&self, session_id: &str) {
         self.sessions.lock().insert(session_id.to_string());
     }
@@ -270,14 +303,16 @@ impl ComputerUseShared {
             .retain(|_, token| token.session_id != session_id);
     }
 
-    /// 会话当前是否持有有效授权（未被吊销/急停清除）。只读投影，供状态命令
-    /// 使用；门控判定仍以 [`Self::begin_input_action`] 为准。
+    /// Whether the session currently holds a valid grant (not cleared by
+    /// revoke/emergency stop). A read-only projection for status commands;
+    /// gating decisions still go by [`Self::begin_input_action`].
     pub fn has_active_grant(&self, session_id: &str) -> bool {
         self.sessions.lock().contains(session_id)
     }
 
-    /// 紧急停止：置停止旗标并吊销全部会话授权、清空全部待决/已批确认
-    /// （停止之后不应有任何同意状态存活）。
+    /// Emergency stop: raises the stop flag, revokes all session grants, and
+    /// clears all pending/approved confirmations (no consent state should
+    /// survive a stop).
     pub fn stop_all(&self) {
         self.stop.store(true, Ordering::SeqCst);
         self.sessions.lock().clear();
@@ -286,17 +321,20 @@ impl ComputerUseShared {
         consent.approved_tokens.clear();
     }
 
-    /// 用户重新开启后清除停止旗标（不恢复任何授权）。
+    /// Clears the stop flag when the user re-enables (restores no grants).
     pub fn reset_stop(&self) {
         self.stop.store(false, Ordering::SeqCst);
     }
 
-    /// 吊销全部会话授权并清空全部同意状态（待决确认、已铸令牌），
-    /// 但**不置**停止旗标——与 [`Self::stop_all`] 的紧急停止语义区分：总开关
-    /// 关闭不是急停，重新开启后不应残留停止状态
-    /// （`computer_use_set_enabled(false)` 调用）。评审发现：此前关闭开关不清
-    /// 授权与令牌，重开后旧 grant 与旧批准令牌仍然有效——开关关闭期间的
-    /// 同意状态在重开后不应存活。
+    /// Revokes all session grants and clears all consent state (pending
+    /// confirmations, minted tokens) but does **not** raise the stop flag —
+    /// distinct from [`Self::stop_all`]'s emergency-stop semantics: turning
+    /// the master switch off is not an emergency stop, and no stop state
+    /// should remain after re-enabling (the `computer_use_set_enabled(false)`
+    /// call). Review finding: previously, turning the switch off did not
+    /// clear grants and tokens, so after re-enabling the old grant and old
+    /// approval tokens remained valid — consent state from the off period
+    /// must not survive a re-enable.
     pub fn revoke_all_sessions(&self) {
         self.sessions.lock().clear();
         let mut consent = self.consent.lock();
@@ -304,7 +342,8 @@ impl ComputerUseShared {
         consent.approved_tokens.clear();
     }
 
-    /// 观察/被动类动作门控：只需总开关开启且未停止。
+    /// Gate for observe/passive actions: only needs the master switch on and
+    /// no stop.
     pub fn check_readonly(&self) -> Result<(), GuardRejection> {
         if !self.is_enabled() {
             return Err(GuardRejection::Disabled);
@@ -315,8 +354,10 @@ impl ComputerUseShared {
         Ok(())
     }
 
-    /// 输入类动作门控：开关开启、未停止、会话持有授权（授权活到显式吊销，
-    /// 无空闲过期）。注入前还应再查一次 [`Self::verify_input_action`]。
+    /// Gate for input-class actions: switch on, not stopped, and the session
+    /// holds a grant (grants live until explicitly revoked, no idle expiry).
+    /// [`Self::verify_input_action`] must be checked once more before
+    /// injection.
     pub fn begin_input_action(&self, session_id: &str) -> Result<(), GuardRejection> {
         self.check_readonly()?;
         if !self.sessions.lock().contains(session_id) {
@@ -325,9 +366,11 @@ impl ComputerUseShared {
         Ok(())
     }
 
-    /// 只读复检：授权是否仍然有效（开关、停止旗标、授权存在）。在
-    /// `begin_input_action` 与真实注入之间可能隔着自动截图等耗时步骤
-    /// （评审发现：该窗口内的 revoke 不生效），注入前必须调用。
+    /// Read-only re-check: whether the grant is still valid (switch, stop
+    /// flag, grant present). Between `begin_input_action` and the actual
+    /// injection there can be time-consuming steps such as an automatic
+    /// screenshot (review finding: a revoke inside that window did not take
+    /// effect); must be called before injecting.
     pub fn verify_input_action(&self, session_id: &str) -> Result<(), GuardRejection> {
         self.check_readonly()?;
         if !self.sessions.lock().contains(session_id) {
@@ -336,20 +379,23 @@ impl ComputerUseShared {
         Ok(())
     }
 
-    /// 跨会话串行化物理输入注入（见 [`ComputerUseShared::physical_input_lock`]）。
-    /// 获取是**有界等待**（`try_lock_for`，见 [`PHYSICAL_INPUT_LOCK_TIMEOUT`]）：
-    /// 锁被其他会话持有时超时返回显式 [`GuardRejection::InputBusy`]，不无限
-    /// 挂等。锁语义（Input 动作筛查到注入全程持有）与释放路径（guard drop）
-    /// 不变。
+    /// Serializes physical input injection across sessions (see
+    /// [`ComputerUseShared::physical_input_lock`]). Acquisition is a **bounded
+    /// wait** (`try_lock_for`, see [`PHYSICAL_INPUT_LOCK_TIMEOUT`]): when the
+    /// lock is held by another session, it times out returning an explicit
+    /// [`GuardRejection::InputBusy`] instead of waiting unboundedly. The lock
+    /// semantics (held for the whole screening-to-injection of an Input
+    /// action) and the release path (guard drop) are unchanged.
     pub fn lock_physical_input(&self) -> Result<parking_lot::MutexGuard<'_, ()>, GuardRejection> {
         self.physical_input_lock
             .try_lock_for(PHYSICAL_INPUT_LOCK_TIMEOUT)
             .ok_or(GuardRejection::InputBusy)
     }
 
-    /// 注册一个等待用户决定的 T3 确认，返回 confirm_id。每个会话至多一个
-    /// pending：新请求替换该会话已有的 pending（最新胜出，与普通对话框
-    /// 一致），因此本方法不会失败。顺带清扫过期 pending。
+    /// Registers a T3 confirmation waiting for the user's decision and
+    /// returns the confirm_id. At most one pending per session: a new request
+    /// replaces the session's existing pending (newest wins, like an ordinary
+    /// dialog), so this method cannot fail. Also sweeps expired pendings.
     pub fn new_pending_confirmation(
         &self,
         session_id: &str,
@@ -386,29 +432,38 @@ impl ComputerUseShared {
         Some(entry.clone())
     }
 
-    /// 用户在前端明确「拒绝」一个被拦截的 T3 动作：消耗 pending。拒绝不
-    /// 记录任何服务端状态——同一动作的重试会照常走筛查并铸造**新的**
-    /// pending、重发确认事件（主流模型：拒绝只是模型可见的上下文，不是
-    /// 存储的惩罚状态）。未知 id 返回 false。
+    /// The user explicitly "denies" a blocked T3 action in the frontend:
+    /// consumes the pending. A denial records no server-side state — a retry
+    /// of the same action goes through screening as usual and mints a
+    /// **new** pending, re-emitting the confirm event (mainstream model: a
+    /// denial is only model-visible context, not stored punitive state).
+    /// Returns false for an unknown id.
     pub fn deny_confirmation(&self, confirm_id: &str) -> bool {
         let mut consent = self.consent.lock();
         if consent.pending.remove(confirm_id).is_some() {
             return true;
         }
-        // 批准之后的「拒绝」是反悔：同一 confirm_id 的已铸令牌若尚未消费，
-        // 一并撤回（评审发现：此前 deny 只清 pending，"批准→反悔"的令牌
-        // 活到 TTL，拒绝按钮在竞态窗口内静默失效）。令牌不存在（已消费/
-        // 已过期/已被 revoke 清除）时返回 false，与未知 id 同口径。
+        // A "denial" after approval is a change of heart: if the same
+        // confirm_id's minted token is unspent, retract it too (review
+        // finding: deny used to clear only the pending, so the token from
+        // "approved → changed my mind" lived out its TTL and the deny button
+        // silently did nothing inside the race window). Returns false when
+        // the token does not exist (already spent / expired / already cleared
+        // by revoke), the same as an unknown id.
         consent.approved_tokens.remove(confirm_id).is_some()
     }
 
-    /// 铸造批准令牌。只能由 `computer_use_confirm` Tauri 命令调用——绝不能让
-    /// 模型经工具调用自己铸造。只为存在且未过期的 pending 铸币并返回 `true`；
-    /// pending 不存在/已过期/已被决定时返回 `false`——静默 no-op 会让前端把
-    /// 失败显示为成功（评审发现）。令牌继承该 pending 的会话与动作摘要
-    /// （消费时逐项比对）。令牌无存量上限：一个会话同时只有一个 pending，
-    /// 铸币又移除 pending，令牌存量天然受交互节奏约束；过期由消费前的
-    /// TTL 清扫兜底。
+    /// Mints an approval token. Callable only by the `computer_use_confirm`
+    /// Tauri command — the model must never be able to mint one via a tool
+    /// call. Mints only for a pending that exists and is unexpired, returning
+    /// `true`; returns `false` when the pending does not exist / has expired /
+    /// was already decided — a silent no-op would let the frontend show a
+    /// failure as success (review finding). The token inherits the pending's
+    /// session and action summary (compared item by item at spend time).
+    /// Tokens have no stock cap: a session has at most one pending at a time,
+    /// and minting removes the pending, so the token stock is naturally
+    /// bounded by the interaction cadence; expiry is backstopped by the TTL
+    /// sweep before spending.
     pub fn mint_confirmation(&self, confirm_id: &str) -> bool {
         // pending removal + token insertion in one lock: a mint cannot
         // interleave with a revoke/clear and leave a token that outlives the
@@ -435,12 +490,16 @@ impl ComputerUseShared {
         true
     }
 
-    /// 消费批准令牌（单次有效）。工具在执行带 `confirm_id` 的动作前调用；
-    /// 令牌必须与**本次**会话和动作摘要完全匹配（评审发现：裸字符串令牌可
-    /// 花在任意动作/会话上）。匹配即放行执行——不做二次筛查（主流模型：
-    /// API 确认就是一个 per-action 的确认 id，客户端应答后直接执行）；
-    /// 不匹配时令牌保留（精确绑定下唯一能通过的组合就是用户批准的那个
-    /// 原动作重放，误试不应烧掉用户的确认）。
+    /// Spends an approval token (single-use). The tool calls it before
+    /// executing an action carrying a `confirm_id`; the token must exactly
+    /// match **this** session and the action summary (review finding: a bare
+    /// string token could be spent on any action/session). On a match,
+    /// execution proceeds — no second screening (mainstream model: the API
+    /// confirmation is just a per-action confirmation id; once the client
+    /// acknowledges, execute); on a mismatch the token is kept (under exact
+    /// binding, the only combination that can pass is the user-approved
+    /// original action replay — a wrong attempt should not burn the user's
+    /// confirmation).
     pub fn take_confirmation(
         &self,
         confirm_id: &str,
@@ -474,7 +533,7 @@ mod tests {
         shared
     }
 
-    /// 测试便捷封装：标准三参数的 pending / 消费。
+    /// Test convenience wrapper: the standard three-argument pending / spend.
     fn new_pending(shared: &ComputerUseShared, session: &str, summary: &str) -> String {
         shared.new_pending_confirmation(session, summary, "Buy now")
     }
@@ -528,26 +587,29 @@ mod tests {
         assert!(!shared.has_active_grant("s1"));
     }
 
-    /// 会话授权无空闲过期：授权一经授予就活到显式吊销——重复门控/复检、
-    /// 新授权其他会话、再授权本会话都不会清掉它（旧实现的 grant_session
-    /// 会顺带清扫「空闲过期」的会话；该机制已整体移除，此测试钉住不存在
-    /// 隐式失效路径）。
+    /// Session grants have no idle expiry: once granted, a grant lives until
+    /// explicitly revoked — repeated gating/re-checks, granting other
+    /// sessions, or re-granting this session never clears it (the old
+    /// grant_session also swept "idle-expired" sessions; that mechanism was
+    /// removed entirely, and this test pins that no implicit invalidation
+    /// path exists).
     #[test]
     fn grant_stays_live_until_revoked() {
         let shared = enabled_shared();
         shared.grant_session("s1");
-        // 反复门控/复检都不产生失效。
+        // Repeated gating/re-checks never invalidate.
         for _ in 0..10 {
             assert!(shared.begin_input_action("s1").is_ok());
             assert!(shared.verify_input_action("s1").is_ok());
             assert!(shared.has_active_grant("s1"));
         }
-        // 授予/再授予其他会话不清掉 s1（无空闲清扫）。
+        // Granting/re-granting other sessions does not clear s1 (no idle
+        // sweep).
         shared.grant_session("s2");
         shared.grant_session("s1");
         assert!(shared.has_active_grant("s1"));
         assert!(shared.begin_input_action("s1").is_ok());
-        // 唯一的失效路径是显式吊销。
+        // The only invalidation path is an explicit revoke.
         shared.revoke_session("s1");
         assert_eq!(
             shared.begin_input_action("s1"),
@@ -567,20 +629,24 @@ mod tests {
             Err(GuardRejection::Stopped)
         );
         shared.reset_stop();
-        // stop_all 已吊销授权：即使清除停止旗标仍需重新 grant。
+        // stop_all already revoked the grant: even with the stop flag
+        // cleared, a re-grant is required.
         assert_eq!(
             shared.begin_input_action("s1"),
             Err(GuardRejection::GrantRequired)
         );
     }
 
-    /// 名单只含后果类别词项（金融/发送/不可逆删除/提交/条款同意，中英日
-    /// 繁），大小写不敏感；泛化肯定词与泛化动作词已全部移除——没有任何
-    /// 主流类别清单包含它们，子串误伤（"bin"→"combine"）随之消失。
+    /// The list contains only consequence-category terms (financial/send/
+    /// irreversible deletion/submission/terms-consent; Chinese/English/
+    /// Japanese/Traditional Chinese), case-insensitive; generic affirmatives
+    /// and generic action words have all been removed — no mainstream
+    /// category list contains them, so substring false positives
+    /// ("bin"→"combine") disappear too.
     #[test]
     fn t3_denylist_matches_only_consequence_categories() {
         for label in [
-            // 金融。
+            // Financial.
             "Buy now",
             "PAY",
             "Complete Purchase",
@@ -599,12 +665,12 @@ mod tests {
             "口座に送金",
             "注文を確定",
             "購買",
-            // 发送。
+            // Sends.
             "Send message",
             "发送",
             "傳送",
             "メッセージを送信",
-            // 不可逆删除（含拖拽目的地）。
+            // Irreversible deletion (including drag destinations).
             "Delete file",
             "Move to Trash",
             "Empty Trash",
@@ -617,11 +683,11 @@ mod tests {
             "刪除檔案",
             "資源回收筒",
             "ファイルを削除",
-            // 提交。
+            // Submission.
             "submit form",
             "提交订单",
             "フォームを提出",
-            // 条款/同意接受。
+            // Terms/consent acceptance.
             "Accept all",
             "I agree",
             "同意条款",
@@ -629,7 +695,8 @@ mod tests {
             assert!(matches_t3_denylist(label), "should match: {label}");
         }
         for label in [
-            // 泛化肯定词/动作词：不在任何主流类别清单里，一律放行。
+            // Generic affirmatives/action words: in no mainstream category
+            // list; always let through.
             "OK",
             "Yes",
             "Continue",
@@ -644,7 +711,7 @@ mod tests {
             "运行脚本",
             "执行命令",
             "安裝更新",
-            // 常见非 T3 控件。
+            // Common non-T3 controls.
             "Open",
             "Save as",
             "显示更多",
@@ -666,7 +733,7 @@ mod tests {
         let id = new_pending(&shared, "s1", summary);
         let pending = shared.pending_confirmation(&id);
         assert!(pending.as_ref().is_some_and(|p| p.session_id == "s1"));
-        // 未铸造前不可消费。
+        // Cannot be spent before minting.
         assert_eq!(
             take(&shared, &id, "s1", summary),
             ConfirmationCheck::Unknown
@@ -675,9 +742,9 @@ mod tests {
             shared.mint_confirmation(&id),
             "mint must report success for a live pending"
         );
-        // 铸造后 pending 清除。
+        // The pending is cleared after minting.
         assert!(shared.pending_confirmation(&id).is_none());
-        // 正确的会话 + 动作摘要才能消费。
+        // Only the correct session + action summary can spend it.
         assert_eq!(
             take(&shared, &id, "s-other", summary),
             ConfirmationCheck::Unknown,
@@ -688,36 +755,41 @@ mod tests {
             ConfirmationCheck::Unknown,
             "token must be bound to the action it approved"
         );
-        // 不匹配的误试不销毁令牌(精确绑定下唯一能通过的只有用户批准的原动作)。
+        // A mismatched wrong attempt does not destroy the token (under exact
+        // binding, the only thing that can pass is the user-approved original
+        // action).
         assert_eq!(
             take(&shared, &id, "s1", summary),
             ConfirmationCheck::Granted
         );
-        // 单次使用：第二次消费失败。
+        // Single-use: the second spend fails.
         assert_eq!(
             take(&shared, &id, "s1", summary),
             ConfirmationCheck::Unknown
         );
     }
 
-    /// deny 消费 pending；拒绝不记录服务端状态——同一动作的重试照常铸造
-    /// **新的** pending（新 confirm_id），重新走确认流程（主流模型：拒绝
-    /// 只是模型可见的上下文）。
+    /// deny consumes the pending; a denial records no server-side state — a
+    /// retry of the same action mints a **new** pending (a new confirm_id) as
+    /// usual and goes through the confirm flow again (mainstream model: a
+    /// denial is only model-visible context).
     #[test]
     fn deny_confirmation_consumes_the_pending_and_retry_mints_a_new_one() {
         let shared = enabled_shared();
         let id = new_pending(&shared, "s1", "left click");
         assert!(shared.deny_confirmation(&id));
-        // deny 清除 pending：不能再为它铸币（mint 返回 false，不再静默 no-op）。
+        // deny clears the pending: it can no longer mint (mint returns false,
+        // no longer a silent no-op).
         assert!(shared.pending_confirmation(&id).is_none());
         assert!(!shared.mint_confirmation(&id));
-        // 重试同一 id：令牌无效。
+        // Retry the same id: the token is invalid.
         assert_eq!(
             take(&shared, &id, "s1", "left click"),
             ConfirmationCheck::Unknown,
             "a denied id is simply unknown afterwards"
         );
-        // 重试同一动作：铸造新的 pending（新 id），确认流程照常——无拒绝记忆。
+        // Retry the same action: a new pending is minted (a new id) and the
+        // confirm flow proceeds as usual — no denial memory.
         let retry = new_pending(&shared, "s1", "left click");
         assert_ne!(retry, id, "a retry after denial must mint a new confirm_id");
         assert!(shared.pending_confirmation(&retry).is_some());
@@ -726,7 +798,7 @@ mod tests {
             take(&shared, &retry, "s1", "left click"),
             ConfirmationCheck::Granted
         );
-        // 未知 id 的 deny 失败。
+        // deny on an unknown id fails.
         assert!(!shared.deny_confirmation("cu-unknown"));
         assert_eq!(
             take(&shared, "cu-unknown", "s1", "x"),
@@ -735,22 +807,25 @@ mod tests {
         );
     }
 
-    /// 评审修复回归：铸币后的「拒绝」是反悔——同一 confirm_id 的未消费
-    /// 令牌必须一并撤回，而不是活到 TTL（此前 deny 只清 pending，铸币后
-    /// 的 deny 静默失效，前端也拿这个错误口径回 false）。
+    /// Review-fix regression: a "denial" after minting is a change of heart —
+    /// the same confirm_id's unspent token must be retracted along with it,
+    /// not live out its TTL (deny used to clear only the pending; after
+    /// minting, deny silently did nothing, and the frontend also returned
+    /// false on this wrong basis).
     #[test]
     fn deny_after_mint_retracts_the_unspent_token() {
         let shared = enabled_shared();
         let id = new_pending(&shared, "s1", "left click x1 at Some((5, 6))");
         assert!(shared.mint_confirmation(&id));
-        // 反悔：撤回未消费的令牌。
+        // Change of heart: retract the unspent token.
         assert!(shared.deny_confirmation(&id));
         assert_eq!(
             take(&shared, &id, "s1", "left click x1 at Some((5, 6))"),
             ConfirmationCheck::Unknown,
             "a retracted token must not grant anything"
         );
-        // 已消费（或未知）的 id 再 deny 仍报 false——与"未知/已决定"同口径。
+        // Denying an already-spent (or unknown) id still reports false — the
+        // same as "unknown/already decided".
         assert!(!shared.deny_confirmation(&id));
     }
 
@@ -797,7 +872,7 @@ mod tests {
             shared.verify_input_action("s1"),
             Err(GuardRejection::GrantRequired)
         );
-        // 只读：多次 verify 不产生副作用。
+        // Read-only: repeated verify has no side effects.
         shared.grant_session("s1");
         for _ in 0..10 {
             assert!(shared.verify_input_action("s1").is_ok());
@@ -819,10 +894,12 @@ mod tests {
         assert!(shared.physical_input_lock.try_lock().is_some());
     }
 
-    /// 评审修复回归：总开关关闭吊销全部会话授权与全部同意状态（待决确认、
-    /// 已铸令牌），但**不置**停止旗标（与 stop_all 语义区分）——重开后旧
-    /// grant 不得复活，disable→enable 循环里旧的已铸令牌也不得被免确认
-    /// 重放（第三轮评审发现）。
+    /// Review-fix regression: turning the master switch off revokes all
+    /// session grants and all consent state (pending confirmations, minted
+    /// tokens) but does **not** raise the stop flag (distinct from stop_all
+    /// semantics) — after re-enabling, the old grant must not resurrect, and
+    /// in a disable→enable cycle the old minted tokens must not be replayed
+    /// confirmation-free (third-round review finding).
     #[test]
     fn revoke_all_sessions_clears_grants_and_pendings_without_stop_flag() {
         let shared = enabled_shared();
@@ -842,13 +919,15 @@ mod tests {
         );
         assert!(shared.pending_confirmation(&confirm_id).is_none());
         assert!(shared.pending_confirmation(&token_id).is_none());
-        // 已铸令牌一并清除：重新开启+重新授权后不能拿旧令牌免确认重放。
+        // Minted tokens are cleared too: after re-enabling + re-granting,
+        // old tokens must not allow a confirmation-free replay.
         assert_eq!(
             take(&shared, &s2_pending, "s2", "left click 3"),
             ConfirmationCheck::Unknown,
             "a disabled cycle must wipe minted approval tokens"
         );
-        // 与 stop_all 的语义区分：停止旗标不被置位，观察类动作仍可用。
+        // Distinct from stop_all semantics: the stop flag is not raised and
+        // observe actions still work.
         assert!(!shared.is_stopped());
         assert!(shared.check_readonly().is_ok());
     }
@@ -857,16 +936,18 @@ mod tests {
     fn pending_confirmation_expires_after_ttl() {
         let shared = enabled_shared();
         let id = new_pending(&shared, "s1", "left_click (100,200)");
-        // 手工把 created_at 拨回 TTL 之前（等真实 5 分钟太慢）。
+        // Manually wind created_at back past the TTL (waiting a real 5
+        // minutes is too slow).
         {
             let mut consent = shared.consent.lock();
             if let Some(entry) = consent.pending.get_mut(&id) {
                 entry.created_at = Instant::now() - CONFIRM_TTL - Duration::from_secs(1);
             }
         }
-        // 过期即视为不存在。
+        // Expired means nonexistent.
         assert!(shared.pending_confirmation(&id).is_none());
-        // 过期 pending 不再铸币：令牌不可用，且 mint 显式报告失败。
+        // An expired pending no longer mints: the token is unavailable and
+        // mint reports the failure explicitly.
         assert!(!shared.mint_confirmation(&id));
         assert_eq!(
             take(&shared, &id, "s1", "left_click (100,200)"),
@@ -874,7 +955,7 @@ mod tests {
         );
     }
 
-    /// Regression (round-10 评审 m12): a MINTED approval token past
+    /// Regression (round-10 review m12): a MINTED approval token past
     /// [`CONFIRM_TTL`] must be refused at spend time — previously only the
     /// pending side of the TTL had test coverage, so the spend-path expiry
     /// branch (the only defense against a token minted then spent minutes
@@ -885,14 +966,16 @@ mod tests {
         let summary = "left click x1 at Some((100, 200))";
         let id = new_pending(&shared, "s1", summary);
         assert!(shared.mint_confirmation(&id), "fresh pending must mint");
-        // 手工把 minted_at 拨回 TTL 之前（等真实 5 分钟太慢）。
+        // Manually wind minted_at back past the TTL (waiting a real 5 minutes
+        // is too slow).
         {
             let mut consent = shared.consent.lock();
             if let Some(token) = consent.approved_tokens.get_mut(&id) {
                 token.minted_at = Instant::now() - CONFIRM_TTL - Duration::from_secs(1);
             }
         }
-        // 过期令牌在花费处报 Unknown，且被移除（重放同样 Unknown）。
+        // An expired token reports Unknown at spend and is removed (a replay
+        // is Unknown too).
         assert_eq!(
             take(&shared, &id, "s1", summary),
             ConfirmationCheck::Unknown

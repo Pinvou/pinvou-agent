@@ -1,22 +1,25 @@
-//! Wayland 同会话截屏:portal 会话绑定的 ScreenCast 流(PipeWire)。
+//! Wayland same-session screen capture: the ScreenCast stream (PipeWire) bound to the portal
+//! session.
 //!
-//! RemoteDesktop 会话在 Start 响应里已经带了 ScreenCast stream 的 PipeWire
-//! node id(绝对移动坐标参照);`ScreenCast.OpenPipewireRemote` 用同一会话
-//! 换取一条 PipeWire 私有连接 fd。本模块把这条 fd 交给一个专用 PipeWire
-//! 线程:订阅该 node 的视频流,把到达帧转成 RGBA 与协商尺寸共享出来,
-//! `capture()` 即可从同会话取帧——截屏不再走 xcap 的 GNOME-Shell/portal
-//! Screenshot/wlroots 链(旧链可能每次截屏弹授权对话框)。
+//! The RemoteDesktop session's Start response already carries the ScreenCast stream's PipeWire
+//! node id (the absolute-motion coordinate reference); `ScreenCast.OpenPipewireRemote` trades
+//! the same session for a private PipeWire connection fd. This module hands that fd to a
+//! dedicated PipeWire thread: it subscribes to the node's video stream, converts arriving
+//! frames to RGBA, and shares them with the negotiated size, so `capture()` can take frames
+//! from the same session — capture no longer goes through xcap's GNOME-Shell/portal
+//! Screenshot/wlroots chains (the legacy chain could pop an authorization dialog per capture).
 //!
-//! 坐标语义(见 mutter `meta_screen_cast_monitor_stream` 的
-//! `transform_position` 与 KDE portal 层补流原点的实现):输入注入坐标是
-//! 「流本地像素」,全局偏移由合成器/portal 层内部处理,故调用方 origin
-//! 恒为 (0,0);scale≠1 时 KDE 的输入单位是流本地逻辑像素(其缓冲为
-//! 物理像素,需除以缩放),mutter 的输入单位是缓冲像素,由调用方按桌面
-//! 环境选择倍率。
+//! Coordinate semantics (see mutter `meta_screen_cast_monitor_stream`'s `transform_position`
+//! and KDE's portal-layer implementation that adds the stream origin): input injection
+//! coordinates are "stream-local pixels", the global offset being handled inside the
+//! compositor/portal layer, so the caller's origin is always (0,0); at scale≠1 KDE's input
+//! unit is stream-local logical pixels (its buffer is physical pixels and needs dividing by
+//! the scale), while mutter's input unit is buffer pixels — the caller picks the factor per
+//! desktop environment.
 //!
-//! 线程约定:对象在 computer_use 专用 worker 线程构造;PipeWire 主循环在
-//! 自有线程运行,共享状态只经 `Arc<Mutex>` 交换;`shutdown` 经 pw channel
-//! 停流并 join 线程。
+//! Threading contract: objects are constructed on the computer_use dedicated worker thread;
+//! the PipeWire main loop runs on its own thread, shared state exchanged only via
+//! `Arc<Mutex>`; `shutdown` stops the stream via the pw channel and joins the thread.
 
 use std::os::fd::OwnedFd;
 use std::sync::{Arc, Mutex};
@@ -44,15 +47,16 @@ use pipewire::{
 
 use super::super::types::ComputerUseError;
 
-/// 等待首帧的预算(格式协商 + 首帧合成)。
+/// Budget for waiting for the first frame (format negotiation + first-frame composition).
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(4);
-/// 输入动作后等待比动作新的一帧的宽限(无视觉变化时不会有新帧,超时即用
-/// 现有帧——内容未变,帧仍然正确)。
+/// Grace period after an input action while waiting for a frame newer than it (with no
+/// visual change no new frame arrives; on timeout use the existing frame — content
+/// unchanged, the frame is still correct).
 const FRESH_FRAME_GRACE: Duration = Duration::from_millis(400);
-/// 等帧轮询步长。
+/// Poll step while waiting for a frame.
 const POLL_STEP: Duration = Duration::from_millis(20);
 
-/// 一帧就绪的截屏(流本地像素)。
+/// A captured frame that is ready (stream-local pixels).
 #[derive(Debug, Clone)]
 pub(super) struct PortalFrame {
     pub rgba: Vec<u8>,
@@ -64,16 +68,17 @@ pub(super) struct PortalFrame {
 #[derive(Default)]
 struct SharedCapture {
     frame: Option<PortalFrame>,
-    /// 累计收到的帧数(诊断:区分"流停推"与"调用方没取")。
+    /// Total frames received (diagnostics: distinguishes "stream stopped pushing" from
+    /// "the caller did not take").
     frames_received: u64,
-    /// PipeWire 格式协商出的缓冲尺寸(流本地像素)。
+    /// Buffer size negotiated by PipeWire (stream-local pixels).
     negotiated: Option<(u32, u32)>,
-    /// 最近一次流状态/错误(诊断用)。
+    /// Latest stream state/error (for diagnostics).
     last_state: Option<String>,
     stopped: bool,
 }
 
-/// PipeWire 截屏接收器:持有专用线程与共享帧缓冲。
+/// PipeWire capture receiver: owns the dedicated thread and the shared frame buffer.
 pub(super) struct PwCapture {
     shared: Arc<Mutex<SharedCapture>>,
     control: channel::Sender<bool>,
@@ -81,8 +86,8 @@ pub(super) struct PwCapture {
 }
 
 impl PwCapture {
-    /// 从 portal `OpenPipewireRemote` 的 fd 建立同会话截屏流。
-    /// `node_id` 是 Start 响应 streams 里的 PipeWire node id。
+    /// Establish the same-session capture stream from the portal `OpenPipewireRemote` fd.
+    /// `node_id` is the PipeWire node id from the Start response's streams.
     pub(super) fn spawn(node_id: u32, fd: OwnedFd) -> Result<Self, ComputerUseError> {
         let shared = Arc::new(Mutex::new(SharedCapture::default()));
         let (control, control_rx) = channel::channel::<bool>();
@@ -108,9 +113,10 @@ impl PwCapture {
         })
     }
 
-    /// 取最新帧。`not_before` 为 `Some` 时(输入动作刚完成)先等比它新的帧,
-    /// 宽限超时后回退为现有帧(画面没有视觉变化,现有帧就是当前画面);
-    /// 完全没有帧时按首帧预算等待。
+    /// Take the latest frame. When `not_before` is `Some` (an input action just completed),
+    /// first wait for a frame newer than it, falling back to the existing frame once the
+    /// grace period expires (no visual change means the existing frame IS the current
+    /// picture); with no frames at all, wait within the first-frame budget.
     pub(super) fn latest_frame(
         &self,
         not_before: Option<Instant>,
@@ -127,7 +133,8 @@ impl PwCapture {
                 if fresh_enough {
                     return Ok(frame.clone());
                 }
-                // 帧存在但不比动作新:等宽限窗口,过期就用它。
+                // A frame exists but is not newer than the action: wait the grace window,
+                // then use it.
                 if let Some(deadline) = grace_deadline {
                     if Instant::now() > deadline {
                         return Ok(frame.clone());
@@ -151,15 +158,16 @@ impl PwCapture {
         }
     }
 
-    /// 停流(backend 析构/会话回收时调用;幂等)。
+    /// Stop the stream (called on backend drop/session recycling; idempotent).
     ///
-    /// 丢弃 JoinHandle 让线程 detach 而非 join(round-12 评审 M4):正常路径上
-    /// control(false) 会让主循环退出;但若 PipeWire 线程卡死在 control_rx
-    /// attach 之前的连接阶段(对端 portal/pipewire 已死),它永远看不到退出
-    /// 信号——在 worker 线程上 join 会把整个会话后端永久钉死(后续每个
-    /// 请求,包括紧急清理,全部超时,只能重启应用)。detach 的代价是至多
-    /// 滞留一条卡死线程(与 capture probe 的弃线同款、且有界的权衡),
-    /// 换来 shutdown 永不阻塞。
+    /// Drop the JoinHandle so the thread detaches instead of joining (round-12 review M4):
+    /// on the normal path control(false) makes the main loop quit; but if the PipeWire
+    /// thread is wedged in the connection phase before control_rx attach (the peer
+    /// portal/pipewire is dead), it will never see the quit signal — joining on the worker
+    /// thread would pin the whole session backend forever (every later request, including
+    /// emergency cleanup, would time out; only an app restart would recover). The cost of
+    /// detach is at most one wedged lingering thread (the same trade as the capture probe's
+    /// abandoned thread, and bounded) in exchange for a shutdown that never blocks.
     pub(super) fn shutdown(&mut self) {
         self.shared
             .lock()
@@ -178,8 +186,8 @@ impl Drop for PwCapture {
     }
 }
 
-/// PipeWire 线程主体:portal fd → context → stream(帧共享)。
-/// `control_rx` 收到 `false` 即停流退出主循环。
+/// The PipeWire thread body: portal fd → context → stream (frames shared).
+/// Receiving `false` on `control_rx` stops the stream and exits the main loop.
 fn run_pw_loop(
     node_id: u32,
     fd: OwnedFd,
@@ -190,7 +198,7 @@ fn run_pw_loop(
 
     let main_loop = MainLoopRc::new(None).map_err(|e| e.to_string())?;
     let context = ContextRc::new(&main_loop, None).map_err(|e| e.to_string())?;
-    // 会话私有的 PipeWire 远端:只暴露本 portal 会话的流对象。
+    // The session-private PipeWire remote: only this portal session's stream objects are exposed.
     let core = context
         .connect_fd_rc(fd, None)
         .map_err(|e| format!("cannot connect to the portal pipewire remote: {e}"))?;
@@ -239,9 +247,10 @@ fn run_pw_loop(
                         .map_err(|e| format!("cannot parse negotiated video format: {e}"))
                 })
                 .and_then(|info| {
-                    // 防御性校验:offer 虽然把格式固定为 BGRx,但异常合成器
-                    // fixate 出别的格式时 convert_frame 的通道交换会静默输出
-                    // 错色帧——协商阶段直接拒绝(fail-closed)。
+                    // Defensive validation: although the offer pins the format to BGRx, an
+                    // anomalous compositor fixating another format would make convert_frame's
+                    // channel swap silently output wrong-colored frames — reject outright
+                    // during negotiation (fail-closed).
                     if info.format() == VideoFormat::BGRx {
                         Ok(info)
                     } else {
@@ -322,10 +331,11 @@ fn run_pw_loop(
         .register()
         .map_err(|e| e.to_string())?;
 
-    // 允许的格式:固定 BGRx(三大合成器 portal 实现的 shm 缓冲格式,见
-    // mutter screen-cast / kwin screencastbuffer / xdg-desktop-portal-wlr);
-    // 尺寸与帧率给区间,由合成器 fixate(协商结果即截屏分辨率,也是流本地
-    // 像素的输入坐标空间)。
+    // Allowed format: fixed BGRx (the shm buffer format of the three major compositors'
+    // portal implementations, see mutter screen-cast / kwin screencastbuffer /
+    // xdg-desktop-portal-wlr); size and framerate are given as ranges for the compositor to
+    // fixate (the negotiated result is the capture resolution and also the input coordinate
+    // space of stream-local pixels).
     let obj = pod::object!(
         SpaTypes::ObjectParamFormat,
         ParamType::EnumFormat,
@@ -377,12 +387,13 @@ fn run_pw_loop(
             &mut params,
         )
         .map_err(|e| format!("cannot connect the capture stream to node {node_id}: {e}"))?;
-    // pw_stream 默认Inactive:显式激活后合成器才开始推帧。
+    // pw_stream defaults to Inactive: the compositor only starts pushing frames after an
+    // explicit activation.
     stream
         .set_active(true)
         .map_err(|e| format!("cannot activate the capture stream: {e}"))?;
 
-    // 停流开关:收到 false 即停流退出(backend 析构/close 路径)。
+    // Stop switch: receiving false stops the stream and exits (backend drop/close path).
     let quit_loop = main_loop.clone();
     let shutdown_shared = Arc::clone(shared);
     let _attached = control_rx.attach(main_loop.loop_(), move |active| {
@@ -400,7 +411,7 @@ fn run_pw_loop(
     Ok(())
 }
 
-/// BGRx([b,g,r,x])→ RGBA 帧拷贝,尊重 stride。纯函数,便于单测。
+/// BGRx ([b,g,r,x]) → RGBA frame copy, honoring stride. Pure function, easy to unit test.
 fn convert_frame(raw: &[u8], stride: usize, width: u32, height: u32) -> Option<Vec<u8>> {
     let width = width as usize;
     let height = height as usize;
@@ -430,13 +441,13 @@ mod tests {
 
     #[test]
     fn convert_frame_handles_stride_padding_and_swizzle() {
-        // 宽 2 高 2,stride 12(每行多 4 字节填充);BGRx 输入 → RGBA 输出。
+        // Width 2, height 2, stride 12 (4 bytes of padding per row); BGRx input → RGBA output.
         let mut raw = vec![0u8; 12 * 2];
-        // 第一行像素 0:B G R x → 期望 R G B A。
+        // First row, pixel 0: B G R x → expected R G B A.
         raw[0..4].copy_from_slice(&[10, 20, 30, 255]);
-        // 第一行像素 1。
+        // First row, pixel 1.
         raw[4..8].copy_from_slice(&[40, 50, 60, 0]);
-        // 第二行像素 0(在 padding 之后)。
+        // Second row, pixel 0 (after the padding).
         raw[12..16].copy_from_slice(&[1, 2, 3, 7]);
         let out = convert_frame(&raw, 12, 2, 2).expect("convert");
         assert_eq!(out.len(), 16);
@@ -449,9 +460,9 @@ mod tests {
     #[test]
     fn convert_frame_rejects_short_or_mismatched_buffers() {
         assert!(convert_frame(&[], 8, 1, 1).is_none());
-        // stride < row(宽 3 时 row=12 > stride 8)。
+        // stride < row (row = 12 > stride 8 at width 3).
         assert!(convert_frame(&[0u8; 24], 8, 3, 1).is_none());
-        // 最后一行不满(len 7 < stride*(h-1)+row = 12)。
+        // Last row incomplete (len 7 < stride*(h-1)+row = 12).
         assert!(convert_frame(&[0u8; 7], 8, 1, 2).is_none());
         assert!(convert_frame(&[0u8; 8], 8, 0, 1).is_none(), "zero width");
         assert!(convert_frame(&[0u8; 8], 8, 1, 0).is_none(), "zero height");
@@ -459,8 +470,9 @@ mod tests {
 
     #[test]
     fn convert_frame_requires_full_final_row() {
-        // 最后一行不满:整帧拒绝,不能只截掉尾行静默输出坏图。
-        let raw = vec![0u8; 8]; // 1 行完整,声明 2 行。
+        // Last row incomplete: reject the whole frame rather than silently dropping the
+        // trailing row and emitting a broken image.
+        let raw = vec![0u8; 8]; // 1 complete row, 2 declared.
         assert!(convert_frame(&raw, 8, 1, 2).is_none());
     }
 }

@@ -120,9 +120,11 @@ const ExpertAgentCard = ({ item, t }) => {
   );
 };
 
-// ── computer_use 截图卡 ───────────────────────────────────────────
-// 工具把截图存进会话工作区 attachments/computer_use/*.png，文本输出带绝对路径。
-// 功能开关关闭时一律回退默认工具卡（特性不可见）；输出里没有截图路径时同样回退。
+// ── computer_use screenshot card ───────────────────────────────────────────
+// The tool stores screenshots in the session workspace at attachments/computer_use/*.png;
+// the text output carries the absolute path. Whenever the feature switch is off, always
+// fall back to the default tool card (the feature stays invisible); fall back likewise when
+// the output carries no screenshot path.
 function computerUseToolCardEnabled() {
   if (!bridge.available || !bridge.state || typeof bridge.state.get !== 'function') return false;
   try {
@@ -185,8 +187,9 @@ const ComputerUseScreenshotCard = ({ item, path, t }) => {
 const ToolOutput = ({ item, t }) => {
       const out = item.output;
       if (item.success === false) return <OutputError text={out} />;
-      // computer_use：输出引用 attachments/computer_use/*.png 时渲染截图卡；
-      // 无截图或功能关闭时落回默认 <OutputPre>。
+      // computer_use: render the screenshot card when the output references
+      // attachments/computer_use/*.png; with no screenshot or the feature off, fall back to
+      // the default <OutputPre>.
       if (item.name === 'computer_use') {
         const screenshotPath = computerUseScreenshotForItem(item);
         if (screenshotPath) return <ComputerUseScreenshotCard item={item} path={screenshotPath} t={t} />;
@@ -302,7 +305,8 @@ const ToolOutput = ({ item, t }) => {
       const isRunning = item.state === 'running';
       // eslint-disable-next-line react-hooks/rules-of-hooks -- the early-return branch is constant for an instance's lifetime (see the comment above); the per-instance Hook count is stable
       const { cancelling, cancelError: shellCancelError, cancel: cancelShellTask } = useShellTaskCancel(t);
-      // 有可视化卡片的工具(天气/股票/computer_use 截图)完成后直接展开,不折叠
+      // Tools with a visual card (weather/stocks/computer_use screenshot) expand directly
+      // when done, no collapsing
       const hasCard = ((isWeatherTool(item.name) || isStockQuoteTool(item.name)) && item.state === 'done')
         || !!computerUseScreenshotForItem(item);
       const hasLiveShellOutput = isShellExecutionTool(item.name)

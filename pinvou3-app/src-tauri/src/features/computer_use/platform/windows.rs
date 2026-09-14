@@ -1,41 +1,50 @@
-//! Windows 后端：xcap（GDI BitBlt）截屏 + enigo（SendInput）输入注入
-//! + uiautomation（UI Automation）无障碍树。
+//! Windows backend: xcap (GDI BitBlt) screen capture + enigo (SendInput) input injection
+//! + uiautomation (UI Automation) accessibility tree.
 //!
-//! 坐标约定：进程经 tao 置为 Per-Monitor-V2 DPI aware（`new()` 时读取线程
-//! DPI 感知核对，见 `capabilities` notes），截图像素、UIA BoundingRectangle、
-//! SendInput 绝对坐标同为**设备物理像素**，故 `Capture.input_scale_x/y = 1.0`；
-//! 多显示器虚拟桌面原点可为负，原样透传。
+//! Coordinate contract: the process is made Per-Monitor-V2 DPI aware via tao (the thread DPI
+//! awareness is read and checked at `new()` time, see the `capabilities` notes), so capture
+//! pixels, UIA BoundingRectangle, and SendInput absolute coordinates are all **device physical
+//! pixels**; hence `Capture.input_scale_x/y = 1.0`. The multi-monitor virtual desktop origin
+//! can be negative and is passed through as-is.
 //!
-//! **绝对鼠标移动不经 enigo**：enigo 0.6.1 的 `Coordinate::Abs` 只按主屏
-//! （`SM_CXSCREEN`）归一化且不带 `MOUSEEVENTF_VIRTUALDESK`，光标在副屏时坐标
-//! 会被折算到主屏。本模块用 windows-sys 直接调用 `SendInput`，以整个虚拟桌面
-//! 归一化（`move_mouse_abs`）；按钮按下/释放与键盘仍走 enigo——其点击事件
-//! 相对当前光标位置（dx=dy=0、无 ABSOLUTE 标志），绝对移动先行落位即正确。
+//! **Absolute mouse movement bypasses enigo**: enigo 0.6.1's `Coordinate::Abs` normalizes only
+//! against the primary screen (`SM_CXSCREEN`) and does not set `MOUSEEVENTF_VIRTUALDESK`, so
+//! when the cursor is on a secondary screen the coordinates get folded onto the primary screen.
+//! This module calls `SendInput` directly via windows-sys, normalized against the entire
+//! virtual desktop (`move_mouse_abs`); button press/release and keyboard still go through
+//! enigo — its click events are relative to the current cursor position (dx=dy=0, no ABSOLUTE
+//! flag), so an absolute move landing first is correct.
 //!
-//! 线程与 COM：所有对象于 backend worker 线程构造、使用、析构（见
-//! `super::super::backend::BackendHandle`），不跨线程移动。`Enigo` 持有在结构内；
-//! `uiautomation::UIAutomation` 因 windows-rs COM 接口为 `!Send` 而不入结构——
-//! `new()` 在该线程以 MTA 初始化 COM 一次，此后每次 UIA 调用现建现析客户端。
-//! 全部 UIA 调用都留在这条无窗口的 worker 线程上，避免与 WebView UI 线程死锁。
+//! Threads and COM: all objects are constructed, used, and dropped on the backend worker
+//! thread (see `super::super::backend::BackendHandle`) and never move across threads. `Enigo`
+//! is held inside the struct; `uiautomation::UIAutomation` does not enter the struct because
+//! the windows-rs COM interfaces are `!Send` — `new()` initializes COM once on that thread as
+//! MTA, and afterwards every UIA call builds and drops a client on the fly. All UIA calls stay
+//! on this windowless worker thread, avoiding deadlocks with the WebView UI thread.
 //!
-//! 已知限制（UIPI / 安全桌面 / UIA 超时）：
-//! - 本进程以 medium IL 运行且不带 `uiAccess`，对**以管理员身份运行**的目标窗口，
-//!   SendInput 注入会被 UIPI 丢弃、UIA 读取返回 access denied。两类失败都可
-//!   探测并映射为显式 `unavailable`：UIA 的拒绝访问（HRESULT 0x80070005）与
-//!   enigo 报告的注入数不足（见 `map_input_err`）。
-//! - 安全桌面（锁屏 / UAC 同意框）与显示器休眠期间截图为全黑、注入与 UIA 全部
-//!   失效：全黑帧会作为显式 `unavailable` 错误返回，唤醒后自动恢复。
-//! - UIA 读取没有事务超时：目标应用挂死可阻塞调用直至系统默认 COM 超时。
-//!   精确语义分两段(round-10 评审 m9)：调用在途时,该会话的后续请求被
-//!   in-flight 旗标**立即拒绝**(不排队);调用方在调用预算处超时放弃后,
-//!   后续请求才会排队并各自耗满整个调用预算才报错。worker 线程在 OS 调用
-//!   里可能卡到系统 COM 超时(固有限制)。
-//! - enigo 的 `text()` 对 `\n`/`\t` 会同时发 Return/Tab 键击**和**对应的
-//!   Unicode 事件(上游实现,见 enigo win_impl),对同时处理两种消息的
-//!   目标应用可能双次插入换行/制表。type_text 未做拆分规避(需在 Windows
-//!   上实测拆分注入的等价性),如实披露。
-//! - `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` 与 DRM 保护内容在截图中
-//!   呈现为黑块，属系统预期行为。
+//! Known limitations (UIPI / secure desktop / UIA timeouts):
+//! - This process runs at medium IL without `uiAccess`, so for target windows **run as
+//!   administrator**, SendInput injection is dropped by UIPI and UIA reads return access
+//!   denied. Both failure classes are detectable and mapped to explicit `unavailable`: UIA's
+//!   access denied (HRESULT 0x80070005) and enigo's reported injection shortfall
+//!   (see `map_input_err`).
+//! - During the secure desktop (lock screen / UAC consent dialog) and display sleep, capture
+//!   is all black and injection and UIA all stop working: an all-black frame is returned as an
+//!   explicit `unavailable` error, and things recover automatically after wake.
+//! - UIA reads have no transaction timeout: a hung target application can block the call until
+//!   the system default COM timeout. The precise semantics have two phases (round-10 review
+//!   m9): while a call is in flight, subsequent requests of that session are **rejected
+//!   immediately** by the in-flight flag (no queueing); only after the caller gives up at the
+//!   call budget timeout do subsequent requests queue and each burn the entire call budget
+//!   before erroring. The worker thread may remain stuck inside the OS call up to the system
+//!   COM timeout (inherent limitation).
+//! - enigo's `text()` sends both the Return/Tab keystrokes **and** the corresponding Unicode
+//!   events for `\n`/`\t` (upstream implementation, see enigo win_impl); target applications
+//!   that handle both message kinds may insert the newline/tab twice. type_text does not split
+//!   to work around this (split-injection equivalence would need to be verified on real
+//!   Windows); disclosed as-is.
+//! - `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` and DRM-protected content appear as
+//!   black blocks in captures; this is expected system behavior.
 
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -63,45 +72,52 @@ use super::super::types::{
 };
 use super::helpers::{TYPE_CHUNK_CHARS, char_chunks, drag_waypoints, map_scroll, sanitize_name};
 
-/// 点击前等待先前 move 落位（目标进程消费鼠标移动事件）。
+/// Wait before a click so the previous move has settled (the target process consumes mouse
+/// move events).
 const CLICK_SETTLE_MS: u64 = 30;
-/// 双击/三击中相邻两次点击的间隔（远小于系统双击时限 500ms）。
+/// Interval between adjacent clicks of a double/triple click (far below the system 500ms
+/// double-click threshold).
 const MULTI_CLICK_INTERVAL_MS: u64 = 40;
-/// 拖拽按下后、开始移动前的停顿，给目标窗口进入拖拽识别状态的时间。
+/// Pause after the drag press and before movement starts, giving the target window time to
+/// enter drag-recognition state.
 const DRAG_PRESS_SETTLE_MS: u64 = 60;
-/// 拖拽路径插值步数（部分应用只有收到足够多 motion 事件才识别拖拽）。
+/// Number of interpolated steps along the drag path (some apps only recognize a drag after
+/// receiving enough motion events).
 const DRAG_STEPS: usize = 8;
-/// 拖拽相邻两点的间隔。
+/// Interval between adjacent drag waypoints.
 const DRAG_STEP_DELAY_MS: u64 = 12;
-/// 按下全部键与逆序释放之间的停顿，提高修饰键和弦（alt+Tab 等）命中率。
+/// Pause between pressing all keys and releasing them in reverse, improving the hit rate of
+/// modifier chords (alt+Tab etc.).
 const CHORD_HOLD_MS: u64 = 20;
 
-/// `ui_tree` 默认/上限：深度与节点数（防止巨型树拖垮 worker 线程与文本预算）。
+/// `ui_tree` defaults/caps: depth and node count (prevents giant trees from overwhelming the
+/// worker thread and the text budget).
 const DEFAULT_TREE_MAX_DEPTH: u32 = 8;
 const DEFAULT_TREE_MAX_NODES: u32 = 400;
 const MAX_TREE_DEPTH: u32 = 24;
 const MAX_TREE_NODES: u32 = 2000;
-/// 单行 name 的字符上限。
+/// Character cap for a single name line.
 const MAX_NODE_NAME_CHARS: usize = 80;
-/// 焦点元素向上爬升查找所属窗口的防御性上限。
+/// Defensive cap for climbing from the focused element up to its owning window.
 const MAX_ANCESTOR_CLIMB: u32 = 16;
 
-/// `VkKeyScanExW` 返回值高字节的修饰位（Win32 文档）：bit0=Shift（0x01），
-/// bit1=Ctrl（0x02），bit2=Alt（0x04，AltGr = Ctrl+Alt）。高字节非零表示
-/// 产生该字符需要修饰键；bit0-2 之外的高位 Win32 未定义，注入计划一律按
-/// 「需要修饰键」fail-closed 处理（见 `char_injection_from_scan`），判断
-/// 只依赖「高字节非零」，无需逐位常量。
+/// Modifier bits of the high byte returned by `VkKeyScanExW` (Win32 docs): bit0=Shift (0x01),
+/// bit1=Ctrl (0x02), bit2=Alt (0x04, AltGr = Ctrl+Alt). A nonzero high byte means producing
+/// the character requires modifier keys; high bits beyond bit0-2 are undefined in Win32, and
+/// the injection plan treats them all fail-closed as "needs a modifier key"
+/// (see `char_injection_from_scan`); the check relies only on "high byte nonzero", so no
+/// per-bit constants are needed.
 
-/// `GetAwarenessFromDpiAwarenessContext` 的返回值：Per-Monitor 感知。
-/// （windows-sys `Win32_UI_HiDpi` 的 `DPI_AWARENESS_PER_MONITOR_AWARE`。）
+/// Return value of `GetAwarenessFromDpiAwarenessContext`: Per-Monitor awareness.
+/// (windows-sys `Win32_UI_HiDpi`'s `DPI_AWARENESS_PER_MONITOR_AWARE`.)
 const DPI_AWARENESS_PER_MONITOR_AWARE: i32 = 2;
-/// `DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2` 伪句柄（-4）。
+/// `DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2` pseudo-handle (-4).
 const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
 
-// windows-sys 0.61 的这三条 user32 入口位于 `Win32_UI_HiDpi` feature 之后，而
-// Cargo.toml 未启用该 feature；为不新增依赖 feature 在此手声明（签名与
-// windows-sys HiDpi 模块逐字一致）。最低要求 Windows 10 1607，在 Tauri 2 /
-// WebView2 的 Win10 基线之上。
+// These three user32 entry points live behind the `Win32_UI_HiDpi` feature in
+// windows-sys 0.61, which Cargo.toml does not enable; declare them by hand here rather than
+// adding the dependency feature (signatures verbatim-identical to the windows-sys HiDpi
+// module). Minimum requirement is Windows 10 1607, above the Tauri 2 / WebView2 Win10 baseline.
 #[allow(non_snake_case)]
 #[link(name = "user32")]
 unsafe extern "system" {
@@ -110,17 +126,19 @@ unsafe extern "system" {
     fn AreDpiAwarenessContextsEqual(a: *mut core::ffi::c_void, b: *mut core::ffi::c_void) -> i32;
 }
 
-/// Win32 `E_ACCESSDENIED`（0x80070005）：UIA 跨完整性级别读取被拒的典型信号。
+/// Win32 `E_ACCESSDENIED` (0x80070005): the typical signal of a UIA read denied across
+/// integrity levels.
 const E_ACCESSDENIED: i32 = -2147024891;
 
-/// 线程 DPI 感知是否为 Per-Monitor-V2：感知级别为 PER_MONITOR_AWARE(2) 且
-/// 线程上下文确为 PMv2 伪句柄（Per-Monitor v1 满足前者不满足后者）。纯函数，
-/// 便于单测；`context_is_pmv2` 即 `AreDpiAwarenessContextsEqual(ctx, PMv2)`。
+/// Whether the thread DPI awareness is Per-Monitor-V2: the awareness level is
+/// PER_MONITOR_AWARE(2) and the thread context really is the PMv2 pseudo-handle
+/// (Per-Monitor v1 satisfies the former but not the latter). Pure function, easy to unit
+/// test; `context_is_pmv2` is `AreDpiAwarenessContextsEqual(ctx, PMv2)`.
 fn thread_is_pmv2(awareness: i32, context_is_pmv2: bool) -> bool {
     awareness == DPI_AWARENESS_PER_MONITOR_AWARE && context_is_pmv2
 }
 
-/// 读取当前线程的 DPI 感知是否为 PMv2（见 `thread_is_pmv2`）。
+/// Whether the current thread's DPI awareness is PMv2 (see `thread_is_pmv2`).
 fn thread_dpi_is_pmv2() -> bool {
     // SAFETY: GetThreadDpiAwarenessContext/GetAwarenessFromDpiAwarenessContext
     // are thread-info queries with no lifetime or ownership constraints; a
@@ -139,27 +157,30 @@ fn thread_dpi_is_pmv2() -> bool {
     }
 }
 
-/// 单字符键的注入计划（据 `VkKeyScanExW` 布局查询结果）。
+/// Injection plan for a single-character key (from the `VkKeyScanExW` layout query).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CharInjection {
-    /// 布局直发：无需修饰键（纯 ASCII 字母/数字/无需 Shift 的标点），走既有
-    /// enigo 虚拟键路径（shift state 高字节为 0，enigo 的 VK 换算正确）。
+    /// Layout sends it directly: no modifier needed (plain ASCII letters/digits/punctuation
+    /// that needs no Shift), via the existing enigo virtual-key path (shift-state high byte
+    /// is 0, enigo's VK conversion is correct).
     Direct,
-    /// 需要修饰键（Shift/AltGr 等）才能产生该字符。enigo 会把 `VkKeyScanExW`
-    /// 的 shift state 高字节一并当作 VK 发送（SendInput 成功但目标收不到该
-    /// 字符），故不能再走 VK 和弦。
+    /// Producing the character requires a modifier key (Shift/AltGr etc.). enigo sends the
+    /// `VkKeyScanExW` shift-state high byte along as a VK too (SendInput succeeds but the
+    /// target never receives the character), so the VK chord path must not be used.
     NeedsModifier,
-    /// 布局无此字符（如英文布局下的 CJK）；enigo 对映射失败自动回退
-    /// KEYEVENTF_UNICODE 事件，维持现路径即可。
+    /// The layout has no such character (e.g. CJK on an English layout); enigo automatically
+    /// falls back to KEYEVENTF_UNICODE events on mapping failure, so keep the current path.
     NotInLayout,
 }
 
-/// `VkKeyScanExW` 返回值 → 注入计划（纯函数，便于单测）。低字节为 VK，
-/// 高字节为修饰位（`VKSHIFT_*`）；返回负值表示布局无法产生该字符。
-/// 高字节任何非零位都按「需要修饰键」处理（fail-closed）：Win32 只定义
-/// bit0-2，未知高位组合按需修饰而不是直接注入（第三轮评审发现：掩码
-/// `& 0x07` 把未知高位当 Direct，与模块文档/单测承诺的 fail-closed 矛盾；
-/// 运行时语义无差（未知位不会真实出现），但代码必须兑现承诺的行为）。
+/// `VkKeyScanExW` return value → injection plan (pure function, easy to unit test). The low
+/// byte is the VK, the high byte the modifier bits (`VKSHIFT_*`); a negative return means the
+/// layout cannot produce the character. Any nonzero bit of the high byte is treated as
+/// "needs a modifier key" (fail-closed): Win32 only defines bit0-2, and unknown high-bit
+/// combinations ask for the modifier rather than injecting directly (third-round review
+/// finding: the `& 0x07` mask treated unknown high bits as Direct, contradicting the
+/// fail-closed promise made by the module docs/unit tests; runtime semantics were unchanged
+/// (unknown bits never really occur), but the code must deliver the promised behavior).
 fn char_injection_from_scan(scan: i16) -> CharInjection {
     if scan < 0 {
         return CharInjection::NotInLayout;
@@ -171,12 +192,13 @@ fn char_injection_from_scan(scan: i16) -> CharInjection {
     }
 }
 
-/// 查询字符在目标线程键盘布局中的注入计划。布局取前台窗口线程的（与 enigo
-/// 的换算目标一致），取不到前台窗口时回退当前线程布局。
+/// Query the injection plan for a character under the target thread's keyboard layout. The
+/// layout is taken from the foreground window's thread (consistent with enigo's conversion
+/// target), falling back to the current thread's layout when no foreground window exists.
 fn char_injection(c: char) -> CharInjection {
     let mut utf16 = [0u16; 2];
     if c.encode_utf16(&mut utf16).len() != 1 {
-        // BMP 外字符（代理对）无法映射为单个 VK。
+        // Characters outside the BMP (surrogate pairs) cannot map to a single VK.
         return CharInjection::NotInLayout;
     }
     // SAFETY: GetForegroundWindow/GetWindowThreadProcessId/GetKeyboardLayout
@@ -195,22 +217,23 @@ fn char_injection(c: char) -> CharInjection {
     char_injection_from_scan(unsafe { VkKeyScanExW(utf16[0], layout) })
 }
 
-/// 屏幕/虚拟桌面单轴坐标 → SendInput 绝对归一化坐标（0..=65535）。
-/// `origin`/`extent` 为归一化域的原点与尺寸（虚拟桌面原点可为负）。
-/// 纯函数，便于单测。
+/// Single axis of a screen/virtual-desktop coordinate → SendInput absolute normalized
+/// coordinate (0..=65535). `origin`/`extent` are the origin and size of the normalization
+/// domain (the virtual desktop origin can be negative). Pure function, easy to unit test.
 fn normalize_abs_axis(value: i32, origin: i32, extent: i32) -> i32 {
     if extent <= 1 {
-        // 退化（单像素/无效）：0 与 65535 等价，取 0。
+        // Degenerate (single-pixel/invalid): 0 and 65535 are equivalent, take 0.
         return 0;
     }
     let delta = i64::from(value - origin);
     let den = i64::from(extent - 1);
-    // 四舍五入（半值向上）；负值（域外）随后被钳掉。
+    // Round half up; negative values (outside the domain) are clamped right after.
     let scaled = (delta * i64::from(65535) + den / 2) / den;
     scaled.clamp(0, i64::from(65535)) as i32
 }
 
-/// 读取虚拟桌面度量：(原点 x, 原点 y, 宽, 高)，覆盖全部显示器（原点可为负）。
+/// Read the virtual desktop metrics: (origin x, origin y, width, height), covering all
+/// monitors (the origin can be negative).
 fn virtual_desktop_metrics() -> (i32, i32, i32, i32) {
     // SAFETY: GetSystemMetrics with SM_*VIRTUALSCREEN indices are pure
     // metric queries returning i32 values; no pointers involved.
@@ -224,8 +247,9 @@ fn virtual_desktop_metrics() -> (i32, i32, i32, i32) {
     }
 }
 
-/// SendInput 注入结果校验：注入数与请求数不符（典型原因是目标窗口提权、
-/// UIPI 拦截注入）映射为 `unavailable`，而非泛化 failed——上层可据此提示。
+/// Validate the SendInput injection result: a mismatch between injected and requested counts
+/// (typically an elevated target window with UIPI blocking the injection) maps to
+/// `unavailable` instead of a generic failed — the upper layer can use this to advise the user.
 fn check_injection(context: &str, requested: u32, sent: u32) -> Result<(), ComputerUseError> {
     if sent == requested {
         return Ok(());
@@ -242,9 +266,10 @@ fn map_xcap_err(context: &str, err: xcap::XCapError) -> ComputerUseError {
 }
 
 fn map_input_err(context: &str, err: enigo::InputError) -> ComputerUseError {
-    // enigo 在 SendInput 注入数不足时返回 Simulate("...blocked by UIPI")——
-    // 典型场景是目标窗口以管理员运行、UIPI 静默丢弃注入事件。映射为
-    // `unavailable`（可探测、带提示），不再是泛化 failed。
+    // enigo returns Simulate("...blocked by UIPI") when SendInput's injected count falls
+    // short — the typical scenario is a target window running as administrator with UIPI
+    // silently dropping the injected events. Map it to `unavailable` (detectable, with
+    // guidance) instead of a generic failed.
     if let enigo::InputError::Simulate(msg) = &err {
         if msg.contains("UIPI") {
             return ComputerUseError::unavailable(format!(
@@ -267,29 +292,33 @@ fn map_uia_err(context: &str, err: uiautomation::Error) -> ComputerUseError {
     }
 }
 
-/// `map_key` 的结果。普通键给出 enigo 按键；需修饰键的字符（如 '+'）在
-/// 单独成和弦时要求改走 Unicode 直注通道。
+/// The result of `map_key`. Ordinary keys yield an enigo key; characters that need a modifier
+/// (like '+') require switching to the direct Unicode injection channel when they are the
+/// whole chord.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MappedKey {
     Key(enigo::Key),
-    /// 该字符需修饰键才能产生且和弦只有它自己：用 `Keyboard::text` 经
-    /// KEYEVENTF_UNICODE 直注（不依赖布局与 IME）。注意该通道立即
-    /// down+up，`hold_key` 的按住语义不适用。
+    /// The character needs a modifier to be produced and the chord contains only it: inject
+    /// directly via `Keyboard::text` and KEYEVENTF_UNICODE (independent of layout and IME).
+    /// Note this channel does down+up immediately, so `hold_key`'s held semantics do not apply.
     UnicodeOnly(char),
 }
 
-/// 据 `Key::Char` 的布局注入计划与和弦长度给出映射结果（纯函数，便于单测）。
-/// 需修饰键的字符（如 '+'，enigo 会把 `VkKeyScanExW` 的 shift state 高字节
-/// 一并当作 VK 发送、目标收不到该字符）：
-/// - 和弦除该字符外还有其它键 → 显式报错；
-/// - 和弦仅该字符 → 返回 [`MappedKey::UnicodeOnly`]，由调用方走 Unicode 通道。
+/// Map according to the `Key::Char` layout injection plan and the chord length (pure
+/// function, easy to unit test). Characters that need a modifier (like '+'; enigo would send
+/// the `VkKeyScanExW` shift-state high byte along as a VK and the target would never receive
+/// the character):
+/// - the chord has other keys besides the character → error explicitly;
+/// - the chord is only the character → return [`MappedKey::UnicodeOnly`] and let the caller
+///   take the Unicode channel.
 fn map_char_with_plan(
     c: char,
     plan: CharInjection,
     chord_len: usize,
 ) -> Result<MappedKey, ComputerUseError> {
     match plan {
-        // Direct：enigo 的 VK 换算正确；NotInLayout：enigo 自动回退 Unicode 事件。
+        // Direct: enigo's VK conversion is correct; NotInLayout: enigo automatically falls
+        // back to Unicode events.
         CharInjection::Direct | CharInjection::NotInLayout => {
             Ok(MappedKey::Key(enigo::Key::Unicode(c)))
         }
@@ -311,9 +340,9 @@ fn map_char_with_plan(
     }
 }
 
-/// 本 crate `Key` → enigo 按键。`Char` 先经 `VkKeyScanExW` 查布局注入计划
-/// （见 [`map_char_with_plan`]）；命名键直映。布局取前台窗口线程的，与
-/// enigo 的换算目标一致。
+/// This crate's `Key` → enigo key. `Char` first goes through `VkKeyScanExW` for the layout
+/// injection plan (see [`map_char_with_plan`]); named keys map directly. The layout is taken
+/// from the foreground window's thread, consistent with enigo's conversion target.
 fn map_key(key: Key, chord_len: usize) -> Result<MappedKey, ComputerUseError> {
     use enigo::Key as EK;
     let mapped = match key {
@@ -368,14 +397,14 @@ fn map_mouse_button(button: MouseButton) -> Button {
     }
 }
 
-/// 树序列化的节点预算与序号。
+/// Node budget and sequence numbers for tree serialization.
 struct TreeWriter {
     next_index: u32,
     remaining: u32,
     truncated: bool,
 }
 
-/// 单行格式：`[i] role "name" (x,y,w,h) flags`，flags 省略时为无。
+/// Single-line format: `[i] role "name" (x,y,w,h) flags`, with flags omitted when there are none.
 fn format_tree_line(
     index: u32,
     depth: u32,
@@ -419,9 +448,11 @@ fn format_tree_line(
     Ok(line)
 }
 
-/// 序列化一个子树：逐节点以 Children-scope 缓存请求抓取「该节点 + 直接子级」，
-/// 节点预算（`writer.remaining`）约束跨进程往返次数——整棵树的抓取规模由此有界。
-/// 元素可能在排队期间销毁：单节点抓取失败按“该分支结束”处理，不拖垮整次抓取。
+/// Serialize a subtree: fetch "this node + direct children" per node via a Children-scope
+/// cache request; the node budget (`writer.remaining`) bounds the number of cross-process
+/// round-trips — the total fetch scale of the whole tree is thereby bounded. Elements may be
+/// destroyed while queued: a single-node fetch failure is treated as "this branch ended" and
+/// does not sink the whole fetch.
 fn write_tree_node(
     element: &uiautomation::UIElement,
     cache: &uiautomation::core::UICacheRequest,
@@ -434,7 +465,8 @@ fn write_tree_node(
         writer.truncated = true;
         return Ok(());
     }
-    // 抓取失败不消耗预算：销毁的元素不应挤占可见节点的名额。
+    // Fetch failures do not consume budget: destroyed elements must not crowd out slots for
+    // visible nodes.
     let Ok(cached) = element.build_updated_cache(cache) else {
         return Ok(());
     };
@@ -446,7 +478,8 @@ fn write_tree_node(
     if depth >= max_depth {
         return Ok(());
     }
-    // 子级已在同一次缓存请求中抓回；枚举失败同样按“该分支结束”处理。
+    // Children were already fetched in the same cache request; enumeration failure is likewise
+    // treated as "this branch ended".
     let Ok(children) = cached.get_cached_children() else {
         return Ok(());
     };
@@ -495,16 +528,17 @@ fn combine_drag_errors(
 
 pub(super) struct WindowsComputerUseBackend {
     enigo: Enigo,
-    /// `new()` 时读一次的线程 DPI 感知结论：非 Per-Monitor-V2 时在
-    /// `capabilities().notes` 声明坐标假设存疑（不做硬失败）。
+    /// The thread DPI awareness conclusion read once at `new()`: when not Per-Monitor-V2,
+    /// `capabilities().notes` declares that the coordinate assumption is doubtful (no hard failure).
     dpi_pmv2: bool,
-    /// 调用方超时后置位的取消旗标（round-12 评审 M5）：type 分块注入在
-    /// 块间检查它，被放弃的请求不再继续注入。
+    /// Cancel flag set after the caller times out (round-12 review M5): the type chunked
+    /// injection checks it between chunks, so abandoned requests stop injecting.
     cancel: Option<Arc<AtomicBool>>,
-    // 注意：不持有 uiautomation::UIAutomation——windows-rs 的 COM 接口类型是
-    // !Send（IUIAutomation 内含 NonNull），而 ComputerUseBackend 要求 Send。
-    // 改为在 new() 里于 worker 线程初始化 COM MTA 一次，之后每次 UIA 调用经
-    // uia_client() 现建现析客户端（CoCreateInstance 开销对每回合一次的调用可忽略）。
+    // Note: does not hold uiautomation::UIAutomation — the windows-rs COM interface types are
+    // !Send (IUIAutomation contains NonNull), while ComputerUseBackend requires Send.
+    // Instead, new() initializes COM MTA once on the worker thread, and every UIA call builds
+    // and drops a client via uia_client() on the fly (CoCreateInstance overhead is negligible
+    // for once-per-turn calls).
 }
 
 impl WindowsComputerUseBackend {
@@ -512,15 +546,17 @@ impl WindowsComputerUseBackend {
         let enigo = Enigo::new(&Settings::default()).map_err(|err| {
             ComputerUseError::unavailable(format!("cannot initialize SendInput backend: {err}"))
         })?;
-        // 在 worker 线程上以 MTA 初始化 COM（UIAutomation::new 内含 CoInitializeEx），
-        // 随后丢弃客户端；公寓存续至线程结束（该 crate 不 CoUninitialize）。
+        // Initialize COM as MTA on the worker thread (UIAutomation::new includes
+        // CoInitializeEx), then drop the client; the apartment lives until thread end
+        // (the crate does not CoUninitialize).
         let _com_mta_init = UIAutomation::new().map_err(|err| {
             ComputerUseError::unavailable(format!(
                 "cannot initialize UI Automation (COM MTA): {err}"
             ))
         })?;
-        // 坐标契约的前提是进程 Per-Monitor-V2 DPI aware（tao 置位）。此处读一次
-        // 线程感知核对，非 PMv2 时仅在 capabilities notes 声明（不做硬失败）。
+        // The coordinate contract presumes the process is Per-Monitor-V2 DPI aware (set by
+        // tao). Read the thread awareness once to verify; when not PMv2, only declare it in
+        // the capabilities notes (no hard failure).
         let dpi_pmv2 = thread_dpi_is_pmv2();
         Ok(Self {
             enigo,
@@ -529,14 +565,16 @@ impl WindowsComputerUseBackend {
         })
     }
 
-    /// 现建一个 UIA 客户端。要求 COM 已在当前线程初始化（new() 保证）。
+    /// Build a UIA client on the fly. Requires COM to be initialized on the current thread
+    /// (guaranteed by new()).
     fn uia_client(&self) -> Result<UIAutomation, ComputerUseError> {
         UIAutomation::new_direct().map_err(|err| {
             ComputerUseError::unavailable(format!("cannot create UI Automation client: {err}"))
         })
     }
 
-    /// 截屏目标显示器：光标所在屏，取不到时回退主屏，再退化为第一块屏。
+    /// Pick the monitor to capture: the screen under the cursor, falling back to the primary
+    /// screen, and finally degrading to the first screen.
     fn pick_monitor(cursor: Option<(i32, i32)>) -> Result<Monitor, ComputerUseError> {
         if let Some((x, y)) = cursor {
             if let Ok(monitor) = Monitor::from_point(x, y) {
@@ -557,10 +595,10 @@ impl WindowsComputerUseBackend {
             .ok_or_else(|| ComputerUseError::unavailable("no monitor available for screen capture"))
     }
 
-    /// 属性缓存请求：把逐节点多次跨进程 COM 往返合并成一次批量读取。
-    /// `scope` 给出缓存抓取的树范围（`ui_tree` 逐节点下潜用 `Children`，
-    /// 单元素读取用 `Element`）；`Element` 之外的 scope 会施加控件视图过滤，
-    /// 与 UIA 标准查看口径一致。
+    /// Property cache request: merges many per-node cross-process COM round-trips into a
+    /// single batched read. `scope` gives the tree range of the cached fetch (`ui_tree`'s
+    /// per-node descent uses `Children`; single-element reads use `Element`); scopes beyond
+    /// `Element` apply the control-view filter, consistent with the UIA standard view.
     fn property_cache(
         uia: &UIAutomation,
         scope: TreeScope,
@@ -595,8 +633,10 @@ impl WindowsComputerUseBackend {
         Ok(cache)
     }
 
-    /// 树的根：焦点元素所属的顶层窗口。焦点取不到时显式失败（fail-closed），
-    /// **不回退桌面根**——桌面全树可达数万节点，回退会让逐层预算失去意义。
+    /// The tree's root: the top-level window owning the focused element. When the focus
+    /// cannot be obtained, fail explicitly (fail-closed), **never fall back to the desktop
+    /// root** — the full desktop tree can reach tens of thousands of nodes, and a fallback
+    /// would render the per-level budgets meaningless.
     fn focused_window_root(
         uia: &UIAutomation,
     ) -> Result<uiautomation::UIElement, ComputerUseError> {
@@ -614,7 +654,8 @@ impl WindowsComputerUseBackend {
             }
             match walker.get_parent(&current) {
                 Ok(parent) => {
-                    // 防御父链自环（桌面根的父是其自身或直接失败）。
+                    // Defend against a self-looping parent chain (the desktop root's parent
+                    // is itself or the call fails outright).
                     if uia.compare_elements(&parent, &current).unwrap_or(false) {
                         return Ok(current);
                     }
@@ -626,7 +667,8 @@ impl WindowsComputerUseBackend {
         Ok(current)
     }
 
-    /// 逆序释放已按下的键；即使中途出错也尽力释放全部，返回首个错误。
+    /// Release the pressed keys in reverse; even on a mid-way error, best-effort release
+    /// everything and return the first error.
     fn release_reverse(pressed: &[enigo::Key], enigo: &mut Enigo) -> Result<(), enigo::InputError> {
         let mut first_err = None;
         for key in pressed.iter().rev() {
@@ -642,14 +684,15 @@ impl WindowsComputerUseBackend {
         }
     }
 
-    /// 按下全部键（出错时回滚已按下的），停顿，再逆序释放。
+    /// Press all keys (rolling back those already pressed on error), pause, then release in reverse.
     fn chord(&mut self, keys: &[Key], hold: Duration) -> Result<(), ComputerUseError> {
         let mut pressed: Vec<enigo::Key> = Vec::with_capacity(keys.len());
         for key in keys {
             let mapped = match map_key(*key, keys.len()) {
                 Ok(MappedKey::Key(mapped)) => mapped,
-                // 仅当和弦只有这一个字符时才可能出现：改走 Unicode 直注
-                // （与 type_text 同通道，KEYEVENTF_UNICODE 不依赖布局）。
+                // Only possible when the chord is this single character: switch to the direct
+                // Unicode injection (same channel as type_text; KEYEVENTF_UNICODE does not
+                // depend on the layout).
                 Ok(MappedKey::UnicodeOnly(c)) => {
                     return self
                         .enigo
@@ -657,7 +700,8 @@ impl WindowsComputerUseBackend {
                         .map_err(|err| map_input_err("key chord", err));
                 }
                 Err(err) => {
-                    // 和弦解析中途失败：先释放已按下的修饰键，避免卡键。
+                    // Chord resolution failed midway: release the pressed modifiers first to
+                    // avoid stuck keys.
                     let _ = Self::release_reverse(&pressed, &mut self.enigo);
                     return Err(err);
                 }
@@ -673,13 +717,15 @@ impl WindowsComputerUseBackend {
             .map_err(|err| map_input_err("key release", err))
     }
 
-    /// 多显示器正确的绝对移动：windows-sys 直接调 `SendInput`，以整个虚拟桌面
-    /// （`MOUSEEVENTF_VIRTUALDESK`，原点可为负）归一化。enigo 0.6.1 的
-    /// `Coordinate::Abs` 只按主屏（`SM_CXSCREEN`）归一化，光标在副屏时点击会
-    /// 落到主屏，故绝对移动必须自实现；按钮事件相对当前光标位置，先落位即可。
+    /// Multi-monitor-correct absolute movement: calls `SendInput` directly via windows-sys,
+    /// normalized against the entire virtual desktop (`MOUSEEVENTF_VIRTUALDESK`, whose origin
+    /// can be negative). enigo 0.6.1's `Coordinate::Abs` normalizes only against the primary
+    /// screen (`SM_CXSCREEN`), so a click while the cursor is on a secondary screen would land
+    /// on the primary screen; hence absolute movement must be self-implemented. Button events
+    /// are relative to the current cursor position, so landing the move first suffices.
     fn move_mouse_abs(&mut self, x: i32, y: i32) -> Result<(), ComputerUseError> {
         let (vx, vy, vw, vh) = virtual_desktop_metrics();
-        // 联合体以字段字面量构造（安全），不必 zeroed 后回填。
+        // Construct the union via field literals (safe) rather than zeroing and patching.
         let input = INPUT {
             r#type: INPUT_MOUSE,
             Anonymous: INPUT_0 {
@@ -741,8 +787,9 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
         let width = image.width();
         let height = image.height();
         let mut rgba = image.into_raw();
-        // xcap 的 GDI 路径在 Win8+ 不修复 alpha（可能整体为 0，下游 PNG 会全透明）；
-        // 单趟遍历顺带把 alpha 置为不透明并做全黑帧检测（安全桌面/受保护内容）。
+        // xcap's GDI path does not fix up alpha on Win8+ (it can be 0 throughout, making the
+        // downstream PNG fully transparent); the single pass also sets alpha opaque and
+        // detects all-black frames (secure desktop/protected content).
         let mut all_black = true;
         for pixel in rgba.chunks_exact_mut(4) {
             pixel[3] = 255;
@@ -774,13 +821,14 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
     }
 
     fn move_to(&mut self, x: i32, y: i32) -> Result<(), ComputerUseError> {
-        // 绝对移动走自有 SendInput 路径（全虚拟桌面归一化，多显示器安全）。
+        // Absolute movement takes the own SendInput path (full virtual-desktop normalization,
+        // multi-monitor safe).
         self.move_mouse_abs(x, y)
     }
 
     fn click(&mut self, button: MouseButton, count: u8) -> Result<(), ComputerUseError> {
         let button = map_mouse_button(button);
-        // 让先前的 move 落位再点击，避免点在旧光标位置。
+        // Let the previous move settle before clicking, avoiding a click at the stale cursor position.
         sleep(Duration::from_millis(CLICK_SETTLE_MS));
         for i in 0..count.max(1) {
             self.enigo
@@ -819,7 +867,8 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
             }
             Ok(())
         })();
-        // 无论路径移动是否出错都必须释放按键，避免鼠标卡在按下状态。
+        // The button must be released regardless of whether the path movement errored, so the
+        // mouse does not stay stuck pressed.
         let release = self
             .enigo
             .button(Button::Left, Direction::Release)
@@ -835,12 +884,15 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
     }
 
     fn type_text(&mut self, text: &str) -> Result<(), ComputerUseError> {
-        // Unicode 直注（KEYEVENTF_UNICODE），绕过 IME——中文直接落进焦点字段。
-        // 分块注入（round-12 评审 M5）：enigo 的 text() 把整段文本建成一次
-        // SendInput，但低级键盘钩子（AV/反键盘记录产品）对每个事件同步处理，
-        // 长文本在如此环境下可合法超过调用预算——分块 + 块间取消检查把调用方
-        // 超时后僵尸注入的上界从整段压到一个块。块内语义与整段调用逐字符
-        // 等价（'\n'/'\t' 的队列行为不随分块改变）。
+        // Direct Unicode injection (KEYEVENTF_UNICODE), bypassing the IME — Chinese lands
+        // straight in the focused field. Chunked injection (round-12 review M5): enigo's
+        // text() builds the whole text into one SendInput, but low-level keyboard hooks
+        // (AV/anti-keylogger products) process each event synchronously, and long text can
+        // legitimately exceed the call budget in such environments — chunking plus
+        // between-chunk cancellation checks shrink the upper bound of zombie injection after
+        // a caller timeout from the whole text to one chunk. Per-character semantics inside a
+        // chunk are equivalent to the whole-text call ('\n'/'\t' queue behavior does not
+        // change with chunking).
         for chunk in char_chunks(text, TYPE_CHUNK_CHARS) {
             if let Some(flag) = &self.cancel {
                 if flag.load(Ordering::SeqCst) {
@@ -880,10 +932,12 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
             .min(MAX_TREE_NODES);
         let uia = self.uia_client()?;
         let root = Self::focused_window_root(&uia)?;
-        // 逐节点下潜：每个节点以 Children-scope 缓存请求抓取「自身 + 直接子级」，
-        // 跨进程往返次数由 max_nodes 预算约束。此前是一次 Subtree 抓整树——
-        // 抓取规模不受预算约束（桌面级回退可数万节点），MAX_TREE_NODES 只管
-        // 序列化。序列化层的 MAX_TREE_NODES/MAX_TREE_DEPTH 语义保持不变。
+        // Per-node descent: each node fetches "itself + direct children" via a Children-scope
+        // cache request; the number of cross-process round-trips is bounded by the max_nodes
+        // budget. Previously one Subtree fetch grabbed the whole tree — the fetch scale was
+        // unbounded by the budget (a desktop-level fallback can be tens of thousands of
+        // nodes) and MAX_TREE_NODES only governed serialization. The serialization-layer
+        // MAX_TREE_NODES/MAX_TREE_DEPTH semantics stay unchanged.
         let cache = Self::property_cache(&uia, TreeScope::Children)?;
         let mut out = String::new();
         let mut writer = TreeWriter {
@@ -908,7 +962,7 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
         let element = uia
             .get_focused_element_build_cache(&cache)
             .map_err(|e| map_uia_err("focused_element", e))?;
-        // fail-closed：任何属性读取失败都报错，不产出残缺的 ElementInfo。
+        // fail-closed: any property read failure errors out, never producing a partial ElementInfo.
         let control_type = element
             .get_cached_control_type()
             .map_err(|e| map_uia_err("focused_element control type", e))?;
@@ -918,7 +972,8 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
         let rect = element
             .get_cached_bounding_rectangle()
             .map_err(|e| map_uia_err("focused_element bounds", e))?;
-        // IsPassword 是密码框的权威信号；读取失败同样 fail-closed。
+        // IsPassword is the authoritative signal for a password field; a read failure is
+        // also fail-closed.
         let secure = element
             .is_cached_password()
             .map_err(|e| map_uia_err("focused_element password", e))?;
@@ -952,9 +1007,10 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
         let rect = element
             .get_cached_bounding_rectangle()
             .map_err(|e| map_uia_err("element_at_point bounds", e))?;
-        // IsPassword 是密码框的权威信号（Edit 控件的 password 变体必置位；
-        // 浏览器自绘密码框也会暴露它）。读取失败必须报错（fail-closed）——
-        // unwrap_or(false) 会让密码框被当成普通元素静默放行，T3 筛查失效。
+        // IsPassword is the authoritative signal for a password field (the password variant
+        // of an Edit control must have it set; browser-drawn password fields expose it too).
+        // A read failure must error out (fail-closed) — unwrap_or(false) would silently pass
+        // password fields off as ordinary elements, defeating the T3 screening.
         let secure = element
             .is_cached_password()
             .map_err(|e| map_uia_err("element_at_point password", e))?;
@@ -978,7 +1034,7 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
 mod tests {
     use super::*;
 
-    /// 解开 [`MappedKey::Key`]（测试辅助）。
+    /// Unwrap [`MappedKey::Key`] (test helper).
     fn unwrap_mapped(plan: Result<MappedKey, ComputerUseError>) -> Option<enigo::Key> {
         match plan {
             Ok(MappedKey::Key(key)) => Some(key),
@@ -987,12 +1043,12 @@ mod tests {
         }
     }
 
-    /// [`combine_drag_errors`] 的移动失败样本（测试辅助）。
+    /// A move-failure sample for [`combine_drag_errors`] (test helper).
     fn failed_move() -> ComputerUseError {
         ComputerUseError::failed("move aborted")
     }
 
-    /// [`combine_drag_errors`] 的释放失败样本（带 map_input_err 同款上下文）。
+    /// A release-failure sample for [`combine_drag_errors`] (with map_input_err-style context).
     fn failed_release() -> ComputerUseError {
         ComputerUseError::failed("drag release: injected 0/1 events")
     }
@@ -1031,8 +1087,9 @@ mod tests {
                 "mapping {input:?}"
             );
         }
-        // 字符键：无论布局能否映射（Direct 或 NotInLayout→enigo 回退 Unicode），
-        // 都走 enigo 虚拟键路径；只有需修饰键的字符才返回 UnicodeOnly。
+        // Character keys: regardless of whether the layout can map them (Direct or
+        // NotInLayout → enigo falls back to Unicode), they take enigo's virtual-key path;
+        // only characters needing a modifier return UnicodeOnly.
         assert_eq!(
             unwrap_mapped(map_key(Key::Char('s'), 1)),
             Some(EK::Unicode('s'))
@@ -1047,23 +1104,24 @@ mod tests {
 
     #[test]
     fn char_injection_plan_follows_vkkeyscan_shift_bits() {
-        // 布局映射失败（返回 -1）：如英文布局下的 CJK → enigo 自动回退 Unicode。
+        // Layout mapping failure (returns -1): e.g. CJK on an English layout → enigo
+        // automatically falls back to Unicode.
         assert_eq!(char_injection_from_scan(-1), CharInjection::NotInLayout);
         assert_eq!(
             char_injection_from_scan(i16::MIN),
             CharInjection::NotInLayout
         );
-        // 无修饰：'a'（VK 0x41，高字节 0）。
+        // No modifiers: 'a' (VK 0x41, high byte 0).
         assert_eq!(char_injection_from_scan(0x0041), CharInjection::Direct);
-        // 仅 VK、高字节为 0 的 OEM 键。
+        // VK only, OEM key with a zero high byte.
         assert_eq!(char_injection_from_scan(0x001B), CharInjection::Direct);
-        // Shift 位（bit0）：美式键盘的 '+' = Shift + VK_OEM_PLUS(0xBB) → 0x01BB。
-        // 这是 enigo 把高字节当 VK 的缺陷场景，必须改道。
+        // Shift bit (bit0): the US keyboard's '+' = Shift + VK_OEM_PLUS(0xBB) → 0x01BB.
+        // This is the defect scenario where enigo treats the high byte as a VK; must reroute.
         assert_eq!(
             char_injection_from_scan(0x01BB),
             CharInjection::NeedsModifier
         );
-        // Ctrl 位（bit1）与 Alt 位（bit2，AltGr）：同样需要改道。
+        // Ctrl bit (bit1) and Alt bit (bit2, AltGr): also need rerouting.
         assert_eq!(
             char_injection_from_scan(0x0241),
             CharInjection::NeedsModifier
@@ -1072,12 +1130,13 @@ mod tests {
             char_injection_from_scan(0x0451),
             CharInjection::NeedsModifier
         );
-        // Shift+Ctrl+Alt 组合位。
+        // Shift+Ctrl+Alt combined bits.
         assert_eq!(
             char_injection_from_scan(0x0741),
             CharInjection::NeedsModifier
         );
-        // 未知的其它高位组合位也按需修饰处理（fail-closed）。
+        // Unknown other high-bit combinations are also treated as needing a modifier
+        // (fail-closed).
         assert_eq!(
             char_injection_from_scan(0x0841),
             CharInjection::NeedsModifier
@@ -1087,19 +1146,22 @@ mod tests {
     #[test]
     fn shift_char_maps_to_unicode_only_alone_and_errors_in_chords() {
         use enigo::Key as EK;
-        // 需修饰字符（如美式键盘的 '+' = Shift+VK_OEM_PLUS）单独成和弦：
-        // 改走 Unicode 直注，不经 enigo 的缺陷 VK 换算。
+        // A modifier-needing character (like the US keyboard's '+' = Shift+VK_OEM_PLUS) as a
+        // whole chord on its own: reroute to direct Unicode injection, bypassing enigo's
+        // defective VK conversion.
         assert_eq!(
             map_char_with_plan('+', CharInjection::NeedsModifier, 1).ok(),
             Some(MappedKey::UnicodeOnly('+'))
         );
-        // 与修饰键组合：显式报错（enigo 会把 shift state 高字节当 VK，目标收不到）。
+        // Combined with modifier keys: error explicitly (enigo would treat the shift-state
+        // high byte as a VK and the target would not receive it).
         let err = map_char_with_plan('+', CharInjection::NeedsModifier, 2).unwrap_err();
         assert!(err.to_string().contains("modifier chord"));
         assert!(err.to_string().contains("use the type action"));
-        // 模型输入的字符本身绝不能回显进审计日志的 error 字段。
+        // The model-provided character itself must never be echoed into the audit log's
+        // error field.
         assert!(!err.to_string().contains('+'), "{}", err);
-        // Direct / NotInLayout 维持 enigo 路径，与和弦长度无关。
+        // Direct / NotInLayout keep the enigo path, regardless of chord length.
         assert_eq!(
             map_char_with_plan('s', CharInjection::Direct, 2).ok(),
             Some(MappedKey::Key(EK::Unicode('s')))
@@ -1112,14 +1174,14 @@ mod tests {
 
     #[test]
     fn thread_pmv2_requires_both_awareness_and_context() {
-        // Per-Monitor v1：awareness == 2 但上下文不是 PMv2 伪句柄。
+        // Per-Monitor v1: awareness == 2 but the context is not the PMv2 pseudo-handle.
         assert!(!thread_is_pmv2(2, false));
-        // 非 PM 感知：unaware(0) / system(1) / invalid(-1) / gdiscaled(3)。
+        // Non-PM awareness: unaware(0) / system(1) / invalid(-1) / gdiscaled(3).
         assert!(!thread_is_pmv2(0, false));
         assert!(!thread_is_pmv2(1, false));
         assert!(!thread_is_pmv2(-1, false));
         assert!(!thread_is_pmv2(3, false));
-        // 只有 awareness == 2 且上下文确为 PMv2 才通过。
+        // Only awareness == 2 with a context that really is PMv2 passes.
         assert!(thread_is_pmv2(2, true));
         assert!(!thread_is_pmv2(1, true));
     }
@@ -1161,25 +1223,27 @@ mod tests {
 
     #[test]
     fn abs_axis_normalization_maps_full_virtual_desktop() {
-        // 主屏 (0,0) 1920x1080：左右端点与精确中点（半值向上取整）。
+        // Primary screen (0,0) 1920x1080: both endpoints and the exact midpoint (round half up).
         assert_eq!(normalize_abs_axis(0, 0, 1920), 0);
         assert_eq!(normalize_abs_axis(1919, 0, 1920), 65535);
         assert_eq!(normalize_abs_axis(960, 0, 1921), 32768); // 32767.5 → 32768
-        // 域外钳位：超出右缘/低于左缘都压到边界。
+        // Out-of-domain clamping: beyond the right edge / below the left edge both clamp to
+        // the boundary.
         assert_eq!(normalize_abs_axis(1920, 0, 1920), 65535);
         assert_eq!(normalize_abs_axis(-1, 0, 1920), 0);
         assert_eq!(normalize_abs_axis(5000, 0, 1920), 65535);
-        // 负原点（左侧副屏 -1920..=-1）：两端正确映射。
+        // Negative origin (left-hand secondary screen -1920..=-1): both ends map correctly.
         assert_eq!(normalize_abs_axis(-1920, -1920, 1920), 0);
         assert_eq!(normalize_abs_axis(-1, -1920, 1920), 65535);
-        // 副屏内的坐标不会折算到主屏（0..65535 域仅覆盖该副屏）。
+        // Coordinates inside the secondary screen are not folded onto the primary screen
+        // (the 0..65535 domain covers only that secondary screen).
         let mid = normalize_abs_axis(-960, -1920, 1920);
         assert!((1..65534).contains(&mid), "midpoint {mid} out of range");
-        assert_eq!(normalize_abs_axis(0, -1920, 1920), 65535); // 右缘外一点钳位
-        // 顶部负原点（副屏在主屏上方）。
+        assert_eq!(normalize_abs_axis(0, -1920, 1920), 65535); // a point past the right edge clamps
+        // Top negative origin (secondary screen above the primary).
         assert_eq!(normalize_abs_axis(-1080, -1080, 1080), 0);
         assert_eq!(normalize_abs_axis(-1, -1080, 1080), 65535);
-        // 退化尺寸（单像素/无效）。
+        // Degenerate size (single-pixel/invalid).
         assert_eq!(normalize_abs_axis(100, 0, 1), 0);
         assert_eq!(normalize_abs_axis(100, 0, 0), 0);
         assert_eq!(normalize_abs_axis(100, 0, -5), 0);

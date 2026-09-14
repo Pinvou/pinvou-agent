@@ -154,9 +154,10 @@ fn poll_global_mouse(_dev: &()) -> GlobalMouse {
 #[cfg(target_os = "macos")]
 mod macos_mouse {
     use super::GlobalMouse;
-    // 返回类型必须与 features/computer_use/platform/macos.rs 对同一 CoreGraphics
-    // 符号的声明逐类型一致（同 crate 内 extern 重复声明签名不一致会触发
-    // clashing_extern_declarations 警告，且本项目以 -D warnings 作为本地门禁）。
+    // The return type must be type-for-type identical to the declaration of the same
+    // CoreGraphics symbol in features/computer_use/platform/macos.rs (inconsistent
+    // signatures between duplicate extern declarations within one crate trigger the
+    // clashing_extern_declarations warning, and this project gates locally on -D warnings).
     use objc2_foundation::NSPoint;
 
     /// CGEventSourceStateID:kCGEventSourceStateHIDSystemState = 1。
@@ -174,7 +175,8 @@ mod macos_mouse {
         // 此前误声明为 *mut c_void 并先 CGEventSourceCreate 再传入,arm64 ABI 下
         // 堆指针低 32 位被当作 stateID 读取(非法枚举值),导致恒返回 false →
         // macOS 撕离拖拽 100% 失效。直接传整数枚举值即可,无需分配 source 对象。
-        // C 原型返回 Boolean(unsigned char),按逐类型一致声明为 u8。
+        // The C prototype returns Boolean (unsigned char); declared as u8 for type-for-type
+        // consistency.
         fn CGEventSourceButtonState(state_id: i32, button: u32) -> u8;
     }
 

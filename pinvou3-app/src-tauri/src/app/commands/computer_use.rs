@@ -1,17 +1,22 @@
-//! Computer Use 同意门控命令面。
+//! Computer Use consent-gating command surface.
 //!
-//! 引擎当前自动批准所有工具调用，同意门控内建于工具自身（`ComputerUseShared`
-//! 是唯一事实来源）；这些命令是前端注入用户决定的唯一入口：
-//! 设置开关 / 会话授权 / 吊销 / 急停 / T3 确认 / 平台权限引导。
-//! 授权与确认令牌只活于内存，落盘的只有 `computer_use.enabled` 总开关。
+//! The engine currently auto-approves every tool call, so consent gating is
+//! built into the tool itself (`ComputerUseShared` is the single source of
+//! truth); these commands are the only entry point through which the
+//! frontend injects user decisions:
+//! settings toggle / session grant / revoke / emergency stop / T3
+//! confirmation / platform permission onboarding.
+//! Grants and confirmation tokens live only in memory; the only persisted
+//! piece is the `computer_use.enabled` master toggle.
 
 use std::sync::Arc;
 
 use super::prelude::*;
 use crate::features::computer_use::ComputerUseShared;
 
-/// grant/revoke（session_id）与 confirm/deny（confirm_id）的标识符空串防御
-/// （评审发现）：空串既无业务意义，也不应静默成功污染守卫状态。
+/// Empty-string defense for the grant/revoke (session_id) and confirm/deny
+/// (confirm_id) identifiers (review finding): an empty string has no
+/// business meaning and must not silently succeed and pollute guard state.
 fn ensure_non_empty(field: &str, value: &str) -> Result<(), String> {
     if value.trim().is_empty() {
         return Err(format!("{field} must not be empty"));
@@ -19,16 +24,20 @@ fn ensure_non_empty(field: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `computer_use_get_status` 的返回投影（前端据此渲染授权/急停状态）。
+/// Return projection of `computer_use_get_status` (the frontend renders the
+/// grant/stop state from it).
 #[derive(Debug, Clone, Serialize)]
 pub struct ComputerUseStatus {
-    /// 设置总开关（settings.json `computer_use.enabled` 的内存镜像）。
+    /// Settings master toggle (in-memory mirror of settings.json
+    /// `computer_use.enabled`).
     pub enabled: bool,
-    /// 该会话当前持有有效输入授权（未被吊销/急停清除；授权无空闲过期）。
+    /// Whether this session currently holds a valid input grant (not
+    /// revoked/cleared by stop; grants have no idle expiry).
     pub granted: bool,
-    /// 急停旗标（`computer_use_stop` 置位，重新开启总开关时清除）。
+    /// Emergency-stop flag (set by `computer_use_stop`, cleared when the
+    /// master toggle is re-enabled).
     pub stopped: bool,
-    /// 当前操作系统是否有 computer_use 后端实现。
+    /// Whether the current OS has a computer_use backend implementation.
     pub platform_supported: bool,
 }
 
@@ -45,12 +54,17 @@ pub fn computer_use_get_status(
     }
 }
 
-/// 授予本会话鼠标/键盘控制权（会话授权）。授权活到被显式吊销（revoke /
-/// stop / 总开关关闭），无空闲过期——没有主流产品给会话级授权设空闲时钟
-/// （Claude Code 的「本次会话允许」同口径）。总开关关闭或急停中拒绝授权：
-/// 此时授予的授权会静默休眠到开关重开/急停复位才生效，等于陈旧前端的一次
-/// 点击越过用户当下的全局意图（评审发现；前端在禁用态本就不渲染授权按钮，
-/// 这是对陈旧/失同步前端的防线）。
+/// Grant this session mouse/keyboard control (session grant). The grant
+/// lives until explicitly revoked (revoke / stop / master toggle off) and
+/// has no idle expiry — no mainstream product puts an idle clock on a
+/// session-scoped grant (same semantics as Claude Code's "allow for this
+/// session"). Granting is refused while the master toggle is off or the
+/// emergency stop is latched: a grant issued in that state would silently
+/// sleep until the toggle is re-enabled / the stop is reset, meaning one
+/// click from a stale frontend would override the user's current global
+/// intent (review finding; the disabled UI does not render the grant
+/// button in the first place — this is the line of defense against a
+/// stale/desynced frontend).
 #[tauri::command]
 pub fn computer_use_grant(
     session_id: String,
@@ -69,9 +83,11 @@ pub fn computer_use_grant(
     Ok(())
 }
 
-/// 吊销本会话输入授权。应用内授权即时失效；同时触发后端关闭持久 OS 级
-/// 授权（Wayland portal 会话）——detached 线程执行，不阻塞本命令
-/// （评审发现：授权此前会活到进程退出，与"可随时停止"承诺不符）。
+/// Revoke this session's input grant. The in-app grant expires
+/// immediately; this also triggers the backend to close the persistent
+/// OS-level grant (Wayland portal session) — on a detached thread so this
+/// command does not block (review finding: grants previously lived until
+/// process exit, contradicting the "stoppable at any time" promise).
 /// Emergency (not plain) release: a physically held left button is
 /// unpressed first, and the control lane survives an in-flight action.
 #[tauri::command]
@@ -85,27 +101,32 @@ pub fn computer_use_revoke(
     Ok(())
 }
 
-/// 紧急停止：置停止旗标并吊销全部会话授权，同时触发所有后端关闭持久
-/// OS 级授权（detached 线程，见 [`computer_use_revoke`]）。
+/// Emergency stop: latch the stop flag and revoke every session grant,
+/// and trigger all backends to close persistent OS-level grants (detached
+/// threads, see [`computer_use_revoke`]).
 #[tauri::command]
 pub fn computer_use_stop(shared: State<'_, Arc<ComputerUseShared>>) {
     shared.stop_all();
     shared.backends.emergency_release_all();
 }
 
-/// 用户在前端确认一个被拦截的 T3 后果性动作：铸造单次批准令牌。
-/// confirm_id 必须来自 `computer_use:confirm_required` 事件（pending 中），
-/// 未知 id 报错，避免为模型自造的 id 铸币。
+/// The user confirms an intercepted T3 consequential action in the
+/// frontend: mint a single-use approval token. confirm_id must come from a
+/// `computer_use:confirm_required` event (still pending); unknown ids are
+/// rejected so the model cannot mint approvals for self-invented ids.
 #[tauri::command]
 pub fn computer_use_confirm(
     confirm_id: String,
     shared: State<'_, Arc<ComputerUseShared>>,
 ) -> Result<(), String> {
     ensure_non_empty("confirm_id", &confirm_id)?;
-    // mint_confirmation 只为存在且未过期的 pending 铸币并返回 true（评审
-    // 发现：此前静默 no-op，前端把失败显示为成功）；false 显式报错。
-    // 括注保留 "unknown or expired"：前端 bridge 以该短语识别「pending 已
-    // 过期」并本地清理确认弹窗（过期不是用户拒绝），文案不得破坏该契约。
+    // mint_confirmation only mints for an existing, unexpired pending and
+    // returns true (review finding: it previously no-op'd silently and the
+    // frontend showed failure as success); false surfaces an explicit
+    // error. The parenthetical keeps "unknown or expired": the frontend
+    // bridge matches that phrase to recognize "this pending expired" and
+    // clear the confirmation dialog locally (expiry is not a user denial);
+    // the wording must not break that contract.
     if shared.mint_confirmation(&confirm_id) {
         Ok(())
     } else {
@@ -115,9 +136,11 @@ pub fn computer_use_confirm(
     }
 }
 
-/// 用户在前端明确「拒绝」一个被拦截的 T3 动作：清除 pending。拒绝不记录
-/// 任何服务端状态——模型的同动作重试会照常触发筛查并铸造**新的** pending、
-/// 重发确认事件（主流模型：拒绝只是模型可见的上下文，不是存储的惩罚状态）。
+/// The user explicitly "denies" an intercepted T3 action in the frontend:
+/// drop the pending. A denial records no server-side state — a same-action
+/// retry by the model re-runs screening and mints a **new** pending and
+/// re-emits the confirmation event (mainstream-model stance: a denial is
+/// only model-visible context, not a stored penalty state).
 #[tauri::command]
 pub fn computer_use_deny(
     confirm_id: String,
@@ -133,14 +156,21 @@ pub fn computer_use_deny(
     }
 }
 
-/// 设置总开关。先落盘后翻内存旗标（同 set_voice_shortcut_enabled 的顺序）：
-/// 写盘失败时内存态不得与 settings.json 不一致。重新开启时清除急停旗标
-/// （guard 的既定语义），但不恢复任何会话授权；关闭时吊销全部会话授权并
-/// 清空待决确认（评审发现：否则重开后旧 grant 与旧批准令牌仍然有效）。
-/// 最后热刷 disallowed_tools（评审发现：tool_policy 闭包只在 refresh 时
-/// 重算，不主动刷新则已在跑的存量引擎目录要滞后到下一次任意策略刷新；
-/// 与 marketplace/connectors 命令调用 `pool.refresh_disallowed_tools()`
-/// 的既有模式一致）。
+/// Set the master toggle. Persist to disk first, then flip the in-memory
+/// flag (same order as set_voice_shortcut_enabled): if the write fails the
+/// in-memory state must not diverge from settings.json. Re-enabling clears
+/// the stop flag (the guard's established semantics) but restores no
+/// session grants; disabling revokes all session grants and clears pending
+/// confirmations (review finding: otherwise old grants and old approval
+/// tokens would survive a disable/enable cycle). Finally, hot-refresh the
+/// disallowed_tools (review finding: the tool_policy closure only
+/// re-evaluates when refreshed; without an explicit refresh the catalog of
+/// already-running engines would lag until some unrelated policy refresh;
+/// same established pattern as the marketplace/connector commands calling
+/// `pool.refresh_disallowed_tools()`). The refresh makes BOTH toggle
+/// directions immediate on every live engine: the tool is always
+/// constructed (see the tool_factory in lib.rs), so enabling just removes
+/// it from the disallow list — no engine rebuild required.
 #[tauri::command]
 pub async fn computer_use_set_enabled(
     enabled: bool,
@@ -156,7 +186,8 @@ pub async fn computer_use_set_enabled(
         shared.reset_stop();
     } else {
         shared.revoke_all_sessions();
-        // 总开关关闭：所有后端的持久 OS 级授权一并终止（detached 线程）。
+        // Master toggle off: terminate every backend's persistent OS-level
+        // grant as well (detached threads).
         // Emergency variant: also unpress any physically held left button.
         shared.backends.emergency_release_all();
     }
@@ -164,8 +195,10 @@ pub async fn computer_use_set_enabled(
     Ok(())
 }
 
-/// 触发平台授权引导：macOS 弹 Screen Recording + Accessibility 系统窗；
-/// Windows/Linux 无系统授权流程，显式返回 unsupported 错误（不静默 no-op）。
+/// Trigger platform permission onboarding: macOS raises the Screen
+/// Recording + Accessibility system dialogs; Windows/Linux have no system
+/// permission flow and get an explicit unsupported error (never a silent
+/// no-op).
 #[tauri::command]
 pub fn computer_use_request_permissions() -> Result<(), String> {
     crate::features::computer_use::request_permissions().map_err(|error| error.to_string())
@@ -175,7 +208,8 @@ pub fn computer_use_request_permissions() -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// 状态投影的 JSON 键是前端契约（computerUse feature 直接消费）。
+    /// The status projection's JSON keys are a frontend contract (the
+    /// computerUse feature consumes them directly).
     #[test]
     fn status_serializes_contract_keys() {
         let status = ComputerUseStatus {
@@ -198,8 +232,9 @@ mod tests {
         );
     }
 
-    /// 评审修复回归：grant/revoke（session_id）与 confirm/deny（confirm_id）
-    /// 的空串/纯空白标识符必须显式报错，不得静默成功。
+    /// Review-fix regression: empty/whitespace-only identifiers for
+    /// grant/revoke (session_id) and confirm/deny (confirm_id) must fail
+    /// explicitly instead of silently succeeding.
     #[test]
     fn empty_identifiers_are_rejected() {
         assert!(ensure_non_empty("session_id", "").is_err());
