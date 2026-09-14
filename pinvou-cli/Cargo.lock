@@ -5612,7 +5612,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rustversion",
- "syn 3.0.3",
+ "syn 3.0.5",
 ]
 
 [[package]]
