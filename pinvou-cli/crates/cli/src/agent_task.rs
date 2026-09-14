@@ -189,6 +189,10 @@ fn run_agent(
     attachments: Vec<PathBuf>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
+    // Same absolute-path contract as every other family — and this one most
+    // of all, since it spawns a real shell agent: a relative PINVOU3_HOME
+    // would silently materialize the session store under the cwd.
+    crate::support::sandbox_home()?;
     // Consistent with the other read failures in lib.rs (read_to_string ->
     // failed): an unreadable file is a host-level failure (exit 1), not an
     // argument usage error — the documented exit-code contract also lists
@@ -253,9 +257,12 @@ fn run_agent(
     // oldest chat session(s) — pinned ones included, with no warning in the
     // app. Sample the store size BEFORE the run: retention trims to exactly
     // 50, so a pre-run count >= 50 is what makes this run evict; a post-run
-    // count would also fire when 49 grew to 50 with nothing evicted.
-    let evicts_gui_sessions = keep_session_enabled()
-        && session.is_none()
+    // count would also fire when 49 grew to 50 with nothing evicted. The
+    // warning fires in BOTH cleanup modes: even with
+    // PINVOU3_AGENT_TASK_KEEP_SESSION=0 the prepare-time save happens first
+    // and does the evicting — the later cleanup only deletes this run's own
+    // session.
+    let evicts_gui_sessions = session.is_none()
         && pinvou3_lib::features::sessions::SessionStore::boot()
             .ok()
             .and_then(|store| store.list().ok())
@@ -280,8 +287,9 @@ fn run_agent(
             eprintln!(
                 "pinvou: warning: the session store was already at the 50-session retention \
                  cap before this run; persisting this run's session evicted the oldest chat \
-                 session(s), pinned ones included. Point PINVOU3_HOME at a sandbox or set \
-                 PINVOU3_AGENT_TASK_KEEP_SESSION=0 for batch runs."
+                 session(s), pinned ones included. Point PINVOU3_HOME at a sandbox or prune \
+                 the session store (PINVOU3_AGENT_TASK_KEEP_SESSION=0 only removes this \
+                 run's session afterwards; the save-time eviction still happens)."
             );
         }
     }
@@ -295,19 +303,6 @@ fn run_agent(
         exit_code: ExitCode::Success,
         stdout: render_agent_report(&report, output)?,
     })
-}
-
-/// Mirrors the app-side `keep_session_from_env` parsing so the eviction
-/// warning only fires when this run actually persisted a session.
-#[cfg(feature = "product-backend")]
-fn keep_session_enabled() -> bool {
-    match std::env::var("PINVOU3_AGENT_TASK_KEEP_SESSION") {
-        Ok(value) => !matches!(
-            value.to_ascii_lowercase().as_str(),
-            "0" | "false" | "no" | "off"
-        ),
-        Err(_) => true,
-    }
 }
 
 #[cfg(feature = "product-backend")]
