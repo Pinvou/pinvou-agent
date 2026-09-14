@@ -39,19 +39,24 @@ cargo build --manifest-path pinvou-cli/Cargo.toml --bin pinvou
   commands expose stored secrets, both explicitly: `models show <id>
   --reveal-key` (mirrors the GUI reveal action) prints the key, and `code
   providers export` writes/prints the provider JSON with plaintext API keys
-  (warns on stderr; a file destination is written 0600).
+  (warns on stderr; on unix a file destination is written 0600).
 - Destructive actions require an explicit `--yes` (family `delete`/`remove`
   commands, `purge`, `deps install`, `connectors logout`, `code logout`,
   checkpoint `rewind`/`undo`; the usage error names the flag). Concurrent CLI mutations
   are serialized through two cross-process locks: a per-session lock (checkpoint
   `rewind`/`undo`/`diff`, `workspace checkout`) and a per-execution-root lock
   (`rewind`/`undo`, `checkout`) so two different sessions bound to the same
-  project directory cannot interleave working-tree restores. A GUI turn or GUI
-  rewind takes neither lock (the app's guards are process-local) — do not
+  project directory cannot interleave working-tree restores. Scheduled CLI
+  mutations (`create`/`update`/`delete`/`run`/…) are serialized among themselves
+  by a third lock (`locks/scheduled-store.lock`) — `scheduled run` holds it for
+  the whole headless host run, so other CLI scheduled commands wait until it
+  finishes. A GUI turn or GUI
+  rewind takes none of these locks (the app's guards are process-local) — do not
   rewind while its GUI Code session may be mid-turn. Similarly, `agent run
-  --session` does not lock the session against concurrent GUI use. Other shared
-  stores (plugins `installed.json`, scheduled sidecars, memory JSONL files)
-  have no cross-process lock in either surface: last writer wins, so avoid CLI
+  --session` does not lock the session against concurrent GUI use. Remaining
+  shared stores (plugins `installed.json`, the `acp-providers.json` provider
+  registry, memory JSONL files) have no cross-process lock in either surface:
+  last writer wins, so avoid CLI
   mutations while the desktop app is running. `sessions rename` is the one to
   treat with real care: it rewrites the whole transcript JSON from a snapshot
   read moments earlier, so renaming a session the GUI is ACTIVELY streaming
@@ -69,10 +74,10 @@ cargo build --manifest-path pinvou-cli/Cargo.toml --bin pinvou
 | `pinvou agent run` | `--prompt-file [--workspace] [--timeout-secs] [--session ID] [--mode plan\|agent] [--model ID] [--attach PATH]...` | One product-equivalent agentic turn: unlimited tool-call rounds and a persisted session (GUI parity; `PINVOU3_AGENT_TASK_KEEP_SESSION=0` restores one-shot cleanup). See [agent-task-cli.md](agent-task-cli.md); the session/mode/model/attach flags extend it without changing its defaults or exit contract. |
 | `pinvou benchmark` | `list`, `run smoke`, `run/fetch/verify/score/submission gaia`, `status`, `resume`, `report` | Evaluation harness; see [gaia-benchmark.md](gaia-benchmark.md). |
 | `pinvou sessions` | `list [--archived] [--limit N]`, `show`, `rename`, `pin`, `unpin`, `archive`, `restore`, `delete --yes`, `export [--format markdown\|json] [--output PATH]`, `timeline`, `subagents`, `folder` | Same `SessionStore` the GUI uses, including scheduled-run cascades. Any store-opening command (even reads like `list`) runs the shared 50-sessions-per-kind retention, so CLI runs can evict the oldest GUI chat sessions. ACP/code sessions are listed too — the CLI has no live pool to filter them like the GUI does. |
-| `pinvou models` / `pinvou settings` | `models list/add/remove/use/show [--reveal-key]/test/probe-local`; `settings get/set`, `settings search list/set/test` | `settings` is an alias routed to the same module. Settings writes go through the GUI's own prefs transactions (migrations and locale policies included). |
+| `pinvou models` / `pinvou settings` | `models list/add/remove/use/show [--reveal-key]/test/probe-local`; `settings get/set`, `settings search list/set/test` | `settings` is an alias routed to the same module. Settings writes go through the GUI's own prefs transactions (migrations and locale policies included). `probe-local` is deliberately stricter than the GUI's local-server probe: loopback addresses only (the GUI also accepts LAN/private hosts), a credential-read failure fails the probe, and redirects are not followed. |
 | `pinvou memory` | `overview`, `profile get/set`, `list [--store]`, `add preference/work-context`, `update`, `delete --yes`, `archive`, `pending confirm/ignore/never`, `organize`, `organize-history` | `organize` needs the model host. `list --store` JSON is always `{items, cleanup_warnings}` for every store. |
 | `pinvou knowledge` | `scan`, `stats`, `type-counts`, `collections ...`, `documents ...`, `index ...`, `search`, `model status/download/cancel`, `mounts/mount/unmount`, `remote connections/probe/collections/search`, `host status` | One-shot imports progress only while the process lives; an import interrupted at exit is marked resumable and continues only after an explicit `index resume <job-id>` (desktop app completes large imports). `model download` declines headless (the in-process ONNX verification and progress events are GUI-bound); `model cancel` and `scan cancel` execute but can only signal cancels inside the CLI's own process (an app-side scan needs the desktop app). `mounts/mount/unmount` refuse with `knowledge_*_requires_product_host`: mounted collections live in the desktop app's process memory and are not persisted, so a one-shot process can neither observe nor change them. `--before` filters on UTC midnight boundaries. |
-| `pinvou scheduled` | `list`, `show`, `create`, `update`, `pause`, `resume`, `pin`, `unpin`, `delete --yes`, `run`, `runs`, `runs-all`, `mark-viewed`, `chat-prompt` | `run` executes `memory-organize` tasks headless; chat-kind runs need the desktop runtime. `update --kind/--mode` are rejected (creation-time properties; every run is forced to `yolo` like the GUI). `run` reconciles stranded CLI queued records (no foundation task id) to a terminal failed record on the next run, and `delete` only refuses GUI-owned active runs — a CLI process killed mid-run cannot wedge a task. Created tasks default `auto_approve` to true (the GUI's new-task default) and read `allow_shell` from the environment/settings like the GUI. |
+| `pinvou scheduled` | `list`, `show`, `create`, `update`, `pause`, `resume`, `pin`, `unpin`, `delete --yes`, `run`, `runs`, `runs-all`, `mark-viewed`, `chat-prompt` | There is no daemon here: a task fires only when the desktop app's scheduler sweep runs, so a task created while the app is closed starts firing at the next app start. `run` executes `memory-organize` tasks headless; chat-kind runs need the desktop runtime. `update --kind/--mode` are rejected (creation-time properties; every run is forced to `yolo` like the GUI). `run` reconciles stranded CLI queued records (no foundation task id) to a terminal failed record on the next run, and `delete` only refuses GUI-owned active runs — a CLI process killed mid-run cannot wedge a task. Created tasks default `auto_approve` to true (the GUI's new-task default) and read `allow_shell` from the environment/settings like the GUI. |
 | `pinvou plugins` | `tools list/install/uninstall/auth/oauth-*`, `skills list/install/update/uninstall`, `import <PATH>`, `export`, `meta`, `recycle ...`, `readiness`, `enable/disable [--scope]`, `project-skills on\|off` | `import` replaces the GUI's native dialog. OAuth login declines headless (`oauth_login_unavailable_in_cli`): the interactive grant happens in the desktop app. `readiness` reads credential presence from the OS keyring, which can prompt for access on macOS. |
 | `pinvou connectors` | `status`, `ensure-cli`, `enable`, `disable`, `logout --yes`, `apply-skills`, `connect [--timeout]`, `ima status/connect/logout --yes` | For feishu/wecom/dingtalk/tmeet. Vendor CLIs resolve through the managed assets install (what `ensure-cli` and the GUI install) before PATH. `connect` prints the login URL to stderr as soon as the vendor CLI emits it (and again in the final/error summary — a timeout keeps the captured link); wecom prints the one-scan `qr.png` path the same way (the stdout URL alone is a landing page). `--timeout` bounds every blocking vendor-CLI phase. |
 | `pinvou personas` | `list`, `show`, `create`, `update`, `delete --yes`, `equip`, `unequip`, `active` | Expert card deck CRUD. `equip` records the staged persona for the session sidecar; prompt injection happens in the GUI, so the CLI itself does not deliver it. |
