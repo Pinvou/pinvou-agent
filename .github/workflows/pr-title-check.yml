@@ -1,0 +1,64 @@
+name: PR Title Check
+
+# Dedicated lightweight gate for the PR title. The squash-merge subject
+# GitHub generates is "<PR title> (#N)", so the PR title becomes the
+# main-branch commit subject verbatim, and merge-queue merges never run the
+# commit-message job of pr-check.yml. This workflow validates the title at
+# PR time — the last point where a violation is still fixable (e.g. #482
+# landed a 53-character subject that kept failing later main pushes). The
+# push leg of pr-check.yml stays the backstop for commits that bypass a PR;
+# the merge_group payload does not expose the PR title, so queue-time
+# validation is not implementable.
+#
+# Why a dedicated workflow instead of a job inside pr-check.yml: routing
+# `edited` through pr-check.yml makes a body-only edit create skipped check
+# runs named after the required contexts (commit-message, required-gate,
+# ...), and the checks API/UI surfaces the latest check run per name, so
+# those skipped runs replaced the green gate results (review finding on
+# #501, run 34818389619). This workflow's job name `pr-title` is unique, so
+# its runs can never shadow a required context.
+#
+# Routing: only a title or base-branch change reruns the validation; a
+# body-only edit skips the job (the resulting skipped `pr-title` run means
+# "not re-validated, previous result stands").
+#
+# Note: this check is advisory — it is not part of required-gate or branch
+# protection, so a violating title shows red here without blocking the
+# merge. Add the `pr-title` context to branch protection to make it
+# blocking.
+#
+# Residual race: a title edited after this run finished is not re-checked
+# until the next event.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+# Body-only edits are all-skipped no-ops: a dedicated group suffix keeps
+# them from cancelling an in-flight validation or occupying its concurrency
+# slot. Same-kind runs cancel-and-replace so repeated edits do not pile up.
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}-${{ github.event.action == 'edited' && !(github.event.changes.title.from != '' || github.event.changes.base.ref.from != '') && 'noop' || 'rerun' }}
+  cancel-in-progress: true
+
+jobs:
+  pr-title:
+    name: pr-title
+    if: ${{ github.event.action != 'edited' || github.event.changes.title.from != '' || github.event.changes.base.ref.from != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # The title is passed through a temp file instead of a command-line
+      # argument so it cannot be interpreted as an option or inject code.
+      - name: Validate PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          printf '%s\n' "$PR_TITLE" > "$RUNNER_TEMP/pr-title"
+          python3 scripts/validate-commit-msg.py "$RUNNER_TEMP/pr-title"

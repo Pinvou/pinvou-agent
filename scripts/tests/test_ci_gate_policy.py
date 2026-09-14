@@ -729,13 +729,8 @@ class CiGatePolicyTests(unittest.TestCase):
         concurrency = self.pr_workflow.split(
             "\nconcurrency:", maxsplit=1
         )[1].split("\njobs:", maxsplit=1)[0]
-        # main push never cancels in-flight cache warming. Body-only PR edits
-        # are excluded too (they are all-skipped no-op runs that must not kill
-        # a running gate); title/base edits may cancel-and-replace.
         self.assertIn(
-            "cancel-in-progress: ${{ github.event_name == 'pull_request' && "
-            "(github.event.action != 'edited' || github.event.changes.title.from != '' || "
-            "github.event.changes.base.ref.from != '') }}",
+            "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
             concurrency,
         )
 

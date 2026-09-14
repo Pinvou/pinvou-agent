@@ -1,8 +1,7 @@
 name: PR Check
 
 # Jobs:
-# - commit-message: enforce the Git commit convention on pushed commits and PR
-#   titles (the squash-merge subject) on pull requests and pushes.
+# - commit-message: enforce the Git commit convention on pull requests and pushes.
 # - version-consistency:强制校验 VERSION 单一事实来源与 SemVer 规则。
 # - fast-gate (seconds, runs on every PR): fork-guard fingerprints + fork
 #   compliance linkage + actionlint + Python determinism tests.
@@ -58,12 +57,8 @@ on:
     # job 已按路径短路无关 job(rust-test 默认跳过等),不会无差别烧 CI 分钟。
     # ready/converted 事件用于切换 Draft 快检与 Ready 定向门禁；标签事件用于
     # 按需开启/关闭 ci:full-rust。
-    # edited 用于标题门禁(squash 主分支提交主题取自 PR 标题):只有标题或 base
-    # 分支变化的 edited 才重跑(见各 job 的 if),纯正文编辑全 job 跳过、不烧
-    # CI 分钟。缺 edited 时,标题编辑后旧的绿色检查仍挂在同一 head SHA 上,
-    # commit-message 的标题门禁会被绕过。
     # closed 事件会进入同一个 concurrency group，及时取消已合并/关闭 PR 的旧任务。
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled, edited, closed]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled, closed]
   merge_group:
     types: [checks_requested]
   push:
@@ -74,22 +69,18 @@ permissions:
   pull-requests: read   # dorny/paths-filter 调 API 读 PR 改了哪些文件
 
 # 同一 PR 连续 push 或被合并/关闭时取消上一次未跑完的检查,省 runner。
-# 标题/base 变化的 edited 重跑同样取消并替换在跑任务(重跑内容与在跑任务
-# 基本重合,取消更省);纯正文编辑的 edited 是全 job 跳过的空跑,若允许取消
-# 会把同 head SHA 上仍在跑的完整门禁杀掉、留下无有效 required check 的窗口,
-# 故排除(空跑进 pending 槽位,数秒内自然结束,不覆盖任何检查结果)。
 # main push 保留当前正在运行的暖缓存任务；GitHub 同一 concurrency group 最多保留
 # 一个 running 和一个 pending，新 push 会替换旧 pending。为避免被替换的 pending
 # 恰好包含 Rust 变更、而保留下来的后续 push 只看相邻非 Rust diff，main 的 Rust
 # 累计验证不依赖单次 push 的 paths-filter(见 rust-test/windows-rust-test)。
 concurrency:
   group: pr-check-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.title.from != '' || github.event.changes.base.ref.from != '') }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   commit-message:
     name: commit-message
-    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed' && (github.event.action != 'edited' || github.event.changes.title.from != '' || github.event.changes.base.ref.from != '')) || github.event_name == 'push' }}
+    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -102,24 +93,9 @@ jobs:
         run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - name: Validate commit messages
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             python3 scripts/validate-commit-msg.py --range "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
-            # The squash subject GitHub generates on merge is "<PR title> (#N)",
-            # and merge-queue merges never run this job. The PR title is the
-            # only point where the squash subject can still be enforced before
-            # it lands on main; otherwise the push leg below can only flag the
-            # merged commit after the fact (e.g. #482 kept failing later main
-            # pushes with a 53-character subject). Title edits re-trigger this
-            # job (edited in pull_request.types; body-only edits skip every
-            # job, see the trigger comment). Residual race: a title changed
-            # after this run finished is not re-checked until the next event —
-            # the merge_group event does not expose the PR title, so the push
-            # leg stays the backstop there.
-            printf '%s\n' "$PR_TITLE" > "$RUNNER_TEMP/pr-title"
-            python3 scripts/validate-commit-msg.py "$RUNNER_TEMP/pr-title"
           else
             before="${{ github.event.before }}"
             python3 scripts/validate-commit-msg.py --range "$before" "${{ github.sha }}"
@@ -127,7 +103,7 @@ jobs:
 
   version-consistency:
     name: version-consistency
-    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed' && (github.event.action != 'edited' || github.event.changes.title.from != '' || github.event.changes.base.ref.from != '')) || github.event_name == 'merge_group' || github.event_name == 'push' }}
+    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -159,7 +135,7 @@ jobs:
   # concurrency pending 替换盲区，有意不依赖单次 push 的相邻 diff。
   changes:
     name: changes
-    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed' && (github.event.action != 'edited' || github.event.changes.title.from != '' || github.event.changes.base.ref.from != '')) || github.event_name == 'merge_group' || github.event_name == 'push' }}
+    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -362,7 +338,7 @@ jobs:
 
   fast-gate:
     name: fast-gate
-    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed' && (github.event.action != 'edited' || github.event.changes.title.from != '' || github.event.changes.base.ref.from != '')) || github.event_name == 'merge_group' }}
+    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -1441,7 +1417,7 @@ jobs:
       - windows-rust-test
       - macos-codex-runtime-test
       - windows-codex-runtime-test
-    if: ${{ always() && ((github.event_name == 'pull_request' && github.event.action != 'closed' && (github.event.action != 'edited' || github.event.changes.title.from != '' || github.event.changes.base.ref.from != '')) || github.event_name == 'merge_group') }}
+    if: ${{ always() && ((github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
