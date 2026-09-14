@@ -598,13 +598,21 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         release_contract_paths = changes.split(
             "            release_contract:", maxsplit=1
-        )[1].split("            l1:", maxsplit=1)[0]
+        )[1].split("            pet:", maxsplit=1)[0]
         self.assertIn(
             "- 'pinvou3-app/src-tauri/resources/**'",
             release_contract_paths,
         )
         self.assertIn(
             "- 'pinvou3-app/tests/knowledge_host_packaging.test.mjs'",
+            release_contract_paths,
+        )
+        # The section boundary above must stay load-bearing: if the split
+        # anchor stops matching (e.g. a filter rename), the slice silently
+        # grows to the end of the changes block and these assertions
+        # degrade into no-ops. This bit us once with a stale "l1:" anchor.
+        self.assertNotIn(
+            "- 'pinvou3-app/src/app/pet-main.jsx'",
             release_contract_paths,
         )
 
