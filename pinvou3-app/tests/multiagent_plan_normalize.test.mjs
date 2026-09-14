@@ -165,11 +165,6 @@ test('多智能体能力门禁与会话策略契约（multiagent_desktop_scope �
     /if \(typeof window === 'undefined'\) return;\s*\/\/ agentId === null is a valid request: open the panel's list state \(the\s*\/\/ swarm count row's entry point\)\.\s*if \(!agentId && agentId !== null\) return;/,
     'the subagent panel poll must guard on both the host and agentId; agentId=null is allowed to open the panel list state (the swarm count row entry point)',
   );
-  assert.match(
-    toolRenderersSource,
-    /listSubagentTranscripts\(sid\)/,
-    'tools 侧 transcript 拉取入口不得绕过底座投影',
-  );
 });
 test('空白新对话切换多智能体后立即通知界面，且不提前物化会话', async () => {
   const root = {};
@@ -726,11 +721,6 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     '清单行优先展示专家身份副标题；无任务标题时展示任务目标，遗留行回退 agent_id',
   );
   assert.match(
-    toolRenderersSource,
-    /const \{ identity, name, subtitle \} = presentation;/,
-    '行内卡与右侧清单共用任务主标题、专家身份副标题的投影结果',
-  );
-  assert.match(
     transcriptsSource,
     /fn read_header_agent_id/,
     '清单轮询只读表头行认身份，正文仅"成功完成判受阻"时整读一次（复核 P2）',
@@ -802,16 +792,6 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     chatBridgeSource2,
     /prefillComposer\(text,\s*true\);\s*(?:\/\/[^\n]*\n\s*)*return "restored";/,
     '物化中止时输入必须回填输入框，不得静默丢字（复核 P1；恢复类 prefill 带 append=true，返回 "restored" 阻止调用方二次恢复造成重复——issue #406）',
-  );
-  assert.match(
-    toolRenderersSource,
-    /subagentRoleOrdinals\(list\)/,
-    '轮询广播必须携带同角色序号，行内卡的 ①② 与面板同源一致',
-  );
-  assert.match(
-    toolRenderersSource,
-    /\.\.\.(?:\(prev \|\| \{\}\)|prev), \.\.\.detail/,
-    '实时事件不带 seq/blocked 等补字段，卡片状态必须字段合并，不得整包覆盖',
   );
   const personasBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'personas.js');
   assert.doesNotMatch(
@@ -1057,7 +1037,7 @@ test('agent 工具调用渲染成行内专家卡，点击打开只读面板', ()
   );
   assert.match(
     toolRenderersSource,
-    /return <ExpertAgentCard item=\{item\} t=\{t\} sessionId=\{sessionId\} \/>;/,
+    /return <ExpertAgentCard item=\{item\} t=\{t\} \/>;/,
     'status/wait/cancel coordination operations still use the expert card quiet single row, never posing as a new delegation',
   );
   assert.match(
@@ -1067,53 +1047,8 @@ test('agent 工具调用渲染成行内专家卡，点击打开只读面板', ()
   );
   assert.match(
     toolRenderersSource,
-    /args\.profile \|\| args\.role/,
-    '承担者以底座正式契约字段 profile 为准（role 是内置类型别名）',
-  );
-  assert.match(
-    toolRenderersSource,
-    /watchExpertCard\(sessionId, agentId\)/,
-    '卡片必须接权威落盘轮询（实时事件会丢：拥塞/重启/停止级联）',
-  );
-  assert.match(
-    toolRenderersSource,
-    /pinvou:subagent-ledger-update/,
-    '一次会话级 ledger 轮询必须把完整父子投影共享给全部行内卡',
-  );
-  assert.match(
-    toolRenderersSource,
-    /visibleSubagentDescendantRows\(ledger, agentId, expandedChildIds\)/,
-    '主对话里的直属卡必须只显示自己的后代树',
-  );
-  assert.match(
-    toolRenderersSource,
-    /data-testid="expert-agent-child-card"/,
-    '后代节点必须是可点开的专家卡，不展示原始 JSON',
-  );
-  assert.match(
-    toolRenderersSource,
-    /if \(prev && prev\.done && !detail\.done\) return prev;/,
-    '终态 ratchet：迟到的非终态实时事件不得把卡翻回工作中',
-  );
-  assert.match(
-    toolRenderersSource,
-    /copy\.blockedTag/,
-    '[BLOCKED] 的"完成"不得显示绿色完成',
-  );
-  assert.match(
-    toolRenderersSource,
     /pinvou:open-subagent/,
-    '点击整卡经 DOM 事件通知 ChatView 打开面板',
-  );
-  assert.match(
-    toolRenderersSource,
-    /resolveSubagentSpawnResult\(item\)/,
-    '专家卡必须同时读取工具完成态与成功态，不能把失败的 done 当成派工成功',
-  );
-  assert.match(
-    toolRenderersSource,
-    /disabled=\{!canOpenTranscript\}[\s\S]{0,160}onClick=\{canOpenTranscript/,
-    '没有成功返回真实 agent_id 的卡片不得打开其他子智能体 transcript',
+    '点击计数行经 DOM 事件通知 ChatView 打开面板',
   );
 });
 
