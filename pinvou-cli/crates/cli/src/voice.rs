@@ -800,7 +800,6 @@ fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
 /// model/language/timeout, concurrent pipe draining, and exit code 6 as the
 /// "no speech" convention.
 fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliError> {
-    use std::io::Read;
     use std::process::Stdio;
 
     let model = std::env::var("PINVOU3_ASR_MODEL")
@@ -855,17 +854,27 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
 
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
+    // Size-bound the drains: a chatty engine must not buffer unbounded
+    // output for the whole timeout window (every other capture in the CLI
+    // is size-capped too).
+    const MAX_ENGINE_OUTPUT_BYTES: u64 = 8 * 1024 * 1024;
     let stdout_drain = std::thread::spawn(move || {
         let mut buffer = String::new();
         if let Some(mut pipe) = stdout_pipe {
-            let _ = pipe.read_to_string(&mut buffer);
+            let _ = std::io::Read::read_to_string(
+                &mut std::io::Read::take(pipe, MAX_ENGINE_OUTPUT_BYTES),
+                &mut buffer,
+            );
         }
         buffer
     });
     let stderr_drain = std::thread::spawn(move || {
         let mut buffer = String::new();
         if let Some(mut pipe) = stderr_pipe {
-            let _ = pipe.read_to_string(&mut buffer);
+            let _ = std::io::Read::read_to_string(
+                &mut std::io::Read::take(pipe, MAX_ENGINE_OUTPUT_BYTES),
+                &mut buffer,
+            );
         }
         buffer
     });

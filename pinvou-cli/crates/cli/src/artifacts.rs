@@ -21,7 +21,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::support::{render, success};
+use crate::support::{read_text_file_capped, render, success};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::sessions::SessionStore;
 
@@ -442,11 +442,12 @@ fn list(session: Option<String>, output: OutputMode) -> Result<CliOutcome, CliEr
 fn read(session_id: &str, relative_path: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store = open_store()?;
     // Read lane: the ledger-tree containment applies (scheduled-run
-    // workspaces readable), matching the GUI's read path.
+    // workspaces readable), matching the GUI's read path. Bounded like the
+    // write lane — a multi-gigabyte deliverable fails cleanly instead of
+    // being slurped whole into memory.
     let path = resolve_session_artifact(&store, session_id, relative_path, false)?;
-    let content = std::fs::read_to_string(&path).map_err(|error| {
-        CliError::failed(format!("artifact_read_failed({}): {error}", path.display()))
-    })?;
+    let content =
+        read_text_file_capped(&path, MAX_EDITABLE_MARKDOWN_BYTES, "artifact_read_failed")?;
     let value = serde_json::json!({
         "session_id": session_id,
         "path": path.display().to_string(),
@@ -561,7 +562,7 @@ mod tests {
         owned.insert(0, "pinvou".to_owned());
         match parse_args(owned)?.command() {
             crate::CliCommand::Artifacts(command) => Ok(command.clone()),
-            other => panic!(
+            _other => panic!(
                 "parsed an unexpected command family; the fixture argv does not match the test"
             ),
         }
