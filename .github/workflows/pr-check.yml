@@ -4,7 +4,8 @@ name: PR Check
 # - commit-message: enforce the Git commit convention on pull requests and pushes.
 # - version-consistency:强制校验 VERSION 单一事实来源与 SemVer 规则。
 # - fast-gate(秒级,每 PR 都跑):fork-guard 指纹 + fork 合规联动 + Python 确定性测试。
-# - changes:检测本 PR 有没有 Rust 代码、发布契约、L1 harness 或前端改动,给后续 job 做 paths filter。
+# - changes: detect whether a PR touches Rust code, release contracts, or
+#   frontend files; used as the paths filter for later jobs.
 # - frontend-test: Draft runs lint/build/logic tests. Ready PRs and Merge Queue
 #   select browser smokes from their actual base/head diff and fail closed for
 #   unknown or shared paths.
@@ -181,7 +182,7 @@ jobs:
               - '**/Cargo.lock'
               - '**/deny.toml'
               - '**/build.rs'
-              - '.cargo/**'
+              - 'pinvou3-app/src-tauri/.cargo/**'
               - '.gitmodules'
               - 'CodeWhale'
               - 'pinvou3-app/src-tauri/rust-toolchain.toml'
@@ -225,8 +226,6 @@ jobs:
               - 'pinvou3-app/src-tauri/packaging/**'
               - 'pinvou3-app/src-tauri/resources/**'
               - 'pinvou3-app/tests/knowledge_host_packaging.test.mjs'
-              - 'pinvou3-app/tests/codex_acp_windows_*'
-              - 'pinvou3-app/tests/windows_runtime_packaging_contract.test.js'
               - 'pinvou3-app/tests/linux_asr_runtime_packaging.test.js'
               - 'pinvou3-app/tests/macos_phase2_contract.test.js'
             pet:
@@ -242,7 +241,7 @@ jobs:
               - 'pinvou3-app/tests/pet_*'
               - 'pinvou3-app/src/platform/tauri/bridge.js'
               - 'pinvou3-app/src-tauri/capabilities/default.json'
-              - 'pinvou3-app/src-tauri/src/platform/prefs.rs'
+              - 'pinvou3-app/src-tauri/src/platform/prefs/**'
               - 'pinvou3-app/src-tauri/src/lib.rs'
               - 'pinvou3-app/src-tauri/src/features/pet/pet_window.rs'
               - 'pinvou3-app/src-tauri/src/features/pet/selected_pet.rs'
