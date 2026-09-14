@@ -45,6 +45,16 @@ pub struct RunManifest {
     concurrency: u16,
     pass: u16,
     created_at_ms: u64,
+    /// Machine-readable harness-deadline mode (`None` = tasks run without a
+    /// harness wall-clock deadline; `Some(secs)` = bounded, the upper bound
+    /// when per-task deadlines vary). Scores from runs with different modes
+    /// are not comparable. `None` is written as an explicit `null` so a
+    /// manifest written by this version stays machine-distinguishable from
+    /// a legacy manifest, where the key is absent entirely (serde default)
+    /// and the real mode is unrecoverable. The field is deliberately NOT
+    /// part of `matches_expected`: resuming an older run must keep working.
+    #[serde(default)]
+    harness_deadline_secs: Option<u64>,
 }
 
 impl RunManifest {
@@ -72,6 +82,7 @@ impl RunManifest {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,
+            harness_deadline_secs: descriptor.harness_deadline_secs(),
         };
         manifest.validate()?;
         Ok(manifest)
@@ -86,6 +97,12 @@ impl RunManifest {
         validate_safe_text(&self.split)?;
         validate_safe_text(&self.tool_policy)?;
         if self.schema_version != 1 || self.concurrency != 1 || self.pass == 0 {
+            return Err(crate::BenchmarkError::coded("invalid_manifest"));
+        }
+        // A zero-second deadline is not a mode; it is a typo for `None` that
+        // would time every task out instantly while looking like a bounded
+        // run in the manifest.
+        if self.harness_deadline_secs == Some(0) {
             return Err(crate::BenchmarkError::coded("invalid_manifest"));
         }
         Ok(())
@@ -105,6 +122,10 @@ impl RunManifest {
 
     pub fn concurrency(&self) -> u16 {
         self.concurrency
+    }
+
+    pub fn harness_deadline_secs(&self) -> Option<u64> {
+        self.harness_deadline_secs
     }
 
     pub(crate) fn matches_expected(&self, expected: &Self) -> bool {
