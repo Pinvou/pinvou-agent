@@ -914,9 +914,20 @@ fn status(connector: Option<ConnectorKind>, output: OutputMode) -> Result<CliOut
         entries.push(vendor_status_entry(kind)?);
     }
     // ima is part of the default overview only; a filtered `status <id>`
-    // must not report unrelated connectors.
+    // must not report unrelated connectors. A credential-store failure must
+    // degrade the ima entry, not fail the whole overview — the four vendor
+    // entries were computed fine and the GUI surfaces per-connector too.
     if connector.is_none() {
-        entries.push(ima_status_entry()?);
+        match ima_status_entry() {
+            Ok(entry) => entries.push(entry),
+            Err(error) => entries.push(json!({
+                "id": "ima",
+                "connected": false,
+                "credentials_present": false,
+                "skill_installed": false,
+                "note": error.to_string(),
+            })),
+        }
     }
 
     let human = entries
@@ -930,6 +941,9 @@ fn status(connector: Option<ConnectorKind>, output: OutputMode) -> Result<CliOut
                     yes_no(bool_field(entry, "credentials_present")),
                     yes_no(bool_field(entry, "skill_installed")),
                 ));
+                if let Some(note) = entry.get("note").and_then(Value::as_str) {
+                    line.push_str(&format!("\t({note})"));
+                }
             } else {
                 let installed = if bool_field(entry, "installed") {
                     match entry.get("version").and_then(Value::as_str) {
@@ -1535,6 +1549,17 @@ fn download_https(url: &str, destination: &Path) -> Result<(), CliError> {
     let response = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(600))
         .connect_timeout(Duration::from_secs(30))
+        // Same https-only redirect policy as the GUI's `download_verified`
+        // (features/connectors/native_installer.rs): content integrity is
+        // pinned by sha256, but a scheme-downgrading redirect must not leak
+        // the URL to a plaintext hop either.
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 10 || attempt.url().scheme() != "https" {
+                attempt.stop()
+            } else {
+                attempt.follow()
+            }
+        }))
         .user_agent(concat!("pinvou-cli/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| CliError::failed(format!("cannot build download client: {error}")))?
