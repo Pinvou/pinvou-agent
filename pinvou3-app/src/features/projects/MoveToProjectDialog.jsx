@@ -3,11 +3,12 @@
 // projects/assignments and receives the chosen move as
 // onMove(projectId | null, addWorkspaceRoot). When the target project's roots
 // do not cover the session's workspace, the picker first shows the
-// add-folder confirmation (add + move vs move-only) instead of moving at once.
+// move-only confirmation instead of moving at once.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, Layers, Search, X } from '../../components/icons.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
+import { useDialogFocusRestore } from '../../hooks/useDialogFocusRestore.js';
 import { projectCoversPath } from './projectGrouping.js';
 
 const MoveToProjectDialog = ({
@@ -25,35 +26,49 @@ const MoveToProjectDialog = ({
   // key listeners subscribed once instead of per render.
   const onCloseRef = useRef(onClose);
   const dialogRef = useRef(null);
-  // Escape 键的确认面板回退读最新 pendingAddFolder;ref 镜像保持 key 监听
-  // 不随每次状态变更重订阅(与 onCloseRef 同范式)。
+  const searchInputRef = useRef(null);
+  const confirmPanelRef = useRef(null);
+  const backdropPressRef = useRef(false);
+  // Escape 键的确认面板回退读最新 pendingAddFolder;busy 同理(提交中关闭会
+  // 毁掉「确认面板原地重试」刻意保留的上下文)。ref 镜像保持 key 监听不随
+  // 每次状态变更重订阅(与 onCloseRef 同范式)。
   const pendingAddFolderRef = useRef(pendingAddFolder);
+  const busyRef = useRef(busy);
   useEffect(() => {
     onCloseRef.current = onClose;
     pendingAddFolderRef.current = pendingAddFolder;
+    busyRef.current = busy;
   });
+  // Initial focus goes to the filter field and the triggering row is focused
+  // again on unmount (shared modal-dismiss recipe).
+  useDialogFocusRestore(dialogRef, searchInputRef);
 
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === 'Escape' && !isImeComposing(e)) {
         e.preventDefault();
+        if (busyRef.current) return;
         // 确认面板态先退回列表,列表态才关窗(评审 #449 finding:确认框
         // Escape 不该直接关整个弹窗)。
         if (pendingAddFolderRef.current) { setPendingAddFolder(null); return; }
         onCloseRef.current();
-      } else if (e.key === 'Tab' && dialogRef.current) {
+      } else if (e.key === 'Tab' && !isImeComposing(e) && dialogRef.current) {
         // Minimal focus trap: cycle Tab within the dialog instead of letting
-        // it escape into the page behind the modal.
+        // it escape into the page behind the modal. Focus legitimately sits
+        // outside the dialog on body (non-focusable backdrop click, the
+        // subview swap unmounting the focused row, an Escape step-back), so
+        // any outside focus wraps like the edge rows do.
         const focusables = dialogRef.current.querySelectorAll(
           'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
         );
         if (!focusables.length) return;
         const first = focusables[0];
         const last = focusables[focusables.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
+        const contained = dialogRef.current.contains(document.activeElement);
+        if (e.shiftKey && (!contained || document.activeElement === first)) {
           e.preventDefault();
           last.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
+        } else if (!e.shiftKey && (!contained || document.activeElement === last)) {
           e.preventDefault();
           first.focus();
         }
@@ -79,6 +94,23 @@ const MoveToProjectDialog = ({
     });
   }, [projectList, query]);
 
+  // 确认态以活列表为准:目标项目在子视图打开期间被删(如另一窗口)时,快照
+  // 会把一个已死 id 反复送进 store 的 project not found,失败 toast + 面板
+  // 重试构成死循环;从活列表派生,项目消失即回落列表视图。
+  const pendingProject = pendingAddFolder
+    ? projectList.find(project => project.id === pendingAddFolder.id) || null
+    : null;
+
+  // 子视图进出都把焦点带到位:进入确认面板读出其标签,退回列表回到过滤框;
+  // 否则被卸载的行把焦点丢在 body,只能靠 Tab 陷阱兜底。
+  useEffect(() => {
+    if (pendingProject) {
+      confirmPanelRef.current?.focus();
+    } else {
+      searchInputRef.current?.focus();
+    }
+  }, [pendingProject]);
+
   if (!session || typeof document === 'undefined') return null;
 
   const workspacePath = session.workspaceKind === 'project' ? String(session.workspacePath || '') : '';
@@ -99,17 +131,26 @@ const MoveToProjectDialog = ({
     // 若先清 pendingAddFolder,异步进行/失败期间会回落成"选择项目"列表,
     // 看起来像点击后又弹出了另一个弹窗(评审 #449 finding:失败清目标后
     // 用户被迫重新选择,本轮正面修复)。
-    if (pendingAddFolder && !busy) onMove(pendingAddFolder.id, false);
+    if (pendingProject && !busy) onMove(pendingProject.id, false);
+  };
+  // 背板关闭以按下起点为准:从 break-all 路径上起手的文本拖选,松开落在
+  // 背板上也会合成一次 click(click 目标是共同祖先),按 click 关会把用户
+  // 没打算关的确认态一起丢掉。
+  const handleBackdropClick = (e) => {
+    if (!backdropPressRef.current || e.target !== e.currentTarget) return;
+    backdropPressRef.current = false;
+    if (busyRef.current) return;
+    onCloseRef.current();
   };
 
   const rowCls = 'w-full px-3.5 py-2.5 flex items-center gap-2.5 text-left text-[14px] rounded-2xl transition-colors text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]';
   const projectLabel = (project) => {
     const firstRoot = (project.roots || [])[0];
-    const rootPath = firstRoot ? String(typeof firstRoot === 'object' ? firstRoot.path : firstRoot) : '';
+    const path = firstRoot ? String(typeof firstRoot === 'object' ? firstRoot.path : firstRoot) : '';
     return (
       <span className="min-w-0 flex-1">
         <span className="block truncate">{project.name}</span>
-        {rootPath && <span className="block truncate text-[12px] text-[#8A8F94] dark:text-[#9AA0A6]">{rootPath}</span>}
+        {path && <span className="block truncate text-[12px] text-[#8A8F94] dark:text-[#9AA0A6]">{path}</span>}
       </span>
     );
   };
@@ -120,7 +161,8 @@ const MoveToProjectDialog = ({
       role="presentation"
       className="fixed inset-0 z-[200] flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,.34)', backdropFilter: 'blur(14px) saturate(140%)', WebkitBackdropFilter: 'blur(14px) saturate(140%)' }}
-      onClick={onClose}
+      onMouseDown={(e) => { backdropPressRef.current = e.target === e.currentTarget; }}
+      onClick={handleBackdropClick}
     >
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: dialog body stops bubbling so backdrop close is not triggered accidentally; not interactive itself */}
       <div
@@ -140,30 +182,41 @@ const MoveToProjectDialog = ({
           <button
             type="button"
             title={t.cpCancel}
+            disabled={busy}
             onClick={onClose}
-            className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-[#5F6368] hover:bg-[#D3D7DB] dark:text-[#C4C7C5] dark:hover:bg-[#444746]"
+            className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-[#5F6368] hover:bg-[#D3D7DB] dark:text-[#C4C7C5] dark:hover:bg-[#444746] disabled:opacity-50"
           >
             <X size={16} />
           </button>
         </div>
-        <div className="px-4 pb-2">
-          <div className="flex h-9 items-center gap-2 rounded-full px-3 bg-[#EAECEF] dark:bg-[#303134]">
-            <Search size={14} className="shrink-0 text-[#5F6368] dark:text-[#9AA0A6]" />
-            {/* biome-ignore lint/a11y/noAutofocus: modal opens for a single purpose; focus belongs in the filter field immediately */}
-            <input autoFocus
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              placeholder={t.uiProjects.searchPlaceholder}
-              className="w-full bg-transparent border-0 outline-none text-[14px] placeholder:text-[#8A8F94] dark:placeholder:text-[#9AA0A6]"
-            />
+        {!pendingProject && (
+          <div className="px-4 pb-2">
+            <div className="flex h-9 items-center gap-2 rounded-full px-3 bg-[#EAECEF] dark:bg-[#303134]">
+              <Search size={14} className="shrink-0 text-[#5F6368] dark:text-[#9AA0A6]" />
+              <input
+                ref={searchInputRef}
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder={t.uiProjects.searchPlaceholder}
+                aria-label={t.uiProjects.searchPlaceholder}
+                className="w-full bg-transparent border-0 outline-none text-[14px] placeholder:text-[#8A8F94] dark:placeholder:text-[#9AA0A6]"
+              />
+            </div>
           </div>
-        </div>
-        {pendingAddFolder ? (
+        )}
+        {pendingProject ? (
           <div className="px-4 pb-4 pt-1">
-            <div className="rounded-2xl bg-[#EAECEF] dark:bg-[#303134] px-3.5 py-3">
+            {/* biome-ignore lint/a11y/useSemanticElements: focus target announcing the confirm step; a <fieldset> would drag form semantics and default styling into a plain confirmation panel */}
+            <div
+              ref={confirmPanelRef}
+              tabIndex={-1}
+              role="group"
+              aria-label={t.uiProjects.moveConfirmTitle}
+              className="rounded-2xl bg-[#EAECEF] dark:bg-[#303134] px-3.5 py-3 outline-none"
+            >
               <div className="text-[13px] font-semibold mb-1">{t.uiProjects.moveConfirmTitle}</div>
               <div className="text-[12px] text-[#5F6368] dark:text-[#C4C7C5] mb-3 break-all">
-                {t.uiProjects.moveConfirmBody(pendingAddFolder.name, workspacePath)}
+                {t.uiProjects.moveConfirmBody(pendingProject.name, workspacePath)}
               </div>
               <div className="flex gap-2">
                 <button
@@ -196,9 +249,9 @@ const MoveToProjectDialog = ({
               <button
                 key={project.id}
                 type="button"
-                disabled={busy || project.id === currentProjectId}
+                aria-disabled={busy || project.id === currentProjectId}
                 onClick={() => choose(project)}
-                className={`${rowCls} disabled:opacity-60`}
+                className={`${rowCls} ${busy || project.id === currentProjectId ? 'opacity-60 cursor-default' : ''}`}
               >
                 <Layers size={15} className="shrink-0 text-[#5F6368] dark:text-[#9AA0A6]" />
                 {projectLabel(project)}
@@ -213,12 +266,15 @@ const MoveToProjectDialog = ({
             <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
             <button
               type="button"
-              disabled={busy || !currentProjectId}
-              onClick={() => !busy && onMove(null, false)}
-              className={`${rowCls} disabled:opacity-40`}
+              aria-disabled={busy || !currentProjectId}
+              onClick={() => { if (!busy && currentProjectId) onMove(null, false); }}
+              className={`${rowCls} ${busy || !currentProjectId ? 'opacity-40 cursor-default' : ''}`}
             >
               <X size={15} className="shrink-0 text-[#5F6368] dark:text-[#9AA0A6]" />
               <span className="min-w-0 flex-1 truncate">{t.uiProjects.moveToUngrouped}</span>
+              {!currentProjectId && (
+                <span className="sr-only">{t.uiProjects.alreadyUngrouped}</span>
+              )}
             </button>
           </div>
         )}
