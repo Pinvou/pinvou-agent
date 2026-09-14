@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Archive, Check, Download, Edit2, FolderOpen, Layers, MoreHorizontal, PinIcon, PinOffIcon, Sparkles, Trash2, X } from '../icons.jsx';
 import { useLongPressDrag } from '../../hooks/useLongPressDrag.js';
@@ -233,6 +233,11 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
       // only drives the bottom-edge flip decision and the portal clips
       // (per-menu height convention, see ProjectGroupHeader).
       const { menuOpen, menuStyle, closeMenu, toggleMenu, openMenuAt } = usePortalMenu({ height: 233 });
+      // 移动菜单项把流程移交给 App 级弹窗:菜单门户与弹窗在同一次提交里
+      // 卸载/挂载,被聚焦的菜单项随门户消失,弹窗的焦点还原来不及捕获它。
+      // 先把焦点交给行内常驻的「更多」按钮,弹窗关闭后焦点有一个还连着的
+      // 归宿(行本身)。
+      const moreButtonRef = useRef(null);
       const openContextMenu = openMenuAt;
       const menuItemCls = `w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] whitespace-nowrap transition-colors text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]`;
       const menu = menuOpen && menuStyle && typeof document !== 'undefined' ? createPortal(
@@ -249,7 +254,7 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
             <span>{t.riRename}</span>
           </button>
           {onMoveToProject && (
-            <button type="button" className={menuItemCls} onClick={() => { closeMenu(); onMoveToProject(chat); }}>
+            <button type="button" className={menuItemCls} onClick={() => { moreButtonRef.current?.focus(); closeMenu(); onMoveToProject(chat); }}>
               <Layers size={15} />
               <span>{t.uiProjects.moveToProject}</span>
             </button>
@@ -370,7 +375,7 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
                 </button>
 
                 <div className="relative">
-                  <button type="button" title={t.riMore} onClick={toggleMenu}
+                  <button ref={moreButtonRef} type="button" title={t.riMore} onClick={toggleMenu}
                     className="w-6 h-6 rounded-full flex items-center justify-center text-[#5F6368] hover:bg-[#D3D7DB] dark:text-[#C4C7C5] dark:hover:bg-[#444746]"><MoreHorizontal size={14} /></button>
                 </div>
               </div>
