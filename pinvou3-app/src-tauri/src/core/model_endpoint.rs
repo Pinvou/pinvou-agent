@@ -25,12 +25,13 @@ static PROBE_KIND_CACHE: std::sync::OnceLock<
 pub struct OpenAiModelInfo {
     pub id: String,
     pub max_model_len: Option<u32>,
-    /// 条目自报的单轮输出上限（tokens）。`None` = 端点未声明（绝大多数本地
-    /// 引擎的 `/v1/models` 没有、Ollama/LM Studio 列表也没有）。best-effort
-    /// 解析 `max_output_tokens` / `max_completion_tokens` /
-    /// `top_provider.max_completion_tokens`（OpenRouter 网关形状；unlimited
-    /// 时是 null，按未声明处理）。只作 route 声明的 min 收紧依据，
-    /// 永不抬高任何上限。
+    /// Entry self-reported per-turn output limit (tokens). `None` = the
+    /// endpoint does not declare one (most local engines omit it from
+    /// `/v1/models`; Ollama/LM Studio listings do too). Best-effort parse of
+    /// `max_output_tokens` / `max_completion_tokens` /
+    /// `top_provider.max_completion_tokens` (OpenRouter gateway shape;
+    /// unlimited is null, treated as undeclared). Only used to min-tighten
+    /// route declarations, never to raise any limit.
     pub max_output_tokens: Option<u32>,
     /// 是否已加载到内存。`None` = 未知（通用 OpenAI 兼容端点不区分）。
     /// Ollama（/api/ps vs /api/tags）与 LM Studio（/api/v0/models 的 state）
@@ -45,8 +46,10 @@ pub struct OpenAiModelsProbe {
     pub models: Vec<OpenAiModelInfo>,
 }
 
-/// u64 JSON 数值 → 正 u32。超出 u32 的自报值一律按未声明处理：`as u32`
-/// 会把 2^32 截成 0、2^32+5 截成 5，让下游把损坏值当真限；非正数同理无效。
+/// u64 JSON number → positive u32. Self-reported values outside the u32
+/// range are always treated as undeclared: `as u32` would truncate 2^32 to
+/// 0 and 2^32+5 to 5, letting downstream code mistake a corrupted value for
+/// a real limit; non-positive values are equally invalid.
 fn parse_positive_u32(v: &serde_json::Value) -> Option<u32> {
     u32::try_from(v.as_u64()?).ok().filter(|n| *n > 0)
 }
@@ -72,11 +75,13 @@ pub(crate) fn parse_models_response_list(v: serde_json::Value) -> Option<Vec<Ope
     (!models.is_empty()).then_some(models)
 }
 
-/// 从 `/v1/models` 条目里 best-effort 抽自报的单轮输出上限。
-/// 覆盖三种已知形状：直挂 `max_output_tokens` / `max_completion_tokens`，
-/// 以及 OpenRouter 网关的 `top_provider.max_completion_tokens`（unlimited
-/// 是 null，`as_u64()` 落空即按未声明处理）。值必须为正；本地引擎普遍
-/// 不提供该字段 → None，调用方不得据此编造上限。
+/// Best-effort extraction of the entry's self-reported per-turn output
+/// limit from a `/v1/models` entry. Covers three known shapes: direct
+/// `max_output_tokens` / `max_completion_tokens`, and the OpenRouter
+/// gateway's `top_provider.max_completion_tokens` (unlimited is null;
+/// `as_u64()` missing means undeclared). The value must be positive; local
+/// engines usually omit the field → None, and callers must not fabricate a
+/// limit from it.
 fn parse_entry_output_limit(item: &serde_json::Value) -> Option<u32> {
     let direct = ["max_output_tokens", "max_completion_tokens"]
         .into_iter()
@@ -670,14 +675,18 @@ async fn probe_lmstudio_v0_only(base_url: &str, bearer: Option<&str>) -> Option<
     })
 }
 
-/// 抓取 OpenAI 兼容模型列表响应体。地址口径：配置根已带 `/v1` 直接拼
-/// `/models`（与 `features::monitor` 的 `models_probe_url` 同一口径）；裸主机
-/// 形态（本地 vLLM 常见）先补 `/v1/models`。对非 `/v1` 的版本根（glm
-/// `/api/paas/v4`、火山方舟 `/api/v3` 等——它们的模型列表在 `{base}/models`，
-/// 补 `/v1` 反而 404），仅当主候选明确“路径不存在”（404/405）时回退重试一次
-/// `{base}/models`；鉴权失败（401/403）换路径无济于事，超时/拒连说明主机
-/// 不可达，同样不重试——保守回退到无事实。失败/非 2xx/解析失败返回 `None`，
-/// 调用方 treated as probe failure. Shared with the kind-probe chain
+/// Fetches an OpenAI-compatible model-list response body. URL convention:
+/// a configured root already ending in `/v1` appends `/models` directly
+/// (same convention as `features::monitor`'s `models_probe_url`); the bare
+/// host form (common for local vLLM) gets `/v1/models` appended first. For
+/// non-`/v1` version roots (glm `/api/paas/v4`, Volcengine Ark `/api/v3`,
+/// etc. — their model list lives at `{base}/models`, and appending `/v1`
+/// would 404), retry `{base}/models` once only when the primary candidate
+/// clearly reports "path not found" (404/405); auth failures (401/403) are
+/// not helped by switching paths, and timeouts/connection refusals mean the
+/// host is unreachable — neither is retried, conservatively falling back to
+/// no facts. Failure / non-2xx / parse failure returns `None`, and the
+/// caller treated as probe failure. Shared with the kind-probe chain
 /// (`probe_local_server_kind_uncached` fetches once for the LMDeploy/vLLM
 /// owned_by decisions) and monitor's vLLM served-name
 /// probe, so the `/v1/models` URL assembly stays consistent in both places.
@@ -703,9 +712,11 @@ pub(crate) async fn fetch_v1_models(
         .send()
         .await
         .ok()?;
-    // 仅当主候选明确"路径不存在"（404/405）且存在回退候选时重试一次；
-    // 鉴权失败（401/403）换路径无济于事，超时/拒连说明主机不可达，
-    // 同样不重试——保守回退到无事实。
+    // Retry once only when the primary candidate clearly reports "path not
+    // found" (404/405) and a fallback candidate exists; auth failures
+    // (401/403) are not helped by switching paths, and timeouts/connection
+    // refusals mean the host is unreachable — neither is retried,
+    // conservatively falling back to no facts.
     let resp = match (resp.status().as_u16(), fallback) {
         (200..=299, _) => resp,
         (404 | 405, Some(url)) => {
@@ -959,9 +970,11 @@ pub async fn post_anthropic_messages(
     anthropic_messages_text(&value).context("no text block in anthropic messages response")
 }
 
-/// 仅测试用：最小模型列表 mock 服务器。按路径返回可配状态码与响应体并记录
-/// 命中数与 Authorization 头——`fetch_v1_models` 的回退口径测试与 engine_pool
-/// spawn 采纳接线测试共用，断言“探测打到了哪条路径、打了几次、是否携带凭据”。
+/// Test-only: minimal model-list mock server. Returns a configurable status
+/// code and body per path, recording hit counts and Authorization headers —
+/// shared by the `fetch_v1_models` fallback-convention tests and the
+/// engine_pool spawn adoption wiring tests, asserting "which path was hit,
+/// how many times, and whether credentials were attached".
 #[cfg(test)]
 pub(crate) mod models_mock {
     use std::collections::HashMap;
@@ -984,7 +997,8 @@ pub(crate) mod models_mock {
                 .unwrap_or(0)
         }
 
-        /// 该路径最后一次请求携带的 Authorization 头（未携带则 None）。
+        /// Authorization header carried by the last request to this path
+        /// (None when absent).
         pub(crate) fn auth_for(&self, path: &str) -> Option<String> {
             self.auth
                 .lock()
@@ -1006,8 +1020,10 @@ pub(crate) mod models_mock {
         let auth: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
         let auth_thread = auth.clone();
         std::thread::spawn(move || {
-            // 最多伺服 32 个连接：内核测试各发 1–2 个请求，finalize 接线测试
-            // 还要经过 kind 探测（7 个并行候选），留足余量；兜底防线程泄漏。
+            // Serve at most 32 connections: the core tests each send 1-2
+            // requests and the finalize wiring tests also go through the kind
+            // probe (7 parallel candidates), so leave headroom; this also
+            // bounds thread leaks.
             for stream in listener.incoming().take(32) {
                 let Ok(mut stream) = stream else { continue };
                 let mut buf = Vec::new();
@@ -1099,8 +1115,9 @@ mod tests {
         assert_eq!(models[1].max_model_len, Some(32768));
     }
 
-    /// `/v1/models` 条目自报输出上限的三种形状 + 非法值拒绝。
-    /// 本地引擎（vLLM/Ollama）普遍不提供该字段 → None，不得编造。
+    /// The three known shapes of a `/v1/models` entry's self-reported output
+    /// limit + rejection of invalid values. Local engines (vLLM/Ollama)
+    /// usually omit the field → None; it must not be fabricated.
     #[test]
     fn parse_models_response_list_extracts_output_limits() {
         let json: serde_json::Value = serde_json::from_str(
@@ -1125,16 +1142,18 @@ mod tests {
         assert_eq!(output_of("direct-max-output"), Some(65536));
         assert_eq!(output_of("direct-max-completion"), Some(8192));
         assert_eq!(output_of("openrouter-shape"), Some(131072));
-        // unlimited（null）与 0 都按未声明处理
+        // unlimited (null) and 0 are both treated as undeclared
         assert_eq!(output_of("unlimited-null"), None);
         assert_eq!(output_of("zero-invalid"), None);
-        // max_model_len 是 context window，不是输出上限
+        // max_model_len is a context window, not an output limit
         assert_eq!(output_of("plain-vllm"), None);
     }
 
-    /// 解析健壮性：超出 u32 的自报值（`as u32` 会截成 0 或小值，让损坏值
-    /// 被当真限）与浮点/负数/字符串形态一律按未声明处理；max_model_len
-    /// 的 0 值与超界值同样拒绝。
+    /// Parse robustness: self-reported values beyond u32 (`as u32` would
+    /// truncate them to 0 or a small value, mistaking corrupted values for
+    /// real limits), float/negative/string forms are all treated as
+    /// undeclared; max_model_len 0 and out-of-range values are likewise
+    /// rejected.
     #[test]
     fn parse_models_response_list_rejects_out_of_range_and_malformed_values() {
         let json: serde_json::Value = serde_json::from_str(
@@ -1160,14 +1179,17 @@ mod tests {
             "string-form",
         ] {
             let model = models.iter().find(|m| m.id == id).unwrap();
-            assert_eq!(model.max_output_tokens, None, "{id} 必须按未声明处理");
+            assert_eq!(
+                model.max_output_tokens, None,
+                "{id} must be treated as undeclared"
+            );
         }
         let zero_context = models.iter().find(|m| m.id == "zero-context").unwrap();
-        assert_eq!(zero_context.max_model_len, None, "0 窗口不是事实");
+        assert_eq!(zero_context.max_model_len, None, "a 0 window is not a fact");
         let overflow_context = models.iter().find(|m| m.id == "overflow-context").unwrap();
         assert_eq!(
             overflow_context.max_model_len, None,
-            "超 u32 窗口不得截断成假值"
+            "a window beyond u32 must not be truncated into a fake value"
         );
     }
 
@@ -2167,30 +2189,35 @@ mod tests {
         ]);
         let value = fetch_v1_models(&mock.base_url, None)
             .await
-            .expect("裸主机形态主候选 /v1/models 应命中");
+            .expect("bare-host form hits the primary /v1/models candidate");
         assert_eq!(parse_models_response_list(value).unwrap()[0].id, "served-a");
         assert_eq!(mock.hits_for("/v1/models"), 1);
-        assert_eq!(mock.hits_for("/models"), 0, "主候选成功不得再打回退路径");
+        assert_eq!(
+            mock.hits_for("/models"),
+            0,
+            "a successful primary must not hit the fallback path"
+        );
     }
 
     #[tokio::test]
     async fn fetch_v1_models_falls_back_to_root_models_on_404() {
-        // glm /api/paas/v4、方舟 /api/v3 这类非 v1 版本根：补 /v1 必 404，
-        // 模型列表在 {base}/models——回退一次必须命中。
+        // Non-v1 version roots such as glm /api/paas/v4 or Ark /api/v3:
+        // appending /v1 always 404s and the model list lives at
+        // {base}/models — the single fallback must hit.
         let mock = models_mock::spawn(&[
             ("/v1/models", 404, "{}".into()),
             ("/models", 200, r#"{"data":[{"id":"glm-4.7"}]}"#.into()),
         ]);
         let value = fetch_v1_models(&mock.base_url, Some("route-key"))
             .await
-            .expect("404 后应回退 {base}/models");
+            .expect("after 404 the fallback to {base}/models must happen");
         assert_eq!(parse_models_response_list(value).unwrap()[0].id, "glm-4.7");
         assert_eq!(mock.hits_for("/v1/models"), 1);
         assert_eq!(mock.hits_for("/models"), 1);
         assert_eq!(
             mock.auth_for("/models").as_deref(),
             Some("Bearer route-key"),
-            "回退请求必须携带同源凭据，不得静默降级为匿名请求"
+            "the fallback request must carry the same-origin credentials, never silently degrade to anonymous"
         );
     }
 
@@ -2204,14 +2231,15 @@ mod tests {
         assert_eq!(
             mock.hits_for("/models"),
             0,
-            "401 是鉴权问题，换路径无济于事，不得重试"
+            "401 is an auth problem; switching paths cannot help, no retry"
         );
     }
 
     #[tokio::test]
     async fn fetch_v1_models_v1_shaped_base_has_no_alt_path() {
-        // /v1 结尾的配置根：主候选是 {base}/models == mock 的 "/v1/models"；
-        // 404 时不得再出现任何第二条路径（无 /v1/models 之外的回退）。
+        // A configured root ending in /v1: the primary candidate is
+        // {base}/models == the mock's "/v1/models"; on 404 no second path
+        // may ever appear (no fallback beyond /v1/models).
         let mock = models_mock::spawn(&[("/v1/models", 404, "{}".into())]);
         let base = format!("{}/v1", mock.base_url);
         assert!(fetch_v1_models(&base, None).await.is_none());
@@ -2219,7 +2247,7 @@ mod tests {
         assert_eq!(
             mock.hits_for("/models"),
             0,
-            "/v1 结尾的配置根只有一个候选，无回退路径"
+            "a /v1-shaped configured root has a single candidate, no fallback path"
         );
     }
 }

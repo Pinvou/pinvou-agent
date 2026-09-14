@@ -31,7 +31,7 @@
 | 量 | 谁算 | 含义 | 公式 |
 |---|---|---|---|
 | **W** 窗口 | app 探测 | vLLM `max_model_len` | probe → `RouteLimits.context_tokens`；失败 → 名字 hint → 128,000 兜底 |
-| **O** 输出预留 | app 派生 | 单次回复留的空间 | operator-owned 端点按窗口分档声明（`core::model_context::operator_owned_output_declaration`：≥500K→131,072 / ≥250K→65,536 / 否则 min(W/4, 32,768)，无窗口事实→32,768，<4K 不声明），再被端点自报上限与显式配置 min 收紧 |
+| **O** 输出预留 | app 派生 | 单次回复留的空间 | operator-owned endpoints declare by window tier (`core::model_context::operator_owned_output_declaration`: ≥500K→131,072 / ≥250K→65,536 / otherwise min(W/4, 32,768); no window fact→32,768; <4K not declared), then min-tightened by the endpoint's self-reported limit and explicit configuration |
 | **E** 紧急线 | 底座，**不要自己算** | 全量输入硬天花板 | `W − O − 1,024`（入口为底座 `context_input_budget_for_route`，`crates/tui/src/core/engine/context.rs`） |
 | **T** 正常线 | app 推导后填 `token_threshold` | 温和摘要触发点 | 见 §3 |
 
@@ -77,11 +77,14 @@ served name 变 `qwen3.6-35b` 无 `_Nk` 后缀 → 底座兜底 128,000 窗口�
 3. `SavedModel`：持久化具体部署的 `context_window_tokens` / `max_output_tokens`，与发给服务端
    的 wire model alias 解耦；设置页可为任意 OpenAI-compatible 引擎配置。
 4. `bridge/mod.rs`：声明窗口与 probe 取较小值，生成同时包含 context/output 的
-   `active_route_limits`；operator-owned 端点（本地 vLLM、自定义 OpenAI 兼容 /
-   custom，coding_plan 除外）输出按窗口分档统一声明：>=500K→131072 /
-   >=250K→65536 / 否则 min(window/4, 32768)，无窗口事实按 128K 默认窗口的
-   1/4（→32768，经底座 min(requested_cap=64000, route_cap) 后为生效值），
-   再被端点自报输出上限 min 收紧；官方云端 preset 与 coding_plan 不声明时不猜。
+   `active_route_limits`; operator-owned endpoints (local vLLM, custom
+   OpenAI-compatible / custom, excluding coding_plan) declare their output
+   uniformly by window tier: >=500K→131072 / >=250K→65536 / otherwise
+   min(window/4, 32768), with no window fact taking a quarter of the 128K
+   default window (→32768, the effective value after the base's
+   min(requested_cap=64000, route_cap)), then min-tightened by the
+   endpoint's self-reported output limit; official cloud presets and
+   coding_plan stay undeclared and do not guess.
 5. v0.9 底座只补最小 embed API：把宿主 limits 附到 resolved route；显式 route output
    优先于未知模型名的 4K 兼容 fallback，未声明 route 的上游行为不变。
 
@@ -112,29 +115,37 @@ T = clamp(T, floor=4,096, 上界=0.75·W)
 
 | W | E | T（实测公式） | T/W | 触发顺序实证 |
 |---|---|---|---|---|
-| 262,144 | 195,584 | **~106K**（105,722） | 40% | T=130K：nice 在 N=174 先于 emergency N=198 ✅（2026-07-02，O=24K 时代实测） |
-| 131,072 | 97,280 | **~40K** | 31% | T=45K：nice 在 N=60 先于 emergency N=84 ✅（同上） |
+| 262,144 | 195,584 | **~106K**（105,722） | 40% | T=130K：nice 在 N=174 先于 emergency N=198 ✅（2026-07-02, measured in the O=24K era） |
+| 131,072 | 97,280 | **~40K** | 31% | T=45K：nice 在 N=60 先于 emergency N=84 ✅（same as above） |
 | 65,536 | 48,128 | **~7K** | 11% | 贴近 floor，正常线仍先（压缩频繁） |
 | < ~20,000 | 很小 | floor 4,096 | — | prompt 吃光窗口，floor 防风暴 + UI 告警 |
 
-> 2026-09 分档声明前 O 恒为 24,576（262,144→E 236,544/T ~133K；131,072→E 105,472/T ~46K）；
-> 「触发顺序实证」列是该时代的历史实测记录，E/T 数值已按分档后的 O 重算，比例关系
-> （正常线先于紧急线）不变。
+> Before the 2026-09 tiered declaration O was constant 24,576 (262,144→E 236,544 /
+> T ~133K; 131,072→E 105,472 / T ~46K); the trigger-order-evidence column
+> (「触发顺序实证」) holds the historical measurements from that era, with the E/T
+> values recomputed under the post-tier O — the ordering relationship (normal
+> line before emergency line) is unchanged.
 
 小窗口 T 贴 floor 是**数学结论不是设计旋钮**——固定开销在小窗口占大头。C/D 档不花精力
 调参，只保证「floor 防压缩风暴 + 设置页/chip 告警不崩」。
 
-### O 来源（v0.9；v0.9.3 起改窗口分档声明）
+### O 来源（v0.9；window-tiered declaration since v0.9.3）
 
-O 是具体 route 的单轮输出上限，不再从 wire model 名字猜。operator-owned 端点（本地 vLLM、
-自定义 OpenAI 兼容 / custom；coding_plan 与官方云端 preset 除外不声明）由宿主按窗口分档
-统一声明：≥500K→131,072 / ≥250K→65,536 / 否则 min(W/4, 32,768)，无窗口事实按 128K 默认
-窗口的 1/4（→32,768，经底座 min(requested_cap=64,000, route_cap) 后为生效值），再被端点
-自报输出上限（`/v1/models`）与显式配置 min 收紧、只降不升；<4,096 的声明视为无意义不发。
-旧版本机器写入的本地 24K 在 load 时迁移清除（24576 自此为本地遗留哨兵值）。显式配置仍受
-进程级请求上限（默认 24K）钳制——要在分档之上抬高上限须走 `PINVOU3_MAX_OUTPUT_TOKENS` /
-`prefs.advanced.max_output_tokens`。底座只在 route 未声明 O 时才使用静态模型目录/未知
-模型 8K fallback（4K 仅 Codex OAuth 路由）。
+O 是具体 route 的单轮输出上限，不再从 wire model 名字猜。Operator-owned endpoints
+(local vLLM, custom OpenAI-compatible / custom; coding_plan and official cloud
+presets stay undeclared) are declared uniformly by window tier on their behalf:
+≥500K→131,072 / ≥250K→65,536 / otherwise min(W/4, 32,768), with no window fact
+taking a quarter of the 128K default window (→32,768, the effective value after
+the base's min(requested_cap=64,000, route_cap)); then min-tightened — only
+down, never up — by the endpoint's self-reported output limit (`/v1/models`)
+and explicit configuration; declarations under 4,096 are considered
+meaningless and are not sent. The machine-written local 24K from older
+versions is migrated away at load time (24576 is thereby a local legacy
+sentinel value). Explicit configuration is still clamped by the process-level
+request cap (default 24K) — raising the cap above the tiers must go through
+`PINVOU3_MAX_OUTPUT_TOKENS` / `prefs.advanced.max_output_tokens`. The base
+only uses the static model catalog / unknown-model 8K fallback when a route
+does not declare O (the 4K fallback applies only to the Codex OAuth route).
 
 ## 4. 分期计划
 
@@ -153,9 +164,12 @@ O 是具体 route 的单轮输出上限，不再从 wire model 名字猜。opera
 > 剩余:GUI 长会话人工观察 banner（需桌面环境）+ ops 补 served-name（下方，113 机）——待用户。
 > 注：O 按窗口分档(≥500K→262144,否则 max_output_tokens);云端拿不到真实窗口的模型
 > (gpt-4o/qwen-max 等)退 128k 兜底(与底座同源不倒置),准确值靠二期手动配置。
-> （⚠️ 本块为 v0.8 期历史记录:此处「≥500K→262144」的 O 分档口径已被 §3「O 来源」的
-> operator-owned 窗口分档声明取代——≥500K→131072 / ≥250K→65536 / 否则 min(W/4, 32768);
-> `compaction_cloud_large_window_models` 现亦直取底座公开预算链,不再镜像分档常数。）
+> （⚠️ This block is a v0.8-era historical record: the「≥500K→262144」O-tier
+> convention here has been superseded by §3 "O 来源" 's operator-owned
+> window-tier declaration——≥500K→131072 / ≥250K→65536 / otherwise
+> min(W/4, 32768); `compaction_cloud_large_window_models` now also reads the
+> base's public budget chain directly and no longer mirrors the tier
+> constants.)
 
 > **v0.9 更新（2026-07-17）**：上面的“零 fork”是当时基线的历史结论。v0.9 resolved
 > route 会对未知 wire alias 采用 4K output 兼容 fallback，因此现方案在 T6 增加了最小

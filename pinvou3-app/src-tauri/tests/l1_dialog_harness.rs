@@ -541,9 +541,10 @@ fn ensure_runtime_env() {
     // 允许开发者通过 DEEPSEEK_BASE_URL 接入非 loopback 的本地网络 vLLM。
     set_var_if_unset("DEEPSEEK_ALLOW_INSECURE_HTTP", "1");
     set_var_if_unset("DEEPSEEK_FORCE_HTTP1", "1");
-    // L1 是本地 vLLM headless 测试：正式 App 已不注入该 env（宿主按窗口分档
-    // 声明输出），这里由底座直读 DEEPSEEK_MAX_OUTPUT_TOKENS 显式给出 24K
-    // 预算，用于锁定底座在该口径下的本地行为。
+    // L1 is a local vLLM headless test: the production app no longer
+    // injects this env (the host declares output by window tiers); here the
+    // base reads DEEPSEEK_MAX_OUTPUT_TOKENS directly to get an explicit 24K
+    // budget, pinning the base's local behavior under that convention.
     set_var_if_unset("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576");
     // 与正式 App 和底座默认值保持一致，避免 L1 仍用旧 90s 配置，
     // 把慢速本地模型的正常长生成误判为运行时回归。

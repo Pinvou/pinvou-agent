@@ -104,27 +104,33 @@ pub fn resolve_context_window(
     }
 }
 
-/// operator-owned 端点（本地 vLLM、自定义 OpenAI 兼容 / custom；判定见
-/// `SavedModel::is_operator_owned_endpoint`）的输出上限分档声明——宿主作为
-/// 部署者的代理，按窗口分档代为声明 route 输出事实（替换底座对未编目模型
-/// 的 8192 fail-close 猜测）。
+/// Output-cap tier declaration for operator-owned endpoints (local vLLM,
+/// custom OpenAI-compatible / custom; see
+/// `SavedModel::is_operator_owned_endpoint` for the predicate) — acting as
+/// the deployer's proxy, the host declares the route output fact by window
+/// tier (replacing the base's 8192 fail-close guess for uncatalogued
+/// models).
 ///
-/// 单一事实源：`bridge::route_limits_for_model` 的声明臂与监控页 live 探测
-/// 测试都从这里取值，禁止再内联同公式（曾经的内联副本在引入当轮就漏掉了
-/// 500K 档发生漂移）。
+/// Single source of truth: both the declaration arm of
+/// `bridge::route_limits_for_model` and the monitor page's live-probe test
+/// take their values from here; do not inline the formula again (an inlined
+/// copy drifted in the very round it was introduced by missing the 500K
+/// tier).
 #[must_use]
 pub fn operator_owned_output_declaration(window: Option<u32>) -> Option<u32> {
     let declared = match window {
         Some(window) if window >= 500_000 => 131_072,
         Some(window) if window >= 250_000 => 65_536,
         Some(window) => (window / 4).min(32_768),
-        // 无窗口事实：按底座 128K 默认窗口的 1/4 兜底（非底座自身数值：
-        // 底座模型级兜底 64000、路由级 fail-close ≤8192；min(64000, 32768)
-        // 后恰好生效 32768）。
+        // No window fact: fall back to a quarter of the base's 128K default
+        // window (not a base-native value: the base model-level fallback is
+        // 64000 and the route-level fail-close is <=8192; after
+        // min(64000, 32768) the effective value is exactly 32768).
         None => 32_768,
     };
-    // 窗口过小时 window/4 装不下一个有意义的输出预算（<4K）：保持不声明
-    // （fail-closed），不发 Some(<4K) 的 route 事实。
+    // For tiny windows window/4 cannot fit a meaningful output budget (<4K):
+    // stay undeclared (fail-closed) instead of emitting a Some(<4K) route
+    // fact.
     (declared >= 4_096).then_some(declared)
 }
 
@@ -206,7 +212,8 @@ mod tests {
 
     #[test]
     fn operator_owned_output_declaration_tiers_and_fail_closed_floor() {
-        // 分档边界（与 bridge 分档测试同表，此处钉纯函数本身）。
+        // Tier boundaries (same table as the bridge tier test; this pins the
+        // pure function itself).
         assert_eq!(
             operator_owned_output_declaration(Some(1_048_576)),
             Some(131_072)
@@ -242,7 +249,7 @@ mod tests {
         assert_eq!(operator_owned_output_declaration(Some(16_384)), Some(4_096));
         assert_eq!(operator_owned_output_declaration(Some(16_383)), None);
         assert_eq!(operator_owned_output_declaration(Some(4_096)), None);
-        // 无窗口事实 → 128K 默认窗口的 1/4 兜底。
+        // No window fact → quarter of the 128K default window fallback.
         assert_eq!(operator_owned_output_declaration(None), Some(32_768));
     }
 }

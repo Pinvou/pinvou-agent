@@ -186,9 +186,11 @@ pub struct Pinvou3Bridge {
     /// active_route_limits, and compaction thresholds derive from it together
     /// with the output profile.
     pub probed_context_tokens: Option<u32>,
-    /// `/v1/models` 条目自报的单轮输出上限（engine spawn 探测注入，匹配条目
-    /// 自己的值；端点未声明或未探测为 None）。只做 route 声明的 min 收紧
-    /// （`route_limits_for_model`），永不抬高任何上限。
+    /// Per-turn output limit self-reported by the `/v1/models` entry
+    /// (injected by the engine spawn probe; the matched entry's own value;
+    /// None when the endpoint does not declare it or it was not probed).
+    /// Only min-tightens route declarations (`route_limits_for_model`),
+    /// never raises any limit.
     pub probed_output_tokens: Option<u32>,
     /// 本地 loopback 端点（OpenAI 兼容 preset）探测出的服务类型（Ollama / vLLM /
     /// LM Studio / 通用）。EnginePool spawn 时由 `probe_local_server_kind` 注入；
@@ -1267,10 +1269,12 @@ impl Pinvou3Bridge {
         Self::allow_shell_for_prefs(&self.prefs)
     }
 
-    /// env > prefs.advanced > 24576 (24K)。
-    /// 24K 不再是本地模型的 route 输出声明（见 `route_limits_for_model`）。
-    /// 现在只剩两个消费者：min 钳制用户显式配置的 `SavedModel.max_output_tokens`
-    /// （操作者可用本 env / prefs 抬高上限），以及 compaction 阈值推导的兜底。
+    /// env > prefs.advanced > 24576 (24K).
+    /// 24K is no longer the route output declaration for local models (see
+    /// `route_limits_for_model`). Only two consumers remain: min-clamping a
+    /// user's explicit `SavedModel.max_output_tokens` (the operator can
+    /// raise the cap via this env / prefs) and the compaction threshold
+    /// derivation fallback.
     pub fn max_output_tokens(&self) -> u32 {
         if let Ok(v) = std::env::var("PINVOU3_MAX_OUTPUT_TOKENS") {
             if let Ok(n) = v.parse() {
@@ -1283,12 +1287,15 @@ impl Pinvou3Bridge {
     /// 为一个具体 wire model 生成宿主已知的 route facts：
     /// SavedModel 显式能力与实时 probe 取更小值；两者都没有时复用运行状态页同一份
     /// 模型 catalog，未知本地 vLLM 才使用 128K 保守值。
-    /// output_tokens: operator-owned 端点（本地 vLLM、自定义 OpenAI 兼容 / custom，
-    /// coding_plan 除外）按窗口分档统一声明 —— >=500K→131072，>=250K→65536，
-    /// 否则 min(window/4, 32768)，无窗口事实按 128K 兜底的 1/4（→32768）；
-    /// 再被端点自报输出上限（probe）与窗口余量 min 收紧。云端 preset 与
-    /// coding_plan 一律不声明（SavedModel.max_output_tokens 默认 None），
-    /// 交底座按厂商能力 / 保守猜测兜底。
+    /// output_tokens: operator-owned endpoints (local vLLM, custom
+    /// OpenAI-compatible / custom, excluding coding_plan) declare uniformly
+    /// by window tier — >=500K→131072, >=250K→65536, otherwise
+    /// min(window/4, 32768), with no window fact falling back to a quarter
+    /// of the 128K fallback (→32768); then min-tightened by the endpoint's
+    /// self-reported output limit (probe) and the window headroom. Cloud
+    /// presets and coding_plan never declare (SavedModel.max_output_tokens
+    /// defaults to None) and fall back to the base's vendor capability /
+    /// conservative guess.
     fn route_limits_for_model(&self, model: &str) -> Option<codewhale_config::route::RouteLimits> {
         let saved = self.effective_model().filter(|saved| saved.model == model);
         let configured_context = saved.and_then(|saved| saved.context_window_tokens);
@@ -1306,24 +1313,34 @@ impl Pinvou3Bridge {
             inferred_context.or_else(|| is_local_vllm.then_some(128_000)),
         );
         let configured_output = saved.and_then(|saved| saved.max_output_tokens);
-        // operator-owned 端点（判定见 `SavedModel::is_operator_owned_endpoint`）：
-        // 端点由用户配置，输出上限是部署者自己的责任。底座（upstream #5461
-        // 语义）对未编目模型 fail-close 到 8192 保守猜测、仅在有显式
-        // output_tokens 事实时替换——宿主作为部署者的代理，按窗口分档代为
-        // 声明该 route 事实。分档公式单一实现在
-        // `core::model_context::operator_owned_output_declaration`：
-        // >=500K→131072，>=250K→65536，否则 min(window/4, 32768)；无窗口事实
-        // 兜底 32768（128K 默认窗口的 1/4，非底座自身数值：底座模型级兜底
-        // 64000、路由级 fail-close ≤8192，min(64000, 32768) 后恰好生效
-        // 32768）。本地 vLLM 无探测时 128K 兜底会先成为窗口事实
-        // （is_local_vllm 分支），落 32000 而非本兜底。<4096 由分档函数
-        // fail-closed 返回 None。
-        // 声明的是端点能力，不是 Pinvou 单轮预算，因此不参与进程级
-        // max_output_tokens()（24K）的钳制——与已收录云端模型同权；用户可以
-        // 通过 SavedModel.max_output_tokens 显式收紧（configured_output 优先）。
-        // 注意方向：显式配置仍受进程级 24K 预算钳制（base 既有语义），因此
-        // 在 >=250K 窗口上"显式填 65536"反而小于"不填拿分档 65536"——要抬高
-        // 上限请走 PINVOU3_MAX_OUTPUT_TOKENS / prefs.advanced.max_output_tokens。
+        // Operator-owned endpoint (predicate in
+        // `SavedModel::is_operator_owned_endpoint`): the endpoint is
+        // configured by the user and the output ceiling is the deployer's
+        // own responsibility. The base (upstream #5461 semantics)
+        // fail-closes uncatalogued models to the 8192 conservative guess and
+        // replaces it only when an explicit output_tokens fact exists —
+        // acting as the deployer's proxy, the host declares that route fact
+        // by window tier. The tier formula has a single implementation in
+        // `core::model_context::operator_owned_output_declaration`:
+        // >=500K→131072, >=250K→65536, otherwise min(window/4, 32768); with
+        // no window fact the fallback is 32768 (a quarter of the 128K
+        // default window, not a base-native value: the base model-level
+        // fallback is 64000 and the route-level fail-close is <=8192; after
+        // min(64000, 32768) the effective value is exactly 32768). When a
+        // local vLLM is unprobed, the 128K fallback becomes the window fact
+        // first (the is_local_vllm branch), landing on 32000 instead of this
+        // fallback. <4096 returns None fail-closed from the tier function.
+        // The declaration is an endpoint capability, not the Pinvou per-turn
+        // budget, so it is NOT clamped by the process-level
+        // max_output_tokens() (24K) — same standing as catalogued cloud
+        // models; users can tighten it explicitly via
+        // SavedModel.max_output_tokens (configured_output wins).
+        // Direction warning: an explicit configuration is still clamped by
+        // the process-level 24K budget (existing base semantics), so on a
+        // >=250K window explicitly entering 65536 is effectively smaller
+        // than entering nothing and receiving the tier's 65536 — to raise
+        // the cap use
+        // PINVOU3_MAX_OUTPUT_TOKENS / prefs.advanced.max_output_tokens.
         let is_operator_owned_endpoint =
             saved.is_some_and(|saved| saved.is_operator_owned_endpoint());
         let output_tokens = configured_output
@@ -1337,8 +1354,9 @@ impl Pinvou3Bridge {
                         )
                     })
             })
-            // 端点自报输出上限（`/v1/models` 探测）只做 min 收紧：API 拒绝
-            // 超限请求时，声明值必须让步。
+            // The endpoint's self-reported output limit (the `/v1/models`
+            // probe) only min-tightens: when the API rejects over-limit
+            // requests, the declaration must yield.
             .map(|tokens| match self.probed_output_tokens {
                 Some(probed) => tokens.min(probed),
                 None => tokens,
@@ -1794,9 +1812,10 @@ impl Pinvou3Bridge {
             //   active_route_limits/skills_scan_codewhale_only/workspace_follow_symlinks: 透传。
             // [pinvou3-fork] active_route_limits:把 SavedModel 声明和实时 probe 收敛成同一份
             // context/output route facts，让底座 emergency 线、Compact 与真实请求上限同尺。
-            // 未登记的 vLLM 才回退 128K 窗口 + 窗口分档输出（见
-            // route_limits_for_model / operator_owned_output_declaration）；
-            // 其他兼容引擎可在 SavedModel 显式声明。
+            // Uncatalogued vLLM falls back to the 128K window + window-tiered
+            // output (see route_limits_for_model /
+            // operator_owned_output_declaration); other compatible engines
+            // can declare explicitly in SavedModel.
             active_route_limits: self.route_limits_for_model(&self.model()),
             skills_scan_codewhale_only,
             max_admitted_subagents,
@@ -4367,10 +4386,12 @@ mod tests {
         let (_lock, _env) =
             locked_env(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
         // [根因] derive_compaction_threshold 经底座 context_input_budget_for_route 算
-        // output 预留：本地 vLLM 与自定义端点同走 operator 窗口分档
-        // （route_limits_for_model 声明进 RouteLimits.output_tokens），主导预留计算
-        // （min(requested_cap, route_cap)），不依赖 DEEPSEEK_MAX_OUTPUT_TOKENS env。
-        // 云端模型不被品悟钉死，落底座 64K 兜底。
+        // output reservation: local vLLM and custom endpoints both follow the
+        // operator window tiers (declared into RouteLimits.output_tokens by
+        // route_limits_for_model), dominating the reservation calculation
+        // (min(requested_cap, route_cap)), independent of the
+        // DEEPSEEK_MAX_OUTPUT_TOKENS env. Cloud models are not pinned by
+        // Pinvou and fall to the base's 64K fallback.
         // A. 真实 128K 部署:探测拿到 131072
         // 默认预设已平台感知(macOS/Windows→Deepseek),显式设 LocalVllm 才测 128K vLLM compaction。
         let mut a = fixture_bridge();
@@ -4384,7 +4405,7 @@ mod tests {
         a.probed_context_tokens = Some(131_072);
         let cfg_a = a.build_engine_config();
         let t_a = cfg_a.compaction.token_threshold;
-        // route 声明:131072 < 250K → min(window/4, 32768) = 32768
+        // route declaration: 131072 < 250K → min(window/4, 32768) = 32768
         let e_a = 131_072usize - 32_768 - 1_024;
         eprintln!(
             "[A 真实128K部署] probed=131072 → T={t_a}  E={e_a}  route_limits={:?}",
@@ -4398,11 +4419,11 @@ mod tests {
         assert_eq!(
             cfg_a.active_route_limits.and_then(|l| l.output_tokens),
             Some(32_768),
-            "128K 本地 route 按窗口分档声明 min(131072/4, 32768)=32768"
+            "the 128K local route declares min(131072/4, 32768)=32768 per the window tiers"
         );
         assert!(
             (38_000..=55_000).contains(&t_a),
-            "128K 窗口 T 应 ~40K,实得 {t_a}"
+            "the 128K window T should be ~40K, got {t_a}"
         );
         assert!(t_a < e_a, "T 必须低于 E(nice 先于 emergency)");
 
@@ -4419,7 +4440,7 @@ mod tests {
         let win_b = b.effective_context_window(&b.model());
         let cfg_b = b.build_engine_config();
         let t_b = cfg_b.compaction.token_threshold;
-        // route 声明:128000 → min(128000/4, 32768) = 32000
+        // route declaration: 128000 → min(128000/4, 32768) = 32000
         let e_b = win_b as usize - 32_000 - 1_024;
         eprintln!(
             "[B 客户bug兜底] name=qwen3.6-35b probed=None → window={win_b}  T={t_b}  E={e_b}  route_limits={:?}",
@@ -4436,19 +4457,20 @@ mod tests {
                 input_tokens: None,
                 output_tokens: Some(32_000),
             }),
-            "未知本地 alias 也必须携带明确的 128K 窗口 + 窗口分档 32K 输出"
+            "an unknown local alias must also carry an explicit 128K window + window-tiered 32K output"
         );
         assert!(
             (36_000..=50_000).contains(&t_b),
-            "128000 兜底 T 应 ~38.6K,实得 {t_b}"
+            "the 128000 fallback T should be ~38.6K, got {t_b}"
         );
         assert!(
             t_b < e_b,
             "T({t_b}) 必须低于紧急线 E({e_b})——nice 先于 emergency(不倒置)"
         );
 
-        // C. Pinvou 默认健康部署:SavedModel 上下文 262144（normalize 对
-        // qwen36_35b_256k 的兜底），输出不预填、走窗口分档 → 65536。
+        // C. Pinvou default healthy deployment: SavedModel context 262144
+        // (the normalize fallback for qwen36_35b_256k), no output prefill,
+        // window tiers → 65536.
         let mut c = fixture_bridge();
         c.prefs.advanced.model_preset = Some(ModelPreset::LocalVllm);
         c.prefs.migrate_models();
@@ -4464,15 +4486,15 @@ mod tests {
         );
         assert_eq!(
             t_c, 105_722,
-            "256K/65536 profile 的 Compact 阈值应稳定为 105722"
+            "the 256K/65536 profile's Compact threshold must stay stable at 105722"
         );
     }
 
     /// PR #210 回归：云端模型不再被全局 DEEPSEEK_MAX_OUTPUT_TOKENS 钉死 24576。
     /// clean env（无该 env）下云端 SavedModel.max_output_tokens 为 None →
     /// route_limits.output_tokens 必须为 None（不声明 → 底座 64K/厂商能力兜底）；
-    /// 本地 vLLM 与自定义端点同走 operator 窗口分档（262144→65536，不依赖
-    /// env），两者都要锁。
+    /// local vLLM and custom endpoints both follow the operator window tiers
+    /// (262144→65536, independent of env); both must be locked.
     ///
     /// ⚠️ C 段语义（评审修正 2026-08-11）：品悟中间层确实不读该 env，但底座
     /// `effective_max_output_tokens_for_route` **优先**读它——env 残留仍会把云端
@@ -4518,7 +4540,7 @@ mod tests {
             "clean env 下云端 route_limits.output_tokens 必须为 None（不声明，落底座兜底）"
         );
 
-        // B. 本地 vLLM：operator 窗口分档（262144 ≥250K → 65536），不依赖 env。
+        // B. Local vLLM: operator window tiers (262144 >=250K → 65536), independent of env.
         let mut local = fixture_bridge();
         set_active_model(
             &mut local,
@@ -4531,7 +4553,7 @@ mod tests {
         assert_eq!(
             local_limits.as_ref().and_then(|l| l.output_tokens),
             Some(65_536),
-            "本地 vLLM 按窗口分档声明输出（262144→65536），不依赖 DEEPSEEK_MAX_OUTPUT_TOKENS env"
+            "local vLLM declares its output per the window tiers (262144→65536), independent of the DEEPSEEK_MAX_OUTPUT_TOKENS env"
         );
 
         // C. env 残留（旧生产双保险未清干净 / 未来有人重新注入）：品悟中间层不读
@@ -4893,10 +4915,12 @@ mod tests {
         );
     }
 
-    /// Operator-owned 输出声明的统一窗口分档（本地 vLLM 与自定义 OpenAI 兼容
-    /// / custom 同一套）：>=500K→131072，>=250K→65536，否则
-    /// min(window/4, 32768)；无窗口事实按 128K 默认窗口的 1/4 → 32768
-    /// （经底座 min(requested_cap=64000, route_cap) 后恰为生效值）。
+    /// The unified window tiers of the operator-owned output declaration
+    /// (one table for both local vLLM and custom OpenAI-compatible /
+    /// custom): >=500K→131072, >=250K→65536, otherwise min(window/4, 32768);
+    /// no window fact takes a quarter of the 128K default window → 32768
+    /// (which becomes the effective value after the base's
+    /// min(requested_cap=64000, route_cap)).
     #[test]
     fn operator_owned_output_tiers_by_window() {
         let (_lock, _env) =
@@ -4919,41 +4943,47 @@ mod tests {
         assert_eq!(
             declared_for(Some(500_000)),
             Some(131_072),
-            ">=500K 档含边界"
+            "the >=500K tier includes its boundary"
         );
         assert_eq!(
             declared_for(Some(499_999)),
             Some(65_536),
-            "<500K 落 250K 档"
+            "<500K falls into the 250K tier"
         );
         assert_eq!(declared_for(Some(262_144)), Some(65_536), "256K → 65536");
-        assert_eq!(declared_for(Some(250_000)), Some(65_536), ">=250K 档含边界");
+        assert_eq!(
+            declared_for(Some(250_000)),
+            Some(65_536),
+            "the >=250K tier includes its boundary"
+        );
         assert_eq!(
             declared_for(Some(249_999)),
             Some(32_768),
-            "<250K 落 window/4 档,min(62499,32768)=32768"
+            "<250K falls into the window/4 tier, min(62499,32768)=32768"
         );
         assert_eq!(declared_for(Some(131_072)), Some(32_768), "128K → 32768");
         assert_eq!(declared_for(Some(65_536)), Some(16_384), "64K → window/4");
         assert_eq!(
             declared_for(Some(16_384)),
             Some(4_096),
-            "16K → window/4=4096 恰好过声明下限"
+            "16K → window/4=4096 exactly passes the declaration floor"
         );
         assert_eq!(
             declared_for(Some(16_383)),
             None,
-            "<16K 的 window/4 < 4096 → fail-closed 不声明"
+            "below 16K the window/4 is < 4096 → fail-closed, no declaration"
         );
         assert_eq!(
             declared_for(None),
             Some(32_768),
-            "无窗口事实按 128K 默认窗口的 1/4 声明 → 32768"
+            "no window fact declares a quarter of the 128K default window → 32768"
         );
     }
 
-    /// 端点自报输出上限（`/v1/models` 探测的 `max_output_tokens` 等字段）
-    /// 对所有 operator-owned 声明与用户显式配置只做 min 收紧，永不抬高。
+    /// The endpoint's self-reported output limit (`max_output_tokens` and
+    /// similar fields from the `/v1/models` probe) only min-tightens every
+    /// operator-owned declaration and the user's explicit configuration;
+    /// it never raises them.
     #[test]
     fn probed_output_limit_only_tightens() {
         let (_lock, _env) =
@@ -4971,7 +5001,8 @@ mod tests {
             f.prefs.advanced.saved_models[0].max_output_tokens = configured;
             f
         };
-        // 分档声明 262144→65536，被端点自报 8192 收紧。
+        // The tier declaration 262144→65536 is tightened by the endpoint's
+        // self-reported 8192.
         let mut tightened = build(Some(262_144), None);
         tightened.probed_output_tokens = Some(8_192);
         assert_eq!(
@@ -4979,9 +5010,10 @@ mod tests {
                 .route_limits_for_model(&tightened.model())
                 .and_then(|l| l.output_tokens),
             Some(8_192),
-            "端点自报上限必须 min 收紧分档声明"
+            "the endpoint's self-reported limit must min-tighten the tier declaration"
         );
-        // 用户显式配置同样被自报上限收紧。
+        // The user's explicit configuration is tightened by the self-reported
+        // limit too.
         let mut explicit = build(Some(262_144), Some(32_768));
         explicit.probed_output_tokens = Some(16_384);
         assert_eq!(
@@ -4989,9 +5021,9 @@ mod tests {
                 .route_limits_for_model(&explicit.model())
                 .and_then(|l| l.output_tokens),
             Some(16_384),
-            "显式配置 32768 被自报上限 16384 收紧"
+            "the explicit 32768 is tightened by the self-reported 16384"
         );
-        // 自报上限高于声明值时不抬高。
+        // A self-reported limit above the declared value never raises it.
         let mut laxer = build(Some(131_072), None);
         laxer.probed_output_tokens = Some(1_048_576);
         assert_eq!(
@@ -4999,14 +5031,17 @@ mod tests {
                 .route_limits_for_model(&laxer.model())
                 .and_then(|l| l.output_tokens),
             Some(32_768),
-            "自报上限只收紧不抬高（131072→32768 不变）"
+            "the self-reported limit only tightens, never raises (131072→32768 unchanged)"
         );
     }
 
-    /// LocalVllm 预设与自定义端点同吃分档 + 自报 min 收紧：默认 262144
-    /// 窗口的分档声明 65536 被自报 32768 收紧；自报高于声明时不抬高。
-    /// （probed_output_tokens 的生产注入在 engine_pool spawn，本测试钉住
-    /// bridge 侧对本地预设的消费语义。）
+    /// The LocalVllm preset shares the same tiers + self-reported
+    /// min-tightening as custom endpoints: the default 262144 window's tier
+    /// declaration 65536 is tightened by the self-reported 32768; a
+    /// self-reported limit above the declaration never raises it.
+    /// (probed_output_tokens is injected in production by the engine_pool
+    /// spawn; this test pins the bridge-side consumption semantics for the
+    /// local preset.)
     #[test]
     fn probed_output_limit_tightens_local_vllm_tiers() {
         let (_lock, _env) =
@@ -5025,7 +5060,7 @@ mod tests {
                 .route_limits_for_model(&local.model())
                 .and_then(|l| l.output_tokens),
             Some(32_768),
-            "本地 vLLM 分档 65536 被端点自报 32768 收紧"
+            "the local vLLM tier 65536 is tightened by the endpoint's self-reported 32768"
         );
         let mut laxer = local;
         laxer.probed_output_tokens = Some(1_048_576);
@@ -5034,7 +5069,7 @@ mod tests {
                 .route_limits_for_model(&laxer.model())
                 .and_then(|l| l.output_tokens),
             Some(65_536),
-            "自报上限只收紧不抬高（本地 262144→65536 不变）"
+            "the self-reported limit only tightens, never raises (local 262144→65536 unchanged)"
         );
     }
 
@@ -5506,8 +5541,10 @@ mod tests {
 
     /// probed_context_tokens=Some → 必须填进 active_route_limits.context_tokens
     /// (底座 emergency 线 + footer 百分比据此按真实 max_model_len 计);None → 本地 vLLM
-    /// 仍给 model hint/128K 窗口 + 分档输出(262144 窗口→65536,不再是旧 24K 预算)。
-    /// 下次 sync 若构造块改回透传 default，本测试立刻报错。
+    /// still gets model hint/128K window + tiered output (262144 window→65536,
+    /// no longer the old 24K budget). If a future sync changes the
+    /// construction block back to passing through default, this test fails
+    /// immediately.
     #[test]
     fn forkguard_probed_window_fills_route_limits() {
         // 本测试钉死本地 vLLM 的 route_limits 行为(默认预设已平台感知),两处 fixture 都显式设 LocalVllm。
@@ -5545,7 +5582,7 @@ mod tests {
                 input_tokens: None,
                 output_tokens: Some(65_536),
             }),
-            "未探测的本地 vLLM 应使用 model hint/128K 窗口 + 窗口分档输出（262144→65536）"
+            "an unprobed local vLLM should use the model hint/128K window + window-tiered output (262144→65536)"
         );
     }
 

@@ -1117,9 +1117,11 @@ impl EnginePool {
         Ok((bridge, prepared, pins_scheduled_model))
     }
 
-    /// 无 `&self`：本函数不读池状态，只做 spawn 收尾编排。提为关联函数使
-    /// 单测能直接驱动真实注入块（真实 EnginePool 不可在单测构造，接线覆盖见
-    /// `probed_facts_wiring_tests`）。
+    /// No `&self`: this function does not read pool state, it only
+    /// orchestrates the spawn finish. Making it an associated function lets
+    /// unit tests drive the real injection block directly (a real EnginePool
+    /// cannot be constructed in unit tests; wiring coverage lives in
+    /// `probed_facts_wiring_tests`).
     async fn finalize_runtime_bridge(
         mut bridge: Pinvou3Bridge,
         prepared: &PreparedRuntimeModel,
@@ -1146,18 +1148,25 @@ impl EnginePool {
                 .await,
             );
         }
-        // Operator-owned 路由（本地 vLLM + 自定义 OpenAI 兼容 / custom，见
-        // `SavedModel::is_operator_owned_endpoint`）在 spawn 时探测一次
-        // `/v1/models`，带回匹配条目自己的 context window 与自报输出上限，
-        // 供 `route_limits_for_model` 做 min 收紧（probe 失败两项皆为 None，
-        // 回退配置值/窗口分档）。vLLM 路由顺带做 served-name 纠偏
-        // (resolve_served_model)：配置名在服务列表里必须原样保留——LM
-        // Studio/Ollama 会列出全部已下载模型，首条与用户选择无关，替换配置名
-        // 正是"会话叫 A、引擎载 B"断链的根因；仅单模型服务且不含配置名时才
-        // 跟随 served name。非 vLLM 的 operator-owned 路由不做名字纠偏，也
-        // 仅在配置名精确命中列表时采纳事实（`adopts_probed_facts`）——单条目
-        // "借名"场景的事实属于别家模型，不得张冠李戴。云端 preset 与
-        // coding_plan 不是 operator-owned，不探测。
+        // Operator-owned routes (local vLLM + custom OpenAI-compatible /
+        // custom, see `SavedModel::is_operator_owned_endpoint`) probe
+        // `/v1/models` once at spawn, bringing back the matched entry's own
+        // context window and self-reported output limit for
+        // `route_limits_for_model` to min-tighten (on probe failure both are
+        // None, falling back to configured values / window tiers). vLLM
+        // routes additionally correct the served name
+        // (resolve_served_model): a configured name that the server lists
+        // must be kept verbatim — LM Studio/Ollama list every downloaded
+        // model, the first entry is unrelated to the user's pick, and
+        // substituting it is exactly the reported "conversation names A,
+        // engine loads B" chain break; only follow the served name on a
+        // single-model server that does not expose the configured name.
+        // Non-vLLM operator-owned routes do no name correction and adopt
+        // facts only when the configured name exactly hits the list
+        // (`adopts_probed_facts`) — a single-entry "borrowed name" returns
+        // facts belonging to another model and must not be misattributed.
+        // Cloud presets and coding_plan are not operator-owned and are not
+        // probed.
         let is_vllm_route = bridge.provider() == "vllm";
         if let Some(model) = bridge.effective_model_owned() {
             Self::adopt_probed_endpoint_facts(
@@ -1171,12 +1180,16 @@ impl EnginePool {
         bridge
     }
 
-    /// spawn 探测与事实采纳（`finalize_runtime_bridge` 的可测内核，接线单测见
-    /// 文件尾 `probed_facts_wiring_tests`）：operator-owned 路由（或 vLLM 路由）
-    /// 探测 `/v1/models`，vLLM 顺带纠偏 served name（`pins_scheduled_model` 时
-    /// 保留配置名）；事实是否采纳由 `adopts_probed_facts` 判定，采纳时同时写
-    /// `probed_context_tokens` 与 `probed_output_tokens`。探测失败（端点不可达
-    /// / 名称未匹配）两项事实为 None，路由回退配置值/窗口分档。
+    /// Spawn-time probe and fact adoption (the testable core of
+    /// `finalize_runtime_bridge`; wiring unit tests live in
+    /// `probed_facts_wiring_tests` at the end of this file): operator-owned
+    /// routes (or vLLM routes) probe `/v1/models`, and vLLM additionally
+    /// corrects the served name (keeping the configured name when
+    /// `pins_scheduled_model`); whether facts are adopted is decided by
+    /// `adopts_probed_facts`, and on adoption both `probed_context_tokens`
+    /// and `probed_output_tokens` are written. On probe failure (endpoint
+    /// unreachable / name not matched) both facts are None and the route
+    /// falls back to configured values / window tiers.
     async fn adopt_probed_endpoint_facts(
         bridge: &mut Pinvou3Bridge,
         mut model: SavedModel,
@@ -1186,8 +1199,9 @@ impl EnginePool {
         if !(is_vllm_route || model.is_operator_owned_endpoint()) {
             return;
         }
-        // 探测与真实推理同源携带凭据（带鉴权的端点 `/v1/models` 无凭据
-        // 会 401；探测失败保留配置值）。
+        // The probe carries the same credential as real inference
+        // (authenticated endpoints 401 on `/v1/models` without credentials;
+        // on probe failure the configured values are kept).
         let api_key = bridge.api_key();
         let (served, max_len, max_output) = crate::features::monitor::resolve_served_model(
             &bridge.base_url(),
@@ -4857,14 +4871,19 @@ mod scheduled_model_tests {
     }
 }
 
-/// spawn 探测采纳的接线测试，两层覆盖：`finalize_runtime_bridge`（真实生产
-/// 注入块，关联函数可直接驱动）钉住 provider() 推导、effective_model_owned
-/// 门控与 adopt 调用本身；`adopt_probed_endpoint_facts`（可测内核）经真实
-/// HTTP mock（127.0.0.1:0）钉死四条路径——非 vLLM 单条目"借名"不采纳、
-/// 精确命中采纳、vLLM 改名 + 采纳、vLLM 钉名不改名仍采纳（有意取舍，见
-/// `adopts_probed_facts` 文档），以及云端 preset 不探测。评审 round-2 发现
-/// 生产注入点零测试（纯函数级保证无法覆盖 spawn 接线），round-3 补齐
-/// finalize 层——此前仅内核有测试，删掉 finalize 里的注入块零测试会失败。
+/// Wiring tests for spawn-time probe adoption, in two layers:
+/// `finalize_runtime_bridge` (the real production injection block, drivable
+/// directly as an associated function) pins the provider() derivation, the
+/// effective_model_owned gating, and the adopt call itself;
+/// `adopt_probed_endpoint_facts` (the testable core) pins four paths through
+/// a real HTTP mock (127.0.0.1:0) — non-vLLM single-entry "borrowed name" is
+/// not adopted, exact match is adopted, vLLM renames + adopts, vLLM pinned
+/// name still adopts (an intentional trade-off, see the
+/// `adopts_probed_facts` docs), plus cloud presets are not probed. Review
+/// round-2 found the production injection point had zero tests (pure-function
+/// guarantees cannot cover the spawn wiring); round-3 added the finalize
+/// layer — previously only the core had tests, so deleting the injection
+/// block in finalize would not fail any test.
 #[cfg(test)]
 #[allow(clippy::await_holding_lock)]
 mod probed_facts_wiring_tests {
@@ -4901,8 +4920,9 @@ mod probed_facts_wiring_tests {
         }
     }
 
-    /// 隔离 base_url/api_key 相关 env（`Pinvou3Bridge::base_url`/`api_key` 的
-    /// env 优先级高于 session model），返回的 guard 在测试结束时恢复。
+    /// Isolates env vars related to base_url/api_key (`Pinvou3Bridge::
+    /// base_url`/`api_key` prioritize env over session model); the returned
+    /// guard restores them when the test ends.
     fn isolate_model_env() -> EnvRestore {
         let restore = EnvRestore::capture(&["DEEPSEEK_BASE_URL", "DEEPSEEK_API_KEY"]);
         // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
@@ -4970,13 +4990,16 @@ mod probed_facts_wiring_tests {
         EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, false, false).await;
         assert_eq!(
             bridge.probed_context_tokens, None,
-            "单条目借名返回的窗口事实属于别家模型，不得采纳"
+            "window facts from a single-entry borrowed name belong to another model and must not be adopted"
         );
-        assert_eq!(bridge.probed_output_tokens, None, "自报输出上限同理不采纳");
+        assert_eq!(
+            bridge.probed_output_tokens, None,
+            "the self-reported output limit is likewise not adopted"
+        );
         assert_eq!(
             bridge.session_model.as_ref().unwrap().model,
             "my-model",
-            "非 vLLM 不做 served-name 纠偏"
+            "non-vLLM routes do no served-name correction"
         );
     }
 
@@ -5006,7 +5029,7 @@ mod probed_facts_wiring_tests {
         assert_eq!(
             bridge.session_model.as_ref().unwrap().model,
             "served-actual",
-            "vLLM 单条目跟随 served name"
+            "a vLLM single entry follows the served name"
         );
         assert_eq!(bridge.probed_context_tokens, Some(262_144));
         assert_eq!(bridge.probed_output_tokens, Some(4_096));
@@ -5024,12 +5047,12 @@ mod probed_facts_wiring_tests {
         assert_eq!(
             bridge.session_model.as_ref().unwrap().model,
             "my-model",
-            "定时任务钉名时纠偏被抑制，配置名原样上线"
+            "name correction is suppressed while a scheduled model is pinned; the configured name goes live verbatim"
         );
         assert_eq!(
             bridge.probed_context_tokens,
             Some(262_144),
-            "钉名 + 单条目借用仍按 vLLM 语义采纳事实（有意取舍，见 adopts_probed_facts 文档）"
+            "pinned name + single-entry borrow still adopts facts under vLLM semantics (intentional trade-off, see the adopts_probed_facts docs)"
         );
         assert_eq!(bridge.probed_output_tokens, Some(4_096));
     }
@@ -5046,16 +5069,18 @@ mod probed_facts_wiring_tests {
         assert_eq!(
             mock.hits_for("/v1/models"),
             0,
-            "云端 preset 不是 operator-owned，不得发起探测请求"
+            "cloud presets are not operator-owned; no probe request may be issued"
         );
         assert_eq!(bridge.probed_context_tokens, None);
         assert_eq!(bridge.probed_output_tokens, None);
     }
 
-    /// finalize_runtime_bridge 真实注入块（非 vLLM 侧）：OpenaiCompatible +
-    /// custom 路由经 provider() 推导（本地 mock URL → kind 探测跑完落
-    /// Generic → "openai"）与 effective_model_owned 门控走到 adopt，精确
-    /// 命中采纳事实、不改名；kind 探测共存（TTL 缓存按 base_url 隔离）。
+    /// The real finalize_runtime_bridge injection block (non-vLLM side):
+    /// an OpenaiCompatible + custom route goes through the provider()
+    /// derivation (local mock URL → kind probe completes as Generic →
+    /// "openai") and the effective_model_owned gate to reach adopt; exact
+    /// match adopts facts without renaming; the kind probe coexists (TTL
+    /// cache is isolated per base_url).
     #[tokio::test]
     async fn finalize_runtime_bridge_injects_probed_facts_into_custom_route() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -5069,19 +5094,20 @@ mod probed_facts_wiring_tests {
         assert_eq!(
             bridge.probed_local_kind,
             Some(LocalServerKind::Generic),
-            "openai 路由的 kind 探测共存落 Generic（mock 无 kind 签名）"
+            "the openai route's coexisting kind probe lands on Generic (mock has no kind signature)"
         );
         assert_eq!(bridge.probed_context_tokens, Some(262_144));
         assert_eq!(bridge.probed_output_tokens, Some(4_096));
         assert_eq!(
             bridge.session_model.as_ref().unwrap().model,
             "my-model",
-            "非 vLLM 路由不做 served-name 纠偏"
+            "non-vLLM routes do no served-name correction"
         );
     }
 
-    /// finalize_runtime_bridge 真实注入块（vLLM 侧）：provider() 推导出
-    /// "vllm"（跳过 kind 探测），单条目跟随 served name 改名并采纳事实。
+    /// The real finalize_runtime_bridge injection block (vLLM side):
+    /// provider() derives "vllm" (skipping the kind probe) and a single
+    /// entry renames to the served name and adopts facts.
     #[tokio::test]
     async fn finalize_runtime_bridge_renames_and_injects_vllm_route() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -5095,7 +5121,7 @@ mod probed_facts_wiring_tests {
         assert_eq!(
             bridge.session_model.as_ref().unwrap().model,
             "served-actual",
-            "vLLM 单条目跟随 served name"
+            "a vLLM single entry follows the served name"
         );
         assert_eq!(bridge.probed_context_tokens, Some(262_144));
         assert_eq!(bridge.probed_output_tokens, Some(4_096));

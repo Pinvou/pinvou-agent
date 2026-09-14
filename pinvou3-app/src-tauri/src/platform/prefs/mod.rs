@@ -251,11 +251,14 @@ pub struct SavedModel {
 }
 
 impl SavedModel {
-    /// Operator-owned 端点：本地自托管（LocalVllm）或用户自填的 OpenAI 兼容 /
-    /// custom 端点。这类端点的输出上限是部署者自己的责任，宿主按窗口分档
-    /// 代为声明 route 输出事实（见 `bridge::route_limits_for_model`）。
-    /// `coding_plan` 是官方托管入口，即使套在 `OpenaiCompatible` 预设上也
-    /// 不算 operator-owned——必须保持底座 fail-closed，不得代声明。
+    /// Operator-owned endpoint: locally self-hosted (LocalVllm) or a
+    /// user-entered OpenAI-compatible / custom endpoint. The output ceiling
+    /// of these endpoints is the deployer's own responsibility; the host
+    /// declares the route output fact by window tier on their behalf (see
+    /// `bridge::route_limits_for_model`). `coding_plan` is the official
+    /// managed entry point and does not count as operator-owned even when it
+    /// rides on the `OpenaiCompatible` preset — it must stay base
+    /// fail-closed, with no declaration on its behalf.
     pub fn is_operator_owned_endpoint(&self) -> bool {
         (self.preset == ModelPreset::LocalVllm
             || self.preset == ModelPreset::OpenaiCompatible
@@ -282,16 +285,22 @@ impl SavedModel {
             if self.context_window_tokens.is_none() && self.model == "qwen36_35b_256k" {
                 self.context_window_tokens = Some(262_144);
             }
-            // 输出上限不再为 LocalVllm 预设强制 24K：未显式配置时与自定义
-            // OpenAI 兼容端点同路，由 route_limits_for_model 按窗口分档统一
-            // 声明（>=500K→131072 / >=250K→65536 / 否则 min(window/4, 32768)）。
-            // 旧版本的 24K 曾被机器写入存量配置（这里强制补写 + 设置页预填后
-            // 保存），磁盘上无法与用户显式输入区分；把恰好 24576 的本地模型
-            // 视为“遗留的未配置”归一掉，让窗口分档对升级用户同样生效（持久化
-            // 门禁会在 load 时把该归一写回磁盘）。代价：此后在本地模型上显式
-            // 配置 24576 也会被视为未配置——24576 自此保留为遗留哨兵值，与
-            // 上面 <=0 过滤同类。非 LocalVllm 端点的 24576 一律是显式输入，
-            // 不迁移。
+            // The output cap is no longer forced to 24K for the LocalVllm
+            // preset: when not explicitly configured it takes the same path
+            // as custom OpenAI-compatible endpoints and is declared uniformly
+            // by window tier in route_limits_for_model (>=500K→131072 /
+            // >=250K→65536 / otherwise min(window/4, 32768)). Older versions
+            // machine-wrote the 24K into existing configs (forced here +
+            // prefilled in the settings page, then saved), making it
+            // indistinguishable on disk from explicit user input; a local
+            // model whose value is exactly 24576 is normalized away as
+            // "legacy unset" so the window tiers also apply to upgraded
+            // users (the persistence gate writes this normalization back to
+            // disk on load). Trade-off: from now on explicitly configuring
+            // 24576 on a local model is also treated as unset — 24576 is
+            // thereby kept as a legacy sentinel value, in the same family as
+            // the <=0 filter above. 24576 on non-LocalVllm endpoints is
+            // always explicit input and is not migrated.
             if self.max_output_tokens == Some(24_576) {
                 self.max_output_tokens = None;
             }
@@ -673,9 +682,11 @@ impl UserPrefs {
             .saved_models
             .iter()
             .any(|model| model.preset == ModelPreset::LocalVllm && model.alias.is_some());
-        // 本地 24576 遗留哨兵迁移（`normalize_route_limits` 把机器写入的 24K 归一为
-        // 未配置）同理：必须在 migrate/normalize 改写前记录，否则 save gate 看不到
-        // 变化，存量 settings.json 里的 24K 会永久留在磁盘上。
+        // The local 24576 legacy-sentinel migration (`normalize_route_limits`
+        // normalizes the machine-written 24K to unset) is the same case: it
+        // must be recorded before migrate/normalize rewrite the models,
+        // otherwise the save gate sees no change and the 24K in existing
+        // settings.json stays on disk forever.
         let local_output_sentinel_changed = prefs.advanced.saved_models.iter().any(|model| {
             model.preset == ModelPreset::LocalVllm && model.max_output_tokens == Some(24_576)
         });
@@ -1222,9 +1233,10 @@ mod tests {
         }
     }
 
-    /// LocalVllm 不再强制 24K 输出（未显式配置保持 None，由运行时窗口分档
-    /// 统一声明）；operator-owned 判定覆盖本地/自定义两类端点并排除
-    /// coding_plan 官方入口。
+    /// LocalVllm no longer forces a 24K output (stays None when not
+    /// explicitly configured; declared uniformly by the runtime window
+    /// tiers); the operator-owned predicate covers both local and custom
+    /// endpoints and excludes the coding_plan official entry.
     #[test]
     fn normalize_keeps_local_output_unset_and_operator_owned_detection() {
         let mut local = SavedModel {
@@ -1252,29 +1264,31 @@ mod tests {
         assert_eq!(
             local.context_window_tokens,
             Some(262_144),
-            "qwen36_35b_256k 的窗口兜底保留"
+            "the qwen36_35b_256k window fallback is kept"
         );
         assert_eq!(
             local.max_output_tokens, None,
-            "本地模型不再强制 24K 输出，未配置保持 None"
+            "local models no longer force a 24K output; unset stays None"
         );
         assert!(local.is_operator_owned_endpoint());
 
-        // 用户显式配置的输出上限（含正值过滤）原样保留。
+        // A user's explicitly configured output limit (including the
+        // positive-value filter) is kept verbatim.
         let mut explicit = local.clone();
         explicit.max_output_tokens = Some(32_768);
         explicit.normalize_route_limits();
         assert_eq!(explicit.max_output_tokens, Some(32_768));
 
-        // 旧版本机器写入的本地 24K（normalize 强制 + 设置页预填）视为遗留的
-        // 未配置，归一为 None 走窗口分档；非 LocalVllm 的 24576 是显式输入，
-        // 原样保留。
+        // A machine-written legacy local 24K (normalize force + settings
+        // page prefill) counts as legacy unset and is normalized to None to
+        // take the window tiers; 24576 on non-LocalVllm endpoints is
+        // explicit input and is kept verbatim.
         let mut legacy = local.clone();
         legacy.max_output_tokens = Some(24_576);
         legacy.normalize_route_limits();
         assert_eq!(
             legacy.max_output_tokens, None,
-            "存量机器写入的本地 24K 归一为未配置，走窗口分档"
+            "a legacy machine-written local 24K is normalized to unset and takes the window tiers"
         );
         let mut custom_legacy = legacy.clone();
         custom_legacy.preset = ModelPreset::OpenaiCompatible;
@@ -1284,7 +1298,7 @@ mod tests {
         assert_eq!(
             custom_legacy.max_output_tokens,
             Some(24_576),
-            "自定义端点的 24576 是显式输入，不迁移"
+            "24576 on a custom endpoint is explicit input and is not migrated"
         );
 
         let mut custom = local.clone();
@@ -1292,12 +1306,13 @@ mod tests {
         custom.provider_kind = Some("custom".into());
         assert!(custom.is_operator_owned_endpoint());
 
-        // coding_plan 即使套在 OpenaiCompatible 预设上也不是 operator-owned。
+        // coding_plan is not operator-owned even on the OpenaiCompatible
+        // preset.
         let mut plan = custom.clone();
         plan.provider_kind = Some("coding_plan".into());
         assert!(!plan.is_operator_owned_endpoint());
 
-        // 官方云端 preset 不是 operator-owned。
+        // Official cloud presets are not operator-owned.
         let mut cloud = local;
         cloud.preset = ModelPreset::Deepseek;
         assert!(!cloud.is_operator_owned_endpoint());
@@ -1598,16 +1613,21 @@ mod tests {
         }
     }
 
-    /// 本地 24576 遗留哨兵迁移必须在 load 时落盘（round-2 评审 MAJOR：曾只改内存，
-    /// save gate 看不到变化，机器写入的 24K 永久留在 settings.json）。同时钉住：
-    /// 非 LocalVllm 端点的 24576 是显式输入，迁移不得碰它。
+    /// The local 24576 legacy-sentinel migration must be persisted at load
+    /// time (round-2 review MAJOR: it once only changed memory, the save
+    /// gate saw no change, and the machine-written 24K stayed in
+    /// settings.json forever). Also pins: 24576 on non-LocalVllm endpoints
+    /// is explicit input the migration must not touch.
     #[test]
     fn load_persists_legacy_local_output_sentinel_migration() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        // RAII 清理：断言/panic 时 PINVOU3_HOME 与临时 home 也须回收——此前恢复
-        // 只写在正常结尾，中途失败会泄漏 env + 目录并污染同进程后续测试
-        // （同 bridge 测试 TempDirGuard 配方；目录名叠加 pid + 进程内原子后缀，
-        // 双终端并发 cargo test 不碰撞）。
+        // RAII cleanup: PINVOU3_HOME and the temporary home must be reclaimed
+        // even on assertion/panic — the previous restore was only written at
+        // the normal end, so a mid-test failure leaked the env + directory
+        // and polluted later tests in the same process (same recipe as the
+        // bridge tests' TempDirGuard; the directory name stacks pid + an
+        // in-process atomic suffix so concurrent cargo test from two
+        // terminals does not collide).
         struct PrefsHomeGuard {
             previous: Option<std::ffi::OsString>,
             home: std::path::PathBuf,
@@ -1647,7 +1667,8 @@ mod tests {
             alias: None,
             preset: ModelPreset::LocalVllm,
             context_window_tokens: Some(262_144),
-            // 旧版本 normalize + 设置页预填机器写入的 24K：应被迁移清除并落盘。
+            // The machine-written 24K from older normalize + settings page
+            // prefill: must be migrated away and persisted.
             max_output_tokens: Some(24_576),
             reasoning_effort: None,
             model: "qwen36_35b_256k".into(),
@@ -1669,7 +1690,8 @@ mod tests {
             alias: None,
             preset: ModelPreset::OpenaiCompatible,
             context_window_tokens: None,
-            // 自定义端点的 24576 是显式输入：必须原样保留。
+            // 24576 on a custom endpoint is explicit input: must be kept
+            // verbatim.
             max_output_tokens: Some(24_576),
             reasoning_effort: None,
             model: "custom-model".into(),
@@ -1699,16 +1721,17 @@ mod tests {
             .expect("legacy local model");
         assert_eq!(
             legacy_local.max_output_tokens, None,
-            "内存中的遗留 24K 应已归一为未配置"
+            "the legacy in-memory 24K must already be normalized to unset"
         );
         let custom = loaded.model_by_id("custom-explicit").expect("custom model");
         assert_eq!(
             custom.max_output_tokens,
             Some(24_576),
-            "自定义端点的显式 24576 不得被迁移"
+            "the explicit 24576 on the custom endpoint must not be migrated"
         );
 
-        // 关键断言：归一已写回磁盘（而不仅改内存）。
+        // Key assertion: the normalization was written back to disk (not
+        // just changed in memory).
         let persisted: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).expect("read migrated prefs"))
                 .expect("parse migrated prefs");
@@ -1721,7 +1744,7 @@ mod tests {
             .expect("legacy local on disk");
         assert!(
             legacy_on_disk["max_output_tokens"].is_null(),
-            "磁盘上的遗留 24K 应已清除，实得 {}",
+            "the legacy on-disk 24K must be cleared, got {}",
             legacy_on_disk["max_output_tokens"]
         );
         let custom_on_disk = models
@@ -1729,8 +1752,9 @@ mod tests {
             .find(|model| model["id"] == "custom-explicit")
             .expect("custom on disk");
         assert_eq!(custom_on_disk["max_output_tokens"], 24_576);
-        // PINVOU3_HOME 恢复与临时 home 回收由 PrefsHomeGuard 的 Drop 接管
-        // （断言/panic 路径同样生效），此处不再手写恢复块。
+        // PINVOU3_HOME restoration and temporary home reclamation are
+        // handled by PrefsHomeGuard's Drop (also on assertion/panic paths);
+        // no hand-written restore block here.
     }
 
     #[test]
