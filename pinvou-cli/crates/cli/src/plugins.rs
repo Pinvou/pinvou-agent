@@ -903,9 +903,25 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
         // READ failure (permissions, non-UTF-8 body) must surface like the
         // .md channel's error instead of degrading to an empty string — that
         // would silently replace the user's skill body with a stub.
-        let skill_md_path = path.join("SKILL.md");
-        let skill_md_bytes =
-            read_import_file_capped(&skill_md_path, "SKILL.md", &display, &mut cumulative)?;
+        //
+        // The walk above already read and charged the root SKILL.md against
+        // `cumulative`, so the bytes are taken from `entries` instead of
+        // re-read against the same budget: a second charge rejected legal
+        // directories near the limit (true content ≤ limit but
+        // content + SKILL.md > limit). A missing entry means SKILL.md
+        // vanished mid-walk or is a symlink (which the walk skips, matching
+        // the pipeline's no-symlink policy) — rejected here like the
+        // missing-root check above.
+        let skill_md_bytes = entries
+            .iter()
+            .find(|(name, _)| name == "SKILL.md")
+            .map(|(_, bytes)| bytes.clone())
+            .ok_or_else(|| {
+                CliError::failed(format!(
+                    "plugins import({}): directory has no SKILL.md at its root",
+                    path.display()
+                ))
+            })?;
         let skill_md = String::from_utf8(skill_md_bytes).map_err(|_| {
             CliError::failed(format!(
                 "plugins import({}): SKILL.md is not valid UTF-8",

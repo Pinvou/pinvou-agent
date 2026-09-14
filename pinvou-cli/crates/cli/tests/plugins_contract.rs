@@ -539,6 +539,48 @@ fn import_rejects_directory_over_cumulative_limit() {
     );
 }
 
+/// The root SKILL.md is walked and charged once. A regression re-read it
+/// against the same cumulative budget, so a directory whose true content
+/// was within the limit was rejected by the pre-wrap read itself (content +
+/// SKILL.md > limit). The fixture sits in exactly that window (assets +
+/// 2×SKILL.md over the limit while assets + SKILL.md stays under it) at the
+/// smallest asymmetric sizes: the pre-wrap stage must hand the package to
+/// the unified pipeline — which then applies its own budget — instead of
+/// rejecting it with the CLI's own limit error.
+#[test]
+fn import_directory_counts_root_skill_md_once() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("import-skill-md-once");
+    let dir = home.path().join("boundary-dir");
+    std::fs::create_dir_all(&dir).unwrap();
+    let skill_md = dir.join("SKILL.md");
+    std::fs::write(&skill_md, "---\nname: boundary-skill\n---\n").unwrap();
+    // Extend SKILL.md with zero-filled sparse bytes (valid UTF-8, no real
+    // disk cost) so a second charge would tip the budget while the true
+    // total stays under the limit.
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&skill_md)
+        .unwrap();
+    file.set_len(8192).unwrap();
+    drop(file);
+    write_sparse(&dir.join("a.bin"), import_package_limit() - 12288);
+
+    let parsed = parse_args(vec!["pinvoy", "plugins", "import", dir.to_str().unwrap()])
+        .expect("valid command");
+    match execute(parsed) {
+        Ok(outcome) => {
+            assert_eq!(outcome.exit_code, ExitCode::Success, "stdout: {outcome:?}");
+        }
+        Err(error) => assert!(
+            !error
+                .to_string()
+                .contains("exceeds the 200 MiB import limit"),
+            "pre-wrap read charged the root SKILL.md twice: {error}"
+        ),
+    }
+}
+
 /// A FIFO shaped like a skill file is rejected from its metadata, before any
 /// read: the old `read_to_string` path would block on `open` until an
 /// unrelated writer appeared (a hang, not an error). Unix-only because FIFOs
