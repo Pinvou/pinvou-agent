@@ -19,8 +19,14 @@ name: mac-build
 # - 每次触发:check + test + release-fast + verify(~8min),macOS 原生回归核心。
 # - 仅打包链路(bundle_chain)变更:追加 universal bundle smoke。链路覆盖仍完整:
 #   链路 PR 合入前由 pr-check 跑轻量发布契约;VERSION bump 再构建全量 dmg。
-# - cancel-in-progress 保持 true(verify-tip):8min 任务在 push 间隙大概率跑完,
-#   被取消的中间 run 由更新的 tip 取代,不为每个中间 commit 排队。
+# - cancel-in-progress must be false: measured across all 289 runs, 88.6%
+#   were cancelled (55/55 in the first half of 2026-09) — the "8min run
+#   usually finishes between pushes" premise does not hold. Under push
+#   bursts even the tip itself gets superseded, leaving macOS regression
+#   coverage at zero for weeks on end. In queue mode GitHub keeps
+#   1 running + 1 pending: intermediate runs are still replaced by the
+#   latest tip, but a started run is guaranteed to finish — same
+#   throughput, with guaranteed output.
 # - 纯前端改动(pinvou3-app/src/**)不触发:cargo check/test 不依赖前端产物,
 #   前端进包由打包链路的 bundle smoke 与正式 release-packages 覆盖。
 
@@ -44,7 +50,7 @@ permissions:
 
 concurrency:
   group: mac-build-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   # 打包链路检测:仅这些路径变化时才跑 8.6min 的 universal bundle smoke。
