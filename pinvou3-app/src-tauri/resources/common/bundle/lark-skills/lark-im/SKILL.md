@@ -35,6 +35,10 @@ Chat (oc_xxx)
 
 ## Important Notes
 
+### AppLink and Share Links
+
+Prefer CLI-returned links: use `chat_app_link` to open joined conversations, `message_app_link` to open messages, and `share_link` to invite others to groups. If manually building a joined-conversation AppLink, use `https://<applink_host>/client/chat/open?openChatId=<oc_xxx>`, never `chatId=<oc_xxx>` or `lark://...chat_id=<oc_xxx>`.
+
 ### Identity and Token Mapping
 
 身份规则见 lark-shared。IM 特有注意：同一 API 用 user/bot 可能一成一败（群成员关系、群主/管理员、租户边界都按当前调用者校验）。
@@ -52,13 +56,19 @@ The raw `sender_name` is not duplicated in output (its value is in `name`); the 
 
 The four message-pulling shortcuts (`+messages-mget`, `+chat-messages-list`, `+messages-search`, `+threads-messages-list`) automatically attach a `reactions` block and (for edited messages) `update_time` to each returned message — no separate `im.reactions.batch_query` call is needed. Pass `--no-reactions` to opt out. For the full contract (output shape, the `im:message.reactions:read` scope requirement, and the "missing field ≠ fetch failure" data rules), read [`references/lark-im-message-enrichment.md`](references/lark-im-message-enrichment.md).
 
+### Compact message output (`--concise`)
+
+Some message-listing shortcuts support `--concise` for compact Markdown output. Use it when the user asks for concise output or a smaller result/file; check `--help` for availability and do not combine it with an explicit `--format`, an enabled `--json`, or a non-empty `--jq`.
+
 ### Opt-in resource auto-download (`--download-resources`)
 
-`+chat-messages-list`/`+messages-mget`/`+threads-messages-list` 支持 `--download-resources`（默认关）把图片/文件/音视频（不含 sticker）下载到 `./lark-im-resources/`；完整契约见 [message-enrichment](references/lark-im-message-enrichment.md)。一次性下载用 [`+messages-resources-download`](references/lark-im-messages-resources-download.md)。
+`+chat-messages-list`, `+messages-mget`, and `+threads-messages-list` accept `--download-resources` to save eligible attachments into `./lark-im-resources/` and add a `resources` array to each message. It is off by default; stickers are not downloadable. A failed attachment is reported on that resource without aborting the message pull. Use [`+messages-resources-download`](references/lark-im-messages-resources-download.md) for one attachment. See [`references/lark-im-message-enrichment.md`](references/lark-im-message-enrichment.md) for the output contract.
+
+**Folder resources** are containers, not files — a folder `file_key` cannot be downloaded directly. Expand it first with `lark-cli im files folder --recursive --file-key <folder_key> --srctype message --srcid <message_id>`, then download the files inside with [`+messages-resources-download`](references/lark-im-messages-resources-download.md).
 
 ### Card Messages (Interactive)
 
-**Before sending or replying with any `interactive` card (`+messages-send` / `+messages-reply`), you MUST read [`references/card/lark-im-card-create.md`](references/card/lark-im-card-create.md) and follow its workflow.** The card JSON passed to `--msg-type interactive --content` must be the output of that workflow — never hand-write or copy a card payload.
+**Before sending, replying with, or updating any `interactive` card (`+messages-send` / `+messages-reply` / `messages.patch`), you MUST read [`references/card/lark-im-card-create.md`](references/card/lark-im-card-create.md) and follow its workflow.** The card JSON passed to `--msg-type interactive --content` (send/reply) or `messages.patch --data` (update) must be the output of that workflow — never hand-write or copy a card payload.
 
 Card messages (`interactive` type) are not yet supported for compact conversion in event subscriptions. The raw event data will be returned instead, with a hint printed to stderr.
 
@@ -107,9 +117,12 @@ Shortcut 是对常用操作的高级封装（`lark-cli im +<verb> [flags]`）。
 | [`+chat-messages-list`](references/lark-im-chat-messages-list.md) | List messages in a chat or P2P conversation; user/bot; accepts --chat-id or --user-id, resolves P2P chat_id, supports time range, --order asc/desc sorting, auto-pagination |
 | [`+chat-search`](references/lark-im-chat-search.md) | Search visible group chats by --query keyword and/or --member-ids; user/bot; e.g. look up chat_id by group name; supports type filters, sorting, auto-pagination, and --exclude-muted (user identity only) |
 | [`+chat-update`](references/lark-im-chat-update.md) | Update group chat name or description; user/bot; updates a chat's name or description |
+| [`+message-read-users`](references/lark-im-message-read-status.md) | List users who read one message; user/bot; identity-specific scopes; supports bounded auto-pagination |
+| [`+messages-edit`](references/lark-im-messages-edit.md) | Edit a message's content (text/post, including the attachment zone); bot-only (user identity is rejected by the server); PUT /open-apis/im/v1/messages/:message_id |
 | [`+messages-mget`](references/lark-im-messages-mget.md) | Batch get messages by IDs; user/bot; fetches up to 50 om_ message IDs, formats sender names, expands thread replies |
+| [`+messages-read-status`](references/lark-im-message-read-status.md) | Batch query whether the current user read 1–50 messages; user-only; returns readable items and invalid message IDs |
 | [`+messages-reply`](references/lark-im-messages-reply.md) | Reply to a message (supports thread replies); user/bot; supports text/markdown/post/media replies, reply-in-thread, idempotency key |
-| [`+messages-resources-download`](references/lark-im-messages-resources-download.md) | Download an image or file attached to a message; user/bot |
+| [`+messages-resources-download`](references/lark-im-messages-resources-download.md) | Download an image/file from a message; folders are not directly downloadable — expand with `im files folder --recursive` first, then download the files inside; user/bot |
 | [`+messages-search`](references/lark-im-messages-search.md) | Search messages across chats (supports keyword, sender, time range filters) with user or bot identity; filters by chat/sender/attachment/time, supports auto-pagination via `--page-all` / `--page-limit`, enriches results via batched mget and chats batch_query |
 | [`+messages-send`](references/lark-im-messages-send.md) | Send a message to a chat or direct message; user/bot; sends to chat-id or user-id with text/markdown/post/media, supports idempotency key |
 | [`+threads-messages-list`](references/lark-im-threads-messages-list.md) | List messages in a thread; user/bot; accepts om_/omt_ input, resolves message IDs to thread_id, supports --order asc/desc sorting, auto-pagination |
@@ -155,6 +168,11 @@ lark-cli im <resource> <method> [flags] # 调用 API
   - `update` — 设置自己的群昵称。Set or update your own nickname in the chat (self-only). Identity: `user` only (`user_access_token`); `nickname` must be a non-empty string (max 300 bytes). Use DELETE to clear it.
   - `delete` — 清空自己的群昵称。Clear your own nickname in the chat (self-only). Identity: `user` only (`user_access_token`).
 
+### chat.join_requests
+
+  - `list` — 列出群的待审批入群申请（仅群主/管理员，user_access_token）。List pending join requests for a chat. Identity: `user` only (`user_access_token`); the caller must be the chat owner or an admin. Paginated (`page_size` 1-100); stop on `has_more == false` — `page_token` is returned even on the last page, so paging while it is present never terminates.
+  - `handle` — 批量审批入群申请（approve/reject，仅群主/管理员，user_access_token）。Approve or reject pending join requests in bulk (1-50 items, processed in order). Identity: `user` only (`user_access_token`); the caller must be the chat owner or an admin. `results[]` mirrors `items[]` in count and order — check each `result` (`success` / `failed` / `already_handled`); exit 0 does not mean every item succeeded.
+
 ### chat.managers
 
   - `add_managers` — 指定群管理员。Identity: supports `user` and `bot`; only the group owner can add managers; max 10 managers per chat (20 for super-large chats), and at most 5 bots per request.
@@ -167,10 +185,12 @@ lark-cli im <resource> <method> [flags] # 调用 API
 
 ### messages
 
+  - `read_status` — 批量查询当前用户对消息的已读状态。Identity: `user` only (`user_access_token`); accepts up to 50 message IDs and returns readable items plus invalid message IDs.[Must-read](references/lark-im-message-read-status.md)
   - `delete` — 撤回消息。Identity: supports `user` and `bot`; for `bot` calls, the bot must be in the chat to revoke group messages; to revoke another user's group message, the bot must be the owner, an admin, or the creator; for user P2P recalls, the target user must be within the bot's availability.
   - `forward` — 转发消息。Identity: supports `user` and `bot`.
   - `merge_forward` — 合并转发消息。Identity: `bot` only (`tenant_access_token`).
-  - `read_users` — 查询消息已读信息。Identity: `bot` only (`tenant_access_token`); the bot must be in the chat, and can only query read status for messages it sent within the last 7 days.
+  - `read_users` — 查询消息已读信息。Identity: supports `user` and `bot`; the caller must still be in the chat. A user can query messages they sent within the last 7 days, while a bot can query only messages sent by that bot within the last 7 days.[Must-read](references/lark-im-message-read-status.md)
+  - `patch` — 更新已发送的消息卡片。Update an interactive message card sent by the app. Identity: supports `user` and `bot`; the message must have been sent within the last 14 days, and `content` must be a JSON-serialized string no larger than 30 KB.[Must-read](references/card/lark-im-card-create.md)
   - `urgent_app` — 发送应用内加急。Identity: `bot` only (`tenant_access_token`); the bot must be the message sender and must be in the conversation that contains the message.
   - `urgent_phone` — 发送电话加急。Identity: `bot` only (`tenant_access_token`); the bot must be the message sender and must be in the conversation that contains the message.
   - `urgent_sms` — 发送短信加急。Identity: `bot` only (`tenant_access_token`); the bot must be the message sender and must be in the conversation that contains the message.
@@ -209,4 +229,52 @@ lark-cli im <resource> <method> [flags] # 调用 API
   - `delete` — Delete a feed group. Identity: `user` only (`user_access_token`).[Must-read](references/lark-im-feed-groups.md)
   - `update` — Update a feed group. Identity: `user` only (`user_access_token`).[Must-read](references/lark-im-feed-groups.md)
 
-- 各方法所需 scope 见 [lark-im-scopes.md](references/lark-im-scopes.md)；权限报错时优先按 lark-shared 读错误里的 `missing_scopes`
+## 权限表
+
+快捷命令（`+shortcut`）的 identity 特定 scope 要求另见 [lark-im-scopes.md](references/lark-im-scopes.md)；权限报错时优先按 lark-shared 读错误里的 `missing_scopes`。
+
+| 方法 | 所需 scope |
+|------|-----------|
+| `chats.create` | `im:chat:create` |
+| `chats.get` | `im:chat:read` |
+| `chats.link` | `im:chat:read` |
+| `chats.update` | `im:chat:update` |
+| `chat.members.create` | `im:chat.members:write_only` |
+| `chat.members.delete` | `im:chat.members:write_only` |
+| `chat.members.get` | `im:chat.members:read` |
+| `+chat-members-list` | `im:chat.members:read` |
+| `chat.user_setting.batch_query` | `im:chat.user_setting:read` |
+| `chat.user_setting.batch_update` | `im:chat.user_setting:write` |
+| `chat.managers.add_managers` | `im:chat.managers:write_only` |
+| `chat.managers.delete_managers` | `im:chat.managers:write_only` |
+| `chat.moderation.get` | `im:chat.moderation:read` |
+| `chat.moderation.update` | `im:chat:moderation:write_only` |
+| `chat.join_requests.list` | `im:chat.membership_application:read` |
+| `chat.join_requests.handle` | `im:chat.membership_application:write` |
+| `+messages-read-status` | user: `im:message:readonly` (recommended), `im:message`, or `im:message:get_as_user` |
+| `+message-read-users` | user: `im:message:readonly` (recommended), `im:message`, `im:message:basic`, or `im:message:get_as_user`; bot: `im:message:readonly` |
+| `messages.read_status` | `im:message:readonly` (recommended), `im:message`, or `im:message:get_as_user` |
+| `messages.delete` | `im:message:recall` |
+| `messages.forward` | `im:message` |
+| `messages.merge_forward` | `im:message` |
+| `messages.read_users` | user: `im:message:readonly` (recommended), `im:message`, `im:message:basic`, or `im:message:get_as_user`; bot: `im:message:readonly` |
+| `messages.patch` | `im:message:update` |
+| `messages.urgent_app` | `im:message.urgent` |
+| `messages.urgent_phone` | `im:message.urgent:phone` |
+| `messages.urgent_sms` | `im:message.urgent:sms` |
+| `reactions.batch_query` | `im:message.reactions:read` |
+| `reactions.create` | `im:message.reactions:write_only` |
+| `reactions.delete` | `im:message.reactions:write_only` |
+| `reactions.list` | `im:message.reactions:read` |
+| `threads.forward` | `im:message` |
+| `images.create` | `im:resource` |
+| `files.create` | `im:resource` |
+| `pins.create` | `im:message.pins:write_only` |
+| `pins.delete` | `im:message.pins:write_only` |
+| `pins.list` | `im:message.pins:read` |
+| `feed.groups.batch_add_item` | `im:feed_group_v1:write` |
+| `feed.groups.batch_query` | `im:feed_group_v1:read` |
+| `feed.groups.batch_remove_item` | `im:feed_group_v1:write` |
+| `feed.groups.create` | `im:feed_group_v1:write` |
+| `feed.groups.delete` | `im:feed_group_v1:write` |
+| `feed.groups.update` | `im:feed_group_v1:write` |

@@ -34,7 +34,7 @@ assert.match(installer, /MAX_ARCHIVE_BYTES/);
 assert.match(installer, /normalized_path_eq/);
 assert.match(installer, /\.installing-/);
 
-assert.match(tmeet, /@tencentcloud\/tmeet@1\.0\.15/);
+assert.match(tmeet, /@tencentcloud\/tmeet@1\.0\.18/);
 for (const platformSource of [linux, macos]) {
   assert.match(platformSource, /bundled_connector_npm_cli/);
   assert.match(platformSource, /cli_bin == "tmeet"/);
@@ -60,7 +60,12 @@ for (const [osDir, archDir] of [
 }
 const lockVersions = lockVersionsByPlatform["macos/aarch64"];
 for (const [platform, versions] of Object.entries(lockVersionsByPlatform)) {
-  assert.deepEqual(versions, lockVersions, `${platform} connectors.lock.json 版本与其他平台不一致`);
+  // macos/x86_64 例外：上游 @wecom/cli-darwin-x64@1.2.1 错发 linux 二进制，
+  // 该平台 lock 把 wecom-cli 钉在 1.2.0（与 wecom.rs WECOM_MIN_VERSION=1.2.0 对齐，
+  // min 若高于 lock 版本会导致该平台反复替换升级）。
+  const expected =
+    platform === "macos/x86_64" ? { ...lockVersions, "wecom-cli": "1.2.0" } : lockVersions;
+  assert.deepEqual(versions, expected, `${platform} connectors.lock.json 版本与其他平台不一致`);
 }
 const cardVersion = (marker) => {
   const line = toolCommon.split("\n").find((l) => l.includes(marker));

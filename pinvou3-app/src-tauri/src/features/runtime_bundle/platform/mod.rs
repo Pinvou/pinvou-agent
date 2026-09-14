@@ -153,7 +153,17 @@ const TMEET_SKILL_DIRS: [&str; 1] = ["tmeet-skill"];
 ///       connected users to refresh at startup (otherwise the refresh
 ///       waits for the post-first-frame refresh_connector_auth_gates
 ///       backfill).
-pub const BUNDLE_VERSION: &str = concat!("0.31-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.32: connector skill trees synced to latest upstream (wecom-cli
+///       1.2.1 skills, lark-cli 1.0.95, dws 1.0.61, tmeet 1.0.18; all
+///       registered in the trees' NOTICE files). wecom-cli min
+///       acceptable version raised to 1.2.0 (macos/x86_64 lock stays
+///       on 1.2.0: upstream @wecom/cli-darwin-x64@1.2.1 shipped a
+///       linux binary); tmeet npm pin raised to 1.0.18. Skill trees
+///       are excluded from the content hash, so the semantic bump is
+///       required for connected users to refresh at startup (otherwise
+///       the refresh waits for the post-first-frame
+///       refresh_connector_auth_gates backfill).
+pub const BUNDLE_VERSION: &str = concat!("0.32-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
 /// skeleton = identity / baseline / user memory (placeholder) / tool-and-fact discipline /

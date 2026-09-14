@@ -4,30 +4,30 @@
   "artifacts": [
     {
       "name": "dws",
-      "version": "1.0.58",
+      "version": "1.0.61",
       "license": "Apache-2.0",
       "source": "https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli",
-      "url": "https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/v1.0.58/dws-darwin-arm64.tar.gz",
-      "archiveSha256": "7d98599f90cae9d42b51ff2863efc87dbfb4a3176ff3c84fc2216110c0157a70",
-      "binarySha256": "c3a84e7a1f30b5205ded240a2a4f20949c32fd8b085edf685f93abd96643d4c8"
+      "url": "https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/v1.0.61/dws-darwin-arm64.tar.gz",
+      "archiveSha256": "9a122f6322983c45e44db7274788dbb5c62d1762268e45d18e0e72ed40d39978",
+      "binarySha256": "b41b5d3250fc809dbb80e1471b9a3768e0df3af088e296b457bd381f5e1df3de"
     },
     {
       "name": "lark-cli",
-      "version": "1.0.87",
+      "version": "1.0.95",
       "license": "MIT",
       "source": "https://github.com/larksuite/cli",
-      "url": "https://github.com/larksuite/cli/releases/download/v1.0.87/lark-cli-1.0.87-darwin-arm64.tar.gz",
-      "archiveSha256": "b4cf7b1b7ff9c3d8c9ac3dd577fd178f3c8a84ec82184a82de809335840d5b20",
-      "binarySha256": "2455021d03ab3055b3c956a59067fd38ba4a9aa20accca8a8136ce4d0fae73de"
+      "url": "https://github.com/larksuite/cli/releases/download/v1.0.95/lark-cli-1.0.95-darwin-arm64.tar.gz",
+      "archiveSha256": "7ae7241b7de5ebfe86aa6b2b24af3600bd5019ec5b6206ea3bfdc0894f6fd925",
+      "binarySha256": "11a8ea5fe04b7874f6212c5ff018ef2003e529784fb283d3b39f9e470aa093f0"
     },
     {
       "name": "wecom-cli",
-      "version": "1.1.0",
+      "version": "1.2.1",
       "license": "MIT",
       "source": "https://github.com/WecomTeam/wecom-cli",
-      "url": "https://registry.npmjs.org/@wecom/cli-darwin-arm64/-/cli-darwin-arm64-1.1.0.tgz",
-      "archiveSha256": "abaa9734561b6c45459bdc831afff29f2b3011d1d63045ea88253848e1320aee",
-      "binarySha256": "b78a5ce3679c0b5a26d8294247ce8e9a9549c35945b01f78f28ac8444735cbf2"
+      "url": "https://registry.npmjs.org/@wecom/cli-darwin-arm64/-/cli-darwin-arm64-1.2.1.tgz",
+      "archiveSha256": "7791e128873e9594fbdabcb0ff45695e501b0cfe9b09eff33d488b2171593274",
+      "binarySha256": "1c9df0f8f928718e99562ccf10f00e8177e4096d744589290f92dc778d44b747"
     }
   ]
 }

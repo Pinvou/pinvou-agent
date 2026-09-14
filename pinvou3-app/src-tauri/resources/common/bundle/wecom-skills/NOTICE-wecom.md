@@ -266,18 +266,47 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
     与 reply-mail.md 既有工作流对齐(原条目未覆盖发件人邮箱为空的
     例外路径,初版漏登记,复审补齐)。
 
+### 上游同步(2026-09-15,wecom-cli 1.2.1)
+
+全量同步至上游 v1.2.1 发布提交 `e88bf90a`(2026-09-08,npm `@wecom/cli@1.2.1`
+同源;上游 GitHub 仓库无 tag/release,版本以 npm registry 为准,v1.2.1 为当前
+最新)。上游 v1.2.x 相对 v1.1.0 的 `skills/` 改动仅 3 个文件、无技能目录增删:
+
+1. **wecomcli-doc/SKILL.md**(MR !62):description 重写为路由导向,并把原
+   description 中的 sheet/smartsheet/结构化数据分流语义下沉为「不适用」节
+   3 条 bullet。本地合并:采纳「不适用」3 条 bullet;description 保留品悟
+   「何时用:」口径(≤280 字符),并吸收上游新增触发词「office 文档」与
+   「导入(.doc/.docx/.txt)」细节。
+2. **wecomcli-smartpage/SKILL.md**(MR !62):description 重写,补充能力清单
+   (上传附件、数据系统页面、信息收集表单)与 smartpage/page.weixin.qq.com
+   链接触发。本地合并:保留「何时用:」口径,能力清单按上游补齐
+   (≤280 字符);正文无变化,本地委托契约分叉原样保留。
+3. **wecomcli-shared/SKILL.md**(MR !52):Step 3 初始化命令
+   `wecom-cli auth init` → `wecom-cli auth init --noninteractive`。本地直接
+   采纳(与本地 Step 1 品悟代管口径不冲突);周围 prose 上游未改,照旧。
+
+上游本次**未**修复 NOTICE 此前预判的缺陷:smartsheet `records.values` 双层
+嵌套 bug(2026-09-05 登记第 5 条)、smartpage 逾期判断模板方向(第 1 条)、
+send-mail >5 候选口径(第 10 条)、`a1_`/`s3_` docid 前缀示例笔误(第 17 条)
+等 references 层修正全部维持本地版本,继续有效。
+
+上游 main 在 v1.2.1 之后尚有未发布提交(安全拼接规范 `605b506`、
+DESC_SPEC 格式修复 `1cd90a5`,触及全部技能),不属于本次 release 基线,
+未纳入;待上游发版后再同步。
+
 ### 各技能重放基线
 
-14 个技能全部 = 上游 `cd0480e0`(v1.1.0 发布提交,npm 1.1.0 同源),技能目录与
+14 个技能全部 = 上游 `e88bf90a`(v1.2.1 发布提交,npm 1.2.1 同源),技能目录与
 上游同名同构;本地分叉为上文「本轮品悟适配清单」六类,审计登记「路由口径
 统一与文档缺陷修复(2026-08-27)」(sheet/smartsheet/smartpage 三技能)、
-「文档缺陷修复(2026-08-27,calendar/meeting/email/message/media 五技能)」
-及「文档缺陷修复(2026-09-05,全量第二轮:十个技能)」。
+「文档缺陷修复(2026-08-27,calendar/meeting/email/message/media 五技能)」、
+「文档缺陷修复(2026-09-05,全量第二轮:十个技能)」及本次
+「上游同步(2026-09-15,wecom-cli 1.2.1)」的三文件合并口径。
 
 > 对账命令(仓库根执行):
 > ```
 > git clone https://github.com/WecomTeam/wecom-cli.git /tmp/wecom-upstream
-> git -C /tmp/wecom-upstream worktree add /tmp/wecom-verify cd0480e0
+> git -C /tmp/wecom-upstream worktree add /tmp/wecom-verify e88bf90a
 > diff -rq /tmp/wecom-verify/skills/<skill> \
 >   pinvou3-app/src-tauri/resources/common/bundle/wecom-skills/<skill>
 > ```

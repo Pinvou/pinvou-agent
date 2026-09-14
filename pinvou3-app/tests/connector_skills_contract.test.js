@@ -52,6 +52,10 @@ for (const f of docs) {
     "comments-guide",
     "core-operations",
   ]) {
+    // dws 1.0.61 真实快捷命令（读取文档白板 OpenNodes 快照，见 whiteboard.md 命令表），
+    // 与 lark-cli 1.0.87 移除的 lark 侧 whiteboard +query 无关——按域豁免（登记理由，
+    // 见 rule 9 豁免登记约定）。
+    if (gone === "whiteboard +query" && rel(f).includes("dingtalk-skills")) continue;
     const hit = proseLines.find((l) => l.includes(gone) && !removedCtx.test(l));
     assert.ok(!hit, `${rel(f)}: 引用已删除对象 ${gone}: ${hit?.trim()}`);
   }

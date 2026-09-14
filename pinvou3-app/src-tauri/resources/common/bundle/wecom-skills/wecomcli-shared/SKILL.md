@@ -36,7 +36,7 @@ wecom-cli auth show --status
 ## Step 3：初始化凭证（仅未授权时）
 
 ```bash
-wecom-cli auth init
+wecom-cli auth init --noninteractive
 ```
 
 该命令会展示授权链接和二维码，并等待用户使用企业微信扫码。授权成功后命令自动退出，仅需初始化一次。

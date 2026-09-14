@@ -4,12 +4,14 @@
 //! **纯扫码**接入(不需管理员建自建应用、不需手填 CorpID/Secret)。
 //! 公共管道见 [`crate::features::connectors::connector_cli`];本文件只有企微特有的薄声明 + 单段连接编排。
 //!
-//! 连接(wecom-cli ≥1.1.0):`wecom-cli auth init --noninteractive --no-browser` 长驻 →
+//! 连接(wecom-cli ≥1.2.0):`wecom-cli auth init --noninteractive --no-browser` 长驻 →
 //! 抓二维码 URL → 用户扫码 → 进程退出后 `auth show --status` 判 ready。
 //! 进度走事件 `wecom:qr` / `wecom:connected` / `wecom:error`。
 //! 凭证落 `~/.config/wecom`(Win:`%USERPROFILE%\.config\wecom`),断开即删该目录。
-//! 1.1.0 起命令模型重构(`msg`→`message`、`schedule`→`calendar`、入参改 flags),
-//! 技能与判定都以 1.1.0 为基线,故 [`WECOM_MIN_VERSION`] 以下的旧安装会被替换升级。
+//! 1.1.0 起命令模型重构(`msg`→`message`、`schedule`→`calendar`、入参改 flags);
+//! 现技能基线为 wecom-cli 1.2.1 域技能,最低可接受版本取 1.2.0(macos/x86_64 的上游
+//! @wecom/cli-darwin-x64@1.2.1 错发 linux 二进制,该平台 lock 钉在 1.2.0),
+//! 故 [`WECOM_MIN_VERSION`] 以下的旧安装会被替换升级。
 
 use std::process::Stdio;
 use std::sync::mpsc;
@@ -33,9 +35,12 @@ const WECOM_CTX: CliCtx = CliCtx {
     auth_domains: &["work.weixin.qq.com", "weixin.qq.com"],
 };
 
-/// 技能与鉴权命令面基线:1.1.0 重构了命令模型(`init`→`auth init`、
-/// `msg`→`message`、`schedule`→`calendar`、入参 JSON→flags),旧安装必须替换。
-const WECOM_MIN_VERSION: (u64, u64, u64) = (1, 1, 0);
+/// 技能与鉴权命令面最低可接受版本:1.1.0 重构了命令模型(`init`→`auth init`、
+/// `msg`→`message`、`schedule`→`calendar`、入参 JSON→flags),现技能基线为 1.2.1;
+/// 但 macos/x86_64 lock 钉在 1.2.0(上游 @wecom/cli-darwin-x64@1.2.1 错发 linux
+/// 二进制),故 min 取 1.2.0——低于它的旧安装必须替换,min 高于它会导致该平台
+/// 替换升级循环。
+const WECOM_MIN_VERSION: (u64, u64, u64) = (1, 2, 0);
 
 fn wecom(args: &[&str]) -> std::process::Command {
     WECOM_CTX.cli(args)
@@ -61,7 +66,7 @@ fn wecom_cli_version() -> Option<(u64, u64, u64)> {
     parse_wecom_version(&so).or_else(|| parse_wecom_version(&se))
 }
 
-/// wecom-cli 是否已装且 ≥ 1.1.0(命令模型基线);旧版视为未装,触发在线替换升级。
+/// wecom-cli 是否已装且 ≥ 1.2.0(最低可接受版本);旧版视为未装,触发在线替换升级。
 fn wecom_cli_present() -> bool {
     wecom_cli_version()
         .map(|v| v >= WECOM_MIN_VERSION)
@@ -83,7 +88,7 @@ fn is_ready() -> bool {
 
 // ───────────────────────────── Tauri commands ─────────────────────────────
 
-/// 引导:首次使用(或安装低于 1.1.0 命令模型基线)时下载并校验锁定版本的 wecom-cli,
+/// 引导:首次使用(或安装低于 1.2.0 最低可接受版本)时下载并校验锁定版本的 wecom-cli,
 /// 已装且达标则秒返回;托管目录中的旧版按 lock 哈希不一致直接替换升级。
 pub async fn wecom_ensure_cli() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
@@ -176,7 +181,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
     // directory, so the real auth QR PNG is written into a temp dir. The stdout
     // URL is the /ai/qc/gen landing page (which would ask the user to scan
     // again) and cannot be encoded as the QR directly; only the PNG QR reaches
-    // authorization in one scan. Any CLI that reaches this point is ≥1.1.0
+    // authorization in one scan. Any CLI that reaches this point is ≥1.2.0
     // (wecom_ensure_cli's version gate force-replaces older ones), so the
     // self-drawn fallback only covers PNG write failure / poll timeout.
     let qr_dir = std::env::temp_dir().join(format!(

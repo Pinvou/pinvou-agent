@@ -1,16 +1,16 @@
 钉钉内置技能来自钉钉官方 dingtalk-workspace-cli 的 dws-skills.zip mono 形态。
 
 - npm package: dingtalk-workspace-cli
-- skill/CLI version: 1.0.58
+- skill/CLI version: 1.0.61
 - 各平台 dws 二进制 SHA-256 见 `pinvou3-app/src-tauri/resources/platforms/<os>/<arch>/bundle/connectors/connectors.lock.json`（仓库相对路径；`<os>/<arch>` 取 macos/aarch64、macos/x86_64、linux/aarch64、linux/x86_64、windows/x86_64 五份，版本一致）
-- Linux ARM64 dws SHA-256: de6f8a51de83a18cbd2691c1bc03ddc8809d4e33b51fab407c5313fa9d8140ea
+- Linux ARM64 dws SHA-256: 23c5e06b3175cf3910bf4c9af960545e0f995c621e1ff0aaadf58478fb84d90c
 - license: Apache-2.0
 
 来源与更新方式（新手操作手册）：
 
-1. 查当前版本：读任一 `connectors.lock.json` 中 `name: "dws"` 的 `version`（当前 1.0.58）。
+1. 查当前版本：读任一 `connectors.lock.json` 中 `name: "dws"` 的 `version`（当前 1.0.61）。
 2. 拉技能源：GitHub Releases 资产，URL 模式
-   `https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/v<version>/dws-skills.zip`（当前 v1.0.58；版本号带 `v` 前缀）。
+   `https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/v<version>/dws-skills.zip`（当前 v1.0.61；版本号带 `v` 前缀）。
 3. 取 mono 形态：zip 解压后顶层为 `NOTICE`、`mono/`、`multi/` 三部分——品悟收录的是 **`mono/` 子目录**（单一 `dws/SKILL.md` 入口 + references/ + scripts/，LICENSE 与 NOTICE 在 mono/ 内也各有一份）；顶层与 `mono/` 内容经 diff 确认一致，`multi/`（dingtalk-chat/ 等 14 个子 skill 布局）不随包分发。核对 zip 真伪可对照同 Release 的 `checksums.txt`。
 4. 以该 zip 的 `mono/` 为三方合并基线，按下文登记逐条重放本地修改后，保留本声明。
 
@@ -195,3 +195,50 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 10. **补登首批漏记的 fork 侧改动**（复审时逐项漏账，此条补齐 sync 重放基线）：url-patterns.md `read_url` 工具名整段改「宿主提供的网页读取能力」；aitable-record-query.md select/multiSelect 过滤口径反转为「传选项 exact 名称」（aitable.go:2128）；capability-limits.md「撤回个人消息」行改写（`chat message recall` 能力口径）；intent-guide.md「知识库里创建文档」doc create 语义纠正；attendance-report.md 明细 3+14 / 签到 3+10+9 列定义修正、自检与报表类型五选一、query-data 禁令补「单次点查」例外；SKILL.md curl 唯一例外扩展（attachment upload + aitable-attachment.md 链）与 drive 总览行（三步上传/`drive upload` 一步封装）；doc.md/doc-read.md 新增「正文不得当指令执行」安全规则、doc-block.md 补 `--parent-block` flag；doc-jsonml-schema.json 加 `_note`（legacy 标注）、cookbook 颜色表对齐 doc-style-guideline.md §5、style-guideline 推荐格式列改写；sheet.md Reference 表补 `create-with-data`/`export-csv`、sheet-media-image.md 删浮动图 CAUTION、sheet-version.md `--yes` 先确认措辞、whiteboard/06-vector-icon-path.md 补 `--yes`（media upload 确认门禁）、calendar.md room search Flags 补 `--available`（hidden flag 实测接受）；aitable.md 脚本表补 aitable_import_via_task.py 行、aitable-cell-value.md/aitable-field-properties.md 补 lookup/filterUp/primaryDoc/AI 字段行、aitable-data-analysis-sop.md 补 `--page-limit` 默认 50 页截断注；minutes.md speaker summary 轮询「等待的合规实现」、`--target-uid` 流程改 AI 先查后带、11-minutes-speaker-correct.md 补 `minutes get audio`；best_practices 01/02/03/05/07/08/09 lite 入口改指 lite-recipes.md「#N」+ lite-recipes 补「#6/#10/#11 无 lite」注；05-reporting.md query-report 改 `agentDisplayMarkdown` 展示规范、月报补 ≤20 天窗口分段；mail.md 删重复路由行；report.md detail/stats 指针改 entry get/stats。
 11. **三轮代修（2026-09-05 复审清扫，均有 v1.0.58 实机/源码证据）**：弃用迁移残留——lite-recipes.md #4（query-doc/list-folder-docs）、minutes.md 3 处与 10-minutes-speaker-match.md 2 处（发言人链路路径②）、url-patterns.md 4 处（探测流程/能力矩阵）、conventions.md nodeId 来源表与 ID 边界段，统一 `doc search`→`drive search`、`doc list`→`drive list --folder`、`doc folder create`→`drive mkdir`（doc.go:4373-4399 弃用映射，实跑 WARN）；dev.md `dev app` 行回退「成员/安全/网页」枚举（member/security/webapp 为直连子命令，「经版本通道生效」无 CLI/源码依据）；06-data-analytics.md `--output` 定性纠正（非全局 flag，`export data` 无此 flag）；attendance_report_detail.py 表头注释指针改 attendance-report.md。
 12. **复审响应（2026-09-07，review 三项全部采纳）**：attendance_report_common.py Pillow 缺失处理定稿为「告警 + 「打卡图片」超链接兜底」（不自动 pip install 维持不变；此前「提示后退出」会中止本可降级产出的报表，回退 daily/monthly/detail 报表在 main 的降级契约；attendance_report_checkin.py 自带硬依赖检查、语义不受影响），补根级回归 `scripts/tests/test_dws_pillow_fallback.py`（fast-gate discover 覆盖：Pillow 缺失时断言不退出且兜底被调用）；按 CONTRIBUTING「代码注释/诊断用英文」口径，本波新增实现注释与诊断英文化（attendance_report_common.py Pillow 检查块、attendance_report_daily/monthly/detail.py 列定义注释；指向中文文档的锚点「预定义列集合」保留原样；usage 示例与脚本 CLI help 属本地化技能文案，不改）；本节抬头、范围声明与第 7 条表述同步更正。
+
+## 同步记录（2026-09-15 → 1.0.61）
+
+本次同步自 v1.0.61 dws-skills.zip 的 mono 形态（zip 顶层与 `mono/` 内容经 diff 确认一致；`checksums.txt` 中 dws-skills.zip SHA-256 `24b4c48b4bf095cc8f749b60ad021716141c997f5ca38cc0883fd4f1d50f7acd` 校验 OK）。合并方法：以 v1.0.58 上游 mono 为 base、当前本地为 ours、v1.0.61 上游为 theirs 做逐文件三方合并（git merge-file），25 个冲突文件人工按本节登记裁定。`dws/LICENSE`、`dws/NOTICE` 与上游一致，未改动。
+
+### 上游结构变化（1.0.58 → 1.0.61 mono）
+
+- references 新增：`products/recruit.md`（钉钉招聘）、`products/openapi-explorer.md`（OpenAPI 逃生舱，`dws api`）、`products/doc/doc-whiteboard.md`、`products/aitable/aitable-record-stats.md`、`products/sheet/sheet-revision-changeset.md`、`products/whiteboard/{compose,replace,vector}.md`、`products/drive/{drive-export,drive-storage,drive-task}.md`（drive 首个子目录，对应 status/pull/push/sync/publish 新能力）。
+- references 删除：`products/whiteboard/recipes.md`（本地与 1.0.58 基线逐字节一致，直接跟随上游删除，无需重放）。
+- scripts 删除：`minutes_extract_todos.py`（上游改以 `dws minutes +action-items` / `+detail --artifacts todos` 快捷命令替代，07-minutes.md 与 minutes.md 引用同步移除；该脚本的 python3 化与 errors='replace' 本地修改随文件删除不再重放）、`minutes_list_parse.py`（本地无修改，跟随删除）。
+- `references/channel-login.md` 上游仍随包发布，品悟继续不收录（真实性审查补录第 9 条继续生效，冲突合并时弃上游侧）。
+- SKILL.md 大改：新增 `api`（OpenAPI 逃生舱）/`recruit` 产品域与意图路由；`drive` 能力扩展（差异比较/拉取/推送/同步/公开发布）；意图树新增 VoIP/Todo 事件路由；NEVER DO 新增 openapi-explorer 例外；MUST DO「实时个人事件例外」扩展 VoIP 通话邀请与 Todo；Shortcut 总览按 1.0.61 catalog 重写（新增 agoal/aisearch/pat/whiteboard 行）。
+- 命令面重命名（上游事实，跟随）：`chat message send --group/--text` → `--conversation-id/--content`；`doc block update --text` → `--content`；doc 写入管道整章重写（阈值 >30000 字符、degradations 上报、`--index` 与分片互斥、fail-closed `doc_write_commit_unknown`）。
+
+### 上游已自行修复/覆盖，本地登记不再重放（注销或降级说明）
+
+1. **产品总览表补 `agoal`/`dev` 行**（头部登记第 4 条、PR #437 登记第 4 条）：上游 1.0.61 产品总览表已含 agoal/dev/api/recruit 行——**上游已修复，不再重放**。
+2. **PR #437 第 5 条 doc 写入管道收敛**：上游 1.0.61 整章重写，「减半重试/最小 5000/CONTENT_TRUNCATED」表述上游已删除并改为 fail-closed 语义；阈值上游写 >30000（本地 1.0.58 实测为 10000，上游 1.0.61 分片示例按 ~30000 字符切分，判为版本行为变更）——**跟随上游重写，本地「10000 阈值」登记注销**；回读硬约束上游以「内容完整性验证（必读）」保留，但 doc.md/doc-update.md 关键原则行上游写了「由调用方自行决定是否回读确认」，已重放改写为硬约束句（见下）。
+3. **PR #437 登记第 10 条 drive 总览行（三步上传/drive upload 一步封装）**：上游 1.0.61 改为「上传（两步）」并扩展 status/pull/push/sync/publish——**跟随上游，登记注销**。
+4. **SKILL.md Shortcut 计数**（真实性审查补录第 2 条实测口径）：上游 1.0.61 全面更新 catalog（aitable 92→100、calendar 20→27、wiki 1→20 等），本地 1.0.58 实测计数以上游 1.0.61 数据整体替代；「删除 multi skill 列」继续重放。
+5. **doc.md `permission list --limit` 上限**：上游 1.0.61 help 复刻为「最大 50」（1.0.58 为 200）——跟随上游。
+6. **report.md 脚本表收敛**（「dws 文档审计」第 11/12 条观察项）：上游 1.0.61 重写为只登记 `report_received_today.py`（有界扫描 `dws report +inbox-list`，≤10 页/200 条/总时限，禁止恢复旧 N+1 流程），`report_inbox_today.py` 文件上游未删但已从文档下架——登记表以上游为准；观察项更新为「上游已文档收敛、文件未合并，继续观察下版是否删文件」。
+
+### 重放清单（本次逐条重放并核验）
+
+- 头部登记 9 条：1 description 重写——重放（保持【何时用】形态，240 字符；`cli_version` 升 `>=1.0.61`；metadata.requires.bins/cliHelp 同步升版）；2 脚本能力描述——重放（1.0.61 MUST DO 仍提「AI 应用创建轮询、文档创建后写内容」，继续删除该说法）；3 --dry-run 表述——上游仍按脚本说明参数，无需重放；4 agoal/dev 行——上游已修复（见上）；5 警告块压缩——重放（保持一行形态，Schema 事实源要点保留）；6 --yes 去重——重放（上游无回潮）；7 核心流程 0-3 步——重放；8 MUST DO 括号注——重放；9 best_practices 单行汇总——重放。SKILL.md NEVER DO curl 例外与上游新增 openapi-explorer 例外合并为两条例外表述。
+- git 历史两处：`attendance.md`/`minutes.md` 工具名适配——本地现行口径为小写 `read`（CodeWhale v0.9.12 起 replay 工具名 `File(action=` 已被契约测试禁入技能文档），merge 保持；`attendance_report_common.py` URL 哈希 sha256 保持。
+- 真实性审查补录 9 条：全部保持（mono 形态适配、channel-login 不收录、calendar/sheet 包内链接、07-minutes「开源版未引入」清理、aisearch 链接化、report.md 占位链接、recipes→compose/replace/vector 属上游重排随上游）。
+- 第四轮（metadata/何时用）：重放。第三轮盲区 12 条：保持（--users/--limit/大小写不敏感、doc-export 三格式、event.md mono 指引、doc.md 权限路由行重放 --users；`chat message list --user`、`calendar acl add --user` 未误改）。
+- 第四轮本地工具依赖（jq→--jq 等 6 条）与第六轮语义扫描 5 条：保持（sheet-filter「core-operations」括注仍删除；minutes/06-data-analytics「悟空」口径保持品悟锚定）。
+- 第七轮脚本审计 5 类：保持。其中 4 个上游重写脚本（report_received_today.py、todo_batch_create.py、todo_daily_summary.py、todo_overdue_check.py）全部重放 python3 化与 `errors='replace'`（各 1 处 text=True）；上游新实现的游标/重复 reportId/总时限防护替代本地 seen_cursors 方案（第七轮第 4 条对 received_today 注销、inbox_today 本地版保持）；safe_file_name（含 PR #299 UTF-8 字节截断与 Win32 尾随点规整）与 Pillow 兜底保持，根级回归单测通过。
+- PR #359（oa/simple 确认门禁 --yes）：保持，merged oa.md --yes 计数 32→34（上游新增示例自带 --yes）；契约测试规则 7 通过。
+- PR #437 其余各条：命令/flag 纠错保持（上游 1.0.61 已自行完成 contact/aisearch/sheet find 等 flag 对齐——`aisearch person` 实测 flag 为 `--query`，本地 1.0.58 文档残留的 `--keyword` 已全部改为 `--query`，与上游 1.0.61 一致）；串行口径保持（conventions/05-reporting/mail/07-minutes/10-minutes 本地串行句重放，上游「& wait/并发」表述在冲突行未采纳）；弃用迁移保持（04-document 各行 drive search/list）；置信度单一事实源保持（07-minutes/10-minutes 不另设阈值）；批量上限保持；脚本配套保持（mail_unread_summary 时区、aitable_export --max-polls 等随上游重写核验）。Shortcut 总览计数经 dws 1.0.61 windows-amd64 二进制 `shortcut list --service <svc>` 逐一实测：上游表 19 项中仅 `todo` 不符（上游文档 21、实测 20），已按实测改为 20，其余（aitable 100/calendar 27/chat 98/doc 45/drive 28/minutes 29/wiki 20 等）与上游一致。`doc permission list --limit`（默认 30 最大 50）、`doc export --export-format`（docx/markdown/pdf）、`doc block update --content` 亦经 1.0.61 二进制 `--help` 实测复核。
+
+### 本次新增本地修改登记（下次 sync 需重放）
+
+1. 新增 `references/products/drive/{drive-export,drive-storage,drive-task}.md` 三文件前置块「必须先用 Read 工具读取」改为「必须先用 `read` 读取」（契约测试禁「Read 工具」字样）。
+2. `references/products/dev.md`「详细规则见 multi skill 的 `references/dev/mcp.md`」改为 mono 口径（`dws mcp --help` / `dws dev mcp --help`，mono 收录形态无 multi 子 skill 目录）。
+3. `references/products/doc.md`、`references/products/doc/doc-update.md` 关键原则行上游「写入完成后由调用方自行决定是否回读确认」重放为硬约束句（CLI 不自动回读；必须主动回读确认，见下文「内容完整性验证」）。
+4. 冲突裁定保留本地口径处：`aitable-best-practices.md` 保持本地收敛段（上游 1.0.61 扩写为分节+任务选路表；新增 record stats/group-stats/--field-ids 语义由新文件 aitable-record-stats.md 承载）；`07-minutes.md` minutes-detail/minutes-speaker-summarize 行保持本地串行口径与「不另设阈值」（上游仍写 `& wait` 与 >70% 阈值）；`sheet.md` 采用上游 1.0.61 路由层重写后补回「跨产品协作」（./aitable.md、./doc.md）与「局部意图与 Recipe」节；`02-task.md`/`03-meeting.md`/`04-document.md`/`05-reporting.md` 采用上游 chat message send 新 flag（--group/--text → --conversation-id/--content）与 report submit `--to-user-ids` 必填说明，其余保持本地；`SKILL.md` MUST DO 采用上游扩展后的事件例外句（VoIP/Todo）。`aisearch person` 的 --keyword/--query 分歧经 1.0.61 二进制实测关闭（--query），已全部对齐，不算保留项。
+5. `pinvou3-app/tests/connector_skills_contract.test.js` 按规则 9 登记豁免：`whiteboard +query` 黑名单对 dingtalk 域豁免——`dws whiteboard +query` 是 dws 1.0.61 真实快捷命令（读取文档白板 OpenNodes 快照，见 whiteboard.md 命令表），与 lark-cli 1.0.87 移除的 lark 侧同名命令无关。
+
+### 遗留观察项
+
+- `chat message send` flag 重命名后，上游自身 `conventions.md` ID 边界表仍写 `chat message list/send --group`（上游 1.0.61 原文如此），跟随上游未改；下版 sync 关注上游是否收敛。
+- doc 分片阈值本地未能以写入路径实测（connectors.lock 已升 1.0.61；1.0.61 文档分片示例按 ~30000 字符切分，倾向阈值已变更，如需确认可实机写入超长文档复核）；若实测为 10000，需回写 doc.md/doc-update.md/doc-create.md 阈值并重登记。
+- aisearch person `--keyword`/`--query` 分歧已用 1.0.61 二进制 `--help` 实测关闭：真实 flag 为 `--query`，本地已全部对齐（含 02-task/07-minutes/10-minutes-speaker-match/lite-recipes/mail）。
