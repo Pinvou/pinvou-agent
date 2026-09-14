@@ -403,7 +403,7 @@ impl Options {
 
     fn exactly_one_positional(&self) -> Result<String, CliError> {
         match self.positionals.len() {
-            // `label` already names the subcommand ("pinvoy models remove"),
+            // `label` already names the subcommand ("pinvou models remove"),
             // so the message needs no extra noun.
             1 => Ok(self.positionals[0].clone()),
             0 => Err(CliError::usage(format!("{} requires an id", self.label))),
@@ -850,12 +850,15 @@ fn add(
     Ok(success(text))
 }
 
-/// Classifies transaction failures: model-not-found and the min-1 rule are
-/// argument-level problems (exit 2); everything else (I/O, credential store)
-/// is a host failure (exit 1). Messages are already redacted by the
+/// Classifies transaction failures: the min-1 rule is an argument-level
+/// problem (exit 2); everything else — I/O, credential store, and unknown
+/// ids — is a host failure (exit 1). Unknown ids exit 1 like every other
+/// family (`sessions`, `knowledge`, `scheduled`): a lookup miss against the
+/// live store is a runtime failure, not argv misuse, and scripts branch on
+/// the same code across families. Messages are already redacted by the
 /// credential layer.
 fn prefs_error(error: String) -> CliError {
-    if error.starts_with("model not found") || error.starts_with("cannot remove the last") {
+    if error.starts_with("cannot remove the last") {
         CliError::usage(error)
     } else {
         CliError::failed(error)
@@ -927,7 +930,8 @@ fn find_model(prefs: &UserPrefs, id: &str) -> Result<SavedModel, CliError> {
     prefs
         .model_by_id(id)
         .cloned()
-        .ok_or_else(|| CliError::usage(format!("model not found: {id}")))
+        // Unknown ids exit 1 like every other family — see `prefs_error`.
+        .ok_or_else(|| CliError::failed(format!("model not found: {id}")))
 }
 
 /// Resolves a stored credential exactly like the GUI's

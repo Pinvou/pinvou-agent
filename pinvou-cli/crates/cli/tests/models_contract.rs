@@ -722,7 +722,9 @@ fn models_add_set_active_and_unknown_ids() {
         vec!["pinvoy", "models", "remove", "missing-id", "--yes"],
     ] {
         let (message, code) = run_err(&command);
-        assert_eq!(code, ExitCode::Usage, "{message}");
+        // Unknown ids exit 1 like every other family: a lookup miss against
+        // the live store is a runtime failure, not argv misuse.
+        assert_eq!(code, ExitCode::Failed, "{message}");
         assert!(message.contains("model not found"), "{message}");
     }
 }
