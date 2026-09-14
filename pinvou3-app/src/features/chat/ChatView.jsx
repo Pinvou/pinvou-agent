@@ -1591,9 +1591,12 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                 const missing = prepared.missing && prepared.missing.length
                   ? t.uiChatScenes.missingCapabilities(prepared.missing.join(', '))
                   : '';
-                throw new Error(missing || sceneCopy.failure);
+                throw new Error(missing || prepared.error || sceneCopy.failure);
               }
-              if (prepared.installed) {
+              // DenyAll 收敛后 ready 的语义由「装过」扩为「装好或显式开回」：
+              // 已装但被默认关挡住的场景包在此完成 opt-in，同样要提示已启用
+              // （评审 #455 R5-B3）。
+              if (prepared.installed || prepared.enabled) {
                 setSceneCapabilityStatus({ kind: 'ready', text: sceneCopy.ready });
                 window.setTimeout(() => setSceneCapabilityStatus((current) => (
                   current && current.kind === 'ready' ? null : current
