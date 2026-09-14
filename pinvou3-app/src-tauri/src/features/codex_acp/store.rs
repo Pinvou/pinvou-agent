@@ -167,6 +167,18 @@ pub struct CodeSessionSidecar {
     pub bound_at: Option<i64>,
 }
 
+/// `rebind_workspace_prefix` 的产出。
+#[derive(Debug, Default)]
+pub struct RebindWorkspacePrefixOutcome {
+    /// 受影响 (session_id, 平移后路径)：索引命中的会话 + 索引外孤儿 sidecar。
+    pub affected: Vec<(String, PathBuf)>,
+    /// 本次 sidecar 重写落盘失败的会话。孤儿以 sidecar 为唯一权威载体，
+    /// 上层（rebind_workspace_root）据 durable_session_record_is_absent 把
+    /// 名单内的孤儿计入失败而非成功（评审 #463 m2）；索引内会话另走补写
+    /// 段重试，不在此列处置。
+    pub sidecar_write_failed: Vec<String>,
+}
+
 fn code_session_sidecar_version() -> u32 {
     CODE_SESSION_SIDECAR_VERSION
 }
@@ -619,16 +631,27 @@ impl SessionAgentStore {
     /// 三处一致中的前两处在此落盘：辅助索引（session-agents.json）与权威
     /// sidecar（code-session.json，含索引外孤儿——启动扫描按 sidecar 恢复，
     /// 漏写会让旧值复活）；第三处 SavedSession 元数据由命令层经 SessionStore
-    /// 写入。幂等：from→to 重跑无匹配即空操作。返回受影响 (session_id, 新路径)。
+    /// 写入。幂等：from→to 重跑无匹配即空操作。
+    ///
+    /// 存储形式不变量（评审 #463 m1）：`from`/`to` 必须与绑定时的存储形态
+    /// 同源——会话绑定保存的是绑定当时的路径原值（对已存在目录，绑定入口
+    /// 已经过 canonical 化）。`from` 指向已消失目录时命令层无法对其做
+    /// canonical 化，macOS `/tmp` 与 `/private/tmp` 这类别名在此不可分辨；
+    /// 调用方必须传存储原值（前端取项目 store 的 root 展示串），传别名会
+    /// 静默半改写。
+    ///
+    /// 返回受影响 (session_id, 新路径) 及 sidecar 落盘失败名单：孤儿以
+    /// sidecar 为唯一权威载体，写失败不得被上层计入成功（评审 #463 m2）。
     pub fn rebind_workspace_prefix(
         &self,
         from: &Path,
         to: &Path,
-    ) -> Result<Vec<(String, PathBuf)>> {
+    ) -> Result<RebindWorkspacePrefixOutcome> {
         if from == to {
-            return Ok(Vec::new());
+            return Ok(RebindWorkspacePrefixOutcome::default());
         }
         let mut affected: Vec<(String, PathBuf)> = Vec::new();
+        let mut sidecar_write_failed: Vec<String> = Vec::new();
         {
             let mut records = self.records.write();
             for (session_id, record) in records.iter_mut() {
@@ -694,10 +717,12 @@ impl SessionAgentStore {
                     },
                 ) {
                     // 旧 sidecar 仍在盘上,重启恢复会复活旧目录;记日志并让
-                    // 索引内会话走下面的补写段重试(评审 #463 minor)。
+                    // 索引内会话走下面的补写段重试(评审 #463 minor)。孤儿
+                    // 没有补写路径,失败名单交命令层计入 failed(评审 #463 m2)。
                     eprintln!(
                         "[pinvou3-app] 重绑定改写原生代码会话 sidecar 失败（{session_id}）: {error:#}"
                     );
+                    sidecar_write_failed.push(session_id.clone());
                 } else {
                     sidecar_rewritten.push(session_id.clone());
                 }
@@ -720,6 +745,9 @@ impl SessionAgentStore {
                     .get(session_id)
                     .is_some_and(|record| record.mode.is_code())
                 {
+                    // 失败在 write_code_session_sidecar 内逐条记日志并返回
+                    // false:索引是运行时权威,不阻断;缺失 sidecar 由启动
+                    // backfill 自愈。
                     write_code_session_sidecar(
                         &self.path,
                         session_id,
@@ -729,7 +757,10 @@ impl SessionAgentStore {
                 }
             }
         }
-        Ok(affected)
+        Ok(RebindWorkspacePrefixOutcome {
+            affected,
+            sidecar_write_failed,
+        })
     }
 
     pub fn set_acp_session(
@@ -1491,10 +1522,15 @@ mod tests {
             read_code_session_sidecar(&store.path, "s1").and_then(|sidecar| sidecar.bound_at);
         assert!(bound_at_before.is_some());
 
-        let affected = store.rebind_workspace_prefix(&from, &to).unwrap();
-        let mut ids: Vec<&str> = affected.iter().map(|(sid, _)| sid.as_str()).collect();
+        let outcome = store.rebind_workspace_prefix(&from, &to).unwrap();
+        let mut ids: Vec<&str> = outcome
+            .affected
+            .iter()
+            .map(|(sid, _)| sid.as_str())
+            .collect();
         ids.sort_unstable();
         assert_eq!(ids, vec!["s1", "s2"]);
+        assert!(outcome.sidecar_write_failed.is_empty());
         assert_eq!(
             store.get("s1").workspace_path.as_deref(),
             Some(to.as_path())
@@ -1521,12 +1557,9 @@ mod tests {
         assert_eq!(sidecar.bound_at, bound_at_before);
 
         // 幂等:再跑一遍 from→to 无命中。
-        assert!(
-            store
-                .rebind_workspace_prefix(&from, &to)
-                .unwrap()
-                .is_empty()
-        );
+        let rerun = store.rebind_workspace_prefix(&from, &to).unwrap();
+        assert!(rerun.affected.is_empty());
+        assert!(rerun.sidecar_write_failed.is_empty());
 
         // 孤儿 sidecar(索引无记录)也会被改写,重启恢复不会复活旧目录。
         persist_code_session_sidecar(
@@ -1549,12 +1582,61 @@ mod tests {
             .unwrap();
         fs::create_dir_all(root.join("to2")).unwrap();
         // 上一步 to 已改走;此轮 from 无索引命中,但孤儿 sidecar 命中。
-        assert!(affected.iter().any(|(sid, _)| sid == "orphan"));
+        assert!(affected.affected.iter().any(|(sid, _)| sid == "orphan"));
+        assert!(affected.sidecar_write_failed.is_empty());
         let orphan = read_code_session_sidecar(&store.path, "orphan").unwrap();
         assert_eq!(
             orphan.workspace_path.as_deref(),
             Some(root.join("to2").join("deep").as_path())
         );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rebind_prefix_reports_orphan_sidecar_write_failures() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-rebind-sidecar-fail-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let from = root.join("from");
+        let to = root.join("to");
+        fs::create_dir_all(&from).unwrap();
+        fs::create_dir_all(&to).unwrap();
+        // 索引外孤儿:sidecar 是唯一权威载体(索引无记录,没有补写路径)。
+        persist_code_session_sidecar(
+            &code_session_sidecar_path(&store.path, "orphan-deny"),
+            &CodeSessionSidecar {
+                version: CODE_SESSION_SIDECAR_VERSION,
+                workspace_kind: CodexWorkspaceKind::Project,
+                workspace_path: Some(from.clone()),
+                bound_at: None,
+            },
+        )
+        .unwrap();
+        // 占住持久化的临时文件路径:写入 code-session.json.tmp 时即失败,
+        // rename 永远走不到,跨平台稳定地模拟落盘故障。
+        fs::create_dir_all(
+            code_session_sidecar_path(&store.path, "orphan-deny").with_extension("json.tmp"),
+        )
+        .unwrap();
+
+        let outcome = store.rebind_workspace_prefix(&from, &to).unwrap();
+        assert_eq!(
+            outcome.sidecar_write_failed,
+            vec!["orphan-deny".to_string()]
+        );
+        assert!(outcome.affected.iter().any(|(sid, _)| sid == "orphan-deny"));
+        // 盘上 sidecar 仍是旧路径:命令层据此把孤儿计入 failed 而非成功(m2),
+        // 失败重跑时旧路径仍命中 from 前缀,重试可收敛。
+        let stale = read_code_session_sidecar(&store.path, "orphan-deny").unwrap();
+        assert_eq!(stale.workspace_path.as_deref(), Some(from.as_path()));
 
         fs::remove_dir_all(&root).unwrap();
     }

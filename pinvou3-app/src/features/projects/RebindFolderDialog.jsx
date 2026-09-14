@@ -7,7 +7,7 @@ import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { AlertTriangle, RefreshCw, X } from '../../components/icons.jsx';
 
-const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, t, busy, onCancel, onConfirm }) => {
+const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, t, busy, onCancel, onConfirm }) => {
   const dialogRef = useRef(null);
   useEffect(() => {
     const onKey = (e) => {
@@ -93,16 +93,42 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, t, busy, onC
             </div>
           )}
         </div>
+        {/* 部分失败报告(评审 #463 M1):窗不关——root 已平移,失效徽标
+            (唯一重绑入口)会随刷新消失,重试承诺必须在窗内兑现。失败会话
+            id 是数据而非 UI 文案,原样列出供手动兜底。 */}
+        {partial && (
+          <div className="px-4 pb-2 space-y-2" data-testid="rebind-partial-report">
+            <div className="flex items-start gap-2 rounded-2xl bg-[#FCE8E6] dark:bg-[#3C2A29] px-3 py-2 text-[12px] text-[#C5221F] dark:text-[#F28B82]">
+              <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <div>{t.uiProjects.rebindPartial(partial.rebound, partial.failed)}</div>
+                {partial.postBusy > 0 && (
+                  <div>{t.uiProjects.rebindBusyAfter(partial.postBusy)}</div>
+                )}
+              </div>
+            </div>
+            {partial.failedIds.length > 0 && (
+              <div className="space-y-1">
+                <div className="text-[12px] text-[#5F6368] dark:text-[#C4C7C5]">
+                  {t.uiProjects.rebindFailedSessions}
+                </div>
+                <div className="max-h-24 overflow-y-auto rounded-xl bg-black/5 dark:bg-white/10 px-2 py-1 font-mono text-[11px] break-all">
+                  {partial.failedIds.join('\n')}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         <div className="px-4 pb-4 pt-1 flex gap-2">
           <button
             type="button"
             // biome-ignore lint/a11y/noAutofocus: modal opens for a single purpose; focus belongs on the primary action immediately (same idiom as MoveToProjectDialog)
             autoFocus
             disabled={busy}
-            onClick={() => onConfirm(!!warnExisting)}
+            onClick={() => onConfirm(!!warnExisting || !!partial)}
             className="flex-1 h-10 rounded-full bg-[#0B57D0] text-white text-[14px] font-medium hover:bg-[#0A4CB8] disabled:opacity-50"
           >
-            {t.uiProjects.rebindConfirm}
+            {partial ? t.uiProjects.rebindRetryRemaining : t.uiProjects.rebindConfirm}
           </button>
           <button
             type="button"
