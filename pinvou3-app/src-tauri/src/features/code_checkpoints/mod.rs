@@ -360,9 +360,11 @@ fn canonical_execution_root(execution_root: &Path) -> Result<PathBuf> {
 /// 与签名/钩子以外的正常行为需要）。
 fn isolated_git_command() -> std::process::Command {
     let mut command = crate::platform::process::HiddenCommand::new("git");
-    // 固定键名列表剥离（platform::process::strip_all_git_env），不得遍历
-    // process env 找 GIT_*：并行测试里其他线程的 setenv 与遍历并发会漏键，
-    // 隔离偶尔整体失效（2026-09-12 抖动族根因）。
+    // Strip via a fixed key list (platform::process::strip_all_git_env); do
+    // not scan the process env for GIT_*: in parallel tests, setenv from other
+    // threads concurrent with the iteration can miss keys, making the
+    // isolation fail intermittently as a whole (root cause of the 2026-09-12
+    // flaky family).
     crate::platform::process::strip_all_git_env(&mut command);
     command.env("GIT_CONFIG_NOSYSTEM", "1");
     command.env("GIT_CONFIG_GLOBAL", crate::platform::os::null_device());
@@ -375,7 +377,12 @@ fn git(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<std::process
         .arg(format!("--work-tree={}", work_tree.display()))
         .args(arguments)
         .output()
-        .with_context(|| format!("执行 git {} 失败（Git 不可用？）", arguments.join(" ")))
+        .with_context(|| {
+            format!(
+                "failed to run git {} (is Git unavailable?)",
+                arguments.join(" ")
+            )
+        })
 }
 
 fn git_ok(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<String> {

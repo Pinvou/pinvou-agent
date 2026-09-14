@@ -14,40 +14,49 @@ impl HiddenCommand {
     }
 }
 
-/// 剥离宿主环境注入的 `GIT_*` 覆盖变量（重定向/配置注入类）。启动 shell 里的
-/// `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE`/`GIT_OBJECT_DIRECTORY` 会把模块
-/// 内部的 git 操作重定向到无关仓库/索引/对象库，`GIT_CONFIG*` 注入会覆盖目标
-/// 仓库自身的配置，`GIT_CEILING_DIRECTORIES` 等会改变仓库发现结果——GUI 从
-/// 开发 shell 启动时这些变量真实存在。内部 spawn git 的功能（code_checkpoints
-/// 影子仓库、codex_acp workspace 分支/差异操作）必须在 spawn 前调用本函数。
+/// Strips `GIT_*` override variables (redirection/config-injection classes)
+/// injected by the host environment. `GIT_DIR`/`GIT_WORK_TREE`/
+/// `GIT_INDEX_FILE`/`GIT_OBJECT_DIRECTORY` exported by the launching shell
+/// redirect the module's internal git operations to unrelated repositories,
+/// indexes, or object stores; `GIT_CONFIG*` injection overrides the target
+/// repository's own configuration; `GIT_CEILING_DIRECTORIES` and friends alter
+/// repository discovery — these variables really exist when the GUI is
+/// launched from a development shell. Features that spawn git internally
+/// (code_checkpoints shadow repositories, codex_acp workspace branch/diff
+/// operations) must call this before spawning.
 ///
-/// **必须用固定键名列表逐个 `env_remove`，不得先 `env::vars_os()` 遍历再删**：
-/// 遍历 `environ` 与其他线程的 `setenv`/`remove_var` 并发时可能漏键（glibc
-/// 的 environ 修改非线程安全），并行测试里就曾因此让隔离偶尔整体失效
-/// （2026-09-12 抖动族）。`GIT_CONFIG_COUNT` 一旦移除，`GIT_CONFIG_KEY_n`/
-/// `GIT_CONFIG_VALUE_n` 编号对即被 git 忽略，无需枚举。
+/// **Must remove keys one by one from a fixed key list; do not iterate
+/// `env::vars_os()` first and delete matches**: iterating `environ` while other
+/// threads run `setenv`/`remove_var` concurrently can miss keys (glibc environ
+/// mutation is not thread-safe); parallel tests have occasionally lost
+/// isolation entirely this way (the 2026-09-12 flaky family). Once
+/// `GIT_CONFIG_COUNT` is removed, git ignores the `GIT_CONFIG_KEY_n`/
+/// `GIT_CONFIG_VALUE_n` numbered pairs, so they need no enumeration.
 ///
-/// 保留 `GIT_AUTHOR_*`/`GIT_COMMITTER_*`/`GIT_SSH*` 等非重定向变量：对用户
-/// 真实工作区的操作应以用户本人 git 的行为为基准；code_checkpoints 的影子
-/// 仓库需要更强隔离（连同身份与全局配置一并钉死），改用
-/// [`strip_all_git_env`]。
+/// Non-redirection variables such as `GIT_AUTHOR_*`/`GIT_COMMITTER_*`/
+/// `GIT_SSH*` are kept: operations on the user's real worktree should follow
+/// the behavior of the user's own git; code_checkpoints shadow repositories
+/// need stronger isolation (identity and global config pinned too) and should
+/// use [`strip_all_git_env`] instead.
 pub(crate) fn strip_git_override_env(command: &mut Command) {
     for key in GIT_OVERRIDE_KEYS {
         command.env_remove(key);
     }
 }
 
-/// [`strip_git_override_env`] 的影子仓库强化版：连同身份/日期变量一并移除。
-/// 影子仓库的提交身份由调用方显式 `-c` 提供，宿主 shell 导出的
-/// `GIT_AUTHOR_*` 不得渗透进快照提交。
+/// Shadow-repository hardened variant of [`strip_git_override_env`]: also
+/// removes identity/date variables. The shadow repository's commit identity is
+/// provided explicitly via `-c` by the caller; `GIT_AUTHOR_*` exported by the
+/// host shell must not leak into snapshot commits.
 pub(crate) fn strip_all_git_env(command: &mut Command) {
     for key in GIT_OVERRIDE_KEYS.iter().copied().chain(GIT_IDENTITY_KEYS) {
         command.env_remove(key);
     }
 }
 
-/// `GIT_CONFIG_COUNT` 移除后 `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` 编号对
-/// 失效，故无需枚举编号键。
+/// Once `GIT_CONFIG_COUNT` is removed, the `GIT_CONFIG_KEY_n`/
+/// `GIT_CONFIG_VALUE_n` numbered pairs become ineffective, so the numbered
+/// keys need no enumeration.
 const GIT_OVERRIDE_KEYS: [&str; 20] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -67,8 +76,10 @@ const GIT_OVERRIDE_KEYS: [&str; 20] = [
     "GIT_CONFIG_NOSYSTEM",
     "GIT_CONFIG_PARAMETERS",
     "GIT_CONFIG_COUNT",
-    // GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n 由 GIT_CONFIG_COUNT 门控，移除
-    // COUNT 即整组失效；仍移除 0 号键值对以对抗绕过 COUNT 的极端宿主注入。
+    // GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n pairs are gated by
+    // GIT_CONFIG_COUNT: removing COUNT disables the whole group. Key/value 0
+    // is still removed to guard against extreme host injections that bypass
+    // COUNT.
     "GIT_CONFIG_KEY_0",
     "GIT_CONFIG_VALUE_0",
 ];
@@ -410,7 +421,7 @@ mod tests {
 
     #[test]
     fn git_override_keys_cover_redirection_and_config_injection_without_identity() {
-        // 重定向与配置注入键必须在剥离清单内。
+        // Redirection and config-injection keys must be on the strip list.
         for key in [
             "GIT_DIR",
             "GIT_WORK_TREE",
@@ -435,8 +446,10 @@ mod tests {
                 "override keys must cover {key}"
             );
         }
-        // 身份、传输、终端行为等非重定向变量不在子集清单内：对用户真实工作区
-        // 的操作以用户本人 git 的行为为基准（影子仓库的强化清单另行覆盖身份）。
+        // Identity, transport, and terminal-behavior variables are not on the
+        // subset list: operations on the user's real worktree follow the
+        // behavior of the user's own git (the shadow-repository hardened list
+        // covers identity separately).
         for key in [
             "GIT_AUTHOR_NAME",
             "GIT_AUTHOR_EMAIL",
@@ -455,7 +468,8 @@ mod tests {
                 "override keys must not contain {key}"
             );
         }
-        // 影子仓库强化清单 = 子集清单 + 身份键，且身份键确实在强化清单生效。
+        // Shadow-repository hardened list = subset list + identity keys, and
+        // the identity keys must actually take effect in the hardened list.
         let strengthened: std::collections::BTreeSet<&str> = GIT_OVERRIDE_KEYS
             .iter()
             .copied()

@@ -898,10 +898,12 @@ mod tests {
     use super::*;
 
     fn service() -> KnowledgeService {
-        // 路径必须每次调用唯一：line!() 在辅助函数内展开对所有调用者是同一个
-        // 值，并行测试会共用同一 SQLite 文件——Store::open 的 stale 检测并发
-        // 读到中间态 user_version 就会整库删除重建，另一测试随即 "no such
-        // table"。曾以此真实抖动（2026-09-12 全量并行复现）。
+        // The path must be unique per call: line!() expands to the same value
+        // for every caller inside this helper, so parallel tests would share
+        // one SQLite file — Store::open's staleness detection concurrently
+        // reading a mid-state user_version deletes and recreates the whole
+        // store, and another test then hits "no such table". This caused a
+        // real flake (reproduced in the 2026-09-12 full parallel run).
         static SERVICE_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
             "pinvou3_kb_import_reload_{}_{}",

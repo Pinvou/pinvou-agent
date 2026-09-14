@@ -1962,18 +1962,22 @@ mod tests {
         );
     }
 
-    /// GIT_* 环境隔离：宿主 shell（或并发持有 ENV_LOCK 写环境的测试）注入的
-    /// GIT_INDEX_FILE/GIT_OBJECT_DIRECTORY 不得把 workspace 的分支/暂存操作
-    /// 重定向到无关位置。回归背景：全量并行时该污染真实发生，曾让 git 子进程
-    /// 用例逐轮随机失败（串行全绿）。
+    /// GIT_* environment isolation: GIT_INDEX_FILE/GIT_OBJECT_DIRECTORY
+    /// injected by the host shell (or by tests concurrently holding ENV_LOCK
+    /// to write the environment) must not redirect the workspace's branch and
+    /// stash operations to unrelated locations. Regression background: under
+    /// full parallel runs this pollution really occurred, making the git
+    /// subprocess cases fail randomly across runs (serial runs were all
+    /// green).
     #[test]
     fn workspace_git_operations_ignore_host_git_environment() {
         let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let bogus = TestDir::new("bogus-git-env");
-        // SAFETY: ENV_LOCK 序列化进程环境写（crate 级唯一约定）；workspace 的
-        // git 子进程自身剥离 GIT_* 覆盖变量，不受本写影响。
+        // SAFETY: ENV_LOCK serializes process environment writes (the
+        // crate-wide convention); the workspace git subprocess itself strips
+        // GIT_* override variables and is unaffected by this write.
         unsafe {
             std::env::set_var("GIT_INDEX_FILE", bogus.path().join("index"));
             std::env::set_var("GIT_OBJECT_DIRECTORY", bogus.path().join("objects"));
@@ -1983,7 +1987,8 @@ mod tests {
                 return;
             };
             fs::write(root.path().join("file.txt"), "v1-dirty").unwrap();
-            // 提交对象必须落在本仓库对象库，分支切换与 stash 恢复全链路照常。
+            // Commit objects must land in this repository's own object store
+            // so branch switching and stash restoration work end to end.
             checkout_workspace_branch(root.path(), "feature", BranchSwitchMode::Stash, None)
                 .unwrap();
             assert_eq!(git_branch(root.path()).as_deref(), Some("feature"));
@@ -1993,10 +1998,11 @@ mod tests {
             );
             let stash_list = git_output(root.path(), &["stash", "list"]).unwrap();
             assert!(stash_list.trim().is_empty());
-            // 污染目标保持干净：索引与对象都没有被重定向。
+            // The pollution targets stay clean: neither the index nor the
+            // objects were redirected.
             assert!(
                 !bogus.path().join("index").exists(),
-                "GIT_INDEX_FILE 必须被剥离"
+                "GIT_INDEX_FILE must be stripped"
             );
             assert!(
                 bogus
@@ -2004,10 +2010,11 @@ mod tests {
                     .read_dir()
                     .map(|entries| entries.count() == 0)
                     .unwrap_or(true),
-                "GIT_OBJECT_DIRECTORY 必须被剥离"
+                "GIT_OBJECT_DIRECTORY must be stripped"
             );
         });
-        // SAFETY: 同 ENV_LOCK 序列化，恢复污染前的环境。
+        // SAFETY: serialized by the same ENV_LOCK; restore the pre-pollution
+        // environment.
         unsafe {
             std::env::remove_var("GIT_INDEX_FILE");
             std::env::remove_var("GIT_OBJECT_DIRECTORY");
