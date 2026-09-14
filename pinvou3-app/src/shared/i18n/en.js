@@ -575,7 +575,7 @@ dictEn.uiToolDetails.flow = {
   openBrowser:'Open in browser ↗', connectionIncomplete:'Connection incomplete', close:'Close', retry:'Retry',
 };
 
-dictEn.uiToolDetails.actions = { connectedTmeet:'Tencent Meeting connected', enabled:'Official skill enabled; start a new conversation to use it', disconnectedTmeet:'Tencent Meeting disconnected', connectingIma:'Connecting Tencent ima', validatingIma:'Validating OpenAPI credentials and enabling the Skill…', connectedIma:'Tencent ima connected', imaEnabled:'IMA OpenAPI Skill enabled; start a new conversation to use it.', imaFailed:'IMA connection failed', disconnectedIma:'Tencent ima disconnected', operationFailed:'Operation failed. Please retry' };
+dictEn.uiToolDetails.actions = { connectedTmeet:'Tencent Meeting connected', enabled:'Connected. Tool switches are off by default; turn this on in the composer tools list', disconnectedTmeet:'Tencent Meeting disconnected', connectingIma:'Connecting Tencent ima', validatingIma:'Validating OpenAPI credentials and enabling the Skill…', connectedIma:'Tencent ima connected', imaEnabled:'IMA connected. Tool switches are off by default; turn this on in the composer tools list.', imaFailed:'IMA connection failed', disconnectedIma:'Tencent ima disconnected', operationFailed:'Operation failed. Please retry' };
 
 dictEn.uiToolDetails.tmeetSteps = [{key:'runtime',label:'Prepare runtime',sub:'Use the app-provided Node runtime'},{key:'cli',label:'Install connector',sub:'tmeet · about 40 seconds on first use'},{key:'qr',label:'Sign in',sub:'Tencent Meeting authorization page'}];
 
@@ -855,7 +855,7 @@ Object.assign(dictEn.uiToolStore, {
   toolNames:{ feishu:'Feishu', wecom:'WeCom', dingtalk:'DingTalk', tmeet:'Tencent Meeting', ima:'Tencent ima' },
   connected:'Connected', installed:'Installed', builtin:'Built-in', internalDirect:'Direct intranet', keyRequired:'Key required', localLatency:'Local',
   cancel:'Cancel', ok:'Got it', newChat:'New Chat',
-  installHint:'New tools take effect in a new conversation', removeHint:'Removed; new conversations will no longer load this tool', firstUseOnlineInstall:'The first connection downloads and verifies the official CLI',
+  installHint:'Tool switches are off by default; turn new tools on in the composer tools list to use them', removeHint:'Removed; new conversations will no longer load this tool', firstUseOnlineInstall:'The first connection downloads and verifies the official CLI',
   configTitle:name=>`Configure ${name}`, configConnect:'Connect', configInstall:'Install', configDocDefault:'View setup guide', configHelpFeishu:'No app yet? Create one on the Feishu Open Platform →',
   obsidianGuide:{
 not_installed:{ title:'Obsidian required', body:'"Obsidian Vault" works together with Obsidian. It is not installed yet—install Obsidian and create a vault to connect.', primary:'Download Obsidian', retry:'I have installed it—check again' },

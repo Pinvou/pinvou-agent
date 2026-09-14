@@ -576,7 +576,7 @@ dictJa.uiToolDetails.flow = {
   openBrowser:'ブラウザーで開く ↗', connectionIncomplete:'接続が完了していません', close:'閉じる', retry:'再試行',
 };
 
-dictJa.uiToolDetails.actions = { connectedTmeet:'Tencent Meeting に接続しました', enabled:'公式 Skill を有効化しました。新しい会話で利用できます', disconnectedTmeet:'Tencent Meeting から切断しました', connectingIma:'Tencent ima に接続中', validatingIma:'OpenAPI 認証情報を確認し、Skill を有効化しています…', connectedIma:'Tencent ima に接続しました', imaEnabled:'IMA OpenAPI Skill を有効化しました。新しい会話で利用できます。', imaFailed:'IMA の接続に失敗しました', disconnectedIma:'Tencent ima から切断しました', operationFailed:'操作に失敗しました。再試行してください' };
+dictJa.uiToolDetails.actions = { connectedTmeet:'Tencent Meeting に接続しました', enabled:'接続しました。ツールスイッチはデフォルトでオフです。入力欄のツールリストでオンにしてください', disconnectedTmeet:'Tencent Meeting から切断しました', connectingIma:'Tencent ima に接続中', validatingIma:'OpenAPI 認証情報を確認し、Skill を有効化しています…', connectedIma:'Tencent ima に接続しました', imaEnabled:'IMA に接続しました。ツールスイッチはデフォルトでオフです。入力欄のツールリストでオンにしてください。', imaFailed:'IMA の接続に失敗しました', disconnectedIma:'Tencent ima から切断しました', operationFailed:'操作に失敗しました。再試行してください' };
 
 dictJa.uiToolDetails.tmeetSteps = [{key:'runtime',label:'ランタイムを準備',sub:'アプリ同梱の Node を使用'},{key:'cli',label:'接続コンポーネントをインストール',sub:'tmeet · 初回は約 40 秒'},{key:'qr',label:'ログイン',sub:'Tencent Meeting 認証ページ'}];
 
@@ -856,7 +856,7 @@ Object.assign(dictJa.uiToolStore, {
   toolNames:{ feishu:'Feishu', wecom:'WeCom', dingtalk:'DingTalk', tmeet:'Tencent Meeting', ima:'Tencent ima' },
   connected:'接続済み', installed:'インストール済み', builtin:'内蔵', internalDirect:'社内ネットワーク直結', keyRequired:'キーが必要', localLatency:'ローカル',
   cancel:'キャンセル', ok:'了解', newChat:'新しいチャット',
-  installHint:'新しいツールは新しい会話で有効になります', removeHint:'削除しました。新しい会話ではこのツールは読み込まれません', firstUseOnlineInstall:'初回接続時に公式 CLI をダウンロードして検証します',
+  installHint:'ツールスイッチはデフォルトでオフです。新しいツールは入力欄のツールリストでオンにしてから利用してください', removeHint:'削除しました。新しい会話ではこのツールは読み込まれません', firstUseOnlineInstall:'初回接続時に公式 CLI をダウンロードして検証します',
   configTitle:name=>`「${name}」の設定`, configConnect:'接続', configInstall:'インストール', configDocDefault:'設定ガイドを見る', configHelpFeishu:'アプリの作成方法が分からない場合は Feishu オープンプラットフォームで作成 →',
   obsidianGuide:{
 not_installed:{ title:'Obsidian のインストールが必要です', body:'「Obsidian ナレッジベース」は Obsidian と併用します。まだインストールされていません。インストールして保管庫を作成すると接続できます。', primary:'Obsidian をダウンロード', retry:'インストールしました。再検出' },
