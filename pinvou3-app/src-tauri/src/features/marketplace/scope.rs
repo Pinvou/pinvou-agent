@@ -129,27 +129,39 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
             // 文件存在但不可读（权限/占用锁等）：与损坏同口径 fail-closed，
             // 不得并入上一条迁移分支——升级装机上那会把 plain 初始化为空
             // （旧 AllowAll 全开）并在无隔离的情况下覆盖原文件，用户的显式
-            // 关闭被静默销毁（评审 #455 R4-B1）。原始字节尽力留副本（读不出
-            // 则以错误占位），降级态覆盖落盘使恢复一次性完成。
-            let salvaged = std::fs::read(&path)
-                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-                .unwrap_or_else(|_| format!("<unreadable: {error}>"));
+            // 关闭被静默销毁（评审 #455 R4-B1）。按 salvage 读取结果分流：
+            // 字节读得出（非 UTF-8 走 lossy）→ 隔离副本能真实保住原始字节，
+            // 降级态覆盖落盘使恢复一次性完成；隔离失败或字节本身读不出 →
+            // 不动原文件——占位符「隔离」保不住任何字节，此时覆盖会把「不可
+            // 读但可恢复」变成「永久丢失」（评审 #455 R6-B1）。内存 fail-closed
+            // 态已正确，下次读取重试。
             let recovered = DisabledBundlesFile {
                 plain_defaults_migrated: true,
                 ..DisabledBundlesFile::default()
             };
-            if let Err(quarantine_err) =
-                quarantine_corrupt_disabled_bundles(&salvaged, &error.to_string())
-            {
-                // 隔离失败不覆盖原文件：内存 fail-closed 态已正确，下次读取
-                // 重试（评审 #455 R5-m4）。
-                eprintln!(
-                    "[marketplace] {quarantine_err}; skipping disabled_bundles.json overwrite this read"
-                );
-                return recovered;
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let salvaged = String::from_utf8_lossy(&bytes).into_owned();
+                    if let Err(quarantine_err) =
+                        quarantine_corrupt_disabled_bundles(&salvaged, &error.to_string())
+                    {
+                        // 隔离失败不覆盖原文件：内存 fail-closed 态已正确，
+                        // 下次读取重试（评审 #455 R5-m4）。
+                        eprintln!(
+                            "[marketplace] {quarantine_err}; skipping disabled_bundles.json overwrite this read"
+                        );
+                        return recovered;
+                    }
+                    save_disabled_bundles_file(&recovered);
+                    return recovered;
+                }
+                Err(salvage_error) => {
+                    eprintln!(
+                        "[marketplace] disabled_bundles.json exists but is unreadable ({error}; salvage read failed: {salvage_error}); skipping quarantine and overwrite this read, fail-closed applies in memory"
+                    );
+                    return recovered;
+                }
             }
-            save_disabled_bundles_file(&recovered);
-            return recovered;
         }
     };
     let mut file: DisabledBundlesFile = match serde_json::from_str(&content) {
@@ -886,6 +898,13 @@ mod tests {
                 load_hidden_bundles_for(ConnectorScope::Plain),
                 vec!["gongwen".to_string()],
                 "认领翻转后读时归一应把隐藏条目重映射到包 id"
+            );
+            // 落盘字节级断言（评审 #455 R6-m2）：归一化不止修门控口径，还
+            // 必须持久化——否则卸载认领 owner 后原始条目残留，重装即复活。
+            let persisted = std::fs::read_to_string(disabled_bundles_path()).unwrap();
+            assert!(
+                persisted.contains("\"gongwen\"") && !persisted.contains("government-writing"),
+                "归一化结果应落盘替换原始条目: {persisted}"
             );
         });
     }
