@@ -11,6 +11,16 @@ EXPECTED_COMMITS=36
 # 过渡期锚点：不可变 r1 tag 的收口 commit。层 0 断言它是当前 head 的祖先，
 # 即 gitlink 沿维护分支领先 tag 而非另起分叉；r2 收口后随 TAG 常量一起退役。
 R1_CLOSURE="1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
+# Candidate registration: the TurnStarted submission-correlation candidate
+# (review branch fix/turn-started-submission-echo, paired CodeWhale PR #58)
+# is one commit above the registered maintenance head while its CodeWhale PR
+# is open. Layer 0 accepts the registered head or this candidate; re-pin the
+# entry when the candidate rebases and retire it once the commit lands on
+# pinvou3-clean (see docs/fork-modifications.md, the turn-bound cancel
+# section). verify-public-submodule.sh stays red for the pinned candidate:
+# that is the registered candidate-period state, not a regression.
+CANDIDATE_HEAD="9300ab60afb35fdd87bcc40221cc596ee478f07c"
+CANDIDATE_COMMITS=29
 FAST_ONLY=0
 
 case "${1:-}" in
@@ -27,10 +37,14 @@ fail=0
 
 bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 21 个登记提交，r2 收口未切 tag）──"
 actual_head="$(git -C "$CODEWHALE" rev-parse HEAD 2>/dev/null || true)"
+registered_commits="$EXPECTED_COMMITS"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
   green "  ✓ CodeWhale gitlink 指向登记 head ${EXPECTED_HEAD}（过渡期：gitlink 领先 r1 tag，见 fork-policy 第 0 节豁免）"
+elif [[ -n "$CANDIDATE_HEAD" && "$actual_head" == "$CANDIDATE_HEAD" ]]; then
+  registered_commits="$CANDIDATE_COMMITS"
+  green "  ✓ CodeWhale gitlink pinned to the registered candidate ${CANDIDATE_HEAD} (registered head + $((CANDIDATE_COMMITS - EXPECTED_COMMITS)) candidate commit(s))"
 else
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，登记 head 为 $EXPECTED_HEAD"
+  red "  ✗ CodeWhale HEAD is ${actual_head:-<unreadable>}; expected the registered head $EXPECTED_HEAD or the registered candidate ${CANDIDATE_HEAD:-<none>}"
   fail=1
 fi
 
@@ -49,10 +63,10 @@ else
 fi
 
 commit_count="$(git -C "$CODEWHALE" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev/null || true)"
-if [[ "$commit_count" == "$EXPECTED_COMMITS" ]]; then
-  green "  ✓ v0.9.12 之上 $EXPECTED_COMMITS 个登记提交"
+if [[ "$commit_count" == "$registered_commits" ]]; then
+  green "  ✓ v0.9.12 之上 $commit_count 个登记提交"
 else
-  red "  ✗ v0.9.12 之上有 ${commit_count:-<unreadable>} 个 commit，登记值为 $EXPECTED_COMMITS"
+  red "  ✗ v0.9.12 之上有 ${commit_count:-<unreadable>} 个 commit，登记值为 $registered_commits"
   fail=1
 fi
 
@@ -76,6 +90,7 @@ fingerprints=(
   "T1|陈旧取消不误杀自主续跑轮回归        |CodeWhale/crates/tui/src/core/engine/tests.rs|forkguard_cancel_turn_binding_spares_unnamed_turns_and_hits_the_observed_turn"
   "T1|自启续轮陈旧 stop 端到端回归        |CodeWhale/crates/tui/src/core/engine/tests.rs|forkguard_idle_subagent_completion_self_start_ignores_a_stale_previous_turn_cancel"
   "T1|处置入口不触发任何 token 回归      |CodeWhale/crates/tui/src/core/engine/tests.rs|engine_handle_stop_disposition_publishes_without_firing_any_token"
+  "T1|TurnStarted 回显宿主提交令牌回归    |CodeWhale/crates/tui/src/core/engine/tests.rs|forkguard_turn_started_echoes_submission_id_self_starts_stay_none"
 
   "T1|GLM-5.3 强制思考改写禁用 payload    |CodeWhale/crates/tui/src/client/chat.rs|fn apply_zai_forced_thinking_effort"
   "T1|BigModel host 纳入第一方 Chat 路由  |CodeWhale/crates/config/src/provider.rs|is_exact_https_route(base_url, \"open.bigmodel.cn\", \"api/paas/v4\")"
@@ -178,6 +193,7 @@ fingerprints=(
   "APP|无目标轮仅发布处置绝不开火        |pinvou3-app/src-tauri/src/features/assistant/engine.rs|engine.publish_stop_disposition_only(mode)"
   "APP|cancel 闭包接入共享轮绑定分派     |pinvou3-app/src-tauri/src/features/assistant/engine_pool.rs|dispatch_turn_bound_cancel(engine, identity.as_ref(), steer_mode)"
   "APP|pending 取消按引擎轮身份重放      |pinvou3-app/src-tauri/src/features/assistant/forwarder.rs|approve_handle.cancel_turn("
+  "APP|超越自启轮不能消费 pending 重放    |pinvou3-app/src-tauri/src/features/assistant/engine_pool.rs|overtaking_self_started_turn_started_cannot_consume_the_replay"
   "APP|resolved route 由宿主统一解析     |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|pub fn resolve_runtime_route_for_model("
   "APP|GLM 小写存量配置解析到规范模型    |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn forkguard_zai_direct_route_survives_model_casing_mismatch"
   "APP|128K/256K compaction 合约        |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn forkguard_compaction_128k_scenarios"

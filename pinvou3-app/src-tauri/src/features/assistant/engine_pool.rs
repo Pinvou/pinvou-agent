@@ -2899,6 +2899,7 @@ where
 // so it cannot deadlock.
 #[allow(clippy::await_holding_lock)]
 mod scheduled_model_tests {
+    const TEST_SUBMISSION: &str = "sub-test";
     use super::{
         EvalModelSnapshots, ModelIdentity, ModelUpdateRevisions, Pinvou3Bridge,
         PreparedRuntimeState, SESSION_MODEL_BINDING_STALE_ERROR, ScheduledUnattendedGuard,
@@ -3635,7 +3636,7 @@ mod scheduled_model_tests {
     fn turn_lifecycle_survives_engine_entry_removal_without_faking_idle_cancel() {
         let lifecycles = SessionTurnLifecycles::default();
         let engine_lifecycle = lifecycles.for_session("session-1");
-        engine_lifecycle.on_submitted();
+        engine_lifecycle.on_submitted(Some(TEST_SUBMISSION.to_string()));
         drop(engine_lifecycle);
 
         let pool_lifecycle = lifecycles.get("session-1").expect("session lifecycle");
@@ -4106,7 +4107,7 @@ mod scheduled_model_tests {
         let lifecycle = lifecycles.for_session(sid);
         // turn1：on_submitted 激活（active+submitted+epoch 自增），使阶段一 cancel_engine
         // 能匹配 generation，且 finish_once 可 claim（需 submitted）。
-        assert!(lifecycle.on_submitted());
+        assert!(lifecycle.on_submitted(Some(TEST_SUBMISSION.to_string())));
 
         let gate = locks.for_session(sid).await;
         let blocker = gate.lock().await;
@@ -4261,7 +4262,7 @@ mod scheduled_model_tests {
 
         let lifecycle = lifecycles.for_session(sid);
         // turn1：on_submitted 激活（active+submitted+epoch=1）。
-        assert!(lifecycle.on_submitted());
+        assert!(lifecycle.on_submitted(Some(TEST_SUBMISSION.to_string())));
 
         let gate = locks.for_session(sid).await;
         let blocker = gate.lock().await;
@@ -4338,7 +4339,7 @@ mod scheduled_model_tests {
 
         let lifecycle = lifecycles.for_session(sid);
         // turn1：on_submitted 激活（epoch=1）。
-        assert!(lifecycle.on_submitted());
+        assert!(lifecycle.on_submitted(Some(TEST_SUBMISSION.to_string())));
 
         let gate = locks.for_session(sid).await;
         let blocker = gate.lock().await;
@@ -4373,7 +4374,7 @@ mod scheduled_model_tests {
         // turn1 终态 → turn2 on_submitted 激活（epoch=2，submitted=true——
         // SendMessage 已入 engine，可能已启动新轮子代理）。
         assert!(lifecycle.finish_once(|| {}).is_some());
-        assert!(lifecycle.on_submitted());
+        assert!(lifecycle.on_submitted(Some(TEST_SUBMISSION.to_string())));
 
         // 释放 turn_lock：阶段二 current=Some(2) ≠ target=Some(1) → mismatch；
         // 新轮已提交 → 不得补发级联取消。
@@ -4411,7 +4412,7 @@ mod scheduled_model_tests {
 
         let lifecycle = lifecycles.for_session(sid);
         // turn1：on_submitted 激活（active+submitted+epoch=1）。
-        assert!(lifecycle.on_submitted());
+        assert!(lifecycle.on_submitted(Some(TEST_SUBMISSION.to_string())));
         let target = lifecycle.current_turn_generation().expect("turn1 epoch");
         assert_eq!(target, 1_u64);
 
@@ -4637,7 +4638,7 @@ mod scheduled_model_tests {
 
         let lifecycle = lifecycles.for_session(sid);
         // turn1：on_submitted 激活（active+submitted+epoch=1）。
-        assert!(lifecycle.on_submitted());
+        assert!(lifecycle.on_submitted(Some(TEST_SUBMISSION.to_string())));
 
         // 用 Notify 协调：探针先通知「已进入 get_engine 的 await」，挂起等待
         // release；主线程收到 entered 后推进轮次，再放行探针。
@@ -4735,7 +4736,7 @@ mod scheduled_model_tests {
         let sid = "session-closing-cancel";
 
         let lifecycle = lifecycles.for_session(sid);
-        assert!(lifecycle.on_submitted());
+        assert!(lifecycle.on_submitted(Some(TEST_SUBMISSION.to_string())));
         // Terminal claim: active=false, submitted=false,
         // terminal_closing=true, turn_id taken into the EmittedTerminal.
         assert!(lifecycle.claim_terminal().is_some());
@@ -4874,7 +4875,7 @@ mod scheduled_model_tests {
         let sid = "session-delayed-forwarder";
 
         let lifecycle = lifecycles.for_session(sid);
-        assert!(lifecycle.on_submitted());
+        assert!(lifecycle.on_submitted(Some(TEST_SUBMISSION.to_string())));
         let epoch = lifecycle.current_turn_generation().expect("reserved epoch");
         // The engine self-started N+1 before the forwarder observed anything.
         let engine = FakeTurnSlotEngine::installed_on("turn-n-plus-1");
@@ -4898,7 +4899,9 @@ mod scheduled_model_tests {
         // The forwarder's turn-bound replay is armed under the same lock the
         // verdict was made in.
         assert!(
-            lifecycle.take_pending_cancel(epoch).is_some(),
+            lifecycle
+                .take_pending_cancel(epoch, Some(TEST_SUBMISSION))
+                .is_some(),
             "the pending replay must be armed so the genuinely pending target is still deliverable"
         );
         // Simulate the replay once the delayed `TurnStarted(N)` is finally
@@ -4937,7 +4940,7 @@ mod scheduled_model_tests {
         let sid = "session-genuine-pending";
 
         let lifecycle = lifecycles.for_session(sid);
-        assert!(lifecycle.on_submitted());
+        assert!(lifecycle.on_submitted(Some(TEST_SUBMISSION.to_string())));
         let epoch = lifecycle.current_turn_generation().expect("reserved epoch");
         // The engine admitted N; its `TurnStarted` is still queued.
         let engine = FakeTurnSlotEngine::installed_on("turn-n");
@@ -4958,7 +4961,9 @@ mod scheduled_model_tests {
         // armed cancel and replays it bound to that turn id — the slot names
         // N, so it fires.
         assert!(
-            lifecycle.take_pending_cancel(epoch).is_some(),
+            lifecycle
+                .take_pending_cancel(epoch, Some(TEST_SUBMISSION))
+                .is_some(),
             "the armed pending cancel must be consumable by the forwarder"
         );
         assert!(
@@ -4976,6 +4981,81 @@ mod scheduled_model_tests {
     }
 
     #[tokio::test]
+    async fn overtaking_self_started_turn_started_cannot_consume_the_replay() {
+        // The remaining #254 window (P1 review round, submission
+        // correlation): the stop was armed inside the submit→TurnStarted
+        // window, and a runtime self-started follow-up's `TurnStarted`
+        // overtook the submitted turn's in the forwarder stream. Epoch alone
+        // cannot tell the two events apart, so the first arrival used to
+        // consume the pending replay and — the slot naming the overtaking
+        // turn — cancelled N+1 while the stop intended for N was lost. The
+        // foundation now echoes a host-supplied submission id on every
+        // host-submitted turn's `TurnStarted` and never tags a self-started
+        // one: the forwarder's consumption gate refuses the overtaking
+        // arrival, the replay stays armed, and the submitted turn's own
+        // echo delivers the cancel to exactly that turn.
+        let locks = SessionTurnLocks::default();
+        let lifecycles = SessionTurnLifecycles::default();
+        let shell_tasks = SessionTurnShellTasks::default();
+        let sid = "session-overtaking-start";
+
+        let lifecycle = lifecycles.for_session(sid);
+        assert!(lifecycle.on_submitted(Some(TEST_SUBMISSION.to_string())));
+        let epoch = lifecycle.current_turn_generation().expect("reserved epoch");
+        // The engine admitted the submitted turn N; a self-started N+1's
+        // `TurnStarted` overtakes N's in the event stream.
+        let engine = FakeTurnSlotEngine::installed_on("turn-n");
+
+        let (target, _) =
+            run_production_cancel_wiring(&locks, &lifecycles, &shell_tasks, sid, &engine).await;
+        assert_eq!(target, Some(epoch));
+        assert!(
+            engine.fired_turns().is_empty(),
+            "arming must not fire any token"
+        );
+
+        // The overtaking self-started `TurnStarted` carries no submission
+        // id: the forwarder gate must refuse it — the replay is neither
+        // consumed nor redirected onto the overtaking turn.
+        assert!(
+            lifecycle.take_pending_cancel(epoch, None).is_none(),
+            "an overtaking self-started TurnStarted must not consume the replay"
+        );
+        assert!(
+            engine.fired_turns().is_empty(),
+            "no cancel may reach the overtaking turn through the replay"
+        );
+        // A foreign submitted id must not consume it either.
+        assert!(
+            lifecycle
+                .take_pending_cancel(epoch, Some("sub-other-turn"))
+                .is_none(),
+            "a foreign submission echo must not consume the replay"
+        );
+        // The submitted turn's own `TurnStarted` arrives: the gate accepts
+        // the matching echo and the forwarder replays bound to that turn —
+        // the slot names N, so it fires exactly there.
+        assert!(
+            lifecycle
+                .take_pending_cancel(epoch, Some(TEST_SUBMISSION))
+                .is_some(),
+            "the replay must stay armed for the submitted turn's own echo"
+        );
+        assert!(
+            engine.cancel_bound_turn(
+                "turn-n",
+                deepseek_tui::core::engine::CancelMode::StopDropInbox
+            ),
+            "the replay must land on the submitted turn, not the overtake"
+        );
+        assert_eq!(
+            engine.fired_turns(),
+            vec!["turn-n".to_string()],
+            "the user's stop for N must be delivered to N"
+        );
+    }
+
+    #[tokio::test]
     async fn bound_stop_hits_the_observed_turn_and_skips_a_moved_on_slot() {
         // Bound-verdict wiring: with the turn id observed, the dispatch fires
         // exactly that turn through the foundation entry; when the slot has
@@ -4988,7 +5068,7 @@ mod scheduled_model_tests {
         let sid = "session-bound-hit";
 
         let lifecycle = lifecycles.for_session(sid);
-        assert!(lifecycle.on_submitted());
+        assert!(lifecycle.on_submitted(Some(TEST_SUBMISSION.to_string())));
         lifecycle.on_started("turn-n".to_string());
 
         // Hit: the slot still names the observed turn.
@@ -5014,7 +5094,7 @@ mod scheduled_model_tests {
         // start the next user turn.
         assert!(lifecycle.claim_terminal().is_some());
         lifecycle.finish_terminal_emission();
-        assert!(lifecycle.on_submitted());
+        assert!(lifecycle.on_submitted(Some(TEST_SUBMISSION.to_string())));
         lifecycle.on_started("turn-n-plus-1".to_string());
         let engine = FakeTurnSlotEngine::installed_on("turn-n-plus-2-auto");
         let dispositions_before = engine.disposition_count();
@@ -5044,7 +5124,7 @@ mod scheduled_model_tests {
         let sid = "session-closing-vs-followup";
 
         let lifecycle = lifecycles.for_session(sid);
-        assert!(lifecycle.on_submitted());
+        assert!(lifecycle.on_submitted(Some(TEST_SUBMISSION.to_string())));
         assert!(lifecycle.claim_terminal().is_some());
         let engine = FakeTurnSlotEngine::installed_on("turn-n-plus-1-auto");
 
@@ -5112,7 +5192,7 @@ mod scheduled_model_tests {
         let lifecycle = lifecycles.for_session(sid);
         // turn：on_submitted 激活（submitted 未 started，turn_id 仍为 None，
         // epoch=1）——arm_pending_cancel 的前置条件满足。
-        assert!(lifecycle.on_submitted());
+        assert!(lifecycle.on_submitted(Some(TEST_SUBMISSION.to_string())));
 
         let cancel_calls = Arc::new(AtomicU64::new(0));
         let probe_calls = cancel_calls.clone();
@@ -5147,7 +5227,9 @@ mod scheduled_model_tests {
         // （模拟 TurnStarted 到达时 take 并重放）。
         let epoch = lifecycle.current_turn_generation().unwrap_or(0);
         assert!(
-            lifecycle.take_pending_cancel(epoch).is_some(),
+            lifecycle
+                .take_pending_cancel(epoch, Some(TEST_SUBMISSION))
+                .is_some(),
             "pending_cancel must be armed before cancel_current so a TurnStarted can be replayed"
         );
     }
@@ -5246,7 +5328,7 @@ mod scheduled_model_tests {
             let shell_tasks = SessionTurnShellTasks::default();
             let sid = "session-outcome-gate";
             let lifecycle = lifecycles.for_session(sid);
-            assert!(lifecycle.on_submitted());
+            assert!(lifecycle.on_submitted(Some(TEST_SUBMISSION.to_string())));
             let (target, claimed_unsubmitted) = cancel_turn_with_gates(
                 &locks,
                 &lifecycles,
@@ -5313,7 +5395,7 @@ mod scheduled_model_tests {
             let lifecycle = lifecycles.for_session(sid);
             // Submitted but TurnStarted not yet arrived (turn_id=None) → the
             // arm preconditions hold.
-            assert!(lifecycle.on_submitted());
+            assert!(lifecycle.on_submitted(Some(TEST_SUBMISSION.to_string())));
             let epoch = lifecycle.current_turn_generation().expect("active epoch");
             cancel_turn_with_gates(
                 &locks,
@@ -5328,7 +5410,7 @@ mod scheduled_model_tests {
             )
             .await;
             assert_eq!(
-                lifecycle.take_pending_cancel(epoch),
+                lifecycle.take_pending_cancel(epoch, Some(TEST_SUBMISSION)),
                 Some((epoch, mode)),
                 "armed pending_cancel must carry the CancelMode passed to cancel_turn_with_gates"
             );
