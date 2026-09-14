@@ -184,29 +184,34 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
         file.plain_defaults_migrated = true;
         save_disabled_bundles_file(&file);
     }
-    if strip_skill_prefixes(&mut file) {
+    if normalize_stored_lists(&mut file) {
         save_disabled_bundles_file(&file);
     }
     file
 }
 
-/// 防御：剥除所有 scope 禁用集与不可见集里的 `skill:` 前缀（旧前端 bug 窗口期
-/// 误写入的带前缀 id；本文件按裸包 id 匹配，读者在此统一归一）。返回是否剥出过前缀。
-fn strip_skill_prefixes(file: &mut DisabledBundlesFile) -> bool {
-    let mut stripped = false;
+/// 防御：把所有 scope 禁用集与不可见集的条目归一化为包 id（剥 `skill:` 前缀 +
+/// 按当前认领映射 companion）并去重保序，返回是否有变化。**落盘**归一（评审
+/// #455 R5-m6）：写路径的删除/启用按归一化 id 匹配，认领翻转前的原始条目匹配
+/// 不到、在卸载（同样按归一化匹配清理）后残留，重装同名包即复活用户已移除的
+/// 禁用/隐藏态——读时归一（F4）只修门控口径，修不了存储本身；所有写方都经
+/// `load_disabled_bundles_file_locked` → save，此处落盘即全量收敛。
+fn normalize_stored_lists(file: &mut DisabledBundlesFile) -> bool {
+    let mut changed = false;
     for ids in file
         .scopes
         .values_mut()
         .chain(file.hidden_scopes.values_mut())
     {
-        for id in ids.iter_mut() {
-            if let Some(s) = id.strip_prefix("skill:") {
-                *id = s.to_string();
-                stripped = true;
-            }
+        let normalized = normalize_stored_pkg_ids(ids);
+        if normalized.len() != ids.len()
+            || normalized.iter().zip(ids.iter()).any(|(a, b)| a != b)
+        {
+            *ids = normalized;
+            changed = true;
         }
     }
-    stripped
+    changed
 }
 
 /// 原始条目 → 包 id。连接器/CLI id 原样保留（`skill_owner_package` 对它们恒等）；
