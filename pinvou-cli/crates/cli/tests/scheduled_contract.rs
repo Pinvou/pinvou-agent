@@ -1180,6 +1180,183 @@ fn newer_schema_sidecars_are_refused_not_merged_and_written_back() {
 }
 
 #[test]
+fn hourly_interval_beyond_scheduler_range_is_refused() {
+    // The foundation sweep computes the first slot lazily for CLI-created
+    // records (`next_run_at: null`) and its unanchored branch does an
+    // unchecked `DateTime + Duration::hours(interval)` — an absurd INTERVAL
+    // overflows chrono's range and panics the scheduler task, stalling every
+    // GUI automation. The CLI must refuse the value up front.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("hourly-interval-bound");
+    let prompt = write_prompt_file(&home, "interval.md", "Summarize the reports.");
+    let error = assert_validation_fail(&[
+        "scheduled",
+        "create",
+        "--name",
+        "huge interval",
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+        "--rrule",
+        "FREQ=HOURLY;INTERVAL=4000000000",
+    ]);
+    assert!(error.contains("INTERVAL must be <="), "{error}");
+
+    // Just past the bound is refused, the bound itself is accepted.
+    let error = assert_validation_fail(&[
+        "scheduled",
+        "create",
+        "--name",
+        "past bound",
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+        "--rrule",
+        "FREQ=HOURLY;INTERVAL=1000001",
+    ]);
+    assert!(error.contains("INTERVAL must be <="), "{error}");
+    let created = run_json(&[
+        "scheduled",
+        "create",
+        "--name",
+        "at bound",
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+        "--rrule",
+        "FREQ=HOURLY;INTERVAL=1000000",
+    ]);
+    assert_eq!(created["rrule"], "FREQ=HOURLY;INTERVAL=1000000");
+}
+
+#[test]
+fn rfc3339_once_accepts_lowercase_separator_like_the_foundation() {
+    // RFC3339 §5.6 NOTE allows the lowercase date/time separator and the
+    // foundation parses through chrono, which accepts it; the CLI must not
+    // reject a stamp the GUI can create.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("once-lowercase-t");
+    let prompt = write_prompt_file(&home, "lower.md", "Summarize the reports.");
+    let created = run_json(&[
+        "scheduled",
+        "create",
+        "--name",
+        "lowercase separator",
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+        "--rrule",
+        "FREQ=ONCE;AT=2030-02-28t08:30:00z",
+    ]);
+    assert_eq!(created["id"].as_str().map(str::len), Some(36));
+}
+
+#[test]
+fn malformed_schema_version_is_refused_not_treated_as_legacy() {
+    // A wrong-typed schema_version used to pass the gate as 0 while the
+    // GUI's typed deserialization kept failing on the file: the CLI must
+    // refuse to operate on a record the app cannot read instead of
+    // reporting success.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("schema-malformed");
+    let created = create_task(&home, "Stringy schema");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    let def_path = home.def_path(&task_id);
+    let mut def: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&def_path).unwrap()).unwrap();
+    def["schema_version"] = serde_json::json!("2");
+    std::fs::write(&def_path, def.to_string()).unwrap();
+
+    let error = expect_failed(&["scheduled", "pause", &task_id]);
+    assert!(error.contains("malformed"), "{error}");
+}
+
+#[test]
+fn newer_schema_read_state_is_refused_not_merged_and_written_back() {
+    // The read-state registry carries the viewed history; a newer app's
+    // format must never be merged and written back (the GUI's
+    // VersionedJsonStore quarantines the same situation).
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("read-state-newer-schema");
+    let created = create_task(&home, "Watched task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+
+    let store = pinvou3_lib::features::sessions::SessionStore::boot().unwrap();
+    let session = store
+        .create_scheduled_run(pinvou3_lib::features::sessions::ScheduledRunProfile {
+            task_id: task_id.clone(),
+            model: "default-model".to_owned(),
+            model_id: None,
+            workspace: home
+                .path()
+                .join("scheduled")
+                .join(&task_id)
+                .join("workspace"),
+            mode: pinvou3_lib::features::sessions::ScheduledRunMode::Agent,
+            allow_shell: false,
+            trust_mode: true,
+            auto_approve: true,
+        })
+        .unwrap();
+    let run_id = "completed-run-1";
+    std::fs::create_dir_all(home.runs_dir(&task_id)).unwrap();
+    std::fs::write(
+        home.runs_dir(&task_id).join(format!("{run_id}.json")),
+        serde_json::json!({
+            "schema_version": 1,
+            "id": run_id,
+            "automation_id": task_id,
+            "scheduled_for": "2026-09-10T08:00:00.000Z",
+            "status": "completed",
+            "created_at": "2026-09-10T08:00:00.000Z",
+            "started_at": "2026-09-10T08:00:01.000Z",
+            "ended_at": "2026-09-10T08:05:00.000Z",
+            "task_id": "foundation-task-1",
+            "thread_id": session.metadata.id,
+            "turn_id": "turn-1",
+            "error": null
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let read_state = home.path().join("scheduled-runs").join("read-state.json");
+    std::fs::create_dir_all(read_state.parent().unwrap()).unwrap();
+    let future_format = r#"{"schema_version": 99, "viewed_runs": {"other": ["r1"]}}"#;
+    std::fs::write(&read_state, future_format).unwrap();
+
+    let error = expect_failed(&["scheduled", "mark-viewed", &task_id, run_id]);
+    assert!(error.contains("newer than supported"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(&read_state).unwrap(),
+        future_format,
+        "the refused write must leave the future-format file untouched"
+    );
+}
+
+#[test]
+fn newer_schema_history_archive_blocks_delete_and_restores_the_task() {
+    // The archive gate must both refuse the write-back AND restore the
+    // provisional pause, like every other blocked delete path — a caller
+    // retrying after upgrading must not find the task paused.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("archive-newer-schema");
+    let created = create_task(&home, "Archived task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+
+    let archive = home.path().join("automations").join("history-archive.json");
+    let future_format = r#"{"schema_version": 99, "tasks": {}}"#;
+    std::fs::write(&archive, future_format).unwrap();
+
+    let error = expect_failed(&["scheduled", "delete", &task_id, "--yes"]);
+    assert!(error.contains("newer than supported"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(&archive).unwrap(),
+        future_format,
+        "the refused write must leave the future-format file untouched"
+    );
+    let def: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
+    assert_eq!(def["status"], "active", "the provisional pause is restored");
+}
+
+#[test]
 fn delete_blocked_restores_the_previous_status() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let home = TempHome::new("delete-restore");

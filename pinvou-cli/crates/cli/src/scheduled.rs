@@ -407,6 +407,20 @@ fn parse_limit(options: &[(&str, &str)], name: &str) -> Result<Option<usize>, Cl
 
 // ---- rrule validation (mirror of codewhale-tui AutomationSchedule::parse_rrule) ----
 
+/// Upper bound for `FREQ=HOURLY;INTERVAL`. The CLI persists
+/// `next_run_at: null` (disclosed deviation) and the foundation sweep
+/// computes the first slot lazily in `collect_due_runs`; its unanchored
+/// branch does plain `DateTime + Duration::hours(interval)` (up to
+/// `MAX_HOURLY_SEARCH_STEPS` = 504 iterations under a BYDAY filter), so an
+/// absurd INTERVAL overflows chrono's date range and panics the scheduler
+/// task — or, on the anchored branch, errors out the entire sweep, stalling
+/// every GUI automation until the record is removed by hand. The GUI can
+/// never persist such a record (it evaluates the first slot eagerly at
+/// create), so this bound restores the guard the deferred evaluation
+/// removed. 1e6 hours (~114 years) per step keeps the worst-case 504-step
+/// reach (~57k years) far inside chrono's ±262k-year range.
+const MAX_HOURLY_INTERVAL: u32 = 1_000_000;
+
 /// Validates an rrule with the same grammar the foundation scheduler applies:
 /// FREQ=ONCE (AT), FREQ=HOURLY (INTERVAL, BYDAY, BYHOUR, BYMINUTE),
 /// FREQ=WEEKLY (BYDAY, BYHOUR, BYMINUTE), FREQ=CRON (EXPR, 5 fields).
@@ -486,6 +500,12 @@ YYYY-MM-DDTHH:MM[:SS] or RFC3339)",
                     return Err(CliError::usage(
                         "INTERVAL must be >= 1 for HOURLY schedules",
                     ));
+                }
+                if interval > MAX_HOURLY_INTERVAL {
+                    return Err(CliError::usage(format!(
+                        "INTERVAL must be <= {MAX_HOURLY_INTERVAL} for HOURLY schedules (a \
+                         larger step cannot be evaluated by the scheduler)"
+                    )));
                 }
             }
             if let Some(byday) = value("BYDAY") {
@@ -931,7 +951,10 @@ fn parse_rfc3339(value: &str) -> Option<(i64, u32)> {
     };
     if bytes[4] != b'-'
         || bytes[7] != b'-'
-        || bytes[10] != b'T'
+        // RFC3339 §5.6 NOTE lets the date/time separator be lowercase; the
+        // foundation parses through chrono, which accepts it, so the CLI
+        // must not reject a stamp the GUI can create.
+        || (bytes[10] != b'T' && bytes[10] != b't')
         || bytes[13] != b':'
         || bytes[16] != b':'
     {
@@ -1265,14 +1288,23 @@ fn ensure_supported_schema(
     supported: u32,
     what: &str,
 ) -> Result<(), CliError> {
-    let version = value
-        .get("schema_version")
-        .and_then(|value| value.as_u64())
-        .unwrap_or(0);
+    let Some(raw_version) = value.get("schema_version") else {
+        // Legacy files carry no version; every CLI writer adds one.
+        return Ok(());
+    };
+    // A present-but-wrong-typed version would pass this gate as 0 while the
+    // GUI's typed deserialization fails on the file — refuse it instead of
+    // reporting success on a record the app cannot read.
+    let version = raw_version.as_u64().ok_or_else(|| {
+        CliError::failed(format!(
+            "scheduled_storage_unavailable: {what} schema_version is malformed (expected a \
+             number); fix or remove the file manually"
+        ))
+    })?;
     if version > u64::from(supported) {
         return Err(CliError::failed(format!(
             "scheduled_storage_unavailable: {what} schema v{version} is newer than supported \
-             v{supported}; upgrade pinvoy to edit it"
+             v{supported}; upgrade pinvou to edit it"
         )));
     }
     Ok(())
@@ -1345,6 +1377,37 @@ fn write_json_atomic(path: &Path, value: &serde_json::Value) -> Result<(), CliEr
             path.display()
         ))
     })
+}
+
+/// Cross-process write serialization for the scheduled store: every mutating
+/// subcommand is a whole-file read-modify-write of the definition or a
+/// sidecar registry, so two concurrent writers would each read the same base
+/// and the second write silently drop the first (mark-viewed, pin, model
+/// bindings, kind, delete/archive all race this way). The advisory fd-lock
+/// serializes the CLI×CLI half; a concurrent GUI write takes no CLI lock
+/// (the GUI keeps its own in-process registry and persists wholesale) and
+/// stays a documented residual, like the code family's session locks.
+fn scheduled_store_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
+    let dir = pinvou3_lib::platform::paths::pinvou3_home().join("locks");
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        CliError::failed(format!(
+            "scheduled_storage_unavailable: cannot create the lock directory {}: {error}",
+            dir.display()
+        ))
+    })?;
+    let path = dir.join("scheduled-store.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|error| {
+            CliError::failed(format!(
+                "scheduled_storage_unavailable: cannot open the store lock {}: {error}",
+                path.display()
+            ))
+        })?;
+    Ok(fd_lock::RwLock::new(file))
 }
 
 /// Reads a versioned sidecar registry (model bindings, task kinds, UI
@@ -1757,6 +1820,33 @@ fn task_name_map(
 // ---- command execution ----
 
 pub fn execute(command: ScheduledCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
+    // Hold the cross-process store write lock across the whole mutating
+    // command (see `scheduled_store_lock`); read-only commands skip it.
+    let mutating = matches!(
+        command,
+        ScheduledCommand::Create { .. }
+            | ScheduledCommand::Update { .. }
+            | ScheduledCommand::Pause { .. }
+            | ScheduledCommand::Resume { .. }
+            | ScheduledCommand::Pin { .. }
+            | ScheduledCommand::Unpin { .. }
+            | ScheduledCommand::Delete { .. }
+            | ScheduledCommand::Run { .. }
+            | ScheduledCommand::MarkViewed { .. }
+    );
+    let mut store_lock = if mutating {
+        Some(scheduled_store_lock()?)
+    } else {
+        None
+    };
+    let _store_write_guard = match store_lock.as_mut() {
+        Some(lock) => Some(lock.write().map_err(|error| {
+            CliError::failed(format!(
+                "scheduled_storage_unavailable: cannot acquire the store write lock: {error}"
+            ))
+        })?),
+        None => None,
+    };
     match command {
         ScheduledCommand::List => list(output),
         ScheduledCommand::Show { id } => show(&id, output),
@@ -2235,7 +2325,13 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         .and_then(Value::as_str)
         .unwrap_or("active")
         .to_owned();
+    // Match the GUI pause shape exactly: a GUI pause always clears the next
+    // slot, so the provisional pause must not leave a `next_run_at` no GUI
+    // pause would ever produce. The original value is restored on every
+    // blocked/failed path below, together with the status.
+    let previous_next_run_at = def.get("next_run_at").cloned();
     def["status"] = Value::String("paused".into());
+    def["next_run_at"] = Value::Null;
     store_holder.write_def(&def)?;
     let runs = store_holder.list_runs(id, None)?;
     // The GUI cancels queued/running runs through the foundation TaskManager
@@ -2270,13 +2366,26 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     let restore_status = |def: &Value, status: &str| {
         let mut restored = def.clone();
         restored["status"] = Value::String(status.to_owned());
+        match &previous_next_run_at {
+            Some(value) => restored["next_run_at"] = value.clone(),
+            None => {
+                if let Some(object) = restored.as_object_mut() {
+                    object.remove("next_run_at");
+                }
+            }
+        }
         let _ = store_holder.write_def(&restored);
     };
     let mut archive = read_registry(&store_holder.history_archive_path());
     // Same newer-schema refusal as registry_tasks_mut: an archive written by
-    // a newer app version must not be merged and written back.
+    // a newer app version must not be merged and written back. The refusal
+    // restores the provisional pause like every other blocked path — a
+    // caller retrying after upgrading must not find the task paused.
     if archive.is_object() {
-        ensure_supported_schema(&archive, 2, "history archive")?;
+        if let Err(error) = ensure_supported_schema(&archive, 2, "history archive") {
+            restore_status(&def, &previous_status);
+            return Err(error);
+        }
     }
     if !archive.is_object() {
         archive = serde_json::json!({ "schema_version": 2, "tasks": {} });
@@ -2366,6 +2475,24 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     ] {
         let mut registry = read_registry(&path);
         if registry.is_null() {
+            continue;
+        }
+        // Same newer-schema refusal as the write paths — but non-fatal: the
+        // delete is already committed above, so a registry this CLI must not
+        // rewrite only skips its cleanup (the GUI compaction drops the stale
+        // entry); failing the whole delete here would strand a live-less
+        // task with sidecar entries and no definition.
+        if registry.is_object()
+            && registry
+                .get("schema_version")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                > 1
+        {
+            eprintln!(
+                "pinvou: warning: scheduled task {id} was deleted, but a sidecar registry has \
+                 a newer schema; its stale entry is left for the desktop app to clean up"
+            );
             continue;
         }
         if let Some(tasks) = registry
