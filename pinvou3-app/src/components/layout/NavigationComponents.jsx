@@ -226,9 +226,12 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
       const selectChat = () => onSelect(chat.id);
       function save() { const tx = val.trim(); setEditing(false); if (tx && tx !== chat.title) onRename(chat.id, tx); }
       // Portal "more" menu placement/close lives in the shared hook (same
-      // plumbing as the project-group header menu). Height covers the 7-item
-      // session menu (6 menu items × h-9 (36px) + 9px divider + 8px vertical
-      // padding ≈ 233).
+      // plumbing as the project-group header menu). Height covers the tallest
+      // variant actually rendered — 6 menu items at h-9 (36px) + 9px divider +
+      // 8px vertical padding ≈ 233: codex rows render move-to-project, other
+      // rows render export-archive, and the two are taskKind-exclusive. It
+      // only drives the bottom-edge flip decision and the portal clips
+      // (per-menu height convention, see ProjectGroupHeader).
       const { menuOpen, menuStyle, closeMenu, toggleMenu, openMenuAt } = usePortalMenu({ height: 233 });
       const openContextMenu = openMenuAt;
       const menuItemCls = `w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] whitespace-nowrap transition-colors text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]`;
