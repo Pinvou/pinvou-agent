@@ -692,7 +692,10 @@ fn add_sources_indexes_a_text_file_end_to_end() {
     assert_eq!(documents[0]["parseStatus"], serde_json::json!("parsed"));
 
     let failed = run_ok(&["pinvou", "knowledge", "index", "failed", &job_id]);
-    assert!(failed.contains("no failed files"), "{failed}");
+    assert!(
+        failed.contains("no failed files"),
+        "index failed should report no failed files"
+    );
 
     // Per-job live state is not addressable headlessly: an unknown/latest
     // mismatch names the boundary instead of silently returning another job.
