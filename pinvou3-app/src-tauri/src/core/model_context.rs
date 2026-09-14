@@ -1,8 +1,12 @@
-//! pinvou3 运行状态与 Engine 路由共用的模型上下文窗口解析。
+//! Model context-window resolution shared by pinvou3 runtime state and Engine
+//! routing.
 //!
-//! 已由 CodeWhale 维护的模型事实优先复用底座；这里只补充 pinvou3 设置页已经提供、
-//! 但当前底座尚未覆盖的云端模型。所有消费者必须走这一入口，避免页面显示窗口与
-//! `active_route_limits` / 压缩阈值使用不同口径。
+//! Model facts maintained by CodeWhale reuse the base catalog first; this module
+//! only supplements cloud models that the pinvou3 settings page already provides
+//! but the base does not cover yet. Both the window facts (resolved by name) and
+//! the window precedence (declared vs probed vs inferred) have their single entry
+//! point here, so the page display never uses a different scale than
+//! `active_route_limits` / compaction thresholds / the monitor denominator.
 
 /// 精确匹配模型名，并容忍 `-` 分隔的日期、快照或服务档位后缀。
 fn model_name_matches(lower: &str, name: &str) -> bool {
@@ -74,6 +78,32 @@ pub fn resolved_context_window(model: &str) -> Option<u32> {
         .map(|(_, window)| *window)
 }
 
+/// The unified context-window precedence: the host `bridge::route_limits_for_model`
+/// (which decides inference and compaction thresholds) and the monitor display
+/// (`model_probe`) must both call this function; writing a second match elsewhere
+/// is not allowed. Precedence: the window the user explicitly declares in the
+/// model form wins and is min-clamped against the probed value (the probe is
+/// deployment ground truth); without a declaration the probed value applies, and
+/// only when that is absent too does the caller-resolved inferred fallback apply.
+/// The second return value flags "the inferred fallback was actually adopted",
+/// for the monitor page to label the `context_window_inferred` diagnostic.
+///
+/// "Whether the probed value is trustworthy / participates in clamping" is the
+/// caller's decision: the host only probes locally introspectable vLLM (cloud
+/// is always `probed = None`); the monitor's gate lives in `model_probe`.
+#[must_use]
+pub fn resolve_context_window(
+    configured: Option<u32>,
+    probed: Option<u32>,
+    inferred: Option<u32>,
+) -> (Option<u32>, bool) {
+    match (configured, probed) {
+        (Some(configured), Some(probed)) => (Some(configured.min(probed)), false),
+        (Some(configured), None) => (Some(configured), false),
+        (None, probed) => (probed.or(inferred), probed.is_none() && inferred.is_some()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,5 +144,39 @@ mod tests {
             deepseek_tui::models::context_window_for_model("gpt-5.6-sol")
         );
         assert_eq!(resolved_context_window("unknown-cloud-model"), None);
+    }
+
+    /// Window precedence table (single source of truth): declaration+probe →
+    /// min, declaration beats an absent probe, probe beats inference without a
+    /// declaration, and the flag is set only when inference is truly adopted.
+    #[test]
+    fn context_window_precedence_is_single_sourced() {
+        // Declaration + probe → min (ground-truth clamping for local deployments;
+        // under-declaring likewise keeps the declaration).
+        assert_eq!(
+            resolve_context_window(Some(1_048_576), Some(131_072), None),
+            (Some(131_072), false)
+        );
+        assert_eq!(
+            resolve_context_window(Some(32_768), Some(131_072), None),
+            (Some(32_768), false)
+        );
+        // Declaration + no probe → the declaration applies as-is (the host never
+        // probes cloud; a failed local probe lands here too).
+        assert_eq!(
+            resolve_context_window(Some(1_048_576), None, Some(131_072)),
+            (Some(1_048_576), false)
+        );
+        // No declaration → probe first; only when the probe is absent does
+        // inference apply, and the adopted flag is set only in that case.
+        assert_eq!(
+            resolve_context_window(None, Some(262_144), Some(131_072)),
+            (Some(262_144), false)
+        );
+        assert_eq!(
+            resolve_context_window(None, None, Some(1_000_000)),
+            (Some(1_000_000), true)
+        );
+        assert_eq!(resolve_context_window(None, None, None), (None, false));
     }
 }
