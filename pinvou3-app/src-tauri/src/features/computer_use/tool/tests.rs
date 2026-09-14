@@ -3,17 +3,20 @@ use crate::features::computer_use::backend::ComputerUseBackend;
 use crate::features::computer_use::types::{Capabilities, Capture, ElementInfo, Key};
 use std::sync::Mutex as StdMutex;
 
-/// 评审修复回归（round-10 m3）：含字符键的和弦摘要在确认对话框/事件流里
-/// 只出现命名键与字符数——密码焦点下的 `key "shift+h"` 之类不再把打出的
-/// 字符送进对话框与远程事件流（Type 动作的既有语义）。摘要同时绑定批准
-/// 令牌（mint/spend 都调 [`action_summary`]），因此必须是动作的纯函数。
+/// Review-fix regression (round-10 m3): a chord summary containing character
+/// keys shows only named keys plus a character count in the confirm
+/// dialog/event stream — `key "shift+h"` under a password focus no longer
+/// sends the typed characters into the dialog and remote event stream (the
+/// existing semantics of the Type action). The summary is also bound into the
+/// approval token (both mint and spend call [`action_summary`]), so it must
+/// be a pure function of the action.
 #[test]
 fn chord_summaries_mask_typed_characters() {
     let summary_of = |input: serde_json::Value| {
         let parsed = parse_action(&input).expect("chord parses");
         action_summary(&parsed.action)
     };
-    // 纯命名键和弦保持可读原文。
+    // Pure named-key chords keep the readable original text.
     assert_eq!(
         summary_of(json!({"action": "key", "text": "ctrl+Delete"})),
         "key ctrl+Delete"
@@ -22,7 +25,8 @@ fn chord_summaries_mask_typed_characters() {
         summary_of(json!({"action": "key", "text": "Return"})),
         "key Return"
     );
-    // 含字符键的和弦只渲染修饰键/命名键 + 字符计数。
+    // Chords with character keys render only modifiers/named keys + a
+    // character count.
     assert_eq!(
         summary_of(json!({"action": "key", "text": "ctrl+s"})),
         "key ctrl + 1 character"
@@ -39,7 +43,7 @@ fn chord_summaries_mask_typed_characters() {
         summary_of(json!({"action": "key", "text": "p+a+Return"})),
         "key enter + 2 characters"
     );
-    // hold_key 同一规则，保留按住时长。
+    // hold_key follows the same rule, keeping the held duration.
     assert_eq!(
         summary_of(json!({"action": "hold_key", "text": "ctrl+s", "ms": 500})),
         "hold ctrl + 1 character for 500ms"
@@ -51,42 +55,51 @@ fn chord_summaries_mask_typed_characters() {
 }
 
 // ---------------------------------------------------------------------------
-// 测试替身
+// Test doubles
 // ---------------------------------------------------------------------------
 
 struct MockState {
-    /// 命中测试按元素 bounds 判定（真实 a11y 语义）：element_at_point 只在
-    /// 查询点落入元素矩形内时返回它。
+    /// Hit-testing decides by element bounds (real a11y semantics):
+    /// element_at_point returns an element only when the query point falls
+    /// inside its rectangle.
     element: Option<ElementInfo>,
     /// Secondary element list (tried in order when the primary misses):
     /// drives multi-element scenarios such as "start point has no on-screen
     /// element while the drop point hits one" (the mock's primary is a
     /// single element).
     background: Vec<ElementInfo>,
-    /// 置位时 element_at_point 返回 Err（a11y 故障注入）。
+    /// When set, element_at_point returns Err (injected a11y failure).
     element_error: bool,
-    /// 焦点元素（focused_element 的返回值；None = 明确无焦点）。
+    /// The focused element (focused_element's return value; None = definitively
+    /// no focus).
     focused: Option<ElementInfo>,
-    /// 置位时 focused_element 返回 Err（焦点查询失败/平台不支持的故障注入）。
+    /// When set, focused_element returns Err (injected failure of the focus
+    /// query / unsupported platform).
     focused_error: bool,
-    /// 截图捕获的显示器原点（输入坐标空间；默认 (0,0) 即恒等映射）。
+    /// The monitor origin captured in the screenshot (input coordinate space;
+    /// default (0,0), i.e. the identity mapping).
     capture_origin: (i32, i32),
-    /// 截图捕获的尺寸（设备物理像素；默认 16x16）。
+    /// The captured size (device physical pixels; default 16x16).
     capture_size: (u32, u32),
-    /// 捕获的 device→input 倍率（默认 (1.0, 1.0)；Retina 场景设 0.5）。
+    /// The captured device→input scale (default (1.0, 1.0); set 0.5 for the
+    /// Retina scenario).
     input_scale: (f64, f64),
-    /// cursor_position 的返回值（**输入坐标空间**——macOS 为点、Windows/X11
-    /// 为物理像素；可配置以驱动筛查定位与光标移动场景）。默认 (7,9)（历史
-    /// 行为）。
+    /// cursor_position's return value (**input coordinate space** — points on
+    /// macOS, physical pixels on Windows/X11; configurable to drive screening
+    /// location and cursor-move scenarios). Default (7,9) (historical
+    /// behavior).
     cursor: (i32, i32),
-    /// 置位时 cursor_position 返回 Err（光标未知，如 Wayland 首次 move 前）。
+    /// When set, cursor_position returns Err (cursor unknown, e.g. before the
+    /// first Wayland move).
     cursor_error: bool,
-    /// 置位时 input 能力位为 false（默认具备输入能力）。
+    /// When set, the input capability bit is false (input capable by default).
     no_input_cap: bool,
     moved_to: Vec<(i32, i32)>,
     clicked: Vec<(MouseButton, u8)>,
-    /// 评审修复（第三轮）：五个注入面全部记录——down/up/drag/scroll/hold_key
-    /// 的「NOT executed」断言此前验不了执行面（回归钉子是软的）。
+    /// Review fix (third round): all five injection surfaces are recorded —
+    /// the "NOT executed" assertions for down/up/drag/scroll/hold_key could
+    /// not previously verify the execution surface (the regression pin was
+    /// soft).
     downed: Vec<MouseButton>,
     upped: Vec<MouseButton>,
     drags: Vec<((i32, i32), (i32, i32))>,
@@ -94,16 +107,20 @@ struct MockState {
     held: Vec<(Vec<Key>, u64)>,
     typed: Vec<String>,
     chords: Vec<Vec<Key>>,
-    /// release_os_grant 被调用次数（评审修复回归：revoke/stop 必须触发
-    /// 后端关闭持久 OS 级授权）。
+    /// Number of times release_os_grant was called (review-fix regression:
+    /// revoke/stop must trigger the backend to close its persistent OS-level
+    /// grant).
     released: u64,
-    /// 置位时 drag 返回 Err（拖拽后端故障注入，验证失败后的按钮释放兜底）。
+    /// When set, drag returns Err (injected drag backend failure, verifying
+    /// the button-release safety net after a failure).
     drag_error: bool,
-    /// 置位时 capture 返回 Err（截屏后端故障注入；round-12 评审 M6：钉死
-    /// screenshot 动作失败必须上抛而非降级 warning）。
+    /// When set, capture returns Err (injected capture backend failure;
+    /// round-12 review M6: pins that a failed screenshot action must
+    /// propagate instead of degrading to a warning).
     capture_error: bool,
-    /// 非空时 type_text 返回该错误文本（执行错误路径的审计脱敏钉子：
-    /// 错误进审计，键入的内容仍不得出现）。
+    /// When non-empty, type_text returns this error text (a pin for audit
+    /// redaction on the execution-error path: the error goes into the audit,
+    /// the typed content must still never appear).
     type_error: Option<String>,
 }
 
@@ -306,7 +323,8 @@ struct TestFixture {
     mock: Arc<Mutex<MockState>>,
     events: Arc<StdMutex<Vec<(String, Value)>>>,
     workspace: PathBuf,
-    /// PINVOU3_HOME 指向的临时根（审计 JSONL 落在 `<home>/computer-use/`）。
+    /// The temp root PINVOU3_HOME points at (the audit JSONL lands in
+    /// `<home>/computer-use/`).
     home: PathBuf,
     _env_guard: std::sync::MutexGuard<'static, ()>,
 }
@@ -316,9 +334,10 @@ struct EnvRestore(Option<std::ffi::OsString>);
 impl Drop for EnvRestore {
     fn drop(&mut self) {
         match self.0.take() {
-            // SAFETY: 测试持有 platform::paths::tests::ENV_LOCK，进程内 env 写串行。
+            // SAFETY: the test holds platform::paths::tests::ENV_LOCK, so env
+            // writes are serialized in-process.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: 同上。
+            // SAFETY: same as above.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
     }
@@ -334,7 +353,8 @@ fn fixture() -> (TestFixture, EnvRestore) {
         std::process::id(),
         crate::platform::paths::tests::unique_suffix()
     ));
-    // SAFETY: 持有 platform::paths::tests::ENV_LOCK，进程内 env 写串行。
+    // SAFETY: holding platform::paths::tests::ENV_LOCK, so env writes are
+    // serialized in-process.
     unsafe { std::env::set_var("PINVOU3_HOME", &home) };
 
     let workspace = home.join("sessions").join("s-test").join("workspace");
@@ -375,8 +395,9 @@ fn context(workspace: &Path) -> ToolContext {
     ToolContext::new(workspace)
 }
 
-/// 名单之外的无害元素（T3 筛查 Clear）：place 元素盖住筛查点，让放行路径
-/// 走到执行。Unnamed targets screen Clear (Ok(None) is not a red flag);
+/// A benign element outside the denylist (T3 screening Clear): the place
+/// element covers the screening point so the pass path reaches execution.
+/// Unnamed targets screen Clear (Ok(None) is not a red flag);
 /// a11y query *errors* also screen Clear (best-effort fail-open), but a
 /// positive denylist/secure match still confirms.
 fn benign_element(x: i32, y: i32, width: i32, height: i32) -> ElementInfo {
@@ -392,7 +413,7 @@ fn benign_element(x: i32, y: i32, width: i32, height: i32) -> ElementInfo {
 }
 
 // ---------------------------------------------------------------------------
-// 参数校验
+// Parameter validation
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -419,7 +440,8 @@ fn rejects_bad_param_combinations() {
             json!({"action": "scroll", "direction": "north", "amount": 1}),
         ),
         ("scroll", json!({"action": "scroll", "direction": "down"})),
-        // 评审修复回归：scroll amount 下限 1，0 格显式拒绝。
+        // Review-fix regression: scroll amount has a lower bound of 1; 0
+        // clicks are rejected explicitly.
         (
             "scroll",
             json!({"action": "scroll", "direction": "down", "amount": 0}),
@@ -431,7 +453,8 @@ fn rejects_bad_param_combinations() {
         ),
         ("key", json!({"action": "key", "text": "ctrl+shift"})),
         ("key", json!({"action": "key", "text": "ctrl+nosuchkey"})),
-        // 评审修复回归：和弦 token 上限与控制字符拒绝。
+        // Review-fix regression: chord token cap and control-character
+        // rejection.
         ("key", json!({"action": "key", "text": "a+b+c+d+e"})),
         (
             "key",
@@ -451,7 +474,8 @@ fn rejects_bad_param_combinations() {
     }
 }
 
-/// 评审修复回归：type 文本上限 10_000 字符、拒绝 NUL。
+/// Review-fix regression: type text is capped at 10_000 characters; NUL is
+/// rejected.
 #[test]
 fn type_rejects_oversized_text_and_nul() {
     let ok = "a".repeat(MAX_TYPE_TEXT_CHARS);
@@ -491,16 +515,19 @@ fn accepts_valid_param_combinations() {
     }
 }
 
-// hold_key 的 "shift" 单独是修饰键——chord 必须含非修饰键。
+// hold_key's "shift" alone is a modifier key — a chord must contain a
+// non-modifier key.
 #[test]
 fn hold_key_rejects_modifier_only_chord() {
     assert!(parse_action(&json!({"action": "hold_key", "text": "shift", "ms": 100})).is_err());
 }
 
-/// 评审修复回归（M1）：`key` 的解析失败绝不把模型文本回显进审计日志——
-/// 模型可以用 text 字段携带敏感串探测（`{"action":"key","text":"hunter2"}`
-/// 曾把该串经错误信息写进 JSONL 的 error 字段）。错误串只描述和弦形状，
-/// 模型本来就知道自己的输入，不损失任何信息。
+/// Review-fix regression (M1): a failed `key` parse must never echo the
+/// model's text into the audit log — the model can carry a sensitive string
+/// in the text field to probe (`{"action":"key","text":"hunter2"}` used to
+/// write that string into the JSONL error field via the error message). The
+/// error string only describes the chord shape; the model already knows its
+/// own input, so no information is lost.
 #[tokio::test]
 async fn parse_failure_audit_record_does_not_echo_the_chord_text() {
     let (fixture, _restore) = fixture();
@@ -553,7 +580,7 @@ async fn parse_failure_audit_record_does_not_echo_the_chord_text() {
 }
 
 // ---------------------------------------------------------------------------
-// 同意门控
+// Consent gating
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -634,10 +661,11 @@ async fn input_without_grant_emits_event_and_errors() {
         ),
         "expected grant_required event, got {events:?}"
     );
-    // 未授权时绝不能触碰后端。
+    // Without a grant the backend must never be touched.
     assert!(fixture.mock.lock().clicked.is_empty());
-    // 被拒调用必须留痕（round-4 一致性修复 + round-10 m12 回归）：审计里
-    // 有 result:"rejected"、consent:"rejected:grant-required" 的记录。
+    // Rejected calls must leave a trace (round-4 consistency fix + round-10
+    // m12 regression): an audit record with result:"rejected" and
+    // consent:"rejected:grant-required".
     let audit_path = fixture.home.join("computer-use").join("audit-s-test.jsonl");
     let raw = std::fs::read_to_string(&audit_path).expect("audit jsonl exists");
     let records: Vec<serde_json::Value> = raw
@@ -675,13 +703,15 @@ async fn granted_click_executes_and_attaches_screenshot() {
         Err(e) => panic!("execute failed: {e}"),
     };
     assert!(result.success, "{}", result.content);
-    // 点击前移到了映射后的输入坐标（16x16 无缩放，input_scale=1 → 恒等）。
+    // Before the click, moved to the mapped input coordinates (16x16, no
+    // scaling, input_scale=1 → identity).
     assert_eq!(fixture.mock.lock().moved_to.last().copied(), Some((5, 6)));
     assert_eq!(
         fixture.mock.lock().clicked.last().copied(),
         Some((MouseButton::Left, 1))
     );
-    // metadata.images 带绝对路径；文本带 attachments 相对路径回退指引。
+    // metadata.images carries the absolute path; the text carries the
+    // attachments relative path with the image_analyze fallback hint.
     let images = result
         .metadata
         .as_ref()
@@ -693,8 +723,9 @@ async fn granted_click_executes_and_attaches_screenshot() {
     let path = images[0].as_str().unwrap_or_default().to_string();
     assert!(path.ends_with(".png"), "{path}");
     assert!(Path::new(&path).is_file(), "{path} should exist");
-    // 截图文件必须 0600（round-10 评审 m12：此前只在 ignored live 套件里
-    // 断言；CI 里 capture_and_store 若退化为普通 write 无人拦截）。
+    // The screenshot file must be 0600 (round-10 review m12: previously only
+    // asserted in the ignored live suite; in CI, nothing would catch
+    // capture_and_store degrading to a plain write).
     crate::platform::filesystem::assert_private_file_mode(Path::new(&path));
     assert!(
         result.content.contains("attachments/computer_use/"),
@@ -727,14 +758,15 @@ async fn out_of_bounds_coordinates_clamp_with_warning() {
     };
     assert!(result.success, "{}", result.content);
     assert!(result.content.contains("clamped"), "{}", result.content);
-    // 16x16 截图 → 钳到 (15, 15)。
+    // 16x16 screenshot → clamped to (15, 15).
     assert_eq!(fixture.mock.lock().moved_to.last().copied(), Some((15, 15)));
 }
 
 #[tokio::test]
 async fn first_coordinate_action_auto_captures() {
     let (fixture, _restore) = fixture();
-    // scroll 是 Input 类动作（评审修正）：需要会话授权。
+    // scroll is an Input-class action (review correction): it needs a session
+    // grant.
     fixture.shared.grant_session("s-test");
     // A benign element covers the (3,4) screening point (screens Clear).
     fixture.mock.lock().element = Some(benign_element(0, 0, 16, 16));
@@ -765,7 +797,7 @@ async fn first_coordinate_action_auto_captures() {
 }
 
 // ---------------------------------------------------------------------------
-// T3 后果性动作
+// T3 consequential actions
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -808,7 +840,7 @@ async fn t3_denylist_blocks_click_until_user_confirms() {
         .unwrap_or_default()
         .to_string();
 
-    // 伪造/重复使用 confirm_id 一律拒绝。
+    // A forged/replayed confirm_id is always rejected.
     let forged = fixture
         .tool
         .execute(
@@ -822,7 +854,8 @@ async fn t3_denylist_blocks_click_until_user_confirms() {
         "{forged_text}"
     );
 
-    // 用户确认（未来的 computer_use_confirm 命令铸造令牌）后重试成功。
+    // After the user confirms (a future computer_use_confirm command mints
+    // the token), the retry succeeds.
     fixture.shared.mint_confirmation(&confirm_id);
     let confirmed = fixture
         .tool
@@ -843,7 +876,8 @@ async fn t3_denylist_blocks_click_until_user_confirms() {
 async fn secure_field_blocks_typing() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
-    // 键盘筛查查**焦点元素**：焦点在密码框即拦截，与光标位置无关。
+    // Keyboard screening checks the **focused element**: focus on a password
+    // field blocks regardless of the cursor position.
     fixture.mock.lock().focused = Some(ElementInfo {
         role: "AXSecureTextField".to_string(),
         name: "Password".to_string(),
@@ -867,7 +901,7 @@ async fn secure_field_blocks_typing() {
 }
 
 // ---------------------------------------------------------------------------
-// 观察类
+// Observation class
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -918,15 +952,17 @@ async fn cursor_position_reports_screenshot_space_after_capture() {
 }
 
 // ---------------------------------------------------------------------------
-// 评审修复回归:层级筛查 / 筛查不可用放行 / 令牌绑定 / 能力先行
+// Review-fix regressions: layered screening / screening-unavailable passes /
+// token binding / capabilities first
 // ---------------------------------------------------------------------------
 
-/// P0 回归:mouse_down/mouse_up 曾不在 T3 清单里,可拆解出零确认点击。
+/// P0 regression: mouse_down/mouse_up were once absent from the T3 list,
+/// allowing a zero-confirmation click to be decomposed.
 #[tokio::test]
 async fn mouse_down_up_composition_is_t3_screened() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
-    // 光标 (7,9) 处是 denylist 控件。
+    // The denylist control sits at the cursor (7,9).
     fixture.mock.lock().element = Some(ElementInfo {
         role: "button".to_string(),
         name: "Delete forever".to_string(),
@@ -954,8 +990,9 @@ async fn mouse_down_up_composition_is_t3_screened() {
             .is_empty(),
         "confirm_required must have been emitted"
     );
-    // 第三轮评审修复回归：注入面执行断言——拦截时 down/up 不得真的下发
-    // （mock 现在记录全部五个注入面）。
+    // Third-round review-fix regression: execution-surface assertions — when
+    // blocked, down/up must not actually be dispatched (the mock now records
+    // all five injection surfaces).
     let mock = fixture.mock.lock();
     assert!(
         mock.downed.is_empty(),
@@ -969,9 +1006,11 @@ async fn mouse_down_up_composition_is_t3_screened() {
     );
 }
 
-/// 筛查不可用不阻断执行（主流口径：筛查是尽力而为的类别检测，没有产品
-/// 为筛查基础设施故障单独索要确认）：a11y 查询故障的目标照常执行、不发
-/// 确认事件；正面命中名单仍会拦截（见其余 T3 测试）。
+/// Screening being unavailable does not block execution (mainstream
+/// position: screening is best-effort category detection, and no product asks
+/// for a confirmation over a screening infrastructure failure): a target
+/// with an a11y query failure executes as usual without a confirm event; a
+/// positive denylist hit still blocks (see the other T3 tests).
 #[tokio::test]
 async fn a11y_query_error_executes_without_confirmation() {
     let (fixture, _restore) = fixture();
@@ -1004,13 +1043,16 @@ async fn a11y_query_error_executes_without_confirmation() {
     );
 }
 
-/// 评审修复回归（最重）：键盘输入落在**焦点元素**而非光标处——焦点在密码
-/// 框、光标在空白处时，type 旧实现按光标筛查（查不到元素）直接放行注入。
+/// Review-fix regression (heaviest): keyboard input lands on the **focused
+/// element**, not at the cursor — when focus is on a password field and the
+/// cursor is elsewhere, the old type implementation screened by cursor (found
+/// no element) and let the injection through.
 #[tokio::test]
 async fn focus_on_password_with_cursor_elsewhere_requires_confirmation() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
-    // 焦点在密码框；光标 (7,9) 处无任何元素（element 只用于证明光标处空白）。
+    // Focus is on a password field; no element at all at the cursor (7,9)
+    // (element only proves the cursor point is blank).
     fixture.mock.lock().focused = Some(ElementInfo {
         role: "AXSecureTextField".to_string(),
         name: "Password".to_string(),
@@ -1032,7 +1074,8 @@ async fn focus_on_password_with_cursor_elsewhere_requires_confirmation() {
     assert!(text.contains("password/secure field"), "{text}");
     assert!(fixture.mock.lock().typed.is_empty(), "must not type");
 
-    // key 和弦同样按焦点筛查：焦点在后果性控件上时要求确认。
+    // key chords are screened by focus too: a consequential control with
+    // focus requires confirmation.
     fixture.mock.lock().focused = Some(ElementInfo {
         role: "button".to_string(),
         name: "Send payment".to_string(),
@@ -1055,14 +1098,15 @@ async fn focus_on_password_with_cursor_elsewhere_requires_confirmation() {
     assert!(fixture.mock.lock().chords.is_empty(), "must not press");
 }
 
-/// 只有**正面**命中密码/安全角色才确认：焦点读不出（查询故障）不构成
-/// 信号，type 照常执行、不发确认事件；焦点正面命中密码角色时仍拦截
-/// （同一测试两段对照，pin (c)）。
+/// Only a **positive** hit on the password/secure role confirms: an
+/// unreadable focus (query failure) is not a signal — type executes as usual
+/// without a confirm event; a focus positively hitting the password role
+/// still blocks (two contrasting halves in one test, pin (c)).
 #[tokio::test]
 async fn unreadable_type_focus_executes_and_password_focus_confirms() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
-    // 焦点查询失败：不阻断执行、不发确认事件。
+    // Focus query fails: does not block execution, no confirm event.
     fixture.mock.lock().focused_error = true;
     let result = fixture
         .tool
@@ -1089,7 +1133,8 @@ async fn unreadable_type_focus_executes_and_password_focus_confirms() {
         "no confirmation may be requested while the focus is unreadable: {events:?}"
     );
 
-    // 对照：焦点正面命中密码角色 → 拦截确认。
+    // Contrast: focus positively hits the password role → blocked with a
+    // confirmation.
     fixture.mock.lock().focused_error = false;
     fixture.mock.lock().focused = Some(ElementInfo {
         role: "AXSecureTextField".to_string(),
@@ -1117,8 +1162,9 @@ async fn unreadable_type_focus_executes_and_password_focus_confirms() {
     );
 }
 
-/// 明确无焦点元素 = 无处键入，type 放行（Ok(None) 与 Err 一样不构成确认
-/// 信号；只有正面命中密码/名单角色才拦截，见其余 T3 测试）。
+/// Definitively no focused element = nowhere to type; type passes (Ok(None),
+/// like Err, is not a confirmation signal; only a positive hit on the
+/// password/denylist role blocks — see the other T3 tests).
 #[tokio::test]
 async fn no_focused_element_allows_typing() {
     let (fixture, _restore) = fixture();
@@ -1142,8 +1188,9 @@ async fn no_focused_element_allows_typing() {
     );
 }
 
-/// drag 的起点与落点都必须被筛查（pin (f)）：终点命中 denylist（起点良性）
-/// 与起点命中 denylist（终点良性）两个方向都要求确认。
+/// Both the drag start and the drop point must be screened (pin (f)): a
+/// drop point hitting the denylist (benign start) and a start hitting the
+/// denylist (benign drop) both require confirmation.
 #[tokio::test]
 async fn drag_drop_target_is_screened() {
     let (fixture, _restore) = fixture();
@@ -1170,13 +1217,14 @@ async fn drag_drop_target_is_screened() {
     let text = result.ok().map(|r| r.content).unwrap_or_default();
     assert!(text.contains("NOT executed"), "{text}");
     assert!(text.contains("Delete"), "{text}");
-    // 第三轮评审修复回归：拦截时拖拽不得真的下发。
+    // Third-round review-fix regression: when blocked, the drag must not
+    // actually be dispatched.
     assert!(
         fixture.mock.lock().drags.is_empty(),
         "drag must not execute"
     );
 
-    // 反向：起点命中 denylist（终点良性）同样拦截。
+    // Reverse: the start hits the denylist (benign drop) — blocked as well.
     fixture.mock.lock().background = vec![ElementInfo {
         role: "button".to_string(),
         name: "Delete".to_string(),
@@ -1304,7 +1352,8 @@ async fn denied_action_retry_mints_a_fresh_confirmation() {
     );
 }
 
-/// 令牌绑定动作:为 A 动作铸造的 confirm_id 不能给 B 动作用(工具层集成)。
+/// Tokens are bound to the action: a confirm_id minted for action A cannot
+/// be spent on action B (tool-layer integration).
 #[tokio::test]
 async fn confirm_token_is_bound_to_the_action() {
     let (fixture, _restore) = fixture();
@@ -1333,7 +1382,7 @@ async fn confirm_token_is_bound_to_the_action() {
         .map(|(_, p)| p["confirm_id"].as_str().unwrap_or_default().to_string())
         .expect("confirm event");
     fixture.shared.mint_confirmation(&confirm_id);
-    // 拿「点击」的令牌去重放「type」——必须被拒。
+    // Replaying a "type" with the click's token — must be rejected.
     let replay = fixture
         .tool
         .execute(
@@ -1349,7 +1398,8 @@ async fn confirm_token_is_bound_to_the_action() {
     assert!(fixture.mock.lock().typed.is_empty());
 }
 
-/// 评审修正:mouse_move/scroll 是真实指针输入,必须持会话授权。
+/// Review correction: mouse_move/scroll are real pointer input and must hold
+/// a session grant.
 #[tokio::test]
 async fn mouse_move_requires_session_grant() {
     let (fixture, _restore) = fixture();
@@ -1365,7 +1415,8 @@ async fn mouse_move_requires_session_grant() {
     assert!(fixture.mock.lock().moved_to.is_empty(), "must not move");
 }
 
-/// 能力先行:无输入能力的平台在授权门控之前就被拒绝,不弹授权、不耗预算。
+/// Capabilities first: a platform without input capability is rejected before
+/// the grant gate — no grant prompt, no budget spent.
 #[tokio::test]
 async fn unsupported_input_platform_is_rejected_before_grant_prompt() {
     let (fixture, _restore) = fixture();
@@ -1388,7 +1439,8 @@ async fn unsupported_input_platform_is_rejected_before_grant_prompt() {
         !events.iter().any(|(name, _)| name == EVENT_GRANT_REQUIRED),
         "no grant prompt expected, got {events:?}"
     );
-    // 能力拒绝必须留痕（round-4 一致性修复 + round-10 m12 回归）。
+    // Capability rejections must leave a trace (round-4 consistency fix +
+    // round-10 m12 regression).
     let audit_path = fixture.home.join("computer-use").join("audit-s-test.jsonl");
     let raw = std::fs::read_to_string(&audit_path).expect("audit jsonl exists");
     let records: Vec<serde_json::Value> = raw
@@ -1411,7 +1463,8 @@ async fn unsupported_input_platform_is_rejected_before_grant_prompt() {
     );
 }
 
-/// schema enum、未知动作错误文案与 parse_action 分发三者一致。
+/// The schema enum, the unknown-action error text, and parse_action's
+/// dispatch must all agree.
 #[tokio::test]
 async fn schema_actions_match_parser() {
     let (fixture, _restore) = fixture();
@@ -1440,7 +1493,7 @@ async fn schema_actions_match_parser() {
     }
 }
 
-/// 每个动作的最小合法参数（parity 测试用）。
+/// The minimal valid arguments for each action (used by the parity test).
 fn minimal_input(action: &str) -> Value {
     match action {
         "wait" => json!({"action": "wait", "ms": 1}),
@@ -1458,7 +1511,8 @@ fn minimal_input(action: &str) -> Value {
 }
 
 // ---------------------------------------------------------------------------
-// 确认摘要：纯参数摘要（type N characters），全文经 type_preview_full 下发
+// Confirmation summaries: a plain parameter summary (type N characters); the
+// full text goes out via type_preview_full
 // ---------------------------------------------------------------------------
 
 /// The Type summary is exactly `type N characters`: no raw text, no
@@ -1564,7 +1618,8 @@ async fn type_summary_masks_preview_for_secure_targets() {
         .expect("confirm event carries the action summary");
     let summary = payload["action"].as_str().unwrap_or_default();
 
-    // 明文不得出现在摘要；摘要只有字符数。
+    // Plaintext must not appear in the summary; the summary is only a
+    // character count.
     assert_eq!(summary, "type 14 characters", "{summary}");
     assert!(!summary.contains("hunter2"), "{summary}");
     // No full-text preview and no plaintext anywhere in the payload.
@@ -1581,7 +1636,8 @@ async fn type_summary_masks_preview_for_secure_targets() {
 }
 
 // ---------------------------------------------------------------------------
-// 审计脱敏（单字符和弦只记键数；多键快捷键和弦保留明文）
+// Audit redaction (single-character chords log only a key count; multi-key
+// shortcut chords keep the plaintext)
 // ---------------------------------------------------------------------------
 
 /// Single-character chords are audited redacted as `pressed 1 key` — never
@@ -1683,11 +1739,13 @@ async fn single_char_key_chord_is_audited_as_typed_text() {
     assert!(!raw.contains("keys: h+shift+shift"));
 }
 
-/// 评审修复回归（M2 + round-10 B1）：含字符键的和弦（≤4 token）是把文本
-/// 按 ≤4 字符块拼写——审计只记键数（`pressed 4 keys`），绝不记明文。混合
-/// 和弦（`p+a+Return`、`esc+h+u+n`）的字符键同样被注入，旧实现只要混入
-/// 命名键就整体按 `keys: <chord>` 明文落盘。纯命名键和弦（`Return`）不注
-/// 入字符，保持可读的 `keys: <chord>`。
+/// Review-fix regression (M2 + round-10 B1): a chord with character keys
+/// (≤4 tokens) spells out text in ≤4-character chunks — the audit logs only
+/// the key count (`pressed 4 keys`), never the plaintext. Mixed chords
+/// (`p+a+Return`, `esc+h+u+n`) inject their character keys too; the old
+/// implementation logged the whole thing as plaintext `keys: <chord>` as long
+/// as a named key was mixed in. Pure named-key chords (`Return`) inject no
+/// characters and keep the readable `keys: <chord>`.
 #[tokio::test]
 async fn multi_char_letter_chords_are_audited_as_counts_only() {
     let (fixture, _restore) = fixture();
@@ -1754,7 +1812,7 @@ async fn multi_char_letter_chords_are_audited_as_counts_only() {
 }
 
 // ---------------------------------------------------------------------------
-// 审计 fail-open（信息性日志）/ 混合 DPI 出界防护
+// Audit fail-open (informational log) / mixed-DPI out-of-bounds guard
 // ---------------------------------------------------------------------------
 
 /// The audit is an informational, fail-open log: when the audit directory
@@ -1762,8 +1820,9 @@ async fn multi_char_letter_chords_are_audited_as_counts_only() {
 /// fails, the caller warns via eprintln, and the action still executes —
 /// for every action class.
 #[tokio::test]
-// ENV_LOCK 必须横跨 await 持有：run() 在 spawn_blocking 线程上按进程级 env
-// 解析 PINVOU3_HOME，env 与锁都要活到测试结束（与 fixture() 同一约定）。
+// ENV_LOCK must be held across the awaits: run() resolves PINVOU3_HOME from
+// the process-level env on a spawn_blocking thread, so both the env and the
+// lock must live until the test ends (same convention as fixture()).
 #[allow(clippy::await_holding_lock)]
 async fn audit_unavailable_fails_open_and_actions_still_execute() {
     let _env_lock = crate::platform::paths::tests::ENV_LOCK
@@ -1776,7 +1835,8 @@ async fn audit_unavailable_fails_open_and_actions_still_execute() {
         crate::platform::paths::tests::unique_suffix()
     ));
     std::fs::write(&blocker, b"not a directory").expect("write blocker file");
-    // SAFETY: 持有 platform::paths::tests::ENV_LOCK，进程内 env 写串行。
+    // SAFETY: holding platform::paths::tests::ENV_LOCK, so env writes are
+    // serialized in-process.
     unsafe { std::env::set_var("PINVOU3_HOME", &blocker) };
     // Restore via the fixture's EnvRestore guard: the guard runs even when
     // an assertion (or the awaits) panic, so the overridden env cannot leak
@@ -1784,7 +1844,8 @@ async fn audit_unavailable_fails_open_and_actions_still_execute() {
     // while the lock is still held.
     let _env_restore = EnvRestore(previous);
 
-    // workspace 与审计目录解耦：放在独立临时目录。
+    // The workspace is decoupled from the audit directory: it lives in its
+    // own temp directory.
     let workspace = std::env::temp_dir().join(format!(
         "pinvou3-cu-nows-{}-{}",
         std::process::id(),
@@ -1810,7 +1871,8 @@ async fn audit_unavailable_fails_open_and_actions_still_execute() {
         Arc::new(RecordingSink(Arc::clone(&events))),
     );
 
-    // Input 类：审计不可用只降级为 eprintln，动作照常执行。
+    // Input class: audit unavailability only degrades to eprintln; the
+    // action executes as usual.
     let typed = tool
         .execute(
             json!({"action": "type", "text": "hello"}),
@@ -1828,7 +1890,7 @@ async fn audit_unavailable_fails_open_and_actions_still_execute() {
         "the action must execute although the audit append failed"
     );
 
-    // Observe 类：同样照常。
+    // Observe class: likewise executes as usual.
     let shot = tool
         .execute(json!({"action": "screenshot"}), &context(&workspace))
         .await;
@@ -1842,12 +1904,14 @@ async fn audit_unavailable_fails_open_and_actions_still_execute() {
     let _ = std::fs::remove_file(&blocker);
 }
 
-/// 混合 DPI 防护：光标在截图显示器之外时，cursor_position 不做换算，
-/// 回报原始输入坐标并附警告文本。
+/// Mixed-DPI guard: when the cursor is outside the captured monitor,
+/// cursor_position does no conversion — it reports the raw input coordinates
+/// with warning text attached.
 #[tokio::test]
 async fn cursor_outside_captured_monitor_reports_input_position_with_warning() {
     let (fixture, _restore) = fixture();
-    // 截图显示器在 (-1000,-1000)..(0,0)；光标 (7,9) 在另一块屏上。
+    // The captured monitor spans (-1000,-1000)..(0,0); the cursor (7,9) is on
+    // another screen.
     fixture.mock.lock().capture_origin = (-1000, -1000);
     let _ = fixture
         .tool
@@ -1873,8 +1937,10 @@ async fn cursor_outside_captured_monitor_reports_input_position_with_warning() {
     assert!(!text.contains("in screenshot space"), "{text}");
 }
 
-/// 混合 DPI：光标在截图显示器之外时无目标可查（绝不拿跨屏垃圾坐标筛查）
-/// ——筛查不可用不阻断执行，也不索要确认。
+/// Mixed DPI: when the cursor is outside the captured monitor there is no
+/// target to check (never screen with cross-screen junk coordinates) —
+/// screening being unavailable does not block execution nor ask for
+/// confirmation.
 #[tokio::test]
 async fn mouse_down_outside_captured_monitor_executes_without_confirmation() {
     let (fixture, _restore) = fixture();
@@ -1907,14 +1973,16 @@ async fn mouse_down_outside_captured_monitor_executes_without_confirmation() {
     );
 }
 
-/// Retina 式混合 DPI 回归（M3）：捕获 200x200 设备像素、input_scale 0.5
-/// （即 100x100 点的显示器）。cursor_position 直接回报输入坐标：
-/// - 光标在输入 (60,40)（截图内）→ 无坐标 down 在 (60,40) 处筛查，命中
-///   名单控件被拦；
-/// - 光标在输入 (150,40)（输入矩形 [0,100) 之外）→ 无目标可查，动作照常
-///   执行、零确认事件；cursor_position 回报原始输入坐标并附警告；
-/// - 光标回到 (60,40) → cursor_position 报告精确的截图坐标 (120, 80)
-///   （input_to_shot 的 ×2 逆换算）。
+/// Retina-style mixed-DPI regression (M3): capture 200x200 device pixels
+/// with input_scale 0.5 (i.e. a 100x100-point monitor). cursor_position
+/// reports input coordinates directly:
+/// - Cursor at input (60,40) (inside the capture) → the coordinate-less down
+///   screens at (60,40), hits a denylist control, and is blocked;
+/// - Cursor at input (150,40) (outside the input rect [0,100)) → no target
+///   to check; the action executes as usual with zero confirm events;
+///   cursor_position reports the raw input coordinates with a warning;
+/// - Cursor back at (60,40) → cursor_position reports the exact screenshot
+///   coordinates (120, 80) (input_to_shot's ×2 inverse conversion).
 #[tokio::test]
 async fn retina_input_space_cursor_screens_inside_and_reports_exact_coords() {
     let (fixture, _restore) = fixture();
@@ -1924,7 +1992,8 @@ async fn retina_input_space_cursor_screens_inside_and_reports_exact_coords() {
         mock.capture_size = (200, 200);
         mock.input_scale = (0.5, 0.5);
     }
-    // 建立映射表（shot 200x200，输入坐标 = 截图坐标 × 0.5）。
+    // Establish the scale map (shot 200x200; input coordinates = screenshot
+    // coordinates × 0.5).
     let _ = fixture
         .tool
         .execute(
@@ -1933,7 +2002,8 @@ async fn retina_input_space_cursor_screens_inside_and_reports_exact_coords() {
         )
         .await;
 
-    // 光标 (60,40) 处是后果性控件：无坐标 down 必须在输入点 (60,40) 筛查。
+    // A consequential control sits at the cursor (60,40): the coordinate-less
+    // down must screen at the input point (60,40).
     fixture.mock.lock().cursor = (60, 40);
     fixture.mock.lock().element = Some(ElementInfo {
         role: "AXButton".to_string(),
@@ -1958,7 +2028,8 @@ async fn retina_input_space_cursor_screens_inside_and_reports_exact_coords() {
         "a blocked down must not inject"
     );
 
-    // 光标 (150,40) 在捕获显示器的输入矩形之外：不筛查、执行、零确认。
+    // The cursor (150,40) is outside the captured monitor's input rect: no
+    // screening, executes, zero confirmations.
     fixture.mock.lock().cursor = (150, 40);
     let executed = fixture
         .tool
@@ -1983,7 +2054,8 @@ async fn retina_input_space_cursor_screens_inside_and_reports_exact_coords() {
         "only the blocked down may raise a confirmation: {events:?}"
     );
 
-    // 光标在矩形之外时 cursor_position 回报输入坐标 + 警告，不给截图坐标。
+    // With the cursor outside the rect, cursor_position reports input
+    // coordinates + a warning, not screenshot coordinates.
     let outside = fixture
         .tool
         .execute(
@@ -2005,7 +2077,8 @@ async fn retina_input_space_cursor_screens_inside_and_reports_exact_coords() {
         "{outside_text}"
     );
 
-    // 光标回到 (60,40)：精确换算到截图坐标 (120, 80)。
+    // Cursor back at (60,40): converted exactly to the screenshot coordinates
+    // (120, 80).
     fixture.mock.lock().cursor = (60, 40);
     let inside = fixture
         .tool
@@ -2022,17 +2095,21 @@ async fn retina_input_space_cursor_screens_inside_and_reports_exact_coords() {
 }
 
 // ---------------------------------------------------------------------------
-// 第三轮评审回归（口径更新后）：和弦不设形态确认 / mouse_move·scroll 不筛查
+// Third-round review regressions (after the position update): chords never
+// get a form-based confirmation / mouse_move·scroll are not screened
 // ---------------------------------------------------------------------------
 
-/// 和弦永不设确认（pin (d)）：和弦编辑可逆，没有主流产品按和弦形态设门。
-/// 无论修饰键组合如何（cmd+delete、ctrl+Enter、shift+delete……），key 都
-/// 直接执行；焦点元素的名单/密码筛查仍然生效（见其余 T3 测试）。
+/// Chords never require a confirmation (pin (d)): chord editing is
+/// reversible and no mainstream product gates by chord shape. No matter the
+/// modifier combination (cmd+delete, ctrl+Enter, shift+delete…), key executes
+/// directly; denylist/password screening of the focused element still applies
+/// (see the other T3 tests).
 #[tokio::test]
 async fn key_chords_never_require_confirmation() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
-    // 焦点是普通文本域（名单判定 Clear）——旧口径会按和弦语义拦截。
+    // Focus is an ordinary text area (denylist verdict Clear) — the old
+    // position would have blocked it by chord semantics.
     fixture.mock.lock().focused = Some(ElementInfo {
         role: "AXTextArea".to_string(),
         name: String::new(),
@@ -2047,10 +2124,12 @@ async fn key_chords_never_require_confirmation() {
         "ctrl+backspace",
         "meta+Enter",
         "ctrl+Enter",
-        // Shift 参与过的判定也已移除：shift+delete 直接执行。
+        // The old shift-involved verdict is gone too: shift+delete executes
+        // directly.
         "shift+delete",
         "shift+Backspace",
-        // 普通键（文本编辑主路径）照旧直接执行。
+        // Ordinary keys (the main text-editing path) execute directly as
+        // before.
         "Return",
         "Delete",
         "Backspace",
@@ -2088,14 +2167,18 @@ async fn key_chords_never_require_confirmation() {
     );
 }
 
-/// mouse_move 与 scroll 永不设确认（pin (e)）：悬停/滚动无动作后果，主流
-/// 一致——即使落点/目标压在名单控件上也照常执行；按住左键期间的 move 亦然
-/// （held-move 复筛已移除，drag 的筛查固定在 Drag 动作的起点+终点）。
+/// mouse_move and scroll never require a confirmation (pin (e)): hover and
+/// scroll have no action consequences, consistent with mainstream products —
+/// they execute even when the landing point/target sits on a denylist
+/// control; the same applies to a move while the left button is held
+/// (held-move re-screening was removed; drag screening is fixed at the Drag
+/// action's start + end points).
 #[tokio::test]
 async fn mouse_move_and_scroll_never_require_confirmation() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
-    // 名单控件 "Pay" 盖住光标 (7,9) 与整个截图：scroll / mouse_move 照常执行。
+    // The denylist control "Pay" covers the cursor (7,9) and the whole
+    // screenshot: scroll / mouse_move execute as usual.
     fixture.mock.lock().element = Some(ElementInfo {
         role: "AXButton".to_string(),
         name: "Pay".to_string(),
@@ -2148,8 +2231,9 @@ async fn mouse_move_and_scroll_never_require_confirmation() {
     );
     let moves_before_held = fixture.mock.lock().moved_to.len();
 
-    // 按住左键期间的 move（实质拖拽）同样只走执行——不复筛。down 需要光标点
-    // 筛查 Clear：先放良性元素，再换成名单控件。
+    // A move while the left button is held (effectively a drag) likewise only
+    // executes — no re-screening. The down needs the cursor point to screen
+    // Clear: place a benign element first, then swap in a denylist control.
     fixture.mock.lock().element = Some(benign_element(0, 0, 16, 16));
     let down = fixture
         .tool
@@ -2181,7 +2265,7 @@ async fn mouse_move_and_scroll_never_require_confirmation() {
         held_text.contains("mouse moved to"),
         "a held move must execute without confirmation: {held_text}"
     );
-    // up：光标 (7,9) 不在 Trash 矩形内 → Clear → 执行。
+    // up: the cursor (7,9) is not inside the Trash rect → Clear → executes.
     let up = fixture
         .tool
         .execute(
@@ -2206,14 +2290,16 @@ async fn mouse_move_and_scroll_never_require_confirmation() {
     );
 }
 
-/// 名单收敛为后果类别（pin (a)）：泛化肯定词（OK/Continue/Run）不设确认、
-/// 直接执行；后果类别词（Pay/Delete/Submit/Accept）仍拦截并索要确认。
+/// The denylist narrowed to consequence categories (pin (a)): generic
+/// affirmatives (OK/Continue/Run) get no confirmation and execute directly;
+/// consequence-category words (Pay/Delete/Submit/Accept) still block and ask
+/// for confirmation.
 #[tokio::test]
 async fn trimmed_denylist_affirmatives_execute_and_consequences_confirm() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
 
-    // 泛化肯定词：直接执行。
+    // Generic affirmatives: execute directly.
     for name in ["OK", "Continue", "Run"] {
         fixture.mock.lock().element = Some(ElementInfo {
             role: "AXButton".to_string(),
@@ -2248,7 +2334,7 @@ async fn trimmed_denylist_affirmatives_execute_and_consequences_confirm() {
         "all affirmative-label clicks executed"
     );
 
-    // 后果类别词：拦截 + 确认事件。
+    // Consequence-category words: block + confirm event.
     for name in ["Pay", "Delete", "Submit", "Accept"] {
         fixture.mock.lock().element = Some(ElementInfo {
             role: "AXButton".to_string(),
@@ -2278,14 +2364,18 @@ async fn trimmed_denylist_affirmatives_execute_and_consequences_confirm() {
 }
 
 // ---------------------------------------------------------------------------
-// 评审修复回归:撤销/停止必须终止持久 OS 级授权(登记表 → release_os_grant)
+// Review-fix regressions: revoke/stop must terminate the persistent OS-level
+// grant (registry → release_os_grant)
 // ---------------------------------------------------------------------------
 
-/// revoke 经登记表触发 emergency release（detached 线程，轮询等待）：
-/// 先释放物理左键、再关闭后端持久 OS 级授权（worker 通道串行化保证此
-/// 顺序）。登记保留（清理幂等；被再次授权的会话必须仍可被后续全局停止
-/// 触达）；活着的工具经 Drop 的 `release_and_unregister` 注销。Wayland
-/// portal 会话由此随用户"停止控制"终止，而不是活到进程退出。
+/// Revoke triggers an emergency release via the registry (a detached thread,
+/// waited on by polling): the physical left button is released first, then
+/// the backend's persistent OS-level grant is closed (worker channel
+/// serialization guarantees this order). The registration is kept (cleanup is
+/// idempotent; a session granted again must still be reachable by a later
+/// global stop); a live tool unregisters via Drop's
+/// `release_and_unregister`. The Wayland portal session thereby ends with the
+/// user's "stop control" instead of living until process exit.
 #[tokio::test]
 async fn emergency_release_keeps_registration_releases_button_then_os_grant() {
     let (fixture, _restore) = fixture();
@@ -2298,7 +2388,7 @@ async fn emergency_release_keeps_registration_releases_button_then_os_grant() {
         fixture.shared.backends.contains("s-test"),
         "emergency_release must keep the registration (only tool Drop unregisters)"
     );
-    // 阶段一：物理左键释放先到达后端。
+    // Phase one: the physical left button release reaches the backend first.
     let mut upped = false;
     for _ in 0..300 {
         if !fixture.mock.lock().upped.is_empty() {
@@ -2308,8 +2398,9 @@ async fn emergency_release_keeps_registration_releases_button_then_os_grant() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert!(upped, "emergency_mouse_up must reach the backend");
-    // 阶段二：OS 级授权关闭在其后到达（通道串行化：released 只能在
-    // mouse_up 请求执行完毕后置数）。
+    // Phase two: the OS-level grant close arrives afterwards (channel
+    // serialization: released can only be incremented after the mouse_up
+    // request has finished executing).
     let mut released = false;
     for _ in 0..300 {
         if fixture.mock.lock().released > 0 {
@@ -2320,15 +2411,18 @@ async fn emergency_release_keeps_registration_releases_button_then_os_grant() {
     }
     assert!(released, "release_os_grant must reach the backend");
     let mock = fixture.mock.lock();
-    // 三键逐一释放（emergency_mouse_up 的既定契约，见 backend.rs）。
+    // All three buttons released one by one (the documented contract of
+    // emergency_mouse_up, see backend.rs).
     assert_eq!(
         mock.upped,
         vec![MouseButton::Left, MouseButton::Right, MouseButton::Middle]
     );
 }
 
-/// 工具析构经 emergency release：物理左键与 OS 级授权一并清理（模型按下
-/// 左键后死掉不得把用户机器留在按住拖拽状态），并注销登记。
+/// Tool drop goes through the emergency release: the physical left button
+/// and the OS-level grant are cleaned up together (a model that pressed the
+/// left button and died must not leave the user's machine in a held-drag
+/// state), and the registration is removed.
 #[tokio::test]
 async fn dropping_the_tool_releases_the_button_and_os_grant() {
     let (fixture, _restore) = fixture();
@@ -2351,8 +2445,8 @@ async fn dropping_the_tool_releases_the_button_and_os_grant() {
     );
 }
 
-/// 工具析构注销登记:否则登记表里的句柄把 worker 线程(及其上的 portal
-/// 会话)吊到进程退出。
+/// Tool drop unregisters: otherwise the registry handle would pin the worker
+/// thread (and its portal session) until process exit.
 #[tokio::test]
 async fn dropping_the_tool_unregisters_its_backend_handle() {
     let (fixture, _restore) = fixture();
@@ -2364,9 +2458,11 @@ async fn dropping_the_tool_unregisters_its_backend_handle() {
     );
 }
 
-/// 评审修复回归（M4）：会话结束 = 引擎回收工具（Drop）。Drop 必须先吊销
-/// 本会话的授权并清空其同意工件（待决确认、已铸令牌）——同意状态不得比
-/// 持有它的工具活得更久；其他会话的授权与工件不受影响。
+/// Review-fix regression (M4): session end = the engine reclaiming the tool
+/// (Drop). Drop must revoke this session's grant and wipe its consent
+/// artifacts (pending confirmations, minted tokens) — consent state must not
+/// outlive the tool holding it; other sessions' grants and artifacts are
+/// unaffected.
 #[tokio::test]
 async fn dropping_the_tool_revokes_the_grant_and_consent_artifacts() {
     let (fixture, _restore) = fixture();
@@ -2384,7 +2480,7 @@ async fn dropping_the_tool_revokes_the_grant_and_consent_artifacts() {
 
     drop(fixture.tool);
 
-    // 本会话：授权与同意工件全部清除。
+    // This session: the grant and all consent artifacts are wiped.
     assert!(!fixture.shared.has_active_grant("s-test"));
     assert_eq!(
         fixture.shared.begin_input_action("s-test"),
@@ -2397,7 +2493,7 @@ async fn dropping_the_tool_revokes_the_grant_and_consent_artifacts() {
         ConfirmationCheck::Unknown,
         "tool drop must wipe the session's minted approval tokens"
     );
-    // 其他会话：授权与工件原样保留。
+    // Other sessions: grants and artifacts kept intact.
     assert!(fixture.shared.has_active_grant("s-other"));
     assert_eq!(
         fixture
@@ -2588,10 +2684,12 @@ async fn t3_confirmation_error_is_audited_as_stable_code() {
     assert!(!raw.contains("Buy now"), "element label leaked to audit");
 }
 
-/// 审计集成（m4 round-6）：一次「铸造 pending → 用户批准铸币 → 带确认执行
-/// （附补拍截图）」的完整批准流之后，会话 JSONL 的已确认记录满足脱敏契约：
-/// consent 含 "t3-confirmed"、target 是 count/coords 形态（只有坐标参数，
-/// 无元素标签文本）、截图记录带 sha256 字段。
+/// Audit integration (m4 round-6): after the full approval flow of "mint a
+/// pending → the user approves (mint) → execute with the confirmation (with
+/// a follow-up screenshot)", the confirmed record in the session JSONL
+/// satisfies the redaction contract: consent contains "t3-confirmed", target
+/// is the count/coords form (coordinate parameters only, no element label
+/// text), and the screenshot record carries the sha256 field.
 #[tokio::test]
 async fn approved_click_audit_record_meets_the_redaction_contract() {
     let (fixture, _restore) = fixture();
@@ -2853,7 +2951,9 @@ async fn confirm_event_carries_full_type_preview_even_for_short_text() {
 }
 
 // ---------------------------------------------------------------------------
-// 回归：光标移动/不可读不阻碍已批令牌 / 摘要粒度的令牌绑定 / 注入面执行断言
+// Regressions: cursor moving/unreadable does not block an approved token /
+// token binding at summary granularity / injection-surface execution
+// assertions
 // ---------------------------------------------------------------------------
 
 /// A cursor-acting action's approval token is bound to the session and the
@@ -2864,7 +2964,8 @@ async fn confirm_event_carries_full_type_preview_even_for_short_text() {
 async fn approved_cursor_action_spends_even_after_the_pointer_moved() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
-    // 光标默认 (7,9)，其上覆盖一个后果性目标 → down 被拦、铸造 pending。
+    // The cursor defaults to (7,9), covered by a consequential target → the
+    // down is blocked and a pending minted.
     fixture.mock.lock().element = Some(ElementInfo {
         role: "AXButton".to_string(),
         name: "Buy now".to_string(),
@@ -2891,7 +2992,8 @@ async fn approved_cursor_action_spends_even_after_the_pointer_moved() {
     let confirm_id = latest_confirm_id(&fixture.events);
     assert!(fixture.shared.mint_confirmation(&confirm_id));
 
-    // 光标移走后重放：令牌只绑会话与摘要，注入照常执行。
+    // Replay after the cursor moved: the token is bound only to the session
+    // and the summary; the injection executes as usual.
     fixture.mock.lock().cursor = (3, 4);
     let spend = fixture
         .tool
@@ -2910,7 +3012,7 @@ async fn approved_cursor_action_spends_even_after_the_pointer_moved() {
         1,
         "cursor movement after approval must not block the approved action"
     );
-    // 单次有效：令牌已被消费。
+    // Single-use: the token has been spent.
     let again = fixture
         .tool
         .execute(
@@ -2926,9 +3028,11 @@ async fn approved_cursor_action_spends_even_after_the_pointer_moved() {
     assert_eq!(fixture.mock.lock().downed.len(), 1, "nothing more ran");
 }
 
-/// 令牌只绑**动作摘要**（主流模型）：同为 N 字符的另一段文本产生相同摘要
-/// `type 21 characters`——令牌会花在它上面（内容级指纹绑定已按主流口径
-/// 移除；摘要即用户批准的粒度）。单次有效语义不变。
+/// The token binds only the **action summary** (mainstream model): another
+/// text with the same N characters produces the same summary
+/// `type 21 characters` — the token is spent on it (content-level fingerprint
+/// binding was removed per the mainstream position; the summary is the
+/// granularity the user approved). Single-use semantics unchanged.
 #[tokio::test]
 async fn same_summary_type_text_spends_the_token() {
     let (fixture, _restore) = fixture();
@@ -2960,7 +3064,8 @@ async fn same_summary_type_text_spends_the_token() {
     let confirm_id = latest_confirm_id(&fixture.events);
     assert!(fixture.shared.mint_confirmation(&confirm_id));
 
-    // 同长不同文：摘要相同（type 21 characters）→ 令牌消费，注入执行。
+    // Same length, different content: same summary (type 21 characters) →
+    // the token is spent and the injection executes.
     let swapped = "XXXXXXXXXXXXXXXXXXXXX"; // 21 chars
     let replay = fixture
         .tool
@@ -2980,7 +3085,8 @@ async fn same_summary_type_text_spends_the_token() {
         "the token binds the summary, so a same-summary text spends it"
     );
 
-    // 单次有效：令牌已被消费，原文重放被拒。
+    // Single-use: the token has been spent; the original text's replay is
+    // rejected.
     let spend = fixture
         .tool
         .execute(
@@ -3000,8 +3106,10 @@ async fn same_summary_type_text_spends_the_token() {
     );
 }
 
-/// 消费时光标位置读不出（Wayland 首次 move 前的常态）与令牌无关：令牌只绑
-/// 会话与摘要，没有光标比对——光标不可读不阻碍已批准动作的执行。
+/// An unreadable cursor position at spend time (the normal state before the
+/// first Wayland move) is irrelevant to the token: the token binds only the
+/// session and the summary, with no cursor comparison — an unreadable cursor
+/// does not block executing an approved action.
 #[tokio::test]
 async fn unreadable_cursor_at_spend_does_not_block_a_granted_token() {
     let (fixture, _restore) = fixture();
@@ -3052,13 +3160,15 @@ async fn unreadable_cursor_at_spend_does_not_block_a_granted_token() {
     );
 }
 
-/// Round-6 评审缺口：drag / scroll / hold_key 的 happy-path 此前从不断言
-/// 「真的执行了」——mock 有记录字段但零断言，静默丢调用的重构照样全绿。
+/// Round-6 review gap: the happy paths of drag / scroll / hold_key never
+/// asserted "it really executed" — the mock had recording fields but zero
+/// assertions, so a refactor silently dropping calls would stay green.
 #[tokio::test]
 async fn drags_scrolls_and_holds_execute_on_granted_actions() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
-    // 无元素覆盖 → 筛查 Clear，三个动作直接执行。
+    // No element covers the target → screening Clear; all three actions
+    // execute directly.
     let drag = fixture
         .tool
         .execute(
@@ -3114,10 +3224,12 @@ async fn drags_scrolls_and_holds_execute_on_granted_actions() {
     );
 }
 
-/// 评审修复回归（审阅 round-11）：`type` 成功路径的"键入文本绝不落审计"
-/// 契约此前只有构造侧单测，没有任何测试执行一次成功 type 并核对真实
-/// JSONL 文件——重构若把 text 写进 target 也能全绿。钉死：文件里只有
-/// 计数（"typed 5 characters"），原文字节不出现。
+/// Review-fix regression (round-11 review): the "typed text never reaches
+/// the audit" contract of type's success path previously had only
+/// construction-side unit tests; no test actually executed a successful type
+/// and checked the real JSONL file — a refactor writing text into the target
+/// would still be green. Pinned: the file carries only the count
+/// ("typed 5 characters"); the original bytes never appear.
 #[tokio::test]
 async fn type_success_audit_record_carries_counts_never_text() {
     let (fixture, _restore) = fixture();
@@ -3148,16 +3260,18 @@ async fn type_success_audit_record_carries_counts_never_text() {
     );
 }
 
-/// 评审修复回归（审阅 round-11）：`stop_all` 的同意态清扫此前只有 grant
-/// 断言——pending 与已铸令牌的清除路径没有直接钉。急停后：pending 消失、
-/// 未消费令牌一律 Unknown。
+/// Review-fix regression (round-11 review): stop_all's consent-state wipe
+/// previously had only grant assertions — the clearing of pendings and
+/// minted tokens had no direct pin. After an emergency stop: pendings are
+/// gone and unspent tokens are uniformly Unknown.
 #[test]
 fn stop_all_wipes_pending_confirmations_and_approved_tokens() {
     let shared = ComputerUseShared::new();
     shared.set_enabled(true);
     shared.grant_session("s1");
-    // 两个会话：同一会话的第二个 pending 会按"最新胜出"顶掉第一个，
-    // 跨会话才能同时持有一个 pending 和一个已铸令牌。
+    // Two sessions: a second pending for the same session would replace the
+    // first per "newest wins"; only across sessions can one pending and one
+    // minted token coexist.
     shared.grant_session("s2");
     let pending_id = shared.new_pending_confirmation("s1", "left click", "Buy now");
     let token_id = shared.new_pending_confirmation("s2", "type 3 characters", "secret-field");
@@ -3177,13 +3291,16 @@ fn stop_all_wipes_pending_confirmations_and_approved_tokens() {
     );
 }
 
-/// 评审修复回归（审阅 round-11）：`key`/`hold_key` 的 text 原文此前无长度
-/// 上限——合法和弦解析后有 ≤4 键名的约束，但原文会原样进入确认事件/结果
-/// 负载，空白即可走私任意体量的字符串。>128 字符拒绝；错误文案不回显。
+/// Review-fix regression (round-11 review): key/hold_key's text had no
+/// length cap — a legal chord is constrained to ≤4 key names after parsing,
+/// but the raw text rode verbatim into the confirm event/result payload, and
+/// whitespace alone could smuggle in a string of any size. >128 characters is
+/// rejected; the error text does not echo it.
 #[tokio::test]
 async fn key_chord_text_length_is_capped() {
     let (fixture, _restore) = fixture();
-    // 129 个 'a'（含分隔符的形状也会超限——这里直接构造超长原文）。
+    // 129 'a's (a shape with separators would exceed the cap too — here the
+    // oversized raw text is constructed directly).
     let oversized = "a".repeat(MAX_KEY_CHORD_TEXT_CHARS + 1);
     let result = fixture
         .tool
@@ -3200,7 +3317,7 @@ async fn key_chord_text_length_is_capped() {
         error.contains("too long for key"),
         "expected the length-cap error: {error}"
     );
-    // hold_key 同口径。
+    // hold_key follows the same rule.
     let result = fixture
         .tool
         .execute(
@@ -3211,11 +3328,14 @@ async fn key_chord_text_length_is_capped() {
     assert!(result.is_err(), "an oversized hold_key text must not parse");
 }
 
-/// 评审修复回归（审阅 round-11 P1）：`element_at_point` 返回的 bounds 必须
-/// 是**截图像素空间**——a11y 元素矩形是输入/屏幕坐标，截图超长边被降采样
-/// 时两套坐标按比例因子错位，模型拿 bounds 当截图坐标点击会静默偏移。
-/// Retina 场景（shot 200x200，input = shot × 0.5）下：输入矩形
-/// (50,30,20x20) 必须报告为截图矩形 (100,60,40x40)。
+/// Review-fix regression (round-11 review P1): the bounds returned by
+/// element_at_point must be in **screenshot pixel space** — a11y element
+/// rectangles are input/screen coordinates; when the screenshot's long edge
+/// is downsampled, the two coordinate sets drift apart by the scale factor,
+/// and a click using bounds as screenshot coordinates would silently land
+/// offset. In the Retina scenario (shot 200x200, input = shot × 0.5): the
+/// input rect (50,30,20x20) must be reported as the screenshot rect
+/// (100,60,40x40).
 #[tokio::test]
 async fn element_at_point_reports_bounds_in_screenshot_space() {
     let (fixture, _restore) = fixture();
@@ -3234,7 +3354,7 @@ async fn element_at_point_reports_bounds_in_screenshot_space() {
             secure: false,
         });
     }
-    // 建立映射表。
+    // Establish the scale map.
     let _ = fixture
         .tool
         .execute(
@@ -3243,7 +3363,8 @@ async fn element_at_point_reports_bounds_in_screenshot_space() {
         )
         .await;
 
-    // 查询点 (120, 80) 在截图像素空间 → 输入 (60, 40) → 命中元素。
+    // The query point (120, 80) in screenshot pixel space → input (60, 40)
+    // → hits the element.
     let result = fixture
         .tool
         .execute(
@@ -3271,12 +3392,14 @@ async fn element_at_point_reports_bounds_in_screenshot_space() {
 }
 
 // ---------------------------------------------------------------------------
-// Round-12 评审回归
+// Round-12 review regressions
 // ---------------------------------------------------------------------------
 
-/// round-12 评审 M6：`screenshot` 动作的截图就是动作本身——捕获失败必须
-/// 上抛为失败结果（success=false），而不是降级成 success+warning 且审计记
-/// ok（旧行为让"截屏不可用"这一平台状态对模型和审计都不可见）。
+/// Round-12 review M6: the screenshot action's capture IS the action — a
+/// capture failure must propagate as a failed result (success=false), not
+/// degrade to success+warning with an ok audit record (the old behavior made
+/// the "capture unavailable" platform state invisible to both the model and
+/// the audit).
 #[tokio::test]
 async fn screenshot_failure_fails_the_action_instead_of_warning() {
     let (fixture, _restore) = fixture();
@@ -3315,9 +3438,11 @@ async fn screenshot_failure_fails_the_action_instead_of_warning() {
     );
 }
 
-/// round-12 评审：执行错误路径的审计脱敏此前只在构造侧验证过——没有任何
-/// 测试真正执行一次带错误的 type 并核对文件字节。钉死：错误消息进审计
-/// （后端错误构造器保证不含输入内容），但键入文本绝不出现。
+/// Round-12 review: audit redaction on the execution-error path was
+/// previously verified only on the construction side — no test actually
+/// executed a failing type and checked the file bytes. Pinned: the error
+/// message goes into the audit (the backend error constructors guarantee it
+/// carries no input content), but the typed text never appears.
 #[tokio::test]
 async fn type_execution_error_audits_the_error_never_the_text() {
     let (fixture, _restore) = fixture();
@@ -3348,8 +3473,9 @@ async fn type_execution_error_audits_the_error_never_the_text() {
     );
 }
 
-/// round-12 评审：`type_preview_full` 的 4096 截断此前没有事件级测试——
-/// 4097 字符的非安全 type 不得携带全文预览（对话框回退到字符数摘要）。
+/// Round-12 review: type_preview_full's 4096 truncation had no event-level
+/// test — a non-secure type of 4097 characters must not carry the full-text
+/// preview (the dialog falls back to the character-count summary).
 #[tokio::test]
 async fn confirm_event_drops_full_preview_above_4096_chars() {
     let (fixture, _restore) = fixture();
@@ -3392,9 +3518,11 @@ async fn confirm_event_drops_full_preview_above_4096_chars() {
     );
 }
 
-/// round-12 评审：键位形式的和弦同样是打字——非安全目标上的 `key
-/// "h+a+c+k"` 确认事件必须携带字符序列预览（与 type 同一透明度、同一
-/// 4096 上限），否则用户在逐块盲签。安全目标仍然只给计数。
+/// Round-12 review: character-key chords are typing too — on a non-secure
+/// target the `key "h+a+c+k"` confirm event must carry the character-sequence
+/// preview (the same transparency as type, the same 4096 cap), otherwise the
+/// user is blind-signing chunk by chunk. Secure targets still get a count
+/// only.
 #[tokio::test]
 async fn char_carrying_chord_confirm_carries_preview_on_non_secure_target() {
     let (fixture_plain, _restore_plain) = fixture();
@@ -3440,9 +3568,11 @@ async fn char_carrying_chord_confirm_carries_preview_on_non_secure_target() {
     );
 }
 
-/// 同一契约的安全目标侧：密码框上的和弦打字只给计数，预览绝不出现
-/// （masking 契约不变）。独立测试：同一 fn 内二次 `fixture()` 会对
-/// ENV_LOCK 自死锁（std Mutex 不可重入，第一阶段的守卫仍存活）。
+/// The secure-target side of the same contract: chord typing on a password
+/// field gets a count only; the preview never appears (the masking contract
+/// is unchanged). A separate test: calling `fixture()` twice inside the same
+/// fn would self-deadlock on ENV_LOCK (std Mutex is not reentrant; the first
+/// phase's guard is still alive).
 #[tokio::test]
 async fn char_carrying_chord_confirm_stays_masked_on_secure_target() {
     let (fixture_secure, _restore_secure) = fixture();
@@ -3487,10 +3617,12 @@ async fn char_carrying_chord_confirm_stays_masked_on_secure_target() {
     );
 }
 
-/// round-12 评审：跨会话物理输入锁此前只在裸 mutex 上有单测——把 run()
-/// 里的 `lock_physical_input()` 调用删掉，整个套件仍然全绿。钉死端到端
-/// 契约：会话 A 持锁期间，会话 B 的输入动作被 InputBusy 拒绝且绝不注入
-/// （代价：拒绝路径本身要等满 20s 有界超时）。
+/// Round-12 review: the cross-session physical input lock previously had a
+/// unit test only on the bare mutex — deleting the `lock_physical_input()`
+/// call in run() would still leave the whole suite green. Pins the end-to-end
+/// contract: while session A holds the lock, session B's input action is
+/// rejected with InputBusy and never injects (the cost: the rejection path
+/// itself waits out the full 20s bounded timeout).
 #[tokio::test]
 async fn held_input_lock_rejects_other_sessions_to_inject() {
     let (fixture, _restore) = fixture();
@@ -3511,7 +3643,7 @@ async fn held_input_lock_rejects_other_sessions_to_inject() {
     );
     fixture.shared.grant_session("s-other");
 
-    // 会话 1 持锁（模拟一个在行的注入动作）。
+    // Session 1 holds the lock (simulating an in-flight injection action).
     let guard = fixture
         .shared
         .lock_physical_input()
@@ -3545,15 +3677,18 @@ async fn held_input_lock_rejects_other_sessions_to_inject() {
     );
 }
 
-/// round-12 评审：同会话工厂重入时，迟到的旧工具 Drop 此前会无条件撤销
-/// 该会话的授权——把注册表侧的身份检查延伸到 consent 撤销。新工具注册
-/// 之后旧工具 Drop，新工具的授权与对话框必须原样保留。
+/// Round-12 review: when the same-session factory re-enters, a late stale
+/// tool's Drop previously revoked the session's grant unconditionally — the
+/// registry-side identity check is extended to the consent revocation. When
+/// the new tool has registered and then the old tool Drops, the new tool's
+/// grant and dialogs must be kept intact.
 #[test]
 fn stale_tool_drop_keeps_a_same_session_successors_grant() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
 
-    // 后继工具：同会话注册（with_parts 内部 insert 顶替旧条目）。
+    // The successor tool: registered for the same session (with_parts'
+    // internal insert replaces the old entry).
     let mock2 = Arc::new(Mutex::new(MockState::default()));
     let events2 = Arc::new(StdMutex::new(Vec::new()));
     let mock2_for_factory = Arc::clone(&mock2);
@@ -3569,14 +3704,16 @@ fn stale_tool_drop_keeps_a_same_session_successors_grant() {
         Arc::new(RecordingSink(Arc::clone(&events2))),
     );
 
-    // 旧工具此刻 Drop：不得撤掉 s-test 的授权（后继已在注册表中）。
+    // The old tool now Drops: it must not revoke s-test's grant (the
+    // successor is already in the registry).
     drop(fixture.tool);
 
     assert!(
         fixture.shared.has_active_grant("s-test"),
         "the successor's grant must survive the stale tool's Drop"
     );
-    // 后继工具仍可实际注入（授权可用且后端注册未被破坏）。
+    // The successor tool can still actually inject (the grant is available
+    // and the backend registration is intact).
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

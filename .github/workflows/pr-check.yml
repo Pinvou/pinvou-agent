@@ -27,8 +27,8 @@ name: PR Check
 #   欠账由清理 PR(#35 及后续)消化后逐个升 deny。
 # - windows-rust-test: Native Windows coverage runs for ready high-risk paths or
 #   ci:full-rust. Merge Queue does not repeat it; main retains cumulative coverage.
-# - macos-rust-check: Native macOS compile check (check 不链接,无需签名/打包)
-#   mirrors windows-rust-test gating; Linux 腿无法暴露平台专属类型错误。
+# - macos-rust-check: Native macOS compile check (check does not link, no signing/packaging)
+#   mirrors windows-rust-test gating; the Linux leg cannot expose platform-specific type errors.
 # - windows-codex-runtime-test:Relevant PRs exercise the browser-wrapper lifecycle,
 #   prepare Node + ACP Bridge, and verify packaged resources on native Windows.
 # - Benchmarks stay outside product PR/MQ gates and run manually in an isolated environment.
@@ -1352,11 +1352,13 @@ jobs:
     name: macos-rust-check
     needs: changes
     # Native macOS compile coverage for ready high-risk/explicit PRs and main;
-    # 与 windows-rust-test 同门禁。平台专属代码(如 computer_use/platform/macos.rs)
-    # 的类型错误只有原生 cargo check 能发现,Linux 腿(ubuntu)编译不到 macOS target。
-    # Merge Queue 不重复本腿,Linux rust-test 验证组合树;check 不链接,无需
-    # 签名/打包/前端产物(同 windows-rust-test:2026-08 已在 macOS 实证
-    # cargo check --all-targets 不依赖 node_modules,故不装 node/npm)。
+    # same gate as windows-rust-test. Type errors in platform-specific code (e.g.
+    # computer_use/platform/macos.rs) are only caught by a native cargo check; the Linux
+    # leg (ubuntu) never compiles the macOS target. The Merge Queue does not repeat this
+    # leg; the Linux rust-test verifies the combined tree; check does not link, so no
+    # signing/packaging/frontend artifacts are needed (same as windows-rust-test: verified
+    # empirically on macOS in 2026-08 that cargo check --all-targets does not depend on
+    # node_modules, hence no node/npm install).
     if: >-
       ${{
         !cancelled() &&
@@ -1376,13 +1378,15 @@ jobs:
         )
       }}
     runs-on: macos-15
-    # check 冷编译耗时(macOS runner 更慢);与 windows-rust-test 同上限,
-    # 挂死不长期烧 runner 分钟。
+    # A cold check build is slow (macOS runners slower still); same cap as windows-rust-test,
+    # so a hang does not burn runner minutes for long.
     timeout-minutes: 90
     env:
-      # 同 mac-build:按平台注入 sh 版栈 wrapper(codewhale-tui O2 编译的
-      # rustc/LLVM 栈溢出 macOS 已实测触发,见 rustc-stack-wrapper 头注释)。
-      # 必须用 ${{ github.workspace }} 绝对路径,避免 Cargo 按进程 cwd 双拼解析。
+      # Same as mac-build: inject the sh stack wrapper per platform (the rustc/LLVM stack
+      # overflow from codewhale-tui's O2 build has actually been triggered on macOS, see
+      # the rustc-stack-wrapper header comment).
+      # Must use the ${{ github.workspace }} absolute path so Cargo does not double-join
+      # the per-process cwd when resolving it.
       RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
     steps:
       - name: Checkout
@@ -1390,22 +1394,24 @@ jobs:
         with:
           submodules: false
 
-      - name: 初始化公共底座 submodule
+      - name: Init CodeWhale submodule
         run: git submodule update --init --recursive -- CodeWhale
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      # 同 rust-test/windows-rust-test:把 src-tauri/rust-toolchain.toml 锁定的
-      # 工具链设为 default,保证从仓库根 --manifest-path 调用 cargo 时与本地
-      # 同一 pinned 版本(单一真相源是文件,版本号不在 workflow 里重复硬编码)。
-      - name: 对齐 rust-toolchain.toml 锁定的工具链
+      # Same as rust-test/windows-rust-test: set the toolchain pinned by
+      # src-tauri/rust-toolchain.toml as default, so cargo invoked from the repo root via
+      # --manifest-path uses the same pinned version as locally (the file is the single
+      # source of truth; the version number is not re-hardcoded in the workflow).
+      - name: Align rust-toolchain.toml pinned toolchain
         working-directory: pinvou3-app/src-tauri
         run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
 
-      # bge-m3 是 gitignored 大资源(559MB),CI 干净 checkout 没有它;同
-      # mac-build 与 Linux rust-test:造空占位文件骗过 tauri-build 资源校验。
-      - name: bge-m3 占位 (骗过 tauri-build 资源校验)
+      # bge-m3 is a gitignored large asset (559MB); a clean CI checkout does not have it.
+      # Same as mac-build and the Linux rust-test: create empty placeholder files to pass
+      # tauri-build's resource validation.
+      - name: bge-m3 placeholder (satisfies tauri-build resource check)
         run: |
           d=pinvou3-app/src-tauri/resources/bge-m3
           mkdir -p "$d"
@@ -1417,12 +1423,14 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: pinvou3-app/src-tauri
-          # 独立 key:macOS 产物与 Linux/Windows 互不通用,不与兄弟腿共用。
+          # Separate key: macOS artifacts are not interchangeable with Linux/Windows; do not
+          # share with the sibling legs.
           shared-key: macos-rust-check
-          # 只在 main 保存(暖 cache 唯一来源);PR 侧只读,不占 10GB 限额。
+          # Save only on main (the sole source of warm cache); the PR side is read-only and
+          # does not eat the 10GB quota.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: macOS Rust 全目标检查
+      - name: macOS Rust all-targets check
         run: >-
           cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml
           --all-targets --features dev-tools

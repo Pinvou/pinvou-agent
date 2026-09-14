@@ -64,16 +64,19 @@ pub(crate) fn sanitize_name(name: &str, max_chars: usize) -> String {
     cleaned.trim().to_string()
 }
 
-/// type 注入的分块粒度（字符数）：单事件后端（Windows SendInput 批量、
-/// macOS CGEvent 批量）没有事件间取消检查点，整段 `enigo.text()` 在低级
-/// 键盘钩子（AV/反键盘记录产品对每个事件同步处理）下可合法超过调用预算
-/// ——分块 + 块间取消检查把调用方超时后僵尸注入的上界从整段文本压到一个
-/// 块（round-12 评审 M5）。64 字符块在 50ms/事件的最慢合理钩子下约 6s，
-/// 相对 700s 预算可忽略。
+/// The chunk granularity of type injection (in characters): single-event backends (Windows
+/// SendInput batch, macOS CGEvent batch) have no between-event cancellation checkpoint, and
+/// a whole-text `enigo.text()` can legitimately exceed the call budget under low-level
+/// keyboard hooks (AV/anti-keylogger products process each event synchronously) — chunking
+/// plus between-chunk cancellation checks shrink the upper bound of zombie injection after
+/// a caller timeout from the whole text to one chunk (round-12 review M5). A 64-character
+/// chunk is roughly 6s under the slowest reasonable 50ms/event hook, negligible against the
+/// 700s budget.
 pub(crate) const TYPE_CHUNK_CHARS: usize = 64;
 
-/// 按字符（而非字节）把文本切成至多 `chunk_chars` 字符的块。空输入产生
-/// 空向量（调用方循环体不执行，与 enigo 对空文本的 no-op 一致）。
+/// Split the text into chunks of at most `chunk_chars` characters (by character, not by
+/// byte). Empty input produces an empty vector (the caller's loop body never runs,
+/// consistent with enigo's no-op on empty text).
 pub(crate) fn char_chunks(text: &str, chunk_chars: usize) -> Vec<&str> {
     debug_assert!(chunk_chars > 0);
     let mut chunks = Vec::new();
@@ -134,7 +137,8 @@ mod tests {
         assert_eq!(char_chunks("ab", 4), vec!["ab"]);
         assert_eq!(char_chunks("abcd", 2), vec!["ab", "cd"]);
         assert_eq!(char_chunks("abcde", 2), vec!["ab", "cd", "e"]);
-        // 多字节字符不可被切开：3 字符块对 4 字节 CJK 同样安全。
+        // Multi-byte characters must not be split: a 3-character chunk is equally safe for
+        // 4-byte CJK.
         assert_eq!(char_chunks("中文测试", 3), vec!["中文测", "试"]);
     }
 }

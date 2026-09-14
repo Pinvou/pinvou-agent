@@ -256,9 +256,10 @@
     activeModelId: null,
     currentSessionModelId: null, // 当前 active session 显式绑定的模型;null=跟随全局默认
     superPermEnabled: false,
-    // Computer use（截屏 + 键鼠控制）授权状态。enabled 是全局开关（默认关）；
-    // granted/stopped/sessionId/grantRequest/confirmRequest 描述当前 active
-    // 会话的授权与待决请求，由 bridge/computer_use.js 维护。
+    // Computer use (screenshot + keyboard/mouse control) authorization state. enabled is
+    // the global switch (off by default);
+    // granted/stopped/sessionId/grantRequest/confirmRequest describe the current active
+    // session's authorization and pending requests, maintained by bridge/computer_use.js.
     computerUse: {
       enabled: false,
       granted: false,

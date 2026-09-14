@@ -2121,20 +2121,22 @@ fn reserved_target_is_unchanged_impl(_file: &File, path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
 }
 
-/// 测试辅助（round-10 评审 m12）：断言文件权限为 0600。tool 层的 CI 测试
-/// 经此检查 capture_and_store 落盘的截图——目标 cfg 留在本适配层
-/// （architecture guard 规则）。Windows 无 POSIX 权限位，恒通过。
-/// 断言消息只述结果、不复述路径（round-12 评审：路径内含 session id，
-/// CodeQL 把它格式化进 panic/assert 消息建模为敏感信息落日志；测试
-/// 失败时从调用点即可定位具体文件）。
+/// Test helper (round-10 review m12): assert the file mode is 0600. The tool layer's CI
+/// tests check the screenshot capture_and_store wrote through this — the target cfg stays
+/// in this adapter layer (architecture guard rule). Windows has no POSIX mode bits, always
+/// passes. The assertion message states only the outcome and never repeats the path
+/// (round-12 review: the path contains a session id, and CodeQL models it formatted into
+/// panic/assert messages as sensitive information reaching logs; on test failure the
+/// specific file is identifiable from the call site).
 #[cfg(test)]
 pub(crate) fn assert_private_file_mode(path: &Path) {
     assert_private_mode_impl(path, 0o600);
 }
 
-/// 测试辅助（审阅 round-11）：断言目录权限为 0700。computer_use 的审计
-/// 日志目录经此检查——目标 cfg 留在本适配层（architecture guard 规则，
-/// 同 [`assert_private_file_mode`]）。Windows 无 POSIX 权限位，恒通过。
+/// Test helper (review round-11): assert the directory mode is 0700. computer_use's audit
+/// log directory is checked through this — the target cfg stays in this adapter layer
+/// (architecture guard rule, same as [`assert_private_file_mode`]). Windows has no POSIX
+/// mode bits, always passes.
 #[cfg(test)]
 pub(crate) fn assert_private_dir_mode(path: &Path) {
     assert_private_mode_impl(path, 0o700);
@@ -2920,9 +2922,10 @@ pub(crate) mod tests {
         let _ = std::fs::remove_file(link);
     }
 
-    /// Round-6 评审回归：`open_private_append_file` 的 `mode(0o600)` 只作用于
-    /// 创建——已存在的宽松文件必须在每次 open 时重新收紧，否则早期版本或
-    /// 外部工具留下的 0644 文件将永远组/全局可读。
+    /// Round-6 review regression: `open_private_append_file`'s `mode(0o600)` only applies
+    /// at creation — an existing loose file must be re-tightened on every open, otherwise a
+    /// 0644 file left behind by an earlier version or an external tool stays group/world
+    /// readable forever.
     #[cfg(unix)]
     #[test]
     fn private_append_open_re_tightens_a_loose_existing_file() {
@@ -2931,7 +2934,7 @@ pub(crate) mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("audit-session.jsonl");
 
-        // 模拟历史遗留的宽松文件。
+        // Simulate a loose file left over from history.
         std::fs::write(&path, b"prior revision data").unwrap();
         let loose = std::fs::Permissions::from_mode(0o644);
         std::fs::set_permissions(&path, loose).unwrap();

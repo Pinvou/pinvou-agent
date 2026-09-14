@@ -1,30 +1,35 @@
-//! Computer Use 核心类型：动作枚举、错误、后端结果结构、按键和弦解析。
+//! Computer Use core types: action enums, errors, backend result structs, key chord parsing.
 //!
-//! 坐标契约（全模块唯一事实来源）：模型看到的坐标永远是「截图空间」——
-//! 工具最近一次返回的 PNG 的像素空间，原点在左上。截图空间 → 设备物理像素 →
-//! 输入注入坐标的换算集中在 [`crate::features::computer_use::scaling::ScaleMap`]，
-//! 本文件只定义承载这些空间的结构。
+//! Coordinate contract (the single source of truth for the whole module): the coordinates the
+//! model sees are always "screenshot space" — the pixel space of the PNG the tool most
+//! recently returned, origin at the top-left. The conversion screenshot space → device
+//! physical pixels → input injection coordinates is centralized in
+//! [`crate::features::computer_use::scaling::ScaleMap`]; this file only defines the structs
+//! carrying those spaces.
 
 use serde::Serialize;
 
-/// 工具名（单一 ToolSpec，`action` 字段区分动作）。
+/// Tool name (a single ToolSpec; the `action` field distinguishes actions).
 pub const TOOL_NAME: &str = "computer_use";
-/// 输入类动作缺少会话授权时发出的 Tauri 事件。
+/// Tauri event emitted when an input action lacks session authorization.
 pub const EVENT_GRANT_REQUIRED: &str = "computer_use:grant_required";
-/// T3 后果性动作被拦截、等待用户确认时发出的 Tauri 事件。
+/// Tauri event emitted when a T3 consequential action is intercepted, awaiting user confirmation.
 pub const EVENT_CONFIRM_REQUIRED: &str = "computer_use:confirm_required";
 
-/// 动作同意层级（consent tier）。
+/// Action consent tier.
 ///
-/// 单一事实来源：`class()` 决定门控强度，`requires_t3_check` 等派生判断一律
-/// 以此为准（曾因层级表散落三处导致 MouseDown/Up 绕过 T3）。
+/// Single source of truth: `class()` decides the gating strength, and derived checks like
+/// `requires_t3_check` all defer to it (a formerly scattered three-place tier table once let
+/// MouseDown/Up bypass T3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionClass {
-    /// 只读观察：screenshot / cursor_position / wait / ui_tree / element_at_point。
+    /// Read-only observation: screenshot / cursor_position / wait / ui_tree / element_at_point.
     Observe,
-    /// 真实输入注入：鼠标移动/滚轮/点击/按下释放/拖拽/键盘/文本——全部需要
-    /// 会话授权。mouse_move 与 scroll 同样实际触碰用户的指针设备，与点击同级
-    /// 门控（评审修正：原 Passive 层允许无授权移动用户光标/滚动滚轮）。
+    /// Real input injection: mouse move/wheel/click/press-release/drag/keyboard/text — all
+    /// require session authorization. mouse_move and scroll likewise actually touch the
+    /// user's pointer device, gated at the same tier as clicks (review correction: the
+    /// former Passive tier allowed moving the user's cursor/scrolling the wheel without
+    /// authorization).
     Input,
 }
 
@@ -76,15 +81,16 @@ impl ScrollDirection {
     }
 }
 
-/// 归一化后的按键身份。`key` / `hold_key` 的 xdotool 风格和弦（"ctrl+s"、
-/// "Return"、"alt+Tab"）解析成一组 `Key`，后端按下全部再逆序释放。
+/// The normalized key identity. The xdotool-style chords of `key` / `hold_key` ("ctrl+s",
+/// "Return", "alt+Tab") parse into a set of `Key`s; the backend presses all of them then
+/// releases in reverse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Key {
     Control,
     Alt,
     Shift,
-    /// macOS Cmd / Windows Win / Linux Super。
+    /// macOS Cmd / Windows Win / Linux Super.
     Meta,
     Enter,
     Escape,
@@ -101,14 +107,14 @@ pub enum Key {
     End,
     PageUp,
     PageDown,
-    /// F1..=F12。
+    /// F1..=F12.
     Function(u8),
-    /// 单字符键（字母、数字、标点）。
+    /// Single-character key (letters, digits, punctuation).
     Char(char),
 }
 
 impl Key {
-    /// 规范化显示名（用于审计与错误信息）。
+    /// Canonical display name (used for audit and error messages).
     pub fn canonical_name(self) -> String {
         match self {
             Self::Control => "ctrl".to_string(),
@@ -140,9 +146,10 @@ impl Key {
     }
 }
 
-/// 单个和弦的 token 上限。合法快捷键最多 4 键（ctrl+shift+alt+f1）；更长的
-/// 序列几乎必然是模型在用 key 动作逐字符键入文本（评审发现：无上限时可用
-/// `key "p"` 之类的调用绕开 type 的筛查与审计策略）。
+/// Token cap for a single chord. Legitimate shortcuts have at most 4 keys
+/// (ctrl+shift+alt+f1); longer sequences are almost certainly the model typing text
+/// character by character via the key action (review finding: with no cap, calls like
+/// `key "p"` could bypass type's screening and audit policy).
 pub const MAX_KEY_CHORD_TOKENS: usize = 4;
 
 fn parse_key_token(token: &str) -> Option<Key> {
@@ -182,9 +189,10 @@ fn parse_key_token(token: &str) -> Option<Key> {
                     return None;
                 }
             }
-            // 单字符键：归一到小写（大小写不敏感；要按大写 "S" 用 shift+s）。
-            // 控制字符不是可按压的键位，拒绝注入（评审发现：NUL/ESC 之类的
-            // 不可见字符经 key 动作注入既无意义也难以审计）。
+            // Single-character key: normalize to lowercase (case-insensitive; to press an
+            // uppercase "S" use shift+s). Control characters are not pressable key positions
+            // and are refused (review finding: injecting invisible characters like NUL/ESC
+            // through the key action is both meaningless and hard to audit).
             let mut chars = lower.chars();
             match (chars.next(), chars.next()) {
                 (Some(c), None) if !c.is_control() => return Some(Key::Char(c)),
@@ -195,9 +203,9 @@ fn parse_key_token(token: &str) -> Option<Key> {
     Some(named)
 }
 
-/// 解析 xdotool 风格和弦："ctrl+s"、"Return"、"alt+Tab"、"shift+f5"。
-/// 大小写不敏感；同义词表见 `parse_key_token`。token 数上限
-/// [`MAX_KEY_CHORD_TOKENS`]。
+/// Parse an xdotool-style chord: "ctrl+s", "Return", "alt+Tab", "shift+f5".
+/// Case-insensitive; see `parse_key_token` for the synonym table. The token count is capped
+/// at [`MAX_KEY_CHORD_TOKENS`].
 ///
 /// Parse errors describe the chord's SHAPE only and never echo the input
 /// text: the error string is written into the audit log's parse-failure
@@ -234,23 +242,24 @@ pub fn parse_key_chord(text: &str) -> Result<Vec<Key>, String> {
     Ok(keys)
 }
 
-/// 后端能力声明。stub 后端全部 false；真实后端按平台实际支持填写。
+/// Backend capability declaration. The stub backend reports all false; real backends fill in
+/// what the platform actually supports.
 #[derive(Debug, Clone)]
 pub struct Capabilities {
     pub screenshot: bool,
     pub input: bool,
     pub ui_tree: bool,
-    /// 自由文本说明（如 "input unavailable: no portal authorization"）。
+    /// Free-text explanation (e.g. "input unavailable: no portal authorization").
     pub notes: String,
 }
 
-/// 一次屏幕捕获的原始结果（设备物理像素）。
+/// The raw result of one screen capture (device physical pixels).
 ///
-/// - `rgba`：宽度×高度×4 字节的 RGBA 像素。
-/// - `origin_x/origin_y`：显示器原点，单位是**输入坐标空间**
-///   （Windows/X11 为物理像素；macOS 为 CGEvent 点）。
-/// - `input_scale_x/input_scale_y`：设备物理像素 → 输入坐标的倍率。
-///   Windows/X11 为 1.0；macOS 为 1/backing_scale_factor（Retina 2x 时为 0.5）。
+/// - `rgba`: width×height×4 bytes of RGBA pixels.
+/// - `origin_x/origin_y`: the monitor origin, in **input coordinate space**
+///   (Windows/X11 physical pixels; macOS CGEvent points).
+/// - `input_scale_x/input_scale_y`: the device-physical-pixel → input-coordinate scale.
+///   Windows/X11 is 1.0; macOS is 1/backing_scale_factor (0.5 on a 2x Retina).
 #[derive(Debug, Clone)]
 pub struct Capture {
     pub rgba: Vec<u8>,
@@ -263,13 +272,13 @@ pub struct Capture {
 }
 
 impl Capture {
-    /// 设备物理像素 → 输入坐标倍率（每平台规则编码于此）。
+    /// Device physical pixels → input coordinate scale (per-platform rule encoded here).
     pub fn input_scale(&self) -> (f64, f64) {
         (self.input_scale_x, self.input_scale_y)
     }
 }
 
-/// `element_at_point` 命中的 UI 元素（坐标为输入坐标空间）。
+/// The UI element hit by `element_at_point` (coordinates in input coordinate space).
 #[derive(Debug, Clone, Serialize)]
 pub struct ElementInfo {
     pub role: String,
@@ -278,28 +287,31 @@ pub struct ElementInfo {
     pub y: i32,
     pub width: i32,
     pub height: i32,
-    /// 密码框/安全文本字段（T3 强制确认信号之一）。
+    /// Password/secure text field (one of the T3 forced-confirmation signals).
     pub secure: bool,
 }
 
-/// `ui_tree` 抓取选项。`None` 由后端给默认值。
+/// `ui_tree` fetch options. `None` lets the backend apply its defaults.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UiTreeOptions {
     pub max_depth: Option<u32>,
     pub max_nodes: Option<u32>,
 }
 
-/// 后端错误。平台缺少能力时必须显式 `Unsupported`，不得静默降级。
+/// Backend error. When the platform lacks a capability it must be an explicit
+/// `Unsupported`, never a silent degradation.
 #[derive(Debug, Clone)]
 pub enum ComputerUseError {
-    /// 该平台/会话不支持此能力（如 portal 未提供 RemoteDesktop、未实现的后端）。
+    /// This platform/session does not support the capability (e.g. the portal does not offer
+    /// RemoteDesktop, an unimplemented backend).
     Unsupported {
         capability: &'static str,
         detail: String,
     },
-    /// 能力原则上支持但当前不可用（权限未授予、显示器句柄失效等）。
+    /// The capability is supported in principle but currently unavailable (permission not
+    /// granted, a stale monitor handle, etc.).
     Unavailable { detail: String },
-    /// 执行失败。
+    /// Execution failed.
     Failed { detail: String },
 }
 
@@ -323,9 +335,10 @@ impl ComputerUseError {
         }
     }
 
-    /// 保留错误类别、改写明细（round-12 评审：拖拽收尾的错误合并此前把
-    /// Unavailable 一律重包成 Failed，"以管理员身份运行"之类**基于类别**
-    /// 的上游处置随之丢失——文本线索还在，分类没了）。
+    /// Keep the error kind, rewrite the detail (round-12 review: the drag-teardown error
+    /// merging previously re-wrapped every Unavailable as Failed, losing category-based
+    /// upstream handling like "run as administrator" — the textual clue survived, the
+    /// classification did not).
     pub fn same_kind(&self, detail: impl Into<String>) -> Self {
         match self {
             Self::Unsupported { capability, .. } => Self::Unsupported {
@@ -352,7 +365,7 @@ impl std::fmt::Display for ComputerUseError {
 
 impl std::error::Error for ComputerUseError {}
 
-/// 解析校验后的工具调用。
+/// A parsed, validated tool call.
 #[derive(Debug, Clone)]
 pub enum ComputerUseAction {
     Screenshot,
@@ -376,7 +389,7 @@ pub enum ComputerUseAction {
         amount: u32,
         at: Option<(i64, i64)>,
     },
-    /// count: 1=单击 2=双击 3=三击。
+    /// count: 1 = single click, 2 = double click, 3 = triple click.
     Click {
         button: MouseButton,
         count: u8,
@@ -460,7 +473,7 @@ impl ComputerUseAction {
         }
     }
 
-    /// 动作是否携带截图空间坐标（需要 ScaleMap 才能执行）。
+    /// Whether the action carries screenshot-space coordinates (needs a ScaleMap to execute).
     pub fn needs_scale_map(&self) -> bool {
         match self {
             Self::ElementAtPoint { .. } | Self::MouseMove { .. } | Self::Drag { .. } => true,
@@ -469,9 +482,10 @@ impl ComputerUseAction {
         }
     }
 
-    /// 动作完成后是否补拍截图附上。单点事实来源：真实改变屏幕内容的动作
-    /// （键盘、点击、拖拽、滚轮）与 wait 后都补拍；mouse_move 只动指针、
-    /// 不改内容，补拍只会烧 token，不附。
+    /// Whether a follow-up screenshot is attached after the action. Single source of truth:
+    /// actions that actually change screen content (keyboard, click, drag, wheel) and wait
+    /// all attach a follow-up; mouse_move only moves the pointer and changes no content, so
+    /// a follow-up would only burn tokens and is not attached.
     pub fn attaches_screenshot(&self) -> bool {
         match self {
             Self::Screenshot | Self::Wait { .. } | Self::Scroll { .. } => true,
@@ -483,7 +497,7 @@ impl ComputerUseAction {
             | Self::KeyChord { .. }
             | Self::HoldKey { .. } => true,
             Self::CursorPosition | Self::UiTree { .. } | Self::ElementAtPoint { .. } => false,
-            // mouse_move 特意不补拍。
+            // mouse_move deliberately does not attach a screenshot.
             Self::MouseMove { .. } => false,
         }
     }
@@ -538,15 +552,16 @@ mod tests {
         assert!(parse_key_chord("ctrl+nosuchkey").is_err());
         assert!(parse_key_chord("f13").is_err());
         assert!(parse_key_chord("f0").is_err());
-        // 纯修饰键不构成一次按键。
+        // Modifiers alone do not constitute a key press.
         assert!(parse_key_chord("ctrl+shift").is_err());
-        // 多字符且不在同义词表。
+        // Multi-character and not in the synonym table.
         assert!(parse_key_chord("ctrl+ab").is_err());
     }
 
-    /// 评审修复回归：解析失败的错误串只描述和弦的**形状**，绝不回显输入
-    /// 文本——错误串会写进审计日志的 parse-failure 记录，模型可以用 text
-    /// 字段携带敏感内容探测（M1）。
+    /// Review-fix regression: a parse-failure error string describes only the chord's
+    /// **shape** and never echoes the input text — the error string is written into the
+    /// audit log's parse-failure record, and the model could carry sensitive content in the
+    /// text field to probe (M1).
     #[test]
     fn key_chord_errors_do_not_echo_the_input_text() {
         for input in ["hunter2", "ctrl+secret", "a+b+c+d+e", "ctrl+", "ctrl+shift"] {
@@ -555,16 +570,17 @@ mod tests {
         }
     }
 
-    /// 评审修复回归：和弦 token 数上限 ≤4，控制字符不是合法键位。
-    /// （更长的序列应改走 type 动作，接受焦点筛查与确认。）
+    /// Review-fix regression: the chord token cap is ≤4 and control characters are not valid
+    /// key positions. (Longer sequences should take the type action instead, which accepts
+    /// focus screening and confirmation.)
     #[test]
     fn key_chord_rejects_overlong_chords_and_control_characters() {
         assert!(parse_key_chord("ctrl+alt+shift+meta+c").is_err());
         assert!(parse_key_chord("a+b+c+d+e").is_err());
-        // 上限内仍接受。
+        // Within the cap, still accepted.
         assert!(parse_key_chord("ctrl+alt+shift+f1").is_ok());
         assert!(parse_key_chord("ctrl+a").is_ok());
-        // 控制字符（NUL、ESC、BEL、DEL……）一律拒绝。
+        // Control characters (NUL, ESC, BEL, DEL, ...) are rejected outright.
         for control in ['\0', '\u{1}', '\u{7}', '\u{1b}', '\u{7f}'] {
             let chord = control.to_string();
             assert!(
@@ -587,7 +603,8 @@ mod tests {
             ComputerUseAction::Wait { ms: 100 }.class(),
             ActionClass::Observe
         );
-        // mouse_move/scroll 真实触碰指针设备,与点击同级门控(评审修正)。
+        // mouse_move/scroll really touch the pointer device, gated at the same tier as
+        // clicks (review correction).
         assert_eq!(
             ComputerUseAction::MouseMove { x: 1, y: 2 }.class(),
             ActionClass::Input
@@ -621,7 +638,8 @@ mod tests {
             ComputerUseAction::Type { text: "x".into() }.class(),
             ActionClass::Input
         );
-        // 补拍契约:真实改变屏幕内容的动作与 wait 后补拍;mouse_move 不补拍。
+        // Follow-up contract: actions that actually change screen content and wait attach a
+        // follow-up screenshot; mouse_move does not.
         assert!(
             ComputerUseAction::Scroll {
                 direction: ScrollDirection::Down,

@@ -1,29 +1,37 @@
-//! 截图缩放与坐标映射——Computer Use 的头号 bug 源，全部换算集中在本文件。
+//! Screenshot scaling and coordinate mapping — the number-one bug source of Computer Use;
+//! all conversions are centralized in this file.
 //!
-//! 三层坐标空间：
-//! - **截图空间（shot）**：模型看到的 PNG 像素，原点左上。长边 ≤ 1440。
-//! - **设备空间（device）**：捕获显示器物理像素，全局坐标（多显示器可有负原点）。
-//! - **输入空间（input）**：输入注入 API 的坐标。Windows/X11 == 设备物理像素；
-//!   macOS == CGEvent 点 = 设备物理像素 × (1/backing_scale_factor)。
+//! Three coordinate spaces:
+//! - **Screenshot space (shot)**: the PNG pixels the model sees, origin at the top-left.
+//!   Long edge ≤ 1440.
+//! - **Device space (device)**: physical pixels of the captured monitor, global coordinates
+//!   (multi-monitor origins can be negative).
+//! - **Input space (input)**: coordinates of the input injection APIs. Windows/X11 ==
+//!   device physical pixels; macOS == CGEvent points = device physical pixels ×
+//!   (1/backing_scale_factor).
 //!
-//! `ScaleMap` 每次截图生成一份并随会话保存，后续动作坐标一律按最近一次截图换算；
-//! 截图空间 ↔ 输入空间双向换算（`shot_to_input` / `input_to_shot`），光标位置
-//! 由后端直接以输入坐标回报。
+//! A `ScaleMap` is generated per screenshot and kept with the session; subsequent action
+//! coordinates are always converted against the most recent screenshot; the conversion is
+//! bidirectional shot space ↔ input space (`shot_to_input` / `input_to_shot`), and cursor
+//! positions are reported by the backend directly in input coordinates.
 
 use xcap::image;
 
 use super::types::{Capture, ComputerUseError};
 
-/// 截图长边上限（像素）。Anthropic 建议长边 ≤1568；取 1440 兼顾细节与 token 成本。
+/// Screenshot long-edge cap (pixels). Anthropic recommends a long edge ≤1568; 1440 balances
+/// detail against token cost.
 pub const MAX_LONG_EDGE: u32 = 1440;
-/// 底座 `image_attach` 的单图硬上限是 5 MB，超限会被**静默跳过**（模型该轮
-/// 失去视觉）。PNG 对照片类内容压缩率差，1440px 的噪点截图可以远超 5 MB
-/// （评审发现）。编码后超限时按 0.8 步进降分辨率重编码，保住视觉通路，
-/// 长边不低于 [`MIN_LONG_EDGE_FLOOR`]。
+/// The foundation `image_attach` hard cap per image is 5 MB; over-limit images are
+/// **silently skipped** (the model loses vision for that turn). PNG compresses photo-like
+/// content poorly, and a noisy 1440px screenshot can far exceed 5 MB (review finding). When
+/// the encoded size exceeds the cap, re-encode at 0.8 resolution steps to keep the visual
+/// channel alive, with the long edge never below [`MIN_LONG_EDGE_FLOOR`].
 pub const MAX_IMAGE_BYTES: usize = 4 * 1024 * 1024;
 pub const MIN_LONG_EDGE_FLOOR: u32 = 640;
 
-/// 均匀缩放系数：长边压到 ≤ [`MAX_LONG_EDGE`]，小图不放大。
+/// Uniform scale factor: squeeze the long edge to ≤ [`MAX_LONG_EDGE`], never upscale small
+/// images.
 pub fn scale_factor(width: u32, height: u32) -> f64 {
     let long_edge = width.max(height);
     if long_edge == 0 {
@@ -32,27 +40,28 @@ pub fn scale_factor(width: u32, height: u32) -> f64 {
     (f64::from(MAX_LONG_EDGE) / f64::from(long_edge)).min(1.0)
 }
 
-/// 一次截图的坐标映射表。
+/// Coordinate map for one screenshot.
 #[derive(Debug, Clone)]
 pub struct ScaleMap {
-    /// 截图（PNG）宽/高，模型坐标空间。
+    /// Screenshot (PNG) width/height, the model's coordinate space.
     pub shot_w: u32,
     pub shot_h: u32,
-    /// 设备物理像素宽/高。
+    /// Device physical pixel width/height.
     pub dev_w: u32,
     pub dev_h: u32,
-    /// 显示器原点，**输入坐标空间**（Windows 物理像素；macOS 点）。
+    /// Monitor origin, in **input coordinate space** (Windows physical pixels; macOS points).
     pub origin_x: i32,
     pub origin_y: i32,
-    /// 设备物理像素 → 输入坐标倍率（Windows/X11 = 1.0；macOS Retina 2x = 0.5）。
+    /// Device physical pixels → input coordinate scale (Windows/X11 = 1.0; macOS Retina 2x = 0.5).
     pub input_scale_x: f64,
     pub input_scale_y: f64,
 }
 
 impl ScaleMap {
-    /// 从捕获结果构建映射表。`input_scale` 非正/非有限时拒绝（评审发现：
-    /// 0 或 NaN 倍率会让后续所有换算除零/产生垃圾坐标——混合 DPI 屏上曾
-    /// 静默映射到错误位置）。
+    /// Build the map from a capture result. Rejects a non-positive/non-finite `input_scale`
+    /// (review finding: a 0 or NaN scale makes every later conversion divide by zero or
+    /// produce garbage coordinates — it once silently mapped to the wrong position on a
+    /// mixed-DPI screen).
     pub fn from_capture(
         shot_w: u32,
         shot_h: u32,
@@ -79,12 +88,13 @@ impl ScaleMap {
         })
     }
 
-    /// 截图相对设备像素的缩放比（结果文本里展示给模型）。
+    /// Screenshot-to-device-pixel scale ratio (shown to the model in result text).
     pub fn factor(&self) -> f64 {
         f64::from(self.shot_w) / f64::from(self.dev_w)
     }
 
-    /// 截图坐标 → 全局输入注入坐标（发给后端 move/click 的坐标）。
+    /// Screenshot coordinates → global input injection coordinates (what is sent to the
+    /// backend's move/click).
     pub fn shot_to_input(&self, x: i64, y: i64) -> (i32, i32) {
         let ix = f64::from(self.origin_x)
             + x as f64 * f64::from(self.dev_w) * self.input_scale_x / f64::from(self.shot_w);
@@ -108,17 +118,18 @@ impl ScaleMap {
         f64::from(self.origin_x) <= fx && fx < max_x && f64::from(self.origin_y) <= fy && fy < max_y
     }
 
-    /// 全局输入坐标 → 截图坐标（cursor_position 回报给模型用）。[`Self::shot_to_input`]
-    /// 的逆换算：`(ix - origin_x) * shot_w / (dev_w * input_scale_x)`，
-    /// f64 中计算后四舍五入。分母非零由 [`Self::from_capture`]
-    /// 保证（input_scale 必须 > 0 且有限，dev 尺寸下限 1）。
+    /// Global input coordinates → screenshot coordinates (what cursor_position reports back
+    /// to the model). The inverse of [`Self::shot_to_input`]:
+    /// `(ix - origin_x) * shot_w / (dev_w * input_scale_x)`, computed in f64 then rounded.
+    /// A nonzero denominator is guaranteed by [`Self::from_capture`] (input_scale must be
+    /// > 0 and finite; dev dimensions have a floor of 1).
     ///
-    /// 结果钳制到 `[0, shot-1]`（round-12 评审）：截缩采样 ≥2× 的捕获时
-    /// （4K/5K 屏 → 1440 长边），包含性测试放行的最后一个输入像素会四舍
-    /// 五入到正好 `shot_w`（如 3840→1440 时 3839 → 1439.625 → 1440）——
-    /// 模型会收到一个越界坐标、下一次点击触发多余的"outside the
-    /// screenshot"警告。截屏坐标合法域本就是 `[0, shot-1]`，钳制不损失
-    /// 信息。
+    /// The result is clamped to `[0, shot-1]` (round-12 review): when capturing with
+    /// downsample ≥2× (4K/5K screens → 1440 long edge), the last input pixel admitted by the
+    /// containment test rounds up to exactly `shot_w` (e.g. at 3840→1440, 3839 →
+    /// 1439.625 → 1440) — the model would receive an out-of-range coordinate and the next
+    /// click would trigger a spurious "outside the screenshot" warning. The legal domain of
+    /// screenshot coordinates is `[0, shot-1]` anyway, so clamping loses no information.
     pub fn input_to_shot(&self, ix: i32, iy: i32) -> (i64, i64) {
         let sx = (f64::from(ix) - f64::from(self.origin_x)) * f64::from(self.shot_w)
             / (f64::from(self.dev_w) * self.input_scale_x);
@@ -130,8 +141,9 @@ impl ScaleMap {
         )
     }
 
-    /// 把模型给的坐标钳制到截图范围内；返回 (x, y, 是否被钳制)。
-    /// 模型经常发出越界坐标——钳制并在结果里警告，而不是失败。
+    /// Clamp model-provided coordinates into the screenshot range; returns (x, y, clamped).
+    /// Models frequently emit out-of-range coordinates — clamp and warn in the result
+    /// instead of failing.
     pub fn clamp_shot(&self, x: i64, y: i64) -> (i64, i64, bool) {
         let max_x = i64::from(self.shot_w) - 1;
         let max_y = i64::from(self.shot_h) - 1;
@@ -141,16 +153,17 @@ impl ScaleMap {
     }
 }
 
-/// 缩放并 PNG 编码后的截图。
+/// The screenshot after scaling and PNG encoding.
 pub struct ScaledScreenshot {
     pub png: Vec<u8>,
     pub map: ScaleMap,
 }
 
-/// 设备物理像素捕获 → 均匀缩放（长边 ≤1440）→ PNG 编码。
+/// Device physical pixel capture → uniform scale (long edge ≤1440) → PNG encode.
 pub fn downscale_and_encode(capture: &Capture) -> Result<ScaledScreenshot, ComputerUseError> {
-    // 评审修复：`w * h * 4` 用 checked 乘法——超大尺寸在乘法处显式失败，
-    // 而不是依赖 usize 宽度碰运气（32 位目标会回绕成假的小长度）。
+    // Review fix: `w * h * 4` uses checked multiplication — oversized dimensions fail
+    // explicitly at the multiplication instead of relying on usize width luck (32-bit
+    // targets would wrap into a fake small length).
     let expected_len = capture
         .width
         .checked_mul(capture.height)
@@ -187,8 +200,9 @@ pub fn downscale_and_encode(capture: &Capture) -> Result<ScaledScreenshot, Compu
         source
     };
 
-    // 编码超过底座 5MB 上限时降分辨率重编码：超限文件会被 image_attach
-    // 静默跳过，模型该轮直接失去视觉——宁可细节少一点也不能盲。
+    // When the encoding exceeds the foundation's 5MB cap, re-encode at a lower resolution:
+    // an over-cap file is silently skipped by image_attach and the model loses vision for
+    // that turn outright — less detail is preferable to blindness.
     let mut png = encode_png(&shot)?;
     while png.len() > MAX_IMAGE_BYTES {
         let long_edge = shot_w.max(shot_h);
@@ -233,12 +247,12 @@ mod tests {
         }
     }
 
-    /// 测试助手：合法捕获 → 解包映射表。
+    /// Test helper: valid capture → unwrap the map.
     fn map(shot_w: u32, shot_h: u32, cap: &Capture) -> ScaleMap {
         ScaleMap::from_capture(shot_w, shot_h, cap).expect("valid capture map")
     }
 
-    /// 评审修复回归：非正/非有限 input_scale 必须被拒绝。
+    /// Review-fix regression: a non-positive/non-finite input_scale must be rejected.
     #[test]
     fn from_capture_rejects_non_positive_input_scale() {
         for (sx, sy) in [(0.0, 1.0), (1.0, 0.0), (-0.5, 1.0), (1.0, -1.0)] {
@@ -249,7 +263,7 @@ mod tests {
         let error = ScaleMap::from_capture(10, 10, &capture(100, 100, 0, 0, f64::NAN, 1.0))
             .expect_err("NaN scale must be rejected");
         assert!(error.to_string().contains("input_scale"), "{error}");
-        // 合法倍率仍通过。
+        // Legitimate scales still pass.
         assert!(ScaleMap::from_capture(10, 10, &capture(100, 100, 0, 0, 0.5, 0.5)).is_ok());
     }
 
@@ -348,34 +362,34 @@ mod tests {
         assert!((f - 0.5).abs() < 1e-9);
         let f = scale_factor(2560, 1440);
         assert!((f - 1440.0 / 2560.0).abs() < 1e-9);
-        // 竖屏以高为长边。
+        // Portrait: the height is the long edge.
         let f = scale_factor(1080, 2400);
         assert!((f - 0.6).abs() < 1e-9);
     }
 
     #[test]
     fn shot_input_round_trip_windows_style() {
-        // Windows：物理像素 2560x1440，input_scale = 1，无缩放截图。
+        // Windows: physical pixels 2560x1440, input_scale = 1, unscaled screenshot.
         let map = map(1440, 810, &capture(2560, 1440, 0, 0, 1.0, 1.0));
         let (ix, iy) = map.shot_to_input(720, 405);
         assert_eq!((ix, iy), (1280, 720));
-        // 输入 → 截图回环。
+        // Input → screenshot round trip.
         let (sx, sy) = map.input_to_shot(ix, iy);
         assert_eq!((sx, sy), (720, 405));
     }
 
     #[test]
     fn shot_input_mapping_macos_retina_2x() {
-        // macOS Retina：捕获 3024x1964 物理像素，CGEvent 点是物理像素/2，
-        // xcap 报告的原点也是点。
+        // macOS Retina: capture 3024x1964 physical pixels, CGEvent points are physical
+        // pixels / 2, and the origin xcap reports is also in points.
         let cap = capture(3024, 1964, 0, 0, 0.5, 0.5);
         let shot_w = (3024.0 * scale_factor(3024, 1964)).round() as u32;
         let shot_h = (1964.0 * scale_factor(3024, 1964)).round() as u32;
         let map = map(shot_w, shot_h, &cap);
-        // 截图中心 → 输入点 = 物理像素/2。
+        // Screenshot center → input point = physical pixels / 2.
         let (ix, iy) = map.shot_to_input(i64::from(shot_w) / 2, i64::from(shot_h) / 2);
         assert!((ix - 756).abs() <= 1 && (iy - 491).abs() <= 1);
-        // 输入 → 截图回环（整除舍入允许 1px 误差）。
+        // Input → screenshot round trip (1px error allowed from division rounding).
         let (sx, sy) = map.input_to_shot(ix, iy);
         assert!((sx - i64::from(shot_w) / 2).abs() <= 1);
         assert!((sy - i64::from(shot_h) / 2).abs() <= 1);
@@ -383,7 +397,8 @@ mod tests {
 
     #[test]
     fn multi_monitor_negative_origin_is_preserved() {
-        // 主屏右侧的副屏：Windows 虚拟桌面原点可为负。
+        // Secondary screen to the right of the primary: the Windows virtual desktop origin
+        // can be negative.
         let map = map(1440, 810, &capture(2560, 1440, -2560, 0, 1.0, 1.0));
         let (ix, iy) = map.shot_to_input(0, 0);
         assert_eq!((ix, iy), (-2560, 0));
@@ -393,7 +408,7 @@ mod tests {
 
     #[test]
     fn non_unit_scale_factor_round_trips_within_one_pixel() {
-        // 奇数尺寸 + 非 1 缩放比：往返误差 ≤ 1 输入像素。
+        // Odd dimensions + non-1 scale factor: round-trip error ≤ 1 input pixel.
         let map = map(1113, 627, &capture(1983, 1117, 0, 0, 1.0, 1.0));
         for (sx, sy) in [(0, 0), (500, 300), (1112, 626), (1, 625)] {
             let (ix, iy) = map.shot_to_input(sx, sy);
@@ -414,7 +429,7 @@ mod tests {
 
     #[test]
     fn downscale_and_encode_produces_png_and_map() {
-        // 构造非纯色像素，验证编码路径真实工作。
+        // Construct non-uniform-color pixels to verify the encode path really works.
         let mut cap = capture(2000, 1000, 0, 0, 1.0, 1.0);
         for (i, byte) in cap.rgba.iter_mut().enumerate() {
             *byte = (i % 251) as u8;
@@ -428,7 +443,7 @@ mod tests {
         assert_eq!(scaled.map.shot_h, 720);
         assert!(scaled.png.len() > 8);
         assert_eq!(&scaled.png[..4], b"\x89PNG");
-        // 无缩放时尺寸不变。
+        // Unchanged dimensions when no scaling applies.
         let small = downscale_and_encode(&capture(64, 32, 0, 0, 1.0, 1.0));
         assert!(small.is_ok());
         let small = match small {
@@ -440,7 +455,7 @@ mod tests {
 
     #[test]
     fn oversized_png_downgrades_resolution_instead_of_losing_vision() {
-        // 噪点 RGBA 产生远超 5MB 的 PNG（照片类内容的最坏情况）。
+        // Noisy RGBA produces a PNG far over 5MB (worst case for photo-like content).
         let w = 2560u32;
         let h = 1440u32;
         let mut cap = Capture {
@@ -452,7 +467,7 @@ mod tests {
             input_scale_x: 1.0,
             input_scale_y: 1.0,
         };
-        // 线性同余噪声：不可压缩，逼出真实的大 PNG。
+        // Linear congruential noise: incompressible, forces a genuinely large PNG.
         let mut state = 123_456_789u32;
         for byte in cap.rgba.iter_mut() {
             state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
@@ -482,7 +497,8 @@ mod tests {
         assert!(downscale_and_encode(&bad).is_err());
     }
 
-    /// 评审修复回归：尺寸乘法用 checked——溢出显式失败而非回绕成假的小长度。
+    /// Review-fix regression: dimension multiplication is checked — overflow fails
+    /// explicitly rather than wrapping into a fake small length.
     #[test]
     fn downscale_and_encode_rejects_overflowing_dimensions() {
         let huge = Capture {
