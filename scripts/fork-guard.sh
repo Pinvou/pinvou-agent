@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 28 registered commits + 1 candidate, six maintained themes (r2 tag pending).
+# CodeWhale v0.9.12 clean re-fork guard: 28 registered commits + 1 five-commit candidate, six maintained themes (r2 tag pending).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -12,8 +12,8 @@ EXPECTED_COMMITS=28
 # 即 gitlink 沿维护分支领先 tag 而非另起分叉；r2 收口后随 TAG 常量一起退役。
 R1_CLOSURE="1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
 # Candidate registration: the skills phantom-tool text candidate (review
-# branch fix/skills-phantom-tool-text, paired CodeWhale PR #56) is one
-# commit above the registered maintenance head while its CodeWhale PR is
+# branch fix/skills-phantom-tool-text, paired CodeWhale PR #56) is five
+# commits above the registered maintenance head while its CodeWhale PR is
 # open. Layer 0 accepts the registered head or this candidate; re-pin the
 # entry when the candidate rebases and retire it once the commit lands on
 # pinvou3-clean (see docs/fork-modifications.md, the T3 section).
@@ -35,7 +35,7 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 13 个登记提交，r2 收口未切 tag）──"
+bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 13 个登记提交 + 1 个候选，r2 收口未切 tag）──"
 actual_head="$(git -C "$CODEWHALE" rev-parse HEAD 2>/dev/null || true)"
 registered_commits="$EXPECTED_COMMITS"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then

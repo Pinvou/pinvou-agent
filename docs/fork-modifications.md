@@ -26,17 +26,17 @@
 - 覆盖：`forkguard_skill_index_usage_names_tool_search_activation`、`forkguard_subagent_skill_catalog_uses_tool_search_discovery`、`forkguard_mcp_discovery_skill_conditions_registry_commands`、`forkguard_registry_first_instruction_names_registered_tool_specs`、`forkguard_bundled_skills_cite_no_hidden_or_retired_tool_names`、`forkguard_best_of_n_goal_tool_is_availability_gated`、`forkguard_subagent_context_hint_names_active_tools`（由既有 `subagent_results_are_summarized_before_parent_context_insertion` 反转钉入 forkguard 集）。省略尾行兜底随去重并入 Usage 单点教学，`forkguard_omitted_skills_line_carries_tool_search_fallback` 随之退役，其守护由 `forkguard_skill_index_usage_names_tool_search_activation` 承接；fork-guard T3 指纹相应为 16 条（新增 17、随去重退役 1）。
 - 搭车披露（已剥离）：PR 首个提交（`c34c3a430`）曾同时携带基线门禁修复（engine/tests.rs clippy `map(Ok)`、CHANGELOG 切片重同步、v0.9.11→v0.9.12 事实文件刷新）。按 CONTRIBUTING 的 changelog 政策（PR 携带 changelog hunk 会被要求剥离）与车道核查（facts/web 检查只在 master/main 触发），候选第四提交已将其整体剥离，移入专门的 [CodeWhale#60](https://github.com/Pinvou/CodeWhale/pull/60)；#56 净 diff 现为纯主题。已知遗留（第四轮订正描述）：`workflows/stopship.workflow.js` 侦察简报仍引用隐藏别名 `File` 的 `search_content` 动作。实证现状比此前登记的更严重：真实子代理会话的执行入口 `execute_from_surface` 对不在该子代理 policy-filtered 目录中的名字直接失败，而 `File` 因 `model_visible=false` 进不了任何模型可见目录，故该调用在活会话中会被目录闸拒绝（explore gate 首步必失效）；「按别名可分派」仅在绕过目录闸的直接 `registry.resolve` 层（如回放测试）成立。它属仓内发布验收 fixture 而非随附模型文本，修复需协议级重做（教 `tool_search`→`grep_files` 两步激活并重测角色响应预算），已按该口径落地为独立 [CodeWhale#61](https://github.com/Pinvou/CodeWhale/pull/61)：侦察轮改为三响应（`tool_search` 激活 → `grep_files` 同 alternation 搜索 → verdict），步数与 token 上限不变，并以两条 forkguard 测试分别钉住 scout 表面的两步激活路径（活动 `tool_search` + deferred 可搜索 `grep_files` + 无 `File`）与 fixture 文本只引用目录可见工具名。
 
-## 0. 当前状态（2026-09-11 · r1 基线 + 14 个登记提交，r2 收口未切 tag）
+## 0. 当前状态（2026-09-11 · r1 基线 + 13 个登记提交 + 1 个待合入候选，r2 收口未切 tag）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5` |
-| 维护分支 | `pinvou3-clean` = `18f7c7b15469f9244f9087bac54d96f092c8dc2a`（r1 基线 `1fafee7e2` 之上 14 个 squash 合入：#41/#47/#49 与 2026-09-10/11 遗留 PR 清理批次 #31/#37/#38/#39/#43/#48/#50/#51/#52/#53，及 #56 技能索引幻影工具修复） |
-| 发布状态 | 过渡期（fork-policy 第 0 节豁免）：不可变 tag `pinvou-v0.9.12-r1` 保持 r1 收口状态（15 个提交），父仓 gitlink 指向 `18f7c7b15`、领先 tag 14 个提交，直至下一次 r2 发布收口对齐 |
+| 维护分支 | `pinvou3-clean` = `ae7e3fb36f89486f30d41b28ae0eaaa516ae4740`（r1 基线 `1fafee7e2` 之上 13 个 squash 合入：#41/#47/#49 与 2026-09-10/11 遗留 PR 清理批次 #31/#37/#38/#39/#43/#48/#50/#51/#52/#53）；#56 技能索引幻影工具修复待合入（候选头 `9f46ac5f0`，见下方 T3 增补） |
+| 发布状态 | 过渡期（fork-policy 第 0 节豁免）：不可变 tag `pinvou-v0.9.12-r1` 保持 r1 收口状态（15 个提交），父仓 gitlink 随 #490 指向登记候选 `9f46ac5f0`、领先 tag 18 个提交（其中 13 个已合入 squash 提交、5 个为 #56 候选提交），直至 #56 落地推进 `pinvou3-clean` 后恢复 gitlink=分支头 |
 | 升级前回退点 | 公开不可变 tag `pinvou-v0.9.5-r13` → `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 `backup/pre-v0.9.12-sync` 仅作便利引用 |
-| 历史组织 | 上游之上 32 个带 DCO sign-off 的提交，归属 4 个长期主题（T1–T4）+ 2 个追加减量主题（T5 会话归档导出、T6 蜂群限流治理）；r1 之后 14 个提交全部经 PR squash 合入并过五项必需门禁 |
-| drift | `145 files, +10301/-1235`，净增 9066 行；r1 为 `94 files, +5022/-944`，旧 r13 为 `110 files, +10895/-1195` |
-| 守护 | 62 条独立 CodeWhale `forkguard_*` 行为测试（56 条默认 + 6 条 `benchmark-eval-controls`）+ 父仓指纹与行为测试 |
+| 历史组织 | 上游之上 33 个带 DCO sign-off 的提交，归属 4 个长期主题（T1–T4）+ 2 个追加减量主题（T5 会话归档导出、T6 蜂群限流治理）；r1 之后 13 个提交已经 PR squash 合入并过五项必需门禁，第 14 个（#56）以 5 提交候选待合入 |
+| drift | `145 files, +10320/-1239`，净增 9081 行；r1 为 `94 files, +5022/-944`，旧 r13 为 `110 files, +10895/-1195` |
+| 守护 | 61 条独立 CodeWhale `forkguard_*` 行为测试（55 条默认 + 6 条 `benchmark-eval-controls`）+ 父仓指纹与行为测试 |
 | 父仓适配 | v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2、Shell 任务来源对账；消费方 PR #396（execpolicy）、#408（轮次取消）、#444（蜂群）、#468（computer-use）、#472（一键导出）依赖本批底座能力 |
 
 ## 1. 为什么本次使用 clean re-fork
@@ -273,6 +273,6 @@
 ## 12. 发布与回退
 
 - 公开回退点是不可变 tag `pinvou-v0.9.5-r13`；本地 `backup/pre-v0.9.12-sync` 不是发布前提。
-- 不可变 `pinvou-v0.9.12-r1` 停在 r1 收口 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`；当前处于过渡期：`pinvou3-clean` 与父仓 gitlink 指向 `18f7c7b15`（领先 tag 14 个 squash 提交），下一次 r2 发布收口时在合并头切不可变 tag 并对齐三方（分支/tag/gitlink），以 `scripts/verify-public-submodule.sh` 验证公开可达性（过渡期断言 gitlink=分支头、tag 钉在 r1 收口，r2 收口后恢复三方相等；依据 `docs/fork-policy.md` 第 0 节过渡期豁免）。
+- 不可变 `pinvou-v0.9.12-r1` 停在 r1 收口 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`；当前处于过渡期：`pinvou3-clean` 指向 `ae7e3fb36`（领先 tag 13 个 squash 提交），父仓 gitlink 随 #490 指向登记候选 `9f46ac5f0`（领先 tag 18 个提交；候选期 `verify-public-submodule.sh` 按登记保持红，见 T3 增补），#56 落地并推进 `pinvou3-clean` 后恢复 gitlink=分支头；下一次 r2 发布收口时在合并头切不可变 tag 并对齐三方（分支/tag/gitlink），以 `scripts/verify-public-submodule.sh` 验证公开可达性（过渡期断言 gitlink=分支头、tag 钉在 r1 收口，r2 收口后恢复三方相等；依据 `docs/fork-policy.md` 第 0 节过渡期豁免）。
 - 发布过程中只为精确 head 的受保护分支更新临时移除无法在该维护分支触发的 required status contexts，完成快进后立即恢复原保护配置；未关闭 force-push 防护，也未重写已发布 tag。
 - 后续发布仍不得降低公开校验或把本地 object 当成发布成功。
