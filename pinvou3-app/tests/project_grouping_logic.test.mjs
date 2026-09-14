@@ -234,6 +234,15 @@ test("resolveSessionProjectId mirrors the grouping tiers", () => {
   // path, resolution falls through to tier 2 and returns that project.
   // (projects=[] would trivially yield null and pin nothing.)
   assert.equal(resolveSessionProjectId(item, projects, { a1: "prj-gone" }), "p1", "stale id falls through to root matching");
+  // Cross case pinned for groupSessionsWithProjects: tier 1 assignment wins
+  // even when the workspace path sits under another project's root.
+  const two = [
+    project("p1", "Alpha", ["D:/work/alpha"], 0),
+    project("p2", "Beta", ["D:/work/beta"], 1),
+  ];
+  const cross = projectItem("x1", "D:/work/beta/inner", "2026-08-01T08:00:00Z");
+  assert.equal(resolveSessionProjectId(cross, two, { x1: "p1" }), "p1", "explicit assignment beats path containment");
+  assert.equal(resolveSessionProjectId(cross, two, {}), "p2", "path containment resolves without assignment");
 });
 
 test("projectCoversPath gates the move-only confirm prompt", () => {
