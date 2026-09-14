@@ -527,6 +527,11 @@ assert.ok(
   'backend prompt should include supported rrule examples'
 );
 assert.ok(
+  scheduledTaskPromptRust.includes("FREQ=ONCE;AT=2027-06-01T09:30") &&
+    scheduledTaskPromptRust.includes("如果用户指定的一次性时刻已经过去，必须先和用户确认改成未来的时刻，不要输出草稿。"),
+  'backend prompt must teach once-only schedules and reject past one-shot times'
+);
+assert.ok(
   scheduledTaskPromptRust.includes("create_scheduled_task") &&
     scheduledTaskPromptRust.includes("schtasks") &&
     scheduledTaskPromptRust.includes("Windows Task Scheduler") &&
