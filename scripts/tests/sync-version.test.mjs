@@ -294,6 +294,20 @@ test('--check fails when pinvou-cli Cargo.lock lags behind (the #415 drift scena
   }
 });
 
+test('--check fails when the cli crate Cargo.toml lags behind (pinvou --version drift)', () => {
+  const root = createSandboxRoot();
+  assert.equal(main(root), 0);
+
+  // Reproduce the regression: `pinvou --version` (CARGO_PKG_VERSION) missed
+  // a release because the crate manifest was not synced.
+  const crateTomlPath = join(root, 'pinvou-cli/crates/cli/Cargo.toml');
+  writeFileSync(crateTomlPath, `[package]\nname = "pinvou-cli"\nversion = "${OLD_VERSION}"\n`);
+
+  assert.equal(main(root, { checkOnly: true }), 1);
+  // --check is read-only: the stale version must survive unchanged.
+  assert.match(readFileSync(crateTomlPath, 'utf8'), /version = "0\.8\.7"/u);
+});
+
 test('src-tauri Cargo.lock has exactly one section per package, updatable independently', () => {
   const lock = srcTauriLock(OLD_VERSION, OLD_VERSION);
 
