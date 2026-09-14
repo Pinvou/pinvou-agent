@@ -109,6 +109,12 @@ fn to_package_id(raw: &str) -> String {
     skill_owner_package(stripped)
 }
 
+/// 供无头调用方（CLI 开关回读验证）把用户给的裸 id 换算成清单落盘用的包 id。
+/// 裸技能 id 会被条件认领重映射到属主包，验证若用裸 id 比较会得到假阳性。
+pub fn package_id_for(raw: &str) -> String {
+    to_package_id(raw)
+}
+
 /// 读时归一：存储条目按**当前**认领状态重映射为包 id 并去重（保序）。
 /// 认领（`skill_owner_package`）随安装态时变：条目可能在 companion MCP 未装时
 /// 按独立技能 id 落库，MCP 后装则认领翻转到包 id——只在写时归一会让用户的

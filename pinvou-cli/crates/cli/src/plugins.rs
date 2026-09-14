@@ -48,8 +48,10 @@
 //!   a read-only CLI run CAN touch the OS keyring (macOS may prompt) — only
 //!   a run with nothing installed never does.
 //! - enable/disable/project-skills → `scope::load_disabled_bundles_for` /
-//!   `save_disabled_bundles_for` / `set_project_skills_enabled` (the storage
-//!   behind `set_disabled_skills` / `set_project_skills_enabled`).
+//!   `update_disabled_bundles_for` (single-critical-section RMW) /
+//!   `set_project_skills_enabled` (the storage behind `set_disabled_skills` /
+//!   `set_project_skills_enabled`), with `package_id_for` normalizing ids for
+//!   the persistence read-back.
 //!
 //! Pure storage only: no Tauri host, no engine, no async runtime.
 
@@ -1237,6 +1239,12 @@ fn set_enabled(
     let known = installed.iter().any(|existing| existing == id)
         || installed.iter().any(|existing| existing == stripped);
     let mut unverified = Vec::new();
+    // Storage keys on the package id the raw id remaps to (a `skill:`- or
+    // companion-owned skill id maps to its owner package), so the mutation
+    // and the read-back verification must both use that id: comparing the
+    // raw id reported false `persistence_verified` for enables (nothing was
+    // removed) and could never verify disables of remapped ids.
+    let packages = pinvou3_lib::features::marketplace::package_id_for(id);
     for connector_scope in scope.scopes() {
         // Single-critical-section read-modify-write: loading and saving in
         // two separate lock acquisitions let a concurrent GUI toggle between
@@ -1244,22 +1252,20 @@ fn set_enabled(
         // layer documented and fixed for its own RMW). Write failures are
         // swallowed by the storage layer, so persistence is verified by
         // reading the scope back: an enable must have removed the id, and a
-        // disable must have recorded it (a missing entry can also mean the
-        // id was remapped to its owner package, which the CLI cannot
-        // compute — that case is reported as unverified, not as success).
+        // disable must have recorded it.
         pinvou3_lib::features::marketplace::update_disabled_bundles_for(
             connector_scope,
             |ids: &mut Vec<String>| {
                 if enabled {
-                    ids.retain(|existing| existing != id);
-                } else if !ids.iter().any(|existing| existing == id) {
-                    ids.push(id.to_owned());
+                    ids.retain(|existing| existing != &packages);
+                } else if !ids.iter().any(|existing| existing == &packages) {
+                    ids.push(packages.clone());
                 }
             },
         );
         let reloaded =
             pinvou3_lib::features::marketplace::load_disabled_bundles_for(connector_scope);
-        let present = reloaded.iter().any(|existing| existing == id);
+        let present = reloaded.iter().any(|existing| existing == &packages);
         if enabled {
             if present {
                 return Err(CliError::failed(format!(
@@ -1287,8 +1293,8 @@ fn set_enabled(
     if !unverified.is_empty() {
         value["persistence_verified"] = serde_json::json!(false);
         human.push_str(&format!(
-            "\nwarning: could not verify persistence for scope(s) {} (the id may map to an \
-             owner package)",
+            "\nwarning: could not verify persistence for scope(s) {} (the storage write \
+             may have been dropped or overwritten)",
             unverified.join(", ")
         ));
     } else {

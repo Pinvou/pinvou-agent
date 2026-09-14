@@ -570,6 +570,55 @@ fn disable_enable_scope_round_trip_persists_disabled_bundles_json() {
     assert!(stdout.contains("scope=code"), "stdout: {stdout}");
 }
 
+// `ima-skills` is claimed by the `ima` package inside the storage layer, so
+// toggling the raw skill id must persist (and verify against) `ima`, not the
+// raw id. This is the companion-id remap shape: a raw-id comparison reported
+// a false `persistence_verified: true` on enable while the owner package
+// stayed disabled.
+#[test]
+fn toggles_verify_against_the_owner_package_for_remapped_ids() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("scope-companion-remap");
+
+    let disabled = run_json(&[
+        "pinvoy",
+        "plugins",
+        "disable",
+        "ima-skills",
+        "--scope",
+        "plain",
+    ]);
+    assert_eq!(
+        disabled["persistence_verified"],
+        serde_json::json!(true),
+        "disable of a remapped id is exactly verifiable: {disabled}"
+    );
+    assert_eq!(
+        disabled_bundles_json(home.path())["scopes"]["plain"],
+        serde_json::json!(["ima"]),
+        "the owner package id is what lands in the store"
+    );
+
+    let enabled = run_json(&[
+        "pinvoy",
+        "plugins",
+        "enable",
+        "ima-skills",
+        "--scope",
+        "plain",
+    ]);
+    assert_eq!(
+        enabled["persistence_verified"],
+        serde_json::json!(true),
+        "enable of a remapped id is exactly verifiable: {enabled}"
+    );
+    assert_eq!(
+        disabled_bundles_json(home.path())["scopes"]["plain"],
+        serde_json::json!([]),
+        "the owner package entry must actually be removed"
+    );
+}
+
 #[test]
 fn project_skills_round_trip() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
