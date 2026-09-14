@@ -1040,7 +1040,7 @@ Object.assign(dictJa.uiSettingsDetail.modelDescriptions, {
   '速度与智能均衡':'速度と知能のバランス',
   '最新 Flash，均衡高性价比':'最新 Flash、バランス型で高コストパフォーマンス',
   '旗舰推理（预览）':'フラッグシップ推論（プレビュー）',
-  // モデルカタログ項目（src/features/settings/model-catalog.js items[].desc）
+  // Model catalog entries (src/features/settings/model-catalog.js items[].desc)
   '旗舰编码模型，全套餐支持':'フラッグシップコーディングモデル、全プラン対応', '原生多模态编码模型，额度三倍':'ネイティブマルチモーダルコーディングモデル、利用枠3倍',
   '历史模型，请求自动切换至 GLM-5.3':'レガシーモデル、リクエストは GLM-5.3 に自動切替', '历史模型，自动切换至 GLM-5.3-Flash':'レガシーモデル、GLM-5.3-Flash に自動切替',
   '历史模型，请求自动路由至 GLM-5.3':'レガシーモデル、リクエストは GLM-5.3 に自動ルーティング', '历史模型，自动路由至 GLM-5.3-Flash':'レガシーモデル、GLM-5.3-Flash に自動ルーティング',

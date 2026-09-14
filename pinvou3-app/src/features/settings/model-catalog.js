@@ -1021,9 +1021,9 @@ function isOfficialDeepseekBaseUrl(baseUrl) {
   return normalized === 'https://api.deepseek.com';
 }
 
-// The base only routes tiered effort for moonshot/zai/minimax/xai by
-// 路由（CodeWhale config::is_exact_direct_moonshot_k3_route / is_exact_kimi_code_k3_route /
-// is_exact_zai_tiered_effort_route / is_exact_minimax_m3_route / is_exact_xai_grok_4_6_route）。
+// The base only routes tiered effort for moonshot/zai/minimax/xai via the
+// CodeWhale config routes (is_exact_direct_moonshot_k3_route / is_exact_kimi_code_k3_route /
+// is_exact_zai_tiered_effort_route / is_exact_minimax_m3_route / is_exact_xai_grok_4_6_route).
 // replicates the base `is_exact_https_route` comparison semantics: scheme and
 // host are ASCII case-insensitive while the path is case-
 // sensitive, and only one trailing slash is tolerated — no extra slash

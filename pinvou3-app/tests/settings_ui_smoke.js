@@ -1405,7 +1405,7 @@ async function modalWidth(page, headingText) {
     const visionToggle = root && root.querySelector('[data-testid="vision-model-toggle"]');
     return {
       // deepseek-v4-pro is explicitly annotated text-only (false) in the
-      // catalog; the edit form echoes the annotation as 不支持图片 (not supported).
+      // catalog; the edit form echoes that annotation ("image input not supported").
       hasCapabilityRow: !!capabilityToggle && (capabilityToggle.textContent || '').includes('不支持图片'),
       hasVisionRow: !!visionToggle && (visionToggle.textContent || '').includes('无'),
       hasHelpText: text.includes('当前模型不能看图时，用该模型分析图片'),
@@ -1413,7 +1413,7 @@ async function modalWidth(page, headingText) {
       hasPrivacyText: text.includes('使用云端模型时，图片会发送给你选择的模型服务商') && text.includes('本地模型图片不离开本机'),
     };
   });
-  rec('⑦.img.1 edit form shows image-input capability/vision-model controls, catalog-annotated echo of 不支持图片 (not supported)/无 (none), and the static privacy notice', Object.values(imageSectionDefault).every(Boolean), JSON.stringify(imageSectionDefault));
+  rec('⑦.img.1 edit form shows image-input capability/vision-model controls, catalog-annotated echo of the "not supported"/"none" values, and the static privacy notice', Object.values(imageSectionDefault).every(Boolean), JSON.stringify(imageSectionDefault));
   // 图片能力三档:自动处理/支持图片/不支持图片(「保存时检测」档已下线)。
   await page.click('[data-testid="image-capability-toggle"]');
   await sleep(200);
@@ -1704,14 +1704,14 @@ async function modalWidth(page, headingText) {
   const echoPinvou = await echoOverride();
   // Reopen after saving with pinvou (not pinned): deepseek-v4-pro is
   // explicitly annotated false in the catalog, so the form echoes the
-  // annotation as 不支持图片 (not supported); only unannotated models fall
-  // back to 自动处理 (auto).
-  rec('⑦.img.12b reopened form echoes the catalog annotation 不支持图片 (not supported)', echoPinvou.includes('不支持图片'), echoPinvou);
+  // annotation ("image input not supported"); only unannotated models fall
+  // back to the "auto" (auto-handling) tier.
+  rec('⑦.img.12b reopened form echoes the catalog "image input not supported" annotation', echoPinvou.includes('不支持图片'), echoPinvou);
 
-  // Legacy 保存时检测 (detect-on-save, auto) tier leftover: the reopened form
-  // must not render the retired 保存时检测 tier,
+  // Legacy detect-on-save (auto) tier leftover: the reopened form
+  // must not render the retired detect-on-save tier,
   // and unpinned tiers echo the catalog annotation (this model is annotated
-  // false → 不支持图片, not supported). In the production path
+  // false → "image input not supported"). In the production path
   // "auto" 由 Rust serde 迁移为 pinvou 后前端才收到,此处直灌 auto 只测前端
   // 防御层(serde 迁移另有 settings 单测覆盖);mock 改档后必须 loadModels()
   // 刷新 bridge state,React 才会以新 savedModels 渲染(同 ⑦.img.2b)。
@@ -1720,7 +1720,7 @@ async function modalWidth(page, headingText) {
   await page.evaluate(() => window.TauriBridge.models.loadModels());
   await sleep(200);
   const echoLegacyAuto = await echoOverride();
-  rec('⑦.img.12c legacy auto tier leftover does not render the retired 保存时检测 and echoes the catalog annotation',
+  rec('⑦.img.12c legacy auto tier leftover does not render the retired detect-on-save tier and echoes the catalog annotation',
     echoLegacyAuto.includes('不支持图片') && !echoLegacyAuto.includes('保存时检测'),
     echoLegacyAuto);
 
@@ -1748,10 +1748,10 @@ async function modalWidth(page, headingText) {
   const retrySaved = await page.evaluate(() => !document.querySelector('[data-testid="model-form-dialog"]'));
   rec('⑦.img.13b 修正后重试保存成功关闭弹窗', retrySaved, String(retrySaved));
 
-  // ⑦.img.14 catalog vision-capability annotations auto-fill the 图片输入能力
+  // ⑦.img.14 catalog vision-capability annotations auto-fill the image-input
   // (image input capability) control: the Kimi family and DeepSeek group
   // first items (k3 / deepseek-flash) are both annotated, so opening prefills
-  // 支持图片 (image input supported); after manually changing the tier,
+  // the "image input supported" value; after manually changing the tier,
   // switching entries no longer follows the catalog annotation (switching to
   // the false-annotated deepseek-v4-pro keeps the manual value).
   const capabilityToggleText = () => page.evaluate(() => {
