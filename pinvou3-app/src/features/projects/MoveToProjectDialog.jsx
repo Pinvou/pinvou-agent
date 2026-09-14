@@ -122,9 +122,9 @@ const MoveToProjectDialog = ({
     // 用户被迫重新选择,本轮正面修复)。
     if (pendingProject && !busy) onMove(pendingProject.id, false);
   };
-  // 背板关闭以按下起点为准:从 break-all 路径上起手的文本拖选,松开落在
-  // 背板上也会合成一次 click(click 目标是共同祖先),按 click 关会把用户
-  // 没打算关的确认态一起丢掉。
+  // 背板关闭要求按下与松开两端都落在背板上:文本拖选无论从背板起手拖进
+  // 弹窗,还是从弹窗起手拖到背板,合成的 click 都落在共同祖先(背板)上,
+  // 只看 click 会把用户没打算关的确认态一起丢掉。
   const handleBackdropClick = (e) => {
     if (!backdropPressRef.current || e.target !== e.currentTarget) return;
     backdropPressRef.current = false;
@@ -151,6 +151,7 @@ const MoveToProjectDialog = ({
       className="fixed inset-0 z-[200] flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,.34)', backdropFilter: 'blur(14px) saturate(140%)', WebkitBackdropFilter: 'blur(14px) saturate(140%)' }}
       onMouseDown={(e) => { backdropPressRef.current = e.target === e.currentTarget; }}
+      onMouseUp={(e) => { if (backdropPressRef.current && e.target !== e.currentTarget) backdropPressRef.current = false; }}
       onClick={handleBackdropClick}
     >
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: dialog body stops bubbling so backdrop close is not triggered accidentally; not interactive itself */}
