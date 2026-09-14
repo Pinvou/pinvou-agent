@@ -13,10 +13,13 @@
 //! - sessions → `SessionStore` + `SessionAgentStore` (`session-agents.json`)
 //!   with the same code-session filter as `list_codex_acp_sessions`, and the
 //!   persisted `acp-timeline.jsonl` behind `AcpPool::timeline`.
-//! - workspace → local mirror of `features::codex_acp::workspace`
-//!   (`pub(crate)` and unreachable): list/search/preview/changes/diff/
+//! - workspace → local mirror of `features::codex_acp::workspace` (kept
+//!   `pub(crate)` at the module level until the CLI adopts the real calls;
+//!   the items and limits are `pub`): list/search/preview/changes/diff/
 //!   branches/checkout with the same limits, path validation, git semantics
-//!   and process-local `CHECKOUT_LOCK`.
+//!   and process-local `CHECKOUT_LOCK`. The limits are differentially pinned
+//!   by `workspace_mirror_limits_match_the_app_module` so a drift breaks the
+//!   build instead of silently diverging.
 //! - checkpoints → `features::code_checkpoints` public functions plus the
 //!   `SessionStore` rewind sidecar methods, mirroring the
 //!   `rewind_to_turn` / `undo_last_rewind` orchestration. User-turn counting
@@ -46,7 +49,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use crate::support::{render, require_yes, resolve_secret, success};
+use crate::support::{read_text_file_capped, render, require_yes, resolve_secret, success};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::code_checkpoints as checkpoints;
 use pinvou3_lib::features::codex_acp::{
@@ -2441,9 +2444,9 @@ fn providers_export(
         "warning: the export contains plaintext API keys; store the file in a safe place";
     match destination {
         Some(path) => {
-            // Plaintext keys land in a 0600 file (the GUI hands the same
-            // content to a save dialog; a default-permission file would be
-            // readable by every local user).
+            // Plaintext keys land in a 0600 file on unix (the GUI hands the
+            // same content to a save dialog; a default-permission file would
+            // be readable by every local user).
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt as _;
@@ -2482,6 +2485,8 @@ fn providers_export(
                     }
                 }
             }
+            // Non-unix: no POSIX mode bits — ACL tightening is a follow-up
+            // (docs/pinvou-cli.md scopes the 0600 claim to unix).
             #[cfg(not(unix))]
             std::fs::write(&path, &content).map_err(|error| {
                 CliError::failed(format!(
@@ -2522,12 +2527,11 @@ fn providers_export(
 fn providers_import(agent: &str, path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
     require_provider_agent(agent)?;
     let manager = open_providers()?;
-    let json = std::fs::read_to_string(path).map_err(|error| {
-        CliError::failed(format!(
-            "code providers import({agent}): cannot read {}: {error}",
-            path.display()
-        ))
-    })?;
+    let json = read_text_file_capped(
+        path,
+        4 * 1024 * 1024,
+        &format!("code providers import({agent})"),
+    )?;
     let result = manager
         .import(agent, &json)
         .map_err(|error| store_error("providers import", agent, error))?;
@@ -2735,6 +2739,18 @@ fn code_sessions_timeline(id: &str, output: OutputMode) -> Result<CliOutcome, Cl
     let store = open_store()?;
     require_existing(&store, id, "sessions timeline")?;
     let path = paths::sessions_root().join(id).join("acp-timeline.jsonl");
+    // Same 32 MiB cap as the sessions timeline reader: a runaway journal
+    // must not be slurped whole into memory (the GUI streams this file).
+    const MAX_TIMELINE_BYTES: u64 = 32 * 1024 * 1024;
+    if let Ok(metadata) = std::fs::metadata(&path) {
+        if metadata.len() > MAX_TIMELINE_BYTES {
+            return Err(CliError::failed(format!(
+                "code sessions timeline({id}): journal too large: {} bytes (limit \
+                 {MAX_TIMELINE_BYTES})",
+                metadata.len()
+            )));
+        }
+    }
     let mut events = Vec::new();
     match std::fs::read_to_string(&path) {
         Ok(content) => {
@@ -4087,11 +4103,19 @@ fn workspace_diff(
             let changes = workspace_changes_value(session_id, &root)?;
             let mut combined = String::new();
             let mut diffed_files = 0usize;
+            let mut hit_diff_limit = false;
             for row in changes["changes"].as_array().cloned().unwrap_or_default() {
                 if diffed_files >= WORKSPACE_DIFF_FILE_CAP {
                     break;
                 }
                 diffed_files += 1;
+                // Stop diffing once the payload is over the cap instead of
+                // accumulating every per-file diff (500 × 1 MiB) before the
+                // final truncation runs.
+                if combined.len() >= DIFF_LIMIT {
+                    hit_diff_limit = true;
+                    break;
+                }
                 let relative = row["relativePath"].as_str().unwrap_or_default().to_owned();
                 if let Ok((_, text, _)) = workspace_diff_one(&root, &relative) {
                     if !combined.is_empty() {
@@ -4102,7 +4126,7 @@ fn workspace_diff(
             }
             // Actually cut the payload when reporting truncation — the
             // per-file path below does the same.
-            let truncated = combined.len() > DIFF_LIMIT;
+            let truncated = hit_diff_limit || combined.len() > DIFF_LIMIT;
             if truncated {
                 truncate_utf8(&mut combined, DIFF_LIMIT);
             }
@@ -4707,6 +4731,22 @@ fn respond(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_mirror_limits_match_the_app_module() {
+        // The workspace section is a local mirror of
+        // `features::codex_acp::workspace`. Until the mirror is deleted in
+        // favor of the real calls, a limit changed on either side must break
+        // this build instead of silently diverging from the GUI.
+        use pinvou3_lib::features::codex_acp::workspace as app;
+        assert_eq!(LIST_LIMIT, app::LIST_LIMIT);
+        assert_eq!(SEARCH_LIMIT, app::SEARCH_LIMIT);
+        assert_eq!(WALK_LIMIT, app::WALK_LIMIT);
+        assert_eq!(PREVIEW_LIMIT, app::PREVIEW_LIMIT);
+        assert_eq!(IMAGE_PREVIEW_LIMIT, app::IMAGE_PREVIEW_LIMIT);
+        assert_eq!(DIFF_LIMIT, app::DIFF_LIMIT);
+        assert_eq!(IGNORED_DIRECTORIES, app::IGNORED_DIRECTORIES);
+    }
 
     #[test]
     fn codex_version_gate_extracts_the_digit_token_like_the_gui() {

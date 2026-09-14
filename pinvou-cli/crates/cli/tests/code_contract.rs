@@ -67,10 +67,6 @@ impl HomeGuard {
     fn sessions_root(&self) -> PathBuf {
         self.root.join("sessions")
     }
-
-    fn home(&self) -> PathBuf {
-        self.root.join("home")
-    }
 }
 
 impl Drop for HomeGuard {
@@ -964,6 +960,30 @@ fn workspace_git_changes_diff_branches_against_fixture_repo() {
         "commit",
     ]);
     assert_eq!(error.exit_code(), ExitCode::Usage);
+}
+
+// The whole-workspace diff must stop diffing once the payload is over
+// DIFF_LIMIT instead of accumulating every per-file diff (500 × 1 MiB)
+// before the final truncation.
+#[test]
+fn whole_workspace_diff_truncates_without_accumulating_over_the_cap() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("workspace-diff-cap");
+    let Some(project) = init_git_repo("diff-cap") else {
+        return; // git unavailable in the environment
+    };
+    let id = create_code_session_fixture(Some(&project));
+
+    // A modified tracked file whose diff alone exceeds DIFF_LIMIT (1 MiB):
+    // the per-file path caps the text, and the whole-workspace loop must cut
+    // the payload at the cap, not concatenate up to FILE_CAP copies of it.
+    let big = format!("v2 {}\n", "x".repeat(1024 * 1024 + 4096));
+    std::fs::write(project.join("tracked.txt"), &big).unwrap();
+    let value = run_json(&["pinvou", "code", "workspace", "diff", &id]);
+    assert_eq!(value["truncated"], serde_json::json!(true));
+    let text = value["text"].as_str().unwrap();
+    assert!(text.len() <= 1024 * 1024, "len={}", text.len());
+    assert!(text.contains("+v2"), "the capped head keeps the hunk");
 }
 
 #[test]
