@@ -1,6 +1,6 @@
 mod platform;
 mod temp_wav;
-mod transcript;
+pub mod transcript;
 pub(crate) mod voice_asr;
 
 /// 麦克风权限重置命令域。实现在私有的 platform 适配层,命令层经此窄口
