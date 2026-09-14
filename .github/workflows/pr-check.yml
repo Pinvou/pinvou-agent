@@ -343,9 +343,14 @@ jobs:
       # shellcheck integration is explicitly off: its findings drift with the
       # shellcheck version, which is unfit for a deterministic gate
       # (SC2034/SC2209 are known false positives on this repo's patterns).
+      # The binary is downloaded from the pinned release tag and verified
+      # against the release checksums.txt digest, so CI executes no mutable
+      # installer code and a tampered artifact fails the gate here.
       - name: workflow lint (actionlint)
         run: |
-          bash <(curl --retry 3 -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.12
+          curl --retry 3 -fsSL -o actionlint.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz" | sha256sum --check -
+          tar -xzf actionlint.tar.gz actionlint
           ./actionlint -shellcheck= .github/workflows/*.yml
 
       - name: 架构边界门禁
