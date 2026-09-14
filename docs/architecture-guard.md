@@ -22,8 +22,10 @@ python scripts/architecture-guard.py
   `commands::`（或 `crate::app::commands::`）前缀引用。
 - `resources/common` 不得混入 PE、ELF 等平台专属二进制。
 - `pinvou-cli` crate 不得在代码中直接引用 `deepseek_tui::` 或 `tauri::`（注释文档
-  除外）：CLI 一律经由 `pinvou3_lib`（`features`/`platform` 公共面）触达 app，
-  防止无头构建悄悄耦合 GUI 栈或绕过 app 自身的分层（2026-09-13 随 PR #478 增补）。
+  除外；`use tauri as x`/glob 导入等别名形态同样被 `use` 语句规则拦截）：CLI 一律
+  经由 `pinvou3_lib`（`features`/`platform` 公共面）触达 app，防止无头构建悄悄耦合
+  GUI 栈或绕过 app 自身的分层（2026-09-13 随 PR #478 增补）。扫描范围是
+  `pinvou-cli/crates/`（源码面；这是 tripwire 级规则，极端混淆形态不在其覆盖内）。
 - **禁止 spawn 外部 `kill` 可执行文件执行进程组/进程树终止**（`Command::new("kill")`、
   `Path::new("kill")`、`connector_cli_command(_, "kill")` 等形态），组杀一律通过
   `libc::kill(2)` 直调（`platform::process::kill_process_tree` /

@@ -402,12 +402,15 @@ def scan_rust(root: Path) -> tuple[dict[str, Counter[str]], list[list[str]]]:
     # The CLI crates reach the app through the pinvou3_lib surface only: no
     # direct foundation (deepseek_tui) or Tauri references, so the headless
     # build cannot silently couple to the GUI stack or skip the app's own
-    # layering. Comment lines are ignored (docs may name the crates).
+    # layering. Comment lines are ignored (docs may name the crates). The
+    # `use`-statement patterns catch every import form (plain, `as`-aliased,
+    # glob); the qualified-path patterns catch inline references.
     cli_reference_patterns = [
         re.compile(r"\bdeepseek_tui\s*::"),
         re.compile(r"\btauri\s*::\s*[A-Za-z_{]"),
+        re.compile(r"\buse\s+(tauri|deepseek_tui)\s*(::|;|as\b)"),
     ]
-    for path in source_files(root, "pinvou-cli", {".rs"}):
+    for path in source_files(root, "pinvou-cli/crates", {".rs"}):
         text = read_text(path)
         code_lines = "\n".join(
             line for line in text.splitlines() if not line.lstrip().startswith("//")
