@@ -1645,7 +1645,11 @@ pub fn humanize_rrule(rrule: &str) -> String {
                 .join("、");
             format!("{days} {byhour:02}:{byminute:02}")
         }
-        Ok(AutomationSchedule::Once { .. } | AutomationSchedule::Cron { .. }) => rrule.to_string(),
+        Ok(AutomationSchedule::Once { at }) => format!(
+            "一次性 {}",
+            at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M")
+        ),
+        Ok(AutomationSchedule::Cron { .. }) => rrule.to_string(),
         Err(_) => rrule.to_string(),
     }
 }
@@ -2305,6 +2309,12 @@ mod tests {
         for (rrule, expected) in cases {
             assert_eq!(humanize_rrule(rrule), expected, "rrule: {rrule}");
         }
+        // One-shot tasks must not surface the raw rrule string; show the
+        // target moment in the local timezone instead.
+        assert_eq!(
+            humanize_rrule("FREQ=ONCE;AT=2100-01-01T09:30"),
+            "一次性 2100-01-01 09:30"
+        );
     }
 
     // ── 删除一次定时运行的级联 ────────────────────────────────────────

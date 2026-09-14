@@ -532,6 +532,15 @@ assert.ok(
   'backend prompt must teach once-only schedules and reject past one-shot times'
 );
 assert.ok(
+  scheduledViewSource.includes("fields.FREQ === 'ONCE'") &&
+    scheduledViewSource.includes("scheduledCopy.repeatOptions.once"),
+  'the schedule editor must recognize one-shot rules instead of rewriting them into recurrences'
+);
+assert.ok(
+  indexHtml.includes("once:'一次性'"),
+  'the zh dictionary must carry the once repeat option'
+);
+assert.ok(
   scheduledTaskPromptRust.includes("create_scheduled_task") &&
     scheduledTaskPromptRust.includes("schtasks") &&
     scheduledTaskPromptRust.includes("Windows Task Scheduler") &&
