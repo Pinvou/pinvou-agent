@@ -109,15 +109,25 @@ impl ScaleMap {
     }
 
     /// 全局输入坐标 → 截图坐标（cursor_position 回报给模型用）。[`Self::shot_to_input`]
-    /// 的精确逆换算：`(ix - origin_x) * shot_w / (dev_w * input_scale_x)`，
+    /// 的逆换算：`(ix - origin_x) * shot_w / (dev_w * input_scale_x)`，
     /// f64 中计算后四舍五入。分母非零由 [`Self::from_capture`]
     /// 保证（input_scale 必须 > 0 且有限，dev 尺寸下限 1）。
+    ///
+    /// 结果钳制到 `[0, shot-1]`（round-12 评审）：截缩采样 ≥2× 的捕获时
+    /// （4K/5K 屏 → 1440 长边），包含性测试放行的最后一个输入像素会四舍
+    /// 五入到正好 `shot_w`（如 3840→1440 时 3839 → 1439.625 → 1440）——
+    /// 模型会收到一个越界坐标、下一次点击触发多余的"outside the
+    /// screenshot"警告。截屏坐标合法域本就是 `[0, shot-1]`，钳制不损失
+    /// 信息。
     pub fn input_to_shot(&self, ix: i32, iy: i32) -> (i64, i64) {
         let sx = (f64::from(ix) - f64::from(self.origin_x)) * f64::from(self.shot_w)
             / (f64::from(self.dev_w) * self.input_scale_x);
         let sy = (f64::from(iy) - f64::from(self.origin_y)) * f64::from(self.shot_h)
             / (f64::from(self.dev_h) * self.input_scale_y);
-        (sx.round() as i64, sy.round() as i64)
+        (
+            (sx.round() as i64).clamp(0, i64::from(self.shot_w) - 1),
+            (sy.round() as i64).clamp(0, i64::from(self.shot_h) - 1),
+        )
     }
 
     /// 把模型给的坐标钳制到截图范围内；返回 (x, y, 是否被钳制)。

@@ -51,7 +51,7 @@ use super::super::types::{
     Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
     UiTreeOptions,
 };
-use super::helpers::{drag_waypoints, sanitize_name};
+use super::helpers::{MAX_SCROLL_CLICKS, drag_waypoints, sanitize_name};
 use super::wayland_portal::{self, PortalInput};
 
 /// Settle time between a move and the click that follows it (applied in
@@ -232,7 +232,7 @@ fn combine_drag_errors(
         (Ok(()), Ok(())) => Ok(()),
         (Ok(()), Err(error)) => Err(error),
         (Err(error), Ok(())) => Err(error),
-        (Err(move_error), Err(release_error)) => Err(ComputerUseError::failed(format!(
+        (Err(move_error), Err(release_error)) => Err(move_error.same_kind(format!(
             "{move_error}; additionally the drag release failed ({release_error}) — \
              the left mouse button may still be pressed"
         ))),
@@ -256,8 +256,11 @@ fn press_keysyms_unwind(
             // Release the already-pressed keysyms in reverse, best-effort
             // (release errors swallowed): the caller's original press error
             // is what matters, but stranded modifiers would corrupt every
-            // subsequent input action.
-            for held in keysyms[..index].iter().rev() {
+            // subsequent input action. The *failing* keysym is included: a
+            // timed-out notify "says nothing" (评审发现) — the press may
+            // still have been delivered, and releasing an un-landed key is
+            // a compositor-side no-op.
+            for held in keysyms[..=index].iter().rev() {
                 let _ = event(*held, false);
             }
             return Err(error);
@@ -676,41 +679,60 @@ async fn element_at_point_async(
 }
 
 /// 焦点元素。atspi 0.30 的 proxy 层没有 GetFocusedObject 类查询(焦点只能
-/// 从事件流异步积累),故退而求其次:**在可达树上找 state 含 FOCUSED 的
-/// 节点**——活动窗口优先,DFS,受 [`FOCUSED_SEARCH_MAX_NODES`] 节点预算与
-/// 操作级 deadline 双约束(选择此路线而非返回 `Err(unsupported)`:树搜索
-/// 在 X11/Wayland 下都可行,不该浪费已有的 AT-SPI 通路)。
+/// 从事件流异步积累),故退而求其次:**在活动窗口的可达树上找 state 含
+/// FOCUSED 的最深节点**,受 [`FOCUSED_SEARCH_MAX_NODES`] 节点预算与操作级
+/// deadline 双约束(选择此路线而非返回 `Err(unsupported)`:树搜索在
+/// X11/Wayland 下都可行,不该浪费已有的 AT-SPI 通路)。
 ///
-/// 结局语义:搜完可达树没找到 → `Ok(None)`(确认无焦点元素:部分工具包
-/// 不实现 FOCUSED state);预算耗尽仍无定论 → `Err`(结果不确定时绝不
-/// 冒充「没有」——错误与「无元素」语义分明,处置由工具层裁定)。
+/// round-12 评审 M2 的两条修正,直接关系密码框承诺的成立性:
+/// - **只在活动窗口内找**。键盘输入必然落在活动窗口;后台窗口里残留的
+///   FOCUSED(部分工具包从不清除该 state)会让查询"成功"但答错——筛查
+///   评估一个死节点,输入却落在活动窗口的密码框里。
+/// - **窗口/容器节点自身不作为答案,取最深 FOCUSED**。部分工具包(如
+///   Qt 顶层持焦时)把 FOCUSED 挂在顶层容器上,返回容器会让键盘筛查与
+///   密码判定评估整个窗口而非真实输入焦点所在的组件。
+///
+/// 结局语义:活动窗口内没找到 → `Ok(None)`(确认无焦点元素:部分工具包
+/// 不实现 FOCUSED state;工具层按筛查不可用走 fail-open,与既定语义一致);
+/// 预算耗尽仍无定论 → `Err`(结果不确定时绝不冒充「没有」——错误与
+/// 「无元素」语义分明,处置由工具层裁定)。
 async fn focused_element_async(
     conn: &zbus::Connection,
 ) -> Result<Option<ElementInfo>, ComputerUseError> {
     let root = root_accessible(conn).await?;
-    let mut windows = app_windows(conn, &root, true).await?;
-    active_first(&mut windows).await;
+    let windows = app_windows(conn, &root, true).await?;
+    let active = {
+        let mut active = None;
+        for window in &windows {
+            if let Ok(state) = window.get_state().await {
+                if state.contains(State::Active) {
+                    active = Some(window);
+                    break;
+                }
+            }
+        }
+        active
+    };
+    let Some(window) = active else {
+        return Ok(None);
+    };
     let mut budget = FOCUSED_SEARCH_MAX_NODES;
-    for window in &windows {
-        if let Some(info) = find_focused_in_subtree(conn, window, &mut budget).await? {
-            return Ok(Some(info));
-        }
-        if budget == 0 {
-            break;
-        }
-    }
-    if budget == 0 {
+    let found = find_focused_in_subtree(conn, window, true, &mut budget).await?;
+    if found.is_none() && budget == 0 {
         return Err(ComputerUseError::unavailable(
             "focused element search exhausted its node budget without a definitive answer",
         ));
     }
-    Ok(None)
+    Ok(found)
 }
 
-/// 在子树内 DFS 找 state 含 FOCUSED 的节点;`budget` 限制访问节点数。
+/// 在子树内 DFS 找 state 含 FOCUSED 的**最深**节点;`budget` 限制访问节点数。
+/// `is_root` 标记窗口根调用:窗口节点自身的 FOCUSED 不作为答案(见
+/// [`focused_element_async`] 的 M2 说明)。
 async fn find_focused_in_subtree(
     conn: &zbus::Connection,
     proxy: &AccessibleProxy<'_>,
+    is_root: bool,
     budget: &mut usize,
 ) -> Result<Option<ElementInfo>, ComputerUseError> {
     if *budget == 0 {
@@ -721,9 +743,27 @@ async fn find_focused_in_subtree(
         .get_state()
         .await
         .map_err(|error| ComputerUseError::unavailable(format!("AT-SPI state query: {error}")))?;
-    if state.contains(State::Focused) {
-        return Ok(Some(element_info_of(conn, proxy, (0, 0, 0, 0)).await));
+    if !state.contains(State::Focused) {
+        return find_focused_among_children(conn, proxy, budget).await;
     }
+    // 自身带 FOCUSED:先向深处确认有无更深的焦点(容器与其焦点子孙可能
+    // 同时带 FOCUSED,最深的才是真实输入焦点);没有更深的,本节点即答案
+    // ——但窗口根自身除外(容器级 FOCUSED 定位不到密码框,M2)。
+    if let Some(found) = find_focused_among_children(conn, proxy, budget).await? {
+        return Ok(Some(found));
+    }
+    if is_root {
+        return Ok(None);
+    }
+    Ok(Some(element_info_of(conn, proxy, (0, 0, 0, 0)).await))
+}
+
+/// 遍历直接子节点,返回第一个子树内找到的 FOCUSED 节点。
+async fn find_focused_among_children(
+    conn: &zbus::Connection,
+    proxy: &AccessibleProxy<'_>,
+    budget: &mut usize,
+) -> Result<Option<ElementInfo>, ComputerUseError> {
     let children = proxy
         .get_children()
         .await
@@ -738,7 +778,7 @@ async fn find_focused_in_subtree(
             .map_err(|error| {
                 ComputerUseError::unavailable(format!("AT-SPI child proxy: {error}"))
             })?;
-        if let Some(found) = Box::pin(find_focused_in_subtree(conn, &child, budget)).await? {
+        if let Some(found) = Box::pin(find_focused_in_subtree(conn, &child, false, budget)).await? {
             return Ok(Some(found));
         }
         if *budget == 0 {
@@ -762,6 +802,9 @@ async fn a11y_connect() -> Result<zbus::Connection, String> {
     // round-10 评审 M4:这个调用走 zbus 默认连接(method_timeout 为 None,
     // 正是下方注释描述的危害),必须整体限时——接受连接但不应答的总线会把
     // create_backend 永久钉死在 worker 线程上。失败本就按非致命处理。
+    // 有意不在 teardown 时回调 set_session_accessibility(false)(round-12
+    // 评审:该开关是会话级全局状态,真实读屏用户可能正在依赖它——撤掉会
+    // 直接打断其辅助技术;留下的代价只是桌面应用继续维护 a11y 树)。
     let _ = tokio::time::timeout(
         2 * A11Y_METHOD_TIMEOUT,
         atspi::connection::set_session_accessibility(true),
@@ -1117,12 +1160,25 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             let experimental = "Wayland input is experimental (compositor implementations \
                  differ), and typing non-Latin-1 text (CJK etc.) is explicitly rejected: \
                  mutter silently drops keysyms outside the active keymap";
+            // 如实披露(round-12 评审:此前只在 PR 描述里说,模型/维护者在代码
+            // 与能力说明里看不到):portal 流不可用时的 xcap 回退走 XCB/XWayland
+            // 或 compositor 截图协议,多显示器下的坐标系与输入(流逻辑坐标)
+            // 未对齐;且回退路径固定抓主屏(self.input 恒为 None → 光标锚定
+            // 不可用),模型不会被告知其余屏幕不可见。
+            let fallback_note = if self.wayland_screenshot_ok && !portal_ok {
+                "; capture is on the xcap fallback: multi-monitor coordinate alignment with \
+                 input is best-effort, only the PRIMARY monitor is captured/input-able, and \
+                 the compositor may prompt per capture"
+            } else {
+                ""
+            };
             Capabilities {
                 screenshot: portal_ok || self.wayland_screenshot_ok,
                 input: self.wayland_portal.is_some(),
                 ui_tree,
                 notes: format!(
-                    "Wayland session ({}): {input_note}; {screenshot_note}; {experimental}; \
+                    "Wayland session ({}): {input_note}; {screenshot_note}{fallback_note}; \
+                     {experimental}; \
                      AT-SPI bounds best-effort on Wayland",
                     self.session.desktop_label()
                 ),
@@ -1326,7 +1382,14 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             // 移动与点击之间留静置窗口(与 XTEST 同样的注入竞态缓冲)。
             settle();
             for i in 0..count {
-                portal.button(evdev, true)?;
+                if let Err(error) = portal.button(evdev, true) {
+                    // 按压失败≠未送达（超时对送达性只字未提，评审发现）：
+                    // 对仍开启的毒化会话尽力补一次释放——未落地的释放是
+                    // 合成器侧 no-op，已落地的避免按键滞留（mutter 关闭
+                    // 会话不合成释放事件）。
+                    let _ = portal.button(evdev, false);
+                    return Err(error);
+                }
                 portal.button(evdev, false)?;
                 if i + 1 < count {
                     sleep(Duration::from_millis(CLICK_GAP_MS));
@@ -1354,7 +1417,12 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             self.note_input();
             let portal = self.require_portal()?;
             portal.ensure_started()?;
-            return portal.button(wayland_portal::map_button(button), true);
+            if let Err(error) = portal.button(wayland_portal::map_button(button), true) {
+                // 按压失败≠未送达（同 click 的理由）：尽力补一次释放。
+                let _ = portal.button(wayland_portal::map_button(button), false);
+                return Err(error);
+            }
+            return Ok(());
         }
         let enigo = self.require_enigo()?;
         enigo
@@ -1366,12 +1434,14 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
         if self.is_wayland() {
             self.note_input();
             let portal = self.require_portal()?;
-            // 仅在既有健康会话上释放（评审发现）：无会话/毒化会话时绝不
-            // 懒启动——ensure_started 的完整建立流程会弹系统授权对话框，
-            // 撤销/急停/会话结束的紧急 mouse_up 变成反向索权。本后端经
-            // portal 按下的键其会话必然已建立，跳过即无滞留风险；毒化
-            // 会话由下一次 ensure_started 回收，backend Drop 由 close() 兜底。
-            if portal.is_active() {
+            // 仅在仍开启的会话上释放（评审发现）：无会话时绝不懒启动——
+            // ensure_started 的完整建立流程会弹系统授权对话框，撤销/急停/
+            // 会话结束的紧急 mouse_up 变成反向索权。毒化但未关闭的会话
+            // 也在此列（has_open_session 而非 is_active）：其上的 Notify
+            // 仍可投递，而 mutter 的 Session.Close 只销毁虚拟设备、不合成
+            // 释放——按 is_active 跳过会把真实按下的按键滞留在合成器侧，
+            // 直到下一次 ensure_started 之外再无任何释放路径。
+            if portal.has_open_session() {
                 return portal.button(wayland_portal::map_button(button), false);
             }
             return Ok(());
@@ -1389,7 +1459,12 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             portal.ensure_started()?;
             portal.motion_absolute(from.0, from.1)?;
             settle();
-            portal.button(wayland_portal::map_button(MouseButton::Left), true)?;
+            if let Err(error) = portal.button(wayland_portal::map_button(MouseButton::Left), true) {
+                // 按压失败≠未送达（同 click 的理由）：下面的"无论中途成败
+                // 最后都必须释放"保证同样适用于按压失败本身。
+                let _ = portal.button(wayland_portal::map_button(MouseButton::Left), false);
+                return Err(error);
+            }
             // 插值移动;无论中途成败,最后都必须释放按键。
             let mut result = Ok(());
             let mut last_reached = (from.0, from.1);
@@ -1440,8 +1515,8 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
     fn scroll(&mut self, direction: ScrollDirection, clicks: u32) -> Result<(), ComputerUseError> {
         if self.is_wayland() {
             // amount=0 直接 no-op:mutter 对 axis steps=0 报 Invalid,而
-            // notify() 的错误路径会把整个 portal 会话 reset(下次动作重新弹
-            // 授权对话框)——不能为一次空滚动付出会话重建的代价。
+            // notify() 的错误路径会把会话标记 poisoned(下次动作回收重建、
+            // 重新弹授权对话框)——不能为一次空滚动付出会话重建的代价。
             if clicks == 0 {
                 return Ok(());
             }
@@ -1453,8 +1528,11 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             return portal.axis_discrete(axis, steps);
         }
         let enigo = self.require_enigo()?;
-        // 显式用滚轮按钮而非 Mouse::scroll():后者符号约定因平台而异
-        // (x11rb 正数=向下),按钮循环语义无歧义。
+        // 显式用滚轮按钮而非 Mouse::scroll()/helpers::map_scroll():轴滚动的
+        // 符号约定因平台而异(x11rb 正数=向下),按钮循环语义无歧义。与
+        // map_scroll 的分叉是有意的(按钮机制 vs 轴机制),但钳制同样适用:
+        // 工具层已限 100,这里对直连 Backend 的调用方兜底(round-12 评审)。
+        let clicks = clicks.min(MAX_SCROLL_CLICKS);
         let button = match direction {
             ScrollDirection::Up => Button::ScrollUp,
             ScrollDirection::Down => Button::ScrollDown,
@@ -1511,7 +1589,14 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                          already injected are not undone",
                     ));
                 }
-                portal.keysym_event(keysym, true)?;
+                if let Err(error) = portal.keysym_event(keysym, true) {
+                    // 按压失败≠未送达（超时对送达性只字未提，评审发现）：对
+                    // 仍开启的毒化会话尽力补一次释放——未落地的释放是合成器
+                    // 侧 no-op，已落地的避免按键滞留（mutter 关闭会话不合成
+                    // 释放）。
+                    let _ = portal.keysym_event(keysym, false);
+                    return Err(error);
+                }
                 if let Err(error) = portal.keysym_event(keysym, false) {
                     if first_err.is_none() {
                         first_err = Some(error);
@@ -1700,14 +1785,17 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
     }
     let wayland = session.kind == SessionKind::Wayland;
 
-    // Capture/input plane mismatch warning: xcap's own Wayland detector
-    // prefers WAYLAND_DISPLAY over XDG_SESSION_TYPE=x11, so capture can be
-    // routed through the Wayland portal chain while XTEST input targets
-    // X11. The classification itself is deliberate (pinned by tests) — warn
-    // once so the split is diagnosable instead of silent. Predicate matches
-    // capabilities() notes (any non-empty value): socket names like "wl-0"
-    // or "sway-1" route capture through the Wayland chain just as well as
-    // "wayland-0", and the warning must not be narrower than the behavior it
+    // Capture/input plane mismatch warning: xcap's own Wayland detector keys
+    // off XDG_SESSION_TYPE=wayland or a WAYLAND_DISPLAY containing
+    // "wayland", so capture can be routed through the Wayland portal chain
+    // while XTEST input targets X11. The classification itself is deliberate
+    // (pinned by tests) — warn once so the split is diagnosable instead of
+    // silent. Predicate matches capabilities() notes (any non-empty value):
+    // deliberately BROADER than xcap's routing (e.g. "wl-0"/"sway-1" do NOT
+    // match xcap's substring check and still take the XCB path), because a
+    // non-X11 socket name signals a Wayland-colored environment whose
+    // behavior the user should double-check; over-warning is the safe
+    // direction, and the warning must not be narrower than the behavior it
     // diagnoses (评审发现).
     if session.kind == SessionKind::X11
         && std::env::var("WAYLAND_DISPLAY")
@@ -1742,10 +1830,10 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
         Ok(Err(error)) => (None, Some(error)),
         Err(_) => (
             None,
-            Some(ComputerUseError::unavailable(format!(
+            Some(format!(
                 "a11y bus connection did not finish within {:?}",
                 4 * A11Y_METHOD_TIMEOUT
-            ))),
+            )),
         ),
     };
 
@@ -2028,8 +2116,14 @@ mod tests {
         });
         assert!(result.is_err());
         // The modifier pressed before the failure is released in reverse;
-        // keysyms after the failing one are never attempted.
-        assert_eq!(events, vec![(0xffe3, true), (0x63, true), (0xffe3, false)]);
+        // the FAILING keysym itself is also released best-effort (a timed-out
+        // notify may still have been delivered; releasing an un-landed key
+        // is a compositor-side no-op — round-12 review M1); keysyms after
+        // the failing one are never attempted.
+        assert_eq!(
+            events,
+            vec![(0xffe3, true), (0x63, true), (0x63, false), (0xffe3, false)]
+        );
     }
 
     #[test]
@@ -2060,7 +2154,9 @@ mod tests {
         });
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().to_string(), "failed: press failed");
-        assert_eq!(releases, 1);
+        // Both the failing keysym and the held modifier are released
+        // (round-12 review M1); their failures stay swallowed.
+        assert_eq!(releases, 2);
     }
 }
 
@@ -2070,10 +2166,24 @@ mod wayland_e2e_tests {
     //! 需要真实 Wayland 会话 + xdg-desktop-portal(RemoteDesktop/ScreenCast),
     //! 且系统授权对话框须被确认——验证环境用 root 的 uinput 脚本模拟用户按
     //! Enter(见 PR 描述的验证章节)。默认 ignored:
-    //! `cargo test --lib computer_use::platform::linux::wayland_e2e_tests -- --ignored --nocapture`
+    //! `PINVOU3_CU_WAYLAND_LIVE=1 cargo test --lib computer_use::platform::linux::wayland_e2e_tests -- --ignored --nocapture`
+    //!
+    //! 与 X11 live 套件同一双重 opt-in(round-12 评审:X11 套件在上一轮正是
+    //! 因 `--ignored` 只是约定式防护而加的显式环境门禁——裸 `--ignored` 在
+    //! 带真实桌面会话的 Wayland 开发机上会移动真实指针、点击并键入测试
+    //! 文本;同一发现此前只落在了 X11 一侧)。
 
     use super::*;
     use atspi::proxy::text::TextProxy;
+
+    /// 与 X11 `live_display()` 同款的环境门禁:未显式导出
+    /// `PINVOU3_CU_WAYLAND_LIVE=1` 时返回 None,所有用例首行跳过。
+    fn live_wayland() -> Option<()> {
+        std::env::var("PINVOU3_CU_WAYLAND_LIVE")
+            .ok()
+            .filter(|v| v == "1")
+            .map(|_| ())
+    }
 
     /// DFS 收集所有 role=Text 节点的文本(a11y 验证打字结果)。
     async fn read_texts_via_a11y(conn: &zbus::Connection) -> Result<Vec<String>, ComputerUseError> {
@@ -2155,6 +2265,10 @@ mod wayland_e2e_tests {
     #[ignore = "needs a live Wayland session with xdg-desktop-portal and the system \
                 authorization dialog confirmed (uinput Enter in the verification env)"]
     fn e2e_dialog_grant_capture_and_input() {
+        if live_wayland().is_none() {
+            println!("skipped: set PINVOU3_CU_WAYLAND_LIVE=1 to run against a live desktop");
+            return;
+        }
         let session = detect_session(&|key| std::env::var(key).ok());
         assert_eq!(
             session.kind,

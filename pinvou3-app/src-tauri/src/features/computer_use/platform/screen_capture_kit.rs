@@ -98,7 +98,7 @@ pub(super) fn capture_region(
             } else {
                 // SAFETY: 回调参数非空且在块执行期内有效；code() 是纯读取，
                 // 借用不超过块作用域。
-                format!("NSerror code {}", unsafe { (*error).code() })
+                format!("NSError code {}", unsafe { (*error).code() })
             };
             Err(format!("ScreenCaptureKit returned no image: {detail}"))
         } else {
@@ -151,6 +151,15 @@ fn bgra_image_to_rgba(image: &CGImage) -> Result<CapturedScreen, String> {
     if bits_per_pixel != 32 {
         return Err(format!(
             "unexpected CGImage bit depth {bits_per_pixel} (expected 32-bit BGRA)"
+        ));
+    }
+    // 行拷贝切片的前置不变量（round-12 评审）：bytes_per_row >= width*4 是
+    // CG 对 32bpp 图像的约定，行拷贝按 `row*bpr .. row*bpr + width*4` 切片，
+    // 违约图像会在回调块内 panic——foreign 调用栈上的 unwind 不受 worker
+    // catch_unwind 保护。显式检查把它变成普通错误。
+    if bytes_per_row < width.checked_mul(4).ok_or("CGImage width overflows")? {
+        return Err(format!(
+            "CGImage row stride {bytes_per_row} < width*4 ({width}); not a packed 32-bit image"
         ));
     }
     let provider = CGImage::data_provider(Some(image))
