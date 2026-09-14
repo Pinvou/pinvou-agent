@@ -99,6 +99,10 @@ impl RunManifest {
         &self.benchmark
     }
 
+    pub fn tool_policy(&self) -> &str {
+        &self.tool_policy
+    }
+
     pub fn concurrency(&self) -> u16 {
         self.concurrency
     }

@@ -90,8 +90,9 @@ vision backend 才能加入 offline profile，否则图片分析固定返回能�
 不带 eval 策略运行。
 
 `pinvou-product/v1` 是它的 deprecated alias，解析到同一策略，仅为兼容存量
-pinvou-cli smoke/resume 状态与旧基准配置而保留；生产路径与新配置一律使用
-canonical id，不得再新用旧名。
+pinvou-cli smoke/resume 状态与旧基准配置而保留：pinvou-cli 的 smoke resume 会
+显式接受两个 id，但新运行写入的 task/manifest 一律使用 canonical id，
+不得再新用旧名。
 
 ### 公共拒绝面
 
