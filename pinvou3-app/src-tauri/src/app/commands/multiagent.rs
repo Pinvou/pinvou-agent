@@ -24,8 +24,8 @@ pub(crate) const SWARM_MODE_PROMPT: &str = "This is a system message. User has a
 /// shared tier: Work and Code sessions both run 4 direct-concurrent / 8
 /// tree-admitted. Note: in production wiring `expert_snapshot` only exists
 /// while multi_agent is on, so the "off" tier is currently reached only by
-/// tests and defensive calls; its numbers just bind the reminder copy and the
-/// engine config together.
+/// tests; its numbers just bind the reminder copy and the engine config
+/// together.
 pub(crate) struct DelegationLimits {
     /// Max direct children running at the same time (launch_concurrency).
     pub max_concurrent: usize,
