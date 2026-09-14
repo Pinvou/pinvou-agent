@@ -1975,6 +1975,18 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let bogus = TestDir::new("bogus-git-env");
+        // Capture the host's values first: restoration must put back exactly
+        // this state, not an unconditionally-absent one (the launching shell
+        // may legitimately carry these variables).
+        let prior_index = std::env::var_os("GIT_INDEX_FILE");
+        let prior_objects = std::env::var_os("GIT_OBJECT_DIRECTORY");
+        // Panic-safe restore: Drop puts back the captured values on every
+        // exit path — normal end, the early return inside catch_unwind, and
+        // caught assertion panics alike.
+        let env_guard = crate::platform::paths::tests::EnvVarGuard::capture(&[
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+        ]);
         // SAFETY: ENV_LOCK serializes process environment writes (the
         // crate-wide convention); the workspace git subprocess itself strips
         // GIT_* override variables and is unaffected by this write.
@@ -2013,12 +2025,20 @@ mod tests {
                 "GIT_OBJECT_DIRECTORY must be stripped"
             );
         });
-        // SAFETY: serialized by the same ENV_LOCK; restore the pre-pollution
-        // environment.
-        unsafe {
-            std::env::remove_var("GIT_INDEX_FILE");
-            std::env::remove_var("GIT_OBJECT_DIRECTORY");
-        }
+        // Restore before unwrapping the result, so the original environment
+        // is back even when the unwrapped panic propagates; then assert the
+        // restoration is complete.
+        drop(env_guard);
+        assert_eq!(
+            std::env::var_os("GIT_INDEX_FILE"),
+            prior_index,
+            "GIT_INDEX_FILE must be restored to its pre-test state"
+        );
+        assert_eq!(
+            std::env::var_os("GIT_OBJECT_DIRECTORY"),
+            prior_objects,
+            "GIT_OBJECT_DIRECTORY must be restored to its pre-test state"
+        );
         result.unwrap();
     }
 }

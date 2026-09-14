@@ -2198,6 +2198,17 @@ mod tests {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let bogus = TestDir::new("bogus-gitdir");
+        // Capture the host's values first: restoration must put back exactly
+        // this state, not an unconditionally-absent one (the launching shell
+        // may legitimately carry these variables).
+        let prior_index = std::env::var_os("GIT_INDEX_FILE");
+        let prior_objects = std::env::var_os("GIT_OBJECT_DIRECTORY");
+        // Panic-safe restore on every exit path (early return, caught panic,
+        // or normal end); see platform::paths::tests::EnvVarGuard.
+        let env_guard = crate::platform::paths::tests::EnvVarGuard::capture(&[
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+        ]);
         // SAFETY: ENV_LOCK 序列化进程环境写（crate 级唯一约定）；影子 git 调用
         // 自身剥离 GIT_*，并发测试的 git 子进程同样走隔离命令，不受本变量影响。
         unsafe {
@@ -2225,11 +2236,20 @@ mod tests {
                 "GIT_INDEX_FILE/GIT_OBJECT_DIRECTORY 必须被隔离"
             );
         });
-        // SAFETY: 同 ENV_LOCK 序列化。
-        unsafe {
-            std::env::remove_var("GIT_INDEX_FILE");
-            std::env::remove_var("GIT_OBJECT_DIRECTORY");
-        }
+        // Restore before unwrapping the result, so the original environment
+        // is back even when the unwrapped panic propagates; then assert the
+        // restoration is complete.
+        drop(env_guard);
+        assert_eq!(
+            std::env::var_os("GIT_INDEX_FILE"),
+            prior_index,
+            "GIT_INDEX_FILE must be restored to its pre-test state"
+        );
+        assert_eq!(
+            std::env::var_os("GIT_OBJECT_DIRECTORY"),
+            prior_objects,
+            "GIT_OBJECT_DIRECTORY must be restored to its pre-test state"
+        );
         result.unwrap();
     }
 }
