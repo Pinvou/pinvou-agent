@@ -931,8 +931,10 @@ fn merge_nl_rules(mut sq: SearchQuery) -> SearchQuery {
     sq
 }
 
-/// 秒搜。文本会先过 NL 规则解析（"上周的 pdf" → exts+时间过滤+残余文本）；
-/// 前端**显式**传入的结构化过滤优先于解析结果，不被覆盖。
+/// Instant search. The text first runs through NL-rule parsing ("上周的 pdf"
+/// → exts + time filter + residual text); structured filters passed
+/// **explicitly** by the frontend take precedence over the parsed result and
+/// are not overwritten.
 pub async fn kb_search(
     state: State<'_, KnowledgeService>,
     query: SearchQueryDto,

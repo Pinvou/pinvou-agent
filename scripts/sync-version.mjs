@@ -20,9 +20,10 @@
 //      pinvou-cli/Cargo.lock (that standalone workspace vendors both release
 //      crates as path dependencies; a stale lock breaks `cargo --locked`
 //      builds there — the drift #415 had to fix by hand)
-//   9. pinvou-cli/crates/cli/Cargo.toml 的 [package] 版本（`pinvou --version`
-//      报的是该 crate 的 CARGO_PKG_VERSION，不接入单一事实源就会与 app 分叉）
-//      及 pinvou-cli/Cargo.lock 中对应的 pinvou-cli 成员条目
+//   9. The [package] version of pinvou-cli/crates/cli/Cargo.toml (`pinvou
+//      --version` reports that crate's CARGO_PKG_VERSION; without the single
+//      source of truth it would drift from the app) and the matching
+//      pinvou-cli member entry in pinvou-cli/Cargo.lock
 
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';

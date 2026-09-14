@@ -1035,7 +1035,8 @@ jobs:
         with:
           submodules: false
 
-      # 与 rust-test 同策略:Linux Rust job 必须先做内存扩容(gate policy 强制)。
+      # Same policy as rust-test: the Linux Rust job must set up extra memory
+      # first (enforced by the gate policy).
       - name: Set up zram and swap
         run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
@@ -1072,10 +1073,12 @@ jobs:
         with:
           components: rustfmt
 
-      # rust-toolchain.toml 在 src-tauri 下,对从仓库根用 --manifest-path 调用的
-      # cargo 不生效;与 rust-test 同步把 pinned 版本设为 default。单一真相源是
-      # 该文件——硬编码 toolchain 版本会在未来升级时把本 leg 静默甩在旧版本上。
-      - name: 对齐 rust-toolchain.toml 锁定的工具链
+      # rust-toolchain.toml lives under src-tauri and does not apply to cargo
+      # invoked from the repo root with --manifest-path; like rust-test, make
+      # the pinned version the default. That file is the single source of
+      # truth — a hardcoded toolchain version would silently leave this leg
+      # on an old toolchain at the next upgrade.
+      - name: Align the toolchain pinned by rust-toolchain.toml
         working-directory: pinvou3-app/src-tauri
         run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
 

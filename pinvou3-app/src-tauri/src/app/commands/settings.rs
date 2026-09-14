@@ -362,8 +362,10 @@ pub async fn save_model(model: SavedModel, pool: State<'_, EnginePool>) -> Resul
 /// 删一条模型。至少保留一条;删到当前 active 会自动回退列表首条。
 #[tauri::command]
 pub async fn delete_model(id: String) -> Result<(), String> {
-    // keyring 删除在 prefs 保存成功之后执行:先删会在保存失败时留下"仍配置但
-    // 无密钥"的模型;保存成功后删除失败只会留下孤儿凭据(良性方向)。
+    // The keyring delete runs after the prefs save has succeeded: deleting
+    // first would leave a configured-but-secretless model when the save then
+    // fails; after a successful save, a failed delete only leaves an orphaned
+    // credential (the benign direction).
     let mut reference_to_delete: Option<CredentialReference> = None;
     UserPrefs::update_transaction(|prefs| {
         if prefs.advanced.saved_models.len() <= 1 {

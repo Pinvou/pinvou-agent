@@ -690,10 +690,13 @@ impl SessionAgentStore {
 
     /// 从权威 sidecar 恢复原生代码会话记录（辅助索引缺失/损坏时的兜底）。
     ///
-    /// 与 ACP 的 `restore_missing_acp_record` 对称：sidecar 是长期权威
-    /// 依据，辅助索引只负责加速。恢复成功即持久化回 `session-agents.json`，
-    /// 使后续读取不再依赖 sidecar。返回是否真实发生了恢复：索引已持有
-    /// code 模式记录时返回 `Ok(false)`，调用方不得把它计入恢复信号。
+    /// Symmetric with the ACP `restore_missing_acp_record`: the sidecar is
+    /// the long-term authority and the auxiliary index only accelerates. A
+    /// successful recovery is persisted back into `session-agents.json` so
+    /// later reads no longer depend on the sidecar. Returns whether a
+    /// recovery actually happened: `Ok(false)` when the index already holds
+    /// the code-mode record, which the caller must not count as a recovery
+    /// signal.
     pub fn restore_missing_code_session_record(
         &self,
         session_id: &str,
