@@ -59,10 +59,11 @@ fn skill_source_dirs() -> Vec<PathBuf> {
 
 /// 项目技能来源目录（workspace 内工具约定，按底座上游 #432 优先级降序，
 /// `.pinvou/skills` 为 pinvou3 自有约定，插在 `.agents/skills` 之后）。
-/// 仅当项目级 skills 开关开启且该 scope 的 `project_skills_opt_in` 表字段为
-/// true（当前仅 code）时使用（§2.4：项目内文本是 prompt-injection 面，显式
-/// 开启才扫描；fork #41 已砍断 workspace 并集发现，这里在 app 侧按同一来源
-/// 顺序补上，经组合目录通道物化）。
+/// 仅当项目级 skills 全局开关开启、且会话绑定了真实目录（调用方传入
+/// Some(workspace)：原生 code 会话的项目目录或普通 chat 会话的用户工作目录
+/// 绑定）时使用（§2.4：项目内文本是 prompt-injection 面，显式开启才扫描；
+/// fork #41 已砍断 workspace 并集发现，这里在 app 侧按同一来源顺序补上，经
+/// 组合目录通道物化）。
 fn project_skill_source_dirs(project_workspace: &Path) -> Vec<PathBuf> {
     [
         ".agents/skills",
@@ -82,8 +83,8 @@ fn project_skill_source_dirs(project_workspace: &Path) -> Vec<PathBuf> {
 ///
 /// 排除两类：本 scope 禁用集中的技能（含未初始化 DenyAll 模式的默认全禁）+
 /// 被禁用连接器声明的 companion skills（保持「关 MCP → 关联技能一并隐藏」的
-/// 既有联动）。`project_workspace` 仅在该 scope 的 `project_skills_opt_in` 表
-/// 字段为 true 且项目级 skills 开关开启时被扫描（排在用户/市场来源之前，
+/// 既有联动）。`project_workspace` 只在会话绑定了真实目录时由调用方传入
+/// （Some），且项目级 skills 全局开关开启时才被扫描（排在用户/市场来源之前，
 /// 项目本地覆盖语义与底座 workspace 目录优先一致）。
 pub fn enabled_skills_for(
     scope: ConnectorScope,
@@ -93,10 +94,10 @@ pub fn enabled_skills_for(
     let mut seen: HashSet<String> = HashSet::new();
     let mut out: Vec<(String, PathBuf)> = Vec::new();
     // 项目技能优先（workspace 目录 > 全局来源，与底座 first-wins 一致）；
-    // 项目门由模式能力表字段驱动（当前仅 code 为 true）。
-    if crate::features::assistant::session_policy::project_skills_opt_in_for(scope)
-        && project_skills_enabled()
-    {
+    // 项目门 = 全局开关 + 绑定：仅绑定了真实目录的会话（调用方传入
+    // Some(workspace)）且用户显式开启项目级 skills 开关时才扫描——项目内
+    // 文本是 prompt-injection 面，与模式无关、跟绑定走。
+    if project_skills_enabled() {
         if let Some(workspace) = project_workspace {
             for src in project_skill_source_dirs(workspace) {
                 collect_source_skills(&src, &disabled, &mut seen, &mut out);
@@ -742,7 +743,13 @@ mod tests {
                 ".agents/skills 优先级应高于 .pinvou/skills（同名仍取 .agents）"
             );
 
-            // plain scope 不受项目开关影响
+            // 项目门与模式解耦（跟绑定不跟模式）：plain scope 传入绑定目录时
+            // 同样扫描；全局开关关闭则不扫。
+            let enabled = enabled_skills_for(ConnectorScope::Plain, Some(&project));
+            assert!(
+                enabled.iter().any(|(n, _)| n == "project-skill"),
+                "绑定目录的普通会话同样参与项目技能扫描（开关开启时）"
+            );
             set_project_skills_enabled(false);
             let enabled = enabled_skills_for(ConnectorScope::Plain, Some(&project));
             assert!(!enabled.iter().any(|(n, _)| n == "project-skill"));

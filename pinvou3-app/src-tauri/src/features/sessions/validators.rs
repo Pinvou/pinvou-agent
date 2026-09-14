@@ -7,7 +7,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use deepseek_tui::models::SystemPrompt;
 use deepseek_tui::session_manager::SessionManager;
 
@@ -73,6 +73,31 @@ pub(crate) fn validate_scheduled_workspace_path(root: &Path, workspace: &Path) -
         );
     }
     Ok(())
+}
+
+/// 普通 chat 会话用户选择的工作目录校验:非空、绝对路径、盘上必须存在且是
+/// 目录。canonicalize 后返回(消除 `.`/符号链接/尾部分隔符),调用方直接使用
+/// 返回值绑定与展示。
+pub(crate) fn validate_user_workspace_path(raw: &str) -> Result<PathBuf> {
+    if raw.trim().is_empty() {
+        bail!("Workspace path must not be empty");
+    }
+    let path = PathBuf::from(raw);
+    if !path.is_absolute() {
+        bail!("Workspace path must be absolute: {raw}");
+    }
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("Workspace path does not exist: {raw}"))?;
+    if !canonical.is_dir() {
+        bail!("Workspace path must be a directory: {raw}");
+    }
+    // Windows canonicalize 会返回 \?\ verbatim 前缀;agent 与前端对 cwd 做
+    // 字符串/前缀比较时会误判,统一归一成常规盘符路径(非 Windows 恒等)——
+    // 与 validate_codex_project_workspace 同一条不变量(评审 #445 P1-1)。
+    Ok(crate::platform::os::platform_compat_path(
+        &canonical.to_string_lossy(),
+    ))
 }
 
 pub(crate) fn persisted_system_prompt(system_prompt: Option<&SystemPrompt>) -> Option<String> {

@@ -124,7 +124,12 @@ const expectedProtocolHashes = {
   // byte-identical to the previous state).
   chat: 'd9b18bcde6f40b5ff1644c1bccc388b70632a9f49444de44524c24b39830959c',
   dependencies: '2cb185d38dabeb35f48773457c182e1c35951b210f5d0fc853b074eb2eb68626',
-  interaction: '3f275b9c4fc77ebf42a56df1c84d638ca5f1f8a3b80612efebeddf1a39f14efd',
+  // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
+  // session id (the YOLO gate passes the adjudicated sid), so the
+  // exit_plan_to_yolo invoke payload text changes from
+  // { sessionId: state.activeSessionId } to { sessionId: sid } — same
+  // command surface, no new invoke or listen entries.
+  interaction: '7a58372cdc0b3eabe1b0744dda4a18a31926ba929b67307309803e88a30e5fab',
   knowledge: '9105a42c6b69f04d0bc28b6a72e0746648110a44823891ded3261cdcbc99766b',
   // memory recomputed for the memory-maintenance feature: organize_memory +
   // get_memory_organize_history invokes added to bridge/memory.js.
@@ -139,7 +144,12 @@ const expectedProtocolHashes = {
   // Recomputed for one-click full-fidelity session log export: the tauri
   // sessions bridge gains the export_session_archive invoke wrapping the
   // export_session command (web lane intentionally has no such backend).
-  sessions: '4abdde9c3ee3e1b241ffacf9d6cf4d100a0e0cb0d9de6ca84facafd8586f2133',
+  // Recomputed again for the normal-chat draft workspace selector:
+  // create_session now carries the optional workspacePath payload
+  // (bridge/sessions.js). Recomputed again for workspace-bound sessions:
+  // get_session_workspace_binding query + bound-draft staged mode application
+  // (set_plan_mode_next / exit_plan_to_yolo) at materialization.
+  sessions: 'c85e365dcf0874b577396a02f764cb6f108ad34a4b54c0853cd8f918ffa39b5c',
   settings: 'a44929caff59641eb059f28885f1674d4e277412526d31c1d3ddfd75e44d0496',
   updater: '86412d40999a268d3d92dc4fe97e3fe465de08745423be820f38a462d79aaced',
   // Recomputed for the comment-only English translation of the voice bridge

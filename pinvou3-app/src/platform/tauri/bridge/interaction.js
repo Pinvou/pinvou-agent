@@ -138,11 +138,18 @@
   }
   // 草稿态 chip 切换：写本 lane 全局默认（setDraftMode 不物化会话——
   // 物化时由 ensureSession 把 lane 默认应用到新会话）。
+  // 绑定了工作目录的草稿安全姿态对齐 code 模式：切换写 code lane 全局默认
+  // （不写 work lane），并把显式选择暂存到 pendingDraftMode，物化时按暂存值
+  // 逐会话应用（后端对绑定会话只解析 code lane 默认，不读 work）。
   async function setDraftMode(target) {
-    const lane = state.modeLane === "code" ? "code" : "work";
+    const boundDraft = !!state.draftWorkspacePath;
+    // 绑定草稿恒写 code lane；未绑定草稿跟随当前 lane（work/code 两 lane，
+    // design 已并入 work，#428）。
+    const lane = boundDraft || state.modeLane === "code" ? "code" : "work";
     try {
       const defaults = await invoke("set_mode_default", { lane, mode: target });
       if (defaults) state.modeDefaults = defaults;
+      if (boundDraft) state.pendingDraftMode = target;
       if (!state.activeSessionId) {
         state.modeState = {
           mode: target,
@@ -151,6 +158,21 @@
       }
     } catch (e) { addSystemItem(bt("switchModeFailed") + e); }
     notify();
+  }
+
+  // ── code 权限偏好（YOLO 一次性确认门）─────────────────────────────
+  // 绑定工作目录的普通会话切 YOLO 前与 code 模式共用同一确认门事实源。
+  // 读取失败按 null 返回（needsYoloConfirmation 对 null 按未确认处理——
+  // 安全方向：宁可多弹一次）；confirm 的失败上抛给 UI 提示，不静默。
+  async function getCodePermissionPrefs() {
+    try {
+      return await invoke("get_code_permission_prefs");
+    } catch {
+      return null;
+    }
+  }
+  async function confirmCodeYolo() {
+    return invoke("confirm_code_yolo");
   }
 
   // ── 卡片动作辅助 ─────────────────────────────────────────────────
@@ -313,15 +335,21 @@
     }
     notify();
   }
-  async function exitPlanToYolo() {
-    const sid = state.activeSessionId;
+  async function exitPlanToYolo(targetSessionId) {
+    // 目标会话可由调用方显式裁定：YOLO 确认门在多个 await 往返后才发起
+    // 切换，期间用户可能已切走，实时 active 不再等于裁决对象（评审 #445
+    // R8，与 sessions.js 物化路径传 meta.id 同一先例）。无参调用保持原
+    // 语义：作用于发起瞬间的实时 active（灯泡 / plan-stuck 卡片）。
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
     // Draft state: do not materialize a session; rewrite this lane's global
     // default (two-lane semantics).
     if (!sid) { await setDraftMode("yolo"); return; }
     try {
-      // invoke 形状保持 { sessionId: state.activeSessionId }（协议指纹按文本
-      // 计算）；发起瞬间 activeSessionId === sid，await 返回后按 sid 定向写回。
-      const st = await invoke("exit_plan_to_yolo", { sessionId: state.activeSessionId });
+      // invoke 发起时即定向 sid；await 返回后按同一 sid 写回（协议指纹按
+      // 调用文本计算，参数化后 interaction 域哈希同步重算）。
+      const st = await invoke("exit_plan_to_yolo", { sessionId: sid });
       applyAuthoritativeModeState(sid, st);
     } catch (e) { addSystemItemFor(sid, bt("exitPlanFailed") + e); }
     notify();
@@ -577,6 +605,8 @@
       setDraftMode,
       setModeLane,
       refreshModeDefaults,
+      getCodePermissionPrefs,
+      confirmCodeYolo,
       setMultiAgentMode,
       planStuckReplan,
       planStuckGo,

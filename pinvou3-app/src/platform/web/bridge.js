@@ -7477,6 +7477,13 @@
       notify();
     }
   }
+  // 桌面端绑定工作目录会话的配套查询在 Web 端无对应后端（Web/远程会话不
+  // 返回目录绑定）：同名桩方法保持两端 bridge API 对称——绑定查询恒 null
+  // （UI 不显示绑定指示、YOLO 确认门不触发），code 权限偏好读取恒 null、
+  // 确认写入为 no-op。
+  async function getSessionWorkspaceBinding() { return null; }
+  async function getCodePermissionPrefs() { return null; }
+  async function confirmCodeYolo() { return null; }
   // 草稿态 chip 切换：写本 lane 全局默认（不物化会话——物化时由
   // ensureSession 把 lane 默认应用到新会话）。
   async function setDraftMode(target) {
@@ -8096,15 +8103,21 @@
     }
     notify();
   }
-  async function exitPlanToYolo() {
-    const sid = state.activeSessionId;
+  async function exitPlanToYolo(targetSessionId) {
+    // 目标会话可由调用方显式裁定：YOLO 确认门在多个 await 往返后才发起
+    // 切换，期间用户可能已切走，实时 active 不再等于裁决对象（评审 #445
+    // R8，与 tauri 桥同一签名）。无参调用保持原语义：作用于发起瞬间的
+    // 实时 active（灯泡 / plan-stuck 卡片）。
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
     // Draft state: do not materialize a session; rewrite this lane's global
     // default (two-lane semantics).
     if (!sid) { await setDraftMode("yolo"); return; }
     try {
-      // invoke 形状保持 { sessionId: state.activeSessionId }（协议指纹按文本
-      // 计算）；await 返回后按发起时 sid 定向写回并 bump modeSyncSeq。
-      const st = await invoke("exit_plan_to_yolo", { sessionId: state.activeSessionId });
+      // invoke 发起时即定向 sid；await 返回后按同一 sid 写回并 bump
+      // modeSyncSeq。
+      const st = await invoke("exit_plan_to_yolo", { sessionId: sid });
       applyAuthoritativeModeState(sid, st);
     } catch (e) { addSystemItemFor(sid, bt("exitPlanFailed") + e); }
     notify();
@@ -10112,6 +10125,10 @@
     setDraftMode,
     setModeLane,
     refreshModeDefaults,
+    // 桌面专属能力的 Web 桩（绑定目录会话 / YOLO 确认门，两端 API 对称）
+    getSessionWorkspaceBinding,
+    getCodePermissionPrefs,
+    confirmCodeYolo,
     planStuckReplan,
     planStuckGo,
     // 用户交互

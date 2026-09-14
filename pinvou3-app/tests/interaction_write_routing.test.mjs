@@ -41,6 +41,7 @@ function loadInteractionRuntime() {
   const runtime = {
     state,
     calls,
+    invokeCalls: [],
     errorItems: [],
     notifyCount: 0,
     defer(name) {
@@ -88,9 +89,9 @@ function loadInteractionRuntime() {
     isBusyFor() { return false; },
     markRemoteTurn() {},
     turnUsageDirty: {},
-    // eslint-disable-next-line no-unused-vars -- stub keeps the full call signature
     invoke(name, args) {
       calls.push(name);
+      runtime.invokeCalls.push({ name, args });
       if (deferred[name] && deferred[name].promise) return deferred[name].promise;
       return Promise.resolve({ mode: 'yolo', multi_agent: false });
     },
@@ -116,6 +117,28 @@ test('exitPlanToYolo 权威写回定向触发会话：await 期间切走不污�
     '成功路径不得走错误分支（不得出现 exitPlanFailed + ReferenceError 提示）');
   assert.equal(rt.state.modeState.multiAgent, true,
     '权威写回必须被应用（成功路径的 applyModeFromState 生效）');
+});
+
+// 评审 #445 R8 P1：YOLO 确认门的最终动作必须显式定向裁决 sid。门禁路径
+// 在多个 await 后发起切换，activeSessionIdRef（渲染期镜像）可滞后桥存储
+// 一帧；无参的 exitPlanToYolo 在调用瞬间读实时 active，会把裁决对象换成
+// 切换后的会话（未绑定确认偏好的 B 被无卡翻成 Yolo）。裁决 sid 必须作为
+// 参数直达 invoke，而非依赖调用瞬间的实时 active。
+test('exitPlanToYolo 支持显式裁决 sid：invoke 与权威写回都作用于传入会话', async () => {
+  const rt = loadInteractionRuntime();
+  const exit = rt.defer('exit_plan_to_yolo');
+  const exitP = rt.api.exitPlanToYolo('chat-gate');         // 门禁按裁决 sid 发起
+  rt.state.activeSessionId = 'chat-b';                      // 调用瞬间实时 active 已是别的会话
+  exit.resolve({ mode: 'yolo', multi_agent: true });
+  await exitP;
+  const exitCall = rt.invokeCalls.find(c => c.name === 'exit_plan_to_yolo');
+  assert.ok(exitCall, 'exit_plan_to_yolo 必须被调用');
+  // 断言用原始值而非 deepEqual：桥在独立 vm context 里装载，args 对象的
+  // 原型来自另一 realm，deepStrictEqual 会因原型不同误报。
+  assert.equal(exitCall.args && exitCall.args.sessionId, 'chat-gate',
+    '显式裁决 sid 必须直达 invoke 参数（修复前取实时 active chat-b）');
+  assert.ok(rt.calls.includes('runSyncOnSession:chat-gate'),
+    '权威写回必须定向裁决会话 chat-gate');
 });
 
 test('setPlanModeNext 权威写回定向触发会话：await 期间切走不污染当前显示', async () => {

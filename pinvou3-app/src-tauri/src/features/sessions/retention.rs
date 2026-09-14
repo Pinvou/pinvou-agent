@@ -217,6 +217,16 @@ impl SessionStore {
             self.save_session_mode_states();
         }
 
+        // 工作目录绑定：清内存缓存并 best-effort 删除 per-session sidecar
+        // 文件。正常路径下会话目录删除已把它带走，这里兜底部分删除失败留下
+        // 的残留；无绑定的 id 上是纯 NotFound 探测，代价可忽略。
+        for id in ids {
+            self.session_workspaces.write().remove(id.as_str());
+            if validate_session_id(id).is_ok() {
+                self.remove_workspace_sidecar_file(id);
+            }
+        }
+
         let removed_models = {
             let mut models = self.session_models.write();
             let before = models.len();
