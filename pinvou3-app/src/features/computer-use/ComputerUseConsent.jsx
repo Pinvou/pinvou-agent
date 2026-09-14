@@ -120,11 +120,17 @@ export function ComputerUseDialogs({ slice, copy }) {
 
   // Esc maps to Deny: the reflexive way out of a machine-control prompt must
   // never equal approval, so Esc performs the conservative action (revoke or
-  // per-action deny) instead of a neutral dismiss.
+  // per-action deny) instead of a neutral dismiss. The stamp argument keeps
+  // a failed Esc-path action visible: without it the error would carry no
+  // request id and both render gates (exact stamp match) would hide it
+  // (round-12 review).
   const denyCurrentRequest = () => {
     if (pendingAction) return;
-    if (grantRequest) run('deny', () => bridge.computerUse.revoke(grantRequest.sessionId));
-    else if (confirmRequest) run('deny', () => bridge.computerUse.deny(confirmRequest.confirmId));
+    if (grantRequest) {
+      run('deny', () => bridge.computerUse.revoke(grantRequest.sessionId), grantRequest.sessionId);
+    } else if (confirmRequest) {
+      run('deny', () => bridge.computerUse.deny(confirmRequest.confirmId), confirmRequest.confirmId);
+    }
   };
 
   // Modal focus trap: while the dialog is up the rest of the page must stay
