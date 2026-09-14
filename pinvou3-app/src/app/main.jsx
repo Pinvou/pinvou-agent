@@ -2889,6 +2889,7 @@ const NAV_PREFETCH = {
         bs && bs.pinvouModal ? 'pinvou-review' : '',
         isCompactShell && isSidebarOpen ? 'mobile-sidebar' : '',
         isCompactShell && mobileMoreOpen ? 'mobile-more' : '',
+        moveToProjectSession ? 'move-picker' : '',
       ].filter(Boolean).join('|');
       const browserOverlayPublicationReady = !!browserOverlayIntent
         && publishedBrowserOverlayIntent === browserOverlayIntent;
@@ -3034,7 +3035,7 @@ const NAV_PREFETCH = {
             document.body
           )}
 
-          {moveToProjectSession && (
+          {moveToProjectSession && browserOverlayPublicationReady && (
             <MoveToProjectDialog
               session={moveToProjectSession}
               projects={sidebarProjectsData ? sidebarProjectsData.projects : []}
