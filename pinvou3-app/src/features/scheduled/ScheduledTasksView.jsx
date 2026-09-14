@@ -1037,8 +1037,39 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
           .map(key => `${key}=${fields[key]}`).join(';');
       }
 
+      // The backend stores AT verbatim and also accepts RFC3339, so a stored
+      // rule may carry a UTC offset. Resolve it to the local wall clock — the
+      // same moment humanize_rrule shows — so the editor never displays a
+      // foreign wall time and time edits re-anchor locally instead of
+      // silently dropping the offset. Returns null when AT is unusable.
+      function onceScheduleParts(rawAt) {
+        const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2})?(Z|[+-]\d{2}:\d{2})?$/.exec(String(rawAt || ''));
+        if (!match) return null;
+        if (!match[3]) return { date: match[1], time: match[2] };
+        const instant = new Date(match[0]);
+        if (Number.isNaN(instant.getTime())) return null;
+        const pad = part => String(part).padStart(2, '0');
+        return {
+          date: `${instant.getFullYear()}-${pad(instant.getMonth() + 1)}-${pad(instant.getDate())}`,
+          time: `${pad(instant.getHours())}:${pad(instant.getMinutes())}`,
+        };
+      }
+
       function scheduleEditorValue(rrule) {
         const fields = parseScheduleFields(rrule);
+        if (fields.FREQ === 'ONCE') {
+          // One-shot rules have no recurring fields; derive the editor state
+          // from AT so the recurring fallback below cannot misread them.
+          const once = onceScheduleParts(fields.AT);
+          return {
+            repeat: 'once',
+            days: [],
+            day: 'MO',
+            interval: 1,
+            time: once ? once.time : '',
+            hasTimeAnchor: true,
+          };
+        }
         const days = normalizeScheduleDays(fields.BYDAY);
         const hasTimeAnchor = fields.BYHOUR != null || fields.BYMINUTE != null;
         let repeat = 'workdays';
@@ -1059,6 +1090,11 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
 
       function scheduleRepeatLabel(editor) {
         if (!editor) return '';
+        if (editor.repeat === 'once') {
+          return editor.time
+            ? `${scheduledCopy.repeatOptions.once} · ${editor.time}`
+            : scheduledCopy.repeatOptions.once;
+        }
         if (editor.repeat === 'hourly') {
           const interval = editor.interval === 1 ? scheduledCopy.repeatOptions.hourly : scheduledCopy.everyHours(editor.interval);
           return editor.hasTimeAnchor ? `${interval} · ${scheduledCopy.startsAt(editor.time)}` : interval;
@@ -1068,6 +1104,21 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
 
       function buildRrule(currentRrule, key, value) {
         const fields = parseScheduleFields(currentRrule);
+        if (fields.FREQ === 'ONCE') {
+          if (key === 'time') {
+            // Rewrite AT instead of appending BYHOUR/BYMINUTE, which the ONCE
+            // parser rejects; bail out unchanged when AT cannot be resolved
+            // to a local date, e.g. a malformed RFC3339 offset.
+            const once = onceScheduleParts(fields.AT);
+            if (!once) return currentRrule;
+            const [onceHour, onceMinute] = String(value || '').split(':');
+            fields.AT = `${once.date}T${String(Number(onceHour || 0)).padStart(2, '0')}:${String(Number(onceMinute || 0)).padStart(2, '0')}`;
+            return serializeScheduleFields(fields);
+          }
+          if (key === 'repeat' && value === 'once') return currentRrule;
+          // Any other key is an explicit conversion to a recurring rule and
+          // falls through to the builders below, which reuse the AT time.
+        }
         const previousEditor = scheduleEditorValue(currentRrule);
         const editor = {...previousEditor, [key]: value,};
         const [hour, minute] = String(editor.time || '08:00').split(':');
@@ -1192,7 +1243,9 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
             <div className="flex flex-1 items-center justify-between py-3.5 pr-3.5">
               <span className={`ml-1 text-[15px] font-normal ${bodyText}`}>{scheduledCopy.repeat}</span>
               <div className="flex items-center gap-1.5">
-                <ScheduledSelect value={editor.repeat} options={repeatOptions}
+                <ScheduledSelect value={editor.repeat} options={editor.repeat === 'once'
+                  ? [{ value: 'once', label: scheduledCopy.repeatOptions.once }, ...repeatOptions]
+                  : repeatOptions}
                   onChange={value => onEdit('repeat', value)}
                   testId={`${prefix}-repeat`} ariaLabel={scheduledCopy.chooseRepeat} theme={theme} emptyLabel={scheduledCopy.choose} />
               </div>
