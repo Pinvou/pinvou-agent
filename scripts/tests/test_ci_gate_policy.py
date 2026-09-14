@@ -667,6 +667,50 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertNotIn("github.event.merge_group.base_sha", dependency_review)
         self.assertNotIn("github.event.merge_group.head_sha", dependency_review)
 
+    def test_secret_scan_guard_and_cutoff_are_load_bearing(self):
+        # The empty-scan guard must demand positive evidence of a non-zero
+        # commit count: it is an inverted grep, so an empty log (gitleaks logs
+        # to stderr, so a dropped 2>&1 empties the tee'd file), a "0 commits
+        # scanned" no-op, or any other missing or renamed summary fails the
+        # step instead of going green. The scan range must share the same
+        # LEGACY_HISTORY_CUTOFF as the commit-message gate; drifting either
+        # side alone would shift the trust boundary between secret scanning
+        # and the commit convention.
+        secret_scan = (
+            ROOT / ".github/workflows/secret-scan.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn('HEAD" 2>&1', secret_scan)
+        guard = re.search(
+            r'if ! grep -Eq "([^"]+)" /tmp/gitleaks\.log', secret_scan
+        )
+        self.assertIsNotNone(
+            guard, "secret-scan.yml must fail closed on missing scan evidence"
+        )
+        count_pattern = guard.group(1)
+        # The gitleaks summary line is "N commits scanned." (ANSI-wrapped);
+        # the guard pattern must accept that shape for N > 0 and reject both
+        # the zero-commit summary and an empty log (no match at all).
+        self.assertTrue(
+            re.search(count_pattern, "395 commits scanned."),
+            "guard pattern must accept a real non-zero gitleaks summary line",
+        )
+        self.assertFalse(
+            re.search(count_pattern, "0 commits scanned."),
+            "guard pattern must reject a zero-commit scan summary",
+        )
+        self.assertFalse(
+            re.search(count_pattern, ""),
+            "guard pattern must reject an empty scan log",
+        )
+        validator = (ROOT / "scripts/validate-commit-msg.py").read_text(
+            encoding="utf-8"
+        )
+        match = re.search(r'LEGACY_HISTORY_CUTOFF = "([0-9a-f]{40})"', validator)
+        self.assertIsNotNone(
+            match, "validate-commit-msg.py is missing the LEGACY_HISTORY_CUTOFF constant"
+        )
+        self.assertIn(match.group(1), secret_scan)
+
     def test_mac_bundle_chain_paths_are_reachable_by_workflow_trigger(self):
         # mac-build 的 bundle_chain filter 决定何时追加 universal bundle smoke。
         # filter 只在该 workflow 被触发后才有机会匹配,因此 bundle_chain 的每条
