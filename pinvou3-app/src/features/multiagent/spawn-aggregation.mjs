@@ -33,6 +33,11 @@ export function isAgentSpawnChatItem(item) {
   return isExpertDelegationCall(item.name, item.args);
 }
 
+/** Whether a spawn-type chat item has failed, by tool completion or state. */
+export function isFailedSpawn(item) {
+  return !!item && (item.success === false || item.state === 'failed');
+}
+
 /**
  * Degenerate group shape for a single unannotated spawn item: the render
  * layer's fallback when an item somehow bypasses annotation (kept here so
@@ -42,7 +47,7 @@ export function isAgentSpawnChatItem(item) {
 export function spawnGroupOf(item) {
   return {
     count: 1,
-    failed: item.success === false || item.state === 'failed' ? 1 : 0,
+    failed: isFailedSpawn(item) ? 1 : 0,
   };
 }
 
@@ -65,7 +70,7 @@ export function annotateAgentSpawnGroups(items) {
         result.push({ ...item, spawnGroup: group });
       } else {
         group.count += 1;
-        if (item.success === false || item.state === 'failed') group.failed += 1;
+        if (isFailedSpawn(item)) group.failed += 1;
         result.push({ ...item, spawnGroupHidden: true });
       }
       continue;
