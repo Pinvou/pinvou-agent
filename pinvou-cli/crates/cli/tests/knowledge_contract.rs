@@ -1037,3 +1037,83 @@ fn remote_connections_probe_a_configured_server() {
     assert_eq!(connections[0]["serverId"], serde_json::json!("srv-test"));
     assert_eq!(connections[0]["online"], serde_json::json!(false));
 }
+
+/// `index cancel` on a resumable (interrupted) job is an effective cancel —
+/// the store's cancel is synchronous and also deletes the staged chunks —
+/// and must be reported as signalled. The post-cancel status never shows
+/// `running`, so deciding the message from it printed "nothing was
+/// signalled" on exactly the cancels that landed. Driven through the real
+/// binary so the stranded-job recovery is the production path.
+#[test]
+fn index_cancel_reports_a_signalled_resumable_job() {
+    let bin = env!("CARGO_BIN_EXE_pinvou");
+    let root = std::env::temp_dir().join(format!(
+        "pinvou-cli-knowledge-cancel-report-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let run = |args: &[&str]| {
+        let mut command = std::process::Command::new(bin);
+        command
+            .args(args)
+            .env("PINVOU3_HOME", &root)
+            .env("PINVOU_NO_COLOR", "1");
+        command.output().expect("binary runs")
+    };
+    let created = run(&[
+        "knowledge",
+        "collections",
+        "create",
+        "--name",
+        "cancellable",
+        "--output",
+        "json",
+    ]);
+    assert!(created.status.success(), "{created:?}");
+    let created: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let id = created["id"].as_i64().expect("created collection id");
+
+    let source = root.join("cancel-me.txt");
+    std::fs::write(
+        &source,
+        "Pinvou knowledge cancel reporting probe.".repeat(64),
+    )
+    .unwrap();
+    let started = run(&[
+        "knowledge",
+        "collections",
+        "add-sources",
+        &id.to_string(),
+        source.to_str().unwrap(),
+        "--output",
+        "json",
+    ]);
+    assert!(started.status.success(), "{started:?}");
+    let started: serde_json::Value = serde_json::from_slice(&started.stdout).unwrap();
+    let job_id = started["jobId"]
+        .as_str()
+        .expect("started job id")
+        .to_owned();
+
+    // The one-shot add-sources process stranded its import thread; this
+    // invocation's recovery marks the job interrupted (= resumable), and the
+    // cancel must report the signal it actually landed.
+    let cancelled = run(&["knowledge", "index", "cancel", &job_id]);
+    assert!(cancelled.status.success(), "{cancelled:?}");
+    let stdout = String::from_utf8_lossy(&cancelled.stdout);
+    assert!(stdout.contains("signalled"), "{stdout}");
+    assert!(!stdout.contains("nothing was signalled"), "{stdout}");
+
+    // The cancelled job is finished, so a second cancel honestly reports
+    // there was nothing left to signal.
+    let again = run(&["knowledge", "index", "cancel", &job_id]);
+    assert!(again.status.success(), "{again:?}");
+    let stdout = String::from_utf8_lossy(&again.stdout);
+    assert!(stdout.contains("nothing was signalled"), "{stdout}");
+
+    let _ = std::fs::remove_dir_all(&root);
+}

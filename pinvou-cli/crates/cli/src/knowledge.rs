@@ -778,7 +778,14 @@ fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, C
 fn scan_status(output: OutputMode) -> Result<CliOutcome, CliError> {
     let service = open_service()?;
     let state = service.status();
-    scan_out("scan status", state, output)
+    // Same process-local scope as scan start/cancel: the in-memory scan
+    // state is process-local, so this reports what a one-shot process can
+    // know (the last finished scan), never a live desktop-app scan.
+    scan_out(
+        "scan status (process-local: a desktop-app scan in flight is not visible here)",
+        state,
+        output,
+    )
 }
 
 fn scan_cancel(output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -1244,18 +1251,24 @@ fn index_cancel(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError
             )));
         }
     }
+    // `ImportJobStore::cancel` is synchronous: a running or interrupted
+    // (resumable) job is flipped to `cancelled` inside the call, so the
+    // post-cancel status never reports running — deciding the message from
+    // it printed "nothing was signalled" on every effective cancel. Decide
+    // from the pre-cancel state instead: a running or resumable job gets a
+    // real signal, a finished job (done/cancelled) takes the same call
+    // without anything to signal.
+    let was_active = latest.running || latest.resumable;
     service
         .cancel_index()
         .map_err(|error| feature_error("index cancel", error))?;
     let state = service.index_status();
-    // A finished job (done/cancelled) takes the same cancel call, but
-    // nothing was signalled — say so instead of claiming a signal landed.
-    let header = if state.running {
+    let header = if was_active {
         format!("index cancel signalled for job {job_id}")
     } else {
         format!(
-            "index cancel: job {job_id} is not active (phase: {}); nothing was signalled",
-            state.phase
+            "index cancel: job {job_id} was not active (phase: {}); nothing was signalled",
+            latest.phase
         )
     };
     let human = format!("{header}\n{}", render_index_state(&state));
@@ -1728,8 +1741,9 @@ fn mount_requires_product_host(action: &str, session_id: &str) -> CliError {
 
 /// GUI `session_mounted_collections_snapshot`: the revisioned source of truth
 /// for one session's mounts. Unknown sessions are rejected first (CLI
-/// convention); an existing session without mounts is an empty snapshot, not
-/// an error.
+/// convention); every existing session is then refused honestly — mounts
+/// live in the desktop app's process memory and are deliberately not
+/// persisted, so the CLI can neither read nor change them.
 fn mounts(session_id: &str, _output: OutputMode) -> Result<CliOutcome, CliError> {
     sandbox_home()?;
     let store = open_store()?;
