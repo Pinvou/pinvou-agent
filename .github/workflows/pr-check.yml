@@ -93,9 +93,21 @@ jobs:
         run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
 
       - name: Validate commit messages
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             python3 scripts/validate-commit-msg.py --range "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
+            # The squash subject GitHub generates on merge is "<PR title> (#N)",
+            # and merge-queue merges never run this job. The PR title is the
+            # only point where the squash subject can still be enforced before
+            # it lands on main; otherwise the push leg below can only flag the
+            # merged commit after the fact (e.g. #482 kept failing later main
+            # pushes with a 53-character subject). A title edited after the
+            # last synchronize/labeled event can still slip through; the push
+            # leg remains the backstop for that residual case.
+            printf '%s\n' "$PR_TITLE" > "$RUNNER_TEMP/pr-title"
+            python3 scripts/validate-commit-msg.py "$RUNNER_TEMP/pr-title"
           else
             before="${{ github.event.before }}"
             python3 scripts/validate-commit-msg.py --range "$before" "${{ github.sha }}"
