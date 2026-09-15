@@ -5,7 +5,8 @@ Unused preinstalled SDKs may only be removed from two strict allowlist tiers:
 
 - Base tier (default): /usr/local/lib/android, /usr/share/dotnet,
   /usr/local/.ghcup, plus every /usr/local/julia* directory, resolved to
-  concrete paths at runtime via a pathlib glob.
+  concrete paths at runtime via a pathlib glob (a non-directory match is
+  refused instead of skipped — the cleanup fails closed).
 - Aggressive tier (--aggressive): additionally /opt/hostedtoolcache,
   /opt/google/chrome and /opt/microsoft/msedge. /opt/hostedtoolcache is also
   where setup-* actions install their tools, so the aggressive tier is only
@@ -46,6 +47,9 @@ AGGRESSIVE_SDK_PATHS = (
 )
 DEFAULT_MIN_FREE_GIB = 12
 MIN_FREE_BYTES = DEFAULT_MIN_FREE_GIB * 1024**3
+# du of a huge SDK tree could in principle stall; the measurement is purely
+# informational, so it is hard-capped like every other external call.
+DU_TIMEOUT_SECS = 120
 
 
 def resolve_sdk_paths(aggressive: bool) -> tuple:
@@ -62,9 +66,13 @@ def _du_size(path: Path) -> str:
     """Human-readable `du -sh` size; a failing du must never block cleanup."""
     try:
         result = subprocess.run(
-            ["du", "-sh", str(path)], capture_output=True, text=True, check=False
+            ["du", "-sh", str(path)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=DU_TIMEOUT_SECS,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return "unknown size"
     if result.returncode == 0 and result.stdout.split():
         return result.stdout.split()[0]
@@ -74,6 +82,9 @@ def _du_size(path: Path) -> str:
 def prepare_disk(workspace: Path, *, aggressive: bool = False, min_free_gib: int = DEFAULT_MIN_FREE_GIB) -> None:
     if sys.platform != "linux" or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted":
         raise RuntimeError("Disk preparation is restricted to GitHub-hosted Linux runners")
+    if min_free_gib < 1:
+        # A zero/negative threshold would silently disable the ENOSPC gate.
+        raise RuntimeError("min_free_gib must be >= 1")
     workspace = workspace.resolve(strict=True)
     if not workspace.is_dir() or not (workspace / ".github/workflows/pr-check.yml").is_file():
         raise RuntimeError("GITHUB_WORKSPACE must be the checked-out repository")
@@ -105,9 +116,21 @@ def prepare_disk(workspace: Path, *, aggressive: bool = False, min_free_gib: int
     print(f"Rust CI disk available after preparation: {after / 1024**3:.1f} GiB", flush=True)
     if after < min_free_bytes:
         raise RuntimeError(
-            f"Rust jobs require at least {min_free_gib} GiB free "
-            "after dependencies, caches and swap are prepared; refusing an undersized runner"
+            f"Rust jobs require at least {min_free_gib} GiB free right after "
+            "disk preparation; refusing an undersized runner (the build would ENOSPC)"
         )
+
+
+def _min_free_gib_arg(value: str) -> int:
+    """argparse type: a non-positive threshold would silently disable the
+    ENOSPC fast-fail gate, so reject it at the CLI boundary."""
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid int value: {value!r}") from None
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("--min-free-gib must be >= 1 GiB")
+    return parsed
 
 
 def main(argv=None) -> int:
@@ -122,7 +145,7 @@ def main(argv=None) -> int:
     )
     parser.add_argument(
         "--min-free-gib",
-        type=int,
+        type=_min_free_gib_arg,
         default=DEFAULT_MIN_FREE_GIB,
         help=f"required free disk space in GiB after preparation (default: {DEFAULT_MIN_FREE_GIB})",
     )
