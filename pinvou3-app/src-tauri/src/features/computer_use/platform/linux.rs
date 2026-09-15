@@ -1011,6 +1011,12 @@ pub(super) struct LinuxComputerUseBackend {
     /// The most recent failure reason of the same-session screenshot stream
     /// (surfaced alongside the error after falling back to the xcap chain).
     wayland_portal_capture_error: Option<String>,
+    /// Set once a portal-stream capture attempt failed while a portal
+    /// session was alive (review finding: capabilities then still claimed
+    /// stream capture while actual captures silently fell back to the xcap
+    /// primary-screen chain, whose multi-monitor coordinates do not align
+    /// with input — the degradation must surface in the capabilities note).
+    wayland_portal_capture_degraded: bool,
     /// When the most recent input action started: the same-session
     /// screenshot stream is damage-driven, so a follow-up screenshot must
     /// wait for a frame newer than it to see the post-action picture (when
@@ -1047,6 +1053,7 @@ impl LinuxComputerUseBackend {
             Ok(frame) => frame,
             Err(error) => {
                 self.wayland_portal_capture_error = Some(error.to_string());
+                self.wayland_portal_capture_degraded = true;
                 return None;
             }
         };
@@ -1289,7 +1296,9 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             // fallback path also always captures the primary monitor
             // (self.input is always None → cursor anchoring unavailable), so
             // the model is never told the other screens are invisible.
-            let fallback_note = if self.wayland_screenshot_ok && !portal_ok {
+            let fallback_note = if (self.wayland_screenshot_ok && !portal_ok)
+                || self.wayland_portal_capture_degraded
+            {
                 "; capture is on the xcap fallback: multi-monitor coordinate alignment with \
                  input is best-effort, only the PRIMARY monitor is captured/input-able, and \
                  the compositor may prompt per capture"
@@ -1416,7 +1425,23 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                         ),
                     )
                 } else {
-                    ComputerUseError::unavailable(format!("monitor capture failed: {error}"))
+                    // Review finding: the capture library passes the RandR
+                    // monitor's raw x/y into GetImage on the root window, so
+                    // a monitor placed left/above the primary (negative
+                    // origin) fails unconditionally — name the cause instead
+                    // of an opaque failure.
+                    let (mx, my) = (monitor.x().unwrap_or(0), monitor.y().unwrap_or(0));
+                    if mx < 0 || my < 0 {
+                        ComputerUseError::unavailable(format!(
+                            "the monitor at negative origin ({mx},{my}) cannot be captured: \
+                             the capture library cannot address screens placed left/above \
+                             the primary monitor; capture the primary screen instead, or \
+                             arrange the displays so this one is not left of/above the \
+                             primary (underlying error: {error})"
+                        ))
+                    } else {
+                        ComputerUseError::unavailable(format!("monitor capture failed: {error}"))
+                    }
                 }
             })?,
             Err(_) => {
@@ -1615,9 +1640,27 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             }
             // Interpolated movement; the button must be released at the end
             // no matter what happened midway.
+            let cancel = self.cancel.clone();
+            let cancelled = |cancel: &Option<Arc<AtomicBool>>| {
+                cancel
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(Ordering::SeqCst))
+            };
             let mut result = Ok(());
             let mut last_reached = (from.0, from.1);
             for (x, y) in drag_waypoints(from, to, DRAG_STEPS) {
+                // Review finding: type checks its chunk flag between chunks,
+                // but a drag used to run every waypoint unconditionally — a
+                // request abandoned at the caller timeout kept holding the
+                // physical button for the whole interpolated path. Same
+                // contract as type: stop at the next boundary, release the
+                // button, report the abandonment.
+                if cancelled(&cancel) {
+                    result = Err(ComputerUseError::unavailable(
+                        "drag was cancelled after the caller timed out; the button is                          released and the pointer stays at the last waypoint",
+                    ));
+                    break;
+                }
                 if let Err(error) = portal.motion_absolute(x, y) {
                     result = Err(error);
                     break;
@@ -2064,6 +2107,7 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
         wayland_portal_capture_error: None,
         last_input_at: None,
         cancel: None,
+        wayland_portal_capture_degraded: false,
     }))
 }
 
@@ -3083,10 +3127,13 @@ mod x11_live_tests {
         // computer_use_confirm / the confirmed-retry path use): mint → spend
         // → single-use.
         let summary = "left click x1 at Some((200, 300))";
-        let confirm_id = fx.shared.new_pending_confirmation(SESSION, summary, "Live");
+        let confirm_id = fx
+            .shared
+            .new_pending_confirmation(SESSION, summary, "Live", 0);
         assert!(fx.shared.pending_confirmation(&confirm_id).is_some());
         assert_eq!(
-            fx.shared.take_confirmation(&confirm_id, SESSION, summary),
+            fx.shared
+                .take_confirmation(&confirm_id, SESSION, summary, 0),
             ConfirmationCheck::Unknown,
             "an un-minted token must not be spendable"
         );
@@ -3095,12 +3142,14 @@ mod x11_live_tests {
             "minting must succeed while the pending exists"
         );
         assert_eq!(
-            fx.shared.take_confirmation(&confirm_id, SESSION, summary),
+            fx.shared
+                .take_confirmation(&confirm_id, SESSION, summary, 0),
             ConfirmationCheck::Granted,
             "the minted token must be spendable"
         );
         assert_eq!(
-            fx.shared.take_confirmation(&confirm_id, SESSION, summary),
+            fx.shared
+                .take_confirmation(&confirm_id, SESSION, summary, 0),
             ConfirmationCheck::Unknown,
             "the token is single-use"
         );
