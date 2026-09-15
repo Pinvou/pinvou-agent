@@ -116,6 +116,7 @@ impl SessionStore {
         store.load_pinned_sessions();
         store.load_hidden_sessions();
         store.load_session_mode_states();
+        store.migrate_legacy_session_workspaces();
         {
             let _mutation = store.scheduled_mutation.lock();
             if recover_interrupted_tools {
@@ -192,6 +193,7 @@ impl SessionStore {
             pinned_sessions: Arc::new(RwLock::new(HashMap::new())),
             hidden_sessions: Arc::new(RwLock::new(HashMap::new())),
             execution_root_resolver: Arc::new(RwLock::new(None)),
+            session_workspaces: Arc::new(RwLock::new(HashMap::new())),
             code_session_predicate: Arc::new(RwLock::new(None)),
             session_mode_states: Arc::new(RwLock::new(HashMap::new())),
             code_permission: Arc::new(RwLock::new(prefs_snapshot.code_permission)),
@@ -483,7 +485,7 @@ impl SessionStore {
         for (id, state) in m.iter_mut() {
             if state.mode == SerializableMode::Yolo
                 && !persisted.contains(id)
-                && self.is_code_session(id)
+                && (self.is_code_session(id) || self.session_workspace_binding(id).is_some())
             {
                 state.mode = SerializableMode::Plan;
             }
@@ -499,16 +501,24 @@ impl SessionStore {
             return Ok(SessionRoots {
                 execution: profile.workspace.clone(),
                 ledger: profile.workspace,
+                bound: false,
             });
         }
         if self.is_scheduled_session(id)? {
             bail!("Scheduled-run session '{id}' has no persisted execution profile");
         }
+        // The production-injected resolver (lib.rs) already covers both binding
+        // kinds: codex_acp native code sessions' project bindings plus plain chat
+        // sessions' user working-directory bindings (sidecar). The .or_else
+        // fallback here is defensive and only applies when no resolver is
+        // injected (tests / early startup) — bridge goes through the resolver
+        // directly (bridge.rs) and never hits this fallback.
         let bound_project_root = self
             .execution_root_resolver
             .read()
             .as_ref()
-            .and_then(|resolver| resolver(id));
+            .and_then(|resolver| resolver(id))
+            .or_else(|| self.session_workspace_binding(id));
         Ok(session_roots_for(id, bound_project_root))
     }
 

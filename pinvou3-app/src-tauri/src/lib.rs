@@ -931,10 +931,22 @@ pub fn run() {
                     // 解析到项目目录；账本根（附件/审计/产物）恒为会话私有目录。
                     // 解析实现统一下沉在 SessionStore::session_roots，bridge 与
                     // SessionStore 注入同一份 resolver 闭包，两侧结果一致。
+                    // When the resolver misses a native code session's project
+                    // binding, fall back to plain chat sessions' user
+                    // working-directory bindings (the per-session sidecar
+                    // `workspace-binding.json` inside the session-private
+                    // directory) — the dual-root semantics, AGENTS.md injection,
+                    // and prompt environment section treat both kinds of bound
+                    // sessions alike.
                     let execution_root_resolver: crate::features::sessions::ExecutionRootResolver =
                         std::sync::Arc::new({
                             let agents = code_session_agents.clone();
-                            move |session_id: &str| agents.code_project_workspace(session_id)
+                            let store = store_for_engine.clone();
+                            move |session_id: &str| {
+                                agents
+                                    .code_project_workspace(session_id)
+                                    .or_else(|| store.session_workspace_binding(session_id))
+                            }
                         });
                     pool.bridge
                         .set_execution_root_resolver(execution_root_resolver.clone());
@@ -1283,6 +1295,7 @@ pub fn run() {
             commands::projects::move_session_to_project,
             commands::sessions::list_sessions,
             commands::sessions::create_session,
+            commands::sessions::get_session_workspace_binding,
             commands::sessions::load_session,
             commands::sessions::delete_session,
             commands::sessions::rename_session,

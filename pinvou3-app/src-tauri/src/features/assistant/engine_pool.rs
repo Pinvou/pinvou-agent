@@ -1014,13 +1014,16 @@ impl EnginePool {
         tools
     }
 
-    /// 该会话的项目执行根（绑项目 code 会话 = 项目目录）。解析失败 → None
-    /// （项目级技能不参与组合目录，行为与未绑定一致）。
+    /// Project-skills source root for the session: returns the bound real
+    /// directory only when the session is actually bound (a native code
+    /// session's project directory, or a plain chat session's user workspace
+    /// binding — the explicit `SessionRoots::bound` signal); unbound or
+    /// resolution failure -> None (project-level skills stay out of play).
     fn project_workspace_for(&self, session_id: &str) -> Option<std::path::PathBuf> {
         self.store
             .session_roots(session_id)
             .ok()
-            .map(|roots| roots.execution)
+            .and_then(|roots| roots.bound.then_some(roots.execution))
     }
 
     /// skill 双 scope 治理：事件驱动**增量重写**所有在线会话的组合目录

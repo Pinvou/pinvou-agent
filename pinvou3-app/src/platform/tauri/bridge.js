@@ -269,6 +269,17 @@
     modeLane: "work",
     // 草稿态寄存的多智能体开关意图：不物化会话，首条消息创建会话时落后端。
     pendingDraftMultiAgent: false,
+    // Staged explicit mode of a bound-workspace draft (null = never explicitly
+    // chosen): bound drafts run in the code lane (code mode's safety posture),
+    // applied per session from the staged value at materialization; when
+    // unstaged, the backend resolves the code lane global default and the
+    // frontend no longer applies the work lane default.
+    pendingDraftMode: null,
+    // Working directory selected in draft state (plain chat, mirroring the code
+    // mode draft selector): null = default (session-private directory). Sent to
+    // create_session via the workspacePath parameter, cleared after successful
+    // materialization, reset by enterDraft.
+    draftWorkspacePath: null,
     // 最新 plan/todos 快照（用于 mode header 进度 chip，与 plan_ready 卡解耦）
     planSnapshot: { plan: null, todos: null },
     // 当前 session 产物列表 [{ path, basename }]
@@ -1051,6 +1062,10 @@
 
   const sessionsFeature = installBridgeFeature("sessions", {
     state, invoke, listen, notify,
+    // The draft workspace picker (pickDraftWorkspace) uses the system directory
+    // dialog, injected through the same channel as the artifacts feature; the
+    // React side only calls sessions-feature methods.
+    dialogOpen,
     sessionStates, scheduledRunSessionOwners,
     personaPlaceholderTitles, turnUsageDirty,
     // Clean host-side per-session side tables when a session buffer is
@@ -1145,6 +1160,9 @@
   const refreshHistoryList = sessionsFeature.refreshHistoryList;
   const enterDraft = sessionsFeature.enterDraft;
   const createNewSession = sessionsFeature.createNewSession;
+  const setDraftWorkspace = sessionsFeature.setDraftWorkspace;
+  const pickDraftWorkspace = sessionsFeature.pickDraftWorkspace;
+  const getSessionWorkspaceBinding = sessionsFeature.getSessionWorkspaceBinding;
   const ensureSession = sessionsFeature.ensureSession;
   const hydratedMessageKey = sessionsFeature.hydratedMessageKey;
   const mergeHydratedArtifacts = sessionsFeature.mergeHydratedArtifacts;
@@ -1202,12 +1220,18 @@
 
   // The draft-state (no active session) modeState: take the current lane's
   // global default, falling back to yolo (aligned with the backend's plain
-  // default direction). Two-lane semantics: the draft display = this lane's
-  // global default.
+  // default direction). Two-lane semantics (design merged into work, #428):
+  // the draft display = this lane's global default. A draft bound to a
+  // workspace aligns with the code lane's safety posture: show the code
+  // lane's global default, falling back to plan on first use (read-only is
+  // the safe side, same as the code page's draft fallback).
   function currentDraftModeState() {
-    const lane = state.modeLane === "code" ? "code" : "work";
+    const boundDraft = !!state.draftWorkspacePath;
+    // Bound drafts always show the code lane default; unbound drafts follow the
+    // current lane (design was merged into work, #428).
+    const lane = boundDraft || state.modeLane === "code" ? "code" : "work";
     const d = state.modeDefaults && state.modeDefaults[lane];
-    return { mode: d || "yolo", multiAgent: false };
+    return { mode: d || (boundDraft ? "plan" : "yolo"), multiAgent: false };
   }
 
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
@@ -1530,7 +1554,7 @@
   let subscribers = [];
   const STATE_SLICE_FIELDS = {
     platform: ["appVersion", "backendOnline", "platformCapabilities"],
-    sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch"],
+    sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch", "draftWorkspacePath"],
     chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
     voice: ["voiceInput", "voiceAsrSetup"],
     knowledge: ["kbModelSetup", "mountedCollection", "mountedCollections", "mountedRemoteCollections", "mountedCollectionsRevision"],
@@ -2356,6 +2380,8 @@
   const setDraftMode = interactionFeature.setDraftMode;
   const setModeLane = interactionFeature.setModeLane;
   const refreshModeDefaults = interactionFeature.refreshModeDefaults;
+  const getCodePermissionPrefs = interactionFeature.getCodePermissionPrefs;
+  const confirmCodeYolo = interactionFeature.confirmCodeYolo;
   const setMultiAgentMode = interactionFeature.setMultiAgentMode;
   const planStuckReplan = interactionFeature.planStuckReplan;
   const planStuckGo = interactionFeature.planStuckGo;
@@ -2656,6 +2682,15 @@
       archiveSession,
       restoreArchivedSession,
       exportSessionArchive,
+      // Draft-state working directory selection (desktop only: system directory
+      // dialog + the create_session workspacePath parameter; the web side has no
+      // such channel, the UI guards on method existence).
+      setDraftWorkspace,
+      pickDraftWorkspace,
+      // Working directory binding query for materialized sessions (bound
+      // sessions share the code mode's safety posture; web/remote sessions have
+      // no binding concept, stub returns null).
+      getSessionWorkspaceBinding,
     },
     projects: {
       loadProjects,
@@ -2712,6 +2747,10 @@
     setDraftMode,
     setModeLane,
     refreshModeDefaults,
+      // One-shot YOLO confirmation gate for bound-workspace sessions (same
+      // source of truth as the code mode)
+    getCodePermissionPrefs,
+    confirmCodeYolo,
     setMultiAgentMode,
     planStuckReplan,
     planStuckGo,

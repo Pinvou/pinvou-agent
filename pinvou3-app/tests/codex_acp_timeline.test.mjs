@@ -178,6 +178,41 @@ try {
     'terminal recovery must not leave tool, permission, or input items visually running',
   );
 
+  // ACP turn errors must be routed through
+  // PinvouModelServiceErrors.redactTechnicalDetail before display: raw
+  // agent-CLI output may carry gateway bodies or credentials (#445 R3).
+  const redactCalls = [];
+  globalThis.PinvouModelServiceErrors = {
+    redactTechnicalDetail(text, lang) {
+      redactCalls.push([text, lang]);
+      return `redacted(${text})`;
+    },
+  };
+  try {
+    const errorTurn = projectAcpTimeline([
+      event(30, 'user_message', { content: [{ type: 'text', text: 'hi' }] }, 'turn-error'),
+      event(31, 'turn_started', { status: 'running' }, 'turn-error'),
+      event(32, 'turn_completed', {
+        status: 'Failed',
+        error: 'Authorization: Bearer sk-secret-token',
+      }, 'turn-error'),
+    ], { language: 'zh' }).turns[0];
+    assert.deepEqual(
+      redactCalls,
+      [['Authorization: Bearer sk-secret-token', 'zh']],
+      'turn_completed errors must pass through redactTechnicalDetail with the caller language',
+    );
+    assert.equal(errorTurn.error, 'redacted(Authorization: Bearer sk-secret-token)');
+    // Missing helper (classic script absent) degrades to the pre-redaction behavior.
+    delete globalThis.PinvouModelServiceErrors;
+    const degradedTurn = projectAcpTimeline([
+      event(33, 'turn_completed', { status: 'Failed', error: 'plain error' }, 'turn-error-2'),
+    ]).turns[0];
+    assert.equal(degradedTurn.error, 'plain error');
+  } finally {
+    delete globalThis.PinvouModelServiceErrors;
+  }
+
   const commandEvents = [
     event(20, 'user_message', { content: [{ type: 'text', text: '检查 PR' }] }, 'turn-command'),
     event(21, 'turn_started', { status: 'running' }, 'turn-command'),

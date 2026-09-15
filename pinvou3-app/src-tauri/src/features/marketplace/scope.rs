@@ -38,7 +38,9 @@ pub struct DisabledBundlesFile {
     /// 已被用户显式初始化（改过开关）的 scope 集合。
     #[serde(default)]
     pub initialized: std::collections::BTreeSet<String>,
-    /// 项目级 skills 是否对 code 会话开启（默认关）。随技能侧迁入本文件。
+    /// Whether project-level skills are enabled (default off; effective only
+    /// when the session is bound to a project/work directory — not code-only;
+    /// see skill_materialization.rs). Moved here with the skills side.
     #[serde(default)]
     pub project_skills_enabled: bool,
     /// 未知键原样保留（前向兼容）。

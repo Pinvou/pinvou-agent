@@ -1,3 +1,10 @@
+use super::prelude::*;
+// Native save dialog support for `export_session`; the other session
+// commands do not interact with the dialog plugin.
+use std::path::Path;
+use std::path::PathBuf;
+use tauri_plugin_dialog::DialogExt;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionListItem {
     #[serde(flatten)]
@@ -317,13 +324,17 @@ pub async fn list_archived_sessions(
 
 /// 新建空 session 并设为 active。返回创建的 SessionMetadata。
 /// 引擎层的 session 状态切换由 chat() 下次发消息时自然处理（暂不发 SyncSession）。
+/// When `workspace` is Some, metadata.workspace uses that directory (for
+/// display); None keeps the status quo (pool.bridge.workspace, the home
+/// directory).
 pub(super) fn create_session_record(
     set_active: bool,
     store: &SessionStore,
     pool: &EnginePool,
+    workspace: Option<PathBuf>,
 ) -> Result<SessionMetadata, String> {
     let (model, model_id) = pool.default_model_for_new_session();
-    let workspace = pool.bridge.workspace.clone();
+    let workspace = workspace.unwrap_or_else(|| pool.bridge.workspace.clone());
     let session = store
         .create_new(model, model_id, workspace)
         .map_err(|e| format!("create_session: {e:#}"))?;
@@ -336,15 +347,52 @@ pub(super) fn create_session_record(
 #[tauri::command]
 pub async fn create_session(
     set_active: Option<bool>,
+    workspace_path: Option<String>,
     app: AppHandle,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<SessionMetadata, String> {
-    let metadata = create_session_record(set_active.unwrap_or(true), &store, &pool)?;
+    let workspace = workspace_path
+        .as_deref()
+        .map(crate::features::sessions::validate_user_workspace_path)
+        .transpose()
+        .map_err(|e| format!("create_session: invalid workspace_path: {e:#}"))?;
+    let metadata =
+        create_session_record(set_active.unwrap_or(true), &store, &pool, workspace.clone())?;
+    if let Some(workspace) = workspace {
+        // A failed binding persist must not leave behind a session that "looked
+        // created but falls back to the private execution root after restart":
+        // roll back by deleting the just-created empty session (in the rollback
+        // style of create_new).
+        if let Err(error) = store.bind_session_workspace(&metadata.id, workspace) {
+            let rollback = store.delete(&metadata.id);
+            return Err(match rollback {
+                Ok(()) => format!("create_session: bind workspace: {error:#}"),
+                Err(rollback_error) => format!(
+                    "create_session: bind workspace: {error:#}; rollback Session {}: {rollback_error:#}",
+                    metadata.id
+                ),
+            });
+        }
+    }
     emit_session_event(&app, "session:list_changed", &metadata.id, "created");
     // 多 session 并发:不预热 engine(lazy)。新建的空 session 没有历史,首条 chat
     // 时 EnginePool.get_or_spawn 会为它 spawn 一个带专属 workspace 的 engine。
     Ok(metadata)
+}
+
+/// Queries a plain chat session's user working-directory binding (None when
+/// unbound). The frontend uses this to apply the code lane's safety posture to
+/// bound sessions (Plan on first use / one-shot YOLO confirm) and to show a
+/// bound-directory indicator.
+#[tauri::command]
+pub async fn get_session_workspace_binding(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<Option<String>, String> {
+    Ok(store
+        .session_workspace_binding(&session_id)
+        .map(|path| path.display().to_string()))
 }
 
 /// Desktop `load_session` response: same shape as `SavedSession` plus the
@@ -968,11 +1016,6 @@ pub(super) fn list_workspace_files_for_session(
     out.sort();
     Ok(out)
 }
-use super::prelude::*;
-// Native save dialog support for `export_session`; the other session
-// commands do not interact with the dialog plugin.
-use std::path::Path;
-use tauri_plugin_dialog::DialogExt;
 
 #[cfg(test)]
 mod desktop_saved_session_contract_tests {
