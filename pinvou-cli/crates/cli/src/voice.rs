@@ -27,6 +27,15 @@
 //!   the Speech runtime as ready (same as the GUI status) but performs
 //!   transcription through the external-CLI lane only.
 //!
+//! Two small, deliberate deviations from the GUI's retry/fallback contract,
+//! forced by the headless surface: (1) the unchanged-answer postprocess
+//! retry also fires when the model legitimately echoes the text back (the
+//! GUI exempts an empty draft, a case the CLI has no equivalent for), and
+//! (2) after a native engine failure the external-CLI fallback resolves any
+//! candidate command — configured override, managed dir, or a `pinvou-asr`
+//! on PATH — while the GUI falls back only on an explicitly configured
+//! override and otherwise reports `asr_engine_error`.
+//!
 //! `voice postprocess` needs the GUI's `EnginePool` state to resolve the
 //! active model credentials, so it runs through the windowless product host
 //! (`run_windowless_host`, requires a display / xvfb like `agent run`) and
@@ -328,15 +337,14 @@ fn wait_bounded(
             Ok(Some(status)) => return Some(status),
             Ok(None) => {
                 if started.elapsed() >= timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    // Tree kill: a bare `kill()` would orphan descendants.
+                    crate::support::kill_process_tree(child);
                     return None;
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
             Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                crate::support::kill_process_tree(child);
                 return None;
             }
         }
@@ -344,13 +352,14 @@ fn wait_bounded(
 }
 
 fn ffmpeg_available() -> bool {
-    let Ok(mut child) = std::process::Command::new("ffmpeg")
+    let mut command = std::process::Command::new("ffmpeg");
+    command
         .arg("-version")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    else {
+        .stderr(std::process::Stdio::null());
+    crate::support::set_process_group(&mut command);
+    let Ok(mut child) = command.spawn() else {
         return false;
     };
     wait_bounded(&mut child, FFMPEG_PROBE_TIMEOUT)
@@ -573,15 +582,17 @@ fn download_asr_model() -> Result<PathBuf, CliError> {
     if let Some(custom) = custom.as_deref() {
         // The app's `model_download_urls` tries ONLY the override: a broken
         // custom URL must fail the install instead of silently installing
-        // the public model behind the operator's back.
-        if download_to(custom, &dest, spec.sha256).is_ok() {
-            return Ok(dest);
+        // the public model behind the operator's back. The error class from
+        // `download_to` is URL-safe by construction, so surface it instead
+        // of mislabeling every failure as a checksum gate failure.
+        if let Err(error) = download_to(custom, &dest, spec.sha256) {
+            let _ = std::fs::remove_file(&dest);
+            return Err(CliError::failed(format!(
+                "voice asr-install: the PINVOU3_ASR_MODEL_URL download failed ({error}); \
+                 fix or unset the override and retry"
+            )));
         }
-        let _ = std::fs::remove_file(&dest);
-        return Err(CliError::failed(
-            "voice asr-install: the PINVOU3_ASR_MODEL_URL download failed the checksum \
-             gate; fix or unset the override and retry",
-        ));
+        return Ok(dest);
     }
     for url in [spec.primary_url, spec.mirror_url] {
         if download_to(url, &dest, spec.sha256).is_ok() {
@@ -678,7 +689,29 @@ const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_TRANSCRIBE_BYTES: usize = 4 * 1024 * 1024;
 
 fn transcribe(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
-    // Fail fast on missing ASR before loading the file into memory.
+    // Validate the input BEFORE anything else: a FIFO or character device
+    // reports len 0, so a size gate alone would let `/dev/zero` stream
+    // unbounded into memory — that must fail fast without requiring an ASR
+    // install first. Regular files only, and the read itself is capped in
+    // case the file grows between the stat and the read.
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        CliError::failed(format!(
+            "voice transcribe: cannot read {}: {error}",
+            path.display()
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(CliError::failed(format!(
+            "voice transcribe: {} is not a regular audio file",
+            path.display()
+        )));
+    }
+    if metadata.len() > MAX_TRANSCRIBE_BYTES as u64 {
+        return Err(CliError::failed(
+            "recording_too_long: recording exceeds the 4 MiB transcription cap",
+        ));
+    }
+    // Then fail fast on missing ASR before loading the file into memory.
     let (engine, ffmpeg, model, _) = asr_components();
     if !cfg!(target_os = "macos")
         && !(engine && ffmpeg && model)
@@ -698,23 +731,30 @@ fn transcribe(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
              (hint: run `pinvou voice asr-status`)",
         ));
     }
-    let metadata = std::fs::metadata(path).map_err(|error| {
-        CliError::failed(format!(
-            "voice transcribe: cannot read {}: {error}",
-            path.display()
-        ))
-    })?;
-    if metadata.len() > MAX_TRANSCRIBE_BYTES as u64 {
+    let audio = {
+        use std::io::Read as _;
+        let file = std::fs::File::open(path).map_err(|error| {
+            CliError::failed(format!(
+                "voice transcribe: cannot read {}: {error}",
+                path.display()
+            ))
+        })?;
+        let mut capped = Vec::new();
+        file.take(MAX_TRANSCRIBE_BYTES as u64 + 1)
+            .read_to_end(&mut capped)
+            .map_err(|error| {
+                CliError::failed(format!(
+                    "voice transcribe: cannot read {}: {error}",
+                    path.display()
+                ))
+            })?;
+        capped
+    };
+    if audio.len() > MAX_TRANSCRIBE_BYTES {
         return Err(CliError::failed(
             "recording_too_long: recording exceeds the 4 MiB transcription cap",
         ));
     }
-    let audio = std::fs::read(path).map_err(|error| {
-        CliError::failed(format!(
-            "voice transcribe: cannot read {}: {error}",
-            path.display()
-        ))
-    })?;
     if audio.len() < 44 {
         return Err(CliError::failed(
             "audio_empty: recording is empty or corrupted",
@@ -854,15 +894,17 @@ fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
     }
     drop(normalized_file);
     let input = if ffmpeg_available() {
-        let spawned = std::process::Command::new("ffmpeg")
+        let mut convert_command = std::process::Command::new("ffmpeg");
+        convert_command
             .args(["-y", "-i"])
             .arg(wav)
             .args(["-ar", "16000", "-ac", "1", "-f", "wav"])
             .arg(&normalized)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
+            .stderr(std::process::Stdio::null());
+        crate::support::set_process_group(&mut convert_command);
+        let spawned = convert_command.spawn();
         let status_ok = match spawned {
             Ok(mut convert) => wait_bounded(&mut convert, FFMPEG_CONVERT_TIMEOUT)
                 .map(|status| status.success())
