@@ -11,9 +11,10 @@ use agent_backend_api::{
 };
 use async_trait::async_trait;
 use benchmark_core::{
-    BenchmarkDescriptor, BenchmarkId, BenchmarkPlan, BenchmarkService, BenchmarkTask,
-    ExecutionKind, ExecutionRequest, ModelIdentity, NativeAgentRunner, OutputContract, RunContext,
-    RunManifest, RunStore, Split, TaskRunner, TaskStatus, ToolPolicyId,
+    BenchmarkAdapter, BenchmarkDescriptor, BenchmarkId, BenchmarkPlan, BenchmarkService,
+    BenchmarkTask, CompletedRun, ExecutionKind, ExecutionRequest, ModelIdentity, NativeAgentRunner,
+    OfficialScoreReport, OutputContract, PreparedTask, RunContext, RunManifest, RunStore, Split,
+    SubmissionArtifact, TaskRunner, TaskSelection, TaskStatus, ToolPolicyId, VerifiedDataset,
 };
 
 fn temp_base(name: &str) -> PathBuf {
@@ -66,6 +67,7 @@ fn manifest_records_the_harness_deadline_mode_and_reads_old_manifests() {
     assert_eq!(bounded.harness_deadline_secs(), Some(600));
     let json = serde_json::to_value(&bounded).unwrap();
     assert_eq!(json["harness_deadline_secs"], 600);
+    assert_eq!(json["schema_version"], 2);
 
     let unbounded = RunManifest::new(
         "run-unbounded",
@@ -85,13 +87,19 @@ fn manifest_records_the_harness_deadline_mode_and_reads_old_manifests() {
     let json = serde_json::to_value(&unbounded).unwrap();
     assert_eq!(json["harness_deadline_secs"], serde_json::Value::Null);
 
-    // Manifests written before the field existed keep deserializing (serde
-    // default) so resuming an older run stays possible.
+    // Manifests written before the field existed (schema 1) keep
+    // deserializing so old scores stay readable and scoreable. Schema is what
+    // makes them detectably legacy and keeps the unrecoverable legacy mode
+    // enforceable: this fixture matches the current descriptor on every
+    // recoverable dimension, and this descriptor's deadline is `None`, so a
+    // schema-2 manifest with an explicit `null` would be the current
+    // unbounded format — only the schema version tells the two apart, and
+    // only the current version may resume.
     let legacy: RunManifest = serde_json::from_str(
         r#"{
             "schema_version": 1, "run_id": "run-legacy", "benchmark": "smoke",
-            "adapter_version": "smoke-adapter/v1", "dataset_revision": "r",
-            "scorer_revision": "r", "split": "smoke",
+            "adapter_version": "smoke/v1", "dataset_revision": "dataset-sha-123",
+            "scorer_revision": "scorer-sha-123", "split": "smoke",
             "model": {"provider": "fixture", "model": "mock-model"},
             "tool_policy": "smoke/v1", "concurrency": 1, "pass": 1,
             "created_at_ms": 0
@@ -99,6 +107,13 @@ fn manifest_records_the_harness_deadline_mode_and_reads_old_manifests() {
     )
     .unwrap();
     assert_eq!(legacy.harness_deadline_secs(), None);
+    assert!(legacy.matches_contract(&descriptor(), "smoke", "smoke/v1", 1));
+    assert!(!legacy.matches_resume(
+        &descriptor(),
+        "smoke",
+        &ModelIdentity::new("fixture", "mock-model").unwrap(),
+        "smoke/v1"
+    ));
 }
 
 /// `Some(0)` is not a mode: validate must reject it at creation time instead
@@ -176,7 +191,7 @@ fn resume_manifest_match_rejects_every_pinned_contract_dimension() {
     assert!(expected.matches_resume(&expected_descriptor, "smoke", &expected_model, "smoke/v1"));
 
     let mutations = [
-        ("schema_version", serde_json::json!(2)),
+        ("schema_version", serde_json::json!(1)),
         ("concurrency", serde_json::json!(2)),
         ("pass", serde_json::json!(2)),
         ("benchmark", serde_json::json!("other")),
@@ -208,7 +223,7 @@ fn gaia_manifest_contract_rejects_every_non_model_dimension() {
     assert!(expected.matches_contract(&expected_descriptor, "smoke", "smoke/v1", 1));
 
     let mutations = [
-        ("schema_version", serde_json::json!(2)),
+        ("schema_version", serde_json::json!(3)),
         ("concurrency", serde_json::json!(2)),
         ("pass", serde_json::json!(2)),
         ("benchmark", serde_json::json!("other")),
@@ -1254,5 +1269,124 @@ async fn some_deadline_cuts_off_the_same_slow_backend() {
         .await
         .expect("the harness machinery itself must not fail");
     assert_eq!(outcome.status(), TaskStatus::Timeout);
+    fs::remove_dir_all(base).unwrap();
+}
+
+/// Minimal adapter so `resume_adapter`'s manifest gates can be exercised end
+/// to end. `verify_dataset` reports the descriptor's own revision so the
+/// dataset check never fires before the manifest gates under test.
+struct ResumeProbeAdapter {
+    descriptor: BenchmarkDescriptor,
+}
+
+impl BenchmarkAdapter for ResumeProbeAdapter {
+    fn descriptor(&self) -> &BenchmarkDescriptor {
+        &self.descriptor
+    }
+
+    fn verify_dataset(&self, dataset_root: &Path) -> benchmark_core::Result<VerifiedDataset> {
+        Ok(VerifiedDataset::new(
+            self.descriptor.dataset_revision().to_owned(),
+            dataset_root,
+        ))
+    }
+
+    fn plan(
+        &self,
+        _dataset: &VerifiedDataset,
+        _selection: &TaskSelection,
+    ) -> benchmark_core::Result<BenchmarkPlan> {
+        Ok(BenchmarkPlan::new(vec![task("one")]))
+    }
+
+    fn prepare_task(
+        &self,
+        task: &BenchmarkTask,
+        _run: &RunContext,
+    ) -> benchmark_core::Result<PreparedTask> {
+        Ok(PreparedTask::new(task.clone()))
+    }
+
+    fn score(&self, _run: &CompletedRun) -> benchmark_core::Result<OfficialScoreReport> {
+        Ok(OfficialScoreReport::new(1, 1))
+    }
+
+    fn write_submission(
+        &self,
+        _run: &CompletedRun,
+        destination: &Path,
+    ) -> benchmark_core::Result<SubmissionArtifact> {
+        Ok(SubmissionArtifact::new(destination))
+    }
+}
+
+/// A legacy (schema 1) manifest matches the current descriptor on every
+/// recoverable dimension, so the schema version is the only thing that can —
+/// and must — stop an incompatible resume while the stored scores stay
+/// readable.
+#[tokio::test]
+async fn resume_adapter_rejects_a_legacy_manifest_as_incompatible() {
+    let base = temp_base("legacy-resume-rejected");
+    let store = RunStore::create(&base, &manifest("run-legacy")).unwrap();
+    let legacy = r#"{
+        "schema_version": 1, "run_id": "run-legacy", "benchmark": "smoke",
+        "adapter_version": "smoke/v1", "dataset_revision": "dataset-sha-123",
+        "scorer_revision": "scorer-sha-123", "split": "smoke",
+        "model": {"provider": "fixture", "model": "mock-model"},
+        "tool_policy": "smoke/v1", "concurrency": 1, "pass": 1,
+        "created_at_ms": 0
+    }"#;
+    fs::write(store.manifest_path(), legacy).unwrap();
+
+    let adapter = ResumeProbeAdapter {
+        descriptor: descriptor(),
+    };
+    let stored = RunStore::open(&base, "run-legacy").unwrap();
+    let stored_manifest = stored.read_manifest().unwrap();
+    assert!(stored_manifest.matches_contract(adapter.descriptor(), "smoke", "smoke/v1", 1));
+
+    let expected = manifest("run-legacy");
+    let dataset = Arc::new(adapter.verify_dataset(&base).unwrap());
+    let service = BenchmarkService::native(&base, Arc::new(MockBackend::default())).unwrap();
+    let error = service
+        .resume_adapter(
+            "run-legacy",
+            &expected,
+            &adapter,
+            &dataset,
+            &TaskSelection::all(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "resume_manifest_mismatch");
+    fs::remove_dir_all(base).unwrap();
+}
+
+/// The rejection above must not spill over to current-format runs: an
+/// unbounded (explicit-null deadline) schema-2 manifest resumes normally.
+#[tokio::test]
+async fn resume_adapter_accepts_a_current_unbounded_manifest() {
+    let base = temp_base("current-unbounded-resume");
+    let store = RunStore::create(&base, &manifest("run-current")).unwrap();
+    store.plan_tasks(["one"]).unwrap();
+
+    let adapter = ResumeProbeAdapter {
+        descriptor: descriptor(),
+    };
+    let stored = RunStore::open(&base, "run-current").unwrap();
+    let stored_manifest = stored.read_manifest().unwrap();
+    let dataset = Arc::new(adapter.verify_dataset(&base).unwrap());
+    let service = BenchmarkService::native(&base, Arc::new(MockBackend::default())).unwrap();
+    let summary = service
+        .resume_adapter(
+            "run-current",
+            &stored_manifest,
+            &adapter,
+            &dataset,
+            &TaskSelection::all(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(summary.completed(), 1);
     fs::remove_dir_all(base).unwrap();
 }

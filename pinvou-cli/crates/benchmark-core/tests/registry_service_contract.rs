@@ -494,7 +494,7 @@ fn adapter_driven_service_plans_prepares_then_runs_without_implicit_scoring() {
     )
     .unwrap();
     for (field, replacement) in [
-        ("schema_version", serde_json::json!(2)),
+        ("schema_version", serde_json::json!(3)),
         ("concurrency", serde_json::json!(2)),
         ("pass", serde_json::json!(2)),
         ("adapter_version", serde_json::json!("fixture-adapter/v2")),
