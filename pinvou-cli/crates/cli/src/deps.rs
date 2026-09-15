@@ -73,7 +73,16 @@ pub fn execute(command: DepsCommand, output: OutputMode) -> Result<CliOutcome, C
 }
 
 fn check(output: OutputMode) -> Result<CliOutcome, CliError> {
-    let items = file_ingest::check_dependencies();
+    let mut items = file_ingest::check_dependencies();
+    // The GUI localizes dependency `hint` strings through its i18n table;
+    // the CLI has no i18n layer, so known keys are translated at this
+    // boundary (same technique as `translate_deps_error`) and unknown hints
+    // pass through unchanged rather than being dropped.
+    for item in &mut items {
+        if let Some(hint) = item.hint.as_deref() {
+            item.hint = Some(translate_deps_hint(hint));
+        }
+    }
     let value = serde_json::json!({ "items": items });
     let human = items
         .iter()
@@ -115,6 +124,16 @@ fn install(packages: &[String], yes: bool, output: OutputMode) -> Result<CliOutc
         format!("Installed: {}", packages.join(", ")),
         &value,
     )))
+}
+
+/// Maps the dependency hints the GUI localizes through its i18n table; the
+/// CLI is an English tool, so the known keys get English copy here and
+/// anything unrecognized passes through unchanged rather than being dropped.
+fn translate_deps_hint(hint: &str) -> String {
+    match hint {
+        "email_manual" => "install the Perl Email::Outlook::Message module manually".to_owned(),
+        other => other.to_owned(),
+    }
 }
 
 /// The per-platform dependency installers surface Chinese GUI copy; the CLI

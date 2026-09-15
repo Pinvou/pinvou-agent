@@ -71,11 +71,21 @@ fn status(output: OutputMode) -> Result<CliOutcome, CliError> {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
     let Some(snapshot) = snapshot else {
+        // Same key set as the model-present branch below, with null values
+        // where the snapshot is missing, so a script can parse one stable
+        // shape regardless of whether a model is configured.
         let value = serde_json::json!({
             "vllm_online": false,
             "last_check_ms": now_ms,
             "max_model_len": null,
+            "status": null,
             "health_status": "unavailable",
+            "provider": null,
+            "model": null,
+            "configured_model": null,
+            "upstream": null,
+            "target_kind": null,
+            "diagnostic": null,
         });
         return Ok(success(render(
             output,
