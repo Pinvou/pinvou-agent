@@ -310,6 +310,15 @@ fn knowledge_rejects_invalid_usage_with_exit_code_two() {
             "knowledge",
             "collections",
             "update",
+            "-3",
+            "--name",
+            "n",
+        ],
+        vec![
+            "pinvou",
+            "knowledge",
+            "collections",
+            "update",
             "3",
             "--name",
             "n",
@@ -346,6 +355,7 @@ fn knowledge_rejects_invalid_usage_with_exit_code_two() {
         ],
         vec!["pinvou", "knowledge", "documents"],
         vec!["pinvou", "knowledge", "documents", "abc"],
+        vec!["pinvou", "knowledge", "documents", "-3"],
         vec!["pinvou", "knowledge", "documents", "5", "--limit"],
         vec!["pinvou", "knowledge", "documents", "5", "--limit", "0"],
         vec!["pinvou", "knowledge", "documents", "5", "--limit", "x"],
@@ -403,6 +413,7 @@ fn knowledge_rejects_invalid_usage_with_exit_code_two() {
         vec!["pinvou", "knowledge", "mount", "s-1", "abc"],
         vec!["pinvou", "knowledge", "mount", "s-1", "42", "--extra"],
         vec!["pinvou", "knowledge", "unmount", "s-1"],
+        vec!["pinvou", "knowledge", "unmount", "s-1", "-3"],
         vec!["pinvou", "knowledge", "remote"],
         vec!["pinvou", "knowledge", "remote", "bogus"],
         vec!["pinvou", "knowledge", "remote", "connections", "--extra"],
@@ -692,7 +703,10 @@ fn add_sources_indexes_a_text_file_end_to_end() {
     assert_eq!(documents[0]["parseStatus"], serde_json::json!("parsed"));
 
     let failed = run_ok(&["pinvou", "knowledge", "index", "failed", &job_id]);
-    assert!(failed.contains("no failed files"), "{failed}");
+    assert!(
+        failed.contains("no failed files"),
+        "index failed should report no failed files"
+    );
 
     // Per-job live state is not addressable headlessly: an unknown/latest
     // mismatch names the boundary instead of silently returning another job.
@@ -746,7 +760,7 @@ fn add_sources_refuses_to_drop_sources_behind_a_resumable_job() {
         "--output",
         "json",
     ]);
-    assert!(created.status.success(), "{created:?}");
+    assert!(created.status.success(), "collection create must succeed");
     let created: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
     let id = created["id"].as_i64().expect("created collection id");
 
@@ -772,7 +786,7 @@ fn add_sources_refuses_to_drop_sources_behind_a_resumable_job() {
         "--output",
         "json",
     ]);
-    assert!(started.status.success(), "{started:?}");
+    assert!(started.status.success(), "first add-sources must succeed");
 
     // The one-shot process of the first add-sources killed its import
     // thread mid-flight; this invocation's recovery marks the job
@@ -787,7 +801,149 @@ fn add_sources_refuses_to_drop_sources_behind_a_resumable_job() {
     ]);
     assert!(!blocked.status.success(), "second add-sources must fail");
     let stderr = String::from_utf8_lossy(&blocked.stderr);
-    assert!(stderr.contains("NOT enqueued"), "{stderr}");
+    assert!(
+        stderr.contains("NOT enqueued"),
+        "second add-sources must name the sources it did not enqueue"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `index failed` for an unknown job must not leak the raw rusqlite driver
+/// message ("Query returned no rows") that upstream uses to signal a missing
+/// job id: the CLI names the cause, like `index cancel` does.
+#[test]
+fn index_failed_names_an_unknown_job() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::new("index-failed-unknown");
+    let error = execute_error(&["pinvou", "knowledge", "index", "failed", "missing-job"]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("knowledge_index_job_not_found"),
+        "{error}"
+    );
+}
+
+/// Green-path `index resume`: a job stranded by a dead one-shot
+/// `add-sources` process is re-armed in a fresh process — that child's boot
+/// recovery flips the stranded job to `interrupted`, which is exactly the
+/// state `resume` requires, and the resume re-marks it running. Polled
+/// read-only (never recovering) through `index status`. Note: the resume
+/// child kills its own import thread at exit like every one-shot invocation,
+/// so the deterministic assertion is the interrupted → running progression;
+/// when the child's import does beat process exit, the document-level
+/// `parsed` end state is asserted too.
+#[test]
+fn index_resume_rearms_a_job_stranded_by_a_dead_process() {
+    let bin = env!("CARGO_BIN_EXE_pinvou");
+    let root = std::env::temp_dir().join(format!(
+        "pinvou-cli-knowledge-resume-roundtrip-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let run = |args: &[&str]| {
+        let mut command = std::process::Command::new(bin);
+        command
+            .args(args)
+            .env("PINVOU3_HOME", &root)
+            .env("PINVOU_NO_COLOR", "1");
+        command.output().expect("binary runs")
+    };
+    let created = run(&[
+        "knowledge",
+        "collections",
+        "create",
+        "--name",
+        "resumable",
+        "--output",
+        "json",
+    ]);
+    assert!(created.status.success(), "collection create must succeed");
+    let created: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let id = created["id"].as_i64().expect("created collection id");
+
+    let source = root.join("resume-me.txt");
+    std::fs::write(
+        &source,
+        "Pinvou knowledge resume progression probe.".repeat(64),
+    )
+    .unwrap();
+    let started = run(&[
+        "knowledge",
+        "collections",
+        "add-sources",
+        &id.to_string(),
+        source.to_str().unwrap(),
+        "--output",
+        "json",
+    ]);
+    assert!(started.status.success(), "add-sources must succeed");
+    let started: serde_json::Value = serde_json::from_slice(&started.stdout).unwrap();
+    let job_id = started["jobId"]
+        .as_str()
+        .expect("started job id")
+        .to_owned();
+
+    // The add-sources one-shot process killed its import thread mid-flight;
+    // `index resume` in a fresh process must re-arm the job (its boot
+    // recovery marks the stranded job interrupted, then the resume flips it
+    // back to running).
+    let resumed = run(&["knowledge", "index", "resume", &job_id]);
+    assert!(resumed.status.success(), "index resume must succeed");
+
+    // Read-only poll (`index status` opens without recovery): the job must
+    // have left `interrupted` for the active progression — or already be
+    // done when the resume child's import thread beat process exit.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let state = loop {
+        let polled = run(&["knowledge", "index", "status", "--output", "json"]);
+        assert!(polled.status.success(), "index status must succeed");
+        let state: serde_json::Value = serde_json::from_slice(&polled.stdout).unwrap();
+        let phase = state["phase"].as_str().unwrap_or_default().to_owned();
+        if phase != "interrupted" {
+            break state;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "resumed job never left interrupted; last state: {state}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert_eq!(state["jobId"], serde_json::json!(job_id));
+    assert_eq!(state["resumable"], serde_json::json!(false));
+    assert!(
+        state["phase"] == serde_json::json!("preparing")
+            || state["phase"] == serde_json::json!("running")
+            || state["phase"] == serde_json::json!("parsing")
+            || state["phase"] == serde_json::json!("done")
+            || state["phase"] == serde_json::json!("done_with_errors"),
+        "expected the active progression after resume: {state}"
+    );
+    // The resume child may exit (stranding the import thread again) before
+    // it re-claims the item, so `total` can transiently read 0 during the
+    // parsing phase; the deterministic resume contract is the re-armed state
+    // above (same job id, running, not resumable).
+    assert_eq!(state["running"], serde_json::json!(true), "state: {state}");
+    if state["phase"] == serde_json::json!("done") {
+        // Only reachable when the resume child's import finished before the
+        // process exited; assert the document-level end state when it is.
+        let documents = run(&[
+            "knowledge",
+            "documents",
+            &id.to_string(),
+            "--output",
+            "json",
+        ]);
+        assert!(documents.status.success(), "documents listing must succeed");
+        let documents: serde_json::Value = serde_json::from_slice(&documents.stdout).unwrap();
+        let documents = documents["documents"].as_array().expect("documents array");
+        assert_eq!(documents.len(), 1);
+        assert_eq!(documents[0]["parseStatus"], serde_json::json!("parsed"));
+    }
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -1078,7 +1234,7 @@ fn index_cancel_reports_a_signalled_resumable_job() {
         "--output",
         "json",
     ]);
-    assert!(created.status.success(), "{created:?}");
+    assert!(created.status.success(), "collection create must succeed");
     let created: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
     let id = created["id"].as_i64().expect("created collection id");
 
@@ -1097,7 +1253,7 @@ fn index_cancel_reports_a_signalled_resumable_job() {
         "--output",
         "json",
     ]);
-    assert!(started.status.success(), "{started:?}");
+    assert!(started.status.success(), "add-sources must succeed");
     let started: serde_json::Value = serde_json::from_slice(&started.stdout).unwrap();
     let job_id = started["jobId"]
         .as_str()
@@ -1108,7 +1264,7 @@ fn index_cancel_reports_a_signalled_resumable_job() {
     // invocation's recovery marks the job interrupted (= resumable), and the
     // cancel must report the signal it actually landed.
     let cancelled = run(&["knowledge", "index", "cancel", &job_id]);
-    assert!(cancelled.status.success(), "{cancelled:?}");
+    assert!(cancelled.status.success(), "index cancel must succeed");
     let stdout = String::from_utf8_lossy(&cancelled.stdout);
     assert!(stdout.contains("signalled"), "{stdout}");
     assert!(!stdout.contains("nothing was signalled"), "{stdout}");
@@ -1116,7 +1272,7 @@ fn index_cancel_reports_a_signalled_resumable_job() {
     // The cancelled job is finished, so a second cancel honestly reports
     // there was nothing left to signal.
     let again = run(&["knowledge", "index", "cancel", &job_id]);
-    assert!(again.status.success(), "{again:?}");
+    assert!(again.status.success(), "second index cancel must succeed");
     let stdout = String::from_utf8_lossy(&again.stdout);
     assert!(stdout.contains("nothing was signalled"), "{stdout}");
 

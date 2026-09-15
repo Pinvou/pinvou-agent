@@ -258,7 +258,7 @@ fn personas_list_shows_builtin_catalog_and_source_filters() {
     // Human rows are id/source/name/dept/description, tab separated.
     let first = outcome.stdout.lines().next().unwrap_or_default();
     let columns: Vec<&str> = first.split('\t').collect();
-    assert!(columns.len() >= 4, "row layout changed: {first:?}");
+    assert!(columns.len() >= 4, "personas list row layout changed");
     assert!(columns[0].starts_with("pinvou-") || columns[1] == "builtin");
 
     // The whole catalog: builtin cards only for a fresh home, and every
@@ -563,6 +563,93 @@ fn personas_equip_unequip_active_round_trip_with_fixture_session() {
     assert_eq!(value["id"], "pinvou-card-creator");
     let value = run_json(&["pinvou", "personas", "active", &session_id]);
     assert_eq!(value["id"], "pinvou-card-creator");
+
+    std::fs::remove_file(&body_path).unwrap();
+}
+
+/// `personas delete` must sweep the CLI's own equip persistence: every
+/// `persona_equipped.json` sidecar that still references the deleted card
+/// (which carries its full pending-body injection text) is removed and
+/// reported as `cleared_sessions`, while sidecars for other personas stay
+/// untouched.
+#[test]
+fn personas_delete_sweeps_equipped_sidecars_for_the_deleted_card_only() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("delete-sidecar-sweep");
+    let session_a = create_session_fixture();
+    let session_b = create_session_fixture();
+    let body_path = write_body_file("sweep", "# Sweep Expert\n\nbody\n");
+
+    // Two user cards: one to delete, one that must stay equipped.
+    let value = run_json(&[
+        "pinvou",
+        "personas",
+        "create",
+        "--name",
+        "Sweep Expert",
+        "--file",
+        body_path.to_str().unwrap(),
+    ]);
+    let deleted_id = value["id"].as_str().unwrap().to_owned();
+    let value = run_json(&[
+        "pinvou",
+        "personas",
+        "create",
+        "--name",
+        "Keeper Expert",
+        "--file",
+        body_path.to_str().unwrap(),
+    ]);
+    let keeper_id = value["id"].as_str().unwrap().to_owned();
+
+    // Equip the doomed card on session A and the keeper on session B.
+    run(&["pinvou", "personas", "equip", &session_a, &deleted_id]).unwrap();
+    run(&["pinvou", "personas", "equip", &session_b, &keeper_id]).unwrap();
+    let sidecar_a = home
+        .sessions_root()
+        .join(&session_a)
+        .join("persona_equipped.json");
+    let sidecar_b = home
+        .sessions_root()
+        .join(&session_b)
+        .join("persona_equipped.json");
+    assert!(sidecar_a.is_file() && sidecar_b.is_file());
+
+    let value = run_json(&["pinvou", "personas", "delete", &deleted_id, "--yes"]);
+    assert_eq!(value["action"], "deleted");
+    let cleared = value["cleared_sessions"]
+        .as_array()
+        .expect("cleared_sessions list");
+    assert_eq!(cleared.len(), 1);
+    assert_eq!(
+        cleared[0], session_a,
+        "the delete must name every session whose sidecar referenced the card"
+    );
+    // The deleted persona's sidecar is gone and `active` reports nothing;
+    // the keeper's sidecar (a different persona id) is untouched.
+    assert!(
+        !sidecar_a.exists(),
+        "the deleted persona's sidecar must be removed"
+    );
+    let value = run_json(&["pinvou", "personas", "active", &session_a]);
+    assert!(value.is_null(), "the deleted persona must not stay active");
+    assert!(
+        sidecar_b.is_file(),
+        "a sidecar for a different persona must be untouched"
+    );
+    let value = run_json(&["pinvou", "personas", "active", &session_b]);
+    assert_eq!(value["id"], keeper_id);
+
+    // The human line reports the cleared-session count; the ids live in the
+    // JSON `cleared_sessions` field (delete the keeper to exercise the line).
+    let outcome = run(&["pinvou", "personas", "delete", &keeper_id, "--yes"])
+        .expect("human delete must succeed");
+    assert!(
+        outcome
+            .stdout
+            .contains("cleared the equipped-persona sidecar on 1 session"),
+        "the human output must report the cleared-session count"
+    );
 
     std::fs::remove_file(&body_path).unwrap();
 }

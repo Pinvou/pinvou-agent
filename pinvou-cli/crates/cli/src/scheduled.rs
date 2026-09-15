@@ -165,8 +165,11 @@ pub enum ScheduledCommand {
 }
 
 /// Fixed AI task-creation prompt served by the GUI `scheduled_task_chat_prompt`
-/// command (`features::scheduled::tasks::SCHEDULED_TASK_CHAT_PROMPT`, mirrored
-/// verbatim: it is GUI data the model consumes, not CLI copy).
+/// command (`features::scheduled::tasks::SCHEDULED_TASK_CHAT_PROMPT`, copied
+/// verbatim: the GUI feature is `pub(crate)` to `pinvoy3_lib`, so the const
+/// cannot be referenced from the CLI, and this is GUI data the model consumes,
+/// not CLI copy). `chat_prompt_mirrors_the_gui_once_scheduling_guidance` in
+/// scheduled_contract.rs pins the ONCE guidance so copy drift fails CI.
 const SCHEDULED_TASK_CHAT_PROMPT: &str = r#"我想创建一个 Pinvou 定时任务。请通过提问帮我确定方案，回复保持简短，不要长篇解释。
 
 这是一个纯对话收集流程。不要调用任何工具，不要写文件，不要读写 ~/.pinvou3，也不要手动创建 automations JSON。信息完整后只输出给前端解析的任务参数，前端会通过 create_scheduled_task 创建并打开任务详情，不再要求用户二次确认。
@@ -175,7 +178,7 @@ const SCHEDULED_TASK_CHAT_PROMPT: &str = r#"我想创建一个 Pinvou 定时任�
 
 请一次只问我一个问题，并依次确认这些信息：
 1. 任务要做什么。
-2. 什么时候运行。支持每 N 小时（可指定起始时间）、每天指定时间、每周指定星期和时间。不支持分钟级规则；如果用户要求“每 5 分钟”等分钟级频率，必须询问用户改成每 N 小时、每天指定时间或每周指定时间，不要输出草稿。
+2. 什么时候运行。支持每 N 小时（可指定起始时间）、每天指定时间、每周指定星期和时间，以及一次性定时（在指定时刻运行一次后自动结束，适合“明天 9 点提醒我一次”这类需求）。一次性定时的 AT 只用本地时刻 YYYY-MM-DDTHH:MM，不要带 Z 或时区偏移后缀。如果用户指定的一次性时刻已经过去，必须先和用户确认改成未来的时刻，不要输出草稿。不支持分钟级规则；如果用户要求“每 5 分钟”等分钟级频率，必须询问用户改成每 N 小时、每天指定时间或每周指定时间，不要输出草稿。
 
 每次运行创建独立对话；同一个定时任务的所有运行对话共享该任务的专属工作间，不同任务互不共享。产物仍归属各次运行对话。不需要询问工作目录或权限设置。
 
@@ -183,6 +186,7 @@ const SCHEDULED_TASK_CHAT_PROMPT: &str = r#"我想创建一个 Pinvou 定时任�
 - 每 6 小时一次，从 08:30 起算：FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30
 - 每天 08:30：FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30
 - 每周一、三 09:30：FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=9;BYMINUTE=30
+- 2027-06-01 09:30 运行一次：FREQ=ONCE;AT=2027-06-01T09:30
 
 当信息足够时，请直接给出最终任务参数，并使用下面这种完整代码块格式：
 ```scheduled-task-draft
@@ -636,6 +640,13 @@ fn validate_once_at(at: &str) -> Result<(), CliError> {
         }
         return Ok(());
     }
+    // Deliberate strictness: the naive channel accepts only the canonical
+    // fixed-width `YYYY-MM-DDTHH:MM[:SS]` shape. The foundation's chrono
+    // parse (`parse_once_at`) also accepts looser 1-digit month/day/hour
+    // forms through its `%Y-%m-%dT%H:%M` formats, but the GUI prompt
+    // documents exactly this canonical shape and the fixed offsets keep the
+    // field slicing below unambiguous, so the CLI refuses spellings the two
+    // surfaces would not render identically.
     let numeric = |range: std::ops::Range<usize>| digits(range).is_some();
     let shape_ok = bytes.len() == 16 || bytes.len() == 19;
     let separators = bytes.len() > 15
@@ -1033,7 +1044,11 @@ fn safe_storage_id(kind: &str, value: &str) -> Result<(), CliError> {
     let mut components = path.components();
     match components.next() {
         Some(std::path::Component::Normal(_)) if components.next().is_none() => Ok(()),
-        _ => Err(CliError::failed(format!(
+        // A malformed id is invalid user input, not a runtime failure: the
+        // refusal is a usage error (exit 2), matching the crate-wide input
+        // validation convention (sessions id alphabet, knowledge integer
+        // parse).
+        _ => Err(CliError::usage(format!(
             "{kind} must be a single path component: {value}"
         ))),
     }
@@ -1116,6 +1131,11 @@ impl TaskStore {
                 path.display()
             ))
         })?;
+        // A valid-JSON but non-object definition (hand-edited store) must be
+        // refused by every command uniformly: read-only `show` would
+        // otherwise render a phantom empty task with exit 0 while `list`
+        // died on the record's missing id field.
+        require_object_definition(id, &value)?;
         ensure_supported_schema(&value, 2, "record")?;
         Ok(value)
     }
@@ -1159,6 +1179,13 @@ impl TaskStore {
                     path.display()
                 ))
             })?;
+            // Same uniform non-object refusal as read_def; the file name is
+            // the task id.
+            let id = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("");
+            require_object_definition(id, &value)?;
             ensure_supported_schema(&value, 2, "record")?;
             defs.push(value);
         }
@@ -1314,8 +1341,11 @@ fn ensure_supported_schema(
 }
 
 /// A definition file that is valid JSON but not an object (hand-edited
-/// store) must fail honestly instead of panicking on the `IndexMut` writes
-/// below it, which would exit 101 and break the CLI's exit-code contract.
+/// store) must fail honestly: `read_def` and `list_defs` apply this check so
+/// every command refuses uniformly, with the same stable message — read-only
+/// `show`/`list` would otherwise render a phantom empty task, and the
+/// `IndexMut` writes in the mutating commands would panic (exit 101, outside
+/// the CLI's exit-code contract).
 fn require_object_definition(id: &str, def: &serde_json::Value) -> Result<(), CliError> {
     if def.is_object() {
         Ok(())
@@ -1585,10 +1615,13 @@ fn with_days(byday: Option<&str>, label: &str) -> String {
     }
 }
 
+/// `store` is `None` when the sessions store could not be opened for
+/// best-effort enrichment (see `open_sessions_for_enrichment`): the task is
+/// then rendered without session-derived fields instead of failing.
 fn unread_and_running(
     def: &serde_json::Value,
     runs: &[serde_json::Value],
-    store: &SessionStore,
+    store: Option<&SessionStore>,
     read_state: &serde_json::Value,
 ) -> (bool, bool) {
     let task_id = str_field(def, "id").unwrap_or("");
@@ -1596,13 +1629,19 @@ fn unread_and_running(
         .iter()
         .any(|run| matches!(str_field(run, "status").unwrap_or(""), "queued" | "running"));
     let viewed = viewed_runs(read_state, task_id);
-    let has_unread = runs.iter().any(|run| {
-        str_field(run, "status") == Some("completed")
-            && owned_session_id(run, task_id, store).is_some_and(|session_id| {
-                !store.is_hidden(&session_id)
-                    && !viewed.contains(&str_field(run, "id").unwrap_or(""))
-            })
-    });
+    let has_unread = match store {
+        Some(store) => runs.iter().any(|run| {
+            str_field(run, "status") == Some("completed")
+                && owned_session_id(run, task_id, store).is_some_and(|session_id| {
+                    !store.is_hidden(&session_id)
+                        && !viewed.contains(&str_field(run, "id").unwrap_or(""))
+                })
+        }),
+        // Without the store the unread computation cannot tell which
+        // completed runs have live conversations; report none rather than
+        // failing the command.
+        None => false,
+    };
     (has_unread, is_running)
 }
 
@@ -1663,7 +1702,7 @@ fn pinned_for(ui_metadata: &serde_json::Value, task_id: &str) -> (bool, Option<S
 fn map_task(
     def: &serde_json::Value,
     runs: &[serde_json::Value],
-    store: &SessionStore,
+    store: Option<&SessionStore>,
     read_state: &serde_json::Value,
     bindings: &serde_json::Value,
     kinds: &serde_json::Value,
@@ -1825,6 +1864,9 @@ fn task_name_map(
 pub fn execute(command: ScheduledCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
     // Hold the cross-process store write lock across the whole mutating
     // command (see `scheduled_store_lock`); read-only commands skip it.
+    // `run` holds it across the entire headless host execution (which can
+    // take minutes) by design: concurrent `scheduled run` invocations must
+    // serialize CLI×CLI so their store writes and run records stay ordered.
     let mutating = matches!(
         command,
         ScheduledCommand::Create { .. }
@@ -1908,7 +1950,7 @@ fn list(output: OutputMode) -> Result<CliOutcome, CliError> {
             let value = map_task(
                 def,
                 &runs,
-                &sessions,
+                Some(&sessions),
                 &read_state,
                 &bindings,
                 &kinds,
@@ -1951,7 +1993,7 @@ fn show(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let task = map_task(
         &def,
         &runs,
-        &sessions,
+        Some(&sessions),
         &read_state,
         &bindings,
         &kinds,
@@ -2094,11 +2136,15 @@ enabled in settings",
             return Err(error);
         }
     }
-    let sessions = open_sessions()?;
+    // The definition (and its sidecar records) are committed above; session
+    // enrichment is best-effort so a sessions-store failure cannot misreport
+    // the committed create as a failure (same rationale as the mutating
+    // commands).
+    let sessions = open_sessions_for_enrichment();
     let value = map_task(
         &def,
         &[],
-        &sessions,
+        sessions.as_ref(),
         &serde_json::Value::Null,
         &read_registry(&store_holder.model_bindings_path()),
         &read_registry(&store_holder.task_kinds_path()),
@@ -2121,7 +2167,6 @@ fn update(
 ) -> Result<CliOutcome, CliError> {
     let store_holder = TaskStore::new()?;
     let mut def = store_holder.read_def(id)?;
-    require_object_definition(id, &def)?;
     let mut schedule_changed = false;
     if let Some(name) = name {
         let name = name.trim();
@@ -2161,12 +2206,14 @@ fn update(
     if model_id.is_some() {
         persist_model_binding(&store_holder, id, model_id.as_deref())?;
     }
-    let sessions = open_sessions()?;
+    // Enrichment is best-effort: the update is committed above, so a
+    // sessions store boot failure must not report the update as failed.
+    let sessions = open_sessions_for_enrichment();
     let runs = store_holder.list_runs(id, None)?;
     let value = map_task(
         &def,
         &runs,
-        &sessions,
+        sessions.as_ref(),
         &read_registry(&store_holder.read_state_path()),
         &read_registry(&store_holder.model_bindings_path()),
         &read_registry(&store_holder.task_kinds_path()),
@@ -2255,7 +2302,6 @@ fn persist_task_kind(
 fn pause_or_resume(id: &str, pause: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store_holder = TaskStore::new()?;
     let mut def = store_holder.read_def(id)?;
-    require_object_definition(id, &def)?;
     let action = if pause { "paused" } else { "resumed" };
     def["status"] = serde_json::json!(if pause { "paused" } else { "active" });
     // Both branches clear the next slot: pause must not fire, and resume lets
@@ -2266,12 +2312,14 @@ fn pause_or_resume(id: &str, pause: bool, output: OutputMode) -> Result<CliOutco
         ensure_workspace(&store_holder, &mut def)?;
     }
     store_holder.write_def(&def)?;
-    let sessions = open_sessions()?;
+    // Enrichment is best-effort: the status flip is committed above, so a
+    // sessions store boot failure must not report the command as failed.
+    let sessions = open_sessions_for_enrichment();
     let runs = store_holder.list_runs(id, None)?;
     let value = map_task(
         &def,
         &runs,
-        &sessions,
+        sessions.as_ref(),
         &read_registry(&store_holder.read_state_path()),
         &read_registry(&store_holder.model_bindings_path()),
         &read_registry(&store_holder.task_kinds_path()),
@@ -2314,10 +2362,6 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     require_yes(yes)?;
     let store_holder = TaskStore::new()?;
     let mut def = store_holder.read_def(id)?;
-    // The pause below mutates the object in place; a non-object definition
-    // (hand-edited store) must fail honestly instead of panicking on the
-    // IndexMut.
-    require_object_definition(id, &def)?;
     // Pause first, exactly like the GUI's destructive sequence: a concurrent
     // GUI scheduler tick must not enqueue a run between the active-run check
     // below and the removal. The pause lives in `status` — the field the
@@ -2506,11 +2550,13 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
             }
         }
     }
-    let sessions = open_sessions()?;
+    // Enrichment is best-effort: the delete is committed above, so a
+    // sessions store boot failure must not report the delete as failed.
+    let sessions = open_sessions_for_enrichment();
     let task = map_task(
         &def,
         &runs,
-        &sessions,
+        sessions.as_ref(),
         &serde_json::Value::Null,
         &serde_json::Value::Null,
         &serde_json::Value::Null,
@@ -2815,7 +2861,7 @@ viewed"
     let (has_unread, _) = {
         let refreshed = read_registry(&store_holder.read_state_path());
         let def = serde_json::json!({ "id": task_id });
-        unread_and_running(&def, &runs, &sessions, &refreshed)
+        unread_and_running(&def, &runs, Some(&sessions), &refreshed)
     };
     let value = serde_json::json!({
         "automationId": task_id,
@@ -2841,6 +2887,23 @@ fn chat_prompt(output: OutputMode) -> Result<CliOutcome, CliError> {
 fn open_sessions() -> Result<SessionStore, CliError> {
     SessionStore::boot()
         .map_err(|error| CliError::failed(format!("sessions store unavailable: {error:#}")))
+}
+
+/// Best-effort sessions store for enriching a response after the store write
+/// is already committed (`update`/`pause`/`resume`/`delete`): the mutation is
+/// irreversible, so a boot failure must not report the command as failed — it
+/// prints a warning and the response degrades without session-derived fields.
+fn open_sessions_for_enrichment() -> Option<SessionStore> {
+    match open_sessions() {
+        Ok(store) => Some(store),
+        Err(error) => {
+            eprintln!(
+                "pinvou: warning: could not open the sessions store to enrich this response: \
+                 {error}"
+            );
+            None
+        }
+    }
 }
 
 #[cfg(test)]

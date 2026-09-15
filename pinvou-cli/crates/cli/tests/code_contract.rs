@@ -20,6 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use pinvou_cli::{CliError, CliOutcome, ExitCode, OutputMode, execute, parse_args};
 use pinvou3_lib::features::code_checkpoints as checkpoints;
+use pinvou3_lib::features::codex_acp::workspace as app_workspace;
 use pinvou3_lib::features::codex_acp::{CodexWorkspaceKind, SessionAgentStore};
 use pinvou3_lib::features::sessions::SessionStore;
 
@@ -88,6 +89,49 @@ impl Drop for HomeGuard {
             }
         }
         let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+/// Captures one process environment variable and restores it on drop, so a
+/// failing assertion cannot leak an override into sibling tests.
+#[cfg(unix)]
+struct EnvVarGuard {
+    name: &'static str,
+    previous: Option<OsString>,
+}
+
+#[cfg(unix)]
+impl EnvVarGuard {
+    fn capture(name: &'static str) -> Self {
+        Self {
+            name,
+            previous: std::env::var_os(name),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        // SAFETY: the owning test holds ENV_LOCK, so env writes are
+        // serialized in-process.
+        unsafe {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
+    }
+}
+
+/// Removes a scratch directory on drop (panic-safe cleanup for fake CLI bins).
+#[cfg(unix)]
+struct ScratchDir(PathBuf);
+
+#[cfg(unix)]
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -175,7 +219,8 @@ fn seed_two_turn_transcript(id: &str) {
 }
 
 /// Initializes a git repository with `main` + `feature` branches and one
-/// committed file; returns `None` when git is unavailable.
+/// committed file; returns `None` when git is unavailable, printing a visible
+/// skip line so a green run cannot hide an environment gap.
 fn init_git_repo(label: &str) -> Option<PathBuf> {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -186,20 +231,30 @@ fn init_git_repo(label: &str) -> Option<PathBuf> {
         std::process::id()
     ));
     std::fs::create_dir_all(&root).unwrap();
+    // Same ambient-gitconfig isolation as the production `git_command`: a
+    // developer's global/system config (aliases, hooks, credential helpers)
+    // must not decide whether the fixture repository builds.
+    let devnull = if cfg!(windows) { "NUL" } else { "/dev/null" };
     let run = |args: &[&str]| {
         std::process::Command::new("git")
             .current_dir(&root)
             .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", devnull)
             .output()
             .map(|output| output.status.success())
             .unwrap_or(false)
     };
+    let skip = |reason: &str| -> Option<PathBuf> {
+        eprintln!("skipping: git unavailable ({reason})");
+        None
+    };
     if !run(&["init", "-b", "main"]) {
-        return None;
+        return skip("git init failed");
     }
     if !run(&["config", "user.email", "test@example.com"]) || !run(&["config", "user.name", "test"])
     {
-        return None;
+        return skip("repo config failed");
     }
     std::fs::write(root.join("tracked.txt"), "v1\n").unwrap();
     for args in [
@@ -208,7 +263,7 @@ fn init_git_repo(label: &str) -> Option<PathBuf> {
         &["branch", "feature"][..],
     ] {
         if !run(args) {
-            return None;
+            return skip("fixture commit failed");
         }
     }
     Some(root)
@@ -800,15 +855,87 @@ fn code_sessions_info_and_timeline_read_persisted_state() {
     // envelope and the legacy snake_case spelling (a missing turnId renders
     // "-" — envelopes without an active turn exist).
     assert_eq!(outcome.stdout.lines().count(), 3);
-    assert!(outcome.stdout.contains("turn_started"), "{outcome:?}");
-    assert!(outcome.stdout.contains("turn-1"), "{outcome:?}");
+    assert!(
+        outcome.stdout.contains("turn_started"),
+        "timeline should contain the turn_started event"
+    );
+    assert!(
+        outcome.stdout.contains("turn-1"),
+        "timeline should contain the turn id column"
+    );
     assert!(
         outcome
             .stdout
             .lines()
             .all(|line| line.split('\t').nth(2).is_some_and(|kind| !kind.is_empty())),
-        "event-type column must never be silently empty: {outcome:?}"
+        "timeline event-type column must never be silently empty"
     );
+}
+
+/// A session whose persisted JSON model is an ACP model name but whose
+/// session-agents sidecar record is missing (the sidecar-loss fallback) must
+/// be accepted everywhere `code sessions list` accepts it: listed with the
+/// model-derived agent label, readable through `info`, and its missing
+/// journal reported as an empty timeline success.
+#[test]
+fn sidecar_lost_acp_session_is_listed_and_readable() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("sidecar-lost-acp");
+    let project = home.root.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    // A plain chat session whose model name is the ACP sentinel: no
+    // session-agents.json record is ever written for it.
+    let store = SessionStore::boot().unwrap();
+    let id = store
+        .create_new("Codex (ACP)".to_owned(), None, project.clone())
+        .unwrap()
+        .metadata
+        .id;
+    drop(store);
+
+    // list shows it with the degraded workspace and the derived agent.
+    let value = run_json(&["pinvou", "code", "sessions", "list"]);
+    let rows = value["sessions"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], id.as_str());
+    assert_eq!(rows[0]["agent_id"], "codex");
+    assert_eq!(rows[0]["workspace_available"], false);
+
+    // info succeeds on the same fallback with the identical label.
+    let value = run_json(&["pinvou", "code", "sessions", "info", &id]);
+    assert_eq!(value["agent_id"], "codex");
+    assert_eq!(value["agent_name"], "Codex");
+    assert_eq!(value["workspace_available"], false);
+
+    // and the missing journal is an empty success, not an error.
+    let outcome = run(&["pinvou", "code", "sessions", "timeline", &id]).expect("empty timeline");
+    assert_eq!(outcome.stdout, "");
+    let value = run_json(&["pinvou", "code", "sessions", "timeline", &id]);
+    assert_eq!(value["events"].as_array().unwrap().len(), 0);
+}
+
+/// Plain (non-code) chat sessions are refused by `info` and `timeline` with
+/// the same stable error the workspace commands use (timeline used to report
+/// an empty success for any existing session).
+#[test]
+fn sessions_info_and_timeline_refuse_plain_chat_sessions() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("info-timeline-gate");
+    let store = SessionStore::boot().unwrap();
+    let plain = store
+        .create_new("plain".to_owned(), None, std::env::temp_dir())
+        .unwrap()
+        .metadata
+        .id;
+    drop(store);
+    for action in ["info", "timeline"] {
+        let error = run(&["pinvou", "code", "sessions", action, &plain]).unwrap_err();
+        assert_eq!(error.exit_code(), ExitCode::Failed, "{action}: {error}");
+        assert!(
+            error.to_string().contains("code_session_not_found"),
+            "{action}: {error}"
+        );
+    }
 }
 
 #[test]
@@ -856,6 +983,31 @@ fn workspace_list_search_preview_round_trip_with_fixture_session() {
     assert_eq!(error.exit_code(), ExitCode::Usage);
     let error = run(&["pinvou", "code", "workspace", "preview", &id, "missing.md"]).unwrap_err();
     assert_eq!(error.exit_code(), ExitCode::Failed);
+}
+
+/// `workspace search` must report when the app module's SEARCH_LIMIT cut the
+/// result list, mirroring the `truncated` flag of `workspace list`.
+#[test]
+fn workspace_search_reports_truncation_past_the_limit() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("search-truncated");
+    let project = home.root.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    // One match past the app module's SEARCH_LIMIT (300) plus one non-match.
+    for index in 0..301 {
+        std::fs::write(project.join(format!("needle-{index:03}.txt")), "x\n").unwrap();
+    }
+    std::fs::write(project.join("other.md"), "x\n").unwrap();
+    let id = create_code_session_fixture(Some(&project));
+
+    let value = run_json(&["pinvou", "code", "workspace", "search", &id, "needle"]);
+    assert_eq!(value["results"].as_array().unwrap().len(), 300);
+    assert_eq!(value["truncated"], serde_json::json!(true));
+
+    // A short result set is not reported as truncated.
+    let value = run_json(&["pinvou", "code", "workspace", "search", &id, "other"]);
+    assert_eq!(value["results"].as_array().unwrap().len(), 1);
+    assert_eq!(value["truncated"], serde_json::json!(false));
 }
 
 #[test]
@@ -984,6 +1136,55 @@ fn whole_workspace_diff_truncates_without_accumulating_over_the_cap() {
     let text = value["text"].as_str().unwrap();
     assert!(text.len() <= 1024 * 1024, "len={}", text.len());
     assert!(text.contains("+v2"), "the capped head keeps the hunk");
+}
+
+/// The per-file diff lane stays a CLI mirror on purpose (bounded untracked
+/// reads, English section copy, whole-workspace composition are CLI-specific),
+/// so its output is differentially pinned against the app module on the same
+/// fixture tree: identical `truncated` flags and identical git diff bodies.
+#[test]
+fn workspace_diff_stays_pinned_to_the_app_module_on_a_fixture() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("diff-pin");
+    // The CLI's git lane pins the ambient gitconfig away while the app module
+    // honors it; pin it here too so both render the same diff for the same
+    // tree regardless of the developer's global diff settings.
+    let _git_global = EnvVarGuard::capture("GIT_CONFIG_GLOBAL");
+    let _git_nosystem = EnvVarGuard::capture("GIT_CONFIG_NOSYSTEM");
+    unsafe {
+        std::env::set_var(
+            "GIT_CONFIG_GLOBAL",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+        );
+        std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+    }
+    let Some(project) = init_git_repo("diff-pin") else {
+        return; // git unavailable in the environment
+    };
+    let id = create_code_session_fixture(Some(&project));
+    std::fs::write(project.join("tracked.txt"), "v2\n").unwrap();
+    std::fs::write(project.join("untracked.txt"), "brand new\n").unwrap();
+
+    // Modified tracked file: both render one section-header line followed by
+    // the same git diff.
+    let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "tracked.txt"]);
+    let app = app_workspace::workspace_diff(&id, &project, "tracked.txt")
+        .expect("app diff for the modified tracked file");
+    assert_eq!(cli["relativePath"], app.relative_path);
+    assert_eq!(cli["truncated"], app.truncated);
+    let body = |text: &str| text.lines().skip(1).collect::<Vec<_>>().join("\n");
+    assert_eq!(body(cli["text"].as_str().unwrap()), body(&app.text));
+
+    // Untracked file: both synthesize the same new-file diff, byte for byte.
+    let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "untracked.txt"]);
+    let app = app_workspace::workspace_diff(&id, &project, "untracked.txt")
+        .expect("app diff for the untracked file");
+    assert_eq!(cli["truncated"], app.truncated);
+    assert_eq!(
+        cli["text"].as_str().unwrap(),
+        app.text,
+        "untracked synthetic diffs must be identical"
+    );
 }
 
 #[test]
@@ -1225,7 +1426,10 @@ fn providers_round_trip_against_temp_home() {
     ]);
     assert_eq!(value["action"], "added");
     let added_id = value["provider"]["id"].as_str().unwrap().to_owned();
-    assert!(added_id.starts_with("pv-"), "GUI id scheme: {added_id}");
+    assert!(
+        added_id.starts_with("pv-"),
+        "code providers add should print a pv_-prefixed GUI id"
+    );
     assert_eq!(value["provider"]["name"], "Relay A");
     assert_eq!(value["provider"]["base_url"], "https://api.example.com/v1");
     let raw = std::fs::read_to_string(&store_path).unwrap();
@@ -1701,6 +1905,10 @@ fn code_login_rejects_conflicting_code_sources() {
 
 #[test]
 fn code_login_rejects_a_missing_code_env_and_non_claude_codes() {
+    // The execute path reads environment variables (`--code-env` resolution)
+    // while sibling tests set_var under ENV_LOCK, so this test must hold the
+    // same lock.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let error = parse_args([
         "pinvou",
         "code",
@@ -1722,18 +1930,14 @@ fn code_login_rejects_a_missing_code_env_and_non_claude_codes() {
     assert_eq!(error.exit_code(), ExitCode::Usage);
 }
 
-#[test]
+/// Writes a scripted `codex` stand-in into a fresh bin directory (argv logged
+/// to `seen-args.txt` for spawn assertions) and returns the directory and the
+/// script path. `version_snippet` runs for `--version` and `login_snippet`
+/// for `login` (each must end in its own exit); any other subcommand exits 1.
 #[cfg(unix)]
-fn login_drives_the_real_vendor_spawn_path() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("fake-login");
-    // A scripted codex stand-in driven through the real override-resolution
-    // and spawn path: the override must pass the version gate (a real
-    // `--version` probe), the login child must receive its argv exactly once
-    // (the doubled-argv regression was invisible to empty-PATH tests), and
-    // the allow-listed login URL must be captured into the JSON result.
+fn write_fake_codex(label: &str, version_snippet: &str, login_snippet: &str) -> (PathBuf, PathBuf) {
     let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-code-fake-codex-{}-{}",
+        "pinvou-cli-code-fake-codex-{label}-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1747,20 +1951,48 @@ fn login_drives_the_real_vendor_spawn_path() {
     std::fs::write(
         &script,
         format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\nif [ \"$1\" = \"--version\" ]; then echo \"codex 1.2.0\"; exit 0; fi\nif [ \"$1\" = \"login\" ]; then echo \"signin with this URL:\"; echo \"https://auth.openai.com/authorize?o=fake\"; echo \"user code: ABCD-EFGH\"; exit 0; fi\nexit 1\n",
-            args_file.display()
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\nif [ \"$1\" = \"--version\" ]; then {}\nfi\nif [ \"$1\" = \"login\" ]; then {}\nfi\nexit 1\n",
+            args_file.display(),
+            version_snippet,
+            login_snippet
         ),
     )
     .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let previous = std::env::var_os("PINVOU3_CODEX_PATH");
+    (bin, script)
+}
+
+#[test]
+#[cfg(unix)]
+fn login_drives_the_real_vendor_spawn_path() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("fake-login");
+    // A scripted codex stand-in driven through the real override-resolution
+    // and spawn path: the override must pass the version gate (a real
+    // `--version` probe), the login child must receive its argv exactly once
+    // (the doubled-argv regression was invisible to empty-PATH tests), and
+    // the allow-listed login URL must be captured into the JSON result.
+    // Cleanup runs through drop guards so a failed assertion cannot leak the
+    // PATH override or the scratch bin into sibling tests.
+    let (bin, script) = write_fake_codex(
+        "login",
+        "echo \"codex 1.2.0\"; exit 0",
+        "echo \"signin with this URL:\"; echo \"https://auth.openai.com/authorize?o=fake\"; \
+         echo \"user code: ABCD-EFGH\"; exit 0",
+    );
+    let args_file = bin.join("seen-args.txt");
+    let _bin = ScratchDir(bin);
+    let _codex_path = EnvVarGuard::capture("PINVOU3_CODEX_PATH");
     unsafe { std::env::set_var("PINVOU3_CODEX_PATH", &script) };
 
     let outcome = run(&["pinvou", "code", "login", "codex", "--output", "json"])
         .expect("login against the fake codex must succeed");
     let value: serde_json::Value =
         serde_json::from_str(&outcome.stdout).expect("single-line JSON login result");
-    assert_eq!(value["status"], "completed", "{value}");
+    assert_eq!(
+        value["status"], "completed",
+        "the login result must report status completed"
+    );
     assert_eq!(
         value["login_url"], "https://auth.openai.com/authorize?o=fake",
         "the allow-listed login URL must be captured"
@@ -1784,10 +2016,57 @@ fn login_drives_the_real_vendor_spawn_path() {
         "login argv must be passed exactly once: {seen}"
     );
     assert_eq!(count("status"), 1, "probe argv must not double: {seen}");
+}
 
-    match previous {
-        Some(value) => unsafe { std::env::set_var("PINVOU3_CODEX_PATH", value) },
-        None => unsafe { std::env::remove_var("PINVOU3_CODEX_PATH") },
-    }
-    let _ = std::fs::remove_dir_all(&bin);
+/// A vendor CLI that prints the login URL and then exits non-zero must not
+/// lose the URL: it is the only actionable part of the failed flow (the
+/// timeout path already keeps it).
+#[test]
+#[cfg(unix)]
+fn login_failure_keeps_the_captured_login_url() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("login-failed-url");
+    let (bin, script) = write_fake_codex(
+        "login-failure",
+        "echo \"codex 1.2.0\"; exit 0",
+        "echo \"signin with this URL:\"; echo \"https://auth.openai.com/authorize?o=fake\"; exit 3",
+    );
+    let _bin = ScratchDir(bin);
+    let _codex_path = EnvVarGuard::capture("PINVOU3_CODEX_PATH");
+    unsafe { std::env::set_var("PINVOU3_CODEX_PATH", &script) };
+
+    let error = run(&["pinvou", "code", "login", "codex"]).unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = error.to_string();
+    assert!(
+        message.contains("code_login_failed"),
+        "the login failure must carry the code_login_failed prefix"
+    );
+    assert!(
+        message.contains("https://auth.openai.com/authorize?o=fake"),
+        "the captured login URL must survive the failure path: {message}"
+    );
+}
+
+/// A vendor CLI whose `--version` probe fails is a distinct state from a
+/// genuinely too-old version: the JSON must say `version_probe_failed` and
+/// the install gate must stay closed.
+#[test]
+#[cfg(unix)]
+fn version_probe_failure_is_reported_and_fails_the_gate() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("version-probe-failed");
+    let (bin, _script) = write_fake_codex("probe-failure", "exit 7", "exit 1");
+    // Resolve through PATH: the override route is rejected by the gate
+    // itself before a probe failure could ever be reported.
+    let _path = EnvVarGuard::capture("PATH");
+    unsafe { std::env::set_var("PATH", &bin) };
+    let _bin = ScratchDir(bin);
+
+    let value = run_json(&["pinvou", "code", "agents", "status", "codex"]);
+    assert_eq!(value["cli_found"], true);
+    assert_eq!(value["version"], serde_json::Value::Null);
+    assert_eq!(value["version_probe_failed"], true);
+    assert_eq!(value["version_supported"], false);
+    assert_eq!(value["installed"], false);
 }

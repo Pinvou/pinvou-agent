@@ -73,7 +73,11 @@ fn usage_error(args: &[&str]) -> String {
 fn run_ok(args: &[&str]) -> String {
     let parsed = parse_args(args.to_vec()).expect("valid command");
     let outcome = execute(parsed).expect("execute succeeds");
-    assert_eq!(outcome.exit_code, ExitCode::Success, "stdout: {outcome:?}");
+    // Diagnostic messages deliberately stay free of command output: the
+    // shared CliOutcome can carry command-shaped strings (session ids,
+    // credential echoes), so tests report only the exit codes — assert_eq!
+    // already prints both sides on failure.
+    assert_eq!(outcome.exit_code, ExitCode::Success);
     outcome.stdout
 }
 
@@ -90,7 +94,8 @@ fn run_json(args: &[&str]) -> serde_json::Value {
     owned.insert(1, "--output");
     owned.insert(2, "json");
     let stdout = run_ok(&owned);
-    serde_json::from_str(&stdout).unwrap_or_else(|error| panic!("json output: {error}: {stdout}"))
+    serde_json::from_str(&stdout)
+        .unwrap_or_else(|error| panic!("json output did not parse: {error}"))
 }
 
 fn disabled_bundles_json(home: &Path) -> serde_json::Value {
@@ -413,17 +418,29 @@ fn import_directory_and_zip_show_up_in_skills_list() {
     let home = SandboxHome::new("import-list");
     let dir = fixture_skill_dir(home.path());
     let stdout = run_ok(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
-    assert!(stdout.contains(FIXTURE_DIR_SKILL), "stdout: {stdout}");
-    assert!(stdout.contains("kind=skill"), "stdout: {stdout}");
+    assert!(
+        stdout.contains(FIXTURE_DIR_SKILL),
+        "skills list should mention the imported directory skill"
+    );
+    assert!(
+        stdout.contains("kind=skill"),
+        "skills list should mark the entry kind=skill"
+    );
 
     let zip = fixture_skill_zip(home.path());
     let stdout = run_ok(&["pinvoy", "plugins", "import", zip.to_str().unwrap()]);
-    assert!(stdout.contains(FIXTURE_ZIP_SKILL), "stdout: {stdout}");
+    assert!(
+        stdout.contains(FIXTURE_ZIP_SKILL),
+        "skills list should mention the imported zip skill"
+    );
 
     let human = run_ok(&["pinvoy", "plugins", "skills", "list"]);
     assert!(human.contains(FIXTURE_DIR_SKILL));
     assert!(human.contains(FIXTURE_ZIP_SKILL));
-    assert!(human.contains("uploaded"), "human: {human}");
+    assert!(
+        human.contains("uploaded"),
+        "skills list should mark imported skills uploaded"
+    );
 
     let installed_only = run_ok(&["pinvoy", "plugins", "skills", "list", "--installed-only"]);
     assert!(installed_only.contains(FIXTURE_DIR_SKILL));
@@ -447,7 +464,10 @@ fn import_md_file_with_and_without_frontmatter() {
     let named = home.path().join("contract-md-skill.md");
     std::fs::write(&named, "---\nname: contract-md-skill\n---\nbody").unwrap();
     let stdout = run_ok(&["pinvoy", "plugins", "import", named.to_str().unwrap()]);
-    assert!(stdout.contains("contract-md-skill"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("contract-md-skill"),
+        "import output should mention the skill id from the file name"
+    );
 
     // No frontmatter name: the stem is sanitized into the fallback id
     // ("plain notes" → "plain-notes"); import without an injected name would
@@ -455,7 +475,41 @@ fn import_md_file_with_and_without_frontmatter() {
     let plain = home.path().join("plain notes.md");
     std::fs::write(&plain, "just some body text").unwrap();
     let stdout = run_ok(&["pinvoy", "plugins", "import", plain.to_str().unwrap()]);
-    assert!(stdout.contains("plain-notes"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("plain-notes"),
+        "import output should mention the sanitized fallback id"
+    );
+}
+
+/// Regression: two directories whose names sanitize to the generic "skill"
+/// fallback (pure non-ASCII names) must not collapse onto one constant id.
+/// The wrapper's anti-collision branch hashes the RAW name (GUI FNV collision
+/// defense); feeding it the pre-sanitized name hashed the constant "skill"
+/// instead, so the second import failed with an id-exists error.
+#[test]
+fn import_directories_with_non_ascii_names_get_distinct_fallback_ids() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("import-nonascii-dirs");
+
+    let mut ids = Vec::new();
+    for name in ["技能一", "技能二"] {
+        let dir = home.path().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        // No frontmatter name: the fallback id must derive from the raw
+        // directory name, so the bodies stay distinct too.
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("body for {name} without a frontmatter name"),
+        )
+        .unwrap();
+        let value = run_json(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
+        ids.push(value["id"].as_str().expect("string id").to_owned());
+    }
+    assert_ne!(ids[0], ids[1], "distinct names must yield distinct ids");
+    assert!(
+        ids[0].starts_with("skill-") && ids[1].starts_with("skill-"),
+        "pure non-ASCII names must land on the skill-<hash> fallback form"
+    );
 }
 
 #[test]
@@ -570,7 +624,7 @@ fn import_directory_counts_root_skill_md_once() {
         .expect("valid command");
     match execute(parsed) {
         Ok(outcome) => {
-            assert_eq!(outcome.exit_code, ExitCode::Success, "stdout: {outcome:?}");
+            assert_eq!(outcome.exit_code, ExitCode::Success);
         }
         Err(error) => assert!(
             !error
@@ -657,7 +711,10 @@ fn import_directory_skips_fifo_entries() {
     assert!(status.success(), "mkfifo failed");
 
     let stdout = run_ok(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
-    assert!(stdout.contains("fifo-dir-skill"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("fifo-dir-skill"),
+        "import output should mention the skill from the fifo dir"
+    );
 }
 
 #[test]
@@ -677,7 +734,10 @@ fn meta_updates_upload_package_and_rejects_preset() {
         "--description",
         "Updated description",
     ]);
-    assert!(stdout.contains("display meta"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("display meta"),
+        "meta output should confirm the display meta update"
+    );
 
     let bundles: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(home.path().join("marketplace/bundles.json")).unwrap(),
@@ -715,19 +775,21 @@ fn disable_enable_scope_round_trip_persists_disabled_bundles_json() {
         "pinvoy", "plugins", "disable", "weather", "--scope", "plain",
     ]);
     let file = disabled_bundles_json(home.path());
-    assert_eq!(
-        file["scopes"]["plain"],
-        serde_json::json!(["weather"]),
-        "file: {file}"
-    );
+    assert_eq!(file["scopes"]["plain"], serde_json::json!(["weather"]));
 
     run_ok(&["pinvoy", "plugins", "disable", "weather", "--scope", "code"]);
     let file = disabled_bundles_json(home.path());
     // Uninitialized code scope defaults to deny-all (builtin CLI connector
     // ids included); disabling weather freezes that list plus weather.
     let code = file["scopes"]["code"].as_array().unwrap();
-    assert!(code.contains(&serde_json::json!("weather")), "file: {file}");
-    assert!(code.contains(&serde_json::json!("feishu")), "file: {file}");
+    assert!(
+        code.contains(&serde_json::json!("weather")),
+        "disabled code scope should record weather"
+    );
+    assert!(
+        code.contains(&serde_json::json!("feishu")),
+        "disabled code scope should keep the builtin feishu connector"
+    );
 
     // Default scope is `both`.
     run_ok(&["pinvoy", "plugins", "disable", "obsidian"]);
@@ -745,7 +807,10 @@ fn disable_enable_scope_round_trip_persists_disabled_bundles_json() {
     assert!(plain.contains(&serde_json::json!("obsidian")));
 
     let stdout = run_ok(&["pinvoy", "plugins", "enable", "obsidian", "--scope", "code"]);
-    assert!(stdout.contains("scope=code"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("scope=code"),
+        "enable output should confirm scope=code"
+    );
 }
 
 // `ima-skills` is claimed by the `ima` package inside the storage layer, so
@@ -769,7 +834,7 @@ fn toggles_verify_against_the_owner_package_for_remapped_ids() {
     assert_eq!(
         disabled["persistence_verified"],
         serde_json::json!(true),
-        "disable of a remapped id is exactly verifiable: {disabled}"
+        "disable of a remapped id is exactly verifiable"
     );
     assert_eq!(
         disabled_bundles_json(home.path())["scopes"]["plain"],
@@ -788,7 +853,7 @@ fn toggles_verify_against_the_owner_package_for_remapped_ids() {
     assert_eq!(
         enabled["persistence_verified"],
         serde_json::json!(true),
-        "enable of a remapped id is exactly verifiable: {enabled}"
+        "enable of a remapped id is exactly verifiable"
     );
     assert_eq!(
         disabled_bundles_json(home.path())["scopes"]["plain"],
@@ -804,7 +869,10 @@ fn project_skills_round_trip() {
 
     assert!(!disabled_bundles_json_exists(home.path()));
     let stdout = run_ok(&["pinvoy", "plugins", "project-skills", "on"]);
-    assert!(stdout.contains("enabled"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("enabled"),
+        "project-skills on should confirm enabled"
+    );
     assert_eq!(
         disabled_bundles_json(home.path())["project_skills_enabled"],
         serde_json::json!(true)
@@ -832,10 +900,7 @@ fn tools_list_shows_embedded_catalog_with_installed_state() {
 
     let human = run_ok(&["pinvoy", "plugins", "tools", "list"]);
     for known in ["weather", "qcc", "obsidian", "pptx"] {
-        assert!(
-            human.contains(known),
-            "catalog should list {known}: {human}"
-        );
+        assert!(human.contains(known), "catalog should list {known}");
     }
     assert!(!human.contains("installed\t"), "nothing installed yet");
 
@@ -863,7 +928,7 @@ fn tools_list_shows_embedded_catalog_with_installed_state() {
     let installed_only = run_ok(&["pinvoy", "plugins", "tools", "list", "--installed-only"]);
     assert!(
         installed_only.is_empty(),
-        "nothing installed: {installed_only}"
+        "installed-only list must be empty before any install"
     );
 }
 
@@ -873,10 +938,16 @@ fn tools_install_uninstall_round_trip_is_hermetic_for_manifest_only_packages() {
     let home = SandboxHome::new("tools-roundtrip");
 
     let stdout = run_ok(&["pinvoy", "plugins", "tools", "install", "qcc"]);
-    assert!(stdout.contains("installed qcc"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("installed qcc"),
+        "tools install output should confirm installed qcc"
+    );
 
     let installed_only = run_ok(&["pinvoy", "plugins", "tools", "list", "--installed-only"]);
-    assert!(installed_only.contains("qcc"), "{installed_only}");
+    assert!(
+        installed_only.contains("qcc"),
+        "tools list should include installed qcc"
+    );
 
     // Destructive uninstall requires --yes (exit 2 before touching state).
     let (message, code) = run_err(&["pinvoy", "plugins", "tools", "uninstall", "qcc"]);
@@ -885,7 +956,10 @@ fn tools_install_uninstall_round_trip_is_hermetic_for_manifest_only_packages() {
 
     run_ok(&["pinvoy", "plugins", "tools", "uninstall", "qcc", "--yes"]);
     let installed_only = run_ok(&["pinvoy", "plugins", "tools", "list", "--installed-only"]);
-    assert!(!installed_only.contains("qcc"), "{installed_only}");
+    assert!(
+        !installed_only.contains("qcc"),
+        "tools list --installed-only should drop uninstalled qcc"
+    );
     assert!(!home.path().join("bundles").join("qcc").exists());
 }
 
@@ -967,7 +1041,10 @@ fn oauth_login_guards_and_cancel_behaviour() {
 
     // Cancel: a CLI process never owns an in-flight login.
     let stdout = run_ok(&["pinvoy", "plugins", "tools", "oauth-cancel", "qcc"]);
-    assert!(stdout.contains("no active oauth login"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("no active oauth login"),
+        "oauth-cancel output should report no active login"
+    );
 }
 
 /// OPT-IN (network + system credential store): `tools install weather` reads
@@ -989,7 +1066,10 @@ fn tools_install_with_secret_persists_credential() {
         "--secret",
         "AMAP_KEY=PINVOU_CLI_TEST_AMAP_KEY",
     ]);
-    assert!(stdout.contains("installed weather"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("installed weather"),
+        "tools install output should confirm installed weather"
+    );
 
     let (message, code) = run_err(&["pinvoy", "plugins", "tools", "install", "iwencai"]);
     assert_eq!(code, ExitCode::Failed);
@@ -1021,9 +1101,12 @@ fn tools_install_warns_when_remote_validation_is_skipped() {
     ]);
     assert!(
         stdout.contains("installed patsnap-search"),
-        "stdout: {stdout}"
+        "tools install output should confirm installed patsnap-search"
     );
-    assert!(stdout.contains("validation skipped"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("validation skipped"),
+        "tools install output should report validation skipped"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1075,7 +1158,10 @@ fn skills_preset_install_update_uninstall_round_trip() {
         "--yes",
     ]);
     let installed_only = run_ok(&["pinvoy", "plugins", "skills", "list", "--installed-only"]);
-    assert!(!installed_only.contains("visualizer"), "{installed_only}");
+    assert!(
+        !installed_only.contains("visualizer"),
+        "tools list --installed-only should drop uninstalled visualizer"
+    );
 }
 
 #[test]
@@ -1095,7 +1181,10 @@ fn export_installed_package_writes_zip_and_preset_is_rejected() {
         "--output",
         dest.to_str().unwrap(),
     ]);
-    assert!(stdout.contains("exported"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("exported"),
+        "export output should confirm the export"
+    );
     assert!(dest.is_file());
     assert!(std::fs::metadata(&dest).unwrap().len() > 0);
 
@@ -1129,7 +1218,7 @@ fn recycle_round_trip_via_fixture() {
     ]);
     let value = run_json(&["pinvoy", "plugins", "recycle", "list"]);
     let entries = value["recycled"].as_array().expect("recycled array");
-    assert_eq!(entries.len(), 1, "value: {value}");
+    assert_eq!(entries.len(), 1, "exactly one recycled entry");
     assert_eq!(entries[0]["id"], FIXTURE_ZIP_SKILL);
     assert_eq!(entries[0]["kind"], "skill");
     assert_eq!(entries[0]["package_missing"], serde_json::json!(false));
@@ -1215,7 +1304,10 @@ fn readiness_zero_state_reports_uninstalled_catalog() {
     let _home = SandboxHome::new("readiness");
 
     let human = run_ok(&["pinvoy", "plugins", "readiness"]);
-    assert!(human.contains("weather"), "human: {human}");
+    assert!(
+        human.contains("weather"),
+        "readiness output should mention the weather tool"
+    );
 
     let value = run_json(&["pinvoy", "plugins", "readiness"]);
     let bundles = value["bundles"].as_array().expect("bundles array");
@@ -1224,21 +1316,21 @@ fn readiness_zero_state_reports_uninstalled_catalog() {
         assert_eq!(
             bundle["installed"],
             serde_json::json!(false),
-            "zero state: {bundle}"
+            "zero state: catalog bundles are uninstalled"
         );
         // Registry readiness for credential-free packages is `ready` even
         // when uninstalled (GUI bundle_readiness derives the same value);
         // packages with required credentials report missing_credentials.
         if bundle["ready"] == serde_json::json!(true) {
-            assert_eq!(bundle["reason"], serde_json::Value::Null, "{bundle}");
+            assert_eq!(bundle["reason"], serde_json::Value::Null);
         } else {
             assert!(
                 bundle["reason"].is_string(),
-                "not-ready bundles carry a reason: {bundle}"
+                "not-ready bundles carry a reason"
             );
         }
         for field in ["bundle_id", "kind", "installed", "ready", "reason"] {
-            assert!(bundle.get(field).is_some(), "missing {field}: {bundle}");
+            assert!(bundle.get(field).is_some(), "missing {field}");
         }
     }
     let weather = bundles
@@ -1249,7 +1341,7 @@ fn readiness_zero_state_reports_uninstalled_catalog() {
     assert_eq!(
         weather["reason"],
         serde_json::json!("missing_credentials"),
-        "weather requires AMAP_KEY: {weather}"
+        "weather requires AMAP_KEY"
     );
     // Credential-free remote MCP is registry-ready though uninstalled.
     let canva = bundles

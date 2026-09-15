@@ -82,7 +82,7 @@
 //! commands open it WITHOUT the GUI's startup recovery, so inspecting the
 //! store cannot degrade an import a live desktop-app process is still
 //! running. The write/maintenance commands (scan start, collection
-//! mutations, add-sources, resume/retry/cancel) keep recovery, which
+//! delete/add-sources, resume/retry/cancel) keep recovery, which
 //! converts `preparing`/`running` jobs to interrupted/resumable — including
 //! a job that a live desktop-app process is executing RIGHT NOW (there is
 //! no cross-process owner heartbeat in the job store). Recovery itself is
@@ -1018,7 +1018,9 @@ fn collections_create(
     description: Option<&str>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    let service = open_service_recovering()?;
+    // Pure L1 CRUD never touches import jobs, so it must not run the boot
+    // recovery that wedges a live desktop-app import to interrupted.
+    let service = open_service()?;
     let id = service
         .l1()
         .create_collection(name, category, description)
@@ -1040,7 +1042,8 @@ fn collections_update(
     description: Option<String>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    let service = open_service_recovering()?;
+    // Same as create: pure L1 CRUD, no job reconciliation, no recovery.
+    let service = open_service()?;
     let collections = service
         .l1()
         .list_collections()
@@ -1096,9 +1099,20 @@ fn collections_delete(id: i64, output: OutputMode) -> Result<CliOutcome, CliErro
     // The mount table lives in the app's in-process session memory, so this
     // store-level sweep is empty in a one-shot CLI process; mounted
     // collections in a running desktop app are cleaned up on its next mode
-    // load, not here.
-    let store = open_store()?;
-    let unmounted = store.remove_mounted_collection_from_all(id);
+    // load, not here. Best-effort: the collection is already deleted, so a
+    // session-store failure must not turn the outcome into a failure (an
+    // exit 1 after the destructive step would claim the delete did not
+    // happen).
+    let unmounted = match open_store() {
+        Ok(store) => store.remove_mounted_collection_from_all(id),
+        Err(error) => {
+            eprintln!(
+                "warning: knowledge collections delete: could not sweep session mounts for \
+                 collection {id}: {error:#}"
+            );
+            Vec::new()
+        }
+    };
     let mut human = format!("deleted collection {id}");
     if !unmounted.is_empty() {
         human.push_str(&format!("\nunmounted from {} session(s)", unmounted.len()));
@@ -1135,6 +1149,10 @@ fn collections_add_sources(
         }
         Err(error) => return Err(feature_error("collections add-sources", error)),
     }
+    // `start_index` falls back to `index_status()` when the job create or
+    // the follow-up state read fails; the reported job must then not be
+    // passed off as the fresh import.
+    let previous_job = service.index_status().job_id;
     let state = service.start_index(id, paths);
     // Upstream quirk: any resumable job short-circuits start_index and the
     // requested sources are silently dropped — a fresh job reports
@@ -1150,6 +1168,19 @@ fn collections_add_sources(
              `pinvou knowledge index status`, resume or cancel it first, then re-run this \
              command)",
             state.collection_id
+        )));
+    }
+    // Success requires a genuinely new job (or one demonstrably in flight);
+    // the pre-call latest job re-reported in a terminal phase means no
+    // import was created and the requested sources were never enqueued.
+    if state.job_id == previous_job
+        && !matches!(state.phase.as_str(), "preparing" | "running" | "parsing")
+    {
+        return Err(CliError::failed(format!(
+            "knowledge index start failed: collection {id} has no freshly created index \
+             job (latest: {}, phase: {}); the requested sources were not enqueued",
+            state.job_id.as_deref().unwrap_or("none"),
+            state.phase
         )));
     }
     index_started("index job", Ok(state), output)
@@ -1242,8 +1273,11 @@ fn index_status(job_id: Option<&str>, output: OutputMode) -> Result<CliOutcome, 
 /// GUI `kb_index_cancel` targets the active/latest job; refuse when the
 /// caller named a different one so the CLI never cancels the wrong job.
 fn index_cancel(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let service = open_service_recovering()?;
-    let latest = service.index_status();
+    // Validate the named id BEFORE the recovering open: boot recovery flips
+    // every preparing/running job to interrupted — including one a live
+    // desktop-app process is still importing — so a wrong id must fail
+    // without ever running it.
+    let latest = open_service()?.index_status();
     match &latest.job_id {
         Some(active) if active == job_id => {}
         Some(active) => {
@@ -1269,6 +1303,7 @@ fn index_cancel(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError
     // real signal, a finished job (done/cancelled) takes the same call
     // without anything to signal.
     let was_active = latest.running || latest.resumable;
+    let service = open_service_recovering()?;
     service
         .cancel_index()
         .map_err(|error| feature_error("index cancel", error))?;
@@ -1332,7 +1367,19 @@ fn index_failed(
     let service = open_service()?;
     let page = service
         .failed_index_files(job_id, offset, limit.unwrap_or(50))
-        .map_err(|error| feature_error("index failed", error))?;
+        .map_err(|error| {
+            // Upstream `ImportJobStore::failed_files_page` answers an unknown
+            // job id with rusqlite's `QueryReturnedNoRows`; name the real
+            // cause instead of leaking the raw driver message (the same code
+            // `index cancel` uses).
+            if error.contains("Query returned no rows") {
+                CliError::failed(format!(
+                    "knowledge_index_job_not_found: no index job {job_id} exists"
+                ))
+            } else {
+                feature_error("index failed", error)
+            }
+        })?;
     let mut lines = if page.files.is_empty() {
         vec![format!("no failed files for job {job_id}")]
     } else {

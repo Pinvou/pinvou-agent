@@ -176,6 +176,12 @@ pub fn parse(values: &[String]) -> Result<SessionsCommand, CliError> {
             })
         }
         "export" => {
+            if rest.first().is_none() {
+                // Missing id: show the export-specific usage so the global
+                // --output collision note is disclosed at the point of
+                // invocation (see EXPORT_USAGE).
+                return Err(CliError::usage(EXPORT_USAGE));
+            }
             let id = require_id(rest.first())?;
             let (options, _) = parse_flags(&rest[1..], EXPORT_OPTIONS, &[])?;
             let format = match option(&options, "--format") {
@@ -209,6 +215,17 @@ pub fn parse(values: &[String]) -> Result<SessionsCommand, CliError> {
 }
 
 const USAGE: &str = "usage: pinvou sessions <list|show|rename|pin|unpin|archive|restore|delete|export|timeline|subagents|folder>";
+
+/// Export-specific usage. The note discloses the global `--output` scan:
+/// `parse_args` strips `--output json|human` ANYWHERE in argv (lib.rs leaves
+/// only non-mode values for the subcommand, and the `./` workaround lives
+/// only in a code comment there), so `sessions export s-1 --output json`
+/// silently becomes JSON stdout instead of writing a file named "json".
+const EXPORT_USAGE: &str = "usage: pinvou sessions export <id> [--format markdown|json] \
+[--output PATH]\n\
+note: the global --output flag claims the values 'json' and 'human' anywhere in argv, so \
+`--output json` prints JSON stdout instead of writing a file named 'json'; spell such a \
+destination as --output ./json (or use any other path)";
 
 fn require_id(value: Option<&String>) -> Result<String, CliError> {
     let id = value
@@ -894,6 +911,17 @@ mod tests {
         // quotes before argv).
         let error = parse(&["rename", "s-1", "--limit"]).unwrap_err();
         assert!(error.to_string().contains("plain title"), "{error}");
+    }
+
+    #[test]
+    fn export_usage_discloses_the_global_output_collision() {
+        // `sessions export --output json` silently flips the GLOBAL output
+        // mode to json instead of writing a file named "json"; the export
+        // usage text must surface the ./ workaround at the point of
+        // invocation instead of leaving it as a lib.rs code comment.
+        let error = parse(&["export"]).unwrap_err();
+        assert_eq!(error.exit_code(), crate::ExitCode::Usage);
+        assert!(error.to_string().contains("--output ./json"), "{error}");
     }
 
     #[test]

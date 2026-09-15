@@ -665,7 +665,8 @@ fn tools_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome
         "uninstalled"
     };
     let oauth_note = if keeps_oauth_tokens {
-        "\nnote: stored OAuth tokens for this tool were kept; a reinstall stays authorized"
+        "\nnote: if this tool was authorized, its stored OAuth tokens were kept; a \
+         reinstall stays authorized"
     } else {
         ""
     };
@@ -929,7 +930,12 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
             ))
         })?;
         if frontmatter_name(&skill_md).is_none() {
-            let wrapped = wrap_markdown_skill(&skill_md, &sanitize_skill_name(&display));
+            // The RAW name, not the sanitized form: the anti-collision branch
+            // inside wrap_markdown_skill hashes it, so directories whose
+            // names sanitize to the same generic "skill" (any pure non-ASCII
+            // name) still get distinct `skill-<hash>` ids (GUI FNV collision
+            // defense) instead of collapsing onto one constant id.
+            let wrapped = wrap_markdown_skill(&skill_md, &display);
             entries.retain(|(name, _)| name != "SKILL.md");
             entries.push(("SKILL.md".to_owned(), wrapped.into_bytes()));
         }
@@ -967,6 +973,7 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
         ));
     };
     let import_path;
+    let mut temp_zip: Option<TempWrapperZip> = None;
     if let Some((tmp, bytes)) = &wrapper {
         // Exclusive create + write through the same handle: the path lives
         // in the shared temp directory, so a pre-planted symlink or file
@@ -982,19 +989,23 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
                     tmp.display()
                 ))
             })?;
+        // Armed before the first write, so a failed write_all (or any other
+        // early return below) removes the just-created wrapper via Drop.
+        let guard = TempWrapperZip { path: tmp.clone() };
         std::io::Write::write_all(&mut file, bytes).map_err(|error| {
             CliError::failed(format!(
                 "plugins import: cannot write temporary zip: {error}"
             ))
         })?;
+        temp_zip = Some(guard);
         import_path = tmp.clone();
     } else {
         import_path = path.to_path_buf();
     }
     let result = plugin_import::import_plugin_package(&import_path.to_string_lossy(), &display);
-    if wrapper.is_some() {
-        let _ = std::fs::remove_file(&import_path); // temp wrapper: clean up on all paths
-    }
+    // Dropping the armed guard removes the wrapper; every earlier failure
+    // path already removed it through Drop.
+    drop(temp_zip);
     let report = result.map_err(|error| feature_error("import", &display, error))?;
     // Upload safety default (GUI parity): imported packages start disabled in
     // initialized DenyAll scopes until explicitly enabled.
@@ -1275,7 +1286,6 @@ fn set_enabled(
     let stripped = id.strip_prefix("skill:").unwrap_or(id);
     let known = installed.iter().any(|existing| existing == id)
         || installed.iter().any(|existing| existing == stripped);
-    let mut unverified = Vec::new();
     // Storage keys on the package id the raw id remaps to (a `skill:`- or
     // companion-owned skill id maps to its owner package), so the mutation
     // and the read-back verification must both use that id: comparing the
@@ -1303,39 +1313,32 @@ fn set_enabled(
         let reloaded =
             pinvou3_lib::features::marketplace::load_disabled_bundles_for(connector_scope);
         let present = reloaded.iter().any(|existing| existing == &packages);
-        if enabled {
-            if present {
-                return Err(CliError::failed(format!(
-                    "plugins {action}: could not persist {id} for scope {} (the storage \
-                     write failed or was dropped; the id is still active)",
-                    connector_scope.as_str()
-                )));
-            }
-        } else if !present && !unverified.contains(&connector_scope.as_str().to_owned()) {
-            unverified.push(connector_scope.as_str().to_owned());
+        // A lost write is risky in both directions: an enable that did not
+        // stick re-activates the package, and a lost disable leaves it
+        // ACTIVE while the caller sees success. Both fail hard instead of
+        // reporting an unverified success.
+        if present == enabled {
+            return Err(CliError::failed(format!(
+                "plugins {action}: could not persist {id} for scope {} (the storage \
+                 write failed or was dropped; the id is still active)",
+                connector_scope.as_str()
+            )));
         }
     }
-    let mut value = serde_json::json!({
+    // Reaching this point means every scope's read-back matched the requested
+    // state; a mismatch hard-failed above.
+    let value = serde_json::json!({
         "id": id,
         "action": action,
         "scope": scope.label(),
         "known_id": known,
+        "persistence_verified": true,
     });
     let mut human = format!("{action} {id} (scope={})", scope.label());
     if !known {
         human.push_str(
             "\nwarning: id not found in the installed catalog; the toggle was recorded anyway",
         );
-    }
-    if !unverified.is_empty() {
-        value["persistence_verified"] = serde_json::json!(false);
-        human.push_str(&format!(
-            "\nwarning: could not verify persistence for scope(s) {} (the storage write \
-             may have been dropped or overwritten)",
-            unverified.join(", ")
-        ));
-    } else {
-        value["persistence_verified"] = serde_json::json!(true);
     }
     Ok(success(render(output, human, &value)))
 }
@@ -1383,6 +1386,20 @@ fn temp_zip_path(label: &str) -> PathBuf {
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
     std::env::temp_dir().join(format!("{label}-{}-{nanos}.zip", std::process::id()))
+}
+
+/// Removes a temporary wrapper zip when dropped. Armed right after the
+/// exclusive create and dropped only once the import no longer needs the
+/// file, so a failed write (or any early return in between) cannot leave
+/// `pinvou-cli-import-*.zip` debris in the shared temp directory.
+struct TempWrapperZip {
+    path: PathBuf,
+}
+
+impl Drop for TempWrapperZip {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 /// The import-limit rejection every import input shares.

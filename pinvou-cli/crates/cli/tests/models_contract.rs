@@ -143,6 +143,17 @@ fn models_rejects_unknown_subcommands_and_options() {
     assert!(usage_error(&["pinvoy", "models", "show", "a", "b"]).contains("one id"));
 }
 
+/// Duplicate boolean flags exit 2 like duplicate value flags and like every
+/// `support::parse_family_flags` family.
+#[test]
+fn models_reject_duplicate_boolean_flags() {
+    let message = usage_error(&["pinvoy", "models", "remove", "m1", "--yes", "--yes"]);
+    assert!(
+        message.contains("--yes"),
+        "the duplicate-flag usage error must name the flag"
+    );
+}
+
 #[test]
 fn models_add_rejects_bad_presets_and_efforts() {
     let message = usage_error(&[
@@ -497,6 +508,9 @@ fn models_list_reports_fresh_default_model() {
     assert_eq!(models[0]["preset"], default_preset_str());
     assert_eq!(models[0]["active"], true);
     assert_eq!(models[0]["has_secret"], false);
+    // The GUI list DTO's credential_state: a keyless default model is
+    // "missing" after the safe-prefs refresh.
+    assert_eq!(models[0]["credential_state"], "missing");
     assert!(json.contains("has_secret"), "field present");
     assert!(
         !json.to_lowercase().contains("api_key"),
@@ -504,7 +518,27 @@ fn models_list_reports_fresh_default_model() {
     );
 
     let human = run_ok(&["pinvoy", "models", "list"]);
-    assert!(human.contains("*default"), "active marker line: {human}");
+    assert!(
+        human.contains("*default"),
+        "models list should mark the active model"
+    );
+
+    // credential_state mirrors the GUI across states: a non-empty
+    // DEEPSEEK_API_KEY env override marks every model env_override in the
+    // list JSON without touching the OS keychain (the prefs layer's
+    // refresh_credential_states_with_store short-circuits on it).
+    let previous = std::env::var_os("DEEPSEEK_API_KEY");
+    unsafe { std::env::set_var("DEEPSEEK_API_KEY", "pinvou-cli-contract-override") };
+    let json = run_ok(&["pinvoy", "--output", "json", "models", "list"]);
+    match previous {
+        Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY", value) },
+        None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY") },
+    }
+    let value: serde_json::Value = serde_json::from_str(&json).expect("single-line json");
+    assert_eq!(
+        value["models"][0]["credential_state"], "env_override",
+        "a set DEEPSEEK_API_KEY must mark models env_override in list json"
+    );
 }
 
 fn default_preset_str() -> String {
@@ -621,7 +655,10 @@ fn models_add_use_show_remove_round_trip_without_secrets() {
         .expect("prints the new id")
         .trim()
         .to_owned();
-    assert!(added_id.starts_with("m_"), "GUI id scheme: {added_id}");
+    assert!(
+        added_id.starts_with("m_"),
+        "models add should print an m_-prefixed GUI id"
+    );
 
     // list shows the entry with the requested limits.
     let json = run_ok(&["pinvoy", "--output", "json", "models", "list"]);
@@ -637,6 +674,7 @@ fn models_add_use_show_remove_round_trip_without_secrets() {
     assert_eq!(entry["model"], "deepseek-v4-pro");
     assert_eq!(entry["base_url"], "https://api.deepseek.com");
     assert_eq!(entry["has_secret"], false);
+    assert_eq!(entry["credential_state"], "missing");
     assert_eq!(entry["active"], false);
 
     // use -> active marker flips and prefs state matches.
@@ -649,12 +687,29 @@ fn models_add_use_show_remove_round_trip_without_secrets() {
         Some(added_id.as_str())
     );
     let json = run_ok(&["pinvoy", "--output", "json", "models", "list"]);
-    assert!(json.contains(&format!(r#""active":true"#)), "{json}");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("single-line json");
+    let active_entry = value["models"]
+        .as_array()
+        .expect("models array")
+        .iter()
+        .find(|model| model["id"] == added_id.as_str())
+        .expect("added model listed")
+        .clone();
+    assert_eq!(
+        active_entry["active"], true,
+        "models list json should mark the model active"
+    );
 
     // show prints config, never a key.
     let human = run_ok(&["pinvoy", "models", "show", &added_id]);
-    assert!(human.contains("preset: deepseek"), "{human}");
-    assert!(human.contains("has_secret: false"), "{human}");
+    assert!(
+        human.contains("preset: deepseek"),
+        "models show should print the preset line"
+    );
+    assert!(
+        human.contains("has_secret: false"),
+        "models show should report has_secret: false"
+    );
     assert!(
         !human.contains("api_key"),
         "no api_key line without --reveal-key"
@@ -663,7 +718,10 @@ fn models_add_use_show_remove_round_trip_without_secrets() {
     // remove enforces --yes and the min-1 rule.
     let (message, code) = run_err(&["pinvoy", "models", "remove", &added_id]);
     assert_eq!(code, ExitCode::Usage);
-    assert!(message.contains("--yes"), "{message}");
+    assert!(
+        message.contains("--yes"),
+        "the --yes refusal must name the flag"
+    );
     assert!(
         load_prefs().model_by_id(&added_id).is_some(),
         "not removed yet"
@@ -679,8 +737,40 @@ fn models_add_use_show_remove_round_trip_without_secrets() {
     // the GUI's min-1 rule.
     let (message, code) = run_err(&["pinvoy", "models", "remove", "default", "--yes"]);
     assert_eq!(code, ExitCode::Usage);
-    assert!(message.contains("last remaining model"), "{message}");
+    assert!(
+        message.contains("last remaining model"),
+        "the min-1 refusal must keep the GUI wording"
+    );
     assert!(load_prefs().model_by_id("default").is_some());
+}
+
+/// The min-1-model rule is classified structurally before the remove
+/// transaction: removing the only model is refused with a usage error and
+/// nothing is written.
+#[test]
+fn models_remove_refuses_the_only_model_without_changes() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("remove-only-model");
+    let before = std::fs::read_to_string(home_settings_path()).unwrap_or_default();
+    let (message, code) = run_err(&["pinvoy", "models", "remove", "default", "--yes"]);
+    assert_eq!(
+        code,
+        ExitCode::Usage,
+        "the min-1 rule must be a usage error"
+    );
+    assert!(
+        message.contains("cannot remove the last"),
+        "the refusal must reuse the GUI min-1 wording"
+    );
+    assert!(
+        load_prefs().model_by_id("default").is_some(),
+        "the only model must survive the refused removal"
+    );
+    let after = std::fs::read_to_string(home_settings_path()).unwrap_or_default();
+    assert_eq!(
+        before, after,
+        "a refused removal must not write settings.json"
+    );
 }
 
 #[test]
@@ -724,8 +814,15 @@ fn models_add_set_active_and_unknown_ids() {
         let (message, code) = run_err(&command);
         // Unknown ids exit 1 like every other family: a lookup miss against
         // the live store is a runtime failure, not argv misuse.
-        assert_eq!(code, ExitCode::Failed, "{message}");
-        assert!(message.contains("model not found"), "{message}");
+        assert_eq!(
+            code,
+            ExitCode::Failed,
+            "unknown model ids must exit 1 (host failure)"
+        );
+        assert!(
+            message.contains("model not found"),
+            "unknown model ids must be reported as model not found"
+        );
     }
 }
 
@@ -757,7 +854,7 @@ fn models_add_reports_missing_secret_env_as_host_failure() {
     let written = std::fs::read_to_string(home_settings_path()).unwrap_or_default();
     assert!(
         !written.contains("deepseek-v4-pro"),
-        "no model may be added when secret resolution fails: {written}"
+        "no model may be added when secret resolution fails"
     );
 }
 
@@ -780,14 +877,24 @@ fn probe_local_refuses_non_loopback_urls_with_usage_error() {
         "http://example.invalid:8000/v1",
     ] {
         let (message, code) = run_err(&["pinvoy", "models", "probe-local", "--url", url]);
-        assert_eq!(code, ExitCode::Usage, "{message}");
-        assert!(message.contains("loopback"), "{message}");
+        assert_eq!(
+            code,
+            ExitCode::Usage,
+            "non-loopback probe-local urls must be usage errors"
+        );
+        assert!(
+            message.contains("loopback"),
+            "the refusal must name the loopback rule"
+        );
     }
 
     // Malformed URL is a usage error too.
     let (message, code) = run_err(&["pinvoy", "models", "probe-local", "--url", "not a url"]);
     assert_eq!(code, ExitCode::Usage);
-    assert!(message.contains("not a valid url"), "{message}");
+    assert!(
+        message.contains("not a valid url"),
+        "a malformed probe-local url must be reported as invalid"
+    );
 }
 
 #[test]
@@ -795,7 +902,10 @@ fn settings_search_list_reports_defaults() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("search-list");
     let human = run_ok(&["pinvoy", "settings", "search", "list"]);
-    assert!(human.contains("provider: bing"), "{human}");
+    assert!(
+        human.contains("provider: bing"),
+        "search list should default to provider bing"
+    );
     let json = run_ok(&["pinvoy", "--output", "json", "settings", "search", "list"]);
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["provider"], "bing");
@@ -814,7 +924,10 @@ fn bing_probe_hits_live_endpoint() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("ignored-bing-test");
     let stdout = run_ok(&["pinvoy", "settings", "search", "test", "bing"]);
-    assert!(stdout.contains("ok: true"), "{stdout}");
+    assert!(
+        stdout.contains("ok: true"),
+        "search test should report ok: true"
+    );
 }
 
 /// Opt-in against a local vLLM/Ollama/LM Studio server:
@@ -831,7 +944,10 @@ fn probe_local_identifies_local_server() {
         "--url",
         "http://127.0.0.1:8000/v1",
     ]);
-    assert!(stdout.contains("kind:"), "{stdout}");
+    assert!(
+        stdout.contains("kind:"),
+        "probe-local output should include a kind line"
+    );
 }
 
 /// The search provider enum surface the CLI validates against must stay the

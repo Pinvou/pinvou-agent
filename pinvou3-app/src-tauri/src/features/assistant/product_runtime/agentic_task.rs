@@ -59,13 +59,12 @@ const CANCEL_SETTLE_SECS: u64 = 30;
 /// harnesses with an output-inactivity watchdog do not kill long tasks.
 const HEARTBEAT_SECS: u64 = 10;
 
-// Attachment caps are the same constants `ProductHeadlessBackend` enforces on
-// its staged attachments — re-exported under the request-path names so the
-// two headless pipelines cannot drift apart silently.
-pub(crate) use super::headless_bridge::{
-    MAX_STAGED_ATTACHMENT_BYTES as MAX_ATTACHMENT_BYTES, MAX_STAGED_ATTACHMENTS as MAX_ATTACHMENTS,
-    MAX_STAGED_ATTACHMENTS_TOTAL_BYTES as MAX_ATTACHMENTS_TOTAL_BYTES,
-};
+/// Upper bound on `AgenticTaskRequest::attachments`, mirroring the staged
+/// attachment limit of `ProductHeadlessBackend` in `headless_bridge.rs`.
+pub const MAX_ATTACHMENTS: usize = 16;
+/// Per-attachment size cap in bytes (20 MiB), mirroring
+/// `ProductHeadlessBackend`'s staged attachment limit.
+pub const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 
 /// Turn mode for one agentic task. Serialized as a snake_case string
 /// (`"agent"` / `"plan"`). The default (`None` on the request) is
@@ -139,29 +138,27 @@ pub struct AgenticTaskRequest {
     pub session_id: Option<String>,
     /// Turn mode. `None` = [`AgenticTaskMode::Agent`] = today's behavior.
     /// `Plan` submits the same read-only plan turn the GUI produces in Plan
-    /// mode and persists the session mode through the GUI's per-session
-    /// lane, so reopening the session restores Plan for fresh and
-    /// caller-provided sessions alike (a persistence failure fails the run
-    /// before submit — reopening in the stale mode is the unsafe
-    /// divergence).
+    /// mode (the mode is carried on the send op itself, so no session-mode
+    /// sidecar write is required).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<AgenticTaskMode>,
-    /// Pin the session's model for this run, like the GUI per-session model
-    /// switch: validated against the configured model list
+    /// Pin the session's model, like the GUI per-session model switch:
+    /// validated against the configured model list
     /// (`UserPrefs::model_by_id`, the same check the `set_session_model`
     /// command performs), then bound through the eval model-selection route
-    /// for a fresh session or the GUI chip-switch path (sidecar write +
-    /// engine evict) for an existing session. Unknown model →
-    /// `agent_model_not_found`.
+    /// for a fresh session or the GUI chip-switch path (per-session sidecar
+    /// write + engine evict) for an existing session. The chip-switch
+    /// binding persists on the session: it is written during setup, so it
+    /// stays in force even if the run later fails or times out. Unknown
+    /// model → `agent_model_not_found`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
     /// Files attached to the prompt, processed by the GUI attachment
     /// pipeline: staged into the session ledger `attachments/` directory,
     /// ingested via `features/files::file_ingest`, and rendered with the same
-    /// product attachment text the GUI chat send uses. Limits are the staged
-    /// attachment caps shared with `ProductHeadlessBackend`: at most
-    /// [`MAX_ATTACHMENTS`] files, at most [`MAX_ATTACHMENT_BYTES`] each.
-    /// Missing path →
+    /// product attachment text the GUI chat send uses. Limits mirror
+    /// `ProductHeadlessBackend`: at most [`MAX_ATTACHMENTS`] files, at most
+    /// [`MAX_ATTACHMENT_BYTES`] each. Missing path →
     /// `agent_attachment_not_found`; over limits →
     /// `agent_attachment_too_many` / `agent_attachment_too_large`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -243,7 +240,10 @@ pub fn run_agentic_task_headless(request: AgenticTaskRequest) -> Result<AgenticT
 /// turn is submitted, a report is
 /// always returned (internal failures land in the `error` field); setup faults
 /// (request validation, model pin, session prepare, submit) propagate as `Err`
-/// instead — the CLI surfaces those as exit 1 without a report.
+/// instead — the CLI surfaces those as exit 1 without a report. A session
+/// freshly created by such a failed run is deleted best-effort with the same
+/// eval cleanup as `KEEP_SESSION=0`, so no empty eval-titled chat is left
+/// behind; caller-provided sessions are never auto-deleted.
 ///
 /// Persisting counts against the shared 50-session retention cap: when a
 /// fresh run's prepare-time save evicts chat sessions at the cap (pinned
@@ -275,17 +275,7 @@ pub async fn run_agentic_task(
     };
     let session_id = match request.session_id.as_deref() {
         Some(session_id) => session_id.to_owned(),
-        // Fresh ids persist for good now, so a recycled pid replaying the
-        // same counter must not silently overwrite a kept session's record
-        // (transcript loss, and the old pin would transfer to the new stub):
-        // regenerate until the id is free.
-        None => {
-            let mut session_id = fresh_session_id();
-            while store.chat_session_record_exists(&session_id) {
-                session_id = fresh_session_id();
-            }
-            session_id
-        }
+        None => fresh_session_id(),
     };
 
     // Execution root binding: the closure only matches this run's session id
@@ -386,28 +376,30 @@ pub async fn run_agentic_task(
     // or the setup timeout) carries no transcript to inspect: keeping it
     // would litter the shared store — and the GUI history — with zero-message
     // stubs, one eviction apiece in a failing batch. Those runs clean up
-    // after themselves regardless of `KEEP_SESSION` — where "never started"
-    // is decided on the durable record: a stub that already carries admitted
-    // messages is a started transcript and stays inspectable instead (see
-    // the cleanup branch below).
+    // after themselves regardless of `KEEP_SESSION`.
     //
     // A caller-provided `session_id` is never auto-deleted by THIS run, but
     // it is an ordinary chat session in the store: the 50-session retention
     // sweep can still evict it later exactly like any GUI chat session.
     // Only this run's eval observation mark is dropped, and the session is
     // left in place for the caller.
+    //
+    // One exception to keep-by-default: an `Err` outcome on a FRESHLY
+    // created session. The session was created by prepare under the eval
+    // factory title ("临时评测") and the turn never produced a report (the
+    // CLI rename never ran either — the CLI got `Err`), so keeping it would
+    // leave an empty eval-titled stray chat in the GUI's session list. Such
+    // a session is deleted through the exact cleanup the KEEP=0 branch uses
+    // (same order: schedule the late sweep, then the turn-gated delete).
+    // Both steps are best-effort and the delete result is discarded, so a
+    // failed cleanup never masks the original error returned below. Failures
+    // before prepare created anything degrade to a no-op: the delete of a
+    // not-yet-existing id fails with NotFound and the late sweep of its
+    // (absent) directory converges immediately.
     let keep_session = keep_session_from_env();
     if existing_session {
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
-        // Reclaim the engine like the fresh+keep branch below. The process
-        // exits right after this (`run_windowless_host` calls `exit(0)`), and
-        // without the reclaim there is no shell-scope finalize, no Shutdown
-        // and no forwarder drain: background shell jobs the turn started are
-        // orphaned onto the user's machine, and a pending ledger/artifact
-        // write is dropped mid-flight. The session record is untouched —
-        // eviction only tears down the in-memory engine.
-        runtime.pool.evict(&session_id).await;
-    } else if !submitted {
+    } else if !submitted || outcome.is_err() || !keep_session {
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
         // The submit boundary is not atomic with transcript admission: the
         // engine lazily spawns on submit and can durably admit the user
@@ -573,45 +565,9 @@ fn retention_eviction_warning(evicted: &[String]) -> Option<String> {
 
 /// Validate the static attachment limits of an agentic request: at most
 /// [`MAX_ATTACHMENTS`] entries, each resolving to a regular file of at most
-/// [`MAX_ATTACHMENT_BYTES`] bytes (the staged attachment caps shared with
-/// `ProductHeadlessBackend`). Symlinks to regular files are accepted,
-/// matching the GUI staging path (`stage_file_in_workspace` copies content).
-/// Refuses `remove_after_ingest` when the run is also configured to delete its
-/// own session afterwards, because together they destroy both copies of the
-/// caller's file.
-///
-/// `remove_after_ingest` is safe only because the staged copy outlives the
-/// call: staging writes into `sessions/<id>/workspace/attachments/`, and the
-/// source is unlinked *after* submit returns, so the file still exists inside
-/// a transcript the caller can open. Under the legacy one-shot cleanup
-/// (`PINVOU3_AGENT_TASK_KEEP_SESSION` falsy — the setting batch runs are told
-/// to use) that premise is false: the `submitted && !keep_session` arm
-/// `remove_dir_all`s the whole session directory, taking the staged copy with
-/// it moments after the source was deleted. The file is then gone from both
-/// places, unrecoverably.
-///
-/// The two flags express contradictory intents — "hand this file over and keep
-/// only your copy" versus "keep nothing" — so this refuses up front rather
-/// than picking one silently. Checked before anything is staged or deleted.
-fn refuse_ingest_without_a_surviving_copy(
-    attachments: &[AgenticTaskAttachment],
-    keep_session: bool,
-) -> Result<()> {
-    if keep_session {
-        return Ok(());
-    }
-    if let Some(attachment) = attachments.iter().find(|a| a.remove_after_ingest) {
-        anyhow::bail!(
-            "agent_attachment_ingest_would_lose_the_file: '{}' sets remove_after_ingest, but \
-             PINVOU3_AGENT_TASK_KEEP_SESSION is falsy, so this run deletes its own session \
-             (and the staged copy) right after the turn — the source and the copy would both \
-             be destroyed. Drop remove_after_ingest, or let the session persist.",
-            attachment.path.display()
-        );
-    }
-    Ok(())
-}
-
+/// [`MAX_ATTACHMENT_BYTES`] bytes (mirroring `ProductHeadlessBackend`'s staged
+/// attachment limits). Symlinks to regular files are accepted, matching the
+/// GUI staging path (`stage_file_in_workspace` copies content).
 fn validate_attachments(attachments: &[AgenticTaskAttachment]) -> Result<()> {
     if attachments.len() > MAX_ATTACHMENTS {
         anyhow::bail!(
@@ -643,8 +599,9 @@ fn validate_attachments(attachments: &[AgenticTaskAttachment]) -> Result<()> {
         total_bytes += metadata.len();
     }
     // Same aggregate budget as `ProductHeadlessBackend`
-    // (MAX_ATTACHMENTS_TOTAL_BYTES = 100 MiB) — the per-file cap alone
+    // (MAX_STAGED_ATTACHMENTS_TOTAL_BYTES = 100 MiB) — the per-file cap alone
     // allowed 320 MiB of staged attachments.
+    const MAX_ATTACHMENTS_TOTAL_BYTES: u64 = 100 * 1024 * 1024;
     if total_bytes > MAX_ATTACHMENTS_TOTAL_BYTES {
         anyhow::bail!(
             "agent_attachment_too_large: attachments total {total_bytes} bytes (limit \
@@ -824,7 +781,9 @@ async fn run_turn(
             // creation would overwrite the transcript). A model pin goes
             // through the GUI chip-switch path (per-session sidecar write +
             // engine evict); the engine itself lazily spawns on submit,
-            // exactly like a GUI send.
+            // exactly like a GUI send. The sidecar write lands during this
+            // setup and persists on the session even if the later submit
+            // fails.
             if let Some(model_id) = request.model_id.as_deref() {
                 let previous = store.session_model_id(session_id);
                 runtime
@@ -908,16 +867,8 @@ async fn run_turn(
                     .context("persist session mode")?;
             }
         }
-        let (content, consumed_sources) =
-            prompt_with_attachments(store, session_id, request, existing_session).await?;
-        // Marks the point past which a deadline hit is genuinely ambiguous:
-        // the submit may already have admitted the turn, so the timeout arm
-        // must not roll the mode/model pins back. Everything before this —
-        // the pins themselves, the bind, and attachment staging, which is the
-        // slow part and the usual reason a small timeout fires — provably
-        // never reached the submit, and there the pins must be restored.
-        submit_entered.store(true, Ordering::SeqCst);
-        let handle = runtime
+        let content = prompt_with_attachments(store, session_id, request).await?;
+        runtime
             .submit(&TurnInput {
                 session_id: session_id.to_owned(),
                 content,
@@ -1175,8 +1126,7 @@ async fn prompt_with_attachments(
     store: &SessionStore,
     session_id: &str,
     request: &AgenticTaskRequest,
-    existing_session: bool,
-) -> Result<(String, Vec<std::path::PathBuf>)> {
+) -> Result<String> {
     if request.attachments.is_empty() {
         return Ok((request.prompt.clone(), Vec::new()));
     }
@@ -1350,18 +1300,25 @@ fn partial_turn_analysis(
     )
 }
 
-/// Mints the id for a fresh headless run.
-///
-/// The prefix comes from `HEADLESS_SESSION_PREFIX` rather than a literal:
-/// retention keys the separate headless eviction budget on it, so changing the
-/// format here without changing the sweep would silently put these sessions
-/// back in competition with the user's GUI chats.
+/// Fresh session id for one agentic run: `agentic_{pid}_{unix_millis}_{counter}`.
+/// The pid alone is not unique across time: OS pid reuse can hand a later
+/// process the same pid while the per-process counter restarts at 0, so the
+/// old `agentic_{pid}_{counter}` shape could reproduce an id that is still
+/// persisted weeks later, and `create_empty_with_id` would overwrite it
+/// without an existence check. The unix-millisecond component bounds a
+/// collision to same-millisecond reuse of both the pid and the counter. The
+/// id stays inside the session id alphabet `[A-Za-z0-9_-]` (see
+/// `features/sessions/validators.rs`), so the store accepts it unchanged.
 fn fresh_session_id() -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
+    let unix_millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
     format!(
-        "{}{}_{}",
-        crate::features::sessions::HEADLESS_SESSION_PREFIX,
+        "agentic_{}_{}_{}",
         std::process::id(),
+        unix_millis,
         NEXT.fetch_add(1, Ordering::Relaxed)
     )
 }
@@ -1373,7 +1330,7 @@ mod tests {
         AgenticToolEvent, DEFAULT_TIMEOUT_SECS, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS,
         MAX_ATTACHMENTS_TOTAL_BYTES, MAX_TIMEOUT_SECS, ensure_existing_chat_session,
         ensure_model_exists, ensure_stage_size, fresh_session_id, keep_session_from_env,
-        refuse_ingest_without_a_surviving_copy, retention_eviction_warning, validate_attachments,
+        retention_eviction_warning, validate_attachments,
     };
     use crate::features::assistant::attachments::{
         copy_bounded, stage_file_in_workspace_with_copier,
@@ -1466,13 +1423,6 @@ mod tests {
             // SAFETY: see above.
             unsafe { std::env::set_var("PINVOU3_AGENT_TASK_KEEP_SESSION", value) };
             assert!(keep_session_from_env(), "{value} must keep the session");
-        }
-        // Pinned exactness: comparison is ASCII case-insensitive WITHOUT
-        // trimming, and empty means keep — only the bare falsy tokens delete.
-        for value in [" 0", "0 ", "\tfalse", ""] {
-            // SAFETY: see above.
-            unsafe { std::env::set_var("PINVOU3_AGENT_TASK_KEEP_SESSION", value) };
-            assert!(keep_session_from_env(), "{value:?} must keep the session");
         }
         for value in ["0", "false", "no", "off", "FALSE", "Off"] {
             // SAFETY: see above.
@@ -1789,11 +1739,13 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
+        let _tmp_cleanup = TempDirGuard::new(tmp.clone());
         // SAFETY: ENV_LOCK held; env writes are serialized across tests.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let error = ensure_model_exists("definitely-missing-model").unwrap_err();
         assert!(error.to_string().contains("agent_model_not_found"));
-        // `_env` restores the captured PINVOU3_HOME on return or panic.
+        // `_tmp_cleanup` removes the scratch dir on return or panic;
+        // `_env` restores the captured PINVOU3_HOME.
     }
 
     #[test]
@@ -1806,6 +1758,7 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
+        let _tmp_cleanup = TempDirGuard::new(tmp.clone());
         // SAFETY: ENV_LOCK held; env writes are serialized across tests.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
@@ -2040,5 +1993,38 @@ mod tests {
         // 7 days; the CLI parse cap and the library clamp must stay in lockstep
         // so `Instant + Duration` can never overflow.
         assert_eq!(MAX_TIMEOUT_SECS, 7 * 24 * 60 * 60);
+    }
+
+    #[test]
+    fn fresh_session_id_keeps_store_alphabet_and_time_component() {
+        let first = fresh_session_id();
+        let second = fresh_session_id();
+        for id in [&first, &second] {
+            assert!(
+                id.starts_with("agentic_"),
+                "{id} must keep the agentic_ prefix"
+            );
+            assert!(
+                id.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
+                "{id} must stay inside the session id alphabet [A-Za-z0-9_-]"
+            );
+            // pid + unix millis + counter: the time component must be present
+            // so a later process reusing the pid (counter restarted at 0)
+            // cannot reproduce an id that is still persisted.
+            let parts: Vec<&str> = id.strip_prefix("agentic_").unwrap().split('_').collect();
+            assert_eq!(
+                parts.len(),
+                3,
+                "{id} must be agentic_<pid>_<unix_millis>_<counter>"
+            );
+            assert!(
+                parts[0].parse::<u32>().is_ok() && parts[1].parse::<u128>().is_ok(),
+                "{id} pid and unix-millis components must be numeric"
+            );
+        }
+        // The per-process counter keeps consecutive ids distinct even when
+        // both are generated within the same millisecond.
+        assert_ne!(first, second);
     }
 }

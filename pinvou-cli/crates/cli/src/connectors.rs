@@ -579,17 +579,23 @@ fn run_cli_bounded(
     // below) instead of joined unconditionally.
     let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
     let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
+    // Size-bound the drains like voice.rs's engine capture (8 MiB): the
+    // deadline above bounds the process but not the bytes — a chatty or
+    // hostile vendor CLI (or a descendant that inherited the pipes) must not
+    // be able to balloon the CLI's memory while the drain threads block on
+    // EOF. Normal output is far below the cap, so behavior is unchanged.
+    const MAX_VENDOR_OUTPUT_BYTES: u64 = 8 * 1024 * 1024;
     std::thread::spawn(move || {
         let mut bytes = Vec::new();
         if let Some(pipe) = stdout_pipe.as_mut() {
-            let _ = pipe.read_to_end(&mut bytes);
+            let _ = pipe.take(MAX_VENDOR_OUTPUT_BYTES).read_to_end(&mut bytes);
         }
         let _ = stdout_tx.send(String::from_utf8_lossy(&bytes).into_owned());
     });
     std::thread::spawn(move || {
         let mut bytes = Vec::new();
         if let Some(pipe) = stderr_pipe.as_mut() {
-            let _ = pipe.read_to_end(&mut bytes);
+            let _ = pipe.take(MAX_VENDOR_OUTPUT_BYTES).read_to_end(&mut bytes);
         }
         let _ = stderr_tx.send(String::from_utf8_lossy(&bytes).into_owned());
     });
@@ -607,8 +613,10 @@ fn run_cli_bounded(
                 // args can carry pairing/device material; redact heuristically
                 // (prefix-known or 24+-char mixed tokens pass through the
                 // shared redactor — a short unprefixed device code may
-                // survive, which is why the device flow never needs one in
-                // argv).
+                // survive). One known exception passes a code in argv on
+                // purpose: the feishu poll's `--device-code <CODE>` (GUI
+                // parity, feishu.rs) — short-lived single-use material
+                // inherited from the GUI flow, accepted as best-effort here.
                 redact_secret(&args.join(" "))
             )));
         }
@@ -1144,7 +1152,21 @@ fn logout(kind: ConnectorKind, yes: bool, output: OutputMode) -> Result<CliOutco
         "wecom" => {
             let dir = wecom_config_dir();
             let existed = dir.exists();
-            let _ = std::fs::remove_dir_all(&dir);
+            // A failed removal must not be reported as a clean logout: the
+            // directory holds vendor credentials, so the error propagates
+            // instead of being ignored (NotFound just means nothing was
+            // stored). Intentional parity deviation from the GUI's `let _ =`
+            // in wecom_logout: a destructive operation must be honest about
+            // failing.
+            match std::fs::remove_dir_all(&dir) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(CliError::failed(format!(
+                        "connectors: cannot remove the wecom credential directory: {error}"
+                    )));
+                }
+            }
             bundle_store_on_disconnected(spec.id);
             json!({ "ok": true, "id": spec.id, "removed": existed })
         }
@@ -1157,7 +1179,17 @@ fn logout(kind: ConnectorKind, yes: bool, output: OutputMode) -> Result<CliOutco
             } else {
                 &["auth", "logout"]
             };
-            if !cli_installed(spec) {
+            // Gate on CLI PRESENCE, not the min-version gate: an installed
+            // but below-minimum CLI still holds vendor credentials on disk,
+            // so the real logout must run for it (the GUI runs `auth logout`
+            // whenever the version merely parses — `tmeet_logout` gates on
+            // `tmeet_cli_version().is_none()`, tmeet.rs:398-412, and
+            // dingtalk's `dws_cli_present` is version-ungated).
+            // `VersionGate::Missing` (probe failed, or for tmeet no parseable
+            // version) is exactly their not-installed case; the min-version
+            // gate itself stays in status / ensure-cli unchanged.
+            let installed = !matches!(version_gate(spec), VersionGate::Missing);
+            if !installed {
                 bundle_store_on_disconnected(spec.id);
                 json!({ "ok": true, "id": spec.id, "installed": false })
             } else {
@@ -2114,8 +2146,10 @@ fn credential_error(error: impl std::fmt::Display) -> CliError {
 
 /// Mirror of `ima_connect`: network-validate the credentials against the ima
 /// OpenAPI (check_skill_update), store both secrets, install ima-skills and
-/// sync the DenyAll scopes. Network + system keyring: exercised only by
-/// `#[ignore]` tests.
+/// sync the DenyAll scopes. The live network + system keyring success path is
+/// excluded from the contract tests by design; the hermetic tests cover the
+/// failure paths that fire before any network or keyring access (missing
+/// client id environment variable, missing api key).
 fn ima_connect(
     client_id_env: &str,
     api_key_env: Option<String>,

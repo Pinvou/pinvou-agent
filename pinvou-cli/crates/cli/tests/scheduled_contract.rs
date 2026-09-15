@@ -439,6 +439,25 @@ fn empty_home_lists_nothing_and_chat_prompt_is_available() {
 }
 
 #[test]
+fn chat_prompt_mirrors_the_gui_once_scheduling_guidance() {
+    // The served prompt is a verbatim copy of the GUI's
+    // `SCHEDULED_TASK_CHAT_PROMPT` (`features::scheduled::tasks` is
+    // `pub(crate)` to `pinvoy3_lib`, so the const cannot be referenced from
+    // the CLI); these pins make copy drift a CI failure instead of a silent
+    // divergence from the GUI's ONCE guidance.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("chat-prompt-once");
+    let prompt = run_json(&["scheduled", "chat-prompt"]);
+    let prompt = prompt["prompt"].as_str().unwrap();
+    assert!(prompt.contains("FREQ=ONCE;AT="), "{prompt}");
+    assert!(
+        prompt.contains("一次性定时的 AT 只用本地时刻 YYYY-MM-DDTHH:MM"),
+        "{prompt}"
+    );
+    let _ = home;
+}
+
+#[test]
 fn runs_and_show_reject_unknown_task_ids() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let home = TempHome::new("unknown-id");
@@ -732,17 +751,19 @@ fn once_at_rejects_calendar_overflow_like_the_foundation() {
     let _ = home;
 }
 
+/// Rrule validation (including ONCE AT) runs at parse time, so a regression
+/// to execute-time rejection (exit 1) must fail the test: pin the usage exit
+/// code here instead of accepting either layer.
 fn assert_validation_fail(arguments: &[&str]) -> String {
     let mut owned: Vec<String> = std::iter::once("pinvou".to_owned())
         .chain(arguments.iter().map(|value| value.to_string()))
         .collect();
-    match parse_args(owned.drain(..)) {
-        Err(error) => error.to_string(),
-        Ok(parsed) => {
-            let error = execute(parsed).expect_err("expected validation failure");
-            error.to_string()
-        }
-    }
+    let error = match parse_args(owned.drain(..)) {
+        Err(error) => error,
+        Ok(parsed) => execute(parsed).expect_err("expected validation failure"),
+    };
+    assert_eq!(error.exit_code(), ExitCode::Usage, "{error}");
+    error.to_string()
 }
 
 #[test]
@@ -898,7 +919,11 @@ fn runs_all_merges_active_and_archived_runs_with_limit() {
 
     let all = run_json(&["scheduled", "runs-all"]);
     let runs = all["runs"].as_array().unwrap();
-    assert_eq!(runs.len(), 3, "{all}");
+    assert_eq!(
+        runs.len(),
+        3,
+        "runs-all should contain the three seeded runs"
+    );
     assert_eq!(runs[0]["id"].as_str(), Some("run-1"));
     assert_eq!(runs[0]["taskName"].as_str(), Some("Feed task"));
     assert_eq!(runs[1]["id"].as_str(), Some("run-0"));
@@ -1142,6 +1167,35 @@ fn once_at_rejects_calendar_overflow_on_the_rfc3339_channel_too() {
         "FREQ=ONCE;AT=2030-02-28T08:30:00Z",
     ]);
     assert_eq!(value["name"], "Real date");
+}
+
+#[test]
+fn leap_day_schedules_are_accepted_on_every_channel() {
+    // Feb 29 exists in leap years: the naive ONCE channel, the RFC3339 ONCE
+    // channel, and a cron February-29 expression (kept realizable by the
+    // foundation's leap-year date-space probe) must all be accepted — only
+    // the rejections are pinned elsewhere.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("leap-day");
+    let prompt = write_prompt_file(&home, "leap.md", "Summarize the reports.");
+    for rrule in [
+        "FREQ=ONCE;AT=2028-02-29T08:30",
+        "FREQ=ONCE;AT=2028-02-29T08:30:00Z",
+        "FREQ=CRON;EXPR=0 0 29 2 *",
+    ] {
+        let created = run_json(&[
+            "scheduled",
+            "create",
+            "--name",
+            "Leap day",
+            "--prompt-file",
+            prompt.to_str().unwrap(),
+            "--rrule",
+            rrule,
+        ]);
+        assert_eq!(created["rrule"].as_str(), Some(rrule), "{rrule}");
+    }
+    let _ = home;
 }
 
 #[test]
@@ -1422,6 +1476,33 @@ fn delete_on_a_non_object_definition_fails_instead_of_panicking() {
     assert!(error.contains("malformed"), "{error}");
 }
 
+#[test]
+fn read_commands_refuse_non_object_definitions_uniformly() {
+    // `read_def`/`list_defs` apply the object check, so the read-only
+    // commands refuse a hand-edited non-object definition with the same
+    // malformed message as the mutating commands (show used to render a
+    // phantom empty task with exit 0 while list died on a confusing
+    // safe_storage_id error).
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("non-object-read");
+    let created = create_task(&home, "Malformed task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    std::fs::write(home.def_path(&task_id), "5").unwrap();
+    let shown = expect_failed(&["scheduled", "show", &task_id]);
+    assert!(
+        shown.contains("is malformed (not a JSON object)"),
+        "{shown}"
+    );
+    let listed = expect_failed(&["scheduled", "list"]);
+    assert!(
+        listed.contains("is malformed (not a JSON object)"),
+        "{listed}"
+    );
+    let _ = home;
+}
+
+/// TZ-driven: chrono only reads the `TZ` variable on Unix.
+#[cfg(unix)]
 #[test]
 fn once_at_rejects_dst_gap_times_like_the_foundation() {
     // The foundation resolves naive stamps through the system timezone and a

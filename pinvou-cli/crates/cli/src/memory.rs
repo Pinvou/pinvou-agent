@@ -15,6 +15,19 @@
 //! credential preparation), but that method is `pub(crate)` to `pinvou3_lib`,
 //! so the CLI always organizes with the shared pool bridge refreshed from the
 //! current global prefs — the GUI's own no-active-session fallback.
+//!
+//! Cross-process caveat: `memory add`/`update`/`delete`/`pending`/`organize`
+//! rewrite stores a live GUI may be writing at the same time. The feature
+//! layer serializes its writes behind a process-local mutex
+//! (`features/memory/io.rs` `write_lock`) that a separate CLI process cannot
+//! see, so the last writer wins and the desktop app's newest changes can be
+//! lost — avoid memory mutations while the desktop app is actively writing
+//! memory (same caveat as the `sessions` family header).
+//!
+//! Replace-per-topic note: `memory add preference` and `memory add
+//! work-context` do not append. Both stores are organized into topic buckets
+//! and the write deletes the bucket's previous item, and the CLI adds without
+//! a topic, so every add replaces the previous CLI add's item.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -24,13 +37,13 @@ use pinvou3_lib::features::memory::{
     MemoryOrganizeReport, MemorySuggestion, MemoryTextPatch, PendingIgnoreOutcome, PreferenceFile,
     RecentWorkItem, TimedMemoryItem, WorkContextFile,
 };
-use pinvou3_lib::features::sessions::SessionStore;
 
 use crate::support::{self, render, require_yes, success};
 use crate::{CliError, CliOutcome, OutputMode};
 
 const MEMORY_USAGE: &str = "usage: pinvou memory <overview|profile|list|add|update|delete|\
-archive|pending|organize|organize-history>";
+archive|pending|organize|organize-history>\n\
+note: adding to preferences/work-context replaces the previous item in that topic bucket";
 
 /// Stores addressable by `memory list|update|delete`. Hyphenated values are
 /// canonical, the GUI's underscore spellings are accepted as aliases.
@@ -523,52 +536,15 @@ fn overview(output: OutputMode) -> Result<CliOutcome, CliError> {
         &mut warnings,
         &mut sources,
     );
-    // Runtime prompt cache: like the GUI, resolve the active session through the
-    // standalone session store; any failure is a warning, never a failed overview.
-    let runtime = match SessionStore::boot() {
-        Ok(store) => match store.active_id() {
-            Some(session_id) => match feature::runtime_snapshot(&session_id) {
-                Ok(snapshot) => {
-                    mark_source(&mut sources, "runtime", true, None);
-                    Some(snapshot)
-                }
-                Err(error) => {
-                    push_warning(
-                        &mut warnings,
-                        "runtime_refresh_failed",
-                        "runtime",
-                        format!("render runtime memory: {error}"),
-                    );
-                    mark_source(
-                        &mut sources,
-                        "runtime",
-                        false,
-                        Some("runtime_refresh_failed"),
-                    );
-                    None
-                }
-            },
-            None => {
-                mark_source(&mut sources, "runtime", true, None);
-                None
-            }
-        },
-        Err(error) => {
-            push_warning(
-                &mut warnings,
-                "runtime_refresh_failed",
-                "runtime",
-                format!("boot session store: {error}"),
-            );
-            mark_source(
-                &mut sources,
-                "runtime",
-                false,
-                Some("runtime_refresh_failed"),
-            );
-            None
-        }
-    };
+    // Runtime prompt: the GUI overview renders the ACTIVE session's cached
+    // runtime memory, but `SessionStore::active_id()` is process-local state —
+    // a one-shot CLI process never owns the desktop app's active session — so
+    // the previous `boot() + active_id()` resolution here was a dead branch
+    // and "Runtime" was always "none". Keep the GUI's own no-active-session
+    // arm: the runtime source reports available, nothing is rendered, and the
+    // snapshot document below is written without a runtime section. The key
+    // stays in the JSON as an always-null value so the shape is stable.
+    mark_source(&mut sources, "runtime", true, None);
     // Same gate as the GUI overview: refresh snapshot.md only when every
     // authoritative source is available, otherwise defer (a partial read must
     // not wipe that category from the snapshot document).
@@ -582,7 +558,10 @@ fn overview(output: OutputMode) -> Result<CliOutcome, CliError> {
             &recent_work,
             &pending,
             &never,
-            runtime.as_ref(),
+            // No runtime section: see the runtime source note above — a
+            // one-shot CLI process has no active session to render a prompt
+            // for, which is exactly what the GUI passes when none is open.
+            None,
         ) {
             Ok(path) => {
                 mark_source(&mut sources, "snapshot", true, None);
@@ -632,14 +611,10 @@ fn overview(output: OutputMode) -> Result<CliOutcome, CliError> {
         format!("Pending: {}", pending.len()),
         format!("Never: {}", never.len()),
     ];
-    match &runtime {
-        Some(snapshot) => lines.push(format!(
-            "Runtime: {} ({} items)",
-            snapshot.session_id,
-            snapshot.items.len()
-        )),
-        None => lines.push("Runtime: none".to_owned()),
-    }
+    // Always "none": the runtime prompt belongs to the desktop app's active
+    // session, which a one-shot CLI process cannot render (see the runtime
+    // source note above).
+    lines.push("Runtime: none".to_owned());
     lines.push(format!(
         "Snapshot: {}",
         if snapshot_path.is_empty() {
@@ -658,9 +633,10 @@ fn overview(output: OutputMode) -> Result<CliOutcome, CliError> {
         "recent_work": serde_json::to_value(&recent_work).unwrap_or_default(),
         "pending": serde_json::to_value(&pending).unwrap_or_default(),
         "never": serde_json::to_value(&never).unwrap_or_default(),
-        "runtime": runtime
-            .as_ref()
-            .map(|snapshot| serde_json::to_value(snapshot).unwrap_or_default()),
+        // Kept as an always-null key so the overview JSON shape stays stable;
+        // a one-shot CLI process never renders a runtime prompt (see the
+        // runtime source note above).
+        "runtime": serde_json::Value::Null,
         "snapshot_path": snapshot_path,
         "warnings": warnings,
         "sources": sources,
@@ -906,6 +882,22 @@ fn add(kind: AddKind, source: AddSource, output: OutputMode) -> Result<CliOutcom
     };
     if content.trim().is_empty() {
         return Err(CliError::usage("memory add requires non-empty content"));
+    }
+    // Fail before any state change: preference-shaped profile text (the
+    // feature heuristic `looks_like_profile_preference_text`, Chinese-only
+    // needles) is intentionally NOT materialized by the confirm path —
+    // `write_preference_unlocked` silently skips it because it belongs to the
+    // memory profile, not the preference store — yet confirm still marks the
+    // candidate confirmed. Enqueueing anyway would strand a
+    // confirmed-but-never-stored pending entry and only fail afterwards, so
+    // reject up front with the same message the post-write verification
+    // produces, leaving the pending store untouched. The heuristic cleans the
+    // text the same way the pending write does, so this probe is exact.
+    if kind == AddKind::Preference && feature::looks_like_profile_preference_text(&content) {
+        return Err(CliError::failed(
+            "memory_add_not_materialized: preference content belongs to the \
+memory profile instead",
+        ));
     }
     // The preference and work-context stores are replace-per-topic: a new
     // item lands in a fixed topic bucket (the CLI adds without a topic, so
@@ -1184,7 +1176,8 @@ fn pending(
 /// Runs one full memory organize pass through the windowless product host —
 /// the same wiring as the scheduled memory-organize executor. Requires a
 /// display (xvfb on headless Linux) and a configured, active model; organize
-/// calls the LLM and applies delete/update/merge actions to every store.
+/// calls the LLM and applies delete/update/merge actions to every store, then
+/// refreshes the snapshot.md device document like the GUI command does.
 fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
     support::sandbox_home()?;
     if !feature::memory_enabled() {
@@ -1192,22 +1185,19 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
             "memory_organize_disabled: memory is disabled in settings",
         ));
     }
-    let report = pinvou3_lib::headless_bridge::run_windowless_host(|pool, store| async move {
+    let report = pinvou3_lib::headless_bridge::run_windowless_host(|pool, _store| async move {
         // Same shared-bridge fallback as the GUI command and the scheduled
         // executor; fresh_bridge_for is crate-private to pinvou3_lib, so the
         // CLI always organizes with the shared bridge plus current global prefs.
         let mut bridge = pool.bridge.clone();
         bridge.prefs = pinvou3_lib::platform::prefs::UserPrefs::load();
         bridge.session_model = None;
-        let result = feature::organize_memory_with_llm(&bridge, None).await;
-        // Best-effort runtime refresh after organize, same as the executor:
-        // organize may have removed items the cached runtime prompt still serves.
-        if let Some(session_id) = store.active_id() {
-            if let Err(error) = feature::runtime_snapshot(&session_id) {
-                eprintln!("[memory] refresh runtime memory after organize: {error}");
-            }
-        }
-        result
+        feature::organize_memory_with_llm(&bridge, None).await
+        // No runtime prompt refresh here: the previous `store.active_id()`
+        // branch was dead (the active session is process-local state a
+        // one-shot CLI process never owns), and the live GUI's cached prompt
+        // can only be refreshed by the GUI process itself. The snapshot
+        // document refresh happens below, outside the host.
     })
     .map_err(|error| {
         CliError::failed(format!(
@@ -1215,6 +1205,12 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
             pinvou3_lib::platform::credential_store::redact_secret(&format!("{error:#}"))
         ))
     })?;
+    // Same post-organize refresh as the GUI command (app/commands/memory.rs
+    // `organize_memory` → `refresh_memory_snapshot_document`): reload every
+    // authoritative source and rewrite the snapshot document so it reflects
+    // the organize pass. A refresh failure is a warning, never a failed
+    // organize — the GUI treats it the same way.
+    refresh_snapshot_document_after_organize();
     let mut lines = vec![
         organize_summary(&report),
         format!("Started: {}", report.started_at),
@@ -1226,6 +1222,106 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
     }
     let value = serde_json::to_value(&report).unwrap_or_default();
     Ok(success(render(output, lines.join("\n"), &value)))
+}
+
+/// Post-organize snapshot refresh: reload the eight authoritative memory
+/// sources and rewrite the snapshot.md device document, mirroring the GUI
+/// organize command's `refresh_memory_snapshot_document` (which reuses the
+/// same overview loading and snapshot-write helpers). All diagnostics go to
+/// stderr as warnings — the organize result is never failed by a refresh
+/// problem, exactly like the GUI. The same all-sources-available gate as the
+/// overview applies: a partial read must not wipe that category from the
+/// document, so the refresh is deferred when any source is unavailable.
+fn refresh_snapshot_document_after_organize() {
+    let mut warnings = Vec::new();
+    let mut sources = BTreeMap::new();
+    let profile = loaded_source(
+        "profile",
+        feature::load_profile(),
+        &mut warnings,
+        &mut sources,
+    );
+    let preferences = loaded_topic_source(
+        "preferences",
+        feature::list_preferences_with_cleanup(),
+        &mut warnings,
+        &mut sources,
+    );
+    let work_context = loaded_topic_source(
+        "work_context",
+        feature::load_work_context_with_cleanup(),
+        &mut warnings,
+        &mut sources,
+    );
+    let current_focus = loaded_source(
+        "current_focus",
+        feature::load_current_focus(),
+        &mut warnings,
+        &mut sources,
+    );
+    let recent_activity = loaded_source(
+        "recent_activity",
+        feature::load_recent_activity(),
+        &mut warnings,
+        &mut sources,
+    );
+    let recent_work = loaded_source(
+        "recent_work",
+        feature::load_recent_work(),
+        &mut warnings,
+        &mut sources,
+    );
+    let pending = loaded_source(
+        "pending",
+        feature::load_pending_memory(),
+        &mut warnings,
+        &mut sources,
+    );
+    let never = loaded_source(
+        "never",
+        feature::load_never_memory(),
+        &mut warnings,
+        &mut sources,
+    );
+    // Surface every load/cleanup diagnostic on stderr like the GUI's
+    // load_memory_source does, so a deferred or partial refresh is explained.
+    append_warning_lines_to_stderr(&warnings);
+    if !sources.values().all(available) {
+        eprintln!(
+            "[memory] snapshot_refresh_deferred snapshot: memory sources unavailable; \
+snapshot refresh deferred after organize"
+        );
+        return;
+    }
+    if let Err(error) = feature::write_memory_snapshot_document(
+        &profile,
+        &preferences,
+        &work_context,
+        &current_focus,
+        &recent_activity,
+        &recent_work,
+        &pending,
+        &never,
+        // No runtime section: the desktop app's active session is
+        // process-local state, so there is nothing to render here (the GUI
+        // passes None the same way when no session is open).
+        None,
+    ) {
+        eprintln!("[memory] snapshot_refresh_failed snapshot: write memory snapshot: {error}");
+    }
+}
+
+/// stderr variant of `append_warning_lines` for paths without a JSON payload
+/// (the post-organize refresh reports through stderr only).
+fn append_warning_lines_to_stderr(warnings: &[serde_json::Value]) {
+    for warning in warnings {
+        eprintln!(
+            "[memory] {} {}: {}",
+            warning["code"].as_str().unwrap_or(""),
+            warning["source"].as_str().unwrap_or(""),
+            warning["detail"].as_str().unwrap_or(""),
+        );
+    }
 }
 
 fn organize_history(output: OutputMode) -> Result<CliOutcome, CliError> {

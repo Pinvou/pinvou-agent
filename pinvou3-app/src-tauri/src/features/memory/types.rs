@@ -444,7 +444,12 @@ pub(super) fn normalize_timed_memory_topic(kind: &str, _topic: &str) -> String {
     }
 }
 
-pub(super) fn looks_like_profile_preference_text(text: &str) -> bool {
+// `pub` (re-exported from the `features::memory` facade) so the CLI can probe
+// it before enqueueing a preference candidate: the confirm path silently skips
+// profile-shaped text (see `write_preference_unlocked`) while still marking
+// the candidate confirmed, so `memory add` must reject that content up front
+// instead of stranding a confirmed-but-unmaterialized pending entry.
+pub fn looks_like_profile_preference_text(text: &str) -> bool {
     let text = clean_text(text, 120);
     [
         "称呼用户",
