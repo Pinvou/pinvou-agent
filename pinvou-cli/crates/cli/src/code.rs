@@ -1376,8 +1376,10 @@ fn command_output_with_timeout(
         match child.try_wait() {
             Ok(Some(status)) => {
                 // The child is reaped; whatever still holds the pipe gets a
-                // short grace before the whole group dies and the probe
-                // reports no output.
+                // short grace before the probe reports whatever arrived.
+                // Straggler descendants are deliberately left alone: killing
+                // a reaped child's group would race pid reuse, and this
+                // one-shot process exits right after the probe anyway.
                 let text = rx.recv_timeout(Duration::from_secs(5)).unwrap_or_default();
                 return Ok(Some((status.success(), text.trim().to_string())));
             }
@@ -1967,11 +1969,19 @@ fn login(
 ) -> Result<CliOutcome, CliError> {
     let code = match code {
         Some(LoginCodeSource::Arg(raw)) => Some(raw),
-        Some(LoginCodeSource::Env(var)) => Some(std::env::var(&var).map_err(|_| {
-            CliError::failed(format!(
-                "code login: authorization code environment variable {var} is not set"
-            ))
-        })?),
+        Some(LoginCodeSource::Env(var)) => {
+            let value = std::env::var(&var).map_err(|_| {
+                CliError::failed(format!(
+                    "code login: authorization code environment variable {var} is not set"
+                ))
+            })?;
+            if value.trim().is_empty() {
+                return Err(CliError::failed(format!(
+                    "code login: authorization code environment variable {var} is empty"
+                )));
+            }
+            Some(value)
+        }
         Some(LoginCodeSource::Stdin) => {
             // Bounded like `resolve_secret`: an unbounded stdin read lets
             // `yes | pinvou code login --code-stdin` exhaust memory before
@@ -2027,8 +2037,19 @@ fn login(
     }
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let out_reader = std::thread::spawn(move || drain_stream(stdout));
-    let err_reader = std::thread::spawn(move || drain_stream(stderr));
+    // The drains report through channels instead of join handles: a
+    // grandchild (a browser or helper the vendor CLI spawned) can inherit
+    // the pipes and outlive the reaped child, and an unbounded `join()`
+    // here would hang the CLI after login finished — the same hazard the
+    // auth probe bounds one room over.
+    let (out_tx, out_rx) = std::sync::mpsc::channel();
+    let (err_tx, err_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = out_tx.send(drain_stream(stdout));
+    });
+    std::thread::spawn(move || {
+        let _ = err_tx.send(drain_stream(stderr));
+    });
     let deadline = Duration::from_secs(if agent == "kimi" { 1800 } else { 600 });
     let started = Instant::now();
     let mut timed_out = false;
@@ -2050,10 +2071,16 @@ fn login(
         }
         std::thread::sleep(Duration::from_millis(100));
     };
-    // The killed child's pipes close, so the readers finish promptly in the
-    // timeout case too.
-    let out_text = out_reader.join().unwrap_or_default();
-    let err_text = err_reader.join().unwrap_or_default();
+    // One short grace per stream for the drains; in the timeout case the
+    // killed child's pipes close so the readers finish promptly. When a
+    // straggler still holds a pipe, proceed with whatever was captured —
+    // the readers die with this process and cannot reach the transcript.
+    let out_text = out_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap_or_default();
+    let err_text = err_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap_or_default();
     let combined = format!("{out_text}\n{err_text}");
     if timed_out {
         // The buffered transcript would die with this error otherwise, and
@@ -2436,6 +2463,14 @@ fn providers_switch(
 ) -> Result<CliOutcome, CliError> {
     require_provider_agent(agent)?;
     let manager = open_providers()?;
+    // Pre-check the id so the common typo path reports in English instead of
+    // surfacing the lib's untranslated store message (the update lane does
+    // the same before secret resolution); the lib re-checks authoritatively.
+    if manager.store().get(agent, provider_id).is_none() {
+        return Err(CliError::failed(format!(
+            "provider_not_found: no provider '{provider_id}' for agent {agent}"
+        )));
+    }
     manager
         .switch(agent, provider_id)
         .map_err(|error| store_error("providers switch", provider_id, error))?;
@@ -3923,7 +3958,11 @@ fn checkpoints_list(session: &str, output: OutputMode) -> Result<CliOutcome, Cli
         .map_err(|error| store_error("checkpoints list", session, error))?;
     let value = serde_json::to_value(&entries)
         .map(|checkpoints| serde_json::json!({ "session": session, "checkpoints": checkpoints }))
-        .unwrap_or_else(|_| serde_json::json!({ "session": session, "checkpoints": [] }));
+        .map_err(|error| {
+            CliError::failed(format!(
+                "checkpoints list({session}): checkpoint entries failed to serialize: {error}"
+            ))
+        })?;
     let human = entries
         .iter()
         .map(|entry| {
@@ -3972,7 +4011,11 @@ fn checkpoints_diff(
         .map_err(|error| store_error("checkpoints diff", checkpoint_id, error))?;
     let value = serde_json::to_value(&diff)
         .map(|value| serde_json::json!({ "session": session, "diff": value }))
-        .unwrap_or_else(|_| serde_json::json!({ "session": session }));
+        .map_err(|error| {
+            CliError::failed(format!(
+                "checkpoints diff({session}): checkpoint diff failed to serialize: {error}"
+            ))
+        })?;
     let human = format!(
         "checkpoint: {}\nchanges: {}\npatch:\n{}",
         diff.checkpoint.id,
@@ -4007,63 +4050,14 @@ fn count_user_turns_exact(messages: &serde_json::Value) -> Result<u32, CliError>
 }
 
 fn parse_rfc3339_epoch_secs(value: &str) -> Option<i64> {
-    // Minimal RFC3339 parser for the rewind sidecar timestamps
-    // (`chrono::Utc::now().to_rfc3339()` — the current writer, always
-    // `+00:00`), days-from-civil based. An offset-bearing stamp from a future
-    // writer is honored rather than silently shifting the stale-checkpoint
-    // cutoff: UTC = naive - offset. Field ranges are validated so a
-    // hand-corrupted sidecar degrades to `None` instead of overflowing the
-    // intermediate multiplies.
-    let (date, rest) = value.split_once('T')?;
-    let mut date_parts = date.split('-');
-    let year: i64 = date_parts.next()?.parse().ok()?;
-    let month: i64 = date_parts.next()?.parse().ok()?;
-    let day: i64 = date_parts.next()?.parse().ok()?;
-    let (time, offset) = if let Some(naive) = rest.strip_suffix('Z') {
-        (naive, 0)
-    } else if let Some((naive, offset)) = rest.split_once('+') {
-        (naive, offset_seconds(offset, 1)?)
-    } else if let Some((naive, offset)) = rest.rsplit_once('-') {
-        (naive, offset_seconds(offset, -1)?)
-    } else {
-        (rest, 0)
-    };
-    let mut time_parts = time.split(':');
-    let hour: i64 = time_parts.next()?.parse().ok()?;
-    let minute: i64 = time_parts.next()?.parse().ok()?;
-    let second: i64 = time_parts
-        .next()
-        .and_then(|value| value.split('.').next().map(str::to_owned))
-        .and_then(|value| value.parse().ok())?;
-    if !(1..=9999).contains(&year)
-        || !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
-        || hour > 23
-        || minute > 59
-        || second > 60
-    {
-        return None;
-    }
-    // days_from_civil (Howard Hinnant's algorithm).
-    let adjusted_year = if month <= 2 { year - 1 } else { year };
-    let era = adjusted_year.div_euclid(400);
-    let year_of_era = adjusted_year - era * 400;
-    let day_of_year = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    let days = era * 146_097 + day_of_era - 719_468;
-    Some(days * 86_400 + hour * 3600 + minute * 60 + second - offset)
-}
-
-/// Signed `±HH:MM` RFC3339 offset in seconds (`sign` is 1 or -1); `None` on a
-/// malformed or out-of-range offset so a corrupt stamp degrades to `None`.
-fn offset_seconds(offset: &str, sign: i64) -> Option<i64> {
-    let (hours, minutes) = offset.split_once(':')?;
-    let hours: i64 = hours.parse().ok()?;
-    let minutes: i64 = minutes.parse().ok()?;
-    if hours > 23 || minutes > 59 {
-        return None;
-    }
-    Some(sign * (hours * 3600 + minutes * 60))
+    // The rewind sidecar timestamps are written by
+    // `chrono::Utc::now().to_rfc3339()`, so the stale-checkpoint cutoff
+    // parses through the same crate instead of a hand-rolled decoder —
+    // field ranges, month lengths and offsets then agree with the writer
+    // by construction, and a hand-corrupted sidecar degrades to `None`.
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|stamp| stamp.timestamp())
 }
 
 /// Mirrors `resolve_rewind_plan`: "rewind to turn N" restores the first-created
