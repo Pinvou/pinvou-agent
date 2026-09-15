@@ -48,7 +48,10 @@ const swarmBorder = on => (on
 
 const dotClass = {
   running: 'bg-[#0B57D0] dark:bg-[#A8C7FA] animate-pulse',
-  blocked: 'bg-[#F9AB00] animate-pulse',
+  // Blocked is a done worker awaiting user follow-up (the foundation counts
+  // it Completed), so it holds a steady amber dot instead of the breathing
+  // one reserved for live work.
+  blocked: 'bg-[#F9AB00]',
   done: 'bg-[#137333] dark:bg-[#93D5A6]',
   failed: 'bg-[#C5221F] dark:bg-[#F28B82]',
   // Cancelled/interrupted: an operator- or session-level ending, neither a
@@ -117,8 +120,9 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
     () => Object.values(entries).filter(entry => entry.sessionId === sessionId),
     [entries, sessionId],
   );
-  // Whether any entry in this session is non-terminal: drives the ledger poll
-  // cadence (see the hook).
+  // Whether any entry in this session is truly unfinished: drives the ledger
+  // poll cadence (see the hook). Blocked entries are done in the authority
+  // chain, so a stale blocked row never locks the poll at the active cadence.
   const sessionHasActive = useMemo(
     () => sessionEntries.some(entry => !isTerminal(entry)),
     [sessionEntries],
