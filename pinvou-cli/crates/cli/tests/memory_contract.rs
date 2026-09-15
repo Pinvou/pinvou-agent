@@ -201,7 +201,10 @@ fn memory_parses_every_subcommand() {
             ][..],
             r#"Memory(Pending { action: Never, id: "p-1", reason: Some("sensitive") })"#,
         ),
-        (&["pinvou", "memory", "organize"][..], "Memory(Organize)"),
+        (
+            &["pinvou", "memory", "organize", "--yes"][..],
+            "Memory(Organize { confirmed: true })",
+        ),
         (
             &["pinvou", "memory", "organize-history"][..],
             "Memory(OrganizeHistory)",
@@ -272,6 +275,12 @@ fn memory_rejects_invalid_usage_with_exit_code_two() {
     // unknown options and unexpected trailing arguments
     assert_usage(&["pinvou", "memory", "overview", "--json"]);
     assert_usage(&["pinvou", "memory", "organize", "extra"]);
+
+    // organize without --yes is rejected at execute time, like delete: the
+    // LLM-driven store rewrite is destructive
+    let error = expect_usage_error(&["pinvou", "memory", "organize"]);
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert!(error.to_string().contains("--yes"), "{error}");
     assert_usage(&["pinvou", "memory", "list", "--bogus", "x"]);
 
     // delete without --yes is rejected at execute time
@@ -619,7 +628,9 @@ fn memory_organize_refuses_when_memory_is_disabled() {
     // Memory is disabled in a fresh home, so the refusal fires before any
     // host boot (display and model remain the opt-in part exercised
     // manually); this pins the honest error instead of a vacuous pass.
-    let error = expect_usage_error(&["pinvou", "memory", "organize"]);
+    // --yes clears the destructive-action gate so the disabled refusal is
+    // what is under test.
+    let error = expect_usage_error(&["pinvou", "memory", "organize", "--yes"]);
     assert_eq!(error.exit_code(), ExitCode::Failed);
     assert!(
         error.to_string().contains("memory_organize_disabled"),
