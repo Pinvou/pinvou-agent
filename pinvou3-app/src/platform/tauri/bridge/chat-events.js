@@ -269,10 +269,14 @@
       // an interrupted in-flight call — no tool_end is coming, so settle it as
       // failed instead of leaving an eternal "running" card (a live spawn row
       // would then pulse forever). Background shells keep running across turns
-      // and are excluded; their completion arrives via chat:shell_task_status.
+      // and are excluded; so are synthetic shell-snapshot cards (built by the
+      // terminal poll for jobs without a tool card of their own — e.g. a
+      // subagent's detached shell): their "shell-task:" ids never pair with a
+      // tool_use id, yet the job may still be running.
       for (let i = 0; i < state.chatItems.length; i++) {
         const item = state.chatItems[i];
         if (item && item.type === "tool" && item.toolId && item.background !== true
+          && item.shellSnapshot !== true
           && (item.state === "pending" || item.state === "running") && !paired[item.toolId]) {
           item.success = false;
           item.state = "failed";
