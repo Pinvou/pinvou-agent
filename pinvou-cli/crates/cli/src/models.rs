@@ -367,6 +367,14 @@ fn parse_options(
                 }
                 index += 2;
             } else if flag_flags.contains(&name) {
+                // Duplicate boolean flags are usage errors, like duplicate
+                // value flags above and every `support::parse_family_flags`
+                // family (`models remove X --yes --yes` must exit 2).
+                if flags.iter().any(|candidate| candidate == name) {
+                    return Err(CliError::usage(format!(
+                        "--{name} was given more than once"
+                    )));
+                }
                 flags.push(name.to_owned());
                 index += 1;
             } else {
@@ -677,6 +685,9 @@ fn safe_prefs() -> UserPrefs {
     prefs
 }
 
+/// One `models list` JSON row, mirroring the GUI's `ModelListItem` DTO
+/// (`credential_state` included, same semantics as `models show`) minus the
+/// GUI-only presentation fields.
 fn model_entry_json(model: &SavedModel, active_id: Option<&str>) -> serde_json::Value {
     serde_json::json!({
         "id": model.id,
@@ -689,6 +700,7 @@ fn model_entry_json(model: &SavedModel, active_id: Option<&str>) -> serde_json::
         "reasoning_effort": model.reasoning_effort,
         "active": active_id == Some(model.id.as_str()),
         "has_secret": model.has_secret,
+        "credential_state": model.credential_state,
     })
 }
 
@@ -852,11 +864,13 @@ fn add(
 
 /// Classifies transaction failures: the min-1 rule is an argument-level
 /// problem (exit 2); everything else — I/O, credential store, and unknown
-/// ids — is a host failure (exit 1). Unknown ids exit 1 like every other
-/// family (`sessions`, `knowledge`, `scheduled`): a lookup miss against the
-/// live store is a runtime failure, not argv misuse, and scripts branch on
-/// the same code across families. Messages are already redacted by the
-/// credential layer.
+/// ids — is a host failure (exit 1). `remove` rejects the min-1 rule
+/// structurally before the transaction, so the prefix match here is only a
+/// backstop (e.g. a concurrent removal shrinking the list mid-run). Unknown
+/// ids exit 1 like every other family (`sessions`, `knowledge`,
+/// `scheduled`): a lookup miss against the live store is a runtime failure,
+/// not argv misuse, and scripts branch on the same code across families.
+/// Messages are already redacted by the credential layer.
 fn prefs_error(error: String) -> CliError {
     if error.starts_with("cannot remove the last") {
         CliError::usage(error)
@@ -865,8 +879,22 @@ fn prefs_error(error: String) -> CliError {
     }
 }
 
+/// The GUI's min-1-model rule message, shared by the up-front usage check in
+/// `remove` and the in-transaction backstop so the wording cannot drift.
+const REMOVE_LAST_MODEL_MESSAGE: &str =
+    "cannot remove the last remaining model; add another model first";
+
 fn remove(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     require_yes(yes)?;
+    // Structural min-1 classification: load the prefs through the same
+    // `UserPrefs::load` path the transaction uses and reject up front, so
+    // the usage exit code does not depend on string-matching the
+    // transaction error below (which stays as a backstop). A plain load —
+    // not `safe_prefs` — keeps the check free of credential-store refreshes.
+    let prefs = UserPrefs::load();
+    if prefs.model_by_id(id).is_some() && prefs.advanced.saved_models.len() <= 1 {
+        return Err(CliError::usage(REMOVE_LAST_MODEL_MESSAGE));
+    }
     // The keyring delete moves AFTER the prefs save (the ordering this
     // file's own `search set --clear` comment states): deleting first left
     // a save failure with a model that is still configured but secretless.
@@ -878,9 +906,7 @@ fn remove(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
             return Err(format!("model not found: {id}"));
         }
         if prefs.advanced.saved_models.len() <= 1 {
-            return Err(
-                "cannot remove the last remaining model; add another model first".to_owned(),
-            );
+            return Err(REMOVE_LAST_MODEL_MESSAGE.to_owned());
         }
         if let Some(reference) = prefs
             .model_by_id(id)
@@ -1097,7 +1123,9 @@ fn test_connection(id: &str, output: OutputMode) -> Result<CliOutcome, CliError>
     // A keychain failure is a probe RESULT, not a crash: like every other
     // `models test` outcome it renders a single-line JSON row on stdout
     // (with `credential_unavailable`), so scripts can branch on it instead
-    // of parsing stderr text.
+    // of parsing stderr text. Parity by design: the GUI's connection test
+    // resolves the stored key identically, so env-overridden keys (e.g.
+    // DEEPSEEK_API_KEY) are not honored here either.
     let key = match resolve_saved_model_key(&model) {
         Ok(key) => key.unwrap_or_default(),
         Err(error) => {
