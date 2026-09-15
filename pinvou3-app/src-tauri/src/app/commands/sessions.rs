@@ -1,6 +1,7 @@
 use super::prelude::*;
 // Native save dialog support for `export_session`; the other session
 // commands do not interact with the dialog plugin.
+use crate::features::sessions::NEW_CHAT_TITLE;
 use std::path::Path;
 use std::path::PathBuf;
 use tauri_plugin_dialog::DialogExt;
@@ -169,7 +170,7 @@ pub(crate) fn apply_default_session_title(
     let session = store
         .load(session_id)
         .map_err(|error| format!("读取会话 {session_id} 失败: {error:#}"))?;
-    if session.metadata.title != "新对话" {
+    if session.metadata.title != NEW_CHAT_TITLE {
         return Ok(());
     }
     let title = title_source.chars().take(28).collect::<String>();

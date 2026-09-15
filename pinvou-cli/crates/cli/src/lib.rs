@@ -1425,6 +1425,12 @@ fn run_agent(
         prompt,
         workspace,
         timeout_secs,
+        // Engine-side optional request surface (session/mode/model/
+        // attachments); the one-shot `agent run` keeps today's defaults.
+        session_id: None,
+        mode: None,
+        model_id: None,
+        attachments: Vec::new(),
     };
     let report = pinvou_product_backend::run_agentic_task(request)
         .map_err(|error| CliError::failed(format!("agent_run_failed: {error:#}")))?;

@@ -20,6 +20,23 @@ pub(crate) fn count_user_turns(messages: &[Message]) -> u32 {
         .count() as u32
 }
 
+/// Exact user-turn count over raw JSON messages. Headless callers (the CLI)
+/// do not link the foundation crate and only hold the JSON message array
+/// before deserialization; the CLI previously approximated the count from
+/// the role + tool_result shape, which over-counts messages the engine does
+/// not treat as prompts (image-only turns) and could wedge the
+/// `checkpoints rewind` precheck. Each message is deserialized and run
+/// through the exact same predicate as `count_user_turns`, so the two sides
+/// can no longer drift.
+pub fn count_user_turns_in_json(messages: &[serde_json::Value]) -> Result<u32, serde_json::Error> {
+    let mut total = 0u32;
+    for value in messages {
+        let message: Message = serde_json::from_value(value.clone())?;
+        total += count_user_turns(std::slice::from_ref(&message));
+    }
+    Ok(total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -60,5 +77,32 @@ mod tests {
             tool_result_message(),
         ];
         assert_eq!(count_user_turns(&messages), 2);
+    }
+
+    /// JSON 入口与内存切片必须同口径：同一批消息经 serde 往返后
+    /// `count_user_turns_in_json` 与 `count_user_turns` 同值——「CLI 与引擎
+    /// 不再漂移」的承诺正落在这个反序列化环节上。
+    #[test]
+    fn count_user_turns_in_json_matches_in_memory_counting() {
+        let messages = vec![
+            text_message("user", "第一轮"),
+            text_message("assistant", "调工具"),
+            tool_result_message(),
+            text_message("user", "第二轮"),
+        ];
+        let json: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|message| serde_json::to_value(message).unwrap())
+            .collect();
+        assert_eq!(
+            count_user_turns_in_json(&json).unwrap(),
+            count_user_turns(&messages)
+        );
+        assert_eq!(count_user_turns_in_json(&json).unwrap(), 2);
+
+        // 非消息负载必须报错而不是静默计 0：与引擎「session 加载失败」的
+        // 错误模型对齐（doc 声称反序列化失败即 Err）。
+        let invalid = vec![serde_json::json!({ "role": 42 })];
+        assert!(count_user_turns_in_json(&invalid).is_err());
     }
 }

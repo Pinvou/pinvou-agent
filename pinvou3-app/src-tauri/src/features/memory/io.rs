@@ -48,8 +48,13 @@ pub(super) fn write_lock() -> &'static Mutex<()> {
 /// Stored-text caps per store, shared by the write path (which re-cleans every
 /// incoming text) and by organize validation (which must validate against the
 /// same cap so a passing action is not silently truncated when stored).
+///
+/// `WORK_CONTEXT_TEXT_MAX_CHARS` is re-exported from `features::memory` for
+/// the CLI's `memory add` verification: comparing against a locally
+/// duplicated cap would re-create the false `memory_add_not_materialized`
+/// failure the shared normalization fixed if the cap ever changes.
 pub(super) const PREFERENCE_TEXT_MAX_CHARS: usize = 120;
-pub(super) const WORK_CONTEXT_TEXT_MAX_CHARS: usize = 160;
+pub const WORK_CONTEXT_TEXT_MAX_CHARS: usize = 160;
 pub(super) const TIMED_TEXT_MAX_CHARS: usize = 180;
 
 pub(super) fn turn_capture_store() -> &'static Mutex<BTreeMap<String, TurnCapture>> {
@@ -2044,7 +2049,10 @@ fn normalize_work_context(item: &mut WorkContextFile) {
     item.id = clean_id(&item.id);
     item.kind = "work_context".to_string();
     item.topic = normalize_work_context_topic(&item.topic);
-    item.text = clean_text(&item.text, 160);
+    // 最终存储归一必须与导出常量同源：CLI 用 WORK_CONTEXT_TEXT_MAX_CHARS
+    // 做写入前校验，这里若留下本地字面量，常量一改就会出现「CLI 认为已落库、
+    // 归一却被截断」的假 materialize 失败（这正是导出常量要防的漂移）。
+    item.text = clean_text(&item.text, WORK_CONTEXT_TEXT_MAX_CHARS);
     item.source = clean_text(&item.source, 40);
     if item.id.is_empty() && !item.topic.is_empty() {
         item.id = stable_id_with_prefix("ctx", &item.topic);
