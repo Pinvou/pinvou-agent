@@ -28,6 +28,7 @@
 //! 14.0, the class method only in 15.2); below that the caller falls back to xcap's
 //! CGWindowList path.
 
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{OnceLock, mpsc};
 use std::time::Duration;
 
@@ -141,8 +142,15 @@ pub(super) fn capture_region(
         Ok(Err(detail)) => Err(ComputerUseError::failed(format!(
             "ScreenCaptureKit capture failed: {detail}"
         ))),
-        Err(_) => Err(ComputerUseError::failed(
+        // Distinguish the two failure shapes (review finding): a timeout
+        // means the completion handler never ran; a disconnected channel
+        // means the block was released without sending — different faults,
+        // and the old catch-all "timed out" misled diagnosis.
+        Err(RecvTimeoutError::Timeout) => Err(ComputerUseError::failed(
             "ScreenCaptureKit capture timed out",
+        )),
+        Err(RecvTimeoutError::Disconnected) => Err(ComputerUseError::failed(
+            "ScreenCaptureKit capture completed without a frame",
         )),
     }
 }
