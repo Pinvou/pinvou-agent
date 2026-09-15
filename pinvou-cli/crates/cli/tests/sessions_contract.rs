@@ -62,6 +62,23 @@ impl Drop for HomeGuard {
     }
 }
 
+/// Restores the previous `PINVOU3_HOME` on drop — the same contract as
+/// [`HomeGuard`]'s Drop, for tests that set the variable to a non-temp value
+/// themselves. The restore must survive a panicking assertion, otherwise the
+/// polluted value leaks into every later test in the process.
+struct RestoreHome(Option<OsString>);
+
+impl Drop for RestoreHome {
+    fn drop(&mut self) {
+        match self.0.take() {
+            // SAFETY: ENV_LOCK is held by the owning test.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: ENV_LOCK is held by the owning test.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+    }
+}
+
 fn run(arguments: &[&str]) -> Result<CliOutcome, CliError> {
     let parsed = parse_args(arguments).expect("arguments must parse");
     execute(parsed)
@@ -655,23 +672,21 @@ fn relative_pinvou3_home_is_rejected_before_any_store_access() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let previous = std::env::var_os("PINVOU3_HOME");
+    // Panic-safe restore: the guard captures the previous value before the
+    // test overrides it, mirroring HomeGuard's Drop, so a failing assertion
+    // cannot leak the relative PINVOU3_HOME into other tests.
+    let _restore = RestoreHome(std::env::var_os("PINVOU3_HOME"));
     // A relative PINVOU3_HOME violates the CLI sandbox contract; the shared
     // resolver (support::sandbox_home) must refuse it instead of resolving
     // store paths against the current working directory. The store may
     // create directories under the (relative) root before the refusal, so
-    // clean up afterwards.
+    // clean up afterwards (best-effort: a leftover temp directory is
+    // harmless, the restored environment is not).
     let relative = format!("pinvou-cli-rel-home-{}-{nonce}", std::process::id());
     // SAFETY: ENV_LOCK is held; env writes are serialized in-process.
     unsafe { std::env::set_var("PINVOU3_HOME", relative.as_str()) };
     let error = run(&["pinvou", "sessions", "folder", "abc"]).expect_err("relative home refused");
     assert_eq!(error.exit_code(), ExitCode::Failed);
     assert!(error.to_string().contains("absolute"));
-    match previous {
-        // SAFETY: ENV_LOCK is held.
-        Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-        // SAFETY: ENV_LOCK is held.
-        None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-    }
-    let _ = std::fs::remove_dir_all(relative);
+    let _ = std::fs::remove_dir_all(&relative);
 }
