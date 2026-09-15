@@ -49,8 +49,14 @@ fn sanitize_session_id(raw: &str) -> String {
             }
         })
         .collect();
+    // Length-cap so a pathological session id cannot push the audit filename
+    // past filesystem limits and silently fail every append (fail-open, but
+    // the trail would be gone).
+    const MAX_SESSION_ID_CHARS: usize = 64;
     if sanitized.is_empty() {
         "unknown".to_string()
+    } else if sanitized.chars().count() > MAX_SESSION_ID_CHARS {
+        sanitized.chars().take(MAX_SESSION_ID_CHARS).collect()
     } else {
         sanitized
     }

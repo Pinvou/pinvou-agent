@@ -75,10 +75,23 @@ pub const T3_DENYLIST: &[&str] = &[
     "支払い",
     "送金",
     "注文",
+    "下单",
+    "下單",
+    "充值",
+    "儲值",
+    "捐款",
+    "捐贈",
+    "投资",
+    "投資",
+    "訂閱",
+    "subscribe",
+    "donate",
+    "top-up",
     // Sends.
     "send",
     "发送",
     "傳送",
+    "送出",
     "送信",
     // Irreversible deletion, including common drag/delete destinations.
     "delete",
@@ -95,6 +108,8 @@ pub const T3_DENYLIST: &[&str] = &[
     "廢紙簍",
     "ゴミ箱",
     "削除",
+    "格式化",
+    "フォーマット",
     // Form/order submission.
     "submit",
     "提交",
@@ -104,6 +119,7 @@ pub const T3_DENYLIST: &[&str] = &[
     "agree",
     "同意",
     "接受",
+    "承諾",
 ];
 
 /// Whether a label hits the T3 consequential denylist.
@@ -176,18 +192,27 @@ pub struct PendingConfirmation {
     pub session_id: String,
     /// The plain human-readable parameter summary of the blocked action
     /// (e.g. `left click x1 at Some((5, 6))`, `type 3 characters`); the
-    /// approval token is bound to exactly this summary.
+    /// approval token is bound to exactly this summary **and** to
+    /// `action_binding` (review finding: a summary-only binding let a token
+    /// minted for one `type N characters` be spent on a different same-length
+    /// text).
     pub action_summary: String,
+    /// A content hash of the full blocked action (every parameter, not just
+    /// the shape the summary renders). Computed by the tool layer when the
+    /// pending is created and re-checked at spend time, so an approved action
+    /// cannot be silently swapped for a same-summary different-content one.
+    pub action_binding: u64,
     pub element_label: String,
     pub created_at: Instant,
 }
 
-/// A minted approval token: bound to the session and the action summary;
-/// expires if not spent within [`CONFIRM_TTL`].
+/// A minted approval token: bound to the session, the action summary and the
+/// action content hash; expires if not spent within [`CONFIRM_TTL`].
 #[derive(Debug, Clone)]
 struct ApprovedToken {
     session_id: String,
     action_summary: String,
+    action_binding: u64,
     minted_at: Instant,
 }
 
@@ -303,9 +328,11 @@ impl ComputerUseShared {
             .retain(|_, token| token.session_id != session_id);
     }
 
-    /// Whether the session currently holds a valid grant (not cleared by
-    /// revoke/emergency stop). A read-only projection for status commands;
-    /// gating decisions still go by [`Self::begin_input_action`].
+    /// Whether the session currently holds a valid grant. A read-only
+    /// projection for status commands; gating decisions still go by
+    /// [`Self::begin_input_action`]. The row is cleared by
+    /// [`Self::revoke_session`], [`Self::stop_all`] and the master switch
+    /// ([`Self::revoke_all_sessions`]).
     pub fn has_active_grant(&self, session_id: &str) -> bool {
         self.sessions.lock().contains(session_id)
     }
@@ -322,8 +349,16 @@ impl ComputerUseShared {
     }
 
     /// Clears the stop flag when the user re-enables (restores no grants).
+    /// Also sweeps any consent state an in-flight run created between the
+    /// stop and the re-enable (review finding: a pending minted during the
+    /// stopped window would otherwise become mintable the moment the stop is
+    /// lifted — consent state from the stopped period must not survive the
+    /// resume, same rule as `revoke_all_sessions` for the off period).
     pub fn reset_stop(&self) {
         self.stop.store(false, Ordering::SeqCst);
+        let mut consent = self.consent.lock();
+        consent.pending.clear();
+        consent.approved_tokens.clear();
     }
 
     /// Revokes all session grants and clears all consent state (pending
@@ -370,13 +405,11 @@ impl ComputerUseShared {
     /// flag, grant present). Between `begin_input_action` and the actual
     /// injection there can be time-consuming steps such as an automatic
     /// screenshot (review finding: a revoke inside that window did not take
-    /// effect); must be called before injecting.
+    /// effect); must be called before injecting — and before any consent
+    /// surface, so a stop/revoke landing mid-run cannot still pop a
+    /// confirmation dialog.
     pub fn verify_input_action(&self, session_id: &str) -> Result<(), GuardRejection> {
-        self.check_readonly()?;
-        if !self.sessions.lock().contains(session_id) {
-            return Err(GuardRejection::GrantRequired);
-        }
-        Ok(())
+        self.begin_input_action(session_id)
     }
 
     /// Serializes physical input injection across sessions (see
@@ -395,12 +428,15 @@ impl ComputerUseShared {
     /// Registers a T3 confirmation waiting for the user's decision and
     /// returns the confirm_id. At most one pending per session: a new request
     /// replaces the session's existing pending (newest wins, like an ordinary
-    /// dialog), so this method cannot fail. Also sweeps expired pendings.
+    /// dialog), so this method cannot fail. `action_binding` is the tool
+    /// layer's content hash of the blocked action and is carried into the
+    /// minted token. Also sweeps expired pendings.
     pub fn new_pending_confirmation(
         &self,
         session_id: &str,
         action_summary: impl Into<String>,
         element_label: impl Into<String>,
+        action_binding: u64,
     ) -> String {
         let confirm_id = format!("cu-{:016x}", rand::random::<u64>());
         let now = Instant::now();
@@ -415,6 +451,7 @@ impl ComputerUseShared {
             PendingConfirmation {
                 session_id: session_id.to_string(),
                 action_summary: action_summary.into(),
+                action_binding,
                 element_label: element_label.into(),
                 created_at: now,
             },
@@ -465,6 +502,17 @@ impl ComputerUseShared {
     /// bounded by the interaction cadence; expiry is backstopped by the TTL
     /// sweep before spending.
     pub fn mint_confirmation(&self, confirm_id: &str) -> bool {
+        // A stop/toggle-off that lands while a confirmation dialog is on
+        // screen must not leave a mintable token behind (review finding: the
+        // pending itself is cleared by stop_all/revoke_all_sessions, but an
+        // in-flight run can re-create a pending after that sweep — the mint
+        // is the last line of defense, so the token can never outlive the
+        // stop). The false return maps to the command layer's
+        // "unknown or expired" error, which the frontend treats as
+        // close-the-stale-dialog.
+        if !self.is_enabled() || self.is_stopped() {
+            return false;
+        }
         // pending removal + token insertion in one lock: a mint cannot
         // interleave with a revoke/clear and leave a token that outlives the
         // disable.
@@ -484,6 +532,7 @@ impl ComputerUseShared {
             ApprovedToken {
                 session_id: entry.session_id,
                 action_summary: entry.action_summary,
+                action_binding: entry.action_binding,
                 minted_at: now,
             },
         );
@@ -492,19 +541,22 @@ impl ComputerUseShared {
 
     /// Spends an approval token (single-use). The tool calls it before
     /// executing an action carrying a `confirm_id`; the token must exactly
-    /// match **this** session and the action summary (review finding: a bare
-    /// string token could be spent on any action/session). On a match,
-    /// execution proceeds — no second screening (mainstream model: the API
-    /// confirmation is just a per-action confirmation id; once the client
-    /// acknowledges, execute); on a mismatch the token is kept (under exact
-    /// binding, the only combination that can pass is the user-approved
-    /// original action replay — a wrong attempt should not burn the user's
-    /// confirmation).
+    /// match **this** session, the action summary **and** the action content
+    /// hash (review finding: a summary-only binding let a token approved for
+    /// one `type N characters` be spent on a different same-length text — the
+    /// user approves a summary for readability but the token is bound to the
+    /// full action content). On a match, execution proceeds — no second
+    /// screening (mainstream model: the API confirmation is just a per-action
+    /// confirmation id; once the client acknowledges, execute); on a mismatch
+    /// the token is kept (under exact binding, the only combination that can
+    /// pass is the user-approved original action replay — a wrong attempt
+    /// should not burn the user's confirmation).
     pub fn take_confirmation(
         &self,
         confirm_id: &str,
         session_id: &str,
         action_summary: &str,
+        action_binding: u64,
     ) -> ConfirmationCheck {
         let now = Instant::now();
         let mut consent = self.consent.lock();
@@ -515,7 +567,10 @@ impl ComputerUseShared {
             consent.approved_tokens.remove(confirm_id);
             return ConfirmationCheck::Unknown;
         }
-        if token.session_id != session_id || token.action_summary != action_summary {
+        if token.session_id != session_id
+            || token.action_summary != action_summary
+            || token.action_binding != action_binding
+        {
             return ConfirmationCheck::Unknown;
         }
         consent.approved_tokens.remove(confirm_id);
@@ -534,8 +589,10 @@ mod tests {
     }
 
     /// Test convenience wrapper: the standard three-argument pending / spend.
+    /// Tests that don't exercise the content binding pass a zero binding on
+    /// both sides (mint copies it verbatim, spend compares it verbatim).
     fn new_pending(shared: &ComputerUseShared, session: &str, summary: &str) -> String {
-        shared.new_pending_confirmation(session, summary, "Buy now")
+        shared.new_pending_confirmation(session, summary, "Buy now", 0)
     }
 
     fn take(
@@ -544,7 +601,7 @@ mod tests {
         session: &str,
         summary: &str,
     ) -> ConfirmationCheck {
-        shared.take_confirmation(id, session, summary)
+        shared.take_confirmation(id, session, summary, 0)
     }
 
     #[test]
@@ -665,10 +722,21 @@ mod tests {
             "口座に送金",
             "注文を確定",
             "購買",
+            "下单",
+            "下單",
+            "确认充值",
+            "儲值",
+            "捐款",
+            "投資",
+            "訂閱方案",
+            "Subscribe to plan",
+            "Donate",
+            "Top-up wallet",
             // Sends.
             "Send message",
             "发送",
             "傳送",
+            "送出訂單",
             "メッセージを送信",
             // Irreversible deletion (including drag destinations).
             "Delete file",
@@ -683,6 +751,8 @@ mod tests {
             "刪除檔案",
             "資源回收筒",
             "ファイルを削除",
+            "格式化硬盘",
+            "フォーマット実行",
             // Submission.
             "submit form",
             "提交订单",
@@ -1061,5 +1131,72 @@ mod tests {
                 "each token is single-use"
             );
         }
+    }
+
+    /// Review finding (stop race): a pending that an in-flight run re-creates
+    /// AFTER stop_all must not mint a token while the stop latch is raised —
+    /// and must still be unusable after a later re-enable (reset_stop sweeps
+    /// consent created during the stopped window).
+    #[test]
+    fn mint_refuses_consent_created_while_stopped() {
+        let shared = enabled_shared();
+        shared.stop_all();
+        let id = new_pending(&shared, "s1", "left click");
+        assert!(
+            !shared.mint_confirmation(&id),
+            "mint must refuse while the stop latch is raised"
+        );
+        // Re-enabling sweeps the stopped-window pending: the stale dialog
+        // stays dead even though the stop flag is now cleared.
+        shared.reset_stop();
+        assert!(
+            !shared.mint_confirmation(&id),
+            "a pending created during the stop window must not mint after resume"
+        );
+        assert!(shared.pending_confirmation(&id).is_none());
+    }
+
+    /// Review finding (stop race, mint side): a token minted before the stop
+    /// is wiped by stop_all and cannot be resurrected by a re-enable.
+    #[test]
+    fn stop_then_resume_leaves_no_mintable_token() {
+        let shared = enabled_shared();
+        let id = new_pending(&shared, "s1", "left click");
+        assert!(shared.mint_confirmation(&id));
+        shared.stop_all();
+        shared.reset_stop();
+        assert_eq!(
+            take(&shared, &id, "s1", "left click"),
+            ConfirmationCheck::Unknown,
+            "no token may survive stop → resume"
+        );
+    }
+
+    /// Review finding (content binding): the token is bound to the action
+    /// content hash in addition to the summary — a same-summary,
+    /// different-content spend is rejected and keeps the token.
+    #[test]
+    fn token_binding_covers_the_action_content() {
+        let shared = enabled_shared();
+        let id = shared.new_pending_confirmation("s1", "type 3 characters", "field", 42);
+        assert!(shared.mint_confirmation(&id));
+        assert_eq!(
+            shared.take_confirmation(&id, "s1", "type 3 characters", 43),
+            ConfirmationCheck::Unknown,
+            "a different content hash must not spend the token"
+        );
+        assert_eq!(
+            shared.take_confirmation(&id, "s1", "type 3 characters", 42),
+            ConfirmationCheck::Granted,
+            "the exact approved content spends it; the failed attempt kept the token"
+        );
+        // Mint refuses while disabled, too (toggle-off race symmetry).
+        let shared2 = enabled_shared();
+        let id2 = shared2.new_pending_confirmation("s2", "left click", "Buy now", 7);
+        shared2.set_enabled(false);
+        assert!(
+            !shared2.mint_confirmation(&id2),
+            "mint must refuse while the master switch is off"
+        );
     }
 }
