@@ -368,14 +368,12 @@ fn sessions_show_limits_and_exports_transcript() {
         run(&["pinvou", "sessions", "show", &id, "--last", "1"]).expect("human show with --last");
     assert!(
         outcome.stdout.contains("messages: 2 (showing 1)"),
-        "{}",
-        outcome.stdout
+        "human show with --last reported the wrong message counts"
     );
     let outcome = run(&["pinvou", "sessions", "show", &id]).expect("human show");
     assert!(
         outcome.stdout.contains("messages: 2 (showing 2)"),
-        "{}",
-        outcome.stdout
+        "human show reported the wrong message counts"
     );
 
     // markdown export is a human-readable transcript with role headers

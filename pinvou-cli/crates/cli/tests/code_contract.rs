@@ -1142,6 +1142,8 @@ fn whole_workspace_diff_truncates_without_accumulating_over_the_cap() {
 /// reads, English section copy, whole-workspace composition are CLI-specific),
 /// so its output is differentially pinned against the app module on the same
 /// fixture tree: identical `truncated` flags and identical git diff bodies.
+/// Unix-only like the env-var guard it shares with the other git lanes.
+#[cfg(unix)]
 #[test]
 fn workspace_diff_stays_pinned_to_the_app_module_on_a_fixture() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

@@ -144,8 +144,14 @@ fn every_projects_subcommand_parses_and_invalid_usage_exits_two() {
             "move" => "Move",
             other => panic!("unmapped subcommand {other}"),
         };
-        assert!(debug.starts_with("Projects("), "{arguments:?} -> {debug}");
-        assert!(debug.contains(variant), "{arguments:?} -> {debug}");
+        assert!(
+            debug.starts_with("Projects("),
+            "{arguments:?} did not render a Projects debug"
+        );
+        assert!(
+            debug.contains(variant),
+            "{arguments:?} did not mention the {variant} subcommand"
+        );
     }
 
     let invalid: Vec<Vec<&str>> = vec![
