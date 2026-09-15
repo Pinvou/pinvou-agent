@@ -21,7 +21,7 @@ import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
 import { COLOR_SCHEME_STORAGE_KEY, normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
 import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
-import { groupSessionsWithProjects, resolveSessionProjectId } from '../features/projects/projectGrouping.js';
+import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfirm } from '../features/projects/projectGrouping.js';
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
 import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
 import { runSessionBatch } from '../shared/session-management.js';
@@ -1695,6 +1695,10 @@ const NAV_PREFETCH = {
       const [settingsToast, setSettingsToast] = useState('');
       const [projectOpsBusy, setProjectOpsBusy] = useState(false);
       const [moveToProjectSession, setMoveToProjectSession] = useState(null);
+      const [moveToPresetProject, setMoveToPresetProject] = useState(null);
+      // 拖拽高亮的唯一所有者:源行 dragend 无条件清除,webview 丢 dragleave
+      // 事件时高亮也不会卡死(评审 #450 finding 5)。
+      const [dropTargetGroupKey, setDropTargetGroupKey] = useState(null);
       // 稳定入口:RecentItem 的 memo 依赖 prop 引用稳定(NavigationComponents
       // 内注释),内联箭头会让每个 App 重渲染(每个流式 token 批次)重渲染
       // 全部 codex 侧栏行;identity 只在门控布尔翻转(项目从无到有/反之)时
@@ -1702,9 +1706,12 @@ const NAV_PREFETCH = {
       // movePickerRestoreRef:移动成功的 regroup 会把出发行重新挂到新的分组
       // 容器下,原标签节点随之销毁,被动还原会因 isConnected 失败跳过——
       // 成功时按会话键解析新节点,交给 useDialogFocusRestore 的关闭时还原。
+      // menu 打开时一并清陈旧拖拽预置,避免上一次落点残留到本次选择
+      // (finding 7;setState 引用稳定,不影响本回调的 identity)。
       const movePickerRestoreRef = useRef(null);
       const openMovePicker = useCallback((target) => {
         movePickerRestoreRef.current = null;
+        setMoveToPresetProject(null);
         setMoveToProjectSession(target);
       }, []);
       // 桥完成首次状态同步(bs 就绪)后拉一次项目快照;后续变更由
@@ -2579,12 +2586,34 @@ const NAV_PREFETCH = {
           return row ? row.querySelector('button[data-drag-surface]') : null;
         };
         setMoveToProjectSession(current => (current && current.id === sessionId) ? null : current);
+        // 提交后一并清预置目标,避免残留状态泄漏到下一次打开(finding 7)。
+        setMoveToPresetProject(null);
         setSettingsToast(
           outcome && outcome.added_root
             ? t.uiProjects.movedNoticeWithFolder(outcome.added_root)
             : t.uiProjects.movedNotice,
         );
       });
+      // 拖拽落点:root 已覆盖的直接移动;未覆盖的带着预置目标打开选择器,
+      // 进入"添加文件夹"确认(menu 路径则不带预置)。判定用共享的
+      // needsAddFolderConfirm,与选择器的初始化器/选择路径保持同源。
+      const handleDropSessionOnProject = (sessionId, projectId) => {
+        const chat = sidebarTaskHistory.find(c => c.id === sessionId);
+        if (!chat) return;
+        const projects = sidebarProjectsData ? sidebarProjectsData.projects : [];
+        const target = (projects || []).find(p => p && p.id === projectId);
+        if (!target) return;
+        // 拖回当前所属项目 = 选择器里禁用当前项的同一语义,直接忽略。
+        if (resolveSessionProjectId(chat, projects, sidebarProjectsData ? sidebarProjectsData.assignments : {}) === projectId) return;
+        if (needsAddFolderConfirm(chat, target)) {
+          setMoveToPresetProject(projectId);
+          setMoveToProjectSession(chat);
+          return;
+        }
+        // projectOpsBusy 时静默忽略与侧栏其他拖拽反馈一致(runProjectOp
+        // 内部同样有 busy 守卫),不额外打断。
+        handleMoveSessionToProject(sessionId, projectId, false);
+      };
 
       function sessionRowsForIds(ids) {
         const byId = new Map(allSidebarTasks.map(item => [item.id, item]));
@@ -2865,6 +2894,9 @@ const NAV_PREFETCH = {
             onMoveToProject={chat.taskKind === 'codex' && bridge.projects && sidebarProjectsData?.projects?.length
               ? openMovePicker
               : undefined}
+            dndPayload={chat.taskKind === 'codex' && bridge.projects && sidebarCodeListActive ? { sessionId: chat.id } : undefined}
+            dndDisabled={!!dragAvatar}
+            onDragEnd={() => setDropTargetGroupKey(null)}
             dragKind={detachKind}
             dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
             onPickUp={canDetachWindows
@@ -3074,10 +3106,11 @@ const NAV_PREFETCH = {
                 sidebarProjectsData ? sidebarProjectsData.projects : [],
                 sidebarProjectsData ? sidebarProjectsData.assignments : {},
               )}
+              presetProjectId={moveToPresetProject}
               t={t}
               busy={projectOpsBusy}
               restoreTargetRef={movePickerRestoreRef}
-              onClose={() => setMoveToProjectSession(null)}
+              onClose={() => { setMoveToPresetProject(null); setMoveToProjectSession(null); }}
               onMove={(projectId, addWorkspaceRoot) => handleMoveSessionToProject(
                 moveToProjectSession.id, projectId, addWorkspaceRoot)}
             />
@@ -3461,6 +3494,9 @@ const NAV_PREFETCH = {
                                   onConvert={bridge.projects && group.kind === 'folder' ? (name) => handleConvertFolderToProject(group.path, name) : undefined}
                                   onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
                                   onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
+                                  onDropSession={bridge.projects && group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
+                                  dropActive={dropTargetGroupKey === group.key}
+                                  onDropActive={(active) => setDropTargetGroupKey(active ? group.key : null)}
                                 />
                                 {isOpen && (
                                   <div className="mt-1 space-y-0.5">
