@@ -2,11 +2,14 @@
  * multiagent feature for the Tauri bridge.
  * Registered before bridge.js builds the backwards-compatible facade.
  *
- * ADR-0006 之后这里只剩薄薄一层：多智能体 = 普通会话能力 + 主动委派。
- * 子智能体的身份/状态/记录由底座落盘（worker ledger + transcripts），
- * 本域只做两件事：读取子智能体列表与对话记录、把子智能体相关的桥事件
- * 转成 DOM 事件供行内专家卡自订阅（不维护任何运行状态机）。旧的
- * startRun 独立入口已随会话级开关上线退役（开关见 interaction 域）。
+ * After ADR-0006 this is a thin layer: multi-agent = plain-session capability
+ * + proactive delegation. Subagent identity/status/records are persisted by
+ * the foundation (worker ledger + transcripts); this domain only reads the
+ * subagent list and transcripts and forwards subagent bridge events as DOM
+ * events for the running overlay, the spawn count rows, and the transcript
+ * panel to subscribe to (no run-state machine of its own). The old startRun
+ * standalone entry was retired with the session-level switch (see the
+ * interaction domain).
  */
 (function (root) {
   // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim classic-script artifact; strict mode is part of the payload
@@ -18,11 +21,14 @@
     const listen = context.listen;
 
     /**
-     * 子智能体列表（底座 worker ledger 为主表、transcripts 为附表的只读投影）。
-     * 工作模式与品悟原生 Code 多智能体会话可用；重启后依然可查。读取失败返回 null 而不是 []：权限错误/
-     * 文件损坏/命令失败若降级成空表，界面会把故障伪装成"没有子智能体"
-     * （复核 P2）。调用方保留上次有效数据；转写面板会显示读取失败提示，浮层
-     * 则依赖轮询自愈，轮询自动重试。
+     * Subagent list (read-only projection: the foundation worker ledger as the
+     * main table, transcripts as the attached one). Available in swarm sessions
+     * and Pinvou native Code sessions; survives restarts. A failed read
+     * returns null instead of []: downgrading a permission error / corrupted
+     * file / command failure to an empty list would make the UI disguise the
+     * fault as "no subagents" (review P2). Callers keep their last valid data;
+     * the transcript panel shows a read-failure notice, and the overlay heals
+     * through its poll, which retries automatically.
      */
     async function listSubagentTranscripts(runId) {
       try {
@@ -47,14 +53,16 @@
       }
     }
 
-    // 子智能体进展/完成 → DOM 事件。行内专家卡与面板按 agent_id 自订阅，
-    // 不经全局 store（避免重建一套运行状态机）。
+    // Subagent progress/completion → DOM events. The running overlay, the
+    // count rows' fallbacks, and the transcript panel subscribe by agent_id;
+    // no global store (that would rebuild a run-state machine).
     function dispatchSubagentUpdate(payload) {
       if (typeof root.dispatchEvent !== "function" || typeof root.CustomEvent !== "function") return;
       try {
         root.dispatchEvent(new root.CustomEvent("pinvou:subagent-update", { detail: payload }));
       } catch {
-        // CustomEvent 不可用（极旧 webview）时静默降级：界面还有轮询兜底。
+        // No CustomEvent (very old webview): degrade silently — the UI still
+        // has the poll fallback.
       }
     }
 
