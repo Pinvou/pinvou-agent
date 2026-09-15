@@ -28,6 +28,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use deepseek_tui::AppMode;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::features::assistant::attachments::{
@@ -237,11 +238,11 @@ pub fn run_agentic_task_headless(request: AgenticTaskRequest) -> Result<AgenticT
 /// (request validation, model pin, session prepare, submit) propagate as `Err`
 /// instead — the CLI surfaces those as exit 1 without a report.
 ///
-/// Persisting counts against the shared 50-session retention cap: when the
-/// store was already at the cap before a fresh run, the prepare-time save
-/// evicts the oldest GUI chat sessions (pinned included) and a stderr warning
-/// says so, so a batch harness pointed at the desktop's default `PINVOU3_HOME`
-/// is not silent about the data loss.
+/// Persisting counts against the shared 50-session retention cap: when a
+/// fresh run's prepare-time save evicts chat sessions at the cap (pinned
+/// ones included), the store's real eviction events drive a stderr warning,
+/// so a batch harness pointed at the desktop's default `PINVOU3_HOME` is not
+/// silent about the data loss — even when the run errors after the save.
 ///
 /// The execution root resolver must be registered before the pool enters an
 /// `Arc` (the bridge setter needs `&mut self`), which is why this function
@@ -285,15 +286,16 @@ pub async fn run_agentic_task(
     store.set_execution_root_resolver(resolver);
     let runtime = EnginePoolRuntime::new(Arc::new(pool));
 
-    // Pre-run retention sampling: the prepare-time save inside the turn lands
-    // in the same 50-session store the GUI reads, and a fresh save at the cap
-    // evicts the oldest chat session(s) — pinned ones included. Retention
-    // trims to exactly the cap, so a pre-run count at/above the cap is what
-    // makes THIS run evict (a post-run count would also fire when 49 grew to
-    // 50 with nothing evicted). A caller-provided session only rewrites an
-    // existing record, so it never creates a slot and cannot evict.
-    let evicts_chat_sessions =
-        !existing_session && store.retained_chat_session_count() >= MAX_SESSIONS_PER_KIND;
+    // Retention-eviction observation: the prepare-time save inside the turn
+    // lands in the same 50-session store the GUI reads, and a fresh save at
+    // the cap evicts the oldest chat session(s) — pinned ones included. The
+    // store reports its real sweep deletions into this receiver, so the
+    // warning keys on the eviction event itself: a run that errors after the
+    // save (attachment staging, submit) must still surface the eviction, and
+    // a run that fails before saving evicts nothing and stays silent. A
+    // pre-/post-run count heuristic cannot tell those apart.
+    let evictions = Arc::new(Mutex::new(Vec::new()));
+    store.set_retention_eviction_observer(Some(evictions.clone()));
     let outcome = run_turn(
         &runtime,
         &store,
@@ -327,18 +329,21 @@ pub async fn run_agentic_task(
         runtime.schedule_eval_cleanup(&session_id);
         let _ = runtime.close_eval_session_result(&session_id).await;
     }
-    // The prepare-time save happened before any setup fault could surface, so
-    // the eviction is real even when the report carries an error or the run
-    // cleaned its own session up afterwards — warn on every completed run,
-    // not just the keep-session path.
-    if evicts_chat_sessions && outcome.is_ok() {
+    // Disarm before reporting: the prepare-time save happened before any setup
+    // fault could surface, so the evictions are real regardless of the final
+    // outcome — the report may carry an error, and the run may have cleaned
+    // its own session up afterwards.
+    store.take_retention_eviction_observer();
+    let evicted = evictions.lock();
+    if !evicted.is_empty() {
         eprintln!(
-            "[pinvou agent run] warning: the session store was already at the \
-             {MAX_SESSIONS_PER_KIND}-session retention cap before this run; persisting \
-             this run's session evicted the oldest chat session(s), pinned ones \
-             included. Point PINVOU3_HOME at a sandbox or prune the session store \
-             (PINVOU3_AGENT_TASK_KEEP_SESSION=0 only removes this run's session \
-             afterwards; the save-time eviction still happens)."
+            "[pinvou agent run] warning: persisting this run's session evicted \
+             {} chat session(s) at the {MAX_SESSIONS_PER_KIND}-session retention \
+             cap, pinned ones included. Point PINVOU3_HOME at a sandbox or prune \
+             the session store (PINVOU3_AGENT_TASK_KEEP_SESSION=0 only removes \
+             this run's session afterwards; the save-time eviction still \
+             happens).",
+            evicted.len()
         );
     }
     outcome
@@ -1095,11 +1100,12 @@ mod tests {
         // `_env` restores the captured PINVOU3_HOME on return or panic.
     }
 
-    /// The retention-warning gate counts exactly what the sweep trims: at the
-    /// cap a fresh save evicts the oldest record, below it nothing does, and
-    /// `sched-` records never enter the count on either side.
+    /// The eviction warning keys on the real retention event, not the turn's
+    /// final outcome: the prepare-time save of a fresh session at the cap
+    /// evicts and is recorded even when the run errors afterwards, while a
+    /// save below the cap evicts nothing and must stay silent.
     #[test]
-    fn fresh_save_at_retention_cap_is_what_evicts() {
+    fn retention_eviction_observed_even_when_turn_errors_after_prepare() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
         let tmp = std::env::temp_dir().join(format!(
             "pinvou3-agentic-retention-test-{}",
@@ -1111,7 +1117,6 @@ mod tests {
         // SAFETY: ENV_LOCK held; env writes are serialized across tests.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
-        assert_eq!(store.retained_chat_session_count(), 0);
 
         let mut ids = Vec::new();
         for _ in 0..MAX_SESSIONS_PER_KIND {
@@ -1120,26 +1125,52 @@ mod tests {
                 .unwrap();
             ids.push(session.metadata.id);
         }
-        // At the cap: the pre-run state in which this run's fresh save evicts,
-        // so the warning gate must be armed.
-        assert_eq!(store.retained_chat_session_count(), MAX_SESSIONS_PER_KIND);
+
+        // Arm the same receiver `run_agentic_task` installs around the turn.
+        let evictions = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        store.set_retention_eviction_observer(Some(evictions.clone()));
+
+        // The prepare-time save of a fresh run at the cap — the exact call
+        // `prepare_eval_session` makes — evicts the oldest session...
         let oldest = ids[0].clone();
         store
-            .create_new("test-model".to_string(), None, tmp.clone())
+            .create_empty_with_id(
+                "agentic_probe_1".to_string(),
+                "test-model".to_string(),
+                None,
+                tmp.clone(),
+            )
             .unwrap();
-        // The sweep trimmed back to the cap by deleting the oldest record.
-        assert_eq!(store.retained_chat_session_count(), MAX_SESSIONS_PER_KIND);
         assert!(
             store.load(&oldest).is_err(),
             "oldest session must be evicted by the save at the cap"
         );
+        // ...and the record stands on its own: an attachment/submit failure
+        // after this point returns `Err`, but the eviction already happened
+        // and the warning must still see it (no turn outcome consulted).
+        assert_eq!(evictions.lock().as_slice(), &[oldest]);
 
-        // Below the cap nothing evicts and the gate stays disarmed.
+        // Disarm exactly like the runner does before reporting.
+        let evicted = store.take_retention_eviction_observer().unwrap();
+        assert_eq!(evicted.lock().as_slice(), &[ids[0].clone()]);
+
+        // Below the cap a fresh save evicts nothing and records nothing.
         store.delete(&ids[MAX_SESSIONS_PER_KIND - 1]).unwrap();
-        assert_eq!(
-            store.retained_chat_session_count(),
-            MAX_SESSIONS_PER_KIND - 1
+        let evictions = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        store.set_retention_eviction_observer(Some(evictions.clone()));
+        store
+            .create_empty_with_id(
+                "agentic_probe_2".to_string(),
+                "test-model".to_string(),
+                None,
+                tmp.clone(),
+            )
+            .unwrap();
+        assert!(
+            evictions.lock().is_empty(),
+            "a save below the cap must not be reported as an eviction"
         );
+        store.take_retention_eviction_observer();
         // `_env` restores the captured PINVOU3_HOME on return or panic.
     }
 
