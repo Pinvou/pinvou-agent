@@ -27,6 +27,9 @@ if [ ! -f "$SOURCE" ]; then
   exit 1
 fi
 
+# Same maximum-compression repack as release-packages.yml (data.tar gzip-6 → xz -9).
+"$REPO_ROOT/scripts/repack-deb-xz.sh" "$SOURCE"
+
 cp "$SOURCE" "$ASSET"
 sha256sum "$ASSET" > "$ASSET.sha256"
 gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
