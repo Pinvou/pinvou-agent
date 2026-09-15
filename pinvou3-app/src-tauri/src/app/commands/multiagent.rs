@@ -14,7 +14,7 @@ use crate::features::multiagent;
 /// Swarm mode system prompt: injected verbatim, never rewritten. It goes
 /// before the per-turn delegation reminder on the same composition chain
 /// (`{swarm_prompt}\n\n{reminder}\n\n---\n\n{content}`).
-pub(crate) const SWARM_MODE_PROMPT: &str = "This is a system message. User has activated Pinvou swarm mode, which means the user wants as much subagents as possible to finish this task. You should carefully figure out which parts of your task can be parallelized and launch them as subagents. Do consider conflict and dependency between subagents and do tell subagents about potential conflict if any. Do not launch subagents without reasonable improvement only to satisfy the swarm mode itself.";
+pub(crate) const SWARM_MODE_PROMPT: &str = "This is a system message. User has activated Pinvou swarm mode, which means the user wants as many subagents as possible to finish this task. You should carefully figure out which parts of your task can be parallelized and launch them as subagents. Do consider conflict and dependency between subagents and do tell subagents about potential conflict if any. Do not launch subagents without reasonable improvement only to satisfy the swarm mode itself.";
 
 /// Per-turn reminder numbers for the multi-agent resource caps (must match the
 /// MULTI_AGENT_* constants in bridge.rs).
@@ -339,7 +339,7 @@ mod tests {
                 && msg.contains("不要传任何正数深度覆盖值")
                 && msg.contains("同时执行最多 4 个")
                 && msg.contains("合计最多 8 个"),
-            "multi-agent reminder must state the two-level delegation and the concurrency/admission caps (Work tier): {msg}"
+            "multi-agent reminder must state the two-level delegation and the concurrency/admission caps (shared tier): {msg}"
         );
         assert!(
             msg.contains("Git 与工作区策略由你按任务自主完成")
@@ -457,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    fn delegation_reminder_uses_work_resource_limits() {
+    fn delegation_reminder_uses_shared_resource_limits() {
         let msg = delegation_reminder("审查 React 前端代码", capped_limits());
 
         assert!(!msg.contains("工作会话"));
@@ -532,7 +532,7 @@ mod tests {
         assert_eq!(
             SWARM_MODE_PROMPT,
             "This is a system message. User has activated Pinvou swarm mode, \
-             which means the user wants as much subagents as possible to finish \
+             which means the user wants as many subagents as possible to finish \
              this task. You should carefully figure out which parts of your task \
              can be parallelized and launch them as subagents. Do consider \
              conflict and dependency between subagents and do tell subagents \
