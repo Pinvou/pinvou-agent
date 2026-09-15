@@ -2554,6 +2554,15 @@ const NAV_PREFETCH = {
       // 成功只关"这一笔"的弹窗:异步落地期间用户可能已把选择器换到另一个
       // 会话上,无条件清 slot 会把别人的弹窗关掉。
       const handleMoveSessionToProject = (sessionId, projectId, addWorkspaceRoot) => runProjectOp(async (p) => {
+        // The picker holds the snapshot it was opened with; if the session
+        // vanished meanwhile (e.g. deleted from another window), the store
+        // rejects every attempt and the confirm panel retries a doomed op
+        // forever — the dead-target loop the pendingProject derivation
+        // already prevents for projects. Retire the picker instead.
+        if (!(allSidebarTasksRef.current || []).some(task => task.id === sessionId)) {
+          setMoveToProjectSession(current => (current && current.id === sessionId) ? null : current);
+          return;
+        }
         const outcome = await p.moveSessionToProject(sessionId, projectId, addWorkspaceRoot);
         // The bridge notifies before this op resolves, but the sidebar
         // regroup that notification triggers is an asynchronous React commit
