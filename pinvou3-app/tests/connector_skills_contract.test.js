@@ -67,8 +67,10 @@ for (const f of docs) {
 // 目录时，被删文件可能以不自指内容回归，直接断言路径不存在。
 const removedFiles = [
   ["dingtalk-skills", "dws", "references", "channel-login.md"],
-  ["skills", "lark-calendar", "references", "lark-calendar-agenda.md"],
-  ["skills", "lark-calendar", "references", "lark-calendar-freebusy.md"],
+  // PR#302 relocated the lark pack root to lark-skills/: the guard must
+  // watch the live parent, or a restored file slips through vacuously.
+  ["lark-skills", "lark-calendar", "references", "lark-calendar-agenda.md"],
+  ["lark-skills", "lark-calendar", "references", "lark-calendar-freebusy.md"],
 ];
 for (const parts of removedFiles) {
   assert.ok(!fs.existsSync(bundle(...parts)), `${parts.join("/")}: 已删除文件复发（见 NOTICE 登记）`);
