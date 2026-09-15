@@ -257,6 +257,9 @@ impl Store {
     /// version can be read, the error must surface as-is and let the caller
     /// decide whether to retry: failing the open outright always beats a
     /// wrong deletion.
+    ///
+    /// A store written by a newer binary is never deleted by a downgrade:
+    /// the open refuses with a clear error and leaves every file intact.
     pub fn open(db_path: &Path) -> rusqlite::Result<Self> {
         if let Some(parent) = db_path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -270,6 +273,19 @@ impl Store {
         } else {
             None
         }; // the probe connection must drop here so the file can be deleted below
+        // A store written by a NEWER binary must never be deleted by a
+        // downgrade: refuse with a clear error and leave every file intact.
+        if let Some(version) = current_version {
+            if version > SCHEMA_VERSION {
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_NOTADB),
+                    Some(format!(
+                        "knowledge store was written by a newer version (schema v{version} \
+                         > v{SCHEMA_VERSION}); upgrade pinvou"
+                    )),
+                ));
+            }
+        }
         // v3 首次包含不可重建的知识集业务数据，必须原地迁移；更旧的版本仅含可重扫的 L0 索引。
         let stale =
             matches!(current_version, Some(version) if version != 3 && version != SCHEMA_VERSION);
@@ -944,6 +960,44 @@ mod tests {
         assert_eq!(import_table, 1);
         drop(conn);
         drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    #[test]
+    fn newer_schema_store_is_refused_without_deleting_files() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pinvou3_store_newer_{}_{}.db",
+            std::process::id(),
+            suffix
+        ));
+        // Build a valid store first, then pretend a newer binary wrote it.
+        drop(Store::open(&path).unwrap());
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch(&format!("PRAGMA user_version = {};", SCHEMA_VERSION + 1))
+            .unwrap();
+        drop(c);
+
+        let error = match Store::open(&path) {
+            Ok(_) => panic!("newer-schema store must be refused, not reopened"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("newer version") && message.contains("upgrade pinvou"),
+            "{message}"
+        );
+        // The refusal happens before any destructive step: the store files
+        // stay intact for the newer binary.
+        assert!(path.exists(), "store file must survive the refusal");
+
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
