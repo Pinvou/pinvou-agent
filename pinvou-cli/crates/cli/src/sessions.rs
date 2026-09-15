@@ -485,7 +485,7 @@ fn show(
         })
         .collect::<Vec<_>>();
     let mut human = format!(
-        "id: {}\ntitle: {}\nkind: {}\nupdated: {}\nmessages: {}",
+        "id: {}\ntitle: {}\nkind: {}\nupdated: {}\nmessages: {} (showing {})",
         id,
         value
             .pointer("/metadata/title")
@@ -496,6 +496,7 @@ fn show(
             .pointer("/metadata/updated_at")
             .and_then(|value| value.as_str())
             .unwrap_or(""),
+        total_messages,
         rendered.len(),
     );
     for (index, message) in rendered.iter().enumerate() {
