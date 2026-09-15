@@ -613,6 +613,7 @@ fn overview(output: OutputMode) -> Result<CliOutcome, CliError> {
     // Same gate as the GUI overview: refresh snapshot.md only when every
     // authoritative source is available, otherwise defer (a partial read must
     // not wipe that category from the snapshot document).
+    let mut snapshot_failed = false;
     let snapshot_path = if sources.values().all(available) {
         match feature::write_memory_snapshot_document(
             &profile,
@@ -645,6 +646,7 @@ fn overview(output: OutputMode) -> Result<CliOutcome, CliError> {
                     false,
                     Some("snapshot_refresh_failed"),
                 );
+                snapshot_failed = true;
                 String::new()
             }
         }
@@ -682,10 +684,12 @@ fn overview(output: OutputMode) -> Result<CliOutcome, CliError> {
     lines.push("Runtime: none".to_owned());
     lines.push(format!(
         "Snapshot: {}",
-        if snapshot_path.is_empty() {
-            "(deferred)"
-        } else {
+        if !snapshot_path.is_empty() {
             &snapshot_path
+        } else if snapshot_failed {
+            "(failed)"
+        } else {
+            "(deferred)"
         }
     ));
     append_warning_lines(&mut lines, &warnings);
@@ -964,6 +968,21 @@ fn add(kind: AddKind, source: AddSource, output: OutputMode) -> Result<CliOutcom
 memory profile instead",
         ));
     }
+    // Same fail-before-state-change discipline for work-context: content the
+    // confirm path's sentence cleanup empties ("记住。") would pass the
+    // enqueue gates, then fail inside the work-context write with the
+    // pending entry already stranded. Reject up front, mirroring the
+    // preference probe above.
+    if kind == AddKind::WorkContext
+        && feature::clean_candidate_sentence(&content, feature::WORK_CONTEXT_TEXT_MAX_CHARS)
+            .trim()
+            .is_empty()
+    {
+        return Err(CliError::failed(
+            "memory_add_not_materialized: work-context content is empty after \
+normalization (task-like or punctuation-only text is not stored)",
+        ));
+    }
     // The preference and work-context stores are replace-per-topic: a new
     // item lands in a fixed topic bucket (the CLI adds without a topic, so
     // every add targets the same bucket) and the write deletes that bucket's
@@ -1137,8 +1156,18 @@ work-context, current-focus, recent-activity)",
         Some(warning) => format!("{human}\nwarning: {warning}"),
         None => human,
     };
+    // Item fields stay top-level with `warning` appended (mirroring `add`):
+    // nesting the item under a key only when a warning exists would change
+    // the JSON shape exactly when a consumer is least likely to re-check it.
     let value = match warning {
-        Some(warning) => serde_json::json!({ "warning": warning, "item": value }),
+        Some(warning) => {
+            let mut object = match value {
+                serde_json::Value::Object(map) => map,
+                other => serde_json::Map::from_iter([("item".to_owned(), other)]),
+            };
+            object.insert("warning".to_owned(), serde_json::Value::String(warning));
+            serde_json::Value::Object(object)
+        }
         None => value,
     };
     Ok(success(render(output, human, &value)))
