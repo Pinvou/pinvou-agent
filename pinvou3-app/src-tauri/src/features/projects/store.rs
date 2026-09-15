@@ -76,6 +76,24 @@ struct StoreState {
 pub struct ProjectStore {
     state: Arc<RwLock<StoreState>>,
     path: Arc<PathBuf>,
+    /// 目录重绑定的进程内临界区标志(Minor 10):check-and-set 在同一把锁内
+    /// 完成,Guard Drop 清零。重绑定跨 projects store / 会话 store / sidecar
+    /// 三处写入,两次并发调用会交错各自的写阶段——单次写原子且重跑收敛,
+    /// 但序列化后可免掉交错期的中间态报告。
+    rebind_gate: Arc<parking_lot::Mutex<bool>>,
+}
+
+/// `begin_rebind` 的 RAII 凭证:持有期间其他 rebind 调用被拒,Drop 清零。
+/// 只持 `Arc<Mutex<bool>>` 不持锁守卫,跨 await 点(Send future)安全;
+/// 清零在 Drop 内完成,错误路径不会留下常闭的栅栏。
+pub struct RebindGate {
+    flag: Arc<parking_lot::Mutex<bool>>,
+}
+
+impl Drop for RebindGate {
+    fn drop(&mut self) {
+        *self.flag.lock() = false;
+    }
 }
 
 /// 进程内单调计数叠加纳秒时间戳生成项目 id:时间戳保证跨进程唯一,
@@ -339,7 +357,23 @@ impl ProjectStore {
         Self {
             state: Arc::new(RwLock::new(state)),
             path: Arc::new(path),
+            rebind_gate: Arc::new(parking_lot::Mutex::new(false)),
         }
+    }
+
+    /// 进入目录重绑定临界区(Minor 10):check-and-set 原子完成,已置位即拒
+    /// (REBIND_IN_PROGRESS 类型化标记,前端按稳定前缀匹配的既有约定处理)。
+    /// 拒绝路径不创建 Guard,凭证 Drop 是唯一清零点,错误路径不留常闭栅栏。
+    pub fn begin_rebind(&self) -> std::result::Result<RebindGate, String> {
+        let mut flag = self.rebind_gate.lock();
+        if *flag {
+            return Err("REBIND_IN_PROGRESS: 另一个目录重绑定正在进行中，请稍后再试".to_string());
+        }
+        *flag = true;
+        drop(flag);
+        Ok(RebindGate {
+            flag: Arc::clone(&self.rebind_gate),
+        })
     }
 
     /// 按 (position, id) 有序返回项目快照。
