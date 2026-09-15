@@ -75,12 +75,11 @@ pub use self::scheduled::{
     ChatEngineState, ScheduledEngineState, ScheduledRunMode, ScheduledRunProfile,
     ScheduledTokenAccounting,
 };
-// Only the benchmark-gated headless runner (agentic_task) mints headless ids
-// and warns about retention eviction, so both re-exports follow its gate.
-// Retention itself reaches `store` directly and needs neither.
-/// Re-export the headless session id prefix: the runner mints ids from it and
-/// retention keys the separate headless eviction budget on it, so the two must
-/// not drift into separate literals.
+// Only the benchmark-gated headless runner (agentic_task) warns about
+// retention eviction, so the re-export follows the same feature gate.
+/// Re-exported for the agentic-run cleanup guard (kept stable alongside the
+/// other historical `crate::features::sessions::X` paths).
+pub use self::store::EVAL_SESSION_FACTORY_TITLE;
 #[cfg(feature = "benchmark-hooks")]
 pub(crate) use self::store::HEADLESS_SESSION_PREFIX;
 /// Re-export the headless retention cap: it is the number the runner's

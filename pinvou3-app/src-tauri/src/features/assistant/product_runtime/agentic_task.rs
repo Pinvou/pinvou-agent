@@ -42,8 +42,8 @@ use crate::features::assistant::product_runtime::{
 };
 use crate::features::files::file_ingest::IngestResult;
 use crate::features::sessions::{
-    ExecutionRootResolver, MAX_HEADLESS_SESSIONS, SessionKind, SessionStore,
-    validate_user_workspace_path,
+    EVAL_SESSION_FACTORY_TITLE, ExecutionRootResolver, MAX_SESSIONS_PER_KIND, SessionKind,
+    SessionStore, validate_user_workspace_path,
 };
 use crate::platform::prefs::UserPrefs;
 
@@ -117,11 +117,12 @@ pub struct AgenticTaskAttachment {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgenticTaskRequest {
     pub prompt: String,
-    /// Task working directory; None = session-private directory (the same
-    /// isolated scratch as eval sessions). With `session_id`, this binds the
-    /// existing session to the directory only when the caller provides it;
-    /// without a `workspace`, the session keeps its own resolution (its
-    /// private scratch), never overriding a pre-existing binding.
+    /// Task working directory; None = the session's own resolution: the
+    /// working directory the session is bound to when it has one (the GUI's
+    /// working-directory bind), else its private scratch (the same isolated
+    /// scratch as eval sessions). With `session_id`, this binds the existing
+    /// session to the directory only when the caller provides it, never
+    /// overriding a pre-existing binding.
     #[serde(default)]
     pub workspace: Option<PathBuf>,
     #[serde(default = "default_timeout_secs")]
@@ -282,7 +283,10 @@ pub async fn run_agentic_task(
     // (fresh or caller-provided); resolution for every other session stays
     // unchanged. A caller-provided session is bound to `workspace` only when
     // the request carries one — an unset workspace keeps the session's own
-    // resolution (its private scratch) instead of overriding it.
+    // resolution chain instead of overriding it: the session's stored
+    // working-directory binding when it has one (the GUI bind), else its
+    // private scratch. A CLI resume of a GUI-bound session therefore runs
+    // in the bound directory.
     //
     // Normalize ONCE and feed the same string to the run-scoped resolver and
     // the durable binding below: a raw `--workspace` and its normalized form
@@ -386,20 +390,41 @@ pub async fn run_agentic_task(
     //
     // One exception to keep-by-default: an `Err` outcome on a FRESHLY
     // created session. The session was created by prepare under the eval
-    // factory title ("临时评测") and the turn never produced a report (the
-    // CLI rename never ran either — the CLI got `Err`), so keeping it would
-    // leave an empty eval-titled stray chat in the GUI's session list. Such
-    // a session is deleted through the exact cleanup the KEEP=0 branch uses
-    // (same order: schedule the late sweep, then the turn-gated delete).
-    // Both steps are best-effort and the delete result is discarded, so a
-    // failed cleanup never masks the original error returned below. Failures
+    // factory title and the turn never produced a report (the CLI rename
+    // never ran either — the CLI got `Err`), so keeping it would leave an
+    // empty eval-titled stray chat in the GUI's session list. Such a session
+    // is deleted through the exact cleanup the KEEP=0 branch uses (same
+    // order: schedule the late sweep, then the turn-gated delete) — but only
+    // while it still wears the factory title: a GUI user who adopted the
+    // session mid-run (renamed it in the session list) owns it now, and
+    // their rename must survive a failed run. An explicit
+    // PINVOU3_AGENT_TASK_KEEP_SESSION=0 sandbox stays unconditional — the
+    // harness opted into one-shot cleanup for its own store. Both cleanup
+    // steps are best-effort and the delete result is discarded, so a failed
+    // cleanup never masks the original error returned below. Failures
     // before prepare created anything degrade to a no-op: the delete of a
     // not-yet-existing id fails with NotFound and the late sweep of its
     // (absent) directory converges immediately.
     let keep_session = keep_session_from_env();
     if existing_session {
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
-    } else if !submitted || outcome.is_err() || !keep_session {
+    } else if !submitted {
+        crate::features::assistant::timing::unregister_eval_observation(&session_id);
+        runtime.schedule_eval_cleanup(&session_id);
+        let _ = runtime.close_eval_session_result(&session_id).await;
+    } else if outcome.is_err() {
+        let factory_titled = store
+            .load(&session_id)
+            .map(|record| record.metadata.title == EVAL_SESSION_FACTORY_TITLE)
+            .unwrap_or(false);
+        if factory_titled {
+            crate::features::assistant::timing::unregister_eval_observation(&session_id);
+            runtime.schedule_eval_cleanup(&session_id);
+            let _ = runtime.close_eval_session_result(&session_id).await;
+        } else {
+            crate::features::assistant::timing::unregister_eval_observation(&session_id);
+        }
+    } else if !keep_session {
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
         // The submit boundary is not atomic with transcript admission: the
         // engine lazily spawns on submit and can durably admit the user

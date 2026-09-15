@@ -501,8 +501,11 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
 /// 6 bytes per input byte (`\uXXXX` for control bytes). A cap anywhere below
 /// that would silently skip exactly the sidecars carrying the biggest
 /// legitimate personas, leaving stale `persona_equipped.json` behind while
-/// delete still reports success. A matching sidecar that cannot be removed
-/// fails the delete instead of silently leaving stale injection state behind.
+/// delete still reports success — so a sidecar that exists but cannot be
+/// inspected (over the cap, unreadable) is recorded in `sidecar_errors` and
+/// warned instead of skipped silently, while a missing one (the normal
+/// unequipped case) stays silent. A matching sidecar that cannot be removed
+/// is reported the same way rather than failing the delete after the fact.
 fn clear_equipped_sidecars(persona_id: &str) -> Result<(Vec<String>, Vec<String>), CliError> {
     let sessions_dir = sandbox_home()?.join("sessions");
     let entries = match std::fs::read_dir(&sessions_dir) {
@@ -520,10 +523,23 @@ fn clear_equipped_sidecars(persona_id: &str) -> Result<(Vec<String>, Vec<String>
             continue;
         }
         let path = entry.path().join("persona_equipped.json");
-        let Ok(raw) =
-            crate::support::read_text_file_capped(&path, MAX_SIDECAR_BYTES, "personas delete")
-        else {
-            continue;
+        let raw = match crate::support::read_text_file_capped(
+            &path,
+            MAX_SIDECAR_BYTES,
+            "personas delete",
+        ) {
+            Ok(raw) => raw,
+            Err(error) => {
+                // The file exists but cannot be inspected (over the cap,
+                // permissions, vanished mid-read): it may be a ghost the
+                // sweep cannot clear, so surface it instead of a silent
+                // success. A vanished (missing) sidecar is the normal
+                // unequipped case and stays silent.
+                if path.exists() {
+                    sweep_errors.push(format!("{session_id}: {error}"));
+                }
+                continue;
+            }
         };
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
             continue;
@@ -612,6 +628,16 @@ fn persist_equipped_persona(
     let bytes = serde_json::to_vec(&payload).map_err(|error| {
         CliError::failed(format!("cannot serialize session persona sidecar: {error}"))
     })?;
+    // The sweep cap covers the whole serialized sidecar, not just the body:
+    // an uncapped persona id (the app's slugifier imposes no length limit)
+    // could otherwise push a legal body's sidecar past the delete sweep's
+    // read bound and recreate the ghost the checks above prevent.
+    if bytes.len() > MAX_SIDECAR_BYTES {
+        return Err(CliError::failed(
+            "personas equip: the serialized equip state exceeds the sidecar budget; \
+             shrink the persona body or use a shorter persona",
+        ));
+    }
     // Temp + rename (same discipline as the app's atomic writes): a
     // concurrent `active` read must never observe a torn sidecar.
     let nonce = std::time::SystemTime::now()
