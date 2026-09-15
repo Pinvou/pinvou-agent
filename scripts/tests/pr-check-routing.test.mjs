@@ -36,11 +36,39 @@ function stepCondition(text, stepName) {
   return match[1];
 }
 
-// Extract the pull_request.types list of a workflow.
+// Extract the full YAML block of a top-level trigger key: from `  key:` up to
+// the next sibling trigger (2-space indent) or top-level key. Anchoring to
+// the subtree keeps the lookup fail-closed: a reformat of the types list can
+// never silently match another trigger's list (a lazy cross-key match let a
+// block-sequence reformat plus an `edited` regression pass this suite 8/8 —
+// review finding on #501).
+function triggerBlock(text, key) {
+  const start = text.match(new RegExp(`^  ${key}:\\n`, "m"));
+  assert.ok(start, `\`${key}:\` trigger not found`);
+  const rest = text.slice(start.index + start[0].length);
+  const end = rest.search(/^(?: {2}[^ #\s]|\S)/m);
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+// The pull_request.types list in either flow (`types: [a, b]`) or block
+// (`types:\n      - a`) form; any other shape must throw, never fall through
+// to another trigger's list.
 function pullRequestTypes(text) {
-  const match = text.match(/^  pull_request:\n(?:.*\n)*?    types: \[(.+)\]$/m);
-  assert.ok(match, "pull_request.types list not found");
-  return match[1].split(",").map((entry) => entry.trim());
+  const block = triggerBlock(text, "pull_request");
+  const flow = block.match(/^ {4}types: \[(.+)\]$/m);
+  if (flow) {
+    return flow[1]
+      .split(",")
+      .map((entry) => entry.trim().replace(/^['"]|['"]$/g, ""));
+  }
+  const items = [...block.matchAll(/^ {6}- (.+)$/gm)].map((match) =>
+    match[1].trim().replace(/^['"]|['"]$/g, ""),
+  );
+  assert.ok(
+    items.length > 0,
+    "pull_request.types list not found (flow or block form)",
+  );
+  return items;
 }
 
 test("rust_code filter covers plain Rust source changes", () => {
@@ -94,12 +122,16 @@ test("the pr-title context name cannot collide with pr-check.yml job names", () 
   // unique; pin the job name and guard it against later renames on either
   // side (job ids and explicit job names at 2-/4-space indent).
   assert.match(titleWorkflow, /^    name: pr-title$/m, "title gate context must stay `pr-title`");
+  // Quoted keys are legal YAML, and GitHub names the check run after the job
+  // id when no explicit name is set — a bare-word-only scan let `"pr-title":`
+  // recreate the shadowing (review finding on #501). Strip quotes on both
+  // scans.
   const prCheckKeys = [
-    ...workflow.matchAll(/^ {2}([\w-]+):\n/gm),
+    ...workflow.matchAll(/^ {2}"?([\w-]+)"?:\n/gm),
   ].map((match) => match[1]);
   const prCheckJobNames = [
     ...workflow.matchAll(/^ {4}name: (.+)$/gm),
-  ].map((match) => match[1].trim());
+  ].map((match) => match[1].trim().replace(/^['"]|['"]$/g, ""));
   for (const names of [prCheckKeys, prCheckJobNames]) {
     assert.ok(
       !names.includes("pr-title"),
@@ -141,6 +173,14 @@ test("all title-gate runs share one cancel-and-replace concurrency group", () =>
     "concurrency group must be the single PR-keyed group",
   );
   assert.doesNotMatch(concurrency, /changes\./, "no edit-kind routing may remain");
+  // GitHub lets a job-level `concurrency:` key override the workflow-level
+  // group (review finding on #501); ban any indented key so the single
+  // PR-keyed cancel-and-replace group cannot be bypassed from inside a job.
+  assert.doesNotMatch(
+    titleWorkflow,
+    /^ {2,}concurrency:/m,
+    "a job-level concurrency override would bypass the single PR-keyed group",
+  );
 });
 
 test("title gate enforces the convention on the live PR title (squash subject)", () => {
@@ -157,13 +197,27 @@ test("title gate enforces the convention on the live PR title (squash subject)",
     /github\.event\.pull_request\.title/,
     "the event-payload title may be stale; fetch the current title from the API",
   );
+  // Bracket notation or toJSON(github.event) would carry the same stale
+  // payload past the dot-notation ban above (review finding on #501).
+  assert.doesNotMatch(
+    titleWorkflow,
+    /github\s*\[|toJSON\s*\(/,
+    "event-payload access must stay in auditable dot notation",
+  );
   assert.match(
     titleWorkflow,
     /^  pull-requests: read$/m,
     "fetching the current PR title requires pull-requests: read",
   );
-  const step = titleWorkflow.match(
-    /gh api "repos\/\$PR_REPO\/pulls\/\$PR_NUMBER" --jq \.title[\s\S]*?python3 scripts\/validate-commit-msg\.py "\$RUNNER_TEMP\/pr-title"/,
+  // The whole chain must hold: a retry loop around the API fetch, the fetch
+  // landing in exactly the file the validator reads (a chain that fetches
+  // into /dev/null or validates another file must fail here), and the
+  // validator call itself (review finding on #501).
+  const chain = titleWorkflow.match(
+    /for _ in 1 2 3; do[\s\S]*?gh api "repos\/\$PR_REPO\/pulls\/\$PR_NUMBER" --jq \.title > "\$RUNNER_TEMP\/pr-title"[\s\S]*?python3 scripts\/validate-commit-msg\.py "\$RUNNER_TEMP\/pr-title"/,
   );
-  assert.ok(step, "title gate must validate the API-fetched title via validate-commit-msg.py");
+  assert.ok(
+    chain,
+    "title gate must retry-fetch the live title into $RUNNER_TEMP/pr-title and validate exactly that file",
+  );
 });

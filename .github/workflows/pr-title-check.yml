@@ -5,10 +5,13 @@ name: PR Title Check
 # main-branch commit subject verbatim, and merge-queue merges never run the
 # commit-message job of pr-check.yml. This workflow validates the title at
 # PR time — the last point where a violation is still fixable (e.g. #482
-# landed a 53-character subject that kept failing later main pushes). The
-# push leg of pr-check.yml stays the backstop for commits that bypass a PR;
-# the merge_group payload does not expose the PR title, so queue-time
-# validation is not implementable.
+# landed a 53-character subject that its landing push then flagged on main).
+# The push leg of pr-check.yml stays the backstop for commits that bypass a
+# PR; the merge_group payload does not expose the PR title, so queue-time
+# validation from the payload is not implementable (resolving the queued PR
+# from the merge-group head commit via extra API calls would add no real
+# signal: every title edit already fires an `edited` run that re-reads the
+# live title).
 #
 # Why a dedicated workflow instead of a job inside pr-check.yml: routing
 # `edited` through pr-check.yml makes a body-only edit create skipped check
