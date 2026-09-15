@@ -34,6 +34,10 @@
 //!   Chat-kind run-now drives the GUI's `ScheduledChatExecutor` +
 //!   `TaskManager`, which are not exposed headlessly, and is refused with a
 //!   stable error instead of being faked.
+//! - `update` cannot change a task's model: the GUI's `update_task` applies
+//!   `input.model`, while `--model-id` here only re-binds the pin for the
+//!   definition's existing wire model (the GUI's model pinning call). Edit
+//!   the model in the GUI, or delete and recreate the task from the CLI.
 
 use std::path::{Path, PathBuf};
 
@@ -166,7 +170,7 @@ pub enum ScheduledCommand {
 
 /// Fixed AI task-creation prompt served by the GUI `scheduled_task_chat_prompt`
 /// command (`features::scheduled::tasks::SCHEDULED_TASK_CHAT_PROMPT`, copied
-/// verbatim: the GUI feature is `pub(crate)` to `pinvoy3_lib`, so the const
+/// verbatim: the GUI feature is `pub(crate)` to `pinvou3_lib`, so the const
 /// cannot be referenced from the CLI, and this is GUI data the model consumes,
 /// not CLI copy). `chat_prompt_mirrors_the_gui_once_scheduling_guidance` in
 /// scheduled_contract.rs pins the ONCE guidance so copy drift fails CI.
@@ -1261,6 +1265,16 @@ impl TaskStore {
                 ))
             })?;
             ensure_supported_schema(&run, 1, "run record")?;
+            // Same honest-refusal rule as definitions: a non-object run file
+            // (hand-edited store) must not render as a phantom record — the
+            // field defaults would list it as a live run with exit 0.
+            if !run.is_object() {
+                return Err(CliError::failed(format!(
+                    "scheduled_storage_unavailable: {} is valid JSON but not an object (run \
+                     record); fix or remove the file manually",
+                    path.display()
+                )));
+            }
             runs.push(run);
         }
         runs.sort_by(|a, b| record_time(b, "created_at").cmp(&record_time(a, "created_at")));
@@ -1356,16 +1370,34 @@ fn ensure_supported_schema(
 /// every command refuses uniformly, with the same stable message — read-only
 /// `show`/`list` would otherwise render a phantom empty task, and the
 /// `IndexMut` writes in the mutating commands would panic (exit 101, outside
-/// the CLI's exit-code contract).
+/// the CLI's exit-code contract). The required-field check mirrors the
+/// GUI's typed `AutomationRecord` (serde fails the whole store there):
+/// a def missing one of its required fields must not render as a phantom
+/// task either.
 fn require_object_definition(id: &str, def: &serde_json::Value) -> Result<(), CliError> {
-    if def.is_object() {
-        Ok(())
-    } else {
-        Err(CliError::failed(format!(
-            "scheduled task {id} is malformed (not a JSON object); fix or remove its \
-             definition file manually"
-        )))
+    let malformed = || {
+        CliError::failed(format!(
+            "scheduled task {id} is malformed; fix or remove its definition file manually"
+        ))
+    };
+    if !def.is_object() {
+        return Err(malformed());
     }
+    // Required by `AutomationRecord` without #[serde(default)]/Option.
+    for field in [
+        "id",
+        "name",
+        "prompt",
+        "rrule",
+        "status",
+        "created_at",
+        "updated_at",
+    ] {
+        if def.get(field).map(serde_json::Value::is_null) != Some(false) {
+            return Err(malformed());
+        }
+    }
+    Ok(())
 }
 
 fn has_sortable_run_stem(stem: &str) -> bool {
@@ -1491,17 +1523,34 @@ fn registry_shape_valid(value: &serde_json::Value, keys: &[&str]) -> bool {
             .all(|key| value.get(key).is_none_or(Value::is_object))
 }
 
-/// Best-effort `.invalid-<timestamp>` copy of a registry that failed to
-/// parse; failure to quarantine is ignored (the write path still refuses to
-/// treat the file as data — degrading to the default loses only the
-/// malformed file's own content, as before).
+/// Best-effort `.invalid-<timestamp>` quarantine of a registry that failed
+/// to parse; failure to quarantine is ignored (the write path still refuses
+/// to treat the file as data — degrading to the default loses only the
+/// malformed file's own content, as before). The file is renamed aside
+/// (not copied, the GUI's `handle_invalid` semantics): a copy would leave
+/// the malformed bytes at the canonical path and pile up a fresh quarantine
+/// copy on every subsequent read. The degradation is announced on stderr —
+/// silently resetting e.g. the user's viewed-run state looks like success.
 fn quarantine_unreadable(path: &Path) {
     let (secs, nanos) = now_epoch();
     let stamp = format_rfc3339_millis(secs, nanos).replace([':', '.'], "-");
     let mut target = path.as_os_str().to_owned();
     target.push(format!(".invalid-{stamp}"));
-    if path.is_file() {
-        let _ = std::fs::copy(path, PathBuf::from(target));
+    let target = PathBuf::from(target);
+    if !path.is_file() {
+        return;
+    }
+    // Same-directory rename; fall back to copy+remove for exotic mounts
+    // where rename cannot serve.
+    let moved = std::fs::rename(path, &target).or_else(|_| {
+        std::fs::copy(path, &target).and_then(|_| std::fs::remove_file(path).map(|_| ()))
+    });
+    if moved.is_ok() {
+        eprintln!(
+            "pinvou: warning: quarantined malformed registry {} to {}",
+            path.display(),
+            target.display()
+        );
     }
 }
 

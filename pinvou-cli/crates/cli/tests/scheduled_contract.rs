@@ -442,7 +442,7 @@ fn empty_home_lists_nothing_and_chat_prompt_is_available() {
 fn chat_prompt_mirrors_the_gui_once_scheduling_guidance() {
     // The served prompt is a verbatim copy of the GUI's
     // `SCHEDULED_TASK_CHAT_PROMPT` (`features::scheduled::tasks` is
-    // `pub(crate)` to `pinvoy3_lib`, so the const cannot be referenced from
+    // `pub(crate)` to `pinvou3_lib`, so the const cannot be referenced from
     // the CLI); these pins make copy drift a CI failure instead of a silent
     // divergence from the GUI's ONCE guidance.
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
@@ -1489,15 +1489,30 @@ fn read_commands_refuse_non_object_definitions_uniformly() {
     let task_id = created["id"].as_str().unwrap().to_owned();
     std::fs::write(home.def_path(&task_id), "5").unwrap();
     let shown = expect_failed(&["scheduled", "show", &task_id]);
-    assert!(
-        shown.contains("is malformed (not a JSON object)"),
-        "{shown}"
-    );
+    assert!(shown.contains("is malformed"), "{shown}");
     let listed = expect_failed(&["scheduled", "list"]);
-    assert!(
-        listed.contains("is malformed (not a JSON object)"),
-        "{listed}"
-    );
+    assert!(listed.contains("is malformed"), "{listed}");
+    let _ = home;
+}
+
+#[test]
+fn read_commands_refuse_definitions_missing_required_fields() {
+    // A def the GUI's typed `AutomationRecord` cannot deserialize (required
+    // field missing) must refuse like a non-object one instead of rendering
+    // a phantom task with exit 0.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("def-missing-fields");
+    let created = create_task(&home, "Incomplete task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    std::fs::write(
+        home.def_path(&task_id),
+        serde_json::json!({ "schema_version": 2, "id": task_id }).to_string(),
+    )
+    .unwrap();
+    let shown = expect_failed(&["scheduled", "show", &task_id]);
+    assert!(shown.contains("is malformed"), "{shown}");
+    let listed = expect_failed(&["scheduled", "list"]);
+    assert!(listed.contains("is malformed"), "{listed}");
     let _ = home;
 }
 
@@ -1706,4 +1721,40 @@ fn wrong_shaped_registries_are_quarantined_not_silently_overwritten() {
         );
         let _ = home;
     }
+}
+
+#[test]
+fn read_state_with_a_stray_tasks_key_stays_readable() {
+    // The per-registry shape gate (079bf9d43) checks only the keys the
+    // caller's registry owns: the GUI's serde ignores unknown members, so a
+    // read-state file carrying a stray `tasks` key must stay readable and
+    // must NOT be quarantined (that would reset the user's viewed-run
+    // state — the exact regression the per-type key split fixed).
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("read-state-stray-key");
+    let created = create_task(&home, "Stray key task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    let read_state = home.path().join("scheduled-runs").join("read-state.json");
+    std::fs::create_dir_all(read_state.parent().unwrap()).unwrap();
+    std::fs::write(
+        &read_state,
+        serde_json::json!({ "viewed_runs": {}, "tasks": [] }).to_string(),
+    )
+    .unwrap();
+    let listed = run_human(&["scheduled", "runs", &task_id]);
+    assert!(!listed.is_empty(), "runs must stay readable");
+    let quarantined = std::fs::read_dir(read_state.parent().unwrap())
+        .unwrap()
+        .flatten()
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("read-state.json.invalid-")
+        });
+    assert!(
+        !quarantined,
+        "the stray-key read state must not be quarantined"
+    );
+    let _ = home;
 }
