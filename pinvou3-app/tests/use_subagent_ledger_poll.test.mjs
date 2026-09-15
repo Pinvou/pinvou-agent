@@ -100,10 +100,10 @@ test('idle heartbeat discovers a later ledger child with no real-time event', as
   try {
     const { useSubagentLedgerPoll, LEDGER_POLL_ACTIVE_MS, LEDGER_POLL_IDLE_MS } =
       await import(pathToFileURL(hookTmp).href);
-    // The active cadence is the documented 3s half of the 3s/15s contract;
-    // pin the number itself (the idle half is pinned via LEDGER_POLL_IDLE_MS
-    // assertions below).
+    // The two cadences are the documented 3s/15s contract; pin the numbers
+    // themselves so a constant drift cannot satisfy the delay assertions below.
     assert.equal(LEDGER_POLL_ACTIVE_MS, 3000, 'the active cadence must stay 3s');
+    assert.equal(LEDGER_POLL_IDLE_MS, 15000, 'the idle heartbeat must stay 15s');
 
     let ledger = [];
     let received = [];
@@ -147,11 +147,16 @@ test('idle heartbeat discovers a later ledger child with no real-time event', as
     await flushQueue();
     assert.deepEqual(timers.delays(), [LEDGER_POLL_ACTIVE_MS], 'active liveness polls at the active cadence');
 
-    // A transient failure (null instead of an array) must not stop the loop.
+    // A transient failure (null instead of an array) must not stop the loop,
+    // and the guard must drop the payload instead of forwarding it: a null
+    // handed to onSummaries would throw inside the merge and freeze the
+    // overlay silently.
+    const lastGood = received;
     ledger = null;
     timers.fireAll();
     await flushQueue();
     assert.deepEqual(timers.delays(), [LEDGER_POLL_ACTIVE_MS], 'a null read keeps the loop armed');
+    assert.equal(received, lastGood, 'a null read must not reach onSummaries');
   } finally {
     timers.restore();
     delete globalThis.__pinvouReactHooks;
@@ -301,6 +306,79 @@ test('no polling while disabled or without a session', async () => {
     timers.fireAll();
     await flushQueue();
     assert.equal(reads, 1, 'a valid mount reads immediately');
+  } finally {
+    timers.restore();
+    delete globalThis.__pinvouReactHooks;
+  }
+});
+
+test('a session that never succeeds gives up after repeated cold failures', async () => {
+  const timers = installFakeTimers();
+  const runtime = createRuntime();
+  globalThis.__pinvouReactHooks = runtime;
+  try {
+    const { useSubagentLedgerPoll, LEDGER_POLL_MAX_COLD_FAILURES } =
+      await import(pathToFileURL(hookTmp).href);
+    assert.equal(
+      LEDGER_POLL_MAX_COLD_FAILURES,
+      5,
+      'the cold-failure budget is part of the documented give-up contract',
+    );
+
+    // Every read rejects — the shape of a session without a ledger data source
+    // (the multi-agent switch is off), a permanent error. Past the failure
+    // budget the loop must disarm entirely instead of burning an IPC round
+    // trip per heartbeat forever.
+    const kickRef = { current: null };
+    let reads = 0;
+    const render = () => {
+      runtime.reset();
+      useSubagentLedgerPoll({
+        enabled: true, sessionId: 's1', hasActive: true, kickRef,
+        readLedger: () => {
+          reads += 1;
+          return Promise.reject(new Error('unsupported session'));
+        },
+        onSummaries: () => {},
+      });
+    };
+    render();
+    for (let attempt = 1; attempt <= LEDGER_POLL_MAX_COLD_FAILURES; attempt++) {
+      assert.equal(timers.pending.size, 1, `attempt ${attempt}: the loop is still armed before the budget is exhausted`);
+      timers.fireAll();
+      await flushQueue();
+    }
+    assert.equal(reads, LEDGER_POLL_MAX_COLD_FAILURES, 'each armed tick performed one read');
+    assert.equal(timers.pending.size, 0, 'past the cold-failure budget no timer is re-armed');
+    assert.equal(kickRef.current, null, 'the kick is disarmed for a session with no ledger source');
+
+    // The budget counts consecutive cold failures: one success resets it and
+    // afterwards failures are transient forever (the loop never gives up on a
+    // session that has a working ledger source).
+    let fail = false;
+    let successes = 0;
+    const renderOk = () => {
+      runtime.reset();
+      useSubagentLedgerPoll({
+        enabled: true, sessionId: 's2', hasActive: false,
+        readLedger: () => {
+          reads += 1;
+          return fail ? Promise.resolve(null) : Promise.resolve([]);
+        },
+        onSummaries: () => { successes += 1; },
+      });
+    };
+    renderOk();
+    timers.fireAll();
+    await flushQueue();
+    assert.equal(successes, 1, 'the first read succeeds');
+    fail = true;
+    for (let attempt = 0; attempt <= LEDGER_POLL_MAX_COLD_FAILURES + 1; attempt++) {
+      timers.fireAll();
+      await flushQueue();
+      assert.equal(timers.pending.size, 1, 'after one success a failure streak never stops the loop');
+    }
+    assert.equal(successes, 1, 'failed reads deliver nothing once the payload turns null');
   } finally {
     timers.restore();
     delete globalThis.__pinvouReactHooks;

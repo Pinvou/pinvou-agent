@@ -7,6 +7,16 @@ import { useEffect } from 'react';
 // ledger even when nothing is known to be running (see the overlay component).
 export const LEDGER_POLL_ACTIVE_MS = 3000;
 export const LEDGER_POLL_IDLE_MS = 15000;
+/**
+ * Consecutive failed reads (throw, or `null` instead of an array) tolerated
+ * before the first successful one, after which the loop gives up for this
+ * session. Sessions without a ledger data source (e.g. the multi-agent switch
+ * is off) reject every read — a permanent error, so retrying forever only
+ * burns an IPC round trip per heartbeat and logs a console.warn each time. A
+ * session that has succeeded once has a data source; its later failures stay
+ * transient and never trigger the give-up.
+ */
+export const LEDGER_POLL_MAX_COLD_FAILURES = 5;
 
 /**
  * Repeatedly read the authoritative subagent ledger for one session and hand
@@ -16,7 +26,10 @@ export const LEDGER_POLL_IDLE_MS = 15000;
  * down to LEDGER_POLL_IDLE_MS. Restarting the effect on `hasActive` flips is
  * declarative — a fresh generation re-reads immediately and adopts the matching
  * cadence. A single failed read (throw, or `null` instead of an array) is
- * transient: the loop keeps running and retries on the next tick.
+ * transient: the loop keeps running and retries on the next tick — unless the
+ * session has never delivered one successful read and the failures reach
+ * LEDGER_POLL_MAX_COLD_FAILURES, which means it has no ledger source at all
+ * and the loop stops until the effect re-runs (session switch or remount).
  *
  * `kickRef` (optional) receives a function that triggers an immediate read,
  * cancelling the pending tick. Callers use it when a real-time hint suggests
@@ -34,6 +47,8 @@ export function useSubagentLedgerPoll({ enabled, sessionId, hasActive, readLedge
     let inFlight = false;
     let kickQueued = false;
     let timer = null;
+    let everSucceeded = false;
+    let coldFailures = 0;
     const poll = async () => {
       if (inFlight) return;
       inFlight = true;
@@ -41,11 +56,25 @@ export function useSubagentLedgerPoll({ enabled, sessionId, hasActive, readLedge
       try {
         const summaries = await readLedger(sessionId);
         if (stopped) return;
-        if (Array.isArray(summaries)) onSummaries(summaries);
+        if (Array.isArray(summaries)) {
+          everSucceeded = true;
+          onSummaries(summaries);
+        } else if (!everSucceeded) {
+          coldFailures += 1;
+        }
       } catch {
         // A single failed read is not fatal; retry on the next tick.
+        if (!everSucceeded) coldFailures += 1;
       } finally {
         inFlight = false;
+      }
+      if (stopped) return;
+      if (!everSucceeded && coldFailures >= LEDGER_POLL_MAX_COLD_FAILURES) {
+        // No ledger source for this session: permanent rejection (see
+        // LEDGER_POLL_MAX_COLD_FAILURES). Disarm the kick so late revival
+        // hints no-op until the effect re-runs for another session.
+        if (kickRef) kickRef.current = null;
+        return;
       }
       if (kickQueued && !stopped) {
         // Deliver the queued kick: re-read immediately instead of waiting a
