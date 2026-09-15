@@ -314,6 +314,7 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
         <div
           role="presentation"
           onContextMenu={openContextMenu}
+         
           data-drag-kind={sessionDragKind || undefined}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
           style={recentItemRowStyle(dragging, personaTarget, isDark)}
@@ -366,7 +367,7 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
               {/* 默认: 显示日期(辨识每条会话什么时候发生);hover/active 时换成置顶/更多按钮,重命名/收纳/删除在更多菜单里。
                   窄屏无 hover：按钮组常显、日期让位，保证触屏可达。 */}
               {chat.date && (
-                <span className="text-[11px] mr-4 shrink-0 opacity-60 whitespace-nowrap group-hover:hidden max-sm:hidden text-[#5F6368] dark:text-[#9AA0A6]">
+                <span className="text-[11px] mr-4 shrink-0 opacity-60 whitespace-nowrap group-hover:hidden group-focus-within:hidden max-sm:hidden text-[#5F6368] dark:text-[#9AA0A6]">
                   {chat.date}
                 </span>
               )}

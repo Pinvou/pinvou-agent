@@ -168,8 +168,9 @@ const ProjectGroupHeader = ({
       </button>
       {hasMenu && (
         // max-sm keeps the actions reachable without hover (touch, narrow
-        // windows) — same contract as RecentItem's action cluster.
-        <div className="mr-3 hidden group-hover/header:flex max-sm:flex items-center shrink-0">
+        // windows), group-focus-within reveals them for keyboard users —
+        // same contract as RecentItem's action cluster.
+        <div className="mr-3 hidden group-hover/header:flex group-focus-within/header:flex max-sm:flex items-center shrink-0">
           <button
             type="button"
             title={t.riMore}
