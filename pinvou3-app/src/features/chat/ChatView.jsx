@@ -1404,8 +1404,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // detail -> list -> same parent card a new selection even when agentId is unchanged.
       const [subagentPanel, setSubagentPanel] = useState(null);
       const subagentPanelRequestRef = useRef(0);
-      // 辅助对话面板的挂载态提前声明：下面的滚动恢复 useLayoutEffect 依赖它
-      //（面板开合改变右侧 dock 布局，须恢复主会话滚动位置，与 CodexAcpView 一致）。
+      // The aux chat panel's mount state is declared early: the scroll-restore
+      // useLayoutEffect below depends on it (opening/closing the panel changes
+      // the right dock layout, so the main conversation scroll position must
+      // be restored, same as in CodexAcpView).
       const [auxChatPanel, setAuxChatPanel] = useState(null);
       const auxChatPanelRequestRef = useRef(0);
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the sub-agent panel on session switch
@@ -1515,10 +1517,13 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         rememberScrollBeforeSubagentPanelChange,
         rightDockActivePanelId,
       ]);
-      // 辅助对话面板（右侧 dock 的独立纯问答会话，不经子代理体系）。与
-      // subagentPanel 不同：主会话切换时**不关闭**，把新 sessionId 传入换绑。
-      // 开合前记录主会话滚动位置（subagentPanelScrollRef），由上面的恢复
-      // useLayoutEffect 统一回放，与 CodexAcpView 的 aux 入口行为一致。
+      // Aux chat panel (an independent Q&A-only conversation in the right
+      // dock, outside the sub-agent system). Unlike subagentPanel: it does
+      // **not** close on main-session switch; the new sessionId is passed in
+      // to rebind. Before opening/closing, record the main conversation
+      // scroll position (subagentPanelScrollRef); the restore useLayoutEffect
+      // above replays it uniformly, matching the aux entry behavior in
+      // CodexAcpView.
       const openAuxChatPanel = useCallback(() => {
         const requestedSessionId = activeSessionId;
         if (!requestedSessionId) return;
@@ -1536,8 +1541,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           rememberScrollBeforeSubagentPanelChange();
           setAuxChatPanel((current) => ({
             openTick: (current?.openTick || 0) + 1,
-            // 首开时记住此前的 dock 面板，关闭时回跳（与 subagent 面板同款；
-            // 重复打开须保留首开记录，否则恢复目标被自身覆盖）。
+            // Remember the dock panel active at first open and jump back to
+            // it on close (same pattern as the subagent panel; repeat opens
+            // must keep the first record, or the restore target would be
+            // overwritten by the panel itself).
             restorePanelId: current
               ? current.restorePanelId
               : browserDockOpen ? rightDockActivePanelId : null,
@@ -3078,8 +3085,10 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             </PanelSuspense>
             </ViewErrorBoundary>
           )}
-          {/* sched- 运行会话无辅助对话（入口按钮同样隐藏）：切到 sched- 时
-              面板随挂载条件卸载，切回普通会话后自动重挂并重新 ensure。 */}
+          {/* sched- run sessions have no aux chat (the entry button is hidden
+              too): switching to sched- unmounts the panel with the mount
+              condition, and switching back to a normal session re-mounts it
+              and re-runs ensure automatically. */}
           {auxChatPanel && activeSessionId && !activeSessionId.startsWith('sched-') && (
             <ViewErrorBoundary t={t} variant="panel">
             <PanelSuspense>

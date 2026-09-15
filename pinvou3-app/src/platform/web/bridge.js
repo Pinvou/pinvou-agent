@@ -5163,11 +5163,13 @@
     return { accepted: true, queued: false, completion };
   }
 
-  // ── 辅助对话（aux chat）─────────────────────────────────────────
-  // 与桌面端 platform/tauri/bridge/aux-chat.js 同形：辅助会话被后端从
-  // list_sessions 过滤（不进 state.sessions），不能复用 sendMessageToSession；
-  // 回合事件仍由既有 chat:* 监听按 session_id 路由进 per-session buffer。
-  const auxIdByTask = Object.create(null); // 域内私有索引：discard 按 auxId 清本地 buffer
+  // ── Aux chat ─────────────────────────────────────────────────────
+  // Same shape as desktop platform/tauri/bridge/aux-chat.js: aux sessions are
+  // filtered out of list_sessions by the backend (they never enter
+  // state.sessions), so sendMessageToSession cannot be reused; turn events are
+  // still routed into the per-session buffer by the existing chat:* listeners
+  // keyed on session_id.
+  const auxIdByTask = Object.create(null); // domain-private index: discard purges the local buffer by auxId
   function auxChatIsAuxSession(id) {
     return typeof id === "string" && id.indexOf("aux-") === 0;
   }
@@ -5191,18 +5193,23 @@
     if (!message) throw new Error(bt("replyContentEmpty"));
     await ensureSessionBufferLoaded(sid);
     const buf = sessionStates[sid];
-    // 辅助会话不走排队（queue 是用户输入语义）：忙/有排队直接拒绝，调用方自行重试。
+    // Aux sessions never queue (queue is user-input semantics): reject
+    // outright when busy or queued messages exist; the caller retries.
     if (isBusyFor(sid) || (buf && Array.isArray(buf.queued) && buf.queued.length > 0)) {
       throw new Error(bt("turnAlreadyInProgress"));
     }
-    // 命令口径与 doSendFor 一致：Web 走 web_access_chat（附件句柄信道），桌面走 chat。
+    // Command parity with doSendFor: Web goes through web_access_chat (the
+    // attachment-handle channel), desktop goes through chat.
     return IS_WEB
       ? invoke("web_access_chat", { message, attachmentHandles: [], sessionId: sid, restrictTools: true })
       : invoke("chat", { message, attachments: [], sessionId: sid, restrictTools: true });
   }
-  // 同步快照：未加载（无 buffer）返回空结构，不抛错、不触发加载。条目逐个
-  // 浅拷贝（与桌面端 aux-chat.js 同形）：流式 delta 会原地改写 buffer 里的
-  // 条目，只拷数组会共享对象引用，调用方逐字段比较检测不到变更。
+  // Synchronous snapshot: when not loaded (no buffer) returns an empty
+  // structure — never throws and never triggers a load. Items are shallow-
+  // copied one by one (same shape as desktop aux-chat.js): streaming deltas
+  // mutate buffer items in place, so copying only the array would share
+  // object references and a caller comparing field by field could not
+  // detect changes.
   function auxChatSnapshotItems(items) {
     return (Array.isArray(items) ? items : []).map(function (item) {
       return item && typeof item === "object" ? Object.assign({}, item) : item;
@@ -5220,8 +5227,10 @@
     }
     const buf = sessionStates[sid];
     if (!buf) return auxChatEmptySnapshot();
-    // 与桌面端 aux-chat.js 同形：常开的面板按 snapshot 轮询即"在读"，刷新
-    // LRU 新近度，否则 32+ 次切会话后 buffer 被容量回收，面板误显空态。
+    // Same shape as desktop aux-chat.js: an always-open panel polling
+    // snapshot() counts as "reading" and refreshes LRU recency, otherwise
+    // after 32+ session switches the buffer is evicted by capacity and the
+    // panel wrongly shows the empty state.
     touchSessionBuffer(sid, buf, false);
     return {
       chatItems: auxChatSnapshotItems(buf.chatItems),

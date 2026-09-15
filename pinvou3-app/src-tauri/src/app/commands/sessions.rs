@@ -485,9 +485,11 @@ pub async fn delete_session(
     {
         SessionKind::Chat => {
             acp_pool.evict(&id).await;
-            // 辅助会话级联必须先走 gated 删除(turn gate + 引擎回收 + late
-            // sweep,与 discard_aux_session 同链路):store.delete 的级联只删
-            // 盘上记录,会把仍在运行的 aux 引擎留成无句柄孤儿。
+            // The aux session cascade must go through the gated delete first
+            // (turn gate + engine reclaim + late sweep, the same path as
+            // discard_aux_session): store.delete's cascade only removes the
+            // on-disk records and would leave a still-running aux engine as a
+            // handle-less orphan.
             if let Some(aux_id) = store.aux_session_id(&id) {
                 pool.delete_chat_session(&aux_id).await.map_err(|error| {
                     format!("delete_session({id}): 级联删除辅助会话 {aux_id}: {error:#}")
@@ -687,18 +689,22 @@ pub async fn set_session_archived(
     Ok(())
 }
 
-// ===================== 辅助对话(aux session) =====================
+// ===================== Auxiliary conversation (aux session) =====================
 
-/// 获取(不存在则创建)主会话的辅助对话。辅助会话以 `aux-` 前缀落盘、不进
-/// 普通会话列表,因此创建时**不发** `session:list_changed`;前端辅助对话
-/// 面板直接用返回的 metadata 打开。
+/// Get (creating if absent) the auxiliary conversation of a main session. Aux
+/// sessions are persisted with an `aux-` prefix and stay out of the ordinary
+/// session list, so creation does **not** emit `session:list_changed`; the
+/// frontend auxiliary conversation panel opens directly from the returned
+/// metadata.
 #[tauri::command]
 pub async fn get_or_create_aux_session(
     session_id: String,
     store: State<'_, SessionStore>,
 ) -> Result<SessionMetadata, String> {
-    // 辅助对话只挂在普通 chat 会话上:scheduled 会话走自己的删除链路
-    // (delete_scheduled_run 只清映射不级联删会话),挂上去会泄漏孤儿 aux 会话。
+    // Auxiliary conversations may only hang off ordinary chat sessions:
+    // scheduled sessions go through their own delete path
+    // (delete_scheduled_run only clears the mapping without cascade-deleting
+    // the session), so attaching one would leak an orphan aux session.
     ensure_chat_session(&store, &session_id, "get_or_create_aux_session")?;
     store
         .load(&session_id)
@@ -708,8 +714,9 @@ pub async fn get_or_create_aux_session(
         .map_err(|e| format!("get_or_create_aux_session({session_id}): {e:#}"))
 }
 
-/// 丢弃主会话的辅助对话:回收引擎、删除 aux 会话并清映射。重复调用幂等
-/// (无映射即视为已丢弃)。
+/// Discard a main session's auxiliary conversation: reclaim the engine,
+/// delete the aux session, and clear the mapping. Repeated calls are
+/// idempotent (no mapping counts as already discarded).
 #[tauri::command]
 pub async fn discard_aux_session(
     session_id: String,
@@ -720,9 +727,18 @@ pub async fn discard_aux_session(
     let Some(aux_id) = store.aux_session_id(&session_id) else {
         return Ok(());
     };
-    // 与 delete_session 的 Chat 分支同链路:delete_chat_session 在 turn gate
-    // 内回收引擎并调 store.delete;store.delete 的 purge 双向清理会摘掉
-    // 主→辅 映射,这里不得再清一次(并发重建时可能误删新映射)。
+    // Same path as delete_session's Chat branch: delete_chat_session reclaims
+    // the engine inside the turn gate and calls store.delete; store.delete's
+    // purge cleanup removes the main→aux mapping in both directions, so it
+    // must not be cleared again here (a concurrent recreate could lose its
+    // new mapping).
+    // The mapping lookup above runs outside the aux_sessions_io lock: a
+    // concurrent get_or_create can insert a fresh mapping after this read,
+    // and the gated delete below would then reclaim a session the caller
+    // never saw. The window is millisecond-scale and self-healing — the
+    // loser is recreated on the next ensure — so the atomic
+    // resolve-and-remove variant is follow-up hardening, not a correctness
+    // gate here.
     pool.delete_chat_session(&aux_id)
         .await
         .map_err(|error| format!("discard_aux_session({session_id}): {error:#}"))?;

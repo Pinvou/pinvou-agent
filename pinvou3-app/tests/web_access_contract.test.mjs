@@ -286,9 +286,11 @@ assert.equal(allowed.has('list_sessions'), false,
 assert.equal(allowed.has('list_archived_sessions'), false,
   'Web must not call the native archived list that exposes host workspace metadata');
 
-// 辅助对话(aux chat)域:platform/web/bridge.js 的 auxChatEnsure/auxChatDiscard
-// 直接 invoke 这两条;发送走既有 web_access_chat(aux 会话可按 id store.load,
-// 不受 list_sessions 过滤影响)。任一遗漏会让 Web 辅助对话静默失败。
+// Aux chat domain: platform/web/bridge.js's auxChatEnsure/auxChatDiscard
+// invoke these two commands directly; sending goes through the existing
+// web_access_chat (an aux session can be store.load'ed by id and is not
+// affected by the list_sessions filter). Missing either entry would make the
+// Web aux chat fail silently.
 for (const command of [
   'get_or_create_aux_session',
   'discard_aux_session',

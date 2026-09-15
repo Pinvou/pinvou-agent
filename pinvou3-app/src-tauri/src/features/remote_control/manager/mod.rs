@@ -3527,9 +3527,11 @@ mod tests {
                 "{command} must be Web-scoped"
             );
         }
-        // 辅助对话(aux session)两命令:WebUI auxChat 域(bridge.js auxChatEnsure/
-        // auxChatDiscard)直接依赖;放行后由 central validator 的
-        // Required("sessionId") 作用域约束显式会话。
+        // The two auxiliary conversation (aux session) commands: the WebUI
+        // auxChat domain (bridge.js auxChatEnsure/auxChatDiscard) depends on
+        // them directly; once allowed, the central validator's
+        // Required("sessionId") scope constraint pins them to an explicit
+        // session.
         for command in ["get_or_create_aux_session", "discard_aux_session"] {
             assert!(
                 policy.commands.contains(command),

@@ -13,13 +13,16 @@ import {
 } from './aux-chat-state.mjs';
 
 /**
- * 辅助对话面板（右侧 RightDock）：每个主任务挂一条独立的纯问答会话，
- * 不参与主任务的执行与上下文（桥侧 send 已内置 restrictTools），不经子
- * 代理体系、不产生第二任务入口（ADR-0006 约束）。
+ * Auxiliary chat panel (right-side RightDock): each main task gets one
+ * independent question-only session that never joins the main task's
+ * execution or context (the bridge-side send pins restrictTools), never goes
+ * through the subagent system, and never becomes a second task entry
+ * (ADR-0006 constraint).
  *
- * 数据流：换绑/首开后 ensure(sessionId) 幂等拿到 auxId → 本地只存 auxId
- * 与 snapshot 快照；chat 域 notify（后台会话事件已路由进 per-session
- * buffer）时重拉同步快照。App 不维护任何会话状态机。
+ * Data flow: on first open / rebind, ensure(sessionId) idempotently returns
+ * the auxId — locally we only keep the auxId and a snapshot; on chat-domain
+ * notify (background session events are routed into the per-session buffer)
+ * the snapshot is re-pulled. The app maintains no session state machine.
  */
 
 const RESTART_CONFIRM_MS = 4000;
@@ -40,9 +43,19 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
   const generationRef = useRef(0);
   const auxIdRef = useRef(null);
   const scrollRef = useRef(null);
+  // In-flight send latch: the bridge marks the session busy only when the
+  // backend turn_started event lands, so snapshot-busy lags a dispatch by the
+  // relay round trip — without this latch a double Enter fires a duplicate
+  // turn and its rejection would surface as a bogus "send failed" banner.
+  const sendingRef = useRef(false);
+  // taskId -> pending discard promise: lets the rebind effect wait out an
+  // in-flight discard before re-ensuring the same task (see that effect).
+  const discardInFlightRef = useRef(new Map());
 
-  // 快照没变时沿用旧 state（函数式 setState 返回原值，React 跳过重渲染），
-  // 挡住主会话流式 tick 经 chat 域 notify 带来的无效重拉。
+  // Keep the old state when the snapshot is unchanged (the functional setState
+  // returns the same value and React skips the re-render), blocking the
+  // useless re-pulls that the main session's streaming ticks trigger through
+  // chat-domain notifies.
   const pullSnapshot = useCallback((id) => {
     const raw = id && auxChat ? auxChat.snapshot(id) : null;
     setSnapshot((current) => {
@@ -51,8 +64,10 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     });
   }, [auxChat]);
 
-  // 首开与主会话换绑：丢弃旧绑定并幂等 ensure 新任务的辅助会话。generation
-  // 守卫挡住晚到的 ensure 结果把面板绑回上一个任务。
+  // First open and main-session rebind: drop the old binding and idempotently
+  // ensure the new task's aux session. The generation guard stops a
+  // late-arriving ensure result from binding the panel back to the previous
+  // task.
   useEffect(() => {
     const generation = generationRef.current + 1;
     generationRef.current = generation;
@@ -64,30 +79,55 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     setEnsureFailed(false);
     setDiscardFailed(false);
     setRestartArmed(false);
+    // Reset restarting on every rebind: the two restart invokes have no
+    // transport timeout, so a promise that never settles would otherwise
+    // latch the new task's panel disabled forever (the old restart's finally
+    // can no longer be relied on once its generation went stale).
+    setRestarting(false);
     setDraft('');
     if (!auxChat || !sessionId) return;
     let disposed = false;
-    auxChat.ensure(sessionId)
-      .then((nextAuxId) => {
-        if (disposed || generationRef.current !== generation) return;
-        auxIdRef.current = nextAuxId;
-        setAuxId(nextAuxId);
-        pullSnapshot(nextAuxId);
-      })
-      .catch((error) => {
-        console.warn('[pinvou3][aux-chat] ensure failed', error);
-        // ensure 失败时 composer 因 auxId 为空而禁用，但原因不可见；内联提示
-        // 让用户知道初始化没成功，而不是面对一个无反应的面板。
-        if (disposed || generationRef.current !== generation) return;
-        setEnsureFailed(true);
-      });
+    // An in-flight discard for this same task must settle first: its backend
+    // turn gate waits out the running turn (seconds), and while it is pending
+    // the old mapping is still live — an ensure issued now would idempotently
+    // return the doomed aux session, which the discard then deletes behind
+    // the panel's back, leaving a dead binding. Await the in-flight promise
+    // (errors surface on the restart path) and re-check the generation so a
+    // further rebind during the wait aborts this ensure entirely.
+    const pendingDiscard = discardInFlightRef.current.get(sessionId);
+    const ensureAfterDiscard = () => {
+      if (disposed || generationRef.current !== generation) return;
+      auxChat.ensure(sessionId)
+        .then((nextAuxId) => {
+          if (disposed || generationRef.current !== generation) return;
+          auxIdRef.current = nextAuxId;
+          setAuxId(nextAuxId);
+          pullSnapshot(nextAuxId);
+        })
+        .catch((error) => {
+          console.warn('[pinvou3][aux-chat] ensure failed', error);
+          // When ensure fails the composer is disabled via the empty auxId,
+          // but the reason is invisible; an inline hint tells the user the
+          // initialization did not succeed instead of facing a dead panel.
+          if (disposed || generationRef.current !== generation) return;
+          setEnsureFailed(true);
+        });
+    };
+    if (pendingDiscard) {
+      pendingDiscard.then(ensureAfterDiscard, ensureAfterDiscard);
+    } else {
+      ensureAfterDiscard();
+    }
     return () => { disposed = true; };
   }, [auxChat, sessionId, pullSnapshot]);
 
-  // 后台辅助会话的回合事件已自动进 per-session buffer 并触发 notify；
-  // 订阅 chat 域重拉同步快照即可，不新增事件监听。重拉同时是打开中面板的
-  // LRU touch（snapshot() 内刷新新近度）——buffer 容量回收依赖这条订阅必达，
-  // 若未来给订阅加变化门控，touch 需另寻常驻驱动。
+  // Background aux-session turn events already land in the per-session buffer
+  // and trigger notifies; subscribing to the chat domain and re-pulling the
+  // snapshot is enough — no extra event listener. The re-pull doubles as the
+  // LRU touch of an always-open panel (snapshot() refreshes recency): buffer
+  // capacity eviction relies on this subscription being unconditionally
+  // delivered — if the subscription ever gains a change gate, the touch needs
+  // another resident driver.
   useEffect(() => {
     if (!auxChat || !bridge.state) return;
     return bridge.state.subscribeMany(['chat'], () => {
@@ -102,7 +142,8 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     [snapshot, auxId],
   );
 
-  // 新回合出现时贴底；流式增量不强制滚动，避免打断用户回看历史。
+  // Snap to the bottom when a new turn appears; streaming deltas do not force
+  // scrolling, to avoid interrupting a user reading back through history.
   const itemCount = snapshot.chatItems.length;
   useEffect(() => {
     const el = scrollRef.current;
@@ -115,15 +156,23 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     return () => clearTimeout(timer);
   }, [restartArmed]);
 
-  // 发送守卫与 handleRestart 同构:面板不随主任务切换关闭,send 在途时可能
-  // 已换绑——进入时快照 auxId,写 UI 前复查,旧任务的返回结果(清草稿/失败
-  // 横幅)不得落到新任务的面板上。restarting 一并拒绝:确认重开到 discard
-  // 完成之间,Enter 不许把消息发进即将被丢弃的旧会话(路径只锁按钮、锁不住
-  // 这条 Enter 直达)。
+  // The send guards mirror handleRestart: the panel does not close on a main
+  // task switch, so the binding may have changed while a send was in flight —
+  // snapshot the auxId on entry and re-check before touching the UI, so the
+  // old task's outcome (draft clear / failure banner) never lands on the new
+  // task's panel. Also reject while restarting: between the restart confirm
+  // and the discard completing, Enter must not submit into the old session
+  // that is about to be discarded (the disabled composer only locks the
+  // button, not this direct Enter path). sendingRef closes the remaining
+  // gap: snapshot-busy lags the dispatch by one event round trip, so without
+  // the latch a double Enter fires a duplicate turn whose backend rejection
+  // surfaces as a bogus "send failed, retry" banner while the first reply is
+  // actually streaming.
   const handleSend = useCallback(async () => {
     const text = draft.trim();
     const sentAuxId = auxIdRef.current;
-    if (!auxChat || !sentAuxId || !text || busy || restarting) return;
+    if (!auxChat || !sentAuxId || !text || busy || restarting || sendingRef.current) return;
+    sendingRef.current = true;
     setSendFailed(false);
     try {
       await auxChat.send(sentAuxId, text);
@@ -134,21 +183,26 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       console.warn('[pinvou3][aux-chat] send failed', error);
       if (auxIdRef.current !== sentAuxId) return;
       setSendFailed(true);
+    } finally {
+      sendingRef.current = false;
     }
   }, [auxChat, draft, busy, restarting, pullSnapshot]);
 
   const handleComposerKeyDown = useCallback((event) => {
+    if (event.repeat) return;
     if (event.key !== 'Enter' || event.shiftKey || isImeComposing(event)) return;
     event.preventDefault();
     void handleSend();
   }, [handleSend]);
 
-  // 重开话题：两段式轻量确认（Tauri WebView2 下系统 window.confirm 不弹，
-  // 仓内先例为自绘确认）→ discard 旧辅助会话 → ensure 重建 → 清空本地快照。
-  // discard 与 ensure 分段处理（失败语义不同，见下），但共用**一个**外层
-  // try/finally 复位 restarting：任何早退（discard 失败、generation 失配）
-  // 都不得把面板永久锁在 restarting 态——否则「请重试」的提示下按钮全是
-  // 禁用，且换绑 effect 不复位该状态、面板跨任务切换仍锁死。
+  // New topic: two-step lightweight confirm (the system window.confirm does
+  // not pop under Tauri WebView2; the repo precedent is a self-drawn confirm)
+  // → discard the old aux session → ensure a fresh one → clear the local
+  // snapshot. discard and ensure are handled in separate stages (their
+  // failure semantics differ, see below) but share **one** outer try/finally
+  // that resets restarting: no early return (discard failure, generation
+  // mismatch) may leave the panel latched in the restarting state — otherwise
+  // every button sits disabled under a "please retry" hint.
   const handleRestart = useCallback(async () => {
     if (!auxChat || !sessionId || restarting) return;
     if (!restartArmed) {
@@ -161,17 +215,34 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     const generation = generationRef.current;
     try {
       try {
-        await auxChat.discard(sessionId);
+        // Register the in-flight discard by task id: while its backend turn
+        // gate waits out a running turn, the old mapping is still live, and
+        // the rebind effect must await this promise before re-ensuring the
+        // same task — otherwise it would bind the doomed aux session that
+        // this discard deletes behind its back.
+        const discardPromise = auxChat.discard(sessionId);
+        discardInFlightRef.current.set(sessionId, discardPromise);
+        try {
+          await discardPromise;
+        } finally {
+          if (discardInFlightRef.current.get(sessionId) === discardPromise) {
+            discardInFlightRef.current.delete(sessionId);
+          }
+        }
       } catch (error) {
         console.warn('[pinvou3][aux-chat] restart discard failed', error);
-        // discard 失败：旧辅助会话仍完整可用，绑定与快照原样保留，只提示重试
-        // （区分于 ensure 失败——那才是绑定已丢、必须重开话题恢复的局面）。
+        // Discard failed: the old aux session is still fully usable, the
+        // binding and snapshot stay as-is, and only a retry hint is shown
+        // (unlike an ensure failure — that is the binding-lost situation that
+        // must be recovered via a new topic).
         if (generationRef.current !== generation) return;
         setDiscardFailed(true);
         return;
       }
-      // discard 往返期间可能已换绑：此时绝不能对旧 sessionId 发 ensure，
-      // 否则后端幂等重建刚被丢弃的辅助会话（UI 拒绝绑定，但记录已落盘）。
+      // The binding may have changed during the discard round trip: never
+      // issue an ensure for the old sessionId now, or the backend would
+      // idempotently recreate the aux session that was just discarded (the UI
+      // refuses to bind it, but the record already landed on disk).
       if (generationRef.current !== generation) return;
       try {
         const nextAuxId = await auxChat.ensure(sessionId);
@@ -185,9 +256,11 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       } catch (error) {
         console.warn('[pinvou3][aux-chat] restart ensure failed', error);
         if (generationRef.current !== generation) return;
-        // discard 成功而 ensure 重建失败时，旧 auxId 已指向被删会话：必须清掉
-        // 绑定让 composer 如实禁用；此时展示 ensureFailed（"重开话题可恢复"），
-        // 而不是 sendFailed 的"重试发送"——发送动作已无可能成功。
+        // When the discard succeeded but the ensure rebuild fails, the old
+        // auxId points at a deleted session: the binding must be cleared so
+        // the composer is honestly disabled; show ensureFailed ("recover via
+        // new topic"), not sendFailed's "retry send" — a send can no longer
+        // succeed at all.
         auxIdRef.current = null;
         setAuxId(null);
         setSnapshot(normalizeAuxSnapshot(null));

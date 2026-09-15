@@ -602,9 +602,10 @@ test('web late chat:usage event: buffer rebuilt by the event via getBuffer, draf
 
 // ── aux-chat: snapshot() refreshes LRU recency so an open aux panel survives ──
 //
-// An always-open aux panel polls auxChat.snapshot() on a timer, but snapshot
-// used to read sessionStates[sid] without touching lastTouched — after 32+
-// session switches the panel's own buffer was the oldest idle entry and the
+// An always-open aux panel repulls auxChat.snapshot() on every chat-domain
+// notify (no timer — see the AuxChatPanel subscription), but snapshot used to
+// read sessionStates[sid] without touching lastTouched — after 32+ session
+// switches the panel's own buffer was the oldest idle entry and the
 // all-session LRU evicted it, leaving the open panel on a false empty state.
 // Fix: snapshot() (like every other read path) refreshes the buffer's LRU
 // recency via touchSessionBuffer, on both the tauri and the web bridge.

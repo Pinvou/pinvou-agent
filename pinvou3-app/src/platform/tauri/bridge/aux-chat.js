@@ -2,11 +2,14 @@
  * aux-chat feature for the Tauri bridge.
  * Registered before bridge.js builds the backwards-compatible facade.
  *
- * 「辅助对话」桥：每个任务（taskId）挂一条后台辅助会话（id 形如 aux-<ulid>）。
- * 辅助会话被后端从 list_sessions 过滤（不进 state.sessions），因此不能复用
- * chat 域的 sendMessageToSession（它要求 sid ∈ state.sessions）。本域只做薄
- * 封装：会话建立/加载复用 sessions 域的 per-session buffer 路径，回合事件仍由
- * chat-events 按 session_id 路由进 buffer（本域不新增任何事件监听）。
+ * "Aux chat" bridge: each task (taskId) gets one background aux chat session
+ * (id shaped like aux-<base36 nanosecond timestamp>). Aux sessions are
+ * filtered out of list_sessions
+ * by the backend (they never enter state.sessions), so the chat domain's
+ * sendMessageToSession (which requires sid ∈ state.sessions) cannot be reused.
+ * This domain is a thin wrapper: session creation/loading reuses the sessions
+ * domain's per-session buffer path, and turn events are still routed into the
+ * buffer by chat-events keyed on session_id (this domain adds no event listeners).
  */
 (function (root) {
   // biome-ignore lint/suspicious/noRedundantUseStrict: verbatim classic-script artifact; strict mode is part of the payload
@@ -24,8 +27,10 @@
     const isBusyFor = context.isBusyFor;
 
     const AUX_SESSION_ID_PATTERN = /^aux-/;
-    // 域内私有索引（非第二份全局状态）：discard 只知 taskId，清本地 buffer
-    // 需要 auxId。后端删除触发的 session:deleted 由 sessions 域兜底清，双保险且幂等。
+    // Domain-private index (not a second copy of global state): discard only
+    // knows the taskId, and purging the local buffer needs the auxId. The
+    // session:deleted event fired by backend deletion is handled by the
+    // sessions domain as a fallback — belt and suspenders, and idempotent.
     const auxIdByTask = Object.create(null);
 
     function isAuxSession(id) {
@@ -43,7 +48,8 @@
       const auxId = metadata && typeof metadata.id === "string" ? metadata.id : "";
       if (!isAuxSession(auxId)) throw new Error(bt("sessionDataInvalid"));
       auxIdByTask[task] = auxId;
-      // 辅助会话永不成为 active：走后台 buffer 的 load_session(setActive:false) 路径。
+      // Aux sessions never become active: they use the background-buffer
+      // load_session(setActive:false) path.
       await ensureSessionBufferLoaded(auxId);
       return auxId;
     }
@@ -55,17 +61,21 @@
       if (!message) throw new Error(bt("replyContentEmpty"));
       await ensureSessionBufferLoaded(sid);
       const buf = sessionStates[sid];
-      // 辅助会话不走排队（queue 是用户输入语义）：忙/有排队直接拒绝，调用方自行重试。
+      // Aux sessions never queue (queue is user-input semantics): reject
+      // outright when busy or queued messages exist; the caller retries.
       if (isBusyFor(sid) || (buf && Array.isArray(buf.queued) && buf.queued.length > 0)) {
         throw new Error(bt("turnAlreadyInProgress"));
       }
       return invoke("chat", { message, attachments: [], sessionId: sid, restrictTools: true });
     }
 
-    // 同步快照：未加载（无 buffer）返回空结构，不抛错、不触发加载。条目逐个
-    // 浅拷贝：流式 delta 会原地改写 buffer 里的条目（chat-events 的
-    // item.text/html 赋值），只拷数组会共享对象引用，调用方逐字段比较就
-    // 检测不到变更；拷贝后每次轮询拿到新引用，字段比较即真实内容比较。
+    // Synchronous snapshot: when not loaded (no buffer) returns an empty
+    // structure — never throws and never triggers a load. Items are shallow-
+    // copied one by one: streaming deltas mutate buffer items in place (the
+    // item.text/html assignments in chat-events), so copying only the array
+    // would share object references and a caller comparing field by field
+    // could not detect changes; after copying, every poll gets fresh
+    // references, making field comparison a true content comparison.
     function snapshotItems(items) {
       return (Array.isArray(items) ? items : []).map(function (item) {
         return item && typeof item === "object" ? Object.assign({}, item) : item;
@@ -83,8 +93,10 @@
       }
       const buf = sessionStates[sid];
       if (!buf) return emptySnapshot();
-      // 常开的面板按 snapshot 轮询即"在读"：与 getBuffer 系读路径一致刷新
-      // LRU 新近度，否则 32+ 次切会话后 buffer 被容量回收，面板误显空态。
+      // An always-open panel polling snapshot() counts as "reading": refresh
+      // LRU recency consistently with the getBuffer read paths, otherwise
+      // after 32+ session switches the buffer is evicted by capacity and the
+      // panel wrongly shows the empty state.
       touchSessionBuffer(sid, buf, false);
       return {
         chatItems: snapshotItems(buf.chatItems),

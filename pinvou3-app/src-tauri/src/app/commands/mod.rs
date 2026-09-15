@@ -12,7 +12,7 @@
 //! - `list_sessions()` / `create_session()` / `load_session(id)`
 //! - `delete_session(id)` / `rename_session(id, title)`
 //!
-//! 辅助对话（aux session，不进普通会话列表）：
+//! Auxiliary conversation (aux session; not in the ordinary session list):
 //! - `get_or_create_aux_session(session_id)` / `discard_aux_session(session_id)`
 
 pub(crate) mod acp_providers;

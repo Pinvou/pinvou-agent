@@ -1,4 +1,4 @@
-/** 辅助对话（aux-chat）纯逻辑层契约：快照归一化、busy/空态判定与 turns 投影。 */
+/** Aux-chat pure-logic contract: snapshot normalization, busy/empty checks and turns projection. */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -33,10 +33,11 @@ test('auxChatBusy 判定与真实桥 send 的 busy 拒绝分支同口径', () =>
   assert.equal(auxChatBusy(null), false);
 });
 
-// 桥的 busy 拒绝此前只有「口径一致」的命名、从未被执行过（既有 harness 的
-// isBusyFor 恒 false）：这里驱动真实 aux-chat.js 工厂，置 busy / 排队后断言
-// send 抛 turnAlreadyInProgress——面板层 auxChatBusy 的预判与桥的拒绝必须
-// 对同一状态集合生效。
+// The bridge's busy rejection previously only had a "same-criteria" name
+// claim and was never executed (the existing harness's isBusyFor is always
+// false): here we drive the real aux-chat.js factory, set busy / queued, and
+// assert send throws turnAlreadyInProgress — the panel-level auxChatBusy
+// precheck and the bridge's rejection must cover the same set of states.
 function loadTauriAuxChatWithBusy({ busyFor, queued }) {
   const root = { __PINVOU_SHARED_I18N__: {} };
   const src = fs.readFileSync(
@@ -121,9 +122,11 @@ test('projectAuxChatTurns 对空快照返回空 turns', () => {
 test('auxSnapshotsEqual 对内容相同的重拉快照判定相等', () => {
   const item = { id: 1, type: 'user', text: 'q' };
   const prev = normalizeAuxSnapshot({ chatItems: [{ ...item }], busy: false, queued: [] });
-  // 桥每次 snapshot() 都对条目逐个浅拷贝（streaming delta 原地改 buffer 条目，
-  // 拷贝后字段比较才是真实内容比较）：内容没变的重拉快照条目引用不同、字段
-  // 相同——必须判等，面板才能跳过重渲染。
+  // The bridge shallow-copies each item on every snapshot() (streaming deltas
+  // mutate buffer items in place, so only after copying is a field-wise
+  // compare a real content compare): a re-pulled snapshot with unchanged
+  // content has different item references but identical fields — it must
+  // compare equal so the panel can skip the re-render.
   const next = normalizeAuxSnapshot({ chatItems: [{ ...item }], busy: false, queued: [] });
   assert.equal(auxSnapshotsEqual(prev, next), true);
   assert.notEqual(prev.chatItems[0], next.chatItems[0]);
@@ -133,10 +136,14 @@ test('auxSnapshotsEqual 对内容相同的重拉快照判定相等', () => {
 });
 
 test('auxSnapshotsEqual 捕捉流式原地修改与 busy/排队变化', () => {
-  // 真实 buffer 语义：同一份条目对象被流式 delta 原地改写，两次 pull 各自经
-  // 桥的逐条拷贝得到内容不同的新对象——必须判不等，否则面板冻结在首帧。
-  // （桥内不拷贝时两次 pull 是同一引用，auxItemsEqual 的引用短路会误判相等
-  // ——这正是 session_buffer_eviction 里"桥必须逐条拷贝"行为测试钉住的点。）
+  // Real buffer semantics: the same item object is mutated in place by a
+  // streaming delta, and two pulls each go through the bridge's per-item copy
+  // and produce new objects with different content — they must compare
+  // unequal, or the panel freezes on the first frame. (Without the in-bridge
+  // copy the two pulls share one reference and auxItemsEqual's reference
+  // shortcut would wrongly judge them equal — exactly the point the
+  // "bridge must copy per item" behavior test in session_buffer_eviction
+  // pins.)
   const bufferItem = { id: 1, type: 'assistant', text: '流式', streaming: true };
   const prev = normalizeAuxSnapshot({ chatItems: [{ ...bufferItem }], busy: true, queued: [] });
   bufferItem.text = '流式中';

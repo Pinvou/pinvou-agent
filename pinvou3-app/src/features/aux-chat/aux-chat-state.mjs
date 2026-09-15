@@ -1,12 +1,15 @@
 import { projectDeepSeekConversation } from '../conversation/deepseek-conversation.js';
 
 /**
- * 辅助对话面板的纯逻辑层：把 bridge.auxChat.snapshot(auxId) 的同步快照
- * 归一化、判定 busy/空态，并投影成 ConversationTimeline 需要的 turns。
- * 投影直接复用主会话的 projectDeepSeekConversation——它是纯函数（所有
- * 输入经参数传入，不读取 active 会话全局态），辅助会话的 chatItems 又由
- * 同一事件管线写入，结构一致；仅 thinking/tokens/timelineEvents 是后台
- * 快照拿不到的主会话专属增强，辅助对话不投影这些。
+ * Pure logic layer for the aux chat panel: normalizes the synchronous
+ * snapshot from bridge.auxChat.snapshot(auxId), decides busy/empty states,
+ * and projects it into the turns ConversationTimeline needs. The projection
+ * reuses the main conversation's projectDeepSeekConversation directly — it
+ * is a pure function (all inputs come in via parameters, it never reads
+ * active-session global state), and the aux session's chatItems are written
+ * by the same event pipeline, so the structure matches; only
+ * thinking/tokens/timelineEvents are main-session-only enhancements that a
+ * background snapshot cannot provide, and aux chat does not project them.
  */
 
 const EMPTY_AUX_SNAPSHOT = Object.freeze({ chatItems: [], busy: false, queued: [] });
@@ -20,11 +23,14 @@ export function normalizeAuxSnapshot(raw) {
   };
 }
 
-// chat 域 notify 也会携主会话的流式 tick 进来；辅助会话的快照没变时跳过
-// setSnapshot，避免每个 token 都触发面板重渲染与 turns 重投影。逐条浅比较
-// 条目字段：bridge 的 snapshot() 对条目逐个浅拷贝，流式 delta 原地改写
-// buffer 条目后，两次拉取拿到的是内容不同的新对象，字段比较即真实内容
-// 比较——相等才真正意味着内容没变。
+// The chat domain's notify also carries the main conversation's streaming
+// ticks; skip setSnapshot when the aux session's snapshot is unchanged so
+// every token does not trigger a panel re-render and turns re-projection.
+// Compare item fields one by one with a shallow comparison: the bridge's
+// snapshot() shallow-copies each item, and after a streaming delta mutates
+// a buffer item in place, two pulls return new objects with different
+// content — so field comparison is a true content comparison, and equality
+// genuinely means the content did not change.
 function auxItemsEqual(left, right) {
   if (left === right) return true;
   if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
@@ -48,13 +54,15 @@ export function auxSnapshotsEqual(prev, next) {
   return true;
 }
 
-// 与 bridge send 的拒绝口径一致：busy 或仍有排队消息时都视为不可发送。
+// Same rejection criteria as bridge send: busy or queued messages remaining
+// both count as not sendable.
 export function auxChatBusy(snapshot) {
   const snap = normalizeAuxSnapshot(snapshot);
   return snap.busy || snap.queued.length > 0;
 }
 
-// 落地说明条只在还没有任何问答内容时展示（system/工具类条目不算内容）。
+// The landing explanation bar is only shown while there is no Q&A content
+// yet (system/tool-type items do not count as content).
 export function auxChatHasContent(snapshot) {
   return normalizeAuxSnapshot(snapshot).chatItems.some((item) => (
     item && (item.type === 'user' || item.type === 'assistant')

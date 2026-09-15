@@ -61,8 +61,12 @@ test('subagent selection and its first render share the App ACK-gated publicatio
 });
 
 test('closing the aux chat panel restores the dock panel recorded at open', () => {
-  // 与 subagent 面板同款 parity：首开记录 restorePanelId（重复打开保留首开
-  // 记录），关闭时回跳记录的面板而非无条件落 browser。
+  // Same parity intent as the subagent panel: the first open records
+  // restorePanelId (repeat opens keep the first record) and close jumps back
+  // to the recorded panel. Unlike the subagent panel, an unrecorded close
+  // still falls back to 'browser' — deliberate divergence: when the aux panel
+  // was opened with the dock closed, falling back to the dock's default pane
+  // beats leaving the dock with no selection.
   const openBlock = chatView.slice(
     chatView.indexOf('const openAuxChatPanel'),
     chatView.indexOf('const closeAuxChatPanel'),

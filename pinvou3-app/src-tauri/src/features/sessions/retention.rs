@@ -51,7 +51,8 @@ impl SessionStore {
         let payload = serde_json::to_vec_pretty(session).context("serialize saved session")?;
         deepseek_tui::utils::write_atomic(&path, &payload)
             .with_context(|| format!("write session {}", path.display()))?;
-        // 会话 JSON 落盘后列表快照即过期(标题/更新时间/新会话都可能变)
+        // Once the session JSON hits disk the list snapshot is stale (title /
+        // updated_at / new session may all have changed)
         self.invalidate_list_cache();
         Ok(path)
     }
@@ -69,20 +70,26 @@ impl SessionStore {
             // Scheduled sessions own additional records outside sessions/.
             // Generic chat cleanup must not delete only the transcript and
             // strand the other half of their history.
-            // 辅助对话(aux-)的生命周期由主会话级联/discard 拥有(同 sched-
-            // 先例):不进淘汰候选,也不占用可见会话的保留预算。
+            // The lifecycle of an auxiliary conversation (aux-) is owned by the
+            // main session's cascade/discard (same precedent as sched-): it is
+            // never an eviction candidate and does not consume the retention
+            // budget of visible sessions.
             if metadata.id.starts_with("sched-") || metadata.id.starts_with("aux-") {
                 continue;
             }
             chat_count += 1;
             if chat_count > MAX_SESSIONS_PER_KIND {
                 let id = metadata.id;
-                // 淘汰主会话时级联淘汰其辅助会话:先解析映射(主记录提交后
-                // purge_session_side_maps 会摘掉它),aux 记录与主记录进入
-                // 同一个 deleted_ids 集合,统一做 side-map 清理。与主会话的
-                // 既有淘汰语义同构:store 层拿不到 pool(依赖方向),此处的
-                // aux 记录删除不回收引擎、不发 session:deleted——仍在跑的
-                // aux 引擎由 pool 空闲回收巡检按 id 兜底 reclaim。
+                // Evicting a main session cascade-evicts its aux session:
+                // resolve the mapping first (purge_session_side_maps removes it
+                // once the main record commits), then let the aux record and
+                // the main record enter the same deleted_ids set so side-map
+                // cleanup runs uniformly. This mirrors the existing eviction
+                // semantics of main sessions: the store layer cannot reach the
+                // pool (dependency direction), so deleting the aux record here
+                // reclaims no engine and emits no session:deleted — a still
+                // running aux engine is reclaimed by id as a fallback by the
+                // pool's idle-eviction sweep.
                 if let Some(aux_id) = self.aux_session_id(&id) {
                     let (aux_committed, aux_result) = self.delete_session_record(&aux_id);
                     if aux_committed {
@@ -111,8 +118,10 @@ impl SessionStore {
             }
         }
         if !deleted_ids.is_empty() {
-            // 保留策略删掉的会话使列表快照过期;部分失败(JSON 已删、Err 提前
-            // 冒泡)同样过期——不能只认 Ok 分支,否则幽灵条目驻留到下一次任意写。
+            // Sessions deleted by the retention policy stale the list snapshot;
+            // partial failures (JSON already removed, Err bubbling early)
+            // stale it just the same — we must not honor only the Ok branch,
+            // otherwise a ghost entry lingers until the next arbitrary write.
             self.invalidate_list_cache();
         }
         self.purge_session_side_maps(&deleted_ids);
@@ -220,8 +229,10 @@ impl SessionStore {
             removed_multi_agent
         };
         if removed_multi_agent {
-            // 保留策略清掉的会话必须同步移出 _multi_agent.json：残留的幽灵
-            // id 会在重启后复活开关状态，专家池变更联动还会给它重建工作区。
+            // Sessions purged by the retention policy must also be removed from
+            // _multi_agent.json: a leftover ghost id would resurrect the flag
+            // state after a restart, and an expert-pool change would even
+            // rebuild a workspace for it.
             if let Err(error) = self.save_multi_agent_flags() {
                 eprintln!(
                     "[sessions] update _multi_agent.json after retention purge failed: {error:#}"
@@ -291,8 +302,10 @@ impl SessionStore {
         let removed_aux = {
             let mut aux_sessions = self.aux_sessions.write();
             let before = aux_sessions.len();
-            // 双向清理:键(主会话)或值(辅助会话)命中被删集合都移除——删主会话
-            // 与单独删辅助会话两条路径都不得留下幽灵映射。
+            // Bidirectional cleanup: remove an entry when either the key (main
+            // session) or the value (aux session) hits the deleted set — neither
+            // deleting a main session nor deleting an aux session alone may
+            // leave a ghost mapping behind.
             aux_sessions.retain(|main_id, aux_id| {
                 !contains(main_id.as_str()) && !contains(aux_id.as_str())
             });
@@ -312,27 +325,41 @@ impl SessionStore {
         for id in ids {
             self.notify_session_purged(id);
         }
-        // 回退备份 sidecar 同样随会话清理（best-effort，见其实现注释）。
+        // Rewind-backup sidecars are cleaned up with the session as well
+        // (best-effort; see the implementation comment there).
         Self::purge_rewound_turns_backups(ids);
     }
 
-    /// 辅助对话(`aux-` 前缀)孤儿对账,与 `purge_all_scheduled_side_maps` 同款
-    /// 启动回收语义:进程崩溃在「落 aux 记录」与「落 `_aux_sessions.json` 映射」
-    /// 之间、或映射 sidecar 损坏,都会留下不进会话列表、retention 又无条件跳过
-    /// (`aux-` 前缀,见 enforce_session_retention_locked)的隐形孤儿;主会话先死
-    /// (外部清理/中断的级联删除)同理,没有对账就越积越多。
+    /// Orphan reconciliation for auxiliary conversations (`aux-` prefix), with
+    /// the same startup-reclamation semantics as
+    /// `purge_all_scheduled_side_maps`: a crash between "persist the aux
+    /// record" and "persist the `_aux_sessions.json` mapping", or a corrupted
+    /// mapping sidecar, leaves an invisible orphan that never enters the
+    /// session list and is unconditionally skipped by retention (`aux-` prefix,
+    /// see enforce_session_retention_locked); a main session dying first
+    /// (external cleanup / interrupted cascade delete) accumulates the same way
+    /// without reconciliation.
     ///
-    /// 判据与处置分两类:映射缺失但记录在盘时,**先按记录回指的
-    /// `parent_session_id` 重建映射**(主会话还活着就不丢用户的问答内容;崩溃
-    /// 窗口残留的记录是空的,复活它与新建等价;与 sched- 侧「保留 transcript
-    /// 优先」的保全姿态一致)。无法重建(主已死 / 记录读不出 / 主已被另一条
-    /// aux 占用的歧义重复)或映射在但主会话记录已不在盘上,才按孤儿回收:
-    /// 删记录 + `purge_session_side_maps` 双向清理(顺带摘掉主死辅孤的幽灵映射)。
+    /// Two cases, two dispositions: when the mapping is missing but the record
+    /// is on disk, **first rebuild the mapping from the record's backlink
+    /// `parent_session_id`** (as long as the main session is still alive the
+    /// user's Q&A content is not lost; a record left over from the crash window
+    /// is empty, so resurrecting it is equivalent to creating a fresh one; this
+    /// matches the sched- side's "preserve the transcript first" protective
+    /// posture). Only when the mapping cannot be rebuilt (main is dead / record
+    /// unreadable / the main is ambiguously claimed by another aux) or the
+    /// mapping exists but the main session record is no longer on disk do we
+    /// reclaim it as an orphan: delete the record + `purge_session_side_maps`
+    /// bidirectional cleanup (which also strips the ghost mapping of a dead
+    /// main with a surviving aux).
     ///
-    /// 只在启动路径调用(同 sched- 侧表对账):此刻没有在途的 get-or-create,
-    /// 「记录已落、映射未落」的合法创建窗口不可能与对账重叠——因此本函数**不得**
-    /// 接进 enforce_session_retention_locked(create_aux_session 内部 save 会触发
-    /// enforce,把新生儿当孤儿误删)。
+    /// Called only on the startup path (same as the sched- side table
+    /// reconciliation): at that point no get-or-create is in flight, so the
+    /// legitimate creation window of "record persisted, mapping not yet" cannot
+    /// overlap with reconciliation — therefore this function **must not** be
+    /// wired into enforce_session_retention_locked (the save inside
+    /// create_aux_session would trigger enforce and misdelete the newborn as an
+    /// orphan).
     pub(crate) fn reconcile_aux_sessions(&self) -> Result<()> {
         let aux_ids: Vec<String> = self
             .list_sessions_cached()
@@ -348,13 +375,15 @@ impl SessionStore {
         let mut orphan_ids = Vec::new();
         for aux_id in aux_ids {
             match mappings.iter().find(|(_, mapped)| *mapped == &aux_id) {
-                // 映射在,但主会话记录已不在盘上 → 主死辅孤。
+                // Mapping exists, but the main session record is no longer on
+                // disk → dead main with a surviving aux.
                 Some((main_id, _)) => {
                     if !chat_session_file(&self.manager, main_id).is_ok_and(|path| path.exists()) {
                         orphan_ids.push(aux_id);
                     }
                 }
-                // 映射缺失:崩溃在创建窗口 / sidecar 损坏 → 先修后删。
+                // Mapping missing: crash in the creation window / corrupted
+                // sidecar → try to repair first, delete only if that fails.
                 None => {
                     if !self.rebuild_aux_mapping_from_record(&aux_id)? {
                         orphan_ids.push(aux_id);
@@ -378,8 +407,9 @@ impl SessionStore {
             }
         }
         if !deleted_ids.is_empty() {
-            // 与 retention 淘汰同款收尾:列表快照过期 + 侧表双向 purge(值命中
-            // 的 主→辅 幽灵映射一并摘除并落盘)。
+            // Same wrap-up as a retention eviction: stale the list snapshot +
+            // bidirectional side-table purge (which also strips and persists
+            // any main→aux ghost mapping whose value was hit).
             self.invalidate_list_cache();
             self.purge_session_side_maps(&deleted_ids);
         }
@@ -389,11 +419,14 @@ impl SessionStore {
         }
     }
 
-    /// 映射缺失的 aux 记录:按记录回指的 `parent_session_id` 重建 主→辅 映射
-    /// 并落盘。主会话必须真实在盘、自身无映射(已被另一条 aux 占用 = 歧义
-    /// 重复,保既有绑定)、且不是 aux-/sched- 前缀(aux-of-aux / 定时记录不配
-    /// 拥有辅助对话)。返回 Ok(true) = 已重建;Ok(false) = 无法重建,调用方按
-    /// 孤儿回收。
+    /// An aux record whose mapping is missing: rebuild the main→aux mapping
+    /// from the record's backlink `parent_session_id` and persist it. The main
+    /// session must genuinely exist on disk, must have no mapping of its own
+    /// (being claimed by another aux = ambiguous duplicate, keep the existing
+    /// binding), and must not carry an aux-/sched- prefix (aux-of-aux /
+    /// scheduled records do not get auxiliary conversations). Returns
+    /// Ok(true) = rebuilt; Ok(false) = cannot rebuild, caller reclaims it as
+    /// an orphan.
     fn rebuild_aux_mapping_from_record(&self, aux_id: &str) -> Result<bool> {
         let parent_id = match self.load(aux_id) {
             Ok(session) => session.metadata.parent_session_id,
@@ -676,8 +709,10 @@ impl SessionStore {
         }
 
         let _mutation = self.scheduled_mutation.lock();
-        // 每次运行创建独立对话；同一 automation 的所有对话共享任务工作间。
-        // workspace 只由稳定 task_id(automation_id)派生，不接受调用方路径。
+        // Each run creates its own conversation; all conversations of the same
+        // automation share the task workspace.
+        // workspace is derived only from the stable task_id (automation_id);
+        // a caller-supplied path is never accepted.
         profile.workspace = self.scheduled_workspace_for_task(&profile.task_id)?;
         std::fs::create_dir_all(&profile.workspace).with_context(|| {
             format!(
@@ -705,9 +740,11 @@ impl SessionStore {
             .insert(id.clone(), profile.clone());
         if let Err(err) = self.save_scheduled_profiles() {
             self.scheduled_profiles.write().remove(&id);
-            // 回滚删除本身也是一次落盘变更:失效列表缓存,防止并发读者恰在
-            // save 失效与回滚删除之间重扫到 sched-*.json 并以当时的代数回填,
-            // 让已被回滚的幽灵会话滞留在缓存里。
+            // The rollback delete is itself an on-disk change: invalidate the
+            // list cache so a concurrent reader cannot rescan sched-*.json
+            // right between the save invalidation and the rollback delete and
+            // backfill with the generation of that moment, stranding the
+            // rolled-back ghost session in the cache.
             self.invalidate_list_cache();
             let (_, rollback_result) = self.delete_session_record(&id);
             if let Err(rollback_error) = rollback_result {

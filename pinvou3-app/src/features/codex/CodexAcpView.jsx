@@ -1201,12 +1201,16 @@ export function CodexAcpView({
     rememberScrollBeforeRightPanelChange();
     setWorkspaceOpen(false);
   }, [rememberScrollBeforeRightPanelChange]);
-  // 辅助对话面板：与工作模式任务页同一条"每任务一条"的持久纯问答会话
-  //（bridge.auxChat，restrictTools，不碰代码会话的执行与上下文）。与
-  // subagentPanel 不同：切换代码会话时不关闭，由面板按 sessionId 自行换绑；
-  // 草稿态（无 activeSession）下面板随挂载条件隐藏，会话就绪后自动恢复。
-  // auxChatDockActive 是面板在 dock 中的真实可见态（同 workspaceDockActive）：
-  // 被工作区面板盖住时入口按钮不高亮，再点一次把面板带回前台。
+  // Aux chat panel: the same persistent, Q&A-only, one-per-task conversation
+  // as the work-mode task page (bridge.auxChat, restrictTools; it never
+  // touches the code session's execution or context). Unlike subagentPanel:
+  // it does not close when switching code sessions — the panel rebinds itself
+  // by sessionId; in draft state (no activeSession) the panel hides with its
+  // mount condition and restores automatically once the session is ready.
+  // auxChatDockActive is the panel's real visibility in the dock (same as
+  // workspaceDockActive): when covered by the workspace panel the entry
+  // button does not highlight, and clicking it again brings the panel to
+  // the front.
   const [auxChatPanel, setAuxChatPanel] = useState(null);
   const [auxChatDockActive, setAuxChatDockActive] = useState(false);
   const openAuxChatPanel = useCallback(() => {
@@ -1217,9 +1221,12 @@ export function CodexAcpView({
     rememberScrollBeforeRightPanelChange();
     setAuxChatPanel(null);
   }, [rememberScrollBeforeRightPanelChange]);
-  // 挂载条件（auxChatPanel && activeSession，见下方面板挂载点）消失时面板直接
-  // 卸载，而 RightDockPanel 的 onActiveChange 没有卸载清理，高亮会残留；这里在
-  // 挂载条件掉下去时同步复位，会话恢复后面板重新挂载会再回报真实可见态。
+  // When the mount condition (auxChatPanel && activeSession, see the panel
+  // mount point below) goes away, the panel unmounts outright, and
+  // RightDockPanel's onActiveChange has no unmount cleanup, so the highlight
+  // would linger; reset it synchronously here when the mount condition drops,
+  // and once the session is back the panel re-mounts and reports its real
+  // visibility again.
   useEffect(() => {
     if (auxChatPanel && activeSession) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset dock highlight when the panel unmounts; one-shot mirror, same pattern as the subagent reset below

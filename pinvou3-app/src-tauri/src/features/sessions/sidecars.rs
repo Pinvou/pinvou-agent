@@ -272,18 +272,30 @@ impl SessionStore {
         }
     }
 
-    /// 辅助对话映射查询：主会话 id → 辅助会话（`aux-` 前缀）id。
+    /// Auxiliary conversation mapping lookup: main session id → aux session
+    /// (`aux-` prefixed) id.
     pub fn aux_session_id(&self, main_id: &str) -> Option<String> {
         self.aux_sessions.read().get(main_id).cloned()
     }
 
-    /// 写入/清除 主→辅 映射并落盘；落盘失败回滚内存，与 `set_session_model_id`
-    /// 同事务语义——不留"看似成功、重启即丢失"的内存态。
+    /// Write/clear the main→aux mapping and persist it; on persist failure the
+    /// in-memory state is rolled back — same transactional semantics as
+    /// `set_session_model_id`: never leave an in-memory state that "looks
+    /// successful but is lost on restart".
     pub fn set_aux_session(&self, main_id: &str, aux_id: Option<String>) -> Result<()> {
-        // pub 写入口同样锁死「值必带 aux- 前缀」:级联删除的深度上界与
-        // aux- id 跳过创建锁的论据都建立在映射值恒为 aux- 前缀上,该不变量
-        // 在加载与创建两处把关之外,在唯一的写 API 收口(与
-        // validate_scheduled_session_id 对注册表键的同款防线)。
+        // The pub write entry seals both ends of the mapping: keys must be
+        // valid, unprefixed main-session ids, values must carry the aux-
+        // prefix. The cascade-delete depth bound and the "aux- ids skip the
+        // creation lock" argument both rest on keys/values keeping these
+        // shapes; the invariant is guarded at load and creation and sealed
+        // here at the single write API (same defense as
+        // validate_scheduled_session_id on registry keys). Note: the
+        // value==key (self-mapping) case cannot survive this validation —
+        // the value must be aux- prefixed while the key must not be.
+        super::validators::validate_session_id(main_id)?;
+        if main_id.starts_with("aux-") || main_id.starts_with("sched-") {
+            anyhow::bail!("Auxiliary mapping key must be an unprefixed main session id: {main_id}");
+        }
         if let Some(aux_id) = &aux_id {
             super::validators::validate_session_id(aux_id)?;
             if !aux_id.starts_with("aux-") {
@@ -346,17 +358,28 @@ impl SessionStore {
         };
         match serde_json::from_str::<HashMap<String, String>>(&content) {
             Ok(map) => {
-                // 损坏但可解析的条目必须丢弃:键/值不是合法会话 id、值不带
-                // aux- 前缀的映射会让 get_or_create 把主会话自身当作辅助会话
-                // 返回,旁路问题直接写进主上下文(与 sched- 侧 load 校验同款
-                // 防线);键带 aux-/sched- 前缀或自映射的条目会让 delete 的
-                // 级联递归失去"主→辅一层"的深度上界(栈溢出),同样丢弃。
-                // 重复值(两条主会话映射到同一 aux)会使孤儿归属取决于
-                // HashMap 迭代序,一并丢弃——重复 aux 由此成为无映射孤儿,
-                // 启动对账按回指重建其中一条、其余回收,归属确定。
+                // Corrupted-but-parseable entries must be dropped: a mapping
+                // whose key/value is not a valid session id, or whose value
+                // lacks the aux- prefix, would let get_or_create return the
+                // main session as its own aux and write side-chat questions
+                // straight into the main context (same load-time defense as
+                // the sched- profile load); entries with aux-/sched- prefixed
+                // keys or self-mappings would remove the "main→aux, one level"
+                // depth bound from delete's cascade recursion (stack
+                // overflow), so they are dropped too.
+                // Duplicate values (two mains mapping to the same aux) are
+                // dropped *deterministically*: iterating a HashMap would hand
+                // ownership to per-process RandomState iteration order, so the
+                // entries are sorted by (value, key) and the first claim wins
+                // — which owner survives is stable across boots. The
+                // duplicates become mapping-less orphans; startup
+                // reconciliation rebuilds the one whose record backlink
+                // matches and reclaims the rest.
+                let mut entries: Vec<(String, String)> = map.into_iter().collect();
+                entries.sort();
                 let mut seen_aux_ids: std::collections::HashSet<String> =
                     std::collections::HashSet::new();
-                let map: HashMap<String, String> = map
+                let map: HashMap<String, String> = entries
                     .into_iter()
                     .filter(|(main_id, aux_id)| {
                         let valid = super::validators::validate_session_id(main_id).is_ok()

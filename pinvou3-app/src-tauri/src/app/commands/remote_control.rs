@@ -1860,10 +1860,12 @@ mod tests {
         assert!(ensure_web_chat_session_supported(true).is_err());
     }
 
-    /// web_access_chat_for_session 的会话门槛(validate_session_id → multi_agent
-    /// 拒绝 → store.load 存在性)不经过 list()。辅助对话(aux- 前缀)被
-    /// store.list() 过滤出普通会话列表,但三道门槛对它天然全部通过——WebUI
-    /// auxChat 域(auxChatSend → web_access_chat)不会被可见性过滤误伤。
+    /// web_access_chat_for_session's session gates (validate_session_id →
+    /// multi_agent rejection → store.load existence) do not go through
+    /// list(). Auxiliary conversations (`aux-` prefixed) are filtered out of
+    /// the ordinary session list by store.list(), but all three gates pass
+    /// for them naturally — the WebUI auxChat domain (auxChatSend →
+    /// web_access_chat) is not hit by the visibility filtering.
     #[test]
     fn web_chat_preflight_accepts_aux_sessions() {
         let _g = crate::platform::paths::tests::ENV_LOCK
@@ -1889,7 +1891,8 @@ mod tests {
             .create_aux_session(&main.metadata.id)
             .expect("create aux session");
 
-        // 前提:列表隔离生效,辅助会话不在普通会话列表里。
+        // Precondition: list isolation holds — the aux session is not in the
+        // ordinary session list.
         assert!(
             !store
                 .list()
@@ -1898,7 +1901,7 @@ mod tests {
                 .any(|metadata| metadata.id == aux.id),
             "aux sessions must stay out of the ordinary chat list"
         );
-        // web_access_chat_for_session 的三道会话门槛逐一通过:
+        // web_access_chat_for_session's three session gates each pass:
         crate::features::sessions::validate_session_id(&aux.id).expect("aux id charset");
         ensure_web_chat_session_supported(store.mode_state(&aux.id).multi_agent).expect(
             "fresh aux sessions default to single-agent mode (set_multi_agent_mode does \
