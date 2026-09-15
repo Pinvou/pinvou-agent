@@ -2471,11 +2471,11 @@ async fn dropping_the_tool_revokes_the_grant_and_consent_artifacts() {
     let summary = "left click x1 at Some((5, 5))";
     let own_token = fixture
         .shared
-        .new_pending_confirmation("s-test", summary, "Buy now");
+        .new_pending_confirmation("s-test", summary, "Buy now", 0);
     assert!(fixture.shared.mint_confirmation(&own_token));
     let other_token = fixture
         .shared
-        .new_pending_confirmation("s-other", summary, "Buy now");
+        .new_pending_confirmation("s-other", summary, "Buy now", 0);
     assert!(fixture.shared.mint_confirmation(&other_token));
 
     drop(fixture.tool);
@@ -2489,7 +2489,7 @@ async fn dropping_the_tool_revokes_the_grant_and_consent_artifacts() {
     assert_eq!(
         fixture
             .shared
-            .take_confirmation(&own_token, "s-test", summary),
+            .take_confirmation(&own_token, "s-test", summary, 0),
         ConfirmationCheck::Unknown,
         "tool drop must wipe the session's minted approval tokens"
     );
@@ -2498,7 +2498,7 @@ async fn dropping_the_tool_revokes_the_grant_and_consent_artifacts() {
     assert_eq!(
         fixture
             .shared
-            .take_confirmation(&other_token, "s-other", summary),
+            .take_confirmation(&other_token, "s-other", summary, 0),
         ConfirmationCheck::Granted,
         "tool drop must not touch other sessions' consent artifacts"
     );
@@ -3028,13 +3028,14 @@ async fn approved_cursor_action_spends_even_after_the_pointer_moved() {
     assert_eq!(fixture.mock.lock().downed.len(), 1, "nothing more ran");
 }
 
-/// The token binds only the **action summary** (mainstream model): another
+/// The token binds the action summary AND the full action content: another
 /// text with the same N characters produces the same summary
-/// `type 21 characters` — the token is spent on it (content-level fingerprint
-/// binding was removed per the mainstream position; the summary is the
-/// granularity the user approved). Single-use semantics unchanged.
+/// `type 21 characters` but a different content hash, so the swap is rejected
+/// (review finding: a summary-only binding let the approved preview and the
+/// executed content diverge). The user-approved original still spends the
+/// token; single-use semantics unchanged.
 #[tokio::test]
-async fn same_summary_type_text_spends_the_token() {
+async fn same_summary_type_text_swap_is_rejected() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     fixture.mock.lock().focused = Some(ElementInfo {
@@ -3064,8 +3065,10 @@ async fn same_summary_type_text_spends_the_token() {
     let confirm_id = latest_confirm_id(&fixture.events);
     assert!(fixture.shared.mint_confirmation(&confirm_id));
 
-    // Same length, different content: same summary (type 21 characters) →
-    // the token is spent and the injection executes.
+    // Same length, different content: same summary (type 21 characters) but
+    // a different action binding → the token is NOT spent and nothing
+    // injects (the mismatch keeps the token: the user-approved original can
+    // still go through).
     let swapped = "XXXXXXXXXXXXXXXXXXXXX"; // 21 chars
     let replay = fixture
         .tool
@@ -3074,19 +3077,17 @@ async fn same_summary_type_text_spends_the_token() {
             &context(&fixture.workspace),
         )
         .await;
-    let replay = match replay {
-        Ok(r) => r,
-        Err(e) => panic!("replay execute failed: {e}"),
-    };
-    assert!(replay.success, "{}", replay.content);
-    assert_eq!(
-        fixture.mock.lock().typed.last().map(String::as_str),
-        Some(swapped),
-        "the token binds the summary, so a same-summary text spends it"
+    let text = replay.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("invalid, expired, or was already used"),
+        "a same-summary different-content swap must not spend the token: {text}"
+    );
+    assert!(
+        fixture.mock.lock().typed.is_empty(),
+        "nothing may inject on a content swap"
     );
 
-    // Single-use: the token has been spent; the original text's replay is
-    // rejected.
+    // The user-approved original still spends the token.
     let spend = fixture
         .tool
         .execute(
@@ -3094,7 +3095,27 @@ async fn same_summary_type_text_spends_the_token() {
             &context(&fixture.workspace),
         )
         .await;
-    let text = spend.ok().map(|r| r.content).unwrap_or_default();
+    let spend = match spend {
+        Ok(r) => r,
+        Err(e) => panic!("approved replay execute failed: {e}"),
+    };
+    assert!(spend.success, "{}", spend.content);
+    assert_eq!(
+        fixture.mock.lock().typed.last().map(String::as_str),
+        Some(approved_text),
+        "the exact approved content executes"
+    );
+
+    // Single-use: the token has been spent; the original text's replay is
+    // rejected.
+    let again = fixture
+        .tool
+        .execute(
+            json!({"action": "type", "text": approved_text, "confirm_id": confirm_id}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = again.ok().map(|r| r.content).unwrap_or_default();
     assert!(
         text.contains("invalid, expired, or was already used"),
         "{text}"
@@ -3102,7 +3123,7 @@ async fn same_summary_type_text_spends_the_token() {
     assert_eq!(
         fixture.mock.lock().typed.len(),
         1,
-        "only the first replay injects"
+        "only the approved replay injects"
     );
 }
 
@@ -3273,8 +3294,8 @@ fn stop_all_wipes_pending_confirmations_and_approved_tokens() {
     // first per "newest wins"; only across sessions can one pending and one
     // minted token coexist.
     shared.grant_session("s2");
-    let pending_id = shared.new_pending_confirmation("s1", "left click", "Buy now");
-    let token_id = shared.new_pending_confirmation("s2", "type 3 characters", "secret-field");
+    let pending_id = shared.new_pending_confirmation("s1", "left click", "Buy now", 0);
+    let token_id = shared.new_pending_confirmation("s2", "type 3 characters", "secret-field", 0);
     assert!(shared.pending_confirmation(&pending_id).is_some());
     assert!(shared.mint_confirmation(&token_id));
 
@@ -3285,7 +3306,7 @@ fn stop_all_wipes_pending_confirmations_and_approved_tokens() {
         "stop must clear pending confirmations"
     );
     assert_eq!(
-        shared.take_confirmation(&token_id, "s2", "type 3 characters"),
+        shared.take_confirmation(&token_id, "s2", "type 3 characters", 0),
         ConfirmationCheck::Unknown,
         "stop must wipe minted approval tokens"
     );
