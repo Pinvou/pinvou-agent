@@ -1682,9 +1682,11 @@ mod startup_order_contract {
         // include_str! 会连测试模块一并扫描，完整针尖若以字面量出现在测试里
         // 会退化成自匹配，评审 #455 R4-S1）。旧版钉两侧 startup mark 的腿
         // 只保 mark 三明治：删掉/移走两 mark 间的 hoist 调用仍通过（评审
-        // #455 R5-S1）。`find` 取首次出现：唯一更早的出现（disabled_skills
-        // 标记处的幂等重读，行号随源码漂移，评审 #455 R7 nit）
-        // 在 session_store:start（L777）之后，hoist 被删即失败而非自匹配。
+        // #455 R5-S1）。后针尖钉 `SessionStore::boot_for_process_startup` 调用
+        // 本身而非相邻 startup mark 代理（评审 #455 R8 nit）——删掉 boot 调用
+        // 留 mark 也应失败。`find` 取首次出现：唯一更早的出现是 disabled_skills
+        // 标记处的幂等重读与 L852 的 panic 兜底（均在 boot 主调用之后无——
+        // 兜底在主调用分支内），hoist 被删即失败而非自匹配。
         assert_migration_read_precedes(
             include_str!("lib.rs"),
             &[
@@ -1692,7 +1694,7 @@ mod startup_order_contract {
                 "load_disabled_skills()",
             ]
             .concat(),
-            &["startup::mark(\"session_store:start", "\")"].concat(),
+            &["SessionStore::", "boot_for_process_startup()"].concat(),
             "lib.rs",
         );
         // 无窗宿主（agentic/headless）：同序冻结早于 SessionStore boot。

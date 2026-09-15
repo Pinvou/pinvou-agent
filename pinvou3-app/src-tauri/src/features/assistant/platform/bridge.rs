@@ -3427,12 +3427,10 @@ mod tests {
     }
 
     /// CLI 硬拦截规则集（scope 门禁的 execpolicy 通道）：按会话 scope 的被禁
-    /// Binary deny rules generated for scope-disabled CLI connectors — with code
-    /// uninitialized, all 4 built-in CLI binaries are denied by default (external
-    /// capability must be enabled explicitly); plain is allow-by-default and only
-    /// explicitly disabled ones remain denied. Also pins the base execution
-    /// semantics: deny hard-blocks direct, chained, and wrapper forms (even
-    /// AskForApproval::Never is intercepted).
+    /// CLI 连接器生成二进制 deny 规则——plain 未初始化时按 DenyAll 兜底（默认
+    /// 全关，评审 #455 收敛后与 code 同口径）；code 未初始化默认
+    /// 全禁 4 个内置 CLI 二进制；显式开启后仅余被禁者。并钉住底座执行语义：
+    /// deny 在直跑 / 链式 / wrapper 形态下都硬拒（AskForApproval::Never 也拦）。
     #[test]
     fn cli_deny_ruleset_follows_scope_disabled_connectors() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);

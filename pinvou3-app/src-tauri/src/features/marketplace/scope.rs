@@ -70,6 +70,16 @@ static DISABLED_BUNDLES_FILE_LOCK: Mutex<()> = Mutex::new(());
 /// 本备忘只在写失败时短暂承载判定。
 static UNPERSISTED_VERDICT: Mutex<Option<(PathBuf, DisabledBundlesFile)>> = Mutex::new(None);
 
+/// 清空判定备忘。仅测试消费：with_temp_home 复用 pid 键控临时目录，前一用例
+/// 的备忘会按路径命中串味；生产路径无需清空（文件即真相，备忘只在写失败后
+/// 短暂承载判定）。
+#[cfg(test)]
+pub(crate) fn clear_unpersisted_verdict_for_test() {
+    *UNPERSISTED_VERDICT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
+
 /// 读完整文件（取文件锁）。可能触发「读到即迁移」的读路径必须走本入口与持锁写方
 /// 串行（与旧两份文件的 #287 竞态范式一致）。
 pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
@@ -90,11 +100,13 @@ pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
 ///
 /// 「全新装机」的判定不能只看本文件与两份 legacy 文件：统一文件自 v0.8.6
 /// 起就存在、且只在有内容可写时才落盘——老装机 + 从未动过开关的用户可能
-/// 三者皆无。因此升级信号放宽为三条具体路径：marketplace/installed.json、
-/// settings.json 或非空 sessions/ 目录，任一存在即视为升级装机并保留旧
-/// AllowAll 语义（评审 #445 P1-2）。注意这是白名单式信号而非「任何家目录
-/// 痕迹」——其余文件（日志、缓存等）不构成升级证据，三者皆无才算全新；
-/// 不得按本注释以外的口径放宽（评审 #455 R5-m1）。
+/// 三者皆无。因此升级信号放宽为两条具体路径：marketplace/installed.json
+/// 或非空 sessions/ 目录，任一存在即视为升级装机并保留旧 AllowAll 语义
+/// （评审 #445 P1-2；R8-3 收窄：settings.json 移出信号——预置/跨机拷贝会
+/// 误判 fail-open，且真实老装机必有非空 sessions/，收窄不漏判）。注意这是
+/// 白名单式信号而非「任何家目录痕迹」——其余文件（日志、缓存等）不构成
+/// 升级证据，二者皆无才算全新；不得按本注释以外的口径放宽（评审 #455
+/// R5-m1）。
 ///
 /// 该宽口径信号会被应用自身的首启行为污染（bridge boot 的 ensure_dirs 自写
 /// sessions/default/artifacts/、缺省补写默认 settings.json），因此首读被
@@ -121,11 +133,14 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
             let home = paths::pinvou3_home();
             let legacy_existed = home.join("disabled_connectors.json").exists()
                 || home.join("disabled_skills.json").exists();
-            // 宽口径升级信号:三份开关相关文件皆无,但家目录有其他状态
-            // (安装记录/设置/会话) ⇒ 老装机,plain 保持旧 AllowAll 语义。
+            // 宽口径升级信号（评审 #455 R8-3 收窄）：三份开关相关文件皆无，
+            // 但安装记录或非空会话目录存在 ⇒ 老装机，plain 保持旧 AllowAll 语义。
+            // settings.json **不构成**升级证据——预置模板/跨机拷贝的 settings.json
+            // 会把全新装机误判为升级（plain 全开，fail-open），而真实老装机必留
+            // 非空 sessions/（首启 ensure_dirs 自写 sessions/default/artifacts），
+            // 不会因收窄漏判。logs/ 等其余家目录状态同理不构成证据。
             let upgraded_install = legacy_existed
                 || home.join("marketplace").join("installed.json").is_file()
-                || paths::settings_path().is_file()
                 || paths::sessions_root()
                     .read_dir()
                     .map(|mut entries| entries.next().is_some())
@@ -144,7 +159,7 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
             // 判定本身保证（fresh = plain 未初始化 = DenyAll 兜底）。
             if let Err(freeze_error) = try_save_disabled_bundles_file(&file) {
                 eprintln!(
-                    "[scope] CRITICAL: failed to persist the plain-defaults migration verdict: {freeze_error};                      holding the in-process verdict (plain initialized = {}) until restart -                      first-boot traces will not re-open the fresh/upgraded evaluation",
+                    "[scope] CRITICAL: failed to persist the plain-defaults migration verdict: {freeze_error}; holding the in-process verdict (plain initialized = {}) until restart - first-boot traces will not re-open the fresh/upgraded evaluation",
                     file.initialized.contains(SessionMode::Plain.as_str())
                 );
                 *UNPERSISTED_VERDICT
@@ -774,6 +789,11 @@ pub fn redisable_bundle_in_initialized_scopes(raw_id: &str) {
     let mut file = load_disabled_bundles_file_locked();
     let mut changed = false;
     for mode in SessionMode::ALL {
+        // 与 disable 臂同守卫：未来若引入 AllowAll 模式，其开关语义是
+        // 「默认开、显式关」，恢复不得反向写禁用条目。
+        if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
+            continue;
+        }
         let key = mode.as_str();
         if !file.initialized.contains(key) {
             continue;

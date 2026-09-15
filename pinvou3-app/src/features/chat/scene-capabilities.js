@@ -111,12 +111,14 @@ async function prepareSceneCapabilities(meta, invoke) {
   // 安装完成 ≠ 开关打开：plain scope 有效禁用集含场景包时，用户发起的场景
   // 动作即显式 opt-in——enable_marketplace_packages 落盘后热刷在跑会话的
   // 工具白名单与技能组合目录，本轮即生效。
-  const requiredPackages = [...requirements.tools, ...requirements.skills];
-  let enabled = false;
+  const requiredPackages = [...new Set([...requirements.tools, ...requirements.skills])];
+  // 命名按语义（R8 nit）：true = 场景包原本被 gate、本次完成 opt-in——
+  // future 消费方不得把它误读为「包可用性」。
+  let optedIn;
   try {
     const disabledIds = await listDisabledConnectors(invoke);
-    enabled = requiredPackages.some((packageId) => disabledIds.has(packageId));
-    if (enabled) {
+    optedIn = requiredPackages.some((packageId) => disabledIds.has(packageId));
+    if (optedIn) {
       await enablePackagesInPlainScope(invoke, requiredPackages);
     }
   } catch (error) {
@@ -130,7 +132,7 @@ async function prepareSceneCapabilities(meta, invoke) {
     };
   }
 
-  return { ok: true, requirements, installed, enabled };
+  return { ok: true, requirements, installed, optedIn };
 }
 
 export {
