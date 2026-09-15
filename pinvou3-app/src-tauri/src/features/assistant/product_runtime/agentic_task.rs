@@ -43,6 +43,7 @@ use crate::features::assistant::product_runtime::{
 use crate::features::files::file_ingest::IngestResult;
 use crate::features::sessions::{
     ExecutionRootResolver, MAX_SESSIONS_PER_KIND, SessionKind, SessionStore,
+    validate_user_workspace_path,
 };
 use crate::platform::prefs::UserPrefs;
 
@@ -566,8 +567,17 @@ async fn run_turn(
             // mirrors the GUI create path (bind failure rolls back the
             // session); the stub cleanup then removes the prepared record.
             if let Some(workspace) = request.workspace.clone() {
+                // The durable binding must store the same normalized path a
+                // GUI-created binding carries: the CLI pre-canonicalizes, but
+                // Windows canonicalize yields a `\\?\` verbatim path, and an
+                // unnormalized binding diverges in the binding-keyed gates
+                // and path comparisons on reopen. Validating here also fails
+                // the run loud when the directory vanished since the caller
+                // checked, mirroring the GUI create path.
+                let binding = validate_user_workspace_path(&workspace.to_string_lossy())
+                    .context("validate agent workspace binding")?;
                 store
-                    .bind_session_workspace(session_id, workspace)
+                    .bind_session_workspace(session_id, binding)
                     .context("persist session workspace binding")?;
             }
             // Persist an explicit Plan request through the GUI's per-session
@@ -772,8 +782,9 @@ async fn run_turn(
 /// eval bridge use), ingested through `features/files::file_ingest` (the same
 /// chip ingest), and rendered by the same product message builder the GUI
 /// chat command uses for the non-native-image path. `reference_absolute`
-/// follows the GUI chat command: when the ledger root and the engine
-/// execution root diverge (workspace-bound run), staged files are referenced
+/// follows the GUI chat command: when the session is bound to a real
+/// directory (`SessionRoots::bound` — the documented binding signal, not a
+/// path comparison between the two roots), staged files are referenced
 /// by absolute path. Images get the `image_analyze` hard-rule text, which the
 /// product tool allowlist always provides, so no model image-capability probe
 /// is needed.
@@ -789,7 +800,10 @@ async fn prompt_with_attachments(
         .session_roots(session_id)
         .context("resolve attachment roots")?;
     let ledger_root = roots.ledger.clone();
-    let reference_absolute = roots.ledger != roots.execution;
+    // `SessionRoots::bound` is the documented MUST for detecting the bound
+    // state (`ledger != execution` stops implying binding once other dual-root
+    // shapes appear) — same predicate as the GUI chat command.
+    let reference_absolute = roots.bound;
     let attachments = request.attachments.clone();
     let prompt = request.prompt.clone();
     let staging_root = ledger_root.clone();
