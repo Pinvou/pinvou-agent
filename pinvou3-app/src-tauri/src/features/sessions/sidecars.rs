@@ -280,6 +280,16 @@ impl SessionStore {
     /// 写入/清除 主→辅 映射并落盘；落盘失败回滚内存，与 `set_session_model_id`
     /// 同事务语义——不留"看似成功、重启即丢失"的内存态。
     pub fn set_aux_session(&self, main_id: &str, aux_id: Option<String>) -> Result<()> {
+        // pub 写入口同样锁死「值必带 aux- 前缀」:级联删除的深度上界与
+        // aux- id 跳过创建锁的论据都建立在映射值恒为 aux- 前缀上,该不变量
+        // 在加载与创建两处把关之外,在唯一的写 API 收口(与
+        // validate_scheduled_session_id 对注册表键的同款防线)。
+        if let Some(aux_id) = &aux_id {
+            super::validators::validate_session_id(aux_id)?;
+            if !aux_id.starts_with("aux-") {
+                anyhow::bail!("Auxiliary session id must start with 'aux-': {aux_id}");
+            }
+        }
         let mut aux_sessions = self.aux_sessions.write();
         let previous = aux_sessions.get(main_id).cloned();
         match aux_id {
@@ -341,6 +351,11 @@ impl SessionStore {
                 // 返回,旁路问题直接写进主上下文(与 sched- 侧 load 校验同款
                 // 防线);键带 aux-/sched- 前缀或自映射的条目会让 delete 的
                 // 级联递归失去"主→辅一层"的深度上界(栈溢出),同样丢弃。
+                // 重复值(两条主会话映射到同一 aux)会使孤儿归属取决于
+                // HashMap 迭代序,一并丢弃——重复 aux 由此成为无映射孤儿,
+                // 启动对账按回指重建其中一条、其余回收,归属确定。
+                let mut seen_aux_ids: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
                 let map: HashMap<String, String> = map
                     .into_iter()
                     .filter(|(main_id, aux_id)| {
@@ -349,7 +364,8 @@ impl SessionStore {
                             && aux_id.starts_with("aux-")
                             && !main_id.starts_with("aux-")
                             && !main_id.starts_with("sched-")
-                            && main_id != aux_id;
+                            && main_id != aux_id
+                            && seen_aux_ids.insert(aux_id.clone());
                         if !valid {
                             eprintln!("[sessions] drop invalid aux mapping {main_id} -> {aux_id}");
                         }

@@ -316,9 +316,9 @@ impl SessionStore {
         // 主会话删除全程持有 aux 创建锁:映射解析与级联删除对并发的
         // get_or_create_aux_session 原子,创建不会插在「读到无映射」与
         // 「记录已删」之间留下刚建好的孤儿。递归的级联目标恒为 aux- id、
-        // 直接跳过加锁(外层已持有;std Mutex 不可重入)。锁序仍为
-        // aux_sessions_io → scheduled_mutation,无反向持锁路径(retention
-        // 淘汰走 delete_session_record,不进本函数)。
+        // 直接跳过加锁(外层已持有;parking_lot Mutex 同样不可重入)。锁序
+        // 仍为 aux_sessions_io → scheduled_mutation,无反向持锁路径
+        // (retention 淘汰走 delete_session_record,不进本函数)。
         let _aux_io_guard = if id.starts_with("aux-") {
             None
         } else {

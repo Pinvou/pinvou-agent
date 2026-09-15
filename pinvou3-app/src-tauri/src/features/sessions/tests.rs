@@ -3791,6 +3791,66 @@ fn load_aux_sessions_drops_invalid_but_parseable_entries() {
     );
 }
 
+/// 两条主会话映射到同一 aux(手改 sidecar)在加载时去重:恰好保留一条、
+/// 另一条成为无映射孤儿交启动对账按回指处理——孤儿归属不再取决于 HashMap
+/// 迭代序,同一 transcript 也不会被两条主会话同时挂载。
+#[test]
+fn load_aux_sessions_keeps_single_owner_for_duplicate_values() {
+    let (store, _g) = isolated_store();
+    let sidecar = paths::sessions_root().join("_aux_sessions.json");
+    std::fs::write(
+        &sidecar,
+        serde_json::json!({
+            "main-a": "aux-shared",
+            "main-b": "aux-shared",
+            "main-c": "aux-other"
+        })
+        .to_string(),
+    )
+    .expect("write duplicate-value sidecar");
+
+    let reopened = reopen_store(&store).expect("reboot");
+
+    let shared_owners = [
+        reopened.aux_session_id("main-a").is_some(),
+        reopened.aux_session_id("main-b").is_some(),
+    ];
+    assert_eq!(
+        shared_owners.iter().filter(|owner| **owner).count(),
+        1,
+        "重复值条目必须恰好保留一条映射(去重后唯一归属)"
+    );
+    assert_eq!(
+        reopened.aux_session_id("main-c").as_deref(),
+        Some("aux-other"),
+        "无重复的合法条目不受去重影响"
+    );
+}
+
+/// pub 写入口锁死「值必带 aux- 前缀」:非前缀或非法值在唯一的 set API 被
+/// 拒绝,内存与 sidecar 均不变——级联深度上界与 aux- 跳锁论据由此在 API
+/// 层面闭环,而非依赖调用方纪律。
+#[test]
+fn set_aux_session_rejects_non_aux_prefixed_values() {
+    let (store, _g) = isolated_store();
+    for bad in ["main-1", "sched-x", "", "aux id with spaces"] {
+        store
+            .set_aux_session("main-1", Some(bad.to_string()))
+            .expect_err("non-aux-prefixed / invalid value must be rejected");
+    }
+    assert!(
+        store.aux_session_id("main-1").is_none(),
+        "被拒的写入不得留下内存映射"
+    );
+    let sidecar = paths::sessions_root().join("_aux_sessions.json");
+    assert!(!sidecar.exists(), "被拒的写入不得留下 sidecar");
+
+    store
+        .set_aux_session("main-1", Some("aux-ok".to_string()))
+        .expect("valid value must pass");
+    assert_eq!(store.aux_session_id("main-1").as_deref(), Some("aux-ok"));
+}
+
 /// 落盘失败必须回滚内存(与 session_model 同款事务语义),不留内存-only 映射。
 #[test]
 fn aux_session_update_rolls_back_memory_when_sidecar_write_fails() {

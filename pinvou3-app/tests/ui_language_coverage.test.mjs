@@ -34,7 +34,8 @@ for (const language of ['zh', 'en', 'ja']) {
   }
   for (const key of [
     'openLabel', 'panelTitle', 'landingHint', 'emptyState', 'inputPlaceholder',
-    'send', 'busyHint', 'newTopic', 'newTopicConfirm', 'sendFailed', 'ensureFailed', 'close',
+    'send', 'busyHint', 'newTopic', 'newTopicConfirm', 'sendFailed', 'ensureFailed',
+    'discardFailed', 'close',
   ]) {
     assert.ok(dict[language].uiAuxChat[key], `${language}.uiAuxChat.${key} must exist`);
   }
@@ -196,14 +197,29 @@ assert.match(auxChatPanel, /copy=\{conversationCopy\}/);
 // 快照原样保留（旧会话仍可用）并展示 discardFailed；discard 往返后必须复查
 // generation 再 ensure，否则换绑会在后端幂等重建刚被丢弃的辅助会话；ensure
 // 失败必须清绑定并展示 ensureFailed（composer 已禁用，sendFailed 的"重试发送"
-// 文案误导）。
+// 文案误导）。两段必须共用**一个**外层 try/finally 复位 restarting：任何早退
+// （discard 失败 / generation 失配）都不许把面板永久锁死在 restarting 态。
 const restartBlock = auxChatPanel.slice(
   auxChatPanel.indexOf('const handleRestart'),
 );
-assert.match(restartBlock, /try \{\s*await auxChat\.discard\(sessionId\);\s*\} catch[\s\S]*?setDiscardFailed\(true\);[\s\S]*?generationRef\.current !== generation\) return;\s*try \{\s*const nextAuxId = await auxChat\.ensure\(sessionId\)/);
+assert.match(restartBlock, /try \{\s*try \{\s*await auxChat\.discard\(sessionId\);\s*\} catch[\s\S]*?setDiscardFailed\(true\);[\s\S]*?generationRef\.current !== generation\) return;\s*try \{\s*const nextAuxId = await auxChat\.ensure\(sessionId\)/);
 assert.match(restartBlock, /setEnsureFailed\(true\)/);
 assert.doesNotMatch(restartBlock, /setSendFailed\(true\)/);
 assert.match(auxChatPanel, /copy\.discardFailed/);
+// restarting 泄漏守卫：整个函数体只有一处 setRestarting(false)，位于外层
+// finally（其 try 在 discard await 之前打开、finally 在 ensure await 之后
+// 关闭）——早退路径经它统一复位。
+const restartingClears = restartBlock.match(/setRestarting\(false\)/g) || [];
+assert.equal(restartingClears.length, 1, 'restarting must be cleared at exactly one place in handleRestart');
+const outerTry = restartBlock.indexOf('try {');
+const discardAwait = restartBlock.indexOf('await auxChat.discard');
+const ensureAwait = restartBlock.indexOf('await auxChat.ensure');
+const finallyClause = restartBlock.indexOf('} finally {');
+assert.ok(
+  outerTry >= 0 && outerTry < discardAwait && discardAwait < ensureAwait && ensureAwait < finallyClause,
+  'a single outer try must span discard+ensure so its finally resets restarting on every early return',
+);
+assert.match(restartBlock.slice(finallyClause), /} finally \{\s*setRestarting\(false\);/);
 assert.match(source('features/pet/PetSettingsSection.jsx'), /t\.uiPetSettings/);
 const conversation = source('features/conversation/ConversationTimeline.jsx');
 assert.match(conversation, /conversationCopy\(copy\)/);
