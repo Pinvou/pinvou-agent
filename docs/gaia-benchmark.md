@@ -83,8 +83,8 @@ GAIA validation Level 1 是当前唯一支持的 split/level 组合。每道题�
 pinvou benchmark run gaia --split validation --level 1
 ```
 
-- 不设题目级墙钟超时：官方 GAIA 协议未定义运行时长上限（据本仓库现状转述，非引用官方规程原文），运行由引擎自身边界收束（每轮 200 步模型步数上限、每轮 3,600 秒墙钟、取消机制；两者均可被配置调大)。注意该边界只覆盖 turn 本身：harness 侧的 `prepare`/`resolve_output`/`close` 阶段没有各自的截止时间，若这些本地阶段挂死，`pinvou benchmark run gaia` 会一直等待直到操作者手动终止（旧的 600 秒题目级 deadline 恰好覆盖过这类失败）。
-- 与旧版本运行记录不可比：本版本同时移除了题目级 600 秒墙钟与 eval 构建的每轮 8 次工具调用护栏（及 GAIA prompt 中对应的提示句），本版本之前产生的跑分记录与新版本不可直接比较。运行清单（`RunManifest`）因此记录 `harness_deadline_secs`（GAIA 为 null = 无 harness 墙钟），使两种模式的运行在机器层面可区分；该字段缺失的旧清单反序列化为 null（旧值本身无法追溯）。
+- 不设题目级墙钟超时：官方 GAIA 协议未定义运行时长上限（据本仓库现状转述，非引用官方规程原文），运行由引擎自身边界收束（每轮 200 步模型步数上限、每轮 3,600 秒墙钟、取消机制；其中步数上限可经 settings.json 的 `advanced.max_steps` 调大，3,600 秒墙钟在该路径为固定默认值，暂无配置入口)。注意该边界只覆盖 turn 本身：harness 侧的 `prepare`/`resolve_output`/`close` 阶段没有各自的截止时间，若这些本地阶段挂死，`pinvou benchmark run gaia` 会一直等待直到操作者手动终止（旧的 600 秒题目级 deadline 恰好覆盖过这类失败）。
+- 与旧版本运行记录不可比：本版本同时移除了题目级 600 秒墙钟与 eval 构建的每轮 8 次工具调用护栏（及 GAIA prompt 中对应的提示句），本版本之前产生的跑分记录与新版本不可直接比较。运行清单（`RunManifest`）因此记录 `harness_deadline_secs`（GAIA 为显式 `null` = 无 harness 墙钟；smoke 为 60 秒上界），使有界/无界两种模式在清单层面机器可区分。注意：本版本之前的旧清单中该键整个缺失，与显式 `null` 含义不同——缺失代表"本版本之前写入，真实模式已不可追溯"。恢复（resume）一个这样的旧清单会让剩余任务按新模式执行并与旧任务结果混合计分，文档因此要求在变更单侧重跑。
 - 代理使用 `pinvou-gaia-public-web/v1` 工具策略，可访问公开 web 资源。
 - Office/PDF 附件在 host 侧预解析；XLSX 会同时提供工作表值以及有界的填充色、公式和合并
   区域注释。评测附件提示只声明 profile 实际允许的只读能力。

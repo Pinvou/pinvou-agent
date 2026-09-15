@@ -49,9 +49,6 @@ pub struct GaiaAdapter {
 impl GaiaAdapter {
     pub fn new() -> Self {
         Self {
-            // `with_harness_deadline_secs(None)` keeps the unbounded mode
-            // machine-readable in the run manifest (the default is also
-            // None; spelled out so the adapter's mode is explicit here).
             descriptor: BenchmarkDescriptor::new(
                 BenchmarkId::new("gaia"),
                 GAIA_ADAPTER_VERSION,
@@ -60,8 +57,8 @@ impl GaiaAdapter {
                 vec![Split::new(GAIA_SPLIT)],
                 ExecutionKind::NativeTurn,
             )
-            // `None` (unbounded) is the default; spelled out so the
-            // adapter's machine-readable manifest mode is explicit here.
+            // `None` (unbounded) is also the builder default; spelled out so
+            // the adapter's machine-readable manifest mode is explicit.
             .with_harness_deadline_secs(None),
             scoring_dataset: None,
         }
@@ -112,8 +109,8 @@ impl GaiaAdapter {
                     // protocol is not known to define one, so the run is
                     // bounded only by the engine's own limits (model steps
                     // per turn, per-turn wall clock, cancellation). A
-                    // harness-side deadline is a deliberate operator
-                    // decision, not an adapter default.
+                    // harness-side deadline would be an explicit adapter
+                    // change, never a hidden default.
                     ExecutionRequest::native_turn(
                         PrivateInputHandle::new(format!("gaia:{task_id}:prompt")),
                         attachments,
