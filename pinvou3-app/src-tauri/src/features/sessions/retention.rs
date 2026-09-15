@@ -81,6 +81,27 @@ impl SessionStore {
         Ok(path)
     }
 
+    /// Number of ordinary (non-`sched-`) chat sessions the retention sweep
+    /// counts against [`MAX_SESSIONS_PER_KIND`] — computed from the same
+    /// cached listing the sweep trims, so "count at/above the cap" is exactly
+    /// the pre-save state in which the next fresh save evicts. Not the same
+    /// as `SessionStore::list`: benchmark builds hide `eval_` transcripts
+    /// there, and those still consume retention slots. A listing failure
+    /// reads as 0 — this count only gates a best-effort warning, never a
+    /// deletion. The only caller is the benchmark-gated headless runner, so
+    /// the method follows the same feature gate.
+    #[cfg(feature = "benchmark-hooks")]
+    pub(crate) fn retained_chat_session_count(&self) -> usize {
+        self.list_sessions_cached()
+            .map(|sessions| {
+                sessions
+                    .iter()
+                    .filter(|metadata| !metadata.id.starts_with("sched-"))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
     pub(crate) fn enforce_session_retention_locked(&self) -> Result<()> {
         let sessions = self
             .list_sessions_cached()
