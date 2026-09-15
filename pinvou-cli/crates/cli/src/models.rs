@@ -1849,9 +1849,17 @@ fn search_set(
         // Only after the prefs save succeeded — deleting first would leave
         // the prefs entry pointing at a credential that no longer exists if
         // the save fails (a leftover keyring entry is the benign direction).
-        SystemCredentialStore::new()
-            .delete(&provider.credential_reference())
-            .map_err(|error| CliError::failed(error.user_message()))?;
+        // The same benign direction applies on the way out: the prefs entry
+        // is already cleared, so a keyring deletion failure warns and
+        // succeeds like `models remove`, instead of reporting a failure
+        // whose only remedy (rerun) has nothing left to do.
+        if let Err(error) = SystemCredentialStore::new().delete(&provider.credential_reference()) {
+            eprintln!(
+                "pinvou: warning: credential cleared from settings, but the keyring entry \
+                 could not be deleted: {}",
+                error.user_message()
+            );
+        }
     }
     let action = if clear {
         "cleared"
