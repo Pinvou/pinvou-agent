@@ -1,7 +1,9 @@
 //! `agent run` family: prompt-file driven agentic task execution.
 //!
-//! Moved verbatim from the former monolithic `lib.rs`; the parse defaults and
-//! the exit contract must not change.
+//! Extracted from the former monolithic `lib.rs`: the historical parse
+//! defaults and the exit contract are preserved, while the parity flags
+//! (`--session/--mode/--model/--attach`) layered on top of the engine's
+//! session persistence are new in this PR.
 
 use std::path::{Path, PathBuf};
 
@@ -258,45 +260,12 @@ fn run_agent(
         model_id: model,
         attachments,
     };
-    // The persisted session will consume a slot in the SAME 50-session
-    // retention store the GUI reads, and a fresh save at the cap evicts the
-    // oldest chat session(s) — pinned ones included, with no warning in the
-    // app. Sample the store size BEFORE the run: retention trims to exactly
-    // 50, so a pre-run count >= 50 is what makes this run evict; a post-run
-    // count would also fire when 49 grew to 50 with nothing evicted.
-    //
-    // The warning is printed BEFORE `run_agentic_task`, not after: the
-    // evicting save happens at prepare time inside the run, and a failed run
-    // returns `Err` without a report — a success-only warning would stay
-    // silent exactly when the GUI has already lost sessions. The wording is
-    // future tense because at print time nothing has been evicted yet. The
-    // warning fires in BOTH cleanup modes: even with
-    // PINVOU3_AGENT_TASK_KEEP_SESSION=0 the prepare-time save happens first
-    // and does the evicting — the later cleanup only deletes this run's own
-    // session.
-    //
-    // Known blind spot (kept as-is; a real fix needs a store API change and
-    // is out of scope): this sample counts `store.list()`, and in
-    // benchmark (`benchmark-hooks`) builds `SessionStore::list` filters out
-    // `eval_`-prefixed sessions while the retention sweep still counts them.
-    // A store holding e.g. 45 GUI sessions plus 8 residual eval sessions is
-    // over the real cap but samples as 45, so this run evicts GUI sessions
-    // without a warning. (`sched-` sessions are excluded from BOTH paths and
-    // never skew the sample.)
-    let evicts_gui_sessions = session.is_none()
-        && pinvou3_lib::features::sessions::SessionStore::boot()
-            .ok()
-            .and_then(|store| store.list().ok())
-            .is_some_and(|sessions| sessions.len() >= 50);
-    if evicts_gui_sessions {
-        eprintln!(
-            "pinvou: warning: the session store is at the 50-session retention cap; \
-             persisting this run's session will evict the oldest chat session(s), \
-             pinned ones included. Point PINVOU3_HOME at a sandbox or prune the \
-             session store (PINVOU3_AGENT_TASK_KEEP_SESSION=0 only removes this \
-             run's session afterwards; the save-time eviction still happens)."
-        );
-    }
+    // Retention warning: the engine arms the real eviction observer (this
+    // build has `benchmark-hooks`), so an at-cap fresh run prints the exact
+    // evicted count on stderr even when the run later fails — a pre-run
+    // count heuristic here would only duplicate that warning and cry wolf
+    // on runs that fail before the evicting prepare-time save, so the CLI
+    // does not add one of its own.
     let report = pinvou_product_backend::run_agentic_task(request)
         .map_err(|error| CliError::failed(format!("agent_run_failed: {error:#}")))?;
     // A fresh run persists its session under the eval-session factory title
@@ -363,6 +332,49 @@ fn render_agent_report(
 mod tests {
     use super::*;
     use crate::{CliCommand, ExitCode, parse_args};
+
+    /// The report renderer is pure; pin its human layout and its JSON round
+    /// trip (the only execution-path piece testable without an engine).
+    #[test]
+    fn agent_report_renders_human_layout_and_json_envelope() {
+        let report = pinvou_product_backend::AgenticTaskReport {
+            session_id: "s-1".to_owned(),
+            status: "completed".to_owned(),
+            timed_out: false,
+            completed_after_deadline: false,
+            assistant_text: "done\n".to_owned(),
+            tool_events: Vec::new(),
+            usage: Some(pinvou3_lib::agentic_task::AgenticUsageReport {
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_hit_tokens: 0,
+                cache_miss_tokens: 0,
+                cache_write_tokens: 0,
+                reasoning_tokens: 0,
+                context_window: 0,
+            }),
+            error: None,
+        };
+        let human = render_agent_report(&report, OutputMode::Human).unwrap();
+        assert!(
+            human.contains("session: s-1 status: completed"),
+            "human report must lead with the session line: {human}"
+        );
+        assert!(
+            human.contains("tokens: input=10 output=5 tools=0"),
+            "human report must carry the usage line: {human}"
+        );
+        assert!(
+            human.ends_with("done"),
+            "the assistant text ends the report: {human}"
+        );
+
+        let json = render_agent_report(&report, OutputMode::Json).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&json).expect("json mode must render a single-line JSON report");
+        assert_eq!(value["session_id"], serde_json::json!("s-1"));
+        assert_eq!(value["status"], serde_json::json!("completed"));
+    }
 
     /// The flag-less contract: only the three historical fields are set;
     /// every parity field defaults to "unset" (byte-identical request).
