@@ -77,7 +77,7 @@ SOFTWARE.
    ≤280 字符(上游 disk/doc/smartsheet 三个超限 description 压缩改写)。
 2. **安装教学改品悟代管口径**:wecomcli-shared Step 1 的
    `npm install -g @wecom/cli` 自更新指引(会绕过品悟 lock 钉扎触发哈希不匹配
-   重装循环)改写为「wecom-cli 由品悟代管、随应用更新;版本不足时在工具商店
+   重装循环)改写为「wecom-cli 由品悟代管、随应用更新;版本不足时在插件中心
    企业微信卡片重新点连接触发安装/升级」。
 3. **引擎工具名口径**:上游「先 `read` 对应 references 文件」「用 `write` 工具
    写入」「用 Write 工具」「`grep 工具` 提取」等裸引擎工具名统一登记为
