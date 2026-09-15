@@ -16,7 +16,10 @@
 //!   stay inside `sessions_root()/<session-id>/{artifacts,workspace}`,
 //!   session id must not start with `_`, markdown-only overwrite of an
 //!   existing file, 10 MiB cap). Relative paths resolve against the
-//!   session's ledger workspace, like the GUI `resolve_artifact_path`.
+//!   session's ledger workspace, like the GUI `resolve_artifact_path`. The
+//!   overwrite deliberately takes no `--yes`: it is the GUI editor save
+//!   semantics (markdown-only, in-ledger, size-capped), not a destructive
+//!   whole-store operation.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -329,8 +332,19 @@ fn resolve_session_artifact(
     } else {
         workspace.join(raw)
     };
-    let canonical = std::fs::canonicalize(&path)
-        .map_err(|error| CliError::failed(format!("artifact_not_found: {error}")))?;
+    let canonical = std::fs::canonicalize(&path).map_err(|error| {
+        // Scripts key on the machine-readable prefix: only a genuinely
+        // missing path is `artifact_not_found`; permissions/loop errors get
+        // a distinct prefix instead of misclassifying as not-found.
+        if error.kind() == std::io::ErrorKind::NotFound {
+            CliError::failed(format!("artifact_not_found: {error}"))
+        } else {
+            CliError::failed(format!(
+                "artifact_not_readable: cannot resolve {}: {error}",
+                path.display()
+            ))
+        }
+    })?;
     if !canonical.is_file() {
         return Err(CliError::failed(format!(
             "artifact_not_found: {} is not a file",

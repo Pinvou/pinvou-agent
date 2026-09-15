@@ -197,11 +197,19 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
             ));
         }
     };
-    write_json(
-        &receipt_path,
-        serde_json::to_value(&receipt)
-            .map_err(|error| CliError::failed(format!("feedback submit: serialize: {error}")))?,
-    )?;
+    let mut receipt_value = serde_json::to_value(&receipt)
+        .map_err(|error| CliError::failed(format!("feedback submit: serialize: {error}")))?;
+    // The community feature answers with an empty id (`features/feedback`
+    // owns no id generation), while the receipt file is named after the
+    // CLI-generated id — persist that id in the payload so scripts reading
+    // the file see the same id the filename and stdout carry.
+    if let Some(object) = receipt_value.as_object_mut() {
+        object.insert(
+            "feedback_id".to_owned(),
+            serde_json::Value::String(feedback_id.clone()),
+        );
+    }
+    write_json(&receipt_path, receipt_value)?;
 
     let status = status_label(receipt.status);
     let message = translate_feedback_text(&receipt.message);
@@ -304,6 +312,9 @@ fn write_json(path: &Path, value: serde_json::Value) -> Result<(), CliError> {
         .unwrap_or(0);
     let tmp = path.with_extension(format!("json.tmp.{}.{}", std::process::id(), nonce));
     std::fs::write(&tmp, bytes).map_err(|error| {
+        // Same cleanup guarantee as the rename-failure path below: a staged
+        // file that never lands must not accumulate in the feedback dir.
+        let _ = std::fs::remove_file(&tmp);
         CliError::failed(format!(
             "feedback submit: cannot write {}: {error}",
             tmp.display()
