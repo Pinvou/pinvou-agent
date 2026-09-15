@@ -101,8 +101,11 @@ scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
 `hidden_scopes`（可见性）与 `scopes`（disabled，开关）是两套**正交**门控
 （`marketplace/scope.rs`）：
 
-- 对模型两者都「不可见」：供给/执行排除按并集 `unavailable = disabled ∪ hidden`
+- 两者都从模型的可调用供给/执行面排除，按并集 `unavailable = disabled ∪ hidden`
   现算（`unavailable_bundles_for`；物化侧同口径，见 `skill_materialization.rs`）；
+  已安装但禁用的市场 MCP 包会例外地向原生 Engine 会话公开 id、名称与 enabled
+  元数据，但不公开其工具 schema，也不恢复工具调用能力（见
+  `marketplace-unification.md` §5.4）；
 - hidden 只决定包是否出现在 composer 列表，不决定 on/off；disabled 只决定
   开关态，不影响列表可见性；
 - 卸载走 `remove_bundle_from_disabled_scopes`，同时清 disabled 与 hidden

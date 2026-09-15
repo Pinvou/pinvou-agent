@@ -6328,6 +6328,10 @@ mod tests {
     /// code 会话 op 注入的 reminder 与 plain 逐字节相等(R-1 才按模式分化)。
     #[test]
     fn build_send_message_op_plan_reminder_same_text_for_plain_and_code() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: platform::paths::tests::ENV_LOCK held by locked_env.
+        unsafe { std::env::set_var("PINVOU3_HOME", dir.path()) };
         let content_of = |bridge: &Pinvou3Bridge, session_id: &str| match bridge
             .build_send_message_op(
                 session_id,

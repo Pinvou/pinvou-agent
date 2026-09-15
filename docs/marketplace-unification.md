@@ -191,12 +191,13 @@ static session prompt, while each turn repeats only the compact JSON snapshot.
 Plan turns receive the same snapshot so users can inspect installation and
 mode-scoped toggle state while planning.
 
-A disabled application exists but cannot be invoked. The assistant should explain
-that it is not enabled and direct the user to the chat tool menu. An enabled flag
-only reports the toggle; authentication, connectivity, and other tool policies
-still determine whether a tool is callable. Empty tool-search or MCP-resource
-results are not proof that an application is uninstalled. Existing tool gates
-continue to enforce invocation restrictions.
+A disabled application exists, but its tools cannot be invoked. The assistant should
+explain that it is not enabled and direct the user to the chat tool menu. An enabled
+flag only reports the toggle; authentication, connectivity, and other tool policies
+still determine whether a tool is callable. Empty tool-search or MCP-resource results
+are not proof that an application is uninstalled. Existing tool gates continue to
+enforce tool-invocation restrictions; the toggle makes no broader claim about MCP
+resources or prompts.
 
 This disclosure is deliberately limited to marketplace MCP packages. Disabled
 skill-based connectors retain the existing concealment policy enforced by
@@ -208,7 +209,11 @@ converge on the same source of truth. External ACP sessions do not receive these
 instructions because their submissions bypass the native snapshot path. Edit/resend
 operations that replay existing Engine history do not synthesize a snapshot. Mid-turn
 steering also bypasses `SendMessage` and therefore continues under the current turn's
-latest snapshot; the next native Engine submission refreshes it.
+latest snapshot; the next native Engine submission refreshes it. Foundation-spawned
+multi-agent child sessions inherit the tool deny list but receive neither the native
+inventory snapshot nor its interpretation block. Eval and benchmark submissions use
+`build_eval_send_message_op`, which receives the static interpretation block through
+session instructions but does not append a per-turn snapshot.
 
 ## 6. 统一安装管线
 
