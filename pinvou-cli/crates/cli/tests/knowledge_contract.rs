@@ -914,6 +914,48 @@ fn index_resume_and_retry_reject_unknown_ids_without_recovery() {
     assert_eq!(state["jobId"], serde_json::json!(job_id));
     assert_ne!(state["phase"], serde_json::json!("interrupted"), "{state}");
     assert_eq!(state["resumable"], serde_json::json!(false), "{state}");
+
+    // `scan start` never touches the import-job store, so it opens without
+    // the boot recovery too: the stranded job must still read running after
+    // a scan lane ran.
+    let scan_root = home.path().join("scan-root");
+    std::fs::create_dir_all(&scan_root).unwrap();
+    let scan = run_json(&[
+        "pinvou",
+        "knowledge",
+        "scan",
+        "start",
+        "--root",
+        scan_root.to_str().unwrap(),
+        "--output",
+        "json",
+    ]);
+    assert!(scan.is_object(), "{scan}");
+    let polled = run_child(&["knowledge", "index", "status", "--output", "json"]);
+    let state: serde_json::Value = serde_json::from_slice(&polled.stdout).unwrap();
+    assert_ne!(
+        state["phase"],
+        serde_json::json!("interrupted"),
+        "scan start must not run boot recovery: {state}"
+    );
+
+    // Cancelling the live job keeps the recovering open (the caller is
+    // signalling the job on purpose); a second cancel hits the finished-job
+    // branch and must succeed WITHOUT the recovering open.
+    let signalled = run_json(&[
+        "pinvou",
+        "knowledge",
+        "index",
+        "cancel",
+        &job_id,
+        "--output",
+        "json",
+    ]);
+    assert!(signalled.is_object(), "{signalled}");
+    let again = run_child(&["knowledge", "index", "cancel", &job_id]);
+    assert!(again.status.success(), "second cancel must succeed");
+    let text = String::from_utf8(again.stdout).unwrap();
+    assert!(text.contains("nothing was signalled"), "{text}");
 }
 
 /// `index failed` for an unknown job must not leak the raw rusqlite driver

@@ -87,8 +87,9 @@
 //! `scan start`. Every CLI invocation constructs the service fresh; read-only
 //! commands open it WITHOUT the GUI's startup recovery, so inspecting the
 //! store cannot degrade an import a live desktop-app process is still
-//! running. The write/maintenance commands (scan start, collection
-//! delete/add-sources, resume/retry/cancel) keep recovery, which
+//! running. The remaining recovery openers are the commands that act on the
+//! import-job store itself (collection delete/add-sources,
+//! resume/retry/cancel), which
 //! converts `preparing`/`running` jobs to interrupted/resumable — including
 //! a job that a live desktop-app process is executing RIGHT NOW (there is
 //! no cross-process owner heartbeat in the job store). Recovery itself is
@@ -761,7 +762,10 @@ pub fn execute(command: KnowledgeCommand, output: OutputMode) -> Result<CliOutco
 /// thread) and returns immediately; `--root` omitted defaults to the user
 /// home like the GUI.
 fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let service = open_service_recovering()?;
+    // Scan never touches the import-job store, so like the other pure L1
+    // CRUD lanes it must not run the boot recovery: that would flip a job a
+    // live desktop process is still importing to interrupted.
+    let service = open_service()?;
     let roots = vec![root.unwrap_or_else(pinvou3_lib::platform::paths::user_home_dir)];
     let state = service.start_scan(roots);
     // Same process-local disclosure as `scan cancel`: the scan thread dies
@@ -1314,7 +1318,14 @@ fn index_cancel(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError
     // real signal, a finished job (done/cancelled) takes the same call
     // without anything to signal.
     let was_active = latest.running || latest.resumable;
-    let service = open_service_recovering()?;
+    // A finished job has nothing to signal, so the recovering open buys
+    // nothing here and would still flip a job a live desktop process is
+    // importing to interrupted.
+    let service = if was_active {
+        open_service_recovering()?
+    } else {
+        open_service()?
+    };
     service
         .cancel_index()
         .map_err(|error| feature_error("index cancel", error))?;
