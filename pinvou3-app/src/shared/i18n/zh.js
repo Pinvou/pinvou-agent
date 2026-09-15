@@ -7,7 +7,7 @@
 import { browserZh } from './browser.js';
 
 const conversationZh = {
-  completed:'已完成', failed:'失败', interrupted:'已中断', limitReached:'达到限制', processing:'处理中', processingActive:'正在处理',
+  completed:'已完成', failed:'失败', interrupted:'已中断', cancelled:'已取消', limitReached:'达到限制', processing:'处理中', processingActive:'正在处理',
   waitingPermission:'等待授权', waitingInput:'等待你的输入', waitingInputShort:'等待输入',
   goLatest:label=>`${label}，前往最新消息`,
   elapsed:milliseconds=>{ const seconds=Math.max(0,Math.floor(milliseconds/1000)); if(seconds<60)return `${seconds}秒`; const minutes=Math.floor(seconds/60); const remaining=seconds%60; return remaining?`${minutes}分${remaining}秒`:`${minutes}分`; },
@@ -342,7 +342,7 @@ export const dictZh = {
         uiConversation: conversationZh,
         uiMultiAgent: {
           toggleLabel:'蜂群模式',
-          toggleHint:'开启后本会话可主动委派子智能体（蜂群协作）；关闭会回收引擎，并取消仍在运行的子智能体',
+          toggleHint:'开启后本会话可主动委派子智能体（蜂群协作）；开启期间忽略高级设置中的子代理数量上限；关闭会回收引擎，并取消仍在运行的子智能体',
           spawnedAgentsRow:count=>`品悟创建了 ${count} 个智能体`,
           spawnedAgentsRowHint:'点击查看子智能体列表',
           runningAgentsTitle:'运行中的智能体',

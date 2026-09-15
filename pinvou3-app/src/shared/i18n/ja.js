@@ -8,7 +8,7 @@ import { dictEn } from './en.js';
 import { browserJa } from './browser.js';
 
 const conversationJa = {
-  completed:'完了', failed:'失敗', interrupted:'中断', limitReached:'上限に到達', processing:'処理中', processingActive:'処理中',
+  completed:'完了', failed:'失敗', interrupted:'中断', cancelled:'キャンセル済み', limitReached:'上限に到達', processing:'処理中', processingActive:'処理中',
   waitingPermission:'権限の承認待ち', waitingInput:'入力待ち', waitingInputShort:'入力待ち',
   goLatest:label=>`${label}。最新メッセージへ移動`,
   elapsed:milliseconds=>{ const seconds=Math.max(0,Math.floor(milliseconds/1000)); if(seconds<60)return `${seconds}秒`; const minutes=Math.floor(seconds/60); const remaining=seconds%60; return remaining?`${minutes}分${remaining}秒`:`${minutes}分`; },
@@ -340,8 +340,8 @@ const jaBase = {
         uiConversation: conversationJa,
         uiMultiAgent: {
           toggleLabel:'スワームモード',
-          toggleHint:'この会話からサブエージェントへ委任できるようにする（スワーム協働）。オフにするとエンジンを解放し、実行中のサブエージェントをキャンセルします',
-          spawnedAgentsRow:count=>`品悟が ${count} 体のエージェントを生成`,
+          toggleHint:'この会話からサブエージェントへ委任できるようにする（スワーム協働）。オンの間、高度な設定のサブエージェント上限は無視されます。オフにするとエンジンを解放し、実行中のサブエージェントをキャンセルします',
+          spawnedAgentsRow:count=>`品悟が ${count} 体のエージェントを生成しました`,
           spawnedAgentsRowHint:'クリックでサブエージェント一覧を表示',
           runningAgentsTitle:'実行中のエージェント',
           runningAgentsCount:count=>`${count} 件を実行中`,
