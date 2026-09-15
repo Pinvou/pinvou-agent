@@ -94,7 +94,8 @@
         a.sessionId === b.sessionId &&
         a.confirmId === b.confirmId &&
         a.action === b.action &&
-        a.element === b.element
+        a.element === b.element &&
+        (a.typePreviewFull || null) === (b.typePreviewFull || null)
       );
     }
 
@@ -337,8 +338,18 @@
         // finding). The renderer shows the grant dialog first
         // when both are pending.
         // Feature toggle off: stay inert (no dialog), the record above still
-        // lets a later enable + refresh resurface the request.
-        if (!state.computerUse.enabled) return;
+        // lets a later enable + refresh resurface the request. Review finding:
+        // "later enable" may happen in ANOTHER window (settings live in the
+        // main window; detached windows keep their own slice), and nothing
+        // tells this window — the reconciler skips polling while the slice
+        // says disabled, so a detached session's grant dialog would never
+        // surface. One authoritative re-read bridges the gap: if the feature
+        // is on now, refreshStatus republishes the recorded pending; if not,
+        // it is a cheap no-op.
+        if (!state.computerUse.enabled) {
+          void refreshStatus(sid).catch(() => {});
+          return;
+        }
         // The backend never emits this event while stopped, so a `stopped`
         // flag still latched here is frontend residue (e.g. from a stop that
         // predates a re-enable); clearing it keeps the dialog reachable even
@@ -364,7 +375,12 @@
         if (typeof typePreviewFull === "string" && typePreviewFull) {
           pending.confirm.typePreviewFull = typePreviewFull;
         }
-        if (!state.computerUse.enabled) return;
+        if (!state.computerUse.enabled) {
+          // Same other-window-enable gap as the grant branch above: re-read
+          // once so a detached window's confirm dialog can resurface.
+          void refreshStatus(sid).catch(() => {});
+          return;
+        }
         publish(sid, { confirmRequest: pending.confirm });
       });
     }
