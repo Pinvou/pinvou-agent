@@ -18,6 +18,7 @@ const MoveToProjectDialog = ({
   currentProjectId,
   t,
   busy,
+  restoreTargetRef,
   onClose,
   onMove,
 }) => {
@@ -42,8 +43,10 @@ const MoveToProjectDialog = ({
   // Initial focus goes to the filter field; on unmount focus returns to the
   // row's always-rendered label button, which the move menu item focuses
   // before the portal unmounts (see NavigationComponents) so a live element
-  // is captured (shared modal-dismiss recipe).
-  useDialogFocusRestore(dialogRef, searchInputRef);
+  // is captured (shared modal-dismiss recipe). A successful move regroups the
+  // sidebar and re-parents that row — the container then resolves the moved
+  // row's new node into restoreTargetRef, which the hook prefers at close.
+  useDialogFocusRestore(dialogRef, searchInputRef, restoreTargetRef);
   // Tab 循环走共享陷阱(含 busy 全禁用时的按住与 IME 守卫);这里只保留
   // Escape 的分级(确认面板先退回列表)。
   useDialogFocusTrap(dialogRef);

@@ -55,7 +55,7 @@ test('picker entry keeps the RecentItem memo stable', () => {
 });
 
 test('focus trap and restore come from the shared hooks', () => {
-  assert.match(DIALOG, /useDialogFocusRestore\(dialogRef, searchInputRef\)/);
+  assert.match(DIALOG, /useDialogFocusRestore\(dialogRef, searchInputRef, restoreTargetRef\)/);
   assert.match(DIALOG, /useDialogFocusTrap\(dialogRef\)/);
   assert.doesNotMatch(
     DIALOG,
@@ -90,6 +90,17 @@ test('backdrop close requires press start and end on the backdrop', () => {
     'a drag ending inside the dialog must not close it',
   );
   assert.match(DIALOG, /if \(!backdropPressRef\.current \|\| e\.target !== e\.currentTarget\) return;/);
+});
+
+test('focus restore survives the success regroup', () => {
+  assert.match(MAIN, /const movePickerRestoreRef = useRef\(null\)/);
+  assert.match(MAIN, /data-session-key="\$\{CSS\.escape\(String\(sessionId\)\)\}"/);
+  assert.match(
+    DIALOG,
+    /useDialogFocusRestore\(dialogRef, searchInputRef, restoreTargetRef\)/,
+    'success-path restore must resolve the moved row\'s new node',
+  );
+  assert.match(NAV, /data-session-key=\{chat\.id\}/);
 });
 
 test('move menu item hands focus to the always-rendered label button', () => {

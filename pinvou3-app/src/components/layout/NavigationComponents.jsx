@@ -314,7 +314,7 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
         <div
           role="presentation"
           onContextMenu={openContextMenu}
-         
+          data-session-key={chat.id}
           data-drag-kind={sessionDragKind || undefined}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
           style={recentItemRowStyle(dragging, personaTarget, isDark)}

@@ -1699,7 +1699,14 @@ const NAV_PREFETCH = {
       // 内注释),内联箭头会让每个 App 重渲染(每个流式 token 批次)重渲染
       // 全部 codex 侧栏行;identity 只在门控布尔翻转(项目从无到有/反之)时
       // 变化。RecentItem 自己传 chat,无需逐行捕获。
-      const openMovePicker = useCallback((target) => setMoveToProjectSession(target), []);
+      // movePickerRestoreRef:移动成功的 regroup 会把出发行重新挂到新的分组
+      // 容器下,原标签节点随之销毁,被动还原会因 isConnected 失败跳过——
+      // 成功时按会话键解析新节点,交给 useDialogFocusRestore 的关闭时还原。
+      const movePickerRestoreRef = useRef(null);
+      const openMovePicker = useCallback((target) => {
+        movePickerRestoreRef.current = null;
+        setMoveToProjectSession(target);
+      }, []);
       // 桥完成首次状态同步(bs 就绪)后拉一次项目快照;后续变更由
       // projects:list_changed 事件驱动桥内刷新(bridge/projects.js)。
       const projectsBootstrapReady = !!bs;
@@ -2548,6 +2555,11 @@ const NAV_PREFETCH = {
       // 会话上,无条件清 slot 会把别人的弹窗关掉。
       const handleMoveSessionToProject = (sessionId, projectId, addWorkspaceRoot) => runProjectOp(async (p) => {
         const outcome = await p.moveSessionToProject(sessionId, projectId, addWorkspaceRoot);
+        // 桥的 loadProjects 在 resolve 前已 notify,侧栏此刻已完成重分组,
+        // 按会话键找到该行的新节点作为还原目标。
+        movePickerRestoreRef.current = document.querySelector(
+          `[data-session-key="${CSS.escape(String(sessionId))}"]`,
+        );
         setMoveToProjectSession(current => (current && current.id === sessionId) ? null : current);
         setSettingsToast(
           outcome && outcome.added_root
@@ -3046,6 +3058,7 @@ const NAV_PREFETCH = {
               )}
               t={t}
               busy={projectOpsBusy}
+              restoreTargetRef={movePickerRestoreRef}
               onClose={() => setMoveToProjectSession(null)}
               onMove={(projectId, addWorkspaceRoot) => handleMoveSessionToProject(
                 moveToProjectSession.id, projectId, addWorkspaceRoot)}
