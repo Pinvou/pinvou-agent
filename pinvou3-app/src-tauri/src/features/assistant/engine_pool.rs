@@ -66,6 +66,17 @@ const IDLE_EVICT_AFTER_SECS: u64 = 30 * 60;
 /// 回收、embedder 空闲卸载的巡检节奏保持一致）。
 const REAP_INTERVAL_SECS: u64 = 5 * 60;
 
+/// Upper bound for side-effect awaits issued while the per-session turn gate
+/// is held: the phase-two subagent-cascade sends in `cancel_turn_with_gates`,
+/// the shell-scope cleanup join, and the reclaim shutdown sends. A wedged
+/// engine (provider hang with the ops channel full and never drained) would
+/// otherwise hold the gate forever and block evict, delete, and the next
+/// send of the whole session (issue #255). On timeout the await is
+/// abandoned — a lost cascade only leaks the old turn's subagents on an
+/// already-wedged engine, and the next turn's `SendMessage` would be stuck
+/// on the same channel, so no late cancel can ever land after it.
+const TURN_GATE_AWAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// 空闲回收判定（纯函数，便于单测）：turn 活跃（reserve 占用或终态收口）、
 /// scheduled 轮进行中（run_scheduled_turn 的 spawn→submit 窗口 lifecycle 尚未
 /// active）以及当前 active 会话一律不回收。
@@ -385,6 +396,25 @@ fn should_retry_cascade(lifecycle: Option<&TurnLifecycle>) -> bool {
     !lifecycle.is_some_and(|lc| lc.is_current_turn_submitted())
 }
 
+/// Bounds an await that runs while the caller holds the session turn gate
+/// (see [`TURN_GATE_AWAIT_TIMEOUT`], issue #255). Returns whether the future
+/// settled; on timeout the future is dropped (nothing further is enqueued)
+/// and the degradation is logged.
+async fn bounded_while_holding_turn_gate<F>(what: &str, fut: F) -> bool
+where
+    F: Future<Output = ()>,
+{
+    match tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, fut).await {
+        Ok(()) => true,
+        Err(_) => {
+            eprintln!(
+                "[engine_pool] {what} did not settle within {TURN_GATE_AWAIT_TIMEOUT:?} while holding the turn gate; abandoning it to keep the session gate responsive"
+            );
+            false
+        }
+    }
+}
+
 /// 取消逻辑的可测主体，从 [`EnginePool::cancel`] 抽出以便用裸 Default 组件
 /// （`SessionTurnLocks` / `SessionTurnLifecycles` / `SessionTurnShellTasks`）+
 /// 闭包注入确定性测试，绕开 `Pinvou3Bridge::boot` / `AppHandle` / 真实
@@ -436,6 +466,13 @@ fn should_retry_cascade(lifecycle: Option<&TurnLifecycle>) -> bool {
 /// 新轮消息入队，FIFO 保证 engine 先取消旧轮子智能体、后启动新轮，迟到的
 /// 级联取消不会误杀新轮刚启动的子智能体（reviewer 点 4：spawn 异步发送
 /// 失去相对下一轮 SendMessage 的入队顺序保证）。
+///
+/// 每次调用以 [`TURN_GATE_AWAIT_TIMEOUT`] 为上界（issue #255）：engine 卡死
+/// （ops 通道满且不排空）时不得把 turn gate 永久占住，否则 evict/delete/send
+/// 全部排队等同一把锁，会话管道整体僵死。超时放弃本次入队——代价只是卡死
+/// 引擎上的旧轮子代理可能存活到引擎解除卡死或被回收；不会出现迟到级联取消
+/// 误杀新轮：放弃的 send 不再入队，而下一轮 `SendMessage` 在同一满通道上
+/// 同样无法入队，乱序不可能发生。
 ///
 /// **级联取消送达守护**（reviewer 点 9 + G1 补发收敛）：phase 1 的 best-effort
 /// `try_send` 在 ops 通道满（容量 32）时可能失败且被静默忽略，`CancelSubAgents`
@@ -560,7 +597,8 @@ where
         // 一次是 no-op（简化③，无需 cascade_queued 标志）。
         if should_retry_cascade(lifecycle.as_deref()) {
             if let Some(engine) = get_engine().await {
-                cascade_cancel(&engine).await;
+                bounded_while_holding_turn_gate("cascade subagent cancel", cascade_cancel(&engine))
+                    .await;
             }
         }
         // The target turn already ended (its terminal was emitted
@@ -606,14 +644,22 @@ where
                         // 级联取消必须在释放 turn gate 前完成入队（reviewer 点 4）：
                         // 下一轮 SendMessage 需等同一把 turn_lock，级联取消必先入队，
                         // FIFO 保证 engine 先取消旧轮子智能体、后启动新轮。
-                        cascade_cancel(&engine).await;
+                        bounded_while_holding_turn_gate(
+                            "cascade subagent cancel",
+                            cascade_cancel(&engine),
+                        )
+                        .await;
                     } else if should_retry_cascade(Some(lifecycle.as_ref())) {
                         // G1 漏发点：arm 被拒 = 复查通过后轮次已切换。phase-1 的
                         // best-effort try_send 若未送达（通道满）且新轮尚未提交
                         // （engine 里仍是旧轮遗留子代理），补发级联取消，避免
                         // 旧轮 detached 子代理继续运行（与入口 mismatch 分支同一
                         // 谓词，见 should_retry_cascade）。
-                        cascade_cancel(&engine).await;
+                        bounded_while_holding_turn_gate(
+                            "cascade subagent cancel",
+                            cascade_cancel(&engine),
+                        )
+                        .await;
                     }
                     // 被拒：轮次已切换，不得取消新轮 engine / 子智能体。
                 } else {
@@ -627,12 +673,26 @@ where
                 // reserve）。phase-1 的 try_send 若未送达且新轮尚未提交，补发级联
                 // 取消——入口 mismatch 分支的补发在此发现点不会被评估，必须单独
                 // 补上（reviewer 点 9 的同类窗口）。
-                cascade_cancel(&engine).await;
+                bounded_while_holding_turn_gate("cascade subagent cancel", cascade_cancel(&engine))
+                    .await;
             }
         }
     }
     if let Some(cancellation) = shell_cancellation {
-        cancellation.cleanup().await;
+        // Killing the shells is side-effect-safe to finish later (the scope
+        // belongs to the ended turn and the registry worker keeps sweeping
+        // pending kills), so the cleanup runs detached and only the join is
+        // bounded (issue #255): a slow cleanup must not extend the time the
+        // turn gate is held. Dropping the join handle detaches the task.
+        let cleanup = tokio::spawn(async move { cancellation.cleanup().await });
+        if tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, cleanup)
+            .await
+            .is_err()
+        {
+            eprintln!(
+                "[engine_pool] shell cleanup did not settle within {TURN_GATE_AWAIT_TIMEOUT:?} while holding the turn gate; letting it finish in the background"
+            );
+        }
     }
     (target, claimed_unsubmitted)
 }
@@ -1574,10 +1634,27 @@ impl EnginePool {
         // 通道，FIFO 保证取消先于关闭被处理；否则删除/换模型回收后，会话派生的
         // 裸子智能体会以孤儿任务继续跑到自己的步数/时限上限。已知限制：取消是
         // abort 不 join，子智能体已启动的独立 shell 子进程仍可能残留。
+        // 两次 send 都以 [`TURN_GATE_AWAIT_TIMEOUT`] 为上界（issue #255）：
+        // reclaim 在 turn gate 内执行，卡死的 engine 不得把 gate 永久占住——
+        // entry 无论如何都会被移除，超时只是放弃向卡死引擎投递收尾 op。
         for op in Self::shutdown_cancel_cascade_ops() {
-            if let Err(e) = engine.handle.send(op).await {
-                eprintln!("[engine_pool] shutdown {session_id} failed: {e:#}");
-                break;
+            // The diagnostics must not carry the session id (CodeQL flags
+            // cleartext session ids in newly added lines); surrounding
+            // pre-existing logs already provide the session context.
+            match tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, engine.handle.send(op)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    eprintln!(
+                        "[engine_pool] shutdown send failed: {e:#}; abandoning remaining shutdown ops"
+                    );
+                    break;
+                }
+                Err(_) => {
+                    eprintln!(
+                        "[engine_pool] shutdown op send timed out after {TURN_GATE_AWAIT_TIMEOUT:?}; abandoning remaining shutdown ops"
+                    );
+                    break;
+                }
             }
         }
     }
@@ -4055,6 +4132,69 @@ mod scheduled_model_tests {
             reservation2.ensure_active().is_ok(),
             "new turn reservation must remain valid after a stale cancel's phase two recovered"
         );
+    }
+
+    // issue #255: phase two must not hold the turn gate unboundedly. The
+    // cascade closure models a wedged engine (ops channel full, never
+    // drained): `cancel_turn_with_gates` must return after the bound and
+    // release the gate so evict / delete / send can proceed. On unbounded
+    // code this test hangs (reverse-verified red on main). The wait is the
+    // real 5s TURN_GATE_AWAIT_TIMEOUT — deliberate: enabling tokio's
+    // test-util for a paused clock would change the tokio feature set and
+    // invalidate the whole CI test cache for one test.
+    #[tokio::test]
+    async fn cancel_holds_turn_lock_boundedly() {
+        let locks = SessionTurnLocks::default();
+        let lifecycles = SessionTurnLifecycles::default();
+        let shell_tasks = SessionTurnShellTasks::default();
+        let sid = "session-cancel-bounded";
+
+        let lifecycle = lifecycles.for_session(sid);
+        assert!(lifecycle.on_submitted());
+
+        // get_engine: None first (phase one — engine still spawning), Some
+        // afterwards (phase two finds it). This deterministically routes the
+        // cancel through phase two's first arm and the primary cascade send
+        // without relying on the second-arm-on-the-same-turn semantics.
+        let probe_calls = Arc::new(AtomicU64::new(0));
+        let engine_calls = probe_calls.clone();
+        let cascade_started = Arc::new(AtomicBool::new(false));
+        let cascade_probe = cascade_started.clone();
+        let gate_locks = locks.clone();
+        let cancel_task = tokio::spawn(async move {
+            cancel_turn_with_gates(
+                &locks,
+                &lifecycles,
+                &shell_tasks,
+                sid,
+                deepseek_tui::core::engine::CancelMode::StopDropInbox,
+                move || {
+                    let call = engine_calls.fetch_add(1, Ordering::AcqRel);
+                    async move { (call > 0).then_some(()) }
+                },
+                |_engine: &()| {},
+                move |_engine: &()| {
+                    cascade_probe.store(true, Ordering::Release);
+                    std::future::pending::<()>()
+                },
+                |_lc, _target| false,
+            )
+            .await
+        });
+        // Phase two reached the primary cascade send, then parks on the
+        // never-settling wedged engine.
+        while !cascade_started.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+        // The cascade is parked on the wedged engine: cancel must come back
+        // via TURN_GATE_AWAIT_TIMEOUT (≈5s real time), not via the closure.
+        let (target, claimed) = cancel_task.await.expect("cancel task joins");
+        assert_eq!(target, Some(1));
+        assert!(!claimed);
+        // The gate is free again: evict / delete / send queue on it and must
+        // not be stuck behind the cancelled turn (issue #255).
+        let gate = gate_locks.for_session(sid).await;
+        drop(gate.lock().await);
     }
 
     #[tokio::test]
