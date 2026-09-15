@@ -107,6 +107,11 @@ pub fn parse(values: &[String]) -> Result<ArtifactsCommand, CliError> {
                 .unwrap_or(rest.len());
             let (session_id, relative_path) =
                 require_session_and_path(rest.get(..positional_end).unwrap_or_default())?;
+            if positional_end > 2 {
+                return Err(CliError::usage(
+                    "artifacts write accepts only a session id and a relative path",
+                ));
+            }
             let mut file = None;
             let mut stdin = false;
             let mut index = positional_end;
@@ -646,6 +651,15 @@ mod tests {
             vec!["artifacts", "read"],
             vec!["artifacts", "read", "s-1"],
             vec!["artifacts", "read", "s-1", "a.md", "--extra"],
+            vec![
+                "artifacts",
+                "write",
+                "s-1",
+                "a.md",
+                "extra.md",
+                "--file",
+                "in.md",
+            ],
             vec!["artifacts", "write", "s-1"],
             vec!["artifacts", "write", "s-1", "a.md"],
             vec![
