@@ -25,6 +25,7 @@ mod models;
 mod monitor;
 mod personas;
 mod plugins;
+mod projects;
 mod scheduled;
 mod sessions;
 mod support;
@@ -205,6 +206,7 @@ pub enum CliCommand {
     Feedback(feedback::FeedbackCommand),
     Monitor(monitor::MonitorCommand),
     Artifacts(artifacts::ArtifactsCommand),
+    Projects(projects::ProjectsCommand),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -343,6 +345,7 @@ where
         Some("feedback") => CliCommand::Feedback(feedback::parse(&values)?),
         Some("monitor") => CliCommand::Monitor(monitor::parse(&values)?),
         Some("artifacts") => CliCommand::Artifacts(artifacts::parse(&values)?),
+        Some("projects") => CliCommand::Projects(projects::parse(&values)?),
         _ => {
             return Err(CliError::usage(support::TOP_LEVEL_USAGE));
         }
@@ -592,6 +595,7 @@ pub fn execute(parsed: ParsedCli) -> Result<CliOutcome, CliError> {
         CliCommand::Feedback(command) => feedback::execute(command, output),
         CliCommand::Monitor(command) => monitor::execute(command, output),
         CliCommand::Artifacts(command) => artifacts::execute(command, output),
+        CliCommand::Projects(command) => projects::execute(command, output),
     }
 }
 
