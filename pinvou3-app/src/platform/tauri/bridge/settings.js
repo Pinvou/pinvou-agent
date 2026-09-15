@@ -35,6 +35,17 @@
   async function loadSettings() {
     try {
       state.settings = await invoke("get_settings");
+      // The computer_use master switch is persisted via the dedicated command through prefs
+      // (not the update_settings patch);
+      // at cold start with no session yet, computer_use_get_status is unreachable, so the
+      // settings-page toggle uses the persisted value as its initial state.
+      // Note: this mirror is written only once at load — the runtime toggle goes through
+      // bridge/computer_use.js's dedicated command and this slice is never written back
+      // (by design the two representations align only at cold start).
+      const persistedEnabled = !!(state.settings && state.settings.computer_use && state.settings.computer_use.enabled);
+      if (state.computerUse && state.computerUse.enabled !== persistedEnabled) {
+        state.computerUse = Object.assign({}, state.computerUse, { enabled: persistedEnabled });
+      }
     } catch {
       // Backend unreachable = nothing to judge; fall back to following the
       // system for the color scheme (color_scheme: system).

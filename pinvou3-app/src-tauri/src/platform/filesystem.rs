@@ -341,7 +341,10 @@ pub(crate) fn create_secret_file(path: &Path) -> io::Result<std::fs::File> {
 }
 
 /// Open a private append-only data file without introducing a world-readable
-/// creation window on Unix. Windows relies on the owning profile directory's
+/// creation window on Unix. `mode(0o600)` only applies at creation — an
+/// existing file left loose by an earlier revision or external tooling would
+/// stay group/world-readable forever, so re-tighten the mode on every open
+/// (round-6 review). Windows relies on the owning profile directory's
 /// ACL, consistent with the rest of the application data tree.
 pub(crate) fn open_private_append_file(path: &Path) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
@@ -351,7 +354,17 @@ pub(crate) fn open_private_append_file(path: &Path) -> io::Result<std::fs::File>
         use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
-    options.open(path)
+    let file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let metadata = file.metadata()?;
+        let mode = metadata.permissions().mode();
+        if mode & 0o777 != 0o600 {
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    Ok(file)
 }
 
 #[derive(Clone)]
@@ -2108,6 +2121,47 @@ fn reserved_target_is_unchanged_impl(_file: &File, path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
 }
 
+/// Test helper (round-10 review m12): assert the file mode is 0600. The tool layer's CI
+/// tests check the screenshot capture_and_store wrote through this — the target cfg stays
+/// in this adapter layer (architecture guard rule). Windows has no POSIX mode bits, always
+/// passes. The assertion message states only the outcome and never repeats the path
+/// (round-12 review: the path contains a session id, and CodeQL models it formatted into
+/// panic/assert messages as sensitive information reaching logs; on test failure the
+/// specific file is identifiable from the call site).
+#[cfg(test)]
+pub(crate) fn assert_private_file_mode(path: &Path) {
+    assert_private_mode_impl(path, 0o600);
+}
+
+/// Test helper (review round-11): assert the directory mode is 0700. computer_use's audit
+/// log directory is checked through this — the target cfg stays in this adapter layer
+/// (architecture guard rule, same as [`assert_private_file_mode`]). Windows has no POSIX
+/// mode bits, always passes.
+#[cfg(test)]
+pub(crate) fn assert_private_dir_mode(path: &Path) {
+    assert_private_mode_impl(path, 0o700);
+}
+
+#[cfg(test)]
+#[cfg(unix)]
+fn assert_private_mode_impl(path: &Path, expected: u32) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mode = match std::fs::metadata(path) {
+        Ok(metadata) => metadata.permissions().mode(),
+        Err(_) => panic!("private-mode assertion failed: artifact is missing"),
+    };
+    assert!(
+        mode & 0o777 == expected,
+        "private-mode assertion failed: artifact is more permissive than {expected:o}"
+    );
+}
+
+#[cfg(test)]
+#[cfg(not(unix))]
+fn assert_private_mode_impl(path: &Path, expected: u32) {
+    let _ = (path, expected);
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use std::path::Path;
@@ -2866,5 +2920,42 @@ pub(crate) mod tests {
     #[cfg(not(windows))]
     fn remove_dir_link_impl(link: &Path) {
         let _ = std::fs::remove_file(link);
+    }
+
+    /// Round-6 review regression: `open_private_append_file`'s `mode(0o600)` only applies
+    /// at creation — an existing loose file must be re-tightened on every open, otherwise a
+    /// 0644 file left behind by an earlier version or an external tool stays group/world
+    /// readable forever.
+    #[cfg(unix)]
+    #[test]
+    fn private_append_open_re_tightens_a_loose_existing_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("audit-session.jsonl");
+
+        // Simulate a loose file left over from history.
+        std::fs::write(&path, b"prior revision data").unwrap();
+        let loose = std::fs::Permissions::from_mode(0o644);
+        std::fs::set_permissions(&path, loose).unwrap();
+
+        {
+            let mut file = super::open_private_append_file(&path).expect("append open");
+            std::io::Write::write_all(&mut file, b"\nappended").unwrap();
+        }
+
+        let mode = std::fs::metadata(&path)
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "reopen must re-tighten a loose private file"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"prior revision data\nappended"
+        );
     }
 }
