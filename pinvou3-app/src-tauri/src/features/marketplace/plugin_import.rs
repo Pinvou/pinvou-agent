@@ -1872,6 +1872,62 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// zip-slip regression: an entry whose name escapes the package root via
+    /// `../` (and one with an absolute path) must be rejected wholesale by the
+    /// pass1 `enclosed_name()` safety check — before any detection, extraction,
+    /// or disk writes. The guard existed since the unified pipeline landed;
+    /// this test pins it so refactors cannot silently drop the enforcement.
+    #[test]
+    fn import_rejects_zip_slip_traversal_entries() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-zip-slip-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        // Entry names are written verbatim by the zip writer, so the archive
+        // carries the traversal / absolute paths exactly as a malicious
+        // package would.
+        let zip_path = dir.join("zipslip.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("../outside.txt", opts).unwrap();
+            zw.write_all(b"traversal").unwrap();
+            zw.start_file("/abs/evil.txt", opts).unwrap();
+            zw.write_all(b"absolute").unwrap();
+            zw.finish().unwrap();
+        }
+
+        let err = import_plugin_package(&zip_path.to_string_lossy(), "zipslip.zip").unwrap_err();
+        assert!(
+            err.contains("不安全路径"),
+            "zip-slip traversal entry must be rejected, got: {err}"
+        );
+        assert!(
+            !dir.join("bundles").exists(),
+            "rejected package must not land any bundle directory"
+        );
+
+        match prev {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 并发互斥（四轮评审 M-4）：两线程同时导入同 id 同内容包，按 id 的进程内
     /// 互斥锁必须保证双方成功且落盘完整、无 staged/.old 残留（修复前线程 B 的
     /// `remove_dir_all(staged)` 可删线程 A 的在建目录，冲突检查与 rename 间为
