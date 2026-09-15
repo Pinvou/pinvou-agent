@@ -600,7 +600,7 @@ fn capture_and_store(parts: &Parts, workspace: &Path) -> Result<ShotOutcome, Com
 }
 
 fn shot_result_text(shot: &ShotOutcome) -> String {
-    format!(
+    let mut text = format!(
         "screenshot saved: {}\nimage: {}x{} px (scale {:.3} of device {}x{}, monitor origin ({}, {}))\n\
          All coordinates you pass to computer_use are in this image's pixel space, origin top-left.\n\
          If the image is not attached to this result, call image_analyze with image_path=\"{}\" to view it.",
@@ -613,7 +613,17 @@ fn shot_result_text(shot: &ShotOutcome) -> String {
         shot.map.origin_x,
         shot.map.origin_y,
         shot.rel_path,
-    )
+    );
+    // Review finding: at the minimum scale floor the PNG can still exceed
+    // the foundation's attach cap, which silently skips it — the model must
+    // be told instead of going blind.
+    if shot.png.len() > scaling::MAX_IMAGE_BYTES {
+        text.push_str(
+            "\nwarning: this encoded image exceeds the attach size cap even at the minimum \
+             scale, so it will NOT be attached; use image_analyze with image_path to view it.",
+        );
+    }
+    text
 }
 
 fn with_image_metadata(result: ToolResult, shot: &ShotOutcome) -> ToolResult {
@@ -883,6 +893,21 @@ fn full_type_preview(action: &ComputerUseAction, secure_type_target: bool) -> Op
     }
 }
 
+/// Content hash of the full blocked action, bound into the pending and the
+/// approval token (review finding: the human-readable summary deliberately
+/// masks typed content, which let a token minted for one `type N characters`
+/// be spent on a different same-length text; the binding closes that without
+/// changing what the user sees). Hashes the action's Debug rendering — every
+/// parameter participates, nothing user-visible changes. In-process only
+/// (tokens are memory-bound with a 5-minute TTL), so hash stability across
+/// builds does not matter.
+fn action_binding(action: &ComputerUseAction) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    format!("{action:?}").hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Mints a pending confirmation request, emits the event, and returns the
 /// "not executed, go ask for confirmation" error to the model. At most one
 /// pending per session: a new request replaces the old one directly (newest
@@ -893,11 +918,13 @@ fn request_confirmation(
     element_label: &str,
     reason_phrase: &str,
     type_preview_full: Option<String>,
+    binding: u64,
 ) -> String {
     let confirm_id = parts.shared.new_pending_confirmation(
         &parts.session_id,
         summary.to_string(),
         element_label.to_string(),
+        binding,
     );
     let mut payload = json!({
         "session_id": parts.session_id,
@@ -980,32 +1007,49 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
             shot = Some(auto);
         }
 
+        // Reject before any consent surface: a stop/revoke landing during the
+        // automatic screenshot must not still pop a confirmation dialog
+        // (review finding; the mint side refuses stopped/disabled as a second
+        // line of defense).
+        if action.class() == ActionClass::Input {
+            if let Err(rejection) = parts.shared.verify_input_action(&parts.session_id) {
+                return Err(rejection.message());
+            }
+        }
+
         // T3 confirmation token: proceed only when the model passes back a
         // confirm_id and the state holds a matching approval token (same
-        // session, same action summary).
+        // session, same action summary, same action content).
         if requires_t3_check(&action) {
             let summary = action_summary(&action);
+            let binding = action_binding(&action);
             match &parsed.confirm_id {
-                Some(id) => match parts
-                    .shared
-                    .take_confirmation(id, &parts.session_id, &summary)
-                {
-                    // A granted token proceeds directly to execution — no
-                    // re-screen, no re-request arms (mainstream model: the
-                    // API confirmation is one per-action id the client
-                    // acknowledges; there is no crypto and no re-verification).
-                    // No a11y query happens on this path at all.
-                    ConfirmationCheck::Granted => {
-                        confirmed_t3 = true;
-                    }
-                    ConfirmationCheck::Unknown => {
-                        return Err(
-                            "the confirm_id is invalid, expired, or was already used. Ask the \
+                Some(id) => {
+                    match parts
+                        .shared
+                        .take_confirmation(id, &parts.session_id, &summary, binding)
+                    {
+                        // A granted token proceeds directly to execution — no
+                        // re-screen, no re-request arms (mainstream model: the
+                        // API confirmation is one per-action id the client
+                        // acknowledges; there is no crypto and no re-verification).
+                        // No a11y query happens on this path at all. The token is
+                        // bound to the full action content, so what executes is
+                        // identical to what was approved (review finding: a
+                        // summary-only binding let a same-length different text
+                        // spend the token).
+                        ConfirmationCheck::Granted => {
+                            confirmed_t3 = true;
+                        }
+                        ConfirmationCheck::Unknown => {
+                            return Err(
+                                "the confirm_id is invalid, expired, or was already used. Ask the \
                              user to confirm again."
-                                .to_string(),
-                        );
+                                    .to_string(),
+                            );
+                        }
                     }
-                },
+                }
                 None => {
                     // One focused-element read feeds BOTH the masked-preview
                     // decision and keyboard screening below: two separate
@@ -1047,6 +1091,7 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                                 &hit.element_label,
                                 hit.reason,
                                 type_preview_full.clone(),
+                                binding,
                             ));
                         }
                     }

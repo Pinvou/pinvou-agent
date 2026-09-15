@@ -71,7 +71,10 @@ impl ScrollDirection {
     }
 
     pub fn parse(text: &str) -> Option<Self> {
-        match text {
+        // Case-insensitive (review finding: the key/chord parser is
+        // case-insensitive; the scroll parser silently wasn't, so `"Up"`
+        // errored for no reason).
+        match text.to_ascii_lowercase().as_str() {
             "up" => Some(Self::Up),
             "down" => Some(Self::Down),
             "left" => Some(Self::Left),
