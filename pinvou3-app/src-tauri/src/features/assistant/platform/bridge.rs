@@ -2079,19 +2079,27 @@ impl Pinvou3Bridge {
         rules
     }
 
-    /// 多智能体会话专用配置（ADR-0006）。
+    /// Engine config dedicated to multi-agent sessions (ADR-0006).
     ///
-    /// 与普通会话的业务区别是装配专家名册与资源护栏：专家池内可执行的内置卡和用户卡
-    /// 作为底座原生 `[fleet.profiles]` 内存配置，整册装进 `fleet_roster` 供裸
-    /// `agent` 的 `profile` 字段选人；主模型每轮只看到按任务匹配的短候选，完整人设仅注入
-    /// 被派中的子智能体。没有相关候选时模型自拟任务说明裸派。**工具目录与普通会话完全一致**
-    /// ——禁用列表只来自连接器开关，`workflow` 与主线一样保持可用（委派
-    /// 提醒不教学不推荐）。默认直属实例为叶子；复杂任务允许直属实例再拆一层，
-    /// 第二层不得继续派生。Swarm on lifts the caps: the app pins concurrent /
-    /// admitted to the foundation hard ceilings (`config::MAX_SUBAGENTS` /
-    /// `MAX_SUBAGENT_ADMISSION`). Swarm off: one shared tier, 4 direct / 8
-    /// tree-admitted. Deeper descendants skip the direct launch gate but
-    /// count against tree admission. `swarm` is `mode_state.multi_agent`.
+    /// The business differences from a plain session are the expert roster and
+    /// resource guardrails: the built-in and user expert cards eligible inside
+    /// the expert pool become the base's native `[fleet.profiles]` in-memory
+    /// config, and the whole roster is loaded into `fleet_roster` for the bare
+    /// `agent` tool's `profile` field to pick from; each turn the main model
+    /// only sees the short task-matched candidates, and full personas are
+    /// injected only into the dispatched subagent. Without a matching candidate
+    /// the model writes its own task description and dispatches bare. **The
+    /// tool catalog is identical to a plain session** — the disabled list
+    /// comes only from connector switches, and `workflow` stays available as
+    /// on the main line (the delegation reminder neither teaches nor
+    /// recommends it). Direct instances are leaves by default; complex tasks
+    /// may let a direct instance spawn one more level, and that second level
+    /// must not spawn further. Swarm on lifts the caps: the app pins
+    /// concurrent / admitted to the foundation hard ceilings
+    /// (`config::MAX_SUBAGENTS` / `MAX_SUBAGENT_ADMISSION`). Swarm off: one
+    /// shared tier, 4 direct / 8 tree-admitted. Deeper descendants skip the
+    /// direct launch gate but count against tree admission. `swarm` is
+    /// `mode_state.multi_agent`.
     pub(crate) fn build_engine_config_for_multi_agent(
         &self,
         session_id: &str,
