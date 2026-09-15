@@ -58,9 +58,13 @@ function swarmModeOn() {
  * into a single small row ("Pinvou created x agents"); a new spawn only
  * increments x in place. The count comes from spawn-aggregation's result over
  * the message item sequence and updates incrementally with the session flow.
- * Clicking dispatches `pinvou:open-subagent` (agentId=null → panel list state).
+ * The row records dispatch events, so its dot breathes only while some spawn
+ * call of the group is still dispatching (pending/running); once every call
+ * has settled the row reads as history — the live agent status lives in the
+ * running overlay. Clicking dispatches `pinvou:open-subagent` (agentId=null →
+ * panel list state).
  */
-const AgentSpawnCountRow = ({ count, failed = 0, sessionId, t, interactive = true }) => {
+const AgentSpawnCountRow = ({ count, failed = 0, running = 0, sessionId, t, interactive = true }) => {
   const copy = t.uiMultiAgent;
   const on = swarmModeOn();
   // The null-agentId click opens the subagent panel's list state, which only
@@ -82,7 +86,7 @@ const AgentSpawnCountRow = ({ count, failed = 0, sessionId, t, interactive = tru
       }`}
     >
       <span
-        className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${accent} ${failed ? '' : 'animate-pulse'}`}
+        className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${accent} ${running > 0 ? 'animate-pulse' : ''}`}
       />
       <span className="truncate">{copy.spawnedAgentsRow(count)}</span>
       {failed > 0 && (
@@ -216,6 +220,7 @@ const ToolOutput = ({ item, t }) => {
             <AgentSpawnCountRow
               count={resolved.count}
               failed={resolved.failed || 0}
+              running={resolved.running || 0}
               sessionId={sessionId}
               interactive={spawnRowInteractive}
               t={t}

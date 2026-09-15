@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   annotateAgentSpawnGroups,
   isAgentSpawnChatItem,
+  isActiveSpawn,
   spawnGroupOf,
 } from '../src/features/multiagent/spawn-aggregation.mjs';
 
@@ -130,8 +131,36 @@ test('annotation never mutates the input items: group members are shallow copies
   assert.ok(!('spawnGroup' in items[0]) && !('spawnGroupHidden' in items[1]), 'the input array items stay clean');
 });
 
+test('active predicate: only pending/running spawn items count as in flight', () => {
+  assert.equal(isActiveSpawn(spawnItem('aaaa0001', { state: 'running', success: null })), true);
+  assert.equal(isActiveSpawn(spawnItem('aaaa0002', { state: 'pending', success: null })), true);
+  assert.equal(isActiveSpawn(spawnItem('aaaa0003')), false, 'a settled spawn is not in flight');
+  assert.equal(isActiveSpawn(spawnItem('aaaa0004', { state: 'failed' })), false);
+  assert.equal(isActiveSpawn(null), false);
+});
+
+test('in-flight dispatches count toward running so the row pulse reflects activity', () => {
+  const items = [
+    spawnItem('aaaa0001', { state: 'running', success: null }),
+    spawnItem('aaaa0002', { state: 'pending', success: null }),
+    spawnItem('aaaa0003', { success: false, output: 'Error: spawn failed' }),
+    spawnItem('aaaa0004'),
+  ];
+  const annotated = annotateAgentSpawnGroups(items);
+  assert.equal(annotated[0].spawnGroup.count, 4);
+  assert.equal(annotated[0].spawnGroup.running, 2);
+  assert.equal(annotated[0].spawnGroup.failed, 1);
+  // Once every call has settled (the historical-replay shape), running drops
+  // to zero: the row reads as history instead of pulsing forever.
+  const settled = annotateAgentSpawnGroups([spawnItem('aaaa0005'), spawnItem('aaaa0006', { success: false })]);
+  assert.equal(settled[0].spawnGroup.count, 2);
+  assert.equal(settled[0].spawnGroup.running, 0);
+  assert.equal(settled[0].spawnGroup.failed, 1);
+});
+
 test('spawnGroupOf: degenerate group shape for a single unannotated spawn item', () => {
-  assert.deepEqual(spawnGroupOf(spawnItem('aaaa0001')), { count: 1, failed: 0 });
-  assert.deepEqual(spawnGroupOf(spawnItem('aaaa0002', { success: false })), { count: 1, failed: 1 });
-  assert.deepEqual(spawnGroupOf(spawnItem('aaaa0003', { state: 'failed' })), { count: 1, failed: 1 });
+  assert.deepEqual(spawnGroupOf(spawnItem('aaaa0001')), { count: 1, failed: 0, running: 0 });
+  assert.deepEqual(spawnGroupOf(spawnItem('aaaa0002', { success: false })), { count: 1, failed: 1, running: 0 });
+  assert.deepEqual(spawnGroupOf(spawnItem('aaaa0003', { state: 'failed' })), { count: 1, failed: 1, running: 0 });
+  assert.deepEqual(spawnGroupOf(spawnItem('aaaa0004', { state: 'running', success: null })), { count: 1, failed: 0, running: 1 });
 });
