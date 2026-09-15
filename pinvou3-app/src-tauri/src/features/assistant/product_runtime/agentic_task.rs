@@ -28,6 +28,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use deepseek_tui::AppMode;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::features::assistant::attachments::{
@@ -39,7 +40,9 @@ use crate::features::assistant::product_runtime::{
     EnginePoolRuntime, SessionSpec, TurnHandle, TurnInput, TurnResult,
 };
 use crate::features::files::file_ingest::IngestResult;
-use crate::features::sessions::{ExecutionRootResolver, SessionKind, SessionStore};
+use crate::features::sessions::{
+    ExecutionRootResolver, MAX_SESSIONS_PER_KIND, SessionKind, SessionStore,
+};
 use crate::platform::prefs::UserPrefs;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
@@ -235,6 +238,12 @@ pub fn run_agentic_task_headless(request: AgenticTaskRequest) -> Result<AgenticT
 /// (request validation, model pin, session prepare, submit) propagate as `Err`
 /// instead — the CLI surfaces those as exit 1 without a report.
 ///
+/// Persisting counts against the shared 50-session retention cap: when a
+/// fresh run's prepare-time save evicts chat sessions at the cap (pinned
+/// ones included), the store's real eviction events drive a stderr warning,
+/// so a batch harness pointed at the desktop's default `PINVOU3_HOME` is not
+/// silent about the data loss — even when the run errors after the save.
+///
 /// The execution root resolver must be registered before the pool enters an
 /// `Arc` (the bridge setter needs `&mut self`), which is why this function
 /// takes `EnginePool` by value.
@@ -277,6 +286,16 @@ pub async fn run_agentic_task(
     store.set_execution_root_resolver(resolver);
     let runtime = EnginePoolRuntime::new(Arc::new(pool));
 
+    // Retention-eviction observation: the prepare-time save inside the turn
+    // lands in the same 50-session store the GUI reads, and a fresh save at
+    // the cap evicts the oldest chat session(s) — pinned ones included. The
+    // store reports its real sweep deletions into this receiver, so the
+    // warning keys on the eviction event itself: a run that errors after the
+    // save (attachment staging, submit) must still surface the eviction, and
+    // a run that fails before saving evicts nothing and stays silent. A
+    // pre-/post-run count heuristic cannot tell those apart.
+    let evictions = Arc::new(Mutex::new(Vec::new()));
+    store.set_retention_eviction_observer(Some(evictions.clone()));
     let outcome = run_turn(
         &runtime,
         &store,
@@ -309,6 +328,23 @@ pub async fn run_agentic_task(
     } else {
         runtime.schedule_eval_cleanup(&session_id);
         let _ = runtime.close_eval_session_result(&session_id).await;
+    }
+    // Disarm before reporting: the prepare-time save happened before any setup
+    // fault could surface, so the evictions are real regardless of the final
+    // outcome — the report may carry an error, and the run may have cleaned
+    // its own session up afterwards.
+    store.take_retention_eviction_observer();
+    let evicted = evictions.lock();
+    if !evicted.is_empty() {
+        eprintln!(
+            "[pinvou agent run] warning: persisting this run's session evicted \
+             {} chat session(s) at the {MAX_SESSIONS_PER_KIND}-session retention \
+             cap, pinned ones included. Point PINVOU3_HOME at a sandbox or prune \
+             the session store (PINVOU3_AGENT_TASK_KEEP_SESSION=0 only removes \
+             this run's session afterwards; the save-time eviction still \
+             happens).",
+            evicted.len()
+        );
     }
     outcome
 }
@@ -774,9 +810,57 @@ mod tests {
         MAX_TIMEOUT_SECS, ensure_existing_chat_session, ensure_model_exists, keep_session_from_env,
         validate_attachments,
     };
-    use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
+    use crate::features::sessions::{
+        MAX_SESSIONS_PER_KIND, ScheduledRunMode, ScheduledRunProfile, SessionStore,
+    };
     use crate::platform::paths::tests::ENV_LOCK;
+    use std::ffi::OsString;
     use std::path::PathBuf;
+
+    /// RAII restore for the process-level env vars a test mutates: original
+    /// values are captured as `OsString` (non-Unicode values survive) and
+    /// rewritten on drop, which runs on both normal return and panic unwind.
+    /// Like bridge.rs's guard, this holds no lock itself — borrow
+    /// [`ENV_LOCK`] first, via [`locked_env`].
+    struct EnvGuard {
+        vars: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl EnvGuard {
+        fn new(vars: &[&'static str]) -> Self {
+            Self {
+                vars: vars
+                    .iter()
+                    .map(|&name| (name, std::env::var_os(name)))
+                    .collect(),
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (name, value) in &self.vars {
+                // SAFETY: the paired lock guard held ENV_LOCK for this
+                // guard's whole life; env writes stay serialized across tests.
+                unsafe {
+                    if let Some(value) = value {
+                        std::env::set_var(name, value);
+                    } else {
+                        std::env::remove_var(name);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Acquire the crate-wide [`ENV_LOCK`] plus an [`EnvGuard`] restoring
+    /// `vars` on scope exit (normal or panic):
+    /// `let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);`
+    /// Never call this while already holding ENV_LOCK (not reentrant).
+    fn locked_env(vars: &[&'static str]) -> (std::sync::MutexGuard<'static, ()>, EnvGuard) {
+        let lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        (lock, EnvGuard::new(vars))
+    }
 
     fn default_request(prompt: &str) -> AgenticTaskRequest {
         AgenticTaskRequest {
@@ -795,7 +879,7 @@ mod tests {
     /// keep.
     #[test]
     fn keep_session_env_defaults_to_keeping() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let (_lock, _env) = locked_env(&["PINVOU3_AGENT_TASK_KEEP_SESSION"]);
         // SAFETY: ENV_LOCK held; env writes are serialized across tests.
         unsafe { std::env::remove_var("PINVOU3_AGENT_TASK_KEEP_SESSION") };
         assert!(keep_session_from_env(), "absent env must keep the session");
@@ -809,8 +893,7 @@ mod tests {
             unsafe { std::env::set_var("PINVOU3_AGENT_TASK_KEEP_SESSION", value) };
             assert!(!keep_session_from_env(), "{value} must delete the session");
         }
-        // SAFETY: see above.
-        unsafe { std::env::remove_var("PINVOU3_AGENT_TASK_KEEP_SESSION") };
+        // `_env` restores the captured value on return or panic.
     }
 
     #[test]
@@ -948,7 +1031,7 @@ mod tests {
 
     #[test]
     fn ensure_model_exists_rejects_unknown_model() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
         let tmp = std::env::temp_dir().join(format!(
             "pinvou3-agentic-model-test-{}",
             std::time::SystemTime::now()
@@ -956,15 +1039,16 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        // SAFETY: ENV_LOCK held; env writes are serialized across tests.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let error = ensure_model_exists("definitely-missing-model").unwrap_err();
         assert!(error.to_string().contains("agent_model_not_found"));
+        // `_env` restores the captured PINVOU3_HOME on return or panic.
     }
 
     #[test]
     fn ensure_existing_chat_session_accepts_chat_rejects_unknown_and_scheduled() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
         let tmp = std::env::temp_dir().join(format!(
             "pinvou3-agentic-session-test-{}",
             std::time::SystemTime::now()
@@ -972,7 +1056,7 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        // SAFETY: ENV_LOCK held; env writes are serialized across tests.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
 
@@ -1002,6 +1086,81 @@ mod tests {
         );
         let error = ensure_existing_chat_session(&store, &chat.metadata.id).unwrap_err();
         assert!(error.to_string().contains("agent_session_not_chat"));
+        // `_env` restores the captured PINVOU3_HOME on return or panic.
+    }
+
+    /// The eviction warning keys on the real retention event, not the turn's
+    /// final outcome: the prepare-time save of a fresh session at the cap
+    /// evicts and is recorded even when the run errors afterwards, while a
+    /// save below the cap evicts nothing and must stay silent.
+    #[test]
+    fn retention_eviction_observed_even_when_turn_errors_after_prepare() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-agentic-retention-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        // SAFETY: ENV_LOCK held; env writes are serialized across tests.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
+
+        let mut ids = Vec::new();
+        for _ in 0..MAX_SESSIONS_PER_KIND {
+            let session = store
+                .create_new("test-model".to_string(), None, tmp.clone())
+                .unwrap();
+            ids.push(session.metadata.id);
+        }
+
+        // Arm the same receiver `run_agentic_task` installs around the turn.
+        let evictions = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        store.set_retention_eviction_observer(Some(evictions.clone()));
+
+        // The prepare-time save of a fresh run at the cap — the exact call
+        // `prepare_eval_session` makes — evicts the oldest session...
+        let oldest = ids[0].clone();
+        store
+            .create_empty_with_id(
+                "agentic_probe_1".to_string(),
+                "test-model".to_string(),
+                None,
+                tmp.clone(),
+            )
+            .unwrap();
+        assert!(
+            store.load(&oldest).is_err(),
+            "oldest session must be evicted by the save at the cap"
+        );
+        // ...and the record stands on its own: an attachment/submit failure
+        // after this point returns `Err`, but the eviction already happened
+        // and the warning must still see it (no turn outcome consulted).
+        assert_eq!(evictions.lock().as_slice(), &[oldest]);
+
+        // Disarm exactly like the runner does before reporting.
+        let evicted = store.take_retention_eviction_observer().unwrap();
+        assert_eq!(evicted.lock().as_slice(), &[ids[0].clone()]);
+
+        // Below the cap a fresh save evicts nothing and records nothing.
+        store.delete(&ids[MAX_SESSIONS_PER_KIND - 1]).unwrap();
+        let evictions = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        store.set_retention_eviction_observer(Some(evictions.clone()));
+        store
+            .create_empty_with_id(
+                "agentic_probe_2".to_string(),
+                "test-model".to_string(),
+                None,
+                tmp.clone(),
+            )
+            .unwrap();
+        assert!(
+            evictions.lock().is_empty(),
+            "a save below the cap must not be reported as an eviction"
+        );
+        store.take_retention_eviction_observer();
+        // `_env` restores the captured PINVOU3_HOME on return or panic.
     }
 
     #[test]
