@@ -42,7 +42,7 @@ const PPT_DESIGN_CONTEXT = `Pinvou PPT 设计场景路由：
 - 这是强制能力场景，不要按普通聊天、网页或 Markdown 大纲处理。
 - 必须优先加载并使用 PPT 生成技能，技能 id/name 使用 pptx / PPT 生成。
 - 交付目标是可编辑的 .pptx 文件：先列一版大纲（章节 + 每页要点）给用户确认，确认后产结构化 deck。
-- deck 必须调 PPT 工具生成，工具 id/name 使用 pptx / PPT 生成（mcp_pptx_make_pptx），slides 数组每页一个对象并按版式填正文字段；按 PPT 内容自动选主题并一句话说明理由。
+- deck 必须调 PPT 工具生成，工具 id/name 使用 pptx / PPT 生成（mcp_pptx_make_pptx；连接器工具默认延迟加载，不在工具列表时先 tool_search 激活），slides 数组每页一个对象并按版式填正文字段；按 PPT 内容自动选主题并一句话说明理由。
 - 拿到产物路径后必须调用 mcp_pinvou3_present_artifact 上产物卡（若工具列表里没有 mcp_pinvou3_present_artifact，说明产物卡后端不可用，交付文件并明确告知用户），不要只给文件路径文字。
 - 全程不要用 HTML 幻灯片代替 .pptx；没点名在线平台时本地生成，不要用飞书/在线文档代替。
 - 如果 pptx 技能或工具不可用，不要静默降级为普通回答或 HTML，应明确提示所需能力不可用。`;
