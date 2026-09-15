@@ -17,6 +17,7 @@ function VoiceShortcutIntroModal({
 }) {
   const dialogRef = useRef(null);
   const primaryButtonRef = useRef(null);
+  const backdropPressRef = useRef(false);
   const onCloseRef = useRef(onClose);
   // The web lane is web_asr_only: no smart post-processing, and Alt with text silently
   // downgrades to append dictation, so the voice-edit card is no longer shown — avoid
@@ -59,13 +60,21 @@ function VoiceShortcutIntroModal({
   }, []);
 
   return createPortal(
+    // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop press-to-dismiss; the keyboard path is the capture-phase Escape listener and the in-dialog buttons
     <div
       className="fixed inset-0 z-[1200] flex items-center justify-center bg-black/35 px-4 py-6 backdrop-blur-md"
       role="dialog"
       aria-modal="true"
       aria-labelledby="voice-shortcut-intro-title"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
+      onMouseDown={(event) => { backdropPressRef.current = event.target === event.currentTarget; }}
+      onMouseUp={(event) => { if (backdropPressRef.current && event.target !== event.currentTarget) backdropPressRef.current = false; }}
+      onClick={(event) => {
+        // Same two-end recipe as the move picker's backdrop: a text-selection
+        // drag that starts (or ends) here synthesizes a click on the common
+        // ancestor, and dismissing on it would close the intro mid-drag.
+        if (!backdropPressRef.current || event.target !== event.currentTarget) return;
+        backdropPressRef.current = false;
+        onClose();
       }}
     >
       <div
