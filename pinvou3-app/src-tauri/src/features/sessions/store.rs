@@ -43,6 +43,13 @@ static POST_RECORD_DELETE_FAULTS: LazyLock<Mutex<HashMap<String, ErrorKind>>> =
 /// oldest is evicted by [`super::retention::SessionStore::enforce_session_retention_locked`].
 pub(crate) const MAX_SESSIONS_PER_KIND: usize = 50;
 
+/// Placeholder title for a fresh chat session. One of the trilingual
+/// sentinels in the frontend's `DEFAULT_CHAT_TITLES`: the sidebar localizes
+/// it per UI language and the first send triggers the auto-rename. Sessions
+/// created headlessly share the same sentinel so they behave identically in
+/// the history list.
+pub(crate) const NEW_CHAT_TITLE: &str = "新对话";
+
 impl SessionStore {
     /// Repair persisted tool histories only at process boot, before any
     /// session engine can own an in-flight tool call. Runtime reads use the
@@ -615,7 +622,7 @@ impl SessionStore {
             None,
             None,
         );
-        session.metadata.title = "新对话".to_string();
+        session.metadata.title = NEW_CHAT_TITLE.to_string();
         // per-session 模型：先落 sidecar 再公开 Session JSON，避免写盘失败后
         // 留下一条看似创建成功、重启却切回其它模型的会话。
         if let Some(mid) = model_id {
@@ -778,7 +785,10 @@ impl SessionStore {
             None,
             None,
         );
-        session.metadata.title = "临时评测".to_string();
+        // Headless sessions persist by default and surface in the GUI history,
+        // so they carry the same localized placeholder sentinel as GUI-created
+        // sessions (an eval-internal label would leak into every UI language).
+        session.metadata.title = NEW_CHAT_TITLE.to_string();
         if let Some(model_id) = model_id {
             self.set_session_model_id(&id, Some(model_id))?;
         }
