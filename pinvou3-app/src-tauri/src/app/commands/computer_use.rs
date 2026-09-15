@@ -177,6 +177,13 @@ pub async fn computer_use_set_enabled(
     shared: State<'_, Arc<ComputerUseShared>>,
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
+    // Reject on platforms without a backend (review finding: the toggle
+    // used to persist happily where computer use can never work, leaving the
+    // UI to discover it via a status round-trip). The frontend already
+    // rolls the optimistic flip back and surfaces the error.
+    if enabled && !crate::features::computer_use::backend_supported() {
+        return Err("computer use has no backend on this operating system".to_string());
+    }
     UserPrefs::update_transaction(|prefs| {
         prefs.computer_use.enabled = enabled;
         Ok(())
@@ -229,6 +236,22 @@ mod tests {
                 "stopped": false,
                 "platform_supported": true,
             })
+        );
+    }
+
+    /// Review finding: the frontend bridge matches the exact phrase
+    /// "unknown or expired" in the confirm/deny error text to recognize an
+    /// expired pending and clear the stale dialog locally (the 5-minute TTL
+    /// would otherwise dead-lock the modal). Pin the phrase on the producer
+    /// side so a rewording cannot silently break the frontend contract.
+    #[test]
+    fn confirm_error_phrases_keep_the_frontend_contract() {
+        let source = include_str!("computer_use.rs");
+        let occurrences = source.matches("unknown or expired").count();
+        assert!(
+            occurrences >= 2,
+            "the frontend contract phrase \"unknown or expired\" must stay in the confirm \
+             and deny error texts (found {occurrences})"
         );
     }
 
