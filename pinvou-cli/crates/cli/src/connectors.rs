@@ -86,6 +86,13 @@ const DISCONNECTED_REASON: &str = "已断开授权：配套技能已随断开移
 
 /// Archive size cap, mirroring `native_installer::MAX_ARCHIVE_BYTES`.
 const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
+
+/// Per-stream byte cap for the login-output drainer (`drain_for_url`),
+/// matching `run_cli_bounded`'s `MAX_VENDOR_OUTPUT_BYTES`: the login deadline
+/// bounds the process lifetime, not the bytes a chatty or hostile vendor CLI
+/// can write into the piped output while the drainer blocks on EOF.
+const LOGIN_DRAIN_CAP_BYTES: u64 = 8 * 1024 * 1024;
+
 /// Default overall connect timeout, mirroring feishu's 5-minute authorize
 /// window; `connect --timeout SECS` overrides it.
 const CONNECT_DEFAULT_TIMEOUT_SECS: u64 = 300;
@@ -1905,8 +1912,13 @@ fn spawn_and_capture_url(
         ))
     })?;
     // Two rendezvous slots: first auth-domain URL and first user code. The
-    // GUI composes the code into the URL (`with_user_code_param`) because the
-    // login page asks for a code the raw URL does not carry.
+    // wait ends at the first URL, like the GUI loops (feishu.rs takes a single
+    // `recv_timeout`, tmeet.rs `break`s on the first auth line): vendor CLIs
+    // that never print a separate code line (feishu phase 1, wecom, tmeet)
+    // must not burn the whole `login_url_wait_secs` window after the link is
+    // already in hand. Whatever code has arrived by then is composed into the
+    // URL by the caller (`compose_user_code`) because the login page asks for
+    // a code the raw URL does not carry.
     let (tx, rx) = mpsc::channel::<LoginStreamEvent>();
     if let Some(stdout) = child.stdout.take() {
         drain_for_url(spec, stdout, tx.clone());
@@ -1927,23 +1939,14 @@ fn spawn_and_capture_url(
     let qr_png = work_dir.map(|dir| dir.join("qr.png"));
     let mut qr_announced = false;
     let deadline_wait = Instant::now() + url_wait;
-    while url.is_none() || user_code.is_none() {
+    while url.is_none() {
         let remaining = deadline_wait.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             break;
         }
         if let Some(qr) = &qr_png {
-            if !qr_announced && qr.is_file() {
-                eprintln!(
-                    "wecom scan-qr-file: {} (scan this PNG to authorize in one step)",
-                    qr.display()
-                );
-                notes.push(format!(
-                    "scan-qr-file: {} (the login link is a landing page; scan this PNG to \
-                     authorize in one step)",
-                    qr.display()
-                ));
-                qr_announced = true;
+            if !qr_announced {
+                qr_announced = announce_wecom_qr(qr, notes);
             }
         }
         match rx.recv_timeout(Duration::from_millis(200).min(remaining)) {
@@ -1964,6 +1967,20 @@ fn spawn_and_capture_url(
             }
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    if let Some(qr) = &qr_png {
+        if !qr_announced {
+            // Breaking on the first URL can win the race against the vendor
+            // writing `qr.png` (the GUI polls the PNG for up to 6s after the
+            // URL — `wecom.rs::poll_qr_png`); give the file the same short
+            // grace window, capped by the connect budget, so the one-scan
+            // note is not lost.
+            let qr_deadline = (Instant::now() + Duration::from_secs(6)).min(deadline);
+            while !qr.is_file() && Instant::now() < qr_deadline {
+                std::thread::sleep(Duration::from_millis(150));
+            }
+            announce_wecom_qr(qr, notes);
         }
     }
     if url.is_none() {
@@ -1992,6 +2009,25 @@ fn spawn_and_capture_url(
     Ok((url, user_code, status.success()))
 }
 
+/// Announce the wecom one-scan `qr.png` once (stderr + the notes a failure
+/// carries), mirroring the GUI's `wecom:qr` emit. Returns whether the file
+/// was there to announce.
+fn announce_wecom_qr(qr: &Path, notes: &mut Vec<String>) -> bool {
+    if !qr.is_file() {
+        return false;
+    }
+    eprintln!(
+        "wecom scan-qr-file: {} (scan this PNG to authorize in one step)",
+        qr.display()
+    );
+    notes.push(format!(
+        "scan-qr-file: {} (the login link is a landing page; scan this PNG to \
+         authorize in one step)",
+        qr.display()
+    ));
+    true
+}
+
 /// Suffix for connect errors that carries the login material captured so far
 /// — after a timeout the notes are often all the user has (the vendor CLI is
 /// gone and its output was piped, not printed).
@@ -2004,6 +2040,7 @@ fn captured_notes(notes: &[String]) -> String {
 }
 
 /// Stream event collected while a login command runs.
+#[derive(Debug)]
 enum LoginStreamEvent {
     Url(String),
     Code(String),
@@ -2027,6 +2064,9 @@ fn compose_user_code(url: &Option<String>, user_code: Option<&str>) -> Option<St
 /// connector's auth domains — mirror of `connector_cli::drain_for_url` and
 /// `CliCtx::extract_url` (truncate at whitespace, keep query strings) — plus
 /// the first `user_code`-style line (mirror of dingtalk `extract_user_code`).
+/// Byte-capped like `run_cli_bounded`'s drains: the login deadline bounds the
+/// process lifetime, not the bytes a chatty or hostile vendor CLI (or a
+/// descendant that inherited the pipes) can push into the pipe.
 fn drain_for_url<R: std::io::Read + Send + 'static>(
     spec: &VendorSpec,
     reader: R,
@@ -2034,7 +2074,7 @@ fn drain_for_url<R: std::io::Read + Send + 'static>(
 ) -> std::thread::JoinHandle<()> {
     let domains = spec.auth_domains;
     std::thread::spawn(move || {
-        for line in BufReader::new(reader).lines() {
+        for line in BufReader::new(reader.take(LOGIN_DRAIN_CAP_BYTES)).lines() {
             let line = match line {
                 Ok(line) => line,
                 Err(_) => break,
@@ -2271,13 +2311,36 @@ fn validate_ima_credentials(client_id: &str, api_key: &str) -> Result<(), CliErr
         return Ok(());
     }
     // The server message may echo request material (client id / api key) on
-    // hostile or misbehaving responses; redact like `ima.rs` does.
+    // hostile or misbehaving responses; strip the exact known values like
+    // `ima.rs::redact_known_credentials` — the heuristic `redact_secret`
+    // alone can miss short or punctuation-heavy credentials — then run the
+    // heuristic for anything secret-shaped left over.
+    let message = payload
+        .get("msg")
+        .and_then(Value::as_str)
+        .unwrap_or("ima OpenAPI authentication failed; check client id / api key");
     Err(CliError::failed(redact_secret(
-        payload
-            .get("msg")
-            .and_then(Value::as_str)
-            .unwrap_or("ima OpenAPI authentication failed; check client id / api key"),
+        &redact_ima_known_credentials(message.to_owned(), client_id, api_key),
     )))
+}
+
+/// Mirror of `ima.rs::redact_known_credentials`: remove the exact client id /
+/// api key values from a server-supplied message before it reaches the user.
+fn redact_ima_known_credentials(mut text: String, client_id: &str, api_key: &str) -> String {
+    for secret in [client_id, api_key] {
+        if secret.is_empty() {
+            continue;
+        }
+        // GUI parity: the JSON-quoted form (`ima.rs` redacts serialized
+        // response payloads)…
+        if let Ok(json_secret) = serde_json::to_string(secret) {
+            text = text.replace(&json_secret, "\"[REDACTED]\"");
+        }
+        // …and the bare value: the CLI surfaces the plain `msg` field, where
+        // an echoed credential carries no JSON quotes.
+        text = text.replace(secret, "[REDACTED]");
+    }
+    text
 }
 
 /// Mirror of `ima_logout`: delete both secrets, uninstall ima-skills and
@@ -2295,4 +2358,70 @@ fn ima_logout(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     api_result.map_err(|error| credential_error(error.user_message()))?;
     let value = json!({ "ok": true, "id": "ima", "connected": false });
     Ok(success(render(output, "ima logged out".to_owned(), &value)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ima_error_redaction_removes_the_exact_credential_values() {
+        // A misbehaving validation endpoint can echo the request material in
+        // `msg`; the exact client id / api key must be gone even when the
+        // heuristic `redact_secret` would not flag them (short, unprefixed).
+        let message =
+            "authentication failed for client id ima-client-1 and api key ima-key-2".to_owned();
+        let redacted = redact_ima_known_credentials(message, "ima-client-1", "ima-key-2");
+        assert!(!redacted.contains("ima-client-1"), "{redacted}");
+        assert!(!redacted.contains("ima-key-2"), "{redacted}");
+        assert!(redacted.contains("[REDACTED]"), "{redacted}");
+    }
+
+    #[test]
+    fn ima_error_redaction_keeps_the_gui_quoted_form() {
+        // GUI parity (`ima.rs::redact_known_credentials`): the JSON-quoted
+        // echo in a serialized payload is replaced without corrupting the
+        // surrounding text.
+        let message = r#"{"error":"client_id ima-client-1 rejected"}"#.to_owned();
+        let redacted = redact_ima_known_credentials(message, "ima-client-1", "api-key-ignored");
+        assert!(!redacted.contains("ima-client-1"), "{redacted}");
+        assert!(redacted.contains("rejected"), "{redacted}");
+    }
+
+    #[test]
+    fn drain_for_url_stops_reading_at_the_stream_cap() {
+        // `repeat` never yields a newline and never EOFs on its own: without
+        // the byte cap the drainer thread would block on the pipe forever.
+        // `rx` must stay alive — a send failure would end the drainer before
+        // the cap — but the endless 'x' stream produces no code/URL events.
+        let (tx, rx) = mpsc::channel::<LoginStreamEvent>();
+        let drain = drain_for_url(ConnectorKind::Dingtalk.spec(), std::io::repeat(b'x'), tx);
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            drain.join().expect("drainer thread must not panic");
+            done_tx.send(()).expect("test is waiting");
+        });
+        let _keep_rx = rx;
+        done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("drainer must hit the 8 MiB cap instead of blocking forever");
+    }
+
+    #[test]
+    fn drain_for_url_forwards_code_and_url_and_ignores_other_lines() {
+        let (tx, rx) = mpsc::channel::<LoginStreamEvent>();
+        let input: &[u8] = b"noise\nUser Code: ZXCV1234\nvisit https://login.dingtalk.com/oauth/authorize?x=1 now\n";
+        let drain = drain_for_url(ConnectorKind::Dingtalk.spec(), input, tx);
+        let code = match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(LoginStreamEvent::Code(code)) => code,
+            other => panic!("expected the user code first, got {other:?}"),
+        };
+        assert_eq!(code, "ZXCV1234");
+        let url = match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(LoginStreamEvent::Url(url)) => url,
+            other => panic!("expected the auth URL, got {other:?}"),
+        };
+        assert_eq!(url, "https://login.dingtalk.com/oauth/authorize?x=1");
+        drain.join().expect("drainer thread must not panic");
+    }
 }

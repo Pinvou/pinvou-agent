@@ -794,6 +794,56 @@ fn connect_failure_carries_the_captured_login_link() {
 
 #[test]
 #[cfg(unix)]
+fn connect_does_not_wait_out_the_url_window_when_no_user_code_arrives() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("connect-no-code");
+    let bin = std::env::temp_dir().join(format!(
+        "pinvou-cli-connectors-fake-bin-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&bin).unwrap();
+    // dws prints only the authorize link and exits 0 — no user code line, the
+    // feishu/tmeet/wecom situation. The old `while url.is_none() ||
+    // user_code.is_none()` wait burned the whole 60s `login_url_wait_secs`
+    // window here even though the link was already captured; the GUI loops
+    // break on the first URL (feishu.rs / tmeet.rs), so the CLI must move
+    // straight on to the exit status and the auth probe. The probe reports
+    // unauthenticated and the failure must still carry the captured link.
+    write_fake_cli(
+        &bin,
+        "dws",
+        "dws version 1.0.0",
+        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then echo \"visit https://login.dingtalk.com/oauth/authorize?x=1 to continue\"; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo '{\"authenticated\": false}'; exit 0; fi\n",
+    );
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    let started = std::time::Instant::now();
+    let error = run(&["pinvou", "connectors", "connect", "dingtalk"])
+        .expect_err("the fake never authenticates");
+    // Old behavior waited out the full 60s URL window before even checking
+    // the child exit; fixed behavior finishes in a small fraction of that.
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "connect must not wait out login_url_wait_secs once the URL is captured"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("https://login.dingtalk.com/oauth/authorize?x=1"),
+        "the failure must surface the captured login link: {message}"
+    );
+    assert!(
+        message.contains("exited before authorization completed"),
+        "{message}"
+    );
+    let _ = std::fs::remove_dir_all(&bin);
+}
+
+#[test]
+#[cfg(unix)]
 fn wecom_connect_surfaces_the_qr_file_while_it_exists() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("wecom-qr");
