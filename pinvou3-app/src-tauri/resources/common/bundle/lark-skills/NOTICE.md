@@ -125,6 +125,19 @@ PR #302),不在本目录内,不来自 lark-cli 上游,sync 时不涉及。
   (lark-im-scopes.md 保留为本地新增文件)、mget 排障表 contact scope 删除、
   lark-doc fetch/script/update 三篇 references 级修正、
   lark-drive comment-location whiteboard 口径。
+- **管道转义修复随上游文件合并迁移(2026-09-15 勘误补登记)**:2026-08-17
+  登记的「表格管道转义 7 处」中 `lark-base-data-analysis-sop.md` 的 4 处,
+  上游已把该篇合并重写为
+  `lark-base-record-query-and-analysis-sop.md`;本次按上游原样采纳继任文件
+  时漏重放该条(4 处单元格代码跨度 `string|null` / `number|null` /
+  `{lng,lat,full_address}|null` 未 `\|` 转义,3 列表格渲染会列破裂),
+  已补转义。下次 sync 若上游仍未修,需在新文件上继续重放本条。
+- **lark-base description 压缩至 280 字符(2026-09-15 补登记)**:上游重写后
+  本地合并版 description 为 305 字符,超 280 软上限;已压缩至 280(收紧
+  「模板中心」「BaseApp」措辞与尾部路由短句,防误用前缀与全部命令族
+  覆盖不变),connector_skills_contract 规则 6 对 lark 域的 ≤280 检查随
+  binsByPack key 修正(PR#302 后 skills/lark- 失配为 lark-skills/lark-)
+  重新生效,后续 sync 超限即测试失败。
 - 全树链接校验:skill 文件间相对链接无悬空(仅本 NOTICE 自身对
   `../../lark-shared/SKILL.md` 的引用为文档性描述,非链接目标)。
 - **同步后契约修正**:`lark-sheets/references/lark-sheets-chart.md` 三处
@@ -342,7 +355,9 @@ emit_error(JSON+exit 1)、无裸 except。修复 1 处,下次 sync 需重放:
   适配 1 处一并列入本条(filter-condition 为 v1.0.87 新文件,适配随首次同步带入)。
 - **表格管道转义 7 处(第五/八轮审查引入,2026-08-17 补登记)**:
   `lark-base/references/lark-base-data-analysis-sop.md`(4 处,类型表
-  `string\|null` 等)、`lark-doc/references/lark-doc-script.md`(2 处,
+  `string\|null` 等;**该篇已被上游 v1.0.95 合并重写为
+  `lark-base-record-query-and-analysis-sop.md`,4 处转义已迁移重放,见
+  2026-09-15 同步记录勘误条**)、`lark-doc/references/lark-doc-script.md`(2 处,
   `--as user\|bot` 与 `--format` 枚举)、`lark-im/references/card/components/
   checker.md`(1 处,`pc_display_rule:"always"\|"on_hover"`)——单元格代码跨度内的 `|` 须
   `\|` 转义,否则 GFM 渲染表格列破裂。(2026-08-17 勘误:checker.md 一条示例文

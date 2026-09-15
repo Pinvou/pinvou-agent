@@ -53,13 +53,11 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
   释放到运行时技能目录。
 - `tmeet` CLI(`@tencentcloud/tmeet`)不随包内置,由
   `pinvou3-app/src-tauri/src/features/connectors/tmeet.rs` 的 npm 钉扎
-  (`TMEET_NPM_SPEC`,同步时仍为 `@tencentcloud/tmeet@1.0.15`,由统一升级流程
-  处理)在线安装;SKILL.md 的
+  (`TMEET_NPM_SPEC`,随本次同步已升至 `@tencentcloud/tmeet@1.0.18`,与技能
+  基线一致)在线安装;SKILL.md 的
   「安装与初始化」节已按下方登记第 4 条改写为品悟代管口径,上游的
   `npm install -g @tencentcloud/tmeet@latest` 教学不再出现在技能正文,实际版本
-  以 Rust 层钉扎为准。**注意:技能文档基线(v1.0.18)暂领先已安装 CLI
-  (1.0.15),新增的 `minutes` / `app` / `event` 命令在 CLI 升级前不可用,
-  属已知过渡期状态,待 `tmeet.rs` 钉扎升级后自然消除。**
+  以 Rust 层钉扎为准。
 
 ## Pinvou3 本地修改登记
 
@@ -213,11 +211,12 @@ description、认证节、命令树新增 `minutes` / `app` / `event` 三个子�
   按原样重放。
 - `tmeet-auth.md`：第 6 条品悟宿主断言重放；上游 agent_init.py 新指引
   **原样保留**（两条并存：品悟宿主仍注入 `TMEET_AGENT`/`TMEET_MODEL`，
-  上游新增脚本写 `agent.json`）。**未决问题**：1.0.18 二进制是否仍读取
-  这两个环境变量未经 strings 实测，若不再读取，`tmeet.rs` 的注入可能
-  失效、遥测依赖模型执行脚本（脚本路径 `./scripts/agent_init.py` 以技能
-  目录为 cwd 的假设在品悟运行时也待验证），建议统一升级 tmeet.rs 时一并
-  核实。
+  上游新增脚本写 `agent.json`）。**已核实（2026-09-15，按上游 v1.0.18 公开
+  源码 `internal/common/system.go`）**：1.0.18 仍读取这两个环境变量，且
+  **环境变量优先于 `agent.json`**，故品悟注入始终生效，上游脚本写入的
+  agent/model 名不会覆盖品悟遥测；仅余模型执行 `python3 ./scripts/agent_init.py`
+  时 cwd 是否为技能目录一点待冒烟确认（指引明确失败即忽略，最坏为一次
+  静默空操作，遥测仍由 env 兜底）。
 - SKILL.md：第 1-19 条全部重放到上游 v1.0.18 文本上。其中第 1 条
   description 需重新合并——上游 description 新增了元宝纪要 / CLI 应用 /
   事件订阅三个命令族，本地按「何时用」契约重写为 251 字符（≤280 上限），
@@ -225,10 +224,10 @@ description、认证节、命令树新增 `minutes` / `app` / `event` 三个子�
   `event list` / `event schema` / `event status` / `event stop`（与上游
   认证节一致）。
 - frontmatter `version` 随基线更新为 `1.0.18`（钉扎上游 tag 基线；与
-  `tmeet.rs` 的 `TMEET_NPM_SPEC` 仍钉 1.0.15 的落差见上一条「注意」，
-  由统一升级流程消除）。
+  `tmeet.rs` 的 `TMEET_NPM_SPEC` 本次已同步升至 `@tencentcloud/tmeet@1.0.18`,
+  两者一致）。
 
 上游其余内容（含 `auth login` 交互式登录教学等）保持上游原样；品悟实际安装
-版本由 `tmeet.rs` 的 `TMEET_NPM_SPEC` 钉扎（同步时仍为
-`@tencentcloud/tmeet@1.0.15`），实际登录由 `auth login --no-browser` 完成
+版本由 `tmeet.rs` 的 `TMEET_NPM_SPEC` 钉扎（本次同步后即为
+`@tencentcloud/tmeet@1.0.18`），实际登录由 `auth login --no-browser` 完成
 （该 flag 在 1.0.15/1.0.18 help 中均存在），文档描述与品悟用法不矛盾。

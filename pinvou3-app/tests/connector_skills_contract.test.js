@@ -52,9 +52,10 @@ for (const f of docs) {
     "comments-guide",
     "core-operations",
   ]) {
-    // dws 1.0.61 真实快捷命令（读取文档白板 OpenNodes 快照，见 whiteboard.md 命令表），
-    // 与 lark-cli 1.0.87 移除的 lark 侧 whiteboard +query 无关——按域豁免（登记理由，
-    // 见 rule 9 豁免登记约定）。
+    // Real dws 1.0.61 quick command (reads the doc whiteboard OpenNodes
+    // snapshot; see the whiteboard.md command table), unrelated to the
+    // lark-side whiteboard +query removed in lark-cli 1.0.87 — exempted
+    // per domain (rationale registered per the rule 9 exemption ledger).
     if (gone === "whiteboard +query" && rel(f).includes("dingtalk-skills")) continue;
     const hit = proseLines.find((l) => l.includes(gone) && !removedCtx.test(l));
     assert.ok(!hit, `${rel(f)}: 引用已删除对象 ${gone}: ${hit?.trim()}`);
@@ -124,7 +125,9 @@ for (const f of docs) {
 }
 
 // 5) lark 域不得引导裸 auth login（按需授权走 --scope/--domain；行首 `|` 的表格行为描述性语境，豁免）
-for (const f of docs.filter((f) => path.relative(bundle("skills"), f).startsWith("lark-"))) {
+// Since PR #302 the lark skills live in lark-skills/ (the old skills/ path no
+// longer exists, so this rule had been silently dead until then).
+for (const f of docs.filter((f) => path.relative(bundle("lark-skills"), f).startsWith("lark-"))) {
   for (const line of read(f).split("\n")) {
     if (/^\s*\|/.test(line)) continue;
     if (/auth login/.test(line) && !/logout|\bscope\b|--domain|--device-code|--no-wait|--recommend|\bstatus\b|不要|无需|不必|禁止|按需|规则/.test(line)) {
@@ -134,8 +137,11 @@ for (const f of docs.filter((f) => path.relative(bundle("skills"), f).startsWith
 }
 
 // 6) frontmatter 契约：连接器技能 description ≤280、「何时用」开头、bins 正确
+// Since PR #302 the lark skills live in lark-skills/ (the old skills/lark-
+// key no longer matched, which had silently disabled this contract for the
+// whole lark domain).
 const binsByPack = {
-  "skills/lark-": "lark-cli",
+  "lark-skills/lark-": "lark-cli",
   "wecom-skills/wecomcli-": "wecom-cli",
   "dingtalk-skills/dws": "dws",
   "tmeet-skills/tmeet-skill": "tmeet",

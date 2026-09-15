@@ -60,12 +60,7 @@ for (const [osDir, archDir] of [
 }
 const lockVersions = lockVersionsByPlatform["macos/aarch64"];
 for (const [platform, versions] of Object.entries(lockVersionsByPlatform)) {
-  // macos/x86_64 例外：上游 @wecom/cli-darwin-x64@1.2.1 错发 linux 二进制，
-  // 该平台 lock 把 wecom-cli 钉在 1.2.0（与 wecom.rs WECOM_MIN_VERSION=1.2.0 对齐，
-  // min 若高于 lock 版本会导致该平台反复替换升级）。
-  const expected =
-    platform === "macos/x86_64" ? { ...lockVersions, "wecom-cli": "1.2.0" } : lockVersions;
-  assert.deepEqual(versions, expected, `${platform} connectors.lock.json 版本与其他平台不一致`);
+  assert.deepEqual(versions, lockVersions, `${platform} connectors.lock.json 版本与其他平台不一致`);
 }
 const cardVersion = (marker) => {
   const line = toolCommon.split("\n").find((l) => l.includes(marker));
@@ -78,5 +73,23 @@ assert.equal(cardVersion("backendId: 'dingtalk', dingtalkCli: true"), lockVersio
 assert.equal(cardVersion("backendId: 'wecom', wecomCli: true"), lockVersions["wecom-cli"]);
 const tmeetPin = tmeet.match(/@tencentcloud\/tmeet@([\d.]+)/)[1];
 assert.equal(cardVersion("backendId: 'tmeet', tmeetCli: true"), tmeetPin);
+
+// The manual smoke's version floor must equal the host's minimum acceptable
+// wecom-cli version: a stale floor would let wecom-smoke.sh certify a CLI
+// that wecom_ensure_cli force-replaces on first use (the 1.1.0 smoke floor
+// vs the 1.2.1 host gate mismatch fixed here).
+const wecom = read("src-tauri", "src", "features", "connectors", "wecom.rs");
+const wecomSmoke = read("scripts", "wecom-smoke.sh");
+const wecomMin = wecom.match(
+  /WECOM_MIN_VERSION:\s*\(u64, u64, u64\)\s*=\s*\((\d+),\s*(\d+),\s*(\d+)\)/,
+);
+assert.ok(wecomMin, "wecom.rs must declare WECOM_MIN_VERSION as a tuple");
+const wecomMinNumeric =
+  Number(wecomMin[1]) * 10000 + Number(wecomMin[2]) * 100 + Number(wecomMin[3]);
+assert.match(
+  wecomSmoke,
+  new RegExp(`>= ${wecomMinNumeric}\\)`),
+  "wecom-smoke.sh version floor must stay in lockstep with WECOM_MIN_VERSION",
+);
 
 console.log("✓ connector first-use online install contract passed");

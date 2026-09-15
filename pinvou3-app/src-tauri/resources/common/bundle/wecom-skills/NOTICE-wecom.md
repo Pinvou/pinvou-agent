@@ -275,23 +275,32 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
 1. **wecomcli-doc/SKILL.md**(MR !62):description 重写为路由导向,并把原
    description 中的 sheet/smartsheet/结构化数据分流语义下沉为「不适用」节
    3 条 bullet。本地合并:采纳「不适用」3 条 bullet;description 保留品悟
-   「何时用:」口径(≤280 字符),并吸收上游新增触发词「office 文档」与
+   「何时用:」前缀口径(现 416 字符,超 280 软上限,与上游重写前一致属
+   历史遗留),并吸收上游新增触发词「office 文档」与
    「导入(.doc/.docx/.txt)」细节。
 2. **wecomcli-smartpage/SKILL.md**(MR !62):description 重写,补充能力清单
    (上传附件、数据系统页面、信息收集表单)与 smartpage/page.weixin.qq.com
-   链接触发。本地合并:保留「何时用:」口径,能力清单按上游补齐
-   (≤280 字符);正文无变化,本地委托契约分叉原样保留。
+   链接触发。本地合并:保留「何时用:」前缀口径,能力清单按上游补齐
+   (现 452 字符,超 280 软上限,已登记 follow-up 压缩);正文无变化,
+   本地委托契约分叉原样保留。
 3. **wecomcli-shared/SKILL.md**(MR !52):Step 3 初始化命令
    `wecom-cli auth init` → `wecom-cli auth init --noninteractive`。本地直接
    采纳(与本地 Step 1 品悟代管口径不冲突);周围 prose 上游未改,照旧。
+4. **wecomcli-shared/SKILL.md 版本门槛文本(本地修改,随本次同步更新)**:
+   description 与 Step 1/重试分支的最低版本文案由 `1.1.0` 更新为
+   `1.2.1`,与全平台 lock 钉扎 1.2.1 及 `wecom.rs` 的
+   `WECOM_MIN_VERSION = (1, 2, 1)` 对齐。
 
-上游本次**未**修复 NOTICE 此前预判的缺陷:smartsheet `records.values` 双层
-嵌套 bug(2026-09-05 登记第 5 条)、smartpage 逾期判断模板方向(第 1 条)、
-send-mail >5 候选口径(第 10 条)、`a1_`/`s3_` docid 前缀示例笔误(第 17 条)
-等 references 层修正全部维持本地版本,继续有效。
+上游本次**未**修复 NOTICE 此前预判的缺陷:smartpage 逾期判断模板方向
+(第 1 条)、send-mail >5 候选口径(第 10 条)、`a1_`/`s3_` docid 前缀
+示例笔误(第 17 条)等 references 层修正全部维持本地版本,继续有效。
+另:1.1.0 适配清单第 5 条的 smartsheet `records.values` 双层嵌套修正为
+条件式登记,经核对上游自 1.1.0 重写起即为单层结构,本地与上游本无
+分歧,该条视同已了结(不再是「上游未修复」项)。
 
-上游 main 在 v1.2.1 之后尚有未发布提交(安全拼接规范 `605b506`、
-DESC_SPEC 格式修复 `1cd90a5`,触及全部技能),不属于本次 release 基线,
+上游 main 在 v1.2.1 之后尚有未发布提交(安全拼接规范 `605b506`,
+触及 12/14 技能;DESC_SPEC 格式修复 `1cd90a5`,仅触及
+`docs/e2e/DESC_SPEC.md` 不触及技能文件),不属于本次 release 基线,
 未纳入;待上游发版后再同步。
 
 ### 各技能重放基线

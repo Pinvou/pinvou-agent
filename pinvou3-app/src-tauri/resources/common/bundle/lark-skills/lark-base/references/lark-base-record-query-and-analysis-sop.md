@@ -78,12 +78,12 @@ NDJSON 每行是一条 Record，以字段 `name` 为 key，并额外包含系统
 | `field_type` | NDJSON 结构 | Base 特有的分析语义 |
 | --- | --- | --- |
 | `record_id` | `string` | 表内唯一主键，用于定位和块间去重 |
-| `text`、`formula`、`lookup`、`auto_number`、`not_support` | `string|null` | Formula / Lookup 不保留原始计算类型；需要数值运算时必须显式验证转换规则 |
-| `datetime`、`created_at`、`updated_at` | RFC3339 `string|null` | 带 offset；区分绝对时刻与 Base 本地日历语义 |
-| `number` | `number|null` | 空值不是零，是否纳入分母由任务口径决定 |
+| `text`、`formula`、`lookup`、`auto_number`、`not_support` | `string\|null` | Formula / Lookup 不保留原始计算类型；需要数值运算时必须显式验证转换规则 |
+| `datetime`、`created_at`、`updated_at` | RFC3339 `string\|null` | 带 offset；区分绝对时刻与 Base 本地日历语义 |
+| `number` | `number\|null` | 空值不是零，是否纳入分母由任务口径决定 |
 | `checkbox` | `boolean` | 上游空值在 NDJSON 中规范化为 `false` |
 | `select` | `array<string>` | 单选、多选都读取为选项名称数组；空值为 `[]` |
-| `location` | `{lng,lat,full_address}|null` | 地理计算用坐标，文本范围分析用地址 |
+| `location` | `{lng,lat,full_address}\|null` | 地理计算用坐标，文本范围分析用地址 |
 | `user`、`group_chat`、`created_by`、`updated_by` | `array<{id,name}>` | 连接与去重使用 `id`，展示使用 `name` |
 | `link` | `array<{id}>` | `id` 是 Field schema 指定目标表中的 `record_id` |
 | `attachment` | `array<{file_token,size,name}>` | 文件 token 是稳定定位信息；数组展开会改变粒度 |

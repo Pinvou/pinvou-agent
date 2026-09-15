@@ -129,7 +129,7 @@ fn install_tmeet_cli() -> Result<bool, String> {
     cc::run_with_timeout(c, 180)
 }
 
-/// 引导:确保 tmeet 装好且版本不低于 1.0.18。
+/// Bootstrap: ensure the tmeet CLI is installed and at least 1.0.18.
 pub async fn tmeet_ensure_cli() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         if tmeet_cli_present() {
