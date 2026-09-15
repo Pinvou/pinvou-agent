@@ -16,7 +16,7 @@ use crate::{CliError, ExitCode};
 
 pub const TOP_LEVEL_USAGE: &str = "usage: pinvou benchmark <command> | pinvou agent run | \
      pinvou sessions|models|settings|memory|knowledge|scheduled|plugins|connectors|personas|\
-projects|code|files|voice|deps|feedback|monitor|artifacts <command> | pinvou --version";
+projects|code|files|voice|deps|feedback|monitor|artifacts <command> | pinvou --version|version";
 
 /// `$PINVOU3_HOME` when set (absolute), else `~/.pinvou3` — the same product
 /// data root the benchmark family uses.
