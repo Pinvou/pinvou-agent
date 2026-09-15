@@ -705,4 +705,53 @@ function emit(harness, event, payload) {
     `the newer request must resurface from the pending map: ${JSON.stringify(resurfaced)}`);
 }
 
+// ── 28. inert branch re-reads status (other-window enable gap) ──────
+// Review finding: a detached window whose slice says disabled never learns
+// the feature was enabled in the main window (no enabled-change event, and
+// the reconciler skips polling while disabled) — its sessions' grant/confirm
+// requests were recorded but never surfaced. The inert branch now fires one
+// authoritative refreshStatus, which republishes the recorded pending.
+{
+  const harness = createHarness({ initialState: { enabled: false } });
+  emit(harness, 'computer_use:grant_required', { session_id: 's1' });
+  await Promise.resolve();
+  assert.ok(
+    harness.invoked.some(([cmd]) => cmd === 'computer_use_get_status'),
+    'the inert grant branch must re-read authoritative status'
+  );
+  await new Promise((r) => setTimeout(r, 0));
+  const grant = harness.published().at(-1).grantRequest;
+  assert.ok(grant, `an enabled-elsewhere window must resurface the grant dialog: ${JSON.stringify(harness.published().at(-1))}`);
+}
+{
+  const harness = createHarness({ initialState: { enabled: false } });
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-9', action: 'type 3 characters', element: 'field',
+  });
+  await new Promise((r) => setTimeout(r, 0));
+  const confirm = harness.published().at(-1).confirmRequest;
+  assert.ok(
+    confirm && String(confirm.confirmId) === 'cu-9',
+    `the inert confirm branch must resurface the dialog after the re-read: ${JSON.stringify(harness.published().at(-1))}`
+  );
+}
+
+// ── 29. a preview-only payload change re-renders the dialog ─────────
+// sameRequest compares the typed-text preview too: a re-sent confirm event
+// that differs only in typePreviewFull must not be swallowed as a no-op.
+{
+  const harness = createHarness({ initialState: { enabled: true } });
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-1', action: 'type 3 characters',
+    element: 'field', type_preview_full: 'abc',
+  });
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-1', action: 'type 3 characters',
+    element: 'field', type_preview_full: 'xyz',
+  });
+  const last = harness.published().at(-1).confirmRequest;
+  assert.equal(last.typePreviewFull, 'xyz',
+    'a preview-only change must count as a change');
+}
+
 console.log('computer use bridge behavior tests passed');

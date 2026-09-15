@@ -92,7 +92,11 @@ const expectedProtocolHashes = {
   // the digest). Recomputed again when the confirm_required handler's
   // type-preview comment was corrected to the shipped contract (full text
   // rides for every non-password Type action, short texts included).
-  computerUse: '6602b46d3951e444f11818fd4bdbde1495d130c4d6d26778826845715c7247c3',
+  // Recomputed for the fresh-review fixes: the grant/confirm_required inert branches
+  // now re-read authoritative status (other-window enable gap) and sameRequest compares
+  // the typed-text preview (comment and expression wording inside the callback spans
+  // is part of the digest; no invoke/listen call-set change).
+  computerUse: 'e797c1ef264a438b412836c8cba95822b243b856e38fd322afc50042017d277c',
   multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
   orchestration: '0f6d0ff37a357fe9dab1873879d98ebf5e0e1c176c02c431452f5b5dc48b7e22',
   artifacts: '37ca694534c7e6cf44b6d262c40e388999c3ba136faca0d6f57821d5b9b3df53',
