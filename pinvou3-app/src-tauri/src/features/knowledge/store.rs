@@ -1,3 +1,4 @@
+// architecture-guard: allow-target-cfg -- probe 回归测试用 POSIX 权限位构造"开库读失败"，验证失败不再折叠成版本 0 触发删库（OS 元数据检查按先例留在最内聚的测试内）
 //! L0 元数据存储：SQLite + FTS5(trigram) 做全系统秒搜 + 去重候选查询。
 //!
 //! 设计（见 docs/本地知识底座-产品形态与架构.md §4.0/§5）：
@@ -246,21 +247,28 @@ pub struct Store {
 impl Store {
     /// 打开（或新建）磁盘库，建表。父目录会自动创建。
     /// schema 版本不符 → 删库重建（L0 是可重建缓存，重扫即恢复；顺带回收旧版撑大的体积）。
+    ///
+    /// 三条连接（probe / 写 / 只读）都带 busy_timeout：桌面应用与 headless CLI
+    /// 是受支持的两进程场景，任何一条连接撞上另一进程的写事务都要等待而不是报
+    /// "database is locked"。probe 读失败**不得**折叠成版本 0——下面的 stale 分支
+    /// 会删库，而 v3 起含有不可重建的业务数据；无法读出可信版本时必须原样报错，
+    /// 让调用方决定重试，宁可开库失败也绝不误删。
     pub fn open(db_path: &Path) -> rusqlite::Result<Self> {
         if let Some(parent) = db_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         let existed = db_path.exists();
-        let current_version = {
-            match Connection::open(db_path) {
-                Ok(c) => c
-                    .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
-                    .unwrap_or(0),
-                Err(_) => 0,
-            }
-        }; // 连接在此 drop，才能删文件
+        let current_version = if existed {
+            let probe = Connection::open(db_path)?;
+            probe.busy_timeout(std::time::Duration::from_millis(5_000))?;
+            let version = probe.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?;
+            Some(version)
+        } else {
+            None
+        }; // probe 连接在此 drop，才能删文件
         // v3 首次包含不可重建的知识集业务数据，必须原地迁移；更旧的版本仅含可重扫的 L0 索引。
-        let stale = existed && !matches!(current_version, 3 | SCHEMA_VERSION);
+        let stale =
+            matches!(current_version, Some(version) if version != 3 && version != SCHEMA_VERSION);
         if stale {
             let p = db_path.display().to_string();
             let _ = std::fs::remove_file(db_path);
@@ -271,15 +279,18 @@ impl Store {
             );
         }
         let w = Connection::open(db_path)?;
-        // The desktop app and the headless CLI are a supported two-process
-        // scenario over this file. Every open writes `user_version`, which
-        // takes a brief write lock — without a busy timeout an open landing
-        // inside the other process's write transaction fails immediately
-        // with "database is locked". WAL keeps readers non-blocking; this
-        // only makes the short open-time writes wait instead of failing.
         w.busy_timeout(std::time::Duration::from_millis(5_000))?;
-        w.execute_batch(SCHEMA)?;
-        w.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+        if current_version == Some(SCHEMA_VERSION) {
+            // 稳态：schema 已是当前版本。跳过 DDL 批与 user_version 写，两进程
+            // 竞争场景下开库完全不取写锁（这正是 busy_timeout 想兜住的那段窗口）。
+            // 代价是失去「每次开库自愈被外删的表」；表被外部破坏时语句会显式
+            // 报错，比静默重建掩盖问题更可取。
+        } else {
+            // 新建 / v3 旧版原地迁移：DDL 批 + 版本写入各取一次写锁，
+            // busy_timeout 让它等待另一进程的短事务而不是立即失败。
+            w.execute_batch(SCHEMA)?;
+            w.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+        }
         // 独立只读连接：WAL 下与写连接并发，扫描写锁不堵前端查询。
         let r = Connection::open(db_path)?;
         r.busy_timeout(std::time::Duration::from_millis(5_000))?;
@@ -569,6 +580,90 @@ mod tests {
         ])
         .unwrap();
         s
+    }
+
+    /// probe 连接读不到文件时必须报错而不是折叠成版本 0：旧代码把任何 probe
+    /// 失败当成 v0，正好驱动 stale 分支删库（v3+ 含不可重建数据）。权限故障是
+    /// 可确定性构造的 probe 失败；以 root 运行的环境绕过文件权限，跳过。
+    #[cfg(unix)]
+    #[test]
+    fn failed_probe_never_deletes_an_existing_store() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-knowledge-probe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let db = tmp.join("index.db");
+        {
+            let store = Store::open(&db).expect("create store");
+            assert_eq!(store.stats().unwrap().total_files, 0);
+        }
+        let restore = |mode: u32| {
+            let mut perm = std::fs::metadata(&db).unwrap().permissions();
+            perm.set_mode(mode);
+            std::fs::set_permissions(&db, perm).unwrap();
+        };
+        restore(0o000);
+        if std::fs::File::open(&db).is_ok() {
+            restore(0o644);
+            let _ = std::fs::remove_dir_all(&tmp);
+            eprintln!("skipping: privileged environment bypasses file permissions");
+            return;
+        }
+        assert!(
+            Store::open(&db).is_err(),
+            "an unreadable store must fail loud instead of probing version 0"
+        );
+        restore(0o644);
+        assert!(
+            Store::open(&db).is_ok(),
+            "the store must survive a failed probe untouched"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 稳态开库（版本已是当前）不再执行 DDL 批与 user_version 写：这是
+    /// GUI+CLI 两进程场景下「开库不取写锁」的前提。用一条持写事务的连接
+    /// 模拟另一进程的写窗口，第二个开库仍应成功。
+    #[test]
+    fn steady_state_open_does_not_take_the_schema_write_lock() {
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-knowledge-steady-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let db = tmp.join("index.db");
+        {
+            Store::open(&db).expect("create store at current schema version");
+        }
+        // 模拟另一进程持写事务（WAL 下写锁被占用）。
+        let writer = Connection::open(&db).unwrap();
+        writer
+            .busy_timeout(std::time::Duration::from_millis(5_000))
+            .unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        writer
+            .execute_batch("CREATE TABLE IF NOT EXISTS _probe_lock (x INTEGER);")
+            .unwrap();
+        let opened = Store::open(&db);
+        writer.execute_batch("ROLLBACK;").unwrap();
+        assert!(
+            opened.is_ok(),
+            "steady-state open must not need the write lock another process holds: {:?}",
+            opened.err()
+        );
+        drop(writer);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
