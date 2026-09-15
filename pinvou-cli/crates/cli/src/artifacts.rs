@@ -515,13 +515,26 @@ fn write(
         return Err(CliError::failed("markdown_artifact_is_too_large_to_save"));
     }
     // Temp + rename (the GUI writes atomically under its lifecycle lock): a
-    // crash mid-write must not leave a truncated deliverable behind.
+    // crash mid-write must not leave a truncated deliverable behind. The
+    // temp name is hidden (`.{name}.tmp-{pid}-{nonce}`, the GUI uses hidden
+    // `.{name}.tmp-{token}` siblings) so a crashed write never surfaces a
+    // visible `report.md.tmp…` file in the session directory; the rename
+    // target itself is unchanged.
     {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let tmp = path.with_extension(format!("md.tmp.{}.{}", std::process::id(), nonce));
+        let file_name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| {
+                CliError::failed(format!(
+                    "artifact_write_failed({}): cannot name a temp file",
+                    path.display()
+                ))
+            })?;
+        let tmp = path.with_file_name(format!(".{file_name}.tmp-{}-{nonce}", std::process::id()));
         std::fs::write(&tmp, &content).map_err(|error| {
             CliError::failed(format!(
                 "artifact_write_failed({}): {error}",

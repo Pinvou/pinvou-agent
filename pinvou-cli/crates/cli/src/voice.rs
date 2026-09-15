@@ -19,6 +19,9 @@
 //! - the app's transcript parser (`features::voice::transcript`) is shared
 //!   verbatim: the CLI calls `parse_asr_transcript` so engine protocols and
 //!   noise filters cannot drift between the two surfaces.
+//! - `asr-install` mutates the system (ffmpeg through pkexec/apt) exactly
+//!   like `deps install`, so it is gated behind an explicit `--yes` (exit 2
+//!   without it) and stays Linux-only.
 //! - macOS transcription uses the system Speech framework through a
 //!   crate-private adapter; the CLI cannot reach it, so on macOS it reports
 //!   the Speech runtime as ready (same as the GUI status) but performs
@@ -50,7 +53,9 @@ pub enum VoiceCommand {
         text_file: Option<PathBuf>,
     },
     AsrStatus,
-    AsrInstall,
+    AsrInstall {
+        yes: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,7 +76,7 @@ impl PostprocessMode {
 }
 
 const USAGE: &str = "usage: pinvou voice <transcribe <PATH>|postprocess --mode dictation|task|edit \
-     (--text S|--text-file F)|asr-status|asr-install>";
+     (--text S|--text-file F)|asr-status|asr-install [--yes]>";
 
 pub fn parse(values: &[String]) -> Result<VoiceCommand, CliError> {
     let subcommand = values.get(1).ok_or_else(|| CliError::usage(USAGE))?;
@@ -171,10 +176,26 @@ pub fn parse(values: &[String]) -> Result<VoiceCommand, CliError> {
             Ok(VoiceCommand::AsrStatus)
         }
         "asr-install" => {
-            if !rest.is_empty() {
-                return Err(CliError::usage("voice asr-install accepts no options"));
+            // The system-mutating install accepts exactly one optional `--yes`
+            // consent flag (same gate as `deps install`); anything else is a
+            // usage error.
+            let mut yes = false;
+            for token in rest {
+                match token.as_str() {
+                    "--yes" => {
+                        if yes {
+                            return Err(CliError::usage("duplicate voice option --yes"));
+                        }
+                        yes = true;
+                    }
+                    other => {
+                        return Err(CliError::usage(format!(
+                            "unsupported voice asr-install option: {other}"
+                        )));
+                    }
+                }
             }
-            Ok(VoiceCommand::AsrInstall)
+            Ok(VoiceCommand::AsrInstall { yes })
         }
         _ => Err(CliError::usage(USAGE)),
     }
@@ -192,7 +213,7 @@ pub fn execute(command: VoiceCommand, output: OutputMode) -> Result<CliOutcome, 
             text_file,
         } => postprocess(mode, text, text_file, output),
         VoiceCommand::AsrStatus => asr_status(output),
-        VoiceCommand::AsrInstall => asr_install(output),
+        VoiceCommand::AsrInstall { yes } => asr_install(yes, output),
     }
 }
 
@@ -286,12 +307,53 @@ fn model_available() -> bool {
         && file_is_sha256(&path, spec.sha256)
 }
 
+/// Bounded waits so a wedged ffmpeg cannot hang the one-shot CLI: a
+/// `-version` probe answers in milliseconds, and one ≤4 MiB WAV conversion
+/// stays well inside the ASR timeout budget even on slow disks.
+const FFMPEG_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+const FFMPEG_CONVERT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Waits for a short-lived helper child (an ffmpeg probe or conversion) with
+/// a fixed bound, mirroring the bounded-wait loop of the ASR lanes. On
+/// timeout or wait error the child is killed and `None` is returned (the
+/// caller treats it like any other probe failure); on success the exit
+/// status is returned.
+fn wait_bounded(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> Option<std::process::ExitStatus> {
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
 fn ffmpeg_available() -> bool {
-    std::process::Command::new("ffmpeg")
+    let Ok(mut child) = std::process::Command::new("ffmpeg")
         .arg("-version")
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()
+        .spawn()
+    else {
+        return false;
+    };
+    wait_bounded(&mut child, FFMPEG_PROBE_TIMEOUT)
         .map(|status| status.success())
         .unwrap_or(false)
 }
@@ -300,9 +362,10 @@ fn ffmpeg_available() -> bool {
 /// reports the system Speech runtime as present (`asr_bundled_runtime_status`
 /// → `Some(true)`), other platforms check engine + ffmpeg + model files.
 fn asr_components() -> (bool, bool, bool, bool) {
-    // The app's Windows status reports installable from the same external
-    // tool probe; macOS needs no installation; Linux uses the installer.
-    let installable = cfg!(target_os = "linux") || cfg!(target_os = "windows");
+    // Only Linux has a CLI install route (`voice asr-install`); Windows
+    // ships the engine in the MSI, which only the desktop app's
+    // repair/reinstall flow can restore; macOS needs no installation.
+    let installable = cfg!(target_os = "linux");
     if cfg!(target_os = "macos") {
         // System Speech needs no engine binary, model file, or ffmpeg.
         return (true, true, true, installable);
@@ -386,8 +449,10 @@ fn asr_status(output: OutputMode) -> Result<CliOutcome, CliError> {
     // `ready` mirrors the GUI's host-capability status (on macOS it reports
     // the system Speech runtime). The CLI cannot reach that runtime, so this
     // field answers the question the user actually acts on: can THIS command
-    // transcribe right now (Linux bundled engine lane — which needs ffmpeg
-    // too, same gate `voice transcribe` applies — or the external ASR CLI).
+    // transcribe right now (the Linux bundled engine lane — which transcodes
+    // through ffmpeg when present and falls back to the raw wav file
+    // otherwise — or the external ASR CLI; the gate keeps the practical
+    // engine+ffmpeg+model requirement).
     let cli_transcribe_ready = (cfg!(target_os = "linux") && engine && ffmpeg && model)
         || external_asr_command().is_some();
     let mut missing = Vec::new();
@@ -400,7 +465,7 @@ fn asr_status(output: OutputMode) -> Result<CliOutcome, CliError> {
     if !engine {
         missing.push("engine");
     }
-    let value = serde_json::json!({
+    let mut value = serde_json::json!({
         "engine": engine,
         "ffmpeg": ffmpeg,
         "model": model,
@@ -410,6 +475,12 @@ fn asr_status(output: OutputMode) -> Result<CliOutcome, CliError> {
         "missing": missing,
         "asr_dir": asr_dir().display().to_string(),
     });
+    if cfg!(target_os = "windows") {
+        // `installable` is false on Windows because the CLI has no install
+        // route there: the engine ships inside the desktop app's MSI and is
+        // reachable only through its repair/reinstall flow.
+        value["gui_install_only"] = serde_json::json!(true);
+    }
     let mut human = format!(
         "Engine: {}\nFfmpeg: {}\nModel: {}\nReady: {}\nCliTranscribe: {}\nInstallable: {}\nMissing: {}\nAsrDir: {}",
         engine,
@@ -433,22 +504,32 @@ fn asr_status(output: OutputMode) -> Result<CliOutcome, CliError> {
             "\nNote: `voice transcribe` needs the external ASR CLI (PINVOU3_ASR_CMD or `pinvou-asr` on PATH); macOS Speech is GUI-only.",
         );
     }
+    if cfg!(target_os = "windows") {
+        human.push_str(
+            "\nNote: on Windows the ASR engine ships with the desktop app; repair or reinstall pinvou to install it.",
+        );
+    }
     Ok(success(render(output, human, &value)))
 }
 
-/// Linux install lane: missing ffmpeg goes through the same public
+/// Linux install lane: gated behind `--yes` like `deps install` because it
+/// mutates the system — missing ffmpeg goes through the same public
 /// `features::dependencies::install_dependencies` call the GUI platform
 /// adapter makes (pkexec/apt), then the SenseVoice model is downloaded from
 /// the primary URL with the mirror as fallback (a `PINVOU3_ASR_MODEL_URL`
 /// override wins, like the app's `model_download_urls`). The download is
 /// staged, size-capped, and sha256-verified against the pinned digest.
-fn asr_install(output: OutputMode) -> Result<CliOutcome, CliError> {
+fn asr_install(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
+    // Platform check first so macOS/Windows keep their unsupported exit-1
+    // message; the consent gate precedes every probe, install, and download
+    // step.
     if !cfg!(target_os = "linux") {
         return Err(CliError::failed(
             "voice asr-install is only supported on Linux; on Windows repair/reinstall pinvou, \
              on macOS system speech needs no installation",
         ));
     }
+    crate::support::require_yes(yes)?;
     let mut steps: Vec<String> = Vec::new();
     if !ffmpeg_available() {
         pinvou3_lib::features::dependencies::install_dependencies(vec!["ffmpeg".to_owned()], None)
@@ -596,6 +677,15 @@ fn transcribe(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
         && !(engine && ffmpeg && model)
         && external_asr_command().is_none()
     {
+        // The native lane itself falls back to the raw wav when ffmpeg is
+        // missing (GUI parity), so ffmpeg-only gaps are a distinct, fixable
+        // condition from a missing engine/model install.
+        if engine && model && !ffmpeg {
+            return Err(CliError::failed(
+                "ffmpeg_missing: ffmpeg is required for local speech recognition; \
+                 install it manually or run pinvou voice asr-install",
+            ));
+        }
         return Err(CliError::failed(
             "asr_engine_missing: local speech recognition is not installed \
              (hint: run `pinvou voice asr-status`)",
@@ -702,8 +792,9 @@ fn run_recognition(wav: &Path) -> Result<(String, &'static str), CliError> {
 }
 
 /// Mirror of `voice_asr::transcribe`: normalize to 16 kHz mono through ffmpeg
-/// when available, run the engine with cwd pinned to the writable asr dir,
-/// and fail on empty output.
+/// when available (bounded wait), run the engine with cwd pinned to the
+/// writable asr dir under the shared ASR timeout budget with size-capped
+/// output pipes, and fail with `asr_parse_failed` on unusable output.
 fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
     let engine = engine_path().expect("engine checked by caller");
     let model = model_path();
@@ -745,16 +836,22 @@ fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
     }
     drop(normalized_file);
     let input = if ffmpeg_available() {
-        let converted = std::process::Command::new("ffmpeg")
+        let spawned = std::process::Command::new("ffmpeg")
             .args(["-y", "-i"])
             .arg(wav)
             .args(["-ar", "16000", "-ac", "1", "-f", "wav"])
             .arg(&normalized)
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
+            .spawn();
+        let status_ok = match spawned {
+            Ok(mut convert) => wait_bounded(&mut convert, FFMPEG_CONVERT_TIMEOUT)
+                .map(|status| status.success())
+                .unwrap_or(false),
+            Err(_) => false,
+        };
+        let converted = status_ok
             && std::fs::metadata(&normalized)
                 .map(|m| m.len() > 44)
                 .unwrap_or(false);
@@ -768,32 +865,99 @@ fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
     };
     let work_dir = asr_dir();
     let _ = std::fs::create_dir_all(&work_dir);
-    let engine_result = std::process::Command::new(&engine)
+    // Bounded like the external ASR lane: stdin is unused (the input file is
+    // passed as an argument), both pipes are drained size-capped, and a
+    // wedged engine is killed after the shared timeout budget instead of
+    // hanging the one-shot CLI forever.
+    let mut engine_command = std::process::Command::new(&engine);
+    engine_command
         .current_dir(&work_dir)
         .arg("-m")
         .arg(&model)
         .arg(&input)
         .args(["-t", "4", "-l", "auto", "-itn"])
-        .output();
-    let _ = std::fs::remove_file(&normalized);
-    let engine_result = engine_result.map_err(|error| {
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = engine_command.spawn().map_err(|error| {
         CliError::failed(format!(
             "voice transcribe: cannot start ASR engine: {error}"
         ))
     })?;
-    if !engine_result.status.success() {
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_drain = std::thread::spawn(move || drain_capped(stdout_pipe));
+    let stderr_drain = std::thread::spawn(move || drain_capped(stderr_pipe));
+
+    let timeout = asr_timeout_secs();
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => {
+                if started.elapsed() >= Duration::from_secs(timeout) {
+                    break Err(CliError::failed(format!(
+                        "voice transcribe: local ASR engine timed out after {timeout}s"
+                    )));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => {
+                break Err(CliError::failed(format!(
+                    "voice transcribe: local ASR engine failed unexpectedly: {error}"
+                )));
+            }
+        }
+    };
+    let _ = child.kill();
+    let _ = child.wait();
+    let stdout = stdout_drain.join().unwrap_or_default();
+    let stderr = stderr_drain.join().unwrap_or_default();
+    let _ = std::fs::remove_file(&normalized);
+    let status = status?;
+    if !status.success() {
         // The engine transcript can leak into stderr; report the failure
         // shape only, like the external-CLI lane and the GUI.
         return Err(CliError::failed(format!(
             "asr_engine_error: ASR engine failed (stdout {} bytes, stderr {} bytes)",
-            engine_result.stdout.len(),
-            engine_result.stderr.len()
+            stdout.len(),
+            stderr.len()
         )));
     }
-    let stdout = String::from_utf8_lossy(&engine_result.stdout).into_owned();
-    extract_transcript(&stdout, "").ok_or_else(|| {
-        CliError::failed("asr_no_speech: no speech content recognized; please retry")
+    extract_transcript(&stdout, &stderr).ok_or_else(|| {
+        CliError::failed("asr_parse_failed: recognition returned no usable text; please retry")
     })
+}
+
+/// Engine wait budget shared by both ASR lanes: the same env overrides the
+/// GUI honors (`PINVOU3_ASR_TIMEOUT_SECS` /
+/// `PINVOU3_DEEPSPEECH2_TIMEOUT_SECS`), 60 s by default.
+fn asr_timeout_secs() -> u64 {
+    std::env::var("PINVOU3_ASR_TIMEOUT_SECS")
+        .or_else(|_| std::env::var("PINVOU3_DEEPSPEECH2_TIMEOUT_SECS"))
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .unwrap_or(60)
+}
+
+/// Size bound for one captured ASR stream (stdout or stderr): a chatty
+/// engine must not buffer unbounded output for the whole timeout window
+/// (every other capture in the CLI is size-capped too).
+const MAX_ENGINE_OUTPUT_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Drains one child output pipe, capped at [`MAX_ENGINE_OUTPUT_BYTES`] and
+/// decoded lossily, so a chatty engine neither buffers without bound nor
+/// fails the whole transcription over an invalid byte.
+fn drain_capped<R: std::io::Read>(pipe: Option<R>) -> String {
+    let mut bytes = Vec::new();
+    if let Some(pipe) = pipe {
+        let _ = std::io::Read::read_to_end(
+            &mut std::io::Read::take(pipe, MAX_ENGINE_OUTPUT_BYTES),
+            &mut bytes,
+        );
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// Mirror of `run_local_asr_cli`: same argument protocol, same env-driven
@@ -808,14 +972,12 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
     let language = std::env::var("PINVOU3_ASR_LANG")
         .or_else(|_| std::env::var("PINVOU3_DEEPSPEECH2_LANG"))
         .unwrap_or_else(|_| "zh".to_owned());
-    let timeout = std::env::var("PINVOU3_ASR_TIMEOUT_SECS")
-        .or_else(|_| std::env::var("PINVOU3_DEEPSPEECH2_TIMEOUT_SECS"))
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .filter(|secs| *secs > 0)
-        .unwrap_or(60);
+    let timeout = asr_timeout_secs();
 
-    let mut command_line = std::process::Command::new(command);
+    // build_command wraps Windows `.cmd` shims (e.g. PINVOU3_ASR_CMD pointing
+    // at an npm-style asr.cmd) in `cmd /D /S /C`, which CreateProcess cannot
+    // spawn directly.
+    let mut command_line = crate::support::build_command(command, &[]);
     command_line
         .arg("asr")
         .arg("--model")
@@ -854,30 +1016,8 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
 
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
-    // Size-bound the drains: a chatty engine must not buffer unbounded
-    // output for the whole timeout window (every other capture in the CLI
-    // is size-capped too).
-    const MAX_ENGINE_OUTPUT_BYTES: u64 = 8 * 1024 * 1024;
-    let stdout_drain = std::thread::spawn(move || {
-        let mut buffer = String::new();
-        if let Some(mut pipe) = stdout_pipe {
-            let _ = std::io::Read::read_to_string(
-                &mut std::io::Read::take(pipe, MAX_ENGINE_OUTPUT_BYTES),
-                &mut buffer,
-            );
-        }
-        buffer
-    });
-    let stderr_drain = std::thread::spawn(move || {
-        let mut buffer = String::new();
-        if let Some(mut pipe) = stderr_pipe {
-            let _ = std::io::Read::read_to_string(
-                &mut std::io::Read::take(pipe, MAX_ENGINE_OUTPUT_BYTES),
-                &mut buffer,
-            );
-        }
-        buffer
-    });
+    let stdout_drain = std::thread::spawn(move || drain_capped(stdout_pipe));
+    let stderr_drain = std::thread::spawn(move || drain_capped(stderr_pipe));
 
     let started = Instant::now();
     let status = loop {
@@ -918,7 +1058,7 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
         )));
     }
     extract_transcript(&stdout, &stderr).ok_or_else(|| {
-        CliError::failed("asr_no_speech: recognition returned no usable text; please retry")
+        CliError::failed("asr_parse_failed: recognition returned no usable text; please retry")
     })
 }
 
@@ -1276,11 +1416,11 @@ fn postprocess(
             }
             let remaining = budget.saturating_sub(started.elapsed());
             if remaining.is_zero() {
-                return Ok(PostprocessOutcome {
-                    text,
-                    source: "llm",
-                    truncated,
-                });
+                // GUI parity: the timeout budget ran out before the retry
+                // could run — an error, never a silent bad first output. The
+                // host-error boundary below prefixes "voice postprocess
+                // failed: ", so the surfaced message is the exact GUI copy.
+                return Err(CliError::failed("timeout budget exhausted before retry"));
             }
             match call_postprocess_model(&bridge, mode, &raw_text, true, &model_name, remaining) {
                 Ok((retry_text, retry_truncated)) if !retry_text.trim().is_empty() => {
