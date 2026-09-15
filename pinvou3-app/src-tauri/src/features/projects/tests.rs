@@ -395,8 +395,17 @@ fn rebind_roots_rewrites_prefix_and_stays_idempotent() {
     assert_eq!(affected, vec![project.id.clone()]);
     let roots = store.get(&project.id).unwrap().roots;
     assert!(roots.contains(&display(&to)));
-    assert!(roots.contains(&abs("untouched")), "prefix 外的 root 不动");
-    assert_eq!(store.get(&other.id).unwrap().roots, vec![abs("elsewhere")]);
+    // 期望形态统一走 display():Windows 上 env::temp_dir 的 8.3 短名会被
+    // 祖先 canonicalize 展开,原始 abs() 与存储形态词法不等(评审 #463
+    // windows CI 同因两连挂)。
+    assert!(
+        roots.contains(&display(&abs("untouched"))),
+        "prefix 外的 root 不动"
+    );
+    assert_eq!(
+        store.get(&other.id).unwrap().roots,
+        vec![display(&abs("elsewhere"))]
+    );
 
     // 幂等:from 前缀已无命中,再跑为空操作。
     assert!(store.rebind_roots(&from, &to).unwrap().is_empty());
