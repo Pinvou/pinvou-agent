@@ -26,20 +26,46 @@ function itemTime(item) {
 // filesystem_path_identity_key (Windows identity keys fold case, POSIX does
 // not): the pure module has no host-OS signal, so it keys off path shape —
 // drive-letter/UNC paths only ever come from Windows sessions.
+// Leading-// is deliberately NOT claimed as Windows UNC shape: POSIX leaves
+// that prefix implementation-defined, so //tmp/x can be a genuine POSIX path
+// on a case-sensitive volume. Store-produced roots are always backslash-form,
+// so a forward-slash UNC session path (externally written only) compares
+// POSIX-exact here while the store would fold it on Windows hosts — a known,
+// pinned divergence (see the grouping test), not an oversight.
 function looksWindowsPath(value) {
   return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\');
 }
 
+// Component-aware "same or nested", mirroring the store's key_is_same_or_nested
+// (features/projects/store.rs) line for line — including comparing full
+// equality before stripping the root's trailing separator — so the display
+// side and the store can never disagree about which sessions belong where. A
+// bare startsWith would file /a/bc under /a/b: the character right past the
+// base must be a separator, and a bare-separator root ("/") covers every
+// absolute path, matching the store's empty-base rule. Windows-shaped paths
+// fold separators and case on both sides, mirroring filesystem_path_identity_key
+// (Windows identity keys fold case and separators, POSIX does not): the pure
+// module has no host-OS signal, so it keys off path shape — drive-letter/UNC
+// paths only ever come from Windows sessions.
 function isUnderRoot(path, root) {
   if (!path || !root) return false;
   let a = String(path);
   let b = String(root);
-  if (looksWindowsPath(a) && looksWindowsPath(b)) {
-    a = a.toLowerCase();
-    b = b.toLowerCase();
+  const windowsShape = looksWindowsPath(a) && looksWindowsPath(b);
+  if (windowsShape) {
+    a = a.toLowerCase().replaceAll('\\', '/');
+    b = b.toLowerCase().replaceAll('\\', '/');
   }
   if (a === b) return true;
-  return a.startsWith(`${b}/`) || a.startsWith(`${b}\\`);
+  b = windowsShape ? b.replace(/[\\/]$/, '') : b.replace(/\/$/, '');
+  if (!b) return a.startsWith('/');
+  return a.startsWith(b) && a[b.length] === '/';
+}
+
+// Roots arrive either as raw strings (hand-edited state, tests) or as the
+// bridge's { path, available } objects — one accessor for both shapes.
+function rootPath(root) {
+  return root && typeof root === 'object' ? root.path : root;
 }
 
 // Longest root wins so nested project roots cannot steal sessions from a
@@ -50,14 +76,39 @@ function matchProjectByPath(projects, workspacePath) {
   let bestRoot = '';
   projects.forEach((project) => {
     (project && project.roots ? project.roots : []).forEach((root) => {
-      const rootPath = root && typeof root === 'object' ? root.path : root;
-      if (isUnderRoot(workspacePath, rootPath) && String(rootPath).length > bestRoot.length) {
+      if (isUnderRoot(workspacePath, rootPath(root)) && String(rootPath(root)).length > bestRoot.length) {
         best = project;
-        bestRoot = String(rootPath);
+        bestRoot = String(rootPath(root));
       }
     });
   });
   return best;
+}
+
+// Resolve the project a session currently belongs to for UI affordances
+// (current-project marker in the move picker, "remove from project" entry).
+// Mirrors the grouping tiers: explicit assignment first, then auto-grouping;
+// returns null for ungrouped sessions.
+function resolveSessionProjectId(item, projects, assignments) {
+  const projectList = Array.isArray(projects) ? projects.filter(Boolean) : [];
+  const assignmentMap = assignments && typeof assignments === 'object' ? assignments : {};
+  if (!item) return null;
+  if (Object.prototype.hasOwnProperty.call(assignmentMap, item.id)) {
+    const assigned = assignmentMap[item.id];
+    if (assigned && projectList.some(project => project.id === assigned)) return assigned;
+    if (assigned === null) return null;
+  }
+  if (item.workspaceKind !== 'project') return null;
+  const matched = matchProjectByPath(projectList, item.workspacePath);
+  return matched ? matched.id : null;
+}
+
+// True when any of the project roots covers `path` (same containment rule as
+// tier 2; the move picker uses it to gate the move-only confirm panel for a
+// target whose roots do not already cover the session's workspace).
+function projectCoversPath(project, path) {
+  if (!project || !path) return false;
+  return (project.roots || []).some((root) => isUnderRoot(String(path), rootPath(root)));
 }
 
 // Input: items = code sessions [{ id, workspacePath, workspaceKind, updatedAt, ... }],
@@ -143,4 +194,4 @@ function groupSessionsWithProjects(items, projects, assignments) {
   return groups;
 }
 
-export { TEMPORARY_GROUP_KEY, groupSessionsWithProjects };
+export { TEMPORARY_GROUP_KEY, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath };
