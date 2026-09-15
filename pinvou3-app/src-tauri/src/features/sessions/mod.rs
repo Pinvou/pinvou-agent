@@ -224,6 +224,12 @@ pub struct SessionStore {
     /// before workspace/side-map cleanup succeeds, while a side-map purge does
     /// not itself prove that the durable session record is absent.
     session_deleted_hooks: Arc<RwLock<Vec<SessionDeletedHook>>>,
+    /// Headless retention-eviction receiver: the `agent run` runner installs
+    /// one around the turn so its stderr warning keys on the sweep's real
+    /// deletions (see `product_runtime::agentic_task`). `None` everywhere
+    /// else — the GUI never installs one and the sweep pays nothing.
+    #[cfg(feature = "benchmark-hooks")]
+    retention_eviction_observer: Arc<Mutex<Option<Arc<Mutex<Vec<String>>>>>>,
 }
 
 /// 原生代码会话(品悟 Engine)的执行根解析器:绑定了项目目录的原生代码会话
