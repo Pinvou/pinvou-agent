@@ -443,9 +443,11 @@ impl Pinvou3Bridge {
         // MISS 时工具调用会退化成裸文本(实测 single subagent 25%→稳态~100%)。仅保留 model
         // (固定值,不破坏 cache)与 sudo(静态文案兜底,实时状态走 super_permission::turn_reminder)。
         // 分层 instructions:原生代码会话 = 共享骨架 + 代码层(编码执行循环 + 代码场景纪律,
-        // 无产出物/成品卡语义);绑定了真实工作目录的普通会话 = 共享骨架 + 绑定环境段
-        // (工作目录路径渲染进提示词,无产出物面板/tmp 语义);其余会话 = 共享骨架 +
-        // work 层(与历史 instructions 逐字节相等)。
+        // no-artifact/deliverable-card semantics); a plain session bound to a real
+        // working directory = shared skeleton + bound-environment section (working
+        // directory path rendered into the prompt; no-artifact-panel/tmp semantics);
+        // remaining sessions = shared skeleton + work layer (byte-identical to the
+        // historical instructions).
         let uses_code_instructions = self.session_policy(session_id).uses_code_instructions();
         let base = if uses_code_instructions {
             let workspace_hint = self
@@ -467,9 +469,10 @@ impl Pinvou3Bridge {
             .as_ref()
             .and_then(|resolver| resolver(session_id))
         {
-            // 绑定工作目录的普通会话：绑定路径是每会话稳定值(同 code 的项目路径),
-            // 故渲染进静态提示词;引擎 per-turn 仍会输出 `Current workspace`
-            // (与 code lane 一致,无害冗余)。
+            // Plain sessions with a bound working directory: the bound path is stable
+            // per session (like a code project path), so it is rendered into the static
+            // prompt; the engine still emits `Current workspace` per turn (same as the
+            // code lane, harmless redundancy).
             let workspace_hint = format!(
                 "你正在用户选择的工作目录 `{}` 中工作,相对路径即相对该目录;",
                 root.display()
@@ -527,11 +530,13 @@ impl Pinvou3Bridge {
     /// [`SessionRoots::execution`] 或 [`SessionRoots::ledger`]，避免把执行根误当
     /// 账本根写盘（或反之）。
     ///
-    /// - `execution`：绑定了真实目录的会话（原生代码会话的项目目录，或普通
-    ///   chat 会话的用户工作目录绑定）返回绑定目录（engine cwd 与 shell 执行
-    ///   目录由此同源），其余会话返回会话私有目录。
-    /// - `ledger`：绑定目录的会话恒为会话私有目录（附件/审计/产物不污染用户
-    ///   目录）；其余会话与 execution 相同。
+    /// - `execution`: sessions bound to a real directory (native code sessions'
+    ///   project directory, or plain chat sessions' bound user working directory)
+    ///   return the bound directory (engine cwd and the shell execution directory
+    ///   both derive from it); other sessions return the session-private directory.
+    /// - `ledger`: bound sessions always use the session-private directory
+    ///   (attachments/audits/artifacts must not pollute the user's directory);
+    ///   other sessions match `execution`.
     ///
     /// 本入口不感知 scheduled 会话（bridge 拿不到 SessionStore）；scheduled 的
     /// 两个根由调用方经 [`crate::features::sessions::SessionStore::session_roots`]
@@ -544,16 +549,20 @@ impl Pinvou3Bridge {
         sessions::session_roots_for(session_id, bound_project_root)
     }
 
-    /// 当前 active session 的执行根目录：绑定了真实目录的会话（原生代码会话的
-    /// 项目目录，或普通 chat 会话的用户工作目录绑定）返回绑定目录（engine cwd
-    /// 与 shell 执行目录由此同源），其余会话返回会话私有目录。
+    /// Execution root of the current active session: sessions bound to a real
+    /// directory (native code sessions' project directory, or plain chat sessions'
+    /// bound user working directory) return the bound directory (engine cwd and the
+    /// shell execution directory both derive from it); other sessions return the
+    /// session-private directory.
     /// 等价于 [`Self::session_roots`] 的 `execution` 字段。
     pub fn session_workspace(&self, session_id: &str) -> std::path::PathBuf {
         self.session_roots(session_id).execution
     }
 
-    /// 注入执行根解析器（原生代码会话项目绑定 + 普通 chat 会话工作目录绑定，
-    /// 组合根统一装配）；由 app 组合根在 AcpPool 就绪后调用一次。
+    /// Injects the execution root resolver (covering native code session project
+    /// bindings and plain chat session working-directory bindings, assembled by the
+    /// composition root); called once by the app composition root once the AcpPool
+    /// is ready.
     pub fn set_execution_root_resolver(&mut self, resolver: ExecutionRootResolver) {
         self.execution_root_resolver = Some(resolver);
     }
@@ -640,10 +649,13 @@ impl Pinvou3Bridge {
             }
         }
         // 连接器禁用集：非 plain 模式用其 scope 的禁用集替换传入的 plain scope
-        // 禁用集（plain 的禁用集就是传入值本身，无需替换）。scope 即模式——绑定
-        // 工作目录的普通会话仍属 plain scope，不借道 code scope。注意本分支上
-        // plain 未初始化 = AllowAll（连接器/包默认开）：绑定会话的补偿控制是
-        // Plan-first + 一次性 YOLO 确认卡；DenyAll 收敛在 #455。
+        // disabled set (the plain disabled set is the incoming value itself, no
+        // replacement needed). Scope follows mode — a plain session with a bound
+        // working directory still belongs to the plain scope and never borrows the
+        // code scope. Note that on this fork an uninitialized plain scope = AllowAll
+        // (connectors/bundles on by default): bound sessions compensate with
+        // Plan-first plus a one-shot YOLO confirm card; DenyAll tightening is
+        // tracked separately.
         let scope = policy.mode();
         if scope != SessionMode::Plain {
             let plain_connector = crate::features::marketplace::disabled_tool_names();
@@ -671,14 +683,18 @@ impl Pinvou3Bridge {
         tools
     }
 
-    /// 应用账本根：审计等应用自有文件的落盘根。绑定了真实目录的会话（原生代码
-    /// 会话的项目目录，或普通 chat 会话的用户工作目录绑定）恒为会话私有目录
-    /// （不污染用户目录）；其余会话与传入的执行根相同——未绑定普通会话两根
-    /// 本来一致，scheduled 会话继续写其项目目录，行为逐字节不变。
+    /// Application ledger root: where app-owned files such as audits are written.
+    /// Sessions bound to a real directory (native code sessions' project directory,
+    /// or plain chat sessions' bound user working directory) always use the
+    /// session-private directory (the user's directory stays clean); other sessions
+    /// use the incoming execution root as-is — for unbound plain sessions both roots
+    /// already coincide, and scheduled sessions keep writing to their project
+    /// directory, so behavior is byte-for-byte unchanged.
     ///
     /// `execution_workspace` 必须来自 [`Self::session_workspace`]（或
     /// [`Self::session_roots`] 的 `execution` 字段）。对 ledger 与 execution 相同的
-    /// 会话（未绑定普通/临时代码/scheduled），直接返回调用方传入的执行根，保持
+    /// sessions (unbound plain / scratch code / scheduled), return the incoming
+    /// execution root as-is,
     /// scheduled 会话写其项目目录的既有行为。
     pub fn audit_workspace(
         &self,
@@ -696,9 +712,10 @@ impl Pinvou3Bridge {
     /// session 专属 `EngineConfig.instructions` 注入:
     ///   1. pinvou3 自家 INSTRUCTIONS_MD 渲染版(走 `InstructionSource::Inline`,
     ///      不写 disk — 见 C 方案 P-no-disk 决策);
-    ///   2. 受限项目规则:绑定了真实目录的会话(原生代码会话的项目目录,或普通
-    ///      chat 会话的用户工作目录绑定),注入绑定根 → 用户家目录(不含)路径上
-    ///      的 `AGENTS.md`,root→cwd 顺序(审阅建议③a;底座 C5 fork
+    ///   2. restricted project rules: sessions bound to a real directory (native
+    ///      code sessions' project directory, or plain chat sessions' bound user
+    ///      working directory) inject the `AGENTS.md` files on the bound root →
+    ///      user-home (exclusive) path, in root→cwd order (fork base C5
     ///      已砍空 `PROJECT_CONTEXT_FILES`,不再自动扫描,这里按安全边界在 app 侧补齐);
     ///   3. 用户自定义 `~/.codewhale/instructions.md`(可选,仍走 `File`)。
     ///
@@ -731,11 +748,14 @@ impl Pinvou3Bridge {
         out
     }
 
-    /// 受限项目规则（审阅建议③a）：对**绑定了真实目录的会话**（原生代码会话的
-    /// 项目目录，或普通 chat 会话的用户工作目录绑定）注入 `AGENTS.md`，覆盖绑定
-    /// 根向上到用户家目录（不含）的路径——绑定根即家目录时一层都不注入；目录不
-    /// 在家目录之下时覆盖到文件系统根。绑定目录内文本同为 prompt-injection 面，
-    /// 两类绑定会话的安全边界一致，注入规则因此一致。
+    /// Restricted project rules: for **sessions bound to a real directory** (native
+    /// code sessions' project directory, or plain chat sessions' bound user working
+    /// directory), inject the `AGENTS.md` files covering the path from the bound
+    /// root up to (but excluding) the user home directory — inject nothing when the
+    /// bound root is the home directory; cover up to the filesystem root when the
+    /// directory lies outside home. Text inside the bound directory is equally a
+    /// prompt-injection surface for both kinds of bound sessions, so both share the
+    /// same injection rules.
     ///
     /// 底座 C5 fork 已砍空 `PROJECT_CONTEXT_FILES`（不再自动扫描），这里在 app 侧
     /// 按安全边界补齐。行为语义：
@@ -749,7 +769,8 @@ impl Pinvou3Bridge {
     ///   - symlink 拒读：`AGENTS.md` 是 symlink（可指向工作区外任意文件，如
     ///     ~/.ssh/id_rsa）时跳过，与底座 `project_context::load_context_file`
     ///     的防御范式对齐；
-    ///   - 文件不存在或不可读时跳过。未绑定会话/临时代码会话不注入（行为不变）。
+    ///   - Skip when the file is missing or unreadable. Unbound sessions and
+    ///     scratch code sessions are not injected (behavior unchanged).
     fn code_session_project_rules(&self, session_id: &str) -> Vec<PathBuf> {
         let Some(project_root) = self
             .execution_root_resolver
@@ -2505,10 +2526,13 @@ impl Pinvou3Bridge {
     }
 
     fn ensure_session_skills_for_send(&self, session_id: &str) {
-        // 发送路径自愈（skill 双 scope 治理 §2.3.3）：组合目录缺失时按当前模式
-        // scope 重建（微秒级 stat），防手动删除后静默丢失；不做每轮全量比对（V-7/V-10）。
-        // 项目技能来源根只在会话绑定了真实目录时传入（显式 SessionRoots::bound 信号）；
-        // 未绑定会话传 None——项目技能扫描由「绑定 + 全局开关」双门控，与模式无关。
+        // Send-path self-healing (skill dual-scope governance §2.3.3): rebuild the
+        // composed directory from the current mode scope when missing (a microsecond
+        // stat) so a manual deletion is not silently lost; no full comparison every
+        // turn (V-7/V-10). The project-skill source root is passed only when the
+        // session is bound to a real directory (explicit SessionRoots::bound signal);
+        // unbound sessions get None — project-skill scanning is gated by both
+        // binding and a global switch, independent of mode.
         let roots = self.session_roots(session_id);
         let bound_workspace = roots.bound.then_some(roots.execution);
         crate::features::assistant::skill_materialization::ensure_session_skills(
@@ -2979,9 +3003,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// 绑定真实工作目录的普通 chat 会话：模式身份仍是 Plain（提示词配方/产物
-    /// 能力不变），但安全姿态跟绑定——code scope、双根、AGENTS.md 注入、绑定
-    /// 环境段提示词。
+    /// A plain chat session bound to a real working directory: its mode identity is
+    /// still Plain (prompt recipe / artifact capabilities unchanged), but its safety
+    /// posture follows the binding — code scope, dual roots, AGENTS.md injection,
+    /// and the bound-environment prompt section.
     #[test]
     fn bound_plain_session_aligns_safety_posture_with_code() {
         let base =
@@ -3001,14 +3026,15 @@ mod tests {
         }));
         bridge.set_code_session_predicate(std::sync::Arc::new(|_session_id: &str| false));
 
-        // 模式身份不变（Plain），连接器/技能 scope 跟随模式（不借道 code
-        // scope；本分支 plain 未初始化 = AllowAll，DenyAll 收敛在 #455）。
+        // Mode identity stays Plain; connector/skill scopes follow the mode (no
+        // borrowing the code scope; on this fork uninitialized plain = AllowAll,
+        // DenyAll tightening tracked separately).
         assert_eq!(
             bridge.session_policy("sess-plain-bound").mode(),
             SessionMode::Plain
         );
 
-        // 双根：execution=绑定目录，ledger=会话私有目录。
+        // Dual roots: execution = bound directory, ledger = session-private directory.
         let roots = bridge.session_roots("sess-plain-bound");
         assert_eq!(roots.execution, workspace);
         assert_eq!(
@@ -3016,15 +3042,16 @@ mod tests {
             crate::platform::paths::session_workspace_dir("sess-plain-bound")
         );
 
-        // AGENTS.md 注入（绑定目录内文本同为 prompt-injection 面）。
+        // AGENTS.md injection (bound-directory text is equally a prompt-injection surface).
         let rules = bridge.code_session_project_rules("sess-plain-bound");
         assert!(
             rules.iter().any(|p| p == &expected_agents),
             "绑定普通会话应注入绑定根 AGENTS.md: {rules:?}"
         );
 
-        // 提示词：绑定环境段（含路径渲染），无产出物面板/tmp 纪律；
-        // 未绑定普通会话保持默认 work 语义。
+        // Prompt: bound-environment section (with path rendering) plus
+        // no-artifact-panel/tmp discipline; unbound plain sessions keep the default
+        // work semantics.
         let prompt = bridge.build_session_system_prompt("sess-plain-bound");
         assert!(prompt.contains("用户选择的工作目录"), "应渲染绑定环境段");
         assert!(!prompt.contains("自动落到本会话专属工作目录"));
@@ -3131,10 +3158,13 @@ mod tests {
         }
     }
 
-    /// 单门控（绑定即注入）：resolver 命中（存在绑定的真实目录）即注入，不再
-    /// 要求 predicate 判定为原生代码会话——普通 chat 会话的工作目录绑定经同一
-    /// resolver 解析，绑定目录内文本对两类会话同为 prompt-injection 面，注入
-    /// 与执行根保持一致（会话实际 cwd 就在绑定目录里）。
+    /// Single gate (binding implies injection): whenever the resolver hits (a real
+    /// bound directory exists), rules are injected without requiring the predicate
+    /// to classify the session as a native code session — a plain chat session's
+    /// working-directory binding resolves through the same resolver, and text in
+    /// the bound directory is equally a prompt-injection surface for both kinds,
+    /// so injection stays consistent with the execution root (the session's actual
+    /// cwd lives inside the bound directory).
     #[test]
     fn code_session_project_rules_inject_for_bound_plain_session() {
         let base =
@@ -3397,10 +3427,12 @@ mod tests {
     }
 
     /// CLI 硬拦截规则集（scope 门禁的 execpolicy 通道）：按会话 scope 的被禁
-    /// CLI 连接器生成二进制 deny 规则——code 未初始化时默认全禁 4 个内置 CLI
-    /// 二进制（外部能力显式开启）；plain 默认全开，显式禁用后仅余被禁者。
-    /// 并钉住底座执行语义：deny 在直跑 / 链式 / wrapper 形态下都硬拒
-    /// （AskForApproval::Never 也拦）。
+    /// Binary deny rules generated for scope-disabled CLI connectors — with code
+    /// uninitialized, all 4 built-in CLI binaries are denied by default (external
+    /// capability must be enabled explicitly); plain is allow-by-default and only
+    /// explicitly disabled ones remain denied. Also pins the base execution
+    /// semantics: deny hard-blocks direct, chained, and wrapper forms (even
+    /// AskForApproval::Never is intercepted).
     #[test]
     fn cli_deny_ruleset_follows_scope_disabled_connectors() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
@@ -3630,9 +3662,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 通道③ 取数口径：scope 禁用技能的脚本目录生成 deny 规则（code 未初始化
-    /// 默认全禁；本分支 plain 未初始化 = AllowAll，不产生 deny 规则，DenyAll
-    /// 收敛在 #455）；启用后规则消失；与 CLI 二进制 deny 共存于同一规则集。
+    /// Channel 3 data source: script directories of scope-disabled skills generate
+    /// deny rules (code uninitialized denies all by default; on this fork
+    /// uninitialized plain = AllowAll, producing no deny rules — DenyAll tightening
+    /// is tracked separately); rules disappear once the skill is enabled; shares one
+    /// ruleset with the CLI binary deny.
     #[test]
     fn scope_deny_ruleset_covers_disabled_skill_scripts() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);

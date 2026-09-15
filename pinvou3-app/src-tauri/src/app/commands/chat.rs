@@ -186,10 +186,13 @@ pub(crate) async fn chat_with_reservation(
     // 无损表达含 ` · ` 等分隔符的合法文件名)。
     let display_content = display_chat_message(&message, &attachments);
     let raw_message = message.clone();
-    // 绑定了项目/工作目录的会话，落盘根（会话私有目录）与引擎 cwd（绑定目录）
-    // 不同根，附件引用必须绝对路径；未绑定会话两根一致，维持相对路径引用。
-    // 绑定判定用显式 bound 标志（与引擎执行根同一来源 SessionStore::session_roots），
-    // 不做 ledger != execution 路径比较（见 sessions/mod.rs 的原则说明）。
+    // For sessions bound to a project/working directory, the persist root (the
+    // session-private directory) differs from the engine cwd (the bound
+    // directory), so attachment references must be absolute; unbound sessions
+    // have identical roots and keep relative references. Binding is detected via
+    // the explicit bound flag (same source as the engine execution root,
+    // SessionStore::session_roots), not a ledger != execution path comparison
+    // (see the rationale in sessions/mod.rs).
     let reference_absolute = roots.bound;
     // Native(v0.9.5 官方标记方案):图片暂存后生成 `[Attached image: <path>]`
     // 标记行,底座构建时展开为 ImageUrl 块,不注入"看不到图"硬规则;其余路径

@@ -201,12 +201,15 @@ impl SessionStore {
             .is_some_and(|predicate| predicate(id))
     }
 
-    /// 无条目时的默认 mode 解析：code 会话、或绑定了用户工作目录的普通 chat
-    /// 会话（真实目录 = 误操作与注入面，安全姿态跟绑定不跟模式），回落全局
-    /// `code_permission.last_mode`（None = 用户从未用过 → Plan 只读首启）；
-    /// 未绑定 plain 会话缺省 Yolo（work lane 的全局默认由前端在会话物化时
-    /// 应用，后端不再区分 plain 侧 lane——design 已并入 work，见
-    /// `set_mode_default`）。
+    /// Default mode resolution when no entry exists: code sessions, or plain chat
+    /// sessions bound to a user working directory (a real directory means
+    /// mis-operation and injection surface; the safety posture follows the
+    /// binding, not the mode), fall back to the global `code_permission.last_mode`
+    /// (None = the user has never used it → read-only Plan on first use);
+    /// unbound plain sessions default to Yolo (the work lane's global default is
+    /// applied by the frontend at session materialization; the backend no longer
+    /// distinguishes a plain-side lane — design merged into work, see
+    /// `set_mode_default`).
     pub(crate) fn resolved_default_mode(&self, id: &str) -> SerializableMode {
         if self.is_code_session(id) || self.session_workspace_binding(id).is_some() {
             self.code_permission

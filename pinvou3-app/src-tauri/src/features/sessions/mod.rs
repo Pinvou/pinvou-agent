@@ -27,8 +27,9 @@
 //! - `sidecars` —— skill 绑定 / 模型 / 置顶 / 收起 的独立 sidecar 落盘
 //! - `rewind` —— 代码模式回退的对话截断与 `_rewound_turns.json` 备份
 //! - `validators` —— id / workspace / 路径校验与小型 helper
-//! - `workspace_bindings` —— 普通 chat 会话用户工作目录绑定的 per-session sidecar
-//!   （会话目录内 `workspace-binding.json`）与存量全局表迁移
+//! - `workspace_bindings` —— per-session sidecar of plain chat sessions' user
+//!   working-directory bindings (`workspace-binding.json` in the session
+//!   directory) and legacy global-table migration
 //!
 //! 子模块通过 `impl SessionStore` 续写方法（Rust 允许同一 struct 的 impl 块
 //! 散布在子模块里），并直接读 `&self` 的私有字段——struct 字段对后代模块
@@ -141,19 +142,24 @@ pub struct SessionStore {
     /// 从左侧任务列表收起的会话:session_id -> hidden_at。独立落盘到
     /// `_hidden_sessions.json`,不改 SavedSession 结构。
     pub(crate) hidden_sessions: Arc<RwLock<HashMap<String, String>>>,
-    /// 会话执行根解析器,由 app 组合根(lib.rs)在 AcpPool 就绪后注入——生产
-    /// 实现同时覆盖两类来源：codex_acp 原生代码会话的项目绑定 + 普通 chat
-    /// 会话的用户工作目录绑定（sidecar，见下方读缓存字段）。None（测试/启动
-    /// 早期未注入）= 无外部绑定，所有会话的执行根都是会话私有目录；`store.rs`
-    /// 的 or_else 回退仅是此情形的防御。账本根(附件/审计/产物/远程授权)不受
-    /// 其影响,恒为会话私有目录。
+    /// Session execution-root resolver, injected by the app composition root
+    /// (lib.rs) once the AcpPool is ready — the production implementation covers
+    /// both sources: codex_acp native code sessions' project bindings plus plain
+    /// chat sessions' user working-directory bindings (sidecar, see the read-cache
+    /// field below). None (not yet injected in tests / early startup) = no external
+    /// binding, every session's execution root is the session-private directory;
+    /// the or_else fallback in `store.rs` is only a defense for that case. The
+    /// ledger root (attachments/audits/artifacts/remote grants) is unaffected and
+    /// is always the session-private directory.
     pub(crate) execution_root_resolver: Arc<RwLock<Option<ExecutionRootResolver>>>,
-    /// 普通 chat 会话的用户工作目录绑定读缓存:session_id → 用户选择的目录。
-    /// 权威存储是会话私有目录内的 per-session sidecar `workspace-binding.json`
-    /// （见 workspace_bindings.rs，不改 SavedSession 结构）；缓存 bind 时写入、
-    /// 读 miss 时从 sidecar 回填。`session_roots` 在 resolver 未命中时回退查
-    /// 这里:命中即 execution=绑定目录、ledger=会话私有目录(与原生代码会话
-    /// 绑定同款双根语义)。
+    /// Read cache of plain chat sessions' user working-directory bindings:
+    /// session_id → user-selected directory. The authoritative store is the
+    /// per-session sidecar `workspace-binding.json` inside the session-private
+    /// directory (see workspace_bindings.rs; SavedSession is unchanged); the cache
+    /// is written on bind and backfilled from the sidecar on a read miss.
+    /// `session_roots` falls back to this map when the resolver misses: on a hit,
+    /// execution = bound directory and ledger = session-private directory (the
+    /// same dual-root semantics as native code session bindings).
     pub(crate) session_workspaces: Arc<RwLock<HashMap<String, PathBuf>>>,
     /// 品悟原生 code 会话判定（ACP 会话恒为 plain，见 codex_acp store）。
     /// 与 Engine bridge / 远程端共用同一份 `SessionAgentStore` 闭包，由 app 组合根
@@ -238,19 +244,22 @@ pub type SessionPurgedHook = Arc<dyn Fn(&str) + Send + Sync>;
 pub type SessionDeletedHook = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// 一个会话的两个根:
-/// - `execution`:Engine cwd / shell 执行目录。绑了项目目录的原生代码会话、或绑了
-///   用户工作目录的普通 chat 会话 = 绑定目录;其余会话 = 会话私有目录(scheduled
-///   会话 = 其 automation workspace)。
-/// - `ledger`:应用账本根(附件/审计/产物/远程授权)。有绑定目录的会话恒为会话
-///   私有目录(不污染用户目录);其余会话与 execution 相同。
+/// - `execution`: engine cwd / shell execution directory. Native code sessions
+///   with a bound project directory, or plain chat sessions with a bound user
+///   working directory = the bound directory; other sessions = session-private
+///   directory (scheduled sessions = their automation workspace).
+/// - `ledger`: application ledger root (attachments/audits/artifacts/remote
+///   grants). Sessions with a bound directory always use the session-private
+///   directory (the user's directory stays clean); other sessions match `execution`.
 ///
 /// 由 [`SessionStore::session_roots`] 统一解析,调用方按用途显式选择用哪个根,
 /// 避免把执行根误当账本根写盘(或反之)。
 ///
-/// `bound` 是显式的"已绑定真实目录"信号(原生代码会话的项目目录,或普通
-/// chat 会话的用户工作目录绑定):调用方以此判定绑定态,不得用
-/// `ledger != execution` 的路径比较代打——未来出现其他双根形态时,路径
-/// 相等与否不再等价于绑定(评审 #445 P2)。
+/// `bound` is the explicit "bound to a real directory" signal (a native code
+/// session's project directory, or a plain chat session's user working-directory
+/// binding): callers must use it to detect the bound state and must not
+/// substitute a `ledger != execution` path comparison — once other dual-root
+/// shapes appear, path equality no longer implies binding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRoots {
     pub execution: PathBuf,
@@ -258,10 +267,12 @@ pub struct SessionRoots {
     pub bound: bool,
 }
 
-/// 两个根的纯解析:给定会话绑定的执行目录(原生代码会话的项目目录,或普通
-/// chat 会话的用户工作目录;无绑定传 `None`),返回执行根与账本根。不感知
-/// scheduled 会话——scheduled 的两个根都是其 automation workspace,由
-/// [`SessionStore::session_roots`] 在上层处理。
+/// Pure resolution of the two roots: given the execution directory bound to the
+/// session (a native code session's project directory, or a plain chat session's
+/// user working directory; pass `None` when unbound), returns the execution root
+/// and ledger root. Unaware of scheduled sessions — both of a scheduled session's
+/// roots are its automation workspace, handled upstream by
+/// [`SessionStore::session_roots`].
 pub fn session_roots_for(session_id: &str, bound_project_root: Option<PathBuf>) -> SessionRoots {
     let private = paths::session_workspace_dir(session_id);
     match bound_project_root {

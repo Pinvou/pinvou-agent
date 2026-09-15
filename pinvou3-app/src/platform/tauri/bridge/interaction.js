@@ -138,13 +138,15 @@
   }
   // 草稿态 chip 切换：写本 lane 全局默认（setDraftMode 不物化会话——
   // 物化时由 ensureSession 把 lane 默认应用到新会话）。
-  // 绑定了工作目录的草稿安全姿态对齐 code 模式：切换写 code lane 全局默认
-  // （不写 work lane），并把显式选择暂存到 pendingDraftMode，物化时按暂存值
-  // 逐会话应用（后端对绑定会话只解析 code lane 默认，不读 work）。
+  // Bound-workspace drafts share the code mode's safety posture: a switch
+  // writes the code lane global default (not the work lane), and stages the
+  // explicit choice in pendingDraftMode to be applied per session at
+  // materialization (the backend resolves only the code lane default for bound
+  // sessions, never the work one).
   async function setDraftMode(target) {
     const boundDraft = !!state.draftWorkspacePath;
-    // 绑定草稿恒写 code lane；未绑定草稿跟随当前 lane（work/code 两 lane，
-    // design 已并入 work，#428）。
+    // Bound drafts always write the code lane; unbound drafts follow the
+    // current lane (two lanes, work/code; design was merged into work, #428).
     const lane = boundDraft || state.modeLane === "code" ? "code" : "work";
     try {
       const defaults = await invoke("set_mode_default", { lane, mode: target });
@@ -160,10 +162,12 @@
     notify();
   }
 
-  // ── code 权限偏好（YOLO 一次性确认门）─────────────────────────────
-  // 绑定工作目录的普通会话切 YOLO 前与 code 模式共用同一确认门事实源。
-  // 读取失败按 null 返回（needsYoloConfirmation 对 null 按未确认处理——
-  // 安全方向：宁可多弹一次）；confirm 的失败上抛给 UI 提示，不静默。
+  // ── Code permission prefs (one-shot YOLO confirmation gate) ──────
+  // Plain sessions with a bound working directory share the code mode's
+  // confirmation gate source of truth before switching to YOLO. Read failures
+  // return null (needsYoloConfirmation treats null as unconfirmed — the safe
+  // direction: prefer one extra prompt); confirm failures propagate to the UI
+  // instead of being swallowed.
   async function getCodePermissionPrefs() {
     try {
       return await invoke("get_code_permission_prefs");
@@ -336,10 +340,13 @@
     notify();
   }
   async function exitPlanToYolo(targetSessionId) {
-    // 目标会话可由调用方显式裁定：YOLO 确认门在多个 await 往返后才发起
-    // 切换，期间用户可能已切走，实时 active 不再等于裁决对象（评审 #445
-    // R8，与 sessions.js 物化路径传 meta.id 同一先例）。无参调用保持原
-    // 语义：作用于发起瞬间的实时 active（灯泡 / plan-stuck 卡片）。
+    // The caller may pin the target session explicitly: the YOLO confirmation
+    // gate issues the switch only after several await round-trips, by which
+    // time the user may have switched away and the live active session is no
+    // longer the ruling one (same precedent as sessions.js passing meta.id on
+    // its materialization path). No-argument calls keep the original semantics:
+    // act on the live active session at invocation time (bulb / plan-stuck
+    // card).
     const sid = typeof targetSessionId === 'string' && targetSessionId
       ? targetSessionId
       : state.activeSessionId;
@@ -347,8 +354,10 @@
     // default (two-lane semantics).
     if (!sid) { await setDraftMode("yolo"); return; }
     try {
-      // invoke 发起时即定向 sid；await 返回后按同一 sid 写回（协议指纹按
-      // 调用文本计算，参数化后 interaction 域哈希同步重算）。
+      // The invoke targets sid directly at issue time; after the await, the
+      // result is written back to the same sid (the protocol fingerprint is
+      // computed from the call text; parameterizing it requires recomputing the
+      // interaction-feature digest in step).
       const st = await invoke("exit_plan_to_yolo", { sessionId: sid });
       applyAuthoritativeModeState(sid, st);
     } catch (e) { addSystemItemFor(sid, bt("exitPlanFailed") + e); }
@@ -433,11 +442,20 @@
     patchItemById(itemId, { resolved: true, statusLabel: bt("replanRequested") }); notify();
     await sendMessage(bt("planStuckReplanPrompt"));
   }
-  async function planStuckGo(itemId) {
-    const sid = state.activeSessionId;
+  async function planStuckGo(itemId, targetSessionId) {
+    // The plan-stuck card's session is captured when the card is rendered;
+    // gate callers pass it explicitly. A no-arg call (legacy) targets
+    // live-active at invoke time. The explicit form keeps exitPlanToYolo and
+    // the follow-up prompt on the same adjudicated session even if the user
+    // switches away mid-flight (#445 R9: a no-arg read here bypassed both
+    // the gate's sid threading and, for a bound session launched from
+    // ChatView, the one-time YOLO confirmation decided in the UI layer).
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
     if (!sid) return;
     patchItemById(itemId, { resolved: true }); notify();
-    await exitPlanToYolo();
+    await exitPlanToYolo(sid);
     // 补充指令必须发往触发会话：await exitPlanToYolo 期间用户可能已切走，
     // 直接 sendMessage 会把"继续执行"发到切换后的会话（审计遗漏补修）。
     // sendMessageToSession 校验失败（会话已删/对账中）会 throw，必须接住并

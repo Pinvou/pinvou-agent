@@ -215,9 +215,11 @@ fn work_layer_sections() -> (&'static str, &'static str, &'static str) {
     (env_section, browser_section, artifact_rule)
 }
 
-/// 绑定了真实工作目录的普通会话的环境段：仅 `## 工作环境` 一段（含
-/// `{{PINVOU3_WORKSPACE_HINT}}` 工作区占位）。与 work 层默认环境段的差异：
-/// 工作对象是用户选定的真实目录（改动实时可见），无产出物面板与 `tmp/` 语义。
+/// Environment section for plain sessions bound to a real working directory: a
+/// single `## 工作环境` section (with the `{{PINVOU3_WORKSPACE_HINT}}` workspace
+/// placeholder). Difference from the work layer's default environment section:
+/// the working target is the user-selected real directory (changes are visible
+/// live), with no artifact panel and no `tmp/` semantics.
 pub const INSTRUCTIONS_WORK_BOUND_MD: &str =
     include_str!("../../../../resources/common/bundle/instructions-work-bound.md");
 
@@ -243,9 +245,11 @@ pub fn instructions_md() -> &'static str {
     })
 }
 
-/// 绑定真实工作目录的普通会话完整 instructions（共享骨架 + 绑定环境段 +
-/// work 层 Browser capabilities 段与成品条）：仅环境段换成绑定变体，浏览器
-/// 与成品卡能力与普通会话一致。`instructions_md()` 的逐字节语义不受影响。
+/// Full instructions for plain sessions bound to a real working directory
+/// (shared skeleton + bound environment section + the work layer's Browser
+/// capabilities section and deliverables section): only the environment section
+/// swaps in the bound variant; browser and deliverable-card capabilities match
+/// plain sessions. `instructions_md()` keeps its byte-for-byte semantics.
 #[allow(clippy::expect_used)]
 pub fn instructions_work_bound_md(workspace_hint: &str) -> String {
     let (_env_section, browser_section, artifact_rule) = work_layer_sections();
@@ -917,19 +921,22 @@ mod tests {
         let rendered = instructions_work_bound_md(
             "你正在用户选择的工作目录 `/repo/demo` 中工作,相对路径即相对该目录;",
         );
-        // 工作区占位渲染正确。
+        // The workspace placeholder renders correctly.
         assert!(rendered.contains("你正在用户选择的工作目录 `/repo/demo` 中工作"));
         assert!(!rendered.contains("{{PINVOU3_WORKSPACE_HINT}}"));
-        // 产出物面板/tmp 纪律不出现（环境段否定式提及"没有产出物面板与 tmp/ 语义"
-        // 是刻意保留的行为指引）。
+        // Artifact-panel/tmp discipline must not appear (the environment section's
+        // negative mention of "没有产出物面板与 tmp/ 语义" is a deliberately kept
+        // behavioral hint).
         assert!(!rendered.contains("自动落到本会话专属工作目录"));
         assert!(!rendered.contains("只有**最终成品**"));
         assert!(!rendered.contains("产出用**相对路径**写"));
-        // 浏览器段与成品条保留（普通会话能力不变）。
+        // Browser section and deliverables section kept (plain-session capabilities
+        // unchanged).
         assert!(rendered.contains("## Browser capabilities"));
         assert!(rendered.contains("mcp_pinvou3_present_artifact"));
-        // 占位行无残留；骨架结构保持：绑定环境段位于 §底线 与 §工具与事实 之间，
-        // Browser capabilities 段位于环境段之后。
+        // No leftover placeholder lines; skeleton structure preserved: the bound
+        // environment section sits between the §底线 and §工具与事实 sections,
+        // and the Browser capabilities section follows the environment section.
         assert!(!rendered.contains("{{PINVOU3_MODE_ENV_SECTION}}"));
         assert!(!rendered.contains("{{PINVOU3_MODE_ARTIFACT_RULE}}"));
         let bottom = rendered.find("## 底线").unwrap();
@@ -941,7 +948,8 @@ mod tests {
 
     #[test]
     fn work_instructions_unbound_unaffected_by_bound_variant() {
-        // 绑定变体的存在不影响未绑定渲染：默认 work instructions 保持原语义。
+        // The bound variant's existence does not affect unbound rendering: the
+        // default work instructions keep their original semantics.
         let rendered = instructions_md();
         assert!(rendered.contains("自动落到本会话专属工作目录"));
         assert!(!rendered.contains("用户选择的工作目录"));

@@ -1,27 +1,35 @@
-// 首次切 YOLO 的一次性确认卡（全局记忆，UI 层确认，后端不强制门控）。
-// code 模式（CodexAcpView）与普通聊天绑定工作目录会话（ChatView）共用：
-// 语义 = "该模式下模型将对你的项目/工作目录全自动读写、可执行 shell，无逐步审批"，
-// 确认后全局记住、不再弹。两侧文案不同（项目目录 vs 工作目录），经 copy 注入。
+// One-shot confirmation card for the first switch to YOLO (globally remembered,
+// confirmed at the UI layer; the backend does not enforce the gate). Shared by
+// the code mode (CodexAcpView) and plain-chat bound-workspace sessions
+// (ChatView): semantics = "in this mode the model reads/writes the project or
+// working directory fully automatically, can run shell commands, with no
+// per-step approval". Once confirmed it is remembered globally and never shown
+// again. The copy differs per side (project directory vs working directory) and
+// is injected via `copy`.
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 
-// 按钮样式与 features/tools/tool-renderers.jsx 的 cardBtnCls 同款逐字镜像：
-// shared 层不反向依赖 features，改任一侧须同步另一侧。
+// Button styling is a verbatim mirror of cardBtnCls in
+// features/tools/tool-renderers.jsx: the shared layer must not depend back on
+// features, so keep both sides in sync when changing either.
 function cardBtnCls(variant) {
   const base = 'px-3 py-1.5 rounded-full text-[13px] font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
   if (variant === 'danger') return `${base} bg-[#C5221F] text-white hover:bg-[#A50E0E]`;
   return `${base} bg-white text-[#1F1F1F] hover:bg-[#E1E5EA] border border-black/10 dark:border-transparent dark:bg-[#333537] dark:text-[#E3E3E3] dark:hover:bg-[#444746]`;
 }
 
-// copy = { title, body, hint, ok, cancel }（两侧 i18n 键不同，由调用方映射）。
+// copy = { title, body, hint, ok, cancel } (the i18n keys differ per side; the caller maps them).
 export function YoloConfirmCard({ theme, copy, error, busy, onConfirm, onCancel }) {
   const isDark = theme === 'dark';
   const dialogRef = useRef(null);
-  // 挂载时夺取焦点一次（键盘可达）、卸载时归还先前焦点元素（触发元素可能
-  // 已随时间线重建，isConnected 守卫）。焦点 effect 不带依赖：父组件内联
-  // onCancel 每渲染换新身份，打开期间任意父级重渲染都会把焦点从按钮拽回
-  // 容器（镜像 features/codex/RewindChip.jsx 的 useDialogFocusRestore；
-  // shared 层不反向依赖 features，改任一侧须同步另一侧）。
+  // Grab focus once on mount (keyboard accessibility) and restore the previous
+  // focus element on unmount (the trigger element may have been rebuilt with
+  // the timeline, hence the isConnected guard). The focus effect has no
+  // dependency array entry: the parent's inline onCancel gets a new identity
+  // every render, so any parent re-render while open would yank focus from the
+  // button back to the container (mirrors useDialogFocusRestore in
+  // features/codex/RewindChip.jsx; the shared layer must not depend back on
+  // features, so keep both sides in sync when changing either).
   useEffect(() => {
     const previous = document.activeElement;
     dialogRef.current?.focus();
@@ -29,8 +37,10 @@ export function YoloConfirmCard({ theme, copy, error, busy, onConfirm, onCancel 
       if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
     };
   }, []);
-  // Esc 视为取消（busy 时禁用）——与 NativePlanCard 内联卡不同，这是一张
-  // 全屏模态，必须挡住底层控件。重注册监听器无害，不含焦点副作用。
+  // Esc counts as cancel (disabled while busy) — unlike the NativePlanCard
+  // inline card this is a full-screen modal that must block the underlying
+  // controls. Re-registering the listener is harmless and has no focus side
+  // effects.
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === 'Escape' && !busy) {
@@ -41,9 +51,10 @@ export function YoloConfirmCard({ theme, copy, error, busy, onConfirm, onCancel 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [busy, onCancel]);
-  // portal 到 <body>：该卡片渲染在 composer 容器内，而容器的 backdrop-blur 会成为
-  // `position: fixed` 的包含块，不 portal 的话全屏模态只会盖住输入框区域，
-  // 点击遮罩取消也随之失效。
+  // Portal to <body>: this card renders inside the composer container, whose
+  // backdrop-blur becomes the containing block for `position: fixed`. Without
+  // the portal the full-screen modal would only cover the composer area and
+  // click-the-backdrop-to-cancel would stop working too.
   return createPortal(
     <div data-testid="native-yolo-confirm" className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <button

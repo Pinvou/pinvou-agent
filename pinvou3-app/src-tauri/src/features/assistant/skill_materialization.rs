@@ -59,11 +59,13 @@ fn skill_source_dirs() -> Vec<PathBuf> {
 
 /// 项目技能来源目录（workspace 内工具约定，按底座上游 #432 优先级降序，
 /// `.pinvou/skills` 为 pinvou3 自有约定，插在 `.agents/skills` 之后）。
-/// 仅当项目级 skills 全局开关开启、且会话绑定了真实目录（调用方传入
-/// Some(workspace)：原生 code 会话的项目目录或普通 chat 会话的用户工作目录
-/// 绑定）时使用（§2.4：项目内文本是 prompt-injection 面，显式开启才扫描；
-/// fork #41 已砍断 workspace 并集发现，这里在 app 侧按同一来源顺序补上，经
-/// 组合目录通道物化）。
+/// Used only when the project-level skills global switch is on and the session
+/// is bound to a real directory (the caller passes Some(workspace): a native
+/// code session's project directory or a plain chat session's user
+/// working-directory binding) (§2.4: text inside a project is a
+/// prompt-injection surface, scanned only when explicitly enabled; fork #41
+/// removed workspace union discovery, so the app side restores it here in the
+/// same source order, materialized through the composed directory channel).
 fn project_skill_source_dirs(project_workspace: &Path) -> Vec<PathBuf> {
     [
         ".agents/skills",
@@ -83,8 +85,9 @@ fn project_skill_source_dirs(project_workspace: &Path) -> Vec<PathBuf> {
 ///
 /// 排除两类：本 scope 禁用集中的技能（含未初始化 DenyAll 模式的默认全禁）+
 /// 被禁用连接器声明的 companion skills（保持「关 MCP → 关联技能一并隐藏」的
-/// 既有联动）。`project_workspace` 只在会话绑定了真实目录时由调用方传入
-/// （Some），且项目级 skills 全局开关开启时才被扫描（排在用户/市场来源之前，
+/// existing linkage). `project_workspace` is passed by the caller (Some) only
+/// when the session is bound to a real directory, and is scanned only when the
+/// project-level skills global switch is on (ordered before user/marketplace
 /// 项目本地覆盖语义与底座 workspace 目录优先一致）。
 pub fn enabled_skills_for(
     scope: ConnectorScope,
@@ -94,9 +97,10 @@ pub fn enabled_skills_for(
     let mut seen: HashSet<String> = HashSet::new();
     let mut out: Vec<(String, PathBuf)> = Vec::new();
     // 项目技能优先（workspace 目录 > 全局来源，与底座 first-wins 一致）；
-    // 项目门 = 全局开关 + 绑定：仅绑定了真实目录的会话（调用方传入
-    // Some(workspace)）且用户显式开启项目级 skills 开关时才扫描——项目内
-    // 文本是 prompt-injection 面，与模式无关、跟绑定走。
+    // Project gate = global switch + binding: only sessions bound to a real
+    // directory (the caller passes Some(workspace)) with the project-level skills
+    // switch explicitly enabled get scanned — text inside a project is a
+    // prompt-injection surface, independent of mode and tied to the binding.
     if project_skills_enabled() {
         if let Some(workspace) = project_workspace {
             for src in project_skill_source_dirs(workspace) {
@@ -743,8 +747,9 @@ mod tests {
                 ".agents/skills 优先级应高于 .pinvou/skills（同名仍取 .agents）"
             );
 
-            // 项目门与模式解耦（跟绑定不跟模式）：plain scope 传入绑定目录时
-            // 同样扫描；全局开关关闭则不扫。
+            // The project gate is decoupled from mode (tied to the binding, not
+            // the mode): plain scope with a bound directory passed in is scanned
+            // too; with the global switch off, no scan.
             let enabled = enabled_skills_for(ConnectorScope::Plain, Some(&project));
             assert!(
                 enabled.iter().any(|(n, _)| n == "project-skill"),

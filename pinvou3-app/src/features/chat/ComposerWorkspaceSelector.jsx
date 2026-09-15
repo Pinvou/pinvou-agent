@@ -1,8 +1,10 @@
-// 普通聊天草稿态的工作目录选择器：对齐 code 模式（CodexAcpView 草稿态
-// 选择器）的交互——底栏按钮 + 上弹菜单（选择目录… / 默认工作区 / 最近使用）。
-// 仅在草稿态渲染（ChatView 以 !activeSessionId + 能力/方法存在性守卫）；
-// 所有后端动作经 props 注入（bridge.sessions 的 setDraftWorkspace /
-// pickDraftWorkspace），组件不触碰 Tauri 全局。
+// Draft-state working directory picker for plain chat, mirroring the code
+// mode's interaction (CodexAcpView's draft-state picker): a composer-footer
+// button plus a popover menu (Choose directory… / Default workspace / Recent).
+// Rendered only in draft state (ChatView guards on !activeSessionId plus
+// capability/method existence); all backend actions are injected via props
+// (bridge.sessions's setDraftWorkspace / pickDraftWorkspace) and the component
+// never touches Tauri globals.
 import { useRef, useState } from 'react';
 import { ChevronDown, FolderOpen, Sparkles } from '../../components/icons.jsx';
 import { useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
@@ -19,15 +21,17 @@ export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWork
   function toggle() {
     const next = !open;
     setOpen(next);
-    if (next) setRecentWorkspaces(loadRecentWorkspaces()); // 打开时重读：code 模式可能刚记过新目录
+    if (next) setRecentWorkspaces(loadRecentWorkspaces()); // re-read on open: the code mode may have recorded a new directory
   }
   function chooseDirectory() {
     setOpen(false);
     setPickError('');
     onPickWorkspace()
       .then(path => { if (path) setRecentWorkspaces(loadRecentWorkspaces()); })
-      // 目录对话框失败（含旧后端无此命令）必须可见——静默关闭菜单会让用户
-      // 以为选择已生效（评审 #445 R7；code 车道经页面 error surface 呈现）。
+      // Directory dialog failures (including an old backend without the
+      // command) must be visible — silently closing the menu would make the
+      // user think the selection took effect (the code lane surfaces this
+      // through the page error surface).
       .catch(error => setPickError(String((error && error.message) || error || 'error')));
   }
   function select(path) {

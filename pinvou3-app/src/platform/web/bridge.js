@@ -7477,10 +7477,12 @@
       notify();
     }
   }
-  // 桌面端绑定工作目录会话的配套查询在 Web 端无对应后端（Web/远程会话不
-  // 返回目录绑定）：同名桩方法保持两端 bridge API 对称——绑定查询恒 null
-  // （UI 不显示绑定指示、YOLO 确认门不触发），code 权限偏好读取恒 null、
-  // 确认写入为 no-op。
+  // The desktop-side companion queries for bound-workspace sessions have no
+  // web backend counterpart (web/remote sessions carry no directory binding):
+  // same-named stub methods keep the bridge API symmetric on both sides — the
+  // binding query always returns null (UI shows no binding indicator and the
+  // YOLO confirmation gate never fires), code permission prefs always read
+  // null, and the confirm write is a no-op.
   async function getSessionWorkspaceBinding() { return null; }
   async function getCodePermissionPrefs() { return null; }
   async function confirmCodeYolo() { return null; }
@@ -8104,10 +8106,12 @@
     notify();
   }
   async function exitPlanToYolo(targetSessionId) {
-    // 目标会话可由调用方显式裁定：YOLO 确认门在多个 await 往返后才发起
-    // 切换，期间用户可能已切走，实时 active 不再等于裁决对象（评审 #445
-    // R8，与 tauri 桥同一签名）。无参调用保持原语义：作用于发起瞬间的
-    // 实时 active（灯泡 / plan-stuck 卡片）。
+    // The caller may pin the target session explicitly: the YOLO confirmation
+    // gate issues the switch only after several await round-trips, by which
+    // time the user may have switched away and the live active session is no
+    // longer the ruling one (same signature as the tauri bridge). No-argument
+    // calls keep the original semantics: act on the live active session at
+    // invocation time (bulb / plan-stuck card).
     const sid = typeof targetSessionId === 'string' && targetSessionId
       ? targetSessionId
       : state.activeSessionId;
@@ -8115,8 +8119,8 @@
     // default (two-lane semantics).
     if (!sid) { await setDraftMode("yolo"); return; }
     try {
-      // invoke 发起时即定向 sid；await 返回后按同一 sid 写回并 bump
-      // modeSyncSeq。
+      // The invoke targets sid directly at issue time; after the await, the
+      // result is written back to the same sid and modeSyncSeq is bumped.
       const st = await invoke("exit_plan_to_yolo", { sessionId: sid });
       applyAuthoritativeModeState(sid, st);
     } catch (e) { addSystemItemFor(sid, bt("exitPlanFailed") + e); }
@@ -8140,11 +8144,16 @@
     patchItemById(itemId, { resolved: true, statusLabel: bt("replanRequested") }); notify();
     await sendMessage(bt("planStuckReplanPrompt"));
   }
-  async function planStuckGo(itemId) {
-    const sid = state.activeSessionId;
+  async function planStuckGo(itemId, targetSessionId) {
+    // Explicit target session (same contract as the tauri bridge): the
+    // plan-stuck card's session is adjudicated in ChatView; no-arg legacy
+    // calls keep targeting live-active at invoke time.
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
     if (!sid) return;
     patchItemById(itemId, { resolved: true }); notify();
-    await exitPlanToYolo();
+    await exitPlanToYolo(sid);
     // 补充指令必须发往触发会话：await exitPlanToYolo 期间用户可能已切走，
     // 直接 sendMessage 会把"继续执行"发到切换后的会话（审计遗漏补修）。
     // sendMessageToSession 校验失败（会话已删/对账中）会 throw，必须接住并
@@ -10125,7 +10134,8 @@
     setDraftMode,
     setModeLane,
     refreshModeDefaults,
-    // 桌面专属能力的 Web 桩（绑定目录会话 / YOLO 确认门，两端 API 对称）
+    // Web stubs for desktop-only capabilities (bound-workspace sessions / YOLO
+    // confirmation gate; API symmetric on both sides)
     getSessionWorkspaceBinding,
     getCodePermissionPrefs,
     confirmCodeYolo,

@@ -1,13 +1,15 @@
 #!/usr/bin/env node
-// 评审 #445 round-7 的回归钉住：普通聊天绑定会话的 YOLO 门控路径
+// Regression pins for the YOLO gating path of regular-chat bound sessions:
+// session identity must be re-checked after every await against
+// activeSessionIdRef.current (latest rendered value) — the closure's
+// activeSessionId is a render-time constant whose self-comparison is always
+// true. Clicking YOLO on unbound A and switching to bound-but-unconfirmed B
+// while the query is in flight would let B be flipped by exitPlanToYolo with
+// no card.
+// Precedents: chat_cancel_session_scope.test.mjs (post-await writes scoped per
+// session source pattern) and right_dock_occlusion_gate.test.mjs (the
+// activeSessionIdRef comparison pattern).
 // （resolveBindingForGate / handleModeChipSwitch / confirmChatYoloSwitch）
-// 必须在每个 await 之后用 activeSessionIdRef.current（最新渲染值）复核
-// 会话身份——闭包里的 activeSessionId 是渲染期常量，自比较永远为真
-// （round-5 的修复因此是死代码），未绑定 A 点击 YOLO、查询在飞时切到
-// 已绑定未确认的 B，会让 B 无确认卡被 exitPlanToYolo 翻转。
-// 先例：chat_cancel_session_scope.test.mjs（post-await 写入按会话作用域的
-// 源码模式回归）与 right_dock_occlusion_gate.test.mjs（activeSessionIdRef
-// 比对模式）。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,8 +19,9 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const chatPath = path.join(here, '..', 'src', 'features', 'chat', 'ChatView.jsx');
 const src = fs.readFileSync(chatPath, 'utf8');
 
-// 1. resolveBindingForGate 的 post-await state 写入必须与 ref 最新值比对
-//    （渲染期常量 activeSessionId 的比对永远为真，是死守卫）。
+// 1. resolveBindingForGate's post-await state write must be compared against the
+//    latest ref value (comparison against the render-time constant is always
+//    true, a dead guard).
 assert.match(
   src,
   /if \(sid === activeSessionIdRef\.current\) setSessionWorkspaceBinding\(normalized\);/,
@@ -30,21 +33,21 @@ assert.doesNotMatch(
   'render-const comparison is a dead guard (always true in the closure)',
 );
 
-// 2. handleModeChipSwitch 在绑定查询 await 之后复核 ref 最新值。
+// 2. handleModeChipSwitch re-checks the latest ref value after the binding query await.
 assert.match(
   src,
   /const sessionBinding = await resolveBindingForGate\(gateSid\);\s*\n[\s\S]*?if \(gateSid !== activeSessionIdRef\.current\) return;/,
   'gate must re-check the active session after the binding query await',
 );
 
-// 3. prefs 查询 await（第二个 await）之后同样复核。
+// 3. Re-check again after the prefs query await (the second await).
 const rechecks = src.match(/if \(gateSid !== activeSessionIdRef\.current\) return;/g) || [];
 assert.ok(
   rechecks.length >= 2,
   `both awaits (binding query + prefs read) must be followed by the ref re-check, found ${rechecks.length}`,
 );
 
-// 4. 确认卡在 exitPlanToYolo 前复核打开时捕获的 sid。
+// 4. The confirm card re-checks the captured sid before exitPlanToYolo.
 assert.match(
   src,
   /pendingChatYoloSwitchSidRef\.current !== activeSessionIdRef\.current/,
@@ -52,45 +55,49 @@ assert.match(
 );
 assert.match(
   src,
-  /pendingChatYoloSwitchSidRef\.current = gateSid;\s*\n\s*setPendingChatYoloSwitch\(true\);/,
+  /pendingChatYoloSwitchSidRef\.current = gateSid;[\s\S]{0,200}?setPendingChatYoloSwitch\(true\);/,
   'opening the confirm card must capture the gate sid',
 );
 
-// 5. 切换会话即作废旧会话的确认卡与错误文案。
+// 5. Switching sessions invalidates the old session's confirm card and error message.
 assert.match(
   src,
   /setPendingChatYoloSwitch\(false\);\s*\n\s*setChatYoloConfirmError\(''\);\s*\n\s*\}, \[activeSessionId\]\);/,
   'session switch must reset the pending confirm card and its error',
 );
 
-// 6. 门控路径不得残留渲染期常量自比较（死守卫形态）。
+// 6. The gating path must not retain render-time constant self-comparison (dead guard shape).
 assert.doesNotMatch(
   src,
   /if \(gateSid !== activeSessionId\)/,
   'self-referential closure comparison must not come back',
 );
 
-// 7. 决策胶水：确认卡必须由 needsYoloConfirmation(prefs) 的判定驱动打开，
-//    且开卡时捕获裁决 sid（R8：门控判定本身此前未被钉住）。
+// 7. Decision glue: the confirm card must open driven by the
+//    needsYoloConfirmation(prefs) verdict, capturing the verdict sid when it
+//    opens.
 assert.match(
   src,
   /if \(needsYoloConfirmation\(prefs\)\) \{\s*\n\s*pendingChatYoloSwitchSidRef\.current = gateSid;/,
   'the confirm card must be driven by needsYoloConfirmation(prefs) and capture the gate sid',
 );
 
-// 8. 决策胶水：绑定查询失败的 catch 必须 fail-closed 返回未知绑定哨兵
-//    （按已绑定处理、过量施加一次确认），不得静默按未绑定放行（R8）。
+// 8. Decision glue: the catch on binding query failure must fail closed and
+//    return the unknown-binding sentinel (treat as bound, ask once too often),
+//    never silently pass as unbound.
 assert.match(
   src,
   /\} catch \{\s*\n(?:[^\n]*\n){1,6}?\s*return CHAT_YOLO_GATE_UNKNOWN_BINDING;/,
   'the binding-query catch must fail closed by returning CHAT_YOLO_GATE_UNKNOWN_BINDING',
 );
 
-// 9. 最终动作必须按裁决 sid 定向（评审 #445 R8 P1）：activeSessionIdRef 是
-//    渲染期镜像、可滞后桥存储一帧，ref 复核堵不住这一帧；桥层无参的
-//    exitPlanToYolo 在调用瞬间读实时 active，会把裁决对象换成切换后的
-//    会话。裁决 sid 必须作为参数直达命令（桥侧行为由
-//    interaction_write_routing.test.mjs 的显式定向用例钉住）。
+// 9. The final action must target the verdict sid: activeSessionIdRef is a
+//    render-time mirror that can lag the bridge store by a frame, which the
+//    ref check cannot cover; the bridge's argument-less exitPlanToYolo reads
+//    the live active at call time and would swap the target for the
+//    post-switch session. The verdict sid must reach the command as a
+//    parameter (bridge-side behavior pinned by
+//    interaction_write_routing.test.mjs).
 assert.match(
   src,
   /await bridge\.interaction\.exitPlanToYolo\(gateSid\);/,
@@ -103,8 +110,75 @@ assert.match(
 );
 assert.doesNotMatch(
   src,
-  /await bridge\.interaction\.exitPlanToYolo\(\);/,
-  'the gate paths must not fall back to the live-active exitPlanToYolo() form',
+  /bridge\.interaction\.exitPlanToYolo\(\s*\)/,
+  'the gate paths must not fall back to the live-active exitPlanToYolo() form (any call shape)',
 );
 
 console.log('chat_yolo_gate_session_scope: ok');
+
+// ── R9 MAJOR 1: the plan-stuck card's Go must pass the same one-time gate ─────────
+// The bridge's planStuckGo used to finish with an argument-less exitPlanToYolo():
+// a bound regular session went from the plan_stuck card straight to Yolo,
+// bypassing the confirm card entirely, and reading the live active at call time
+// targeted the post-switch session. The ChatView source scan cannot cover the
+// bridge layer, so both bridges' sources are scanned here as well.
+
+const tauriInteractionPath = path.join(here, '..', 'src', 'platform', 'tauri', 'bridge', 'interaction.js');
+const webBridgePath = path.join(here, '..', 'src', 'platform', 'web', 'bridge.js');
+const tauriInteraction = fs.readFileSync(tauriInteractionPath, 'utf8');
+const webBridge = fs.readFileSync(webBridgePath, 'utf8');
+
+// The bridge layer must not retain any argument-less exitPlanToYolo call (void or await).
+for (const [label, bridgeSrc] of [['tauri interaction.js', tauriInteraction], ['web bridge.js', webBridge]]) {
+  assert.doesNotMatch(
+    bridgeSrc,
+    /(?<!\w)exitPlanToYolo\(\s*\)/,
+    `${label} must not call exitPlanToYolo without an explicit target session (#445 R9 MAJOR 1)`,
+  );
+}
+
+// The bridge's planStuckGo must accept an explicit target session and pass the same sid to exitPlanToYolo.
+for (const [label, bridgeSrc] of [['tauri interaction.js', tauriInteraction], ['web bridge.js', webBridge]]) {
+  assert.match(
+    bridgeSrc,
+    /async function planStuckGo\(itemId, targetSessionId\)/,
+    `${label} planStuckGo must accept the adjudicated session id`,
+  );
+  const body = bridgeSrc.slice(bridgeSrc.indexOf('async function planStuckGo'), bridgeSrc.indexOf('async function planStuckGo') + 1200);
+  assert.match(
+    body,
+    /await exitPlanToYolo\(sid\)/,
+    `${label} planStuckGo must target exitPlanToYolo at the adjudicated sid`,
+  );
+}
+
+// ChatView side: the plan card's Go must go through the gated handler and record
+// the planStuckGo action; after confirmation it dispatches the recorded action
+// with the captured sid.
+assert.match(
+  src,
+  /<PlanStuckCard item=\{item\} t=\{t\} onGo=\{onPlanStuckGo\} \/>/,
+  'the plan-stuck card must render through the gate-handler prop',
+);
+assert.match(
+  src,
+  /onPlanStuckGo=\{handlePlanStuckGo\}/,
+  'ChatBubble must receive the gate handler for the plan-stuck card',
+);
+assert.match(
+  src,
+  /pendingChatYoloActionRef\.current = \{ kind: 'planStuckGo', itemId \};/,
+  'the Go path must record its pending action before adjudicating the gate',
+);
+assert.match(
+  src,
+  /bridge\.interaction\.planStuckGo\(action\.itemId, pendingChatYoloSwitchSidRef\.current\)/,
+  'confirmation must dispatch planStuckGo with the captured sid',
+);
+assert.match(
+  src,
+  /useEffect\(\(\) => \{\s*\n\s*pendingChatYoloSwitchSidRef\.current = null;\s*\n\s*pendingChatYoloActionRef\.current = null;/,
+  'session switch must clear the pending action',
+);
+
+console.log('chat_yolo_gate_session_scope: ok (incl. bridge-layer no-arg ban)');

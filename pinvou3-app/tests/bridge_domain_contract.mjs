@@ -35,9 +35,10 @@ export const desktopOnlyBridgeApi = {
   knowledge: ['loadKnowledgeEmbedderAfterFirstFrame', 'mountRemoteCollection', 'removeRemoteCollection', 'setRemoteCollectionEnabled'],
   // 多智能体开关是桌面专属操作（ADR-0006）：Web 端只读呈现。
   interaction: ['setMultiAgentMode'],
-  // 草稿态工作目录选择需要系统目录对话框（TAURI.dialog）和 create_session
-  // 的 workspacePath 参数通道；Web 端没有对应后端，ChatView 以方法存在性
-  // 守卫不渲染该选择器。
+  // Draft workspace selection needs the system directory dialog (TAURI.dialog)
+  // and the create_session workspacePath parameter channel; the Web side has no
+  // such backend, so ChatView's method-existence guard skips rendering the
+  // selector.
   // Session archive export writes the local-disk tar.xz via a native save
   // dialog over ~/.pinvou3/sessions; web keeps no local session store.
   sessions: ['exportSessionArchive', 'pickDraftWorkspace', 'setDraftWorkspace'],

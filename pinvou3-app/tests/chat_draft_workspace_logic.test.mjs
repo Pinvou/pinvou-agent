@@ -1,13 +1,16 @@
 /**
- * 普通聊天草稿态工作目录选择（sessions bridge）逻辑测试：
- *   - setDraftWorkspace 仅草稿态生效，enterDraft 复位为 null；
- *   - ensureSession 物化时 create_session 载荷携带 workspacePath
- *     （未选择时显式 null = 后端现状），物化成功后清除选择；
- *   - create_session 失败保留选择以便重试；
- *   - pickDraftWorkspace 经注入的 dialogOpen 选目录，选中后记入最近列表
- *     （与 src/shared/workspace-recents.js 同 key 同语义的桥侧镜像），
- *     用户取消返回 null 且不改选择。
- * harness 复刻 session_nav_race.test.mjs 的 vm 注入面（factory 最小依赖）。
+ * Logic tests for regular-chat draft workspace selection (sessions bridge):
+ *   - setDraftWorkspace only applies in draft mode; enterDraft resets it to null;
+ *   - on ensureSession materialization the create_session payload carries
+ *     workspacePath (explicit null when nothing is picked = current backend
+ *     behavior) and the choice is cleared on success;
+ *   - a create_session failure keeps the choice for retry;
+ *   - pickDraftWorkspace picks a directory via the injected dialogOpen and
+ *     records it in the recents list (a bridge-side mirror of
+ *     src/shared/workspace-recents.js, same key and semantics); user
+ *     cancellation returns null and keeps the choice.
+ * The harness mirrors the vm injection surface of session_nav_race.test.mjs
+ * (minimal factory deps).
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -20,7 +23,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const bridgeDir = path.join(here, '..', 'src', 'platform', 'tauri', 'bridge');
 const RECENTS_KEY = 'pinvou_codex_recent_workspaces';
 
-/** vm 装载 sessions.js factory，注入最小依赖面 + 内存 localStorage。 */
+/** Load the sessions.js factory in a vm with minimal injected deps and an in-memory localStorage. */
 function loadSessionsFeature(overrides) {
   const storage = new Map();
   const localStorage = {
@@ -115,7 +118,7 @@ function loadSessionsFeature(overrides) {
       return d;
     },
     createSessionArgs() {
-      // invoke 入参对象产自 vm realm，JSON 归一化后再比较（跨域原型不等）。
+      // invoke argument objects come from the vm realm; compare after JSON normalization (prototypes differ across realms).
       return calls.invoke
         .filter(call => call[0] === 'create_session')
         .map(call => JSON.parse(JSON.stringify(call[1])));
@@ -123,7 +126,7 @@ function loadSessionsFeature(overrides) {
   };
 }
 
-// ── setDraftWorkspace：仅草稿态生效 ──────────────────────────
+// ── setDraftWorkspace: draft mode only ──────────────────────────
 
 test('setDraftWorkspace：草稿态更新 state 并 notify；null 回默认', () => {
   const rt = loadSessionsFeature();
@@ -142,7 +145,7 @@ test('setDraftWorkspace：已有 active 会话时忽略（不物化语义之外�
   assert.equal(rt.calls.notify, undefined, '非草稿态不得 notify');
 });
 
-// ── ensureSession：workspacePath 载荷与清除时机 ──────────────────────────
+// ── ensureSession: workspacePath payload and clearing ──────────────────────────
 
 test('ensureSession：草稿选择随 create_session 载荷下发，物化成功后清除', async () => {
   const rt = loadSessionsFeature();
@@ -174,8 +177,8 @@ test('ensureSession：create_session 失败保留草稿选择以便重试', asyn
 });
 
 test('ensureSession：仅路径失效失败清理最近列表；瞬时失败与中途改选不误伤', async () => {
-  // 瞬时后端错误：不得清除最近列表里的有效条目（评审 #445 R5：原实现
-  // 对任何 create_session 失败都清理）。
+  // Transient backend error: must not clear valid recents entries (the original
+  // implementation cleared on any create_session failure).
   const rtTransient = loadSessionsFeature({
     invoke(name) {
       if (name === 'create_session') return Promise.reject(new Error('backend down'));
@@ -192,8 +195,8 @@ test('ensureSession：仅路径失效失败清理最近列表；瞬时失败与�
   );
   assert.equal(rtTransient.state.draftWorkspacePath, '/work/project');
 
-  // 路径失效（后端 invalid workspace_path）：按物化时捕获的目录清除。
-  // X1 创建在飞期间用户改选 X2 —— 失败的是 X1，清 X1 留 X2。
+  // Invalid path (backend invalid workspace_path): clear the directory captured at materialization.
+  // X1 creation in flight while the user re-picks X2 — X1 is the failure; clear X1, keep X2.
   const rtInvalid = loadSessionsFeature();
   rtInvalid.storage.set(RECENTS_KEY, JSON.stringify(['/work/x2', '/work/x1']));
   rtInvalid.api.setDraftWorkspace('/work/x1');
@@ -215,13 +218,13 @@ test('enterDraft：复位草稿工作区选择（含已在干净草稿态的提�
   rt.api.setDraftWorkspace('/work/project');
   rt.api.enterDraft();
   assert.equal(rt.state.draftWorkspacePath, null);
-  // 干净草稿态再点「新建对话」（提前返回分支）同样复位。
+  // Clicking "new chat" again while already in a clean draft state (early-return branch) resets too.
   rt.api.setDraftWorkspace('/work/again');
   rt.api.enterDraft();
   assert.equal(rt.state.draftWorkspacePath, null);
 });
 
-// ── ensureSession：多智能体开关落盘失败的草稿回退 ──────────────────────────
+// ── ensureSession: draft fallback when the multi-agent toggle persist fails ──────────────────────────
 
 test('ensureSession：多智能体开关失败回退草稿保留目录绑定与开关意图', async () => {
   const invokeLog = [];
@@ -237,12 +240,12 @@ test('ensureSession：多智能体开关失败回退草稿保留目录绑定与�
   rt.state.pendingDraftMultiAgent = true;
   const id = await rt.api.ensureSession();
   assert.equal(id, null, '开关落盘失败必须中止物化');
-  // 空会话已回滚删除。
+  // The empty session has been rolled back and deleted.
   assert.deepEqual(
     invokeLog.filter(call => call[0] === 'delete_session').map(call => JSON.parse(JSON.stringify(call[1]))),
     [{ id: 'chat-new' }],
   );
-  // 回退草稿保留失败前的寄存意图：目录绑定不丢，重试不必重选。
+  // The fallback draft keeps the intent recorded before the failure: the workspace binding survives and the retry need not re-pick.
   assert.equal(rt.state.activeSessionId, null);
   assert.equal(rt.state.draftWorkspacePath, '/work/project');
   assert.equal(rt.state.pendingDraftMultiAgent, true);
@@ -267,7 +270,7 @@ test('ensureSession：多智能体开关失败回退草稿同时保留显式 mod
   assert.equal(rt.state.draftWorkspacePath, '/work/project');
 });
 
-// ── pickDraftWorkspace：系统目录对话框 ──────────────────────────
+// ── pickDraftWorkspace: system directory dialog ──────────────────────────
 
 test('pickDraftWorkspace：选中后写回草稿选择并记入最近列表', async () => {
   const dialogCalls = [];
@@ -277,9 +280,9 @@ test('pickDraftWorkspace：选中后写回草稿选择并记入最近列表', as
   const picked = await rt.api.pickDraftWorkspace();
   assert.equal(picked, '/work/picked');
   assert.equal(rt.state.draftWorkspacePath, '/work/picked');
-  // dialogOpen 的入参来自 vm realm，跨域对象用 JSON 比较而非 deepEqual。
+  // dialogOpen's argument comes from the vm realm; compare cross-realm objects via JSON rather than deepEqual.
   assert.deepEqual(dialogCalls.map(options => JSON.parse(JSON.stringify(options))), [{ directory: true, multiple: false, title: 'pickFolderTitle' }]);
-  // 最近列表与共享模块同 key，选中条目置顶。
+  // The recents list shares the shared module's key; the picked entry moves to the top.
   assert.deepEqual(JSON.parse(rt.storage.get(RECENTS_KEY)), ['/work/picked']);
 });
 
@@ -292,7 +295,7 @@ test('pickDraftWorkspace：最近列表去重置顶、6 条上限（与共享模
     next = path;
     await rt.api.pickDraftWorkspace();
   }
-  next = '/3'; // 重复选择去重并置顶
+  next = '/3'; // re-picking dedupes and moves the entry to the top
   await rt.api.pickDraftWorkspace();
   next = '/7';
   await rt.api.pickDraftWorkspace();
@@ -309,7 +312,7 @@ test('pickDraftWorkspace：用户取消返回 null，不改变现有选择', asy
 });
 
 test('pickDraftWorkspace：对话框不可用或非草稿态返回 null', async () => {
-  const rt = loadSessionsFeature(); // 未注入 dialogOpen
+  const rt = loadSessionsFeature(); // dialogOpen not injected
   assert.equal(await rt.api.pickDraftWorkspace(), null);
   const rt2 = loadSessionsFeature({ dialogOpen: async () => '/work/picked' });
   rt2.state.activeSessionId = 'chat-a';

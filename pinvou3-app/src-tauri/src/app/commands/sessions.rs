@@ -324,8 +324,9 @@ pub async fn list_archived_sessions(
 
 /// 新建空 session 并设为 active。返回创建的 SessionMetadata。
 /// 引擎层的 session 状态切换由 chat() 下次发消息时自然处理（暂不发 SyncSession）。
-/// `workspace` 为 Some 时 metadata.workspace 用该目录（展示用），None 保持
-/// 现状（pool.bridge.workspace，home 目录）。
+/// When `workspace` is Some, metadata.workspace uses that directory (for
+/// display); None keeps the status quo (pool.bridge.workspace, the home
+/// directory).
 pub(super) fn create_session_record(
     set_active: bool,
     store: &SessionStore,
@@ -359,8 +360,10 @@ pub async fn create_session(
     let metadata =
         create_session_record(set_active.unwrap_or(true), &store, &pool, workspace.clone())?;
     if let Some(workspace) = workspace {
-        // 绑定落盘失败不能留下「看似创建成功、重启后 execution 根回退私有目录」
-        // 的会话:回滚删除刚建的空 session(参照 create_new 的 rollback 风格)。
+        // A failed binding persist must not leave behind a session that "looked
+        // created but falls back to the private execution root after restart":
+        // roll back by deleting the just-created empty session (in the rollback
+        // style of create_new).
         if let Err(error) = store.bind_session_workspace(&metadata.id, workspace) {
             let rollback = store.delete(&metadata.id);
             return Err(match rollback {
@@ -378,8 +381,10 @@ pub async fn create_session(
     Ok(metadata)
 }
 
-/// 查询普通 chat 会话的用户工作目录绑定（无绑定 → None）。前端据此对绑定会话
-/// 套用 code lane 安全姿态（Plan 首启 / YOLO 一次性确认）并展示绑定目录指示。
+/// Queries a plain chat session's user working-directory binding (None when
+/// unbound). The frontend uses this to apply the code lane's safety posture to
+/// bound sessions (Plan on first use / one-shot YOLO confirm) and to show a
+/// bound-directory indicator.
 #[tauri::command]
 pub async fn get_session_workspace_binding(
     session_id: String,

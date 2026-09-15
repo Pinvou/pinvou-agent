@@ -228,10 +228,13 @@ function BranchSelector({ copy, branches, disabled, busy, menuOpen, onToggle, on
   );
 }
 
-// 分支切换弹窗外壳：与 RewindConfirmDialog / 共享 YoloConfirmCard 同款——portal
-// 到 <body>（composer 容器的 backdrop-blur 会成为 fixed 后代的包含块）、焦点夺取/
-// 归还、Escape 关闭（busy 时禁用）。backdrop 是 disabled 随 busy 的按钮，切换
-// 进行中不允许点空白处把弹窗藏到后台。仅当对应弹窗打开时才挂载（调用处条件渲染）。
+// Branch-switch dialog shell: same pattern as RewindConfirmDialog / the shared
+// YoloConfirmCard — portal to <body> (the composer container's backdrop-blur
+// becomes the containing block for fixed descendants), focus capture/restore,
+// Escape to close (disabled while busy). The backdrop is a button disabled
+// along with busy: while a switch is in flight, clicking the blank area must
+// not hide the dialog into the background. Mounted only while the dialog is
+// open (conditional rendering at the call site).
 function BranchDialogShell({ copy, busy, testid, labelledBy, initialFocusRef, onCancel, children }) {
   const dialogRef = useRef(null);
   useDialogFocusRestore(dialogRef, initialFocusRef);
