@@ -38,11 +38,11 @@
 //!   call budget timeout do subsequent requests queue and each burn the entire call budget
 //!   before erroring. The worker thread may remain stuck inside the OS call up to the system
 //!   COM timeout (inherent limitation).
-//! - enigo's `text()` sends both the Return/Tab keystrokes **and** the corresponding Unicode
-//!   events for `\n`/`\t` (upstream implementation, see enigo win_impl); target applications
-//!   that handle both message kinds may insert the newline/tab twice. type_text does not split
-//!   to work around this (split-injection equivalence would need to be verified on real
-//!   Windows); disclosed as-is.
+//! - `\n`/`\t` are split out of typed text and injected as real Return/Tab key clicks
+//!   (review finding: enigo's `text()` queues both the keystroke and the Unicode control
+//!   character, double-injecting newlines on targets that handle both message kinds). Newline
+//!   keys go through the regular key path, so a foreground IME treats them like a physical
+//!   Enter.
 //! - `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` and DRM-protected content appear as
 //!   black blocks in captures; this is expected system behavior.
 
@@ -70,7 +70,9 @@ use super::super::types::{
     Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
     UiTreeOptions,
 };
-use super::helpers::{TYPE_CHUNK_CHARS, char_chunks, drag_waypoints, map_scroll, sanitize_name};
+use super::helpers::{
+    TYPE_CHUNK_CHARS, TypeRun, drag_waypoints, map_scroll, sanitize_name, split_type_runs,
+};
 
 /// Wait before a click so the previous move has settled (the target process consumes mouse
 /// move events).
@@ -889,11 +891,13 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
         // text() builds the whole text into one SendInput, but low-level keyboard hooks
         // (AV/anti-keylogger products) process each event synchronously, and long text can
         // legitimately exceed the call budget in such environments — chunking plus
-        // between-chunk cancellation checks shrink the upper bound of zombie injection after
-        // a caller timeout from the whole text to one chunk. Per-character semantics inside a
-        // chunk are equivalent to the whole-text call ('\n'/'\t' queue behavior does not
-        // change with chunking).
-        for chunk in char_chunks(text, TYPE_CHUNK_CHARS) {
+        // between-run cancellation checks shrink the upper bound of zombie injection after
+        // a caller timeout from the whole text to one run. Review finding: enigo's text()
+        // queues BOTH a Return/Tab click and the Unicode control character for
+        // '\n'/'\t', double-injecting newlines on targets that handle both —
+        // so newlines and tabs are split out and injected as real key clicks
+        // (same shape as the Linux backend's real Return).
+        for run in split_type_runs(text, TYPE_CHUNK_CHARS) {
             if let Some(flag) = &self.cancel {
                 if flag.load(Ordering::SeqCst) {
                     return Err(ComputerUseError::unavailable(
@@ -902,9 +906,21 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
                     ));
                 }
             }
-            self.enigo
-                .text(chunk)
-                .map_err(|err| map_input_err("type text", err))?;
+            let result = match run {
+                TypeRun::Text(chunk) => self
+                    .enigo
+                    .text(chunk)
+                    .map_err(|err| map_input_err("type text", err)),
+                TypeRun::Return => self
+                    .enigo
+                    .key(enigo::Key::Return, Direction::Click)
+                    .map_err(|err| map_input_err("type text newline", err)),
+                TypeRun::Tab => self
+                    .enigo
+                    .key(enigo::Key::Tab, Direction::Click)
+                    .map_err(|err| map_input_err("type text tab", err)),
+            };
+            result?;
         }
         Ok(())
     }
