@@ -2569,10 +2569,15 @@ const NAV_PREFETCH = {
         // — querying the DOM right here would still see the pre-regroup row.
         // Passive cleanup of the dialog unmount runs after that commit's DOM
         // mutations, so store a resolver and look the moved row's new node up
-        // at close time (see useDialogFocusRestore).
-        movePickerRestoreRef.current = () => document.querySelector(
-          `[data-session-key="${CSS.escape(String(sessionId))}"]`,
-        );
+        // at close time (see useDialogFocusRestore). The row container is
+        // role="presentation" and cannot take focus, so resolve its label
+        // button — the same focusable element the context menu hands off to.
+        movePickerRestoreRef.current = () => {
+          const row = document.querySelector(
+            `[data-session-key="${CSS.escape(String(sessionId))}"]`,
+          );
+          return row ? row.querySelector('button[data-drag-surface]') : null;
+        };
         setMoveToProjectSession(current => (current && current.id === sessionId) ? null : current);
         setSettingsToast(
           outcome && outcome.added_root

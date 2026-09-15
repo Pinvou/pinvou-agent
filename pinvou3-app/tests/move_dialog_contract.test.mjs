@@ -97,10 +97,15 @@ test('focus restore survives the success regroup', () => {
   assert.match(MAIN, /const movePickerRestoreRef = useRef\(null\)/);
   assert.match(
     MAIN,
-    /movePickerRestoreRef\.current = \(\) => document\.querySelector/,
+    /movePickerRestoreRef\.current = \(\) => \{/,
     'the regroup commit lands asynchronously; the lookup must run at close time, not inline',
   );
   assert.match(MAIN, /data-session-key="\$\{CSS\.escape\(String\(sessionId\)\)\}"/);
+  assert.match(
+    MAIN,
+    /row \? row\.querySelector\('button\[data-drag-surface\]'\) : null/,
+    'the row container is role="presentation" and cannot take focus; restore must target its focusable label button',
+  );
   assert.match(
     HOOK,
     /typeof override === 'function' \? override\(\) : override/,
@@ -117,6 +122,14 @@ test('focus restore survives the success regroup', () => {
     'success-path restore must resolve the moved row\'s new node',
   );
   assert.match(NAV, /data-session-key=\{chat\.id\}/);
+});
+
+test('a session deleted while the picker is open retires the picker at submit', () => {
+  assert.match(
+    MAIN,
+    /\(allSidebarTasksRef\.current \|\| \[\]\)\.every\(task => task\.id !== sessionId\)/,
+    'the picker holds the open-time snapshot; submit must re-check the live task list',
+  );
 });
 
 test('move menu item hands focus to the always-rendered label button', () => {
