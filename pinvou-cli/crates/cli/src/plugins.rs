@@ -492,6 +492,37 @@ fn feature_error(action: &str, id: &str, error: impl std::fmt::Display) -> CliEr
     CliError::failed(format!("plugins {action}({id}): {error:#}"))
 }
 
+/// English copy for the shared importer's security rejections, which are
+/// Chinese lib-owned strings (`features/marketplace/plugin_import.rs`). The
+/// importer keeps working unchanged; the CLI just refuses to surface
+/// untranslated copy on exactly the rejections a user most needs to
+/// understand (zip-slip, symlinks, decompression bombs — the same
+/// translation-boundary pattern `personas::translate_persona_error` uses).
+/// Unmapped tails pass through untouched.
+fn translate_plugin_import_error(error: &str) -> Option<String> {
+    if error.contains("不安全路径") {
+        return Some("the package contains an unsafe path (zip-slip traversal); rejected".into());
+    }
+    if error.contains("symlink") {
+        return Some("the package contains a symlink entry; rejected".into());
+    }
+    if error.contains("伪造头部") {
+        return Some(
+            "the package decompresses beyond its zip header's declared size (forged header / \
+             zip bomb); rejected"
+                .into(),
+        );
+    }
+    if error.contains("解压") && error.contains("上限") {
+        return Some(format!(
+            "the package decompresses beyond the {} MiB cap (declared and actual size must \
+             both fit); rejected",
+            plugin_import::MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
+        ));
+    }
+    None
+}
+
 /// Mirror of the GUI's display-value hygiene
 /// (`features/marketplace/store.rs::is_display_unsafe_char`, crate-private):
 /// control characters, zero-width/bidi controls, and line/paragraph
@@ -902,23 +933,27 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
     // values (mirror of `features/marketplace/store.rs
     // is_display_unsafe_char`, which is crate-private): strip instead of
     // reject — the name came from the user's own file path, and a rename
-    // requirement would be a worse outcome than a cleaned label.
-    let display = path
+    // requirement would be a worse outcome than a cleaned label. The RAW
+    // lossy name is kept alongside: the fallback-id branch inside
+    // `wrap_markdown_skill` hashes it (the GUI hashes the raw filename
+    // stem), so names that sanitize to the same label keep distinct
+    // `skill-<hash>` ids and GUI re-imports stay id-stable.
+    let raw_name = path
         .file_name()
-        .map(|name| {
-            let cleaned: String = name
-                .to_string_lossy()
-                .chars()
-                .filter(|c| !is_display_unsafe_char(*c))
-                .collect();
-            let trimmed = cleaned.trim();
-            if trimmed.is_empty() {
-                "plugin.zip".to_owned()
-            } else {
-                trimmed.to_owned()
-            }
-        })
+        .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "plugin.zip".to_owned());
+    let display = {
+        let cleaned: String = raw_name
+            .chars()
+            .filter(|c| !is_display_unsafe_char(*c))
+            .collect();
+        let trimmed = cleaned.trim();
+        if trimmed.is_empty() {
+            "plugin.zip".to_owned()
+        } else {
+            trimmed.to_owned()
+        }
+    };
     // The unified pipeline accepts zip packages; .md files and SKILL.md
     // directories are wrapped into a root-SKILL.md zip first (replacing the
     // GUI's native file dialog).
@@ -972,7 +1007,7 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
             // names sanitize to the same generic "skill" (any pure non-ASCII
             // name) still get distinct `skill-<hash>` ids (GUI FNV collision
             // defense) instead of collapsing onto one constant id.
-            let wrapped = wrap_markdown_skill(&skill_md, &display);
+            let wrapped = wrap_markdown_skill(&skill_md, &raw_name);
             entries.retain(|(name, _)| name != "SKILL.md");
             entries.push(("SKILL.md".to_owned(), wrapped.into_bytes()));
         }
@@ -989,7 +1024,7 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
                 path.display()
             ))
         })?;
-        let wrapped = wrap_markdown_skill(&content, &display);
+        let wrapped = wrap_markdown_skill(&content, &raw_name);
         Some((
             temp_zip_path("pinvou-cli-import-md"),
             build_stored_zip(&[("SKILL.md".to_owned(), wrapped.into_bytes())])?,
@@ -1043,7 +1078,11 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
     // Dropping the armed guard removes the wrapper; every earlier failure
     // path already removed it through Drop.
     drop(temp_zip);
-    let report = result.map_err(|error| feature_error("import", &display, error))?;
+    let report = result.map_err(|error| {
+        let rendered = translate_plugin_import_error(&error.to_string())
+            .unwrap_or_else(|| format!("{error:#}"));
+        feature_error("import", &display, rendered)
+    })?;
     // Upload safety default (GUI parity): imported packages start disabled in
     // initialized DenyAll scopes until explicitly enabled.
     sync_deny_all_scopes_after_install(&report.id);
@@ -1738,6 +1777,34 @@ fn build_stored_zip(entries: &[(String, Vec<u8>)]) -> Result<Vec<u8>, CliError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn security_rejections_translate_to_english() {
+        // The shared importer's Chinese security copy (samples from
+        // `plugin_import.rs`) must map to English; unknown tails pass
+        // through verbatim.
+        let traversal = translate_plugin_import_error("zip 含不安全路径(穿越),拒绝");
+        assert_eq!(
+            traversal.as_deref(),
+            Some("the package contains an unsafe path (zip-slip traversal); rejected")
+        );
+        let bomb = translate_plugin_import_error(
+            "插件包实际解压超过 200 MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
+        );
+        assert_eq!(
+            bomb.as_deref(),
+            Some(format!(
+                "the package decompresses beyond the {} MiB cap (declared and actual size \
+                 must both fit); rejected",
+                plugin_import::MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
+            ))
+            .as_deref()
+        );
+        assert_eq!(
+            translate_plugin_import_error("some unrelated english failure"),
+            None
+        );
+    }
 
     #[test]
     fn scope_arg_covers_both_scopes() {
