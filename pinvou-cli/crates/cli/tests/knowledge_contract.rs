@@ -60,7 +60,7 @@ impl Drop for TempHome {
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
-        std::fs::remove_dir_all(&self.root).unwrap();
+        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
@@ -718,9 +718,32 @@ fn add_sources_indexes_a_text_file_end_to_end() {
     // signal-only no-op that still succeeds.
     run_ok(&["pinvou", "knowledge", "index", "cancel", &job_id]);
 
-    // Resuming an unknown job surfaces the upstream error verbatim.
+    // Resume/retry validate the named id against the latest job BEFORE the
+    // recovering open (like cancel): a mistyped id refuses with exit 1 and
+    // never runs boot recovery.
     let error = execute_error(&["pinvou", "knowledge", "index", "resume", "bogus-job"]);
     assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(error.to_string().contains("active/latest"), "{error}");
+    let error = execute_error(&["pinvou", "knowledge", "index", "retry", "bogus-job", "1"]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(error.to_string().contains("active/latest"), "{error}");
+
+    // The finished job is the latest but not resumable: resume/retry name
+    // that with the friendly job-not-found code instead of leaking the raw
+    // rusqlite "Query returned no rows" driver message.
+    for arguments in [
+        vec!["pinvou", "knowledge", "index", "resume", &job_id],
+        vec!["pinvou", "knowledge", "index", "retry", &job_id, "1"],
+    ] {
+        let error = execute_error(&arguments);
+        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
+        let message = error.to_string();
+        assert!(
+            message.contains("knowledge_index_job_not_found"),
+            "{arguments:?}: {message}"
+        );
+        assert!(!message.contains("Query returned no rows"), "{message}");
+    }
 }
 
 /// A second `add-sources` behind an unfinished job for the SAME collection
@@ -807,6 +830,72 @@ fn add_sources_refuses_to_drop_sources_behind_a_resumable_job() {
     );
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `index resume`/`index retry` with an unknown job id must refuse BEFORE
+/// the recovering open (the `index cancel` rule): boot recovery flips every
+/// preparing/running job to interrupted, including an import a live
+/// desktop-app process is still running. The import thread here belongs to
+/// this test process and stays in flight while the mistyped commands run, so
+/// the untouched `index status` afterwards proves no recovery happened.
+#[test]
+fn index_resume_and_retry_reject_unknown_ids_without_recovery() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = TempHome::new("index-resume-precheck");
+
+    let created = run_json(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "create",
+        "--name",
+        "live",
+    ]);
+    let id = created["id"].as_i64().expect("created collection id");
+
+    // Many tiny files keep the in-process import thread busy long enough to
+    // catch a recovery wedging the live job.
+    let docs = home.path().join("many");
+    std::fs::create_dir_all(&docs).unwrap();
+    for index in 0..128 {
+        std::fs::write(
+            docs.join(format!("note-{index:03}.txt")),
+            format!("pinvou knowledge live import probe {index}"),
+        )
+        .unwrap();
+    }
+    let started = run_json(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "add-sources",
+        &id.to_string(),
+        docs.to_str().unwrap(),
+    ]);
+    let job_id = started["jobId"]
+        .as_str()
+        .expect("started job id")
+        .to_owned();
+
+    for arguments in [
+        vec!["pinvou", "knowledge", "index", "resume", "typo-job"],
+        vec!["pinvou", "knowledge", "index", "retry", "typo-job", "1"],
+    ] {
+        let error = execute_error(&arguments);
+        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
+        let message = error.to_string();
+        assert!(
+            message.contains("active/latest") && message.contains(&job_id),
+            "{arguments:?}: {message}"
+        );
+    }
+
+    // The live import must be untouched: a recovering open would have wedged
+    // it into interrupted/resumable (a just-finished job reads done here —
+    // still neither interrupted nor resumable).
+    let state = run_json(&["pinvou", "knowledge", "index", "status"]);
+    assert_ne!(state["phase"], serde_json::json!("interrupted"), "{state}");
+    assert_eq!(state["resumable"], serde_json::json!(false), "{state}");
 }
 
 /// `index failed` for an unknown job must not leak the raw rusqlite driver
