@@ -301,12 +301,13 @@ pub async fn run_agentic_task(
     if let Some(stale) = store.set_retention_eviction_observer(Some(evictions.clone())) {
         // Single-flight normally guarantees the slot is empty here; a stale
         // observer means an earlier run skipped its disarm (an unwind between
-        // arm and disarm would do it). Its ids were never reported — say so
-        // instead of silently adopting a dead receiver.
+        // arm and disarm would do it). Its record was never reported (and may
+        // be empty) — say so instead of silently adopting a dead receiver.
         drop(stale);
         eprintln!(
             "[pinvou agent run] warning: replaced a stale retention-eviction \
-             observer; the previous run's eviction record was never reported"
+             observer; any eviction record the previous run left unreported \
+             was discarded"
         );
     }
     let (submitted, outcome) = run_turn(
@@ -358,17 +359,8 @@ pub async fn run_agentic_task(
     // outcome — the report may carry an error, and the run may have cleaned
     // its own session up afterwards.
     store.take_retention_eviction_observer();
-    let evicted = evictions.lock();
-    if !evicted.is_empty() {
-        eprintln!(
-            "[pinvou agent run] warning: persisting this run's session evicted \
-             {} unpinned chat session(s) at the {MAX_SESSIONS_PER_KIND}-session \
-             retention cap (pinned sessions are exempt). Point PINVOU3_HOME at \
-             a sandbox or prune the session store (PINVOU3_AGENT_TASK_KEEP_\
-             SESSION=0 only removes this run's session afterwards; the \
-             save-time eviction still happens).",
-            evicted.len()
-        );
+    if let Some(warning) = retention_eviction_warning(&evictions.lock()) {
+        eprintln!("{warning}");
     }
     outcome
 }
@@ -386,6 +378,27 @@ fn keep_session_from_env() -> bool {
         ),
         Err(_) => true,
     }
+}
+
+/// The retention-eviction warning for a run's recorded sweep deletions:
+/// `Some` copy when the prepare-time save evicted unpinned sessions at the
+/// retention cap, `None` when nothing was evicted (stay silent). The decision
+/// deliberately does not consult the turn outcome — the save happened before
+/// any setup fault could surface, so the evictions are real however the run
+/// ends; taking no outcome parameter is what keeps that invariant structural
+/// instead of a code path that can regress behind an `is_ok()` gate.
+fn retention_eviction_warning(evicted: &[String]) -> Option<String> {
+    (!evicted.is_empty()).then(|| {
+        format!(
+            "[pinvou agent run] warning: persisting this run's session evicted \
+             {} unpinned chat session(s) at the {MAX_SESSIONS_PER_KIND}-session \
+             retention cap (pinned sessions are exempt). Point PINVOU3_HOME at \
+             a sandbox or prune the session store (PINVOU3_AGENT_TASK_KEEP_\
+             SESSION=0 only removes this run's session afterwards; the \
+             save-time eviction still happens).",
+            evicted.len()
+        )
+    })
 }
 
 /// Validate the static attachment limits of an agentic request: at most
@@ -890,7 +903,7 @@ mod tests {
         AgenticTaskAttachment, AgenticTaskMode, AgenticTaskReport, AgenticTaskRequest,
         AgenticToolEvent, DEFAULT_TIMEOUT_SECS, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS,
         MAX_TIMEOUT_SECS, ensure_existing_chat_session, ensure_model_exists, keep_session_from_env,
-        validate_attachments,
+        retention_eviction_warning, validate_attachments,
     };
     use crate::features::sessions::{
         MAX_SESSIONS_PER_KIND, ScheduledRunMode, ScheduledRunProfile, SessionStore,
@@ -1171,12 +1184,13 @@ mod tests {
         // `_env` restores the captured PINVOU3_HOME on return or panic.
     }
 
-    /// The eviction warning keys on the real retention event, not the turn's
-    /// final outcome: the prepare-time save of a fresh session at the cap
-    /// evicts and is recorded even when the run errors afterwards, while a
-    /// save below the cap evicts nothing and must stay silent.
+    /// The store-side half of the eviction-warning contract: retention sweep
+    /// deletions are recorded as real eviction events and a save below the
+    /// cap records nothing. The runner's own arm/report half is pinned by
+    /// `retention_eviction_warning_keys_on_the_record_regardless_of_outcome`
+    /// below.
     #[test]
-    fn retention_eviction_observed_even_when_turn_errors_after_prepare() {
+    fn retention_sweep_records_real_evictions_and_below_cap_stays_silent() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
         let tmp = std::env::temp_dir().join(format!(
             "pinvou3-agentic-retention-test-{}",
@@ -1243,6 +1257,27 @@ mod tests {
         );
         store.take_retention_eviction_observer();
         // `_env` restores the captured PINVOU3_HOME on return or panic.
+    }
+
+    /// The runner's warning decision is a pure function of the recorded
+    /// evictions: a non-empty record warns (the copy carries the cap, the
+    /// pin exemption and the KEEP_SESSION pointer) and an empty record stays
+    /// silent. The helper takes no turn outcome, so "a run that errors after
+    /// the prepare-time save still surfaces the eviction" cannot regress
+    /// behind an outcome gate — there is no outcome to gate on.
+    #[test]
+    fn retention_eviction_warning_keys_on_the_record_regardless_of_outcome() {
+        let warning = retention_eviction_warning(&["evicted-id".to_string()])
+            .expect("a non-empty eviction record must warn");
+        assert!(warning.contains("1 unpinned chat session"), "{warning}");
+        assert!(warning.contains("pinned sessions are exempt"), "{warning}");
+        assert!(
+            warning.contains("PINVOU3_AGENT_TASK_KEEP_SESSION=0"),
+            "{warning}"
+        );
+        // Nothing evicted — a below-cap save, or a run that failed before the
+        // prepare-time save — must stay silent.
+        assert!(retention_eviction_warning(&[]).is_none());
     }
 
     #[test]
