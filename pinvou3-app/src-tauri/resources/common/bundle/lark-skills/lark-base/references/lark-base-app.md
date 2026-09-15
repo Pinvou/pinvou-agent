@@ -23,7 +23,7 @@
 当前 CLI 只支持用 `+workspace-move-in` 把 Base 或 BaseApp 移入 Workspace，不支持从 Workspace 移出或移除资源，也没有 `workspace move-out` / `workspace remove` 命令。这类请求必须先完成只读定位，再说明限制并停止，顺序不可调换：
 
 1. Workspace URL 含 `/base/workspace/<workspace_token>` 时，提取其中的真实 `workspace_token`，不要把完整 URL 当作命令参数。
-2. 在同一轮立即执行 `lark-cli base +workspace-entity-list --workspace-token <workspace_token> --page-size 100 --as user`；若 `has_more=true`，继续分页直到完整。该查询是必要的只读定位步骤，不要把它留成等待用户再次选择的可选项，也不要用 `--help` 代替真实查询。
+2. 在同一轮立即执行 `lark-cli base +workspace-entity-list --workspace-token <workspace_token> --page-size 30 --as user`；若 `has_more=true`，继续分页直到完整。该查询是必要的只读定位步骤，不要把它留成等待用户再次选择的可选项，也不要用 `--help` 代替真实查询。
 3. 用服务端返回的 `entities[].name`、`entity_type`、`token` 和 `url` 忠实判断目标。名称完全匹配时报告真实对象；没有完全匹配时明确说明不存在精确同名实体，并原样列出可能相关的候选。不得自动去掉或补齐前后缀，也不得仅凭名称相似就声称已经定位目标。用户直接给出 token 时仍要忠实报告该 token 对应的实际名称。
 4. 定位结果报告完后，明确说明当前 CLI 无法执行 Workspace 移出/移除，并停止，不要发起任何写请求。用户在任一步骤中取消时立即停止，取消后不再调用工具。
 
@@ -55,7 +55,7 @@ lark-cli base +app-get --app-token <app_token>
   lark-cli base +workspace-entity-list \
     --workspace-token <workspace_token> \
     --type baseapp \
-    --page-size 100
+    --page-size 30
   ```
 
 - 响应中的 `pages` 是页面摘要。
@@ -98,6 +98,23 @@ lark-cli base +app-create \
 - `--workspace-token` 必填；`+app-create` 只调用 App 创建接口，不创建 Workspace、Base，也不移动资源。
 - `--theme-style` 可选，支持 `default|cloudBlue|fresh|softLight|future|technology`。
 - 记录输出中的 `app_token` 和 `workspace_token`。
+
+### 新建应用的默认 Page 复用
+
+`+app-create` 会同时生成一个系统默认 Page，但创建响应不返回它的 `page_id`。用户未明确要求其他页面结构时，创建 App 后先读取应用取得该 Page，将其重命名并直接用作用户所需的第一个页面；不要用 `+app-page-create` 另建第一个页面：
+
+```bash
+lark-cli base +app-get --app-token <app_token> --as user
+lark-cli base +app-page-update \
+  --app-token <app_token> \
+  --page-id <default_page_id> \
+  --name "<page_name>" \
+  --as user
+```
+
+在上述默认流程中，随后在这个 Page 上**逐个串行**执行 `+app-block-create`，同一 Page 的多个组件不得并发创建。只有用户确实需要额外页面时，才在复用默认 Page 之后调用 `+app-page-create`。用户明确要求保留默认 Page、另建独立页面或采用其他页面结构时，按用户要求处理。
+
+若 `+app-get` 暂时没有返回默认 Page，重新执行 `+app-get` 或 `+app-page-list` 获取它，不要创建替代 Page。若创建组件返回布局重叠，先停止同页的其他并发写入，用 `+app-block-list` 确认已成功组件，再留在原 Page 上串行重试失败步骤；不要通过新建 Page、删除默认 Page 或整页重建来规避冲突。
 
 ### 创建应用的自然语言编排
 
@@ -171,6 +188,7 @@ lark-cli base +app-page-update --app-token <app_token> --page-id <page_id> --nam
 lark-cli base +app-page-delete --app-token <app_token> --page-id <page_id> --yes
 ```
 
+- 对新建 App，用户未明确要求其他页面结构时，必须按[新建应用的默认 Page 复用](#新建应用的默认-page-复用)将系统默认 Page 用作用户所需的第一个页面；`+app-page-create` 只用于用户要求的额外页面。
 - 同一 App 内 Page 名称必须唯一。创建或更新名称前，CLI 会读取页面列表；更新时排除当前 Page。
 - 同一 Page 内组件名称必须唯一。`+app-block-create` 会分页读取该 Page 的全部组件并在创建前检查重名。
 - 本期没有 Page arrange，也没有 Block delete；Block 的 `type/sub_type` 创建后不可修改。详见[本期不支持的能力](#本期不支持的能力)。

@@ -34,7 +34,7 @@ assert.match(installer, /MAX_ARCHIVE_BYTES/);
 assert.match(installer, /normalized_path_eq/);
 assert.match(installer, /\.installing-/);
 
-assert.match(tmeet, /@tencentcloud\/tmeet@1\.0\.15/);
+assert.match(tmeet, /@tencentcloud\/tmeet@1\.0\.18/);
 for (const platformSource of [linux, macos]) {
   assert.match(platformSource, /bundled_connector_npm_cli/);
   assert.match(platformSource, /cli_bin == "tmeet"/);
@@ -73,5 +73,34 @@ assert.equal(cardVersion("backendId: 'dingtalk', dingtalkCli: true"), lockVersio
 assert.equal(cardVersion("backendId: 'wecom', wecomCli: true"), lockVersions["wecom-cli"]);
 const tmeetPin = tmeet.match(/@tencentcloud\/tmeet@([\d.]+)/)[1];
 assert.equal(cardVersion("backendId: 'tmeet', tmeetCli: true"), tmeetPin);
+
+// The manual smoke's version floor must equal the host's minimum acceptable
+// wecom-cli version: a stale floor would let wecom-smoke.sh certify a CLI
+// that wecom_ensure_cli force-replaces on first use (the 1.1.0 smoke floor
+// vs the 1.2.1 host gate mismatch fixed here).
+const wecom = read("src-tauri", "src", "features", "connectors", "wecom.rs");
+const wecomSmoke = read("scripts", "wecom-smoke.sh");
+const wecomMin = wecom.match(
+  /WECOM_MIN_VERSION:\s*\(u64, u64, u64\)\s*=\s*\((\d+),\s*(\d+),\s*(\d+)\)/,
+);
+assert.ok(wecomMin, "wecom.rs must declare WECOM_MIN_VERSION as a tuple");
+const wecomMinNumeric =
+  Number(wecomMin[1]) * 10000 + Number(wecomMin[2]) * 100 + Number(wecomMin[3]);
+assert.match(
+  wecomSmoke,
+  new RegExp(`>= ${wecomMinNumeric}\\)`),
+  "wecom-smoke.sh version floor must stay in lockstep with WECOM_MIN_VERSION",
+);
+// The gate itself must also equal the wecom-cli version pinned in the five
+// platform locks (all five are forced identical by the deepEqual above):
+// raising WECOM_MIN_VERSION and the smoke floor together while a lock still
+// pins an older CLI would make the host download that older CLI and
+// force-replace it on first use.
+const wecomMinSemver = `${wecomMin[1]}.${wecomMin[2]}.${wecomMin[3]}`;
+assert.equal(
+  wecomMinSemver,
+  lockVersions["wecom-cli"],
+  "WECOM_MIN_VERSION must equal the wecom-cli version pinned in the platform locks",
+);
 
 console.log("✓ connector first-use online install contract passed");

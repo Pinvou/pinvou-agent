@@ -1,6 +1,6 @@
 ---
 name: wecomcli-smartpage
-description: 何时用:企业微信智能文档/智能主页/smartpage 相关诉求,或泛指「创建/写/整理文档」的企微诉求时使用;纯本地文档默认走本地工具。创建智能文档、读取页面内容、调整页面树结构、获取内置智能表格信息。
+description: 何时用:企业微信智能文档/智能主页/smartpage 相关诉求(含 doc.weixin.qq.com/smartpage/ 或 page.weixin.qq.com/smartpage/ 链接),或泛指「创建/写/整理文档」的企微诉求时使用;纯本地文档默认走本地工具。能力:新建/导入(.md)、读取、修改内容(整页重写/局部编辑/增删子页面)、上传附件、搭建带看板/图表的数据系统页面与信息收集表单、获取内置智能表格。
 metadata:
   requires:
     bins: ["wecom-cli"]
