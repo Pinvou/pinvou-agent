@@ -26,6 +26,12 @@ function itemTime(item) {
 // filesystem_path_identity_key (Windows identity keys fold case, POSIX does
 // not): the pure module has no host-OS signal, so it keys off path shape —
 // drive-letter/UNC paths only ever come from Windows sessions.
+// Leading-// is deliberately NOT claimed as Windows UNC shape: POSIX leaves
+// that prefix implementation-defined, so //tmp/x can be a genuine POSIX path
+// on a case-sensitive volume. Store-produced roots are always backslash-form,
+// so a forward-slash UNC session path (externally written only) compares
+// POSIX-exact here while the store would fold it on Windows hosts — a known,
+// pinned divergence (see the grouping test), not an oversight.
 function looksWindowsPath(value) {
   return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\');
 }

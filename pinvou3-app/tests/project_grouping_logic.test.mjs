@@ -339,3 +339,16 @@ test("containment honors separator boundaries and mirrors the store rule", () =>
   assert.equal(projectCoversPath(unc, "\\\\server/share/alpha/sub"), true);
 });
 
+
+test("forward-slash UNC stays POSIX-exact by design", () => {
+  // Deliberate divergence from the store (finding 64): looksWindowsPath does
+  // not claim the leading-// prefix (POSIX leaves it implementation-defined —
+  // it can be a genuine case-sensitive POSIX path), so a forward-slash UNC
+  // root compares exactly while the store would fold it on Windows hosts.
+  // Store-produced roots are always backslash-form, so this input is only
+  // reachable via externally-written session paths. A future heuristic change
+  // must flip these assertions consciously.
+  const root = { id: "p6", name: "UncFwd", roots: ["//Server/Share"] };
+  assert.equal(projectCoversPath(root, "//server/share/dir"), false);
+  assert.equal(projectCoversPath(root, "//Server/Share/dir"), true);
+});
