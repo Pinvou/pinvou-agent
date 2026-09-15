@@ -1656,7 +1656,11 @@ jobs:
         )
       }}
     runs-on: macos-15
-    timeout-minutes: 60
+    # The check intentionally runs without caches and compiles the whole
+    # workspace (the app crate included) from cold; 60 minutes left little
+    # headroom on 3-vCPU runners, where the Windows analogue shares a
+    # 180-minute budget.
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v7
