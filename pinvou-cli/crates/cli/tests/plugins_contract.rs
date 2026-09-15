@@ -510,6 +510,32 @@ fn import_directories_with_non_ascii_names_get_distinct_fallback_ids() {
         ids[0].starts_with("skill-") && ids[1].starts_with("skill-"),
         "pure non-ASCII names must land on the skill-<hash> fallback form"
     );
+    let _ = home;
+}
+
+/// Regression for the sanitizer × hash interaction: a name carrying
+/// invisible characters sanitizes to the same label as its clean spelling
+/// ("技能\u{200B}" cleans to "技能"), so hashing the CLEANED form would
+/// collapse the two onto one id (and diverge from the GUI's raw-stem hash).
+/// The raw name must feed the hash; the cleaned form is only the label.
+#[test]
+fn import_names_sanitizing_to_the_same_label_get_distinct_fallback_ids() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("import-invisible-dirs");
+
+    let mut ids = Vec::new();
+    for name in ["技能", "技能\u{200B}"] {
+        let dir = home.path().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), format!("body for {name}")).unwrap();
+        let value = run_json(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
+        ids.push(value["id"].as_str().expect("string id").to_owned());
+    }
+    assert_ne!(
+        ids[0], ids[1],
+        "names sanitizing to the same label must keep distinct ids"
+    );
+    let _ = home;
 }
 
 #[test]
