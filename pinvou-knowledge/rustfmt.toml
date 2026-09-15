@@ -1,0 +1,10 @@
+# Code style config for pinvou-knowledge, aligned with
+# pinvou3-app/src-tauri/rustfmt.toml.
+# Only options supported by stable rustfmt, so the `cargo fmt --check` gate
+# runs on any stable toolchain.
+edition = "2024"
+# style_edition 2024: pinned explicitly so future default drift cannot cause
+# a meaningless repo-wide diff.
+style_edition = "2024"
+max_width = 100
+use_try_shorthand = true

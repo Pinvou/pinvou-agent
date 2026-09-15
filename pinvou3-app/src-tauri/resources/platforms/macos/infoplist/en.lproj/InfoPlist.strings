@@ -1,0 +1,3 @@
+NSMicrophoneUsageDescription = "pinvou3 needs microphone access to provide voice input.";
+NSSpeechRecognitionUsageDescription = "pinvou3 needs speech recognition access to convert your speech to text. Audio is processed on device when supported; otherwise, it may be sent to Apple Speech services.";
+NSLocalNetworkUsageDescription = "pinvou3 needs access to your local network to connect to model services you configure, such as vLLM, Ollama, or LM Studio.";

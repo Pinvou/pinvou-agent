@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 2,
+  "target": "windows-x86_64",
+  "source": {
+    "type": "git-submodule",
+    "path": "private-runtimes/windows",
+    "url": "https://github.com/Pinvou/pinvou3-windows-runtime.git",
+    "commit": "dcde8f01dc009c4acecfbe3bc64dff39de22d341"
+  },
+  "manifest": {
+    "path": "windows-runtime.manifest.json",
+    "sha256": "9e6221b6b7f20f3f3e8b01e42520dab17e3f0d14c4e890dc828064bd4fb2b792"
+  },
+  "vcRedist": {
+    "minimumVersion": "14.51.36247.0"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "id": "yuandian-mcp",
+  "name": "华宇元典法律数据",
+  "description": "法律法规、案例文书、企业司法风险与法律检索数据查询",
+  "version": "1.0.0",
+  "icon": "book-open",
+  "category": "法律数据",
+  "mcp_tools": [],
+  "command": "",
+  "args": [],
+  "servers": [
+    {
+      "name": "yuandian_mcp",
+      "url": "https://open.chineselaw.com/mcp",
+      "scopes": ["mcp"],
+      "oauth_resource": "https://open.chineselaw.com/mcp"
+    }
+  ],
+  "routing_rules": [
+    "法律法规/法条原文/案例文书/裁判观点/企业司法风险/合同合规/股权责任 → 优先使用 `mcp_yuandian_mcp_*`，不要直接用普通网页搜索替代"
+  ],
+  "tool_table_entries": [
+    "| 法律数据 | `mcp_yuandian_mcp_*` (华宇元典: 法规/案例/企业司法风险) |"
+  ],
+  "pip_dependencies": []
+}

@@ -1,0 +1,35 @@
+{
+  "id": "wecom-bot",
+  "name": "企微群机器人",
+  "description": "通过企业微信官方群机器人 webhook 向绑定的群推送文本、Markdown、图文、图片与文件消息",
+  "version": "1.0.0",
+  "icon": "message-circle",
+  "category": "即时沟通",
+  "mcp_tools": [
+    "mcp_wecom-bot_send_text",
+    "mcp_wecom-bot_send_markdown",
+    "mcp_wecom-bot_send_news",
+    "mcp_wecom-bot_send_image",
+    "mcp_wecom-bot_send_file"
+  ],
+  "command": "python",
+  "args": ["server.py"],
+  "secret_env": [
+    {
+      "key": "WECOM_BOT_KEY",
+      "provider": "wecom-bot",
+      "required": true
+    }
+  ],
+  "config_fields": [
+    { "key": "WECOM_BOT_KEY", "label": "群机器人 Webhook Key", "required": true, "target": "env", "secret": true }
+  ],
+  "routing_rules": [
+    "发企微群/群机器人/通知到群/往群里发 → `mcp_wecom-bot_send_*` 系列工具，不要用 `web_search`",
+    "纯文字或需要@成员 → `mcp_wecom-bot_send_text`；带格式的汇报/周报 → `mcp_wecom-bot_send_markdown`；带链接的图文列表 → `mcp_wecom-bot_send_news`；本地图片 → `mcp_wecom-bot_send_image`；本地文件 → `mcp_wecom-bot_send_file`（自动上传临时素材，仅推送到该 key 绑定的群）"
+  ],
+  "tool_table_entries": [
+    "| 企微群通知 | `mcp_wecom-bot_send_text` 文本(可@成员) / `mcp_wecom-bot_send_markdown` Markdown / `mcp_wecom-bot_send_news` 图文 / `mcp_wecom-bot_send_image` 图片 / `mcp_wecom-bot_send_file` 文件(官方群机器人 webhook，单向推送到绑定的群) |"
+  ],
+  "pip_dependencies": []
+}

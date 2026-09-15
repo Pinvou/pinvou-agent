@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "platform": "windows-x64",
+  "artifacts": [
+    {
+      "name": "dws",
+      "version": "1.0.61",
+      "license": "Apache-2.0",
+      "source": "https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli",
+      "url": "https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/v1.0.61/dws-windows-amd64.zip",
+      "archiveSha256": "defdcf217bddfb74254c6eeaff408f8b23dddb44729cd997b6d85aa6ce7727a0",
+      "binarySha256": "134111858af3ed250d294c9ed9c4ccfb6c46dd70df3bc5cefe78bd8f06ca90ef"
+    },
+    {
+      "name": "lark-cli",
+      "version": "1.0.95",
+      "license": "MIT",
+      "source": "https://github.com/larksuite/cli",
+      "url": "https://github.com/larksuite/cli/releases/download/v1.0.95/lark-cli-1.0.95-windows-amd64.zip",
+      "archiveSha256": "f2d5c3d6316b19ceec0996871ca4cff89541b82ed0d90220b3643ee0e84890a8",
+      "binarySha256": "403b56ab849b28b4072b46799bd898959dc55382c18d7f4e83cd65f49f570b3f"
+    },
+    {
+      "name": "wecom-cli",
+      "version": "1.2.1",
+      "license": "MIT",
+      "source": "https://github.com/WecomTeam/wecom-cli",
+      "url": "https://registry.npmjs.org/@wecom/cli-win32-x64/-/cli-win32-x64-1.2.1.tgz",
+      "archiveSha256": "457a6676c41f13b3536cf4851c496d1b5a2fff26e4787d86a4ef8b68e3fe679d",
+      "binarySha256": "ea916883a0e4f779dbacaf7fdf99df532b67863062cd1d1bb5a558473e804a89"
+    }
+  ]
+}

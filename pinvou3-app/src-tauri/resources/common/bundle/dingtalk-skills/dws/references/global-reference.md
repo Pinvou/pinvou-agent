@@ -1,0 +1,105 @@
+# 全局参考
+
+## 认证
+
+```bash
+# 首次: OAuth 设备流登录 (钉钉扫码授权)
+dws auth login
+
+# 查看状态
+dws auth status
+
+# macOS: 将系统 Keychain 登录态迁移为沙箱可读的 file-DEK（先预检）
+env -u DWS_DISABLE_KEYCHAIN dws auth migrate-keychain --to file-dek --dry-run --format json
+env -u DWS_DISABLE_KEYCHAIN dws auth migrate-keychain --to file-dek --yes --format json
+
+# 退出
+dws auth logout
+
+# 重置全部本地凭证（仅在迁移/按 profile 恢复均失败且确认可丢弃全部登录时使用）
+dws auth reset
+```
+
+登录后自动管理 token 刷新，日常使用无需重复登录。
+
+### 多账号 profile
+
+```bash
+dws profile list --format json
+dws profile switch <corpId:userId>
+dws --profile <corpId:userId> contact user get-self --format json
+```
+
+- 同一组织可保存多个账号，身份由 `corpId + userId` 唯一确定。
+- 选择器支持 ID 或唯一名称组合；自动化使用 `profile list` 返回的 `profile=corpId:userId`。
+- 多账号组织没有 `isOrgCurrent=true` 时，只传 corpId/corpName 会报错，必须指定账号。
+- `profile list` 读取真实身份 Token 状态但不刷新。`auth status` 会尝试刷新；刷新失败时返回未认证和原始失败原因。
+
+| Token | 有效期 | 说明 |
+|-------|--------|------|
+| Access Token | 2 小时 | 调用 API 的凭证，过期自动刷新 |
+| Refresh Token | 30 天 | 换新 Access Token，使用后轮转 |
+
+30 天内使用一次即自动续期。
+
+### 认证失败处理
+- 命令返回 `AUTH_TOKEN_EXPIRED` / `USER_TOKEN_ILLEGAL` / "Token验证失败" → 执行 `dws auth login` 重新登录
+- macOS 返回 `ciphertext_key_mismatch`，且普通终端仍能登录 → 先用系统 Keychain 模式执行 `auth migrate-keychain --to file-dek --dry-run`，通过后加 `--yes`；禁止直接 `auth reset`
+
+### Headless 环境 (CI/CD)
+
+```bash
+# 通过环境变量配置认证（无需交互式登录）
+export DWS_CLIENT_ID=<your-app-key>
+export DWS_CLIENT_SECRET=<your-app-secret>
+dws auth login
+
+# 或使用 --device 设备流登录（远程服务器/Docker）
+dws auth login --device
+```
+refresh_token 单设备独占，远程刷新后源设备凭证失效。
+
+## 全局标志
+
+| 标志 | 短名 | 说明 | 默认 |
+|------|:---:|------|------|
+| `--format` | `-f` | 输出格式: json / table / raw | json |
+| `--jq` | | jq 表达式过滤输出（如 `.result[].name`）。对产品命令（aitable/chat/mail/... 走 MCP 的）已生效；少数工具命令（auth/config/profile/doctor/schema 等）仍直接编码、暂不过滤 | 无 |
+| `--fields` | | 筛选输出字段（逗号分隔）。按**顶层信封键**（data/result/success/status…）或**列表元素字段**投影；取 data 内的嵌套字段（如 baseName）请改用 `--jq '.data.baseName'`，`--fields baseName` 会因顶层无此键返回 `{}`。同 `--jq`：产品命令已生效，个别工具命令暂不生效 | 无 |
+| `--verbose` | `-v` | 详细日志 | false |
+| `--debug` | | 调试日志 | false |
+| `--yes` | `-y` | 跳过确认提示 | false |
+| `--dry-run` | | 预览操作不执行 | false |
+| `--timeout` | | HTTP 超时 (秒) | 30 |
+| `--mock` | | Mock 数据 (开发用) | false |
+| `--client-id` | | 覆盖 OAuth Client ID | 无 |
+| `--client-secret` | | 覆盖 OAuth Client Secret | 无 |
+| `--profile` | | 单次指定组织或账号；支持 corpId/corpName 与 userId/userName 组合，推荐稳定的 corpId:userId | 当前账号 |
+
+## 输出格式
+
+### --format json (机器可读, 默认)
+
+```json
+{"success": true, "body": {...}}
+```
+
+### --format table (人类可读)
+
+```
+已创建 AI 表格 "项目管理" (UUID: abc123)
+
+下一步:
+  dws aitable base get --base-id abc123
+```
+
+## 环境变量
+
+| 变量 | 说明 |
+|------|------|
+| `DWS_CONFIG_DIR` | 覆盖默认配置目录 |
+| `DWS_<PRODUCT>_MCP_URL` | 本地开发时覆盖指定产品 MCP endpoint |
+| `DWS_CLIENT_ID` | 覆盖 OAuth Client ID (DingTalk AppKey) |
+| `DWS_CLIENT_SECRET` | 覆盖 OAuth Client Secret (DingTalk AppSecret) |
+
+凭证优先级: `--token` > `DWS_CLIENT_ID`/`DWS_CLIENT_SECRET` > OAuth 加密存储 (.data)

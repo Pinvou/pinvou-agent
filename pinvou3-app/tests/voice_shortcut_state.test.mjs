@@ -1,0 +1,341 @@
+#!/usr/bin/env node
+import assert from 'assert';
+import {
+  isVoiceShortcutIntroOpen,
+  setVoiceShortcutIntroOpen,
+  shouldIgnoreVoiceShortcutEvent,
+  voiceShortcutActionForKeyDown,
+  voiceShortcutActionForKeyUp,
+} from '../src/features/chat/voice-shortcut-state.mjs';
+
+const alt = (patch = {}) => ({
+  key: 'Alt',
+  code: 'AltLeft',
+  altKey: true,
+  ctrlKey: false,
+  shiftKey: false,
+  metaKey: false,
+  repeat: false,
+  ...patch,
+});
+
+const altSpace = (patch = {}) => ({
+  key: ' ',
+  code: 'Space',
+  altKey: true,
+  ctrlKey: false,
+  shiftKey: false,
+  metaKey: false,
+  repeat: false,
+  ...patch,
+});
+
+const key = (patch = {}) => ({
+  key: 'a',
+  code: 'KeyA',
+  altKey: true,
+  ctrlKey: false,
+  shiftKey: false,
+  metaKey: false,
+  repeat: false,
+  ...patch,
+});
+
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(alt(), { status: 'idle' }),
+  { type: 'pending_alt' },
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(alt(), { status: 'idle', pendingAlt: true }),
+  { type: 'pending_alt' },
+  'holding Alt should remain pending until keyup instead of starting recording',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(alt(), { status: 'idle', pendingAlt: true }),
+  { type: 'trigger', mode: 'dictation' },
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(alt(), { status: 'idle', pendingAlt: false }),
+  { type: 'none' },
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(altSpace(), { status: 'idle' }),
+  { type: 'clear_pending' },
+  'Alt+Space must not trigger direct voice task mode',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(key(), { status: 'idle', pendingAlt: true }),
+  { type: 'clear_pending', swallow: false },
+  'pressing any other key while Alt is pending must disarm the trigger, unswallowed',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(alt(), { status: 'idle', pendingSpace: true }),
+  { type: 'pending_alt' },
+  'legacy pending Space state must not turn Alt into task mode',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(alt(), { status: 'recording', mode: 'dictation' }),
+  { type: 'pending_alt' },
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(alt(), { status: 'recording', mode: 'dictation', pendingAlt: true }),
+  { type: 'trigger', mode: 'dictation' },
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(altSpace(), { status: 'recording', mode: 'dictation' }),
+  { type: 'clear_pending' },
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(alt(), { status: 'recording', mode: 'task' }),
+  { type: 'pending_alt' },
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(alt(), { status: 'recording', mode: 'task', pendingAlt: true }),
+  { type: 'trigger', mode: 'task' },
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(altSpace(), { status: 'recording', mode: 'task' }),
+  { type: 'clear_pending' },
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(alt(), { status: 'recording', mode: 'task', pendingSpace: true }),
+  { type: 'pending_alt' },
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(alt(), { status: 'recording', mode: 'edit', pendingAlt: true }),
+  { type: 'trigger', mode: 'edit' },
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(alt(), { status: 'recording', mode: 'structured', pendingAlt: true }),
+  { type: 'trigger', mode: 'dictation' },
+  'legacy structured recordings should stop through the dictation main path',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown({ key: 'Escape' }, { status: 'recording', mode: 'task' }),
+  { type: 'cancel' },
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown({ key: 'Escape' }, { status: 'idle' }),
+  { type: 'none' },
+  'Escape must not be treated as a global idle shortcut',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown({ key: 'Escape' }, { status: 'failed' }),
+  { type: 'none' },
+  'Escape must not be captured for failed voice notices',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown({ key: 'Escape' }, { status: 'postprocessing' }),
+  { type: 'cancel' },
+  'Escape should still cancel active postprocessing voice work',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(altSpace({ repeat: true }), { status: 'idle' }),
+  { type: 'clear_pending' },
+  'repeat filtering is handled before action mapping so tests can exercise pure key mapping',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown({ key: 'Escape' }, { status: 'requesting_permission' }),
+  { type: 'cancel' },
+  'Escape must cancel a pending permission request',
+);
+// Alt+Esc (system window cycling): an Esc passed through inside the combo is
+// a combo member and must not cancel a recording; a bare Esc (no pending Alt)
+// still cancels. Same policy as Alt+Tab (Other keys only clear pending).
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown({ key: 'Escape' }, { status: 'recording', mode: 'task', pendingAlt: true }),
+  { type: 'clear_pending', swallow: false },
+  'Escape inside an Alt combo passthrough must not cancel an active recording',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown({ key: 'Escape' }, { status: 'idle', pendingAlt: true }),
+  { type: 'clear_pending', swallow: false },
+  'Escape inside an Alt combo passthrough must clear the pending gesture instead of ignoring it',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(alt(), { status: 'requesting_permission', pendingAlt: true }),
+  { type: 'cancel' },
+  'releasing Alt while permission is pending must cancel instead of triggering again',
+);
+assert.strictEqual(shouldIgnoreVoiceShortcutEvent(alt({ repeat: true })), true);
+assert.strictEqual(shouldIgnoreVoiceShortcutEvent(alt({ defaultPrevented: true })), true);
+assert.strictEqual(
+  shouldIgnoreVoiceShortcutEvent({ key: 'Escape', repeat: true }),
+  true,
+  'holding Escape must not storm cancel actions',
+);
+assert.strictEqual(
+  shouldIgnoreVoiceShortcutEvent(key({ isComposing: true })),
+  true,
+  'IME composition keys must not trigger voice shortcuts',
+);
+assert.strictEqual(
+  shouldIgnoreVoiceShortcutEvent({ key: 'Enter', keyCode: 229 }),
+  true,
+  'WKWebView late-dispatched IME keys (keyCode 229) must not trigger voice shortcuts',
+);
+assert.strictEqual(shouldIgnoreVoiceShortcutEvent(alt({ target: { tagName: 'TEXTAREA' } })), false);
+assert.strictEqual(shouldIgnoreVoiceShortcutEvent(alt({ target: { tagName: 'DIV' } })), false);
+
+assert.strictEqual(isVoiceShortcutIntroOpen(), false, 'intro-open flag must default off');
+setVoiceShortcutIntroOpen(true);
+assert.strictEqual(isVoiceShortcutIntroOpen(), true);
+setVoiceShortcutIntroOpen(false);
+assert.strictEqual(isVoiceShortcutIntroOpen(), false, 'intro-open flag must reset so Escape cancel works after the modal closes');
+
+// Windows combo passthrough: the hook injects a synthetic Alt down after the
+// bare combo keydown, so the page sees [combo down, Alt down (injected),
+// combo up, real Alt up]. The tail keyup of the combo key while Alt is
+// pending is that injected sequence's signature — it must clear the gesture
+// so the trailing real Alt up cannot fire a ghost dictation start (or stop
+// an active recording). A human tap never has another key's keyup between
+// Alt down and Alt up.
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(key(), { status: 'idle', pendingAlt: true }),
+  { type: 'clear_pending' },
+  'combo tail keyup while Alt is pending must cancel the ghost tap',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(key(), { status: 'recording', pendingAlt: true }),
+  { type: 'clear_pending' },
+  'combo tail keyup while recording must not stop the recording',
+);
+// After the injected pair is dropped, the trailing real Alt up (no longer
+// pending) must be inert.
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(alt(), { status: 'idle', pendingAlt: false }),
+  { type: 'none' },
+);
+// A genuine tap (Alt up while pending) must keep triggering.
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(alt(), { status: 'idle', pendingAlt: true }),
+  { type: 'trigger', mode: 'dictation' },
+);
+
+// Right Alt triggers the same gesture as left Alt: the Rust hook classifies
+// VK_RMENU as Alt(AltSide::Right) (bare right-Alt taps are swallowed and
+// trigger there, so on Windows-native this lane only matters when the hook is
+// off), and on macOS this JS lane is the only channel — right Option must
+// work. AltGr (Ctrl+right Alt, European layouts) stays inert via the ctrlKey
+// guard, matching the hook where the layout-synthesized left-Ctrl passes
+// unswallowed and no gesture arms.
+const altRight = () => alt({ code: 'AltRight', location: 2 });
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(altRight(), { status: 'idle', pendingAlt: false }),
+  { type: 'pending_alt' },
+  'right Alt keydown must arm the gesture like left Alt',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(altRight(), { status: 'idle', pendingAlt: true }),
+  { type: 'trigger', mode: 'dictation' },
+  'right Alt keyup while pending must trigger dictation',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(altRight(), { status: 'idle', pendingAlt: false }),
+  { type: 'none' },
+);
+// A bare right-Alt tap from keydown to keyup is one full gesture.
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(altRight(), { status: 'recording', mode: 'task', pendingAlt: true }),
+  { type: 'trigger', mode: 'task' },
+  'right Alt must also stop an active recording',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(altRight(), { status: 'requesting_permission', pendingAlt: true }),
+  { type: 'cancel' },
+  'releasing right Alt while permission is pending must cancel instead of triggering again',
+);
+// The injected-passthrough signature is side-agnostic: a right-Alt down right
+// after a combo keydown is marked injected, and its up clears instead of
+// firing dictation.
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(altRight(), {
+    status: 'idle',
+    pendingAlt: false,
+    now: 1000,
+    lastNonAltKeyDownAt: 990,
+  }),
+  { type: 'pending_alt', injected: true },
+  'an injected right-Alt down must be marked like the left one',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(altRight(), {
+    status: 'idle',
+    pendingAlt: true,
+    pendingInjected: true,
+  }),
+  { type: 'clear_pending' },
+  'right Alt up of an injected pending must clear instead of firing dictation',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(alt({ code: 'AltRight', location: 2, ctrlKey: true }), { status: 'idle', pendingAlt: false }),
+  { type: 'none' },
+  'AltGr (ctrl+right Alt) must stay inert',
+);
+// The location/code exclusions were removed, so an AltRight event without a
+// location field must arm as well.
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(alt({ code: 'AltRight' }), { status: 'idle', pendingAlt: false }),
+  { type: 'pending_alt' },
+  'right Alt without a location field must still arm the gesture',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(alt(), { status: 'idle', pendingAlt: false }),
+  { type: 'pending_alt' },
+  'left Alt keydown must keep arming the gesture',
+);
+
+// Reverse release order of the injected passthrough: [combo down, Alt down
+// (injected), real Alt up, combo up]. The combo-up-first order is covered
+// above; here the real Alt up arrives first, so the pending itself must
+// carry the injected signature (an Alt down immediately after a non-Alt
+// keydown) and clear instead of triggering. The signature window is
+// scheduler slack only — a human cannot complete an Alt tap inside it.
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(alt(), {
+    status: 'idle',
+    pendingAlt: false,
+    now: 1000,
+    lastNonAltKeyDownAt: 990,
+  }),
+  { type: 'pending_alt', injected: true },
+  'an Alt down right after a combo keydown must be marked as the injected sequence',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(alt(), {
+    status: 'idle',
+    pendingAlt: true,
+    pendingInjected: true,
+  }),
+  { type: 'clear_pending' },
+  'real Alt up of an injected pending must clear instead of firing dictation',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(alt(), {
+    status: 'idle',
+    pendingAlt: false,
+    now: 1200,
+    lastNonAltKeyDownAt: 1000,
+  }),
+  { type: 'pending_alt' },
+  'an Alt down well after the last combo keydown is a genuine gesture start',
+);
+
+// A human Alt/Option combo member only disarms the pending gesture, and its
+// keydown must stay unswallowed (swallow:false) so the router lets it through:
+// on macOS, right-Option + letter still has to type the symbol (Option+p → π)
+// while merely cancelling the tap — the #470 review regression. Alt+Space keeps
+// no swallow field: it stays swallowed with the gesture cleared (window system
+// menu), pinned by the exact-shape Alt+Space assertions above.
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyDown(key({ key: 'π', code: 'KeyP' }), { status: 'idle', pendingAlt: true }),
+  { type: 'clear_pending', swallow: false },
+  'the symbol keydown of a right-Option combo must disarm without being swallowed',
+);
+assert.deepStrictEqual(
+  voiceShortcutActionForKeyUp(altRight(), { status: 'idle', pendingAlt: false }),
+  { type: 'none' },
+  'the Option up after a cleared combo must stay inert instead of ghost-triggering',
+);
+
+console.log('voice_shortcut_state: ok');

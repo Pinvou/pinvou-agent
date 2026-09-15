@@ -1,0 +1,46 @@
+{
+  "id": "patsnap-search",
+  "name": "智慧芽专利&文献融合检索",
+  "description": "在智慧芽全球专利数据库和文献库中进行融合检索，支持自然语言、语义搜索、关键词检索和多维过滤，并获取专利或文献信息。",
+  "version": "1.0.0",
+  "icon": "search",
+  "category": "研发",
+  "mcp_tools": [
+    "patsnap_search",
+    "patsnap_fetch"
+  ],
+  "command": "",
+  "args": [],
+  "validate_on_install": true,
+  "secret_headers": [
+    {
+      "header": "Authorization",
+      "scheme": "Bearer",
+      "source_key": "PATSNAP_API_KEY",
+      "provider": "patsnap",
+      "required": true
+    }
+  ],
+  "config_fields": [
+    {
+      "key": "PATSNAP_API_KEY",
+      "label": "智慧芽 API Key",
+      "required": true,
+      "target": "bearer",
+      "secret": true
+    }
+  ],
+  "servers": [
+    {
+      "name": "patsnap-search",
+      "url": "https://connect.zhihuiya.com/2b0355/logic-mcp"
+    }
+  ],
+  "routing_rules": [
+    "专利/论文/文献/公开号/申请人/IPC/CPC/专利布局/技术路线/竞品专利 → `mcp_patsnap-search_*`，不要凭模型记忆编造检索结论"
+  ],
+  "tool_table_entries": [
+    "| 专利与文献检索 | `mcp_patsnap-search_*` (智慧芽: 专利/论文融合检索与详情获取) |"
+  ],
+  "pip_dependencies": []
+}

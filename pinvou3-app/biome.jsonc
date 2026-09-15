@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "files": {
+    "includes": ["src/**/*.js", "src/**/*.jsx", "!src/vendor/**"]
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": false,
+      "a11y": { "recommended": true },
+      "correctness": { "recommended": true },
+      "suspicious": { "recommended": true }
+    }
+  },
+  "formatter": { "enabled": false },
+  "javascript": { "jsxRuntime": "transparent" }
+}

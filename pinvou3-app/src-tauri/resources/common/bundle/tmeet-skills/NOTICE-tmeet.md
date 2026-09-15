@@ -1,0 +1,244 @@
+# 第三方组件声明 — 腾讯会议官方技能(tmeet-skill)
+
+本目录下的 `tmeet-skill/`(SKILL.md + references/ + scripts/)同步自腾讯会议官方开源仓库
+**TencentCloud/tencentmeeting-cli**(https://github.com/TencentCloud/tencentmeeting-cli)
+tag **v1.0.18** 的 `skills/tmeet-skill/`,按其 **MIT License** 分发。
+上次同步为 tag v1.0.15(2026-09-13 前基线),本次(2026-09-15)三方合并至 v1.0.18。
+
+上游仓库根目录 `LICENSE` 为腾讯版权声明的 MIT 许可;`skills/tmeet-skill/` 目录内
+无单独 LICENSE 文件,故此处内联保留许可证文本:
+
+```
+Tencent is pleased to support the open source community by making tencentmeeting-cli available.
+
+Copyright (C) 2026 Tencent.  All rights reserved.
+
+tencentmeeting-cli is licensed under the MIT.
+
+
+Terms of the MIT:
+--------------------------------------------------------------------
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+说明:
+
+- 技能本体不随 npm 包分发(`@tencentcloud/tmeet` 包内不含 skills,这是常见踩坑:
+  不要从 npm tgz 里找 skills),更新方式为按上游对应 tag 同步
+  `skills/tmeet-skill/` 到本目录,保留本声明。具体操作:上游仓库
+  TencentCloud/tencentmeeting-cli 的 tag 带 `v` 前缀,与品悟钉扎版本对应
+  (当前技能基线 v1.0.18;注意 npm CLI 钉扎由 `tmeet.rs` 单独管理,见下条),
+  取
+  `https://github.com/TencentCloud/tencentmeeting-cli/archive/refs/tags/v1.0.18.tar.gz`
+  或 `git clone && git checkout v1.0.18` 后,以其中 `skills/tmeet-skill/`
+  整目录为三方合并基线,再按下文登记逐条重放。
+- 品悟按用户连接状态门控该 skill:仅在用户已连接 `tmeet` 且未禁用腾讯会议技能时
+  释放到运行时技能目录。
+- `tmeet` CLI(`@tencentcloud/tmeet`)不随包内置,由
+  `pinvou3-app/src-tauri/src/features/connectors/tmeet.rs` 的 npm 钉扎
+  (`TMEET_NPM_SPEC`,随本次同步已升至 `@tencentcloud/tmeet@1.0.18`,与技能
+  基线一致)在线安装;SKILL.md 的
+  「安装与初始化」节已按下方登记第 4 条改写为品悟代管口径,上游的
+  `npm install -g @tencentcloud/tmeet@latest` 教学不再出现在技能正文,实际版本
+  以 Rust 层钉扎为准。
+
+## Pinvou3 本地修改登记
+
+技能文档命令树与参数均已对照 tmeet 1.0.15 实测 help 核验（含 1.0.15 新增的
+`meeting search`、`control waiting-room`），无发现不符。为适配品悟运行形态，在
+上游 tag v1.0.15 的 `skills/tmeet-skill/` 基础上做了以下修改（1-4、6 的 SKILL.md
+部分仅限 `SKILL.md`；第 5 条另涉 `references/tmeet-record.md` 一处、第 6 条
+另涉 `references/tmeet-auth.md` 两处措辞修正，其余 references/ 与上游逐字节一致，
+已经上游 tag diff 逐文件复核。第六轮核验注 2026-08-16：上述「其余 references
+逐字节一致」经 /tmp 上游 v1.0.15 快照重验仍成立——tmeet-meeting/contact/
+tshoot/report/control 五篇与上游一致，record.md / auth.md 的差异即第 5、6 条
+所述内容。第七轮审查注 2026-08-27：本轮新增第 7-12 条文档缺陷修复，触及
+`SKILL.md` 与 `references/tmeet-contact.md` / `tmeet-meeting.md` /
+`tmeet-record.md` / `tmeet-tshoot.md` 四篇，此后上游同步的重放基线为第 1-12
+条，上一段「其余 references 逐字节一致」仅描述第 1-6 条完成时点的状态。
+第八轮审查注 2026-09-05：本轮新增第 13-19 条文档缺陷修复，触及 `SKILL.md`
+与 `references/tmeet-meeting.md` / `tmeet-control.md` / `tmeet-tshoot.md`
+三篇，此后上游同步的重放基线为第 1-19 条）：
+
+1. **frontmatter `description` 重写**：上游 description 长 327 字符，超过品悟
+   SkillRegistry 的 280 字符截断上限，压缩为 211 字符，并按品悟契约改为
+   「何时用：」开头、附「泛指需求默认走本地工具」防误用语义。
+2. **读取工具名适配**：SKILL.md「录制查询」节 CRITICAL 前置块中的上游写法
+   「MUST 先用 Read 工具读取 `references/tmeet-record.md`」在旧底座时期曾改为
+   `File(action="read")`（历史事实）；当前 CodeWhale v0.9.12 同步登记为模型
+   可见的 canonical `read(path="references/tmeet-record.md")`。全包实测仅此
+   1 处，tmeet-auth.md 等其余文件无读取工具指引。
+3. **悬空占位链接修复**：命令总览说明行中的占位示例
+   `[references/xxx.md](references/xxx.md)` 改为纯代码格式 `references/xxx.md`
+   （原写法是指向不存在文件的悬空 markdown 链接，仅去链接化，语义不变）。
+4. **「安装与初始化」节改写为品悟代管口径**：上游的 `npm install -g
+   @tencentcloud/tmeet@latest` 自动安装指引改为「由品悟应用代为安装与管理，
+   模型不要自行执行安装命令」，并移除文档内的具体安装命令，避免模型在品悟
+   内自行安装/升级。
+5. **登录前置例外清单修正**（references 同步一处措辞修正）：按 1.0.15 源码
+   `cmd/root.go` preCheck 与 `cmd/tshoot/log.go` 的 `skipPreCheckFlag("upload")`
+   实测，免登录命令除 `auth login` / `auth status` 外还包括不带 `--upload` 的
+   `tshoot log`，SKILL.md 认证节例外清单已补齐；`references/tmeet-record.md`
+   中「唯一能按录制内容检索的命令」补「跨会议」限定，消除与
+   `transcript-search` 的表述矛盾。
+6. **宿主环境断言改为品悟口径**（2026-08-16 第四轮审查，SKILL.md 与
+   `references/tmeet-auth.md` 各两处）：上游「如果当前 Agent 是 Hermes 且系统
+   没有默认浏览器」改为「品悟运行环境始终可访问默认浏览器（登录走
+   `--no-browser`），仅品悟之外的 Agent 环境保留原 Hermes 提示」；上游「第一次
+   调用 auth login 必须将 agent 类型/模型名写入 `TMEET_AGENT`/`TMEET_MODEL`」
+   改为「两变量由品悟宿主统一注入（`tmeet.rs` 固定 `Pinvou`），模型不要自行
+   设置，仅品悟之外环境才自行写入」。两变量经 strings 实测存在于 1.0.15
+   二进制、品悟注入值见
+   `pinvou3-app/src-tauri/src/features/connectors/tmeet.rs`。
+
+以下第 7-12 条为 2026-08-27 第七轮文档审查（doc audit）修复，全部为确定性
+文档缺陷（矛盾/错误/遗漏），不改变命令与参数语义：
+
+7. **`tmeet-contact.md` 多结果确认条目下游命令清单去掉「踢人」**：该条曾将
+   「踢人」列为 `contact search` 多结果确认后的合法下游命令（与本文档首部
+   「定位与适用场景硬约束」、SKILL.md 安全规则「`control kick` 成员来源硬
+   约束」直接冲突——`kick` 成员必须来自 `report participants`）。现改为
+   「（如发起会议邀请、呼叫入会等）」。
+8. **SKILL.md 安全规则「通讯录搜索仅限特定场景使用」命令名修正**：`contact_search`
+   / `contact_lookup_by_phone` / `contact_lookup_by_email` 为不存在的下划线
+   形式，按命令树实际形式改为 `contact search` / `contact lookup-by-phone` /
+   `contact lookup-by-email`。
+9. **`tmeet-meeting.md` 常见错误表 `500273` / `500275` 两行「原因/解决方案」
+   列串行修正**：原 500273（会议已开始）两列误写「会议不存在」、500275（会议
+   不存在）两列误写「会议已取消」，现均与各自错误码文案一致（500274 本就
+   一致，未动）。
+10. **`tmeet-record.md` 「进行中会议的录制」条目内链修正**：文首「本文核心
+    硬约束」中「录制状态门禁」为第 1 条，该条目误引「第 2 条」，已改为
+    「第 1 条」（与同文 permission-apply-prepare 前置门禁的引用一致）。
+11. **`record address` 语义统一为「播放地址」**：SKILL.md frontmatter
+    description、SKILL.md 命令树 address 行、`tmeet-record.md` 典型工作流、
+    `tmeet-tshoot.md` feedback 示例 intent 原写「下载地址」，与
+    `tmeet-record.md` address 节（`records[].url` 等价、均为播放地址）矛盾，
+    统一改为「播放地址」（description 长度仍为 211 字符，与第 1 条登记一致）。
+12. **`tmeet-record.md` 「会议号 + 内容关键词」组合示例补会议号格式提醒**：
+    示例「683-872-007 那场会上说的预算」承接用户口语的带短横线形式，未提醒
+    `--meeting-code` 要求仅数字无短横线（同文件 search 参数表与
+    `tmeet-meeting.md` `--meeting-code` 均注明「仅数字，无短横线」），现于该
+    示例处补一句去短横线提醒（如 `683-872-007` → `683872007`）。
+
+以下第 13-19 条为 2026-09-05 第八轮文档审查（doc audit）修复，全部为确定性
+文档缺陷（矛盾/错误/遗漏），不改变命令与参数语义：
+
+13. **SKILL.md 查询路由补「已知会议号 / 会议 ID」三分流**：上游 SKILL.md
+    「查询命令选择准则」表仅 list/search 二路，与上游自身的
+    `references/tmeet-meeting.md` 选择提示及 `references/tmeet-record.md`
+    「录制查询路由总则」（均含「会议号 / 会议 ID → `meeting get`」）矛盾。
+    SKILL.md 选择准则表补「已知会议号 / 会议 ID → `meeting get`」行、「会议
+    查询」节补对应 bullet（含指向「录制查询路由总则」的交叉引用）；同时移除
+    选择准则表「包含关键词」行与「会议查询」bullet 关键词清单中的「会议号」、
+    章节标题去「（list vs search）」尾巴并同步 `tmeet-meeting.md` 的回链锚点，
+    消除同输入同时命中 get/search 两行的歧义（关键词清单与
+    `tmeet-meeting.md`「主题 / 创建人 / 备注」口径一致）。`meeting search
+    --meeting-code` 作为参数能力的陈述（命令树注释、search 参数表与示例）
+    保留不变。
+14. **SKILL.md 强制二次确认表补 `meeting create`（携带 `--invitees` 时）行**：
+    上游确认表漏列；1.0.15 help/源码（`cmd/meeting/create.go`）注明 invitees
+    上限 100，与 `invitees-add` 同为向真人发送会议通知的打扰类写操作。确认
+    要求采用行内自带写法（展示会议主题、时间与完整受邀成员名单并获明确确认），
+    不套用「受邀人管理类写操作的二次确认模板」——该模板作用域钉死三条
+    invitees 命令，且其展示字段（会议号）对尚未创建的会议不可实例化。
+15. **SKILL.md 强制二次确认表补 `control waiting-room` 行**：上游确认表
+    漏列；1.0.15 新增的等候室管理含 `expel`（移出踢出）等对真人产生实际影响
+    的操作（实测 help 三操作类型 enter-meeting / back-to-waiting / expel），
+    表行要求执行前列明目标成员。
+16. **SKILL.md 成员来源硬约束扩到 `control waiting-room`**：原「会中踢人
+    （`control kick`）的成员来源硬约束」bullet 扩为 kick 与 waiting-room
+    共用，目标成员 `open_id` / `ms_open_id` 严禁使用通讯录查询结果；
+    kick 仅限 `report participants`，waiting-room 按操作类型取
+    `report participants`（`back-to-waiting`，目标为会中成员）或
+    `report waiting-room-log`（`enter-meeting` / `expel`，目标为等候室成员），
+    与 `references/tmeet-control.md` kick / waiting-room 两节既有 🔒 约束
+    口径一致（第九轮审查代修按操作类型分列，消除并集表述对 kick 来源的
+    放宽与对 `back-to-waiting` 的来源误导）。
+17. **`references/tmeet-tshoot.md` `--upload` 补隐私提示**：1.0.15 源码将
+    完整命令行以 INFO 级写入本地日志（`cmd/root.go`），日志可能含会议号、
+    联系人等敏感信息，参数说明补「上传前提示用户确认后再上传」。
+18. **`references/tmeet-meeting.md` create 节补确认警示**：与同文件
+    update / cancel 及三条 invitees 节的 ⚠️ 写法对齐，补「携带 `--invitees`
+    时为高风险写操作」确认要求并指向 SKILL.md 安全规则确认表。
+19. **`references/tmeet-control.md` waiting-room 节确认要求补强**：⚠️ 行补
+    「`expel`（移出踢出）等同踢人，执行前必须列明目标成员」，与 SKILL.md
+    确认表补行（第 15 条）口径一致。
+
+第九轮审查注 2026-09-05（重审代修，不新增登记条目，重放基线仍为第 1-19 条）：
+SKILL.md 成员来源硬约束 bullet 按操作类型分列（第 16 条已同步改写）；
+`references/tmeet-contact.md` 两处指名引用同步第 16 条 bullet 新标题，并在
+前置门禁场景示例与 SKILL.md「通讯录搜索仅限特定场景使用」示例中补入携带
+`--invitees` 的 `meeting create`（与第 14 条确认行闭环，`tmeet-meeting.md`
+create 节 `--invitees` 参数行同步补 openid 来源指引）；`tmeet-meeting.md`
+create 节警示链接文字补「」、SKILL.md 会议查询路由行补「录制查询路由总则」
+链接；本声明首段第 5/6 条范围句修正（auth.md 实为两处）。
+
+## 上游 v1.0.18 同步（2026-09-15，重放基线 = 上游 v1.0.18 + 第 1-19 条）
+
+上游 v1.0.15 → v1.0.18 的技能变更：SKILL.md（frontmatter version/
+description、认证节、命令树新增 `minutes` / `app` / `event` 三个子树、
+新增「元宝纪要查询」自包含路由节、`event` 输出无信封与 `--compact` 不适用
+两个例外说明、常见错误表补 500284 与 event 故障行）、
+`references/tmeet-auth.md`（TMEET_AGENT/TMEET_MODEL 环境变量指引整段替换为
+`scripts/agent_init.py` 强制初始化指引）、`references/tmeet-meeting.md`
+（update 的 `--meeting-type 1` 由「周期性会议必传」收窄为「仅改周期规则或
+子会议时必传」），并新增 `references/tmeet-app.md` / `tmeet-event.md` /
+`tmeet-minutes.md` 与 `scripts/agent_init.py` 四个文件。合并方式与结果：
+
+- 四个新文件原样收录（`scripts/agent_init.py` 写入
+  `TMEET_CLI_CONFIG_DIR`（缺省 `~/.tmeet/`）下的 `agent.json`，含原子写与
+  仅 POSIX chmod 的跨平台保护），逐字节与上游一致。
+- `tmeet-meeting.md` 无冲突（上游改动均在 update 节，第 13/14/18 条本地
+  修改均在 create 节、参数表 invitees 行与常见错误表），第 13/14/18 条
+  按原样重放。
+- `tmeet-auth.md`：第 6 条品悟宿主断言重放；上游 agent_init.py 新指引
+  **原样保留**（两条并存：品悟宿主仍注入 `TMEET_AGENT`/`TMEET_MODEL`，
+  上游新增脚本写 `agent.json`）。**已核实（2026-09-15，按上游 v1.0.18 公开
+  源码 `internal/common/system.go`）**：1.0.18 仍读取这两个环境变量，且
+  **环境变量优先于 `agent.json`**，故品悟注入始终生效，上游脚本写入的
+  agent/model 名不会覆盖品悟遥测；仅余模型执行 `python3 ./scripts/agent_init.py`
+  时 cwd 是否为技能目录一点待冒烟确认（指引明确失败即忽略，最坏为一次
+  静默空操作，遥测仍由 env 兜底）。
+- SKILL.md：第 1-19 条全部重放到上游 v1.0.18 文本上。其中第 1 条
+  description 需重新合并——上游 description 新增了元宝纪要 / CLI 应用 /
+  事件订阅三个命令族，本地按「何时用」契约重写为 251 字符（≤280 上限），
+  三个新命令族均覆盖。第 5 条的免登录例外清单按上游 v1.0.18 补齐
+  `event list` / `event schema` / `event status` / `event stop`（与上游
+  认证节一致）。
+- frontmatter `version` 随基线更新为 `1.0.18`（钉扎上游 tag 基线；与
+  `tmeet.rs` 的 `TMEET_NPM_SPEC` 本次已同步升至 `@tencentcloud/tmeet@1.0.18`,
+  两者一致）。
+- 命令树收口核验（2026-09-15）:本次同步后已对 v1.0.18 全部命令树（含新增
+  `minutes` / `app` / `event` 三域与 `auth login --no-browser`）对照 1.0.18
+  实测 help 逐项复核,与文档一致;登记首段「对照 tmeet 1.0.15 实测 help
+  核验」的历史口径至此收口。
+- 待下版跟进（上游缺陷挂起登记）:上游 v1.0.18 自带矛盾——SKILL.md 命令树
+  `event stop` 行与 `references/tmeet-event.md` 均注明 `--force` 为写操作
+  「需二次确认」,但 SKILL.md「必须二次确认」表漏列 `event stop --force`,
+  与本地已修的第 14/15 条（`meeting create` / `control waiting-room` 补行）
+  同类。本次按宣告的重放范围（第 1-19 条）保留上游原文,不另扩本地分叉
+  （文中另有三处在文提示兜底）;下版 sync 若上游仍未修,按第 14/15 条同款
+  口径补行并登记为新本地修改。
+
+上游其余内容（含 `auth login` 交互式登录教学等）保持上游原样；品悟实际安装
+版本由 `tmeet.rs` 的 `TMEET_NPM_SPEC` 钉扎（本次同步后即为
+`@tencentcloud/tmeet@1.0.18`），实际登录由 `auth login --no-browser` 完成
+（该 flag 在 1.0.15/1.0.18 help 中均存在），文档描述与品悟用法不矛盾。

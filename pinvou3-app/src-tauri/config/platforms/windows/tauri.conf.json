@@ -1,0 +1,22 @@
+{
+  "$schema": "../../../../node_modules/@tauri-apps/cli/config.schema.json",
+  "bundle": {
+    "targets": ["msi", "nsis"],
+    "resources": {
+      "resources/platforms/windows/chrome-devtools-mcp/": "runtime/chrome-devtools-mcp"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "installerHooks": "packaging/windows/nsis/installer-hooks.nsh",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
+        "compression": "lzma"
+      }
+    }
+  }
+}

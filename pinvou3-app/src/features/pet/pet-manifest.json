@@ -1,0 +1,26 @@
+[
+  {
+    "id": "lingling",
+    "name": "灵灵",
+    "description": "星纹卷尾，灵动相伴",
+    "spriteVersionNumber": 1,
+    "themeColor": "#7F86B3",
+    "placeholder": false
+  },
+  {
+    "id": "langlang",
+    "name": "浪浪",
+    "description": "黑衫眼镜，从容同行",
+    "spriteVersionNumber": 2,
+    "themeColor": "#555B64",
+    "placeholder": false
+  },
+  {
+    "id": "ace-taffy",
+    "name": "Ace Taffy",
+    "description": "粉发皇冠，元气应援",
+    "spriteVersionNumber": 1,
+    "themeColor": "#D98FB1",
+    "placeholder": false
+  }
+]

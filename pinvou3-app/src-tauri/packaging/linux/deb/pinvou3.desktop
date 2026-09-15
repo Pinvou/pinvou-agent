@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=PINVOU 智能助手
+Name[en]=PINVOU Assistant
+GenericName=AI 智能助手
+GenericName[en]=AI Assistant
+Comment=本地大模型桌面智能助手
+Comment[en]=Local LLM desktop assistant
+Exec=pinvou3-tauri
+Icon=pinvou3-tauri
+Terminal=false
+Categories=Utility;
+Keywords=AI;LLM;assistant;chat;pinvou;品悟;智能助手;
+StartupNotify=true
+StartupWMClass=pinvou3-tauri

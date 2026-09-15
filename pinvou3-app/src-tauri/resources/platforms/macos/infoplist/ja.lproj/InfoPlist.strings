@@ -1,0 +1,3 @@
+NSMicrophoneUsageDescription = "pinvou3 は音声入力を提供するためにマイクへのアクセスを必要とします。";
+NSSpeechRecognitionUsageDescription = "pinvou3 は音声をテキストに変換するために音声認識へのアクセスを必要とします。対応している場合はデバイス上で処理され、それ以外の場合は音声が Apple Speech サービスに送信されることがあります。";
+NSLocalNetworkUsageDescription = "pinvou3 は、設定したローカルネットワーク上のモデルサービス（vLLM、Ollama、LM Studio など）に接続するために、ローカルネットワークへのアクセスを必要とします。";

@@ -1,0 +1,572 @@
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  AppWindow, Check, ChevronDown, ChevronRight, ExternalLink, FileText,
+  Link, Plus, RefreshCw, Search, X,
+} from '../../components/icons.jsx';
+import { useCopyFlash } from '../../hooks/useCopyFlash.js';
+import { pathBasename } from '../../shared/path-utils.js';
+import { RightDockPanel } from '../../components/layout/RightDock.jsx';
+import { invokeTauri } from '../../platform/tauri/client.js';
+import {
+  listAcpWorkspace,
+  loadAcpWorkspaceChanges,
+  loadAcpWorkspaceDiff,
+  previewAcpWorkspaceFile,
+  searchAcpWorkspace,
+} from './acpClient.js';
+import { FileColoredIcon } from '../../components/files/FileColoredIcon.jsx';
+import { CodeViewerModal } from './CodeViewerModal.jsx';
+import { can, isWeb } from '../../shared/platform.js';
+import { acpErrorMessage } from './acpErrors.js';
+import { isMissingWorkspaceDirectoryError, pruneMissingDirectory } from './workspace-tree.js';
+
+const invoke = invokeTauri;
+function changeLabel(status, copy) {
+  return copy.changes[status] || status;
+}
+
+function statusTone(status) {
+  if (['added', 'untracked'].includes(status)) return 'text-emerald-600 dark:text-emerald-300 bg-emerald-500/10';
+  if (status === 'deleted') return 'text-red-600 dark:text-red-300 bg-red-500/10';
+  if (status === 'conflict') return 'text-orange-600 dark:text-orange-300 bg-orange-500/10';
+  return 'text-amber-600 dark:text-amber-300 bg-amber-500/10';
+}
+
+function originLabel(origin, copy) {
+  return copy.origins[origin] || copy.origins.unknown;
+}
+
+function WorkspaceTree({
+  directory = '',
+  depth = 0,
+  entriesByDirectory,
+  expanded,
+  loadingDirectories,
+  onToggle,
+  onPreview,
+  onAddReference,
+  onOpenExternal,
+  onOpenReader,
+  systemOpenAvailable,
+  referencedPaths,
+  copy,
+}) {
+  const entries = entriesByDirectory[directory] || [];
+  // Copy-row-path + "copied" feedback (1200ms reset) consolidated into useCopyFlash (the inline
+  // version wrote straight to navigator.clipboard via setTimeout, with no execCommand fallback).
+  const [copiedPath, copyRowPath] = useCopyFlash(1200);
+
+  return entries.map(entry => {
+    const isDirectory = entry.kind === 'directory';
+    const open = expanded.has(entry.relativePath);
+    const referenced = referencedPaths.has(entry.relativePath);
+    return (
+      <Fragment key={entry.relativePath}>
+        <div
+          className="group h-8 flex items-center gap-1.5 rounded-lg pr-1 hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+          style={{ paddingLeft: 6 + depth * 14 }}
+        >
+          <button
+            type="button"
+            className="min-w-0 flex-1 h-full flex items-center gap-1.5 text-left"
+            onClick={() => isDirectory ? onToggle(entry) : onPreview(entry)}
+            title={entry.relativePath}
+          >
+            <span className="w-3.5 shrink-0 text-gray-400">
+              {isDirectory && entry.hasChildren
+                ? loadingDirectories.has(entry.relativePath)
+                  ? <RefreshCw size={12} className="animate-spin" />
+                  : open ? <ChevronDown size={12} /> : <ChevronRight size={12} />
+                : null}
+            </span>
+            <FileColoredIcon name={entry.name} isDir={isDirectory} isOpen={open} size={14} />
+            <span className="truncate text-[12px]">{entry.name}</span>
+          </button>
+          {!isDirectory && systemOpenAvailable && (
+            <button
+              type="button"
+              aria-label={copy.openInNewWindow}
+              title={copy.openInNewWindow}
+              onClick={() => onOpenReader(entry)}
+              className="w-6 h-6 shrink-0 rounded-md flex items-center justify-center text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] transition-opacity"
+            >
+              <AppWindow size={13} />
+            </button>
+          )}
+          <button
+            type="button"
+            aria-label={copiedPath === entry.relativePath ? copy.copied : copy.copyPath}
+            title={copiedPath === entry.relativePath ? copy.copied : copy.copyPath}
+            onClick={() => copyRowPath(entry.relativePath, entry.relativePath)}
+            className="w-6 h-6 shrink-0 rounded-md flex items-center justify-center text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] transition-opacity"
+          >
+            {copiedPath === entry.relativePath
+              ? <Check size={13} className="text-emerald-500" />
+              : <Link size={13} />}
+          </button>
+          {!isDirectory && (
+            <>
+              <button
+                type="button"
+                aria-label={referenced ? copy.addedPath(entry.relativePath) : copy.addPath(entry.relativePath)}
+                title={referenced ? copy.added : copy.add}
+                onClick={() => onAddReference(entry.relativePath)}
+                className={`w-6 h-6 shrink-0 rounded-md flex items-center justify-center transition-opacity ${
+                  referenced
+                    ? 'text-blue-500 bg-blue-500/10'
+                    : 'text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]'
+                }`}
+              >
+                <Plus size={13} />
+              </button>
+              {systemOpenAvailable && (
+                <button
+                  type="button"
+                  aria-label={copy.open}
+                  title={copy.open}
+                  onClick={() => onOpenExternal(entry)}
+                  className="w-6 h-6 shrink-0 rounded-md flex items-center justify-center text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] transition-opacity"
+                >
+                  <ExternalLink size={13} />
+                </button>
+              )}
+            </>
+          )}
+        </div>
+        {isDirectory && open && (
+          <WorkspaceTree
+            directory={entry.relativePath}
+            depth={depth + 1}
+            entriesByDirectory={entriesByDirectory}
+            expanded={expanded}
+            loadingDirectories={loadingDirectories}
+            onToggle={onToggle}
+            onPreview={onPreview}
+            onAddReference={onAddReference}
+            onOpenExternal={onOpenExternal}
+            onOpenReader={onOpenReader}
+            systemOpenAvailable={systemOpenAvailable}
+            referencedPaths={referencedPaths}
+            copy={copy}
+          />
+        )}
+      </Fragment>
+    );
+  });
+}
+
+// Stable empty-array default: an inline [] is a new reference on every render, which makes memoized children re-render repeatedly.
+const EMPTY_REFERENCES = [];
+
+export function CodexWorkspacePanel({
+  session,
+  workspacePath = '',
+  visible,
+  activationKey,
+  onActiveChange,
+  onClose,
+  references = EMPTY_REFERENCES,
+  onAddReference,
+  refreshToken = 0,
+  onChangeCount,
+  copy,
+}) {
+  const sessionId = session?.id;
+  // 会话前（draft）模式：无 sessionId，直接按项目路径浏览；变更/差异依赖会话基线，仅会话内可用。
+  const browsePath = sessionId ? '' : String(workspacePath || '');
+  const browsable = Boolean(sessionId || browsePath);
+  const scopePayload = () => (sessionId ? { sessionId } : { workspacePath: browsePath });
+  const [tab, setTab] = useState('files');
+  const [entriesByDirectory, setEntriesByDirectory] = useState({});
+  const [expanded, setExpanded] = useState(new Set());
+  const [loadingDirectories, setLoadingDirectories] = useState(new Set());
+  const [query, setQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [changes, setChanges] = useState(null);
+  const [viewer, setViewer] = useState(null);
+  const [error, setError] = useState('');
+  const previewRequestRef = useRef(0);
+  const showError = (nextError) => {
+    console.error('Codex workspace operation failed:', nextError);
+    setError(acpErrorMessage(nextError, copy, { allowRaw: !isWeb }));
+  };
+  const referencedPaths = useMemo(() => new Set(references), [references]);
+  const systemOpenAvailable = can('externalSystemOpen');
+
+  async function loadDirectory(path = '', { force = false } = {}) {
+    if (!browsable || (!force && entriesByDirectory[path])) return;
+    setLoadingDirectories(current => new Set([...current, path]));
+    try {
+      const listing = await listAcpWorkspace({
+        ...scopePayload(),
+        relativePath: path || null,
+      });
+      setEntriesByDirectory(current => ({ ...current, [path]: listing.entries || [] }));
+      setError('');
+    } catch (nextError) {
+      // 浏览中的非根目录已从磁盘消失（回退撤销 agent 创建的目录、agent 回合中
+      // 删目录、用户外部删除都会触发）：把它（含子路径）从展开集合与条目缓存
+      // 逐出，树自然折叠到仍存在的祖先。不 showError——折叠本身已如实反映现实，
+      // 而 showError 会随 refresh/轮询对仍挂在 expanded 里的路径无限重复爆错
+      // （联调 bug）。错误判定依赖后端固定文案，见 workspace-tree.js 注释。
+      // 根路径（''）失败保持 showError：那是整个工作区不可用，必须显式提示。
+      if (path && isMissingWorkspaceDirectoryError(nextError)) {
+        setExpanded(current => pruneMissingDirectory(current, {}, path).expanded);
+        setEntriesByDirectory(current => pruneMissingDirectory(new Set(), current, path).entriesByDirectory);
+      } else {
+        showError(nextError);
+      }
+    } finally {
+      setLoadingDirectories(current => {
+        const next = new Set(current);
+        next.delete(path);
+        return next;
+      });
+    }
+  }
+
+  async function loadChanges() {
+    if (!sessionId) return;
+    try {
+      const result = await loadAcpWorkspaceChanges({ sessionId });
+      setChanges(result);
+      if (onChangeCount) onChangeCount((result.changes || []).length);
+      setError('');
+    } catch (nextError) {
+      showError(nextError);
+      if (onChangeCount) onChangeCount(0);
+    }
+  }
+
+  useEffect(() => {
+    // 工作区切换：作废在途预览响应（见 showFile 的序号校验）。
+    previewRequestRef.current += 1;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset the whole panel state on workspace switch; one-shot mirror
+    setEntriesByDirectory({});
+    setExpanded(new Set());
+    setQuery('');
+    setSearchResults([]);
+    setChanges(null);
+    setViewer(null);
+    setError('');
+    if (browsable) {
+      loadDirectory('', { force: true });
+    }
+    if (sessionId) {
+      loadChanges();
+    } else if (onChangeCount) {
+      onChangeCount(0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset and reload only on workspace/session switch edges; depending on the load functions would repeatedly trigger full refreshes
+  }, [sessionId, browsePath]);
+
+  useEffect(() => {
+    if (!sessionId || !refreshToken) return;
+    const timer = window.setTimeout(() => {
+      loadChanges();
+      if (visible && tab === 'files') {
+        const loadedDirectories = ['', ...expanded];
+        Promise.all(loadedDirectories.map(
+          path => loadDirectory(path, { force: true }),
+        ));
+      }
+    }, 350);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debounced reload: triggered by refresh token/visibility/expansion set; depending on the load functions would repeatedly rebuild the timer
+  }, [refreshToken, sessionId, visible, tab, expanded]);
+
+  useEffect(() => {
+    if (!visible || !browsable) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      if (tab === 'files') {
+        const loadedDirectories = ['', ...expanded];
+        Promise.all(loadedDirectories.map(
+          path => loadDirectory(path, { force: true }),
+        ));
+      }
+      if (sessionId && tab === 'changes') loadChanges();
+    }, 2000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- polling subscription: configured by visibility/tab/expansion set; depending on the load functions would repeatedly rebuild the timer
+  }, [visible, browsable, tab, sessionId, browsePath, expanded]);
+
+  useEffect(() => {
+    if (!browsable || !query.trim()) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset results and search state when the query is cleared; one-shot mirror
+      setSearchResults([]);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        const results = await searchAcpWorkspace({
+          ...scopePayload(),
+          query: query.trim(),
+        });
+        setSearchResults(results || []);
+        setError('');
+      } catch (nextError) {
+        showError(nextError);
+      } finally {
+        setSearching(false);
+      }
+    }, 250);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- search debounce: triggered only by query/scope; depending on the load functions would repeatedly rebuild the timer
+  }, [query, sessionId, browsePath]);
+
+  async function toggleDirectory(entry) {
+    const path = entry.relativePath;
+    const willOpen = !expanded.has(path);
+    setExpanded(current => {
+      const next = new Set(current);
+      if (willOpen) next.add(path);
+      else next.delete(path);
+      return next;
+    });
+    if (willOpen) await loadDirectory(path);
+  }
+
+  async function showFile(entry) {
+    // 请求序号防竞态：只应用最后一次点击的响应，慢响应（旧文件/旧工作区）直接丢弃。
+    const requestId = ++previewRequestRef.current;
+    setViewer({ name: entry.name, relativePath: entry.relativePath, preview: null, loading: true, error: '' });
+    try {
+      const preview = await previewAcpWorkspaceFile({
+        ...scopePayload(),
+        relativePath: entry.relativePath,
+      });
+      if (requestId !== previewRequestRef.current) return;
+      setViewer({ name: entry.name, relativePath: entry.relativePath, preview, loading: false, error: '' });
+      setError('');
+    } catch (nextError) {
+      if (requestId !== previewRequestRef.current) return;
+      console.error('Codex workspace preview failed:', nextError);
+      setViewer({
+        name: entry.name,
+        relativePath: entry.relativePath,
+        preview: null,
+        loading: false,
+        error: acpErrorMessage(nextError, copy, { allowRaw: !isWeb }),
+      });
+    }
+  }
+
+  // 变更项 → 弹窗 diff 视图；与 showFile 共用 viewer 弹窗（diff 字段驱动 diff 模式），
+  // 同样用请求序号防竞态。
+  async function showDiff(change) {
+    const name = pathBasename(change.relativePath, { fallback: change.relativePath });
+    const requestId = ++previewRequestRef.current;
+    setViewer({ name, relativePath: change.relativePath, preview: null, diff: null, loading: true, error: '' });
+    try {
+      const diff = await loadAcpWorkspaceDiff({
+        sessionId,
+        relativePath: change.relativePath,
+      });
+      if (requestId !== previewRequestRef.current) return;
+      setViewer({ name, relativePath: change.relativePath, preview: null, diff, loading: false, error: '' });
+      setError('');
+    } catch (nextError) {
+      if (requestId !== previewRequestRef.current) return;
+      console.error('Codex workspace diff failed:', nextError);
+      setViewer({
+        name,
+        relativePath: change.relativePath,
+        preview: null,
+        diff: null,
+        loading: false,
+        error: acpErrorMessage(nextError, copy, { allowRaw: !isWeb }),
+      });
+    }
+  }
+
+  async function openWorkspacePath(command, relativePath, extra = {}) {
+    if (!relativePath || !browsable) return false;
+    try {
+      await invoke(command, { ...scopePayload(), relativePath, ...extra });
+      return true;
+    } catch (nextError) {
+      showError(nextError);
+      return false;
+    }
+  }
+
+  const rows = query.trim() ? searchResults : null;
+
+  return (
+    <RightDockPanel
+      panelId="codex-workspace"
+      visible={visible}
+      activationKey={activationKey}
+      onActiveChange={onActiveChange}
+      className="border-l border-black/[0.06] bg-white/92 backdrop-blur-xl dark:border-white/[0.07] dark:bg-[#17181A]/96"
+      dataTestId="codex-workspace-panel"
+    >
+      <div className="h-14 shrink-0 px-3 flex items-center gap-2 border-b border-black/[0.05] dark:border-white/[0.06]">
+        <div className="min-w-0 flex-1">
+          <div className="text-[13px] font-semibold">{copy.title}</div>
+          <div className="truncate text-[10px] text-gray-400" title={session?.workspace_path || browsePath}>
+            {session?.workspace_kind === 'temporary' ? copy.temporary : (session?.workspace_path || browsePath)}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            loadDirectory('', { force: true });
+            loadChanges();
+          }}
+          className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
+          title={copy.refresh}
+        >
+          <RefreshCw size={14} />
+        </button>
+        <button type="button" onClick={onClose} className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]" aria-label={copy.close}>
+          <X size={14} />
+        </button>
+      </div>
+
+      <>
+          <div className="shrink-0 px-3 pt-2">
+            <div className="grid grid-cols-2 rounded-lg bg-black/[0.035] dark:bg-white/[0.055] p-0.5">
+              <button type="button" onClick={() => setTab('files')} className={`h-7 rounded-md text-[11px] ${tab === 'files' ? 'bg-white dark:bg-white/10 shadow-sm font-medium' : 'text-gray-400'}`}>
+                {copy.files}
+              </button>
+              <button type="button" onClick={() => { setTab('changes'); loadChanges(); }} className={`h-7 rounded-md text-[11px] ${tab === 'changes' ? 'bg-white dark:bg-white/10 shadow-sm font-medium' : 'text-gray-400'}`}>
+                {copy.changed}{changes?.changes?.length ? ` ${changes.changes.length}` : ''}
+              </button>
+            </div>
+          </div>
+          {error && <div className="mx-3 mt-2 rounded-lg bg-red-500/8 px-2.5 py-2 text-[10px] leading-4 text-red-600 dark:text-red-300">{error}</div>}
+
+          {tab === 'files' ? (
+            <>
+              <div className="shrink-0 px-3 py-2">
+                <div className="h-8 px-2.5 rounded-lg bg-black/[0.035] dark:bg-white/[0.055] flex items-center gap-2">
+                  <Search size={13} className="text-gray-400" />
+                  <input
+                    value={query}
+                    onChange={event => setQuery(event.target.value)}
+                    placeholder={copy.search}
+                    className="min-w-0 flex-1 bg-transparent outline-none text-[11px] placeholder:text-gray-400"
+                  />
+                  {searching && <RefreshCw size={12} className="animate-spin text-gray-400" />}
+                  {query && <button type="button" onClick={() => setQuery('')} className="text-gray-400"><X size={12} /></button>}
+                </div>
+              </div>
+              <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-2 pb-3">
+                {rows ? rows.map(entry => (
+                  <div key={entry.relativePath} className="group h-9 px-2 flex items-center gap-2 rounded-lg hover:bg-black/[0.04] dark:hover:bg-white/[0.05]">
+                    <button type="button" onClick={() => showFile(entry)} className="min-w-0 flex-1 flex items-center gap-2 text-left" title={entry.relativePath}>
+                      <FileText size={14} className="shrink-0 text-gray-400" />
+                      <span className="min-w-0">
+                        <span className="block truncate text-[11px]">{entry.name}</span>
+                        <span className="block truncate text-[9px] text-gray-400">{entry.relativePath}</span>
+                      </span>
+                    </button>
+                    <button type="button" onClick={() => onAddReference(entry.relativePath)} className={`w-6 h-6 rounded-md flex items-center justify-center ${referencedPaths.has(entry.relativePath) ? 'text-blue-500 bg-blue-500/10' : 'opacity-0 group-hover:opacity-100 text-gray-400'}`} title={copy.add}>
+                      <Plus size={13} />
+                    </button>
+                  </div>
+                )) : (
+                  <WorkspaceTree
+                    entriesByDirectory={entriesByDirectory}
+                    expanded={expanded}
+                    loadingDirectories={loadingDirectories}
+                    onToggle={toggleDirectory}
+                    onPreview={showFile}
+                    onAddReference={onAddReference}
+                    onOpenExternal={(entry) => openWorkspacePath('open_codex_workspace_file', entry.relativePath)}
+                    onOpenReader={(entry) => openWorkspacePath('open_code_reader', entry.relativePath)}
+                    systemOpenAvailable={systemOpenAvailable}
+                    referencedPaths={referencedPaths}
+                    copy={copy}
+                  />
+                )}
+                {!searching && rows && rows.length === 0 && (
+                  <div className="py-10 text-center text-[11px] text-gray-400">{copy.noFiles}</div>
+                )}
+              </div>
+            </>
+          ) : (
+            <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-2 py-3">
+              {sessionId ? (
+                <>
+                  {!changes?.baselineAvailable && (
+                    <div className="mx-1 mb-2 rounded-lg bg-amber-500/8 px-2.5 py-2 text-[10px] leading-4 text-amber-700 dark:text-amber-300">
+                      {copy.noBaseline}
+                    </div>
+                  )}
+                  {changes?.branch && <div className="px-2 pb-2 text-[10px] text-gray-400">{copy.branch} · {changes.branch}</div>}
+                  {(changes?.changes || []).map(change => (
+                    <div
+                      key={`${change.status}:${change.relativePath}`}
+                      className="group min-h-11 px-2 py-1.5 flex items-center gap-2 rounded-lg hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+                    >
+                      <button type="button" onClick={() => showDiff(change)} className="min-w-0 flex-1 flex items-center gap-2 text-left" title={change.relativePath}>
+                        <span className={`min-w-10 h-5 px-1.5 rounded-md inline-flex items-center justify-center text-[9px] font-medium ${statusTone(change.status)}`}>
+                          {changeLabel(change.status, copy)}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[11px]" title={change.relativePath}>{change.relativePath}</span>
+                          <span className="block mt-0.5 truncate text-[9px] text-gray-400">{originLabel(change.origin, copy)}{change.staged ? ` · ${copy.staged}` : ''}</span>
+                        </span>
+                        <ChevronRight size={12} className="shrink-0 text-gray-400" />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={referencedPaths.has(change.relativePath) ? copy.addedPath(change.relativePath) : copy.addPath(change.relativePath)}
+                        title={referencedPaths.has(change.relativePath) ? copy.added : copy.add}
+                        onClick={() => onAddReference(change.relativePath)}
+                        className={`w-6 h-6 shrink-0 rounded-md flex items-center justify-center transition-opacity ${
+                          referencedPaths.has(change.relativePath)
+                            ? 'text-blue-500 bg-blue-500/10'
+                            : 'text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]'
+                        }`}
+                      >
+                        <Plus size={13} />
+                      </button>
+                    </div>
+                  ))}
+                  {changes && changes.changes.length === 0 && (
+                    <div className="py-12 text-center text-[11px] text-gray-400">{copy.noChanges}</div>
+                  )}
+                </>
+              ) : (
+                // draft（无会话）模式：变更对比依赖会话基线，给专属空态而非复用旧会话文案。
+                <div className="py-12 px-4 text-center text-[11px] leading-5 text-gray-400">{copy.noSessionChanges}</div>
+              )}
+            </div>
+          )}
+      </>
+      {viewer && (
+        <CodeViewerModal
+          name={viewer.name}
+          relativePath={viewer.relativePath}
+          preview={viewer.preview}
+          diff={viewer.diff}
+          loading={viewer.loading}
+          error={viewer.error}
+          onClose={() => setViewer(null)}
+          onOpen={systemOpenAvailable
+            ? () => openWorkspacePath('open_codex_workspace_file', viewer.relativePath)
+            : undefined}
+          onReveal={systemOpenAvailable
+            ? () => openWorkspacePath('reveal_codex_workspace_file', viewer.relativePath)
+            : undefined}
+          onOpenInNewWindow={systemOpenAvailable
+            ? async () => {
+                const opened = viewer.diff
+                  ? await openWorkspacePath('open_code_reader', viewer.relativePath, { kind: 'diff' })
+                  : await openWorkspacePath('open_code_reader', viewer.relativePath);
+                if (opened) setViewer(null);
+              }
+            : undefined}
+          copy={copy}
+        />
+      )}
+    </RightDockPanel>
+  );
+}

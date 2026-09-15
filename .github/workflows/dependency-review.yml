@@ -1,0 +1,44 @@
+name: dependency-review
+
+on:
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+# Cancel superseded runs for the same ref to avoid queueing and wasted runner
+# minutes. Only PR runs may cancel each other: on merge_group and main pushes
+# github.ref is refs/heads/main, so an unconditional cancel would let
+# concurrent merge-queue entries kill each other's required-check context
+# (same failure class pr-check guards against).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  dependency-review:
+    name: dependency-review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Checkout exists only so the shared memory setup script can run; the
+      # dependency review itself works purely through the API.
+      - uses: actions/checkout@v7
+
+      - name: Set up zram and swap
+        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+
+      - name: 确认队列中的 PR 已通过依赖审查
+        if: github.event_name == 'merge_group'
+        run: echo "依赖审查已在各 PR 入队前验证"
+
+      - name: Review dependency changes
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          vulnerability-check: true
+          license-check: true
+          retry-on-snapshot-warnings: true

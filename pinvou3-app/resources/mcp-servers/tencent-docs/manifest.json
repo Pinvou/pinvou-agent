@@ -1,0 +1,41 @@
+{
+  "id": "tencent-docs",
+  "name": "腾讯文档 MCP",
+  "description": "接入腾讯文档官方远程 MCP，读写在线文档/表格/幻灯片/智能表格，管理知识库空间与文件。需要腾讯文档个人 Token（官方页面 QQ/微信扫码获取），密钥只写入本机系统凭据。",
+  "version": "1.0.0",
+  "icon": "filetext",
+  "category": "协作",
+  "mcp_tools": [],
+  "command": "",
+  "args": [],
+  "validate_on_install": true,
+  "secret_headers": [
+    {
+      "header": "Authorization",
+      "scheme": "",
+      "source_key": "TENCENT_DOCS_TOKEN",
+      "provider": "tencent-docs",
+      "required": true
+    }
+  ],
+  "servers": [
+    {
+      "name": "tencent-docs",
+      "url": "https://docs.qq.com/openapi/mcp"
+    },
+    {
+      "name": "tdoc-slide",
+      "url": "https://docs.qq.com/api/v6/slide/mcp"
+    },
+    {
+      "name": "tdoc-doc",
+      "url": "https://docs.qq.com/api/v6/doc/mcp"
+    },
+    {
+      "name": "tdoc-sheet",
+      "url": "https://docs.qq.com/api/v6/sheet/mcp"
+    }
+  ],
+  "companion_skills": ["tencent-docs-skill"],
+  "pip_dependencies": []
+}
