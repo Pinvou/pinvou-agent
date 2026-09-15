@@ -221,6 +221,7 @@ const ProjectGroupHeader = ({
           type="button"
           data-testid="project-folder-unavailable"
           title={rootPath}
+          aria-label={`${t.uiProjects.folderUnavailable} · ${rootPath}`}
           disabled={busy}
           onClick={(e) => { e.stopPropagation(); onRebind && onRebind(rootPath); }}
           className="mr-2 shrink-0 max-w-[9rem] truncate rounded-full bg-[#FCE8E6] dark:bg-[#3C2A29] px-2 py-0.5 text-[11px] text-[#C5221F] dark:text-[#F28B82] hover:opacity-80 disabled:opacity-50"
@@ -228,16 +229,20 @@ const ProjectGroupHeader = ({
           {t.uiProjects.folderUnavailable} · {t.uiProjects.rebindFolder}
         </button>
       ))}
-      {hiddenCount > 0 && (
+      {/* 多根折叠切换(m3/Nit 13):收起态显示 +N 并可展开;展开态容器换行,
+          同一按钮收起。展开/收起都有 aria-label,各徽标以路径区分可访问名。 */}
+      {unavailableRootList.length > 1 && (
         <button
           type="button"
           data-testid="project-folder-unavailable-more"
-          title={unavailableRootList.slice(visibleRoots.length).join('\n')}
+          aria-label={showAllUnavailableRoots ? t.uiProjects.rebindRootsCollapse : t.uiProjects.rebindRootsExpand}
+          title={showAllUnavailableRoots ? t.uiProjects.rebindRootsCollapse : unavailableRootList.slice(1).join('\n')}
           disabled={busy}
-          onClick={(e) => { e.stopPropagation(); setShowAllUnavailableRoots(true); }}
-          className="mr-2 shrink-0 rounded-full bg-[#FCE8E6] dark:bg-[#3C2A29] px-2 py-0.5 text-[11px] font-medium text-[#C5221F] dark:text-[#F28B82] hover:opacity-80 disabled:opacity-50"
+          onClick={(e) => { e.stopPropagation(); setShowAllUnavailableRoots(v => !v); }}
+          className="mr-2 shrink-0 flex items-center gap-0.5 rounded-full bg-[#FCE8E6] dark:bg-[#3C2A29] px-2 py-0.5 text-[11px] font-medium text-[#C5221F] dark:text-[#F28B82] hover:opacity-80 disabled:opacity-50"
         >
-          +{hiddenCount}
+          {!showAllUnavailableRoots && <span>+{hiddenCount}</span>}
+          <ChevronDown size={11} className={`shrink-0 transition-transform ${showAllUnavailableRoots ? '' : '-rotate-90'}`} />
         </button>
       )}
       {hasMenu && (

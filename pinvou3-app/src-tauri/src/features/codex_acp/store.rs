@@ -170,13 +170,16 @@ pub struct CodeSessionSidecar {
 /// `rebind_workspace_prefix` 的产出。
 #[derive(Debug, Default)]
 pub struct RebindWorkspacePrefixOutcome {
-    /// 受影响 (session_id, 平移后路径)：索引命中的会话 + 索引外孤儿 sidecar。
+    /// 受影响 (session_id, 平移后路径)：索引命中的会话 + 写入成功的孤儿
+    /// sidecar。sidecar 落盘失败的孤儿不入此表——sidecar 即其绑定,声称
+    /// 已平移到新路径是虚报(评审 #463 nit)。
     pub affected: Vec<(String, PathBuf)>,
-    /// 本次 sidecar 重写落盘失败的会话。孤儿以 sidecar 为唯一权威载体，
-    /// 上层（rebind_workspace_root）据 durable_session_record_is_absent 把
-    /// 名单内的孤儿计入失败而非成功（评审 #463 m2）；索引内会话另走补写
-    /// 段重试，不在此列处置。
-    pub sidecar_write_failed: Vec<String>,
+    /// sidecar 最终陈旧的会话:本跑内已无自愈路径。两种来源——孤儿
+    /// (重写段失败,没有补写路径)与索引会话(重写+补写两趟都失败)。
+    /// 陈旧 sidecar 仍在 `from` 前缀下,命令层应计入 failed_session_ids,
+    /// 用户重跑时磁盘前缀扫描会改写它而收敛;不报,索引损坏时恢复流程
+    /// 会复活旧路径、静默撤销重绑定(评审 #463 Major 2)。
+    pub sidecar_final_stale: Vec<String>,
 }
 
 fn code_session_sidecar_version() -> u32 {
@@ -640,8 +643,10 @@ impl SessionAgentStore {
     /// 调用方必须传存储原值（前端取项目 store 的 root 展示串），传别名会
     /// 静默半改写。
     ///
-    /// 返回受影响 (session_id, 新路径) 及 sidecar 落盘失败名单：孤儿以
-    /// sidecar 为唯一权威载体，写失败不得被上层计入成功（评审 #463 m2）。
+    /// 返回受影响 (session_id, 新路径) 及 sidecar 最终陈旧名单（孤儿重写
+    /// 失败、或索引会话重写+补写两趟都失败——本跑内已无自愈路径，命令层
+    /// 应计入 failed_session_ids，重跑由磁盘前缀扫描收敛，评审 #463 m2 /
+    /// Major 2）。
     pub fn rebind_workspace_prefix(
         &self,
         from: &Path,
@@ -651,7 +656,7 @@ impl SessionAgentStore {
             return Ok(RebindWorkspacePrefixOutcome::default());
         }
         let mut affected: Vec<(String, PathBuf)> = Vec::new();
-        let mut sidecar_write_failed: Vec<String> = Vec::new();
+        let mut sidecar_final_stale: Vec<String> = Vec::new();
         {
             let mut records = self.records.write();
             for (session_id, record) in records.iter_mut() {
@@ -707,7 +712,7 @@ impl SessionAgentStore {
                 } else {
                     to.join(suffix)
                 };
-                if let Err(error) = persist_code_session_sidecar(
+                match persist_code_session_sidecar(
                     &code_session_sidecar_path(&self.path, &session_id),
                     &CodeSessionSidecar {
                         version: CODE_SESSION_SIDECAR_VERSION,
@@ -716,25 +721,34 @@ impl SessionAgentStore {
                         bound_at: sidecar.bound_at,
                     },
                 ) {
-                    // 旧 sidecar 仍在盘上,重启恢复会复活旧目录;记日志并让
-                    // 索引内会话走下面的补写段重试(评审 #463 minor)。孤儿
-                    // 没有补写路径,失败名单交命令层计入 failed(评审 #463 m2)。
-                    eprintln!(
-                        "[pinvou3-app] 重绑定改写原生代码会话 sidecar 失败（{session_id}）: {error:#}"
-                    );
-                    sidecar_write_failed.push(session_id.clone());
-                } else {
-                    sidecar_rewritten.push(session_id.clone());
-                }
-                // 索引缺失的孤儿会话也计入受影响名单（索引里改不到它们）。
-                if !affected.iter().any(|(sid, _)| *sid == session_id) {
-                    affected.push((session_id, next));
+                    Err(error) => {
+                        // 旧 sidecar 仍在盘上,重启恢复会复活旧目录;索引内
+                        // 会话走下面的补写段重试,孤儿没有补写路径——两种
+                        // 情况都先进最终陈旧名单(索引会话若补写成功会被
+                        // 移出),交命令层计入 failed(评审 #463 m2/Major 2)。
+                        eprintln!(
+                            "[pinvou3-app] 重绑定改写原生代码会话 sidecar 失败（{session_id}）: {error:#}"
+                        );
+                        sidecar_final_stale.push(session_id.clone());
+                    }
+                    Ok(()) => {
+                        sidecar_rewritten.push(session_id.clone());
+                        // 索引缺失的孤儿:写入成功才计入受影响名单——
+                        // sidecar 即其绑定,失败时声称已平移到 next 是虚报
+                        // (评审 #463 nit)。索引内会话已在 affected 中。
+                        if !affected.iter().any(|(sid, _)| *sid == session_id) {
+                            affected.push((session_id, next));
+                        }
+                    }
                 }
             }
         }
-        // 索引内已改绑的原生代码会话补写 sidecar（失败仅记日志，启动回填自愈）。
-        // 跳过上面已重写的会话:重写段保留了原 bound_at,这里再以 now 回填
-        // 是双写 + 丢失首次绑定时间(评审 #463 minor)。
+        // 索引内已改绑的原生代码会话补写 sidecar。跳过上面已重写的会话:
+        // 重写段保留了原 bound_at,这里再以 now 回填是双写 + 丢失首次绑定
+        // 时间(评审 #463 minor)。补写也失败 = 最终陈旧:回填自愈只补
+        // *缺失*的 sidecar,boot restore 在索引完好时跳过 sidecar,无人
+        // 会再改写这条陈旧记录——留在名单里交命令层计入 failed;补写
+        // 成功则移出名单(评审 #463 Major 2)。
         {
             let records = self.records.read();
             for (session_id, path) in &affected {
@@ -745,21 +759,22 @@ impl SessionAgentStore {
                     .get(session_id)
                     .is_some_and(|record| record.mode.is_code())
                 {
-                    // 失败在 write_code_session_sidecar 内逐条记日志并返回
-                    // false:索引是运行时权威,不阻断;缺失 sidecar 由启动
-                    // backfill 自愈。
-                    write_code_session_sidecar(
+                    if write_code_session_sidecar(
                         &self.path,
                         session_id,
                         CodexWorkspaceKind::Project,
                         Some(path.clone()),
-                    );
+                    ) {
+                        sidecar_final_stale.retain(|sid| sid != session_id);
+                    } else if !sidecar_final_stale.iter().any(|sid| sid == session_id) {
+                        sidecar_final_stale.push(session_id.clone());
+                    }
                 }
             }
         }
         Ok(RebindWorkspacePrefixOutcome {
             affected,
-            sidecar_write_failed,
+            sidecar_final_stale,
         })
     }
 
@@ -1530,7 +1545,7 @@ mod tests {
             .collect();
         ids.sort_unstable();
         assert_eq!(ids, vec!["s1", "s2"]);
-        assert!(outcome.sidecar_write_failed.is_empty());
+        assert!(outcome.sidecar_final_stale.is_empty());
         assert_eq!(
             store.get("s1").workspace_path.as_deref(),
             Some(to.as_path())
@@ -1559,7 +1574,7 @@ mod tests {
         // 幂等:再跑一遍 from→to 无命中。
         let rerun = store.rebind_workspace_prefix(&from, &to).unwrap();
         assert!(rerun.affected.is_empty());
-        assert!(rerun.sidecar_write_failed.is_empty());
+        assert!(rerun.sidecar_final_stale.is_empty());
 
         // 孤儿 sidecar(索引无记录)也会被改写,重启恢复不会复活旧目录。
         persist_code_session_sidecar(
@@ -1583,7 +1598,7 @@ mod tests {
         fs::create_dir_all(root.join("to2")).unwrap();
         // 上一步 to 已改走;此轮 from 无索引命中,但孤儿 sidecar 命中。
         assert!(affected.affected.iter().any(|(sid, _)| sid == "orphan"));
-        assert!(affected.sidecar_write_failed.is_empty());
+        assert!(affected.sidecar_final_stale.is_empty());
         let orphan = read_code_session_sidecar(&store.path, "orphan").unwrap();
         assert_eq!(
             orphan.workspace_path.as_deref(),
@@ -1620,23 +1635,46 @@ mod tests {
             },
         )
         .unwrap();
-        // 占住持久化的临时文件路径:写入 code-session.json.tmp 时即失败,
-        // rename 永远走不到,跨平台稳定地模拟落盘故障。
-        fs::create_dir_all(
-            code_session_sidecar_path(&store.path, "orphan-deny").with_extension("json.tmp"),
-        )
-        .unwrap();
+        // 索引内原生代码会话:重写段与补写段都会尝试改写它的 sidecar。
+        store
+            .bind_code_native_session(
+                "indexed-deny",
+                CodexWorkspaceKind::Project,
+                Some(from.clone()),
+            )
+            .unwrap();
+        // 占住两个会话持久化的临时文件路径:写入 code-session.json.tmp 时
+        // 即失败,rename 永远走不到,跨平台稳定地模拟落盘故障——孤儿只有
+        // 重写段,索引会话两趟都撞同一堵墙,构成"最终陈旧"。
+        for sid in ["orphan-deny", "indexed-deny"] {
+            fs::create_dir_all(
+                code_session_sidecar_path(&store.path, sid).with_extension("json.tmp"),
+            )
+            .unwrap();
+        }
 
         let outcome = store.rebind_workspace_prefix(&from, &to).unwrap();
+        let mut stale = outcome.sidecar_final_stale.clone();
+        stale.sort();
         assert_eq!(
-            outcome.sidecar_write_failed,
-            vec!["orphan-deny".to_string()]
+            stale,
+            vec!["indexed-deny".to_string(), "orphan-deny".to_string()]
         );
-        assert!(outcome.affected.iter().any(|(sid, _)| sid == "orphan-deny"));
-        // 盘上 sidecar 仍是旧路径:命令层据此把孤儿计入 failed 而非成功(m2),
-        // 失败重跑时旧路径仍命中 from 前缀,重试可收敛。
-        let stale = read_code_session_sidecar(&store.path, "orphan-deny").unwrap();
-        assert_eq!(stale.workspace_path.as_deref(), Some(from.as_path()));
+        // 孤儿写入失败不得进 affected——sidecar 即其绑定,声称已平移是虚报
+        // (评审 #463 nit);索引会话索引已改写,affected 如实包含。
+        assert!(!outcome.affected.iter().any(|(sid, _)| sid == "orphan-deny"));
+        assert!(
+            outcome
+                .affected
+                .iter()
+                .any(|(sid, _)| sid == "indexed-deny")
+        );
+        // 盘上 sidecar 仍是旧路径:命令层据此把两者计入 failed 而非成功
+        // (Major 2),失败重跑时旧路径仍命中 from 前缀,重试可收敛。
+        for sid in ["orphan-deny", "indexed-deny"] {
+            let stale = read_code_session_sidecar(&store.path, sid).unwrap();
+            assert_eq!(stale.workspace_path.as_deref(), Some(from.as_path()));
+        }
 
         fs::remove_dir_all(&root).unwrap();
     }

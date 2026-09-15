@@ -19,13 +19,13 @@ use crate::features::sessions::SessionStore;
 use super::sessions::ensure_chat_session;
 
 /// 项目事件只走本地 emit:projects 域按 bridge 契约是桌面端专属,
-/// remote-control 的转发白名单没有该事件,转发只会被中继拒绝并每次
-/// 刷一条拒绝日志(评审 #447 finding 11:在消费方出现前不转发)。
+/// remote-control 正式支持项目列表之前不转发(评审 #447 finding 11:在
+/// 消费方出现前不转发)。转发被拒的实际位置是 `policy.events` 闸门
+/// (remote_control/manager 的 publish_event_inner),拒绝经
+/// `forward_local_event` 记日志;`RUST_FORWARDED_EVENTS` 只负责去重
+/// Frontend 来源的回声,与本裁决无关(评审 #463 minor:此前注释归属有误)。
 fn emit_project_event(app: &AppHandle, event: &str, action: &str) {
     let _ = app.emit(event, serde_json::json!({ "action": action }));
-    // 只走桌面 webview 通道。projects 域桌面独占(Web 桥整域缺席),远程端
-    // 正式支持项目列表之前不转发——与 remote_control 对代码会话事件的
-    // 同类裁决一致;转发不在 RUST_FORWARDED_EVENTS 白名单内会被拒并刷日志。
 }
 
 /// root 的可用性(目录是否仍在磁盘上)——前端据此渲染"文件夹不可用·重新绑定",
@@ -287,6 +287,9 @@ pub async fn rebind_workspace_root(
     acp_pool: State<'_, AcpPool>,
     engines: State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<RebindWorkspaceReport, String> {
+    // 并发栅栏(Minor 10):重绑定跨三处存储写阶段,序列化并发调用。凭证
+    // 持有到命令返回,Drop 清零。
+    let _rebind_gate = store.begin_rebind()?;
     let to_key = crate::features::codex_acp::validate_codex_project_workspace(&to)
         .map_err(|e| format!("rebind_workspace_root: 目标目录不可用: {e:#}"))?;
     if from == to_key {
@@ -325,6 +328,10 @@ pub async fn rebind_workspace_root(
     // 活跃回合栅栏:受影响会话任一在跑 prompt/turn/scheduled 轮就拒绝,
     // 等空闲后重试。scheduled 轮只记在 scheduled_running_sessions,不算
     // 进去会漏掉 spawn→submit 窗口里的在途轮(同 rewind 门口径,M5)。
+    // 已知权衡(评审 #463 Minor 9,记录在案):busy 判定读运行时的
+    // busy/configuring 标志,标志一旦卡死(进程异常退出未复位)会持续
+    // 拒绝直到重启;ACP 侧 is_turn_active 并入 configuring,配置同步窗口
+    // 同样落在拒绝范围内。不设 stale 逃生门,避免误回收在途回合的会话。
     let mut busy_ids = Vec::new();
     for (session_id, _) in &affected {
         if acp_pool.is_turn_active(session_id).await
@@ -335,10 +342,10 @@ pub async fn rebind_workspace_root(
         }
     }
     if !busy_ids.is_empty() {
-        return Err(format!(
-            "rebind_workspace_root: 会话正在运行，稍后重试: {}",
-            busy_ids.join(", ")
-        ));
+        // 类型化标记(Minor 7):busy 拒绝是栅栏正常工作的高频路径,前端按
+        // 稳定前缀映射 i18n 文案,标记后只跟会话 id 供排查(同
+        // REBIND_OLD_ROOT_EXISTS 的既有约定)。
+        return Err(format!("REBIND_SESSIONS_BUSY: {}", busy_ids.join(", ")));
     }
 
     // 顺序:项目 root → 会话绑定(索引+sidecar) → 元数据 → baseline。
@@ -347,8 +354,11 @@ pub async fn rebind_workspace_root(
     let affected_project_ids = store
         .rebind_roots(&from, &to_key)
         .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
-    // sidecar 写失败名单:m2 修复后孤儿不再被静默计入成功——孤儿以 sidecar
-    // 为唯一权威载体,落盘失败时重启恢复会复活旧目录,必须如实进 failed。
+    // sidecar 最终陈旧名单(Major 2):孤儿重写失败、或索引会话重写+补写
+    // 两趟都失败——本跑内已无自愈路径(回填只补缺失,boot restore 在索引
+    // 完好时跳过 sidecar),不报的话索引损坏时恢复会复活旧目录、静默撤销
+    // 重绑定。陈旧 sidecar 仍在 from 前缀下,计入 failed 后用户重跑,磁盘
+    // 前缀扫描即改写收敛。
     let prefix_outcome = acp_pool
         .agents()
         .rebind_workspace_prefix(&from, &to_key)
@@ -365,7 +375,7 @@ pub async fn rebind_workspace_root(
         // minor:孤儿分类只认 NotFound,不认一切 load 错误)。
         if sessions.durable_session_record_is_absent(session_id) {
             if prefix_outcome
-                .sidecar_write_failed
+                .sidecar_final_stale
                 .iter()
                 .any(|sid| sid == session_id)
             {
@@ -378,7 +388,19 @@ pub async fn rebind_workspace_root(
             continue;
         }
         match sessions.set_workspace(session_id, new_path.clone()) {
-            Ok(()) => rebound_session_ids.push(session_id.clone()),
+            Ok(()) => {
+                // 索引会话的 sidecar 两趟都失败:绑定已平移但权威 sidecar
+                // 仍是旧路径,如实计入 failed 触发用户重跑(Major 2)。
+                if prefix_outcome
+                    .sidecar_final_stale
+                    .iter()
+                    .any(|sid| sid == session_id)
+                {
+                    failed_session_ids.push(session_id.clone());
+                } else {
+                    rebound_session_ids.push(session_id.clone());
+                }
+            }
             Err(error) => {
                 eprintln!("[projects] rebind set_workspace({session_id}) failed: {error:#}");
                 failed_session_ids.push(session_id.clone());
@@ -427,6 +449,22 @@ pub async fn rebind_workspace_root(
         {
             post_busy_session_ids.push(session_id.clone());
         }
+    }
+    // 空闲运行时定向回收(评审 #463 Major 1):rebind 只平移存储绑定,驻留
+    // 进程仍持有 spawn 时的旧 cwd——ACP get_or_spawn 的复用分支不比对工作区,
+    // 原生引擎的 PreparedRuntimeModel 重建键不含 workspace,下一回合会继续
+    // 在已消失/错位的目录里执行,而 UI 承诺的是"改用新目录"。对绑定已平移
+    // 且未进入新回合的会话回收运行时,下次 send 走 lazy respawn 以新目录
+    // 重建(同 rewind 的回收语义)。post_busy 会话在跑在途回合,不动:回合
+    // 对着旧目录执行是该修复的已知边界,已由 rebindBusyAfter 文案提示。
+    let post_busy: std::collections::HashSet<&str> =
+        post_busy_session_ids.iter().map(String::as_str).collect();
+    for session_id in &rebound_session_ids {
+        if post_busy.contains(session_id.as_str()) {
+            continue;
+        }
+        acp_pool.evict(session_id).await;
+        engines.evict(session_id).await;
     }
     Ok(RebindWorkspaceReport {
         rebound_session_ids,
