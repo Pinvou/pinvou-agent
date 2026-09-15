@@ -236,6 +236,7 @@ test('native surface suspension is centrally derived for every occlusion path', 
     'bs.pinvouModal',
     'isCompactShell && isSidebarOpen',
     'isCompactShell && mobileMoreOpen',
+    'moveToProjectSession',
   ]) {
     assert.ok(main.includes(blocker), `missing native-surface blocker: ${blocker}`);
   }
