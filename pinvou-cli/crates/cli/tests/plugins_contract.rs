@@ -481,6 +481,37 @@ fn import_md_file_with_and_without_frontmatter() {
     );
 }
 
+/// Regression: two directories whose names sanitize to the generic "skill"
+/// fallback (pure non-ASCII names) must not collapse onto one constant id.
+/// The wrapper's anti-collision branch hashes the RAW name (GUI FNV collision
+/// defense); feeding it the pre-sanitized name hashed the constant "skill"
+/// instead, so the second import failed with an id-exists error.
+#[test]
+fn import_directories_with_non_ascii_names_get_distinct_fallback_ids() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("import-nonascii-dirs");
+
+    let mut ids = Vec::new();
+    for name in ["技能一", "技能二"] {
+        let dir = home.path().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        // No frontmatter name: the fallback id must derive from the raw
+        // directory name, so the bodies stay distinct too.
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("body for {name} without a frontmatter name"),
+        )
+        .unwrap();
+        let value = run_json(&["pinvoy", "plugins", "import", dir.to_str().unwrap()]);
+        ids.push(value["id"].as_str().expect("string id").to_owned());
+    }
+    assert_ne!(ids[0], ids[1], "distinct names must yield distinct ids");
+    assert!(
+        ids[0].starts_with("skill-") && ids[1].starts_with("skill-"),
+        "pure non-ASCII names must land on the skill-<hash> fallback form"
+    );
+}
+
 #[test]
 fn import_rejects_missing_path_and_unsupported_extension() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -744,19 +775,21 @@ fn disable_enable_scope_round_trip_persists_disabled_bundles_json() {
         "pinvoy", "plugins", "disable", "weather", "--scope", "plain",
     ]);
     let file = disabled_bundles_json(home.path());
-    assert_eq!(
-        file["scopes"]["plain"],
-        serde_json::json!(["weather"]),
-        "file: {file}"
-    );
+    assert_eq!(file["scopes"]["plain"], serde_json::json!(["weather"]));
 
     run_ok(&["pinvoy", "plugins", "disable", "weather", "--scope", "code"]);
     let file = disabled_bundles_json(home.path());
     // Uninitialized code scope defaults to deny-all (builtin CLI connector
     // ids included); disabling weather freezes that list plus weather.
     let code = file["scopes"]["code"].as_array().unwrap();
-    assert!(code.contains(&serde_json::json!("weather")), "file: {file}");
-    assert!(code.contains(&serde_json::json!("feishu")), "file: {file}");
+    assert!(
+        code.contains(&serde_json::json!("weather")),
+        "disabled code scope should record weather"
+    );
+    assert!(
+        code.contains(&serde_json::json!("feishu")),
+        "disabled code scope should keep the builtin feishu connector"
+    );
 
     // Default scope is `both`.
     run_ok(&["pinvoy", "plugins", "disable", "obsidian"]);
@@ -801,7 +834,7 @@ fn toggles_verify_against_the_owner_package_for_remapped_ids() {
     assert_eq!(
         disabled["persistence_verified"],
         serde_json::json!(true),
-        "disable of a remapped id is exactly verifiable: {disabled}"
+        "disable of a remapped id is exactly verifiable"
     );
     assert_eq!(
         disabled_bundles_json(home.path())["scopes"]["plain"],
@@ -820,7 +853,7 @@ fn toggles_verify_against_the_owner_package_for_remapped_ids() {
     assert_eq!(
         enabled["persistence_verified"],
         serde_json::json!(true),
-        "enable of a remapped id is exactly verifiable: {enabled}"
+        "enable of a remapped id is exactly verifiable"
     );
     assert_eq!(
         disabled_bundles_json(home.path())["scopes"]["plain"],
@@ -867,10 +900,7 @@ fn tools_list_shows_embedded_catalog_with_installed_state() {
 
     let human = run_ok(&["pinvoy", "plugins", "tools", "list"]);
     for known in ["weather", "qcc", "obsidian", "pptx"] {
-        assert!(
-            human.contains(known),
-            "catalog should list {known}: {human}"
-        );
+        assert!(human.contains(known), "catalog should list {known}");
     }
     assert!(!human.contains("installed\t"), "nothing installed yet");
 
@@ -898,7 +928,7 @@ fn tools_list_shows_embedded_catalog_with_installed_state() {
     let installed_only = run_ok(&["pinvoy", "plugins", "tools", "list", "--installed-only"]);
     assert!(
         installed_only.is_empty(),
-        "nothing installed: {installed_only}"
+        "installed-only list must be empty before any install"
     );
 }
 
@@ -1188,7 +1218,7 @@ fn recycle_round_trip_via_fixture() {
     ]);
     let value = run_json(&["pinvoy", "plugins", "recycle", "list"]);
     let entries = value["recycled"].as_array().expect("recycled array");
-    assert_eq!(entries.len(), 1, "value: {value}");
+    assert_eq!(entries.len(), 1, "exactly one recycled entry");
     assert_eq!(entries[0]["id"], FIXTURE_ZIP_SKILL);
     assert_eq!(entries[0]["kind"], "skill");
     assert_eq!(entries[0]["package_missing"], serde_json::json!(false));
@@ -1286,21 +1316,21 @@ fn readiness_zero_state_reports_uninstalled_catalog() {
         assert_eq!(
             bundle["installed"],
             serde_json::json!(false),
-            "zero state: {bundle}"
+            "zero state: catalog bundles are uninstalled"
         );
         // Registry readiness for credential-free packages is `ready` even
         // when uninstalled (GUI bundle_readiness derives the same value);
         // packages with required credentials report missing_credentials.
         if bundle["ready"] == serde_json::json!(true) {
-            assert_eq!(bundle["reason"], serde_json::Value::Null, "{bundle}");
+            assert_eq!(bundle["reason"], serde_json::Value::Null);
         } else {
             assert!(
                 bundle["reason"].is_string(),
-                "not-ready bundles carry a reason: {bundle}"
+                "not-ready bundles carry a reason"
             );
         }
         for field in ["bundle_id", "kind", "installed", "ready", "reason"] {
-            assert!(bundle.get(field).is_some(), "missing {field}: {bundle}");
+            assert!(bundle.get(field).is_some(), "missing {field}");
         }
     }
     let weather = bundles
@@ -1311,7 +1341,7 @@ fn readiness_zero_state_reports_uninstalled_catalog() {
     assert_eq!(
         weather["reason"],
         serde_json::json!("missing_credentials"),
-        "weather requires AMAP_KEY: {weather}"
+        "weather requires AMAP_KEY"
     );
     // Credential-free remote MCP is registry-ready though uninstalled.
     let canva = bundles
