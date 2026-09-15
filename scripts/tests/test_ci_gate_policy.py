@@ -546,6 +546,22 @@ class CiGatePolicyTests(unittest.TestCase):
                 f"ubuntu job '{job_name}' must invoke scripts/ci-memory-setup.sh"
                 " via an absolute path (some jobs set a run working-directory)",
             )
+            # 内核态挂起无法被脚本内部的用户态 timeout 中断,workflow 侧的
+            # timeout 240 + 非致命包装是唯一防线(脚本头注释所声称的最后
+            # 一道防线)。漏写包装的 job 挂死时会烧满整个 job 时限,守卫
+            # 在此强制每个调用点结构一致。
+            self.assertIn(
+                'run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"',
+                job,
+                f"ubuntu job '{job_name}' must hard-cap ci-memory-setup with"
+                " 'timeout --kill-after=15 240' (userspace hang backstop)",
+            )
+            self.assertIn(
+                '|| echo "::warning::ci-memory-setup',
+                job,
+                f"ubuntu job '{job_name}' must keep ci-memory-setup non-fatal"
+                " (degrade to stock runner memory with a ::warning)",
+            )
 
     def test_windows_rust_test_cumulative_main_push_is_path_independent(self):
         # Main's Windows regression must remain independent of adjacent diff paths.
@@ -921,19 +937,58 @@ class ReleaseDiskAndImagePolicyTests(unittest.TestCase):
         # 与 release 构建同基线(ubuntu-22.04 / ubuntu-22.04-arm)。发布二进制
         # 链接构建机的 glibc,测试/校验必须跑在发布同款系统上;镜像升级必须
         # 全仓一次性协调进行,禁止 ubuntu-latest 等滚动镜像或个别 job 单独换版。
+        # 剥掉 YAML 注释再扫:注释里的版本记述(如迁移说明)不应触发守卫,
+        # 守卫只管真实 runs-on。
         allowed = {"ubuntu-22.04", "ubuntu-22.04-arm"}
-        for workflow in sorted((ROOT / ".github/workflows").glob("*.yml")):
-            text = workflow.read_text(encoding="utf-8")
+        workflows = sorted(
+            list((ROOT / ".github/workflows").glob("*.yml"))
+            + list((ROOT / ".github/workflows").glob("*.yaml"))
+        )
+        self.assertTrue(workflows, "no workflow files found under .github/workflows")
+        for workflow in workflows:
+            text = _without_yaml_comments(workflow.read_text(encoding="utf-8"))
             self.assertNotIn(
                 "ubuntu-latest",
                 text,
-                f"{workflow.name}: ubuntu-latest 是滚动镜像,违反单一镜像公约",
+                f"{workflow.name}: ubuntu-latest 是滚动镜像,违反单一镜像公约,"
+                "必须钉到与 release 一致的 ubuntu-22.04",
             )
             for image in sorted(set(re.findall(r"ubuntu-\d+\.\d+(?:-arm)?", text))):
                 self.assertIn(
                     image,
                     allowed,
-                    f"{workflow.name}: Linux 镜像 '{image}' 偏离发布基线",
+                    f"{workflow.name}: Linux 镜像 '{image}' 偏离发布基线,"
+                    "镜像升级必须全仓一次性进行",
+                )
+
+    def test_audited_redundant_apt_packages_stay_pruned(self):
+        # 2026-09-15 探针逐包审计结论(单包模拟安装,安装集合不变即冗余):
+        # libgtk-3-dev/libsoup-3.0-dev/libx11-dev/libxi-dev/libxtst-dev 均被
+        # libwebkit2gtk-4.1-dev 硬依赖链传递安装,librsvg2-dev 构建不需要
+        # (Cargo 无 rsvg crate)。任何 workflow 的安装清单回填它们都会拖慢
+        # 依赖安装并占用单盘 runner 的构建磁盘。守卫剥注释后全文扫描:审计
+        # 注释允许提及这些名字,但非注释文本出现即拒绝(含多行续行)。
+        redundant = (
+            "libgtk-3-dev",
+            "libsoup-3.0-dev",
+            "librsvg2-dev",
+            "libx11-dev",
+            "libxi-dev",
+            "libxtst-dev",
+        )
+        workflows = sorted(
+            list((ROOT / ".github/workflows").glob("*.yml"))
+            + list((ROOT / ".github/workflows").glob("*.yaml"))
+        )
+        self.assertTrue(workflows, "no workflow files found under .github/workflows")
+        for workflow in workflows:
+            text = _without_yaml_comments(workflow.read_text(encoding="utf-8"))
+            for package in redundant:
+                self.assertNotIn(
+                    package,
+                    text,
+                    f"{workflow.name}: 审计判定的冗余 apt 包 '{package}' 不得回填"
+                    "(由 libwebkit2gtk-4.1-dev 传递安装或构建不需要)",
                 )
 
 

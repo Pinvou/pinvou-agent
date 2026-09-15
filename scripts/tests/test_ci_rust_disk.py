@@ -150,8 +150,16 @@ class RustDiskTests(unittest.TestCase):
     def test_glob_resolved_mount_point_is_rejected(self):
         julia = self.root / "julia2.0.0"
         julia.mkdir()
+
+        # Only the glob-resolved entry reports itself as a mount point, so the
+        # fixed allowlist entries validate normally first and the assertion
+        # below really exercises the glob item (an unconditional True stub
+        # would trip on the first fixed entry and never reach the glob scan).
+        def mounted(path):
+            return path == julia
+
         with patch.object(DISK, "GLOB_SDK_DIRS", ((self.root, "julia*"),)), patch.object(
-            Path, "is_mount", lambda self: True
+            Path, "is_mount", mounted
         ):
             with self.assertRaisesRegex(RuntimeError, "unexpected"):
                 DISK.prepare_disk(self.workspace)
@@ -181,9 +189,26 @@ class RustDiskTests(unittest.TestCase):
                 DISK.prepare_disk(self.workspace)
             self.assertFalse(sdk.exists())
             sdk.mkdir()
+            with patch.object(DISK.subprocess, "run", side_effect=DISK.subprocess.TimeoutExpired(cmd="du", timeout=DISK.DU_TIMEOUT_SECS)):
+                DISK.prepare_disk(self.workspace)
+            self.assertFalse(sdk.exists())
+            sdk.mkdir()
             with patch.object(DISK.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout="")):
                 DISK.prepare_disk(self.workspace)
         self.assertFalse(sdk.exists())
+
+    def test_non_positive_min_free_gib_is_rejected(self):
+        # A zero/negative threshold would silently disable the ENOSPC gate.
+        with self.assertRaisesRegex(RuntimeError, "min_free_gib must be >= 1"):
+            DISK.prepare_disk(self.workspace, min_free_gib=0)
+        self.assertTrue(self.sdk.exists())
+        with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(self.workspace)}):
+            for bad in ("0", "-5", "abc"):
+                with self.subTest(value=bad):
+                    with self.assertRaises(SystemExit) as ctx:
+                        DISK.main(["--min-free-gib", bad])
+                    self.assertEqual(ctx.exception.code, 2)
+        self.assertTrue(self.sdk.exists())
 
     def test_main_fails_without_workspace(self):
         with patch.dict(os.environ, {"GITHUB_WORKSPACE": ""}):
