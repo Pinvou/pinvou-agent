@@ -898,8 +898,12 @@ fn search(
         mtime_after: after
             .map(|value| parse_date_epoch(value, "--after"))
             .transpose()?,
+        // The store filters `mtime <= ?`, so the raw day start would let a
+        // file stamped exactly at 00:00:00Z of the named day through; pass
+        // the last second of the previous day to keep the boundary truly
+        // exclusive at the store's second granularity.
         mtime_before: before
-            .map(|value| parse_date_epoch(value, "--before"))
+            .map(|value| parse_date_epoch(value, "--before").map(|epoch| epoch - 1))
             .transpose()?,
         min_size: None,
         max_size: None,
@@ -1160,6 +1164,26 @@ fn collections_add_sources(
         }
         Err(error) => return Err(feature_error("collections add-sources", error)),
     }
+    // Pre-flight the paths like `files ingest` does: `start_index` expands
+    // roots on a background thread this one-shot process kills at exit, so
+    // a nonexistent path (or a FIFO, which upstream's `is_file()` expansion
+    // silently skips) would otherwise exit 0 with the sources never
+    // enqueued and never reported.
+    for path in &paths {
+        let Ok(meta) = std::fs::metadata(path) else {
+            return Err(CliError::failed(format!(
+                "knowledge collections add-sources: source path {} does not exist",
+                path.display()
+            )));
+        };
+        if !meta.is_file() && !meta.is_dir() {
+            return Err(CliError::failed(format!(
+                "knowledge collections add-sources: source path {} is not a regular file \
+                 or directory",
+                path.display()
+            )));
+        }
+    }
     // `start_index` falls back to `index_status()` when the job create or
     // the follow-up state read fails; the reported job must then not be
     // passed off as the fresh import.
@@ -1326,6 +1350,27 @@ fn index_cancel(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError
     } else {
         open_service()?
     };
+    // Re-check on the open that will actually cancel: `cancel_index`
+    // targets the latest job at call time, so a job created between the
+    // validation open and this one must fail here instead of being
+    // cancelled unvalidated — the whole point of the pre-check above.
+    if was_active {
+        match service.index_status().job_id.as_deref() {
+            Some(active) if active == job_id => {}
+            Some(active) => {
+                return Err(CliError::failed(format!(
+                    "knowledge index cancel({job_id}): job is no longer the active/latest \
+                     index job (latest: {active}); re-run to act on {active}"
+                )));
+            }
+            None => {
+                return Err(CliError::failed(format!(
+                    "knowledge_index_job_not_found: no index job exists anymore (nothing \
+                     to cancel for {job_id})"
+                )));
+            }
+        }
+    }
     service
         .cancel_index()
         .map_err(|error| feature_error("index cancel", error))?;
@@ -1450,8 +1495,8 @@ fn index_failed(
         .map_err(|error| {
             // Upstream `ImportJobStore::failed_files_page` answers an unknown
             // job id with rusqlite's `QueryReturnedNoRows`; name the real
-            // cause instead of leaking the raw driver message (the same code
-            // `index cancel` uses).
+            // cause instead of leaking the raw driver message (the same
+            // mapping `index resume`/`index retry` use).
             if error.contains("Query returned no rows") {
                 CliError::failed(format!(
                     "knowledge_index_job_not_found: no index job {job_id} exists"

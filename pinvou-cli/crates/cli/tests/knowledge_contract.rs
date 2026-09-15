@@ -673,9 +673,10 @@ fn add_sources_indexes_a_text_file_end_to_end() {
 
     // The import runs on the `add-sources` invocation's background thread —
     // here the test process. Let it finish before the first fresh service
-    // boot: every new invocation runs the GUI's startup recovery, which
-    // recovers an in-flight job to `interrupted` (crash semantics), so
-    // polling mid-flight would disturb the live import.
+    // boot: every new invocation of a write/maintenance command opens with
+    // the GUI's startup recovery, which recovers an in-flight job to
+    // `interrupted` (crash semantics). `index status` itself opens without
+    // recovery, but the wait keeps the sequencing obvious either way.
     std::thread::sleep(std::time::Duration::from_secs(1));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let state = loop {
@@ -1075,8 +1076,16 @@ fn index_resume_rearms_a_job_stranded_by_a_dead_process() {
     // The resume child may exit (stranding the import thread again) before
     // it re-claims the item, so `total` can transiently read 0 during the
     // parsing phase; the deterministic resume contract is the re-armed state
-    // above (same job id, running, not resumable).
-    assert_eq!(state["running"], serde_json::json!(true), "state: {state}");
+    // above (same job id, not resumable). Upstream maps DB `running` to the
+    // DTO `parsing` phase with `running: true`, so preparing/running/parsing
+    // all guarantee the flag; only the finished phases legitimately read
+    // false.
+    if !matches!(
+        state["phase"].as_str(),
+        Some("done") | Some("done_with_errors")
+    ) {
+        assert_eq!(state["running"], serde_json::json!(true), "state: {state}");
+    }
     if state["phase"] == serde_json::json!("done") {
         // Only reachable when the resume child's import finished before the
         // process exited; assert the document-level end state when it is.
