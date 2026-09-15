@@ -60,7 +60,7 @@ impl Drop for TempHome {
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
-        std::fs::remove_dir_all(&self.root).unwrap();
+        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
@@ -718,9 +718,32 @@ fn add_sources_indexes_a_text_file_end_to_end() {
     // signal-only no-op that still succeeds.
     run_ok(&["pinvou", "knowledge", "index", "cancel", &job_id]);
 
-    // Resuming an unknown job surfaces the upstream error verbatim.
+    // Resume/retry validate the named id against the latest job BEFORE the
+    // recovering open (like cancel): a mistyped id refuses with exit 1 and
+    // never runs boot recovery.
     let error = execute_error(&["pinvou", "knowledge", "index", "resume", "bogus-job"]);
     assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(error.to_string().contains("active/latest"), "{error}");
+    let error = execute_error(&["pinvou", "knowledge", "index", "retry", "bogus-job", "1"]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(error.to_string().contains("active/latest"), "{error}");
+
+    // The finished job is the latest but not resumable: resume/retry name
+    // that with the friendly job-not-found code instead of leaking the raw
+    // rusqlite "Query returned no rows" driver message.
+    for arguments in [
+        vec!["pinvou", "knowledge", "index", "resume", &job_id],
+        vec!["pinvou", "knowledge", "index", "retry", &job_id, "1"],
+    ] {
+        let error = execute_error(&arguments);
+        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
+        let message = error.to_string();
+        assert!(
+            message.contains("knowledge_index_job_not_found"),
+            "{arguments:?}: {message}"
+        );
+        assert!(!message.contains("Query returned no rows"), "{message}");
+    }
 }
 
 /// A second `add-sources` behind an unfinished job for the SAME collection
@@ -807,6 +830,90 @@ fn add_sources_refuses_to_drop_sources_behind_a_resumable_job() {
     );
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `index resume`/`index retry` with an unknown job id must refuse BEFORE
+/// the recovering open (the `index cancel` rule): boot recovery flips every
+/// preparing/running job to interrupted, including an import a live
+/// desktop-app process is still running. A one-shot add-sources child leaves
+/// its job stranded in `running`; only boot recovery (or the resume itself)
+/// may flip it to interrupted, so the job reading `running` afterwards proves
+/// the mistyped commands never ran recovery.
+#[test]
+fn index_resume_and_retry_reject_unknown_ids_without_recovery() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = TempHome::new("index-resume-precheck");
+    let bin = env!("CARGO_BIN_EXE_pinvou");
+    let run_child = |args: &[&str]| {
+        let mut command = std::process::Command::new(bin);
+        command
+            .args(args)
+            .env("PINVOU3_HOME", home.path())
+            .env("PINVOU_NO_COLOR", "1");
+        command.output().expect("binary runs")
+    };
+
+    let created = run_json(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "create",
+        "--name",
+        "live",
+    ]);
+    let id = created["id"].as_i64().expect("created collection id");
+
+    // One ingestible file: enough work that the add-sources child's import
+    // thread is killed mid-flight at process exit (the one-shot contract),
+    // leaving the job row stranded in `running` with no live worker.
+    let source = home.path().join("precheck.txt");
+    std::fs::write(
+        &source,
+        "Pinvou knowledge resume precheck probe.".repeat(64),
+    )
+    .unwrap();
+    let started = run_child(&[
+        "knowledge",
+        "collections",
+        "add-sources",
+        &id.to_string(),
+        source.to_str().unwrap(),
+        "--output",
+        "json",
+    ]);
+    assert!(started.status.success(), "add-sources must succeed");
+    let started: serde_json::Value = serde_json::from_slice(&started.stdout).unwrap();
+    let job_id = started["jobId"]
+        .as_str()
+        .expect("started job id")
+        .to_owned();
+
+    // The mistyped commands run in-process (same dispatch the binary runs);
+    // both must fail against the latest job without ever opening the service
+    // through the boot-recovery path.
+    for arguments in [
+        vec!["pinvou", "knowledge", "index", "resume", "typo-job"],
+        vec!["pinvou", "knowledge", "index", "retry", "typo-job", "1"],
+    ] {
+        let error = execute_error(&arguments);
+        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
+        let message = error.to_string();
+        assert!(
+            message.contains("active/latest") && message.contains(&job_id),
+            "{arguments:?}: {message}"
+        );
+    }
+
+    // The stranded job must still read `running` (or already be done): only
+    // boot recovery would have wedged it into interrupted/resumable, so the
+    // state is the proof that no recovery ran. A fresh child reads the same
+    // store without touching it (`index status` opens non-recovering).
+    let polled = run_child(&["knowledge", "index", "status", "--output", "json"]);
+    assert!(polled.status.success(), "index status must succeed");
+    let state: serde_json::Value = serde_json::from_slice(&polled.stdout).unwrap();
+    assert_eq!(state["jobId"], serde_json::json!(job_id));
+    assert_ne!(state["phase"], serde_json::json!("interrupted"), "{state}");
+    assert_eq!(state["resumable"], serde_json::json!(false), "{state}");
 }
 
 /// `index failed` for an unknown job must not leak the raw rusqlite driver

@@ -68,7 +68,7 @@ impl Drop for TempHome {
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
-        std::fs::remove_dir_all(&self.root).unwrap();
+        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
@@ -1658,4 +1658,52 @@ fn unreadable_registries_are_quarantined_before_the_default_is_used() {
                 .starts_with("model-bindings.json.invalid-")
         });
     assert!(quarantined, "the malformed registry must be quarantined");
+}
+
+#[test]
+fn wrong_shaped_registries_are_quarantined_not_silently_overwritten() {
+    // The GUI's VersionedJsonStore::open quarantines any payload its typed
+    // deserialization rejects — valid JSON of the wrong shape included; the
+    // CLI's read_registry must do the same instead of normalizing the value
+    // in memory and letting the next write destroy the only on-disk copy.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    for (label, payload) in [
+        ("non-object", "[]"),
+        ("wrong-typed-tasks", r#"{"tasks": []}"#),
+    ] {
+        let home = TempHome::new(&format!("registry-shape-quarantine-{label}"));
+        let created = create_task(&home, "Shape task");
+        let task_id = created["id"].as_str().unwrap().to_owned();
+        let bindings = home.path().join("automations").join("model-bindings.json");
+        std::fs::write(&bindings, payload).unwrap();
+        // A mutating command reading the registry must quarantine the
+        // wrong-shaped file next to the original before degrading to the
+        // default, so the only on-disk copy survives the write-back.
+        let _ = run_json(&["scheduled", "update", &task_id, "--model-id", "model-1"]);
+        let quarantine_copies: Vec<_> = std::fs::read_dir(bindings.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("model-bindings.json.invalid-")
+            })
+            .map(|entry| std::fs::read_to_string(entry.path()).unwrap())
+            .collect();
+        assert_eq!(
+            quarantine_copies,
+            vec![payload.to_owned()],
+            "{label}: exactly one quarantine copy of the original payload"
+        );
+        // The write itself still lands: the command degrades to the default
+        // registry and persists the new binding.
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&bindings).unwrap()).unwrap();
+        assert_eq!(
+            written["tasks"][&task_id]["model_id"], "model-1",
+            "{label}: the binding write lands after the quarantine"
+        );
+        let _ = home;
+    }
 }

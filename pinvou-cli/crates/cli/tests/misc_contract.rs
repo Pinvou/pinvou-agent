@@ -342,6 +342,39 @@ impl Drop for AsrEnvGuard {
     }
 }
 
+/// Sets explicit env values for the duration of a test, restoring the
+/// previous values (or absence) on drop, including during panic unwinding.
+/// Caller holds ENV_LOCK.
+struct EnvOverrideGuard {
+    saved: Vec<(String, Option<OsString>)>,
+}
+
+impl EnvOverrideGuard {
+    fn set(pairs: &[(&str, &str)]) -> Self {
+        let mut saved = Vec::new();
+        for (name, value) in pairs {
+            saved.push(((*name).to_owned(), std::env::var_os(name)));
+            // SAFETY: ENV_LOCK is held by the owning test.
+            unsafe { std::env::set_var(name, value) };
+        }
+        Self { saved }
+    }
+}
+
+impl Drop for EnvOverrideGuard {
+    fn drop(&mut self) {
+        for (name, value) in &self.saved {
+            // SAFETY: ENV_LOCK is held by the owning test.
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+}
+
 /// Empties `PATH` for the duration of machine-dependent probes (ffmpeg,
 /// external ASR CLIs) so the sandbox stays deterministic; restores the
 /// previous value on drop, including during panic unwinding. Caller holds
@@ -481,6 +514,67 @@ fn voice_transcribe_uses_installed_asr_runtime() {
     assert!(outcome.stdout.contains("Text: "));
 }
 
+/// The ASR child is spawned as a process-group leader, so the timeout kill
+/// takes its descendants with it instead of orphaning them (the same
+/// contract as `pinvou connectors`'s vendor CLI spawns). The fake engine
+/// backgrounds a long `sleep` and records its pid, then hangs; after the CLI
+/// reports the timeout, the descendant must be dead.
+#[cfg(unix)]
+#[test]
+fn voice_transcribe_timeout_kills_the_external_asr_process_tree() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("voice-transcribe-tree-kill");
+    let _asr_env = AsrEnvGuard::new();
+    let marker = home.root.join("descendant.pid");
+    let engine = home.root.join("fake-asr.sh");
+    std::fs::write(
+        &engine,
+        format!(
+            "#!/bin/sh\nsleep 300 &\necho $! > {}\nsleep 600\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _overrides = EnvOverrideGuard::set(&[
+        ("PINVOU3_ASR_CMD", engine.to_str().unwrap()),
+        ("PINVOU3_ASR_TIMEOUT_SECS", "1"),
+    ]);
+    let wav = home.root.join("capture.wav");
+    // 44-byte header-only WAV: large enough to pass the empty-audio gate.
+    std::fs::write(&wav, vec![0u8; 44]).unwrap();
+
+    let error = run(&["pinvou", "voice", "transcribe", wav.to_str().unwrap()])
+        .expect_err("the wedged fake engine must time out");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("asr_timeout"),
+        "expected the timeout code, got: {error}"
+    );
+
+    let descendant: i32 = std::fs::read_to_string(&marker)
+        .expect("the fake engine records its descendant pid")
+        .trim()
+        .parse()
+        .expect("the descendant pid is numeric");
+    let mut reaped = false;
+    for _ in 0..50 {
+        // Safety: `kill(pid, 0)` only probes for existence; the pid came from
+        // this test's own fake engine seconds ago.
+        if unsafe { libc::kill(descendant, 0) } != 0 {
+            reaped = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(
+        reaped,
+        "the timed-out ASR child orphaned its descendant process {descendant}"
+    );
+}
+
 /// OPT-IN: `voice postprocess` boots the windowless host (display required)
 /// and calls the configured model endpoint. Run with: cargo test -p
 /// pinvou-cli --test misc_contract -- --ignored voice_postprocess
@@ -499,7 +593,106 @@ fn voice_postprocess_calls_the_active_model() {
     .unwrap();
     let outcome = execute(parsed).expect("postprocess must succeed with a configured model");
     assert_eq!(outcome.exit_code, ExitCode::Success);
-    assert!(outcome.stdout.contains("Source: llm"), "{}", outcome.stdout);
+    assert!(
+        outcome.stdout.contains("Source: llm"),
+        "postprocess output missing the llm source line"
+    );
+}
+
+/// OPT-IN: boots the windowless host (display required), like the test above.
+/// The mock endpoint answers the first postprocess call with an unusable
+/// output (empty on the Anthropic wire, `finish_reason: "length"` on the
+/// OpenAI wire), which triggers the retry, and the retry call with HTTP 500.
+/// GUI parity (`app/commands/voice.rs`): the failed retry must fail the
+/// command (exit 1, `voice postprocess failed: …`) — the known-bad first
+/// output must never be returned as the result. Run with: cargo test -p
+/// pinvou-cli --test misc_contract -- --ignored voice_postprocess_retry
+#[test]
+#[ignore = "needs display host: cargo test --test misc_contract -- --ignored voice_postprocess_retry"]
+fn voice_postprocess_retry_failure_is_an_error() {
+    use std::io::{Read as _, Write as _};
+
+    // Loopback mock model endpoint: request 1 forces the retry, request 2
+    // fails it. `DEEPSEEK_*` env overrides pin the bridge to this endpoint
+    // without touching the machine's settings.
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("bind the loopback mock endpoint");
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for round in 0..2 {
+            let (mut stream, _) = listener.accept().expect("mock accepts a request");
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && head.len() < 64 * 1024 {
+                if stream.read(&mut byte).unwrap_or(0) == 0 {
+                    break;
+                }
+                head.push(byte[0]);
+            }
+            let head = String::from_utf8_lossy(&head);
+            let path = head
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or_default()
+                .to_owned();
+            let response = if round == 0 {
+                let body = if path.contains("/v1/messages") {
+                    // Anthropic wire: empty content is the retry trigger.
+                    r#"{"id":"msg_mock","model":"mock","role":"assistant","content":[{"type":"text","text":""}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}"#
+                } else {
+                    // OpenAI wire: a "length" finish marks the output truncated.
+                    r#"{"choices":[{"message":{"role":"assistant","content":"partial first output"},"finish_reason":"length"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#
+                };
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \
+                     {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            } else {
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: \
+                 close\r\n\r\n"
+                    .to_owned()
+            };
+            stream.write_all(response.as_bytes()).unwrap();
+        }
+    });
+    let base_url = format!("http://{address}/v1");
+
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _overrides = EnvOverrideGuard::set(&[
+        ("DEEPSEEK_BASE_URL", base_url.as_str()),
+        ("DEEPSEEK_PROVIDER", "openai"),
+        ("DEEPSEEK_API_KEY", "mock-key"),
+    ]);
+    let error = run(&[
+        "pinvou",
+        "voice",
+        "postprocess",
+        "--mode",
+        "task",
+        "--text",
+        "查一下今日金价并生成数据分析",
+    ])
+    .expect_err("a failed postprocess retry must fail the command");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = error.to_string();
+    assert!(
+        message.starts_with("voice postprocess failed"),
+        "expected the GUI-parity failure prefix, got: {message}"
+    );
+    assert!(
+        !message.contains("partial first output"),
+        "the known-bad first output must not leak into the result: {message}"
+    );
+    // The server exits after its two rounds; if the host failed before even
+    // the first request, don't hang the test on join.
+    for _ in 0..100 {
+        if server.is_finished() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    server.join().expect("the mock endpoint thread finishes");
 }
 
 /// `voice asr-install` mutates the system (pkexec/apt ffmpeg install), so
@@ -910,8 +1103,7 @@ fn monitor_status_reports_clean_zero_state_without_a_model() {
     assert_eq!(outcome.exit_code, ExitCode::Success);
     assert!(
         outcome.stdout.contains("Online: false"),
-        "{}",
-        outcome.stdout
+        "monitor status output missing the offline line"
     );
     // The zero state carries the same key set as the model-present branch,
     // with null values where there is no snapshot, so scripts parse one

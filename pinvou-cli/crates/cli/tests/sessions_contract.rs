@@ -233,6 +233,16 @@ fn every_artifacts_subcommand_parses_and_unknown_flags_exit_two() {
         vec!["pinvou", "artifacts", "read"],
         vec!["pinvou", "artifacts", "read", "s-1"],
         vec!["pinvou", "artifacts", "read", "s-1", "a.md", "--extra"],
+        vec![
+            "pinvou",
+            "artifacts",
+            "write",
+            "s-1",
+            "a.md",
+            "extra.md",
+            "--file",
+            "in.md",
+        ],
         vec!["pinvou", "artifacts", "write", "s-1"],
         vec!["pinvou", "artifacts", "write", "s-1", "a.md"],
         vec![
@@ -351,6 +361,20 @@ fn sessions_show_limits_and_exports_transcript() {
     assert_eq!(value["shown_message_count"], 1);
     assert_eq!(value["messages"][0]["role"], "assistant");
     assert_eq!(value["messages"][0]["text"], "hi there");
+
+    // The human header mirrors the JSON fields: session total plus the
+    // windowed count, not the windowed count as the total.
+    let outcome =
+        run(&["pinvou", "sessions", "show", &id, "--last", "1"]).expect("human show with --last");
+    assert!(
+        outcome.stdout.contains("messages: 2 (showing 1)"),
+        "human show with --last reported the wrong message counts"
+    );
+    let outcome = run(&["pinvou", "sessions", "show", &id]).expect("human show");
+    assert!(
+        outcome.stdout.contains("messages: 2 (showing 2)"),
+        "human show reported the wrong message counts"
+    );
 
     // markdown export is a human-readable transcript with role headers
     let outcome = run(&["pinvou", "sessions", "export", &id]).expect("markdown export");

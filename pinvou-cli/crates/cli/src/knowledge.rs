@@ -27,7 +27,11 @@
 //!   failed_index_files}`; `--limit` for failed files defaults to the GUI
 //!   page size 50. Per-job live state is not addressable headlessly (the job
 //!   store is `pub(super)`), so `index status <job-id>` reports only the
-//!   latest job.
+//!   latest job. `index cancel/resume/retry <job-id>` validate the named id
+//!   against that latest job BEFORE the recovering open: boot recovery would
+//!   flip every preparing/running job to interrupted — including one a live
+//!   desktop-app process is still importing — so a mistyped id must fail
+//!   without ever running it.
 //! - stats/type-counts → the headless `KnowledgeService::{stats, type_counts}`
 //!   (the same store calls as `kb_stats`/`kb_type_counts`, synchronously).
 //! - search → the headless `KnowledgeService::search` (`kb_search` semantics:
@@ -35,7 +39,9 @@
 //!   "pdf from last week" becomes an ext + mtime filter plus residual text).
 //!   `--after`/`--before` take UTC `YYYY-MM-DD` dates (the GUI frontend sends
 //!   epoch seconds directly); `--limit` omitted keeps the store's default
-//!   page of 200.
+//!   page of 200. `--before` is exclusive: it keeps files with mtime before
+//!   the START of the named day, so `--before 2026-09-01` excludes
+//!   2026-09-01 itself.
 //! - mounts/mount/unmount → honest refusal (`knowledge_*_requires_product_host`):
 //!   mounted collections live in the desktop app's per-process memory
 //!   (`features::sessions::mode_state`, deliberately not persisted), so a
@@ -715,16 +721,8 @@ pub fn execute(command: KnowledgeCommand, output: OutputMode) -> Result<CliOutco
         } => documents(collection_id, limit, output),
         KnowledgeCommand::IndexStatus { job_id } => index_status(job_id.as_deref(), output),
         KnowledgeCommand::IndexCancel { job_id } => index_cancel(&job_id, output),
-        KnowledgeCommand::IndexResume { job_id } => index_started(
-            "index resumed",
-            open_service_recovering()?.resume_index(job_id),
-            output,
-        ),
-        KnowledgeCommand::IndexRetry { job_id, item_id } => index_started(
-            "index retry queued",
-            open_service_recovering()?.retry_index_item(job_id, item_id),
-            output,
-        ),
+        KnowledgeCommand::IndexResume { job_id } => index_resume(&job_id, output),
+        KnowledgeCommand::IndexRetry { job_id, item_id } => index_retry(&job_id, item_id, output),
         KnowledgeCommand::IndexFailed {
             job_id,
             offset,
@@ -879,7 +877,8 @@ fn type_counts(output: OutputMode) -> Result<CliOutcome, CliError> {
 /// goes through the same NL-rule merge as the GUI ("pdf from last week" →
 /// ext + mtime filter + residual text). `--after`/`--before` are UTC
 /// `YYYY-MM-DD` dates; `--limit` omitted keeps the store's default page (0 =
-/// 200 upstream).
+/// 200 upstream). `--before` is exclusive (mtime before the start of the
+/// named day; the named day itself never matches).
 fn search(
     query: &str,
     limit: Option<usize>,
@@ -1103,14 +1102,18 @@ fn collections_delete(id: i64, output: OutputMode) -> Result<CliOutcome, CliErro
     // session-store failure must not turn the outcome into a failure (an
     // exit 1 after the destructive step would claim the delete did not
     // happen).
-    let unmounted = match open_store() {
-        Ok(store) => store.remove_mounted_collection_from_all(id),
+    // The stderr warning stays static: the CodeQL cleartext-logging gate
+    // flags interpolated store details in log writes, so the error text
+    // travels in the JSON payload instead.
+    let (unmounted, mount_sweep_error) = match open_store() {
+        Ok(store) => (store.remove_mounted_collection_from_all(id), None),
         Err(error) => {
             eprintln!(
-                "warning: knowledge collections delete: could not sweep session mounts for \
-                 collection {id}: {error:#}"
+                "warning: knowledge collections delete: could not sweep session mounts \
+                 for the deleted collection; stale mounts may remain in a running \
+                 desktop app session"
             );
-            Vec::new()
+            (Vec::new(), Some(error.to_string()))
         }
     };
     let mut human = format!("deleted collection {id}");
@@ -1125,7 +1128,11 @@ fn collections_delete(id: i64, output: OutputMode) -> Result<CliOutcome, CliErro
     Ok(success(render(
         output,
         human,
-        &serde_json::json!({ "id": id, "unmounted_sessions": unmounted.len() }),
+        &serde_json::json!({
+            "id": id,
+            "unmounted_sessions": unmounted.len(),
+            "mount_sweep_error": mount_sweep_error,
+        }),
     )))
 }
 
@@ -1227,9 +1234,13 @@ fn documents(
 
 /// GUI `kb_remove_document` with the existence check the rest of this family
 /// adds: the upstream delete is a silent no-op for unknown ids, which would
-/// report success for a document that was never there.
+/// report success for a document that was never there. Pure L1 CRUD (an
+/// existence check plus a delete), so it opens WITHOUT boot recovery — the
+/// recovering open belongs to commands that legitimately reconcile the job
+/// store, and running it here would wedge a live desktop-app import for a
+/// delete that never touches the job store.
 fn documents_remove(doc_id: i64, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let service = open_service_recovering()?;
+    let service = open_service()?;
     let exists = service
         .l1()
         .document_exists(doc_id)
@@ -1321,6 +1332,51 @@ fn index_cancel(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError
     Ok(success(render(output, human, &value)))
 }
 
+/// Validates the named job id against the latest job BEFORE any recovering
+/// open (the same rule `index cancel` applies): boot recovery flips every
+/// preparing/running job to interrupted — including one a live desktop-app
+/// process is still importing — so a mistyped id must fail without ever
+/// running it.
+fn require_latest_job_id(job_id: &str, operation: &str) -> Result<(), CliError> {
+    let latest = open_service()?.index_status();
+    match &latest.job_id {
+        Some(active) if active == job_id => Ok(()),
+        Some(active) => Err(CliError::failed(format!(
+            "knowledge index {operation}({job_id}): job is not the active/latest index \
+             job (latest: {active})"
+        ))),
+        // No job exists at all: claiming a {operation} landed would be a
+        // false success.
+        None => Err(CliError::failed(format!(
+            "knowledge_index_job_not_found: no index job exists (nothing to {operation} for \
+             {job_id})"
+        ))),
+    }
+}
+
+/// GUI `kb_index_resume` re-arms an interrupted job; the named id is
+/// validated against the latest job before the recovering open (see
+/// [`require_latest_job_id`]).
+fn index_resume(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
+    require_latest_job_id(job_id, "resume")?;
+    index_started(
+        "index resumed",
+        open_service_recovering()?.resume_index(job_id.to_owned()),
+        output,
+    )
+}
+
+/// GUI `kb_index_retry` re-queues one failed item; same pre-validation as
+/// [`index_resume`].
+fn index_retry(job_id: &str, item_id: i64, output: OutputMode) -> Result<CliOutcome, CliError> {
+    require_latest_job_id(job_id, "retry")?;
+    index_started(
+        "index retry queued",
+        open_service_recovering()?.retry_index_item(job_id.to_owned(), item_id),
+        output,
+    )
+}
+
 /// Shared shape for the start/status-style job operations (`add-sources`,
 /// `resume`, `retry`): the feature call returns immediately with the
 /// DB-persisted job state that `index status` polls.
@@ -1329,7 +1385,20 @@ fn index_started(
     result: Result<IndexState, String>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    let state = result.map_err(|error| CliError::failed(format!("knowledge index: {error}")))?;
+    let state = result.map_err(|error| {
+        // Upstream `ImportJobStore::{resume, retry_item}` answer an unknown
+        // or non-resumable job id with rusqlite's `QueryReturnedNoRows`;
+        // name the real cause instead of leaking the raw driver message (the
+        // same code `index failed` uses).
+        if error.contains("Query returned no rows") {
+            CliError::failed(
+                "knowledge_index_job_not_found: no resumable index job for the requested id"
+                    .to_owned(),
+            )
+        } else {
+            CliError::failed(format!("knowledge index: {error}"))
+        }
+    })?;
     index_out(header, state, output)
 }
 

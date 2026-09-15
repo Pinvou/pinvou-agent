@@ -1445,22 +1445,34 @@ fn scheduled_store_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
 
 /// Reads a versioned sidecar registry (model bindings, task kinds, UI
 /// metadata, read state, history archive); a missing file is the empty
-/// default. An unreadable payload is quarantined next to the original
-/// (`<name>.invalid-<timestamp>`, the GUI `VersionedJsonStore` convention)
-/// before degrading to the default for this process — otherwise the next
-/// write through this process would silently destroy the only copy of the
-/// other tasks' data.
+/// default. An unreadable or wrong-shaped payload is quarantined next to the
+/// original (`<name>.invalid-<timestamp>`, the GUI `VersionedJsonStore`
+/// convention) before degrading to the default for this process — otherwise
+/// the next write through this process would silently destroy the only copy
+/// of the other tasks' data. Newer-schema files stay untouched: they take
+/// the refusal path (`ensure_supported_schema`), not quarantine.
 fn read_registry(path: &Path) -> serde_json::Value {
     match std::fs::read_to_string(path) {
         Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
-            Ok(value) => value,
-            Err(_) => {
+            Ok(value) if registry_shape_valid(&value) => value,
+            _ => {
                 quarantine_unreadable(path);
                 serde_json::Value::Null
             }
         },
         Err(_) => serde_json::Value::Null,
     }
+}
+
+/// Shape gate mirroring the GUI `VersionedJsonStore`'s typed deserialization:
+/// a payload that parses as JSON but can never deserialize into any of the
+/// registries (a non-object top level like `[]`, or a `tasks` / `viewed_runs`
+/// member of the wrong type like `{"tasks": []}`) is treated like a parse
+/// failure — quarantined, never normalized in place and overwritten.
+fn registry_shape_valid(value: &serde_json::Value) -> bool {
+    value.is_object()
+        && value.get("tasks").is_none_or(Value::is_object)
+        && value.get("viewed_runs").is_none_or(Value::is_object)
 }
 
 /// Best-effort `.invalid-<timestamp>` copy of a registry that failed to
@@ -1494,8 +1506,9 @@ fn registry_tasks_mut<'a>(
     object
         .entry("schema_version")
         .or_insert_with(|| serde_json::json!(schema_version));
-    // A wrong-shaped `tasks` value normalizes to the default instead of
-    // panicking (same quarantine-then-default behavior as read_registry).
+    // Defense in depth: read_registry quarantines a wrong-shaped `tasks`
+    // value before this point, so the normalize is only reachable for
+    // registries built in memory.
     if !object.get("tasks").is_some_and(Value::is_object) {
         object.insert("tasks".to_owned(), serde_json::json!({}));
     }
