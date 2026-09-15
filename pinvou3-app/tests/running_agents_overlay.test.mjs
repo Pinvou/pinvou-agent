@@ -43,9 +43,13 @@ const entry = (overrides = {}) => ({
 
 const byCodePoint = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
-test('isTerminal: only done and unblocked is terminal', () => {
+test('isTerminal: done is terminal; blocked is terminal too (authority chain), displayed separately', () => {
   assert.equal(isTerminal(entry({ done: true })), true);
-  assert.equal(isTerminal(entry({ done: true, blocked: true })), false, 'a blocked entry is not terminal');
+  assert.equal(
+    isTerminal(entry({ done: true, blocked: true })),
+    true,
+    'the foundation counts a blocked worker Completed; keeping it non-terminal would lock the poll at the active cadence',
+  );
   assert.equal(isTerminal(entry({ done: false })), false);
   assert.equal(isTerminal(null), false);
 });
@@ -61,6 +65,21 @@ test('overlayVisibleEntries: non-terminal goes active, just-finished terminal go
   const { active, recent } = overlayVisibleEntries(entries, now);
   assert.deepEqual(active.map(item => item.agentId), ['agent_1']);
   assert.deepEqual(recent.map(item => item.agentId), ['agent_2'], 'out-of-window and completedAt-less terminal entries are invisible');
+});
+
+test('overlayVisibleEntries: a blocked entry stays listed (awaiting user) without riding the success window', () => {
+  const now = 10_000;
+  const blocked = entry({ agentId: 'agent_1', done: true, blocked: true });
+  const { active, recent } = overlayVisibleEntries([blocked], now);
+  assert.deepEqual(
+    active.map(item => item.agentId),
+    ['agent_1'],
+    'a blocked entry is the waiting-on-the-user surface and must stay visible',
+  );
+  assert.deepEqual(recent, []);
+  // It is terminal for the poll cadence: hasActive in the component keys off
+  // isTerminal, so this shape must not hold the poll at the active rate.
+  assert.equal(isTerminal(blocked), true);
 });
 
 test('statusPresentation: terminal first; ledger English tokens map to i18n copy, never shown raw', () => {
@@ -242,14 +261,21 @@ test('mergeOverlayEntry: a status-less real-time completion keeps the ledger can
   assert.equal(completed.completedAt, 11_000, 'the success window is granted for the genuine flip');
 });
 
-test('mergeOverlayEntry: unblock grants the success window at the moment of unblocking', () => {
+test('mergeOverlayEntry: blocked reads cold-start cleanly; unblocking is terminal-to-terminal, not a flip', () => {
   const now = 10_000;
-  // A blocked entry has done=true/blocked=true and is not terminal.
+  // A blocked entry is done in the authority chain: a cold-start blocked read
+  // grants no success window, and it never rides the recent list (the
+  // visibility test above pins it to the active bucket instead).
   const coldBlocked = mergeOverlayEntry(null, ledgerRead({ done: true, blocked: true, status: 'waiting_input' }), 's1', now);
   assert.equal(coldBlocked.completedAt, undefined, 'a blocked entry read cold-start gets no grant either');
+  // Clearing the block goes terminal → terminal: no completedAt, so the entry
+  // simply leaves the list. A re-awakened worker that completes again grants
+  // its window on the running → completed flip instead.
   const unblocked = mergeOverlayEntry(coldBlocked, ledgerRead({ done: true, blocked: false, status: 'completed' }), 's1', now + 500);
-  assert.equal(unblocked.completedAt, now + 500, 'only clearing the block counts as a real completion flip');
-  assert.deepEqual(overlayVisibleEntries([unblocked], now + 500).recent.map(item => item.agentId), ['agent_1']);
+  assert.equal(unblocked.completedAt, undefined, 'blocked → completed is terminal-to-terminal, not a live flip');
+  const visible = overlayVisibleEntries([unblocked], now + 500);
+  assert.deepEqual(visible.active, []);
+  assert.deepEqual(visible.recent, [], 'an unblocked entry leaves the list instead of flashing the success window');
 });
 
 test('mergeOverlayEntry: entry ownership follows the passed-in session; cross-session events do not leak', () => {
@@ -297,5 +323,14 @@ test('component glue: session-switch discard, revival kick, and ledger mapping s
   assert.ok(
     overlaySource.includes('if (isUnknownLedgerRow(summary)) continue;'),
     'unknown ledger rows must be skipped before merging into the overlay',
+  );
+  // The poll hook itself is exercised by its own test file, but this wiring —
+  // summaries flowing into the merge and revival hints flowing into the kick —
+  // lives only here: swapping either for a no-op would leave every assertion
+  // above green while the overlay goes blind.
+  assert.match(
+    overlaySource,
+    /useSubagentLedgerPoll\(\{[\s\S]{0,200}hasActive: sessionHasActive,[\s\S]{0,200}onSummaries: mergeLedgerSummaries,[\s\S]{0,200}kickRef: kickPollRef,[\s\S]{0,50}\}\);/,
+    'the ledger poll must be wired to the session activity, the merge callback, and the revival kick',
   );
 });

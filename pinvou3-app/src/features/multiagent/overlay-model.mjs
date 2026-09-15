@@ -18,8 +18,15 @@ export function entryKey(sessionId, agentId) {
   return `${sessionId || ''}\u0000${agentId || ''}`;
 }
 
+/**
+ * Terminal matches the authority chain exactly: the foundation considers a
+ * blocked worker Completed (`is_terminal`), and transcripts.rs projects it as
+ * done=true. Blocked is a display-layer attribute (`statusPresentation`), not
+ * a liveness fact — keeping it out of `isTerminal` would pin the entry into
+ * the active bucket forever and lock the ledger poll at the active cadence.
+ */
 export function isTerminal(entry) {
-  return !!entry && !!entry.done && !entry.blocked;
+  return !!entry && !!entry.done;
 }
 
 /**
@@ -102,8 +109,11 @@ export function statusPresentation(entry, copy) {
 }
 
 /**
- * Overlay visibility: some entry is non-terminal, or a just-finished terminal
- * entry is still inside its success-state window.
+ * Overlay visibility: some entry is running, or a just-finished terminal
+ * entry is still inside its success-state window. A done-but-blocked entry
+ * stays in the active list on purpose — it is the "waiting on the user"
+ * surface — but it must not drive the poll cadence: `hasActive` in the
+ * component is computed with `isTerminal`, which blocked entries satisfy.
  * @param {Array} entries the current session's entries
  * @param {number} now clock (injected by tests)
  */
@@ -111,7 +121,8 @@ export function overlayVisibleEntries(entries, now) {
   const active = [];
   const recent = [];
   for (const entry of entries || []) {
-    if (!isTerminal(entry)) active.push(entry);
+    if (!entry) continue;
+    if (!entry.done || entry.blocked) active.push(entry);
     else if (entry.completedAt && now - entry.completedAt < RECENT_TERMINAL_MS) recent.push(entry);
   }
   return { active, recent };
