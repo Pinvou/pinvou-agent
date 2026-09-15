@@ -28,8 +28,9 @@ pub use macos_system::{
     pandoc_dependency_packages, pandoc_missing_message, pandoc_tool_exists, pandoc_tool_path,
     pdf_dependency_packages, pdf_ocr_missing_message, pdf_render_missing_message,
     pdf_text_missing_message, pdf_tool_exists, pdf_tool_path, presentation_pdf_missing_message,
-    process_alive, reveal_target, show_archive_dependency_check, show_ocr_dependency_check,
-    show_pandoc_dependency_check, show_pdf_dependency_check, system_default_open_supported,
+    process_alive, reveal_target, set_file_mode, show_archive_dependency_check,
+    show_ocr_dependency_check, show_pandoc_dependency_check, show_pdf_dependency_check,
+    system_default_open_supported,
 };
 
 use std::path::PathBuf;

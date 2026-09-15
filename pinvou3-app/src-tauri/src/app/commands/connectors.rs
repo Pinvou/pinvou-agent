@@ -74,6 +74,38 @@ pub async fn get_bundle_visibility(scope: Option<String>) -> Result<Vec<String>,
     Ok(crate::features::marketplace::load_hidden_bundles_for(scope))
 }
 
+/// 场景 opt-in 等用户动作的批量包开启（评审 #455 R7-M3）：后端在
+/// `DISABLED_BUNDLES_FILE_LOCK` 单临界区内做「读当前有效禁用集 → 移除
+/// package_ids → 落盘」，前端不再整表读-改-写（跨 IPC 复合操作会用陈旧
+/// 快照覆盖并发 composer toggle，fail-open 复活用户显式关闭的包）。落盘后
+/// 与 `set_disabled_connectors` 同链路热刷：重写在线会话组合目录 + 工具
+/// 白名单 + execpolicy 规则集，当轮对话即生效。
+#[tauri::command]
+pub async fn enable_marketplace_packages(
+    package_ids: Vec<String>,
+    scope: Option<String>,
+    app: AppHandle,
+    pool: State<'_, EnginePool>,
+) -> Result<(), String> {
+    let scope = parse_connector_scope(scope.as_deref())?;
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::scope::enable_packages_in_scope(scope, &package_ids);
+    })
+    .await
+    .map_err(|e| format!("enable_marketplace_packages join: {e}"))?;
+    pool.refresh_live_sessions_skills().await;
+    pool.refresh_disallowed_tools().await;
+    pool.refresh_permission_rulesets().await;
+    let payload = serde_json::json!({});
+    let _ = app.emit("remote_control:tools_changed", payload.clone());
+    crate::features::remote_control::forward_app_event(
+        &app,
+        "remote_control:tools_changed",
+        payload,
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // 技能开关（按会话类型 scope 独立持久，skill 双 scope 治理）
 // ---------------------------------------------------------------------------

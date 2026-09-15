@@ -92,6 +92,7 @@ command_protocol!(
         "get_disabled_connectors",
         "set_bundle_visibility",
         "get_bundle_visibility",
+        "enable_marketplace_packages",
         "set_disabled_skills",
         "get_disabled_skills",
         "set_project_skills_enabled",

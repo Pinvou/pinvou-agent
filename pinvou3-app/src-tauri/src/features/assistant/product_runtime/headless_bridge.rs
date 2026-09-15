@@ -1336,6 +1336,12 @@ where
     context.config_mut().app.windows.clear();
     let app = tauri::Builder::default()
         .setup(move |app| {
+            // 与 GUI 宿主（lib.rs `disabled_bundles_migration` 标记）同序：
+            // 「全新 vs 升级」判定必须在 SessionStore boot / engine spawn 等
+            // 首启自写（sessions/、默认 settings.json）之前读取冻结——否则
+            // 无窗宿主首触的全新家目录会冻结被污染的「升级」判定，plain 翻回
+            // 全开，且后续 GUI 启动尊重该已冻结标记（评审 #455 阻塞项 3）。
+            let _ = crate::features::assistant::skill_materialization::load_disabled_skills();
             if let Ok(resource_dir) = app.path().resource_dir() {
                 crate::platform::paths::set_runtime_resource_dir(resource_dir);
             }

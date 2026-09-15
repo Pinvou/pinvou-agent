@@ -6,7 +6,7 @@
 
 > **落地状态**（2026-08-14）：§1、§2 为现状（能力档案已退役，模式能力差量
 > 已收敛为静态表 `MODE_TABLE`）；§3 的存储已收敛为**单一 `disabled_bundles.json`**
-> （`{scopes, hidden_scopes, initialized, project_skills_enabled}`，键 = 包 id，见 §3.2），取代原
+> （`{scopes, hidden_scopes, initialized, project_skills_enabled, plain_defaults_migrated}`，键 = 包 id，见 §3.2），取代原
 > `disabled_connectors.json` + `disabled_skills.json` 双文件与 `skill:` 前缀跨文件借道；
 > companion 联动排除改由包模型现算（`bundle::skill_owner_package`）。§3.1 的
 > 统一包模型与「一个包 = 一个开关」已部分落地（`BundleStore` + `bundle_readiness`），
@@ -88,7 +88,7 @@ Bundle = { id, name, mcp_servers: [], skills: [], cli: [] }
 存储：`~/.pinvou3/disabled_bundles.json` 单一文件（包 id × 模式键控 map）：
 
 ```json
-{ "scopes": { "<mode>": ["<包 id>"] }, "hidden_scopes": { "<mode>": ["<包 id>"] }, "initialized": ["<mode>"], "project_skills_enabled": false }
+{ "scopes": { "<mode>": ["<包 id>"] }, "hidden_scopes": { "<mode>": ["<包 id>"] }, "initialized": ["<mode>"], "project_skills_enabled": false, "plain_defaults_migrated": true }
 ```
 
 scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
@@ -110,22 +110,56 @@ scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
   CLI 连接器「断开」（logout，删授权不删记录）不走该入口，两个集合均不动；
 - 能力开关写路径（`save_disabled_bundles_for`）只写 `scopes`，不动 hidden；
 - 连接器开关（`sync_disabled_bundles_for_connector_switch`）：关闭只写
-  disabled、不动 hidden；**开回复用卸载清理入口，会连带清 hidden**——即
-  开关开回后该包在所有 scope 恢复可见。
+  disabled、不动 hidden；**开回（`enable_bundle_in_deny_all_scopes`）会连带
+  清 hidden**——即开关开回后该包在所有 scope 恢复可见（行为同卸载清理，
+  实现上为未初始化 scope 物化 opt-in + 各集合内联剔除）。
 
 每个模式的默认策略显式声明为**模式身份**（`core/session_mode.rs` 的
 `SessionMode::pack_default_policy()`），不再是存储层的硬编码分支：
 
 | 模式 | 包默认策略 | 含义 |
 |---|---|---|
-| plain | AllowAll | 全开 |
+| plain | **DenyAll** | 全禁（工具开关全量收敛：外部能力一律显式开启） |
 | code | **DenyAll** | 全禁（外部能力显式开启，封泄露面/攻击面） |
+
+plain 从 AllowAll 翻为 DenyAll 时的**存量迁移**（读时迁移，见
+`scope.rs::load_disabled_bundles_file_locked`）：旧版文件（无
+`plain_defaults_migrated` 字段）或旧双文件时代的装机，plain 被初始化为
+落盘列表——锁定升级前 AllowAll 语义下的真实开关状态（缺省空 = 全开），
+升级后用户无感；全新装机只置迁移标记不初始化，未初始化 plain 按 DenyAll
+兜底（默认全关）。「升级 vs 全新」的判定使用**宽口径升级信号**：三份开关
+相关文件皆无、但 `marketplace/installed.json` 或非空 `sessions/` 目录存在
+即视为升级装机——统一文件自 v0.8.6 起就存在且只在有内容可写时才落盘，
+老装机 + 从未动过开关的用户可能三者皆无。信号只检查这两条特定路径：家目录
+即使持有无关状态（`knowledge/`、`logs/` 等），只要二者皆无仍判全新。
+`settings.json` **不构成**信号（评审 #455 R8-3）：预置模板/跨机拷贝的
+settings.json 会把全新装机误判为升级（plain 全开，fail-open）；真实老装机
+必留非空 `sessions/`（首启 `ensure_dirs` 自写 `sessions/default/artifacts`），
+收窄不漏判。该信号会被应用自身首启行为污染（bridge
+boot 自写 `sessions/` 目录项、缺省补写默认 `settings.json`），因此首读被
+上提至各宿主启动钩顶部（GUI setup、headless bridge、dump_system_prompt，
+早于一切首启自写），且判定在**首次读取时无条件落盘**（置
+`plain_defaults_migrated`）冻结——否则全新装机会被自己的首启痕迹误判为
+升级装机而翻回全开。文件损坏时不静默覆盖：先隔离为 `.corrupt.<ts>` 副本，
+再按 **fail-closed** 一次性恢复落盘——只置迁移标记（冻结为全新装机判定）、
+不初始化任何 scope，未初始化 scope 按 DenyAll 兜底（宁可恢复全关，不把
+用户显式关过的状态恢复成全开）。
 
 用户数据语义（三条线一致）：
 
 - 某 scope 无记录 → 回落编译期默认（跟随产品演进）；
 - 用户首次 toggle 时物化整个 scope 列表落盘 → 此后冻结，默认调整不穿透
-  已做过选择的用户（`initialized` 集合标记初始化）；
+  已做过选择的用户（`initialized` 集合标记初始化）。**已知的权衡**：物化
+  发生在「用户显式开启」的瞬间（composer 首次 toggle、场景 opt-in、连接器
+  enable 臂），落盘的是当时的现算扩集减去该 id——此后应用更新新增的内置
+  包不在落盘列表里，会在该 scope 默认**开**（disable 臂对未初始化 scope
+  拒绝固化同一扩集，见 `scope.rs`）。产品接受此权衡：显式开启过工具的用户
+  视为已信任该 scope 的外部能力面，新增包默认开的暴露与旧 AllowAll 语义
+  相当且范围更窄；若需反向收敛，走后续版本的全量默认重置。边缘情形：
+  installed.json 读不出时，fail-closed 兜底扩集（全部可装包 ∪ 内置 CLI ∪
+  技能 owner 包）会在用户显式开启动作时被整体物化为该 scope 的落盘状态——
+  未来新增内置包同样默认开，属上述同一权衡的极端入口；
+
 - 未知条目（工具下架、上游改名残留）静默忽略，写回时清理。
 
 项目级技能（`.agents/skills` 等）保持**独立开关**、默认关：项目内文本是

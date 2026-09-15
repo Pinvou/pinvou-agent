@@ -295,6 +295,12 @@ pub fn process_alive(_pid: u32) -> bool {
 /// Unsupported platforms do not provide a portable directory-permission primitive.
 pub fn make_private_dir(_path: &Path) {}
 
+/// No POSIX mode bits outside the three desktop targets; the readable probe
+/// always passes.
+pub fn set_file_mode(_path: &Path, _mode: u32) -> std::io::Result<bool> {
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

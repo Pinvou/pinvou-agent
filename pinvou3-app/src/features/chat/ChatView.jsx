@@ -334,7 +334,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                     <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
                   </span>
-                  {t.uiChat.ready}
+                  {/* 安装路径刻意保持开关关闭（DenyAll 收敛），「Ready」是假话；
+                      如实描述并在首次提问时完成 opt-in（评审 #455 R7-M4）。 */}
+                  {t.uiChat.installedReady}
                 </div>
               </div>
             </div>
@@ -1350,6 +1352,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // 顶掉「你好」欢迎语(该 tool 无 welcomeQueries 时 ToolWelcomeCard 渲染 null → 整块空白)。
       // 设置与清空收进同一 effect,按 justInstalledTool 优先,避免多 effect 同帧竞态。
       const [welcomeToolId, setWelcomeToolId] = useState(null);
+      // sendChatMessage 的 useCallback 不依赖 welcomeToolId（避免身份抖动重建），
+      // 自由输入路径经此 ref 消费当前欢迎包（评审 #455 R8-2）。
+      const welcomeToolIdRef = useRef(null);
       const welcomeSessionKeyRef = useRef(null);
       // Web 只读判定：多智能体是桌面专属能力（ADR-0006），Web 端只读呈现。
       // modeState.multiAgent 经 get_mode_state 双端同步（开关已持久化）。
@@ -1564,6 +1569,20 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // eslint-disable-next-line sonarjs/cognitive-complexity -- scene-capability preflight and send orchestration are cohesive in a single callback; split refactor tracked separately
       const sendChatMessage = useCallback(async (text) => {
         if (!bridge.available) return false;
+        // 欢迎卡的两条发送路径（点击示例提问 / 自由输入）统一在此完成
+        // opt-in（评审 #455 R8-2）：只经一次 enable_marketplace_packages，
+        // 失败不阻断发送——工具缺席在回复中可见，不静默。chip 路径的
+        // onSend 不再重复调用。
+        const welcomeTool = welcomeToolIdRef.current;
+        if (welcomeTool) {
+          welcomeToolIdRef.current = null;
+          setWelcomeToolId(null);
+          await Promise.resolve(
+            invokeTauri('enable_marketplace_packages', { packageIds: [welcomeTool], scope: 'plain' })
+          ).catch((err) => {
+            console.warn("[pinvou3][chat-ui] welcome-card opt-in failed", err);
+          });
+        }
         const outgoing = String(text || '').trim();
         const matchedPersonalWorkbenchDraft = findPersonalWorkbenchTemplateDraft(outgoing);
         const templateId = personalWorkbenchTemplateIdRef.current
@@ -1591,9 +1610,12 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                 const missing = prepared.missing && prepared.missing.length
                   ? t.uiChatScenes.missingCapabilities(prepared.missing.join(', '))
                   : '';
-                throw new Error(missing || sceneCopy.failure);
+                throw new Error(missing || prepared.error || sceneCopy.failure);
               }
-              if (prepared.installed) {
+              // DenyAll 收敛后 ready 的语义由「装过」扩为「装好或显式开回」：
+              // 已装但被默认关挡住的场景包在此完成 opt-in，同样要提示已启用
+              // （评审 #455 R5-B3）。
+              if (prepared.installed || prepared.optedIn) {
                 setSceneCapabilityStatus({ kind: 'ready', text: sceneCopy.ready });
                 window.setTimeout(() => setSceneCapabilityStatus((current) => (
                   current && current.kind === 'ready' ? null : current
@@ -1752,10 +1774,12 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         if (justInstalledTool) {
           // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot apply of the welcome-card state after tool install
           setWelcomeToolId(justInstalledTool);
+          welcomeToolIdRef.current = justInstalledTool;
           welcomeSessionKeyRef.current = sessionKey;
           if (setJustInstalledTool) setJustInstalledTool(null);
         } else if (welcomeSessionKeyRef.current && welcomeSessionKeyRef.current !== sessionKey) {
           setWelcomeToolId(null);
+          welcomeToolIdRef.current = null;
           welcomeSessionKeyRef.current = null;
         }
         // justInstalledTool 故意不放进依赖:否则上面 setJustInstalledTool(null) 清掉它会二次触发
@@ -2445,11 +2469,8 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   theme={theme}
                   t={t}
                   onSend={(q) => {
-                    setWelcomeToolId(null);
-                    // sendChatMessage's failure path re-throws (the current
-                    // implementation never rejects, but stay consistent with
-                    // handleSend's defense so it cannot become a floating
-                    // rejection later).
+                    // opt-in 统一在 sendChatMessage 内完成（R8-2，chip 与自由
+                    // 输入同路径）；这里只负责发送，失败处理与 handleSend 同口径。
                     Promise.resolve(sendChatMessage(q)).catch((err) => {
                       console.warn("[pinvou3][chat-ui] welcome-card send failed", err);
                     });
