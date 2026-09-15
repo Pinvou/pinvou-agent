@@ -1,6 +1,6 @@
-import { memo, useEffect, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Archive, Check, Download, Edit2, FolderOpen, MoreHorizontal, PinIcon, PinOffIcon, Sparkles, Trash2, X } from '../icons.jsx';
+import { Archive, Check, Download, Edit2, FolderOpen, Layers, MoreHorizontal, PinIcon, PinOffIcon, Sparkles, Trash2, X } from '../icons.jsx';
 import { useLongPressDrag } from '../../hooks/useLongPressDrag.js';
 import { usePortalMenu } from '../../hooks/usePortalMenu.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -215,7 +215,7 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
     // derived by the parent's useMemo and callbacks come from the parent's
     // useCallback / per-item closure cache (see renderSidebarTaskItem in
     // main.jsx); the default shallow compare then skips correctly.
-    const RecentItem = memo(function RecentItem({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onExportArchive, onArchive, dragKind = 'session', dragging, onPickUp }) {
+    const RecentItem = memo(function RecentItem({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onExportArchive, onArchive, onMoveToProject, dragKind = 'session', dragging, onPickUp }) {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
@@ -226,10 +226,19 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
       const selectChat = () => onSelect(chat.id);
       function save() { const tx = val.trim(); setEditing(false); if (tx && tx !== chat.title) onRename(chat.id, tx); }
       // Portal "more" menu placement/close lives in the shared hook (same
-      // plumbing as the project-group header menu). Height covers the 7-item
-      // session menu (6 menu items × h-9 (36px) + 9px divider + 8px vertical
-      // padding ≈ 233).
+      // plumbing as the project-group header menu). Height covers the tallest
+      // variant actually rendered — 6 menu items at h-9 (36px) + 9px divider +
+      // 8px vertical padding ≈ 233: codex rows render move-to-project, other
+      // rows render export-archive, and the two are taskKind-exclusive. It
+      // only drives the bottom-edge flip decision and the portal clips
+      // (per-menu height convention, see ProjectGroupHeader).
       const { menuOpen, menuStyle, closeMenu, toggleMenu, openMenuAt } = usePortalMenu({ height: 233 });
+      // 移动菜单项把流程移交给 App 级弹窗:菜单门户与弹窗在同一次提交里
+      // 卸载/挂载,被聚焦的菜单项随门户消失,弹窗的焦点还原来不及捕获它;
+      // 且此刻行的 :hover/focus-within 都已失效,hover 显隐的按钮容器是
+      // display:none,往里面聚焦是空操作。只能交接给常驻的行标签按钮,
+      // 弹窗关闭后焦点回到出发点所在的行。
+      const rowLabelRef = useRef(null);
       const openContextMenu = openMenuAt;
       const menuItemCls = `w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] whitespace-nowrap transition-colors text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]`;
       const menu = menuOpen && menuStyle && typeof document !== 'undefined' ? createPortal(
@@ -245,6 +254,12 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
             <Edit2 size={15} />
             <span>{t.riRename}</span>
           </button>
+          {onMoveToProject && (
+            <button type="button" className={menuItemCls} onClick={() => { rowLabelRef.current?.focus(); closeMenu(); onMoveToProject(chat); }}>
+              <Layers size={15} />
+              <span>{t.uiProjects.moveToProject}</span>
+            </button>
+          )}
           <button type="button" className={`${menuItemCls} text-[#C5221F] hover:bg-[#FAD2CF] dark:text-[#F28B82] dark:hover:bg-[#5c2b29]`} onClick={() => { closeMenu(); setConfirming(true); }}>
             <Trash2 size={15} />
             <span>{t.cpDelete}</span>
@@ -295,10 +310,11 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
         // styling (persona target highlight / dragging opacity) and hover
         // grouping; session selection is the label button, so the action
         // buttons are siblings instead of descendants of an ARIA button.
-        // biome-ignore lint/a11y/noStaticElementInteractions: right-click is a pointer-only shortcut for the same menu the "more" button opens; keyboard users use that button (menu items are real buttons, Escape closes)
+        // biome-ignore lint/a11y/noStaticElementInteractions: right-click is a pointer-only shortcut for the same menu the "more" button opens; keyboard users reach the "more" button too (Tab reveals the hover-hidden action row via group-focus-within, menu items are real buttons, Escape closes)
         <div
           role="presentation"
           onContextMenu={openContextMenu}
+          data-session-key={chat.id}
           data-drag-kind={sessionDragKind || undefined}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
           style={recentItemRowStyle(dragging, personaTarget, isDark)}
@@ -307,6 +323,7 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
               : active ? 'bg-[#E1E5EA] text-[#1F1F1F] dark:bg-[#333537] dark:text-white'
                      : 'text-[#1F1F1F] hover:bg-[#E1E5EA] dark:text-[#E3E3E3] dark:hover:bg-[#282A2C]'}`}>{/* isDark dynamic-value: 保留 (personaTarget boxShadow 运行时拼色,与 background/color 同对象) */}
           <button
+            ref={rowLabelRef}
             type="button"
             data-testid={chat.testId}
             data-drag-surface
@@ -350,11 +367,11 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
               {/* 默认: 显示日期(辨识每条会话什么时候发生);hover/active 时换成置顶/更多按钮,重命名/收纳/删除在更多菜单里。
                   窄屏无 hover：按钮组常显、日期让位，保证触屏可达。 */}
               {chat.date && (
-                <span className="text-[11px] mr-4 shrink-0 opacity-60 whitespace-nowrap group-hover:hidden max-sm:hidden text-[#5F6368] dark:text-[#9AA0A6]">
+                <span className="text-[11px] mr-4 shrink-0 opacity-60 whitespace-nowrap group-hover:hidden group-focus-within:hidden max-sm:hidden text-[#5F6368] dark:text-[#9AA0A6]">
                   {chat.date}
                 </span>
               )}
-              <div className="mr-4 hidden group-hover:flex max-sm:flex items-center gap-0.5 shrink-0">
+              <div className="mr-4 hidden group-hover:flex group-focus-within:flex max-sm:flex items-center gap-0.5 shrink-0">
                 <button type="button" title={chat.pinned ? t.riUnpin : t.riPin} onClick={(e) => { e.stopPropagation(); onTogglePinned && onTogglePinned(chat.id, !chat.pinned); }}
                   className="w-6 h-6 rounded-full flex items-center justify-center transition-colors text-[#5F6368] hover:bg-[#D3D7DB] dark:text-[#C4C7C5] dark:hover:bg-[#444746]">
                   {chat.pinned ? <PinOffIcon size={13} /> : <PinIcon size={13} />}
