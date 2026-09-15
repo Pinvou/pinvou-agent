@@ -16,6 +16,11 @@
     const invoke = context.invoke;
     const listen = context.listen;
     const notify = context.notify;
+    // System directory picker dialog (injected by bridge.js as TAURI.dialog.open;
+    // React must not touch Tauri globals directly — draft workspace selection goes
+    // through this wrapper). undefined when unavailable; pickDraftWorkspace
+    // returns null early in that case.
+    const dialogOpen = context.dialogOpen || null;
     const sessionStates = context.sessionStates;
     const scheduledRunSessionOwners = context.scheduledRunSessionOwners;
     const personaPlaceholderTitles = context.personaPlaceholderTitles;
@@ -555,6 +560,12 @@
     state.scheduledTaskPendingGuide = null; // 换了对话,未发送的定时任务引导词作废
     // 新草稿从关闭状态开始：寄存意图作废，开关行显示同步复位。
     state.pendingDraftMultiAgent = false;
+    // The staged explicit mode of a bound draft is registered intent too and is
+    // invalidated together with the draft.
+    state.pendingDraftMode = null;
+    // A new draft resets to the default workspace: the previous draft's directory
+    // choice must not carry over (shared by both early-return branches).
+    state.draftWorkspacePath = null;
 
     // 已在干净草稿态 → 只 notify(epoch 已自增)。注意要连 chatItems 一起判空:messages 与 chatItems
     // 会背离(persona 气泡 / ensureSession 失败的 system 报错卡只进 chatItems),否则残留卡顶掉「你好」。
@@ -578,6 +589,118 @@
   // 公开「新建对话」入口(侧边栏按钮)= 进草稿态。名字保留以兼容前端调用。
   async function createNewSession() { enterDraft(); }
 
+  // ── Draft-state working directory selection (plain chat, mirroring the code
+  // mode draft selector) ────────────────────────────────────────────────
+  // The recents list shares key and semantics with src/shared/workspace-recents.js:
+  // this file is a <script src> classic script and cannot import that ES module,
+  // so what follows is a verbatim mirror of it. Any change to one side must be
+  // mirrored on the other (tests/chat_draft_workspace_logic.test.mjs locks the
+  // bridge-side behavior, tests/workspace_recents_logic.test.mjs the shared module).
+  const DRAFT_WORKSPACE_RECENTS_KEY = "pinvou_codex_recent_workspaces";
+  function rememberDraftWorkspaceRecent(path) {
+    let list;
+    try {
+      const value = JSON.parse(localStorage.getItem(DRAFT_WORKSPACE_RECENTS_KEY) || "[]");
+      list = Array.isArray(value) ? value.filter(function (item) { return typeof item === "string"; }).slice(0, 6) : [];
+    } catch {
+      list = [];
+    }
+    const next = [path, ...list.filter(function (item) { return item !== path; })].slice(0, 6);
+    try {
+      localStorage.setItem(DRAFT_WORKSPACE_RECENTS_KEY, JSON.stringify(next));
+    } catch {
+      // When localStorage is unavailable, skip recording just this one entry;
+      // the directory selection itself is unaffected.
+    }
+  }
+
+  // Recents-list cleanup policy after create_session fails: prune only when the
+  // backend explicitly rejected the path (invalid workspace_path — the directory
+  // is stale or deleted); transient errors must not remove valid entries. Prune
+  // by the boundWorkspace captured at materialization, not the live
+  // draftWorkspacePath — if the user re-picks X2 while X1's creation is in
+  // flight, X1 is the one that fails and the valid X2 must survive.
+  function maybePruneFailedWorkspaceRecent(boundWorkspace, error) {
+    if (!boundWorkspace) return;
+    if (!/invalid workspace_path/.test(String((error && error.message) || error || ''))) return;
+    forgetDraftWorkspaceRecent(boundWorkspace);
+  }
+
+  // Remove a single directory from the recents list (mirror of
+  // workspace-recents.js forgetWorkspace): called from the ensureSession failure
+  // path when materialization fails (directory deleted/renamed) so a bad entry
+  // no longer lingers forever. The shared module and this classic script cannot
+  // import each other; keep both sides in sync.
+  function forgetDraftWorkspaceRecent(path) {
+    let list;
+    try {
+      const value = JSON.parse(localStorage.getItem(DRAFT_WORKSPACE_RECENTS_KEY) || "[]");
+      list = Array.isArray(value) ? value.filter(function (item) { return typeof item === "string"; }) : [];
+    } catch {
+      list = [];
+    }
+    const next = list.filter(function (item) { return item !== path; });
+    try {
+      localStorage.setItem(DRAFT_WORKSPACE_RECENTS_KEY, JSON.stringify(next));
+    } catch {
+      // When localStorage is unavailable, skip recording just this one entry;
+      // the directory selection itself is unaffected.
+    }
+  }
+
+  // Effective in draft state only; path = null means back to the default
+  // (session-private directory).
+  function setDraftWorkspace(path) {
+    if (state.activeSessionId) return;
+    state.draftWorkspacePath = path || null;
+    // Binding/unbinding switches the draft mode display lane (bound → code lane,
+    // unbound → back to this lane's default); on unbind, the previous bound
+    // draft's staged explicit mode is invalidated and must not carry into an
+    // unbound draft.
+    if (!state.draftWorkspacePath) state.pendingDraftMode = null;
+    state.modeState = currentDraftModeState();
+    notify();
+  }
+  // System directory picker: on success, records the path in the recents list,
+  // writes it back to the draft selection, and returns the selected path;
+  // returns null on user cancel (or dialog unavailable / not in draft state)
+  // without changing the current selection.
+  async function pickDraftWorkspace() {
+    if (state.activeSessionId || !dialogOpen) return null;
+    const selected = await dialogOpen({ directory: true, multiple: false, title: bt("pickFolderTitle") });
+    const path = Array.isArray(selected) ? selected[0] : selected;
+    if (!path) return null;
+    rememberDraftWorkspaceRecent(path);
+    setDraftWorkspace(path);
+    return path;
+  }
+
+  // Tauri's rejection message for an unregistered command (compat detection for
+  // older backends without the command); an unavailable invoke itself (web-side
+  // stub) is treated the same way as "command missing".
+  function isCommandMissingError(error) {
+    const message = String((error && error.message) || error || "");
+    return /unknown command|command not found|not implemented|invoke is unavailable/i.test(message);
+  }
+
+  // Working directory binding of a materialized session (plain-chat bound
+  // workspace sessions; safety posture aligned with the code mode): returns the
+  // full bound path, null when unbound, and null for older backends without the
+  // command (UI shows no binding indicator). Other query failures (transient
+  // errors) propagate to the caller — the YOLO confirmation gate relies on that
+  // to fail closed with one extra confirmation rather than silently skipping a
+  // bound session.
+  async function getSessionWorkspaceBinding(sessionId) {
+    if (!sessionId) return null;
+    try {
+      const binding = await invoke("get_session_workspace_binding", { sessionId });
+      return typeof binding === "string" && binding ? binding : null;
+    } catch (error) {
+      if (isCommandMissingError(error)) return null;
+      throw error;
+    }
+  }
+
   // 草稿态首次有实质内容时真正向后端创建 session 并切为 active;已有 active 直接返回。
   // 返回新 session id,创建失败返回 null。调用方:sendMessage(首条消息) / equipPersona(加卡)。
   // 并发防护（审计）：草稿态双击发送会并发 create_session，导致两条消息分家到两个新
@@ -591,10 +714,20 @@
     // 只推进 token 不改 activeSessionId（仍为 null），在途 create_session 返回
     // 后必须连同 token 一起校验，否则会劫持用户新进的草稿（三审 P1）。
     const navToken = sessionSwitchRequestToken;
+    // boundWorkspace is captured outside the try: the catch-side recents
+    // cleanup must also use the directory bound by this materialization, not
+    // the live draftWorkspacePath.
+    const boundWorkspace = state.draftWorkspacePath || null;
     const p = (async function () {
       // 多 session 并发:不预热 engine。新建空 session 的 buffer 由 switchActiveTo({fresh}) 起。
       try {
-        const meta = await invoke("create_session");
+        // The draft's selected working directory is sent along with
+        // materialization; null = backend default (session-private directory).
+        // The argument is captured at the invoke's synchronous evaluation, so a
+        // later selection during the await does not affect this creation. The
+        // post-materialization lane default application likewise keys off
+        // whether this creation was bound.
+        const meta = await invoke("create_session", { workspacePath: boundWorkspace });
         // create_session 等待期间用户可能已发送/清空输入，必须读取最新值，
         // 不能把 await 前的已发送文本带入新 session。
         const composerDraft = state.composerDraft || "";
@@ -605,6 +738,7 @@
         // 仍为 null 但导航 token 已前移——两种导航都中止物化（三审 P1）。
         if (state.activeSessionId || navToken !== sessionSwitchRequestToken) {
           state.pendingDraftMultiAgent = false;
+          state.pendingDraftMode = null;
           sessionStates[meta.id] = freshBuffer();
           sessionStates[meta.id].loadedFromDisk = true;
           return null;
@@ -613,6 +747,13 @@
         // 清：switchActiveTo 会把寄存意图当作已消费。
         const pendingMultiAgent = state.pendingDraftMultiAgent === true;
         state.pendingDraftMultiAgent = false;
+        // The bound draft's staged explicit mode is read-then-cleared the
+        // same way (an explicit switch during the await is user intent too).
+        const stagedDraftMode = state.pendingDraftMode;
+        state.pendingDraftMode = null;
+        // Materialization committed: clear the draft directory; on
+        // create_session failure (outer catch) it is kept for retry.
+        state.draftWorkspacePath = null;
         switchActiveTo(meta.id, { fresh: true });
         // 草稿态因首条消息/加卡等实质操作物化为 session 时，输入草稿也要
         // 跟随迁移；这不是用户主动切换到另一个已有会话。
@@ -632,9 +773,13 @@
               // 空会话残留可手动删除，不掩盖主错误。
             }
             enterDraft();
+            // Restore the registered intent captured before the failure: the
+            // retry must keep the user's explicit toggle.
             state.pendingDraftMultiAgent = true;
+            state.draftWorkspacePath = boundWorkspace;
+            state.pendingDraftMode = stagedDraftMode || null;
             state.modeState = {
-              mode: (state.modeState && state.modeState.mode) || "yolo",
+              mode: stagedDraftMode || currentDraftModeState().mode,
               multiAgent: true,
             };
             addSystemItem(bt("switchModeFailed") + toggleError);
@@ -645,11 +790,35 @@
         }
         await refreshHistoryList();
         await syncModeState();
-        // Two-lane semantics: the backend's plain default is always Yolo and
-        // lanes are only work/code; when the materializing session's lane
-        // global default is plan, apply it right now (the write becomes that
-        // session's own per-session record; the global default is
-        // unaffected).
+        if (boundWorkspace) {
+          // Bound-workspace sessions share the code mode's safety posture: the
+          // backend already resolves mode for bound sessions via the code lane
+          // global default, so do not apply the work lane default through
+          // set_plan_mode_next here; apply only a mode the user explicitly
+          // staged in draft state (the one-shot YOLO confirmation gate was
+          // already passed by ChatView at draft switch time).
+          if (stagedDraftMode === "plan" || stagedDraftMode === "yolo") {
+            // Use the meta.id captured at materialization, not activeSessionId:
+            // during the awaits above the user may have switched away, and
+            // running the mode command against the current active session would
+            // target the wrong one.
+            try {
+              const stagedModeState = stagedDraftMode === "plan"
+                ? await invoke("set_plan_mode_next", { sessionId: meta.id })
+                : await invoke("exit_plan_to_yolo", { sessionId: meta.id });
+              applyAuthoritativeModeState(meta.id, stagedModeState);
+            } catch (stagedModeError) {
+              runSyncOnSession(meta.id, function () {
+                addSystemItem(bt("switchModeFailed") + stagedModeError);
+              });
+            }
+          }
+        } else {
+        // Two-lane semantics (#428 merged design into work): the backend's
+        // plain default is always Yolo and lanes are only work/code; when the
+        // materializing session's lane global default is plan, apply it right
+        // now (the write becomes that session's own per-session record; the
+        // global default is unaffected).
         const laneDefault = state.modeDefaults
           && state.modeDefaults[state.modeLane === "code" ? "code" : "work"];
         // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户
@@ -664,6 +833,7 @@
             });
           }
         }
+        }
         await syncActivePersona();
         await syncMountedCollection();
         notify();
@@ -677,6 +847,11 @@
           && state.activeSessionId === meta.id ? meta.id : null;
       } catch (e) {
         addSystemItem(bt("newChatFailed") + e);
+        // Recents-list cleanup is centralized in maybePruneFailedWorkspaceRecent
+        // (prune only when the path itself was rejected, keyed by the captured
+        // bound directory). The draft selection itself is kept per the existing
+        // contract so the user can fix the directory and retry.
+        maybePruneFailedWorkspaceRecent(boundWorkspace, e);
         return null;
       }
     })();
@@ -1387,6 +1562,9 @@
       refreshHistoryList,
       enterDraft,
       createNewSession,
+      setDraftWorkspace,
+      pickDraftWorkspace,
+      getSessionWorkspaceBinding,
       ensureSession,
       reportSessionSwitchFailure,
       hydratedMessageKey,

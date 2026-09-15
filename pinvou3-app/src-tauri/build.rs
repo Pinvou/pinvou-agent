@@ -5,6 +5,7 @@ fn main() {
     for file in [
         "resources/common/bundle/instructions-shared.md",
         "resources/common/bundle/instructions-work.md",
+        "resources/common/bundle/instructions-work-bound.md",
         "resources/common/bundle/instructions-code.md",
         "resources/common/bundle/deny_sensitive_paths.sh",
     ] {

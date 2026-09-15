@@ -1006,7 +1006,7 @@ const ToolOutput = ({ item, t }) => {
     // ==========================================
     // PlanStuckCard — Plan 模式 AI 撞只读保护(白名单/sandbox)的兜底卡
     // ==========================================
-    const PlanStuckCard = ({ item, t }) => {
+    const PlanStuckCard = ({ item, t, onGo }) => {
       const webReadOnly = multiAgentWebReadOnly();
       const done = item.resolved;
       return (
@@ -1019,7 +1019,7 @@ const ToolOutput = ({ item, t }) => {
           ) : (
             <div className="flex items-center gap-2 flex-wrap">
               <button type="button" className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.planStuckReplan(item.id)}>{t.stuckReplan}</button>
-              <button type="button" className={cardBtnCls('primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.planStuckGo(item.id)}>⚡ {t.stuckGo}</button>
+              <button type="button" className={cardBtnCls('primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => (onGo ? onGo(item.id) : bridge.interaction.planStuckGo(item.id))}>⚡ {t.stuckGo}</button>
             </div>
           )}
         </div>

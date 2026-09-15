@@ -99,6 +99,7 @@ fn reopen_store(store: &SessionStore) -> Result<SessionStore> {
     reopened.load_hidden_sessions();
     reopened.load_aux_sessions();
     reopened.load_session_mode_states();
+    reopened.migrate_legacy_session_workspaces();
     {
         let _mutation = reopened.scheduled_mutation.lock();
         reopened.enforce_session_retention_locked()?;
@@ -317,6 +318,339 @@ fn scheduled_profile(task_id: &str) -> ScheduledRunProfile {
         trust_mode: false,
         auto_approve: false,
     }
+}
+
+fn unique_temp_dir(label: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "pinvou3-{label}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ))
+}
+
+#[test]
+fn session_roots_user_workspace_binding_uses_bound_execution_root() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let bound_dir = unique_temp_dir("user-workspace-binding");
+    std::fs::create_dir_all(&bound_dir).expect("create bound dir");
+    store
+        .bind_session_workspace(&s.metadata.id, bound_dir.clone())
+        .expect("bind");
+
+    let roots = store.session_roots(&s.metadata.id).expect("roots");
+    assert_eq!(roots.execution, bound_dir);
+    // The ledger root is always the session-private directory; the user-selected
+    // directory stays clean.
+    let private = paths::session_workspace_dir(&s.metadata.id);
+    assert_eq!(roots.ledger, private);
+
+    // Unbound sessions are unaffected; both roots still coincide.
+    let other = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create other");
+    let other_roots = store.session_roots(&other.metadata.id).expect("roots");
+    assert_eq!(other_roots.execution, other_roots.ledger);
+
+    let _ = std::fs::remove_dir_all(&bound_dir);
+}
+
+#[test]
+fn session_workspace_binding_survives_reload() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let bound_dir = unique_temp_dir("user-workspace-reload");
+    std::fs::create_dir_all(&bound_dir).expect("create bound dir");
+    store
+        .bind_session_workspace(&s.metadata.id, bound_dir.clone())
+        .expect("bind");
+
+    let reopened = reopen_store(&store).expect("reopen");
+    assert_eq!(
+        reopened.session_workspace_binding(&s.metadata.id),
+        Some(bound_dir.clone())
+    );
+    let roots = reopened.session_roots(&s.metadata.id).expect("roots");
+    assert_eq!(roots.execution, bound_dir);
+
+    let _ = std::fs::remove_dir_all(&bound_dir);
+}
+
+#[test]
+fn delete_session_removes_workspace_binding() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let bound_dir = unique_temp_dir("user-workspace-delete");
+    std::fs::create_dir_all(&bound_dir).expect("create bound dir");
+    store
+        .bind_session_workspace(&s.metadata.id, bound_dir.clone())
+        .expect("bind");
+    let sidecar = paths::sessions_root()
+        .join(&s.metadata.id)
+        .join("workspace-binding.json");
+    assert!(sidecar.is_file());
+
+    store.delete(&s.metadata.id).expect("delete");
+    assert!(store.session_workspace_binding(&s.metadata.id).is_none());
+    // The binding is removed together with the session directory (no separate
+    // global leftovers).
+    assert!(!sidecar.exists());
+
+    let _ = std::fs::remove_dir_all(&bound_dir);
+}
+
+#[test]
+fn bind_session_workspace_requires_existing_session_record() {
+    let (store, _g) = isolated_store();
+    let bound_dir = unique_temp_dir("user-workspace-no-record");
+    std::fs::create_dir_all(&bound_dir).expect("create bound dir");
+    // A binding is subordinate session data: unknown ids are rejected, and no
+    // session directory may be fabricated.
+    assert!(
+        store
+            .bind_session_workspace("ghost-session-id", bound_dir.clone())
+            .is_err()
+    );
+    assert!(!paths::sessions_root().join("ghost-session-id").exists());
+    assert!(
+        store
+            .session_workspace_binding("ghost-session-id")
+            .is_none()
+    );
+
+    let _ = std::fs::remove_dir_all(&bound_dir);
+}
+
+#[test]
+fn workspace_binding_sidecar_ignores_residue_of_deleted_session() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let bound_dir = unique_temp_dir("user-workspace-residue");
+    std::fs::create_dir_all(&bound_dir).expect("create bound dir");
+    store
+        .bind_session_workspace(&s.metadata.id, bound_dir.clone())
+        .expect("bind");
+    // Simulate leftovers of a partially failed deletion: the session JSON is
+    // gone but the directory (including the sidecar) is still present.
+    let record = paths::sessions_root().join(format!("{}.json", s.metadata.id));
+    std::fs::remove_file(&record).expect("remove record");
+    store.session_workspaces.write().clear();
+    assert!(
+        store.session_workspace_binding(&s.metadata.id).is_none(),
+        "会话记录已删时残留 sidecar 不得复活绑定"
+    );
+
+    let _ = std::fs::remove_dir_all(&bound_dir);
+}
+
+#[test]
+fn migrate_legacy_session_workspaces_converges_to_per_session_sidecars() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let bound_dir = unique_temp_dir("user-workspace-migrate");
+    std::fs::create_dir_all(&bound_dir).expect("create bound dir");
+    // Legacy pre-consolidation format: a global table {session_id: path}, with
+    // both live-session and ghost entries.
+    let legacy = paths::sessions_root().join("_session_workspaces.json");
+    std::fs::write(
+        &legacy,
+        serde_json::to_string_pretty(&std::collections::HashMap::from([
+            (s.metadata.id.clone(), bound_dir.clone()),
+            ("ghost-session-id".to_string(), bound_dir.clone()),
+        ]))
+        .expect("serialize legacy"),
+    )
+    .expect("write legacy");
+
+    store.migrate_legacy_session_workspaces();
+    // Live-session entries converge into per-session sidecars; even after the
+    // in-memory cache is cleared they can be read back from the sidecar
+    // (read-through), leaving execution-root resolution unaffected.
+    store.session_workspaces.write().clear();
+    assert_eq!(
+        store.session_workspace_binding(&s.metadata.id),
+        Some(bound_dir.clone())
+    );
+    let sidecar = paths::sessions_root()
+        .join(&s.metadata.id)
+        .join("workspace-binding.json");
+    assert!(sidecar.is_file());
+    let roots = store.session_roots(&s.metadata.id).expect("roots");
+    assert_eq!(roots.execution, bound_dir);
+    // Ghost entries are not migrated (no directory is created for deleted
+    // sessions); the old table is removed once migration completes.
+    assert!(!paths::sessions_root().join("ghost-session-id").exists());
+    assert!(!legacy.exists());
+
+    let _ = std::fs::remove_dir_all(&bound_dir);
+}
+
+/// Partial migration failure: failed entries keep the old file and are taken
+/// over by the in-memory cache so they still resolve, retried on the next boot;
+/// the cache is extended rather than replaced wholesale — entries bound earlier
+/// in this boot must not be dropped.
+#[test]
+fn migrate_legacy_session_workspaces_partial_failure_retains_and_extends() {
+    let (store, _g) = isolated_store();
+    let ok = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create ok");
+    let blocked = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create blocked");
+    let prebound = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create prebound");
+    let bound_dir = unique_temp_dir("user-workspace-partial");
+    std::fs::create_dir_all(&bound_dir).expect("create bound dir");
+    // An entry bound before this boot's migration: a partial failure must not drop it.
+    store
+        .bind_session_workspace(&prebound.metadata.id, bound_dir.clone())
+        .expect("prebind");
+    // Make the sidecar write fail for the blocked session: its session directory
+    // path is occupied by a file of the same name (the <id>.json record still
+    // exists, so bind passes the record check and fails writing under <id>/).
+    let blocked_dir = paths::sessions_root().join(&blocked.metadata.id);
+    std::fs::write(&blocked_dir, b"not-a-dir").expect("block session dir");
+    let legacy = paths::sessions_root().join("_session_workspaces.json");
+    std::fs::write(
+        &legacy,
+        serde_json::to_string(&std::collections::HashMap::from([
+            (ok.metadata.id.clone(), bound_dir.clone()),
+            (blocked.metadata.id.clone(), bound_dir.clone()),
+        ]))
+        .expect("serialize legacy"),
+    )
+    .expect("write legacy");
+
+    store.migrate_legacy_session_workspaces();
+
+    assert!(
+        paths::sessions_root()
+            .join(&ok.metadata.id)
+            .join("workspace-binding.json")
+            .is_file(),
+        "成功条目已迁移为 sidecar"
+    );
+    assert!(
+        legacy.exists(),
+        "存在未迁移条目时旧文件必须保留（下次 boot 重试）"
+    );
+    assert_eq!(
+        store.session_workspace_binding(&blocked.metadata.id),
+        Some(bound_dir.clone()),
+        "失败条目接管进内存表，读路径仍返回绑定"
+    );
+    assert_eq!(
+        store.session_workspace_binding(&prebound.metadata.id),
+        Some(bound_dir.clone()),
+        "extend 不得丢弃本 boot 已绑定的条目"
+    );
+    // Once the failure source is removed, a retry completes and deletes the old file.
+    std::fs::remove_file(&blocked_dir).expect("unblock");
+    store.migrate_legacy_session_workspaces();
+    assert!(
+        paths::sessions_root()
+            .join(&blocked.metadata.id)
+            .join("workspace-binding.json")
+            .is_file(),
+        "重试后失败条目完成迁移"
+    );
+    assert!(!legacy.exists(), "全部迁移成功后旧文件删除");
+
+    let _ = std::fs::remove_dir_all(&bound_dir);
+}
+
+/// Future-version sidecars and corrupted JSON are both treated as missing
+/// (never silently parsed as the current version); bind rewriting in the
+/// current version self-heals.
+#[test]
+fn workspace_binding_sidecar_future_version_and_corrupt_json_are_ignored() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let bound_dir = unique_temp_dir("user-workspace-sidecar");
+    std::fs::create_dir_all(&bound_dir).expect("create bound dir");
+    let sidecar_dir = paths::sessions_root().join(&s.metadata.id);
+    std::fs::create_dir_all(&sidecar_dir).expect("create sidecar dir");
+    let sidecar = sidecar_dir.join("workspace-binding.json");
+
+    std::fs::write(
+        &sidecar,
+        serde_json::json!({ "version": 99, "path": bound_dir }).to_string(),
+    )
+    .expect("write future version");
+    assert_eq!(
+        store.session_workspace_binding(&s.metadata.id),
+        None,
+        "未来高版本 sidecar 必须拒读按缺失处理"
+    );
+
+    std::fs::write(&sidecar, b"{not json").expect("write corrupt");
+    assert_eq!(
+        store.session_workspace_binding(&s.metadata.id),
+        None,
+        "损坏 JSON sidecar 必须按缺失处理"
+    );
+
+    store
+        .bind_session_workspace(&s.metadata.id, bound_dir.clone())
+        .expect("rebind heals");
+    assert_eq!(
+        store.session_workspace_binding(&s.metadata.id),
+        Some(bound_dir.clone()),
+        "bind 重写为当前版本即自愈"
+    );
+
+    let _ = std::fs::remove_dir_all(&bound_dir);
+}
+
+#[test]
+fn validate_user_workspace_path_rejects_invalid_and_accepts_directory() {
+    use super::validators::validate_user_workspace_path;
+
+    assert!(validate_user_workspace_path("").is_err());
+    assert!(validate_user_workspace_path("   ").is_err());
+    assert!(validate_user_workspace_path("relative/dir").is_err());
+
+    let missing = unique_temp_dir("user-workspace-missing");
+    assert!(validate_user_workspace_path(missing.to_str().expect("utf8")).is_err());
+
+    // A file rather than a directory → reject.
+    let file = unique_temp_dir("user-workspace-file");
+    std::fs::write(&file, b"x").expect("seed file");
+    assert!(validate_user_workspace_path(file.to_str().expect("utf8")).is_err());
+    let _ = std::fs::remove_file(&file);
+
+    // A valid directory → returned after canonicalization.
+    let dir = unique_temp_dir("user-workspace-valid");
+    std::fs::create_dir_all(&dir).expect("create dir");
+    let validated = validate_user_workspace_path(dir.to_str().expect("utf8")).expect("valid dir");
+    let expected = crate::platform::os::platform_compat_path(
+        &dir.canonicalize().expect("canonicalize").to_string_lossy(),
+    );
+    assert_eq!(validated, expected);
+    // Regression assertion: a bound directory must not carry a Windows verbatim
+    // prefix, matching the existing convention in validate_codex_project_workspace.
+    assert!(
+        !validated.to_string_lossy().starts_with(r"\\?\"),
+        "validated workspace must not keep the verbatim prefix: {}",
+        validated.display()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn text_message(role: &str, text: &str) -> Message {
@@ -3016,6 +3350,43 @@ fn code_session_default_follows_code_lane_default() {
     assert_eq!(store.mode_state("code-1").mode, SerializableMode::Yolo);
     store.set_mode_default(ModeLane::Code, SerializableMode::Plan);
     assert_eq!(store.mode_state("code-2").mode, SerializableMode::Plan);
+}
+
+/// A plain chat session bound to a user working directory: its default mode
+/// aligns with the code safety posture (Plan on first use, following the code
+/// lane's global default); unbound plain sessions stay on Yolo.
+#[test]
+fn workspace_bound_plain_session_defaults_to_plan_like_code() {
+    let (store, _g) = isolated_store();
+    let bound = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create bound");
+    let bound_dir = unique_temp_dir("user-workspace-mode-default");
+    std::fs::create_dir_all(&bound_dir).expect("create bound dir");
+    store
+        .bind_session_workspace(&bound.metadata.id, bound_dir.clone())
+        .expect("bind");
+
+    // Never used (global last_mode=None) → read-only Plan on first use;
+    // unbound plain stays Yolo.
+    assert_eq!(
+        store.mode_state(&bound.metadata.id).mode,
+        SerializableMode::Plan
+    );
+    assert_eq!(
+        store.mode_state("plain-unbound").mode,
+        SerializableMode::Yolo
+    );
+
+    // The code lane's global default applies to bound plain sessions as well.
+    store.set_mode_default(ModeLane::Code, SerializableMode::Yolo);
+    assert_eq!(
+        store.mode_state(&bound.metadata.id).mode,
+        SerializableMode::Yolo
+    );
+    store.set_mode_default(ModeLane::Code, SerializableMode::Plan);
+
+    let _ = std::fs::remove_dir_all(&bound_dir);
 }
 
 #[test]
