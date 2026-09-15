@@ -50,6 +50,11 @@ pub const PINVOU3_ALLOWED_TOOLS: &[&str] = &[
     // session).
     "registry_sync",
     "start_registry_mcp_server",
+    // The ima connector's marketplace skill orders the model to call this
+    // native tool directly, but it matches no family rule above (the `mcp_*`
+    // prefix only covers MCP-discovered names), so without this entry the
+    // per-turn catalog strip made the skill teach a permanently absent tool.
+    "ima_openapi",
     "mcp_*",
     "list_mcp_resources",
     "list_mcp_resource_templates",

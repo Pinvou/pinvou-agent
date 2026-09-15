@@ -5,7 +5,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const BUNDLE = path.join(ROOT, 'src-tauri', 'resources', 'common', 'bundle');
+// Both bundle/ and skill-marketplace/ ship model-facing guidance; a retired
+// name is equally teachable from either tree, so scan all of resources/common.
+const RESOURCES_COMMON = path.join(ROOT, 'src-tauri', 'resources', 'common');
+const BUNDLE = path.join(RESOURCES_COMMON, 'bundle');
 // Retired tool names must not leak into runtime guidance: the v0.9.12
 // model-visible file/shell surface is read/write/edit/list_dir/file_search/
 // grep_files/bash. Old names (write_file/exec_shell, ...) and hidden replay
@@ -30,7 +33,7 @@ function runtimeGuidanceFiles(dir) {
 
 test('runtime guidance does not teach retired or hidden replay tool names', () => {
   const leaks = [];
-  for (const file of runtimeGuidanceFiles(BUNDLE)) {
+  for (const file of runtimeGuidanceFiles(RESOURCES_COMMON)) {
     const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
     lines.forEach((line, index) => {
       if (RETIRED.test(line) || line.includes('File(action=') || line.includes('Bash(action=')) {
