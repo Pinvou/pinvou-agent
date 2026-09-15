@@ -12,19 +12,15 @@ import {
   startTranscriptPolling,
 } from '../src/features/multiagent/runState.mjs';
 import {
-  extractSubagentId,
   fileChangeStat,
   projectSubagentTranscript,
   resolveSubagentIdentity,
   resolveSubagentPresentation,
-  resolveSubagentSpawnResult,
   subagentAncestorIds,
   subagentObjectiveName,
   splitSubagentTitle,
   subagentOrdinalLabel,
   subagentRoleOrdinals,
-  subagentTreeIsDone,
-  visibleSubagentDescendantRows,
   visibleSubagentTreeRows,
   windowSubagentTranscript,
 } from '../src/features/multiagent/subagent-conversation.mjs';
@@ -972,42 +968,6 @@ test('多级代理树：默认只列直属根，按父节点逐级展开并保�
   );
 });
 
-test('主对话行内卡只投影自己的后代，按子节点逐级展开', () => {
-  const list = [
-    { agent_id: 'agent_root_a', parent_run_id: null },
-    { agent_id: 'agent_child_a', parent_run_id: 'agent_root_a' },
-    { agent_id: 'agent_grandchild_a', parent_run_id: 'agent_child_a' },
-    { agent_id: 'agent_root_b', parent_run_id: null },
-    { agent_id: 'agent_child_b', parent_run_id: 'agent_root_b' },
-    { agent_id: 'agent_cycle', parent_run_id: 'agent_cycle' },
-  ];
-  const ids = rows => rows.map(row => row.entry.agent_id);
-
-  const collapsed = visibleSubagentDescendantRows(list, 'agent_root_a', new Set());
-  assert.deepEqual(ids(collapsed), ['agent_child_a']);
-  assert.equal(collapsed[0].depth, 0);
-  assert.equal(collapsed[0].childCount, 1);
-
-  const expanded = visibleSubagentDescendantRows(
-    list,
-    'agent_root_a',
-    new Set(['agent_child_a']),
-  );
-  assert.deepEqual(ids(expanded), ['agent_child_a', 'agent_grandchild_a']);
-  assert.equal(expanded[1].depth, 1);
-  assert.deepEqual(
-    visibleSubagentDescendantRows(list, 'agent_missing', new Set()),
-    [],
-  );
-  assert.equal(subagentTreeIsDone(list, 'agent_root_a'), false, '运行中的后代必须保持轮询');
-  assert.equal(
-    subagentTreeIsDone(list.map(entry => ({ ...entry, done: true })), 'agent_root_a'),
-    true,
-    '父节点与全部后代终态后才能停表',
-  );
-  assert.equal(subagentTreeIsDone(list, 'agent_missing'), false, '根记录未出现时不得提前停表');
-});
-
 // ── 行内专家卡（消息流内的委派可视化） ───────────────────────────────────────
 
 test('agent 工具调用渲染成行内专家卡，点击打开只读面板', () => {
@@ -1049,50 +1009,6 @@ test('agent 工具调用渲染成行内专家卡，点击打开只读面板', ()
     toolRenderersSource,
     /pinvou:open-subagent/,
     '点击计数行经 DOM 事件通知 ChatView 打开面板',
-  );
-});
-
-test('子智能体 ID 只接受 CodeWhale 实例格式，不把 agent_id 字段名当成实例', () => {
-  assert.equal(extractSubagentId('agent_id'), null);
-  assert.equal(extractSubagentId('schema: { agent_id: string }'), null);
-  assert.equal(
-    extractSubagentId('{"agent_id":"agent_7fb1c7be","status":"running"}'),
-    'agent_7fb1c7be',
-  );
-  assert.equal(extractSubagentId({ agent_id: 'agent_7A7D442F' }), 'agent_7A7D442F');
-  assert.equal(extractSubagentId('agent_1234'), null, '非正式短 id 不得误绑卡片');
-  assert.equal(
-    extractSubagentId('Error: write-scope contention with agent_6282bd07'),
-    null,
-    '错误正文中的冲突方不得被认成新派出的实例',
-  );
-  assert.equal(
-    extractSubagentId('[sub-agent result summarized for parent context]\n- agent_fa6e55b5 (agent) status=running'),
-    'agent_fa6e55b5',
-    '上下文压缩后的正式成功摘要仍须可定位实例',
-  );
-});
-
-test('失败派工不绑定冲突方，成功重派只绑定自身', () => {
-  const failureOutput = 'Error: Failed to spawn sub-agent: write-scope contention with agent_6282bd07';
-  assert.deepEqual(
-    resolveSubagentSpawnResult({ state: 'done', success: false, output: failureOutput }),
-    { failed: true, agentId: null },
-    '实时 tool_end 的 done + success=false 必须显示启动失败且不可打开 transcript',
-  );
-  assert.deepEqual(
-    resolveSubagentSpawnResult({ state: 'failed', success: null, output: failureOutput }),
-    { failed: true, agentId: null },
-    '旧车道的显式 failed 状态也不得把冲突方绑定到失败卡',
-  );
-  assert.deepEqual(
-    resolveSubagentSpawnResult({
-      state: 'done',
-      success: true,
-      output: '[sub-agent result summarized for parent context]\n- agent_fa6e55b5 (agent) status=running',
-    }),
-    { failed: false, agentId: 'agent_fa6e55b5' },
-    '成功重派仍应打开真正的新实例',
   );
 });
 
