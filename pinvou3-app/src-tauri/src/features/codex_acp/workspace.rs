@@ -80,6 +80,8 @@ pub struct WorkspaceChange {
 pub struct WorkspaceChanges {
     pub git: bool,
     pub branch: Option<String>,
+    pub repository_url: Option<String>,
+    pub commit_sha: Option<String>,
     pub baseline_available: bool,
     pub changes: Vec<WorkspaceChange>,
 }
@@ -345,6 +347,8 @@ pub fn workspace_changes(session_id: &str, root: &Path) -> Result<WorkspaceChang
     Ok(WorkspaceChanges {
         git,
         branch: git.then(|| git_branch(&root)).flatten(),
+        repository_url: git.then(|| git_repository_url(&root)).flatten(),
+        commit_sha: git.then(|| git_commit_sha(&root)).flatten(),
         baseline_available,
         changes,
     })
@@ -528,8 +532,10 @@ struct DiffFingerprint {
     head_tail_hash: u64,
     index_size: u64,
     index_modified: u128,
+    index_hash: u64,
     head_ref_size: u64,
     head_ref_modified: u128,
+    head_ref_hash: u64,
 }
 
 #[derive(Clone)]
@@ -587,8 +593,10 @@ fn diff_fingerprint(root: &Path, relative: &str) -> DiffFingerprint {
         head_tail_hash: 0,
         index_size: 0,
         index_modified: 0,
+        index_hash: 0,
         head_ref_size: 0,
         head_ref_modified: 0,
+        head_ref_hash: 0,
     };
     if let Ok(metadata) = root.join(relative).metadata() {
         fingerprint.file_size = metadata.len();
@@ -596,9 +604,12 @@ fn diff_fingerprint(root: &Path, relative: &str) -> DiffFingerprint {
         fingerprint.head_tail_hash = sample_head_tail_hash(&root.join(relative), metadata.len());
     }
     // git 暂存区变化会重写 .git/index；非 git 工作区无此文件，字段保持 0。
+    // index 条目定长、同路径同 SHA 位数，重写往往尺寸不变，且同样可能落在
+    // 同一 mtime 粒度内——与 HEAD ref 一样加内容哈希兜底。
     if let Ok(metadata) = root.join(".git/index").metadata() {
         fingerprint.index_size = metadata.len();
         fingerprint.index_modified = modified_nanos(&metadata);
+        fingerprint.index_hash = sample_head_tail_hash(&root.join(".git/index"), metadata.len());
     }
     // git diff --cached 比较 index 与 HEAD；reset --soft / update-ref / commit 只移动
     // HEAD（改写其指向的 ref 文件），可能不更新 .git/index 或工作区。解析 .git/HEAD
@@ -607,6 +618,9 @@ fn diff_fingerprint(root: &Path, relative: &str) -> DiffFingerprint {
         if let Ok(metadata) = head_ref.metadata() {
             fingerprint.head_ref_size = metadata.len();
             fingerprint.head_ref_modified = modified_nanos(&metadata);
+            // 内容哈希兜底:reset --soft / update-ref 与上次指纹落在同一时间戳
+            // 粒度内时 mtime 不变,只有内容(SHA 改写)才能正确失效缓存。
+            fingerprint.head_ref_hash = sample_head_tail_hash(&head_ref, metadata.len());
         }
     }
     fingerprint
@@ -1192,6 +1206,50 @@ fn git_branch(root: &Path) -> Option<String> {
     (!branch.is_empty()).then(|| branch.to_string())
 }
 
+fn git_commit_sha(root: &Path) -> Option<String> {
+    let commit = git_output(root, &["rev-parse", "HEAD"]).ok()?;
+    let commit = commit.trim().to_ascii_lowercase();
+    (commit.len() >= 7 && commit.len() <= 64 && commit.chars().all(|ch| ch.is_ascii_hexdigit()))
+        .then_some(commit)
+}
+
+fn git_repository_url(root: &Path) -> Option<String> {
+    let remote = git_output(root, &["remote", "get-url", "origin"]).ok()?;
+    sanitize_git_remote_url(remote.trim())
+}
+
+fn sanitize_git_remote_url(remote: &str) -> Option<String> {
+    let remote = remote.trim();
+    if remote.is_empty() {
+        return None;
+    }
+    let candidate = if let Some(rest) = remote.strip_prefix("git@") {
+        let (host, path) = rest.split_once(':')?;
+        format!("https://{host}/{path}")
+    } else if remote.starts_with("ssh://") || remote.starts_with("git://") {
+        let parsed = reqwest::Url::parse(remote).ok()?;
+        let host = parsed.host_str()?;
+        format!("https://{host}{}", parsed.path())
+    } else {
+        remote.to_string()
+    };
+    let mut parsed = reqwest::Url::parse(&candidate).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    parsed.set_username("").ok()?;
+    parsed.set_password(None).ok()?;
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    let clean_path = parsed
+        .path()
+        .trim_end_matches('/')
+        .trim_end_matches(".git")
+        .to_string();
+    parsed.set_path(&clean_path);
+    Some(parsed.to_string().trim_end_matches('/').to_string())
+}
+
 fn git_status_entries(root: &Path) -> Result<Vec<WorkspaceChange>> {
     let mut command = crate::platform::process::HiddenCommand::new("git");
     crate::platform::process::strip_git_override_env(&mut command);
@@ -1386,19 +1444,40 @@ mod tests {
         assert_eq!(third.text, fourth.text);
     }
 
+    // 采样某时刻的 mtime 并可回写:同尺寸同 mtime 重写(比依赖文件系统时间
+    // 粒度更确定——没有内容哈希时这些测试在任何平台上都必然失败,而不是只在
+    // coarse-mtime 的 Linux CI 上才暴露)。
+    fn current_times(path: &Path) -> fs::FileTimes {
+        let metadata = fs::metadata(path).unwrap();
+        fs::FileTimes::new().set_modified(metadata.modified().unwrap())
+    }
+
+    fn apply_times(path: &Path, times: fs::FileTimes) {
+        let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_times(times).unwrap();
+    }
+
     #[test]
     fn diff_fingerprint_covers_file_and_git_index() {
         let root = TestDir::new("diff-fingerprint");
         fs::create_dir_all(root.path().join(".git")).unwrap();
-        fs::write(root.path().join(".git/index"), b"idx1").unwrap();
+        let index = root.path().join(".git/index");
+        fs::write(&index, b"idx1").unwrap();
         fs::write(root.path().join("main.py"), "print(1)\n").unwrap();
 
         let baseline = diff_fingerprint(root.path(), "main.py");
+        // 暂存区变化(.git/index 重写)→ 指纹变化。index 条目定长、同路径同
+        // SHA 位数,重写尺寸不变;显式固定回基线 mtime 后,只有内容哈希能失效。
+        let index_stamp = current_times(&index);
+        fs::write(&index, b"idx2").unwrap();
+        apply_times(&index, index_stamp);
+        assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
+        // 内容与 mtime 全部还原 → 指纹回到基线(同内容不产生虚假失效)。
+        fs::write(&index, b"idx1").unwrap();
+        apply_times(&index, index_stamp);
+        assert_eq!(baseline, diff_fingerprint(root.path(), "main.py"));
         // 文件内容变化 → 指纹变化。
         fs::write(root.path().join("main.py"), "print(2)\n").unwrap();
-        assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
-        // 暂存区变化（.git/index 重写）→ 指纹变化。
-        fs::write(root.path().join(".git/index"), b"idx2").unwrap();
         assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
     }
 
@@ -1407,7 +1486,8 @@ mod tests {
         // git diff --cached 比较 index 与 HEAD；reset --soft / update-ref 只改写 HEAD
         // 指向的 ref 文件、不更新 .git/index 或工作区——指纹必须覆盖此场景，否则缓存
         // 会返回陈旧差异。.git/HEAD 多为 symref（ref: refs/heads/<branch>），目标文件
-        // 是 41 字节的 SHA（不同提交同尺寸），故此处以同尺寸重写验证 mtime 失效。
+        // 是 41 字节的 SHA（不同提交同尺寸），且两次改写可能落在同一 mtime 粒度内，
+        // 故此处以同尺寸同 mtime 重写验证内容哈希失效。
         let root = TestDir::new("diff-fingerprint-head");
         fs::create_dir_all(root.path().join(".git/refs/heads")).unwrap();
         let head_ref = root.path().join(".git/refs/heads/main");
@@ -1416,11 +1496,22 @@ mod tests {
         fs::write(root.path().join("main.py"), "print(1)\n").unwrap();
 
         let baseline = diff_fingerprint(root.path(), "main.py");
+        let ref_stamp = current_times(&head_ref);
         // 等价 reset --soft <other-commit>：分支 ref 同尺寸改写（index 与工作区不变）。
         fs::write(&head_ref, format!("{}\n", "b".repeat(40))).unwrap();
+        apply_times(&head_ref, ref_stamp);
         assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
+        // 内容与 mtime 全部还原 → 指纹回到基线(同内容不产生虚假失效)。
+        fs::write(&head_ref, format!("{}\n", "a".repeat(40))).unwrap();
+        apply_times(&head_ref, ref_stamp);
+        assert_eq!(baseline, diff_fingerprint(root.path(), "main.py"));
 
         // symref 目标切换（checkout）也算 HEAD 变化：HEAD 文件内容改写即失效。
+        // dev ref 与 main 同尺寸、并固定为同一 mtime：失效只能来自内容哈希
+        // （解析路径跟随 symref 切到 dev 后，内容哈希不同）。
+        let dev_ref = root.path().join(".git/refs/heads/dev");
+        fs::write(&dev_ref, format!("{}\n", "c".repeat(40))).unwrap();
+        apply_times(&dev_ref, ref_stamp);
         fs::write(root.path().join(".git/HEAD"), "ref: refs/heads/dev\n").unwrap();
         assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
     }
@@ -1960,6 +2051,22 @@ mod tests {
             classify_origin(root.path(), Some(&baseline), "new.txt").unwrap(),
             "session"
         );
+    }
+
+    #[test]
+    fn git_remote_url_is_shareable_and_drops_credentials() {
+        assert_eq!(
+            sanitize_git_remote_url("git@github.com:pinvou/pinvou-agent.git").as_deref(),
+            Some("https://github.com/pinvou/pinvou-agent")
+        );
+        assert_eq!(
+            sanitize_git_remote_url(
+                "https://token:secret@example.com/team/repo.git?ref=main#readme"
+            )
+            .as_deref(),
+            Some("https://example.com/team/repo")
+        );
+        assert_eq!(sanitize_git_remote_url("/private/local/repo"), None);
     }
 
     /// GIT_* environment isolation: GIT_INDEX_FILE/GIT_OBJECT_DIRECTORY
