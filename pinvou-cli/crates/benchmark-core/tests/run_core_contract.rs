@@ -68,6 +68,15 @@ fn manifest_records_the_harness_deadline_mode_and_reads_old_manifests() {
     let json = serde_json::to_value(&bounded).unwrap();
     assert_eq!(json["harness_deadline_secs"], 600);
     assert_eq!(json["schema_version"], 2);
+    // Within the current format the recorded mode joins the resume identity:
+    // a bounded manifest matches the one descriptor declaring the same bound
+    // and no other.
+    assert!(bounded.matches_resume(
+        &descriptor().with_harness_deadline_secs(Some(600)),
+        "smoke",
+        &ModelIdentity::new("fixture", "mock-model").unwrap(),
+        "smoke/v1"
+    ));
 
     let unbounded = RunManifest::new(
         "run-unbounded",
@@ -202,6 +211,9 @@ fn resume_manifest_match_rejects_every_pinned_contract_dimension() {
             serde_json::json!({"provider": "fixture", "model": "other-model"}),
         ),
         ("tool_policy", serde_json::json!("smoke/v2")),
+        // The recorded deadline mode joins the resume identity: a bounded
+        // manifest must not resume against this unbounded descriptor.
+        ("harness_deadline_secs", serde_json::json!(600)),
     ];
     for (field, replacement) in mutations {
         let mut stored = serde_json::to_value(&expected).unwrap();
