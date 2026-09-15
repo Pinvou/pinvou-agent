@@ -1294,6 +1294,17 @@ impl TaskStore {
             ))
         })?;
         let (secs, nanos) = record_time(run, "created_at");
+        if secs == i64::MIN {
+            // The sentinel from `record_time` would flow into
+            // `run_file_stamp` as an unsortable year-(-...) name, and the
+            // legacy-name cleanup below would leave the run on disk twice.
+            // Only hand-edited storage can produce this; refuse instead of
+            // writing it.
+            return Err(CliError::failed(format!(
+                "scheduled_storage_unavailable: run {id} carries an unparseable \
+                 created_at; refusing to store it under an unsortable name"
+            )));
+        }
         let path = dir.join(format!("{}-{id}.json", run_file_stamp(secs, nanos)));
         write_json_atomic(&path, run)?;
         // Mirror the foundation: rewrites of a legacy-named run migrate it
@@ -1451,10 +1462,10 @@ fn scheduled_store_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
 /// the next write through this process would silently destroy the only copy
 /// of the other tasks' data. Newer-schema files stay untouched: they take
 /// the refusal path (`ensure_supported_schema`), not quarantine.
-fn read_registry(path: &Path) -> serde_json::Value {
+fn read_registry(path: &Path, keys: &[&str]) -> serde_json::Value {
     match std::fs::read_to_string(path) {
         Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
-            Ok(value) if registry_shape_valid(&value) => value,
+            Ok(value) if registry_shape_valid(&value, keys) => value,
             _ => {
                 quarantine_unreadable(path);
                 serde_json::Value::Null
@@ -1464,15 +1475,20 @@ fn read_registry(path: &Path) -> serde_json::Value {
     }
 }
 
-/// Shape gate mirroring the GUI `VersionedJsonStore`'s typed deserialization:
-/// a payload that parses as JSON but can never deserialize into any of the
-/// registries (a non-object top level like `[]`, or a `tasks` / `viewed_runs`
-/// member of the wrong type like `{"tasks": []}`) is treated like a parse
-/// failure — quarantined, never normalized in place and overwritten.
-fn registry_shape_valid(value: &serde_json::Value) -> bool {
+/// Shape gate mirroring the GUI `VersionedJsonStore`'s typed
+/// deserialization: a payload that parses as JSON but can never deserialize
+/// into the registry being read (a non-object top level like `[]`, or one of
+/// the registry's own keys of the wrong type like `{"tasks": []}`) is
+/// treated like a parse failure — quarantined, never normalized in place and
+/// overwritten. Only the keys the caller's registry owns are checked: the
+/// GUI's deserializer ignores unknown members, so a read-state file with a
+/// stray `tasks` key must stay readable here too instead of being
+/// quarantined into data loss.
+fn registry_shape_valid(value: &serde_json::Value, keys: &[&str]) -> bool {
     value.is_object()
-        && value.get("tasks").is_none_or(Value::is_object)
-        && value.get("viewed_runs").is_none_or(Value::is_object)
+        && keys
+            .iter()
+            .all(|key| value.get(key).is_none_or(Value::is_object))
 }
 
 /// Best-effort `.invalid-<timestamp>` copy of a registry that failed to
@@ -1949,10 +1965,10 @@ pub fn execute(command: ScheduledCommand, output: OutputMode) -> Result<CliOutco
 fn list(output: OutputMode) -> Result<CliOutcome, CliError> {
     let store_holder = TaskStore::new()?;
     let sessions = open_sessions()?;
-    let read_state = read_registry(&store_holder.read_state_path());
-    let bindings = read_registry(&store_holder.model_bindings_path());
-    let kinds = read_registry(&store_holder.task_kinds_path());
-    let ui_metadata = read_registry(&store_holder.ui_metadata_path());
+    let read_state = read_registry(&store_holder.read_state_path(), &["viewed_runs"]);
+    let bindings = read_registry(&store_holder.model_bindings_path(), &["tasks"]);
+    let kinds = read_registry(&store_holder.task_kinds_path(), &["tasks"]);
+    let ui_metadata = read_registry(&store_holder.ui_metadata_path(), &["tasks"]);
     let defs = store_holder.list_defs()?;
     let mut lines = Vec::new();
     let tasks = defs
@@ -1998,10 +2014,10 @@ fn show(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store_holder = TaskStore::new()?;
     let def = store_holder.read_def(id)?;
     let sessions = open_sessions()?;
-    let read_state = read_registry(&store_holder.read_state_path());
-    let bindings = read_registry(&store_holder.model_bindings_path());
-    let kinds = read_registry(&store_holder.task_kinds_path());
-    let ui_metadata = read_registry(&store_holder.ui_metadata_path());
+    let read_state = read_registry(&store_holder.read_state_path(), &["viewed_runs"]);
+    let bindings = read_registry(&store_holder.model_bindings_path(), &["tasks"]);
+    let kinds = read_registry(&store_holder.task_kinds_path(), &["tasks"]);
+    let ui_metadata = read_registry(&store_holder.ui_metadata_path(), &["tasks"]);
     let runs = store_holder.list_runs(id, None)?;
     let task = map_task(
         &def,
@@ -2159,9 +2175,9 @@ enabled in settings",
         &[],
         sessions.as_ref(),
         &serde_json::Value::Null,
-        &read_registry(&store_holder.model_bindings_path()),
-        &read_registry(&store_holder.task_kinds_path()),
-        &read_registry(&store_holder.ui_metadata_path()),
+        &read_registry(&store_holder.model_bindings_path(), &["tasks"]),
+        &read_registry(&store_holder.task_kinds_path(), &["tasks"]),
+        &read_registry(&store_holder.ui_metadata_path(), &["tasks"]),
     );
     Ok(success(render(
         output,
@@ -2227,10 +2243,10 @@ fn update(
         &def,
         &runs,
         sessions.as_ref(),
-        &read_registry(&store_holder.read_state_path()),
-        &read_registry(&store_holder.model_bindings_path()),
-        &read_registry(&store_holder.task_kinds_path()),
-        &read_registry(&store_holder.ui_metadata_path()),
+        &read_registry(&store_holder.read_state_path(), &["viewed_runs"]),
+        &read_registry(&store_holder.model_bindings_path(), &["tasks"]),
+        &read_registry(&store_holder.task_kinds_path(), &["tasks"]),
+        &read_registry(&store_holder.ui_metadata_path(), &["tasks"]),
     );
     Ok(success(render(
         output,
@@ -2263,7 +2279,7 @@ fn persist_model_binding(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
-    let mut registry = read_registry(&store_holder.model_bindings_path());
+    let mut registry = read_registry(&store_holder.model_bindings_path(), &["tasks"]);
     let tasks = registry_tasks_mut(&mut registry, 1)?;
     match model_id {
         Some(model_id) => {
@@ -2296,7 +2312,7 @@ fn persist_task_kind(
     id: &str,
     kind: Option<&str>,
 ) -> Result<(), CliError> {
-    let mut registry = read_registry(&store_holder.task_kinds_path());
+    let mut registry = read_registry(&store_holder.task_kinds_path(), &["tasks"]);
     let tasks = registry_tasks_mut(&mut registry, 1)?;
     match kind {
         Some(kind) => {
@@ -2333,10 +2349,10 @@ fn pause_or_resume(id: &str, pause: bool, output: OutputMode) -> Result<CliOutco
         &def,
         &runs,
         sessions.as_ref(),
-        &read_registry(&store_holder.read_state_path()),
-        &read_registry(&store_holder.model_bindings_path()),
-        &read_registry(&store_holder.task_kinds_path()),
-        &read_registry(&store_holder.ui_metadata_path()),
+        &read_registry(&store_holder.read_state_path(), &["viewed_runs"]),
+        &read_registry(&store_holder.model_bindings_path(), &["tasks"]),
+        &read_registry(&store_holder.task_kinds_path(), &["tasks"]),
+        &read_registry(&store_holder.ui_metadata_path(), &["tasks"]),
     );
     Ok(success(render(
         output,
@@ -2350,7 +2366,7 @@ fn set_pinned(id: &str, pinned: bool, output: OutputMode) -> Result<CliOutcome, 
     // Same existence gate as the GUI: pin state never lingers for a deleted
     // task.
     store_holder.read_def(id)?;
-    let mut registry = read_registry(&store_holder.ui_metadata_path());
+    let mut registry = read_registry(&store_holder.ui_metadata_path(), &["tasks"]);
     let tasks = registry_tasks_mut(&mut registry, 1)?;
     if pinned {
         let now = now_string();
@@ -2435,7 +2451,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     // Archive first (commit before removal), then delete the definition and
     // its runs, then drop the sidecar entries — the GUI delete order minus
     // the engine-task cancellation step.
-    let mut archive = read_registry(&store_holder.history_archive_path());
+    let mut archive = read_registry(&store_holder.history_archive_path(), &["tasks"]);
     // Same newer-schema refusal as registry_tasks_mut: an archive written by
     // a newer app version must not be merged and written back. The refusal
     // restores the provisional pause like every other blocked path — a
@@ -2532,7 +2548,8 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         store_holder.task_kinds_path(),
         store_holder.ui_metadata_path(),
     ] {
-        let mut registry = read_registry(&path);
+        // All three are `tasks`-keyed registries.
+        let mut registry = read_registry(&path, &["tasks"]);
         if registry.is_null() {
             continue;
         }
@@ -2605,7 +2622,10 @@ fn run(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
             let _ = store_holder.save_run(&stale);
         }
     }
-    let kind = kind_for(&read_registry(&store_holder.task_kinds_path()), id);
+    let kind = kind_for(
+        &read_registry(&store_holder.task_kinds_path(), &["tasks"]),
+        id,
+    );
     if kind.as_deref() != Some("memory_organize") {
         // Chat-kind run-now drives the GUI's ScheduledChatExecutor +
         // foundation TaskManager, which are not exposed headlessly; report a
@@ -2672,7 +2692,7 @@ enabled in settings",
         &record,
         &sessions,
         &session_titles(&sessions),
-        &read_registry(&store_holder.read_state_path()),
+        &read_registry(&store_holder.read_state_path(), &["viewed_runs"]),
         str_field(&def, "name"),
         str_field(&def, "model"),
     );
@@ -2708,7 +2728,7 @@ fn runs(id: &str, limit: Option<usize>, output: OutputMode) -> Result<CliOutcome
     let store_holder = TaskStore::new()?;
     let def = store_holder.read_def(id)?;
     let sessions = open_sessions()?;
-    let read_state = read_registry(&store_holder.read_state_path());
+    let read_state = read_registry(&store_holder.read_state_path(), &["viewed_runs"]);
     let records = store_holder.list_runs(id, limit)?;
     let names = task_name_map(std::slice::from_ref(&def));
     let (lines, values) = render_runs(&sessions, &records, &read_state, &names);
@@ -2724,7 +2744,7 @@ fn runs(id: &str, limit: Option<usize>, output: OutputMode) -> Result<CliOutcome
 fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store_holder = TaskStore::new()?;
     let sessions = open_sessions()?;
-    let read_state = read_registry(&store_holder.read_state_path());
+    let read_state = read_registry(&store_holder.read_state_path(), &["viewed_runs"]);
     let defs = store_holder.list_defs()?;
     let mut records: Vec<serde_json::Value> = Vec::new();
     let mut names = task_name_map(&defs);
@@ -2741,7 +2761,7 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
     }
     // Archived tasks (deleted through the GUI or this CLI) keep their run
     // history visible in runs-all, exactly like the GUI sidebar feed.
-    let archive = read_registry(&store_holder.history_archive_path());
+    let archive = read_registry(&store_holder.history_archive_path(), &["tasks"]);
     if let Some(tasks) = archive.get("tasks").and_then(|value| value.as_object()) {
         for (task_id, archived) in tasks {
             names.entry(task_id.clone()).or_insert_with(|| {
@@ -2790,7 +2810,7 @@ fn mark_viewed(task_id: &str, run_id: &str, output: OutputMode) -> Result<CliOut
     let runs = match store_holder.read_def(task_id) {
         Ok(_) => store_holder.list_runs(task_id, None)?,
         Err(error) if error.to_string().starts_with("scheduled_task_not_found") => {
-            let archive = read_registry(&store_holder.history_archive_path());
+            let archive = read_registry(&store_holder.history_archive_path(), &["tasks"]);
             archive
                 .get("tasks")
                 .and_then(|value| value.get(task_id))
@@ -2821,7 +2841,7 @@ viewed"
 viewed"
         )));
     }
-    let mut read_state = read_registry(&store_holder.read_state_path());
+    let mut read_state = read_registry(&store_holder.read_state_path(), &["viewed_runs"]);
     // Same newer-schema refusal as registry_tasks_mut: a read-state file
     // written by a newer app version must not be merged and written back.
     if read_state.is_object() {
@@ -2872,7 +2892,7 @@ viewed"
     }
     write_json_atomic(&store_holder.read_state_path(), &read_state)?;
     let (has_unread, _) = {
-        let refreshed = read_registry(&store_holder.read_state_path());
+        let refreshed = read_registry(&store_holder.read_state_path(), &["viewed_runs"]);
         let def = serde_json::json!({ "id": task_id });
         unread_and_running(&def, &runs, Some(&sessions), &refreshed)
     };
