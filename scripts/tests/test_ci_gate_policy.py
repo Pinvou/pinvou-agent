@@ -676,6 +676,22 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("WINDOWS_RUST_RESULT", required_gate)
         self.assertIn('"windows-rust-test:$WINDOWS_RUST_RESULT"', required_gate)
 
+    def test_macos_rust_check_is_wired_into_required_gate(self):
+        # Review finding: the new native macOS leg must satisfy the same
+        # three-wiring rule as windows-rust-test (needs entry, env backfill,
+        # summary-loop entry) -- otherwise removing the job keeps CI green
+        # while the gate silently degrades.
+        job_body = self.pr_workflow.split("\n  macos-rust-check:", maxsplit=1)[1]
+        job = re.split(r"\n  [a-zA-Z]", job_body, maxsplit=1)[0]
+        self.assertIn("needs: changes", job)
+        self.assertIn("MACOS_RUST_CHECK_RESULT", self.pr_workflow)
+        required_gate = self.pr_workflow.split(
+            "\n  required-gate:", maxsplit=1
+        )[1]
+        self.assertIn("- macos-rust-check", required_gate)
+        self.assertIn("MACOS_RUST_CHECK_RESULT", required_gate)
+        self.assertIn('"macos-rust-check:$MACOS_RUST_CHECK_RESULT"', required_gate)
+
     def test_windows_browser_wrapper_lifecycle_runs_in_required_native_job(self):
         changes = self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
             "\n  fast-gate:", maxsplit=1
