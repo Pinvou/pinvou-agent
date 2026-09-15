@@ -113,9 +113,9 @@ test("title gate revalidates on every subscribed event (no skip condition)", () 
   // `pr-title`, and the checks API surfaces the latest run per name, so a
   // body-only skip would replace the previous red or green result with
   // SKIPPED — and a skipped required check counts as success, clearing a
-  // red gate. Every event must therefore run the validator; an unchanged
-  // title yields the same verdict, so the latest result always reflects
-  // the current title.
+  // red gate. Every event must therefore run the validator; each run
+  // fetches the live title, so the latest result always reflects the
+  // current title.
   const jobBlock = titleWorkflow.match(/^  pr-title:\n(?:^(?! {2}\S).*\n)*/m);
   assert.ok(jobBlock, "pr-title job block not found");
   assert.doesNotMatch(
@@ -126,9 +126,10 @@ test("title gate revalidates on every subscribed event (no skip condition)", () 
 });
 
 test("all title-gate runs share one cancel-and-replace concurrency group", () => {
-  // A fresh validation is a superset of any in-flight run (same head SHA,
-  // same or newer title), so every run joins one PR-keyed group and
-  // cancels the previous one; no edit-kind routing may remain anywhere.
+  // Every run validates the title it fetched from the API at execution
+  // time, so whichever run finishes last holds the freshest verdict; the
+  // single PR-keyed group with cancel-and-replace just keeps repeated
+  // edits from piling up runs. No edit-kind routing may remain anywhere.
   const concurrency = titleWorkflow.slice(
     titleWorkflow.indexOf("\nconcurrency:"),
     titleWorkflow.indexOf("\njobs:"),
@@ -142,12 +143,27 @@ test("all title-gate runs share one cancel-and-replace concurrency group", () =>
   assert.doesNotMatch(concurrency, /changes\./, "no edit-kind routing may remain");
 });
 
-test("title gate enforces the convention on the PR title (squash subject)", () => {
+test("title gate enforces the convention on the live PR title (squash subject)", () => {
   // The squash merge subject is "<PR title> (#N)" and the merge queue never
-  // runs commit-message, so the title is validated at PR time. It reaches
-  // the validator through a temp file to avoid injection.
-  const step = titleWorkflow.match(
-    /PR_TITLE: \$\{\{ github\.event\.pull_request\.title \}\}[\s\S]*?python3 scripts\/validate-commit-msg\.py "\$RUNNER_TEMP\/pr-title"/,
+  // runs commit-message, so the title is validated at PR time. Review
+  // finding on #501: GitHub does not guarantee the start order of runs in
+  // one concurrency group, so an older `edited` event can run last (and
+  // cancel-and-replace a newer run) while carrying a superseded event
+  // payload — the event-payload title must therefore never reach the
+  // validator. Each run fetches the current title from the API right
+  // before validating, through a temp file to avoid injection.
+  assert.doesNotMatch(
+    titleWorkflow,
+    /github\.event\.pull_request\.title/,
+    "the event-payload title may be stale; fetch the current title from the API",
   );
-  assert.ok(step, "title gate must validate the PR title via validate-commit-msg.py");
+  assert.match(
+    titleWorkflow,
+    /^  pull-requests: read$/m,
+    "fetching the current PR title requires pull-requests: read",
+  );
+  const step = titleWorkflow.match(
+    /gh api "repos\/\$PR_REPO\/pulls\/\$PR_NUMBER" --jq \.title[\s\S]*?python3 scripts\/validate-commit-msg\.py "\$RUNNER_TEMP\/pr-title"/,
+  );
+  assert.ok(step, "title gate must validate the API-fetched title via validate-commit-msg.py");
 });
