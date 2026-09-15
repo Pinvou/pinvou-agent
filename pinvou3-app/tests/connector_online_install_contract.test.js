@@ -91,5 +91,16 @@ assert.match(
   new RegExp(`>= ${wecomMinNumeric}\\)`),
   "wecom-smoke.sh version floor must stay in lockstep with WECOM_MIN_VERSION",
 );
+// The gate itself must also equal the wecom-cli version pinned in the five
+// platform locks (all five are forced identical by the deepEqual above):
+// raising WECOM_MIN_VERSION and the smoke floor together while a lock still
+// pins an older CLI would make the host download that older CLI and
+// force-replace it on first use.
+const wecomMinSemver = `${wecomMin[1]}.${wecomMin[2]}.${wecomMin[3]}`;
+assert.equal(
+  wecomMinSemver,
+  lockVersions["wecom-cli"],
+  "WECOM_MIN_VERSION must equal the wecom-cli version pinned in the platform locks",
+);
 
 console.log("✓ connector first-use online install contract passed");
