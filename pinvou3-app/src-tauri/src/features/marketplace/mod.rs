@@ -664,7 +664,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     ///
     /// # 不得用于门控
     /// 读错误在此折叠为空集——仅适合展示/簿记类消费方；DenyAll 门控必须走
-    /// [`Self::try_installed_ids`] 以区分「确认为空」与「集合未知」（后者由
+    /// `Self::try_installed_ids` 以区分「确认为空」与「集合未知」（后者由
     /// scope.rs 的 DenyAll 臂按全目录 fail-closed 兜底，评审 #455 R8 nit）。
     pub fn installed_ids(&self) -> Vec<String> {
         match self.try_installed_ids() {
