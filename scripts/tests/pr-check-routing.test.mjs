@@ -36,17 +36,6 @@ function stepCondition(text, stepName) {
   return match[1];
 }
 
-// Extract the single-line `if:` condition of a named top-level job. Lines in
-// between may be any depth except a sibling job key (exactly 2-space indent).
-function jobCondition(text, jobName) {
-  const escaped = jobName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = text.match(
-    new RegExp(`^  ${escaped}:\\n(?:^(?! {2}\\S).*\\n)*?^    if: \\$\\{\\{ (.*?) \\}\\}$`, "m"),
-  );
-  if (!match) throw new Error(`job '${jobName}' or its single-line if-condition not found`);
-  return match[1];
-}
-
 // Extract the pull_request.types list of a workflow.
 function pullRequestTypes(text) {
   const match = text.match(/^  pull_request:\n(?:.*\n)*?    types: \[(.+)\]$/m);
@@ -119,20 +108,27 @@ test("the pr-title context name cannot collide with pr-check.yml job names", () 
   }
 });
 
-test("title gate reruns only on title or base changes", () => {
-  // A body-only edit leaves the previous result valid for an unchanged
-  // title, so the job skips; a title or base change must re-validate.
-  const condition = jobCondition(titleWorkflow, "pr-title");
-  assert.match(condition, /github\.event\.action != 'edited'/);
-  assert.match(condition, /github\.event\.changes\.title\.from != ''/);
-  assert.match(condition, /github\.event\.changes\.base\.ref\.from != ''/);
+test("title gate revalidates on every subscribed event (no skip condition)", () => {
+  // Review finding on #501: a skipped job still creates a check run named
+  // `pr-title`, and the checks API surfaces the latest run per name, so a
+  // body-only skip would replace the previous red or green result with
+  // SKIPPED — and a skipped required check counts as success, clearing a
+  // red gate. Every event must therefore run the validator; an unchanged
+  // title yields the same verdict, so the latest result always reflects
+  // the current title.
+  const jobBlock = titleWorkflow.match(/^  pr-title:\n(?:^(?! {2}\S).*\n)*/m);
+  assert.ok(jobBlock, "pr-title job block not found");
+  assert.doesNotMatch(
+    jobBlock[0],
+    /^    if:/m,
+    "pr-title job must not carry a skip condition (skipped runs shadow the result)",
+  );
 });
 
-test("body-only edits neither cancel nor queue behind a title validation", () => {
-  // An all-skipped no-op run must not cancel an in-flight validation (that
-  // would leave the title unchecked) nor occupy its concurrency slot, so
-  // the group suffix splits no-op from rerun kinds; same-kind runs
-  // cancel-and-replace so repeated edits do not pile up.
+test("all title-gate runs share one cancel-and-replace concurrency group", () => {
+  // A fresh validation is a superset of any in-flight run (same head SHA,
+  // same or newer title), so every run joins one PR-keyed group and
+  // cancels the previous one; no edit-kind routing may remain anywhere.
   const concurrency = titleWorkflow.slice(
     titleWorkflow.indexOf("\nconcurrency:"),
     titleWorkflow.indexOf("\njobs:"),
@@ -140,9 +136,10 @@ test("body-only edits neither cancel nor queue behind a title validation", () =>
   assert.match(concurrency, /^  cancel-in-progress: true$/m);
   assert.match(
     concurrency,
-    /group: pr-title-\$\{\{ github\.event\.pull_request\.number \}\}-\$\{\{ github\.event\.action == 'edited' && !\(github\.event\.changes\.title\.from != '' \|\| github\.event\.changes\.base\.ref\.from != ''\) && 'noop' \|\| 'rerun' \}\}/,
-    "concurrency group must split no-op from rerun kinds",
+    /^  group: pr-title-\$\{\{ github\.event\.pull_request\.number \}\}$/m,
+    "concurrency group must be the single PR-keyed group",
   );
+  assert.doesNotMatch(concurrency, /changes\./, "no edit-kind routing may remain");
 });
 
 test("title gate enforces the convention on the PR title (squash subject)", () => {

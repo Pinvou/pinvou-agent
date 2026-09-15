@@ -18,14 +18,21 @@ name: PR Title Check
 # #501, run 34818389619). This workflow's job name `pr-title` is unique, so
 # its runs can never shadow a required context.
 #
-# Routing: only a title or base-branch change reruns the validation; a
-# body-only edit skips the job (the resulting skipped `pr-title` run means
-# "not re-validated, previous result stands").
+# Routing: every subscribed event revalidates the title, including a
+# body-only edit. Skipping the job on body-only edits would still create a
+# check run named `pr-title` with conclusion SKIPPED, and the checks API
+# surfaces the latest run per name, so it would replace the previous red or
+# green result (review finding on #501) — and a skipped required check
+# counts as success, which would let a body edit clear a red gate if this
+# context were added to branch protection. Revalidating is a single cheap
+# job, and an unchanged title yields the same verdict, so the latest
+# `pr-title` result always reflects the current title.
 #
 # Note: this check is advisory — it is not part of required-gate or branch
 # protection, so a violating title shows red here without blocking the
 # merge. Add the `pr-title` context to branch protection to make it
-# blocking.
+# blocking; that stays sound because every run is a real validation and a
+# skipped run can never occur.
 #
 # Residual race: a title edited after this run finished is not re-checked
 # until the next event.
@@ -37,17 +44,16 @@ on:
 permissions:
   contents: read
 
-# Body-only edits are all-skipped no-ops: a dedicated group suffix keeps
-# them from cancelling an in-flight validation or occupying its concurrency
-# slot. Same-kind runs cancel-and-replace so repeated edits do not pile up.
+# Every run is a real validation — a superset of any in-flight run (same
+# head SHA, same or newer title) — so all runs of a PR share one group and
+# cancel-and-replace instead of piling up repeated edits.
 concurrency:
-  group: pr-title-${{ github.event.pull_request.number }}-${{ github.event.action == 'edited' && !(github.event.changes.title.from != '' || github.event.changes.base.ref.from != '') && 'noop' || 'rerun' }}
+  group: pr-title-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   pr-title:
     name: pr-title
-    if: ${{ github.event.action != 'edited' || github.event.changes.title.from != '' || github.event.changes.base.ref.from != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
