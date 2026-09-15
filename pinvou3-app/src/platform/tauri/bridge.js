@@ -2153,10 +2153,14 @@
     // "running" card (a live spawn row would then pulse forever through the
     // swarm aggregation). Skipped while the session is mid-turn: pending
     // cards then belong to the live turn and are settled by its own events;
-    // background shells keep running across turns and are excluded.
+    // background shells keep running across turns and are excluded; so are
+    // synthetic shell-snapshot cards ("shell-task:" ids never pair with a
+    // tool_use id, and their job may still be running — the terminal poll
+    // settles them itself from the snapshot).
     if (!state.busy) {
       for (const item of state.chatItems) {
         const unsettled = item && item.type === "tool" && item.toolId && item.background !== true
+          && item.shellSnapshot !== true
           && (item.state === "pending" || item.state === "running") && !resultById[item.toolId];
         if (!unsettled) continue;
         item.success = false;

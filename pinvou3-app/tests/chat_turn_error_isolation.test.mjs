@@ -972,19 +972,31 @@ assert.match(chatViewSource, /conversationItemsForMode\(spawnAnnotatedItems\)/);
 // forever, or the aggregated spawn row pulses eternally. Both the replay sweep
 // (bridge.js, settled when a session timeline is rebuilt while not mid-turn)
 // and the live sweep (chat-events.js, settled at chat:done) must stay wired,
-// and both must exclude background shells, which legitimately run across turns.
+// and both must exclude background shells, which legitimately run across turns,
+// and synthetic shell-snapshot cards, whose "shell-task:" ids never pair with a
+// tool_use id while their job may still be running.
 assert.match(
   desktopBridgeSource,
-  /Replay-time terminal ratchet[\s\S]{0,900}item\.state = "failed"/,
+  /Replay-time terminal ratchet[\s\S]{0,1400}item\.state = "failed"/,
   'the replay-time terminal ratchet must settle interrupted tool cards',
 );
 assert.match(
   chatEventsSource,
-  /Live-path terminal ratchet[\s\S]{0,900}item\.state = "failed"/,
+  /Live-path terminal ratchet[\s\S]{0,1400}item\.state = "failed"/,
   'the live chat:done terminal ratchet must settle interrupted tool cards',
 );
 assert.match(desktopBridgeSource, /item\.background !== true/, 'the replay ratchet must exclude background shell cards');
 assert.match(chatEventsSource, /item\.background !== true/, 'the live ratchet must exclude background shell cards');
+assert.match(
+  desktopBridgeSource,
+  /item\.shellSnapshot !== true/,
+  'the replay ratchet must exclude synthetic shell-snapshot cards',
+);
+assert.match(
+  chatEventsSource,
+  /item\.shellSnapshot !== true/,
+  'the live ratchet must exclude synthetic shell-snapshot cards',
+);
 assert.match(chatEventsSource, /sweepUnpairedToolMeta\(\);/);
 
 assert.match(webBridgeSource, /turnErrorNotice && item\.text === notice/);
