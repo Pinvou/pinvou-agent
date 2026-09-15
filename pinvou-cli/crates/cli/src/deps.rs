@@ -4,7 +4,11 @@
 //! - `deps check` calls the exact GUI probe
 //!   `features::files::file_ingest::check_dependencies` (sync, pure
 //!   detection — no host, no network): one row per file-parsing capability
-//!   with its installed flag and the platform package names.
+//!   with its installed flag and the platform package names. On Windows the
+//!   GUI's settings dialog shows a variant list (the `app/commands`
+//!   windows adapter drops `voice_asr` and adds the two model-download
+//!   rows); the CLI always renders the shared lib list shown on the other
+//!   platforms.
 //! - `deps install` calls the exact GUI installer
 //!   `features::dependencies::install_dependencies` (Linux: package
 //!   whitelist + `pkexec apt-get install`; macOS: Homebrew; Windows: bundled
