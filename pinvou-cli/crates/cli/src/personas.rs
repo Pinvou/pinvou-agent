@@ -21,7 +21,15 @@
 //! sidecar `~/.pinvou3/sessions/<id>/persona_equipped.json` (the directory
 //! that already hosts the other per-session sidecars) and `active` reads it
 //! back; `unequip` removes it. The in-memory `SessionStore` calls still run
-//! so same-process semantics stay identical to the GUI commands.
+//! so same-process semantics stay identical to the GUI commands. Because
+//! that sidecar holds the card's full pending-body injection text, `delete`
+//! sweeps every sidecar that still references the deleted card (the CLI
+//! equivalent of the GUI's `remove_persona_from_all` cascade) and reports
+//! the cleared session ids as `cleared_sessions`.
+//!
+//! Field note (headless deviation): `create`/`update` expose only the GUI
+//! dialog's name/description/body fields — the department is fixed to
+//! "specialized" and the emoji/color take the card defaults.
 
 use std::path::PathBuf;
 
@@ -434,6 +442,10 @@ fn update(
 }
 
 /// Mirror of `delete_persona`: user cards only ("只能删除自制卡" → exit 1).
+/// After the card is gone, every per-session equip sidecar that still
+/// references it is swept (see the equip-state note): the sidecar holds the
+/// deleted card's full injection body, and leaving it behind would make
+/// `active` report a persona that no longer exists.
 fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     require_yes(yes)?;
     sandbox_home()?;
@@ -443,8 +455,69 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     // `personas show` does.
     get(id).ok_or_else(|| CliError::failed(format!("unknown persona: {id}")))?;
     delete_user_persona(id).map_err(|error| persona_error("delete", error))?;
-    let value = serde_json::json!({ "id": id, "action": "deleted" });
-    Ok(success(render(output, format!("deleted {id}"), &value)))
+    let cleared_sessions = clear_equipped_sidecars(id)?;
+    let human = if cleared_sessions.is_empty() {
+        format!("deleted {id}")
+    } else {
+        format!(
+            "deleted {id} (cleared the equipped-persona sidecar on {} session{})",
+            cleared_sessions.len(),
+            if cleared_sessions.len() == 1 { "" } else { "s" }
+        )
+    };
+    let value = serde_json::json!({
+        "id": id,
+        "action": "deleted",
+        "cleared_sessions": cleared_sessions,
+    });
+    Ok(success(render(output, human, &value)))
+}
+
+/// Delete-time sweep of the CLI's own equip persistence: scan
+/// `$PINVOU3_HOME/sessions/<id>/persona_equipped.json` (only ids that pass
+/// `valid_session_id`), and where the sidecar's `persona_id` matches the
+/// deleted card, remove the file. Sidecars for other personas are left
+/// untouched. Reads are bounded (64 KiB) and tolerant — a missing,
+/// unreadable, or corrupt sidecar is skipped, the same tolerance `active`
+/// applies — but a matching sidecar that cannot be removed fails the
+/// delete instead of silently leaving stale injection state behind.
+fn clear_equipped_sidecars(persona_id: &str) -> Result<Vec<String>, CliError> {
+    let sessions_dir = sandbox_home()?.join("sessions");
+    let entries = match std::fs::read_dir(&sessions_dir) {
+        Ok(entries) => entries,
+        // No sessions directory yet: nothing can be equipped anywhere.
+        Err(_) => return Ok(Vec::new()),
+    };
+    let mut cleared = Vec::new();
+    for entry in entries.flatten() {
+        let Some(session_id) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !valid_session_id(&session_id) {
+            continue;
+        }
+        let path = entry.path().join("persona_equipped.json");
+        let Ok(raw) = crate::support::read_text_file_capped(&path, 64 * 1024, "personas delete")
+        else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            continue;
+        };
+        if value.get("persona_id").and_then(serde_json::Value::as_str) == Some(persona_id) {
+            std::fs::remove_file(&path).map_err(|error| {
+                CliError::failed(format!(
+                    "personas delete: cannot remove the session persona sidecar for \
+                     {session_id}: {error}"
+                ))
+            })?;
+            cleared.push(session_id);
+        }
+    }
+    // read_dir order is arbitrary; a stable output keeps scripts and tests
+    // deterministic.
+    cleared.sort();
+    Ok(cleared)
 }
 
 /// Session ids join onto paths (the equip sidecar below), so apply the same
@@ -567,13 +640,21 @@ fn equip(session_id: &str, persona_id: &str, output: OutputMode) -> Result<CliOu
 
 /// Mirror of `unequip_persona`: clear both the active id and the pending
 /// body so nothing is injected on the next turn (memory + persisted sidecar;
-/// a missing sidecar is the already-unequipped case).
+/// a missing sidecar is the already-unequipped case, but any other removal
+/// failure must not be reported as success — the next `active` would still
+/// resolve the persona).
 fn unequip(session_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let path = equip_state_path(session_id)?;
     let store = open_store()?;
     store.set_active_persona(session_id, None);
     store.set_pending_persona_body(session_id, None);
-    let _ = std::fs::remove_file(&path);
+    if let Err(error) = std::fs::remove_file(&path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(CliError::failed(format!(
+                "personas unequip: cannot remove the session persona sidecar: {error}"
+            )));
+        }
+    }
     let value = serde_json::json!({ "session_id": session_id, "action": "unequipped" });
     Ok(success(render(
         output,
@@ -638,7 +719,10 @@ fn read_body(source: &BodySource, subcommand: &str) -> Result<String, CliError> 
                 )));
             }
             if content.len() > MAX_BODY_BYTES {
-                return Err(CliError::usage(format!(
+                // Input size is a content error (exit 1), not an invocation
+                // error — the same classification as the artifacts/feedback
+                // read caps.
+                return Err(CliError::failed(format!(
                     "personas {subcommand}: the persona body exceeds the 4 MiB stdin limit"
                 )));
             }
