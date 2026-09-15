@@ -102,7 +102,7 @@ fn delegation_reminder_with_roles(roles: Vec<String>, limits: Option<&Delegation
             .to_string(),
     };
     format!(
-        "本会话已开启多智能体模式：请按任务形态**主动委派**，工具面与普通\
+        "本会话已开启蜂群模式：请按任务形态**主动委派**，工具面与普通\
          对话完全一致（联网检索、读取网页等照常）：\n\
          1. 强制委派：当前用户消息只要包含需要完成的任务，就必须调用 `agent` 工具。\
          单一任务至少派一个；能够拆分时，尽可能拆成边界清晰、可独立交付、\
@@ -450,10 +450,18 @@ mod tests {
 
     /// 续行符丢失会把源码缩进嵌进消息正文——模型会照着奇怪的空白理解任务。
     /// （回归：此前正是因为字符串断行丢了 `\`，提示语里混进大段缩进。）
+    /// Both tiers are guarded: the swarm tier is the only production-reachable
+    /// one, so guarding only the capped tier would leave the real copy
+    /// unprotected.
     #[test]
     fn delegation_reminder_contains_no_stray_indentation() {
         let msg = delegation_reminder("审查 React 前端代码", capped_limits());
         assert!(!msg.contains("  "), "提示语混入了源码缩进空格:\n{msg}");
+        let swarm = delegation_reminder("审查 React 前端代码", swarm_limits());
+        assert!(
+            !swarm.contains("  "),
+            "swarm reminder picked up stray indentation:\n{swarm}"
+        );
     }
 
     #[test]
@@ -548,7 +556,7 @@ mod tests {
             .expect("swarm prompt must be present")
             + SWARM_MODE_PROMPT.len();
         let reminder_start = composed
-            .find("本会话已开启多智能体模式")
+            .find("本会话已开启蜂群模式")
             .expect("reminder present");
         let content_start = composed.find("USER TASK").expect("content present");
         assert!(
@@ -566,7 +574,7 @@ mod tests {
             "swarm off must not inject the swarm prompt: {without_swarm}"
         );
         assert!(
-            without_swarm.starts_with("本会话已开启多智能体模式")
+            without_swarm.starts_with("本会话已开启蜂群模式")
                 && without_swarm.ends_with("USER TASK"),
             "swarm off keeps the plain reminder → content chain"
         );
