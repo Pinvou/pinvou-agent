@@ -6,10 +6,13 @@
 // focusing a detached element is a spec-permitted no-op). When initialFocusRef is provided it is
 // focused first (e.g. a text box needing immediate input) — this runs after React commits autoFocus
 // and overrides it, so initial focus must go through this path instead of the autoFocus attribute.
-// An optional restoreOverrideRef lets the container redirect the restore to a
-// node resolved at close time — used when the trigger is expected to unmount
-// mid-session (the moved sidebar row re-parents during the regroup that a
-// successful move itself triggers).
+// An optional restoreOverrideRef lets the container redirect the restore at
+// close time — to a node, or to a resolver (() => Element|null) producing it
+// then, for targets that only exist after a React commit landing in the same
+// unmount as the dialog itself (the moved sidebar row re-parents during the
+// regroup that a successful move itself triggers). A missing or detached
+// target falls back to the original restore element instead of silently
+// cancelling the restore.
 // Shared by the codex confirm dialogs, NativeYoloConfirmCard, CodexAcpView's
 // branch-switch dialog, the voice-shortcut intro modal, and the projects move
 // picker.
@@ -23,9 +26,12 @@ export function useDialogFocusRestore(dialogRef, initialFocusRef, restoreOverrid
       // Deliberate latest-ref read: the override is resolved at close time —
       // the container fills it while the dialog is open (e.g. the moved row's
       // new node after the success regroup), so capturing it at mount would
-      // always see null.
+      // always see null. Passive cleanup runs after the commit's DOM
+      // mutations, so a resolver is called once the new subtree is mounted.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      const target = (restoreOverrideRef && restoreOverrideRef.current) || previous;
+      const override = restoreOverrideRef && restoreOverrideRef.current;
+      const resolved = typeof override === 'function' ? override() : override;
+      const target = (resolved instanceof HTMLElement && resolved.isConnected ? resolved : null) || previous;
       if (target instanceof HTMLElement && target.isConnected) target.focus();
     };
   }, [dialogRef, initialFocusRef, restoreOverrideRef]);

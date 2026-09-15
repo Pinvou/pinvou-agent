@@ -44,8 +44,9 @@ const MoveToProjectDialog = ({
   // row's always-rendered label button, which the move menu item focuses
   // before the portal unmounts (see NavigationComponents) so a live element
   // is captured (shared modal-dismiss recipe). A successful move regroups the
-  // sidebar and re-parents that row — the container then resolves the moved
-  // row's new node into restoreTargetRef, which the hook prefers at close.
+  // sidebar and re-parents that row — the container then stores a resolver
+  // for the moved row's new node in restoreTargetRef, which the hook calls
+  // at close, once the regroup commit has mounted it.
   useDialogFocusRestore(dialogRef, searchInputRef, restoreTargetRef);
   // Tab 循环走共享陷阱(含 busy 全禁用时的按住与 IME 守卫);这里只保留
   // Escape 的分级(确认面板先退回列表)。

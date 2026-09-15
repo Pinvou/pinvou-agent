@@ -20,6 +20,7 @@ const read = (...parts) => fs.readFileSync(path.join(appRoot, ...parts), 'utf8')
 const DIALOG = read('src', 'features', 'projects', 'MoveToProjectDialog.jsx');
 const MAIN = read('src', 'app', 'main.jsx');
 const NAV = read('src', 'components', 'layout', 'NavigationComponents.jsx');
+const HOOK = read('src', 'hooks', 'useDialogFocusRestore.js');
 
 test('picker participates in the browser-surface suspend protocol', () => {
   // The native webview dock must be suspended before the picker mounts, or
@@ -94,7 +95,22 @@ test('backdrop close requires press start and end on the backdrop', () => {
 
 test('focus restore survives the success regroup', () => {
   assert.match(MAIN, /const movePickerRestoreRef = useRef\(null\)/);
+  assert.match(
+    MAIN,
+    /movePickerRestoreRef\.current = \(\) => document\.querySelector/,
+    'the regroup commit lands asynchronously; the lookup must run at close time, not inline',
+  );
   assert.match(MAIN, /data-session-key="\$\{CSS\.escape\(String\(sessionId\)\)\}"/);
+  assert.match(
+    HOOK,
+    /typeof override === 'function' \? override\(\) : override/,
+    'the override may be a resolver; the hook must call it during cleanup',
+  );
+  assert.match(
+    HOOK,
+    /resolved : null\) \|\| previous;/,
+    'a vanished override target must fall back to the original restore element',
+  );
   assert.match(
     DIALOG,
     /useDialogFocusRestore\(dialogRef, searchInputRef, restoreTargetRef\)/,

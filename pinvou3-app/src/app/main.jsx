@@ -2555,9 +2555,13 @@ const NAV_PREFETCH = {
       // 会话上,无条件清 slot 会把别人的弹窗关掉。
       const handleMoveSessionToProject = (sessionId, projectId, addWorkspaceRoot) => runProjectOp(async (p) => {
         const outcome = await p.moveSessionToProject(sessionId, projectId, addWorkspaceRoot);
-        // 桥的 loadProjects 在 resolve 前已 notify,侧栏此刻已完成重分组,
-        // 按会话键找到该行的新节点作为还原目标。
-        movePickerRestoreRef.current = document.querySelector(
+        // The bridge notifies before this op resolves, but the sidebar
+        // regroup that notification triggers is an asynchronous React commit
+        // — querying the DOM right here would still see the pre-regroup row.
+        // Passive cleanup of the dialog unmount runs after that commit's DOM
+        // mutations, so store a resolver and look the moved row's new node up
+        // at close time (see useDialogFocusRestore).
+        movePickerRestoreRef.current = () => document.querySelector(
           `[data-session-key="${CSS.escape(String(sessionId))}"]`,
         );
         setMoveToProjectSession(current => (current && current.id === sessionId) ? null : current);
