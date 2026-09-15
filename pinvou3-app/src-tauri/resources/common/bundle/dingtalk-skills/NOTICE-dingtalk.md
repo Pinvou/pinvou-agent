@@ -32,7 +32,7 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 
 除上述 9 条外，仓库对 `dws/` 另有两处已登记于 git 历史的本地修改，同步时同样重放：
 
-- `references/products/attendance.md`、`references/products/minutes.md`：将宿主已退役的工具名 `read_file` 改为 `File(action="read")`（CodeWhale v0.9.5 canonical 工具族适配，PR #231）。
+- `references/products/attendance.md`、`references/products/minutes.md`：将宿主已退役的工具名 `read_file` 改为 `File(action="read")`（CodeWhale v0.9.5 canonical 工具族适配，PR #231）。（2026-09-15 注：该条工具名写法已由下方「同步记录（2026-09-15 → 1.0.61）」更新为小写 `read`，以此为准；重放时勿再沿用本条的 `File(action=` 旧形态。）
 - `scripts/attendance_report_common.py`：图片缓存文件名的 URL 哈希由 MD5 改为 SHA-256（CodeQL py/weak-sensitive-data-hashing，PR #54）。
 
 ## 同步记录（2026-08-16 → 1.0.58）

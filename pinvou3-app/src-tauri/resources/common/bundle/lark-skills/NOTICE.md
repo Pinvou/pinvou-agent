@@ -37,7 +37,8 @@ lark-sheets、lark-im、lark-task、lark-wiki、lark-base。
    (5 份,任一即可,版本字段一致)中 `name: "lark-cli"` 的 `version`(当前 1.0.95)。
 2. 拉上游源:上游 tag 带 `v` 前缀,即
    `https://github.com/larksuite/cli/archive/refs/tags/v<version>.tar.gz`
-   (上次基线 v1.0.87,本次 v1.0.95),解压后取其 `skills/<域>`(上游仓库共 27 个 lark-* 域,
+   (上次基线 v1.0.87,本次 v1.0.95),解压后取其 `skills/<域>`(上游仓库共 28 个 lark-* 域,
+   v1.0.95 新增 lark-meeting,仍未收录;
    品悟只收录上述 9 域;其余域一律「未随包收录」,文档中提及须按「技能未随包
    收录 + CLI 命令直给」口径,不复制其目录)。
 3. 以该 tag 为三方合并基线,按下文登记逐条重放本地修改后,保留本 NOTICE。
@@ -61,7 +62,8 @@ PR #302),不在本目录内,不来自 lark-cli 上游,sync 时不涉及。
   连接器升级已把 5 份 connectors.lock.json 的 lark-cli 钉扎升至 1.0.95,
   技能基线与 CLI 钉扎一致。已核对 v1.0.95
   相对 v1.0.87 的命令面变化均为文档级(shortcut 重命名别名转正、
-  `--api-version v2` 彻底移除、新增 +join-event / +transfer /
+  `--api-version v2` 大面积移除(上游仍残留 2 处,见下方「上游未解决」清单)、
+  新增 +join-event / +transfer /
   +list-attendees / +messages-edit / +message-read-status 等),未见与
   钉扎 1.0.87 二进制冲突的硬性命令断言新增;个别「实测」口径(如
   `+search-event` 默认页大小 20)若与 1.0.87 二进制不符,以本地实测登记为准。
@@ -86,11 +88,18 @@ PR #302),不在本目录内,不来自 lark-cli 上游,sync 时不涉及。
   仍在(+record-batch-create 见 base SKILL.md 示例),本地文件保留作命令级
   参考,后续 sync 若上游恢复文档需对账。
 - **本地有修改、上游已等价解决(无需再重放,旧登记条目自然失效)**:
-  `--api-version v2` 残留(v1.0.95 全部移除)、
-  `sheets +read`/`+find` 别名(上游已全面改为 `+cells-get`/`+cells-search`)、
+  `sheets +read`/`+find` 别名(上游已全面改为 `+cells-get`/`+cells-search`,
+  `+read` 旧名已删、`+find` 仅作 `+cells-search` 别名保留)、
   lark-sheets 下拉配色「必须配 --highlight=true」误述(v1.0.95 上游已改为
-  「单独传即生效;--highlight=false 时被忽略」,与本地修正一致)、
-  lark-calendar `+search-event` 默认页大小(上游已写 20,与本地实测一致)、
+  「单独传即生效;--highlight=false 时被忽略」,与本地修正一致)。
+- **本地有修改、上游未解决(本次已重放保留,下次 sync 逐条继续重放;
+  2026-09-15 勘误:以下前两条早前被误记入「已等价解决」,经对上游
+  v1.0.95 实文复核均未解决,特此移出并勘误)**:
+  `--api-version v2` 残留(上游 v1.0.95 仍余 2 处:`lark-calendar/references/lark-calendar-meeting.md`
+  与 `lark-drive/references/lark-drive-workflow-topic-move-collector-resolve-verify.md`,
+  本地 2 处修正继续生效)、
+  lark-calendar `+search-event` 默认页大小(上游 v1.0.95 仍写「默认 30」,
+  本地按实测 20 的修正继续生效)、
   lark-doc 思维笔记死路路由(v1.0.95 上游仍指 lark-doc-whiteboard,
   本地修正已重放保留)、lark-drive `drive files patch` 重命名
   (上游仍用旧聚合式,本地 `drive +update-title` 修正已重放保留)。
@@ -114,7 +123,10 @@ PR #302),不在本目录内,不来自 lark-cli 上游,sync 时不涉及。
   lark-slides/lark-mindnote → CLI 直连)、品悟钉扎 update 口径、
   `tmp/` 临时目录规则(lark-sheets 两处「系统临时目录」口径按本地规则改写)、
   lark-wiki obj_type 分流表、lark-base Wiki URL 直传 `+url-resolve`、
-  formula/lookup 默认选型口径、bot 重试需用户明确同意(base SKILL.md 由
+  formula/lookup 默认选型口径(旧 SKILL.md 心智模型行随上游 base 域重写
+  消失,该口径现由上游 `lark-base-field-formula.md` 原生说明与本地重放的
+  `lark-base-field-lookup.md` 决策树共同承载,无需单独重放)、
+  bot 重试需用户明确同意(base SKILL.md 由
   上游「身份选择」节等价覆盖)、lark-base-data-query `--search-field`/
   `--field-id` 旗标写法、lark-base-app `drive +update-title`、
   filter-condition 日期操作符适用性表、workflow-schema 笔误 4 处 +
@@ -138,6 +150,10 @@ PR #302),不在本目录内,不来自 lark-cli 上游,sync 时不涉及。
   覆盖不变),connector_skills_contract 规则 6 对 lark 域的 ≤280 检查随
   binsByPack key 修正(PR#302 后 skills/lark- 失配为 lark-skills/lark-)
   重新生效,后续 sync 超限即测试失败。
+- **契约测试规则 5 路径修复(2026-09-15 补登记,非技能文件)**:规则 5
+  (lark 域裸 `auth login` 扫描)自 PR #302 迁移技能树后同样因旧路径
+  `skills/` 失配静默失效,本次随同步修正为 `lark-skills/`,与规则 6 一并
+  重新生效;规则失配期间无漏网——本次全量重同步已按登记逐文件核对。
 - 全树链接校验:skill 文件间相对链接无悬空(仅本 NOTICE 自身对
   `../../lark-shared/SKILL.md` 的引用为文档性描述,非链接目标)。
 - **同步后契约修正**:`lark-sheets/references/lark-sheets-chart.md` 三处
