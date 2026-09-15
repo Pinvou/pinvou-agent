@@ -41,7 +41,8 @@
 //!   to the GUI's `AcpPool` and cannot be reached from another process.
 //!
 //! Exit codes: 0 success, 1 host failure, 2 usage error. JSON output is a
-//! single serde_json line mirroring the GUI DTOs (camelCase fields).
+//! single serde_json line mirroring the GUI DTOs' own serialization (their
+//! field casing varies — do not assume camelCase).
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;
@@ -1359,25 +1360,42 @@ fn command_output_with_timeout(
     ] {
         command.env_remove(variable);
     }
+    crate::support::set_process_group(&mut command);
     let mut child = command.spawn()?;
     let stdout = child.stdout.take();
-    let reader = std::thread::spawn(move || drain_stream(stdout));
+    // The reader hands its buffer back through a channel so the wait stays
+    // bounded: a vendor CLI's grandchild can inherit the pipe and outlive
+    // the reaped child, and an unbounded `join()` there would hang this
+    // probe well past its deadline.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(drain_stream(stdout));
+    });
     let deadline = Instant::now() + timeout;
-    let status = loop {
+    loop {
         match child.try_wait() {
-            Ok(Some(status)) => break status,
+            Ok(Some(status)) => {
+                // The child is reaped; whatever still holds the pipe gets a
+                // short grace before the whole group dies and the probe
+                // reports no output.
+                let text = rx.recv_timeout(Duration::from_secs(5)).unwrap_or_default();
+                return Ok(Some((status.success(), text.trim().to_string())));
+            }
             Ok(None) => {}
-            Err(_) => return Ok(None),
+            Err(_) => {
+                crate::support::kill_process_tree(&mut child);
+                return Ok(None);
+            }
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
+            // The bare `kill()` this site used before orphans process-group
+            // descendants; every other spawn site goes through the tree kill.
+            crate::support::kill_process_tree(&mut child);
             let _ = child.wait();
             return Ok(None);
         }
         std::thread::sleep(Duration::from_millis(20));
-    };
-    let text = reader.join().unwrap_or_default();
-    Ok(Some((status.success(), text.trim().to_string())))
+    }
 }
 
 /// Drains a byte stream into a string (bounded tail: the buffer keeps the
@@ -2019,6 +2037,9 @@ fn login(
             Ok(Some(status)) => break Some(status),
             Ok(None) => {}
             Err(error) => {
+                // The wait itself failed; the child may still be running, so
+                // it goes down with the group like every other exit path.
+                crate::support::kill_process_tree(&mut child);
                 return Err(CliError::failed(format!("code login({agent}): {error}")));
             }
         }
@@ -2041,8 +2062,9 @@ fn login(
         if let Some(url) = &login_url {
             eprintln!("login link: {url}");
         }
-        // Same mode gate as the non-timeout echo below: `--output json`
-        // keeps stderr free of the multi-line transcript dump.
+        // Unlike the unconditionally-printed single-line link above, the
+        // multi-line transcript dump below is human-gated: `--output json`
+        // keeps stderr free of it.
         let echoed = pinvou3_lib::platform::credential_store::redact_secret(&combined);
         if output == OutputMode::Human && !echoed.trim().is_empty() {
             eprintln!("{echoed}");

@@ -180,8 +180,10 @@ fn every_projects_subcommand_parses_and_invalid_usage_exits_two() {
         vec!["pinvou", "projects", "delete", "prj-1", "--yes", "1"],
         // move needs both ids and accepts no options.
         vec!["pinvou", "projects", "move"],
-        vec!["pinvou", "projects", "move", "s-1"],
+        // an omitted project id is the ungroup form; an empty or
+        // flag-shaped project token is still malformed
         vec!["pinvou", "projects", "move", "s-1", ""],
+        vec!["pinvou", "projects", "move", "s-1", "--json"],
         vec!["pinvou", "projects", "move", "s-1", "prj-1", "extra"],
         vec!["pinvou", "projects", "move", "s-1", "prj-1", "--yes"],
     ];
@@ -499,4 +501,39 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
             .is_file(),
         "project delete must never delete the session"
     );
+
+    // Omitting the project id moves a session out of its project — the
+    // store's ungroup arm, matching the GUI picker's ungrouped entry.
+    let value = run_json(&["pinvou", "projects", "create", "--name", "Temp"]);
+    let project_id = value["id"].as_str().unwrap().to_owned();
+    let value = run_json(&["pinvou", "projects", "move", &session_id, &project_id]);
+    assert_eq!(value["project_id"], project_id);
+    let outcome = run(&["pinvou", "projects", "move", &session_id]).expect("human ungroup");
+    assert!(
+        outcome.stdout.contains("out of its project"),
+        "{}",
+        outcome.stdout
+    );
+    let value = run_json(&[
+        "pinvou",
+        "projects",
+        "move",
+        &session_id,
+        "--output",
+        "json",
+    ]);
+    assert_eq!(value["session_id"], session_id);
+    assert!(
+        value["project_id"].is_null(),
+        "a repeat ungroup stays idempotent: {value}"
+    );
+    let value = run_json(&["pinvou", "projects", "list"]);
+    let assignment = value["assignments"].get(session_id.as_str());
+    assert!(
+        assignment.is_none() || assignment == Some(&serde_json::Value::Null),
+        "the ungroup must clear the assignment: {value}"
+    );
+    let error = run(&["pinvou", "projects", "move", "no-such-session"])
+        .expect_err("an unknown session is still a failure without a project id");
+    assert!(error.to_string().contains("does not exist"), "{}", error);
 }

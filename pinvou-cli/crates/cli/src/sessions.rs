@@ -27,9 +27,11 @@
 //! session the GUI is ACTIVELY streaming rewrites the whole transcript JSON
 //! from a snapshot read moments earlier, so the engine's newest messages
 //! can be lost (the store's own `set_title` comment names this hazard).
-//! Avoid metadata mutations on a session the desktop app is currently
-//! writing; the last-writer-wins windows on the sidecar registries
-//! (viewed/pinned state) are cosmetic by comparison.
+//! `archive`/`restore` race the same way, and a `delete` of a streaming
+//! session can leave the GUI engine rebuilding a zombie transcript when its
+//! in-flight turn commits. Avoid mutations on a session the desktop app is
+//! currently writing; the last-writer-wins windows on the sidecar
+//! registries (viewed/pinned state) are cosmetic by comparison.
 
 use std::io::BufRead;
 use std::path::PathBuf;
@@ -592,6 +594,18 @@ fn export(
     };
     match destination {
         Some(path) => {
+            // An existing destination is refused, not overwritten: the
+            // transcript store lives in plain files under the same root, so
+            // a silent `fs::write` could destroy a stored session (or any
+            // other file the user pointed at) with exit 0. Pick a fresh
+            // path instead.
+            if path.exists() {
+                return Err(CliError::failed(format!(
+                    "sessions export({id}): refusing to overwrite {}; choose a destination \
+                     that does not exist yet",
+                    path.display()
+                )));
+            }
             let bytes = content.len();
             std::fs::write(&path, content).map_err(|error| {
                 CliError::failed(format!(

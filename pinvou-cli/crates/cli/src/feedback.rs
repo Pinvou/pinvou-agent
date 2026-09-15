@@ -295,9 +295,26 @@ fn write_json(path: &Path, value: serde_json::Value) -> Result<(), CliError> {
     let mut bytes = serde_json::to_vec_pretty(&value)
         .map_err(|error| CliError::failed(format!("feedback submit: serialize: {error}")))?;
     bytes.push(b'\n');
-    std::fs::write(path, bytes).map_err(|error| {
+    // Same tmp+rename discipline as the scheduled registry writer: a crash
+    // mid-write must not leave a truncated pending/receipt file that a later
+    // submit would read as garbage.
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = path.with_extension(format!("json.tmp.{}.{}", std::process::id(), nonce));
+    std::fs::write(&tmp, bytes).map_err(|error| {
         CliError::failed(format!(
             "feedback submit: cannot write {}: {error}",
+            tmp.display()
+        ))
+    })?;
+    let _ = std::fs::File::open(&tmp).and_then(|file| file.sync_all());
+    std::fs::rename(&tmp, path).map_err(|error| {
+        let _ = std::fs::remove_file(&tmp);
+        CliError::failed(format!(
+            "feedback submit: cannot move {} to {}: {error}",
+            tmp.display(),
             path.display()
         ))
     })

@@ -412,6 +412,26 @@ fn sessions_show_limits_and_exports_transcript() {
     let written = std::fs::read_to_string(&destination).unwrap();
     assert!(written.contains("## user"));
     assert!(written.contains("hello"));
+
+    // An existing destination is refused, not overwritten: the transcript
+    // store itself is plain files, so a silent overwrite could destroy a
+    // stored session with exit 0.
+    let error = run(&[
+        "pinvou",
+        "sessions",
+        "export",
+        &id,
+        "--output",
+        destination.to_str().unwrap(),
+    ])
+    .unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("refusing to overwrite"),
+        "{error}"
+    );
+    // The first export's content survived the refusal untouched.
+    assert_eq!(std::fs::read_to_string(&destination).unwrap(), written);
     std::fs::remove_file(&destination).unwrap();
 
     // exporting an unknown session fails at host level (exit 1)

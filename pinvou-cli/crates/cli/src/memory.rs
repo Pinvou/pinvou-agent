@@ -177,7 +177,9 @@ pub enum MemoryCommand {
         id: String,
         reason: Option<String>,
     },
-    Organize,
+    Organize {
+        confirmed: bool,
+    },
     OrganizeHistory,
 }
 
@@ -203,8 +205,14 @@ pub fn parse(values: &[String]) -> Result<MemoryCommand, CliError> {
         }
         "pending" => parse_pending(&values[2..]),
         "organize" => {
-            expect_no_arguments(&values[2..], "memory organize")?;
-            Ok(MemoryCommand::Organize)
+            // organize rewrites the stores under LLM decisions — a
+            // destructive action like `memory delete`, so it opts in the
+            // same way.
+            let options = parse_options(&values[2..], &[], &["--yes"])?;
+            options.ensure_no_positionals("memory organize")?;
+            Ok(MemoryCommand::Organize {
+                confirmed: options.has_flag("--yes"),
+            })
         }
         "organize-history" => {
             expect_no_arguments(&values[2..], "memory organize-history")?;
@@ -480,7 +488,10 @@ pub fn execute(command: MemoryCommand, output: OutputMode) -> Result<CliOutcome,
         } => delete(store, &id, confirmed, output),
         MemoryCommand::Archive { id } => archive(&id, output),
         MemoryCommand::Pending { action, id, reason } => pending(action, &id, reason, output),
-        MemoryCommand::Organize => organize(output),
+        MemoryCommand::Organize { confirmed } => {
+            require_yes(confirmed)?;
+            organize(output)
+        }
         MemoryCommand::OrganizeHistory => organize_history(output),
     }
 }
@@ -493,8 +504,25 @@ fn not_found(store: MemoryStore, id: &str) -> CliError {
     CliError::failed(format!("{}_not_found: {id}", store.as_str()))
 }
 
-fn overview(output: OutputMode) -> Result<CliOutcome, CliError> {
-    support::sandbox_home()?;
+/// The eight authoritative memory sources loaded through the shared
+/// per-source diagnostics, plus the warning list and the per-source
+/// availability map: the single loading path behind `overview` and the
+/// post-organize snapshot refresh, so the two cannot drift apart (the GUI
+/// keeps the same helper: `load_memory_sources`).
+struct LoadedMemorySources {
+    profile: feature::MemoryProfile,
+    preferences: Vec<feature::PreferenceFile>,
+    work_context: Vec<feature::WorkContextFile>,
+    current_focus: Vec<feature::TimedMemoryItem>,
+    recent_activity: Vec<feature::TimedMemoryItem>,
+    recent_work: Vec<feature::RecentWorkItem>,
+    pending: Vec<feature::PendingMemoryItem>,
+    never: Vec<feature::NeverMemoryItem>,
+    warnings: Vec<serde_json::Value>,
+    sources: BTreeMap<String, serde_json::Value>,
+}
+
+fn load_memory_sources() -> LoadedMemorySources {
     let mut warnings = Vec::new();
     let mut sources = BTreeMap::new();
     let profile = loaded_source(
@@ -545,6 +573,34 @@ fn overview(output: OutputMode) -> Result<CliOutcome, CliError> {
         &mut warnings,
         &mut sources,
     );
+    LoadedMemorySources {
+        profile,
+        preferences,
+        work_context,
+        current_focus,
+        recent_activity,
+        recent_work,
+        pending,
+        never,
+        warnings,
+        sources,
+    }
+}
+
+fn overview(output: OutputMode) -> Result<CliOutcome, CliError> {
+    support::sandbox_home()?;
+    let LoadedMemorySources {
+        profile,
+        preferences,
+        work_context,
+        current_focus,
+        recent_activity,
+        recent_work,
+        pending,
+        never,
+        mut warnings,
+        mut sources,
+    } = load_memory_sources();
     // Runtime prompt: the GUI overview renders the ACTIVE session's cached
     // runtime memory, but `SessionStore::active_id()` is process-local state —
     // a one-shot CLI process never owns the desktop app's active session — so
@@ -1242,56 +1298,18 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
 /// overview applies: a partial read must not wipe that category from the
 /// document, so the refresh is deferred when any source is unavailable.
 fn refresh_snapshot_document_after_organize() {
-    let mut warnings = Vec::new();
-    let mut sources = BTreeMap::new();
-    let profile = loaded_source(
-        "profile",
-        feature::load_profile(),
-        &mut warnings,
-        &mut sources,
-    );
-    let preferences = loaded_topic_source(
-        "preferences",
-        feature::list_preferences_with_cleanup(),
-        &mut warnings,
-        &mut sources,
-    );
-    let work_context = loaded_topic_source(
-        "work_context",
-        feature::load_work_context_with_cleanup(),
-        &mut warnings,
-        &mut sources,
-    );
-    let current_focus = loaded_source(
-        "current_focus",
-        feature::load_current_focus(),
-        &mut warnings,
-        &mut sources,
-    );
-    let recent_activity = loaded_source(
-        "recent_activity",
-        feature::load_recent_activity(),
-        &mut warnings,
-        &mut sources,
-    );
-    let recent_work = loaded_source(
-        "recent_work",
-        feature::load_recent_work(),
-        &mut warnings,
-        &mut sources,
-    );
-    let pending = loaded_source(
-        "pending",
-        feature::load_pending_memory(),
-        &mut warnings,
-        &mut sources,
-    );
-    let never = loaded_source(
-        "never",
-        feature::load_never_memory(),
-        &mut warnings,
-        &mut sources,
-    );
+    let LoadedMemorySources {
+        profile,
+        preferences,
+        work_context,
+        current_focus,
+        recent_activity,
+        recent_work,
+        pending,
+        never,
+        warnings,
+        sources,
+    } = load_memory_sources();
     // Surface every load/cleanup diagnostic on stderr like the GUI's
     // load_memory_source does, so a deferred or partial refresh is explained.
     append_warning_lines_to_stderr(&warnings);
