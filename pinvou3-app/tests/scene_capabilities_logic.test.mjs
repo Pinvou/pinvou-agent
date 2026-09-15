@@ -68,7 +68,7 @@ function makeInvoke({ tools = [], skills = [], disabled = [] } = {}) {
     tools: new Set(tools),
     skills: new Set(skills),
     disabled: new Set(disabled),
-    setCalls: [],
+    enableCalls: [],
   };
   const toolList = () => [...state.tools].map((id) => ({ id, installed: true }));
   const skillList = () => [...state.skills].map((id) => ({ id, installed: true }));
@@ -78,9 +78,12 @@ function makeInvoke({ tools = [], skills = [], disabled = [] } = {}) {
     if (command === 'install_marketplace_tool') { state.tools.add(args.toolId); return null; }
     if (command === 'install_marketplace_skill') { state.skills.add(args.skillId); return null; }
     if (command === 'get_disabled_connectors') return [...state.disabled];
-    if (command === 'set_disabled_connectors') {
-      state.setCalls.push([...args.connectorIds]);
-      state.disabled = new Set(args.connectorIds);
+    // 后端 enable_marketplace_packages 的单临界区 RMW 语义：移除指定 id，
+    // 其余不动（R7-M3——前端不再整表读改写）。
+    if (command === 'enable_marketplace_packages') {
+      if (args.scope !== 'plain') throw new Error('scene opt-in must target plain scope');
+      state.enableCalls.push([...args.packageIds]);
+      for (const id of args.packageIds) state.disabled.delete(id);
       return null;
     }
     throw new Error(`unexpected command ${command}`);
@@ -104,7 +107,8 @@ async function runDenyAllOptInScenarios() {
     assert.strictEqual(state.disabled.has('gongwen'), false);
     assert.strictEqual(state.disabled.has('government-writing'), false);
     assert.strictEqual(state.disabled.has('feishu'), true, 'unrelated packs stay disabled');
-    assert.strictEqual(state.setCalls.length > 0, true, 'opt-in must persist via set_disabled_connectors');
+    // 精确快照：单次批量调用、恰好场景包、无多余 id（R7 minor）
+    assert.deepStrictEqual(state.enableCalls, [['gongwen', 'government-writing']]);
   }
 
   // 未安装 + 未初始化（DenyAll 默认关）：安装后仍需显式 opt-in。
@@ -115,6 +119,7 @@ async function runDenyAllOptInScenarios() {
     assert.strictEqual(prepared.installed, true);
     assert.strictEqual(prepared.enabled, true);
     assert.strictEqual(state.disabled.has('pptx'), false);
+    assert.deepStrictEqual(state.enableCalls, [['pptx', 'pptx']]);
   }
 
   // 已装且不在禁用集：零开关写，enabled=false（UI 不再弹 ready）。
@@ -128,7 +133,7 @@ async function runDenyAllOptInScenarios() {
     assert.strictEqual(prepared.ok, true);
     assert.strictEqual(prepared.installed, false);
     assert.strictEqual(prepared.enabled, false);
-    assert.strictEqual(state.setCalls.length, 0, 'no switch write when already enabled');
+    assert.strictEqual(state.enableCalls.length, 0, 'no switch write when already enabled');
   }
 
   // 开关读取失败：fail 必须可见（ok=false + error），不得按「已就绪」放行。
@@ -142,6 +147,19 @@ async function runDenyAllOptInScenarios() {
     assert.strictEqual(prepared.ok, false, 'gate-read failure must not pass as ready');
     assert.strictEqual(prepared.enableFailed, true);
     assert.match(prepared.error, /scope file unreadable/);
+  }
+
+  // enable 命令本身失败：fail 可见（ok=false + error），不得按「已就绪」放行。
+  {
+    const { invoke } = makeInvoke({ tools: ['gongwen'], skills: ['government-writing'], disabled: ['gongwen'] });
+    const failing = async (command, args) => {
+      if (command === 'enable_marketplace_packages') throw new Error('backend locked');
+      return invoke(command, args);
+    };
+    const prepared = await prepareSceneCapabilities({ pinvouScene: 'work:document-writing' }, failing);
+    assert.strictEqual(prepared.ok, false, 'enable failure must not pass as ready');
+    assert.strictEqual(prepared.enableFailed, true);
+    assert.match(prepared.error, /backend locked/);
   }
 
   console.log('scene_capabilities_logic deny-all opt-in: ok');

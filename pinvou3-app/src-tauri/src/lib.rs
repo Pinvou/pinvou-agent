@@ -1393,6 +1393,7 @@ pub fn run() {
             commands::remote_control::web_access_read_artifact_image_b64,
             commands::remote_control::web_access_read_artifact_thumbnail,
             commands::remote_control::web_access_render_artifact_visual,
+            commands::connectors::enable_marketplace_packages,
             commands::connectors::set_disabled_connectors,
             commands::connectors::get_disabled_connectors,
             commands::connectors::set_bundle_visibility,
@@ -1681,7 +1682,8 @@ mod startup_order_contract {
         // include_str! 会连测试模块一并扫描，完整针尖若以字面量出现在测试里
         // 会退化成自匹配，评审 #455 R4-S1）。旧版钉两侧 startup mark 的腿
         // 只保 mark 三明治：删掉/移走两 mark 间的 hoist 调用仍通过（评审
-        // #455 R5-S1）。`find` 取首次出现：唯一更早的出现（L1012 幂等重读）
+        // #455 R5-S1）。`find` 取首次出现：唯一更早的出现（disabled_skills
+        // 标记处的幂等重读，行号随源码漂移，评审 #455 R7 nit）
         // 在 session_store:start（L777）之后，hoist 被删即失败而非自匹配。
         assert_migration_read_precedes(
             include_str!("lib.rs"),

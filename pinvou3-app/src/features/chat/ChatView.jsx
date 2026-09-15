@@ -334,7 +334,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                     <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
                   </span>
-                  {t.uiChat.ready}
+                  {/* 安装路径刻意保持开关关闭（DenyAll 收敛），「Ready」是假话；
+                      如实描述并在首次提问时完成 opt-in（评审 #455 R7-M4）。 */}
+                  {t.uiChat.installedReady}
                 </div>
               </div>
             </div>
@@ -2449,13 +2451,20 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   t={t}
                   onSend={(q) => {
                     setWelcomeToolId(null);
-                    // sendChatMessage's failure path re-throws (the current
-                    // implementation never rejects, but stay consistent with
-                    // handleSend's defense so it cannot become a floating
-                    // rejection later).
-                    Promise.resolve(sendChatMessage(q)).catch((err) => {
-                      console.warn("[pinvou3][chat-ui] welcome-card send failed", err);
-                    });
+                    // 点击欢迎提问 = 显式 opt-in（评审 #455 R7-M4）：先经后端
+                    // 单临界区 RMW 把该包移出 plain 禁用集（热刷当轮生效），
+                    // 再发送——否则模型收不到工具，提问静默降级。opt-in 失败
+                    // 仍发送（工具缺席可见于回复），不把失败吞成 floating rejection。
+                    Promise.resolve(
+                      invokeTauri('enable_marketplace_packages', { packageIds: [welcomeToolId], scope: 'plain' })
+                    )
+                      .catch((err) => {
+                        console.warn("[pinvou3][chat-ui] welcome-card opt-in failed", err);
+                      })
+                      .then(() => sendChatMessage(q))
+                      .catch((err) => {
+                        console.warn("[pinvou3][chat-ui] welcome-card send failed", err);
+                      });
                   }}
                 />
               </div>
