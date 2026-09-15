@@ -1378,9 +1378,10 @@ jobs:
         )
       }}
     runs-on: macos-15
-    # A cold check build is slow (macOS runners slower still); same cap as windows-rust-test,
-    # so a hang does not burn runner minutes for long.
-    timeout-minutes: 90
+    # A cold check build is slow (macOS runners slower still); same cap as windows-rust-test
+    # (180: the 90-minute cap was once killed at the link phase on the Windows leg, see
+    # that job), so a hang does not burn runner minutes for long.
+    timeout-minutes: 180
     env:
       # Same as mac-build: inject the sh stack wrapper per platform (the rustc/LLVM stack
       # overflow from codewhale-tui's O2 build has actually been triggered on macOS, see
