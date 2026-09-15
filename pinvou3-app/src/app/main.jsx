@@ -2545,10 +2545,11 @@ const NAV_PREFETCH = {
       const startRebindWorkspace = async (fromPath) => {
         // rebindDraft 已开时不再重复开:焦点留在徽标上时按 Enter 会重复触发
         // onRebind(评审 #463 minor),projectOpsBusy 守卫管不到这个窗口。
-        if (!bridge.files || !bridge.files.pickFolders || projectOpsBusy || rebindDraft) return;
+        if (!bridge.files || !bridge.files.pickRebindFolder || projectOpsBusy || rebindDraft) return;
         try {
-          const picked = await bridge.files.pickFolders();
-          const to = Array.isArray(picked) ? picked[0] : picked;
+          // 单目录、标题贴合重绑定语义(评审 #463 Minor 6):不再借用 KB 的
+          // 多选导入选择器。
+          const to = await bridge.files.pickRebindFolder();
           if (!to) return;
           // 不带会话数:命令实际重绑定 from 之下的一切会话,侧栏组渲染数
           // 只是子集,数字承诺会与 RebindWorkspaceReport 对不上(finding 10)。
@@ -2560,8 +2561,8 @@ const NAV_PREFETCH = {
       const confirmRebindWorkspace = async (confirmExisting) => {
         if (!bridge.projects || !rebindDraft || projectOpsBusy) return;
         setProjectOpsBusy(true);
-        // 清掉上一次失败的内联错误,避免与本次结果叠显。
-        setRebindDraft(prev => prev && { ...prev, error: null });
+        // 清掉上一次失败的内联错误/忙碌提示,避免与本次结果叠显。
+        setRebindDraft(prev => prev && { ...prev, error: null, busySessionIds: null });
         try {
           const report = await bridge.projects.rebindWorkspaceRoot(
             rebindDraft.from, rebindDraft.to, confirmExisting);
@@ -2598,13 +2599,22 @@ const NAV_PREFETCH = {
           });
         } catch (error) {
           const message = String(error);
-          // 类型化标记匹配(finding 11):只认稳定前缀,不匹配人类文案。
+          // 类型化标记匹配(finding 11 / Minor 7):只认稳定前缀,不匹配人类文案。
           if (message.startsWith('REBIND_OLD_ROOT_EXISTS')) {
             setRebindDraft(prev => prev && { ...prev, warnExisting: true, error: null });
+          } else if (message.startsWith('REBIND_SESSIONS_BUSY')) {
+            // busy 拒绝是栅栏正常工作的高频路径(Minor 7):映射 i18n 文案,
+            // 标记后只跟会话 id,原样展示供排查。
+            const busyIds = message.slice('REBIND_SESSIONS_BUSY:'.length).trim();
+            setRebindDraft(prev => prev && {
+              ...prev,
+              busySessionIds: busyIds ? busyIds.split(/,\s*/) : [],
+              error: null,
+            });
           } else {
             console.warn('rebind workspace failed', error);
-            // 失败保持对话框打开并内联呈现错误(评审 #463 M7):toast 层级
-            // 在对话框遮罩(z-200 + blur)之下,关窗前 toast 用户看不到。
+            // 失败保持对话框打开并内联呈现错误(评审 #463 M7):就地展示
+            // 持久、紧邻重试;后端错误原文(非 UI copy)不经 i18n 键。
             setRebindDraft(prev => prev && { ...prev, error: message });
           }
         } finally {
@@ -3099,6 +3109,7 @@ const NAV_PREFETCH = {
               warnExisting={rebindDraft.warnExisting}
               errorMessage={rebindDraft.error}
               partial={rebindDraft.partial || null}
+              busySessionIds={rebindDraft.busySessionIds || null}
               t={t}
               busy={projectOpsBusy}
               onCancel={() => setRebindDraft(null)}
