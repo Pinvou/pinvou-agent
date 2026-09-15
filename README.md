@@ -54,6 +54,7 @@ Use **Codex, Claude Code, or Kimi** through [ACP](docs/multi-agent-acp.md) in th
 - **Artifact panel** automatically collects every file the agent creates or edits; preview, locate, and open them in one place
 - **Editable Markdown artifacts** — edit directly, or select a passage and ask the agent to revise it
 - **Plan / YOLO modes** — review the plan first for complex work, or execute directly when the task is clear
+- **Auxiliary chat** — ask side questions while a task runs, in a per-task side session that is server-enforced zero-tool and isolated from the task's execution context
 
 ### 🧠 Knowledge and memory
 

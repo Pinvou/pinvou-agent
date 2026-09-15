@@ -251,6 +251,23 @@ pub(crate) fn turn_restrict_tools(
     persona_conversational || caller_restrict || session_id.starts_with("aux-")
 }
 
+/// 决策→下发的「最后一公里」收进同一个可测函数:`send_reserved_user_message`
+/// 算出的强制结果必须**原样**传给引擎的逐轮发送入口。此前该接线没有测试钉
+/// ——直传调用方参数也能全绿,零工具不变量恰在组合点裸奔;现在捕获型测试
+/// 钉住到达引擎的值,且组合点只剩这一条路(绕开本函数直传在评审面即暴露)。
+pub(crate) fn forward_forced_turn_restrict<F>(
+    session_id: &str,
+    persona_conversational: bool,
+    caller_restrict: bool,
+    send: impl FnOnce(bool) -> F,
+) -> F {
+    send(turn_restrict_tools(
+        session_id,
+        persona_conversational,
+        caller_restrict,
+    ))
+}
+
 fn scheduled_profile_after_turn_gate(
     store: &SessionStore,
     session_id: &str,
@@ -2070,22 +2087,24 @@ impl EnginePool {
         let persona_reminder = active_card
             .as_ref()
             .map(crate::features::personas::equip_anchor);
-        let restrict_tools = turn_restrict_tools(
+        let persona_conversational = active_card.as_ref().is_some_and(|c| c.conversational_only);
+        let engine = self.get_or_spawn(session_id).await?;
+        forward_forced_turn_restrict(
             session_id,
-            active_card.as_ref().is_some_and(|c| c.conversational_only),
+            persona_conversational,
             restrict_tools_for_turn,
-        );
-        self.get_or_spawn(session_id)
-            .await?
-            .send_reserved_user_message(
-                content,
-                mode,
-                persona_reminder,
-                restrict_tools,
-                expert_snapshot,
-                reservation,
-            )
-            .await
+            |restrict_tools| {
+                engine.send_reserved_user_message(
+                    content,
+                    mode,
+                    persona_reminder,
+                    restrict_tools,
+                    expert_snapshot,
+                    reservation,
+                )
+            },
+        )
+        .await
     }
 
     /// Execute the initial turn for a pre-created scheduled session and wait
@@ -2847,11 +2866,11 @@ mod scheduled_model_tests {
         SessionShellManagers, SessionTurnLifecycles, SessionTurnLocks, SessionTurnShellTasks,
         TranscriptOperation, cancel_turn_with_gates, default_model_for_new_session_from,
         delete_chat_session_with_gate, delete_scheduled_run_with_gate, delete_then_forget,
-        evict_if_idle_with_gates, generation_matches, identity_for_active_model,
-        identity_for_saved_model, quiesce_engine_before_reclaim, resolve_eval_model_selection_from,
-        resolve_runtime_model_override, resolve_scheduled_model, resolve_spawn_model,
-        scheduled_profile_after_turn_gate, should_still_reap_after_snapshot, should_sync_session,
-        turn_restrict_tools, user_display_message,
+        evict_if_idle_with_gates, forward_forced_turn_restrict, generation_matches,
+        identity_for_active_model, identity_for_saved_model, quiesce_engine_before_reclaim,
+        resolve_eval_model_selection_from, resolve_runtime_model_override, resolve_scheduled_model,
+        resolve_spawn_model, scheduled_profile_after_turn_gate, should_still_reap_after_snapshot,
+        should_sync_session, turn_restrict_tools, user_display_message,
     };
     use crate::features::assistant::runtime_model::PreparedRuntimeModel;
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
@@ -2928,6 +2947,53 @@ mod scheduled_model_tests {
         assert!(turn_restrict_tools("sess-plain", true, false));
         // sched- 等其它带前缀会话不走 aux 规则。
         assert!(!turn_restrict_tools("sched-1", false, false));
+    }
+
+    /// PR #433 评审 round-6(MAJOR):决策→下发「最后一公里」——`send_reserved_
+    /// user_message` 必须把 `turn_restrict_tools` 的强制结果**原样**交给引擎的
+    /// 逐轮发送入口。此前该接线无测试钉:把收口点改回直传调用方参数,现有全部
+    /// 测试保持全绿而 aux 恢复全工具。本测试用捕获闭包钉住到达引擎入口的值,
+    /// 且组合点收进 `forward_forced_turn_restrict` 一条路,绕开即暴露。
+    #[test]
+    fn send_dispatch_forwards_forced_restrict_to_engine_entry() {
+        let captured = std::cell::Cell::new(None);
+        {
+            let captured = &captured;
+            forward_forced_turn_restrict("aux-1", false, false, |restrict| {
+                captured.set(Some(restrict));
+            });
+        }
+        assert_eq!(
+            captured.get(),
+            Some(true),
+            "aux 会话即使调用方传 false,到达引擎的逐轮 restrict 也必须为 true(零工具)"
+        );
+
+        captured.set(None);
+        {
+            let captured = &captured;
+            forward_forced_turn_restrict("sess-plain", false, false, |restrict| {
+                captured.set(Some(restrict));
+            });
+        }
+        assert_eq!(
+            captured.get(),
+            Some(false),
+            "对照:普通会话不调用方不限制、无元卡时,引擎收到的 restrict 保持 false"
+        );
+
+        captured.set(None);
+        {
+            let captured = &captured;
+            forward_forced_turn_restrict("sess-plain", false, true, |restrict| {
+                captured.set(Some(restrict));
+            });
+        }
+        assert_eq!(
+            captured.get(),
+            Some(true),
+            "对照:调用方逐轮要求限制时原样透传"
+        );
     }
 
     /// ADR-0006：引擎回收必须**先**取消全部子智能体、**后**发 Shutdown。

@@ -79,7 +79,10 @@ impl SessionStore {
                 let id = metadata.id;
                 // 淘汰主会话时级联淘汰其辅助会话:先解析映射(主记录提交后
                 // purge_session_side_maps 会摘掉它),aux 记录与主记录进入
-                // 同一个 deleted_ids 集合,统一做 side-map 清理。
+                // 同一个 deleted_ids 集合,统一做 side-map 清理。与主会话的
+                // 既有淘汰语义同构:store 层拿不到 pool(依赖方向),此处的
+                // aux 记录删除不回收引擎、不发 session:deleted——仍在跑的
+                // aux 引擎由 pool 空闲回收巡检按 id 兜底 reclaim。
                 if let Some(aux_id) = self.aux_session_id(&id) {
                     let (aux_committed, aux_result) = self.delete_session_record(&aux_id);
                     if aux_committed {

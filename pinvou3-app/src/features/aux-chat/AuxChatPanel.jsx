@@ -85,7 +85,9 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
   }, [auxChat, sessionId, pullSnapshot]);
 
   // 后台辅助会话的回合事件已自动进 per-session buffer 并触发 notify；
-  // 订阅 chat 域重拉同步快照即可，不新增事件监听。
+  // 订阅 chat 域重拉同步快照即可，不新增事件监听。重拉同时是打开中面板的
+  // LRU touch（snapshot() 内刷新新近度）——buffer 容量回收依赖这条订阅必达，
+  // 若未来给订阅加变化门控，touch 需另寻常驻驱动。
   useEffect(() => {
     if (!auxChat || !bridge.state) return;
     return bridge.state.subscribeMany(['chat'], () => {
@@ -113,19 +115,27 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     return () => clearTimeout(timer);
   }, [restartArmed]);
 
+  // 发送守卫与 handleRestart 同构:面板不随主任务切换关闭,send 在途时可能
+  // 已换绑——进入时快照 auxId,写 UI 前复查,旧任务的返回结果(清草稿/失败
+  // 横幅)不得落到新任务的面板上。restarting 一并拒绝:确认重开到 discard
+  // 完成之间,Enter 不许把消息发进即将被丢弃的旧会话(路径只锁按钮、锁不住
+  // 这条 Enter 直达)。
   const handleSend = useCallback(async () => {
     const text = draft.trim();
-    if (!auxChat || !auxIdRef.current || !text || busy) return;
+    const sentAuxId = auxIdRef.current;
+    if (!auxChat || !sentAuxId || !text || busy || restarting) return;
     setSendFailed(false);
     try {
-      await auxChat.send(auxIdRef.current, text);
+      await auxChat.send(sentAuxId, text);
+      if (auxIdRef.current !== sentAuxId) return;
       setDraft('');
       pullSnapshot(auxIdRef.current);
     } catch (error) {
       console.warn('[pinvou3][aux-chat] send failed', error);
+      if (auxIdRef.current !== sentAuxId) return;
       setSendFailed(true);
     }
-  }, [auxChat, draft, busy, pullSnapshot]);
+  }, [auxChat, draft, busy, restarting, pullSnapshot]);
 
   const handleComposerKeyDown = useCallback((event) => {
     if (event.key !== 'Enter' || event.shiftKey || isImeComposing(event)) return;

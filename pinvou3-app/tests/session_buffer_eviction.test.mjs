@@ -636,13 +636,16 @@ test('tauri aux snapshot() refreshes LRU recency: an open aux panel survives 33 
   buf.loadedFromDisk = true;
   for (let i = 1; i <= 33; i++) {
     boot.api.switchActiveTo(`s${i}`, null);
-    // The open panel polls snapshot on a timer: each poll proves the panel
-    // is alive and must count as a read for LRU recency.
+    // The open panel repulls snapshot on every chat-domain notify (no timer):
+    // each pull proves the panel is alive and must count as a read for LRU
+    // recency. The guarantee leans on "notify reaches subscribers" — if a
+    // change gate is ever added to subscribeMany, the pull must move to
+    // another always-on driver or the LRU touch is lost with it.
     const snap = auxChat.snapshot('aux-1');
     assert.equal(snap.chatItems.length, 1, `the aux buffer must survive switch ${i}`);
   }
   assert.notEqual(boot.sessionStates['aux-1'], undefined,
-    'snapshot polling must refresh LRU recency so an open aux buffer survives pruning');
+    'snapshot repulls must refresh LRU recency so an open aux buffer survives pruning');
   assert.equal(auxChat.snapshot('aux-1').chatItems[0].text, 'q');
 });
 
@@ -664,14 +667,15 @@ test('tauri aux buffer without snapshot polling is evicted (control)', () => {
   assert.equal(snap.queued.length, 0);
 });
 
-test('web aux snapshot polling keeps an open aux buffer alive through 34 session switches (no rehydration)', async () => {
+test('web aux snapshot repulls keep an open aux buffer alive through 34 session switches (no rehydration)', async () => {
   const rt = bootWebBridge();
   rt.handlers.get_or_create_aux_session = args => ({ id: `aux-${args.sessionId}` });
   const auxId = await rt.flat.auxChatEnsure('task-1');
   assert.equal(auxId, 'aux-task-1');
   assert.equal(rt.calls.chunkLoads.filter(id => id === auxId).length, 1,
     'precondition: ensure cold-loaded the aux buffer exactly once');
-  // The open panel polls snapshot constantly while the user switches sessions.
+  // The open panel repulls snapshot on every chat-domain notify (no timer)
+  // while the user switches sessions.
   for (let i = 1; i <= 34; i++) {
     assert.equal(await rt.flat.switchToSession(`s${i}`), true);
     rt.flat.auxChatSnapshot(auxId);
