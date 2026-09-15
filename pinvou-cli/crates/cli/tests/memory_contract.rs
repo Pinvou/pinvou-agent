@@ -654,7 +654,7 @@ fn memory_add_accepts_ordinary_punctuated_work_context() {
         "We deploy on Fridays.",
     ]);
 
-    let json = run_ok(&[
+    let json: serde_json::Value = serde_json::from_str(&run_ok(&[
         "pinvou",
         "memory",
         "list",
@@ -662,11 +662,15 @@ fn memory_add_accepts_ordinary_punctuated_work_context() {
         "work-context",
         "--output",
         "json",
-    ]);
-    let text = json.to_string();
+    ]))
+    .expect("single-line JSON output");
+    let items = json["items"].as_array().expect("work-context items array");
     assert!(
-        text.contains("We deploy on Fridays"),
-        "the punctuated work-context item must be materialized"
+        items
+            .iter()
+            .any(|item| item["text"] == serde_json::json!("We deploy on Fridays")),
+        "the punctuated work-context item must be materialized with the \
+         punctuation-stripped normalization: {json}"
     );
     let _ = home;
 }
