@@ -803,7 +803,18 @@ fn run_recognition(wav: &Path) -> Result<(String, &'static str), CliError> {
 /// writable asr dir under the shared ASR timeout budget with size-capped
 /// output pipes, and fail with `asr_parse_failed` on unusable output.
 fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
-    let engine = engine_path().expect("engine checked by caller");
+    // The availability check ran earlier in the caller; if the binary
+    // vanished since, fail honestly instead of panicking (a panic here
+    // would strand the staged wav).
+    let engine = match engine_path() {
+        Some(engine) => engine,
+        None => {
+            return Err(CliError::failed(
+                "asr_engine_missing: the local ASR engine binary is gone between the \
+                 availability check and the spawn; run `pinvou voice asr-install --yes` again",
+            ));
+        }
+    };
     let model = model_path();
     // The normalized scratch file is the same private audio as the staged
     // input: pre-create it 0600 + exclusive (ffmpeg then writes into the
@@ -916,9 +927,12 @@ fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
             }
         }
     };
-    // The child was spawned as a process-group leader: the group kill reaps
-    // timed-out engines and any descendants that inherited their pipes.
-    crate::support::kill_process_tree(&mut child);
+    // Off the success path the group kill reaps timed-out engines and any
+    // descendants that inherited their pipes. On a clean success the group
+    // died with its leader, and killing a reaped pid would race a reused id.
+    if !matches!(&status, Ok(status) if status.success()) {
+        crate::support::kill_process_tree(&mut child);
+    }
     let stdout = stdout_drain.join().unwrap_or_default();
     let stderr = stderr_drain.join().unwrap_or_default();
     let _ = std::fs::remove_file(&normalized);
@@ -1066,9 +1080,12 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
             }
         }
     };
-    // The child was spawned as a process-group leader: the group kill reaps
-    // a timed-out CLI together with any descendants that inherited its pipes.
-    crate::support::kill_process_tree(&mut child);
+    // Off the success path the group kill reaps a timed-out CLI together
+    // with any descendants that inherited its pipes; a clean success left no
+    // group behind, and killing the reaped pid would race a reused id.
+    if !matches!(&status, Ok(status) if status.success()) {
+        crate::support::kill_process_tree(&mut child);
+    }
     let stdout = stdout_drain.join().unwrap_or_default();
     let stderr = stderr_drain.join().unwrap_or_default();
     let status = status?;
