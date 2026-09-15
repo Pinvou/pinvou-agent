@@ -285,6 +285,11 @@ impl Store {
             // 竞争场景下开库完全不取写锁（这正是 busy_timeout 想兜住的那段窗口）。
             // 代价是失去「每次开库自愈被外删的表」；表被外部破坏时语句会显式
             // 报错，比静默重建掩盖问题更可取。
+            //
+            // 连接级 PRAGMA 不持久化（journal_mode 才写在库文件头里），DDL 批
+            // 里的 synchronous=NORMAL 必须在这里补齐，稳态与建库/迁移两条路径
+            // 的写连接耐久性才一致。它是纯连接设置，不取库写锁。
+            w.execute_batch("PRAGMA synchronous = NORMAL;")?;
         } else {
             // 新建 / v3 旧版原地迁移：DDL 批 + 版本写入各取一次写锁，
             // busy_timeout 让它等待另一进程的短事务而不是立即失败。
@@ -654,6 +659,38 @@ mod tests {
             opened.err()
         );
         drop(writer);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 稳态跳过 DDL 批后，连接级 PRAGMA 必须仍然生效：synchronous 是连接
+    /// 设置、不持久化（journal_mode 才写在库文件头里），缺失时稳态写连接会
+    /// 静默退回默认 FULL。
+    #[test]
+    fn steady_state_open_keeps_connection_level_pragmas() {
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-knowledge-pragma-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let db = tmp.join("index.db");
+        {
+            Store::open(&db).expect("create store at current schema version");
+        }
+        let store = Store::open(&db).expect("steady-state reopen");
+        let synchronous: i64 = store
+            .conn
+            .lock()
+            .query_row("PRAGMA synchronous", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            synchronous, 1,
+            "steady-state write connection must keep synchronous=NORMAL (1), not the FULL default (2)"
+        );
+        drop(store);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
