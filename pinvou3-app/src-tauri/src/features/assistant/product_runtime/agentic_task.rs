@@ -41,7 +41,8 @@ use crate::features::assistant::product_runtime::{
 };
 use crate::features::files::file_ingest::IngestResult;
 use crate::features::sessions::{
-    ExecutionRootResolver, MAX_SESSIONS_PER_KIND, SessionKind, SessionStore,
+    EVAL_SESSION_FACTORY_TITLE, ExecutionRootResolver, MAX_SESSIONS_PER_KIND, SessionKind,
+    SessionStore,
 };
 use crate::platform::prefs::UserPrefs;
 
@@ -331,20 +332,36 @@ pub async fn run_agentic_task(
     //
     // One exception to keep-by-default: an `Err` outcome on a FRESHLY
     // created session. The session was created by prepare under the eval
-    // factory title ("临时评测") and the turn never produced a report (the
-    // CLI rename never ran either — the CLI got `Err`), so keeping it would
-    // leave an empty eval-titled stray chat in the GUI's session list. Such
-    // a session is deleted through the exact cleanup the KEEP=0 branch uses
-    // (same order: schedule the late sweep, then the turn-gated delete).
-    // Both steps are best-effort and the delete result is discarded, so a
-    // failed cleanup never masks the original error returned below. Failures
+    // factory title and the turn never produced a report (the CLI rename
+    // never ran either — the CLI got `Err`), so keeping it would leave an
+    // empty eval-titled stray chat in the GUI's session list. Such a session
+    // is deleted through the exact cleanup the KEEP=0 branch uses (same
+    // order: schedule the late sweep, then the turn-gated delete) — but only
+    // while it still wears the factory title: a GUI user who adopted the
+    // session mid-run (renamed it in the session list) owns it now, and
+    // their rename must survive a failed run. An explicit
+    // PINVOU3_AGENT_TASK_KEEP_SESSION=0 sandbox stays unconditional — the
+    // harness opted into one-shot cleanup for its own store. Both cleanup
+    // steps are best-effort and the delete result is discarded, so a failed
+    // cleanup never masks the original error returned below. Failures
     // before prepare created anything degrade to a no-op: the delete of a
     // not-yet-existing id fails with NotFound and the late sweep of its
     // (absent) directory converges immediately.
     let keep_session = keep_session_from_env();
     if existing_session {
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
-    } else if outcome.is_err() || !keep_session {
+    } else if outcome.is_err() {
+        let factory_titled = store
+            .load(&session_id)
+            .map(|record| record.metadata.title == EVAL_SESSION_FACTORY_TITLE)
+            .unwrap_or(false);
+        if factory_titled {
+            runtime.schedule_eval_cleanup(&session_id);
+            let _ = runtime.close_eval_session_result(&session_id).await;
+        } else {
+            crate::features::assistant::timing::unregister_eval_observation(&session_id);
+        }
+    } else if !keep_session {
         runtime.schedule_eval_cleanup(&session_id);
         let _ = runtime.close_eval_session_result(&session_id).await;
     } else {

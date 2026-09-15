@@ -79,6 +79,9 @@ pub use self::scheduled::{
     ChatEngineState, ScheduledEngineState, ScheduledRunMode, ScheduledRunProfile,
     ScheduledTokenAccounting,
 };
+/// Re-exported for the agentic-run cleanup guard (kept stable alongside the
+/// other historical `crate::features::sessions::X` paths).
+pub use self::store::EVAL_SESSION_FACTORY_TITLE;
 #[cfg(feature = "benchmark-hooks")]
 pub(crate) use self::store::MAX_SESSIONS_PER_KIND;
 /// Re-export transcript helpers (consumed across engine / remote-control).
