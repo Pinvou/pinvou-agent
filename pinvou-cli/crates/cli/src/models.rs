@@ -204,7 +204,8 @@ fn parse_reasoning_effort(raw: &str) -> Result<String, CliError> {
         // GUI-created configurations unrepresentable from the CLI.
         "off" | "low" | "medium" | "high" | "max" | "auto" | "automatic" => Ok(raw.to_owned()),
         other => Err(CliError::usage(format!(
-            "invalid reasoning effort {other:?}; valid values: off, low, medium, high, max, auto"
+            "invalid reasoning effort {other:?}; valid values: off, low, medium, high, max, \
+             auto, automatic"
         ))),
     }
 }
@@ -994,7 +995,6 @@ fn show(id: &str, reveal_key: bool, output: OutputMode) -> Result<CliOutcome, Cl
             None
         };
     let mut json = model_entry_json(&model, active_id);
-    json["credential_state"] = serde_json::json!(model.credential_state);
     if reveal_key {
         json["api_key"] = serde_json::json!(revealed);
     }
@@ -1248,13 +1248,34 @@ fn apply_bearer(
     }
 }
 
+/// Generous cap on one probe/model-list response body: the timeout bounds
+/// time, but a hostile loopback endpoint can stream within it — the same
+/// bounded-IO rule every other CLI read follows.
+const PROBE_BODY_CAP_BYTES: usize = 4 * 1024 * 1024;
+
+/// Reads and parses a probe response body under [`PROBE_BODY_CAP_BYTES`];
+/// an over-cap or non-JSON body degrades to `None` like any other probe
+/// failure.
+fn read_json_capped(response: reqwest::blocking::Response) -> Option<serde_json::Value> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    response
+        .take(PROBE_BODY_CAP_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > PROBE_BODY_CAP_BYTES {
+        return None;
+    }
+    serde_json::from_slice(&bytes).ok()
+}
+
 fn get_json(url: &str, bearer: Option<&str>) -> Option<serde_json::Value> {
     let response = apply_bearer(probe_client()?.get(url), bearer)
         .send()
         .ok()?
         .error_for_status()
         .ok()?;
-    response.json::<serde_json::Value>().ok()
+    read_json_capped(response)
 }
 
 fn probe_ollama_tags(base_url: &str, bearer: Option<&str>) -> bool {
@@ -1396,7 +1417,7 @@ fn fetch_v1_models(base_url: &str, bearer: Option<&str>) -> Option<serde_json::V
         }
         _ => return None,
     };
-    response.json::<serde_json::Value>().ok()
+    read_json_capped(response)
 }
 
 fn v1_models_owned_by_matches(value: &serde_json::Value, expected: &str) -> bool {
