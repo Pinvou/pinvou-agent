@@ -486,7 +486,26 @@ fn parse_positive(options: &[(&str, &str)], name: &str) -> Result<Option<u64>, C
 }
 
 fn feature_error(action: &str, id: &str, error: impl std::fmt::Display) -> CliError {
+    // Passed through verbatim like the personas/deps translation boundaries
+    // document for their unmapped tails: the importer's error strings are
+    // product copy owned by the lib (partly Chinese), not CLI developer copy.
     CliError::failed(format!("plugins {action}({id}): {error:#}"))
+}
+
+/// Mirror of the GUI's display-value hygiene
+/// (`features/marketplace/store.rs::is_display_unsafe_char`, crate-private):
+/// control characters, zero-width/bidi controls, and line/paragraph
+/// separators never belong in a stored display name.
+fn is_display_unsafe_char(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
+            '\u{00AD}' // SOFT HYPHEN
+            | '\u{200B}'..='\u{200D}' // ZERO WIDTH SPACE..JOINER
+            | '\u{2028}'..='\u{2029}' // LINE/PARAGRAPH SEPARATOR
+            | '\u{202A}'..='\u{202E}' // bidi embedding/override controls
+            | '\u{2066}'..='\u{2069}' // bidi isolate controls
+            | '\u{FEFF}' // BOM / ZERO WIDTH NO-BREAK SPACE
+        )
 }
 
 pub fn execute(command: PluginsCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -878,9 +897,27 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
             path.display()
         )));
     }
+    // The raw file name becomes the package display name in bundles.json, so
+    // it gets the same invisible-character hygiene as the GUI's display
+    // values (mirror of `features/marketplace/store.rs
+    // is_display_unsafe_char`, which is crate-private): strip instead of
+    // reject — the name came from the user's own file path, and a rename
+    // requirement would be a worse outcome than a cleaned label.
     let display = path
         .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
+        .map(|name| {
+            let cleaned: String = name
+                .to_string_lossy()
+                .chars()
+                .filter(|c| !is_display_unsafe_char(*c))
+                .collect();
+            let trimmed = cleaned.trim();
+            if trimmed.is_empty() {
+                "plugin.zip".to_owned()
+            } else {
+                trimmed.to_owned()
+            }
+        })
         .unwrap_or_else(|| "plugin.zip".to_owned());
     // The unified pipeline accepts zip packages; .md files and SKILL.md
     // directories are wrapped into a root-SKILL.md zip first (replacing the
