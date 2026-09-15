@@ -69,12 +69,16 @@ use parking_lot::{Mutex, RwLock};
 pub use self::mode_state::{
     MountedCollection, MountedCollectionsSnapshot, MountedRemoteCollection, SessionModeState,
 };
+// Only the benchmark-gated headless runner (agentic_task) warns about
+// retention eviction, so the re-export follows the same feature gate.
 /// Re-export scheduled-run types so the historical
 /// `crate::features::sessions::X` paths stay stable.
 pub use self::scheduled::{
     ChatEngineState, ScheduledEngineState, ScheduledRunMode, ScheduledRunProfile,
     ScheduledTokenAccounting,
 };
+#[cfg(feature = "benchmark-hooks")]
+pub(crate) use self::store::MAX_SESSIONS_PER_KIND;
 /// Re-export transcript helpers (consumed across engine / remote-control).
 pub use self::transcript::transcript_revision;
 /// Re-export the crate-visible session-id validator (used by commands). It is
