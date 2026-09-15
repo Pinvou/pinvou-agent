@@ -295,6 +295,9 @@ fingerprints=(
   "T9|Custom Responses exact-model replay             |CodeWhale/crates/tui/src/client/responses/tests.rs|fn forkguard_custom_responses_replays_only_exact_model_opaque_reasoning_state"
   "T9|Chat wire never captures encrypted reasoning    |CodeWhale/crates/tui/src/client/responses/tests.rs|fn forkguard_custom_chat_stream_does_not_capture_encrypted_reasoning"
   "T9|Empty encrypted content skips without breaking the stream |CodeWhale/crates/tui/src/client/responses/tests.rs|fn forkguard_custom_responses_capture_tolerates_missing_or_empty_encrypted_content"
+
+  "APP|unified 2000-step budget default           |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|const HOST_STEP_BUDGET: u32 = 2_000;"
+  "APP|2000-step budget behavior regression       |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn engine_config_defaults_to_unified_step_budget_and_respects_override"
 )
 
 for fp in "${fingerprints[@]}"; do
