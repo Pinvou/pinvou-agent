@@ -64,8 +64,9 @@ pub struct BenchmarkDescriptor {
     /// Machine-readable harness-deadline mode recorded into the run
     /// manifest: `None` = tasks run without a harness wall-clock deadline
     /// (bounded only by the engine), `Some(secs)` = tasks carry a harness
-    /// deadline. Scores from runs with different modes are not comparable;
-    /// without this marker a submission could not tell the two apart.
+    /// deadline (the upper bound when per-task deadlines vary). Scores from
+    /// runs with different modes are not comparable; this marker keeps the
+    /// mode machine-readable in the run's on-disk manifest.
     harness_deadline_secs: Option<u64>,
 }
 

@@ -51,9 +51,9 @@ fn manifest(run_id: &str) -> RunManifest {
 
 #[test]
 fn manifest_records_the_harness_deadline_mode_and_reads_old_manifests() {
-    // The mode is machine-readable in the manifest so a submission can tell
-    // an unbounded run (no harness wall-clock deadline) from a bounded one —
-    // the two are not score-comparable.
+    // The mode is machine-readable in the manifest so an unbounded run (no
+    // harness wall-clock deadline) stays distinguishable from a bounded one
+    // — the two are not score-comparable.
     let bounded = RunManifest::new(
         "run-bounded",
         &descriptor().with_harness_deadline_secs(Some(600)),
@@ -77,10 +77,13 @@ fn manifest_records_the_harness_deadline_mode_and_reads_old_manifests() {
     )
     .unwrap();
     assert_eq!(unbounded.harness_deadline_secs(), None);
-    // None is skipped entirely, so an unbounded run's manifest does not
-    // carry a marker that could be misread as a bounded 0-second deadline.
+    // `None` serializes as an explicit `null`, not a missing key: a
+    // manifest written by this version stays distinguishable from a legacy
+    // manifest, whose key is absent entirely (and whose real mode is
+    // unrecoverable). A missing key must never be misread as a bounded
+    // 0-second deadline either.
     let json = serde_json::to_value(&unbounded).unwrap();
-    assert!(json.get("harness_deadline_secs").is_none());
+    assert_eq!(json["harness_deadline_secs"], serde_json::Value::Null);
 
     // Manifests written before the field existed keep deserializing (serde
     // default) so resuming an older run stays possible.
@@ -96,6 +99,22 @@ fn manifest_records_the_harness_deadline_mode_and_reads_old_manifests() {
     )
     .unwrap();
     assert_eq!(legacy.harness_deadline_secs(), None);
+}
+
+/// `Some(0)` is not a mode: validate must reject it at creation time instead
+/// of writing a manifest whose tasks would all time out instantly.
+#[test]
+fn manifest_rejects_a_zero_second_harness_deadline() {
+    let error = RunManifest::new(
+        "run-zero-deadline",
+        &descriptor().with_harness_deadline_secs(Some(0)),
+        Split::new("smoke"),
+        ModelIdentity::new("fixture", "mock-model").unwrap(),
+        ToolPolicyId::new("smoke/v1"),
+        1,
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), "invalid_manifest");
 }
 
 fn task(id: &str) -> BenchmarkTask {

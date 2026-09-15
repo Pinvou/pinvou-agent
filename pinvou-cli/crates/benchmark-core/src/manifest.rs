@@ -46,13 +46,14 @@ pub struct RunManifest {
     pass: u16,
     created_at_ms: u64,
     /// Machine-readable harness-deadline mode (`None` = tasks run without a
-    /// harness wall-clock deadline; `Some(secs)` = bounded). Scores from
-    /// runs with different modes are not comparable. Absent in manifests
-    /// written before the field existed (serde default), which is why it is
-    /// deliberately NOT part of `matches_expected`: resuming an older run
-    /// must keep working, and the information for those runs is genuinely
-    /// unrecoverable.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// harness wall-clock deadline; `Some(secs)` = bounded, the upper bound
+    /// when per-task deadlines vary). Scores from runs with different modes
+    /// are not comparable. `None` is written as an explicit `null` so a
+    /// manifest written by this version stays machine-distinguishable from
+    /// a legacy manifest, where the key is absent entirely (serde default)
+    /// and the real mode is unrecoverable. The field is deliberately NOT
+    /// part of `matches_expected`: resuming an older run must keep working.
+    #[serde(default)]
     harness_deadline_secs: Option<u64>,
 }
 
@@ -96,6 +97,12 @@ impl RunManifest {
         validate_safe_text(&self.split)?;
         validate_safe_text(&self.tool_policy)?;
         if self.schema_version != 1 || self.concurrency != 1 || self.pass == 0 {
+            return Err(crate::BenchmarkError::coded("invalid_manifest"));
+        }
+        // A zero-second deadline is not a mode; it is a typo for `None` that
+        // would time every task out instantly while looking like a bounded
+        // run in the manifest.
+        if self.harness_deadline_secs == Some(0) {
             return Err(crate::BenchmarkError::coded("invalid_manifest"));
         }
         Ok(())
