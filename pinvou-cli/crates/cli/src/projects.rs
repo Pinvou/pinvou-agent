@@ -56,7 +56,7 @@ pub enum ProjectsCommand {
     },
     Move {
         session_id: String,
-        project_id: String,
+        project_id: Option<String>,
     },
 }
 
@@ -112,11 +112,17 @@ pub fn parse(values: &[String]) -> Result<ProjectsCommand, CliError> {
         }
         "move" => {
             let session_id = require_id(rest.first(), "move")?;
-            let project_id = rest
-                .get(1)
-                .filter(|id| !id.is_empty() && !id.starts_with("--"))
-                .ok_or_else(|| CliError::usage("projects move requires a project id"))?
-                .clone();
+            // Omitting the project id moves the session out of its project —
+            // the store's None arm, the same entry the GUI's move picker
+            // offers as ungrouped. An explicit empty or flag-shaped token
+            // stays a usage error.
+            let project_id = match rest.get(1) {
+                None => None,
+                Some(id) if id.is_empty() || id.starts_with("--") => {
+                    return Err(CliError::usage("projects move: invalid project id"));
+                }
+                Some(id) => Some(id.clone()),
+            };
             if rest.len() > 2 {
                 return Err(CliError::usage("projects move accepts no options"));
             }
@@ -191,7 +197,7 @@ pub fn execute(command: ProjectsCommand, output: OutputMode) -> Result<CliOutcom
         ProjectsCommand::Move {
             session_id,
             project_id,
-        } => move_session(&session_id, &project_id, output),
+        } => move_session(&session_id, project_id.as_deref(), output),
     }
 }
 
@@ -328,7 +334,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
 /// write is the exact store call, gated by the GUI's chat-session checks.
 fn move_session(
     session_id: &str,
-    project_id: &str,
+    project_id: Option<&str>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     // Session ids join onto store paths inside the session store, so apply
@@ -360,13 +366,13 @@ fn move_session(
     // session's workspace record; see the module header for the disclosed
     // headless deviation.
     let outcome = store
-        .move_session_to_project(session_id, Some(project_id), None)
+        .move_session_to_project(session_id, project_id, None)
         .map_err(|error| project_error("move", error))?;
     let mut value = serde_json::to_value(&outcome).unwrap_or_else(|_| serde_json::json!({}));
     value["session_id"] = serde_json::json!(session_id);
-    Ok(success(render(
-        output,
-        format!("moved {session_id} into {project_id}"),
-        &value,
-    )))
+    let human = match project_id {
+        Some(project_id) => format!("moved {session_id} into {project_id}"),
+        None => format!("moved {session_id} out of its project"),
+    };
+    Ok(success(render(output, human, &value)))
 }
