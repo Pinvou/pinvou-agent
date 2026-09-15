@@ -200,6 +200,8 @@ impl SessionStore {
             mode_defaults: Arc::new(RwLock::new(mode_defaults_snapshot)),
             session_purged_hooks: Arc::new(RwLock::new(Vec::new())),
             session_deleted_hooks: Arc::new(RwLock::new(Vec::new())),
+            #[cfg(feature = "benchmark-hooks")]
+            retention_eviction_observer: Arc::new(Mutex::new(None)),
         };
         store.load_scheduled_profiles()?;
         store.reconcile_scheduled_profiles_locked()?;
