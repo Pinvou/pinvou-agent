@@ -1,5 +1,6 @@
 /** Pure model of the swarm running overlay (overlay-model.mjs): visibility window / status mapping / cache eviction / entry merge. */
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import test from 'node:test';
 import {
   MAX_OVERLAY_ENTRIES,
@@ -12,10 +13,19 @@ import {
   statusPresentation,
 } from '../src/features/multiagent/overlay-model.mjs';
 
+// Source pin target: the component glue (session-switch cache discard,
+// revival kick, ledger summary mapping) has no React test harness in this
+// repo, so its wiring is pinned with the same source-regex convention as
+// chat_turn_error_isolation.
+const overlaySource = fs.readFileSync(
+  new URL('../src/features/multiagent/RunningAgentsOverlay.jsx', import.meta.url),
+  'utf8',
+);
+
 // Fixture mirrors the zh locale's uiMultiAgent copy: statusPresentation must
 // map ledger tokens into whatever localized copy it is given.
 const copy = {
-  agentCard: { failed: '失败', completed: '已完成', working: '运行中' },
+  agentCard: { failed: '失败', completed: '已完成', working: '运行中', interrupted: '已中断', cancelled: '已取消' },
   blockedTag: '受阻',
   pendingTag: '等待中',
 };
@@ -71,6 +81,27 @@ test('statusPresentation: terminal first; ledger English tokens map to i18n copy
   assert.equal(statusPresentation(entry({ status: 'reading files' }), copy).text, '运行中');
   assert.equal(statusPresentation(entry({ status: 'scanning' }), copy).text, 'scanning');
   assert.equal(statusPresentation(entry({ status: null }), copy).text, '运行中');
+});
+
+test('statusPresentation: a cancelled or interrupted terminal is not a dispatch failure', () => {
+  // The ledger folds every non-completed ending into failed=true, but the
+  // status token still distinguishes them: turning swarm off cancels live
+  // children and a session restart interrupts them — neither is the agent's
+  // failure, so both get their own copy and a neutral dot.
+  assert.deepEqual(
+    statusPresentation(entry({ done: true, failed: true, status: 'cancelled' }), copy),
+    { text: '已取消', dot: 'stopped' },
+  );
+  assert.deepEqual(
+    statusPresentation(entry({ done: true, failed: true, status: 'INTERRUPTED' }), copy),
+    { text: '已中断', dot: 'stopped' },
+  );
+  assert.equal(statusPresentation(entry({ done: true, failed: true, status: 'failed' }), copy).dot, 'failed');
+  assert.equal(
+    statusPresentation(entry({ done: true, failed: true, status: null }), copy).text,
+    '失败',
+    'a failure without a distinguishing token stays a dispatch failure',
+  );
 });
 
 test('entryKey: combines session and agentId, null-safe', () => {
@@ -166,4 +197,40 @@ test('mergeOverlayEntry: unblock grants the success window at the moment of unbl
 test('mergeOverlayEntry: entry ownership follows the passed-in session; cross-session events do not leak', () => {
   const merged = mergeOverlayEntry(null, ledgerRead({ sessionId: 'other' }), 's1', 10_000);
   assert.equal(merged.sessionId, 's1', 'when detail lacks or carries a mismatched sessionId, the subscribing session wins');
+});
+
+test('component glue: session-switch discard, revival kick, and ledger mapping stay wired', () => {
+  // Session switch drops the previous session's cache entries (cache hygiene
+  // on top of the ownership stamping pinned above).
+  assert.match(
+    overlaySource,
+    /entry\.sessionId === sessionId\) continue;[\s\S]{0,300}commitEntries\(next\)/,
+    'switching sessions must drop the previous session cache entries',
+  );
+  // The render projection itself is session-filtered (second half of the
+  // cross-session guard).
+  assert.match(
+    overlaySource,
+    /Object\.values\(entries\)\.filter\(entry => entry\.sessionId === sessionId\)/,
+    'render must filter entries to the subscribing session',
+  );
+  // A live non-terminal event rejected by the terminal ratchet kicks an
+  // immediate authoritative read instead of waiting for the next heartbeat.
+  assert.match(
+    overlaySource,
+    /if \(!applied && !detail\.done && detail\.source !== 'ledger' && kickPollRef\.current\) \{\s*kickPollRef\.current\(\);/,
+    'a ratchet-rejected live event must kick the ledger poll',
+  );
+  // mergeLedgerSummaries is the only snake_case → camelCase adapter between
+  // the Rust ledger summary and the pure model; its field set must stay exact.
+  for (const mapping of [
+    'agentId: summary.agent_id',
+    'role: summary.role || null',
+    'status: summary.status || null',
+    'done: !!summary.done',
+    'failed: !!summary.failed',
+    'blocked: !!summary.blocked',
+  ]) {
+    assert.ok(overlaySource.includes(mapping), `ledger mapping drift: missing \`${mapping}\``);
+  }
 });

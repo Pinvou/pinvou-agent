@@ -89,7 +89,7 @@ for (const language of ['zh', 'en', 'ja']) {
   for (const key of ['toggleLabel', 'toggleHint', 'close', 'loadingTranscript', 'emptyTranscript', 'blockedTag', 'panelResize', 'panelResizeHint', 'agentsListTitle', 'agentsEmpty', 'backToAgents']) {
     assert.ok(multiAgent[key], `${language}.uiMultiAgent.${key} must exist`);
   }
-  for (const cardKey of ['working', 'completed', 'failed', 'spawnFailed', 'interrupted']) {
+  for (const cardKey of ['working', 'completed', 'failed', 'spawnFailed', 'interrupted', 'cancelled']) {
     assert.ok(multiAgent.agentCard[cardKey], `${language}.uiMultiAgent.agentCard.${cardKey} must exist`);
   }
   for (const deadKey of ['confirmTitle', 'impactLabels', 'startDenied', 'stages', 'terminal', 'workerCount', 'advancedEdit', 'planCompileError']) {

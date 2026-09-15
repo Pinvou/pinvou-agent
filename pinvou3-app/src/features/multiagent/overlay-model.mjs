@@ -51,15 +51,24 @@ export function mergeOverlayEntry(previous, detail, sessionIdIn, now) {
 }
 
 /**
- * Status presentation: terminal first; non-terminal entries map the ledger's
- * English status tokens to i18n copy (queued/pending/starting, plus the
- * waiting tokens waiting_for_user/model_wait → pending; running and the
- * executing-tools token running_tool → working); anything else is treated as
- * a real-time progress phrase and shown verbatim.
+ * Status presentation: terminal first. Terminal failures keep a distinguishing
+ * status token honest: the ledger folds every non-completed ending into
+ * failed=true, but a swarm-off cancellation or a session interruption is not a
+ * dispatch failure, so those two tokens map to their own copy and a neutral
+ * dot. Non-terminal entries map the ledger's English status tokens to i18n
+ * copy (queued/pending/starting, plus the waiting tokens waiting_for_user/
+ * model_wait → pending; running and the executing-tools token running_tool →
+ * working). A multi-word non-terminal phrase is a real-time progress line
+ * (e.g. "🔧 Edit (step 3)") and falls back to working; a single unknown token
+ * is shown verbatim.
  */
 export function statusPresentation(entry, copy) {
   const statusToken = String(entry && entry.status || '').toLowerCase();
-  if (entry && entry.done && entry.failed) return { text: copy.agentCard.failed, dot: 'failed' };
+  if (entry && entry.done && entry.failed) {
+    if (statusToken === 'cancelled') return { text: copy.agentCard.cancelled, dot: 'stopped' };
+    if (statusToken === 'interrupted') return { text: copy.agentCard.interrupted, dot: 'stopped' };
+    return { text: copy.agentCard.failed, dot: 'failed' };
+  }
   if (entry && entry.done && entry.blocked) return { text: copy.blockedTag, dot: 'blocked' };
   if (entry && entry.done) return { text: copy.agentCard.completed, dot: 'done' };
   if (['queued', 'pending', 'starting', 'waiting_for_user', 'model_wait'].includes(statusToken)) return { text: copy.pendingTag, dot: 'running' };
