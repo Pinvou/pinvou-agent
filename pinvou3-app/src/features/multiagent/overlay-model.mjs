@@ -23,6 +23,20 @@ export function isTerminal(entry) {
 }
 
 /**
+ * A ledger summary with no status token that is not done: transcripts.rs
+ * projects orphan transcripts (file exists, no worker-ledger record) this
+ * way. The foundation prunes worker records past MAX_AGENT_WORKER_RECORDS
+ * (256) while keeping their transcript files, so any swarm session that
+ * spawns more than 256 children accumulates these rows. They are historical
+ * leftovers, not live agents: merging them would pin eternal "working"
+ * ghosts into the overlay, inflate the count badge, and lock the ledger
+ * poll at the active cadence forever. Callers must skip them.
+ */
+export function isUnknownLedgerRow(summary) {
+  return !!summary && !summary.done && summary.status == null;
+}
+
+/**
  * Single-entry merge (the pure logic behind the component's mergeEntry):
  * - Terminal ratchet: the persisted terminal state is authoritative; a late
  *   non-terminal real-time event must not flip an entry back to running (the
@@ -42,6 +56,17 @@ export function isTerminal(entry) {
 export function mergeOverlayEntry(previous, detail, sessionIdIn, now) {
   if (previous && previous.done && !detail.done && detail.source !== 'ledger') return null;
   const next = { ...previous, ...detail, sessionId: sessionIdIn };
+  // A real-time completion carries no status token (the bridge sends
+  // status: null because the engine event cannot distinguish endings).
+  // Keep the ledger's distinguishing terminal token — and its failed flag —
+  // instead of letting the spread whiten a cancelled/interrupted ending into
+  // a green "completed" until the next ledger read corrects it.
+  const previousToken = String(previous && previous.status || '').toLowerCase();
+  if (previous && previous.done && detail.status == null
+    && (previousToken === 'cancelled' || previousToken === 'interrupted')) {
+    next.status = previous.status;
+    next.failed = previous.failed;
+  }
   // A first observation (no previous) is not a flip: grant nothing whether the
   // reading is running or terminal.
   const wasLiveNonTerminal = !!previous && !isTerminal(previous);
@@ -105,7 +130,7 @@ export function pruneOverlayEntries(entries, max = MAX_OVERLAY_ENTRIES) {
   const terminal = keys
     .filter(key => isTerminal(entries[key]))
     .sort((left, right) => (entries[left].completedAt || 0) - (entries[right].completedAt || 0));
-  if (terminal.length <= overflow) return null;
+  if (terminal.length < overflow) return null;
   const evict = new Set(terminal.slice(0, overflow));
   const next = {};
   for (const key of keys) {

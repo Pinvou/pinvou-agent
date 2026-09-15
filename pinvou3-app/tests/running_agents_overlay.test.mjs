@@ -7,6 +7,7 @@ import {
   RECENT_TERMINAL_MS,
   entryKey,
   isTerminal,
+  isUnknownLedgerRow,
   mergeOverlayEntry,
   overlayVisibleEntries,
   pruneOverlayEntries,
@@ -135,6 +136,19 @@ test('pruneOverlayEntries: null when there are not enough terminal entries (non-
   assert.equal(pruneOverlayEntries(entries), null, 'still over the cap after evicting the only terminal entry: rather keep than drop running state');
 });
 
+test('pruneOverlayEntries: exactly enough terminal entries evicts back to the cap', () => {
+  const entries = {
+    live_a: entry({ agentId: 'live_a' }),
+    live_b: entry({ agentId: 'live_b' }),
+    live_c: entry({ agentId: 'live_c' }),
+    old: entry({ agentId: 'old', done: true, completedAt: 100 }),
+    mid: entry({ agentId: 'mid', done: true, completedAt: 200 }),
+  };
+  const pruned = pruneOverlayEntries(entries, 3);
+  assert.ok(pruned, 'two terminal entries are exactly the overflow: evicting both reaches the cap');
+  assert.deepEqual(Object.keys(pruned).sort(byCodePoint), ['live_a', 'live_b', 'live_c']);
+});
+
 const ledgerRead = (overrides = {}) => ({
   sessionId: 's1',
   agentId: 'agent_1',
@@ -182,6 +196,50 @@ test('mergeOverlayEntry: a ledger non-terminal reading flips back to running and
   assert.equal(revived.done, false);
   assert.equal(revived.completedAt, undefined, 're-awakened from the ledger means running again; the success window is void');
   assert.deepEqual(overlayVisibleEntries([revived], 11_000).active.map(item => item.agentId), ['agent_1']);
+});
+
+test('isUnknownLedgerRow: orphan transcripts (done=false, no status token) are not live agents', () => {
+  // transcripts.rs projects transcripts whose worker-ledger record was pruned
+  // (foundation 256-record cap) as done=false/status=null unknown rows; the
+  // overlay must skip them instead of showing eternal "working" ghosts.
+  assert.equal(isUnknownLedgerRow({ agent_id: 'a', done: false, failed: false, blocked: false, status: null }), true);
+  assert.equal(isUnknownLedgerRow({ agent_id: 'a', done: false, status: 'running' }), false, 'a real non-terminal reading carries a token');
+  assert.equal(isUnknownLedgerRow({ agent_id: 'a', done: true, status: null }), false, 'a done reading is terminal regardless of the token');
+  assert.equal(isUnknownLedgerRow(null), false);
+});
+
+test('mergeOverlayEntry: a status-less real-time completion keeps the ledger cancelled/interrupted token', () => {
+  // The bridge cannot distinguish endings (agent_complete sends status:null),
+  // but the ledger already recorded an operator cancellation: the spread must
+  // not whiten it into a green "completed" until the next ledger read.
+  const cancelled = mergeOverlayEntry(null, ledgerRead({ done: true, failed: true, status: 'cancelled' }), 's1', 10_000);
+  const whitened = mergeOverlayEntry(
+    cancelled,
+    { sessionId: 's1', agentId: 'agent_1', done: true, failed: false, status: null, source: 'realtime' },
+    's1',
+    11_000,
+  );
+  assert.equal(whitened.status, 'cancelled', 'the distinguishing ledger token must survive');
+  assert.equal(whitened.failed, true, 'the distinguishing failed flag must survive with it');
+  assert.deepEqual(statusPresentation(whitened, copy), { text: '已取消', dot: 'stopped' });
+  const interrupted = mergeOverlayEntry(
+    mergeOverlayEntry(null, ledgerRead({ done: true, failed: true, status: 'interrupted' }), 's1', 10_000),
+    { sessionId: 's1', agentId: 'agent_1', done: true, failed: false, status: null, source: 'realtime' },
+    's1',
+    11_000,
+  );
+  assert.deepEqual(statusPresentation(interrupted, copy), { text: '已中断', dot: 'stopped' });
+  // A live running entry has no distinguishing token to preserve: the plain
+  // completion settles it as a real success.
+  const running = mergeOverlayEntry(null, ledgerRead({ done: false, status: 'running' }), 's1', 10_000);
+  const completed = mergeOverlayEntry(
+    running,
+    { sessionId: 's1', agentId: 'agent_1', done: true, failed: false, status: null, source: 'realtime' },
+    's1',
+    11_000,
+  );
+  assert.equal(statusPresentation(completed, copy).text, '已完成');
+  assert.equal(completed.completedAt, 11_000, 'the success window is granted for the genuine flip');
 });
 
 test('mergeOverlayEntry: unblock grants the success window at the moment of unblocking', () => {
@@ -233,4 +291,11 @@ test('component glue: session-switch discard, revival kick, and ledger mapping s
   ]) {
     assert.ok(overlaySource.includes(mapping), `ledger mapping drift: missing \`${mapping}\``);
   }
+  // Orphan-transcript rows (done=false, no status token; the foundation
+  // prunes worker records past 256 but keeps their transcript files) must be
+  // skipped before the merge, or they become eternal "working" ghosts.
+  assert.ok(
+    overlaySource.includes('if (isUnknownLedgerRow(summary)) continue;'),
+    'unknown ledger rows must be skipped before merging into the overlay',
+  );
 });

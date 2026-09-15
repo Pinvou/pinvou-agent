@@ -5,6 +5,7 @@ import {
   RECENT_TERMINAL_MS,
   entryKey,
   isTerminal,
+  isUnknownLedgerRow,
   mergeOverlayEntry,
   overlayVisibleEntries,
   pruneOverlayEntries,
@@ -136,6 +137,12 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
     const merged = { ...previous };
     for (const summary of summaries) {
       if (!summary || !summary.agent_id) continue;
+      // Orphan transcripts (done=false, no status token) are records the
+      // foundation pruned from its 256-entry worker ledger while keeping the
+      // transcript files: historical leftovers, not live agents. Merging them
+      // would pin eternal "working" ghosts into the overlay and lock the
+      // poll at the active cadence (see isUnknownLedgerRow).
+      if (isUnknownLedgerRow(summary)) continue;
       const key = entryKey(sessionId, summary.agent_id);
       const next = mergeOverlayEntry(previous[key], {
         sessionId,
