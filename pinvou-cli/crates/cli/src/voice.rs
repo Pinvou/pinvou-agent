@@ -617,7 +617,14 @@ fn download_to(url: &str, dest: &Path, expected_sha256: &str) -> Result<(), CliE
         .get(url)
         .send()
         .and_then(|response| response.error_for_status())
-        .map_err(|error| CliError::failed(format!("voice asr-install: download: {error}")))?;
+        // reqwest Display carries the full mirror URL (possibly an intranet
+        // address), so only the error class is kept.
+        .map_err(|error| {
+            CliError::failed(format!(
+                "voice asr-install: download: {}",
+                summarize_request_error(&error, "model mirror")
+            ))
+        })?;
     let result = (|| -> Result<(), CliError> {
         use std::io::Read as _;
         let mut file = std::fs::File::create(&part).map_err(|error| {
@@ -879,11 +886,11 @@ fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let mut child = engine_command.spawn().map_err(|error| {
-        CliError::failed(format!(
-            "voice transcribe: cannot start ASR engine: {error}"
-        ))
-    })?;
+    // A group leader, so the timeout kill below takes any engine descendants
+    // with it instead of orphaning them (same contract as `connectors`'s
+    // vendor CLI spawns).
+    crate::support::set_process_group(&mut engine_command);
+    let mut child = spawn_asr_engine(&mut engine_command, &normalized)?;
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
     let stdout_drain = std::thread::spawn(move || drain_capped(stdout_pipe));
@@ -909,8 +916,9 @@ fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
             }
         }
     };
-    let _ = child.kill();
-    let _ = child.wait();
+    // The child was spawned as a process-group leader: the group kill reaps
+    // timed-out engines and any descendants that inherited their pipes.
+    crate::support::kill_process_tree(&mut child);
     let stdout = stdout_drain.join().unwrap_or_default();
     let stderr = stderr_drain.join().unwrap_or_default();
     let _ = std::fs::remove_file(&normalized);
@@ -926,6 +934,22 @@ fn native_engine_transcribe(wav: &Path) -> Result<String, CliError> {
     }
     extract_transcript(&stdout, &stderr).ok_or_else(|| {
         CliError::failed("asr_parse_failed: recognition returned no usable text; please retry")
+    })
+}
+
+/// Spawns the local ASR engine. The normalized staging file is private
+/// audio; a failed spawn must not leak it in the shared temp dir (the app
+/// removes it unconditionally after the engine attempt, half-written ffmpeg
+/// output included).
+fn spawn_asr_engine(
+    command: &mut std::process::Command,
+    normalized: &Path,
+) -> Result<std::process::Child, CliError> {
+    command.spawn().map_err(|error| {
+        let _ = std::fs::remove_file(normalized);
+        CliError::failed(format!(
+            "voice transcribe: cannot start ASR engine: {error}"
+        ))
     })
 }
 
@@ -1001,6 +1025,10 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command_line.creation_flags(CREATE_NO_WINDOW);
     }
+    // A group leader, so the timeout kill below takes the CLI's shell/node
+    // descendants with it instead of orphaning them (same contract as
+    // `connectors`'s vendor CLI spawns).
+    crate::support::set_process_group(&mut command_line);
     let mut child = command_line.spawn().map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             CliError::failed(
@@ -1038,8 +1066,9 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
             }
         }
     };
-    let _ = child.kill();
-    let _ = child.wait();
+    // The child was spawned as a process-group leader: the group kill reaps
+    // a timed-out CLI together with any descendants that inherited its pipes.
+    crate::support::kill_process_tree(&mut child);
     let stdout = stdout_drain.join().unwrap_or_default();
     let stderr = stderr_drain.join().unwrap_or_default();
     let status = status?;
@@ -1314,25 +1343,59 @@ fn strip_markdown_fence(text: &str) -> &str {
     }
 }
 
+/// Only the error class survives a reqwest failure: its Display carries the
+/// full request URL (possibly an intranet address or a signed mirror link),
+/// so it must never reach the terminal. Shared by the postprocess lane
+/// (mirror of `summarize_voice_postprocess_error`) and the model download.
+fn summarize_request_error(error: &reqwest::Error, subject: &str) -> String {
+    if let Some(status) = error.status() {
+        return format!("{subject} http {status}");
+    }
+    if error.is_timeout() {
+        return format!("{subject} timeout");
+    }
+    if error.is_connect() {
+        return format!("{subject} connect failed");
+    }
+    format!("{subject} request failed")
+}
+
 /// Mirror of `summarize_voice_postprocess_error`: reqwest Display carries the
 /// full URL (possibly an intranet address), so only the error class is kept.
 fn summarize_postprocess_error(error: &reqwest::Error) -> String {
-    if let Some(status) = error.status() {
-        return format!("model endpoint http {status}");
-    }
-    if error.is_timeout() {
-        return "model endpoint timeout".to_owned();
-    }
-    if error.is_connect() {
-        return "model endpoint connect failed".to_owned();
-    }
-    "model endpoint request failed".to_owned()
+    summarize_request_error(error, "model endpoint")
 }
 
+#[derive(Debug)]
 struct PostprocessOutcome {
     text: String,
     source: &'static str,
     truncated: bool,
+}
+
+/// Applies the GUI's retry contract (`app/commands/voice.rs::voice_postprocess`)
+/// to the retry response: non-empty retry text wins; an empty retry is the
+/// correct answer for pure-filler input, not an error; and a failed retry is
+/// an error — the first output was already judged unusable and must never be
+/// returned as the postprocessed text.
+fn postprocess_retry_result(
+    retry: Result<(String, bool), CliError>,
+) -> Result<PostprocessOutcome, CliError> {
+    match retry {
+        Ok((text, truncated)) if !text.trim().is_empty() => Ok(PostprocessOutcome {
+            text,
+            source: "llm",
+            truncated,
+        }),
+        // Empty output for pure-filler input is the correct answer,
+        // not an error (same contract as the GUI).
+        Ok(_) => Ok(PostprocessOutcome {
+            text: String::new(),
+            source: "llm",
+            truncated: false,
+        }),
+        Err(error) => Err(error),
+    }
 }
 
 fn postprocess(
@@ -1422,27 +1485,17 @@ fn postprocess(
                 // failed: ", so the surfaced message is the exact GUI copy.
                 return Err(CliError::failed("timeout budget exhausted before retry"));
             }
-            match call_postprocess_model(&bridge, mode, &raw_text, true, &model_name, remaining) {
-                Ok((retry_text, retry_truncated)) if !retry_text.trim().is_empty() => {
-                    Ok(PostprocessOutcome {
-                        text: retry_text,
-                        source: "llm",
-                        truncated: retry_truncated,
-                    })
-                }
-                // Empty output for pure-filler input is the correct answer,
-                // not an error (same contract as the GUI).
-                Ok(_) => Ok(PostprocessOutcome {
-                    text: String::new(),
-                    source: "llm",
-                    truncated: false,
-                }),
-                Err(_) => Ok(PostprocessOutcome {
-                    text,
-                    source: "llm",
-                    truncated,
-                }),
-            }
+            // GUI parity (`app/commands/voice.rs`): a failed retry is an error
+            // — the first output was already judged unusable, so returning it
+            // would surface known-bad text as the postprocessed result.
+            postprocess_retry_result(call_postprocess_model(
+                &bridge,
+                mode,
+                &raw_text,
+                true,
+                &model_name,
+                remaining,
+            ))
         };
         async move { work.await.map_err(std::convert::Into::into) }
     })
@@ -1689,5 +1742,119 @@ mod transcript_tests {
             extract_transcript("[0.00-2.10] recognized words", ""),
             Some("recognized words".to_owned())
         );
+    }
+}
+
+#[cfg(test)]
+mod review_fix_tests {
+    use super::*;
+
+    #[test]
+    fn postprocess_retry_failure_is_an_error_not_the_first_output() {
+        // The retry only runs because the first output was judged unusable;
+        // GUI parity (`app/commands/voice.rs`) makes a failed retry an error
+        // instead of silently returning the known-bad first text.
+        let error = CliError::failed("model endpoint request failed: model endpoint timeout");
+        let outcome = postprocess_retry_result(Err(error));
+        let error = outcome.expect_err("a failed retry must fail the command");
+        assert_eq!(error.exit_code(), crate::ExitCode::Failed);
+        assert!(
+            error.to_string().contains("model endpoint timeout"),
+            "the retry error must surface verbatim: {error}"
+        );
+    }
+
+    #[test]
+    fn postprocess_retry_empty_output_is_the_correct_answer() {
+        // Empty retry output means pure-filler input: a success with empty
+        // text, exactly like the GUI contract.
+        let outcome = postprocess_retry_result(Ok((String::new(), true))).unwrap();
+        assert_eq!(outcome.text, "");
+        assert_eq!(outcome.source, "llm");
+        assert!(!outcome.truncated);
+    }
+
+    #[test]
+    fn postprocess_retry_non_empty_output_wins() {
+        // The text is passed through verbatim: trimming/sanitization is the
+        // caller's job (`sanitize_postprocess_output`), not the merge's.
+        let outcome = postprocess_retry_result(Ok(("corrected text".to_owned(), false)))
+            .expect("a non-empty retry succeeds");
+        assert_eq!(outcome.text, "corrected text");
+        assert_eq!(outcome.source, "llm");
+        assert!(!outcome.truncated);
+    }
+
+    #[test]
+    fn summarize_request_error_keeps_only_the_error_class() {
+        // A refused loopback connect yields a connect-class reqwest error
+        // whose Display carries the URL; the summary must keep the class
+        // only, never the URL (mirrors `summarize_voice_postprocess_error`).
+        let error = reqwest::blocking::Client::new()
+            .get("http://127.0.0.1:1/private-mirror-path?q=secret")
+            .send()
+            .expect_err("nothing listens on loopback port 1");
+        let mirror = summarize_request_error(&error, "model mirror");
+        assert!(mirror.starts_with("model mirror "), "got: {mirror}");
+        assert!(
+            mirror.contains("http ")
+                || mirror.contains("timeout")
+                || mirror.contains("connect failed")
+                || mirror.contains("request failed"),
+            "expected a known error class, got: {mirror}"
+        );
+        assert!(!mirror.contains("127.0.0.1"), "URL leaked: {mirror}");
+        assert!(
+            !mirror.contains("private-mirror-path"),
+            "URL leaked: {mirror}"
+        );
+        // The postprocess lane keeps its established subject line.
+        let endpoint = summarize_postprocess_error(&error);
+        assert!(endpoint.starts_with("model endpoint "), "got: {endpoint}");
+        assert!(!endpoint.contains("127.0.0.1"), "URL leaked: {endpoint}");
+    }
+
+    /// The normalized staging file is private audio; when the engine binary
+    /// cannot be spawned at all, the spawn-error path must remove it instead
+    /// of leaking it in the shared temp dir.
+    #[cfg(unix)]
+    #[test]
+    fn engine_spawn_failure_removes_the_normalized_staging_file() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-cli-voice-spawn-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let normalized = dir.join("normalized.wav");
+        std::fs::write(&normalized, vec![0u8; 44]).unwrap();
+        // An engine file that exists but cannot be exec'd: spawn must fail
+        // with a permission error, exercising the cleanup path.
+        let engine = dir.join(engine_binary_name());
+        std::fs::write(&engine, b"not an executable").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let mut command = std::process::Command::new(&engine);
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+
+        let error =
+            spawn_asr_engine(&mut command, &normalized).expect_err("the engine cannot be spawned");
+        assert!(
+            error.to_string().contains("cannot start ASR engine"),
+            "expected the spawn error, got: {error}"
+        );
+        assert!(
+            !normalized.exists(),
+            "the failed spawn must not leak the normalized staging file"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
