@@ -257,23 +257,48 @@ fn run_agent(
     // oldest chat session(s) — pinned ones included, with no warning in the
     // app. Sample the store size BEFORE the run: retention trims to exactly
     // 50, so a pre-run count >= 50 is what makes this run evict; a post-run
-    // count would also fire when 49 grew to 50 with nothing evicted. The
+    // count would also fire when 49 grew to 50 with nothing evicted.
+    //
+    // The warning is printed BEFORE `run_agentic_task`, not after: the
+    // evicting save happens at prepare time inside the run, and a failed run
+    // returns `Err` without a report — a success-only warning would stay
+    // silent exactly when the GUI has already lost sessions. The wording is
+    // future tense because at print time nothing has been evicted yet. The
     // warning fires in BOTH cleanup modes: even with
     // PINVOU3_AGENT_TASK_KEEP_SESSION=0 the prepare-time save happens first
     // and does the evicting — the later cleanup only deletes this run's own
     // session.
+    //
+    // Known blind spot (kept as-is; a real fix needs a store API change and
+    // is out of scope): this sample counts `store.list()`, and in
+    // benchmark (`benchmark-hooks`) builds `SessionStore::list` filters out
+    // `eval_`-prefixed sessions while the retention sweep still counts them.
+    // A store holding e.g. 45 GUI sessions plus 8 residual eval sessions is
+    // over the real cap but samples as 45, so this run evicts GUI sessions
+    // without a warning. (`sched-` sessions are excluded from BOTH paths and
+    // never skew the sample.)
     let evicts_gui_sessions = session.is_none()
         && pinvou3_lib::features::sessions::SessionStore::boot()
             .ok()
             .and_then(|store| store.list().ok())
             .is_some_and(|sessions| sessions.len() >= 50);
+    if evicts_gui_sessions {
+        eprintln!(
+            "pinvou: warning: the session store is at the 50-session retention cap; \
+             persisting this run's session will evict the oldest chat session(s), \
+             pinned ones included. Point PINVOU3_HOME at a sandbox or prune the \
+             session store (PINVOU3_AGENT_TASK_KEEP_SESSION=0 only removes this \
+             run's session afterwards; the save-time eviction still happens)."
+        );
+    }
     let report = pinvou_product_backend::run_agentic_task(request)
         .map_err(|error| CliError::failed(format!("agent_run_failed: {error:#}")))?;
     // A fresh run persists its session under the eval-session factory title
     // ("临时评测"), which then reads as a stray user chat in the GUI's
     // session list. Give CLI-created sessions an honest label; best-effort —
     // a failed rename is cosmetic and must not fail the report. A
-    // caller-provided session keeps its own title.
+    // caller-provided session keeps its own title. Success path only: the
+    // rename needs `report.session_id`, which a failed run never produces.
     if session.is_none() {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -282,15 +307,6 @@ fn run_agent(
         let store = pinvou3_lib::features::sessions::SessionStore::boot();
         if let Ok(store) = store {
             let _ = store.set_title(&report.session_id, format!("CLI agent run <{stamp}>"));
-        }
-        if evicts_gui_sessions {
-            eprintln!(
-                "pinvou: warning: the session store was already at the 50-session retention \
-                 cap before this run; persisting this run's session evicted the oldest chat \
-                 session(s), pinned ones included. Point PINVOU3_HOME at a sandbox or prune \
-                 the session store (PINVOU3_AGENT_TASK_KEEP_SESSION=0 only removes this \
-                 run's session afterwards; the save-time eviction still happens)."
-            );
         }
     }
     // TB/harness semantics: exit 0 whenever a report is produced (timeouts and
