@@ -45,7 +45,9 @@ fn gaia_score_rejects_every_mutated_manifest_contract_dimension() {
     assert_eq!(GAIA_LEVEL, 1);
     let mutations = [
         ("run_id", serde_json::json!("different-run-id")),
-        ("schema_version", serde_json::json!(2)),
+        // Schema 1 (legacy) stays scoreable on purpose; only an unknown
+        // schema must be rejected by the scoring gate.
+        ("schema_version", serde_json::json!(99)),
         ("concurrency", serde_json::json!(2)),
         ("pass", serde_json::json!(2)),
         (
