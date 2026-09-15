@@ -236,6 +236,9 @@ test('native surface suspension is centrally derived for every occlusion path', 
     'bs.pinvouModal',
     'isCompactShell && isSidebarOpen',
     'isCompactShell && mobileMoreOpen',
+    // The state name alone appears at every picker touchpoint; only the
+    // intent entry suspends the dock, so assert that exact fragment.
+    "moveToProjectSession ? 'move-picker' : ''",
   ]) {
     assert.ok(main.includes(blocker), `missing native-surface blocker: ${blocker}`);
   }

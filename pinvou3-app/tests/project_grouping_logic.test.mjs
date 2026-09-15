@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   TEMPORARY_GROUP_KEY,
   groupSessionsWithProjects,
+  projectCoversPath,
+  resolveSessionProjectId,
 } from "../src/features/projects/projectGrouping.js";
 
 const projectItem = (id, path, updatedAt) => ({
@@ -217,6 +219,40 @@ test("project sessions without a workspace path fall into the temporary group", 
   assert.equal(groups[0].key, TEMPORARY_GROUP_KEY);
 });
 
+// ── Move-picker helpers ────────────────────────────────────────────────────
+
+test("resolveSessionProjectId mirrors the grouping tiers", () => {
+  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
+  const item = projectItem("a1", "D:/work/alpha", "2026-08-01T08:00:00Z");
+  assert.equal(resolveSessionProjectId(item, projects, {}), "p1");
+  assert.equal(resolveSessionProjectId(item, projects, { a1: "p1" }), "p1");
+  assert.equal(resolveSessionProjectId(item, projects, { a1: null }), null, "explicit move-out wins");
+  assert.equal(resolveSessionProjectId(temporaryItem("t1", "x"), projects, { t1: "p1" }), "p1");
+  assert.equal(resolveSessionProjectId(temporaryItem("t1", "x"), projects, {}), null, "temp never auto-groups");
+  // The real fork the picker must survive: a stale id does not stick as
+  // "ungrouped" — with a non-empty project list whose root still covers the
+  // path, resolution falls through to tier 2 and returns that project.
+  // (projects=[] would trivially yield null and pin nothing.)
+  assert.equal(resolveSessionProjectId(item, projects, { a1: "prj-gone" }), "p1", "stale id falls through to root matching");
+  // Cross case pinned for groupSessionsWithProjects: tier 1 assignment wins
+  // even when the workspace path sits under another project's root.
+  const two = [
+    project("p1", "Alpha", ["D:/work/alpha"], 0),
+    project("p2", "Beta", ["D:/work/beta"], 1),
+  ];
+  const cross = projectItem("x1", "D:/work/beta/inner", "2026-08-01T08:00:00Z");
+  assert.equal(resolveSessionProjectId(cross, two, { x1: "p1" }), "p1", "explicit assignment beats path containment");
+  assert.equal(resolveSessionProjectId(cross, two, {}), "p2", "path containment resolves without assignment");
+});
+
+test("projectCoversPath gates the move-only confirm prompt", () => {
+  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
+  assert.equal(projectCoversPath(projects[0], "D:/work/alpha"), true);
+  assert.equal(projectCoversPath(projects[0], "D:/work/alpha/sub"), true);
+  assert.equal(projectCoversPath(projects[0], "D:/work/beta"), false);
+  assert.equal(projectCoversPath(null, "D:/work/alpha"), false);
+});
+
 test("rows sort by updatedAt descending within a group", () => {
   // Ported from the retired sidebar_grouping_logic suite: in-group ordering
   // with multiple timestamps must survive the project-layer rewrite.
@@ -246,4 +282,73 @@ test("temporary group rows sort by recency while the group stays last", () => {
   );
   assert.equal(groups[groups.length - 1].key, TEMPORARY_GROUP_KEY);
   assert.deepEqual(groups[groups.length - 1].rows.map((r) => r.id), ["t1", "t2"]);
+});
+
+test("projectCoversPath accepts raw string roots and empty paths", () => {
+  // The project() helper normalizes roots to { path } objects like the bridge
+  // sends them; hand-edited state can still carry raw strings, so the raw
+  // branch must satisfy the same containment rule.
+  const rawRoots = { id: "p1", name: "Alpha", roots: ["D:/work/alpha"] };
+  assert.equal(projectCoversPath(rawRoots, "D:/work/alpha"), true);
+  assert.equal(projectCoversPath(rawRoots, "D:/work/alpha/sub"), true);
+  assert.equal(projectCoversPath(rawRoots, "D:/work/alpha-beta"), false);
+  assert.equal(projectCoversPath(rawRoots, ""), false);
+});
+
+test("resolveSessionProjectId degrades safely on invalid inputs", () => {
+  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
+  const item = projectItem("a1", "D:/work/alpha", "2026-08-01T08:00:00Z");
+  assert.equal(resolveSessionProjectId(null, projects, {}), null);
+  assert.equal(resolveSessionProjectId(undefined, projects, {}), null);
+  // Non-object assignments must not throw and fall through to tier 2.
+  assert.equal(resolveSessionProjectId(item, projects, "garbage"), "p1");
+  assert.equal(resolveSessionProjectId(item, projects, null), "p1");
+});
+
+test("containment honors separator boundaries and mirrors the store rule", () => {
+  // key_is_same_or_nested's reason to exist: a bare startsWith would file
+  // D:/work/alpha-beta under D:/work/alpha. Pin that boundary on all three
+  // public helpers (mutation guard for isUnderRoot).
+  const projects = [project("p1", "Alpha", ["D:/work/alpha"], 0)];
+  const sibling = projectItem("s1", "D:/work/alpha-beta", "2026-08-01T08:00:00Z");
+  assert.equal(projectCoversPath(projects[0], "D:/work/alpha-beta"), false);
+  assert.equal(resolveSessionProjectId(sibling, projects, {}), null);
+  const groups = groupSessionsWithProjects([sibling], projects, {});
+  // Empty project groups still render; the point is that the sibling lands
+  // in its own folder bucket instead of the project's rows.
+  assert.deepEqual(groups.find((g) => g.projectId === "p1")?.rows, []);
+
+  // Mixed separators fold for Windows-shaped paths (store identity keys fold
+  // separators and case); a trailing separator on the root still lets children
+  // match while the exact path keeps comparing unequal before the strip, and
+  // a bare separator root covers every absolute path on that side — all
+  // mirroring key_is_same_or_nested.
+  const backslash = { id: "p2", name: "Win", roots: ["D:\\work\\alpha"] };
+  assert.equal(projectCoversPath(backslash, "D:/Work/Alpha"), true);
+  assert.equal(projectCoversPath(backslash, "D:/Work/Alpha/deep"), true);
+  const trailing = { id: "p3", name: "Trail", roots: ["D:/work/alpha/"] };
+  assert.equal(projectCoversPath(trailing, "D:/work/alpha"), false);
+  assert.equal(projectCoversPath(trailing, "D:/work/alpha/deep"), true);
+  const posixRoot = { id: "p4", name: "Posix", roots: ["/"] };
+  assert.equal(projectCoversPath(posixRoot, "/home/x/anything"), true);
+
+  // The UNC branch of the shape heuristic: backslash-UNC root against a
+  // case-differing and a separator-differing UNC path beneath it.
+  const unc = { id: "p5", name: "Unc", roots: ["\\\\Server\\Share\\Alpha"] };
+  assert.equal(projectCoversPath(unc, "\\\\server\\share\\alpha\\sub"), true);
+  assert.equal(projectCoversPath(unc, "\\\\server/share/alpha/sub"), true);
+});
+
+
+test("forward-slash UNC stays POSIX-exact by design", () => {
+  // Deliberate divergence from the store (finding 64): looksWindowsPath does
+  // not claim the leading-// prefix (POSIX leaves it implementation-defined —
+  // it can be a genuine case-sensitive POSIX path), so a forward-slash UNC
+  // root compares exactly while the store would fold it on Windows hosts.
+  // Store-produced roots are always backslash-form, so this input is only
+  // reachable via externally-written session paths. A future heuristic change
+  // must flip these assertions consciously.
+  const root = { id: "p6", name: "UncFwd", roots: ["//Server/Share"] };
+  assert.equal(projectCoversPath(root, "//server/share/dir"), false);
+  assert.equal(projectCoversPath(root, "//Server/Share/dir"), true);
 });
