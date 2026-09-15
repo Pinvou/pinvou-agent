@@ -349,7 +349,7 @@ const jaBase = {
           drawerTitle:role=>`サブエージェント · ${role}`, close:'閉じる', loadingTranscript:'会話を読み込み中…',
           emptyTranscript:'保存済みの会話はまだありません。サブエージェントが起動直後の可能性があります。',
           panelResize:'パネル幅を調整', panelResizeHint:'ドラッグで幅を調整、ダブルクリックで初期値に戻す',
-          agentCard:{ working:'作業中', completed:'完了', failed:'失敗', spawnFailed:'派遣失敗', interrupted:'中断' },
+          agentCard:{ working:'作業中', completed:'完了', failed:'失敗', spawnFailed:'派遣失敗', interrupted:'中断', cancelled:'キャンセル済み' },
           agentsListTitle:'サブエージェント', agentsEmpty:'この会話ではまだサブエージェントを派遣していません。', backToAgents:'サブエージェント一覧へ戻る',
           agentsListSummary:(roots,total)=>roots === total ? `合計 ${total}` : `直属 ${roots} · 合計 ${total}`,
           childAgentCount:count=>`下位 ${count} 件`, expandChildren:name=>`${name} の下位を展開`, collapseChildren:name=>`${name} の下位を折りたたむ`,

@@ -50,6 +50,9 @@ const dotClass = {
   blocked: 'bg-[#F9AB00] animate-pulse',
   done: 'bg-[#137333] dark:bg-[#93D5A6]',
   failed: 'bg-[#C5221F] dark:bg-[#F28B82]',
+  // Cancelled/interrupted: an operator- or session-level ending, neither a
+  // failure (red) nor a success (green).
+  stopped: 'bg-[#9AA0A6]',
 };
 
 export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) => {
@@ -311,7 +314,9 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
                       <span className={`shrink-0 text-[10.5px] ${
                         status.dot === 'failed'
                           ? (isDark ? 'text-[#F28B82]' : 'text-[#C5221F]')
-                          : (isDark ? 'text-[#93D5A6]' : 'text-[#137333]')
+                          : status.dot === 'stopped'
+                            ? 'text-[#9AA0A6]'
+                            : (isDark ? 'text-[#93D5A6]' : 'text-[#137333]')
                       }`}>
                         {status.text}
                       </span>

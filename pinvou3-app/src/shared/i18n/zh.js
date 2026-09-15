@@ -351,7 +351,7 @@ export const dictZh = {
           drawerTitle:role=>`子智能体 · ${role}`, close:'关闭', loadingTranscript:'正在读取对话记录…',
           emptyTranscript:'还没有落盘的对话记录（子智能体可能刚启动）。',
           panelResize:'调整面板宽度', panelResizeHint:'拖拽调整宽度，双击恢复默认',
-          agentCard:{ working:'工作中', completed:'已完成', failed:'失败', spawnFailed:'派出失败', interrupted:'已中断' },
+          agentCard:{ working:'工作中', completed:'已完成', failed:'失败', spawnFailed:'派出失败', interrupted:'已中断', cancelled:'已取消' },
           agentsListTitle:'子智能体', agentsEmpty:'本会话还没有派出过子智能体。', backToAgents:'返回子智能体列表',
           agentsListSummary:(roots,total)=>roots === total ? `${total} 个` : `${roots} 个直属 · 共 ${total} 个`,
           childAgentCount:count=>`${count} 个下级`, expandChildren:name=>`展开 ${name} 的下级`, collapseChildren:name=>`收起 ${name} 的下级`,
