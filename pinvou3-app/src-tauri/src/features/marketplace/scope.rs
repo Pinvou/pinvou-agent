@@ -55,13 +55,54 @@ fn disabled_bundles_path() -> PathBuf {
 /// `disabled_bundles.json` 读-改-写的进程内串行化。
 static DISABLED_BUNDLES_FILE_LOCK: Mutex<()> = Mutex::new(());
 
-/// 读完整文件（取文件锁）。可能触发「读到即迁移」的读路径必须走本入口与持锁写方
-/// 串行（与旧两份文件的 #287 竞态范式一致）。
-pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
+/// 取两层锁后运行临界区：进程内互斥量串行化线程，`disabled_bundles.lock` 上的
+/// 排他 flock 串行化**进程**（桌面应用与 headless CLI 各持一份进程内互斥量，
+/// 双方都是整文件覆盖写，没有跨进程锁时 GUI 的切换会被 CLI 的写覆盖、反之亦
+/// 然——同 #287 旧两份文件的跨进程竞态范式）。flock 与 remote_control 的进程
+/// 锁同原语、同 fd-lock crate；临界区只有文件尺寸的读写（亚毫秒级），阻塞等待
+/// 比失败重试更合适。锁不可用时退化为仅进程内串行并告警：写路径一贯吞 IO 错
+/// 误，开关操作不应因锁文件故障硬失败。
+fn with_disabled_bundles_lock<T>(f: impl FnOnce() -> T) -> T {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    load_disabled_bundles_file_locked()
+    let lock_path = paths::pinvou3_home().join("disabled_bundles.lock");
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+    {
+        Ok(file) => file,
+        Err(error) => {
+            eprintln!(
+                "[marketplace] open cross-process lock {}: {error}; proceeding with in-process locking only",
+                lock_path.display()
+            );
+            return f();
+        }
+    };
+    let mut rw = fd_lock::RwLock::new(file);
+    // fd-lock 4 的 write() 返回借用守卫（无闭包形态）；命名绑定让守卫存活到
+    // f() 结束，dropping 即释放 flock。
+    let result = match rw.write() {
+        Ok(_flock_guard) => f(),
+        Err(error) => {
+            eprintln!(
+                "[marketplace] acquire cross-process lock {}: {error}; proceeding with in-process locking only",
+                lock_path.display()
+            );
+            f()
+        }
+    };
+    result
+}
+
+/// 读完整文件（取两层锁）。可能触发「读到即迁移」的读路径必须走本入口与持锁写方
+/// 串行（与旧两份文件的 #287 竞态范式一致）。
+pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
+    with_disabled_bundles_lock(load_disabled_bundles_file_locked)
 }
 
 /// 已持锁读实现。首个版本：文件不存在时从两份旧文件迁移（幂等）；文件存在时按新
@@ -312,37 +353,36 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
 /// 写某 scope 被禁用的包 id 列表（写入即标记该 scope 已初始化）。入参统一归一为包
 /// id（剥 `skill:` 前缀 + companion 映射），防御历史版本误写入的带前缀条目。
 pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) {
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
-    let mut file = load_disabled_bundles_file_locked();
-    let key = scope.as_str().to_string();
-    file.scopes.insert(key.clone(), normalized);
-    file.initialized.insert(key);
-    save_disabled_bundles_file(&file);
+    with_disabled_bundles_lock(|| {
+        let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
+        let mut file = load_disabled_bundles_file_locked();
+        let key = scope.as_str().to_string();
+        file.scopes.insert(key.clone(), normalized);
+        file.initialized.insert(key);
+        save_disabled_bundles_file(&file);
+    });
 }
 
 /// Single-critical-section read-modify-write of one scope's disabled package
-/// id list. A per-scope load→save across two lock acquisitions loses
-/// concurrent writes in the inter-lock window (same shape as M-6b: while the
-/// GUI toggles exclusively, a whole CLI disable can be dropped); the CLI's
-/// enable/disable and the lock-holding writers share this entry point. The
-/// closure receives the effective list including the DenyAll fallback,
-/// matching `load_disabled_bundles_for`.
+/// id list, serialized both in-process and across the GUI/CLI processes. A
+/// per-scope load→save across two lock acquisitions loses concurrent writes
+/// in the inter-lock window (same shape as M-6b: while the GUI toggles
+/// exclusively, a whole CLI disable can be dropped); the CLI's enable/disable
+/// and the lock-holding writers share this entry point. The closure receives
+/// the effective list including the DenyAll fallback, matching
+/// `load_disabled_bundles_for`.
 pub fn update_disabled_bundles_for(scope: ConnectorScope, update: impl FnOnce(&mut Vec<String>)) {
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let file = load_disabled_bundles_file_locked();
-    let mut ids = resolve_scope_disabled_ids(&file, scope);
-    update(&mut ids);
-    let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
-    let mut file = file;
-    let key = scope.as_str().to_string();
-    file.scopes.insert(key.clone(), normalized);
-    file.initialized.insert(key);
-    save_disabled_bundles_file(&file);
+    with_disabled_bundles_lock(|| {
+        let file = load_disabled_bundles_file_locked();
+        let mut ids = resolve_scope_disabled_ids(&file, scope);
+        update(&mut ids);
+        let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
+        let mut file = file;
+        let key = scope.as_str().to_string();
+        file.scopes.insert(key.clone(), normalized);
+        file.initialized.insert(key);
+        save_disabled_bundles_file(&file);
+    });
 }
 
 /// 读某 scope 被「不可见」（可见性过滤）的包 id 列表。缺省空 = 全可见。
@@ -361,14 +401,13 @@ pub fn load_hidden_bundles_for(scope: ConnectorScope) -> Vec<String> {
 
 /// 写某 scope 被「不可见」的包 id 列表（不参与 DenyAll 默认，显式写入才隐藏）。
 pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) {
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
-    let mut file = load_disabled_bundles_file_locked();
-    file.hidden_scopes
-        .insert(scope.as_str().to_string(), normalized);
-    save_disabled_bundles_file(&file);
+    with_disabled_bundles_lock(|| {
+        let normalized: Vec<String> = ids.iter().map(|id| to_package_id(id)).collect();
+        let mut file = load_disabled_bundles_file_locked();
+        file.hidden_scopes
+            .insert(scope.as_str().to_string(), normalized);
+        save_disabled_bundles_file(&file);
+    });
 }
 
 /// 该 scope 对底座「不可用」的包 id 并集 = 开关关（disabled）+ 不可见（hidden）。
@@ -399,28 +438,27 @@ pub fn save_disabled_bundles(ids: &[String]) {
 /// 共用本入口：入参可为连接器 id / 技能 id / 包 id，统一归一为包 id。
 pub fn sync_deny_all_scopes_after_install(raw_id: &str) {
     let package_id = to_package_id(raw_id);
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = load_disabled_bundles_file_locked();
-    let mut changed = false;
-    for mode in SessionMode::ALL {
-        if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
-            continue;
+    with_disabled_bundles_lock(|| {
+        let mut file = load_disabled_bundles_file_locked();
+        let mut changed = false;
+        for mode in SessionMode::ALL {
+            if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
+                continue;
+            }
+            let key = mode.as_str();
+            if !file.initialized.contains(key) {
+                continue;
+            }
+            let ids = file.scopes.entry(key.to_string()).or_default();
+            if !ids.iter().any(|id| id == &package_id) {
+                ids.push(package_id.clone());
+                changed = true;
+            }
         }
-        let key = mode.as_str();
-        if !file.initialized.contains(key) {
-            continue;
+        if changed {
+            save_disabled_bundles_file(&file);
         }
-        let ids = file.scopes.entry(key.to_string()).or_default();
-        if !ids.iter().any(|id| id == &package_id) {
-            ids.push(package_id.clone());
-            changed = true;
-        }
-    }
-    if changed {
-        save_disabled_bundles_file(&file);
-    }
+    });
 }
 
 /// Sync every scope after a bundle uninstall/disconnect: drop the id from each
@@ -430,25 +468,24 @@ pub fn sync_deny_all_scopes_after_install(raw_id: &str) {
 /// normalized to the package id.
 pub fn remove_bundle_from_disabled_scopes(raw_id: &str) {
     let package_id = to_package_id(raw_id);
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = load_disabled_bundles_file_locked();
-    let mut changed = false;
-    for ids in file.scopes.values_mut() {
-        let before = ids.len();
-        ids.retain(|id| id != &package_id);
-        changed |= ids.len() != before;
-    }
-    // 可见性集同样清理：卸载后残留 hidden 会误隐藏未来同名重装。
-    for ids in file.hidden_scopes.values_mut() {
-        let before = ids.len();
-        ids.retain(|id| id != &package_id);
-        changed |= ids.len() != before;
-    }
-    if changed {
-        save_disabled_bundles_file(&file);
-    }
+    with_disabled_bundles_lock(|| {
+        let mut file = load_disabled_bundles_file_locked();
+        let mut changed = false;
+        for ids in file.scopes.values_mut() {
+            let before = ids.len();
+            ids.retain(|id| id != &package_id);
+            changed |= ids.len() != before;
+        }
+        // 可见性集同样清理：卸载后残留 hidden 会误隐藏未来同名重装。
+        for ids in file.hidden_scopes.values_mut() {
+            let before = ids.len();
+            ids.retain(|id| id != &package_id);
+            changed |= ids.len() != before;
+        }
+        if changed {
+            save_disabled_bundles_file(&file);
+        }
+    });
 }
 
 /// 项目级 skills 开关（默认关）。
@@ -458,15 +495,14 @@ pub fn project_skills_enabled() -> bool {
 
 /// 写项目级 skills 开关。落盘后由调用方重写在线会话组合目录。
 pub fn set_project_skills_enabled(enabled: bool) {
-    let _guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut file = load_disabled_bundles_file_locked();
-    if file.project_skills_enabled == enabled {
-        return;
-    }
-    file.project_skills_enabled = enabled;
-    save_disabled_bundles_file(&file);
+    with_disabled_bundles_lock(|| {
+        let mut file = load_disabled_bundles_file_locked();
+        if file.project_skills_enabled == enabled {
+            return;
+        }
+        file.project_skills_enabled = enabled;
+        save_disabled_bundles_file(&file);
+    });
 }
 
 #[cfg(test)]
@@ -541,6 +577,25 @@ mod tests {
             let mut u = unavailable_bundles_for(ConnectorScope::Plain);
             u.sort();
             assert_eq!(u, vec!["pptx".to_string(), "weather".to_string()]);
+        });
+    }
+
+    /// 写方走跨进程锁文件：GUI 应用与 headless CLI 是两个进程、各自的进程内
+    /// 互斥量互不可见，`disabled_bundles.lock` 上的 flock（与 remote_control
+    /// 进程锁同原语）是双方唯一共享的串行化点。锁文件必须随首次写入创建。
+    #[test]
+    fn writers_hold_the_cross_process_lock_file() {
+        with_temp_home(|| {
+            save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
+            assert!(
+                paths::pinvou3_home().join("disabled_bundles.lock").exists(),
+                "cross-process lock file must exist after the first write"
+            );
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["weather".to_string()],
+                "the write must survive the double critical section"
+            );
         });
     }
 
