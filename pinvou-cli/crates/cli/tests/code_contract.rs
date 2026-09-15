@@ -1050,8 +1050,7 @@ fn workspace_git_changes_diff_branches_against_fixture_repo() {
             .as_str()
             .unwrap()
             .contains("+added by fixture"),
-        "{}",
-        value["text"]
+        "untracked diff must carry the synthetic new-file hunk"
     );
     assert_eq!(value["relativePath"], "new.txt");
 
@@ -1065,7 +1064,7 @@ fn workspace_git_changes_diff_branches_against_fixture_repo() {
     let text = value["text"].as_str().unwrap();
     assert!(
         text.contains("+v2") && text.contains("+added by fixture"),
-        "{text}"
+        "the combined diff must contain both per-file hunks"
     );
 
     // checkout without a dirty tree: carry switches branches cleanly.
@@ -1175,7 +1174,11 @@ fn workspace_diff_stays_pinned_to_the_app_module_on_a_fixture() {
     assert_eq!(cli["relativePath"], app.relative_path);
     assert_eq!(cli["truncated"], app.truncated);
     let body = |text: &str| text.lines().skip(1).collect::<Vec<_>>().join("\n");
-    assert_eq!(body(cli["text"].as_str().unwrap()), body(&app.text));
+    assert_eq!(
+        body(cli["text"].as_str().unwrap()),
+        body(&app.text),
+        "the CLI diff body must match the app module's line for line"
+    );
 
     // Untracked file: both synthesize the same new-file diff, byte for byte.
     let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "untracked.txt"]);
