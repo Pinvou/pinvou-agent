@@ -455,7 +455,22 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     // `personas show` does.
     get(id).ok_or_else(|| CliError::failed(format!("unknown persona: {id}")))?;
     delete_user_persona(id).map_err(|error| persona_error("delete", error))?;
-    let cleared_sessions = clear_equipped_sidecars(id)?;
+    let (cleared_sessions, sidecar_errors) = clear_equipped_sidecars(id)?;
+    // The delete has committed by the time the sweep runs, so a sidecar the
+    // sweep cannot remove must not flip the outcome to a failure that
+    // claims nothing was deleted — and it must not be swallowed either:
+    // a failed rerun cannot reach the sweep again (the card is gone), so
+    // the stuck sessions are named right here.
+    if !sidecar_errors.is_empty() {
+        for error in &sidecar_errors {
+            eprintln!("warning: personas delete: stale persona sidecar: {error}");
+        }
+        eprintln!(
+            "warning: personas delete: {} session sidecar(s) could not be removed; \
+             unequip them per session (the persona card itself is deleted)",
+            sidecar_errors.len()
+        );
+    }
     let human = if cleared_sessions.is_empty() {
         format!("deleted {id}")
     } else {
@@ -469,6 +484,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         "id": id,
         "action": "deleted",
         "cleared_sessions": cleared_sessions,
+        "sidecar_errors": sidecar_errors,
     });
     Ok(success(render(output, human, &value)))
 }
@@ -487,16 +503,15 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
 /// legitimate personas, leaving stale `persona_equipped.json` behind while
 /// delete still reports success. A matching sidecar that cannot be removed
 /// fails the delete instead of silently leaving stale injection state behind.
-fn clear_equipped_sidecars(persona_id: &str) -> Result<Vec<String>, CliError> {
-    // 4 MiB body cap × worst-case JSON escape expansion + wrapper/envelope.
-    const MAX_SIDECAR_BYTES: usize = 4 * 1024 * 1024 * 6 + 1024;
+fn clear_equipped_sidecars(persona_id: &str) -> Result<(Vec<String>, Vec<String>), CliError> {
     let sessions_dir = sandbox_home()?.join("sessions");
     let entries = match std::fs::read_dir(&sessions_dir) {
         Ok(entries) => entries,
         // No sessions directory yet: nothing can be equipped anywhere.
-        Err(_) => return Ok(Vec::new()),
+        Err(_) => return Ok((Vec::new(), Vec::new())),
     };
     let mut cleared = Vec::new();
+    let mut sweep_errors = Vec::new();
     for entry in entries.flatten() {
         let Some(session_id) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
@@ -514,19 +529,17 @@ fn clear_equipped_sidecars(persona_id: &str) -> Result<Vec<String>, CliError> {
             continue;
         };
         if value.get("persona_id").and_then(serde_json::Value::as_str) == Some(persona_id) {
-            std::fs::remove_file(&path).map_err(|error| {
-                CliError::failed(format!(
-                    "personas delete: cannot remove the session persona sidecar for \
-                     {session_id}: {error}"
-                ))
-            })?;
-            cleared.push(session_id);
+            match std::fs::remove_file(&path) {
+                Ok(()) => cleared.push(session_id),
+                Err(error) => sweep_errors.push(format!("{session_id}: {error}")),
+            }
         }
     }
     // read_dir order is arbitrary; a stable output keeps scripts and tests
     // deterministic.
     cleared.sort();
-    Ok(cleared)
+    sweep_errors.sort();
+    Ok((cleared, sweep_errors))
 }
 
 /// Session ids join onto paths (the equip sidecar below), so apply the same
@@ -555,7 +568,8 @@ fn equip_state_path(session_id: &str) -> Result<PathBuf, CliError> {
 /// path, where the memory-only state is simply gone).
 fn equipped_persona_id(session_id: &str) -> Option<String> {
     let path = equip_state_path(session_id).ok()?;
-    let raw = std::fs::read_to_string(path).ok()?;
+    let raw =
+        crate::support::read_text_file_capped(&path, MAX_SIDECAR_BYTES, "personas equip").ok()?;
     let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
     value
         .get("persona_id")
@@ -564,12 +578,28 @@ fn equipped_persona_id(session_id: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// 4 MiB body cap × worst-case JSON escape expansion + wrapper/envelope.
+const MAX_SIDECAR_BYTES: usize = 4 * 1024 * 1024 * 6 + 1024;
+/// The body budget the sidecar cap is computed from — the same 4 MiB the
+/// CLI's own persona write paths enforce.
+const MAX_EQUIP_BODY_BYTES: usize = 4 * 1024 * 1024;
+
 /// Persists the equip state for the next CLI invocation.
 fn persist_equipped_persona(
     session_id: &str,
     persona_id: &str,
     pending_body: &str,
 ) -> Result<(), CliError> {
+    // The delete sweep's capped read only covers bodies up to this budget;
+    // a larger one (possible on a persona the desktop app wrote, whose
+    // writer has no cap) would equip fine and then survive the delete as a
+    // ghost. Refuse at equip time instead.
+    if pending_body.len() > MAX_EQUIP_BODY_BYTES {
+        return Err(CliError::failed(
+            "personas equip: the persona body exceeds the 4 MiB sidecar budget; \
+             shrink the body before equipping",
+        ));
+    }
     let path = equip_state_path(session_id)?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|error| {
