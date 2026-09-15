@@ -3726,22 +3726,14 @@ mod tests {
                 .any(|r| r.command.as_deref().is_some_and(|c| c.contains("run.py"))),
             "plain 禁用已装技能后，脚本 deny 规则应在场"
         );
+        // safety-net 规则自 v3 回滚起为 command-only（File path 面已移除）：
+        // mkfs 类兜底 deny 恒在场，与脚本规则共存于同一规则集。
         assert!(
-            bridge
-                .scope_deny_ruleset("sess-plain")
-                .ask_rules
-                .iter()
-                .any(|r| r.path.is_some()
-                    && r.action == codewhale_execpolicy::PermissionAction::Deny),
-            "safety-net File path rules should always be present"
+            rs.ask_rules.iter().any(|r| r.path.is_none()
+                && r.action == codewhale_execpolicy::PermissionAction::Deny
+                && r.command.as_deref().is_some_and(|c| c.starts_with("mkfs"))),
+            "safety-net command rules should always be present"
         );
-
-        // plain disables my-skill → contains a deny rule pointing at the script
-        crate::features::marketplace::skill_scope::save_disabled_skills_for(
-            ConnectorScope::Plain,
-            &["my-skill".to_string()],
-        );
-        let rs = bridge.scope_deny_ruleset("sess-plain");
         assert!(
             rs.ask_rules.iter().any(|r| r
                 .command
