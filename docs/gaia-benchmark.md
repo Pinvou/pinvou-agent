@@ -116,6 +116,9 @@ pinvou benchmark score gaia --run-id <run-id>
 ```
 
 - 评分器从持久化的私有预测中解析候选答案，与参考答案比对。
+- `score.json` 附加记录 `manifest_schema_version` 与 `harness_deadline_secs`（无界
+  run 显式写 `null`）：schema 1 早于 deadline 模式记录，legacy 有界 run 的分数产物
+  因此无法冒充现行无界 run；不同 deadline 模式的分数不可比较。
 - 未完成 run 的 score 只返回 `unofficial_partial` 诊断，不发布固定的
   `score.json` / `report.md`；resume 完成后再次 score 才发布最终产物，避免 partial
   结果占用固定文件并阻塞最终评分。

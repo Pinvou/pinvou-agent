@@ -136,6 +136,10 @@ impl RunManifest {
         self.concurrency
     }
 
+    pub fn schema_version(&self) -> u16 {
+        self.schema_version
+    }
+
     pub fn harness_deadline_secs(&self) -> Option<u64> {
         self.harness_deadline_secs
     }
