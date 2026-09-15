@@ -464,6 +464,15 @@ impl SessionStore {
             persona_id;
     }
 
+    /// Publish the selected persona and its one-shot body as one state change.
+    pub fn set_persona(&self, id: &str, persona_id: Option<String>, pending_body: Option<String>) {
+        let default_mode = self.resolved_default_mode(id);
+        let mut states = self.mode_states.write();
+        let state = Self::mode_state_entry(&mut states, id, default_mode);
+        state.active_persona = persona_id;
+        state.pending_persona_body = pending_body;
+    }
+
     pub fn active_persona_id(&self, id: &str) -> Option<String> {
         self.mode_states.read().get(id)?.active_persona.clone()
     }
@@ -472,6 +481,24 @@ impl SessionStore {
         let default_mode = self.resolved_default_mode(id);
         Self::mode_state_entry(&mut self.mode_states.write(), id, default_mode)
             .pending_persona_body = body;
+    }
+
+    /// Clear a deleted persona and its one-shot body from every session that
+    /// still references it. Returning the affected IDs lets callers publish a
+    /// presentation update for each session after the atomic state change.
+    pub fn remove_persona_from_all(&self, persona_id: &str) -> Vec<String> {
+        let mut states = self.mode_states.write();
+        let mut changed = Vec::new();
+        for (session_id, state) in states.iter_mut() {
+            if state.active_persona.as_deref() != Some(persona_id) {
+                continue;
+            }
+            state.active_persona = None;
+            state.pending_persona_body = None;
+            changed.push(session_id.clone());
+        }
+        changed.sort();
+        changed
     }
 
     pub fn set_mounted_collection(&self, id: &str, collection_id: Option<i64>) {

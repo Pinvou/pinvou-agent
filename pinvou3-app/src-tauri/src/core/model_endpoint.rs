@@ -25,6 +25,15 @@ static PROBE_KIND_CACHE: std::sync::OnceLock<
 pub struct OpenAiModelInfo {
     pub id: String,
     pub max_model_len: Option<u32>,
+    /// Entry self-reported per-turn output limit (tokens). `None` = the
+    /// endpoint does not declare one (most local engines omit it from
+    /// `/v1/models`; Ollama/LM Studio listings do too). Best-effort parse of
+    /// `max_output_tokens` / `max_completion_tokens` /
+    /// `top_provider.max_completion_tokens` (OpenRouter gateway shape;
+    /// unlimited is null, treated as undeclared); when an entry reports
+    /// several shapes the tightest value wins. Only used to min-tighten
+    /// route declarations, never to raise any limit.
+    pub max_output_tokens: Option<u32>,
     /// 是否已加载到内存。`None` = 未知（通用 OpenAI 兼容端点不区分）。
     /// Ollama（/api/ps vs /api/tags）与 LM Studio（/api/v0/models 的 state）
     /// 的列表接口返回全部已下载模型，二者都是 JIT 加载——任何推理请求引用
@@ -38,6 +47,14 @@ pub struct OpenAiModelsProbe {
     pub models: Vec<OpenAiModelInfo>,
 }
 
+/// u64 JSON number → positive u32. Self-reported values outside the u32
+/// range are always treated as undeclared: `as u32` would truncate 2^32 to
+/// 0 and 2^32+5 to 5, letting downstream code mistake a corrupted value for
+/// a real limit; non-positive values are equally invalid.
+fn parse_positive_u32(v: &serde_json::Value) -> Option<u32> {
+    u32::try_from(v.as_u64()?).ok().filter(|n| *n > 0)
+}
+
 pub(crate) fn parse_models_response_list(v: serde_json::Value) -> Option<Vec<OpenAiModelInfo>> {
     let data = v.get("data")?.as_array()?;
     let models = data
@@ -47,18 +64,37 @@ pub(crate) fn parse_models_response_list(v: serde_json::Value) -> Option<Vec<Ope
             if id.is_empty() {
                 return None;
             }
-            let max_model_len = item
-                .get("max_model_len")
-                .and_then(|v| v.as_u64())
-                .map(|n| n as u32);
+            let max_model_len = item.get("max_model_len").and_then(parse_positive_u32);
             Some(OpenAiModelInfo {
                 id: id.to_string(),
                 max_model_len,
+                max_output_tokens: parse_entry_output_limit(item),
                 loaded: None,
             })
         })
         .collect::<Vec<_>>();
     (!models.is_empty()).then_some(models)
+}
+
+/// Best-effort extraction of the entry's self-reported per-turn output
+/// limit from a `/v1/models` entry. Covers three known shapes: direct
+/// `max_output_tokens` / `max_completion_tokens`, and the OpenRouter
+/// gateway's `top_provider.max_completion_tokens` (unlimited is null;
+/// `as_u64()` missing means undeclared). Every value must be positive,
+/// and when several shapes coexist the tightest one wins: preferring a
+/// shape by priority could adopt a cap larger than another cap the same
+/// entry reported, breaking the only-tighten contract. Local engines
+/// usually omit the field → None, and callers must not fabricate a
+/// limit from it.
+fn parse_entry_output_limit(item: &serde_json::Value) -> Option<u32> {
+    let direct = ["max_output_tokens", "max_completion_tokens"]
+        .into_iter()
+        .filter_map(|key| item.get(key).and_then(parse_positive_u32));
+    let top_provider = item
+        .get("top_provider")
+        .and_then(|provider| provider.get("max_completion_tokens"))
+        .and_then(parse_positive_u32);
+    direct.chain(top_provider).min()
 }
 
 /// 通用 OpenAI 兼容 `/models` 探测。探测地址与云端 probe / 连接测试同一口径
@@ -134,6 +170,7 @@ fn parse_lmstudio_v0_models(v: &serde_json::Value) -> Option<Vec<OpenAiModelInfo
             Some(OpenAiModelInfo {
                 id: id.to_string(),
                 max_model_len: None,
+                max_output_tokens: None,
                 loaded,
             })
         })
@@ -216,6 +253,7 @@ pub async fn probe_ollama_models(
                 OpenAiModelInfo {
                     id: name,
                     max_model_len: None,
+                    max_output_tokens: None,
                     loaded: Some(loaded),
                 }
             })
@@ -591,7 +629,9 @@ fn select_local_server_kind(hits: ProbeCandidateHits) -> LocalServerKind {
 /// The actual probe without cache (a TTL cache hit returns directly; see
 /// `probe_local_server_kind`). All candidate probes are issued in parallel
 /// via `tokio::join!` (each shares `shared_probe_client`'s 3s timeout, so a
-/// hung endpoint costs ~3s at worst instead of accumulating serially);
+/// hung endpoint costs ~3s at worst instead of accumulating serially;
+/// `fetch_v1_models`'s 404/405 root fallback adds at most one more request
+/// window — a hung primary times out once and is not retried);
 /// `/v1/models` is fetched only once, shared by the LMDeploy and vLLM
 /// `owned_by` decisions. Once all complete, the result is picked by
 /// signature-exclusivity priority.
@@ -639,10 +679,18 @@ async fn probe_lmstudio_v0_only(base_url: &str, bearer: Option<&str>) -> Option<
     })
 }
 
-/// 抓取 OpenAI 兼容 `/v1/models` 响应体。探测地址口径与
-/// `features::monitor::probe_vllm_model_info` 一致：upstream 带 `/v1` 直接拼
-/// `/models`，不带则补 `/v1/models`。失败/非 2xx/解析失败返回 `None`，调用方
-/// treated as probe failure. Shared with the kind-probe chain
+/// Fetches an OpenAI-compatible model-list response body. URL convention:
+/// a configured root already ending in `/v1` appends `/models` directly
+/// (same convention as `features::monitor`'s `models_probe_url`); the bare
+/// host form (common for local vLLM) gets `/v1/models` appended first. For
+/// non-`/v1` version roots (glm `/api/paas/v4`, Volcengine Ark `/api/v3`,
+/// etc. — their model list lives at `{base}/models`, and appending `/v1`
+/// would 404), retry `{base}/models` once only when the primary candidate
+/// clearly reports "path not found" (404/405); auth failures (401/403) are
+/// not helped by switching paths, and timeouts/connection refusals mean the
+/// host is unreachable — neither is retried, conservatively falling back to
+/// no facts. Failure / non-2xx / parse failure returns `None`, and the
+/// caller treated as probe failure. Shared with the kind-probe chain
 /// (`probe_local_server_kind_uncached` fetches once for the LMDeploy/vLLM
 /// owned_by decisions) and monitor's vLLM served-name
 /// probe, so the `/v1/models` URL assembly stays consistent in both places.
@@ -655,17 +703,35 @@ pub(crate) async fn fetch_v1_models(
     let Some(client) = shared_probe_client() else {
         return None;
     };
-    let url = if base_url.trim_end_matches('/').ends_with("/v1") {
-        format!("{}/models", base_url.trim_end_matches('/'))
+    let trimmed = base_url.trim_end_matches('/');
+    let (primary, fallback) = if trimmed.ends_with("/v1") {
+        (format!("{trimmed}/models"), None)
     } else {
-        format!("{}/v1/models", base_url.trim_end_matches('/'))
+        (
+            format!("{trimmed}/v1/models"),
+            Some(format!("{trimmed}/models")),
+        )
     };
-    let Ok(resp) = apply_bearer(client.get(url), bearer).send().await else {
-        return None;
+    let resp = apply_bearer(client.get(primary), bearer)
+        .send()
+        .await
+        .ok()?;
+    // Retry once only when the primary candidate clearly reports "path not
+    // found" (404/405) and a fallback candidate exists; auth failures
+    // (401/403) are not helped by switching paths, and timeouts/connection
+    // refusals mean the host is unreachable — neither is retried,
+    // conservatively falling back to no facts.
+    let resp = match (resp.status().as_u16(), fallback) {
+        (200..=299, _) => resp,
+        (404 | 405, Some(url)) => {
+            let resp = apply_bearer(client.get(url), bearer).send().await.ok()?;
+            if !resp.status().is_success() {
+                return None;
+            }
+            resp
+        }
+        _ => return None,
     };
-    if !resp.status().is_success() {
-        return None;
-    }
     resp.json::<serde_json::Value>().await.ok()
 }
 
@@ -908,6 +974,133 @@ pub async fn post_anthropic_messages(
     anthropic_messages_text(&value).context("no text block in anthropic messages response")
 }
 
+/// Test-only: minimal model-list mock server. Returns a configurable status
+/// code and body per path, recording hit counts and Authorization headers —
+/// shared by the `fetch_v1_models` fallback-convention tests and the
+/// engine_pool spawn adoption wiring tests, asserting "which path was hit,
+/// how many times, and whether credentials were attached".
+#[cfg(test)]
+pub(crate) mod models_mock {
+    use std::collections::HashMap;
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    pub(crate) struct ModelsMock {
+        pub base_url: String,
+        hits: Arc<Mutex<HashMap<String, usize>>>,
+        auth: Arc<Mutex<HashMap<String, String>>>,
+    }
+
+    impl ModelsMock {
+        pub(crate) fn hits_for(&self, path: &str) -> usize {
+            self.hits
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(path)
+                .copied()
+                .unwrap_or(0)
+        }
+
+        /// Authorization header carried by the last request to this path
+        /// (None when absent).
+        pub(crate) fn auth_for(&self, path: &str) -> Option<String> {
+            self.auth
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(path)
+                .cloned()
+        }
+    }
+
+    pub(crate) fn spawn(routes: &[(&str, u16, String)]) -> ModelsMock {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock listener");
+        let addr = listener.local_addr().expect("mock listener addr");
+        let routes: Vec<(String, u16, String)> = routes
+            .iter()
+            .map(|(path, status, body)| ((*path).to_string(), *status, body.clone()))
+            .collect();
+        let hits: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+        let hits_thread = hits.clone();
+        let auth: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+        let auth_thread = auth.clone();
+        std::thread::spawn(move || {
+            // Serve at most 32 connections: the core tests each send 1-2
+            // requests and the finalize wiring tests also go through the kind
+            // probe (7 parallel candidates), so leave headroom; this also
+            // bounds thread leaks.
+            for stream in listener.incoming().take(32) {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let Ok(n) = std::io::Read::read(&mut stream, &mut chunk) else {
+                        break;
+                    };
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&buf);
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("")
+                    .split('?')
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                *hits_thread
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .entry(path.clone())
+                    .or_insert(0) += 1;
+                let authorization = request
+                    .lines()
+                    .skip(1)
+                    .take_while(|line| !line.is_empty())
+                    .find(|line| line.to_ascii_lowercase().starts_with("authorization:"))
+                    .map(|line| {
+                        line.split_once(':')
+                            .unwrap_or((":", ""))
+                            .1
+                            .trim()
+                            .to_string()
+                    });
+                if let Some(value) = authorization {
+                    auth_thread
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .insert(path.clone(), value);
+                }
+                let matched = routes.iter().find(|(route, _, _)| path == *route);
+                let (status, body) = matched
+                    .map(|(_, status, body)| (*status, body.clone()))
+                    .unwrap_or((404, "{}".to_string()));
+                let reason = match status {
+                    200 => "OK",
+                    401 => "Unauthorized",
+                    404 => "Not Found",
+                    _ => "OK",
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+            }
+        });
+        ModelsMock {
+            base_url: format!("http://{addr}"),
+            hits,
+            auth,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -924,6 +1117,114 @@ mod tests {
         assert_eq!(models[0].max_model_len, None);
         assert_eq!(models[1].id, "deepseek-r1:14b");
         assert_eq!(models[1].max_model_len, Some(32768));
+    }
+
+    /// The three known shapes of a `/v1/models` entry's self-reported output
+    /// limit + rejection of invalid values. Local engines (vLLM/Ollama)
+    /// usually omit the field → None; it must not be fabricated.
+    #[test]
+    fn parse_models_response_list_extracts_output_limits() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"object":"list","data":[
+                {"id":"direct-max-output","max_output_tokens":65536},
+                {"id":"direct-max-completion","max_completion_tokens":8192},
+                {"id":"openrouter-shape","top_provider":{"max_completion_tokens":131072,"context_length":1000000}},
+                {"id":"unlimited-null","top_provider":{"max_completion_tokens":null}},
+                {"id":"zero-invalid","max_output_tokens":0},
+                {"id":"plain-vllm","max_model_len":262144}
+            ]}"#,
+        )
+        .unwrap();
+        let models = parse_models_response_list(json).unwrap();
+        let output_of = |id: &str| {
+            models
+                .iter()
+                .find(|m| m.id == id)
+                .unwrap()
+                .max_output_tokens
+        };
+        assert_eq!(output_of("direct-max-output"), Some(65536));
+        assert_eq!(output_of("direct-max-completion"), Some(8192));
+        assert_eq!(output_of("openrouter-shape"), Some(131072));
+        // unlimited (null) and 0 are both treated as undeclared
+        assert_eq!(output_of("unlimited-null"), None);
+        assert_eq!(output_of("zero-invalid"), None);
+        // max_model_len is a context window, not an output limit
+        assert_eq!(output_of("plain-vllm"), None);
+    }
+
+    /// A single entry may report several output-cap shapes at once (a
+    /// gateway mirroring both the OpenAI and OpenRouter fields). The
+    /// adopted limit is the minimum of every valid value, so it never
+    /// exceeds any cap the endpoint declared; invalid shapes are ignored
+    /// and must not shadow the remaining valid one.
+    #[test]
+    fn parse_models_response_list_conflicting_output_caps_takes_the_tightest() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"object":"list","data":[
+                {"id":"all-three","max_output_tokens":65536,"max_completion_tokens":4096,
+                 "top_provider":{"max_completion_tokens":8192}},
+                {"id":"direct-and-null-provider","max_output_tokens":16384,
+                 "top_provider":{"max_completion_tokens":null}},
+                {"id":"invalid-plus-valid","max_output_tokens":0,"max_completion_tokens":2048}
+            ]}"#,
+        )
+        .unwrap();
+        let models = parse_models_response_list(json).unwrap();
+        let output_of = |id: &str| {
+            models
+                .iter()
+                .find(|m| m.id == id)
+                .unwrap()
+                .max_output_tokens
+        };
+        assert_eq!(output_of("all-three"), Some(4096));
+        assert_eq!(output_of("direct-and-null-provider"), Some(16384));
+        assert_eq!(output_of("invalid-plus-valid"), Some(2048));
+    }
+
+    /// Parse robustness: self-reported values beyond u32 (`as u32` would
+    /// truncate them to 0 or a small value, mistaking corrupted values for
+    /// real limits), float/negative/string forms are all treated as
+    /// undeclared; max_model_len 0 and out-of-range values are likewise
+    /// rejected.
+    #[test]
+    fn parse_models_response_list_rejects_out_of_range_and_malformed_values() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"object":"list","data":[
+                {"id":"u64-overflow","max_output_tokens":4294967296},
+                {"id":"u64-overflow-plus","max_completion_tokens":4294967301},
+                {"id":"top-provider-overflow","top_provider":{"max_completion_tokens":4294967296}},
+                {"id":"float-form","max_output_tokens":65536.0},
+                {"id":"negative","max_output_tokens":-1},
+                {"id":"string-form","max_output_tokens":"65536"},
+                {"id":"zero-context","max_model_len":0},
+                {"id":"overflow-context","max_model_len":4294967296}
+            ]}"#,
+        )
+        .unwrap();
+        let models = parse_models_response_list(json).unwrap();
+        for id in [
+            "u64-overflow",
+            "u64-overflow-plus",
+            "top-provider-overflow",
+            "float-form",
+            "negative",
+            "string-form",
+        ] {
+            let model = models.iter().find(|m| m.id == id).unwrap();
+            assert_eq!(
+                model.max_output_tokens, None,
+                "{id} must be treated as undeclared"
+            );
+        }
+        let zero_context = models.iter().find(|m| m.id == "zero-context").unwrap();
+        assert_eq!(zero_context.max_model_len, None, "a 0 window is not a fact");
+        let overflow_context = models.iter().find(|m| m.id == "overflow-context").unwrap();
+        assert_eq!(
+            overflow_context.max_model_len, None,
+            "a window beyond u32 must not be truncated into a fake value"
+        );
     }
 
     #[test]
@@ -1912,5 +2213,75 @@ mod tests {
 
         task.abort();
         clear_probe_kind_cache();
+    }
+
+    #[tokio::test]
+    async fn fetch_v1_models_prefers_v1_root_and_does_not_fall_back_on_success() {
+        let mock = models_mock::spawn(&[
+            ("/v1/models", 200, r#"{"data":[{"id":"served-a"}]}"#.into()),
+            ("/models", 200, r#"{"data":[{"id":"root-b"}]}"#.into()),
+        ]);
+        let value = fetch_v1_models(&mock.base_url, None)
+            .await
+            .expect("bare-host form hits the primary /v1/models candidate");
+        assert_eq!(parse_models_response_list(value).unwrap()[0].id, "served-a");
+        assert_eq!(mock.hits_for("/v1/models"), 1);
+        assert_eq!(
+            mock.hits_for("/models"),
+            0,
+            "a successful primary must not hit the fallback path"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_v1_models_falls_back_to_root_models_on_404() {
+        // Non-v1 version roots such as glm /api/paas/v4 or Ark /api/v3:
+        // appending /v1 always 404s and the model list lives at
+        // {base}/models — the single fallback must hit.
+        let mock = models_mock::spawn(&[
+            ("/v1/models", 404, "{}".into()),
+            ("/models", 200, r#"{"data":[{"id":"glm-4.7"}]}"#.into()),
+        ]);
+        let value = fetch_v1_models(&mock.base_url, Some("route-key"))
+            .await
+            .expect("after 404 the fallback to {base}/models must happen");
+        assert_eq!(parse_models_response_list(value).unwrap()[0].id, "glm-4.7");
+        assert_eq!(mock.hits_for("/v1/models"), 1);
+        assert_eq!(mock.hits_for("/models"), 1);
+        assert_eq!(
+            mock.auth_for("/models").as_deref(),
+            Some("Bearer route-key"),
+            "the fallback request must carry the same-origin credentials, never silently degrade to anonymous"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_v1_models_auth_failure_does_not_retry_alt_path() {
+        let mock = models_mock::spawn(&[
+            ("/v1/models", 401, "{}".into()),
+            ("/models", 200, r#"{"data":[{"id":"x"}]}"#.into()),
+        ]);
+        assert!(fetch_v1_models(&mock.base_url, None).await.is_none());
+        assert_eq!(
+            mock.hits_for("/models"),
+            0,
+            "401 is an auth problem; switching paths cannot help, no retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_v1_models_v1_shaped_base_has_no_alt_path() {
+        // A configured root ending in /v1: the primary candidate is
+        // {base}/models == the mock's "/v1/models"; on 404 no second path
+        // may ever appear (no fallback beyond /v1/models).
+        let mock = models_mock::spawn(&[("/v1/models", 404, "{}".into())]);
+        let base = format!("{}/v1", mock.base_url);
+        assert!(fetch_v1_models(&base, None).await.is_none());
+        assert_eq!(mock.hits_for("/v1/models"), 1);
+        assert_eq!(
+            mock.hits_for("/models"),
+            0,
+            "a /v1-shaped configured root has a single candidate, no fallback path"
+        );
     }
 }

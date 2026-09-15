@@ -386,6 +386,10 @@ assert.ok(
   'Scheduled model and frequency controls should use the themed keyboard-dismissible popover'
 );
 assert.ok(
+  !/<ScheduledSelect\b(?:(?!\/>)[\s\S])*?(?:testId="scheduled-live-model"|testId=\{`\$\{prefix\}-(?:repeat|day)`\})(?:(?!\/>)[\s\S])*?\/>\s*<ChevronRight\b/.test(scheduledViewSource),
+  'scheduled selectors should not render a second inert chevron outside their trigger'
+);
+assert.ok(
   /const iosInsetSurface =/.test(indexHtml) &&
     /data-testid="scheduled-create-settings" className=\{`overflow-visible rounded-\[16px\] \$\{iosInsetSurface\}`\}/.test(indexHtml) &&
     /data-testid="scheduled-detail-settings" className=\{`overflow-visible rounded-\[16px\] \$\{iosInsetSurface\}`\}/.test(indexHtml) &&
@@ -521,6 +525,25 @@ assert.ok(
     scheduledTaskPromptRust.includes("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30") &&
     scheduledTaskPromptRust.includes("FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=9;BYMINUTE=30"),
   'backend prompt should include supported rrule examples'
+);
+assert.ok(
+  scheduledTaskPromptRust.includes("FREQ=ONCE;AT=2027-06-01T09:30") &&
+    scheduledTaskPromptRust.includes("如果用户指定的一次性时刻已经过去，必须先和用户确认改成未来的时刻，不要输出草稿。") &&
+    scheduledTaskPromptRust.includes("不要带 Z 或时区偏移后缀"),
+  'backend prompt must teach once-only schedules, reject past one-shot times, and pin AT to local wall-clock format'
+);
+assert.ok(
+  scheduledViewSource.includes("fields.FREQ === 'ONCE'") &&
+    scheduledViewSource.includes("scheduledCopy.repeatOptions.once"),
+  'the schedule editor must recognize one-shot rules instead of rewriting them into recurrences'
+);
+assert.ok(
+  scheduledViewSource.includes("function onceScheduleParts"),
+  'the schedule editor must resolve once AT to the local wall clock instead of dropping stored UTC offsets'
+);
+assert.ok(
+  indexHtml.includes("once:'一次性'"),
+  'the zh dictionary must carry the once repeat option'
 );
 assert.ok(
   scheduledTaskPromptRust.includes("create_scheduled_task") &&

@@ -1131,8 +1131,12 @@ impl EnginePool {
         Ok((bridge, prepared, pins_scheduled_model))
     }
 
+    /// No `&self`: this function does not read pool state, it only
+    /// orchestrates the spawn finish. Making it an associated function lets
+    /// unit tests drive the real injection block directly (a real EnginePool
+    /// cannot be constructed in unit tests; wiring coverage lives in
+    /// `probed_facts_wiring_tests`).
     async fn finalize_runtime_bridge(
-        &self,
         mut bridge: Pinvou3Bridge,
         prepared: &PreparedRuntimeModel,
         pins_scheduled_model: bool,
@@ -1158,37 +1162,77 @@ impl EnginePool {
                 .await,
             );
         }
-        // Local vLLM: correct the request model name against the server's
-        // actual served list (resolve_served_model). A configured name the
-        // server lists must be kept verbatim — LM Studio/Ollama list every
-        // downloaded model in /v1/models, so the first entry is unrelated to
-        // the user's pick, and substituting it is exactly the reported
-        // "conversation names A, engine loads B" chain break. Only follow the
-        // served name on a single-model server that does not expose the
-        // configured name. On probe failure (vLLM down) keep the configured
-        // value; cloud providers are not probed. OpenAI-compatible endpoints
-        // detected as vLLM take the same path (provider() maps them to
-        // "vllm").
-        if bridge.provider() == "vllm" {
-            // The served-name probe carries the same inference-same-origin
-            // credential (authenticated vLLM 401s on /v1/models; on probe
-            // failure the configured model name is kept).
-            let api_key = bridge.api_key();
-            if let Some(mut model) = bridge.effective_model_owned() {
-                let (served, max_len) = crate::features::monitor::resolve_served_model(
-                    &bridge.base_url(),
-                    Some(api_key.as_str()),
-                    &model.model,
-                )
-                .await;
-                if served != model.model && !pins_scheduled_model {
-                    model.model = served;
-                    bridge.session_model = Some(model);
-                }
-                bridge.probed_context_tokens = max_len;
-            }
+        // Operator-owned routes (local vLLM + custom OpenAI-compatible /
+        // custom, see `SavedModel::is_operator_owned_endpoint`) probe
+        // `/v1/models` once at spawn, bringing back the matched entry's own
+        // context window and self-reported output limit for
+        // `route_limits_for_model` to min-tighten (on probe failure both are
+        // None, falling back to configured values / window tiers). vLLM
+        // routes additionally correct the served name
+        // (resolve_served_model): a configured name that the server lists
+        // must be kept verbatim — LM Studio/Ollama list every downloaded
+        // model, the first entry is unrelated to the user's pick, and
+        // substituting it is exactly the reported "conversation names A,
+        // engine loads B" chain break; only follow the served name on a
+        // single-model server that does not expose the configured name.
+        // Non-vLLM operator-owned routes do no name correction and adopt
+        // facts only when the configured name exactly hits the list
+        // (`adopts_probed_facts`) — a single-entry "borrowed name" returns
+        // facts belonging to another model and must not be misattributed.
+        // Cloud presets and coding_plan are not operator-owned and are not
+        // probed.
+        let is_vllm_route = bridge.provider() == "vllm";
+        if let Some(model) = bridge.effective_model_owned() {
+            Self::adopt_probed_endpoint_facts(
+                &mut bridge,
+                model,
+                is_vllm_route,
+                pins_scheduled_model,
+            )
+            .await;
         }
         bridge
+    }
+
+    /// Spawn-time probe and fact adoption (the testable core of
+    /// `finalize_runtime_bridge`; wiring unit tests live in
+    /// `probed_facts_wiring_tests` at the end of this file): operator-owned
+    /// routes (or vLLM routes) probe `/v1/models`, and vLLM additionally
+    /// corrects the served name (keeping the configured name when
+    /// `pins_scheduled_model`); whether facts are adopted is decided by
+    /// `adopts_probed_facts`, and on adoption both `probed_context_tokens`
+    /// and `probed_output_tokens` are written. On probe failure (endpoint
+    /// unreachable / name not matched) both facts are None and the route
+    /// falls back to configured values / window tiers.
+    async fn adopt_probed_endpoint_facts(
+        bridge: &mut Pinvou3Bridge,
+        mut model: SavedModel,
+        is_vllm_route: bool,
+        pins_scheduled_model: bool,
+    ) {
+        if !(is_vllm_route || model.is_operator_owned_endpoint()) {
+            return;
+        }
+        // The probe carries the same credential as real inference
+        // (authenticated endpoints 401 on `/v1/models` without credentials;
+        // on probe failure the configured values are kept).
+        let api_key = bridge.api_key();
+        let (served, max_len, max_output) = crate::features::monitor::resolve_served_model(
+            &bridge.base_url(),
+            Some(api_key.as_str()),
+            &model.model,
+        )
+        .await;
+        let adopts =
+            crate::features::monitor::adopts_probed_facts(is_vllm_route, &model.model, &served);
+        if is_vllm_route && served != model.model && !pins_scheduled_model {
+            model.model = served;
+            bridge.session_model = Some(model);
+        }
+        if adopts {
+            bridge.probed_context_tokens = max_len;
+            bridge.probed_output_tokens = max_output;
+        }
     }
 
     async fn fresh_bridge_for_policy(
@@ -1203,9 +1247,7 @@ impl EnginePool {
         let (bridge, prepared, pins_scheduled_model) = self
             .prepare_runtime_model(session_id, scheduled_unattended, eval_model)
             .await?;
-        Ok(self
-            .finalize_runtime_bridge(bridge, &prepared, pins_scheduled_model)
-            .await)
+        Ok(Self::finalize_runtime_bridge(bridge, &prepared, pins_scheduled_model).await)
     }
 
     /// 取该 session 的 engine,没有就 spawn 一个。spawn 后若该 session 有磁盘历史
@@ -1251,9 +1293,8 @@ impl EnginePool {
         }
 
         let is_scheduled = self.store.scheduled_profile(session_id).is_some();
-        let bridge = self
-            .finalize_runtime_bridge(bridge, &prepared.prepared, pins_scheduled_model)
-            .await;
+        let bridge =
+            Self::finalize_runtime_bridge(bridge, &prepared.prepared, pins_scheduled_model).await;
         // shell 执行目录与 engine cwd 同源：统一走 SessionStore::session_roots
         // （scheduled = automation workspace，原生代码绑项目会话 = 项目目录）。
         // 解析失败（如 scheduled 会话缺 profile）时维持原回退：bridge 侧解析。
@@ -4961,5 +5002,262 @@ mod scheduled_model_tests {
             );
             assert!(lifecycle.finish_once(|| {}).is_some());
         }
+    }
+}
+
+/// Wiring tests for spawn-time probe adoption, in two layers:
+/// `finalize_runtime_bridge` (the real production injection block, drivable
+/// directly as an associated function) pins the provider() derivation, the
+/// effective_model_owned gating, and the adopt call itself;
+/// `adopt_probed_endpoint_facts` (the testable core) pins four paths through
+/// a real HTTP mock (127.0.0.1:0) — non-vLLM single-entry "borrowed name" is
+/// not adopted, exact match is adopted, vLLM renames + adopts, vLLM pinned
+/// name still adopts (an intentional trade-off, see the
+/// `adopts_probed_facts` docs), plus cloud presets are not probed. Review
+/// round-2 found the production injection point had zero tests (pure-function
+/// guarantees cannot cover the spawn wiring); round-3 added the finalize
+/// layer — previously only the core had tests, so deleting the injection
+/// block in finalize would not fail any test.
+#[cfg(test)]
+#[allow(clippy::await_holding_lock)]
+mod probed_facts_wiring_tests {
+    use super::{EnginePool, Pinvou3Bridge, PreparedRuntimeModel};
+    use crate::core::model_endpoint::{LocalServerKind, models_mock};
+    use crate::features::runtime_bundle::platform::Pinvou3Bundle;
+    use crate::platform::credential_store::CredentialState;
+    use crate::platform::paths::tests::ENV_LOCK;
+    use crate::platform::prefs::{ImageCapabilityOverride, ModelPreset, SavedModel, UserPrefs};
+
+    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    impl EnvRestore {
+        fn capture(names: &[&'static str]) -> Self {
+            Self(
+                names
+                    .iter()
+                    .map(|name| (*name, std::env::var_os(name)))
+                    .collect(),
+            )
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (name, value) in self.0.drain(..) {
+                match value {
+                    // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+                    Some(value) => unsafe { std::env::set_var(name, value) },
+                    // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+                    None => unsafe { std::env::remove_var(name) },
+                }
+            }
+        }
+    }
+
+    /// Isolates env vars related to base_url/api_key (`Pinvou3Bridge::
+    /// base_url`/`api_key` prioritize env over session model); the returned
+    /// guard restores them when the test ends.
+    fn isolate_model_env() -> EnvRestore {
+        let restore = EnvRestore::capture(&["DEEPSEEK_BASE_URL", "DEEPSEEK_API_KEY"]);
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::remove_var("DEEPSEEK_BASE_URL") };
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+        restore
+    }
+
+    fn saved_model(preset: ModelPreset, model: &str, provider_kind: Option<&str>) -> SavedModel {
+        SavedModel {
+            id: "wiring-model".into(),
+            name: "Wiring".into(),
+            alias: None,
+            preset,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            model: model.into(),
+            base_url: String::new(),
+            provider_kind: provider_kind.map(Into::into),
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        }
+    }
+
+    fn wiring_bridge(model: SavedModel) -> Pinvou3Bridge {
+        Pinvou3Bridge {
+            prefs: UserPrefs::default(),
+            bundle: Pinvou3Bundle::paths(),
+            workspace: std::env::temp_dir(),
+            session_model: Some(model),
+            runtime_model_credential: None,
+            probed_context_tokens: None,
+            probed_output_tokens: None,
+            probed_local_kind: None,
+            execution_root_resolver: None,
+            code_session_predicate: None,
+            external_acp_session_predicate: None,
+            image_analyze_always: false,
+        }
+    }
+
+    fn single_entry_json(id: &str) -> String {
+        format!(
+            r#"{{"data":[{{"id":"{id}","max_model_len":262144,"max_completion_tokens":4096}}]}}"#
+        )
+    }
+
+    #[tokio::test]
+    async fn non_vllm_operator_route_does_not_adopt_borrowed_single_entry() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[("/v1/models", 200, single_entry_json("served-only"))]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, false, false).await;
+        assert_eq!(
+            bridge.probed_context_tokens, None,
+            "window facts from a single-entry borrowed name belong to another model and must not be adopted"
+        );
+        assert_eq!(
+            bridge.probed_output_tokens, None,
+            "the self-reported output limit is likewise not adopted"
+        );
+        assert_eq!(
+            bridge.session_model.as_ref().unwrap().model,
+            "my-model",
+            "non-vLLM routes do no served-name correction"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_vllm_operator_route_adopts_on_exact_name_match() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[("/v1/models", 200, single_entry_json("my-model"))]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, false, false).await;
+        assert_eq!(bridge.probed_context_tokens, Some(262_144));
+        assert_eq!(bridge.probed_output_tokens, Some(4_096));
+        assert_eq!(bridge.session_model.as_ref().unwrap().model, "my-model");
+    }
+
+    #[tokio::test]
+    async fn vllm_route_renames_to_served_name_and_adopts_facts() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[("/v1/models", 200, single_entry_json("served-actual"))]);
+        let mut model = saved_model(ModelPreset::LocalVllm, "my-model", None);
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, true, false).await;
+        assert_eq!(
+            bridge.session_model.as_ref().unwrap().model,
+            "served-actual",
+            "a vLLM single entry follows the served name"
+        );
+        assert_eq!(bridge.probed_context_tokens, Some(262_144));
+        assert_eq!(bridge.probed_output_tokens, Some(4_096));
+    }
+
+    #[tokio::test]
+    async fn vllm_route_pins_scheduled_model_keeps_name_but_adopts_facts() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[("/v1/models", 200, single_entry_json("served-actual"))]);
+        let mut model = saved_model(ModelPreset::LocalVllm, "my-model", None);
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, true, true).await;
+        assert_eq!(
+            bridge.session_model.as_ref().unwrap().model,
+            "my-model",
+            "name correction is suppressed while a scheduled model is pinned; the configured name goes live verbatim"
+        );
+        assert_eq!(
+            bridge.probed_context_tokens,
+            Some(262_144),
+            "pinned name + single-entry borrow still adopts facts under vLLM semantics (intentional trade-off, see the adopts_probed_facts docs)"
+        );
+        assert_eq!(bridge.probed_output_tokens, Some(4_096));
+    }
+
+    #[tokio::test]
+    async fn cloud_route_is_not_probed_at_all() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[("/v1/models", 200, single_entry_json("my-model"))]);
+        let mut model = saved_model(ModelPreset::Deepseek, "my-model", None);
+        model.base_url = mock.base_url.clone();
+        let mut bridge = wiring_bridge(model.clone());
+        EnginePool::adopt_probed_endpoint_facts(&mut bridge, model, false, false).await;
+        assert_eq!(
+            mock.hits_for("/v1/models"),
+            0,
+            "cloud presets are not operator-owned; no probe request may be issued"
+        );
+        assert_eq!(bridge.probed_context_tokens, None);
+        assert_eq!(bridge.probed_output_tokens, None);
+    }
+
+    /// The real finalize_runtime_bridge injection block (non-vLLM side):
+    /// an OpenaiCompatible + custom route goes through the provider()
+    /// derivation (local mock URL → kind probe completes as Generic →
+    /// "openai") and the effective_model_owned gate to reach adopt; exact
+    /// match adopts facts without renaming; the kind probe coexists (TTL
+    /// cache is isolated per base_url).
+    #[tokio::test]
+    async fn finalize_runtime_bridge_injects_probed_facts_into_custom_route() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[("/v1/models", 200, single_entry_json("my-model"))]);
+        let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
+        model.base_url = mock.base_url.clone();
+        let bridge = wiring_bridge(model.clone());
+        let prepared = PreparedRuntimeModel::unchanged(model);
+        let bridge = EnginePool::finalize_runtime_bridge(bridge, &prepared, false).await;
+        assert_eq!(
+            bridge.probed_local_kind,
+            Some(LocalServerKind::Generic),
+            "the openai route's coexisting kind probe lands on Generic (mock has no kind signature)"
+        );
+        assert_eq!(bridge.probed_context_tokens, Some(262_144));
+        assert_eq!(bridge.probed_output_tokens, Some(4_096));
+        assert_eq!(
+            bridge.session_model.as_ref().unwrap().model,
+            "my-model",
+            "non-vLLM routes do no served-name correction"
+        );
+    }
+
+    /// The real finalize_runtime_bridge injection block (vLLM side):
+    /// provider() derives "vllm" (skipping the kind probe) and a single
+    /// entry renames to the served name and adopts facts.
+    #[tokio::test]
+    async fn finalize_runtime_bridge_renames_and_injects_vllm_route() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = isolate_model_env();
+        let mock = models_mock::spawn(&[("/v1/models", 200, single_entry_json("served-actual"))]);
+        let mut model = saved_model(ModelPreset::LocalVllm, "my-model", None);
+        model.base_url = mock.base_url.clone();
+        let bridge = wiring_bridge(model.clone());
+        let prepared = PreparedRuntimeModel::unchanged(model);
+        let bridge = EnginePool::finalize_runtime_bridge(bridge, &prepared, false).await;
+        assert_eq!(
+            bridge.session_model.as_ref().unwrap().model,
+            "served-actual",
+            "a vLLM single entry follows the served name"
+        );
+        assert_eq!(bridge.probed_context_tokens, Some(262_144));
+        assert_eq!(bridge.probed_output_tokens, Some(4_096));
     }
 }

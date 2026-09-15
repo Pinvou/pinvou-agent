@@ -27,7 +27,7 @@ source: https://cdn.addon.tencentsuite.com/static/tencent-docs.zip（官方 1.0.
 
 ## ⚙️ 快速配置
 
-本 skill 由 Pinvou 工具商店的「腾讯文档 MCP」连接器自动安装，四个 MCP 服务（tencent-docs / tdoc-slide / tdoc-doc / tdoc-sheet）共用同一个 Token，已由连接器写入本机系统凭据，无需在对话中配置。鉴权报错时见 `references/auth.md` 的处理指引。
+本 skill 由 Pinvou 插件中心的「腾讯文档 MCP」连接器自动安装，四个 MCP 服务（tencent-docs / tdoc-slide / tdoc-doc / tdoc-sheet）共用同一个 Token，已由连接器写入本机系统凭据，无需在对话中配置。鉴权报错时见 `references/auth.md` 的处理指引。
 
 ## 🎯 场景路由表
 
@@ -199,7 +199,7 @@ tencent-docs/
 
 1. **匹配错误码**：先查上方错误码表，按对应方案处理
 2. **确认工具可用**：按品类核对对应前缀的工具（`mcp_tencent-docs_*` 通用 / `mcp_tdoc-slide_*` PPT / `mcp_tdoc-doc_*` Word / `mcp_tdoc-sheet_*` Excel）
-3. **确认授权状态**：如有鉴权相关错误，按 `references/auth.md` 的指引提示用户在 Pinvou 工具商店更新 Token
+3. **确认授权状态**：如有鉴权相关错误，按 `references/auth.md` 的指引提示用户在 Pinvou 插件中心更新 Token
 4. **查阅品类参考文档**：根据场景路由表找到对应参考文档，确认工具调用规范和参数约束
 
 ## SKILL 更新

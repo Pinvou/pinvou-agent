@@ -6429,7 +6429,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pinvou-cli"
-version = "0.1.0"
+version = "0.10.1"
 dependencies = [
  "adapter-gaia",
  "adapter-smoke",
@@ -6437,13 +6437,21 @@ dependencies = [
  "anyhow",
  "async-trait",
  "benchmark-core",
+ "chrono",
+ "fd-lock",
+ "libc",
  "pinvou-product-backend",
+ "pinvou3-tauri",
+ "reqwest 0.13.4",
  "serde_json",
+ "toml 1.1.4+spec-1.1.0",
+ "uuid",
+ "wait-timeout",
 ]
 
 [[package]]
 name = "pinvou-knowledge"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -6478,7 +6486,7 @@ dependencies = [
 
 [[package]]
 name = "pinvou3-tauri"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "age",
  "agent-backend-api",
@@ -7696,9 +7704,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.44"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6725596c3f2c3a0aef021139e145d4eafe314a6623e4680ca83852b2c67ab2ba"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "aws-lc-rs",
  "log",

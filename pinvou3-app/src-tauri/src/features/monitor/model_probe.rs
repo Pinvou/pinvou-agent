@@ -60,7 +60,7 @@ pub struct VllmSnapshot {
     pub prompt_tokens_total: Option<f64>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VllmStatus {
     Offline,
@@ -144,6 +144,11 @@ pub async fn active_model_snapshot() -> Option<VllmSnapshot> {
     let api_key = model.as_ref().and_then(model_api_key);
     let model_id = model.as_ref().map(|m| m.id.clone());
     let provider = preset.as_str().to_string();
+    // The context window the user explicitly declares in the model form must
+    // join the monitor / live-dot display scale; otherwise after saving 1M the
+    // chat page (chat:usage denominator) and the monitor page / progress-bar
+    // denominator each tell their own story.
+    let configured_context = model.as_ref().and_then(|m| m.context_window_tokens);
     snapshot_for_model_config(
         &upstream,
         configured_model,
@@ -151,6 +156,7 @@ pub async fn active_model_snapshot() -> Option<VllmSnapshot> {
         model_id,
         provider,
         api_key.as_deref(),
+        configured_context,
     )
     .await
 }
@@ -166,6 +172,7 @@ pub async fn vllm_snapshot(
         ModelPreset::LocalVllm,
         None,
         "local_vllm".to_string(),
+        None,
         None,
     )
     .await
@@ -225,6 +232,7 @@ async fn snapshot_for_model_config(
     model_id: Option<String>,
     provider: String,
     api_key: Option<&str>,
+    configured_context: Option<u32>,
 ) -> Option<VllmSnapshot> {
     let client = shared_probe_client()?;
     let target_kind = if preset == ModelPreset::LocalVllm {
@@ -337,7 +345,9 @@ async fn snapshot_for_model_config(
 
     let (served_model, max_model_len) = match models_resp {
         Some(r) => match r.json::<serde_json::Value>().await.ok() {
-            Some(v) => parse_models_response(v).unwrap_or((None, None)),
+            Some(v) => {
+                parse_models_response(v, configured_model.as_deref()).unwrap_or((None, None))
+            }
             None => (None, None),
         },
         None => (None, None),
@@ -368,19 +378,25 @@ async fn snapshot_for_model_config(
     } else {
         Vec::new()
     };
-    let max_model_len = max_model_len.or_else(|| {
-        let inferred = infer_context_window(
-            preset,
-            configured_model.as_deref().or(served_model.as_deref()),
-        );
-        if inferred.is_some() {
-            metric_diagnostics.push(MonitorDiagnostic {
-                code: "context_window_inferred".to_string(),
-                message: "上下文长度由模型名/供应商预设推断，远端模型接口未直接提供".to_string(),
-            });
-        }
-        inferred
-    });
+    // The display window goes through the unified precedence (see
+    // display_context_window): an explicit user declaration wins first, a local
+    // deployment's probe value min-clamps; a cloud probe value (usually a list
+    // entry from a proxy/gateway, unrelated to or stale for the configured
+    // model) must not override the user declaration, otherwise saving 1M gets
+    // the progress bar knocked back to 131K. Probe and catalog/preset fallbacks
+    // only fill in when no declaration exists.
+    let inferred = infer_context_window(
+        preset,
+        configured_model.as_deref().or(served_model.as_deref()),
+    );
+    let (max_model_len, window_from_inference) =
+        display_context_window(configured_context, target_kind, max_model_len, inferred);
+    if window_from_inference {
+        metric_diagnostics.push(MonitorDiagnostic {
+            code: "context_window_inferred".to_string(),
+            message: "上下文长度由模型名/供应商预设推断，远端模型接口未直接提供".to_string(),
+        });
+    }
 
     let running = metrics_text
         .as_deref()
@@ -415,13 +431,11 @@ async fn snapshot_for_model_config(
     // 如果用户配置了模型名，但和 vLLM 实际返回的不一致，降级为 Mismatch。
     // 这样监控台不会显示绿色 READY，聊天 live dot 也会变红。
     if metrics_applicable {
-        if let Some(ref cfg) = configured_model {
-            if let Some(ref actual) = served_model {
-                if cfg.trim() != actual.trim() {
-                    status = VllmStatus::Mismatch;
-                }
-            }
-        }
+        status = mismatch_if_served_differs(
+            status,
+            configured_model.as_deref(),
+            served_model.as_deref(),
+        );
     }
     let health_status = match status {
         VllmStatus::Mismatch => "mismatch",
@@ -486,16 +500,89 @@ async fn snapshot_for_model_config(
     Some(snapshot)
 }
 
-fn parse_models_response(v: serde_json::Value) -> Option<(Option<String>, Option<u32>)> {
-    let first = crate::core::model_endpoint::parse_models_response_list(v)?
-        .into_iter()
-        .next()?;
-    Some((Some(first.id), first.max_model_len))
+fn parse_models_response(
+    v: serde_json::Value,
+    configured: Option<&str>,
+) -> Option<(Option<String>, Option<u32>)> {
+    let entries = crate::core::model_endpoint::parse_models_response_list(v)?;
+    // Cloud /models often lists every model at once: prefer the configured
+    // model's own entry (exact hit, ASCII case-insensitive fallback; the
+    // configured name is trimmed first, matching the double-sided trim of the
+    // Mismatch check). The first-entry fallback only serves the served-name
+    // display — its max_model_len belongs to another model and must not be lent
+    // to the configured model (the same "a window is never borrowed from another
+    // model" principle as `resolve_served_model_from_entries`). The two paths
+    // falling back differently is intentional: the inference path keeps the
+    // configured name on a miss so model_not_found surfaces explicitly; the
+    // display path falling back to the first entry's name is diagnostic info
+    // only.
+    let configured = configured.map(str::trim).filter(|name| !name.is_empty());
+    let matched = configured.and_then(|name| {
+        entries.iter().find(|entry| entry.id == name).or_else(|| {
+            entries
+                .iter()
+                .find(|entry| entry.id.eq_ignore_ascii_case(name))
+        })
+    });
+    let entry = matched.or_else(|| entries.first())?;
+    let window = if matched.is_some() || configured.is_none() {
+        entry.max_model_len
+    } else {
+        None
+    };
+    Some((Some(entry.id.clone()), window))
+}
+
+/// Display-side context window (the monitor card + the progress-bar denominator
+/// of `get_backend_status`). The precedence itself lives in
+/// `core::model_context::resolve_context_window`, shared with the host
+/// `bridge::route_limits_for_model` (which decides inference and compaction
+/// thresholds); this wrapper only owns the "is the probe trustworthy" gate: a
+/// local deployment's (loopback/private IP, locally introspectable) probe value
+/// is handed to the unified scale for min-clamping; a cloud probe value comes
+/// from gateway/proxy list entries and is not deployment ground truth, so when
+/// the user already declared a window it does not participate at all (the
+/// declaration wins and there is no clamping basis) and only fills the display
+/// when no declaration exists.
+fn display_context_window(
+    configured: Option<u32>,
+    target_kind: &str,
+    probed: Option<u32>,
+    inferred: Option<u32>,
+) -> (Option<u32>, bool) {
+    let probed = match (configured, target_kind) {
+        (Some(_), "local") | (None, _) => probed,
+        (Some(_), _) => None,
+    };
+    crate::core::model_context::resolve_context_window(configured, probed, inferred)
+}
+
+/// Downgrade to `Mismatch` when the configured model name differs from the
+/// actual served name (only local-deployment callers enable it, see
+/// `snapshot_for_model_config`). Extracted as a pure function so unit tests can
+/// pin the comparison semantics: exact comparison after trimming both sides
+/// (case-sensitive, the same scale as the inference path
+/// `resolve_served_model_from_entries`' exact match — when a gateway normalizes
+/// ids to lowercase while the configured name has uppercase, the Engine sending
+/// the configured original name gets model_not_found, so the monitor red dot is
+/// a real signal, not a false positive).
+fn mismatch_if_served_differs(
+    status: VllmStatus,
+    configured: Option<&str>,
+    served: Option<&str>,
+) -> VllmStatus {
+    match (configured, served) {
+        (Some(cfg), Some(actual)) if cfg.trim() != actual.trim() => VllmStatus::Mismatch,
+        _ => status,
+    }
 }
 
 fn infer_context_window(preset: ModelPreset, model: Option<&str>) -> Option<u32> {
-    // 模型名事实与 Engine route_limits 共用同一入口，避免页面显示 1M、实际仍按
-    // 128K 压缩。底座与补充表都无法识别时按供应商预设兜底（表在 prefs::model_preset）。
+    // Model-name facts resolve through the core::model_context single entry, the
+    // same source as the host route_limits inference fallback, so the page never
+    // displays 1M while compaction still runs on 128K. When neither the base nor
+    // the supplemental table recognizes the name, fall back to the vendor preset
+    // (table in prefs::model_preset).
     if let Some(window) = model.and_then(crate::core::model_context::resolved_context_window) {
         return Some(window);
     }
@@ -606,9 +693,11 @@ pub async fn probe_vllm_model_info(
     bearer: Option<&str>,
 ) -> (Option<String>, Option<u32>) {
     // HTTP layer and URL assembly reuse the shared core probe (no /v1/models
-    // semantics drift).
+    // semantics drift). Local single-model probe: no configured name to match,
+    // so the first list entry stays the served-name source (unchanged here;
+    // the configured-name matching lives in `snapshot_for_model_config`).
     match crate::core::model_endpoint::fetch_v1_models(base_url, bearer).await {
-        Some(v) => parse_models_response(v).unwrap_or((None, None)),
+        Some(v) => parse_models_response(v, None).unwrap_or((None, None)),
         None => (None, None),
     }
 }
@@ -627,38 +716,68 @@ pub async fn probe_vllm_model_info(
 /// - otherwise (probe failure / multi-entry list without the configured
 ///   name) → keep the configured name so inference surfaces `model_not_found`
 ///   explicitly, never silently switching to any other listed model.
-/// Returns `(model name to send, that model's context window)`; when the
-/// configured name is kept the window is `None` (the model is not in the
-/// list, so another model's window must not drive compaction thresholds).
+/// Returns `(model name to send, that model's context window, that model's
+/// self-reported output limit)`; when the configured name is kept the window
+/// and output limit are `None` (the model is not in the list, so another
+/// model's facts must not drive compaction thresholds or output caps).
 fn resolve_served_model_from_entries(
     configured: &str,
     entries: &[crate::core::model_endpoint::OpenAiModelInfo],
-) -> (String, Option<u32>) {
+) -> (String, Option<u32>, Option<u32>) {
     if let Some(matched) = entries.iter().find(|model| model.id == configured) {
-        return (configured.to_string(), matched.max_model_len);
+        return (
+            configured.to_string(),
+            matched.max_model_len,
+            matched.max_output_tokens,
+        );
     }
     if let [single] = entries {
-        return (single.id.clone(), single.max_model_len);
+        return (
+            single.id.clone(),
+            single.max_model_len,
+            single.max_output_tokens,
+        );
     }
-    (configured.to_string(), None)
+    (configured.to_string(), None, None)
 }
 
 /// Fetches `/v1/models` and decides the actual model name via
 /// [`resolve_served_model_from_entries`]. On probe failure returns the
-/// configured name with a `None` window. `bearer` semantics match
+/// configured name with `None` window/limit. `bearer` semantics match
 /// [`probe_vllm_model_info`] (inference-same-origin key).
 pub async fn resolve_served_model(
     base_url: &str,
     bearer: Option<&str>,
     configured: &str,
-) -> (String, Option<u32>) {
+) -> (String, Option<u32>, Option<u32>) {
     match crate::core::model_endpoint::fetch_v1_models(base_url, bearer)
         .await
         .and_then(crate::core::model_endpoint::parse_models_response_list)
     {
         Some(entries) => resolve_served_model_from_entries(configured, &entries),
-        None => (configured.to_string(), None),
+        None => (configured.to_string(), None, None),
     }
+}
+
+/// Whether a probed entry's facts (context window / self-reported output
+/// limit) may be adopted by this route. The facts must belong to the model
+/// name actually sent to the endpoint: routes that follow the served name
+/// (vLLM, whose name is usually corrected to the entry itself) may always
+/// adopt; routes that do not rename adopt only when the configured name
+/// exactly hits the list — in the single-entry "borrowed name" scenario the
+/// returned served name is unrelated to the configured one and its facts
+/// belong to another model, so they must not tighten this route's
+/// window/output caps.
+///
+/// Known exception (intentional trade-off): with vLLM +
+/// `pins_scheduled_model` the served-name correction is suppressed and the
+/// configured name goes live verbatim, but `follows_served_name` is still
+/// true by route type — the single-entry facts are then adopted. A lenient
+/// single-model server is genuinely serving that entry (facts correct); a
+/// strict one 404s on the configured name (facts have no effect), so no
+/// extra condition complexity is added for that corner.
+pub fn adopts_probed_facts(follows_served_name: bool, configured: &str, served: &str) -> bool {
+    follows_served_name || served == configured
 }
 
 /// 当前 monitor/探测应使用的 vLLM base_url。
@@ -710,9 +829,14 @@ mod tests {
         );
         // 端到端佐证:探测窗口喂进 derive 公式应得按窗口缩放的 T(非写死 190K)。
         // 复算 derive_compaction_threshold(bridge 私有,此处内联同公式):
-        //   E = W − O − 1024;T = (E−S)/1.5 − 22000, clamp[4096, 0.75W]。O=24576(默认预留)。
+        //   E = W − O − 1024; T = (E−S)/1.5 − 22000, clamp[4096, 0.75W].
+        // O = the window-tier declaration — taken from the same source as
+        // production, core::model_context::operator_owned_output_declaration;
+        // do not inline a copy again.
+        let o = crate::core::model_context::operator_owned_output_declaration(Some(window))
+            .expect("a real-machine window >=100K always yields a tier declaration");
         let e = (window as usize)
-            .saturating_sub(24_576)
+            .saturating_sub(o as usize)
             .saturating_sub(1_024);
         let t = (e.saturating_sub(4_000).saturating_mul(2) / 3)
             .saturating_sub(22_000)
@@ -748,18 +872,191 @@ mod tests {
             r#"{"object":"list","data":[{"id":"/model","object":"model","max_model_len":65536}]}"#,
         )
         .unwrap();
-        let (id, max) = parse_models_response(json).unwrap();
+        let (id, max) = parse_models_response(json, None).unwrap();
         assert_eq!(id.as_deref(), Some("/model"));
         assert_eq!(max, Some(65536));
+    }
+
+    fn models_list_json(entries: &[(&str, Option<u32>)]) -> serde_json::Value {
+        let data: Vec<String> = entries
+            .iter()
+            .map(|(id, len)| match len {
+                Some(len) => format!(r#"{{"id":"{id}","max_model_len":{len}}}"#),
+                None => format!(r#"{{"id":"{id}"}}"#),
+            })
+            .collect();
+        serde_json::from_str(&format!(
+            r#"{{"object":"list","data":[{}]}}"#,
+            data.join(",")
+        ))
+        .unwrap()
+    }
+
+    /// Cloud /models often lists every model at once: max_model_len must come
+    /// from the configured model's own entry, never borrowed from the first
+    /// entry (often another model, or a gateway default of 131072).
+    #[test]
+    fn parse_models_response_matches_configured_model_entry() {
+        let json = models_list_json(&[
+            ("glm-5.2", Some(1000_000)),
+            ("glm-5.3-flash", Some(131_072)),
+        ]);
+        let (id, max) = parse_models_response(json, Some("glm-5.3-flash")).unwrap();
+        assert_eq!(id.as_deref(), Some("glm-5.3-flash"));
+        assert_eq!(max, Some(131_072));
+    }
+
+    /// Configured name not in the list (gateway returns a partial roster): the
+    /// first-entry fallback only serves the served-name display; its
+    /// max_model_len belongs to another model and must not be lent to the
+    /// configured model (the inference path resolve_served_model_from_entries
+    /// follows the same "window never borrowed" principle).
+    #[test]
+    fn parse_models_response_first_entry_fallback_lends_name_not_window() {
+        let json = models_list_json(&[("a", Some(4096)), ("b", Some(8192))]);
+        let (id, max) = parse_models_response(json, Some("gone")).unwrap();
+        assert_eq!(id.as_deref(), Some("a"));
+        assert_eq!(max, None);
+    }
+
+    /// When the case-insensitive fallback hits, the window likewise belongs to
+    /// the configured model (gateways normalizing ids to lowercase are a common
+    /// shape, and the window does belong to the same model).
+    #[test]
+    fn parse_models_response_matches_case_insensitively_and_keeps_window() {
+        let json = models_list_json(&[("other", Some(4096)), ("glm-5.3-flash", Some(131_072))]);
+        let (id, max) = parse_models_response(json, Some("GLM-5.3-Flash")).unwrap();
+        assert_eq!(id.as_deref(), Some("glm-5.3-flash"));
+        assert_eq!(max, Some(131_072));
+    }
+
+    /// The configured name is trimmed before matching (the same scale as the
+    /// double-sided trim of the Mismatch check), so a name with leading or
+    /// trailing whitespace can finally match.
+    #[test]
+    fn parse_models_response_trims_configured_name() {
+        let json = models_list_json(&[("glm-5.3-flash", Some(131_072))]);
+        let (id, max) = parse_models_response(json, Some("  glm-5.3-flash\t")).unwrap();
+        assert_eq!(id.as_deref(), Some("glm-5.3-flash"));
+        assert_eq!(max, Some(131_072));
+    }
+
+    /// Matched entry but the server carries no max_model_len: the window stays
+    /// None and is left to the declaration/inference fallbacks — never
+    /// fabricated (the same principle as resolve_served_model_from_entries).
+    #[test]
+    fn parse_models_response_matched_entry_without_window_propagates_none() {
+        let json = models_list_json(&[("user-picked", None)]);
+        let (id, max) = parse_models_response(json, Some("user-picked")).unwrap();
+        assert_eq!(id.as_deref(), Some("user-picked"));
+        assert_eq!(max, None);
+    }
+
+    /// A user-declared window (cloud; probe value 131072 from a gateway list):
+    /// the declaration must win as-is — regression pin for the reported bug
+    /// (after saving 1048576 the progress bar still showed 131.1K).
+    #[test]
+    fn display_window_remote_configured_declaration_beats_probe() {
+        let (window, inferred) =
+            display_context_window(Some(1_048_576), "remote", Some(131_072), Some(1_000_000));
+        assert_eq!(window, Some(1_048_576));
+        assert!(!inferred);
+    }
+
+    /// A local deployment's probe is ground truth: the same min-clamp as the
+    /// host route_limits.
+    #[test]
+    fn display_window_local_min_clamps_declaration_with_probe() {
+        let (window, inferred) =
+            display_context_window(Some(1_048_576), "local", Some(131_072), None);
+        assert_eq!(window, Some(131_072));
+        assert!(!inferred);
+        // Reverse: declared 32K, machine at 128K → clamped to the declaration
+        // (consistent with route_limits).
+        let (window, _) = display_context_window(Some(32_768), "local", Some(131_072), None);
+        assert_eq!(window, Some(32_768));
+    }
+
+    /// Local declaration but probe absent (/models parse failure etc.): the
+    /// declaration applies as-is — matching the host route_limits (Some, None)
+    /// arm; an absent probe produces no clamping.
+    #[test]
+    fn display_window_local_declared_without_probe_uses_declaration() {
+        let (window, inferred) =
+            display_context_window(Some(1_048_576), "local", None, Some(131_072));
+        assert_eq!(window, Some(1_048_576));
+        assert!(!inferred);
+    }
+
+    /// Abnormal target_kind (URL parse failure): a declaration still displays
+    /// as declared, and the probe value does not override it.
+    #[test]
+    fn display_window_declared_on_nonlocal_target_ignores_probe() {
+        let (window, inferred) =
+            display_context_window(Some(262_144), "invalid", Some(131_072), None);
+        assert_eq!(window, Some(262_144));
+        assert!(!inferred);
+    }
+
+    /// Without a declaration the existing scale holds: the probe wins first and
+    /// inference only fills in when the probe is absent; the diagnostic flag is
+    /// set only when inference is truly adopted.
+    #[test]
+    fn display_window_without_declaration_keeps_probe_then_infer() {
+        let (window, inferred) =
+            display_context_window(None, "remote", Some(262_144), Some(131_072));
+        assert_eq!(window, Some(262_144));
+        assert!(!inferred);
+        let (window, inferred) = display_context_window(None, "remote", None, Some(1_000_000));
+        assert_eq!(window, Some(1_000_000));
+        assert!(inferred);
+        let (window, inferred) = display_context_window(None, "remote", None, None);
+        assert_eq!(window, None);
+        assert!(!inferred);
+    }
+
+    /// Mismatch detection semantics (extracted pure function): double-sided
+    /// trim, exact comparison (case-sensitive), a missing side never downgrades,
+    /// and a non-Ready original status can only be downgraded, never upgraded.
+    #[test]
+    fn mismatch_detection_trims_and_is_case_sensitive() {
+        use VllmStatus::{Busy, Ready};
+        assert_eq!(
+            mismatch_if_served_differs(Ready, Some(" qwen "), Some("qwen")),
+            Ready
+        );
+        // Case difference → Mismatch: the Engine sending the configured original
+        // name would get model_not_found, so the red dot is a real signal (the
+        // same scale as resolve_served_model_from_entries' exact match).
+        assert_eq!(
+            mismatch_if_served_differs(Ready, Some("Qwen"), Some("qwen")),
+            VllmStatus::Mismatch
+        );
+        assert_eq!(
+            mismatch_if_served_differs(Busy, Some("a"), Some("b")),
+            VllmStatus::Mismatch
+        );
+        assert_eq!(mismatch_if_served_differs(Ready, None, Some("b")), Ready);
+        assert_eq!(mismatch_if_served_differs(Ready, Some("a"), None), Ready);
+        assert_eq!(mismatch_if_served_differs(Ready, None, None), Ready);
     }
 
     fn served_entry(
         id: &str,
         max_model_len: Option<u32>,
     ) -> crate::core::model_endpoint::OpenAiModelInfo {
+        served_entry_with_output(id, max_model_len, None)
+    }
+
+    fn served_entry_with_output(
+        id: &str,
+        max_model_len: Option<u32>,
+        max_output_tokens: Option<u32>,
+    ) -> crate::core::model_endpoint::OpenAiModelInfo {
         crate::core::model_endpoint::OpenAiModelInfo {
             id: id.to_string(),
             max_model_len,
+            max_output_tokens,
             loaded: None,
         }
     }
@@ -774,9 +1071,10 @@ mod tests {
             served_entry("first-downloaded", Some(4096)),
             served_entry("user-picked", Some(131_072)),
         ];
-        let (name, window) = resolve_served_model_from_entries("user-picked", &entries);
+        let (name, window, output) = resolve_served_model_from_entries("user-picked", &entries);
         assert_eq!(name, "user-picked");
         assert_eq!(window, Some(131_072));
+        assert_eq!(output, None);
     }
 
     /// Real vLLM scenario: after a `--served-model-name` change the list holds
@@ -784,9 +1082,10 @@ mod tests {
     #[test]
     fn served_model_follows_single_unknown_name() {
         let entries = vec![served_entry("served-name", Some(65536))];
-        let (name, window) = resolve_served_model_from_entries("qwen36_35b_256k", &entries);
+        let (name, window, output) = resolve_served_model_from_entries("qwen36_35b_256k", &entries);
         assert_eq!(name, "served-name");
         assert_eq!(window, Some(65536));
+        assert_eq!(output, None);
     }
 
     /// Multi-entry list without the configured name (stale/hand-edited config):
@@ -797,9 +1096,10 @@ mod tests {
     #[test]
     fn served_model_keeps_configured_name_when_absent_from_multi_model_list() {
         let entries = vec![served_entry("a", Some(4096)), served_entry("b", Some(8192))];
-        let (name, window) = resolve_served_model_from_entries("gone", &entries);
+        let (name, window, output) = resolve_served_model_from_entries("gone", &entries);
         assert_eq!(name, "gone");
         assert_eq!(window, None);
+        assert_eq!(output, None);
     }
 
     /// Single entry that equals the configured name: takes the "found in list"
@@ -809,9 +1109,10 @@ mod tests {
     #[test]
     fn served_model_single_entry_equal_to_configured_keeps_name_and_window() {
         let entries = vec![served_entry("qwen36_35b_256k", Some(262_144))];
-        let (name, window) = resolve_served_model_from_entries("qwen36_35b_256k", &entries);
+        let (name, window, output) = resolve_served_model_from_entries("qwen36_35b_256k", &entries);
         assert_eq!(name, "qwen36_35b_256k");
         assert_eq!(window, Some(262_144));
+        assert_eq!(output, None);
     }
 
     /// Matched entry without `max_model_len` (server does not expose it): the
@@ -823,9 +1124,52 @@ mod tests {
             served_entry("first-downloaded", None),
             served_entry("user-picked", None),
         ];
-        let (name, window) = resolve_served_model_from_entries("user-picked", &entries);
+        let (name, window, output) = resolve_served_model_from_entries("user-picked", &entries);
         assert_eq!(name, "user-picked");
         assert_eq!(window, None);
+        assert_eq!(output, None);
+    }
+
+    /// The entry's self-reported output limit rides the same matched-entry
+    /// rule as the window: only the configured model's own limit is used,
+    /// never another listed model's.
+    #[test]
+    fn served_model_output_limit_follows_matched_entry() {
+        let entries = vec![
+            served_entry_with_output("first-downloaded", Some(4096), Some(8192)),
+            served_entry_with_output("user-picked", Some(262_144), Some(65_536)),
+        ];
+        let (name, _, output) = resolve_served_model_from_entries("user-picked", &entries);
+        assert_eq!(name, "user-picked");
+        assert_eq!(output, Some(65_536));
+        // No match → never borrow another model's output limit
+        let (_, _, borrowed) = resolve_served_model_from_entries("gone", &entries);
+        assert_eq!(borrowed, None);
+    }
+
+    /// Probed facts belong only to the model name actually requested:
+    /// routes that follow the served name (vLLM, whose name is corrected to
+    /// the entry itself) always adopt; routes that do not rename adopt only
+    /// on an exact configured-name match, and single-entry "borrowed name"
+    /// facts must not be misattributed.
+    #[test]
+    fn probed_facts_adoptable_only_on_exact_match_unless_route_follows_served_name() {
+        // vLLM: after correction the facts share the same origin as the
+        // final request name; always adopt (both inputs, before and after
+        // correction).
+        assert!(adopts_probed_facts(true, "qwen36_35b_256k", "served-name"));
+        assert!(adopts_probed_facts(
+            true,
+            "qwen36_35b_256k",
+            "qwen36_35b_256k"
+        ));
+        // Non-vLLM: exact match adopts; a single-entry borrowed name does not.
+        assert!(adopts_probed_facts(false, "user-picked", "user-picked"));
+        assert!(!adopts_probed_facts(
+            false,
+            "user-picked",
+            "first-downloaded"
+        ));
     }
 
     #[test]
@@ -897,9 +1241,13 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
     #[test]
     fn infer_context_window_cloud_models() {
         let cases: &[(ModelPreset, &str, u32)] = &[
-            // DeepSeek：v4 全系 1M（原 bug：预设固定 128K）
+            // DeepSeek: every v4 model is 1M (original bug: preset fixed 128K);
+            // deepseek-flash (V4.1-Flash) is officially 1M, corrected via the
+            // core::model_context override table (the base applies the legacy
+            // 128K heuristic to deepseek names without "v4", checked 2026-09-11)
             (ModelPreset::Deepseek, "deepseek-v4-pro", 1_000_000),
             (ModelPreset::Deepseek, "deepseek-v4-flash", 1_000_000),
+            (ModelPreset::Deepseek, "deepseek-flash", 1_000_000),
             // Kimi：直连平台 kimi-k3 是 1M；Coding Plan 裸 k3 默认按 256K 安全值
             (ModelPreset::Kimi, "kimi-k3", 1_048_576),
             (ModelPreset::Kimi, "kimi-k2.7-code", 262_144),
@@ -916,8 +1264,9 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
             // (binary 256K = 262,144).
             (ModelPreset::OpenaiCompatible, "k3-256k", 262_144),
             (ModelPreset::OpenaiCompatible, "k3", 262_144),
-            // GLM：5.2 是 1M，5.1/5-turbo 是 202,752，4.7 官方 200K
+            // GLM: 5.2 / 5.3 are 1M, 5.1/5-turbo are 202,752, 4.7 is officially 200K
             (ModelPreset::Glm, "glm-5.2", 1_000_000),
+            (ModelPreset::Glm, "glm-5.3", 1_000_000),
             (ModelPreset::Glm, "glm-5.1", 202_752),
             (ModelPreset::Glm, "glm-5-turbo", 202_752),
             (ModelPreset::Glm, "glm-4.7", 204_800),
@@ -935,20 +1284,56 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
             (ModelPreset::Qwen, "qwen3.7-max", 1_000_000),
             (ModelPreset::Qwen, "qwen3.7-flash", 1_000_000),
             (ModelPreset::Qwen, "qwen3.6-flash", 1_000_000),
-            // 豆包：evolving 已升 1M，2.x 全系 256K
+            // Doubao: evolving is already 1M; the 2.x family is officially 256k
+            // (volcengine 1330310, checked 2026-09-12), carried by the
+            // core::model_context supplemental table — the base has no doubao
+            // rows, and without the supplemental table the engine side falls to
+            // 128K, diverging from the monitor page
             (ModelPreset::Doubao, "doubao-seed-evolving", 1_048_576),
-            (ModelPreset::Doubao, "doubao-seed-2.1-pro", 262_144),
-            (ModelPreset::Doubao, "doubao-seed-2.1-turbo", 262_144),
-            (ModelPreset::Doubao, "doubao-seed-2.0-pro", 262_144),
-            (ModelPreset::Doubao, "doubao-seed-2.0-lite", 262_144),
+            (ModelPreset::Doubao, "doubao-seed-2-1-pro-260628", 262_144),
+            (ModelPreset::Doubao, "doubao-seed-2-1-turbo-260628", 262_144),
+            (
+                ModelPreset::Doubao,
+                "doubao-seed-2-0-code-preview-260215",
+                262_144,
+            ),
+            (ModelPreset::Doubao, "doubao-seed-2-0-pro-260215", 262_144),
+            (ModelPreset::Doubao, "doubao-seed-2-0-lite-260428", 262_144),
             // OpenAI 兼容示例：gpt-5.6 全系 1.05M
             (ModelPreset::OpenaiCompatible, "gpt-5.6-terra", 1_050_000),
             (ModelPreset::OpenaiCompatible, "gpt-5.6-luna", 1_050_000),
             (ModelPreset::OpenaiCompatible, "gpt-5.6-sol", 1_050_000),
-            // 底座 catalog 已知（haiku 200K）与 PINVOU_OVERRIDES 覆盖（opus-5 1M）
-            // 的 Anthropic 模型走 resolved_context_window，preset 兜底见 prefs 测试。
+            // xAI: the base known table lists grok-4.6 / grok-4.5 at 500K (checked 2026-09-11)
+            (ModelPreset::Xai, "grok-4.6", 500_000),
+            // The base known table still records grok-4.20-0309-* as 2M; the
+            // core::model_context override table corrects it first to the 1M
+            // re-checked from docs.x.ai on 2026-09-11 (matching the catalog desc).
+            (ModelPreset::Xai, "grok-4.20-0309-reasoning", 1_000_000),
+            (ModelPreset::Xai, "grok-4.20-0309-non-reasoning", 1_000_000),
+            // The pre-retirement legacy spelling kept by the ACP preset: the
+            // base has no row and relies on the core::model_context override
+            // table correcting it to 1M, otherwise the engine falls to 128K
+            // and diverges from the monitor page's prefs substring fallback.
+            (ModelPreset::Xai, "grok-4.20-reasoning", 1_000_000),
+            // The base known table only has bare "grok-build" → 512K, which
+            // misses the -0.1 wire id; the core::model_context override table
+            // corrects it to the official docs.x.ai 256K (matching the catalog desc).
+            (ModelPreset::Xai, "grok-build-0.1", 256_000),
+            // The base chain has no rows for gpt-6 / gemini-3.8; the
+            // core::model_context override table fills them in per the official
+            // figures (the engine-side resolved was None → 128K, diverging from
+            // the monitor page fallback).
+            (ModelPreset::Openai, "gpt-6-astra", 1_050_000),
+            (ModelPreset::Gemini, "gemini-3.8-flash", 1_048_576),
+            // Anthropic models covered by the base catalog (haiku 200K) and the
+            // PINVOU_OVERRIDES entries (opus-5 / fable-5-1 both 1M) go through
+            // resolved_context_window; preset fallbacks are covered by the prefs
+            // tests. The base known table does not list fable-5-1 exactly (only
+            // fable-5), so without the override it would fall to the claude
+            // wildcard 200K.
             (ModelPreset::Anthropic, "claude-haiku-4-5", 200_000),
             (ModelPreset::Anthropic, "claude-opus-5", 1_000_000),
+            (ModelPreset::Anthropic, "claude-fable-5-1", 1_000_000),
         ];
         for (preset, model, expected) in cases {
             assert_eq!(
@@ -974,5 +1359,51 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
             Some(131_072)
         );
         assert_eq!(infer_context_window(ModelPreset::Kimi, None), Some(262_144));
+    }
+
+    /// Every preset's default model must resolve a context window through the
+    /// shared resolution entry point (resolved_context_window): the engine-side
+    /// `effective_context_window` falls straight to 128K when resolved is None,
+    /// while the monitor page's `infer_context_window` still has the prefs
+    /// vendor fallback, so the two sides diverge (gpt-6-astra /
+    /// gemini-3.8-flash once derived compaction thresholds from 128K while the
+    /// page displayed 1M for exactly this reason). This test turns "changing a
+    /// default must pass the resolution chain" into an explicit gate; the
+    /// expected values are the vendor official figures and, together with
+    /// `default_model_matches_vendor_docs_2026_09` and the frontend
+    /// MODEL_PRESET_DEFS lock tests, form a three-layer default-value defense.
+    #[test]
+    fn preset_default_models_resolve_engine_context_window() {
+        let cases: &[(ModelPreset, u32)] = &[
+            // The `_256k` suffix hint resolves to 256,000 via N×1000 (same
+            // source as the monitor page; the prefs LocalVllm fallback of
+            // 262,144 only applies when resolved is None, which this default
+            // never reaches).
+            (ModelPreset::LocalVllm, 256_000),
+            (ModelPreset::Deepseek, 1_000_000),
+            (ModelPreset::Kimi, 1_048_576),
+            (ModelPreset::Qwen, 1_000_000),
+            (ModelPreset::Doubao, 1_048_576),
+            (ModelPreset::Minimax, 1_000_000),
+            (ModelPreset::Glm, 1_000_000),
+            (ModelPreset::Mimo, 1_000_000),
+            (ModelPreset::Openai, 1_050_000),
+            (ModelPreset::Anthropic, 1_000_000),
+            (ModelPreset::Gemini, 1_048_576),
+            (ModelPreset::Xai, 500_000),
+            // The openai_compatible Rust default gpt-5.6-terra only serves as
+            // the legacy migration fallback (deliberately left empty on the
+            // frontend), but as a default_model() output it must likewise pass
+            // the shared resolution entry (base gpt-5.6 exact list → 1.05M).
+            (ModelPreset::OpenaiCompatible, 1_050_000),
+        ];
+        for (preset, expected) in cases {
+            let model = preset.default_model();
+            assert_eq!(
+                crate::core::model_context::resolved_context_window(model),
+                Some(*expected),
+                "{preset:?} default model {model} must resolve an official context window via the shared resolution entry (the engine side has no prefs fallback)"
+            );
+        }
     }
 }

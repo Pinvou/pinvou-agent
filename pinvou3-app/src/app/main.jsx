@@ -55,6 +55,7 @@ import { ChatView } from '../features/chat/ChatView.jsx';
 import { createPinvouModeScopeKey, savePinvouModeState } from '../features/chat/pinvou-mode-state.js';
 import { WebConnectionStatus } from '../features/web/WebConnectionStatus.jsx';
 import { VoiceShortcutRouter } from '../features/voice-composer/VoiceShortcutRouter.jsx';
+import { MODEL_PRESET_DEFS } from '../features/settings/model-catalog.js';
 import { createPetActivationGuard } from '../features/pet/activation-guard.js';
 import { SessionAttachmentTitle } from '../features/attachments/SessionAttachmentTitle.jsx';
 import {
@@ -1047,17 +1048,18 @@ const NAV_PREFETCH = {
       const savedModelConfigRef = useRef(null);
       const savedSearchConfigRef = useRef(null);
 
-      // 各厂商默认配置（前端自动填充用，与 bridge/mod.rs 对齐）
+      // Per-vendor default configs (used to backfill the legacy single-model
+      // draft): reuse settings/model-catalog.js MODEL_PRESET_DEFS directly
+      // (which is aligned with the Rust prefs
+      // `ModelPreset::default_base_url/default_model`) instead of hand-copying
+      // a second copy, avoiding the mirror drift qwen once suffered. The only
+      // override is openai_compatible: the add-model catalog deliberately has
+      // no default address/model, while this table backfills the values the
+      // Rust legacy migration fallback actually resolves
+      // (prefs default_base_url/default_model).
       const PRESET_DEFAULTS = {
-        local_vllm:  { baseUrl: 'http://127.0.0.1:8000/v1',                model: 'qwen36_35b_256k' },
-        deepseek:    { baseUrl: 'https://api.deepseek.com',                model: 'deepseek-v4-pro' },
-        kimi:        { baseUrl: 'https://api.moonshot.cn/v1',              model: 'kimi-k3' },
-        openai_compatible: { baseUrl: 'https://api.openai.com/v1',        model: 'gpt-5.6-terra' },
-        qwen:        { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3.7-plus' },
-        doubao:      { baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-seed-evolving' },
-        minimax:     { baseUrl: 'https://api.minimaxi.com/v1',            model: 'MiniMax-M3' },
-        glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-5.2' },
-        mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2.5-pro' },
+        ...MODEL_PRESET_DEFS,
+        openai_compatible: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.6-terra' },
       };
       function normalizedModelProfile(name, baseUrl, apiKey) {
         const modelName = (name || '').trim();
@@ -1697,6 +1699,14 @@ const NAV_PREFETCH = {
       useEffect(() => {
         if (projectsBootstrapReady && bridge.projects) bridge.projects.loadProjects();
       }, [projectsBootstrapReady]);
+      // Set of session ids whose archive export is in flight: the handler
+      // exits early to prevent concurrent duplicate exports, and the sidebar
+      // hides the matching menu item as in-progress feedback.
+      const [exportingSessionIds, setExportingSessionIds] = useState(() => new Set());
+      // latest-ref mirror: the stable export callback reads the in-flight set
+      // here instead of changing identity whenever the set changes.
+      const exportingSessionIdsRef = useRef(exportingSessionIds);
+      exportingSessionIdsRef.current = exportingSessionIds;
 
       // Expanded sidebar width: drag the right edge to adjust (220~480px), double-click
       // the handle to reset to default; the choice is persisted.
@@ -2420,6 +2430,42 @@ const NAV_PREFETCH = {
         if (isCodexSession) await refreshCodexSessions().catch(() => {});
       }, [codexSessions, refreshCodexSessions]);
 
+      // One-click full session log export (.tar.xz, full-fidelity context).
+      // The backend opens the native save dialog: cancellation resolves to
+      // null; the success toast carries the save path and failures surface
+      // through the settings-page toast. Sessions already exporting exit
+      // early (preventing concurrent duplicate exports) and their sidebar
+      // menu items are hidden at the same time as in-progress feedback. The
+      // default file name carries the session title (truncated by code
+      // points so surrogate pairs are not split) and a short id; the final
+      // name is sanitized by the backend (against path traversal and invalid
+      // characters). The task list is read via allSidebarTasksRef and the
+      // in-flight set via exportingSessionIdsRef so the callback identity
+      // stays stable (RecentItem is memoized).
+      const handleExportSessionArchive = useCallback(async (id) => {
+        if (!bridge.available || !bridge.sessions.exportSessionArchive) return;
+        if (exportingSessionIdsRef.current.has(id)) return;
+        const chat = (allSidebarTasksRef.current || []).find(c => c.id === id);
+        const title = ((chat && chat.title) || 'session').trim() || 'session';
+        const stem = [...title].slice(0, 30).join('');
+        const defaultName = `pinvou-session-${stem}-${id.slice(0, 8)}.tar.xz`;
+        setExportingSessionIds(prev => new Set(prev).add(id));
+        try {
+          const result = await bridge.sessions.exportSessionArchive(id, defaultName);
+          if (!result) return;
+          setSettingsToast(t.exportSessionDone(result.path));
+        } catch (error) {
+          console.warn('export session archive failed', error);
+          setSettingsToast(t.exportSessionFailed);
+        } finally {
+          setExportingSessionIds(prev => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
+        }
+      }, [t]);
+
       const handleToggleSessionPinned = useCallback(async (id, pinned) => {
         const isCodexSession = codexSessions.some(session => session.id === id);
         if (bridge.available) await bridge.sessions.toggleSessionPinned(id, pinned);
@@ -2762,6 +2808,7 @@ const NAV_PREFETCH = {
             onDelete={handleDeleteSession}
             onTogglePinned={handleToggleSessionPinned}
             onOpenFolder={can('externalSystemOpen') ? handleRevealSessionFolder : undefined}
+            onExportArchive={chat.taskKind !== 'codex' && !exportingSessionIds.has(chat.id) && bridge.sessions.exportSessionArchive ? handleExportSessionArchive : undefined}
             onArchive={handleArchiveSession}
             dragKind={detachKind}
             dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
@@ -3619,6 +3666,7 @@ const NAV_PREFETCH = {
                 onDelete={handleDeleteSession}
                 onTogglePinned={handleToggleSessionPinned}
                 onOpenFolder={can('externalSystemOpen') ? handleRevealSessionFolder : undefined}
+                onExportArchive={bridge.sessions.exportSessionArchive ? handleExportSessionArchive : undefined}
                 onArchive={handleArchiveSession}
                 onArchiveMany={handleBatchArchiveSessions}
                 onDeleteMany={handleBatchDeleteSessions}

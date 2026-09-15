@@ -186,6 +186,7 @@ class CiGatePolicyTests(unittest.TestCase):
             "rust_code",
             "rust_dependencies",
             "rust_full",
+            "cli_rust",
             "knowledge_rust",
             "knowledge_dependencies",
             "release_contract",
@@ -239,6 +240,13 @@ class CiGatePolicyTests(unittest.TestCase):
             "cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --all-targets --all-features --no-deps",
             knowledge,
         )
+        # The -D-warnings hard gate must stay in this job (single shared
+        # cache); rust-lint must not compile the workspace a second time.
+        self.assertIn(
+            "cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --lib --bins --no-deps --features server -- -D warnings",
+            knowledge,
+        )
+        self.assertNotIn("cargo clippy pinvou-knowledge", self.pr_workflow)
         self.assertIn(
             "cargo test --manifest-path pinvou-knowledge/Cargo.toml --all-features",
             knowledge,
@@ -255,6 +263,88 @@ class CiGatePolicyTests(unittest.TestCase):
         )[1]
         self.assertIn("- knowledge-rust", required_gate)
         self.assertIn('"knowledge-rust:$KNOWLEDGE_RUST_RESULT"', required_gate)
+
+    def test_fast_gate_actionlint_is_pinned_and_checksum_verified(self):
+        fast_gate = self.pr_workflow.split("\n  fast-gate:", maxsplit=1)[1].split(
+            "\n  frontend-test:", maxsplit=1
+        )[0]
+        step = fast_gate.split(
+            "- name: workflow lint (actionlint)", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        # The release artifact is fetched from the pinned tag and verified
+        # against the release checksums.txt digest. Executing an installer
+        # fetched from a mutable ref (e.g. raw.githubusercontent .../main/)
+        # would let third-party code drift under a green gate.
+        self.assertIn(
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz",
+            step,
+        )
+        self.assertIn(
+            "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz",
+            step,
+        )
+        self.assertIn("| sha256sum --check -", step)
+        self.assertNotIn("download-actionlint.bash", step)
+    def test_cli_crate_has_its_own_required_gate(self):
+        changes = _without_yaml_comments(
+            self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
+                "\n  fast-gate:", maxsplit=1
+            )[0]
+        )
+        self.assertIn("cli_rust:", changes)
+        cli_paths = changes.split("            cli_rust:", maxsplit=1)[1].split(
+            "            knowledge_rust:", maxsplit=1
+        )[0]
+        self.assertIn(
+            "- 'pinvou-cli/**/*.rs'",
+            cli_paths,
+            "cli_rust must match the real crate directory (pinvou-cli)",
+        )
+        self.assertIn("- 'pinvou-cli/**/Cargo.toml'", cli_paths)
+        self.assertIn("- 'CodeWhale'", cli_paths)
+        # The CLI path-depends on the app crate, so the leaf features that
+        # rust_full exempts still gate through the CLI suite (a change confined
+        # to features/feedback or features/personas would otherwise run NO rust
+        # gate at all).
+        self.assertIn("- 'pinvou3-app/src-tauri/src/features/feedback/**'", cli_paths)
+        self.assertIn("- 'pinvou3-app/src-tauri/src/features/personas/**'", cli_paths)
+
+        cli_test = _without_yaml_comments(
+            self.pr_workflow.split("\n  cli-test:", maxsplit=1)[1].split(
+                "\n  windows-rust-test:", maxsplit=1
+            )[0]
+        )
+        self.assertIn("needs.changes.outputs.cli_rust == 'true'", cli_test)
+        self.assertIn(
+            "github.event.pull_request.draft == false",
+            cli_test,
+            "draft PRs must skip the heavy CLI leg like the other rust jobs",
+        )
+        self.assertIn("- name: Set up zram and swap", cli_test)
+        self.assertIn("scripts/ci-memory-setup.sh", cli_test)
+        self.assertIn(
+            "cargo fmt --all --check --manifest-path pinvou-cli/Cargo.toml",
+            cli_test,
+            "pinvou-cli is a virtual workspace: plain --manifest-path fmt fails "
+            "with 'Failed to find targets', --all is required",
+        )
+        self.assertIn(
+            "cargo test --manifest-path pinvou-cli/Cargo.toml --locked --no-fail-fast",
+            cli_test,
+        )
+        self.assertIn(
+            "cargo test -p adapter-gaia --features test-support --locked --no-fail-fast",
+            cli_test,
+            "dataset_contract is required-features-gated and silently skipped by "
+            "the workspace run; the gaia timeout pins live there",
+        )
+        self.assertIn("cache-targets: false", cli_test)
+
+        required_gate = self.pr_workflow.split(
+            "\n  required-gate:", maxsplit=1
+        )[1]
+        self.assertIn("- cli-test", required_gate)
+        self.assertIn('"cli-test:$CLI_TEST_RESULT"', required_gate)
 
     def test_benchmark_jobs_stay_out_of_product_pr_workflow(self):
         self.assertNotIn("\n  benchmark-contract:", self.pr_workflow)
@@ -477,6 +567,9 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn(
             "github.event.pull_request.draft == false", windows_rust_test
         )
+        # Cold Windows compile plus the lib link check recently died at the
+        # 90-minute cap while passing runs already took 85-87 minutes.
+        self.assertIn("timeout-minutes: 180", windows_rust_test)
 
         windows_rust_test = _without_yaml_comments(
             self.pr_workflow.split("\n  windows-rust-test:", maxsplit=1)[1].split(
@@ -598,13 +691,21 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         release_contract_paths = changes.split(
             "            release_contract:", maxsplit=1
-        )[1].split("            l1:", maxsplit=1)[0]
+        )[1].split("            pet:", maxsplit=1)[0]
         self.assertIn(
             "- 'pinvou3-app/src-tauri/resources/**'",
             release_contract_paths,
         )
         self.assertIn(
             "- 'pinvou3-app/tests/knowledge_host_packaging.test.mjs'",
+            release_contract_paths,
+        )
+        # The section boundary above must stay load-bearing: if the split
+        # anchor stops matching (e.g. a filter rename), the slice silently
+        # grows to the end of the changes block and these assertions
+        # degrade into no-ops. This bit us once with a stale "l1:" anchor.
+        self.assertNotIn(
+            "- 'pinvou3-app/src/app/pet-main.jsx'",
             release_contract_paths,
         )
 
@@ -658,6 +759,50 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertNotIn("完整门禁已在 PR 入队前验证", self.pr_workflow)
         self.assertNotIn("github.event.merge_group.base_sha", dependency_review)
         self.assertNotIn("github.event.merge_group.head_sha", dependency_review)
+
+    def test_secret_scan_guard_and_cutoff_are_load_bearing(self):
+        # The empty-scan guard must demand positive evidence of a non-zero
+        # commit count: it is an inverted grep, so an empty log (gitleaks logs
+        # to stderr, so a dropped 2>&1 empties the tee'd file), a "0 commits
+        # scanned" no-op, or any other missing or renamed summary fails the
+        # step instead of going green. The scan range must share the same
+        # LEGACY_HISTORY_CUTOFF as the commit-message gate; drifting either
+        # side alone would shift the trust boundary between secret scanning
+        # and the commit convention.
+        secret_scan = (
+            ROOT / ".github/workflows/secret-scan.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn('HEAD" 2>&1', secret_scan)
+        guard = re.search(
+            r'if ! grep -Eq "([^"]+)" /tmp/gitleaks\.log', secret_scan
+        )
+        self.assertIsNotNone(
+            guard, "secret-scan.yml must fail closed on missing scan evidence"
+        )
+        count_pattern = guard.group(1)
+        # The gitleaks summary line is "N commits scanned." (ANSI-wrapped);
+        # the guard pattern must accept that shape for N > 0 and reject both
+        # the zero-commit summary and an empty log (no match at all).
+        self.assertTrue(
+            re.search(count_pattern, "395 commits scanned."),
+            "guard pattern must accept a real non-zero gitleaks summary line",
+        )
+        self.assertFalse(
+            re.search(count_pattern, "0 commits scanned."),
+            "guard pattern must reject a zero-commit scan summary",
+        )
+        self.assertFalse(
+            re.search(count_pattern, ""),
+            "guard pattern must reject an empty scan log",
+        )
+        validator = (ROOT / "scripts/validate-commit-msg.py").read_text(
+            encoding="utf-8"
+        )
+        match = re.search(r'LEGACY_HISTORY_CUTOFF = "([0-9a-f]{40})"', validator)
+        self.assertIsNotNone(
+            match, "validate-commit-msg.py is missing the LEGACY_HISTORY_CUTOFF constant"
+        )
+        self.assertIn(match.group(1), secret_scan)
 
     def test_mac_bundle_chain_paths_are_reachable_by_workflow_trigger(self):
         # mac-build 的 bundle_chain filter 决定何时追加 universal bundle smoke。

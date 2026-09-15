@@ -360,27 +360,29 @@ fn canonical_execution_root(execution_root: &Path) -> Result<PathBuf> {
 /// 与签名/钩子以外的正常行为需要）。
 fn isolated_git_command() -> std::process::Command {
     let mut command = crate::platform::process::HiddenCommand::new("git");
-    // vars_os 而非 vars：POSIX 允许环境变量取任意字节，vars 遇非 UTF-8 键/值会
-    // 直接 panic（lib.rs EnvSnapshot 同坑在先），一个这样的变量就会废掉该用户
-    // 全部快照能力；前缀按原始字节匹配，key 无需转 String。
-    for (key, _) in std::env::vars_os() {
-        if key.as_encoded_bytes().starts_with(b"GIT_") {
-            command.env_remove(&key);
-        }
-    }
+    // Strip via a fixed key list (platform::process::strip_all_git_env); do
+    // not scan the process env for GIT_*: in parallel tests, setenv from other
+    // threads concurrent with the iteration can miss keys, making the
+    // isolation fail intermittently as a whole (root cause of the 2026-09-12
+    // flaky family).
+    crate::platform::process::strip_all_git_env(&mut command);
     command.env("GIT_CONFIG_NOSYSTEM", "1");
     command.env("GIT_CONFIG_GLOBAL", crate::platform::os::null_device());
     command
 }
 
 fn git(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<std::process::Output> {
-    let output = isolated_git_command()
+    isolated_git_command()
         .arg(format!("--git-dir={}", repo.display()))
         .arg(format!("--work-tree={}", work_tree.display()))
         .args(arguments)
         .output()
-        .with_context(|| format!("执行 git {} 失败（Git 不可用？）", arguments.join(" ")))?;
-    Ok(output)
+        .with_context(|| {
+            format!(
+                "failed to run git {} (is Git unavailable?)",
+                arguments.join(" ")
+            )
+        })
 }
 
 fn git_ok(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<String> {
@@ -2196,6 +2198,17 @@ mod tests {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let bogus = TestDir::new("bogus-gitdir");
+        // Capture the host's values first: restoration must put back exactly
+        // this state, not an unconditionally-absent one (the launching shell
+        // may legitimately carry these variables).
+        let prior_index = std::env::var_os("GIT_INDEX_FILE");
+        let prior_objects = std::env::var_os("GIT_OBJECT_DIRECTORY");
+        // Panic-safe restore on every exit path (early return, caught panic,
+        // or normal end); see platform::paths::tests::EnvVarGuard.
+        let env_guard = crate::platform::paths::tests::EnvVarGuard::capture(&[
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+        ]);
         // SAFETY: ENV_LOCK 序列化进程环境写（crate 级唯一约定）；影子 git 调用
         // 自身剥离 GIT_*，并发测试的 git 子进程同样走隔离命令，不受本变量影响。
         unsafe {
@@ -2223,11 +2236,20 @@ mod tests {
                 "GIT_INDEX_FILE/GIT_OBJECT_DIRECTORY 必须被隔离"
             );
         });
-        // SAFETY: 同 ENV_LOCK 序列化。
-        unsafe {
-            std::env::remove_var("GIT_INDEX_FILE");
-            std::env::remove_var("GIT_OBJECT_DIRECTORY");
-        }
+        // Restore before unwrapping the result, so the original environment
+        // is back even when the unwrapped panic propagates; then assert the
+        // restoration is complete.
+        drop(env_guard);
+        assert_eq!(
+            std::env::var_os("GIT_INDEX_FILE"),
+            prior_index,
+            "GIT_INDEX_FILE must be restored to its pre-test state"
+        );
+        assert_eq!(
+            std::env::var_os("GIT_OBJECT_DIRECTORY"),
+            prior_objects,
+            "GIT_OBJECT_DIRECTORY must be restored to its pre-test state"
+        );
         result.unwrap();
     }
 }

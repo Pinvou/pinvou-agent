@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::LazyLock;
@@ -289,6 +289,44 @@ impl SessionStore {
         self.manager
             .load_session_snapshot(id)
             .with_context(|| format!("load_session({id})"))
+    }
+
+    /// Pack one session into a full-fidelity `.tar.xz` archive, reusing the
+    /// base `deepseek_tui::session_export`. The archive contains the full
+    /// context (system prompt, all turn messages, tool calls and results)
+    /// plus the portable container JSON; the artifacts directory is packed
+    /// by default, and `include_artifacts=false` exports the record only.
+    ///
+    /// Boundary: what gets packed is the bytes of the
+    /// `sessions/<id>/artifacts` directory; ledger/workspace files that the
+    /// artifacts panel also lists are not part of the archive — their
+    /// "record" travels with `session.json`, and the file bytes themselves
+    /// are not distributed with the archive.
+    pub(crate) fn export_archive(
+        &self,
+        id: &str,
+        output: &Path,
+        include_artifacts: bool,
+    ) -> Result<deepseek_tui::session_export::SessionArchiveSummary> {
+        validate_session_id(id)?;
+        let session = self.load(id)?;
+        let artifacts_dir = if include_artifacts {
+            deepseek_tui::session_export::session_artifacts_dir(
+                self.manager.sessions_dir(),
+                &session.metadata.id,
+            )
+        } else {
+            None
+        };
+        Ok(deepseek_tui::session_export::write_session_archive(
+            &session,
+            artifacts_dir.as_deref(),
+            output,
+            deepseek_tui::session_export::SessionArchiveOptions {
+                include_artifacts,
+                ..deepseek_tui::session_export::SessionArchiveOptions::default()
+            },
+        )?)
     }
 
     pub(crate) fn persisted_size(&self, id: &str) -> Result<u64> {

@@ -1479,7 +1479,9 @@ mod product {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use adapter_gaia::GaiaPrivateInputs;
-    use adapter_smoke::{SmokeAdapter, SmokePrivateInputs};
+    use adapter_smoke::{
+        SMOKE_TOOL_POLICY_ID, SMOKE_TOOL_POLICY_ID_DEPRECATED, SmokeAdapter, SmokePrivateInputs,
+    };
     use agent_backend_api::{
         AgentBackendError, AgentRunObserver, AgentSessionHandle, AgentTaskInput, AgentTaskOutcome,
         HeadlessAgentBackend, PrepareRequest, PrivateInputResolver, PrivateOutputHandle,
@@ -1534,6 +1536,37 @@ mod product {
         }
     }
 
+    /// Manifest for a new smoke run. New runs always record the canonical
+    /// `pinvou-read-only-web/v1` id; the deprecated `pinvou-product/v1` name
+    /// must not appear in newly written state (see
+    /// `docs/gaia-native-turn-tool-policy.md`).
+    pub(super) fn new_smoke_manifest(
+        run_id: &str,
+        adapter: &SmokeAdapter,
+        model: ModelIdentity,
+    ) -> benchmark_core::Result<RunManifest> {
+        RunManifest::new(
+            run_id,
+            adapter.descriptor(),
+            Split::new("smoke"),
+            model,
+            ToolPolicyId::new(SMOKE_TOOL_POLICY_ID),
+            1,
+        )
+    }
+
+    /// Smoke resume accepts the canonical policy id plus the deprecated
+    /// pre-rename alias still found in manifests stored by older builds.
+    pub(super) fn smoke_resume_manifest_matches(
+        stored: &RunManifest,
+        adapter: &SmokeAdapter,
+        model: &ModelIdentity,
+    ) -> bool {
+        [SMOKE_TOOL_POLICY_ID, SMOKE_TOOL_POLICY_ID_DEPRECATED]
+            .iter()
+            .any(|id| stored.matches_resume(adapter.descriptor(), "smoke", model, id))
+    }
+
     pub(super) fn run(output: OutputMode) -> Result<CliOutcome, CliError> {
         let base = benchmark_base()?;
         pinvou_product_backend::run_with_product_backend(move |backend| async move {
@@ -1544,14 +1577,8 @@ mod product {
             let dataset = adapter.verify_dataset(Path::new("."))?;
             let plan = adapter.plan(&dataset, &TaskSelection::all())?;
             let run_id = new_run_id();
-            let manifest = RunManifest::new(
-                &run_id,
-                adapter.descriptor(),
-                Split::new("smoke"),
-                ModelIdentity::new(identity.provider(), identity.model())?,
-                ToolPolicyId::new("pinvou-product/v1"),
-                1,
-            )?;
+            let model = ModelIdentity::new(identity.provider(), identity.model())?;
+            let manifest = new_smoke_manifest(&run_id, &adapter, model)?;
             let service = BenchmarkService::native_with_private_inputs(
                 &base,
                 Arc::new(DynamicBackend(backend)),
@@ -1655,7 +1682,7 @@ mod product {
             let store = RunStore::open(&base, &run_id)?;
             let stored = store.read_manifest()?;
             let model = ModelIdentity::new(identity.provider(), identity.model())?;
-            if !stored.matches_resume(adapter.descriptor(), "smoke", &model, "pinvou-product/v1") {
+            if !smoke_resume_manifest_matches(&stored, &adapter, &model) {
                 return Err(anyhow::anyhow!("resume_manifest_mismatch"));
             }
             let service: BenchmarkService<NativeAgentRunner<DynamicBackend>> =
@@ -1933,6 +1960,7 @@ mod tests {
 
     #[test]
     fn smoke_finalize_publishes_report_matching_failed_summary_and_score() {
+        use adapter_smoke::SMOKE_TOOL_POLICY_ID;
         use benchmark_core::{
             BenchmarkDescriptor, BenchmarkId, ExecutionKind, ModelIdentity, RunManifest, Split,
             TaskOutcome, TaskStatus, ToolPolicyId,
@@ -1952,7 +1980,7 @@ mod tests {
             &descriptor,
             Split::new("smoke"),
             ModelIdentity::new("fixture", "model").unwrap(),
-            ToolPolicyId::new("pinvou-product/v1"),
+            ToolPolicyId::new(SMOKE_TOOL_POLICY_ID),
             1,
         )
         .unwrap();
@@ -1988,6 +2016,57 @@ mod tests {
             .unwrap();
         assert!(report.contains(&format!("总分：{score} (pinvou-product-score/v1)")));
         std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn new_smoke_manifests_record_the_canonical_read_only_web_policy_id() {
+        use adapter_smoke::{SMOKE_TOOL_POLICY_ID, SMOKE_TOOL_POLICY_ID_DEPRECATED, SmokeAdapter};
+        use benchmark_core::ModelIdentity;
+
+        let adapter = SmokeAdapter::new();
+        let model = ModelIdentity::new("fixture", "model").unwrap();
+        let manifest = product::new_smoke_manifest("run-canonical", &adapter, model.clone())
+            .expect("valid manifest");
+
+        assert_eq!(manifest.tool_policy(), SMOKE_TOOL_POLICY_ID);
+        assert_ne!(manifest.tool_policy(), SMOKE_TOOL_POLICY_ID_DEPRECATED);
+        assert!(product::smoke_resume_manifest_matches(
+            &manifest, &adapter, &model
+        ));
+    }
+
+    #[test]
+    fn smoke_resume_still_accepts_manifests_stored_with_the_deprecated_policy_id() {
+        use adapter_smoke::{SMOKE_TOOL_POLICY_ID_DEPRECATED, SmokeAdapter};
+        use benchmark_core::{BenchmarkAdapter, ModelIdentity, RunManifest, Split, ToolPolicyId};
+
+        let adapter = SmokeAdapter::new();
+        let model = ModelIdentity::new("fixture", "model").unwrap();
+        let legacy = RunManifest::new(
+            "run-legacy",
+            adapter.descriptor(),
+            Split::new("smoke"),
+            model.clone(),
+            ToolPolicyId::new(SMOKE_TOOL_POLICY_ID_DEPRECATED),
+            1,
+        )
+        .unwrap();
+        assert!(product::smoke_resume_manifest_matches(
+            &legacy, &adapter, &model
+        ));
+
+        let foreign = RunManifest::new(
+            "run-foreign",
+            adapter.descriptor(),
+            Split::new("smoke"),
+            model.clone(),
+            ToolPolicyId::new("pinvou-gaia-public-web/v1"),
+            1,
+        )
+        .unwrap();
+        assert!(!product::smoke_resume_manifest_matches(
+            &foreign, &adapter, &model
+        ));
     }
 
     #[test]
