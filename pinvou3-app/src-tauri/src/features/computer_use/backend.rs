@@ -426,14 +426,18 @@ impl BackendInner {
                     }
                     // Startup reply timed out (factory did not return within
                     // BACKEND_CALL_TIMEOUT) or the startup channel dropped
-                    // (worker thread panicked).
+                    // (worker thread panicked). The sticky StartFailed state
+                    // covers both, but the diagnosis differs (review
+                    // finding): report the budget overrun as abandoned, not
+                    // as a dead thread.
                     Err(_) => {
                         *state = WorkerState::StartFailed(
-                            "computer use backend thread died during startup".to_string(),
+                            "computer use backend startup was abandoned (the factory did not                              return within the startup budget, or the thread died)"
+                                .to_string(),
                         );
                         cleanup = Some((tx, thread));
                         Err(ComputerUseError::unavailable(
-                            "computer use backend thread died during startup",
+                            "computer use backend startup was abandoned (the factory did not                              return within the startup budget, or the thread died)",
                         ))
                     }
                 };
