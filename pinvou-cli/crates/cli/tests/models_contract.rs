@@ -50,6 +50,21 @@ impl Drop for SandboxHome {
     }
 }
 
+/// Restores an environment variable to its saved value on drop, so a panic
+/// between `set_var` and the assertions cannot leak state into other tests
+/// (same pattern as `RestoreHome` in sessions_contract.rs).
+struct RestoreEnvVar(&'static str, Option<std::ffi::OsString>);
+
+impl Drop for RestoreEnvVar {
+    fn drop(&mut self) {
+        // SAFETY: ENV_LOCK is held by the owning test.
+        match self.1.take() {
+            Some(value) => unsafe { std::env::set_var(self.0, value) },
+            None => unsafe { std::env::remove_var(self.0) },
+        }
+    }
+}
+
 fn usage_error(args: &[&str]) -> String {
     let error = parse_args(args.to_vec()).expect_err("expected a usage error");
     assert_eq!(error.exit_code(), ExitCode::Usage, "message: {error}");
@@ -522,22 +537,28 @@ fn models_list_reports_fresh_default_model() {
         human.contains("*default"),
         "models list should mark the active model"
     );
+    assert!(
+        human.contains("credential_state=missing"),
+        "models list human output must carry the credential_state column"
+    );
 
     // credential_state mirrors the GUI across states: a non-empty
     // DEEPSEEK_API_KEY env override marks every model env_override in the
     // list JSON without touching the OS keychain (the prefs layer's
     // refresh_credential_states_with_store short-circuits on it).
-    let previous = std::env::var_os("DEEPSEEK_API_KEY");
+    let _restore_deepseek_key =
+        RestoreEnvVar("DEEPSEEK_API_KEY", std::env::var_os("DEEPSEEK_API_KEY"));
     unsafe { std::env::set_var("DEEPSEEK_API_KEY", "pinvou-cli-contract-override") };
     let json = run_ok(&["pinvoy", "--output", "json", "models", "list"]);
-    match previous {
-        Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY", value) },
-        None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY") },
-    }
+    let human = run_ok(&["pinvoy", "models", "list"]);
     let value: serde_json::Value = serde_json::from_str(&json).expect("single-line json");
     assert_eq!(
         value["models"][0]["credential_state"], "env_override",
         "a set DEEPSEEK_API_KEY must mark models env_override in list json"
+    );
+    assert!(
+        human.contains("credential_state=env_override"),
+        "models list human output must carry the env_override state"
     );
 }
 

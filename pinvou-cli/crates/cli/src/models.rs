@@ -725,7 +725,7 @@ fn list(output: OutputMode) -> Result<CliOutcome, CliError> {
                 "-"
             };
             format!(
-                "{marker}{}\t{}\t{}\t{}\t{}\tcontext_window={}\tmax_output={}\treasoning_effort={}\thas_secret={}",
+                "{marker}{}\t{}\t{}\t{}\t{}\tcontext_window={}\tmax_output={}\treasoning_effort={}\thas_secret={}\tcredential_state={}",
                 model.id,
                 model.name,
                 model.preset.as_str(),
@@ -735,6 +735,7 @@ fn list(output: OutputMode) -> Result<CliOutcome, CliError> {
                 optional_u32(model.max_output_tokens),
                 model.reasoning_effort.as_deref().unwrap_or("default"),
                 model.has_secret,
+                credential_state_str(model.credential_state),
             )
         })
         .collect::<Vec<_>>()
@@ -1356,17 +1357,46 @@ fn probe_docker_model_runner(base_url: &str, bearer: Option<&str>) -> bool {
     .is_some_and(|value| value.is_array())
 }
 
-/// OpenAI-compatible `/v1/models` body shared by the LMDeploy and vLLM
-/// `owned_by` decisions; upstreams already ending in `/v1` get `/models`
-/// appended, others get `/v1/models`.
+/// Fetches an OpenAI-compatible model-list response body. URL convention:
+/// a configured root already ending in `/v1` appends `/models` directly
+/// (same convention as the GUI's `fetch_v1_models`); the bare host form
+/// (common for local vLLM) gets `/v1/models` appended first. For non-`/v1`
+/// version roots (glm `/api/paas/v4`, Volcengine Ark `/api/v3`, etc. — their
+/// model list lives at `{base}/models`, and appending `/v1` would 404),
+/// retry `{base}/models` once only when the primary candidate clearly
+/// reports "path not found" (404/405); auth failures (401/403) are not
+/// helped by switching paths, and timeouts/connection refusals mean the
+/// host is unreachable — neither is retried, conservatively falling back
+/// to no facts. Mirrors the GUI's `fetch_v1_models` fallback exactly.
 fn fetch_v1_models(base_url: &str, bearer: Option<&str>) -> Option<serde_json::Value> {
+    let client = probe_client()?;
     let trimmed = base_url.trim_end_matches('/');
-    let url = if trimmed.ends_with("/v1") {
-        format!("{trimmed}/models")
+    let (primary, fallback) = if trimmed.ends_with("/v1") {
+        (format!("{trimmed}/models"), None)
     } else {
-        format!("{trimmed}/v1/models")
+        (
+            format!("{trimmed}/v1/models"),
+            Some(format!("{trimmed}/models")),
+        )
     };
-    get_json(&url, bearer)
+    let response = apply_bearer(client.get(&primary), bearer).send().ok()?;
+    // Retry once only when the primary candidate clearly reports "path not
+    // found" (404/405) and a fallback candidate exists; auth failures
+    // (401/403) are not helped by switching paths, and timeouts/connection
+    // refusals mean the host is unreachable — neither is retried,
+    // conservatively falling back to no facts.
+    let response = match (response.status().as_u16(), fallback) {
+        (200..=299, _) => response,
+        (404 | 405, Some(url)) => {
+            let response = apply_bearer(client.get(&url), bearer).send().ok()?;
+            if !response.status().is_success() {
+                return None;
+            }
+            response
+        }
+        _ => return None,
+    };
+    response.json::<serde_json::Value>().ok()
 }
 
 fn v1_models_owned_by_matches(value: &serde_json::Value, expected: &str) -> bool {
@@ -1975,6 +2005,167 @@ fn resolve_search_key(provider: SearchProvider) -> Result<Option<String>, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Minimal loopback HTTP mock (std-only, same idea as the GUI's
+    /// `models_mock`): each route is `(path, status, body)`; hit counts and
+    /// the last Authorization header per path are recorded for assertions.
+    struct ProbeMock {
+        base_url: String,
+        hits: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, usize>>>,
+        auth: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+    }
+
+    impl ProbeMock {
+        fn hits_for(&self, path: &str) -> usize {
+            self.hits
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(path)
+                .copied()
+                .unwrap_or(0)
+        }
+
+        fn auth_for(&self, path: &str) -> Option<String> {
+            self.auth
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(path)
+                .cloned()
+        }
+    }
+
+    fn spawn_probe_mock(routes: &[(&str, u16, &str)]) -> ProbeMock {
+        use std::io::Read;
+        use std::sync::{Arc, Mutex};
+
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe mock listener");
+        let addr = listener.local_addr().expect("probe mock listener addr");
+        let routes: Vec<(String, u16, String)> = routes
+            .iter()
+            .map(|(path, status, body)| ((*path).to_owned(), *status, (*body).to_owned()))
+            .collect();
+        let hits: Arc<Mutex<std::collections::HashMap<String, usize>>> =
+            Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let hits_thread = hits.clone();
+        let auth: Arc<Mutex<std::collections::HashMap<String, String>>> =
+            Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let auth_thread = auth.clone();
+        std::thread::spawn(move || {
+            // Each test sends at most two requests; this also bounds the
+            // leaked thread.
+            for stream in listener.incoming().take(8) {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let Ok(n) = stream.read(&mut chunk) else {
+                        break;
+                    };
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&buf);
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("")
+                    .split('?')
+                    .next()
+                    .unwrap_or("")
+                    .to_owned();
+                *hits_thread
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .entry(path.clone())
+                    .or_insert(0) += 1;
+                let authorization = request.lines().skip(1).find_map(|line| {
+                    line.split_once(':')
+                        .filter(|(name, _)| name.trim().eq_ignore_ascii_case("authorization"))
+                        .map(|(_, value)| value)
+                });
+                if let Some(value) = authorization {
+                    auth_thread
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .insert(path.clone(), value.trim().to_owned());
+                }
+                let (status, body) = routes
+                    .iter()
+                    .find(|(route, _, _)| route == &path)
+                    .map_or((404, "{}".to_owned()), |(_, status, body)| {
+                        (*status, body.clone())
+                    });
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+            }
+        });
+        ProbeMock {
+            base_url: format!("http://{addr}"),
+            hits,
+            auth,
+        }
+    }
+
+    #[test]
+    fn fetch_v1_models_falls_back_to_root_models_on_404() {
+        // Non-v1 version roots such as glm /api/paas/v4 or Ark /api/v3:
+        // appending /v1 always 404s and the model list lives at
+        // {base}/models — the single fallback must hit, mirroring the GUI's
+        // `fetch_v1_models_falls_back_to_root_models_on_404`.
+        let mock = spawn_probe_mock(&[
+            ("/v1/models", 404, "{}"),
+            ("/models", 200, r#"{"data":[{"id":"glm-4.7"}]}"#),
+        ]);
+        let value = fetch_v1_models(&mock.base_url, Some("route-key"))
+            .expect("after 404 the fallback to {base}/models must happen");
+        assert_eq!(value["data"][0]["id"], "glm-4.7");
+        assert_eq!(mock.hits_for("/v1/models"), 1);
+        assert_eq!(mock.hits_for("/models"), 1);
+        assert_eq!(
+            mock.auth_for("/models").as_deref(),
+            Some("Bearer route-key"),
+            "the fallback request must carry the same-origin credentials, never silently degrade to anonymous"
+        );
+    }
+
+    #[test]
+    fn fetch_v1_models_auth_failure_does_not_retry_alt_path() {
+        let mock = spawn_probe_mock(&[
+            ("/v1/models", 401, "{}"),
+            ("/models", 200, r#"{"data":[{"id":"x"}]}"#),
+        ]);
+        assert!(fetch_v1_models(&mock.base_url, None).is_none());
+        assert_eq!(
+            mock.hits_for("/models"),
+            0,
+            "401 is an auth problem; switching paths cannot help, no retry"
+        );
+    }
+
+    #[test]
+    fn fetch_v1_models_v1_shaped_base_has_no_alt_path() {
+        // A configured root ending in /v1: the primary candidate is
+        // {base}/models == the mock's "/v1/models"; on 404 no second path
+        // may ever appear (no fallback beyond /v1/models).
+        let mock = spawn_probe_mock(&[("/v1/models", 404, "{}")]);
+        let base = format!("{}/v1", mock.base_url);
+        assert!(fetch_v1_models(&base, None).is_none());
+        assert_eq!(mock.hits_for("/v1/models"), 1);
+        assert_eq!(
+            mock.hits_for("/models"),
+            0,
+            "a /v1-shaped configured root has a single candidate, no fallback path"
+        );
+    }
 
     #[test]
     fn loopback_guard_parses_ips_instead_of_prefix_matching() {
