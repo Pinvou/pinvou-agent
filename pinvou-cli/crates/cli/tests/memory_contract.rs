@@ -49,7 +49,9 @@ impl Drop for TempHome {
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
-        std::fs::remove_dir_all(&self.root).unwrap();
+        // Best-effort cleanup: a leftover temp directory must never turn an
+        // assertion failure into a panic raised from inside Drop.
+        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
@@ -548,16 +550,28 @@ fn memory_overview_counts_match_fixtures_and_write_snapshot() {
 
     let json = run_ok(&["pinvou", "memory", "overview", "--output", "json"]);
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["preferences"].as_array().unwrap().len(), 1, "{value}");
-    assert_eq!(value["pending"].as_array().unwrap().len(), 2, "{value}");
-    assert_eq!(value["recent_work"].as_array().unwrap().len(), 1, "{value}");
+    assert_eq!(
+        value["preferences"].as_array().unwrap().len(),
+        1,
+        "overview preference count mismatch"
+    );
+    assert_eq!(
+        value["pending"].as_array().unwrap().len(),
+        2,
+        "overview pending count mismatch"
+    );
+    assert_eq!(
+        value["recent_work"].as_array().unwrap().len(),
+        1,
+        "overview recent-work count mismatch"
+    );
     assert_eq!(value["current_focus"].as_array().unwrap().len(), 0);
     assert_eq!(value["recent_activity"].as_array().unwrap().len(), 0);
     assert_eq!(value["never"].as_array().unwrap().len(), 0);
     // all authoritative sources available: the snapshot document was refreshed
     assert!(
         !value["snapshot_path"].as_str().unwrap().is_empty(),
-        "{value}"
+        "overview should refresh the snapshot document when every source is available"
     );
     assert_eq!(value["sources"]["preferences"]["available"], true);
     assert_eq!(value["sources"]["runtime"]["available"], true);
@@ -641,7 +655,7 @@ fn memory_add_accepts_ordinary_punctuated_work_context() {
     let text = json.to_string();
     assert!(
         text.contains("We deploy on Fridays"),
-        "the item must be materialized: {text}"
+        "the punctuated work-context item must be materialized"
     );
     let _ = home;
 }
@@ -665,7 +679,7 @@ fn memory_add_preference_reports_the_replaced_item() {
     let first_id = first["id"].as_str().unwrap().to_owned();
     assert!(
         first.get("replaced").is_none(),
-        "a first add replaces nothing: {first}"
+        "a first add must replace nothing"
     );
 
     // The preference store is replace-per-topic: the CLI adds without a
@@ -697,6 +711,44 @@ fn memory_add_preference_reports_the_replaced_item() {
     ]);
     assert!(
         human.contains("replaced 1 earlier item"),
-        "human output must surface the replacement: {human}"
+        "human output must surface the replacement"
+    );
+}
+
+#[test]
+fn memory_add_profile_shaped_preference_text_fails_before_the_pending_store() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("preference-profile-shaped");
+
+    // Chinese profile-preference phrasing (the feature heuristic
+    // `looks_like_profile_preference_text`, features/memory/types.rs) is
+    // routed to the profile, not the preference store: the confirm path
+    // silently skips the write while still marking the candidate confirmed.
+    // The add must fail up front (exit 1) WITHOUT enqueueing the candidate.
+    let error = expect_usage_error(&[
+        "pinvou",
+        "memory",
+        "add",
+        "preference",
+        "--content",
+        "请以后称呼用户为老板",
+    ]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("memory_add_not_materialized"),
+        "{error}"
+    );
+    // The pending store is untouched: no candidate was enqueued, so nothing
+    // was marked confirmed behind the failure.
+    assert!(
+        pinvou3_lib::features::memory::load_pending_memory()
+            .unwrap()
+            .is_empty()
+    );
+    // And nothing was materialized into the preference store either.
+    assert!(
+        pinvou3_lib::features::memory::list_preferences()
+            .unwrap()
+            .is_empty()
     );
 }

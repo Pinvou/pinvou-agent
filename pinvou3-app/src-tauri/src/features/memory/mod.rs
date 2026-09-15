@@ -60,6 +60,13 @@ pub use self::io::{
 // punctuated input.
 pub use self::io::WORK_CONTEXT_TEXT_MAX_CHARS;
 pub use self::util::clean_candidate_sentence;
+// The CLI `memory add` probes this heuristic before enqueueing: the confirm
+// path silently skips profile-shaped preference text
+// (`write_preference_unlocked` no-ops it) while still marking the candidate
+// confirmed, so the CLI must reject that content up front without touching
+// the pending store. Same CLI-parity rationale as `clean_candidate_sentence`
+// above.
+pub use self::types::looks_like_profile_preference_text;
 
 // ---- LLM 后台复盘（llm_review）----
 pub use self::llm_review::review_turn_candidates_with_llm;
