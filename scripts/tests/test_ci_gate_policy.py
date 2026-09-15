@@ -383,7 +383,11 @@ class CiGatePolicyTests(unittest.TestCase):
 
         # macOS-gated CLI code must type-check somewhere: cli-test is
         # ubuntu-only, so the dedicated macos-cli-check leg mirrors the
-        # Windows compile check and gates through required-gate.
+        # Windows compile check and gates through required-gate. It runs for
+        # ready cli_rust/rust_full PRs, the matching Merge Queue combined tree
+        # (green-alone PRs can still combine into a macOS-only compile break),
+        # and main push (cumulative); see
+        # test_macos_cli_check_runs_on_main_push_and_merge_group.
         macos_cli = self.pr_workflow.split(
             "\n  macos-cli-check:", maxsplit=1
         )[1].split("\n  required-gate:", maxsplit=1)[0]
@@ -434,6 +438,50 @@ class CiGatePolicyTests(unittest.TestCase):
             required_gate,
             "macos-cli-check must enter the failure loop like cli-test "
             "(success|skipped accepted so path-filtered skips do not false-fail)",
+        )
+
+    def test_macos_cli_check_runs_on_main_push_and_merge_group(self):
+        # macos-cli-check is the only leg that type-checks
+        # #[cfg(target_os = "macos")] CLI code, and Linux cannot cover that risk
+        # class for the Merge Queue combined tree. It must therefore run on
+        # push(main) unconditionally (cumulative verification, independent of a
+        # single push's paths-filter) and on the Merge Queue when the combined
+        # diff touches cli_rust/rust_full.
+        macos_cli = self.pr_workflow.split(
+            "\n  macos-cli-check:", maxsplit=1
+        )[1].split("\n  required-gate:", maxsplit=1)[0]
+        self.assertIn("github.event_name == 'push' ||", macos_cli)
+        self.assertIn("github.event_name == 'merge_group'", macos_cli)
+        merge_group_branch = macos_cli.split(
+            "github.event_name == 'merge_group'", maxsplit=1
+        )[1].split("github.event_name == 'pull_request'", maxsplit=1)[0]
+        self.assertIn(
+            "needs.changes.outputs.cli_rust == 'true'",
+            merge_group_branch,
+            "the Merge Queue leg must be gated by cli_rust like the PR leg",
+        )
+        self.assertIn(
+            "needs.changes.outputs.rust_full == 'true'",
+            merge_group_branch,
+        )
+        # Draft gating only applies to the pull_request leg (merge_group and
+        # push have no draft concept).
+        pull_request_branch = macos_cli.split(
+            "github.event_name == 'pull_request'", maxsplit=1
+        )[1]
+        self.assertIn("github.event.pull_request.draft == false", pull_request_branch)
+        self.assertNotIn(
+            "github.event.pull_request.draft",
+            merge_group_branch,
+        )
+
+        required_gate = self.pr_workflow.split(
+            "\n  required-gate:", maxsplit=1
+        )[1]
+        self.assertIn("- macos-cli-check", required_gate)
+        self.assertIn(
+            "MACOS_CLI_RESULT: ${{ needs.macos-cli-check.result }}",
+            required_gate,
         )
 
     def test_benchmark_jobs_stay_out_of_product_pr_workflow(self):
