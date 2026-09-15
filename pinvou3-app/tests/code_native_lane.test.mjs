@@ -13,11 +13,13 @@ const temp = mkdtempSync(path.join(tmpdir(), 'pinvou3-code-native-lane-'));
 writeFileSync(path.join(temp, 'package.json'), '{"type":"module"}\n');
 mkdirSync(path.join(temp, 'features', 'conversation'), { recursive: true });
 mkdirSync(path.join(temp, 'features', 'codex'), { recursive: true });
+mkdirSync(path.join(temp, 'features', 'multiagent'), { recursive: true });
 mkdirSync(path.join(temp, 'shared'), { recursive: true });
 for (const file of ['conversation-model.js', 'deepseek-conversation.js']) {
   copyFileSync(path.join(root, 'src', 'features', 'conversation', file), path.join(temp, 'features', 'conversation', file));
 }
 copyFileSync(path.join(root, 'src', 'features', 'codex', 'code-native-lane.js'), path.join(temp, 'features', 'codex', 'code-native-lane.js'));
+copyFileSync(path.join(root, 'src', 'features', 'multiagent', 'spawn-aggregation.mjs'), path.join(temp, 'features', 'multiagent', 'spawn-aggregation.mjs'));
 copyFileSync(path.join(root, 'src', 'shared', 'internal-message.mjs'), path.join(temp, 'shared', 'internal-message.mjs'));
 
 try {
@@ -948,6 +950,26 @@ try {
     error: 'SSE stream request failed: HTTP 402 insufficient balance',
   }, { language: 'en', modelServiceState: null });
   assert.match(lane16.items.find(item => item.type === 'system').text, /SSE stream request failed/);
+
+  // ── Swarm rework: projectNativeLane annotates its projection input, so the
+  // native code lane renders one aggregated count row instead of one
+  // degenerate "spawned 1 agent" row per spawn call.
+  const swarmLane = createNativeLane();
+  applyNativeChatEvent(swarmLane, 'chat:turn_started', { session_id: 'swarm-1', turn_id: 'tw1' });
+  applyNativeChatEvent(swarmLane, 'chat:tool_start', { session_id: 'swarm-1', id: 'ag1', name: 'agent', args: { action: 'start', prompt: 'task one' } });
+  applyNativeChatEvent(swarmLane, 'chat:tool_end', { session_id: 'swarm-1', id: 'ag1', success: true, output: JSON.stringify({ agent_id: 'agent_1' }) });
+  applyNativeChatEvent(swarmLane, 'chat:tool_start', { session_id: 'swarm-1', id: 'ag2', name: 'agent', args: { action: 'start', prompt: 'task two' } });
+  applyNativeChatEvent(swarmLane, 'chat:tool_end', { session_id: 'swarm-1', id: 'ag2', success: false, output: 'spawn failed' });
+  const swarmProjection = projectNativeLane(swarmLane, 'swarm-1');
+  const swarmDelegation = swarmProjection.turns
+    .flatMap(turn => turn.items)
+    .filter(item => item.legacyItem && item.legacyItem.spawnGroup !== undefined || item.legacyItem && item.legacyItem.spawnGroupHidden);
+  assert.equal(swarmDelegation.length, 2, 'both spawn calls are projected with their annotation');
+  const swarmFirst = swarmDelegation.find(item => item.legacyItem.spawnGroup);
+  assert.equal(swarmFirst.legacyItem.spawnGroup.count, 2, 'consecutive spawns aggregate into one group of 2');
+  assert.equal(swarmFirst.legacyItem.spawnGroup.failed, 1, 'the failed spawn counts toward failed');
+  assert.equal(swarmDelegation.filter(item => item.legacyItem.spawnGroupHidden).length, 1, 'the second spawn is hidden');
+  assert.ok(!('spawnGroup' in swarmLane.items.find(item => item.toolId === 'ag1')), 'annotation never mutates the lane items');
 
   console.log('code_native_lane.test.mjs: all assertions passed');
 } finally {
