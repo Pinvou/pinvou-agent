@@ -245,6 +245,15 @@ fn gaia_fetch_from_non_repository_home_does_not_require_git_metadata() {
     std::fs::create_dir(&home).unwrap();
     let previous_dir = std::env::current_dir().unwrap();
     let _restore = RestoreHome(std::env::var_os("PINVOU3_HOME"));
+    // Panic-safe cwd restore: a failing assert inside the temp dir must not
+    // leave every sibling test running inside a deleted directory.
+    struct RestoreCwd(std::path::PathBuf);
+    impl Drop for RestoreCwd {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.0);
+        }
+    }
+    let _cwd_guard = RestoreCwd(previous_dir);
     std::env::set_current_dir(&home).unwrap();
     unsafe { std::env::set_var("PINVOU3_HOME", &home) };
 
@@ -260,7 +269,7 @@ fn gaia_fetch_from_non_repository_home_does_not_require_git_metadata() {
     let error = execute(parsed).unwrap_err();
     assert_ne!(error.to_string(), "gaia_worktree_unavailable");
 
-    std::env::set_current_dir(previous_dir).unwrap();
+    drop(_cwd_guard);
     drop(_restore);
     std::fs::remove_dir_all(home).unwrap();
 }

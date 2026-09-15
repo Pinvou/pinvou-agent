@@ -35,6 +35,7 @@ fn every_family_token_dispatches_to_its_module() {
         ),
         ("monitor", "status"),
         ("artifacts", "list"),
+        ("projects", "list"),
     ];
     for (token, subcommand) in tokens {
         let mut argv = vec!["pinvou".to_string(), token.to_string()];
@@ -60,6 +61,7 @@ fn every_family_token_dispatches_to_its_module() {
                     | CliCommand::Feedback(_)
                     | CliCommand::Monitor(_)
                     | CliCommand::Artifacts(_)
+                    | CliCommand::Projects(_)
             ),
             "unexpected command variant for {token}: {command:?}"
         );
@@ -109,12 +111,12 @@ fn version_is_a_usable_subcommand_with_json_output() {
     let parsed = parse_args(["pinvou", "--version"]).expect("--version parses");
     let outcome = pinvou_cli::execute(parsed).expect("version executes");
     assert_eq!(outcome.exit_code, ExitCode::Success);
-    assert!(outcome.stdout.contains("pinvou "), "{}", outcome.stdout);
+    assert!(outcome.stdout.contains("pinvou "));
 
     let parsed = parse_args(["pinvou", "--version", "--output", "json"])
         .expect("--version --output json parses");
     let outcome = pinvou_cli::execute(parsed).expect("version executes");
     let value: serde_json::Value =
         serde_json::from_str(&outcome.stdout).expect("json output is a single line");
-    assert!(value["version"].is_string(), "{}", outcome.stdout);
+    assert!(value["version"].is_string());
 }
