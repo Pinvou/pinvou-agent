@@ -394,7 +394,7 @@ fn rebind_roots_rewrites_prefix_and_stays_idempotent() {
     let affected = store.rebind_roots(&from, &to).expect("rebind roots");
     assert_eq!(affected, vec![project.id.clone()]);
     let roots = store.get(&project.id).unwrap().roots;
-    assert!(roots.contains(&to.canonicalize().unwrap()));
+    assert!(roots.contains(&display(&to)));
     assert!(roots.contains(&abs("untouched")), "prefix 外的 root 不动");
     assert_eq!(store.get(&other.id).unwrap().roots, vec![abs("elsewhere")]);
 
