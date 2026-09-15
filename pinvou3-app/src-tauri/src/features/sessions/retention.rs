@@ -103,11 +103,20 @@ impl SessionStore {
         let mut chat_count = 0usize;
         let mut deleted_ids = Vec::new();
         let mut delete_error = None;
+        // 钉住的会话是用户显式标记的“永久保留”：既不计入上限也不参与驱逐。
+        // headless `agent run` 默认共享这个 50 上限的存储，没有豁免的话一次
+        // 批量运行就会把用户钉住的 GUI 会话静默清掉（代价是全钉住时上限失效，
+        // 存储可超过上限——这是钉住语义的自然结果）。
+        let pinned: std::collections::HashSet<String> =
+            self.pinned_sessions.read().keys().cloned().collect();
         for metadata in sessions {
             // Scheduled sessions own additional records outside sessions/.
             // Generic chat cleanup must not delete only the transcript and
             // strand the other half of their history.
             if metadata.id.starts_with("sched-") {
+                continue;
+            }
+            if pinned.contains(&metadata.id) {
                 continue;
             }
             chat_count += 1;
