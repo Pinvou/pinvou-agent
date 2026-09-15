@@ -18,8 +18,10 @@
 //!
 //! Screenshot implementation: on macOS 15.2+ ScreenCaptureKit is used
 //! ([`super::screen_capture_kit`], `SCScreenshotManager::captureImageInRect`
-//! — that class method is only available from 15.2); on 14.x and earlier we
-//! fall back to xcap's CGWindowListCreateImage path (that API is obsoleted in
+//! — that class method is only available from 15.2); below 15.2 (including
+//! 15.0/15.1, which sit in the periodic "keep allowing screen recording"
+//! window) we fall back to xcap's CGWindowListCreateImage path (that API is
+//! obsoleted in
 //! the macOS 15 SDK and on Sequoia+ triggers the periodic "keep allowing
 //! screen recording" system confirmation, but on older systems it remains the
 //! only option). The app supports macOS 11 at minimum:
@@ -270,6 +272,8 @@ pub fn request_permissions() {
     // are exported by CoreFoundation and valid for the process lifetime; only
     // their addresses are borrowed.
     let key_callbacks = unsafe { &kCFTypeDictionaryKeyCallBacks };
+    // SAFETY: same CoreFoundation-exported static as the key callbacks —
+    // valid for the process lifetime; only its address is borrowed.
     let value_callbacks = unsafe { &kCFTypeDictionaryValueCallBacks };
     // SAFETY: keys/values point at equal-length (1) arrays on this function's
     // stack; the kCFType callbacks retain the key/value at creation, after
@@ -496,6 +500,39 @@ fn cg_mouse_event_types(button: MouseButton) -> (u32, u32, u32) {
             CG_EVENT_OTHER_MOUSE_DRAGGED,
         ),
     }
+}
+
+/// The CG event type (and accompanying mouse button) a synthetic move must
+/// use given the buttons this backend itself holds pressed: apps recognize a
+/// drag only via the Dragged event types (review finding: MouseMoved while a
+/// button was held turned a down → move → up sequence into a plain click).
+/// Without a held button it stays the plain MouseMoved.
+fn move_event_type(held: &[MouseButton]) -> (u32, u32) {
+    if held.contains(&MouseButton::Left) {
+        (CG_EVENT_LEFT_MOUSE_DRAGGED, CG_MOUSE_BUTTON_LEFT)
+    } else if held.contains(&MouseButton::Right) {
+        (
+            CG_EVENT_RIGHT_MOUSE_DRAGGED,
+            cg_mouse_button(MouseButton::Right),
+        )
+    } else if held.contains(&MouseButton::Middle) {
+        (
+            CG_EVENT_OTHER_MOUSE_DRAGGED,
+            cg_mouse_button(MouseButton::Middle),
+        )
+    } else {
+        (CG_EVENT_MOUSE_MOVED, CG_MOUSE_BUTTON_LEFT)
+    }
+}
+
+/// Press modifiers before character/named keys (stable order otherwise):
+/// enigo's macOS backend attaches its accumulated modifier flags only to the
+/// keys pressed after the modifier (review finding: `s+ctrl` used to inject a
+/// bare `s` followed by a lone ctrl press).
+fn ordered_chord_keys(keys: &[Key]) -> Vec<Key> {
+    let mut ordered = keys.to_vec();
+    ordered.sort_by_key(|key| !matches!(key, Key::Control | Key::Alt | Key::Shift | Key::Meta));
+    ordered
 }
 
 /// Password field detection: the authoritative signal is subrole
@@ -821,6 +858,10 @@ struct AxNodeInfo {
     disabled: bool,
     focused: bool,
     secure: bool,
+    /// Whether the geometry fields were actually read (nodes at the depth
+    /// limit skip the four geometry IPCs — their x/y/w/h stay zeroed without
+    /// meaning "at the origin").
+    geometry_read: bool,
 }
 
 /// Accounting for AX attribute read errors: [`AX_CANNOT_COMPLETE_LIMIT`]
@@ -889,8 +930,8 @@ fn tree_attr<T>(
 ///
 /// With `with_geometry` false, the four position/size/enabled/focused reads
 /// are skipped (for nodes already at the depth limit that will not be drilled
-/// into: those fields only affect that row's display, the row shows 0
-/// coordinates, saving 4 cross-process IPCs).
+/// into: those fields only affect that row's display, the row renders its
+/// geometry as unknown, saving 4 cross-process IPCs).
 fn read_node_info(
     element: &AXUIElement,
     names: &AxNames,
@@ -924,6 +965,7 @@ fn read_node_info(
         height: size.map_or(0, |s| s.height.round().max(0.0) as i32),
         disabled: enabled == Some(false),
         focused: focused == Some(true),
+        geometry_read: with_geometry,
     }
 }
 
@@ -1026,19 +1068,20 @@ fn format_tree_line(index: u32, depth: u32, info: &AxNodeInfo) -> String {
         &info.title
     };
     let mut line = String::new();
+    let geometry = if info.geometry_read {
+        format!("({},{},{},{})", info.x, info.y, info.width, info.height)
+    } else {
+        "(-,-,-,-)".to_string()
+    };
     let _ = write!(
         line,
-        "{indent}[{index}] {role} \"{title}\" ({x},{y},{w},{h}){flags}",
+        "{indent}[{index}] {role} \"{title}\" {geometry}{flags}",
         indent = "  ".repeat(depth as usize),
         // AXRole/AXSubrole are free-form strings supplied by the target app;
         // without sanitizing they could break the one-node-per-line invariant
         // (forged tree lines / newline injection) (round-10 review m6).
         role = sanitize_name(&info.role, MAX_NODE_NAME_CHARS),
         title = sanitize_name(display_title, MAX_NODE_NAME_CHARS),
-        x = info.x,
-        y = info.y,
-        w = info.width,
-        h = info.height,
     );
     line
 }
@@ -1143,6 +1186,11 @@ pub(super) struct MacosComputerUseBackend {
     /// chunked type injection checks it between chunks, so abandoned requests
     /// stop injecting.
     cancel: Option<Arc<AtomicBool>>,
+    /// Buttons this backend itself holds synthetically pressed (review
+    /// finding: `move_to` used to post MouseMoved even while a button was
+    /// held, so a down → move → up sequence composed a plain click on every
+    /// app that only recognizes the Dragged event types).
+    held_buttons: Vec<MouseButton>,
 }
 
 impl MacosComputerUseBackend {
@@ -1151,6 +1199,7 @@ impl MacosComputerUseBackend {
             enigo: None,
             pending_move_target: None,
             cancel: None,
+            held_buttons: Vec::new(),
         }
     }
 
@@ -1264,9 +1313,13 @@ impl MacosComputerUseBackend {
         Ok(())
     }
 
-    /// Synthesizes one mouse move (MouseMoved, without clickState).
+    /// Synthesizes one mouse move. While one of this backend's own buttons
+    /// is held, the move must use the matching Dragged event type — apps
+    /// recognize a drag only via those (the dedicated `drag` path already
+    /// did; the composed down → move → up path went through here).
     fn post_move(&mut self, at: (i32, i32)) -> Result<(), ComputerUseError> {
-        self.post_mouse_event(CG_EVENT_MOUSE_MOVED, CG_MOUSE_BUTTON_LEFT, at, 0)
+        let (event_type, button) = move_event_type(&self.held_buttons);
+        self.post_mouse_event(event_type, button, at, 0)
     }
 
     /// Presses all keys (rolling back the pressed ones on error), pauses,
@@ -1279,7 +1332,7 @@ impl MacosComputerUseBackend {
         // polluting all of enigo's subsequent injections. The module's stated
         // invariant is "best-effort release everything even on a mid-way
         // error", which applies equally to mapping failures).
-        let mapped = keys
+        let mapped = ordered_chord_keys(keys)
             .iter()
             .map(|key| map_key(*key))
             .collect::<Result<Vec<_>, _>>()?;
@@ -1470,11 +1523,16 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             // and triple clicks from it.
             let click_state = i64::from(i) + 1;
             self.post_mouse_event(down, cg_button, dest, click_state)?;
+            if !self.held_buttons.contains(&button) {
+                self.held_buttons.push(button);
+            }
             // A successful down with a failed up (TCC revoked mid-way, event
             // allocation failure) would strand the physical button pressed,
             // hijacking the user's next physical click (review finding) —
             // retry the release once; if it still fails, report "the button
-            // may still be pressed" instead of returning silently.
+            // may still be pressed" instead of returning silently. The
+            // stranded button stays registered in `held_buttons`, so later
+            // synthetic moves keep using the Dragged event type.
             if let Err(error) = self.post_mouse_event(up, cg_button, dest, click_state) {
                 sleep(Duration::from_millis(MULTI_CLICK_INTERVAL_MS));
                 self.post_mouse_event(up, cg_button, dest, click_state)
@@ -1485,6 +1543,7 @@ impl ComputerUseBackend for MacosComputerUseBackend {
                         ))
                     })?;
             }
+            self.held_buttons.retain(|held| *held != button);
             if i + 1 < rounds {
                 sleep(Duration::from_millis(MULTI_CLICK_INTERVAL_MS));
             }
@@ -1499,7 +1558,11 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         let dest = self.click_destination()?;
         sleep(Duration::from_millis(CLICK_SETTLE_MS));
         let (down, _, _) = cg_mouse_event_types(button);
-        self.post_mouse_event(down, cg_mouse_button(button), dest, 1)
+        let posted = self.post_mouse_event(down, cg_mouse_button(button), dest, 1);
+        if posted.is_ok() && !self.held_buttons.contains(&button) {
+            self.held_buttons.push(button);
+        }
+        posted
     }
 
     fn mouse_up(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
@@ -1507,7 +1570,11 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         // must land at the drag endpoint).
         let dest = self.click_destination()?;
         let (_, up, _) = cg_mouse_event_types(button);
-        self.post_mouse_event(up, cg_mouse_button(button), dest, 1)
+        let posted = self.post_mouse_event(up, cg_mouse_button(button), dest, 1);
+        if posted.is_ok() {
+            self.held_buttons.retain(|held| *held != button);
+        }
+        posted
     }
 
     fn drag(&mut self, from: (i32, i32), to: (i32, i32)) -> Result<(), ComputerUseError> {
@@ -1516,6 +1583,7 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         self.post_move(from)?;
         sleep(Duration::from_millis(CLICK_SETTLE_MS));
         self.post_mouse_event(down, left, from, 1)?;
+        self.held_buttons.push(MouseButton::Left);
         sleep(Duration::from_millis(DRAG_PRESS_SETTLE_MS));
         let result = (|| {
             for (x, y) in drag_waypoints(from, to, DRAG_STEPS) {
@@ -1533,6 +1601,9 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         // learn that the button may be stranded pressed (mirrors click()'s
         // stranded-button wording).
         let release = self.post_mouse_event(up, left, to, 1);
+        if release.is_ok() {
+            self.held_buttons.retain(|held| *held != MouseButton::Left);
+        }
         match (result, release) {
             (Ok(()), Ok(())) => {}
             // Only the path move failed and the release succeeded: report the
@@ -1891,6 +1962,7 @@ mod tests {
             disabled: false,
             focused: false,
             secure: false,
+            geometry_read: true,
         };
         assert!(ensure_readable(&base).is_ok());
         let info = element_info_from(base.clone());
@@ -1926,10 +1998,21 @@ mod tests {
             disabled: false,
             focused: true,
             secure: false,
+            geometry_read: true,
         };
         let line = format_tree_line(7, 2, &web_button);
         assert!(
             line.contains("[7] AXButton \"Search the web\" (10,20,100,24) focused"),
+            "unexpected line: {line}"
+        );
+        // Review finding: a node whose geometry was skipped (depth limit)
+        // must not render as a fake origin "(0,0,0,0)" — the model would
+        // click (0,0) on it. It renders as unknown instead.
+        let mut unprobed = web_button.clone();
+        unprobed.geometry_read = false;
+        let line = format_tree_line(9, 3, &unprobed);
+        assert!(
+            line.contains("[9] AXButton \"Search the web\" (-,-,-,-) focused"),
             "unexpected line: {line}"
         );
         // When title is non-empty it is still displayed, format unchanged.
@@ -1981,5 +2064,59 @@ mod tests {
             !info.role.is_empty(),
             "focused element role must not be empty"
         );
+    }
+
+    /// Review finding: a synthetic move while one of this backend's own
+    /// buttons is held must use the matching Dragged event type, otherwise
+    /// apps treat the down → move → up sequence as a plain click.
+    #[test]
+    fn move_event_type_follows_held_buttons() {
+        assert_eq!(
+            move_event_type(&[]),
+            (CG_EVENT_MOUSE_MOVED, CG_MOUSE_BUTTON_LEFT),
+            "no held button: plain move"
+        );
+        assert_eq!(
+            move_event_type(&[MouseButton::Left]),
+            (CG_EVENT_LEFT_MOUSE_DRAGGED, CG_MOUSE_BUTTON_LEFT)
+        );
+        assert_eq!(
+            move_event_type(&[MouseButton::Right]),
+            (
+                CG_EVENT_RIGHT_MOUSE_DRAGGED,
+                cg_mouse_button(MouseButton::Right)
+            )
+        );
+        assert_eq!(
+            move_event_type(&[MouseButton::Middle]),
+            (
+                CG_EVENT_OTHER_MOUSE_DRAGGED,
+                cg_mouse_button(MouseButton::Middle)
+            )
+        );
+        // Left wins when several buttons report held: it is the drag case
+        // that matters in practice.
+        assert_eq!(
+            move_event_type(&[MouseButton::Middle, MouseButton::Left]),
+            (CG_EVENT_LEFT_MOUSE_DRAGGED, CG_MOUSE_BUTTON_LEFT)
+        );
+    }
+
+    /// Review finding: chord keys press modifiers first (stable), otherwise
+    /// enigo attaches its accumulated modifier flags only to later presses
+    /// and `s+ctrl` injects a bare `s` plus a lone ctrl.
+    #[test]
+    fn chord_keys_press_modifiers_first() {
+        let ordered = ordered_chord_keys(&[Key::Char('s'), Key::Control]);
+        assert_eq!(ordered, vec![Key::Control, Key::Char('s')]);
+        let multi = ordered_chord_keys(&[Key::Char('h'), Key::Meta, Key::Char('u'), Key::Shift]);
+        assert_eq!(
+            multi,
+            vec![Key::Meta, Key::Shift, Key::Char('h'), Key::Char('u')],
+            "modifiers first, characters keep their relative order"
+        );
+        // Already-ordered input is unchanged (stable sort).
+        let pre = ordered_chord_keys(&[Key::Shift, Key::Char('a')]);
+        assert_eq!(pre, vec![Key::Shift, Key::Char('a')]);
     }
 }
