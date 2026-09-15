@@ -38,16 +38,22 @@ export function isFailedSpawn(item) {
   return !!item && (item.success === false || item.state === 'failed');
 }
 
+/** Whether a spawn-type chat item is still dispatching (queued or in flight). */
+export function isActiveSpawn(item) {
+  return !!item && (item.state === 'pending' || item.state === 'running');
+}
+
 /**
  * Degenerate group shape for a single unannotated spawn item: the render
  * layer's fallback when an item somehow bypasses annotation (kept here so
  * the failure predicate stays in one place).
- * @returns {{count: number, failed: number}}
+ * @returns {{count: number, failed: number, running: number}}
  */
 export function spawnGroupOf(item) {
   return {
     count: 1,
     failed: isFailedSpawn(item) ? 1 : 0,
+    running: isActiveSpawn(item) ? 1 : 0,
   };
 }
 
@@ -71,6 +77,7 @@ export function annotateAgentSpawnGroups(items) {
       } else {
         group.count += 1;
         if (isFailedSpawn(item)) group.failed += 1;
+        if (isActiveSpawn(item)) group.running += 1;
         result.push({ ...item, spawnGroupHidden: true });
       }
       continue;
