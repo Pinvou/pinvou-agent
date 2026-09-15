@@ -470,6 +470,108 @@ pub async fn delete_session(
     result
 }
 
+/// Payload returned by `export_session`: the save path (the location the
+/// user confirmed in the native dialog) plus an archive size summary that
+/// the frontend uses to render the success message.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExportedSessionArchive {
+    pub path: String,
+    pub session_id: String,
+    pub member_count: usize,
+    pub includes_artifacts: bool,
+    pub total_member_bytes: u64,
+    pub compressed_bytes: u64,
+}
+
+/// Sanitize the archive default file name: keep only the base file name,
+/// strip any existing extension, and reject control and path-sensitive
+/// characters; abnormal input falls back to
+/// `pinvou-session-<first 8 chars of id>.tar.xz` (the fallback stem keeps
+/// only `[A-Za-z0-9_-]`, matching the upstream valid character set of
+/// session ids). Mirrors the `assistant_response` export naming guard, but
+/// keeps the multi-segment `.tar.xz` extension.
+fn normalized_archive_name(default_name: &str, session_id: &str) -> String {
+    const EXTENSION: &str = "tar.xz";
+    let fallback_stem = format!(
+        "pinvou-session-{}",
+        session_id
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+            .take(8)
+            .collect::<String>()
+    );
+    let Some(name) = Path::new(default_name)
+        .file_name()
+        .and_then(|name| name.to_str())
+    else {
+        return format!("{fallback_stem}.{EXTENSION}");
+    };
+    let stem = name
+        .trim()
+        .trim_end_matches(&format!(".{EXTENSION}"))
+        .trim_end_matches(['.', ' ']);
+    if stem.is_empty()
+        || stem.len() > 120
+        || stem
+            .chars()
+            .any(|ch| ch.is_control() || "<>:\"/\\|?*".contains(ch))
+    {
+        format!("{fallback_stem}.{EXTENSION}")
+    } else {
+        format!("{stem}.{EXTENSION}")
+    }
+}
+
+/// One-click full session log export: open the native save dialog and pack
+/// the session's full-fidelity record (system prompt, all turns, tool calls
+/// and results) together with artifacts into a `.tar.xz` archive. Packing
+/// reuses the base `deepseek_tui::session_export` and runs inside
+/// spawn_blocking so the main thread is not blocked. Returns `Ok(None)` when
+/// the user cancels.
+///
+/// Accepts any persisted session id under read-only semantics (same as
+/// `load_session`, without calling `ensure_chat_session`): scheduled run
+/// sessions can be exported too; external ACP sessions have no local
+/// persisted record, and `store.export_archive` naturally reports "not
+/// found". The menu entry only appears on chat sessions.
+#[tauri::command]
+pub async fn export_session(
+    app: AppHandle,
+    id: String,
+    default_name: String,
+    include_artifacts: Option<bool>,
+    store: State<'_, SessionStore>,
+) -> Result<Option<ExportedSessionArchive>, String> {
+    let filename = normalized_archive_name(&default_name, &id);
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .set_file_name(&filename)
+        .add_filter("Session archive", &["tar.xz"])
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+    let path = picked
+        .into_path()
+        .map_err(|error| format!("resolve_export_path_failed: {error}"))?;
+    let store = store.inner().clone();
+    let include_artifacts = include_artifacts.unwrap_or(true);
+    let summary =
+        tokio::task::spawn_blocking(move || store.export_archive(&id, &path, include_artifacts))
+            .await
+            .map_err(|error| format!("session_export_task_failed: {error}"))?
+            .map_err(|error| format!("session_export_failed: {error:#}"))?;
+    Ok(Some(ExportedSessionArchive {
+        path: summary.output.display().to_string(),
+        member_count: summary.members.len(),
+        includes_artifacts: summary.includes_artifacts,
+        total_member_bytes: summary.total_member_bytes(),
+        compressed_bytes: summary.compressed_bytes(),
+        session_id: summary.session_id,
+    }))
+}
+
 /// 重命名 session 标题。普通会话与定时运行会话共用 Session 元数据。
 #[tauri::command]
 pub async fn rename_session(
@@ -867,6 +969,10 @@ pub(super) fn list_workspace_files_for_session(
     Ok(out)
 }
 use super::prelude::*;
+// Native save dialog support for `export_session`; the other session
+// commands do not interact with the dialog plugin.
+use std::path::Path;
+use tauri_plugin_dialog::DialogExt;
 
 #[cfg(test)]
 mod desktop_saved_session_contract_tests {
@@ -929,5 +1035,49 @@ mod desktop_saved_session_contract_tests {
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod session_archive_name_tests {
+    use super::*;
+
+    #[test]
+    fn archive_name_strips_extension_and_keeps_multi_segment_tar_xz() {
+        assert_eq!(
+            normalized_archive_name("会话 demo.tar.xz", "abcd1234-0000"),
+            "会话 demo.tar.xz"
+        );
+        // Same semantics as the assistant export: keep the original stem and
+        // always append .tar.xz.
+        assert_eq!(
+            normalized_archive_name("chat.txt", "abcd1234-0000"),
+            "chat.txt.tar.xz"
+        );
+    }
+
+    #[test]
+    fn archive_name_cannot_escape_or_inject() {
+        assert_eq!(
+            normalized_archive_name("../evil/attack.tar.xz", "abcd1234-0000"),
+            "attack.tar.xz"
+        );
+        assert_eq!(
+            normalized_archive_name("bad:name?.tar.xz", "abcd1234-0000"),
+            "pinvou-session-abcd1234.tar.xz"
+        );
+    }
+
+    #[test]
+    fn archive_name_falls_back_when_empty_or_overlong() {
+        assert_eq!(
+            normalized_archive_name("   ", "abcd1234-0000"),
+            "pinvou-session-abcd1234.tar.xz"
+        );
+        let long = "x".repeat(200);
+        assert_eq!(
+            normalized_archive_name(&long, "abcd1234-0000"),
+            "pinvou-session-abcd1234.tar.xz"
+        );
     }
 }

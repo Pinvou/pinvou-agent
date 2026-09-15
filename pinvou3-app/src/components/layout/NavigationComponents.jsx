@@ -1,6 +1,6 @@
 import { memo, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Archive, Check, Edit2, FolderOpen, MoreHorizontal, PinIcon, PinOffIcon, Sparkles, Trash2, X } from '../icons.jsx';
+import { Archive, Check, Download, Edit2, FolderOpen, MoreHorizontal, PinIcon, PinOffIcon, Sparkles, Trash2, X } from '../icons.jsx';
 import { useLongPressDrag } from '../../hooks/useLongPressDrag.js';
 import { usePortalMenu } from '../../hooks/usePortalMenu.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -215,7 +215,7 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
     // derived by the parent's useMemo and callbacks come from the parent's
     // useCallback / per-item closure cache (see renderSidebarTaskItem in
     // main.jsx); the default shallow compare then skips correctly.
-    const RecentItem = memo(function RecentItem({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onArchive, dragKind = 'session', dragging, onPickUp }) {
+    const RecentItem = memo(function RecentItem({ chat, active, personaTarget, theme, t, onSelect, onRename, onDelete, onTogglePinned, onOpenFolder, onExportArchive, onArchive, dragKind = 'session', dragging, onPickUp }) {
       const isDark = theme === 'dark';
       const [editing, setEditing] = useState(false);
       const [confirming, setConfirming] = useState(false);
@@ -226,8 +226,10 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
       const selectChat = () => onSelect(chat.id);
       function save() { const tx = val.trim(); setEditing(false); if (tx && tx !== chat.title) onRename(chat.id, tx); }
       // Portal "more" menu placement/close lives in the shared hook (same
-      // plumbing as the project-group header menu).
-      const { menuOpen, menuStyle, closeMenu, toggleMenu, openMenuAt } = usePortalMenu({ height: 184 });
+      // plumbing as the project-group header menu). Height covers the 7-item
+      // session menu (6 menu items × h-9 (36px) + 9px divider + 8px vertical
+      // padding ≈ 233).
+      const { menuOpen, menuStyle, closeMenu, toggleMenu, openMenuAt } = usePortalMenu({ height: 233 });
       const openContextMenu = openMenuAt;
       const menuItemCls = `w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] whitespace-nowrap transition-colors text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]`;
       const menu = menuOpen && menuStyle && typeof document !== 'undefined' ? createPortal(
@@ -254,6 +256,12 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
             <button type="button" className={menuItemCls} onClick={() => { closeMenu(); onOpenFolder(chat.id); }}>
               <FolderOpen size={15} />
               <span>{t.riOpenFolder}</span>
+            </button>
+          )}
+          {onExportArchive && (
+            <button type="button" className={menuItemCls} data-testid="session-export-archive" onClick={() => { closeMenu(); onExportArchive(chat.id); }}>
+              <Download size={15} />
+              <span>{t.exportSessionArchive}</span>
             </button>
           )}
           {onArchive && (

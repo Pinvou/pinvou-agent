@@ -1239,6 +1239,17 @@
     }
   }
 
+  // One-click full session log export: the backend opens the native save
+  // dialog and packs the full-fidelity session record (system prompt, all
+  // turns, tool calls and results) together with artifacts into a .tar.xz
+  // archive. Resolves to { path, ... }; resolves to null when the user
+  // cancels. The web build has no local session files, so the bridge does
+  // not expose this entry point (the frontend hides the menu item based on
+  // capabilities).
+  async function exportSessionArchive(id, defaultName) {
+    return invoke("export_session", { id, defaultName, includeArtifacts: true });
+  }
+
   async function archiveSession(id) {
     invalidateScheduledRecentRunsForSession(id);
     const idx = state.sessions.findIndex(function (s) { return s.id === id; });
@@ -1395,7 +1406,8 @@
       renameSession,
       toggleSessionPinned,
       archiveSession,
-      restoreArchivedSession
+      restoreArchivedSession,
+      exportSessionArchive
     };
   };
 })(window);
