@@ -182,6 +182,36 @@ pub fn resolve_context_window(
     }
 }
 
+/// Output-cap tier declaration for operator-owned endpoints (local vLLM,
+/// custom OpenAI-compatible / custom; see
+/// `SavedModel::is_operator_owned_endpoint` for the predicate) — acting as
+/// the deployer's proxy, the host declares the route output fact by window
+/// tier (replacing the base's 8192 fail-close guess for uncatalogued
+/// models).
+///
+/// Single source of truth: both the declaration arm of
+/// `bridge::route_limits_for_model` and the monitor page's live-probe test
+/// take their values from here; do not inline the formula again (an inlined
+/// copy drifted in the very round it was introduced by missing the 500K
+/// tier).
+#[must_use]
+pub fn operator_owned_output_declaration(window: Option<u32>) -> Option<u32> {
+    let declared = match window {
+        Some(window) if window >= 500_000 => 131_072,
+        Some(window) if window >= 250_000 => 65_536,
+        Some(window) => (window / 4).min(32_768),
+        // No window fact: fall back to a quarter of the base's 128K default
+        // window (not a base-native value: the base model-level fallback is
+        // 64000 and the route-level fail-close is <=8192; after
+        // min(64000, 32768) the effective value is exactly 32768).
+        None => 32_768,
+    };
+    // For tiny windows window/4 cannot fit a meaningful output budget (<4K):
+    // stay undeclared (fail-closed) instead of emitting a Some(<4K) route
+    // fact.
+    (declared >= 4_096).then_some(declared)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,5 +330,48 @@ mod tests {
             (Some(1_000_000), true)
         );
         assert_eq!(resolve_context_window(None, None, None), (None, false));
+    }
+
+    #[test]
+    fn operator_owned_output_declaration_tiers_and_fail_closed_floor() {
+        // Tier boundaries (same table as the bridge tier test; this pins the
+        // pure function itself).
+        assert_eq!(
+            operator_owned_output_declaration(Some(1_048_576)),
+            Some(131_072)
+        );
+        assert_eq!(
+            operator_owned_output_declaration(Some(500_000)),
+            Some(131_072)
+        );
+        assert_eq!(
+            operator_owned_output_declaration(Some(499_999)),
+            Some(65_536)
+        );
+        assert_eq!(
+            operator_owned_output_declaration(Some(250_000)),
+            Some(65_536)
+        );
+        assert_eq!(
+            operator_owned_output_declaration(Some(249_999)),
+            Some(32_768)
+        );
+        assert_eq!(
+            operator_owned_output_declaration(Some(262_144)),
+            Some(65_536)
+        );
+        assert_eq!(
+            operator_owned_output_declaration(Some(131_072)),
+            Some(32_768)
+        );
+        assert_eq!(
+            operator_owned_output_declaration(Some(65_536)),
+            Some(16_384)
+        );
+        assert_eq!(operator_owned_output_declaration(Some(16_384)), Some(4_096));
+        assert_eq!(operator_owned_output_declaration(Some(16_383)), None);
+        assert_eq!(operator_owned_output_declaration(Some(4_096)), None);
+        // No window fact → quarter of the 128K default window fallback.
+        assert_eq!(operator_owned_output_declaration(None), Some(32_768));
     }
 }

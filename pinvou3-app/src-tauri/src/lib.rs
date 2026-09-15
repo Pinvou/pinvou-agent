@@ -51,8 +51,9 @@ const RELEASE_ENV_DEFAULTS: &[(&str, &str)] = &[
     ("DEEPSEEK_FORCE_HTTP1", "1"),
     // 不再注入 DEEPSEEK_MAX_OUTPUT_TOKENS：它会把所有模型（含云端）的输出上限
     // 钉死在 24576。底座对 ≥500K 窗口模型默认 64K（API_MAX_OUTPUT_TOKENS），
-    // 云端模型应落到底座兜底；本地 vLLM 的 24K 预算由 route_limits_for_model
-    // 的 is_local_vllm 分支显式携带，不依赖该 env。
+    // Cloud models should land on the base fallback; local models and custom
+    // endpoints share the operator window tiers (route_limits_for_model),
+    // equally independent of this env.
     // 与 CodeWhale 的 stream_chunk_timeout 默认值保持一致。
     ("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS", "300"),
     // SSE 首响应头超时(open timeout):底座只认 env,默认 45s 是为云端调的。

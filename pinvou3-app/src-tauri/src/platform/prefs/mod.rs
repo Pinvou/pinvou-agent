@@ -251,6 +251,21 @@ pub struct SavedModel {
 }
 
 impl SavedModel {
+    /// Operator-owned endpoint: locally self-hosted (LocalVllm) or a
+    /// user-entered OpenAI-compatible / custom endpoint. The output ceiling
+    /// of these endpoints is the deployer's own responsibility; the host
+    /// declares the route output fact by window tier on their behalf (see
+    /// `bridge::route_limits_for_model`). `coding_plan` is the official
+    /// managed entry point and does not count as operator-owned even when it
+    /// rides on the `OpenaiCompatible` preset — it must stay base
+    /// fail-closed, with no declaration on its behalf.
+    pub fn is_operator_owned_endpoint(&self) -> bool {
+        (self.preset == ModelPreset::LocalVllm
+            || self.preset == ModelPreset::OpenaiCompatible
+            || self.provider_kind.as_deref() == Some("custom"))
+            && self.provider_kind.as_deref() != Some("coding_plan")
+    }
+
     fn normalize_alias(&mut self) {
         if self.preset == ModelPreset::LocalVllm {
             self.alias = None;
@@ -270,8 +285,24 @@ impl SavedModel {
             if self.context_window_tokens.is_none() && self.model == "qwen36_35b_256k" {
                 self.context_window_tokens = Some(262_144);
             }
-            if self.max_output_tokens.is_none() {
-                self.max_output_tokens = Some(24_576);
+            // The output cap is no longer forced to 24K for the LocalVllm
+            // preset: when not explicitly configured it takes the same path
+            // as custom OpenAI-compatible endpoints and is declared uniformly
+            // by window tier in route_limits_for_model (>=500K→131072 /
+            // >=250K→65536 / otherwise min(window/4, 32768)). Older versions
+            // machine-wrote the 24K into existing configs (forced here +
+            // prefilled in the settings page, then saved), making it
+            // indistinguishable on disk from explicit user input; a local
+            // model whose value is exactly 24576 is normalized away as
+            // "legacy unset" so the window tiers also apply to upgraded
+            // users (the persistence gate writes this normalization back to
+            // disk on load). Trade-off: from now on explicitly configuring
+            // 24576 on a local model is also treated as unset — 24576 is
+            // thereby kept as a legacy sentinel value, in the same family as
+            // the <=0 filter above. 24576 on non-LocalVllm endpoints is
+            // always explicit input and is not migrated.
+            if self.max_output_tokens == Some(24_576) {
+                self.max_output_tokens = None;
             }
         }
         // reasoning_effort 归一为底座 `ReasoningEffort::parse_strict` 认识的规范档位
@@ -651,12 +682,21 @@ impl UserPrefs {
             .saved_models
             .iter()
             .any(|model| model.preset == ModelPreset::LocalVllm && model.alias.is_some());
+        // The local 24576 legacy-sentinel migration (`normalize_route_limits`
+        // normalizes the machine-written 24K to unset) is the same case: it
+        // must be recorded before migrate/normalize rewrite the models,
+        // otherwise the save gate sees no change and the 24K in existing
+        // settings.json stays on disk forever.
+        let local_output_sentinel_changed = prefs.advanced.saved_models.iter().any(|model| {
+            model.preset == ModelPreset::LocalVllm && model.max_output_tokens == Some(24_576)
+        });
         prefs.migrate_models();
         prefs.normalize_saved_model_metadata();
         let migration = prefs.migrate_plaintext_api_keys_with_store(&SystemCredentialStore::new());
         let memory_policy_changed = prefs.enforce_memory_locale_policy();
         let normalization_changed = minimax_endpoint_changed
             || local_model_alias_changed
+            || local_output_sentinel_changed
             || migration.settings_sanitized
             || memory_policy_changed
             || color_scheme_derived;
@@ -1193,6 +1233,91 @@ mod tests {
         }
     }
 
+    /// LocalVllm no longer forces a 24K output (stays None when not
+    /// explicitly configured; declared uniformly by the runtime window
+    /// tiers); the operator-owned predicate covers both local and custom
+    /// endpoints and excludes the coding_plan official entry.
+    #[test]
+    fn normalize_keeps_local_output_unset_and_operator_owned_detection() {
+        let mut local = SavedModel {
+            id: "m1".into(),
+            name: "m1".into(),
+            alias: None,
+            preset: ModelPreset::LocalVllm,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            model: "qwen36_35b_256k".into(),
+            base_url: "http://127.0.0.1:8000/v1".into(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: Default::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        };
+        local.normalize_route_limits();
+        assert_eq!(
+            local.context_window_tokens,
+            Some(262_144),
+            "the qwen36_35b_256k window fallback is kept"
+        );
+        assert_eq!(
+            local.max_output_tokens, None,
+            "local models no longer force a 24K output; unset stays None"
+        );
+        assert!(local.is_operator_owned_endpoint());
+
+        // A user's explicitly configured output limit (including the
+        // positive-value filter) is kept verbatim.
+        let mut explicit = local.clone();
+        explicit.max_output_tokens = Some(32_768);
+        explicit.normalize_route_limits();
+        assert_eq!(explicit.max_output_tokens, Some(32_768));
+
+        // A machine-written legacy local 24K (normalize force + settings
+        // page prefill) counts as legacy unset and is normalized to None to
+        // take the window tiers; 24576 on non-LocalVllm endpoints is
+        // explicit input and is kept verbatim.
+        let mut legacy = local.clone();
+        legacy.max_output_tokens = Some(24_576);
+        legacy.normalize_route_limits();
+        assert_eq!(
+            legacy.max_output_tokens, None,
+            "a legacy machine-written local 24K is normalized to unset and takes the window tiers"
+        );
+        let mut custom_legacy = legacy.clone();
+        custom_legacy.preset = ModelPreset::OpenaiCompatible;
+        custom_legacy.provider_kind = Some("custom".into());
+        custom_legacy.max_output_tokens = Some(24_576);
+        custom_legacy.normalize_route_limits();
+        assert_eq!(
+            custom_legacy.max_output_tokens,
+            Some(24_576),
+            "24576 on a custom endpoint is explicit input and is not migrated"
+        );
+
+        let mut custom = local.clone();
+        custom.preset = ModelPreset::OpenaiCompatible;
+        custom.provider_kind = Some("custom".into());
+        assert!(custom.is_operator_owned_endpoint());
+
+        // coding_plan is not operator-owned even on the OpenaiCompatible
+        // preset.
+        let mut plan = custom.clone();
+        plan.provider_kind = Some("coding_plan".into());
+        assert!(!plan.is_operator_owned_endpoint());
+
+        // Official cloud presets are not operator-owned.
+        let mut cloud = local;
+        cloud.preset = ModelPreset::Deepseek;
+        assert!(!cloud.is_operator_owned_endpoint());
+    }
+
     /// reasoning_effort 归一为底座 `ReasoningEffort::parse_strict` 认识的规范档位：
     /// 非法值置 None（避免被底座静默回退成 Max），合法别名规范化为对应档位
     /// （对齐 `as_setting()`，避免 wire 层 `apply_reasoning_effort` 静默丢弃）。
@@ -1486,6 +1611,150 @@ mod tests {
             // SAFETY: same as above; restore-side removal serialized under ENV_LOCK.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
+    }
+
+    /// The local 24576 legacy-sentinel migration must be persisted at load
+    /// time (round-2 review MAJOR: it once only changed memory, the save
+    /// gate saw no change, and the machine-written 24K stayed in
+    /// settings.json forever). Also pins: 24576 on non-LocalVllm endpoints
+    /// is explicit input the migration must not touch.
+    #[test]
+    fn load_persists_legacy_local_output_sentinel_migration() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // RAII cleanup: PINVOU3_HOME and the temporary home must be reclaimed
+        // even on assertion/panic — the previous restore was only written at
+        // the normal end, so a mid-test failure leaked the env + directory
+        // and polluted later tests in the same process (same recipe as the
+        // bridge tests' TempDirGuard; the directory name stacks pid + an
+        // in-process atomic suffix so concurrent cargo test from two
+        // terminals does not collide).
+        struct PrefsHomeGuard {
+            previous: Option<std::ffi::OsString>,
+            home: std::path::PathBuf,
+        }
+        impl PrefsHomeGuard {
+            fn set(home: std::path::PathBuf) -> Self {
+                let previous = std::env::var_os("PINVOU3_HOME");
+                // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
+                unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+                Self { previous, home }
+            }
+        }
+        impl Drop for PrefsHomeGuard {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.home);
+                match self.previous.take() {
+                    // SAFETY: holding ENV_LOCK (first line of this test); restore-side writes serialized.
+                    Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+                    // SAFETY: same as above; restore-side removal serialized under ENV_LOCK.
+                    None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+                }
+            }
+        }
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-prefs-local-output-sentinel-{}-{}",
+            std::process::id(),
+            super::super::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("create temporary prefs home");
+        let _prefs_home = PrefsHomeGuard::set(home);
+
+        let mut prefs = UserPrefs::default();
+        prefs.advanced.saved_models.push(SavedModel {
+            id: "legacy-local".into(),
+            name: "Legacy Local".into(),
+            alias: None,
+            preset: ModelPreset::LocalVllm,
+            context_window_tokens: Some(262_144),
+            // The machine-written 24K from older normalize + settings page
+            // prefill: must be migrated away and persisted.
+            max_output_tokens: Some(24_576),
+            reasoning_effort: None,
+            model: "qwen36_35b_256k".into(),
+            base_url: "http://127.0.0.1:8000/v1".into(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        });
+        prefs.advanced.saved_models.push(SavedModel {
+            id: "custom-explicit".into(),
+            name: "Custom Explicit".into(),
+            alias: None,
+            preset: ModelPreset::OpenaiCompatible,
+            context_window_tokens: None,
+            // 24576 on a custom endpoint is explicit input: must be kept
+            // verbatim.
+            max_output_tokens: Some(24_576),
+            reasoning_effort: None,
+            model: "custom-model".into(),
+            base_url: "https://gateway.example.com/v1".into(),
+            provider_kind: Some(MODEL_PROVIDER_KIND_CUSTOM.into()),
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        });
+        prefs.advanced.active_model_id = Some("legacy-local".into());
+        let path = super::super::paths::settings_path();
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&prefs).expect("serialize legacy prefs"),
+        )
+        .expect("write legacy prefs");
+
+        let loaded = UserPrefs::load();
+        let legacy_local = loaded
+            .model_by_id("legacy-local")
+            .expect("legacy local model");
+        assert_eq!(
+            legacy_local.max_output_tokens, None,
+            "the legacy in-memory 24K must already be normalized to unset"
+        );
+        let custom = loaded.model_by_id("custom-explicit").expect("custom model");
+        assert_eq!(
+            custom.max_output_tokens,
+            Some(24_576),
+            "the explicit 24576 on the custom endpoint must not be migrated"
+        );
+
+        // Key assertion: the normalization was written back to disk (not
+        // just changed in memory).
+        let persisted: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read migrated prefs"))
+                .expect("parse migrated prefs");
+        let models = persisted["advanced"]["saved_models"]
+            .as_array()
+            .expect("saved_models array");
+        let legacy_on_disk = models
+            .iter()
+            .find(|model| model["id"] == "legacy-local")
+            .expect("legacy local on disk");
+        assert!(
+            legacy_on_disk["max_output_tokens"].is_null(),
+            "the legacy on-disk 24K must be cleared, got {}",
+            legacy_on_disk["max_output_tokens"]
+        );
+        let custom_on_disk = models
+            .iter()
+            .find(|model| model["id"] == "custom-explicit")
+            .expect("custom on disk");
+        assert_eq!(custom_on_disk["max_output_tokens"], 24_576);
+        // PINVOU3_HOME restoration and temporary home reclamation are
+        // handled by PrefsHomeGuard's Drop (also on assertion/panic paths);
+        // no hand-written restore block here.
     }
 
     #[test]

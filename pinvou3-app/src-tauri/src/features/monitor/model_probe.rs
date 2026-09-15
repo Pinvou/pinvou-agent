@@ -716,38 +716,68 @@ pub async fn probe_vllm_model_info(
 /// - otherwise (probe failure / multi-entry list without the configured
 ///   name) → keep the configured name so inference surfaces `model_not_found`
 ///   explicitly, never silently switching to any other listed model.
-/// Returns `(model name to send, that model's context window)`; when the
-/// configured name is kept the window is `None` (the model is not in the
-/// list, so another model's window must not drive compaction thresholds).
+/// Returns `(model name to send, that model's context window, that model's
+/// self-reported output limit)`; when the configured name is kept the window
+/// and output limit are `None` (the model is not in the list, so another
+/// model's facts must not drive compaction thresholds or output caps).
 fn resolve_served_model_from_entries(
     configured: &str,
     entries: &[crate::core::model_endpoint::OpenAiModelInfo],
-) -> (String, Option<u32>) {
+) -> (String, Option<u32>, Option<u32>) {
     if let Some(matched) = entries.iter().find(|model| model.id == configured) {
-        return (configured.to_string(), matched.max_model_len);
+        return (
+            configured.to_string(),
+            matched.max_model_len,
+            matched.max_output_tokens,
+        );
     }
     if let [single] = entries {
-        return (single.id.clone(), single.max_model_len);
+        return (
+            single.id.clone(),
+            single.max_model_len,
+            single.max_output_tokens,
+        );
     }
-    (configured.to_string(), None)
+    (configured.to_string(), None, None)
 }
 
 /// Fetches `/v1/models` and decides the actual model name via
 /// [`resolve_served_model_from_entries`]. On probe failure returns the
-/// configured name with a `None` window. `bearer` semantics match
+/// configured name with `None` window/limit. `bearer` semantics match
 /// [`probe_vllm_model_info`] (inference-same-origin key).
 pub async fn resolve_served_model(
     base_url: &str,
     bearer: Option<&str>,
     configured: &str,
-) -> (String, Option<u32>) {
+) -> (String, Option<u32>, Option<u32>) {
     match crate::core::model_endpoint::fetch_v1_models(base_url, bearer)
         .await
         .and_then(crate::core::model_endpoint::parse_models_response_list)
     {
         Some(entries) => resolve_served_model_from_entries(configured, &entries),
-        None => (configured.to_string(), None),
+        None => (configured.to_string(), None, None),
     }
+}
+
+/// Whether a probed entry's facts (context window / self-reported output
+/// limit) may be adopted by this route. The facts must belong to the model
+/// name actually sent to the endpoint: routes that follow the served name
+/// (vLLM, whose name is usually corrected to the entry itself) may always
+/// adopt; routes that do not rename adopt only when the configured name
+/// exactly hits the list — in the single-entry "borrowed name" scenario the
+/// returned served name is unrelated to the configured one and its facts
+/// belong to another model, so they must not tighten this route's
+/// window/output caps.
+///
+/// Known exception (intentional trade-off): with vLLM +
+/// `pins_scheduled_model` the served-name correction is suppressed and the
+/// configured name goes live verbatim, but `follows_served_name` is still
+/// true by route type — the single-entry facts are then adopted. A lenient
+/// single-model server is genuinely serving that entry (facts correct); a
+/// strict one 404s on the configured name (facts have no effect), so no
+/// extra condition complexity is added for that corner.
+pub fn adopts_probed_facts(follows_served_name: bool, configured: &str, served: &str) -> bool {
+    follows_served_name || served == configured
 }
 
 /// 当前 monitor/探测应使用的 vLLM base_url。
@@ -799,9 +829,14 @@ mod tests {
         );
         // 端到端佐证:探测窗口喂进 derive 公式应得按窗口缩放的 T(非写死 190K)。
         // 复算 derive_compaction_threshold(bridge 私有,此处内联同公式):
-        //   E = W − O − 1024;T = (E−S)/1.5 − 22000, clamp[4096, 0.75W]。O=24576(默认预留)。
+        //   E = W − O − 1024; T = (E−S)/1.5 − 22000, clamp[4096, 0.75W].
+        // O = the window-tier declaration — taken from the same source as
+        // production, core::model_context::operator_owned_output_declaration;
+        // do not inline a copy again.
+        let o = crate::core::model_context::operator_owned_output_declaration(Some(window))
+            .expect("a real-machine window >=100K always yields a tier declaration");
         let e = (window as usize)
-            .saturating_sub(24_576)
+            .saturating_sub(o as usize)
             .saturating_sub(1_024);
         let t = (e.saturating_sub(4_000).saturating_mul(2) / 3)
             .saturating_sub(22_000)
@@ -1010,9 +1045,18 @@ mod tests {
         id: &str,
         max_model_len: Option<u32>,
     ) -> crate::core::model_endpoint::OpenAiModelInfo {
+        served_entry_with_output(id, max_model_len, None)
+    }
+
+    fn served_entry_with_output(
+        id: &str,
+        max_model_len: Option<u32>,
+        max_output_tokens: Option<u32>,
+    ) -> crate::core::model_endpoint::OpenAiModelInfo {
         crate::core::model_endpoint::OpenAiModelInfo {
             id: id.to_string(),
             max_model_len,
+            max_output_tokens,
             loaded: None,
         }
     }
@@ -1027,9 +1071,10 @@ mod tests {
             served_entry("first-downloaded", Some(4096)),
             served_entry("user-picked", Some(131_072)),
         ];
-        let (name, window) = resolve_served_model_from_entries("user-picked", &entries);
+        let (name, window, output) = resolve_served_model_from_entries("user-picked", &entries);
         assert_eq!(name, "user-picked");
         assert_eq!(window, Some(131_072));
+        assert_eq!(output, None);
     }
 
     /// Real vLLM scenario: after a `--served-model-name` change the list holds
@@ -1037,9 +1082,10 @@ mod tests {
     #[test]
     fn served_model_follows_single_unknown_name() {
         let entries = vec![served_entry("served-name", Some(65536))];
-        let (name, window) = resolve_served_model_from_entries("qwen36_35b_256k", &entries);
+        let (name, window, output) = resolve_served_model_from_entries("qwen36_35b_256k", &entries);
         assert_eq!(name, "served-name");
         assert_eq!(window, Some(65536));
+        assert_eq!(output, None);
     }
 
     /// Multi-entry list without the configured name (stale/hand-edited config):
@@ -1050,9 +1096,10 @@ mod tests {
     #[test]
     fn served_model_keeps_configured_name_when_absent_from_multi_model_list() {
         let entries = vec![served_entry("a", Some(4096)), served_entry("b", Some(8192))];
-        let (name, window) = resolve_served_model_from_entries("gone", &entries);
+        let (name, window, output) = resolve_served_model_from_entries("gone", &entries);
         assert_eq!(name, "gone");
         assert_eq!(window, None);
+        assert_eq!(output, None);
     }
 
     /// Single entry that equals the configured name: takes the "found in list"
@@ -1062,9 +1109,10 @@ mod tests {
     #[test]
     fn served_model_single_entry_equal_to_configured_keeps_name_and_window() {
         let entries = vec![served_entry("qwen36_35b_256k", Some(262_144))];
-        let (name, window) = resolve_served_model_from_entries("qwen36_35b_256k", &entries);
+        let (name, window, output) = resolve_served_model_from_entries("qwen36_35b_256k", &entries);
         assert_eq!(name, "qwen36_35b_256k");
         assert_eq!(window, Some(262_144));
+        assert_eq!(output, None);
     }
 
     /// Matched entry without `max_model_len` (server does not expose it): the
@@ -1076,9 +1124,52 @@ mod tests {
             served_entry("first-downloaded", None),
             served_entry("user-picked", None),
         ];
-        let (name, window) = resolve_served_model_from_entries("user-picked", &entries);
+        let (name, window, output) = resolve_served_model_from_entries("user-picked", &entries);
         assert_eq!(name, "user-picked");
         assert_eq!(window, None);
+        assert_eq!(output, None);
+    }
+
+    /// The entry's self-reported output limit rides the same matched-entry
+    /// rule as the window: only the configured model's own limit is used,
+    /// never another listed model's.
+    #[test]
+    fn served_model_output_limit_follows_matched_entry() {
+        let entries = vec![
+            served_entry_with_output("first-downloaded", Some(4096), Some(8192)),
+            served_entry_with_output("user-picked", Some(262_144), Some(65_536)),
+        ];
+        let (name, _, output) = resolve_served_model_from_entries("user-picked", &entries);
+        assert_eq!(name, "user-picked");
+        assert_eq!(output, Some(65_536));
+        // No match → never borrow another model's output limit
+        let (_, _, borrowed) = resolve_served_model_from_entries("gone", &entries);
+        assert_eq!(borrowed, None);
+    }
+
+    /// Probed facts belong only to the model name actually requested:
+    /// routes that follow the served name (vLLM, whose name is corrected to
+    /// the entry itself) always adopt; routes that do not rename adopt only
+    /// on an exact configured-name match, and single-entry "borrowed name"
+    /// facts must not be misattributed.
+    #[test]
+    fn probed_facts_adoptable_only_on_exact_match_unless_route_follows_served_name() {
+        // vLLM: after correction the facts share the same origin as the
+        // final request name; always adopt (both inputs, before and after
+        // correction).
+        assert!(adopts_probed_facts(true, "qwen36_35b_256k", "served-name"));
+        assert!(adopts_probed_facts(
+            true,
+            "qwen36_35b_256k",
+            "qwen36_35b_256k"
+        ));
+        // Non-vLLM: exact match adopts; a single-entry borrowed name does not.
+        assert!(adopts_probed_facts(false, "user-picked", "user-picked"));
+        assert!(!adopts_probed_facts(
+            false,
+            "user-picked",
+            "first-downloaded"
+        ));
     }
 
     #[test]
