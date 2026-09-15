@@ -17,6 +17,19 @@ use serde::{Deserialize, Serialize};
 
 pub const PRODUCT_SCORE_VERSION: &str = "pinvou-product-score/v1";
 
+/// Canonical id of the smoke tool policy: the headless read-only-web face
+/// (the same six tools as the GAIA public-web policy), deliberately not
+/// named "product" — the real product surface is
+/// `tool_policy::PINVOU3_ALLOWED_TOOLS` in the app, and the product-equivalent
+/// benchmark path is a headless task without an eval policy. See
+/// `docs/gaia-native-turn-tool-policy.md`.
+pub const SMOKE_TOOL_POLICY_ID: &str = "pinvou-read-only-web/v1";
+
+/// Deprecated pre-rename id of [`SMOKE_TOOL_POLICY_ID`]. The app-side resolver
+/// still maps it to the same policy, and smoke resume keeps accepting stored
+/// manifests recorded before the rename. Never written by new runs.
+pub const SMOKE_TOOL_POLICY_ID_DEPRECATED: &str = "pinvou-product/v1";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolExpectation {
     Forbidden,
@@ -55,7 +68,7 @@ impl SmokeCase {
                 PrivateInputHandle::new(format!("smoke:{}", self.id)),
                 vec![],
                 self.timeout,
-                ToolPolicyId::new("pinvou-product/v1"),
+                ToolPolicyId::new(SMOKE_TOOL_POLICY_ID),
                 OutputContract::new("smoke-private-output/v1"),
             ),
             None,

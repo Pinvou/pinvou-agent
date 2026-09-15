@@ -2,9 +2,10 @@ use std::time::Duration;
 
 use adapter_smoke::{
     JudgeDimensionScore, JudgeStatus, JudgeWireResponse, ProductScoreConfidence,
-    ProductScoreDimension, SmokeAnalysisMaterial, SmokeRecord, SmokeToolEvent, SmokeUsage,
-    ToolExpectation, analyze_rules, calculate_product_score, is_low_cache_hit_ratio,
-    latency_exceeds_twice_median, parse_judge_response, render_smoke_markdown, smoke_cases,
+    ProductScoreDimension, SMOKE_TOOL_POLICY_ID, SMOKE_TOOL_POLICY_ID_DEPRECATED,
+    SmokeAnalysisMaterial, SmokeRecord, SmokeToolEvent, SmokeUsage, ToolExpectation, analyze_rules,
+    calculate_product_score, is_low_cache_hit_ratio, latency_exceeds_twice_median,
+    parse_judge_response, render_smoke_markdown, smoke_cases,
 };
 use agent_backend_api::PrivateInputResolver;
 use benchmark_core::{
@@ -311,6 +312,18 @@ fn private_input_store_keeps_prompts_behind_opaque_ids() {
         .expect("known prompt id");
     assert_eq!(resolved.prompt().expose_to_backend(), case.prompt());
     assert!(!format!("{inputs:?}").contains(case.prompt()));
+}
+
+#[test]
+fn smoke_tasks_carry_the_canonical_read_only_web_policy_id() {
+    for case in smoke_cases() {
+        let task = case.to_benchmark_task();
+        let ExecutionRequest::NativeTurn { tool_policy, .. } = task.execution() else {
+            panic!("Smoke task must be native");
+        };
+        assert_eq!(tool_policy.as_str(), SMOKE_TOOL_POLICY_ID);
+        assert_ne!(tool_policy.as_str(), SMOKE_TOOL_POLICY_ID_DEPRECATED);
+    }
 }
 
 #[test]
