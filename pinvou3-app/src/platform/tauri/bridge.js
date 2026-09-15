@@ -1200,6 +1200,17 @@
       loadWorkingSetFrom(restoreBuffer);
     }
   }
+  // Aux chat domain: reuses the injected pieces from chat/sessions (isBusyFor,
+  // the getBuffer family, ensureSessionBufferLoaded, purgeSessionBuffer,
+  // touchSessionBuffer); it does not build its own state or event listeners.
+  const auxChatFeature = installBridgeFeature("auxChat", {
+    state, invoke, bt, sessionStates,
+    ensureSessionBufferLoaded,
+    purgeSessionBuffer,
+    touchSessionBuffer,
+    isBusyFor,
+  });
+
   // ── modeState 权威写回收敛点（评审 P1）────────────────────────────
   // 任何「invoke 返回 / 事件负载」带来的权威 modeState 更新都必须走
   // applyAuthoritativeModeState：内部统一 bump per-session epoch（作废
@@ -2623,6 +2634,13 @@
       interruptAndSendQueued,
       cancelGeneration,
       cancelShellTask,
+    },
+    auxChat: {
+      ensure: auxChatFeature.ensure,
+      send: auxChatFeature.send,
+      snapshot: auxChatFeature.snapshot,
+      discard: auxChatFeature.discard,
+      isAuxSession: auxChatFeature.isAuxSession,
     },
     voice: {
       startVoiceInput,

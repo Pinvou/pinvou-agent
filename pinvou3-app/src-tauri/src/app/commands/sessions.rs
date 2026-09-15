@@ -485,6 +485,24 @@ pub async fn delete_session(
     {
         SessionKind::Chat => {
             acp_pool.evict(&id).await;
+            // The aux session cascade must go through the gated delete first
+            // (turn gate + engine reclaim + late sweep, the same path as
+            // discard_aux_session): store.delete's cascade only removes the
+            // on-disk records and would leave a still-running aux engine as a
+            // handle-less orphan.
+            if let Some(aux_id) = store.aux_session_id(&id) {
+                pool.delete_chat_session(&aux_id).await.map_err(|error| {
+                    format!("delete_session({id}): 级联删除辅助会话 {aux_id}: {error:#}")
+                })?;
+                pool.forget_session(&aux_id);
+                let payload = serde_json::json!({ "id": &aux_id });
+                let _ = app.emit("session:deleted", payload.clone());
+                crate::features::remote_control::forward_app_event(
+                    &app,
+                    "session:deleted",
+                    payload,
+                );
+            }
             let result = pool
                 .delete_chat_session(&id)
                 .await
@@ -668,6 +686,66 @@ pub async fn set_session_archived(
     store.set_hidden(&id, archived);
     let action = if archived { "archived" } else { "restored" };
     emit_session_event(&app, "session:list_changed", &id, action);
+    Ok(())
+}
+
+// ===================== Auxiliary conversation (aux session) =====================
+
+/// Get (creating if absent) the auxiliary conversation of a main session. Aux
+/// sessions are persisted with an `aux-` prefix and stay out of the ordinary
+/// session list, so creation does **not** emit `session:list_changed`; the
+/// frontend auxiliary conversation panel opens directly from the returned
+/// metadata.
+#[tauri::command]
+pub async fn get_or_create_aux_session(
+    session_id: String,
+    store: State<'_, SessionStore>,
+) -> Result<SessionMetadata, String> {
+    // Auxiliary conversations may only hang off ordinary chat sessions:
+    // scheduled sessions go through their own delete path
+    // (delete_scheduled_run only clears the mapping without cascade-deleting
+    // the session), so attaching one would leak an orphan aux session.
+    ensure_chat_session(&store, &session_id, "get_or_create_aux_session")?;
+    store
+        .load(&session_id)
+        .map_err(|e| format!("get_or_create_aux_session({session_id}): 主会话不存在: {e:#}"))?;
+    store
+        .get_or_create_aux_session(&session_id)
+        .map_err(|e| format!("get_or_create_aux_session({session_id}): {e:#}"))
+}
+
+/// Discard a main session's auxiliary conversation: reclaim the engine,
+/// delete the aux session, and clear the mapping. Repeated calls are
+/// idempotent (no mapping counts as already discarded).
+#[tauri::command]
+pub async fn discard_aux_session(
+    session_id: String,
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+) -> Result<(), String> {
+    let Some(aux_id) = store.aux_session_id(&session_id) else {
+        return Ok(());
+    };
+    // Same path as delete_session's Chat branch: delete_chat_session reclaims
+    // the engine inside the turn gate and calls store.delete; store.delete's
+    // purge cleanup removes the main→aux mapping in both directions, so it
+    // must not be cleared again here (a concurrent recreate could lose its
+    // new mapping).
+    // The mapping lookup above runs outside the aux_sessions_io lock: a
+    // concurrent get_or_create can insert a fresh mapping after this read,
+    // and the gated delete below would then reclaim a session the caller
+    // never saw. The window is millisecond-scale and self-healing — the
+    // loser is recreated on the next ensure — so the atomic
+    // resolve-and-remove variant is follow-up hardening, not a correctness
+    // gate here.
+    pool.delete_chat_session(&aux_id)
+        .await
+        .map_err(|error| format!("discard_aux_session({session_id}): {error:#}"))?;
+    pool.forget_session(&aux_id);
+    let payload = serde_json::json!({ "id": &aux_id });
+    let _ = app.emit("session:deleted", payload.clone());
+    crate::features::remote_control::forward_app_event(&app, "session:deleted", payload);
     Ok(())
 }
 

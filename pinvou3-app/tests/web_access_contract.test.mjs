@@ -286,6 +286,20 @@ assert.equal(allowed.has('list_sessions'), false,
 assert.equal(allowed.has('list_archived_sessions'), false,
   'Web must not call the native archived list that exposes host workspace metadata');
 
+// Aux chat domain: platform/web/bridge.js's auxChatEnsure/auxChatDiscard
+// invoke these two commands directly; sending goes through the existing
+// web_access_chat (an aux session can be store.load'ed by id and is not
+// affected by the list_sessions filter). Missing either entry would make the
+// Web aux chat fail silently.
+for (const command of [
+  'get_or_create_aux_session',
+  'discard_aux_session',
+]) {
+  assert.equal(allowed.has(command), true, `${command} must be allowed on Web (aux chat)`);
+}
+assert.equal(allowed.has('get_aux_session'), false,
+  'the dead get_aux_session command must stay removed from the Web surface');
+
 assert.equal(allowedEvents.has('acp:event'), true,
   'the shared ACP timeline must reach WebUI through the normal event transport');
 assert.match(bootstrap, /acpCodeMode:\s*\{[\s\S]*?commands:\s*\[[\s\S]*?web_access_codex_acp_prompt[\s\S]*?events:\s*\["acp:event"\]/,
@@ -608,6 +622,18 @@ assert.match(webBridge, /composerDraft: ""/,
   'WebUI must keep a per-session in-memory composer draft');
 assert.match(webDomainAdapter, /chat: domain\(\["sendMessage", "sendMessageToSession", "getComposerDraft", "setComposerDraft"/,
   'WebUI domain facade must expose the same composer draft API as desktop');
+assert.match(webDomainAdapter, /auxChat: domain\(\[\], \{\s*ensure: "auxChatEnsure",\s*send: "auxChatSend",\s*snapshot: "auxChatSnapshot",\s*discard: "auxChatDiscard",\s*isAuxSession: "auxChatIsAuxSession"/,
+  'WebUI domain facade must expose the same auxChat domain as desktop');
+assert.match(webBridge, /async function auxChatEnsure\(taskId\)/);
+assert.match(webBridge, /invoke\("get_or_create_aux_session", \{ sessionId: task \}\)/,
+  'WebUI aux chat must create-or-fetch the aux session by task id');
+assert.match(webBridge, /invoke\("web_access_chat", \{ message, attachmentHandles: \[\], sessionId: sid, restrictTools: true \}\)/,
+  'WebUI aux chat sends must ride the bounded web chat command with tools restricted');
+assert.match(webBridge, /invoke\("discard_aux_session", \{ sessionId: task \}\)/);
+assert.match(bridge, /registry\.auxChat = function \(context\)/,
+  'the desktop bridge must register the auxChat feature module');
+assert.match(bridge, /invoke\("chat", \{ message, attachments: \[\], sessionId: sid, restrictTools: true \}\)/,
+  'desktop aux chat sends must restrict tools and skip attachments');
 assert.match(webBridge, /buf\.composerDraft = state\.composerDraft/,
   'WebUI session switching must save the active composer draft');
 assert.match(webBridge, /state\.composerDraft = buf\.composerDraft/,

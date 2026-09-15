@@ -1,15 +1,18 @@
-//! pinvou3-app 与 CodeWhale 之间的抽象层（"bridge"）。
+//! Abstraction layer between pinvou3-app and CodeWhale (the "bridge").
 //!
-//! 职责：
-//! 1. 加载/持久化 [`UserPrefs`]（GUI 可调的视觉/语言偏好，序列化在
-//!    `~/.pinvou3/settings.json`）
-//! 2. 维护 `~/.pinvou3/` 目录布局并把内嵌 `bundle` 首启解包到 `bundle/`
-//! 3. **把 prefs + bundle 翻译成 [`EngineConfig`] / [`DtConfig`]**——所有
-//!    字段都显式列出，禁用 spread `..Default::default()`，让上游加字段时
-//!    `cargo build` 报"missing field"，强制 review 是否对 pinvou3 安全。
+//! Responsibilities:
+//! 1. Load/persist [`UserPrefs`] (GUI-adjustable visual/language preferences,
+//!    serialized to `~/.pinvou3/settings.json`)
+//! 2. Maintain the `~/.pinvou3/` directory layout and unpack the embedded
+//!    `bundle` into `bundle/` on first launch
+//! 3. **Translate prefs + bundle into [`EngineConfig`] / [`DtConfig`]** — every
+//!    field is listed explicitly; spread `..Default::default()` is forbidden so
+//!    that an upstream-added field makes `cargo build` fail with "missing
+//!    field", forcing a review of whether it is safe for pinvou3.
 //!
-//! 用户层面看不到这一层；这层只服务 GUI 与 deepseek-tui engine 之间的
-//! 转译。GUI 永远不直接操纵 EngineConfig；engine.rs 永远从这层取配置。
+//! Users never see this layer; it only translates between the GUI and the
+//! deepseek-tui engine. The GUI never manipulates EngineConfig directly;
+//! engine.rs always takes its configuration from this layer.
 
 pub use crate::features::marketplace;
 pub use crate::features::marketplace::skill_marketplace;
@@ -54,8 +57,9 @@ fn shared_credential_store() -> &'static SystemCredentialStore {
     STORE.get_or_init(SystemCredentialStore::new)
 }
 
-// Qwen3.6 在 vLLM 里是 passthrough 字符串（不走 alias）;`_256k` 后缀语义与
-// ops 同步要求见 `ModelPreset::default_model` 的 LocalVllm 注释（prefs/model.rs）。
+// Qwen3.6 is a passthrough string in vLLM (no alias); the semantics of the
+// `_256k` suffix and the ops sync requirement are documented in the LocalVllm
+// comment of `ModelPreset::default_model` (prefs/model.rs).
 const LOCAL_VLLM_API_KEY: &str = "local-no-auth";
 const SEPARATE_REASONING_FIELD: &str = "separate_field";
 
@@ -117,12 +121,16 @@ pub(crate) fn base_url_uses_loopback(base_url: &str) -> bool {
         })
 }
 
-/// 是否把该 base_url 视为「本地推理服务」：loopback（localhost / 127.0.0.0/8 /
-/// ::1）、RFC1918 私网段（10/8、172.16/12、192.168/16）或 Docker 特主机名
-/// （host.docker.internal 等）。这些端点通常跑在用户自己的机器/内网，探测
-/// 成本低且值得默认关思考；公网 OpenAI 兼容端点不在此列（保持默认 high）。
-/// 与 `base_url_uses_loopback` 的区别：后者仅用于「允许无鉴权」判定（api_key
-/// required），本判定覆盖探测与思考控制范围（局域网 vLLM/Ollama 也默认关思考）。
+/// Whether to treat this base_url as a "local inference service": loopback
+/// (localhost / 127.0.0.0/8 / ::1), RFC1918 private ranges (10/8, 172.16/12,
+/// 192.168/16), or Docker-specific hostnames (host.docker.internal, etc.).
+/// These endpoints usually run on the user's own machine/intranet; probing
+/// them is cheap and thinking can default to off; public OpenAI-compatible
+/// endpoints are excluded (keep the default high).
+/// Difference from `base_url_uses_loopback`: the latter is only for the
+/// "allow unauthenticated" decision (api_key required), while this decision
+/// covers probing and thinking control (LAN vLLM/Ollama also defaults to
+/// thinking off).
 pub(crate) fn base_url_uses_local_or_private(base_url: &str) -> bool {
     reqwest::Url::parse(base_url)
         .ok()
@@ -135,7 +143,8 @@ pub(crate) fn base_url_uses_local_or_private(base_url: &str) -> bool {
             if host.eq_ignore_ascii_case("localhost") {
                 return true;
             }
-            // Docker Desktop 宿主别名：容器内访问宿主机的常见写法。
+            // Docker Desktop host alias: the common way to reach the host from
+            // inside a container.
             if host.eq_ignore_ascii_case("host.docker.internal")
                 || host.eq_ignore_ascii_case("host.lima.internal")
                 || host.eq_ignore_ascii_case("host.orbstack.internal")
@@ -149,8 +158,9 @@ pub(crate) fn base_url_uses_local_or_private(base_url: &str) -> bool {
             if address.is_loopback() {
                 return true;
             }
-            // RFC1918 私网段（10/8、172.16/12、192.168/16）：std 的
-            // `Ipv4Addr::is_private` 语义完全等价，直接复用。
+            // RFC1918 private ranges (10/8, 172.16/12, 192.168/16): std's
+            // `Ipv4Addr::is_private` has exactly equivalent semantics, so
+            // reuse it directly.
             match address {
                 std::net::IpAddr::V4(v4) => v4.is_private(),
                 std::net::IpAddr::V6(_) => false,
@@ -167,9 +177,10 @@ fn official_deepseek_model_name(model: &str) -> String {
     }
 }
 
-/// 原生代码会话的执行根解析器与「两个根」类型统一由
-/// [`crate::features::sessions`] 定义(SessionStore 与 bridge 共用同一实现),
-/// 此处 re-export 保持既有调用路径不变。
+/// The execution-root resolver and the "two roots" type for native code
+/// sessions are defined uniformly in [`crate::features::sessions`]
+/// (SessionStore and bridge share the same implementation); re-exported here
+/// to keep existing call paths unchanged.
 pub use crate::features::sessions::{ExecutionRootResolver, SessionRoots};
 
 #[derive(Clone)]
@@ -177,11 +188,14 @@ pub struct Pinvou3Bridge {
     pub prefs: UserPrefs,
     pub bundle: Pinvou3Bundle,
     pub workspace: PathBuf,
-    /// 本 engine 绑定的 session 锁定模型(per-session 不同模型)。None = 用 prefs 全局
-    /// active。EnginePool spawn 时按该 session 的 model_id 注入。
+    /// The model locked to the session this engine is bound to (per-session
+    /// different models). None = use the prefs-global active model. Injected
+    /// by EnginePool at spawn per that session's model_id.
     pub session_model: Option<SavedModel>,
-    /// RuntimeModelProvider 为本次引擎准备的内存凭据。Some 时是最终值，不能再被
-    /// 环境变量或本地凭据库覆盖；Debug 由包装类型强制脱敏。
+    /// In-memory credential prepared by RuntimeModelProvider for this engine.
+    /// When Some it is the final value and must not be overridden by
+    /// environment variables or the local credential store; Debug output is
+    /// forcibly redacted by the wrapper type.
     pub runtime_model_credential: Option<RuntimeModelCredential>,
     /// `max_model_len` (context window) probed from the local vLLM
     /// `/v1/models` endpoint. Injected at
@@ -197,28 +211,39 @@ pub struct Pinvou3Bridge {
     /// Only min-tightens route declarations (`route_limits_for_model`),
     /// never raises any limit.
     pub probed_output_tokens: Option<u32>,
-    /// 本地 loopback 端点（OpenAI 兼容 preset）探测出的服务类型（Ollama / vLLM /
-    /// LM Studio / 通用）。EnginePool spawn 时由 `probe_local_server_kind` 注入；
-    /// None = 非本地端点或尚未探测。决定思考控制走哪套底座 wire 协议：
-    /// Ollama → think 开关、vLLM → 档位；LM Studio / 通用保持 openai wire（无思考控制）。
+    /// The server kind probed from a local loopback endpoint (OpenAI
+    /// compatible preset): Ollama / vLLM / LM Studio / generic. Injected by
+    /// `probe_local_server_kind` at EnginePool spawn; None = not a local
+    /// endpoint or not yet probed. Decides which foundation wire protocol the
+    /// thinking control uses: Ollama → think toggle, vLLM → effort levels;
+    /// LM Studio / generic stay on the openai wire (no thinking control).
     pub probed_local_kind: Option<LocalServerKind>,
-    /// 原生代码会话的执行根（engine cwd / shell 目录）解析器；None = 无代码会话
-    /// 项目绑定，所有会话都用会话私有目录。账本根（附件/审计/产物）不受其影响，
-    /// 仍由 `SessionStore::session_roots` 的 `ledger` 字段统一决定。
+    /// Execution-root (engine cwd / shell directory) resolver for native code
+    /// sessions; None = no code-session project binding, every session uses
+    /// its session-private directory. The ledger root (attachments/audits/
+    /// artifacts) is unaffected and is still decided uniformly by the `ledger`
+    /// field of `SessionStore::session_roots`.
     pub execution_root_resolver: Option<ExecutionRootResolver>,
-    /// 原生代码会话判定（code_session=true，含临时与绑项目两种）。用于
-    /// instructions 的 work/code 分支渲染与工具整形；lib.rs 与执行根解析器
-    /// 共用 AcpPool 那份 SessionAgentStore 注入。
+    /// Native code session predicate (code_session=true, covering both
+    /// temporary and project-bound forms). Used for rendering the work/code
+    /// branches of instructions and for tool shaping; lib.rs shares the same
+    /// AcpPool-held SessionAgentStore injection with the execution-root
+    /// resolver.
     pub code_session_predicate: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
-    /// 外部 ACP 会话判定。产品多智能体只由 Pinvou 原生 Engine 承载；该谓词
-    /// 与 `code_session_predicate` 一起由同一份 AcpPool 注入，防止外部 ACP 的
-    /// plain 产品模式被误当成 Work 并通过直调 IPC 开启产品开关。
+    /// External ACP session predicate. Product multi-agent is carried only by
+    /// the Pinvou-native Engine; this predicate is injected from the same
+    /// AcpPool together with `code_session_predicate`, preventing an external
+    /// ACP's plain product mode from being mistaken for Work and having the
+    /// product switch enabled via direct IPC calls.
     pub external_acp_session_predicate: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
-    /// scheduled 会话标记:EnginePool spawn 时按 scheduled_profile 注入。此类
-    /// 会话的图片不走路由(命令层固定 VisionToolFallback + image_analyze 硬规则),
-    /// 因此即使主模型能力 Unknown 也要注册 `image_analyze`(恢复 main 行为),
-    /// 否则 prompt 硬性要求模型调用一个未注册的工具。仅影响
-    /// `resolve_vision_model_config` 的规则 3 回退,不影响交互会话路由。
+    /// Scheduled-session flag: injected by EnginePool at spawn per the
+    /// scheduled_profile. Images in such sessions do not go through routing
+    /// (the command layer hardcodes VisionToolFallback + the image_analyze
+    /// hard rule), so `image_analyze` must be registered even when the main
+    /// model's capability is Unknown (restoring main behavior) — otherwise
+    /// the prompt hard-requires the model to call an unregistered tool. Only
+    /// affects the rule-3 fallback of `resolve_vision_model_config`; does not
+    /// affect interactive-session routing.
     pub image_analyze_always: bool,
 }
 
@@ -282,23 +307,30 @@ impl crate::features::memory::MemoryReviewModel for Pinvou3Bridge {
 }
 
 impl Pinvou3Bridge {
-    /// 启动序列：确保 `~/.pinvou3/` 子目录存在 → 解包 bundle → 加载 prefs。
-    /// 首次启动写一份默认 `settings.json` 让用户/开发者方便手改 advanced。
+    /// Boot sequence: ensure the `~/.pinvou3/` subdirectories exist → unpack
+    /// the bundle → load prefs.
+    /// On first launch a default `settings.json` is written so users/
+    /// developers can conveniently hand-edit advanced.
     ///
-    /// **workspace 现为 `$HOME`**（阶段 C 调整）——让 AI 能用 read_file/glob
-    /// 找到用户在桌面/文档/下载里的真实文件。配套敏感目录禁令在
-    /// `bundle/instructions.md` 里引导，硬拦截后续走 deepseek-tui hook 注册。
+    /// **workspace is now `$HOME`** (phase C adjustment) — so the AI can use
+    /// read_file/glob to find the user's real files on Desktop/Documents/
+    /// Downloads. The companion sensitive-directory ban is guided in
+    /// `bundle/instructions.md`; hard interception later goes through a
+    /// deepseek-tui hook registration.
     ///
     /// The session artifacts dir `PINVOU3_SESSION_ARTIFACTS` is NOT injected here:
     /// boot runs in the multi-threaded phase, and process env writes are
     /// funneled to lib.rs `startup_process_env` (the single-threaded startup
     /// window).
     ///
-    /// ⚠️ 不得在这里（或 boot 其它位置）注入 `DEEPSEEK_MAX_OUTPUT_TOKENS` /
-    /// `PINVOU3_MAX_OUTPUT_TOKENS`：底座 `effective_max_output_tokens()` 优先读
-    /// 前者，一旦回归会把所有模型（含云端）输出上限重新钉死 24576——正是本 PR
-    /// 移除的根因。lib.rs `release_env_defaults_guard` 守 run() 的 release env 注入，
-    /// 本函数 + `forkguard_boot_env_must_not_pin_global_output_cap` 守 boot 注入源头。
+    /// ⚠️ Never inject `DEEPSEEK_MAX_OUTPUT_TOKENS` /
+    /// `PINVOU3_MAX_OUTPUT_TOKENS` here (or anywhere else in boot): the
+    /// foundation's `effective_max_output_tokens()` reads the former first, and
+    /// a regression would re-pin the output cap of every model (including
+    /// cloud) to 24576 — exactly the root cause this PR removed. lib.rs
+    /// `release_env_defaults_guard` guards run()'s release env injection; this
+    /// function + `forkguard_boot_env_must_not_pin_global_output_cap` guard
+    /// the boot injection source.
     ///
     /// ⚠️ boot runs in the Tauri setup phase (the multi-threaded runtime is
     /// already up), so it must NOT write the process env (edition 2024: a
@@ -309,10 +341,12 @@ impl Pinvou3Bridge {
     /// `startup_process_env` (the single-threaded window of the run()/headless
     /// startup sequence).
     pub fn boot() -> Result<Self> {
-        // ⓪ 注入 pinvou3 版 prompt 文案到底座 prompt 合成层(base/locale/authority)。
-        // 幂等(底座 OnceLock 首次生效、后续 Err 被忽略),必须早于任何 engine spawn。
-        // 编译期内嵌常量,不依赖 bundle 解包。dump_system_prompt bin 也经此 boot,故
-        // dump 同样生效。
+        // ⓪ Inject the pinvou3 prompt copy into the foundation's prompt
+        // composition layer (base/locale/authority). Idempotent (the
+        // foundation OnceLock takes effect once; later Err is ignored) and
+        // must run before any engine spawn. Compile-time embedded constants,
+        // independent of bundle extraction. The dump_system_prompt bin also
+        // goes through this boot, so dumps are affected the same way.
         crate::platform::startup::mark("bridge_boot:prompt_overrides:start");
         bundle::install_prompt_overrides();
         // Register the foundation's MCP secret resolver (secrets live in the
@@ -327,11 +361,15 @@ impl Pinvou3Bridge {
         crate::platform::startup::mark("bridge_boot:bundle_extract:start");
         bundle.ensure_extracted()?;
         crate::platform::startup::mark("bridge_boot:bundle_extract:done");
-        // 旧布局 CLI 二进制（connectors/<platform>/bin/）→ 版本化资产库的一次性
-        // 迁移（marketplace-unification §9.3）：验过 SHA-256 才移动，不匹配的不动
-        // （store 侧 degraded 语义，重连重下）。放 app 侧 boot 而非 runtime_bundle
-        // 内部：connectors → runtime_bundle 依赖已存在，反向调用会成环（架构守卫
-        // rust_feature_cycles 基线为空）。幂等、内部不返回错误，不阻塞启动。
+        // One-time migration of old-layout CLI binaries
+        // (connectors/<platform>/bin/) to the versioned asset library
+        // (marketplace-unification §9.3): only moved after SHA-256
+        // verification; mismatches stay in place (store-side degraded
+        // semantics, re-downloaded on reconnect). Done in the app-side boot
+        // rather than inside runtime_bundle: the connectors → runtime_bundle
+        // dependency already exists and a reverse call would form a cycle
+        // (the architecture guard's rust_feature_cycles baseline is empty).
+        // Idempotent, returns no error internally, does not block startup.
         crate::features::connectors::native_installer::migrate_legacy_cli_binaries();
         crate::platform::startup::mark("bridge_boot:mcp_secret_sync:start");
         if let Err(err) = marketplace::sync_mcp_secret_values() {
@@ -363,28 +401,34 @@ impl Pinvou3Bridge {
             external_acp_session_predicate: None,
             image_analyze_always: false,
         };
-        // C 方案(P-no-disk)最终版: 清理所有 pinvou3 历史 disk 残留:
-        //   • `~/.pinvou3/sessions/<sid>/instructions.md`(per-session inline 前路径)
-        //   • `~/.pinvou3/workspace_context.md`(workspace context 已合并进 INSTRUCTIONS_MD §0)
-        //   • `~/.codewhale/instructions.md` / `~/.deepseek/instructions.md`(早期 P-brand 路径)
-        // 不再生成任何 pinvou3-managed disk 文件 — 所有 prompt 内容走 Inline。
+        // Plan C (P-no-disk), final form: clean up all historical pinvou3 disk
+        // leftovers:
+        //   • `~/.pinvou3/sessions/<sid>/instructions.md` (the pre-inline per-session path)
+        //   • `~/.pinvou3/workspace_context.md` (workspace context has been merged into INSTRUCTIONS_MD §0)
+        //   • `~/.codewhale/instructions.md` / `~/.deepseek/instructions.md` (early P-brand paths)
+        // No pinvou3-managed disk file is generated anymore — all prompt
+        // content goes through Inline.
         crate::platform::startup::mark("bridge_boot:legacy_cleanup:start");
         this.cleanup_legacy_pinvou3_disk_files();
         crate::platform::startup::mark("bridge_boot:legacy_cleanup:done");
         Ok(this)
     }
 
-    /// 清扫所有早期版本 pinvou3 写过的 prompt-related disk 文件。C-fork P-no-disk
-    /// 最终态 disk 完全干净,所有 prompt 内容走 `InstructionSource::Inline` 内存注入。
+    /// Sweep all prompt-related disk files written by early pinvou3 versions.
+    /// In the C-fork P-no-disk final state the disk is completely clean; all
+    /// prompt content goes through `InstructionSource::Inline` in-memory
+    /// injection.
     ///
-    /// 清单(只清 pinvou3-managed / auto-gen 内容,用户自定义文件保留):
-    ///   • `~/.pinvou3/sessions/<sid>/instructions.md` — per-session inline 前路径(全清)
-    ///   • `~/.pinvou3/workspace_context.md` — workspace context 合并进 INSTRUCTIONS_MD §0 前路径
-    ///   • `~/.codewhale/instructions.md` + `~/.deepseek/instructions.md` — 早期 P-brand 路径
+    /// Inventory (only pinvou3-managed / auto-gen content is removed; user
+    /// custom files are preserved):
+    ///   • `~/.pinvou3/sessions/<sid>/instructions.md` — pre-inline per-session path (removed unconditionally)
+    ///   • `~/.pinvou3/workspace_context.md` — path from before workspace context was merged into INSTRUCTIONS_MD §0
+    ///   • `~/.codewhale/instructions.md` + `~/.deepseek/instructions.md` — early P-brand paths
     fn cleanup_legacy_pinvou3_disk_files(&self) {
         let mut removed = 0usize;
 
-        // (1) sessions/*/instructions.md — 无条件清(per-session pinvou3 自家产物,不会用户编辑)
+        // (1) sessions/*/instructions.md — removed unconditionally (per-session
+        // pinvou3's own product, never user-edited)
         if let Ok(entries) = std::fs::read_dir(paths::sessions_root()) {
             for entry in entries.flatten() {
                 let path = entry.path().join("instructions.md");
@@ -394,7 +438,8 @@ impl Pinvou3Bridge {
             }
         }
 
-        // (2)(3)(4) 单文件 — 只清 pinvou3-managed / auto-gen 标识的,用户自定义保留
+        // (2)(3)(4) single files — remove only those carrying the
+        // pinvou3-managed / auto-gen marker; user custom files are preserved
         for legacy in [
             self.workspace.join(".pinvou3").join("workspace_context.md"),
             self.workspace.join(".codewhale").join("instructions.md"),
@@ -418,10 +463,11 @@ impl Pinvou3Bridge {
         }
     }
 
-    /// 测试入口(L1 harness 用):同 [`Self::boot`] 但 workspace 用传入的 `ws`
-    /// (通常是 scenario 自己的 tempdir),而不是 `paths::user_home_dir()`。
-    /// 让 L1 真 vLLM dialog harness 能给每个 scenario 一个隔离的产出目录,
-    /// 避免污染用户 $HOME 也避免 scenario 之间互相干扰。
+    /// Test entry point (for the L1 harness): same as [`Self::boot`] but the
+    /// workspace is the passed-in `ws` (usually the scenario's own tempdir)
+    /// instead of `paths::user_home_dir()`. Lets the L1 real-vLLM dialog
+    /// harness give each scenario an isolated output directory, avoiding
+    /// polluting the user's $HOME and avoiding cross-scenario interference.
     pub fn boot_with_workspace(ws: PathBuf) -> Result<Self> {
         let mut this = Self::boot()?;
         this.workspace = ws;
@@ -438,11 +484,15 @@ impl Pinvou3Bridge {
     /// directory) is stable per session and is rendered into the static prompt
     /// by the respective instruction layer.
     pub fn build_session_system_prompt(&self, session_id: &str) -> String {
-        // [pinvou3] date/workspace 已移出静态 system → per-turn <turn_meta>:每 session
-        // 变的 workspace 路径(及每天变的 date)若进 cached system prefix, vLLM prefix-cache
-        // MISS 时工具调用会退化成裸文本(实测 single subagent 25%→稳态~100%)。仅保留 model
-        // (固定值,不破坏 cache)与 sudo(静态文案兜底,实时状态走 super_permission::turn_reminder)。
-        // 分层 instructions:原生代码会话 = 共享骨架 + 代码层(编码执行循环 + 代码场景纪律,
+        // [pinvou3] date/workspace have been moved out of the static system →
+        // per-turn <turn_meta>: if the per-session-varying workspace path (and
+        // the daily-varying date) entered the cached system prefix, a vLLM
+        // prefix-cache MISS would degrade tool calls into bare text (measured:
+        // single subagent 25%→steady state ~100%). Only model (a fixed value,
+        // does not break the cache) and sudo (static copy as fallback; live
+        // state goes through super_permission::turn_reminder) are kept.
+        // Layered instructions: a native code session = shared skeleton + code
+        // layer (coding execution loop + code-scenario discipline,
         // no-artifact/deliverable-card semantics); a plain session bound to a real
         // working directory = shared skeleton + bound-environment section (working
         // directory path rendered into the prompt; no-artifact-panel/tmp semantics);
@@ -496,16 +546,22 @@ impl Pinvou3Bridge {
                 "{{PINVOU3_MEMORY_SECTION}}\n",
                 bundle::memory_section(crate::features::memory::memory_enabled()),
             )
-            // present_artifact 的 title 语言随 locale(原写死「中文 title」会把英文 UI 的产物
-            // 标题/描述/后续总结整段拽回中文,见 prefs::title_language_name 注释)。
+            // present_artifact's title language follows the locale (the old
+            // hardcoded "Chinese title" would drag an English UI's artifact
+            // title/description/follow-up summary back into Chinese; see the
+            // prefs::title_language_name comment).
             .replace(
                 "{{PINVOU3_TITLE_LANG}}",
                 self.prefs.language.title_language_name(),
             );
-        // [pinvou3] 非中文 locale 的语言指令补丁:底座 locale_reinforcement_preamble
-        // 对 en 返回 None,而 pinvou3 整份 system prompt 是中文,会把回复语言拽回中文。
-        // 这里给底座留空的 locale 补一段 mirror 指令(zh-Hans/ja 已有底座 bookend,返回
-        // None 不重复)。固定值(随 language 变,不随 session 变)→ 不破 prefix-cache。
+        // [pinvou3] Language-directive patch for non-Chinese locales: the
+        // foundation's locale_reinforcement_preamble returns None for en, while
+        // the entire pinvou3 system prompt is Chinese and would drag the reply
+        // language back to Chinese. Here we supply a mirror directive for the
+        // locales the foundation leaves empty (zh-Hans/ja already have the
+        // foundation bookend; returning None avoids duplication). A fixed
+        // value (varies with language, not with session) → does not break the
+        // prefix-cache.
         if let Some(block) = self.prefs.language.extra_language_directive() {
             rendered.push_str("\n\n");
             rendered.push_str(block);
@@ -526,9 +582,10 @@ impl Pinvou3Bridge {
         rendered
     }
 
-    /// 统一解析一个会话的两个根（执行根 + 账本根）。调用方按用途显式选择
-    /// [`SessionRoots::execution`] 或 [`SessionRoots::ledger`]，避免把执行根误当
-    /// 账本根写盘（或反之）。
+    /// Uniformly resolve the two roots of a session (execution root + ledger
+    /// root). Callers explicitly choose [`SessionRoots::execution`] or
+    /// [`SessionRoots::ledger`] by purpose, avoiding writing to the execution
+    /// root while intending the ledger root (or vice versa).
     ///
     /// - `execution`: sessions bound to a real directory (native code sessions'
     ///   project directory, or plain chat sessions' bound user working directory)
@@ -538,9 +595,11 @@ impl Pinvou3Bridge {
     ///   (attachments/audits/artifacts must not pollute the user's directory);
     ///   other sessions match `execution`.
     ///
-    /// 本入口不感知 scheduled 会话（bridge 拿不到 SessionStore）；scheduled 的
-    /// 两个根由调用方经 [`crate::features::sessions::SessionStore::session_roots`]
-    /// 解析。与 SessionStore 入口共用 [`sessions::session_roots_for`] 同一实现。
+    /// This entry point is unaware of scheduled sessions (the bridge cannot
+    /// reach SessionStore); a scheduled session's two roots are resolved by the
+    /// caller via [`crate::features::sessions::SessionStore::session_roots`].
+    /// Shares the same [`sessions::session_roots_for`] implementation with the
+    /// SessionStore entry point.
     pub fn session_roots(&self, session_id: &str) -> SessionRoots {
         let bound_project_root = self
             .execution_root_resolver
@@ -554,7 +613,7 @@ impl Pinvou3Bridge {
     /// bound user working directory) return the bound directory (engine cwd and the
     /// shell execution directory both derive from it); other sessions return the
     /// session-private directory.
-    /// 等价于 [`Self::session_roots`] 的 `execution` 字段。
+    /// Equivalent to the `execution` field of [`Self::session_roots`].
     pub fn session_workspace(&self, session_id: &str) -> std::path::PathBuf {
         self.session_roots(session_id).execution
     }
@@ -567,7 +626,8 @@ impl Pinvou3Bridge {
         self.execution_root_resolver = Some(resolver);
     }
 
-    /// 注入原生代码会话判定（与执行根解析器同一份 SessionAgentStore）。
+    /// Inject the native code session predicate (the same SessionAgentStore
+    /// as the execution-root resolver).
     pub fn set_code_session_predicate(
         &mut self,
         predicate: Arc<dyn Fn(&str) -> bool + Send + Sync>,
@@ -575,7 +635,8 @@ impl Pinvou3Bridge {
         self.code_session_predicate = Some(predicate);
     }
 
-    /// 注入外部 ACP 会话判定（与原生 Code 判定同源于 AcpPool）。
+    /// Inject the external ACP session predicate (sourced from the same
+    /// AcpPool as the native Code predicate).
     pub fn set_external_acp_session_predicate(
         &mut self,
         predicate: Arc<dyn Fn(&str) -> bool + Send + Sync>,
@@ -583,15 +644,18 @@ impl Pinvou3Bridge {
         self.external_acp_session_predicate = Some(predicate);
     }
 
-    /// 该 session 是否为原生（品悟 Engine）代码会话（含临时与绑项目两种）。
+    /// Whether this session is a native (Pinvou Engine) code session
+    /// (covering both temporary and project-bound forms).
     pub fn is_code_session(&self, session_id: &str) -> bool {
         self.code_session_predicate
             .as_ref()
             .is_some_and(|predicate| predicate(session_id))
     }
 
-    /// 产品多智能体可用性同时受产品模式与运行时后端约束。SessionPolicy 只描述
-    /// plain/code 轴；外部 ACP 虽然也是 plain，却不由 Pinvou Engine 执行。
+    /// Product multi-agent availability is constrained by both the product
+    /// mode and the runtime backend. SessionPolicy only describes the
+    /// plain/code axis; an external ACP session is also plain, yet is not
+    /// executed by the Pinvou Engine.
     pub fn multi_agent_mode_available(&self, session_id: &str) -> bool {
         let external_acp = self
             .external_acp_session_predicate
@@ -611,9 +675,11 @@ impl Pinvou3Bridge {
         !external_acp && self.session_policy(session_id).exposes_browser_mcp()
     }
 
-    /// 该 session 的会话模式策略：共享链路（发送 op 构造、工具整形、session
-    /// instructions）按它取数，不再散 `is_code_session` if（D-2/D-3 统一入口）。
-    /// predicate 未注入时默认 Plain——与 `is_code_session` 缺省 false 等价。
+    /// The session mode policy for this session: shared pipelines (send-op
+    /// construction, tool shaping, session instructions) read from it instead
+    /// of scattering `is_code_session` ifs (the unified D-2/D-3 entry point).
+    /// Defaults to Plain when the predicate is not injected — equivalent to
+    /// `is_code_session` defaulting to false.
     pub fn session_policy(&self, session_id: &str) -> SessionPolicy {
         let mode = if self.is_code_session(session_id) {
             SessionMode::Code
@@ -623,32 +689,44 @@ impl Pinvou3Bridge {
         SessionPolicy::for_mode(mode)
     }
 
-    /// 会话级工具整形:按会话策略（[`SessionPolicy`]）并入模式差量——
-    /// 无差量时原样返回。spawn 初值与全局热刷都经此整形。
+    /// Session-level tool shaping: merge the mode delta per the session policy
+    /// ([`SessionPolicy`]) — returned as-is when there is no delta. Both the
+    /// spawn initial value and the global hot refresh go through this shaping.
     ///
-    /// 传入的 `tools` 是全局(plain scope)的禁用工具名。差量项（均由编译期
-    /// 静态表 `MODE_TABLE` 驱动，见 session_policy）：
-    /// - 模式缺席工具（表字段 `unavailable_tools`；code: 产物卡）
-    ///   ——"该模式架构上无此能力"，非用户偏好;
-    /// - 连接器禁用集：非 plain 模式改用其 scope 的禁用集
-    ///   ——scope 键即模式，各 scope 各自持久化(见 marketplace),互不影响;
-    ///   非连接器禁用(kb_search 等)仍保留;
-    /// - `load_skill` 按**该会话组合目录是否为空**动态决定（表字段
-    ///   `skills_empty_hides_load_skill` 门控,V-5 联动）——目录为空（无任何
-    ///   启用技能）时隐藏,避免"开关开着但没技能"的假状态;目录非空时放行。
-    ///   判定在 bridge 侧做（目录检查是磁盘 I/O,策略对象保持纯数据）。
+    /// The incoming `tools` are the disabled tool names of the global (plain
+    /// scope). Delta items (all driven by the compile-time static table
+    /// `MODE_TABLE`, see session_policy):
+    /// - Mode-absent tools (table field `unavailable_tools`; code: artifact card)
+    ///   ——"this mode architecturally lacks the capability", not a user preference;
+    /// - Connector disabled set: non-plain modes use their scope's disabled set
+    ///   ——the scope key is the mode; each scope persists independently (see
+    ///   marketplace) and does not affect others; non-connector disables
+    ///   (kb_search, etc.) are still preserved;
+    /// - `load_skill` is decided dynamically by **whether the session's
+    ///   composed directory is empty** (table field
+    ///   `skills_empty_hides_load_skill` gate, V-5 linkage) — hidden when the
+    ///   directory is empty (no enabled skills at all), avoiding the false
+    ///   state of "the toggle is on but there are no skills"; allowed through
+    ///   when the directory is non-empty. The check is done on the bridge
+    ///   side (directory inspection is disk I/O; the policy object stays pure
+    ///   data).
     pub fn shape_disallowed_tools(&self, session_id: &str, mut tools: Vec<String>) -> Vec<String> {
         let policy = self.session_policy(session_id);
-        // 模式缺席工具（编译期常量表）：并入 disallowed（所有模式）。
-        // ⚠️ 顺序约束：先于下方 connector retain——缺席名单应避开连接器全名
-        // （当前 code 的 mcp_pinvou3_present_artifact 与连接器禁用集无交集），
-        // 否则会被 retain 误删；新增条目时同样注意（或先做 retain 再追加）。
+        // Mode-absent tools (compile-time constant table): merge into
+        // disallowed (all modes).
+        // ⚠️ Order constraint: must precede the connector retain below — the
+        // absent list should avoid connector full names (currently code's
+        // mcp_pinvou3_present_artifact has no intersection with the connector
+        // disabled set), otherwise it would be wrongly dropped by retain;
+        // take the same care when adding entries (or retain first, then
+        // append).
         for name in policy.unavailable_tools() {
             if !tools.iter().any(|tool| tool == name) {
                 tools.push((*name).to_string());
             }
         }
-        // 连接器禁用集：非 plain 模式用其 scope 的禁用集替换传入的 plain scope
+        // Connector disabled set: non-plain modes replace the incoming plain
+        // scope disabled set with their own scope's
         // disabled set (the plain disabled set is the incoming value itself, no
         // replacement needed). Scope follows mode — a plain session with a bound
         // working directory still belongs to the plain scope and never borrows the
@@ -667,9 +745,11 @@ impl Pinvou3Bridge {
                 }
             }
         }
-        // load_skill 空目录隐藏由表字段驱动（与 scope 替换解耦）：组合目录为空 →
-        // 一并隐藏（空态保护，V-5）。行为等价于原「scope 非 plain 分支内检查」：
-        // 当前仅 code 该字段为 true，code 恒非 plain。
+        // load_skill empty-directory hiding is driven by the table field
+        // (decoupled from scope replacement): composed directory empty → hide
+        // it too (empty-state protection, V-5). Behavior is equivalent to the
+        // original "check inside the scope-non-plain branch": currently only
+        // code has this field true, and code is always non-plain.
         if policy.capabilities().skills_empty_hides_load_skill
             && crate::features::assistant::skill_materialization::session_skills_is_empty(
                 session_id,
@@ -691,11 +771,13 @@ impl Pinvou3Bridge {
     /// already coincide, and scheduled sessions keep writing to their project
     /// directory, so behavior is byte-for-byte unchanged.
     ///
-    /// `execution_workspace` 必须来自 [`Self::session_workspace`]（或
-    /// [`Self::session_roots`] 的 `execution` 字段）。对 ledger 与 execution 相同的
+    /// `execution_workspace` must come from [`Self::session_workspace`] (or
+    /// the `execution` field of [`Self::session_roots`]). For sessions whose
+    /// ledger and execution are the same
     /// sessions (unbound plain / scratch code / scheduled), return the incoming
     /// execution root as-is,
-    /// scheduled 会话写其项目目录的既有行为。
+    /// preserving the existing behavior of scheduled sessions writing to
+    /// their project directory.
     pub fn audit_workspace(
         &self,
         session_id: &str,
@@ -709,22 +791,28 @@ impl Pinvou3Bridge {
         }
     }
 
-    /// session 专属 `EngineConfig.instructions` 注入:
-    ///   1. pinvou3 自家 INSTRUCTIONS_MD 渲染版(走 `InstructionSource::Inline`,
-    ///      不写 disk — 见 C 方案 P-no-disk 决策);
+    /// Session-specific `EngineConfig.instructions` injection:
+    ///   1. pinvou3's own rendered INSTRUCTIONS_MD (via
+    ///      `InstructionSource::Inline`, nothing written to disk — see the
+    ///      plan-C P-no-disk decision);
     ///   2. restricted project rules: sessions bound to a real directory (native
     ///      code sessions' project directory, or plain chat sessions' bound user
     ///      working directory) inject the `AGENTS.md` files on the bound root →
     ///      user-home (exclusive) path, in root→cwd order (fork base C5
-    ///      已砍空 `PROJECT_CONTEXT_FILES`,不再自动扫描,这里按安全边界在 app 侧补齐);
-    ///   3. 用户自定义 `~/.codewhale/instructions.md`(可选,仍走 `File`)。
+    ///      emptied `PROJECT_CONTEXT_FILES` and no longer scans automatically;
+    ///      the app side fills the gap within the security boundary here);
+    ///   3. user-custom `~/.codewhale/instructions.md` (optional, still `File`).
     ///
-    /// 之前版本写 `~/.pinvou3/sessions/<sid>/instructions.md` disk 文件然后传
-    /// `Vec<PathBuf>` 给底座 — 改用 `InstructionSource::Inline` 后:
-    ///  • disk 上没了多余的 instructions.md 给用户造成混淆
-    ///  • 多引擎并发不再依赖 per-session 文件避免 race(内存对象天然隔离)
-    ///  • rehydrate 不再从 disk 重读,内容跟 EngineConfig 一起在内存里活
-    ///  • Inline name 保持稳定,避免纯展示标签中的 session_id 破坏跨会话前缀缓存
+    /// Earlier versions wrote a `~/.pinvou3/sessions/<sid>/instructions.md`
+    /// disk file and passed a `Vec<PathBuf>` to the foundation — after
+    /// switching to `InstructionSource::Inline`:
+    ///  • no stray instructions.md on disk to confuse users
+    ///  • multi-engine concurrency no longer relies on per-session files to
+    ///    avoid races (in-memory objects are naturally isolated)
+    ///  • rehydrate no longer rereads from disk; the content lives in memory
+    ///    with the EngineConfig
+    ///  • the Inline name stays stable, avoiding a session_id inside a purely
+    ///    display label breaking the cross-session prefix cache
     pub fn session_instructions(&self, session_id: &str) -> Vec<InstructionSource> {
         let mut out: Vec<InstructionSource> = Vec::new();
         let rendered = self.build_session_system_prompt(session_id);
@@ -757,18 +845,24 @@ impl Pinvou3Bridge {
     /// prompt-injection surface for both kinds of bound sessions, so both share the
     /// same injection rules.
     ///
-    /// 底座 C5 fork 已砍空 `PROJECT_CONTEXT_FILES`（不再自动扫描），这里在 app 侧
-    /// 按安全边界补齐。行为语义：
-    ///   - 注入顺序 root→cwd（祖先在前、项目根最后），与 codex/claude 惯例一致，
-    ///     越靠近项目根的规则在提示词中越靠后；
-    ///   - 家目录边界：home 与项目路径走同一归一化（canonicalize + 去 Windows
-    ///     `\\?\` verbatim 前缀，与绑定入口 `validate_codex_project_workspace`
-    ///     同源），`~/AGENTS.md` 等家目录及以上层不注入；归一化失败 fail-closed
-    ///     ——项目根无法归一化时不注入，家目录无法归一化时只注入项目根本层、
-    ///     不上溯祖先；
-    ///   - symlink 拒读：`AGENTS.md` 是 symlink（可指向工作区外任意文件，如
-    ///     ~/.ssh/id_rsa）时跳过，与底座 `project_context::load_context_file`
-    ///     的防御范式对齐；
+    /// The C5 fork base emptied `PROJECT_CONTEXT_FILES` (no more automatic
+    /// scanning); the app side fills the gap within the security boundary
+    /// here. Behavioral semantics:
+    ///   - injection order root→cwd (ancestors first, project root last),
+    ///     matching codex/claude convention — the closer a rule is to the
+    ///     project root, the later it appears in the prompt;
+    ///   - home-directory boundary: home and project paths go through the same
+    ///     normalization (canonicalize + strip the Windows `\\?\` verbatim
+    ///     prefix, same source as the binding entry
+    ///     `validate_codex_project_workspace`); `~/AGENTS.md` and any level at
+    ///     or above the home directory are not injected; normalization failure
+    ///     is fail-closed — when the project root cannot be normalized nothing
+    ///     is injected, and when home cannot be normalized only the project
+    ///     root's own level is injected without walking ancestors;
+    ///   - symlink refusal: an `AGENTS.md` that is a symlink (which can point
+    ///     anywhere outside the workspace, e.g. ~/.ssh/id_rsa) is skipped,
+    ///     aligned with the foundation's `project_context::load_context_file`
+    ///     defensive pattern;
     ///   - Skip when the file is missing or unreadable. Unbound sessions and
     ///     scratch code sessions are not injected (behavior unchanged).
     fn code_session_project_rules(&self, session_id: &str) -> Vec<PathBuf> {
@@ -779,16 +873,20 @@ impl Pinvou3Bridge {
         else {
             return Vec::new();
         };
-        // 项目根归一化失败（目录已删除/不可访问）→ fail-closed，不注入。
+        // Project-root normalization failed (directory deleted/inaccessible)
+        // → fail-closed, inject nothing.
         let Some(project_root) = normalize_rule_boundary_path(&project_root) else {
             return Vec::new();
         };
-        // 家目录归一化失败 → 无法确定上溯边界，fail-closed：只注入项目根本层。
+        // Home normalization failed → the upward boundary cannot be
+        // determined; fail-closed: inject only the project root's own level.
         let home = normalize_rule_boundary_path(&crate::platform::paths::user_home_dir());
         let mut rules = Vec::new();
         for dir in collect_project_rule_chain(&project_root, home.as_deref()) {
-            // 项目根及各祖先层（不含家目录本身）的 AGENTS.md 都注入，支持
-            // monorepo 根规则覆盖子目录的既有语义。
+            // AGENTS.md from the project root and every ancestor level
+            // (excluding the home directory itself) is injected, supporting
+            // the existing semantics of a monorepo-root rule covering
+            // subdirectories.
             let agents = dir.join("AGENTS.md");
             if is_plain_file(&agents) {
                 rules.push(agents);
@@ -797,22 +895,27 @@ impl Pinvou3Bridge {
         rules
     }
 
-    /// 当前 active provider 标识（传给底座 `DtConfig.provider`）。
-    /// 本 engine/session 实际生效的模型记录:session 锁定优先,否则全局 active。
-    /// load 后 prefs.active_model() 必非空,正常返回 Some。
+    /// Current active provider identifier (passed to the foundation's
+    /// `DtConfig.provider`).
+    /// The model record actually in effect for this engine/session:
+    /// session-locked first, otherwise the global active one. After load,
+    /// prefs.active_model() is never empty, so this normally returns Some.
     fn effective_model(&self) -> Option<&SavedModel> {
         self.session_model
             .as_ref()
             .or_else(|| self.prefs.active_model())
     }
 
-    /// 当前生效模型的副本(session > active)。EnginePool 探测 vLLM served name 后
-    /// 用它克隆→改 model 名→塞回 session_model,实现「请求用 vLLM 实际名字」。
+    /// A copy of the currently effective model (session > active). After
+    /// EnginePool probes the vLLM served name it clones this, renames the
+    /// model, and puts it back into session_model, achieving "requests use
+    /// vLLM's actual name".
     pub fn effective_model_owned(&self) -> Option<SavedModel> {
         self.effective_model().cloned()
     }
 
-    /// 克隆一份 bridge 并绑定 per-session 模型(EnginePool spawn 时按 session model_id 注入)。
+    /// Clone the bridge and bind a per-session model (EnginePool injects it at
+    /// spawn per the session's model_id).
     #[cfg(any(feature = "benchmark-hooks", test))]
     pub fn with_session_model(&self, model: Option<SavedModel>) -> Self {
         let mut b = self.clone();
@@ -827,9 +930,11 @@ impl Pinvou3Bridge {
         if let Ok(v) = std::env::var("DEEPSEEK_PROVIDER") {
             return v;
         }
-        // `OpenAI compatible` 只是 wire protocol，不代表真实 provider 就是
-        // OpenAI。reasoning_content 的解析、回放和思考开关都依赖底座里的
-        // provider 身份，因此优先使用模型目录已经保存的 vendor 元数据。
+        // `OpenAI compatible` is only a wire protocol; it does not mean the
+        // real provider is OpenAI. reasoning_content parsing, replay, and the
+        // thinking toggle all depend on the provider identity in the
+        // foundation, so prefer the vendor metadata already saved in the
+        // model catalog.
         if let Some(vendor) = self
             .effective_model()
             .and_then(|model| model.vendor.as_deref())
@@ -843,14 +948,17 @@ impl Pinvou3Bridge {
                 "minimax" => Some("minimax"),
                 "mimo" | "xiaomi" | "xiaomi-mimo" => Some("xiaomi-mimo"),
                 "doubao" | "volcengine" => Some("volcengine"),
-                // Anthropic 走底座内建 anthropic provider(Messages 原生协议,
-                // x-api-key 鉴权),不能落入 OpenAI Chat Completions 路由。
+                // Anthropic uses the foundation's built-in anthropic provider
+                // (native Messages protocol, x-api-key auth) and must not fall
+                // into the OpenAI Chat Completions route.
                 "anthropic" | "claude" => Some("anthropic"),
                 "xai" | "grok" => Some("xai"),
-                // DashScope、腾讯 Coding Plan 和 Gemini 暂无对应内建 provider,
-                // 保留 OpenAI Chat Completions wire route(Gemini 官方提供
-                // OpenAI 兼容端点),另由下方显式 reasoning_stream_style 保留
-                // 独立思考字段。
+                // DashScope, Tencent Coding Plan, and Gemini have no
+                // corresponding built-in provider yet; keep the OpenAI Chat
+                // Completions wire route (Gemini officially offers an
+                // OpenAI-compatible endpoint), with the explicit
+                // reasoning_stream_style below preserving the separate
+                // thinking field.
                 "qwen" | "tencent" | "openai" | "gemini" | "google" => Some("openai"),
                 _ => None,
             };
@@ -858,9 +966,11 @@ impl Pinvou3Bridge {
                 return provider.to_string();
             }
         }
-        // active model(列表化后的真实来源)优先;无 active model 时回退 legacy
-        // model_preset 字段——与 model()/base_url()/api_key() 的三段式兜底保持一致,
-        // 避免 provider 说 vllm 而 base_url/model 已按 legacy preset 走的分叉。
+        // The active model (the real source after list-ification) takes
+        // precedence; with no active model, fall back to the legacy
+        // model_preset field — consistent with the three-stage fallback of
+        // model()/base_url()/api_key(), avoiding the fork where provider says
+        // vllm while base_url/model already follow the legacy preset.
         let preset = self
             .effective_model()
             .map(|m| m.preset)
@@ -875,11 +985,14 @@ impl Pinvou3Bridge {
             ModelPreset::Mimo => "xiaomi-mimo".to_string(),
             ModelPreset::Anthropic => "anthropic".to_string(),
             ModelPreset::Xai => "xai".to_string(),
-            // 本地端点（用户自定义 OpenAI 兼容地址指向本机/内网服务）：按
-            // EnginePool spawn 时探测出的服务类型走对应底座 provider，让思考
-            // 控制真正生效（Ollama → think 开关、vLLM → off/low/medium/high 档位）。
-            // LM Studio / 通用 / 尚未探测（None）保持 openai wire route
-            // （底座对 openai 的 reasoning_effort 是空操作，不注入思考控制）。
+            // Local endpoint (a user-custom OpenAI-compatible address pointing
+            // at a local/intranet service): route to the corresponding
+            // foundation provider by the server kind probed at EnginePool
+            // spawn, so thinking control actually takes effect (Ollama → think
+            // toggle, vLLM → off/low/medium/high tiers). LM Studio / generic /
+            // not yet probed (None) keep the openai wire route (the
+            // foundation's reasoning_effort for openai is a no-op; no thinking
+            // control is injected).
             ModelPreset::OpenaiCompatible => {
                 if base_url_uses_local_or_private(&self.base_url()) {
                     match self.probed_local_kind {
@@ -905,18 +1018,21 @@ impl Pinvou3Bridge {
                 }
                 "openai".to_string()
             }
-            // Gemini 走官方 OpenAI 兼容端点，复用 openai wire route。
+            // Gemini uses the official OpenAI-compatible endpoint, reusing the
+            // openai wire route.
             ModelPreset::Qwen | ModelPreset::Openai | ModelPreset::Gemini => "openai".to_string(),
         }
     }
 
-    /// 当前 route 的流式思考协议。
+    /// The streaming-thinking protocol of the current route.
     ///
-    /// 已知厂商和官方兼容端点都把思考放在 `reasoning_content` /
-    /// `reasoning` 独立字段中。显式写入 provider config，避免新模型 ID、
-    /// Coding Plan 的动态别名或模型目录暂未收录时被降级成普通正文。
-    /// 真正的自定义 OpenAI 兼容接口保持 None，继续采用底座的安全默认值，
-    /// 不根据回答文本猜测思考内容。
+    /// Known vendors and official compatible endpoints all place thinking in
+    /// the separate `reasoning_content` / `reasoning` fields. Written into the
+    /// provider config explicitly, avoiding degradation to plain body text for
+    /// new model IDs, Coding Plan's dynamic aliases, or models the catalog has
+    /// not cataloged yet. Truly custom OpenAI-compatible interfaces keep None,
+    /// continuing with the foundation's safe default, never guessing thinking
+    /// content from the reply text.
     fn reasoning_stream_style(&self, provider: &str) -> Option<&'static str> {
         if matches!(
             provider,
@@ -945,11 +1061,14 @@ impl Pinvou3Bridge {
         None
     }
 
-    /// 当前 route 发给模型的思考深度档位（透传底座 `reasoning_effort`）。
+    /// The thinking-depth tier the current route sends to the model (passed
+    /// through to the foundation's `reasoning_effort`).
     ///
-    /// 优先级：用户显式设置的 `SavedModel.reasoning_effort` > provider 默认
-    /// （本地模型——vLLM 与探测出的 Ollama——默认 off 防 SSE timeout；其余默认
-    /// high——底座自身默认是 Max，品悟统一收口到 high，符合产品默认思考强度）。
+    /// Priority: user-explicit `SavedModel.reasoning_effort` > provider
+    /// default (local models — vLLM and probed Ollama — default to off to
+    /// prevent SSE timeouts; everything else defaults to high — the
+    /// foundation's own default is Max, and Pinvou uniformly caps it to high,
+    /// matching the product's default thinking intensity).
     /// The exception is models whose thinking cannot be disabled on local
     /// routes: when the `core::always_thinking` knowledge table matches,
     /// normalize per the table (NoControl sends no thinking parameters; Tiers
@@ -970,10 +1089,12 @@ impl Pinvou3Bridge {
     /// `apply_openai_reasoning_effort` (local endpoint model names do not match
     /// that family, so not injecting here is unaffected).
     ///
-    /// 注意：Kimi Code 的 `kimi-for-coding` 等是 always-thinking 模型，官方
-    /// 接入要求 Thinking 保持开启；默认 high 由底座翻译成
-    /// `thinking: {"type":"enabled"}`，天然满足该要求，无需特判模型名
-    /// （探测 payload 仍需显式注入 thinking，见 image_capability.rs）。
+    /// Note: Kimi Code's `kimi-for-coding` etc. are always-thinking models
+    /// whose official integration requires Thinking to stay on; the default
+    /// high is translated by the foundation into `thinking:
+    /// {"type":"enabled"}`, which naturally satisfies the requirement with no
+    /// model-name special-casing (the probe payload still needs explicit
+    /// thinking injection, see image_capability.rs).
     fn request_reasoning_effort(&self) -> Option<String> {
         let provider = self.provider();
         // "Local route": the vllm/ollama providers. When the openai wire
@@ -1026,17 +1147,21 @@ impl Pinvou3Bridge {
             return Some(effort.to_string());
         }
         match provider.as_str() {
-            // 本地模型默认关思考：vLLM 防 SSE timeout；Ollama 防思考 trace 抢占首包。
+            // Local models default to thinking off: vLLM to prevent SSE
+            // timeouts; Ollama to prevent the thinking trace from preempting
+            // the first packet.
             "vllm" | "ollama" => Some("off".to_string()),
-            // 本地 OpenAI 兼容端点（loopback/私网的 LM Studio/通用服务）不注入，
-            // 保持旧行为。
+            // Local OpenAI-compatible endpoints (loopback/private-network LM
+            // Studio/generic services) are not injected, preserving the old
+            // behavior.
             "openai" if base_url_uses_local_or_private(&self.base_url()) => None,
             _ => Some("high".to_string()),
         }
     }
 
-    /// 当前 active 模型名（传给底座 `DtConfig.default_text_model` / `EngineConfig.model`）。
-    /// 环境变量 > settings.custom_model_name > 厂商默认值。
+    /// Current active model name (passed to the foundation's
+    /// `DtConfig.default_text_model` / `EngineConfig.model`).
+    /// env var > settings.custom_model_name > vendor default.
     pub fn model(&self) -> String {
         let is_official_deepseek = is_official_deepseek_base_url(&self.base_url());
         if let Ok(v) = std::env::var("DEEPSEEK_MODEL") {
@@ -1059,7 +1184,8 @@ impl Pinvou3Bridge {
         self.default_model_for_preset()
     }
 
-    /// 各厂商默认模型名（表在 prefs `ModelPreset::default_model`）。
+    /// Default model name per vendor (the table lives in prefs
+    /// `ModelPreset::default_model`).
     fn default_model_for_preset(&self) -> String {
         self.prefs
             .advanced
@@ -1069,8 +1195,9 @@ impl Pinvou3Bridge {
             .to_string()
     }
 
-    /// 当前 active base_url（传给底座 `DtConfig.providers.*.base_url`）。
-    /// 环境变量 > settings.custom_base_url > 厂商默认值。
+    /// Current active base_url (passed to the foundation's
+    /// `DtConfig.providers.*.base_url`).
+    /// env var > settings.custom_base_url > vendor default.
     pub fn base_url(&self) -> String {
         if let Ok(v) = std::env::var("DEEPSEEK_BASE_URL") {
             return v;
@@ -1081,16 +1208,19 @@ impl Pinvou3Bridge {
         self.default_base_url_for_preset()
     }
 
-    /// 是否要求用户配置 API Key。local_vllm 和明确指向本机 loopback 的
-    /// OpenAI-compatible 服务允许无鉴权；云端/局域网地址默认仍要求 Key。
+    /// Whether the user is required to configure an API Key. local_vllm and
+    /// OpenAI-compatible services explicitly pointing at a local loopback
+    /// allow no auth; cloud/LAN addresses still require a Key by default.
     pub fn api_key_required(&self) -> bool {
-        // vLLM 与 Ollama（含探测出的 LAN Ollama）默认无鉴权，底座也允许空 key
-        //（Ollama 官方即开即用）；loopback 端点同样豁免。
+        // vLLM and Ollama (including probed LAN Ollama) default to no auth and
+        // the foundation also allows an empty key (Ollama officially works out
+        // of the box); loopback endpoints are likewise exempt.
         !matches!(self.provider().as_str(), "vllm" | "ollama")
             && !base_url_uses_loopback(&self.base_url())
     }
 
-    /// 各厂商默认 API base URL（表在 prefs `ModelPreset::default_base_url`）。
+    /// Default API base URL per vendor (the table lives in prefs
+    /// `ModelPreset::default_base_url`).
     fn default_base_url_for_preset(&self) -> String {
         self.prefs
             .advanced
@@ -1100,7 +1230,8 @@ impl Pinvou3Bridge {
             .to_string()
     }
 
-    /// 当前 active api_key（传给底座 `DtConfig.api_key`）。
+    /// Current active api_key (passed to the foundation's
+    /// `DtConfig.api_key`).
     pub fn api_key(&self) -> String {
         if let Some(credential) = &self.runtime_model_credential {
             return credential.expose_api_key().to_string();
@@ -1125,7 +1256,8 @@ impl Pinvou3Bridge {
                     }
                 }
             }
-            // 本地 vLLM 不需鉴权:用户留空 key 兜底 local-no-auth(底座要求非空)。
+            // Local vLLM needs no auth: fall back to local-no-auth when the
+            // user leaves the key empty (the foundation requires non-empty).
             if m.preset == ModelPreset::LocalVllm && self.provider() == "vllm" {
                 return LOCAL_VLLM_API_KEY.to_string();
             }
@@ -1140,10 +1272,12 @@ impl Pinvou3Bridge {
         }
     }
 
-    /// 解析一条任意 SavedModel 的凭据(视觉兜底模型专用,设计 §9.3):
-    /// 复用 `credential_ref` → 系统凭据库路径,**不存第二份明文密钥**;
-    /// 不回落到全局 `DEEPSEEK_API_KEY` env(那是主模型的覆盖入口)。
-    /// 本地 vLLM/loopback 无鉴权场景返回占位 key(底座要求非空)。
+    /// Resolve the credential of an arbitrary SavedModel (vision fallback
+    /// models only, design §9.3): reuse the `credential_ref` → system
+    /// credential store path, **never storing a second plaintext key**; never
+    /// falls back to the global `DEEPSEEK_API_KEY` env (that is the main
+    /// model's override entry). Local vLLM/loopback unauthenticated scenarios
+    /// return a placeholder key (the foundation requires non-empty).
     fn api_key_for_saved_model(model: &SavedModel) -> String {
         if let Some(reference) = &model.credential_ref {
             let store = shared_credential_store();
@@ -1165,19 +1299,28 @@ impl Pinvou3Bridge {
         model.api_key.clone()
     }
 
-    /// 视觉工具(`image_analyze`)配置解析(设计 §9.3,阶段 E)。规则:
-    /// 1. 主模型设置了 `vision_model_id` → 用该 SavedModel 的 endpoint + 凭据;
-    ///    id 失效、凭据缺失 → 记 warning 并优雅降级为不注册,不硬错。视觉模型
-    ///    **自身**的图片能力不在此处拒绝——选择器已用识图探测闸门验证(supported
-    ///    才允许选中),override 标记(disabled)可能是历史探测误判残留,运行时
-    ///    按实际被选中的事实使用(见函数体内注释)。
-    /// 2. 未设置、但主模型能力已确认为 Supported → 复用主模型作为 workspace
-    ///    图片分析工具(保留旧的复用行为,但仅限 Supported)。
-    /// 3. 主模型 Unsupported/Unknown 且未设置视觉模型 → 返回 None,不注册
-    ///    `image_analyze`(不 enable `Feature::VisionModel`)。例外:`image_analyze_always`
-    ///    (scheduled 会话)时 Unknown 回退复用主模型——scheduled 图片不走路由,
-    ///    prompt 硬规则要求调用 `image_analyze`,未注册会让模型反复调用不存在的
-    ///    工具;调用时 provider 拒绝的优雅失败与 main 行为一致。
+    /// Vision tool (`image_analyze`) config resolution (design §9.3, phase E).
+    /// Rules:
+    /// 1. Main model has `vision_model_id` set → use that SavedModel's
+    ///    endpoint + credentials; invalid id or missing credentials → log a
+    ///    warning and gracefully degrade to not registering, never a hard
+    ///    error. The vision model's **own** image capability is not rejected
+    ///    here — the selector already gates it with an image-recognition
+    ///    probe (only supported models can be selected), and the override
+    ///    mark (disabled) may be a leftover from a historical probe
+    ///    misjudgment, so at runtime it is used per the fact that it was
+    ///    actually selected (see the in-function comment).
+    /// 2. Not set, but the main model's capability is confirmed Supported →
+    ///    reuse the main model as the workspace image-analysis tool (keeping
+    ///    the old reuse behavior, but only for Supported).
+    /// 3. Main model Unsupported/Unknown and no vision model set → return
+    ///    None, do not register `image_analyze` (do not enable
+    ///    `Feature::VisionModel`). Exception: with `image_analyze_always`
+    ///    (scheduled sessions), Unknown falls back to reusing the main model —
+    ///    scheduled images do not go through routing, the prompt hard rule
+    ///    requires calling `image_analyze`, and not registering it would make
+    ///    the model repeatedly call a nonexistent tool; the graceful failure
+    ///    of a provider rejection at call time matches main behavior.
     fn resolve_vision_model_config(&self) -> Option<deepseek_tui::config::VisionModelConfig> {
         let effective = self.effective_model();
         if let Some(vision_id) = effective.and_then(|model| model.vision_model_id.as_deref()) {
@@ -1188,10 +1331,14 @@ impl Pinvou3Bridge {
                 );
                 return None;
             };
-            // 视觉模型自身能力不在此处拒绝:选择器已用识图探测验证(supported
-            // 才允许选中)。override 标记(disabled)可能是历史探测误判残留
-            // (如 kimi-for-coding 曾因探测链路 400 被回填),运行时按实际被
-            // 选中的事实使用;文本模型配成视觉模型由前端探测闸门挡住。
+            // The vision model's own capability is not rejected here: the
+            // selector already verified it with the image-recognition probe
+            // (only supported models can be selected). The override mark
+            // (disabled) may be a leftover from a historical probe
+            // misjudgment (e.g. kimi-for-coding was once backfilled after the
+            // probe pipeline returned 400); at runtime it is used per the fact
+            // that it was actually selected; a text model configured as a
+            // vision model is blocked by the frontend probe gate.
             let api_key = Self::api_key_for_saved_model(vision);
             if api_key.trim().is_empty() {
                 eprintln!(
@@ -1214,8 +1361,10 @@ impl Pinvou3Bridge {
                 base_url: Some(self.base_url()),
             });
         }
-        // scheduled 例外:Unknown(如本地 vLLM 模型不在内置表)也注册,见函数头
-        // 注释规则 3。Unsupported 仍不注册(确认不支持的模型注册了只会持续报错)。
+        // scheduled exception: Unknown (e.g. a local vLLM model absent from
+        // the built-in table) is also registered, see rule 3 in the function
+        // header comment. Unsupported is still not registered (registering a
+        // confirmed-unsupported model only produces continuous errors).
         if self.image_analyze_always
             && effective.map(effective_image_capability) == Some(EffectiveImageCapability::Unknown)
         {
@@ -1228,17 +1377,22 @@ impl Pinvou3Bridge {
         None
     }
 
-    /// 当前有效模型的图片输入能力(设计 §6.3)。命令层在发送前拒绝时需要据此
-    /// 区分"确认不支持"与"能力未知",给出不同的用户指引。
+    /// The current effective model's image-input capability (design §6.3).
+    /// The command layer needs this to distinguish "confirmed unsupported"
+    /// from "capability unknown" when rejecting before send, giving different
+    /// user guidance.
     pub fn effective_image_capability(&self) -> EffectiveImageCapability {
         self.effective_model()
             .map(effective_image_capability)
-            // 无有效模型(配置损坏)按 Unknown 处理:不冒充支持,交给路由兜底。
+            // No effective model (corrupted config) is treated as Unknown:
+            // do not pretend to support it; let routing be the fallback.
             .unwrap_or(EffectiveImageCapability::Unknown)
     }
 
-    /// 兜底视觉模型端点是否本地(§11.8/§11.9):None 表示未配置可用视觉模型。
-    /// fallback 路径的图片字节发给视觉模型而非主模型,隐私提示必须按此口径。
+    /// Whether the fallback vision model endpoint is local (§11.8/§11.9):
+    /// None means no usable vision model is configured. On the fallback path
+    /// image bytes go to the vision model rather than the main model, so the
+    /// privacy notice must use this caliber.
     pub fn vision_uses_local_endpoint(&self) -> Option<bool> {
         self.resolve_vision_model_config().map(|config| {
             config
@@ -1248,10 +1402,13 @@ impl Pinvou3Bridge {
         })
     }
 
-    /// 普通会话图片输入路由(设计 §9.2,阶段 D)。仅当消息含图片附件时由命令层调用。
-    /// `has_vision_model` 取自 `resolve_vision_model_config`:Supported 主模型本来就走
-    /// Native,该值只在 Unsupported/Unknown 时影响路由,而那时 Some 仅可能来自
-    /// `vision_model_id` 命中的独立视觉模型。
+    /// Image-input routing for ordinary sessions (design §9.2, phase D).
+    /// Called by the command layer only when the message carries image
+    /// attachments. `has_vision_model` comes from
+    /// `resolve_vision_model_config`: a Supported main model always routes
+    /// Native anyway, so this value only affects routing under
+    /// Unsupported/Unknown — where Some can only come from a standalone
+    /// vision model hit via `vision_model_id`.
     pub fn image_input_mode(&self) -> crate::features::assistant::image_capability::ImageInputMode {
         crate::features::assistant::image_capability::image_input_mode(
             self.effective_image_capability(),
@@ -1259,21 +1416,26 @@ impl Pinvou3Bridge {
         )
     }
 
-    /// 是否配置了**可用**的独立视觉模型(或 Supported 主模型可自复用)。
-    /// 与 `image_input_mode` 内部的 `has_vision_model` 同一口径
-    /// (`resolve_vision_model_config`),供能力查询命令回传前端展示。
+    /// Whether a **usable** standalone vision model is configured (or the
+    /// Supported main model can reuse itself). Same caliber as the
+    /// `has_vision_model` inside `image_input_mode`
+    /// (`resolve_vision_model_config`); used by the capability-query command
+    /// to report back for frontend display.
     pub fn has_vision_model(&self) -> bool {
         self.resolve_vision_model_config().is_some()
     }
 
-    /// 当前有效模型 endpoint 是否指向本机(设计 §11.8/§11.9):前端据此决定是否在
-    /// 附件区提示"图片将发送给模型服务商"——本机 loopback 场景图片字节不离开本机,
-    /// 不得显示云上传字样。判定与 `api_key_for_saved_model` 同一口径:preset 为
-    /// local_vllm,或有效 base_url host 为 loopback(127.0.0.1/localhost/`[::1]`)。
+    /// Whether the current effective model's endpoint points at the local
+    /// machine (design §11.8/§11.9): the frontend uses this to decide whether
+    /// to show "images will be sent to the model provider" in the attachment
+    /// area — in the local loopback scenario image bytes never leave the
+    /// machine, so cloud-upload wording must not appear. Same caliber as
+    /// `api_key_for_saved_model`: preset is local_vllm, or the effective
+    /// base_url host is loopback (127.0.0.1/localhost/`[::1]`).
     pub fn is_local_endpoint(&self) -> bool {
         let preset_is_local = match self.effective_model() {
             Some(model) => model.preset == ModelPreset::LocalVllm,
-            // 无有效模型(配置损坏):按全局 preset 判定。
+            // No effective model (corrupted config): judge by the global preset.
             None => self.prefs.advanced.model_preset.unwrap_or_default() == ModelPreset::LocalVllm,
         };
         preset_is_local || base_url_uses_loopback(&self.base_url())
@@ -1337,9 +1499,11 @@ impl Pinvou3Bridge {
         self.prefs.advanced.max_output_tokens.unwrap_or(24_576)
     }
 
-    /// 为一个具体 wire model 生成宿主已知的 route facts：
-    /// SavedModel 显式能力与实时 probe 取更小值；两者都没有时复用运行状态页同一份
-    /// 模型 catalog，未知本地 vLLM 才使用 128K 保守值。
+    /// Generate the host-known route facts for a concrete wire model:
+    /// the smaller of the SavedModel's explicit capability and the live
+    /// probe; when neither exists, reuse the same model catalog as the run
+    /// status page, with the 128K conservative value only for unknown local
+    /// vLLM.
     /// output_tokens: operator-owned endpoints (local vLLM, custom
     /// OpenAI-compatible / custom, excluding coding_plan) declare uniformly
     /// by window tier — >=500K→131072, >=250K→65536, otherwise
@@ -1427,18 +1591,24 @@ impl Pinvou3Bridge {
         limits.has_known_limit().then_some(limits)
     }
 
-    /// 当前 active route 的上下文窗口（供 chat:usage 事件携带给前端做
-    /// token 进度条分母）。与 effective_context_window 同源（SavedModel 声明
-    /// vs probe 取小），云端模型不再停留在前端 32K 假分母。
+    /// Context window of the current active route (carried to the frontend by
+    /// the chat:usage event as the denominator of the token progress bar).
+    /// Same source as effective_context_window (min of SavedModel declaration
+    /// vs probe), so cloud models no longer sit on the frontend's fake 32K
+    /// denominator.
     pub fn usage_context_window(&self) -> u32 {
         self.effective_context_window(&self.model())
     }
 
-    /// 底座 emergency 线用的 context window。SavedModel 声明与 probe(vLLM
-    /// `/v1/models` 的 `max_model_len`)取较小值；都没有时才按模型名 hint/128K。
+    /// The context window the foundation's emergency line uses. The smaller
+    /// of the SavedModel declaration and the probe (vLLM `/v1/models`'s
+    /// `max_model_len`); only when neither exists does it fall back to the
+    /// model-name hint/128K.
     ///
-    /// ⚠️ **填 active_route_limits 与推导 token_threshold 必须共用这一个 window**,
-    /// 否则 T(正常线)/E(紧急线)用不同窗口 → 倒置(见 docs/context-compaction-设计.md)。
+    /// ⚠️ **Filling active_route_limits and deriving token_threshold must
+    /// share this one window**, otherwise T (nice line) / E (emergency line)
+    /// use different windows → inversion (see
+    /// docs/context-compaction-设计.md).
     fn effective_context_window(&self, model: &str) -> u32 {
         self.route_limits_for_model(model)
             .and_then(|limits| limits.context_tokens)
@@ -1448,25 +1618,38 @@ impl Pinvou3Bridge {
             })
     }
 
-    /// 按窗口推导 `should_compact` 的 `token_threshold`(nice 主路径触发线 T)。
-    /// 公式与常数见 docs/context-compaction-设计.md §3(2026-07-02 实测校准):
+    /// Derive `should_compact`'s `token_threshold` from the window (the nice
+    /// main-path trigger line T). Formula and constants in
+    /// docs/context-compaction-设计.md §3 (field-calibrated 2026-07-02):
     ///
     ///   T = (E − S)/1.5 − FIXED,   clamp[4096, 0.75·W]
-    ///   E = W − O − 1024           (底座 emergency 线,conservative 全量尺)
-    ///   O 来自同一 route profile；未声明 route 时才由底座 provider/model fallback 推导
+    ///   E = W − O − 1024           (foundation emergency line, conservative full ruler)
+    ///   O comes from the same route profile; only undeclared routes let the
+    ///   foundation's provider/model fallback derive it
     ///
-    /// ÷1.5 把 conservative 全量尺换算回 `should_compact` 的 raw 子集尺(k=1.5 实测精确,
-    /// pinvou 关 thinking 无偏移)。S=4000(system 保守估算,dump 实测 ~1.4K + 余量);
-    /// FIXED=22000(framing ~2.5K + pinned/recent R ~4.5K + safety margin ~15K)。
-    /// 写死单值对任一窗口非倒置即过保守,故按窗口推导(实证:262K→~133K / 131K→~46K)。
+    /// ÷1.5 converts the conservative full ruler back to `should_compact`'s
+    /// raw subset ruler (k=1.5 is field-accurate; pinvou disabling thinking
+    /// introduces no offset). S=4000 (conservative system estimate; dump
+    /// measures ~1.4K + headroom);
+    /// FIXED=22000(framing ~2.5K + pinned/recent R ~4.5K + safety margin ~15K).
+    /// A single hardcoded value is either inverted or over-conservative for
+    /// some window, hence derive per window (field evidence: 262K→~133K /
+    /// 131K→~46K).
     fn derive_compaction_threshold(&self, model: &str) -> usize {
         let window = self.effective_context_window(model) as usize;
-        // [pinvou3-fork 根治 2026-07-03] 直接问底座要 emergency input budget E,**不再镜像**
-        // 500K/262144/output 预留/`E=W−O−1024` 公式。那些常数一旦上游 sync 改动,pinvou3 编译
-        // 不报错却静默算出不一致的 E → 倒置(与 tool_search 折叠单名同类:依赖上游不变的假设,
-        // 间接检查抓不到)。底座 `context_input_budget_for_route` 已封装窗口分档(≥500K→262144 /
-        // 否则 effective_max_output)+ headroom;传 input_tokens=0 取总 budget E。上游改这些
-        // pinvou3 自动跟随、永不倒置。route_limits 与 build_engine_config.active_route_limits 同源。
+        // [pinvou3-fork root fix 2026-07-03] ask the foundation directly for
+        // the emergency input budget E, **no longer mirroring** the
+        // 500K/262144/output reservation/`E=W−O−1024` formula. Once an upstream
+        // sync changes those constants, pinvou3 would compile fine yet
+        // silently compute an inconsistent E → inversion (same class as the
+        // tool_search collapsed single name: an assumption depending on
+        // upstream not changing, which indirect checks cannot catch). The
+        // foundation's `context_input_budget_for_route` already encapsulates
+        // window tiering (≥500K→262144 / otherwise effective_max_output) +
+        // headroom; pass input_tokens=0 to get the total budget E. When
+        // upstream changes these, pinvou3 follows automatically and never
+        // inverts. route_limits shares its source with
+        // build_engine_config.active_route_limits.
         let route_limits = self.route_limits_for_model(model);
         let provider = self.build_dt_config().api_provider();
         let emergency = deepseek_tui::core::engine::context_input_budget_for_route(
@@ -1476,7 +1659,9 @@ impl Pinvou3Bridge {
             0,
         )
         .unwrap_or_else(|| {
-            // 底座返 None(未知 model + 无探测 route_limits):与底座禁用 preflight 时同路,保守兜底。
+            // Foundation returned None (unknown model + no probed
+            // route_limits): same path as the foundation's disabled preflight;
+            // conservative fallback.
             window
                 .saturating_sub(
                     route_limits
@@ -1486,20 +1671,26 @@ impl Pinvou3Bridge {
                 )
                 .saturating_sub(1_024)
         });
-        // 以下 S/FIXED/÷1.5/clamp 是 pinvou3 自己的 T 推导(同尺换算 + 守护余量),**非镜像底座**。
+        // The S/FIXED/÷1.5/clamp below are pinvou3's own T derivation
+        // (same-ruler conversion + guard margin), **not a mirror of the
+        // foundation**.
         const S: usize = 4_000;
         const FIXED: usize = 22_000;
-        // ÷1.5 == ×2/3:把 conservative 全量尺换算回 should_compact 的 raw 子集尺。
+        // ÷1.5 == ×2/3: convert the conservative full ruler back to
+        // should_compact's raw subset ruler.
         let raw_equiv = emergency.saturating_sub(S).saturating_mul(2) / 3;
         let threshold = raw_equiv.saturating_sub(FIXED);
-        // ⚠️ 上界 `.max(4_096)`:病态小窗口(W<5461 → W*3/4<4096)时裸 clamp 的 min>max 会触发
-        // `Ord::clamp` 的 `assert!(min<=max)` panic → build_engine_config 崩。抬高上界使合法。
+        // ⚠️ Upper bound `.max(4_096)`: with a pathologically small window
+        // (W<5461 → W*3/4<4096), a bare clamp's min>max would trip
+        // `Ord::clamp`'s `assert!(min<=max)` panic → build_engine_config
+        // crashes. Raising the upper bound keeps it legal.
         threshold.clamp(4_096, (window * 3 / 4).max(4_096))
     }
 
-    /// legacy 单引擎路径(headless harness 用):走 instructions inline + 用户自定义。
-    /// 跟 [`Self::session_instructions`] 区别仅在不带 session_id —— 直接用 work 渲染原文
-    /// (不替换 `{{PINVOU3_WORKSPACE}}`)。
+    /// Legacy single-engine path (for the headless harness): inline
+    /// instructions + user custom ones. Differs from
+    /// [`Self::session_instructions`] only in lacking a session_id — the work
+    /// rendering is used verbatim (no `{{PINVOU3_WORKSPACE}}` replacement).
     pub fn instructions(&self) -> Vec<InstructionSource> {
         let mut out: Vec<InstructionSource> = vec![InstructionSource::Inline {
             name: "pinvou3:bundle/instructions".to_string(),
@@ -1515,15 +1706,19 @@ impl Pinvou3Bridge {
         out
     }
 
-    /// 构造 [`EngineConfig`]：**显式列出每个字段**。
+    /// Build the [`EngineConfig`]: **list every field explicitly**.
     ///
-    /// 实现技巧：先 destructure 上游 `EngineConfig::default()`——destructure 模式
-    /// 不带 `..` 时，上游加新字段会让本处编译报"missing field"，强制 reviewer
-    /// 决定该字段对 pinvou3 是否安全。pinvou3 自定义字段标记 `_` 忽略原 default
-    /// 值；纯透传字段命名变量再放进新结构体。
+    /// Implementation trick: destructure the upstream
+    /// `EngineConfig::default()` first — without `..` in the destructure
+    /// pattern, an upstream-added field makes this fail to compile with
+    /// "missing field", forcing the reviewer to decide whether the field is
+    /// safe for pinvou3. pinvou3-customized fields are marked `_` to ignore
+    /// the original default; pure passthrough fields are bound to named
+    /// variables and placed into the new struct.
     pub fn build_engine_config(&self) -> EngineConfig {
         let EngineConfig {
-            // —— pinvou3 自定义（destructure 这里 `_`，新结构体里覆盖）——
+            // —— pinvou3-customized (`_` in the destructure here, overridden
+            //    in the new struct) ——
             model: _,
             workspace: _,
             session_id: _,
@@ -1537,7 +1732,8 @@ impl Pinvou3Bridge {
             plugin_registry: _,
             instructions: _,
             project_context_pack_enabled: _,
-            // advanced.max_steps 显式配置时覆盖；未配置则复用底座默认值。
+            // advanced.max_steps overrides when explicitly configured;
+            // otherwise reuse the foundation default.
             max_steps: default_max_steps,
             max_subagents: _,
             snapshots_enabled: _,
@@ -1547,14 +1743,15 @@ impl Pinvou3Bridge {
             strict_tool_mode: _,
             translation_enabled: _,
             vision_config: _,
-            subagent_api_timeout: _, // pinvou3 自定义 (见下),本地慢推理 120s 不够
-            // —— 上游 default 透传（命名后放进新结构体）——
+            subagent_api_timeout: _, // pinvou3-customized (see below); 120s is not enough for local slow inference
+            // —— upstream default passthrough (named, then placed into the new
+            //    struct) ——
             features,
             compaction,
             todos,
             plan_state,
             max_spawn_depth,
-            network_policy: _, // pinvou3 显式构造 (见下),不透传 default(None)
+            network_policy: _, // pinvou3 constructs explicitly (see below); default(None) is not passed through
             lsp_config,
             mut runtime_services,
             subagent_model_overrides,
@@ -1565,51 +1762,62 @@ impl Pinvou3Bridge {
             reasoning_only_reprompt_message,
             workshop,
             snapshots_max_workspace_bytes,
-            search_provider: _, // pinvou3 显式构造 (见下),由 prefs.search 翻译
+            search_provider: _, // pinvou3 constructs explicitly (see below), translated from prefs.search
             search_api_key: _,
             goal_state,
             mut tools_always_load,
             prefer_bwrap,
             turn_tool_security: _,
-            // —— v0.8.49 上游新增字段,透传 default ——
+            // —— v0.8.49 upstream-added fields, default passed through ——
             allowed_tools: _,
             tools,
-            // —— v0.8.51 上游新增字段 ——
+            // —— v0.8.51 upstream-added fields ——
             speech_output_dir,
             hook_executor: _, // pinvou3 injects the bundle hook (connector introspection correction) + CLI env hook
-            // —— v0.8.53 上游新增字段,透传 default(subagent 心跳超时;配 subagent
-            //    lifecycle hooks feat)。⚠️ 本地慢 vLLM 下或需像 subagent_api_timeout
-            //    一样调大,先透传 default,验证后再评估。——
+            // —— v0.8.53 upstream-added field, default passed through (subagent
+            //    heartbeat timeout; pairs with the subagent lifecycle hooks
+            //    feat). ⚠️ Under a slow local vLLM this may need to be raised
+            //    like subagent_api_timeout; pass the default through for now
+            //    and evaluate after verification.——
             subagent_heartbeat_timeout,
-            // —— v0.8.54-57 上游新增字段,透传 default ——
-            //   search_base_url: 自定义搜索后端 base URL(pinvou3 用内置 provider → None)。
-            //   stream_chunk_timeout: 单 chunk SSE 超时。⚠️ 本地慢 vLLM 下或需像
-            //   subagent_api_timeout 一样调大(配 C3 SSE idle-timeout 遥测),先透传 default 验证。
+            // —— v0.8.54-57 upstream-added fields, default passed through ——
+            //   search_base_url: custom search backend base URL (pinvou3 uses
+            //   the built-in provider → None).
+            //   stream_chunk_timeout: per-chunk SSE timeout. ⚠️ Under a slow
+            //   local vLLM this may need to be raised like
+            //   subagent_api_timeout (pair with C3 SSE idle-timeout
+            //   telemetry); pass the default through and verify first.
             search_base_url,
             stream_chunk_timeout,
             turn_wall_clock,
             stream_max_content_bytes,
             stream_max_duration,
-            // —— v0.8.58-60 上游新增字段,透传 default ——
-            //   verbosity: concise 输出模式(CLI noninteractive 默认;GUI → None)。
-            //   interactive_launch_limit: #3095 交互 fanout 闸信号量上限(default 4)。
-            //   goal_token_budget / goal_status: /goal 目标管理(GUI 暂不用,透传)。
-            //   disallowed_tools: codewhale exec --disallowed-tools(CLI 专用,GUI → None)。
+            // —— v0.8.58-60 upstream-added fields, default passed through ——
+            //   verbosity: concise output mode (CLI noninteractive default;
+            //   GUI → None).
+            //   interactive_launch_limit: #3095 interactive fanout gate
+            //   semaphore limit (default 4).
+            //   goal_token_budget / goal_status: /goal goal management (GUI
+            //   does not use it yet; pass through).
+            //   disallowed_tools: codewhale exec --disallowed-tools (CLI only,
+            //   GUI → None).
             verbosity,
             launch_concurrency,
             goal_token_budget,
             goal_status,
-            disallowed_tools: _, // pinvou3 从持久列表算初值(见构造处),默认值忽略
+            disallowed_tools: _, // pinvou3 computes the initial value from the persisted list (see the construction site); the default is ignored
             max_tool_calls,
-            // —— v0.8.65 上游新增字段,透传 default ——
-            //   subagents_enabled: default true（通用多智能体委派需要 SpawnSubAgent）。
+            // —— v0.8.65 upstream-added fields, default passed through ——
+            //   subagents_enabled: default true (generic multi-agent
+            //   delegation needs SpawnSubAgent).
             //   launch_concurrency/max_admitted_subagents/subagent_token_budget: subagent
-            //   资源闸(决策③ fork 基底用步数上限,token_budget 透传 default 不启用)。
-            //   auto_review_policy/exec_policy_engine: 审查/exec 策略。
-            //   active_route_limits/skills_scan_codewhale_only/workspace_follow_symlinks: 透传。
-            active_route_limits: _, // pinvou3 按 SavedModel + probe 显式构造，不透传 default
+            //   resource gates (decision ③: the fork base uses the step limit;
+            //   token_budget passes the default through, not enabled).
+            //   auto_review_policy/exec_policy_engine: review/exec policies.
+            //   active_route_limits/skills_scan_codewhale_only/workspace_follow_symlinks: pass through.
+            active_route_limits: _, // pinvou3 constructs explicitly from SavedModel + probe; default is not passed through
             skills_scan_codewhale_only,
-            explicit_skills_root_only: _, // bundle skills 是完整 filesystem authority
+            explicit_skills_root_only: _, // bundle skills are the complete filesystem authority
             max_admitted_subagents,
             subagents_enabled,
             auto_review_policy,
@@ -1625,9 +1833,10 @@ impl Pinvou3Bridge {
             subagent_state_root,
         } = EngineConfig::default();
 
-        // hook 有两条消费路径：turn_loop 从 EngineConfig.hook_executor 跑
-        // ToolCallBefore，exec_shell 则从 RuntimeToolServices.hook_executor 收集
-        // shell_env。必须共享同一个实例，不能只填前者。
+        // Hooks have two consumption paths: turn_loop runs ToolCallBefore
+        // from EngineConfig.hook_executor, while exec_shell collects shell_env
+        // from RuntimeToolServices.hook_executor. They must share the same
+        // instance; filling only the former is not enough.
         let hook_executor = self.build_hook_executor();
         runtime_services.hook_executor = Some(hook_executor.clone());
         tools_always_load.extend(
@@ -1636,16 +1845,19 @@ impl Pinvou3Bridge {
                 .map(|name| (*name).to_string()),
         );
 
-        // 视觉工具(image_analyze)注册两道门(设计 §9.3,阶段 E):
-        //   vision_config 有值 + Feature::VisionModel 开启,缺一不可。
-        // 不再无条件复用主模型:只有「显式 vision_model_id 可解析」或
-        // 「主模型能力确认 Supported」才注册;否则文本模型也会拿到
-        // image_analyze,调用时才发现不支持图片(原 bridge 无条件复用 bug)。
+        // Two gates for vision tool (image_analyze) registration (design §9.3,
+        // phase E): vision_config has a value + Feature::VisionModel is
+        // enabled — both are required. The main model is no longer reused
+        // unconditionally: only "an explicit vision_model_id resolves" or "the
+        // main model's capability is confirmed Supported" registers;
+        // otherwise even a text model would get image_analyze and only
+        // discover it cannot handle images at call time (the original bridge
+        // unconditional-reuse bug).
         let vision_config = self.resolve_vision_model_config();
         let vision_tool_enabled = vision_config.is_some();
 
         EngineConfig {
-            // pinvou3 覆盖
+            // pinvou3 override
             model: self.model(),
             workspace: self.workspace.clone(),
             session_id: None,
@@ -1666,29 +1878,38 @@ impl Pinvou3Bridge {
             instructions: self.instructions(),
             project_context_pack_enabled: false,
             max_steps: self.prefs.advanced.max_steps.unwrap_or(default_max_steps),
-            // 默认 10，为会话级多智能体 fan-out 场景预留。
-            // 原始锁定 2026-05-19 是避免 multi-subagent 并发在弱模型 + 单 vLLM 下 timeout。
-            // 实测 single subagent + 串行 2-3 subagent 都可用,fan-out 4+ 仍有 timeout 风险,
-            // 但走 SubAgentManager.max_agents fallback 不 hard crash。
-            // 出问题再回退,不预先限制。
+            // Default 10, reserved for session-level multi-agent fan-out.
+            // The original lock (2026-05-19) avoided multi-subagent
+            // concurrency timing out under a weak model + a single vLLM.
+            // Field tests show single subagent + 2-3 serial subagents work;
+            // fan-out 4+ still risks timeout but degrades through the
+            // SubAgentManager.max_agents fallback instead of a hard crash.
+            // Roll back if problems appear; do not pre-restrict.
             max_subagents: self.prefs.advanced.max_subagents.unwrap_or(10),
             snapshots_enabled: false,
             memory_enabled: false,
             memory_path: paths::memory_path(),
             locale_tag: self.locale_tag().to_string(),
             strict_tool_mode: false,
-            // pinvou3 中文用户已经是中文语境，不走 /translate 路径
+            // pinvou3's Chinese users are already in a Chinese context; the
+            // /translate path is not used
             translation_enabled: false,
-            // 视觉配置由 resolve_vision_model_config 按 §9.3 三规则解析;
-            // None = 不注册 image_analyze(主模型不支持/未知且无可用视觉模型)。
+            // Vision config is resolved by resolve_vision_model_config per
+            // the §9.3 three rules; None = do not register image_analyze
+            // (main model unsupported/unknown and no usable vision model).
             vision_config,
-            // [pinvou3-fork] 上游默认 120s 是为 DeepSeek 云端 API 设计。
-            // 本地 Qwen3.6 vLLM 慢推理下单 step 30-90s 很常见,120s 频繁误杀子 agent。
-            // 300s 与 elapsed cap 对齐,给复杂研究类任务留出完整单步窗口。
+            // [pinvou3-fork] The upstream default 120s is designed for the
+            // DeepSeek cloud API. Under local Qwen3.6 vLLM slow inference a
+            // single step of 30-90s is common, and 120s frequently kills
+            // sub-agents by mistake. 300s aligns with the elapsed cap,
+            // leaving a complete single-step window for complex research
+            // tasks.
             subagent_api_timeout: std::time::Duration::from_secs(300),
-            // 开启 VisionModel feature(默认 Experimental 关)仅当 vision_config
-            // 解析成功(见上):tool_setup.rs 才会注册 image_analyze 工具给 LLM。
-            // 两道门缺一不可——只配 vision_config 不开 feature,工具不会注册。
+            // Enable the VisionModel feature (off by default as Experimental)
+            // only when vision_config resolves successfully (see above): only
+            // then does tool_setup.rs register the image_analyze tool for the
+            // LLM. Both gates are required — configuring vision_config without
+            // enabling the feature leaves the tool unregistered.
             features: {
                 let mut f = features;
                 if vision_tool_enabled {
@@ -1696,53 +1917,82 @@ impl Pinvou3Bridge {
                 }
                 f
             },
-            // compaction model 默认 deepseek-v4-pro,本地 vLLM 没这个模型,
-            // 必须改成 pinvou3 当前用的 model,否则手动 /compact 报 404。
+            // The compaction model defaults to deepseek-v4-pro, which a local
+            // vLLM does not have; it must be changed to the model pinvou3
+            // currently uses, otherwise a manual /compact reports 404.
             //
-            // 两条压缩触发(turn_loop 内顺序:先 should_compact,后 emergency),用**两把尺**:
-            //  - should_compact(nice LLM 摘要,正常线 T):可摘要**子集**的 raw 尺 > T − pinned。
-            //  - emergency(强制 recover_context_overflow,紧急线 E):**全量** input 的
-            //    conservative 尺(raw×1.5 + system + framing) > W − O − 1024。
+            // The two compaction triggers (in turn_loop order: should_compact
+            // first, then emergency) use **two rulers**:
+            //  - should_compact (nice LLM summary, nice line T): the raw ruler
+            //    of the summarizable **subset** > T − pinned.
+            //  - emergency (forced recover_context_overflow, emergency line E):
+            //    the conservative ruler of the **full** input (raw×1.5 +
+            //    system + framing) > W − O − 1024.
             //
-            // ⚠️ 两把尺差 ×1.5 乘性,T 必须换算后仍显著低于 E,否则 emergency 抢先、nice 死
-            //    (倒置 bug)。且 W 必须探测真实 max_model_len:写死单值(旧 190K)对任一窗口
-            //    非倒置即过保守——2026-07-02 实证坐实 190K 在健康 256K 机也倒置(emergency@198
-            //    早于 should_compact@255)。故 token_threshold 改**按窗口推导**:
+            // ⚠️ The two rulers differ by a ×1.5 multiplicative factor, so T
+            //    must stay clearly below E after conversion, otherwise
+            //    emergency preempts and nice dies (the inversion bug). And W
+            //    must be the probed real max_model_len: a hardcoded single
+            //    value (the old 190K) is either inverted or over-conservative
+            //    for any given window — the 2026-07-02 field evidence proved
+            //    190K inverts even on a healthy 256K machine (emergency@198
+            //    fires before should_compact@255). Hence token_threshold is
+            //    now **derived per window**:
             //    derive_compaction_threshold() = (E−S)/1.5 − 22000, clamp[4096, 0.75W];
-            //    W/O 来源 = SavedModel 显式 route profile + probe；vLLM 缺省才走保守值。
-            //    公式常数与实证见 docs/context-compaction-设计.md;同尺不变式由回归测试
-            //    forkguard_compaction_threshold_below_emergency_all_windows 四窗口锁住。
-            // 上游默认 token_threshold=800K,对本地窗口永远撞不到,**必须显式 set**。
-            // ⚠️ v0.8.51 上游移除了 CompactionConfig.auto_floor_tokens 字段(floor 概念
-            //    随 cycle removal 一并去掉),原 60K 下限设置失效,删除。
+            //    W/O source = SavedModel explicit route profile + probe; vLLM
+            //    falls back to the conservative value only by default.
+            //    Formula constants and field evidence in
+            //    docs/context-compaction-设计.md; the same-ruler invariant is
+            //    locked across four windows by the regression test
+            //    forkguard_compaction_threshold_below_emergency_all_windows.
+            // Upstream's default token_threshold=800K can never be hit on a
+            // local window, so it **must be set explicitly**.
+            // ⚠️ v0.8.51 upstream removed the
+            //    CompactionConfig.auto_floor_tokens field (the floor concept
+            //    went away with cycle removal); the old 60K floor setting
+            //    became ineffective and was deleted.
             compaction: deepseek_tui::compaction::CompactionConfig {
                 model: self.model(),
                 token_threshold: self.derive_compaction_threshold(&self.model()),
                 ..compaction
             },
-            // ⚠️ v0.8.51 上游整体移除 cycle 子系统(release "cycle removal"):
-            //    EngineConfig.cycle 字段不复存在。原 pinvou3 在小窗口下显式关闭 cycle
-            //    (防 trigger_floor saturating_sub 归零导致每轮误触发 briefing)的逻辑
-            //    随之失效——目标已由上游删除子系统达成,直接删去。
-            // capacity controller 保持上游 default = off (2026-05-19 codex
-            // adversarial-review round 2 发现:其 low_risk_max / medium_risk_max
-            // 是 p_fail 风险阈值而非 context_used_ratio,context 权重只占 15%。
-            // 复杂工具轮在 context 远低于 200K 时就可能触发 VerifyAndReplan /
-            // VerifyWithToolReplay 改写会话。
-            // auto compact 直接用上游 turn_loop:90 的 should_compact preflight,
-            // 语义干净:按 token_threshold/auto_floor 决定是否走 LLM 摘要。
+            // ⚠️ v0.8.51 upstream removed the cycle subsystem entirely
+            //    (release "cycle removal"): the EngineConfig.cycle field no
+            //    longer exists. pinvou3's old logic of explicitly disabling
+            //    cycle under small windows (preventing trigger_floor's
+            //    saturating_sub from zeroing out and misfiring briefing every
+            //    turn) became obsolete — the goal has been achieved by
+            //    upstream deleting the subsystem, so it was deleted outright.
+            // capacity controller keeps the upstream default = off (the
+            // 2026-05-19 codex adversarial-review round 2 found that its
+            // low_risk_max / medium_risk_max are p_fail risk thresholds, not
+            // context_used_ratio — context weighs only 15%. A complex tool
+            // turn could trigger VerifyAndReplan / VerifyWithToolReplay
+            // rewriting the session with context far below 200K).
+            // auto compact uses upstream turn_loop:90's should_compact
+            // preflight directly — clean semantics: token_threshold/auto_floor
+            // decides whether to run the LLM summary.
             todos,
             plan_state,
             max_spawn_depth,
-            // pinvou3 产品要跑在用户自带的 clash/透明代理 fake-ip(TUN) 环境:所有
-            // 域名 DNS 解析到 fake-ip 占位段(clash 默认 198.18.0.0/15,IETF benchmark
-            // 保留段、无真实服务),底座 fetch_url 自解析后被 SSRF 防护当 restricted 误杀。
-            // 修法:按 **IP 段**信任 fake-ip 占位段(`with_trusted_fakeip_cidrs`),而非
-            // 按 host 信任(早期 `proxy=["*"]` 会让任意域名解析到真实私网/元数据也放行 →
-            // SSRF)。改成 IP 段后:198.18.x 占位放行;`*.lan→192.168.x`、`→169.254.169.254`
-            // (云元数据)、IP 字面量仍被 is_restricted_ip 拦。default=Allow 仅指不按 host
-            // 弹窗确认(本地可信助手),与 SSRF 兜底正交。
-            // 自定义 fake-ip-range 的用户暂未暴露配置(默认段覆盖绝大多数;真有人撞再加)。
+            // The pinvou3 product must run in the user's own clash/transparent
+            // proxy fake-ip (TUN) environment: every domain name DNS-resolves
+            // into the fake-ip placeholder range (clash defaults to
+            // 198.18.0.0/15, an IETF benchmark reserved range with no real
+            // service), and the foundation's fetch_url self-resolution would
+            // then be killed as restricted by the SSRF protection.
+            // Fix: trust the fake-ip placeholder range by **IP range**
+            // (`with_trusted_fakeip_cidrs`) instead of trusting by host (the
+            // early `proxy=["*"]` would also let any domain resolving to a
+            // real private network / metadata address through → SSRF). After
+            // switching to the IP range: 198.18.x placeholders pass;
+            // `*.lan→192.168.x`, `→169.254.169.254` (cloud metadata), and IP
+            // literals are still blocked by is_restricted_ip. default=Allow
+            // only means no per-host confirmation popup (a local trusted
+            // assistant) and is orthogonal to the SSRF backstop.
+            // Users with a custom fake-ip-range get no exposed setting yet
+            // (the default range covers the vast majority; add one if someone
+            // actually hits this).
             network_policy: Some(
                 deepseek_tui::network_policy::NetworkPolicyDecider::new(
                     deepseek_tui::network_policy::NetworkPolicy {
@@ -1767,11 +2017,15 @@ impl Pinvou3Bridge {
             reasoning_only_reprompt_message,
             workshop,
             snapshots_max_workspace_bytes,
-            // pinvou3 search 后端: prefs 翻译。
-            // 底座默认仍是 DuckDuckGo;这里构造 EngineConfig 时丢弃底座默认、显式注入
-            // prefs 默认 Bing (forkguard_search_provider_translates_from_prefs 锁定)。
-            // Metaso/Bocha/Baidu 是 GUI 切换项。底座 web_search 对 Metaso 留空 key 用
-            // 内置共享 key (~100 次/天),对 Bocha/Baidu 留空 key 直接报 ToolError "requires API key"。
+            // pinvou3 search backend: translated from prefs.
+            // The foundation default is still DuckDuckGo; when constructing
+            // the EngineConfig here we discard the foundation default and
+            // explicitly inject the prefs default Bing (locked by
+            // forkguard_search_provider_translates_from_prefs).
+            // Metaso/Bocha/Baidu are GUI switch options. The foundation's
+            // web_search uses its built-in shared key (~100 calls/day) for
+            // Metaso with an empty key, and reports ToolError "requires API
+            // key" outright for Bocha/Baidu with an empty key.
             search_provider: match self.prefs.search.provider {
                 prefs::SearchProvider::Bing => deepseek_tui::config::SearchProvider::Bing,
                 prefs::SearchProvider::Metaso => deepseek_tui::config::SearchProvider::Metaso,
@@ -1784,31 +2038,36 @@ impl Pinvou3Bridge {
             tools_always_load,
             prefer_bwrap,
             turn_tool_security: None,
-            // Pinvou 产品工具面使用 CodeWhale 0.9.12 原生 hard allowlist。它约束
-            // 初始目录、tool_search 与 dispatch；SubAgent 角色仍会在此基础上进一步收窄。
+            // The Pinvou product tool surface uses CodeWhale 0.9.12's native
+            // hard allowlist. It constrains the initial catalog, tool_search,
+            // and dispatch; SubAgent roles still narrow it further on top.
             allowed_tools: Some(crate::features::assistant::tool_policy::allowed_tool_names()),
             tools,
-            // v0.8.51 上游新增,透传 default
+            // v0.8.51 upstream-added, default passed through
             speech_output_dir,
             hook_executor: Some(hook_executor),
-            // v0.8.53 上游新增,透传 default
+            // v0.8.53 upstream-added, default passed through
             subagent_heartbeat_timeout,
-            // v0.8.54-57 上游新增,透传 default(search_base_url=None / stream_chunk_timeout)
+            // v0.8.54-57 upstream-added, default passed through (search_base_url=None / stream_chunk_timeout)
             search_base_url,
             stream_chunk_timeout,
             turn_wall_clock,
             stream_max_content_bytes,
             stream_max_duration,
-            // v0.8.58-60 上游新增,透传 default(verbosity/fanout 闸/goal 管理/disallowed_tools)
+            // v0.8.58-60 upstream-added, default passed through (verbosity/fanout gate/goal management/disallowed_tools)
             verbosity,
             launch_concurrency,
             goal_token_budget,
             goal_status,
-            // pinvou3 工具开关:从全局持久的"被禁用连接器"算出禁用工具全名作为初值,
-            // 让新对话/新窗口的引擎都继承用户的开关状态(持久语义)。
-            // [多智能体] 不追加 `workflow` 禁令：主线上底座在 subagents_enabled 时
-            // 注册的 WorkflowTool 对所有会话可用，本分支保持能力持平。委派提醒只教
-            // agent 集群、不教 workflow；已知底座限制记录在 ADR-0006。
+            // pinvou3 tool toggles: compute the disabled tool full names from
+            // the globally persisted "disabled connectors" as the initial
+            // value, so engines of new conversations/new windows inherit the
+            // user's toggle state (persistent semantics).
+            // [Multi-agent] no `workflow` ban is appended: on mainline the
+            // foundation registers WorkflowTool for all sessions when
+            // subagents_enabled is set, and this branch keeps capability
+            // parity. The delegation reminder only teaches agent clusters, not
+            // workflow; known foundation limitations are recorded in ADR-0006.
             disallowed_tools: {
                 let n = crate::features::marketplace::disabled_tool_names();
                 if n.is_empty() { None } else { Some(n) }
@@ -1856,15 +2115,20 @@ impl Pinvou3Bridge {
                     max_tool_calls
                 }
             },
-            // [pinvou3-fork] 透传 default(空);kb_search 在 spawn_for_session 按 session 注入
-            // —— v0.8.65 上游新增字段,透传 default ——
-            //   subagents_enabled: default true（通用多智能体委派需要 SpawnSubAgent）。
+            // [pinvou3-fork] pass the default through (empty); kb_search is
+            // injected per session in spawn_for_session
+            // —— v0.8.65 upstream-added fields, default passed through ——
+            //   subagents_enabled: default true (generic multi-agent
+            //   delegation needs SpawnSubAgent).
             //   launch_concurrency/max_admitted_subagents/subagent_token_budget: subagent
-            //   资源闸(决策③ fork 基底用步数上限,token_budget 透传 default 不启用)。
-            //   auto_review_policy/exec_policy_engine: 审查/exec 策略。
-            //   active_route_limits/skills_scan_codewhale_only/workspace_follow_symlinks: 透传。
-            // [pinvou3-fork] active_route_limits:把 SavedModel 声明和实时 probe 收敛成同一份
-            // context/output route facts，让底座 emergency 线、Compact 与真实请求上限同尺。
+            //   resource gates (decision ③: the fork base uses the step limit;
+            //   token_budget passes the default through, not enabled).
+            //   auto_review_policy/exec_policy_engine: review/exec policies.
+            //   active_route_limits/skills_scan_codewhale_only/workspace_follow_symlinks: pass through.
+            // [pinvou3-fork] active_route_limits: converge the SavedModel
+            // declaration and the live probe into one set of context/output
+            // route facts, keeping the foundation's emergency line, Compact,
+            // and the real request ceiling on the same ruler.
             // Uncatalogued vLLM falls back to the 128K window + window-tiered
             // output (see route_limits_for_model /
             // operator_owned_output_declaration); other compatible engines
@@ -1913,11 +2177,15 @@ impl Pinvou3Bridge {
         cfg.session_id = Some(session_id.to_string());
         cfg.subagent_state_root = Some(roots.ledger);
         cfg.instructions = self.session_instructions(session_id);
-        // 技能发现根按会话指向组合目录（skill 双 scope 治理：目录内容 = 该会话
-        // scope 的启用技能集）。spawn 前的物化由 EnginePool 负责；此处只注入路径。
-        // 目录不存在时底座 `insert_configured_skills_dir` 会跳过（发现集为空 →
-        // `## Skills` 块不渲染），发送路径的自愈（`ensure_session_skills`）保证
-        // 目录在下次物化时机前被重建。
+        // The skill discovery root points at the composed directory per
+        // session (skill dual-scope governance: directory content = the
+        // enabled skill set of that session's scope). Pre-spawn
+        // materialization is EnginePool's job; only the path is injected
+        // here. When the directory does not exist the foundation's
+        // `insert_configured_skills_dir` skips it (empty discovery set → the
+        // `## Skills` block is not rendered), and the send path's self-heal
+        // (`ensure_session_skills`) guarantees the directory is rebuilt
+        // before the next materialization opportunity.
         cfg.skills_dir = crate::platform::paths::session_skills_dir(session_id);
         // CLI hard-deny (the execpolicy channel of the scope gate): spawn-time
         // injection initial value; the hot refresh after a toggle goes through
@@ -1929,6 +2197,18 @@ impl Pinvou3Bridge {
         cfg.exec_policy_engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
             self.scope_deny_ruleset(session_id),
         ]);
+        // An auxiliary conversation (aux- prefix) is a pure Q&A session: the
+        // spawn config pins zero tools (empty allowed_tools). The foundation's
+        // Op::EditLastTurn resend carries no tool surface and directly reuses
+        // the engine config's allowed_tools, which SendMessage's per-turn
+        // allowlist cannot reach — the window of "the first operation after a
+        // restart/idle reclaim is an edit-resend" can only be covered by this
+        // backstop; the per-turn enforcement for regular sends lives in
+        // EnginePool::send_reserved_user_message (turn_restrict_tools). Both
+        // places share the same rule and back each other up.
+        if session_id.starts_with("aux-") {
+            cfg.allowed_tools = Some(Vec::new());
+        }
         // Native Code-mode and external ACP sessions do not expose Browser MCP tools. They
         // fall back to global mcp.json, which has no browser entry. System instructions and
         // tool registration share this gate.
@@ -1945,27 +2225,41 @@ impl Pinvou3Bridge {
         cfg
     }
 
-    /// 该会话 scope 被禁 CLI 连接器的 execpolicy deny 规则集（硬拦截）。
+    /// The execpolicy deny ruleset (hard interception) for CLI connectors
+    /// disabled in this session's scope.
     ///
-    /// 技能组合目录是软门控（模型看不见技能），本规则集是硬兜底：模型即使知道
-    /// 命令，`lark-cli` 等被禁 CLI 二进制也在 spawn 前被底座硬拒（deny 全模式
-    /// 生效，含 YOLO；错误直返模型）。从 scope 禁用集派生，自身无状态。
+    /// The skill composed directory is a soft gate (the model cannot see the
+    /// skills); this ruleset is the hard backstop: even if the model knows the
+    /// command, disabled CLI binaries like `lark-cli` are hard-rejected by the
+    /// foundation before spawn (deny takes effect in all modes, including
+    /// YOLO; the error goes straight back to the model). Derived from the
+    /// scope's disabled set; stateless itself.
     ///
-    /// 覆盖面边界（四轮评审登记，仅注释、不改行为）：规则按 CLI **二进制名**做
-    /// word-boundary 前缀匹配（同 `skill_script_deny_rules` 的 DSL 现状），只拦
-    /// 「首 token 即该二进制名」的直接调用；每个二进制同时发 `{bin}.exe` /
-    /// `{bin}.cmd` 变体（六轮评审 R4：Windows 带扩展名拼写绕过）。已知残余绕过面：
-    /// - 首 token 拼成路径（`C:\...\lark-cli.exe`、`/usr/local/bin/lark-cli`、
-    ///   `./bin/lark-cli`）——typed ask 规则走底座 `allow_rule_matches` 纯前缀
-    ///   比对，无 basename 折叠（底座折叠仅作用于 `denied_prefixes` 字符串通道），
-    ///   路径拼写仍绕过（七轮评审实证）；
-    /// - Windows PATHEXT 其余变体（`.bat`/`.com`/`.ps1` 等）未发规则——npm shim
-    ///   为 `.cmd`、原生二进制为 `.exe`，其余拼写被模型生成的现实概率低；
-    /// - shell 包装前缀（`cmd /c lark-cli …`、`powershell -Command …`、`sh -c …`、
-    ///   `env lark-cli …`、`env python …` 等）——首 token 是包装器；
-    /// - 重命名/拷贝后的同功能二进制。
-    /// 以上绕过面与「禁用连接器 CLI 被模型直接调用」的主路径相比属边缘场景，
-    /// 登记待底座 execpolicy 支持参数级/路径级匹配后收敛（底座缝候选）。
+    /// Coverage boundary (registered in review round 4; comment only, no
+    /// behavior change): rules do word-boundary prefix matching on the CLI
+    /// **binary name** (same as the current `skill_script_deny_rules` DSL),
+    /// blocking only direct invocations whose first token is that binary
+    /// name; each binary also emits `{bin}.exe` / `{bin}.cmd` variants
+    /// (review round 6 R4: Windows extension-spelling bypass). Known residual
+    /// bypass surface:
+    /// - first token spelled as a path (`C:\...\lark-cli.exe`,
+    ///   `/usr/local/bin/lark-cli`, `./bin/lark-cli`) — typed ask rules go
+    ///   through the foundation's `allow_rule_matches` pure prefix comparison
+    ///   with no basename folding (the foundation's folding only applies to
+    ///   the `denied_prefixes` string channel), so path spelling still
+    ///   bypasses (proven in review round 7);
+    /// - other Windows PATHEXT variants (`.bat`/`.com`/`.ps1`, etc.) have no
+    ///   rules emitted — npm shims are `.cmd` and native binaries are `.exe`;
+    ///   the realistic probability of the model generating other spellings is
+    ///   low;
+    /// - shell wrapper prefixes (`cmd /c lark-cli …`,
+    ///   `powershell -Command …`, `sh -c …`, `env lark-cli …`,
+    ///   `env python …`, etc.) — the first token is the wrapper;
+    /// - renamed/copied same-function binaries.
+    /// Compared with the main path of "a disabled connector CLI being invoked
+    /// directly by the model", the above bypasses are edge cases; registered
+    /// to be tightened once the foundation's execpolicy supports
+    /// argument-level/path-level matching (a foundation-seam candidate).
     pub(crate) fn cli_deny_ruleset(&self, session_id: &str) -> codewhale_execpolicy::Ruleset {
         codewhale_execpolicy::Ruleset::user(vec![], vec![])
             .with_ask_rules(self.cli_deny_rules(session_id))
@@ -1973,15 +2267,19 @@ impl Pinvou3Bridge {
 
     fn cli_deny_rules(&self, session_id: &str) -> Vec<codewhale_execpolicy::ToolAskRule> {
         let scope = self.session_policy(session_id).mode();
-        // 不可用集 = 开关关 + 不可见，两套门控都硬拒 CLI 二进制。
+        // Unavailable set = toggled off + not visible; both gates hard-reject
+        // the CLI binaries.
         crate::features::marketplace::unavailable_bundles_for(scope)
             .into_iter()
             .filter_map(|id| crate::features::marketplace::bundle::cli_bundle_bin(&id))
             .flat_map(|bin| {
-                // Windows 下首 token 常带扩展名（`lark-cli.exe im send`），只发裸
-                // 二进制名会被绕过（六轮评审 R4）：每个规则同时发 `{bin}.exe` /
-                // `{bin}.cmd` 变体。无条件发、不加 cfg —— 非 Windows 平台上这些
-                // 规则惰性无害，避免引入平台条件编译。
+                // On Windows the first token often carries an extension
+                // (`lark-cli.exe im send`); emitting only the bare binary name
+                // would be bypassed (review round 6 R4): each rule also emits
+                // the `{bin}.exe` / `{bin}.cmd` variants. Emitted
+                // unconditionally, without cfg — on non-Windows platforms
+                // these rules are inert and harmless, avoiding platform
+                // conditional compilation.
                 [bin.to_string(), format!("{bin}.exe"), format!("{bin}.cmd")]
                     .into_iter()
                     .map(|cmd| {
@@ -2028,25 +2326,37 @@ impl Pinvou3Bridge {
         crate::features::assistant::safety_deny_rules::ruleset_with_denied_prefix_promotion(rules)
     }
 
-    /// 带脚本技能的执行点硬拦截（marketplace-unification §5.1 通道③）。
+    /// Hard interception at the execution point for script-carrying skills
+    /// (marketplace-unification §5.1 channel ③).
     ///
-    /// 缺口：物化排除只让模型「看不见」禁用技能，脚本仍物理存在于
-    /// `bundle/skills/<name>/`，模型可凭路径经 exec_shell 直接执行。本规则集在
-    /// spawn 前硬拒（typed Deny 短路于一切审批模式，含 YOLO）。
+    /// The gap: materialization exclusion only makes disabled skills
+    /// "invisible" to the model; the scripts still physically exist under
+    /// `bundle/skills/<name>/`, and the model could execute them directly via
+    /// exec_shell by path. This ruleset hard-rejects before spawn (a typed
+    /// Deny short-circuits every approval mode, including YOLO).
     ///
-    /// 取数与物化排除同一口径（`disabled_skill_names_for`：scope 禁用集 +
-    /// 被禁连接器的 companion 技能联动）。
+    /// Data source uses the same caliber as materialization exclusion
+    /// (`disabled_skill_names_for`: scope disabled set + companion-skill
+    /// linkage of disabled connectors).
     ///
-    /// 底座 DSL 现状（调研结论）：`ToolAskRule.command` 是 word-boundary 前缀匹配
-    /// （参数位精确 token 匹配），能表达「解释器 + 脚本完整路径」，**不能表达目录
-    /// 前缀**（模式后必须是空格或结尾）。故按目录内脚本文件逐个枚举生成规则。
-    /// 已知残余面（注释登记，不阻塞）：非常用解释器、stdin 喂脚本（`python < x.py`）、
-    /// 拷贝后执行、引号/正反斜杠拼写差异可绕过；目录级前缀规则需底座 execpolicy
-    /// 支持参数级路径前缀匹配（底座缝候选）。
+    /// Foundation DSL status quo (investigation conclusion):
+    /// `ToolAskRule.command` is word-boundary prefix matching (argument
+    /// positions match exact tokens), which can express "interpreter + full
+    /// script path" but **cannot express a directory prefix** (the pattern
+    /// must be followed by a space or end of string). Hence rules are
+    /// generated by enumerating each script file in the directory. Known
+    /// residual surface (registered in comments, non-blocking): uncommon
+    /// interpreters, feeding a script via stdin (`python < x.py`), executing
+    /// after copying, and quote/forward-backslash spelling differences can
+    /// bypass; directory-level prefix rules need the foundation execpolicy to
+    /// support argument-level path prefix matching (a foundation-seam
+    /// candidate).
     fn skill_script_deny_rules(&self, session_id: &str) -> Vec<codewhale_execpolicy::ToolAskRule> {
         let scope = self.session_policy(session_id).mode();
-        // 技能目录定位经 `find_skill_dir`：新布局（bundles/<pkg>/skills/）优先、
-        // 旧扁平布局回退——取数与物化排除同一口径（disabled_skill_names_for）。
+        // Skill directories are located via `find_skill_dir`: the new layout
+        // (bundles/<pkg>/skills/) first, the old flat layout as fallback —
+        // same data-source caliber as materialization exclusion
+        // (disabled_skill_names_for).
         let manager =
             crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
         let mut rules = Vec::new();
@@ -2057,24 +2367,33 @@ impl Pinvou3Bridge {
         names.sort();
         for name in names {
             let Some(dir) = manager.find_skill_dir(&name) else {
-                continue; // 未安装/已物化排除：无脚本可拦
+                continue; // not installed / already excluded from materialization: no script to intercept
             };
             rules.extend(skill_script_deny_rules_for(&dir));
         }
         rules
     }
 
-    /// 多智能体会话专用配置（ADR-0006）。
+    /// Multi-agent session-specific configuration (ADR-0006).
     ///
-    /// 与普通会话的业务区别是装配专家名册与资源护栏：专家池内可执行的内置卡和用户卡
-    /// 作为底座原生 `[fleet.profiles]` 内存配置，整册装进 `fleet_roster` 供裸
-    /// `agent` 的 `profile` 字段选人；主模型每轮只看到按任务匹配的短候选，完整人设仅注入
-    /// 被派中的子智能体。没有相关候选时模型自拟任务说明裸派。**工具目录与普通会话完全一致**
-    /// ——禁用列表只来自连接器开关，`workflow` 与主线一样保持可用（委派
-    /// 提醒不教学不推荐）。默认直属实例为叶子；复杂任务允许直属实例再拆一层，
-    /// 第二层不得继续派生。Work 直属并行 4 / 全树准入 8，原生 Code 直属并行
-    /// 6 / 全树准入 12。更深后代为避免父子互等死锁不占直属 launch gate，
-    /// 但仍受整棵树的准入上限约束。
+    /// The business difference from ordinary sessions is assembling the
+    /// expert roster and resource guardrails: the executable built-in cards
+    /// and user cards in the expert pool are loaded wholesale into
+    /// `fleet_roster` as the foundation's native `[fleet.profiles]` in-memory
+    /// configuration, for a bare `agent`'s `profile` field to pick from; the
+    /// main model only sees short candidates matched by task each turn, and
+    /// the full persona is injected only into the dispatched sub-agent. With
+    /// no relevant candidate the model drafts its own task description and
+    /// dispatches bare. **The tool catalog is exactly the same as ordinary
+    /// sessions** — the disabled list comes only from connector toggles, and
+    /// `workflow` stays available as on mainline (the delegation reminder
+    /// neither teaches nor recommends it). Direct instances are leaves by
+    /// default; a complex task may let a direct instance split one more
+    /// level, and the second level must not spawn further. Work: direct
+    /// parallel 4 / whole-tree admission 8; native Code: direct parallel
+    /// 6 / whole-tree admission 12. Deeper descendants do not occupy the
+    /// direct launch gate (to avoid parent-child mutual-wait deadlock) but
+    /// are still bounded by the whole-tree admission cap.
     pub(crate) fn build_engine_config_for_multi_agent(
         &self,
         session_id: &str,
@@ -2082,10 +2401,13 @@ impl Pinvou3Bridge {
         snapshot: &ExpertRosterSnapshot,
     ) -> EngineConfig {
         let mut cfg = self.build_engine_config_for_session_roots(session_id, roots);
-        // 主会话是总协调者：直属子智能体处于 depth=1，复杂任务可再派生
-        // depth=2；第二层不能继续。主会话侧的正数深度覆盖由专用 hook 拦截；
-        // 嵌套层的工具调用不经过 ToolCallBefore，靠继承上限（省略参数即
-        // 收窄）与全局准入/并发额度兜底。
+        // The main session is the overall coordinator: direct sub-agents sit
+        // at depth=1, and a complex task may spawn depth=2; the second level
+        // cannot continue. A positive depth override on the main-session side
+        // is intercepted by a dedicated hook; nested-level tool calls do not
+        // go through ToolCallBefore and are backstopped by inherited limits
+        // (omitting the parameter narrows) plus global admission/concurrency
+        // quotas.
         cfg.max_spawn_depth = cfg.max_spawn_depth.min(MULTI_AGENT_MAX_SPAWN_DEPTH);
         let (max_concurrent, max_admitted) = if self.is_code_session(session_id) {
             (
@@ -2098,8 +2420,9 @@ impl Pinvou3Bridge {
                 MULTI_AGENT_WORK_MAX_ADMITTED,
             )
         };
-        // 显式用户配置只做上限，不抬高更保守的值（包括 0 = 禁用）；未配置时
-        // 使用当前会话模式的产品默认。
+        // An explicit user configuration only acts as a cap and never raises
+        // a more conservative value (including 0 = disabled); when
+        // unconfigured, use the product default of the current session mode.
         cfg.max_subagents = self
             .prefs
             .advanced
@@ -2121,9 +2444,11 @@ impl Pinvou3Bridge {
         cfg
     }
 
-    /// 构造 deepseek-tui 顶层 [`DtConfig`]：按 `ModelPreset` 动态路由 provider /
-    /// model / base_url / api_key，注入敏感目录拦截 hook。
-    /// 环境变量优先（兼容 run-dev.sh 里既有的 `DEEPSEEK_*` 设置）。
+    /// Build the deepseek-tui top-level [`DtConfig`]: dynamically route
+    /// provider / model / base_url / api_key by `ModelPreset`, and inject the
+    /// sensitive-directory interception hook.
+    /// Environment variables take priority (compatible with the existing
+    /// `DEEPSEEK_*` settings in run-dev.sh).
     pub fn build_dt_config(&self) -> DtConfig {
         let mut cfg = DtConfig::default();
         let provider = self.provider();
@@ -2134,7 +2459,8 @@ impl Pinvou3Bridge {
         let model = self.model();
         let reasoning_stream_style = self.reasoning_stream_style(&provider);
         let providers = cfg.providers.get_or_insert_with(ProvidersConfig::default);
-        // 按 provider 写对应 provider 配置的 base_url + api_key
+        // Write base_url + api_key into the corresponding provider config
+        // per provider
         match provider.as_str() {
             "vllm" => configure_provider(
                 &mut providers.vllm,
@@ -2224,14 +2550,16 @@ impl Pinvou3Bridge {
             }
         }
         cfg.default_text_model = Some(model);
-        // 本地模型（vLLM / 探测出的 Ollama）默认关 thinking（防 SSE timeout）；其余默认 high。
+        // Local models (vLLM / probed Ollama) default to thinking off (to
+        // prevent SSE timeouts); everything else defaults to high.
         cfg.reasoning_effort = self.request_reasoning_effort();
         cfg
     }
 
-    /// 为开启多智能体的 Engine/turn 注入 Pinvou 专家池对应的原生
-    /// `[fleet.profiles]`。调用方必须复用与提醒相同的 [`ExpertRosterSnapshot`]；
-    /// 普通会话继续调用 [`build_dt_config`](Self::build_dt_config)，不会获得专家。
+    /// Inject the native `[fleet.profiles]` of the Pinvou expert pool for a
+    /// multi-agent-enabled Engine/turn. Callers must reuse the same
+    /// [`ExpertRosterSnapshot`] as the reminder; ordinary sessions keep
+    /// calling [`build_dt_config`](Self::build_dt_config) and get no experts.
     pub(crate) fn build_multi_agent_dt_config(&self, snapshot: &ExpertRosterSnapshot) -> DtConfig {
         let mut config = self.build_dt_config();
         config.fleet = Some(snapshot.fleet_config().clone());
@@ -2273,9 +2601,12 @@ impl Pinvou3Bridge {
             plugin_authority: None,
         }];
 
-        // Linux/macOS 桌面安装通常不继承用户登录 shell 的 PATH/SDK 环境。
-        // 复用底座现有 shell_env 扩展点，仅给 exec_shell 注入过滤后的终端环境；
-        // MCP、RLM、JS、其他 hooks 仍保持各自原有环境策略，底座无需 fork patch。
+        // Linux/macOS desktop installs usually do not inherit the user's login
+        // shell PATH/SDK environment. Reuse the foundation's existing shell_env
+        // extension point to inject a filtered terminal environment for
+        // exec_shell only; MCP, RLM, JS, and other hooks keep their own
+        // original environment policies — no fork patch needed in the
+        // foundation.
         #[cfg(unix)]
         let hooks = {
             let mut hooks = hooks;
@@ -2313,12 +2644,15 @@ impl Pinvou3Bridge {
         ))
     }
 
-    /// 多智能体会话的资源护栏。`EngineConfig.max_spawn_depth = 2` 允许直属
-    /// 代理为复杂任务再拆一层；该 hook 拦住**主会话**在 `agent` / `workflow`
-    /// 调用中用正数深度覆盖参数扩大上限，并要求 Workflow 文件调用改用
-    /// 可检查的 inline 输入。嵌套子代理的工具调用不经过 ToolCallBefore
-    /// hook——那一层由继承上限与全局准入/并发额度兜底，提醒词只作教学。
-    /// 普通对话不挂载此 hook。
+    /// Resource guardrail for multi-agent sessions. `EngineConfig.max_spawn_depth
+    /// = 2` allows a direct agent to split one more level for a complex task;
+    /// this hook stops the **main session** from enlarging the cap with a
+    /// positive depth-override parameter in `agent` / `workflow` calls, and
+    /// requires Workflow file invocations to switch to inspectable inline
+    /// input. Tool calls of nested sub-agents do not go through the
+    /// ToolCallBefore hook — that level is backstopped by inherited limits
+    /// and global admission/concurrency quotas, and the reminder text is only
+    /// for teaching. Ordinary conversations do not mount this hook.
     fn build_multi_agent_hook_executor(&self, workspace: &std::path::Path) -> Arc<HookExecutor> {
         #[cfg(windows)]
         let command = {
@@ -2358,25 +2692,32 @@ impl Pinvou3Bridge {
         Arc::new(HookExecutor::new(config, workspace.to_path_buf()))
     }
 
-    /// 构造发给 engine 的 [`Op::SendMessage`]——按 `mode` 切换 trust/approval/sandbox。
+    /// Build the [`Op::SendMessage`] sent to the engine — switch
+    /// trust/approval/sandbox by `mode`.
     ///
-    /// 决策来源：`docs/Plan-YOLO双模式-设计决策.md` 第 4.1 节复用底座 mode 字段。
+    /// Decision source: `docs/Plan-YOLO双模式-设计决策.md` section 4.1 reuses
+    /// the foundation's mode field.
     ///
-    /// | mode | allow_shell | trust_mode | auto_approve | approval_mode | 实际效果 |
+    /// | mode | allow_shell | trust_mode | auto_approve | approval_mode | effective behavior |
     /// |------|-------------|------------|--------------|---------------|---------|
-    /// | Yolo | self.allow  | true       | true         | Auto          | 全自动 + 信任全家目录 |
-    /// | Plan | true        | true       | true         | Auto          | 只读工具集 + ReadOnly sandbox（底座 tool_setup.rs 按 mode 自动切换） |
+    /// | Yolo | self.allow  | true       | true         | Auto          | fully automatic + trust the whole home directory |
+    /// | Plan | true        | true       | true         | Auto          | read-only toolset + ReadOnly sandbox (the foundation's tool_setup.rs switches automatically by mode) |
     ///
-    /// **M1 弱模型加固**: 在 user content 前 prepend `<system-reminder>` 段,
-    /// 内容按 `phase` 动态生成。Claude Code 同款机制对抗 long-context 遗忘 +
-    /// 强制特定状态行为。Qwen3.6 短期注意力强,放 message 顶端命中率高。
-    /// 见决策文档 V2 §13.1。
+    /// **M1 weak-model hardening**: prepend a `<system-reminder>` block before
+    /// the user content, generated dynamically per `phase`. The same
+    /// mechanism as Claude Code fights long-context forgetting + enforces
+    /// state-specific behavior. Qwen3.6 has strong short-term attention, so
+    /// the top of the message has a high hit rate. See the decision document
+    /// V2 §13.1.
     ///
-    /// 注：底座现已让 `auto_approve = true` **旁路**可绕过的 Required 审批
-    /// （`turn_loop.rs::registered_tool_approval_required`，早期版本不旁路）。
-    /// 需要审批事件的场景必须逐轮关掉它；Yolo 还会在底座重新折算成自动批准。
-    /// `trust_mode` 是本地 workspace 边界语义，不与是否自动批准联动；定时任务
-    /// 按其独立 profile 收紧权限与审批字段。
+    /// Note: the foundation now makes `auto_approve = true` **bypass**
+    /// bypassable Required approvals
+    /// (`turn_loop.rs::registered_tool_approval_required`; early versions did
+    /// not bypass). Scenarios needing approval events must turn it off per
+    /// turn; Yolo is also re-folded into auto-approval by the foundation.
+    /// `trust_mode` is local-workspace boundary semantics and is not linked
+    /// to auto-approval; scheduled tasks tighten their permission and
+    /// approval fields per their own profile.
     pub fn resolve_runtime_route_for_model(
         &self,
         model: &str,
@@ -2396,10 +2737,13 @@ impl Pinvou3Bridge {
         route.map_err(anyhow::Error::msg)
     }
 
-    /// 解析携带本轮专家快照的路由。底座在真正执行 `agent(profile=...)` 前会
-    /// 从 `ResolvedRuntimeRoute.config.fleet` 重建仅含宿主 Config 来源、prompt-only
-    /// 的 profile overlay，因此只更新 `EngineConfig.fleet_roster` 不足以支持
-    /// execution != ledger 的 Code 会话，也不能依赖 ambient Personal/Workspace profile。
+    /// Resolve the route carrying this turn's expert snapshot. Before the
+    /// foundation actually executes `agent(profile=...)` it rebuilds a
+    /// prompt-only profile overlay from `ResolvedRuntimeRoute.config.fleet`
+    /// that contains only host-Config sources, so updating only
+    /// `EngineConfig.fleet_roster` is insufficient for Code sessions with
+    /// execution != ledger, and ambient Personal/Workspace profiles cannot be
+    /// relied upon either.
     pub(crate) fn resolve_multi_agent_runtime_route_for_model(
         &self,
         model: &str,
@@ -2501,8 +2845,10 @@ impl Pinvou3Bridge {
         })
     }
 
-    /// 多智能体会话每轮都必须重新携带专用 hook；底座的 `SendMessage` 会覆盖
-    /// EngineConfig 上的 hook executor，只在启动配置里设置一次并不生效。
+    /// A multi-agent session must re-carry the dedicated hook on every turn;
+    /// the foundation's `SendMessage` overrides the hook executor on
+    /// EngineConfig, so setting it only once in the startup config does not
+    /// take effect.
     pub(crate) fn build_multi_agent_send_message_op(
         &self,
         session_id: &str,
@@ -2557,118 +2903,160 @@ impl Pinvou3Bridge {
         // AppMode variant. Keep mode and approval as separate typed inputs.
         let (auto_approve, approval_mode) = policy.approval_params();
         let (allow_shell, trust_mode) = match mode {
-            // Agent/Yolo 是本地单用户工作模式；workspace 信任是固定产品语义，
-            // 不能因未来调整 auto_approve 而意外收窄文件访问边界。
+            // Agent/Yolo is the local single-user work mode; workspace trust
+            // is fixed product semantics and must not be accidentally narrowed
+            // by a future auto_approve adjustment.
             AppMode::Agent => (self.allow_shell(), true),
-            // Plan: allow_shell=true 让 engine 正常路由 shell 工具，
-            // 底座 tool_setup.rs 会把 sandbox 切到 ReadOnly + 工具白名单切到只读集。
-            // trust_mode=true 让 list_dir/read_file 等只读工具能跨 session workspace
-            // 边界（pinvou3 是本地单用户工具，无跨用户安全边界，写保护靠 ReadOnly
-            // sandbox + 只读工具集，不依赖 trust_mode）。
+            // Plan: allow_shell=true lets the engine route shell tools
+            // normally; the foundation's tool_setup.rs switches the sandbox to
+            // ReadOnly + the tool allowlist to the read-only set.
+            // trust_mode=true lets read-only tools like list_dir/read_file
+            // cross session workspace boundaries (pinvou3 is a local
+            // single-user tool with no cross-user security boundary; write
+            // protection comes from the ReadOnly sandbox + the read-only
+            // toolset, not from trust_mode).
             AppMode::Plan => (true, true),
             AppMode::Operate => (self.allow_shell(), false),
         };
-        // 超级权限状态每 turn 实时注入(is_enabled() 每次读 disk),绕开
-        // refresh_all_instructions no-op 导致的"切开关不生效"——静态 prompt
-        // spawn 时渲染一次就过时,这里每 turn 重出。
-        // 但只对**能跑命令**的 mode 注入:Plan 是只读、无 exec_shell(底座只读工具集),
-        // sudo 用不用对它毫无意义,注入纯浪费 ~110 字/turn。
+        // The super-permission state is injected live every turn (is_enabled()
+        // reads disk each time), working around "toggling the switch has no
+        // effect" caused by the refresh_all_instructions no-op — the static
+        // prompt is rendered once at spawn and goes stale; here it is reissued
+        // every turn.
+        // But it is only injected for modes that **can run commands**: Plan is
+        // read-only with no exec_shell (the foundation's read-only toolset),
+        // so sudo is meaningless to it and injecting would waste ~110
+        // chars/turn.
         let sudo = crate::platform::super_permission::turn_reminder();
-        // mode 维度的 per-turn reminder(砍 PlanPhase 后只剩 mode 维度):Plan 经会话
-        // 策略产出(D-2,本期两模式同文);其余 mode 无 reminder——Yolo 大产物分块实测
-        // 不再 load-bearing 已砍(只剩 sudo 动态状态),Agent pinvou3 不暴露。
-        // 命中率优先于优雅:每段都是命令式、短、列禁令清单(Qwen3.6 友好)。
-        // plan_reminder() 仅 Plan 产出 Some;原两步 match 的 `Some(r) => format!(…sudo)`
-        // 分支要求 Some 且 mode≠Plan,永不命中,故合并为单 match 消除死分支。
+        // The mode-dimension per-turn reminder (after PlanPhase was cut, only
+        // the mode dimension remains): Plan's is produced by the session
+        // policy (D-2; this phase's two modes share the same text); other
+        // modes have no reminder — Yolo's large-artifact chunking was measured
+        // to be no longer load-bearing and was cut (only the dynamic sudo
+        // state remains), and Agent is not exposed by pinvou3.
+        // Hit rate beats elegance: each block is imperative, short, and lists
+        // prohibitions (Qwen3.6 friendly).
+        // plan_reminder() yields Some only for Plan; the original two-step
+        // match's `Some(r) => format!(…sudo)` branch required Some and
+        // mode≠Plan and could never hit, so the branches were merged into a
+        // single match to eliminate the dead one.
         let mut reminder_body = match mode {
-            // Plan: 只读无 exec,只注入 mode reminder(不混 sudo)。
+            // Plan: read-only with no exec; only inject the mode reminder (no
+            // sudo mixed in).
             AppMode::Plan => policy
                 .plan_reminder()
                 .map(str::to_string)
                 .unwrap_or_else(|| sudo.to_string()),
-            // 其余 mode: 无 per-turn reminder,只注入动态 sudo 状态。
+            // Other modes: no per-turn reminder; only inject the dynamic sudo
+            // state.
             AppMode::Agent | AppMode::Operate => sudo.to_string(),
         };
-        // 卡片池: 该 session 加持了专家面具时,每 turn 注入 persona 人设(粘性身份)。
+        // Card pool: when this session is wearing an expert mask, inject the
+        // persona every turn (sticky identity).
         if let Some(persona) = persona_reminder {
             reminder_body = format!("{reminder_body}\n\n{persona}");
         }
         let full_content =
             format!("<system-reminder>\n{reminder_body}\n</system-reminder>\n\n{content}");
         let model = self.model();
-        // 审批参数经会话策略产出(R-2),与 reminder 同一 policy 来源。
+        // Approval parameters come from the session policy (R-2), the same
+        // policy source as the reminder.
         let route = match expert_snapshot {
             Some(snapshot) => self.resolve_multi_agent_runtime_route_for_model(&model, snapshot)?,
             None => self.resolve_runtime_route_for_model(&model)?,
         };
         Ok(Op::SendMessage {
             content: full_content,
-            // v0.9.5 官方方案:图片以 `[Attached image: <path>]` 标记行内嵌在
-            // content 里,由底座 image_attach 展开为 ImageUrl 块并按其 route
-            // 能力剥离;无需结构化 input 字段。
+            // v0.9.5 official approach: images are embedded inline in content
+            // as `[Attached image: <path>]` marker lines, expanded by the
+            // foundation's image_attach into ImageUrl blocks and stripped per
+            // its route capability; no structured input field is needed.
             mode,
             route: Box::new(route),
             compaction: Box::new(self.compaction_config_for_model(&model)),
             goal_objective: None,
-            // v0.8.59 上游新增 /goal 目标管理;pinvou3 GUI 不用,取默认(无预算/Active)。
+            // v0.8.59 upstream-added /goal goal management; the pinvou3 GUI
+            // does not use it — take the default (no budget/Active).
             goal_token_budget: None,
             goal_status: deepseek_tui::tools::goal::GoalStatus::Active,
-            // 本地 vLLM 关 thinking（防 SSE timeout）；其余默认 high。
+            // Local vLLM turns thinking off (to prevent SSE timeouts);
+            // everything else defaults to high.
             reasoning_effort: self.request_reasoning_effort(),
             reasoning_effort_auto: false,
             auto_model: false,
             allow_shell,
             trust_mode,
-            // 审批参数按会话策略取数(R-2):本期两模式同为全自动+Auto,与此前写死
-            // 值一致;S-1 安全分化落地时改 SessionPolicy::approval_params 即可。
+            // Approval parameters are read from the session policy (R-2):
+            // this phase's two modes are both fully-automatic+Auto, identical
+            // to the previously hardcoded values; when the S-1 security
+            // split lands, change SessionPolicy::approval_params.
             auto_approve,
             approval_mode,
             translation_enabled: false,
 
-            // v0.8.49 上游新增。Some(空表) = 本轮零工具:底座 filter_tool_catalog_for_gates
-            // 直接从发给模型的 schema 里 retain 掉全部工具,模型根本看不到 write_file /
-            // present_artifact 等。卡牌制造专家等"纯对话元卡"用它,从工具层杜绝小模型误走
-            // 写文件路径、产出无法收藏的产物卡(不靠模型自觉遵守 prompt 硬规则)。None = 不
-            // 限制,沿用 engine 全量工具表。判定源 = 每 turn 实时 active_persona(engine_pool
-            // 解析后经 restrict_tools 传入),戴上即限 / 卸下即恢复,无持久状态。
+            // v0.8.49 upstream-added. Some(empty list) = zero tools this turn:
+            // the foundation's filter_tool_catalog_for_gates retains every
+            // tool out of the schema sent to the model, so the model cannot
+            // even see write_file / present_artifact etc. "Pure-conversation
+            // meta cards" such as the card-crafting expert use this to forbid
+            // a small model from wandering into the write-file path and
+            // producing un-collectable artifact cards at the tool layer (not
+            // relying on the model obeying prompt hard rules). None = no
+            // restriction, the engine's full tool table applies. Decision
+            // source = the per-turn live active_persona (resolved by
+            // engine_pool and passed in via restrict_tools); put it on and it
+            // restricts, take it off and it recovers — no persisted state.
             allowed_tools: if restrict_tools {
                 Some(Vec::new())
             } else {
                 Some(crate::features::assistant::tool_policy::allowed_tool_names())
             },
-            // 底座会用这里的值覆盖 Engine 级 hook_executor；必须每轮显式携带，
-            // 否则 ToolCallBefore 防火墙会在第一条消息时被 None 清掉。
+            // The foundation overrides the Engine-level hook_executor with
+            // this value; it must be carried explicitly every turn, otherwise
+            // the ToolCallBefore firewall is cleared to None on the first
+            // message.
             hook_executor: Some(hook_executor),
-            // v0.8.59 上游新增 concise verbosity 模式;pinvou3 GUI 走默认详尽,取 None。
+            // v0.8.59 upstream-added concise verbosity mode; the pinvou3 GUI
+            // uses the default verbose mode — None.
             verbosity: None,
-            // dynamic_tools: per-message 动态工具;pinvou3 不用,空。
+            // dynamic_tools: per-message dynamic tools; unused by pinvou3 —
+            // empty.
             dynamic_tools: Vec::new(),
-            // provenance: 消息来源。build_send_message_op 是用户内容 → ExternalUser。
+            // provenance: message source. build_send_message_op is user
+            // content → ExternalUser.
             provenance: deepseek_tui::core::ops::UserInputProvenance::ExternalUser,
             turn_tool_security: None,
         })
     }
 }
 
-/// 项目规则注入链的路径归一化：canonicalize（解析 symlink/8.3 短名、统一大小写）
-/// 后去掉 Windows `\\?\` verbatim 前缀——与绑定入口 `validate_codex_project_workspace`
-/// 的 `platform_compat_path` 归一化同源，保证 home 与项目路径按同一形式比较
-/// （`canonicalize` 的 verbatim 路径与绑定链的常规盘符路径按组件比较永不相等，
-/// 不做这层归一化，家目录边界在 Windows 上是死代码）。归一化失败（路径不存在/
-/// 不可访问）返回 None，调用方按 fail-closed 处理。
+/// Path normalization for the project-rule injection chain: canonicalize
+/// (resolving symlinks/8.3 short names, unifying case) then strip the Windows
+/// `\\?\` verbatim prefix — same normalization source as the binding entry
+/// `validate_codex_project_workspace`'s `platform_compat_path`, ensuring home
+/// and project paths are compared in the same form (a `canonicalize` verbatim
+/// path and the binding chain's regular drive-letter path never compare equal
+/// component-wise; without this normalization the home boundary is dead code
+/// on Windows). Normalization failure (path missing/inaccessible) returns
+/// None, and callers handle it fail-closed.
 fn normalize_rule_boundary_path(path: &std::path::Path) -> Option<PathBuf> {
     path.canonicalize()
         .ok()
         .map(|canonical| crate::platform::os::platform_compat_path(&canonical.to_string_lossy()))
 }
 
-/// 项目规则注入的目录链（纯函数，home 可注入以便单测）：从 `project_root` 逐级
-/// 向上，到达用户家目录即停止——家目录本身不入链（`~/AGENTS.md` 等全局上下文
-/// 不注入），项目根即家目录时整链为空；项目不在家目录之下时上溯到文件系统根。
-/// `home` 为 None（家目录归一化失败）时 fail-closed：只返回项目根本层、不上溯。
+/// The directory chain for project-rule injection (pure function; home is
+/// injectable for unit tests): walk up level by level from `project_root` and
+/// stop at the user's home directory — the home directory itself is not in
+/// the chain (`~/AGENTS.md` and other global context are not injected); when
+/// the project root is the home directory the whole chain is empty; when the
+/// project is not under the home directory the walk continues to the
+/// filesystem root.
+/// When `home` is None (home normalization failed), fail-closed: return only
+/// the project root's own level, without walking up.
 ///
-/// 返回顺序 root→cwd（祖先在前、项目根最后），与 codex/claude 的项目规则注入
-/// 惯例一致。
+/// The return order is root→cwd (ancestors first, project root last),
+/// matching the codex/claude project-rule injection convention.
 fn collect_project_rule_chain(
     project_root: &std::path::Path,
     home: Option<&std::path::Path>,
@@ -2689,10 +3077,12 @@ fn collect_project_rule_chain(
     chain
 }
 
-/// `AGENTS.md` 注入前的文件类型检查：只接受普通文件，拒绝 symlink——symlink
-/// 可指向工作区外任意文件（如 ~/.ssh/id_rsa），`is_file()` 会跟随 symlink，
-/// 不能用于安全边界。与底座 `project_context::load_context_file` 的
-/// `symlink_metadata` 防御范式对齐；文件不存在或不可读时返回 false（跳过）。
+/// File-type check before `AGENTS.md` injection: only plain files are
+/// accepted; symlinks are refused — a symlink can point anywhere outside the
+/// workspace (e.g. ~/.ssh/id_rsa), and `is_file()` follows symlinks, so it
+/// cannot be used for the security boundary. Aligned with the foundation's
+/// `project_context::load_context_file` `symlink_metadata` defensive pattern;
+/// returns false (skip) when the file is missing or unreadable.
 fn is_plain_file(path: &std::path::Path) -> bool {
     std::fs::symlink_metadata(path)
         .map(|metadata| {
@@ -2702,14 +3092,18 @@ fn is_plain_file(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
-// Plan reminder 文案与按 mode 的选择已收进 `session_policy`(D-2 策略化);
-// 本模块只经 `SessionPolicy::plan_reminder` 取数。
+// The Plan reminder copy and the per-mode selection have been moved into
+// `session_policy` (D-2 policification); this module only reads it via
+// `SessionPolicy::plan_reminder`.
 
-// ─── 带脚本技能的 execpolicy 硬拦截：纯函数部分（可独立测试）───────────────
+// ─── execpolicy hard interception for script-carrying skills: pure-function
+//     part (independently testable) ───────────────
 
-/// 单个技能目录的脚本 deny 规则（纯函数：输入目录，输出规则）。
-/// 每个脚本文件生成「解释器 × 脚本完整路径」+「脚本路径直跑」两类 typed Deny
-/// 规则（底座 command 匹配语义见 `skill_script_deny_rules` 的调研注释）。
+/// Script deny rules for a single skill directory (pure function: directory
+/// in, rules out). Each script file generates two kinds of typed Deny rules:
+/// "interpreter × full script path" + "direct run of the script path" (see
+/// the investigation comment of `skill_script_deny_rules` for the
+/// foundation's command matching semantics).
 fn skill_script_deny_rules_for(dir: &std::path::Path) -> Vec<codewhale_execpolicy::ToolAskRule> {
     let mut scripts = Vec::new();
     collect_script_files(dir, &mut scripts);
@@ -2724,7 +3118,8 @@ fn skill_script_deny_rules_for(dir: &std::path::Path) -> Vec<codewhale_execpolic
             rule.action = codewhale_execpolicy::PermissionAction::Deny;
             rules.push(rule);
         }
-        // 直跑形态（shebang / 可执行位 / 双击关联）：脚本路径本身作命令词。
+        // Direct-run form (shebang / executable bit / double-click
+        // association): the script path itself as the command word.
         let mut direct =
             codewhale_execpolicy::ToolAskRule::exec_shell(script.display().to_string());
         direct.action = codewhale_execpolicy::PermissionAction::Deny;
@@ -2733,7 +3128,8 @@ fn skill_script_deny_rules_for(dir: &std::path::Path) -> Vec<codewhale_execpolic
     rules
 }
 
-/// 递归收集目录内的脚本文件（按扩展名识别；跳过隐藏目录如 `.git`）。
+/// Recursively collect script files in a directory (identified by extension;
+/// skip hidden directories such as `.git`).
 fn collect_script_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return;
@@ -2754,7 +3150,7 @@ fn collect_script_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>
     }
 }
 
-/// 脚本扩展名 → 常见解释器集合（空切片 = 非脚本）。
+/// Script extension → common interpreter set (empty slice = not a script).
 fn interpreters_for_script(path: &std::path::Path) -> &'static [&'static str] {
     match path
         .extension()
@@ -2782,15 +3178,20 @@ fn interpreters_for_script(path: &std::path::Path) -> &'static [&'static str] {
 mod tests {
     use super::*;
 
-    // env 写测试统一借用 bridge::paths::tests::ENV_LOCK(crate 级唯一 env 锁),
-    // 避免本模块自建锁与其它模块的 PINVOU3_HOME/DEEPSEEK_* 写测试并发竞争
-    // (曾经的 ENV_GUARD_LOCK 与 paths::ENV_LOCK 不通,导致 qwen_preset/vllm flaky,
-    // 进而被迫全局 --test-threads=1)。
+    // env-writing tests uniformly borrow bridge::paths::tests::ENV_LOCK (the
+    // crate-wide single env lock), avoiding a self-built module lock racing
+    // other modules' PINVOU3_HOME/DEEPSEEK_* write tests (the old
+    // ENV_GUARD_LOCK was not shared with paths::ENV_LOCK, making
+    // qwen_preset/vllm flaky and eventually forcing a global
+    // --test-threads=1).
     //
-    // EnvGuard **本身不持锁**(避免与外部 ENV_LOCK 获取重入死锁);调用方负责先拿锁。
-    // 所有写 env 的本模块测试统一用 `locked_env` helper 一步到位(锁 + guard):
+    // EnvGuard **itself does not hold the lock** (avoiding reentrant deadlock
+    // against an external ENV_LOCK acquisition); the caller is responsible
+    // for locking first. All env-writing tests in this module use the
+    // `locked_env` helper for a one-step (lock + guard):
     //   let (_lock, _env) = locked_env(&["PINVOU3_ALLOW_SHELL"]);
-    // 切勿在已持 ENV_LOCK 时再调 locked_env(同一 Mutex 不可重入,会死锁)。
+    // Never call locked_env while already holding ENV_LOCK (the same Mutex is
+    // not reentrant and would deadlock).
     struct EnvGuard {
         vars: Vec<(&'static str, Option<String>)>,
     }
@@ -2820,9 +3221,11 @@ mod tests {
         }
     }
 
-    /// 获取 crate 级 ENV_LOCK 并返回 (锁 guard, EnvGuard)。
-    /// 供需要写 DEEPSEEK_* 等 env 的测试使用——锁保证与所有 env 写测试串行,
-    /// EnvGuard 保证退出时恢复原值。切勿在已持 ENV_LOCK 时再调用(会重入死锁)。
+    /// Acquire the crate-level ENV_LOCK and return (lock guard, EnvGuard).
+    /// For tests that need to write DEEPSEEK_* and similar env vars — the
+    /// lock serializes with all env-writing tests, and EnvGuard restores the
+    /// original values on exit. Never call while already holding ENV_LOCK
+    /// (would reentrantly deadlock).
     fn locked_env(vars: &[&'static str]) -> (std::sync::MutexGuard<'static, ()>, EnvGuard) {
         let lock = crate::bridge::paths::tests::ENV_LOCK
             .lock()
@@ -2881,7 +3284,8 @@ mod tests {
     fn execution_root_resolver_overrides_session_workspace_only_when_hit() {
         let mut bridge = fixture_bridge();
         let private = crate::platform::paths::session_workspace_dir("sess-plain");
-        // 未注入 resolver：所有会话都用会话私有目录（现状不变）。
+        // No resolver injected: every session uses its session-private
+        // directory (unchanged behavior).
         assert_eq!(bridge.session_workspace("sess-plain"), private);
 
         let project = std::env::temp_dir().join("pinvou3-resolver-test-project");
@@ -2889,16 +3293,19 @@ mod tests {
         bridge.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
             (session_id == "sess-code-project").then(|| hit.clone())
         }));
-        // 命中：绑了项目目录的原生代码会话解析到项目目录（engine 与 shell 同源）。
+        // Hit: a native code session bound to a project directory resolves to
+        // the project directory (engine and shell share the source).
         assert_eq!(bridge.session_workspace("sess-code-project"), project);
-        // 未命中：普通会话与临时代码会话仍回退会话私有目录。
+        // Miss: plain sessions and scratch code sessions still fall back to
+        // the session-private directory.
         assert_eq!(bridge.session_workspace("sess-plain"), private);
         assert_eq!(
             bridge.session_workspace("sess-code-temp"),
             crate::platform::paths::session_workspace_dir("sess-code-temp"),
         );
 
-        // 账本根：仅绑项目的代码会话改用会话私有目录，其余会话与执行根相同。
+        // Ledger root: only project-bound code sessions switch to the
+        // session-private directory; other sessions match the execution root.
         let execution = std::env::temp_dir().join("pinvou3-resolver-test-execution");
         assert_eq!(
             bridge.audit_workspace("sess-code-project", &execution),
@@ -2910,9 +3317,12 @@ mod tests {
             execution
         );
 
-        // session_roots() 结构体取法与上面的 workspace/audit 双取法同源
-        // (原 session_roots_exposes_both_roots_for_every_session_kind 的断言):
-        // 命中项目的会话 execution=项目、ledger=会话私有;其余会话两根一致。
+        // The session_roots() struct accessor shares its source with the
+        // workspace/audit dual accessor above
+        // (assertions of the original
+        // session_roots_exposes_both_roots_for_every_session_kind):
+        // a project-hit session has execution=project, ledger=session-private;
+        // other sessions have both roots identical.
         let roots = bridge.session_roots("sess-code-project");
         assert_eq!(roots.execution, project);
         assert_eq!(
@@ -2932,15 +3342,18 @@ mod tests {
         let base =
             std::env::temp_dir().join(format!("pinvou3-agents-inject-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
-        // 布局：base/project/AGENTS.md（项目根规则）、base/AGENTS.md（monorepo 根规则）。
+        // Layout: base/project/AGENTS.md (project-root rules), base/AGENTS.md
+        // (monorepo-root rules).
         let project = base.join("project");
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(project.join("AGENTS.md"), "project rules").unwrap();
         std::fs::write(base.join("AGENTS.md"), "monorepo root rules").unwrap();
-        // 家目录边界的纯函数语义（含伪造家目录、项目根==家目录、归一化失败
-        // fail-closed）由 project_rule_chain_stops_at_home_boundary 覆盖；
-        // 这里走真实 user_home_dir() 做端到端注入验证。返回的路径已按
-        // normalize_rule_boundary_path 归一化，期望值同样归一化后再比较。
+        // The pure-function semantics of the home boundary (fake home,
+        // project root == home, normalization-failure fail-closed) are covered
+        // by project_rule_chain_stops_at_home_boundary; here we go through the
+        // real user_home_dir() for end-to-end injection verification. The
+        // returned paths are normalized by normalize_rule_boundary_path, and
+        // expectations are normalized the same way before comparison.
         let expected_base = normalize_rule_boundary_path(&base)
             .unwrap()
             .join("AGENTS.md");
@@ -2959,7 +3372,8 @@ mod tests {
                 || session_id == "sess-code-project2"
         }));
 
-        // 绑项目的代码会话：注入 project/AGENTS.md 与 base/AGENTS.md（monorepo 根）。
+        // Project-bound code session: inject project/AGENTS.md and
+        // base/AGENTS.md (monorepo root).
         let rules = bridge.code_session_project_rules("sess-code-project");
         assert!(
             rules.iter().any(|p| p == &expected_project),
@@ -2969,7 +3383,8 @@ mod tests {
             rules.iter().any(|p| p == &expected_base),
             "应注入 monorepo 根 AGENTS.md: {rules:?}"
         );
-        // 注入顺序 root→cwd（祖先在前、项目根最后），与 codex/claude 惯例一致。
+        // Injection order root→cwd (ancestors first, project root last),
+        // matching the codex/claude convention.
         let position = |target: &std::path::Path| rules.iter().position(|p| p == target);
         assert!(
             position(&expected_base)
@@ -2978,7 +3393,8 @@ mod tests {
             "注入顺序应为 root→cwd（monorepo 根在前、项目根最后）: {rules:?}"
         );
 
-        // 临时代码会话 / 普通会话：resolver 未命中 → 不注入。
+        // Scratch code session / plain session: resolver misses → no
+        // injection.
         assert!(
             bridge
                 .code_session_project_rules("sess-code-temp")
@@ -2986,7 +3402,8 @@ mod tests {
         );
         assert!(bridge.code_session_project_rules("sess-plain").is_empty());
 
-        // 没有 AGENTS.md 的目录链不注入（project2 无规则文件）。
+        // A directory chain without AGENTS.md does not inject (project2 has no
+        // rule file).
         let project2 = base.join("project2");
         std::fs::create_dir_all(&project2).unwrap();
         let hit2 = project2.clone();
@@ -3061,35 +3478,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// 家目录边界的纯函数语义：伪造 home 注入，覆盖项目在家目录之下、
-    /// 项目根==家目录、家目录归一化失败（fail-closed）、项目不在家目录之下
-    /// 四种情形（原实现自认「无法伪造家目录」而无边界测试，抽纯函数后可测）。
+    /// Pure-function semantics of the home boundary: inject a fake home,
+    /// covering four cases — project under home, project root == home, home
+    /// normalization failure (fail-closed), and project not under home (the
+    /// original implementation declared "cannot fake the home directory" and
+    /// had no boundary test; extracting the pure function makes it testable).
     #[test]
     fn project_rule_chain_stops_at_home_boundary() {
         let base =
             std::env::temp_dir().join(format!("pinvou3-rule-chain-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
-        // 布局：home/project/sub，另有不相关目录 other。
+        // Layout: home/project/sub, plus an unrelated directory other.
         let home = base.join("home");
         let project = home.join("project");
         let sub = project.join("sub");
         std::fs::create_dir_all(&sub).unwrap();
-        // 纯函数假定入参已归一化；测试侧自行 canonicalize（Windows 的 temp_dir
-        // 可能含 8.3 短名，不归一化会与生产侧 canonicalize 结果比歪）。
+        // The pure function assumes normalized inputs; the test side
+        // canonicalizes itself (Windows' temp_dir may contain 8.3 short names,
+        // which would miscompare against the production-side canonicalize
+        // result without normalization).
         let home = home.canonicalize().unwrap();
         let project = project.canonicalize().unwrap();
         let sub = sub.canonicalize().unwrap();
 
-        // 项目在家目录之下：链不含家目录本身，root→cwd（祖先在前）。
+        // Project under home: the chain excludes home itself, root→cwd
+        // (ancestors first).
         assert_eq!(
             collect_project_rule_chain(&sub, Some(&home)),
             vec![project.clone(), sub.clone()]
         );
-        // 项目根即家目录：整链为空（~/AGENTS.md 不注入）。
+        // Project root == home: the whole chain is empty (~/AGENTS.md is not
+        // injected).
         assert!(collect_project_rule_chain(&home, Some(&home)).is_empty());
-        // 家目录归一化失败（None）：fail-closed，只留项目根本层、不上溯。
+        // Home normalization failed (None): fail-closed, keep only the project
+        // root's own level, no walking up.
         assert_eq!(collect_project_rule_chain(&sub, None), vec![sub.clone()]);
-        // 项目不在家目录之下：上溯到文件系统根，仍不含 home。
+        // Project not under home: walk up to the filesystem root, still
+        // excluding home.
         let other = base.join("other");
         std::fs::create_dir_all(&other).unwrap();
         let other = other.canonicalize().unwrap();
@@ -3104,9 +3529,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// symlink 拒读：恶意仓库把 AGENTS.md 指到工作区外文件时不得注入
-    /// （与底座 load_context_file 的 symlink_metadata 防御对齐）。
-    /// Windows 创建 symlink 需管理员/开发者模式，无权限时优雅跳过而非失败。
+    /// Symlink refusal: a malicious repo pointing AGENTS.md at a file outside
+    /// the workspace must not get it injected (aligned with the foundation
+    /// load_context_file's symlink_metadata defense).
+    /// Windows requires admin/developer mode to create symlinks; skip
+    /// gracefully instead of failing when lacking the privilege.
     #[test]
     fn code_session_project_rules_rejects_symlinked_agents_md() {
         #[cfg(not(any(unix, windows)))]
@@ -3123,7 +3550,8 @@ mod tests {
             let _ = std::fs::remove_dir_all(&base);
             let project = base.join("project");
             std::fs::create_dir_all(&project).unwrap();
-            // 工作区外的"敏感文件"与指向它的 AGENTS.md symlink。
+            // The "sensitive file" outside the workspace, and an AGENTS.md
+            // symlink pointing at it.
             let outside = base.join("outside-secret.md");
             std::fs::write(&outside, "secret content").unwrap();
             let link = project.join("AGENTS.md");
@@ -3146,7 +3574,8 @@ mod tests {
                 session_id == "sess-code-project"
             }));
 
-            // symlink 的 AGENTS.md 不得注入（项目目录下唯一的 AGENTS.md 即该 symlink）。
+            // The symlinked AGENTS.md must not be injected (the only AGENTS.md
+            // in the project directory is that symlink).
             let rules = bridge.code_session_project_rules("sess-code-project");
             let marker = base.file_name().unwrap().to_string_lossy().into_owned();
             assert!(
@@ -3191,8 +3620,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// 100KB 截断端到端：bridge 注入的超限 AGENTS.md 经底座渲染系统提示词时
-    /// 按 INSTRUCTIONS_FILE_MAX_BYTES（100KB）截断并带标记。
+    /// 100KB truncation end-to-end: an oversized AGENTS.md injected by the
+    /// bridge is truncated with a marker per INSTRUCTIONS_FILE_MAX_BYTES
+    /// (100KB) when the foundation renders the system prompt.
     #[test]
     fn session_instructions_oversize_agents_md_truncated_end_to_end() {
         let base =
@@ -3200,7 +3630,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         let project = base.join("project");
         std::fs::create_dir_all(&project).unwrap();
-        // 超过底座 100KB 上限的项目规则。
+        // Project rules exceeding the foundation's 100KB cap.
         let oversized = "a".repeat(120 * 1024);
         std::fs::write(project.join("AGENTS.md"), &oversized).unwrap();
 
@@ -3253,7 +3683,8 @@ mod tests {
         }));
 
         let instr = bridge.session_instructions("sess-code-project");
-        // 第一项 Inline（自家 prompt），随后是项目规则 File 项。
+        // First entry Inline (our own prompt), then the project-rule File
+        // entries.
         assert!(matches!(instr[0], InstructionSource::Inline { .. }));
         let files: Vec<_> = instr
             .iter()
@@ -3270,7 +3701,7 @@ mod tests {
             "session instructions 应含项目 AGENTS.md: {files:?}"
         );
 
-        // 普通会话不注入项目规则。
+        // Plain sessions do not inject project rules.
         let plain_instr = bridge.session_instructions("sess-plain");
         let plain_files: Vec<_> = plain_instr
             .iter()
@@ -3309,7 +3740,8 @@ mod tests {
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         let mut bridge = fixture_bridge();
-        // 未注入 predicate：一律按非代码会话处理；plain 无模式差量。
+        // No predicate injected: everything is treated as a non-code session;
+        // plain has no mode delta.
         let plain = vec!["kb_search".to_string()];
         assert_eq!(
             bridge.shape_disallowed_tools("sess-plain", plain.clone()),
@@ -3323,13 +3755,14 @@ mod tests {
         assert!(bridge.is_code_session("sess-code-project"));
         assert!(!bridge.is_code_session("sess-plain"));
 
-        // 临时与绑项目的代码会话都隐藏成品卡工具并禁用 load_skill；普通会话不受影响。
+        // Both scratch and project-bound code sessions hide the artifact-card
+        // tool and disable load_skill; plain sessions are unaffected.
         for sid in ["sess-code-temp", "sess-code-project"] {
             let shaped = bridge.shape_disallowed_tools(sid, plain.clone());
             assert!(shaped.contains(&"mcp_pinvou3_present_artifact".to_string()));
             assert!(shaped.contains(&"load_skill".to_string()));
             assert!(shaped.contains(&"kb_search".to_string()));
-            // 幂等：不重复追加。
+            // Idempotent: no duplicate appends.
             let twice = bridge.shape_disallowed_tools(sid, shaped);
             assert_eq!(
                 twice
@@ -3348,9 +3781,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 代码会话的连接器禁用集来自 code scope(独立于 plain scope):
-    /// plain 禁用 weather 但 code 未初始化(默认全禁已装连接器)时,weather 仍被禁;
-    /// code 显式只禁用 pptx 时,weather 恢复可用、pptx 保持禁用;非连接器禁用不受影响。
+    /// Code sessions take their connector disabled set from the code scope
+    /// (independent of the plain scope): when plain disables weather but code
+    /// is uninitialized (default: all installed connectors disabled), weather
+    /// is still disabled; when code explicitly disables only pptx, weather
+    /// recovers while pptx stays disabled; non-connector disables are
+    /// unaffected.
     #[test]
     fn code_session_tool_shaping_uses_code_scope_for_connectors() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
@@ -3360,7 +3796,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        // 模拟已装 weather/pptx 两个连接器(code 未初始化 → 默认全禁)。
+        // Simulate the weather/pptx connectors being installed (code
+        // uninitialized → all disabled by default).
         let installed = dir.join("marketplace").join("installed.json");
         std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
         std::fs::write(
@@ -3368,7 +3805,8 @@ mod tests {
             serde_json::to_string(&["weather".to_string(), "pptx".to_string()]).unwrap(),
         )
         .unwrap();
-        // model_tool_names 依赖 servers_dir 下的 manifest 才能把连接器 id 映射成工具全名。
+        // model_tool_names needs the manifest under servers_dir to map a
+        // connector id to its full tool name.
         let servers_dir = crate::platform::paths::bundle_mcp_servers_dir();
         for (id, tool) in [("weather", "get_weather"), ("pptx", "make_pptx")] {
             let mdir = servers_dir.join(id);
@@ -3381,7 +3819,7 @@ mod tests {
             )
             .unwrap();
         }
-        // 每 scope 已装连接器映射成模型可见全名。
+        // Map each scope's installed connectors to model-visible full names.
         let weather = crate::features::marketplace::MarketplaceManager::new()
             .model_tool_names(&["weather".to_string()]);
         let pptx = crate::features::marketplace::MarketplaceManager::new()
@@ -3395,21 +3833,26 @@ mod tests {
         }));
 
         use crate::features::marketplace::ConnectorScope;
-        // plain 禁 weather(模拟普通会话里用户关了天气)。
+        // plain disables weather (simulating a user turning off weather in an
+        // ordinary conversation).
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Plain,
             &["weather".to_string()],
         );
-        // code scope 未初始化 → 默认全禁已装连接器。
+        // code scope uninitialized → all installed connectors disabled by
+        // default.
         let tools = vec!["kb_search".to_string()];
         let shaped = bridge.shape_disallowed_tools("sess-code", tools.clone());
         assert!(shaped.contains(&weather[0]));
         assert!(shaped.contains(&pptx[0]));
         assert!(shaped.contains(&"kb_search".to_string()));
-        // 代码会话整体禁用 load_skill(skill 开关是进程级全局,无法按会话生效的过渡方案)。
+        // Code sessions disable load_skill wholesale (the skill toggle is
+        // process-global and cannot take effect per session — a transitional
+        // scheme).
         assert!(shaped.contains(&"load_skill".to_string()));
 
-        // code 显式只禁 pptx → weather 恢复,pptx 仍禁;plain 的 weather 禁用不再影响代码会话。
+        // code explicitly disables only pptx → weather recovers, pptx stays
+        // disabled; plain's weather disable no longer affects code sessions.
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Code,
             &["pptx".to_string()],
@@ -3419,14 +3862,16 @@ mod tests {
         assert!(shaped.contains(&pptx[0]));
         assert!(shaped.contains(&"load_skill".to_string()));
 
-        // 普通会话保留 plain scope 禁用集，无模式差量（Git 已放开）。
+        // Plain sessions keep the plain scope disabled set, with no mode
+        // delta (Git has been opened up).
         let shaped = bridge.shape_disallowed_tools("sess-plain", tools.clone());
         assert_eq!(shaped, tools);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// CLI 硬拦截规则集（scope 门禁的 execpolicy 通道）：按会话 scope 的被禁
+    /// CLI hard-interception ruleset (the execpolicy channel of the scope
+    /// gate): per the session scope's disabled
     /// Binary deny rules generated for scope-disabled CLI connectors — with code
     /// uninitialized, all 4 built-in CLI binaries are denied by default (external
     /// capability must be enabled explicitly); plain is allow-by-default and only
@@ -3449,11 +3894,12 @@ mod tests {
         }));
 
         use crate::features::marketplace::ConnectorScope;
-        // plain 无禁用 → 无规则。
+        // plain with nothing disabled → no rules.
         let rs = bridge.cli_deny_ruleset("sess-plain");
         assert!(rs.ask_rules.is_empty(), "plain 默认无 CLI deny 规则");
 
-        // plain 禁 feishu → 仅 lark-cli deny（裸名 + .exe/.cmd 变体各一条，R4）。
+        // plain disables feishu → only lark-cli denied (bare name + one rule
+        // each for the .exe/.cmd variants, R4).
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Plain,
             &["feishu".to_string()],
@@ -3472,8 +3918,9 @@ mod tests {
                 .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny)
         );
 
-        // code 未初始化 → 默认全禁 4 个内置 CLI 二进制（与连接器开关默认同语义），
-        // 每个二进制发裸名 + .exe/.cmd 变体共 3 条。
+        // code uninitialized → all 4 built-in CLI binaries denied by default
+        // (same semantics as the connector-toggle default), each binary
+        // emitting bare name + .exe/.cmd variants, 3 rules total.
         let rs = bridge.cli_deny_ruleset("sess-code");
         let mut bins: Vec<&str> = rs
             .ask_rules
@@ -3504,7 +3951,8 @@ mod tests {
                 .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny)
         );
 
-        // code 显式只禁 dingtalk → 仅剩 dws 被硬拒（含 .exe/.cmd 变体）。
+        // code explicitly disables only dingtalk → only dws remains
+        // hard-rejected (including the .exe/.cmd variants).
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Code,
             &["dingtalk".to_string()],
@@ -3518,7 +3966,8 @@ mod tests {
         cmds.sort_unstable();
         assert_eq!(cmds, ["dws", "dws.cmd", "dws.exe"]);
 
-        // 底座执行语义：deny 在直跑 / 链式 / wrapper 形态下都硬拒。
+        // Foundation execution semantics: deny hard-rejects in direct,
+        // chained, and wrapper forms.
         let engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![rs]);
         let check = |command: &str| {
             engine
@@ -3539,15 +3988,18 @@ mod tests {
         ] {
             assert!(!check(cmd).allow, "{cmd} 应被 deny 规则硬拒");
         }
-        // 非禁用命令不受影响（lark-cli 已被显式开启）。
+        // Non-disabled commands are unaffected (lark-cli has been explicitly
+        // enabled).
         assert!(check("lark-cli im send").allow, "未禁用的 CLI 不应被拦");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Windows 绕过面钉死（六轮评审 R4）：被禁 CLI 以 `{bin}.exe` / `{bin}.cmd`
-    /// 形式首 token 调用（Windows 常见拼写）同样被硬拒——裸二进制名规则不匹配
-    /// 带扩展名的首 token，此前 `lark-cli.exe im send` 可绕过。
+    /// Windows bypass surface pinned (review round 6 R4): a disabled CLI
+    /// invoked as a first token spelled `{bin}.exe` / `{bin}.cmd` (the common
+    /// Windows spelling) is likewise hard-rejected — the bare-binary-name rule
+    /// does not match an extension-carrying first token; previously
+    /// `lark-cli.exe im send` could bypass.
     #[test]
     fn cli_deny_rules_cover_exe_and_cmd_variants() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
@@ -3590,7 +4042,8 @@ mod tests {
         ] {
             assert!(!check(cmd).allow, "{cmd} 应被 deny 规则硬拒");
         }
-        // 前缀相似的其它二进制不受影响（word-boundary 匹配）。
+        // Other binaries with similar prefixes are unaffected (word-boundary
+        // matching).
         assert!(
             check("lark-cli-extra im send").allow,
             "非同名的相似前缀命令不应被拦"
@@ -3599,8 +4052,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 脚本 deny 规则生成（纯函数）：脚本文件 × 解释器 + 直跑路径；非脚本文件与
-    /// 隐藏目录不生成规则。
+    /// Script deny rule generation (pure function): script files ×
+    /// interpreters + direct-run paths; non-script files and hidden
+    /// directories generate no rules.
     #[test]
     fn skill_script_deny_rules_cover_interpreters_and_direct_exec() {
         let dir =
@@ -3617,7 +4071,8 @@ mod tests {
         std::fs::write(dir.join(".git").join("hook.py"), "x").unwrap();
 
         let rules = skill_script_deny_rules_for(&dir);
-        // x.py: 4 解释器 + 1 直跑 = 5；y.sh: 2 + 1 = 3；notes.md / .git 无规则
+        // x.py: 4 interpreters + 1 direct run = 5; y.sh: 2 + 1 = 3;
+        // notes.md / .git produce no rules
         assert_eq!(rules.len(), 8, "规则数: {rules:?}");
         assert!(
             rules
@@ -3625,8 +4080,9 @@ mod tests {
                 .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny)
         );
 
-        // 引擎级行为：直跑 / 带参数 / 链式都硬拒（Never 模式也不放水）；
-        // 其它路径的同名解释器调用不受影响。
+        // Engine-level behavior: direct run / with arguments / chained are all
+        // hard-rejected (Never mode gets no slack either); same-name
+        // interpreter invocations at other paths are unaffected.
         let engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
             codewhale_execpolicy::Ruleset::user(vec![], vec![]).with_ask_rules(rules),
         ]);
@@ -3678,9 +4134,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        // 盘上放一个带脚本的市场技能目录（SKILL.md + upload 标记 → 对已装技能
-        // 集合可见，code 未初始化「默认全禁」才能覆盖它）。市场技能已迁到按包聚合
-        // 的新布局 `bundles/<pkg>/skills/<name>/`（旧扁平 `bundle/skills/` 仅存内置技能）。
+        // Place a script-carrying marketplace skill directory on disk
+        // (SKILL.md + upload marker → visible to the installed-skill set, so
+        // code-uninitialized "deny all by default" can cover it). Marketplace
+        // skills have migrated to the per-package aggregated layout
+        // `bundles/<pkg>/skills/<name>/` (the old flat `bundle/skills/` keeps
+        // only built-in skills).
         let script = dir.join("bundles/my-skill/skills/my-skill/scripts/run.py");
         std::fs::create_dir_all(script.parent().unwrap()).unwrap();
         std::fs::write(&script, "print(1)").unwrap();
@@ -3694,8 +4153,10 @@ mod tests {
             "upload:pkg.zip",
         )
         .unwrap();
-        // 上传技能的枚举自刀十起是 BundleStore 记录驱动：code「默认全禁已装技能」
-        // 依赖 installed_skill_ids → list_skills → store 记录，此处对齐生产语义
+        // Enumeration of uploaded skills has been BundleStore-record-driven
+        // since wave ten: code's "deny all installed skills by default"
+        // depends on installed_skill_ids → list_skills → store records; this
+        // aligns with production semantics here
         crate::features::marketplace::store::BundleStore::new()
             .upsert(
                 crate::features::marketplace::store::BundleRecord::installed_now(
@@ -3965,7 +4426,8 @@ mod tests {
         bridge.prefs.advanced.active_model_id = Some("test-model".to_string());
     }
 
-    /// 追加一条视觉兜底模型(测试辅助):plaintext api_key 直给,绕过系统凭据库。
+    /// Append a vision fallback model (test helper): plaintext api_key given
+    /// directly, bypassing the system credential store.
     fn push_vision_model(bridge: &mut Pinvou3Bridge, id: &str, model: &str, api_key: &str) {
         bridge.prefs.advanced.saved_models.push(SavedModel {
             id: id.to_string(),
@@ -3990,8 +4452,9 @@ mod tests {
         });
     }
 
-    /// §9.3 规则 1:主模型显式设置 vision_model_id → 用该 SavedModel 的
-    /// endpoint + 凭据(不回落主模型,不读第二份明文)。
+    /// §9.3 rule 1: the main model explicitly sets vision_model_id → use that
+    /// SavedModel's endpoint + credentials (no falling back to the main
+    /// model, no second plaintext read).
     #[test]
     fn vision_config_prefers_explicit_vision_model_id() {
         let mut bridge = fixture_bridge();
@@ -4026,7 +4489,8 @@ mod tests {
 
     #[test]
     fn vision_endpoint_locality_reflects_vision_model_base_url() {
-        // 未配置视觉模型 → None;云端视觉模型 → Some(false);loopback 视觉模型 → Some(true)。
+        // No vision model configured → None; cloud vision model →
+        // Some(false); loopback vision model → Some(true).
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -4045,8 +4509,9 @@ mod tests {
         assert_eq!(bridge.vision_uses_local_endpoint(), Some(true));
     }
 
-    /// §9.3 规则 2:未设置 vision_model_id、主模型能力 Supported →
-    /// 复用主模型作为 workspace 图片分析工具(保留旧的复用行为,但仅限 Supported)。
+    /// §9.3 rule 2: vision_model_id not set and the main model's capability
+    /// is Supported → reuse the main model as the workspace image-analysis
+    /// tool (keeping the old reuse behavior, but only for Supported).
     #[test]
     fn vision_config_reuses_main_model_only_when_supported() {
         let (_lock, _env) =
@@ -4083,11 +4548,13 @@ mod tests {
         );
     }
 
-    /// §9.3 规则 3:主模型 Unknown/Unsupported 且未设置视觉模型 →
-    /// 不注册 image_analyze(vision_config=None 且不 enable Feature::VisionModel)。
+    /// §9.3 rule 3: main model Unknown/Unsupported and no vision model set →
+    /// do not register image_analyze (vision_config=None and
+    /// Feature::VisionModel not enabled).
     #[test]
     fn vision_config_absent_for_unknown_or_disabled_main_model() {
-        // Unknown:deepseek-v4-pro 不在内置已验证能力表。
+        // Unknown: deepseek-v4-pro is not in the built-in verified-capability
+        // table.
         let mut unknown = fixture_bridge();
         set_active_model(
             &mut unknown,
@@ -4105,7 +4572,8 @@ mod tests {
                 .enabled(deepseek_tui::features::Feature::VisionModel)
         );
 
-        // override Disabled:即便主模型命中内置表也不得复用。
+        // override Disabled: even a main model hitting the built-in table
+        // must not be reused.
         let mut disabled = fixture_bridge();
         set_active_model(
             &mut disabled,
@@ -4120,9 +4588,11 @@ mod tests {
         assert!(disabled.build_engine_config().vision_config.is_none());
     }
 
-    /// scheduled 例外(规则 3 回退):`image_analyze_always` 时主模型 Unknown 也
-    /// 注册 image_analyze——scheduled 会话的图片硬规则要求调用该工具,未注册
-    /// 会让模型反复调用不存在的工具;Unsupported 仍不注册。
+    /// scheduled exception (rule-3 fallback): with `image_analyze_always`,
+    /// image_analyze is registered even when the main model is Unknown —
+    /// scheduled sessions' image hard rule requires calling this tool, and
+    /// not registering it would make the model repeatedly call a nonexistent
+    /// tool; Unsupported is still not registered.
     #[test]
     fn vision_config_falls_back_for_unknown_main_model_when_image_analyze_always() {
         let mut scheduled = fixture_bridge();
@@ -4143,8 +4613,10 @@ mod tests {
                 .enabled(deepseek_tui::features::Feature::VisionModel)
         );
 
-        // Unsupported(手动 Disabled)即使 always 也不注册:确认不支持的模型
-        // 注册了 image_analyze 只会持续调用报错,与交互会话口径一致。
+        // Unsupported (manual Disabled) is not registered even with always:
+        // registering image_analyze for a confirmed-unsupported model only
+        // produces continuous call errors — same caliber as interactive
+        // sessions.
         let mut unsupported = fixture_bridge();
         set_active_model(
             &mut unsupported,
@@ -4159,11 +4631,13 @@ mod tests {
         assert!(unsupported.resolve_vision_model_config().is_none());
     }
 
-    /// §9.3 规则 1 的优雅降级:vision_model_id 失效(指向不存在/已删除的模型)
-    /// 或目标模型凭据缺失 → 不注册并记 warning,不硬错、不回落主模型。
+    /// §9.3 rule-1 graceful degradation: vision_model_id invalid (pointing at
+    /// a nonexistent/deleted model) or the target model's credential missing
+    /// → do not register, log a warning; no hard error, no fallback to the
+    /// main model.
     #[test]
     fn vision_config_degrades_gracefully_on_missing_id_or_credential() {
-        // id 指向不存在的模型。
+        // id points at a nonexistent model.
         let mut ghost = fixture_bridge();
         set_active_model(
             &mut ghost,
@@ -4175,7 +4649,8 @@ mod tests {
         ghost.prefs.advanced.saved_models[0].vision_model_id = Some("ghost".to_string());
         assert!(ghost.resolve_vision_model_config().is_none());
 
-        // 目标模型无凭据(云端 base_url + 空 key + 无 credential_ref)。
+        // The target model has no credential (cloud base_url + empty key + no
+        // credential_ref).
         let mut no_key = fixture_bridge();
         set_active_model(
             &mut no_key,
@@ -4189,11 +4664,15 @@ mod tests {
         assert!(no_key.resolve_vision_model_config().is_none());
     }
 
-    /// §9.3 规则 1 的视觉候选能力口径:视觉模型**自身**的 override 不在运行时
-    /// 拒绝——选择器已用识图探测闸门验证(supported 才允许选中),disabled 标记
-    /// 可能是历史探测误判残留,按被选中的事实使用;文本模型混入由前端闸门挡住
-    /// (曾按审阅缺口 #104 拒绝 disabled,后续轮次反转,见 `resolve_vision_model_config`
-    /// 规则 1 注释)。Supported/Unknown(默认态)同样放行。
+    /// §9.3 rule-1 vision-candidate capability caliber: a vision model's
+    /// **own** override is not rejected at runtime — the selector already
+    /// gates it with the image-recognition probe (only supported models can
+    /// be selected), and the disabled mark may be a leftover from a
+    /// historical probe misjudgment, so it is used per the fact of being
+    /// selected; text models mixed in are blocked by the frontend gate (an
+    /// earlier review gap #104 rejected disabled, later rounds reversed it;
+    /// see the rule-1 comment of `resolve_vision_model_config`).
+    /// Supported/Unknown (default state) also pass.
     #[test]
     fn vision_config_allows_disabled_vision_model() {
         let mut bridge = fixture_bridge();
@@ -4204,7 +4683,7 @@ mod tests {
             "https://api.deepseek.com",
             "sk-main",
         );
-        // 候选视觉模型默认 Pinvou(Unknown):可解析。
+        // Candidate vision model with default Pinvou (Unknown): resolvable.
         push_vision_model(&mut bridge, "vision-unknown", "my-finetune-7b", "sk-vision");
         bridge.prefs.advanced.saved_models[0].vision_model_id = Some("vision-unknown".to_string());
         assert!(
@@ -4212,9 +4691,13 @@ mod tests {
             "Unknown 能力的候选模型应允许作为视觉兜底(用户可显式确认)"
         );
 
-        // 候选视觉模型 override Disabled:不再拒绝——选择器已用识图探测验证
-        // (supported 才允许选中),disabled 可能是历史探测误判残留(kimi-for-coding
-        // 曾因探测链路 400 被回填),被选中即按实际能力使用;凭据可用即可解析。
+        // Candidate vision model with override Disabled: no longer rejected —
+        // the selector already verified it with the image-recognition probe
+        // (only supported models can be selected); disabled may be a leftover
+        // from a historical probe misjudgment (kimi-for-coding was once
+        // backfilled after the probe pipeline returned 400), so once selected
+        // it is used per its actual capability; a usable credential makes it
+        // resolvable.
         let mut disabled = fixture_bridge();
         set_active_model(
             &mut disabled,
@@ -4233,7 +4716,8 @@ mod tests {
         );
         assert!(disabled.build_engine_config().vision_config.is_some());
 
-        // override Enabled 的候选模型:显式确认支持,放行。
+        // Candidate model with override Enabled: explicitly confirmed
+        // supported — pass.
         let mut enabled = fixture_bridge();
         set_active_model(
             &mut enabled,
@@ -4249,13 +4733,14 @@ mod tests {
         assert!(enabled.resolve_vision_model_config().is_some());
     }
 
-    /// §9.2 路由(阶段 D):Supported → Native(无论有无视觉模型);
-    /// Unknown/Unsupported → 有可用视觉模型走 VisionToolFallback,否则 Unsupported。
+    /// §9.2 routing (phase D): Supported → Native (with or without a vision
+    /// model); Unknown/Unsupported → VisionToolFallback when a usable vision
+    /// model exists, otherwise Unsupported.
     #[test]
     fn image_input_mode_routes_by_capability_and_vision_model() {
         use crate::features::assistant::image_capability::ImageInputMode;
 
-        // Supported 主模型:无视觉模型也 Native。
+        // Supported main model: Native even without a vision model.
         let mut native = fixture_bridge();
         set_active_model(
             &mut native,
@@ -4266,7 +4751,8 @@ mod tests {
         );
         assert_eq!(native.image_input_mode(), ImageInputMode::Native);
 
-        // Unknown 主模型、无视觉模型 → Unsupported(发送前拒绝)。
+        // Unknown main model, no vision model → Unsupported (reject before
+        // sending).
         let mut unknown = fixture_bridge();
         set_active_model(
             &mut unknown,
@@ -4277,7 +4763,8 @@ mod tests {
         );
         assert_eq!(unknown.image_input_mode(), ImageInputMode::Unsupported);
 
-        // Unknown 主模型 + vision_model_id 命中可用视觉模型 → VisionToolFallback。
+        // Unknown main model + vision_model_id hitting a usable vision model
+        // → VisionToolFallback.
         let mut fallback = fixture_bridge();
         set_active_model(
             &mut fallback,
@@ -4293,7 +4780,7 @@ mod tests {
             ImageInputMode::VisionToolFallback
         );
 
-        // override Enabled 的未知本地模型 → Native。
+        // Unknown local model with override Enabled → Native.
         let mut forced = fixture_bridge();
         set_active_model(
             &mut forced,
@@ -4306,7 +4793,8 @@ mod tests {
             prefs::ImageCapabilityOverride::Enabled;
         assert_eq!(forced.image_input_mode(), ImageInputMode::Native);
 
-        // override Disabled 即便命中内置表也不 Native;有视觉模型 → Fallback。
+        // override Disabled is not Native even when it hits the built-in
+        // table; with a vision model → Fallback.
         let mut disabled = fixture_bridge();
         set_active_model(
             &mut disabled,
@@ -4325,9 +4813,12 @@ mod tests {
         );
     }
 
-    /// v0.9.5 官方方案:图片以 `[Attached image: <path>]` 标记行内嵌在 content,
-    /// reminder 直接拼在 content 前缀;标记由底座 image_attach 展开,bridge 不做
-    /// 结构化处理。此处验证 reminder 前缀拼接与标记行透传。
+    /// v0.9.5 official approach: images are embedded inline in content as
+    /// `[Attached image: <path>]` marker lines, with the reminder directly
+    /// prepended to content; the marker is expanded by the foundation's
+    /// image_attach and the bridge does no structured processing. This
+    /// verifies the reminder prefix concatenation and the marker-line
+    /// passthrough.
     #[test]
     fn build_send_message_op_preserves_attach_marker_in_content() {
         let bridge = fixture_bridge();
@@ -4383,9 +4874,12 @@ mod tests {
 
     #[test]
     fn unknown_cloud_model_context_stays_unspeculative_output_declared_by_tier() {
-        // 锁 DEEPSEEK_* env：本用例读 `model()`（env 优先），若与其他写 env 的
-        // 测试并发会读到临时 DEEPSEEK_MODEL（如 deepseek-ai/DeepSeek-V4-Pro →
-        // 底座推导 1M 窗口），导致 route limits 误判为已知。锁保证串行 + 恢复。
+        // Lock the DEEPSEEK_* env: this test reads `model()` (env takes
+        // priority); running concurrently with other env-writing tests it
+        // could read a temporary DEEPSEEK_MODEL (e.g.
+        // deepseek-ai/DeepSeek-V4-Pro → the foundation derives a 1M window),
+        // making route limits misjudge as known. The lock guarantees
+        // serialization + restoration.
         let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MODEL",
             "DEEPSEEK_PROVIDER",
@@ -4443,11 +4937,13 @@ mod tests {
         assert!(cloud_compatible.api_key_required());
     }
 
-    /// §11.8/§11.9:is_local_endpoint 与发送路径同一解析口径——local_vllm preset
-    /// 或有效 base_url host 为 loopback 即本机;云端/局域网地址不得误判为本机。
+    /// §11.8/§11.9: is_local_endpoint uses the same resolution caliber as the
+    /// send path — the local_vllm preset or an effective base_url host that is
+    /// loopback counts as local; cloud/LAN addresses must not be misjudged as
+    /// local.
     #[test]
     fn is_local_endpoint_detects_loopback_and_local_vllm_preset() {
-        // local_vllm preset 默认部署(127.0.0.1:8000):本机。
+        // local_vllm preset default deployment (127.0.0.1:8000): local.
         let mut local_preset = fixture_bridge();
         set_active_model(
             &mut local_preset,
@@ -4458,7 +4954,8 @@ mod tests {
         );
         assert!(local_preset.is_local_endpoint());
 
-        // local_vllm preset 即按本地对待,即使 base_url 被改成非 loopback 地址(规格口径)。
+        // The local_vllm preset is treated as local even when its base_url
+        // was changed to a non-loopback address (the spec caliber).
         let mut local_preset_remote = fixture_bridge();
         set_active_model(
             &mut local_preset_remote,
@@ -4469,7 +4966,8 @@ mod tests {
         );
         assert!(local_preset_remote.is_local_endpoint());
 
-        // 非 local preset 但 base_url 指向 loopback(自定义本机服务):本机。
+        // Non-local preset but base_url points at loopback (a custom local
+        // service): local.
         let mut loopback_compatible = fixture_bridge();
         set_active_model(
             &mut loopback_compatible,
@@ -4480,7 +4978,8 @@ mod tests {
         );
         assert!(loopback_compatible.is_local_endpoint());
 
-        // 云端地址:非本机,前端应提示图片发送给服务商。
+        // Cloud address: not local; the frontend should warn that images are
+        // sent to the provider.
         let mut cloud = fixture_bridge();
         set_active_model(
             &mut cloud,
@@ -4491,7 +4990,8 @@ mod tests {
         );
         assert!(!cloud.is_local_endpoint());
 
-        // 局域网地址不是 loopback(见 api_key_requirement 测试同口径):非本机。
+        // A LAN address is not loopback (same caliber as the
+        // api_key_requirement test): not local.
         let mut lan = fixture_bridge();
         set_active_model(
             &mut lan,
@@ -4505,11 +5005,11 @@ mod tests {
 
     #[test]
     fn local_or_private_detection_covers_loopback_lan_and_docker_hosts() {
-        // loopback（与 base_url_uses_loopback 一致）
+        // loopback (consistent with base_url_uses_loopback)
         assert!(base_url_uses_local_or_private("http://localhost:8000/v1"));
         assert!(base_url_uses_local_or_private("http://127.0.0.42:8000/v1"));
         assert!(base_url_uses_local_or_private("http://[::1]:8000/v1"));
-        // RFC1918 私网段
+        // RFC1918 private ranges
         assert!(base_url_uses_local_or_private("http://10.0.0.5:8000/v1"));
         assert!(base_url_uses_local_or_private("http://172.16.3.4:8000/v1"));
         assert!(base_url_uses_local_or_private(
@@ -4518,9 +5018,9 @@ mod tests {
         assert!(base_url_uses_local_or_private(
             "http://192.168.1.10:8000/v1"
         ));
-        // 172.32 不在 172.16/12 段内
+        // 172.32 is not inside 172.16/12
         assert!(!base_url_uses_local_or_private("http://172.32.1.1:8000/v1"));
-        // Docker 宿主别名
+        // Docker host aliases
         assert!(base_url_uses_local_or_private(
             "http://host.docker.internal:8000/v1"
         ));
@@ -4530,7 +5030,7 @@ mod tests {
         assert!(base_url_uses_local_or_private(
             "http://myapp.docker.internal:9000/v1"
         ));
-        // 公网端点不是本地
+        // Public endpoints are not local
         assert!(!base_url_uses_local_or_private(
             "https://api.deepseek.com/v1"
         ));
@@ -4543,24 +5043,31 @@ mod tests {
         assert!(!base_url_uses_local_or_private("not a url"));
     }
 
-    /// 128K 上下文的两种情况(客户翻车场景的正反面),端到端走 build_engine_config:
-    ///  A. 真实 128K 部署——vLLM max_model_len=131072、探测成功 → 窗口正确、T 按 131072 缩。
-    ///  B. 客户 bug 兜底——丢 `--served-model-name`(名字无 _Nk)+ 探测失败 → 底座 legacy
-    ///     128000,T 按 128000 推导。两种都 nice 主路径活(T ≪ E),不再是写死 190K 的倒置
-    ///     抖动(190K > 128K 窗口的 E,必倒置——正是客户机每 1-2 工具调用一次 Emergency 的根因)。
+    /// The two 128K-context cases (both sides of the customer incident),
+    /// end-to-end through build_engine_config:
+    ///  A. A real 128K deployment — vLLM max_model_len=131072, probe succeeds
+    ///     → the window is correct and T scales by 131072.
+    ///  B. The customer-bug fallback — a missing `--served-model-name` (name
+    ///     without _Nk) + probe failure → the foundation's legacy 128000, T
+    ///     derived by 128000. In both cases the nice main path survives
+    ///     (T ≪ E); no longer the hardcoded-190K inversion jitter (190K > the
+    ///     E of a 128K window — guaranteed inversion, exactly the root cause
+    ///     of the customer machine hitting Emergency every 1-2 tool calls).
     #[test]
     fn forkguard_compaction_128k_scenarios() {
         let (_lock, _env) =
             locked_env(&["DEEPSEEK_MAX_OUTPUT_TOKENS", "PINVOU3_MAX_OUTPUT_TOKENS"]);
-        // [根因] derive_compaction_threshold 经底座 context_input_budget_for_route 算
+        // [Root cause] derive_compaction_threshold computes via the
+        // foundation's context_input_budget_for_route
         // output reservation: local vLLM and custom endpoints both follow the
         // operator window tiers (declared into RouteLimits.output_tokens by
         // route_limits_for_model), dominating the reservation calculation
         // (min(requested_cap, route_cap)), independent of the
         // DEEPSEEK_MAX_OUTPUT_TOKENS env. Cloud models are not pinned by
         // Pinvou and fall to the base's 64K fallback.
-        // A. 真实 128K 部署:探测拿到 131072
-        // 默认预设已平台感知(macOS/Windows→Deepseek),显式设 LocalVllm 才测 128K vLLM compaction。
+        // A. Real 128K deployment: the probe returns 131072
+        // The default preset is now platform-aware (macOS/Windows→Deepseek);
+        // set LocalVllm explicitly to test 128K vLLM compaction.
         let mut a = fixture_bridge();
         set_active_model(
             &mut a,
@@ -4594,7 +5101,8 @@ mod tests {
         );
         assert!(t_a < e_a, "T 必须低于 E(nice 先于 emergency)");
 
-        // B. 客户 bug 兜底:名字无 _Nk 后缀 + 探测失败(vLLM 没起)
+        // B. Customer-bug fallback: name without the _Nk suffix + probe
+        // failure (vLLM not running)
         let mut b = fixture_bridge();
         set_active_model(
             &mut b,
@@ -4657,19 +5165,26 @@ mod tests {
         );
     }
 
-    /// PR #210 回归：云端模型不再被全局 DEEPSEEK_MAX_OUTPUT_TOKENS 钉死 24576。
-    /// clean env（无该 env）下云端 SavedModel.max_output_tokens 为 None →
-    /// route_limits.output_tokens 必须为 None（不声明 → 底座 64K/厂商能力兜底）；
+    /// PR #210 regression: cloud models are no longer pinned to 24576 by the
+    /// global DEEPSEEK_MAX_OUTPUT_TOKENS.
+    /// Under a clean env (no such env), a cloud SavedModel.max_output_tokens
+    /// of None → route_limits.output_tokens must be None (undeclared → the
+    /// foundation's 64K/vendor-capability fallback);
     /// local vLLM and custom endpoints both follow the operator window tiers
     /// (262144→65536, independent of env); both must be locked.
     ///
-    /// ⚠️ C 段语义（评审修正 2026-08-11）：品悟中间层确实不读该 env，但底座
-    /// `effective_max_output_tokens_for_route` **优先**读它——env 残留仍会把云端
-    /// **最终请求**的 max_tokens 钉回 24576。因此不能声称"残留 env 不影响云端"；
-    /// 真正的防线是 release/boot 不再注入（见 lib.rs `release_env_defaults_guard`
-    /// 与下方 `forkguard_boot_env_must_not_pin_global_output_cap`）。
-    /// C 段只锁"中间层不被 env 污染"这一层事实，D 段沿底座公开预算链验证 env
-    /// 确实生效（对应 CHANGES_REQUESTED：补沿最终预算/请求构造链的回归）。
+    /// ⚠️ Section-C semantics (review correction 2026-08-11): the Pinvou
+    /// middle layer indeed does not read this env, but the foundation's
+    /// `effective_max_output_tokens_for_route` **preferentially** reads it —
+    /// an env leftover still pins the **final request**'s max_tokens of cloud
+    /// models back to 24576. So we cannot claim "a leftover env does not
+    /// affect cloud"; the real defense is that release/boot no longer injects
+    /// it (see lib.rs `release_env_defaults_guard` and
+    /// `forkguard_boot_env_must_not_pin_global_output_cap` below).
+    /// Section C only locks the fact "the middle layer is not polluted by the
+    /// env"; section D walks the foundation's public budget chain to verify
+    /// the env does take effect there (answering the CHANGES_REQUESTED: add a
+    /// regression along the final budget/request-construction chain).
     #[test]
     fn forkguard_cloud_route_output_not_pinned_by_global_env() {
         // The base requested_cap precedence chain is CODEWHALE_ > DEEPSEEK_ >
@@ -4690,8 +5205,10 @@ mod tests {
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS") };
 
-        // A. 云端（Deepseek preset）：SavedModel.max_output_tokens=None（保存云端模型
-        //    时前端存 null）→ route_limits.output_tokens=None → 底座 64K/厂商能力兜底。
+        // A. Cloud (Deepseek preset): SavedModel.max_output_tokens=None (the
+        //    frontend stores null when saving a cloud model) →
+        //    route_limits.output_tokens=None → the foundation's 64K/vendor
+        //    capability fallback.
         let mut cloud = fixture_bridge();
         set_active_model(
             &mut cloud,
@@ -4723,9 +5240,13 @@ mod tests {
             "local vLLM declares its output per the window tiers (262144→65536), independent of the DEEPSEEK_MAX_OUTPUT_TOKENS env"
         );
 
-        // C. env 残留（旧生产双保险未清干净 / 未来有人重新注入）：品悟中间层不读
-        //    该 env（route 仍不声明）——但这只是中间层事实，底座最终预算链会读
-        //    （见 D 段）。此处只锁"中间层不被 env 污染"，不能据此声称残留无害。
+        // C. env leftover (the old production double-insurance not cleaned up
+        //    / someone re-injects it in the future): the Pinvou middle layer
+        //    does not read this env (the route still does not declare) — but
+        //    that is only a middle-layer fact; the foundation's final budget
+        //    chain reads it (see section D). This locks only "the middle layer
+        //    is not polluted by the env" and cannot be used to claim the
+        //    leftover is harmless.
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576") };
         let cloud_limits_env = cloud.route_limits_for_model("deepseek-v4-pro");
@@ -4735,18 +5256,25 @@ mod tests {
             "品悟中间层不读该 env（云端 route 仍不声明）；env 影响发生在底座最终预算链（见 D 段）"
         );
 
-        // D. 沿底座公开预算链（context_input_budget_for_route，品悟 derive_compaction_threshold
-        //    同款 API）验证：env 残留 24576 会把底座 output reservation 从 clean env 的 64K
-        //    压回 24K → 可用输入预算随之变大。证明"残留 env 不影响云端"不成立——真正防线是
-        //    release/boot 不再注入（lib.rs release_env_defaults_guard）。用显式 256K RouteLimits
-        //    （<500K 窗口才走 effective_max_output_tokens_for_route，≥500K 走 TURN 分支不读 env），
-        //    deepseek-v4-pro 的 provider max_output=384K 不会钳制 64K/24K 中的任一个。
+        // D. Verify along the foundation's public budget chain
+        //    (context_input_budget_for_route, the same API Pinvou's
+        //    derive_compaction_threshold uses): an env leftover of 24576
+        //    presses the foundation's output reservation from clean-env 64K
+        //    back to 24K → the available input budget grows accordingly. This
+        //    proves "a leftover env does not affect cloud" is false — the
+        //    real defense is release/boot no longer injecting it (lib.rs
+        //    release_env_defaults_guard). Uses an explicit 256K RouteLimits
+        //    (only windows <500K take effective_max_output_tokens_for_route;
+        //    ≥500K takes the TURN branch which does not read the env);
+        //    deepseek-v4-pro's provider max_output=384K clamps neither 64K
+        //    nor 24K.
         let route_limits_256k = codewhale_config::route::RouteLimits {
             context_tokens: Some(256_000),
             input_tokens: None,
             output_tokens: None,
         };
-        // 先回到 clean env 基准（C 段末尾已 set 24576）。
+        // First return to the clean-env baseline (section C ended having set
+        // 24576).
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS") };
         let budget_clean = deepseek_tui::core::engine::context_input_budget_for_route(
@@ -4779,9 +5307,11 @@ mod tests {
         unsafe { std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS") };
     }
 
-    /// PR #210 守卫（第四轮评审修正 2026-08-12）：bridge boot 的 env 注入结果
-    /// 不得包含输出上限 env。lib.rs `release_env_defaults_guard` 只覆盖 run() 的
-    /// release env 注入路径；若未来有人在 boot 路径直接 set_var
+    /// PR #210 guard (review round-4 correction 2026-08-12): the env
+    /// injection result of bridge boot must not contain the output-cap env.
+    /// lib.rs `release_env_defaults_guard` only covers run()'s release env
+    /// injection path; if someone in the future directly set_vars in the boot
+    /// path
     /// `DEEPSEEK_MAX_OUTPUT_TOKENS`, which that guard cannot see — so this test
     /// actually runs `Pinvou3Bridge::boot()` under an isolated home and asserts
     /// the final env state: no matter which boot line the injection happens
@@ -4793,15 +5323,20 @@ mod tests {
     /// startup window). This test also locks that boundary: after boot the key
     /// must still be unset.
     ///
-    /// 第五轮评审修正 2026-08-13：此前只隔离 `HOME`——Windows 的 `user_home_dir()`
-    /// 优先读 `USERPROFILE`、其次 `HOMEDRIVE`+`HOMEPATH`、最后才 `HOME`，只设 `HOME`
-    /// 会让 `boot()` 的 `workspace`（= `user_home_dir()`）在 Windows 上仍指向真实
-    /// 用户目录，legacy 清扫可能删除真实目录里带管理标识的文件。现把三平台 home
-    /// 来源全部隔离到临时目录；临时目录命名叠加 `std::process::id()`（跨进程唯一），
-    /// 并用 RAII guard 保证 boot/断言 panic 时仍回收整份解包 bundle。
+    /// Review round-5 correction 2026-08-13: previously only `HOME` was
+    /// isolated — Windows' `user_home_dir()` reads `USERPROFILE` first, then
+    /// `HOMEDRIVE`+`HOMEPATH`, and `HOME` only last, so setting only `HOME`
+    /// would leave `boot()`'s `workspace` (= `user_home_dir()`) on Windows
+    /// still pointing at the real user directory, and the legacy sweep could
+    /// delete marker-carrying files in the real directory. Now all three
+    /// platforms' home sources are isolated to the temp directory; the temp
+    /// directory name also folds in `std::process::id()` (unique across
+    /// processes), and an RAII guard guarantees the fully unpacked bundle is
+    /// reclaimed even when boot/assertions panic.
     #[test]
     fn forkguard_boot_env_must_not_pin_global_output_cap() {
-        // 需要写 PINVOU3_HOME / HOME / Windows home 来源（隔离目录），锁 + 恢复这些与目标 key。
+        // Needs to write PINVOU3_HOME / HOME / the Windows home sources
+        // (isolated directories); lock + restore those and the target keys.
         let (_lock, _env) = locked_env(&[
             "DEEPSEEK_MAX_OUTPUT_TOKENS",
             "PINVOU3_MAX_OUTPUT_TOKENS",
@@ -4819,16 +5354,20 @@ mod tests {
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("PINVOU3_SESSION_ARTIFACTS") };
 
-        // RAII 清理：boot 会全量解包 bundle 到隔离 home，断言/panic 时也须回收
-        // （此前仅在正常结尾 remove_dir_all，中途失败会残留整份 bundle）。
+        // RAII cleanup: boot fully unpacks the bundle into the isolated home,
+        // and it must be reclaimed even when assertions panic (previously
+        // remove_dir_all ran only at the normal end; a midway failure left
+        // the whole bundle behind).
         struct TempDirGuard(std::path::PathBuf);
         impl Drop for TempDirGuard {
             fn drop(&mut self) {
                 let _ = std::fs::remove_dir_all(&self.0);
             }
         }
-        // 叠加 pid + 进程内原子后缀：unique_suffix 只保证单进程内唯一，双终端并发
-        // cargo test 会跨进程碰撞（见 paths::tests::unique_suffix 文档）。
+        // pid + an in-process atomic suffix: unique_suffix only guarantees
+        // uniqueness within one process; two terminals running cargo test
+        // concurrently collide across processes (see the
+        // paths::tests::unique_suffix docs).
         let root = std::env::temp_dir().join(format!(
             "pinvou3-boot-env-guard-{}-{}",
             std::process::id(),
@@ -4839,9 +5378,11 @@ mod tests {
         std::fs::create_dir_all(&root).expect("创建隔离 home");
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-        // 三平台 user_home_dir() 来源全部隔离到 root：macOS/Linux 读 HOME；Windows
-        // 优先 USERPROFILE，其次 HOMEDRIVE+HOMEPATH，最后 HOME。若不隔离 Windows 的
-        // 前两项，boot 的 workspace 仍指向真实用户目录，legacy 清扫会触碰真实文件。
+        // All three platforms' user_home_dir() sources isolated to root:
+        // macOS/Linux read HOME; Windows reads USERPROFILE first, then
+        // HOMEDRIVE+HOMEPATH, and HOME last. Without isolating Windows' first
+        // two, boot's workspace would still point at the real user directory
+        // and the legacy sweep would touch real files.
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("HOME", &root) };
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
@@ -4869,13 +5410,16 @@ mod tests {
             "boot must not write PINVOU3_SESSION_ARTIFACTS (injection is funneled to startup_process_env)"
         );
 
-        // bridge 先于 TempDirGuard 回收（guard 声明更早、drop 更晚），避免删目录时
-        // bridge 仍持有其中的 bundle 路径。
+        // bridge is dropped before TempDirGuard (the guard was declared
+        // earlier and drops later), so the directory is not deleted while
+        // bridge still holds bundle paths inside it.
         drop(bridge);
     }
 
-    /// route profile 属于具体部署，不属于 vLLM/Qwen 特例。任何 OpenAI-compatible
-    /// 本地引擎只要在 SavedModel 声明能力，都必须走同一预算链。
+    /// A route profile belongs to a concrete deployment, not to a
+    /// vLLM/Qwen special case. Any OpenAI-compatible local engine that
+    /// declares its capability in the SavedModel must go through the same
+    /// budget chain.
     #[test]
     fn forkguard_openai_compatible_route_uses_declared_limits() {
         let (_lock, _env) =
@@ -5240,9 +5784,13 @@ mod tests {
         );
     }
 
-    /// 实际会用的云端大窗口模型(不探测 → probed=None,window 走 catalog/名字 hint)。
-    /// 断言 derive 的 T 换算 conservative 后 < 底座 E(不倒置)。deepseek-v4-pro(1M,≥500K)
-    /// 走 output 预留分档(底座 TURN_MAX_OUTPUT=262144),锁住 2026-07-02 修的大窗口倒置。
+    /// The cloud large-window models actually in use (not probed →
+    /// probed=None, window via catalog/name hint).
+    /// Assert that the derived T, converted to the conservative ruler, stays
+    /// below the foundation's E (no inversion). deepseek-v4-pro (1M, ≥500K)
+    /// takes the output-reservation tier (the foundation's
+    /// TURN_MAX_OUTPUT=262144), locking the large-window inversion fixed on
+    /// 2026-07-02.
     #[test]
     fn compaction_cloud_large_window_models() {
         let (_lock, _env) = locked_env(&[
@@ -5251,14 +5799,16 @@ mod tests {
             "DEEPSEEK_BASE_URL",
             "DEEPSEEK_API_KEY",
         ]);
-        // T(raw 子集尺)换算回 emergency 的 conservative 全量尺(同 forkguard 常数)
+        // T (raw subset ruler) converted back to emergency's conservative
+        // full ruler (same constants as the forkguard)
         const K_NUM: usize = 3;
         const K_DEN: usize = 2;
         const R: usize = 4_500;
         const S: usize = 4_000;
         const FRAMING: usize = 2_500;
-        // (模型名, 期望窗口)。输出预留与 emergency 预算直接取底座公开预算链，
-        // 不复制某个版本的分档常数。
+        // (model name, expected window). The output reservation and the
+        // emergency budget come straight from the foundation's public budget
+        // chain, without copying any version's tier constants.
         let cases = [
             ("deepseek-v4-pro", 1_000_000usize),
             ("kimi-k2.6", 262_144),
@@ -5267,7 +5817,7 @@ mod tests {
         for (model, want_window) in cases {
             let mut b = fixture_bridge();
             set_active_model(&mut b, ModelPreset::Deepseek, model, "https://x/v1", "");
-            b.probed_context_tokens = None; // 云端不探测
+            b.probed_context_tokens = None; // cloud is not probed
             let win = b.effective_context_window(&b.model()) as usize;
             assert_eq!(
                 win, want_window,
@@ -5290,14 +5840,18 @@ mod tests {
         }
     }
 
-    /// 默认模型名必须能被底座 `context_window_for_model` 识别出窗口,
-    /// 否则 `context_input_budget` 静默返回 `None`,preflight + emergency
-    /// recovery 全静默禁用 (codex adversarial-review 2026-05-19 抓到的
-    /// 高优 finding)。后缀 `_256k` 由 fork B1 `_Nk` hint 解析。
+    /// The default model name must be recognized by the foundation's
+    /// `context_window_for_model` with a window, otherwise
+    /// `context_input_budget` silently returns `None` and preflight +
+    /// emergency recovery are all silently disabled (a high-priority finding
+    /// caught by the codex adversarial-review on 2026-05-19). The `_256k`
+    /// suffix is parsed by fork B1's `_Nk` hint.
     #[test]
     fn default_model_window_recognized_by_engine() {
-        // 本测试钉死 LocalVllm 的 256K 窗口识别(默认预设已平台感知:macOS/Windows 默认
-        // Deepseek),故显式设 LocalVllm preset 再断言其窗口派生。
+        // This test pins LocalVllm's 256K window recognition (the default
+        // preset is now platform-aware: macOS/Windows default to Deepseek), so
+        // it sets the LocalVllm preset explicitly before asserting the window
+        // derivation.
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -5314,7 +5868,8 @@ mod tests {
              LOCAL_VLLM_MODEL 后缀漏了 _Nk 标记,B2 preflight 静默禁用)。\
              当前 model = {model:?}"
         );
-        // 256K = 256_000 (hint 用 ×1000;实际 vLLM 262144 差 6K 在 2% 噪声内)
+        // 256K = 256_000 (the hint uses ×1000; the real vLLM 262144 differs
+        // by 6K, within the 2% noise)
         assert_eq!(
             window,
             Some(256_000),
@@ -5322,8 +5877,10 @@ mod tests {
         );
     }
 
-    /// 超级权限状态对**能 exec 的 mode**(Yolo)必须每 turn 注入(切开关即时生效,
-    /// refresh no-op);Plan 只读无 exec,sudo 无意义→不注入(省 ~110 字/turn)。
+    /// The super-permission state must be injected every turn for modes that
+    /// **can exec** (Yolo) (switch toggles take effect immediately; refresh is
+    /// a no-op); Plan is read-only with no exec, sudo is meaningless → not
+    /// injected (saves ~110 chars/turn).
     #[test]
     fn build_send_message_op_injects_sudo_for_yolo_not_plan() {
         let bridge = fixture_bridge();
@@ -5346,8 +5903,10 @@ mod tests {
         );
     }
 
-    /// 卡片池: 该 session 加持了专家面具时,persona reminder 必须进 per-turn
-    /// `<system-reminder>`(粘性身份的核心机制)。None 时不注入(不破坏纯对话)。
+    /// Card pool: when the session is wearing an expert mask, the persona
+    /// reminder must enter the per-turn `<system-reminder>` (the core
+    /// mechanism of the sticky identity). Not injected when None (pure
+    /// conversation stays intact).
     #[test]
     fn build_send_message_op_injects_persona_reminder_when_present() {
         let bridge = fixture_bridge();
@@ -5369,7 +5928,7 @@ mod tests {
             content.contains("<system-reminder>") && content.contains(&persona),
             "加持后 op 必须在 system-reminder 内注入 persona 人设,得到:\n{content}"
         );
-        // None 时不应出现该文案
+        // This copy must not appear when None
         let op_none = bridge
             .build_send_message_op("sess-plain", "hi".to_string(), AppMode::Agent, None, false)
             .expect("resolve test route");
@@ -5378,11 +5937,16 @@ mod tests {
         }
     }
 
-    /// gating: 纯对话元卡(restrict_tools=true)→ 本轮 allowed_tools=Some(空表)=零工具;
-    /// 普通卡 / 未加持(false)→ Pinvou 基础白名单。这是卡牌制造专家"只产可收藏的内联卡、绝不
-    /// 写文件"的**工具层**强制手段(底座从 schema 删工具),不靠模型自觉遵守 prompt。
-    /// R-2 注:op 链路不感知会话类型,该白名单对 code 会话同样生效(前端入口见
-    /// CodexAcpView.jsx `restrictTools` 注释,S-1 分化时按策略驱动)。
+    /// gating: a pure-conversation meta card (restrict_tools=true) → this
+    /// turn's allowed_tools=Some(empty list)=zero tools; a normal card / no
+    /// mask (false) → the Pinvou base allowlist. This is the **tool-layer**
+    /// enforcement of the card-crafting expert's "only produce collectable
+    /// inline cards, never write files" (the foundation deletes tools from
+    /// the schema), not relying on the model obeying the prompt.
+    /// R-2 note: the op pipeline is unaware of session type, so this
+    /// allowlist applies to code sessions as well (the frontend entry point
+    /// is in the CodexAcpView.jsx `restrictTools` comment; policy-driven when
+    /// the S-1 split lands).
     #[test]
     fn build_send_message_op_restricts_tools_for_conversational_persona() {
         let bridge = fixture_bridge();
@@ -5410,9 +5974,11 @@ mod tests {
             "普通卡 / 未加持必须恢复 Pinvou 基础白名单"
         );
 
-        // code 会话同链路生效(原 build_send_message_op_restrict_tools_also_
-        // applies_to_code_sessions 的断言):op 链路不感知会话类型,S-1 分化若
-        // 往这里加会话类型分支,下面两条必须报警。
+        // Code sessions take effect through the same pipeline (assertions of
+        // the original build_send_message_op_restrict_tools_also_
+        // applies_to_code_sessions): the op pipeline is unaware of session
+        // type — if the S-1 split adds a session-type branch here, the two
+        // assertions below must alarm.
         let mut bridge = fixture_bridge();
         bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
             session_id == "sess-code-project"
@@ -5440,6 +6006,66 @@ mod tests {
             Some(crate::features::assistant::tool_policy::allowed_tool_names()),
             "code 会话未限制时必须恢复 Pinvou 基础白名单"
         );
+    }
+
+    /// PR #433 review (MAJOR): both server-side enforcement paths for
+    /// aux-session zero-tools must hold simultaneously —
+    /// ① spawn config `allowed_tools=Some(empty list)`: the foundation's
+    /// `Op::EditLastTurn` resend carries no tool surface and directly reuses
+    /// the engine config — this is the tool-surface source for edit-resends
+    /// (including the window of "the first operation after restart/reclaim is
+    /// an edit"); ② per-turn sends go through `turn_restrict_tools` (the same
+    /// decision function as `EnginePool::send_reserved_user_message`), and a
+    /// caller passing `restrict_tools=false` is still pressed to an empty
+    /// allowlist by the `aux-` prefix. Ordinary sessions are enforced on
+    /// neither side.
+    #[test]
+    fn aux_session_is_tool_free_on_spawn_config_and_send_op() {
+        let bridge = fixture_bridge();
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-aux-tool-free-{}-{:p}",
+            std::process::id(),
+            &bridge
+        ));
+        let roots = |name: &str| SessionRoots {
+            execution: root.join(format!("{name}-exec")),
+            ledger: root.join(format!("{name}-ledger")),
+            bound: false,
+        };
+
+        // ① spawn config: edit_last_turn resends reuse this allowed_tools.
+        let aux_cfg = bridge.build_engine_config_for_session_roots("aux-xyz", roots("aux"));
+        assert_eq!(
+            aux_cfg.allowed_tools,
+            Some(Vec::new()),
+            "aux 会话 spawn 配置必须零工具(空 allowed_tools),兜住 edit_last_turn 重发"
+        );
+
+        // ② per-turn send: a caller restrict=false is still forced to an
+        // empty list (the web_access_chat bypass surface).
+        let restrict =
+            crate::features::assistant::engine_pool::turn_restrict_tools("aux-xyz", false, false);
+        let op = bridge
+            .build_send_message_op("aux-xyz", "hi".to_string(), AppMode::Agent, None, restrict)
+            .expect("resolve test route");
+        match op {
+            Op::SendMessage { allowed_tools, .. } => assert_eq!(
+                allowed_tools,
+                Some(Vec::new()),
+                "aux 轮必须零工具(空白名单),与调用方传值无关"
+            ),
+            other => panic!("期望 SendMessage,得到 {other:?}"),
+        }
+
+        // Control: ordinary sessions' spawn config keeps the Pinvou
+        // allowlist, unharmed by the aux rule.
+        let normal_cfg = bridge.build_engine_config_for_session_roots("sess-plain", roots("plain"));
+        assert_eq!(
+            normal_cfg.allowed_tools,
+            Some(crate::features::assistant::tool_policy::allowed_tool_names()),
+            "普通会话 spawn 配置必须保持 Pinvou 基础白名单"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(feature = "benchmark-hooks")]
@@ -5514,8 +6140,9 @@ mod tests {
         ));
     }
 
-    /// 主 agent 步数预算:未显式配置时必须复用底座 `EngineConfig::default()` 的
-    /// max_steps(跟随上游调整),显式配置时 settings.json 优先。
+    /// Main-agent step budget: when not explicitly configured, the max_steps
+    /// of the foundation's `EngineConfig::default()` must be reused
+    /// (following upstream adjustments); an explicit settings.json value wins.
     #[test]
     fn engine_config_reuses_base_max_steps_default_and_respects_override() {
         let mut bridge = fixture_bridge();
@@ -5589,10 +6216,12 @@ mod tests {
         }
     }
 
-    /// 安全敏感字段必须固定——这些值改了会让 pinvou3 出现奇怪行为或越权。
+    /// Security-sensitive fields must stay fixed — changing these values
+    /// would give pinvou3 strange behavior or privilege escalation.
     #[test]
     fn engine_config_locks_critical_fields() {
-        // reasoning_effort=off 断言钉的是 LocalVllm 行为(默认预设已平台感知),显式设 LocalVllm。
+        // The reasoning_effort=off assertion pins LocalVllm behavior (the
+        // default preset is now platform-aware), so set LocalVllm explicitly.
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -5637,15 +6266,21 @@ mod tests {
         );
     }
 
-    /// 同尺守护:把推导出的 `token_threshold`(T,should_compact 的 raw 子集尺)换算回
-    /// conservative 全量尺后,必须 ≤ emergency 线 E,否则 emergency 抢先、nice LLM 摘要
-    /// 路径永远轮不到(倒置 bug)。四窗口参数化——2026-07-02 实证坐实写死 190K 在健康
-    /// 256K 机也倒置(emergency@198 早于 should_compact@255),故按窗口推导。
+    /// Same-ruler guard: the derived `token_threshold` (T, should_compact's
+    /// raw subset ruler), converted back to the conservative full ruler, must
+    /// be ≤ the emergency line E — otherwise emergency preempts and the nice
+    /// LLM summary path never runs (the inversion bug). Parameterized over
+    /// four windows — the 2026-07-02 field evidence proved a hardcoded 190K
+    /// inverts even on a healthy 256K machine (emergency@198 fires before
+    /// should_compact@255), hence the per-window derivation.
     ///
-    /// 换算用实测常数(docs/context-compaction-设计.md §6):k=1.5、pinned/recent R=4500、
-    /// system S=4000、framing=2500。旧测试锁的 `threshold + 20K ≤ budget` 是**跨尺**假
-    /// 不变式(T 用子集 raw、budget 用全量 conservative,差 ×1.5 乘性),已废弃。
-    /// 谁改 derive_compaction_threshold 或 max_output_tokens 导致倒置都会被这条挡下。
+    /// Conversion uses field-measured constants
+    /// (docs/context-compaction-设计.md §6): k=1.5, pinned/recent R=4500,
+    /// system S=4000, framing=2500. The old test's `threshold + 20K ≤ budget`
+    /// was a **cross-ruler** false invariant (T in subset raw, budget in full
+    /// conservative — a ×1.5 multiplicative gap) and has been retired.
+    /// Anyone changing derive_compaction_threshold or max_output_tokens into
+    /// an inversion is stopped by this test.
     #[test]
     fn forkguard_compaction_threshold_below_emergency_all_windows() {
         let (_lock, _env) =
@@ -5654,16 +6289,21 @@ mod tests {
         unsafe { std::env::set_var("DEEPSEEK_MAX_OUTPUT_TOKENS", "24576") };
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS") };
-        // 把 T 从 should_compact 的 raw 子集尺 → emergency 的 conservative 全量尺
+        // Convert T from should_compact's raw subset ruler → emergency's
+        // conservative full ruler
         const K_NUM: usize = 3; // ÷ K_DEN == ×1.5
         const K_DEN: usize = 2;
         const R: usize = 4_500; // pinned(近 4 条 + query)raw,实测 4,358,与会话长无关
         const S: usize = 4_000; // system 保守估算
         const FRAMING: usize = 2_500; // messages.len()×12+48,长会话量级
 
-        // 正常窗口:同尺不变式必须成立(nice 先于 emergency)。emergency **直接对拍底座**
-        // context_input_budget_for_route(与 derive 同源)——不再镜像 `window-output-1024`。上游改
-        // output 预留/公式,本测试自动跟随、始终验**真跨仓一致**(根治的守护核心;不依赖 env 值)。
+        // Normal windows: the same-ruler invariant must hold (nice before
+        // emergency). emergency is **compared directly against the
+        // foundation's** context_input_budget_for_route (same source as
+        // derive) — no longer mirroring `window-output-1024`. When upstream
+        // changes the output reservation/formula, this test follows
+        // automatically and always verifies **true cross-repo consistency**
+        // (the core of the root-fix guard; does not depend on env values).
         for window in [262_144u32, 131_072, 65_536] {
             let mut bridge = fixture_bridge();
             bridge.probed_context_tokens = Some(window);
@@ -5676,7 +6316,8 @@ mod tests {
             )
             .expect("探测窗口 → 底座必给出 budget");
             let t = bridge.build_engine_config().compaction.token_threshold;
-            // T(raw 子集)换算回 conservative 全量:≈ k·(T + R) + S + framing
+            // T (raw subset) converted back to conservative full:
+            // ≈ k·(T + R) + S + framing
             let conservative_equiv = (t + R) * K_NUM / K_DEN + S + FRAMING;
             assert!(
                 conservative_equiv <= emergency,
@@ -5685,8 +6326,10 @@ mod tests {
             );
         }
 
-        // 病态小窗口(O > W):公式自然算成负值 → saturating + clamp 到 floor,
-        // 只保证不 panic / 不归零(threshold=0 会退化成按消息数触发的压缩风暴)。
+        // Pathologically small window (O > W): the formula naturally yields
+        // a negative value → saturating + clamped to the floor, only
+        // guaranteeing no panic / no zeroing (threshold=0 would degrade into
+        // a message-count-triggered compaction storm).
         let mut tiny = fixture_bridge();
         tiny.probed_context_tokens = Some(16_384);
         let t = tiny.build_engine_config().compaction.token_threshold;
@@ -5695,26 +6338,32 @@ mod tests {
             "病态小窗口 T 必须 clamp 到 floor ≥4096(防压缩风暴),实得 {t}"
         );
 
-        // 极端小窗口(W<5461 → W*3/4<4096):clamp 上界 < floor,若不 `.max(4_096)`
-        // 则 `Ord::clamp` 的 min>max 断言 panic(build_engine_config 崩、engine 起不来)。
-        // LM Studio 默认 4096 / 小窗口 vLLM 探测即触发。断言不 panic 且 T 落 floor。
+        // Extremely small window (W<5461 → W*3/4<4096): the clamp upper bound
+        // < the floor; without `.max(4_096)` the `Ord::clamp` min>max
+        // assertion panics (build_engine_config crashes, the engine cannot
+        // start). Triggered by LM Studio's default 4096 / a small-window vLLM
+        // probe. Assert no panic and T lands on the floor.
         for w in [4_096u32, 5_460, 8_192] {
             let mut b = fixture_bridge();
             b.probed_context_tokens = Some(w);
-            let t = b.build_engine_config().compaction.token_threshold; // 不得 panic
+            let t = b.build_engine_config().compaction.token_threshold; // must not panic
             assert_eq!(t, 4_096, "极端小窗口 W={w} 应 clamp 到 floor 4096,实得 {t}");
         }
     }
 
-    /// probed_context_tokens=Some → 必须填进 active_route_limits.context_tokens
-    /// (底座 emergency 线 + footer 百分比据此按真实 max_model_len 计);None → 本地 vLLM
+    /// probed_context_tokens=Some → must be filled into
+    /// active_route_limits.context_tokens (the foundation's emergency line +
+    /// the footer percentage compute from the real max_model_len by this);
+    /// None → local vLLM
     /// still gets model hint/128K window + tiered output (262144 window→65536,
     /// no longer the old 24K budget). If a future sync changes the
     /// construction block back to passing through default, this test fails
     /// immediately.
     #[test]
     fn forkguard_probed_window_fills_route_limits() {
-        // 本测试钉死本地 vLLM 的 route_limits 行为(默认预设已平台感知),两处 fixture 都显式设 LocalVllm。
+        // This test pins local vLLM's route_limits behavior (the default
+        // preset is now platform-aware); both fixtures set LocalVllm
+        // explicitly.
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -5753,16 +6402,21 @@ mod tests {
         );
     }
 
-    /// EngineConfig.search_provider 必须由 prefs.search 翻译,不能透传上游 default。
-    /// 默认 prefs 是 Bing(国情:DDG 在大陆被 DNS 污染 + SNI 重置,完全不可达;
-    /// 底座自身默认仍是 DuckDuckGo,应用侧默认 Bing 由本桥接显式注入)。
-    /// 切到 Metaso/Bocha 时 prefs.search.api_key 必须透传到 EngineConfig.search_api_key
-    /// (Bocha 必填,Metaso 留空可走底座内置共享 key)。
-    /// 下次 sync 若 destructure 块把 search_provider/search_api_key 改回透传 default,
-    /// 本测试立刻报错。
+    /// EngineConfig.search_provider must be translated from prefs.search,
+    /// never passed through from the upstream default.
+    /// The default prefs are Bing (local reality: DDG is DNS-poisoned +
+    /// SNI-reset in the mainland, completely unreachable; the foundation's
+    /// own default is still DuckDuckGo, and the app-side default Bing is
+    /// injected explicitly by this bridge).
+    /// When switched to Metaso/Bocha, prefs.search.api_key must be passed
+    /// through to EngineConfig.search_api_key (Bocha requires it; Metaso with
+    /// an empty key can use the foundation's built-in shared key).
+    /// If a future sync changes the destructure block back to passing
+    /// search_provider/search_api_key through the default, this test fails
+    /// immediately.
     #[test]
     fn forkguard_search_provider_translates_from_prefs() {
-        // 默认 prefs → Bing
+        // default prefs → Bing
         let cfg = fixture_bridge().build_engine_config();
         assert_eq!(
             cfg.search_provider,
@@ -5770,7 +6424,7 @@ mod tests {
         );
         assert!(cfg.search_api_key.is_none());
 
-        // 切 Metaso + 自定义 key
+        // switch to Metaso + custom key
         let mut bridge = fixture_bridge();
         bridge.prefs.search = prefs::SearchPrefs {
             provider: prefs::SearchProvider::Metaso,
@@ -5784,9 +6438,11 @@ mod tests {
         );
         assert_eq!(cfg.search_api_key.as_deref(), Some("mk-user-key"));
 
-        // 切 Metaso + 空白 key: bridge 层必须归一化成 None,让底座回退内置共享 key。
-        // 若透传 Some(""),旧底座会收到 Metaso HTTP 200 + errCode=2005,
-        // 并可能误显示成 No results found。
+        // switch to Metaso + blank key: the bridge layer must normalize it to
+        // None, letting the foundation fall back to the built-in shared key.
+        // Passing Some("") through would make an old foundation receive a
+        // Metaso HTTP 200 + errCode=2005 and possibly misdisplay it as
+        // No results found.
         let mut bridge = fixture_bridge();
         bridge.prefs.search = prefs::SearchPrefs {
             provider: prefs::SearchProvider::Metaso,
@@ -5800,7 +6456,8 @@ mod tests {
         );
         assert!(cfg.search_api_key.is_none());
 
-        // 切 Bocha + 留空 key (UX 上前端应阻止,但 bridge 层透传 None)
+        // switch to Bocha + empty key (UX-wise the frontend should block
+        // this, but the bridge layer passes None through)
         let mut bridge = fixture_bridge();
         bridge.prefs.search = prefs::SearchPrefs {
             provider: prefs::SearchProvider::Bocha,
@@ -5814,7 +6471,7 @@ mod tests {
         );
         assert!(cfg.search_api_key.is_none());
 
-        // 切 Baidu + key (千帆 AI Search,key 必填)
+        // switch to Baidu + key (Qianfan AI Search, key required)
         let mut bridge = fixture_bridge();
         bridge.prefs.search = prefs::SearchPrefs {
             provider: prefs::SearchProvider::Baidu,
@@ -5828,7 +6485,8 @@ mod tests {
         );
         assert_eq!(cfg.search_api_key.as_deref(), Some("bce-v3-user-key"));
 
-        // 切 Baidu + 空白 key 同样归一化为 None,由底座报明确缺 key 错误。
+        // switch to Baidu + blank key: likewise normalized to None, letting
+        // the foundation report a clear missing-key error.
         let mut bridge = fixture_bridge();
         bridge.prefs.search = prefs::SearchPrefs {
             provider: prefs::SearchProvider::Baidu,
@@ -5842,7 +6500,8 @@ mod tests {
         );
         assert!(cfg.search_api_key.is_none());
 
-        // 切 Tavily + key (海外 agent 搜索 API,tvly- key 必填)
+        // switch to Tavily + key (overseas agent search API, tvly- key
+        // required)
         let mut bridge = fixture_bridge();
         bridge.prefs.search = prefs::SearchPrefs {
             provider: prefs::SearchProvider::Tavily,
@@ -5857,11 +6516,14 @@ mod tests {
         assert_eq!(cfg.search_api_key.as_deref(), Some("tvly-user-key"));
     }
 
-    /// [pinvou3-fork-guard #18] network_policy 必须 Some 且**只信 fake-ip 占位段**。
-    /// 产品跑在用户 clash/TUN fake-ip 环境,域名全解析到 198.18/15,需放行;
-    /// 但绝不能信任真实私网(早期 `proxy=["*"]` 会放行任意域名 → 内网 SSRF)。
-    /// 上游改 EngineConfig 字段后 bridge 若静默传 None,fake-ip 下联网全废 /
-    /// 或信任过宽。
+    /// [pinvou3-fork-guard #18] network_policy must be Some and **trust only
+    /// the fake-ip placeholder range**. The product runs in the user's
+    /// clash/TUN fake-ip environment where every domain resolves into
+    /// 198.18/15, which must be allowed; but a real private network must
+    /// never be trusted (the early `proxy=["*"]` would let any domain
+    /// through → intranet SSRF). If an upstream EngineConfig change makes
+    /// the bridge silently pass None, networking under fake-ip either dies
+    /// entirely or trusts too broadly.
     #[test]
     fn forkguard_network_policy_trusts_fakeip_range_only() {
         let cfg = fixture_bridge().build_engine_config();
@@ -5879,7 +6541,7 @@ mod tests {
         );
     }
 
-    /// 语言切换必须传到 engine.locale_tag。
+    /// The language switch must reach engine.locale_tag.
     #[test]
     fn locale_tag_follows_language_pref() {
         let mut bridge = fixture_bridge();
@@ -5888,8 +6550,10 @@ mod tests {
         assert_eq!(bridge.build_engine_config().locale_tag, "en");
     }
 
-    /// en locale 的 system prompt 必须带英文语言指令(底座 en→None,pinvou3 补)。
-    /// zh-Hans 走底座 bookend,不在 inline instructions 里重复补。
+    /// The en locale's system prompt must carry the English language
+    /// directive (the foundation returns None for en; pinvou3 fills the gap).
+    /// zh-Hans goes through the foundation's bookend and must not be
+    /// duplicated in the inline instructions.
     #[test]
     fn en_locale_injects_english_language_directive() {
         let mut bridge = fixture_bridge();
@@ -5910,7 +6574,7 @@ mod tests {
         );
     }
 
-    /// allow_shell 默认 true（pinvou3 yolo 模式需要）。
+    /// allow_shell defaults to true (needed by pinvou3's yolo mode).
     #[test]
     fn allow_shell_defaults_to_true() {
         let (_lock, _env) = locked_env(&["PINVOU3_ALLOW_SHELL"]);
@@ -5929,7 +6593,7 @@ mod tests {
         assert!(!bridge.allow_shell());
     }
 
-    /// env 优先级高于 prefs。
+    /// env takes priority over prefs.
     #[test]
     fn allow_shell_env_overrides_prefs() {
         let (_lock, _env) = locked_env(&["PINVOU3_ALLOW_SHELL"]);
@@ -5967,8 +6631,9 @@ mod tests {
             "connector-introspection hook (pinvou3-sensitive-firewall, \
              security segment migrated to execpolicy) must stay registered"
         );
-        // 平台脚本命令契约(原 sensitive_firewall_hook_uses_platform_script 的断言):
-        // Windows 用 PowerShell 脚本,其余平台用 bash 脚本。
+        // Platform script command contract (assertions of the original
+        // sensitive_firewall_hook_uses_platform_script): Windows uses a
+        // PowerShell script, other platforms use a bash script.
         let firewall_command = hooks
             .hooks
             .iter()
@@ -6064,7 +6729,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(workspace);
     }
 
-    /// 路径必须落在 ~/.pinvou3/ 下，绝不能落 ~/.deepseek/。
+    /// Paths must land under ~/.pinvou3/, never under ~/.deepseek/.
     #[test]
     fn engine_config_paths_isolated_from_deepseek() {
         let cfg = fixture_bridge().build_engine_config();
@@ -6079,9 +6744,10 @@ mod tests {
         assert!(!cfg.memory_path.starts_with(&ds));
     }
 
-    /// 阶段 C：bridge.workspace 必须透传到 EngineConfig.workspace。
-    /// 不直接测 boot()——boot 会 mutate PINVOU3_HOME 跟其他测试 race。
-    /// 单独验证 paths::user_home_dir() 的逻辑见 paths.rs 测试。
+    /// Phase C: bridge.workspace must be passed through to
+    /// EngineConfig.workspace. boot() is not tested directly — boot mutates
+    /// PINVOU3_HOME and would race other tests. The paths::user_home_dir()
+    /// logic is verified separately in the paths.rs tests.
     #[test]
     fn engine_config_workspace_follows_bridge_field() {
         let mut bridge = fixture_bridge();
@@ -6092,8 +6758,8 @@ mod tests {
         );
     }
 
-    /// 把 build_send_message_op 返回的 Op 解构成 (allow_shell, trust_mode)，
-    /// 失败 panic（测试用 helper）。
+    /// Destructure the Op returned by build_send_message_op into
+    /// (allow_shell, trust_mode); panics on failure (test helper).
     fn extract_shell_trust(op: Op) -> (bool, bool) {
         match op {
             Op::SendMessage {
@@ -6105,12 +6771,15 @@ mod tests {
         }
     }
 
-    /// L2-5: Yolo 模式 → trust_mode=true（pinvou3 是本地单用户工具，
-    /// yolo 路径默认放开 trust 让产物落任意用户授权目录）。
+    /// L2-5: Yolo mode → trust_mode=true (pinvou3 is a local single-user
+    /// tool; the yolo path opens trust by default so artifacts can land in
+    /// any user-authorized directory).
     #[test]
     fn bridge_yolo_mode_trust_mode_true() {
-        // remove_var 是无保护的 env 写,须持 crate 级 ENV_LOCK 与 allow_shell_* 组串行,
-        // 否则去掉 --test-threads=1 后会与同组测试并发污染 PINVOU3_ALLOW_SHELL。
+        // remove_var is an unprotected env write and must be serialized with
+        // the allow_shell_* group under the crate-level ENV_LOCK, otherwise
+        // removing --test-threads=1 would let it concurrently pollute
+        // PINVOU3_ALLOW_SHELL with tests of the same group.
         let (_lock, _env) = locked_env(&["PINVOU3_ALLOW_SHELL"]);
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("PINVOU3_ALLOW_SHELL") };
@@ -6122,8 +6791,9 @@ mod tests {
         assert!(trust_mode, "Yolo 模式 trust_mode 必须 true");
     }
 
-    /// L2-6: Plan 模式 → trust_mode=true（P1 修复回归，原本是 false 导致
-    /// list_dir 跨 session workspace 边界报 PathEscape）。
+    /// L2-6: Plan mode → trust_mode=true (P1 fix regression; it was false
+    /// before, making list_dir report PathEscape across session workspace
+    /// boundaries).
     #[test]
     fn bridge_plan_mode_trust_mode_true_after_p1() {
         let bridge = fixture_bridge();
@@ -6137,14 +6807,17 @@ mod tests {
         );
     }
 
-    /// L2-7: Plan 模式 → allow_shell=true（让底座 tool_setup.rs 正常路由
-    /// shell 工具到 ReadOnly sandbox + 只读工具白名单；allow_shell=false
-    /// 会直接屏蔽掉 shell 工具入口，Plan 阶段 AI 反而连只读 exec_shell ls
-    /// 都用不了）。
+    /// L2-7: Plan mode → allow_shell=true (lets the foundation's
+    /// tool_setup.rs route shell tools normally to the ReadOnly sandbox +
+    /// read-only tool allowlist; allow_shell=false would block the shell tool
+    /// entry outright, and the AI in the Plan phase could not even run a
+    /// read-only exec_shell ls).
     #[test]
     fn bridge_plan_mode_allow_shell_true() {
-        // 本测试既 remove_var 又经 allow_shell_for_prefs() 读 PINVOU3_ALLOW_SHELL 断言 true;
-        // 不持锁时会与 allow_shell_env_overrides_prefs(临界区内 set "false")竞态 → 断言偶发失败。
+        // This test both remove_vars and asserts true by reading
+        // PINVOU3_ALLOW_SHELL via allow_shell_for_prefs(); without the lock it
+        // would race allow_shell_env_overrides_prefs (which sets "false"
+        // inside its critical section) → flaky assertion failures.
         let (_lock, _env) = locked_env(&["PINVOU3_ALLOW_SHELL"]);
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::remove_var("PINVOU3_ALLOW_SHELL") };
@@ -6159,11 +6832,13 @@ mod tests {
         );
     }
 
-    /// L2-8: workspace 路径已从静态 system **移出** → per-turn `<turn_meta>` 的
-    /// `Current workspace`(见 engine.rs turn_metadata_block)。每 session 变的路径若进
-    /// cached system prefix 会让 vLLM prefix-cache MISS、工具调用退化成裸文本(实测 single
-    /// subagent 25%→稳态~100%),故 build_session_system_prompt 不再含 session-specific
-    /// 路径,保持跨 session 字节静态。
+    /// L2-8: the workspace path has been **moved out** of the static system →
+    /// the per-turn `<turn_meta>`'s `Current workspace` (see engine.rs
+    /// turn_metadata_block). A per-session-varying path entering the cached
+    /// system prefix would cause vLLM prefix-cache MISSes and degrade tool
+    /// calls into bare text (measured: single subagent 25%→steady ~100%), so
+    /// build_session_system_prompt no longer contains session-specific paths
+    /// and stays byte-static across sessions.
     #[test]
     fn instructions_md_session_workspace_subst() {
         let bridge = fixture_bridge();
@@ -6182,9 +6857,11 @@ mod tests {
 
     #[test]
     fn yolo_has_no_mode_reminder_plan_reminder_has_no_write_content() {
-        // 大产物分块实测不再 load-bearing(397 行一次写 73.8s 不撞 timeout)→ YOLO_REMINDER 砍光,
-        // Yolo 生产主路径无 mode reminder(per-turn 只剩 sudo,由 build_send_message_op 的
-        // mode 匹配产出 None)。
+        // Large-artifact chunking measured no longer load-bearing (a 397-line
+        // one-shot write at 73.8s does not hit the timeout) → YOLO_REMINDER
+        // was cut entirely; the Yolo production main path has no mode
+        // reminder (per-turn only sudo remains, produced as None by
+        // build_send_message_op's mode match).
         let bridge = fixture_bridge();
         let yolo = match bridge
             .build_send_message_op("sess-plain", "hi".into(), AppMode::Agent, None, false)
@@ -6197,7 +6874,8 @@ mod tests {
             !yolo.contains("Plan 模式(只读调研)"),
             "Yolo 不该再有 mode reminder(大产物分块已砍)"
         );
-        // Plan 仍有 reminder(经会话策略产出,D-2),但只读不写,不含任何写文件/分块内容。
+        // Plan still has a reminder (produced by the session policy, D-2),
+        // but it is read-only and contains no write-file/chunking content.
         let plan = SessionPolicy::for_mode(SessionMode::Plain)
             .plan_reminder()
             .expect("plan reminder exists");
@@ -6207,8 +6885,10 @@ mod tests {
         );
     }
 
-    /// D-2 行为不变断言:Plan reminder 经会话策略产出,本期 plain/code 两模式同文——
-    /// code 会话 op 注入的 reminder 与 plain 逐字节相等(R-1 才按模式分化)。
+    /// D-2 behavior-invariance assertion: the Plan reminder is produced by
+    /// the session policy, and this phase's plain/code modes share the same
+    /// text — the reminder a code session's op injects is byte-identical to
+    /// plain's (mode differentiation only arrives with R-1).
     #[test]
     fn build_send_message_op_plan_reminder_same_text_for_plain_and_code() {
         let content_of = |bridge: &Pinvou3Bridge, session_id: &str| match bridge
@@ -6225,7 +6905,8 @@ mod tests {
             other => panic!("期望 SendMessage,得到 {other:?}"),
         };
         let mut bridge = fixture_bridge();
-        // 未注入 predicate:按 plain 缺省(与历史 reminder_for 不感知会话等价)。
+        // No predicate injected: plain by default (equivalent to the
+        // historical reminder_for being session-unaware).
         let plain = content_of(&bridge, "sess-plain");
         bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
             session_id == "sess-code"
@@ -6238,20 +6919,24 @@ mod tests {
         assert_eq!(plain, code, "本期两模式 Plan reminder 必须同文(行为不变)");
     }
 
-    /// D-2 行为断言:整形按策略数据驱动。plain 会话无模式差量（Git 已放开）；
-    /// code 会话按策略追加缺席工具且幂等不重复(连接器 scope 切换
-    /// 由 code_session_tool_shaping_uses_code_scope_for_connectors 覆盖)。
+    /// D-2 behavior assertion: shaping is data-driven by the policy. Plain
+    /// sessions have no mode delta (Git has been opened up); code sessions
+    /// get absent tools appended per policy, idempotently without duplicates
+    /// (connector scope switching is covered by
+    /// code_session_tool_shaping_uses_code_scope_for_connectors).
     #[test]
     fn shape_disallowed_tools_follows_session_policy() {
         let tools = vec!["kb_search".to_string(), "custom_disabled".to_string()];
         let mut bridge = fixture_bridge();
-        // 未注入 predicate → plain:保留原禁用项，无模式差量追加。
+        // No predicate injected → plain: keep the original disabled items,
+        // no mode-delta appends.
         let plain = bridge.shape_disallowed_tools("sess-plain", tools.clone());
         assert_eq!(plain, tools.clone());
         bridge.set_code_session_predicate(std::sync::Arc::new(|session_id: &str| {
             session_id == "sess-code"
         }));
-        // code:按策略追加缺席工具,保留非连接器禁用项,且不重复。
+        // code: absent tools appended per policy, non-connector disabled
+        // items kept, and no duplicates.
         let shaped = bridge.shape_disallowed_tools("sess-code", tools.clone());
         for kept in &tools {
             assert!(shaped.contains(kept), "非连接器禁用项应保留: {shaped:?}");
@@ -6279,8 +6964,10 @@ mod tests {
         }
     }
 
-    /// 多引擎并发隔离基石(C 方案 P-no-disk 版): 两个不同 session 的 EngineConfig
-    /// 必须使用不同 workspace 隔离产物,同时保持静态 instructions 前缀一致以便缓存复用。
+    /// The bedrock of multi-engine concurrency isolation (plan C, P-no-disk
+    /// version): two different sessions' EngineConfigs must use different
+    /// workspaces to isolate artifacts, while keeping the static instructions
+    /// prefix identical for cache reuse.
     #[test]
     fn engine_config_for_session_keeps_isolation_without_prompt_variance() {
         // This test reads env-derived paths (PINVOU3_HOME -> bundle_browser_wrapper)
@@ -6313,8 +7000,9 @@ mod tests {
         assert!(cfg_a.workspace.to_string_lossy().contains(a));
         assert!(cfg_b.workspace.to_string_lossy().contains(b));
 
-        // Inline source 的 name 会被渲染进 <instructions source="...">,所以它也是
-        // system prompt 文本的一部分,不能携带 session_id。
+        // An Inline source's name is rendered into
+        // <instructions source="...">, so it is also part of the system prompt
+        // text and must not carry a session_id.
         let inline_of = |s: &InstructionSource| -> (String, String) {
             match s {
                 InstructionSource::Inline { name, content } => (name.clone(), content.clone()),
@@ -6334,17 +7022,21 @@ mod tests {
             content_a, content_b,
             "跨 session 的静态 instructions 必须一致"
         );
-        // session_id / workspace 已移出静态 content,走 per-turn <turn_meta>
-        // (见 build_session_system_prompt 注释:per-session 变动进 cache 前缀会
-        // 触发 vLLM prefix-cache MISS → 工具调用漂移)。session 隔离由不同 workspace
-        // 和每个 session 独立的 EngineConfig/Engine 实例负责,name 仅是展示标签。
+        // session_id / workspace have been moved out of the static content
+        // and travel via the per-turn <turn_meta> (see the
+        // build_session_system_prompt comment: a per-session variation in the
+        // cache prefix triggers vLLM prefix-cache MISSes → tool-call drift).
+        // Session isolation is owned by the different workspaces and each
+        // session's independent EngineConfig/Engine instance; the name is
+        // only a display label.
 
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn engine_config_for_session_keeps_mcp_artifacts_public() {
-        // locked_env 一步获取 crate 级 ENV_LOCK + EnvGuard(保护 PINVOU3_HOME 写并恢复)。
+        // locked_env acquires the crate-level ENV_LOCK + EnvGuard in one step
+        // (protecting the PINVOU3_HOME write and restoring it).
         let (_lock, _env) = locked_env(&["PINVOU3_HOME", "PINVOU3_SESSION_ARTIFACTS"]);
         let root = std::env::temp_dir().join(format!(
             "pinvou3-mcp-artifacts-public-{}-{}",
@@ -6378,10 +7070,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// OpenaiCompatible preset 必须透传任意模型名（如自定义兼容端点模型）,
-    /// 而不是回退到默认。9e296c4 模型列表化后,legacy preset+custom_* 经
-    /// `migrate_models()`(每次 `UserPrefs::load()` 都跑)物化成 active SavedModel
-    /// 才生效——测试显式调一次模拟之。
+    /// The OpenaiCompatible preset must pass through an arbitrary model name
+    /// (e.g. a custom compatible-endpoint model) instead of falling back to
+    /// the default. Since the 9e296c4 model list-ification, the legacy
+    /// preset+custom_* pair is materialized into an active SavedModel by
+    /// `migrate_models()` (run on every `UserPrefs::load()`) before taking
+    /// effect — the test invokes it once explicitly to simulate this.
     #[test]
     fn openai_compatible_passthrough_model_name() {
         let (_lock, _env) = locked_env(&[
@@ -6734,12 +7428,14 @@ mod tests {
         }
     }
 
-    /// 用户显式设置的 `SavedModel.reasoning_effort` 必须覆盖 provider 默认
-    /// （此处验证 off 覆盖 moonshot 默认 high），且三个注入点保持一致。
-    /// 注:provider 默认值本身(moonshot→high)由
-    /// known_reasoning_routes_preserve_provider_identity_and_stream_shape 的
-    /// Kimi 首case覆盖;未显式设置时 request_reasoning_effort() 的默认注入
-    /// 断言保留在下方本测试的 baseline 段。
+    /// A user-explicit `SavedModel.reasoning_effort` must override the
+    /// provider default (here verifying off overriding moonshot's default
+    /// high), consistently across the three injection points.
+    /// Note: the provider default itself (moonshot→high) is covered by the
+    /// first Kimi case of
+    /// known_reasoning_routes_preserve_provider_identity_and_stream_shape;
+    /// the default-injection assertion for an unset value is kept in the
+    /// baseline section of this test below.
     #[test]
     fn explicit_reasoning_effort_overrides_provider_default() {
         let (_lock, _env) = locked_env(&[
@@ -6757,8 +7453,9 @@ mod tests {
             "sk-test",
         );
 
-        // baseline:未显式设置时 Moonshot 默认 high
-        // (原 moonshot_model_defaults_to_high_reasoning_effort 的默认断言)。
+        // baseline: Moonshot defaults to high when not explicitly set
+        // (the default assertion of the original
+        // moonshot_model_defaults_to_high_reasoning_effort).
         assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("high"));
 
         bridge.prefs.advanced.saved_models[0].reasoning_effort = Some("off".to_string());
@@ -6785,7 +7482,8 @@ mod tests {
         );
     }
 
-    /// env 优先级始终高于 settings.json（兼容 run-dev.sh / harness）。
+    /// env always takes priority over settings.json (compatible with
+    /// run-dev.sh / harness).
     #[test]
     fn env_always_overrides_settings() {
         let (_lock, _env) = locked_env(&[
@@ -6860,7 +7558,8 @@ mod tests {
         assert_eq!(bridge.api_key(), "saved-key");
     }
 
-    /// DtConfig 在 OpenaiCompatible 模式下默认思考深度为 high（不强制 off）。
+    /// DtConfig defaults the thinking depth to high in OpenaiCompatible mode
+    /// (not forced off).
     #[test]
     fn remote_provider_defaults_to_high_reasoning_effort() {
         let (_lock, _env) = locked_env(&[
@@ -6881,8 +7580,9 @@ mod tests {
         assert_eq!(cfg.reasoning_effort.as_deref(), Some("high"));
     }
 
-    /// 本地 OpenAI 兼容端点（loopback，如 LM Studio/Ollama）保持旧行为：
-    /// 不注入 reasoning_effort（None），避免行为漂移。
+    /// Local OpenAI-compatible endpoints (loopback, e.g. LM Studio/Ollama)
+    /// keep the old behavior: no reasoning_effort injected (None), avoiding
+    /// behavior drift.
     #[test]
     fn local_openai_compatible_endpoint_keeps_none_reasoning_effort() {
         let (_lock, _env) = locked_env(&[
@@ -6904,8 +7604,9 @@ mod tests {
         assert_eq!(bridge.build_dt_config().reasoning_effort, None);
     }
 
-    /// 本地 loopback 端点探测出 Ollama：走底座 ollama provider（think 开关），
-    /// 默认关思考（off → think=false），无需鉴权。
+    /// A local loopback endpoint probed as Ollama: use the foundation's
+    /// ollama provider (think toggle), default thinking off (off →
+    /// think=false), no auth required.
     #[test]
     fn local_ollama_probe_maps_to_ollama_wire_and_defaults_off() {
         let (_lock, _env) = locked_env(&[
@@ -6937,8 +7638,9 @@ mod tests {
         assert_eq!(providers.ollama.model.as_deref(), Some("qwen3:8b"));
     }
 
-    /// 本地 loopback 端点探测出 vLLM（OpenAI 兼容 preset 指向 vLLM）：走 vllm
-    /// provider（档位 wire），默认关思考。
+    /// A local loopback endpoint probed as vLLM (an OpenAI-compatible preset
+    /// pointing at vLLM): use the vllm provider (tier wire), default thinking
+    /// off.
     #[test]
     fn local_vllm_probe_maps_to_vllm_wire_and_defaults_off() {
         let (_lock, _env) = locked_env(&[
@@ -6969,8 +7671,9 @@ mod tests {
         );
     }
 
-    /// 本地 loopback 端点探测出 LM Studio / 通用服务：保持 openai wire route
-    /// （底座对 openai 的 reasoning_effort 是空操作），不注入档位。
+    /// A local loopback endpoint probed as LM Studio / generic: keep the
+    /// openai wire route (the foundation's reasoning_effort for openai is a
+    /// no-op) and inject no tier.
     #[test]
     fn local_lmstudio_or_generic_probe_keeps_openai_wire_without_effort() {
         for kind in [LocalServerKind::LmStudio, LocalServerKind::Generic] {
@@ -7069,11 +7772,14 @@ mod tests {
         assert_eq!(bridge.request_reasoning_effort(), None);
     }
 
-    /// 显式保存的档位优先于「本地 generic 端点不注入」默认：用户在 LM Studio/
-    /// 通用端点存过档位（如 web 预览静态四档时代的 off）时，stored 值直接透传
-    /// ——「显式选择优先」是既定设计；openai wire route 对非 gpt-5.x reasoning
-    /// 家族模型的注入是空操作，实际 wire 无感。本测试锁定该优先级，防止后续
-    /// 误改为「本地端点一律丢弃 stored 档位」。
+    /// An explicitly stored tier takes priority over the "local generic
+    /// endpoint does not inject" default: when the user has stored a tier on
+    /// an LM Studio/generic endpoint (e.g. an off from the web-preview static
+    /// four-tier era), the stored value passes through directly — "explicit
+    /// choice wins" is the established design; the openai wire route's
+    /// injection for non-gpt-5.x reasoning-family models is a no-op, so the
+    /// actual wire is unaffected. This test locks that priority, preventing a
+    /// future mistake of "local endpoints always discard the stored tier".
     #[test]
     fn local_openai_compatible_stored_effort_wins_over_none_default() {
         let (_lock, _env) = locked_env(&[
@@ -7103,8 +7809,10 @@ mod tests {
         );
     }
 
-    /// LAN（RFC1918 私网）端点探测出 Ollama：同样豁免 API key——Ollama 默认
-    /// 无鉴权、底座允许空 key，强制要求 key 是纯 UI 摩擦（vLLM 已豁免）。
+    /// A LAN (RFC1918 private) endpoint probed as Ollama: likewise exempt
+    /// from the API key — Ollama defaults to no auth and the foundation
+    /// allows an empty key, so requiring a key is pure UI friction (vLLM is
+    /// already exempt).
     #[test]
     fn lan_ollama_probe_does_not_require_api_key() {
         let (_lock, _env) = locked_env(&[
@@ -7127,7 +7835,8 @@ mod tests {
             !bridge.api_key_required(),
             "LAN Ollama 同样默认无鉴权，不应强制 key"
         );
-        // 对照：LAN 上的通用 OpenAI 兼容端点（未探测出免鉴权服务）仍要求 key。
+        // Control: a generic OpenAI-compatible endpoint on the LAN (no
+        // auth-free service probed) still requires a key.
         let mut generic = fixture_bridge();
         set_active_model(
             &mut generic,
@@ -7139,7 +7848,8 @@ mod tests {
         assert!(generic.api_key_required());
     }
 
-    /// 本地 Ollama 上用户显式设置的思考档位优先于默认 off。
+    /// On a local Ollama, a user-explicit thinking tier takes priority over
+    /// the default off.
     #[test]
     fn local_ollama_explicit_effort_overrides_default_off() {
         let (_lock, _env) = locked_env(&[
@@ -7445,7 +8155,7 @@ mod tests {
         );
     }
 
-    /// Deepseek preset 应返回正确的默认 URL 和模型。
+    /// The Deepseek preset should return the correct default URL and model.
     #[test]
     fn deepseek_preset_defaults() {
         let (_lock, _env) = locked_env(&[
@@ -7476,9 +8186,11 @@ mod tests {
         ));
     }
 
-    /// 官方 DeepSeek API 只能接收裸模型名。若用户手动把 API 地址改成
-    /// api.deepseek.com,bridge 必须把 provider 纠正为 deepseek,避免底座按 vLLM /
-    /// sglang 形状把 deepseek-v4-flash 改写成 deepseek-ai/DeepSeek-V4-Flash。
+    /// The official DeepSeek API only accepts bare model names. If the user
+    /// manually changes the API address to api.deepseek.com, the bridge must
+    /// correct the provider to deepseek, preventing the foundation from
+    /// rewriting deepseek-v4-flash into deepseek-ai/DeepSeek-V4-Flash in the
+    /// vLLM / sglang shape.
     #[test]
     fn official_deepseek_base_url_forces_deepseek_provider() {
         let (_lock, _env) = locked_env(&[
@@ -7512,8 +8224,10 @@ mod tests {
         );
     }
 
-    /// 即便环境变量残留 vLLM provider / provider-prefixed 模型,只要有效
-    /// base_url 是官方 DeepSeek,bridge 就必须发官方 API 接受的 provider+模型名。
+    /// Even with a leftover vLLM provider / provider-prefixed model in the
+    /// environment variables, as long as the effective base_url is the
+    /// official DeepSeek one, the bridge must send the provider+model name
+    /// the official API accepts.
     #[test]
     fn official_deepseek_base_url_canonicalizes_env_mismatch() {
         let (_lock, _env) = locked_env(&[
@@ -7552,7 +8266,7 @@ mod tests {
         );
     }
 
-    /// Qwen preset 应返回正确的默认 URL 和模型。
+    /// The Qwen preset should return the correct default URL and model.
     #[test]
     fn qwen_preset_defaults() {
         let (_lock, _env) = locked_env(&[
@@ -7584,8 +8298,9 @@ mod tests {
         );
     }
 
-    /// Anthropic 模型必须走底座内建 anthropic provider(Messages 原生协议),
-    /// 凭证与地址写入 providers.anthropic,不得落入 openai/vllm 表。
+    /// Anthropic models must use the foundation's built-in anthropic provider
+    /// (native Messages protocol); credentials and address go into
+    /// providers.anthropic and must not fall into the openai/vllm tables.
     #[test]
     fn anthropic_preset_routes_to_native_messages_provider() {
         let (_lock, _env) = locked_env(&[
@@ -7621,12 +8336,14 @@ mod tests {
         assert_eq!(providers.anthropic.api_key.as_deref(), Some("sk-ant"));
         assert_eq!(providers.openai.base_url.as_deref(), None);
         assert_eq!(providers.vllm.base_url.as_deref(), None);
-        // Anthropic 的思考为原生 thinking block,不注入 OpenAI 系 reasoning 字段。
+        // Anthropic thinking is a native thinking block; no OpenAI-family
+        // reasoning field is injected.
         assert_eq!(providers.anthropic.reasoning_stream_style.as_deref(), None);
     }
 
-    /// xAI 走内建 xai provider;Gemini 无内建 provider,经官方 OpenAI
-    /// 兼容端点复用 openai wire route。
+    /// xAI uses the built-in xai provider; Gemini has no built-in provider
+    /// and reuses the openai wire route via the official OpenAI-compatible
+    /// endpoint.
     #[test]
     fn xai_and_gemini_routing() {
         let (_lock, _env) = locked_env(&[
@@ -7674,7 +8391,8 @@ mod tests {
         );
     }
 
-    /// DtConfig 在 LocalVllm 模式下必须保持 reasoning_effort=off（防 SSE timeout）。
+    /// DtConfig must keep reasoning_effort=off in LocalVllm mode (to prevent
+    /// SSE timeouts).
     #[test]
     fn local_vllm_forces_reasoning_effort_off() {
         let (_lock, _env) = locked_env(&[
@@ -7683,7 +8401,8 @@ mod tests {
             "DEEPSEEK_BASE_URL",
             "DEEPSEEK_API_KEY",
         ]);
-        // 默认预设已平台感知(macOS/Windows→Deepseek),显式设 LocalVllm 才测其 reasoning_effort=off。
+        // The default preset is now platform-aware (macOS/Windows→Deepseek),
+        // so set LocalVllm explicitly to test its reasoning_effort=off.
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
@@ -7696,8 +8415,10 @@ mod tests {
         assert_eq!(cfg.reasoning_effort.as_deref(), Some("off"));
     }
 
-    /// 工具面与主线持平：不得往基础配置里追加 `workflow` 禁令（复核指出
-    /// 全局禁用改变了主分支已有能力）。禁用列表只来自连接器开关。
+    /// Tool surface at parity with mainline: no `workflow` ban may be added
+    /// to the base config (a re-review pointed out that the global disable
+    /// changed a capability the main branch already had). The disabled list
+    /// comes only from connector toggles.
     #[test]
     fn chat_engine_config_keeps_the_workflow_tool_available() {
         let bridge = fixture_bridge();
@@ -7782,10 +8503,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// scheduled 会话由 SessionStore::session_roots 解析为"两个根都是该
-    /// automation 的共享 workspace"（sessions/mod.rs 契约）。此处验证 EngineConfig
-    /// 消费该 roots 时执行根与状态根同源，且不额外创建会话私有状态根
-    /// （审计补测：scheduled 语义在 EngineConfig 层保持）。
+    /// A scheduled session is resolved by SessionStore::session_roots as
+    /// "both roots are the automation's shared workspace" (the sessions/mod.rs
+    /// contract). This verifies that when EngineConfig consumes those roots,
+    /// the execution root and the state root share the source, and no extra
+    /// session-private state root is created (audit follow-up test: scheduled
+    /// semantics are preserved at the EngineConfig layer).
     #[test]
     fn scheduled_roots_keep_shared_automation_workspace_in_engine_config() {
         let bridge = fixture_bridge();
@@ -7819,8 +8542,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(automation);
     }
 
-    /// 多智能体配置装配专家名册与专用资源护栏；工具面仍与普通对话
-    /// 一致（workflow 也同样可用——不教不荐，但不禁用）。
+    /// The multi-agent config assembles the expert roster and the dedicated
+    /// resource guardrails; the tool surface stays identical to ordinary
+    /// conversations (workflow is likewise available — neither taught nor
+    /// recommended, but not disabled).
     #[test]
     fn multi_agent_engine_config_adds_roles_and_resource_guards() {
         let bridge = fixture_bridge();
@@ -7869,8 +8594,10 @@ mod tests {
         assert!(!ordinary_has_guard, "普通对话不得挂载多智能体深度护栏");
         assert!(multi_agent_has_guard, "多智能体会话必须拦截深度覆盖");
 
-        // 专家池卡片使用原生 config profiles；不得再向会话或项目播种文件。
-        // 底座自带的内置成员（verifier 等）也保持可用。
+        // Expert-pool cards use native config profiles; no files are seeded
+        // into the session or the project anymore.
+        // The foundation's own built-in members (verifier, etc.) also stay
+        // available.
         let agents_dir = workspace.join(deepseek_tui::WORKSPACE_AGENT_PROFILE_DIR);
         assert!(!agents_dir.exists(), "不得创建会话级 agents 投影目录");
         assert!(
@@ -7894,8 +8621,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&workspace);
     }
 
-    /// 多智能体与普通对话保持相同模式、工具面和审批语义；每轮唯一差异是
-    /// 多智能体附加直属深度护栏，且普通对话不得受影响。
+    /// Multi-agent keeps the same mode, tool surface, and approval semantics
+    /// as ordinary conversations; the only per-turn difference is the direct
+    /// depth guardrail attached to multi-agent, and ordinary conversations
+    /// must not be affected.
     #[test]
     fn multi_agent_send_path_only_adds_resource_guard() {
         let mut bridge = fixture_bridge();

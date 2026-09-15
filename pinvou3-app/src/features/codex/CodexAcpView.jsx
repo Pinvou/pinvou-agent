@@ -2,12 +2,13 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { createPortal } from 'react-dom';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import {
-  Brain, Check, ChevronDown, FileText, FolderOpen, GitBranch, Monitor, Paperclip,
+  Brain, Check, ChevronDown, FileText, FolderOpen, GitBranch, MessageSquare, Monitor, Paperclip,
   Plus, RefreshCw, Send, Sparkles, StopCircle, Upload, User,
 } from '../../components/icons.jsx';
 import { AcpAgentLogo } from './AcpAgentLogo.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
 import { SubagentTranscriptPanel } from '../multiagent/SubagentTranscriptPanel.jsx';
+import { AuxChatPanel } from '../aux-chat/AuxChatPanel.jsx';
 import {
   refreshAcpAgentCatalog,
   startSerialStatusPolling,
@@ -1200,6 +1201,37 @@ export function CodexAcpView({
     rememberScrollBeforeRightPanelChange();
     setWorkspaceOpen(false);
   }, [rememberScrollBeforeRightPanelChange]);
+  // Aux chat panel: the same persistent, Q&A-only, one-per-task conversation
+  // as the work-mode task page (bridge.auxChat, restrictTools; it never
+  // touches the code session's execution or context). Unlike subagentPanel:
+  // it does not close when switching code sessions — the panel rebinds itself
+  // by sessionId; in draft state (no activeSession) the panel hides with its
+  // mount condition and restores automatically once the session is ready.
+  // auxChatDockActive is the panel's real visibility in the dock (same as
+  // workspaceDockActive): when covered by the workspace panel the entry
+  // button does not highlight, and clicking it again brings the panel to
+  // the front.
+  const [auxChatPanel, setAuxChatPanel] = useState(null);
+  const [auxChatDockActive, setAuxChatDockActive] = useState(false);
+  const openAuxChatPanel = useCallback(() => {
+    rememberScrollBeforeRightPanelChange();
+    setAuxChatPanel(current => ({ openTick: (current?.openTick || 0) + 1 }));
+  }, [rememberScrollBeforeRightPanelChange]);
+  const closeAuxChatPanel = useCallback(() => {
+    rememberScrollBeforeRightPanelChange();
+    setAuxChatPanel(null);
+  }, [rememberScrollBeforeRightPanelChange]);
+  // When the mount condition (auxChatPanel && activeSession, see the panel
+  // mount point below) goes away, the panel unmounts outright, and
+  // RightDockPanel's onActiveChange has no unmount cleanup, so the highlight
+  // would linger; reset it synchronously here when the mount condition drops,
+  // and once the session is back the panel re-mounts and reports its real
+  // visibility again.
+  useEffect(() => {
+    if (auxChatPanel && activeSession) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset dock highlight when the panel unmounts; one-shot mirror, same pattern as the subagent reset below
+    setAuxChatDockActive(false);
+  }, [auxChatPanel, activeSession]);
   useLayoutEffect(() => {
     const snapshot = rightPanelScrollRef.current;
     if (!snapshot) return;
@@ -1213,7 +1245,7 @@ export function CodexAcpView({
       autoScrollRef.current = true;
       setShowScrollBottom(false);
     }
-  }, [subagentPanel, workspaceDockActivation, workspaceOpen]);
+  }, [auxChatPanel, subagentPanel, workspaceDockActivation, workspaceOpen]);
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously collapse the subagent panel on session switch; one-shot mirror
     setSubagentPanel(null);
@@ -3361,6 +3393,23 @@ export function CodexAcpView({
             />
           )}
           {busy && <ConversationStatusBadge status="running" copy={t.uiConversation} />}
+          {activeSession && bridge.available && bridge.auxChat && (
+            <button
+              type="button"
+              data-testid="aux-chat-open"
+              aria-label={t.uiAuxChat.openLabel}
+              title={t.uiAuxChat.openLabel}
+              onClick={openAuxChatPanel}
+              className={`h-8 px-2.5 rounded-lg inline-flex items-center gap-1.5 text-[11px] transition-colors ${
+                auxChatPanel && auxChatDockActive
+                  ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
+                  : 'text-gray-500 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
+              }`}
+            >
+              <MessageSquare size={14} />
+              <span>{t.uiAuxChat.openLabel}</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={toggleWorkspacePanel}
@@ -4309,6 +4358,16 @@ export function CodexAcpView({
             t={t}
             theme={theme}
             onClose={closeSubagentPanel}
+          />
+        )}
+        {auxChatPanel && activeSession && (
+          <AuxChatPanel
+            sessionId={activeSession.id}
+            activationKey={auxChatPanel.openTick}
+            onActiveChange={setAuxChatDockActive}
+            t={t}
+            theme={theme}
+            onClose={closeAuxChatPanel}
           />
         )}
         </div>

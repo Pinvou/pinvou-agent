@@ -29,8 +29,16 @@ for (const language of ['zh', 'en', 'ja']) {
     'uiProjects',
     'uiArtifacts',
     'uiToolDetails',
+    'uiAuxChat',
   ]) {
     assert.ok(dict[language][section], `${language}.${section} must exist`);
+  }
+  for (const key of [
+    'openLabel', 'panelTitle', 'landingHint', 'emptyState', 'inputPlaceholder',
+    'send', 'busyHint', 'newTopic', 'newTopicConfirm', 'sendFailed', 'ensureFailed',
+    'discardFailed', 'close',
+  ]) {
+    assert.ok(dict[language].uiAuxChat[key], `${language}.uiAuxChat.${key} must exist`);
   }
   assert.ok(dict[language].uiSettings.providers, `${language}.uiSettings.providers must exist`);
   for (const key of [
@@ -182,6 +190,67 @@ assert.doesNotMatch(chat, /label:\s*'数据可视化'/);
 assert.doesNotMatch(chat, /`取消\$\{scene\.label\}`/);
 assert.doesNotMatch(chat, /:\s*'描述你想生成或调整的内容'/);
 assert.doesNotMatch(chat, />下载语音识别模型</);
+assert.match(chat, /data-testid="aux-chat-open"/);
+const auxChatPanel = source('features/aux-chat/AuxChatPanel.jsx');
+assert.match(auxChatPanel, /const copy = t\.uiAuxChat/);
+assert.match(auxChatPanel, /copy=\{conversationCopy\}/);
+// Restart-topic staged guards: discard and ensure are wrapped in separate
+// try/catch blocks — a discard failure keeps the binding and snapshot as-is
+// (the old session is still usable) and shows discardFailed; after the
+// discard round trip the generation must be re-checked before ensure, or a
+// rebind would idempotently recreate the just-discarded aux session on the
+// backend; an ensure failure must clear the binding and show ensureFailed
+// (the composer is already disabled and sendFailed's "retry send" copy would
+// mislead). The two stages must share **one** outer try/finally that resets
+// restarting: no early return (discard failure / generation mismatch) may
+// latch the panel in the restarting state.
+const restartBlock = auxChatPanel.slice(
+  auxChatPanel.indexOf('const handleRestart'),
+);
+assert.match(restartBlock, /try \{\s*try \{[\s\S]*?const discardPromise = auxChat\.discard\(sessionId\);[\s\S]*?await discardPromise;[\s\S]*?\} catch[\s\S]*?setDiscardFailed\(true\);[\s\S]*?generationRef\.current !== generation\) return;\s*try \{\s*const nextAuxId = await auxChat\.ensure\(sessionId\)/);
+assert.match(restartBlock, /setEnsureFailed\(true\)/);
+assert.doesNotMatch(restartBlock, /setSendFailed\(true\)/);
+assert.match(auxChatPanel, /copy\.discardFailed/);
+// In-flight discard registry (round-7 M-B): while the backend turn gate waits
+// out a running turn, the old mapping is still live — the rebind effect must
+// await the registered discard promise before re-ensuring the same task, or
+// it would bind the doomed aux session that the discard then deletes.
+assert.match(restartBlock, /discardInFlightRef\.current\.set\(sessionId, discardPromise\)/);
+assert.match(restartBlock, /discardInFlightRef\.current\.delete\(sessionId\)/);
+assert.match(auxChatPanel, /discardInFlightRef\.current\.get\(sessionId\)/);
+// restarting leak guard: the whole function body has exactly one
+// setRestarting(false), located in the outer finally (whose try opens before
+// the discard await and whose finally closes after the ensure await) — every
+// early-return path resets through it.
+const restartingClears = restartBlock.match(/setRestarting\(false\)/g) || [];
+assert.equal(restartingClears.length, 1, 'restarting must be cleared at exactly one place in handleRestart');
+const outerTry = restartBlock.indexOf('try {');
+const discardAwait = restartBlock.indexOf('await discardPromise;');
+const ensureAwait = restartBlock.indexOf('await auxChat.ensure');
+const restartingClearIdx = restartBlock.indexOf('setRestarting(false)');
+const finallyClause = restartBlock.lastIndexOf('} finally {', restartingClearIdx);
+assert.ok(
+  outerTry >= 0 && outerTry < discardAwait && discardAwait < ensureAwait && ensureAwait < finallyClause,
+  'a single outer try must span discard+ensure so its finally resets restarting on every early return',
+);
+assert.match(restartBlock.slice(finallyClause), /} finally \{\s*setRestarting\(false\);/);
+// In-flight send latch (round-7 M-A): snapshot-busy lags the dispatch by one
+// event round trip, so without a synchronous latch a double Enter fires a
+// duplicate turn whose rejection surfaces as a bogus "send failed" banner;
+// key-repeat Enter must be ignored outright. The latch must be released on
+// every outcome via finally, or the composer would lock after one failure.
+assert.match(auxChatPanel, /if \(!auxChat \|\| !sentAuxId \|\| !text \|\| busy \|\| restarting \|\| sendingRef\.current\) return;/);
+assert.match(auxChatPanel, /sendingRef\.current = true;[\s\S]*?await auxChat\.send\(sentAuxId, text\);[\s\S]*?\} finally \{\s*sendingRef\.current = false;/);
+assert.match(auxChatPanel, /if \(event\.repeat\) return;/);
+// Rebind resets restarting (round-7 m11): the restart invokes have no
+// transport timeout, so a promise that never settles must not latch the next
+// task's panel disabled — the rebind effect resets the flag itself, between
+// the restartArmed reset and the draft reset in the binding-state reset block.
+const rebindBlock = auxChatPanel.slice(
+  auxChatPanel.indexOf('const generation = generationRef.current + 1;'),
+  auxChatPanel.indexOf("setDraft('');\n    if (!auxChat || !sessionId) return;"),
+);
+assert.match(rebindBlock, /setRestarting\(false\);/, 'the rebind effect must reset restarting itself');
 assert.match(source('features/pet/PetSettingsSection.jsx'), /t\.uiPetSettings/);
 const conversation = source('features/conversation/ConversationTimeline.jsx');
 assert.match(conversation, /conversationCopy\(copy\)/);
@@ -190,6 +259,9 @@ const codex = source('features/codex/CodexAcpView.jsx');
 assert.match(codex, /const codexCopy = t\.uiCodex/);
 assert.match(codex, /copy=\{t\.uiConversation\}/);
 assert.match(codex, /copy=\{t\.uiCodexWorkspace\}/);
+assert.match(codex, /data-testid="aux-chat-open"/);
+assert.match(codex, /t\.uiAuxChat\.openLabel/);
+assert.match(codex, /<AuxChatPanel/);
 const workspace = source('features/codex/CodexWorkspacePanel.jsx');
 assert.match(workspace, /\{copy\.title\}/);
 assert.doesNotMatch(workspace, />工作区</);

@@ -1,39 +1,42 @@
-//! 多对话管理 wrapper（facade + 子模块）。
+//! Multi-conversation management wrapper (facade + submodules).
 //!
-//! 复用 deepseek-tui 上游 [`SessionManager`](deepseek_tui::session_manager::SessionManager)（已支持 `new(custom_dir)`），
-//! 把 sessions 目录定向到 `~/.pinvou3/sessions/`（隔离 `~/.deepseek/`）。
+//! Reuses the upstream deepseek-tui [`SessionManager`](deepseek_tui::session_manager::SessionManager) (which already supports `new(custom_dir)`),
+//! directing the sessions directory to `~/.pinvou3/sessions/` (isolated from `~/.deepseek/`).
 //!
-//! 暴露给 pinvou3-app Tauri commands 的能力：
-//! - `list` —— 列出所有会话元数据（前端历史面板）
-//! - `create_new` —— 新建空会话（首次未发送消息前）
-//! - `load` —— 读完整对话（切换 session 时给 engine 通过 `Op::SyncSession` 注入）
-//! - `save` —— 持久化（每轮 turn 完成 auto-save）
-//! - `delete` —— 删除会话 + artifacts 目录
-//! - `set_title` —— 重命名
-//! - `active_id` / `set_active` —— 跟踪当前 active session（chat command 用）
+//! Capabilities exposed to pinvou3-app Tauri commands:
+//! - `list` — list all session metadata (frontend history panel)
+//! - `create_new` — create a new empty session (before the first message is sent)
+//! - `load` — read the full conversation (injected into the engine via `Op::SyncSession` on session switch)
+//! - `save` — persist (auto-save after each turn completes)
+//! - `delete` — delete session + artifacts directory
+//! - `set_title` — rename
+//! - `active_id` / `set_active` — track the current active session (chat command surface)
 //!
-//! **Arc + RwLock 包装**：所有字段都是 `Arc`，整个 `SessionStore` 可以
-//! 廉价 Clone 进 Tauri State + 多个 task 共享。
+//! **Arc + RwLock wrapping**: every field is an `Arc`, so the whole
+//! `SessionStore` can be cheaply Cloned into Tauri State + shared across tasks.
 //!
-//! 历史上本文件是 3700+ 行的 god-module，混了 7 类职责。Wave 2 任务 2d 把它
-//! 拆成 facade（本文件，保留 struct 定义 + 常量）+ 子模块：
+//! Historically this file was a 3700+ line god-module mixing 7 kinds of
+//! responsibility. Wave 2 task 2d split it into a facade (this file, keeping
+//! the struct definitions + constants) + submodules:
 //!
-//! - `store` —— 会话存储 CRUD / 生命周期 / engine-state 持久化入口
-//! - `scheduled` —— 定时运行 profile / engine-state 类型与 registry
-//! - `retention` —— 保留策略与 `persist_then_reconcile` 系列 helper
-//! - `transcript` —— transcript revision / 截断保护
-//! - `mode_state` —— per-session 模式状态机（mode/plan/persona/skill）
-//! - `injections` —— 一次性注入与 plan-claim 的事务 checkout guard
-//! - `sidecars` —— skill 绑定 / 模型 / 置顶 / 收起 的独立 sidecar 落盘
-//! - `rewind` —— 代码模式回退的对话截断与 `_rewound_turns.json` 备份
-//! - `validators` —— id / workspace / 路径校验与小型 helper
+//! - `store` — session storage CRUD / lifecycle / engine-state persistence entry
+//! - `scheduled` — scheduled-run profile / engine-state types and registry
+//! - `retention` — retention policy and the `persist_then_reconcile` helper family
+//! - `transcript` — transcript revision / truncation protection
+//! - `mode_state` — per-session mode state machine (mode/plan/persona/skill)
+//! - `injections` — one-shot injections and the plan-claim transactional checkout guard
+//! - `sidecars` — independent sidecar persistence for skill bindings / model / pin / collapse
+//! - `rewind` — conversation truncation for code-mode rewind and the `_rewound_turns.json` backup
+//! - `validators` — id / workspace / path validation and small helpers
 //! - `workspace_bindings` —— per-session sidecar of plain chat sessions' user
 //!   working-directory bindings (`workspace-binding.json` in the session
 //!   directory) and legacy global-table migration
 //!
-//! 子模块通过 `impl SessionStore` 续写方法（Rust 允许同一 struct 的 impl 块
-//! 散布在子模块里），并直接读 `&self` 的私有字段——struct 字段对后代模块
-//! 可见。pub 面在本文件集中 re-export，保持外部调用路径不变。
+//! Submodules continue the methods via `impl SessionStore` (Rust allows impl
+//! blocks of the same struct to be scattered across submodules) and read
+//! `&self`'s private fields directly — struct fields are visible to descendant
+//! modules. The pub surface is re-exported centrally in this file, keeping
+//! external call paths unchanged.
 
 pub(crate) mod diagnostics;
 mod injections;
@@ -132,16 +135,35 @@ pub struct SessionStore {
     pub(crate) active: Arc<RwLock<Option<String>>>,
     /// Per-session runtime mode state (mode, plan, persona, ...).
     pub(crate) mode_states: Arc<RwLock<HashMap<String, SessionModeState>>>,
-    /// per-session 模型绑定:session_id → SavedModel.id。某 session 显式选过模型
-    /// 才有条目;没选的回退全局 active_model_id。落盘到 `_session_models.json`
-    /// 底座 SavedSession 不能加字段，故通过独立 sidecar 存储。
+    /// Per-session model binding: session_id → SavedModel.id. An entry exists
+    /// only for a session that has explicitly chosen a model; the rest fall
+    /// back to the global active_model_id. Persisted to
+    /// `_session_models.json`; the upstream SavedSession cannot gain fields, so
+    /// this lives in an independent sidecar.
     pub(crate) session_models: Arc<RwLock<HashMap<String, String>>>,
-    /// 历史对话置顶表:session_id -> pinned_at。独立落盘到 `_pinned_sessions.json`,
-    /// 不改 SavedSession 结构。
+    /// Pin table for conversation history: session_id -> pinned_at. Persisted
+    /// independently to `_pinned_sessions.json` without changing the
+    /// SavedSession structure.
     pub(crate) pinned_sessions: Arc<RwLock<HashMap<String, String>>>,
-    /// 从左侧任务列表收起的会话:session_id -> hidden_at。独立落盘到
-    /// `_hidden_sessions.json`,不改 SavedSession 结构。
+    /// Sessions collapsed from the left task list: session_id -> hidden_at.
+    /// Persisted independently to `_hidden_sessions.json` without changing the
+    /// SavedSession structure.
     pub(crate) hidden_sessions: Arc<RwLock<HashMap<String, String>>>,
+    /// Auxiliary-conversation mapping: main session_id -> aux session_id
+    /// (`aux-` prefix). Persisted to `_aux_sessions.json`; aux sessions never
+    /// enter the regular session list and are cascade-deleted with their main
+    /// session (see store.rs `delete`); orphan records with a missing mapping
+    /// or a dead main session are reclaimed by the startup-path
+    /// `reconcile_aux_sessions` (retention.rs).
+    pub(crate) aux_sessions: Arc<RwLock<HashMap<String, String>>>,
+    /// Mutex for aux-session get-or-create: the mapping lookup and creation
+    /// must run in one critical section, or two concurrent calls each create a
+    /// session and the later write overwrites the mapping, leaving the first
+    /// aux session as an un-reclaimable orphan. Also held across main-session
+    /// deletes (mapping resolution + cascade), making delete-vs-create atomic.
+    /// Lock order is always `aux_sessions_io` → `scheduled_mutation` (create/
+    /// save take the latter internally), with no reverse acquisition path.
+    pub(crate) aux_sessions_io: Arc<Mutex<()>>,
     /// Session execution-root resolver, injected by the app composition root
     /// (lib.rs) once the AcpPool is ready — the production implementation covers
     /// both sources: codex_acp native code sessions' project bindings plus plain
@@ -161,9 +183,11 @@ pub struct SessionStore {
     /// execution = bound directory and ledger = session-private directory (the
     /// same dual-root semantics as native code session bindings).
     pub(crate) session_workspaces: Arc<RwLock<HashMap<String, PathBuf>>>,
-    /// 品悟原生 code 会话判定（ACP 会话恒为 plain，见 codex_acp store）。
-    /// 与 Engine bridge / 远程端共用同一份 `SessionAgentStore` 闭包，由 app 组合根
-    /// (lib.rs) 注入；None = 无 code 会话判定（测试/启动早期），全部按 plain 语义。
+    /// Pinvou-native code session predicate (ACP sessions are always plain,
+    /// see the codex_acp store). Shares the same `SessionAgentStore` closure
+    /// with the Engine bridge / remote side, injected by the app composition
+    /// root (lib.rs); None = no code session predicate (tests / early
+    /// startup), everything follows plain semantics.
     code_session_predicate: Arc<RwLock<Option<CodeSessionPredicate>>>,
     /// In-memory source of truth for `_session_mode_states.json`: every
     /// session's explicit mode (under two-lane semantics plain sessions
@@ -171,9 +195,11 @@ pub struct SessionStore {
     /// maintained and flushed by set_mode / session deletion / retention
     /// policy cleanup.
     session_mode_states: Arc<RwLock<HashMap<String, SerializableMode>>>,
-    /// settings.json `code_permission` 的进程内镜像。`mode_state` 在 chat 发送
-    /// 路径上每轮被调，默认值解析只读这块内存（加锁读，不触盘）；写入经
-    /// `UserPrefs::update_transaction` 落盘后同步本镜像。
+    /// In-process mirror of settings.json `code_permission`. `mode_state` is
+    /// called on every turn along the chat send path; default resolution only
+    /// reads this memory (read under lock, never touching disk); writes are
+    /// persisted via `UserPrefs::update_transaction` and then synced into this
+    /// mirror.
     code_permission: Arc<RwLock<CodePermissionPrefs>>,
     /// In-process mirror of settings.json `mode_defaults` (the work lane's
     /// global default), mirroring `code_permission` semantics. At startup the
@@ -182,15 +208,20 @@ pub struct SessionStore {
     /// no semantic writes (the original value is preserved verbatim by
     /// whole-preferences writes so the legacy fold source stays available).
     mode_defaults: Arc<RwLock<ModeDefaultPrefs>>,
-    /// `_multi_agent.json` 的持久化互斥：内存快照与 tmp+rename 必须在同一临界
-    /// 区内完成。少了它，两个并发保存会各自读到不同时刻的快照，**后完成写盘的
-    /// 旧快照**会覆盖新快照——重启后部分会话的开关状态消失。
+    /// Persistence mutex for `_multi_agent.json`: the in-memory snapshot and
+    /// the tmp+rename must complete inside the same critical section. Without
+    /// it, two concurrent saves each read snapshots from different moments and
+    /// the **older snapshot that finishes writing last** overwrites the newer
+    /// one — after a restart, the flag state of some sessions is gone.
     multi_agent_flags_io: Arc<Mutex<()>>,
-    /// `manager.list_sessions()` 的进程内快照缓存。上游每次调用都会全目录
-    /// read_dir + 逐文件前缀解析，而启动路径(boot 恢复/保留策略/AcpPool 元数据)
-    /// 与每个 list 命令都会调它——同代元数据重复扫描 3+ 次。缓存以
-    /// `save_session_atomic`/`delete` 等 App 侧唯一写路径失效；绕过 App 写盘的
-    /// 外部进程改动不在守护范围(与上游每次现读的口径差异见 store.rs 注释)。
+    /// In-process snapshot cache of `manager.list_sessions()`. Every upstream
+    /// call does a full-directory read_dir + per-file prefix parsing, and the
+    /// startup paths (boot restore / retention policy / AcpPool metadata) plus
+    /// every list command call it — the same-generation metadata gets rescanned
+    /// 3+ times. The cache is invalidated by `save_session_atomic`/`delete` and
+    /// the other App-side exclusive write paths; external-process writes that
+    /// bypass the App are out of scope (see the store.rs comment for how this
+    /// differs from the upstream read-every-time contract).
     pub(crate) list_cache: Arc<
         RwLock<
             Option<(
@@ -199,8 +230,10 @@ pub struct SessionStore {
             )>,
         >,
     >,
-    /// `list_cache` 的代数计数:每次失效自增,回填前比对——miss 期间发生过写
-    /// 的扫描结果不得回填(陈旧快照复活会驻留到下一次写)。见 store.rs。
+    /// Generation counter for `list_cache`: incremented on every invalidation
+    /// and compared before backfill — a scan result produced across a write
+    /// during the miss must not be backfilled (a resurrected stale snapshot
+    /// would linger until the next write). See store.rs.
     pub(crate) list_cache_generation: Arc<AtomicU64>,
     /// Session-purged hook (dependency inversion): see
     /// [`SessionPurgedHook`]. None = nobody registered (tests/early
@@ -214,18 +247,24 @@ pub struct SessionStore {
     session_deleted_hooks: Arc<RwLock<Vec<SessionDeletedHook>>>,
 }
 
-/// 原生代码会话(品悟 Engine)的执行根解析器:绑定了项目目录的原生代码会话
-/// 返回 `Some(项目目录)`;其余会话返回 `None`,调用方回退到会话私有目录。
+/// Execution-root resolver for native code sessions (Pinvou Engine): a native
+/// code session with a bound project directory returns `Some(project
+/// directory)`; all other sessions return `None` and the caller falls back to
+/// the session-private directory.
 ///
-/// 用闭包而非直接依赖 `codex_acp::SessionAgentStore`:`sessions` 与 `codex_acp`
-/// 两个 feature 互相引用会成环,解析器由 app 组合根(lib.rs)注入并共享 AcpPool
-/// 持有的同一份 store(clone 共享 Arc,运行时读到最新绑定)。
+/// A closure instead of a direct dependency on `codex_acp::SessionAgentStore`:
+/// the `sessions` and `codex_acp` features referencing each other would form a
+/// cycle, so the resolver is injected by the app composition root (lib.rs) and
+/// shares the same store held by AcpPool (clone shares the Arc, so the latest
+/// binding is read at runtime).
 pub type ExecutionRootResolver = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
 
-/// 品悟原生 code 会话判定闭包：与 `ExecutionRootResolver` 同样的注入理由
-/// （避免 sessions ↔ codex_acp 成环），由 lib.rs 共享同一份 `SessionAgentStore`。
-/// ACP 会话在其 store 里恒为 plain（`bind_*` 时显式重置），故本判定命中即
-/// "品悟原生 code 会话"，不会误伤 ACP 会话自己的权限模式。
+/// Pinvou-native code session predicate closure: injected for the same reason
+/// as `ExecutionRootResolver` (avoiding a sessions ↔ codex_acp cycle); lib.rs
+/// shares the same `SessionAgentStore`. ACP sessions are always plain in their
+/// store (explicitly reset on `bind_*`), so a hit from this predicate means
+/// "Pinvou-native code session" and never misclassifies an ACP session's own
+/// permission mode.
 pub type CodeSessionPredicate = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Session-purged hook: fired by [`SessionStore::delete`] and deep deletion
@@ -243,7 +282,7 @@ pub type SessionPurgedHook = Arc<dyn Fn(&str) + Send + Sync>;
 /// is owned by the composition root.
 pub type SessionDeletedHook = Arc<dyn Fn(&str) + Send + Sync>;
 
-/// 一个会话的两个根:
+/// The two roots of a session:
 /// - `execution`: engine cwd / shell execution directory. Native code sessions
 ///   with a bound project directory, or plain chat sessions with a bound user
 ///   working directory = the bound directory; other sessions = session-private
@@ -252,8 +291,9 @@ pub type SessionDeletedHook = Arc<dyn Fn(&str) + Send + Sync>;
 ///   grants). Sessions with a bound directory always use the session-private
 ///   directory (the user's directory stays clean); other sessions match `execution`.
 ///
-/// 由 [`SessionStore::session_roots`] 统一解析,调用方按用途显式选择用哪个根,
-/// 避免把执行根误当账本根写盘(或反之)。
+/// Resolved uniformly by [`SessionStore::session_roots`]; callers explicitly
+/// pick the root matching their purpose, avoiding writing to the execution
+/// root while intending the ledger root (or vice versa).
 ///
 /// `bound` is the explicit "bound to a real directory" signal (a native code
 /// session's project directory, or a plain chat session's user working-directory
