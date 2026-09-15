@@ -1927,6 +1927,45 @@ fn chat_retention_exempts_pinned_sessions_from_cap_and_eviction() {
     );
 }
 
+/// 全部会话都被钉住时保留策略必须完全停用：钉住会话既不计数也不作为驱逐
+/// 候选（sweep 对钉住条目逐个 continue），超额保存不得删除任何会话。
+#[test]
+fn chat_retention_with_all_sessions_pinned_deletes_nothing() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("all-pinned-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(index as i64);
+        store.save(&session).expect("seed session");
+        store.set_pinned(&session.metadata.id, true);
+    }
+    // 第 51 条未钉住会话：非钉住计数 1 ≤ 50，整个 sweep 不产生任何删除。
+    let extra = create_saved_session_with_id_and_mode(
+        "all-pinned-extra".to_string(),
+        &[],
+        "/chat-model",
+        &std::env::temp_dir(),
+        0,
+        None,
+        None,
+    );
+    store.save(&extra).expect("persist the over-cap session");
+
+    assert_eq!(
+        store.list().expect("chat list").len(),
+        MAX_SESSIONS_PER_KIND + 1,
+        "all-pinned stores are exempt from the cap: nothing may be deleted"
+    );
+}
+
 #[test]
 fn retention_notifies_hook_when_record_commit_precedes_cleanup_error() {
     let (store, _g) = isolated_store();
