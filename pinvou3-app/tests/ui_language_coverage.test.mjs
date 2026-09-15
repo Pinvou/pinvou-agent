@@ -89,12 +89,15 @@ for (const language of ['zh', 'en', 'ja']) {
   for (const key of ['toggleLabel', 'toggleHint', 'close', 'loadingTranscript', 'emptyTranscript', 'blockedTag', 'panelResize', 'panelResizeHint', 'agentsListTitle', 'agentsEmpty', 'backToAgents']) {
     assert.ok(multiAgent[key], `${language}.uiMultiAgent.${key} must exist`);
   }
-  for (const cardKey of ['spawning', 'working', 'completed', 'failed', 'spawnFailed', 'interrupted']) {
+  for (const cardKey of ['working', 'completed', 'failed', 'spawnFailed', 'interrupted']) {
     assert.ok(multiAgent.agentCard[cardKey], `${language}.uiMultiAgent.agentCard.${cardKey} must exist`);
   }
   for (const deadKey of ['confirmTitle', 'impactLabels', 'startDenied', 'stages', 'terminal', 'workerCount', 'advancedEdit', 'planCompileError']) {
     assert.equal(multiAgent[deadKey], undefined, `${language}.uiMultiAgent.${deadKey} is retired and must stay deleted`);
   }
+  // agentCard.spanning-era keys: 'spawning' died with the inline expert card
+  // (the aggregate count row only speaks in past-tense totals).
+  assert.equal(multiAgent.agentCard.spawning, undefined, `${language}.uiMultiAgent.agentCard.spawning is retired and must stay deleted`);
   // The bottom-right code-style toggle was replaced by the All/Code pill in
   // the task list header; its tooltip copy must not come back as dead keys.
   for (const deadKey of ['sidebarCodeStyleOn', 'sidebarCodeStyleOff']) {

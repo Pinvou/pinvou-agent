@@ -350,7 +350,7 @@ export const dictEn = {
           drawerTitle:role=>`Subagent · ${role}`, close:'Close', loadingTranscript:'Loading conversation…',
           emptyTranscript:'No saved conversation yet. The subagent may have just started.',
           panelResize:'Resize panel', panelResizeHint:'Drag to resize; double-click to reset',
-          agentCard:{ spawning:'Dispatching', working:'Working', completed:'Completed', failed:'Failed', spawnFailed:'Dispatch failed', interrupted:'Interrupted' },
+          agentCard:{ working:'Working', completed:'Completed', failed:'Failed', spawnFailed:'Dispatch failed', interrupted:'Interrupted' },
           agentsListTitle:'Subagents', agentsEmpty:'No subagents have been dispatched in this conversation yet.', backToAgents:'Back to subagent list',
           agentsListSummary:(roots,total)=>roots === total ? `${total} total` : `${roots} direct · ${total} total`,
           childAgentCount:count=>`${count} child${count === 1 ? '' : 'ren'}`, expandChildren:name=>`Expand children of ${name}`, collapseChildren:name=>`Collapse children of ${name}`,
