@@ -272,6 +272,7 @@ where
     }
     let mut output = OutputMode::Human;
     let mut index = 0;
+    let mut global_output_seen = false;
     while index < values.len() {
         if values[index] == "--output" {
             let value = values.get(index + 1).ok_or_else(|| {
@@ -280,12 +281,24 @@ where
                 )
             })?;
             match value.as_str() {
-                "human" => {
-                    output = OutputMode::Human;
-                    values.drain(index..=index + 1);
-                }
-                "json" => {
-                    output = OutputMode::Json;
+                "human" | "json" => {
+                    // A repeated identical mode is accepted (scripts append
+                    // `--output json` unconditionally), but two conflicting
+                    // modes must not silently last-win like the family
+                    // parsers' duplicate rejection. A value that is not
+                    // human|json is left for the subcommand and not counted.
+                    let mode = if value == "json" {
+                        OutputMode::Json
+                    } else {
+                        OutputMode::Human
+                    };
+                    if global_output_seen && mode != output {
+                        return Err(CliError::usage(
+                            "--output given twice with conflicting global modes",
+                        ));
+                    }
+                    global_output_seen = true;
+                    output = mode;
                     values.drain(index..=index + 1);
                 }
                 // Not a global-mode value: leave the pair for the subcommand.
@@ -1774,11 +1787,30 @@ mod tests {
         assert!(!outcome.stdout.contains("ready"));
     }
 
+    /// Panic-safe `PINVOU3_HOME` restore: a failing assert must not leak the
+    /// temp home into sibling unit tests (the same RAII rule the
+    /// integration tests' `RestoreHome` guard applies).
+    struct RestoreHomeGuard(Option<std::ffi::OsString>);
+    impl RestoreHomeGuard {
+        fn set_home(path: &std::path::Path) -> Self {
+            let previous = std::env::var_os("PINVOU3_HOME");
+            unsafe { std::env::set_var("PINVOU3_HOME", path) };
+            Self(previous)
+        }
+    }
+    impl Drop for RestoreHomeGuard {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+                None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+            }
+        }
+    }
+
     #[test]
     fn official_gaia_consumer_rejects_a_tampered_marker_at_the_real_ready_root() {
         let home = temp_base("gaia-tampered-ready");
-        let previous = std::env::var_os("PINVOU3_HOME");
-        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+        let _home_guard = RestoreHomeGuard::set_home(&home);
         let snapshot = gaia_snapshot_root().unwrap();
         std::fs::create_dir(&snapshot).unwrap();
         std::fs::write(
@@ -1792,10 +1824,6 @@ mod tests {
         assert_eq!(error.to_string(), "gaia_verify_failed");
         assert!(!error.to_string().contains(snapshot.to_str().unwrap()));
 
-        match previous {
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
         std::fs::remove_dir_all(home).unwrap();
     }
 
