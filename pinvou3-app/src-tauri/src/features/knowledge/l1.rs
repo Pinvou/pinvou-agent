@@ -419,6 +419,17 @@ impl L1Store {
         Ok(())
     }
 
+    /// Whether the document exists (headless callers reject unknown ids with
+    /// it; the GUI's delete has always been a silent no-op).
+    pub fn document_exists(&self, doc_id: i64) -> rusqlite::Result<bool> {
+        let c = self.conn.lock();
+        c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM documents WHERE id=?1)",
+            params![doc_id],
+            |r| r.get::<_, i64>(0).map(|v| v != 0),
+        )
+    }
+
     fn replace_doc_chunks(
         &self,
         doc_id: i64,

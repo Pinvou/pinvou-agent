@@ -29,6 +29,10 @@ name: PR Check
 #   ci:full-rust. Merge Queue does not repeat it; main retains cumulative coverage.
 # - windows-codex-runtime-test:Relevant PRs exercise the browser-wrapper lifecycle,
 #   prepare Node + ACP Bridge, and verify packaged resources on native Windows.
+# - macos-cli-check:macOS-gated pinvou-cli code (#[cfg(target_os = "macos")]) must
+#   type-check somewhere; compile-only leg mirroring the Windows CLI compile check
+#   for ready cli_rust/rust_full PRs, the matching Merge Queue combined tree, and
+#   main push (cumulative; Linux cannot type-check macOS-gated code).
 # - Benchmarks stay outside product PR/MQ gates and run manually in an isolated environment.
 # - required-gate:PR 阶段汇总所有适用检查，作为唯一 required check。
 # - merge_group:按 base/head 的真实组合 diff 运行适用门禁，保证验证对象就是
@@ -200,11 +204,16 @@ jobs:
               - 'pinvou-cli/**/Cargo.toml'
               - 'pinvou-cli/**/Cargo.lock'
               - 'CodeWhale'
+              # 本 workflow 文件刻意不进 cli_rust(策略:workflow 改动不得联动全量
+              # app 测试;test_ci_gate_policy 锁定此项)。cli-test 自身的改动由下一条
+              # cli_rust PR / merge queue 验证。
               # The CLI path-depends on the app crate: leaf features exempt
-              # from the full app suite still gate through the CLI suite, so
-              # a consumer-breaking change cannot escape pre-merge CI.
+              # from the full app suite (feedback, personas, pet) still gate
+              # through the CLI suite, so a consumer-breaking change cannot
+              # escape pre-merge CI.
               - 'pinvou3-app/src-tauri/src/features/feedback/**'
               - 'pinvou3-app/src-tauri/src/features/personas/**'
+              - 'pinvou3-app/src-tauri/src/features/pet/**'
             knowledge_rust:
               - 'pinvou-knowledge/**/*.rs'
               - 'pinvou-knowledge/Cargo.toml'
@@ -1400,6 +1409,82 @@ jobs:
       - name: macOS Codex 与 Claude Runtime 原生打包冒烟
         run: npm --prefix pinvou3-app run test:codex-acp-macos-runtime
 
+  # pinvou-cli contains #[cfg(target_os = "macos")] code (connectors.rs, voice.rs,
+  # ...) that compiles nowhere else in CI: cli-test is ubuntu-only and the macOS
+  # runner above only smokes the Node ACP bridge. This compile-only leg mirrors
+  # the windows-rust-test "pinvou-cli Windows compile check" step for exactly
+  # that risk class. No Tauri system packages are needed on macOS (system frameworks
+  # are preinstalled; same minimum as the Windows compile check), no zram setup
+  # is required (macOS runners are out of the gate-policy memory scope), and no
+  # cargo cache is configured: no macOS cache exists in this workflow that a
+  # refs/pull/N/merge run could restore (PR cache scopes are mutually invisible),
+  # so each run pays a full cold compile — hence compile-only, no test execution
+  # (cli-test already runs the CLI suite on Linux).
+  # Triggers: ready cli_rust/rust_full PRs, the matching Merge Queue combined tree
+  # (a PR that is green alone can still combine into a macOS-only compile break,
+  # and Linux cannot type-check #[cfg(target_os = "macos")] code, so "Linux
+  # validates the combined tree" does not cover this risk class), and
+  # unconditionally on main push: main is the cumulative compile verification and
+  # must not depend on a single push's paths-filter (same policy as
+  # rust-test/windows-rust-test, guarding the concurrency pending-replacement
+  # blind spot).
+  macos-cli-check:
+    name: macos-cli-check
+    needs: changes
+    if: >-
+      ${{
+        !cancelled() &&
+        github.event.action != 'closed' &&
+        (
+          github.event_name == 'push' ||
+          (
+            github.event_name == 'merge_group' &&
+            (
+              needs.changes.outputs.cli_rust == 'true' ||
+              needs.changes.outputs.rust_full == 'true'
+            )
+          ) ||
+          (
+            github.event_name == 'pull_request' &&
+            github.event.pull_request.draft == false &&
+            (
+              needs.changes.outputs.cli_rust == 'true' ||
+              needs.changes.outputs.rust_full == 'true'
+            )
+          )
+        )
+      }}
+    runs-on: macos-15
+    # The check intentionally runs without caches and compiles the whole
+    # workspace (the app crate included) from cold; 60 minutes left little
+    # headroom on 3-vCPU runners, where the Windows analogue shares a
+    # 180-minute budget.
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - name: Init CodeWhale submodule
+        run: git submodule update --init --recursive -- CodeWhale
+
+      # Same two-step toolchain as cli-test/windows-rust-test: dtolnay only
+      # bootstraps rustup; the version pinned by src-tauri/rust-toolchain.toml
+      # must become the default so cargo invoked from the repo root with
+      # --manifest-path uses the same toolchain as local development.
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Align the toolchain pinned by rust-toolchain.toml
+        working-directory: pinvou3-app/src-tauri
+        run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
+
+      - name: pinvou-cli macOS compile check
+        run: >-
+          cargo check --manifest-path pinvou-cli/Cargo.toml
+          --workspace --all-targets --locked
+
   required-gate:
     name: required-gate
     needs:
@@ -1416,6 +1501,7 @@ jobs:
       - cli-test
       - windows-rust-test
       - macos-codex-runtime-test
+      - macos-cli-check
       - windows-codex-runtime-test
     if: ${{ always() && ((github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group') }}
     runs-on: ubuntu-latest
@@ -1442,6 +1528,7 @@ jobs:
           CLI_TEST_RESULT: ${{ needs.cli-test.result }}
           WINDOWS_RUST_RESULT: ${{ needs.windows-rust-test.result }}
           MACOS_CODEX_RESULT: ${{ needs.macos-codex-runtime-test.result }}
+          MACOS_CLI_RESULT: ${{ needs.macos-cli-check.result }}
           WINDOWS_CODEX_RESULT: ${{ needs.windows-codex-runtime-test.result }}
         run: |
           if [[ "$GITHUB_EVENT_NAME" == "merge_group" ]]; then
@@ -1467,6 +1554,7 @@ jobs:
             "cli-test:$CLI_TEST_RESULT" \
             "windows-rust-test:$WINDOWS_RUST_RESULT" \
             "macos-codex-runtime-test:$MACOS_CODEX_RESULT" \
+            "macos-cli-check:$MACOS_CLI_RESULT" \
             "windows-codex-runtime-test:$WINDOWS_CODEX_RESULT"; do
             name="${item%%:*}"
             result="${item#*:}"

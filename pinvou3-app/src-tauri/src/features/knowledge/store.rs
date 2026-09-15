@@ -246,6 +246,7 @@ pub struct Store {
 impl Store {
     /// 打开（或新建）磁盘库，建表。父目录会自动创建。
     /// schema 版本不符 → 删库重建（L0 是可重建缓存，重扫即恢复；顺带回收旧版撑大的体积）。
+    /// 版本比本程序更新 → 拒绝打开并报错（回退旧版会毁掉新版写入的数据），不删任何文件。
     pub fn open(db_path: &Path) -> rusqlite::Result<Self> {
         if let Some(parent) = db_path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -253,12 +254,34 @@ impl Store {
         let existed = db_path.exists();
         let current_version = {
             match Connection::open(db_path) {
-                Ok(c) => c
-                    .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
-                    .unwrap_or(0),
+                Ok(c) => {
+                    // Two-process open (desktop app + headless CLI): this
+                    // probe read can land inside the other process's write
+                    // lock. The busy timeout rides out the common BUSY case;
+                    // any remaining probe failure is propagated because a
+                    // default of version 0 on an EXISTING store would send
+                    // it to the stale-rebuild path below, which deletes it.
+                    c.busy_timeout(std::time::Duration::from_millis(5_000))?;
+                    c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?
+                }
+                // A missing store is the fresh-install path (the schema is
+                // created below); an unreadable existing one surfaces here
+                // instead of being misread as version 0.
+                Err(error) if existed => return Err(error),
                 Err(_) => 0,
             }
         }; // 连接在此 drop，才能删文件
+        // A store written by a NEWER binary must never be deleted by a
+        // downgrade: refuse with a clear error and leave every file intact.
+        if existed && current_version > SCHEMA_VERSION {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_NOTADB),
+                Some(format!(
+                    "knowledge store was written by a newer version (schema v{current_version} \
+                     > v{SCHEMA_VERSION}); upgrade pinvou"
+                )),
+            ));
+        }
         // v3 首次包含不可重建的知识集业务数据，必须原地迁移；更旧的版本仅含可重扫的 L0 索引。
         let stale = existed && !matches!(current_version, 3 | SCHEMA_VERSION);
         if stale {
@@ -271,10 +294,18 @@ impl Store {
             );
         }
         let w = Connection::open(db_path)?;
+        // The desktop app and the headless CLI are a supported two-process
+        // scenario over this file. Every open writes `user_version`, which
+        // takes a brief write lock — without a busy timeout an open landing
+        // inside the other process's write transaction fails immediately
+        // with "database is locked". WAL keeps readers non-blocking; this
+        // only makes the short open-time writes wait instead of failing.
+        w.busy_timeout(std::time::Duration::from_millis(5_000))?;
         w.execute_batch(SCHEMA)?;
         w.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
         // 独立只读连接：WAL 下与写连接并发，扫描写锁不堵前端查询。
         let r = Connection::open(db_path)?;
+        r.busy_timeout(std::time::Duration::from_millis(5_000))?;
         r.execute_batch("PRAGMA query_only = ON;")?;
         Ok(Self {
             conn: Arc::new(Mutex::new(w)),
@@ -737,6 +768,44 @@ mod tests {
         assert_eq!(import_table, 1);
         drop(conn);
         drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    #[test]
+    fn newer_schema_store_is_refused_without_deleting_files() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pinvou3_store_newer_{}_{}.db",
+            std::process::id(),
+            suffix
+        ));
+        // Build a valid store first, then pretend a newer binary wrote it.
+        drop(Store::open(&path).unwrap());
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch(&format!("PRAGMA user_version = {};", SCHEMA_VERSION + 1))
+            .unwrap();
+        drop(c);
+
+        let error = match Store::open(&path) {
+            Ok(_) => panic!("newer-schema store must be refused, not reopened"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("newer version") && message.contains("upgrade pinvou"),
+            "{message}"
+        );
+        // The refusal happens before any destructive step: the store files
+        // stay intact for the newer binary.
+        assert!(path.exists(), "store file must survive the refusal");
+
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));

@@ -68,9 +68,10 @@ pub struct ProviderRecord {
     /// 因此保存 claude Provider 时五个槽位均为必填。BTreeMap 保证序列化有序。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_slots: Option<std::collections::BTreeMap<String, String>>,
-    /// 上下文窗口（可选）：codex 写入模型 catalog 的 context_window、
-    /// kimi 写 models.<id>.max_context_size；claude 无对应配置项（用 [1m] 变体）。
-    /// 未填时 writer 用各自默认值（200_000）。
+    /// Optional context window: codex writes the model catalog's
+    /// `context_window`, kimi writes `models.<id>.max_context_size`; claude
+    /// has no matching config key (use the `[1m]` variant). When unset, the
+    /// writer falls back to each provider's default (200_000).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<i64>,
     pub wire_api: ProviderWireApi,

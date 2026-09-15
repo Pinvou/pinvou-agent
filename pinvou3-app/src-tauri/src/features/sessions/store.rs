@@ -44,6 +44,12 @@ static POST_RECORD_DELETE_FAULTS: LazyLock<Mutex<HashMap<String, ErrorKind>>> =
 /// oldest is evicted by [`super::retention::SessionStore::enforce_session_retention_locked`].
 pub(crate) const MAX_SESSIONS_PER_KIND: usize = 50;
 
+/// Title stamped onto freshly created eval sessions by
+/// [`SessionStore::create_empty_with_id`]. An agentic run deletes a failed
+/// fresh session only while it still wears this title, so a GUI user who
+/// adopted the session mid-run (renamed it in the session list) keeps it.
+pub const EVAL_SESSION_FACTORY_TITLE: &str = "临时评测";
+
 impl SessionStore {
     /// Repair persisted tool histories only at process boot, before any
     /// session engine can own an in-flight tool call. Runtime reads use the
@@ -200,6 +206,8 @@ impl SessionStore {
             mode_defaults: Arc::new(RwLock::new(mode_defaults_snapshot)),
             session_purged_hooks: Arc::new(RwLock::new(Vec::new())),
             session_deleted_hooks: Arc::new(RwLock::new(Vec::new())),
+            #[cfg(feature = "benchmark-hooks")]
+            retention_eviction_observer: Arc::new(Mutex::new(None)),
         };
         store.load_scheduled_profiles()?;
         store.reconcile_scheduled_profiles_locked()?;
@@ -739,7 +747,7 @@ impl SessionStore {
             None,
             None,
         );
-        session.metadata.title = "临时评测".to_string();
+        session.metadata.title = EVAL_SESSION_FACTORY_TITLE.to_string();
         if let Some(model_id) = model_id {
             self.set_session_model_id(&id, Some(model_id))?;
         }

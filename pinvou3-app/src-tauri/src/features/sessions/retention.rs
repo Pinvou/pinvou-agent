@@ -15,10 +15,14 @@
 //!    retention depends on, plus the runtime-sidecar purges.
 
 use std::io::ErrorKind;
+#[cfg(feature = "benchmark-hooks")]
+use std::sync::Arc;
 #[cfg(test)]
 use std::{collections::HashMap, sync::LazyLock};
 
 use anyhow::{Context, Result};
+#[cfg(feature = "benchmark-hooks")]
+use parking_lot::Mutex;
 
 use super::SessionStore;
 use super::scheduled::{SCHEDULED_PROFILE_SCHEMA_VERSION, ScheduledProfileRegistry};
@@ -54,6 +58,40 @@ impl SessionStore {
         // 会话 JSON 落盘后列表快照即过期(标题/更新时间/新会话都可能变)
         self.invalidate_list_cache();
         Ok(path)
+    }
+
+    /// Install the headless retention-eviction observer (see the field docs
+    /// and `record_retention_evictions`); returns the previously installed
+    /// one. The headless runner is single-flight per store, so a `Some`
+    /// previous value means the caller armed twice without disarming.
+    #[cfg(feature = "benchmark-hooks")]
+    pub(crate) fn set_retention_eviction_observer(
+        &self,
+        observer: Option<Arc<Mutex<Vec<String>>>>,
+    ) -> Option<Arc<Mutex<Vec<String>>>> {
+        std::mem::replace(&mut self.retention_eviction_observer.lock(), observer)
+    }
+
+    /// Disarm and hand back the installed observer, if any.
+    #[cfg(feature = "benchmark-hooks")]
+    pub(crate) fn take_retention_eviction_observer(&self) -> Option<Arc<Mutex<Vec<String>>>> {
+        self.retention_eviction_observer.lock().take()
+    }
+
+    /// Forward the sessions this sweep actually deleted to the installed
+    /// headless observer, so the runner's warning keys on the eviction event
+    /// itself rather than on the turn's final outcome (a run that fails after
+    /// its prepare-time save must still surface the eviction, and a run that
+    /// failed before saving must stay silent). No observer installed (every
+    /// GUI process) is a no-op.
+    #[cfg(feature = "benchmark-hooks")]
+    fn record_retention_evictions(&self, evicted: &[String]) {
+        if evicted.is_empty() {
+            return;
+        }
+        if let Some(observer) = self.retention_eviction_observer.lock().clone() {
+            observer.lock().extend(evicted.iter().cloned());
+        }
     }
 
     pub(crate) fn enforce_session_retention_locked(&self) -> Result<()> {
@@ -93,6 +131,8 @@ impl SessionStore {
             // 冒泡)同样过期——不能只认 Ok 分支,否则幽灵条目驻留到下一次任意写。
             self.invalidate_list_cache();
         }
+        #[cfg(feature = "benchmark-hooks")]
+        self.record_retention_evictions(&deleted_ids);
         self.purge_session_side_maps(&deleted_ids);
         let reconcile_error = self.reconcile_scheduled_profiles_locked().err();
         match (delete_error, reconcile_error) {

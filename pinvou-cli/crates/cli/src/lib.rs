@@ -12,6 +12,27 @@ use benchmark_core::{
     TaskOutcome, TaskStatus, publish_markdown_report, publish_score_json,
 };
 
+mod agent_task;
+mod artifacts;
+mod code;
+mod connectors;
+mod deps;
+mod feedback;
+mod files;
+mod knowledge;
+mod memory;
+mod models;
+mod monitor;
+mod personas;
+mod plugins;
+mod projects;
+mod scheduled;
+mod sessions;
+mod support;
+mod voice;
+
+pub use agent_task::AgentCommand;
+
 #[cfg(any(test, feature = "product-backend"))]
 use adapter_smoke::{
     SmokeAnalysisMaterial, SmokeRecord, SmokeToolEvent, analyze_rules, calculate_product_score,
@@ -166,18 +187,26 @@ pub enum BenchmarkCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AgentCommand {
-    Run {
-        prompt_file: PathBuf,
-        workspace: Option<PathBuf>,
-        timeout_secs: u64,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CliCommand {
+    Version,
     Benchmark(BenchmarkCommand),
     Agent(AgentCommand),
+    Sessions(sessions::SessionsCommand),
+    Models(models::ModelsCommand),
+    Memory(memory::MemoryCommand),
+    Knowledge(knowledge::KnowledgeCommand),
+    Scheduled(scheduled::ScheduledCommand),
+    Plugins(plugins::PluginsCommand),
+    Connectors(connectors::ConnectorsCommand),
+    Personas(personas::PersonasCommand),
+    Code(code::CodeCommand),
+    Files(files::FilesCommand),
+    Voice(voice::VoiceCommand),
+    Deps(deps::DepsCommand),
+    Feedback(feedback::FeedbackCommand),
+    Monitor(monitor::MonitorCommand),
+    Artifacts(artifacts::ArtifactsCommand),
+    Projects(projects::ProjectsCommand),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -203,14 +232,14 @@ pub struct CliError {
 }
 
 impl CliError {
-    fn usage(message: impl Into<String>) -> Self {
+    pub(crate) fn usage(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             exit_code: ExitCode::Usage,
         }
     }
 
-    fn failed(message: impl Into<String>) -> Self {
+    pub(crate) fn failed(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             exit_code: ExitCode::Failed,
@@ -244,20 +273,37 @@ where
     }
     let mut output = OutputMode::Human;
     let mut index = 0;
+    let mut global_output_seen = false;
     while index < values.len() {
         if values[index] == "--output" {
             let value = values
                 .get(index + 1)
                 .ok_or_else(|| CliError::usage("--output requires human or json"))?;
             match value.as_str() {
-                "human" => {
-                    output = OutputMode::Human;
+                "human" | "json" => {
+                    // A repeated identical mode is accepted (scripts append
+                    // `--output json` unconditionally), but two conflicting
+                    // modes must not silently last-win like the family
+                    // parsers' duplicate rejection. A value that is not
+                    // human|json is left for the subcommand and not counted.
+                    let mode = if value == "json" {
+                        OutputMode::Json
+                    } else {
+                        OutputMode::Human
+                    };
+                    if global_output_seen && mode != output {
+                        return Err(CliError::usage(
+                            "--output given twice with conflicting global modes",
+                        ));
+                    }
+                    global_output_seen = true;
+                    output = mode;
                     values.drain(index..=index + 1);
                 }
-                "json" => {
-                    output = OutputMode::Json;
-                    values.drain(index..=index + 1);
-                }
+                // Not a global-mode value: leave the pair for the subcommand.
+                // `sessions export --output FILE` legitimately takes a path
+                // here; families without such a flag report it themselves.
+                // (A file literally named "json"/"human" needs a ./ prefix.)
                 _ => index += 1,
             }
         } else {
@@ -265,17 +311,62 @@ where
         }
     }
     if values.first().map(String::as_str) == Some("agent") {
-        let command = parse_agent(&values)?;
+        let command = agent_task::parse(&values)?;
         return Ok(ParsedCli {
             command: CliCommand::Agent(command),
             output,
         });
     }
-    if values.first().map(String::as_str) != Some("benchmark") {
-        return Err(CliError::usage(
-            "usage: pinvou benchmark <command> | pinvou agent run",
-        ));
+    if values.first().map(String::as_str) == Some("settings") {
+        let command = models::parse(&values)?;
+        return Ok(ParsedCli {
+            command: CliCommand::Models(command),
+            output,
+        });
     }
+    // `pinvou --version` / `pinvou version`: a product CLI convention the
+    // docs previously could not deliver.
+    if values.first().map(String::as_str) == Some("--version")
+        || values.first().map(String::as_str) == Some("version")
+    {
+        if values.len() > 1 {
+            return Err(CliError::usage("pinvou --version accepts no arguments"));
+        }
+        let command = CliCommand::Version;
+        return Ok(ParsedCli { command, output });
+    }
+    if values.first().map(String::as_str) == Some("benchmark") {
+        let command = parse_benchmark(&values)?;
+        return Ok(ParsedCli {
+            command: CliCommand::Benchmark(command),
+            output,
+        });
+    }
+    let command = match values.first().map(String::as_str) {
+        Some("sessions") => CliCommand::Sessions(sessions::parse(&values)?),
+        Some("models") => CliCommand::Models(models::parse(&values)?),
+        Some("memory") => CliCommand::Memory(memory::parse(&values)?),
+        Some("knowledge") => CliCommand::Knowledge(knowledge::parse(&values)?),
+        Some("scheduled") => CliCommand::Scheduled(scheduled::parse(&values)?),
+        Some("plugins") => CliCommand::Plugins(plugins::parse(&values)?),
+        Some("connectors") => CliCommand::Connectors(connectors::parse(&values)?),
+        Some("personas") => CliCommand::Personas(personas::parse(&values)?),
+        Some("code") => CliCommand::Code(code::parse(&values)?),
+        Some("files") => CliCommand::Files(files::parse(&values)?),
+        Some("voice") => CliCommand::Voice(voice::parse(&values)?),
+        Some("deps") => CliCommand::Deps(deps::parse(&values)?),
+        Some("feedback") => CliCommand::Feedback(feedback::parse(&values)?),
+        Some("monitor") => CliCommand::Monitor(monitor::parse(&values)?),
+        Some("artifacts") => CliCommand::Artifacts(artifacts::parse(&values)?),
+        Some("projects") => CliCommand::Projects(projects::parse(&values)?),
+        _ => {
+            return Err(CliError::usage(support::TOP_LEVEL_USAGE));
+        }
+    };
+    Ok(ParsedCli { command, output })
+}
+
+fn parse_benchmark(values: &[String]) -> Result<BenchmarkCommand, CliError> {
     let command = match values.get(1).map(String::as_str) {
         Some("list") if values.len() == 2 => BenchmarkCommand::List,
         Some("run") if values.len() >= 3 => {
@@ -308,10 +399,7 @@ where
         Some("submission") => parse_gaia_submission(&values)?,
         _ => return Err(CliError::usage("unknown benchmark command")),
     };
-    Ok(ParsedCli {
-        command: CliCommand::Benchmark(command),
-        output,
-    })
+    Ok(command)
 }
 
 fn parse_gaia_fetch(values: &[String]) -> Result<BenchmarkCommand, CliError> {
@@ -388,46 +476,6 @@ fn require_gaia(values: &[String], command: &str) -> Result<(), CliError> {
         )));
     }
     Ok(())
-}
-
-/// Parse-time cap for `agent run --timeout-secs` (7 days): an unbounded u64
-/// would overflow `Instant + Duration`, exiting 101 with no report. Must stay
-/// in lockstep with the library clamp `pinvou_product_backend::MAX_TIMEOUT_SECS`
-/// (asserted equal by `agent_timeout_cap_matches_library_clamp`).
-const AGENT_TIMEOUT_SECS_MAX: u64 = 7 * 24 * 60 * 60;
-
-fn parse_agent(values: &[String]) -> Result<AgentCommand, CliError> {
-    match values.get(1).map(String::as_str) {
-        Some("run") => {
-            let options = named_options(
-                &values[2..],
-                &["--prompt-file", "--workspace", "--timeout-secs"],
-            )?;
-            let prompt_file = option(&options, "--prompt-file")
-                .map(PathBuf::from)
-                .ok_or_else(|| CliError::usage("agent run requires --prompt-file"))?;
-            let workspace = option(&options, "--workspace").map(PathBuf::from);
-            let timeout_secs = match option(&options, "--timeout-secs") {
-                None => 600,
-                Some(value) => value
-                    .parse::<u64>()
-                    .ok()
-                    .filter(|seconds| *seconds > 0 && *seconds <= AGENT_TIMEOUT_SECS_MAX)
-                    .ok_or_else(|| {
-                        CliError::usage(format!(
-                            "agent run requires --timeout-secs to be a positive integer \
-                             no greater than {AGENT_TIMEOUT_SECS_MAX}"
-                        ))
-                    })?,
-            };
-            Ok(AgentCommand::Run {
-                prompt_file,
-                workspace,
-                timeout_secs,
-            })
-        }
-        _ => Err(CliError::usage("usage: pinvou agent run")),
-    }
 }
 
 fn named_options<'a>(
@@ -509,6 +557,12 @@ pub struct CliOutcome {
 pub fn execute(parsed: ParsedCli) -> Result<CliOutcome, CliError> {
     let output = parsed.output;
     match parsed.command {
+        CliCommand::Version => Ok(success(match output {
+            OutputMode::Human => format!("pinvou {}", env!("CARGO_PKG_VERSION")),
+            OutputMode::Json => {
+                serde_json::json!({ "version": env!("CARGO_PKG_VERSION") }).to_string()
+            }
+        })),
         CliCommand::Benchmark(BenchmarkCommand::List) => Ok(success(render_list(output))),
         CliCommand::Benchmark(BenchmarkCommand::Status(run_id)) => status(&run_id, output),
         CliCommand::Benchmark(BenchmarkCommand::Report(run_id)) => report(&run_id, output),
@@ -538,11 +592,23 @@ pub fn execute(parsed: ParsedCli) -> Result<CliOutcome, CliError> {
         CliCommand::Benchmark(BenchmarkCommand::NotAvailable(command)) => Err(CliError::usage(
             format!("benchmark command '{command}' is not_available"),
         )),
-        CliCommand::Agent(AgentCommand::Run {
-            prompt_file,
-            workspace,
-            timeout_secs,
-        }) => run_agent(&prompt_file, workspace.as_deref(), timeout_secs, output),
+        CliCommand::Agent(command) => agent_task::execute(command, output),
+        CliCommand::Sessions(command) => sessions::execute(command, output),
+        CliCommand::Models(command) => models::execute(command, output),
+        CliCommand::Memory(command) => memory::execute(command, output),
+        CliCommand::Knowledge(command) => knowledge::execute(command, output),
+        CliCommand::Scheduled(command) => scheduled::execute(command, output),
+        CliCommand::Plugins(command) => plugins::execute(command, output),
+        CliCommand::Connectors(command) => connectors::execute(command, output),
+        CliCommand::Personas(command) => personas::execute(command, output),
+        CliCommand::Code(command) => code::execute(command, output),
+        CliCommand::Files(command) => files::execute(command, output),
+        CliCommand::Voice(command) => voice::execute(command, output),
+        CliCommand::Deps(command) => deps::execute(command, output),
+        CliCommand::Feedback(command) => feedback::execute(command, output),
+        CliCommand::Monitor(command) => monitor::execute(command, output),
+        CliCommand::Artifacts(command) => artifacts::execute(command, output),
+        CliCommand::Projects(command) => projects::execute(command, output),
     }
 }
 
@@ -873,6 +939,12 @@ fn publish_gaia_score_artifacts(
     let outcomes = store.read_outcomes().map_err(core_error)?;
     let diagnostics = GaiaDiagnostics::from_outcomes(&outcomes);
     let agent_evaluation_eligible = diagnostics.agent_evaluation_eligible();
+    // Era and harness-deadline mode travel with the score so a legacy
+    // schema-1 artifact can never be mistaken for a current-era run: schema
+    // 1 predates the recorded deadline mode, and an explicit `null` here is
+    // the current writer saying "unbounded" while the legacy era is
+    // unrecoverable by definition.
+    let manifest = store.read_manifest().map_err(core_error)?;
     let mut score = serde_json::json!({
         "run_id": run_id,
         "status": status,
@@ -883,6 +955,8 @@ fn publish_gaia_score_artifacts(
         "complete": report.is_complete(),
         "official_dataset_compatible": report.is_official_dataset_compatible(),
         "agent_evaluation_eligible": agent_evaluation_eligible,
+        "manifest_schema_version": manifest.schema_version(),
+        "harness_deadline_secs": manifest.harness_deadline_secs(),
         "diagnostics": diagnostics.to_json(),
     });
     if let Some(accuracy) = comparable_accuracy {
@@ -1370,108 +1444,6 @@ fn run_gaia(_output: OutputMode) -> Result<CliOutcome, CliError> {
     Err(CliError::failed("product_backend_not_enabled"))
 }
 
-#[cfg(not(feature = "product-backend"))]
-fn run_agent(
-    _prompt_file: &Path,
-    _workspace: Option<&Path>,
-    _timeout_secs: u64,
-    _output: OutputMode,
-) -> Result<CliOutcome, CliError> {
-    Err(CliError::failed("product_backend_not_enabled"))
-}
-
-#[cfg(feature = "product-backend")]
-fn run_agent(
-    prompt_file: &Path,
-    workspace: Option<&Path>,
-    timeout_secs: u64,
-    output: OutputMode,
-) -> Result<CliOutcome, CliError> {
-    // Consistent with the other read failures in lib.rs (read_to_string ->
-    // failed): an unreadable file is a host-level failure (exit 1), not an
-    // argument usage error — the documented exit-code contract also lists
-    // read failures under host-level.
-    let prompt = std::fs::read_to_string(prompt_file)
-        .map_err(|_| CliError::failed("agent run cannot read --prompt-file"))?;
-    // Canonicalize so the engine receives an absolute path regardless of cwd
-    // changes, and fail fast on a missing/non-directory workspace instead of
-    // letting a typo'd path get silently created deeper in the stack.
-    let workspace = match workspace {
-        Some(path) => {
-            let resolved = std::fs::canonicalize(path).map_err(|error| {
-                if error.kind() == std::io::ErrorKind::NotFound {
-                    CliError::failed(format!(
-                        "agent run --workspace does not exist: {}",
-                        path.display()
-                    ))
-                } else {
-                    CliError::failed(format!(
-                        "agent run --workspace cannot be accessed: {} ({error})",
-                        path.display()
-                    ))
-                }
-            })?;
-            if !resolved.is_dir() {
-                return Err(CliError::failed(format!(
-                    "agent run --workspace is not a directory: {}",
-                    resolved.display()
-                )));
-            }
-            Some(resolved)
-        }
-        None => None,
-    };
-    let request = pinvou_product_backend::AgenticTaskRequest {
-        prompt,
-        workspace,
-        timeout_secs,
-    };
-    let report = pinvou_product_backend::run_agentic_task(request)
-        .map_err(|error| CliError::failed(format!("agent_run_failed: {error:#}")))?;
-    // TB/harness semantics: exit 0 whenever a report is produced (timeouts and
-    // in-turn errors live in the report fields and are settled by the
-    // harness grader); non-zero exit codes are reserved for host-level
-    // failures (unreadable file, unusable backend, ...). Otherwise a timed-out
-    // task would be recorded as an exception instead of a 0-reward run and the
-    // mean would only cover surviving tasks, skewing scores.
-    Ok(CliOutcome {
-        exit_code: ExitCode::Success,
-        stdout: render_agent_report(&report, output)?,
-    })
-}
-
-#[cfg(feature = "product-backend")]
-fn render_agent_report(
-    report: &pinvou_product_backend::AgenticTaskReport,
-    output: OutputMode,
-) -> Result<String, CliError> {
-    match output {
-        OutputMode::Json => serde_json::to_string(report).map_err(|error| {
-            CliError::failed(format!("agent report serialization failed: {error}"))
-        }),
-        OutputMode::Human => {
-            let mut lines = vec![format!(
-                "session: {} status: {}",
-                report.session_id, report.status
-            )];
-            if let Some(error) = &report.error {
-                lines.push(format!("error: {error}"));
-            }
-            if let Some(usage) = &report.usage {
-                lines.push(format!(
-                    "tokens: input={} output={} tools={}",
-                    usage.input_tokens,
-                    usage.output_tokens,
-                    report.tool_events.len()
-                ));
-            }
-            lines.push(String::new());
-            lines.push(report.assistant_text.trim_end().to_string());
-            Ok(lines.join("\n"))
-        }
-    }
-}
-
 #[cfg(feature = "product-backend")]
 mod product {
     use std::path::Path;
@@ -1779,119 +1751,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_args_accepts_agent_run_with_options() {
-        let parsed = parse_args([
-            "pinvou",
-            "agent",
-            "run",
-            "--prompt-file",
-            "task.txt",
-            "--workspace",
-            "/tmp/task",
-            "--timeout-secs",
-            "900",
-        ])
-        .unwrap();
-        assert_eq!(
-            parsed.command(),
-            &CliCommand::Agent(AgentCommand::Run {
-                prompt_file: PathBuf::from("task.txt"),
-                workspace: Some(PathBuf::from("/tmp/task")),
-                timeout_secs: 900,
-            })
-        );
-        assert_eq!(parsed.output(), OutputMode::Human);
-    }
-
-    #[test]
-    fn parse_args_defaults_agent_run_timeout_and_workspace() {
-        let parsed = parse_args(["pinvou", "agent", "run", "--prompt-file", "task.txt"]).unwrap();
-        assert_eq!(
-            parsed.command(),
-            &CliCommand::Agent(AgentCommand::Run {
-                prompt_file: PathBuf::from("task.txt"),
-                workspace: None,
-                timeout_secs: 600,
-            })
-        );
-    }
-
-    #[test]
-    fn parse_args_rejects_agent_run_without_prompt_file() {
-        let error = parse_args(["pinvou", "agent", "run"]).unwrap_err();
-        assert_eq!(error.exit_code(), ExitCode::Usage);
-        assert!(error.to_string().contains("--prompt-file"));
-    }
-
-    #[test]
-    fn parse_args_rejects_non_positive_agent_timeout() {
-        let error = parse_args([
-            "pinvou",
-            "agent",
-            "run",
-            "--prompt-file",
-            "task.txt",
-            "--timeout-secs",
-            "0",
-        ])
-        .unwrap_err();
-        assert_eq!(error.exit_code(), ExitCode::Usage);
-        assert!(error.to_string().contains("positive integer"));
-    }
-
-    #[test]
-    fn parse_args_rejects_oversized_agent_timeout() {
-        // u64::MAX parses fine, but Instant + Duration would overflow and
-        // panic; the parse layer must reject it with a usage error carrying
-        // the cap.
-        let error = parse_args([
-            "pinvou",
-            "agent",
-            "run",
-            "--prompt-file",
-            "task.txt",
-            "--timeout-secs",
-            &(u64::MAX.to_string()),
-        ])
-        .unwrap_err();
-        assert_eq!(error.exit_code(), ExitCode::Usage);
-        assert!(error.to_string().contains("no greater than"));
-        assert_eq!(AGENT_TIMEOUT_SECS_MAX, 7 * 24 * 60 * 60);
-    }
-
-    /// The CLI parse cap and the library clamp guard the same
-    /// `Instant + Duration` overflow; they must never diverge.
-    #[cfg(feature = "product-backend")]
-    #[test]
-    fn agent_timeout_cap_matches_library_clamp() {
-        assert_eq!(
-            AGENT_TIMEOUT_SECS_MAX,
-            pinvou_product_backend::MAX_TIMEOUT_SECS
-        );
-    }
-
-    #[test]
-    fn parse_args_rejects_unknown_agent_subcommand() {
-        let error = parse_args(["pinvou", "agent", "status"]).unwrap_err();
-        assert_eq!(error.exit_code(), ExitCode::Usage);
-    }
-
-    #[test]
-    fn parse_args_keeps_output_flag_for_agent_run() {
-        let parsed = parse_args([
-            "pinvou",
-            "--output",
-            "json",
-            "agent",
-            "run",
-            "--prompt-file",
-            "task.txt",
-        ])
-        .unwrap();
-        assert_eq!(parsed.output(), OutputMode::Json);
-    }
-
-    #[test]
     fn parse_args_still_rejects_bare_pinvou_invocation() {
         let error = parse_args(["pinvou"]).unwrap_err();
         assert_eq!(error.exit_code(), ExitCode::Usage);
@@ -1921,11 +1780,30 @@ mod tests {
         assert!(!outcome.stdout.contains("ready"));
     }
 
+    /// Panic-safe `PINVOU3_HOME` restore: a failing assert must not leak the
+    /// temp home into sibling unit tests (the same RAII rule the
+    /// integration tests' `RestoreHome` guard applies).
+    struct RestoreHomeGuard(Option<std::ffi::OsString>);
+    impl RestoreHomeGuard {
+        fn set_home(path: &std::path::Path) -> Self {
+            let previous = std::env::var_os("PINVOU3_HOME");
+            unsafe { std::env::set_var("PINVOU3_HOME", path) };
+            Self(previous)
+        }
+    }
+    impl Drop for RestoreHomeGuard {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+                None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+            }
+        }
+    }
+
     #[test]
     fn official_gaia_consumer_rejects_a_tampered_marker_at_the_real_ready_root() {
         let home = temp_base("gaia-tampered-ready");
-        let previous = std::env::var_os("PINVOU3_HOME");
-        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+        let _home_guard = RestoreHomeGuard::set_home(&home);
         let snapshot = gaia_snapshot_root().unwrap();
         std::fs::create_dir(&snapshot).unwrap();
         std::fs::write(
@@ -1939,10 +1817,6 @@ mod tests {
         assert_eq!(error.to_string(), "gaia_verify_failed");
         assert!(!error.to_string().contains(snapshot.to_str().unwrap()));
 
-        match previous {
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
         std::fs::remove_dir_all(home).unwrap();
     }
 
@@ -2102,6 +1976,8 @@ mod tests {
         assert_eq!(score["complete"], true);
         assert_eq!(score["official_dataset_compatible"], true);
         assert_eq!(score["agent_evaluation_eligible"], true);
+        assert_eq!(score["manifest_schema_version"], 2);
+        assert_eq!(score["harness_deadline_secs"], serde_json::json!(null));
         assert_eq!(
             score["diagnostics"]["integration_stability"]["status"],
             "pass"
@@ -2122,6 +1998,71 @@ mod tests {
         assert!(markdown.contains("状态: **PASS**"));
         assert!(markdown.contains("31 / 53"));
         assert!(markdown.contains("## 接入诊断"));
+
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn gaia_score_artifacts_pin_manifest_era_and_harness_deadline_mode() {
+        use adapter_gaia::GaiaAdapter;
+        use benchmark_core::{
+            BenchmarkAdapter, ModelIdentity, OfficialScoreReport, RunManifest, Split, ToolPolicyId,
+        };
+
+        let base = temp_base("gaia-score-era-markers");
+        let adapter = GaiaAdapter::new();
+        let model = ModelIdentity::new("fixture", "model").unwrap();
+        let policy = ToolPolicyId::new("pinvou-gaia-public-web/v1");
+        let report = OfficialScoreReport::compatible(3, 3, GAIA_SPLIT, "1");
+
+        let bounded = RunManifest::new(
+            "gaia-score-era-bounded",
+            &adapter
+                .descriptor()
+                .clone()
+                .with_harness_deadline_secs(Some(300)),
+            Split::new(GAIA_SPLIT),
+            model.clone(),
+            ToolPolicyId::new("pinvou-gaia-public-web/v1"),
+            1,
+        )
+        .unwrap();
+        let bounded_store = RunStore::create(&base, &bounded).unwrap();
+        publish_gaia_score_artifacts(&bounded_store, "gaia-score-era-bounded", &report).unwrap();
+        let score: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(bounded_store.run_dir().join("score.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(score["manifest_schema_version"], 2);
+        assert_eq!(score["harness_deadline_secs"], 300);
+
+        let legacy = RunManifest::new(
+            "gaia-score-era-legacy",
+            adapter.descriptor(),
+            Split::new(GAIA_SPLIT),
+            model,
+            policy,
+            1,
+        )
+        .unwrap();
+        let legacy_store = RunStore::create(&base, &legacy).unwrap();
+        let mut stored = serde_json::to_value(&legacy).unwrap();
+        stored["schema_version"] = serde_json::json!(1);
+        std::fs::write(
+            legacy_store.manifest_path(),
+            serde_json::to_vec(&stored).unwrap(),
+        )
+        .unwrap();
+        publish_gaia_score_artifacts(&legacy_store, "gaia-score-era-legacy", &report).unwrap();
+        let score: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(legacy_store.run_dir().join("score.json")).unwrap(),
+        )
+        .unwrap();
+        // A legacy schema-1 manifest predates the recorded deadline mode, so
+        // its score artifact must stay era-marked and deadline-unrecoverable
+        // instead of masquerading as a current unbounded run.
+        assert_eq!(score["manifest_schema_version"], 1);
+        assert_eq!(score["harness_deadline_secs"], serde_json::json!(null));
 
         std::fs::remove_dir_all(base).unwrap();
     }
