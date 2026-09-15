@@ -653,3 +653,59 @@ fn personas_delete_sweeps_equipped_sidecars_for_the_deleted_card_only() {
 
     std::fs::remove_file(&body_path).unwrap();
 }
+
+/// Regression: the delete-time sweep reads each sidecar through a bounded
+/// reader whose cap must cover the largest legal sidecar (injection-wrapped
+/// 4 MiB body, JSON-escaped). A sidecar staged from a persona whose body is
+/// well over the old 64 KiB read cap must still be matched and removed —
+/// otherwise delete reports success while a stale `persona_equipped.json`
+/// keeps the deleted persona "active" on the session.
+#[test]
+fn personas_delete_sweep_clears_sidecars_with_large_bodies() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("delete-sidecar-large-body");
+    let session_id = create_session_fixture();
+    // 100 KiB: over the old 64 KiB sweep cap, far under the 4 MiB body cap.
+    let big_body = format!("# Big Expert\n\n{}\n", "x".repeat(100 * 1024));
+    let body_path = write_body_file("sweep-big", &big_body);
+
+    let value = run_json(&[
+        "pinvou",
+        "personas",
+        "create",
+        "--name",
+        "Big Expert",
+        "--file",
+        body_path.to_str().unwrap(),
+    ]);
+    let persona_id = value["id"].as_str().unwrap().to_owned();
+    run(&["pinvou", "personas", "equip", &session_id, &persona_id]).unwrap();
+    let sidecar = home
+        .sessions_root()
+        .join(&session_id)
+        .join("persona_equipped.json");
+    assert!(
+        sidecar.is_file(),
+        "equip must persist the sidecar for the large body"
+    );
+
+    let value = run_json(&["pinvou", "personas", "delete", &persona_id, "--yes"]);
+    assert_eq!(value["action"], "deleted");
+    let cleared = value["cleared_sessions"]
+        .as_array()
+        .expect("cleared_sessions list");
+    assert_eq!(
+        cleared.len(),
+        1,
+        "the large-body sidecar must be swept, not skipped by the read cap"
+    );
+    assert_eq!(cleared[0], session_id);
+    assert!(
+        !sidecar.exists(),
+        "the large-body sidecar must be removed by the delete sweep"
+    );
+    let value = run_json(&["pinvou", "personas", "active", &session_id]);
+    assert!(value.is_null(), "the deleted persona must not stay active");
+
+    std::fs::remove_file(&body_path).unwrap();
+}

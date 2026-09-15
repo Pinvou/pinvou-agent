@@ -477,11 +477,19 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
 /// `$PINVOU3_HOME/sessions/<id>/persona_equipped.json` (only ids that pass
 /// `valid_session_id`), and where the sidecar's `persona_id` matches the
 /// deleted card, remove the file. Sidecars for other personas are left
-/// untouched. Reads are bounded (64 KiB) and tolerant — a missing,
-/// unreadable, or corrupt sidecar is skipped, the same tolerance `active`
-/// applies — but a matching sidecar that cannot be removed fails the
-/// delete instead of silently leaving stale injection state behind.
+/// untouched. Reads are bounded and tolerant — a missing, unreadable, or
+/// corrupt sidecar is skipped, the same tolerance `active` applies — but the
+/// bound must cover the largest legal sidecar: `pending_body` holds the
+/// injection-wrapped body (body cap 4 MiB plus a few hundred bytes of wrapper
+/// text), serialized as a JSON string whose worst-case escape expansion is
+/// 6 bytes per input byte (`\uXXXX` for control bytes). A cap anywhere below
+/// that would silently skip exactly the sidecars carrying the biggest
+/// legitimate personas, leaving stale `persona_equipped.json` behind while
+/// delete still reports success. A matching sidecar that cannot be removed
+/// fails the delete instead of silently leaving stale injection state behind.
 fn clear_equipped_sidecars(persona_id: &str) -> Result<Vec<String>, CliError> {
+    // 4 MiB body cap × worst-case JSON escape expansion + wrapper/envelope.
+    const MAX_SIDECAR_BYTES: usize = 4 * 1024 * 1024 * 6 + 1024;
     let sessions_dir = sandbox_home()?.join("sessions");
     let entries = match std::fs::read_dir(&sessions_dir) {
         Ok(entries) => entries,
@@ -497,7 +505,8 @@ fn clear_equipped_sidecars(persona_id: &str) -> Result<Vec<String>, CliError> {
             continue;
         }
         let path = entry.path().join("persona_equipped.json");
-        let Ok(raw) = crate::support::read_text_file_capped(&path, 64 * 1024, "personas delete")
+        let Ok(raw) =
+            crate::support::read_text_file_capped(&path, MAX_SIDECAR_BYTES, "personas delete")
         else {
             continue;
         };
