@@ -835,13 +835,23 @@ fn add_sources_refuses_to_drop_sources_behind_a_resumable_job() {
 /// `index resume`/`index retry` with an unknown job id must refuse BEFORE
 /// the recovering open (the `index cancel` rule): boot recovery flips every
 /// preparing/running job to interrupted, including an import a live
-/// desktop-app process is still running. The import thread here belongs to
-/// this test process and stays in flight while the mistyped commands run, so
-/// the untouched `index status` afterwards proves no recovery happened.
+/// desktop-app process is still running. A one-shot add-sources child leaves
+/// its job stranded in `running`; only boot recovery (or the resume itself)
+/// may flip it to interrupted, so the job reading `running` afterwards proves
+/// the mistyped commands never ran recovery.
 #[test]
 fn index_resume_and_retry_reject_unknown_ids_without_recovery() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = TempHome::new("index-resume-precheck");
+    let bin = env!("CARGO_BIN_EXE_pinvou");
+    let run_child = |args: &[&str]| {
+        let mut command = std::process::Command::new(bin);
+        command
+            .args(args)
+            .env("PINVOU3_HOME", home.path())
+            .env("PINVOU_NO_COLOR", "1");
+        command.output().expect("binary runs")
+    };
 
     let created = run_json(&[
         "pinvou",
@@ -853,30 +863,34 @@ fn index_resume_and_retry_reject_unknown_ids_without_recovery() {
     ]);
     let id = created["id"].as_i64().expect("created collection id");
 
-    // Many tiny files keep the in-process import thread busy long enough to
-    // catch a recovery wedging the live job.
-    let docs = home.path().join("many");
-    std::fs::create_dir_all(&docs).unwrap();
-    for index in 0..128 {
-        std::fs::write(
-            docs.join(format!("note-{index:03}.txt")),
-            format!("pinvou knowledge live import probe {index}"),
-        )
-        .unwrap();
-    }
-    let started = run_json(&[
-        "pinvou",
+    // One ingestible file: enough work that the add-sources child's import
+    // thread is killed mid-flight at process exit (the one-shot contract),
+    // leaving the job row stranded in `running` with no live worker.
+    let source = home.path().join("precheck.txt");
+    std::fs::write(
+        &source,
+        "Pinvou knowledge resume precheck probe.".repeat(64),
+    )
+    .unwrap();
+    let started = run_child(&[
         "knowledge",
         "collections",
         "add-sources",
         &id.to_string(),
-        docs.to_str().unwrap(),
+        source.to_str().unwrap(),
+        "--output",
+        "json",
     ]);
+    assert!(started.status.success(), "add-sources must succeed");
+    let started: serde_json::Value = serde_json::from_slice(&started.stdout).unwrap();
     let job_id = started["jobId"]
         .as_str()
         .expect("started job id")
         .to_owned();
 
+    // The mistyped commands run in-process (same dispatch the binary runs);
+    // both must fail against the latest job without ever opening the service
+    // through the boot-recovery path.
     for arguments in [
         vec!["pinvou", "knowledge", "index", "resume", "typo-job"],
         vec!["pinvou", "knowledge", "index", "retry", "typo-job", "1"],
@@ -890,10 +904,14 @@ fn index_resume_and_retry_reject_unknown_ids_without_recovery() {
         );
     }
 
-    // The live import must be untouched: a recovering open would have wedged
-    // it into interrupted/resumable (a just-finished job reads done here —
-    // still neither interrupted nor resumable).
-    let state = run_json(&["pinvou", "knowledge", "index", "status"]);
+    // The stranded job must still read `running` (or already be done): only
+    // boot recovery would have wedged it into interrupted/resumable, so the
+    // state is the proof that no recovery ran. A fresh child reads the same
+    // store without touching it (`index status` opens non-recovering).
+    let polled = run_child(&["knowledge", "index", "status", "--output", "json"]);
+    assert!(polled.status.success(), "index status must succeed");
+    let state: serde_json::Value = serde_json::from_slice(&polled.stdout).unwrap();
+    assert_eq!(state["jobId"], serde_json::json!(job_id));
     assert_ne!(state["phase"], serde_json::json!("interrupted"), "{state}");
     assert_eq!(state["resumable"], serde_json::json!(false), "{state}");
 }

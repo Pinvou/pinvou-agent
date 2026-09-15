@@ -24,6 +24,15 @@
 //! lost — avoid memory mutations while the desktop app is actively writing
 //! memory (same caveat as the `sessions` family header).
 //!
+//! Snapshot rewrite caveat: `memory overview` and `memory organize` refresh
+//! `snapshot.md` through the feature layer with `runtime: None` (a one-shot
+//! CLI never owns the desktop app's active session — see the overview
+//! command), so the rewritten document carries no `runtime` section. Running
+//! either command concurrently while the desktop app has an active session
+//! temporarily drops that section from `snapshot.md` until the app next
+//! refreshes it; avoid `overview`/`organize` while the app is displaying
+//! memory for a live session.
+//!
 //! Replace-per-topic note: `memory add preference` and `memory add
 //! work-context` do not append. Both stores are organized into topic buckets
 //! and the write deletes the bucket's previous item, and the CLI adds without
