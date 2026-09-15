@@ -1236,6 +1236,23 @@ test('transcript 适配：文件工具归 file_change，终态后不留转圈条
   assert.equal(turn.error, 'boom');
 });
 
+test('transcript 适配：cancelled 终态不再渲染成红色失败（与运行中代理浮层语义一致）', () => {
+  // The ledger folds every non-completed ending into failed=true, but the
+  // status token still distinguishes an operator cancellation; the panel must
+  // not contradict the overlay's neutral "cancelled" presentation.
+  const cancelled = projectSubagentTranscript({
+    messages: [{ role: 'user', content: [{ type: 'text', text: '调研' }] }],
+    agent: { agentId: 'a3', role: 'scout', done: true, failed: true, status: 'cancelled' },
+  }).turns[0];
+  assert.equal(cancelled.status, 'Cancelled');
+  assert.notEqual(cancelled.status, 'Failed');
+  const interrupted = projectSubagentTranscript({
+    messages: [],
+    agent: { agentId: 'a4', done: true, failed: true, status: 'INTERRUPTED' },
+  }).turns[0];
+  assert.equal(interrupted.status, 'Interrupted', 'the token comparison is case-insensitive');
+});
+
 test('transcript 适配：v0.9.5 canonical File write/edit/patch 归 file_change，read 不算', () => {
   const { turns } = projectSubagentTranscript({
     messages: [

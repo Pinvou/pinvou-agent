@@ -94,7 +94,12 @@ function toolLocations(name, input) {
 function turnStatusFromAgent(agent) {
   if (!agent || !agent.done) return 'running';
   if (!agent.failed) return 'Completed';
-  return agent.status === 'interrupted' ? 'Interrupted' : 'Failed';
+  const token = String(agent.status || '').toLowerCase();
+  if (token === 'interrupted') return 'Interrupted';
+  // A swarm-off cancellation is an operator ending, not the agent's failure:
+  // keep it distinct so the panel agrees with the running-agents overlay.
+  if (token === 'cancelled') return 'Cancelled';
+  return 'Failed';
 }
 
 /**

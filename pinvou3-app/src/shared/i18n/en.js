@@ -8,7 +8,7 @@
 import { browserEn } from './browser.js';
 
 const conversationEn = {
-  completed:'Completed', failed:'Failed', interrupted:'Interrupted', limitReached:'Limit reached', processing:'Processing', processingActive:'Processing',
+  completed:'Completed', failed:'Failed', interrupted:'Interrupted', cancelled:'Cancelled', limitReached:'Limit reached', processing:'Processing', processingActive:'Processing',
   waitingPermission:'Waiting for permission', waitingInput:'Waiting for your input', waitingInputShort:'Waiting for input',
   goLatest:label=>`${label}. Go to latest message`,
   elapsed:milliseconds=>{ const seconds=Math.max(0,Math.floor(milliseconds/1000)); if(seconds<60)return `${seconds}s`; const minutes=Math.floor(seconds/60); const remaining=seconds%60; return remaining?`${minutes}m ${remaining}s`:`${minutes}m`; },
@@ -341,7 +341,7 @@ export const dictEn = {
         uiConversation: conversationEn,
         uiMultiAgent: {
           toggleLabel:'Swarm Mode',
-          toggleHint:'Let this conversation delegate to subagents (swarm collaboration); turning it off recycles the engine and cancels any subagents still running',
+          toggleHint:'Let this conversation delegate to subagents (swarm collaboration); while on, the subagent cap in advanced settings is ignored; turning it off recycles the engine and cancels any subagents still running',
           spawnedAgentsRow:count=>`Pinvou spawned ${count} agent${count === 1 ? '' : 's'}`,
           spawnedAgentsRowHint:'Click to view the subagent list',
           runningAgentsTitle:'Running agents',
@@ -350,7 +350,7 @@ export const dictEn = {
           drawerTitle:role=>`Subagent · ${role}`, close:'Close', loadingTranscript:'Loading conversation…',
           emptyTranscript:'No saved conversation yet. The subagent may have just started.',
           panelResize:'Resize panel', panelResizeHint:'Drag to resize; double-click to reset',
-          agentCard:{ working:'Working', completed:'Completed', failed:'Failed', spawnFailed:'Dispatch failed', interrupted:'Interrupted', cancelled:'Canceled' },
+          agentCard:{ working:'Working', completed:'Completed', failed:'Failed', spawnFailed:'Dispatch failed', interrupted:'Interrupted', cancelled:'Cancelled' },
           agentsListTitle:'Subagents', agentsEmpty:'No subagents have been dispatched in this conversation yet.', backToAgents:'Back to subagent list',
           agentsListSummary:(roots,total)=>roots === total ? `${total} total` : `${roots} direct · ${total} total`,
           childAgentCount:count=>`${count} child${count === 1 ? '' : 'ren'}`, expandChildren:name=>`Expand children of ${name}`, collapseChildren:name=>`Collapse children of ${name}`,
