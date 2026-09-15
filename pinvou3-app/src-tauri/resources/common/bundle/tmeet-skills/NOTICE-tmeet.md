@@ -226,6 +226,17 @@ description、认证节、命令树新增 `minutes` / `app` / `event` 三个子�
 - frontmatter `version` 随基线更新为 `1.0.18`（钉扎上游 tag 基线；与
   `tmeet.rs` 的 `TMEET_NPM_SPEC` 本次已同步升至 `@tencentcloud/tmeet@1.0.18`,
   两者一致）。
+- 命令树收口核验（2026-09-15）:本次同步后已对 v1.0.18 全部命令树（含新增
+  `minutes` / `app` / `event` 三域与 `auth login --no-browser`）对照 1.0.18
+  实测 help 逐项复核,与文档一致;登记首段「对照 tmeet 1.0.15 实测 help
+  核验」的历史口径至此收口。
+- 待下版跟进（上游缺陷挂起登记）:上游 v1.0.18 自带矛盾——SKILL.md 命令树
+  `event stop` 行与 `references/tmeet-event.md` 均注明 `--force` 为写操作
+  「需二次确认」,但 SKILL.md「必须二次确认」表漏列 `event stop --force`,
+  与本地已修的第 14/15 条（`meeting create` / `control waiting-room` 补行）
+  同类。本次按宣告的重放范围（第 1-19 条）保留上游原文,不另扩本地分叉
+  （文中另有三处在文提示兜底）;下版 sync 若上游仍未修,按第 14/15 条同款
+  口径补行并登记为新本地修改。
 
 上游其余内容（含 `auth login` 交互式登录教学等）保持上游原样；品悟实际安装
 版本由 `tmeet.rs` 的 `TMEET_NPM_SPEC` 钉扎（本次同步后即为

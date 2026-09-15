@@ -275,13 +275,15 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
 1. **wecomcli-doc/SKILL.md**(MR !62):description 重写为路由导向,并把原
    description 中的 sheet/smartsheet/结构化数据分流语义下沉为「不适用」节
    3 条 bullet。本地合并:采纳「不适用」3 条 bullet;description 保留品悟
-   「何时用:」前缀口径(现 416 字符,超 280 软上限,与上游重写前一致属
-   历史遗留),并吸收上游新增触发词「office 文档」与
+   「何时用:」前缀口径(现 216 字符,未超 280 软上限;早前登记误把 UTF-8
+   字节数 416 当作字符数,特此勘误),并补齐本地 1.1.0 适配时漏掉的
+   触发词「office文档」(上游自 1.1.0 起即有,非本次上游新增)与
    「导入(.doc/.docx/.txt)」细节。
 2. **wecomcli-smartpage/SKILL.md**(MR !62):description 重写,补充能力清单
    (上传附件、数据系统页面、信息收集表单)与 smartpage/page.weixin.qq.com
    链接触发。本地合并:保留「何时用:」前缀口径,能力清单按上游补齐
-   (现 452 字符,超 280 软上限,已登记 follow-up 压缩);正文无变化,
+   (现 212 字符,未超 280 软上限;早前登记误把 UTF-8 字节数 452 当作
+   字符数并据以登记 follow-up 压缩,该 follow-up 一并撤销);正文无变化,
    本地委托契约分叉原样保留。
 3. **wecomcli-shared/SKILL.md**(MR !52):Step 3 初始化命令
    `wecom-cli auth init` → `wecom-cli auth init --noninteractive`。本地直接

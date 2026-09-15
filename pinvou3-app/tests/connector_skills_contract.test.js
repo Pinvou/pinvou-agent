@@ -55,7 +55,9 @@ for (const f of docs) {
     // Real dws 1.0.61 quick command (reads the doc whiteboard OpenNodes
     // snapshot; see the whiteboard.md command table), unrelated to the
     // lark-side whiteboard +query removed in lark-cli 1.0.87 — exempted
-    // per domain (rationale registered per the rule 9 exemption ledger).
+    // per domain. Rationale registered in NOTICE-dingtalk.md (rule 9's
+    // EXEMPT_FILES only collects file-level exemptions; rule-scoped
+    // exemptions register inline here plus in the domain NOTICE).
     if (gone === "whiteboard +query" && rel(f).includes("dingtalk-skills")) continue;
     const hit = proseLines.find((l) => l.includes(gone) && !removedCtx.test(l));
     assert.ok(!hit, `${rel(f)}: 引用已删除对象 ${gone}: ${hit?.trim()}`);
@@ -240,6 +242,9 @@ assert.ok(
 // 9) Semantic-scan exemption registry: if any rule above gains a justified new exemption after an upstream sync, register file + reason in this list.
 // EXEMPT_FILES 当前为空：OPENCLAW_WORKSPACE 为 dws scripts 的路径护栏 env（未设时回退
 // cwd），非宿主断言（负向断言见上）；历史审查记录（NOTICE*.md）整体豁免由 docs 过滤实现。
+// EXEMPT_FILES collects file-level exemptions only. Rule-scoped / domain-scoped
+// exemptions (e.g. the dingtalk whiteboard +query continue above) live inline at
+// the exemption point and are registered in the domain's NOTICE file instead.
 const EXEMPT_FILES = [];
 assert.deepEqual(EXEMPT_FILES, [], "新增豁免须在此登记文件与理由，不得静默扩权");
 
