@@ -605,6 +605,9 @@ fn adapter_descriptor_and_native_turn_contract_are_exact() {
     assert_eq!(descriptor.scorer_revision(), GAIA_SCORER_REVISION);
     assert_eq!(descriptor.supported_splits()[0].as_str(), GAIA_SPLIT);
     assert_eq!(descriptor.execution_kind(), ExecutionKind::NativeTurn);
+    // The manifest era marker must agree with the lane: GAIA runs unbounded,
+    // so the descriptor records no harness deadline (an explicit manifest null).
+    assert_eq!(descriptor.harness_deadline_secs(), None);
     assert_eq!(
         adapter.private_output_retention(),
         PredictionRetention::DurableUntilPurge

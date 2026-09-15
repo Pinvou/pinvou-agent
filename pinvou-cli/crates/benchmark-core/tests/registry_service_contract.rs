@@ -506,6 +506,8 @@ fn adapter_driven_service_plans_prepares_then_runs_without_implicit_scoring() {
             serde_json::json!({"provider": "fixture", "model": "other"}),
         ),
         ("tool_policy", serde_json::json!("fixture/v2")),
+        // The recorded deadline mode joins the resume identity (matches_expected).
+        ("harness_deadline_secs", serde_json::json!(600)),
     ] {
         let mut value = serde_json::to_value(&expected).unwrap();
         value[field] = replacement;
