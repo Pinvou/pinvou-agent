@@ -2559,7 +2559,7 @@ const NAV_PREFETCH = {
         // rejects every attempt and the confirm panel retries a doomed op
         // forever — the dead-target loop the pendingProject derivation
         // already prevents for projects. Retire the picker instead.
-        if (!(allSidebarTasksRef.current || []).some(task => task.id === sessionId)) {
+        if ((allSidebarTasksRef.current || []).every(task => task.id !== sessionId)) {
           setMoveToProjectSession(current => (current && current.id === sessionId) ? null : current);
           return;
         }
