@@ -22,7 +22,7 @@ if [ -z "$CLI" ]; then echo "找不到 wecom-cli(先 npm i -g @wecom/cli 并扫�
 echo "wecom-cli = $CLI"
 echo
 
-echo "[1] 版本可执行且 ≥1.2.1(与 wecom.rs WECOM_MIN_VERSION 一致)"
+echo "[1] --version runs and is >= 1.2.1 (matches WECOM_MIN_VERSION in wecom.rs)"
 VER="$("$CLI" --version 2>/dev/null || true)"
 VNUM="$(echo "$VER" | awk '{print $2}')"
 # 与 wecom.rs parse_wecom_version 同口径:取输出前三个数字段逐段数值比较、
@@ -36,9 +36,9 @@ GE="$(printf '%s\n' "$TRI" | awk -F. '($1*10000+$2*100+$3 >= 10201) {print "yes"
 if [ -n "$VER" ]; then
   ok "--version 可执行: $(echo "$VER" | head -1)"
   if [ "$GE" = yes ]; then
-    ok "版本 ≥1.2.1: $VNUM"
+    ok "version >= 1.2.1: $VNUM"
   else
-    no "版本低于 1.2.1(低于最低可接受版本): $VNUM"
+    no "version below 1.2.1 (below the minimum accepted version): $VNUM"
   fi
 else
   no "--version 失败"
