@@ -63,6 +63,13 @@ fn disabled_bundles_path() -> PathBuf {
 /// `disabled_bundles.json` 读-改-写的进程内串行化。
 static DISABLED_BUNDLES_FILE_LOCK: Mutex<()> = Mutex::new(());
 
+/// freeze 落盘失败时的进程内判定备忘（评审 #455 R7-M2）：「全新 vs 升级」
+/// 判定未能持久化时，同进程的次读**不得**用首启自写痕迹重新判定——全新装机
+/// 会因此被误判为升级装机、plain 翻回全开（fail-open，正是 freeze 要防的）。
+/// 按家目录路径键控，测试切换 PINVOU3_HOME 互不串扰；成功落盘后文件即真相，
+/// 本备忘只在写失败时短暂承载判定。
+static UNPERSISTED_VERDICT: Mutex<Option<(PathBuf, DisabledBundlesFile)>> = Mutex::new(None);
+
 /// 读完整文件（取文件锁）。可能触发「读到即迁移」的读路径必须走本入口与持锁写方
 /// 串行（与旧两份文件的 #287 竞态范式一致）。
 pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
@@ -100,6 +107,17 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            {
+                // 判定未持久化过：本进程沿用首次判定，不给首启痕迹重新判定的机会。
+                let memo = UNPERSISTED_VERDICT
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Some((home, file)) = memo.as_ref() {
+                    if *home == paths::pinvou3_home() {
+                        return file.clone();
+                    }
+                }
+            }
             let home = paths::pinvou3_home();
             let legacy_existed = home.join("disabled_connectors.json").exists()
                 || home.join("disabled_skills.json").exists();
@@ -121,8 +139,18 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
             file.plain_defaults_migrated = true;
             // 无条件落盘冻结判定：全新装机不持久化标记时，首启自写的
             // settings.json/sessions/default 会污染宽口径升级信号，次读即被
-            // 误判为升级装机而翻回全开（评审 #455 阻塞项）。
-            save_disabled_bundles_file(&file);
+            // 误判为升级装机而翻回全开（评审 #455 阻塞项）。落盘失败时把本次
+            // 判定记入进程内备忘（R7-M2）——后续读沿用，fail-closed 方向由
+            // 判定本身保证（fresh = plain 未初始化 = DenyAll 兜底）。
+            if let Err(freeze_error) = try_save_disabled_bundles_file(&file) {
+                eprintln!(
+                    "[scope] CRITICAL: failed to persist the plain-defaults migration verdict: {freeze_error};                      holding the in-process verdict (plain initialized = {}) until restart -                      first-boot traces will not re-open the fresh/upgraded evaluation",
+                    file.initialized.contains(SessionMode::Plain.as_str())
+                );
+                *UNPERSISTED_VERDICT
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((home, file.clone()));
+            }
             return file;
         }
         Err(error) => {
@@ -141,9 +169,10 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
             };
             match std::fs::read(&path) {
                 Ok(bytes) => {
-                    let salvaged = String::from_utf8_lossy(&bytes).into_owned();
+                    // 原始字节直接隔离（R7-M1）：lossy 转换的副本是 mojibake，
+                    // 逐字节修复通道就断了。
                     if let Err(quarantine_err) =
-                        quarantine_corrupt_disabled_bundles(&salvaged, &error.to_string())
+                        quarantine_corrupt_disabled_bundles(&bytes, &error.to_string())
                     {
                         // 隔离失败不覆盖原文件：内存 fail-closed 态已正确，
                         // 下次读取重试（评审 #455 R5-m4）。
@@ -179,7 +208,7 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
                 ..DisabledBundlesFile::default()
             };
             if let Err(quarantine_err) =
-                quarantine_corrupt_disabled_bundles(&content, &error.to_string())
+                quarantine_corrupt_disabled_bundles(content.as_bytes(), &error.to_string())
             {
                 eprintln!(
                     "[marketplace] {quarantine_err}; skipping disabled_bundles.json overwrite this read"
@@ -396,18 +425,24 @@ fn merge_ids_into_scope(file: &mut DisabledBundlesFile, key: &str, ids: Vec<Stri
 /// 首次落盘可能早于任何建目录的启动步骤，`write_atomic` 不代建父目录，写失败
 /// 会让「全新 vs 升级」判定静默解冻、次读 fail-open（评审 #455）。
 fn save_disabled_bundles_file(file: &DisabledBundlesFile) {
+    if let Err(error) = try_save_disabled_bundles_file(file) {
+        eprintln!("[scope] {error}");
+    }
+}
+
+/// 落盘失败按 Err 上报（评审 #455 R7-M2）：freeze 等语义敏感的调用方需要
+/// 区分「写成了」与「静默丢写」。
+fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), String> {
     let path = disabled_bundles_path();
     if let Some(parent) = path.parent() {
-        if let Err(error) = std::fs::create_dir_all(parent) {
-            eprintln!("[scope] create parent dir for disabled_bundles.json failed: {error}");
-            return;
-        }
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!("create parent dir for disabled_bundles.json failed: {error}")
+        })?;
     }
-    if let Ok(json) = serde_json::to_string(file) {
-        if let Err(error) = deepseek_tui::utils::write_atomic(&path, json.as_bytes()) {
-            eprintln!("[scope] write disabled_bundles.json failed: {error}");
-        }
-    }
+    let json = serde_json::to_string(file)
+        .map_err(|error| format!("serialize disabled_bundles.json failed: {error}"))?;
+    deepseek_tui::utils::write_atomic(&path, json.as_bytes())
+        .map_err(|error| format!("write disabled_bundles.json failed: {error}"))
 }
 
 /// 读某 scope 被禁用的**包 id** 列表（读不到/空 → 空）。
@@ -676,6 +711,49 @@ pub fn remove_bundle_from_disabled_scopes(raw_id: &str) {
         let before = ids.len();
         ids.retain(|id| id != &package_id);
         changed |= ids.len() != before;
+    }
+    if changed {
+        save_disabled_bundles_file(&file);
+    }
+}
+
+/// 场景 opt-in 等用户动作的批量开启入口（评审 #455 R7-M3）：**单临界区**
+/// RMW——读当前有效禁用集 → 批量移除 ids → 一次落盘。前端整表「读-改-写」
+/// 跨 IPC 不受本锁保护，并发 composer toggle 的写入会被陈旧快照覆盖（用户
+/// 显式关闭的包被复活，fail-open）。该 scope 未初始化时以（现算扩集 − ids）
+/// 物化 opt-in；已初始化时从落盘列表移除；hidden 集同步清理（被隐藏的包
+/// 即使开关打开也见不到工具）。
+pub fn enable_packages_in_scope(scope: ConnectorScope, raw_ids: &[String]) {
+    let ids: Vec<String> = raw_ids.iter().map(|id| to_package_id(id)).collect();
+    if ids.is_empty() {
+        return;
+    }
+    let _guard = DISABLED_BUNDLES_FILE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut file = load_disabled_bundles_file_locked();
+    let key = scope.as_str();
+    let mut changed = false;
+    if file.initialized.contains(key) {
+        if let Some(list) = file.scopes.get_mut(key) {
+            let before = list.len();
+            list.retain(|id| !ids.contains(id));
+            changed |= list.len() != before;
+        }
+    } else if scope.pack_default_policy() == PackDefaultPolicy::DenyAll {
+        let mut effective = resolve_scope_disabled_ids(&file, scope);
+        let before = effective.len();
+        effective.retain(|id| !ids.contains(id));
+        if effective.len() != before {
+            file.scopes.insert(key.to_string(), effective);
+            file.initialized.insert(key.to_string());
+            changed = true;
+        }
+    }
+    if let Some(hidden) = file.hidden_scopes.get_mut(key) {
+        let before = hidden.len();
+        hidden.retain(|id| !ids.contains(id));
+        changed |= hidden.len() != before;
     }
     if changed {
         save_disabled_bundles_file(&file);
@@ -959,7 +1037,7 @@ mod tests {
 /// （与 installed.json 共用 `quarantine_corrupt_state_file`），随后由读路径
 /// fail-closed 降级自愈。隔离失败按 Err 传播——调用方据此放弃覆盖原文件，
 /// 避免隔离没写成却把可找回的原始字节冲掉（评审 #455 R5-m4）。
-fn quarantine_corrupt_disabled_bundles(content: &str, error: &str) -> Result<(), String> {
+fn quarantine_corrupt_disabled_bundles(content: &[u8], error: &str) -> Result<(), String> {
     let path = disabled_bundles_path();
     super::quarantine_corrupt_state_file(&path, content)?;
     eprintln!(

@@ -145,12 +145,14 @@ fn marketplace_transaction_journal() -> PathBuf {
         .join("state-transaction.json")
 }
 
-/// 把损坏的状态文件原始字节隔离成 `<name>.corrupt.<ts>` 旁路副本（不删原文件），
-/// 供人工找回；随后调用方按各自策略降级自愈。installed.json 与
+/// 把损坏的状态文件**原始字节**隔离成 `<name>.corrupt.<ts>` 旁路副本（不删
+/// 原文件），供人工找回；随后调用方按各自策略降级自愈。installed.json 与
 /// disabled_bundles.json 共用本入口（评审 #455：两处曾近乎逐字重复）。
-/// 隔离失败按 Err 传播：调用方不得继续覆盖原文件——ENOSPC 等场景下「隔离
-/// 失败但仍覆盖」会把可人工找回的损坏字节彻底销毁（评审 #455 R5-m4）。
-pub(crate) fn quarantine_corrupt_state_file(path: &Path, content: &str) -> Result<(), String> {
+/// 入参按字节而非字符串（评审 #455 R7-M1）：非 UTF-8 损坏经 lossy 字符串
+/// 隔离会留下 mojibake 副本，一字节修复变得不可能——副本必须逐字节等于
+/// 原文件。隔离失败按 Err 传播：调用方不得继续覆盖原文件——ENOSPC 等场景
+/// 下「隔离失败但仍覆盖」会把可人工找回的损坏字节彻底销毁（评审 #455 R5-m4）。
+pub(crate) fn quarantine_corrupt_state_file(path: &Path, content: &[u8]) -> Result<(), String> {
     let Some(parent) = path.parent() else {
         return Err(format!(
             "quarantine target has no parent: {}",
@@ -163,9 +165,11 @@ pub(crate) fn quarantine_corrupt_state_file(path: &Path, content: &str) -> Resul
             path.display()
         ));
     };
+    // 纳秒分辨率：GUI + headless 双宿主共用一个 home 时，秒级戳会让同秒
+    // 的第二次隔离覆盖第一次副本（quarantine_marketplace_journal 同先例）。
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_nanos())
         .unwrap_or(0);
     let backup = parent.join(format!("{name}.corrupt.{ts}"));
     std::fs::write(&backup, content).map_err(|error| {
@@ -1613,7 +1617,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     }
 
     fn backup_corrupt_installed(&self, content: &str) -> Result<(), String> {
-        quarantine_corrupt_state_file(&self.installed_file, content)
+        quarantine_corrupt_state_file(&self.installed_file, content.as_bytes())
     }
 
     fn recover_installed_ids_from_mcp(&self) -> Vec<String> {
@@ -3936,8 +3940,9 @@ mod tests {
             let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
             let original = "{\"plain_defaults_migrated\":true}";
             std::fs::write(&path, original).unwrap();
-            // 0o000：存在但不可读。无法构造不可读文件的平台（Windows ACL）跳过本测试。
-            if !crate::platform::os::set_file_mode(&path, 0o000).unwrap() {
+            // 0o000：存在但不可读。`set_file_mode` 以真实 open 探测报告可读性：
+            // Ok(true) = 仍可读（Windows ACL / root 运行 mode 位不生效），跳过本测试。
+            if crate::platform::os::set_file_mode(&path, 0o000).unwrap() {
                 return;
             }
 
@@ -3988,15 +3993,26 @@ mod tests {
     /// （评审 #455 R5-B2）——否则未初始化 scope 的有效禁用集丢失全部已装包，
     /// plain 会话零同意放行已装连接器（本 PR 承诺永不产生的全开翻转）。
     /// 原文件保持原样（不隔离、不覆盖），恢复后按真实已装集计算。
+    /// 夹具须先预置 disabled_bundles.json（marker 冻结判定）再写 installed.json：
+    /// 否则首读命中宽升级信号把 plain 初始化为空落盘表，`resolve_scope_disabled_ids`
+    /// 走 stored-list 分支，DenyAll 扩集——被测机制——根本不被 consult（评审
+    /// #455 R7-B1）。
     #[test]
     fn unreadable_installed_json_deny_all_expansion_fails_closed() {
         with_temp_home(|| {
+            // 先冻结「升级 vs 全新」判定：marker-only 文件，plain 保持未初始化。
+            std::fs::write(
+                crate::platform::paths::pinvou3_home().join("disabled_bundles.json"),
+                "{\"plain_defaults_migrated\":true}",
+            )
+            .unwrap();
             let dir = crate::platform::paths::pinvou3_home().join("marketplace");
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join("installed.json");
             std::fs::write(&path, "[\"feishu\"]").unwrap();
-            // 0o000：存在但不可读。无法构造不可读文件的平台（Windows ACL）跳过。
-            if !crate::platform::os::set_file_mode(&path, 0o000).unwrap() {
+            // 0o000：存在但不可读。`set_file_mode` 以真实 open 探测报告可读性：
+            // Ok(true) = 仍可读（Windows ACL / root 运行 mode 位不生效），跳过。
+            if crate::platform::os::set_file_mode(&path, 0o000).unwrap() {
                 return;
             }
 
@@ -4014,8 +4030,8 @@ mod tests {
                 disabled.iter().any(|id| id == builtin),
                 "fail-closed 扩集必须含内置 CLI 包: {disabled:?}"
             );
-            // 全量目录含内嵌预置（mcp_catalog），非空即可证明 fail-closed 分支生效
-            // （空已装集口径下扩集只剩内置 CLI ∪ 已装技能）。
+            // fail-closed 分支生效的直接证据：日志声明的全量目录 fallback。
+            // （空已装集口径下扩集只剩内置 CLI ∪ 已装技能，远小于全目录。）
             assert!(
                 disabled.len() > 4,
                 "fail-closed 扩集必须覆盖全部可装包，而非只剩内置 CLI: {disabled:?}"
@@ -4060,6 +4076,28 @@ mod tests {
                     "tmeet".to_string(),
                 ],
                 "空 sessions/ 目录不算升级信号，plain 仍 DenyAll 默认全关"
+            );
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(!file.initialized.contains("plain"));
+        });
+    }
+
+    /// 升级信号是三条路径的**白名单**（评审 #455 R7 nit）：首启早期写入的
+    /// logs/ 等无关家目录状态不构成升级证据——只有该日志目录时仍判全新装机，
+    /// plain 保持 DenyAll 默认全关。防止「任何痕迹都算升级」的口径漂移。
+    #[test]
+    fn plain_deny_all_logs_dir_alone_is_not_an_upgrade_signal() {
+        with_temp_home(|| {
+            std::fs::create_dir_all(crate::platform::paths::pinvou3_home().join("logs")).unwrap();
+            assert_eq!(
+                load_disabled_connectors(),
+                vec![
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ],
+                "logs/ 单独存在不算升级信号，plain 仍 DenyAll 默认全关"
             );
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
             assert!(!file.initialized.contains("plain"));
