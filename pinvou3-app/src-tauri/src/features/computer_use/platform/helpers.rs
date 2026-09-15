@@ -77,6 +77,65 @@ pub(crate) const TYPE_CHUNK_CHARS: usize = 64;
 /// Split the text into chunks of at most `chunk_chars` characters (by character, not by
 /// byte). Empty input produces an empty vector (the caller's loop body never runs,
 /// consistent with enigo's no-op on empty text).
+/// One segment of a split type request (review finding, Windows: enigo's
+/// `text()` queues BOTH a Return/Tab key click and the Unicode control
+/// character for `'\n'`/`'\t'`, so multi-line text double-injected
+/// newlines on targets that handle both). Newlines and tabs become real key
+/// clicks; everything else stays Unicode text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TypeRun {
+    /// Unicode text (already chunked).
+    Text(String),
+    /// A real Return key click for `'\n'`.
+    Return,
+    /// A real Tab key click for `'\t'`.
+    Tab,
+}
+
+/// Splits a type request into chunked text runs and explicit Return/Tab key
+/// clicks. Chunking applies per text run, so a text with many newlines keeps
+/// the between-run cancellation granularity.
+pub(crate) fn split_type_runs(text: &str, chunk_chars: usize) -> Vec<TypeRun> {
+    debug_assert!(chunk_chars > 0);
+    let mut runs = Vec::new();
+    let mut buf = String::new();
+    for ch in text.chars() {
+        match ch {
+            '\n' => {
+                if !buf.is_empty() {
+                    runs.extend(
+                        char_chunks(&buf, chunk_chars)
+                            .into_iter()
+                            .map(|chunk| TypeRun::Text(chunk.to_string())),
+                    );
+                    buf.clear();
+                }
+                runs.push(TypeRun::Return);
+            }
+            '\t' => {
+                if !buf.is_empty() {
+                    runs.extend(
+                        char_chunks(&buf, chunk_chars)
+                            .into_iter()
+                            .map(|chunk| TypeRun::Text(chunk.to_string())),
+                    );
+                    buf.clear()
+                }
+                runs.push(TypeRun::Tab);
+            }
+            _ => buf.push(ch),
+        }
+    }
+    if !buf.is_empty() {
+        runs.extend(
+            char_chunks(&buf, chunk_chars)
+                .into_iter()
+                .map(|chunk| TypeRun::Text(chunk.to_string())),
+        );
+    }
+    runs
+}
+
 pub(crate) fn char_chunks(text: &str, chunk_chars: usize) -> Vec<&str> {
     debug_assert!(chunk_chars > 0);
     let mut chunks = Vec::new();
@@ -129,6 +188,40 @@ mod tests {
         assert_eq!(sanitize_name("a\"b\nc\td\u{1}e ", 20), "a'b c d e");
         assert_eq!(sanitize_name("abcdef", 3), "abc");
         assert_eq!(sanitize_name("  \n x", 10), "x");
+    }
+
+    #[test]
+    fn split_type_runs_extracts_real_keys_and_chunks_text() {
+        use TypeRun::*;
+        assert!(split_type_runs("", 4).is_empty());
+        assert_eq!(split_type_runs("abc", 4), vec![Text("abc".into())]);
+        // Multi-line: each newline becomes a Return click; text around it is
+        // preserved (an empty trailing segment adds nothing, so "a\n" still
+        // submits the "a" line).
+        assert_eq!(
+            split_type_runs("a\nb\n", 8),
+            vec![Text("a".into()), Return, Text("b".into()), Return]
+        );
+        // Tabs split too.
+        assert_eq!(
+            split_type_runs("x\ty", 8),
+            vec![Text("x".into()), Tab, Text("y".into())]
+        );
+        // Chunking applies per run, not across key clicks.
+        assert_eq!(
+            split_type_runs("abcd\nef", 2),
+            vec![
+                Text("ab".into()),
+                Text("cd".into()),
+                Return,
+                Text("ef".into())
+            ]
+        );
+        // Unicode content survives the split on char boundaries.
+        assert_eq!(
+            split_type_runs("中文\n测试", 2),
+            vec![Text("中文".into()), Return, Text("测试".into())]
+        );
     }
 
     #[test]
