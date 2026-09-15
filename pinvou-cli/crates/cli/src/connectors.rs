@@ -789,9 +789,16 @@ fn run_status_probe(spec: &VendorSpec) -> Result<(bool, String, String), CliErro
 /// - tmeet: output contains `Logged in`.
 fn cli_connected(spec: &VendorSpec) -> Result<bool, CliError> {
     let (ok, stdout, stderr) = run_status_probe(spec)?;
-    Ok(match spec.id {
-        "feishu" => parse_json(&stdout)
-            .or_else(|| parse_json(&stderr))
+    Ok(connected_from_probe(spec, ok, &stdout, &stderr))
+}
+
+/// The per-connector `connected` verdict over one status-probe capture —
+/// the single authority both `status` entries and the connect/login gates
+/// read, so the four vendor branches cannot drift apart.
+fn connected_from_probe(spec: &VendorSpec, ok: bool, stdout: &str, stderr: &str) -> bool {
+    match spec.id {
+        "feishu" => parse_json(stdout)
+            .or_else(|| parse_json(stderr))
             .and_then(|value| {
                 value
                     .pointer("/identities/user/status")
@@ -799,11 +806,11 @@ fn cli_connected(spec: &VendorSpec) -> Result<bool, CliError> {
                     .map(|status| status == "ready")
             })
             .unwrap_or(false),
-        "wecom" => ok && (authorized_line(&stdout) || authorized_line(&stderr)),
-        "dingtalk" => authenticated_json(&stdout) || authenticated_json(&stderr),
+        "wecom" => ok && (authorized_line(stdout) || authorized_line(stderr)),
+        "dingtalk" => authenticated_json(stdout) || authenticated_json(stderr),
         "tmeet" => stdout.contains("Logged in") || stderr.contains("Logged in"),
         _ => false,
-    })
+    }
 }
 
 /// Mirror of wecom `status_is_authorized`: the whole trimmed line must be
@@ -1039,31 +1046,19 @@ fn vendor_status_entry(kind: ConnectorKind) -> Result<Value, CliError> {
             entry["upgrade_required"] = json!(false);
             entry["version"] = json!(raw);
             let (ok, stdout, stderr) = run_status_probe(spec)?;
-            let connected = match spec.id {
-                "feishu" => {
-                    let parsed = parse_json(&stdout).or_else(|| parse_json(&stderr));
-                    let connected = parsed
-                        .as_ref()
-                        .and_then(|value| value.pointer("/identities/user/status"))
-                        .and_then(Value::as_str)
-                        .map(|status| status == "ready")
-                        .unwrap_or(false);
-                    // Mirror `feishu_status`'s extra `configured` flag
-                    // (non-empty appId in the auth status payload).
-                    let configured = parsed
-                        .as_ref()
-                        .and_then(|value| value.get("appId"))
-                        .and_then(Value::as_str)
-                        .map(|app_id| !app_id.is_empty())
-                        .unwrap_or(false);
-                    entry["configured"] = json!(configured);
-                    connected
-                }
-                "wecom" => ok && (authorized_line(&stdout) || authorized_line(&stderr)),
-                "dingtalk" => authenticated_json(&stdout) || authenticated_json(&stderr),
-                "tmeet" => stdout.contains("Logged in") || stderr.contains("Logged in"),
-                _ => false,
-            };
+            let connected = connected_from_probe(spec, ok, &stdout, &stderr);
+            if spec.id == "feishu" {
+                // Mirror `feishu_status`'s extra `configured` flag (non-empty
+                // appId in the auth status payload).
+                let configured = parse_json(&stdout)
+                    .or_else(|| parse_json(&stderr))
+                    .as_ref()
+                    .and_then(|value| value.get("appId"))
+                    .and_then(Value::as_str)
+                    .map(|app_id| !app_id.is_empty())
+                    .unwrap_or(false);
+                entry["configured"] = json!(configured);
+            }
             entry["ok"] = json!(ok);
             entry["connected"] = json!(connected);
         }
@@ -1157,7 +1152,7 @@ fn logout(kind: ConnectorKind, yes: bool, output: OutputMode) -> Result<CliOutco
         // credential directory `~/.config/wecom` (real user home, exactly
         // like the GUI — PINVOU3_HOME does not relocate vendor credentials).
         "wecom" => {
-            let dir = wecom_config_dir();
+            let dir = wecom_config_dir()?;
             let existed = dir.exists();
             // A failed removal must not be reported as a clean logout: the
             // directory holds vendor credentials, so the error propagates
@@ -1219,12 +1214,20 @@ fn logout(kind: ConnectorKind, yes: bool, output: OutputMode) -> Result<CliOutco
     )))
 }
 
-/// Mirror of `wecom_config_dir` (real home, not PINVOU3_HOME).
-fn wecom_config_dir() -> PathBuf {
+/// Mirror of `wecom_config_dir` (real home, not PINVOU3_HOME). An unset
+/// home is an error, not an empty path: the directory feeds a destructive
+/// `remove_dir_all`, and `Path::new("").join(...)` would resolve against
+/// the process cwd.
+fn wecom_config_dir() -> Result<PathBuf, CliError> {
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_default();
-    Path::new(&home).join(".config").join("wecom")
+    if home.is_empty() {
+        return Err(CliError::failed(
+            "connectors: cannot locate the wecom credential directory: neither USERPROFILE nor HOME is set",
+        ));
+    }
+    Ok(Path::new(&home).join(".config").join("wecom"))
 }
 
 // ─────────────────────────────── ensure-cli ───────────────────────────────
@@ -1911,14 +1914,23 @@ fn spawn_and_capture_url(
             spec.cli_bin, spec.id
         ))
     })?;
-    // Two rendezvous slots: first auth-domain URL and first user code. The
-    // wait ends at the first URL, like the GUI loops (feishu.rs takes a single
-    // `recv_timeout`, tmeet.rs `break`s on the first auth line): vendor CLIs
-    // that never print a separate code line (feishu phase 1, wecom, tmeet)
-    // must not burn the whole `login_url_wait_secs` window after the link is
-    // already in hand. Whatever code has arrived by then is composed into the
-    // URL by the caller (`compose_user_code`) because the login page asks for
-    // a code the raw URL does not carry.
+    // Two rendezvous slots: first auth-domain URL and first user code.
+    // Vendor CLIs that never print a separate code line (feishu phase 1,
+    // wecom, tmeet, dws) must not burn the whole `login_url_wait_secs`
+    // window after the link is already in hand, so the wait ends at the
+    // first URL for them — like the GUI loops (feishu.rs takes a single
+    // `recv_timeout`, tmeet.rs `break`s on the first auth line). dingtalk
+    // is the exception: its login page needs the `user_code` the vendor
+    // prints on a separate line, and the GUI loop keeps draining after the
+    // bare URL (`dingtalk.rs` stashes `plain_url` and returns only once
+    // both halves are in hand). For dingtalk the CLI therefore keeps
+    // draining for a short grace after a bare URL — long enough for the
+    // code line that follows the link in practice, while a CLI that
+    // already exited (no code is coming) falls through immediately via
+    // the `Disconnected` branch instead of waiting the window out.
+    // Whatever code has arrived is composed into the URL by the caller
+    // (`compose_user_code`) because the login page asks for a code the
+    // raw URL does not carry.
     let (tx, rx) = mpsc::channel::<LoginStreamEvent>();
     if let Some(stdout) = child.stdout.take() {
         drain_for_url(spec, stdout, tx.clone());
@@ -1932,6 +1944,13 @@ fn spawn_and_capture_url(
         .max(Duration::from_secs(1));
     let mut url: Option<String> = None;
     let mut user_code: Option<String> = None;
+    let needs_code_line = spec.id == "dingtalk";
+    // Once a bare URL is in hand, the code line — when the vendor emits one
+    // — follows within moments of the same login initiation, so a short
+    // grace (the qr.png precedent) suffices; the full window stays reserved
+    // for capturing the URL itself.
+    let code_line_grace = Duration::from_secs(10);
+    let mut code_line_deadline: Option<Instant> = None;
     // wecom writes the one-scan `qr.png` around the time it prints the
     // landing-page URL. Poll it on the same tick as the login events: the
     // path is the actionable artifact and must be visible while the login
@@ -1939,8 +1958,9 @@ fn spawn_and_capture_url(
     let qr_png = work_dir.map(|dir| dir.join("qr.png"));
     let mut qr_announced = false;
     let deadline_wait = Instant::now() + url_wait;
-    while url.is_none() {
-        let remaining = deadline_wait.saturating_duration_since(Instant::now());
+    while url.is_none() || code_line_deadline.is_some() {
+        let wait_until = code_line_deadline.unwrap_or(deadline_wait);
+        let remaining = wait_until.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             break;
         }
@@ -1958,7 +1978,15 @@ fn spawn_and_capture_url(
                 // later error.
                 eprintln!("{} login link: {found}", spec.cli_bin);
                 notes.push(format!("login link: {found}"));
+                let carries_code = found.contains("user_code=");
                 url = Some(found);
+                if needs_code_line && !carries_code && user_code.is_none() {
+                    code_line_deadline = Some(
+                        Instant::now()
+                            + code_line_grace
+                                .min(deadline_wait.saturating_duration_since(Instant::now())),
+                    );
+                }
             }
             Ok(LoginStreamEvent::Code(code)) => {
                 eprintln!("{} user code: {code}", spec.cli_bin);
@@ -1967,6 +1995,12 @@ fn spawn_and_capture_url(
             }
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+        let url_complete = url
+            .as_deref()
+            .is_some_and(|found| found.contains("user_code="));
+        if url.is_some() && (!needs_code_line || url_complete || user_code.is_some()) {
+            break;
         }
     }
     if let Some(qr) = &qr_png {
@@ -1987,6 +2021,16 @@ fn spawn_and_capture_url(
         notes.push(format!(
             "no login link within {url_wait:?} (check network / proxy); still waiting for the CLI to exit"
         ));
+    } else if needs_code_line
+        && user_code.is_none()
+        && !url
+            .as_deref()
+            .is_some_and(|found| found.contains("user_code="))
+    {
+        notes.push(
+            "no separate user code line arrived; the dingtalk login page asks for a code the              CLI never printed, so the link alone cannot complete the login"
+                .to_string(),
+        );
     }
     let remaining = deadline.saturating_duration_since(Instant::now());
     let status = match child.wait_timeout(remaining) {

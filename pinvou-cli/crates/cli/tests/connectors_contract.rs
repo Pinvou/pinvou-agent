@@ -844,6 +844,64 @@ fn connect_does_not_wait_out_the_url_window_when_no_user_code_arrives() {
 
 #[test]
 #[cfg(unix)]
+fn connect_keeps_draining_the_dingtalk_user_code_after_a_bare_url() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("connect-dingtalk-code");
+    let bin = std::env::temp_dir().join(format!(
+        "pinvou-cli-connectors-fake-bin-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&bin).unwrap();
+    // dingtalk's login page needs the `user_code` the vendor CLI prints on a
+    // separate line after the authorize link; the GUI loop keeps draining
+    // after the bare URL until both halves are in hand. The CLI must do the
+    // same while the vendor CLI is still running — the old break-on-first-URL
+    // loop abandoned the code line in the channel and surfaced a link whose
+    // page cannot be completed without the code. The URL-only-and-exited
+    // case above stays fast: once the child exits no code can arrive.
+    write_fake_cli(
+        &bin,
+        "dws",
+        "dws version 1.0.0",
+        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then echo \"visit https://login.dingtalk.com/oauth/authorize?x=1 to continue\"; sleep 1; echo \"user code: DTK123\"; sleep 300; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo '{\"authenticated\": false}'; exit 0; fi\n",
+    );
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    let started = std::time::Instant::now();
+    let error = run(&[
+        "pinvou",
+        "connectors",
+        "connect",
+        "dingtalk",
+        "--timeout",
+        "6",
+    ])
+    .expect_err("the fake never authorizes");
+    // The code line arrives ~1s after the link; the drain must have kept
+    // going instead of breaking at the URL, and the budget (6s) is what
+    // ends the run — not the URL window (60s).
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "connect must end on the connect budget, not the URL window"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("user code: DTK123"),
+        "the failure must surface the captured user code: {message}"
+    );
+    assert!(
+        message.contains("https://login.dingtalk.com/oauth/authorize?x=1"),
+        "the failure must surface the captured login link: {message}"
+    );
+    let _ = std::fs::remove_dir_all(&bin);
+}
+
+#[test]
+#[cfg(unix)]
 fn wecom_connect_surfaces_the_qr_file_while_it_exists() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("wecom-qr");
