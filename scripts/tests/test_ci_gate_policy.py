@@ -285,6 +285,7 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         self.assertIn("| sha256sum --check -", step)
         self.assertNotIn("download-actionlint.bash", step)
+
     def test_cli_crate_has_its_own_required_gate(self):
         changes = _without_yaml_comments(
             self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
@@ -308,6 +309,22 @@ class CiGatePolicyTests(unittest.TestCase):
         # gate at all).
         self.assertIn("- 'pinvou3-app/src-tauri/src/features/feedback/**'", cli_paths)
         self.assertIn("- 'pinvou3-app/src-tauri/src/features/personas/**'", cli_paths)
+        self.assertIn(
+            "- 'pinvou3-app/src-tauri/src/features/pet/**'",
+            cli_paths,
+            "pet is exempted from rust_full like feedback/personas, so pet Rust "
+            "changes must gate through the CLI suite too",
+        )
+        # Policy: the workflow file itself is deliberately excluded from
+        # cli_rust — workflow edits must not link the full-app test suites
+        # (this test enforces that). cli-test changes are instead validated
+        # by the next cli_rust PR / the merge queue.
+        self.assertNotIn(
+            "- '.github/workflows/pr-check.yml'",
+            cli_paths,
+            "cli_rust must not include the workflow file: workflow edits must "
+            "not link the full-app test suites",
+        )
 
         cli_test = _without_yaml_comments(
             self.pr_workflow.split("\n  cli-test:", maxsplit=1)[1].split(
@@ -340,11 +357,84 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         self.assertIn("cache-targets: false", cli_test)
 
+        # The Windows leg also compile-checks the pinvou-cli workspace: the
+        # CLI's cfg(target_os = "windows") branches (exe/cmd shims, taskkill,
+        # CREATE_NO_WINDOW) only type-check on a Windows runner, and cli_rust
+        # must trigger that leg exactly like it triggers cli-test.
+        windows_rust_test = self.pr_workflow.split(
+            "\n  windows-rust-test:", maxsplit=1
+        )[1].split("\n  windows-codex-runtime-test:", maxsplit=1)[0]
+        self.assertIn(
+            "needs.changes.outputs.cli_rust == 'true'",
+            windows_rust_test,
+            "windows-rust-test must be triggered by cli_rust: its pinvou-cli "
+            "compile check is the only Windows leg for CLI code",
+        )
+        windows_rust_steps = _without_yaml_comments(windows_rust_test)
+        self.assertIn(
+            "- name: pinvou-cli Windows compile check",
+            windows_rust_steps,
+        )
+        self.assertIn(
+            "cargo check --manifest-path pinvou-cli/Cargo.toml",
+            windows_rust_steps,
+        )
+        self.assertIn("--workspace --all-targets --locked", windows_rust_steps)
+
+        # macOS-gated CLI code must type-check somewhere: cli-test is
+        # ubuntu-only, so the dedicated macos-cli-check leg mirrors the
+        # Windows compile check and gates through required-gate.
+        macos_cli = self.pr_workflow.split(
+            "\n  macos-cli-check:", maxsplit=1
+        )[1].split("\n  required-gate:", maxsplit=1)[0]
+        self.assertIn("runs-on: macos-15", macos_cli)
+        self.assertIn(
+            "needs.changes.outputs.cli_rust == 'true'",
+            macos_cli,
+            "macos-cli-check must use the same cli_rust trigger as cli-test",
+        )
+        self.assertIn(
+            "needs.changes.outputs.rust_full == 'true'",
+            macos_cli,
+            "macos-cli-check must cover rust_full like cli-test does",
+        )
+        self.assertIn(
+            "github.event.pull_request.draft == false",
+            macos_cli,
+            "draft PRs must skip the macOS compile leg like the other rust jobs",
+        )
+        macos_cli_steps = _without_yaml_comments(macos_cli)
+        self.assertIn(
+            "- name: pinvou-cli macOS compile check",
+            macos_cli_steps,
+        )
+        self.assertIn(
+            "cargo check --manifest-path pinvou-cli/Cargo.toml",
+            macos_cli_steps,
+        )
+        self.assertIn("--workspace --all-targets --locked", macos_cli_steps)
+        self.assertIn(
+            "rustup show active-toolchain",
+            macos_cli_steps,
+            "the macOS leg must run the toolchain pinned by rust-toolchain.toml",
+        )
+
         required_gate = self.pr_workflow.split(
             "\n  required-gate:", maxsplit=1
         )[1]
         self.assertIn("- cli-test", required_gate)
         self.assertIn('"cli-test:$CLI_TEST_RESULT"', required_gate)
+        self.assertIn("- macos-cli-check", required_gate)
+        self.assertIn(
+            "MACOS_CLI_RESULT: ${{ needs.macos-cli-check.result }}",
+            required_gate,
+        )
+        self.assertIn(
+            '"macos-cli-check:$MACOS_CLI_RESULT"',
+            required_gate,
+            "macos-cli-check must enter the failure loop like cli-test "
+            "(success|skipped accepted so path-filtered skips do not false-fail)",
+        )
 
     def test_benchmark_jobs_stay_out_of_product_pr_workflow(self):
         self.assertNotIn("\n  benchmark-contract:", self.pr_workflow)
