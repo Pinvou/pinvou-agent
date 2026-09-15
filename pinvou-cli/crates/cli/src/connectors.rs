@@ -543,6 +543,23 @@ fn run_cli(spec: &VendorSpec, args: &[&str]) -> Result<(bool, String, String), C
     )
 }
 
+/// Best-effort argv redaction for timeout errors: exact-value strip of the
+/// values of pairing flags the vendor CLIs pass (`--device-code`), before
+/// the heuristic `redact_secret` pass — a short device code survives the
+/// heuristic otherwise (the same exact-value-first pattern the ima errors
+/// use).
+fn redact_argv_pairing(args: &[&str]) -> String {
+    let mut joined = args.join(" ");
+    let mut index = 0;
+    while index + 1 < args.len() {
+        if args[index] == "--device-code" && !args[index + 1].is_empty() {
+            joined = joined.replace(args[index + 1], "[REDACTED]");
+        }
+        index += 1;
+    }
+    pinvou3_lib::platform::credential_store::redact_secret(&joined)
+}
+
 /// Runs `<cli> <args>` capturing `(success, stdout, stderr)` — like
 /// [`run_cli`], with a hard kill at `deadline`: the GUI cancels through its
 /// host, so the CLI must enforce the `--timeout` budget itself on every
@@ -617,14 +634,14 @@ fn run_cli_bounded(
             return Err(CliError::failed(format!(
                 "{} {} timed out",
                 spec.cli_bin,
-                // args can carry pairing/device material; redact heuristically
-                // (prefix-known or 24+-char mixed tokens pass through the
-                // shared redactor — a short unprefixed device code may
-                // survive). One known exception passes a code in argv on
-                // purpose: the feishu poll's `--device-code <CODE>` (GUI
-                // parity, feishu.rs) — short-lived single-use material
-                // inherited from the GUI flow, accepted as best-effort here.
-                redact_secret(&args.join(" "))
+                // args can carry pairing/device material; the shared
+                // redactor only catches secret-shaped tokens, so pairing
+                // flag values are stripped by exact value first. One known
+                // exception passes a code in argv on purpose: the feishu
+                // poll's `--device-code <CODE>` (GUI parity, feishu.rs) —
+                // short-lived single-use material inherited from the GUI
+                // flow, redacted best-effort here.
+                redact_argv_pairing(args)
             )));
         }
         Err(error) => {
@@ -1122,6 +1139,7 @@ fn apply_skills(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, C
         yes_no(connected),
     );
     let value = json!({
+        "ok": true,
         "id": spec.id,
         "visible": visible,
         "connected": connected,
@@ -1843,18 +1861,16 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             if let Some(url) = compose_user_code(&url, user_code.as_deref()) {
                 notes.push(format!("authorize-url: {url}"));
             }
-            // Mirror the GUI's exit handling: judge by the auth probe alone,
-            // whatever exit code the vendor CLI used — an exit-0 logout that
-            // never authenticated must fail here too, not five minutes later.
-            // Vendor output was piped (not shown), so the error carries the
-            // login material captured so far instead of pointing at a
-            // terminal that never saw it.
-            // Judge by the auth probe alone like the GUI: a CLI that
-            // authorizes successfully but exits non-zero connects there and
-            // must connect here too. This single probe after exit is the
-            // whole wait — the vendor CLI itself blocks until authorization
-            // (or its own timeout), and the spawn deadline above already
-            // bounds the process.
+            // Mirror the GUI's exit handling: judge by the auth probe alone —
+            // a CLI that authorizes successfully but exits non-zero connects
+            // there and must connect here too, while an exit-0 logout that
+            // never authenticated must fail instead of passing. Vendor
+            // output was piped (not shown), so the error carries the login
+            // material captured so far instead of pointing at a terminal
+            // that never saw it. This single probe after exit is the whole
+            // wait — the vendor CLI itself blocks until authorization (or
+            // its own timeout), and the spawn deadline above already bounds
+            // the process.
             if !cli_connected(spec)? {
                 return Err(CliError::failed(format!(
                     "{} login exited before authorization completed{}",
@@ -1868,6 +1884,7 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
     }
     notes.push(format!("{} connected", spec.id));
     let value = json!({
+        "ok": true,
         "id": spec.id,
         "connected": true,
         "notes": notes,
@@ -2028,7 +2045,8 @@ fn spawn_and_capture_url(
             .is_some_and(|found| found.contains("user_code="))
     {
         notes.push(
-            "no separate user code line arrived; the dingtalk login page asks for a code the              CLI never printed, so the link alone cannot complete the login"
+            "no separate user code line arrived; the dingtalk login page asks for a code the \
+             CLI never printed, so the link alone cannot complete the login"
                 .to_string(),
         );
     }
