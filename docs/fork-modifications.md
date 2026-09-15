@@ -18,17 +18,25 @@
 - All shell-specific guidance now lives in named constants, including cmd, fish, and the shared fallback. A before/after comparison across 14 shell cases confirmed identical output after constant extraction.
 - Following the 40-call curl ablation, remove the tool-level curl alias reminder only. Preserve the other PowerShell guidance and application instructions used in that experiment; both arms achieved 19/20 correct executions with no shell mismatch errors.
 
-## 0. 当前状态（2026-09-11 · r1 基线 + 13 个登记提交，r2 收口未切 tag）
+## T3 增补：技能索引幻影工具修复（PR #56 待合入，候选头 `be2b2fe92`）
+
+- 状态：[Pinvou/CodeWhale#56](https://github.com/Pinvou/CodeWhale/pull/56) open，候选头 `be2b2fe92`（r1 维护分支头 `ae7e3fb36` 之上共 6 个提交：事故现场 `c34c3a430`、同类清扫 `f81528358`、两段式激活收口 `a2e21fcf9`、拼车剥离 `18f7c7b15`、复审去重与守护加固 `9f46ac5f0`、复审第五轮收口 `be2b2fe92`）；父仓侧白名单/常载与指令适配随父仓 PR #490。fork-guard 以 `CANDIDATE_HEAD` 登记该候选（沿用 #408 的候选期登记约定）：登记 head 仍为公开 `pinvou3-clean` 头 `ae7e3fb36`，候选落地并推进公开分支前 `verify-public-submodule.sh` 按登记保持红。
+- 问题（品悟「运动打卡」会话实测）：底座渲染的技能索引 Usage 教模型直接调 `load_skill(name="list")`，但 `load_skill` 是 deferred 工具、不在首轮目录；子代理 prompt 的 `## Skills` 段同样教它调 `load_skill`，而子代理首轮活动集按设计不含该工具（技能经 `tool_search` 发现）。模型陷入「索引说有、工具列表里没有」的思维链混乱。
+- 修复：Usage 首条补兜底——`load_skill` 不在当前工具列表时先用 `tool_search` 激活；子代理技能段改为教 `tool_search` 发现路径。`tools/skill.rs` 在 r1 线上已无 File-family 引用，本次不改动该文件。复审补齐同类残留：底座内置 `mcp-discovery` 技能的 `registry_sync` 命令加工具存在性自条件，并停引退役别名 `exec_shell`（目录名为 `bash`）；子代理 `## Skills` 头串对连 `tool_search` 也缺失的空工具集子代理保持诚实；技能省略尾行补同一 `tool_search` 兜底；新增 engine 回归把 `MCP_REGISTRY_FIRST_INSTRUCTION` 与注册 `ToolSpec` 名互钉，任一侧改名即红，防宿主白名单耦合静默失效。对抗复审补齐提交（PR 第二个提交）继续收口同类残留：`mcp-discovery` 步骤 1 改为「先 `tool_search` 激活、激活不到再如实宣布不可用」的统一话术（原生 host 上该工具 deferred 可搜索，旧文案会教模型放弃可达能力），教带 `query` 的可成功调用并如实描述八条评分匹配契约，前言停称「常驻 active surface」，步骤 3 对 `start_registry_mcp_server` 加门控；插件来源索引行与省略尾行补 `tool_search` 兜底，Usage/尾行对 `tool_search` 也缺失的表面（ACP、allowlist 收缩 exec）保持诚实；子代理头串覆盖第三类子代理（显式 allowlist 留 `tool_search` 但过滤 `load_skill`）；捆绑 `pdf`/`help` 技能停引隐藏兼容别名 `File`（改引 `read`），`best-of-n` 对 `create_goal` 加存在性门控（子代理注册表整体移除该工具）；新增捆绑技能退役/隐藏名清扫回归与 best-of-n 门控回归。第三轮对抗复审补齐提交（PR 第三个提交）修正上轮门控自身的可见性误降级：`mcp-discovery` 步骤 3 对 `start_registry_mcp_server` 改用与步骤 1 相同的两段式（激活不随 `registry_sync` 联动，逐名激活），前言如实披露 start 工具还依赖 MCP pool 初始化，步骤 4 补「连接的工具次轮会再 deferred、先 `tool_search` 再调」；`best-of-n` 为 `create_goal`（每个存量 host 首轮都 deferred）补 `tool_search` 激活路径，并对子会话整体缺席保持诚实；父上下文子代理结果提示改引首轮必活的 `read`/`bash`（原文引用隐藏别名 `File` 与不存在的 `list` 动作，测试钉一并反转并纳入 forkguard 集）；捆绑技能 denylist 删除误列的活工具 `list_dir`、补齐注册表隐藏别名与 canonical 退役名；`MAX_REGISTRY_MATCHES` 与「eight」文案编译期互钉。复审第四轮（第五提交 `9f46ac5f0`）做提示词去重与守护加固：技能索引 Usage 首条与 `mcp-discovery` 步骤 1 保留为激活兜底的唯一教学点，插件索引行、技能省略尾行与 `mcp-discovery` 步骤 3 改为按引用复用（`as in step 1`）不再重复整句兜底，子代理 `## Skills` 头串压缩为同一单句模式——降低模型上下文占用且信息无损；`mcp-discovery` 前言精确化（pool 初始化只辖 start 工具，`registry_sync` 仅需 MCP 支持即注册）；捆绑技能 denylist 删除从未存在于任何注册表的臆测名 `Read`/`Write`/`Edit`、补齐 `git_diff`/`git_log`/`git_show`/`git_blame`/`agents/coordinate` 退役名并订正跟踪注释，注释披露 BUNDLED_SKILLS 扫描范围不含 `v4-best-practices`/`feishu`；「eight」文案的指令侧与 `registry_sync` schema 侧补测试钉（与编译期常量钉共同锁三处）；父上下文提示测试注释的「every stock host」表述订正为「默认原生活动集注册处」。复审第五轮（第六提交 `be2b2fe92`）修正第四轮去重后的两处过强声明并补齐同类残留：技能索引 Usage 与子代理 `## Skills` 头串此前称 `tool_search` 也失败时「本会话无法加载技能」，实际已注册的 deferred 工具被直接点名会当场注水并提示重试（`maybe_hydrate_requested_deferred_tool`），两处改为「仍缺就照名字直接调——已注册工具按需注水——该调用也失败才继续无技能」；GOAL_CONTINUATION_PROMPT 停止无条件命令 `update_goal`（存量 host 首轮 deferred，host 侧 `/goal` 建的目标会因工具缺席而静默失效），改为教 `tool_search` 激活路径；父上下文子代理提示的 `handle_read` 引用补同样的激活路径；mcp-discovery 测试钉的空输入归因订正（schema 必填 `query` 字段、拒绝空值的是 host 侧校验）与 `MAX_REGISTRY_MATCHES` 断言文案订正（「eight matches」而非「eight scored matches」）；新增 `forkguard_goal_continuation_names_tool_search_activation`、`forkguard_omitted_skills_line_stays_short`（承接第四轮退役的省略尾行守护）等守护钉。
+- 覆盖：`forkguard_skill_index_usage_names_tool_search_activation`、`forkguard_subagent_skill_catalog_uses_tool_search_discovery`、`forkguard_mcp_discovery_skill_conditions_registry_commands`、`forkguard_registry_first_instruction_names_registered_tool_specs`、`forkguard_bundled_skills_cite_no_hidden_or_retired_tool_names`、`forkguard_best_of_n_goal_tool_is_availability_gated`、`forkguard_subagent_context_hint_names_active_tools`（由既有 `subagent_results_are_summarized_before_parent_context_insertion` 反转钉入 forkguard 集）、`forkguard_goal_continuation_names_tool_search_activation`（第五轮）。省略尾行兜底随去重并入 Usage 单点教学，`forkguard_omitted_skills_line_carries_tool_search_fallback` 随之退役，第五轮以 `forkguard_omitted_skills_line_stays_short` 重建守护（防去重静默回潮）；fork-guard T3 指纹相应为 18 条（新增 19、随去重退役 1）。
+- 搭车披露（已剥离）：PR 首个提交（`c34c3a430`）曾同时携带基线门禁修复（engine/tests.rs clippy `map(Ok)`、CHANGELOG 切片重同步、v0.9.11→v0.9.12 事实文件刷新）。按 CONTRIBUTING 的 changelog 政策（PR 携带 changelog hunk 会被要求剥离）与车道核查（facts/web 检查只在 master/main 触发），候选第四提交已将其整体剥离，移入专门的 [CodeWhale#60](https://github.com/Pinvou/CodeWhale/pull/60)；#56 净 diff 现为纯主题。已知遗留（第四轮订正描述）：`workflows/stopship.workflow.js` 侦察简报仍引用隐藏别名 `File` 的 `search_content` 动作。实证现状比此前登记的更严重：真实子代理会话的执行入口 `execute_from_surface` 对不在该子代理 policy-filtered 目录中的名字直接失败，而 `File` 因 `model_visible=false` 进不了任何模型可见目录，故该调用在活会话中会被目录闸拒绝（explore gate 首步必失效）；「按别名可分派」仅在绕过目录闸的直接 `registry.resolve` 层（如回放测试）成立。它属仓内发布验收 fixture 而非随附模型文本，修复需协议级重做（教 `tool_search`→`grep_files` 两步激活并重测角色响应预算），已按该口径落地为独立 [CodeWhale#61](https://github.com/Pinvou/CodeWhale/pull/61)：侦察轮改为三响应（`tool_search` 激活 → `grep_files` 同 alternation 搜索 → verdict），步数与 token 上限不变，并以两条 forkguard 测试分别钉住 scout 表面的两步激活路径（活动 `tool_search` + deferred 可搜索 `grep_files` + 无 `File`）与 fixture 文本只引用目录可见工具名。
+
+## 0. 当前状态（2026-09-11 · r1 基线 + 13 个登记提交 + 1 个待合入候选，r2 收口未切 tag）
 
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5` |
-| 维护分支 | `pinvou3-clean` = `ae7e3fb36f89486f30d41b28ae0eaaa516ae4740`（r1 基线 `1fafee7e2` 之上 13 个 squash 合入：#41/#47/#49 与 2026-09-10/11 遗留 PR 清理批次 #31/#37/#38/#39/#43/#48/#50/#51/#52/#53） |
-| 发布状态 | 过渡期（fork-policy 第 0 节豁免）：不可变 tag `pinvou-v0.9.12-r1` 保持 r1 收口状态（15 个提交），父仓 gitlink 指向 `ae7e3fb36`、领先 tag 13 个提交，直至下一次 r2 发布收口对齐 |
+| 维护分支 | `pinvou3-clean` = `ae7e3fb36f89486f30d41b28ae0eaaa516ae4740`（r1 基线 `1fafee7e2` 之上 13 个 squash 合入：#41/#47/#49 与 2026-09-10/11 遗留 PR 清理批次 #31/#37/#38/#39/#43/#48/#50/#51/#52/#53）；#56 技能索引幻影工具修复待合入（候选头 `be2b2fe92`，见下方 T3 增补） |
+| 发布状态 | 过渡期（fork-policy 第 0 节豁免）：不可变 tag `pinvou-v0.9.12-r1` 保持 r1 收口状态（15 个提交），父仓 gitlink 随 #490 指向登记候选 `be2b2fe92`、领先 tag 19 个提交（其中 13 个已合入 squash 提交、6 个为 #56 候选提交），直至 #56 落地推进 `pinvou3-clean` 后恢复 gitlink=分支头 |
 | 升级前回退点 | 公开不可变 tag `pinvou-v0.9.5-r13` → `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 `backup/pre-v0.9.12-sync` 仅作便利引用 |
-| 历史组织 | 上游之上 28 个带 DCO sign-off 的提交，归属 4 个长期主题（T1–T4）+ 2 个追加减量主题（T5 会话归档导出、T6 蜂群限流治理）；r1 之后 13 个提交全部经 PR squash 合入并过五项必需门禁 |
-| drift | `139 files, +9953/-1217`，净增 8736 行；r1 为 `94 files, +5022/-944`，旧 r13 为 `110 files, +10895/-1195` |
-| 守护 | 54 条独立 CodeWhale `forkguard_*` 行为测试（48 条默认 + 6 条 `benchmark-eval-controls`）+ 父仓指纹与行为测试 |
+| 历史组织 | 上游之上 34 个带 DCO sign-off 的提交，归属 4 个长期主题（T1–T4）+ 2 个追加减量主题（T5 会话归档导出、T6 蜂群限流治理）；r1 之后 13 个提交已经 PR squash 合入并过五项必需门禁，第 14 个（#56）以 6 提交候选待合入 |
+| drift | `145 files, +10446/-1309`，净增 9137 行（候选第五提交时为 `+10320/-1239`、净增 9081）；r1 为 `94 files, +5022/-944`，旧 r13 为 `110 files, +10895/-1195` |
+| 守护 | 63 条独立 CodeWhale `forkguard_*` 行为测试（57 条默认 + 6 条 `benchmark-eval-controls`）+ 父仓指纹与行为测试 |
 | 父仓适配 | v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2、Shell 任务来源对账；消费方 PR #396（execpolicy）、#408（轮次取消）、#444（蜂群）、#468（computer-use）、#472（一键导出）依赖本批底座能力 |
 
 ## 1. 为什么本次使用 clean re-fork
@@ -247,7 +255,7 @@
 
 ## 11. 软上限评估与后续减量
 
-当前净增 8736 行，超过 1500 行软上限；`engine.rs`、`turn_loop.rs` 和 `engine/tests.rs` 也超过单文件 200 行提示线。原因是状态机、最终分发安全、“完整专家人设仅进入被选子智能体”的 spawn 边界、bundle Skills 排除 ambient 文件源的权限边界，以及评审要求的结果式生命周期/评测回归必须和 v0.9.12 原生 Engine 同步，拆成 app 侧镜像会形成更危险的双状态源。当前 Rust/Clippy/rustdoc 兼容只包含等价重写、`Default` 补全、窄 lint 说明、文档可达性修复和无调用测试 helper 清理，不改变公开函数签名或新增运行语义。
+当前净增 9137 行（候选第五提交时为 9081），超过 1500 行软上限；`engine.rs`、`turn_loop.rs` 和 `engine/tests.rs` 也超过单文件 200 行提示线。原因是状态机、最终分发安全、“完整专家人设仅进入被选子智能体”的 spawn 边界、bundle Skills 排除 ambient 文件源的权限边界，以及评审要求的结果式生命周期/评测回归必须和 v0.9.12 原生 Engine 同步，拆成 app 侧镜像会形成更危险的双状态源。当前 Rust/Clippy/rustdoc 兼容只包含等价重写、`Default` 补全、窄 lint 说明、文档可达性修复和无调用测试 helper 清理，不改变公开函数签名或新增运行语义。
 
 后续减量顺序：
 
@@ -265,6 +273,6 @@
 ## 12. 发布与回退
 
 - 公开回退点是不可变 tag `pinvou-v0.9.5-r13`；本地 `backup/pre-v0.9.12-sync` 不是发布前提。
-- 不可变 `pinvou-v0.9.12-r1` 停在 r1 收口 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`；当前处于过渡期：`pinvou3-clean` 与父仓 gitlink 指向 `ae7e3fb36`（领先 tag 13 个 squash 提交），下一次 r2 发布收口时在合并头切不可变 tag 并对齐三方（分支/tag/gitlink），以 `scripts/verify-public-submodule.sh` 验证公开可达性（过渡期断言 gitlink=分支头、tag 钉在 r1 收口，r2 收口后恢复三方相等；依据 `docs/fork-policy.md` 第 0 节过渡期豁免）。
+- 不可变 `pinvou-v0.9.12-r1` 停在 r1 收口 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`；当前处于过渡期：`pinvou3-clean` 指向 `ae7e3fb36`（领先 tag 13 个 squash 提交），父仓 gitlink 随 #490 指向登记候选 `be2b2fe92`（领先 tag 19 个提交；候选期 `verify-public-submodule.sh` 按登记保持红，见 T3 增补），#56 落地并推进 `pinvou3-clean` 后恢复 gitlink=分支头；下一次 r2 发布收口时在合并头切不可变 tag 并对齐三方（分支/tag/gitlink），以 `scripts/verify-public-submodule.sh` 验证公开可达性（过渡期断言 gitlink=分支头、tag 钉在 r1 收口，r2 收口后恢复三方相等；依据 `docs/fork-policy.md` 第 0 节过渡期豁免）。
 - 发布过程中只为精确 head 的受保护分支更新临时移除无法在该维护分支触发的 required status contexts，完成快进后立即恢复原保护配置；未关闭 force-push 防护，也未重写已发布 tag。
 - 后续发布仍不得降低公开校验或把本地 object 当成发布成功。

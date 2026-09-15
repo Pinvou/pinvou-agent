@@ -42,15 +42,53 @@ pub const PINVOU3_ALLOWED_TOOLS: &[&str] = &[
     "image_analyze",
     "kb_search",
     "kb_open_source",
+    // The two model-facing tools named by the base registry-first policy (the
+    // runtime:mcp-registry-first instruction injected by Engine::new): the
+    // instruction says "call these first", so the allowlist must admit them;
+    // otherwise the model is ordered to call tools missing from its tool list
+    // (observed as a broken reasoning loop in an exercise check-in Work-card
+    // session).
+    "registry_sync",
+    "start_registry_mcp_server",
+    // The ima connector's marketplace skill orders the model to call this
+    // native tool directly, but it matches no family rule above (the `mcp_*`
+    // prefix only covers MCP-discovered names), so without this entry the
+    // per-turn catalog strip made the skill teach a permanently absent tool.
+    "ima_openapi",
     "mcp_*",
     "list_mcp_resources",
     "list_mcp_resource_templates",
     "read_mcp_resource",
 ];
 
-/// 需要首轮直接可见、不能依赖模型先调用 `tool_search` 的工具。
-pub const PINVOU3_ALWAYS_LOADED_TOOLS: &[&str] = &["request_user_input", "image_analyze"];
-
+/// Tools that must be visible on the first turn and cannot rely on the model
+/// first calling `tool_search`.
+///
+/// Admission criterion: tools that static instructions or base-injected
+/// policies tell the model to call directly — if any of them is missing from
+/// the first-turn tool list, the model gets stuck on "the description says it
+/// exists, the list says it does not". The base first turn always carries
+/// read/write/edit/bash/agent/todo_write; every other native tool is
+/// deferred by default (`tool_search` stays active so the model can
+/// re-activate deferred tools).
+///
+/// - `load_skill`: the Usage line of the base-rendered skills index teaches
+///   the model to call `load_skill` directly.
+/// - `file_search`: the work instructions teach the model to use it to find
+///   user files.
+/// - `registry_sync` / `start_registry_mcp_server`: the base registry-first
+///   policy orders the model to call these two first.
+///
+/// Always-load only affects deferral and does not bypass `disallowed`
+/// (deny wins).
+pub const PINVOU3_ALWAYS_LOADED_TOOLS: &[&str] = &[
+    "request_user_input",
+    "image_analyze",
+    "load_skill",
+    "file_search",
+    "registry_sync",
+    "start_registry_mcp_server",
+];
 #[must_use]
 pub fn allowed_tool_names() -> Vec<String> {
     PINVOU3_ALLOWED_TOOLS

@@ -1719,6 +1719,15 @@ mod tool_allowlist_contract {
             "kb_search",
             "kb_open_source",
             "mcp_weather_get_weather",
+            // Tools named by the base registry-first policy: the instruction
+            // says "call these first", so the allowlist must admit them
+            // (capability is governed by the allowlist, not by deleting
+            // descriptions).
+            "registry_sync",
+            "start_registry_mcp_server",
+            // The ima connector skill teaches a direct call to this native
+            // tool; without an exact rule the `mcp_*` prefix never admits it.
+            "ima_openapi",
         ] {
             assert!(is_pinvou3_allowed(core), "核心工具 {core} 应在白名单");
         }
@@ -1747,10 +1756,15 @@ mod tool_allowlist_contract {
             );
         }
 
-        assert_eq!(
-            PINVOU3_ALWAYS_LOADED_TOOLS,
-            &["request_user_input", "image_analyze"]
-        );
+        // Always-loading a name the allowlist strips is dead configuration
+        // (the per-turn retain wins), so every entry must resolve through the
+        // real matcher; a typo here must fail instead of silently deferring.
+        for always_loaded in PINVOU3_ALWAYS_LOADED_TOOLS {
+            assert!(
+                is_pinvou3_allowed(always_loaded),
+                "always-loaded tool {always_loaded} has no matching allowlist rule"
+            );
+        }
         // `is_pinvou3_allowed` is deliberately case-insensitive, so the
         // legacy `Bash` spelling remains executable when replaying an old
         // transcript. The source catalog still teaches only canonical `bash`.
