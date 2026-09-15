@@ -31,8 +31,8 @@ name: PR Check
 #   prepare Node + ACP Bridge, and verify packaged resources on native Windows.
 # - macos-cli-check:macOS-gated pinvou-cli code (#[cfg(target_os = "macos")]) must
 #   type-check somewhere; compile-only leg mirroring the Windows CLI compile check
-#   for ready cli_rust/rust_full PRs (no Merge Queue repeat; Linux validates the
-#   combined tree).
+#   for ready cli_rust/rust_full PRs, the matching Merge Queue combined tree, and
+#   main push (cumulative; Linux cannot type-check macOS-gated code).
 # - Benchmarks stay outside product PR/MQ gates and run manually in an isolated environment.
 # - required-gate:PR 阶段汇总所有适用检查，作为唯一 required check。
 # - merge_group:按 base/head 的真实组合 diff 运行适用门禁，保证验证对象就是
@@ -1462,29 +1462,48 @@ jobs:
         run: npm --prefix pinvou3-app run test:codex-acp-macos-runtime
 
   # pinvou-cli contains #[cfg(target_os = "macos")] code (connectors.rs, voice.rs,
-  # ...) that compiled nowhere in CI: cli-test is ubuntu-only and the macOS runner
-  # above only smokes the Node ACP bridge. This compile-only leg mirrors the
-  # windows-rust-test "pinvou-cli Windows compile check" step for exactly that
-  # risk class. No Tauri system packages are needed on macOS (system frameworks
+  # ...) that compiles nowhere else in CI: cli-test is ubuntu-only and the macOS
+  # runner above only smokes the Node ACP bridge. This compile-only leg mirrors
+  # the windows-rust-test "pinvou-cli Windows compile check" step for exactly
+  # that risk class. No Tauri system packages are needed on macOS (system frameworks
   # are preinstalled; same minimum as the Windows compile check), no zram setup
   # is required (macOS runners are out of the gate-policy memory scope), and no
   # cargo cache is configured: no macOS cache exists in this workflow that a
   # refs/pull/N/merge run could restore (PR cache scopes are mutually invisible),
   # so each run pays a full cold compile — hence compile-only, no test execution
-  # (cli-test already runs the CLI suite on Linux). Merge Queue does not repeat
-  # this leg; Linux validates the combined tree (same policy as windows-rust-test).
+  # (cli-test already runs the CLI suite on Linux).
+  # Triggers: ready cli_rust/rust_full PRs, the matching Merge Queue combined tree
+  # (a PR that is green alone can still combine into a macOS-only compile break,
+  # and Linux cannot type-check #[cfg(target_os = "macos")] code, so "Linux
+  # validates the combined tree" does not cover this risk class), and
+  # unconditionally on main push: main is the cumulative compile verification and
+  # must not depend on a single push's paths-filter (same policy as
+  # rust-test/windows-rust-test, guarding the concurrency pending-replacement
+  # blind spot).
   macos-cli-check:
     name: macos-cli-check
     needs: changes
     if: >-
       ${{
         !cancelled() &&
-        github.event_name == 'pull_request' &&
         github.event.action != 'closed' &&
-        github.event.pull_request.draft == false &&
         (
-          needs.changes.outputs.cli_rust == 'true' ||
-          needs.changes.outputs.rust_full == 'true'
+          github.event_name == 'push' ||
+          (
+            github.event_name == 'merge_group' &&
+            (
+              needs.changes.outputs.cli_rust == 'true' ||
+              needs.changes.outputs.rust_full == 'true'
+            )
+          ) ||
+          (
+            github.event_name == 'pull_request' &&
+            github.event.pull_request.draft == false &&
+            (
+              needs.changes.outputs.cli_rust == 'true' ||
+              needs.changes.outputs.rust_full == 'true'
+            )
+          )
         )
       }}
     runs-on: macos-15
