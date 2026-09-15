@@ -33,7 +33,7 @@
 //! currently writing; the last-writer-wins windows on the sidecar
 //! registries (viewed/pinned state) are cosmetic by comparison.
 
-use std::io::BufRead;
+use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
 use crate::support::{render, require_yes, sandbox_home, success};
@@ -597,22 +597,32 @@ fn export(
             // An existing destination is refused, not overwritten: the
             // transcript store lives in plain files under the same root, so
             // a silent `fs::write` could destroy a stored session (or any
-            // other file the user pointed at) with exit 0. Pick a fresh
-            // path instead.
-            if path.exists() {
-                return Err(CliError::failed(format!(
-                    "sessions export({id}): refusing to overwrite {}; choose a destination \
-                     that does not exist yet",
-                    path.display()
-                )));
-            }
+            // other file the user pointed at) with exit 0. `create_new`
+            // makes the check and the write one atomic step, so a
+            // destination created (or swapped onto a symlink) after a
+            // plain exists() probe can no longer be truncated.
             let bytes = content.len();
-            std::fs::write(&path, content).map_err(|error| {
-                CliError::failed(format!(
-                    "sessions export({id}): cannot write {}: {error}",
-                    path.display()
-                ))
-            })?;
+            let write_result = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .and_then(|mut file| file.write_all(content.as_bytes()));
+            match write_result {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Err(CliError::failed(format!(
+                        "sessions export({id}): refusing to overwrite {}; choose a destination \
+                         that does not exist yet",
+                        path.display()
+                    )));
+                }
+                Err(error) => {
+                    return Err(CliError::failed(format!(
+                        "sessions export({id}): cannot write {}: {error}",
+                        path.display()
+                    )));
+                }
+            }
             let value = serde_json::json!({
                 "id": id,
                 "format": format.as_str(),
