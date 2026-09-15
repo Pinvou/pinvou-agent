@@ -103,7 +103,7 @@ async function runDenyAllOptInScenarios() {
     const prepared = await prepareSceneCapabilities({ pinvouScene: 'work:document-writing' }, invoke);
     assert.strictEqual(prepared.ok, true);
     assert.strictEqual(prepared.installed, false, 'nothing was installed');
-    assert.strictEqual(prepared.enabled, true, 'scene packages must be opted in');
+    assert.strictEqual(prepared.optedIn, true, 'scene packages must be opted in');
     assert.strictEqual(state.disabled.has('gongwen'), false);
     assert.strictEqual(state.disabled.has('government-writing'), false);
     assert.strictEqual(state.disabled.has('feishu'), true, 'unrelated packs stay disabled');
@@ -117,9 +117,9 @@ async function runDenyAllOptInScenarios() {
     const prepared = await prepareSceneCapabilities({ pinvouScene: 'design:ppt' }, invoke);
     assert.strictEqual(prepared.ok, true);
     assert.strictEqual(prepared.installed, true);
-    assert.strictEqual(prepared.enabled, true);
+    assert.strictEqual(prepared.optedIn, true);
     assert.strictEqual(state.disabled.has('pptx'), false);
-    assert.deepStrictEqual(state.enableCalls, [['pptx', 'pptx']]);
+    assert.deepStrictEqual(state.enableCalls, [['pptx']]);
   }
 
   // 已装且不在禁用集：零开关写，enabled=false（UI 不再弹 ready）。
@@ -132,7 +132,7 @@ async function runDenyAllOptInScenarios() {
     const prepared = await prepareSceneCapabilities({ pinvouScene: 'work:document-writing' }, invoke);
     assert.strictEqual(prepared.ok, true);
     assert.strictEqual(prepared.installed, false);
-    assert.strictEqual(prepared.enabled, false);
+    assert.strictEqual(prepared.optedIn, false);
     assert.strictEqual(state.enableCalls.length, 0, 'no switch write when already enabled');
   }
 

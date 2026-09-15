@@ -660,7 +660,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         tools
     }
 
-    /// 已安装的工具 ID 列表
+    /// 已安装的工具 ID 列表。
+    ///
+    /// # 不得用于门控
+    /// 读错误在此折叠为空集——仅适合展示/簿记类消费方；DenyAll 门控必须走
+    /// [`Self::try_installed_ids`] 以区分「确认为空」与「集合未知」（后者由
+    /// scope.rs 的 DenyAll 臂按全目录 fail-closed 兜底，评审 #455 R8 nit）。
     pub fn installed_ids(&self) -> Vec<String> {
         match self.try_installed_ids() {
             Ok(ids) => ids,
@@ -699,10 +704,24 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 eprintln!(
                     "[marketplace] installed.json is invalid: {e}; quarantined, rebuilding from mcp.json"
                 );
-                let recovered = self.recover_installed_ids_from_mcp();
-                if let Err(write_err) = self.save_installed(&recovered) {
-                    eprintln!("[marketplace] failed to rewrite installed.json: {write_err}");
-                }
+                // 恢复结果必须**可确证**（评审 #455 R8-1）：mcp.json 缺失/损坏/
+                // 无 servers 键时无法证明恢复集的完备性——按空集返回 Ok 会让
+                // DenyAll 扩集丢失全部非内置已装包（零同意放行），且 save_installed
+                // 把丢失持久化。此时按 Err 交由 DenyAll 门控走全目录 fail-closed
+                // 兜底，未验证结果不落盘。
+                let recovered = match self.recover_installed_ids_from_mcp() {
+                    Ok(recovered) => recovered,
+                    Err(recover_error) => {
+                        return Err(format!(
+                            "installed.json is invalid: {e}; {recover_error}; installed set unknown, DenyAll gate falls back to the full catalog"
+                        ));
+                    }
+                };
+                // 恢复覆盖失败按 Err 上报（R8 nit）：损坏原文件仍在，下次读取
+                // 重试隔离+恢复；静默丢写会让每次读都重新隔离（副本累积）。
+                self.save_installed(&recovered).map_err(|write_err| {
+                    format!("failed to rewrite installed.json after quarantine: {write_err}")
+                })?;
                 Ok(recovered)
             }
         }
@@ -1620,16 +1639,20 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         quarantine_corrupt_state_file(&self.installed_file, content.as_bytes())
     }
 
-    fn recover_installed_ids_from_mcp(&self) -> Vec<String> {
+    /// 从 mcp.json 重建已装集。返回 Err = 无法**确证**恢复集完备（mcp.json
+    /// 缺失/不可读/损坏/缺 servers 键）——调用方必须按「已装集合未知」处理，
+    /// 不得把空集当事实持久化（评审 #455 R8-1）。合法 JSON + servers 对象存在
+    /// 即可证（恢复集允许为空：mcp.json 本来就可能没注册任何包）。
+    fn recover_installed_ids_from_mcp(&self) -> Result<Vec<String>, String> {
         let content = match std::fs::read_to_string(paths::mcp_config_path()) {
             Ok(c) => c,
-            Err(_) => return Vec::new(),
+            Err(error) => return Err(format!("mcp.json is missing or unreadable: {error}")),
         };
         let Ok(mcp) = serde_json::from_str::<serde_json::Value>(&content) else {
-            return Vec::new();
+            return Err("mcp.json is corrupt".to_string());
         };
         let Some(servers) = mcp.get("servers").and_then(|s| s.as_object()) else {
-            return Vec::new();
+            return Err("mcp.json has no servers object".to_string());
         };
         let mut recovered = Vec::new();
         for manifest in self.available_tools() {
@@ -1645,7 +1668,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 recovered.push(manifest.id);
             }
         }
-        recovered
+        Ok(recovered)
     }
 }
 
@@ -1675,6 +1698,9 @@ mod tests {
     /// point moves from env to the registry).
     fn with_temp_home<F: FnOnce()>(f: F) {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // 判定备忘按家目录键控，但临时目录复用同一 pid 前缀——显式清空防止
+        // 前一用例的 UNPERSISTED_VERDICT 串味（评审 #455 R8 nit）。
+        crate::features::marketplace::scope::clear_unpersisted_verdict_for_test();
         // The test process installs the foundation resolver too (OnceLock is
         // idempotent, same contract as the production boot): otherwise the
         // foundation falls back to the process env when resolving
@@ -3663,19 +3689,18 @@ mod tests {
         });
     }
 
-    /// 宽口径升级信号:installed.json/settings/会话目录任一存在 ⇒ 老装机,
+    /// 宽口径升级信号:installed.json/非空会话目录任一存在 ⇒ 老装机,
     /// plain 初始化为落盘状态(缺省空 = 旧 AllowAll 全开),不被 DenyAll 兜底
     /// 波及。三份开关相关文件皆无的 v0.8.6-v0.9.2 老装机正是本信号要救的
-    /// 群体(评审 #445 P1-2)。
+    /// 群体(评审 #445 P1-2)。settings.json 不构成信号(R8-3 收窄:预置模板/
+    /// 跨机拷贝的 settings.json 会把全新装机误判 fail-open,而老装机必留非空
+    /// sessions/,收窄不漏判),单独存在的 settings.json ⇒ 仍判全新。
     #[test]
     fn plain_deny_all_upgraded_install_with_existing_state_preserves_all_on() {
         for seed in [
             |home: &std::path::Path| {
                 std::fs::create_dir_all(home.join("marketplace")).unwrap();
                 std::fs::write(home.join("marketplace").join("installed.json"), r"[]").unwrap();
-            },
-            |home: &std::path::Path| {
-                std::fs::write(home.join("settings.json"), "{}").unwrap();
             },
             |_home: &std::path::Path| {
                 let sessions = crate::platform::paths::sessions_root();
@@ -3694,6 +3719,31 @@ mod tests {
         }
     }
 
+    /// settings.json 单独存在不构成升级信号（R8-3 收窄的反向 pin）：
+    /// 预置/跨机拷贝的 settings.json 不得把全新装机判为升级（plain 全开）。
+    #[test]
+    fn plain_deny_all_settings_json_alone_is_not_an_upgrade_signal() {
+        with_temp_home(|| {
+            std::fs::write(
+                crate::platform::paths::pinvou3_home().join("settings.json"),
+                "{}",
+            )
+            .unwrap();
+            assert_eq!(
+                load_disabled_connectors(),
+                vec![
+                    "feishu".to_string(),
+                    "wecom".to_string(),
+                    "dingtalk".to_string(),
+                    "tmeet".to_string(),
+                ],
+                "预置 settings.json 不得触发升级判定，plain 仍 DenyAll 全关"
+            );
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(!file.initialized.contains("plain"), "{file:?}");
+        });
+    }
+
     /// 旧版双文件时代升级（legacy 文件存在）→ plain 初始化锁定迁移后的落盘
     /// 状态（空 = 全开），不走 DenyAll 兜底。
     #[test]
@@ -3707,6 +3757,72 @@ mod tests {
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
             assert!(file.plain_defaults_migrated);
             assert!(file.initialized.contains("plain"));
+        });
+    }
+
+    /// enable_packages_in_scope（评审 #455 R8：批量 opt-in 出口的 Rust 钉子，
+    /// 此前仅 JS mock 覆盖）：未初始化 DenyAll scope 以（扩集 − ids）物化
+    /// opt-in；已初始化 scope 从落盘列表移除；hidden 集同步清理；未列出的包
+    /// 保持原状。
+    #[test]
+    fn enable_packages_in_scope_materializes_and_cleans_hidden() {
+        with_temp_home(|| {
+            // 未初始化 plain：扩集含内置 CLI。批量开启 feishu → 物化 opt-in。
+            crate::features::marketplace::scope::enable_packages_in_scope(
+                ConnectorScope::Plain,
+                &["feishu".to_string()],
+            );
+            let disabled = load_disabled_connectors_for(ConnectorScope::Plain);
+            assert!(
+                !disabled.contains(&"feishu".to_string()),
+                "批量开启后 feishu 退出有效禁用集: {disabled:?}"
+            );
+            assert!(
+                disabled.contains(&"wecom".to_string()),
+                "未列出的内置包保持默认关: {disabled:?}"
+            );
+            let file = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(file.initialized.contains("plain"), "物化落盘: {file:?}");
+
+            // 已初始化 scope：从落盘列表移除 + hidden 同步清理。
+            save_hidden_bundles_for(ConnectorScope::Plain, &["wecom".to_string()]);
+            crate::features::marketplace::scope::enable_packages_in_scope(
+                ConnectorScope::Plain,
+                &["wecom".to_string(), "feishu".to_string()],
+            );
+            let disabled = load_disabled_connectors_for(ConnectorScope::Plain);
+            assert!(
+                !disabled.contains(&"wecom".to_string()),
+                "已初始化 scope 从落盘列表移除: {disabled:?}"
+            );
+            let hidden = load_hidden_bundles_for(ConnectorScope::Plain);
+            assert!(
+                !hidden.contains(&"wecom".to_string()),
+                "hidden 集同步清理: {hidden:?}"
+            );
+
+            // 技能 id 入参归一为包 id（government-writing → gongwen）。
+            std::fs::remove_file(
+                crate::platform::paths::pinvou3_home().join("disabled_bundles.json"),
+            )
+            .unwrap();
+            crate::features::marketplace::store::BundleStore::new()
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        "gongwen".to_string(),
+                        crate::features::marketplace::store::BundleSource::Preset,
+                    ),
+                )
+                .unwrap();
+            crate::features::marketplace::scope::enable_packages_in_scope(
+                ConnectorScope::Plain,
+                &["government-writing".to_string()],
+            );
+            assert!(
+                !load_disabled_connectors_for(ConnectorScope::Plain)
+                    .contains(&"gongwen".to_string()),
+                "companion 技能 id 应归一为包 id 后移除"
+            );
         });
     }
 
@@ -3941,8 +4057,12 @@ mod tests {
             let original = "{\"plain_defaults_migrated\":true}";
             std::fs::write(&path, original).unwrap();
             // 0o000：存在但不可读。`set_file_mode` 以真实 open 探测报告可读性：
-            // Ok(true) = 仍可读（Windows ACL / root 运行 mode 位不生效），跳过本测试。
+            // Ok(true) = 仍可读（Windows ACL / root 运行 mode 位不生效），跳过本
+            // 测试——打印跳过原因，避免 CI 通过数高估 fail-closed 覆盖（R7 nit）。
             if crate::platform::os::set_file_mode(&path, 0o000).unwrap() {
+                eprintln!(
+                    "SKIP: cannot build an unreadable fixture on this platform/root; fail-closed unreadable path not exercised here"
+                );
                 return;
             }
 
@@ -4011,8 +4131,12 @@ mod tests {
             let path = dir.join("installed.json");
             std::fs::write(&path, "[\"feishu\"]").unwrap();
             // 0o000：存在但不可读。`set_file_mode` 以真实 open 探测报告可读性：
-            // Ok(true) = 仍可读（Windows ACL / root 运行 mode 位不生效），跳过。
+            // Ok(true) = 仍可读（Windows ACL / root 运行 mode 位不生效），跳过
+            // ——打印跳过原因（R7 nit）。
             if crate::platform::os::set_file_mode(&path, 0o000).unwrap() {
+                eprintln!(
+                    "SKIP: cannot build an unreadable fixture on this platform/root; fail-closed unreadable path not exercised here"
+                );
                 return;
             }
 

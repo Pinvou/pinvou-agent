@@ -1352,6 +1352,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // 顶掉「你好」欢迎语(该 tool 无 welcomeQueries 时 ToolWelcomeCard 渲染 null → 整块空白)。
       // 设置与清空收进同一 effect,按 justInstalledTool 优先,避免多 effect 同帧竞态。
       const [welcomeToolId, setWelcomeToolId] = useState(null);
+      // sendChatMessage 的 useCallback 不依赖 welcomeToolId（避免身份抖动重建），
+      // 自由输入路径经此 ref 消费当前欢迎包（评审 #455 R8-2）。
+      const welcomeToolIdRef = useRef(null);
       const welcomeSessionKeyRef = useRef(null);
       // Web 只读判定：多智能体是桌面专属能力（ADR-0006），Web 端只读呈现。
       // modeState.multiAgent 经 get_mode_state 双端同步（开关已持久化）。
@@ -1566,6 +1569,20 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // eslint-disable-next-line sonarjs/cognitive-complexity -- scene-capability preflight and send orchestration are cohesive in a single callback; split refactor tracked separately
       const sendChatMessage = useCallback(async (text) => {
         if (!bridge.available) return false;
+        // 欢迎卡的两条发送路径（点击示例提问 / 自由输入）统一在此完成
+        // opt-in（评审 #455 R8-2）：只经一次 enable_marketplace_packages，
+        // 失败不阻断发送——工具缺席在回复中可见，不静默。chip 路径的
+        // onSend 不再重复调用。
+        const welcomeTool = welcomeToolIdRef.current;
+        if (welcomeTool) {
+          welcomeToolIdRef.current = null;
+          setWelcomeToolId(null);
+          await Promise.resolve(
+            invokeTauri('enable_marketplace_packages', { packageIds: [welcomeTool], scope: 'plain' })
+          ).catch((err) => {
+            console.warn("[pinvou3][chat-ui] welcome-card opt-in failed", err);
+          });
+        }
         const outgoing = String(text || '').trim();
         const matchedPersonalWorkbenchDraft = findPersonalWorkbenchTemplateDraft(outgoing);
         const templateId = personalWorkbenchTemplateIdRef.current
@@ -1598,7 +1615,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
               // DenyAll 收敛后 ready 的语义由「装过」扩为「装好或显式开回」：
               // 已装但被默认关挡住的场景包在此完成 opt-in，同样要提示已启用
               // （评审 #455 R5-B3）。
-              if (prepared.installed || prepared.enabled) {
+              if (prepared.installed || prepared.optedIn) {
                 setSceneCapabilityStatus({ kind: 'ready', text: sceneCopy.ready });
                 window.setTimeout(() => setSceneCapabilityStatus((current) => (
                   current && current.kind === 'ready' ? null : current
@@ -1757,10 +1774,12 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         if (justInstalledTool) {
           // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot apply of the welcome-card state after tool install
           setWelcomeToolId(justInstalledTool);
+          welcomeToolIdRef.current = justInstalledTool;
           welcomeSessionKeyRef.current = sessionKey;
           if (setJustInstalledTool) setJustInstalledTool(null);
         } else if (welcomeSessionKeyRef.current && welcomeSessionKeyRef.current !== sessionKey) {
           setWelcomeToolId(null);
+          welcomeToolIdRef.current = null;
           welcomeSessionKeyRef.current = null;
         }
         // justInstalledTool 故意不放进依赖:否则上面 setJustInstalledTool(null) 清掉它会二次触发
@@ -2450,21 +2469,11 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   theme={theme}
                   t={t}
                   onSend={(q) => {
-                    setWelcomeToolId(null);
-                    // 点击欢迎提问 = 显式 opt-in（评审 #455 R7-M4）：先经后端
-                    // 单临界区 RMW 把该包移出 plain 禁用集（热刷当轮生效），
-                    // 再发送——否则模型收不到工具，提问静默降级。opt-in 失败
-                    // 仍发送（工具缺席可见于回复），不把失败吞成 floating rejection。
-                    Promise.resolve(
-                      invokeTauri('enable_marketplace_packages', { packageIds: [welcomeToolId], scope: 'plain' })
-                    )
-                      .catch((err) => {
-                        console.warn("[pinvou3][chat-ui] welcome-card opt-in failed", err);
-                      })
-                      .then(() => sendChatMessage(q))
-                      .catch((err) => {
-                        console.warn("[pinvou3][chat-ui] welcome-card send failed", err);
-                      });
+                    // opt-in 统一在 sendChatMessage 内完成（R8-2，chip 与自由
+                    // 输入同路径）；这里只负责发送，失败处理与 handleSend 同口径。
+                    Promise.resolve(sendChatMessage(q)).catch((err) => {
+                      console.warn("[pinvou3][chat-ui] welcome-card send failed", err);
+                    });
                   }}
                 />
               </div>
