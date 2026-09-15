@@ -22,6 +22,12 @@
 # fold_tool_call_before_results only accepts exit_code==2 or the stdout JSON
 # {"decision":"deny"}; exit 1 is treated as passthrough (ALLOW).
 
+# Policy boundary: this concealment applies only to skill-based connectors.
+# Marketplace MCP packages deliberately expose installed/enabled metadata to the
+# model; see docs/marketplace-unification.md section 5.4. Match complete JSON string
+# values below so a marketplace package such as `wecom-bot` is not caught merely
+# because its ID or display name contains a skill-connector alias.
+
 set -uo pipefail
 
 ARGS="${DEEPSEEK_TOOL_ARGS:-}"
@@ -37,10 +43,11 @@ TOOL="${DEEPSEEK_TOOL_NAME:-unknown}"
 #    文案刻意不回显连接器名、不列举技能/CLI 名：模型问一个不应连带知道全部，
 #    且对「已禁用」的连接器不确认其存在（disable 感知审计，泄漏面 2）。
 if [[ "$TOOL" == "list_mcp_resources" || "$TOOL" == "list_mcp_resource_templates" ]]; then
-    # 关键词覆盖模型可能传的各种写法:英文 wecom/weixin/wework、中文全称「企业微信」
-    # (注意「企微」子串不含在「企业微信」里,必须显式列全称)、feishu/lark/飞书、
-    # 以及 dingtalk/dingding/dws/钉钉、tmeet/tencent meeting/腾讯会议。
-    if [[ "$ARGS" =~ (wecom|weixin|wework|feishu|lark|dingtalk|dingding|dws|tmeet|tencent[[:space:]_-]?meeting|企微|企业微信|微信|飞书|钉钉|腾讯会议) ]]; then
+    # Match complete JSON string values for common English and Chinese connector
+    # aliases. The surrounding quotes are the boundary, so marketplace MCP names
+    # such as `wecom-bot` and `企微群机器人` remain introspectable.
+    SKILL_CONNECTOR_NAME_PATTERN='"(wecom|weixin|wework|feishu|lark|dingtalk|dingding|dws|tmeet|tencent[[:space:]_-]?meeting|企微|企业微信|微信|飞书|钉钉|腾讯会议)"'
+    if [[ "$ARGS" =~ $SKILL_CONNECTOR_NAME_PATTERN ]]; then
         echo '{"decision":"deny","reason":"该名称不是 MCP server（无 MCP schema），无法用 list_mcp_resources 自省。若它是技能型连接器，请用 load_skill 加载其对应技能后按技能说明使用。连接状态以工具面板为准，自省失败不代表未连接。"}'
         exit 2
     fi
