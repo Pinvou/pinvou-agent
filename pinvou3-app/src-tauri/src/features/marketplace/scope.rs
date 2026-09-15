@@ -67,6 +67,18 @@ fn with_disabled_bundles_lock<T>(f: impl FnOnce() -> T) -> T {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let lock_path = paths::pinvou3_home().join("disabled_bundles.lock");
+    // 全新 PINVOU3_HOME 的首次写入发生在任何其它写方建目录之前：先建父目录，
+    // 否则开锁必然失败、静默退化为仅进程内锁（与 remote_control 进程锁的
+    // acquire 前置 create_dir_all 同款）。锁文件无敏感内容，不追私有权设置。
+    if let Some(parent) = lock_path.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            eprintln!(
+                "[marketplace] create {}: {error}; proceeding with in-process locking only",
+                parent.display()
+            );
+            return f();
+        }
+    }
     let file = match std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -389,7 +401,9 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) {
 /// exclusively, a whole CLI disable can be dropped); the CLI's enable/disable
 /// and the lock-holding writers share this entry point. The closure receives
 /// the effective list including the DenyAll fallback, matching
-/// `load_disabled_bundles_for`.
+/// `load_disabled_bundles_for`. The closure runs under both locks and must
+/// not re-enter this module's load/save helpers (the in-process mutex is not
+/// reentrant — it would self-deadlock).
 pub fn update_disabled_bundles_for(scope: ConnectorScope, update: impl FnOnce(&mut Vec<String>)) {
     with_disabled_bundles_lock(|| {
         let file = load_disabled_bundles_file_locked();
@@ -628,6 +642,81 @@ mod tests {
                 load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["weather".to_string()],
                 "the write must survive the double critical section"
+            );
+        });
+    }
+
+    /// 单临界区 RMW 语义：闭包收到的是**生效列表**（未初始化的 DenyAll scope
+    /// 展开为当前认领 ∪ 内置 CLI 包，与 `load_disabled_bundles_for` 同口径），
+    /// 写回即标记 scope 已初始化——此后读路径以落盘列表为准，兜底不再展开。
+    #[test]
+    fn update_disabled_bundles_for_writes_effective_list_and_initializes() {
+        with_temp_home(|| {
+            // 未初始化的 Code（DenyAll）：读路径与闭包入参必须是同一份生效列表。
+            let effective = load_disabled_bundles_for(ConnectorScope::Code);
+            assert!(
+                !effective.is_empty(),
+                "the DenyAll fallback must expand to the effective set"
+            );
+            update_disabled_bundles_for(ConnectorScope::Code, |ids| {
+                assert_eq!(
+                    *ids, effective,
+                    "closure input must match the read path's effective list"
+                );
+                ids.clear();
+                ids.push("kept-pkg".to_string());
+            });
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                vec!["kept-pkg".to_string()],
+                "the write-back must freeze the scope as initialized"
+            );
+            // 已初始化后再跑 RMW：闭包看到落盘列表而非兜底展开（幂等读改写）。
+            update_disabled_bundles_for(ConnectorScope::Code, |ids| {
+                assert_eq!(ids.as_slice(), ["kept-pkg".to_string()].as_slice());
+            });
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                vec!["kept-pkg".to_string()]
+            );
+        });
+    }
+
+    /// flock 本体的互斥：本进程另一 fd 持锁（flock 按 open-file-description
+    /// 冲突，等价另一进程）时，写方必须阻塞到锁释放才完成。「创建锁文件但
+    /// 忘记 flock」的回归在存在性断言下照样绿，在这里会红。
+    #[test]
+    fn cross_process_lock_blocks_a_concurrent_writer() {
+        with_temp_home(|| {
+            let lock_path = paths::pinvou3_home().join("disabled_bundles.lock");
+            let stand_in = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)
+                .unwrap();
+            let mut rw = fd_lock::RwLock::new(stand_in);
+            let guard = rw.write().expect("hold the stand-in process lock");
+            let (tx, rx) = std::sync::mpsc::channel::<()>();
+            let writer = std::thread::spawn(move || {
+                save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
+                tx.send(()).expect("signal writer completion");
+            });
+            // 非阻塞写对一个小文件亚毫秒即返；500ms 未完成即证明它在等锁。
+            assert!(
+                rx.recv_timeout(std::time::Duration::from_millis(500))
+                    .is_err(),
+                "a writer must block while another process holds the flock"
+            );
+            drop(guard);
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .expect("the writer completes once the flock is released");
+            writer.join().unwrap();
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Plain),
+                vec!["weather".to_string()],
+                "the blocked write must land intact after the lock is released"
             );
         });
     }
