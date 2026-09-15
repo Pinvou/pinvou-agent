@@ -31,6 +31,7 @@ use deepseek_tui::AppMode;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
+use crate::core::mode_state::SerializableMode;
 use crate::features::assistant::attachments::{
     build_message_with_attachments_in_dir, stage_file_in_workspace,
 };
@@ -240,9 +241,10 @@ pub fn run_agentic_task_headless(request: AgenticTaskRequest) -> Result<AgenticT
 ///
 /// Persisting counts against the shared 50-session retention cap: when a
 /// fresh run's prepare-time save evicts chat sessions at the cap (pinned
-/// ones included), the store's real eviction events drive a stderr warning,
-/// so a batch harness pointed at the desktop's default `PINVOU3_HOME` is not
-/// silent about the data loss — even when the run errors after the save.
+/// sessions are exempt from retention), the store's real eviction events
+/// drive a stderr warning, so a batch harness pointed at the desktop's
+/// default `PINVOU3_HOME` is not silent about the data loss — even when the
+/// run errors after the save.
 ///
 /// The execution root resolver must be registered before the pool enters an
 /// `Arc` (the bridge setter needs `&mut self`), which is why this function
@@ -288,15 +290,26 @@ pub async fn run_agentic_task(
 
     // Retention-eviction observation: the prepare-time save inside the turn
     // lands in the same 50-session store the GUI reads, and a fresh save at
-    // the cap evicts the oldest chat session(s) — pinned ones included. The
-    // store reports its real sweep deletions into this receiver, so the
-    // warning keys on the eviction event itself: a run that errors after the
-    // save (attachment staging, submit) must still surface the eviction, and
-    // a run that fails before saving evicts nothing and stays silent. A
-    // pre-/post-run count heuristic cannot tell those apart.
+    // the cap evicts the oldest unpinned chat session(s) (pinned sessions are
+    // exempt from retention). The store reports its real sweep deletions into
+    // this receiver, so the warning keys on the eviction event itself: a run
+    // that errors after the save (attachment staging, submit) must still
+    // surface the eviction, and a run that fails before saving evicts nothing
+    // and stays silent — a count sampled around the run cannot see mid-run
+    // forwarder evictions, and the store's own deletions can.
     let evictions = Arc::new(Mutex::new(Vec::new()));
-    store.set_retention_eviction_observer(Some(evictions.clone()));
-    let outcome = run_turn(
+    if let Some(stale) = store.set_retention_eviction_observer(Some(evictions.clone())) {
+        // Single-flight normally guarantees the slot is empty here; a stale
+        // observer means an earlier run skipped its disarm (an unwind between
+        // arm and disarm would do it). Its ids were never reported — say so
+        // instead of silently adopting a dead receiver.
+        drop(stale);
+        eprintln!(
+            "[pinvou agent run] warning: replaced a stale retention-eviction \
+             observer; the previous run's eviction record was never reported"
+        );
+    }
+    let (submitted, outcome) = run_turn(
         &runtime,
         &store,
         &session_id,
@@ -309,10 +322,17 @@ pub async fn run_agentic_task(
     // Session lifecycle after the turn: sessions persist by default (GUI
     // parity — the 50-session retention cap applies), so the engine is
     // reclaimed while the transcript, artifacts and timeline stay under the
-    // sessions root for continuation via `--session`. Only an explicit
-    // `PINVOU3_AGENT_TASK_KEEP_SESSION=0|false|no|off` restores the old
-    // one-shot cleanup for harnesses that want a clean sandbox (the legacy
-    // truthy values "1"/"true"/"yes"/"on" keep meaning keep).
+    // sessions root for later continuation through the request's `session_id`
+    // (a library surface; the one-shot CLI keeps its defaults today). Only an
+    // explicit `PINVOU3_AGENT_TASK_KEEP_SESSION=0|false|no|off` restores the
+    // old one-shot cleanup for harnesses that want a clean sandbox (the
+    // legacy truthy values "1"/"true"/"yes"/"on" keep meaning keep).
+    //
+    // A fresh session whose turn never started (attachment staging, submit,
+    // or the setup timeout) carries no transcript to inspect: keeping it
+    // would litter the shared store — and the GUI history — with zero-message
+    // stubs, one eviction apiece in a failing batch. Those runs clean up
+    // after themselves regardless of `KEEP_SESSION`.
     //
     // A caller-provided `session_id` is never auto-deleted by THIS run, but
     // it is an ordinary chat session in the store: the 50-session retention
@@ -322,6 +342,10 @@ pub async fn run_agentic_task(
     let keep_session = keep_session_from_env();
     if existing_session {
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
+    } else if !submitted {
+        crate::features::assistant::timing::unregister_eval_observation(&session_id);
+        runtime.schedule_eval_cleanup(&session_id);
+        let _ = runtime.close_eval_session_result(&session_id).await;
     } else if keep_session {
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
         runtime.pool.evict(&session_id).await;
@@ -338,11 +362,11 @@ pub async fn run_agentic_task(
     if !evicted.is_empty() {
         eprintln!(
             "[pinvou agent run] warning: persisting this run's session evicted \
-             {} chat session(s) at the {MAX_SESSIONS_PER_KIND}-session retention \
-             cap, pinned ones included. Point PINVOU3_HOME at a sandbox or prune \
-             the session store (PINVOU3_AGENT_TASK_KEEP_SESSION=0 only removes \
-             this run's session afterwards; the save-time eviction still \
-             happens).",
+             {} unpinned chat session(s) at the {MAX_SESSIONS_PER_KIND}-session \
+             retention cap (pinned sessions are exempt). Point PINVOU3_HOME at \
+             a sandbox or prune the session store (PINVOU3_AGENT_TASK_KEEP_\
+             SESSION=0 only removes this run's session afterwards; the \
+             save-time eviction still happens).",
             evicted.len()
         );
     }
@@ -438,6 +462,11 @@ fn ensure_existing_chat_session(store: &SessionStore, session_id: &str) -> Resul
     }
 }
 
+/// Run prepare → submit → wait, and report. `true` in the first tuple slot
+/// means the turn was actually submitted: everything after submit (cancel,
+/// wait, report building) belongs to a session whose transcript exists, while
+/// `false` marks the never-started cases (attachment staging, submit failure,
+/// setup timeout) the caller's lifecycle handling cleans up as stubs.
 async fn run_turn(
     runtime: &EnginePoolRuntime,
     store: &SessionStore,
@@ -445,30 +474,43 @@ async fn run_turn(
     request: &AgenticTaskRequest,
     timeout_secs: u64,
     existing_session: bool,
-) -> Result<AgenticTaskReport> {
+) -> (bool, Result<AgenticTaskReport>) {
     // Model selection: a fresh session without an explicit model keeps
     // today's behavior — the active evaluation model is captured, pinned, and
     // released by the guard's Drop. A caller-provided `model_id` replaces
     // that pin (validated up front), and an existing session keeps its own
     // per-session model binding (the GUI chat send semantics).
+    // These failures happen before prepare, so no session record exists and
+    // the run reports `(false, Err)`.
     let suite_guard = if !existing_session && request.model_id.is_none() {
-        let guard = runtime
+        let guard = match runtime
             .capture_eval_suite_model()
-            .context("active evaluation model is not configured")?;
+            .context("active evaluation model is not configured")
+        {
+            Ok(guard) => guard,
+            Err(error) => return (false, Err(error)),
+        };
         Some(guard)
     } else {
         None
     };
     let model_selection = if let Some(guard) = suite_guard.as_ref() {
-        Some(guard.derive_case_selection()?)
+        match guard.derive_case_selection() {
+            Ok(selection) => Some(selection),
+            Err(error) => return (false, Err(error)),
+        }
     } else if !existing_session {
         // Fresh session with an explicit model: bind it through the same eval
         // selection route `prepare_eval_session` consumes.
-        request
+        match request
             .model_id
             .as_deref()
             .map(|model_id| runtime.pin_eval_model_selection(model_id))
-            .transpose()?
+            .transpose()
+        {
+            Ok(selection) => selection,
+            Err(error) => return (false, Err(error)),
+        }
     } else {
         None
     };
@@ -500,6 +542,31 @@ async fn run_turn(
                 })
                 .await
                 .context("prepare agentic session")?;
+            // Persist the requested workspace as the session's durable #445
+            // binding: a later GUI reopen keeps working-directory continuity
+            // and the binding-keyed gates (composer chip, YOLO confirmation)
+            // apply exactly as for a GUI-created bound session. Without the
+            // sidecar the reopened session silently falls back to its private
+            // scratch while `metadata.workspace` records the task directory.
+            // Caller-provided sessions keep their own binding — the run-scoped
+            // resolver above overrides this run only. Failing the run here
+            // mirrors the GUI create path (bind failure rolls back the
+            // session); the stub cleanup then removes the prepared record.
+            if let Some(workspace) = request.workspace.clone() {
+                store
+                    .bind_session_workspace(session_id, workspace)
+                    .context("persist session workspace binding")?;
+            }
+            // Persist an explicit Plan request through the GUI's per-session
+            // lane, so reopening the session restores its own last mode
+            // instead of resolving the unbound default (Yolo). Best-effort,
+            // mirroring the GUI command: the in-run mode is already applied
+            // via the send op; only the sidecar write is logged on failure.
+            if matches!(request.mode, Some(AgenticTaskMode::Plan)) {
+                if let Err(error) = store.set_mode(session_id, SerializableMode::Plan) {
+                    eprintln!("[pinvou agent run] persisting session mode: {error:#}");
+                }
+            }
         }
         let content = prompt_with_attachments(store, session_id, request).await?;
         runtime
@@ -516,20 +583,26 @@ async fn run_turn(
     let handle =
         match tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), setup).await
         {
-            Ok(submitted) => submitted?,
+            Ok(submitted) => match submitted {
+                Ok(handle) => handle,
+                Err(error) => return (false, Err(error)),
+            },
             Err(_elapsed) => {
-                return Ok(AgenticTaskReport {
-                    session_id: session_id.to_owned(),
-                    status: "timeout".to_string(),
-                    timed_out: true,
-                    completed_after_deadline: false,
-                    assistant_text: String::new(),
-                    tool_events: Vec::new(),
-                    usage: None,
-                    error: Some(
-                        "agentic session setup did not finish within the timeout".to_string(),
-                    ),
-                });
+                return (
+                    false,
+                    Ok(AgenticTaskReport {
+                        session_id: session_id.to_owned(),
+                        status: "timeout".to_string(),
+                        timed_out: true,
+                        completed_after_deadline: false,
+                        assistant_text: String::new(),
+                        tool_events: Vec::new(),
+                        usage: None,
+                        error: Some(
+                            "agentic session setup did not finish within the timeout".to_string(),
+                        ),
+                    }),
+                );
             }
         };
     drop(suite_guard);
@@ -595,47 +668,53 @@ async fn run_turn(
             } else {
                 turn.status
             };
-            Ok(AgenticTaskReport {
-                session_id: session_id.to_owned(),
-                status,
-                timed_out,
-                completed_after_deadline,
-                assistant_text: turn.assistant_text,
-                tool_events: turn
-                    .tool_events
-                    .into_iter()
-                    .map(|event| AgenticToolEvent {
-                        name: event.name,
-                        failed: event.failed,
-                    })
-                    .collect(),
-                usage: turn.usage.map(|usage| AgenticUsageReport {
-                    input_tokens: usage.input_tokens,
-                    output_tokens: usage.output_tokens,
-                    cache_hit_tokens: usage.cache_hit_tokens,
-                    cache_miss_tokens: usage.cache_miss_tokens,
-                    cache_write_tokens: usage.cache_write_tokens,
-                    reasoning_tokens: usage.reasoning_tokens,
-                    context_window: usage.context_window,
+            (
+                true,
+                Ok(AgenticTaskReport {
+                    session_id: session_id.to_owned(),
+                    status,
+                    timed_out,
+                    completed_after_deadline,
+                    assistant_text: turn.assistant_text,
+                    tool_events: turn
+                        .tool_events
+                        .into_iter()
+                        .map(|event| AgenticToolEvent {
+                            name: event.name,
+                            failed: event.failed,
+                        })
+                        .collect(),
+                    usage: turn.usage.map(|usage| AgenticUsageReport {
+                        input_tokens: usage.input_tokens,
+                        output_tokens: usage.output_tokens,
+                        cache_hit_tokens: usage.cache_hit_tokens,
+                        cache_miss_tokens: usage.cache_miss_tokens,
+                        cache_write_tokens: usage.cache_write_tokens,
+                        reasoning_tokens: usage.reasoning_tokens,
+                        context_window: usage.context_window,
+                    }),
+                    error: turn.error,
                 }),
-                error: turn.error,
-            })
+            )
         }
         TurnOutcome::AbandonedAfterCancel => {
             // The turn never settled after cancel; salvage whatever the
             // transcript already holds so the report keeps partial
             // observability instead of dropping every tool event.
             let (assistant_text, tool_events) = partial_turn_analysis(runtime, &handle);
-            Ok(AgenticTaskReport {
-                session_id: session_id.to_owned(),
-                status: "timeout".to_string(),
-                timed_out: true,
-                completed_after_deadline: false,
-                assistant_text,
-                tool_events,
-                usage: None,
-                error: Some("agent turn did not settle after cancel".to_string()),
-            })
+            (
+                true,
+                Ok(AgenticTaskReport {
+                    session_id: session_id.to_owned(),
+                    status: "timeout".to_string(),
+                    timed_out: true,
+                    completed_after_deadline: false,
+                    assistant_text,
+                    tool_events,
+                    usage: None,
+                    error: Some("agent turn did not settle after cancel".to_string()),
+                }),
+            )
         }
         TurnOutcome::WaitFailed(timed_out, error) => {
             // When the deadline had already fired, the task genuinely
@@ -653,20 +732,23 @@ async fn run_turn(
             } else {
                 format!("failed to read turn result: {error:#}")
             };
-            Ok(AgenticTaskReport {
-                session_id: session_id.to_owned(),
-                status: if timed_out {
-                    "timeout".to_string()
-                } else {
-                    "error".to_string()
-                },
-                timed_out,
-                completed_after_deadline: false,
-                assistant_text,
-                tool_events,
-                usage: None,
-                error: Some(error),
-            })
+            (
+                true,
+                Ok(AgenticTaskReport {
+                    session_id: session_id.to_owned(),
+                    status: if timed_out {
+                        "timeout".to_string()
+                    } else {
+                        "error".to_string()
+                    },
+                    timed_out,
+                    completed_after_deadline: false,
+                    assistant_text,
+                    tool_events,
+                    usage: None,
+                    error: Some(error),
+                }),
+            )
         }
     }
 }
