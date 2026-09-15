@@ -257,13 +257,17 @@ impl Store {
                 Ok(c) => {
                     // Two-process open (desktop app + headless CLI): this
                     // probe read can land inside the other process's write
-                    // lock. Without a busy timeout it fails immediately with
-                    // BUSY and the `unwrap_or(0)` below would misread a live
-                    // store as version 0 (stale/corrupt) and delete it.
-                    let _ = c.busy_timeout(std::time::Duration::from_millis(5_000));
-                    c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
-                        .unwrap_or(0)
+                    // lock. The busy timeout rides out the common BUSY case;
+                    // any remaining probe failure is propagated because a
+                    // default of version 0 on an EXISTING store would send
+                    // it to the stale-rebuild path below, which deletes it.
+                    c.busy_timeout(std::time::Duration::from_millis(5_000))?;
+                    c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?
                 }
+                // A missing store is the fresh-install path (the schema is
+                // created below); an unreadable existing one surfaces here
+                // instead of being misread as version 0.
+                Err(error) if existed => return Err(error),
                 Err(_) => 0,
             }
         }; // 连接在此 drop，才能删文件
