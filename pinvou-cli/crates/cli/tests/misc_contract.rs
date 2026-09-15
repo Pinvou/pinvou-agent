@@ -593,7 +593,10 @@ fn voice_postprocess_calls_the_active_model() {
     .unwrap();
     let outcome = execute(parsed).expect("postprocess must succeed with a configured model");
     assert_eq!(outcome.exit_code, ExitCode::Success);
-    assert!(outcome.stdout.contains("Source: llm"), "{}", outcome.stdout);
+    assert!(
+        outcome.stdout.contains("Source: llm"),
+        "postprocess output missing the llm source line"
+    );
 }
 
 /// OPT-IN: boots the windowless host (display required), like the test above.
@@ -1100,8 +1103,7 @@ fn monitor_status_reports_clean_zero_state_without_a_model() {
     assert_eq!(outcome.exit_code, ExitCode::Success);
     assert!(
         outcome.stdout.contains("Online: false"),
-        "{}",
-        outcome.stdout
+        "monitor status output missing the offline line"
     );
     // The zero state carries the same key set as the model-present branch,
     // with null values where there is no snapshot, so scripts parse one
