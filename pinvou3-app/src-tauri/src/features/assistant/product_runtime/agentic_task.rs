@@ -39,7 +39,9 @@ use crate::features::assistant::product_runtime::{
     EnginePoolRuntime, ProductChatRuntime, SessionSpec, TurnHandle, TurnInput, TurnResult,
 };
 use crate::features::files::file_ingest::IngestResult;
-use crate::features::sessions::{ExecutionRootResolver, SessionKind, SessionStore};
+use crate::features::sessions::{
+    ExecutionRootResolver, MAX_SESSIONS_PER_KIND, SessionKind, SessionStore,
+};
 use crate::platform::prefs::UserPrefs;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
@@ -235,6 +237,12 @@ pub fn run_agentic_task_headless(request: AgenticTaskRequest) -> Result<AgenticT
 /// (request validation, model pin, session prepare, submit) propagate as `Err`
 /// instead — the CLI surfaces those as exit 1 without a report.
 ///
+/// Persisting counts against the shared 50-session retention cap: when the
+/// store was already at the cap before a fresh run, the prepare-time save
+/// evicts the oldest GUI chat sessions (pinned included) and a stderr warning
+/// says so, so a batch harness pointed at the desktop's default `PINVOU3_HOME`
+/// is not silent about the data loss.
+///
 /// The execution root resolver must be registered before the pool enters an
 /// `Arc` (the bridge setter needs `&mut self`), which is why this function
 /// takes `EnginePool` by value.
@@ -277,6 +285,15 @@ pub async fn run_agentic_task(
     store.set_execution_root_resolver(resolver);
     let runtime = EnginePoolRuntime::new(Arc::new(pool));
 
+    // Pre-run retention sampling: the prepare-time save inside the turn lands
+    // in the same 50-session store the GUI reads, and a fresh save at the cap
+    // evicts the oldest chat session(s) — pinned ones included. Retention
+    // trims to exactly the cap, so a pre-run count at/above the cap is what
+    // makes THIS run evict (a post-run count would also fire when 49 grew to
+    // 50 with nothing evicted). A caller-provided session only rewrites an
+    // existing record, so it never creates a slot and cannot evict.
+    let evicts_chat_sessions =
+        !existing_session && store.retained_chat_session_count() >= MAX_SESSIONS_PER_KIND;
     let outcome = run_turn(
         &runtime,
         &store,
@@ -309,6 +326,20 @@ pub async fn run_agentic_task(
     } else {
         runtime.schedule_eval_cleanup(&session_id);
         let _ = runtime.close_eval_session_result(&session_id).await;
+    }
+    // The prepare-time save happened before any setup fault could surface, so
+    // the eviction is real even when the report carries an error or the run
+    // cleaned its own session up afterwards — warn on every completed run,
+    // not just the keep-session path.
+    if evicts_chat_sessions && outcome.is_ok() {
+        eprintln!(
+            "[pinvou agent run] warning: the session store was already at the \
+             {MAX_SESSIONS_PER_KIND}-session retention cap before this run; persisting \
+             this run's session evicted the oldest chat session(s), pinned ones \
+             included. Point PINVOU3_HOME at a sandbox or prune the session store \
+             (PINVOU3_AGENT_TASK_KEEP_SESSION=0 only removes this run's session \
+             afterwards; the save-time eviction still happens)."
+        );
     }
     outcome
 }
@@ -785,7 +816,9 @@ mod tests {
         MAX_TIMEOUT_SECS, ensure_existing_chat_session, ensure_model_exists, keep_session_from_env,
         validate_attachments,
     };
-    use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
+    use crate::features::sessions::{
+        MAX_SESSIONS_PER_KIND, ScheduledRunMode, ScheduledRunProfile, SessionStore,
+    };
     use crate::platform::paths::tests::ENV_LOCK;
     use std::ffi::OsString;
     use std::path::PathBuf;
@@ -1059,6 +1092,54 @@ mod tests {
         );
         let error = ensure_existing_chat_session(&store, &chat.metadata.id).unwrap_err();
         assert!(error.to_string().contains("agent_session_not_chat"));
+        // `_env` restores the captured PINVOU3_HOME on return or panic.
+    }
+
+    /// The retention-warning gate counts exactly what the sweep trims: at the
+    /// cap a fresh save evicts the oldest record, below it nothing does, and
+    /// `sched-` records never enter the count on either side.
+    #[test]
+    fn fresh_save_at_retention_cap_is_what_evicts() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-agentic-retention-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        // SAFETY: ENV_LOCK held; env writes are serialized across tests.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
+        assert_eq!(store.retained_chat_session_count(), 0);
+
+        let mut ids = Vec::new();
+        for _ in 0..MAX_SESSIONS_PER_KIND {
+            let session = store
+                .create_new("test-model".to_string(), None, tmp.clone())
+                .unwrap();
+            ids.push(session.metadata.id);
+        }
+        // At the cap: the pre-run state in which this run's fresh save evicts,
+        // so the warning gate must be armed.
+        assert_eq!(store.retained_chat_session_count(), MAX_SESSIONS_PER_KIND);
+        let oldest = ids[0].clone();
+        store
+            .create_new("test-model".to_string(), None, tmp.clone())
+            .unwrap();
+        // The sweep trimmed back to the cap by deleting the oldest record.
+        assert_eq!(store.retained_chat_session_count(), MAX_SESSIONS_PER_KIND);
+        assert!(
+            store.load(&oldest).is_err(),
+            "oldest session must be evicted by the save at the cap"
+        );
+
+        // Below the cap nothing evicts and the gate stays disarmed.
+        store.delete(&ids[MAX_SESSIONS_PER_KIND - 1]).unwrap();
+        assert_eq!(
+            store.retained_chat_session_count(),
+            MAX_SESSIONS_PER_KIND - 1
+        );
         // `_env` restores the captured PINVOU3_HOME on return or panic.
     }
 
