@@ -6,12 +6,23 @@
 // held in place instead of escaping past the aria-modal backdrop. Owns the
 // keydown listener; Escape tiering and initial focus/restore stay with the
 // consumer (see useDialogFocusRestore for the dismiss recipe).
+//
+// The listener sits on window in the bubble phase and deliberately does not
+// short-circuit on defaultPrevented: dialogs that consume Tab themselves
+// (none today) would then double-handle. Mounted traps register on a module
+// stack and only the topmost one acts, so two stacked modals cannot ping-pong
+// focus across each other.
 import { useEffect } from 'react';
 import { isImeComposing } from '../shared/ime-guard.mjs';
 
+const trapStack = [];
+
 export function useDialogFocusTrap(dialogRef) {
   useEffect(() => {
+    const entry = { dialogRef };
+    trapStack.push(entry);
     const onKeyDown = (e) => {
+      if (trapStack[trapStack.length - 1] !== entry) return;
       if (e.key !== 'Tab' || isImeComposing(e) || !dialogRef.current) return;
       // 提交中的 busy 态会把所有可聚焦元素禁用:此时必须按住焦点,不能
       // 让 Tab 走到 aria-modal 背板后的页面里。
@@ -31,6 +42,10 @@ export function useDialogFocusTrap(dialogRef) {
       }
     };
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    return () => {
+      const at = trapStack.indexOf(entry);
+      if (at >= 0) trapStack.splice(at, 1);
+      window.removeEventListener('keydown', onKeyDown);
+    };
   }, [dialogRef]);
 }
