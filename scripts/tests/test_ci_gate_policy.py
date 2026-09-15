@@ -881,7 +881,65 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("wrapper: ${{ steps.filter.outputs.wrapper }}", changes)
         self.assertIn("needs: changes", smoke)
         self.assertIn("if: ${{ needs.changes.outputs.wrapper == 'true' }}", smoke)
-        self.assertIn("os: [macos-15, ubuntu-latest, windows-latest]", smoke)
+        self.assertIn("os: [macos-15, ubuntu-22.04, windows-latest]", smoke)
+
+
+
+
+class ReleaseDiskAndImagePolicyTests(unittest.TestCase):
+    """发布构建磁盘准备与单一镜像公约守卫(2026-09-16 自主仓 #1112 回移)。"""
+
+    def setUp(self):
+        self.release_workflow = (ROOT / ".github/workflows/release-packages.yml").read_text(
+            encoding="utf-8"
+        )
+
+    def test_release_linux_build_jobs_prepare_disk_and_prune_apt(self):
+        # 发布构建 job(单盘 hosted runner,x64 镜像开机仅 ~13-14G 可用)必须在
+        # 工具链/缓存/依赖落盘之前清理未使用预装 SDK,并在装系统依赖后
+        # autoremove + clean;否则冷编译曾把盘写满(ENOSPC,2026-09-13 起)。
+        blocks = re.split(
+            r"\n  (?=[A-Za-z0-9_-]+:\s*$)", self.release_workflow, flags=re.MULTILINE
+        )
+        for job_id in ("build-linux-x64", "build-linux-arm64"):
+            job = next(
+                (b for b in blocks if b.strip().startswith(f"{job_id}:")), None
+            )
+            self.assertIsNotNone(job, f"release job '{job_id}' not found")
+            self.assertIn("python3 scripts/ci-rust-disk.py", job)
+            self.assertIn("--min-free-gib 24", job)
+            # 磁盘准备必须发生在 setup-node 之前(aggressive 档会删
+            # /opt/hostedtoolcache,删后 setup-node 会重新下载 Node)。
+            self.assertLess(
+                job.index("python3 scripts/ci-rust-disk.py"),
+                job.index("uses: actions/setup-node"),
+            )
+            self.assertIn("sudo apt-get autoremove -y --purge", job)
+            self.assertIn("sudo apt-get clean", job)
+        x64 = next(b for b in blocks if b.strip().startswith("build-linux-x64:"))
+        arm64 = next(b for b in blocks if b.strip().startswith("build-linux-arm64:"))
+        self.assertIn("--aggressive", x64)
+        self.assertNotIn("--aggressive", arm64)
+
+    def test_all_linux_jobs_pin_the_release_runner_image(self):
+        # 镜像版本绝不漂移(单一镜像公约):全部 workflow 的 Linux runner 必须
+        # 与 release 构建同基线(ubuntu-22.04 / ubuntu-22.04-arm)。发布二进制
+        # 链接构建机的 glibc,测试/校验必须跑在发布同款系统上;镜像升级必须
+        # 全仓一次性协调进行,禁止 ubuntu-latest 等滚动镜像或个别 job 单独换版。
+        allowed = {"ubuntu-22.04", "ubuntu-22.04-arm"}
+        for workflow in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            text = workflow.read_text(encoding="utf-8")
+            self.assertNotIn(
+                "ubuntu-latest",
+                text,
+                f"{workflow.name}: ubuntu-latest 是滚动镜像,违反单一镜像公约",
+            )
+            for image in sorted(set(re.findall(r"ubuntu-\d+\.\d+(?:-arm)?", text))):
+                self.assertIn(
+                    image,
+                    allowed,
+                    f"{workflow.name}: Linux 镜像 '{image}' 偏离发布基线",
+                )
 
 
 if __name__ == "__main__":

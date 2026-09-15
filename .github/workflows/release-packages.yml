@@ -44,7 +44,7 @@ jobs:
   # 只有 VERSION push 或人工触发能进入本工作流，因此通过版本一致性检查后直接放行。
   check-version-bump:
     name: 校验发布版本
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 10
     outputs:
       build_required: ${{ steps.release.outputs.build_required }}
@@ -56,7 +56,8 @@ jobs:
           fetch-depth: 0
 
       - name: Set up zram and swap
-        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+        # 尽力而为:超时/失败只告警不阻断(回退 runner 默认内存)。
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup 未完成,继续使用 runner 默认内存"
 
       - name: Node.js
         uses: actions/setup-node@v7
@@ -112,8 +113,17 @@ jobs:
           submodules: recursive
 
       - name: Set up zram and swap
-        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+        # 尽力而为:超时/失败只告警不阻断(回退 runner 默认内存)。
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup 未完成,继续使用 runner 默认内存"
 
+      # hosted runner 是单盘布局(/ 与 /mnt 同一 ext4,x64 镜像开机仅 ~13-14G
+      # 可用);发布冷编译(700+ crate,dep-level O2)曾把盘写满(ENOSPC)。在任何
+      # 工具链/缓存/依赖落盘之前删掉未使用的预装 SDK。
+      - name: 为发布构建准备磁盘空间
+        run: |
+          sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            python3 scripts/ci-rust-disk.py --aggressive --min-free-gib 24
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -138,12 +148,19 @@ jobs:
       - name: 装 Tauri + pinvou3 Linux 系统依赖
         run: |
           sudo apt-get update
+          # 清单经 2026-09-15 逐包冗余审计(剔除单包模拟安装,安装集合不变
+          # 即可移除):gtk/soup/x11 三件套由 libwebkit2gtk-4.1-dev 传递安装,
+          # librsvg2-dev 构建不需要(Cargo 无 rsvg crate)。libssl-dev 保留:
+          # hf-hub→native-tls→openssl-sys 非 vendored;appindicator 托盘在用。
           sudo apt-get install -y --no-install-recommends \
-            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
-            librsvg2-dev libssl-dev \
-            libx11-dev libxi-dev libxtst-dev \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
             libayatana-appindicator3-dev \
             build-essential pkg-config cmake lld
+          # 从源头减负:孤儿依赖、apt 缓存包与索引清单不留在构建盘上。
+          sudo apt-get autoremove -y --purge
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
 
       - name: Node.js
         uses: actions/setup-node@v7
@@ -236,8 +253,16 @@ jobs:
           submodules: recursive
 
       - name: Set up zram and swap
-        run: sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh"
+        # 尽力而为:超时/失败只告警不阻断(回退 runner 默认内存)。
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup 未完成,继续使用 runner 默认内存"
 
+      # ARM64 镜像轻量(开机 ~38G 可用)且 setup-node 依赖 hostedtoolcache,
+      # 只删 base 档 SDK,不动 /opt。
+      - name: 为发布构建准备磁盘空间
+        run: |
+          sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            python3 scripts/ci-rust-disk.py --min-free-gib 24
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -256,12 +281,19 @@ jobs:
       - name: 装 Tauri + pinvou3 Linux 系统依赖
         run: |
           sudo apt-get update
+          # 清单经 2026-09-15 逐包冗余审计(剔除单包模拟安装,安装集合不变
+          # 即可移除):gtk/soup/x11 三件套由 libwebkit2gtk-4.1-dev 传递安装,
+          # librsvg2-dev 构建不需要(Cargo 无 rsvg crate)。libssl-dev 保留:
+          # hf-hub→native-tls→openssl-sys 非 vendored;appindicator 托盘在用。
           sudo apt-get install -y --no-install-recommends \
-            libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
-            librsvg2-dev libssl-dev \
-            libx11-dev libxi-dev libxtst-dev \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
             libayatana-appindicator3-dev \
             build-essential pkg-config cmake lld
+          # 从源头减负:孤儿依赖、apt 缓存包与索引清单不留在构建盘上。
+          sudo apt-get autoremove -y --purge
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
 
       - name: Node.js
         uses: actions/setup-node@v7
