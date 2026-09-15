@@ -22,14 +22,17 @@ export const LEDGER_POLL_IDLE_MS = 15000;
  * cancelling the pending tick. Callers use it when a real-time hint suggests
  * the ledger moved (e.g. a revival event the terminal ratchet rejected): an
  * authoritative read beats waiting for the next heartbeat. A kick during an
- * in-flight read is a no-op — that read's delivery already serves as the
- * fresh snapshot.
+ * in-flight read queues exactly one re-read right after it: the in-flight
+ * read was issued before the kick, so its snapshot may predate the very
+ * change the kick is about — dropping the request could delay the correction
+ * to the next heartbeat.
  */
 export function useSubagentLedgerPoll({ enabled, sessionId, hasActive, readLedger, onSummaries, kickRef }) {
   useEffect(() => {
     if (!enabled || !sessionId) return;
     let stopped = false;
     let inFlight = false;
+    let kickQueued = false;
     let timer = null;
     const poll = async () => {
       if (inFlight) return;
@@ -44,12 +47,23 @@ export function useSubagentLedgerPoll({ enabled, sessionId, hasActive, readLedge
       } finally {
         inFlight = false;
       }
+      if (kickQueued && !stopped) {
+        // Deliver the queued kick: re-read immediately instead of waiting a
+        // full cadence for a snapshot this already-finished read may predate.
+        kickQueued = false;
+        void poll();
+        return;
+      }
       if (!stopped) timer = setTimeout(poll, hasActive ? LEDGER_POLL_ACTIVE_MS : LEDGER_POLL_IDLE_MS);
     };
     timer = setTimeout(poll, 0);
     if (kickRef) {
       kickRef.current = () => {
-        if (stopped || inFlight) return;
+        if (stopped) return;
+        if (inFlight) {
+          kickQueued = true;
+          return;
+        }
         if (timer != null) {
           clearTimeout(timer);
           timer = null;

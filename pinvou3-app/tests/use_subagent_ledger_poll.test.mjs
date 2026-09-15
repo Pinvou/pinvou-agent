@@ -100,6 +100,10 @@ test('idle heartbeat discovers a later ledger child with no real-time event', as
   try {
     const { useSubagentLedgerPoll, LEDGER_POLL_ACTIVE_MS, LEDGER_POLL_IDLE_MS } =
       await import(pathToFileURL(hookTmp).href);
+    // The active cadence is the documented 3s half of the 3s/15s contract;
+    // pin the number itself (the idle half is pinned via LEDGER_POLL_IDLE_MS
+    // assertions below).
+    assert.equal(LEDGER_POLL_ACTIVE_MS, 3000, 'the active cadence must stay 3s');
 
     let ledger = [];
     let received = [];
@@ -186,8 +190,9 @@ test('kickRef triggers an immediate read and is in-flight safe', async () => {
     assert.equal(reads, 2, 'the kick read ran');
     assert.deepEqual(timers.delays(), [15000], 'the loop re-arms after the kick read');
 
-    // Kick while a read is in flight is a no-op: the in-flight delivery is
-    // already the fresh snapshot, and no second loop may be started.
+    // Kick while a read is in flight queues exactly one re-read: the in-flight
+    // read was issued before the kick, so its snapshot may predate the change
+    // the kick is about — but no second loop may be started.
     let resolveRead;
     let inFlightReads = 0;
     const blockingRead = () => {
@@ -204,10 +209,14 @@ test('kickRef triggers an immediate read and is in-flight safe', async () => {
     assert.equal(inFlightReads, 1, 'the new generation started one read');
     kickRef.current();
     await flushQueue();
-    assert.equal(inFlightReads, 1, 'a kick during an in-flight read starts no second read');
+    assert.equal(inFlightReads, 1, 'a kick during an in-flight read starts no second read yet');
     resolveRead([]);
     await flushQueue();
-    assert.deepEqual(timers.delays(), [15000], 'the in-flight read re-arms the loop once');
+    assert.equal(inFlightReads, 2, 'the queued kick re-reads right after the in-flight read settles');
+    resolveRead([]);
+    await flushQueue();
+    assert.equal(inFlightReads, 2, 'the queued kick is consumed exactly once');
+    assert.deepEqual(timers.delays(), [15000], 'the loop re-arms once after the kick chain settles');
 
     // Unmount clears the kick.
     runtime.reset();
