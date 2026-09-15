@@ -7,6 +7,7 @@ import { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Edit2, FolderPlus, MoreHorizontal, Trash2, X } from '../../components/icons.jsx';
 import { usePortalMenu } from '../../hooks/usePortalMenu.js';
+import { capUnavailableRootsForDisplay } from './projectGrouping.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 
 const PROJECT_DROP_TYPE = 'application/x-pinvou-session';
@@ -25,6 +26,10 @@ const ProjectGroupHeader = ({
   onRename,
   onDelete,
   onDropSession,
+  onRebind,
+  // 每个失效 root 一个徽标入口(逐根重绑定):部分失效的项目也有修复路径,
+  // 且一根重绑后其余失效根的入口不会消失。
+  unavailableRoots,
   // Highlight ownership lives in the sidebar container (one drop target lit at
   // a time) so the source row's dragend can clear it unconditionally even when
   // a webview skips dragleave/drop.
@@ -35,6 +40,9 @@ const ProjectGroupHeader = ({
 }) => {
   const [editing, setEditing] = useState(null);
   const [confirming, setConfirming] = useState(false);
+  // 多个失效 root 时折叠为"首徽标 + N":28px 头部行放不下多个 shrink-0
+  // 徽标(评审 #463 m3),展开后平铺并允许换行。
+  const [showAllUnavailableRoots, setShowAllUnavailableRoots] = useState(false);
   // 菜单按实际可用的动作渲染:web 没有 projects 后端,onConvert 等为
   // undefined,此时整个组不渲染「更多」按钮,避免点开一个空菜单。
   const hasMenu = (kind === 'folder' && !!onConvert)
@@ -182,11 +190,14 @@ const ProjectGroupHeader = ({
   // another ARIA button. Project headers double as HTML5 drop targets for the
   // sidebar session drag; role="presentation" declares the div
   // non-interactive to the a11y tree while it carries the drag handlers.
+  const unavailableRootList = kind === 'project' ? unavailableRoots || [] : [];
+  const { visibleRoots, hiddenCount } = capUnavailableRootsForDisplay(unavailableRootList, showAllUnavailableRoots);
+  const wrapUnavailable = visibleRoots.length > 1;
   return (
     <div
       role="presentation"
       {...dropHandlers}
-      className={`group/header w-full h-7 flex items-center rounded-full text-[12px] transition-colors ${dropActive
+      className={`group/header ${wrapUnavailable ? 'w-full min-h-7 h-auto flex-wrap' : 'w-full h-7'} flex items-center rounded-full text-[12px] transition-colors ${dropActive
         ? 'ring-1 ring-[#0B57D0] bg-[#E8F0FE] dark:ring-[#A8C7FA] dark:bg-[#1F2A3D]'
         : theme === 'dark' ? 'text-[#9AA0A6] hover:bg-[#282A2C]' : 'text-[#8A8F94] hover:bg-[#E1E5EA]'}`}
       data-drop-target={onDropSession ? 'project' : undefined}
@@ -202,6 +213,40 @@ const ProjectGroupHeader = ({
         {headerExtra}
         <ChevronDown size={14} className={`shrink-0 transition-transform ${isOpen ? '' : '-rotate-90'}`} />
       </button>
+      {/* 失效 root 逐根徽标 + 一键重绑定。不自动删项目——归属与历史仍在,
+          目录接骨是唯一修复路径。徽标是切换按钮的真实兄弟 <button>(不再
+          嵌在 <button> 内部),每根一个,重绑一根其余入口保留;多根时折叠
+          进 +N 展开(m3),展开态容器换行不再溢出。 */}
+      {visibleRoots.map((rootPath) => (
+        <button
+          key={rootPath}
+          type="button"
+          data-testid="project-folder-unavailable"
+          title={rootPath}
+          aria-label={`${t.uiProjects.folderUnavailable} · ${rootPath}`}
+          disabled={busy}
+          onClick={(e) => { e.stopPropagation(); onRebind && onRebind(rootPath); }}
+          className="mr-2 shrink-0 max-w-[9rem] truncate rounded-full bg-[#FCE8E6] dark:bg-[#3C2A29] px-2 py-0.5 text-[11px] text-[#C5221F] dark:text-[#F28B82] hover:opacity-80 disabled:opacity-50"
+        >
+          {t.uiProjects.folderUnavailable} · {t.uiProjects.rebindFolder}
+        </button>
+      ))}
+      {/* 多根折叠切换(m3/Nit 13):收起态显示 +N 并可展开;展开态容器换行,
+          同一按钮收起。展开/收起都有 aria-label,各徽标以路径区分可访问名。 */}
+      {unavailableRootList.length > 1 && (
+        <button
+          type="button"
+          data-testid="project-folder-unavailable-more"
+          aria-label={showAllUnavailableRoots ? t.uiProjects.rebindRootsCollapse : t.uiProjects.rebindRootsExpand}
+          title={showAllUnavailableRoots ? t.uiProjects.rebindRootsCollapse : unavailableRootList.slice(1).join('\n')}
+          disabled={busy}
+          onClick={(e) => { e.stopPropagation(); setShowAllUnavailableRoots(v => !v); }}
+          className="mr-2 shrink-0 flex items-center gap-0.5 rounded-full bg-[#FCE8E6] dark:bg-[#3C2A29] px-2 py-0.5 text-[11px] font-medium text-[#C5221F] dark:text-[#F28B82] hover:opacity-80 disabled:opacity-50"
+        >
+          {!showAllUnavailableRoots && <span>+{hiddenCount}</span>}
+          <ChevronDown size={11} className={`shrink-0 transition-transform ${showAllUnavailableRoots ? '' : '-rotate-90'}`} />
+        </button>
+      )}
       {hasMenu && (
         // max-sm keeps the actions reachable without hover (touch, narrow
         // windows) — same contract as RecentItem's action cluster.

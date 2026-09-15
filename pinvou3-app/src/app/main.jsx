@@ -24,6 +24,7 @@ import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared
 import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfirm } from '../features/projects/projectGrouping.js';
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
 import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
+import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
@@ -1694,6 +1695,7 @@ const NAV_PREFETCH = {
       const [projectOpsBusy, setProjectOpsBusy] = useState(false);
       const [moveToProjectSession, setMoveToProjectSession] = useState(null);
       const [moveToPresetProject, setMoveToPresetProject] = useState(null);
+      const [rebindDraft, setRebindDraft] = useState(null);
       // 拖拽高亮的唯一所有者:源行 dragend 无条件清除,webview 丢 dragleave
       // 事件时高亮也不会卡死(评审 #450 finding 5)。
       const [dropTargetGroupKey, setDropTargetGroupKey] = useState(null);
@@ -2537,6 +2539,88 @@ const NAV_PREFETCH = {
         // 内部同样有 busy 守卫),不额外打断。
         handleMoveSessionToProject(sessionId, projectId, false);
       };
+      // 目录重绑定(修断链):失效 root 的项目头上点"重新绑定" → 系统选目录
+      // → 确认弹窗。两阶段确认:首调不带 confirmExisting,后端发现旧目录
+      // 仍在时拒绝,弹窗升级为强警告后由用户再次确认。
+      const startRebindWorkspace = async (fromPath) => {
+        // rebindDraft 已开时不再重复开:焦点留在徽标上时按 Enter 会重复触发
+        // onRebind(评审 #463 minor),projectOpsBusy 守卫管不到这个窗口。
+        if (!bridge.files || !bridge.files.pickRebindFolder || projectOpsBusy || rebindDraft) return;
+        try {
+          // 单目录、标题贴合重绑定语义(评审 #463 Minor 6):不再借用 KB 的
+          // 多选导入选择器。
+          const to = await bridge.files.pickRebindFolder();
+          if (!to) return;
+          // 不带会话数:命令实际重绑定 from 之下的一切会话,侧栏组渲染数
+          // 只是子集,数字承诺会与 RebindWorkspaceReport 对不上(finding 10)。
+          setRebindDraft({ from: fromPath, to, warnExisting: false });
+        } catch (error) {
+          console.warn('pick rebind folder failed', error);
+        }
+      };
+      const confirmRebindWorkspace = async (confirmExisting) => {
+        if (!bridge.projects || !rebindDraft || projectOpsBusy) return;
+        setProjectOpsBusy(true);
+        // 清掉上一次失败的内联错误/忙碌提示,避免与本次结果叠显。
+        setRebindDraft(prev => prev && { ...prev, error: null, busySessionIds: null });
+        try {
+          const report = await bridge.projects.rebindWorkspaceRoot(
+            rebindDraft.from, rebindDraft.to, confirmExisting);
+          const rebound = (report && report.rebound_session_ids) ? report.rebound_session_ids.length : 0;
+          const failed = (report && report.failed_session_ids) ? report.failed_session_ids.length : 0;
+          const postBusy = (report && report.post_busy_session_ids) ? report.post_busy_session_ids.length : 0;
+          // 部分失败不再吞掉(finding 3),也不再关窗:root 已平移,loadProjects
+          // 刷新后失效徽标(唯一重绑入口)随之消失,toast 承诺的"重试剩余"
+          // 就不可达(评审 #463 M1)。窗内转入部分报告态,展示失败会话并给出
+          // 重试;后端按同 from/to 重跑即收敛(快照含未同步会话,已成功项为
+          // 空操作),成功路径照旧关窗 + toast。
+          if (failed > 0) {
+            setRebindDraft(prev => prev && {
+              ...prev,
+              partial: {
+                rebound,
+                failed,
+                failedIds: (report && report.failed_session_ids) || [],
+                postBusy,
+              },
+            });
+          } else {
+            setRebindDraft(null);
+            if (postBusy > 0) {
+              setSettingsToast(t.uiProjects.rebindBusyAfter(postBusy));
+            } else {
+              setSettingsToast(t.uiProjects.rebindSuccess(rebound));
+            }
+          }
+          await refreshCodexSessions().catch((error) => {
+            // 失败不吞:会话列表靠 session:list_changed 事件自愈,但显式
+            // 失败的静默间隙要对排查可见(评审 #463 minor)。
+            console.warn('refresh sessions after rebind failed', error);
+          });
+        } catch (error) {
+          const message = String(error);
+          // 类型化标记匹配(finding 11 / Minor 7):只认稳定前缀,不匹配人类文案。
+          if (message.startsWith('REBIND_OLD_ROOT_EXISTS')) {
+            setRebindDraft(prev => prev && { ...prev, warnExisting: true, error: null });
+          } else if (message.startsWith('REBIND_SESSIONS_BUSY')) {
+            // busy 拒绝是栅栏正常工作的高频路径(Minor 7):映射 i18n 文案,
+            // 标记后只跟会话 id,原样展示供排查。
+            const busyIds = message.slice('REBIND_SESSIONS_BUSY:'.length).trim();
+            setRebindDraft(prev => prev && {
+              ...prev,
+              busySessionIds: busyIds ? busyIds.split(/,\s*/) : [],
+              error: null,
+            });
+          } else {
+            console.warn('rebind workspace failed', error);
+            // 失败保持对话框打开并内联呈现错误(评审 #463 M7):就地展示
+            // 持久、紧邻重试;后端错误原文(非 UI copy)不经 i18n 键。
+            setRebindDraft(prev => prev && { ...prev, error: message });
+          }
+        } finally {
+          setProjectOpsBusy(false);
+        }
+      };
 
       function sessionRowsForIds(ids) {
         const byId = new Map(allSidebarTasks.map(item => [item.id, item]));
@@ -3018,6 +3102,21 @@ const NAV_PREFETCH = {
             document.body
           )}
 
+          {rebindDraft && (
+            <RebindFolderDialog
+              from={rebindDraft.from}
+              to={rebindDraft.to}
+              warnExisting={rebindDraft.warnExisting}
+              errorMessage={rebindDraft.error}
+              partial={rebindDraft.partial || null}
+              busySessionIds={rebindDraft.busySessionIds || null}
+              t={t}
+              busy={projectOpsBusy}
+              onCancel={() => setRebindDraft(null)}
+              onConfirm={confirmRebindWorkspace}
+            />
+          )}
+
           {moveToProjectSession && (
             <MoveToProjectDialog
               session={moveToProjectSession}
@@ -3415,6 +3514,12 @@ const NAV_PREFETCH = {
                                   onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
                                   onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
                                   onDropSession={bridge.projects && group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
+                                  unavailableRoots={group.kind === 'project'
+                                    ? (group.roots || [])
+                                        .filter(root => !(root && typeof root === 'object' ? root.available : root))
+                                        .map(root => String(typeof root === 'object' ? root.path : root))
+                                    : []}
+                                  onRebind={bridge.projects && group.kind === 'project' ? (rootPath) => startRebindWorkspace(rootPath) : undefined}
                                   dropActive={dropTargetGroupKey === group.key}
                                   onDropActive={(active) => setDropTargetGroupKey(active ? group.key : null)}
                                 />

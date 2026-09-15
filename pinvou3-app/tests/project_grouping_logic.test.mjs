@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   TEMPORARY_GROUP_KEY,
+  capUnavailableRootsForDisplay,
   groupSessionsWithProjects,
   needsAddFolderConfirm,
   projectCoversPath,
@@ -350,4 +351,17 @@ test("needsAddFolderConfirm is the shared drop/pick decision", () => {
   );
   assert.equal(needsAddFolderConfirm(null, target), false, "missing session is a no-op");
   assert.equal(needsAddFolderConfirm(projectItem("a1", "x", "x"), null), false, "missing target is a no-op");
+});
+
+test("capUnavailableRootsForDisplay keeps one badge and folds the rest into +N", () => {
+  const roots = ["/a/gone", "/b/gone", "/c/gone"];
+  const collapsed = capUnavailableRootsForDisplay(roots, false);
+  assert.deepEqual(collapsed, { visibleRoots: ["/a/gone"], hiddenCount: 2 });
+  const expanded = capUnavailableRootsForDisplay(roots, true);
+  assert.deepEqual(expanded, { visibleRoots: roots, hiddenCount: 0 });
+  // 单根与空列表:不出现 +N,行为与裁剪前一致。
+  assert.deepEqual(capUnavailableRootsForDisplay(["/a/gone"], false), { visibleRoots: ["/a/gone"], hiddenCount: 0 });
+  assert.deepEqual(capUnavailableRootsForDisplay([], false), { visibleRoots: [], hiddenCount: 0 });
+  // 非数组入参(后端缺席时的 undefined)按空列表处理。
+  assert.deepEqual(capUnavailableRootsForDisplay(undefined, false), { visibleRoots: [], hiddenCount: 0 });
 });

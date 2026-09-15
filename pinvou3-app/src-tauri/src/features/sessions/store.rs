@@ -346,7 +346,10 @@ impl SessionStore {
         (committed, result)
     }
 
-    pub(super) fn durable_session_record_is_absent(&self, id: &str) -> bool {
+    /// 会话 JSON 是否已不在盘上(无效 id 一律按"在场"处理,fail-closed)。
+    /// 除删除路径外,目录重绑定的孤儿分类也用它:只认 NotFound,损坏 JSON
+    /// 不算孤儿(评审 #463:解析失败必须进失败名单可重试,不静默跳过)。
+    pub(crate) fn durable_session_record_is_absent(&self, id: &str) -> bool {
         if validate_session_id(id).is_err() {
             return false;
         }
@@ -489,6 +492,21 @@ impl SessionStore {
             .with_context(|| format!("load_session({id}) for title update"))?;
         session.metadata.title = title;
         self.persist_then_reconcile(&session, "title update")?;
+        Ok(())
+    }
+
+    /// 目录重绑定的元数据写入(与 set_title 同款 load→patch→persist 模式)。
+    /// 只改 SavedSession 元数据的 workspace 字段,不触碰消息/transcript——
+    /// 历史回合里引用的旧路径是事实记录,保持原样。调用方(命令层)负责
+    /// 活跃回合栅栏;此处上锁防与 Engine 写盘竞争。
+    pub fn set_workspace(&self, id: &str, workspace: PathBuf) -> Result<()> {
+        let _mutation = self.scheduled_mutation.lock();
+        let mut session = self
+            .manager
+            .load_session_snapshot(id)
+            .with_context(|| format!("load_session({id}) for workspace rebind"))?;
+        session.metadata.workspace = workspace;
+        self.persist_then_reconcile(&session, "workspace rebind")?;
         Ok(())
     }
 
