@@ -80,27 +80,24 @@ impl Drop for HomeGuard {
 struct VendorCliGuard {
     previous: Option<OsString>,
     empty_bin: PathBuf,
-    /// The extra process-global state `new()` isolates (npm prefixes resolve
-    /// through these); `None` for the PATH-only `new_at` form.
+    /// The extra process-global state both constructor forms isolate (npm
+    /// prefixes resolve through these outside PATH).
     isolated: Option<Vec<(&'static str, Option<OsString>)>>,
     empty_home: Option<PathBuf>,
 }
 
 impl VendorCliGuard {
-    fn new() -> Self {
+    /// Isolation shared by both constructor forms: vendor-CLI resolution
+    /// also consults the npm global prefixes outside PATH (a real
+    /// `~/.npm-global/bin/dws` on the dev machine would defeat a fake
+    /// staged on PATH), so `HOME` is pointed at a throwaway directory and
+    /// the npm prefix envs are cleared. Returns the throwaway home (removed
+    /// on drop) and the state list `Drop` re-applies.
+    fn isolate_home_and_npm_prefixes() -> (PathBuf, Vec<(&'static str, Option<OsString>)>) {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let empty_bin = std::env::temp_dir().join(format!(
-            "pinvou-cli-connectors-empty-path-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&empty_bin).unwrap();
-        // Resolution also consults the npm global prefixes outside PATH: a
-        // real ~/.npm-global/bin/tmeet on the dev machine would defeat the
-        // "not installed" premise, so HOME and the prefix envs are isolated
-        // too.
         let empty_home = std::env::temp_dir().join(format!(
             "pinvou-cli-connectors-empty-home-{}-{nonce}",
             std::process::id()
@@ -119,6 +116,20 @@ impl VendorCliGuard {
                 None => unsafe { std::env::remove_var(key) },
             }
         }
+        (empty_home, isolated)
+    }
+
+    fn new() -> Self {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let empty_bin = std::env::temp_dir().join(format!(
+            "pinvou-cli-connectors-empty-path-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&empty_bin).unwrap();
+        let (empty_home, isolated) = Self::isolate_home_and_npm_prefixes();
         let previous = std::env::var_os("PATH");
         // SAFETY: the caller holds ENV_LOCK for the whole test.
         unsafe { std::env::set_var("PATH", &empty_bin) };
@@ -131,16 +142,20 @@ impl VendorCliGuard {
     }
 
     /// Points `PATH` at a caller-provided directory — the fake-vendor-CLI
-    /// tests stage scripted stand-ins there (unix only).
+    /// tests stage scripted stand-ins there (unix only). Isolates `HOME` and
+    /// the npm prefix envs exactly like `new()`: a dev machine's
+    /// `~/.npm-global/bin/dws` or `$NPM_CONFIG_PREFIX/bin/tmeet` must not
+    /// bypass the staged fake.
     fn new_at(bin: PathBuf) -> Self {
+        let (empty_home, isolated) = Self::isolate_home_and_npm_prefixes();
         let previous = std::env::var_os("PATH");
         // SAFETY: the caller holds ENV_LOCK for the whole test.
         unsafe { std::env::set_var("PATH", &bin) };
         Self {
             previous,
             empty_bin: bin,
-            isolated: None,
-            empty_home: None,
+            isolated: Some(isolated),
+            empty_home: Some(empty_home),
         }
     }
 }
@@ -167,6 +182,37 @@ impl Drop for VendorCliGuard {
             let _ = std::fs::remove_dir_all(&home);
         }
         let _ = std::fs::remove_dir_all(&self.empty_bin);
+    }
+}
+
+/// Sets one environment variable for the duration of the test and restores
+/// the previous value on drop (panic-safe, unlike an inline restore after the
+/// assertions). Must be constructed while ENV_LOCK is held.
+#[cfg(unix)]
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<OsString>,
+}
+
+#[cfg(unix)]
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &std::ffi::OsStr) -> Self {
+        let previous = std::env::var_os(key);
+        // SAFETY: the caller holds ENV_LOCK for the whole test.
+        unsafe { std::env::set_var(key, value) };
+        Self { key, previous }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            // SAFETY: ENV_LOCK is held by the owning test.
+            Some(value) => unsafe { std::env::set_var(self.key, value) },
+            // SAFETY: ENV_LOCK is held by the owning test.
+            None => unsafe { std::env::remove_var(self.key) },
+        }
     }
 }
 
@@ -786,6 +832,140 @@ fn wecom_connect_surfaces_the_qr_file_while_it_exists() {
 
 #[test]
 #[cfg(unix)]
+fn logout_runs_the_real_auth_logout_for_a_below_minimum_tmeet() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("logout-old-tmeet");
+    let bin = std::env::temp_dir().join(format!(
+        "pinvou-cli-connectors-fake-bin-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&bin).unwrap();
+    let args_file = bin.join("seen-args.txt");
+    // tmeet 1.0.10 parses but sits below the 1.0.15 install gate: status /
+    // ensure-cli treat it as upgrade_required, yet the vendor credentials it
+    // holds are real — logout must still run `tmeet auth logout` (GUI
+    // parity: tmeet_logout gates on "the version parses", not on the
+    // minimum). Without that, logout reports success while the credentials
+    // stay on disk.
+    write_fake_cli_logged(
+        &bin,
+        "tmeet",
+        "tmeet version 1.0.10",
+        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"logout\" ]; then echo \"Logged out\"; exit 0; fi\n",
+        Some(&args_file),
+    );
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    let value = run_json(&["pinvou", "connectors", "logout", "tmeet", "--yes"]);
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["id"], "tmeet");
+    assert_eq!(
+        value["installed"], true,
+        "a below-minimum install must not be reported as not-installed"
+    );
+
+    let seen = std::fs::read_to_string(&args_file).unwrap();
+    let arguments: Vec<&str> = seen.lines().collect();
+    assert_eq!(
+        arguments,
+        vec!["--version", "auth", "logout"],
+        "logout must run the real `tmeet auth logout` even below the minimum version"
+    );
+    let _ = std::fs::remove_dir_all(&bin);
+}
+
+#[test]
+#[cfg(unix)]
+fn logout_success_leg_spawns_auth_logout_once_and_flags_the_store_disconnected() {
+    use pinvou3_lib::features::marketplace::store::{BundleRecord, BundleSource, BundleStore};
+
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("logout-success");
+    let bin = std::env::temp_dir().join(format!(
+        "pinvou-cli-connectors-fake-bin-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&bin).unwrap();
+    let args_file = bin.join("seen-args.txt");
+    // Usable-version fakes: `--version` answers through the prelude, the
+    // logout subcommand exits 0 like a real logged-out vendor CLI.
+    write_fake_cli_logged(
+        &bin,
+        "dws",
+        "dws version 1.0.0",
+        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"logout\" ]; then exit 0; fi\n",
+        Some(&args_file),
+    );
+    write_fake_cli_logged(
+        &bin,
+        "tmeet",
+        "tmeet version 1.0.15",
+        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"logout\" ]; then exit 0; fi\n",
+        Some(&args_file),
+    );
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    // Seed connected records first: mark_degraded is a no-op on a missing
+    // record, so only a seeded record proves the logout mirror flipped it.
+    let store = BundleStore::new();
+    for id in ["dingtalk", "tmeet"] {
+        store
+            .upsert(BundleRecord::installed_now(id, BundleSource::Builtin))
+            .expect("seed the bundle store record");
+    }
+
+    for id in ["dingtalk", "tmeet"] {
+        let value = run_json(&["pinvou", "connectors", "logout", id, "--yes"]);
+        assert_eq!(value["ok"], true, "{id}");
+        assert_eq!(value["id"], id, "{id}");
+        assert_eq!(value["installed"], true, "{id}");
+    }
+
+    // Exactly one `--version` probe + one `auth logout [--yes]` spawn per
+    // connector, in call order (dingtalk carries `--yes`, tmeet does not).
+    let seen = std::fs::read_to_string(&args_file).unwrap();
+    let arguments: Vec<&str> = seen.lines().collect();
+    assert_eq!(
+        arguments,
+        vec![
+            "--version",
+            "auth",
+            "logout",
+            "--yes",
+            "--version",
+            "auth",
+            "logout",
+        ],
+        "each success-leg logout must spawn auth logout exactly once"
+    );
+
+    // The store mirror must flip the seeded records to the disconnected
+    // state (degraded set to the shared bundle_store_on_disconnected reason
+    // the GUI renders — the store's "connected=false").
+    for id in ["dingtalk", "tmeet"] {
+        let record = store
+            .get(id)
+            .expect("store read must succeed")
+            .expect("seeded record must be kept");
+        assert_eq!(
+            record.degraded.as_deref(),
+            Some("已断开授权：配套技能已随断开移除，重新连接即可恢复"),
+            "{id}: logout must mark the store record disconnected"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&bin);
+}
+
+#[test]
+#[cfg(unix)]
 fn status_finds_a_gui_installed_npm_prefix_cli() {
     use std::os::unix::fs::PermissionsExt as _;
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -809,8 +989,9 @@ fn status_finds_a_gui_installed_npm_prefix_cli() {
     )
     .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let previous = std::env::var_os("NPM_CONFIG_PREFIX");
-    unsafe { std::env::set_var("NPM_CONFIG_PREFIX", &prefix) };
+    // Panic-safe restore: without the guard a failing assert would leak the
+    // fixture prefix into the remaining tests in this process.
+    let _prefix = EnvVarGuard::set("NPM_CONFIG_PREFIX", prefix.as_os_str());
 
     let outcome = run(&[
         "pinvou",
@@ -829,9 +1010,5 @@ fn status_finds_a_gui_installed_npm_prefix_cli() {
         "a GUI-installed npm-prefix CLI must be visible to the CLI: {status}"
     );
 
-    match previous {
-        Some(value) => unsafe { std::env::set_var("NPM_CONFIG_PREFIX", value) },
-        None => unsafe { std::env::remove_var("NPM_CONFIG_PREFIX") },
-    }
     let _ = std::fs::remove_dir_all(&prefix);
 }
