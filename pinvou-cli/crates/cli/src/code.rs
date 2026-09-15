@@ -13,13 +13,14 @@
 //! - sessions → `SessionStore` + `SessionAgentStore` (`session-agents.json`)
 //!   with the same code-session filter as `list_codex_acp_sessions`, and the
 //!   persisted `acp-timeline.jsonl` behind `AcpPool::timeline`.
-//! - workspace → local mirror of `features::codex_acp::workspace` (kept
-//!   `pub(crate)` at the module level until the CLI adopts the real calls;
-//!   the items and limits are `pub`): list/search/preview/changes/diff/
-//!   branches/checkout with the same limits, path validation, git semantics
-//!   and process-local `CHECKOUT_LOCK`. The limits are differentially pinned
-//!   by `workspace_mirror_limits_match_the_app_module` so a drift breaks the
-//!   build instead of silently diverging.
+//! - workspace → read-only ops (list/search/preview/changes/branches) call
+//!   `features::codex_acp::workspace` directly and serialize its types, so
+//!   CLI output is byte-identical to the GUI's. Two pieces stay local: the
+//!   per-file/whole-workspace diff mirror (bounded untracked reads, English
+//!   copy, whole-workspace composition — differentially pinned against the
+//!   app module by a contract test) and `workspace checkout` (cross-process
+//!   locks + git identity hardening are CLI-specific value). Path validation
+//!   stays a CLI pre-check so escapes remain usage errors (exit 2).
 //! - checkpoints → `features::code_checkpoints` public functions plus the
 //!   `SessionStore` rewind sidecar methods, mirroring the
 //!   `rewind_to_turn` / `undo_last_rewind` orchestration. User-turn counting
@@ -42,16 +43,17 @@
 //! Exit codes: 0 success, 1 host failure, 2 usage error. JSON output is a
 //! single serde_json line mirroring the GUI DTOs (camelCase fields).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use crate::support::{read_text_file_capped, render, require_yes, resolve_secret, success};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::code_checkpoints as checkpoints;
+use pinvou3_lib::features::codex_acp::workspace;
 use pinvou3_lib::features::codex_acp::{
     AcpPool, AcpProvidersView, AgentBackend, CodexWorkspaceKind, ProviderManager, ProviderWireApi,
     SessionAgentStore,
@@ -69,7 +71,7 @@ const LOGIN_USAGE: &str = "usage: pinvou code login <agent> [--code-env VAR|--co
      (agent: codex|claude|kimi; the claude flow consumes an authorization code)";
 const LOGOUT_USAGE: &str = "usage: pinvou code logout <agent> --yes  (agent: codex|claude|kimi)";
 const PROVIDERS_USAGE: &str = "usage: pinvou code providers <list [--agent A]|add --agent A --name N --base-url U \
-     [--wire-api anthropic|openai|kimi] [--model M] [--model-slot SLOT=M]... [--context-window N] \
+     [--wire-api anthropic|openai|kimi (aliases: openai_compatible|chat)] [--model M] [--model-slot SLOT=M]... [--context-window N] \
      (--api-key-env V|--api-key-stdin)|update <id> --agent A [...] |remove <id> --agent A --yes \
      |switch <agent> <provider-id>|switch-official <agent>|export --agent A [--output PATH] \
      |import --agent A <PATH>|probe <provider-id> --agent A>";
@@ -1770,6 +1772,9 @@ fn probe_json(probe: &AgentProbe) -> serde_json::Value {
         "cli_found": probe.cli_path.is_some(),
         "cli_path": probe.cli_path.as_ref().map(|path| path.display().to_string()),
         "version": probe.version,
+        // Distinguishes "probe failed/hung" from a genuinely too-old version
+        // for JSON consumers (`version: null` alone is ambiguous).
+        "version_probe_failed": probe.version_probe_failed,
         "version_supported": probe.version_supported,
         "min_version": probe.min_version,
         "authenticated": probe.authenticated,
@@ -2097,8 +2102,15 @@ fn login(
         }
         Ok(success(render(output, human, &value)))
     } else {
+        // Same rationale as the timeout path above: the captured login link
+        // is the only actionable part of a failed flow, so it survives into
+        // the error.
+        let link_hint = match &login_url {
+            Some(url) => format!("; last login link: {url}"),
+            None => String::new(),
+        };
         Err(CliError::failed(format!(
-            "code_login_failed: {agent} login process exited with {}",
+            "code_login_failed: {agent} login process exited with {}{link_hint}",
             status
                 .code()
                 .map(|code| code.to_string())
@@ -2264,7 +2276,8 @@ fn parse_wire_api_value(value: Option<&str>) -> Result<ProviderWireApi, CliError
         | Some("kimi") => ProviderWireApi::parse(value)
             .map_err(|error| CliError::failed(format!("wire api: {error:#}"))),
         Some(other) => Err(CliError::usage(format!(
-            "--wire-api must be anthropic|openai|kimi (got {other})"
+            "--wire-api must be anthropic|openai|kimi (aliases: openai_compatible|chat, mirroring \
+             ProviderWireApi::parse) (got {other})"
         ))),
     }
 }
@@ -2286,15 +2299,18 @@ fn providers_save(
 ) -> Result<CliOutcome, CliError> {
     require_provider_agent(agent)?;
     let manager = open_providers()?;
-    let secret = resolve_secret(&api_key_env, api_key_stdin)?;
-    // Update merges with the existing record so unspecified fields keep their
-    // stored values (the GUI edit form prefills the same way).
+    // Update must refuse an unknown provider before any secret resolution:
+    // `--api-key-stdin` blocks on stdin, and piping a key into a typo'd
+    // provider id must not consume it (or echo a prompt) before failing.
     let existing = provider_id.and_then(|id| manager.store().get(agent, id));
     if let (Some(id), None) = (provider_id, existing.as_ref()) {
         return Err(CliError::failed(format!(
             "provider_not_found: no provider '{id}' for agent {agent}"
         )));
     }
+    let secret = resolve_secret(&api_key_env, api_key_stdin)?;
+    // Update merges with the existing record so unspecified fields keep their
+    // stored values (the GUI edit form prefills the same way).
     let existing = existing.clone();
     let name = name.or_else(|| existing.as_ref().map(|record| record.name.clone()));
     let base_url = base_url.or_else(|| existing.as_ref().map(|record| record.base_url.clone()));
@@ -2444,24 +2460,24 @@ fn providers_export(
         "warning: the export contains plaintext API keys; store the file in a safe place";
     match destination {
         Some(path) => {
-            // Plaintext keys land in a 0600 file on unix (the GUI hands the
-            // same content to a save dialog; a default-permission file would
-            // be readable by every local user).
             #[cfg(unix)]
             {
+                use std::os::unix::fs::OpenOptionsExt as _;
                 use std::os::unix::fs::PermissionsExt as _;
                 // Plaintext keys land in a 0600 file (the GUI hands the same
                 // content to a save dialog; a default-permission file would
-                // be readable by every local user). `OpenOptions::mode` only
-                // applies at create time, so a pre-existing (world-readable)
-                // file is tightened explicitly before the keys are written.
-                // The open follows a symlinked destination like any std write
-                // would — exporting onto a path the user controls is the
-                // documented contract, not an attack surface.
+                // be readable by every local user). `mode` creates the file
+                // 0600 from the start; it only applies at create time, so a
+                // pre-existing (world-readable) file is tightened explicitly
+                // before the keys are written. The open follows a symlinked
+                // destination like any std write would — exporting onto a
+                // path the user controls is the documented contract, not an
+                // attack surface.
                 match std::fs::OpenOptions::new()
                     .write(true)
                     .create(true)
                     .truncate(true)
+                    .mode(0o600)
                     .open(&path)
                 {
                     Ok(mut file) => {
@@ -2577,11 +2593,16 @@ fn agent_label(agents: &SessionAgentStore, id: &str, model: &str) -> (&'static s
 
 /// Mirrors `AcpPool::workspace_info` for persisted state: native code sessions
 /// resolve their two roots through `SessionStore::session_roots`; ACP sessions
-/// use the bound project directory or the temporary execution root.
+/// use the bound project directory or the temporary execution root. `model` is
+/// the session's persisted model name: an ACP model name with a lost
+/// session-agents sidecar record still counts as a code session (same fallback
+/// as `is_code_chat_session`) and degrades to an unavailable temporary
+/// workspace exactly like `code_sessions_list` renders it.
 fn code_workspace_info(
     store: &SessionStore,
     agents: &SessionAgentStore,
     id: &str,
+    model: &str,
 ) -> Result<(CodexWorkspaceKind, PathBuf, bool), CliError> {
     let record = agents.get(id);
     if record.mode.is_code() {
@@ -2592,6 +2613,11 @@ fn code_workspace_info(
         return Ok((record.workspace_kind, roots.execution, available));
     }
     if !record.backend.is_acp() {
+        if acp_session_model(model) {
+            // Sidecar record lost: keep the session usable (list/info) with
+            // the same degraded workspace shape the list uses.
+            return Ok((CodexWorkspaceKind::Temporary, PathBuf::new(), false));
+        }
         return Err(CliError::failed(format!(
             "code_session_not_found: session {id} is not a code session"
         )));
@@ -2633,7 +2659,7 @@ fn code_sessions_list(output: OutputMode) -> Result<CliOutcome, CliError> {
     rows.sort_by_key(|metadata| std::cmp::Reverse(metadata.updated_at));
     let mut items = Vec::new();
     for metadata in &rows {
-        let info = match code_workspace_info(&store, &agents, &metadata.id) {
+        let info = match code_workspace_info(&store, &agents, &metadata.id, &metadata.model) {
             Ok(info) => info,
             // Sessions whose workspace cannot be resolved are still listed;
             // the workspace fields degrade to unavailable, matching the GUI's
@@ -2688,24 +2714,26 @@ fn code_sessions_list(output: OutputMode) -> Result<CliOutcome, CliError> {
 fn code_sessions_info(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store = open_store()?;
     let agents = open_agent_store()?;
-    require_existing(&store, id, "sessions info")?;
-    let record = agents.get(id);
-    if !record.backend.is_acp() && !record.mode.is_code() {
+    // Fetch the session (and its model name) first: the gate below must
+    // accept exactly the sessions `code sessions list` accepts, including
+    // ACP sessions whose session-agents sidecar record was lost (detected
+    // through the persisted model name).
+    let metadata = store
+        .load(id)
+        .map_err(|error| store_error("sessions info", id, error))?
+        .metadata;
+    if !is_code_chat_session(&agents, id, &metadata.model) {
         return Err(CliError::failed(format!(
             "code_session_not_found: session {id} is not a code session"
         )));
     }
-    let metadata = store
-        .list()
-        .map_err(|error| store_error("sessions info", id, error))?
-        .into_iter()
-        .find(|metadata| metadata.id == id);
-    let info = code_workspace_info(&store, &agents, id)?;
-    let (agent_id, agent_name) = agent_label(&agents, id, "");
+    let record = agents.get(id);
+    let info = code_workspace_info(&store, &agents, id, &metadata.model)?;
+    let (agent_id, agent_name) = agent_label(&agents, id, &metadata.model);
     let value = serde_json::json!({
         "id": id,
-        "title": metadata.as_ref().map(|metadata| metadata.title.clone()),
-        "updated_at": metadata.as_ref().map(|metadata| metadata.updated_at.to_rfc3339()),
+        "title": metadata.title,
+        "updated_at": metadata.updated_at.to_rfc3339(),
         "pinned": store.is_pinned(id),
         "agent_id": agent_id,
         "agent_name": agent_name,
@@ -2734,26 +2762,48 @@ fn code_sessions_info(id: &str, output: OutputMode) -> Result<CliOutcome, CliErr
 
 /// Per-event ACP timeline from `sessions_root/<id>/acp-timeline.jsonl`, the
 /// same append-only file `AcpPool::timeline` reads. Malformed lines are
-/// skipped (the GUI logs and skips identically).
+/// skipped (the GUI logs and skips identically). Like `info`, the command is
+/// a code-session view: plain chat sessions are refused with the same stable
+/// error instead of reporting an empty journal.
 fn code_sessions_timeline(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store = open_store()?;
-    require_existing(&store, id, "sessions timeline")?;
+    let agents = open_agent_store()?;
+    // Same gate (and same error) as `code sessions info`, including the
+    // model-name fallback for sessions whose sidecar record was lost.
+    let metadata = store
+        .load(id)
+        .map_err(|error| store_error("sessions timeline", id, error))?
+        .metadata;
+    if !is_code_chat_session(&agents, id, &metadata.model) {
+        return Err(CliError::failed(format!(
+            "code_session_not_found: session {id} is not a code session"
+        )));
+    }
     let path = paths::sessions_root().join(id).join("acp-timeline.jsonl");
     // Same 32 MiB cap as the sessions timeline reader: a runaway journal
     // must not be slurped whole into memory (the GUI streams this file).
+    // The read itself is bounded (`File::take`), so a journal growing between
+    // a size check and the read cannot bypass the cap.
     const MAX_TIMELINE_BYTES: u64 = 32 * 1024 * 1024;
-    if let Ok(metadata) = std::fs::metadata(&path) {
-        if metadata.len() > MAX_TIMELINE_BYTES {
-            return Err(CliError::failed(format!(
-                "code sessions timeline({id}): journal too large: {} bytes (limit \
-                 {MAX_TIMELINE_BYTES})",
-                metadata.len()
-            )));
-        }
-    }
     let mut events = Vec::new();
-    match std::fs::read_to_string(&path) {
-        Ok(content) => {
+    match std::fs::File::open(&path) {
+        Ok(file) => {
+            let mut capped = file.take(MAX_TIMELINE_BYTES + 1);
+            let mut bytes = Vec::new();
+            capped.read_to_end(&mut bytes).map_err(|error| {
+                CliError::failed(format!(
+                    "code sessions timeline({id}): cannot read {}: {error}",
+                    path.display()
+                ))
+            })?;
+            if bytes.len() as u64 > MAX_TIMELINE_BYTES {
+                return Err(CliError::failed(format!(
+                    "code sessions timeline({id}): journal too large: over {} bytes (limit \
+                     {MAX_TIMELINE_BYTES})",
+                    MAX_TIMELINE_BYTES + 1
+                )));
+            }
+            let content = String::from_utf8_lossy(&bytes);
             for line in content.lines() {
                 if line.trim().is_empty() {
                     continue;
@@ -2814,13 +2864,19 @@ fn code_sessions_timeline(id: &str, output: OutputMode) -> Result<CliOutcome, Cl
     Ok(success(render(output, human, &value)))
 }
 
-// ── workspace (local mirror of features::codex_acp::workspace) ──────────────
+// ── workspace ───────────────────────────────────────────────────────────────
+//
+// Read-only ops (list/search/preview/changes/branches) call
+// `features::codex_acp::workspace` directly and serialize its types, so the
+// CLI JSON matches the GUI's exactly. Two pieces stay local on purpose: the
+// diff lane (the app's per-file diff reads untracked files unbounded, uses
+// Chinese section copy, and has no whole-workspace composition — the mirror
+// is differentially pinned against the app module by a contract test) and
+// `workspace checkout` (cross-process locks + git identity hardening are
+// CLI-specific value). Path validation stays a CLI pre-check so escapes
+// remain usage errors (exit 2).
 
-const LIST_LIMIT: usize = 500;
-const SEARCH_LIMIT: usize = 300;
-const WALK_LIMIT: usize = 20_000;
 const PREVIEW_LIMIT: usize = 512 * 1024;
-const IMAGE_PREVIEW_LIMIT: u64 = 10 * 1024 * 1024;
 const DIFF_LIMIT: usize = 1024 * 1024;
 /// Upper bound on per-file diffs composed into one whole-workspace diff; each
 /// file costs two git spawns, so this bounds the subprocess fan-out.
@@ -2839,21 +2895,6 @@ fn truncate_utf8(text: &mut String, limit: usize) {
     }
     text.truncate(boundary);
 }
-
-const IGNORED_DIRECTORIES: &[&str] = &[
-    ".git",
-    ".hg",
-    ".svn",
-    "node_modules",
-    "target",
-    "dist",
-    "build",
-    ".next",
-    ".cache",
-    "__pycache__",
-    ".venv",
-    "venv",
-];
 
 /// Same process-local serialization as `workspace::CHECKOUT_LOCK`: concurrent
 /// checkouts must not interleave stash push/checkout/pop sequences.
@@ -3025,174 +3066,30 @@ fn normalize_relative_path(raw: &str) -> Result<String, CliError> {
     Ok(parts.join("/"))
 }
 
-fn relative_text(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_default()
-}
-
-fn modified_seconds(metadata: &std::fs::Metadata) -> i64 {
-    metadata
-        .modified()
-        .ok()
-        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-        .map(|value| value.as_secs() as i64)
-        .unwrap_or_default()
-}
-
-fn is_ignored_directory(name: &str) -> bool {
-    IGNORED_DIRECTORIES.contains(&name)
-}
-
-fn should_walk(root: &Path, path: &Path) -> bool {
-    if path == root {
-        return true;
-    }
-    let name = path
-        .file_name()
-        .map(|value| value.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    !path.is_dir() || !is_ignored_directory(&name)
-}
-
-struct WalkFile {
-    path: PathBuf,
-    relative: String,
-}
-
-/// Depth-first walk mirroring the GUI's `WalkDir` limits: ignored directories
-/// are pruned, symlinks are never followed, and the walk stops at WALK_LIMIT.
-fn walk_files(root: &Path) -> Vec<WalkFile> {
-    let mut files = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    let mut visited = 0usize;
-    while let Some(directory) = stack.pop() {
-        visited += 1;
-        if visited > WALK_LIMIT {
-            break;
-        }
-        let entries = match std::fs::read_dir(&directory) {
-            Ok(entries) => entries,
-            Err(_) => continue,
-        };
-        for entry in entries.filter_map(|entry| entry.ok()) {
-            let path = entry.path();
-            if path.is_symlink() {
-                continue;
-            }
-            if !should_walk(root, &path) {
-                continue;
-            }
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.is_file() {
-                files.push(WalkFile {
-                    relative: relative_text(root, &path),
-                    path,
-                });
-            }
-            if files.len() >= WALK_LIMIT {
-                return files;
-            }
-        }
-    }
-    files
-}
-
 fn workspace_list(
     root: &Path,
     relative_path: Option<&str>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     let root = canonical_workspace(root)?;
+    // CLI pre-check so an escape attempt stays a usage error (exit 2); the
+    // app module re-validates and resolves the directory itself.
     let relative = normalize_relative_path(relative_path.unwrap_or_default())?;
-    let directory = if relative.is_empty() {
-        root.clone()
-    } else {
-        let candidate = root.join(&relative);
-        let canonical = std::fs::canonicalize(&candidate).map_err(|_| {
-            CliError::failed(format!("code workspace list: path not found {relative}"))
-        })?;
-        if !canonical.starts_with(&root) {
-            return Err(CliError::failed(
-                "code workspace list: path escapes the workspace",
-            ));
-        }
-        if !canonical.is_dir() {
-            return Err(CliError::failed(format!(
-                "code workspace list: not a directory {relative}"
-            )));
-        }
-        canonical
-    };
-    let mut entries = Vec::new();
-    for entry in std::fs::read_dir(&directory)
-        .map_err(|error| CliError::failed(format!("code workspace list: {error}")))?
-        .filter_map(|entry| entry.ok())
-    {
-        let path = entry.path();
-        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
-            continue;
-        };
-        if metadata.file_type().is_symlink() {
-            continue;
-        }
-        let name = path
-            .file_name()
-            .map(|value| value.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        if name.is_empty() || (metadata.is_dir() && is_ignored_directory(&name)) {
-            continue;
-        }
-        let kind = if metadata.is_dir() {
-            "directory"
-        } else if metadata.is_file() {
-            "file"
-        } else {
-            continue;
-        };
-        let has_children = metadata.is_dir()
-            && std::fs::read_dir(&path).is_ok_and(|mut entries| entries.next().is_some());
-        entries.push(serde_json::json!({
-            "name": name,
-            "relativePath": relative_text(&root, &path),
-            "kind": kind,
-            "size": if metadata.is_file() { metadata.len() } else { 0 },
-            "modified": modified_seconds(&metadata),
-            "hasChildren": has_children,
-        }));
-    }
-    entries.sort_by(|left, right| {
-        let left_dir = left["kind"] == "directory";
-        let right_dir = right["kind"] == "directory";
-        right_dir.cmp(&left_dir).then_with(|| {
-            left["name"]
-                .as_str()
-                .unwrap_or_default()
-                .to_lowercase()
-                .cmp(&right["name"].as_str().unwrap_or_default().to_lowercase())
-        })
-    });
-    let truncated = entries.len() > LIST_LIMIT;
-    entries.truncate(LIST_LIMIT);
-    let human = entries
+    let listing = workspace::list_workspace(&root, Some(&relative))
+        .map_err(|error| CliError::failed(format!("code workspace list: {error:#}")))?;
+    let value = serde_json::to_value(&listing)
+        .map_err(|error| CliError::failed(format!("code workspace list: {error}")))?;
+    let human = listing
+        .entries
         .iter()
         .map(|entry| {
             format!(
                 "{}\t{}\t{}\t{}",
-                entry["kind"].as_str().unwrap_or("-"),
-                entry["name"].as_str().unwrap_or("-"),
-                entry["size"].as_u64().unwrap_or(0),
-                entry["modified"].as_i64().unwrap_or(0),
+                entry.kind, entry.name, entry.size, entry.modified
             )
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let value = serde_json::json!({
-        "relativePath": relative,
-        "entries": entries,
-        "truncated": truncated,
-    });
     Ok(success(render(output, human, &value)))
 }
 
@@ -3202,45 +3099,23 @@ fn workspace_search(root: &Path, query: &str, output: OutputMode) -> Result<CliO
         return Ok(success(render(
             output,
             String::new(),
-            &serde_json::json!({ "results": [] }),
+            &serde_json::json!({ "results": [], "truncated": false }),
         )));
     }
     let root = canonical_workspace(root)?;
-    let mut results = Vec::new();
-    for file in walk_files(&root) {
-        if file.relative.to_lowercase().contains(&query) {
-            if let Ok(metadata) = std::fs::symlink_metadata(&file.path) {
-                results.push(serde_json::json!({
-                    "name": file.path.file_name().map(|value| value.to_string_lossy().into_owned()).unwrap_or_default(),
-                    "relativePath": file.relative,
-                    "kind": "file",
-                    "size": metadata.len(),
-                    "modified": modified_seconds(&metadata),
-                    "hasChildren": false,
-                }));
-            }
-            if results.len() >= SEARCH_LIMIT {
-                break;
-            }
-        }
-    }
-    results.sort_by(|left, right| {
-        left["relativePath"]
-            .as_str()
-            .unwrap_or_default()
-            .cmp(right["relativePath"].as_str().unwrap_or_default())
-    });
+    let results = workspace::search_workspace(&root, &query)
+        .map_err(|error| CliError::failed(format!("code workspace search: {error:#}")))?;
+    // The app walk stops silently at SEARCH_LIMIT, so from the outside the
+    // cap being reached is all we can observe; `truncated` is therefore the
+    // honest "at least SEARCH_LIMIT matches exist" signal (a CLI-specific
+    // envelope computed on top of the app result, mirroring `workspace list`).
+    let truncated = results.len() >= workspace::SEARCH_LIMIT;
+    let value = serde_json::json!({ "results": results, "truncated": truncated });
     let human = results
         .iter()
-        .map(|entry| {
-            entry["relativePath"]
-                .as_str()
-                .unwrap_or_default()
-                .to_owned()
-        })
+        .map(|entry| entry.relative_path.clone())
         .collect::<Vec<_>>()
         .join("\n");
-    let value = serde_json::json!({ "results": results });
     Ok(success(render(output, human, &value)))
 }
 
@@ -3384,51 +3259,6 @@ fn looks_like_text(path: &Path) -> bool {
     }
 }
 
-fn image_mime_type(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "svg" => "image/svg+xml",
-        "bmp" => "image/bmp",
-        _ => "image/png",
-    }
-}
-
-/// Minimal standard base64 encoder for image preview data URLs (no base64
-/// dependency in the CLI crate).
-fn base64_encode(data: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let bytes = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
-        let value = (u32::from(bytes[0]) << 16) | (u32::from(bytes[1]) << 8) | u32::from(bytes[2]);
-        out.push(ALPHABET[(value >> 18) as usize & 63] as char);
-        out.push(ALPHABET[(value >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 {
-            ALPHABET[(value >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            ALPHABET[value as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    out
-}
-
 fn workspace_preview(
     root: &Path,
     relative_path: &str,
@@ -3436,82 +3266,20 @@ fn workspace_preview(
 ) -> Result<CliOutcome, CliError> {
     let root = canonical_workspace(root)?;
     let relative = normalize_relative_path(relative_path)?;
-    let path = if relative.is_empty() {
+    if relative.is_empty() {
         return Err(CliError::usage("workspace preview requires a file path"));
-    } else {
-        let candidate = root.join(&relative);
-        let canonical = std::fs::canonicalize(&candidate).map_err(|_| {
-            CliError::failed(format!("code workspace preview: path not found {relative}"))
-        })?;
-        if !canonical.starts_with(&root) {
-            return Err(CliError::failed(
-                "code workspace preview: path escapes the workspace",
-            ));
-        }
-        canonical
-    };
-    let metadata = path
-        .metadata()
-        .map_err(|error| CliError::failed(format!("code workspace preview: {error}")))?;
-    if !metadata.is_file() {
-        return Err(CliError::failed(format!(
-            "code workspace preview: not a file {relative}"
-        )));
     }
-    let kind = file_kind(&path);
-    let name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or(&relative)
-        .to_string();
-    let (text, data_url, truncated) = if kind == "image" {
-        if metadata.len() > IMAGE_PREVIEW_LIMIT {
-            (None, None, true)
-        } else {
-            let bytes = std::fs::read(&path)
-                .map_err(|error| CliError::failed(format!("code workspace preview: {error}")))?;
-            (
-                None,
-                Some(format!(
-                    "data:{};base64,{}",
-                    image_mime_type(&path),
-                    base64_encode(&bytes)
-                )),
-                false,
-            )
-        }
-    } else if kind == "text" {
-        let mut file = std::fs::File::open(&path)
-            .map_err(|error| CliError::failed(format!("code workspace preview: {error}")))?;
-        let mut bytes = Vec::with_capacity(PREVIEW_LIMIT.min(metadata.len() as usize));
-        file.by_ref()
-            .take(PREVIEW_LIMIT as u64 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|error| CliError::failed(format!("code workspace preview: {error}")))?;
-        let truncated = bytes.len() > PREVIEW_LIMIT;
-        bytes.truncate(PREVIEW_LIMIT);
-        (
-            Some(String::from_utf8_lossy(&bytes).into_owned()),
-            None,
-            truncated,
-        )
-    } else {
-        (None, None, false)
-    };
-    let value = serde_json::json!({
-        "name": name,
-        "relativePath": relative,
-        "kind": kind,
-        "size": metadata.len(),
-        "modified": modified_seconds(&metadata),
-        "text": text,
-        "dataUrl": data_url,
-        "truncated": truncated,
-    });
-    let human = match (&text, &data_url) {
+    let preview = workspace::preview_workspace_file(&root, &relative)
+        .map_err(|error| CliError::failed(format!("code workspace preview: {error:#}")))?;
+    let value = serde_json::to_value(&preview)
+        .map_err(|error| CliError::failed(format!("code workspace preview: {error}")))?;
+    let human = match (&preview.text, &preview.data_url) {
         (Some(text), _) => text.clone(),
         (None, Some(url)) => url.clone(),
-        _ => format!("{} ({kind}, {} bytes)", relative, metadata.len()),
+        _ => format!(
+            "{} ({}, {} bytes)",
+            preview.relative_path, preview.kind, preview.size
+        ),
     };
     Ok(success(render(output, human, &value)))
 }
@@ -3636,12 +3404,6 @@ fn git_root(root: &Path) -> Option<PathBuf> {
     std::fs::canonicalize(String::from_utf8_lossy(&output.stdout).trim()).ok()
 }
 
-fn git_branch(root: &Path) -> Option<String> {
-    let branch = git_output(root, &["branch", "--show-current"]).ok()?;
-    let branch = branch.trim();
-    (!branch.is_empty()).then(|| branch.to_string())
-}
-
 fn git_status_label(x: char, y: char) -> &'static str {
     if x == '?' && y == '?' {
         "untracked"
@@ -3706,207 +3468,44 @@ fn git_status_entries(root: &Path) -> Result<Vec<(String, String, bool)>, CliErr
     Ok(changes)
 }
 
-fn baseline_path(session_id: &str) -> PathBuf {
-    paths::sessions_root()
-        .join(session_id)
-        .join("codex-workspace-baseline.json")
-}
-
-/// Mirror of the GUI baseline loader: a missing baseline is `Ok(None)`, but
-/// read or parse failures surface instead of silently degrading origin
-/// reporting to "unknown".
-fn load_baseline(session_id: &str, root: &Path) -> Result<Option<serde_json::Value>, CliError> {
-    let bytes = match std::fs::read(baseline_path(session_id)) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(CliError::failed(format!(
-                "code workspace: cannot read the workspace baseline: {error}"
-            )));
-        }
-    };
-    let value = serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|error| {
-        CliError::failed(format!(
-            "code workspace: cannot parse the workspace baseline: {error}"
-        ))
-    })?;
-    if value.get("workspace_path").and_then(|value| value.as_str())
-        != Some(root.to_string_lossy().as_ref())
-    {
-        return Ok(None);
-    }
-    Ok(Some(value))
-}
-
-fn classify_origin(
-    root: &Path,
-    baseline: Option<&serde_json::Value>,
-    relative_path: &str,
-) -> String {
-    let Some(baseline) = baseline else {
-        return "unknown".to_owned();
-    };
-    // The GUI's WorkspaceBaseline derives Serialize WITHOUT
-    // rename_all = "camelCase", so the on-disk key is the snake_case
-    // `dirty_paths`; accept the camelCase spelling too for robustness
-    // against hand-written baselines. Reading only the wrong-case key made
-    // every file classify as "session" — the opposite of the truth.
-    let dirty_paths = baseline
-        .get("dirty_paths")
-        .or_else(|| baseline.get("dirtyPaths"));
-    let dirty = dirty_paths
-        .and_then(|value| value.as_array())
-        .map(|paths| {
-            paths
-                .iter()
-                .filter_map(|value| value.as_str())
-                .any(|path| path == relative_path)
-        })
-        .unwrap_or(false);
-    if !dirty {
-        return "session".to_owned();
-    }
-    // The GUI compares sha256 fingerprints for pre-existing dirty files; the
-    // CLI mirror reports the file as preexisting_modified without hashing
-    // (the size+mtime fields come from the same baseline capture).
-    match (
-        baseline
-            .get("entries")
-            .and_then(|entries| entries.get(relative_path)),
-        std::fs::metadata(root.join(relative_path)).ok(),
-    ) {
-        (Some(before), Some(current)) => {
-            let same_size =
-                before.get("size").and_then(|value| value.as_u64()) == Some(current.len());
-            let same_mtime = before.get("modified").and_then(|value| value.as_i64())
-                == Some(modified_seconds(&current));
-            if same_size && same_mtime {
-                "preexisting".to_owned()
-            } else {
-                "preexisting_modified".to_owned()
-            }
-        }
-        // A dirty-at-baseline file deleted during the session compares
-        // unequal in the GUI, so it is "preexisting_modified", not a clean
-        // "preexisting".
-        (Some(_), None) => "preexisting_modified".to_owned(),
-        _ => "preexisting_modified".to_owned(),
-    }
-}
-
 fn workspace_changes(
     session_id: &str,
     root: &Path,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     let root = canonical_workspace(root)?;
-    let git = git_root(&root).is_some_and(|git_root| git_root == root);
-    let baseline = load_baseline(session_id, &root)?;
-    let baseline_available = baseline.is_some();
-    let mut changes: Vec<(String, String, bool)> = if git {
-        git_status_entries(&root)?
-    } else {
-        filesystem_changes(&root, baseline.as_ref())?
-    };
-    let origin = |path: &str| classify_origin(&root, baseline.as_ref(), path);
-    changes.sort_by(|left, right| left.0.cmp(&right.0));
-    let rows = changes
+    // The app module owns git status parsing, baseline loading, and origin
+    // classification (with the GUI's sha256 fingerprint comparison); the CLI
+    // serializes the same `WorkspaceChanges` type the GUI command returns.
+    let changes = workspace::workspace_changes(session_id, &root)
+        .map_err(|error| CliError::failed(format!("code workspace changes: {error:#}")))?;
+    let value = serde_json::to_value(&changes)
+        .map_err(|error| CliError::failed(format!("code workspace changes: {error}")))?;
+    let human = changes
+        .changes
         .iter()
-        .map(|(path, status, staged)| {
-            serde_json::json!({
-                "relativePath": path,
-                "status": status,
-                "staged": staged,
-                "origin": origin(path),
-            })
-        })
-        .collect::<Vec<_>>();
-    let human = rows
-        .iter()
-        .map(|row| {
+        .map(|change| {
             format!(
                 "{}\t{}\t{}\t{}",
-                row["status"].as_str().unwrap_or("-"),
-                if row["staged"].as_bool().unwrap_or(false) {
-                    "staged"
-                } else {
-                    "-"
-                },
-                row["origin"].as_str().unwrap_or("-"),
-                row["relativePath"].as_str().unwrap_or("-"),
+                change.status,
+                if change.staged { "staged" } else { "-" },
+                change.origin,
+                change.relative_path,
             )
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let value = serde_json::json!({
-        "git": git,
-        "branch": git.then(|| git_branch(&root)).flatten(),
-        "baselineAvailable": baseline_available,
-        "changes": rows,
-    });
     Ok(success(render(output, human, &value)))
-}
-
-/// Non-git change detection against the workspace baseline fingerprints.
-fn filesystem_changes(
-    root: &Path,
-    baseline: Option<&serde_json::Value>,
-) -> Result<Vec<(String, String, bool)>, CliError> {
-    let current: BTreeMap<String, (u64, i64)> = walk_files(root)
-        .into_iter()
-        .filter_map(|file| {
-            let metadata = std::fs::metadata(&file.path).ok()?;
-            Some((file.relative, (metadata.len(), modified_seconds(&metadata))))
-        })
-        .collect();
-    let Some(baseline) = baseline else {
-        return Ok(current
-            .keys()
-            .map(|path| (path.clone(), "unknown".to_owned(), false))
-            .collect());
-    };
-    let before: BTreeMap<String, (u64, i64)> = baseline
-        .get("entries")
-        .and_then(|entries| entries.as_object())
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(|(path, value)| {
-                    Some((
-                        path.clone(),
-                        (
-                            value.get("size").and_then(|value| value.as_u64())?,
-                            value.get("modified").and_then(|value| value.as_i64())?,
-                        ),
-                    ))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut paths: BTreeSet<String> = BTreeSet::new();
-    paths.extend(current.keys().cloned());
-    paths.extend(before.keys().cloned());
-    Ok(paths
-        .into_iter()
-        .filter_map(|path| match (before.get(&path), current.get(&path)) {
-            (None, Some(_)) => Some((path, "added".to_owned(), false)),
-            (Some(_), None) => Some((path, "deleted".to_owned(), false)),
-            (Some(before), Some(current)) if before != current => {
-                Some((path, "modified".to_owned(), false))
-            }
-            _ => None,
-        })
-        .collect())
 }
 
 fn workspace_branches(root: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
     let root = canonical_workspace(root)?;
-    let branches = workspace_branches_inner(&root)?;
+    let value = workspace_branches_value(&root)?;
     let human = format!(
         "git: {}\ncurrent: {}\nbranches: {}\ndirty: {}",
-        branches["git"],
-        branches["current"].as_str().unwrap_or("-"),
-        branches["branches"]
+        value["git"],
+        value["current"].as_str().unwrap_or("-"),
+        value["branches"]
             .as_array()
             .map(|branches| branches
                 .iter()
@@ -3914,43 +3513,18 @@ fn workspace_branches(root: &Path, output: OutputMode) -> Result<CliOutcome, Cli
                 .collect::<Vec<_>>()
                 .join(", "))
             .unwrap_or_default(),
-        branches["dirtyCount"].as_u64().unwrap_or(0),
+        value["dirtyCount"].as_u64().unwrap_or(0),
     );
-    Ok(success(render(output, human, &branches)))
+    Ok(success(render(output, human, &value)))
 }
 
-fn workspace_branches_inner(root: &Path) -> Result<serde_json::Value, CliError> {
-    let root = canonical_workspace(root)?;
-    let is_git = git_root(&root).is_some_and(|git_root| git_root == root);
-    if !is_git {
-        return Ok(serde_json::json!({
-            "git": false,
-            "current": null,
-            "branches": [],
-            "dirtyCount": 0,
-        }));
-    }
-    let listing = git_output(
-        &root,
-        &[
-            "branch",
-            "--sort=-committerdate",
-            "--format=%(refname:short)",
-        ],
-    )?;
-    let branches = listing
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    let dirty_count = git_status_entries(&root)?.len();
-    Ok(serde_json::json!({
-        "git": true,
-        "current": git_branch(&root),
-        "branches": branches,
-        "dirtyCount": dirty_count,
-    }))
+/// `features::codex_acp::workspace::workspace_branches` serialized for the
+/// JSON envelope; shared by `workspace branches` and the checkout result.
+fn workspace_branches_value(root: &Path) -> Result<serde_json::Value, CliError> {
+    let branches = workspace::workspace_branches(root)
+        .map_err(|error| CliError::failed(format!("code workspace branches: {error:#}")))?;
+    serde_json::to_value(&branches)
+        .map_err(|error| CliError::failed(format!("code workspace branches: {error}")))
 }
 
 fn stash_head(root: &Path) -> Result<Option<String>, CliError> {
@@ -4066,7 +3640,7 @@ fn workspace_checkout(
 }
 
 fn finish_checkout(root: &Path, branch: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let branches = workspace_branches_inner(root)?;
+    let branches = workspace_branches_value(root)?;
     let value = serde_json::json!({
         "checkedOut": branch,
         "branches": branches,
@@ -4268,7 +3842,10 @@ fn resolve_session_workspace(
     let store = open_store()?;
     let agents = open_agent_store()?;
     require_existing(&store, session, "workspace")?;
-    let (_, root, available) = code_workspace_info(&store, &agents, session)?;
+    // Workspace *operations* stay record-gated (empty model): a sidecar-lost
+    // ACP session has no reliable workspace record, so resolving one would
+    // guess at a directory.
+    let (_, root, available) = code_workspace_info(&store, &agents, session, "")?;
     if !available {
         return Err(CliError::failed(format!(
             "code_workspace_unavailable: workspace {} is not available",
@@ -4677,12 +4254,33 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
             .map_err(|error| store_error("checkpoints undo", checkpoint_id, error))?;
     }
     let restored_messages = store.restore_rewound_turns(session).map_err(|error| {
-        CliError::failed(format!(
-            "code checkpoints undo({session}): the working tree was already restored to rollback \
-             point {}, but restoring the transcript failed: {error:#}. The rewind record was not \
-             consumed, so `checkpoints undo` can be retried",
-            checkpoint_id.as_deref().unwrap_or("-")
-        ))
+        let detail = format!("{error:#}");
+        // The store fails *non-retryably* when the transcript changed after
+        // the rewind (new turns produced or turn content edited —
+        // features/sessions/rewind.rs bails with "不可反悔" on exactly those
+        // precondition violations). Retrying cannot succeed and would steer
+        // the user wrong, so mirror the GUI's condition_broken classification
+        // (app/commands/checkpoints.rs undo_last_rewind): report that the
+        // record was NOT left consumable-by-retry and the truncated messages
+        // remain in the rewind backup for manual handling. Every other
+        // failure (IO etc.) leaves the record unconsumed and retryable.
+        if detail.contains("不可反悔") {
+            CliError::failed(format!(
+                "code_checkpoints_undo_condition_changed({session}): the working tree was already \
+                 restored to rollback point {}, but restoring the transcript failed: {detail}. \
+                 This is not retryable; the rewind record was not consumed but the truncated \
+                 messages remain in the rewind backup — handle manually (new turns or edits \
+                 landed after the rewind)",
+                checkpoint_id.as_deref().unwrap_or("-")
+            ))
+        } else {
+            CliError::failed(format!(
+                "code checkpoints undo({session}): the working tree was already restored to \
+                 rollback point {}, but restoring the transcript failed: {detail}. The rewind \
+                 record was not consumed, so `checkpoints undo` can be retried",
+                checkpoint_id.as_deref().unwrap_or("-")
+            ))
+        }
     })?;
     let value = serde_json::json!({
         "session": session,
@@ -4734,18 +4332,13 @@ mod tests {
 
     #[test]
     fn workspace_mirror_limits_match_the_app_module() {
-        // The workspace section is a local mirror of
-        // `features::codex_acp::workspace`. Until the mirror is deleted in
-        // favor of the real calls, a limit changed on either side must break
-        // this build instead of silently diverging from the GUI.
+        // The read-only workspace ops call `features::codex_acp::workspace`
+        // directly; only the kept diff mirror (and its preview fallback)
+        // still carries local limit copies, so a drift on either side must
+        // break this build instead of silently diverging from the GUI.
         use pinvou3_lib::features::codex_acp::workspace as app;
-        assert_eq!(LIST_LIMIT, app::LIST_LIMIT);
-        assert_eq!(SEARCH_LIMIT, app::SEARCH_LIMIT);
-        assert_eq!(WALK_LIMIT, app::WALK_LIMIT);
         assert_eq!(PREVIEW_LIMIT, app::PREVIEW_LIMIT);
-        assert_eq!(IMAGE_PREVIEW_LIMIT, app::IMAGE_PREVIEW_LIMIT);
         assert_eq!(DIFF_LIMIT, app::DIFF_LIMIT);
-        assert_eq!(IGNORED_DIRECTORIES, app::IGNORED_DIRECTORIES);
     }
 
     #[test]
