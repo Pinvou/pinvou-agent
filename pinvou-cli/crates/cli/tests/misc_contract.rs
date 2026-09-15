@@ -256,6 +256,7 @@ fn voice_subcommands_parse() {
     }
     assert!(parse_args(["pinvou", "voice", "asr-status"]).is_ok());
     assert!(parse_args(["pinvou", "voice", "asr-install"]).is_ok());
+    assert!(parse_args(["pinvou", "voice", "asr-install", "--yes"]).is_ok());
 }
 
 #[test]
@@ -293,6 +294,8 @@ fn voice_rejects_invalid_usage_with_exit_two() {
         vec!["pinvou", "voice", "postprocess", "--mode", "task", "--text"],
         vec!["pinvou", "voice", "asr-status", "--extra"],
         vec!["pinvou", "voice", "asr-install", "--extra"],
+        // The install consent flag is accepted at most once.
+        vec!["pinvou", "voice", "asr-install", "--yes", "--yes"],
     ];
     for arguments in invalid {
         let error = parse_args(&arguments).expect_err(arguments.join(" ").as_str());
@@ -339,6 +342,35 @@ impl Drop for AsrEnvGuard {
     }
 }
 
+/// Empties `PATH` for the duration of machine-dependent probes (ffmpeg,
+/// external ASR CLIs) so the sandbox stays deterministic; restores the
+/// previous value on drop, including during panic unwinding. Caller holds
+/// ENV_LOCK.
+struct PathGuard {
+    saved: Option<OsString>,
+}
+
+impl PathGuard {
+    fn empty() -> Self {
+        let saved = std::env::var_os("PATH");
+        // SAFETY: ENV_LOCK is held by the owning test.
+        unsafe { std::env::set_var("PATH", "") };
+        Self { saved }
+    }
+}
+
+impl Drop for PathGuard {
+    fn drop(&mut self) {
+        // SAFETY: ENV_LOCK is held by the owning test.
+        unsafe {
+            match self.saved.take() {
+                Some(path) => std::env::set_var("PATH", path),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+    }
+}
+
 #[test]
 fn voice_asr_status_reports_hermetic_zero_state() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -347,44 +379,41 @@ fn voice_asr_status_reports_hermetic_zero_state() {
     // Empty PATH makes the machine-dependent probes deterministic: no ffmpeg
     // on PATH and no external ASR CLI anywhere. Env writes are safe here
     // because ENV_LOCK serializes all tests in this process.
-    let saved_path = std::env::var("PATH").ok();
-    unsafe { std::env::set_var("PATH", "") };
-    let value = run_json(&["pinvou", "voice", "asr-status"]);
-    match saved_path {
-        Some(path) => unsafe { std::env::set_var("PATH", path) },
-        None => unsafe { std::env::remove_var("PATH") },
-    }
+    let value = {
+        let _path = PathGuard::empty();
+        run_json(&["pinvou", "voice", "asr-status"])
+    };
     // macOS reports the host Speech runtime (present by definition, exactly
     // like the GUI status); on other platforms engine and model live under
     // `$PINVOU3_HOME`, so a fresh sandbox is a zero state.
     if cfg!(target_os = "macos") {
         assert_eq!(
             value["engine"], true,
-            "macOS status mirrors the system Speech runtime: {value}"
+            "macOS status mirrors the system Speech runtime"
         );
         assert_eq!(value["model"], true);
         assert_eq!(value["ready"], true);
     } else {
-        assert_eq!(
-            value["engine"], false,
-            "fresh sandbox has no engine: {value}"
-        );
-        assert_eq!(value["model"], false, "fresh sandbox has no model: {value}");
+        assert_eq!(value["engine"], false, "fresh sandbox has no engine");
+        assert_eq!(value["model"], false, "fresh sandbox has no model");
         assert_eq!(value["ready"], false);
         let missing = value["missing"].as_array().expect("missing list");
         assert!(missing.contains(&serde_json::json!("model")));
         assert!(missing.contains(&serde_json::json!("ffmpeg")));
         assert!(missing.contains(&serde_json::json!("engine")));
     }
+    // Only Linux has a CLI install route; Windows reports gui_install_only
+    // because its engine ships inside the desktop app's MSI.
+    assert_eq!(value["installable"], cfg!(target_os = "linux"));
     assert_eq!(
-        value["installable"],
-        cfg!(target_os = "linux") || cfg!(target_os = "windows")
+        value["gui_install_only"].as_bool().unwrap_or(false),
+        cfg!(target_os = "windows")
     );
     // Neither lane of the CLI itself can transcribe in this sandbox (the
     // macOS `ready` flag describes GUI capability, not CLI capability).
     assert_eq!(
         value["cli_transcribe_ready"], false,
-        "no engine, model, or external ASR CLI: {value}"
+        "no engine, model, or external ASR CLI"
     );
     assert!(
         value["asr_dir"]
@@ -393,13 +422,10 @@ fn voice_asr_status_reports_hermetic_zero_state() {
             .starts_with(home.root.to_str().unwrap())
     );
     // The human output mirrors the same fields.
-    let saved_path = std::env::var("PATH").ok();
-    unsafe { std::env::set_var("PATH", "") };
-    let outcome = run(&["pinvou", "voice", "asr-status"]).unwrap();
-    match saved_path {
-        Some(path) => unsafe { std::env::set_var("PATH", path) },
-        None => unsafe { std::env::remove_var("PATH") },
-    }
+    let outcome = {
+        let _path = PathGuard::empty();
+        run(&["pinvou", "voice", "asr-status"]).unwrap()
+    };
     if cfg!(target_os = "macos") {
         assert!(outcome.stdout.contains("Engine: true"));
         assert!(outcome.stdout.contains("CliTranscribe: no"));
@@ -418,17 +444,14 @@ fn voice_transcribe_reports_missing_engine_cleanly_without_asr() {
     let _asr_env = AsrEnvGuard::new();
     // Empty PATH too: a developer with a real `pinvou-asr` on PATH must not
     // have an arbitrary external binary executed by a default test run.
-    let saved_path = std::env::var("PATH").ok();
-    unsafe { std::env::set_var("PATH", "") };
-    let wav = home.root.join("capture.wav");
-    // 44-byte header-only WAV: large enough to pass the empty-audio gate.
-    std::fs::write(&wav, vec![0u8; 44]).unwrap();
-    let error = run(&["pinvou", "voice", "transcribe", wav.to_str().unwrap()])
-        .expect_err("no ASR runtime exists in the sandbox");
-    match saved_path {
-        Some(path) => unsafe { std::env::set_var("PATH", path) },
-        None => unsafe { std::env::remove_var("PATH") },
-    }
+    let error = {
+        let _path = PathGuard::empty();
+        let wav = home.root.join("capture.wav");
+        // 44-byte header-only WAV: large enough to pass the empty-audio gate.
+        std::fs::write(&wav, vec![0u8; 44]).unwrap();
+        run(&["pinvou", "voice", "transcribe", wav.to_str().unwrap()])
+            .expect_err("no ASR runtime exists in the sandbox")
+    };
     assert_eq!(error.exit_code(), ExitCode::Failed);
     let message = error.to_string();
     assert!(
@@ -479,6 +502,25 @@ fn voice_postprocess_calls_the_active_model() {
     assert!(outcome.stdout.contains("Source: llm"), "{}", outcome.stdout);
 }
 
+/// `voice asr-install` mutates the system (pkexec/apt ffmpeg install), so
+/// like `deps install` it must refuse with a usage error naming `--yes`
+/// before any probe, install, or download step. Compile-time Linux gate:
+/// the unsupported-platform check is a runtime `cfg!` in the command, and
+/// on macOS/Windows this invocation legitimately exits 1 instead.
+#[cfg(target_os = "linux")]
+#[test]
+fn voice_asr_install_without_yes_exits_two_before_touching_the_system() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("voice-install-no-yes");
+    let error = run(&["pinvou", "voice", "asr-install"])
+        .expect_err("install without --yes must be refused");
+    assert_usage(&error, "voice asr-install without --yes");
+    assert!(
+        error.to_string().contains("--yes"),
+        "the refusal must name the --yes flag: {error}"
+    );
+}
+
 /// OPT-IN: `voice asr-install` downloads the SenseVoice model (network) and
 /// may install ffmpeg through pkexec/apt. Run with: cargo test -p pinvou-cli
 /// --test misc_contract -- --ignored voice_asr_install
@@ -487,7 +529,9 @@ fn voice_postprocess_calls_the_active_model() {
 fn voice_asr_install_downloads_model_with_network_and_pkexec() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("voice-install");
-    let outcome = run(&["pinvou", "voice", "asr-install"])
+    // The consent gate is part of the command: the live install passes
+    // --yes explicitly.
+    let outcome = run(&["pinvou", "voice", "asr-install", "--yes"])
         .expect("install should run with network and policy agent available");
     assert_eq!(outcome.exit_code, ExitCode::Success);
     assert!(outcome.stdout.contains("Model: true"), "{}", outcome.stdout);
@@ -560,6 +604,13 @@ fn deps_check_reports_the_platform_capability_table() {
     let lines = outcome.stdout.lines().count();
     assert_eq!(lines, items.len(), "{}", outcome.stdout);
     assert!(outcome.stdout.contains("voice_asr\t"));
+    // macOS carries the GUI's i18n key `email_manual` as the email row hint;
+    // the CLI boundary maps it to English copy instead of leaking the key.
+    #[cfg(target_os = "macos")]
+    assert!(
+        !outcome.stdout.contains("email_manual"),
+        "the raw email_manual i18n key must not reach CLI output"
+    );
 }
 
 /// `deps install` refuses packages outside every platform allowlist before
@@ -862,6 +913,27 @@ fn monitor_status_reports_clean_zero_state_without_a_model() {
         "{}",
         outcome.stdout
     );
+    // The zero state carries the same key set as the model-present branch,
+    // with null values where there is no snapshot, so scripts parse one
+    // stable shape.
+    let value = run_json(&["pinvou", "monitor", "status"]);
+    assert_eq!(value["vllm_online"], false);
+    assert_eq!(value["health_status"], "unavailable");
+    for key in [
+        "max_model_len",
+        "status",
+        "provider",
+        "model",
+        "configured_model",
+        "upstream",
+        "target_kind",
+        "diagnostic",
+    ] {
+        assert!(
+            value.get(key).is_some_and(serde_json::Value::is_null),
+            "{key} must be present and null in the zero state"
+        );
+    }
 }
 
 /// OPT-IN: `monitor snapshot` boots the windowless host (display required),
