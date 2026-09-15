@@ -156,9 +156,13 @@ test('多智能体能力门禁与会话策略契约（multiagent_desktop_scope �
     toolRenderersSource,
     /detail: \{ agentId, sessionId: sessionId \|\| null \}/,
   );
+  // Pin the guard's code shape, not the adjacent comment wording: the intent
+  // is that the host check precedes the agentId check, and that agentId=null
+  // passes (it opens the panel's list state for the swarm count row) while
+  // undefined does not.
   assert.match(
     toolRenderersSource,
-    /if \(typeof window === 'undefined'\) return;\s*\/\/ agentId === null is a valid request: open the panel's list state \(the\s*\/\/ swarm count row's entry point\)\.\s*if \(!agentId && agentId !== null\) return;/,
+    /if \(typeof window === 'undefined'\) return;\s*(?:\/\/[^\n]*\n\s*)*if \(!agentId && agentId !== null\) return;/,
     'the subagent panel poll must guard on both the host and agentId; agentId=null is allowed to open the panel list state (the swarm count row entry point)',
   );
 });
@@ -1058,8 +1062,8 @@ test('面板是只读执行记录：列表→详情两级，复用共享对话�
   assert.match(panelSource, /copy\.showEarlierTranscript/);
   assert.match(
     panelSource,
-    /active: \(list\) => !Array\.isArray\(list\) \|\| list\.some\(\(entry\) => !entry\.done\)/,
-    '清单全部终态后必须停止定时轮询',
+    /active: \(list\) => !Array\.isArray\(list\)\s*\|\|\s*list\.some\(\(entry\) => !entry\.done && entry\.status != null\)/,
+    '清单全部终态后必须停止定时轮询；孤儿行（无 status 的未完成历史记录）不得钉住 2s 轮询',
   );
   assert.match(panelSource, /pinvou:subagent-update/, '新子智能体实时事件必须能唤醒终态清单');
   assert.match(panelSource, /listSubagentTranscripts\(sessionId\)/, '列表来自底座落盘投影');
