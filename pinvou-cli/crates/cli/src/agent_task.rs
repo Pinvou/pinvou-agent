@@ -226,6 +226,12 @@ fn run_agent(
         }
         None => None,
     };
+    // `--session` resumes a store the desktop app may be actively writing:
+    // both engines load-modify-save the same transcript JSON, so a run
+    // against a GUI-open session is last-writer-wins on the whole file (the
+    // store's `set_title` comment names the same hazard). A run without
+    // `--mode` sends Agent (full-write) turns even into a session the GUI
+    // has in Plan mode — pass `--mode plan` to keep its read-only contract.
     let mode = mode.map(|mode| {
         if mode == "plan" {
             pinvou3_lib::agentic_task::AgenticTaskMode::Plan
