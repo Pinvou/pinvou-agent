@@ -117,11 +117,12 @@ pub struct AgenticTaskAttachment {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgenticTaskRequest {
     pub prompt: String,
-    /// Task working directory; None = session-private directory (the same
-    /// isolated scratch as eval sessions). With `session_id`, this binds the
-    /// existing session to the directory only when the caller provides it;
-    /// without a `workspace`, the session keeps its own resolution (its
-    /// private scratch), never overriding a pre-existing binding.
+    /// Task working directory; None = the session's own resolution: the
+    /// working directory the session is bound to when it has one (the GUI's
+    /// working-directory bind), else its private scratch (the same isolated
+    /// scratch as eval sessions). With `session_id`, this binds the existing
+    /// session to the directory only when the caller provides it, never
+    /// overriding a pre-existing binding.
     #[serde(default)]
     pub workspace: Option<PathBuf>,
     #[serde(default = "default_timeout_secs")]
@@ -281,7 +282,10 @@ pub async fn run_agentic_task(
     // (fresh or caller-provided); resolution for every other session stays
     // unchanged. A caller-provided session is bound to `workspace` only when
     // the request carries one — an unset workspace keeps the session's own
-    // resolution (its private scratch) instead of overriding it.
+    // resolution chain instead of overriding it: the session's stored
+    // working-directory binding when it has one (the GUI bind), else its
+    // private scratch. A CLI resume of a GUI-bound session therefore runs
+    // in the bound directory.
     let bound_workspace = request.workspace.clone();
     let matched_session = session_id.clone();
     let resolver: ExecutionRootResolver = Arc::new(move |id: &str| {
