@@ -532,6 +532,7 @@ struct DiffFingerprint {
     head_tail_hash: u64,
     index_size: u64,
     index_modified: u128,
+    index_hash: u64,
     head_ref_size: u64,
     head_ref_modified: u128,
     head_ref_hash: u64,
@@ -592,6 +593,7 @@ fn diff_fingerprint(root: &Path, relative: &str) -> DiffFingerprint {
         head_tail_hash: 0,
         index_size: 0,
         index_modified: 0,
+        index_hash: 0,
         head_ref_size: 0,
         head_ref_modified: 0,
         head_ref_hash: 0,
@@ -602,9 +604,12 @@ fn diff_fingerprint(root: &Path, relative: &str) -> DiffFingerprint {
         fingerprint.head_tail_hash = sample_head_tail_hash(&root.join(relative), metadata.len());
     }
     // git 暂存区变化会重写 .git/index；非 git 工作区无此文件，字段保持 0。
+    // index 条目定长、同路径同 SHA 位数，重写往往尺寸不变，且同样可能落在
+    // 同一 mtime 粒度内——与 HEAD ref 一样加内容哈希兜底。
     if let Ok(metadata) = root.join(".git/index").metadata() {
         fingerprint.index_size = metadata.len();
         fingerprint.index_modified = modified_nanos(&metadata);
+        fingerprint.index_hash = sample_head_tail_hash(&root.join(".git/index"), metadata.len());
     }
     // git diff --cached 比较 index 与 HEAD；reset --soft / update-ref / commit 只移动
     // HEAD（改写其指向的 ref 文件），可能不更新 .git/index 或工作区。解析 .git/HEAD
@@ -1439,19 +1444,40 @@ mod tests {
         assert_eq!(third.text, fourth.text);
     }
 
+    // 采样某时刻的 mtime 并可回写:同尺寸同 mtime 重写(比依赖文件系统时间
+    // 粒度更确定——没有内容哈希时这些测试在任何平台上都必然失败,而不是只在
+    // coarse-mtime 的 Linux CI 上才暴露)。
+    fn current_times(path: &Path) -> fs::FileTimes {
+        let metadata = fs::metadata(path).unwrap();
+        fs::FileTimes::new().set_modified(metadata.modified().unwrap())
+    }
+
+    fn apply_times(path: &Path, times: fs::FileTimes) {
+        let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_times(times).unwrap();
+    }
+
     #[test]
     fn diff_fingerprint_covers_file_and_git_index() {
         let root = TestDir::new("diff-fingerprint");
         fs::create_dir_all(root.path().join(".git")).unwrap();
-        fs::write(root.path().join(".git/index"), b"idx1").unwrap();
+        let index = root.path().join(".git/index");
+        fs::write(&index, b"idx1").unwrap();
         fs::write(root.path().join("main.py"), "print(1)\n").unwrap();
 
         let baseline = diff_fingerprint(root.path(), "main.py");
+        // 暂存区变化(.git/index 重写)→ 指纹变化。index 条目定长、同路径同
+        // SHA 位数,重写尺寸不变;显式固定回基线 mtime 后,只有内容哈希能失效。
+        let index_stamp = current_times(&index);
+        fs::write(&index, b"idx2").unwrap();
+        apply_times(&index, index_stamp);
+        assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
+        // 内容与 mtime 全部还原 → 指纹回到基线(同内容不产生虚假失效)。
+        fs::write(&index, b"idx1").unwrap();
+        apply_times(&index, index_stamp);
+        assert_eq!(baseline, diff_fingerprint(root.path(), "main.py"));
         // 文件内容变化 → 指纹变化。
         fs::write(root.path().join("main.py"), "print(2)\n").unwrap();
-        assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
-        // 暂存区变化（.git/index 重写）→ 指纹变化。
-        fs::write(root.path().join(".git/index"), b"idx2").unwrap();
         assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
     }
 
@@ -1470,11 +1496,22 @@ mod tests {
         fs::write(root.path().join("main.py"), "print(1)\n").unwrap();
 
         let baseline = diff_fingerprint(root.path(), "main.py");
+        let ref_stamp = current_times(&head_ref);
         // 等价 reset --soft <other-commit>：分支 ref 同尺寸改写（index 与工作区不变）。
         fs::write(&head_ref, format!("{}\n", "b".repeat(40))).unwrap();
+        apply_times(&head_ref, ref_stamp);
         assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
+        // 内容与 mtime 全部还原 → 指纹回到基线(同内容不产生虚假失效)。
+        fs::write(&head_ref, format!("{}\n", "a".repeat(40))).unwrap();
+        apply_times(&head_ref, ref_stamp);
+        assert_eq!(baseline, diff_fingerprint(root.path(), "main.py"));
 
         // symref 目标切换（checkout）也算 HEAD 变化：HEAD 文件内容改写即失效。
+        // dev ref 与 main 同尺寸、并固定为同一 mtime：失效只能来自内容哈希
+        // （解析路径跟随 symref 切到 dev 后，内容哈希不同）。
+        let dev_ref = root.path().join(".git/refs/heads/dev");
+        fs::write(&dev_ref, format!("{}\n", "c".repeat(40))).unwrap();
+        apply_times(&dev_ref, ref_stamp);
         fs::write(root.path().join(".git/HEAD"), "ref: refs/heads/dev\n").unwrap();
         assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
     }
