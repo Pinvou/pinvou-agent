@@ -140,13 +140,15 @@ pub struct AgenticTaskRequest {
     /// sidecar write is required).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<AgenticTaskMode>,
-    /// Pin the session's model for this run, like the GUI per-session model
-    /// switch: validated against the configured model list
+    /// Pin the session's model, like the GUI per-session model switch:
+    /// validated against the configured model list
     /// (`UserPrefs::model_by_id`, the same check the `set_session_model`
     /// command performs), then bound through the eval model-selection route
-    /// for a fresh session or the GUI chip-switch path (sidecar write +
-    /// engine evict) for an existing session. Unknown model →
-    /// `agent_model_not_found`.
+    /// for a fresh session or the GUI chip-switch path (per-session sidecar
+    /// write + engine evict) for an existing session. The chip-switch
+    /// binding persists on the session: it is written during setup, so it
+    /// stays in force even if the run later fails or times out. Unknown
+    /// model → `agent_model_not_found`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
     /// Files attached to the prompt, processed by the GUI attachment
@@ -236,7 +238,10 @@ pub fn run_agentic_task_headless(request: AgenticTaskRequest) -> Result<AgenticT
 /// turn is submitted, a report is
 /// always returned (internal failures land in the `error` field); setup faults
 /// (request validation, model pin, session prepare, submit) propagate as `Err`
-/// instead — the CLI surfaces those as exit 1 without a report.
+/// instead — the CLI surfaces those as exit 1 without a report. A session
+/// freshly created by such a failed run is deleted best-effort with the same
+/// eval cleanup as `KEEP_SESSION=0`, so no empty eval-titled chat is left
+/// behind; caller-provided sessions are never auto-deleted.
 ///
 /// Persisting counts against the shared 50-session retention cap: when a
 /// fresh run's prepare-time save evicts chat sessions at the cap (pinned
@@ -319,15 +324,28 @@ pub async fn run_agentic_task(
     // sweep can still evict it later exactly like any GUI chat session.
     // Only this run's eval observation mark is dropped, and the session is
     // left in place for the caller.
+    //
+    // One exception to keep-by-default: an `Err` outcome on a FRESHLY
+    // created session. The session was created by prepare under the eval
+    // factory title ("临时评测") and the turn never produced a report (the
+    // CLI rename never ran either — the CLI got `Err`), so keeping it would
+    // leave an empty eval-titled stray chat in the GUI's session list. Such
+    // a session is deleted through the exact cleanup the KEEP=0 branch uses
+    // (same order: schedule the late sweep, then the turn-gated delete).
+    // Both steps are best-effort and the delete result is discarded, so a
+    // failed cleanup never masks the original error returned below. Failures
+    // before prepare created anything degrade to a no-op: the delete of a
+    // not-yet-existing id fails with NotFound and the late sweep of its
+    // (absent) directory converges immediately.
     let keep_session = keep_session_from_env();
     if existing_session {
         crate::features::assistant::timing::unregister_eval_observation(&session_id);
-    } else if keep_session {
-        crate::features::assistant::timing::unregister_eval_observation(&session_id);
-        runtime.pool.evict(&session_id).await;
-    } else {
+    } else if outcome.is_err() || !keep_session {
         runtime.schedule_eval_cleanup(&session_id);
         let _ = runtime.close_eval_session_result(&session_id).await;
+    } else {
+        crate::features::assistant::timing::unregister_eval_observation(&session_id);
+        runtime.pool.evict(&session_id).await;
     }
     // Disarm before reporting: the prepare-time save happened before any setup
     // fault could surface, so the evictions are real regardless of the final
@@ -483,7 +501,9 @@ async fn run_turn(
             // creation would overwrite the transcript). A model pin goes
             // through the GUI chip-switch path (per-session sidecar write +
             // engine evict); the engine itself lazily spawns on submit,
-            // exactly like a GUI send.
+            // exactly like a GUI send. The sidecar write lands during this
+            // setup and persists on the session even if the later submit
+            // fails.
             if let Some(model_id) = request.model_id.as_deref() {
                 runtime
                     .pool
@@ -804,11 +824,25 @@ fn partial_turn_analysis(
     )
 }
 
+/// Fresh session id for one agentic run: `agentic_{pid}_{unix_millis}_{counter}`.
+/// The pid alone is not unique across time: OS pid reuse can hand a later
+/// process the same pid while the per-process counter restarts at 0, so the
+/// old `agentic_{pid}_{counter}` shape could reproduce an id that is still
+/// persisted weeks later, and `create_empty_with_id` would overwrite it
+/// without an existence check. The unix-millisecond component bounds a
+/// collision to same-millisecond reuse of both the pid and the counter. The
+/// id stays inside the session id alphabet `[A-Za-z0-9_-]` (see
+/// `features/sessions/validators.rs`), so the store accepts it unchanged.
 fn fresh_session_id() -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
+    let unix_millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
     format!(
-        "agentic_{}_{}",
+        "agentic_{}_{}_{}",
         std::process::id(),
+        unix_millis,
         NEXT.fetch_add(1, Ordering::Relaxed)
     )
 }
@@ -818,8 +852,8 @@ mod tests {
     use super::{
         AgenticTaskAttachment, AgenticTaskMode, AgenticTaskReport, AgenticTaskRequest,
         AgenticToolEvent, DEFAULT_TIMEOUT_SECS, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS,
-        MAX_TIMEOUT_SECS, ensure_existing_chat_session, ensure_model_exists, keep_session_from_env,
-        validate_attachments,
+        MAX_TIMEOUT_SECS, ensure_existing_chat_session, ensure_model_exists, fresh_session_id,
+        keep_session_from_env, validate_attachments,
     };
     use crate::features::sessions::{
         MAX_SESSIONS_PER_KIND, ScheduledRunMode, ScheduledRunProfile, SessionStore,
@@ -871,6 +905,26 @@ mod tests {
     fn locked_env(vars: &[&'static str]) -> (std::sync::MutexGuard<'static, ()>, EnvGuard) {
         let lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         (lock, EnvGuard::new(vars))
+    }
+
+    /// RAII cleanup for a test scratch directory under `std::env::temp_dir()`:
+    /// removed best-effort on drop (normal return or panic unwind). Removal
+    /// failures are ignored on purpose — a leaked temp dir must never fail a
+    /// test, and an OS that still holds the directory open simply skips it.
+    struct TempDirGuard {
+        path: PathBuf,
+    }
+
+    impl TempDirGuard {
+        fn new(path: PathBuf) -> Self {
+            Self { path }
+        }
+    }
+
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
     }
 
     fn default_request(prompt: &str) -> AgenticTaskRequest {
@@ -1050,11 +1104,13 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
+        let _tmp_cleanup = TempDirGuard::new(tmp.clone());
         // SAFETY: ENV_LOCK held; env writes are serialized across tests.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let error = ensure_model_exists("definitely-missing-model").unwrap_err();
         assert!(error.to_string().contains("agent_model_not_found"));
-        // `_env` restores the captured PINVOU3_HOME on return or panic.
+        // `_tmp_cleanup` removes the scratch dir on return or panic;
+        // `_env` restores the captured PINVOU3_HOME.
     }
 
     #[test]
@@ -1067,6 +1123,7 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
+        let _tmp_cleanup = TempDirGuard::new(tmp.clone());
         // SAFETY: ENV_LOCK held; env writes are serialized across tests.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
@@ -1097,7 +1154,8 @@ mod tests {
         );
         let error = ensure_existing_chat_session(&store, &chat.metadata.id).unwrap_err();
         assert!(error.to_string().contains("agent_session_not_chat"));
-        // `_env` restores the captured PINVOU3_HOME on return or panic.
+        // `_tmp_cleanup` removes the scratch dir (store included) on return
+        // or panic; `_env` restores the captured PINVOU3_HOME.
     }
 
     /// The eviction warning keys on the real retention event, not the turn's
@@ -1220,5 +1278,38 @@ mod tests {
         // 7 days; the CLI parse cap and the library clamp must stay in lockstep
         // so `Instant + Duration` can never overflow.
         assert_eq!(MAX_TIMEOUT_SECS, 7 * 24 * 60 * 60);
+    }
+
+    #[test]
+    fn fresh_session_id_keeps_store_alphabet_and_time_component() {
+        let first = fresh_session_id();
+        let second = fresh_session_id();
+        for id in [&first, &second] {
+            assert!(
+                id.starts_with("agentic_"),
+                "{id} must keep the agentic_ prefix"
+            );
+            assert!(
+                id.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
+                "{id} must stay inside the session id alphabet [A-Za-z0-9_-]"
+            );
+            // pid + unix millis + counter: the time component must be present
+            // so a later process reusing the pid (counter restarted at 0)
+            // cannot reproduce an id that is still persisted.
+            let parts: Vec<&str> = id.strip_prefix("agentic_").unwrap().split('_').collect();
+            assert_eq!(
+                parts.len(),
+                3,
+                "{id} must be agentic_<pid>_<unix_millis>_<counter>"
+            );
+            assert!(
+                parts[0].parse::<u32>().is_ok() && parts[1].parse::<u128>().is_ok(),
+                "{id} pid and unix-millis components must be numeric"
+            );
+        }
+        // The per-process counter keeps consecutive ids distinct even when
+        // both are generated within the same millisecond.
+        assert_ne!(first, second);
     }
 }
