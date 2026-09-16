@@ -635,7 +635,9 @@ fn tools_install(
     for sid in mgr.companion_skills(id) {
         match SkillMarketplaceManager::new().install(&sid) {
             Ok(()) => {
-                skill_scope::sync_deny_all_scopes_after_skill_install(&sid);
+                if let Err(error) = skill_scope::sync_deny_all_scopes_after_skill_install(&sid) {
+                    eprintln!("[plugins] companion skill '{sid}' scope sync failed: {error}");
+                }
                 companion_note.push(sid);
             }
             Err(error) => {
@@ -644,7 +646,8 @@ fn tools_install(
         }
     }
     // DenyAll scopes (e.g. code) keep newly installed packages off by default.
-    sync_deny_all_scopes_after_install(id);
+    sync_deny_all_scopes_after_install(id)
+        .map_err(|error| feature_error("tools install", id, error))?;
     // The GUI validates remote MCP connections right after install
     // (validate_on_install manifests). The handshake runs on the foundation's
     // async MCP stack, unavailable headless: surface an explicit warning
@@ -698,17 +701,20 @@ fn tools_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome
         SkillMarketplaceManager::new()
             .uninstall(sid)
             .map_err(|error| feature_error("tools uninstall", id, error))?;
-        skill_scope::remove_skill_from_disabled_scopes(sid);
+        skill_scope::remove_skill_from_disabled_scopes(sid)
+            .map_err(|error| feature_error("tools uninstall", id, error))?;
     }
     mgr.uninstall(id)
         .map_err(|error| feature_error("tools uninstall", id, error))?;
     if recycles_with_package {
         for sid in &companions {
-            skill_scope::remove_skill_from_disabled_scopes(sid);
+            skill_scope::remove_skill_from_disabled_scopes(sid)
+                .map_err(|error| feature_error("tools uninstall", id, error))?;
         }
     }
     // Keep the disabled sets free of stale connector ids (GUI parity).
-    pinvou3_lib::features::marketplace::remove_connector_from_disabled_scopes(id);
+    pinvou3_lib::features::marketplace::remove_connector_from_disabled_scopes(id)
+        .map_err(|error| feature_error("tools uninstall", id, error))?;
     let action = if recycles_with_package {
         "uninstalled (moved to recycle bin)"
     } else {
@@ -881,7 +887,8 @@ fn skills_install(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> 
     SkillMarketplaceManager::new()
         .install(id)
         .map_err(|error| feature_error("skills install", id, error))?;
-    skill_scope::sync_deny_all_scopes_after_skill_install(id);
+    skill_scope::sync_deny_all_scopes_after_skill_install(id)
+        .map_err(|error| feature_error("skills install", id, error))?;
     let value = serde_json::json!({ "id": id, "action": "installed" });
     Ok(success(render(output, format!("installed {id}"), &value)))
 }
@@ -912,7 +919,8 @@ fn skills_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcom
     SkillMarketplaceManager::new()
         .uninstall(id)
         .map_err(|error| feature_error("skills uninstall", id, error))?;
-    skill_scope::remove_skill_from_disabled_scopes(id);
+    skill_scope::remove_skill_from_disabled_scopes(id)
+        .map_err(|error| feature_error("skills uninstall", id, error))?;
     let value = serde_json::json!({ "id": id, "action": "uninstalled" });
     Ok(success(render(output, format!("uninstalled {id}"), &value)))
 }
@@ -1085,7 +1093,8 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
     })?;
     // Upload safety default (GUI parity): imported packages start disabled in
     // initialized DenyAll scopes until explicitly enabled.
-    sync_deny_all_scopes_after_install(&report.id);
+    sync_deny_all_scopes_after_install(&report.id)
+        .map_err(|error| feature_error("import", &report.id, error))?;
     let kind = serde_json::to_value(&report.kind)
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))
@@ -1376,6 +1385,9 @@ fn set_enabled(
         // swallowed by the storage layer, so persistence is verified by
         // reading the scope back: an enable must have removed the id, and a
         // disable must have recorded it.
+        // The RMW is fail-closed: an unavailable bundle lock (or a failing
+        // write) surfaces here instead of falling through to the read-back
+        // verification below, which could otherwise bless a stale state.
         pinvou3_lib::features::marketplace::update_disabled_bundles_for(
             connector_scope,
             |ids: &mut Vec<String>| {
@@ -1385,7 +1397,14 @@ fn set_enabled(
                     ids.push(packages.clone());
                 }
             },
-        );
+        )
+        .map_err(|error| {
+            CliError::failed(format!(
+                "plugins {action}: could not update disabled bundles for {id} in \
+                 scope {} : {error}",
+                connector_scope.as_str()
+            ))
+        })?;
         let reloaded =
             pinvou3_lib::features::marketplace::load_disabled_bundles_for(connector_scope);
         let present = reloaded.iter().any(|existing| existing == &packages);
@@ -1429,8 +1448,9 @@ fn known_installed_ids() -> Vec<String> {
 fn project_skills(enabled: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     // `skill_scope::set_project_skills_enabled` (alias of the scope.rs
     // storage the GUI set_project_skills_enabled command writes). The write
-    // swallows failures internally; the getter verifies the persisted value.
-    skill_scope::set_project_skills_enabled(enabled);
+    // is fail-closed; the getter still verifies the persisted value.
+    skill_scope::set_project_skills_enabled(enabled)
+        .map_err(|error| CliError::failed(format!("plugins project-skills: {error}")))?;
     if skill_scope::project_skills_enabled() != enabled {
         return Err(CliError::failed(
             "plugins project-skills: could not persist the new value (the storage write \
