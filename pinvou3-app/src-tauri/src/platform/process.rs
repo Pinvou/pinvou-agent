@@ -1,7 +1,9 @@
 use std::ffi::OsStr;
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
+
+use wait_timeout::ChildExt;
 
 pub(crate) struct HiddenCommand;
 
@@ -195,7 +197,13 @@ fn output_with_timeout_inner(
                     let _ = kill_process_tree(child.id());
                 }
                 let _ = child.kill();
-                let _ = child.wait();
+                let reap_note = match reap_killed_child(&mut child, REAP_GRACE) {
+                    Reap::Reaped => None,
+                    Reap::Abandoned => Some(String::from(
+                        "termination requested but the child has not exited; it may linger",
+                    )),
+                    Reap::Failed(error) => Some(format!("reaping the child failed: {error}")),
+                };
                 if kill_tree_on_timeout {
                     // A privileged descendant may be outside the caller's signal
                     // permission even after its wrapper is gone. Never block the
@@ -204,6 +212,17 @@ fn output_with_timeout_inner(
                     drop(stderr_reader);
                     return Err(format!(
                         "{program} timed out after {}s: subprocess tree termination requested",
+                        timeout.as_secs()
+                    ));
+                }
+                if let Some(reap_note) = reap_note {
+                    // A child that refuses to die may still hold the pipes
+                    // open, so joining the readers could block forever;
+                    // abandon them like the kill-tree path does.
+                    drop(stdout_reader);
+                    drop(stderr_reader);
+                    return Err(format!(
+                        "{program} timed out after {}s: {reap_note}",
                         timeout.as_secs()
                     ));
                 }
@@ -220,8 +239,10 @@ fn output_with_timeout_inner(
                     let _ = kill_process_tree(child.id());
                 }
                 let _ = child.kill();
-                let _ = child.wait();
-                if kill_tree_on_timeout {
+                let reaped = matches!(reap_killed_child(&mut child, REAP_GRACE), Reap::Reaped);
+                if kill_tree_on_timeout || !reaped {
+                    // The tree may have surviving members, or the child may
+                    // still hold the pipes open: never block on the readers.
                     drop(stdout_reader);
                     drop(stderr_reader);
                     return Err(format!("{program} wait error: {error}"));
@@ -238,6 +259,38 @@ fn output_with_timeout_inner(
         stdout: stdout_reader.join().unwrap_or_default(),
         stderr: stderr_reader.join().unwrap_or_default(),
     })
+}
+
+/// How long to keep reaping a child after a termination request. A
+/// successful `kill()` does not force a prompt exit: a process stuck in
+/// uninterruptible kernel sleep (Unix D state) never observes SIGKILL, so
+/// a blocking `wait()` could hang the caller past its own timeout budget.
+/// Bounded reaping trades that unbounded hang for a bounded, reported
+/// leak.
+pub(crate) const REAP_GRACE: Duration = Duration::from_secs(2);
+
+/// Outcome of [`reap_killed_child`].
+pub(crate) enum Reap {
+    /// Child exited and was reaped.
+    Reaped,
+    /// Grace elapsed without an observed exit; the child may linger.
+    Abandoned,
+    /// Waiting for the child errored; the reap is not established.
+    Failed(std::io::Error),
+}
+
+/// Reap a killed child, bounded by `grace`. Waits via `wait_timeout`
+/// instead of a blocking `wait()` so the caller keeps its timeout
+/// guarantee even when the child cannot exit promptly, and returns the
+/// outcome instead of swallowing wait errors. The child does not have to
+/// have accepted the kill for this to stay bounded: at most `grace` is
+/// spent even on a still-live child.
+pub(crate) fn reap_killed_child(child: &mut Child, grace: Duration) -> Reap {
+    match child.wait_timeout(grace) {
+        Ok(Some(_)) => Reap::Reaped,
+        Ok(None) => Reap::Abandoned,
+        Err(error) => Reap::Failed(error),
+    }
 }
 
 fn subprocess_output_detail(stdout: &[u8], stderr: &[u8]) -> String {
@@ -418,6 +471,59 @@ pub(crate) fn hide_tokio_console(_command: &mut tokio::process::Command) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// reap_killed_child collects an exited child promptly instead of
+    /// waiting out the grace deadline. Soft-skips where no `sleep` binary
+    /// exists (Windows).
+    #[test]
+    fn reap_killed_child_reaps_exited_child() {
+        if Command::new("sleep").arg("0").status().is_err() {
+            eprintln!("skipping: no `sleep` binary on this platform");
+            return;
+        }
+        let mut child = Command::new("sleep")
+            .arg("0")
+            .spawn()
+            .expect("spawn sleep 0");
+        let started = Instant::now();
+        assert!(
+            matches!(reap_killed_child(&mut child, REAP_GRACE), Reap::Reaped),
+            "an exited child must be reaped successfully"
+        );
+        assert!(
+            started.elapsed() < REAP_GRACE,
+            "reaping an exited child must not wait out the grace deadline"
+        );
+    }
+
+    /// The Abandoned branch is induced deterministically by a zero grace
+    /// budget on a live child: no SIGKILL-surviving process is needed. Only
+    /// the Failed branch is not inducible in-process (std caches the exit
+    /// status, so a collected child can never report a wait error).
+    #[test]
+    fn reap_killed_child_abandons_a_live_child_on_zero_grace() {
+        if Command::new("sleep").arg("0").status().is_err() {
+            eprintln!("skipping: no `sleep` binary on this platform");
+            return;
+        }
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep 30");
+        assert!(
+            matches!(
+                reap_killed_child(&mut child, Duration::ZERO),
+                Reap::Abandoned
+            ),
+            "a live child with a zero grace budget must be abandoned"
+        );
+        // Clean up so the test leaves no zombie or stray sleeper behind.
+        let _ = child.kill();
+        assert!(
+            matches!(reap_killed_child(&mut child, REAP_GRACE), Reap::Reaped),
+            "cleanup kill must reap the child"
+        );
+    }
 
     #[test]
     fn git_override_keys_cover_redirection_and_config_injection_without_identity() {

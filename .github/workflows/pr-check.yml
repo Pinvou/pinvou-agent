@@ -1336,7 +1336,9 @@ jobs:
             'features::voice::platform::windows::tests::closed_temp_wav_can_be_reopened_when_asr_denies_write_sharing' \
             'features::memory::tests::topic_migration_' \
             'connector_introspection_guard_matches_complete_names_only' \
-            'features::projects::tests::'; do
+            'features::projects::tests::' \
+            'run_with_timeout_reaps_and_stays_bounded' \
+            'reap_killed_child_'; do
             "$test_exe" "$filter" --test-threads=1 2>&1 | tee /tmp/windows_regression.log
             grep -qE 'running [1-9][0-9]* tests?' /tmp/windows_regression.log || {
               echo "FAIL: 回归过滤器 '$filter' 匹配 0 个测试(疑似测试改名导致静默空跑)" >&2
