@@ -78,48 +78,6 @@ pub async fn get_bundle_visibility(scope: Option<String>) -> Result<Vec<String>,
 // 技能开关（按会话类型 scope 独立持久，skill 双 scope 治理）
 // ---------------------------------------------------------------------------
 
-/// pinvou3 技能开关：写某 scope 被禁用的技能 id 列表（市场 id）。落盘
-/// `~/.pinvou3/disabled_bundles.json`（scope 收敛后与连接器开关同一文件）→ 重写该 scope 在线会话的组合目录（下一轮
-/// prompt 即生效）→ 热刷工具白名单（组合目录空/非空会改变 `load_skill` 的隐藏
-/// 判定）。`scope` = "plain"(缺省)或 "code"。
-#[tauri::command]
-pub async fn set_disabled_skills(
-    skill_ids: Vec<String>,
-    scope: Option<String>,
-    app: AppHandle,
-    pool: State<'_, EnginePool>,
-) -> Result<(), String> {
-    let scope = parse_connector_scope(scope.as_deref())?;
-    let ids = skill_ids.clone();
-    tokio::task::spawn_blocking(move || {
-        crate::features::marketplace::skill_scope::save_disabled_skills_for(scope, &ids);
-    })
-    .await
-    .map_err(|e| format!("set_disabled_skills join: {e}"))?;
-    // 事件驱动时机（§2.3.2）：该 scope 在线会话组合目录增量重写，下一轮 prompt 生效。
-    pool.refresh_live_sessions_skills().await;
-    // load_skill 隐藏判定随目录空/非空变化，热刷 disallowed_tools 与 UI 事件。
-    pool.refresh_disallowed_tools().await;
-    // 技能开关影响 execpolicy 规则集（skill denied_prefixes 与组合目录派生 deny），需双向热刷
-    pool.refresh_permission_rulesets().await;
-    let payload = serde_json::json!({});
-    let _ = app.emit("remote_control:tools_changed", payload.clone());
-    crate::features::remote_control::forward_app_event(
-        &app,
-        "remote_control:tools_changed",
-        payload,
-    );
-    Ok(())
-}
-
-/// pinvou3 技能开关：读某 scope 被禁用的技能 id 列表。code scope 未初始化时
-/// 返回全部已安装技能 id（默认全禁，显式开启），前端据此渲染开关状态。
-#[tauri::command]
-pub async fn get_disabled_skills(scope: Option<String>) -> Result<Vec<String>, String> {
-    let scope = parse_connector_scope(scope.as_deref())?;
-    Ok(crate::features::marketplace::skill_scope::load_disabled_skills_for(scope))
-}
-
 /// 项目级 skills 开关（默认关，§2.4）。开启后绑项目的 code 会话组合目录额外
 /// 包含项目 `.agents/skills` 等目录——项目内文本是 prompt-injection 面，前端
 /// 在开启路径展示注入风险警告。
@@ -136,7 +94,7 @@ pub async fn set_project_skills_enabled(
     // 同步 execpolicy 规则集：项目级 skills 重新纳入 deny/allow 集合。
     pool.refresh_permission_rulesets().await;
     // 广播工具变更：项目级 skills 开关影响 code 会话组合目录，其它窗口/实例
-    // 需借此事件刷新开关状态（与 set_disabled_skills 对齐）。
+    // 需借此事件刷新开关状态（与 set_disabled_connectors 对齐）。
     let payload = serde_json::json!({});
     let _ = app.emit("remote_control:tools_changed", payload.clone());
     crate::features::remote_control::forward_app_event(
@@ -210,29 +168,15 @@ pub async fn feishu_ensure_cli(app: AppHandle) -> Result<Value, String> {
     }
     Ok(result)
 }
-async_command_passthrough!(feishu_domain, feishu_status() -> Result<Value, String>);
 async_command_passthrough!(feishu_domain, feishu_connect_begin(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(feishu_domain, feishu_cancel(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(feishu_domain, feishu_logout() -> Result<Value, String>);
 /// 连接成功/断开后的技能门控收口：domain 层按 show 增删技能落盘、show=true 时
 /// 同步各 scope 禁用集 → 热刷 execpolicy 规则集（五轮评审 M-6：纯转发不刷
-/// ruleset，在跑引擎 CLI 硬拦截过期 = fail-open）。对照 `ima_connect` 与
-/// `set_feishu_enabled`（M-6a）的热刷做法。
+/// ruleset，在跑引擎 CLI 硬拦截过期 = fail-open）。对照 `ima_connect` 的热刷做法。
 #[tauri::command]
 pub async fn feishu_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, String> {
     let result = feishu_domain::feishu_apply_skills().await?;
-    pool.refresh_permission_rulesets().await;
-    Ok(result)
-}
-/// 连接器开关：domain 层写停用标志并同步各 scope 禁用集 → 热刷 execpolicy 规则集
-/// （四轮评审 M-6a：纯转发不刷 ruleset，在跑引擎 CLI 硬拦截过期 = fail-open）。
-/// 对照 `set_disabled_connectors` 的热刷做法。
-#[tauri::command]
-pub async fn set_feishu_enabled(
-    enabled: bool,
-    pool: State<'_, EnginePool>,
-) -> Result<Value, String> {
-    let result = feishu_domain::set_feishu_enabled(enabled).await?;
     pool.refresh_permission_rulesets().await;
     Ok(result)
 }
@@ -246,7 +190,6 @@ pub async fn wecom_ensure_cli(app: AppHandle) -> Result<Value, String> {
     }
     Ok(result)
 }
-async_command_passthrough!(wecom_domain, wecom_status() -> Result<Value, String>);
 async_command_passthrough!(wecom_domain, wecom_connect_begin(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(wecom_domain, wecom_cancel(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(wecom_domain, wecom_logout() -> Result<Value, String>);
@@ -255,16 +198,6 @@ async_command_passthrough!(wecom_domain, wecom_logout() -> Result<Value, String>
 #[tauri::command]
 pub async fn wecom_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, String> {
     let result = wecom_domain::wecom_apply_skills().await?;
-    pool.refresh_permission_rulesets().await;
-    Ok(result)
-}
-/// 同 `set_feishu_enabled`（M-6a）：开关落盘后热刷 execpolicy 规则集。
-#[tauri::command]
-pub async fn set_wecom_enabled(
-    enabled: bool,
-    pool: State<'_, EnginePool>,
-) -> Result<Value, String> {
-    let result = wecom_domain::set_wecom_enabled(enabled).await?;
     pool.refresh_permission_rulesets().await;
     Ok(result)
 }
@@ -278,7 +211,6 @@ pub async fn dingtalk_ensure_cli(app: AppHandle) -> Result<Value, String> {
     }
     Ok(result)
 }
-async_command_passthrough!(dingtalk_domain, dingtalk_status() -> Result<Value, String>);
 async_command_passthrough!(dingtalk_domain, dingtalk_connect_begin(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(dingtalk_domain, dingtalk_cancel(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(dingtalk_domain, dingtalk_logout() -> Result<Value, String>);
@@ -287,16 +219,6 @@ async_command_passthrough!(dingtalk_domain, dingtalk_logout() -> Result<Value, S
 #[tauri::command]
 pub async fn dingtalk_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, String> {
     let result = dingtalk_domain::dingtalk_apply_skills().await?;
-    pool.refresh_permission_rulesets().await;
-    Ok(result)
-}
-/// 同 `set_feishu_enabled`（M-6a）：开关落盘后热刷 execpolicy 规则集。
-#[tauri::command]
-pub async fn set_dingtalk_enabled(
-    enabled: bool,
-    pool: State<'_, EnginePool>,
-) -> Result<Value, String> {
-    let result = dingtalk_domain::set_dingtalk_enabled(enabled).await?;
     pool.refresh_permission_rulesets().await;
     Ok(result)
 }
@@ -310,7 +232,6 @@ pub async fn tmeet_ensure_cli(app: AppHandle) -> Result<Value, String> {
     }
     Ok(result)
 }
-async_command_passthrough!(tmeet_domain, tmeet_status() -> Result<Value, String>);
 async_command_passthrough!(tmeet_domain, tmeet_connect_begin(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(tmeet_domain, tmeet_cancel(app: AppHandle) -> Result<Value, String>);
 async_command_passthrough!(tmeet_domain, tmeet_logout() -> Result<Value, String>);
@@ -319,16 +240,6 @@ async_command_passthrough!(tmeet_domain, tmeet_logout() -> Result<Value, String>
 #[tauri::command]
 pub async fn tmeet_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, String> {
     let result = tmeet_domain::tmeet_apply_skills().await?;
-    pool.refresh_permission_rulesets().await;
-    Ok(result)
-}
-/// 同 `set_feishu_enabled`（M-6a）：开关落盘后热刷 execpolicy 规则集。
-#[tauri::command]
-pub async fn set_tmeet_enabled(
-    enabled: bool,
-    pool: State<'_, EnginePool>,
-) -> Result<Value, String> {
-    let result = tmeet_domain::set_tmeet_enabled(enabled).await?;
     pool.refresh_permission_rulesets().await;
     Ok(result)
 }

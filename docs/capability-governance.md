@@ -12,7 +12,7 @@
 > 统一包模型与「一个包 = 一个开关」已部分落地（`BundleStore` + `bundle_readiness`），
 > §3.3 的运行时工具名发现（现为 manifest 预测）、内置 CLI 连接器归并、统一失效入口
 > （现为各开关命令分别触发刷新）与 §6 的泛化命令面（现为 `set_disabled_connectors` /
-> `set_disabled_skills` 等）为**已定方向、未实施**，实施时以本文档为准并更新本注记。
+> `set_bundle_visibility` 等）为**已定方向、未实施**，实施时以本文档为准并更新本注记。
 
 ---
 
@@ -206,7 +206,7 @@ UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI
 面是经 `bash` 调用 CLI，开关只能隐藏引导；要封死需 bash hook 拦截，
 当前作为已接受风险记录于此。
 
-## 6. 前端接线（目标形态，未实施——现状为 `set_disabled_connectors` / `set_disabled_skills` / `set_bundle_visibility` 等各开关命令 + `remote_control:tools_changed` 事件）
+## 6. 前端接线（目标形态，未实施——现状为 `set_disabled_connectors` / `set_bundle_visibility` 等各开关命令 + `remote_control:tools_changed` 事件）
 
 - 命令面：`list_capability_items(scope)` 读全量状态（默认已合并），
   `set_capability_enabled(scope, id, enabled)` 唯一写入口；前端不在 JS 侧

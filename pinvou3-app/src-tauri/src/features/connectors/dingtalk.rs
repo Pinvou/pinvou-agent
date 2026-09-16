@@ -217,6 +217,7 @@ pub async fn dingtalk_ensure_cli() -> Result<Value, String> {
 }
 
 /// 查询当前钉钉连接状态。只返回布尔,不把身份信息带进 webview。
+/// (仅命令层 `bundle_readiness` 的 CLI 分派内部调用,不再有独立 tauri command。)
 pub async fn dingtalk_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         if !dws_cli_present() {
@@ -455,21 +456,6 @@ pub async fn dingtalk_apply_skills() -> Result<Value, String> {
         crate::features::marketplace::sync_deny_all_scopes_after_install("dingtalk");
     }
     Ok(json!({ "visible": show }))
-}
-pub async fn set_dingtalk_enabled(enabled: bool) -> Result<Value, String> {
-    let show = tokio::task::spawn_blocking(move || -> Result<bool, String> {
-        set_dingtalk_disabled_flag(!enabled)?;
-        // 停用标志 ↔ 统一禁用集桥接（见 set_feishu_enabled 同名注释）。
-        crate::features::marketplace::sync_disabled_bundles_for_connector_switch(
-            "dingtalk", enabled,
-        );
-        let show = dingtalk_skills_should_show();
-        GATE.apply_skills(show)?;
-        Ok(show)
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {e}"))??;
-    Ok(json!({ "ok": true, "visible": show }))
 }
 pub async fn dingtalk_skills_state() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {

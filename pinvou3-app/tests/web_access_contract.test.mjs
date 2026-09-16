@@ -204,27 +204,25 @@ for (const command of ['organize_memory', 'get_memory_organize_history']) {
   assert.equal(allowed.has(command), true, `${command} must be allowed on Web (memory organize)`);
 }
 
-// 已授权连接器的只读状态查询属于 WebUI 业务面（ToolStoreView 挂载即调用 *_status，
-// SettingsView 的 composer 工具菜单调用 *_skills_state）。任一遗漏会让对应连接器在
+// 已授权连接器的开关/技能状态查询属于 WebUI 业务面（SettingsView 的 composer
+// 工具菜单调用 *_skills_state；授权态注入由 get_marketplace_tool_auth_status
+// 在命令层内部完成，前端不再直接调用 *_status）。任一遗漏会让对应连接器在
 // Web 端永远显示未连接：卡片因 externalAuth 不可用而依赖 installed 徽标展示。
-// 连接器开关/装卸（set_*_enabled、*_ensure_cli、*_apply_skills 等）仍保持桌面专用。
+// 连接器开关/装卸（*_ensure_cli、*_apply_skills 等）仍保持桌面专用。
 for (const command of [
-  'feishu_status',
   'feishu_skills_state',
-  'wecom_status',
   'wecom_skills_state',
-  'dingtalk_status',
   'dingtalk_skills_state',
-  'tmeet_status',
   'tmeet_skills_state',
   'ima_status',
 ]) {
   assert.equal(allowed.has(command), true, `${command} must be allowed on Web (authorized connector status queries)`);
 }
 // 连接器变更面保持桌面专用：连接/断开（*_connect_begin/*_logout、ima_connect/ima_logout）、
-// 逐连接器开关（set_*_enabled）与全局清单写入（set_disabled_connectors）、原生 CLI 安装
-// （*_ensure_cli 触发下载物化）、技能装卸（*_apply_skills 向 ~/.pinvou3 物化技能包）、
-// OAuth 中断（*_cancel）、授权门重算（refresh_connector_auth_gates）。
+// 原生 CLI 安装（*_ensure_cli 触发下载物化）、技能装卸（*_apply_skills 向 ~/.pinvou3
+// 物化技能包）、OAuth 中断（*_cancel）、授权门重算（refresh_connector_auth_gates）。
+// 逐连接器开关（set_*_enabled）与技能级停用清单（set_disabled_skills/get_disabled_skills）
+// 命令已随死命令清理删除：连接器开关统一走 set_disabled_connectors。
 // 清单须与 lib.rs 连接器注册面保持同步。
 const deniedConnectorMutations = [];
 for (const connector of ["feishu", "wecom", "dingtalk", "tmeet"]) {
@@ -234,14 +232,12 @@ for (const connector of ["feishu", "wecom", "dingtalk", "tmeet"]) {
     `${connector}_ensure_cli`,
     `${connector}_cancel`,
     `${connector}_apply_skills`,
-    `set_${connector}_enabled`,
   );
 }
 deniedConnectorMutations.push(
   "ima_connect", "ima_logout", "set_disabled_connectors", "refresh_connector_auth_gates",
-  // 技能级停用清单与项目技能开关（settings 管理面，读写均桌面专用；
-  // 此前两头都不沾，加白名单不会触发测试——与「清单须与注册面同步」承诺矛盾）。
-  "set_disabled_skills", "get_disabled_skills",
+  // 项目技能开关（settings 管理面，读写均桌面专用；此前两头都不沾，加白名单不会
+  // 触发测试——与「清单须与注册面同步」承诺矛盾）。
   "set_project_skills_enabled", "get_project_skills_enabled",
 );
 for (const command of deniedConnectorMutations) {

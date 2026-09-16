@@ -112,8 +112,8 @@ pub async fn wecom_ensure_cli() -> Result<Value, String> {
 }
 
 /// 查询当前企微连接状态:`wecom-cli auth show --status`。
-/// 装了但低于 [`WECOM_MIN_VERSION`] 时回 `upgrade_required:true`(tmeet 同款三态;
-/// 前端 ToolStoreView 暂只读 connected,该字段待 tmeet/wecom 统一做「待升级」UI 后消费)。
+/// 装了但低于 [`WECOM_MIN_VERSION`] 时回 `upgrade_required:true`(tmeet 同款三态)。
+/// (仅命令层 `bundle_readiness` 的 CLI 分派内部调用,不再有独立 tauri command。)
 pub async fn wecom_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         // 没装就别 spawn auth show —— 省掉没装连接器的用户每次白等一次子进程;
@@ -386,24 +386,6 @@ pub async fn wecom_apply_skills() -> Result<Value, String> {
         crate::features::marketplace::sync_deny_all_scopes_after_install("wecom");
     }
     Ok(json!({ "visible": show }))
-}
-
-/// composer 企微开关:写停用标志 → 按规则增删技能。
-///
-/// 注:停用标志写盘此前用 `let _ =` 静默忽略失败,现统一为 `Result` 传播
-/// (Wave 1 批准的契约面变更)。
-pub async fn set_wecom_enabled(enabled: bool) -> Result<Value, String> {
-    let show = tokio::task::spawn_blocking(move || -> Result<bool, String> {
-        set_wecom_disabled_flag(!enabled)?;
-        // 停用标志 ↔ 统一禁用集桥接（见 set_feishu_enabled 同名注释）。
-        crate::features::marketplace::sync_disabled_bundles_for_connector_switch("wecom", enabled);
-        let show = wecom_skills_should_show();
-        GATE.apply_skills(show)?;
-        Ok(show)
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {e}"))??;
-    Ok(json!({ "ok": true, "visible": show }))
 }
 
 /// 给前端渲染开关态:`{connected, enabled(=未停用), visible}`。
