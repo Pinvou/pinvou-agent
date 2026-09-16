@@ -57,7 +57,7 @@ pub(crate) fn is_sched_session_id(id: &str) -> bool {
 /// partial echoes still trip the cleartext-logging scanner, so nothing of the
 /// raw id may survive into the output.
 pub(crate) fn mask_session_id(id: &str) -> String {
-    use std::hash::{Hash, Hasher};
+    use sha2::Digest;
     let (prefix, rest) = id.split_once('-').map_or(("", id), |(head, tail)| {
         if matches!(head, "aux" | "sched" | "eval") {
             (head, tail)
@@ -65,13 +65,16 @@ pub(crate) fn mask_session_id(id: &str) -> String {
             ("", id)
         }
     });
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    rest.hash(&mut hasher);
-    let digest = hasher.finish();
+    // A cryptographic digest, not a std Hasher: the cleartext-logging scanner
+    // taints values derived from the id through ordinary string/hash pipelines
+    // (alerts #217/#218 fired on a DefaultHasher-based mask), so the digest
+    // must be recognizably one-way for both the scanner and the reader.
+    let digest = sha2::Sha256::digest(rest.as_bytes());
+    let short = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]);
     if prefix.is_empty() {
-        format!("…{digest:08x}")
+        format!("…{short:08x}")
     } else {
-        format!("{prefix}-…{digest:08x}")
+        format!("{prefix}-…{short:08x}")
     }
 }
 
