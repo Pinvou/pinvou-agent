@@ -12,15 +12,15 @@ EXPECTED_COMMITS=37
 # 即 gitlink 沿维护分支领先 tag 而非另起分叉；r2 收口后随 TAG 常量一起退役。
 R1_CLOSURE="1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
 # Candidate registration: the skills phantom-tool text candidate (review
-# branch fix/skills-phantom-tool-text, paired CodeWhale PR #56) is six
+# branch fix/skills-phantom-tool-text, paired CodeWhale PR #56) is seven
 # commits above the registered maintenance head while its CodeWhale PR is
 # open. Layer 0 accepts the registered head or this candidate; re-pin the
 # entry when the candidate rebases and retire it once the commit lands on
 # pinvou3-clean (see docs/fork-modifications.md, the T3 section).
 # verify-public-submodule.sh stays red for the pinned candidate: that is
 # the registered candidate-period state, not a regression.
-CANDIDATE_HEAD="be2b2fe92d34a9f651822077e8c14458fc1d4293"
-CANDIDATE_COMMITS=34
+CANDIDATE_HEAD="4eb487cd3e6bcfc9b8315672a908979afd0dfd9b"
+CANDIDATE_COMMITS=35
 FAST_ONLY=0
 
 case "${1:-}" in
@@ -164,6 +164,18 @@ fingerprints=(
   "T3|父上下文提示只点名活工具          |CodeWhale/crates/tui/src/core/engine/context.rs|verify side effects with \`read\` or \`bash\`"
   "T3|Permissions 窄 100 KiB 预算       |CodeWhale/crates/tui/src/prompts.rs|forkguard_instruction_fragment_preserves_explicit_host_budget"
   "T3|内部 reminder 不污染 working set  |CodeWhale/crates/tui/src/working_set.rs|forkguard_working_set_ignores_leading_system_reminder_paths"
+  "T3|registry-first 指令补激活路径        |CodeWhale/crates/tui/src/core/engine.rs|run \`tool_search\` first to activate it; if it cannot be surfaced"
+  "T3|start 工具独立激活披露             |CodeWhale/crates/tui/src/core/engine.rs|activate it via \`tool_search\` as well, since activating \`registry_sync\` does not activate it"
+  "T3|sync 结果提示补 start 激活          |CodeWhale/crates/tui/src/tools/mcp_registry.rs|run tool_search first to activate it"
+  "T3|sync 结果提示激活回归               |CodeWhale/crates/tui/src/tools/mcp_registry.rs|fn forkguard_registry_first_prompt_teaches_start_tool_activation"
+  "T3|worker 记录共享 handle_read 激活提示 |CodeWhale/crates/tui/src/tools/subagent/mod.rs|if \`handle_read\` is not in your tool list, activate it via \`tool_search\` first"
+  "T3|worker 记录激活提示回归             |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_worker_record_hints_teach_handle_read_activation"
+  "T3|目标续轮直呼兜底                   |CodeWhale/crates/tui/src/prompts/text.rs|call \`update_goal\` directly anyway"
+  "T3|父上下文提示直呼兜底                |CodeWhale/crates/tui/src/core/engine/context.rs|call \`handle_read\` directly anyway"
+  "T3|fetch 溢出证据可取回标记            |CodeWhale/crates/tui/src/tools/fetch_url.rs|\"evidence_available\": true,"
+  "T3|web.run 溢出证据可取回标记          |CodeWhale/crates/tui/src/tools/web_run.rs|\"evidence_available\": true,"
+  "T3|/agent 派发简报补激活回归           |CodeWhale/crates/tui/src/commands/groups/core/agent.rs|fn forkguard_slash_agent_dispatch_teaches_handle_read_activation"
+  "T3|/goal 简报补 create_goal 激活        |CodeWhale/crates/tui/src/commands/groups/project/goal.rs|if \`create_goal\` is not in your tool list"
 
   "T4|Automation 稳定 conversation key |CodeWhale/crates/tui/src/automation_manager.rs|add_task_with_conversation_key(new_task, Some(automation.id.clone()))"
   "T4|离线不补跑且同一任务不重叠          |CodeWhale/crates/tui/src/automation_manager.rs|forkguard_scheduler_skips_offline_backfill_and_overlapping_runs"
