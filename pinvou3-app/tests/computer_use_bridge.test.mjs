@@ -280,7 +280,7 @@ function emit(harness, event, payload) {
 }
 
 // ── 11. stop → re-enable → grant_required must re-open the dialog ───
-// Review finding: the backend only flips `enabled`, so without a status
+// The backend only flips `enabled`, so without a status
 // refresh the sticky `stopped` kept every later dialog collapsed.
 {
   const harness = createHarness({
@@ -334,7 +334,7 @@ function emit(harness, event, payload) {
   );
 }
 
-// ── 14. confirm on an expired request closes the dead-end modal (review finding) ─
+// ── 14. confirm on an expired request closes the dead-end modal ─
 {
   const harness = createHarness({
     initialState: { enabled: true },
@@ -375,7 +375,7 @@ function emit(harness, event, payload) {
 }
 
 // ── 16. session switch clears the stale dialog synchronously, keeps pending ──
-// Review finding: during the async refresh window the previous session's
+// During the async refresh window the previous session's
 // grant dialog stayed clickable.
 {
   let resolveStatus;
@@ -402,7 +402,7 @@ function emit(harness, event, payload) {
 }
 
 // ── 17. stop() clears the per-session pending map (no phantom dialogs) ──
-// Review finding: the backend's stop_all wipes every grant/confirm/token,
+// The backend's stop_all wipes every grant/confirm/token,
 // so stale pending entries made a later re-enable + refresh republish
 // dialogs for requests that no longer exist.
 {
@@ -459,7 +459,7 @@ function emit(harness, event, payload) {
   );
 }
 
-// ── 19. session switch clears the banner synchronously (review finding) ─
+// ── 19. session switch clears the banner synchronously ─
 // The requests were already dropped pre-await; a stale `granted` kept the
 // previous session's control banner up during the IPC round-trip.
 {
@@ -481,7 +481,7 @@ function emit(harness, event, payload) {
 }
 
 // ── 20. grant_required must not wipe a live per-action confirmation ──
-// Review finding: a grant that idle-expired mid-run re-arms the grant gate
+// A grant that idle-expired mid-run re-arms the grant gate
 // while the backend confirm is still pending; wiping pending.confirm left
 // no dialog after Allow.
 {
@@ -540,7 +540,7 @@ function emit(harness, event, payload) {
 }
 
 // ── 22. expired confirm() cleanup must not wipe a NEWER dialog ──────
-// Review finding: the catch path cleared unconditionally, so a newer request
+// The catch path cleared unconditionally, so a newer request
 // that arrived mid-IPC lost its dialog. It must survive, while the matching
 // request still clears (dialog + pending entry).
 {
@@ -623,7 +623,7 @@ function emit(harness, event, payload) {
     'the matching expired dialog must still close after deny');
 }
 
-// ── 25. revoke() collapses a same-session confirm dialog (review finding) ─
+// ── 25. revoke() collapses a same-session confirm dialog ─
 // Backend revoke wipes the session's grant AND its pending confirmations, so
 // a pending confirm dialog must not linger as a dead modal after revoke.
 {
@@ -650,7 +650,7 @@ function emit(harness, event, payload) {
 }
 
 // ── 26. late cleanup clears the ORIGINAL session's map across a switch ──
-// Review finding: the published-slice early-return skipped the pending-map
+// The published-slice early-return skipped the pending-map
 // cleanup when a different session's dialog was published mid-IPC, so
 // switching back resurfaced a phantom dialog for the decided request.
 {
@@ -706,7 +706,7 @@ function emit(harness, event, payload) {
 }
 
 // ── 28. inert branch re-reads status (other-window enable gap) ──────
-// Review finding: a detached window whose slice says disabled never learns
+// A detached window whose slice says disabled never learns
 // the feature was enabled in the main window (no enabled-change event, and
 // the reconciler skips polling while disabled) — its sessions' grant/confirm
 // requests were recorded but never surfaced. The inert branch now fires one
@@ -719,7 +719,9 @@ function emit(harness, event, payload) {
     harness.invoked.some(([cmd]) => cmd === 'computer_use_get_status'),
     'the inert grant branch must re-read authoritative status'
   );
-  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => {
+    setTimeout(r, 0);
+  });
   const grant = harness.published().at(-1).grantRequest;
   assert.ok(grant, `an enabled-elsewhere window must resurface the grant dialog: ${JSON.stringify(harness.published().at(-1))}`);
 }
@@ -728,7 +730,9 @@ function emit(harness, event, payload) {
   emit(harness, 'computer_use:confirm_required', {
     session_id: 's1', confirm_id: 'cu-9', action: 'type 3 characters', element: 'field',
   });
-  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => {
+    setTimeout(r, 0);
+  });
   const confirm = harness.published().at(-1).confirmRequest;
   assert.ok(
     confirm && String(confirm.confirmId) === 'cu-9',
@@ -752,6 +756,99 @@ function emit(harness, event, payload) {
   const last = harness.published().at(-1).confirmRequest;
   assert.equal(last.typePreviewFull, 'xyz',
     'a preview-only change must count as a change');
+}
+
+// ── 30. structured payload fields pass through to the published request ──
+// Backend contract: the confirm event carries the action name plus optional
+// structured fields, with the original English summary kept in `summary` as
+// the renderer's fallback. Legacy payloads (summary in `action`, no `summary`
+// key) must keep their exact old shape.
+{
+  const harness = createHarness({ initialState: { enabled: true } });
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-1', summary: 'left click x2 at Some((5, 6))',
+    action: 'click', button: 'left', click_count: 2, point: { x: 5, y: 6 },
+    element: 'Buy now', text_preview_truncated: false,
+  });
+  const request = harness.published().at(-1).confirmRequest;
+  assert.equal(request.summary, 'left click x2 at Some((5, 6))',
+    'the English summary must be kept as the fallback');
+  assert.equal(request.actionName, 'click');
+  assert.equal(request.button, 'left');
+  assert.equal(request.clickCount, 2);
+  assert.equal(JSON.stringify(request.point), JSON.stringify({ x: 5, y: 6 }),
+    'the structured point must pass through to the published request');
+  assert.equal(request.textPreviewTruncated, false);
+  // snake_case spellings are accepted too.
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-2', summary: 'type 12 characters',
+    action: 'type', element: 'field', text_length: 12,
+    text_preview: 'hi', text_preview_truncated: true,
+  });
+  const typed = harness.published().at(-1).confirmRequest;
+  assert.equal(typed.textLength, 12);
+  assert.equal(typed.textPreview, 'hi');
+  assert.equal(typed.textPreviewTruncated, true);
+  // Legacy payload: no summary key — the action field IS the summary.
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-3', action: 'left click x1', element: 'e',
+  });
+  const legacy = harness.published().at(-1).confirmRequest;
+  assert.equal(legacy.summary, 'left click x1');
+  assert.equal(legacy.actionName, null);
+  assert.equal(legacy.textPreviewTruncated, false);
+}
+
+// ── 31. session-less refreshStatus fills enabled + platform_supported ──
+// Settings cold start: no session exists yet, and the settings page greys
+// the toggle out only once platform_supported lands in the slice.
+{
+  const harness = createHarness({
+    initialState: { enabled: false },
+    status: { enabled: true, platform_supported: false },
+  });
+  harness.state.activeSessionId = null;
+  const raw = await harness.feature.refreshStatus(null);
+  assert.ok(raw, 'a session-less read must resolve with the backend answer');
+  const getStatus = harness.invoked.find(([command]) => command === 'computer_use_get_status');
+  assert.equal(getStatus[1].sessionId, '', 'the session-less read must pass an empty session id');
+  const last = harness.published().at(-1);
+  assert.equal(last.enabled, true, 'the session-less read must publish enabled');
+  assert.equal(last.platformSupported, false, 'the session-less read must publish platform_supported');
+  // Backends predating the session-less form answer null: the slice stays
+  // untouched and nothing throws.
+  const legacyHarness = createHarness({ initialState: { enabled: false }, status: null });
+  legacyHarness.state.activeSessionId = null;
+  const before = { ...legacyHarness.state.computerUse };
+  await legacyHarness.feature.refreshStatus(null);
+  assert.deepEqual(legacyHarness.state.computerUse, before,
+    'a null session-less answer must leave the slice untouched');
+}
+
+// ── 32. known backend error strings map onto the localized settings copy ──
+// Exact-equality match only: "computer use has no backend on this operating
+// system" surfaces as the platformUnsupportedHint text in the persisted UI
+// language; anything else passes through verbatim.
+{
+  const harness = createHarness({
+    initialState: { enabled: false },
+    failInvoke: (command) => command === 'computer_use_set_enabled',
+    failMessage: 'computer use has no backend on this operating system',
+  });
+  harness.state.settings = { language: 'zh-Hans' };
+  await assert.rejects(
+    harness.feature.setEnabled(true),
+    /当前平台没有电脑使用后端/,
+    'the known no-backend error must surface as the localized hint',
+  );
+  const other = createHarness({
+    initialState: { enabled: false },
+    failInvoke: (command) => command === 'computer_use_set_enabled',
+    failMessage: 'computer use has no backend on this operating system.',
+  });
+  other.state.settings = { language: 'zh-Hans' };
+  await assert.rejects(other.feature.setEnabled(true), /no backend on this operating system/,
+    'an unrecognized error string must pass through untouched');
 }
 
 console.log('computer use bridge behavior tests passed');

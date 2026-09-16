@@ -7,8 +7,7 @@
 //! unavailable at probe time and never degrade silently). The portal's system authorization
 //! dialog is a second layer of user consent, independent of the in-app consent flow.
 //!
-//! **Why a hand-written portal client instead of `ashpd`** (round-12 review: this trade-off was
-//! previously undocumented, and the next maintainer would inevitably ask again): ashpd is the
+//! **Why a hand-written portal client instead of `ashpd`**: ashpd is the
 //! officially recommended Rust portal client, but this module needs to impose bounded timeouts
 //! separately on the **three independent phases** of every portal round-trip (AddMatch
 //! subscription, method call, Response signal wait), while ashpd's wait APIs expose neither
@@ -19,7 +18,7 @@
 //! lazy-start sum" of meaning, and zombie requests plus double injection would come back. If
 //! ashpd ever provides per-phase timeouts, the migration should be re-evaluated.
 //!
-//! Known gaps (need real-machine portal verification, disclosed since round-10):
+//! Known gaps (need real-machine portal verification):
 //! - `AvailableCursorModes` is not probed: SelectSources always requests cursor_mode=hidden,
 //!   and compositor behavior when that mode is unsupported (reject vs degrade) is unverified;
 //! - the **Response wait timeout** branch of `CreateSession`: the portal side may still be
@@ -71,7 +70,7 @@
 
 use std::collections::HashMap;
 use std::future::poll_fn;
-use std::os::fd::{AsFd as _, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
@@ -112,7 +111,7 @@ const NOTIFY_TIMEOUT: Duration = Duration::from_secs(10);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 /// Overall timeout for portal probe/connection setup. zbus's default method_timeout for the
 /// session bus is very generous; a hung portal service must not suspend backend construction
-/// indefinitely (review finding: unbounded property queries would pin the worker).
+/// indefinitely (unbounded property queries would pin the worker).
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// evdev button codes (portal spec: Linux evdev button codes).
@@ -163,7 +162,7 @@ pub(super) fn map_keysym(key: Key) -> Result<i32, ComputerUseError> {
 /// Characters beyond Latin-1 **error out explicitly** (fail-closed): X keysyms do have a
 /// `0x01000000 | code point` encoding for them, but mutter silently drops keysyms **not in
 /// the current keymap** — every per-character call "succeeds" yet not a single Chinese
-/// character gets in (the silent loss found in review). Prefer explicit failure over fake
+/// character gets in (the silent loss). Prefer explicit failure over fake
 /// success.
 pub(super) fn char_keysym(c: char) -> Result<i32, ComputerUseError> {
     let keysym = keysym_for_char(c).ok_or_else(|| {
@@ -359,8 +358,7 @@ impl PortalInput {
     /// sticky error.
     ///
     /// Bounded overall by [`PROBE_TIMEOUT`]: zbus's default method_timeout is very generous,
-    /// and a hung portal service must not suspend backend construction indefinitely (review
-    /// finding).
+    /// and a hung portal service must not suspend backend construction indefinitely.
     pub(super) fn probe() -> Result<(), String> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -438,10 +436,9 @@ impl PortalInput {
     /// does not short-circuit on poison). The emergency mouse_up uses this rather than a
     /// "healthy" check — mutter's Session.Close only destroys the virtual device and does not
     /// synthesize releases, so skipping poisoned sessions would strand already-pressed buttons
-    /// forever (round-12 review M1); with no session the caller must return directly and must
-    /// not trigger the full establishment flow (that would pop a new system authorization
-    /// dialog — review finding: the revoke/emergency-stop's emergency release demanding
-    /// authorization in reverse).
+    /// forever; with no session the caller must return directly and must not trigger the full
+    /// establishment flow — that would pop a new system authorization dialog for the
+    /// revoke/emergency-stop's emergency release, demanding authorization in reverse.
     pub(super) fn has_open_session(&self) -> bool {
         self.inner.session.is_some()
     }
@@ -542,8 +539,7 @@ struct PortalInner {
     /// be alive and authorized, but is no longer trustworthy. A poisoned session is closed
     /// only after the action's mandatory release is delivered (see `button`'s action-boundary
     /// recycling) and is recycled/rebuilt by the next `ensure_started` — closing before
-    /// releasing would make the forced release of a stuck drag key impossible to deliver
-    /// (review finding).
+    /// releasing would make the forced release of a stuck drag key impossible to deliver.
     poisoned: bool,
 }
 
@@ -651,7 +647,7 @@ impl PortalInner {
         // return in milliseconds, capped at REQUEST_TIMEOUT; the authorization-dialog wait
         // happens on the Response signal (next phase) — the old shape of giving each phase its
         // own full timeout made Start's worst-case waits stack up multiplicatively and blow
-        // through the backend layer's call budget (review finding).
+        // through the backend layer's call budget.
         let call_deadline = timeout.min(REQUEST_TIMEOUT);
         tokio::time::timeout(call_deadline, async {
             match session {
@@ -726,7 +722,7 @@ impl PortalInner {
     /// Full establishment flow (pops the system authorization dialog). After CreateSession
     /// succeeds, any later step failing (request error/timeout/user cancel/authorization
     /// without devices/no stream) must close the created session object before returning
-    /// (the leak path found in review, see [`PortalInner::abandon`]).
+    /// (see [`PortalInner::abandon`]).
     async fn ensure_started(&mut self) -> Result<(), ComputerUseError> {
         // Poisoned-session recycling: the close deferred after the previous action's failure
         // is made up here (bounded best-effort) before the full establishment flow — never
@@ -899,19 +895,18 @@ impl PortalInner {
         .map_err(|error| {
             ComputerUseError::unavailable(format!("portal OpenPipeWireRemote: {error}"))
         })?;
-        let fd = reply
+        // Deserialization already yields an owning wrapper around the received fd, and
+        // `From<zvariant::OwnedFd> for std::os::fd::OwnedFd` is a pure ownership transfer
+        // (no dup): hand the fd straight to the PipeWire thread.
+        reply
             .body()
             .deserialize::<zbus::zvariant::OwnedFd>()
             .map_err(|error| {
                 ComputerUseError::unavailable(format!(
                     "portal OpenPipeWireRemote returned no fd: {error}"
                 ))
-            })?;
-        // Duplicate the portal-side fd for the PipeWire thread; the zvariant wrapper is freed
-        // with the message.
-        fd.as_fd()
-            .try_clone_to_owned()
-            .map_err(|error| ComputerUseError::unavailable(format!("fd clone: {error}")))
+            })
+            .map(OwnedFd::from)
     }
 
     /// Resolve and clone the session path (the borrow cannot span `notify`'s `&mut self`:
@@ -975,14 +970,15 @@ impl PortalInner {
 
     /// Close and clear the current session's session-level state. Called from: `ensure_started`'s
     /// poisoned-session recycling (notify failure/timeout marks the session poisoned, deferred
-    /// until after the action's mandatory release is delivered — review finding: closing
-    /// immediately would make the forced release of a stuck drag key impossible to deliver),
+    /// until after the action's mandatory release is delivered: closing immediately would make
+    /// the forced release of a stuck drag key impossible to deliver),
     /// and `button`'s action-boundary recycling after release. `PortalSession` has no Drop impl, so
     /// `Session.Close` must be sent explicitly: take the session and close
     /// it via `abandon` (bounded by CLOSE_TIMEOUT, close errors logged — the
     /// caller's original error is what matters), then clear the remaining
     /// per-session state. Dropping the taken `PortalSession` also drops its
-    /// `PwCapture`, stopping the stream and joining its thread.
+    /// `PwCapture`, stopping the stream and detaching its thread (shutdown
+    /// never joins, see [`PwCapture::shutdown`]).
     async fn reset_closed(&mut self) {
         if let Some(session) = self.session.take() {
             self.abandon(session.path).await;
@@ -994,9 +990,9 @@ impl PortalInner {
 
     /// Close a portal session that was created but not yet registered (`self.session`) or is
     /// being destroyed: best-effort `Session.Close` (short timeout), and clear pointer
-    /// tracking. Review finding: if a failure path after CreateSession succeeds only resets
-    /// local state, the half-authorized session leaks on the compositor side. Failures/
-    /// timeouts of the close itself are logged (review finding: when revoke reports success
+    /// tracking. If a failure path after CreateSession succeeds only resets local state, the
+    /// half-authorized session leaks on the compositor side. Failures/
+    /// timeouts of the close itself are logged (when revoke reports success
     /// but OS-level authorization actually lingers, neither the user nor the logs have any
     /// clue; when the portal disconnects, the compositor side cleans up as a fallback, so
     /// only log, no retry).
@@ -1033,8 +1029,8 @@ impl PortalInner {
         self.abandon(session.path).await;
     }
 
-    /// When the session is started, verify the device bits the user actually granted (review
-    /// finding: GNOME's authorization dialog has per-device toggles; checking only the union
+    /// When the session is started, verify the device bits the user actually granted (GNOME's
+    /// authorization dialog has per-device toggles; checking only the union
     /// makes a pointer-only authorization's keyboard action error on `NotifyKeyboardKeysym` →
     /// reset → the next action pops the authorization dialog again, trapping the user in a
     /// dialog loop; erroring explicitly before injection breaks the loop).
@@ -1074,8 +1070,8 @@ impl PortalInner {
         let body = (&path, &options, evdev_button, state);
         let result = self.notify("NotifyPointerButton", body).await;
         // Action-boundary recycling: once the release (pressed=false) succeeds, the poisoned
-        // session has served its purpose; close it here — not before the release (review
-        // finding: closing first would make the drag's forced release fail with "portal
+        // session has served its purpose; close it here — not before the release (closing
+        // first would make the drag's forced release fail with "portal
         // session not started", leaving the button stuck on the compositor side). On release
         // failure stay poisoned; the next ensure_started recycles as a fallback.
         if !pressed && self.poisoned && result.is_ok() {
@@ -1128,7 +1124,7 @@ mod tests {
         assert_eq!(map_keysym(Key::Char('+')).ok(), Some(0x2b));
         // U+4E2D: the old implementation encoded it as 0x01000000|code point and sent it
         // anyway, but mutter silently drops keysyms outside the keymap — per-character
-        // "success" with no input (the silent CJK loss found in review). It now errors
+        // "success" with no input (the silent CJK loss). It now errors
         // explicitly, with the error text explaining the Wayland limitation.
         let error = map_keysym(Key::Char('中')).unwrap_err().to_string();
         assert!(error.contains("Wayland"), "{error}");

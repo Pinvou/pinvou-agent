@@ -89,7 +89,7 @@ const DEFAULT_MAX_NODES: usize = 200;
 const MAX_NAME_CHARS: usize = 80;
 /// Timeout for a single a11y D-Bus method call (zbus connection-level
 /// `method_timeout`).
-/// Review finding: zbus's default timeout is very generous, tree traversal
+/// zbus's default timeout is very generous, tree traversal
 /// makes 4-5 calls per node, and a single hung app can leave the worker
 /// pending forever.
 const A11Y_METHOD_TIMEOUT: Duration = Duration::from_secs(3);
@@ -250,10 +250,10 @@ fn input_failed(context: &str, error: impl std::fmt::Display) -> ComputerUseErro
     ComputerUseError::failed(format!("{context}: {error}"))
 }
 
-/// Merges drag-finalization errors (review finding: when the move and the
-/// release **both fail**, the old implementation only surfaced the move error
-/// — the caller never learned the left button was still stuck pressed). When
-/// both fail, explicitly note the button may not have been released.
+/// Merges drag-finalization errors: when the move and the release **both
+/// fail**, surfacing only the move error would leave the caller unaware the
+/// left button was still stuck pressed. When both fail, explicitly note the
+/// button may not have been released.
 fn combine_drag_errors(
     move_result: Result<(), ComputerUseError>,
     release_result: Result<(), ComputerUseError>,
@@ -289,7 +289,7 @@ fn press_keysyms_unwind(
             // (release errors swallowed): the caller's original press error
             // is what matters, but stranded modifiers would corrupt every
             // subsequent input action. The *failing* keysym is included: a
-            // timed-out notify "says nothing" (review finding) — the press may
+            // timed-out notify "says nothing" about delivery — the press may
             // still have been delivered, and releasing an un-landed key is
             // a compositor-side no-op.
             for held in keysyms[..=index].iter().rev() {
@@ -320,7 +320,7 @@ fn x11_type_runs(text: &str) -> Vec<String> {
 /// **failed role query** (`role_unknown`) conservatively falls back to secure
 /// — unable to prove it is not a password field, prefer making the tool layer
 /// ask for one more confirmation over letting a password field through as a
-/// normal element (review finding).
+/// normal element.
 fn is_secure_role(role: Role, role_unknown: bool) -> bool {
     role == Role::PasswordText || role_unknown
 }
@@ -404,7 +404,7 @@ async fn screen_extents(
 /// distinct from the "no element" Ok(None) — Ok(None) is let through by the
 /// tool layer under the None policy); it must not continue as "the window
 /// does not cover the point", swallowing a query failure into a pass
-/// justification (review finding).
+/// justification.
 async fn screen_extents_strict(
     conn: &zbus::Connection,
     proxy: &AccessibleProxy<'_>,
@@ -423,7 +423,7 @@ async fn screen_extents_strict(
     // this module); letting it through would judge **every** window as "does
     // not cover the point" → Ok(None), swallowing a query failure into a pass
     // justification, and the backend could never answer a trustworthy hit
-    // result again (second-round review finding). Raise it as a query
+    // result again. Raise it as a query
     // failure, clearly distinct from "no element"; how screening handles
     // faults (let the action execute) is decided uniformly by the tool layer.
     if extents.2 <= 0 || extents.3 <= 0 {
@@ -588,16 +588,16 @@ impl TreeWriter<'_> {
         self.next_index += 1;
 
         // A failed role query is handled conservatively as Unknown: secure
-        // fallback + name erasure (review finding: an Unknown role cannot
-        // prove it is not a password field).
+        // fallback + name erasure (an Unknown role cannot prove it is not a
+        // password field).
         let (role, role_unknown) = match proxy.get_role().await {
             Ok(role) => (role, false),
             Err(_) => (Role::Unknown, true),
         };
         let secure = is_secure_role(role, role_unknown);
         // Nodes that are password fields or of unknown role do not output a
-        // name in the tree (review finding: the name may be the password
-        // content itself); this also saves one D-Bus property query.
+        // name in the tree (the name may be the password content itself);
+        // this also saves one D-Bus property query.
         let name = if secure {
             String::new()
         } else {
@@ -752,8 +752,8 @@ async fn element_at_point_async(
 /// `Err(unsupported)`: tree search works on both X11 and Wayland, and the
 /// existing AT-SPI channel should not go to waste).
 ///
-/// Two round-12 review M2 corrections that bear directly on whether the
-/// password field promise holds:
+/// Two constraints that bear directly on whether the password field promise
+/// holds:
 /// - **Search only inside the active window.** Keyboard input necessarily
 ///   lands in the active window; a stale FOCUSED in a background window
 ///   (some toolkits never clear that state) would make the query "succeed"
@@ -873,7 +873,7 @@ async fn find_focused_among_children(
 /// failing is non-fatal), then **self-build** the a11y bus connection.
 ///
 /// The connection is built with `zbus::connection::Builder` and gets a
-/// `method_timeout` (3s). Review finding: zbus's default timeout is very
+/// `method_timeout` (3s). zbus's default timeout is very
 /// generous, and atspi's `AccessibilityConnection` does not allow injecting
 /// a self-built connection — so, following the same flow as atspi's
 /// `AccessibilityConnection::new`, the bus address is fetched ourselves
@@ -882,13 +882,13 @@ async fn find_focused_among_children(
 /// a timeout setting point; the operation-level overall deadline is
 /// backstopped by [`LinuxComputerUseBackend::block_on_a11y`].)
 async fn a11y_connect() -> Result<zbus::Connection, String> {
-    // round-10 review M4: this call goes over zbus's default connection
+    // This call goes over zbus's default connection
     // (method_timeout None — exactly the hazard described in the comment
     // below), so it must be time-bounded overall — a bus that accepts the
     // connection but never answers would pin create_backend on the worker
     // thread forever. Failure is already handled as non-fatal.
-    // Deliberately not calling set_session_accessibility(false) at teardown
-    // (round-12 review: the switch is session-global state that a real
+    // Deliberately not calling set_session_accessibility(false) at teardown:
+    // the switch is session-global state that a real
     // screen reader user may be relying on — removing it would directly
     // break their assistive technology; the cost of leaving it on is only
     // that desktop apps keep maintaining their a11y trees).
@@ -952,7 +952,7 @@ fn probe_wayland_screenshot() -> Result<(), String> {
 /// returns, and catch_unwind cannot stop a hang: the backend worker would be
 /// pinned forever, and once the backend layer's call budget is exhausted the
 /// in-flight gate and the control channel (emergency release, grant release)
-/// all jam (round-6 review). On timeout, give up and abandon the probe
+/// all jam. On timeout, give up and abandon the probe
 /// thread (pure capture, no shared state touched; repeated timeouts leak a
 /// few threads at worst — better than a stuck worker). The next screenshot
 /// retries the probe — a sticky failed-probe state would regress to the old
@@ -1012,7 +1012,7 @@ pub(super) struct LinuxComputerUseBackend {
     /// (surfaced alongside the error after falling back to the xcap chain).
     wayland_portal_capture_error: Option<String>,
     /// Set once a portal-stream capture attempt failed while a portal
-    /// session was alive (review finding: capabilities then still claimed
+    /// session was alive: capabilities then still claimed
     /// stream capture while actual captures silently fell back to the xcap
     /// primary-screen chain, whose multi-monitor coordinates do not align
     /// with input — the degradation must surface in the capabilities note).
@@ -1026,7 +1026,7 @@ pub(super) struct LinuxComputerUseBackend {
     /// dispatching, cleared after; see
     /// [`ComputerUseBackend::set_cancel_flag`]): type's per-event injection
     /// checks it between events, so a request the caller already abandoned
-    /// after its timeout stops injecting immediately (round-10 review M3).
+    /// after its timeout stops injecting immediately.
     cancel: Option<Arc<AtomicBool>>,
 }
 
@@ -1114,10 +1114,11 @@ impl LinuxComputerUseBackend {
 
     /// Wayland portal input backend (the sticky probe-failure error lives in
     /// `wayland_portal_error`). After a failed Wayland screenshot probe,
-    /// retry on the next capture (review finding: the old implementation let
-    /// a single probe failure stick for the whole backend lifetime — a
+    /// retry on the next capture: a single probe failure must not stick for
+    /// the whole backend lifetime — a
     /// portal dialog accidentally dismissed by the user or a brief compositor
-    /// hiccup lost screenshots permanently, with no retry entry point).
+    /// hiccup would otherwise lose screenshots permanently, with no retry
+    /// entry point.
     fn ensure_wayland_capture(&mut self) -> Result<(), ComputerUseError> {
         if !self.is_wayland() || self.wayland_screenshot_ok {
             return Ok(());
@@ -1279,7 +1280,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 (None, Some(error)) => format!("input unavailable: {error}"),
                 (None, None) => "input unavailable".to_string(),
             };
-            // Honest disclosure (review finding): Wayland input is treated as
+            // Honest disclosure: Wayland input is treated as
             // experimental overall (compositor implementation differences);
             // injection of non-Latin-1 text is explicitly rejected (mutter
             // silently drops keysyms outside the keymap, see
@@ -1287,9 +1288,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             let experimental = "Wayland input is experimental (compositor implementations \
                  differ), and typing non-Latin-1 text (CJK etc.) is explicitly rejected: \
                  mutter silently drops keysyms outside the active keymap";
-            // Honest disclosure (round-12 review: previously stated only in
-            // the PR description, invisible to the model/maintainers in code
-            // and capability notes): when the portal stream is unavailable,
+            // Honest disclosure: when the portal stream is unavailable,
             // the xcap fallback goes through XCB/XWayland or a compositor
             // screenshot protocol, whose multi-monitor coordinate system is
             // not aligned with input (stream-logical coordinates); the
@@ -1325,11 +1324,10 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                     self.input_init_error.as_deref().unwrap_or("unknown error")
                 )
             };
-            // Honest disclosure (round-10 review m10): when WAYLAND_DISPLAY
+            // Honest disclosure: when WAYLAND_DISPLAY
             // is set in an X11 session, xcap's own detection prefers the
             // Wayland chain — capture and XTEST input would run on different
-            // planes; previously only a stderr warning was emitted, invisible
-            // to both the model and the user.
+            // planes.
             let mismatch = if self.session.has_wayland_display {
                 "; WARNING: WAYLAND_DISPLAY is set in this X11 session, so capture may be \
                  routed through the Wayland portal chain while input targets X11 (unset \
@@ -1362,11 +1360,10 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             }
         }
         // Fallback: the xcap chain (the X11 main path; on Wayland a failed
-        // probe can retry on a later capture — review finding: the old
-        // implementation let a single probe failure stick for the whole
-        // backend lifetime — a portal dialog accidentally dismissed by the
-        // user or a brief compositor hiccup lost screenshots permanently,
-        // with no retry entry point).
+        // probe can retry on a later capture — a single probe failure must
+        // not stick for the whole backend lifetime, otherwise a portal
+        // dialog accidentally dismissed by the user or a brief compositor
+        // hiccup loses screenshots permanently, with no retry entry point).
         self.ensure_wayland_capture()?;
         let monitors = Monitor::all().map_err(|error| {
             ComputerUseError::unavailable(format!("monitor enumeration: {error}"))
@@ -1410,8 +1407,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
         // xcap's Wayland chain contains `.expect(...)` internally (PNG
         // re-encode, see the same wrapping at the probe): per-frame capture is
         // likewise wrapped in catch_unwind, turning a potential panic into an
-        // explicit error instead of blowing up the backend worker thread
-        // (round-10 review m10).
+        // explicit error instead of blowing up the backend worker thread.
         let captured =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| monitor.capture_image()));
         let image = match captured {
@@ -1425,7 +1421,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                         ),
                     )
                 } else {
-                    // Review finding: the capture library passes the RandR
+                    // The capture library passes the RandR
                     // monitor's raw x/y into GetImage on the root window, so
                     // a monitor placed left/above the primary (negative
                     // origin) fails unconditionally — name the cause instead
@@ -1547,7 +1543,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             for i in 0..count {
                 if let Err(error) = portal.button(evdev, true) {
                     // A failed press ≠ not delivered (the timeout says
-                    // nothing about delivery, review finding): best-effort
+                    // nothing about delivery): best-effort
                     // issue one extra release on the still-open poisoned
                     // session — a release that did not land is a
                     // compositor-side no-op, and one that did land avoids a
@@ -1602,7 +1598,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
         if self.is_wayland() {
             self.note_input();
             let portal = self.require_portal()?;
-            // Release only on a still-open session (review finding): never
+            // Release only on a still-open session: never
             // lazily start when there is no session — ensure_started's full
             // establishment flow would pop the system authorization dialog,
             // turning the emergency mouse_up of a revoke/emergency-stop/
@@ -1627,6 +1623,10 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
     fn drag(&mut self, from: (i32, i32), to: (i32, i32)) -> Result<(), ComputerUseError> {
         if self.is_wayland() {
             self.note_input();
+            // The flag Arc is cloned before require_portal: portal is a
+            // mutable borrow of self that outlives the whole interpolation
+            // loop, so the flag cannot be read through &self again.
+            let cancel = self.cancel.clone();
             let portal = self.require_portal()?;
             portal.ensure_started()?;
             portal.motion_absolute(from.0, from.1)?;
@@ -1640,7 +1640,6 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             }
             // Interpolated movement; the button must be released at the end
             // no matter what happened midway.
-            let cancel = self.cancel.clone();
             let cancelled = |cancel: &Option<Arc<AtomicBool>>| {
                 cancel
                     .as_ref()
@@ -1649,15 +1648,15 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             let mut result = Ok(());
             let mut last_reached = (from.0, from.1);
             for (x, y) in drag_waypoints(from, to, DRAG_STEPS) {
-                // Review finding: type checks its chunk flag between chunks,
-                // but a drag used to run every waypoint unconditionally — a
-                // request abandoned at the caller timeout kept holding the
-                // physical button for the whole interpolated path. Same
-                // contract as type: stop at the next boundary, release the
-                // button, report the abandonment.
+                // Same abandonment contract as type: a request the caller
+                // already abandoned must stop at the next waypoint —
+                // otherwise it keeps holding the physical button for the
+                // whole interpolated path. Release the button, report the
+                // abandonment.
                 if cancelled(&cancel) {
                     result = Err(ComputerUseError::unavailable(
-                        "drag was cancelled after the caller timed out; the button is                          released and the pointer stays at the last waypoint",
+                        "drag was cancelled after the caller timed out; the button is \
+                         released and the pointer stays at the last waypoint",
                     ));
                     break;
                 }
@@ -1681,6 +1680,10 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             combine_drag_errors(result, release)?;
             return Ok(());
         }
+        // The flag Arc is cloned before require_enigo: enigo is a mutable
+        // borrow of self that outlives the interpolation loop, so the flag
+        // cannot be read through &self inside it.
+        let cancel = self.cancel.clone();
         let enigo = self.require_enigo()?;
         enigo
             .move_mouse(from.0, from.1, Coordinate::Abs)
@@ -1693,6 +1696,19 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
         // matter what happened midway.
         let mut result = Ok(());
         for (x, y) in drag_waypoints(from, to, DRAG_STEPS) {
+            // Same abandonment contract as the Wayland branch: stop at the
+            // next waypoint for a request the caller already abandoned, then
+            // release the button below and report the abandonment.
+            if cancel
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::SeqCst))
+            {
+                result = Err(ComputerUseError::unavailable(
+                    "drag was cancelled after the caller timed out; the button is \
+                     released and the pointer stays at the last waypoint",
+                ));
+                break;
+            }
             if let Err(error) = enigo.move_mouse(x, y, Coordinate::Abs) {
                 result = Err(input_failed("drag: interpolated move", error));
                 break;
@@ -1719,7 +1735,11 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             let portal = self.require_portal()?;
             portal.ensure_started()?;
             // One discrete scroll event can carry multiple clicks (the
-            // compositor injects them click by click internally).
+            // compositor injects them click by click internally). Clamp
+            // exactly like the X11 branch below: the tool layer already
+            // caps at 100; this backstops callers that reach the Backend
+            // directly.
+            let clicks = clicks.min(MAX_SCROLL_CLICKS);
             let (axis, steps) = wayland_portal::map_discrete_scroll(direction, clicks);
             return portal.axis_discrete(axis, steps);
         }
@@ -1728,9 +1748,9 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
         // helpers::map_scroll(): the sign convention of axis scrolling varies
         // by platform (x11rb positive = down), while button cycling is
         // unambiguous. The divergence from map_scroll is intentional (button
-        // mechanism vs axis mechanism), but the clamp applies all the same:
-        // the tool layer already caps at 100; this backstops callers that
-        // reach the Backend directly (round-12 review).
+        // mechanism vs axis mechanism), but the clamp applies all the same
+        // as on the Wayland branch above: the tool layer already caps at
+        // 100; this backstops callers that reach the Backend directly.
         let clicks = clicks.min(MAX_SCROLL_CLICKS);
         let button = match direction {
             ScrollDirection::Up => Button::ScrollUp,
@@ -1779,11 +1799,11 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             // as the X11 `release_chord` helper).
             let mut first_err = None;
             for keysym in keysyms {
-                // Stop injecting for a request the caller already abandoned
-                // (round-10 review M3: two bounded portal notifications per
-                // character; long text on a degraded bus far exceeds the call
-                // budget, and dequeue-time checks cannot stop it — a zombie
-                // request would double-inject alongside the retry).
+                // Stop injecting for a request the caller already abandoned:
+                // each character costs two bounded portal notifications, long
+                // text on a degraded bus far exceeds the call budget, and
+                // dequeue-time checks cannot stop it — a zombie request would
+                // double-inject alongside the retry.
                 if cancel
                     .as_ref()
                     .is_some_and(|flag| flag.load(Ordering::SeqCst))
@@ -1795,7 +1815,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 }
                 if let Err(error) = portal.keysym_event(keysym, true) {
                     // A failed press ≠ not delivered (the timeout says
-                    // nothing about delivery, review finding): best-effort
+                    // nothing about delivery): best-effort
                     // issue one extra release on the still-open poisoned
                     // session — a release that did not land is a
                     // compositor-side no-op, and one that did land avoids a
@@ -1852,7 +1872,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             // with the whole run would widen the cancel check's granularity
             // to the entire run — a single-line abandoned long text on a
             // degraded bus would keep injecting for minutes and double-inject
-            // alongside the retry (review finding).
+            // alongside the retry.
             // text(&c) is per-character equivalent to text's internal per-char
             // path; semantics unchanged.
             if !run.is_empty() {
@@ -2013,7 +2033,7 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
     // non-X11 socket name signals a Wayland-colored environment whose
     // behavior the user should double-check; over-warning is the safe
     // direction, and the warning must not be narrower than the behavior it
-    // diagnoses (review finding).
+    // diagnoses.
     if session.kind == SessionKind::X11
         && std::env::var("WAYLAND_DISPLAY")
             .ok()
@@ -2036,7 +2056,7 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
         })?;
     let (a11y, a11y_init_error) = match runtime.block_on(tokio::time::timeout(
         // Overall cap on connection establishment (the SASL/Hello handshake
-        // is not covered by zbus's method_timeout — review finding: a wedged
+        // is not covered by zbus's method_timeout: a wedged
         // a11y bus that accepts the connection but never answers would hang
         // create_backend indefinitely, and the startup-timeout cleanup
         // thread.join() would then block the first caller forever; same
@@ -2348,7 +2368,7 @@ mod tests {
         // The modifier pressed before the failure is released in reverse;
         // the FAILING keysym itself is also released best-effort (a timed-out
         // notify may still have been delivered; releasing an un-landed key
-        // is a compositor-side no-op — round-12 review M1); keysyms after
+        // is a compositor-side no-op); keysyms after
         // the failing one are never attempted.
         assert_eq!(
             events,
@@ -2384,8 +2404,8 @@ mod tests {
         });
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().to_string(), "failed: press failed");
-        // Both the failing keysym and the held modifier are released
-        // (round-12 review M1); their failures stay swallowed.
+        // Both the failing keysym and the held modifier are released;
+        // their failures stay swallowed.
         assert_eq!(releases, 2);
     }
 }
@@ -2401,12 +2421,10 @@ mod wayland_e2e_tests {
     //! PR description). Ignored by default:
     //! `PINVOU3_CU_WAYLAND_LIVE=1 cargo test --lib computer_use::platform::linux::wayland_e2e_tests -- --ignored --nocapture`
     //!
-    //! Same double opt-in as the X11 live suite (round-12 review: the X11
-    //! suite got its explicit environment gate in the previous round precisely
-    //! because `--ignored` is only a conventional guard — a bare `--ignored`
+    //! Same double opt-in as the X11 live suite: `--ignored` is only a
+    //! conventional guard — a bare `--ignored`
     //! on a Wayland dev machine with a real desktop session would move the
-    //! real pointer, click, and type test text; the same finding had
-    //! previously only landed on the X11 side).
+    //! real pointer, click, and type test text.
 
     use super::*;
     use atspi::proxy::text::TextProxy;
@@ -2749,10 +2767,10 @@ mod x11_live_tests {
     /// The live-display gate: `Some((width, height, display))` when `$DISPLAY`
     /// names an X server xdotool can reach, `None` otherwise (tests skip).
     fn live_display() -> Option<(u32, u32, String)> {
-        // Double opt-in (review finding: `#[ignore]` is only a conventional
+        // Double opt-in: `#[ignore]` is only a conventional
         // guard; the documented `--ignored` command on a Linux dev machine
         // with a real desktop session would move the real pointer, click, and
-        // type test text). CI/headless usage of the test suite exports the
+        // type test text. CI/headless usage of the test suite exports the
         // variable explicitly; any ordinary dev machine's DISPLAY skips.
         std::env::var("PINVOU3_CU_X11_LIVE")
             .ok()
@@ -2869,9 +2887,9 @@ mod x11_live_tests {
         }
 
         fn audit_path(&self) -> std::path::PathBuf {
-            self.home
-                .join("computer-use")
-                .join(format!("audit-{SESSION}.jsonl"))
+            self.home.join("computer-use").join(
+                crate::features::computer_use::audit::audit_file_name(SESSION),
+            )
         }
     }
 
@@ -3263,6 +3281,7 @@ mod x11_live_tests {
             SESSION,
             "left click x1 at Some((300, 200))",
             "Live",
+            0,
         );
         assert!(fx.shared.pending_confirmation(&confirm_id).is_some());
 

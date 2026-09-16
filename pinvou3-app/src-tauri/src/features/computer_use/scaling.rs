@@ -16,6 +16,7 @@
 //! positions are reported by the backend directly in input coordinates.
 
 use xcap::image;
+use xcap::image::ImageEncoder as _;
 
 use super::types::{Capture, ComputerUseError};
 
@@ -24,7 +25,7 @@ use super::types::{Capture, ComputerUseError};
 pub const MAX_LONG_EDGE: u32 = 1440;
 /// The foundation `image_attach` hard cap per image is 5 MB; over-limit images are
 /// **silently skipped** (the model loses vision for that turn). PNG compresses photo-like
-/// content poorly, and a noisy 1440px screenshot can far exceed 5 MB (review finding). When
+/// content poorly, and a noisy 1440px screenshot can far exceed 5 MB. When
 /// the encoded size exceeds the cap, re-encode at 0.8 resolution steps to keep the visual
 /// channel alive, with the long edge never below [`MIN_LONG_EDGE_FLOOR`].
 pub const MAX_IMAGE_BYTES: usize = 4 * 1024 * 1024;
@@ -58,10 +59,9 @@ pub struct ScaleMap {
 }
 
 impl ScaleMap {
-    /// Build the map from a capture result. Rejects a non-positive/non-finite `input_scale`
-    /// (review finding: a 0 or NaN scale makes every later conversion divide by zero or
-    /// produce garbage coordinates — it once silently mapped to the wrong position on a
-    /// mixed-DPI screen).
+    /// Build the map from a capture result. Rejects a non-positive/non-finite `input_scale`:
+    /// a 0 or NaN scale makes every later conversion divide by zero or produce garbage
+    /// coordinates.
     pub fn from_capture(
         shot_w: u32,
         shot_h: u32,
@@ -88,9 +88,20 @@ impl ScaleMap {
         })
     }
 
-    /// Screenshot-to-device-pixel scale ratio (shown to the model in result text).
+    /// Screenshot-to-device-pixel scale ratio on the x axis (shown to the model in result
+    /// text). Screenshot scaling is uniform, so this matches [`Self::factor_y`] up to
+    /// rounding; compare both when a non-uniform ratio would mislead.
     pub fn factor(&self) -> f64 {
+        self.factor_x()
+    }
+
+    /// Screenshot-to-device scale ratio per axis (`shot_w/dev_w` and `shot_h/dev_h`).
+    pub fn factor_x(&self) -> f64 {
         f64::from(self.shot_w) / f64::from(self.dev_w)
+    }
+
+    pub fn factor_y(&self) -> f64 {
+        f64::from(self.shot_h) / f64::from(self.dev_h)
     }
 
     /// Screenshot coordinates → global input injection coordinates (what is sent to the
@@ -124,7 +135,7 @@ impl ScaleMap {
     /// A nonzero denominator is guaranteed by [`Self::from_capture`] (input_scale must be
     /// > 0 and finite; dev dimensions have a floor of 1).
     ///
-    /// The result is clamped to `[0, shot-1]` (round-12 review): when capturing with
+    /// The result is clamped to `[0, shot-1]`: when capturing with
     /// downsample ≥2× (4K/5K screens → 1440 long edge), the last input pixel admitted by the
     /// containment test rounds up to exactly `shot_w` (e.g. at 3840→1440, 3839 →
     /// 1439.625 → 1440) — the model would receive an out-of-range coordinate and the next
@@ -161,9 +172,9 @@ pub struct ScaledScreenshot {
 
 /// Device physical pixel capture → uniform scale (long edge ≤1440) → PNG encode.
 pub fn downscale_and_encode(capture: &Capture) -> Result<ScaledScreenshot, ComputerUseError> {
-    // Review fix: `w * h * 4` uses checked multiplication — oversized dimensions fail
-    // explicitly at the multiplication instead of relying on usize width luck (32-bit
-    // targets would wrap into a fake small length).
+    // `w * h * 4` uses checked multiplication — oversized dimensions fail
+    // explicitly at the multiplication instead of relying on usize width luck
+    // (32-bit targets would wrap into a fake small length).
     let expected_len = capture
         .width
         .checked_mul(capture.height)
@@ -187,9 +198,13 @@ pub fn downscale_and_encode(capture: &Capture) -> Result<ScaledScreenshot, Compu
     let mut shot_w = ((f64::from(capture.width) * factor).round() as u32).max(1);
     let mut shot_h = ((f64::from(capture.height) * factor).round() as u32).max(1);
 
-    let source = image::RgbaImage::from_raw(capture.width, capture.height, capture.rgba.clone())
-        .ok_or_else(|| ComputerUseError::failed("capture buffer cannot form an image"))?;
-    let mut shot = if factor < 1.0 {
+    // Resize reads straight from the borrowed capture buffer (no copy); only the
+    // no-downscale path needs an owned image, because the encode-budget loop below
+    // reassigns `shot` with fresh owned buffers.
+    let mut shot: image::RgbaImage = if factor < 1.0 {
+        let source =
+            image::ImageBuffer::from_raw(capture.width, capture.height, capture.rgba.as_slice())
+                .ok_or_else(|| ComputerUseError::failed("capture buffer cannot form an image"))?;
         image::imageops::resize(
             &source,
             shot_w,
@@ -197,7 +212,8 @@ pub fn downscale_and_encode(capture: &Capture) -> Result<ScaledScreenshot, Compu
             image::imageops::FilterType::Triangle,
         )
     } else {
-        source
+        image::RgbaImage::from_raw(capture.width, capture.height, capture.rgba.clone())
+            .ok_or_else(|| ComputerUseError::failed("capture buffer cannot form an image"))?
     };
 
     // When the encoding exceeds the foundation's 5MB cap, re-encode at a lower resolution:
@@ -225,8 +241,16 @@ pub fn downscale_and_encode(capture: &Capture) -> Result<ScaledScreenshot, Compu
 
 fn encode_png(shot: &image::RgbaImage) -> Result<Vec<u8>, ComputerUseError> {
     let mut png = std::io::Cursor::new(Vec::new());
-    image::DynamicImage::ImageRgba8(shot.clone())
-        .write_to(&mut png, image::ImageFormat::Png)
+    // Encode straight from the pixel slice: DynamicImage::write_to selects this same
+    // encoder for RGBA8, so wrapping the buffer in a DynamicImage would clone the whole
+    // image for no benefit.
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(
+            shot.as_raw(),
+            shot.width(),
+            shot.height(),
+            image::ExtendedColorType::Rgba8,
+        )
         .map_err(|error| ComputerUseError::failed(format!("png encode: {error}")))?;
     Ok(png.into_inner())
 }
@@ -252,7 +276,7 @@ mod tests {
         ScaleMap::from_capture(shot_w, shot_h, cap).expect("valid capture map")
     }
 
-    /// Review-fix regression: a non-positive/non-finite input_scale must be rejected.
+    /// A non-positive/non-finite input_scale must be rejected.
     #[test]
     fn from_capture_rejects_non_positive_input_scale() {
         for (sx, sy) in [(0.0, 1.0), (1.0, 0.0), (-0.5, 1.0), (1.0, -1.0)] {
@@ -480,7 +504,16 @@ mod tests {
             scaled.png.len()
         );
         assert_eq!(&scaled.png[..4], b"\x89PNG");
-        assert!(scaled.map.shot_w >= MIN_LONG_EDGE_FLOOR / 2);
+        // Real termination condition: the downgrade ladder starts at the long-edge cap and
+        // multiplies by 0.8 per step, so four steps land at/below MIN_LONG_EDGE_FLOOR where
+        // the loop stops — the final long edge is always inside
+        // [0.8^4 * MAX_LONG_EDGE, MAX_LONG_EDGE] and the encoded PNG fits the cap.
+        let long_edge = scaled.map.shot_w.max(scaled.map.shot_h);
+        let ladder_floor = (f64::from(MAX_LONG_EDGE) * 0.8f64.powi(4)).round() as u32;
+        assert!(
+            (ladder_floor..=MAX_LONG_EDGE).contains(&long_edge),
+            "long edge {long_edge} outside the termination window [{ladder_floor}, {MAX_LONG_EDGE}]"
+        );
     }
 
     #[test]
@@ -497,8 +530,8 @@ mod tests {
         assert!(downscale_and_encode(&bad).is_err());
     }
 
-    /// Review-fix regression: dimension multiplication is checked — overflow fails
-    /// explicitly rather than wrapping into a fake small length.
+    /// Dimension multiplication is checked — overflow fails explicitly
+    /// rather than wrapping into a fake small length.
     #[test]
     fn downscale_and_encode_rejects_overflowing_dimensions() {
         let huge = Capture {

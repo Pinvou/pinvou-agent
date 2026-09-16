@@ -12,16 +12,32 @@
 use std::sync::Arc;
 
 use super::prelude::*;
-use crate::features::computer_use::ComputerUseShared;
+use crate::features::computer_use::{ComputerUseShared, GrantOutcome};
 
 /// Empty-string defense for the grant/revoke (session_id) and confirm/deny
-/// (confirm_id) identifiers (review finding): an empty string has no
-/// business meaning and must not silently succeed and pollute guard state.
+/// (confirm_id) identifiers: an empty string has no business meaning and
+/// must not silently succeed and pollute guard state.
 fn ensure_non_empty(field: &str, value: &str) -> Result<(), String> {
     if value.trim().is_empty() {
         return Err(format!("{field} must not be empty"));
     }
     Ok(())
+}
+
+/// The `computer_use_confirm` error for a confirm_id that no longer mints.
+/// The parenthetical "unknown or expired" is a frontend contract: the
+/// bridge matches that phrase to recognize an expired pending and clear
+/// the confirmation dialog locally (expiry is not a user denial); the
+/// wording must not break that contract.
+fn confirm_unknown_error(confirm_id: &str) -> String {
+    format!("confirmation request no longer exists (unknown or expired): {confirm_id}")
+}
+
+/// The `computer_use_deny` error for a confirm_id that is not pending (and
+/// has no unspent token to retract). Carries the same "unknown or expired"
+/// frontend contract phrase as [`confirm_unknown_error`].
+fn deny_unknown_error(confirm_id: &str) -> String {
+    format!("unknown or expired confirm_id (already decided?): {confirm_id}")
 }
 
 /// Return projection of `computer_use_get_status` (the frontend renders the
@@ -31,8 +47,10 @@ pub struct ComputerUseStatus {
     /// Settings master toggle (in-memory mirror of settings.json
     /// `computer_use.enabled`).
     pub enabled: bool,
-    /// Whether this session currently holds a valid input grant (not
-    /// revoked/cleared by stop; grants have no idle expiry).
+    /// Whether this session currently holds a valid input grant (the grant
+    /// is bound to the tool instance's lifetime: a revoke / stop /
+    /// master-switch-off, or engine idle reclaim, ends it — see guard.rs).
+    /// Always false when the request carries no session id.
     pub granted: bool,
     /// Emergency-stop flag (set by `computer_use_stop`, cleared when the
     /// master toggle is re-enabled).
@@ -48,48 +66,53 @@ pub fn computer_use_get_status(
 ) -> ComputerUseStatus {
     ComputerUseStatus {
         enabled: shared.is_enabled(),
-        granted: shared.has_active_grant(&session_id),
+        // An empty session id means "no active session" (e.g. the settings
+        // page probing platform support before any session exists); there is
+        // no grant to report in that case.
+        granted: !session_id.is_empty() && shared.has_active_grant(&session_id),
         stopped: shared.is_stopped(),
         platform_supported: crate::features::computer_use::backend_supported(),
     }
 }
 
-/// Grant this session mouse/keyboard control (session grant). The grant
-/// lives until explicitly revoked (revoke / stop / master toggle off) and
-/// has no idle expiry — no mainstream product puts an idle clock on a
-/// session-scoped grant (same semantics as Claude Code's "allow for this
-/// session"). Granting is refused while the master toggle is off or the
+/// Grant this session mouse/keyboard control (session grant). The grant is
+/// bound to the tool instance's lifetime: it ends on revoke / stop /
+/// master-switch off, or when the engine reclaims the tool (its `Drop`
+/// revokes) — including the engine pool's idle reaper silently reaping an
+/// idle engine, in which case the grant lapses and the user must grant
+/// again. Granting is refused while the master toggle is off or the
 /// emergency stop is latched: a grant issued in that state would silently
 /// sleep until the toggle is re-enabled / the stop is reset, meaning one
 /// click from a stale frontend would override the user's current global
-/// intent (review finding; the disabled UI does not render the grant
-/// button in the first place — this is the line of defense against a
-/// stale/desynced frontend).
+/// intent (the disabled UI does not render the grant button in the first
+/// place — this is the line of defense against a stale/desynced frontend).
 #[tauri::command]
 pub fn computer_use_grant(
     session_id: String,
     shared: State<'_, Arc<ComputerUseShared>>,
 ) -> Result<(), String> {
     ensure_non_empty("session_id", &session_id)?;
-    if !shared.is_enabled() {
-        return Err(
-            "computer use is disabled; enable it in settings before granting control".into(),
-        );
+    // The authoritative switch/stop check lives inside grant_session, under
+    // the sessions lock in the same critical section as the insert (a grant
+    // cannot slip in after a revoke sweep and survive the off period); the
+    // match below only maps the refusal to a specific user-facing message.
+    match shared.grant_session(&session_id) {
+        GrantOutcome::Granted => Ok(()),
+        GrantOutcome::Disabled => {
+            Err("computer use is disabled; enable it in settings before granting control".into())
+        }
+        GrantOutcome::Stopped => {
+            Err("computer use is stopped; resume it before granting control".into())
+        }
     }
-    if shared.is_stopped() {
-        return Err("computer use is stopped; resume it before granting control".into());
-    }
-    shared.grant_session(&session_id);
-    Ok(())
 }
 
 /// Revoke this session's input grant. The in-app grant expires
 /// immediately; this also triggers the backend to close the persistent
 /// OS-level grant (Wayland portal session) — on a detached thread so this
-/// command does not block (review finding: grants previously lived until
-/// process exit, contradicting the "stoppable at any time" promise).
-/// Emergency (not plain) release: a physically held left button is
-/// unpressed first, and the control lane survives an in-flight action.
+/// command does not block. Emergency (not plain) release: a physically held
+/// left button is unpressed first, and the control lane survives an
+/// in-flight action.
 #[tauri::command]
 pub fn computer_use_revoke(
     session_id: String,
@@ -120,19 +143,14 @@ pub fn computer_use_confirm(
     shared: State<'_, Arc<ComputerUseShared>>,
 ) -> Result<(), String> {
     ensure_non_empty("confirm_id", &confirm_id)?;
-    // mint_confirmation only mints for an existing, unexpired pending and
-    // returns true (review finding: it previously no-op'd silently and the
-    // frontend showed failure as success); false surfaces an explicit
-    // error. The parenthetical keeps "unknown or expired": the frontend
-    // bridge matches that phrase to recognize "this pending expired" and
-    // clear the confirmation dialog locally (expiry is not a user denial);
-    // the wording must not break that contract.
+    // mint_confirmation only mints for an existing, unexpired pending while
+    // the switch is on and no stop is latched (both re-checked under the
+    // consent lock), returning true; false surfaces an explicit error — a
+    // silent no-op would let the frontend show failure as success.
     if shared.mint_confirmation(&confirm_id) {
         Ok(())
     } else {
-        Err(format!(
-            "confirmation request no longer exists (unknown or expired): {confirm_id}"
-        ))
+        Err(confirm_unknown_error(&confirm_id))
     }
 }
 
@@ -150,9 +168,7 @@ pub fn computer_use_deny(
     if shared.deny_confirmation(&confirm_id) {
         Ok(())
     } else {
-        Err(format!(
-            "unknown or expired confirm_id (already decided?): {confirm_id}"
-        ))
+        Err(deny_unknown_error(&confirm_id))
     }
 }
 
@@ -161,12 +177,12 @@ pub fn computer_use_deny(
 /// in-memory state must not diverge from settings.json. Re-enabling clears
 /// the stop flag (the guard's established semantics) but restores no
 /// session grants; disabling revokes all session grants and clears pending
-/// confirmations (review finding: otherwise old grants and old approval
-/// tokens would survive a disable/enable cycle). Finally, hot-refresh the
-/// disallowed_tools (review finding: the tool_policy closure only
-/// re-evaluates when refreshed; without an explicit refresh the catalog of
-/// already-running engines would lag until some unrelated policy refresh;
-/// same established pattern as the marketplace/connector commands calling
+/// confirmations — otherwise old grants and old approval tokens would
+/// survive a disable/enable cycle. Finally, hot-refresh the
+/// disallowed_tools: the tool_policy closure only re-evaluates when
+/// refreshed; without an explicit refresh the catalog of already-running
+/// engines would lag until some unrelated policy refresh (same established
+/// pattern as the marketplace/connector commands calling
 /// `pool.refresh_disallowed_tools()`). The refresh makes BOTH toggle
 /// directions immediate on every live engine: the tool is always
 /// constructed (see the tool_factory in lib.rs), so enabling just removes
@@ -177,10 +193,10 @@ pub async fn computer_use_set_enabled(
     shared: State<'_, Arc<ComputerUseShared>>,
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
-    // Reject on platforms without a backend (review finding: the toggle
-    // used to persist happily where computer use can never work, leaving the
-    // UI to discover it via a status round-trip). The frontend already
-    // rolls the optimistic flip back and surfaces the error.
+    // Reject on platforms without a backend: the toggle used to persist
+    // happily where computer use can never work, leaving the UI to discover
+    // it via a status round-trip. The frontend already rolls the optimistic
+    // flip back and surfaces the error.
     if enabled && !crate::features::computer_use::backend_supported() {
         return Err("computer use has no backend on this operating system".to_string());
     }
@@ -239,25 +255,30 @@ mod tests {
         );
     }
 
-    /// Review finding: the frontend bridge matches the exact phrase
-    /// "unknown or expired" in the confirm/deny error text to recognize an
-    /// expired pending and clear the stale dialog locally (the 5-minute TTL
-    /// would otherwise dead-lock the modal). Pin the phrase on the producer
-    /// side so a rewording cannot silently break the frontend contract.
+    /// The frontend bridge matches the exact phrase "unknown or expired" in
+    /// the confirm/deny error text to recognize an expired pending and clear
+    /// the stale dialog locally (the 5-minute TTL would otherwise dead-lock
+    /// the modal). The commands build those errors through
+    /// `confirm_unknown_error` / `deny_unknown_error`; assert on the
+    /// constructed strings so a rewording of the helper breaks the test
+    /// (a raw source-text count could be satisfied by a comment mentioning
+    /// the phrase).
     #[test]
     fn confirm_error_phrases_keep_the_frontend_contract() {
-        let source = include_str!("computer_use.rs");
-        let occurrences = source.matches("unknown or expired").count();
+        let confirm_id = "cu-0123456789abcdef";
         assert!(
-            occurrences >= 2,
-            "the frontend contract phrase \"unknown or expired\" must stay in the confirm \
-             and deny error texts (found {occurrences})"
+            confirm_unknown_error(confirm_id).contains("unknown or expired"),
+            "the confirm error must carry the frontend contract phrase"
+        );
+        assert!(
+            deny_unknown_error(confirm_id).contains("unknown or expired"),
+            "the deny error must carry the frontend contract phrase"
         );
     }
 
-    /// Review-fix regression: empty/whitespace-only identifiers for
-    /// grant/revoke (session_id) and confirm/deny (confirm_id) must fail
-    /// explicitly instead of silently succeeding.
+    /// Empty/whitespace-only identifiers for grant/revoke (session_id) and
+    /// confirm/deny (confirm_id) must fail explicitly instead of silently
+    /// succeeding.
     #[test]
     fn empty_identifiers_are_rejected() {
         assert!(ensure_non_empty("session_id", "").is_err());

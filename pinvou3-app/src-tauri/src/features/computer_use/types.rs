@@ -18,9 +18,10 @@ pub const EVENT_CONFIRM_REQUIRED: &str = "computer_use:confirm_required";
 
 /// Action consent tier.
 ///
-/// Single source of truth: `class()` decides the gating strength, and derived checks like
-/// `requires_t3_check` all defer to it (a formerly scattered three-place tier table once let
-/// MouseDown/Up bypass T3).
+/// Single source of truth: `class()` decides the gating strength, and every
+/// derived check defers to it — `requires_t3_check` (tool.rs) is "Input
+/// class minus the hover/scroll no-gate set", so the tier table and the
+/// screening gate cannot drift apart when a new action variant is added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionClass {
     /// Read-only observation: screenshot / cursor_position / wait / ui_tree / element_at_point.
@@ -258,7 +259,11 @@ pub struct Capabilities {
 
 /// The raw result of one screen capture (device physical pixels).
 ///
-/// - `rgba`: width×height×4 bytes of RGBA pixels.
+/// - `rgba`: width×height×4 bytes of RGBA pixels. Invariant:
+///   `rgba.len() == width*height*4`; the tool layer's single capture
+///   consumption point (tool.rs `capture_and_store`) enforces it with a
+///   `debug_assert!` plus an explicit error, so a malformed backend buffer
+///   fails loudly instead of panicking downstream in the scaling layer.
 /// - `origin_x/origin_y`: the monitor origin, in **input coordinate space**
 ///   (Windows/X11 physical pixels; macOS CGEvent points).
 /// - `input_scale_x/input_scale_y`: the device-physical-pixel → input-coordinate scale.
@@ -338,10 +343,10 @@ impl ComputerUseError {
         }
     }
 
-    /// Keep the error kind, rewrite the detail (round-12 review: the drag-teardown error
-    /// merging previously re-wrapped every Unavailable as Failed, losing category-based
-    /// upstream handling like "run as administrator" — the textual clue survived, the
-    /// classification did not).
+    /// Keep the error kind, rewrite the detail: drag-teardown error merging
+    /// must not re-wrap an `Unavailable` as `Failed` — category-based
+    /// upstream handling (e.g. "run as administrator") depends on the
+    /// classification surviving, not just the textual clue.
     pub fn same_kind(&self, detail: impl Into<String>) -> Self {
         match self {
             Self::Unsupported { capability, .. } => Self::Unsupported {

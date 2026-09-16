@@ -62,8 +62,9 @@
 //! and CFDictionary/CFArray's generic default parameters are crate-private
 //! types that cannot be constructed externally — hence attribute names use
 //! NSString (toll-free bridged to CFString) and a small set of
-//! CoreFoundation extern "C" functions for array/dictionary/boolean/release
-//! (the same FFI precedent as detach.rs). Objects returned by the AX "Copy
+//! CoreFoundation extern "C" functions for array/dictionary/boolean
+//! (CFRelease itself is shared via `platform::cursor`, the same FFI-sharing
+//! precedent as detach.rs). Objects returned by the AX "Copy
 //! rule" are always converted into typed smart pointers
 //! (`CFRetained<AXUIElement>` / `CFRetained<AXValue>` / `Retained<NSString>`)
 //! after a GetTypeID precheck; this module never dereferences raw pointers
@@ -93,7 +94,10 @@ use super::super::types::{
     Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
     UiTreeOptions,
 };
-use super::helpers::{TYPE_CHUNK_CHARS, char_chunks, drag_waypoints, map_scroll, sanitize_name};
+use super::helpers::{
+    TYPE_CHUNK_CHARS, TypeRun, drag_waypoints, map_scroll, sanitize_name, split_type_runs,
+};
+use crate::platform::cursor::{CFRelease, CursorPositionError, cursor_position};
 
 /// Wait before a click so the preceding move settles (the target process
 /// consumes the mouse-moved event).
@@ -152,8 +156,6 @@ const ACCESSIBILITY_DENIED: &str = "accessibility_denied: enable in System Setti
 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
-    fn CGEventCreate(source: *const c_void) -> *const c_void;
-    fn CGEventGetLocation(event: *const c_void) -> NSPoint;
     /// CGEventRef CGEventCreateMouseEvent(CGEventSourceRef, CGEventType,
     /// CGPoint, CGMouseButton). Types declared manually per the SDK prototype:
     /// the enums are u32.
@@ -171,7 +173,6 @@ unsafe extern "C" {
 
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
-    fn CFRelease(cf: *const c_void);
     fn CFGetTypeID(cf: *const c_void) -> usize;
     fn CFStringGetTypeID() -> usize;
     fn CFBooleanGetTypeID() -> usize;
@@ -303,27 +304,18 @@ pub fn request_permissions() {
 
 /// Reads the cursor position in CGEvent global point coordinates (top-left
 /// origin). Grant-free (only event synthesis requires Accessibility),
-/// callable on any thread — same approach as detach.rs's macos_mouse.
+/// callable on any thread — the extern declarations and the read itself are
+/// shared with detach.rs via [`crate::platform::cursor`].
 fn cursor_points() -> Result<(i32, i32), ComputerUseError> {
-    // SAFETY: CGEventCreate accepts NULL (the default event source); after a
-    // null check the returned event is only read for its coordinates;
-    // CFRelease releases the successfully created object exactly once.
-    unsafe {
-        let event = CGEventCreate(std::ptr::null());
-        if event.is_null() {
-            return Err(ComputerUseError::failed(
-                "CGEventCreate returned null while reading the cursor position",
-            ));
-        }
-        let loc = CGEventGetLocation(event);
-        CFRelease(event);
-        if !loc.x.is_finite() || !loc.y.is_finite() {
-            return Err(ComputerUseError::failed(
-                "CGEventGetLocation returned non-finite coordinates",
-            ));
-        }
-        Ok((loc.x.round() as i32, loc.y.round() as i32))
-    }
+    cursor_position().map_err(|err| {
+        let message = match err {
+            CursorPositionError::NullEvent => {
+                "CGEventCreate returned null while reading the cursor position"
+            }
+            CursorPositionError::NonFinite => "CGEventGetLocation returned non-finite coordinates",
+        };
+        ComputerUseError::failed(message)
+    })
 }
 
 /// Monitor to capture: the one holding the cursor (on macOS from_point takes
@@ -1182,14 +1174,14 @@ pub(super) struct MacosComputerUseBackend {
     /// physically moving the mouse races our synthetic move (review defect
     /// 6), so the position is verified and re-located before clicking.
     pending_move_target: Option<(i32, i32)>,
-    /// Cancel flag set after the caller times out (round-12 review M5):
-    /// chunked type injection checks it between chunks, so abandoned requests
-    /// stop injecting.
+    /// Cancel flag set after the caller times out: chunked type injection
+    /// checks it between runs, so abandoned requests stop injecting.
     cancel: Option<Arc<AtomicBool>>,
-    /// Buttons this backend itself holds synthetically pressed (review
-    /// finding: `move_to` used to post MouseMoved even while a button was
-    /// held, so a down → move → up sequence composed a plain click on every
-    /// app that only recognizes the Dragged event types).
+    /// Buttons this backend itself holds synthetically pressed:
+    /// `move_to` must post MouseMoved, but a move posted while a button is
+    /// held would compose a plain click on apps that only recognize the
+    /// Dragged event types, so a held button switches moves to the matching
+    /// Dragged event type.
     held_buttons: Vec<MouseButton>,
 }
 
@@ -1245,8 +1237,13 @@ impl MacosComputerUseBackend {
             return Ok(());
         };
         let (cx, cy) = cursor_points()?;
-        if (cx - target.0).abs() <= CLICK_POSITION_TOLERANCE_PT
-            && (cy - target.1).abs() <= CLICK_POSITION_TOLERANCE_PT
+        // i64 intermediate: with target/cursor coordinates near i32::MIN/MAX
+        // (never reachable by a real cursor, but cursor_points() does not
+        // clamp) the i32 subtraction would overflow and panic in debug builds.
+        let dx = (i64::from(cx) - i64::from(target.0)).abs();
+        let dy = (i64::from(cy) - i64::from(target.1)).abs();
+        if dx <= i64::from(CLICK_POSITION_TOLERANCE_PT)
+            && dy <= i64::from(CLICK_POSITION_TOLERANCE_PT)
         {
             return Ok(());
         }
@@ -1314,9 +1311,8 @@ impl MacosComputerUseBackend {
     }
 
     /// Synthesizes one mouse move. While one of this backend's own buttons
-    /// is held, the move must use the matching Dragged event type — apps
-    /// recognize a drag only via those (the dedicated `drag` path already
-    /// did; the composed down → move → up path went through here).
+    /// is held, the move uses the matching Dragged event type — apps
+    /// recognize a drag only via those, not via MouseMoved.
     fn post_move(&mut self, at: (i32, i32)) -> Result<(), ComputerUseError> {
         let (event_type, button) = move_event_type(&self.held_buttons);
         self.post_mouse_event(event_type, button, at, 0)
@@ -1443,6 +1439,11 @@ impl ComputerUseBackend for MacosComputerUseBackend {
                 .map_err(|err| map_xcap_err("monitor size", err))?,
         );
         if super::screen_capture_kit::available() {
+            // A runtime SCK failure returns the error as-is: there is no
+            // fallback to xcap's CGWindowListCreateImage path, because on
+            // Sequoia+ that API sits behind the periodic "keep allowing
+            // screen recording" system confirmation — surfacing the SCK
+            // error is preferable to re-prompting the user on every capture.
             return self.capture_via_screen_capture_kit(
                 origin_x,
                 origin_y,
@@ -1583,7 +1584,9 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         self.post_move(from)?;
         sleep(Duration::from_millis(CLICK_SETTLE_MS));
         self.post_mouse_event(down, left, from, 1)?;
-        self.held_buttons.push(MouseButton::Left);
+        if !self.held_buttons.contains(&MouseButton::Left) {
+            self.held_buttons.push(MouseButton::Left);
+        }
         sleep(Duration::from_millis(DRAG_PRESS_SETTLE_MS));
         let result = (|| {
             for (x, y) in drag_waypoints(from, to, DRAG_STEPS) {
@@ -1637,13 +1640,17 @@ impl ComputerUseBackend for MacosComputerUseBackend {
     fn type_text(&mut self, text: &str) -> Result<(), ComputerUseError> {
         // Direct Unicode injection (CGEventKeyboardSetUnicodeString; enigo
         // chunks internally at 20 characters), bypassing the IME — text lands
-        // directly in the focused field. An outer 64-character chunking
-        // (round-12 review M5): low-level event hooks process each event
+        // directly in the focused field. Chunked injection with between-run
+        // cancel checks: low-level event hooks process each event
         // synchronously, so long text can legitimately exceed the call
-        // budget — the between-chunks cancel check shrinks the upper bound
-        // of zombie injection after a caller timeout from the whole text to
-        // one chunk.
-        for chunk in char_chunks(text, TYPE_CHUNK_CHARS) {
+        // budget — the checks shrink the upper bound of zombie injection
+        // after a caller timeout from the whole text to one run. Newlines and
+        // tabs are split out as real Return/Tab key clicks, the same shape as
+        // the Windows/Linux backends: enigo's macOS fast_text handles a
+        // leading '\n' by recursively injecting "\u{200B}\n" (zero-width
+        // space + newline), which would pollute the target field (a password
+        // box especially) with invisible characters.
+        for run in split_type_runs(text, TYPE_CHUNK_CHARS) {
             if let Some(flag) = &self.cancel {
                 if flag.load(Ordering::SeqCst) {
                     return Err(ComputerUseError::unavailable(
@@ -1652,9 +1659,19 @@ impl ComputerUseBackend for MacosComputerUseBackend {
                     ));
                 }
             }
-            self.enigo()?
-                .text(chunk)
-                .map_err(|err| map_input_err("type text", err))?;
+            let injector = self.enigo()?;
+            let result = match run {
+                TypeRun::Text(chunk) => injector
+                    .text(&chunk)
+                    .map_err(|err| map_input_err("type text", err)),
+                TypeRun::Return => injector
+                    .key(enigo::Key::Return, Direction::Click)
+                    .map_err(|err| map_input_err("type text newline", err)),
+                TypeRun::Tab => injector
+                    .key(enigo::Key::Tab, Direction::Click)
+                    .map_err(|err| map_input_err("type text tab", err)),
+            };
+            result?;
         }
         Ok(())
     }

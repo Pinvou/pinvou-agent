@@ -778,15 +778,18 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // authorization state — this periodic refreshStatus reconciles with the backend,
         // recovering missed grant/stop events so the banner realigns (a pure recovery
         // mechanism; it does not change the authorization's own lifecycle).
-        // Skip polling while the last known state is disabled (review finding: the
-        // reconciliation loop previously ran for the app's whole lifetime even when the
-        // feature was off); re-enabling goes through setEnabled, which re-reads the
-        // authoritative state directly and cannot miss the state flip.
+        // Skip polling while there is no last-known state yet (nothing has
+        // published a slice) or the last known state is disabled: a null
+        // slice used to still fire an empty round-trip every 30s, and a
+        // disabled feature has nothing to reconcile (the mount refresh above
+        // covers cold start; re-enabling goes through setEnabled, which
+        // re-reads the authoritative state directly and cannot miss the
+        // state flip).
         const reconciler = setInterval(() => {
           try {
             const snapshot = bridge.state.get("computerUse");
             const slice = snapshot && snapshot.computerUse;
-            if (slice && slice.enabled === false) return;
+            if (!slice || slice.enabled === false) return;
           } catch {
             /* state.get unavailable: keep polling */
           }

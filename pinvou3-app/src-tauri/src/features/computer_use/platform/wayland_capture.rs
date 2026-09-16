@@ -19,7 +19,8 @@
 //!
 //! Threading contract: objects are constructed on the computer_use dedicated worker thread;
 //! the PipeWire main loop runs on its own thread, shared state exchanged only via
-//! `Arc<Mutex>`; `shutdown` stops the stream via the pw channel and joins the thread.
+//! `Arc<Mutex>`; `shutdown` stops the stream via the pw channel and detaches the thread,
+//! so shutdown never blocks on a wedged PipeWire thread.
 
 use std::os::fd::OwnedFd;
 use std::sync::{Arc, Mutex};
@@ -49,9 +50,12 @@ use super::super::types::ComputerUseError;
 
 /// Budget for waiting for the first frame (format negotiation + first-frame composition).
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(4);
-/// Grace period after an input action while waiting for a frame newer than it (with no
+/// Grace period while waiting for a frame newer than a just-finished input action (with no
 /// visual change no new frame arrives; on timeout use the existing frame — content
-/// unchanged, the frame is still correct).
+/// unchanged, the frame is still correct). Measured from the start of the wait, not from
+/// the action's own timestamp: `not_before` is stamped when the input action *starts*, so a
+/// mark-based deadline would expire in the middle of a long action (hold_key/type_text) and
+/// hand back a pre-action frame exactly when the post-action picture is expected.
 const FRESH_FRAME_GRACE: Duration = Duration::from_millis(400);
 /// Poll step while waiting for a frame.
 const POLL_STEP: Duration = Duration::from_millis(20);
@@ -122,7 +126,12 @@ impl PwCapture {
         not_before: Option<Instant>,
     ) -> Result<PortalFrame, ComputerUseError> {
         let first_deadline = Instant::now() + FIRST_FRAME_TIMEOUT;
-        let grace_deadline = not_before.map(|mark| mark + FRESH_FRAME_GRACE);
+        // The grace window runs from the start of this wait, not from `not_before`: the
+        // mark is stamped when the input action *starts*, and a long action (hold_key/
+        // type_text beyond the grace period) would leave a mark-based deadline already
+        // expired here, returning a stale pre-action frame instead of waiting for the
+        // post-action one.
+        let grace_deadline = not_before.map(|_| Instant::now() + FRESH_FRAME_GRACE);
         loop {
             let shared = self
                 .shared
@@ -160,14 +169,15 @@ impl PwCapture {
 
     /// Stop the stream (called on backend drop/session recycling; idempotent).
     ///
-    /// Drop the JoinHandle so the thread detaches instead of joining (round-12 review M4):
-    /// on the normal path control(false) makes the main loop quit; but if the PipeWire
-    /// thread is wedged in the connection phase before control_rx attach (the peer
-    /// portal/pipewire is dead), it will never see the quit signal — joining on the worker
-    /// thread would pin the whole session backend forever (every later request, including
-    /// emergency cleanup, would time out; only an app restart would recover). The cost of
-    /// detach is at most one wedged lingering thread (the same trade as the capture probe's
-    /// abandoned thread, and bounded) in exchange for a shutdown that never blocks.
+    /// Drop the JoinHandle so the thread detaches instead of joining: on the
+    /// normal path control(false) makes the main loop quit; but if the PipeWire
+    /// thread is wedged in the connection phase before control_rx attach (the
+    /// peer portal/pipewire is dead), it will never see the quit signal — joining
+    /// on the worker thread would pin the whole session backend forever (every
+    /// later request, including emergency cleanup, would time out; only an app
+    /// restart would recover). The cost of detach is at most one wedged lingering
+    /// thread (the same trade as the capture probe's abandoned thread, and
+    /// bounded) in exchange for a shutdown that never blocks.
     pub(super) fn shutdown(&mut self) {
         self.shared
             .lock()
@@ -194,6 +204,9 @@ fn run_pw_loop(
     shared: &Arc<Mutex<SharedCapture>>,
     control_rx: channel::Receiver<bool>,
 ) -> Result<(), String> {
+    // pw_init is idempotent (pipewire ref-counts repeated calls), and each spawn runs the
+    // loop body on a freshly spawned thread — after a session rebuild there is no earlier
+    // point guaranteed to have run, so init here rather than once per process.
     pipewire::init();
 
     let main_loop = MainLoopRc::new(None).map_err(|e| e.to_string())?;
@@ -394,6 +407,10 @@ fn run_pw_loop(
         .map_err(|e| format!("cannot activate the capture stream: {e}"))?;
 
     // Stop switch: receiving false stops the stream and exits (backend drop/close path).
+    // attach is infallible in pipewire 0.10 (internal errors such as a poisoned channel
+    // mutex panic there), so there is no failure to handle; the `_attached` binding is
+    // load-bearing, not ignored output — dropping the AttachedReceiver would detach the
+    // IO source from the loop and the quit signal would never be delivered.
     let quit_loop = main_loop.clone();
     let shutdown_shared = Arc::clone(shared);
     let _attached = control_rx.attach(main_loop.loop_(), move |active| {

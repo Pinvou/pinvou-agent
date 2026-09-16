@@ -1,15 +1,17 @@
 use super::*;
 use crate::features::computer_use::backend::ComputerUseBackend;
+use crate::features::computer_use::guard::{
+    PHYSICAL_INPUT_LOCK_TIMEOUT, set_physical_input_lock_timeout_for_tests,
+};
 use crate::features::computer_use::types::{Capabilities, Capture, ElementInfo, Key};
 use std::sync::Mutex as StdMutex;
 
-/// Review-fix regression (round-10 m3): a chord summary containing character
-/// keys shows only named keys plus a character count in the confirm
-/// dialog/event stream — `key "shift+h"` under a password focus no longer
-/// sends the typed characters into the dialog and remote event stream (the
-/// existing semantics of the Type action). The summary is also bound into the
-/// approval token (both mint and spend call [`action_summary`]), so it must
-/// be a pure function of the action.
+/// A chord summary containing character keys shows only named keys plus a
+/// character count in the confirm dialog/event stream — `key "shift+h"` under
+/// a password focus no longer sends the typed characters into the dialog and
+/// remote event stream (the existing semantics of the Type action). The
+/// summary is also bound into the approval token (both mint and spend call
+/// [`action_summary`]), so it must be a pure function of the action.
 #[test]
 fn chord_summaries_mask_typed_characters() {
     let summary_of = |input: serde_json::Value| {
@@ -94,12 +96,22 @@ struct MockState {
     cursor_error: bool,
     /// When set, the input capability bit is false (input capable by default).
     no_input_cap: bool,
+    /// When set, the screenshot capability bit is false (capture capable by
+    /// default).
+    screenshot_cap: bool,
+    /// When set, the ui_tree capability bit is false (a11y tree capable by
+    /// default).
+    ui_tree_cap: bool,
+    /// When set, the screening queries (element_at_point/focused_element/
+    /// cursor_position) revoke this fixture session's grant ("s-test") before
+    /// answering — drives the last-moment re-check pin (a revoke landing
+    /// mid-screening must abort before injection).
+    revoke_grant_via: Option<Arc<ComputerUseShared>>,
     moved_to: Vec<(i32, i32)>,
     clicked: Vec<(MouseButton, u8)>,
-    /// Review fix (third round): all five injection surfaces are recorded —
-    /// the "NOT executed" assertions for down/up/drag/scroll/hold_key could
-    /// not previously verify the execution surface (the regression pin was
-    /// soft).
+    /// All five injection surfaces are recorded — the "NOT executed"
+    /// assertions for down/up/drag/scroll/hold_key verify the execution
+    /// surface (the regression pin was soft without them).
     downed: Vec<MouseButton>,
     upped: Vec<MouseButton>,
     drags: Vec<((i32, i32), (i32, i32))>,
@@ -107,16 +119,15 @@ struct MockState {
     held: Vec<(Vec<Key>, u64)>,
     typed: Vec<String>,
     chords: Vec<Vec<Key>>,
-    /// Number of times release_os_grant was called (review-fix regression:
-    /// revoke/stop must trigger the backend to close its persistent OS-level
-    /// grant).
+    /// Number of times release_os_grant was called: revoke/stop must
+    /// trigger the backend to close its persistent OS-level grant.
     released: u64,
     /// When set, drag returns Err (injected drag backend failure, verifying
     /// the button-release safety net after a failure).
     drag_error: bool,
-    /// When set, capture returns Err (injected capture backend failure;
-    /// round-12 review M6: pins that a failed screenshot action must
-    /// propagate instead of degrading to a warning).
+    /// When set, capture returns Err (injected capture backend failure; pins
+    /// that a failed screenshot action must propagate instead of degrading to
+    /// a warning).
     capture_error: bool,
     /// When non-empty, type_text returns this error text (a pin for audit
     /// redaction on the execution-error path: the error goes into the audit,
@@ -138,6 +149,9 @@ impl Default for MockState {
             cursor: (7, 9),
             cursor_error: false,
             no_input_cap: false,
+            screenshot_cap: true,
+            ui_tree_cap: true,
+            revoke_grant_via: None,
             moved_to: Vec::new(),
             clicked: Vec::new(),
             downed: Vec::new(),
@@ -168,12 +182,24 @@ struct MockBackend {
     state: Arc<Mutex<MockState>>,
 }
 
+impl MockBackend {
+    /// Revokes the fixture session's grant before answering a screening
+    /// query when the mock state asks for it (the last-moment re-check pin).
+    fn maybe_revoke_grant(&self) {
+        let shared = self.state.lock().revoke_grant_via.clone();
+        if let Some(shared) = shared {
+            shared.revoke_session("s-test");
+        }
+    }
+}
+
 impl ComputerUseBackend for MockBackend {
     fn capabilities(&self) -> Capabilities {
+        let state = self.state.lock();
         Capabilities {
-            screenshot: true,
-            input: !self.state.lock().no_input_cap,
-            ui_tree: true,
+            screenshot: state.screenshot_cap,
+            input: !state.no_input_cap,
+            ui_tree: state.ui_tree_cap,
             notes: "mock".to_string(),
         }
     }
@@ -200,6 +226,7 @@ impl ComputerUseBackend for MockBackend {
     }
 
     fn cursor_position(&mut self) -> Result<(i32, i32), ComputerUseError> {
+        self.maybe_revoke_grant();
         let state = self.state.lock();
         if state.cursor_error {
             return Err(ComputerUseError::unsupported(
@@ -272,6 +299,7 @@ impl ComputerUseBackend for MockBackend {
         x: i32,
         y: i32,
     ) -> Result<Option<ElementInfo>, ComputerUseError> {
+        self.maybe_revoke_grant();
         let state = self.state.lock();
         if state.element_error {
             return Err(ComputerUseError::unavailable("mock: a11y backend failed"));
@@ -291,6 +319,7 @@ impl ComputerUseBackend for MockBackend {
     }
 
     fn focused_element(&mut self) -> Result<Option<ElementInfo>, ComputerUseError> {
+        self.maybe_revoke_grant();
         let state = self.state.lock();
         if state.focused_error {
             return Err(ComputerUseError::unsupported(
@@ -324,8 +353,9 @@ struct TestFixture {
     events: Arc<StdMutex<Vec<(String, Value)>>>,
     workspace: PathBuf,
     /// The temp root PINVOU3_HOME points at (the audit JSONL lands in
-    /// `<home>/computer-use/`).
+    /// `<home>/computer-use/`). Deleted automatically when the fixture drops.
     home: PathBuf,
+    _home_dir: tempfile::TempDir,
     _env_guard: std::sync::MutexGuard<'static, ()>,
 }
 
@@ -348,11 +378,11 @@ fn fixture() -> (TestFixture, EnvRestore) {
         .lock()
         .unwrap_or_else(|p| p.into_inner());
     let previous = std::env::var_os("PINVOU3_HOME");
-    let home = std::env::temp_dir().join(format!(
-        "pinvou3-cu-home-{}-{}",
-        std::process::id(),
-        crate::platform::paths::tests::unique_suffix()
-    ));
+    let home_dir = tempfile::Builder::new()
+        .prefix("pinvou3-cu-home-")
+        .tempdir()
+        .expect("temp home dir");
+    let home = home_dir.path().to_path_buf();
     // SAFETY: holding platform::paths::tests::ENV_LOCK, so env writes are
     // serialized in-process.
     unsafe { std::env::set_var("PINVOU3_HOME", &home) };
@@ -385,6 +415,7 @@ fn fixture() -> (TestFixture, EnvRestore) {
             events,
             workspace,
             home,
+            _home_dir: home_dir,
             _env_guard: env_lock,
         },
         EnvRestore(previous),
@@ -393,6 +424,40 @@ fn fixture() -> (TestFixture, EnvRestore) {
 
 fn context(workspace: &Path) -> ToolContext {
     ToolContext::new(workspace)
+}
+
+/// The fixture session's audit JSONL path, resolved through `AuditLog` so the
+/// filename format stays owned by audit.rs (the fixture pins PINVOU3_HOME).
+fn session_audit_path() -> PathBuf {
+    AuditLog::for_session("s-test")
+        .expect("audit log for session")
+        .path()
+        .to_path_buf()
+}
+
+/// Reads the fixture session's audit JSONL into typed records (one record
+/// per non-empty line). AuditRecord has no Deserialize derive, so the fields
+/// are mapped from the parsed JSON explicitly.
+fn read_audit_records(_fixture: &TestFixture) -> Vec<AuditRecord> {
+    let raw = std::fs::read_to_string(session_audit_path()).expect("audit jsonl exists");
+    raw.lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let value: Value = serde_json::from_str(line).expect("valid jsonl line");
+            let mut record = AuditRecord::new(
+                value["session_id"].as_str().unwrap_or_default(),
+                value["action"].as_str().unwrap_or_default(),
+                value["consent"].as_str().unwrap_or_default(),
+            );
+            record.target = value["target"].as_str().map(str::to_string);
+            record.result = value["result"].as_str().map(str::to_string);
+            record.error = value["error"].as_str().map(str::to_string);
+            record.duration_ms = value["duration_ms"].as_u64();
+            record.screenshot_sha256 = value["screenshot_sha256"].as_str().map(str::to_string);
+            record.screenshot_path = value["screenshot_path"].as_str().map(str::to_string);
+            record
+        })
+        .collect()
 }
 
 /// A benign element outside the denylist (T3 screening Clear): the place
@@ -440,20 +505,22 @@ fn rejects_bad_param_combinations() {
             json!({"action": "scroll", "direction": "north", "amount": 1}),
         ),
         ("scroll", json!({"action": "scroll", "direction": "down"})),
-        // Review-fix regression: scroll amount has a lower bound of 1; 0
+        // Scroll amount has a lower bound of 1; 0
         // clicks are rejected explicitly.
         (
             "scroll",
             json!({"action": "scroll", "direction": "down", "amount": 0}),
         ),
         ("wait", json!({"action": "wait"})),
+        // ms upper bound: wait rejects anything above MAX_WAIT_MS.
+        ("wait", json!({"action": "wait", "ms": 30001})),
         (
             "left_click_drag",
             json!({"action": "left_click_drag", "x": 1, "y": 2}),
         ),
         ("key", json!({"action": "key", "text": "ctrl+shift"})),
         ("key", json!({"action": "key", "text": "ctrl+nosuchkey"})),
-        // Review-fix regression: chord token cap and control-character
+        // Chord token cap and control-character
         // rejection.
         ("key", json!({"action": "key", "text": "a+b+c+d+e"})),
         (
@@ -474,7 +541,7 @@ fn rejects_bad_param_combinations() {
     }
 }
 
-/// Review-fix regression: type text is capped at 10_000 characters; NUL is
+/// Type text is capped at 10_000 characters; NUL is
 /// rejected.
 #[test]
 fn type_rejects_oversized_text_and_nul() {
@@ -522,7 +589,7 @@ fn hold_key_rejects_modifier_only_chord() {
     assert!(parse_action(&json!({"action": "hold_key", "text": "shift", "ms": 100})).is_err());
 }
 
-/// Review-fix regression (M1): a failed `key` parse must never echo the
+/// A failed `key` parse must never echo the
 /// model's text into the audit log — the model can carry a sensitive string
 /// in the text field to probe (`{"action":"key","text":"hunter2"}` used to
 /// write that string into the JSONL error field via the error message). The
@@ -554,24 +621,20 @@ async fn parse_failure_audit_record_does_not_echo_the_chord_text() {
         assert!(!error.contains(chord), "error echoed the chord: {error}");
     }
 
-    let audit_path = fixture.home.join("computer-use").join("audit-s-test.jsonl");
-    let raw = std::fs::read_to_string(&audit_path).expect("audit jsonl exists");
+    let raw = std::fs::read_to_string(session_audit_path()).expect("audit jsonl exists");
     assert!(
         !raw.contains("hunter2") && !raw.contains("h+u+n+t+e+r"),
         "the secret substring must appear nowhere in the audit log: {raw}"
     );
-    let records: Vec<serde_json::Value> = raw
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| serde_json::from_str(line).expect("valid jsonl line"))
-        .collect();
+    let records = read_audit_records(&fixture);
     assert_eq!(records.len(), 2, "one record per call: {records:?}");
     for record in &records {
-        assert_eq!(record["action"], "unparseable", "{records:?}");
-        assert_eq!(record["result"], "rejected", "{records:?}");
+        assert_eq!(record.action, "unparseable", "{records:?}");
+        assert_eq!(record.result.as_deref(), Some("rejected"), "{records:?}");
         assert!(
-            record["error"]
-                .as_str()
+            record
+                .error
+                .as_deref()
                 .unwrap_or_default()
                 .starts_with("parse failed: Failed to validate input: key chord"),
             "shape-only parse error expected: {records:?}"
@@ -603,7 +666,7 @@ async fn disabled_returns_clear_error() {
 
 #[tokio::test]
 async fn enabling_toggle_serves_existing_tool_instance_without_rebuild() {
-    // Audit-round regression: engines spawned while the settings toggle is
+    // Engines spawned while the settings toggle is
     // off hold a ComputerUseTool instance (tool_factory construction is
     // unconditional; visibility comes from the disallow list). Flipping the
     // toggle on — everything computer_use_set_enabled does on the tool
@@ -663,26 +726,19 @@ async fn input_without_grant_emits_event_and_errors() {
     );
     // Without a grant the backend must never be touched.
     assert!(fixture.mock.lock().clicked.is_empty());
-    // Rejected calls must leave a trace (round-4 consistency fix + round-10
-    // m12 regression): an audit record with result:"rejected" and
-    // consent:"rejected:grant-required".
-    let audit_path = fixture.home.join("computer-use").join("audit-s-test.jsonl");
-    let raw = std::fs::read_to_string(&audit_path).expect("audit jsonl exists");
-    let records: Vec<serde_json::Value> = raw
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| serde_json::from_str(line).expect("valid jsonl line"))
-        .collect();
-    let rejected: Vec<&serde_json::Value> = records
+    // Rejected calls must leave a trace: an audit record with
+    // result:"rejected" and consent:"rejected:grant-required".
+    let records = read_audit_records(&fixture);
+    let rejected: Vec<&AuditRecord> = records
         .iter()
-        .filter(|r| r["result"] == "rejected" && r["action"] == "left_click")
+        .filter(|r| r.result.as_deref() == Some("rejected") && r.action == "left_click")
         .collect();
     assert_eq!(
         rejected.len(),
         1,
         "the grant-rejected click must leave exactly one audit record: {records:?}"
     );
-    assert_eq!(rejected[0]["consent"], "rejected:grant-required");
+    assert_eq!(rejected[0].consent, "rejected:grant-required");
 }
 
 #[tokio::test]
@@ -723,7 +779,7 @@ async fn granted_click_executes_and_attaches_screenshot() {
     let path = images[0].as_str().unwrap_or_default().to_string();
     assert!(path.ends_with(".png"), "{path}");
     assert!(Path::new(&path).is_file(), "{path} should exist");
-    // The screenshot file must be 0600 (round-10 review m12: previously only
+    // The screenshot file must be 0600: previously only
     // asserted in the ignored live suite; in CI, nothing would catch
     // capture_and_store degrading to a plain write).
     crate::platform::filesystem::assert_private_file_mode(Path::new(&path));
@@ -765,7 +821,7 @@ async fn out_of_bounds_coordinates_clamp_with_warning() {
 #[tokio::test]
 async fn first_coordinate_action_auto_captures() {
     let (fixture, _restore) = fixture();
-    // scroll is an Input-class action (review correction): it needs a session
+    // scroll is an Input-class action: it needs a session
     // grant.
     fixture.shared.grant_session("s-test");
     // A benign element covers the (3,4) screening point (screens Clear).
@@ -952,7 +1008,7 @@ async fn cursor_position_reports_screenshot_space_after_capture() {
 }
 
 // ---------------------------------------------------------------------------
-// Review-fix regressions: layered screening / screening-unavailable passes /
+// Layered screening / screening-unavailable passes /
 // token binding / capabilities first
 // ---------------------------------------------------------------------------
 
@@ -990,8 +1046,8 @@ async fn mouse_down_up_composition_is_t3_screened() {
             .is_empty(),
         "confirm_required must have been emitted"
     );
-    // Third-round review-fix regression: execution-surface assertions — when
-    // blocked, down/up must not actually be dispatched (the mock now records
+    // Execution-surface assertions: when
+    // blocked, down/up must not actually be dispatched (the mock records
     // all five injection surfaces).
     let mock = fixture.mock.lock();
     assert!(
@@ -1043,7 +1099,7 @@ async fn a11y_query_error_executes_without_confirmation() {
     );
 }
 
-/// Review-fix regression (heaviest): keyboard input lands on the **focused
+/// Keyboard input lands on the **focused
 /// element**, not at the cursor — when focus is on a password field and the
 /// cursor is elsewhere, the old type implementation screened by cursor (found
 /// no element) and let the injection through.
@@ -1217,7 +1273,7 @@ async fn drag_drop_target_is_screened() {
     let text = result.ok().map(|r| r.content).unwrap_or_default();
     assert!(text.contains("NOT executed"), "{text}");
     assert!(text.contains("Delete"), "{text}");
-    // Third-round review-fix regression: when blocked, the drag must not
+    // When blocked, the drag must not
     // actually be dispatched.
     assert!(
         fixture.mock.lock().drags.is_empty(),
@@ -1398,7 +1454,7 @@ async fn confirm_token_is_bound_to_the_action() {
     assert!(fixture.mock.lock().typed.is_empty());
 }
 
-/// Review correction: mouse_move/scroll are real pointer input and must hold
+/// mouse_move/scroll are real pointer input and must hold
 /// a session grant.
 #[tokio::test]
 async fn mouse_move_requires_session_grant() {
@@ -1439,28 +1495,18 @@ async fn unsupported_input_platform_is_rejected_before_grant_prompt() {
         !events.iter().any(|(name, _)| name == EVENT_GRANT_REQUIRED),
         "no grant prompt expected, got {events:?}"
     );
-    // Capability rejections must leave a trace (round-4 consistency fix +
-    // round-10 m12 regression).
-    let audit_path = fixture.home.join("computer-use").join("audit-s-test.jsonl");
-    let raw = std::fs::read_to_string(&audit_path).expect("audit jsonl exists");
-    let records: Vec<serde_json::Value> = raw
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| serde_json::from_str(line).expect("valid jsonl line"))
-        .collect();
-    let rejected: Vec<&serde_json::Value> = records
+    // Capability rejections must leave a trace.
+    let records = read_audit_records(&fixture);
+    let rejected: Vec<&AuditRecord> = records
         .iter()
-        .filter(|r| r["result"] == "rejected" && r["action"] == "left_click")
+        .filter(|r| r.result.as_deref() == Some("rejected") && r.action == "left_click")
         .collect();
     assert_eq!(
         rejected.len(),
         1,
         "the capability-rejected click must leave exactly one audit record: {records:?}"
     );
-    assert_eq!(
-        rejected[0]["consent"],
-        "rejected:capability:input-unsupported"
-    );
+    assert_eq!(rejected[0].consent, "rejected:capability:input-unsupported");
 }
 
 /// The schema enum, the unknown-action error text, and parse_action's
@@ -1558,20 +1604,26 @@ async fn type_summary_is_a_plain_character_count() {
         .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
         .map(|(_, p)| p.clone())
         .expect("confirm event carries the action summary");
-    let summary = payload["action"].as_str().unwrap_or_default();
+    // Canonical action name + the English parameter summary under `summary`.
+    assert_eq!(payload["action"], "type", "{payload}");
+    let summary = payload["summary"].as_str().unwrap_or_default();
 
     // Exactly the plain character count — no `[fp …]` suffix, nothing else.
     assert_eq!(summary, "type 20 characters", "{summary}");
     // The raw text never rides the dialog summary.
     assert!(!summary.contains("hello"), "{summary}");
     assert!(!summary.contains('\u{7}'), "{summary:?}");
+    // Structured typing fields disclose the count and the full preview.
+    assert_eq!(payload["text_length"], 20, "{payload}");
+    assert_eq!(payload["text_preview"], text, "{payload}");
+    assert_eq!(payload["text_preview_truncated"], false, "{payload}");
     // The full text rides type_preview_full for this non-secure target.
     assert_eq!(
         payload["type_preview_full"].as_str(),
         Some(text.as_str()),
         "the expander payload carries the full text: {payload}"
     );
-    // Non-execution pin (round-12 review): see the preview tests below.
+    // Non-execution pin: see the preview tests below.
     assert!(
         fixture.mock.lock().typed.is_empty(),
         "the blocked type must not reach the injection surface"
@@ -1616,12 +1668,20 @@ async fn type_summary_masks_preview_for_secure_targets() {
         .find(|(name, _)| name == EVENT_CONFIRM_REQUIRED)
         .map(|(_, p)| p.clone())
         .expect("confirm event carries the action summary");
-    let summary = payload["action"].as_str().unwrap_or_default();
+    let summary = payload["summary"].as_str().unwrap_or_default();
 
     // Plaintext must not appear in the summary; the summary is only a
     // character count.
     assert_eq!(summary, "type 14 characters", "{summary}");
     assert!(!summary.contains("hunter2"), "{summary}");
+    // Masked target: the count may ride (length only), but no preview of any
+    // form and no truncation flag.
+    assert_eq!(payload["text_length"], 14, "{payload}");
+    assert!(
+        payload.get("text_preview").is_none(),
+        "secure targets must not carry a preview: {payload}"
+    );
+    assert_eq!(payload["text_preview_truncated"], false, "{payload}");
     // No full-text preview and no plaintext anywhere in the payload.
     assert!(
         payload.get("type_preview_full").is_none(),
@@ -1641,7 +1701,7 @@ async fn type_summary_masks_preview_for_secure_targets() {
 // ---------------------------------------------------------------------------
 
 /// Single-character chords are audited redacted as `pressed 1 key` — never
-/// the character, regardless of the modifier (round-6 review: a password
+/// the character, regardless of the modifier: a password
 /// spelled one `alt+x` call at a time would otherwise land in the log as
 /// plaintext `keys: alt+x` records; classification is by content, not token
 /// position, so duplicate-modifier chords like `shift+shift+h` — which types
@@ -1688,24 +1748,16 @@ async fn single_char_key_chord_is_audited_as_typed_text() {
     };
     assert!(held.success, "{}", held.content);
 
-    let audit_path = fixture.home.join("computer-use").join("audit-s-test.jsonl");
-    let raw = std::fs::read_to_string(&audit_path).expect("audit jsonl exists");
-    let records: Vec<serde_json::Value> = raw
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| serde_json::from_str(line).expect("valid jsonl line"))
-        .collect();
-    let keys: Vec<&serde_json::Value> = records.iter().filter(|r| r["action"] == "key").collect();
+    let raw = std::fs::read_to_string(session_audit_path()).expect("audit jsonl exists");
+    let records = read_audit_records(&fixture);
+    let keys: Vec<&AuditRecord> = records.iter().filter(|r| r.action == "key").collect();
     assert_eq!(keys.len(), 7, "seven key calls: {records:?}");
-    let holds: Vec<&serde_json::Value> = records
-        .iter()
-        .filter(|r| r["action"] == "hold_key")
-        .collect();
+    let holds: Vec<&AuditRecord> = records.iter().filter(|r| r.action == "hold_key").collect();
     assert_eq!(holds.len(), 1, "one hold_key call: {records:?}");
 
-    let typed: Vec<&&serde_json::Value> = keys
+    let typed: Vec<&&AuditRecord> = keys
         .iter()
-        .filter(|r| r["target"] == "pressed 1 key")
+        .filter(|r| r.target.as_deref() == Some("pressed 1 key"))
         .collect();
     assert_eq!(
         typed.len(),
@@ -1714,15 +1766,17 @@ async fn single_char_key_chord_is_audited_as_typed_text() {
     );
     // No single-character chord keeps a plaintext target — ctrl+s included.
     assert!(
-        keys.iter().all(|r| !r["target"]
-            .as_str()
+        keys.iter().all(|r| !r
+            .target
+            .as_deref()
             .unwrap_or_default()
             .starts_with("keys: ")),
         "single-character chords must never log their character: {records:?}"
     );
     // The held typing-form chord carries the held-ms suffix, no character.
     assert_eq!(
-        holds[0]["target"], "pressed 1 key held for 10ms",
+        holds[0].target.as_deref(),
+        Some("pressed 1 key held for 10ms"),
         "hold_key appends the held duration to the redacted target"
     );
     // No crypto fields exist at all: the audit is a plain log.
@@ -1739,7 +1793,7 @@ async fn single_char_key_chord_is_audited_as_typed_text() {
     assert!(!raw.contains("keys: h+shift+shift"));
 }
 
-/// Review-fix regression (M2 + round-10 B1): a chord with character keys
+/// A chord with character keys
 /// (≤4 tokens) spells out text in ≤4-character chunks — the audit logs only
 /// the key count (`pressed 4 keys`), never the plaintext. Mixed chords
 /// (`p+a+Return`, `esc+h+u+n`) inject their character keys too; the old
@@ -1779,8 +1833,7 @@ async fn multi_char_letter_chords_are_audited_as_counts_only() {
     };
     assert!(named.success, "{}", named.content);
 
-    let audit_path = fixture.home.join("computer-use").join("audit-s-test.jsonl");
-    let raw = std::fs::read_to_string(&audit_path).expect("audit jsonl exists");
+    let raw = std::fs::read_to_string(session_audit_path()).expect("audit jsonl exists");
     assert!(
         !raw.contains("p+a+s+s")
             && !raw.contains("h+u+n")
@@ -1788,15 +1841,11 @@ async fn multi_char_letter_chords_are_audited_as_counts_only() {
             && !raw.contains("esc+h+u+n"),
         "letter chunks (mixed with named keys or not) must never reach the log as plaintext: {raw}"
     );
-    let records: Vec<serde_json::Value> = raw
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| serde_json::from_str(line).expect("valid jsonl line"))
-        .collect();
+    let records = read_audit_records(&fixture);
     let targets: Vec<&str> = records
         .iter()
-        .filter(|r| r["action"] == "key")
-        .filter_map(|r| r["target"].as_str())
+        .filter(|r| r.action == "key")
+        .filter_map(|r| r.target.as_deref())
         .collect();
     assert_eq!(
         targets,
@@ -1829,11 +1878,11 @@ async fn audit_unavailable_fails_open_and_actions_still_execute() {
         .lock()
         .unwrap_or_else(|p| p.into_inner());
     let previous = std::env::var_os("PINVOU3_HOME");
-    let blocker = std::env::temp_dir().join(format!(
-        "pinvou3-cu-blocker-{}-{}",
-        std::process::id(),
-        crate::platform::paths::tests::unique_suffix()
-    ));
+    let blocker_dir = tempfile::Builder::new()
+        .prefix("pinvou3-cu-blocker-")
+        .tempdir()
+        .expect("temp blocker dir");
+    let blocker = blocker_dir.path().join("not-a-directory");
     std::fs::write(&blocker, b"not a directory").expect("write blocker file");
     // SAFETY: holding platform::paths::tests::ENV_LOCK, so env writes are
     // serialized in-process.
@@ -1846,11 +1895,11 @@ async fn audit_unavailable_fails_open_and_actions_still_execute() {
 
     // The workspace is decoupled from the audit directory: it lives in its
     // own temp directory.
-    let workspace = std::env::temp_dir().join(format!(
-        "pinvou3-cu-nows-{}-{}",
-        std::process::id(),
-        crate::platform::paths::tests::unique_suffix()
-    ));
+    let workspace_dir = tempfile::Builder::new()
+        .prefix("pinvou3-cu-nows-")
+        .tempdir()
+        .expect("temp workspace dir");
+    let workspace = workspace_dir.path().to_path_buf();
     let _ = std::fs::create_dir_all(&workspace);
 
     let shared = Arc::new(ComputerUseShared::new());
@@ -1899,9 +1948,6 @@ async fn audit_unavailable_fails_open_and_actions_still_execute() {
         Err(e) => panic!("screenshot failed: {e}"),
     };
     assert!(shot.success, "{}", shot.content);
-
-    let _ = std::fs::remove_dir_all(&workspace);
-    let _ = std::fs::remove_file(&blocker);
 }
 
 /// Mixed-DPI guard: when the cursor is outside the captured monitor,
@@ -1973,7 +2019,7 @@ async fn mouse_down_outside_captured_monitor_executes_without_confirmation() {
     );
 }
 
-/// Retina-style mixed-DPI regression (M3): capture 200x200 device pixels
+/// Retina-style mixed-DPI regression: capture 200x200 device pixels
 /// with input_scale 0.5 (i.e. a 100x100-point monitor). cursor_position
 /// reports input coordinates directly:
 /// - Cursor at input (60,40) (inside the capture) → the coordinate-less down
@@ -2095,8 +2141,8 @@ async fn retina_input_space_cursor_screens_inside_and_reports_exact_coords() {
 }
 
 // ---------------------------------------------------------------------------
-// Third-round review regressions (after the position update): chords never
-// get a form-based confirmation / mouse_move·scroll are not screened
+// Chords never get a form-based confirmation /
+// mouse_move·scroll are not screened
 // ---------------------------------------------------------------------------
 
 /// Chords never require a confirmation (pin (d)): chord editing is
@@ -2364,7 +2410,7 @@ async fn trimmed_denylist_affirmatives_execute_and_consequences_confirm() {
 }
 
 // ---------------------------------------------------------------------------
-// Review-fix regressions: revoke/stop must terminate the persistent OS-level
+// Revoke/stop must terminate the persistent OS-level
 // grant (registry → release_os_grant)
 // ---------------------------------------------------------------------------
 
@@ -2458,7 +2504,7 @@ async fn dropping_the_tool_unregisters_its_backend_handle() {
     );
 }
 
-/// Review-fix regression (M4): session end = the engine reclaiming the tool
+/// Session end = the engine reclaiming the tool
 /// (Drop). Drop must revoke this session's grant and wipe its consent
 /// artifacts (pending confirmations, minted tokens) — consent state must not
 /// outlive the tool holding it; other sessions' grants and artifacts are
@@ -2665,26 +2711,22 @@ async fn t3_confirmation_error_is_audited_as_stable_code() {
     assert!(text.contains("Buy now"), "{text}");
     assert!(text.contains("NOT executed"), "{text}");
 
-    let audit_path = fixture.home.join("computer-use").join("audit-s-test.jsonl");
-    let raw = std::fs::read_to_string(&audit_path).expect("audit jsonl exists");
-    let records: Vec<serde_json::Value> = raw
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("valid jsonl line"))
-        .collect();
+    let raw = std::fs::read_to_string(session_audit_path()).expect("audit jsonl exists");
+    let records = read_audit_records(&fixture);
     assert_eq!(records.len(), 1, "one record per call: {records:?}");
-    assert_eq!(records[0]["result"], "error");
-    assert_eq!(records[0]["action"], "left_click");
-    assert_eq!(records[0]["consent"], "input:session-grant");
+    assert_eq!(records[0].result.as_deref(), Some("error"));
+    assert_eq!(records[0].action, "left_click");
+    assert_eq!(records[0].consent, "input:session-grant");
     assert_eq!(
-        records[0]["error"], T3_CONFIRM_REQUIRED_ERROR,
+        records[0].error.as_deref(),
+        Some(T3_CONFIRM_REQUIRED_ERROR),
         "audit error field must be the stable code"
     );
     // The element label must not appear anywhere in the audit record.
     assert!(!raw.contains("Buy now"), "element label leaked to audit");
 }
 
-/// Audit integration (m4 round-6): after the full approval flow of "mint a
+/// Audit integration: after the full approval flow of "mint a
 /// pending → the user approves (mint) → execute with the confirmation (with
 /// a follow-up screenshot)", the confirmed record in the session JSONL
 /// satisfies the redaction contract: consent contains "t3-confirmed", target
@@ -2738,19 +2780,10 @@ async fn approved_click_audit_record_meets_the_redaction_contract() {
 
     let log = AuditLog::for_session("s-test").expect("audit log for session");
     let raw = std::fs::read_to_string(log.path()).expect("audit jsonl exists");
-    let records: Vec<serde_json::Value> = raw
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| serde_json::from_str(line).expect("valid jsonl line"))
-        .collect();
-    let confirmed: Vec<&serde_json::Value> = records
+    let records = read_audit_records(&fixture);
+    let confirmed: Vec<&AuditRecord> = records
         .iter()
-        .filter(|r| {
-            r["consent"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("t3-confirmed")
-        })
+        .filter(|r| r.consent.contains("t3-confirmed"))
         .collect();
     assert_eq!(
         confirmed.len(),
@@ -2761,14 +2794,15 @@ async fn approved_click_audit_record_meets_the_redaction_contract() {
     // The target is the count/coords form: coordinates only, never the
     // screened element's label text.
     assert_eq!(
-        record["target"], "left click x1 at Some((5, 5))",
-        "target must be the parameter summary: {record}"
+        record.target.as_deref(),
+        Some("left click x1 at Some((5, 5))"),
+        "target must be the parameter summary: {record:?}"
     );
-    assert_eq!(record["result"], "ok", "{record}");
+    assert_eq!(record.result.as_deref(), Some("ok"), "{record:?}");
     // The attached screenshot rides as sha256 + path, never pixels.
-    let sha = record["screenshot_sha256"].as_str().unwrap_or_default();
-    assert_eq!(sha.len(), 64, "sha256 field must be present: {record}");
-    assert!(record["screenshot_path"].is_string(), "{record}");
+    let sha = record.screenshot_sha256.as_deref().unwrap_or_default();
+    assert_eq!(sha.len(), 64, "sha256 field must be present: {record:?}");
+    assert!(record.screenshot_path.is_some(), "{record:?}");
     // The element label (on-screen content) never reached the log at all.
     assert!(!raw.contains("Buy now"), "element label leaked: {raw}");
 }
@@ -2889,14 +2923,17 @@ async fn confirm_event_carries_full_type_preview_for_long_non_secure_text() {
         "full text must ride the confirm event: {payload}"
     );
     // The dialog summary stays a plain character count (the expander is the
-    // full view).
-    let summary = payload["action"].as_str().unwrap_or_default();
+    // full view), with the structured typing fields alongside it.
+    let summary = payload["summary"].as_str().unwrap_or_default();
     assert_eq!(
         summary,
         format!("type {} characters", text.chars().count()),
         "summary must be the parameter summary: {payload}"
     );
-    // Blocked-type non-execution is pinned here too (round-12 review): the
+    assert_eq!(payload["text_length"], text.chars().count(), "{payload}");
+    assert_eq!(payload["text_preview"], text, "{payload}");
+    assert_eq!(payload["text_preview_truncated"], false, "{payload}");
+    // Blocked-type non-execution is pinned here too: the
     // event assertions alone would stay green if the blocked path began
     // injecting before raising the confirmation.
     assert!(
@@ -2905,7 +2942,7 @@ async fn confirm_event_carries_full_type_preview_for_long_non_secure_text() {
     );
 }
 
-/// Short type texts DO ride `type_preview_full` (round-6 review): the
+/// Short type texts DO ride `type_preview_full`: the
 /// dialog would otherwise show only "type 2 characters" — approving a
 /// length with zero visible content is not informed consent. The old
 /// 12-char lower bound was stale logic from the removed inline preview.
@@ -3031,7 +3068,7 @@ async fn approved_cursor_action_spends_even_after_the_pointer_moved() {
 /// The token binds the action summary AND the full action content: another
 /// text with the same N characters produces the same summary
 /// `type 21 characters` but a different content hash, so the swap is rejected
-/// (review finding: a summary-only binding let the approved preview and the
+/// (a summary-only binding let the approved preview and the
 /// executed content diverge). The user-approved original still spends the
 /// token; single-use semantics unchanged.
 #[tokio::test]
@@ -3181,7 +3218,7 @@ async fn unreadable_cursor_at_spend_does_not_block_a_granted_token() {
     );
 }
 
-/// Round-6 review gap: the happy paths of drag / scroll / hold_key never
+/// The happy paths of drag / scroll / hold_key never
 /// asserted "it really executed" — the mock had recording fields but zero
 /// assertions, so a refactor silently dropping calls would stay green.
 #[tokio::test]
@@ -3245,7 +3282,7 @@ async fn drags_scrolls_and_holds_execute_on_granted_actions() {
     );
 }
 
-/// Review-fix regression (round-11 review): the "typed text never reaches
+/// The "typed text never reaches
 /// the audit" contract of type's success path previously had only
 /// construction-side unit tests; no test actually executed a successful type
 /// and checked the real JSONL file — a refactor writing text into the target
@@ -3269,8 +3306,7 @@ async fn type_success_audit_record_carries_counts_never_text() {
     };
     assert!(result.success, "{}", result.content);
 
-    let audit_path = fixture.home.join("computer-use").join("audit-s-test.jsonl");
-    let raw = std::fs::read_to_string(&audit_path).expect("audit jsonl exists");
+    let raw = std::fs::read_to_string(session_audit_path()).expect("audit jsonl exists");
     assert!(
         !raw.contains("hello"),
         "typed text must never reach the audit log: {raw}"
@@ -3281,7 +3317,7 @@ async fn type_success_audit_record_carries_counts_never_text() {
     );
 }
 
-/// Review-fix regression (round-11 review): stop_all's consent-state wipe
+/// stop_all's consent-state wipe
 /// previously had only grant assertions — the clearing of pendings and
 /// minted tokens had no direct pin. After an emergency stop: pendings are
 /// gone and unspent tokens are uniformly Unknown.
@@ -3312,10 +3348,10 @@ fn stop_all_wipes_pending_confirmations_and_approved_tokens() {
     );
 }
 
-/// Review-fix regression (round-11 review): key/hold_key's text had no
-/// length cap — a legal chord is constrained to ≤4 key names after parsing,
-/// but the raw text rode verbatim into the confirm event/result payload, and
-/// whitespace alone could smuggle in a string of any size. >128 characters is
+/// key/hold_key's text length cap: a legal chord is constrained
+/// to ≤4 key names after parsing, but the raw text rode verbatim into the
+/// confirm event/result payload, and whitespace alone could smuggle in a
+/// string of any size. >128 characters is
 /// rejected; the error text does not echo it.
 #[tokio::test]
 async fn key_chord_text_length_is_capped() {
@@ -3349,7 +3385,7 @@ async fn key_chord_text_length_is_capped() {
     assert!(result.is_err(), "an oversized hold_key text must not parse");
 }
 
-/// Review-fix regression (round-11 review P1): the bounds returned by
+/// The bounds returned by
 /// element_at_point must be in **screenshot pixel space** — a11y element
 /// rectangles are input/screen coordinates; when the screenshot's long edge
 /// is downsampled, the two coordinate sets drift apart by the scale factor,
@@ -3413,10 +3449,10 @@ async fn element_at_point_reports_bounds_in_screenshot_space() {
 }
 
 // ---------------------------------------------------------------------------
-// Round-12 review regressions
+// Screenshot failure, execution-error redaction, and preview-cap pins
 // ---------------------------------------------------------------------------
 
-/// Round-12 review M6: the screenshot action's capture IS the action — a
+/// The screenshot action's capture IS the action — a
 /// capture failure must propagate as a failed result (success=false), not
 /// degrade to success+warning with an ok audit record (the old behavior made
 /// the "capture unavailable" platform state invisible to both the model and
@@ -3447,8 +3483,7 @@ async fn screenshot_failure_fails_the_action_instead_of_warning() {
         "the capture error must reach the model: {}",
         result.content
     );
-    let audit_path = fixture.home.join("computer-use").join("audit-s-test.jsonl");
-    let raw = std::fs::read_to_string(&audit_path).expect("audit jsonl exists");
+    let raw = std::fs::read_to_string(session_audit_path()).expect("audit jsonl exists");
     assert!(
         raw.contains("\"result\":\"error\""),
         "the audit record must carry the failure, not ok: {raw}"
@@ -3459,7 +3494,7 @@ async fn screenshot_failure_fails_the_action_instead_of_warning() {
     );
 }
 
-/// Round-12 review: audit redaction on the execution-error path was
+/// Audit redaction on the execution-error path was
 /// previously verified only on the construction side — no test actually
 /// executed a failing type and checked the file bytes. Pinned: the error
 /// message goes into the audit (the backend error constructors guarantee it
@@ -3482,8 +3517,7 @@ async fn type_execution_error_audits_the_error_never_the_text() {
     };
     assert!(!result.success, "{}", result.content);
 
-    let audit_path = fixture.home.join("computer-use").join("audit-s-test.jsonl");
-    let raw = std::fs::read_to_string(&audit_path).expect("audit jsonl exists");
+    let raw = std::fs::read_to_string(session_audit_path()).expect("audit jsonl exists");
     assert!(
         !raw.contains("hunter2"),
         "typed text must never reach the audit log, even on execution errors: {raw}"
@@ -3494,8 +3528,8 @@ async fn type_execution_error_audits_the_error_never_the_text() {
     );
 }
 
-/// Round-12 review: type_preview_full's 4096 truncation had no event-level
-/// test — a non-secure type of 4097 characters must not carry the full-text
+/// type_preview_full's 4096 truncation: a non-secure
+/// type of 4097 characters must not carry the full-text
 /// preview (the dialog falls back to the character-count summary).
 #[tokio::test]
 async fn confirm_event_drops_full_preview_above_4096_chars() {
@@ -3539,7 +3573,7 @@ async fn confirm_event_drops_full_preview_above_4096_chars() {
     );
 }
 
-/// Round-12 review: character-key chords are typing too — on a non-secure
+/// Character-key chords are typing too — on a non-secure
 /// target the `key "h+a+c+k"` confirm event must carry the character-sequence
 /// preview (the same transparency as type, the same 4096 cap), otherwise the
 /// user is blind-signing chunk by chunk. Secure targets still get a count
@@ -3638,15 +3672,24 @@ async fn char_carrying_chord_confirm_stays_masked_on_secure_target() {
     );
 }
 
-/// Round-12 review: the cross-session physical input lock previously had a
-/// unit test only on the bare mutex — deleting the `lock_physical_input()`
-/// call in run() would still leave the whole suite green. Pins the end-to-end
-/// contract: while session A holds the lock, session B's input action is
-/// rejected with InputBusy and never injects (the cost: the rejection path
-/// itself waits out the full 20s bounded timeout).
+/// The cross-session physical input lock: while session A holds the lock,
+/// session B's input action is rejected with InputBusy and never injects.
+/// The rejection path itself waits out the bounded lock-acquisition timeout,
+/// so the test temporarily shrinks it to ~50ms; the production value is
+/// restored on drop (panic-safe, so the short timeout cannot leak into other
+/// tests).
+struct RestoreLockTimeout;
+impl Drop for RestoreLockTimeout {
+    fn drop(&mut self) {
+        set_physical_input_lock_timeout_for_tests(PHYSICAL_INPUT_LOCK_TIMEOUT);
+    }
+}
+
 #[tokio::test]
 async fn held_input_lock_rejects_other_sessions_to_inject() {
     let (fixture, _restore) = fixture();
+    set_physical_input_lock_timeout_for_tests(std::time::Duration::from_millis(50));
+    let _timeout_reset = RestoreLockTimeout;
     fixture.shared.grant_session("s-test");
     let mock2 = Arc::new(Mutex::new(MockState::default()));
     let events2 = Arc::new(StdMutex::new(Vec::new()));
@@ -3698,7 +3741,7 @@ async fn held_input_lock_rejects_other_sessions_to_inject() {
     );
 }
 
-/// Round-12 review: when the same-session factory re-enters, a late stale
+/// When the same-session factory re-enters, a late stale
 /// tool's Drop previously revoked the session's grant unconditionally — the
 /// registry-side identity check is extended to the consent revocation. When
 /// the new tool has registered and then the old tool Drops, the new tool's
@@ -3750,5 +3793,296 @@ fn stale_tool_drop_keeps_a_same_session_successors_grant() {
         mock2.lock().clicked.len(),
         1,
         "the successor must still reach the injection surface"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Execution-surface pins: click-variant button/count mapping, capability bits,
+// no-screenshot branches, wait bounds, ui_tree pass-through, last-moment
+// consent re-check
+// ---------------------------------------------------------------------------
+
+/// Execution-level pin for the click-variant mapping: right_click injects
+/// (Right, 1), double_click (Left, 2), triple_click (Left, 3) — the mock
+/// records the injected button/count, so a mapping regression cannot stay
+/// green behind a generic "clicked" assertion.
+#[tokio::test]
+async fn click_variants_map_to_the_right_button_and_count() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    // No element covers the targets (screening Clear); the auto-captured
+    // 16x16 screenshot maps (5, 6) identically to input coordinates.
+    let cases: &[(&str, MouseButton, u8)] = &[
+        ("right_click", MouseButton::Right, 1),
+        ("double_click", MouseButton::Left, 2),
+        ("triple_click", MouseButton::Left, 3),
+    ];
+    for (action, button, count) in cases {
+        let result = fixture
+            .tool
+            .execute(
+                json!({"action": action, "x": 5, "y": 6}),
+                &context(&fixture.workspace),
+            )
+            .await;
+        let result = match result {
+            Ok(r) => r,
+            Err(e) => panic!("execute failed for {action}: {e}"),
+        };
+        assert!(result.success, "{action}: {}", result.content);
+        let mock = fixture.mock.lock();
+        assert_eq!(
+            mock.moved_to.last().copied(),
+            Some((5, 6)),
+            "{action} must move to the target first"
+        );
+        assert_eq!(
+            mock.clicked.last().copied(),
+            Some((*button, *count)),
+            "{action} must inject the mapped button/count"
+        );
+    }
+}
+
+/// Capabilities first for the a11y-observation actions: without the ui_tree
+/// capability bit, ui_tree and element_at_point are rejected with the
+/// explicit "accessibility tree is unsupported" error before any a11y query.
+#[tokio::test]
+async fn unsupported_ui_tree_capability_rejects_ui_tree_and_element_at_point() {
+    let (fixture, _restore) = fixture();
+    fixture.mock.lock().ui_tree_cap = false;
+    for input in [
+        json!({"action": "ui_tree"}),
+        json!({"action": "element_at_point", "x": 1, "y": 2}),
+    ] {
+        let result = fixture
+            .tool
+            .execute(input, &context(&fixture.workspace))
+            .await;
+        let text = result.ok().map(|r| r.content).unwrap_or_default();
+        assert!(
+            text.contains("the accessibility tree is unsupported"),
+            "{text}"
+        );
+    }
+}
+
+/// Without the screenshot capability bit, the screenshot action is rejected
+/// with the explicit "screen capture is unsupported" error instead of running
+/// all the way to a degraded success with no image.
+#[tokio::test]
+async fn unsupported_screenshot_capability_rejects_screenshot() {
+    let (fixture, _restore) = fixture();
+    fixture.mock.lock().screenshot_cap = false;
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "screenshot"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(text.contains("screen capture is unsupported"), "{text}");
+}
+
+/// cursor_position before any screenshot: no ScaleMap exists, so the raw
+/// input coordinates are reported with the explicit "no screenshot has been
+/// taken this session" explanation.
+#[tokio::test]
+async fn cursor_position_without_screenshot_reports_input_coordinates() {
+    let (fixture, _restore) = fixture();
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "cursor_position"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("cursor is at (7, 9) in global input coordinates"),
+        "{text}"
+    );
+    assert!(
+        text.contains("no screenshot has been taken this session"),
+        "{text}"
+    );
+}
+
+/// The coordinate-carrying actions' "no screenshot yet" execution branches:
+/// when run() has no ScaleMap for them (the defensive `None` arm of
+/// execute_action), each action fails with its own "take one before …"
+/// message instead of injecting against a missing coordinate space.
+#[test]
+fn coordinate_actions_without_a_map_fail_with_take_one_first() {
+    let shared = Arc::new(ComputerUseShared::new());
+    let mock = Arc::new(Mutex::new(MockState::default()));
+    let backend = BackendHandle::lazy({
+        let mock = Arc::clone(&mock);
+        move || Ok(Box::new(MockBackend { state: mock }) as Box<dyn ComputerUseBackend>)
+    });
+    let parts = Parts {
+        session_id: "s-test".to_string(),
+        shared,
+        backend,
+        events: Arc::new(RecordingSink(Arc::new(StdMutex::new(Vec::new())))),
+        state: Arc::new(Mutex::new(ToolState::default())),
+    };
+    let cases: &[(&str, Value, &str)] = &[
+        (
+            "element_at_point",
+            json!({"action": "element_at_point", "x": 1, "y": 2}),
+            "take one before element_at_point",
+        ),
+        (
+            "mouse_move",
+            json!({"action": "mouse_move", "x": 1, "y": 2}),
+            "take one before mouse_move",
+        ),
+        (
+            "scroll with coordinates",
+            json!({"action": "scroll", "direction": "down", "amount": 1, "x": 1, "y": 2}),
+            "take one before scroll with coordinates",
+        ),
+        (
+            "click with coordinates",
+            json!({"action": "left_click", "x": 1, "y": 2}),
+            "take one before clicking with coordinates",
+        ),
+        (
+            "left_click_drag",
+            json!({"action": "left_click_drag", "start_x": 1, "start_y": 2, "x": 3, "y": 4}),
+            "take one before dragging",
+        ),
+    ];
+    for (name, input, expected) in cases {
+        let parsed = parse_action(input).expect("parses");
+        let mut warnings = Vec::new();
+        let error = execute_action(&parts, &parsed.action, None, &mut warnings)
+            .expect_err("a missing scale map must fail the action");
+        assert!(
+            error.to_string().contains(expected),
+            "{name}: expected `{expected}` in {error}"
+        );
+    }
+    // Nothing may have been injected on any of the failed branches.
+    let mock = mock.lock();
+    assert!(mock.moved_to.is_empty(), "no move may be injected");
+    assert!(mock.clicked.is_empty(), "no click may be injected");
+    assert!(mock.scrolled.is_empty(), "no scroll may be injected");
+    assert!(mock.drags.is_empty(), "no drag may be injected");
+}
+
+/// wait executes through the tool (an Observe-class action: no grant needed),
+/// sleeps the requested duration and attaches a fresh screenshot.
+#[tokio::test]
+async fn wait_executes_and_attaches_a_screenshot() {
+    let (fixture, _restore) = fixture();
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "wait", "ms": 50}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => panic!("execute failed: {e}"),
+    };
+    assert!(result.success, "{}", result.content);
+    assert!(
+        result.content.contains("waited 50 ms"),
+        "{}",
+        result.content
+    );
+    assert!(
+        result
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("images"))
+            .is_some(),
+        "wait attaches a follow-up screenshot: {:?}",
+        result.metadata
+    );
+}
+
+/// The ms upper bound is inclusive: exactly MAX_WAIT_MS parses, one
+/// millisecond over is rejected with the explicit bound and the offending
+/// value in the message.
+#[test]
+fn wait_ms_boundary_is_inclusive_at_the_cap() {
+    let err = parse_action(&json!({"action": "wait", "ms": MAX_WAIT_MS + 1}))
+        .expect_err("above the cap must reject")
+        .to_string();
+    assert!(err.contains("ms must be <= 30000"), "{err}");
+    assert!(err.contains("30001"), "{err}");
+    assert!(
+        parse_action(&json!({"action": "wait", "ms": MAX_WAIT_MS})).is_ok(),
+        "exactly the cap is accepted"
+    );
+}
+
+/// ui_tree's backend output passes through to the model verbatim (the mock
+/// tree text), plus the coordinate-space disclaimer that keeps the model from
+/// reading a11y rectangles as screenshot-space coordinates.
+#[tokio::test]
+async fn ui_tree_output_passes_through_to_the_model() {
+    let (fixture, _restore) = fixture();
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "ui_tree", "max_depth": 3, "max_nodes": 100}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => panic!("execute failed: {e}"),
+    };
+    assert!(result.success, "{}", result.content);
+    assert!(
+        result.content.contains("window \"Mock\"\n  button \"OK\""),
+        "the backend tree must reach the model verbatim: {}",
+        result.content
+    );
+    assert!(
+        result
+            .content
+            .contains("bounds above are global input/screen coordinates"),
+        "{}",
+        result.content
+    );
+}
+
+/// The last-moment re-check before injection: a revoke landing after the
+/// consent gate (here inside the screening query, i.e. after the automatic
+/// screenshot) must abort the action with the grant error instead of
+/// injecting.
+#[tokio::test]
+async fn revoke_during_screening_aborts_before_injection() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    {
+        let mut mock = fixture.mock.lock();
+        mock.revoke_grant_via = Some(Arc::clone(&fixture.shared));
+    }
+    // A coordinate click with no prior screenshot: run() auto-captures, the
+    // consent gate passes, then the screening query revokes the grant — the
+    // re-check before the capability check/injection must catch it.
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "left_click", "x": 5, "y": 6}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.ok().map(|r| r.content).unwrap_or_default();
+    assert!(
+        text.contains("has not granted control"),
+        "the revoke must surface as the grant error: {text}"
+    );
+    assert!(
+        fixture.mock.lock().clicked.is_empty(),
+        "the revoked action must never reach the injection surface"
     );
 }

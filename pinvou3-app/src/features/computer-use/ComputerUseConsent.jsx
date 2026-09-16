@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 // screen readers, which the role/aria-modal attributes on the dialog elements
 // also serve.)
 import { bridge } from '../../hooks/useBridge.js';
-import { computerUseConsentView } from './computer-use-logic.js';
+import { computerUseConsentView, formatComputerUseConfirmAction } from './computer-use-logic.js';
 
 /**
  * Computer-use consent surfaces for the chat view. All visibility derives from
@@ -13,7 +13,9 @@ import { computerUseConsentView } from './computer-use-logic.js';
 
 // Post-completion grace window (ms) for the synchronous single-flight guard in
 // useConsentAction: it swallows the trailing click of a double-click, whose
-// second press can land before React has committed the disabled state.
+// second press can land before React has committed the disabled state. Only a
+// SUCCESSFUL action arms the window — a failed action may be retried
+// immediately, the user should never wait out a cooldown to try again.
 const DOUBLE_CLICK_GUARD_MS = 200;
 
 function useConsentAction(copy) {
@@ -22,14 +24,14 @@ function useConsentAction(copy) {
   // decided on. The dialog renders the error only while THAT request is
   // still displayed — a late rejection resolving after a replacement request
   // landed mid-IPC would otherwise paint "action failed" onto an unrelated,
-  // newer dialog (review finding; the request-change reset below cannot
-  // cover this, it runs before the rejection lands).
+  // newer dialog (the request-change reset below cannot cover this, it runs
+  // before the rejection lands).
   const [actionError, setActionError] = useState(null);
-  // Synchronous single-flight (review finding): the disabled attribute only
-  // updates one render after the click, so a double-click could fire two
-  // concurrent backend calls. This ref is checked inside the event handler,
-  // before React commits anything, and also ignores re-clicks within a short
-  // window after an action settles.
+  // Synchronous single-flight: the disabled attribute only updates one render
+  // after the click, so a double-click could fire two concurrent backend
+  // calls. This ref is checked inside the event handler, before React commits
+  // anything, and also ignores re-clicks within a short window after a
+  // successful action settles.
   const flightRef = useRef({ busy: false, settledAt: 0 });
   const run = (key, action, stamp) => {
     const flight = flightRef.current;
@@ -37,15 +39,19 @@ function useConsentAction(copy) {
     flight.busy = true;
     setPendingAction(key);
     setActionError(null);
+    // Only success arms the re-click cooldown: a rejection must be retryable
+    // immediately, so the catch path leaves settledAt untouched.
+    let succeeded = false;
     Promise.resolve()
       .then(action)
+      .then(() => { succeeded = true; })
       .catch((error) => setActionError({
         stamp: stamp || null,
         message: copy.actionFailed(String(error && error.message ? error.message : error)),
       }))
       .finally(() => {
         flight.busy = false;
-        flight.settledAt = Date.now();
+        if (succeeded) flight.settledAt = Date.now();
         setPendingAction(null);
       });
   };
@@ -122,8 +128,7 @@ export function ComputerUseDialogs({ slice, copy }) {
   // never equal approval, so Esc performs the conservative action (revoke or
   // per-action deny) instead of a neutral dismiss. The stamp argument keeps
   // a failed Esc-path action visible: without it the error would carry no
-  // request id and both render gates (exact stamp match) would hide it
-  // (round-12 review).
+  // request id and both render gates (exact stamp match) would hide it.
   const denyCurrentRequest = () => {
     if (pendingAction) return;
     if (grantRequest) {
@@ -166,8 +171,8 @@ export function ComputerUseDialogs({ slice, copy }) {
   // Listen at document level while a dialog is up: clicking the backdrop can
   // move focus to <body>, which takes the dialog out of the keydown
   // propagation path — Escape (the conservative deny) and the Tab trap must
-  // keep working wherever focus went (review finding: after an overlay
-  // click, Escape stopped denying and Tab escaped the trap).
+  // keep working wherever focus went (after an overlay click, Escape used to
+  // stop denying and Tab escaped the trap).
   useEffect(() => {
     if (!open) return;
     document.addEventListener('keydown', handleDialogKeyDown);
@@ -178,8 +183,8 @@ export function ComputerUseDialogs({ slice, copy }) {
   // A failed action's error belongs to the request it was attempted on: while
   // no request is pending this component renders null, but the hook state
   // survives, so without a reset the error leaked into the NEXT, unrelated
-  // dialog as a misleading message about a different confirm_id (review
-  // finding). Declared before the early return to keep hook order stable.
+  // dialog as a misleading message about a different confirm_id. Declared
+  // before the early return to keep hook order stable.
   useEffect(() => {
     clearActionError();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- clearActionError is a stable state setter; the surfaced requests are the trigger
@@ -231,12 +236,15 @@ export function ComputerUseDialogs({ slice, copy }) {
     );
   }
 
-  // Full typed-text preview (backend contract): present for every non-password
-  // Type action with at most 4096 chars (absent for password and secure
-  // targets). It always renders inline in a scrollable container — no reveal
-  // click stands between the user and the exact text, so approval happens with
-  // the text visible and "Confirm once" is never gated on preview visibility.
-  const typePreviewFull = confirmRequest && confirmRequest.typePreviewFull;
+  // Structured payload rendering: newer backends send action/button/
+  // click_count/point/text_length/… plus the original English summary as
+  // fallback; legacy payloads carry only the summary. formatComputerUseConfirmAction
+  // localizes the structured shape and returns { description, preview,
+  // previewTooLong } — description always falls back to the English summary,
+  // preview drives the inline typed-text block, and previewTooLong drives the
+  // "too long to preview" hint bar (backend shipped no preview for an
+  // over-long text).
+  const confirmDetails = formatComputerUseConfirmAction(copy, confirmRequest);
 
   return (
     <div data-testid="computer-use-confirm-dialog" className="fixed inset-0 z-[1200] flex items-center justify-center p-4 bg-black/45">
@@ -251,7 +259,7 @@ export function ComputerUseDialogs({ slice, copy }) {
         <div className="text-[13px] leading-relaxed mb-4 space-y-1.5">
           <div className="flex gap-2">
             <span className="shrink-0 opacity-60">{copy.confirmActionLabel}</span>
-            <span className="min-w-0 break-words font-medium">{confirmRequest.action}</span>
+            <span className="min-w-0 break-words font-medium">{confirmDetails.description}</span>
           </div>
           {confirmRequest.element && (
             <div className="flex gap-2">
@@ -260,7 +268,10 @@ export function ComputerUseDialogs({ slice, copy }) {
             </div>
           )}
         </div>
-        {typePreviewFull != null && (
+        {confirmDetails.previewTooLong && (
+          <div data-testid="computer-use-confirm-text-too-long" className="text-[12px] leading-relaxed text-[#B3261E] dark:text-[#F28B82] mb-2">{copy.textTooLongToPreview}</div>
+        )}
+        {confirmDetails.preview != null && (
           <div className="mb-4">
             <div className="text-[12px] leading-relaxed text-[#B3261E] dark:text-[#F28B82] mb-2">{copy.fullTextWarning}</div>
             <pre
@@ -268,7 +279,7 @@ export function ComputerUseDialogs({ slice, copy }) {
               className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-xl p-3 text-[12px] font-mono bg-[#F1F3F4] dark:bg-[#2A2B2D] select-text"
               style={{ userSelect: 'text' }}
             >
-              {typePreviewFull}
+              {confirmDetails.preview}
             </pre>
           </div>
         )}

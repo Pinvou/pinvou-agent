@@ -1077,12 +1077,17 @@ jobs:
           # Package list audited per-package on 2026-09-15: gtk/soup/x11 are installed
           # transitively via webkit-dev; librsvg2-dev is not needed for the build; libssl-dev (openssl-sys is not vendored)
           # and appindicator (tray) must be kept.
+          # libx11/libxi/libxtst headers are required by the computer_use input
+          # injection stack (enigo XTest/XInput); pipewire/drm/gbm/egl headers by
+          # its capture backends — none of these come transitively via webkit-dev.
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev \
             libssl-dev \
             libayatana-appindicator3-dev \
             build-essential pkg-config cmake \
-            time
+            time \
+            libx11-dev libxi-dev libxtst-dev \
+            libpipewire-0.3-dev libdrm-dev libgbm-dev libegl-dev
           # Reduce footprint at the source: orphan dependencies, apt cache packages, and index lists do not stay on the build disk.
           sudo apt-get autoremove -y --purge
           sudo apt-get clean
@@ -1468,7 +1473,7 @@ jobs:
       - name: macOS Rust all-targets check
         run: >-
           cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml
-          --all-targets --features dev-tools
+          --all-targets --features dev-tools --locked
 
   windows-codex-runtime-test:
     name: windows-codex-runtime-test
