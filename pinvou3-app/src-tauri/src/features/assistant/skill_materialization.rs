@@ -370,7 +370,7 @@ mod tests {
                 .unwrap();
 
             // 禁用公文 MCP → 组合目录计算排除关联技能
-            crate::features::marketplace::save_disabled_bundles(&["gongwen".to_string()]);
+            crate::features::marketplace::save_disabled_bundles(&["gongwen".to_string()]).unwrap();
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(
                 !enabled.iter().any(|(n, _)| n == "government-writing"),
@@ -378,7 +378,7 @@ mod tests {
             );
 
             // 开回来 → 恢复
-            crate::features::marketplace::save_disabled_bundles(&[]);
+            crate::features::marketplace::save_disabled_bundles(&[]).unwrap();
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(
                 enabled.iter().any(|(n, _)| n == "government-writing"),
@@ -433,14 +433,14 @@ mod tests {
                 write_skill(&paths::bundle_skills_dir(), name, "# Lark\n");
             }
 
-            crate::features::marketplace::save_disabled_bundles(&["feishu".to_string()]);
+            crate::features::marketplace::save_disabled_bundles(&["feishu".to_string()]).unwrap();
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(
                 !enabled.iter().any(|(n, _)| n.starts_with("lark-")),
                 "禁用 feishu 后 lark-* 技能应从组合目录排除"
             );
 
-            crate::features::marketplace::save_disabled_bundles(&[]);
+            crate::features::marketplace::save_disabled_bundles(&[]).unwrap();
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert_eq!(
                 enabled
@@ -525,14 +525,14 @@ mod tests {
             .unwrap();
             std::fs::write(skill_dir.join(".installed-from"), "upload:weather.zip").unwrap();
 
-            crate::features::marketplace::save_disabled_bundles(&["weather".to_string()]);
+            crate::features::marketplace::save_disabled_bundles(&["weather".to_string()]).unwrap();
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(
                 !enabled.iter().any(|(n, _)| n == "weather"),
                 "统一包模型下禁用 weather 包应一并排除同名技能目录"
             );
 
-            crate::features::marketplace::save_disabled_bundles(&[]);
+            crate::features::marketplace::save_disabled_bundles(&[]).unwrap();
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
             assert!(
                 enabled.iter().any(|(n, _)| n == "weather"),
@@ -692,7 +692,6 @@ mod tests {
             // 语义会把已装技能也排除掉，与测试意图无关——先显式初始化 code scope
             // （空禁用集 = 全部启用），让项目技能覆盖链路可被断言。
             save_disabled_bundles_for(ConnectorScope::Code, &[]).unwrap();
-
             // 默认关：code 组合集不含项目技能
             let enabled = enabled_skills_for(ConnectorScope::Code, Some(&project));
             assert!(

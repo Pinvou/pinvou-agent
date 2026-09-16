@@ -1,12 +1,12 @@
 //! 知识库 embedding 模型（bge-m3）按需下载 + 校验 + 部署 + 热加载。
 //!
-//! Models are no longer shipped with the installer; the user downloads them
-//! proactively from the knowledge page into `super::model_dir`
-//! (`~/.pinvou3/knowledge/models/bge-m3`). The five files of a fixed revision
-//! are streamed and verified file-by-file by `pinvou-knowledge`. Only after
-//! a candidate directory passes a real embedding load does it replace the
-//! managed model with rollback and refresh the tool gating — library
-//! creation, ingestion, and search work **without a restart**.
+//! Models are no longer bundled with the installer; users download them
+//! from the knowledge page into `super::model_dir`
+//! (`~/.pinvou3/knowledge/models/bge-m3`). The five files at the pinned
+//! revision are streamed and per-file verified by `pinvou-knowledge`. Only
+//! after the candidate directory passes a real embedding load is the managed
+//! model replaced with rollback and the tool gating refreshed, so index
+//! building, ingestion, and search all gain the model **without a restart**.
 //!
 //! 进度事件 `kb_model:progress`：`{ stage: download|verify|prepare|done, downloaded, total, ready }`。
 

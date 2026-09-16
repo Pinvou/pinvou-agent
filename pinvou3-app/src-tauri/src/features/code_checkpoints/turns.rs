@@ -78,4 +78,33 @@ mod tests {
         ];
         assert_eq!(count_user_turns(&messages), 2);
     }
+
+    /// The JSON entry point and the in-memory slice must agree: after a
+    /// serde round-trip, the same messages give `count_user_turns_in_json`
+    /// the same value as `count_user_turns`. The "CLI and engine no longer
+    /// drift" promise lands exactly on this deserialization step.
+    #[test]
+    fn count_user_turns_in_json_matches_in_memory_counting() {
+        let messages = vec![
+            text_message("user", "第一轮"),
+            text_message("assistant", "调工具"),
+            tool_result_message(),
+            text_message("user", "第二轮"),
+        ];
+        let json: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|message| serde_json::to_value(message).unwrap())
+            .collect();
+        assert_eq!(
+            count_user_turns_in_json(&json).unwrap(),
+            count_user_turns(&messages)
+        );
+        assert_eq!(count_user_turns_in_json(&json).unwrap(), 2);
+
+        // Non-message payloads must error instead of silently counting 0,
+        // aligning with the engine's "session load failed" error model (the
+        // doc promises Err on deserialization failure).
+        let invalid = vec![serde_json::json!({ "role": 42 })];
+        assert!(count_user_turns_in_json(&invalid).is_err());
+    }
 }
