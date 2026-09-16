@@ -481,6 +481,48 @@ mod tests {
         assert!(!GIT_OVERRIDE_KEYS.contains(&"GIT_AUTHOR_NAME"));
     }
 
+    /// The strip helpers must translate the key lists into explicit
+    /// `env_remove` entries on the Command (observable via `get_envs`); the
+    /// code_checkpoints test only spot-checks representatives, so the full
+    /// list coverage lives here, next to the lists themselves.
+    #[test]
+    fn strip_git_env_helpers_remove_every_listed_key() {
+        let removed_entries = |command: &std::process::Command| -> Vec<std::ffi::OsString> {
+            command
+                .get_envs()
+                .filter_map(|(name, value)| value.is_none().then(|| name.to_os_string()))
+                .collect()
+        };
+
+        let mut hardened = std::process::Command::new("git");
+        strip_all_git_env(&mut hardened);
+        let removed = removed_entries(&hardened);
+        for key in GIT_OVERRIDE_KEYS.iter().copied().chain(GIT_IDENTITY_KEYS) {
+            assert!(
+                removed.iter().any(|entry| entry == key),
+                "strip_all_git_env must env_remove {key}"
+            );
+        }
+
+        let mut soft = std::process::Command::new("git");
+        strip_git_override_env(&mut soft);
+        let removed = removed_entries(&soft);
+        for key in GIT_OVERRIDE_KEYS {
+            assert!(
+                removed.iter().any(|entry| entry == key),
+                "strip_git_override_env must env_remove {key}"
+            );
+        }
+        for key in GIT_IDENTITY_KEYS {
+            assert!(
+                !soft
+                    .get_envs()
+                    .any(|(name, _)| name == std::ffi::OsStr::new(key)),
+                "strip_git_override_env must not touch identity key {key}"
+            );
+        }
+    }
+
     #[test]
     fn windows_command_shims_use_command_interpreter() {
         let command = external_command_for(Path::new(r"C:\Users\u\npm\kimi.cmd"), true);
