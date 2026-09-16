@@ -467,8 +467,8 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     poolSource,
-    /reconfigure_multi_agent_mode[\s\S]{0,700}if enabled && !self\.multi_agent_mode_available\(session_id\)[\s\S]{0,900}self\.store\.set_multi_agent\(session_id, enabled\)/,
-    '开启前必须先执行能力门禁；开关只持久化会话策略，不再生成磁盘名册',
+    /reconfigure_multi_agent_mode[\s\S]{0,700}if enabled && !self\.swarm_mode_available\(session_id\)[\s\S]{0,900}self\.store\.set_multi_agent\(session_id, enabled\)/,
+    '开启前必须先执行能力门禁（swarm 可用性含定时会话排除）；开关只持久化会话策略，不再生成磁盘名册',
   );
   assert.match(
     assistantBridgeSource,

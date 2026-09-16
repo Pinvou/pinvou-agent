@@ -1820,7 +1820,7 @@ impl EnginePool {
         session_id: &str,
         enabled: bool,
     ) -> Result<()> {
-        if enabled && !self.multi_agent_mode_available(session_id) {
+        if enabled && !self.swarm_mode_available(session_id) {
             anyhow::bail!("当前会话不支持 Pinvou 蜂群模式");
         }
         let _reservation = self.turn_lifecycles.for_session(session_id).reserve()?;
@@ -1921,6 +1921,27 @@ impl EnginePool {
         self.bridge.multi_agent_mode_available(session_id)
     }
 
+    /// Whether the swarm regime (lifted delegation caps, expert roster, swarm
+    /// prompt) may apply to this session. Scheduled sessions always assemble
+    /// plain engine config (engine.rs's `scheduled_profile` gate), so the
+    /// swarm regime must follow the same exclusion: turn assembly must not
+    /// inject swarm copy the engine would not honor, and the toggle must not
+    /// be offered. Kept separate from [`Self::multi_agent_mode_available`],
+    /// which intentionally stays the sole gate for transcript listing —
+    /// scheduled runs can still delegate through the bare `agent` tool and
+    /// their records stay readable.
+    pub(crate) fn swarm_mode_available(&self, session_id: &str) -> bool {
+        Self::swarm_mode_available_for(
+            self.multi_agent_mode_available(session_id),
+            self.store.scheduled_profile(session_id).is_some(),
+        )
+    }
+
+    /// Testable body of [`Self::swarm_mode_available`].
+    fn swarm_mode_available_for(multi_agent_available: bool, scheduled: bool) -> bool {
+        multi_agent_available && !scheduled
+    }
+
     /// Resolve the session-owned delegated-agent runtime-state root.
     /// For project-bound Code sessions this is distinct from the execution root.
     pub(crate) fn session_state_root(
@@ -1945,7 +1966,7 @@ impl EnginePool {
         let reservation = self.reserve_turn(session_id)?;
         let display_message = user_display_message(content.clone());
         let expert_snapshot = (self.store.mode_state(session_id).multi_agent
-            && self.multi_agent_mode_available(session_id))
+            && self.swarm_mode_available(session_id))
         .then(ExpertRosterSnapshot::capture);
         self.send_reserved_user_message(
             session_id,
@@ -3583,6 +3604,21 @@ mod scheduled_model_tests {
             .err()
             .expect("steer without a live engine must fail");
         assert!(format!("{err:#}").contains("no live engine"));
+    }
+
+    #[test]
+    fn swarm_mode_availability_excludes_scheduled_sessions() {
+        // The swarm regime must track the engine-side scheduled_profile gate:
+        // a scheduled session assembles plain engine config, so its switch —
+        // even if still on — must not inject swarm copy, must refuse to
+        // enable, and must report unavailable to the frontend. Availability
+        // alone stays true for a plain session and false for an unsupported
+        // lane; transcript listing keeps using multi_agent_mode_available
+        // (scheduled runs delegate via bare `agent` and stay readable).
+        assert!(super::EnginePool::swarm_mode_available_for(true, false));
+        assert!(!super::EnginePool::swarm_mode_available_for(true, true));
+        assert!(!super::EnginePool::swarm_mode_available_for(false, true));
+        assert!(!super::EnginePool::swarm_mode_available_for(false, false));
     }
 
     #[test]

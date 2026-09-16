@@ -189,7 +189,7 @@ pub(crate) fn prepare_delegation_turn(
     task: &str,
     content: String,
 ) -> PreparedDelegationTurn {
-    if !enabled || !pool.multi_agent_mode_available(session_id) {
+    if !enabled || !pool.swarm_mode_available(session_id) {
         return PreparedDelegationTurn {
             content,
             expert_snapshot: None,
@@ -218,7 +218,7 @@ pub(crate) fn prepend_delegation_replay_reminder(
     enabled: bool,
     content: String,
 ) -> String {
-    if !enabled || !pool.multi_agent_mode_available(session_id) {
+    if !enabled || !pool.swarm_mode_available(session_id) {
         return content;
     }
     // EditLastTurn carries no new route; pull the swarm regime the same way

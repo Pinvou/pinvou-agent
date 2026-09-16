@@ -2882,7 +2882,11 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                     </span>
                   )}
                   <ComposerModeChip t={t} bs={bs} compact={composerCompact} onSwitch={handleModeChipSwitch} />
-                  <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoModelSettings || onGotoSettings} compact={composerCompact} />
+                  {/* Scheduled run conversations expose no swarm toggle:
+                      the backend's swarm_mode_available excludes them (the
+                      engine always assembles plain config there), so the
+                      entry hides up front instead of erroring on click. */}
+                  <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoModelSettings || onGotoSettings} compact={composerCompact} multiAgentAvailable={!scheduledRunContext} />
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} compact={composerCompact} activeSkill={bs && bs.activeSkill} />
                   <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
                 </div>

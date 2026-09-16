@@ -26,6 +26,8 @@ pub struct SessionModeStateView {
     state: SessionModeState,
     /// Whether the product-level multi-agent mode is available for this session.
     /// This is resolved by SessionPolicy instead of inferred by the frontend.
+    /// Swarm-regime scope (scheduled sessions excluded) so the toggle hides
+    /// where the engine would never honor the lifted caps.
     multi_agent_available: bool,
 }
 
@@ -37,7 +39,7 @@ pub async fn get_mode_state(
 ) -> Result<SessionModeStateView, String> {
     Ok(SessionModeStateView {
         state: store.mode_state(&session_id),
-        multi_agent_available: pool.multi_agent_mode_available(&session_id),
+        multi_agent_available: pool.swarm_mode_available(&session_id),
     })
 }
 
