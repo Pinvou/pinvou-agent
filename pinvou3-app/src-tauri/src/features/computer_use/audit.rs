@@ -340,12 +340,25 @@ mod tests {
         let slash = audit_file_name("a/b");
         let underscore = audit_file_name("a_b");
         assert_ne!(slash, underscore);
-        assert!(slash.starts_with("audit-a_b-"), "{slash}");
+        // Static messages: the file name derives from sanitize_session_id,
+        // and formatting that taint into assert output trips CodeQL
+        // rust/cleartext-logging (the repo-wide assert-message hygiene rule).
+        assert!(
+            slash.starts_with("audit-a_b-"),
+            "the sanitized id must survive in the file name prefix"
+        );
         // First 8 bytes of the SHA-256, hex-encoded (16 chars).
         let stem = slash
             .trim_start_matches("audit-a_b-")
             .trim_end_matches(".jsonl");
-        assert_eq!(stem.len(), 16, "{slash}");
-        assert!(stem.chars().all(|c| c.is_ascii_hexdigit()), "{slash}");
+        assert_eq!(
+            stem.len(),
+            16,
+            "the hash stem is the first 8 sha-256 bytes, hex-encoded"
+        );
+        assert!(
+            stem.chars().all(|c| c.is_ascii_hexdigit()),
+            "the hash stem must be pure hex"
+        );
     }
 }
