@@ -66,7 +66,7 @@ use super::super::types::{
     Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
     UiTreeOptions,
 };
-use super::helpers::{MAX_SCROLL_CLICKS, drag_waypoints, sanitize_name};
+use super::helpers::{MAX_SCROLL_CLICKS, drag_waypoints, normalize_typed_newlines, sanitize_name};
 use super::wayland_portal::{self, PortalInput};
 
 /// Settle time between a move and the click that follows it (applied in
@@ -299,13 +299,6 @@ fn press_keysyms_unwind(
         }
     }
     Ok(())
-}
-
-/// Line-break normalization for type_text (pure, unit-tested): CRLF/CR fold
-/// to '\n' — a raw CR would submit twice / inject a stray key on both
-/// injection paths.
-fn normalize_line_breaks(text: &str) -> String {
-    text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 /// X11 type_text segmentation (pure, unit-tested): split at every '\n'
@@ -1655,7 +1648,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 // abandonment.
                 if cancelled(&cancel) {
                     result = Err(ComputerUseError::unavailable(
-                        "drag was cancelled after the caller timed out; the button is \
+                        "drag was cancelled (caller timeout or stop); the button is \
                          released and the pointer stays at the last waypoint",
                     ));
                     break;
@@ -1704,7 +1697,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 .is_some_and(|flag| flag.load(Ordering::SeqCst))
             {
                 result = Err(ComputerUseError::unavailable(
-                    "drag was cancelled after the caller timed out; the button is \
+                    "drag was cancelled (caller timeout or stop); the button is \
                      released and the pointer stays at the last waypoint",
                 ));
                 break;
@@ -1770,10 +1763,11 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
     }
 
     fn type_text(&mut self, text: &str) -> Result<(), ComputerUseError> {
-        // Fold CRLF/CR to '\n' first: a raw CR would submit twice / inject a
-        // stray key on both injection paths, and the '\n'-only form is what
-        // the Enter handling below keys off.
-        let text = normalize_line_breaks(text);
+        // Fold CRLF/CR to '\n' first (the shared helper; same reason as the
+        // Windows/macOS paths): a raw CR would submit twice / inject a stray
+        // key on both injection paths, and the '\n'-only form is what the
+        // Enter handling below keys off.
+        let text = normalize_typed_newlines(text);
         if self.is_wayland() {
             self.note_input();
             // The flag Arc is cloned before require_portal: portal is a
@@ -1809,7 +1803,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                     .is_some_and(|flag| flag.load(Ordering::SeqCst))
                 {
                     return Err(ComputerUseError::unavailable(
-                        "type text was cancelled after the caller timed out; characters \
+                        "type text was cancelled (caller timeout or stop); characters \
                          already injected are not undone",
                     ));
                 }
@@ -1858,7 +1852,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 .is_some_and(|flag| flag.load(Ordering::SeqCst))
             {
                 return Err(ComputerUseError::unavailable(
-                    "type text was cancelled after the caller timed out; characters \
+                    "type text was cancelled (caller timeout or stop); characters \
                      already injected are not undone",
                 ));
             }
@@ -1882,7 +1876,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                         .is_some_and(|flag| flag.load(Ordering::SeqCst))
                     {
                         return Err(ComputerUseError::unavailable(
-                            "type text was cancelled after the caller timed out; characters \
+                            "type text was cancelled (caller timeout or stop); characters \
                              already injected are not undone",
                         ));
                     }
@@ -2268,14 +2262,6 @@ mod tests {
             sanitize_name(&long, MAX_NAME_CHARS).chars().count(),
             MAX_NAME_CHARS
         );
-    }
-
-    #[test]
-    fn normalize_line_breaks_folds_cr_and_crlf() {
-        assert_eq!(normalize_line_breaks("a\r\nb"), "a\nb");
-        assert_eq!(normalize_line_breaks("a\rb"), "a\nb");
-        assert_eq!(normalize_line_breaks("plain"), "plain");
-        assert_eq!(normalize_line_breaks(""), "");
     }
 
     #[test]
