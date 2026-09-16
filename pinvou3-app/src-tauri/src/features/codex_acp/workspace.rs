@@ -1700,11 +1700,28 @@ mod tests {
         run_git(&linked, &["add", "main.py"]);
         assert_ne!(baseline, diff_fingerprint(&linked, "main.py"));
 
-        // Moving HEAD inside the worktree (empty commit rewrites the branch
-        // ref in the commondir without touching the worktree files) →
-        // fingerprint changes through the resolved HEAD ref path.
-        run_git(&linked, &["commit", "--allow-empty", "-m", "second"]);
-        assert_ne!(baseline, diff_fingerprint(&linked, "main.py"));
+        // Commit the staged change, then move HEAD again with a genuinely
+        // empty commit. The snapshot below sandwiches only the empty commit:
+        // it rewrites the branch ref in the commondir and nothing else (the
+        // worktree files and the index are untouched), so the assertions can
+        // attribute any difference to resolved HEAD-ref tracking instead of
+        // the file/index noise of the staging step above.
+        run_git(&linked, &["commit", "-m", "second"]);
+        let after_commit = diff_fingerprint(&linked, "main.py");
+        run_git(&linked, &["commit", "--allow-empty", "-m", "third"]);
+        let moved = diff_fingerprint(&linked, "main.py");
+        // Same worktree file, same index content, same 41-byte ref format...
+        assert_eq!(after_commit.file_size, moved.file_size);
+        assert_eq!(after_commit.file_modified, moved.file_modified);
+        assert_eq!(after_commit.head_tail_hash, moved.head_tail_hash);
+        assert_eq!(after_commit.index_size, moved.index_size);
+        assert_eq!(after_commit.index_hash, moved.index_hash);
+        assert_eq!(after_commit.head_ref_size, moved.head_ref_size);
+        // ...while only the resolved ref content changes, so the fingerprint
+        // must invalidate through the HEAD-ref fields. A broken resolution
+        // would leave head_ref_* at 0 and the two fingerprints identical —
+        // comparing against the pre-staging baseline would not catch that.
+        assert_ne!(after_commit.head_ref_hash, moved.head_ref_hash);
     }
 
     #[test]
