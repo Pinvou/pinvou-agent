@@ -103,10 +103,12 @@ impl SessionStore {
         let mut chat_count = 0usize;
         let mut deleted_ids = Vec::new();
         let mut delete_error = None;
-        // 钉住的会话是用户显式标记的“永久保留”：既不计入上限也不参与驱逐。
-        // headless `agent run` 默认共享这个 50 上限的存储，没有豁免的话一次
-        // 批量运行就会把用户钉住的 GUI 会话静默清掉（代价是全钉住时上限失效，
-        // 存储可超过上限——这是钉住语义的自然结果）。
+        // Pinned sessions are the user's explicit "keep forever" mark: they
+        // count against neither the cap nor eviction. A headless `agent run`
+        // shares this 50-cap store by default; without the exemption a single
+        // batch run would silently delete the user's pinned GUI sessions (the
+        // cost is that an all-pinned store disables the cap and may exceed it —
+        // the natural consequence of pin semantics).
         let pinned: std::collections::HashSet<String> =
             self.pinned_sessions.read().keys().cloned().collect();
         for metadata in sessions {

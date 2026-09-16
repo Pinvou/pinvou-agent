@@ -79,9 +79,10 @@ mod tests {
         assert_eq!(count_user_turns(&messages), 2);
     }
 
-    /// JSON 入口与内存切片必须同口径：同一批消息经 serde 往返后
-    /// `count_user_turns_in_json` 与 `count_user_turns` 同值——「CLI 与引擎
-    /// 不再漂移」的承诺正落在这个反序列化环节上。
+    /// The JSON entry point and the in-memory slice must agree: after a
+    /// serde round-trip, the same messages give `count_user_turns_in_json`
+    /// the same value as `count_user_turns`. The "CLI and engine no longer
+    /// drift" promise lands exactly on this deserialization step.
     #[test]
     fn count_user_turns_in_json_matches_in_memory_counting() {
         let messages = vec![
@@ -100,8 +101,9 @@ mod tests {
         );
         assert_eq!(count_user_turns_in_json(&json).unwrap(), 2);
 
-        // 非消息负载必须报错而不是静默计 0：与引擎「session 加载失败」的
-        // 错误模型对齐（doc 声称反序列化失败即 Err）。
+        // Non-message payloads must error instead of silently counting 0,
+        // aligning with the engine's "session load failed" error model (the
+        // doc promises Err on deserialization failure).
         let invalid = vec![serde_json::json!({ "role": 42 })];
         assert!(count_user_turns_in_json(&invalid).is_err());
     }
