@@ -1545,7 +1545,19 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                     let _ = portal.button(evdev, false);
                     return Err(error);
                 }
-                portal.button(evdev, false)?;
+                if let Err(error) = portal.button(evdev, false) {
+                    // Same best-effort retry as the press path above: a
+                    // failed release notify may or may not have been
+                    // delivered. Issuing one extra release on the still-open
+                    // (poisoned) session is a compositor-side no-op when the
+                    // first one landed, and unstrands the button when it did
+                    // not — after the poisoned-session recycle there is no
+                    // second chance, because the emergency mouse-up no-ops on
+                    // a closed session and mutter never synthesizes the
+                    // missing release when the session closes.
+                    let _ = portal.button(evdev, false);
+                    return Err(error);
+                }
                 if i + 1 < count {
                     sleep(Duration::from_millis(CLICK_GAP_MS));
                 }
