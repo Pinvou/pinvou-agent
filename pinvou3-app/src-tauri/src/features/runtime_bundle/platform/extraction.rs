@@ -746,6 +746,19 @@ impl Pinvou3Bundle {
                 "args": [present_server.to_string_lossy()]
             }),
         );
+        // 只读会话查询 server(「引用对话」能力):args 直接带 --sessions-dir 绝对路径——
+        // 底座 child_env sanitize 不透传 PINVOU3_HOME,server 不能靠环境变量定位会话目录。
+        servers.insert(
+            "pinvou3_sessions".to_string(),
+            serde_json::json!({
+                "command": python_cmd.clone(),
+                "args": [
+                    paths::bundle_session_reader_server().to_string_lossy(),
+                    "--sessions-dir",
+                    paths::sessions_root().to_string_lossy()
+                ]
+            }),
+        );
         // Browser MCP lets Work-mode Agents operate the in-app native WebView and is
         // deliberately absent from global mcp.json. Only Work-mode sessions expose it.
         // Remove only historical entries owned by this app (commands targeting
@@ -1149,6 +1162,12 @@ impl Pinvou3Bundle {
         self.write_if_changed(
             &paths::bundle_mcp_python_runner(),
             MCP_PYTHON_DEPENDENCY_RUNNER_PY,
+        )?;
+        // session_reader（pinvou 内置只读会话查询，「引用对话」能力）：同 present
+        // 布局直放 mcp-servers/ 根，由 python command 拉起，无需可执行位。
+        self.write_if_changed(
+            &paths::bundle_session_reader_server(),
+            SESSION_READER_SERVER_PY,
         )?;
         if server_written {
             // 可执行位只在本次实际写出时补;内容未变时也不丢——上次写出后已设过。
