@@ -56,8 +56,8 @@ jobs:
           fetch-depth: 0
 
       - name: Set up zram and swap
-        # 尽力而为:超时/失败只告警不阻断(回退 runner 默认内存)。
-        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup 未完成,继续使用 runner 默认内存"
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - name: Node.js
         uses: actions/setup-node@v7
@@ -113,13 +113,13 @@ jobs:
           submodules: recursive
 
       - name: Set up zram and swap
-        # 尽力而为:超时/失败只告警不阻断(回退 runner 默认内存)。
-        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup 未完成,继续使用 runner 默认内存"
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
-      # hosted runner 是单盘布局(/ 与 /mnt 同一 ext4,x64 镜像开机仅 ~13-14G
-      # 可用);发布冷编译(700+ crate,dep-level O2)曾把盘写满(ENOSPC)。在任何
-      # 工具链/缓存/依赖落盘之前删掉未使用的预装 SDK。
-      - name: 为发布构建准备磁盘空间
+      # Hosted runners are single-disk (/ and /mnt share one ext4; the x64 image boots
+      # with only ~13-14G free); a cold release build (700+ crates, dep-level O2) once
+      # filled the disk (ENOSPC). Remove unused preinstalled SDKs before any toolchain, cache, or dependency lands.
+      - name: Prepare disk space for the release build
         run: |
           sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
             RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
@@ -148,16 +148,16 @@ jobs:
       - name: 装 Tauri + pinvou3 Linux 系统依赖
         run: |
           sudo apt-get update
-          # 清单经 2026-09-15 逐包冗余审计(剔除单包模拟安装,安装集合不变
-          # 即可移除):gtk/soup/x11 三件套由 libwebkit2gtk-4.1-dev 传递安装,
-          # librsvg2-dev 构建不需要(Cargo 无 rsvg crate)。libssl-dev 保留:
-          # hf-hub→native-tls→openssl-sys 非 vendored;appindicator 托盘在用。
+          # Package list audited per-package on 2026-09-15 (single-package simulated install;
+          # removable when the installed set is unchanged): the gtk/soup/x11 trio is
+          # pulled in transitively by libwebkit2gtk-4.1-dev; librsvg2-dev is not needed (no rsvg crate in Cargo).
+          # libssl-dev stays: hf-hub -> native-tls -> openssl-sys is not vendored; appindicator is used for the tray.
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev \
             libssl-dev \
             libayatana-appindicator3-dev \
             build-essential pkg-config cmake lld
-          # 从源头减负:孤儿依赖、apt 缓存包与索引清单不留在构建盘上。
+          # Reduce footprint at the source: orphan dependencies, apt cache packages, and index lists do not stay on the build disk.
           sudo apt-get autoremove -y --purge
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
@@ -253,12 +253,12 @@ jobs:
           submodules: recursive
 
       - name: Set up zram and swap
-        # 尽力而为:超时/失败只告警不阻断(回退 runner 默认内存)。
-        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup 未完成,继续使用 runner 默认内存"
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
-      # ARM64 镜像轻量(开机 ~38G 可用)且 setup-node 依赖 hostedtoolcache,
-      # 只删 base 档 SDK,不动 /opt。
-      - name: 为发布构建准备磁盘空间
+      # The ARM64 image is lightweight (~38G free at boot) and setup-node relies on hostedtoolcache,
+      # so only remove "base"-tier SDKs and leave /opt untouched.
+      - name: Prepare disk space for the release build
         run: |
           sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
             RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
@@ -281,16 +281,16 @@ jobs:
       - name: 装 Tauri + pinvou3 Linux 系统依赖
         run: |
           sudo apt-get update
-          # 清单经 2026-09-15 逐包冗余审计(剔除单包模拟安装,安装集合不变
-          # 即可移除):gtk/soup/x11 三件套由 libwebkit2gtk-4.1-dev 传递安装,
-          # librsvg2-dev 构建不需要(Cargo 无 rsvg crate)。libssl-dev 保留:
-          # hf-hub→native-tls→openssl-sys 非 vendored;appindicator 托盘在用。
+          # Package list audited per-package on 2026-09-15 (single-package simulated install;
+          # removable when the installed set is unchanged): the gtk/soup/x11 trio is
+          # pulled in transitively by libwebkit2gtk-4.1-dev; librsvg2-dev is not needed (no rsvg crate in Cargo).
+          # libssl-dev stays: hf-hub -> native-tls -> openssl-sys is not vendored; appindicator is used for the tray.
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev \
             libssl-dev \
             libayatana-appindicator3-dev \
             build-essential pkg-config cmake lld
-          # 从源头减负:孤儿依赖、apt 缓存包与索引清单不留在构建盘上。
+          # Reduce footprint at the source: orphan dependencies, apt cache packages, and index lists do not stay on the build disk.
           sudo apt-get autoremove -y --purge
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*

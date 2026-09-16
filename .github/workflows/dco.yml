@@ -30,8 +30,8 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up zram and swap
-        # 尽力而为:超时/失败只告警不阻断(回退 runner 默认内存)。
-        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup 未完成,继续使用 runner 默认内存"
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       # 进入 Merge Queue 前，每个 PR 已通过本 required check。merge_group 中只包含
       # GitHub 生成的组合提交，此处复用同名 check 上报成功，避免队列等待缺失上下文。
