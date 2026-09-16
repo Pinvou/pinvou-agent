@@ -7,7 +7,7 @@
 //! 本模块是 facade:把原本 2600+ 行的 god-module 按职责拆成子模块,
 //! 对外 pub 面通过 `pub use` 保持不变。
 //!
-// architecture-guard: allow-target-cfg -- 不可读状态文件的 fail-closed 回归测试需要构造 chmod 000 夹具，仅测试代码内联 cfg(unix)+PermissionsExt（package_export.rs 同款豁免先例，评审 #455 R9-M5）；以真实 open 探测兜底 root，Windows 由链接检查覆盖。
+// architecture-guard: allow-target-cfg -- fail-closed regression tests for unreadable state files need a chmod 000 fixture; test-only inline cfg(unix)+PermissionsExt (same exemption precedent as package_export.rs, review #455 R9-M5); a real open() probe guards against running as root, Windows is covered by link checks.
 //!
 //! - `types`      — manifest/info/迁移结果等数据类型
 //! - `secrets`    — 密钥/凭证助手 + MarketplaceManager 的 secret 读写方法
@@ -58,10 +58,12 @@ const JOURNAL_REMOVE_RETRY_DELAY: Duration = Duration::from_millis(120);
 static FAIL_NEXT_INSTALLED_WRITE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// 故障注入标志的通用复位守卫：作用域结束（含 panic unwind 或目标路径提前
-/// 失败、未消费注入）时自动清零，防止标志泄漏到后续测试（曾在 install 早于
-/// save_installed 失败时泄漏，击穿无关用例）。三个注入点共用本守卫
-/// （评审 #455：三份逐字重复的守卫结构体合一）。
+/// Generic reset guard for fault-injection flags: auto-clears on scope exit
+/// (including panic unwind, early failure before the target path, or an
+/// unconsumed injection) so the flag cannot leak into later tests (it once
+/// leaked when install failed before save_installed and broke unrelated
+/// cases). All three injection points share this guard
+/// (review #455: three verbatim-duplicated guard structs merged into one).
 #[cfg(test)]
 pub(crate) struct FailpointResetGuard(&'static std::sync::atomic::AtomicBool);
 
@@ -87,8 +89,10 @@ pub(crate) fn fail_next_installed_write_for_test() -> FailpointResetGuard {
 static FAIL_NEXT_JOURNAL_REMOVAL: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// 与 installed 写失败注入同款:调用点设置标志后、begin(..) 到达
-/// 前失败(或 panic)时自动清零,不再泄漏到无关用例(评审 #445 P2)。
+/// Same pattern as the installed-write failure injection: if a failure (or
+/// panic) hits after the call site sets the flag but before begin(..) is
+/// reached, the flag auto-clears and no longer leaks into unrelated cases
+/// (review #445 P2).
 #[cfg(test)]
 pub(crate) fn fail_next_journal_removal_for_test() -> FailpointResetGuard {
     arm_failpoint(&FAIL_NEXT_JOURNAL_REMOVAL)
@@ -147,13 +151,18 @@ fn marketplace_transaction_journal() -> PathBuf {
         .join("state-transaction.json")
 }
 
-/// 把损坏的状态文件**原始字节**隔离成 `<name>.corrupt.<ts>` 旁路副本（不删
-/// 原文件），供人工找回；随后调用方按各自策略降级自愈。installed.json 与
-/// disabled_bundles.json 共用本入口（评审 #455：两处曾近乎逐字重复）。
-/// 入参按字节而非字符串（评审 #455 R7-M1）：非 UTF-8 损坏经 lossy 字符串
-/// 隔离会留下 mojibake 副本，一字节修复变得不可能——副本必须逐字节等于
-/// 原文件。隔离失败按 Err 传播：调用方不得继续覆盖原文件——ENOSPC 等场景
-/// 下「隔离失败但仍覆盖」会把可人工找回的损坏字节彻底销毁（评审 #455 R5-m4）。
+/// Quarantines the **raw bytes** of a corrupt state file into a `<name>.corrupt.<ts>`
+/// sidecar copy (the original file is not deleted) for manual recovery; the
+/// caller then degrades and self-heals per its own strategy. installed.json
+/// and disabled_bundles.json share this entry point (review #455: the two
+/// used to be near-verbatim duplicates).
+/// The input is bytes rather than a string (review #455 R7-M1): quarantining
+/// non-UTF-8 corruption through a lossy string leaves a mojibake copy and makes
+/// one-byte repair impossible — the copy must be byte-for-byte equal to the
+/// original file. Quarantine failure propagates as Err: the caller must not
+/// proceed to overwrite the original file — under ENOSPC-like conditions
+/// "quarantine failed but overwrite anyway" would destroy recoverable corrupt
+/// bytes for good (review #455 R5-m4).
 pub(crate) fn quarantine_corrupt_state_file(path: &Path, content: &[u8]) -> Result<(), String> {
     let Some(parent) = path.parent() else {
         return Err(format!(
@@ -167,12 +176,15 @@ pub(crate) fn quarantine_corrupt_state_file(path: &Path, content: &[u8]) -> Resu
             path.display()
         ));
     };
-    // 纳秒分辨率：GUI + headless 双宿主共用一个 home 时，秒级戳会让同秒
-    // 的第二次隔离覆盖第一次副本（quarantine_marketplace_journal 同先例）。
+    // Nanosecond resolution: when GUI and headless hosts share one home, a
+    // second-granularity stamp would let a same-second second quarantine
+    // overwrite the first copy (same precedent as quarantine_marketplace_journal).
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        // A pre-epoch clock must not collapse every backup onto `.corrupt.0`
+        // and clobber the previous copy — fall back to a nonzero constant.
+        .unwrap_or(1);
     let backup = parent.join(format!("{name}.corrupt.{ts}"));
     std::fs::write(&backup, content).map_err(|error| {
         format!(
@@ -662,12 +674,14 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         tools
     }
 
-    /// 已安装的工具 ID 列表。
+    /// List of installed tool IDs.
     ///
-    /// # 不得用于门控
-    /// 读错误在此折叠为空集——仅适合展示/簿记类消费方；DenyAll 门控必须走
-    /// `Self::try_installed_ids` 以区分「确认为空」与「集合未知」（后者由
-    /// scope.rs 的 DenyAll 臂按全目录 fail-closed 兜底，评审 #455 R8 nit）。
+    /// # Must not be used for gating
+    /// Read errors collapse to an empty set here — suitable only for
+    /// display/bookkeeping consumers; DenyAll gating must go through
+    /// `Self::try_installed_ids` to distinguish "confirmed empty" from
+    /// "set unknown" (the latter makes scope.rs's DenyAll arm fall back to
+    /// fail-closed over the full catalog, review #455 R8 nit).
     pub fn installed_ids(&self) -> Vec<String> {
         match self.try_installed_ids() {
             Ok(ids) => ids,
@@ -678,10 +692,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         }
     }
 
-    /// 可区分读错误的 `installed_ids`：NotFound 与损坏恢复（隔离 + 按 mcp.json
-    /// 重建）按 Ok 返回；文件存在但读不出（权限/占用锁等）按 Err 返回且不动
-    /// 原文件——「已安装集合未知」由调用方决定口径，DenyAll 门控消费方据此
-    /// fail-closed（评审 #455 R5-B2）。
+    /// `installed_ids` that distinguishes read errors: NotFound and corrupt
+    /// recovery (quarantine + rebuild from mcp.json) return Ok; a file that
+    /// exists but cannot be read (permissions/lock held, etc.) returns Err
+    /// and leaves the file untouched — callers decide how to interpret
+    /// "installed set unknown", and DenyAll gating consumers fail closed on
+    /// it (review #455 R5-B2).
     pub(crate) fn try_installed_ids(&self) -> Result<Vec<String>, String> {
         let content = match std::fs::read_to_string(&self.installed_file) {
             Ok(c) => c,
@@ -695,9 +711,11 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         match serde_json::from_str::<Vec<String>>(&content) {
             Ok(ids) => Ok(ids),
             Err(e) => {
-                // 隔离失败（ENOSPC 等）时不得覆盖原文件：损坏字节就此不可
-                // 找回（评审 #455 R5-m4）。按「已安装集合未知」fail-closed 返回
-                // Err，内存态已正确，下次读取重试隔离+恢复。
+                // On quarantine failure (ENOSPC etc.) the original file must
+                // not be overwritten: the corrupt bytes become unrecoverable
+                // (review #455 R5-m4). Return Err fail-closed as "installed
+                // set unknown"; the in-memory state is correct and the next
+                // read retries quarantine + recovery.
                 if let Err(quarantine_err) = self.backup_corrupt_installed(&content) {
                     return Err(format!(
                         "installed.json is invalid: {e}; {quarantine_err}; installed set unknown, leaving the corrupt file untouched"
@@ -706,11 +724,24 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 eprintln!(
                     "[marketplace] installed.json is invalid: {e}; quarantined, rebuilding from mcp.json"
                 );
-                // 恢复结果必须**可确证**（评审 #455 R8-1）：mcp.json 缺失/损坏/
-                // 无 servers 键时无法证明恢复集的完备性——按空集返回 Ok 会让
-                // DenyAll 扩集丢失全部非内置已装包（零同意放行），且 save_installed
-                // 把丢失持久化。此时按 Err 交由 DenyAll 门控走全目录 fail-closed
-                // 兜底，未验证结果不落盘。
+                // Hold the marketplace transaction lock across quarantine →
+                // rebuild → persist (round-10 m2): without it, an install can
+                // commit mcp.json with X while this recovery (holding a
+                // pre-install mcp snapshot) lands installed.json without X —
+                // a supplied-but-unregistered ghost that no journal or repair
+                // revisits, silently shrinking the DenyAll expansion.
+                let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                // The recovery result must be **provable** (review #455 R8-1):
+                // when mcp.json is missing/corrupt/has no servers key, the
+                // completeness of the recovered set cannot be proven —
+                // returning Ok with an empty set would drop every non-builtin
+                // installed pack from the DenyAll expansion (zero-consent
+                // pass-through), and save_installed would persist the loss.
+                // Return Err instead so the DenyAll gate falls back to
+                // fail-closed over the full catalog; unverified results are
+                // never persisted.
                 let recovered = match self.recover_installed_ids_from_mcp() {
                     Ok(recovered) => recovered,
                     Err(recover_error) => {
@@ -719,8 +750,10 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                         ));
                     }
                 };
-                // 恢复覆盖失败按 Err 上报（R8 nit）：损坏原文件仍在，下次读取
-                // 重试隔离+恢复；静默丢写会让每次读都重新隔离（副本累积）。
+                // A failed recovery overwrite is reported as Err (R8 nit):
+                // the corrupt original is still there, so the next read
+                // retries quarantine + recovery; silently dropping the write
+                // would re-quarantine on every read (copies accumulate).
                 self.save_installed(&recovered).map_err(|write_err| {
                     format!("failed to rewrite installed.json after quarantine: {write_err}")
                 })?;
@@ -1641,10 +1674,13 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         quarantine_corrupt_state_file(&self.installed_file, content.as_bytes())
     }
 
-    /// 从 mcp.json 重建已装集。返回 Err = 无法**确证**恢复集完备（mcp.json
-    /// 缺失/不可读/损坏/缺 servers 键）——调用方必须按「已装集合未知」处理，
-    /// 不得把空集当事实持久化（评审 #455 R8-1）。合法 JSON + servers 对象存在
-    /// 即可证（恢复集允许为空：mcp.json 本来就可能没注册任何包）。
+    /// Rebuilds the installed set from mcp.json. Returning Err = the
+    /// completeness of the recovered set cannot be **proven** (mcp.json
+    /// missing/unreadable/corrupt/no servers key) — the caller must treat it
+    /// as "installed set unknown" and must not persist an empty set as fact
+    /// (review #455 R8-1). Valid JSON + a servers object is sufficient proof
+    /// (the recovered set may legitimately be empty: mcp.json may simply have
+    /// no packages registered).
     fn recover_installed_ids_from_mcp(&self) -> Result<Vec<String>, String> {
         let content = match std::fs::read_to_string(paths::mcp_config_path()) {
             Ok(c) => c,
@@ -1700,8 +1736,9 @@ mod tests {
     /// point moves from env to the registry).
     fn with_temp_home<F: FnOnce()>(f: F) {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        // 判定备忘按家目录键控，但临时目录复用同一 pid 前缀——显式清空防止
-        // 前一用例的 UNPERSISTED_VERDICT 串味（评审 #455 R8 nit）。
+        // The verdict memo is keyed by home directory, but temp dirs reuse
+        // the same pid prefix — clear it explicitly so a previous case's
+        // UNPERSISTED_VERDICT does not bleed in (review #455 R8 nit).
         crate::features::marketplace::scope::clear_unpersisted_verdict_for_test();
         // The test process installs the foundation resolver too (OnceLock is
         // idempotent, same contract as the production boot): otherwise the
@@ -3018,11 +3055,14 @@ mod tests {
         });
     }
 
-    /// 损坏的 disabled_bundles.json：原始字节隔离成 `.corrupt.<ts>` 副本，
-    /// 恢复 fail-closed——plain 保持 DenyAll 全关（不翻回全开）、迁移标记
-    /// 置位**落盘**（评审 #455：安全收敛特性宁可恢复全关，也不静默恢复全开）。
-    /// 恢复一次性完成：损坏文件被降级态覆盖，重复读不再重新隔离（否则副本
-    /// 无界累积，评审 #455 阻塞项 2）。
+    /// Corrupt disabled_bundles.json: the raw bytes are quarantined into a
+    /// `.corrupt.<ts>` copy and recovery fails closed — plain stays fully
+    /// DenyAll-off (never flips back to fully on), and the migration marker
+    /// is persisted (review #455: a security-converging feature prefers
+    /// recovering fully-off over silently recovering fully-on).
+    /// Recovery completes in one shot: the corrupt file is overwritten by the
+    /// degraded state and repeated reads do not re-quarantine (otherwise
+    /// copies accumulate unboundedly, review #455 blocking item 2).
     #[test]
     fn corrupt_disabled_bundles_quarantined_and_recovers_fail_closed() {
         with_temp_home(|| {
@@ -3044,7 +3084,8 @@ mod tests {
                 ],
                 "损坏恢复必须 fail-closed：plain 按 DenyAll 兜底全关"
             );
-            // 恢复态落盘：标记置位且不初始化任何 scope（内存与磁盘一致）。
+            // The recovered state is persisted: marker set and no scope
+            // initialized (memory and disk agree).
             let on_disk: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&path).expect("恢复态应覆盖落盘"))
                     .expect("落盘应为合法 JSON");
@@ -3066,8 +3107,9 @@ mod tests {
                 file.plain_defaults_migrated,
                 "恢复后迁移标记应置位（不重复走升级判定）: {file:?}"
             );
-            // 重复读不重新隔离：恢复一次性完成（跨秒等一等再读，排除同秒
-            // 同名覆盖造成的假阳性）。
+            // A repeated read does not re-quarantine: recovery completes in
+            // one shot (wait past the second boundary to rule out a
+            // same-second same-name overwrite false positive).
             std::thread::sleep(std::time::Duration::from_millis(1100));
             let _ = load_disabled_connectors();
             let backups: Vec<_> = std::fs::read_dir(path.parent().unwrap())
@@ -3328,12 +3370,13 @@ mod tests {
         });
     }
 
-    /// 全局禁用列表落盘往返:存→读一致;清空→读空。
-    /// （全模式 DenyAll 后无文件≠读空——未初始化默认全关，故先显式初始化。）
+    /// Global disabled-list persistence roundtrip: save → read back equal; clear → read empty.
+    /// (After all-mode DenyAll, a missing file no longer means empty-read — uninitialized
+    /// defaults to fully off, so initialize explicitly first.)
     #[test]
     fn disabled_connectors_persist_roundtrip() {
         with_temp_home(|| {
-            save_disabled_connectors(&[]); // 初始化 plain 为空集（全开基线）
+            save_disabled_connectors(&[]); // initialize plain to the empty set (all-on baseline)
             assert!(load_disabled_connectors().is_empty());
             save_disabled_connectors(&["weather".to_string(), "pptx".to_string()]);
             assert_eq!(
@@ -3356,9 +3399,12 @@ mod tests {
     #[test]
     fn disabled_connectors_scope_isolation() {
         with_temp_home(|| {
-            // 全新装机（家目录无任何状态）：未初始化 plain/code 均按 DenyAll 兜底
-            // （全模式 DenyAll 收敛），扩集 = 当前已装连接器 ∪ 内置 CLI 四连接器；
-            // 此刻无已装条目，仅内置四项（scope.rs DenyAll 扩集是有意语义）。
+            // Fresh install (no state in the home dir): uninitialized
+            // plain/code both fall back to DenyAll (all-mode DenyAll
+            // convergence); expansion = currently installed connectors ∪ the
+            // four built-in CLI connectors; with nothing installed yet, only
+            // the four built-ins remain (the scope.rs DenyAll expansion is
+            // intentional semantics).
             let builtin_cli = || {
                 vec![
                     "feishu".to_string(),
@@ -3375,9 +3421,11 @@ mod tests {
                 load_disabled_connectors_for(ConnectorScope::Code),
                 builtin_cli()
             );
-            // 模拟已装 2 个连接器后继续：plain 首读已冻结 DenyAll 判定
-            // （plain_deny_all_marker_frozen_at_first_read），installed.json 出现
-            // 不再触发翻回全开；code 兜底扩集随之并入已装条目。
+            // Continue after simulating 2 installed connectors: the first
+            // plain read already froze the DenyAll verdict
+            // (plain_deny_all_marker_frozen_at_first_read), so installed.json
+            // appearing no longer flips plain back to fully on; the code
+            // fallback expansion absorbs the installed entries.
             write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
             let deny_all_default = || {
                 vec![
@@ -3495,8 +3543,9 @@ mod tests {
     }
 
     /// 旧对象 `code_initialized=false` 时,code 数组被忽略、按 DenyAll 默认全禁
-    /// (与迁移前逐字节一致);plain 列表被读时迁移初始化为落盘真相（锁定旧
-    /// AllowAll 语义下的实际开关状态）。
+    /// (byte-for-byte identical to pre-migration); the plain list is
+    /// migration-initialized at read time to the on-disk truth (locking in
+    /// the actual switch state under the old AllowAll semantics).
     #[test]
     fn legacy_object_uninitialized_code_keeps_deny_all_default() {
         with_temp_home(|| {
@@ -3597,18 +3646,22 @@ mod tests {
         });
     }
 
-    /// plain 收敛 DenyAll 的读时迁移（升级）：旧版 disabled_bundles.json（无
-    /// `plain_defaults_migrated` 字段、plain 未初始化）→ plain 初始化为落盘
-    /// 列表（缺省空 = 旧 AllowAll 语义全开），升级后开关状态不变。
+    /// Read-time migration for plain converging to DenyAll (upgrade): an
+    /// old disabled_bundles.json (no `plain_defaults_migrated` field, plain
+    /// uninitialized) → plain is initialized to the on-disk list (default
+    /// empty = fully on under the old AllowAll semantics); switch state is
+    /// unchanged after the upgrade.
     #[test]
     fn plain_deny_all_migration_preserves_upgrade_state() {
         with_temp_home(|| {
             write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
             let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            // 旧版文件：code 已初始化（用户管过 code 开关），plain 从未碰过。
+            // Old-format file: code is initialized (the user touched the code
+            // switches), plain was never touched.
             std::fs::write(&path, r#"{"scopes":{"code":[]},"initialized":["code"]}"#).unwrap();
-            // 迁移后 plain 保持旧语义（全开），而不是 DenyAll 兜底全关。
+            // After migration plain keeps the old semantics (fully on), not
+            // the DenyAll fully-off fallback.
             assert_eq!(load_disabled_connectors(), Vec::<String>::new());
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
             assert!(file.plain_defaults_migrated, "迁移标记应置位: {file:?}");
@@ -3619,11 +3672,15 @@ mod tests {
         });
     }
 
-    /// plain 收敛 DenyAll 的读时迁移（全新装机）：家目录无任何既有状态 → 只
-    /// 置标记不初始化 plain，未初始化 scope 按 DenyAll 兜底（默认全关，内置
-    /// CLI 列表）；判定在首读即落盘冻结（宽口径升级信号会被首启自写的
-    /// settings.json/sessions 污染，评审 #455 阻塞项）。「全新」是宽口径升级
-    /// 信号的补集：装过包、写过设置或有过会话都算升级装机（评审 #445 P1-2）。
+    /// Read-time migration for plain converging to DenyAll (fresh install):
+    /// home dir has no prior state → only the marker is set, plain is not
+    /// initialized, and uninitialized scopes fall back to DenyAll (default
+    /// fully off, the built-in CLI list); the verdict is frozen to disk at
+    /// the first read (the broad upgrade signal gets polluted by first-boot
+    /// self-writes of settings.json/sessions, review #455 blocking item).
+    /// "Fresh" is the complement of the broad upgrade signal: having
+    /// installed a package, written settings, or had a session all count as
+    /// an upgraded install (review #445 P1-2).
     #[test]
     fn plain_deny_all_fresh_install_defaults_off() {
         with_temp_home(|| {
@@ -3650,11 +3707,15 @@ mod tests {
         });
     }
 
-    /// 评审 #455 阻塞项回归：真实首启时 bridge/paths 会自写 settings.json
-    /// 与 sessions/default/artifacts/。生产保证来自启动顺序——首读被上提至
-    /// Tauri setup 钩子顶部（lib.rs `disabled_bundles_migration` 标记），早于
-    /// bridge boot 的一切首启自写；本测试覆盖该顺序所依赖的冻结语义：判定
-    /// 一旦随首读落盘，之后出现的首启痕迹不得把全新装机翻回旧 AllowAll 全开。
+    /// Review #455 blocking-item regression: on a real first boot,
+    /// bridge/paths self-write settings.json and sessions/default/artifacts/.
+    /// The production guarantee comes from startup ordering — the first read
+    /// is hoisted to the top of the Tauri setup hook (lib.rs
+    /// `disabled_bundles_migration` marker), ahead of every first-boot
+    /// self-write from bridge boot; this test covers the freeze semantics
+    /// that ordering relies on: once the verdict is persisted with the first
+    /// read, later first-boot traces must not flip a fresh install back to
+    /// the old AllowAll fully-on.
     #[test]
     fn plain_deny_all_marker_frozen_at_first_read() {
         with_temp_home(|| {
@@ -3666,17 +3727,19 @@ mod tests {
                     "tmeet".to_string(),
                 ]
             };
-            // 首读：全新装机判定冻结落盘（DenyAll 兜底全关）。
+            // First read: the fresh-install verdict is frozen to disk
+            // (DenyAll fallback, fully off).
             assert_eq!(load_disabled_connectors(), builtin_cli());
-            // 首启自写痕迹（bridge.rs 首启默认 settings.json；ensure_dirs 创建
-            // sessions/default/artifacts/）。
+            // First-boot self-write traces (bridge.rs first-boot default
+            // settings.json; ensure_dirs creates sessions/default/artifacts/).
             let home = crate::platform::paths::pinvou3_home();
             std::fs::write(home.join("settings.json"), "{}").unwrap();
             std::fs::create_dir_all(
                 crate::platform::paths::sessions_root().join("default/artifacts"),
             )
             .unwrap();
-            // 次读：信号已被污染，但判定已冻结——plain 必须保持 DenyAll。
+            // Second read: the signal is polluted but the verdict is already
+            // frozen — plain must stay DenyAll.
             assert_eq!(
                 load_disabled_connectors(),
                 builtin_cli(),
@@ -3691,12 +3754,16 @@ mod tests {
         });
     }
 
-    /// 宽口径升级信号:installed.json/非空会话目录任一存在 ⇒ 老装机,
-    /// plain 初始化为落盘状态(缺省空 = 旧 AllowAll 全开),不被 DenyAll 兜底
-    /// 波及。三份开关相关文件皆无的 v0.8.6-v0.9.2 老装机正是本信号要救的
-    /// 群体(评审 #445 P1-2)。settings.json 不构成信号(R8-3 收窄:预置模板/
-    /// 跨机拷贝的 settings.json 会把全新装机误判 fail-open,而老装机必留非空
-    /// sessions/,收窄不漏判),单独存在的 settings.json ⇒ 仍判全新。
+    /// Broad upgrade signal: installed.json or a non-empty sessions dir
+    /// present ⇒ old install, plain is initialized to the on-disk state
+    /// (default empty = fully on under old AllowAll semantics), untouched by
+    /// the DenyAll fallback. v0.8.6–v0.9.2 old installs that lack all three
+    /// switch-related files are exactly the population this signal rescues
+    /// (review #445 P1-2). settings.json is not a signal (R8-3 narrowing: a
+    /// preset-template/copied-from-another-machine settings.json would
+    /// misjudge a fresh install as fail-open, while an old install always
+    /// leaves a non-empty sessions/, so the narrowing misses nothing);
+    /// settings.json alone ⇒ still judged fresh.
     #[test]
     fn plain_deny_all_upgraded_install_with_existing_state_preserves_all_on() {
         for seed in [
@@ -3721,8 +3788,9 @@ mod tests {
         }
     }
 
-    /// settings.json 单独存在不构成升级信号（R8-3 收窄的反向 pin）：
-    /// 预置/跨机拷贝的 settings.json 不得把全新装机判为升级（plain 全开）。
+    /// settings.json alone is not an upgrade signal (reverse pin of the
+    /// R8-3 narrowing): a preset/copied settings.json must not classify a
+    /// fresh install as an upgrade (plain fully on).
     #[test]
     fn plain_deny_all_settings_json_alone_is_not_an_upgrade_signal() {
         with_temp_home(|| {
@@ -3746,8 +3814,9 @@ mod tests {
         });
     }
 
-    /// 旧版双文件时代升级（legacy 文件存在）→ plain 初始化锁定迁移后的落盘
-    /// 状态（空 = 全开），不走 DenyAll 兜底。
+    /// Upgrade from the old two-file era (legacy file present) → plain is
+    /// initialized and locked to the post-migration on-disk state (empty =
+    /// fully on), skipping the DenyAll fallback.
     #[test]
     fn plain_deny_all_migration_from_legacy_files_preserves_all_on() {
         with_temp_home(|| {
@@ -3762,48 +3831,70 @@ mod tests {
         });
     }
 
-    /// enable_packages_in_scope（评审 #455 R8：批量 opt-in 出口的 Rust 钉子，
-    /// 此前仅 JS mock 覆盖）：未初始化 DenyAll scope 以（扩集 − ids）物化
-    /// opt-in；已初始化 scope 从落盘列表移除；hidden 集同步清理；未列出的包
-    /// 保持原状。
+    /// enable_packages_in_scope (review #455 R8: the Rust pin for the batch
+    /// opt-in export, previously covered only by a JS mock): an
+    /// uninitialized DenyAll scope materializes the opt-in as
+    /// (expansion − ids); an initialized scope removes ids from the stored
+    /// list; the hidden set is cleaned in sync; unlisted packs keep their
+    /// state.
     #[test]
     fn enable_packages_in_scope_materializes_and_cleans_hidden() {
         with_temp_home(|| {
-            // 未初始化 plain：扩集含内置 CLI。批量开启 feishu → 物化 opt-in。
-            crate::features::marketplace::scope::enable_packages_in_scope(
+            // Uninitialized plain: expansion covers the built-in CLI packs.
+            // Batch-enabling feishu materializes the opt-in (expansion minus ids).
+            let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
                 ConnectorScope::Plain,
                 &["feishu".to_string()],
+            );
+            assert!(
+                blocked.is_empty(),
+                "default-gated packs enable freely: {blocked:?}"
             );
             let disabled = load_disabled_connectors_for(ConnectorScope::Plain);
             assert!(
                 !disabled.contains(&"feishu".to_string()),
-                "批量开启后 feishu 退出有效禁用集: {disabled:?}"
+                "feishu leaves the effective disabled set: {disabled:?}"
             );
             assert!(
                 disabled.contains(&"wecom".to_string()),
-                "未列出的内置包保持默认关: {disabled:?}"
+                "unlisted packs stay default-off: {disabled:?}"
             );
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
-            assert!(file.initialized.contains("plain"), "物化落盘: {file:?}");
+            assert!(file.initialized.contains("plain"), "materialized: {file:?}");
 
-            // 已初始化 scope：从落盘列表移除 + hidden 同步清理。
-            save_hidden_bundles_for(ConnectorScope::Plain, &["wecom".to_string()]);
-            crate::features::marketplace::scope::enable_packages_in_scope(
+            // Initialized scope + id in the stored list = explicit user opt-out:
+            // the batch is refused wholesale with the blocked ids, nothing moves.
+            // (save writes the whole stored list: only wecom is explicit-off.)
+            save_disabled_bundles_for(ConnectorScope::Plain, &["wecom".to_string()]);
+            let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
                 ConnectorScope::Plain,
-                &["wecom".to_string(), "feishu".to_string()],
+                &["wecom".to_string(), "dingtalk".to_string()],
             );
-            let disabled = load_disabled_connectors_for(ConnectorScope::Plain);
-            assert!(
-                !disabled.contains(&"wecom".to_string()),
-                "已初始化 scope 从落盘列表移除: {disabled:?}"
+            assert_eq!(
+                blocked,
+                vec!["wecom".to_string()],
+                "explicit opt-out is surfaced"
             );
-            let hidden = load_hidden_bundles_for(ConnectorScope::Plain);
             assert!(
-                !hidden.contains(&"wecom".to_string()),
-                "hidden 集同步清理: {hidden:?}"
+                load_disabled_connectors_for(ConnectorScope::Plain).contains(&"wecom".to_string()),
+                "blocked pack stays disabled"
+            );
+            // (dingtalk is not in the stored list, but the refusal is wholesale.)
+
+            // Hidden set cleanup rides along with enabling a hidden pack that is
+            // not explicitly stored-off (dingtalk above).
+            save_hidden_bundles_for(ConnectorScope::Plain, &["dingtalk".to_string()]);
+            let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
+                ConnectorScope::Plain,
+                &["dingtalk".to_string()],
+            );
+            assert!(blocked.is_empty());
+            assert!(
+                !load_hidden_bundles_for(ConnectorScope::Plain).contains(&"dingtalk".to_string()),
+                "hidden entry cleaned on enable"
             );
 
-            // 技能 id 入参归一为包 id（government-writing → gongwen）。
+            // Skill-id input normalizes to the owner package id (companion → pack).
             std::fs::remove_file(
                 crate::platform::paths::pinvou3_home().join("disabled_bundles.json"),
             )
@@ -3816,34 +3907,33 @@ mod tests {
                     ),
                 )
                 .unwrap();
-            crate::features::marketplace::scope::enable_packages_in_scope(
+            let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
                 ConnectorScope::Plain,
                 &["government-writing".to_string()],
             );
+            assert!(blocked.is_empty());
             assert!(
                 !load_disabled_connectors_for(ConnectorScope::Plain)
                     .contains(&"gongwen".to_string()),
-                "companion 技能 id 应归一为包 id 后移除"
+                "companion skill id resolves to the owner pack for the enable"
             );
         });
     }
 
-    /// composer 连接器开关桥接（评审 #455 阻塞项 1）：未初始化 scope 的门控
-    /// 来自 DenyAll 现算扩集（无视落盘列表），「开」方向只删落盘列表是静默
-    /// no-op——UI 显示已启用而 CLI 硬拦截/技能排除依旧。开方向必须以
-    /// 「扩集减该 id」初始化该 scope（用户显式开启 = 显式 opt-in）。
     #[test]
     fn connector_switch_enable_on_uninitialized_scope_materializes_opt_in() {
         with_temp_home(|| {
-            // 全新装机：feishu（内置 CLI）在 plain/code 的 DenyAll 扩集里。
+            // Fresh install: feishu (built-in CLI) is inside the DenyAll
+            // expansion of both plain and code.
             for scope in [ConnectorScope::Plain, ConnectorScope::Code] {
                 assert!(
                     load_disabled_connectors_for(scope).contains(&"feishu".to_string()),
                     "{scope:?} 未初始化应按 DenyAll 兜底含内置 feishu"
                 );
             }
-            // 用户开回 feishu → 两个 scope 初始化（扩集减 feishu），feishu 退出
-            // 有效禁用集；其余内置包保持默认关。
+            // The user re-enables feishu → both scopes initialize (expansion
+            // minus feishu), feishu leaves the effective disabled set; the
+            // other built-in packs stay default-off.
             sync_disabled_bundles_for_connector_switch("feishu", true);
             for scope in [ConnectorScope::Plain, ConnectorScope::Code] {
                 let disabled = load_disabled_connectors_for(scope);
@@ -3863,20 +3953,25 @@ mod tests {
         });
     }
 
-    /// 关 → 开往返（评审 #455 三轮 M1）：本测试在首读前写入 installed.json，
-    /// 宽口径升级信号因此把 plain **迁移初始化**为空落盘列表——钉住的是
-    /// 「迁移已初始化 scope 的往返」，不是未初始化 scope。关方向：id 不在
-    /// 有效禁用集且 scope 已初始化 → 物化（resolve + push）；开方向：从落盘
-    /// 列表移除，其余条目不动（已初始化 scope 以落盘为准）。真正未初始化
-    /// scope 的关方向语义与之不同：id 已在 DenyAll 现算扩集里 → no-op；
-    /// id 不在扩集里 → 早退不初始化——分别见
-    /// `connector_switch_disable_builtin_on_uninitialized_scope_is_noop` 与
-    /// `connector_switch_disable_unknown_id_does_not_freeze_expansion`。
+    /// Off → on roundtrip (review #455 round-3 M1): this test writes
+    /// installed.json before the first read, so the broad upgrade signal
+    /// **migration-initializes** plain to an empty stored list — what is
+    /// pinned here is the "roundtrip on a migration-initialized scope", not
+    /// an uninitialized one. Off direction: id not in the effective disabled
+    /// set and the scope initialized → materialize (resolve + push); on
+    /// direction: remove from the stored list, leaving the other entries
+    /// untouched (an initialized scope is stored-list truth). The off
+    /// direction for a truly uninitialized scope differs: id already in the
+    /// DenyAll freshly-computed expansion → no-op; id not in the expansion →
+    /// early exit without initializing — see
+    /// `connector_switch_disable_builtin_on_uninitialized_scope_is_noop` and
+    /// `connector_switch_disable_unknown_id_does_not_freeze_expansion`.
     #[test]
     fn connector_switch_disable_then_enable_roundtrip_on_migration_initialized_scope() {
         with_temp_home(|| {
-            // installed.json 先于首读落盘 ⇒ 升级信号 ⇒ plain 迁移初始化为空
-            // 落盘列表，weather 此刻不在有效禁用集。
+            // installed.json lands before the first read ⇒ upgrade signal ⇒
+            // plain is migration-initialized to an empty stored list;
+            // weather is not in the effective disabled set at this point.
             write_installed_ids(&["weather".to_string()]);
             let baseline = load_disabled_connectors_for(ConnectorScope::Plain);
             assert!(!baseline.contains(&"weather".to_string()));
@@ -3901,16 +3996,21 @@ mod tests {
         });
     }
 
-    /// 真正未初始化 scope 的关方向（评审 #455 三轮 M1）：全空家目录首读冻结
-    /// 全新装机判定（不初始化任何 scope）后，关掉一个**已在 DenyAll 现算扩集
-    /// 里**的内置 id（feishu）是 no-op——门控本就来自扩集，物化落盘反而会把
-    /// 当前扩集固化为用户状态（未来新增内置包将默认开）。因此不得初始化
-    /// scope、不得落盘任何列表，feishu 继续由扩集兜底默认关。
+    /// Off direction on a truly uninitialized scope (review #455 round-3
+    /// M1): after the first read on an empty home dir freezes the
+    /// fresh-install verdict (initializing no scope), disabling a built-in
+    /// id (feishu) that is **already in the DenyAll freshly-computed
+    /// expansion** is a no-op — the gating already comes from the expansion,
+    /// and materializing it to disk would freeze the current expansion into
+    /// user state (future built-ins would default on). So the scope must not
+    /// be initialized and no list may be persisted; feishu keeps being
+    /// default-off via the expansion.
     #[test]
     fn connector_switch_disable_builtin_on_uninitialized_scope_is_noop() {
         with_temp_home(|| {
-            // 首读冻结全新装机判定；feishu（内置 CLI）经 DenyAll 扩集已在
-            // 有效禁用集。
+            // The first read freezes the fresh-install verdict; feishu
+            // (built-in CLI) is already in the effective disabled set via
+            // the DenyAll expansion.
             assert!(
                 load_disabled_connectors_for(ConnectorScope::Plain).contains(&"feishu".to_string())
             );
@@ -3924,16 +4024,19 @@ mod tests {
                 file.scopes.get("plain").is_none() && file.scopes.get("code").is_none(),
                 "no-op 不得落盘物化任何列表: {file:?}"
             );
-            // 门控仍来自现算扩集：feishu 保持默认关。
+            // Gating still comes from the freshly-computed expansion: feishu
+            // stays default-off.
             assert!(
                 load_disabled_connectors_for(ConnectorScope::Plain).contains(&"feishu".to_string())
             );
         });
     }
 
-    /// 关方向早退（评审 #455 非阻塞 2）：关掉一个不在有效禁用集里的 id
-    /// （未装的预置包）不得把当前扩集固化为用户状态——否则未来新增的内置包
-    /// 会因 scope 已初始化而默认开。
+    /// Off-direction early exit (review #455 non-blocking 2): disabling an
+    /// id that is not in the effective disabled set (an uninstalled preset)
+    /// must not freeze the current expansion into user state — otherwise
+    /// future built-ins would default on because the scope is already
+    /// initialized.
     #[test]
     fn connector_switch_disable_unknown_id_does_not_freeze_expansion() {
         with_temp_home(|| {
@@ -3943,7 +4046,8 @@ mod tests {
                 !file.initialized.contains("plain") && !file.initialized.contains("code"),
                 "id 不在有效禁用集时不得初始化 scope: {file:?}"
             );
-            // 后装的新包仍按 DenyAll 默认关（扩集现算，未被固化）。
+            // A pack installed later is still DenyAll default-off (the
+            // expansion is computed on the fly, not frozen).
             write_installed_ids(&["late-joiner".to_string()]);
             assert!(
                 load_disabled_connectors_for(ConnectorScope::Plain)
@@ -3953,7 +4057,8 @@ mod tests {
         });
     }
 
-    /// 升级装机的开方向：已初始化 scope 保持原有「从落盘列表移除」行为。
+    /// On direction for an upgraded install: an initialized scope keeps the
+    /// existing "remove from the stored list" behavior.
     #[test]
     fn connector_switch_enable_on_initialized_scope_removes_from_stored_list() {
         with_temp_home(|| {
@@ -3969,16 +4074,19 @@ mod tests {
         });
     }
 
-    /// 判定矩阵补全（评审 #455 非阻塞 4）：升级装机里 plain 在收敛前已被
-    /// 用户显式初始化（旧版文件 initialized 含 plain、无迁移标记）→ 保留
-    /// 落盘列表，不被迁移重置。
+    /// Verdict-matrix completion (review #455 non-blocking 4): in an
+    /// upgraded install where plain was explicitly initialized by the user
+    /// before convergence (old-format file with initialized containing
+    /// plain, no migration marker) → the stored list is preserved and not
+    /// reset by the migration.
     #[test]
     fn plain_deny_all_upgrade_with_plain_pre_initialized_preserves_user_list() {
         with_temp_home(|| {
             write_installed_ids(&["weather".to_string()]);
             let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            // 旧版文件（无 plain_defaults_migrated）：用户早已显式关过 weather。
+            // Old-format file (no plain_defaults_migrated): the user
+            // explicitly disabled weather long ago.
             std::fs::write(
                 &path,
                 r#"{"scopes":{"plain":["weather"]},"initialized":["plain"]}"#,
@@ -3995,8 +4103,10 @@ mod tests {
         });
     }
 
-    /// 判定矩阵补全：升级装机（家目录有既有状态）里的损坏文件 → 恢复同样
-    /// fail-closed（隔离 + 标记落盘 + DenyAll 兜底），升级信号不参与损坏恢复。
+    /// Verdict-matrix completion: a corrupt file in an upgraded install
+    /// (existing state in the home dir) → recovery likewise fails closed
+    /// (quarantine + marker persisted + DenyAll fallback); the upgrade
+    /// signal plays no part in corrupt recovery.
     #[test]
     fn corrupt_disabled_bundles_in_upgraded_install_also_recovers_fail_closed() {
         with_temp_home(|| {
@@ -4023,7 +4133,8 @@ mod tests {
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
             assert!(file.plain_defaults_migrated);
             assert!(!file.initialized.contains("plain"));
-            // 隔离副本恰好一份；恢复一次性完成——跨秒再读不产生新副本。
+            // Exactly one quarantine copy; recovery completes in one shot —
+            // a read past the second boundary produces no new copy.
             std::thread::sleep(std::time::Duration::from_millis(1100));
             let _ = load_disabled_connectors();
             let backups: Vec<_> = std::fs::read_dir(path.parent().unwrap())
@@ -4039,21 +4150,29 @@ mod tests {
         });
     }
 
-    /// 存在但不可读的 disabled_bundles.json（权限/占用锁等，非 NotFound）：
-    /// 不得走迁移分支（升级装机上那会把 plain 初始化为空 = 旧 AllowAll 全开
-    /// 并无隔离覆盖原文件），且 salvage 读本身必然失败——占位符「隔离」保不住
-    /// 任何原始字节，此时覆盖原文件会把「不可读但可恢复」变成「永久丢失」
-    /// （评审 #455 R6-B1）。期望：内存 fail-closed 生效、原文件字节原样、零
-    /// 隔离副本、零落盘；权限恢复后按原内容正常解析。权限位夹具走
-    /// `cfg(unix)`+`PermissionsExt` 内联豁免（文件头 architecture-guard
-    /// 标记，package_export.rs 同款先例，评审 #455 R9-M5），以真实 open
-    /// 探测兜底 root 运行，平台无关语义不变。
+    /// A disabled_bundles.json that exists but is unreadable
+    /// (permissions/lock held, etc., not NotFound): the migration branch
+    /// must not run (on an upgraded install that would initialize plain to
+    /// empty = old AllowAll fully-on, with no quarantine overwriting the
+    /// original), and the salvage read itself necessarily fails — a
+    /// placeholder "quarantine" preserves no original bytes, and
+    /// overwriting the original file here would turn "unreadable but
+    /// recoverable" into "permanently lost" (review #455 R6-B1). Expected:
+    /// in-memory fail-closed takes effect, the original file's bytes stay
+    /// as-is, zero quarantine copies, zero writes; after permissions are
+    /// restored it parses normally from the original content. The
+    /// permission-bit fixture uses the `cfg(unix)`+`PermissionsExt` inline
+    /// exemption (file-header architecture-guard marker, same precedent as
+    /// package_export.rs, review #455 R9-M5); a real open() probe guards
+    /// against running as root, and platform-independent semantics are
+    /// unchanged.
     #[cfg(unix)]
     #[test]
     fn unreadable_disabled_bundles_stays_untouched_fail_closed_in_memory() {
         use std::os::unix::fs::PermissionsExt;
         with_temp_home(|| {
-            // 升级装机痕迹：settings.json 存在（旧版首启自写）。
+            // Upgraded-install trace: settings.json present (self-written
+            // by old first boots).
             std::fs::write(
                 crate::platform::paths::pinvou3_home().join("settings.json"),
                 "{}",
@@ -4062,8 +4181,10 @@ mod tests {
             let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
             let original = "{\"plain_defaults_migrated\":true}";
             std::fs::write(&path, original).unwrap();
-            // 0o000：存在但不可读。open 探测兜底 root 运行（mode 位不生效），
-            // 打印跳过原因，避免 CI 通过数高估 fail-closed 覆盖（R7 nit）。
+            // 0o000: exists but unreadable. The open() probe guards against
+            // running as root (mode bits have no effect); print the skip
+            // reason so the CI pass count does not overstate fail-closed
+            // coverage (R7 nit).
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
             if std::fs::File::open(&path).is_ok() {
                 eprintln!(
@@ -4084,7 +4205,8 @@ mod tests {
                 ],
                 "不可读必须内存 fail-closed（不得按升级迁移初始化 plain 为全开）"
             );
-            // 恢复权限断言：原文件字节原样、无隔离副本、无降级态覆盖落盘。
+            // Assertions after restoring permissions: original file bytes
+            // as-is, no quarantine copy, no degraded-state overwrite on disk.
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
             assert_eq!(
                 std::fs::read_to_string(&path).unwrap(),
@@ -4104,7 +4226,9 @@ mod tests {
                 backups.is_empty(),
                 "占位符隔离不落地：不可读不得产生隔离副本"
             );
-            // 权限恢复后按原内容正常解析（marker 来自文件本身，非降级态）。
+            // After permissions are restored it parses normally from the
+            // original content (the marker comes from the file itself, not
+            // the degraded state).
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
             assert!(file.plain_defaults_migrated, "原内容含 marker: {file:?}");
             assert!(
@@ -4114,21 +4238,29 @@ mod tests {
         });
     }
 
-    /// 存在但不可读的 installed.json（权限/占用锁等，非 NotFound）：DenyAll 现算
-    /// 扩集必须 fail-closed 退化为「全部可装包 ∪ 内置 CLI」，不得按空已装集放行
-    /// （评审 #455 R5-B2）——否则未初始化 scope 的有效禁用集丢失全部已装包，
-    /// plain 会话零同意放行已装连接器（本 PR 承诺永不产生的全开翻转）。
-    /// 原文件保持原样（不隔离、不覆盖），恢复后按真实已装集计算。
-    /// 夹具须先预置 disabled_bundles.json（marker 冻结判定）再写 installed.json：
-    /// 否则首读命中宽升级信号把 plain 初始化为空落盘表，`resolve_scope_disabled_ids`
-    /// 走 stored-list 分支，DenyAll 扩集——被测机制——根本不被 consult（评审
-    /// #455 R7-B1）。
+    /// An installed.json that exists but is unreadable (permissions/lock
+    /// held, etc., not NotFound): the DenyAll freshly-computed expansion
+    /// must fail closed by degrading to "all installable packs ∪ built-in
+    /// CLI" instead of admitting an empty installed set (review #455
+    /// R5-B2) — otherwise the effective disabled set of an uninitialized
+    /// scope loses every installed pack, and plain sessions pass installed
+    /// connectors through with zero consent (the fully-on flip this PR
+    /// promises never happens). The original file stays as-is (no
+    /// quarantine, no overwrite); after recovery it is computed from the
+    /// real installed set.
+    /// The fixture must pre-seed disabled_bundles.json (marker freezing the
+    /// verdict) before writing installed.json: otherwise the first read
+    /// hits the broad upgrade signal, initializes plain to an empty stored
+    /// list, and `resolve_scope_disabled_ids` takes the stored-list branch
+    /// — the DenyAll expansion, the mechanism under test, is never even
+    /// consulted (review #455 R7-B1).
     #[cfg(unix)]
     #[test]
     fn unreadable_installed_json_deny_all_expansion_fails_closed() {
         use std::os::unix::fs::PermissionsExt;
         with_temp_home(|| {
-            // 先冻结「升级 vs 全新」判定：marker-only 文件，plain 保持未初始化。
+            // Freeze the "upgrade vs fresh" verdict first: a marker-only
+            // file, plain stays uninitialized.
             std::fs::write(
                 crate::platform::paths::pinvou3_home().join("disabled_bundles.json"),
                 "{\"plain_defaults_migrated\":true}",
@@ -4138,7 +4270,8 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join("installed.json");
             std::fs::write(&path, "[\"feishu\"]").unwrap();
-            // 0o000：存在但不可读。open 探测兜底 root 运行（R7 nit）。
+            // 0o000: exists but unreadable. The open() probe guards against
+            // running as root (R7 nit).
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
             if std::fs::File::open(&path).is_ok() {
                 eprintln!(
@@ -4147,7 +4280,8 @@ mod tests {
                 return;
             }
 
-            // 「已安装集合未知」按 Err 区分，原文件不动。
+            // "Installed set unknown" is distinguished as Err; the original
+            // file is left untouched.
             let manager = MarketplaceManager::new();
             assert!(
                 manager.try_installed_ids().is_err(),
@@ -4161,13 +4295,15 @@ mod tests {
                 disabled.iter().any(|id| id == builtin),
                 "fail-closed 扩集必须含内置 CLI 包: {disabled:?}"
             );
-            // fail-closed 分支生效的直接证据：日志声明的全量目录 fallback。
-            // （空已装集口径下扩集只剩内置 CLI ∪ 已装技能，远小于全目录。）
+            // Direct evidence the fail-closed branch is in effect: the
+            // logged full-catalog fallback. (Under the empty-installed-set
+            // interpretation the expansion would be just built-in CLI ∪
+            // installed skill packs, far smaller than the full catalog.)
             assert!(
                 disabled.len() > 4,
                 "fail-closed 扩集必须覆盖全部可装包，而非只剩内置 CLI: {disabled:?}"
             );
-            // 文件原样保留、不产生隔离副本。
+            // The file is preserved as-is; no quarantine copy is produced.
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
             assert_eq!(
                 std::fs::read_to_string(&path).unwrap(),
@@ -4184,7 +4320,8 @@ mod tests {
                 })
                 .collect();
             assert!(quarantined.is_empty(), "不可读不属于损坏，不得隔离");
-            // 恢复后按真实已装集计算（损坏 JSON 路径的隔离重建不受影响）。
+            // After recovery it computes from the real installed set (the
+            // corrupt-JSON path's quarantine-rebuild is unaffected).
             assert_eq!(
                 MarketplaceManager::new().installed_ids(),
                 vec!["feishu".to_string()]
@@ -4192,8 +4329,9 @@ mod tests {
         });
     }
 
-    /// 判定矩阵补全：空 sessions/ 目录（无任何目录项）不算升级信号——
-    /// 全新装机的 DenyAll 判定不受影响。
+    /// Verdict-matrix completion: an empty sessions/ dir (no entries) does
+    /// not count as an upgrade signal — the fresh-install DenyAll verdict
+    /// is unaffected.
     #[test]
     fn plain_deny_all_empty_sessions_dir_is_not_an_upgrade_signal() {
         with_temp_home(|| {
@@ -4213,9 +4351,12 @@ mod tests {
         });
     }
 
-    /// 升级信号是三条路径的**白名单**（评审 #455 R7 nit）：首启早期写入的
-    /// logs/ 等无关家目录状态不构成升级证据——只有该日志目录时仍判全新装机，
-    /// plain 保持 DenyAll 默认全关。防止「任何痕迹都算升级」的口径漂移。
+    /// The upgrade signal is a **whitelist** of three paths (review #455
+    /// R7 nit): unrelated home-dir state written early on first boot, such
+    /// as logs/, is not upgrade evidence — with only that log dir present
+    /// the install is still judged fresh and plain stays DenyAll
+    /// default-off. Guards against scope drift toward "any trace counts as
+    /// an upgrade".
     #[test]
     fn plain_deny_all_logs_dir_alone_is_not_an_upgrade_signal() {
         with_temp_home(|| {

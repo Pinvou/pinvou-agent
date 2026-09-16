@@ -21,9 +21,10 @@ fn main() -> Result<()> {
     // session id 走临时值,避免污染真实 sessions/
     let sid = "__dump_system_prompt__";
 
-    // 与 GUI/无窗宿主同序：「全新 vs 升级」迁移判定先于 bridge.boot() 的
-    // 首启自写（ensure_dirs/默认 settings.json）冻结，避免 dev 工具首触
-    // 全新家目录时把污染判定落盘（评审 #455 阻塞项 3）。
+    // Same order as the GUI/windowless hosts: freeze the fresh-vs-upgraded
+    // migration verdict before bridge.boot()'s first-boot self-writes
+    // (ensure_dirs/default settings.json), so the dev tool's first touch of a
+    // fresh home cannot persist a polluted verdict (review #455 blocking item 3).
     let _ = pinvou3_lib::features::marketplace::load_disabled_bundles();
 
     let bridge = Pinvou3Bridge::boot()?;

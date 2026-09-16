@@ -74,25 +74,35 @@ pub async fn get_bundle_visibility(scope: Option<String>) -> Result<Vec<String>,
     Ok(crate::features::marketplace::load_hidden_bundles_for(scope))
 }
 
-/// 场景 opt-in 等用户动作的批量包开启（评审 #455 R7-M3）：后端在
-/// `DISABLED_BUNDLES_FILE_LOCK` 单临界区内做「读当前有效禁用集 → 移除
-/// package_ids → 落盘」，前端不再整表读-改-写（跨 IPC 复合操作会用陈旧
-/// 快照覆盖并发 composer toggle，fail-open 复活用户显式关闭的包）。落盘后
-/// 与 `set_disabled_connectors` 同链路热刷：重写在线会话组合目录 + 工具
-/// 白名单 + execpolicy 规则集，当轮对话即生效。
+/// Batch package enabling for user actions such as scene opt-in (review #455
+/// R7-M3): the backend performs "read the currently effective disabled set →
+/// remove package_ids → persist" inside the `DISABLED_BUNDLES_FILE_LOCK`
+/// single critical section; the frontend no longer does a whole-table
+/// read-modify-write (a cross-IPC compound operation would overwrite a
+/// concurrent composer toggle with a stale snapshot, and fail-open would
+/// resurrect a package the user explicitly turned off). After persisting, it
+/// hot-refreshes on the same path as `set_disabled_connectors`: rewrite
+/// online session composite skills directories + the tool allowlist +
+/// execpolicy rulesets, taking effect in the current conversation turn.
 #[tauri::command]
 pub async fn enable_marketplace_packages(
     package_ids: Vec<String>,
     scope: Option<String>,
     app: AppHandle,
     pool: State<'_, EnginePool>,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     let scope = parse_connector_scope(scope.as_deref())?;
-    tokio::task::spawn_blocking(move || {
-        crate::features::marketplace::scope::enable_packages_in_scope(scope, &package_ids);
+    let blocked = tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::scope::enable_packages_in_scope(scope, &package_ids)
     })
     .await
     .map_err(|e| format!("enable_marketplace_packages join: {e}"))?;
+    // Non-empty = the scope is initialized and those ids sit in the user's
+    // stored switch state: nothing was enabled, the caller must surface the
+    // blocked ids (round-10 Major 2).
+    if !blocked.is_empty() {
+        return Ok(blocked);
+    }
     pool.refresh_live_sessions_skills().await;
     pool.refresh_disallowed_tools().await;
     pool.refresh_permission_rulesets().await;
@@ -103,7 +113,7 @@ pub async fn enable_marketplace_packages(
         "remote_control:tools_changed",
         payload,
     );
-    Ok(())
+    Ok(Vec::new())
 }
 
 // ---------------------------------------------------------------------------

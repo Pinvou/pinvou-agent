@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// consumeWelcomeOptIn 契约（评审 #455 R9 覆盖注记）：
-// - 无欢迎卡 → 不尝试、不消费、不调用后端；
-// - 有欢迎卡 → 单次消费 + 单次 enable_marketplace_packages（plain scope）；
-// - enable 失败 → failed:true + error，且仍已消费（不重复打点）。
+// consumeWelcomeOptIn contract (review #455 R9 coverage note):
+// - no welcome card → no attempt, no consumption, no backend call;
+// - welcome card present → single consumption + a single enable_marketplace_packages (plain scope);
+// - enable failure → failed:true + error, and already consumed (no repeated attempts).
 import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -16,10 +16,10 @@ const code = fs.readFileSync(logicPath, 'utf8')
 
 const ctx = {};
 vm.createContext(ctx);
-vm.runInContext(`${code}\nthis.consumeWelcomeOptIn = consumeWelcomeOptIn;`, ctx, { filename: logicPath });
-const { consumeWelcomeOptIn } = ctx;
+vm.runInContext(`${code}\nthis.consumeWelcomeOptIn = consumeWelcomeOptIn;\nthis.resolveSendCapabilityStatus = resolveSendCapabilityStatus;`, ctx, { filename: logicPath });
+const { consumeWelcomeOptIn, resolveSendCapabilityStatus } = ctx;
 
-// 1. 无欢迎卡：零动作。
+// 1. No welcome card: zero actions.
 {
   const calls = [];
   const result = await consumeWelcomeOptIn({
@@ -32,7 +32,7 @@ const { consumeWelcomeOptIn } = ctx;
   assert.deepStrictEqual(calls, []);
 }
 
-// 2. 正常路径：消费一次 + 单次批量 enable（plain）。
+// 2. Happy path: one consumption + a single batched enable (plain).
 {
   const calls = [];
   const result = await consumeWelcomeOptIn({
@@ -45,7 +45,7 @@ const { consumeWelcomeOptIn } = ctx;
   });
   assert.strictEqual(result.attempted, true);
   assert.strictEqual(result.failed, false);
-  // vm 跨 realm 对象不做引用相等：按字段断言。
+  // vm cross-realm objects do not compare by reference: assert field by field.
   assert.strictEqual(calls[0], 'consume');
   assert.strictEqual(calls[1][0], 'enable_marketplace_packages');
   assert.deepStrictEqual([...calls[1][1].packageIds], ['gongwen']);
@@ -53,7 +53,7 @@ const { consumeWelcomeOptIn } = ctx;
   assert.strictEqual(calls.length, 2);
 }
 
-// 3. enable 失败：failed:true + error，仍已消费。
+// 3. enable failure: failed:true + error, already consumed.
 {
   const calls = [];
   const result = await consumeWelcomeOptIn({
@@ -65,6 +65,33 @@ const { consumeWelcomeOptIn } = ctx;
   assert.strictEqual(result.failed, true);
   assert.match(result.error, /backend locked/);
   assert.deepStrictEqual(calls, ['consume']);
+}
+
+// 4. Explicitly-disabled pack: backend returns blocked ids → surfaced, not failed.
+{
+  const result = await consumeWelcomeOptIn({
+    getToolId: () => 'gongwen',
+    consume: () => {},
+    invoke: async () => ['gongwen'],
+  });
+  assert.strictEqual(result.attempted, true);
+  assert.deepStrictEqual([...result.blocked], ['gongwen']);
+  assert.strictEqual(result.failed, undefined);
+}
+
+// 5. resolveSendCapabilityStatus: welcome failure beats scene status; otherwise passthrough.
+{
+  const got = resolveSendCapabilityStatus({
+    welcomeFailed: true,
+    welcomeText: 'enable failed',
+    sceneStatus: { kind: 'ready', text: 'ok' },
+  });
+  assert.strictEqual(got.kind, 'error');
+  assert.strictEqual(got.text, 'enable failed');
+  const ready = resolveSendCapabilityStatus({ welcomeFailed: false, welcomeText: '', sceneStatus: { kind: 'ready', text: 'ok' } });
+  assert.strictEqual(ready.kind, 'ready');
+  assert.strictEqual(ready.text, 'ok');
+  assert.strictEqual(resolveSendCapabilityStatus({ welcomeFailed: false, welcomeText: '', sceneStatus: null }), null);
 }
 
 console.log('welcome_optin_logic: ok');

@@ -423,14 +423,22 @@ pub(crate) fn package_kind(pkg_dir: &Path) -> &'static str {
 ///    修复后从回收站重试，不残留「记录已安装、无供给面、回收站条目已消费、无从
 ///    重试」的半恢复态；
 /// 4. 技能组件随包目录搬回 + 登记恢复即回到安装态（技能无独立供给管线）；
-/// 5. scope 禁用集分两类处理（评审 #455 R5-m5 修正同意门漏洞）：
-///    - 未初始化 scope（DenyAll 现算扩集本就覆盖该包）：仅兜底清理，不写落盘
-///      （与 disable 臂的非固化口径一致）——恢复的包在此类 scope 维持默认关；
-///    - 已初始化 scope（卸载前存在显式开关态）：恢复为**禁用**（重新加回落盘
-///      列表）而非启用——卸载抹掉了落盘条目，若恢复成启用，「卸载前被用户显式
-///      关掉的包」会经恢复按钮零同意重新上线，违背「外部能力显式开启」的
-///      同意模型。代价是卸载前**开着**的包恢复后也要手动开回一次（记录倾向
-///      安全一侧）。hidden 集只清不写（恢复包应对用户可见）。
+/// 5. The scope disabled set is handled in two cases (review #455 R5-m5 fixes
+///    a consent gate hole):
+///    - Uninitialized scope (the DenyAll on-the-fly expansion already covers
+///      the package): fallback cleanup only, nothing written to disk (same
+///      non-persisting policy as the disable arm) — the restored package
+///      stays default-off in such scopes;
+///    - Initialized scope (an explicit switch state existed before
+///      uninstall): restore as **disabled** (re-added to the persisted list)
+///      rather than enabled — uninstall wiped the persisted entry, so
+///      restoring as enabled would bring a "package the user explicitly
+///      turned off before uninstall" back online via the restore button with
+///      zero consent, violating the "external capabilities require explicit
+///      opt-in" consent model. The cost is that packages that were **on**
+///      before uninstall must also be manually re-enabled once after restore
+///      (the record leans to the safe side). The hidden set is only cleared,
+///      never written (restored packages must stay visible to the user).
 ///
 /// 并发契约：全程持同 id `import_lock_for`（与导入/卸载/展示编辑同一把锁；
 /// 锁序 import → recycle → store，与卸载路径一致，无死锁面），恢复整链路
@@ -509,13 +517,18 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
         }
     }
 
-    // scope 禁用集（评审 #455 R5-m5 / R9-M2）：卸载抹掉了落盘条目，「卸载前
-    // 被显式关掉」与「卸载前开着」已不可区分——统一把包 id + 包内技能重新
-    // 加回**已初始化** scope 的禁用集（保守收敛：需要用的包用户在工具列表
-    // 手动开回一次，不经恢复按钮零同意重新上线）；未初始化 scope 不写
-    // （DenyAll 现算扩集本就覆盖，与 disable 臂的非固化口径一致）；hidden 集
-    // 只清不写（恢复包应对用户可见）。全部在一个临界区内完成（防跨锁窗口
-    // 被并发 enable 穿插丢更新）。
+    // Scope disabled set (review #455 R5-m5 / R9-M2): uninstall wiped the
+    // persisted entry, so "explicitly off before uninstall" and "on before
+    // uninstall" are indistinguishable — uniformly re-add the package id and
+    // its in-package skills to the disabled set of **initialized** scopes
+    // (conservative convergence: the user manually re-enables needed packages
+    // once from the tool list; they never come back online via the restore
+    // button with zero consent); uninitialized scopes are not written (the
+    // DenyAll on-the-fly expansion already covers them, same non-persisting
+    // policy as the disable arm); the hidden set is only cleared, never
+    // written (restored packages must stay visible). All of this happens in a
+    // single critical section (no cross-lock window where a concurrent enable
+    // interleaves and loses the update).
     let mut consent_ids = vec![pkg_id.to_string()];
     if let Ok(rd) = std::fs::read_dir(pkg_dir.join("skills")) {
         for entry in rd.flatten() {
@@ -524,7 +537,15 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
             }
         }
     }
-    super::scope::apply_restore_consent_gate(&consent_ids);
+    super::scope::apply_restore_consent_gate(&consent_ids).map_err(|save_error| {
+        // The pack is already restored and supplied; failing the restore here
+        // surfaces the unpersisted consent gate so the user retries (restore
+        // is idempotent) instead of living with a silently enabled pack
+        // (round-10 m4).
+        format!(
+            "恢复 {pkg_id} 已完成，但重新禁用状态落盘失败（重启后将默认启用，请重试恢复以写入同意门）: {save_error}"
+        )
+    })?;
     Ok(RestoreRecycledResult {
         credentials_required,
     })
@@ -751,10 +772,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// 恢复的同意门（评审 #455 R5-m5）：已初始化 scope 里恢复的包回到**禁用**
-    /// 而非启用——卸载抹掉了落盘条目，「卸载前开着」与「卸载前关着」已不可
-    /// 区分，统一按禁用恢复，不得经恢复按钮零同意重新上线。未初始化 scope
-    /// 不写（DenyAll 现算扩集本就覆盖）。
+    /// Restore consent gate (review #455 R5-m5): in initialized scopes a
+    /// restored package comes back **disabled** rather than enabled —
+    /// uninstall wiped the persisted entry, so "on before uninstall" and
+    /// "off before uninstall" are indistinguishable; restore uniformly as
+    /// disabled, never bringing a package back online via the restore button
+    /// with zero consent. Uninitialized scopes are not written (the DenyAll
+    /// on-the-fly expansion already covers them).
     #[test]
     fn restore_redisables_in_initialized_scopes() {
         let _g = crate::platform::paths::tests::ENV_LOCK
@@ -774,7 +798,8 @@ mod tests {
         let store = BundleStore::new();
         store.upsert(upload_record("my-skill-rr")).unwrap();
 
-        // 卸载前：plain 已初始化且该包被显式关闭（存储里留有禁用条目）。
+        // Before uninstall: plain is initialized and the package is
+        // explicitly off (a disabled entry is left in storage).
         crate::features::marketplace::scope::save_disabled_bundles_for(
             crate::features::marketplace::ConnectorScope::Plain,
             &["my-skill-rr".to_string()],
@@ -787,7 +812,8 @@ mod tests {
             .any(|id| id == "my-skill-rr")
         );
 
-        // 模拟完整卸载：登记移除 + 整包回收 + 命令层的禁用集清理。
+        // Simulate a full uninstall: registry removal + whole-package
+        // recycle + command-layer disabled-set cleanup.
         let record = store.get("my-skill-rr").unwrap().unwrap();
         store.remove("my-skill-rr").unwrap();
         RecycleBin::new()
@@ -805,8 +831,9 @@ mod tests {
 
         let result = restore_plugin("my-skill-rr").unwrap();
         assert!(!result.credentials_required);
-        // 恢复后必须重新禁用：plain 已初始化，落盘列表重新含该包 id——
-        // DenyAll「显式开启」同意门对恢复路径依然成立。
+        // After restore it must be re-disabled: plain is initialized and the
+        // persisted list contains the package id again — the DenyAll
+        // "explicit opt-in" consent gate still holds on the restore path.
         assert!(
             crate::features::marketplace::scope::load_disabled_bundles_for(
                 crate::features::marketplace::ConnectorScope::Plain
@@ -815,7 +842,8 @@ mod tests {
             .any(|id| id == "my-skill-rr"),
             "恢复后已初始化 scope 必须回到禁用态（同意门）"
         );
-        // 未初始化 scope（code）不被写入：DenyAll 现算扩集本就覆盖，不固化用户状态。
+        // The uninitialized scope (code) is not written: the DenyAll
+        // on-the-fly expansion already covers it; user state is not persisted.
         let file = crate::features::marketplace::scope::load_disabled_bundles_file();
         assert!(
             !file.initialized.contains("code"),

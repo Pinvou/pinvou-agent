@@ -414,8 +414,10 @@ mod tests {
     #[test]
     fn standalone_companion_named_skill_survives_uninstalled_connector() {
         with_temp_home(|| {
-            // 全模式 DenyAll 后 fresh home 默认全关；本测试钉的是条件认领形态
-            // （未装连接器的 companion 保留独立纯技能包），显式初始化 plain 全开。
+            // With every mode DenyAll a fresh home is default-all-off; this
+            // test pins the conditional-claim shape (a companion whose
+            // connector is not installed stays a standalone pure-skill pack),
+            // so plain is explicitly initialized to all-on.
             save_disabled_skills_for(ConnectorScope::Plain, &[]);
             write_tool_manifest(
                 "gongwen",
@@ -475,9 +477,11 @@ mod tests {
         });
     }
 
-    /// plain/code scope 均未初始化时「默认全禁」（全模式 DenyAll 收敛）覆盖 CLI
-    /// 连接器技能：lark-* 不注册在技能市场清单（连接门控直接解包），仍被默认
-    /// 禁用兜住；显式初始化全开后恢复。
+    /// With neither plain nor code scope initialized, the deny-all default
+    /// (the every-mode DenyAll convergence) covers CLI connector skills too:
+    /// lark-* are not registered in the skill-marketplace listing (the
+    /// connection gate unpacks them directly) yet are still held by the
+    /// default-disable fallback; explicitly initializing the scope restores them.
     #[test]
     fn uninitialized_scopes_default_disable_cli_connector_skills() {
         with_temp_home(|| {
@@ -492,7 +496,7 @@ mod tests {
                     "{scope:?} 未初始化时 lark-* 技能应默认全禁"
                 );
             }
-            // plain 显式初始化全开 → lark-* 恢复。
+            // plain explicitly initialized to all-on → lark-* restored.
             save_disabled_skills_for(ConnectorScope::Plain, &[]);
             let enabled_plain = enabled_skills_for(ConnectorScope::Plain, None);
             assert_eq!(
@@ -591,8 +595,9 @@ mod tests {
     fn enabled_skills_respect_first_wins_and_scope_disabled() {
         with_temp_home(|| {
             seed_sources();
-            // 全模式 DenyAll 后 fresh home 默认全关；本测试聚焦 first-wins 与
-            // 开关语义，显式初始化 plain 为全开。
+            // With every mode DenyAll a fresh home is default-all-off; this
+            // test focuses on first-wins and switch semantics, so plain is
+            // explicitly initialized to all-on.
             save_disabled_skills_for(ConnectorScope::Plain, &[]);
             // 默认（无禁用）：user 覆盖 bundle 同名 + 手放技能入集
             let enabled = enabled_skills_for(ConnectorScope::Plain, None);
@@ -621,8 +626,9 @@ mod tests {
     fn materialize_then_rewrite_is_idempotent() {
         with_temp_home(|| {
             seed_sources();
-            // 全模式 DenyAll 后 fresh home 默认全关；本测试聚焦物化幂等，
-            // 显式初始化 plain 为全开。
+            // With every mode DenyAll a fresh home is default-all-off; this
+            // test focuses on materialization idempotence, so plain is
+            // explicitly initialized to all-on.
             save_disabled_skills_for(ConnectorScope::Plain, &[]);
             let sid = "session-test-1";
             materialize_session_skills(sid, ConnectorScope::Plain, None).unwrap();

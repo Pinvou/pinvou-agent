@@ -53,13 +53,13 @@ assert.deepStrictEqual([...pptDesignRequirements.skills], ['pptx']);
 
 assert.strictEqual(requiredCapabilitiesForMeta(null), null);
 assert.strictEqual(requiredCapabilitiesForMeta({ pinvouScene: 'design:poster' }), null);
-// 用户可见文案由 UI 层从 t.uiChatScenes[requirements.key] 取值，模块不得再携带文案字段。
+// User-visible copy is resolved by the UI layer from t.uiChatScenes[requirements.key]; the module must not carry copy fields.
 assert.strictEqual('label' in dataVisualizationRequirements, false);
 assert.strictEqual('preparingText' in dataVisualizationRequirements, false);
 
 console.log('scene_capabilities_logic: ok');
 
-// --- DenyAll 适配（评审 #455 R5-B3）：安装 ≠ 可用，场景动作必须完成显式 opt-in ---
+// --- DenyAll adaptation (review #455 R5-B3): installed ≠ usable; a scene action must complete the explicit opt-in ---
 vm.runInContext('this.prepareSceneCapabilities = prepareSceneCapabilities;', ctx, { filename: logicPath });
 const { prepareSceneCapabilities } = ctx;
 
@@ -78,8 +78,9 @@ function makeInvoke({ tools = [], skills = [], disabled = [] } = {}) {
     if (command === 'install_marketplace_tool') { state.tools.add(args.toolId); return null; }
     if (command === 'install_marketplace_skill') { state.skills.add(args.skillId); return null; }
     if (command === 'get_disabled_connectors') return [...state.disabled];
-    // 后端 enable_marketplace_packages 的单临界区 RMW 语义：移除指定 id，
-    // 其余不动（R7-M3——前端不再整表读改写）。
+    // Backend single-critical-section RMW semantics of enable_marketplace_packages:
+    // remove exactly the given ids, leave the rest untouched (R7-M3 — the
+    // frontend no longer does a whole-list read-modify-write).
     if (command === 'enable_marketplace_packages') {
       if (args.scope !== 'plain') throw new Error('scene opt-in must target plain scope');
       state.enableCalls.push([...args.packageIds]);
@@ -92,8 +93,10 @@ function makeInvoke({ tools = [], skills = [], disabled = [] } = {}) {
 }
 
 async function runDenyAllOptInScenarios() {
-  // 全装全关：场景包坐在 DenyAll 扩集里（有效禁用集含包 id），场景动作
-  // 必须把它移出禁用集——否则模型收不到工具、ready 文案在说谎。
+  // All installed, all switched off: the scene packs sit in the DenyAll
+  // extension of the set (the effective disabled set contains the pack ids),
+  // and the scene action must move them out of the disabled set — otherwise
+  // the model receives no tools and the ready copy would be lying.
   {
     const { invoke, state } = makeInvoke({
       tools: ['gongwen'],
@@ -107,11 +110,11 @@ async function runDenyAllOptInScenarios() {
     assert.strictEqual(state.disabled.has('gongwen'), false);
     assert.strictEqual(state.disabled.has('government-writing'), false);
     assert.strictEqual(state.disabled.has('feishu'), true, 'unrelated packs stay disabled');
-    // 精确快照：单次批量调用、恰好场景包、无多余 id（R7 minor）
+    // Exact snapshot: a single batched call, exactly the scene packs, no extra ids (R7 minor)
     assert.deepStrictEqual(state.enableCalls, [['gongwen', 'government-writing']]);
   }
 
-  // 未安装 + 未初始化（DenyAll 默认关）：安装后仍需显式 opt-in。
+  // Not installed + scope uninitialized (DenyAll default-off): the explicit opt-in is still required after install.
   {
     const { invoke, state } = makeInvoke({ disabled: ['pptx'] });
     const prepared = await prepareSceneCapabilities({ pinvouScene: 'design:ppt' }, invoke);
@@ -122,7 +125,7 @@ async function runDenyAllOptInScenarios() {
     assert.deepStrictEqual(state.enableCalls, [['pptx']]);
   }
 
-  // 已装且不在禁用集：零开关写，enabled=false（UI 不再弹 ready）。
+  // Installed and not in the disabled set: zero switch writes, enabled=false (the UI no longer pops ready).
   {
     const { invoke, state } = makeInvoke({
       tools: ['gongwen'],
@@ -136,7 +139,7 @@ async function runDenyAllOptInScenarios() {
     assert.strictEqual(state.enableCalls.length, 0, 'no switch write when already enabled');
   }
 
-  // 开关读取失败：fail 必须可见（ok=false + error），不得按「已就绪」放行。
+  // Switch read failure: fail must be visible (ok=false + error) and must not pass as "ready".
   {
     const { invoke } = makeInvoke({ tools: ['gongwen'], skills: ['government-writing'] });
     const failing = async (command, args) => {
@@ -149,7 +152,7 @@ async function runDenyAllOptInScenarios() {
     assert.match(prepared.error, /scope file unreadable/);
   }
 
-  // enable 命令本身失败：fail 可见（ok=false + error），不得按「已就绪」放行。
+  // The enable command itself fails: fail-visible (ok=false + error), must not pass as "ready".
   {
     const { invoke } = makeInvoke({ tools: ['gongwen'], skills: ['government-writing'], disabled: ['gongwen'] });
     const failing = async (command, args) => {

@@ -710,12 +710,16 @@ pub fn run() {
         })
         .setup(|app| {
             startup::mark("setup:start");
-            // disabled_bundles 迁移判定必须在此冻结：宽口径升级信号
-            // （settings.json/会话目录存在 ⇒ 升级装机）会被 bridge boot 的首启
-            // 行为污染（ensure_dirs 自写 sessions/default/artifacts/、缺省补写
-            // 默认 settings.json），全新装机的首读若晚于这些写入，会被误判为
-            // 升级装机而翻回旧 AllowAll 全开（评审 #455 阻塞项）。此处读取触发
-            // 迁移并把「全新 vs 升级」判定落盘冻结，早于一切首启自写痕迹。
+            // The disabled_bundles migration verdict must be frozen here: the
+            // broad upgrade signal (settings.json/session dirs exist ⇒ upgrade
+            // install) gets polluted by bridge boot's first-startup behavior
+            // (ensure_dirs writes sessions/default/artifacts/ itself and
+            // backfills a default settings.json); if a fresh install's first
+            // read happens after those writes, it is misjudged as an upgrade
+            // and flips back to the old AllowAll-everything posture (review
+            // #455 blocking item). This read triggers the migration and
+            // persists the frozen fresh-vs-upgrade verdict, ahead of every
+            // first-startup write.
             startup::mark("disabled_bundles_migration:start");
             let _ = crate::features::assistant::skill_materialization::load_disabled_skills();
             startup::mark("disabled_bundles_migration:done");
@@ -1046,13 +1050,16 @@ pub fn run() {
             startup::mark("engine_pool:done");
 
             // 技能/工具开关 scope 治理(已收敛为 disabled_bundles.json):启动时
-            //   1. 读一次 disabled_bundles.json——旧双文件迁移(disabled_connectors
-            //      .json / disabled_skills.json → 包 id × SessionMode 单一禁用集)
-            //      与「全新 vs 升级」判定冻结已在 setup 钩子顶部完成(必须早于
-            //      bridge boot 的首启自写,见 disabled_bundles_migration 标记),
-            //      此处为幂等重读。
-            // （进程级全局 DISABLED_SKILLS 的退役已在 main 完成，组合目录空 →
-            // 整个 `## Skills` 块不渲染,路径泄露面随之封闭。）
+            //   1. Read disabled_bundles.json once — the legacy two-file
+            //      migration (disabled_connectors.json / disabled_skills.json →
+            //      a single disabled set keyed by package id × SessionMode) and
+            //      the fresh-vs-upgrade verdict freeze already happened at the
+            //      top of the setup hook (must precede bridge boot's
+            //      first-startup writes; see the disabled_bundles_migration
+            //      marks); this is an idempotent re-read.
+            // (Retiring the process-global DISABLED_SKILLS already landed on
+            // main; an empty composite dir → the whole `## Skills` block is
+            // not rendered, closing the path-leak surface.)
             // 组合目录的物化在 engine spawn 时按会话进行(build_engine_config 注入
             // skills_dir 指向 ~/.pinvou3/sessions/<sid>/skills/)。
             startup::mark("disabled_skills:start");
@@ -1656,12 +1663,17 @@ pub fn run() {
 
 #[cfg(test)]
 mod startup_order_contract {
-    /// 顺序钉住（评审 #455 非阻塞 3，三轮改为源码位置断言）：disabled_bundles
-    /// 迁移读取（冻结「全新 vs 升级」判定）必须在三个宿主的启动钩里早于首个
-    /// 首启自写痕迹（SessionStore boot 创建 sessions/ 目录项、bridge boot 补
-    /// 写默认 settings.json）。语句顺序本身无法在模块内测出；自建 mark 轨迹的
-    /// 断言自证无效（重排真实 setup 钩子不会失败），因此这里用 `include_str!`
-    /// 直接读取三处宿主源码，钉死迁移读取调用点的**文本位置**早于 boot 调用点。
+    /// Order pin (review #455 non-blocking item 3; three rounds in, switched
+    /// to a source-position assertion): the disabled_bundles migration read
+    /// (which freezes the fresh-vs-upgrade verdict) must run, in all three
+    /// hosts' startup hooks, ahead of the first first-startup write
+    /// (SessionStore boot creating the sessions/ dir entries; bridge boot
+    /// backfilling the default settings.json). Statement order cannot be
+    /// observed from inside the module, and assertions over a self-built mark
+    /// trace prove nothing (reordering the real setup hook would not fail
+    /// them), so this reads the three host sources directly via
+    /// `include_str!` and pins the **textual position** of the migration-read
+    /// call site ahead of the boot call site.
     fn assert_migration_read_precedes(source: &str, earlier: &str, later: &str, file: &str) {
         let pos_earlier = source
             .find(earlier)
@@ -1677,16 +1689,23 @@ mod startup_order_contract {
 
     #[test]
     fn disabled_bundles_migration_read_precedes_first_boot_writes() {
-        // GUI 宿主：setup 钩顶部迁移读取早于 SessionStore boot。针尖钉 hoist
-        // 调用本身（分片拼接防自匹配——本测试与生产调用点同处 lib.rs，
-        // include_str! 会连测试模块一并扫描，完整针尖若以字面量出现在测试里
-        // 会退化成自匹配，评审 #455 R4-S1）。旧版钉两侧 startup mark 的腿
-        // 只保 mark 三明治：删掉/移走两 mark 间的 hoist 调用仍通过（评审
-        // #455 R5-S1）。后针尖钉 `SessionStore::boot_for_process_startup` 调用
-        // 本身而非相邻 startup mark 代理（评审 #455 R8 nit）——删掉 boot 调用
-        // 留 mark 也应失败。`find` 取首次出现：唯一更早的出现是 disabled_skills
-        // 标记处的幂等重读与 L852 的 panic 兜底（均在 boot 主调用之后无——
-        // 兜底在主调用分支内），hoist 被删即失败而非自匹配。
+        // GUI host: the migration read at the top of the setup hook precedes
+        // the SessionStore boot. The needle pins the hoist call itself
+        // (fragment-concatenated to prevent a self-match — this test lives in
+        // the same lib.rs as the production call site, and include_str! scans
+        // the test module too, so a full needle appearing verbatim in the
+        // test would degenerate into a self-match, review #455 R4-S1). The
+        // old leg pinning the startup marks on both sides only preserved the
+        // mark sandwich: deleting or moving the hoist call between the two
+        // marks still passed (review #455 R5-S1). The later needle pins the
+        // `SessionStore::boot_for_process_startup` call itself rather than
+        // the adjacent startup-mark proxy (review #455 R8 nit). `find` takes
+        // the first occurrence: the guarded regression is "hoist deleted or
+        // reordered" (the needle's first occurrence lands after the boot;
+        // deletion fails the test outright, and it is not a self-match);
+        // deleting the boot call itself is **not** guarded — the same-named
+        // call in the panic fallback branch still hits the needle (round-10
+        // nit wording made accurate).
         assert_migration_read_precedes(
             include_str!("lib.rs"),
             &[
@@ -1697,15 +1716,16 @@ mod startup_order_contract {
             &["SessionStore::", "boot_for_process_startup()"].concat(),
             "lib.rs",
         );
-        // 无窗宿主（agentic/headless）：同序冻结早于 SessionStore boot。
+        // Windowless hosts (agentic/headless): same-order freeze ahead of the
+        // SessionStore boot.
         assert_migration_read_precedes(
             include_str!("features/assistant/product_runtime/headless_bridge.rs"),
             "skill_materialization::load_disabled_skills()",
             "SessionStore::boot()",
             "headless_bridge.rs",
         );
-        // dump_system_prompt 工具：同序冻结早于 bridge.boot()（ensure_dirs /
-        // 默认 settings.json 首启自写）。
+        // dump_system_prompt tool: same-order freeze ahead of bridge.boot()
+        // (ensure_dirs / default settings.json first-startup writes).
         assert_migration_read_precedes(
             include_str!("bin/dump_system_prompt.rs"),
             "load_disabled_bundles()",

@@ -987,10 +987,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           await loadBackendState();
           loadRecycledPlugins();
           const name = item.display_name || item.id;
-          // isInstall:true → TsAlert 默认副标题为 installHint（「新工具开关默认关闭，
-          // 请在输入框工具列表中开启后使用」）：恢复为已安装 ≠ 开关打开——DenyAll
-          // 收敛后已初始化 scope 的恢复包回到禁用态（recycle_bin::restore_plugin），
-          // 文案如实提示用户去工具列表开启；false 会落到 removeHint（「已移除…」），语义相反。
+          // isInstall:true → the TsAlert subtitle defaults to installHint
+          // ("tool switches are off by default; enable in the composer tools
+          // list"): restored-as-installed ≠ switched on — after the DenyAll
+          // convergence a restored pack comes back disabled in initialized
+          // scopes (recycle_bin::restore_plugin), and the copy tells the user
+          // to enable it from the tools list; false would fall through to
+          // removeHint ("removed…"), the opposite semantics.
           setAlert({
             visible: true, loading: false,
             title: res && res.credentials_required ? storeCopy.recycleRestoredCredentials(name) : storeCopy.recycleRestored(name),

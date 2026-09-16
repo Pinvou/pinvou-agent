@@ -652,9 +652,11 @@ impl Pinvou3Bridge {
         // disabled set (the plain disabled set is the incoming value itself, no
         // replacement needed). Scope follows mode — a plain session with a bound
         // working directory still belongs to the plain scope and never borrows the
-        // code scope. 未初始化的 plain scope 按 DenyAll 兜底（评审 #455 全量
-        // 收敛后与 code 同口径：外部能力默认关，显式开启）；绑定工作目录的
-        // plain 会话仍叠加 Plan-first + 一次性 YOLO 确认卡作为执行面防线。
+        // code scope. An uninitialized plain scope falls back to DenyAll (after
+        // the review #455 full convergence it matches the code posture: external
+        // capabilities off by default, enabled explicitly); plain sessions with
+        // a bound working directory still layer Plan-first plus a one-shot YOLO
+        // confirm card as the execution-plane defense.
         let scope = policy.mode();
         if scope != SessionMode::Plain {
             let plain_connector = crate::features::marketplace::disabled_tool_names();
@@ -3426,10 +3428,13 @@ mod tests {
     }
 
     /// CLI 硬拦截规则集（scope 门禁的 execpolicy 通道）：按会话 scope 的被禁
-    /// CLI 连接器生成二进制 deny 规则——plain 未初始化时按 DenyAll 兜底（默认
-    /// 全关，评审 #455 收敛后与 code 同口径）；code 未初始化默认
-    /// 全禁 4 个内置 CLI 二进制；显式开启后仅余被禁者。并钉住底座执行语义：
-    /// deny 在直跑 / 链式 / wrapper 形态下都硬拒（AskForApproval::Never 也拦）。
+    /// CLI connectors generate binary deny rules — an uninitialized plain scope
+    /// falls back to DenyAll (all off by default; same posture as code after
+    /// the review #455 convergence); uninitialized code denies all 4 built-in
+    /// CLI binaries by default; once enabled explicitly, only the disabled
+    /// ones remain. Also pins the base execution semantics: deny hard-blocks
+    /// direct, chained, and wrapper forms (even AskForApproval::Never is
+    /// intercepted).
     #[test]
     fn cli_deny_ruleset_follows_scope_disabled_connectors() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
@@ -3446,7 +3451,8 @@ mod tests {
         }));
 
         use crate::features::marketplace::ConnectorScope;
-        // 4 个内置 CLI 二进制全禁时的 deny 命令清单（裸名 + .exe/.cmd 变体各一条，R4）。
+        // Deny command list when all 4 built-in CLI binaries are denied (bare
+        // name plus one .exe/.cmd variant each, R4).
         let all_four_cli_denied = [
             "dws",
             "dws.cmd",
@@ -3471,7 +3477,8 @@ mod tests {
             bins
         }
 
-        // plain 未初始化 → DenyAll 收敛后与 code 同语义：默认全禁 4 个内置 CLI。
+        // plain uninitialized → after the DenyAll convergence, same semantics as
+        // code: all 4 built-in CLIs denied by default.
         let rs = bridge.cli_deny_ruleset("sess-plain");
         assert_eq!(
             denied_bins(&rs),
@@ -3479,7 +3486,7 @@ mod tests {
             "plain 未初始化默认全禁内置 CLI（DenyAll 收敛）"
         );
 
-        // plain 显式只禁 feishu → 仅 lark-cli deny。
+        // plain explicitly disables only feishu → just the lark-cli deny remains.
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Plain,
             &["feishu".to_string()],
@@ -3495,7 +3502,8 @@ mod tests {
                 .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny)
         );
 
-        // code 未初始化 → 默认全禁 4 个内置 CLI 二进制（与连接器开关默认同语义）。
+        // code uninitialized → all 4 built-in CLI binaries denied by default
+        // (same semantics as the connector-switch defaults).
         let rs = bridge.cli_deny_ruleset("sess-code");
         assert_eq!(denied_bins(&rs), all_four_cli_denied);
         assert!(
@@ -3662,8 +3670,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 通道③ 取数口径：scope 禁用技能（plain/code 未初始化均默认全禁）的脚本
-    /// 目录生成 deny 规则；启用后规则消失；与 CLI 二进制 deny 共存于同一规则集。
+    /// Channel 3 data source: script directories of scope-disabled skills
+    /// (plain/code uninitialized both deny all by default) generate deny
+    /// rules; the rules disappear once the skill is enabled; they coexist with
+    /// the CLI binary deny in the same ruleset.
     #[test]
     fn scope_deny_ruleset_covers_disabled_skill_scripts() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
@@ -3710,10 +3720,12 @@ mod tests {
         }));
         use crate::features::marketplace::ConnectorScope;
 
-        // 全模式 DenyAll 收敛后 plain 的「禁用技能 → 脚本 deny 规则」与 code
-        // 同语义。这里用显式初始化驱动（未初始化的 DenyAll 兜底展开依赖进程
-        // env 的读取时点，并行套件下非确定；兜底语义本身由 marketplace 的
-        // plain_deny_all_* 测试覆盖）。
+        // After the all-mode DenyAll convergence, plain's disabled-skill →
+        // script deny rules match the code semantics. Drive it here with
+        // explicit initialization (expanding the uninitialized DenyAll
+        // fallback depends on when the process env is read, which is
+        // non-deterministic under the parallel suite; the fallback semantics
+        // themselves are covered by the marketplace plain_deny_all_* tests).
         crate::features::marketplace::skill_scope::save_disabled_skills_for(
             ConnectorScope::Plain,
             &["my-skill".to_string()],
@@ -3725,17 +3737,20 @@ mod tests {
                 .any(|r| r.command.as_deref().is_some_and(|c| c.contains("run.py"))),
             "plain 禁用已装技能后，脚本 deny 规则应在场"
         );
-        // safety-net 规则自 v3 回滚起为 command-only（File path 面已移除）：
-        // mkfs 类兜底 deny 恒在场，与脚本规则共存于同一规则集。
+        // Since the v3 rollback, safety-net rules are command-only (the File
+        // path face was removed): mkfs-style fallback denies are always
+        // present, coexisting with the script rules in the same ruleset.
         assert!(
             rs.ask_rules.iter().any(|r| r.path.is_none()
                 && r.action == codewhale_execpolicy::PermissionAction::Deny
                 && r.command.as_deref().is_some_and(|c| c.starts_with("mkfs"))),
             "safety-net command rules should always be present"
         );
-        // 推进通道（denied_prefixes）必须同样承载 safety-net 规则——运行时
-        // 真正匹配通配/flag 规则的是该通道；规则在场与推进各钉一次，推进
-        // 回归才有独立信号（沿用 #445 版本的断言，评审 #455 R9 nit）。
+        // The promotion channel (denied_prefixes) must carry the safety-net
+        // rules too — it is the channel that actually matches wildcard/flag
+        // rules at runtime; rule presence and promotion are each pinned
+        // separately so a promotion regression gets an independent signal
+        // (assertions kept from the #445 version, review #455 R9 nit).
         assert!(
             rs.denied_prefixes.iter().any(|p| p.starts_with("mkfs")),
             "safety-net rules should be promoted into denied_prefixes"
@@ -7815,9 +7830,10 @@ mod tests {
     /// 一致（workflow 也同样可用——不教不荐，但不禁用）。
     #[test]
     fn multi_agent_engine_config_adds_roles_and_resource_guards() {
-        // 两次 build 的禁用列表读取 PINVOU3_HOME 下的市场状态：持 env 锁防止
-        // 并行的 env 翻转测试跨过两次读取（否则两次结果可能各取一个家目录，
-        // 断言间歇性失败）。
+        // The disabled lists for both builds read marketplace state under
+        // PINVOU3_HOME: hold the env lock so parallel env-flipping tests
+        // cannot straddle the two reads (otherwise each read may pick a
+        // different home directory and the assertion fails intermittently).
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
         let bridge = fixture_bridge();
         let workspace = std::env::temp_dir().join(format!(

@@ -529,7 +529,7 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
     );
 
     uninstall_marketplace_skill_sync("visualizer").unwrap();
-    // 卸载清除两个 scope 禁用集残留（与连接器同语义）。
+    // Uninstall clears the pack's residue from both scope disabled sets (same semantics as connectors).
     assert!(
         !sm::load_disabled_skills_for(ConnectorScope::Plain)
             .iter()
@@ -537,8 +537,10 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
         "卸载应从禁用集清除残留 id"
     );
     install_marketplace_skill_sync("visualizer").unwrap();
-    // 全模式 DenyAll（工具开关默认全关）后，重装视同新装：已初始化的 scope
-    // 默认保持关闭，由用户显式开启（与连接器「新装默认关」语义一致）。
+    // With every mode DenyAll (tool switches default-off), a reinstall counts
+    // as a fresh install: initialized scopes keep it off by default until the
+    // user explicitly enables it (matching the connectors' fresh-install
+    // default-off semantics).
     assert!(
         sm::load_disabled_skills_for(ConnectorScope::Plain)
             .iter()

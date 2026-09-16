@@ -8,9 +8,11 @@
 //!
 //! 落盘格式与 #287 泛化后的两份旧文件同构：`{scopes: {"<mode>": [...]},
 //! "initialized": ["<mode>"], project_skills_enabled, plain_defaults_migrated}`，
-//! scope 键即 `SessionMode` 的 kebab-case 名。`plain_defaults_migrated` 是 plain
-//! scope 默认策略迁移标记：旧版文件（false）= 写于 plain 仍 AllowAll 的时代，
-//! 读到即迁移把 plain 初始化为落盘列表后落盘置位。首个版本读取时把两份旧文件迁移到本文件（读到即迁移）：
+//! Scope keys are the kebab-case names of `SessionMode`. `plain_defaults_migrated`
+//! is the plain scope default-policy migration marker: an old file (false) was
+//! written while plain was still AllowAll; read-time migration initializes plain
+//! to the persisted list and then sets the marker on disk. The first version
+//! migrates the two legacy files into this file on read (migrate-on-read):
 //! 旧连接器 id 原样进包 id（连接器 id 即包 id）；旧技能 id 经 `bundle::skill_owner_package`
 //! 映射到所属包（companion → MCP/CLI 包，独立技能 → 自身）；`skill:` 前缀跨文件借道
 //! 残留统一剥除并清出连接器文件。迁移幂等，失败回退默认值（安全兜底）。
@@ -40,15 +42,20 @@ pub struct DisabledBundlesFile {
     /// 已被用户显式初始化（改过开关）的 scope 集合。
     #[serde(default)]
     pub initialized: std::collections::BTreeSet<String>,
-    /// 项目级 skills 是否开启（默认关；生效条件是会话绑定了项目/工作目录，
-    /// 非仅 code 会话，见 skill_materialization.rs）。随技能侧迁入本文件。
+    /// Whether project-level skills are enabled (default off; effective only
+    /// when the session is bound to a project/work directory — not code-only;
+    /// see skill_materialization.rs). Moved here with the skills side.
     #[serde(default)]
     pub project_skills_enabled: bool,
-    /// plain scope 默认策略迁移标记：false（旧版文件无此字段）= 文件写于 plain
-    /// 仍 AllowAll 的时代，读时迁移会把 plain 初始化为落盘列表（锁定当时实际的
-    /// 开/关状态）后置 true——存量用户升级后开关状态不变；全新装机首读置 true
-    /// 不初始化 plain，且**同样落盘冻结判定**（首启自写 settings.json/sessions
-    /// 会污染升级信号，见读路径注释），plain 未初始化时按 DenyAll 兜底（默认全关）。
+    /// plain scope default-policy migration marker: false (field absent in old
+    /// files) = the file was written while plain was still AllowAll; read-time
+    /// migration initializes plain to the persisted list (locking in the actual
+    /// on/off state at that time) and then sets true — existing users keep their
+    /// switch state after upgrading. A fresh install sets true on first read
+    /// without initializing plain, and **likewise persists the frozen verdict
+    /// to disk** (first-boot self-written settings.json/sessions pollute the
+    /// upgrade signal — see the read-path comments); uninitialized plain falls
+    /// back to DenyAll (default fully off).
     #[serde(default)]
     pub plain_defaults_migrated: bool,
     /// 未知键原样保留（前向兼容）。
@@ -63,23 +70,30 @@ fn disabled_bundles_path() -> PathBuf {
 /// `disabled_bundles.json` 读-改-写的进程内串行化。
 static DISABLED_BUNDLES_FILE_LOCK: Mutex<()> = Mutex::new(());
 
-/// freeze 落盘失败时的进程内判定备忘（评审 #455 R7-M2）：「全新 vs 升级」
-/// 判定未能持久化时，同进程的次读**不得**用首启自写痕迹重新判定——全新装机
-/// 会因此被误判为升级装机、plain 翻回全开（fail-open，正是 freeze 要防的）。
-/// 按家目录路径键控，测试切换 PINVOU3_HOME 互不串扰；成功落盘后文件即真相，
-/// 本备忘只在写失败时短暂承载判定。
+/// In-process verdict memo for freeze persist failures (review #455 R7-M2):
+/// when the "fresh vs upgraded" verdict could not be persisted, later reads in
+/// the same process **must not** re-evaluate using first-boot self-written
+/// traces — a fresh install would be misjudged as an upgrade and plain would
+/// flip back to fully on (fail-open, exactly what the freeze prevents). Keyed
+/// by home-directory path so tests switching PINVOU3_HOME do not cross-talk;
+/// after a successful save the file is the truth, and this memo only briefly
+/// carries the verdict on a write failure.
 static UNPERSISTED_VERDICT: Mutex<Option<(PathBuf, DisabledBundlesFile)>> = Mutex::new(None);
 
-/// 损坏恢复「隔离已留、覆盖写失败」的进程内备忘（评审 #455 R9-M1）：
-/// 恢复落盘失败时损坏原文件仍在盘上，若不记忆，下一次读取会重新隔离
-/// （新纳秒时间戳）→ `.corrupt.*` 副本无界累积——正是本 PR 在别处定为
-/// 阻塞项的行为。命中备忘的读取直接复用内存 fail-closed 态；任意一次
-/// 成功落盘（文件变回合法 JSON）后清除，进程自愈。
+/// In-process memo for corrupt-recovery "quarantine kept, overwrite save
+/// failed" (review #455 R9-M1): when the recovery save fails the corrupt
+/// original is still on disk; without remembering this, the next read would
+/// re-quarantine (fresh nanosecond timestamp) → `.corrupt.*` copies accumulate
+/// unboundedly — the very behavior this PR flags as a blocker elsewhere. Reads
+/// hitting the memo reuse the in-memory fail-closed state directly; any
+/// successful save (the file becomes valid JSON again) clears it, and the
+/// process self-heals.
 static PENDING_CORRUPT_RECOVERY: Mutex<Option<(PathBuf, DisabledBundlesFile)>> = Mutex::new(None);
 
-/// 清空判定备忘。仅测试消费：with_temp_home 复用 pid 键控临时目录，前一用例
-/// 的备忘会按路径命中串味；生产路径无需清空（文件即真相，备忘只在写失败后
-/// 短暂承载判定）。
+/// Clears the verdict memos. Test-only: with_temp_home reuses a pid-keyed temp
+/// directory, so the previous case's memo would be matched by path and bleed
+/// into the next one; production paths never need to clear (the file is the
+/// truth; the memo only briefly carries the verdict after a write failure).
 #[cfg(test)]
 pub(crate) fn clear_unpersisted_verdict_for_test() {
     *UNPERSISTED_VERDICT
@@ -102,35 +116,88 @@ pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
 /// 已持锁读实现。首个版本：文件不存在时从两份旧文件迁移（幂等）；文件存在时按新
 /// 格式解析，防御性剥除 `skill:` 前缀残留（新写路径不会再产生）。
 ///
-/// plain 默认策略迁移（工具开关全量收敛 DenyAll）：旧版文件（无
-/// `plain_defaults_migrated` 字段）或旧版双文件时代（legacy 文件存在）= 升级
-/// 装机，把 plain 初始化为落盘列表——其有效状态即旧 AllowAll 语义下的真实开关
-/// 状态（缺省空 = 全开），升级后用户无感；全新装机只置标记不初始化，plain 未
-/// 初始化按 DenyAll 兜底（默认全关）。
+/// plain default-policy migration (tool switches converge fully to DenyAll):
+/// an old file (no `plain_defaults_migrated` field) or the legacy two-file
+/// era (legacy files present) = upgraded install, initialize plain to the
+/// persisted list — its effective state is the real switch state under the old
+/// AllowAll semantics (default empty = fully on), so users notice nothing after
+/// upgrading; a fresh install only sets the marker without initializing, and
+/// uninitialized plain falls back to DenyAll (default fully off).
 ///
-/// 「全新装机」的判定不能只看本文件与两份 legacy 文件：统一文件自 v0.8.6
-/// 起就存在、且只在有内容可写时才落盘——老装机 + 从未动过开关的用户可能
-/// 三者皆无。因此升级信号放宽为两条具体路径：marketplace/installed.json
-/// 或非空 sessions/ 目录，任一存在即视为升级装机并保留旧 AllowAll 语义
-/// （评审 #445 P1-2；R8-3 收窄：settings.json 移出信号——预置/跨机拷贝会
-/// 误判 fail-open，且真实老装机必有非空 sessions/，收窄不漏判）。注意这是
-/// 白名单式信号而非「任何家目录痕迹」——其余文件（日志、缓存等）不构成
-/// 升级证据，二者皆无才算全新；不得按本注释以外的口径放宽（评审 #455
-/// R5-m1）。
+/// The "fresh install" verdict cannot look only at this file and the two
+/// legacy files: the unified file has existed since v0.8.6 and is only
+/// persisted when there is content to write — an old install whose user never
+/// touched a switch may have none of the three. The upgrade signal is
+/// therefore widened to two concrete paths: marketplace/installed.json or a
+/// non-empty sessions/ directory; either present marks an upgraded install
+/// that keeps the old AllowAll semantics (review #445 P1-2; R8-3 narrowing:
+/// settings.json removed from the signal — preset/cross-machine-copied
+/// settings.json would misjudge fail-open, and a real old install always has a
+/// non-empty sessions/, so the narrowing misses nothing). Note this is a
+/// whitelist-style signal, not "any home-directory trace" — other files (logs,
+/// caches, etc.) do not count as upgrade evidence; the install is fresh only
+/// when both are absent; do not widen beyond the criteria in this comment
+/// (review #455 R5-m1).
 ///
-/// 该宽口径信号会被应用自身的首启行为污染（bridge boot 的 ensure_dirs 自写
-/// sessions/default/artifacts/、缺省补写默认 settings.json），因此首读被
-/// 上提至 Tauri setup 钩子顶部（lib.rs `disabled_bundles_migration` 标记，
-/// 早于一切首启自写痕迹），且「升级 vs 全新」的判定在**首次读取时无条件
-/// 落盘**（置 `plain_defaults_migrated` 标记）冻结——否则全新装机会被
-/// 首启痕迹误判为升级装机而翻回全开（评审 #455 阻塞项）。
+/// This wide upgrade signal is polluted by the app's own first-boot behavior
+/// (bridge boot's ensure_dirs self-writes sessions/default/artifacts/ and
+/// back-fills the default settings.json), so the first read is hoisted to the
+/// top of the Tauri setup hook (the lib.rs `disabled_bundles_migration`
+/// marker, ahead of every first-boot self-written trace), and the
+/// "upgraded vs fresh" verdict is **unconditionally, at the first read,
+
+/// Corrupt-file recovery core shared by the parse-error and unreadable-salvage
+/// branches (round-10 m5): consult the PENDING_CORRUPT_RECOVERY memo (a prior
+/// quarantine succeeded but the overwrite save failed — reuse instead of
+/// re-quarantining), quarantine the raw bytes, then try the one-shot fail-
+/// closed overwrite; on save failure record the memo and leave the original
+/// in place. The recovered state never initializes any scope (DenyAll
+/// fallback) — see the branch comments for the consent rationale.
+fn quarantine_and_recover_disabled_bundles(raw: &[u8], error: &str) -> DisabledBundlesFile {
+    let recovered = DisabledBundlesFile {
+        plain_defaults_migrated: true,
+        ..DisabledBundlesFile::default()
+    };
+    {
+        let memo = PENDING_CORRUPT_RECOVERY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((home, file)) = memo.as_ref() {
+            if *home == paths::pinvou3_home() {
+                return file.clone();
+            }
+        }
+    }
+    if let Err(quarantine_err) = quarantine_corrupt_disabled_bundles(raw, error) {
+        eprintln!(
+            "[marketplace] {quarantine_err}; skipping disabled_bundles.json overwrite this read"
+        );
+        return recovered;
+    }
+    if let Err(save_error) = try_save_disabled_bundles_file(&recovered) {
+        eprintln!(
+            "[marketplace] {save_error}; corrupt recovery overwrite failed - holding the in-memory fail-closed state, re-quarantine suppressed until a save succeeds"
+        );
+        *PENDING_CORRUPT_RECOVERY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some((paths::pinvou3_home(), recovered.clone()));
+        return recovered;
+    }
+    recovered
+}
+
+/// persisted to disk** (setting the `plain_defaults_migrated` marker) as a
+/// freeze — otherwise a fresh install is misjudged as an upgrade by first-boot
+/// traces and flips back to fully on (review #455 blocker).
 fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
     let path = disabled_bundles_path();
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             {
-                // 判定未持久化过：本进程沿用首次判定，不给首启痕迹重新判定的机会。
+                // Verdict not yet persisted: this process keeps the first
+                // verdict, denying first-boot traces a chance to re-evaluate.
                 let memo = UNPERSISTED_VERDICT
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -143,12 +210,16 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
             let home = paths::pinvou3_home();
             let legacy_existed = home.join("disabled_connectors.json").exists()
                 || home.join("disabled_skills.json").exists();
-            // 宽口径升级信号（评审 #455 R8-3 收窄）：三份开关相关文件皆无，
-            // 但安装记录或非空会话目录存在 ⇒ 老装机，plain 保持旧 AllowAll 语义。
-            // settings.json **不构成**升级证据——预置模板/跨机拷贝的 settings.json
-            // 会把全新装机误判为升级（plain 全开，fail-open），而真实老装机必留
-            // 非空 sessions/（首启 ensure_dirs 自写 sessions/default/artifacts），
-            // 不会因收窄漏判。logs/ 等其余家目录状态同理不构成证据。
+            // Wide upgrade signal (review #455 R8-3 narrowing): none of the
+            // three switch-related files exist, but an install record or a
+            // non-empty sessions directory is present ⇒ old install, plain
+            // keeps the old AllowAll semantics. settings.json is **not**
+            // upgrade evidence — a preset template or cross-machine-copied
+            // settings.json would misjudge a fresh install as upgraded (plain
+            // fully on, fail-open), while a real old install always leaves a
+            // non-empty sessions/ (first-boot ensure_dirs self-writes
+            // sessions/default/artifacts), so the narrowing misses nothing.
+            // Other home-directory state such as logs/ is likewise no evidence.
             let upgraded_install = legacy_existed
                 || home.join("marketplace").join("installed.json").is_file()
                 || paths::sessions_root()
@@ -157,16 +228,21 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
                     .unwrap_or(false);
             let mut file = migrate_from_legacy_files();
             if upgraded_install {
-                // 升级：初始化 plain（scopes 缺省空 = 旧语义全开），锁定升级前状态。
+                // Upgraded: initialize plain (scopes default empty = fully on
+                // under the old semantics), locking in the pre-upgrade state.
                 file.initialized
                     .insert(SessionMode::Plain.as_str().to_string());
             }
             file.plain_defaults_migrated = true;
-            // 无条件落盘冻结判定：全新装机不持久化标记时，首启自写的
-            // settings.json/sessions/default 会污染宽口径升级信号，次读即被
-            // 误判为升级装机而翻回全开（评审 #455 阻塞项）。落盘失败时把本次
-            // 判定记入进程内备忘（R7-M2）——后续读沿用，fail-closed 方向由
-            // 判定本身保证（fresh = plain 未初始化 = DenyAll 兜底）。
+            // Persist the frozen verdict unconditionally: if a fresh install
+            // does not persist the marker, first-boot self-written
+            // settings.json/sessions/default pollute the wide upgrade signal
+            // and the next read is misjudged as an upgraded install that
+            // flips back to fully on (review #455 blocker). On a persist
+            // failure, record this verdict in the in-process memo (R7-M2) —
+            // later reads reuse it; the fail-closed direction is guaranteed
+            // by the verdict itself (fresh = plain uninitialized = DenyAll
+            // fallback).
             if let Err(freeze_error) = try_save_disabled_bundles_file(&file) {
                 eprintln!(
                     "[scope] CRITICAL: failed to persist the plain-defaults migration verdict: {freeze_error}; holding the in-process verdict (plain initialized = {}) until restart - first-boot traces will not re-open the fresh/upgraded evaluation",
@@ -179,35 +255,29 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
             return file;
         }
         Err(error) => {
-            // 文件存在但不可读（权限/占用锁等）：与损坏同口径 fail-closed，
-            // 不得并入上一条迁移分支——升级装机上那会把 plain 初始化为空
-            // （旧 AllowAll 全开）并在无隔离的情况下覆盖原文件，用户的显式
-            // 关闭被静默销毁（评审 #455 R4-B1）。按 salvage 读取结果分流：
-            // 字节读得出（非 UTF-8 走 lossy）→ 隔离副本能真实保住原始字节，
-            // 降级态覆盖落盘使恢复一次性完成；隔离失败或字节本身读不出 →
-            // 不动原文件——占位符「隔离」保不住任何字节，此时覆盖会把「不可
-            // 读但可恢复」变成「永久丢失」（评审 #455 R6-B1）。内存 fail-closed
-            // 态已正确，下次读取重试。
+            // File exists but is unreadable (permissions/lock in use, etc.):
+            // fail-closed, same treatment as corruption; must not fold into
+            // the migration branch above — on an upgraded install that would
+            // initialize plain as empty (old AllowAll fully on) and overwrite
+            // the original without quarantine, silently destroying the user's
+            // explicit opt-outs (review #455 R4-B1). Branch on the salvage
+            // read: bytes readable (non-UTF-8 goes lossy) → the quarantine
+            // copy genuinely preserves the original bytes, and the degraded
+            // overwrite completes recovery in one shot; quarantine failed or
+            // bytes themselves unreadable → leave the original untouched — a
+            // placeholder "quarantine" preserves no bytes, and overwriting
+            // then would turn "unreadable but recoverable" into "permanently
+            // lost" (review #455 R6-B1). The in-memory fail-closed state is
+            // already correct; the next read retries.
             let recovered = DisabledBundlesFile {
                 plain_defaults_migrated: true,
                 ..DisabledBundlesFile::default()
             };
             match std::fs::read(&path) {
                 Ok(bytes) => {
-                    // 原始字节直接隔离（R7-M1）：lossy 转换的副本是 mojibake，
-                    // 逐字节修复通道就断了。
-                    if let Err(quarantine_err) =
-                        quarantine_corrupt_disabled_bundles(&bytes, &error.to_string())
-                    {
-                        // 隔离失败不覆盖原文件：内存 fail-closed 态已正确，
-                        // 下次读取重试（评审 #455 R5-m4）。
-                        eprintln!(
-                            "[marketplace] {quarantine_err}; skipping disabled_bundles.json overwrite this read"
-                        );
-                        return recovered;
-                    }
-                    save_disabled_bundles_file(&recovered);
-                    return recovered;
+                    // Raw bytes quarantine (R7-M1: a lossy copy is mojibake) with
+                    // the shared memo/try-save recovery core (round-10 m5).
+                    return quarantine_and_recover_disabled_bundles(&bytes, &error.to_string());
                 }
                 Err(salvage_error) => {
                     eprintln!(
@@ -221,48 +291,19 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
     let mut file: DisabledBundlesFile = match serde_json::from_str(&content) {
         Ok(file) => file,
         Err(error) => {
-            // 损坏文件不静默覆盖:先留 .corrupt.<ts> 隔离副本(installed.json
-            // 同款),再把降级态**覆盖落盘**——恢复须一次性完成,否则损坏文件
-            // 留在盘上、每次读都重新隔离,副本无界累积(评审 #455 阻塞项)。
-            // 恢复必须 fail-closed：按空状态降级会把带迁移标记的新格式文件
-            // （用户可能显式关过包）恢复成全开；安全收敛特性宁可恢复全关——
-            // 只置迁移标记（冻结为全新装机判定）、不初始化任何 scope，未初始化
-            // scope 按 DenyAll 兜底（评审 #455）。
-            let recovered = DisabledBundlesFile {
-                plain_defaults_migrated: true,
-                ..DisabledBundlesFile::default()
-            };
-            {
-                // 本进程已为该 home 隔离过且覆盖写失败：直接复用，不再重复
-                // 隔离（防 .corrupt.* 无界累积，R9-M1）。
-                let memo = PENDING_CORRUPT_RECOVERY
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                if let Some((home, file)) = memo.as_ref() {
-                    if *home == paths::pinvou3_home() {
-                        return file.clone();
-                    }
-                }
-            }
-            if let Err(quarantine_err) =
-                quarantine_corrupt_disabled_bundles(content.as_bytes(), &error.to_string())
-            {
-                eprintln!(
-                    "[marketplace] {quarantine_err}; skipping disabled_bundles.json overwrite this read"
-                );
-                return recovered;
-            }
-            if let Err(save_error) = try_save_disabled_bundles_file(&recovered) {
-                eprintln!(
-                    "[marketplace] {save_error}; corrupt recovery overwrite failed - holding the in-memory fail-closed state, re-quarantine suppressed until a save succeeds"
-                );
-                *PENDING_CORRUPT_RECOVERY
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                    Some((paths::pinvou3_home(), recovered.clone()));
-                return recovered;
-            }
-            recovered
+            // Never silently overwrite a corrupt file: first keep a
+            // .corrupt.<ts> quarantine copy (same as installed.json), then
+            // **overwrite** the degraded state to disk — recovery must
+            // complete in one shot, otherwise the corrupt file stays on disk,
+            // every read re-quarantines, and copies accumulate unboundedly
+            // (review #455 blocker). Recovery must be fail-closed: degrading
+            // to an empty state would restore a new-format file carrying the
+            // migration marker (where the user may have explicitly disabled
+            // packs) to fully on; a security-convergence feature had better
+            // recover fully off — set only the migration marker (frozen as
+            // the fresh-install verdict) and initialize no scope;
+            // uninitialized scopes fall back to DenyAll (review #455).
+            quarantine_and_recover_disabled_bundles(content.as_bytes(), &error.to_string())
         }
     };
     if !file.plain_defaults_migrated {
@@ -277,12 +318,17 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
     file
 }
 
-/// 防御：把所有 scope 禁用集与不可见集的条目归一化为包 id（剥 `skill:` 前缀 +
-/// 按当前认领映射 companion）并去重保序，返回是否有变化。**落盘**归一（评审
-/// #455 R5-m6）：写路径的删除/启用按归一化 id 匹配，认领翻转前的原始条目匹配
-/// 不到、在卸载（同样按归一化匹配清理）后残留，重装同名包即复活用户已移除的
-/// 禁用/隐藏态——读时归一（F4）只修门控口径，修不了存储本身；所有写方都经
-/// `load_disabled_bundles_file_locked` → save，此处落盘即全量收敛。
+/// Defensive: normalize the entries of every scope's disabled and invisible
+/// sets to package ids (strip the `skill:` prefix + map companions by the
+/// current claim), deduplicating while preserving order, and return whether
+/// anything changed. **Persist** the normalization (review #455 R5-m6): the
+/// write paths' removal/enable match by normalized id, so pre-claim-flip raw
+/// entries match nothing, survive an uninstall (which likewise cleans by
+/// normalized matching), and revive the user's removed disabled/hidden state
+/// once a same-named pack is reinstalled — read-time normalization (F4) only
+/// fixes the gating criteria, not the storage itself; every writer goes
+/// through `load_disabled_bundles_file_locked` → save, so persisting here
+/// converges the whole file.
 fn normalize_stored_lists(file: &mut DisabledBundlesFile) -> bool {
     let mut changed = false;
     for ids in file
@@ -467,17 +513,21 @@ fn merge_ids_into_scope(file: &mut DisabledBundlesFile, key: &str, ids: Vec<Stri
     }
 }
 
-/// 写完整文件（原子替换，与旧文件同范式）。先建父目录：迁移冻结/损坏恢复的
-/// 首次落盘可能早于任何建目录的启动步骤，`write_atomic` 不代建父目录，写失败
-/// 会让「全新 vs 升级」判定静默解冻、次读 fail-open（评审 #455）。
+/// Write the full file (atomic replace, same as the legacy files). Create the
+/// parent directory first: the first persist of a migration freeze or corrupt
+/// recovery may precede any directory-creating startup step, `write_atomic`
+/// does not create parent directories, and a failed write would silently
+/// unfreeze the "fresh vs upgraded" verdict and fail open on the next read
+/// (review #455).
 fn save_disabled_bundles_file(file: &DisabledBundlesFile) {
     if let Err(error) = try_save_disabled_bundles_file(file) {
         eprintln!("[scope] {error}");
     }
 }
 
-/// 落盘失败按 Err 上报（评审 #455 R7-M2）：freeze 等语义敏感的调用方需要
-/// 区分「写成了」与「静默丢写」。
+/// Reports persist failures as Err (review #455 R7-M2): semantically
+/// sensitive callers such as freeze need to distinguish "written" from
+/// "silently lost".
 fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), String> {
     let path = disabled_bundles_path();
     if let Some(parent) = path.parent() {
@@ -489,7 +539,8 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
         .map_err(|error| format!("serialize disabled_bundles.json failed: {error}"))?;
     deepseek_tui::utils::write_atomic(&path, json.as_bytes())
         .map_err(|error| format!("write disabled_bundles.json failed: {error}"))?;
-    // 成功落盘 = 文件回到合法 JSON：两个「写失败」备忘都过期了（R9-M1）。
+    // Successful persist = the file is valid JSON again: both "write-failed"
+    // memos are now stale (R9-M1).
     let home = paths::pinvou3_home();
     for memo in [&UNPERSISTED_VERDICT, &PENDING_CORRUPT_RECOVERY] {
         let mut slot = memo.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -504,11 +555,14 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
 
 /// 读某 scope 被禁用的**包 id** 列表（读不到/空 → 空）。
 ///
-/// 已初始化的 scope 以落盘列表为准；未初始化的 scope 按 DenyAll 兜底（全部
-/// 已安装包 id ∪ 全部内置 CLI 包 id）——「默认全关，外部能力显式开启」。
-/// 全部模式均 DenyAll；plain 的存量装机由 `load_disabled_bundles_file_locked`
-/// 的读时迁移初始化（锁定升级前开关状态），不走此兜底。CLI 包未连接时纳入
-/// 无害（配套技能不在盘上，排除为空操作），且「后才连接」也自动默认关。
+/// Initialized scopes follow the persisted list; uninitialized scopes fall
+/// back to DenyAll (all installed package ids ∪ all built-in CLI package ids)
+/// — "default fully off, external capabilities enabled explicitly". All modes
+/// are DenyAll; existing plain installs are initialized by the read-time
+/// migration in `load_disabled_bundles_file_locked` (locking in the
+/// pre-upgrade switch state) and never take this fallback. Including
+/// unconnected CLI packs is harmless (companion skills are not on disk, so
+/// excluding them is a no-op), and "connected later" is also off by default.
 pub fn load_disabled_bundles_for(scope: ConnectorScope) -> Vec<String> {
     let file = load_disabled_bundles_file();
     resolve_scope_disabled_ids(&file, scope)
@@ -527,11 +581,16 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
         }
         PackDefaultPolicy::DenyAll => {
             // 现算分支：已按当前认领推导包 id，无需再归一。
-            // installed.json 存在但读不出（权限/占用锁）时「已安装集合未知」：
-            // 必须 fail-closed 按全部可装包禁用——若按空集合处理，未初始化 scope
-            // 的有效禁用集丢失全部已装包（plain 会话零同意放行，fail-open 翻转），
-            // 且此刻的 enable 物化会把缩水的扩集固化为永久 opt-in（评审 #455
-            // R5-B2）。多禁未装包无害：包后装仍默认关，与本分支语义一致。
+            // installed.json exists but cannot be read (permissions/lock in
+            // use): the "installed set" is unknown — must fail closed by
+            // disabling all installable packs; treating it as an empty set
+            // would strip every installed pack from an uninitialized scope's
+            // effective disabled set (plain sessions pass with zero consent,
+            // a fail-open flip), and an enable at that moment would
+            // materialize the shrunken expansion into a permanent opt-in
+            // (review #455 R5-B2). Over-disabling uninstalled packs is
+            // harmless: packs installed later are still off by default,
+            // consistent with this branch's semantics.
             let manager = MarketplaceManager::new();
             let mut ids: Vec<String> = match manager.try_installed_ids() {
                 Ok(ids) => ids,
@@ -627,11 +686,14 @@ pub fn save_disabled_bundles(ids: &[String]) {
     save_disabled_bundles_for(ConnectorScope::Plain, ids);
 }
 
-/// 包安装/连接后同步所有已初始化的 scope：用户已改过开关时，新装的包默认仍
-/// 保持关闭（加入该 scope 禁用集）；未初始化时无需处理（load 会按「默认全禁
-/// 已装包」兜底）。全部模式均 DenyAll（plain 由读时迁移初始化后同样进同步）。
-/// 连接器与技能安装共用本入口：入参可为连接器 id / 技能 id / 包 id，统一归一
-/// 为包 id。
+/// After a pack is installed/connected, sync every initialized scope: when
+/// the user has touched the switches, newly installed packs stay off by
+/// default (added to that scope's disabled set); uninitialized scopes need
+/// nothing (load falls back to "all installed packs disabled by default").
+/// All modes are DenyAll (plain joins the sync once initialized by the
+/// read-time migration). Connector and skill installs share this entry: the
+/// input may be a connector id / skill id / package id, uniformly normalized
+/// to a package id.
 pub fn sync_deny_all_scopes_after_install(raw_id: &str) {
     let package_id = to_package_id(raw_id);
     let _guard = DISABLED_BUNDLES_FILE_LOCK
@@ -664,14 +726,16 @@ pub fn sync_deny_all_scopes_after_install(raw_id: &str) {
 /// composer 连接器开关 ↔ 统一禁用集桥接（二轮评审：CLI 三数据源无桥接）。
 /// 连接器停用标志（`<connector>_disabled` 文件）只删技能目录，而 execpolicy CLI
 /// 硬拦截与技能物化排除读 `disabled_bundles.json`——开关关掉连接器时必须同步把
-/// 包 id 写入所有 scope 的禁用集，开回时必须把它从有效禁用集移除，两条门控才一致。
+/// pack id written into every scope's disabled set, and re-enabling must
+/// remove it from the effective disabled set, so both gates stay consistent.
 pub fn sync_disabled_bundles_for_connector_switch(connector_id: &str, enabled: bool) {
     if enabled {
         enable_bundle_in_deny_all_scopes(connector_id);
         return;
     }
-    // 与 enable 臂同口径：入参统一归一为包 id（剥 `skill:` 前缀 +
-    // companion 映射），防御非内置 id 调用方（评审 #455 R4-m1）。
+    // Same treatment as the enable arm: normalize the input to a package id
+    // (strip the `skill:` prefix + companion mapping), defending against
+    // callers passing non-builtin ids (review #455 R4-m1).
     let connector_id = &to_package_id(connector_id);
     // 单临界区 RMW（四轮评审 M-6b）：逐 scope 独立 load→save 两次加锁会在跨临界区
     // 窗口丢并发写（lost-update），与文件内其它写方同范式——持锁读 → 改 → 一次落盘。
@@ -685,9 +749,12 @@ pub fn sync_disabled_bundles_for_connector_switch(connector_id: &str, enabled: b
         if ids.iter().any(|id| id == connector_id) {
             continue;
         }
-        // id 不在有效禁用集（未初始化 scope 按现算扩集兜底，未装的预置包不在
-        // 扩集里）：落盘初始化会把当前扩集固化为用户状态，未来新增的内置包将
-        // 默认开——与「用户没碰过的包默认关」语义相悖，不动（评审 #455）。
+        // id not in the effective disabled set (uninitialized scopes fall
+        // back to the on-the-fly expansion, and uninstalled preset packs are
+        // not in it): persisting an initialization would freeze the current
+        // expansion as user state, and future built-in packs would default
+        // on — contrary to "packs the user never touched default off";
+        // leave it alone (review #455).
         if !file.initialized.contains(mode.as_str()) {
             continue;
         }
@@ -702,15 +769,20 @@ pub fn sync_disabled_bundles_for_connector_switch(connector_id: &str, enabled: b
     }
 }
 
-/// 连接器开回（enabled=true）方向的桥接：必须让包 id 退出**有效**禁用集。
-/// 只编辑落盘列表对未初始化 scope 是静默 no-op——其门控来自 DenyAll 现算扩集
-/// （无视落盘列表），UI 显示「已启用」而 CLI 硬拦截/技能排除依旧（评审 #455
-/// 阻塞项）。因此对每个「包 id 在现算扩集里且未初始化」的 scope，以
-/// 扩集减该 id 初始化（用户刚显式开启 = 显式 opt-in）；已初始化的 scope
-/// 保持原有从落盘列表移除的行为；同时清理可见性集残留。
+/// Bridge for the connector re-enable (enabled=true) direction: the package
+/// id must leave the **effective** disabled set. Editing only the persisted
+/// list is a silent no-op for uninitialized scopes — their gating comes from
+/// the DenyAll on-the-fly expansion (which ignores the persisted list), so
+/// the UI shows "enabled" while the CLI hard-block/skill exclusion persist
+/// (review #455 blocker). Therefore, for every scope where the package id is
+/// in the expansion and that is uninitialized, initialize with the expansion
+/// minus that id (the user just explicitly enabled = explicit opt-in);
+/// initialized scopes keep the existing remove-from-persisted-list behavior;
+/// visibility-set leftovers are cleaned up at the same time.
 fn enable_bundle_in_deny_all_scopes(raw_id: &str) {
-    // 与旧 enable 路径（save/remove 等写方）同口径：入参统一归一为包 id
-    // （剥 `skill:` 前缀 + companion 映射），防御非内置 id 调用方。
+    // Same treatment as the old enable path (save/remove and other writers):
+    // normalize the input to a package id (strip the `skill:` prefix +
+    // companion mapping), defending against callers passing non-builtin ids.
     let connector_id = to_package_id(raw_id);
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
@@ -735,7 +807,8 @@ fn enable_bundle_in_deny_all_scopes(raw_id: &str) {
         file.initialized.insert(key.to_string());
         changed = true;
     }
-    // 已初始化 scope 与可见性集：从落盘列表移除（与卸载清理同路径）。
+    // Initialized scopes and visibility sets: remove from the persisted list
+    // (same path as uninstall cleanup).
     for ids in file.scopes.values_mut() {
         let before = ids.len();
         ids.retain(|id| id != &connector_id);
@@ -774,22 +847,40 @@ pub fn remove_bundle_from_disabled_scopes(raw_id: &str) {
     }
 }
 
-/// 场景 opt-in 等用户动作的批量开启入口（评审 #455 R7-M3）：**单临界区**
-/// RMW——读当前有效禁用集 → 批量移除 ids → 一次落盘。前端整表「读-改-写」
-/// 跨 IPC 不受本锁保护，并发 composer toggle 的写入会被陈旧快照覆盖（用户
-/// 显式关闭的包被复活，fail-open）。该 scope 未初始化时以（现算扩集 − ids）
-/// 物化 opt-in；已初始化时从落盘列表移除；hidden 集同步清理（被隐藏的包
-/// 即使开关打开也见不到工具）。
-pub fn enable_packages_in_scope(scope: ConnectorScope, raw_ids: &[String]) {
+/// Batch-enable entry for user actions such as scenario opt-ins (review #455
+/// R7-M3): **single-critical-section** RMW — read the current effective
+/// disabled set → batch-remove ids → one persist. The frontend's whole-table
+/// read-modify-write across IPC is not covered by this lock, and a concurrent
+/// composer toggle's write would be overwritten by the stale snapshot (packs
+/// the user explicitly disabled get revived, fail-open). When the scope is
+/// uninitialized, materialize the opt-in as (on-the-fly expansion − ids);
+/// when initialized, remove from the persisted list; the hidden set is
+/// cleaned in sync (a hidden pack sees no tools even with the switch on).
+pub fn enable_packages_in_scope(scope: ConnectorScope, raw_ids: &[String]) -> Vec<String> {
     let ids: Vec<String> = raw_ids.iter().map(|id| to_package_id(id)).collect();
     if ids.is_empty() {
-        return;
+        return Vec::new();
     }
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut file = load_disabled_bundles_file_locked();
     let key = scope.as_str();
+    if file.initialized.contains(key) {
+        // Initialized scope: the stored list *is* the user's explicit switch
+        // state (pre-upgrade or composer-toggled). Removing an id here would
+        // silently re-enable a deliberate opt-out (round-10 Major 2): refuse
+        // the whole batch instead and let the caller surface the blocked ids.
+        let stored = file.scopes.get(key).cloned().unwrap_or_default();
+        let blocked: Vec<String> = ids
+            .iter()
+            .filter(|id| stored.contains(id))
+            .cloned()
+            .collect();
+        if !blocked.is_empty() {
+            return blocked;
+        }
+    }
     let mut changed = false;
     if file.initialized.contains(key) {
         if let Some(list) = file.scopes.get_mut(key) {
@@ -815,18 +906,23 @@ pub fn enable_packages_in_scope(scope: ConnectorScope, raw_ids: &[String]) {
     if changed {
         save_disabled_bundles_file(&file);
     }
+    Vec::new()
 }
 
-/// 回收站恢复的同意门（评审 #455 R5-m5 / R9-M2）：**单临界区**完成
-/// 「清 hidden 残留 + 把包 id 与包内技能重新加回已初始化 DenyAll scope 的
-/// 禁用集」。跨 N 个独立锁获取的版本在两次加锁间可被并发 enable 穿插
-/// （lost-update）；与 enable_packages_in_scope / disable 臂同一持锁范式。
-/// 语义不变：已初始化 scope 恢复为禁用（保守收敛），未初始化 scope 不写
-/// （DenyAll 现算扩集本就覆盖），hidden 集只清不写（恢复包应对用户可见）。
-pub fn apply_restore_consent_gate(raw_ids: &[String]) {
+/// Consent gate for trash restores (review #455 R5-m5 / R9-M2): a **single
+/// critical section** performs "clear hidden leftovers + add the package id
+/// and its in-pack skills back into initialized DenyAll scopes' disabled
+/// sets". A version spanning N independent lock acquisitions can be
+/// interleaved by a concurrent enable between locks (lost-update); same
+/// lock-holding pattern as enable_packages_in_scope / the disable arm.
+/// Semantics unchanged: initialized scopes restore as disabled
+/// (conservative convergence), uninitialized scopes are not written (the
+/// DenyAll on-the-fly expansion already covers them), and the hidden set is
+/// only cleared, never written (restored packs must stay visible to the user).
+pub fn apply_restore_consent_gate(raw_ids: &[String]) -> Result<(), String> {
     let ids: Vec<String> = raw_ids.iter().map(|id| to_package_id(id)).collect();
     if ids.is_empty() {
-        return;
+        return Ok(());
     }
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
@@ -834,13 +930,15 @@ pub fn apply_restore_consent_gate(raw_ids: &[String]) {
     let mut file = load_disabled_bundles_file_locked();
     let mut changed = false;
     for id in &ids {
-        // hidden 残留清理：卸载后残留 hidden 会误隐藏恢复的包。
+        // Hidden leftover cleanup: hidden entries left after an uninstall
+        // would wrongly hide restored packs.
         for hidden in file.hidden_scopes.values_mut() {
             let before = hidden.len();
             hidden.retain(|x| x != id);
             changed |= hidden.len() != before;
         }
-        // 已初始化 DenyAll scope：重新加回禁用集（同意门）。
+        // Initialized DenyAll scopes: add the id back into the disabled set
+        // (consent gate).
         for mode in SessionMode::ALL {
             if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
                 continue;
@@ -858,8 +956,12 @@ pub fn apply_restore_consent_gate(raw_ids: &[String]) {
         }
     }
     if changed {
-        save_disabled_bundles_file(&file);
+        // Fire-and-forget here would leave a restored pack live with zero
+        // consent after a failed save (round-10 m4): propagate so the caller
+        // can fail the restore — restore is idempotent, the user retries.
+        try_save_disabled_bundles_file(&file)?;
     }
+    Ok(())
 }
 
 /// 项目级 skills 开关（默认关）。
@@ -908,8 +1010,10 @@ mod tests {
     #[test]
     fn bundles_roundtrip_per_scope() {
         with_temp_home(|| {
-            // 全模式 DenyAll 后 fresh home 未初始化 scope 默认全关（含内置 CLI
-            // 包）；本测试聚焦 per-scope 读写 roundtrip，先显式初始化 plain 为空集。
+            // After all modes went DenyAll, an uninitialized scope on a fresh
+            // home defaults fully off (including built-in CLI packs); this
+            // test focuses on the per-scope read/write roundtrip, so
+            // explicitly initialize plain as an empty set first.
             save_disabled_bundles_for(ConnectorScope::Plain, &[]);
             assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
             save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
@@ -930,8 +1034,10 @@ mod tests {
     fn hidden_bundles_are_orthogonal_to_disabled() {
         with_temp_home(|| {
             assert!(load_hidden_bundles_for(ConnectorScope::Plain).is_empty());
-            // 显式初始化 plain 为空集（DenyAll 收敛后 fresh home 未初始化默认
-            // 全关，hidden 正交性断言需要空 disabled 基线）。
+            // Explicitly initialize plain as an empty set (after the DenyAll
+            // convergence, a fresh home's uninitialized default is fully off;
+            // the hidden-orthogonality assertions need an empty disabled
+            // baseline).
             save_disabled_bundles_for(ConnectorScope::Plain, &[]);
             save_hidden_bundles_for(ConnectorScope::Plain, &["combo-demo".to_string()]);
             // hidden 不影响 disabled
@@ -1049,8 +1155,10 @@ mod tests {
                 vec!["gongwen".to_string()],
                 "认领翻转后读时归一应把隐藏条目重映射到包 id"
             );
-            // 落盘字节级断言（评审 #455 R6-m2）：归一化不止修门控口径，还
-            // 必须持久化——否则卸载认领 owner 后原始条目残留，重装即复活。
+            // Byte-level on-disk assertion (review #455 R6-m2): normalization
+            // must not only fix the gating criteria but also persist —
+            // otherwise raw entries survive uninstalling the claim owner and
+            // revive on reinstall.
             let persisted = std::fs::read_to_string(disabled_bundles_path()).unwrap();
             assert!(
                 persisted.contains("\"gongwen\"") && !persisted.contains("government-writing"),
@@ -1105,15 +1213,17 @@ mod tests {
     }
 }
 
-/// 把损坏的 disabled_bundles.json 原始字节隔离成 `.corrupt.<ts>` 副本
-/// （与 installed.json 共用 `quarantine_corrupt_state_file`），随后由读路径
-/// fail-closed 降级自愈。隔离失败按 Err 传播——调用方据此放弃覆盖原文件，
-/// 避免隔离没写成却把可找回的原始字节冲掉（评审 #455 R5-m4）。
+/// Quarantines the raw bytes of a corrupt disabled_bundles.json into a
+/// `.corrupt.<ts>` copy (sharing `quarantine_corrupt_state_file` with
+/// installed.json); the read path then self-heals via fail-closed degrade.
+/// Quarantine failure propagates as Err — the caller uses that to give up
+/// overwriting the original, avoiding wiping recoverable raw bytes when the
+/// quarantine copy never landed (review #455 R5-m4).
 fn quarantine_corrupt_disabled_bundles(content: &[u8], error: &str) -> Result<(), String> {
     let path = disabled_bundles_path();
     super::quarantine_corrupt_state_file(&path, content)?;
     eprintln!(
-        "[marketplace] disabled_bundles.json was corrupt ({error}); quarantined and reset to fail-closed defaults"
+        "[marketplace] disabled_bundles.json was corrupt ({error}); quarantined, attempting the fail-closed reset"
     );
     Ok(())
 }

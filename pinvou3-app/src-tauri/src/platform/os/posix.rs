@@ -102,7 +102,6 @@ pub fn make_private_dir(path: &Path) {
         );
     }
 }
-
 /// 探测 PATH 中第一个可用的 python 解释器名。
 /// 优先 `python3`，回退 `python`，最终默认 `python3`。
 pub fn python_command() -> String {

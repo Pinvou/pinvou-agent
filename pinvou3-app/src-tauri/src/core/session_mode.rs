@@ -28,8 +28,9 @@ pub enum SessionMode {
 /// feature 依赖环（见 marketplace/skill_scope.rs 头注释）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackDefaultPolicy {
-    /// 默认全开。当前所有模式均已收敛 DenyAll，此变体仅为未来可能的新模式
-    /// 保留（评审 #455），现有代码路径不可达。
+    /// Allow-all. Every mode has converged on DenyAll; this variant is kept
+    /// only for potential future modes (review #455) and is unreachable from
+    /// current code paths.
     AllowAll,
     DenyAll,
 }
@@ -82,9 +83,11 @@ impl SessionMode {
     }
 
     /// 该模式能力开关未初始化时的包默认策略（见 [`PackDefaultPolicy`]）。
-    /// 全部模式默认全禁已装条目（外部能力一律显式开启；plain 于工具开关收敛
-    /// 版本从 AllowAll 翻为 DenyAll，存量用户由 scope.rs 的读时迁移播种
-    /// 「保持原开关状态」，新装包不再默认进入任何会话）。
+    /// Deny-all: every mode disables installed packs by default (external
+    /// capabilities are always explicitly enabled; plain flipped from AllowAll
+    /// to DenyAll by the tool-switch convergence — existing users keep their
+    /// pre-upgrade switch state via scope.rs's read-time migration seeding, and
+    /// newly installed packs no longer enter any session by default).
     pub fn pack_default_policy(self) -> PackDefaultPolicy {
         match self {
             Self::Plain => PackDefaultPolicy::DenyAll,
@@ -117,8 +120,10 @@ mod tests {
 
     #[test]
     fn pack_default_policy_per_mode() {
-        // 全部模式 DenyAll：外部能力默认全禁、显式开启（plain 的存量体验由
-        // scope.rs 读时迁移兜底，见 load_disabled_bundles_file_locked）。
+        // Every mode is DenyAll: external capabilities are default-off and
+        // explicitly enabled. Plain's existing installs keep their pre-upgrade
+        // switch state via scope.rs's read-time migration (see
+        // load_disabled_bundles_file_locked).
         for mode in SessionMode::ALL {
             assert_eq!(
                 mode.pack_default_policy(),
