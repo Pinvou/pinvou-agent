@@ -7,6 +7,8 @@
 //! 本模块是 facade:把原本 2600+ 行的 god-module 按职责拆成子模块,
 //! 对外 pub 面通过 `pub use` 保持不变。
 //!
+// architecture-guard: allow-target-cfg -- 不可读状态文件的 fail-closed 回归测试需要构造 chmod 000 夹具，仅测试代码内联 cfg(unix)+PermissionsExt（package_export.rs 同款豁免先例，评审 #455 R9-M5）；以真实 open 探测兜底 root，Windows 由链接检查覆盖。
+//!
 //! - `types`      — manifest/info/迁移结果等数据类型
 //! - `secrets`    — 密钥/凭证助手 + MarketplaceManager 的 secret 读写方法
 //! - `validation` — 远程 MCP 连接校验
@@ -4042,10 +4044,14 @@ mod tests {
     /// 并无隔离覆盖原文件），且 salvage 读本身必然失败——占位符「隔离」保不住
     /// 任何原始字节，此时覆盖原文件会把「不可读但可恢复」变成「永久丢失」
     /// （评审 #455 R6-B1）。期望：内存 fail-closed 生效、原文件字节原样、零
-    /// 隔离副本、零落盘；权限恢复后按原内容正常解析。权限位操作走平台适配层，
-    /// 平台无关。
+    /// 隔离副本、零落盘；权限恢复后按原内容正常解析。权限位夹具走
+    /// `cfg(unix)`+`PermissionsExt` 内联豁免（文件头 architecture-guard
+    /// 标记，package_export.rs 同款先例，评审 #455 R9-M5），以真实 open
+    /// 探测兜底 root 运行，平台无关语义不变。
+    #[cfg(unix)]
     #[test]
     fn unreadable_disabled_bundles_stays_untouched_fail_closed_in_memory() {
+        use std::os::unix::fs::PermissionsExt;
         with_temp_home(|| {
             // 升级装机痕迹：settings.json 存在（旧版首启自写）。
             std::fs::write(
@@ -4056,12 +4062,12 @@ mod tests {
             let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
             let original = "{\"plain_defaults_migrated\":true}";
             std::fs::write(&path, original).unwrap();
-            // 0o000：存在但不可读。`set_file_mode` 以真实 open 探测报告可读性：
-            // Ok(true) = 仍可读（Windows ACL / root 运行 mode 位不生效），跳过本
-            // 测试——打印跳过原因，避免 CI 通过数高估 fail-closed 覆盖（R7 nit）。
-            if crate::platform::os::set_file_mode(&path, 0o000).unwrap() {
+            // 0o000：存在但不可读。open 探测兜底 root 运行（mode 位不生效），
+            // 打印跳过原因，避免 CI 通过数高估 fail-closed 覆盖（R7 nit）。
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            if std::fs::File::open(&path).is_ok() {
                 eprintln!(
-                    "SKIP: cannot build an unreadable fixture on this platform/root; fail-closed unreadable path not exercised here"
+                    "SKIP: running as root - chmod 000 fixture stays readable; fail-closed unreadable path not exercised here"
                 );
                 return;
             }
@@ -4079,7 +4085,7 @@ mod tests {
                 "不可读必须内存 fail-closed（不得按升级迁移初始化 plain 为全开）"
             );
             // 恢复权限断言：原文件字节原样、无隔离副本、无降级态覆盖落盘。
-            crate::platform::os::set_file_mode(&path, 0o644).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
             assert_eq!(
                 std::fs::read_to_string(&path).unwrap(),
                 original,
@@ -4117,8 +4123,10 @@ mod tests {
     /// 否则首读命中宽升级信号把 plain 初始化为空落盘表，`resolve_scope_disabled_ids`
     /// 走 stored-list 分支，DenyAll 扩集——被测机制——根本不被 consult（评审
     /// #455 R7-B1）。
+    #[cfg(unix)]
     #[test]
     fn unreadable_installed_json_deny_all_expansion_fails_closed() {
+        use std::os::unix::fs::PermissionsExt;
         with_temp_home(|| {
             // 先冻结「升级 vs 全新」判定：marker-only 文件，plain 保持未初始化。
             std::fs::write(
@@ -4130,12 +4138,11 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join("installed.json");
             std::fs::write(&path, "[\"feishu\"]").unwrap();
-            // 0o000：存在但不可读。`set_file_mode` 以真实 open 探测报告可读性：
-            // Ok(true) = 仍可读（Windows ACL / root 运行 mode 位不生效），跳过
-            // ——打印跳过原因（R7 nit）。
-            if crate::platform::os::set_file_mode(&path, 0o000).unwrap() {
+            // 0o000：存在但不可读。open 探测兜底 root 运行（R7 nit）。
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            if std::fs::File::open(&path).is_ok() {
                 eprintln!(
-                    "SKIP: cannot build an unreadable fixture on this platform/root; fail-closed unreadable path not exercised here"
+                    "SKIP: running as root - chmod 000 fixture stays readable; fail-closed unreadable path not exercised here"
                 );
                 return;
             }
@@ -4161,7 +4168,7 @@ mod tests {
                 "fail-closed 扩集必须覆盖全部可装包，而非只剩内置 CLI: {disabled:?}"
             );
             // 文件原样保留、不产生隔离副本。
-            crate::platform::os::set_file_mode(&path, 0o644).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
             assert_eq!(
                 std::fs::read_to_string(&path).unwrap(),
                 "[\"feishu\"]",

@@ -652,10 +652,9 @@ impl Pinvou3Bridge {
         // disabled set (the plain disabled set is the incoming value itself, no
         // replacement needed). Scope follows mode — a plain session with a bound
         // working directory still belongs to the plain scope and never borrows the
-        // code scope. Note that on this fork an uninitialized plain scope = AllowAll
-        // (connectors/bundles on by default): bound sessions compensate with
-        // Plan-first plus a one-shot YOLO confirm card; DenyAll tightening is
-        // tracked separately.
+        // code scope. 未初始化的 plain scope 按 DenyAll 兜底（评审 #455 全量
+        // 收敛后与 code 同口径：外部能力默认关，显式开启）；绑定工作目录的
+        // plain 会话仍叠加 Plan-first + 一次性 YOLO 确认卡作为执行面防线。
         let scope = policy.mode();
         if scope != SessionMode::Plain {
             let plain_connector = crate::features::marketplace::disabled_tool_names();
@@ -3027,8 +3026,8 @@ mod tests {
         bridge.set_code_session_predicate(std::sync::Arc::new(|_session_id: &str| false));
 
         // Mode identity stays Plain; connector/skill scopes follow the mode (no
-        // borrowing the code scope; on this fork uninitialized plain = AllowAll,
-        // DenyAll tightening tracked separately).
+        // borrowing the code scope; uninitialized plain falls back to DenyAll —
+        // same posture as code since the #455 convergence).
         assert_eq!(
             bridge.session_policy("sess-plain-bound").mode(),
             SessionMode::Plain
@@ -3733,6 +3732,13 @@ mod tests {
                 && r.action == codewhale_execpolicy::PermissionAction::Deny
                 && r.command.as_deref().is_some_and(|c| c.starts_with("mkfs"))),
             "safety-net command rules should always be present"
+        );
+        // 推进通道（denied_prefixes）必须同样承载 safety-net 规则——运行时
+        // 真正匹配通配/flag 规则的是该通道；规则在场与推进各钉一次，推进
+        // 回归才有独立信号（沿用 #445 版本的断言，评审 #455 R9 nit）。
+        assert!(
+            rs.denied_prefixes.iter().any(|p| p.starts_with("mkfs")),
+            "safety-net rules should be promoted into denied_prefixes"
         );
         assert!(
             rs.ask_rules.iter().any(|r| r

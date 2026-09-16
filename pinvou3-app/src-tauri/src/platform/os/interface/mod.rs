@@ -25,7 +25,3 @@ pub use system::{
     show_pandoc_dependency_check, show_pdf_dependency_check, spawn_detached_and_reap,
     startup_platform_env, system_default_open_supported,
 };
-
-// 仅测试消费的权限位夹具原语：生产 lib 构建不导出，见 os/mod.rs 同名说明。
-#[cfg(test)]
-pub use system::set_file_mode;

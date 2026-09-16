@@ -509,23 +509,22 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
         }
     }
 
-    // scope 禁用集（评审 #455 R5-m5）：卸载抹掉了落盘条目，「卸载前被显式
-    // 关掉」与「卸载前开着」已不可区分——统一把包 id + 包内技能重新加回**已
-    // 初始化** scope 的禁用集（保守收敛：需要用的包用户在工具列表手动开回
-    // 一次，不经恢复按钮零同意重新上线）；未初始化 scope 不写（DenyAll 现算
-    // 扩集本就覆盖该包，与 disable 臂的非固化口径一致）。hidden 集只清不写：
-    // 恢复包应对用户可见。先清（卸载残留 + 兜底）再恢复禁用。
-    super::scope::remove_bundle_from_disabled_scopes(pkg_id);
-    super::scope::redisable_bundle_in_initialized_scopes(pkg_id);
+    // scope 禁用集（评审 #455 R5-m5 / R9-M2）：卸载抹掉了落盘条目，「卸载前
+    // 被显式关掉」与「卸载前开着」已不可区分——统一把包 id + 包内技能重新
+    // 加回**已初始化** scope 的禁用集（保守收敛：需要用的包用户在工具列表
+    // 手动开回一次，不经恢复按钮零同意重新上线）；未初始化 scope 不写
+    // （DenyAll 现算扩集本就覆盖，与 disable 臂的非固化口径一致）；hidden 集
+    // 只清不写（恢复包应对用户可见）。全部在一个临界区内完成（防跨锁窗口
+    // 被并发 enable 穿插丢更新）。
+    let mut consent_ids = vec![pkg_id.to_string()];
     if let Ok(rd) = std::fs::read_dir(pkg_dir.join("skills")) {
         for entry in rd.flatten() {
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                super::scope::remove_bundle_from_disabled_scopes(&name);
-                super::scope::redisable_bundle_in_initialized_scopes(&name);
+                consent_ids.push(entry.file_name().to_string_lossy().into_owned());
             }
         }
     }
+    super::scope::apply_restore_consent_gate(&consent_ids);
     Ok(RestoreRecycledResult {
         credentials_required,
     })

@@ -138,6 +138,7 @@ import {
   isPersonalWorkbenchTemplateDraftForTemplate,
 } from './personal-workbench-scene.js';
 import { canPrepareSceneCapabilities, prepareSceneCapabilities, requiredCapabilitiesForMeta } from './scene-capabilities.js';
+import { consumeWelcomeOptIn } from './welcome-optin.js';
 import { invokeTauri } from '../../platform/tauri/client.js';
 import {
   COMPOSER_ICON_BUTTON_CLASS,
@@ -1570,17 +1571,22 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const sendChatMessage = useCallback(async (text) => {
         if (!bridge.available) return false;
         // 欢迎卡的两条发送路径（点击示例提问 / 自由输入）统一在此完成
-        // opt-in（评审 #455 R8-2）：只经一次 enable_marketplace_packages，
-        // 失败不阻断发送——工具缺席在回复中可见，不静默。chip 路径的
-        // onSend 不再重复调用。
-        const welcomeTool = welcomeToolIdRef.current;
-        if (welcomeTool) {
-          welcomeToolIdRef.current = null;
-          setWelcomeToolId(null);
-          await Promise.resolve(
-            invokeTauri('enable_marketplace_packages', { packageIds: [welcomeTool], scope: 'plain' })
-          ).catch((err) => {
-            console.warn("[pinvou3][chat-ui] welcome-card opt-in failed", err);
+        // opt-in（评审 #455 R8-2，逻辑提取在 welcome-optin.js 便于直测）：
+        // 失败不阻断发送，但必须 fail-visible——横幅提示 + 控制台留痕
+        // （评审 #455 R9-M4），工具缺席在回复中同样可见。
+        const welcomeOptIn = await consumeWelcomeOptIn({
+          getToolId: () => welcomeToolIdRef.current,
+          consume: () => {
+            welcomeToolIdRef.current = null;
+            setWelcomeToolId(null);
+          },
+          invoke: invokeTauri,
+        });
+        if (welcomeOptIn.failed) {
+          console.warn("[pinvou3][chat-ui] welcome-card opt-in failed:", welcomeOptIn.error);
+          setSceneCapabilityStatus({
+            kind: 'error',
+            text: t.uiChat.welcomeOptInFailed,
           });
         }
         const outgoing = String(text || '').trim();
@@ -1782,10 +1788,11 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           welcomeToolIdRef.current = null;
           welcomeSessionKeyRef.current = null;
         }
-        // justInstalledTool 故意不放进依赖:否则上面 setJustInstalledTool(null) 清掉它会二次触发
-        // 本 effect → 这次走 else 把刚显示的欢迎卡又清空(表现为"装完工具欢迎卡一闪即消失")。
-        // 依赖 activeSessionId(切会话)+ draftEpoch(每次点「新建对话」自增):后者保证即便已在草稿态
-        // 再点「新建对话」(activeSessionId 不变 null→null)也能重新求值,否则残留工具卡顶掉「你好」。
+        // justInstalledTool 在依赖里（一次性指令，父层重渲不会重复触发：effect 内
+        // 立即 setJustInstalledTool(null) 清掉，二次进入走 else 分支只在会话键变化
+        // 时清卡）。依赖 activeSessionId(切会话)+ draftEpoch(每次点「新建对话」
+        // 自增):后者保证即便已在草稿态再点「新建对话」(activeSessionId 不变
+        // null→null)也能重新求值,否则残留工具卡顶掉「你好」。
       // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: setJustInstalledTool is a parent one-shot directive callback; adding it would retrigger clearing on parent rerenders
       }, [justInstalledTool, activeSessionId, draftEpoch]);
 

@@ -70,12 +70,22 @@ static DISABLED_BUNDLES_FILE_LOCK: Mutex<()> = Mutex::new(());
 /// 本备忘只在写失败时短暂承载判定。
 static UNPERSISTED_VERDICT: Mutex<Option<(PathBuf, DisabledBundlesFile)>> = Mutex::new(None);
 
+/// 损坏恢复「隔离已留、覆盖写失败」的进程内备忘（评审 #455 R9-M1）：
+/// 恢复落盘失败时损坏原文件仍在盘上，若不记忆，下一次读取会重新隔离
+/// （新纳秒时间戳）→ `.corrupt.*` 副本无界累积——正是本 PR 在别处定为
+/// 阻塞项的行为。命中备忘的读取直接复用内存 fail-closed 态；任意一次
+/// 成功落盘（文件变回合法 JSON）后清除，进程自愈。
+static PENDING_CORRUPT_RECOVERY: Mutex<Option<(PathBuf, DisabledBundlesFile)>> = Mutex::new(None);
+
 /// 清空判定备忘。仅测试消费：with_temp_home 复用 pid 键控临时目录，前一用例
 /// 的备忘会按路径命中串味；生产路径无需清空（文件即真相，备忘只在写失败后
 /// 短暂承载判定）。
 #[cfg(test)]
 pub(crate) fn clear_unpersisted_verdict_for_test() {
     *UNPERSISTED_VERDICT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    *PENDING_CORRUPT_RECOVERY
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 }
@@ -222,6 +232,18 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
                 plain_defaults_migrated: true,
                 ..DisabledBundlesFile::default()
             };
+            {
+                // 本进程已为该 home 隔离过且覆盖写失败：直接复用，不再重复
+                // 隔离（防 .corrupt.* 无界累积，R9-M1）。
+                let memo = PENDING_CORRUPT_RECOVERY
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Some((home, file)) = memo.as_ref() {
+                    if *home == paths::pinvou3_home() {
+                        return file.clone();
+                    }
+                }
+            }
             if let Err(quarantine_err) =
                 quarantine_corrupt_disabled_bundles(content.as_bytes(), &error.to_string())
             {
@@ -230,7 +252,16 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
                 );
                 return recovered;
             }
-            save_disabled_bundles_file(&recovered);
+            if let Err(save_error) = try_save_disabled_bundles_file(&recovered) {
+                eprintln!(
+                    "[marketplace] {save_error}; corrupt recovery overwrite failed - holding the in-memory fail-closed state, re-quarantine suppressed until a save succeeds"
+                );
+                *PENDING_CORRUPT_RECOVERY
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                    Some((paths::pinvou3_home(), recovered.clone()));
+                return recovered;
+            }
             recovered
         }
     };
@@ -457,7 +488,18 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
     let json = serde_json::to_string(file)
         .map_err(|error| format!("serialize disabled_bundles.json failed: {error}"))?;
     deepseek_tui::utils::write_atomic(&path, json.as_bytes())
-        .map_err(|error| format!("write disabled_bundles.json failed: {error}"))
+        .map_err(|error| format!("write disabled_bundles.json failed: {error}"))?;
+    // 成功落盘 = 文件回到合法 JSON：两个「写失败」备忘都过期了（R9-M1）。
+    let home = paths::pinvou3_home();
+    for memo in [&UNPERSISTED_VERDICT, &PENDING_CORRUPT_RECOVERY] {
+        let mut slot = memo.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((memo_home, _)) = slot.as_ref() {
+            if *memo_home == home {
+                *slot = None;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 读某 scope 被禁用的**包 id** 列表（读不到/空 → 空）。
@@ -775,35 +817,45 @@ pub fn enable_packages_in_scope(scope: ConnectorScope, raw_ids: &[String]) {
     }
 }
 
-/// 回收站恢复专用：把包 id 重新加回**已初始化** scope 的落盘禁用集。
-/// 卸载已把该包从落盘列表抹掉，恢复侧只清不写会让「卸载前被用户显式关掉的
-/// 包」在恢复后于所有已初始化 scope 重新启用——经恢复按钮绕过 DenyAll
-/// 「显式开启」同意门（评审 #455 R5-m5）。未初始化 scope 不写（其 DenyAll
-/// 现算扩集本就覆盖该包，与 disable 臂的非固化口径一致：不把当前扩集
-/// 固化为用户状态）。
-pub fn redisable_bundle_in_initialized_scopes(raw_id: &str) {
-    let package_id = to_package_id(raw_id);
+/// 回收站恢复的同意门（评审 #455 R5-m5 / R9-M2）：**单临界区**完成
+/// 「清 hidden 残留 + 把包 id 与包内技能重新加回已初始化 DenyAll scope 的
+/// 禁用集」。跨 N 个独立锁获取的版本在两次加锁间可被并发 enable 穿插
+/// （lost-update）；与 enable_packages_in_scope / disable 臂同一持锁范式。
+/// 语义不变：已初始化 scope 恢复为禁用（保守收敛），未初始化 scope 不写
+/// （DenyAll 现算扩集本就覆盖），hidden 集只清不写（恢复包应对用户可见）。
+pub fn apply_restore_consent_gate(raw_ids: &[String]) {
+    let ids: Vec<String> = raw_ids.iter().map(|id| to_package_id(id)).collect();
+    if ids.is_empty() {
+        return;
+    }
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut file = load_disabled_bundles_file_locked();
     let mut changed = false;
-    for mode in SessionMode::ALL {
-        // 与 disable 臂同守卫：未来若引入 AllowAll 模式，其开关语义是
-        // 「默认开、显式关」，恢复不得反向写禁用条目。
-        if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
-            continue;
+    for id in &ids {
+        // hidden 残留清理：卸载后残留 hidden 会误隐藏恢复的包。
+        for hidden in file.hidden_scopes.values_mut() {
+            let before = hidden.len();
+            hidden.retain(|x| x != id);
+            changed |= hidden.len() != before;
         }
-        let key = mode.as_str();
-        if !file.initialized.contains(key) {
-            continue;
+        // 已初始化 DenyAll scope：重新加回禁用集（同意门）。
+        for mode in SessionMode::ALL {
+            if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
+                continue;
+            }
+            let key = mode.as_str();
+            if !file.initialized.contains(key) {
+                continue;
+            }
+            let list = file.scopes.entry(key.to_string()).or_default();
+            if list.iter().any(|x| x == id) {
+                continue;
+            }
+            list.push(id.clone());
+            changed = true;
         }
-        let ids = file.scopes.entry(key.to_string()).or_default();
-        if ids.iter().any(|id| id == &package_id) {
-            continue;
-        }
-        ids.push(package_id.clone());
-        changed = true;
     }
     if changed {
         save_disabled_bundles_file(&file);

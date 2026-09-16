@@ -135,7 +135,14 @@ plain 从 AllowAll 翻为 DenyAll 时的**存量迁移**（读时迁移，见
 `settings.json` **不构成**信号（评审 #455 R8-3）：预置模板/跨机拷贝的
 settings.json 会把全新装机误判为升级（plain 全开，fail-open）；真实老装机
 必留非空 `sessions/`（首启 `ensure_dirs` 自写 `sessions/default/artifacts`），
-收窄不漏判。该信号会被应用自身首启行为污染（bridge
+收窄不漏判。
+
+已知限制（进程内备忘的时效性，评审 #455 R9 nit）：freeze 落盘失败
+（`UNPERSISTED_VERDICT`）与损坏恢复覆盖写失败（`PENDING_CORRUPT_RECOVERY`）
+各有一个进程内备忘，命中即复用、不重复落盘尝试；任意一次成功落盘会清除
+对应备忘（文件回到合法 JSON）。备忘不跨进程持久——**重启后**若磁盘故障
+仍未恢复，首读会重新走对应分支（freeze 重算判定、损坏恢复重新隔离一次）；
+这是 fail-closed 方向的有界重试，非数据丢失面。该信号会被应用自身首启行为污染（bridge
 boot 自写 `sessions/` 目录项、缺省补写默认 `settings.json`），因此首读被
 上提至各宿主启动钩顶部（GUI setup、headless bridge、dump_system_prompt，
 早于一切首启自写），且判定在**首次读取时无条件落盘**（置
