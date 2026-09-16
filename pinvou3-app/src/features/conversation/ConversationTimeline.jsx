@@ -135,8 +135,9 @@ export function ConversationStatusBadge({ status, copy }) {
   const interrupted = ['Interrupted', 'interrupted', 'incomplete'].includes(status);
   // A swarm-off cancellation is an operator-level ending, not the agent's
   // failure: keep it out of the red bucket so the panel agrees with the
-  // running-agents overlay (agentCard.cancelled).
-  const cancelled = status === 'Cancelled';
+  // running-agents overlay (agentCard.cancelled). The ledger token is
+  // lowercase; compare case-insensitively like the other consumers.
+  const cancelled = typeof status === 'string' && status.toLowerCase() === 'cancelled';
   const stopped = interrupted || cancelled || status === 'LimitReached';
   const label = done
     ? c.completed

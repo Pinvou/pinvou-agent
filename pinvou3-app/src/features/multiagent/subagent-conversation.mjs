@@ -14,6 +14,7 @@
  */
 
 import { presentConversationItems } from '../conversation/conversation-model.js';
+import { isNeutralEndingStatus } from './overlay-model.mjs';
 // Same model-service gate / redaction / trilingual copy as the main chat
 // timeline: subagents call the same model API, so billing/auth failures must
 // not put raw provider bodies (potentially credential-bearing) on screen.
@@ -95,10 +96,10 @@ function turnStatusFromAgent(agent) {
   if (!agent || !agent.done) return 'running';
   if (!agent.failed) return 'Completed';
   const token = String(agent.status || '').toLowerCase();
-  if (token === 'interrupted') return 'Interrupted';
-  // A swarm-off cancellation is an operator ending, not the agent's failure:
-  // keep it distinct so the panel agrees with the running-agents overlay.
-  if (token === 'cancelled') return 'Cancelled';
+  // Endings that are not dispatch failures (a swarm-off cancellation or a
+  // session interruption) keep their own label, mirroring the overlay's
+  // statusPresentation — same shared token set.
+  if (isNeutralEndingStatus(token)) return token === 'interrupted' ? 'Interrupted' : 'Cancelled';
   return 'Failed';
 }
 

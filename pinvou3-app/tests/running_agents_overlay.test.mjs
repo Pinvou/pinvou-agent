@@ -261,6 +261,28 @@ test('mergeOverlayEntry: a status-less real-time completion keeps the ledger can
   assert.equal(completed.completedAt, 11_000, 'the success window is granted for the genuine flip');
 });
 
+test('mergeOverlayEntry: a status-less real-time completion keeps the ledger blocked flag', () => {
+  // The engine's completion event cannot distinguish endings: it carries
+  // status:null and reports blocked:false. The spread alone would whiten a
+  // blocked entry into a green "completed" until the next ledger read,
+  // losing the "waiting on the user" surface.
+  const blocked = mergeOverlayEntry(
+    null,
+    ledgerRead({ done: true, blocked: true, status: 'waiting_input' }),
+    's1',
+    10_000,
+  );
+  const whitened = mergeOverlayEntry(
+    blocked,
+    { sessionId: 's1', agentId: 'agent_1', done: true, failed: false, blocked: false, status: null, source: 'realtime' },
+    's1',
+    11_000,
+  );
+  assert.equal(whitened.blocked, true, 'the blocked flag must survive a status-less completion');
+  assert.equal(whitened.status, 'waiting_input', 'the distinguishing ledger token must survive with it');
+  assert.deepEqual(statusPresentation(whitened, copy), { text: '受阻', dot: 'blocked' });
+});
+
 test('mergeOverlayEntry: blocked reads cold-start cleanly; unblocking is terminal-to-terminal, not a flip', () => {
   const now = 10_000;
   // A blocked entry is done in the authority chain: a cold-start blocked read
@@ -360,5 +382,23 @@ test('component glue: session-switch discard, revival kick, and ledger mapping s
     chatViewSource,
     /multiAgentAvailable=\{!scheduledRunContext\}/,
     'scheduled run conversations must hide the swarm toggle entry',
+  );
+  // The codex native lane lost its inline expert card (the retired clickable
+  // transcript entry) to the swarm rework; the overlay in its session header
+  // is now its only transcript entry, so an unmount would silently remove
+  // panel access from native code sessions.
+  const codexViewSource = fs.readFileSync(
+    new URL('../src/features/codex/CodexAcpView.jsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(
+    codexViewSource,
+    /<RunningAgentsOverlay\s+sessionId=\{activeId\}[^>]*swarmOn=\{nativeMultiAgentEnabled\}/,
+    'the running overlay must stay mounted in the codex session header (the native lane transcript entry)',
+  );
+  assert.match(
+    codexViewSource,
+    /spawnRowInteractive=\{false\}/,
+    'the codex spawn count row must stay non-interactive: the overlay entry is the transcript door there',
   );
 });

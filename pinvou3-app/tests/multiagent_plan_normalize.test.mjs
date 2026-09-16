@@ -726,7 +726,7 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   // the detail badge's stopped bucket), not the red failed dot.
   assert.match(
     panelSource,
-    /isNeutralEnding\(entry\.status\) \? '#9AA0A6'/,
+    /isNeutralEndingStatus\(entry\.status\) \? '#9AA0A6'/,
     '清单行圆点必须把 cancelled/interrupted 画成中性灰，而不是 failed 红点',
   );
   assert.match(

@@ -44,6 +44,19 @@ export function isUnknownLedgerRow(summary) {
 }
 
 /**
+ * Terminal endings that are not dispatch failures even though the ledger folds
+ * every non-completed terminal into failed=true: a swarm-off cancellation or a
+ * session interruption keeps the neutral presentation (own copy + stopped dot,
+ * or the detail badge's amber bucket). Single source for the token set shared
+ * by the overlay status mapping, the transcript panel dot, and the transcript
+ * projection's status label.
+ */
+export function isNeutralEndingStatus(status) {
+  const token = String(status || '').toLowerCase();
+  return token === 'cancelled' || token === 'interrupted';
+}
+
+/**
  * Single-entry merge (the pure logic behind the component's mergeEntry):
  * - Terminal ratchet: the persisted terminal state is authoritative; a late
  *   non-terminal real-time event must not flip an entry back to running (the
@@ -64,15 +77,19 @@ export function mergeOverlayEntry(previous, detail, sessionIdIn, now) {
   if (previous && previous.done && !detail.done && detail.source !== 'ledger') return null;
   const next = { ...previous, ...detail, sessionId: sessionIdIn };
   // A real-time completion carries no status token (the bridge sends
-  // status: null because the engine event cannot distinguish endings).
-  // Keep the ledger's distinguishing terminal token — and its failed flag —
-  // instead of letting the spread whiten a cancelled/interrupted ending into
-  // a green "completed" until the next ledger read corrects it.
+  // status: null because the engine event cannot distinguish endings) and
+  // reports blocked: false, so the spread alone would whiten three neutral
+  // endings until the next ledger read corrects them: a cancelled/interrupted
+  // token into a green "completed", and a blocked entry into a plain
+  // completion (losing the "waiting on the user" surface). Keep the ledger's
+  // distinguishing fields instead.
   const previousToken = String(previous && previous.status || '').toLowerCase();
+  const previousBlocked = !!(previous && previous.done && previous.blocked);
   if (previous && previous.done && detail.status == null
-    && (previousToken === 'cancelled' || previousToken === 'interrupted')) {
+    && (isNeutralEndingStatus(previousToken) || previousBlocked)) {
     next.status = previous.status;
     next.failed = previous.failed;
+    if (previousBlocked) next.blocked = true;
   }
   // A first observation (no previous) is not a flip: grant nothing whether the
   // reading is running or terminal.
@@ -97,8 +114,7 @@ export function mergeOverlayEntry(previous, detail, sessionIdIn, now) {
 export function statusPresentation(entry, copy) {
   const statusToken = String(entry && entry.status || '').toLowerCase();
   if (entry && entry.done && entry.failed) {
-    if (statusToken === 'cancelled') return { text: copy.agentCard.cancelled, dot: 'stopped' };
-    if (statusToken === 'interrupted') return { text: copy.agentCard.interrupted, dot: 'stopped' };
+    if (isNeutralEndingStatus(statusToken)) return { text: statusToken === 'cancelled' ? copy.agentCard.cancelled : copy.agentCard.interrupted, dot: 'stopped' };
     return { text: copy.agentCard.failed, dot: 'failed' };
   }
   if (entry && entry.done && entry.blocked) return { text: copy.blockedTag, dot: 'blocked' };

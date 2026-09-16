@@ -646,7 +646,11 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
       // synthetic card kinds. Happy-path turns are a no-op (every tool
       // already settled via tool_end).
       for (const item of lane.items) {
-        if (!(item && item.type === 'tool' && item.state !== 'done')) continue;
+        // Aligned with the main lane's chat:done sweep predicate
+        // (chat-events.js): only cards still pending/running are in-flight;
+        // a failed card already settled (e.g. by chat:shell_task_status) must
+        // not be rewritten to done.
+        if (!(item && item.type === 'tool' && (item.state === 'pending' || item.state === 'running'))) continue;
         item.state = 'done';
         item.success = item.success === null ? false : item.success;
       }

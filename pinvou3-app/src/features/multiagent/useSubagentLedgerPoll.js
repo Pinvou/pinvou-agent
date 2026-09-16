@@ -29,7 +29,11 @@ export const LEDGER_POLL_MAX_COLD_FAILURES = 5;
  * transient: the loop keeps running and retries on the next tick — unless the
  * session has never delivered one successful read and the failures reach
  * LEDGER_POLL_MAX_COLD_FAILURES, which means it has no ledger source at all
- * and the loop stops until the effect re-runs (session switch or remount).
+ * and the loop stops. The give-up is not permanent: the effect re-runs on any
+ * `hasActive` flip (a real-time spawn burst is enough), restarting the loop
+ * with a fresh cold-failure budget — so each such burst costs at most
+ * LEDGER_POLL_MAX_COLD_FAILURES doomed IPC reads before giving up again,
+ * bounded and low-frequency.
  *
  * `kickRef` (optional) receives a function that triggers an immediate read,
  * cancelling the pending tick. Callers use it when a real-time hint suggests
@@ -72,7 +76,9 @@ export function useSubagentLedgerPoll({ enabled, sessionId, hasActive, readLedge
       if (!everSucceeded && coldFailures >= LEDGER_POLL_MAX_COLD_FAILURES) {
         // No ledger source for this session: permanent rejection (see
         // LEDGER_POLL_MAX_COLD_FAILURES). Disarm the kick so late revival
-        // hints no-op until the effect re-runs for another session.
+        // hints no-op until the effect re-runs (a `hasActive` flip restarts
+        // the loop with a fresh cold-failure budget, so the disarm is per
+        // generation, not per session).
         if (kickRef) kickRef.current = null;
         return;
       }

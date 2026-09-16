@@ -96,6 +96,10 @@ for (const language of ['zh', 'en', 'ja']) {
   for (const cardKey of ['working', 'completed', 'failed', 'spawnFailed', 'interrupted', 'cancelled']) {
     assert.ok(multiAgent.agentCard[cardKey], `${language}.uiMultiAgent.agentCard.${cardKey} must exist`);
   }
+  // The ConversationTimeline status badge renders uiConversation.cancelled for
+  // the ledger's lowercase cancelled token (case-insensitive match); the key
+  // must exist in all three locales.
+  assert.ok(dict[language].uiConversation.cancelled, `${language}.uiConversation.cancelled must exist`);
   for (const deadKey of ['confirmTitle', 'impactLabels', 'startDenied', 'stages', 'terminal', 'workerCount', 'advancedEdit', 'planCompileError']) {
     assert.equal(multiAgent[deadKey], undefined, `${language}.uiMultiAgent.${deadKey} is retired and must stay deleted`);
   }
