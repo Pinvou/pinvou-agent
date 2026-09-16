@@ -3,9 +3,14 @@ use super::super::RamSnapshot;
 use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 
 pub fn ram_snapshot() -> Option<RamSnapshot> {
+    // SAFETY: MEMORYSTATUSEX is plain integer data (no pointers, no padding
+    // restrictions), so the all-zero bit pattern is a valid value; dwLength is
+    // initialized immediately below, before the struct is passed to Windows.
     let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
     status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
 
+    // SAFETY: &mut status is a live out-parameter, and dwLength was just set
+    // to the struct size, which GlobalMemoryStatusEx requires to be valid.
     let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
     if ok == 0 {
         return None;
