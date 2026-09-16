@@ -281,6 +281,7 @@
 - 旧的全局 disabled-skills 调用已删除；包开关通过显式 bundle/registry 和每会话 disallowed tools 生效。
 - Shell 任务对账优先使用快照与完成事件携带的稳定 `origin_tool_call_id`（上游 v0.9.12 行为，Hmbown/CodeWhale #5869）：host monitor 与 Tauri/Web 桥优先回写来源工具卡，仅对无来源旧任务按命令文本回退；来源卡被压缩或重载清除的已识别终态根任务不追加到当前时间线尾部，运行中任务保持合成状态卡可见（`shell_task_projection.test.mjs`、`forkguard_shell_monitor_assigns_identical_commands_by_stable_origin`）。
 - 来源范围语义：shell 任务的 `origin_tool_call_id` 是产生它的唯一 root 轮内工具调用；子智能体任务只携带 `owner_agent_id`、来源为空，走无来源对账路径。只读 `multi_tool_use.parallel` 子调用虽共享包装调用的来源，但 shell 工具带 `ExecutesCode`、不能进入只读并行，该共享对 shell 任务不会发生。消费方必须保留 owner 区分，且不得让一个任务抢占已绑定另一任务的卡片。
+- 持锁副作用 await 上界：会话 turn gate 持有期间的副作用 await 一律以 `TURN_GATE_AWAIT_TIMEOUT`（5s）为上界（issue #255）——取消阶段二级联 send、shell 清理 join、回收 shutdown send 与 shell reclaim finalize。超时放弃该次副作用并记日志；被放弃的级联 send 因 mpsc `reserve` 的原子性保证未入队，不会在下一轮 `SendMessage` 之后迟到误杀。用户/评测消息的提交 send 仍无界（向已卡死引擎发新消息会重新阻塞 evict/delete），作为已登记后续问题单独处理（`cancel_holds_turn_lock_boundedly`）。
 
 ## 11. 软上限评估与后续减量
 
