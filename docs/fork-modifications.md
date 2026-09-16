@@ -6,6 +6,7 @@
 - 这是可复用的 Codewhale 修复，正在 `Pinvou/CodeWhale#62` 审核；不包含已持久化会话迁移。当前父仓 gitlink 的公开可达性门禁仍需合入 `pinvou3-clean` 后验证。
 - 回归测试 `forkguard_compaction_topology_preserves_tool_round_boundary` 覆盖空/活跃 Agent 拓扑及重复压缩；`forkguard_compaction_tool_round_has_valid_chat_wire_roles` 校验完整出站角色序列和工具 ID；`compaction_marker_quoted_by_user_keeps_wire_order` 覆盖普通用户引用标记。既有拓扑测试继续覆盖终态和用户仿冒消息。
 - 审核跟进：第二次压缩必须把内部拓扑检查点排除在真实用户轮次、保留预算和覆盖统计之外；Chat Completions 只合并压缩检查点附近的消息，并覆盖无摘要裁剪、用户粘贴完整摘要头及损坏历史的边界。
+- 跨轮次回归：已持久化的摘要在后续用户或 assistant 消息追加后会位于历史中间，Chat Completions 每次发送仍需将其放到原保留轮次之前；会话恢复须保持摘要位置，并把恢复后的拓扑检查点合并进同一条 user 出站消息；再次压缩时旧摘要不能截断后续真实问答，需移除旧摘要并完整保留通过覆盖校验的后续轮次。
 - 范围边界：本 PR 不迁移修复前已持久化的会话；受影响的旧会话需尝试手动 `/compact` 重新生成历史，若压缩也被服务端拒绝则需新建会话，尚未做客户服务重放验证。普通 Agent 轮次中，后台子 Agent 完成、失败或等待事件若紧接工具结果，仍可能出现同类 `tool -> user` 错误；这是独立待办，需另行修复并加入出站消息测试。CodeWhale 仓库未启用 Issues，此待办暂记录在本清单与 PR 审核讨论中。
 
 > 本文是 Pinvou 对 CodeWhale fork 的单一现状清单。
