@@ -44,6 +44,11 @@ function screenshotSpanAtMarker(normalized, markerIndex) {
   // first occurrence.
   const pngIndex = basename.toLowerCase().lastIndexOf('.png');
   if (pngIndex < 0) return null;
+  // A '..' segment cannot appear inside the real attachments dir: reject the
+  // mention outright instead of letting a model-injected path escape the
+  // screenshot directory via traversal (the renderer only inline-displays
+  // local files, but staying inside the workspace keeps the card honest).
+  if (/(^|\/)\.\.($|\/)/.test(basename)) return null;
   return { start, end: tail + pngIndex + 4 };
 }
 
