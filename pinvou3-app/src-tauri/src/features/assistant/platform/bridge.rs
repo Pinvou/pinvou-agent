@@ -8070,7 +8070,7 @@ mod tests {
         );
         assert_eq!(
             disabled.max_subagents, 0,
-            "must not raise the user's original disable configuration"
+            "kept verbatim at the EngineConfig level; the foundation clamps 0 to one usable slot"
         );
         assert_eq!(disabled.launch_concurrency, 0);
 
