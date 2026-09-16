@@ -492,7 +492,7 @@ pub async fn delete_session(
             // handle-less orphan.
             if let Some(aux_id) = store.aux_session_id(&id) {
                 pool.delete_chat_session(&aux_id).await.map_err(|error| {
-                    format!("delete_session({id}): 级联删除辅助会话 {aux_id}: {error:#}")
+                    format!("delete_session({id}): cascade delete aux session {aux_id}: {error:#}")
                 })?;
                 pool.forget_session(&aux_id);
                 let payload = serde_json::json!({ "id": &aux_id });
@@ -706,9 +706,9 @@ pub async fn get_or_create_aux_session(
     // (delete_scheduled_run only clears the mapping without cascade-deleting
     // the session), so attaching one would leak an orphan aux session.
     ensure_chat_session(&store, &session_id, "get_or_create_aux_session")?;
-    store
-        .load(&session_id)
-        .map_err(|e| format!("get_or_create_aux_session({session_id}): 主会话不存在: {e:#}"))?;
+    store.load(&session_id).map_err(|e| {
+        format!("get_or_create_aux_session({session_id}): main session not found: {e:#}")
+    })?;
     store
         .get_or_create_aux_session(&session_id)
         .map_err(|e| format!("get_or_create_aux_session({session_id}): {e:#}"))

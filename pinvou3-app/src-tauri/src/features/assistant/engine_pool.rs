@@ -276,7 +276,9 @@ pub(crate) fn turn_restrict_tools(
     persona_conversational: bool,
     caller_restrict: bool,
 ) -> bool {
-    persona_conversational || caller_restrict || session_id.starts_with("aux-")
+    persona_conversational
+        || caller_restrict
+        || crate::features::sessions::is_aux_session_id(session_id)
 }
 
 /// The "last mile" from decision to dispatch is folded into one testable
@@ -1138,8 +1140,9 @@ impl EnginePool {
         };
         for (session_id, snapshot_last_active) in candidates {
             if self.evict_if_idle(&session_id, snapshot_last_active).await {
+                let masked = crate::features::sessions::mask_session_id(&session_id);
                 eprintln!(
-                    "[engine_pool] 会话 {session_id} 空闲超过 {IDLE_EVICT_AFTER_SECS} 秒，回收 engine（下次发消息时 lazy 重建）"
+                    "[engine_pool] session {masked} idle for over {IDLE_EVICT_AFTER_SECS}s, reclaiming engine (lazily respawned on the next message)"
                 );
             }
         }
@@ -2276,7 +2279,8 @@ impl EnginePool {
             baseline_revision,
         )?;
         let scheduled_profile = self.store.scheduled_profile(session_id);
-        if scheduled_profile.is_none() && session_id.starts_with("sched-") {
+        if scheduled_profile.is_none() && crate::features::sessions::is_sched_session_id(session_id)
+        {
             bail!("Scheduled session '{session_id}' no longer exists");
         }
         let turn_lock = self.turn_locks.for_session(session_id).await;
@@ -2737,7 +2741,8 @@ impl EnginePool {
             baseline_revision,
         )?;
         let scheduled_profile = self.store.scheduled_profile(session_id);
-        if scheduled_profile.is_none() && session_id.starts_with("sched-") {
+        if scheduled_profile.is_none() && crate::features::sessions::is_sched_session_id(session_id)
+        {
             bail!("Scheduled session '{session_id}' no longer exists");
         }
         let turn_lock = self.turn_locks.for_session(session_id).await;
@@ -3220,6 +3225,23 @@ mod scheduled_model_tests {
         assert!(turn_restrict_tools("sess-plain", true, false));
         // sched- and other prefixed sessions do not take the aux rule.
         assert!(!turn_restrict_tools("sched-1", false, false));
+    }
+
+    /// PR #433 review round-8 (M-1): the is-aux decision is a prefix test on
+    /// the client-supplied id string, but id validation allows uppercase and
+    /// ids resolve to files without case canonicalization — on
+    /// case-insensitive filesystems an `AUX-<suffix>` alias loads the real
+    /// aux record. The gate must therefore be case-insensitive, or the alias
+    /// runs a full-tool turn over the aux session.
+    #[test]
+    fn aux_tool_gate_is_case_insensitive_against_id_aliases() {
+        assert!(turn_restrict_tools("AUX-1", false, false));
+        assert!(turn_restrict_tools("Aux-1", false, false));
+        assert!(turn_restrict_tools("aUx-1", false, false));
+        // A normal id can never collide: the generator emits lowercase
+        // base36, and a non-prefixed id stays caller-driven either way.
+        assert!(!turn_restrict_tools("SESS-plain", false, false));
+        assert!(!turn_restrict_tools("AUXILIARY-1", false, false));
     }
 
     /// PR #433 review round-6 (MAJOR): the "last mile" from decision to

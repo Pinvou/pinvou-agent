@@ -27,6 +27,16 @@ import {
 
 const RESTART_CONFIRM_MS = 4000;
 
+// taskId -> pending discard promise, module-scoped on purpose: the discard it
+// tracks is backend-scoped (the turn gate can hold it for seconds), while the
+// panel unmounts on close and on sched- session switches. A component-level
+// registry would die with the instance and let a remounted panel rebind to
+// the still-mapped aux session the in-flight discard then deletes — the exact
+// M-B hole re-opened through unmount/remount. Entries are removed when the
+// discard settles, so the map holds at most one pending promise per task and
+// only for the discard's lifetime.
+const discardInFlightByTask = new Map();
+
 export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onActiveChange }) {
   const copy = t.uiAuxChat;
   const conversationCopy = t.uiConversation;
@@ -48,9 +58,6 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
   // relay round trip — without this latch a double Enter fires a duplicate
   // turn and its rejection would surface as a bogus "send failed" banner.
   const sendingRef = useRef(false);
-  // taskId -> pending discard promise: lets the rebind effect wait out an
-  // in-flight discard before re-ensuring the same task (see that effect).
-  const discardInFlightRef = useRef(new Map());
 
   // Keep the old state when the snapshot is unchanged (the functional setState
   // returns the same value and React skips the re-render), blocking the
@@ -84,6 +91,9 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // latch the new task's panel disabled forever (the old restart's finally
     // can no longer be relied on once its generation went stale).
     setRestarting(false);
+    // Same latch class for sends: a never-settling auxChat.send invoke must
+    // not permanently block sends across later task rebinds either.
+    sendingRef.current = false;
     setDraft('');
     if (!auxChat || !sessionId) return;
     let disposed = false;
@@ -94,7 +104,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // the panel's back, leaving a dead binding. Await the in-flight promise
     // (errors surface on the restart path) and re-check the generation so a
     // further rebind during the wait aborts this ensure entirely.
-    const pendingDiscard = discardInFlightRef.current.get(sessionId);
+    const pendingDiscard = discardInFlightByTask.get(sessionId);
     const ensureAfterDiscard = () => {
       if (disposed || generationRef.current !== generation) return;
       auxChat.ensure(sessionId)
@@ -221,12 +231,12 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         // same task — otherwise it would bind the doomed aux session that
         // this discard deletes behind its back.
         const discardPromise = auxChat.discard(sessionId);
-        discardInFlightRef.current.set(sessionId, discardPromise);
+        discardInFlightByTask.set(sessionId, discardPromise);
         try {
           await discardPromise;
         } finally {
-          if (discardInFlightRef.current.get(sessionId) === discardPromise) {
-            discardInFlightRef.current.delete(sessionId);
+          if (discardInFlightByTask.get(sessionId) === discardPromise) {
+            discardInFlightByTask.delete(sessionId);
           }
         }
       } catch (error) {
@@ -267,7 +277,14 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         setEnsureFailed(true);
       }
     } finally {
-      setRestarting(false);
+      // A stale continuation must not clear a newer restart's latch: without
+      // the generation check, R1's finally would re-enable the composer and
+      // the new-topic button while R2's discard is still in flight, letting a
+      // send slip into the session being discarded. The rebind effect resets
+      // the flag itself, so skipping the reset here cannot leak the state.
+      if (generationRef.current === generation) {
+        setRestarting(false);
+      }
     }
   }, [auxChat, sessionId, restartArmed, restarting]);
 

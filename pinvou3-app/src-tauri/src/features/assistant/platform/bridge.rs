@@ -830,7 +830,8 @@ impl Pinvou3Bridge {
         match crate::features::memory::ensure_runtime_prompt(session_id) {
             Ok(path) => out.push(InstructionSource::File(path)),
             Err(err) => eprintln!(
-                "[pinvou3-app] memory runtime prompt unavailable for session {session_id}: {err}"
+                "[pinvou3-app] memory runtime prompt unavailable for session {}: {err}",
+                crate::features::sessions::mask_session_id(session_id)
             ),
         }
         out
@@ -2206,7 +2207,7 @@ impl Pinvou3Bridge {
         // backstop; the per-turn enforcement for regular sends lives in
         // EnginePool::send_reserved_user_message (turn_restrict_tools). Both
         // places share the same rule and back each other up.
-        if session_id.starts_with("aux-") {
+        if crate::features::sessions::is_aux_session_id(session_id) {
             cfg.allowed_tools = Some(Vec::new());
         }
         // Native Code-mode and external ACP sessions do not expose Browser MCP tools. They

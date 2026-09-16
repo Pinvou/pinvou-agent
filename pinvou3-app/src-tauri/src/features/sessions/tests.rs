@@ -4639,7 +4639,7 @@ fn set_aux_session_rejects_invalid_and_prefixed_keys() {
 
 /// Duplicate-value dedup at sidecar load must be deterministic across boots:
 /// iterating a HashMap would hand ownership to per-process RandomState
-/// order, so the entries are sorted by (value, key) and the first claim wins.
+/// order, so the entries are sorted by (key, value) and the first claim wins.
 #[test]
 fn load_aux_sessions_dedups_duplicate_values_deterministically() {
     let (store, _g) = isolated_store();
@@ -4669,6 +4669,103 @@ fn load_aux_sessions_dedups_duplicate_values_deterministically() {
         reopened.aux_session_id("main-a").as_deref(),
         Some("aux-shared"),
         "the winner must be stable across boots"
+    );
+}
+
+/// PR #433 review round-8 (M-1): a case-variant alias must never load a
+/// record written under another casing — on case-insensitive filesystems
+/// `AUX-<suffix>.json` resolves to the real file, so the post-load identity
+/// check is the fail-closed backstop that makes every downstream prefix
+/// decision trustworthy.
+#[test]
+fn load_rejects_case_variant_id_alias() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let aux = store
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect("create aux");
+    let alias = format!("AUX-{}", &aux.id[4..]);
+
+    // The record file exists on disk either way; the load must refuse the
+    // alias regardless of the filesystem's case semantics.
+    let record = store
+        .manager
+        .sessions_dir()
+        .join(format!("{}.json", aux.id));
+    assert!(record.exists(), "precondition: aux record is on disk");
+    let error = store
+        .load(&alias)
+        .expect_err("a case-variant alias must not load the aux record");
+    assert!(
+        error.to_string().contains("session id mismatch")
+            || error.chain().any(|cause| {
+                cause
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+            }),
+        "the alias must fail closed (identity mismatch, or NotFound on a case-sensitive fs): {error:#}"
+    );
+
+    // The canonical id keeps working — the identity check must not reject
+    // the legitimate load.
+    let loaded = store.load(&aux.id).expect("canonical id must still load");
+    assert_eq!(loaded.metadata.id, aux.id);
+}
+
+/// PR #433 review round-8 (m1): the startup reconciliation must fail closed
+/// on transient load errors — a non-NotFound read fault at boot must abort
+/// the reconcile pass instead of classifying a live record as an orphan and
+/// deleting it.
+#[test]
+fn reconcile_aux_sessions_fails_closed_on_transient_load_error() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let aux = store
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect("create aux");
+    // Drop the mapping in-memory + on disk so the record is a rebuild
+    // candidate; keep the record itself alive.
+    store
+        .set_aux_session(&main.metadata.id, None)
+        .expect("clear mapping for the rebuild scenario");
+
+    // A directory where the record file belongs makes every read fail with
+    // something other than NotFound — a stand-in for a transient boot-time
+    // IO fault.
+    let record = store
+        .manager
+        .sessions_dir()
+        .join(format!("{}.json", aux.id));
+    std::fs::remove_file(&record).expect("remove aux record");
+    std::fs::create_dir(&record).expect("block the record path with a directory");
+
+    let error = store
+        .reconcile_aux_sessions()
+        .expect_err("a transient load error must abort the reconcile, not delete the record");
+    assert!(
+        format!("{error:#}").contains(&aux.id),
+        "the error must name the unreadable record: {error:#}"
+    );
+    assert!(
+        record.is_dir(),
+        "the record path must be untouched by the aborted reconcile"
+    );
+
+    // After the fault clears, the same reconcile rebuilds the mapping from
+    // the backlink — fail-closed does not wedge the recovery path.
+    std::fs::remove_dir(&record).expect("unblock the record path");
+    // Recreate the record contents the reconcile needs: the simplest honest
+    // way is a fresh aux for the same main, which then reconciles cleanly.
+    let rebuilt = store
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect("rebuild after the fault clears");
+    assert_eq!(
+        store.aux_session_id(&main.metadata.id).as_deref(),
+        Some(rebuilt.id.as_str())
     );
 }
 

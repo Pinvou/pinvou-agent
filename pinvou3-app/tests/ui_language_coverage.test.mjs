@@ -211,17 +211,24 @@ assert.match(restartBlock, /try \{\s*try \{[\s\S]*?const discardPromise = auxCha
 assert.match(restartBlock, /setEnsureFailed\(true\)/);
 assert.doesNotMatch(restartBlock, /setSendFailed\(true\)/);
 assert.match(auxChatPanel, /copy\.discardFailed/);
-// In-flight discard registry (round-7 M-B): while the backend turn gate waits
-// out a running turn, the old mapping is still live — the rebind effect must
-// await the registered discard promise before re-ensuring the same task, or
-// it would bind the doomed aux session that the discard then deletes.
-assert.match(restartBlock, /discardInFlightRef\.current\.set\(sessionId, discardPromise\)/);
-assert.match(restartBlock, /discardInFlightRef\.current\.delete\(sessionId\)/);
-assert.match(auxChatPanel, /discardInFlightRef\.current\.get\(sessionId\)/);
+// In-flight discard registry (round-7 M-B, rescoped module-level in round-8
+// M-2): while the backend turn gate waits out a running turn, the old mapping
+// is still live — the rebind effect must await the registered discard promise
+// before re-ensuring the same task, or it would bind the doomed aux session
+// that the discard then deletes. The registry must be module-scoped, not a
+// component useRef: the discard is backend-scoped while the panel unmounts on
+// close / sched- switches, and an instance-level registry would die with the
+// unmount and re-open the exact hole through remount.
+assert.match(auxChatPanel, /const discardInFlightByTask = new Map\(\);/);
+assert.doesNotMatch(auxChatPanel, /discardInFlightRef/);
+assert.match(restartBlock, /discardInFlightByTask\.set\(sessionId, discardPromise\)/);
+assert.match(restartBlock, /discardInFlightByTask\.delete\(sessionId\)/);
+assert.match(auxChatPanel, /discardInFlightByTask\.get\(sessionId\)/);
 // restarting leak guard: the whole function body has exactly one
 // setRestarting(false), located in the outer finally (whose try opens before
 // the discard await and whose finally closes after the ensure await) — every
-// early-return path resets through it.
+// early-return path resets through it. The reset must be generation-gated
+// (round-8 m2): a stale continuation must not clear a newer restart's latch.
 const restartingClears = restartBlock.match(/setRestarting\(false\)/g) || [];
 assert.equal(restartingClears.length, 1, 'restarting must be cleared at exactly one place in handleRestart');
 const outerTry = restartBlock.indexOf('try {');
@@ -233,7 +240,7 @@ assert.ok(
   outerTry >= 0 && outerTry < discardAwait && discardAwait < ensureAwait && ensureAwait < finallyClause,
   'a single outer try must span discard+ensure so its finally resets restarting on every early return',
 );
-assert.match(restartBlock.slice(finallyClause), /} finally \{\s*setRestarting\(false\);/);
+assert.match(restartBlock.slice(finallyClause), /} finally \{[\s\S]*?if \(generationRef\.current === generation\) \{\s*setRestarting\(false\);\s*\}/);
 // In-flight send latch (round-7 M-A): snapshot-busy lags the dispatch by one
 // event round trip, so without a synchronous latch a double Enter fires a
 // duplicate turn whose rejection surfaces as a bogus "send failed" banner;
@@ -251,6 +258,10 @@ const rebindBlock = auxChatPanel.slice(
   auxChatPanel.indexOf("setDraft('');\n    if (!auxChat || !sessionId) return;"),
 );
 assert.match(rebindBlock, /setRestarting\(false\);/, 'the rebind effect must reset restarting itself');
+// Rebind also resets the send latch (round-8 m3): a never-settling
+// auxChat.send invoke (same no-transport-timeout class) must not latch sends
+// across later task rebinds either.
+assert.match(rebindBlock, /sendingRef\.current = false;/, 'the rebind effect must reset the send latch itself');
 assert.match(source('features/pet/PetSettingsSection.jsx'), /t\.uiPetSettings/);
 const conversation = source('features/conversation/ConversationTimeline.jsx');
 assert.match(conversation, /conversationCopy\(copy\)/);

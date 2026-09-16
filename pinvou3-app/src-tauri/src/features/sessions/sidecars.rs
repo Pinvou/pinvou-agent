@@ -293,12 +293,14 @@ impl SessionStore {
         // value==key (self-mapping) case cannot survive this validation —
         // the value must be aux- prefixed while the key must not be.
         super::validators::validate_session_id(main_id)?;
-        if main_id.starts_with("aux-") || main_id.starts_with("sched-") {
+        if super::validators::is_aux_session_id(main_id)
+            || super::validators::is_sched_session_id(main_id)
+        {
             anyhow::bail!("Auxiliary mapping key must be an unprefixed main session id: {main_id}");
         }
         if let Some(aux_id) = &aux_id {
             super::validators::validate_session_id(aux_id)?;
-            if !aux_id.starts_with("aux-") {
+            if !super::validators::is_aux_session_id(aux_id) {
                 anyhow::bail!("Auxiliary session id must start with 'aux-': {aux_id}");
             }
         }
@@ -370,11 +372,11 @@ impl SessionStore {
                 // Duplicate values (two mains mapping to the same aux) are
                 // dropped *deterministically*: iterating a HashMap would hand
                 // ownership to per-process RandomState iteration order, so the
-                // entries are sorted by (value, key) and the first claim wins
-                // — which owner survives is stable across boots. The
-                // duplicates become mapping-less orphans; startup
-                // reconciliation rebuilds the one whose record backlink
-                // matches and reclaims the rest.
+                // entries are sorted by (key, value) and the first claim wins
+                // — which owner survives is stable across boots. The winning
+                // owner keeps its mapping; the losers become mapping-less
+                // orphans, whose records the startup reconciliation rebuilds
+                // from the backlink when unambiguous or reclaims otherwise.
                 let mut entries: Vec<(String, String)> = map.into_iter().collect();
                 entries.sort();
                 let mut seen_aux_ids: std::collections::HashSet<String> =
@@ -384,9 +386,9 @@ impl SessionStore {
                     .filter(|(main_id, aux_id)| {
                         let valid = super::validators::validate_session_id(main_id).is_ok()
                             && super::validators::validate_session_id(aux_id).is_ok()
-                            && aux_id.starts_with("aux-")
-                            && !main_id.starts_with("aux-")
-                            && !main_id.starts_with("sched-")
+                            && super::validators::is_aux_session_id(aux_id)
+                            && !super::validators::is_aux_session_id(main_id)
+                            && !super::validators::is_sched_session_id(main_id)
                             && main_id != aux_id
                             && seen_aux_ids.insert(aux_id.clone());
                         if !valid {

@@ -74,7 +74,9 @@ impl SessionStore {
             // main session's cascade/discard (same precedent as sched-): it is
             // never an eviction candidate and does not consume the retention
             // budget of visible sessions.
-            if metadata.id.starts_with("sched-") || metadata.id.starts_with("aux-") {
+            if super::validators::is_sched_session_id(&metadata.id)
+                || super::validators::is_aux_session_id(&metadata.id)
+            {
                 continue;
             }
             chat_count += 1;
@@ -365,7 +367,7 @@ impl SessionStore {
             .list_sessions_cached()
             .context("list sessions for aux session reconciliation")?
             .iter()
-            .filter(|metadata| metadata.id.starts_with("aux-"))
+            .filter(|metadata| super::validators::is_aux_session_id(&metadata.id))
             .map(|metadata| metadata.id.clone())
             .collect();
         if aux_ids.is_empty() {
@@ -430,12 +432,22 @@ impl SessionStore {
     fn rebuild_aux_mapping_from_record(&self, aux_id: &str) -> Result<bool> {
         let parent_id = match self.load(aux_id) {
             Ok(session) => session.metadata.parent_session_id,
-            Err(_) => return Ok(false),
+            // Fail closed on anything but a genuine NotFound: a transient
+            // boot-time read fault (EIO, a held file) must not classify a
+            // live record as an orphan — the caller would delete it. The
+            // error aborts the reconcile pass, which retries on next boot.
+            Err(error) if super::store::is_not_found_error(&error) => return Ok(false),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("load aux record {aux_id} for reconciliation"));
+            }
         };
         let Some(parent_id) = parent_id else {
             return Ok(false);
         };
-        if parent_id.starts_with("aux-") || parent_id.starts_with("sched-") {
+        if super::validators::is_aux_session_id(&parent_id)
+            || super::validators::is_sched_session_id(&parent_id)
+        {
             return Ok(false);
         }
         if self.aux_session_id(&parent_id).is_some()

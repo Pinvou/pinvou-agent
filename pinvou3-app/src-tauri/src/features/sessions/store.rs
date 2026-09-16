@@ -286,7 +286,8 @@ impl SessionStore {
         // 正常路径由评测运行器清理,崩溃残留也不能把私密题目带进会话列表。
         // 默认桌面构建不保留这项前缀语义,避免 benchmark 未启用时改变普通会话列表。
         out.retain(|metadata| {
-            !metadata.id.starts_with("sched-") && !metadata.id.starts_with("aux-")
+            !super::validators::is_sched_session_id(&metadata.id)
+                && !super::validators::is_aux_session_id(&metadata.id)
         });
         #[cfg(feature = "benchmark-hooks")]
         out.retain(|metadata| !metadata.id.starts_with("eval_"));
@@ -295,9 +296,24 @@ impl SessionStore {
     }
 
     pub fn load(&self, id: &str) -> Result<SavedSession> {
-        self.manager
+        let session = self
+            .manager
             .load_session_snapshot(id)
-            .with_context(|| format!("load_session({id})"))
+            .with_context(|| format!("load_session({id})"))?;
+        // Fail closed on case-variant aliases: on case-insensitive
+        // filesystems `AUX-<suffix>.json` resolves to the real `aux-…` record
+        // while case-sensitive identity tests miss the mismatch, so a caller
+        // holding an alias would operate on a different session than the id
+        // claims. Requiring the loaded metadata id to equal the requested id
+        // makes every downstream prefix/identity decision trustworthy
+        // regardless of filesystem case semantics.
+        if session.metadata.id != id {
+            bail!(
+                "session id mismatch: requested '{id}' but record holds '{}'",
+                session.metadata.id
+            );
+        }
+        Ok(session)
     }
 
     /// Pack one session into a full-fidelity `.tar.xz` archive, reusing the
@@ -375,7 +391,7 @@ impl SessionStore {
         // maps below therefore run while this lock is held. That is safe only
         // because no hook re-enters the aux surface today — a hook doing so
         // would self-deadlock. See the notify_session_purged contract.
-        let _aux_io_guard = if id.starts_with("aux-") {
+        let _aux_io_guard = if super::validators::is_aux_session_id(id) {
             None
         } else {
             Some(self.aux_sessions_io.lock())
@@ -666,14 +682,14 @@ impl SessionStore {
         // get-or-create wrapper): an auxiliary conversation must not own
         // another one, and an aux session is itself a Chat kind, so the
         // command layer's `ensure_chat_session` cannot catch it.
-        if parent_id.starts_with("aux-") {
+        if super::validators::is_aux_session_id(parent_id) {
             bail!("Auxiliary session '{parent_id}' cannot own an aux session");
         }
         // `sched-` parents are rejected for the same reason: a sched- keyed
         // mapping is exactly the entry class the sidecar load filter and the
         // startup reconciliation drop, so such an aux transcript would be
         // reclaimed as corrupted state on the next boot.
-        if parent_id.starts_with("sched-") {
+        if super::validators::is_sched_session_id(parent_id) {
             bail!("Scheduled-run session '{parent_id}' cannot own an aux session");
         }
         let parent = self
@@ -729,10 +745,10 @@ impl SessionStore {
     /// `ensure_chat_session` cannot catch it — the single creation entry point
     /// must reject it explicitly.
     pub fn get_or_create_aux_session(&self, parent_id: &str) -> Result<SessionMetadata> {
-        if parent_id.starts_with("aux-") {
+        if super::validators::is_aux_session_id(parent_id) {
             bail!("Auxiliary session '{parent_id}' cannot own an aux session");
         }
-        if parent_id.starts_with("sched-") {
+        if super::validators::is_sched_session_id(parent_id) {
             bail!("Scheduled-run session '{parent_id}' cannot own an aux session");
         }
         let _create = self.aux_sessions_io.lock();
@@ -979,7 +995,7 @@ impl SessionStore {
 /// chain — the "record is not on disk" case. Any other failure kind must be
 /// treated as "unknown" rather than "absent", so transient IO errors are never
 /// conflated with a missing record.
-fn is_not_found_error(error: &anyhow::Error) -> bool {
+pub(super) fn is_not_found_error(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause
             .downcast_ref::<std::io::Error>()

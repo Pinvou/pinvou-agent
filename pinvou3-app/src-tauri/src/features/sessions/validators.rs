@@ -32,6 +32,33 @@ pub(crate) fn validate_scheduled_session_id(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Case-insensitive `aux-` prefix test. The aux zero-tools gates
+/// (`turn_restrict_tools`, the spawn-config backstop) and the aux-of-aux /
+/// sidecar guards decide "is this an aux session" from the client-supplied id
+/// string, but `validate_session_id` allows uppercase and ids resolve to
+/// files without case canonicalization — on case-insensitive filesystems
+/// (NTFS/APFS) an `AUX-<suffix>` alias would load the real aux record while
+/// every case-sensitive prefix test misses it, running a full-tool turn over
+/// the aux session. Every is-aux decision must go through this helper so the
+/// gates hold regardless of filesystem case semantics.
+pub(crate) fn is_aux_session_id(id: &str) -> bool {
+    id.len() >= 4 && id[..4].eq_ignore_ascii_case("aux-")
+}
+
+/// Case-insensitive `sched-` prefix test — same alias-defeating argument as
+/// [`is_aux_session_id`], applied wherever a sched- identity decides a guard.
+pub(crate) fn is_sched_session_id(id: &str) -> bool {
+    id.len() >= 6 && id[..6].eq_ignore_ascii_case("sched-")
+}
+
+/// Log-safe rendering of a session id: keeps the kind prefix and the first
+/// four id characters, masks the rest. Diagnostics stay greppable by session
+/// kind and short prefix without writing the full identifier to logs.
+pub(crate) fn mask_session_id(id: &str) -> String {
+    let keep = id.char_indices().nth(8).map_or(id.len(), |(idx, _)| idx);
+    format!("{}…", &id[..keep])
+}
+
 pub(crate) fn validate_scheduled_task_id(id: &str) -> Result<()> {
     if id.trim().is_empty()
         || !id.chars().all(|character| {

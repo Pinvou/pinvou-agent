@@ -84,7 +84,10 @@ pub use self::scheduled::{
 pub use self::transcript::transcript_revision;
 /// Re-export the crate-visible session-id validator (used by commands). It is
 /// `pub(crate)` so it stays out of the crate's public API surface.
-pub(crate) use self::validators::{validate_session_id, validate_user_workspace_path};
+pub(crate) use self::validators::{
+    is_aux_session_id, is_sched_session_id, mask_session_id, validate_session_id,
+    validate_user_workspace_path,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionKind {
