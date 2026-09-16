@@ -3386,6 +3386,12 @@ mod tests {
                 load_disabled_connectors_for(ConnectorScope::Code),
                 vec!["weather".to_string()]
             );
+            // DenyAll 默认关闭只进 disabled 集，不得误入可见性集：新装包默认关闭
+            // 但仍应可见，用户才能在商店/会话卡里看到并显式开启。
+            assert!(
+                crate::features::marketplace::scope::load_hidden_bundles_for(ConnectorScope::Code)
+                    .is_empty()
+            );
             // 已存在不重复。
             sync_deny_all_scopes_after_install("weather");
             assert_eq!(

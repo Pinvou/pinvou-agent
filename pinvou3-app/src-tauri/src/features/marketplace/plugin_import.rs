@@ -1232,6 +1232,9 @@ mod tests {
                     .as_bytes(),
             )
             .unwrap();
+            zw.start_file("mcp/server.py", opts).unwrap();
+            zw.write_all(b"import json\nprint(json.dumps({'ok': True}))")
+                .unwrap();
             zw.start_file("skills/demo/SKILL.md", opts).unwrap();
             zw.write_all(b"---\nname: demo\n---\n# hi").unwrap();
             zw.finish().unwrap();
@@ -1247,7 +1250,9 @@ mod tests {
             pkg.join("mcp/manifest.json").is_file(),
             "mcp manifest 应落盘"
         );
+        assert!(pkg.join("mcp/server.py").is_file(), "server.py 应落盘");
         assert!(pkg.join("skills/demo/SKILL.md").is_file(), "skill 应落盘");
+        assert!(pkg.join("plugin.json").is_file(), "plugin.json 应落盘");
         assert!(pkg.join("icon.svg").is_file(), "缺省图标应落盘");
 
         // 整条链路关键断言：import 内部的 install() 已把 MCP 供给写进 mcp.json +
@@ -1262,6 +1267,26 @@ mod tests {
         assert!(
             mcp_raw.contains("\"demo\""),
             "mcp.json 应含 demo server 供给，实际: {mcp_raw}"
+        );
+        // 底座拉起契约：command 非空 + args 指向落盘后的 server.py（绝对路径）。
+        let mcp: serde_json::Value = serde_json::from_str(&mcp_raw).unwrap();
+        let server = &mcp["servers"]["demo"];
+        assert!(
+            server["command"]
+                .as_str()
+                .map(|s| !s.is_empty())
+                .unwrap_or(false),
+            "mcp.json 的 command 应非空，实际: {server:?}"
+        );
+        let args = server["args"]
+            .as_array()
+            .expect("mcp.json 的 args 应为数组");
+        assert!(
+            args.iter().any(|a| a
+                .as_str()
+                .map(|s| s.ends_with("server.py"))
+                .unwrap_or(false)),
+            "mcp.json 的 args 应含 server.py 绝对路径，实际: {args:?}"
         );
         // 导入登记的来源必须是 Upload（zip 展示名）—— 若停在 Preset，卸载会误删
         // 用户唯一副本（四轮评审 BLOCKER 1）。
@@ -1331,6 +1356,54 @@ mod tests {
         );
         assert!(pkg.join("icon.svg").is_file(), "缺省图标应落盘");
         assert!(pkg.join("plugin.json").is_file(), "派生 plugin.json 应落盘");
+
+        match prev {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 单个 SKILL.md 文件包装后的形态（zip 根只放一个 SKILL.md）→ 裸技能回退识别
+    /// 并落盘。这是 import_skill_md_bytes 底层走的路。
+    #[test]
+    fn root_skill_md_import_lands_canonical_layout() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-root-skill-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        let zip_path = dir.join("single.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("SKILL.md", opts).unwrap();
+            zw.write_all(b"---\nname: greet\n---\n# hi").unwrap();
+            zw.finish().unwrap();
+        }
+
+        let report = import_plugin_package(&zip_path.to_string_lossy(), "single.zip").unwrap();
+        assert_eq!(report.id, "greet");
+        let pkg = dir.join("bundles").join("greet");
+        assert!(
+            pkg.join("skills/greet/SKILL.md").is_file(),
+            "根 SKILL.md 应规范化为 skills/greet/SKILL.md"
+        );
+        assert!(pkg.join("plugin.json").is_file(), "派生 plugin.json 应落盘");
+        assert!(pkg.join("icon.svg").is_file(), "缺省图标应落盘");
 
         match prev {
             // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
