@@ -720,6 +720,15 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     /subtitle \|\| presentation\.task \|\| entry\.agent_id/,
     '清单行优先展示专家身份副标题；无任务标题时展示任务目标，遗留行回退 agent_id',
   );
+  // Cancelled/interrupted endings fold into failed=true at the ledger
+  // projection, but they are not dispatch failures: the list dot must use
+  // the neutral color (same contract as the overlay's statusPresentation and
+  // the detail badge's stopped bucket), not the red failed dot.
+  assert.match(
+    panelSource,
+    /isNeutralEnding\(entry\.status\) \? '#9AA0A6'/,
+    '清单行圆点必须把 cancelled/interrupted 画成中性灰，而不是 failed 红点',
+  );
   assert.match(
     transcriptsSource,
     /fn read_header_agent_id/,

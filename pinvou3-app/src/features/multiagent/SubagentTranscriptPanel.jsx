@@ -34,6 +34,17 @@ import {
 
 const TRANSCRIPT_WINDOW_STEP = 120;
 
+/**
+ * Endings that are not dispatch failures even though the ledger folds every
+ * non-completed terminal into failed=true: a swarm-off cancellation or a
+ * session interruption keeps the neutral dot, mirroring the overlay's
+ * statusPresentation and the detail badge's stopped bucket.
+ */
+function isNeutralEnding(status) {
+  const token = String(status || '').toLowerCase();
+  return token === 'cancelled' || token === 'interrupted';
+}
+
 /** Codex 式紧凑工具行：图标底 + 标题 + 一行 meta，点开看原始入出参。 */
 function CompactToolRow({ item, conversationCopy }) {
   const [open, setOpen] = useState(false);
@@ -517,7 +528,13 @@ export function SubagentTranscriptPanel({
                     className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
                     style={{
                       background: entry.done
-                        ? (entry.failed ? '#C5221F' : entry.blocked ? '#E8710A' : '#137333')
+                        // The ledger folds every non-completed ending into
+                        // failed=true, but a swarm-off cancellation or a
+                        // session interruption is not a dispatch failure —
+                        // same neutral dot the overlay and the detail badge
+                        // use for those endings.
+                        ? (isNeutralEnding(entry.status) ? '#9AA0A6'
+                          : entry.failed ? '#C5221F' : entry.blocked ? '#E8710A' : '#137333')
                         // An unfinished entry with no status token is an
                         // orphan transcript (worker record pruned, file kept):
                         // unknown history, not live work — keep it neutral
