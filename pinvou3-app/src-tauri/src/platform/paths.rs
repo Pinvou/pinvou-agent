@@ -156,6 +156,12 @@ fn bundled_connector_runtime_paths_for(
 pub fn bundle_present_artifact_server() -> PathBuf {
     bundle_mcp_servers_dir().join("present_artifact_server.py")
 }
+/// session_reader MCP server 脚本绝对路径(mcp.json 的 args 指向它)。
+/// 只读会话查询工具,配合「引用对话」能力;注册时 args 追加
+/// `--sessions-dir <sessions_root()>`,因为底座 env sanitize 不透传 PINVOU3_HOME。
+pub fn bundle_session_reader_server() -> PathBuf {
+    bundle_mcp_servers_dir().join("session_reader_server.py")
+}
 /// Local Python MCP bootstrap that adds the tool's isolated dependency directory before running
 /// its server script.
 pub fn bundle_mcp_python_runner() -> PathBuf {
