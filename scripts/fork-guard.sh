@@ -19,7 +19,7 @@ R1_CLOSURE="1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
 # pinvou3-clean (see docs/fork-modifications.md, the turn-bound cancel
 # section). verify-public-submodule.sh stays red for the pinned candidate:
 # that is the registered candidate-period state, not a regression.
-CANDIDATE_HEAD="9300ab60afb35fdd87bcc40221cc596ee478f07c"
+CANDIDATE_HEAD="064ac6e19cf558c2f5a79ac5870859c845654fd3"
 CANDIDATE_COMMITS=29
 FAST_ONLY=0
 
