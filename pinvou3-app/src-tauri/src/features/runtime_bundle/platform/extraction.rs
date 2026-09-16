@@ -434,10 +434,12 @@ impl Pinvou3Bundle {
                 let before = disabled.len();
                 disabled.retain(|id| id != tool_id);
                 if disabled.len() != before {
-                    crate::features::marketplace::save_disabled_connectors(&disabled);
+                    crate::features::marketplace::save_disabled_connectors(&disabled)
+                        .map_err(std::io::Error::other)?;
                 }
                 // 代码会话的 code scope 同样清理残留。
-                crate::features::marketplace::remove_connector_from_disabled_scopes(tool_id);
+                crate::features::marketplace::remove_connector_from_disabled_scopes(tool_id)
+                    .map_err(std::io::Error::other)?;
 
                 let _ = std::fs::remove_dir_all(paths::bundle_mcp_servers_dir().join(tool_id));
                 // 按包聚合新布局的退役残留：`migrate_custom_mcp_layout` 会先把旧目录

@@ -56,10 +56,10 @@ pub async fn set_bundle_visibility(
     let scope = parse_connector_scope(scope.as_deref())?;
     let ids = bundle_ids.clone();
     tokio::task::spawn_blocking(move || {
-        crate::features::marketplace::save_hidden_bundles_for(scope, &ids);
+        crate::features::marketplace::save_hidden_bundles_for(scope, &ids)
     })
     .await
-    .map_err(|e| format!("set_bundle_visibility join: {e}"))?;
+    .map_err(|e| format!("set_bundle_visibility join: {e}"))??;
     refresh_tools_and_broadcast(&app, pool.inner()).await;
     Ok(())
 }
@@ -85,7 +85,7 @@ pub async fn set_project_skills_enabled(
     app: AppHandle,
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
-    crate::features::marketplace::skill_scope::set_project_skills_enabled(enabled);
+    crate::features::marketplace::skill_scope::set_project_skills_enabled(enabled)?;
     // 开关影响 code 会话组合目录：重写在线会话组合目录 + 热刷 load_skill 隐藏
     // 判定 + execpolicy 规则集（项目级 skills 重新纳入 deny/allow 集合），并广播
     // 工具变更（其它窗口/实例借此刷新开关状态）。

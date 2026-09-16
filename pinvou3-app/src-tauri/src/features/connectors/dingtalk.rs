@@ -436,7 +436,7 @@ pub async fn dingtalk_apply_skills() -> Result<Value, String> {
     .map_err(|e| format!("spawn_blocking: {e}"))??;
     // scope 门禁同步：见 feishu_apply_skills 同名注释（code 默认关语义对齐）。
     if show {
-        crate::features::marketplace::sync_deny_all_scopes_after_install("dingtalk");
+        crate::features::marketplace::sync_deny_all_scopes_after_install("dingtalk")?;
     }
     Ok(json!({ "visible": show }))
 }
