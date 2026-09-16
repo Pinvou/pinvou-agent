@@ -14,6 +14,9 @@
 //! last JSONL line. Append failures are fail-open: the log is
 //! informational, so the caller warns and continues — an audit write error
 //! never blocks an action.
+//!
+//! Known limitation: one file per session grows unboundedly over a long
+//! session; rotation/retention cleanup is not implemented yet (policy TBD).
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -33,7 +36,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex_lower(&sha2::Sha256::digest(bytes))
 }
 
-/// `<pinvou3 data dir>/computer-use/`。
+/// `<pinvou3 data dir>/computer-use/`.
 pub fn audit_dir() -> PathBuf {
     paths::pinvou3_home().join("computer-use")
 }
@@ -60,6 +63,14 @@ fn sanitize_session_id(raw: &str) -> String {
     } else {
         sanitized
     }
+}
+
+/// `audit-<sanitized>-<hash8>.jsonl`. Sanitization is lossy (`a/b` and `a_b`
+/// both become `a_b`), so a hash of the raw session id (first 8 bytes of the
+/// SHA-256, hex) is part of the name to keep colliding ids in distinct files.
+pub(crate) fn audit_file_name(session_id: &str) -> String {
+    let hash = &sha256_hex(session_id.as_bytes())[..16];
+    format!("audit-{}-{hash}.jsonl", sanitize_session_id(session_id))
 }
 
 /// One audit record: a purely informational snapshot of one tool call.
@@ -134,14 +145,14 @@ pub struct AuditLog {
 }
 
 impl AuditLog {
-    /// `<pinvou3 data dir>/computer-use/audit-<session_id>.jsonl`,
-    /// with the directory created under private permissions.
+    /// `<pinvou3 data dir>/computer-use/audit-<session_id>-<hash8>.jsonl`
+    /// (see [`audit_file_name`]), with the directory created under private permissions.
     pub fn for_session(session_id: &str) -> io::Result<Self> {
         let dir = audit_dir();
         // Private-permission directory helper: create/verify 0700 (Windows-equivalent ACL).
         crate::platform::filesystem::open_private_file_directory(&dir)?;
         Ok(Self {
-            path: dir.join(format!("audit-{}.jsonl", sanitize_session_id(session_id))),
+            path: dir.join(audit_file_name(session_id)),
         })
     }
 
@@ -163,8 +174,7 @@ impl AuditLog {
         line.push('\n');
         // Audit records (even when sanitized) fall under private-data governance: go through
         // the platform layer's private append-file helper (0600 creation on unix, no umask
-        // exposure window; review finding: previously written via plain OpenOptions at 0644
-        // — insufficient defense in depth).
+        // exposure window).
         let mut file = crate::platform::filesystem::open_private_append_file(&self.path)?;
         file.write_all(line.as_bytes())?;
         // fsync each record: a crash must not tear the last JSONL line. One
@@ -272,8 +282,7 @@ mod tests {
     /// Private-data governance: for_session creates a 0700 directory and the
     /// appended file is 0600. Mode assertions go through the platform
     /// adapter's cfg(test) helpers so the target cfg stays in the adapter
-    /// layer (architecture guard rule: no target cfg outside adapters — the
-    /// previous inline `use std::os::unix` broke the Windows test build).
+    /// layer (architecture guard rule: no target cfg outside adapters).
     /// Windows has no POSIX mode bits, so the helpers pass through trivially
     /// while the private-directory layout is still exercised.
     #[test]
@@ -321,5 +330,22 @@ mod tests {
         assert_eq!(sanitize_session_id("abc-123_def"), "abc-123_def");
         assert_eq!(sanitize_session_id("../evil/x"), "___evil_x");
         assert_eq!(sanitize_session_id(""), "unknown");
+    }
+
+    /// Sanitization is lossy (`a/b` and `a_b` both become `a_b`), so the raw
+    /// session id hash in the file name is what keeps colliding ids apart.
+    #[test]
+    fn colliding_sanitized_session_ids_get_distinct_file_names() {
+        assert_eq!(sanitize_session_id("a/b"), sanitize_session_id("a_b"));
+        let slash = audit_file_name("a/b");
+        let underscore = audit_file_name("a_b");
+        assert_ne!(slash, underscore);
+        assert!(slash.starts_with("audit-a_b-"), "{slash}");
+        // First 8 bytes of the SHA-256, hex-encoded (16 chars).
+        let stem = slash
+            .trim_start_matches("audit-a_b-")
+            .trim_end_matches(".jsonl");
+        assert_eq!(stem.len(), 16, "{slash}");
+        assert!(stem.chars().all(|c| c.is_ascii_hexdigit()), "{slash}");
     }
 }

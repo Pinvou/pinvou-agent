@@ -971,9 +971,12 @@ pub fn run() {
                         tools.push("kb_search".to_string());
                         tools.push("kb_open_source".to_string());
                     }
-                    // Dynamic visibility for computer_use. The disallowed
-                    // list is the only toggle→engine channel; this closure
-                    // re-evaluates whenever refresh_disallowed_tools runs.
+                    // Dynamic visibility for computer_use: the guard hook
+                    // appends the tool to the disallow list while the master
+                    // switch is off (single source of truth in guard.rs, unit
+                    // tested there). The disallowed list is the only
+                    // toggle→engine channel; this closure re-evaluates
+                    // whenever refresh_disallowed_tools runs.
                     // computer_use_set_enabled flips the flag and refreshes
                     // immediately (see app/commands/computer_use.rs), so both
                     // toggle directions take effect on every live engine on
@@ -981,9 +984,7 @@ pub fn run() {
                     // factory side. Other refresh triggers (connector /
                     // marketplace / knowledge changes) recompute against the
                     // same current flag state.
-                    if !computer_use_shared.is_enabled() {
-                        tools.push(features::computer_use::TOOL_NAME.to_string());
-                    }
+                    computer_use_shared.add_to_disallow_list_when_disabled(&mut tools);
                     tools
                 })
             };

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
   computerUseConsentView,
   extractComputerUseScreenshotPath,
+  formatComputerUseConfirmAction,
 } from '../src/features/computer-use/computer-use-logic.js';
 
 // ── Screenshot path extraction ──────────────────────────────────────────────────
@@ -22,7 +23,7 @@ assert.equal(
 assert.equal(
   extractComputerUseScreenshotPath('shot saved C:\\Users\\John Smith\\.pinvou3\\sessions\\s1\\attachments\\computer_use\\shot.png'),
   'C:\\Users\\John Smith\\.pinvou3\\sessions\\s1\\attachments\\computer_use\\shot.png',
-  'a space INSIDE the path (walk-back extends past inner boundaries) must not lose the card (review finding)',
+  'a space INSIDE the path (walk-back extends past inner boundaries) must not lose the card',
 );
 assert.equal(
   extractComputerUseScreenshotPath('saved /mnt/John Smith/.pinvou3/sessions/s1/attachments/computer_use/shot.png'),
@@ -49,7 +50,7 @@ assert.equal(
   'MCP-style JSON envelopes must be unwrapped before searching',
 );
 // Envelope + Windows path: the raw JSON's escaped backslashes must NOT win
-// the last-match rule and produce a doubled-separator path (review finding).
+// the last-match rule and produce a doubled-separator path.
 assert.equal(
   extractComputerUseScreenshotPath(JSON.stringify({
     content: [{ type: 'text', text: 'saved C:\\Users\\u\\attachments\\computer_use\\win.png' }],
@@ -64,8 +65,7 @@ assert.equal(
 );
 // Envelope with NO text blocks: an envelope that parses must never fall back
 // to searching the raw JSON — its escaped backslashes (\\) normalize into
-// slash-doubled paths and non-text blocks must not surface either
-// (review finding).
+// slash-doubled paths and non-text blocks must not surface either.
 assert.equal(
   extractComputerUseScreenshotPath('{"content":[{"type":"image","text":"shot C:\\\\Users\\\\u/attachments/computer_use/mixed.png"}]}'),
   null,
@@ -149,7 +149,7 @@ assert.deepEqual(
 assert.deepEqual(
   computerUseConsentView({ enabled: true, granted: true, stopped: true, confirmRequest }),
   { enabled: true, stopped: true, showBanner: false, grantRequest: null, confirmRequest: null },
-  'stop() collapses the banner and the dialogs: stop_all already killed the pending confirm, so its approve button must not stay live (review finding)',
+  'stop() collapses the banner and the dialogs: stop_all already killed the pending confirm, so its approve button must not stay live',
 );
 assert.deepEqual(
   computerUseConsentView({ enabled: true, granted: false, stopped: true, grantRequest }),
@@ -160,6 +160,119 @@ assert.deepEqual(
   computerUseConsentView({ enabled: true, granted: true, stopped: false }),
   { enabled: true, stopped: false, showBanner: true, grantRequest: null, confirmRequest: null },
   'granted and not stopped keeps the non-dismissible banner visible',
+);
+
+// ── Structured confirm description rendering ─────────────────────────────
+// Backend contract: the confirm payload carries the action name plus
+// structured fields, with the English summary kept for fallback. The
+// formatter localizes the structured shape and reports the preview block /
+// too-long hint separately.
+const zhConfirmCopy = {
+  textTooLongToPreview: '文本过长，无法完整预览',
+  buttonName: { left: '左键', right: '右键', middle: '中键' },
+  confirmClick1: '单击', confirmClick2: '双击', confirmClick3: '三击',
+  confirmClick: (button, verb) => `${button}${verb}`,
+  confirmClickAt: (button, verb, point) => `在 ${point} ${button}${verb}`,
+  confirmTypeCount: (count) => `输入 ${count} 个字符`,
+  confirmKeyChord: (chord) => `按下组合键 ${chord}`,
+  confirmHoldKey: (chord, ms) => `按住 ${chord} ${ms} 毫秒`,
+  confirmDrag: (from, to) => `从 ${from} 拖拽到 ${to}`,
+  scrollDirection: { up: '向上', down: '向下', left: '向左', right: '向右' },
+  confirmScroll: (direction, amount, point) => point ? `在 ${point} ${direction}滚动 ${amount}` : `${direction}滚动 ${amount}`,
+  confirmMouseMove: (point) => `移动鼠标到 ${point}`,
+  confirmMouseDown: (button) => `按下${button}`,
+  confirmMouseUp: (button) => `松开${button}`,
+};
+const structured = (fields) => ({ sessionId: 's1', confirmId: 'c1', summary: 'english fallback', actionName: null, button: null, clickCount: null, point: null, endPoint: null, textLength: null, textPreview: null, textPreviewTruncated: false, chord: null, holdMs: null, scrollDirection: null, scrollAmount: null, ...fields });
+
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'click', button: 'left', clickCount: 1, point: { x: 5, y: 6 } })),
+  { description: '在 (5, 6) 左键单击', preview: null, previewTooLong: false },
+  'a structured single click at a point renders the localized template',
+);
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'click', button: 'right', clickCount: 3 })),
+  { description: '右键三击', preview: null, previewTooLong: false },
+  'a structured triple click without a point renders the bare template',
+);
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'click', button: 'middle', clickCount: 2, point: { x: 1, y: 2 } })),
+  { description: '在 (1, 2) 中键双击', preview: null, previewTooLong: false },
+  'button × count combinations compose',
+);
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'type', textLength: 12 })),
+  { description: '输入 12 个字符', preview: null, previewTooLong: false },
+  'a type action renders the character count',
+);
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'type', textLength: 12, textPreviewTruncated: true })),
+  { description: '输入 12 个字符', preview: null, previewTooLong: true },
+  'a truncated type action with no preview flags the too-long hint',
+);
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'type', textLength: 3, textPreview: 'abc' })),
+  { description: '输入 3 个字符', preview: 'abc', previewTooLong: false },
+  'a type action with a preview feeds the inline preview block',
+);
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'key', chord: 'Control+C' })),
+  { description: '按下组合键 Control+C', preview: null, previewTooLong: false },
+  'a key chord renders the chord string',
+);
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'hold_key', chord: 'Shift', holdMs: 500 })),
+  { description: '按住 Shift 500 毫秒', preview: null, previewTooLong: false },
+  'a hold-key action renders chord and duration',
+);
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'drag', point: { x: 1, y: 2 }, endPoint: { x: 3, y: 4 } })),
+  { description: '从 (1, 2) 拖拽到 (3, 4)', preview: null, previewTooLong: false },
+  'a drag renders both endpoints',
+);
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'scroll', scrollDirection: 'down', scrollAmount: 3, point: { x: 7, y: 8 } })),
+  { description: '在 (7, 8) 向下滚动 3', preview: null, previewTooLong: false },
+  'a scroll renders direction, amount and point',
+);
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'mouse_move', point: { x: 9, y: 10 } })),
+  { description: '移动鼠标到 (9, 10)', preview: null, previewTooLong: false },
+  'a mouse move renders the target point',
+);
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'mouse_down', button: 'left' })),
+  { description: '按下左键', preview: null, previewTooLong: false },
+  'a mouse down renders the button',
+);
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'mouse_up', button: 'right' })),
+  { description: '松开右键', preview: null, previewTooLong: false },
+  'a mouse up renders the button',
+);
+// Legacy payload generation: no structured fields — the English summary is
+// the only content and must pass through verbatim.
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, { sessionId: 's1', confirmId: 'c1', summary: 'left click x1 at Some((5, 6))' }),
+  { description: 'left click x1 at Some((5, 6))', preview: null, previewTooLong: false },
+  'a legacy request falls back to the English summary',
+);
+// Structured shape with missing required data falls back to the summary too.
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'drag', point: { x: 1, y: 2 } })),
+  { description: 'english fallback', preview: null, previewTooLong: false },
+  'an incomplete structured shape falls back to the English summary',
+);
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'teleport', point: { x: 1, y: 2 } })),
+  { description: 'english fallback', preview: null, previewTooLong: false },
+  'an unknown action name falls back to the English summary',
+);
+// A missing/legacy copy (no template keys) must not throw and must fall back.
+assert.deepEqual(
+  formatComputerUseConfirmAction({}, structured({ actionName: 'click', button: 'left', clickCount: 1 })),
+  { description: 'english fallback', preview: null, previewTooLong: false },
+  'a copy without template keys falls back to the English summary',
 );
 
 console.log('computer use logic tests passed');
@@ -364,9 +477,23 @@ const dialogCopy = {
   confirmTitle: 'Confirm this action',
   confirmActionLabel: 'Action',
   confirmElementLabel: 'Target element',
-  confirmOnce: 'Confirm once',
+  confirmOnce: 'Allow this once',
   confirmDeny: 'Deny',
   fullTextWarning: 'The agent will type exactly this text.',
+  textTooLongToPreview: 'Text too long to preview in full',
+  buttonName: { left: 'Left', right: 'Right', middle: 'Middle' },
+  confirmClick1: 'click', confirmClick2: 'double-click', confirmClick3: 'triple-click',
+  confirmClick: (button, verb) => `${button} ${verb}`,
+  confirmClickAt: (button, verb, point) => `${button} ${verb} at ${point}`,
+  confirmTypeCount: (count) => `Type ${count} characters`,
+  confirmKeyChord: (chord) => `Press ${chord}`,
+  confirmHoldKey: (chord, ms) => `Hold ${chord} for ${ms} ms`,
+  confirmDrag: (from, to) => `Drag from ${from} to ${to}`,
+  scrollDirection: { up: 'up', down: 'down', left: 'left', right: 'right' },
+  confirmScroll: (direction, amount, point) => point ? `Scroll ${direction} by ${amount} at ${point}` : `Scroll ${direction} by ${amount}`,
+  confirmMouseMove: (point) => `Move mouse to ${point}`,
+  confirmMouseDown: (button) => `Press and hold the ${button} mouse button`,
+  confirmMouseUp: (button) => `Release the ${button} mouse button`,
   actionFailed: (error) => `Action failed: ${error}`,
 };
 
@@ -398,10 +525,10 @@ try {
   };
 
   // ── UI-1. Full typePreviewFull always renders inline, approval stays enabled ──
-  // Review finding: the old reveal gate locked "Confirm once" behind a
-  // "show full text" click. The exact typed text must be visible without any
-  // click (mainstream behavior) and approval must never depend on reveal
-  // state — the preview scrolls instead of gating.
+  // The old reveal gate locked approval behind a "show full text" click; the
+  // exact typed text must be visible without any click (mainstream behavior)
+  // and approval must never depend on reveal state — the preview scrolls
+  // instead of gating.
   runtime.reset();
   tree = render(confirmSlice('cu-1', 'Hello 三'));
   const inlinePre = findByTestId(tree, 'computer-use-confirm-full-text');
@@ -410,11 +537,11 @@ try {
   assert.equal(findByTestId(tree, 'computer-use-confirm-show-full'), null,
     'no reveal step exists anymore');
   assert.equal(findByTestId(tree, 'computer-use-confirm-once').props.disabled, false,
-    '"Confirm once" must be enabled while the short text is visible');
+    '"Allow this once" must be enabled while the short text is visible');
   assert.ok(allText(tree).includes(dialogCopy.fullTextWarning),
     'the warning line stays for the inline case');
   // Texts beyond the old 200-char inline cap render inline too — visible
-  // without any click and "Confirm once" enabled (no reveal gate).
+  // without any click and "Allow this once" enabled (no reveal gate).
   const longText = `${'a'.repeat(200)}b`;
   tree = render(confirmSlice('cu-2', longText));
   const longPre = findByTestId(tree, 'computer-use-confirm-full-text');
@@ -423,7 +550,7 @@ try {
   assert.equal(findByTestId(tree, 'computer-use-confirm-show-full'), null,
     'long texts must not bring back the reveal button');
   assert.equal(findByTestId(tree, 'computer-use-confirm-once').props.disabled, false,
-    '"Confirm once" must never be disabled by preview visibility');
+    '"Allow this once" must never be disabled by preview visibility');
   assert.ok(allText(tree).includes(dialogCopy.fullTextWarning),
     'the warning line stays for the long-text case');
   // The backend contract caps the preview at 4096 chars; a max-size preview
@@ -432,18 +559,18 @@ try {
   assert.ok(findByTestId(tree, 'computer-use-confirm-full-text'),
     'a 4096-char preview renders inline in the scrollable container');
   assert.equal(findByTestId(tree, 'computer-use-confirm-once').props.disabled, false,
-    '"Confirm once" stays enabled for a max-size preview');
+    '"Allow this once" stays enabled for a max-size preview');
 
   // ── UI-2. A failed action's error must not leak into the next dialog ──
-  // Review finding: actionError survived after a dialog closed and was then
-  // rendered inside the next, unrelated dialog as a message about a
-  // different confirm_id.
+  // actionError used to survive after a dialog closed and was then rendered
+  // inside the next, unrelated dialog as a message about a different
+  // confirm_id.
   runtime.reset();
   bridgeMock.computerUse.deny = () => Promise.reject(new Error('backend exploded'));
   const failingSlice = confirmSlice('cu-1');
   tree = render(failingSlice);
   assert.equal(findByTestId(tree, 'computer-use-confirm-once').props.disabled, false,
-    'a request without typePreviewFull must not gate "Confirm once" behind a reveal');
+    'a request without typePreviewFull must not gate "Allow this once" behind a reveal');
   findByTestId(tree, 'computer-use-confirm-deny').props.onClick();
   // Same slice object: the failing action happens while THIS dialog is up, so
   // the error belongs to it (a new slice identity would legitimately reset it).
@@ -470,7 +597,44 @@ try {
   assert.equal(allText(tree).includes(dialogCopy.fullTextWarning), false,
     'the exact-text warning belongs to the preview block and stays hidden for secure targets');
   assert.equal(findByTestId(tree, 'computer-use-confirm-once').props.disabled, false,
-    'a missing preview must not disable "Confirm once"');
+    'a missing preview must not disable "Allow this once"');
+
+  // ── UI-4. Structured payloads render localized; too-long texts hint ──
+  // The dialog must not surface the raw English summary when the structured
+  // fields are present, and a truncated text without a preview shows the
+  // too-long hint bar instead of the preview block.
+  runtime.reset();
+  const structuredSlice = (confirmId, fields) => ({
+    enabled: true, granted: true, stopped: false,
+    confirmRequest: {
+      sessionId: 's1', confirmId, element: 'Buy now',
+      summary: 'left click x2 at Some((5, 6))',
+      actionName: null, button: null, clickCount: null, point: null, endPoint: null,
+      textLength: null, textPreview: null, textPreviewTruncated: false,
+      chord: null, holdMs: null, scrollDirection: null, scrollAmount: null,
+      ...fields,
+    },
+  });
+  tree = render(structuredSlice('cu-1', { actionName: 'click', button: 'left', clickCount: 2, point: { x: 5, y: 6 } }));
+  assert.ok(allText(tree).includes('Left double-click at (5, 6)'),
+    'a structured click renders the localized template, not the English summary');
+  assert.equal(allText(tree).includes('left click x2'), false,
+    'the English summary must not leak through when the structured fields exist');
+  tree = render(structuredSlice('cu-2', { actionName: 'type', textLength: 12, textPreviewTruncated: true }));
+  assert.ok(allText(tree).includes('Type 12 characters'),
+    'a structured type renders the localized count');
+  assert.ok(findByTestId(tree, 'computer-use-confirm-text-too-long'),
+    'a truncated text without a preview shows the too-long hint bar');
+  assert.equal(findByTestId(tree, 'computer-use-confirm-full-text'), null,
+    'no preview block renders when the backend shipped no preview');
+  assert.equal(allText(tree).includes(dialogCopy.fullTextWarning), false,
+    'the exact-text warning stays hidden without a preview');
+  tree = render(structuredSlice('cu-3', { actionName: 'type', textLength: 3, textPreview: 'abc' }));
+  const textPre = findByTestId(tree, 'computer-use-confirm-full-text');
+  assert.ok(textPre && allText(textPre).includes('abc'),
+    'a structured text_preview feeds the inline preview block');
+  assert.equal(findByTestId(tree, 'computer-use-confirm-text-too-long'), null,
+    'a shipped preview suppresses the too-long hint');
 } finally {
   await vite.close();
   rmSync(stubDir, { recursive: true, force: true });

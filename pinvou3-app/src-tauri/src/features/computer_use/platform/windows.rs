@@ -32,15 +32,16 @@
 //!   is all black and injection and UIA all stop working: an all-black frame is returned as an
 //!   explicit `unavailable` error, and things recover automatically after wake.
 //! - UIA reads have no transaction timeout: a hung target application can block the call until
-//!   the system default COM timeout. The precise semantics have two phases (round-10 review
-//!   m9): while a call is in flight, subsequent requests of that session are **rejected
-//!   immediately** by the in-flight flag (no queueing); only after the caller gives up at the
-//!   call budget timeout do subsequent requests queue and each burn the entire call budget
-//!   before erroring. The worker thread may remain stuck inside the OS call up to the system
-//!   COM timeout (inherent limitation).
-//! - `\n`/`\t` are split out of typed text and injected as real Return/Tab key clicks
-//!   (review finding: enigo's `text()` queues both the keystroke and the Unicode control
-//!   character, double-injecting newlines on targets that handle both message kinds). Newline
+//!   the system default COM timeout. The precise semantics have two phases: while a call is in
+//!   flight, subsequent requests of that session are **rejected immediately** by the in-flight
+//!   flag (no queueing); only after the caller gives up at the call budget timeout do
+//!   subsequent requests queue and each burn the entire call budget before erroring. The
+//!   worker thread may remain stuck inside the OS call up to the system COM timeout (inherent
+//!   limitation).
+//! - `\n`/`\t` are split out of typed text and injected as real Return/Tab key clicks: enigo's
+//!   `text()` queues both the keystroke and the Unicode control character, double-injecting
+//!   newlines on targets that handle both message kinds. `\r` is normalized to `\n` first —
+//!   enigo's `text()` silently drops it, so CR/CRLF text would lose its line breaks. Newline
 //!   keys go through the regular key path, so a foreground IME treats them like a physical
 //!   Enter.
 //! - `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` and DRM-protected content appear as
@@ -179,10 +180,8 @@ enum CharInjection {
 /// byte is the VK, the high byte the modifier bits (`VKSHIFT_*`); a negative return means the
 /// layout cannot produce the character. Any nonzero bit of the high byte is treated as
 /// "needs a modifier key" (fail-closed): Win32 only defines bit0-2, and unknown high-bit
-/// combinations ask for the modifier rather than injecting directly (third-round review
-/// finding: the `& 0x07` mask treated unknown high bits as Direct, contradicting the
-/// fail-closed promise made by the module docs/unit tests; runtime semantics were unchanged
-/// (unknown bits never really occur), but the code must deliver the promised behavior).
+/// combinations must ask for the modifier rather than inject directly — treating them as
+/// Direct would contradict the fail-closed promise made by the module docs/unit tests.
 fn char_injection_from_scan(scan: i16) -> CharInjection {
     if scan < 0 {
         return CharInjection::NotInLayout;
@@ -404,6 +403,9 @@ struct TreeWriter {
     next_index: u32,
     remaining: u32,
     truncated: bool,
+    /// The depth budget cut off descendants that exist but were not serialized;
+    /// surfaced in the footer alongside node-budget truncation.
+    truncated_by_depth: bool,
 }
 
 /// Single-line format: `[i] role "name" (x,y,w,h) flags`, with flags omitted when there are none.
@@ -450,6 +452,40 @@ fn format_tree_line(
     Ok(line)
 }
 
+/// Assemble an [`ElementInfo`] from a single element fetched with an Element-scope cache
+/// request (used by `focused_element` and `element_at_point`). Fail-closed: any property
+/// read failure errors out, never producing a partial ElementInfo — most critically
+/// `is_cached_password`, the authoritative signal for a password field (the password
+/// variant of an Edit control must have it set; browser-drawn password fields expose it
+/// too): `unwrap_or(false)` would silently pass password fields off as ordinary elements,
+/// defeating the T3 screening. `context` prefixes the error messages.
+fn element_info_from_cache(
+    context: &str,
+    element: &uiautomation::UIElement,
+) -> Result<ElementInfo, ComputerUseError> {
+    let control_type = element
+        .get_cached_control_type()
+        .map_err(|e| map_uia_err(&format!("{context} control type"), e))?;
+    let name = element
+        .get_cached_name()
+        .map_err(|e| map_uia_err(&format!("{context} name"), e))?;
+    let rect = element
+        .get_cached_bounding_rectangle()
+        .map_err(|e| map_uia_err(&format!("{context} bounds"), e))?;
+    let secure = element
+        .is_cached_password()
+        .map_err(|e| map_uia_err(&format!("{context} password"), e))?;
+    Ok(ElementInfo {
+        role: format!("{control_type:?}"),
+        name: sanitize_name(&name, MAX_NODE_NAME_CHARS),
+        x: rect.get_left(),
+        y: rect.get_top(),
+        width: (rect.get_right() - rect.get_left()).max(0),
+        height: (rect.get_bottom() - rect.get_top()).max(0),
+        secure,
+    })
+}
+
 /// Serialize a subtree: fetch "this node + direct children" per node via a Children-scope
 /// cache request; the node budget (`writer.remaining`) bounds the number of cross-process
 /// round-trips — the total fetch scale of the whole tree is thereby bounded. Elements may be
@@ -477,28 +513,45 @@ fn write_tree_node(
     writer.next_index += 1;
     let line = format_tree_line(index, depth, &cached)?;
     let _ = writeln!(out, "{line}");
-    if depth >= max_depth {
-        return Ok(());
-    }
     // Children were already fetched in the same cache request; enumeration failure is likewise
     // treated as "this branch ended".
     let Ok(children) = cached.get_cached_children() else {
         return Ok(());
     };
+    if depth >= max_depth {
+        // Descendants exist below the depth budget but are skipped: flag truncation
+        // (same contract as a spent node budget) so the footer tells the caller to
+        // raise max_depth.
+        if children.first().is_some() {
+            writer.truncated_by_depth = true;
+        }
+        return Ok(());
+    }
     let mut children = children.iter();
     while let Some(child) = children.next() {
         write_tree_node(child, cache, depth + 1, max_depth, writer, out)?;
         // Budget spent is real truncation only when a further child actually
         // exists and is skipped: hitting zero on the last child means the
-        // tree was serialized completely (flagging on `remaining == 0` alone
-        // used to emit a false "(truncated)" footer; the entry check above is
-        // the authoritative signal for a genuinely skipped node).
+        // tree was serialized completely (the entry check above is the
+        // authoritative signal for a genuinely skipped node).
         if writer.remaining == 0 && children.next().is_some() {
             writer.truncated = true;
             break;
         }
     }
     Ok(())
+}
+
+/// Normalize CR/CRLF newlines to `'\n'` for typed text. enigo's `text()` treats `'\r'` as
+/// a no-op and silently drops it, while `'\n'` is split out into a real Return click — so
+/// typing CRLF text verbatim would lose every line break. Borrowed when there is nothing to
+/// normalize.
+fn normalize_typed_newlines(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains('\r') {
+        std::borrow::Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
 }
 
 /// Merge the interpolated-move and button-release results of `drag`. The
@@ -514,10 +567,9 @@ fn combine_drag_errors(
         // Only the path move failed and the release succeeded: report the
         // move error unchanged.
         (Err(move_error), Ok(())) => Err(move_error),
-        // Single-failure cases keep the ORIGINAL error kind (same_kind,
-        // round-12 review): a UIPI-blocked release is `unavailable` — the
-        // "run elevated" classification upstreams rely on must survive the
-        // stranded-button annotation.
+        // Single-failure cases keep the ORIGINAL error kind: a UIPI-blocked
+        // release is `unavailable` — the "run elevated" classification
+        // upstreams rely on must survive the stranded-button annotation.
         (Ok(()), Err(release)) => {
             Err(release.same_kind(format!("{release}; the mouse button may still be pressed")))
         }
@@ -533,7 +585,7 @@ pub(super) struct WindowsComputerUseBackend {
     /// The thread DPI awareness conclusion read once at `new()`: when not Per-Monitor-V2,
     /// `capabilities().notes` declares that the coordinate assumption is doubtful (no hard failure).
     dpi_pmv2: bool,
-    /// Cancel flag set after the caller times out (round-12 review M5): the type chunked
+    /// Cancel flag set after the caller times out: the type chunked
     /// injection checks it between chunks, so abandoned requests stop injecting.
     cancel: Option<Arc<AtomicBool>>,
     // Note: does not hold uiautomation::UIAutomation — the windows-rs COM interface types are
@@ -887,17 +939,18 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
 
     fn type_text(&mut self, text: &str) -> Result<(), ComputerUseError> {
         // Direct Unicode injection (KEYEVENTF_UNICODE), bypassing the IME — Chinese lands
-        // straight in the focused field. Chunked injection (round-12 review M5): enigo's
-        // text() builds the whole text into one SendInput, but low-level keyboard hooks
-        // (AV/anti-keylogger products) process each event synchronously, and long text can
-        // legitimately exceed the call budget in such environments — chunking plus
-        // between-run cancellation checks shrink the upper bound of zombie injection after
-        // a caller timeout from the whole text to one run. Review finding: enigo's text()
-        // queues BOTH a Return/Tab click and the Unicode control character for
-        // '\n'/'\t', double-injecting newlines on targets that handle both —
-        // so newlines and tabs are split out and injected as real key clicks
-        // (same shape as the Linux backend's real Return).
-        for run in split_type_runs(text, TYPE_CHUNK_CHARS) {
+        // straight in the focused field. enigo's text() builds the whole text into one
+        // SendInput, but low-level keyboard hooks (AV/anti-keylogger products) process each
+        // event synchronously, and long text can legitimately exceed the call budget in such
+        // environments — chunking plus between-run cancellation checks shrink the upper
+        // bound of zombie injection after a caller timeout from the whole text to one run.
+        // enigo's text() queues BOTH a Return/Tab click and the Unicode control character
+        // for '\n'/'\t', double-injecting newlines on targets that handle both — so
+        // newlines and tabs are split out and injected as real key clicks (same shape as
+        // the Linux backend's real Return). '\r' stays in no Text chunk at all: it is
+        // normalized to '\n' up front (see normalize_typed_newlines).
+        let text = normalize_typed_newlines(text);
+        for run in split_type_runs(&text, TYPE_CHUNK_CHARS) {
             if let Some(flag) = &self.cancel {
                 if flag.load(Ordering::SeqCst) {
                     return Err(ComputerUseError::unavailable(
@@ -909,7 +962,7 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
             let result = match run {
                 TypeRun::Text(chunk) => self
                     .enigo
-                    .text(chunk)
+                    .text(&chunk)
                     .map_err(|err| map_input_err("type text", err)),
                 TypeRun::Return => self
                     .enigo
@@ -960,6 +1013,7 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
             next_index: 0,
             remaining: max_nodes,
             truncated: false,
+            truncated_by_depth: false,
         };
         write_tree_node(&root, &cache, 0, max_depth, &mut writer, &mut out)?;
         if writer.truncated {
@@ -967,6 +1021,12 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
                 out,
                 "... (truncated at {} nodes; pass a larger max_nodes to see more)",
                 writer.next_index
+            );
+        }
+        if writer.truncated_by_depth {
+            let _ = writeln!(
+                out,
+                "... (truncated by depth; pass a larger max_depth to see more)"
             );
         }
         Ok(out)
@@ -978,30 +1038,7 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
         let element = uia
             .get_focused_element_build_cache(&cache)
             .map_err(|e| map_uia_err("focused_element", e))?;
-        // fail-closed: any property read failure errors out, never producing a partial ElementInfo.
-        let control_type = element
-            .get_cached_control_type()
-            .map_err(|e| map_uia_err("focused_element control type", e))?;
-        let name = element
-            .get_cached_name()
-            .map_err(|e| map_uia_err("focused_element name", e))?;
-        let rect = element
-            .get_cached_bounding_rectangle()
-            .map_err(|e| map_uia_err("focused_element bounds", e))?;
-        // IsPassword is the authoritative signal for a password field; a read failure is
-        // also fail-closed.
-        let secure = element
-            .is_cached_password()
-            .map_err(|e| map_uia_err("focused_element password", e))?;
-        Ok(Some(ElementInfo {
-            role: format!("{control_type:?}"),
-            name: sanitize_name(&name, MAX_NODE_NAME_CHARS),
-            x: rect.get_left(),
-            y: rect.get_top(),
-            width: (rect.get_right() - rect.get_left()).max(0),
-            height: (rect.get_bottom() - rect.get_top()).max(0),
-            secure,
-        }))
+        Ok(Some(element_info_from_cache("focused_element", &element)?))
     }
 
     fn element_at_point(
@@ -1014,31 +1051,7 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
         let element = uia
             .element_from_point_build_cache(Point::new(x, y), &cache)
             .map_err(|e| map_uia_err("element_at_point", e))?;
-        let control_type = element
-            .get_cached_control_type()
-            .map_err(|e| map_uia_err("element_at_point control type", e))?;
-        let name = element
-            .get_cached_name()
-            .map_err(|e| map_uia_err("element_at_point name", e))?;
-        let rect = element
-            .get_cached_bounding_rectangle()
-            .map_err(|e| map_uia_err("element_at_point bounds", e))?;
-        // IsPassword is the authoritative signal for a password field (the password variant
-        // of an Edit control must have it set; browser-drawn password fields expose it too).
-        // A read failure must error out (fail-closed) — unwrap_or(false) would silently pass
-        // password fields off as ordinary elements, defeating the T3 screening.
-        let secure = element
-            .is_cached_password()
-            .map_err(|e| map_uia_err("element_at_point password", e))?;
-        Ok(Some(ElementInfo {
-            role: format!("{control_type:?}"),
-            name: sanitize_name(&name, MAX_NODE_NAME_CHARS),
-            x: rect.get_left(),
-            y: rect.get_top(),
-            width: (rect.get_right() - rect.get_left()).max(0),
-            height: (rect.get_bottom() - rect.get_top()).max(0),
-            secure,
-        }))
+        Ok(Some(element_info_from_cache("element_at_point", &element)?))
     }
 }
 
@@ -1067,6 +1080,24 @@ mod tests {
     /// A release-failure sample for [`combine_drag_errors`] (with map_input_err-style context).
     fn failed_release() -> ComputerUseError {
         ComputerUseError::failed("drag release: injected 0/1 events")
+    }
+
+    #[test]
+    fn normalize_typed_newlines_maps_cr_and_crlf() {
+        // Borrowed when there is no CR.
+        let plain = "abc";
+        let borrowed = normalize_typed_newlines(plain);
+        assert!(matches!(borrowed, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(borrowed.as_ref(), "abc");
+        // CRLF collapses to one '\n' (not two).
+        assert_eq!(normalize_typed_newlines("a\r\nb").as_ref(), "a\nb");
+        // Lone CR maps too.
+        assert_eq!(normalize_typed_newlines("a\rb").as_ref(), "a\nb");
+        // Mixed forms all normalize.
+        assert_eq!(
+            normalize_typed_newlines("a\r\nb\rc\nd").as_ref(),
+            "a\nb\nc\nd"
+        );
     }
 
     #[test]

@@ -1697,18 +1697,16 @@ const formatMemoryTime = (item, copy) => {
     const COMPUTER_USE_TOGGLE_GUARD_MS = 200;
     /**
      * Computer-use settings row as a self-contained component so the failed
-     * write can surface an inline error (review finding: the old code did
-     * `catch(() => {})`, so a failed enable looked like the switch bouncing
-     * back with no explanation). Also consumes the status projection's
-     * platform_supported: on a platform without a backend the toggle is
-     * disabled instead of letting users enable something that cannot work.
+     * write can surface an inline error (the old code did `catch(() => {})`,
+     * so a failed enable looked like the switch bouncing back with no
+     * explanation). Also consumes the status projection's platform_supported:
+     * on a platform without a backend the toggle is disabled instead of
+     * letting users enable something that cannot work.
      *
      * Lives at module scope (stable component identity across parent
-     * renders — the third review round suspected a remount-per-render bug
-     * here, but the definition sits outside SettingsView at depth 0). The
-     * switch disables itself while a write is in flight so rapid clicks
-     * cannot interleave contradictory set_enabled calls (matching the
-     * consent dialog's single-flight standard).
+     * renders). The switch disables itself while a write is in flight so
+     * rapid clicks cannot interleave contradictory set_enabled calls
+     * (matching the consent dialog's single-flight standard).
      */
     const ComputerUseSettingSection = ({ t }) => {
       const slice = useBridgeState(['computerUse']);
@@ -1825,6 +1823,16 @@ const formatMemoryTime = (item, copy) => {
           setActiveSection(initialSection);
         }
       }, [initialSection]);
+      // Cold-start status read: until a session exists nothing else polls
+      // computer-use status, so the platform_supported grey-out would never
+      // learn the platform is unsupported. One session-less refreshStatus on
+      // mount fills enabled/platform_supported; with a session active it
+      // degenerates to the ordinary status read.
+      useEffect(() => {
+        if (!canUseComputerUse || !bridge.available || !bridge.computerUse) return;
+        bridge.computerUse.refreshStatus(bs && bs.activeSessionId).catch(() => {});
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only: the read is idempotent and must not refire on every bs change
+      }, []);
       useEffect(() => {
         if (!feedbackNotice) return;
         const timer = window.setTimeout(() => setFeedbackNotice(''), 2600);

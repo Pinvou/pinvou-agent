@@ -288,10 +288,11 @@ libc = "0.2"
 # Wayland same-session screen capture (features/computer_use/platform/wayland_capture, a
 # Linux-only module): the ScreenCast stream of the portal RemoteDesktop session takes frames
 # by connecting straight to PipeWire via the OpenPipeWireRemote fd. The version matches
-# xcap's transitive dependency, adding no compilation surface. Lives in the Linux target
-# section — macOS/Windows do not compile this module, and a build dependency requiring
-# system PipeWire headers must not be introduced either (the libspa-sys build script would
-# fail outright).
+# xcap's transitive dependency. Lives in the Linux target section — macOS/Windows do not
+# compile this module. Linux builds need the PipeWire system headers: libspa-sys's build
+# script probes them via system-deps, so libpipewire-0.3-dev (plus libdrm-dev/libgbm-dev/
+# libegl-dev) must be installed or the build fails outright; the pr-check Linux jobs install
+# these in their apt steps.
 pipewire = "0.10"
 
 # Tauri 的 show/set_focus 是两条独立主循环消息；隐藏启动窗口在 release 下可能

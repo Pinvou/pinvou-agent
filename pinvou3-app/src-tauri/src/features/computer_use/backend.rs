@@ -108,9 +108,10 @@ pub trait ComputerUseBackend: Send {
     }
     /// Called when the user revokes session authorization / global stop / the master switch
     /// turns off: closes the **persistent OS-level authorization** held by this backend
-    /// (review finding: the Wayland RemoteDesktop portal session is a system-level input
-    /// authorization; if revoke/stop only cleared in-app state it would live until process
-    /// exit, contradicting the user-visible "can be stopped at any time" promise). X11 XTEST,
+    /// (the Wayland RemoteDesktop portal session is a system-level input
+    /// authorization; if revoke/stop only cleared in-app state it would
+    /// live until process exit, contradicting the user-visible "can be
+    /// stopped at any time" promise). X11 XTEST,
     /// Windows SendInput, and macOS CGEvent have no persistent grant, so the default is a
     /// no-op. After the call the backend must remain usable: the next action lazily rebuilds
     /// the grant via the existing path (the user will see the system authorization dialog
@@ -123,16 +124,17 @@ pub trait ComputerUseBackend: Send {
     /// before dispatching each request and clears it afterwards. Implementations of
     /// multi-event requests (type's per-character/per-chunk injection) check it between
     /// events, so a request the caller has already abandoned on timeout stops injecting
-    /// immediately — the one-shot check at dequeue cannot stop long requests that legitimately
-    /// exceed the call budget (round-10 review M3: Wayland per-character injection costs two
-    /// bounded portal notifications per character; 10k characters on a degraded bus far
-    /// exceeds the call budget, and after the caller times out, the zombie request would
-    /// double-inject alongside the retry). type checks in chunks on all three platforms
-    /// (X11 per-character remapping; Wayland per-character portal notifications; Windows/macOS
-    /// 64-character chunks — round-12 review M5: low-level event hooks process each event
-    /// synchronously, so a whole-text batch injection can legitimately exceed the call
-    /// budget). The multi-event loops of scroll/drag do not check (seconds-bounded, see the
-    /// residual notes in the BACKEND_CALL_TIMEOUT comment).
+    /// immediately — the one-shot check at dequeue cannot stop long requests that
+    /// legitimately exceed the call budget: Wayland per-character injection costs
+    /// two bounded portal notifications per character; 10k characters on a degraded
+    /// bus far exceeds the call budget, and after the caller times out, the zombie
+    /// request would double-inject alongside the retry. type checks in chunks on all
+    /// three platforms (X11 per-character remapping; Wayland per-character portal
+    /// notifications; Windows/macOS 64-character chunks — low-level event hooks
+    /// process each event synchronously, so a whole-text batch injection can
+    /// legitimately exceed the call budget). The multi-event loops of scroll/drag do
+    /// not check (seconds-bounded, see the residual notes in the
+    /// BACKEND_CALL_TIMEOUT comment).
     fn set_cancel_flag(&mut self, flag: Option<Arc<AtomicBool>>) {
         let _ = flag;
     }
@@ -202,14 +204,15 @@ struct BackendRequest {
     reply: Sender<BackendResult>,
     /// Cancel flag: the caller and the request each hold half of an `Arc`. It is set once the
     /// caller gives up on timeout/channel disconnect; the worker checks it after dequeue and
-    /// before execution, and a cancelled request is not executed (review finding: after the
-    /// caller returned on timeout the request was still executed as usual — by then the
-    /// physical input lock was released and the guard would not re-check, other sessions
-    /// could be injecting at the same time, breaking the cross-session full-serialization
+    /// before execution, and a cancelled request is not executed (without
+    /// the skip, a request the caller abandoned on timeout was still
+    /// executed as usual — by then the physical input lock was released
+    /// and the guard would not re-check, other sessions could be injecting
+    /// at the same time, breaking the cross-session full-serialization
     /// guarantee, and the model had already been told "the action failed").
     cancelled: Arc<AtomicBool>,
     /// Control-lane request (emergency-stop button release / OS-grant close / Shutdown):
-    /// **exempt from the dequeue skip** (round-12 review). An action request executing late
+    /// **exempt from the dequeue skip**. An action request executing late
     /// after cancellation is a double injection and must be blocked; control requests are the
     /// exact opposite — when a wedged worker recovers, a late release is strictly better than
     /// never executing (skipping would strand pressed buttons and portal sessions even though
@@ -321,19 +324,19 @@ fn worker_loop(
             continue;
         }
         // Hand the cancel flag to the backend before dispatch: multi-event injection (type)
-        // checks it between events so a request the caller has abandoned stops injecting
-        // (review finding M3). Cleared after dispatch so a stale flag does not affect later
-        // requests.
+        // checks it between events so a request the caller has abandoned stops injecting.
+        // Cleared after dispatch so a stale flag does not affect later requests.
         backend
             .as_mut()
             .set_cancel_flag(Some(Arc::clone(&request.cancelled)));
         // dispatch as a whole runs inside catch_unwind: previously only some platforms'
         // capture paths had panic protection, and any other panic (enigo/UIA/portal layers)
         // would unwind-kill the worker thread, sticking the whole session at StartFailed
-        // (review finding: the safe direction is no injection, but disabling the entire
-        // session forever overshot). A panic becomes one Failed reply and the worker keeps
-        // serving later requests; panic details go to stderr via the default hook (they may
-        // embed input content, so they do not enter the reply/audit).
+        // (the safe direction is no injection, but disabling the entire session forever
+        // overshot). A panic becomes one Failed reply and the worker keeps serving later
+        // requests. The panic payload may embed input content — the same reason it is
+        // excluded from the reply/audit — so stderr only gets a bounded, truncated
+        // summary, never the raw payload in full.
         let dispatched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             dispatch(backend.as_mut(), request.kind)
         }));
@@ -344,7 +347,10 @@ fn worker_loop(
             }
             Ok(None) => return,
             Err(panic) => {
-                eprintln!("[computer_use] backend worker panicked: {panic:?}");
+                eprintln!(
+                    "[computer_use] backend worker panicked: {}",
+                    panic_payload_summary(&panic)
+                );
                 let _ = request.reply.send(Err(ComputerUseError::failed(
                     "the computer use backend panicked while handling the request; \
                      the action may have partially executed",
@@ -352,6 +358,26 @@ fn worker_loop(
             }
         }
     }
+}
+
+/// Input-safe summary of a caught panic payload for stderr logging. The
+/// payload may embed typed input content (the same reason it is excluded
+/// from reply/audit), so only the payload kind plus a truncated head
+/// (256 chars, with an explicit truncation marker) is logged.
+fn panic_payload_summary(panic: &(dyn std::any::Any + Send)) -> String {
+    const PANIC_LOG_LIMIT: usize = 256;
+    let (kind, text) = if let Some(text) = panic.downcast_ref::<&str>() {
+        ("&str", *text)
+    } else if let Some(text) = panic.downcast_ref::<String>() {
+        ("String", text.as_str())
+    } else {
+        return "non-string panic payload".to_string();
+    };
+    let mut head: String = text.chars().take(PANIC_LOG_LIMIT).collect();
+    if text.chars().count() > PANIC_LOG_LIMIT {
+        head.push_str("… (truncated)");
+    }
+    format!("{kind}: {head}")
 }
 
 type BackendFactory =
@@ -394,21 +420,28 @@ impl BackendInner {
                 };
                 let (tx, rx) = channel::<BackendRequest>();
                 let (startup_tx, startup_rx) = channel::<Result<(), ComputerUseError>>();
-                let thread = std::thread::Builder::new()
+                let thread = match std::thread::Builder::new()
                     .name("computer-use-backend".to_string())
                     .spawn(move || worker_loop(factory, rx, startup_tx))
-                    .map_err(|error| {
-                        ComputerUseError::unavailable(format!(
-                            "cannot spawn computer use backend thread: {error}"
-                        ))
-                    })?;
+                {
+                    Ok(thread) => thread,
+                    Err(error) => {
+                        // Sticky failure, same as the factory-error branch below: the
+                        // factory is already consumed, so leaving the state at
+                        // Pending(None) would only turn the real spawn error into the
+                        // misleading "factory already consumed" on every later request.
+                        let message = format!("cannot spawn computer use backend thread: {error}");
+                        *state = WorkerState::StartFailed(message.clone());
+                        return Err(ComputerUseError::unavailable(message));
+                    }
+                };
                 let startup = startup_rx.recv_timeout(BACKEND_CALL_TIMEOUT);
                 // On the failure branches, stash (sender, thread): write the state under the
                 // lock first and release the state lock, then finish up outside the lock.
-                // Review finding: the previous timeout branch called `thread.join()` inside
-                // the state-lock critical section while the local tx was still alive and the
-                // worker blocked in rx.recv() forever → join hung permanently while holding
-                // the state lock, deadlocking the whole session.
+                // The timeout branch previously called `thread.join()` inside the
+                // state-lock critical section while the local tx was still alive and the
+                // worker blocked in rx.recv() forever → join hung permanently while
+                // holding the state lock, deadlocking the whole session.
                 let mut cleanup: Option<(Sender<BackendRequest>, JoinHandle<()>)> = None;
                 let result = match startup {
                     Ok(Ok(())) => {
@@ -427,17 +460,18 @@ impl BackendInner {
                     // Startup reply timed out (factory did not return within
                     // BACKEND_CALL_TIMEOUT) or the startup channel dropped
                     // (worker thread panicked). The sticky StartFailed state
-                    // covers both, but the diagnosis differs (review
-                    // finding): report the budget overrun as abandoned, not
-                    // as a dead thread.
+                    // covers both, but the diagnosis differs: report the
+                    // budget overrun as abandoned, not as a dead thread.
                     Err(_) => {
                         *state = WorkerState::StartFailed(
-                            "computer use backend startup was abandoned (the factory did not                              return within the startup budget, or the thread died)"
+                            "computer use backend startup was abandoned (the factory did not \
+                             return within the startup budget, or the thread died)"
                                 .to_string(),
                         );
                         cleanup = Some((tx, thread));
                         Err(ComputerUseError::unavailable(
-                            "computer use backend startup was abandoned (the factory did not                              return within the startup budget, or the thread died)",
+                            "computer use backend startup was abandoned (the factory did not \
+                             return within the startup budget, or the thread died)",
                         ))
                     }
                 };
@@ -445,11 +479,11 @@ impl BackendInner {
                 if let Some((tx, thread)) = cleanup {
                     // Mirror the Drop impl: drop the sender first (the worker's rx.recv()
                     // sees the disconnect and exits the loop), then drop the JoinHandle so
-                    // the thread detaches (round-12 review M4: in the startup-timeout branch
-                    // the worker may still be stuck inside the factory call, and join would
-                    // pin this caller's spawn_blocking thread forever); once the wedged
-                    // factory returns, the worker sees the disconnect and exits on its own,
-                    // and detaching only leaves a lingering thread without blocking anyone.
+                    // the thread detaches (in the startup-timeout branch the worker may
+                    // still be stuck inside the factory call, and join would pin this
+                    // caller's spawn_blocking thread forever); once the wedged factory
+                    // returns, the worker sees the disconnect and exits on its own, and
+                    // detaching only leaves a lingering thread without blocking anyone.
                     drop(tx);
                     drop(thread);
                 }
@@ -466,8 +500,8 @@ impl BackendInner {
     }
 
     /// The worker thread has exited / unwound (all senders dead) but the state machine is
-    /// stuck at Running: migrate to sticky StartFailed (review finding), same semantics as a
-    /// factory failure — otherwise every request for the rest of the session's lifetime would
+    /// stuck at Running: migrate to sticky StartFailed, same semantics as a factory
+    /// failure — otherwise every request for the rest of the session's lifetime would
     /// first enqueue successfully and then fail with the misleading
     /// "did not respond within <BACKEND_CALL_TIMEOUT>". States outside Running (concurrent
     /// migration / a racing Drop) are not overwritten.
@@ -510,7 +544,7 @@ impl BackendInner {
         .map_err(|_| {
             // All senders dead means the worker thread is dead: migrate the state machine
             // from Running to sticky StartFailed so this request and all later ones get a
-            // clear error (review finding).
+            // clear error.
             self.mark_thread_dead();
             ComputerUseError::unavailable("computer use backend thread died")
         })?;
@@ -518,9 +552,9 @@ impl BackendInner {
             Ok(result) => result,
             // Timeout: set the cancel flag so the worker skips the request after dequeue (a
             // request already inside an OS call cannot be interrupted, see the worker_loop
-            // comment). The wording honestly discloses the residual uncertainty (round-12
-            // review: the audit's error record must admit the action may still complete or
-            // have partially completed, same as the panic path).
+            // comment). The wording honestly discloses the residual uncertainty: the
+            // audit's error record must admit the action may still complete or have
+            // partially completed, same as the panic path.
             Err(RecvTimeoutError::Timeout) => {
                 cancelled.store(true, Ordering::SeqCst);
                 Err(ComputerUseError::unavailable(format!(
@@ -528,10 +562,10 @@ impl BackendInner {
                      the action may still execute or has partially executed"
                 )))
             }
-            // Disconnect = the worker has exited, a different failure from a timeout, so it
-            // is reported separately (review finding: both used to be lumped together as
-            // "did not respond within <BACKEND_CALL_TIMEOUT>"). Setting the cancel flag here
-            // is purely defensive (the dead worker will not consume requests anymore) and
+            // Disconnect = the worker has exited, a different failure from a timeout, so
+            // it is reported separately (both used to be lumped together as "did not
+            // respond within <BACKEND_CALL_TIMEOUT>"). Setting the cancel flag here is
+            // purely defensive (the dead worker will not consume requests anymore) and
             // lets the state machine settle in sync.
             Err(RecvTimeoutError::Disconnected) => {
                 cancelled.store(true, Ordering::SeqCst);
@@ -554,7 +588,7 @@ impl BackendInner {
     /// in flight simply runs right after the current request resolves —
     /// that IS the "queue behind the in-flight action" semantics the old
     /// comment promised but `request` never delivered. Control requests are
-    /// also exempt from the dequeue skip (round-12 review): a cleanup that
+    /// also exempt from the dequeue skip: a cleanup that
     /// timed out behind a wedged worker must run late when the worker
     /// recovers, never be discarded.
     fn request_control(&self, kind: BackendRequestKind) -> Result<BackendReply, ComputerUseError> {
@@ -570,6 +604,10 @@ impl Drop for BackendInner {
         // would hang the dropping thread (possibly a Tauri/async thread at
         // teardown) forever while every other caller on the handle blocks
         // on that mutex.
+        // Blocking bound (symmetric to a control request's call-budget
+        // wait): `ensure_sender` holds this same mutex while waiting for
+        // worker startup, up to BACKEND_CALL_TIMEOUT (700s), so a Drop
+        // racing a lazy start can block on the lock for up to 700s.
         let previous = {
             let mut state = self.state.lock();
             std::mem::replace(&mut *state, WorkerState::Shutdown)
@@ -579,17 +617,18 @@ impl Drop for BackendInner {
                 kind: BackendRequestKind::Shutdown,
                 reply: channel::<BackendResult>().0,
                 // The Shutdown request must never carry a set cancel flag: the worker would
-                // check the flag and skip first, never reaching the Shutdown branch to exit
-                // (review correction). control=true as a second line of defense.
+                // check the flag and skip first, never reaching the Shutdown branch to exit.
+                // control=true as a second line of defense.
                 cancelled: Arc::new(AtomicBool::new(false)),
                 control: true,
             });
-            // Drop the sender first (the worker's rx.recv() sees the disconnect and exits the
-            // loop), then drop the JoinHandle so the thread detaches instead of joining
-            // (same class as round-12 review M4): when the worker is wedged inside a single
-            // OS call, join would hang the cleanup thread executing Drop forever — after the
-            // call returns, the wedged worker still sees the disconnect and exits on its own;
-            // detach at worst leaves one lingering thread and never blocks any caller.
+            // Drop the sender first (the worker's rx.recv() sees the disconnect and exits
+            // the loop), then drop the JoinHandle so the thread detaches instead of joining
+            // (same class as the startup-timeout cleanup in `ensure_sender`): when the
+            // worker is wedged inside a single OS call, join would hang the cleanup thread
+            // executing Drop forever — after the call returns, the wedged worker still sees
+            // the disconnect and exits on its own; detach at worst leaves one lingering
+            // thread and never blocks any caller.
             drop(tx);
             drop(thread);
         }
@@ -756,10 +795,16 @@ impl BackendHandle {
     /// Emergency cleanup for sessions that may die mid-drag: a model that
     /// pressed a button and was stopped/revoked/dropped must not leave the
     /// user's machine in button-held state.
+    ///
+    /// Latency bound: the three button releases are three independent
+    /// control-lane requests, each with its own BACKEND_CALL_TIMEOUT (700s)
+    /// budget, so when each one queues behind a wedged worker and then
+    /// waits out its full budget the worst case is ~35 minutes; with a
+    /// healthy worker the whole call is sub-second.
     pub fn emergency_mouse_up(&self) -> Result<(), ComputerUseError> {
-        // Release the three buttons one by one (review finding: synthetic presses of the
-        // right/middle buttons also strand on stop/drop — previously only the left button
-        // was released). For unpressed buttons, every backend's release semantics is a
+        // Release the three buttons one by one (synthetic presses of the
+        // right/middle buttons also strand on stop/drop — previously only the
+        // left button was released). For unpressed buttons, every backend's
         // harmless no-op (consistent with the established line in the cleanup comment
         // below); better one release too many than a stuck button.
         let mut first_err = None;
@@ -779,8 +824,8 @@ impl BackendHandle {
 
 /// Session → backend-handle registry. Registered when a tool is constructed, unregistered on
 /// drop; on revoke/stop/master-switch off the command layer triggers `release_os_grant` for
-/// the corresponding session (review finding: after the user "stops control", the OS-level
-/// portal grant must terminate with it instead of living until process exit).
+/// the corresponding session (after the user "stops control", the OS-level portal grant must
+/// terminate with it instead of living until process exit).
 #[derive(Default)]
 pub struct BackendRegistry {
     handles: Mutex<HashMap<String, BackendHandle>>,
@@ -807,7 +852,7 @@ impl BackendRegistry {
     /// resolves. Errors are only logged: the worst case (a leaked grant or
     /// a held button) must never panic or block the caller.
     ///
-    /// Known trade-off (round-10 m1, acknowledged rather than gated): the
+    /// Known trade-off (acknowledged rather than gated): the
     /// synthetic mouse-up is machine-global and the control lane does not
     /// hold the physical-input lock, so session B's cleanup releases the
     /// button even while session A (or the user) is mid-drag. Tracking
@@ -839,10 +884,10 @@ impl BackendRegistry {
     /// tool's handle (Arc identity). Same-session factory re-invocation can
     /// let a new tool register before the old one drops; a blind remove-by-id
     /// would unregister the NEW tool, and its own Drop would then early-return,
-    /// skipping the button/portal cleanup entirely (review finding).
+    /// skipping the button/portal cleanup entirely.
     pub fn release_and_unregister(&self, session_id: &str, handle: &BackendHandle) {
         // Identity check and remove/reinsert happen under ONE lock
-        // acquisition (round-12 review M3): the previous remove-then-
+        // acquisition: the previous remove-then-
         // reinsert left a window where the successor tool's own Drop could
         // find the map empty and early-return — skipping its emergency
         // cleanup — while the late reinsert afterwards pinned its handle as
@@ -880,10 +925,10 @@ impl BackendRegistry {
     }
 
     /// The currently registered handle for the same session, if any. tool Drop uses it to
-    /// decide whether it is still the session's active tool (round-12 review: when a
+    /// decide whether it is still the session's active tool: when a
     /// same-session factory re-enters, a late old tool's Drop must not revoke the session
     /// grant the new tool just obtained — the registry-side identity check must extend to
-    /// the guard-side consent revocation).
+    /// the guard-side consent revocation.
     pub fn registered_handle(&self, session_id: &str) -> Option<BackendHandle> {
         self.handles.lock().get(session_id).cloned()
     }
@@ -1110,8 +1155,8 @@ mod tests {
             assert!(handle.capabilities().is_ok());
         }
         // After the Drop, the worker thread receives Shutdown and drops the backend object.
-        // Under the detach semantics (round-12 review M4: when the worker is wedged, join
-        // would pin the cleanup thread forever) the teardown completes asynchronously —
+        // Under the detach semantics (when the worker is wedged, join would pin the
+        // cleanup thread forever) the teardown completes asynchronously —
         // wait with a bound instead of asserting immediately.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !dropped.load(Ordering::SeqCst) {
@@ -1123,7 +1168,7 @@ mod tests {
         }
     }
 
-    /// Review-fix regression (round-10 M3): the worker hands the cancel flag to the backend
+    /// Regression: the worker hands the cancel flag to the backend
     /// before dispatching the request and clears it afterwards — only then can multi-event
     /// injection (type) check the flag between events and stop injecting; the flag must be
     /// reset after dispatch ends so a stale flag does not affect later requests.
@@ -1224,7 +1269,7 @@ mod tests {
         );
     }
 
-    /// Review-fix regression: a request the caller has abandoned (flag set on timeout/
+    /// Regression: a request the caller has abandoned (flag set on timeout/
     /// disconnect) is skipped after the worker dequeues it and before execution, replying
     /// with a clear cancellation error — executing it as usual would break cross-session
     /// serialization.
@@ -1259,7 +1304,7 @@ mod tests {
         worker.join().expect("worker exits when channel closes");
     }
 
-    /// Round-12 review: control-lane requests are EXEMPT from the dequeue
+    /// Control-lane requests are EXEMPT from the dequeue
     /// skip — a cleanup that timed out behind a wedged worker must run late
     /// when the worker recovers, never be discarded (a discarded emergency
     /// mouse-up strands the held button; a discarded ReleaseOsGrant keeps
@@ -1438,7 +1483,7 @@ mod tests {
                     .expect("slow capture must eventually succeed");
             })
         };
-        // Bounded wait (round-12 review): if the helper thread dies before setting the flag
+        // Bounded wait: if the helper thread dies before setting the flag
         // (expect panic), an unbounded yield spin would turn the fast failure into hanging
         // until the test times out.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -1606,7 +1651,7 @@ mod tests {
         assert_eq!(state.releases, 1);
     }
 
-    /// Identity check (review finding): a same-session re-registration means the
+    /// Identity check: a same-session re-registration means the
     /// registry entry belongs to the NEW tool's handle. An old tool's Drop
     /// must not unregister it — the stale entry is restored, and only the
     /// old tool's own backend gets the emergency cleanup.

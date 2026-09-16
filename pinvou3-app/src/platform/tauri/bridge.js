@@ -2853,7 +2853,6 @@
       stop: computerUseFeature.stop,
       confirm: computerUseFeature.confirm,
       deny: computerUseFeature.deny,
-      dismissConfirm: computerUseFeature.dismissConfirm,
       setEnabled: computerUseFeature.setEnabled,
       requestPermissions: computerUseFeature.requestPermissions,
     },

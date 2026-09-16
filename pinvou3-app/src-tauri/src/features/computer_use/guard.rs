@@ -6,10 +6,12 @@
 //! The integration layer (Tauri commands) injects the user's decisions through
 //! the public API: `set_enabled` / `grant_session` / `revoke_session` /
 //! `stop_all` / `mint_confirmation`. Grants live only in memory and are never
-//! persisted; a session grant lives until it is explicitly revoked (revoke /
-//! stop / master-switch off / session end — session end is the engine
-//! reclaiming the tool: its `Drop` calls `revoke_session`), no idle expiry —
-//! no mainstream product puts an idle clock on session-level grants.
+//! persisted; a session grant is bound to the tool instance's lifetime: it
+//! ends on revoke / stop / master-switch off, or when the engine reclaims the
+//! tool (its `Drop` calls `revoke_session`) — which includes the engine
+//! pool's idle reaper silently reaping an idle engine. A grant lost to idle
+//! reclaim is simply gone: the next input attempt reads `GrantRequired` and
+//! the user must grant again (a fresh tool instance starts grant-less).
 //!
 //! Confirmation model (mainstream): a blocked action raises one pending
 //! per session (a new request replaces the old one, like a normal dialog);
@@ -22,7 +24,7 @@
 //! state — the mainstream behavior).
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
@@ -33,12 +35,34 @@ use super::backend::BackendRegistry;
 /// expire on its own — after expiry it reads as nonexistent and can no longer
 /// mint an approval token.
 pub const CONFIRM_TTL: Duration = Duration::from_secs(5 * 60);
-/// Bounded-wait cap for the cross-session physical input lock. Input actions
-/// hold the lock from screening through injection (up to a full backend call
-/// cap, see backend.rs's `BACKEND_CALL_TIMEOUT`); waiting unboundedly would
-/// silently wedge other sessions (review finding) — on timeout, fail
-/// explicitly and let the model wait and retry.
+/// Bounded-wait cap for the cross-session physical input lock, in seconds.
+/// An input action holds the lock from screening through injection; a
+/// waiting session blocks at most this long and then fails closed with
+/// [`GuardRejection::InputBusy`], so the model can wait and retry — far
+/// shorter than a full backend call (see backend.rs's
+/// `BACKEND_CALL_TIMEOUT`), and an unbounded wait would silently wedge the
+/// other sessions.
 pub const PHYSICAL_INPUT_LOCK_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Test override for [`PHYSICAL_INPUT_LOCK_TIMEOUT`], in milliseconds: 0
+/// means "use the default" (see
+/// [`set_physical_input_lock_timeout_for_tests`]).
+static PHYSICAL_INPUT_LOCK_TIMEOUT_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Test-only: overrides the bounded-wait cap of
+/// [`ComputerUseShared::lock_physical_input`]; pass `Duration::ZERO` to
+/// restore [`PHYSICAL_INPUT_LOCK_TIMEOUT`].
+#[cfg(test)]
+pub(crate) fn set_physical_input_lock_timeout_for_tests(d: Duration) {
+    PHYSICAL_INPUT_LOCK_TIMEOUT_MS.store(d.as_millis() as u64, Ordering::SeqCst);
+}
+
+fn physical_input_lock_timeout() -> Duration {
+    match PHYSICAL_INPUT_LOCK_TIMEOUT_MS.load(Ordering::SeqCst) {
+        0 => PHYSICAL_INPUT_LOCK_TIMEOUT,
+        ms => Duration::from_millis(ms),
+    }
+}
 
 /// The T3 consequential-action denylist (case-insensitive substring match;
 /// Chinese/English/Japanese/Traditional Chinese).
@@ -129,10 +153,12 @@ pub fn matches_t3_denylist(label: &str) -> bool {
 }
 
 /// Whether the element role is a password/secure text field (a T3 signal;
-/// corresponds to Operator's takeover scenario).
+/// corresponds to Operator's takeover scenario). Roles that merely contain
+/// "insecure" (e.g. AXInsecureTextField) must not trip the "secure"
+/// substring.
 pub fn is_secure_role(role: &str) -> bool {
     let lower = role.to_lowercase();
-    lower.contains("password") || lower.contains("secure")
+    lower.contains("password") || (lower.contains("secure") && !lower.contains("insecure"))
 }
 
 /// Guard rejection reasons.
@@ -174,12 +200,25 @@ impl GuardRejection {
     }
 }
 
+/// The result of [`ComputerUseShared::grant_session`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrantOutcome {
+    /// The session now holds a grant.
+    Granted,
+    /// Refused: the master switch is off. A grant must not silently sleep in
+    /// the set until a re-enable resurrects control the user never
+    /// re-approved.
+    Disabled,
+    /// Refused: the emergency stop is latched.
+    Stopped,
+}
+
 /// A session grant records only "whether this session holds a grant": the
-/// grant lives until explicitly revoked (revoke / stop / master-switch off /
-/// session end — session end is the engine reclaiming the tool (the tool's
-/// `Drop` revokes)), no idle expiry — no mainstream product puts an idle
-/// clock on session-level grants (Claude Code's "allow for this session" is
-/// the same position).
+/// grant is bound to the tool instance's lifetime — it ends on revoke / stop
+/// / master-switch off, or when the engine reclaims the tool (the tool's
+/// `Drop` revokes), which includes the engine pool's idle reaper silently
+/// reaping an idle engine (the grant then lapses without any user action and
+/// the next input attempt reads `GrantRequired`).
 
 /// A T3 confirmation (pending) waiting for the user's decision. The approval
 /// token is minted by the `computer_use_confirm` Tauri command via
@@ -193,9 +232,8 @@ pub struct PendingConfirmation {
     /// The plain human-readable parameter summary of the blocked action
     /// (e.g. `left click x1 at Some((5, 6))`, `type 3 characters`); the
     /// approval token is bound to exactly this summary **and** to
-    /// `action_binding` (review finding: a summary-only binding let a token
-    /// minted for one `type N characters` be spent on a different same-length
-    /// text).
+    /// `action_binding` — a summary-only binding would let a token minted
+    /// for one `type N characters` be spent on a different same-length text.
     pub action_summary: String,
     /// A content hash of the full blocked action (every parameter, not just
     /// the shape the summary renders). Computed by the tool layer when the
@@ -243,12 +281,13 @@ struct ConsentMaps {
 pub struct ComputerUseShared {
     enabled: AtomicBool,
     stop: AtomicBool,
-    /// The set of session ids holding a session grant (a grant lives until
-    /// explicitly revoked, see the lifetime note at the top of this module).
+    /// The set of session ids holding a session grant (grant lifetime: see
+    /// the note at the top of this module — bound to the tool instance, so
+    /// engine idle reclaim also ends it).
     sessions: Mutex<HashSet<String>>,
     /// The physical mouse/keyboard is a globally exclusive resource, but the
     /// backend has one worker per session — this process-level lock
-    /// serializes input injection **across sessions** (review finding: two
+    /// serializes input injection **across sessions** (without it, two
     /// concurrent sessions could each hold a valid grant and interleave
     /// typing/clicks). Input-class actions hold it for the whole screening +
     /// execution.
@@ -302,14 +341,27 @@ impl ComputerUseShared {
         self.stop.load(Ordering::SeqCst)
     }
 
-    /// Grants this session input control (a session grant). The grant lives
-    /// until explicitly revoked (revoke / stop / master-switch off / session
-    /// end — session end is the engine reclaiming the tool (the tool's `Drop`
-    /// revokes)), no idle expiry — no mainstream product puts an idle clock on
-    /// session-level grants (Claude Code's "allow for this session" is the
-    /// same position).
-    pub fn grant_session(&self, session_id: &str) {
-        self.sessions.lock().insert(session_id.to_string());
+    /// Grants this session input control (a session grant), refusing with
+    /// [`GrantOutcome::Disabled`] / [`GrantOutcome::Stopped`] while the
+    /// master switch is off / the emergency stop is latched. The switch/stop
+    /// re-check runs under the `sessions` lock, in the same critical section
+    /// as the insert: a grant cannot slip into the set after a
+    /// `revoke_all_sessions` sweep and survive the off period to resurrect on
+    /// re-enable, and it cannot queue up while stopped to wake with the stop
+    /// reset. Grant lifetime: bound to the tool instance — it ends on revoke
+    /// / stop / master-switch off, or when the engine reclaims the tool (its
+    /// `Drop` revokes), including the engine pool's idle reaper silently
+    /// reaping an idle engine.
+    pub fn grant_session(&self, session_id: &str) -> GrantOutcome {
+        let mut sessions = self.sessions.lock();
+        if !self.is_enabled() {
+            return GrantOutcome::Disabled;
+        }
+        if self.is_stopped() {
+            return GrantOutcome::Stopped;
+        }
+        sessions.insert(session_id.to_string());
+        GrantOutcome::Granted
     }
 
     /// Revoke a single session: besides the grant row, also drop that
@@ -350,10 +402,10 @@ impl ComputerUseShared {
 
     /// Clears the stop flag when the user re-enables (restores no grants).
     /// Also sweeps any consent state an in-flight run created between the
-    /// stop and the re-enable (review finding: a pending minted during the
-    /// stopped window would otherwise become mintable the moment the stop is
-    /// lifted — consent state from the stopped period must not survive the
-    /// resume, same rule as `revoke_all_sessions` for the off period).
+    /// stop and the re-enable: a pending minted during the stopped window
+    /// would otherwise become mintable the moment the stop is lifted —
+    /// consent state from the stopped period must not survive the resume,
+    /// same rule as `revoke_all_sessions` for the off period.
     pub fn reset_stop(&self) {
         self.stop.store(false, Ordering::SeqCst);
         let mut consent = self.consent.lock();
@@ -366,10 +418,8 @@ impl ComputerUseShared {
     /// distinct from [`Self::stop_all`]'s emergency-stop semantics: turning
     /// the master switch off is not an emergency stop, and no stop state
     /// should remain after re-enabling (the `computer_use_set_enabled(false)`
-    /// call). Review finding: previously, turning the switch off did not
-    /// clear grants and tokens, so after re-enabling the old grant and old
-    /// approval tokens remained valid — consent state from the off period
-    /// must not survive a re-enable.
+    /// call). Consent state from the off period must not survive a re-enable:
+    /// the old grant and old approval tokens would otherwise remain valid.
     pub fn revoke_all_sessions(&self) {
         self.sessions.lock().clear();
         let mut consent = self.consent.lock();
@@ -389,10 +439,22 @@ impl ComputerUseShared {
         Ok(())
     }
 
+    /// ToolPolicy hook, called by the composition root's `tool_policy`
+    /// closure on every `refresh_disallowed_tools` round: appends
+    /// `computer_use` to the disallow list while the master switch is off.
+    /// The tool is constructed unconditionally, so the disallow list is the
+    /// visibility channel while disabled; the consent guard's `Disabled`
+    /// rejection is the second, defense-in-depth layer.
+    pub fn add_to_disallow_list_when_disabled(&self, tools: &mut Vec<String>) {
+        if !self.is_enabled() {
+            tools.push(super::TOOL_NAME.to_string());
+        }
+    }
+
     /// Gate for input-class actions: switch on, not stopped, and the session
-    /// holds a grant (grants live until explicitly revoked, no idle expiry).
-    /// [`Self::verify_input_action`] must be checked once more before
-    /// injection.
+    /// holds a grant (grant lifetime: see the note at the top of this
+    /// module). [`Self::verify_input_action`] must be checked once more
+    /// before injection.
     pub fn begin_input_action(&self, session_id: &str) -> Result<(), GuardRejection> {
         self.check_readonly()?;
         if !self.sessions.lock().contains(session_id) {
@@ -404,10 +466,9 @@ impl ComputerUseShared {
     /// Read-only re-check: whether the grant is still valid (switch, stop
     /// flag, grant present). Between `begin_input_action` and the actual
     /// injection there can be time-consuming steps such as an automatic
-    /// screenshot (review finding: a revoke inside that window did not take
-    /// effect); must be called before injecting — and before any consent
-    /// surface, so a stop/revoke landing mid-run cannot still pop a
-    /// confirmation dialog.
+    /// screenshot, and a revoke inside that window must take effect; must be
+    /// called before injecting — and before any consent surface, so a
+    /// stop/revoke landing mid-run cannot still pop a confirmation dialog.
     pub fn verify_input_action(&self, session_id: &str) -> Result<(), GuardRejection> {
         self.begin_input_action(session_id)
     }
@@ -421,7 +482,7 @@ impl ComputerUseShared {
     /// action) and the release path (guard drop) are unchanged.
     pub fn lock_physical_input(&self) -> Result<parking_lot::MutexGuard<'_, ()>, GuardRejection> {
         self.physical_input_lock
-            .try_lock_for(PHYSICAL_INPUT_LOCK_TIMEOUT)
+            .try_lock_for(physical_input_lock_timeout())
             .ok_or(GuardRejection::InputBusy)
     }
 
@@ -481,10 +542,10 @@ impl ComputerUseShared {
             return true;
         }
         // A "denial" after approval is a change of heart: if the same
-        // confirm_id's minted token is unspent, retract it too (review
-        // finding: deny used to clear only the pending, so the token from
-        // "approved → changed my mind" lived out its TTL and the deny button
-        // silently did nothing inside the race window). Returns false when
+        // confirm_id's minted token is unspent, retract it too — deny clears
+        // the pending first, and without this the token from "approved →
+        // changed my mind" would live out its TTL while the deny button
+        // silently did nothing inside the race window. Returns false when
         // the token does not exist (already spent / expired / already cleared
         // by revoke), the same as an unknown id.
         consent.approved_tokens.remove(confirm_id).is_some()
@@ -495,28 +556,27 @@ impl ComputerUseShared {
     /// call. Mints only for a pending that exists and is unexpired, returning
     /// `true`; returns `false` when the pending does not exist / has expired /
     /// was already decided — a silent no-op would let the frontend show a
-    /// failure as success (review finding). The token inherits the pending's
-    /// session and action summary (compared item by item at spend time).
-    /// Tokens have no stock cap: a session has at most one pending at a time,
-    /// and minting removes the pending, so the token stock is naturally
-    /// bounded by the interaction cadence; expiry is backstopped by the TTL
-    /// sweep before spending.
+    /// failure as success. The token inherits the pending's session and
+    /// action summary (compared item by item at spend time). Tokens have no
+    /// stock cap: a session has at most one pending at a time, and minting
+    /// removes the pending, so the token stock is naturally bounded by the
+    /// interaction cadence; expiry is backstopped by the TTL sweep before
+    /// spending.
     pub fn mint_confirmation(&self, confirm_id: &str) -> bool {
-        // A stop/toggle-off that lands while a confirmation dialog is on
-        // screen must not leave a mintable token behind (review finding: the
-        // pending itself is cleared by stop_all/revoke_all_sessions, but an
-        // in-flight run can re-create a pending after that sweep — the mint
-        // is the last line of defense, so the token can never outlive the
-        // stop). The false return maps to the command layer's
-        // "unknown or expired" error, which the frontend treats as
-        // close-the-stale-dialog.
+        // pending removal + token insertion in one lock: a mint cannot
+        // interleave with a revoke/clear and leave a token that outlives the
+        // disable. The switch/stop re-check also lives inside the lock: a
+        // stop/toggle-off that lands while a confirmation dialog is on screen
+        // must not leave a mintable token behind — the pending itself is
+        // cleared by stop_all/revoke_all_sessions, but an in-flight run can
+        // re-create a pending after that sweep, so the mint is the last line
+        // of defense and the token can never outlive the stop. The false
+        // return maps to the command layer's "unknown or expired" error,
+        // which the frontend treats as close-the-stale-dialog.
+        let mut consent = self.consent.lock();
         if !self.is_enabled() || self.is_stopped() {
             return false;
         }
-        // pending removal + token insertion in one lock: a mint cannot
-        // interleave with a revoke/clear and leave a token that outlives the
-        // disable.
-        let mut consent = self.consent.lock();
         let entry = consent.pending.remove(confirm_id);
         let Some(entry) = entry else {
             return false;
@@ -542,15 +602,15 @@ impl ComputerUseShared {
     /// Spends an approval token (single-use). The tool calls it before
     /// executing an action carrying a `confirm_id`; the token must exactly
     /// match **this** session, the action summary **and** the action content
-    /// hash (review finding: a summary-only binding let a token approved for
-    /// one `type N characters` be spent on a different same-length text — the
-    /// user approves a summary for readability but the token is bound to the
-    /// full action content). On a match, execution proceeds — no second
-    /// screening (mainstream model: the API confirmation is just a per-action
-    /// confirmation id; once the client acknowledges, execute); on a mismatch
-    /// the token is kept (under exact binding, the only combination that can
-    /// pass is the user-approved original action replay — a wrong attempt
-    /// should not burn the user's confirmation).
+    /// hash — the user approves a summary for readability but the token is
+    /// bound to the full action content, so a token approved for one
+    /// `type N characters` cannot be spent on a different same-length text.
+    /// On a match, execution proceeds — no second screening (mainstream
+    /// model: the API confirmation is just a per-action confirmation id; once
+    /// the client acknowledges, execute); on a mismatch the token is kept
+    /// (under exact binding, the only combination that can pass is the
+    /// user-approved original action replay — a wrong attempt should not burn
+    /// the user's confirmation).
     pub fn take_confirmation(
         &self,
         confirm_id: &str,
@@ -625,12 +685,53 @@ mod tests {
             shared.begin_input_action("s1"),
             Err(GuardRejection::GrantRequired)
         );
-        shared.grant_session("s1");
+        assert_eq!(shared.grant_session("s1"), GrantOutcome::Granted);
         assert!(shared.begin_input_action("s1").is_ok());
         shared.revoke_session("s1");
         assert_eq!(
             shared.begin_input_action("s1"),
             Err(GuardRejection::GrantRequired)
+        );
+    }
+
+    /// Grant TOCTOU: the switch/stop check lives inside `grant_session`,
+    /// under the `sessions` lock in the same critical section as the insert —
+    /// a grant can never slip in after a `revoke_all_sessions` sweep and
+    /// survive the off period, nor queue up while stopped.
+    #[test]
+    fn grant_is_refused_while_disabled_or_stopped() {
+        let shared = ComputerUseShared::new();
+        assert_eq!(
+            shared.grant_session("s1"),
+            GrantOutcome::Disabled,
+            "granting while the master switch is off must be refused"
+        );
+        assert!(!shared.has_active_grant("s1"));
+        shared.set_enabled(true);
+        assert_eq!(shared.grant_session("s1"), GrantOutcome::Granted);
+        // Off period: revoking all sessions (master-switch-off semantics)
+        // also clears the grant, and a grant attempt inside the off period is
+        // refused rather than queued.
+        shared.revoke_all_sessions();
+        shared.set_enabled(false);
+        assert_eq!(shared.grant_session("s1"), GrantOutcome::Disabled);
+        shared.set_enabled(true);
+        assert!(
+            !shared.has_active_grant("s1"),
+            "a grant refused during the off period must not resurrect"
+        );
+        // Stopped: same refusal.
+        shared.grant_session("s2");
+        shared.stop_all();
+        assert_eq!(
+            shared.grant_session("s2"),
+            GrantOutcome::Stopped,
+            "granting while the stop flag is latched must be refused"
+        );
+        shared.reset_stop();
+        assert!(
+            !shared.has_active_grant("s2"),
+            "stop_all revoked the grant and the refused re-grant must not resurrect it"
         );
     }
 
@@ -644,12 +745,10 @@ mod tests {
         assert!(!shared.has_active_grant("s1"));
     }
 
-    /// Session grants have no idle expiry: once granted, a grant lives until
-    /// explicitly revoked — repeated gating/re-checks, granting other
-    /// sessions, or re-granting this session never clears it (the old
-    /// grant_session also swept "idle-expired" sessions; that mechanism was
-    /// removed entirely, and this test pins that no implicit invalidation
-    /// path exists).
+    /// Session grants have no in-guard idle clock: once granted, a grant
+    /// lives until the tool instance ends (revoke / stop / master-switch off
+    /// / engine reclaim) — repeated gating/re-checks, granting other
+    /// sessions, or re-granting this session never clears it.
     #[test]
     fn grant_stays_live_until_revoked() {
         let shared = enabled_shared();
@@ -794,6 +893,10 @@ mod tests {
         assert!(is_secure_role("Password Text"));
         assert!(is_secure_role("AXSecureTextField"));
         assert!(!is_secure_role("button"));
+        // "insecure" contains "secure" as a substring but is the opposite
+        // signal — it must not trip the secure-role screen.
+        assert!(!is_secure_role("AXInsecureTextField"));
+        assert!(!is_secure_role("insecure text field"));
     }
 
     #[test]
@@ -877,11 +980,8 @@ mod tests {
         );
     }
 
-    /// Review-fix regression: a "denial" after minting is a change of heart —
-    /// the same confirm_id's unspent token must be retracted along with it,
-    /// not live out its TTL (deny used to clear only the pending; after
-    /// minting, deny silently did nothing, and the frontend also returned
-    /// false on this wrong basis).
+    /// A "denial" after minting is a change of heart — the same confirm_id's
+    /// unspent token must be retracted along with it, not live out its TTL.
     #[test]
     fn deny_after_mint_retracts_the_unspent_token() {
         let shared = enabled_shared();
@@ -964,12 +1064,57 @@ mod tests {
         assert!(shared.physical_input_lock.try_lock().is_some());
     }
 
-    /// Review-fix regression: turning the master switch off revokes all
-    /// session grants and all consent state (pending confirmations, minted
-    /// tokens) but does **not** raise the stop flag (distinct from stop_all
-    /// semantics) — after re-enabling, the old grant must not resurrect, and
-    /// in a disable→enable cycle the old minted tokens must not be replayed
-    /// confirmation-free (third-round review finding).
+    /// With the bounded wait shrunk to ~0 via the test override, a lock held
+    /// by another session fails closed with `InputBusy` instead of blocking
+    /// for the full 20-second default.
+    #[test]
+    fn physical_input_lock_times_out_with_the_test_override() {
+        set_physical_input_lock_timeout_for_tests(Duration::from_millis(5));
+        let shared = enabled_shared();
+        let _holder = shared
+            .physical_input_lock
+            .try_lock()
+            .expect("free lock must be acquired");
+        assert!(
+            matches!(shared.lock_physical_input(), Err(GuardRejection::InputBusy)),
+            "a held lock must fail closed once the bounded wait elapses"
+        );
+        // Restore the default so later tests in this process are unaffected.
+        set_physical_input_lock_timeout_for_tests(Duration::ZERO);
+    }
+
+    /// ToolPolicy contract: `computer_use` is in the disallow list while the
+    /// master switch is off and stays visible while it is on.
+    #[test]
+    fn disallow_list_hides_computer_use_only_while_disabled() {
+        let shared = ComputerUseShared::new();
+        let mut tools: Vec<String> = vec!["other_tool".to_string()];
+        shared.add_to_disallow_list_when_disabled(&mut tools);
+        assert_eq!(
+            tools
+                .iter()
+                .filter(|name| *name == super::super::types::TOOL_NAME)
+                .count(),
+            1,
+            "disabled: computer_use must be in the disallow list"
+        );
+        shared.set_enabled(true);
+        tools.retain(|name| name != super::super::types::TOOL_NAME);
+        shared.add_to_disallow_list_when_disabled(&mut tools);
+        assert!(
+            !tools
+                .iter()
+                .any(|name| name == super::super::types::TOOL_NAME),
+            "enabled: computer_use must stay visible"
+        );
+    }
+
+    /// Turning the master switch off revokes all session grants and all
+    /// consent state (pending confirmations, minted tokens) but does **not**
+    /// raise the stop flag (distinct from stop_all semantics) — after
+    /// re-enabling, the old grant must not resurrect, and in a
+    /// disable→enable cycle the old minted tokens must not be replayed
+    /// confirmation-free.
     #[test]
     fn revoke_all_sessions_clears_grants_and_pendings_without_stop_flag() {
         let shared = enabled_shared();
@@ -1025,11 +1170,9 @@ mod tests {
         );
     }
 
-    /// Regression (round-10 review m12): a MINTED approval token past
-    /// [`CONFIRM_TTL`] must be refused at spend time — previously only the
-    /// pending side of the TTL had test coverage, so the spend-path expiry
-    /// branch (the only defense against a token minted then spent minutes
-    /// later) was untested.
+    /// A MINTED approval token past [`CONFIRM_TTL`] must be refused at spend
+    /// time — the spend-path expiry branch is the only defense against a
+    /// token minted then spent minutes later.
     #[test]
     fn minted_token_expires_at_spend() {
         let shared = enabled_shared();
@@ -1133,10 +1276,10 @@ mod tests {
         }
     }
 
-    /// Review finding (stop race): a pending that an in-flight run re-creates
-    /// AFTER stop_all must not mint a token while the stop latch is raised —
-    /// and must still be unusable after a later re-enable (reset_stop sweeps
-    /// consent created during the stopped window).
+    /// Stop race: a pending that an in-flight run re-creates AFTER stop_all
+    /// must not mint a token while the stop latch is raised — and must still
+    /// be unusable after a later re-enable (reset_stop sweeps consent created
+    /// during the stopped window).
     #[test]
     fn mint_refuses_consent_created_while_stopped() {
         let shared = enabled_shared();
@@ -1156,8 +1299,8 @@ mod tests {
         assert!(shared.pending_confirmation(&id).is_none());
     }
 
-    /// Review finding (stop race, mint side): a token minted before the stop
-    /// is wiped by stop_all and cannot be resurrected by a re-enable.
+    /// Stop race, mint side: a token minted before the stop is wiped by
+    /// stop_all and cannot be resurrected by a re-enable.
     #[test]
     fn stop_then_resume_leaves_no_mintable_token() {
         let shared = enabled_shared();
@@ -1172,9 +1315,9 @@ mod tests {
         );
     }
 
-    /// Review finding (content binding): the token is bound to the action
-    /// content hash in addition to the summary — a same-summary,
-    /// different-content spend is rejected and keeps the token.
+    /// Content binding: the token is bound to the action content hash in
+    /// addition to the summary — a same-summary, different-content spend is
+    /// rejected and keeps the token.
     #[test]
     fn token_binding_covers_the_action_content() {
         let shared = enabled_shared();

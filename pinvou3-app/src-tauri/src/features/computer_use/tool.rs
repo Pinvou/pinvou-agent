@@ -46,9 +46,12 @@ use super::types::{
 /// UI settle wait after input/scroll actions execute (the single definition
 /// point of the settle constant).
 pub const POST_ACTION_SETTLE_MS: u64 = 350;
-/// `wait` cap: 30 seconds.
+/// `wait` cap: 30 seconds. wait and hold_key intentionally share one upper
+/// bound: the tool schema exposes a single `ms` field for both actions, so
+/// keep this and [`MAX_HOLD_KEY_MS`] equal.
 pub const MAX_WAIT_MS: u64 = 30_000;
-/// `hold_key` cap: 30 seconds.
+/// `hold_key` cap: 30 seconds (the same shared upper bound as
+/// [`MAX_WAIT_MS`] — the schema's single `ms` field serves both actions).
 pub const MAX_HOLD_KEY_MS: u64 = 30_000;
 /// Scroll clicks per call cap.
 pub const MAX_SCROLL_AMOUNT: u32 = 100;
@@ -63,7 +66,10 @@ pub const MAX_TYPE_TEXT_CHARS: usize = 10_000;
 /// finding). Legal chords (e.g. "ctrl+shift+alt+delete") are far below this
 /// value; over the cap is rejected as a parse error.
 pub const MAX_KEY_CHORD_TEXT_CHARS: usize = 128;
-/// `ui_tree` argument caps.
+/// `ui_tree` argument caps. Bounds mirror the schema's `max_depth`/`max_nodes`
+/// properties (`minimum: 1`, maximums = these constants); the parser rejects
+/// out-of-range values explicitly ([`opt_u32_range`]) instead of silently
+/// clamping or truncating.
 pub const MAX_UI_TREE_DEPTH: u32 = 64;
 pub const MAX_UI_TREE_NODES: u32 = 10_000;
 
@@ -205,12 +211,12 @@ impl Drop for ComputerUseTool {
         // is one of the documented grant-lifetime ends (guard.rs). Revoke
         // the grant, this session's pending confirmations and its minted
         // approval tokens — but ONLY when this tool is still the session's
-        // active one (round-12 review): the same-session factory race is
-        // identity-checked on the registry side below, and a late stale
-        // tool's Drop must not wipe the grant and dialogs of a same-session
-        // successor the user just approved. An absent registry entry still
-        // revokes (defensive cleanup; nothing else owns the session's
-        // consent state at that point).
+        // active one: the same-session factory race is identity-checked on
+        // the registry side below, and a late stale tool's Drop must not
+        // wipe the grant and dialogs of a same-session successor the user
+        // just approved. An absent registry entry still revokes (defensive
+        // cleanup; nothing else owns the session's consent state at that
+        // point).
         let registered = self
             .parts
             .shared
@@ -243,6 +249,7 @@ impl Drop for ComputerUseTool {
 // combinations so the model can self-correct)
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 struct ParsedCall {
     action: ComputerUseAction,
     confirm_id: Option<String>,
@@ -281,14 +288,17 @@ fn opt_i64(input: &Value, field: &str) -> Result<Option<i64>, ToolError> {
     }
 }
 
-/// Narrows an `Option<u64>` argument to `Option<u32>`: `opt_u64`'s max
-/// already pins the value inside the u32 range, but `try_from` is still used
-/// here to reject explicitly instead of `as u32` silently truncating (review
-/// finding: truncation would silently turn max_nodes/max_depth into different
-/// values).
-fn opt_u32_bounded(input: &Value, field: &str, max: u32) -> Result<Option<u32>, ToolError> {
+/// Narrows an `Option<u64>` argument to `Option<u32>` within `min..=max`.
+/// The bounds mirror the tool schema's `minimum`/`maximum` for the field; a
+/// value outside either is rejected explicitly instead of `as u32` silently
+/// truncating (truncation would silently turn max_nodes/max_depth into
+/// different values).
+fn opt_u32_range(input: &Value, field: &str, min: u32, max: u32) -> Result<Option<u32>, ToolError> {
     match opt_u64(input, field, u64::from(max))? {
         None => Ok(None),
+        Some(value) if value < u64::from(min) => {
+            Err(invalid(format!("{field} must be >= {min}; got {value}")))
+        }
         Some(value) => u32::try_from(value)
             .map(Some)
             .map_err(|_| invalid(format!("{field} out of range; got {value}"))),
@@ -363,9 +373,6 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
         Some(_) => return Err(field_type_error("confirm_id", "a string")),
     };
 
-    let coord = opt_coord(input)?;
-    let ms = opt_u64(input, "ms", MAX_WAIT_MS.max(MAX_HOLD_KEY_MS))?;
-
     let action = match action_name {
         "screenshot" => {
             reject_unexpected(input, action_name, &[])?;
@@ -377,16 +384,17 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
         }
         "wait" => {
             reject_unexpected(input, action_name, &["ms"])?;
-            let ms = ms.ok_or_else(|| invalid("ms is required for wait"))?;
-            if ms > MAX_WAIT_MS {
-                return Err(invalid(format!("ms must be <= {MAX_WAIT_MS} for wait")));
-            }
+            let ms = opt_u64(input, "ms", MAX_WAIT_MS)?
+                .ok_or_else(|| invalid("ms is required for wait"))?;
             ComputerUseAction::Wait { ms }
         }
         "ui_tree" => {
             reject_unexpected(input, action_name, &["max_depth", "max_nodes"])?;
-            let max_depth = opt_u32_bounded(input, "max_depth", MAX_UI_TREE_DEPTH)?;
-            let max_nodes = opt_u32_bounded(input, "max_nodes", MAX_UI_TREE_NODES)?;
+            // Bounds mirror the schema (`minimum: 1`, maximums
+            // MAX_UI_TREE_DEPTH/MAX_UI_TREE_NODES); 0 is rejected explicitly
+            // rather than silently accepting a no-op tree query.
+            let max_depth = opt_u32_range(input, "max_depth", 1, MAX_UI_TREE_DEPTH)?;
+            let max_nodes = opt_u32_range(input, "max_nodes", 1, MAX_UI_TREE_NODES)?;
             ComputerUseAction::UiTree {
                 opts: UiTreeOptions {
                     max_depth,
@@ -396,13 +404,14 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
         }
         "element_at_point" => {
             reject_unexpected(input, action_name, &["x", "y"])?;
-            let (x, y) =
-                coord.ok_or_else(|| invalid("x and y are required for element_at_point"))?;
+            let (x, y) = opt_coord(input)?
+                .ok_or_else(|| invalid("x and y are required for element_at_point"))?;
             ComputerUseAction::ElementAtPoint { x, y }
         }
         "mouse_move" => {
             reject_unexpected(input, action_name, &["x", "y"])?;
-            let (x, y) = coord.ok_or_else(|| invalid("x and y are required for mouse_move"))?;
+            let (x, y) =
+                opt_coord(input)?.ok_or_else(|| invalid("x and y are required for mouse_move"))?;
             ComputerUseAction::MouseMove { x, y }
         }
         "scroll" => {
@@ -436,7 +445,7 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
                 direction,
                 amount: u32::try_from(amount)
                     .map_err(|_| invalid("amount out of range for scroll"))?,
-                at: coord,
+                at: opt_coord(input)?,
             }
         }
         "left_click" | "right_click" | "middle_click" | "double_click" | "triple_click" => {
@@ -451,7 +460,7 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
             ComputerUseAction::Click {
                 button,
                 count,
-                at: coord,
+                at: opt_coord(input)?,
             }
         }
         "left_mouse_down" => {
@@ -472,8 +481,8 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
                 .ok_or_else(|| invalid("start_x is required for left_click_drag"))?;
             let start_y = opt_i64(input, "start_y")?
                 .ok_or_else(|| invalid("start_y is required for left_click_drag"))?;
-            let (x, y) =
-                coord.ok_or_else(|| invalid("x and y are required for left_click_drag"))?;
+            let (x, y) = opt_coord(input)?
+                .ok_or_else(|| invalid("x and y are required for left_click_drag"))?;
             if start_x < 0 || start_y < 0 {
                 return Err(invalid("coordinates must be non-negative"));
             }
@@ -519,11 +528,10 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
                 )));
             }
             let keys = parse_key_chord(&text).map_err(invalid)?;
-            let ms = ms.ok_or_else(|| invalid("ms is required for hold_key"))?;
-            if ms == 0 || ms > MAX_HOLD_KEY_MS {
-                return Err(invalid(format!(
-                    "ms must be in 1..={MAX_HOLD_KEY_MS} for hold_key"
-                )));
+            let ms = opt_u64(input, "ms", MAX_HOLD_KEY_MS)?
+                .ok_or_else(|| invalid("ms is required for hold_key"))?;
+            if ms == 0 {
+                return Err(invalid("ms must be >= 1 for hold_key"));
             }
             ComputerUseAction::HoldKey {
                 keys,
@@ -567,6 +575,24 @@ fn resolve_workspace(context: &ToolContext, session_id: &str) -> PathBuf {
 
 fn capture_and_store(parts: &Parts, workspace: &Path) -> Result<ShotOutcome, ComputerUseError> {
     let capture = parts.backend.capture()?;
+    // Invariant: rgba holds exactly width*height*4 bytes. Every consumer
+    // (downscale slicing, platform row copies) assumes it, so a malformed
+    // backend capture must fail explicitly here instead of panicking deep in
+    // the scaling layer.
+    let expected = u64::from(capture.width) * u64::from(capture.height) * 4;
+    debug_assert_eq!(
+        capture.rgba.len() as u64,
+        expected,
+        "capture rgba length must equal width*height*4"
+    );
+    if capture.rgba.len() as u64 != expected {
+        return Err(ComputerUseError::failed(format!(
+            "backend capture rgba buffer is {} bytes, expected {expected} ({}x{}x4)",
+            capture.rgba.len(),
+            capture.width,
+            capture.height
+        )));
+    }
     let scaled: ScaledScreenshot = scaling::downscale_and_encode(&capture)?;
     let dir = workspace.join(ATTACHMENTS_DIR);
     // Persist on the private-file foundation (review finding: `std::fs::write`
@@ -833,17 +859,17 @@ fn t3_screening(
 /// a session grant and are audited as usual), but hover and scroll produce no
 /// action consequence and get no screening confirmation — mainstream products
 /// put no gate on hover/scroll.
+///
+/// Derived from [`ComputerUseAction::class`], not an independent action list:
+/// activation-class = Input class minus the hover/scroll no-gate set, so a
+/// future Input variant cannot silently drift between `class()` and this
+/// check — an explicit decision is required here.
 fn requires_t3_check(action: &ComputerUseAction) -> bool {
-    matches!(
-        action,
-        ComputerUseAction::Click { .. }
-            | ComputerUseAction::MouseDown { .. }
-            | ComputerUseAction::MouseUp { .. }
-            | ComputerUseAction::Drag { .. }
-            | ComputerUseAction::Type { .. }
-            | ComputerUseAction::KeyChord { .. }
-            | ComputerUseAction::HoldKey { .. }
-    )
+    action.class() == ActionClass::Input
+        && !matches!(
+            action,
+            ComputerUseAction::MouseMove { .. } | ComputerUseAction::Scroll { .. }
+        )
 }
 
 /// Whether the full typed text may ride the confirm event
@@ -855,9 +881,7 @@ fn requires_t3_check(action: &ComputerUseAction) -> bool {
 /// - the text is at most 4096 chars — the cap bounds the payload size and
 ///   thus the abuse surface that reaches the dialog. Short texts ride along
 ///   too: the dialog otherwise shows only "type N characters", and approving
-///   a length with zero visible content is not informed consent (round-6
-///   review; the old 12-char lower bound was stale logic from the removed
-///   inline preview).
+///   a length with zero visible content is not informed consent.
 fn full_type_preview(action: &ComputerUseAction, secure_type_target: bool) -> Option<String> {
     if secure_type_target {
         return None;
@@ -867,14 +891,13 @@ fn full_type_preview(action: &ComputerUseAction, secure_type_target: bool) -> Op
             let count = text.chars().count();
             (count <= 4096).then(|| text.clone())
         }
-        // Character-key chords are typing too (round-12 review): `key
-        // "h+a+c+k"` on a labeled non-secure target used to show only
-        // "4 characters", leaving the user blind-signing chunk by chunk —
-        // both are typing input, yet type showed the full text while key did
-        // not, an inconsistency in transparency. On non-secure targets, show
-        // the character-key sequence verbatim (the same 4096 cap); pure
-        // named-key chords (ctrl+s, Return) inject no characters and produce
-        // no preview. Password and other secure targets are already caught by
+        // Character-key chords are typing too: `key "h+a+c+k"` on a labeled
+        // non-secure target shows the character-sequence preview (the same
+        // transparency as type, the same 4096 cap) — both are typing input
+        // and must disclose equally; a count-only chord summary would leave
+        // the user blind-signing chunk by chunk. Pure named-key chords
+        // (ctrl+s, Return) inject no characters and produce no preview.
+        // Password and other secure targets are already caught by
         // secure_type_target at the call site.
         ComputerUseAction::KeyChord { keys, .. } | ComputerUseAction::HoldKey { keys, .. }
             if is_typed_text_chord(keys) =>
@@ -908,16 +931,153 @@ fn action_binding(action: &ComputerUseAction) -> u64 {
     hasher.finish()
 }
 
+/// Structured i18n source for the consent dialog, serialized into the
+/// confirm payload alongside the English `summary` string (the summary stays
+/// as fallback; the dialog renders localized copy from these fields).
+/// Coordinates are shot-space, matching the tool contract. Typed content
+/// follows the same masking contract as the summary / `type_preview_full`:
+/// never for secure targets, capped at 4096 characters.
+#[derive(serde::Serialize)]
+struct ConfirmActionDetails {
+    /// Canonical action name (one of [`SUPPORTED_ACTIONS`]).
+    action: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    button: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    click_count: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    point: Option<ConfirmPoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text_length: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text_preview: Option<String>,
+    /// True when typing exceeded the 4096 preview cap (the dialog then shows
+    /// "text too long to preview in full" next to the length); always false
+    /// for non-typing actions and for masked (secure) targets, where the
+    /// masking contract — not the length — is why there is no preview.
+    text_preview_truncated: bool,
+}
+
+#[derive(serde::Serialize)]
+struct ConfirmPoint {
+    x: i64,
+    y: i64,
+}
+
+impl ConfirmActionDetails {
+    /// Builds the structured fields for one blocked action. `preview` is
+    /// exactly what [`full_type_preview`] allowed for this mint (None for
+    /// secure/masked targets and over-cap texts); `masked_target` is the
+    /// secure-target decision, needed to tell "masked" apart from
+    /// "truncated".
+    fn from_action(action: &ComputerUseAction, preview: Option<&str>, masked_target: bool) -> Self {
+        let mut details = Self {
+            action: action.name(),
+            button: None,
+            click_count: None,
+            point: None,
+            text_length: None,
+            text_preview: preview.map(str::to_string),
+            text_preview_truncated: false,
+        };
+        match action {
+            ComputerUseAction::Click {
+                button, count, at, ..
+            } => {
+                details.button = Some(button.as_str());
+                details.click_count = Some(*count);
+                details.point = at.map(|(x, y)| ConfirmPoint { x, y });
+            }
+            ComputerUseAction::MouseDown { button } | ComputerUseAction::MouseUp { button } => {
+                details.button = Some(button.as_str());
+                details.click_count = Some(1);
+            }
+            ComputerUseAction::Drag { end, .. } => {
+                // A drag has two meaningful points; the drop point is the
+                // consequential one (dragging into delete/drop zones).
+                details.point = Some(ConfirmPoint { x: end.0, y: end.1 });
+            }
+            ComputerUseAction::MouseMove { x, y } | ComputerUseAction::ElementAtPoint { x, y } => {
+                details.point = Some(ConfirmPoint { x: *x, y: *y });
+            }
+            ComputerUseAction::Scroll {
+                at: Some((x, y)), ..
+            } => {
+                details.point = Some(ConfirmPoint { x: *x, y: *y });
+            }
+            ComputerUseAction::Type { text } => {
+                let count = text.chars().count();
+                details.text_length = Some(count);
+                details.text_preview_truncated = !masked_target && count > 4096;
+            }
+            ComputerUseAction::KeyChord { keys, .. } | ComputerUseAction::HoldKey { keys, .. } => {
+                // Same typing classification boundary as the summary and the
+                // audit redaction: only character-carrying chords disclose
+                // (a count of) typed content.
+                if is_typed_text_chord(keys) {
+                    let count = keys
+                        .iter()
+                        .filter(|key| matches!(key, Key::Char(_)))
+                        .count();
+                    details.text_length = Some(count);
+                    details.text_preview_truncated = !masked_target && count > 4096;
+                }
+            }
+            _ => {}
+        }
+        details
+    }
+}
+
+/// Builds the `computer_use:confirm_required` event payload: identity fields
+/// plus the structured [`ConfirmActionDetails`] merged in (the single
+/// serialization path for the structured confirm fields).
+fn build_confirm_payload(
+    session_id: &str,
+    confirm_id: &str,
+    action: &ComputerUseAction,
+    summary: &str,
+    element_label: &str,
+    type_preview_full: Option<&str>,
+    masked_target: bool,
+) -> Value {
+    let details = ConfirmActionDetails::from_action(action, type_preview_full, masked_target);
+    let mut payload = json!({
+        "session_id": session_id,
+        // Canonical action name; the English parameter summary rides under
+        // `summary` as fallback for older consumers.
+        "action": details.action,
+        "summary": summary,
+        "element": element_label,
+        "confirm_id": confirm_id,
+    });
+    if let Ok(Value::Object(map)) = serde_json::to_value(&details) {
+        if let Some(object) = payload.as_object_mut() {
+            object.extend(map);
+        }
+    }
+    // Optional full typed text for the confirm dialog, rendered inline
+    // (absent = the dialog shows the count-only summary). See
+    // `full_type_preview` for when it may exist (never for secure/masked
+    // targets).
+    if let Some(full) = type_preview_full {
+        payload["type_preview_full"] = Value::String(full.to_string());
+    }
+    payload
+}
+
 /// Mints a pending confirmation request, emits the event, and returns the
 /// "not executed, go ask for confirmation" error to the model. At most one
 /// pending per session: a new request replaces the old one directly (newest
 /// wins, like an ordinary dialog).
 fn request_confirmation(
     parts: &Parts,
+    action: &ComputerUseAction,
     summary: &str,
     element_label: &str,
     reason_phrase: &str,
     type_preview_full: Option<String>,
+    masked_target: bool,
     binding: u64,
 ) -> String {
     let confirm_id = parts.shared.new_pending_confirmation(
@@ -926,19 +1086,15 @@ fn request_confirmation(
         element_label.to_string(),
         binding,
     );
-    let mut payload = json!({
-        "session_id": parts.session_id,
-        "action": summary,
-        "element": element_label,
-        "confirm_id": confirm_id,
-    });
-    // Optional full typed text for the confirm dialog, rendered inline
-    // (absent = the dialog shows the count-only summary). See
-    // `full_type_preview` for when it may exist (never for secure/masked
-    // targets).
-    if let Some(full) = type_preview_full {
-        payload["type_preview_full"] = Value::String(full);
-    }
+    let payload = build_confirm_payload(
+        &parts.session_id,
+        &confirm_id,
+        action,
+        summary,
+        element_label,
+        type_preview_full.as_deref(),
+        masked_target,
+    );
     parts.events.emit(EVENT_CONFIRM_REQUIRED, payload);
     // The prefix is [`T3_CONFIRM_REQUIRED_ERROR`]: the error message carries
     // the element label, so the audit record's error field holds only the
@@ -1069,7 +1225,7 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                     // payload (whether the full typed text may ride the
                     // confirm event). Keyboard chords that carry character
                     // keys type their characters too, so the secure-target
-                    // check covers them just like type (round-12 review).
+                    // check covers them just like type.
                     let secure_type_target = matches!(
                         &action,
                         ComputerUseAction::Type { .. }
@@ -1087,10 +1243,12 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                         T3Screening::Blocked(hit) => {
                             return Err(request_confirmation(
                                 &parts,
+                                &action,
                                 &summary,
                                 &hit.element_label,
                                 hit.reason,
                                 type_preview_full.clone(),
+                                secure_type_target,
                                 binding,
                             ));
                         }
@@ -1132,10 +1290,10 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                     capabilities.notes
                 ));
             }
-            // The screenshot capability bit was never checked before (round-12
-            // review M6): on a platform without capture, screenshot would run
-            // all the way to the post-capture degraded warning, and the model
-            // would get success=true with no image.
+            // Without the screenshot capability bit, a platform without
+            // capture would run screenshot all the way to the post-capture
+            // degraded warning, and the model would get success=true with no
+            // image.
             ActionClass::Observe
                 if matches!(action, ComputerUseAction::Screenshot) && !capabilities.screenshot =>
             {
@@ -1170,13 +1328,13 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                     shot = Some(fresh);
                 }
                 Err(error) if matches!(action, ComputerUseAction::Screenshot) => {
-                    // For Screenshot, the capture IS the action (round-12
-                    // review M6): a failure must propagate. Degrading to a
-                    // warning would give the model success with an empty
-                    // result and an ok audit record — diverging from the
-                    // auto-capture path (hard failure, the action does not
-                    // run) and leaving the "capture unavailable" platform
-                    // state invisible to the model.
+                    // For Screenshot, the capture IS the action: a failure
+                    // must propagate. Degrading to a warning would give the
+                    // model success with an empty result and an ok audit
+                    // record — diverging from the auto-capture path (hard
+                    // failure, the action does not run) and leaving the
+                    // "capture unavailable" platform state invisible to the
+                    // model.
                     return Err(backend_error_text(&error));
                 }
                 Err(error) => warnings.push(format!("post-action capture failed: {error}")),
@@ -1615,6 +1773,10 @@ impl ToolSpec for ComputerUseTool {
     }
 
     fn input_schema(&self) -> Value {
+        // Bounds parity: the `ms` property's `minimum: 1` follows hold_key's
+        // 1..=30000 domain (its parse branch rejects 0); the wait branch
+        // tolerates 0 as a no-op, but the shared schema field declares the
+        // stricter hold_key bound.
         json!({
             "type": "object",
             "properties": {
@@ -1628,7 +1790,7 @@ impl ToolSpec for ComputerUseTool {
                 "start_x": { "type": "integer", "minimum": 0, "description": "Drag start X (left_click_drag only)" },
                 "start_y": { "type": "integer", "minimum": 0, "description": "Drag start Y (left_click_drag only)" },
                 "text": { "type": "string", "description": "Text to type (type) or xdotool-style key chord like \"ctrl+s\", \"Return\", \"alt+Tab\" (key, hold_key)" },
-                "ms": { "type": "integer", "minimum": 0, "description": "Duration in milliseconds (wait, hold_key)" },
+                "ms": { "type": "integer", "minimum": 1, "description": "Duration in milliseconds (wait, hold_key; hold_key requires 1-30000)" },
                 "direction": { "type": "string", "enum": ["up", "down", "left", "right"], "description": "Scroll direction (scroll)" },
                 "amount": { "type": "integer", "minimum": 1, "description": "Scroll wheel clicks, 1-100 (scroll)" },
                 "max_depth": { "type": "integer", "minimum": 1, "description": "Max accessibility tree depth (ui_tree)" },
@@ -1657,9 +1819,9 @@ impl ToolSpec for ComputerUseTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        // Parse failures leave a trace too (round-6 review: rejections at the
-        // parse stage had zero audit, so the model could probe the action
-        // surface without a trace). Only the truncated action name and error
+        // Parse failures leave a trace too: rejections at the parse stage
+        // would otherwise have zero audit, letting the model probe the action
+        // surface without a trace. Only the truncated action name and error
         // are recorded; the full call arguments (which may contain typed
         // text) are never recorded.
         let parsed = match parse_action(&input) {
@@ -1827,3 +1989,130 @@ fn audit_rejected_call(parts: &Parts, action: &ComputerUseAction, reason: &str, 
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod confirm_payload_tests {
+    //! Structured confirm-payload contract (the consent dialog's i18n
+    //! source): the payload carries the canonical action name plus the
+    //! structured fields, and keeps the English summary as fallback.
+    use super::*;
+    use serde_json::json;
+
+    fn payload_for(
+        action: ComputerUseAction,
+        preview: Option<String>,
+        masked_target: bool,
+    ) -> Value {
+        let summary = action_summary(&action);
+        build_confirm_payload(
+            "s-test",
+            "cu-1",
+            &action,
+            &summary,
+            "element label",
+            preview.as_deref(),
+            masked_target,
+        )
+    }
+
+    #[test]
+    fn click_payload_carries_structured_fields_matching_the_summary() {
+        let action = ComputerUseAction::Click {
+            button: MouseButton::Left,
+            count: 2,
+            at: Some((5, 6)),
+        };
+        let payload = payload_for(action, None, false);
+        assert_eq!(payload["action"], "double_click");
+        assert_eq!(payload["summary"], "left click x2 at Some((5, 6))");
+        assert_eq!(payload["button"], "left");
+        assert_eq!(payload["click_count"], 2);
+        assert_eq!(payload["point"], json!({ "x": 5, "y": 6 }));
+        // No typing fields on a click.
+        assert!(payload.get("text_length").is_none());
+        assert_eq!(payload["text_preview_truncated"], false);
+    }
+
+    #[test]
+    fn coordinate_less_click_omits_point() {
+        let action = ComputerUseAction::Click {
+            button: MouseButton::Right,
+            count: 1,
+            at: None,
+        };
+        let payload = payload_for(action, None, false);
+        assert_eq!(payload["action"], "right_click");
+        assert_eq!(payload["button"], "right");
+        assert_eq!(payload["click_count"], 1);
+        assert!(payload.get("point").is_none());
+    }
+
+    #[test]
+    fn type_over_4096_marks_preview_truncated_but_keeps_the_length() {
+        let text = "x".repeat(4097);
+        let action = ComputerUseAction::Type { text };
+        let payload = payload_for(action, None, false);
+        assert_eq!(payload["action"], "type");
+        assert_eq!(payload["summary"], "type 4097 characters");
+        assert_eq!(payload["text_length"], 4097);
+        assert_eq!(payload["text_preview_truncated"], true);
+        assert!(
+            payload.get("text_preview").is_none(),
+            "over-cap text must not ride the payload: {payload}"
+        );
+    }
+
+    #[test]
+    fn secure_type_target_stays_masked_without_a_truncation_flag() {
+        let action = ComputerUseAction::Type {
+            text: "secret".into(),
+        };
+        let payload = payload_for(action, None, true);
+        assert_eq!(payload["text_length"], 6);
+        assert_eq!(payload["text_preview_truncated"], false);
+        assert!(
+            payload.get("text_preview").is_none(),
+            "masked targets must not carry a preview: {payload}"
+        );
+    }
+
+    #[test]
+    fn short_non_secure_type_carries_the_preview() {
+        let action = ComputerUseAction::Type {
+            text: "hello".into(),
+        };
+        let payload = payload_for(action, Some("hello".into()), false);
+        assert_eq!(payload["text_preview"], "hello");
+        assert_eq!(payload["text_length"], 5);
+        assert_eq!(payload["text_preview_truncated"], false);
+        // Backward-compatible full-text key stays in sync with text_preview.
+        assert_eq!(payload["type_preview_full"], "hello");
+    }
+
+    #[test]
+    fn typed_text_chord_discloses_char_count_and_preview() {
+        let action = ComputerUseAction::KeyChord {
+            keys: parse_key_chord("h+a+c+k").expect("chord parses"),
+            chord: "h+a+c+k".to_string(),
+        };
+        let payload = payload_for(action, Some("hack".into()), false);
+        assert_eq!(payload["action"], "key");
+        assert_eq!(payload["text_length"], 4);
+        assert_eq!(payload["text_preview"], "hack");
+        assert_eq!(payload["text_preview_truncated"], false);
+    }
+
+    #[test]
+    fn named_key_chord_carries_no_typing_fields() {
+        let action = ComputerUseAction::HoldKey {
+            keys: parse_key_chord("Return").expect("chord parses"),
+            chord: "Return".to_string(),
+            ms: 500,
+        };
+        let payload = payload_for(action, None, false);
+        assert_eq!(payload["action"], "hold_key");
+        assert!(payload.get("text_length").is_none());
+        assert!(payload.get("text_preview").is_none());
+        assert_eq!(payload["text_preview_truncated"], false);
+    }
+}
