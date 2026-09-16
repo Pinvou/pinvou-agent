@@ -32,13 +32,3 @@ pub(super) fn workspace_identity(_path: &Path) -> std::io::Result<WorkspaceIdent
         "workspace identity is unsupported on this platform",
     ))
 }
-
-#[cfg(test)]
-pub(super) fn test_workspace_identity(seed: u64) -> WorkspaceIdentity {
-    WorkspaceIdentity(seed)
-}
-
-#[cfg(test)]
-pub(super) fn private_file_is_restricted(path: &Path) -> std::io::Result<bool> {
-    Ok(path.is_file())
-}

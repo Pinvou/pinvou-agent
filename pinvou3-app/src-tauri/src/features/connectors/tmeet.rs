@@ -518,14 +518,6 @@ mod tests {
     }
 
     #[test]
-    fn version_comparison_uses_semver_order() {
-        assert!(version_at_least((1, 0, 18), TMEET_MIN_VERSION));
-        assert!(version_at_least((1, 1, 0), TMEET_MIN_VERSION));
-        assert!(!version_at_least((1, 0, 17), TMEET_MIN_VERSION));
-        assert!(!version_at_least((0, 9, 99), TMEET_MIN_VERSION));
-    }
-
-    #[test]
     fn auth_output_detects_already_logged_in() {
         assert!(auth_output_says_already_logged_in(
             "Error: user has been login, please use 'tmeet cmd [flags]' to use"

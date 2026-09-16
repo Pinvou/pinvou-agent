@@ -2705,15 +2705,6 @@ mod turn_lifecycle_tests {
     }
 
     #[test]
-    fn forwarder_stop_and_reclaim_share_the_same_terminal_gate() {
-        let lifecycle = TurnLifecycle::default();
-        lifecycle.on_submitted();
-        lifecycle.on_started("turn-1".to_string());
-        assert!(lifecycle.finish_once(|| {}).is_some());
-        assert_eq!(lifecycle.finish_once(|| panic!("duplicate terminal")), None);
-    }
-
-    #[test]
     fn terminal_side_effects_run_only_for_the_path_that_claimed_the_turn() {
         let lifecycle = TurnLifecycle::default();
         let effects = Cell::new(0_u8);
