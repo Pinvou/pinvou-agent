@@ -1,5 +1,11 @@
 # CodeWhale Fork Modification Register
 
+## Pending upstream fix: compaction checkpoint role compatibility
+
+- T3: when replacement history ends in a tool result, insert the typed Agent topology checkpoint after the latest user input and before its assistant/tool chain. This preserves tool pairing and runtime state without a trailing `tool -> user` transition rejected by strict paired templates. The session-pinned system prefix is unchanged; replacement compaction already invalidates the replaced history suffix.
+- This is a reusable Codewhale fix, committed locally as `285b7aa21` and pending upstream submission. No persisted-session migration is included. The parent gitlink's public reachability gate remains pending upstream integration.
+- Regression: `forkguard_compaction_topology_preserves_tool_round_boundary` covers empty/live Agent topology, unchanged tool exchanges, and repeated compaction. Existing topology tests cover terminal state and user-authored lookalikes.
+
 > This is the current-state register for Pinvou's CodeWhale fork.
 > See [`fork-policy.md`](fork-policy.md) for policy and [`codewhale-upgrade-0.9.5-to-0.9.12.md`](codewhale-upgrade-0.9.5-to-0.9.12.md) for upgrade evidence. The Chinese register is authoritative.
 

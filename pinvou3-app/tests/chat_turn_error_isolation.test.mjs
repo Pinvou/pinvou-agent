@@ -28,6 +28,20 @@ const messageSandbox = { window: {} };
 vm.runInNewContext(modelServiceErrorsSource, messageSandbox, { filename: 'model-service-errors.js' });
 vm.runInNewContext(bridgeMessagesSource, messageSandbox, { filename: 'bridge-messages.js' });
 const modelErrors = messageSandbox.window.PinvouModelServiceErrors;
+const roleError = 'SSE stream request failed: HTTP 400 Bad Request: response_role: "user"';
+for (const language of ['zh', 'en', 'ja']) {
+  const notice = modelErrors.build(roleError, { language });
+  assert.equal(notice.kind, 'format');
+  assert.equal(notice.retryable, false);
+  assert.equal(notice.httpStatus, 400);
+  assert.equal(notice.technicalDetail, roleError);
+  assert.equal(modelErrors.build(notice, { language }).kind, 'format');
+}
+assert.equal(modelErrors.classify('HTTP 400: Conversation roles must alternate user/assistant').kind, 'format');
+assert.equal(modelErrors.classify('HTTP 400: invalid temperature').kind, 'unknown');
+assert.equal(modelErrors.classify('HTTP 401: response_role: user').kind, 'auth');
+assert.equal(modelErrors.classify('HTTP 400: maximum context length; response_role: user').kind, 'context');
+assert.equal(modelErrors.isModelServiceError('local validation response_role: user'), false);
 assert.equal(modelErrors.classify('SSE stream request failed: HTTP 402 insufficient balance').kind, 'billing');
 assert.equal(modelErrors.classify('HTTP 429 quota exceeded').kind, 'quota');
 assert.equal(modelErrors.classify('HTTP 429 insufficient_quota').kind, 'quota');

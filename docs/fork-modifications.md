@@ -1,5 +1,11 @@
 # CodeWhale Fork 修改清单
 
+## 待上游修复：压缩检查点角色兼容性
+
+- T3：替换式压缩历史以工具结果结尾时，将带类型的 Agent 拓扑检查点放到最近一次真实用户输入之后、该轮 assistant/tool 链之前。这样既保留工具配对和运行态，也避免严格成对模板拒绝尾部 `tool -> user` 结构。会话固定的系统前缀不变；替换式压缩本身已使被替换的历史后缀失效。
+- 这是可复用的 Codewhale 修复，本地提交为 `285b7aa21`，待提交上游；不包含已持久化会话迁移。当前父仓 gitlink 的公开可达性门禁仍需上游合入后验证。
+- 回归测试 `forkguard_compaction_topology_preserves_tool_round_boundary` 覆盖空/活跃 Agent 拓扑、工具交换不变以及重复压缩；既有拓扑测试继续覆盖终态和用户仿冒消息。
+
 > 本文是 Pinvou 对 CodeWhale fork 的单一现状清单。
 > 维护策略见 [`fork-policy.md`](fork-policy.md)，升级证据见 [`codewhale-upgrade-0.9.5-to-0.9.12.md`](codewhale-upgrade-0.9.5-to-0.9.12.md)。
 > English: [`fork-modifications.en.md`](fork-modifications.en.md)
