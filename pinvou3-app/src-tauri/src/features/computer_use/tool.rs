@@ -386,6 +386,13 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
             reject_unexpected(input, action_name, &["ms"])?;
             let ms = opt_u64(input, "ms", MAX_WAIT_MS)?
                 .ok_or_else(|| invalid("ms is required for wait"))?;
+            // Reject 0 explicitly: the schema declares `minimum: 1` for the
+            // shared ms field, so a strict client can never send the 0 this
+            // branch used to tolerate as a no-op (same lower bound as
+            // hold_key/scroll).
+            if ms == 0 {
+                return Err(invalid("ms must be >= 1 for wait"));
+            }
             ComputerUseAction::Wait { ms }
         }
         "ui_tree" => {
@@ -792,7 +799,11 @@ fn is_typed_text_chord(keys: &[Key]) -> bool {
 ///
 /// Every "screening unavailable" path is Clear (best-effort category
 /// detection: only a positive hit confirms; screening infrastructure failures
-/// do not cause confirmation storms).
+/// do not cause confirmation storms). One deliberate exception: the Linux
+/// AT-SPI read marks a target whose ROLE query failed as possibly-secure
+/// (it cannot prove the field is not a password field), so that single
+/// unreadable-target shape blocks instead of Clearing — disclosed in the
+/// tool description.
 fn t3_screening(
     parts: &Parts,
     action: &ComputerUseAction,
@@ -956,6 +967,18 @@ struct ConfirmActionDetails {
     /// for non-typing actions and for masked (secure) targets, where the
     /// masking contract — not the length — is why there is no preview.
     text_preview_truncated: bool,
+    /// The chord string (key/hold_key) for the localized confirm line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chord: Option<String>,
+    /// Hold duration in ms (hold_key).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hold_ms: Option<u64>,
+    /// Scroll direction (scroll).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    direction: Option<&'static str>,
+    /// Scroll wheel clicks (scroll).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    amount: Option<u32>,
 }
 
 #[derive(serde::Serialize)]
@@ -979,6 +1002,10 @@ impl ConfirmActionDetails {
             text_length: None,
             text_preview: preview.map(str::to_string),
             text_preview_truncated: false,
+            chord: None,
+            hold_ms: None,
+            direction: None,
+            amount: None,
         };
         match action {
             ComputerUseAction::Click {
@@ -1001,16 +1028,36 @@ impl ConfirmActionDetails {
                 details.point = Some(ConfirmPoint { x: *x, y: *y });
             }
             ComputerUseAction::Scroll {
-                at: Some((x, y)), ..
+                direction,
+                amount,
+                at,
             } => {
-                details.point = Some(ConfirmPoint { x: *x, y: *y });
+                // The localized scroll line needs direction + amount + the
+                // (optional) target point.
+                details.direction = Some(direction.as_str());
+                details.amount = Some(*amount);
+                if let Some((x, y)) = at {
+                    details.point = Some(ConfirmPoint { x: *x, y: *y });
+                }
             }
             ComputerUseAction::Type { text } => {
                 let count = text.chars().count();
                 details.text_length = Some(count);
                 details.text_preview_truncated = !masked_target && count > 4096;
             }
-            ComputerUseAction::KeyChord { keys, .. } | ComputerUseAction::HoldKey { keys, .. } => {
+            ComputerUseAction::KeyChord {
+                keys, chord: text, ..
+            }
+            | ComputerUseAction::HoldKey {
+                keys, chord: text, ..
+            } => {
+                // The localized chord/hold lines render the chord string (and
+                // hold duration); the raw chord never contains typed content
+                // beyond Char keys, which the summary already counts.
+                details.chord = Some(text.clone());
+                if let ComputerUseAction::HoldKey { ms, .. } = action {
+                    details.hold_ms = Some(*ms);
+                }
                 // Same typing classification boundary as the summary and the
                 // audit redaction: only character-carrying chords disclose
                 // (a count of) typed content.
@@ -1241,6 +1288,18 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                     match t3_screening(&parts, &action, map.as_ref(), focused.as_ref()) {
                         T3Screening::Clear => {}
                         T3Screening::Blocked(hit) => {
+                            // The a11y queries above (focused element,
+                            // screening) take real time: re-check the
+                            // stop/disable/grant state BEFORE raising the
+                            // dialog, so a stop landing during screening does
+                            // not pop a consent surface for a feature that is
+                            // now off (the mint-side refusal stays as the
+                            // backstop for the race window that remains).
+                            if let Err(rejection) =
+                                parts.shared.verify_input_action(&parts.session_id)
+                            {
+                                return Err(rejection.message());
+                            }
                             return Err(request_confirmation(
                                 &parts,
                                 &action,
@@ -1764,8 +1823,17 @@ impl ToolSpec for ComputerUseTool {
          pauses the action until the user confirms it via confirm_id. Screening is \
          best-effort category detection over the accessibility tree: when the target \
          cannot be read or screening is unavailable, the action still executes without \
-         confirmation. The CONTENT you type is never screened, and key chords are not \
-         screened for destructiveness. Observation (screenshots, ui_tree) reads on-screen \
+         confirmation. Know the limits before relying on the screen: the category terms \
+         match English, Chinese (Simplified/Traditional), and Japanese labels only — in \
+         other UI languages only the language-independent password-field screen applies. \
+         The target is located by a point lookup with no window identity, so a \
+         same-label or same-position window/UI change between screening (or approval) \
+         and injection cannot be detected; on Linux a target whose accessibility role \
+         cannot be read may still require confirmation as a precaution. An approved \
+         confirmation is bound to the exact action content but is NOT re-screened: it \
+         executes on whatever occupies the target position when it runs, which can be \
+         minutes after the user approved. The CONTENT you type is never screened, and \
+         key chords are not screened for destructiveness. Observation (screenshots, ui_tree) reads on-screen \
          and focused-window content while the feature is enabled, which may include \
          private information. After actions that change the screen a fresh screenshot is \
          attached; if it is not visible, call image_analyze with the returned attachments \
@@ -1774,9 +1842,8 @@ impl ToolSpec for ComputerUseTool {
 
     fn input_schema(&self) -> Value {
         // Bounds parity: the `ms` property's `minimum: 1` follows hold_key's
-        // 1..=30000 domain (its parse branch rejects 0); the wait branch
-        // tolerates 0 as a no-op, but the shared schema field declares the
-        // stricter hold_key bound.
+        // 1..=30000 domain; the wait branch rejects 0 as well, so the shared
+        // schema field matches the parse behavior for both actions.
         json!({
             "type": "object",
             "properties": {

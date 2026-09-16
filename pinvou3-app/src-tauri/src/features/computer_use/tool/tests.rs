@@ -512,6 +512,8 @@ fn rejects_bad_param_combinations() {
             json!({"action": "scroll", "direction": "down", "amount": 0}),
         ),
         ("wait", json!({"action": "wait"})),
+        // ms lower bound: 0 is rejected for schema parity (`minimum: 1`).
+        ("wait", json!({"action": "wait", "ms": 0})),
         // ms upper bound: wait rejects anything above MAX_WAIT_MS.
         ("wait", json!({"action": "wait", "ms": 30001})),
         (

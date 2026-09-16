@@ -118,10 +118,14 @@ pub const T3_DENYLIST: &[&str] = &[
     "送出",
     "送信",
     // Irreversible deletion, including common drag/delete destinations.
+    // "format" covers the English verb the CJK entries (格式化/フォーマット)
+    // already carry; substring cost is an extra confirm on labels like
+    // "Format document" — the safe direction.
     "delete",
     "trash",
     "erase",
     "discard",
+    "format",
     "删除",
     "清空",
     "回收站",
@@ -506,6 +510,11 @@ impl ComputerUseShared {
         pending.retain(|_, entry| now.duration_since(entry.created_at) <= CONFIRM_TTL);
         // At most one pending per session: the newest request wins (a normal
         // dialog replaces the previous one instead of queueing behind it).
+        // Under swarm mode every subagent shares the parent session, so two
+        // subagents asking at once collide here BY DESIGN: the first asker's
+        // confirm_id stops minting and its action fails with
+        // t3-confirmation-required; it must re-ask (a fresh request) after
+        // the user dealt with the newer dialog.
         pending.retain(|_, entry| entry.session_id != session_id);
         pending.insert(
             confirm_id.clone(),
@@ -1197,6 +1206,15 @@ mod tests {
             take(&shared, &id, "s1", summary),
             ConfirmationCheck::Unknown
         );
+    }
+
+    /// The English "format" entry must stay: it is the reason the CJK
+    /// entries (格式化/フォーマット) exist, and its absence let an English
+    /// "Format disk" screen Clear while the CJK label confirmed.
+    #[test]
+    fn t3_denylist_covers_english_format() {
+        assert!(matches_t3_denylist("Format Disk"));
+        assert!(matches_t3_denylist("格式化磁盘"));
     }
 
     /// Regression: the T3 denylist must not contain duplicate entries
