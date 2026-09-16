@@ -8,8 +8,7 @@ import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Edit2, FolderPlus, MoreHorizontal, Trash2, X } from '../../components/icons.jsx';
 import { usePortalMenu } from '../../hooks/usePortalMenu.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
-
-const PROJECT_DROP_TYPE = 'application/x-pinvou-session';
+import { PROJECT_SESSION_DRAG_TYPE } from './projectGrouping.js';
 
 const ProjectGroupHeader = ({
   label,
@@ -50,7 +49,7 @@ const ProjectGroupHeader = ({
   // unconditionally on drop).
   const dropHandlers = onDropSession ? {
     onDragOver: (e) => {
-      if (!e.dataTransfer.types.includes(PROJECT_DROP_TYPE)) return;
+      if (!e.dataTransfer.types.includes(PROJECT_SESSION_DRAG_TYPE)) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
       onDropActive(true);
@@ -59,7 +58,7 @@ const ProjectGroupHeader = ({
     onDrop: (e) => {
       e.preventDefault();
       onDropActive(false);
-      const sessionId = e.dataTransfer.getData(PROJECT_DROP_TYPE);
+      const sessionId = e.dataTransfer.getData(PROJECT_SESSION_DRAG_TYPE);
       if (sessionId) onDropSession(sessionId);
     },
   } : {};

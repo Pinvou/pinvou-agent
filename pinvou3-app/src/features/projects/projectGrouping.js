@@ -16,6 +16,13 @@
 
 const TEMPORARY_GROUP_KEY = '__temporary__';
 
+// HTML5 drag-and-drop MIME for the sidebar session drag (move onto a project
+// group). The producer (RecentItem) and the consumer (ProjectGroupHeader) must
+// agree on exactly this type or the gesture silently no-ops — no highlight, no
+// preventDefault, no drop, and no console output — so the literal lives here
+// once and both sides import it.
+const PROJECT_SESSION_DRAG_TYPE = 'application/x-pinvou-session';
+
 function itemTime(item) {
   return String((item && (item.updatedAt || item.pinnedAt)) || '');
 }
@@ -205,4 +212,4 @@ function needsAddFolderConfirm(session, target) {
   return !!workspacePath && !projectCoversPath(target, workspacePath);
 }
 
-export { TEMPORARY_GROUP_KEY, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath, needsAddFolderConfirm };
+export { TEMPORARY_GROUP_KEY, PROJECT_SESSION_DRAG_TYPE, groupSessionsWithProjects, projectCoversPath, resolveSessionProjectId, rootPath, needsAddFolderConfirm };

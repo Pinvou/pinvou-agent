@@ -4,6 +4,7 @@ import { Archive, Check, Download, Edit2, FolderOpen, Layers, MoreHorizontal, Pi
 import { useLongPressDrag } from '../../hooks/useLongPressDrag.js';
 import { usePortalMenu } from '../../hooks/usePortalMenu.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
+import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGrouping.js';
 
     // NavItem memoization: the main nav re-renders on every App bridge
     // notify (including background streaming tokens); when the props are
@@ -318,19 +319,6 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
           data-drag-kind={sessionDragKind || undefined}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
           style={recentItemRowStyle(dragging, personaTarget, isDark)}
-          draggable={dndPayload && !dndDisabled ? true : undefined}
-          onDragEnd={onDragEnd}
-          onDragStart={dndPayload && !dndDisabled ? (e) => {
-            // 侧栏内 HTML5 拖拽(移动到项目)与 tear-off(长按 350ms)本来
-            // 天然冲突——原生 dragstart 取消 pointer 事件,350ms 定时器照跑,
-            // 中途会误触发拆窗。互斥由 useLongPressDrag 的工程手段提供:
-            // pointerdown 时装 capture 阶段 dragstart 监听({once}) +
-            // pointercancel 兜底,clearPress 幂等,自然竞态被消除;
-            // 该行注释仅描述消费侧,不要因"看起来多余"而删 hook 的联锁。
-            // tear-off 进行中(dndDisabled)不再启动 HTML5 拖拽。
-            e.dataTransfer.setData('application/x-pinvou-session', dndPayload.sessionId);
-            e.dataTransfer.effectAllowed = 'move';
-          } : undefined}
           className={`group flex h-11 items-center rounded-full text-[15px] transition-all
             ${personaTarget ? ''
               : active ? 'bg-[#E1E5EA] text-[#1F1F1F] dark:bg-[#333537] dark:text-white'
@@ -340,6 +328,19 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
             type="button"
             data-testid={chat.testId}
             data-drag-surface
+            // HTML5 拖拽(移动到项目)与 tear-off(长按 350ms)共享同一手势
+            // 面:都只从标签按钮(data-drag-surface)启动,置顶/更多/删除等
+            // 动作按钮起手不会拖走整行(useLongPressDrag 的按钮排除同源)。
+            // 两者互斥由 hook 的工程手段提供:pointerdown 时装 capture 阶段
+            // dragstart 监听({once}) + pointercancel 兜底,clearPress 幂等,
+            // 自然竞态被消除;不要因"看起来多余"而删联锁。tear-off 进行中
+            // (dndDisabled)不再启动 HTML5 拖拽。
+            draggable={dndPayload && !dndDisabled ? true : undefined}
+            onDragEnd={onDragEnd}
+            onDragStart={dndPayload && !dndDisabled ? (e) => {
+              e.dataTransfer.setData(PROJECT_SESSION_DRAG_TYPE, dndPayload.sessionId);
+              e.dataTransfer.effectAllowed = 'move';
+            } : undefined}
             onClick={sessionDragKind ? drag.guardClick(selectChat) : selectChat}
             {...dragProps}
             className="flex min-w-0 flex-1 cursor-pointer items-center self-stretch border-0 bg-transparent px-4 text-left">

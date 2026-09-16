@@ -25,7 +25,8 @@ const MoveToProjectDialog = ({
 }) => {
   const [query, setQuery] = useState('');
   // 拖拽落点直达:拖到 root 未覆盖会话目录的项目上时,直接以该目标预置
-  // "添加文件夹"确认;初始化器即可(对话框每次打开都重新挂载)。
+  // "仅移动"确认(刻意 move-only,绝不带 add_workspace_root);初始化器
+  // 即可(对话框每次打开都重新挂载)。
   const [pendingMove, setPendingMove] = useState(() => {
     if (!presetProjectId || !session) return null;
     const target = (Array.isArray(projects) ? projects.filter(Boolean) : [])

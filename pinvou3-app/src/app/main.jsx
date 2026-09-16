@@ -179,6 +179,9 @@ function cachedItemCallback(cache, item, build) {
 }
 const sidebarPickUpCallbacks = new WeakMap();
 const sidebarScheduledSelectCallbacks = new WeakMap();
+// 拖拽 payload 与 onPickUp/onSelect 同因缓存:内联对象每次渲染都是新引用,
+// 会击穿 RecentItem 的 memo(见 NavigationComponents 内注释)。
+const sidebarDndPayloads = new WeakMap();
 
 // Static icon elements for the sidebar main nav: module-level constants keep
 // the element references stable so the NavItem memo can hit.
@@ -1714,6 +1717,10 @@ const NAV_PREFETCH = {
         setMoveToPresetProject(null);
         setMoveToProjectSession(target);
       }, []);
+      // 拖拽高亮清除必须引用稳定:行内箭头让每个 App 重渲染(每个流式
+      // token 批次、tear-off 期间每次 pointermove 的 setDragAvatar)都新建
+      // 引用,击穿 RecentItem 的 memo,重渲染全部侧栏行。
+      const clearDropTarget = useCallback(() => setDropTargetGroupKey(null), []);
       // 桥完成首次状态同步(bs 就绪)后拉一次项目快照;后续变更由
       // projects:list_changed 事件驱动桥内刷新(bridge/projects.js)。
       const projectsBootstrapReady = !!bs;
@@ -2595,9 +2602,14 @@ const NAV_PREFETCH = {
         );
       });
       // 拖拽落点:root 已覆盖的直接移动;未覆盖的带着预置目标打开选择器,
-      // 进入"添加文件夹"确认(menu 路径则不带预置)。判定用共享的
+      // 进入"仅移动"确认(刻意 move-only:绝不带 add_workspace_root,面板
+      // 文案已说明文件夹留在项目外;menu 路径则不带预置)。判定用共享的
       // needsAddFolderConfirm,与选择器的初始化器/选择路径保持同源。
       const handleDropSessionOnProject = (sessionId, projectId) => {
+        // busy 在最外层统一静默忽略,两条路径一致:与侧栏其他拖拽反馈
+        // 相同不额外打断(runProjectOp 内部同样有守卫),也避免落点挂出
+        // 一个 busy 全禁用、无法关闭的预置确认面板。
+        if (projectOpsBusy) return;
         const chat = sidebarTaskHistory.find(c => c.id === sessionId);
         if (!chat) return;
         const projects = sidebarProjectsData ? sidebarProjectsData.projects : [];
@@ -2610,8 +2622,6 @@ const NAV_PREFETCH = {
           setMoveToProjectSession(chat);
           return;
         }
-        // projectOpsBusy 时静默忽略与侧栏其他拖拽反馈一致(runProjectOp
-        // 内部同样有 busy 守卫),不额外打断。
         handleMoveSessionToProject(sessionId, projectId, false);
       };
 
@@ -2868,6 +2878,9 @@ const NAV_PREFETCH = {
       // 日期分组/平铺两种布局共用的任务项渲染
       const renderSidebarTaskItem = (chat) => {
         const detachKind = chat.taskKind === 'codex' ? 'codex-session' : 'session';
+        // 拖拽与"移动到项目"菜单项同一可用性门控:项目列表为空(bootstrap
+        // 窗口、零项目用户)时行不可拖,避免出现零可达落点的死手势。
+        const projectMovesAvailable = chat.taskKind === 'codex' && bridge.projects && !!sidebarProjectsData?.projects?.length;
         return (
           <RecentItem
             key={chat.taskKind === 'scheduled' ? `${chat.scheduledRun?.automationId || ''}:${chat.scheduledRun?.id || chat.id}` : `${chat.taskKind}:${chat.id}`}
@@ -2891,12 +2904,12 @@ const NAV_PREFETCH = {
             onOpenFolder={can('externalSystemOpen') ? handleRevealSessionFolder : undefined}
             onExportArchive={chat.taskKind !== 'codex' && !exportingSessionIds.has(chat.id) && bridge.sessions.exportSessionArchive ? handleExportSessionArchive : undefined}
             onArchive={handleArchiveSession}
-            onMoveToProject={chat.taskKind === 'codex' && bridge.projects && sidebarProjectsData?.projects?.length
-              ? openMovePicker
+            onMoveToProject={projectMovesAvailable ? openMovePicker : undefined}
+            dndPayload={projectMovesAvailable && sidebarCodeListActive
+              ? cachedItemCallback(sidebarDndPayloads, chat, (c) => ({ sessionId: c.id }))
               : undefined}
-            dndPayload={chat.taskKind === 'codex' && bridge.projects && sidebarCodeListActive ? { sessionId: chat.id } : undefined}
             dndDisabled={!!dragAvatar}
-            onDragEnd={() => setDropTargetGroupKey(null)}
+            onDragEnd={clearDropTarget}
             dragKind={detachKind}
             dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
             onPickUp={canDetachWindows
