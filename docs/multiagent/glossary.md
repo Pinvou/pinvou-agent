@@ -9,7 +9,7 @@
 _Avoid_: 多智能体对话、工作流运行、专属会话
 
 **品悟原生代码会话（Pinvou Native Code Session）**：
-代码模式中由品悟直接承担任务的会话。它与外部 ACP 代码会话共享代码界面，并接入 Pinvou 多智能体开关；开关只控制 Pinvou 专家名册与强制委派提醒，不控制底座 `agent` / `workflow` 的执行事实。只要当前会话实际发生子智能体委派，无论开关状态如何，都以聚合 spawn 计数行呈现在消息流（协调调用保留行内专家行）。运行中代理浮层与只读 transcript 面板入口目前仅在工作会话的消息流提供；原生 Code 会话的代码页只渲染不可点击的计数行，完整执行记录暂需在工作会话侧查看。绑定项目时，父模型与子智能体仍在项目目录执行；CodeWhale 的 delegated-agent 账本、transcript 和协调锁通过 `subagent_state_root` 落在 `~/.pinvou3/sessions/<id>/workspace/`，Pinvou 专家则通过内存 `fleet.profiles` 配置提供，不向项目或会话目录写入专家 TOML。关闭产品开关后，CodeWhale 原有 `agent` / `workflow` 能力仍保持不变。
+代码模式中由品悟直接承担任务的会话。它与外部 ACP 代码会话共享代码界面，并接入 Pinvou 多智能体开关；开关只控制 Pinvou 专家名册与强制委派提醒，不控制底座 `agent` / `workflow` 的执行事实。只要当前会话实际发生子智能体委派，无论开关状态如何，都以聚合 spawn 计数行呈现在消息流（协调调用保留行内专家行）。运行中代理浮层目前仅在工作会话的消息流提供；原生 Code 会话的代码页不挂浮层，聚合 spawn 计数行不可点击，但行内协调专家行仍可打开只读 transcript 面板查看完整执行记录。绑定项目时，父模型与子智能体仍在项目目录执行；CodeWhale 的 delegated-agent 账本、transcript 和协调锁通过 `subagent_state_root` 落在 `~/.pinvou3/sessions/<id>/workspace/`，Pinvou 专家则通过内存 `fleet.profiles` 配置提供，不向项目或会话目录写入专家 TOML。关闭产品开关后，CodeWhale 原有 `agent` / `workflow` 能力仍保持不变。
 _Avoid_: 品悟 ACP 会话、Codex 会话
 
 **外部 ACP 代码会话（External ACP Code Session）**：
