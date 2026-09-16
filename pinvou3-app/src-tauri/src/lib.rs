@@ -906,8 +906,15 @@ pub fn run() {
             // owns the later persist-to-disk → flip-flag flow).
             let computer_use_shared =
                 std::sync::Arc::new(features::computer_use::ComputerUseShared::new());
-            computer_use_shared
-                .set_enabled(crate::platform::prefs::UserPrefs::load().computer_use.enabled);
+            // Replay the persisted toggle through the same platform gate the
+            // set_enabled command enforces: on an OS without a backend a
+            // stale `enabled: true` in settings.json must not flip the
+            // in-memory flag (it would keep the tool model-visible while
+            // every call dies at the capability check).
+            computer_use_shared.set_enabled(
+                crate::platform::prefs::UserPrefs::load().computer_use.enabled
+                    && features::computer_use::backend_supported(),
+            );
             app.manage(computer_use_shared.clone());
             let tool_factory: crate::features::assistant::engine_pool::EngineToolFactory = {
                 let computer_use_shared = computer_use_shared.clone();

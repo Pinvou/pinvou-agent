@@ -117,6 +117,16 @@ assert.equal(
   '/ws/attachments/computer_use/obj.png',
   'object outputs are searched via their JSON serialization',
 );
+assert.equal(
+  extractComputerUseScreenshotPath('saved /ws/attachments/computer_use/../../secrets/inner.png'),
+  null,
+  'a traversal segment inside the attachments dir must reject the whole mention',
+);
+assert.equal(
+  extractComputerUseScreenshotPath('saved C:/ws/attachments/computer_use/../..\payload.png'),
+  null,
+  'traversal with backslash separators must be rejected too',
+);
 
 // ── Consent UI visibility state machine ─────────────────────────────────────────────────────
 assert.deepEqual(

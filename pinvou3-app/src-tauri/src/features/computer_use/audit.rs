@@ -31,6 +31,11 @@ use crate::platform::strings::truncate_utf8;
 /// Byte cap for the target / element-label fields (the unified platform audit field
 /// convention).
 pub const AUDIT_TARGET_MAX_BYTES: usize = 600;
+/// Byte cap for the free-form `error` field. Every current source is
+/// fixed copy or a stable code, but the cap keeps the redaction contract
+/// intact if a future error source starts embedding variable data (same
+/// bound as the target field).
+pub const AUDIT_ERROR_MAX_BYTES: usize = 600;
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
     hex_lower(&sha2::Sha256::digest(bytes))
@@ -133,7 +138,7 @@ impl AuditRecord {
 
     pub fn finish(mut self, result: &str, error: Option<String>, duration_ms: u64) -> Self {
         self.result = Some(result.to_string());
-        self.error = error;
+        self.error = error.map(|error| truncate_utf8(&error, AUDIT_ERROR_MAX_BYTES).to_string());
         self.duration_ms = Some(duration_ms);
         self
     }
