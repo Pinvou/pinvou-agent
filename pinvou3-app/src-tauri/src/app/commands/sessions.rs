@@ -19,6 +19,16 @@ pub struct SessionListItem {
     pub workspace_binding: Option<String>,
 }
 
+/// Web boundary projection for SessionListItem: degrade the host absolute
+/// workspace-binding path to its last component, mirroring the metadata
+/// redaction, so the WebUI never receives host directory structure. The
+/// projects slice is desktop-only; the field carries no function on web.
+pub(crate) fn redact_session_list_item_for_web(item: &mut SessionListItem) {
+    if let Some(binding) = &item.workspace_binding {
+        item.workspace_binding = Some(super::codex::redact_workspace_path_for_web(binding));
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct HiddenSessionListItem {
     #[serde(flatten)]
@@ -1133,5 +1143,51 @@ mod session_archive_name_tests {
             normalized_archive_name(&long, "abcd1234-0000"),
             "pinvou-session-abcd1234.tar.xz"
         );
+    }
+}
+
+#[cfg(test)]
+mod web_projection_tests {
+    use super::*;
+
+    /// The web session list must never carry the host absolute binding path:
+    /// `workspace_binding` degrades to its last component, mirroring the
+    /// metadata redaction and the codex list-item projection.
+    #[test]
+    fn redact_session_list_item_for_web_degrades_workspace_binding() {
+        let metadata: SessionMetadata = serde_json::from_value(serde_json::json!({
+            "id": "session-web-binding",
+            "title": "Web binding projection",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "message_count": 0,
+            "total_tokens": 0,
+            "model": "test-model",
+            "workspace": "/tmp/workspace"
+        }))
+        .expect("metadata");
+        let mut item = SessionListItem {
+            pinned: false,
+            pinned_at: None,
+            title_attachment_names: Vec::new(),
+            workspace_binding: Some("/Users/host/Documents/secret-project".to_string()),
+            metadata,
+        };
+
+        redact_session_list_item_for_web(&mut item);
+
+        assert_eq!(
+            item.workspace_binding.as_deref(),
+            Some("secret-project"),
+            "workspace_binding 过 Web 边界必须降级为末级目录名"
+        );
+
+        // 未绑定会话(None)不受影响;Windows 形态同样只留末级。
+        item.workspace_binding = None;
+        redact_session_list_item_for_web(&mut item);
+        assert_eq!(item.workspace_binding, None);
+        item.workspace_binding = Some(r#"C:\Users\host\proj"#.to_string());
+        redact_session_list_item_for_web(&mut item);
+        assert_eq!(item.workspace_binding.as_deref(), Some("proj"));
     }
 }
