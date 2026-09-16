@@ -7,7 +7,7 @@
 - 回归测试 `forkguard_compaction_topology_preserves_tool_round_boundary` 覆盖空/活跃 Agent 拓扑及重复压缩；`forkguard_compaction_tool_round_has_valid_chat_wire_roles` 校验完整出站角色序列和工具 ID；`compaction_marker_quoted_by_user_keeps_wire_order` 覆盖普通用户引用标记。既有拓扑测试继续覆盖终态和用户仿冒消息。
 - 审核跟进：第二次压缩必须把内部拓扑检查点排除在真实用户轮次、保留预算和覆盖统计之外；Chat Completions 只合并压缩检查点附近的消息，并覆盖无摘要裁剪、用户粘贴完整摘要头及损坏历史的边界。
 - 跨轮次回归：已持久化的摘要在后续用户或 assistant 消息追加后会位于历史中间，Chat Completions 每次发送仍需将其放到原保留轮次之前；会话恢复须保持摘要位置，并把恢复后的拓扑检查点合并进同一条 user 出站消息；再次压缩时旧摘要不能截断后续真实问答，需移除旧摘要并完整保留通过覆盖校验的后续轮次。程序生成的摘要增加结构性来源块，真实用户即使在工具结果后粘贴完整摘要头，也不会被错移到旧提问之前。
-- 范围边界：本 PR 不迁移修复前已持久化的会话；受影响的旧会话需尝试手动 `/compact` 重新生成历史，若压缩也被服务端拒绝则需新建会话，尚未做客户服务重放验证。普通 Agent 轮次中，后台子 Agent 完成、失败或等待事件若紧接工具结果，仍可能出现同类 `tool -> user` 错误；这是独立待办，需另行修复并加入出站消息测试。CodeWhale 仓库未启用 Issues，此待办暂记录在本清单与 PR 审核讨论中。
+- 范围边界：本 PR 不迁移修复前已持久化的会话；受影响的旧会话可尝试手动 `/compact`，但摘要请求本身也会在原历史后追加一条 user 指令，严格模板可能同样拒绝，此时需新建会话。尚未做客户服务重放验证。压缩流程之外，后台子 Agent 的完成、失败或等待事件，以及 LSP 诊断、步骤预算、子 Agent 协调、输出截断和基准预算提示，都可能在工具结果后产生 `tool -> user`。真实用户的中途补充和中断恢复也可能形成相同序列，但不能在不改变用户意图的前提下重排。这些独立场景需另行设计路由相关的出站测试与修复；CodeWhale 仓库未启用 Issues，暂记录在本清单与 PR 审核讨论中。
 
 > 本文是 Pinvou 对 CodeWhale fork 的单一现状清单。
 > 维护策略见 [`fork-policy.md`](fork-policy.md)，升级证据见 [`codewhale-upgrade-0.9.5-to-0.9.12.md`](codewhale-upgrade-0.9.5-to-0.9.12.md)。
