@@ -85,7 +85,13 @@ pub async fn set_project_skills_enabled(
     app: AppHandle,
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
-    crate::features::marketplace::scope::set_project_skills_enabled(enabled);
+    // 写路径持跨进程文件锁（#515），可在 flock 上阻塞对端进程释放，须移出
+    // executor 线程（与 set_bundle_visibility 对齐）。
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::scope::set_project_skills_enabled(enabled);
+    })
+    .await
+    .map_err(|e| format!("set_project_skills_enabled join: {e}"))?;
     // 开关影响 code 会话组合目录：重写在线会话组合目录 + 热刷 load_skill 隐藏
     // 判定 + execpolicy 规则集（项目级 skills 重新纳入 deny/allow 集合），并广播
     // 工具变更（其它窗口/实例借此刷新开关状态）。

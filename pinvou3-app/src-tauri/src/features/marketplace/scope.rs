@@ -71,6 +71,11 @@ fn disabled_bundles_lock_path() -> PathBuf {
 /// 取「进程内 Mutex + OS 文件锁」后执行闭包：跨进程把守 load→save 整段临界区
 /// （#515）。OS 锁阻塞等待另一进程（GUI / headless 共享 home）释放；获取失败
 /// （文件系统不支持锁等）退化为仅进程内锁（= 修复前行为）并告警，不阻断写入。
+///
+/// 阻塞无超时（fd-lock v4 已无 timeout API）：对方进程崩溃/退出时 OS 会释放锁
+/// （flock / LockFileEx 随 fd 关闭），但对方被冻结（SIGSTOP / 调试器）时本进程
+/// 将无限等待——临界区为本地 JSON 读-改-写，窗口毫秒级，接受这一 tradeoff
+/// （fail-open 的 lost update 换成 bounded 不了的 fail-stop 挂起，仅对端冻结时）。
 fn with_scope_file_lock<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,
@@ -1040,7 +1045,9 @@ mod tests {
 
             let reader = std::thread::spawn(load_disabled_bundles_for_plain_for_lock_test);
             std::thread::sleep(std::time::Duration::from_millis(200));
-            // 持锁期间 bundles 文件尚未写入（迁移被跨进程锁串行化）。
+            // 持锁期间 bundles 文件尚未写入（迁移被跨进程锁串行化）。sleep 只给
+            // reader 到达持锁点的调度窗口：未到点时此断言真空通过（弱化强度），
+            // 但锁失效时迁移必然在窗口内落盘使断言失败——不会假阴性/flaky fail。
             assert!(
                 !disabled_bundles_path().exists(),
                 "跨进程锁持有期间读路径不得先行迁移落盘"
@@ -1051,6 +1058,43 @@ mod tests {
             assert!(
                 content.contains("\"scopes\""),
                 "释放锁后迁移完成: {content}"
+            );
+        });
+    }
+
+    /// #515 对称用例：读/迁移路径之外，写路径（`save_disabled_bundles_for`）同样
+    /// 经 `with_scope_file_lock`——foreign 持锁期间写方不得先行落盘，释放后写入
+    /// 内容完整。释放后的断言无竞态（join 确定性收束）。
+    #[test]
+    fn cross_process_lock_blocks_save_write_until_release() {
+        with_temp_home("pinvou3-scope-cross-process-save", || {
+            // 「另一进程」持有的锁：独立 open 的锁文件 + fd_lock 写锁。
+            let foreign_file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .open(disabled_bundles_lock_path())
+                .unwrap();
+            let mut foreign_lock = fd_lock::RwLock::new(foreign_file);
+            let foreign_guard = foreign_lock
+                .write()
+                .expect("测试内应能取得跨进程锁文件写锁");
+
+            let writer = std::thread::spawn(|| {
+                save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]);
+            });
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            // 持锁期间写方被跨进程锁串行化，数据文件不得先行落盘。
+            assert!(
+                !disabled_bundles_path().exists(),
+                "跨进程锁持有期间写路径不得先行落盘"
+            );
+            drop(foreign_guard);
+            writer.join().unwrap();
+            let content = std::fs::read_to_string(disabled_bundles_path()).unwrap();
+            assert!(
+                content.contains("\"weather\""),
+                "释放锁后写入完成: {content}"
             );
         });
     }
