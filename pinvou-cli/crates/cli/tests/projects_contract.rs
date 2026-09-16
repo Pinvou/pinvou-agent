@@ -511,8 +511,7 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
     let outcome = run(&["pinvou", "projects", "move", &session_id]).expect("human ungroup");
     assert!(
         outcome.stdout.contains("out of its project"),
-        "{}",
-        outcome.stdout
+        "the human ungroup must report the session leaving its project"
     );
     let value = run_json(&[
         "pinvou",

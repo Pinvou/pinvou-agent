@@ -189,8 +189,7 @@ fn files_ingest_round_trips_markdown_and_text_fixtures() {
     assert_eq!(outcome.exit_code, ExitCode::Success);
     assert!(
         outcome.stdout.contains("File: notes.md"),
-        "{}",
-        outcome.stdout
+        "markdown ingest summary must carry the fixture header"
     );
     assert!(outcome.stdout.contains("Kind: text"));
     assert!(outcome.stdout.contains("Tokens: "));
@@ -1178,8 +1177,7 @@ fn monitor_snapshot_produces_a_one_shot_sample() {
     assert_eq!(outcome.exit_code, ExitCode::Success);
     assert!(
         outcome.stdout.contains("GeneratedAt: "),
-        "{}",
-        outcome.stdout
+        "monitor snapshot must carry the GeneratedAt header"
     );
     assert!(outcome.stdout.contains("Ram: "));
     assert!(outcome.stdout.contains("Backend: "));
