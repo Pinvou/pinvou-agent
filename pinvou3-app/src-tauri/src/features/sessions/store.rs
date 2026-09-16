@@ -55,7 +55,7 @@ pub(crate) const MAX_SESSIONS_PER_KIND: usize = 50;
 /// the history list.
 pub(crate) const NEW_CHAT_TITLE: &str = "新对话";
 /// Title stamped onto freshly created eval sessions by
-/// [`SessionStore::create_empty_with_id`]. An agentic run deletes a failed
+/// `SessionStore::create_empty_with_id`. An agentic run deletes a failed
 /// fresh session only while it still wears this title, so a GUI user who
 /// adopted the session mid-run (renamed it in the session list) keeps it.
 pub const EVAL_SESSION_FACTORY_TITLE: &str = "临时评测";
