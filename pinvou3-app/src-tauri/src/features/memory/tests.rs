@@ -14,8 +14,8 @@ use crate::platform::prefs::ModelPreset;
 
 use super::io::{
     archive_timed_memory_unlocked, commit_topic_migration_unlocked_with,
-    compact_timed_memory_store_unlocked, current_focus_path, enqueue_memory_candidate, is_delivery_tool,
-    load_preferences, load_profile, pending_item_from_suggestion,
+    compact_timed_memory_store_unlocked, current_focus_path, enqueue_memory_candidate,
+    is_delivery_tool, load_preferences, load_profile, pending_item_from_suggestion,
     reconcile_topic_migration_journals_unlocked, summarize_tool_start,
     topic_migration_journal_path, upsert_timed_memory_unlocked, write_lock,
     write_never_memory_unlocked, write_pending_memory_unlocked, write_recent_work_unlocked,
@@ -24,8 +24,8 @@ use super::io::{
 use super::llm_review::{
     LLM_REVIEW_PROMPT_TEMPLATE, append_memory_review_diagnostic_to, apply_llm_memory_review,
     apply_memory_review_reasoning_controls, assistant_suggests_delivery_complete,
-    has_explicit_remember_signal, has_memory_review_signal,
-    memory_review_error_stage, parse_llm_memory_review, sanitize_llm_memory_item,
+    has_explicit_remember_signal, has_memory_review_signal, memory_review_error_stage,
+    parse_llm_memory_review, sanitize_llm_memory_item,
 };
 use super::render::render_from_parts;
 // 引入全部常量（MAX_STORED / PENDING_STATUS_* / PROFILE_VERSION / Llm* 实体）。
@@ -43,8 +43,8 @@ use super::util::{
 use super::util::{
     file_lifecycle_lock, is_transient_windows_lock, json_lines_are_valid,
     promote_recovery_candidate, read_text_recovering, read_text_recovering_unlocked_with,
-    recover_directory_json_files_unlocked, stable_id_with_prefix,
-    write_json_atomic, write_json_atomic_unlocked, write_text_atomic_unlocked_with,
+    recover_directory_json_files_unlocked, stable_id_with_prefix, write_json_atomic,
+    write_json_atomic_unlocked, write_text_atomic_unlocked_with,
 };
 
 struct IsolatedPinvouHome {
