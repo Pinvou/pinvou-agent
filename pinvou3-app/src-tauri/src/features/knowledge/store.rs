@@ -1,4 +1,4 @@
-// architecture-guard: allow-target-cfg -- probe 回归测试用 POSIX 权限位构造"开库读失败"，验证失败不再折叠成版本 0 触发删库（OS 元数据检查按先例留在最内聚的测试内）
+// architecture-guard: allow-target-cfg -- the probe regression test constructs an "open-read failure" with POSIX permission bits to verify the failure is no longer folded into version 0, which would trigger the store deletion (the OS-metadata check stays inside the most cohesive test per precedent)
 //! L0 元数据存储：SQLite + FTS5(trigram) 做全系统秒搜 + 去重候选查询。
 //!
 //! 设计（见 docs/本地知识底座-产品形态与架构.md §4.0/§5）：
@@ -248,11 +248,15 @@ impl Store {
     /// 打开（或新建）磁盘库，建表。父目录会自动创建。
     /// schema 版本不符 → 删库重建（L0 是可重建缓存，重扫即恢复；顺带回收旧版撑大的体积）。
     ///
-    /// 三条连接（probe / 写 / 只读）都带 busy_timeout：桌面应用与 headless CLI
-    /// 是受支持的两进程场景，任何一条连接撞上另一进程的写事务都要等待而不是报
-    /// "database is locked"。probe 读失败**不得**折叠成版本 0——下面的 stale 分支
-    /// 会删库，而 v3 起含有不可重建的业务数据；无法读出可信版本时必须原样报错，
-    /// 让调用方决定重试，宁可开库失败也绝不误删。
+    /// All three connections (probe / write / read-only) carry busy_timeout:
+    /// the desktop app and the headless CLI are a supported two-process pair,
+    /// and any connection hitting the other process's write transaction must
+    /// wait instead of failing with "database is locked". A failed probe read
+    /// must NOT fold into version 0 — the stale branch below deletes the
+    /// database, and since v3 it holds non-rebuildable data. When no trusted
+    /// version can be read, the error must surface as-is and let the caller
+    /// decide whether to retry: failing the open outright always beats a
+    /// wrong deletion.
     pub fn open(db_path: &Path) -> rusqlite::Result<Self> {
         if let Some(parent) = db_path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -265,7 +269,7 @@ impl Store {
             Some(version)
         } else {
             None
-        }; // probe 连接在此 drop，才能删文件
+        }; // the probe connection must drop here so the file can be deleted below
         // v3 首次包含不可重建的知识集业务数据，必须原地迁移；更旧的版本仅含可重扫的 L0 索引。
         let stale =
             matches!(current_version, Some(version) if version != 3 && version != SCHEMA_VERSION);
@@ -281,18 +285,26 @@ impl Store {
         let w = Connection::open(db_path)?;
         w.busy_timeout(std::time::Duration::from_millis(5_000))?;
         if current_version == Some(SCHEMA_VERSION) {
-            // 稳态：schema 已是当前版本。跳过 DDL 批与 user_version 写，两进程
-            // 竞争场景下开库完全不取写锁（这正是 busy_timeout 想兜住的那段窗口）。
-            // 代价是失去「每次开库自愈被外删的表」；表被外部破坏时语句会显式
-            // 报错，比静默重建掩盖问题更可取。
+            // Steady state: the schema is already current. Skip the DDL batch
+            // and the user_version write so opening the store takes no write
+            // lock at all in the two-process contention case (exactly the window
+            // busy_timeout could only shorten). The cost is losing the
+            // "self-heal externally dropped tables on every open" behavior:
+            // statements fail explicitly once tables were externally destroyed,
+            // which beats silent rebuilds masking the damage.
             //
-            // 连接级 PRAGMA 不持久化（journal_mode 才写在库文件头里），DDL 批
-            // 里的 synchronous=NORMAL 必须在这里补齐，稳态与建库/迁移两条路径
-            // 的写连接耐久性才一致。它是纯连接设置，不取库写锁。
+            // Connection-level PRAGMAs do not persist (only journal_mode is
+            // written into the database file header), so the DDL batch's
+            // synchronous=NORMAL must be re-applied here for the steady-state
+            // and create/migrate paths to give write connections the same
+            // durability. It is a pure connection setting and takes no
+            // database write lock.
             w.execute_batch("PRAGMA synchronous = NORMAL;")?;
         } else {
-            // 新建 / v3 旧版原地迁移：DDL 批 + 版本写入各取一次写锁，
-            // busy_timeout 让它等待另一进程的短事务而不是立即失败。
+            // Fresh create / in-place v3 migration: the DDL batch and the
+            // version write each take the write lock once; busy_timeout makes
+            // them wait out the other process's short transaction instead of
+            // failing immediately.
             w.execute_batch(SCHEMA)?;
             w.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
         }
@@ -578,9 +590,12 @@ mod tests {
         s
     }
 
-    /// probe 连接读不到文件时必须报错而不是折叠成版本 0：旧代码把任何 probe
-    /// 失败当成 v0，正好驱动 stale 分支删库（v3+ 含不可重建数据）。权限故障是
-    /// 可确定性构造的 probe 失败；以 root 运行的环境绕过文件权限，跳过。
+    /// When the probe connection cannot read the file it must error instead
+    /// of folding into version 0: the old code treated any probe failure as
+    /// v0, exactly what drove the stale branch to delete the database (v3+
+    /// holds non-rebuildable data). A permission fault is a deterministically
+    /// constructible probe failure; environments running as root bypass file
+    /// permissions, so skip there.
     #[cfg(unix)]
     #[test]
     fn failed_probe_never_deletes_an_existing_store() {
@@ -624,9 +639,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// 稳态开库（版本已是当前）不再执行 DDL 批与 user_version 写：这是
-    /// GUI+CLI 两进程场景下「开库不取写锁」的前提。用一条持写事务的连接
-    /// 模拟另一进程的写窗口，第二个开库仍应成功。
+    /// A steady-state open (schema already current) no longer runs the DDL
+    /// batch and the user_version write: this is what lets the open skip the
+    /// schema write lock in the GUI+CLI two-process scenario. A connection
+    /// holding a write transaction simulates the other process's write window;
+    /// the second open must still succeed.
     #[test]
     fn steady_state_open_does_not_take_the_schema_write_lock() {
         let tmp = std::env::temp_dir().join(format!(
@@ -642,7 +659,7 @@ mod tests {
         {
             Store::open(&db).expect("create store at current schema version");
         }
-        // 模拟另一进程持写事务（WAL 下写锁被占用）。
+        // Simulate the other process holding a write transaction (the WAL write lock is taken).
         let writer = Connection::open(&db).unwrap();
         writer
             .busy_timeout(std::time::Duration::from_millis(5_000))
@@ -662,9 +679,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// 稳态跳过 DDL 批后，连接级 PRAGMA 必须仍然生效：synchronous 是连接
-    /// 设置、不持久化（journal_mode 才写在库文件头里），缺失时稳态写连接会
-    /// 静默退回默认 FULL。
+    /// Once the steady state skips the DDL batch, connection-level PRAGMAs
+    /// must still apply: synchronous is a connection setting and does not
+    /// persist (only journal_mode is written into the file header); dropping
+    /// it would silently fall steady-state write connections back to the FULL
+    /// default.
     #[test]
     fn steady_state_open_keeps_connection_level_pragmas() {
         let tmp = std::env::temp_dir().join(format!(

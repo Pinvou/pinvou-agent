@@ -1750,9 +1750,10 @@ fn chat_retention_does_not_evict_scheduled_conversation() {
     );
 }
 
-/// 钉住的会话是用户显式的「永久保留」：不计入 50 上限、不参与驱逐。headless
-/// `agent run` 默认共享同一存储，没有豁免时一次批量运行就会静默清掉用户钉住
-/// 的 GUI 会话。
+/// Pinned sessions are the user's explicit "keep forever" mark: excluded from
+/// the 50 cap and from eviction. A headless `agent run` shares the same store
+/// by default; without the exemption a single batch run would silently delete
+/// the user's pinned GUI sessions.
 #[test]
 fn chat_retention_exempts_pinned_sessions_from_cap_and_eviction() {
     let (store, _g) = isolated_store();
@@ -1772,9 +1773,10 @@ fn chat_retention_exempts_pinned_sessions_from_cap_and_eviction() {
         store.save(&session).expect("seed session");
         ids.push(session.metadata.id);
     }
-    // updated_at 随 index 递减：ids[MAX-1] 最老。钉住它把它移出预算；此后两条
-    // 未钉住新会话让未钉住计数到 51，驱逐必须跳过钉住的最老会话、落到此时最老
-    // 的未钉住会话（ids[MAX-2]）。
+    // updated_at decreases with index: ids[MAX-1] is the oldest. Pinning it
+    // moves it out of the budget; two fresh unpinned sessions then push the
+    // unpinned count to 51, and eviction must skip the pinned oldest session
+    // and land on the oldest unpinned one (ids[MAX-2]).
     let pinned_id = ids[MAX_SESSIONS_PER_KIND - 1].clone();
     store.set_pinned(&pinned_id, true);
     for suffix in ["fresh-a", "fresh-b"] {
@@ -1806,8 +1808,9 @@ fn chat_retention_exempts_pinned_sessions_from_cap_and_eviction() {
     );
 }
 
-/// 全部会话都被钉住时保留策略必须完全停用：钉住会话既不计数也不作为驱逐
-/// 候选（sweep 对钉住条目逐个 continue），超额保存不得删除任何会话。
+/// With every session pinned, retention must fully disengage: pinned sessions
+/// neither count nor serve as eviction candidates (the sweep continues past
+/// each pinned entry), and an over-cap save must not delete anything.
 #[test]
 fn chat_retention_with_all_sessions_pinned_deletes_nothing() {
     let (store, _g) = isolated_store();
@@ -1826,7 +1829,8 @@ fn chat_retention_with_all_sessions_pinned_deletes_nothing() {
         store.save(&session).expect("seed session");
         store.set_pinned(&session.metadata.id, true);
     }
-    // 第 51 条未钉住会话：非钉住计数 1 ≤ 50，整个 sweep 不产生任何删除。
+    // The 51st session is unpinned: the unpinned count 1 <= 50, so the whole
+    // sweep must produce no deletion.
     let extra = create_saved_session_with_id_and_mode(
         "all-pinned-extra".to_string(),
         &[],
