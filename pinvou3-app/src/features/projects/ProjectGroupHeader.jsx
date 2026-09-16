@@ -44,7 +44,8 @@ const ProjectGroupHeader = ({
   // header row cannot fit multiple shrink-0 badges (review #463 m3); the
   // expanded state lays them out flat and allows wrapping.
   const [showAllUnavailableRoots, setShowAllUnavailableRoots] = useState(false);
-  // 菜单门控与编辑提交判定在 ./projectGroupHeaderState.js(纯函数,有单测)。
+  // Menu gating and edit-submit decisions live in
+  // ./projectGroupHeaderState.js (pure functions, covered by unit tests).
   const hasMenu = groupHeaderHasMenu(kind, { onConvert, onRename, onDelete });
   const { menuOpen, menuStyle, closeMenu, toggleMenu } = usePortalMenu({
     height: kind === 'project' ? 96 : 48,

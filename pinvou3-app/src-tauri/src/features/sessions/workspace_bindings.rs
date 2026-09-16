@@ -40,18 +40,22 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// rebind_workspace_bindings 的结果:已平移 + 逐条目失败隔离(评审 #464
-/// MAJOR 4:非法 id 或单条写失败不再中断整轮,进失败名单由命令层并入报告)。
+/// Outcome of rebind_workspace_bindings: translated entries plus per-entry
+/// failure isolation (review #464 MAJOR 4: an invalid id or a single write
+/// failure no longer aborts the whole round; failures go into the failure
+/// list and the command layer merges them into the report).
 #[derive(Debug, Default)]
 pub struct RebindBindingsOutcome {
     pub rebound: Vec<(String, PathBuf)>,
     pub failed_session_ids: Vec<String>,
 }
 
-/// 折叠身份键下的「等于或嵌套于」前缀判定:Windows 折叠分隔符与大小写,
-/// 与 store 的 key_is_same_or_nested 同约定;空 from 匹配一切(本文件两处
-/// 候选扫描共用——评审 #464 MINOR 8:同一闭包曾字节级重复且语义已与
-/// 项目层漂移)。
+/// "Equal to or nested under" prefix check on folded identity keys: Windows
+/// folds separators and case, same convention as the store's
+/// key_is_same_or_nested; an empty from matches everything (shared by the two
+/// candidate scans in this file — review #464 MINOR 8: the same closure was
+/// once byte-for-byte duplicated and its semantics had drifted from the
+/// project layer).
 fn folded_covers(from: &Path, path: &Path) -> bool {
     let from_key = crate::platform::os::filesystem_path_identity_key(&from.to_string_lossy());
     let from_trim = from_key.trim_end_matches('/');
@@ -199,13 +203,17 @@ impl SessionStore {
         }
     }
 
-    /// 扫描全部 `workspace-binding.json` sidecar 并并入内存表，列出绑定在
-    /// `from` 前缀下的会话（目录重绑定的栅栏候选集；`from` 通常已消失，
-    /// 匹配在共享折叠键上进行——Windows 折叠分隔符与大小写，与
-    /// SessionAgentStore::sessions_under_workspace 同语义）。不校验
-    /// `<id>.json` 存在——残留 sidecar 同样要被重绑定覆盖，否则旧目录复活。
-    /// 内存表并入是因为存量迁移未完成时，未迁移条目只存在于内存/旧全局表
-    /// （评审 #464 nit：栅栏候选不得漏掉这一组）。
+    /// Scans every `workspace-binding.json` sidecar and merges the in-memory
+    /// table, listing sessions bound under the `from` prefix (the fence
+    /// candidate set for directory rebinding; `from` has usually already
+    /// vanished, so matching happens on the shared folded key — Windows folds
+    /// separators and case, same semantics as
+    /// SessionAgentStore::sessions_under_workspace). Does not check that
+    /// `<id>.json` exists — leftover sidecars must also be covered by the
+    /// rebind, otherwise the old directory resurrects. The in-memory table is
+    /// merged because while the legacy-data migration is unfinished, unmigrated
+    /// entries exist only in memory / the old global table (review #464 nit:
+    /// the fence candidates must not miss this group).
     pub fn workspace_bindings_under(&self, from: &Path) -> Vec<(String, PathBuf)> {
         let covered = |path: &Path| folded_covers(from, path);
         let mut matched = Vec::new();
@@ -227,7 +235,8 @@ impl SessionStore {
                 }
             }
         }
-        // 内存表并集(去重):覆盖迁移降级路径下未落 sidecar 的条目。
+        // Union with the in-memory table (deduplicated): entries that never
+        // landed as sidecars on the overwrite-migration degraded path.
         for (id, path) in self.session_workspaces.read().iter() {
             if covered(path) && !matched.iter().any(|(existing_id, _)| existing_id == id) {
                 matched.push((id.clone(), path.clone()));
@@ -236,16 +245,21 @@ impl SessionStore {
         matched
     }
 
-    /// 目录重绑定（修断链通道）：把绑定在 `from` 前缀下的普通会话绑定整体
-    /// 平移到 `to`（sidecar 原子重写 + 内存缓存同步）。与
-    /// SessionAgentStore::rebind_workspace_prefix 同语义、同幂等性——
-    /// from→to 重跑无命中即空操作，失败可整体重试。会话元数据
-    /// （metadata.workspace 展示字段）由命令层统一经 set_workspace 改写。
+    /// Directory rebinding (the broken-link repair channel): translates every
+    /// plain-session binding under the `from` prefix to `to` in one pass
+    /// (atomic sidecar rewrite + in-memory cache sync). Same semantics and
+    /// idempotency as SessionAgentStore::rebind_workspace_prefix — a from→to
+    /// rerun with no matches is a no-op, and failures can be retried as a
+    /// whole. Session metadata (the metadata.workspace display field) is
+    /// rewritten uniformly by the command layer via set_workspace.
     ///
-    /// 逐条目隔离（评审 #464 MAJOR 4）：非法 id（boot 迁移会把未校验的失败
-    /// 条目留在内存旧表）与单条写失败不再 `?` 中断整轮——项目 root 与 agent
-    /// 索引此时已平移，中断会让同一条目在每次重试都重复失败；失败进
-    /// `failed_session_ids` 由命令层并入报告。
+    /// Per-entry isolation (review #464 MAJOR 4): an invalid id (boot
+    /// migration leaves unvalidated failed entries in the in-memory legacy
+    /// table) or a single write failure no longer aborts the whole round with
+    /// `?` — by then the project roots and agent index have already been
+    /// translated, so aborting would make the same entry fail again on every
+    /// retry; failures go into `failed_session_ids` and the command layer
+    /// merges them into the report.
     pub fn rebind_workspace_bindings(
         &self,
         from: &Path,
@@ -254,8 +268,10 @@ impl SessionStore {
         let covered = |path: &Path| folded_covers(from, path);
         let skip = from.components().count();
         let mut outcome = RebindBindingsOutcome::default();
-        // 候选 = sidecar 扫描 ∪ 内存旧表:存量迁移未完成的降级路径下,未迁移
-        // 条目只存在于内存/旧全局表,漏配会在下次 boot 迁移时以旧目录复活。
+        // Candidates = sidecar scan ∪ in-memory legacy table: on the degraded
+        // path where the legacy-data migration is unfinished, unmigrated
+        // entries exist only in memory / the old global table; missing them
+        // would resurrect the old directory at the next boot migration.
         let mut candidates: Vec<(String, PathBuf)> = self.workspace_bindings_under(from);
         for (id, path) in self.session_workspaces.read().iter() {
             if !candidates.iter().any(|(existing_id, _)| existing_id == id) {
@@ -266,8 +282,9 @@ impl SessionStore {
             if !covered(&path) {
                 continue;
             }
-            // id 先过校验再拼路径(与 bind_session_workspace 同闸):遍历形态
-            // 的 id 会写出 sessions_dir 之外。
+            // The id is validated before joining the path (same gate as
+            // bind_session_workspace): a traversal-shaped id would write
+            // outside sessions_dir.
             if let Err(error) = validate_session_id(&id) {
                 eprintln!("[sessions] rebind skips invalid session id {id:?}: {error:#}");
                 outcome.failed_session_ids.push(id);
@@ -284,8 +301,10 @@ impl SessionStore {
                 .sessions_dir()
                 .join(&id)
                 .join(SESSION_WORKSPACE_SIDECAR_FILE);
-            // 内存旧表条目可能没有会话目录(从未写成 sidecar),atomic_write
-            // 不建父目录,先补(与 bind_session_workspace 同)。
+            // In-memory legacy-table entries may have no session directory
+            // (never written as a sidecar); atomic_write does not create
+            // parent directories, so create it first (same as
+            // bind_session_workspace).
             if let Some(parent) = sidecar_path.parent() {
                 if let Err(error) = std::fs::create_dir_all(parent) {
                     eprintln!("[sessions] rebind create session dir for {id} failed: {error:#}");
@@ -293,8 +312,9 @@ impl SessionStore {
                     continue;
                 }
             }
-            // bound_at 仅元信息:原样保留,与 codex 存储的 rebind 同口径,
-            // 不再重置为 None(评审 #452 finding 3)。
+            // bound_at is metadata only: keep it as-is, same convention as
+            // the codex store's rebind; it is no longer reset to None
+            // (review #452 finding 3).
             let bound_at = read_workspace_sidecar(&sidecar_path).and_then(|s| s.bound_at);
             let updated = SessionWorkspaceSidecar {
                 version: SESSION_WORKSPACE_SIDECAR_VERSION,
@@ -323,17 +343,34 @@ impl SessionStore {
                 .insert(id.clone(), next.clone());
             outcome.rebound.push((id, next));
         }
-        // 降级路径对称(评审 #452 finding 9):旧全局表仍在盘上(存量迁移未
-        // 完成)时同步重写,否则重绑定会在下次 boot 迁移时被旧表复活。
+        // Degraded-path symmetry (review #452 finding 9): while the old
+        // global table is still on disk (legacy-data migration unfinished),
+        // rewrite it in sync, otherwise the rebind would be resurrected by
+        // the old table at the next boot migration.
         self.rewrite_legacy_session_workspaces_if_present();
         Ok(outcome)
     }
 
-    /// 旧全局表的最小重写(仅重绑定的降级路径对称使用)。#445 round-2 移除了
-    /// 通用持久化(无其它调用面),这里只保留:表非空则整体原子重写为内存表
-    /// 内容,表空则删文件(没有可复活的条目)。写失败只记日志——内存表与
-    /// sidecar 已是权威,旧表本来就只是迁移残留。
+    /// Minimal rewrite of the old global table (used only for the rebind's
+    /// degraded-path symmetry). #445 round-2 removed the generic persistence
+    /// (no other call surface); all that remains here: if the table is
+    /// non-empty, atomically rewrite it wholesale with the in-memory table
+    /// contents; if empty, delete the file (no entries left to resurrect).
+    /// Write failures are only logged — the in-memory table and sidecars are
+    /// already authoritative, and the old table is nothing but migration
+    /// residue. Exception: a file whose boot parse failed stays untouched, so
+    /// a corrupt-but-repairable file keeps the "fix it and retry" door open.
     fn rewrite_legacy_session_workspaces_if_present(&self) {
+        // A file this process never successfully parsed (corrupt but
+        // repairable) must not be deleted or overwritten — otherwise the
+        // first rebind closes the "repair the file and retry" door
+        // (review #464 round-3 minor 6).
+        if self
+            .legacy_session_workspaces_parse_failed
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
         let legacy = self
             .manager
             .sessions_dir()
@@ -383,6 +420,10 @@ impl SessionStore {
             Ok(bindings) => bindings,
             Err(error) => {
                 eprintln!("[sessions] parse legacy session workspaces failed: {error}");
+                // Corrupt-but-recoverable: keep the file and bar the rebind
+                // degraded-path rewrite from deleting a file we never parsed.
+                self.legacy_session_workspaces_parse_failed
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
                 return;
             }
         };

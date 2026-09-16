@@ -76,8 +76,8 @@ test('HTML5 drag starts only from the label button drag surface', () => {
 test('dnd payload stays memo-stable and mirrors the menu-path availability gate', () => {
   assert.match(
     MAIN,
-    /const projectMovesAvailable = chat\.taskKind === 'codex' && bridge\.projects && !!sidebarProjectsData\?\.projects\?\.length;/,
-    'drag and menu move must share one availability gate (incl. non-empty project list)',
+    /const projectMovesAvailable = \(chat\.taskKind === 'codex' \|\| !!chat\.workspacePath\) && bridge\.projects && !!sidebarProjectsData\?\.projects\?\.length;/,
+    'drag and menu move must share one availability gate (incl. non-empty project list; bound plain sessions included, unify #464)',
   );
   assert.match(
     MAIN,

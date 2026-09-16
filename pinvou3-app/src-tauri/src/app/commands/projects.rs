@@ -174,11 +174,14 @@ pub async fn move_session_to_project(
                 "move_session_to_project: add_workspace_root requires project_id".to_string(),
             );
         }
-        // 统一工作区探测(跨模式融合):代码/ACP 会话走 agent 记录;普通绑定
-        // 会话回落到双根信号——执行根≠账本根 ⇒ 已绑定,执行根即绑定目录
-        // (#445 的绑定语义)。agent 记录存在但非项目形态(如临时)与记录缺失
-        // (Err)两种缺席模式都穿透到同一回退,不让 Ok(Temporary) 短路成错误
-        // (评审 #452 finding 4)。
+        // Unified workspace probing (cross-mode fusion): code/ACP sessions
+        // resolve via the agent record; plain bound sessions fall back to the
+        // dual-root signal — execution root != ledger root ⇒ bound, with the
+        // execution root as the bound directory (#445 binding semantics).
+        // Both absence modes — an agent record that exists but is not
+        // project-shaped (e.g. temporary) and a missing record (Err) — fall
+        // through to the same fallback, never letting Ok(Temporary)
+        // short-circuit into an error (review #452 finding 4).
         let detected = match acp_pool.workspace_info(&session_id) {
             Ok(info) if info.workspace_kind == CodexWorkspaceKind::Project => {
                 Some(PathBuf::from(info.workspace_path))
@@ -186,8 +189,10 @@ pub async fn move_session_to_project(
             _ => sessions
                 .session_roots(&session_id)
                 .ok()
-                // bound 标志是权威判定:不得用 ledger != execution 的路径比较
-                // 代打(SessionRoots::bound 的文档约定;评审 #464 MINOR 7)。
+                // The bound flag is the authoritative verdict: never
+                // substitute a ledger != execution path comparison for it
+                // (documented contract of SessionRoots::bound; review #464
+                // MINOR 7).
                 .filter(|roots| roots.bound)
                 .map(|roots| roots.execution),
         };
@@ -268,10 +273,11 @@ fn validate_rebind_to(to: &Path) -> Result<(), String> {
 /// idempotency (review #451 finding 6). Compared on folded keys so case /
 /// separator differences cannot evade it.
 fn reject_nested_rebind_target(from: &Path, to_key: &Path) -> Result<(), String> {
-    let from_canon = std::fs::canonicalize(from).unwrap_or_else(|_| from.to_path_buf());
-    let from_key = crate::platform::os::filesystem_path_identity_key(
-        &crate::platform::os::platform_compat_path(&from_canon.to_string_lossy()).to_string_lossy(),
-    );
+    // Resolve through the same chain as the store's root_display (deepest
+    // existing ancestor when the path is gone), otherwise the nested check
+    // goes blind on symlinked-ancestor platforms (review #464 round-3 nit).
+    let from_canon = crate::features::projects::root_display(from);
+    let from_key = crate::platform::os::filesystem_path_identity_key(&from_canon.to_string_lossy());
     let to_key_str = crate::platform::os::filesystem_path_identity_key(&to_key.to_string_lossy());
     let from_trim = from_key.trim_end_matches('/');
     let to_trim = to_key_str.trim_end_matches('/');
@@ -362,16 +368,15 @@ pub async fn rebind_workspace_root(
     reject_nested_rebind_target(&from, &to_key)?;
     require_confirm_existing(&from, confirm_existing)?;
 
-    // Affected-set snapshot (shared by the active-turn fence and the
-    // metadata replay), taken BEFORE any rewrite (review #463 M1): the
-    // return of rebind_workspace_prefix is only the set this run rewrote — a
-    // session translated by a previous run whose set_workspace failed no
-    // longer matches `from` and could never be retried without the snapshot.
+    // 受影响集合快照(活跃回合栅栏与元数据重放共用),必须在重写之前取
+    // (review #463 M1): the rewrite returns only the set this run rewrote;
+    // sessions translated by a previous run whose set_workspace failed no
+    // longer match `from`, so without a snapshot they can never be retried.
     // The candidate set spans both binding stores: agent records (code/ACP,
     // including off-index orphan sidecars, M6) and plain-session binding
-    // sidecars (unify: grouping follows binding, so bound plain sessions are
-    // in rebind scope too); retry candidates "already under to but metadata
-    // not synced" are folded in too, so a failed rerun converges.
+    // sidecars (unify: grouping follows binding, so plain bound sessions are
+    // also in rebind scope); retry candidates "already under to but with
+    // metadata not yet synced" are included as well.
     let mut affected = acp_pool.agents().sessions_under_workspace(&from);
     affected.extend(sessions.workspace_bindings_under(&from));
     // Post-busy sessions of a previous run land here on retry (review #463
@@ -434,12 +439,11 @@ pub async fn rebind_workspace_root(
         return Err(format!("REBIND_SESSIONS_BUSY: {}", busy_ids.join(", ")));
     }
 
-    // Order: project roots → session bindings (index + sidecars, both
-    // binding stores) → metadata → baseline. Every step is idempotent; a
-    // failed retry only completes the unfinished parts. The metadata loop
-    // is driven by the snapshot above, computing the target per candidate
-    // (translated for those under the from prefix; as-is for retry
-    // candidates already under to).
+    // Order: project roots → session bindings (index + sidecar, both binding
+    // stores) → metadata → baseline. Each step is idempotent; a failed retry
+    // only fills in the unfinished parts. The metadata loop is driven by the
+    // snapshot above and computes the target path per candidate (translate
+    // under the from prefix; retry candidates already under to stay as-is).
     let affected_project_ids = store
         .rebind_roots(&from, &to_key)
         .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
@@ -455,8 +459,9 @@ pub async fn rebind_workspace_root(
         .agents()
         .rebind_workspace_prefix(&from, &to_key)
         .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
-    // Baseline recapture below is gated to code sessions (unify): plain
-    // bound sessions do not consume workspace baselines.
+    // Baseline re-capture applies to code sessions only (the loop below gates
+    // on this): plain bound sessions do not consume workspace baselines, so do
+    // not create code-lane-only sidecars for them (review #464).
     let code_rebound_ids: std::collections::HashSet<&str> = prefix_outcome
         .affected
         .iter()
@@ -465,8 +470,10 @@ pub async fn rebind_workspace_root(
     let plain_rebind = sessions
         .rebind_workspace_bindings(&from, &to_key)
         .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
-    // 侧写失败的条目绑定仍指向 from:元数据循环跳过它们(否则绑定/元数据
-    // 分叉),失败名单并入报告(评审 #464 MAJOR 4)。
+    // Entries whose sidecar writes failed still have bindings pointing at
+    // from: the metadata loop skips them (otherwise bindings and metadata
+    // would diverge), and the failure list is merged into the report
+    // (review #464 MAJOR 4).
     let plain_failed: std::collections::HashSet<&str> = plain_rebind
         .failed_session_ids
         .iter()
@@ -647,8 +654,9 @@ fn collect_eviction_candidates(
 mod tests {
     use super::*;
 
-    /// 线缆形状锁:bridge 的 applySnapshot 按 projects/assignments 键消费
-    /// 快照,serde 改名会让每次快照被静默丢弃(评审 finding 41)。
+    /// Wire-shape lock: the bridge's applySnapshot consumes the snapshot by
+    /// the projects/assignments keys, so a serde rename would silently drop
+    /// every snapshot (review finding 41).
     #[test]
     fn project_list_response_wire_keys_are_stable() {
         let value = serde_json::to_value(ProjectListResponse {

@@ -1792,7 +1792,17 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // stub returns null), cached per session; query failure/unbound → hidden.
       const [sessionWorkspaceBinding, setSessionWorkspaceBinding] = useState(null);
       const workspaceBindingCacheRef = useRef({});
+      // A folder rebind moves session bindings behind the cache's back; the
+      // sessions-list refresh that follows (session:list_changed) is the
+      // signal. Drop cached bindings then, so the chip and the YOLO gate
+      // re-resolve instead of showing the pre-rebind directory (#464 r3 m9).
+      const bindingCacheSessionsRef = useRef(null);
+      const sessionsForBindingCache = bs && bs.sessions;
       useEffect(() => {
+        if (bindingCacheSessionsRef.current !== sessionsForBindingCache) {
+          bindingCacheSessionsRef.current = sessionsForBindingCache;
+          workspaceBindingCacheRef.current = {};
+        }
         if (!activeSessionId || !bridge.available || !bridge.sessions
           || typeof bridge.sessions.getSessionWorkspaceBinding !== 'function') {
           // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously clear the binding chip when leaving a bound session
@@ -1818,7 +1828,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
           // Treat query failure (e.g. old backend without the command) as unbound; never misreport.
           .catch(() => { if (!cancelled) setSessionWorkspaceBinding(null); });
         return () => { cancelled = true; };
-      }, [activeSessionId]);
+      }, [activeSessionId, sessionsForBindingCache]);
 
       // One-time YOLO confirmation gate for the first switch of a session/draft
       // with a bound workspace (matching code mode): confirming writes the global

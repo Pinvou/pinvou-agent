@@ -4274,8 +4274,10 @@ fn rebind_workspace_bindings_moves_plain_bindings_and_stays_idempotent() {
         .rebound;
     let mut ids: Vec<&str> = affected.iter().map(|(id, _)| id.as_str()).collect();
     ids.sort_unstable();
-    // id 字典序与创建顺序无关(同后缀不同前缀),期望侧同样排序,否则断言
-    // 平台间随机(评审 #452 finding 1:Linux 红 Windows 绿)。
+    // id lexicographic order is independent of creation order (same suffix,
+    // different prefixes), so the expectation side is sorted too — otherwise
+    // the assertion is random across platforms (review #452 finding 1: red on
+    // Linux, green on Windows).
     let mut expected: Vec<&str> = vec![
         bound_session.metadata.id.as_str(),
         nested_session.metadata.id.as_str(),
@@ -4309,7 +4311,8 @@ fn rebind_workspace_bindings_moves_plain_bindings_and_stays_idempotent() {
         "目录边界:sibling 前缀不得误命中",
     );
 
-    // 幂等:再跑无命中;重启(冷缓存)后新值仍然可读。
+    // Idempotent: a rerun finds no matches; after a restart (cold cache) the
+    // new value is still readable.
     assert!(
         store
             .rebind_workspace_bindings(&bound, &to)
@@ -4328,5 +4331,66 @@ fn rebind_workspace_bindings_moves_plain_bindings_and_stays_idempotent() {
 
     let _ = std::fs::remove_dir_all(&bound);
     let _ = std::fs::remove_dir_all(&elsewhere);
+    let _ = std::fs::remove_dir_all(&to);
+}
+
+/// Degraded-path union (review #464 round-3 minor 5): entries that exist only
+/// in the in-memory legacy table while migration is incomplete must join both
+/// the busy-guard candidate set (workspace_bindings_under) and the rebind
+/// rewrite set (rebind_workspace_bindings) — a refactor dropping the memory
+/// union must not stay green.
+#[test]
+fn rebind_workspace_bindings_covers_memory_only_legacy_entries() {
+    let (store, _g) = isolated_store();
+    let from = unique_temp_dir("rebind-mem-from");
+    std::fs::create_dir_all(&from).expect("create from");
+    let to = unique_temp_dir("rebind-mem-to");
+    std::fs::create_dir_all(&to).expect("create to");
+
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    // Simulate the degraded path of a failed sidecar write: the entry lives
+    // only in the in-memory legacy table, no sidecar on disk.
+    store
+        .session_workspaces
+        .write()
+        .insert(session.metadata.id.clone(), from.clone());
+    assert!(
+        !store
+            .manager
+            .sessions_dir()
+            .join(&session.metadata.id)
+            .join("workspace-binding.json")
+            .exists(),
+        "precondition: no sidecar on disk"
+    );
+
+    let matched = store.workspace_bindings_under(&from);
+    assert!(
+        matched.iter().any(|(id, _)| id == &session.metadata.id),
+        "memory-table entry must join the busy-guard candidate set"
+    );
+
+    let outcome = store
+        .rebind_workspace_bindings(&from, &to)
+        .expect("rebind memory-only entry");
+    assert!(outcome.failed_session_ids.is_empty());
+    assert!(
+        outcome
+            .rebound
+            .iter()
+            .any(|(id, _)| id == &session.metadata.id),
+        "memory-table entry must join the rebind rewrite set"
+    );
+    assert_eq!(
+        store
+            .session_workspace_binding(&session.metadata.id)
+            .as_deref(),
+        Some(to.as_path()),
+        "the rebound memory entry must land as a sidecar and sync the cache",
+    );
+
+    let _ = std::fs::remove_dir_all(&from);
     let _ = std::fs::remove_dir_all(&to);
 }

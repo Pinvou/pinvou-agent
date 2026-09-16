@@ -298,12 +298,15 @@ fn move_add_workspace_root_atomically_and_idempotently() {
 
 #[test]
 fn covered_workspace_skip_survives_symlinked_ancestor() {
-    // 评审 #464 MAJOR 3(macOS /var→/private/var 的同型):root 入库时已
-    // canonicalize,而被覆盖判定的工作区路径不存在时,旧的纯词法回退保留
-    // symlink 形态,身份键不再嵌套,会被当成未覆盖重复添加。用 symlink
-    // 祖先在任意平台复现。用 std::env::consts::OS 常量分支而非 cfg 语法:
-    // 平台条件编译不得出现在适配层外(architecture-guard);Windows 的目录
-    // symlink 需要管理员/开发者模式,该机制由 unix/macOS 覆盖。
+    // Review #464 MAJOR 3 (same shape as macOS /var→/private/var): roots are
+    // canonicalized on insertion, but when the workspace path under the
+    // covered check does not exist, the old purely lexical fallback kept the
+    // symlink form, so the identity key was no longer nested and the path was
+    // re-added as uncovered. Reproduce on any platform with a symlinked
+    // ancestor. Branch on the std::env::consts::OS constant instead of cfg
+    // syntax: platform conditional compilation must not appear outside the
+    // adapter layer (architecture-guard); Windows directory symlinks require
+    // admin/developer mode, so the mechanism is covered by unix/macOS.
     if std::env::consts::OS == "windows" {
         return;
     }
@@ -326,7 +329,8 @@ fn covered_workspace_skip_survives_symlinked_ancestor() {
         std::slice::from_ref(&link.join("workspace")),
     );
 
-    // 不存在的嵌套路径经 symlink 祖先书写:covered 判定必须命中已有 root。
+    // A nonexistent nested path written through the symlinked ancestor: the
+    // covered check must hit the existing root.
     let covered = link.join("workspace").join("deep");
     let outcome = store
         .move_session_to_project("s1", Some(&project.id), Some(&covered))

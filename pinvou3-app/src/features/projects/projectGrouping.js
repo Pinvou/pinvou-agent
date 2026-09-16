@@ -100,7 +100,6 @@ function resolveSessionProjectId(item, projects, assignments) {
   const projectList = Array.isArray(projects) ? projects.filter(Boolean) : [];
   const assignmentMap = assignments && typeof assignments === 'object' ? assignments : {};
   if (!item) return null;
-  // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor and Object.hasOwn is unavailable; this call is already in safe form
   if (Object.prototype.hasOwnProperty.call(assignmentMap, item.id)) {
     const assigned = assignmentMap[item.id];
     if (assigned && projectList.some(project => project.id === assigned)) return assigned;
@@ -119,10 +118,11 @@ function projectCoversPath(project, path) {
   return (project.roots || []).some((root) => isUnderRoot(String(path), rootPath(root)));
 }
 
-// 携带真实项目工作目录的会话形态:'project'(代码/ACP)与 'bound'(#445
-// 绑定的普通工作会话)。'bound' 独立成 kind,不伪装成 'project'——将来
-// project-kind 获得自有行为(如 baseline 面板)时不会误伤普通绑定会话
-// (评审 #452 finding 5)。
+// Session shapes carrying a real project working directory: 'project'
+// (code/ACP) and 'bound' (#445 bound plain work sessions). 'bound' is its
+// own kind, not disguised as 'project' — so when project-kind later gains
+// its own behavior (e.g. a baseline panel), plain bound sessions are not
+// affected by mistake (review #452 finding 5).
 const WORKSPACE_KINDS_WITH_PROJECT_DIR = ['project', 'bound'];
 
 function hasProjectWorkspace(item) {
@@ -150,7 +150,6 @@ function groupSessionsWithProjects(items, projects, assignments) {
     if (!item) return;
     let target = null;
     let autoGroupBlocked = false;
-    // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor and Object.hasOwn is unavailable; this call is already in safe form
     if (Object.prototype.hasOwnProperty.call(assignmentMap, item.id)) {
       const assigned = assignmentMap[item.id];
       if (assigned && byId.has(assigned)) {

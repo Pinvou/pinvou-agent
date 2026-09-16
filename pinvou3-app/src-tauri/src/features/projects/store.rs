@@ -135,7 +135,7 @@ fn validate_name(raw: String) -> Result<String> {
 /// canonical p) == p)。再经共享的 `platform_compat_path` 归一,剥掉
 /// Windows canonicalize 产生的 `\\?\` verbatim 前缀(非 Windows 为恒等
 /// 映射),与 `validate_codex_project_workspace` 的既有约定同源。
-pub(super) fn root_display(path: &Path) -> PathBuf {
+pub(crate) fn root_display(path: &Path) -> PathBuf {
     let canonical =
         std::fs::canonicalize(path).unwrap_or_else(|_| resolve_through_existing_ancestor(path));
     crate::platform::os::platform_compat_path(&canonical.to_string_lossy())

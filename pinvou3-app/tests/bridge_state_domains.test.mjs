@@ -142,7 +142,8 @@ test('web domain-adapter fields registry covers every subscribed domain', () => 
   }
   // projects 桩必须与桌面快照同形 { projects, assignments, loadedAt }
   // (tauri/bridge/projects.js),分组直接读 .projects/.assignments。
-  // 括号计数截取(正则会停在 assignments: {} 的内层闭括号上,finding 43)。
+  // Brace-counting extraction (a regex would stop at the inner closing brace
+  // of assignments: {}, finding 43).
   const seedAt = webBridge.indexOf('projectsList:');
   assert.ok(seedAt >= 0, 'web bridge must seed projectsList');
   const seedOpen = webBridge.indexOf('{', seedAt);

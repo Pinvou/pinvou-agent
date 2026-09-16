@@ -13,8 +13,9 @@ pub struct SessionListItem {
     pub pinned_at: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub title_attachment_names: Vec<String>,
-    /// 普通会话的用户工作目录绑定（#445；None = 未绑定）。项目层据此把
-    /// 绑定工作会话纳入项目分组（分组跟随绑定,与安全姿态同一条信号）。
+    /// User workspace binding for plain sessions (#445; None = unbound). The
+    /// project layer uses it to pull bound work sessions into project grouping
+    /// (grouping follows binding, the same signal as the safety posture).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_binding: Option<String>,
 }
@@ -157,9 +158,12 @@ pub async fn list_sessions(
         .into_iter()
         .map(|metadata| {
             let title_attachment_names = session_title_attachment_names(&store, &metadata);
-            // 读缓存 miss 时回读 sidecar;列表 ≤50 条。绑定会话回填后常驻,
-            // 未绑定会话不做负缓存——每次刷新仍有 ≤2 次 syscall × 50 的量级
-            // (成本可接受,评审 #464 nit:注释不得夸大为"一次 N 读后常驻")。
+            // On a read-cache miss the sidecar is re-read; the list is ≤50
+            // entries. Bound sessions stay resident once backfilled, while
+            // unbound sessions get no negative caching — each refresh still
+            // costs on the order of ≤2 syscalls × 50 (acceptable; review #464
+            // nit: the comment must not exaggerate this as "resident after a
+            // single N-read pass").
             let workspace_binding = store
                 .session_workspace_binding(&metadata.id)
                 .map(|path| path.display().to_string());
@@ -1182,7 +1186,8 @@ mod web_projection_tests {
             "workspace_binding 过 Web 边界必须降级为末级目录名"
         );
 
-        // 未绑定会话(None)不受影响;Windows 形态同样只留末级。
+        // Unbound sessions (None) are unaffected; the Windows form likewise
+        // keeps only the final segment.
         item.workspace_binding = None;
         redact_session_list_item_for_web(&mut item);
         assert_eq!(item.workspace_binding, None);

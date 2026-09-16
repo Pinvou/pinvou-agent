@@ -1525,13 +1525,14 @@ const NAV_PREFETCH = {
             pinned: !!s.pinned,
             pinnedAt: s.pinned_at || '',
             working: !!sessionBusy[s.id], // concurrent sessions: is this session generating in the background
-            // #445 binding: a bound work session carries workspacePath/Kind and
-            // project grouping follows the binding (the same signal as the
-            // safety posture); unbound sessions keep both empty and stay in
+            // #445 binding: a bound work session carries workspacePath/Kind;
+            // project grouping follows binding (the same signal as the safety
+            // posture). Unbound sessions leave both values empty and stay in
             // the date view.
             workspacePath: s.workspace_binding || '',
-            // 独立 'bound' kind:与代码/ACP 的 'project' 同享三层分组,但不是
-            // 伪装的 project-kind(评审 #452 finding 5)。
+            // A standalone 'bound' kind: shares the three-tier grouping with
+            // the code/ACP 'project' kind, but is not a disguised
+            // project-kind (review #452 finding 5).
             workspaceKind: s.workspace_binding ? 'bound' : '',
             leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
             testId: 'regular-sidebar-item',
@@ -1853,7 +1854,8 @@ const NAV_PREFETCH = {
       const sidebarTaskFilterOptions = [
         { id: 'all', label: t.sidebarTaskFilterAll },
         { id: 'pinned', label: t.sidebarTaskFilterPinned },
-        // 项目形态(胶囊选中「项目」)下列表恒为代码/绑定会话:「代码会话」筛选等同
+        // In the project form (capsule set to "Projects") the list is always
+        // code/bound sessions: the "Code sessions" filter is equivalent to
         // 「全部」、「定时任务」恒为空——两个选项都是死胡同,只在标准形态提供。
         ...(sidebarCodeListActive ? [] : [
           { id: 'code', label: t.sidebarTaskFilterCodeSessions },
@@ -1925,12 +1927,16 @@ const NAV_PREFETCH = {
         return groups;
       }, [sidebarTaskHistory, sidebarPinnedHoisted]);
 
-      // 项目视图(原「代码」形态):所有绑定真实目录的会话——代码/ACP 会话
-      // 与 #445 的绑定工作会话——统一按项目层三层分组;未绑定普通会话留在
-      // 「全部」的日期视图。分组跟随绑定,与安全姿态同一条信号。
-      // 说明:上游历史链(chatHistory/codexHistory/…)每次 render 重建,这些
-      // memo 目前也随之每轮重算——端到端记忆化留作后续(评审 finding 22);
-      // tier-2 分组是 O(sessions × projects × roots)(#448 finding 8)。
+      // Project view (formerly the "Code" form): every session bound to a
+      // real directory — code/ACP sessions and #445 bound work sessions — is
+      // grouped uniformly by the project layer's three tiers; unbound plain
+      // sessions stay in the date view of "All". Grouping follows binding,
+      // the same signal as the safety posture.
+      // Note: the upstream history chain (chatHistory/codexHistory/…) is
+      // rebuilt on every render, so these memos are recomputed each round for
+      // now — end-to-end memoization is left as follow-up (review finding
+      // 22); tier-2 grouping is O(sessions × projects × roots)
+      // (#448 finding 8).
       const sidebarCodeTasks = useMemo(() => (sidebarCodeListActive
         ? sidebarTaskHistory.filter(chat => chat.taskKind === 'codex'
             || (chat.taskKind === 'regular' && chat.workspacePath))
@@ -2727,9 +2733,10 @@ const NAV_PREFETCH = {
             // copy instead of surfacing raw prose.
             setRebindDraft(prev => prev && { ...prev, error: t.uiProjects.rebindInProgress });
           } else if (message.startsWith('REBIND_NESTED_TARGET')) {
-            // Nested-target rejection: same typed-marker pattern, mapped to
-            // trilingual copy instead of backend prose (review #464 MINOR 9);
-            // shown inline, not toasted (overlay stacking, see below).
+            // Nested-target rejection: same typed marker, mapped to the
+            // trilingual copy instead of passing through backend prose
+            // (review #464 MINOR 9); rendered inline, no toast (see the
+            // overlay layering below).
             setRebindDraft(prev => prev && { ...prev, error: t.uiProjects.rebindNestedRejected });
           } else if (message.startsWith('REBIND_SESSIONS_BUSY')) {
             // Busy rejection is the fence's high-frequency happy path
@@ -3008,9 +3015,12 @@ const NAV_PREFETCH = {
       const renderSidebarTaskItem = (chat) => {
         const detachKind = chat.taskKind === 'codex' ? 'codex-session' : 'session';
         // 拖拽与"移动到项目"菜单项同一可用性门控:项目列表为空(bootstrap
-        // 窗口、零项目用户)时行不可拖,避免出现零可达落点的死手势。#445 的
-        // 绑定工作会话(taskKind regular + workspacePath)与代码会话同权——
-        // 分组跟随绑定,移动入口也跟随(评审 #452 finding 5 同一条信号)。
+        // windows, users with zero projects) the row is not draggable,
+        // avoiding a dead gesture with zero reachable drop targets. #445
+        // bound work sessions (taskKind regular + workspacePath) have the
+        // same rights as code sessions — grouping follows binding, and the
+        // move entry point follows too (same signal as review #452
+        // finding 5).
         const projectMovesAvailable = (chat.taskKind === 'codex' || !!chat.workspacePath) && bridge.projects && !!sidebarProjectsData?.projects?.length;
         return (
           <RecentItem
