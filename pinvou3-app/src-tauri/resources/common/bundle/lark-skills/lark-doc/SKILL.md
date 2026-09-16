@@ -15,9 +15,9 @@ metadata:
 
 **CRITICAL：先判断场景，再读取该场景的参考文件；不要在任务开始时一次性读取全部参考文件。每个文件只在首次进入对应阶段时读取一次。**
 
-**身份：文档操作推荐显式指定 `--as user`。例外：如果 `doc_token` / `note_doc_token` 等是从 bot 链路（如 `vc +detail --as bot` → `note +detail --as bot`）取得的，应继续显式使用 `--as bot`，不要无条件切回 user——身份延续规则见 [`../lark-shared/SKILL.md`](../lark-shared/SKILL.md)。**
+**身份：文档操作推荐显式指定 `--as user`。**
 
-**所有表示本地文件的 `@path` 均使用 `@./xxx` 形式的相对路径，并以运行 `lark-cli` 时的当前工作目录（CWD）为基准。**
+**本地文件引用统一遵循文件访问权限：CWD 内优先使用 `@./相对路径`，其他目录使用 `@绝对路径`。XML 内的相对资源路径先查 CWD；仅文件不存在时再查源 XML 文件所在目录，同名文件以 CWD 为准。内联内容、stdin、在线文档没有源文件目录，不执行回退。**
 
 ### 文档内容
 
@@ -34,7 +34,7 @@ metadata:
 ### 资源、画板与思维笔记
 
 - **插入本地素材 — [`+media-insert`](references/lark-doc-media-insert.md)**：在文末插入本地图片或文件。
-- **预览素材 — [`+media-preview`](references/lark-doc-media-preview.md)**：预览文档中的图片、附件或素材。
+- **预览素材 — [`+media-preview`](references/lark-doc-media-preview.md)**：预览文档或评论中的图片、附件或素材。
 - **下载素材 — [`+media-download`](references/lark-doc-media-download.md)**：下载文档中的图片、附件、素材或画板缩略图。
 - **Docx 封面 — [`+resource-download` / `+resource-update` / `+resource-delete`](references/lark-doc-resource-cover.md)**：下载、更新或删除 Docx 封面。
 - **画板 — [`画板工作流`](references/lark-doc-whiteboard.md)**：创建或更新画板时先读取工作流；更新已有画板必须复用现有 token，禁止新建空白画板。lark-whiteboard skill 未随包收录，写入用 `lark-cli whiteboard +update`（用法以 `--help` 为准）。
@@ -47,5 +47,5 @@ metadata:
 ## 不在本 Skill 范围
 
 - **Drive 文件级操作**：找文档、导入导出、云空间文件上传 / 下载 / 权限管理 → [`lark-drive`](../lark-drive/SKILL.md)。复制文档、创建副本或另存为副本时，按其指引使用 `lark-cli drive +copy`（复制到知识库用 `wiki +node-copy`）；不要用 `docs +fetch` + `docs +create` 重建正文。
-- **文档评论**：添加、查看、回复评论或增删 reaction → [`lark-drive`](../lark-drive/SKILL.md)。
+- **独立评论操作**：添加、分页查看、回复评论或增删 reaction → [`lark-drive`](../lark-drive/SKILL.md)；只需紧凑评论上下文时，直接使用默认 JSON 响应的 `docs +fetch`。
 - **Drive 原生文件的历史版本**：`docx` 等在线文档的历史版本走本 skill 的 `+history-*`；但 Drive 二进制文件（`type=file`，如上传的附件）的历史版本查询 / 下载 / 回滚 / 删除 → [`lark-drive`](../lark-drive/SKILL.md) 的 `+version-*`，不走本 skill。

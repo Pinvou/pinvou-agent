@@ -22,20 +22,23 @@ if [ -z "$CLI" ]; then echo "找不到 wecom-cli(先 npm i -g @wecom/cli 并扫�
 echo "wecom-cli = $CLI"
 echo
 
-echo "[1] 版本可执行且 ≥1.1.0(命令模型基线)"
+echo "[1] --version runs and is >= 1.2.1 (matches WECOM_MIN_VERSION in wecom.rs)"
 VER="$("$CLI" --version 2>/dev/null || true)"
 VNUM="$(echo "$VER" | awk '{print $2}')"
 # 与 wecom.rs parse_wecom_version 同口径:取输出前三个数字段逐段数值比较、
 # 不足三段补 0(两段 `2.0` → 2.0.0,与 parse_semver3 一致);
 # 不用 sort -V——它对 prerelease/两段版本的判定与 Rust 侧三段解析不一致。
+# The floor value (10201 = 1.2.1) is pinned to WECOM_MIN_VERSION in
+# wecom.rs by connector_online_install_contract.test.js, so drift on
+# either side fails the contract test.
 TRI="$(echo "$VER" | grep -oE '[0-9]+' | head -3 | paste -sd. -)"
-GE="$(printf '%s\n' "$TRI" | awk -F. '($1*10000+$2*100+$3 >= 10100) {print "yes"}')"
+GE="$(printf '%s\n' "$TRI" | awk -F. '($1*10000+$2*100+$3 >= 10201) {print "yes"}')"
 if [ -n "$VER" ]; then
   ok "--version 可执行: $(echo "$VER" | head -1)"
   if [ "$GE" = yes ]; then
-    ok "版本 ≥1.1.0: $VNUM"
+    ok "version >= 1.2.1: $VNUM"
   else
-    no "版本低于 1.1.0(命令模型不匹配): $VNUM"
+    no "version below 1.2.1 (below the minimum accepted version): $VNUM"
   fi
 else
   no "--version 失败"
