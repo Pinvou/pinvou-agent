@@ -636,6 +636,20 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
     case 'chat:done': {
       finalizeReasoning(lane);
       finalizeStream(lane);
+      // Live-path terminal ratchet: a stop or an error mid-tool never
+      // delivers chat:tool_end, so an unpaired tool card (typically an
+      // in-flight `agent` spawn) would stay state "running" forever and the
+      // spawn count row would keep pulsing until the lane is rehydrated —
+      // the replay sweep in hydrateNativeLane only runs on reload. Mirrors
+      // the main lane's chat:done sweep; the background/shellSnapshot
+      // exclusions do not apply because the native lane has no such
+      // synthetic card kinds. Happy-path turns are a no-op (every tool
+      // already settled via tool_end).
+      for (const item of lane.items) {
+        if (!(item && item.type === 'tool' && item.state !== 'done')) continue;
+        item.state = 'done';
+        item.success = item.success === null ? false : item.success;
+      }
       const terminalRecord = recordTurnCompleted(lane, p);
       lane.busy = false;
       lane.thinking = null;

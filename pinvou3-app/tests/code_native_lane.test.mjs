@@ -971,6 +971,34 @@ try {
   assert.equal(swarmDelegation.filter(item => item.legacyItem.spawnGroupHidden).length, 1, 'the second spawn is hidden');
   assert.ok(!('spawnGroup' in swarmLane.items.find(item => item.toolId === 'ag1')), 'annotation never mutates the lane items');
 
+  // ── Swarm rework: a stop or an error mid-spawn never delivers
+  // chat:tool_end, so chat:done must settle the unpaired tool card like the
+  // replay sweep does — otherwise the count row's running count stays > 0
+  // and the pulse never stops until the lane is rehydrated.
+  const swarmStopLane = createNativeLane();
+  applyNativeChatEvent(swarmStopLane, 'chat:turn_started', { session_id: 'swarm-stop-1', turn_id: 'tws1' });
+  applyNativeChatEvent(swarmStopLane, 'chat:tool_start', { session_id: 'swarm-stop-1', id: 'ag-s1', name: 'agent', args: { action: 'start', prompt: 'long task' } });
+  applyNativeChatEvent(swarmStopLane, 'chat:done', { session_id: 'swarm-stop-1', status: 'Interrupted' });
+  const stoppedCard = swarmStopLane.items.find(item => item.toolId === 'ag-s1');
+  assert.equal(stoppedCard.state, 'done', 'a stop mid-spawn must settle the unpaired tool card');
+  assert.equal(stoppedCard.success, false, 'the settled card counts as a failed dispatch');
+  const stopProjection = projectNativeLane(swarmStopLane, 'swarm-stop-1');
+  const stopGroup = stopProjection.turns
+    .flatMap(turn => turn.items)
+    .find(item => item.legacyItem && item.legacyItem.spawnGroup);
+  assert.ok(stopGroup, 'the settled spawn still projects as a count row');
+  assert.equal(stopGroup.legacyItem.spawnGroup.running, 0, 'running count drops to 0 so the pulse stops');
+  assert.equal(stopGroup.legacyItem.spawnGroup.failed, 1, 'the interrupted dispatch shows as failed × 1');
+  // Happy-path turns are untouched by the sweep: every tool already settled
+  // via tool_end keeps its real success value.
+  const swarmHappyLane = createNativeLane();
+  applyNativeChatEvent(swarmHappyLane, 'chat:tool_start', { session_id: 'swarm-ok-1', id: 'ag-ok1', name: 'exec_shell', args: { command: 'ls' } });
+  applyNativeChatEvent(swarmHappyLane, 'chat:tool_end', { session_id: 'swarm-ok-1', id: 'ag-ok1', success: true, output: 'a.txt' });
+  applyNativeChatEvent(swarmHappyLane, 'chat:done', { session_id: 'swarm-ok-1', status: 'Completed' });
+  const happyCard = swarmHappyLane.items.find(item => item.toolId === 'ag-ok1');
+  assert.equal(happyCard.state, 'done');
+  assert.equal(happyCard.success, true, 'the sweep must not downgrade an already-settled tool');
+
   console.log('code_native_lane.test.mjs: all assertions passed');
 } finally {
   rmSync(temp, { recursive: true, force: true });
