@@ -51,12 +51,28 @@ pub(crate) fn is_sched_session_id(id: &str) -> bool {
     id.len() >= 6 && id[..6].eq_ignore_ascii_case("sched-")
 }
 
-/// Log-safe rendering of a session id: keeps the kind prefix and the first
-/// four id characters, masks the rest. Diagnostics stay greppable by session
-/// kind and short prefix without writing the full identifier to logs.
+/// Log-safe rendering of a session id: keeps only the kind prefix, hashes the
+/// remainder. Diagnostics stay greppable by session kind and stable per
+/// session without writing any slice of the identifier itself to logs —
+/// partial echoes still trip the cleartext-logging scanner, so nothing of the
+/// raw id may survive into the output.
 pub(crate) fn mask_session_id(id: &str) -> String {
-    let keep = id.char_indices().nth(8).map_or(id.len(), |(idx, _)| idx);
-    format!("{}…", &id[..keep])
+    use std::hash::{Hash, Hasher};
+    let (prefix, rest) = id.split_once('-').map_or(("", id), |(head, tail)| {
+        if matches!(head, "aux" | "sched" | "eval") {
+            (head, tail)
+        } else {
+            ("", id)
+        }
+    });
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    rest.hash(&mut hasher);
+    let digest = hasher.finish();
+    if prefix.is_empty() {
+        format!("…{digest:08x}")
+    } else {
+        format!("{prefix}-…{digest:08x}")
+    }
 }
 
 pub(crate) fn validate_scheduled_task_id(id: &str) -> Result<()> {
