@@ -2,9 +2,9 @@
 
 ## Pending upstream fix: compaction checkpoint role compatibility
 
-- T3: when replacement history ends in a tool result, insert the typed Agent topology checkpoint after the latest user input and before its assistant/tool chain. This preserves tool pairing and runtime state without a trailing `tool -> user` transition rejected by strict paired templates. The session-pinned system prefix is unchanged; replacement compaction already invalidates the replaced history suffix.
-- This is a reusable Codewhale fix, committed locally as `285b7aa21` and pending upstream submission. No persisted-session migration is included. The parent gitlink's public reachability gate remains pending upstream integration.
-- Regression: `forkguard_compaction_topology_preserves_tool_round_boundary` covers empty/live Agent topology, unchanged tool exchanges, and repeated compaction. Existing topology tests cover terminal state and user-authored lookalikes.
+- T3: insert the typed Agent topology checkpoint after the latest real user input and before its assistant/tool chain, including when a compaction summary trails that chain. For Chat Completions, place a structurally recognized current-format summary ahead of the retained round on the wire and combine adjacent user content into one message. Quoting the summary marker inside an ordinary user prompt does not trigger reordering. This avoids the trailing `tool -> user` and adjacent `user -> user` transitions rejected by strict paired templates while preserving the saved history and tool-call/result IDs. The session-pinned system prefix is unchanged.
+- This reusable Codewhale fix is under review in `Pinvou/CodeWhale#62`. No persisted-session migration is included. The parent gitlink's public reachability gate remains pending integration into `pinvou3-clean`.
+- Regression: `forkguard_compaction_topology_preserves_tool_round_boundary` covers empty/live Agent topology and repeated compaction; `forkguard_compaction_tool_round_has_valid_chat_wire_roles` checks the entire outbound role sequence and tool IDs; `compaction_marker_quoted_by_user_keeps_wire_order` covers ordinary user text. Existing topology tests cover terminal state and user-authored lookalikes.
 
 > This is the current-state register for Pinvou's CodeWhale fork.
 > See [`fork-policy.md`](fork-policy.md) for policy and [`codewhale-upgrade-0.9.5-to-0.9.12.md`](codewhale-upgrade-0.9.5-to-0.9.12.md) for upgrade evidence. The Chinese register is authoritative.

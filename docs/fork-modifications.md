@@ -2,9 +2,9 @@
 
 ## 待上游修复：压缩检查点角色兼容性
 
-- T3：替换式压缩历史以工具结果结尾时，将带类型的 Agent 拓扑检查点放到最近一次真实用户输入之后、该轮 assistant/tool 链之前。这样既保留工具配对和运行态，也避免严格成对模板拒绝尾部 `tool -> user` 结构。会话固定的系统前缀不变；替换式压缩本身已使被替换的历史后缀失效。
-- 这是可复用的 Codewhale 修复，本地提交为 `285b7aa21`，待提交上游；不包含已持久化会话迁移。当前父仓 gitlink 的公开可达性门禁仍需上游合入后验证。
-- 回归测试 `forkguard_compaction_topology_preserves_tool_round_boundary` 覆盖空/活跃 Agent 拓扑、工具交换不变以及重复压缩；既有拓扑测试继续覆盖终态和用户仿冒消息。
+- T3：将带类型的 Agent 拓扑检查点放到最近一次真实用户输入之后、该轮 assistant/tool 链之前，包括压缩摘要位于链尾的情况。Chat Completions 发送前仅把结构化识别的当前格式摘要移到保留轮次之前，并把相邻的 user 内容合为一条消息；普通用户引用摘要标记不会触发重排。从而避免严格成对模板拒绝尾部 `tool -> user` 和相邻 `user -> user`；存储历史及工具调用/结果 ID 不变，会话固定的系统前缀也不变。
+- 这是可复用的 Codewhale 修复，正在 `Pinvou/CodeWhale#62` 审核；不包含已持久化会话迁移。当前父仓 gitlink 的公开可达性门禁仍需合入 `pinvou3-clean` 后验证。
+- 回归测试 `forkguard_compaction_topology_preserves_tool_round_boundary` 覆盖空/活跃 Agent 拓扑及重复压缩；`forkguard_compaction_tool_round_has_valid_chat_wire_roles` 校验完整出站角色序列和工具 ID；`compaction_marker_quoted_by_user_keeps_wire_order` 覆盖普通用户引用标记。既有拓扑测试继续覆盖终态和用户仿冒消息。
 
 > 本文是 Pinvou 对 CodeWhale fork 的单一现状清单。
 > 维护策略见 [`fork-policy.md`](fork-policy.md)，升级证据见 [`codewhale-upgrade-0.9.5-to-0.9.12.md`](codewhale-upgrade-0.9.5-to-0.9.12.md)。
