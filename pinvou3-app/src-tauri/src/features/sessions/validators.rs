@@ -51,33 +51,6 @@ pub(crate) fn is_sched_session_id(id: &str) -> bool {
     id.len() >= 6 && id[..6].eq_ignore_ascii_case("sched-")
 }
 
-/// Log-safe rendering of a session id: keeps only the kind prefix, hashes the
-/// remainder. Diagnostics stay greppable by session kind and stable per
-/// session without writing any slice of the identifier itself to logs —
-/// partial echoes still trip the cleartext-logging scanner, so nothing of the
-/// raw id may survive into the output.
-pub(crate) fn mask_session_id(id: &str) -> String {
-    use sha2::Digest;
-    let (prefix, rest) = id.split_once('-').map_or(("", id), |(head, tail)| {
-        if matches!(head, "aux" | "sched" | "eval") {
-            (head, tail)
-        } else {
-            ("", id)
-        }
-    });
-    // A cryptographic digest, not a std Hasher: the cleartext-logging scanner
-    // taints values derived from the id through ordinary string/hash pipelines
-    // (alerts #217/#218 fired on a DefaultHasher-based mask), so the digest
-    // must be recognizably one-way for both the scanner and the reader.
-    let digest = sha2::Sha256::digest(rest.as_bytes());
-    let short = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]);
-    if prefix.is_empty() {
-        format!("…{short:08x}")
-    } else {
-        format!("{prefix}-…{short:08x}")
-    }
-}
-
 pub(crate) fn validate_scheduled_task_id(id: &str) -> Result<()> {
     if id.trim().is_empty()
         || !id.chars().all(|character| {

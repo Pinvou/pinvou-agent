@@ -554,6 +554,13 @@ impl Pinvou3Bridge {
                 "{{PINVOU3_TITLE_LANG}}",
                 self.prefs.language.title_language_name(),
             );
+        // Only native Engine sessions receive the per-turn inventory snapshot. External ACP
+        // submissions bypass build_send_message_op, so advertising snapshot semantics in
+        // their static prompt would describe context they never receive.
+        if !self.is_external_acp_session(session_id) {
+            rendered.push_str("\n\n");
+            rendered.push_str(crate::features::assistant::mcp_inventory::instruction_block());
+        }
         // [pinvou3] Language-directive patch for non-Chinese locales: the
         // foundation's locale_reinforcement_preamble returns None for en, while
         // the entire pinvou3 system prompt is Chinese and would drag the reply
@@ -652,15 +659,18 @@ impl Pinvou3Bridge {
             .is_some_and(|predicate| predicate(session_id))
     }
 
+    fn is_external_acp_session(&self, session_id: &str) -> bool {
+        self.external_acp_session_predicate
+            .as_ref()
+            .is_some_and(|predicate| predicate(session_id))
+    }
+
     /// Product multi-agent availability is constrained by both the product
     /// mode and the runtime backend. SessionPolicy only describes the
     /// plain/code axis; an external ACP session is also plain, yet is not
     /// executed by the Pinvou Engine.
     pub fn multi_agent_mode_available(&self, session_id: &str) -> bool {
-        let external_acp = self
-            .external_acp_session_predicate
-            .as_ref()
-            .is_some_and(|predicate| predicate(session_id));
+        let external_acp = self.is_external_acp_session(session_id);
         !external_acp && self.session_policy(session_id).supports_multi_agent_mode()
     }
 
@@ -668,11 +678,8 @@ impl Pinvou3Bridge {
     /// but not sufficient: external ACP sessions are also Plain, yet do not execute through
     /// the Pinvou Engine and must be excluded on the runtime axis.
     pub fn exposes_browser_mcp(&self, session_id: &str) -> bool {
-        let external_acp = self
-            .external_acp_session_predicate
-            .as_ref()
-            .is_some_and(|predicate| predicate(session_id));
-        !external_acp && self.session_policy(session_id).exposes_browser_mcp()
+        !self.is_external_acp_session(session_id)
+            && self.session_policy(session_id).exposes_browser_mcp()
     }
 
     /// The session mode policy for this session: shared pipelines (send-op
@@ -829,10 +836,9 @@ impl Pinvou3Bridge {
         }
         match crate::features::memory::ensure_runtime_prompt(session_id) {
             Ok(path) => out.push(InstructionSource::File(path)),
-            Err(err) => eprintln!(
-                "[pinvou3-app] memory runtime prompt unavailable for session {}: {err}",
-                crate::features::sessions::mask_session_id(session_id)
-            ),
+            Err(err) => {
+                eprintln!("[pinvou3-app] memory runtime prompt unavailable for a session: {err}")
+            }
         }
         out
     }
@@ -2952,6 +2958,14 @@ impl Pinvou3Bridge {
             // state.
             AppMode::Agent | AppMode::Operate => sudo.to_string(),
         };
+        // Re-read installation and scope toggles for every turn, including live sessions.
+        // Plan receives the snapshot too because users can inspect installed applications
+        // while planning, and its enabled flag is scoped independently from execution mode.
+        // Only the compact JSON snapshot is repeated; its interpretation lives in the
+        // static session prompt.
+        let mcp_inventory = crate::features::assistant::mcp_inventory::turn_reminder(policy.mode());
+        reminder_body.push_str("\n\n");
+        reminder_body.push_str(&mcp_inventory);
         // Card pool: when this session is wearing an expert mask, inject the
         // persona every turn (sticky identity).
         if let Some(persona) = persona_reminder {
@@ -3780,6 +3794,108 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The model sees the live installed/enabled snapshot without changing the
+    /// tool gate, and an empty snapshot explicitly supersedes prior inventory.
+    #[test]
+    fn mcp_inventory_tracks_live_scope_toggles_without_enabling_tools() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: platform::paths::tests::ENV_LOCK held by locked_env.
+        unsafe { std::env::set_var("PINVOU3_HOME", dir.path()) };
+        let installed = dir.path().join("marketplace/installed.json");
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::write(&installed, r#"["weather","qcc"]"#).unwrap();
+        let mut bridge = fixture_bridge();
+        bridge.set_code_session_predicate(Arc::new(|sid| sid == "code"));
+        assert!(
+            bridge
+                .build_session_system_prompt("plain")
+                .contains("## 市场 MCP 应用发现"),
+            "inventory interpretation belongs in the static session prompt"
+        );
+        use crate::features::marketplace::{ConnectorScope, save_disabled_connectors_for};
+        save_disabled_connectors_for(ConnectorScope::Plain, &["weather".into(), "qcc".into()]);
+        save_disabled_connectors_for(ConnectorScope::Code, &[]);
+
+        let inventory = |sid: &str| -> serde_json::Value {
+            let Op::SendMessage { content, .. } = bridge
+                .build_send_message_op(
+                    sid,
+                    "List my MCP applications".into(),
+                    AppMode::Agent,
+                    None,
+                    false,
+                )
+                .unwrap()
+            else {
+                panic!("expected SendMessage")
+            };
+            let line = content
+                .lines()
+                .find_map(|line| line.strip_prefix("市场 MCP 应用（当前会话模式）: "))
+                .expect("inventory must reach the model input");
+            serde_json::from_str(line).unwrap()
+        };
+        let plain = inventory("plain");
+        assert_eq!(plain.as_array().unwrap().len(), 2);
+        assert!(
+            plain
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| entry["enabled"] == false)
+        );
+        assert!(
+            plain
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["id"] == "weather")
+        );
+        assert!(
+            plain
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["id"] == "qcc")
+        );
+        assert!(
+            inventory("code")
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| entry["enabled"] == true)
+        );
+        let denied = crate::features::marketplace::disabled_tool_names_for(ConnectorScope::Plain);
+        assert!(denied.contains(&"mcp_weather_get_weather".to_string()));
+        assert!(denied.contains(&"mcp_qcc-company_*".to_string()));
+        save_disabled_connectors_for(ConnectorScope::Plain, &[]);
+        assert!(
+            inventory("plain")
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| entry["enabled"] == true)
+        );
+        std::fs::write(&installed, r#"["qcc"]"#).unwrap();
+        assert_eq!(inventory("plain").as_array().unwrap().len(), 1);
+        std::fs::write(&installed, "[]").unwrap();
+        assert!(inventory("plain").as_array().unwrap().is_empty());
+        let Op::SendMessage { content, .. } = bridge
+            .build_send_message_op(
+                "plain",
+                "Plan how to configure applications".into(),
+                AppMode::Plan,
+                None,
+                false,
+            )
+            .unwrap()
+        else {
+            panic!("expected SendMessage")
+        };
+        assert!(content.contains("市场 MCP 应用（当前会话模式）: []"));
     }
 
     /// Code sessions take their connector disabled set from the code scope
@@ -6892,6 +7008,10 @@ mod tests {
     /// plain's (mode differentiation only arrives with R-1).
     #[test]
     fn build_send_message_op_plan_reminder_same_text_for_plain_and_code() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: platform::paths::tests::ENV_LOCK held by locked_env.
+        unsafe { std::env::set_var("PINVOU3_HOME", dir.path()) };
         let content_of = |bridge: &Pinvou3Bridge, session_id: &str| match bridge
             .build_send_message_op(
                 session_id,
@@ -7196,6 +7316,18 @@ mod tests {
                 .build_session_system_prompt("sess-acp-1")
                 .contains("## Browser capabilities unavailable"),
             "external ACP sessions must not receive the browser-unavailable message"
+        );
+        assert!(
+            !bridge
+                .build_session_system_prompt("sess-acp-1")
+                .contains("## 市场 MCP 应用发现"),
+            "external ACP sessions must not receive inventory rules without per-turn snapshots"
+        );
+        assert!(
+            bridge
+                .build_session_system_prompt("native-work")
+                .contains("## 市场 MCP 应用发现"),
+            "native Engine sessions must continue to receive inventory rules"
         );
 
         let _ = std::fs::remove_dir_all(&root);

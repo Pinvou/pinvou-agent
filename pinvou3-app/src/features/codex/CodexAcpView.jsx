@@ -81,8 +81,8 @@ import {
   RewindUndoChip,
   RewindUndoConfirmDialog,
   useDialogEscapeKey,
-  useDialogFocusRestore,
 } from './RewindChip.jsx';
+import { useDialogFocusRestore } from '../../hooks/useDialogFocusRestore.js';
 import {
   ConversationActivityIndicator,
   ConversationMarkdown,

@@ -1140,9 +1140,11 @@ impl EnginePool {
         };
         for (session_id, snapshot_last_active) in candidates {
             if self.evict_if_idle(&session_id, snapshot_last_active).await {
-                let masked = crate::features::sessions::mask_session_id(&session_id);
+                // No session id in the log: even a digested rendering trips
+                // the cleartext-logging scanner (its source is tainted and
+                // sanitizer-less, same as checkpoints.rs:556/564 on main).
                 eprintln!(
-                    "[engine_pool] session {masked} idle for over {IDLE_EVICT_AFTER_SECS}s, reclaiming engine (lazily respawned on the next message)"
+                    "[engine_pool] a session idle for over {IDLE_EVICT_AFTER_SECS}s had its engine reclaimed (lazily respawned on the next message)"
                 );
             }
         }

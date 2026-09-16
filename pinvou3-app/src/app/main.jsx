@@ -21,8 +21,9 @@ import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
 import { COLOR_SCHEME_STORAGE_KEY, normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
 import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
-import { groupSessionsWithProjects } from '../features/projects/projectGrouping.js';
+import { groupSessionsWithProjects, resolveSessionProjectId } from '../features/projects/projectGrouping.js';
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
+import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
 import { runSessionBatch } from '../shared/session-management.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
@@ -1693,6 +1694,19 @@ const NAV_PREFETCH = {
       const [archiveToast, setArchiveToast] = useState(false);
       const [settingsToast, setSettingsToast] = useState('');
       const [projectOpsBusy, setProjectOpsBusy] = useState(false);
+      const [moveToProjectSession, setMoveToProjectSession] = useState(null);
+      // 稳定入口:RecentItem 的 memo 依赖 prop 引用稳定(NavigationComponents
+      // 内注释),内联箭头会让每个 App 重渲染(每个流式 token 批次)重渲染
+      // 全部 codex 侧栏行;identity 只在门控布尔翻转(项目从无到有/反之)时
+      // 变化。RecentItem 自己传 chat,无需逐行捕获。
+      // movePickerRestoreRef:移动成功的 regroup 会把出发行重新挂到新的分组
+      // 容器下,原标签节点随之销毁,被动还原会因 isConnected 失败跳过——
+      // 成功时按会话键解析新节点,交给 useDialogFocusRestore 的关闭时还原。
+      const movePickerRestoreRef = useRef(null);
+      const openMovePicker = useCallback((target) => {
+        movePickerRestoreRef.current = null;
+        setMoveToProjectSession(target);
+      }, []);
       // 桥完成首次状态同步(bs 就绪)后拉一次项目快照;后续变更由
       // projects:list_changed 事件驱动桥内刷新(bridge/projects.js)。
       const projectsBootstrapReady = !!bs;
@@ -2533,6 +2547,44 @@ const NAV_PREFETCH = {
       const handleConvertFolderToProject = (path, name) => runProjectOp(p => p.createProject(name, [path]));
       const handleRenameProject = (projectId, name) => runProjectOp(p => p.renameProject(projectId, name));
       const handleDeleteProject = (projectId) => runProjectOp(p => p.deleteProject(projectId));
+      // 移动归属:纯归档操作(工作目录绑定不动)。目标 root 不覆盖会话目录时
+      // 由选择器先弹"仅移动"确认,确认后也只移动、不带 add_workspace_root。
+      // 成功 toast 只在 store 真返回 added_root 时带路径(当前移动语义下是
+      // 防御分支,见 commands 侧契约);失败走 runProjectOp 的 opFailed。
+      // 成功只关"这一笔"的弹窗:异步落地期间用户可能已把选择器换到另一个
+      // 会话上,无条件清 slot 会把别人的弹窗关掉。
+      const handleMoveSessionToProject = (sessionId, projectId, addWorkspaceRoot) => runProjectOp(async (p) => {
+        // The picker holds the snapshot it was opened with; if the session
+        // vanished meanwhile (e.g. deleted from another window), the store
+        // rejects every attempt and the confirm panel retries a doomed op
+        // forever — the dead-target loop the pendingProject derivation
+        // already prevents for projects. Retire the picker instead.
+        if ((allSidebarTasksRef.current || []).every(task => task.id !== sessionId)) {
+          setMoveToProjectSession(current => (current && current.id === sessionId) ? null : current);
+          return;
+        }
+        const outcome = await p.moveSessionToProject(sessionId, projectId, addWorkspaceRoot);
+        // The bridge notifies before this op resolves, but the sidebar
+        // regroup that notification triggers is an asynchronous React commit
+        // — querying the DOM right here would still see the pre-regroup row.
+        // Passive cleanup of the dialog unmount runs after that commit's DOM
+        // mutations, so store a resolver and look the moved row's new node up
+        // at close time (see useDialogFocusRestore). The row container is
+        // role="presentation" and cannot take focus, so resolve its label
+        // button — the same focusable element the context menu hands off to.
+        movePickerRestoreRef.current = () => {
+          const row = document.querySelector(
+            `[data-session-key="${CSS.escape(String(sessionId))}"]`,
+          );
+          return row ? row.querySelector('button[data-drag-surface]') : null;
+        };
+        setMoveToProjectSession(current => (current && current.id === sessionId) ? null : current);
+        setSettingsToast(
+          outcome && outcome.added_root
+            ? t.uiProjects.movedNoticeWithFolder(outcome.added_root)
+            : t.uiProjects.movedNotice,
+        );
+      });
 
       function sessionRowsForIds(ids) {
         const byId = new Map(allSidebarTasks.map(item => [item.id, item]));
@@ -2810,6 +2862,9 @@ const NAV_PREFETCH = {
             onOpenFolder={can('externalSystemOpen') ? handleRevealSessionFolder : undefined}
             onExportArchive={chat.taskKind !== 'codex' && !exportingSessionIds.has(chat.id) && bridge.sessions.exportSessionArchive ? handleExportSessionArchive : undefined}
             onArchive={handleArchiveSession}
+            onMoveToProject={chat.taskKind === 'codex' && bridge.projects && sidebarProjectsData?.projects?.length
+              ? openMovePicker
+              : undefined}
             dragKind={detachKind}
             dragging={canDetachWindows && !!dragAvatar && dragAvatar.key === `${detachKind}:${chat.id}`}
             onPickUp={canDetachWindows
@@ -2864,6 +2919,7 @@ const NAV_PREFETCH = {
         bs && bs.pinvouModal ? 'pinvou-review' : '',
         isCompactShell && isSidebarOpen ? 'mobile-sidebar' : '',
         isCompactShell && mobileMoreOpen ? 'mobile-more' : '',
+        moveToProjectSession ? 'move-picker' : '',
       ].filter(Boolean).join('|');
       const browserOverlayPublicationReady = !!browserOverlayIntent
         && publishedBrowserOverlayIntent === browserOverlayIntent;
@@ -3000,10 +3056,31 @@ const NAV_PREFETCH = {
           )}
 
           {settingsToast && createPortal(
-            <div className="fixed left-1/2 bottom-8 z-[120] -translate-x-1/2 rounded-full bg-black/80 px-4 py-2 text-[13px] font-medium text-white shadow-2xl">
+            // Layer sits above modal overlays (picker backdrop is z-[200]) so a
+            // failure raised under an open dialog stays visible; a filesystem
+            // path in the message must not push the pill past the viewport.
+            <div className="fixed left-1/2 bottom-8 z-[210] -translate-x-1/2 max-w-[80vw] truncate rounded-full bg-black/80 px-4 py-2 text-[13px] font-medium text-white shadow-2xl">
               {settingsToast}
             </div>,
             document.body
+          )}
+
+          {moveToProjectSession && browserOverlayPublicationReady && (
+            <MoveToProjectDialog
+              session={moveToProjectSession}
+              projects={sidebarProjectsData ? sidebarProjectsData.projects : []}
+              currentProjectId={resolveSessionProjectId(
+                moveToProjectSession,
+                sidebarProjectsData ? sidebarProjectsData.projects : [],
+                sidebarProjectsData ? sidebarProjectsData.assignments : {},
+              )}
+              t={t}
+              busy={projectOpsBusy}
+              restoreTargetRef={movePickerRestoreRef}
+              onClose={() => setMoveToProjectSession(null)}
+              onMove={(projectId, addWorkspaceRoot) => handleMoveSessionToProject(
+                moveToProjectSession.id, projectId, addWorkspaceRoot)}
+            />
           )}
 
           {searchOverlayOpen && browserOverlayPublicationReady && createPortal(
