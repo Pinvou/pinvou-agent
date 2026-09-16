@@ -342,7 +342,7 @@ export const dictZh = {
         uiConversation: conversationZh,
         uiMultiAgent: {
           toggleLabel:'蜂群模式',
-          toggleHint:'开启后本会话可主动委派子智能体（蜂群协作）；开启期间忽略高级设置中的子代理数量上限；关闭会回收引擎，并取消仍在运行的子智能体',
+          toggleHint:'开启后本会话可主动委派子智能体（蜂群协作）；开启期间忽略高级设置中的子智能体数量上限；关闭会回收引擎，并取消仍在运行的子智能体',
           spawnedAgentsRow:count=>`品悟创建了 ${count} 个智能体`,
           spawnedAgentsRowHint:'点击查看子智能体列表',
           runningAgentsTitle:'运行中的智能体',
