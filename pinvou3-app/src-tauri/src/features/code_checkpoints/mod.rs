@@ -2187,11 +2187,13 @@ mod tests {
         );
     }
 
-    /// GIT_* 环境隔离（评审 nit + issue #492）：宿主环境的 GIT_DIR /
-    /// GIT_WORK_TREE / GIT_INDEX_FILE / GIT_OBJECT_DIRECTORY 不得把影子仓库的
-    /// 内部操作重定向到无关位置。改为直接断言 isolated_git_command 的剥离
-    /// 契约（Command::get_envs），不再写进程全局环境——进程级 set_var 曾与
-    /// 并发 git 子进程测试互踩，造成间歇性全量测试失败（issue #492）。
+    /// GIT_* environment isolation (review nit + issue #492): host GIT_DIR /
+    /// GIT_WORK_TREE / GIT_INDEX_FILE / GIT_OBJECT_DIRECTORY must not redirect
+    /// the shadow repo's internal operations to unrelated locations. Asserts
+    /// the strip contract of `isolated_git_command` directly via
+    /// `Command::get_envs` instead of mutating the process-global environment:
+    /// process-level `set_var` used to race with concurrent git-subprocess
+    /// tests, causing intermittent full-suite failures (issue #492).
     #[test]
     fn git_subprocess_ignores_host_git_environment() {
         if !git_available() {
@@ -2210,9 +2212,11 @@ mod tests {
         .unwrap();
         let repo = repo_dir(ledger.path());
 
-        // 直接断言剥离契约（Command::get_envs），不写进程全局环境：进程级
-        // set_var 会与并发的 git 子进程测试互踩（issue #492 的间歇性全量失败）。
-        // 剥离键清单的完整性由 platform::process 的测试锚定。
+        // Assert the strip contract directly via `Command::get_envs` without
+        // mutating the process-global environment: process-level `set_var`
+        // races with concurrent git-subprocess tests (the intermittent
+        // full-suite failures of issue #492). Full coverage of the strip key
+        // lists is anchored by the platform::process tests.
         let command = isolated_git_command();
         let env: Vec<(&std::ffi::OsStr, Option<&std::ffi::OsStr>)> = command.get_envs().collect();
         for key in [
@@ -2224,7 +2228,8 @@ mod tests {
             "GIT_COMMON_DIR",
             "GIT_CONFIG_COUNT",
             "GIT_CONFIG_PARAMETERS",
-            // 影子仓库的提交身份由调用方显式 -c 提供，宿主身份变量同样不得泄漏。
+            // The shadow repo's commit identity is provided explicitly via -c
+            // by the caller; host identity variables must not leak either.
             "GIT_AUTHOR_NAME",
             "GIT_AUTHOR_EMAIL",
             "GIT_COMMITTER_NAME",
@@ -2236,7 +2241,7 @@ mod tests {
                         .find(|(name, _)| name == &std::ffi::OsStr::new(key)),
                     Some((_, None))
                 ),
-                "{key} 必须被 env_remove 剥离"
+                "{key} must be stripped via env_remove"
             );
         }
         assert_eq!(
@@ -2244,26 +2249,29 @@ mod tests {
                 .find(|(name, _)| name == &std::ffi::OsStr::new("GIT_CONFIG_GLOBAL"))
                 .and_then(|(_, value)| *value),
             Some(std::ffi::OsStr::new(crate::platform::os::null_device())),
-            "GIT_CONFIG_GLOBAL 必须被重定向到 null device"
+            "GIT_CONFIG_GLOBAL must be redirected to the null device"
         );
         assert_eq!(
             env.iter()
                 .find(|(name, _)| name == &std::ffi::OsStr::new("GIT_CONFIG_NOSYSTEM"))
                 .and_then(|(_, value)| *value),
             Some(std::ffi::OsStr::new("1")),
-            "GIT_CONFIG_NOSYSTEM 必须钉死"
+            "GIT_CONFIG_NOSYSTEM must be pinned"
         );
-        // get_envs() 只含显式 set/remove 的条目（继承变量不出现），因此这里
-        // 实际约束的是不得显式增删任何非 GIT_* 条目。
+        // `get_envs()` only contains explicitly set/removed entries (inherited
+        // variables never appear), so this actually constrains that no non-
+        // GIT_* entry is explicitly added or removed.
         assert!(
             env.iter()
                 .all(|(name, _)| name.as_encoded_bytes().starts_with(b"GIT_")),
-            "不得显式增删任何非 GIT_* 条目"
+            "no non-GIT_* entry may be explicitly added or removed"
         );
 
-        // 冒烟验证：宿主环境下影子仓库的 git 操作照常成功且 a.txt 被跟踪。
-        // 防回归由上面的 get_envs 契约断言承担；本测试不写进程环境，因此不再
-        // 保留旧版 set_var 机制中指向 bogus 目录的断言。
+        // Smoke check: with the host environment in place, shadow-repo git
+        // operations still succeed and a.txt stays tracked. Regression
+        // protection is carried by the get_envs contract assertions above;
+        // this test no longer mutates the process environment, so the old
+        // set_var-era assertion pointing at a bogus directory is dropped.
         let output = isolated_git_command()
             .arg(format!("--git-dir={}", repo.display()))
             .arg(format!("--work-tree={}", exec.path().display()))
