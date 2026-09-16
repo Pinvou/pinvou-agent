@@ -1717,7 +1717,18 @@ impl EnginePool {
         let reclaimed = quiesce_engine_before_reclaim(
             || engine.cancel_current(),
             || async move {
-                shell_reclaim_for_drain.finalize().await;
+                // finalize can legitimately run long (up to MAX_KILL_ATTEMPTS
+                // kill retries), so it must not extend the gate hold either
+                // (issue #255). On timeout the retry future is dropped and the
+                // registry worker keeps sweeping pending kills — the same
+                // degradation as the detached phase-two cleanup; a kill that
+                // later fails can only leak the already-documented orphaned
+                // child shells.
+                bounded_while_holding_turn_gate(
+                    "shell reclaim finalize",
+                    shell_reclaim_for_drain.finalize(),
+                )
+                .await;
                 forwarder.abort();
                 let _ = forwarder.await;
             },
@@ -1756,18 +1767,25 @@ impl EnginePool {
         for op in Self::shutdown_cancel_cascade_ops() {
             // The diagnostics must not carry the session id (CodeQL flags
             // cleartext session ids in newly added lines); surrounding
-            // pre-existing logs already provide the session context.
+            // pre-existing logs already provide the session context. The
+            // static op name is safe to log and tells the two shutdown ops
+            // apart (the op's own Debug would print message contents).
+            let op_name = match op {
+                Op::CancelSubAgents => "CancelSubAgents",
+                Op::Shutdown => "Shutdown",
+                _ => "op",
+            };
             match tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, engine.handle.send(op)).await {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
                     eprintln!(
-                        "[engine_pool] shutdown send failed: {e:#}; abandoning remaining shutdown ops"
+                        "[engine_pool] shutdown {op_name} send failed: {e:#}; abandoning remaining shutdown ops"
                     );
                     break;
                 }
                 Err(_) => {
                     eprintln!(
-                        "[engine_pool] shutdown op send timed out after {TURN_GATE_AWAIT_TIMEOUT:?}; abandoning remaining shutdown ops"
+                        "[engine_pool] shutdown {op_name} send timed out after {TURN_GATE_AWAIT_TIMEOUT:?}; abandoning remaining shutdown ops"
                     );
                     break;
                 }
