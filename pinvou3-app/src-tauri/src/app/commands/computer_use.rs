@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use super::prelude::*;
-use crate::features::computer_use::{ComputerUseShared, GrantOutcome};
+use crate::features::computer_use::{ComputerUseShared, EVENT_STATE_CHANGED, GrantOutcome};
 
 /// Empty-string defense for the grant/revoke (session_id) and confirm/deny
 /// (confirm_id) identifiers: an empty string has no business meaning and
@@ -38,6 +38,23 @@ fn confirm_unknown_error(confirm_id: &str) -> String {
 /// frontend contract phrase as [`confirm_unknown_error`].
 fn deny_unknown_error(confirm_id: &str) -> String {
     format!("unknown or expired confirm_id (already decided?): {confirm_id}")
+}
+
+/// Broadcast a consent-state transition to every window (`app.emit`):
+/// a request resolved in one window collapses the phantom dialog the other
+/// windows still show for the same session, and a stop/toggle elsewhere is
+/// reflected without waiting for the 30s reconciler tick. Payload is a
+/// minimal hint; consumers reconcile through `computer_use_get_status`.
+/// The remote transport rejects this event (it is a first-party consent
+/// signal, like grant_required/confirm_required).
+fn notify_state_changed(app: &AppHandle, reason: &'static str, session_id: Option<&str>) {
+    let _ = app.emit(
+        EVENT_STATE_CHANGED,
+        serde_json::json!({
+            "reason": reason,
+            "session_id": session_id,
+        }),
+    );
 }
 
 /// Return projection of `computer_use_get_status` (the frontend renders the
@@ -90,6 +107,7 @@ pub fn computer_use_get_status(
 pub fn computer_use_grant(
     session_id: String,
     shared: State<'_, Arc<ComputerUseShared>>,
+    app: AppHandle,
 ) -> Result<(), String> {
     ensure_non_empty("session_id", &session_id)?;
     // The authoritative switch/stop check lives inside grant_session, under
@@ -97,7 +115,10 @@ pub fn computer_use_grant(
     // cannot slip in after a revoke sweep and survive the off period); the
     // match below only maps the refusal to a specific user-facing message.
     match shared.grant_session(&session_id) {
-        GrantOutcome::Granted => Ok(()),
+        GrantOutcome::Granted => {
+            notify_state_changed(&app, "granted", Some(&session_id));
+            Ok(())
+        }
         GrantOutcome::Disabled => {
             Err("computer use is disabled; enable it in settings before granting control".into())
         }
@@ -117,10 +138,12 @@ pub fn computer_use_grant(
 pub fn computer_use_revoke(
     session_id: String,
     shared: State<'_, Arc<ComputerUseShared>>,
+    app: AppHandle,
 ) -> Result<(), String> {
     ensure_non_empty("session_id", &session_id)?;
     shared.revoke_session(&session_id);
     shared.backends.emergency_release(&session_id);
+    notify_state_changed(&app, "revoked", Some(&session_id));
     Ok(())
 }
 
@@ -128,9 +151,10 @@ pub fn computer_use_revoke(
 /// and trigger all backends to close persistent OS-level grants (detached
 /// threads, see [`computer_use_revoke`]).
 #[tauri::command]
-pub fn computer_use_stop(shared: State<'_, Arc<ComputerUseShared>>) {
+pub fn computer_use_stop(shared: State<'_, Arc<ComputerUseShared>>, app: AppHandle) {
     shared.stop_all();
     shared.backends.emergency_release_all();
+    notify_state_changed(&app, "stopped", None);
 }
 
 /// The user confirms an intercepted T3 consequential action in the
@@ -141,6 +165,7 @@ pub fn computer_use_stop(shared: State<'_, Arc<ComputerUseShared>>) {
 pub fn computer_use_confirm(
     confirm_id: String,
     shared: State<'_, Arc<ComputerUseShared>>,
+    app: AppHandle,
 ) -> Result<(), String> {
     ensure_non_empty("confirm_id", &confirm_id)?;
     // mint_confirmation only mints for an existing, unexpired pending while
@@ -148,6 +173,7 @@ pub fn computer_use_confirm(
     // consent lock), returning true; false surfaces an explicit error — a
     // silent no-op would let the frontend show failure as success.
     if shared.mint_confirmation(&confirm_id) {
+        notify_state_changed(&app, "confirmed", None);
         Ok(())
     } else {
         Err(confirm_unknown_error(&confirm_id))
@@ -163,9 +189,11 @@ pub fn computer_use_confirm(
 pub fn computer_use_deny(
     confirm_id: String,
     shared: State<'_, Arc<ComputerUseShared>>,
+    app: AppHandle,
 ) -> Result<(), String> {
     ensure_non_empty("confirm_id", &confirm_id)?;
     if shared.deny_confirmation(&confirm_id) {
+        notify_state_changed(&app, "denied", None);
         Ok(())
     } else {
         Err(deny_unknown_error(&confirm_id))
@@ -192,6 +220,7 @@ pub async fn computer_use_set_enabled(
     enabled: bool,
     shared: State<'_, Arc<ComputerUseShared>>,
     pool: State<'_, EnginePool>,
+    app: AppHandle,
 ) -> Result<(), String> {
     // Reject on platforms without a backend: the toggle used to persist
     // happily where computer use can never work, leaving the UI to discover
@@ -215,6 +244,11 @@ pub async fn computer_use_set_enabled(
         shared.backends.emergency_release_all();
     }
     pool.refresh_disallowed_tools().await;
+    // Windows that keep their own slice (detached shells) re-read immediately
+    // instead of discovering a toggle made elsewhere at the next reconciler
+    // tick — this is the other-window-enable gap the inert-branch re-read
+    // already bridges, now pushed proactively.
+    notify_state_changed(&app, "enabled-changed", None);
     Ok(())
 }
 

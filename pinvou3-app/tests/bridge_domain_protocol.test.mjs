@@ -108,7 +108,7 @@ const expectedProtocolHashes = {
   // text_preview_truncated passthrough + summary fallback) and dismissConfirm was
   // removed (no invoke/listen call-set change; listener body wording is part of
   // the digest).
-  computerUse: 'd306217c25027c19f27db8eca0a13fc522bd85bd14eb924f624eb98f29910b94',
+  computerUse: '95bd578ae9c6ecb1d2ae990f040923f21b6823fb7ce0dc24c3c92b760f5339ec',
   multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
   // Recomputed for the shared-helper dedup (see batch note above).
   orchestration: '341efb3b1e4a4036269559294c33b76a744bcde7c3903b9ba3525711d6182f6f',

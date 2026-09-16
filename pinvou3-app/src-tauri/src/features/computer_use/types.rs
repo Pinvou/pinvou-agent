@@ -15,6 +15,11 @@ pub const TOOL_NAME: &str = "computer_use";
 pub const EVENT_GRANT_REQUIRED: &str = "computer_use:grant_required";
 /// Tauri event emitted when a T3 consequential action is intercepted, awaiting user confirmation.
 pub const EVENT_CONFIRM_REQUIRED: &str = "computer_use:confirm_required";
+/// Consent-state transition broadcast (grant/revoke/stop/confirm/deny/
+/// master-toggle): every window reconciles via `computer_use_get_status`, so
+/// a request resolved in one window collapses its phantom dialog in the
+/// others immediately instead of at the next 30s reconciler tick.
+pub const EVENT_STATE_CHANGED: &str = "computer_use:state_changed";
 
 /// Action consent tier.
 ///

@@ -65,7 +65,21 @@ const dialogSecondaryButton = `${dialogButtonBase} bg-[#E1E5EA] hover:bg-[#D3D9E
 /** Persistent, non-dismissible session banner while the agent holds control. */
 export function ComputerUseBanner({ slice, copy }) {
   const view = computerUseConsentView(slice);
-  const { pendingAction, actionError, run } = useConsentAction(copy);
+  const { pendingAction, actionError, clearActionError, run } = useConsentAction(copy);
+  // The hook state survives the banner's hidden phase (the component stays
+  // mounted), so an "action failed" left over from a PREVIOUS grant epoch
+  // must be dropped when a new grant raises the banner again — the error
+  // would otherwise misattribute a stale failure to the fresh control
+  // session (the dialogs solve the same problem with stamp gates).
+  const wasShownRef = useRef(false);
+  useEffect(() => {
+    if (view.showBanner) {
+      if (!wasShownRef.current) clearActionError();
+      wasShownRef.current = true;
+    } else {
+      wasShownRef.current = false;
+    }
+  }, [view.showBanner, clearActionError]);
   if (!view.showBanner) return null;
   // role="alert": the banner mounts while the agent already controls the
   // machine, so it must be announced assertively instead of appearing silently.
