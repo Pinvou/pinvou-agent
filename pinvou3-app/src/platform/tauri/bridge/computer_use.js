@@ -444,6 +444,16 @@
         }
         publish(sid, { confirmRequest: pending.confirm });
       });
+      listen("computer_use:state_changed", function (event) {
+        // Consent state changed somewhere (grant/revoke/stop/confirm/deny/
+        // master toggle): re-read the authoritative status so a request the
+        // user resolved in ANOTHER window collapses here immediately instead
+        // of surviving as a phantom dialog until the next reconciler tick.
+        const payload = (event && event.payload) || {};
+        const sid = payload.session_id || payload.sessionId || state.activeSessionId;
+        if (!sid) return;
+        void refreshStatus(sid).catch(() => {});
+      });
     }
 
     return {

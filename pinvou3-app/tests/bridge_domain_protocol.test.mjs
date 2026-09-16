@@ -101,7 +101,7 @@ const expectedProtocolHashes = {
   // text_preview_truncated passthrough + summary fallback) and dismissConfirm was
   // removed (no invoke/listen call-set change; listener body wording is part of
   // the digest).
-  computerUse: 'd306217c25027c19f27db8eca0a13fc522bd85bd14eb924f624eb98f29910b94',
+  computerUse: '95bd578ae9c6ecb1d2ae990f040923f21b6823fb7ce0dc24c3c92b760f5339ec',
   multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
   orchestration: '0f6d0ff37a357fe9dab1873879d98ebf5e0e1c176c02c431452f5b5dc48b7e22',
   artifacts: '37ca694534c7e6cf44b6d262c40e388999c3ba136faca0d6f57821d5b9b3df53',

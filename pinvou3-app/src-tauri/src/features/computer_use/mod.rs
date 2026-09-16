@@ -46,7 +46,7 @@ pub use self::tool::ComputerUseTool;
 
 // ---- Tool name (types): the canonical "computer_use" spelling, re-exported
 // ---- for the composition root and command surface ----
-pub use self::types::TOOL_NAME;
+pub use self::types::{EVENT_STATE_CHANGED, TOOL_NAME};
 
 // ---- Test-only guard knobs (guard): unit tests across the feature adjust timeouts ----
 #[cfg(test)]

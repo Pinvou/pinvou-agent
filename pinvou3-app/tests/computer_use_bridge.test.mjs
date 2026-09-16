@@ -99,7 +99,11 @@ function extractCalls(source, callee) {
     .map((span) => (span.match(/listen\((["'`])([^"'`]+)\1/) || [])[2]);
   assert.deepEqual(
     listenEvents,
-    ['computer_use:grant_required', 'computer_use:confirm_required'],
+    [
+      'computer_use:grant_required',
+      'computer_use:confirm_required',
+      'computer_use:state_changed',
+    ],
     'computer_use event surface must stay unchanged',
   );
 }
@@ -852,3 +856,25 @@ function emit(harness, event, payload) {
 }
 
 console.log('computer use bridge behavior tests passed');
+
+// ── N. state_changed reconciles cross-window ────────────────────────
+{
+  const harness = createHarness({ initialState: { enabled: true } });
+  // A request the user resolved in ANOTHER window: the state_changed event
+  // must trigger an authoritative re-read for the affected session instead
+  // of leaving the phantom dialog until the next reconciler tick.
+  emit(harness, 'computer_use:state_changed', { reason: 'confirmed', session_id: 's1' });
+  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(
+    harness.invoked.some(([command, args]) => command === 'computer_use_get_status' && args.sessionId === 's1'),
+    'state_changed must re-read authoritative status for the affected session',
+  );
+  // A global transition (stop/enable) with no session hint falls back to the
+  // active session.
+  emit(harness, 'computer_use:state_changed', { reason: 'stopped' });
+  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  const reads = harness.invoked.filter(([command]) => command === 'computer_use_get_status');
+  assert.ok(reads.length >= 2, 'a session-less state_changed must refresh the active session');
+}
