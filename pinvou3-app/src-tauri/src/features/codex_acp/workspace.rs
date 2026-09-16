@@ -615,10 +615,11 @@ fn diff_fingerprint(root: &Path, relative: &str) -> DiffFingerprint {
     // same-path/same-SHA-width rewrites often keep the size unchanged, and can
     // likewise land within one mtime granularity — add a content-hash fallback
     // exactly like the HEAD ref below.
-    if let Ok(metadata) = root.join(".git/index").metadata() {
+    let index_path = git_path(root, "index").unwrap_or_else(|| root.join(".git/index"));
+    if let Ok(metadata) = index_path.metadata() {
         fingerprint.index_size = metadata.len();
         fingerprint.index_modified = modified_nanos(&metadata);
-        fingerprint.index_hash = sample_head_tail_hash(&root.join(".git/index"), metadata.len());
+        fingerprint.index_hash = sample_head_tail_hash(&index_path, metadata.len());
     }
     // git diff --cached compares the index with HEAD; reset --soft /
     // update-ref / commit only move HEAD (rewriting the ref file it points to)
@@ -639,17 +640,45 @@ fn diff_fingerprint(root: &Path, relative: &str) -> DiffFingerprint {
     fingerprint
 }
 
-// 解析 .git/HEAD：symref（`ref: refs/heads/<branch>`）→ `.git/` 下的 ref 文件路径；
-// 分离头（直接存 commit SHA）→ .git/HEAD 本身。reset --soft / update-ref 改写后者，
-// stat 它即可让指纹失效。非 git 工作区无 .git/HEAD 时返回 None。
+// Resolve the ref file HEAD points at: a symref (`ref: refs/heads/<branch>`)
+// → that ref file's path; a detached HEAD (a raw commit SHA) → the HEAD file
+// itself. reset --soft / update-ref rewrite it, so stat-ing it invalidates the
+// fingerprint. Non-git workspaces return None.
+// Paths resolve through git_path: in a linked worktree .git is a gitfile and
+// HEAD and the branch ref live under the gitdir/commondir, so joining
+// root/.git/... directly misses them.
 fn head_ref_path(root: &Path) -> Option<PathBuf> {
-    let git_dir = root.join(".git");
-    let head = fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head_path = git_path(root, "HEAD").unwrap_or_else(|| root.join(".git/HEAD"));
+    let head = fs::read_to_string(&head_path).ok()?;
     match head.trim().strip_prefix("ref:") {
-        // symref 目标相对 .git/（如 refs/heads/main），需在 git_dir 下解析。
-        Some(target) => Some(git_dir.join(target.trim())),
-        None => Some(git_dir.join("HEAD")),
+        // The symref target (e.g. refs/heads/main) resolves through git_path
+        // too; commondir redirection in worktrees is handled by git itself.
+        Some(target) => Some(
+            git_path(root, target.trim()).unwrap_or_else(|| root.join(".git").join(target.trim())),
+        ),
+        None => Some(head_path),
     }
+}
+
+// Resolve a path inside the repository's real git directory via
+// `git rev-parse --git-path`. In a linked worktree `.git` is a gitfile and the
+// plain `root.join(".git/...")` heuristic misses the index/HEAD/ref files, so
+// the fingerprint fields would stay 0 and serve stale cached diffs. Fall back
+// to the heuristic when git is unavailable (non-git workspace, synthetic `.git`
+// directories in unit tests).
+fn git_path(root: &Path, name: &str) -> Option<PathBuf> {
+    let mut command = crate::platform::process::HiddenCommand::new("git");
+    crate::platform::process::strip_git_override_env(&mut command);
+    let output = command
+        .current_dir(root)
+        .args(["rev-parse", "--git-path", name])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let relative = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!relative.is_empty()).then(|| root.join(relative))
 }
 
 fn diff_cache_get(session_id: &str, root: &Path, relative: &str) -> Option<CachedDiff> {
@@ -1427,9 +1456,27 @@ mod tests {
         file.set_times(times).unwrap();
     }
 
+    // The synthetic `.git` fixtures rely on git path discovery failing so the
+    // plain `.git/...` fallback applies. If the temp directory happens to sit
+    // inside a real repository (e.g. a TMPDIR placed under a work tree),
+    // discovery resolves to the outer repository's files and bypasses the
+    // fixtures; skip with a clear message instead of failing confusingly.
+    fn synthetic_git_fixture_is_isolated(root: &Path, name: &str) -> bool {
+        match git_path(root, name) {
+            None => true,
+            Some(resolved) => resolved == root.join(".git").join(name),
+        }
+    }
+
     #[test]
     fn diff_fingerprint_covers_file_and_git_index() {
         let root = TestDir::new("diff-fingerprint");
+        if !synthetic_git_fixture_is_isolated(root.path(), "index") {
+            eprintln!(
+                "skipping diff_fingerprint_covers_file_and_git_index: temp directory sits inside a git repository"
+            );
+            return;
+        }
         fs::create_dir_all(root.path().join(".git")).unwrap();
         fs::write(root.path().join(".git/index"), b"idx1").unwrap();
         fs::write(root.path().join("main.py"), "print(1)\n").unwrap();
@@ -1558,6 +1605,12 @@ mod tests {
         // the same mtime granularity, so this verifies content-hash
         // invalidation via a same-size same-mtime rewrite.
         let root = TestDir::new("diff-fingerprint-head");
+        if !synthetic_git_fixture_is_isolated(root.path(), "HEAD") {
+            eprintln!(
+                "skipping diff_fingerprint_invalidates_on_head_change: temp directory sits inside a git repository"
+            );
+            return;
+        }
         fs::create_dir_all(root.path().join(".git/refs/heads")).unwrap();
         let head_ref = root.path().join(".git/refs/heads/main");
         fs::write(root.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
@@ -1587,6 +1640,86 @@ mod tests {
         apply_times(&dev_ref, ref_stamp);
         fs::write(root.path().join(".git/HEAD"), "ref: refs/heads/dev\n").unwrap();
         assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
+    }
+
+    // In a linked worktree `.git` is a gitfile, so the fingerprint must
+    // resolve index/HEAD/ref paths through git itself; the plain
+    // `root.join(".git/...")` heuristic misses them and would serve stale
+    // cached diffs. Requires the `git` binary; skips gracefully otherwise.
+    #[test]
+    fn diff_fingerprint_tracks_index_and_head_in_linked_worktree() {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!(
+                "skipping diff_fingerprint_tracks_index_and_head_in_linked_worktree: git binary not available"
+            );
+            return;
+        }
+        let root = TestDir::new("diff-fingerprint-worktree");
+        let repo = root.path().join("repo");
+        let linked = root.path().join("linked");
+        fs::create_dir_all(&repo).unwrap();
+        // Strip process-wide GIT_* overrides the way production git call sites
+        // do: other tests concurrently holding ENV_LOCK may point GIT_DIR /
+        // GIT_INDEX_FILE at bogus locations, which would redirect these
+        // subprocesses away from the temp repository.
+        let run_git = |dir: &Path, args: &[&str]| {
+            let mut command = std::process::Command::new("git");
+            crate::platform::process::strip_all_git_env(&mut command);
+            let output = command
+                .current_dir(dir)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .args(args)
+                .output()
+                .unwrap_or_else(|error| panic!("failed to spawn git {args:?}: {error}"));
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}\nstderr: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        };
+        run_git(&repo, &["init", "-b", "main", "."]);
+        run_git(&repo, &["config", "user.name", "test"]);
+        run_git(&repo, &["config", "user.email", "test@example.com"]);
+        fs::write(repo.join("main.py"), "print(1)\n").unwrap();
+        run_git(&repo, &["add", "main.py"]);
+        run_git(&repo, &["commit", "-m", "init"]);
+        run_git(&repo, &["worktree", "add", linked.to_str().unwrap()]);
+
+        // git-path resolution must reach the real per-worktree gitdir...
+        let index_path = git_path(&linked, "index").expect("worktree index path");
+        assert!(index_path.is_file(), "{} missing", index_path.display());
+        assert_eq!(
+            fs::canonicalize(&index_path).unwrap(),
+            fs::canonicalize(repo.join(".git/worktrees/linked/index")).unwrap()
+        );
+
+        let baseline = diff_fingerprint(&linked, "main.py");
+        // ...so the index is actually fingerprinted (the `.git/index` heuristic
+        // reads the gitfile and leaves the fields at 0).
+        assert_ne!(baseline.index_size, 0);
+        assert_ne!(baseline.head_ref_size, 0);
+
+        // Staging a change inside the linked worktree rewrites its index →
+        // fingerprint changes (staged changes must not serve a stale cache).
+        fs::write(linked.join("main.py"), "print(2)\n").unwrap();
+        run_git(&linked, &["add", "main.py"]);
+        assert_ne!(baseline, diff_fingerprint(&linked, "main.py"));
+
+        // Moving HEAD inside the worktree (empty commit rewrites the branch
+        // ref in the commondir without touching the worktree files) →
+        // fingerprint changes through the resolved HEAD ref path.
+        run_git(&linked, &["commit", "--allow-empty", "-m", "second"]);
+        assert_ne!(baseline, diff_fingerprint(&linked, "main.py"));
     }
 
     #[test]
