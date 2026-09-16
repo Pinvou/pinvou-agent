@@ -203,7 +203,8 @@ struct BackendRequest {
     kind: BackendRequestKind,
     reply: Sender<BackendResult>,
     /// Cancel flag: the caller and the request each hold half of an `Arc`. It is set once the
-    /// caller gives up on timeout/channel disconnect; the worker checks it after dequeue and
+    /// caller gives up on timeout/channel disconnect, or by a control request / Drop via
+    /// `BackendInner::cancel_live_requests`; the worker checks it after dequeue and
     /// before execution, and a cancelled request is not executed (without
     /// the skip, a request the caller abandoned on timeout was still
     /// executed as usual — by then the physical input lock was released
@@ -310,16 +311,23 @@ fn worker_loop(
         }
     };
     while let Ok(request) = rx.recv() {
-        // Check the cancel flag after dequeue and before execution: a request the caller has
-        // already abandoned is not executed. Multi-event injection (type) also checks the
-        // flag between events (see `set_cancel_flag`). Residual gap (an inherent limitation
-        // at the platform API level, recorded honestly): a request already inside a single
-        // OS call cannot be interrupted; it can only be intercepted at call boundaries.
+        // Check the cancel flag after dequeue and before execution: a request the caller
+        // has abandoned (timeout) or that a control request / Drop has cancelled (see
+        // `BackendInner::cancel_live_requests`) is not executed. Multi-event injection
+        // (type) also checks the flag between events (see `set_cancel_flag`). Residual
+        // gap (an inherent limitation at the platform API level, recorded honestly): a
+        // request already inside a single OS call cannot be interrupted; it can only be
+        // intercepted at call boundaries, so a stop still waits out the current event
+        // (one chunk / one hold sleep), not the whole request.
         // Control-lane requests (control=true) are exempt: a late emergency-stop release
         // must execute rather than be skipped (see `BackendRequest::control`).
         if !request.control && request.cancelled.load(Ordering::SeqCst) {
             let _ = request.reply.send(Err(ComputerUseError::unavailable(
-                "request was cancelled after the caller timed out",
+                // The flag is set by the caller's own timeout, by a control
+                // request (stop/revoke), or by Drop — the worker cannot tell
+                // which, so the message names all three.
+                "request was cancelled before it executed (caller timeout, stop, or revoke); \
+                 nothing was injected",
             )));
             continue;
         }
@@ -362,22 +370,16 @@ fn worker_loop(
 
 /// Input-safe summary of a caught panic payload for stderr logging. The
 /// payload may embed typed input content (the same reason it is excluded
-/// from reply/audit), so only the payload kind plus a truncated head
-/// (256 chars, with an explicit truncation marker) is logged.
+/// from reply/audit), so only the payload KIND is logged — a string
+/// payload's head used to be logged (256 chars), but slice/format panics
+/// commonly embed the string itself, which would leak typed text into the
+/// stderr log.
 fn panic_payload_summary(panic: &(dyn std::any::Any + Send)) -> String {
-    const PANIC_LOG_LIMIT: usize = 256;
-    let (kind, text) = if let Some(text) = panic.downcast_ref::<&str>() {
-        ("&str", *text)
-    } else if let Some(text) = panic.downcast_ref::<String>() {
-        ("String", text.as_str())
+    if panic.downcast_ref::<&str>().is_some() || panic.downcast_ref::<String>().is_some() {
+        "string panic payload (content withheld)".to_string()
     } else {
-        return "non-string panic payload".to_string();
-    };
-    let mut head: String = text.chars().take(PANIC_LOG_LIMIT).collect();
-    if text.chars().count() > PANIC_LOG_LIMIT {
-        head.push_str("… (truncated)");
+        "non-string panic payload".to_string()
     }
-    format!("{kind}: {head}")
 }
 
 type BackendFactory =
@@ -406,6 +408,15 @@ struct BackendInner {
     /// to 1, and excess calls fail immediately instead of queueing onto
     /// threads.
     in_flight: AtomicBool,
+    /// Cancel flags of every action request currently queued on or executing
+    /// in the worker (registered in `request_inner`, pruned when consumed).
+    /// Control requests (emergency stop / revoke / shutdown) set every flag
+    /// on this list, so an in-flight multi-event action (type) aborts at its
+    /// next event boundary and queued actions are skipped at dequeue —
+    /// previously only the caller's own timeout set its flag, so a Stop
+    /// click had to wait out the entire remaining request while the
+    /// emergency release queued behind it.
+    live_cancels: Mutex<Vec<Arc<AtomicBool>>>,
 }
 
 impl BackendInner {
@@ -512,6 +523,34 @@ impl BackendInner {
         }
     }
 
+    /// Registers an action request's cancel flag as live (queued or
+    /// executing). Entries whose flag is already set have served their
+    /// purpose (their caller timed out or the thread died) and are pruned on
+    /// the way in, so the list stays bounded by the genuinely live requests
+    /// plus at most the flags set since the last prune.
+    fn register_cancel(&self, flag: Arc<AtomicBool>) {
+        let mut live = self.live_cancels.lock();
+        live.retain(|flag| !flag.load(Ordering::SeqCst));
+        live.push(flag);
+    }
+
+    /// Sets the cancel flag of every live action request (see
+    /// [`BackendInner::live_cancels`]).
+    fn cancel_live_requests(&self) {
+        for flag in self.live_cancels.lock().iter() {
+            flag.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Drops the registration of a request whose reply the caller received:
+    /// the request has been consumed by the worker (executed or skipped), so
+    /// no future control request needs to reach it.
+    fn unregister_cancel(&self, flag: &Arc<AtomicBool>) {
+        self.live_cancels
+            .lock()
+            .retain(|live| !Arc::ptr_eq(live, flag));
+    }
+
     fn request(&self, kind: BackendRequestKind) -> Result<BackendReply, ComputerUseError> {
         if self
             .in_flight
@@ -535,6 +574,22 @@ impl BackendInner {
         let tx = self.ensure_sender()?;
         let (reply_tx, reply_rx) = channel::<BackendResult>();
         let cancelled = Arc::new(AtomicBool::new(false));
+        if control {
+            // A control request (emergency mouse-up, OS-grant close, revoke
+            // cleanup) exists to stop or clean up after in-flight work, so
+            // cancel everything already queued on or executing in the worker
+            // FIRST: the in-flight multi-event request aborts at its next
+            // event boundary and queued actions are skipped at dequeue,
+            // instead of the cleanup waiting out the whole remaining request
+            // behind them. The control request's own flag is deliberately
+            // NOT registered: control requests are exempt from the dequeue
+            // skip and must still execute when their turn comes.
+            self.cancel_live_requests();
+        } else {
+            // Register before the send so a control request racing this one
+            // already sees the flag (dequeue-skip + between-event checks).
+            self.register_cancel(Arc::clone(&cancelled));
+        }
         tx.send(BackendRequest {
             kind,
             reply: reply_tx,
@@ -549,7 +604,14 @@ impl BackendInner {
             ComputerUseError::unavailable("computer use backend thread died")
         })?;
         match reply_rx.recv_timeout(BACKEND_CALL_TIMEOUT) {
-            Ok(result) => result,
+            // Reply received: the worker consumed the request (executed or
+            // skipped) — drop the registration. The timeout branch keeps it:
+            // the request may still be executing, and later control requests
+            // must still reach its flag.
+            Ok(result) => {
+                self.unregister_cancel(&cancelled);
+                result
+            }
             // Timeout: set the cancel flag so the worker skips the request after dequeue (a
             // request already inside an OS call cannot be interrupted, see the worker_loop
             // comment). The wording honestly discloses the residual uncertainty: the
@@ -569,6 +631,9 @@ impl BackendInner {
             // lets the state machine settle in sync.
             Err(RecvTimeoutError::Disconnected) => {
                 cancelled.store(true, Ordering::SeqCst);
+                // A dead worker will never dequeue the requests still on the
+                // channel; their registrations are pruned by the next
+                // register_cancel.
                 self.mark_thread_dead();
                 Err(ComputerUseError::unavailable(
                     "computer use backend thread is not running",
@@ -608,6 +673,11 @@ impl Drop for BackendInner {
         // wait): `ensure_sender` holds this same mutex while waiting for
         // worker startup, up to BACKEND_CALL_TIMEOUT (700s), so a Drop
         // racing a lazy start can block on the lock for up to 700s.
+        // Cancel everything queued or executing before the Shutdown request
+        // is enqueued: the worker consumes its channel in order, so without
+        // this a `type` still mid-run would finish injecting after the handle
+        // was dropped.
+        self.cancel_live_requests();
         let previous = {
             let mut state = self.state.lock();
             std::mem::replace(&mut *state, WorkerState::Shutdown)
@@ -657,6 +727,7 @@ impl BackendHandle {
             inner: Arc::new(BackendInner {
                 state: Mutex::new(WorkerState::Pending(Some(Box::new(factory)))),
                 in_flight: AtomicBool::new(false),
+                live_cancels: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -1473,15 +1544,18 @@ mod tests {
     }
 
     /// Spins a slow capture on a helper thread and returns once it provably
-    /// holds the in-flight flag.
-    fn start_in_flight_capture(handle: &BackendHandle) -> std::thread::JoinHandle<()> {
+    /// holds the in-flight flag. The capture's RESULT is returned by the
+    /// thread: a control request racing the registration→dequeue window
+    /// legitimately cancels the queued capture, so "completed" and
+    /// "cancelled before execution" are both acceptable outcomes — the
+    /// invariant under test is that the control request itself is not
+    /// rejected by the in-flight gate.
+    fn start_in_flight_capture(
+        handle: &BackendHandle,
+    ) -> std::thread::JoinHandle<Result<(), ComputerUseError>> {
         let worker = {
             let handle = handle.clone();
-            std::thread::spawn(move || {
-                handle
-                    .capture()
-                    .expect("slow capture must eventually succeed");
-            })
+            std::thread::spawn(move || handle.capture().map(|_| ()))
         };
         // Bounded wait: if the helper thread dies before setting the flag
         // (expect panic), an unbounded yield spin would turn the fast failure into hanging
@@ -1518,10 +1592,18 @@ mod tests {
             released.is_ok(),
             "control lane must bypass the in-flight gate: {released:?}"
         );
-        worker.join().expect("capture thread");
+        let capture = worker.join().expect("capture thread");
         let state = state.lock();
-        assert_eq!(state.captures, 1);
         assert_eq!(state.releases, 1, "release must reach the backend");
+        // Either the capture was dequeued before the control request landed
+        // (ran to completion) or the control request cancelled it at dequeue
+        // (the round-13 stop-cancels-in-flight semantics). Both are fine;
+        // what must never happen is the control request being REJECTED.
+        assert!(
+            state.captures == 1 || capture.is_err(),
+            "capture must complete or be cancelled, not vanish: {capture:?} / {}",
+            state.captures
+        );
     }
 
     /// Regression (emergency cleanup during an in-flight request): the
@@ -1543,9 +1625,15 @@ mod tests {
             result.is_ok(),
             "emergency mouse-up must bypass the in-flight gate: {result:?}"
         );
-        worker.join().expect("capture thread");
+        let capture = worker.join().expect("capture thread");
         let state = state.lock();
-        assert_eq!(state.captures, 1);
+        // Same completed-or-cancelled tolerance as the release_os_grant test
+        // above: the emergency release cancels a queued capture by design.
+        assert!(
+            state.captures == 1 || capture.is_err(),
+            "capture must complete or be cancelled, not vanish: {capture:?} / {}",
+            state.captures
+        );
         // Three buttons released one by one (the established contract of emergency_mouse_up,
         // see its docs).
         assert_eq!(
@@ -1704,6 +1792,127 @@ mod tests {
         assert_eq!(
             state.releases, 2,
             "global stop must reach the re-granted session"
+        );
+    }
+
+    /// Regression (round-13 review): a control request (emergency stop /
+    /// revoke cleanup) must cancel the in-flight multi-event action instead
+    /// of queueing behind it. The mock's `type_text` polls its cancel flag
+    /// exactly like the real chunked type loops; without the
+    /// control-requests-cancel-live wiring the flag is never set, the type
+    /// runs to its 10s internal deadline, and the emergency mouse-up only
+    /// executes afterwards.
+    #[test]
+    fn control_request_cancels_the_in_flight_action() {
+        struct BlockingTypeBackend {
+            cancel: Option<Arc<AtomicBool>>,
+            ups: Arc<std::sync::atomic::AtomicUsize>,
+        }
+        impl ComputerUseBackend for BlockingTypeBackend {
+            fn capabilities(&self) -> Capabilities {
+                Capabilities {
+                    screenshot: false,
+                    input: true,
+                    ui_tree: false,
+                    notes: "test".to_string(),
+                }
+            }
+            fn set_cancel_flag(&mut self, flag: Option<Arc<AtomicBool>>) {
+                self.cancel = flag;
+            }
+            fn type_text(&mut self, _t: &str) -> Result<(), ComputerUseError> {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while std::time::Instant::now() < deadline {
+                    if self
+                        .cancel
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(Ordering::SeqCst))
+                    {
+                        return Err(ComputerUseError::unavailable(
+                            "type text was cancelled (caller timeout or stop); \
+                             characters already injected are not undone",
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Ok(())
+            }
+            fn mouse_up(&mut self, _b: MouseButton) -> Result<(), ComputerUseError> {
+                self.ups.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+            fn capture(&mut self) -> Result<Capture, ComputerUseError> {
+                Err(ComputerUseError::unsupported("capture", "test"))
+            }
+            fn cursor_position(&mut self) -> Result<(i32, i32), ComputerUseError> {
+                Err(ComputerUseError::unsupported("cursor_position", "test"))
+            }
+            fn move_to(&mut self, _x: i32, _y: i32) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("move_to", "test"))
+            }
+            fn click(&mut self, _b: MouseButton, _c: u8) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("click", "test"))
+            }
+            fn mouse_down(&mut self, _b: MouseButton) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("mouse_down", "test"))
+            }
+            fn drag(&mut self, _from: (i32, i32), _to: (i32, i32)) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("drag", "test"))
+            }
+            fn scroll(&mut self, _d: ScrollDirection, _c: u32) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("scroll", "test"))
+            }
+            fn key_chord(&mut self, _k: &[Key]) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("key_chord", "test"))
+            }
+            fn hold_key(&mut self, _k: &[Key], _ms: u64) -> Result<(), ComputerUseError> {
+                Err(ComputerUseError::unsupported("hold_key", "test"))
+            }
+            fn ui_tree(&mut self, _o: &UiTreeOptions) -> Result<String, ComputerUseError> {
+                Err(ComputerUseError::unsupported("ui_tree", "test"))
+            }
+            fn element_at_point(
+                &mut self,
+                _x: i32,
+                _y: i32,
+            ) -> Result<Option<ElementInfo>, ComputerUseError> {
+                Err(ComputerUseError::unsupported("element_at_point", "test"))
+            }
+            fn focused_element(&mut self) -> Result<Option<ElementInfo>, ComputerUseError> {
+                Err(ComputerUseError::unsupported("focused_element", "test"))
+            }
+        }
+
+        let ups = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ups_for_worker = Arc::clone(&ups);
+        let handle = BackendHandle::lazy(move || {
+            Ok(Box::new(BlockingTypeBackend {
+                cancel: None,
+                ups: ups_for_worker,
+            }) as Box<dyn ComputerUseBackend>)
+        });
+        let type_handle = handle.clone();
+        let started = std::time::Instant::now();
+        let type_thread = std::thread::spawn(move || type_handle.type_text("in-flight type"));
+        // Let the type actually reach the worker and start polling.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        handle
+            .emergency_mouse_up()
+            .expect("the emergency release must run");
+        let result = type_thread.join().expect("type thread must not panic");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the stop must abort the in-flight type promptly, not wait out its deadline"
+        );
+        let error = result.expect_err("the cancelled type must report an error");
+        assert!(
+            error.to_string().contains("cancelled"),
+            "the type must abort via the cancel flag, got: {error}"
+        );
+        assert_eq!(
+            ups.load(Ordering::SeqCst),
+            3,
+            "all three emergency button releases must execute after the abort"
         );
     }
 }
