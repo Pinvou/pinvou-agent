@@ -32,9 +32,14 @@ pub async fn set_disabled_connectors(
 #[tauri::command]
 pub async fn get_disabled_connectors(scope: Option<String>) -> Result<Vec<String>, String> {
     let scope = parse_connector_scope(scope.as_deref())?;
-    Ok(crate::features::marketplace::load_disabled_connectors_for(
-        scope,
-    ))
+    // The read path enters the cross-process flock (#515) and can block until
+    // the peer process releases it; keep it off the executor thread (aligned
+    // with the write commands below).
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::load_disabled_connectors_for(scope)
+    })
+    .await
+    .map_err(|e| format!("get_disabled_connectors join: {e}"))
 }
 
 /// 商店「管理可见性」：写某 scope 被「不可见」的包 id 列表。控制 composer 列表显隐 +
@@ -49,10 +54,10 @@ pub async fn set_bundle_visibility(
     let scope = parse_connector_scope(scope.as_deref())?;
     let ids = bundle_ids.clone();
     tokio::task::spawn_blocking(move || {
-        crate::features::marketplace::save_hidden_bundles_for(scope, &ids);
+        crate::features::marketplace::save_hidden_bundles_for(scope, &ids)
     })
     .await
-    .map_err(|e| format!("set_bundle_visibility join: {e}"))?;
+    .map_err(|e| format!("set_bundle_visibility join: {e}"))??;
     pool.refresh_live_sessions_skills().await;
     pool.refresh_disallowed_tools().await;
     pool.refresh_permission_rulesets().await;
@@ -71,7 +76,11 @@ pub async fn set_bundle_visibility(
 #[tauri::command]
 pub async fn get_bundle_visibility(scope: Option<String>) -> Result<Vec<String>, String> {
     let scope = parse_connector_scope(scope.as_deref())?;
-    Ok(crate::features::marketplace::load_hidden_bundles_for(scope))
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::load_hidden_bundles_for(scope)
+    })
+    .await
+    .map_err(|e| format!("get_bundle_visibility join: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -87,13 +96,14 @@ pub async fn set_project_skills_enabled(
     app: AppHandle,
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
-    // 写路径持跨进程文件锁（#515），可在 flock 上阻塞对端进程释放，须移出
-    // executor 线程（与 set_disabled_skills / set_bundle_visibility 对齐）。
+    // The write path takes the cross-process file lock (#515) and can block
+    // on flock until the peer process releases it; keep it off the executor
+    // (aligned with set_disabled_skills / set_bundle_visibility).
     tokio::task::spawn_blocking(move || {
-        crate::features::marketplace::skill_scope::set_project_skills_enabled(enabled);
+        crate::features::marketplace::skill_scope::set_project_skills_enabled(enabled)
     })
     .await
-    .map_err(|e| format!("set_project_skills_enabled join: {e}"))?;
+    .map_err(|e| format!("set_project_skills_enabled join: {e}"))??;
     // 开关影响 code 会话组合目录：重写在线会话 + 热刷 load_skill 隐藏判定。
     pool.refresh_live_sessions_skills().await;
     pool.refresh_disallowed_tools().await;
@@ -115,7 +125,9 @@ pub async fn set_project_skills_enabled(
 /// 项目级 skills 开关状态（默认关）。
 #[tauri::command]
 pub async fn get_project_skills_enabled() -> Result<bool, String> {
-    Ok(crate::features::marketplace::skill_scope::project_skills_enabled())
+    tokio::task::spawn_blocking(crate::features::marketplace::skill_scope::project_skills_enabled)
+        .await
+        .map_err(|e| format!("get_project_skills_enabled join: {e}"))
 }
 
 /// 解析前端传入的 scope:缺省/空 = plain;已注册模式名(`SessionMode` 的

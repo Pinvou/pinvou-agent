@@ -336,7 +336,7 @@ pub async fn ima_connect(client_id: String, api_key: String) -> Result<Value, St
             // connectors → assistant 依赖环（架构守卫 rust_feature_cycles）。
             crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(
                 IMA_SKILL_ID,
-            );
+            )?;
             Ok(())
         })();
 
@@ -372,7 +372,13 @@ pub async fn ima_logout() -> Result<Value, String> {
         // 已卸载技能从各 scope 禁用集清除残留；在线会话组合目录由命令层
         // （connectors::ima_logout）重写。引用 marketplace::skill_scope 避免
         // connectors → assistant 依赖环。
-        crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(IMA_SKILL_ID);
+        if let Err(error) =
+            crate::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(
+                IMA_SKILL_ID,
+            )
+        {
+            eprintln!("[ima] scope cleanup for {IMA_SKILL_ID} skipped: {error}");
+        }
         client_result.map_err(|e| e.user_message())?;
         api_key_result.map_err(|e| e.user_message())?;
         Ok::<Value, String>(json!({ "ok": true, "connected": false }))

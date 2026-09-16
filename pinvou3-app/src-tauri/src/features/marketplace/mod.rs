@@ -382,11 +382,9 @@ pub async fn apply_disabled_connectors_for(
     scope: ConnectorScope,
     connector_ids: Vec<String>,
 ) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        save_disabled_connectors_for(scope, &connector_ids);
-    })
-    .await
-    .map_err(|error| format!("apply_disabled_connectors_for join: {error}"))?;
+    tokio::task::spawn_blocking(move || save_disabled_connectors_for(scope, &connector_ids))
+        .await
+        .map_err(|error| format!("apply_disabled_connectors_for join: {error}"))??;
     Ok(())
 }
 
@@ -1117,7 +1115,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             let _ = self.credential_store.delete(&reference);
             secrets::remove_secret_value(&secrets::mcp_secret_env_var(key));
         }
-        remove_connector_from_disabled_scopes(tool_id);
+        // A refused cleanup (cross-process lock unavailable, #515) only logs:
+        // the leftover entry fails closed (the package stays off after a
+        // reinstall) and the uninstall itself has already succeeded.
+        if let Err(error) = remove_connector_from_disabled_scopes(tool_id) {
+            eprintln!("[marketplace] scope cleanup for {tool_id} skipped: {error}");
+        }
         if preserve_companion_skills {
             return;
         }
@@ -1128,7 +1131,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 continue;
             }
             let _ = skill_marketplace::SkillMarketplaceManager::new().uninstall(&skill_id);
-            skill_scope::remove_skill_from_disabled_scopes(&skill_id);
+            if let Err(error) = skill_scope::remove_skill_from_disabled_scopes(&skill_id) {
+                eprintln!("[marketplace] scope cleanup for {skill_id} skipped: {error}");
+            }
         }
     }
 
@@ -3205,12 +3210,12 @@ mod tests {
     fn disabled_connectors_persist_roundtrip() {
         with_temp_home(|| {
             assert!(load_disabled_connectors().is_empty()); // 无文件 → 空
-            save_disabled_connectors(&["weather".to_string(), "pptx".to_string()]);
+            save_disabled_connectors(&["weather".to_string(), "pptx".to_string()]).unwrap();
             assert_eq!(
                 load_disabled_connectors(),
                 vec!["weather".to_string(), "pptx".to_string()]
             );
-            save_disabled_connectors(&[]); // 全开回去
+            save_disabled_connectors(&[]).unwrap(); // 全开回去
             assert!(load_disabled_connectors().is_empty());
         });
     }
@@ -3246,7 +3251,7 @@ mod tests {
                 deny_all_default()
             );
             // plain 写 weather → code 不受影响(仍默认全禁)。
-            save_disabled_connectors_for(ConnectorScope::Plain, &["weather".to_string()]);
+            save_disabled_connectors_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Plain),
                 vec!["weather".to_string()]
@@ -3256,13 +3261,13 @@ mod tests {
                 deny_all_default()
             );
             // code 显式写 → 标记初始化,此后以落盘为准。
-            save_disabled_connectors_for(ConnectorScope::Code, &["pptx".to_string()]);
+            save_disabled_connectors_for(ConnectorScope::Code, &["pptx".to_string()]).unwrap();
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
                 vec!["pptx".to_string()]
             );
             // plain 再写空,不影响 code。
-            save_disabled_connectors_for(ConnectorScope::Plain, &[]);
+            save_disabled_connectors_for(ConnectorScope::Plain, &[]).unwrap();
             assert!(load_disabled_connectors_for(ConnectorScope::Plain).is_empty());
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
@@ -3386,7 +3391,7 @@ mod tests {
                 r#"{"scopes":{"plain":["weather"]},"initialized":["plain"],"future_field":{"v":1}}"#,
             )
             .unwrap();
-            save_disabled_connectors_for(ConnectorScope::Plain, &["pptx".to_string()]);
+            save_disabled_connectors_for(ConnectorScope::Plain, &["pptx".to_string()]).unwrap();
             let content = std::fs::read_to_string(&path).unwrap();
             assert!(
                 content.contains("future_field"),
@@ -3404,7 +3409,7 @@ mod tests {
         with_temp_home(|| {
             write_installed_ids(&["pptx".to_string()]);
             // 未初始化 → 不落盘,文件保持无/空。
-            sync_deny_all_scopes_after_install("weather");
+            sync_deny_all_scopes_after_install("weather").unwrap();
             assert!(
                 crate::features::marketplace::scope::load_disabled_bundles_file()
                     .scopes
@@ -3413,8 +3418,8 @@ mod tests {
                     .unwrap_or(true)
             );
             // 初始化 code 后(显式开掉 pptx),新装 weather → 自动进 code 禁用集。
-            save_disabled_connectors_for(ConnectorScope::Code, &[]);
-            sync_deny_all_scopes_after_install("weather");
+            save_disabled_connectors_for(ConnectorScope::Code, &[]).unwrap();
+            sync_deny_all_scopes_after_install("weather").unwrap();
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
                 vec!["weather".to_string()]
@@ -3428,7 +3433,7 @@ mod tests {
                     .is_empty()
             );
             // 已存在不重复。
-            sync_deny_all_scopes_after_install("weather");
+            sync_deny_all_scopes_after_install("weather").unwrap();
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Code),
                 vec!["weather".to_string()]
@@ -3442,9 +3447,10 @@ mod tests {
             save_disabled_connectors_for(
                 ConnectorScope::Plain,
                 &["weather".to_string(), "pptx".to_string()],
-            );
-            save_disabled_connectors_for(ConnectorScope::Code, &["weather".to_string()]);
-            remove_connector_from_disabled_scopes("weather");
+            )
+            .unwrap();
+            save_disabled_connectors_for(ConnectorScope::Code, &["weather".to_string()]).unwrap();
+            remove_connector_from_disabled_scopes("weather").unwrap();
             assert_eq!(
                 load_disabled_connectors_for(ConnectorScope::Plain),
                 vec!["pptx".to_string()]
@@ -3460,12 +3466,14 @@ mod tests {
         with_temp_home(|| {
             let plain_writer = std::thread::spawn(|| {
                 for _ in 0..50 {
-                    save_disabled_connectors_for(ConnectorScope::Plain, &["weather".to_string()]);
+                    save_disabled_connectors_for(ConnectorScope::Plain, &["weather".to_string()])
+                        .unwrap();
                 }
             });
             let code_writer = std::thread::spawn(|| {
                 for _ in 0..50 {
-                    save_disabled_connectors_for(ConnectorScope::Code, &["pptx".to_string()]);
+                    save_disabled_connectors_for(ConnectorScope::Code, &["pptx".to_string()])
+                        .unwrap();
                 }
             });
             plain_writer.join().unwrap();

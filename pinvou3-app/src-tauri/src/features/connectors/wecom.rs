@@ -379,7 +379,14 @@ pub async fn wecom_apply_skills() -> Result<Value, String> {
     .map_err(|e| format!("spawn_blocking: {e}"))??;
     // scope 门禁同步：见 feishu_apply_skills 同名注释（code 默认关语义对齐）。
     if show {
-        crate::features::marketplace::sync_deny_all_scopes_after_install("wecom");
+        // The sync write can block on the cross-process flock (#515): keep it
+        // off the executor; a refused write (lock unavailable) fails the call
+        // so the safety default is never silently skipped.
+        tokio::task::spawn_blocking(|| {
+            crate::features::marketplace::sync_deny_all_scopes_after_install("wecom")
+        })
+        .await
+        .map_err(|e| format!("spawn_blocking: {e}"))??;
     }
     Ok(json!({ "visible": show }))
 }
