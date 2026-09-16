@@ -64,6 +64,20 @@ pub(crate) fn sanitize_name(name: &str, max_chars: usize) -> String {
     cleaned.trim().to_string()
 }
 
+/// Normalize CR/CRLF line breaks to `'\n'` for typed text, shared by the
+/// per-OS backends (the per-platform copies had drifted: Windows normalized,
+/// Linux folded, macOS injected the raw CR verbatim — where
+/// CGEventKeyboardSetUnicodeString renders it as a line break, so CRLF text
+/// double-broke/double-submitted). Borrowed when there is nothing to
+/// normalize.
+pub(crate) fn normalize_typed_newlines(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains('\r') {
+        std::borrow::Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
+
 /// The chunk granularity of type injection (in characters): single-event backends (Windows
 /// SendInput batch, macOS CGEvent batch) have no between-event cancellation checkpoint, and
 /// a whole-text `enigo.text()` can legitimately exceed the call budget under low-level
@@ -221,6 +235,24 @@ mod tests {
         assert_eq!(
             split_type_runs("中文\n测试", 2),
             vec![Text("中文".into()), Return, Text("测试".into())]
+        );
+    }
+
+    #[test]
+    fn normalize_typed_newlines_maps_cr_and_crlf() {
+        // Borrowed when there is no CR.
+        let plain = "abc";
+        let borrowed = normalize_typed_newlines(plain);
+        assert!(matches!(borrowed, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(borrowed.as_ref(), "abc");
+        // CRLF collapses to one '\n' (not two).
+        assert_eq!(normalize_typed_newlines("a\r\nb").as_ref(), "a\nb");
+        // Lone CR maps too.
+        assert_eq!(normalize_typed_newlines("a\rb").as_ref(), "a\nb");
+        // Mixed forms all normalize.
+        assert_eq!(
+            normalize_typed_newlines("a\r\nb\rc\nd").as_ref(),
+            "a\nb\nc\nd"
         );
     }
 

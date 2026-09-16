@@ -95,7 +95,8 @@ use super::super::types::{
     UiTreeOptions,
 };
 use super::helpers::{
-    TYPE_CHUNK_CHARS, TypeRun, drag_waypoints, map_scroll, sanitize_name, split_type_runs,
+    TYPE_CHUNK_CHARS, TypeRun, drag_waypoints, map_scroll, normalize_typed_newlines, sanitize_name,
+    split_type_runs,
 };
 use crate::platform::cursor::{CFRelease, CursorPositionError, cursor_position};
 
@@ -1644,17 +1645,22 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         // cancel checks: low-level event hooks process each event
         // synchronously, so long text can legitimately exceed the call
         // budget — the checks shrink the upper bound of zombie injection
-        // after a caller timeout from the whole text to one run. Newlines and
-        // tabs are split out as real Return/Tab key clicks, the same shape as
-        // the Windows/Linux backends: enigo's macOS fast_text handles a
-        // leading '\n' by recursively injecting "\u{200B}\n" (zero-width
-        // space + newline), which would pollute the target field (a password
-        // box especially) with invisible characters.
-        for run in split_type_runs(text, TYPE_CHUNK_CHARS) {
+        // after a caller timeout from the whole text to one run. CR/CRLF is
+        // normalized to '\n' first (the shared helper; a raw CR injected via
+        // CGEventKeyboardSetUnicodeString renders as a line break on top of
+        // the real Return click, so CRLF text double-broke/double-submitted
+        // where Windows/Linux normalize). Newlines and tabs are split out
+        // as real Return/Tab key clicks, the same shape as the Windows/Linux
+        // backends: enigo's macOS fast_text handles a leading '\n' by
+        // recursively injecting "\u{200B}\n" (zero-width space +
+        // newline), which would pollute the target field (a password box
+        // especially) with invisible characters.
+        let text = normalize_typed_newlines(text);
+        for run in split_type_runs(&text, TYPE_CHUNK_CHARS) {
             if let Some(flag) = &self.cancel {
                 if flag.load(Ordering::SeqCst) {
                     return Err(ComputerUseError::unavailable(
-                        "type text was cancelled after the caller timed out; characters \
+                        "type text was cancelled (caller timeout or stop); characters \
                          already injected are not undone",
                     ));
                 }

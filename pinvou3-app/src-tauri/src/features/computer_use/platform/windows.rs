@@ -72,7 +72,8 @@ use super::super::types::{
     UiTreeOptions,
 };
 use super::helpers::{
-    TYPE_CHUNK_CHARS, TypeRun, drag_waypoints, map_scroll, sanitize_name, split_type_runs,
+    TYPE_CHUNK_CHARS, TypeRun, drag_waypoints, map_scroll, normalize_typed_newlines, sanitize_name,
+    split_type_runs,
 };
 
 /// Wait before a click so the previous move has settled (the target process consumes mouse
@@ -542,18 +543,6 @@ fn write_tree_node(
     Ok(())
 }
 
-/// Normalize CR/CRLF newlines to `'\n'` for typed text. enigo's `text()` treats `'\r'` as
-/// a no-op and silently drops it, while `'\n'` is split out into a real Return click — so
-/// typing CRLF text verbatim would lose every line break. Borrowed when there is nothing to
-/// normalize.
-fn normalize_typed_newlines(text: &str) -> std::borrow::Cow<'_, str> {
-    if text.contains('\r') {
-        std::borrow::Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
-    } else {
-        std::borrow::Cow::Borrowed(text)
-    }
-}
-
 /// Merge the interpolated-move and button-release results of `drag`. The
 /// release always runs, but `Result::and` kept only the first error: when the
 /// release failed too, callers never learned that the mouse button may still
@@ -954,7 +943,7 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
             if let Some(flag) = &self.cancel {
                 if flag.load(Ordering::SeqCst) {
                     return Err(ComputerUseError::unavailable(
-                        "type text was cancelled after the caller timed out; characters \
+                        "type text was cancelled (caller timeout or stop); characters \
                          already injected are not undone",
                     ));
                 }
