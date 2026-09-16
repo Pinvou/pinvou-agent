@@ -333,4 +333,32 @@ test('component glue: session-switch discard, revival kick, and ledger mapping s
     /useSubagentLedgerPoll\(\{[\s\S]{0,200}hasActive: sessionHasActive,[\s\S]{0,200}onSummaries: mergeLedgerSummaries,[\s\S]{0,200}kickRef: kickPollRef,[\s\S]{0,50}\}\);/,
     'the ledger poll must be wired to the session activity, the merge callback, and the revival kick',
   );
+  // The read itself is the overlay's only data source: the hook test injects
+  // its own readLedger, so only this pin sees the component wire silence the
+  // facade (same blind-overlay failure as above).
+  assert.match(
+    overlaySource,
+    /const readLedger = useCallback\(\s*id => bridge\.multiAgent\.listSubagentTranscripts\(id\),/,
+    'readLedger must call the bridge multiAgent ledger facade',
+  );
+  // And the finished overlay must actually be mounted by the chat view — an
+  // unmount would leave every assertion in this file green with the feature
+  // gone from the screen.
+  const chatViewSource = fs.readFileSync(
+    new URL('../src/features/chat/ChatView.jsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(
+    chatViewSource,
+    /<RunningAgentsOverlay\s+sessionId=\{activeSessionId\}/,
+    'the running overlay must stay mounted in ChatView',
+  );
+  // Scheduled run conversations assemble plain engine config (the backend's
+  // swarm_mode_available excludes them), so the toggle entry must hide there
+  // instead of erroring on click.
+  assert.match(
+    chatViewSource,
+    /multiAgentAvailable=\{!scheduledRunContext\}/,
+    'scheduled run conversations must hide the swarm toggle entry',
+  );
 });
