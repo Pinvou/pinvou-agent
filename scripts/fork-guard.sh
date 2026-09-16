@@ -19,8 +19,8 @@ R1_CLOSURE="1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
 # pinvou3-clean (see docs/fork-modifications.md, the T3 section).
 # verify-public-submodule.sh stays red for the pinned candidate: that is
 # the registered candidate-period state, not a regression.
-CANDIDATE_HEAD="4eb487cd3e6bcfc9b8315672a908979afd0dfd9b"
-CANDIDATE_COMMITS=35
+CANDIDATE_HEAD="dc1f391d6e8876f9627284a868ea7d3cf279326a"
+CANDIDATE_COMMITS=36
 FAST_ONLY=0
 
 case "${1:-}" in
@@ -176,6 +176,9 @@ fingerprints=(
   "T3|web.run 溢出证据可取回标记          |CodeWhale/crates/tui/src/tools/web_run.rs|\"evidence_available\": true,"
   "T3|/agent 派发简报补激活回归           |CodeWhale/crates/tui/src/commands/groups/core/agent.rs|fn forkguard_slash_agent_dispatch_teaches_handle_read_activation"
   "T3|/goal 简报补 create_goal 激活        |CodeWhale/crates/tui/src/commands/groups/project/goal.rs|if \`create_goal\` is not in your tool list"
+  "T3|/goal 简报补直呼兜底                 |CodeWhale/crates/tui/src/commands/groups/project/goal.rs|call \`create_goal\` directly anyway"
+  "T3|/agent 简报补直呼兜底                |CodeWhale/crates/tui/src/commands/groups/core/agent.rs|call \`handle_read\` directly anyway"
+  "T3|幻影清单锚定 canonical 退役名        |CodeWhale/crates/tui/src/skills/system/tests.rs|fn forkguard_phantom_denylist_covers_canonical_lists"
 
   "T4|Automation 稳定 conversation key |CodeWhale/crates/tui/src/automation_manager.rs|add_task_with_conversation_key(new_task, Some(automation.id.clone()))"
   "T4|离线不补跑且同一任务不重叠          |CodeWhale/crates/tui/src/automation_manager.rs|forkguard_scheduler_skips_offline_backfill_and_overlapping_runs"
