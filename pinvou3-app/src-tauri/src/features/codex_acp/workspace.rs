@@ -663,10 +663,19 @@ fn head_ref_path(root: &Path) -> Option<PathBuf> {
 // Resolve a path inside the repository's real git directory via
 // `git rev-parse --git-path`. In a linked worktree `.git` is a gitfile and the
 // plain `root.join(".git/...")` heuristic misses the index/HEAD/ref files, so
-// the fingerprint fields would stay 0 and serve stale cached diffs. Fall back
-// to the heuristic when git is unavailable (non-git workspace, synthetic `.git`
-// directories in unit tests).
+// the fingerprint fields would stay 0 and serve stale cached diffs. Main
+// worktrees keep `.git` a real directory and discovery from the workspace root
+// lands exactly there, so they resolve without spawning git: the fingerprint
+// runs on every cache probe and several process launches per probe would
+// defeat the cache it guards. Linked worktrees, submodules and
+// separate-git-dir checkouts keep `.git` a gitfile and take the discovery
+// path, which falls back to the heuristic when git is unavailable (non-git
+// workspaces, synthetic fixtures).
 fn git_path(root: &Path, name: &str) -> Option<PathBuf> {
+    let dot_git = root.join(".git");
+    if dot_git.is_dir() {
+        return Some(dot_git.join(name));
+    }
     let mut command = crate::platform::process::HiddenCommand::new("git");
     crate::platform::process::strip_git_override_env(&mut command);
     let output = command
@@ -1456,27 +1465,9 @@ mod tests {
         file.set_times(times).unwrap();
     }
 
-    // The synthetic `.git` fixtures rely on git path discovery failing so the
-    // plain `.git/...` fallback applies. If the temp directory happens to sit
-    // inside a real repository (e.g. a TMPDIR placed under a work tree),
-    // discovery resolves to the outer repository's files and bypasses the
-    // fixtures; skip with a clear message instead of failing confusingly.
-    fn synthetic_git_fixture_is_isolated(root: &Path, name: &str) -> bool {
-        match git_path(root, name) {
-            None => true,
-            Some(resolved) => resolved == root.join(".git").join(name),
-        }
-    }
-
     #[test]
     fn diff_fingerprint_covers_file_and_git_index() {
         let root = TestDir::new("diff-fingerprint");
-        if !synthetic_git_fixture_is_isolated(root.path(), "index") {
-            eprintln!(
-                "skipping diff_fingerprint_covers_file_and_git_index: temp directory sits inside a git repository"
-            );
-            return;
-        }
         fs::create_dir_all(root.path().join(".git")).unwrap();
         fs::write(root.path().join(".git/index"), b"idx1").unwrap();
         fs::write(root.path().join("main.py"), "print(1)\n").unwrap();
@@ -1605,12 +1596,6 @@ mod tests {
         // the same mtime granularity, so this verifies content-hash
         // invalidation via a same-size same-mtime rewrite.
         let root = TestDir::new("diff-fingerprint-head");
-        if !synthetic_git_fixture_is_isolated(root.path(), "HEAD") {
-            eprintln!(
-                "skipping diff_fingerprint_invalidates_on_head_change: temp directory sits inside a git repository"
-            );
-            return;
-        }
         fs::create_dir_all(root.path().join(".git/refs/heads")).unwrap();
         let head_ref = root.path().join(".git/refs/heads/main");
         fs::write(root.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
