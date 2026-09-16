@@ -21,6 +21,7 @@ import {
   startSubagentTranscriptPolling,
   startTranscriptPolling,
 } from './runState.mjs';
+import { isNeutralEndingStatus } from './overlay-model.mjs';
 
 /**
  * 子智能体面板（Codex 式右侧列，ADR-0006）：**只读执行记录**，不是第二个
@@ -111,7 +112,8 @@ export function SubagentTranscriptPanel({
     setSelectedAgentId(initialAgentId || null);
   }, [sessionId, initialAgentId, selectionRequestId]);
 
-  // 列表：面板打开期间串行轮询底座落盘投影（含状态与受阻标注）。
+  // List: serial poll of the persisted foundation projection (status plus
+  // blocked annotation) while the panel is open.
   const [agents, setAgents] = useState(null);
   const [listReadFailed, setListReadFailed] = useState(false);
   const [listWake, setListWake] = useState(0);
@@ -134,16 +136,27 @@ export function SubagentTranscriptPanel({
           setListReadFailed(true);
         }
       },
-      // 只在仍有运行中实例（或本次读取失败）时继续定时刷新。全部终态后
-      // 停表；下方实时事件监听会在新子智能体出现时唤醒一次读取。
-      active: (list) => !Array.isArray(list) || list.some((entry) => !entry.done),
+      // Keep polling only while some entry is genuinely unfinished (or the
+      // read failed). An entry that is not done and carries no status token is
+      // an orphan transcript — the foundation pruned its worker record past
+      // the 256-entry ledger cap while keeping the file; it is a historical
+      // leftover, so it must not hold the poll at the 2s cadence forever.
+      // The real-time listener below wakes one read when a new subagent
+      // appears after everything went terminal.
+      active: (list) => !Array.isArray(list)
+        || list.some((entry) => !entry.done && entry.status != null),
       intervalMs: 2000,
     });
   }, [sessionId, listWake]);
 
+  // Dormant = nothing running and no failed read, so the wake listener below
+  // can take over from the poll. Orphan transcripts (no status token) count as
+  // settled history here exactly as in the poll predicate above — otherwise a
+  // single orphan row would keep dormant false forever, and with the poll
+  // stopped a newly spawned agent would have neither discovery path.
   const listPollingDormant = Array.isArray(agents)
     && !listReadFailed
-    && agents.every((entry) => entry.done);
+    && agents.every((entry) => entry.done || entry.status == null);
   useEffect(() => {
     if (!listPollingDormant || typeof window === 'undefined') return;
     const wakeForNewAgent = (event) => {
@@ -505,8 +518,18 @@ export function SubagentTranscriptPanel({
                     className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
                     style={{
                       background: entry.done
-                        ? (entry.failed ? '#C5221F' : entry.blocked ? '#E8710A' : '#137333')
-                        : '#F9AB00',
+                        // The ledger folds every non-completed ending into
+                        // failed=true, but a swarm-off cancellation or a
+                        // session interruption is not a dispatch failure —
+                        // same neutral dot the overlay and the detail badge
+                        // use for those endings.
+                        ? (isNeutralEndingStatus(entry.status) ? '#9AA0A6'
+                          : entry.failed ? '#C5221F' : entry.blocked ? '#E8710A' : '#137333')
+                        // An unfinished entry with no status token is an
+                        // orphan transcript (worker record pruned, file kept):
+                        // unknown history, not live work — keep it neutral
+                        // instead of the amber "active" color.
+                        : entry.status == null ? '#9AA0A6' : '#F9AB00',
                     }}
                   />
                 </button>

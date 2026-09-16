@@ -87,15 +87,25 @@ for (const language of ['zh', 'en', 'ja']) {
   for (const role of ['scout', 'manager', 'builder', 'reviewer', 'general']) {
     assert.ok(multiAgent.roleCards[role], `${language}.uiMultiAgent.roleCards.${role} must exist`);
   }
-  for (const key of ['toggleLabel', 'toggleHint', 'close', 'loadingTranscript', 'emptyTranscript', 'blockedTag', 'panelResize', 'panelResizeHint', 'agentsListTitle', 'agentsEmpty', 'backToAgents']) {
+  for (const key of ['toggleLabel', 'toggleHint', 'close', 'loadingTranscript', 'emptyTranscript', 'blockedTag', 'panelResize', 'panelResizeHint', 'agentsListTitle', 'agentsEmpty', 'backToAgents', 'spawnedAgentsRowHint', 'runningAgentsTitle', 'runningAgentsCollapse', 'runningAgentsExpand']) {
     assert.ok(multiAgent[key], `${language}.uiMultiAgent.${key} must exist`);
   }
-  for (const cardKey of ['spawning', 'working', 'completed', 'failed', 'spawnFailed', 'interrupted']) {
+  for (const fnKey of ['spawnedAgentsRow', 'runningAgentsCount']) {
+    assert.equal(typeof multiAgent[fnKey], 'function', `${language}.uiMultiAgent.${fnKey} must be a function`);
+  }
+  for (const cardKey of ['working', 'completed', 'failed', 'spawnFailed', 'interrupted', 'cancelled']) {
     assert.ok(multiAgent.agentCard[cardKey], `${language}.uiMultiAgent.agentCard.${cardKey} must exist`);
   }
+  // The ConversationTimeline status badge renders uiConversation.cancelled for
+  // the ledger's lowercase cancelled token (case-insensitive match); the key
+  // must exist in all three locales.
+  assert.ok(dict[language].uiConversation.cancelled, `${language}.uiConversation.cancelled must exist`);
   for (const deadKey of ['confirmTitle', 'impactLabels', 'startDenied', 'stages', 'terminal', 'workerCount', 'advancedEdit', 'planCompileError']) {
     assert.equal(multiAgent[deadKey], undefined, `${language}.uiMultiAgent.${deadKey} is retired and must stay deleted`);
   }
+  // agentCard spawning-era keys: 'spawning' died with the inline expert card
+  // (the aggregate count row only speaks in past-tense totals).
+  assert.equal(multiAgent.agentCard.spawning, undefined, `${language}.uiMultiAgent.agentCard.spawning is retired and must stay deleted`);
   // The bottom-right code-style toggle was replaced by the All/Code pill in
   // the task list header; its tooltip copy must not come back as dead keys.
   for (const deadKey of ['sidebarCodeStyleOn', 'sidebarCodeStyleOff']) {

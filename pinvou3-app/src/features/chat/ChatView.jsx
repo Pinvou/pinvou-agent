@@ -19,6 +19,8 @@ import { ViewErrorBoundary } from '../../shared/ViewErrorBoundary.jsx';
 import { ArtifactCard, localizeTool, tsToolsData, tsToolWelcomeData } from '../tools/tool-common.jsx';
 import { RightDockPanel, useRightDockOcclusion } from '../../components/layout/RightDock.jsx';
 import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard, cardBtnCls } from '../tools/tool-renderers.jsx';
+import { annotateAgentSpawnGroups } from '../multiagent/spawn-aggregation.mjs';
+import { RunningAgentsOverlay } from '../multiagent/RunningAgentsOverlay.jsx';
 import {
   ConversationActivityIndicator,
   ConversationTimeline,
@@ -1160,8 +1162,13 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         )).join('\u0000');
         let lastUserId = null;
         for (let i = chatItems.length - 1; i >= 0; i--) { if (chatItems[i].type === 'user') { lastUserId = chatItems[i].id; break; } }
+        // Swarm rework: consecutive spawn-type agent calls aggregate into one
+        // count row (annotated with spawnGroup / spawnGroupHidden). Annotation
+        // runs once on the projection input; the unified timeline lane reads
+        // the same result through the projected items' legacyItem.
+        const spawnAnnotatedItems = annotateAgentSpawnGroups(visibleChatItems);
         const conversationProjection = projectDeepSeekConversation({
-          chatItems: conversationItemsForMode(visibleChatItems),
+          chatItems: conversationItemsForMode(spawnAnnotatedItems),
           busy,
           thinking: chatThinking,
           tokens: ctxTokens,
@@ -1181,7 +1188,6 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         return { latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn };
       }, [chatItems, busy, ctxTokens, isScheduledTaskCreationChat, chatThinking, turnTimeline, activeSessionId, modelServiceLanguage, chatModelServiceState]);
       const { latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn } = derivedConversation;
-
 
       // External entries can prefill the composer and focus its end.
       // Template/navigation entries (KnowledgeView "continue in chat",
@@ -1355,6 +1361,9 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // modeState.multiAgent 经 get_mode_state 双端同步（开关已持久化）。
       const isMultiAgentReadOnly = !MULTI_AGENT_ENABLED
         && !!(bs && bs.modeState && bs.modeState.multiAgent);
+      // Read-only mirror of the swarm mode switch: mood border color of the
+      // top-right running overlay (on = purple / off = blue).
+      const swarmModeOn = !!(bs && bs.modeState && bs.modeState.multiAgent);
       const artifactsVisible = Boolean(activeSessionId && artifactsOpen);
       const artifactFullscreenPublicationReady = useRightDockOcclusion(
         'artifact-fullscreen',
@@ -1682,7 +1691,12 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       const handleTimelineRenderToolItem = useCallback((item) => (item.legacyItem
         && !isSearchTool(item.tool)
         && !isFetchTool(item.tool)
-        ? <ToolCard item={item.legacyItem} sessionId={activeSessionId} t={t} variant="timeline" />
+        ? <ToolCard
+            item={item.legacyItem}
+            sessionId={activeSessionId}
+            t={t}
+            variant="timeline"
+          />
         : undefined), [activeSessionId, t]);
       const timelineAssistantAvatar = useMemo(() => (
         <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center">
@@ -2387,6 +2401,14 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             </div>
             <div className="flex items-center gap-2">
               {activeSessionId && (
+                <RunningAgentsOverlay
+                  sessionId={activeSessionId}
+                  theme={theme}
+                  t={t}
+                  swarmOn={swarmModeOn}
+                />
+              )}
+              {activeSessionId && (
                 <ChatRightDockSwitcher
                   theme={theme}
                   artifactsLabel={t.artifacts}
@@ -2860,7 +2882,11 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                     </span>
                   )}
                   <ComposerModeChip t={t} bs={bs} compact={composerCompact} onSwitch={handleModeChipSwitch} />
-                  <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoModelSettings || onGotoSettings} compact={composerCompact} />
+                  {/* Scheduled run conversations expose no swarm toggle:
+                      the backend's swarm_mode_available excludes them (the
+                      engine always assembles plain config there), so the
+                      entry hides up front instead of erroring on click. */}
+                  <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoModelSettings || onGotoSettings} compact={composerCompact} multiAgentAvailable={!scheduledRunContext} />
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} sessionId={bs && bs.activeSessionId} compact={composerCompact} activeSkill={bs && bs.activeSkill} />
                   <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
                 </div>

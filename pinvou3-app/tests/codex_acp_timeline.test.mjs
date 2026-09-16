@@ -1024,7 +1024,7 @@ try {
     path.join(root, 'src-tauri', 'src', 'app', 'commands', 'interaction.rs'),
     'utf8',
   );
-  assert.ok(interactionCommands.includes('multi_agent_available: pool.multi_agent_mode_available(&session_id)')
+  assert.ok(interactionCommands.includes('multi_agent_available: pool.swarm_mode_available(&session_id)')
     && codexView.includes('multiAgentAvailable: Boolean(modeState && modeState.multi_agent_available)'),
   'the native multi-agent control must consume the backend SessionPolicy availability instead of a literal UI capability');
   // 语音输入生命周期契约：bridge.voice 的写回守卫只绑定聊天侧 activeSessionId，

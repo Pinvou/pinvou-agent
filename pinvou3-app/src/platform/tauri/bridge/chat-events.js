@@ -249,7 +249,6 @@
     function sweepUnpairedToolMeta() {
       const meta = context.toolMeta;
       const ids = Object.keys(meta || {});
-      if (!ids.length) return;
       const paired = Object.create(null);
       for (let i = 0; i < state.messages.length; i++) {
         const blocks = state.messages[i] && state.messages[i].content;
@@ -264,6 +263,25 @@
       ids.forEach(function (id) {
         if (!paired[id]) delete meta[id];
       });
+      // Live-path terminal ratchet (parity with the replay-time sweep in
+      // rerenderFromMessages and the codex native lane): a tool card still
+      // pending/running at turn end whose tool_use never got a tool_result is
+      // an interrupted in-flight call — no tool_end is coming, so settle it as
+      // failed instead of leaving an eternal "running" card (a live spawn row
+      // would then pulse forever). Background shells keep running across turns
+      // and are excluded; so are synthetic shell-snapshot cards (built by the
+      // terminal poll for jobs without a tool card of their own — e.g. a
+      // subagent's detached shell): their "shell-task:" ids never pair with a
+      // tool_use id, yet the job may still be running.
+      for (let i = 0; i < state.chatItems.length; i++) {
+        const item = state.chatItems[i];
+        if (item && item.type === "tool" && item.toolId && item.background !== true
+          && item.shellSnapshot !== true
+          && (item.state === "pending" || item.state === "running") && !paired[item.toolId]) {
+          item.success = false;
+          item.state = "failed";
+        }
+      }
     }
     const markTurnDirtyArtifact = context.markTurnDirtyArtifact;
     const trackArtifact = context.trackArtifact;
