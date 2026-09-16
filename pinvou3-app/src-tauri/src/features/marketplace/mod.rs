@@ -1234,7 +1234,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             let _ = self.credential_store.delete(&reference);
             secrets::remove_secret_value(&secrets::mcp_secret_env_var(key));
         }
-        remove_bundle_from_disabled_scopes(tool_id);
+        // A refused cleanup (cross-process lock unavailable, #515) only logs:
+        // the leftover entry fails closed (the package stays off after a
+        // reinstall) and the uninstall itself has already succeeded.
+        if let Err(error) = remove_bundle_from_disabled_scopes(tool_id) {
+            eprintln!("[marketplace] scope cleanup for {tool_id} skipped: {error}");
+        }
         if preserve_companion_skills {
             return;
         }
@@ -1245,7 +1250,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 continue;
             }
             let _ = skill_marketplace::SkillMarketplaceManager::new().uninstall(&skill_id);
-            scope::remove_bundle_from_disabled_scopes(&skill_id);
+            if let Err(error) = scope::remove_bundle_from_disabled_scopes(&skill_id) {
+                eprintln!("[marketplace] scope cleanup for {skill_id} skipped: {error}");
+            }
         }
     }
 
@@ -4774,7 +4781,7 @@ mod tests {
         with_temp_home(|| {
             write_installed_ids(&["pptx".to_string()]);
             // 未初始化 → 不落盘,文件保持无/空。
-            sync_deny_all_scopes_after_install("weather");
+            sync_deny_all_scopes_after_install("weather").unwrap();
             assert!(
                 crate::features::marketplace::scope::load_disabled_bundles_file()
                     .scopes
@@ -4784,7 +4791,7 @@ mod tests {
             );
             // 初始化 code 后(显式开掉 pptx),新装 weather → 自动进 code 禁用集。
             save_disabled_bundles_for(ConnectorScope::Code, &[]).unwrap();
-            sync_deny_all_scopes_after_install("weather");
+            sync_deny_all_scopes_after_install("weather").unwrap();
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["weather".to_string()]
@@ -4798,7 +4805,7 @@ mod tests {
                     .is_empty()
             );
             // 已存在不重复。
-            sync_deny_all_scopes_after_install("weather");
+            sync_deny_all_scopes_after_install("weather").unwrap();
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["weather".to_string()]
@@ -4815,7 +4822,7 @@ mod tests {
             )
             .unwrap();
             save_disabled_bundles_for(ConnectorScope::Code, &["weather".to_string()]).unwrap();
-            remove_bundle_from_disabled_scopes("weather");
+            remove_bundle_from_disabled_scopes("weather").unwrap();
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["pptx".to_string()]

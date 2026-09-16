@@ -506,14 +506,25 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
     }
 
     // scope 禁用集：包 id + 包内技能目录名一并兜底清理。恢复有意跳过新装的
-    // DenyAll 默认禁用同意门（见函数头注释第 5 点）。
-    super::scope::remove_bundle_from_disabled_scopes(pkg_id);
+    // DenyAll 默认禁用同意门（见函数头注释第 5 点）。A refused cleanup (lock
+    // unavailable, #515) is logged and skipped: the restore body already
+    // succeeded and is not retryable, and a leftover entry fails closed (the
+    // package stays off after a same-name reinstall), so it must not fail the
+    // restore.
+    if let Err(error) = super::scope::remove_bundle_from_disabled_scopes(pkg_id) {
+        log::warn!("[recycle-bin] scope cleanup for {pkg_id} skipped: {error}");
+    }
     if let Ok(rd) = std::fs::read_dir(pkg_dir.join("skills")) {
         for entry in rd.flatten() {
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                super::scope::remove_bundle_from_disabled_scopes(
+                if let Err(error) = super::scope::remove_bundle_from_disabled_scopes(
                     &entry.file_name().to_string_lossy(),
-                );
+                ) {
+                    log::warn!(
+                        "[recycle-bin] scope cleanup for {} skipped: {error}",
+                        entry.file_name().to_string_lossy()
+                    );
+                }
             }
         }
     }

@@ -69,7 +69,14 @@ impl ConnectorGate {
         .await
         .map_err(|e| format!("spawn_blocking: {e}"))??;
         if show {
-            crate::features::marketplace::sync_deny_all_scopes_after_install(self.id);
+            // The sync write can block on the cross-process flock (#515): keep
+            // it off the executor; a refused write (lock unavailable) fails the
+            // call so the safety default is never silently skipped.
+            tokio::task::spawn_blocking(|| {
+                crate::features::marketplace::sync_deny_all_scopes_after_install(self.id)
+            })
+            .await
+            .map_err(|e| format!("spawn_blocking: {e}"))??;
         }
         Ok(json!({ "visible": show }))
     }
