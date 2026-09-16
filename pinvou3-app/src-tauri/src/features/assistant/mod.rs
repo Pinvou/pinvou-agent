@@ -7,6 +7,7 @@ mod engine_support;
 pub(crate) mod eval;
 pub(crate) mod expert_roster;
 pub(crate) mod image_capability;
+pub(crate) mod mcp_inventory;
 pub(crate) mod pending_user_input;
 pub mod platform;
 #[cfg(any(feature = "benchmark-hooks", test))]

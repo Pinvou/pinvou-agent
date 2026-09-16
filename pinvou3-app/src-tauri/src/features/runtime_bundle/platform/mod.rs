@@ -1020,6 +1020,34 @@ mod tests {
             .expect("run multi-agent depth guard")
     }
 
+    fn run_connector_introspection_guard(
+        bundle: &Pinvou3Bundle,
+        args: &str,
+    ) -> std::process::Output {
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = std::process::Command::new("powershell.exe");
+            command
+                .arg("-NoProfile")
+                .arg("-ExecutionPolicy")
+                .arg("Bypass")
+                .arg("-File")
+                .arg(&bundle.deny_sensitive_ps1);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = std::process::Command::new("bash");
+            command.arg(&bundle.deny_sensitive_sh);
+            command
+        };
+        command
+            .env("DEEPSEEK_TOOL_NAME", "list_mcp_resources")
+            .env("DEEPSEEK_TOOL_ARGS", args)
+            .output()
+            .expect("run connector introspection guard")
+    }
+
     /// 测试 bundle 解包的两个场景：首次解包成功 + VERSION 匹配时不覆写。
     /// 借 crate 级唯一 bridge::paths::tests::ENV_LOCK 跟其他 mutate PINVOU3_HOME 的测试串行化，
     /// 不靠唯一 nanos 路径躲 race（仍会读 env var）。
@@ -1291,6 +1319,38 @@ mod tests {
                 .join("government-writing")
                 .exists()
         );
+
+        cleanup(&tmp);
+    }
+
+    #[test]
+    fn connector_introspection_guard_matches_complete_names_only() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let bundle = Pinvou3Bundle::paths();
+        bundle.ensure_extracted().unwrap();
+
+        for args in [r#"{"server":"wecom"}"#, r#"{"server":"企微"}"#] {
+            let output = run_connector_introspection_guard(&bundle, args);
+            assert_eq!(
+                output.status.code(),
+                Some(2),
+                "exact skill-connector names must be redirected: {output:?}"
+            );
+        }
+        for args in [
+            r#"{"server":"wecom-bot"}"#,
+            r#"{"server":"mcp_wecom-bot_send_text"}"#,
+            r#"{"server":"企微群机器人"}"#,
+        ] {
+            let output = run_connector_introspection_guard(&bundle, args);
+            assert!(
+                output.status.success(),
+                "marketplace MCP names containing connector aliases must remain introspectable: {output:?}"
+            );
+        }
 
         cleanup(&tmp);
     }
