@@ -2187,69 +2187,95 @@ mod tests {
         );
     }
 
-    /// GIT_* 环境隔离（评审 nit）：宿主环境的 GIT_INDEX_FILE /
-    /// GIT_OBJECT_DIRECTORY 不得把影子仓库的内部操作重定向到无关位置。
+    /// GIT_* 环境隔离（评审 nit + issue #492）：宿主环境的 GIT_DIR /
+    /// GIT_WORK_TREE / GIT_INDEX_FILE / GIT_OBJECT_DIRECTORY 不得把影子仓库的
+    /// 内部操作重定向到无关位置。改为直接断言 isolated_git_command 的剥离
+    /// 契约（Command::get_envs），不再写进程全局环境——进程级 set_var 曾与
+    /// 并发 git 子进程测试互踩，造成间歇性全量测试失败（issue #492）。
     #[test]
     fn git_subprocess_ignores_host_git_environment() {
         if !git_available() {
             return;
         }
-        let _lock = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        let bogus = TestDir::new("bogus-gitdir");
-        // Capture the host's values first: restoration must put back exactly
-        // this state, not an unconditionally-absent one (the launching shell
-        // may legitimately carry these variables).
-        let prior_index = std::env::var_os("GIT_INDEX_FILE");
-        let prior_objects = std::env::var_os("GIT_OBJECT_DIRECTORY");
-        // Panic-safe restore on every exit path (early return, caught panic,
-        // or normal end); see platform::paths::tests::EnvVarGuard.
-        let env_guard = crate::platform::paths::tests::EnvVarGuard::capture(&[
+        let ledger = TestDir::new("env-ledger");
+        let exec = TestDir::new("env-exec");
+        exec.write("a.txt", "0\n");
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        let repo = repo_dir(ledger.path());
+
+        // 直接断言剥离契约（Command::get_envs），不写进程全局环境：进程级
+        // set_var 会与并发的 git 子进程测试互踩（issue #492 的间歇性全量失败）。
+        // 剥离键清单的完整性由 platform::process 的测试锚定。
+        let command = isolated_git_command();
+        let env: Vec<(&std::ffi::OsStr, Option<&std::ffi::OsStr>)> = command.get_envs().collect();
+        for key in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
             "GIT_INDEX_FILE",
             "GIT_OBJECT_DIRECTORY",
-        ]);
-        // SAFETY: ENV_LOCK 序列化进程环境写（crate 级唯一约定）；影子 git 调用
-        // 自身剥离 GIT_*，并发测试的 git 子进程同样走隔离命令，不受本变量影响。
-        unsafe {
-            std::env::set_var("GIT_INDEX_FILE", bogus.path().join("index"));
-            std::env::set_var("GIT_OBJECT_DIRECTORY", bogus.path().join("objects"));
-        }
-        let result = std::panic::catch_unwind(|| {
-            let ledger = TestDir::new("env-ledger");
-            let exec = TestDir::new("env-exec");
-            exec.write("a.txt", "0\n");
-            create_checkpoint(
-                ledger.path(),
-                exec.path(),
-                Some(1),
-                CheckpointKind::Turn,
-                "t1",
-            )
-            .unwrap();
-            // 对象与索引都落在影子仓库，bogus 目录保持空。
-            let repo = repo_dir(ledger.path());
-            let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
-            assert!(tracked.lines().any(|line| line == "a.txt"));
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_COMMON_DIR",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_PARAMETERS",
+            // 影子仓库的提交身份由调用方显式 -c 提供，宿主身份变量同样不得泄漏。
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+        ] {
             assert!(
-                !bogus.path().join("index").exists() && !bogus.path().join("objects").exists(),
-                "GIT_INDEX_FILE/GIT_OBJECT_DIRECTORY 必须被隔离"
+                matches!(
+                    env.iter()
+                        .find(|(name, _)| name == &std::ffi::OsStr::new(key)),
+                    Some((_, None))
+                ),
+                "{key} 必须被 env_remove 剥离"
             );
-        });
-        // Restore before unwrapping the result, so the original environment
-        // is back even when the unwrapped panic propagates; then assert the
-        // restoration is complete.
-        drop(env_guard);
+        }
         assert_eq!(
-            std::env::var_os("GIT_INDEX_FILE"),
-            prior_index,
-            "GIT_INDEX_FILE must be restored to its pre-test state"
+            env.iter()
+                .find(|(name, _)| name == &std::ffi::OsStr::new("GIT_CONFIG_GLOBAL"))
+                .and_then(|(_, value)| *value),
+            Some(std::ffi::OsStr::new(crate::platform::os::null_device())),
+            "GIT_CONFIG_GLOBAL 必须被重定向到 null device"
         );
         assert_eq!(
-            std::env::var_os("GIT_OBJECT_DIRECTORY"),
-            prior_objects,
-            "GIT_OBJECT_DIRECTORY must be restored to its pre-test state"
+            env.iter()
+                .find(|(name, _)| name == &std::ffi::OsStr::new("GIT_CONFIG_NOSYSTEM"))
+                .and_then(|(_, value)| *value),
+            Some(std::ffi::OsStr::new("1")),
+            "GIT_CONFIG_NOSYSTEM 必须钉死"
         );
-        result.unwrap();
+        // get_envs() 只含显式 set/remove 的条目（继承变量不出现），因此这里
+        // 实际约束的是不得显式增删任何非 GIT_* 条目。
+        assert!(
+            env.iter()
+                .all(|(name, _)| name.as_encoded_bytes().starts_with(b"GIT_")),
+            "不得显式增删任何非 GIT_* 条目"
+        );
+
+        // 冒烟验证：宿主环境下影子仓库的 git 操作照常成功且 a.txt 被跟踪。
+        // 防回归由上面的 get_envs 契约断言承担；本测试不写进程环境，因此不再
+        // 保留旧版 set_var 机制中指向 bogus 目录的断言。
+        let output = isolated_git_command()
+            .arg(format!("--git-dir={}", repo.display()))
+            .arg(format!("--work-tree={}", exec.path().display()))
+            .arg("ls-files")
+            .output()
+            .expect("spawn git");
+        assert!(
+            output.status.success(),
+            "git stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let tracked = String::from_utf8_lossy(&output.stdout);
+        assert!(tracked.lines().any(|line| line == "a.txt"));
     }
 }
