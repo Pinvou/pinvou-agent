@@ -1437,6 +1437,18 @@ impl TurnLifecycle {
             closing: state.terminal_closing,
         });
         if state.submitted && state.turn_id.is_none() && state.active {
+            if state.submission_id.is_none() {
+                // A replay armed without a submission id can never be
+                // delivered: take_pending_cancel matches only the armed id
+                // against the arriving TurnStarted echo, and every runtime
+                // self-start echoes None. All host-submitted op paths mint
+                // an id today; if one ever stops doing so, this warning is
+                // the loud signal instead of a silently dead stop button
+                // (issue #254).
+                eprintln!(
+                    "[turn_lifecycle] pending cancel armed without a submission id; the stop replay can never be delivered"
+                );
+            }
             state.pending_cancel = Some((epoch, mode, state.submission_id.clone()));
         }
         // 持锁执行同步取消：reserve_turn 需要同一把 state 锁，无法在
@@ -1463,7 +1475,11 @@ impl TurnLifecycle {
     /// 宿主提交轮的 `TurnStarted` 随后到达并完成重放（issue #254 复审）。
     ///
     /// 不匹配时不消费也不清除：pending 仍由 epoch 变化（下一轮 TurnStarted）
-    /// 与 reserve/finish 的整体清空兜底，不会跨轮泄漏。
+    /// 不匹配时不消费也不清除：pending 保持 armed 但对后续事件永不匹配，
+    /// 由 reserve 的整体清空（epoch 变化处）或下一次 arm 覆盖兜底，不会
+    /// 跨轮泄漏。armed 而无记录 id 的 replay 对任何回显（含 `None`）都
+    /// 无法匹配、永远无法送达——所有宿主提交路径都必须携带 submission
+    /// id，arm 处对此有显式告警（见 [`TurnLifecycle::arm_pending_cancel_and_cancel`]）。
     pub(crate) fn take_pending_cancel(
         &self,
         current_epoch: u64,
@@ -2572,6 +2588,35 @@ mod turn_lifecycle_tests {
         );
 
         // 清理：结束当前 turn。
+        assert!(lifecycle.finish_once(|| {}).is_some());
+    }
+
+    #[test]
+    fn pending_cancel_armed_without_submission_id_is_never_consumed() {
+        // 钉死 None-arm 陷阱：arm 时 submission_id 为 None 的 replay 对任何
+        // 回显都不可消费——连 None 回显也不行（否则 #254 的自启轮超车窗口
+        // 会重新打开）。所有宿主提交路径今天都铸造 id，该状态不可达；一旦
+        // 未来某条路径漏铸，arm 处的告警会立即发声，此处锁定其退化行为：
+        // 停止不再误伤（不 fire 任何 token），只是不再送达。
+        let lifecycle = Arc::new(TurnLifecycle::default());
+        lifecycle.on_submitted(None);
+        let epoch = lifecycle.current_turn_generation().expect("active epoch");
+        lifecycle.arm_pending_cancel_and_cancel(
+            epoch,
+            deepseek_tui::core::engine::CancelMode::StopDropInbox,
+            |_identity: Option<TurnIdentity>| {},
+        );
+        assert!(
+            lifecycle.take_pending_cancel(epoch, None).is_none(),
+            "a None-armed replay must never be consumed, not even by a None echo"
+        );
+        assert!(
+            lifecycle
+                .take_pending_cancel(epoch, Some("sub-other-turn"))
+                .is_none(),
+            "a None-armed replay must not match a foreign echo"
+        );
+        // 收尾：结束当前 turn（pending 由 reserve 的整体清空兜底，不悬挂）。
         assert!(lifecycle.finish_once(|| {}).is_some());
     }
 
