@@ -1136,13 +1136,14 @@ fn apply_skills(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, C
     let connected = cli_connected(spec).unwrap_or(false);
     let visible = connected && !is_disabled(kind);
     if visible {
-        pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(spec.id)
-            .map_err(|error| {
+        pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(spec.id).map_err(
+            |error| {
                 CliError::failed(format!(
                     "connectors {}: deny-all scope sync failed: {error}",
                     spec.id
                 ))
-            })?;
+            },
+        )?;
     }
     let human = format!(
         "{} skills should show: {}\nconnected: {}\nskill unpack: requires the desktop app (embedded bundle)\nruleset refresh: requires the GUI engine pool",
