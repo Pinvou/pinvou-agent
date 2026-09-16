@@ -582,13 +582,16 @@ async fn run_turn(
             }
             // Persist an explicit Plan request through the GUI's per-session
             // lane, so reopening the session restores its own last mode
-            // instead of resolving the unbound default (Yolo). Best-effort,
-            // mirroring the GUI command: the in-run mode is already applied
-            // via the send op; only the sidecar write is logged on failure.
+            // instead of resolving the unbound default (Yolo). The failure is
+            // fatal: the in-run mode is already applied via the send op, but
+            // reporting success while the session would reopen in Yolo is the
+            // unsafe direction of divergence. Failing here counts as setup —
+            // the turn never started, so the stub cleanup removes the prepared
+            // session, exactly like the bind failure above.
             if matches!(request.mode, Some(AgenticTaskMode::Plan)) {
-                if let Err(error) = store.set_mode(session_id, SerializableMode::Plan) {
-                    eprintln!("[pinvou agent run] persisting session mode: {error:#}");
-                }
+                store
+                    .set_mode(session_id, SerializableMode::Plan)
+                    .context("persist session mode")?;
             }
         }
         let content = prompt_with_attachments(store, session_id, request).await?;
