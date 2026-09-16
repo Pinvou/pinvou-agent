@@ -2182,6 +2182,27 @@
         });
       }
     }
+    // Replay-time terminal ratchet (parity with the codex native lane): a
+    // tool_use that never got a matching tool_result in the persisted
+    // transcript is an interrupted in-flight call — it can never complete
+    // after reload, so settle it as failed instead of leaving an eternal
+    // "running" card (a live spawn row would then pulse forever through the
+    // swarm aggregation). Skipped while the session is mid-turn: pending
+    // cards then belong to the live turn and are settled by its own events;
+    // background shells keep running across turns and are excluded; so are
+    // synthetic shell-snapshot cards ("shell-task:" ids never pair with a
+    // tool_use id, and their job may still be running — the terminal poll
+    // settles them itself from the snapshot).
+    if (!state.busy) {
+      for (const item of state.chatItems) {
+        const unsettled = item && item.type === "tool" && item.toolId && item.background !== true
+          && item.shellSnapshot !== true
+          && (item.state === "pending" || item.state === "running") && !resultById[item.toolId];
+        if (!unsettled) continue;
+        item.success = false;
+        item.state = "failed";
+      }
+    }
     emitPersonaAt(state.messages.length, true); // 最后一条消息之后发生的卡牌事件(末尾加持/卸下)
   }
 

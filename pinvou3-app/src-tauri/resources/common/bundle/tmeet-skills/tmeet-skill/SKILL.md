@@ -1,7 +1,7 @@
 ---
 name: tmeet-skill
-version: 1.0.15
-description: "何时用：用户明确要通过命令行操作腾讯会议（tmeet），或 Agent 遇到工具缺失/调用失败/能力不足想反馈平台时。OAuth 登录/登出/状态、会议管理（创建/更新/取消/查询/搜索/受邀者）、录制管理（列表/播放地址/智能纪要/转写/权限申请）、会议报告（参会人/等候室/导出明细/异步任务）、通讯录（仅限会议邀请/呼叫入会前置解析，严禁单独查人）、会中控制（呼叫/踢出/等候室）、问题排查。泛指需求默认走本地工具。"
+version: 1.0.18
+description: "何时用：用户明确要通过命令行操作腾讯会议（tmeet），或 Agent 遇到工具缺失/调用失败/能力不足想反馈平台时。OAuth 登录/登出/状态、会议管理（创建/更新/取消/查询/搜索/受邀者）、录制管理（列表/播放地址/智能纪要/转写/权限申请）、元宝纪要（按关键词/时间搜索、稳态/瞬态详情）、会议报告（参会人/等候室/导出明细/异步任务）、通讯录（仅限会议邀请/呼叫入会前置解析，严禁单独查人）、会中控制（呼叫/踢出/等候室）、CLI 应用配置、实时事件订阅、问题排查。泛指需求默认走本地工具。"
 metadata:
   requires:
     bins: ["tmeet"]
@@ -31,13 +31,15 @@ tmeet auth logout
 tmeet auth status
 ```
 
-> **注意**：除 `auth login`、`auth status`、`tshoot log`（不带 `--upload`）外，所有命令都需要先完成登录。未登录时命令会提示 `user config is empty`。
+> **注意**：除 `auth login`、`auth status`、`tshoot log`（不带 `--upload`）与 `event list` / `event schema` / `event status` / `event stop` 外，所有命令都需要先完成登录。未登录时命令会提示 `user config is empty`。
 
 > **注意**：`auth login` 是**阻塞命令**——执行后会先输出授权 URL，然后**阻塞等待最多300s**用户在浏览器完成 OAuth 授权。**必须前台运行**：前台运行保持进程与终端连接，OAuth 回调能正常将凭证写入本地。**不要**用后台方式（`&`）运行——后台进程脱离控制终端会导致凭证写入失败。
  
 > **注意**：品悟运行环境始终可访问系统默认浏览器（`auth login` 走 `--no-browser` 输出授权 URL 后由用户在浏览器完成授权）。若本技能被用于其他无默认浏览器的 Agent 环境（如 Hermes），请**不要**尝试执行 `tmeet auth login` 命令，而是直接告知用户：「请在终端中手动执行 `tmeet auth login` 完成登录授权，获取授权 URL 后在浏览器中打开完成授权。」
 
 > **注意**：`TMEET_AGENT` 和 `TMEET_MODEL` 遥测环境变量由品悟宿主统一注入（值固定为 `Pinvou`），模型**不需要也不要自行设置或修改**。仅当本技能被用于品悟之外的 Agent 环境且宿主未注入时，才将当前使用的 agent 类型和模型名称分别写入这两个环境变量。
+
+> **注意（强制）**：每次新会话首轮、或本轮对话中 LLM 模型发生切换时，必须先静默执行一次 `python3 ./scripts/agent_init.py --agent "<当前 Agent>" --model "<当前模型>"`（不询问用户、失败即忽略、同一组合不重复调用），再执行任何 `tmeet` 命令。
 
 ## 命令总览与详情索引
 
@@ -86,9 +88,22 @@ tmeet
 │   ├── call                      # 呼叫成员入会（会中邀请呼叫）
 │   ├── kick                      # 踢出会议成员（会中踢人）
 │   └── waiting-room              # 等候室管理（移入会议/移回等候室/移出踢出）
-└── tshoot                        # 问题排查与反馈 → [references/tmeet-tshoot.md](references/tmeet-tshoot.md)
-    ├── log                       # 导出本地日志（支持按时间范围过滤，可选 --upload 上传至服务器）
-    └── feedback                  # 反馈工具缺失/失败/能力不足等问题至平台（Agent 自助上报）
+├── minutes                       # 元宝纪要 → [references/tmeet-minutes.md](references/tmeet-minutes.md)
+│   ├── search                    # 按关键词/时间搜索元宝纪要
+│   └── get                       # 查询元宝纪要详情（稳态纪要/滚动瞬态纪要）
+├── tshoot                        # 问题排查与反馈 → [references/tmeet-tshoot.md](references/tmeet-tshoot.md)
+│   ├── log                       # 导出本地日志（支持按时间范围过滤，可选 --upload 上传至服务器）
+│   └── feedback                  # 反馈工具缺失/失败/能力不足等问题至平台（Agent 自助上报）
+├── app                           # 当前用户自己的 CLI 应用信息管理 → [references/tmeet-app.md](references/tmeet-app.md)
+│   ├── get                       # 查询当前 CLI 应用配置（应用名称/主页/打开方式）
+│   └── set                       # 设置 CLI 应用配置：--homepage 控制会中是否下发（空值 = 不下发），--sdk-name 修改应用名称，--layout-style 修改会中打开方式
+└── event                         # 事件订阅 → [references/tmeet-event.md](references/tmeet-event.md)
+    ├── list                      # 列出可订阅的 EventKey（不依赖登录）
+    ├── schema                    # 查看 EventKey 的 params/payload schema 及 jq_root_path（不依赖登录）
+    ├── consume                   # 订阅事件并按 NDJSON 流式输出（需登录；批处理/常驻两种模式）
+    ├── status                    # 查看本机 bus 守护进程状态（不依赖登录）
+    └── stop                      # 停止本机 bus 守护进程（不依赖登录；--force 为写操作，需二次确认）
+
 ```
 
 ## 查询命令选择准则
@@ -101,6 +116,19 @@ tmeet
 | **已知会议号 / 会议 ID** | `meeting get` |
 | **包含关键词**（会议主题、创建人、备注等），无论是否同时带时间范围 | `search` 命令 |
 
+> **⚠️ 上表仅适用于「查会议本身」。若用户要的是「纪要 / 总结 / 会议要点 / 待办 / 会上讲过什么」，
+> 先按下表选链路，不要套用上表：**
+>
+> | 用户要什么 | 走哪条链路 |
+> |---|---|
+> | 纪要 / 总结 / 要点 / 待办（**AI 加工后的内容**） | 先判录制权限：有权限 → `record smart-minutes`；无权限 → `minutes get` / `minutes search`（详见「元宝纪要查询」） |
+> | 发言原话 / 逐字稿 / 谁说了哪句 | `record transcript-*`（录制链路，需权限） |
+> | 会议本身（时间 / 主题 / 参会人 / 会议号） | `meeting list` / `list-ended` / `search` |
+>
+> **「按时间找纪要」应走 `minutes search --start/--end`，不是 `meeting list-ended`**
+> —— `minutes search` 原生支持时间范围检索，一次即可返回多场纪要；
+> 用 `meeting list-ended` 再逐场取纪要会造成 N+1 次调用。
+
 ### 会议查询
 
 - **仅时间** → 使用 `tmeet meeting list`（待开始/进行中）或 `tmeet meeting list-ended`（已结束）
@@ -110,6 +138,53 @@ tmeet
 ### 录制查询
 
 > **CRITICAL — 涉及录制/回放/转写查询前，MUST 先用 `read` 工具读取 [`references/tmeet-record.md`](references/tmeet-record.md)**，其「录制查询路由总则」定义了 `meeting get` / `meeting search` / `meeting list-ended` / `record list` / `record search` / `record transcript-search` 的分流规则与 `permission_status` 权限判断。录制查询涉及会议级/录制级两套入口、无权限录制、内容级搜索、单文件内定位等多层级，路由复杂，**不读将导致命令选择、录制产物定位、权限边界判断错误，不得仅凭本节直接决策。**
+
+> **⚠️ 本条不含「纪要查询」**：纪要类请求（含跨会议搜纪要内容）的路由**一律按下方「元宝纪要查询」节执行，该节自包含、无需先读本文档**。
+> 本条的「内容级搜索」指**转写原文检索**（用户要发言原话/逐字稿），不含元宝纪要文本检索。
+> 若「元宝纪要查询」节的第 ② 类要求同时搜转写（`record search --query-field transcript_content`），可直接执行该一条命令，无需为此先读本文档。
+
+### 元宝纪要查询
+
+**本节自包含 —— 路由决策直接按本节执行，不需要先读 reference。**
+（仅当需要具体参数/响应字段时再读 [`references/tmeet-minutes.md`](references/tmeet-minutes.md)）
+
+腾讯会议一场会议可能产生两类独立纪要：**元宝纪要**（基于会中 ASR、参会者人人可取无需权限、无逐字稿）、**录制纪要**（基于录制文件、创建者所有、需权限、有逐字稿）。**不得仅凭命令名字面匹配。**
+
+**第一步：先判请求属于哪一类**
+
+| 类型 | 特征 | 路由 |
+|---|---|---|
+| **① 取某场会的纪要** | 用户给了会议号/ID/主题/时间，**能定位到具体会议** | 走下方「① 已知会议」 |
+| **② 跨会议搜内容** | 用户只记得「会上讲过 X」，**不知是哪场** | 走下方「② 跨会议检索」 |
+
+**① 已知会议 —— 权限决定链路**
+
+先 `meeting get` 拿 `permission_status`（顺带返回，零额外调用成本）：
+
+- `can_view` → 录制纪要 `record smart-minutes`（内容更全，含逐字稿）
+- `can_apply` / `closed` / 无录制 → 元宝纪要 `minutes get`
+- 录制侧取不到内容时（权限被拒/文件异常）→ **降级 `minutes get`**，并告知用户实际用的是元宝纪要
+
+**② 跨会议检索 —— 两条都搜，不能只搜一条**
+
+此类请求**无法先查权限**（还不知道是哪些会），因此：
+
+- `minutes search --query`（搜元宝纪要文本：概览/要点/待办/滚动总结）
+- `record search --query-field transcript_content`（搜录制转写原文）
+- **两条都要执行**，按会议去重（同一会议多个录制文件只算一场），**每条标注来源**
+
+> ⚠️ **一条搜空 ≠ 内容不存在，必须双向兜底**：
+> 元宝纪要是 AI 总结，**细节（具体数字、某人某句、一次性提及）常被概括掉，但逐字稿里可能有**；
+> 反之转写侧无果时，元宝的概览/待办里也可能有归纳后的表述。
+> **两条都搜完仍无结果，才可告知用户「未找到」**，并说明已检索范围（元宝纪要文本 + 录制转写原文）
+> 以及是否存在无权限的录制未能覆盖。
+
+**通用规则（两类都适用）**
+
+- **用户明确指定纪要类型时以用户为准**，不再按上述判据推断。
+- 要「原话 / 逐字稿 / 谁说了哪句」→ `record transcript-*`；无权限则降级元宝 `short_summaries` 并**标注「非原话 / AI 加工版」**。
+- 用户要求「准确 / 原始 / 不要 AI 编的」→ 元宝纪要本身即 AI 产物，**不满足**该要求；须走 `record transcript-*`，无权限时**先询问用户是否接受元宝内容**，不得擅自充当原始材料。
+- 双诉求（同时要「纪要 + 原话」）→ **两条链路并取，不是二选一**；一侧取不到时先交付另一侧，再说明原因与申请入口。
 
 ### 使用准则
 
@@ -189,6 +264,8 @@ tmeet
 | `json`（默认） | 单行紧凑 JSON，体积小、便于管道传递 | 模型解析、脚本处理、`jq` 过滤 |
 | `json-pretty` | 多行缩进 JSON，可读性强 | 需要将原始结果直接呈现给用户阅读时 |
 
+> **例外**：`event` 子命令族（`event list` / `event schema` / `event consume` / `event status` / `event stop`）输出的是 **bare JSON**，**不带 `{trace_id, message, data}` 信封**——例如 `event consume` 每行 NDJSON 形如 `{event, trace_id, payload}`，`event list` 直接是 `[{...}, ...]`。具体形态详见 [references/tmeet-event.md](references/tmeet-event.md)。
+
 **使用示例**：
 
 ```bash
@@ -225,6 +302,7 @@ tmeet record list --meeting-id 123456789 --compact --format json-pretty
 > **使用准则**：
 > - **查询类命令优先启用**：模型在调用查询/读取类命令时，**默认追加 `--compact`** 以降低上下文占用；
 > - **何时不使用**：当用户明确要求"完整结果"、"原始字段"或需要某个非必要字段时，**不要**使用 `--compact`。
+> - **`event` 子命令族不适用**：`event list` / `event schema` / `event consume` / `event status` / `event stop` 的输出**不经过 compact 中间件**，加 `--compact` 不会有任何精简效果。需要精简事件输出，请改用 `event consume --jq` 做投影。
 
 ### 分页
 
@@ -316,3 +394,5 @@ Agent 应识别以下 5 种场景之一并触发反馈：`tool_not_found`（工�
 | `user config is empty` | 未登录 | 执行 `tmeet auth login` |
 | `--start format error` | 时间格式不合法（如缺少时区） | 改用 `2026-03-12T14:00:00+08:00` 格式 |
 | `user has been initialized` | 已登录，重复执行 login | 直接使用，或先 logout 再 login |
+| 错误码 `500284` / `该功能暂不可使用` | 当前用户无该功能使用权限（可能未灰度、商业化权益不足等） | **严禁重试**（重试无意义，权限问题非临时故障）；如实告知用户「该功能当前账号暂不可使用，可能因未开通灰度或商业化权益不足，具体解释所有权归腾讯会议所有」，不得自行推测具体原因或承诺开通方式 |
+| `event consume` 相关错误（ready 标记不出现 / 退出码 1 / `event stop` 返回 `refused` 等） | — | 见 [`references/tmeet-event.md`](references/tmeet-event.md) «典型故障速查» |

@@ -10,12 +10,13 @@ import { Check, Layers, Search, X } from '../../components/icons.jsx';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { useDialogFocusRestore } from '../../hooks/useDialogFocusRestore.js';
 import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap.js';
-import { projectCoversPath, rootPath } from './projectGrouping.js';
+import { needsAddFolderConfirm, rootPath } from './projectGrouping.js';
 
 const MoveToProjectDialog = ({
   session,
   projects,
   currentProjectId,
+  presetProjectId,
   t,
   busy,
   restoreTargetRef,
@@ -23,7 +24,16 @@ const MoveToProjectDialog = ({
   onMove,
 }) => {
   const [query, setQuery] = useState('');
-  const [pendingMove, setPendingMove] = useState(null);
+  // 拖拽落点直达:拖到 root 未覆盖会话目录的项目上时,直接以该目标预置
+  // "仅移动"确认(刻意 move-only,绝不带 add_workspace_root);初始化器
+  // 即可(对话框每次打开都重新挂载)。
+  const [pendingMove, setPendingMove] = useState(() => {
+    if (!presetProjectId || !session) return null;
+    const target = (Array.isArray(projects) ? projects.filter(Boolean) : [])
+      .find(project => project.id === presetProjectId);
+    if (!target) return null;
+    return needsAddFolderConfirm(session, target) ? target : null;
+  });
   // onClose is an inline arrow at the call site; keeping it in a ref keeps the
   // key listeners subscribed once instead of per render.
   const onCloseRef = useRef(onClose);
@@ -106,10 +116,11 @@ const MoveToProjectDialog = ({
 
   if (!session || typeof document === 'undefined') return null;
 
+  // 显示用:确认框里向用户展示的目录(侧栏投影),实际添加以命令返回为准。
   const workspacePath = session.workspaceKind === 'project' ? String(session.workspacePath || '') : '';
   const choose = (project) => {
     if (busy || project.id === currentProjectId) return;
-    if (workspacePath && !projectCoversPath(project, workspacePath)) {
+    if (needsAddFolderConfirm(session, project)) {
       setPendingMove(project);
       return;
     }

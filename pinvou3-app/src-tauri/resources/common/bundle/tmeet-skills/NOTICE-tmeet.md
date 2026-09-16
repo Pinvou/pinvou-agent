@@ -1,8 +1,9 @@
 # 第三方组件声明 — 腾讯会议官方技能(tmeet-skill)
 
-本目录下的 `tmeet-skill/`(SKILL.md + references/)同步自腾讯会议官方开源仓库
+本目录下的 `tmeet-skill/`(SKILL.md + references/ + scripts/)同步自腾讯会议官方开源仓库
 **TencentCloud/tencentmeeting-cli**(https://github.com/TencentCloud/tencentmeeting-cli)
-tag **v1.0.15** 的 `skills/tmeet-skill/`,按其 **MIT License** 分发。
+tag **v1.0.18** 的 `skills/tmeet-skill/`,按其 **MIT License** 分发。
+上次同步为 tag v1.0.15(2026-09-13 前基线),本次(2026-09-15)三方合并至 v1.0.18。
 
 上游仓库根目录 `LICENSE` 为腾讯版权声明的 MIT 许可;`skills/tmeet-skill/` 目录内
 无单独 LICENSE 文件,故此处内联保留许可证文本:
@@ -43,15 +44,17 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
   不要从 npm tgz 里找 skills),更新方式为按上游对应 tag 同步
   `skills/tmeet-skill/` 到本目录,保留本声明。具体操作:上游仓库
   TencentCloud/tencentmeeting-cli 的 tag 带 `v` 前缀,与品悟钉扎版本对应
-  (当前 v1.0.15),取
-  `https://github.com/TencentCloud/tencentmeeting-cli/archive/refs/tags/v1.0.15.tar.gz`
-  或 `git clone && git checkout v1.0.15` 后,以其中 `skills/tmeet-skill/`
+  (当前技能基线 v1.0.18;注意 npm CLI 钉扎由 `tmeet.rs` 单独管理,见下条),
+  取
+  `https://github.com/TencentCloud/tencentmeeting-cli/archive/refs/tags/v1.0.18.tar.gz`
+  或 `git clone && git checkout v1.0.18` 后,以其中 `skills/tmeet-skill/`
   整目录为三方合并基线,再按下文登记逐条重放。
 - 品悟按用户连接状态门控该 skill:仅在用户已连接 `tmeet` 且未禁用腾讯会议技能时
   释放到运行时技能目录。
 - `tmeet` CLI(`@tencentcloud/tmeet`)不随包内置,由
   `pinvou3-app/src-tauri/src/features/connectors/tmeet.rs` 的 npm 钉扎
-  (`TMEET_NPM_SPEC`,当前 `@tencentcloud/tmeet@1.0.15`)在线安装;SKILL.md 的
+  (`TMEET_NPM_SPEC`,随本次同步已升至 `@tencentcloud/tmeet@1.0.18`,与技能
+  基线一致)在线安装;SKILL.md 的
   「安装与初始化」节已按下方登记第 4 条改写为品悟代管口径,上游的
   `npm install -g @tencentcloud/tmeet@latest` 教学不再出现在技能正文,实际版本
   以 Rust 层钉扎为准。
@@ -188,11 +191,54 @@ create 节 `--invitees` 参数行同步补 openid 来源指引）；`tmeet-meeti
 create 节警示链接文字补「」、SKILL.md 会议查询路由行补「录制查询路由总则」
 链接；本声明首段第 5/6 条范围句修正（auth.md 实为两处）。
 
-本轮不改动 SKILL.md frontmatter `version: 1.0.15`：该版本号钉扎上游 tag
-v1.0.15 基线，与 `tmeet.rs` 的 `TMEET_NPM_SPEC`（`@tencentcloud/tmeet@1.0.15`）
-对应，此前第 1-6 轮本地修改均未 bump 该字段，纯文档修复同样不动。
+## 上游 v1.0.18 同步（2026-09-15，重放基线 = 上游 v1.0.18 + 第 1-19 条）
+
+上游 v1.0.15 → v1.0.18 的技能变更：SKILL.md（frontmatter version/
+description、认证节、命令树新增 `minutes` / `app` / `event` 三个子树、
+新增「元宝纪要查询」自包含路由节、`event` 输出无信封与 `--compact` 不适用
+两个例外说明、常见错误表补 500284 与 event 故障行）、
+`references/tmeet-auth.md`（TMEET_AGENT/TMEET_MODEL 环境变量指引整段替换为
+`scripts/agent_init.py` 强制初始化指引）、`references/tmeet-meeting.md`
+（update 的 `--meeting-type 1` 由「周期性会议必传」收窄为「仅改周期规则或
+子会议时必传」），并新增 `references/tmeet-app.md` / `tmeet-event.md` /
+`tmeet-minutes.md` 与 `scripts/agent_init.py` 四个文件。合并方式与结果：
+
+- 四个新文件原样收录（`scripts/agent_init.py` 写入
+  `TMEET_CLI_CONFIG_DIR`（缺省 `~/.tmeet/`）下的 `agent.json`，含原子写与
+  仅 POSIX chmod 的跨平台保护），逐字节与上游一致。
+- `tmeet-meeting.md` 无冲突（上游改动均在 update 节，第 13/14/18 条本地
+  修改均在 create 节、参数表 invitees 行与常见错误表），第 13/14/18 条
+  按原样重放。
+- `tmeet-auth.md`：第 6 条品悟宿主断言重放；上游 agent_init.py 新指引
+  **原样保留**（两条并存：品悟宿主仍注入 `TMEET_AGENT`/`TMEET_MODEL`，
+  上游新增脚本写 `agent.json`）。**已核实（2026-09-15，按上游 v1.0.18 公开
+  源码 `internal/common/system.go`）**：1.0.18 仍读取这两个环境变量，且
+  **环境变量优先于 `agent.json`**，故品悟注入始终生效，上游脚本写入的
+  agent/model 名不会覆盖品悟遥测；仅余模型执行 `python3 ./scripts/agent_init.py`
+  时 cwd 是否为技能目录一点待冒烟确认（指引明确失败即忽略，最坏为一次
+  静默空操作，遥测仍由 env 兜底）。
+- SKILL.md：第 1-19 条全部重放到上游 v1.0.18 文本上。其中第 1 条
+  description 需重新合并——上游 description 新增了元宝纪要 / CLI 应用 /
+  事件订阅三个命令族，本地按「何时用」契约重写为 251 字符（≤280 上限），
+  三个新命令族均覆盖。第 5 条的免登录例外清单按上游 v1.0.18 补齐
+  `event list` / `event schema` / `event status` / `event stop`（与上游
+  认证节一致）。
+- frontmatter `version` 随基线更新为 `1.0.18`（钉扎上游 tag 基线；与
+  `tmeet.rs` 的 `TMEET_NPM_SPEC` 本次已同步升至 `@tencentcloud/tmeet@1.0.18`,
+  两者一致）。
+- 命令树收口核验（2026-09-15）:本次同步后已对 v1.0.18 全部命令树（含新增
+  `minutes` / `app` / `event` 三域与 `auth login --no-browser`）对照 1.0.18
+  实测 help 逐项复核,与文档一致;登记首段「对照 tmeet 1.0.15 实测 help
+  核验」的历史口径至此收口。
+- 待下版跟进（上游缺陷挂起登记）:上游 v1.0.18 自带矛盾——SKILL.md 命令树
+  `event stop` 行与 `references/tmeet-event.md` 均注明 `--force` 为写操作
+  「需二次确认」,但 SKILL.md「必须二次确认」表漏列 `event stop --force`,
+  与本地已修的第 14/15 条（`meeting create` / `control waiting-room` 补行）
+  同类。本次按宣告的重放范围（第 1-19 条）保留上游原文,不另扩本地分叉
+  （文中另有三处在文提示兜底）;下版 sync 若上游仍未修,按第 14/15 条同款
+  口径补行并登记为新本地修改。
 
 上游其余内容（含 `auth login` 交互式登录教学等）保持上游原样；品悟实际安装
-版本由 `tmeet.rs` 的 `TMEET_NPM_SPEC` 钉扎（`@tencentcloud/tmeet@1.0.15`），
-实际登录由 `auth login --no-browser` 完成（该 flag 在 1.0.15 help 中真实存在），
-文档描述与品悟用法不矛盾。
+版本由 `tmeet.rs` 的 `TMEET_NPM_SPEC` 钉扎（本次同步后即为
+`@tencentcloud/tmeet@1.0.18`），实际登录由 `auth login --no-browser` 完成
+（该 flag 在 1.0.15/1.0.18 help 中均存在），文档描述与品悟用法不矛盾。

@@ -74,6 +74,8 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       const canSwitchModels = can('sessionModelSwitch');
       // 多智能体模式 = 模型列表下方的会话级开关（ADR-0006）。状态权威在
       // 后端 mode_state，这里只读 bs 镜像；翻转后 bridge 回写权威状态。
+      // 可用性由调用方以 multiAgentAvailable 显式传入（定时会话在后端被
+      // swarm_mode_available 排除：引擎永远按普通配置装配，开关必须隐藏）。
       const canMultiAgent = can('multiAgent') && multiAgentAvailableProp !== false;
       const multiAgentOn = multiAgentEnabledProp === undefined
         ? !!(bs && bs.modeState && bs.modeState.multiAgent)

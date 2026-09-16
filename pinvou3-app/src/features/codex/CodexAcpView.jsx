@@ -9,6 +9,7 @@ import { AcpAgentLogo } from './AcpAgentLogo.jsx';
 import { CodexWorkspacePanel } from './CodexWorkspacePanel.jsx';
 import { SubagentTranscriptPanel } from '../multiagent/SubagentTranscriptPanel.jsx';
 import { AuxChatPanel } from '../aux-chat/AuxChatPanel.jsx';
+import { RunningAgentsOverlay } from '../multiagent/RunningAgentsOverlay.jsx';
 import {
   refreshAcpAgentCatalog,
   startSerialStatusPolling,
@@ -3393,6 +3394,14 @@ export function CodexAcpView({
             />
           )}
           {busy && <ConversationStatusBadge status="running" copy={t.uiConversation} />}
+          {isNativeAgent && nativeMultiAgentAvailable && activeId && (
+            <RunningAgentsOverlay
+              sessionId={activeId}
+              theme={theme}
+              t={t}
+              swarmOn={nativeMultiAgentEnabled}
+            />
+          )}
           {activeSession && bridge.available && bridge.auxChat && (
             <button
               type="button"
@@ -3582,6 +3591,14 @@ export function CodexAcpView({
                               <ToolCard
                                 item={{ ...item.legacyItem, sessionId: activeId }}
                                 sessionId={activeId}
+                                // The codex native host has no subagent list
+                                // view: its `pinvou:open-subagent` handler only
+                                // accepts a concrete agentId, so the null-
+                                // agentId count-row click would be a no-op. The
+                                // transcript entry point is the header-mounted
+                                // RunningAgentsOverlay instead, whose entries
+                                // carry a concrete agentId the handler accepts.
+                                spawnRowInteractive={false}
                                 theme={theme}
                                 t={t}
                                 variant="timeline"

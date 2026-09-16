@@ -4,30 +4,30 @@
   "artifacts": [
     {
       "name": "dws",
-      "version": "1.0.58",
+      "version": "1.0.61",
       "license": "Apache-2.0",
       "source": "https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli",
-      "url": "https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/v1.0.58/dws-windows-amd64.zip",
-      "archiveSha256": "b8c50d9111115eafdb466978f1dd8f9421bcc2d5fac848023108353dc5a236cb",
-      "binarySha256": "fc9ef0000ab48be1b30849e272e32bfdc724fefcb5d1628a76dbc5ade1e790f3"
+      "url": "https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/v1.0.61/dws-windows-amd64.zip",
+      "archiveSha256": "defdcf217bddfb74254c6eeaff408f8b23dddb44729cd997b6d85aa6ce7727a0",
+      "binarySha256": "134111858af3ed250d294c9ed9c4ccfb6c46dd70df3bc5cefe78bd8f06ca90ef"
     },
     {
       "name": "lark-cli",
-      "version": "1.0.87",
+      "version": "1.0.95",
       "license": "MIT",
       "source": "https://github.com/larksuite/cli",
-      "url": "https://github.com/larksuite/cli/releases/download/v1.0.87/lark-cli-1.0.87-windows-amd64.zip",
-      "archiveSha256": "5cb039b20502d02d93f2829f82dd5a30eae8ed7674c1c5a229a7f93563526518",
-      "binarySha256": "527a2ed0b3ff161bc56e0b79ae829198389ccfa5db82be84258c8d60b852fed8"
+      "url": "https://github.com/larksuite/cli/releases/download/v1.0.95/lark-cli-1.0.95-windows-amd64.zip",
+      "archiveSha256": "f2d5c3d6316b19ceec0996871ca4cff89541b82ed0d90220b3643ee0e84890a8",
+      "binarySha256": "403b56ab849b28b4072b46799bd898959dc55382c18d7f4e83cd65f49f570b3f"
     },
     {
       "name": "wecom-cli",
-      "version": "1.1.0",
+      "version": "1.2.1",
       "license": "MIT",
       "source": "https://github.com/WecomTeam/wecom-cli",
-      "url": "https://registry.npmjs.org/@wecom/cli-win32-x64/-/cli-win32-x64-1.1.0.tgz",
-      "archiveSha256": "1e7f24cccdc9d61706a717f8765e114663b3911e11b1e22814dea855ae77d313",
-      "binarySha256": "51cccba7a9f84e1995c0ab284dd664a2f79e9aba0c1ff8782ab9b93540297f1b"
+      "url": "https://registry.npmjs.org/@wecom/cli-win32-x64/-/cli-win32-x64-1.2.1.tgz",
+      "archiveSha256": "457a6676c41f13b3536cf4851c496d1b5a2fff26e4787d86a4ef8b68e3fe679d",
+      "binarySha256": "ea916883a0e4f779dbacaf7fdf99df532b67863062cd1d1bb5a558473e804a89"
     }
   ]
 }

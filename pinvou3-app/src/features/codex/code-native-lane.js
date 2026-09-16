@@ -13,6 +13,7 @@
 // 三语文案在渲染层按 key 组装（与 compactPhase 同一约定）。
 
 import { projectDeepSeekConversation, conversationItemsForMode } from '../conversation/deepseek-conversation.js';
+import { annotateAgentSpawnGroups } from '../multiagent/spawn-aggregation.mjs';
 import { isInternalRuntimeEnvelopeText, isInternalUserMessage } from '../../shared/internal-message.mjs';
 
 export function createNativeLane() {
@@ -635,6 +636,24 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
     case 'chat:done': {
       finalizeReasoning(lane);
       finalizeStream(lane);
+      // Live-path terminal ratchet: a stop or an error mid-tool never
+      // delivers chat:tool_end, so an unpaired tool card (typically an
+      // in-flight `agent` spawn) would stay state "running" forever and the
+      // spawn count row would keep pulsing until the lane is rehydrated —
+      // the replay sweep in hydrateNativeLane only runs on reload. Mirrors
+      // the main lane's chat:done sweep; the background/shellSnapshot
+      // exclusions do not apply because the native lane has no such
+      // synthetic card kinds. Happy-path turns are a no-op (every tool
+      // already settled via tool_end).
+      for (const item of lane.items) {
+        // Aligned with the main lane's chat:done sweep predicate
+        // (chat-events.js): only cards still pending/running are in-flight;
+        // a failed card already settled (e.g. by chat:shell_task_status) must
+        // not be rewritten to done.
+        if (!(item && item.type === 'tool' && (item.state === 'pending' || item.state === 'running'))) continue;
+        item.state = 'done';
+        item.success = item.success === null ? false : item.success;
+      }
       const terminalRecord = recordTurnCompleted(lane, p);
       lane.busy = false;
       lane.thinking = null;
@@ -908,8 +927,11 @@ export function projectNativeLane(lane, sessionId, options = {}) {
   // native lane has no legacy mode and is always filtered as unified -
   // otherwise a terminal-upgraded error would show both the bubble and
   // the timeline error card.
+  // Spawn annotation runs on the projection input, mirroring ChatView:
+  // without it the timeline's ToolCard would render one degenerate
+  // "spawned 1 agent" count row per spawn call.
   return projectDeepSeekConversation({
-    chatItems: conversationItemsForMode(lane ? lane.items : [], true),
+    chatItems: conversationItemsForMode(annotateAgentSpawnGroups(lane ? lane.items : []), true),
     busy: Boolean(lane && lane.busy),
     thinking: lane ? lane.thinking : null,
     tokens: lane ? lane.tokens : null,

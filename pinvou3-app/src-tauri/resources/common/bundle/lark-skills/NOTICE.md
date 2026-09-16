@@ -34,10 +34,11 @@ lark-sheets、lark-im、lark-task、lark-wiki、lark-base。
 
 1. 查钉扎版本:读
    `pinvou3-app/src-tauri/resources/platforms/<os>/<arch>/bundle/connectors/connectors.lock.json`
-   (5 份,任一即可,版本字段一致)中 `name: "lark-cli"` 的 `version`(当前 1.0.87)。
+   (5 份,任一即可,版本字段一致)中 `name: "lark-cli"` 的 `version`(当前 1.0.95)。
 2. 拉上游源:上游 tag 带 `v` 前缀,即
    `https://github.com/larksuite/cli/archive/refs/tags/v<version>.tar.gz`
-   (当前 v1.0.87),解压后取其 `skills/<域>`(上游仓库共 27 个 lark-* 域,
+   (上次基线 v1.0.87,本次 v1.0.95),解压后取其 `skills/<域>`(上游仓库共 28 个 lark-* 域,
+   v1.0.95 新增 lark-meeting,仍未收录;
    品悟只收录上述 9 域;其余域一律「未随包收录」,文档中提及须按「技能未随包
    收录 + CLI 命令直给」口径,不复制其目录)。
 3. 以该 tag 为三方合并基线,按下文登记逐条重放本地修改后,保留本 NOTICE。
@@ -53,6 +54,111 @@ PR #302),不在本目录内,不来自 lark-cli 上游,sync 时不涉及。
 ## Pinvou3 本地修改登记
 
 以下修改为 pinvou3 在上游 skill 基础上的本地分叉。**下次上游 sync 时需逐条重放。**
+
+### 同步记录(2026-09-15 → v1.0.95)
+
+- 基线:v1.0.87 → v1.0.95(上游 2026-09-11 发布)。同步当日 CLI 钉扎仍为
+  1.0.87(connectors.lock.json 不在该次改动范围),技能文档先行对齐;同日
+  连接器升级已把 5 份 connectors.lock.json 的 lark-cli 钉扎升至 1.0.95,
+  技能基线与 CLI 钉扎一致。已核对 v1.0.95
+  相对 v1.0.87 的命令面变化均为文档级(shortcut 重命名别名转正、
+  `--api-version v2` 大面积移除(上游仍残留 2 处,见下方「上游未解决」清单)、
+  新增 +join-event / +transfer /
+  +list-attendees / +messages-edit / +message-read-status 等),未见与
+  钉扎 1.0.87 二进制冲突的硬性命令断言新增;个别「实测」口径(如
+  `+search-event` 默认页大小 20)若与 1.0.87 二进制不符,以本地实测登记为准。
+- **上游结构变化(lark-base 重构,已跟随)**:上游重写 base 域——
+  `formula-field-guide.md` → `lark-base-field-formula.md`、
+  `lookup-field-guide.md` → `lark-base-field-lookup.md`(纯改名)、
+  `role-config.md` → `lark-base-role-config.md`(纯改名)、
+  `lark-base-role-guide.md` → `lark-base-advanced-permission-and-role.md`、
+  `dashboard-block-data-config.md` → `lark-base-dashboard-block-config.md`、
+  `lark-base-workflow-guide.md` → `lark-base-workflow.md`、
+  `lark-base-field-json.md` → `lark-base-field-schema.md`;
+  `lark-base-data-analysis-{sop,cloud,pandas,python-stdlib}.md`、
+  `lark-base-data-query-guide.md` 五篇合并重写为
+  `lark-base-record-query-and-analysis-sop.md`;新增 `lark-base-field-extension.md`
+  (字段插件)、`lark-base-template-center.md`(模板中心)、
+  `lark-base-workflow.md`;lark-base/SKILL.md 全面重写(Block 资源模型,
+  version 1.2.22)。
+- **本地有修改、上游直接删除、无继任者的文件(保守保留,未删)**:
+  `lark-base-cell-value.md`(CellValue 构造 SSOT,含本地 select 单元素数组修正)、
+  `lark-base-record-batch-create.md`、`lark-base-record-upsert.md`
+  (含本地 select 数组形态统一)——上游删除了这些命令的独立文档,但命令本身
+  仍在(+record-batch-create 见 base SKILL.md 示例),本地文件保留作命令级
+  参考,后续 sync 若上游恢复文档需对账。
+- **本地有修改、上游已等价解决(无需再重放,旧登记条目自然失效)**:
+  `sheets +read`/`+find` 别名(上游已全面改为 `+cells-get`/`+cells-search`,
+  `+read` 旧名已删、`+find` 仅作 `+cells-search` 别名保留)、
+  lark-sheets 下拉配色「必须配 --highlight=true」误述(v1.0.95 上游已改为
+  「单独传即生效;--highlight=false 时被忽略」,与本地修正一致)。
+- **本地有修改、上游未解决(本次已重放保留,下次 sync 逐条继续重放;
+  2026-09-15 勘误:以下前两条早前被误记入「已等价解决」,经对上游
+  v1.0.95 实文复核均未解决,特此移出并勘误)**:
+  `--api-version v2` 残留(上游 v1.0.95 仍余 2 处:`lark-calendar/references/lark-calendar-meeting.md`
+  与 `lark-drive/references/lark-drive-workflow-topic-move-collector-resolve-verify.md`,
+  本地 2 处修正继续生效)、
+  lark-calendar `+search-event` 默认页大小(上游 v1.0.95 仍写「默认 30」,
+  本地按实测 20 的修正继续生效)、
+  lark-doc 思维笔记死路路由(v1.0.95 上游仍指 lark-doc-whiteboard,
+  本地修正已重放保留)、lark-drive `drive files patch` 重命名
+  (上游仍用旧聚合式,本地 `drive +update-title` 修正已重放保留)。
+- **lark-shared 结构变化(已跟随)**:上游把 SKILL.md 内容拆分为
+  `references/lark-shared-{config-init,high-risk-approval,identity-and-permissions,
+  output-contract,update-notice}.md` 五篇;本地修改随之迁移——「更新检查」
+  品悟钉扎口径重写落在 `lark-shared-update-notice.md`,SKILL.md 保留本地
+  description 防误用前缀 + `cliHelp` + 「临时文件写 `tmp/`」安全规则。
+- **上游新增文件(已采纳,含未收录域口径处理)**:calendar 的
+  `lark-calendar-{join-event,list-attendees,meeting-relation,transfer}.md`
+  (meeting-relation 内 2 处 `lark-meeting` 断链接本地口径改为 CLI 直连)、
+  im 的 `lark-im-{message-read-status,messages-edit}.md`、shared 五篇(见上)、
+  sheets 的 `lark-sheets-legacy-command-migration.md` 与
+  `scripts/lark_chart_{quality_check,size_advisor,size_rules}.py`、
+  base 五篇(见上)。lark-sheets 既有 6 个 Python 脚本无变化,本地
+  `lark_sheet_read_cli.py` 的 `errors='replace'` 修正原样保留。
+- **重放并保留的本地修改(对照旧登记逐条核对)**:全部 9 域 SKILL.md 的
+  防误用 description 前缀与 version bump、`read` 工具名(canonical `read`)、
+  lark-calendar/lark-task/lark-wiki/lark-base/lark-doc 的未收录域口径
+  (lark-vc/lark-note/lark-minutes/lark-meeting/lark-contact/lark-whiteboard/
+  lark-slides/lark-mindnote → CLI 直连)、品悟钉扎 update 口径、
+  `tmp/` 临时目录规则(lark-sheets 两处「系统临时目录」口径按本地规则改写)、
+  lark-wiki obj_type 分流表、lark-base Wiki URL 直传 `+url-resolve`、
+  formula/lookup 默认选型口径(旧 SKILL.md 心智模型行随上游 base 域重写
+  消失,该口径现由上游 `lark-base-field-formula.md` 原生说明与本地重放的
+  `lark-base-field-lookup.md` 决策树共同承载,无需单独重放)、
+  bot 重试需用户明确同意(base SKILL.md 由
+  上游「身份选择」节等价覆盖)、lark-base-data-query `--search-field`/
+  `--field-id` 旗标写法、lark-base-app `drive +update-title`、
+  filter-condition 日期操作符适用性表、workflow-schema 笔误 4 处 +
+  「workflow 外层字段」表 + client_token、field-lookup 决策树修正、
+  lark-sheets `+find` 隐藏别名注(search-replace.md)、
+  `+history-revert` 补入 high-risk-write 清单、「无 sheet 定位」例外改
+  规则式、`--styles` 的 `freeze` 补齐三处、im 权限表下快捷命令指针
+  (lark-im-scopes.md 保留为本地新增文件)、mget 排障表 contact scope 删除、
+  lark-doc fetch/script/update 三篇 references 级修正、
+  lark-drive comment-location whiteboard 口径。
+- **管道转义修复随上游文件合并迁移(2026-09-15 勘误补登记)**:2026-08-17
+  登记的「表格管道转义 7 处」中 `lark-base-data-analysis-sop.md` 的 4 处,
+  上游已把该篇合并重写为
+  `lark-base-record-query-and-analysis-sop.md`;本次按上游原样采纳继任文件
+  时漏重放该条(4 处单元格代码跨度 `string|null` / `number|null` /
+  `{lng,lat,full_address}|null` 未 `\|` 转义,3 列表格渲染会列破裂),
+  已补转义。下次 sync 若上游仍未修,需在新文件上继续重放本条。
+- **lark-base description 压缩至 280 字符(2026-09-15 补登记)**:上游重写后
+  本地合并版 description 为 305 字符,超 280 软上限;已压缩至 280(收紧
+  「模板中心」「BaseApp」措辞与尾部路由短句,防误用前缀与全部命令族
+  覆盖不变),connector_skills_contract 规则 6 对 lark 域的 ≤280 检查随
+  binsByPack key 修正(PR#302 后 skills/lark- 失配为 lark-skills/lark-)
+  重新生效,后续 sync 超限即测试失败。
+- **契约测试规则 5 路径修复(2026-09-15 补登记,非技能文件)**:规则 5
+  (lark 域裸 `auth login` 扫描)自 PR #302 迁移技能树后同样因旧路径
+  `skills/` 失配静默失效,本次随同步修正为 `lark-skills/`,与规则 6 一并
+  重新生效;规则失配期间无漏网——本次全量重同步已按登记逐文件核对。
+- 全树链接校验:skill 文件间相对链接无悬空(仅本 NOTICE 自身对
+  `../../lark-shared/SKILL.md` 的引用为文档性描述,非链接目标)。
+- **同步后契约修正**:`lark-sheets/references/lark-sheets-chart.md` 三处
+  脚本调用裸 `python` 改 `python3`(connector_skills_contract 要求:宿主
+  环境无裸 python 命令;上游 v1.0.95 原文为裸 python,下次 sync 需重放)。
 
 ### 同步记录(2026-08-16 → v1.0.87)
 
@@ -265,7 +371,9 @@ emit_error(JSON+exit 1)、无裸 except。修复 1 处,下次 sync 需重放:
   适配 1 处一并列入本条(filter-condition 为 v1.0.87 新文件,适配随首次同步带入)。
 - **表格管道转义 7 处(第五/八轮审查引入,2026-08-17 补登记)**:
   `lark-base/references/lark-base-data-analysis-sop.md`(4 处,类型表
-  `string\|null` 等)、`lark-doc/references/lark-doc-script.md`(2 处,
+  `string\|null` 等;**该篇已被上游 v1.0.95 合并重写为
+  `lark-base-record-query-and-analysis-sop.md`,4 处转义已迁移重放,见
+  2026-09-15 同步记录勘误条**)、`lark-doc/references/lark-doc-script.md`(2 处,
   `--as user\|bot` 与 `--format` 枚举)、`lark-im/references/card/components/
   checker.md`(1 处,`pc_display_rule:"always"\|"on_hover"`)——单元格代码跨度内的 `|` 须
   `\|` 转义,否则 GFM 渲染表格列破裂。(2026-08-17 勘误:checker.md 一条示例文

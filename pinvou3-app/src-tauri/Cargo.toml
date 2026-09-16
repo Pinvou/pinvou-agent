@@ -372,10 +372,10 @@ redundant_feature_names = "deny"
 
 # —— Cleared in this PR, kept at warn for one observation cycle before deny ——
 # Every unsafe block requires a SAFETY comment (the edition 2024 migration
-# added many unsafe blocks; the macOS/Linux compile surface is fully
-# annotated). Legacy Windows-only unsafe blocks (~34: PDH/registry FFI etc.)
-# remain unannotated — CI compiles on Linux and never sees them, so the warn
-# guard does not apply to the Windows target; follow-up cleanup PR.
+# added many unsafe blocks). The macOS/Linux compile surface was annotated
+# first; the legacy Windows-only unsafe blocks (PDH/registry/NtDll FFI etc.)
+# are annotated since the issue #491 cleanup, so all three desktop targets
+# pass the gate.
 undocumented_unsafe_blocks = "warn"
 # unwrap/expect in a long-lived desktop process kills the session on panic
 # (baseline: unwrap 6 / expect 38; test code exempt). Production code is

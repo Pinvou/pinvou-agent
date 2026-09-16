@@ -12,19 +12,15 @@ import {
   startTranscriptPolling,
 } from '../src/features/multiagent/runState.mjs';
 import {
-  extractSubagentId,
   fileChangeStat,
   projectSubagentTranscript,
   resolveSubagentIdentity,
   resolveSubagentPresentation,
-  resolveSubagentSpawnResult,
   subagentAncestorIds,
   subagentObjectiveName,
   splitSubagentTitle,
   subagentOrdinalLabel,
   subagentRoleOrdinals,
-  subagentTreeIsDone,
-  visibleSubagentDescendantRows,
   visibleSubagentTreeRows,
   windowSubagentTranscript,
 } from '../src/features/multiagent/subagent-conversation.mjs';
@@ -160,15 +156,14 @@ test('多智能体能力门禁与会话策略契约（multiagent_desktop_scope �
     toolRenderersSource,
     /detail: \{ agentId, sessionId: sessionId \|\| null \}/,
   );
+  // Pin the guard's code shape, not the adjacent comment wording: the intent
+  // is that the host check precedes the agentId check, and that agentId=null
+  // passes (it opens the panel's list state for the swarm count row) while
+  // undefined does not.
   assert.match(
     toolRenderersSource,
-    /if \(typeof window === 'undefined' \|\| !agentId\) return;/,
-    '子智能体面板轮询必须有宿主与 agentId 双守卫',
-  );
-  assert.match(
-    toolRenderersSource,
-    /listSubagentTranscripts\(sid\)/,
-    'tools 侧 transcript 拉取入口不得绕过底座投影',
+    /if \(typeof window === 'undefined'\) return;\s*(?:\/\/[^\n]*\n\s*)*if \(!agentId && agentId !== null\) return;/,
+    'the subagent panel poll must guard on both the host and agentId; agentId=null is allowed to open the panel list state (the swarm count row entry point)',
   );
 });
 test('空白新对话切换多智能体后立即通知界面，且不提前物化会话', async () => {
@@ -299,19 +294,27 @@ test('停止按钮与引擎回收都级联取消子智能体', () => {
 // ── 会话级开关 + 每轮委派提醒（Rust 源结构契约） ─────────────────────────────
 
 test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委派提醒', () => {
-  assert.match(commandSource, /fn delegation_reminder_with_roles\(roles: Vec<String>, limits: &DelegationLimits\)/, 'Work and native Code multi-agent sessions generate the delegation reminder from the same per-turn candidate roster');
-  // Per-turn reminder numbers must come from the session tier (DelegationLimits),
-  // not from hardcoded literals: Work sessions run 4 concurrent / 8 admitted,
-  // native Code sessions 6 / 12 (same constants the engine config installs).
+  // Swarm rework: reminder generation still runs off the same per-turn
+  // candidate roster; the numeric caps lift with the swarm switch.
+  assert.match(commandSource, /fn delegation_reminder_with_roles\(roles: Vec<String>, limits: Option<&DelegationLimits>\)/, 'Work and native Code multi-agent sessions generate the delegation reminder from the same per-turn candidate roster');
+  // Reminder numbers must come from DelegationLimits, not hardcoded literals:
+  // swarm off = the shared 4/8 tier sourced from the bridge constants (the
+  // same values the engine config installs); swarm on = None (caps lifted,
+  // the reminder states no number).
   assert.match(
     commandSource,
-    /pub\(crate\) struct DelegationLimits \{[\s\S]{0,160}pub max_concurrent: usize,[\s\S]{0,160}pub max_admitted: usize,[\s\S]{0,160}\}/,
-    'reminder numbers are carried by DelegationLimits so both tiers can be asserted',
+    /pub\(crate\) struct DelegationLimits \{[\s\S]{0,300}pub max_concurrent: usize,[\s\S]{0,300}pub max_admitted: usize,[\s\S]{0,300}\}/,
+    'reminder numbers are carried by DelegationLimits so both regimes can be asserted',
   );
   assert.match(
     commandSource,
-    /pub\(crate\) fn delegation_limits_for\(pool: &EnginePool, session_id: &str\) -> DelegationLimits \{[\s\S]{0,400}pool\.is_code_session\(session_id\)/,
-    'tier selection must reuse the same is_code_session predicate as the engine config',
+    /pub\(crate\) fn delegation_limits_for\(swarm: bool\) -> Option<DelegationLimits> \{[\s\S]{0,500}MULTI_AGENT_MAX_CONCURRENT[\s\S]{0,300}MULTI_AGENT_MAX_ADMITTED/,
+    'tier numbers must reuse the bridge constants the engine config installs; swarm on yields None',
+  );
+  assert.match(
+    commandSource,
+    /match limits \{[\s\S]{0,400}None =>/,
+    'swarm-on reminder must not state any concurrency number (caps are lifted)',
   );
   assert.match(commandSource, /pub\(crate\) fn prepare_delegation_turn\(/, '普通发送与方案接受必须复用同一轮提醒/名册快照组装');
   assert.match(commandSource, /snapshot\.available_role_lines\(task\)/, '候选提醒必须从本轮名册快照筛选，避免提示与实际派工错位');
@@ -410,11 +413,11 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   assert.match(assistantBridgeSource, /MULTI_AGENT_MAX_SPAWN_DEPTH:\s*u32\s*=\s*2/);
   // Tier constants are pub(crate): the per-turn delegation reminder reads the
   // same single source of truth as build_engine_config_for_multi_agent.
-  // Work tier runs 4 concurrent / 8 admitted; native Code tier 6 / 12.
-  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_WORK_MAX_CONCURRENT: usize = 4;/, 'Work tier direct-child concurrency is 4');
-  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_WORK_MAX_ADMITTED: usize = 8;/, 'Work tier tree-wide admission is 8');
-  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_CODE_MAX_CONCURRENT: usize = 6;/, 'Code tier direct-child concurrency is 6');
-  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_CODE_MAX_ADMITTED: usize = 12;/, 'Code tier tree-wide admission is 12');
+  // Swarm rework: Work and native Code merge into one shared 4/8 tier; with
+  // swarm on the engine config pins the foundation hard caps (the reminder
+  // states no number), and with swarm off it falls back to this tier.
+  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_MAX_CONCURRENT: usize = 4;/, 'Shared tier direct-child concurrency is 4');
+  assert.match(assistantBridgeSource, /pub\(crate\) const MULTI_AGENT_MAX_ADMITTED: usize = 8;/, 'Shared tier tree-wide admission is 8');
   assert.match(
     assistantBridgeSource,
     /build_multi_agent_send_message_op[\s\S]{0,700}build_multi_agent_hook_executor/,
@@ -464,8 +467,8 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     poolSource,
-    /reconfigure_multi_agent_mode[\s\S]{0,700}if enabled && !self\.multi_agent_mode_available\(session_id\)[\s\S]{0,900}self\.store\.set_multi_agent\(session_id, enabled\)/,
-    '开启前必须先执行能力门禁；开关只持久化会话策略，不再生成磁盘名册',
+    /reconfigure_multi_agent_mode[\s\S]{0,700}if enabled && !self\.swarm_mode_available\(session_id\)[\s\S]{0,900}self\.store\.set_multi_agent\(session_id, enabled\)/,
+    '开启前必须先执行能力门禁（swarm 可用性含定时会话排除）；开关只持久化会话策略，不再生成磁盘名册',
   );
   assert.match(
     assistantBridgeSource,
@@ -474,7 +477,10 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     assistantBridgeSource,
-    /build_engine_config_for_multi_agent[\s\S]{0,2200}FleetRoster::load\([\s\S]{0,160}snapshot\.fleet_config\(\)[\s\S]{0,80}&cfg\.workspace/,
+    // Window 2200→2500: the swarm rework (#444) grows the function body with
+    // the delegation-tier split; the pin targets the roster load, not the
+    // function's length.
+    /build_engine_config_for_multi_agent[\s\S]{0,2500}FleetRoster::load\([\s\S]{0,160}snapshot\.fleet_config\(\)[\s\S]{0,80}&cfg\.workspace/,
     '初始名册必须把全局配置与实际 execution workspace 合并，允许项目同名 profile 按底座规则覆盖',
   );
   // Wave-2 拆分后 sessions 职责分散在 mod.rs 与 mode_state/store/retention 等
@@ -717,10 +723,14 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     /subtitle \|\| presentation\.task \|\| entry\.agent_id/,
     '清单行优先展示专家身份副标题；无任务标题时展示任务目标，遗留行回退 agent_id',
   );
+  // Cancelled/interrupted endings fold into failed=true at the ledger
+  // projection, but they are not dispatch failures: the list dot must use
+  // the neutral color (same contract as the overlay's statusPresentation and
+  // the detail badge's stopped bucket), not the red failed dot.
   assert.match(
-    toolRenderersSource,
-    /const \{ identity, name, subtitle \} = presentation;/,
-    '行内卡与右侧清单共用任务主标题、专家身份副标题的投影结果',
+    panelSource,
+    /isNeutralEndingStatus\(entry\.status\) \? '#9AA0A6'/,
+    '清单行圆点必须把 cancelled/interrupted 画成中性灰，而不是 failed 红点',
   );
   assert.match(
     transcriptsSource,
@@ -794,16 +804,6 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     chatBridgeSource2,
     /prefillComposer\(text,\s*true\);\s*(?:\/\/[^\n]*\n\s*)*return "restored";/,
     '物化中止时输入必须回填输入框，不得静默丢字（复核 P1；恢复类 prefill 带 append=true，返回 "restored" 阻止调用方二次恢复造成重复——issue #406）',
-  );
-  assert.match(
-    toolRenderersSource,
-    /subagentRoleOrdinals\(list\)/,
-    '轮询广播必须携带同角色序号，行内卡的 ①② 与面板同源一致',
-  );
-  assert.match(
-    toolRenderersSource,
-    /\.\.\.(?:\(prev \|\| \{\}\)|prev), \.\.\.detail/,
-    '实时事件不带 seq/blocked 等补字段，卡片状态必须字段合并，不得整包覆盖',
   );
   const personasBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'personas.js');
   assert.doesNotMatch(
@@ -984,42 +984,6 @@ test('多级代理树：默认只列直属根，按父节点逐级展开并保�
   );
 });
 
-test('主对话行内卡只投影自己的后代，按子节点逐级展开', () => {
-  const list = [
-    { agent_id: 'agent_root_a', parent_run_id: null },
-    { agent_id: 'agent_child_a', parent_run_id: 'agent_root_a' },
-    { agent_id: 'agent_grandchild_a', parent_run_id: 'agent_child_a' },
-    { agent_id: 'agent_root_b', parent_run_id: null },
-    { agent_id: 'agent_child_b', parent_run_id: 'agent_root_b' },
-    { agent_id: 'agent_cycle', parent_run_id: 'agent_cycle' },
-  ];
-  const ids = rows => rows.map(row => row.entry.agent_id);
-
-  const collapsed = visibleSubagentDescendantRows(list, 'agent_root_a', new Set());
-  assert.deepEqual(ids(collapsed), ['agent_child_a']);
-  assert.equal(collapsed[0].depth, 0);
-  assert.equal(collapsed[0].childCount, 1);
-
-  const expanded = visibleSubagentDescendantRows(
-    list,
-    'agent_root_a',
-    new Set(['agent_child_a']),
-  );
-  assert.deepEqual(ids(expanded), ['agent_child_a', 'agent_grandchild_a']);
-  assert.equal(expanded[1].depth, 1);
-  assert.deepEqual(
-    visibleSubagentDescendantRows(list, 'agent_missing', new Set()),
-    [],
-  );
-  assert.equal(subagentTreeIsDone(list, 'agent_root_a'), false, '运行中的后代必须保持轮询');
-  assert.equal(
-    subagentTreeIsDone(list.map(entry => ({ ...entry, done: true })), 'agent_root_a'),
-    true,
-    '父节点与全部后代终态后才能停表',
-  );
-  assert.equal(subagentTreeIsDone(list, 'agent_missing'), false, '根记录未出现时不得提前停表');
-});
-
 // ── 行内专家卡（消息流内的委派可视化） ───────────────────────────────────────
 
 test('agent 工具调用渲染成行内专家卡，点击打开只读面板', () => {
@@ -1033,10 +997,24 @@ test('agent 工具调用渲染成行内专家卡，点击打开只读面板', ()
     /function ToolItem[\s\S]*?const custom = renderToolItem && renderToolItem\(item\)/,
     '独立工具项与工具组必须共用产品级工具渲染器',
   );
+  // Swarm rework: spawn-type delegations no longer render the expert card
+  // banner directly; they go through the aggregated count row
+  // (AgentSpawnCountRow). Coordination operations (status/wait/cancel) still
+  // use the expert card's quiet row.
   assert.match(
     toolRenderersSource,
-    /if \(EXPERT_CARD_ENABLED && \(item\.name === 'agent' \|\| isAgentWaitCall\(item\.name, item\.args\)\)\) \{\s*return <ExpertAgentCard/,
-    'agent 委派与新旧 wait 调用共用产品级展示，并按 capability 门禁（Web 无 multiAgent bridge）',
+    /const delegation = isExpertDelegationCall\(item\.name, item\.args\);\s*if \(delegation\) \{[\s\S]{0,900}return \(\s*<AgentSpawnCountRow/,
+    'spawn-type delegations render the aggregated count row behind the capability gate (Web without a multiAgent bridge falls back to the generic tool card)',
+  );
+  assert.match(
+    toolRenderersSource,
+    /if \(hidden\) return null;/,
+    'non-first spawns of one aggregated sequence do not repeat the text row (the count increments in place)',
+  );
+  assert.match(
+    toolRenderersSource,
+    /return <ExpertAgentCard item=\{item\} t=\{t\} \/>;/,
+    'status/wait/cancel coordination operations still use the expert card quiet single row, never posing as a new delegation',
   );
   assert.match(
     toolRenderersSource,
@@ -1045,97 +1023,8 @@ test('agent 工具调用渲染成行内专家卡，点击打开只读面板', ()
   );
   assert.match(
     toolRenderersSource,
-    /args\.profile \|\| args\.role/,
-    '承担者以底座正式契约字段 profile 为准（role 是内置类型别名）',
-  );
-  assert.match(
-    toolRenderersSource,
-    /watchExpertCard\(sessionId, agentId\)/,
-    '卡片必须接权威落盘轮询（实时事件会丢：拥塞/重启/停止级联）',
-  );
-  assert.match(
-    toolRenderersSource,
-    /pinvou:subagent-ledger-update/,
-    '一次会话级 ledger 轮询必须把完整父子投影共享给全部行内卡',
-  );
-  assert.match(
-    toolRenderersSource,
-    /visibleSubagentDescendantRows\(ledger, agentId, expandedChildIds\)/,
-    '主对话里的直属卡必须只显示自己的后代树',
-  );
-  assert.match(
-    toolRenderersSource,
-    /data-testid="expert-agent-child-card"/,
-    '后代节点必须是可点开的专家卡，不展示原始 JSON',
-  );
-  assert.match(
-    toolRenderersSource,
-    /if \(prev && prev\.done && !detail\.done\) return prev;/,
-    '终态 ratchet：迟到的非终态实时事件不得把卡翻回工作中',
-  );
-  assert.match(
-    toolRenderersSource,
-    /copy\.blockedTag/,
-    '[BLOCKED] 的"完成"不得显示绿色完成',
-  );
-  assert.match(
-    toolRenderersSource,
     /pinvou:open-subagent/,
-    '点击整卡经 DOM 事件通知 ChatView 打开面板',
-  );
-  assert.match(
-    toolRenderersSource,
-    /resolveSubagentSpawnResult\(item\)/,
-    '专家卡必须同时读取工具完成态与成功态，不能把失败的 done 当成派工成功',
-  );
-  assert.match(
-    toolRenderersSource,
-    /disabled=\{!canOpenTranscript\}[\s\S]{0,160}onClick=\{canOpenTranscript/,
-    '没有成功返回真实 agent_id 的卡片不得打开其他子智能体 transcript',
-  );
-});
-
-test('子智能体 ID 只接受 CodeWhale 实例格式，不把 agent_id 字段名当成实例', () => {
-  assert.equal(extractSubagentId('agent_id'), null);
-  assert.equal(extractSubagentId('schema: { agent_id: string }'), null);
-  assert.equal(
-    extractSubagentId('{"agent_id":"agent_7fb1c7be","status":"running"}'),
-    'agent_7fb1c7be',
-  );
-  assert.equal(extractSubagentId({ agent_id: 'agent_7A7D442F' }), 'agent_7A7D442F');
-  assert.equal(extractSubagentId('agent_1234'), null, '非正式短 id 不得误绑卡片');
-  assert.equal(
-    extractSubagentId('Error: write-scope contention with agent_6282bd07'),
-    null,
-    '错误正文中的冲突方不得被认成新派出的实例',
-  );
-  assert.equal(
-    extractSubagentId('[sub-agent result summarized for parent context]\n- agent_fa6e55b5 (agent) status=running'),
-    'agent_fa6e55b5',
-    '上下文压缩后的正式成功摘要仍须可定位实例',
-  );
-});
-
-test('失败派工不绑定冲突方，成功重派只绑定自身', () => {
-  const failureOutput = 'Error: Failed to spawn sub-agent: write-scope contention with agent_6282bd07';
-  assert.deepEqual(
-    resolveSubagentSpawnResult({ state: 'done', success: false, output: failureOutput }),
-    { failed: true, agentId: null },
-    '实时 tool_end 的 done + success=false 必须显示启动失败且不可打开 transcript',
-  );
-  assert.deepEqual(
-    resolveSubagentSpawnResult({ state: 'failed', success: null, output: failureOutput }),
-    { failed: true, agentId: null },
-    '旧车道的显式 failed 状态也不得把冲突方绑定到失败卡',
-  );
-  assert.deepEqual(
-    resolveSubagentSpawnResult({
-      state: 'done',
-      success: true,
-      output: '[sub-agent result summarized for parent context]\n- agent_fa6e55b5 (agent) status=running',
-    }),
-    { failed: false, agentId: 'agent_fa6e55b5' },
-    '成功重派仍应打开真正的新实例',
+    '点击计数行经 DOM 事件通知 ChatView 打开面板',
   );
 });
 
@@ -1185,8 +1074,8 @@ test('面板是只读执行记录：列表→详情两级，复用共享对话�
   assert.match(panelSource, /copy\.showEarlierTranscript/);
   assert.match(
     panelSource,
-    /active: \(list\) => !Array\.isArray\(list\) \|\| list\.some\(\(entry\) => !entry\.done\)/,
-    '清单全部终态后必须停止定时轮询',
+    /active: \(list\) => !Array\.isArray\(list\)\s*\|\|\s*list\.some\(\(entry\) => !entry\.done && entry\.status != null\)/,
+    '清单全部终态后必须停止定时轮询；孤儿行（无 status 的未完成历史记录）不得钉住 2s 轮询',
   );
   assert.match(panelSource, /pinvou:subagent-update/, '新子智能体实时事件必须能唤醒终态清单');
   assert.match(panelSource, /listSubagentTranscripts\(sessionId\)/, '列表来自底座落盘投影');
@@ -1361,6 +1250,23 @@ test('transcript 适配：文件工具归 file_change，终态后不留转圈条
   );
   assert.equal(turn.status, 'Failed');
   assert.equal(turn.error, 'boom');
+});
+
+test('transcript 适配：cancelled 终态不再渲染成红色失败（与运行中代理浮层语义一致）', () => {
+  // The ledger folds every non-completed ending into failed=true, but the
+  // status token still distinguishes an operator cancellation; the panel must
+  // not contradict the overlay's neutral "cancelled" presentation.
+  const cancelled = projectSubagentTranscript({
+    messages: [{ role: 'user', content: [{ type: 'text', text: '调研' }] }],
+    agent: { agentId: 'a3', role: 'scout', done: true, failed: true, status: 'cancelled' },
+  }).turns[0];
+  assert.equal(cancelled.status, 'Cancelled');
+  assert.notEqual(cancelled.status, 'Failed');
+  const interrupted = projectSubagentTranscript({
+    messages: [],
+    agent: { agentId: 'a4', done: true, failed: true, status: 'INTERRUPTED' },
+  }).turns[0];
+  assert.equal(interrupted.status, 'Interrupted', 'the token comparison is case-insensitive');
 });
 
 test('transcript 适配：v0.9.5 canonical File write/edit/patch 归 file_change，read 不算', () => {
