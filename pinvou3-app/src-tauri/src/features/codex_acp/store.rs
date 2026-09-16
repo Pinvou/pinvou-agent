@@ -726,9 +726,9 @@ impl SessionAgentStore {
                         // 会话走下面的补写段重试,孤儿没有补写路径——两种
                         // 情况都先进最终陈旧名单(索引会话若补写成功会被
                         // 移出),交命令层计入 failed(评审 #463 m2/Major 2)。
-                        eprintln!(
-                            "[pinvou3-app] 重绑定改写原生代码会话 sidecar 失败（{session_id}）: {error:#}"
-                        );
+                        // 失败会话经 sidecar_final_stale 上报前端展示,日志
+                        // 不落明文会话 id(CodeQL cleartext-logging)。
+                        eprintln!("[pinvou3-app] 重绑定改写原生代码会话 sidecar 失败: {error:#}");
                         sidecar_final_stale.push(session_id.clone());
                     }
                     Ok(()) => {

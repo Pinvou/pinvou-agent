@@ -402,7 +402,7 @@ pub async fn rebind_workspace_root(
                 }
             }
             Err(error) => {
-                eprintln!("[projects] rebind set_workspace({session_id}) failed: {error:#}");
+                eprintln!("[projects] rebind set_workspace failed: {error:#}");
                 failed_session_ids.push(session_id.clone());
             }
         }
@@ -421,10 +421,10 @@ pub async fn rebind_workspace_root(
         {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
-                eprintln!("[projects] rebind capture_baseline({session_id}) failed: {error:#}")
+                eprintln!("[projects] rebind capture_baseline failed: {error:#}")
             }
             Err(error) => {
-                eprintln!("[projects] rebind capture_baseline({session_id}) task failed: {error}")
+                eprintln!("[projects] rebind capture_baseline task failed: {error}")
             }
         }
     }
