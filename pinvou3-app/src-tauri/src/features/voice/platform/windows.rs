@@ -146,6 +146,11 @@ pub async fn reset_microphone_permission(window: tauri::WebviewWindow) -> Result
     window
         .with_webview(move |webview| {
             let callback_sender = Arc::clone(&sender);
+            // SAFETY: runs inside with_webview on the thread owning the WebView2,
+            // so webview.controller() is a live controller; CoreWebView2() returns
+            // an owned interface pointer, and cast() AddRef-fetches a supported
+            // interface valid for the enclosing scope; the origin HSTRING and
+            // &callback remain alive until SetPermissionState returns.
             let schedule_result: windows_core::Result<()> = (|| unsafe {
                 let webview13 = webview
                     .controller()

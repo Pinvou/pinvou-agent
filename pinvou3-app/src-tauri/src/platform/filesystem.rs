@@ -1118,6 +1118,16 @@ fn rename_windows_file_to_directory(
     let mut rename_buffer = vec![0_usize; buffer_size.div_ceil(std::mem::size_of::<usize>())];
     let rename_info = rename_buffer.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
     let mut io_status = IO_STATUS_BLOCK::default();
+    // SAFETY: rename_buffer is a heap allocation of buffer_size bytes (at least
+    // size_of::<FILE_RENAME_INFORMATION>()), so rename_info is a valid,
+    // uniquely owned pointer for the header fields written below, and the
+    // trailing FileName flexible array has name_size bytes available, exactly
+    // the length copied out of destination_name_wide (buffer_size is
+    // header_size + name_size, rounded up to a usize multiple). source_file
+    // and destination_handle are open, owned handles whose lifetimes cover the
+    // call, io_status outlives it, and NtSetInformationFile reports failure via
+    // the returned NTSTATUS (checked below) rather than by writing beyond the
+    // supplied buffer_length.
     let status = unsafe {
         (*rename_info).Anonymous.ReplaceIfExists = replace_if_exists;
         (*rename_info).RootDirectory = destination_handle.as_raw_handle();
@@ -1139,6 +1149,9 @@ fn rename_windows_file_to_directory(
         )
     };
     if status < 0 {
+        // SAFETY: status is the NTSTATUS returned by NtSetInformationFile above;
+        // RtlNtStatusToDosError takes the NTSTATUS by value, performs no memory
+        // access, and always returns a valid Win32 error code.
         let windows_error = unsafe { RtlNtStatusToDosError(status) };
         if let Ok(raw_error) = i32::try_from(windows_error) {
             return Err(io::Error::from_raw_os_error(raw_error));
@@ -1335,7 +1348,12 @@ fn move_plain_file_to_impl(
         }
         (Some(_), None) => {}
     }
-    let source_file = source_file.as_ref().expect("source checked above");
+    // The match above returns early for every combination where source_file is
+    // None, so reaching this point implies Some; report it as an error instead
+    // of panicking, consistent with the rest of this function.
+    let source_file = source_file
+        .as_ref()
+        .ok_or_else(|| io::Error::other("source file checked above"))?;
     let expected = windows_file_identity(source_file)?;
     let destination_handle = destination
         ._component_handles
@@ -1769,6 +1787,11 @@ fn mark_windows_file_handle_for_deletion(file: &File) -> io::Result<()> {
     };
 
     let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+    // SAFETY: file is an open, owned handle whose lifetime covers the call;
+    // disposition is a stack value cast to a void pointer valid for
+    // size_of::<FILE_DISPOSITION_INFO>() bytes, which matches the
+    // FileDispositionInfo information class, and SetFileInformationByHandle
+    // reports failure via its BOOL return (checked below).
     if unsafe {
         SetFileInformationByHandle(
             file.as_raw_handle(),
@@ -1909,9 +1932,18 @@ fn windows_file_identity(file: &File) -> io::Result<(u32, u64)> {
     };
 
     let mut information = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+    // SAFETY: file is an open, owned handle whose lifetime covers the call, and
+    // information.as_mut_ptr() points at zeroed storage reserved for the full
+    // BY_HANDLE_FILE_INFORMATION struct that GetFileInformationByHandle fully
+    // overwrites on success; failure is reported via the zero return checked
+    // below, in which case the MaybeUninit is never read.
     if unsafe { GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) } == 0 {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: the call above succeeded, and a successful
+    // GetFileInformationByHandle fully initializes every field of
+    // BY_HANDLE_FILE_INFORMATION, a plain-data struct with no validity
+    // invariants beyond initialization.
     let information = unsafe { information.assume_init() };
     let file_index =
         (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow);
@@ -1970,6 +2002,11 @@ fn system_replace_file(target: &Path, replacement: &Path, backup: &Path) -> io::
     let target_wide = wide(target);
     let tmp_wide = wide(replacement);
     let backup_wide = wide(backup);
+    // SAFETY: target_wide, tmp_wide, and backup_wide are Vec<u16>s built by
+    // appending an explicit NUL terminator, so each as_ptr() yields a valid
+    // NUL-terminated wide string for the duration of the call, and the vectors
+    // outlive it; lpExclude and lpReserved are passed as null as documented for
+    // ReplaceFileW; failure is reported via the zero return checked below.
     let replaced = unsafe {
         ReplaceFileW(
             target_wide.as_ptr(),
