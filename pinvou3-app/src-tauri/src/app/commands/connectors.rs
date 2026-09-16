@@ -85,7 +85,7 @@ pub async fn set_project_skills_enabled(
     app: AppHandle,
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
-    crate::features::marketplace::scope::set_project_skills_enabled(enabled);
+    crate::features::marketplace::scope::set_project_skills_enabled(enabled)?;
     // 开关影响 code 会话组合目录：重写在线会话组合目录 + 热刷 load_skill 隐藏
     // 判定 + execpolicy 规则集（项目级 skills 重新纳入 deny/allow 集合），并广播
     // 工具变更（其它窗口/实例借此刷新开关状态）。

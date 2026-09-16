@@ -334,7 +334,7 @@ pub async fn ima_connect(client_id: String, api_key: String) -> Result<Value, St
             // 由命令层（connectors::ima_connect）重写。
             // 注意引用 marketplace::scope（持久化层）而非 assistant：避免
             // connectors → assistant 依赖环（架构守卫 rust_feature_cycles）。
-            crate::features::marketplace::scope::sync_deny_all_scopes_after_install(IMA_SKILL_ID);
+            crate::features::marketplace::scope::sync_deny_all_scopes_after_install(IMA_SKILL_ID)?;
             Ok(())
         })();
 
@@ -370,7 +370,7 @@ pub async fn ima_logout() -> Result<Value, String> {
         // 已卸载技能从各 scope 禁用集清除残留；在线会话组合目录由命令层
         // （connectors::ima_logout）重写。引用 marketplace::scope 避免
         // connectors → assistant 依赖环。
-        crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(IMA_SKILL_ID);
+        crate::features::marketplace::scope::remove_bundle_from_disabled_scopes(IMA_SKILL_ID)?;
         client_result.map_err(|e| e.user_message())?;
         api_key_result.map_err(|e| e.user_message())?;
         Ok::<Value, String>(json!({ "ok": true, "connected": false }))
