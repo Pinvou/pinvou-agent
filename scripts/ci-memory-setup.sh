@@ -164,8 +164,10 @@ setup_zram() {
   fi
 
   # Configure zram0: compressor -> size -> pool cap -> mkswap -> swapon.
-  # Each step warns instead of aborting; only an inactive zram swap device
-  # counts as overall failure so the next layer takes over.
+  # Each step warns instead of aborting, except the pool cap below, which
+  # fails closed: an uncapped zram on a 7.8 GiB runner is worse than no
+  # zram. Only an inactive zram swap device counts as overall failure so
+  # the next layer takes over.
   if echo lz4 >/sys/block/zram0/comp_algorithm 2>/dev/null; then
     log "zram0 compressor set to lz4"
   else
@@ -182,18 +184,26 @@ setup_zram() {
   # pages near 1:1, so an unbounded pool on a 7.8 GiB runner could eat all
   # RAM through zram itself and reproduce the "runner lost communication"
   # failure this script exists to prevent. Writes beyond mem_limit fail the
-  # swap write and surface as ordinary memory pressure instead.
+  # swap write and surface as ordinary memory pressure instead. Fail closed:
+  # if MemTotal cannot be read or the mem_limit write fails, reset the device
+  # and return failure so the fallback layers engage; never activate an
+  # uncapped zram.
   local mem_total_kib mem_limit_bytes
   mem_total_kib="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
   if [[ ${mem_total_kib} =~ ^[0-9]+$ ]] && ((mem_total_kib > 0)); then
     mem_limit_bytes=$((mem_total_kib * 1024 / 2))
-    if echo "${mem_limit_bytes}" >/sys/block/zram0/mem_limit 2>/dev/null; then
-      log "zram0 pool capped at $((mem_limit_bytes / 1024 / 1024)) MiB (50% of RAM)"
-    else
-      warn "could not set zram0 mem_limit; the pool grows unbounded"
+    if ! echo "${mem_limit_bytes}" >/sys/block/zram0/mem_limit 2>/dev/null; then
+      warn "could not set zram0 mem_limit; resetting zram0 so the fallback swap layers engage"
+      echo 0 >"${size_file}" 2>/dev/null \
+        || warn "could not reset the zram0 disksize; giving up on zram"
+      return 1
     fi
+    log "zram0 pool capped at $((mem_limit_bytes / 1024 / 1024)) MiB (50% of RAM)"
   else
-    warn "cannot read MemTotal; zram0 pool left uncapped"
+    warn "cannot read MemTotal; resetting zram0 so the fallback swap layers engage"
+    echo 0 >"${size_file}" 2>/dev/null \
+      || warn "could not reset the zram0 disksize; giving up on zram"
+    return 1
   fi
 
   # udev/devtmpfs usually creates the node synchronously, but wait briefly
