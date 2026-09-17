@@ -266,6 +266,7 @@
 
 - `pinvou3-app` 负责产品工具白名单、AppMode 到 approval/trust 的映射、reasoning effort、会话 owner 过滤和定时会话创建。
 - bridge 保留 v0.9.12 的 read denylist、bubblewrap、MCP OAuth、goal loop 与 telemetry 安全默认值；产品构建不再叠加基准专用的每轮工具上限（见 §2 的 2026-09-14 行）。
+- 自 2026-09-15 起，宿主把每轮模型步数预算统一为 2,000（`HOST_STEP_BUDGET`）：主 turn 默认值不再跟随底座 `EngineConfig::default()` 的 200；`build_dt_config` 向 `[subagents] default_max_steps` 注入 2,000（等于底座 `MAX_SUBAGENT_STEPS` 硬上限，显式正值亦被钳制到同一上限；显式 `max_steps: 0` 仍是底座的无界哨兵，宿主不改写工具参数）。`advanced.max_steps` 仍可显式覆盖主 turn。GUI、CLI 与 benchmark 共用 `build_engine_config`/`build_dt_config`，由 `engine_config_defaults_to_unified_step_budget_and_respects_override` 锁定。这是 fork 侧默认值（非宿主强制的硬上限），属登记的 fork 独立行为。
 - `session_id` 必须在 `Engine::spawn` 前进入 `EngineConfig`；不得事后依赖事件猜归属。
 - 旧的全局 disabled-skills 调用已删除；包开关通过显式 bundle/registry 和每会话 disallowed tools 生效。
 - Shell 任务对账优先使用快照与完成事件携带的稳定 `origin_tool_call_id`（上游 v0.9.12 行为，Hmbown/CodeWhale #5869）：host monitor 与 Tauri/Web 桥优先回写来源工具卡，仅对无来源旧任务按命令文本回退；来源卡被压缩或重载清除的已识别终态根任务不追加到当前时间线尾部，运行中任务保持合成状态卡可见（`shell_task_projection.test.mjs`、`forkguard_shell_monitor_assigns_identical_commands_by_stable_origin`）。
