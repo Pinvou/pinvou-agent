@@ -36,11 +36,13 @@ pub(super) fn ingest_pandoc(
             crate::platform::os::pandoc_missing_message(),
         );
     }
-    let out = pandoc_tool_command()
-        .arg("-t")
-        .arg("markdown")
-        .arg(path)
-        .output();
+    let mut command = pandoc_tool_command();
+    command.arg("-t").arg("markdown").arg(path);
+    // 带超时兜底:挂死的转换进程不能让上传永远转圈。
+    let out = crate::platform::process::output_with_timeout_and_kill_tree(
+        command,
+        std::time::Duration::from_secs(60),
+    );
     match out {
         Ok(o) if o.status.success() => {
             let content = String::from_utf8_lossy(&o.stdout).into_owned();
@@ -61,6 +63,14 @@ pub(super) fn ingest_pandoc(
             format!("pandoc 调用失败: {e}"),
         ),
     }
+}
+
+/// pdftotext 带 kill 的超时兜底（60s）：损坏输入可让 demuxer 挂死。
+fn pdftotext_with_timeout(command: std::process::Command) -> Result<std::process::Output, String> {
+    crate::platform::process::output_with_timeout_and_kill_tree(
+        command,
+        std::time::Duration::from_secs(60),
+    )
 }
 
 /// 用 LibreOffice headless 把文件转成指定 filter 的产物并读回文本。复用于旧
@@ -84,15 +94,21 @@ fn libreoffice_convert_text(
 
     // 独立 UserInstallation profile：LibreOffice 同一 profile 不能并发(会 lock)，
     // 用户一次拖多个 office 文件时前端会并发 ingest_file，必须各用各的 profile。
-    let out = libreoffice_tool_command()
+    let mut command = libreoffice_tool_command();
+    command
         .arg(libreoffice_user_installation_arg(&tmpdir.join("profile"))?)
         .arg("--headless")
         .arg("--convert-to")
         .arg(convert_to)
         .arg("--outdir")
         .arg(&tmpdir)
-        .arg(path)
-        .output();
+        .arg(path);
+    // soffice 冷启动/遗留锁可能挂死,带 kill 的超时兜底;超时错误走下方
+    // 统一的失败分支清理临时目录。
+    let out = crate::platform::process::output_with_timeout_and_kill_tree(
+        command,
+        std::time::Duration::from_secs(180),
+    );
 
     let result = match out {
         Ok(o) if o.status.success() => {
@@ -349,15 +365,19 @@ fn libreoffice_presentation_text(path: &Path) -> Result<String, String> {
     let tmpdir = std::env::temp_dir().join(format!("pinvou3-pptpdf-{ts}"));
     std::fs::create_dir_all(&tmpdir).map_err(|e| format!("创建临时目录失败: {e}"))?;
 
-    let convert = libreoffice_tool_command()
+    let mut convert_cmd = libreoffice_tool_command();
+    convert_cmd
         .arg(libreoffice_user_installation_arg(&tmpdir.join("profile"))?)
         .arg("--headless")
         .arg("--convert-to")
         .arg("pdf")
         .arg("--outdir")
         .arg(&tmpdir)
-        .arg(path)
-        .output();
+        .arg(path);
+    let convert = crate::platform::process::output_with_timeout_and_kill_tree(
+        convert_cmd,
+        std::time::Duration::from_secs(180),
+    );
 
     let result = match convert {
         Ok(o) if o.status.success() => {
@@ -366,11 +386,9 @@ fn libreoffice_presentation_text(path: &Path) -> Result<String, String> {
                 .and_then(|s| s.to_str())
                 .unwrap_or("converted");
             let pdf_path = tmpdir.join(format!("{stem}.pdf"));
-            pdf_tool_command("pdftotext")
-                .arg("-layout")
-                .arg(&pdf_path)
-                .arg("-")
-                .output()
+            let mut pdftotext_cmd = pdf_tool_command("pdftotext");
+            pdftotext_cmd.arg("-layout").arg(&pdf_path).arg("-");
+            pdftotext_with_timeout(pdftotext_cmd)
                 .map_err(|e| format!("pdftotext 调用失败: {e}"))
                 .and_then(|o| {
                     if o.status.success() {

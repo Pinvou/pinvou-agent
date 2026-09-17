@@ -124,6 +124,12 @@ pub(crate) async fn download_to_part_with_verify(
     let client = {
         let mut builder = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(15))
+            // Per-read idle bound, NOT a total deadline: large files (voice
+            // models, knowledge packages) legitimately take many minutes, but
+            // a server that stops sending mid-transfer would otherwise stall
+            // the progress bar at N% forever with no error until the user
+            // cancels manually.
+            .read_timeout(std::time::Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::default());
         if let Some(ua) = req.user_agent {
             builder = builder.user_agent(ua);

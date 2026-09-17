@@ -142,7 +142,11 @@ async fn sample_all_with_cpu(
         .unwrap_or(0);
     MonitorSnapshot {
         generated_at_ms: now_ms,
-        gpu: gpu_snapshot(),
+        // GPU 采样可能拉起 nvidia-smi 子进程（已带 10s 超时兜底），放到
+        // blocking 池，避免 1s 一次的监控轮询占住 async worker。
+        gpu: tokio::task::spawn_blocking(gpu_snapshot)
+            .await
+            .unwrap_or(None),
         cpu,
         ram: platform::ram_snapshot(),
         vllm: match active_model_snapshot().await {
@@ -192,6 +196,10 @@ struct GpuSnapshotCache {
 
 /// 调 `nvidia-smi` 查 GPU。本机没 NVIDIA/没装 nvidia-smi → None。
 /// 桌面环境启动时 PATH 可能不含 nvidia-smi，加常见绝对路径 fallback。
+/// nvidia-smi 在驱动/CUDA 争用下可能挂死数秒到永远，因此带 10s 超时兜底；
+/// 上层（sample_gpu_snapshot）已配 3s 结果缓存，超时按「本机无数据」降级。
+const NVIDIA_SMI_TIMEOUT: Duration = Duration::from_secs(10);
+
 fn nvidia_gpu_snapshot() -> Option<GpuSnapshot> {
     let args = [
         "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw",
@@ -201,9 +209,9 @@ fn nvidia_gpu_snapshot() -> Option<GpuSnapshot> {
     let out = crate::platform::os::nvidia_smi_candidates()
         .into_iter()
         .find_map(|candidate| {
-            crate::platform::process::HiddenCommand::new(candidate)
-                .args(args)
-                .output()
+            let mut command = crate::platform::process::HiddenCommand::new(candidate);
+            command.args(args);
+            crate::platform::process::output_with_timeout(command, NVIDIA_SMI_TIMEOUT)
                 .ok()
                 .filter(|o| o.status.success())
         })?;

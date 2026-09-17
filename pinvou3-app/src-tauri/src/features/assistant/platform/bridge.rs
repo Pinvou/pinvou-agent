@@ -2312,7 +2312,14 @@ impl Pinvou3Bridge {
                 event: HookEvent::ShellEnv,
                 command: format!("bash '{script}'"),
                 condition: None,
-                timeout_secs: 5,
+                // 20s: this script spawns the user's login shell to harvest
+                // the login env. Profiles sourcing nvm/conda/pyenv init
+                // routinely take longer than the previous 5s, and a hook
+                // timeout here silently drops the injected PATH/SDK env for
+                // every exec_shell call (the foundation contract contributes
+                // no vars and only warns). The script itself bounds the login
+                // shell at 15s, so this budget covers it with margin.
+                timeout_secs: 20,
                 background: false,
                 continue_on_error: false,
                 name: Some("pinvou3-cli-shell-env".into()),

@@ -204,36 +204,25 @@ fn output_with_timeout_inner(
                     )),
                     Reap::Failed(error) => Some(format!("reaping the child failed: {error}")),
                 };
-                if kill_tree_on_timeout {
-                    // A privileged descendant may be outside the caller's signal
-                    // permission even after its wrapper is gone. Never block the
-                    // timeout path by joining pipe readers that such a process kept.
-                    drop(stdout_reader);
-                    drop(stderr_reader);
-                    let tree_note = reap_note
-                        .map(|note| format!("; {note}"))
-                        .unwrap_or_default();
-                    return Err(format!(
-                        "{program} timed out after {}s: subprocess tree termination requested{tree_note}",
-                        timeout.as_secs()
-                    ));
-                }
-                if let Some(reap_note) = reap_note {
-                    // A child that refuses to die may still hold the pipes
-                    // open, so joining the readers could block forever;
-                    // abandon them like the kill-tree path does.
-                    drop(stdout_reader);
-                    drop(stderr_reader);
-                    return Err(format!(
-                        "{program} timed out after {}s: {reap_note}",
-                        timeout.as_secs()
-                    ));
-                }
-                let stdout = stdout_reader.join().unwrap_or_default();
-                let stderr = stderr_reader.join().unwrap_or_default();
-                let detail = subprocess_output_detail(&stdout, &stderr);
+                // Never block the timeout path by joining pipe readers: a
+                // privileged descendant may be outside the caller's signal
+                // permission even after its wrapper is gone, and a grandchild
+                // that survived the kill (plain variant) can hold the pipes
+                // open — either way, joining would block this call forever
+                // past the very deadline the caller asked for. Output is
+                // lost on timeout — acceptable, the caller only gets Err.
+                drop(stdout_reader);
+                drop(stderr_reader);
+                let termination_note = if kill_tree_on_timeout {
+                    "subprocess tree termination requested"
+                } else {
+                    "subprocess termination requested"
+                };
+                let reap_suffix = reap_note
+                    .map(|note| format!("; {note}"))
+                    .unwrap_or_default();
                 return Err(format!(
-                    "{program} timed out after {}s: {detail}",
+                    "{program} timed out after {}s: {termination_note}{reap_suffix}",
                     timeout.as_secs()
                 ));
             }
@@ -242,16 +231,13 @@ fn output_with_timeout_inner(
                     let _ = kill_process_tree(child.id());
                 }
                 let _ = child.kill();
-                let reaped = matches!(reap_killed_child(&mut child, REAP_GRACE), Reap::Reaped);
-                if kill_tree_on_timeout || !reaped {
-                    // The tree may have surviving members, or the child may
-                    // still hold the pipes open: never block on the readers.
-                    drop(stdout_reader);
-                    drop(stderr_reader);
-                    return Err(format!("{program} wait error: {error}"));
-                }
-                let _ = stdout_reader.join();
-                let _ = stderr_reader.join();
+                // Reap promptly but never block on it, and never join the
+                // readers: the child may refuse to die, and a surviving
+                // descendant can hold the pipes open past the caller's
+                // deadline. Output is dropped on this path.
+                let _ = reap_killed_child(&mut child, REAP_GRACE);
+                drop(stdout_reader);
+                drop(stderr_reader);
                 return Err(format!("{program} wait error: {error}"));
             }
         }
@@ -296,20 +282,6 @@ pub(crate) fn reap_killed_child(child: &mut Child, grace: Duration) -> Reap {
         Ok(None) => Reap::Abandoned,
         Err(error) => Reap::Failed(error),
     }
-}
-
-fn subprocess_output_detail(stdout: &[u8], stderr: &[u8]) -> String {
-    let stdout = String::from_utf8_lossy(stdout);
-    let stderr = String::from_utf8_lossy(stderr);
-    let stdout = stdout.trim();
-    let stderr = stderr.trim();
-    let detail = match (stdout.is_empty(), stderr.is_empty()) {
-        (true, true) => "no subprocess output".to_string(),
-        (true, false) => stderr.to_string(),
-        (false, true) => stdout.to_string(),
-        (false, false) => format!("stderr:\n{stderr}\nstdout:\n{stdout}"),
-    };
-    detail.chars().take(4000).collect()
 }
 
 /// 构造执行远程安装脚本的异步子进程命令：Windows 用 PowerShell
