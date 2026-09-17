@@ -68,12 +68,13 @@ const USAGE: &str = "usage: pinvou code <agents|login|logout|providers|sessions|
 
 const AGENTS_USAGE: &str =
     "usage: pinvou code agents <list|status <agent>|install <agent>>  (agent: codex|claude|kimi)";
-const LOGIN_USAGE: &str = "usage: pinvou code login <agent> [--code-env VAR|--code-stdin]  \
+const LOGIN_USAGE: &str = "usage: pinvou code login <agent> [--code C|--code-env VAR|--code-stdin]  \
      (agent: codex|claude|kimi; the claude flow consumes an authorization code)";
 const LOGOUT_USAGE: &str = "usage: pinvou code logout <agent> --yes  (agent: codex|claude|kimi)";
 const PROVIDERS_USAGE: &str = "usage: pinvou code providers <list [--agent A]|add --agent A --name N --base-url U \
      [--wire-api anthropic|openai|kimi (aliases: openai_compatible|chat)] [--model M] [--model-slot SLOT=M]... [--context-window N] \
-     (--api-key-env V|--api-key-stdin)|update <id> --agent A [...] |remove <id> --agent A --yes \
+     (--api-key-env V|--api-key-stdin)|update <id> --agent A [--model M] [--model-slot SLOT=M]... [--context-window N] \
+     (--api-key-env V|--api-key-stdin|--delete-key)|remove <id> --agent A --yes \
      |switch <agent> <provider-id>|switch-official <agent>|export --agent A [--output PATH] \
      |import --agent A <PATH>|probe <provider-id> --agent A>";
 const SESSIONS_USAGE: &str = "usage: pinvou code sessions <list|info <id>|timeline <id>>";
@@ -2025,16 +2026,6 @@ fn login(
     let mut child = command.spawn().map_err(|error| {
         CliError::failed(format!("code login({agent}): cannot spawn CLI: {error}"))
     })?;
-    {
-        use std::io::Write;
-        let mut stdin = child.stdin.take();
-        if let (Some(code), Some(stdin)) = (code.as_deref(), stdin.as_mut()) {
-            let _ = writeln!(stdin, "{}", code.trim());
-            let _ = stdin.flush();
-        }
-        // Close stdin for non-code flows so CLI login prompts on the terminal
-        // fail fast instead of blocking on a pipe that never fills.
-    }
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     // The drains report through channels instead of join handles: a
@@ -2050,6 +2041,20 @@ fn login(
     std::thread::spawn(move || {
         let _ = err_tx.send(drain_stream(stderr));
     });
+    // The stdin write happens only after the drains are running: the code is
+    // up to the GUI's 4096-char max, which can exceed the OS pipe buffer, so
+    // a child that fills its own stdout before reading stdin would otherwise
+    // deadlock the write before the deadline loop below ever starts.
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take();
+        if let (Some(code), Some(stdin)) = (code.as_deref(), stdin.as_mut()) {
+            let _ = writeln!(stdin, "{}", code.trim());
+            let _ = stdin.flush();
+        }
+        // Close stdin for non-code flows so CLI login prompts on the terminal
+        // fail fast instead of blocking on a pipe that never fills.
+    }
     let deadline = Duration::from_secs(if agent == "kimi" { 1800 } else { 600 });
     let started = Instant::now();
     let mut timed_out = false;
@@ -2082,6 +2087,13 @@ fn login(
         .recv_timeout(Duration::from_secs(5))
         .unwrap_or_default();
     let combined = format!("{out_text}\n{err_text}");
+    // Exact-value strip of the authorization code this process wrote to the
+    // child's stdin before the heuristic pass: a short, non-secret-shaped
+    // code the vendor CLI echoed back would survive `redact_secret` alone.
+    let combined = match code.as_deref() {
+        Some(value) => combined.replace(value.trim(), "[REDACTED]"),
+        None => combined,
+    };
     if timed_out {
         // The buffered transcript would die with this error otherwise, and
         // its login link is exactly what the user needs to finish the flow.
@@ -2935,10 +2947,9 @@ fn code_sessions_timeline(id: &str, output: OutputMode) -> Result<CliOutcome, Cl
 
 // Direct references to the app's workspace limits (not local copies): the
 // CLI's diff/preview paths share the GUI's caps, so a change on either side
-// breaks this build instead of silently diverging.
-use pinvou3_lib::features::codex_acp::workspace::{
-    DIFF_LIMIT, IGNORED_DIRECTORIES, PREVIEW_LIMIT, SEARCH_LIMIT,
-};
+// breaks this build instead of silently diverging. (`SEARCH_LIMIT` is
+// referenced through the module path where it is compared.)
+use pinvou3_lib::features::codex_acp::workspace::{DIFF_LIMIT, PREVIEW_LIMIT};
 /// Upper bound on per-file diffs composed into one whole-workspace diff; each
 /// file costs two git spawns, so this bounds the subprocess fan-out.
 const WORKSPACE_DIFF_FILE_CAP: usize = 500;

@@ -70,6 +70,21 @@ fn usage_error(args: &[&str]) -> String {
     error.to_string()
 }
 
+/// Panic-safe restore for an env var an opt-in test sets (same pattern as
+/// models_contract.rs): without the Drop guard a failing assert would leak
+/// the variable into every later test in the binary.
+struct RestoreEnvVar(&'static str, Option<std::ffi::OsString>);
+
+impl Drop for RestoreEnvVar {
+    fn drop(&mut self) {
+        // SAFETY: the file-scoped ENV_LOCK is held for the whole test.
+        match self.1.take() {
+            Some(value) => unsafe { std::env::set_var(self.0, value) },
+            None => unsafe { std::env::remove_var(self.0) },
+        }
+    }
+}
+
 fn run_ok(args: &[&str]) -> String {
     let parsed = parse_args(args.to_vec()).expect("valid command");
     let outcome = execute(parsed).expect("execute succeeds");
@@ -1081,6 +1096,10 @@ fn oauth_login_guards_and_cancel_behaviour() {
 fn tools_install_with_secret_persists_credential() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("tools-secret");
+    let _amap = RestoreEnvVar(
+        "PINVOU_CLI_TEST_AMAP_KEY",
+        std::env::var_os("PINVOU_CLI_TEST_AMAP_KEY"),
+    );
     unsafe { std::env::set_var("PINVOU_CLI_TEST_AMAP_KEY", "test-secret-value") };
 
     let stdout = run_ok(&[
@@ -1114,6 +1133,10 @@ fn tools_install_with_secret_persists_credential() {
 fn tools_install_warns_when_remote_validation_is_skipped() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("tools-validate");
+    let _patsnap = RestoreEnvVar(
+        "PINVOU_CLI_TEST_PATSNAP_KEY",
+        std::env::var_os("PINVOU_CLI_TEST_PATSNAP_KEY"),
+    );
     unsafe { std::env::set_var("PINVOU_CLI_TEST_PATSNAP_KEY", "test-secret-value") };
 
     let stdout = run_ok(&[
@@ -1213,6 +1236,25 @@ fn export_installed_package_writes_zip_and_preset_is_rejected() {
     );
     assert!(dest.is_file());
     assert!(std::fs::metadata(&dest).unwrap().len() > 0);
+
+    // An existing destination is refused, not overwritten (exit 1).
+    let (message, code) = run_err(&[
+        "pinvoy",
+        "plugins",
+        "export",
+        FIXTURE_DIR_SKILL,
+        "--output",
+        dest.to_str().unwrap(),
+    ]);
+    assert_eq!(code, ExitCode::Failed);
+    assert!(
+        message.contains("refusing to overwrite"),
+        "message: {message}"
+    );
+    assert!(
+        std::fs::metadata(&dest).unwrap().len() > 0,
+        "the existing destination must be untouched"
+    );
 
     // Embedded preset packages refuse export (feature's own error, exit 1).
     let (message, code) = run_err(&["pinvoy", "plugins", "export", "pptx"]);

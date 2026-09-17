@@ -711,6 +711,14 @@ fn equip(session_id: &str, persona_id: &str, output: OutputMode) -> Result<CliOu
 fn unequip(session_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let path = equip_state_path(session_id)?;
     let store = open_store()?;
+    // Same session-existence gate as `equip`: a well-formed but unknown id
+    // must fail instead of reporting a successful unequip that cleared
+    // nothing.
+    store.load(session_id).map_err(|error| {
+        CliError::failed(format!(
+            "personas unequip: session {session_id} does not exist ({error})"
+        ))
+    })?;
     store.set_active_persona(session_id, None);
     store.set_pending_persona_body(session_id, None);
     if let Err(error) = std::fs::remove_file(&path) {

@@ -71,10 +71,10 @@ const USAGE: &str =
     "usage: pinvou connectors <status|ensure-cli|enable|disable|logout|apply-skills|connect|ima>";
 
 /// Semantic-version floor per connector, mirroring the `*_MIN_VERSION`
-/// gates in wecom.rs (1.1.0 command-model baseline) and tmeet.rs (1.0.15).
-const WECOM_MIN_VERSION: (u64, u64, u64) = (1, 1, 0);
-const TMEET_MIN_VERSION: (u64, u64, u64) = (1, 0, 15);
-const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.15";
+/// gates in wecom.rs (1.2.1 skill baseline) and tmeet.rs (1.0.18 npm spec).
+const WECOM_MIN_VERSION: (u64, u64, u64) = (1, 2, 1);
+const TMEET_MIN_VERSION: (u64, u64, u64) = (1, 0, 18);
+const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.18";
 
 /// ima skill installed by `ima_connect` (mirror of ima.rs `IMA_SKILL_ID`).
 const IMA_SKILL_ID: &str = "ima-skills";
@@ -950,7 +950,19 @@ fn status(connector: Option<ConnectorKind>, output: OutputMode) -> Result<CliOut
     };
     let mut entries = Vec::new();
     for kind in kinds {
-        entries.push(vendor_status_entry(kind)?);
+        // One broken vendor CLI (a corrupt shim, a probe timeout) must not
+        // fail the whole overview and discard the other entries: degrade it
+        // to a note like the ima entry below.
+        match vendor_status_entry(kind) {
+            Ok(entry) => entries.push(entry),
+            Err(error) => entries.push(json!({
+                "id": kind.spec().id,
+                "ok": false,
+                "connected": false,
+                "installed": false,
+                "note": error.to_string(),
+            })),
+        }
     }
     // ima is part of the default overview only; a filtered `status <id>`
     // must not report unrelated connectors. A credential-store failure must
@@ -1884,7 +1896,17 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             // wait — the vendor CLI itself blocks until authorization (or
             // its own timeout), and the spawn deadline above already bounds
             // the process.
-            if !cli_connected(spec)? {
+            // The GUI polls `wait_logged_in` for up to 5 s after the child
+            // exits because `tmeet auth status` can lag credential
+            // persistence at process exit; mirror that so a successful login
+            // is not misreported as a failure.
+            let mut connected = cli_connected(spec).unwrap_or(false);
+            let grace_started = std::time::Instant::now();
+            while !connected && grace_started.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(200));
+                connected = cli_connected(spec).unwrap_or(false);
+            }
+            if !connected {
                 return Err(CliError::failed(format!(
                     "{} login exited before authorization completed{}",
                     spec.display_name,
@@ -1969,9 +1991,16 @@ fn spawn_and_capture_url(
         drain_for_url(spec, stderr, tx.clone());
     }
     drop(tx);
-    let url_wait = Duration::from_secs(spec.login_url_wait_secs)
-        .min(deadline.saturating_duration_since(Instant::now()))
-        .max(Duration::from_secs(1));
+    // The 1 s floor applies only while budget remains: a spent deadline must
+    // not buy an extra second past it.
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let url_wait = if remaining.is_zero() {
+        Duration::ZERO
+    } else {
+        Duration::from_secs(spec.login_url_wait_secs)
+            .min(remaining)
+            .max(Duration::from_secs(1))
+    };
     let mut url: Option<String> = None;
     let mut user_code: Option<String> = None;
     let needs_code_line = spec.id == "dingtalk";

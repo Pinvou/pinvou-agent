@@ -65,7 +65,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::support::{render, require_yes, success};
+use crate::support::{render, require_yes, sandbox_home, success};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::marketplace::{
     ConnectorScope, MarketplaceManager,
@@ -540,6 +540,11 @@ fn is_display_unsafe_char(c: char) -> bool {
 }
 
 pub fn execute(command: PluginsCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
+    // Every store path this family touches resolves through the lib's
+    // `pinvou3_home`, which accepts a relative `PINVOU3_HOME` verbatim;
+    // enforce the same absolute-home contract as the sibling families so one
+    // binary cannot half-apply state against a cwd-relative store.
+    sandbox_home()?;
     match command {
         PluginsCommand::ToolsList { installed_only } => tools_list(installed_only, output),
         PluginsCommand::ToolsInstall { id, secrets } => tools_install(&id, &secrets, output),
@@ -1134,6 +1139,18 @@ fn export(
             format!("package '{id}' is not installed"),
         ));
     }
+    // An existing destination is refused, not overwritten: the default name
+    // is `<id>.zip` in the caller's cwd, so a silent overwrite could destroy
+    // an unrelated file with exit 0 (the same policy as `sessions export`).
+    // The probe is not atomic with the library's write — a check-then-use
+    // window remains — but it closes the ordinary clobber.
+    if dest.exists() {
+        return Err(CliError::failed(format!(
+            "plugins export({id}): refusing to overwrite {}; choose a destination that does \
+             not exist yet",
+            dest.display()
+        )));
+    }
     if let Some(parent) = dest.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent).map_err(|error| {
@@ -1253,6 +1270,15 @@ fn recycle_export(
             id,
             format!("recycled package '{id}' does not exist"),
         ));
+    }
+    // Same no-overwrite policy as `export` (the default is `<id>.zip` in the
+    // caller's cwd); the probe is not atomic with the library's write.
+    if dest.exists() {
+        return Err(CliError::failed(format!(
+            "plugins recycle export({id}): refusing to overwrite {}; choose a destination that \
+             does not exist yet",
+            dest.display()
+        )));
     }
     if let Some(parent) = dest.parent() {
         if !parent.as_os_str().is_empty() {

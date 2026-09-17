@@ -144,7 +144,7 @@ fn translate_deps_hint(hint: &str) -> String {
 /// is an English tool, so the known messages are translated at this boundary
 /// and anything unrecognized passes through unchanged rather than being
 /// dropped.
-fn translate_deps_error(message: &str) -> String {
+pub(crate) fn translate_deps_error(message: &str) -> String {
     for (needle, english) in [
         ("用户取消授权", "authorization was cancelled by the user"),
         (

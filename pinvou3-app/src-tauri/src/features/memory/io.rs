@@ -1269,7 +1269,13 @@ pub fn enqueue_memory_candidate(suggestion: MemorySuggestion) -> io::Result<Pend
     Ok(item)
 }
 
-pub(super) fn confirmed_pending_memory_is_materialized(item: &PendingMemoryItem) -> bool {
+/// Whether a confirmed pending item actually landed in its target store.
+/// The confirm path marks the item confirmed even when the profile-shaped
+/// preference skip in `write_preference_unlocked` deliberately wrote
+/// nothing; surfacing the helper lets the CLI report that no-op honestly
+/// instead of printing success (the GUI review pipeline has its own
+/// post-confirm view).
+pub fn confirmed_pending_memory_is_materialized(item: &PendingMemoryItem) -> bool {
     if item.status != PENDING_STATUS_CONFIRMED {
         return false;
     }

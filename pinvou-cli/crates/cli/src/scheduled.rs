@@ -2230,6 +2230,12 @@ enabled in settings",
                 let _ = std::fs::remove_file(path);
             }
             let _ = std::fs::remove_dir_all(store_holder.workspace_dir(&id));
+            // A binding written above must not outlive the rolled-back task:
+            // clear it so no binding for a nonexistent id lingers in the
+            // shared registry.
+            if model_id.as_deref().is_some() {
+                let _ = persist_model_binding(&store_holder, &id, None);
+            }
             return Err(error);
         }
     }
@@ -2495,7 +2501,16 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         }
         let _ = store_holder.write_def(&restored);
     };
-    let runs = store_holder.list_runs(id, None)?;
+    // list_runs can fail on a corrupt/unsupported run record; that failure
+    // is a blocked delete like any other, so it must restore the pre-delete
+    // status too instead of leaving the task provisionally paused.
+    let runs = match store_holder.list_runs(id, None) {
+        Ok(runs) => runs,
+        Err(error) => {
+            restore_status(&def, &previous_status);
+            return Err(error);
+        }
+    };
     // The GUI cancels queued/running runs through the foundation TaskManager
     // before deleting; headlessly there is no engine runtime to cancel with,
     // so GUI-runtime-owned active runs refuse deletion. A `queued` record
@@ -2582,7 +2597,14 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         rolled["tasks"] = serde_json::Value::Object(existing_snapshot);
         rolled
     };
-    let def_path = store_holder.def_path(id)?;
+    let def_path = match store_holder.def_path(id) {
+        Ok(path) => path,
+        Err(error) => {
+            let _ = write_json_atomic(&store_holder.history_archive_path(), &archive_rollback);
+            restore_status(&def, &previous_status);
+            return Err(error);
+        }
+    };
     match std::fs::remove_file(&def_path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

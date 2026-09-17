@@ -449,10 +449,13 @@ fn chat_prompt_mirrors_the_gui_once_scheduling_guidance() {
     let home = TempHome::new("chat-prompt-once");
     let prompt = run_json(&["scheduled", "chat-prompt"]);
     let prompt = prompt["prompt"].as_str().unwrap();
-    assert!(prompt.contains("FREQ=ONCE;AT="), "{prompt}");
+    assert!(
+        prompt.contains("FREQ=ONCE;AT="),
+        "the chat prompt must embed the ONCE rule"
+    );
     assert!(
         prompt.contains("一次性定时的 AT 只用本地时刻 YYYY-MM-DDTHH:MM"),
-        "{prompt}"
+        "the chat prompt must keep the ONCE AT guidance line"
     );
     let _ = home;
 }
@@ -550,7 +553,7 @@ fn create_list_show_update_pause_resume_pin_round_trip_and_delete() {
     assert_eq!(
         listed["tasks"][0]["pinned"].as_bool(),
         Some(true),
-        "{listed}"
+        "list must report the pinned task"
     );
     let shown = run_json(&["scheduled", "show", &task_id]);
     assert_eq!(shown["pinned"].as_bool(), Some(true));
@@ -992,7 +995,10 @@ fn run_executes_a_memory_organize_task_through_the_product_host() {
     assert_eq!(runs[0]["id"].as_str(), Some(run_id.as_str()));
     let def: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
-    assert!(def["last_run_at"].is_string(), "{def}");
+    assert!(
+        def["last_run_at"].is_string(),
+        "the deleted task must stamp last_run_at for the history archive"
+    );
     let _ = home;
 }
 
@@ -1489,9 +1495,15 @@ fn read_commands_refuse_non_object_definitions_uniformly() {
     let task_id = created["id"].as_str().unwrap().to_owned();
     std::fs::write(home.def_path(&task_id), "5").unwrap();
     let shown = expect_failed(&["scheduled", "show", &task_id]);
-    assert!(shown.contains("is malformed"), "{shown}");
+    assert!(
+        shown.contains("is malformed"),
+        "show must refuse a malformed definition"
+    );
     let listed = expect_failed(&["scheduled", "list"]);
-    assert!(listed.contains("is malformed"), "{listed}");
+    assert!(
+        listed.contains("is malformed"),
+        "list must refuse a malformed definition"
+    );
     let _ = home;
 }
 
@@ -1510,9 +1522,15 @@ fn read_commands_refuse_definitions_missing_required_fields() {
     )
     .unwrap();
     let shown = expect_failed(&["scheduled", "show", &task_id]);
-    assert!(shown.contains("is malformed"), "{shown}");
+    assert!(
+        shown.contains("is malformed"),
+        "show must refuse a malformed definition"
+    );
     let listed = expect_failed(&["scheduled", "list"]);
-    assert!(listed.contains("is malformed"), "{listed}");
+    assert!(
+        listed.contains("is malformed"),
+        "list must refuse a malformed definition"
+    );
     let _ = home;
 }
 
@@ -1565,8 +1583,7 @@ fn once_at_rejects_dst_gap_times_like_the_foundation() {
         assert!(!gap.status.success(), "{gap_stamp} must be rejected");
         assert!(
             String::from_utf8_lossy(&gap.stderr).contains("does not exist"),
-            "gap rejection must name the cause: {}",
-            String::from_utf8_lossy(&gap.stderr)
+            "gap rejection must name the missing task"
         );
     }
     // Ordinary and ambiguous (fall-back) times still resolve — the
@@ -1577,11 +1594,7 @@ fn once_at_rejects_dst_gap_times_like_the_foundation() {
         "FREQ=ONCE;AT=2027-01-15T02:30:00",
     ] {
         let output = run(good);
-        assert!(
-            output.status.success(),
-            "{good} must be accepted: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        assert!(output.status.success(), "{good} must be accepted");
     }
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -1649,6 +1662,40 @@ fn failed_delete_restores_the_previous_status() {
         def["status"], "active",
         "a failed delete must leave the task as it was"
     );
+}
+
+#[test]
+fn delete_with_an_unreadable_run_record_restores_the_paused_task() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("delete-run-record-restore");
+    let created = create_task(&home, "Run-record task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    // A run record the store refuses (newer schema) makes list_runs fail
+    // after the provisional pause was already committed: that failure is a
+    // blocked delete like any other, so the pre-delete status must be
+    // restored instead of leaving the task paused with no next run.
+    std::fs::create_dir_all(home.runs_dir(&task_id)).unwrap();
+    std::fs::write(
+        home.runs_dir(&task_id).join("future-run.json"),
+        serde_json::json!({
+            "schema_version": 99,
+            "id": "future-run",
+            "automation_id": task_id,
+            "scheduled_for": "2026-09-10T08:00:00.000Z",
+            "status": "done",
+            "created_at": "2026-09-10T08:00:00.000Z"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    expect_failed(&["scheduled", "delete", &task_id, "--yes"]);
+    let def: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
+    assert_eq!(
+        def["status"], "active",
+        "a delete blocked by an unreadable run record must not leave the task paused"
+    );
+    assert!(home.def_path(&task_id).exists());
 }
 
 #[test]

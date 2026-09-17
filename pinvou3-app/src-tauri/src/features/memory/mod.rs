@@ -65,12 +65,10 @@ pub use self::io::WORK_CONTEXT_TEXT_MAX_CHARS;
 // with this function, so a local copy would drift into false
 // "not materialized" failures.
 pub use self::util::clean_candidate_sentence;
-// The CLI `memory add` probes this heuristic before enqueueing: the confirm
-// path silently skips profile-shaped preference text
-// (`write_preference_unlocked` no-ops it) while still marking the candidate
-// confirmed, so the CLI must reject that content up front without touching
-// the pending store. Same CLI-parity rationale as `clean_candidate_sentence`
-// above.
+// The CLI `memory add` rejects profile-shaped preference text before
+// enqueueing (the confirm path marks it confirmed but writes nothing), and
+// `memory pending confirm` reports that no-op instead of printing success.
+pub use self::io::confirmed_pending_memory_is_materialized;
 pub use self::types::looks_like_profile_preference_text;
 
 // ---- LLM 后台复盘（llm_review）----
