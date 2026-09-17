@@ -231,8 +231,10 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     // A failed send's banner must not survive into the restart: when the
     // discard succeeds but the ensure rebuild fails, the binding is cleared
     // and the composer disabled — showing "send failed, retry" next to the
-    // ensure failure is a contradictory double banner.
+    // ensure failure is a contradictory double banner. ensureFailed is the
+    // same class (a stale init failure next to the fresh restart outcome).
     setSendFailed(false);
+    setEnsureFailed(false);
     const generation = generationRef.current;
     try {
       try {

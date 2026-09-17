@@ -23,9 +23,8 @@ use super::scheduled::ScheduledProfileRegistry;
 use super::store::MAX_SESSIONS_PER_KIND;
 use super::validators::generate_session_id;
 
-/// Borrows the paths module's process-level env lock — avoiding parallel
-/// races with other tests that mutate PINVOU3_HOME. Returns the store with
-/// the guard; the lock is released only when the guard drops.
+/// 借用 paths 模块的进程级 env 锁——避免与其他 mutate PINVOU3_HOME
+/// 的测试并行 race。返回带 guard 的 store；guard drop 后才解锁。
 fn isolated_store() -> (SessionStore, std::sync::MutexGuard<'static, ()>) {
     let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let tmp = std::env::temp_dir().join(format!(
@@ -38,8 +37,7 @@ fn isolated_store() -> (SessionStore, std::sync::MutexGuard<'static, ()>) {
     // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
     unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
     let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
-    // Note: no remove_var — the lock has not dropped yet, and the assertions
-    // below need PINVOU3_HOME to still be this value.
+    // 注意：不 remove_var——锁还没 drop，下面的断言需要 PINVOU3_HOME 仍是这个值。
     (store, guard)
 }
 
@@ -122,7 +120,7 @@ fn list_cache_shares_snapshot_and_invalidates_on_write() {
     let s1 = store
         .create_new("/model".into(), None, std::env::temp_dir())
         .expect("create");
-    // two reads share the same Arc snapshot (no repeated full-directory scan)
+    // 两次读取共享同一 Arc 快照(不重复全目录扫描)
     let a = store.list_sessions_cached().expect("first cached read");
     let b = store.list_sessions_cached().expect("second cached read");
     assert!(
@@ -131,8 +129,7 @@ fn list_cache_shares_snapshot_and_invalidates_on_write() {
     );
     assert!(a.iter().any(|m| m.id == s1.metadata.id));
 
-    // the write path (set_title goes through save_session_atomic)
-    // invalidates the snapshot; the new title is visible
+    // 写路径(set_title 走 save_session_atomic)使快照失效,新标题可见
     store
         .set_title(&s1.metadata.id, "renamed".into())
         .expect("set title");
@@ -146,7 +143,7 @@ fn list_cache_shares_snapshot_and_invalidates_on_write() {
             .any(|m| m.id == s1.metadata.id && m.title == "renamed")
     );
 
-    // the delete path invalidates it too
+    // 删除路径同样失效
     store.delete(&s1.metadata.id).expect("delete");
     let d = store.list_sessions_cached().expect("read after delete");
     assert!(!d.iter().any(|m| m.id == s1.metadata.id));
@@ -154,23 +151,18 @@ fn list_cache_shares_snapshot_and_invalidates_on_write() {
 
 #[test]
 fn list_cache_stale_generation_snapshot_is_never_served() {
-    // Race regression (list_sessions_cached's backfill guard): thread A
-    // misses and scans the directory; during the scan thread B writes and
-    // invalidates; A's backfill must be rejected by the generation
-    // comparison, otherwise the stale snapshot would overwrite the rescan B
-    // triggered and linger until the next write. The interleaving cannot be
-    // truly reproduced in a single-threaded test, so instead we lock the
-    // guard's observable contract: a snapshot on an expired generation
-    // (simulating the pre-write scan product landed when the guard fails)
-    // must be unreachable on the read path — a hit is trusted only when the
-    // "current generation + entry generation" tuple agrees.
+    // 竞态回归(list_sessions_cached 的回填守卫):线程 A miss 后扫描目录,
+    // 扫描期间线程 B 写盘失效;A 的回填必须被代数比对拒绝,否则陈旧快照
+    // 会覆盖 B 触发的重扫并驻留到下一次写。交错无法在单线程测试里真实
+    // 还原,改为锁定守卫的可观察契约:过期代数的快照(模拟守卫失效时被
+    // 落地的写前扫描产物)对读取路径不可达——命中检查只信「当前代数+
+    // 条目代数一致」的元组。
     let (store, _g) = isolated_store();
     let s1 = store
         .create_new("/model".into(), None, std::env::temp_dir())
         .expect("create");
 
-    // read-after-write: invalidate → reconcile rescan-backfill on the same
-    // pipeline; the new title must be visible.
+    // 写后读:失效→reconcile 重扫回填同链路,必须看到新标题。
     store
         .set_title(&s1.metadata.id, "renamed".into())
         .expect("set title");
@@ -181,8 +173,7 @@ fn list_cache_stale_generation_snapshot_is_never_served() {
             .any(|m| m.id == s1.metadata.id && m.title == "renamed")
     );
 
-    // Simulate what a guard failure lands: the old-title view hangs on an
-    // expired generation, and reads must not return it.
+    // 模拟守卫失效的落地物:旧标题视图挂在过期代数上,读取不得返回它。
     let generation_now = store
         .list_cache_generation
         .load(std::sync::atomic::Ordering::Acquire);
@@ -212,29 +203,24 @@ fn list_cache_stale_generation_snapshot_is_never_served() {
 
 #[test]
 fn list_cache_invalidated_when_delete_partially_fails() {
-    // Partial-failure regression: the upstream delete_session first
-    // remove_files the JSON, then remove_dir_alls (the session directory).
-    // Placing a plain file at the sessions/<id>/ path makes remove_dir_all
-    // deterministically report ENOTDIR — the JSON is already gone from disk
-    // but delete returns Err. The list snapshot must already be invalidated
-    // at that point: if only the Ok branch invalidated, the ghost entry
-    // would linger in the cache until the next arbitrary write.
+    // 部分失败回归:上游 delete_session 先 remove_file(JSON) 再 remove_dir_all
+    // (会话目录)。把 sessions/<id>/ 路径放一个普通文件,让 remove_dir_all 确定性
+    // 报 ENOTDIR——JSON 已从盘上消失但 delete 返回 Err。此时列表快照必须已经
+    // 失效:若只在 Ok 分支失效,幽灵条目会驻留缓存直到下一次任意写。
     let (store, _g) = isolated_store();
     let s1 = store
         .create_new("/model".into(), None, std::env::temp_dir())
         .expect("create");
-    // Warm the cache: the snapshot contains this session at this point.
+    // 预热缓存:此刻快照包含该会话。
     let before = store.list_sessions_cached().expect("warm cache");
     assert!(before.iter().any(|m| m.id == s1.metadata.id));
 
-    // Construct the partial failure: put a plain file at sessions/<id> so
-    // remove_dir_all reports ENOTDIR.
+    // 构造部分失败:sessions/<id> 处放普通文件,remove_dir_all 报 ENOTDIR。
     let session_dir = store.manager.sessions_dir().join(&s1.metadata.id);
     std::fs::create_dir_all(&session_dir).expect("create session dir");
     let blocker = session_dir.with_extension("json.blocker");
     std::fs::write(&blocker, b"not a dir").expect("write blocker");
-    // Replace the whole sessions/<id> directory with a same-named plain
-    // file: remove_dir_all must fail.
+    // 把整个 sessions/<id> 目录替换为同名普通文件:remove_dir_all 必失败。
     std::fs::remove_dir_all(&session_dir).expect("clear dir");
     std::fs::write(&session_dir, b"plain file at dir path").expect("block dir path");
 
@@ -244,8 +230,7 @@ fn list_cache_invalidated_when_delete_partially_fails() {
         err.to_string().contains(&s1.metadata.id) || err.to_string().contains("delete_session"),
         "unexpected error shape: {err:#}"
     );
-    // The session JSON has already been deleted upstream: disk and cache
-    // must agree — the ghost must not linger.
+    // 会话 JSON 已被上游删除:盘面与缓存必须一致——幽灵不得驻留。
     let after = store
         .list_sessions_cached()
         .expect("read after partial failure");
@@ -253,9 +238,8 @@ fn list_cache_invalidated_when_delete_partially_fails() {
         !after.iter().any(|m| m.id == s1.metadata.id),
         "phantom entry must not survive a partially-failed delete"
     );
-    // Restore the environment: the blocker file is harmless, but leaving the
-    // <id> path occupied by a plain file would break later tests' directory
-    // assumptions, so remove it explicitly.
+    // 复原环境:blocker 文件不碍事,但普通文件占用的 <id> 路径留着会让后续
+    // 测试的目录假设失效,显式清掉。
     let _ = std::fs::remove_file(&session_dir);
     let _ = std::fs::remove_file(&blocker);
 }
@@ -292,17 +276,14 @@ fn session_roots_bound_project_keeps_ledger_on_private_root() {
         roots.execution,
         std::env::temp_dir().join("pinvou3-bound-project-roots-test")
     );
-    // A native code session bound to a project directory: the ledger root is
-    // always the session-private directory and never pollutes the user's
-    // project.
+    // 绑了项目目录的原生代码会话：账本根恒为会话私有目录，不污染用户项目。
     let private = paths::session_workspace_dir(&s.metadata.id);
     assert_eq!(roots.ledger, private);
     assert_eq!(
         store.ledger_root(&s.metadata.id).expect("ledger root"),
         private
     );
-    // Unbound sessions are unaffected by the resolver; both roots still
-    // agree.
+    // 未绑定的会话不受 resolver 影响，两根仍一致。
     let other = store
         .create_new("/model".into(), None, std::env::temp_dir())
         .expect("create other");
@@ -912,8 +893,7 @@ fn scheduled_session_is_isolated_but_directly_loadable() {
     let scheduled = store
         .create_scheduled_run(scheduled_profile("task-isolated"))
         .expect("create scheduled run");
-    // Crash-leftover eval sessions (eval_ prefix, containing GAIA private
-    // questions) must not enter the user's list.
+    // 崩溃残留的评测会话(eval_ 前缀,含 GAIA 私有题目)不得进入用户列表。
     let eval_id = "eval_gaia-case-1_crash-leftover".to_string();
     let eval_session = create_saved_session_with_id_and_mode(
         eval_id.clone(),
@@ -1709,9 +1689,8 @@ fn scheduled_creation_rolls_back_when_profile_write_fails() {
     std::fs::create_dir_all(&profile_path).expect("make profile path a directory");
     let deletions = record_session_deletions(&store);
 
-    // The seed session constructs full-field ghost metadata (id/title
-    // changed); persisting it bumps the generation once; the pre-call
-    // generation is then recorded.
+    // 种子会话用于构造完整字段的幽灵元数据(改 id/title),其落盘本身 bump 一次
+    // 代数;随后记录调用前代数。
     let seed = store
         .create_new("/model".into(), None, std::env::temp_dir())
         .expect("seed session");
@@ -1733,15 +1712,11 @@ fn scheduled_creation_rolls_back_when_profile_write_fails() {
             .all(|m| !m.id.starts_with("sched-")),
         "the SavedSession must be removed when profile persistence fails"
     );
-    // The rollback delete must also invalidate the list cache: a concurrent
-    // reader rescanning right between the save invalidation and the rollback
-    // delete would backfill a sched-*.json-containing snapshot with "the
-    // generation after the save invalidation" (= pre-call generation + 1;
-    // save_session_atomic bumps exactly once). Inject that ghost entry: if
-    // the rollback path did not invalidate (the pre-fix behavior), that
-    // generation would still be current and the ghost would be served
-    // forever; after the rollback invalidation the generation is expired,
-    // reads trigger a rescan, and the ghost is invisible.
+    // 回滚删除也必须失效列表缓存:并发读者恰在 save 失效与回滚删除之间重扫,
+    // 会以「save 失效后的代数」(= 调用前代数 + 1,save_session_atomic 恰好
+    // bump 一次)回填含 sched-*.json 的快照。注入该幽灵条目:若回滚路径不
+    // 失效(修复前),该代数仍是当前代,幽灵会被永久供应;回滚失效后该代数
+    // 已过期,读取触发重扫,幽灵不可见。
     let mut phantom = seed.metadata.clone();
     phantom.id = "sched-phantom".into();
     phantom.title = "Scheduled run".into();
@@ -2290,9 +2265,8 @@ fn transcript_cas_rejects_stale_revision_without_overwrite() {
         .expect("create");
     let stale = transcript_revision(&session.messages).expect("empty revision");
     let winner = vec![user_text("winner")];
-    // the first commit succeeds, returns the new revision, and persists
-    // (assertions of the original
-    // transcript_cas_commits_and_returns_content_revision).
+    // first commit 成功并返回新 revision、落盘生效
+    // (原 transcript_cas_commits_and_returns_content_revision 的断言)。
     let committed = store
         .compare_and_swap_messages(&session.metadata.id, &stale, winner.clone())
         .expect("first commit");
@@ -2564,9 +2538,8 @@ fn invalid_precommit_delete_does_not_emit_durable_deletion_hook() {
 #[test]
 fn delete_active_clears_active_id() {
     let (store, _g) = isolated_store();
-    // set_active/active_id tracking semantics (assertions of the original
-    // active_id_tracks_set_active):
-    // initially None → readable after setting Some → reset by setting None.
+    // set_active/active_id 追踪语义(原 active_id_tracks_set_active 的断言):
+    // 初始 None → set Some 后可读回 → set None 复位。
     assert!(store.active_id().is_none());
     store.set_active(Some("abc".into()));
     assert_eq!(store.active_id().as_deref(), Some("abc"));
@@ -2778,31 +2751,24 @@ fn pending_plan_ticket_is_compare_and_consumed_with_failure_restore() {
     assert!(store.discard_pending_plan(sid, "plan-2").is_err());
 }
 
-/// Mode-switch loop (the core contract after the foundation regressed to two
-/// modes): the transition commands set_plan_mode_next(→Plan) /
-/// accept_plan / exit_plan_to_yolo(→Yolo) all just call set_mode under the
-/// hood and must **touch only mode** end to end — orthogonal state such as
-/// the pending persona body / mounted knowledge collection / persona card
-/// must be preserved verbatim.
-/// (discard_plan "never mind" is not in this family: it abandons the plan but
-/// stays in the current mode and does not call set_mode.)
-/// Guards against someone adding side effects to the transition commands, or
-/// rewriting set_mode into a wholesale-overwrite form that clears these
-/// fields along the way.
+/// 模式切换闭环(回归底座二态后的核心契约):流转命令 set_plan_mode_next(→Plan) /
+/// accept_plan / exit_plan_to_yolo(→Yolo) 实质都只调 set_mode,全程**只动 mode**——
+/// 待注入人格 body / 挂载知识集 / 人格卡等正交状态必须原样保留。
+/// (discard_plan「算了」不在此列:放弃方案但留在当前 mode,不调 set_mode。)
+/// 防有人给流转命令加副作用,或把 set_mode 改成整体覆盖式写法时连带清掉这些字段。
 #[test]
 fn mode_switch_loop_preserves_orthogonal_state() {
     use SerializableMode;
     let (store, _g) = isolated_store();
     let sid = "s-loop";
 
-    // starts at the default Yolo, loaded with orthogonal state
+    // 起始默认 Yolo,挂满正交状态
     assert_eq!(store.mode_state(sid).mode, SerializableMode::Yolo);
     store.set_pending_persona_body(sid, Some("PENDING BODY".into()));
     store.set_mounted_collection(sid, Some(42));
     store.set_active_persona(sid, Some("expert-x".into()));
 
-    // two round trips of the loop: Yolo →(set_plan_mode_next)→ Plan
-    // →(accept/exit)→ Yolo
+    // 闭环往返两轮:Yolo →(set_plan_mode_next)→ Plan →(accept/exit)→ Yolo
     for _ in 0..2 {
         store
             .set_mode(sid, SerializableMode::Plan)
@@ -2814,7 +2780,7 @@ fn mode_switch_loop_preserves_orthogonal_state() {
         assert_eq!(store.mode_state(sid).mode, SerializableMode::Yolo);
     }
 
-    // all three orthogonal fields preserved
+    // 三个正交字段全保留
     let st = store.mode_state(sid);
     assert_eq!(
         st.pending_persona_body.as_deref(),
@@ -3167,18 +3133,14 @@ fn deleting_remote_collection_removes_only_the_exact_mount_from_every_session() 
 }
 
 // ============================================================================
-// Regression tests brought back: the 17 cases lost from the god-module
-// `mod tests` during the wave2 split.
-// Covers #162 (multi-agent flag persistence/ghost cleanup/write
-// convergence), #190 (code session two-layer persistence/default
-// resolution), #263 (three-lane defaults and plan-claim semantics).
-// Taken byte-for-byte from the pre-split baseline, with no semantic changes.
+// 回迁的回归测试：wave2 拆分时从 god-module `mod tests` 丢失的 17 个用例。
+// 覆盖 #162（multi-agent 标志持久化/幽灵清理/写盘收敛）、#190（code 会话
+// 双层持久化/默认值解析）、#263（三分 lane 默认与 plan-claim 语义）。
+// 逐字节取自拆分前基线，未做语义改动。
 // ============================================================================
 
-/// Real-behavior regression of flag persistence: persist → new store
-/// restores → delete/cleanup syncs.
-/// (A re-review pointed out the old tests only grepped the source for the
-/// call sites and never covered the real restart and cleanup paths.)
+/// 开关持久化的真实行为回归：落盘 → 新 store 恢复 → 删除/清理同步。
+/// （复核指出旧测试只 grep 源码有没有调用，不覆盖真实重启与清理路径。）
 #[test]
 fn multi_agent_flags_survive_restart_and_follow_deletion() {
     let (store, _guard) = isolated_store();
@@ -3195,7 +3157,7 @@ fn multi_agent_flags_survive_restart_and_follow_deletion() {
         "落盘清单必须包含该会话"
     );
 
-    // "restart": rebuild the store on the same disk → the flag is restored
+    // "重启"：同一磁盘上重建 store → 开关恢复
     let reloaded = SessionStore::boot_with_scheduled_root(paths::scheduled_tasks_root())
         .expect("reboot store");
     assert!(
@@ -3203,12 +3165,11 @@ fn multi_agent_flags_survive_restart_and_follow_deletion() {
         "重启后开关必须恢复（Web 门禁与每轮注入都依据它）"
     );
 
-    // off → the list converges to empty → the file is deleted (no empty
-    // shell left)
+    // 关闭 → 清单收敛为空 → 文件删除（不留空壳）
     store.set_multi_agent(&id, false).expect("persist off");
     assert!(!file.exists(), "空清单必须删除 sidecar 文件");
 
-    // on again → delete the session → the list entry is removed in sync
+    // 再开 → 删除会话 → 清单同步移除
     store
         .set_multi_agent(&id, true)
         .expect("persist flag again");
@@ -3219,9 +3180,8 @@ fn multi_agent_flags_survive_restart_and_follow_deletion() {
     );
 }
 
-/// A ghost id left by a delete-path sidecar update failure must be
-/// reconciled away on the next startup, with the list rewritten on the spot
-/// (no longer infecting later startups).
+/// 删除路径侧车更新失败留下的幽灵 id，必须在下次启动被对账剔除，
+/// 且清单当场重写（不再传染后续启动）。
 #[test]
 fn ghost_ids_are_reconciled_away_on_load() {
     let (store, _guard) = isolated_store();
@@ -3231,7 +3191,7 @@ fn ghost_ids_are_reconciled_away_on_load() {
     let real = chat.metadata.id.clone();
     store.set_multi_agent(&real, true).expect("persist flag");
 
-    // forge a ghost record (its session JSON does not exist)
+    // 伪造一条幽灵记录（会话 JSON 不存在）
     let file = paths::sessions_root().join("_multi_agent.json");
     let mut ids: Vec<String> =
         serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
@@ -3252,10 +3212,8 @@ fn ghost_ids_are_reconciled_away_on_load() {
     );
 }
 
-/// After interleaved concurrent "on/off" calls, the persisted result must
-/// converge to the final in-memory state — the saved snapshot and the write
-/// happen in the same critical section, so an old snapshot cannot overwrite
-/// a newer one.
+/// 并发「开启/关闭」交错后，落盘结果必须收敛到最终内存状态——保存的
+/// 快照与写盘在同一临界区内，旧快照不可能覆盖新快照。
 #[test]
 fn concurrent_flag_saves_converge_to_final_memory_state() {
     let (store, _guard) = isolated_store();
@@ -3292,9 +3250,8 @@ fn concurrent_flag_saves_converge_to_final_memory_state() {
     );
 }
 
-/// The retention policy's automatic cleanup must also remove ids from the
-/// flag list: a leftover ghost id would resurrect the flag state after a
-/// restart, and an expert-pool change would even rebuild a workspace for it.
+/// 保留策略的自动清理同样要移出开关清单：残留幽灵 id 会在重启后复活
+/// 开关状态，专家池变更联动还会给它重建工作区。
 #[test]
 fn retention_purge_also_updates_multi_agent_flags() {
     let (store, _guard) = isolated_store();
@@ -3343,10 +3300,9 @@ fn retention_purge_notifies_session_purged_hooks() {
     );
 }
 
-// ===================== code session permission mode (two-layer persistence + default resolution) =====================
+// ===================== code 会话权限模式（两层持久化 + 默认值解析）=====================
 
-/// Inject a simple code-session predicate: ids in the list count as
-/// Pinvou-native code sessions.
+/// 注入一个简易 code 会话判定：列表内的 id 视为品悟原生 code 会话。
 fn with_code_sessions(store: &SessionStore, ids: &[&str]) {
     let owned: Vec<String> = ids.iter().map(|s| s.to_string()).collect();
     store.set_code_session_predicate(Arc::new(move |id: &str| {
@@ -3358,19 +3314,15 @@ fn with_code_sessions(store: &SessionStore, ids: &[&str]) {
 fn code_session_first_use_defaults_to_plan() {
     let (store, _g) = isolated_store();
     with_code_sessions(&store, &["code-1"]);
-    // Never used code mode (no per-session record, global last_mode=None) →
-    // read-only Plan.
+    // 从未用过 code 模式（无 per-session 记录、全局 last_mode=None）→ Plan 只读。
     assert_eq!(store.mode_state("code-1").mode, SerializableMode::Plan);
-    // plain sessions keep the Yolo status quo.
+    // plain 会话维持 Yolo 现状。
     assert_eq!(store.mode_state("plain-1").mode, SerializableMode::Yolo);
 }
 
-/// With no predicate injected (early startup/tests), everything follows
-/// plain semantics with no misjudgment. Kept as its own test:
-/// `isolated_store` holds the process-level `ENV_LOCK` until the guard
-/// drops, so a second call on the same thread would self-deadlock
-/// (`std::sync::Mutex` is not reentrant). Call `isolated_store` only once
-/// per test.
+/// 谓词未注入时（启动早期/测试）全部按 plain 语义，不误判。拆成独立测试：
+/// `isolated_store` 持有进程级 `ENV_LOCK` 直到 guard drop，同一线程内二次调用
+/// 会自死锁（`std::sync::Mutex` 不可重入）。每测试只调一次 `isolated_store`。
 #[test]
 fn code_session_without_predicate_defaults_to_yolo() {
     let (no_predicate, _g) = isolated_store();
@@ -3384,8 +3336,7 @@ fn code_session_without_predicate_defaults_to_yolo() {
 fn code_session_default_follows_code_lane_default() {
     let (store, _g) = isolated_store();
     with_code_sessions(&store, &["code-1", "code-2"]);
-    // An already-materialized session explicitly switching to yolo: writes
-    // only the per-session record and does not touch the global lane default
+    // 已生成会话显式切 yolo：只写 per-session 记录，不碰全局 lane 默认
     // (two-lane semantics) → a new code session's default does not follow.
     store
         .set_mode("code-1", SerializableMode::Yolo)
@@ -3393,8 +3344,7 @@ fn code_session_default_follows_code_lane_default() {
     assert_eq!(store.mode_state("code-1").mode, SerializableMode::Yolo);
     assert_eq!(store.mode_state("code-2").mode, SerializableMode::Plan);
     assert!(store.code_permission_prefs().last_mode.is_none());
-    // A draft-state write of the code lane global default → new code
-    // sessions' defaults follow; existing sessions are unaffected.
+    // 草稿态写 code lane 全局默认 → 新 code 会话默认跟随；已有会话不受影响。
     store.set_mode_default(ModeLane::Code, SerializableMode::Yolo);
     assert_eq!(store.mode_state("code-2").mode, SerializableMode::Yolo);
     assert_eq!(store.mode_state("code-1").mode, SerializableMode::Yolo);
@@ -3449,7 +3399,7 @@ fn code_mode_persists_per_session_across_restart() {
     store
         .set_mode("code-2", SerializableMode::Plan)
         .expect("code-2 plan");
-    // The sidecar stores only code sessions' explicit modes.
+    // sidecar 只存 code 会话的显式 mode。
     let file = paths::sessions_root().join("_session_mode_states.json");
     let on_disk: HashMap<String, SerializableMode> =
         serde_json::from_str(&std::fs::read_to_string(&file).expect("read sidecar"))
@@ -3458,16 +3408,15 @@ fn code_mode_persists_per_session_across_restart() {
     assert_eq!(on_disk.get("code-1"), Some(&SerializableMode::Yolo));
     assert_eq!(on_disk.get("code-2"), Some(&SerializableMode::Plan));
 
-    // Restart: per-session restores each session's last mode (code-1's yolo
-    // is not overridden by the global last_mode=plan), and a new code
-    // session falls back to the global default.
+    // 重启：per-session 恢复各自上次的 mode（code-1 的 yolo 不被全局
+    // last_mode=plan 盖掉），新 code 会话回落全局默认。
     let reopened = reopen_store(&store).expect("reboot");
     with_code_sessions(&reopened, &["code-1", "code-2", "code-3"]);
     assert_eq!(reopened.mode_state("code-1").mode, SerializableMode::Yolo);
     assert_eq!(reopened.mode_state("code-2").mode, SerializableMode::Plan);
     assert_eq!(reopened.mode_state("code-3").mode, SerializableMode::Plan);
 
-    // Deleting a session cleans up its per-session persisted entry.
+    // 删除会话清理 per-session 持久化条目。
     reopened.delete("code-1").expect("delete code-1");
     let on_disk: HashMap<String, SerializableMode> =
         serde_json::from_str(&std::fs::read_to_string(&file).expect("read sidecar"))
@@ -3476,8 +3425,7 @@ fn code_mode_persists_per_session_across_restart() {
     assert_eq!(on_disk.get("code-2"), Some(&SerializableMode::Plan));
 }
 
-/// After an accepted plan is confirmed (commit), the session's Yolo joins
-/// the per-session persistence;
+/// accept 方案确认提交（commit）后，会话的 Yolo 纳入 per-session 持久化；
 /// no global lane default is touched (two-lane semantics); a failed-commit
 /// rollback writes nothing to disk, and the in-memory Plan stays consistent
 /// with disk.
@@ -3485,14 +3433,13 @@ fn code_mode_persists_per_session_across_restart() {
 fn code_session_accepted_yolo_persists_on_commit_not_rollback() {
     let (store, _g) = isolated_store();
     with_code_sessions(&store, &["code-1", "code-2"]);
-    // Never explicitly switched → defaults to Plan on first use.
+    // 从未显式切过 → 首次默认 Plan。
     assert_eq!(store.mode_state("code-1").mode, SerializableMode::Plan);
     store
         .register_pending_plan("code-1", "plan-1".to_string())
         .expect("register plan");
 
-    // Rollback (dropped without commit): memory returns to Plan, nothing is
-    // written to disk (last_mode still None).
+    // 回滚（未 commit 就 drop）：内存回 Plan，磁盘不写（last_mode 仍 None）。
     let claim = store
         .claim_pending_plan("code-1", "plan-1")
         .expect("claim plan-1");
@@ -3501,8 +3448,7 @@ fn code_session_accepted_yolo_persists_on_commit_not_rollback() {
     assert_eq!(store.mode_state("code-1").mode, SerializableMode::Plan);
     assert!(store.code_permission_prefs().last_mode.is_none());
 
-    // Commit: re-claim + commit → per-session persistence; the global lane
-    // default is untouched.
+    // 提交：重新 claim + commit → per-session 持久化；全局 lane 默认不动。
     store
         .register_pending_plan("code-1", "plan-2".to_string())
         .expect("register plan-2");
@@ -3512,8 +3458,7 @@ fn code_session_accepted_yolo_persists_on_commit_not_rollback() {
         .commit();
     assert!(store.code_permission_prefs().last_mode.is_none());
 
-    // Restart: per-session restores Yolo; a new code session falls back to
-    // the global default (untouched → Plan).
+    // 重启：per-session 恢复 Yolo；新 code 会话回落全局默认（未动 → Plan）。
     let reopened = reopen_store(&store).expect("reboot");
     with_code_sessions(&reopened, &["code-1", "code-2"]);
     assert_eq!(reopened.mode_state("code-1").mode, SerializableMode::Yolo);
@@ -3537,8 +3482,7 @@ fn plain_session_mode_persists_across_restart() {
     assert_eq!(on_disk.get("plain-1"), Some(&SerializableMode::Plan));
     assert!(store.code_permission_prefs().last_mode.is_none());
     assert_eq!(store.mode_defaults().work, None);
-    // After restart the plain session restores its own Plan (semantics 3:
-    // every conversation keeps its own mode).
+    // 重启后 plain 会话恢复自己的 Plan（语义 3：每个对话保存自己的 mode）。
     let reopened = reopen_store(&store).expect("reboot");
     assert_eq!(reopened.mode_state("plain-1").mode, SerializableMode::Plan);
 }
@@ -3555,7 +3499,7 @@ fn mode_lane_defaults_round_trip_and_validate() {
     store.set_mode_default(ModeLane::Code, SerializableMode::Yolo);
     assert_eq!(store.mode_defaults().work, Some(SerializableMode::Plan));
     assert_eq!(store.mode_defaults().code, Some(SerializableMode::Yolo));
-    // Persisted to settings.json + the mirror restored after restart.
+    // 落盘 settings.json + 重启后镜像恢复。
     assert_eq!(
         UserPrefs::load().mode_defaults.work,
         Some(SerializableMode::Plan)
@@ -3563,8 +3507,7 @@ fn mode_lane_defaults_round_trip_and_validate() {
     let reopened = reopen_store(&store).expect("reboot");
     assert_eq!(reopened.mode_defaults().work, Some(SerializableMode::Plan));
     assert_eq!(reopened.mode_defaults().code, Some(SerializableMode::Yolo));
-    // Lane string validation (the command-layer entry blocks direct IPC
-    // writes of unknown lanes).
+    // lane 字符串校验（命令层入口防 IPC 直调写未知 lane）。
     assert!(ModeLane::parse("work").is_ok());
     assert!(ModeLane::parse("code").is_ok());
     // The design lane has been merged into work: the legacy lane name is no
@@ -3690,9 +3633,8 @@ fn legacy_design_default_survives_unrelated_prefs_write() {
     drop(guard);
 }
 
-/// The legacy `_code_mode_states.json` (an artifact of the era when only
-/// code sessions were persisted) is loaded as a fallback when the new file
-/// is missing, so old users' per-session records are not lost.
+/// 旧版 `_code_mode_states.json`（只含 code 会话的时代产物）在新文件缺失时
+/// 回退加载，老用户的 per-session 记录不丢。
 #[test]
 fn legacy_code_mode_states_file_is_loaded_as_fallback() {
     let (store, _g) = isolated_store();
@@ -3718,19 +3660,15 @@ fn confirm_code_yolo_persists_globally() {
     let prefs = store.confirm_code_yolo().expect("confirm yolo");
     assert!(prefs.yolo_confirmed);
     assert!(store.code_permission_prefs().yolo_confirmed);
-    // Persisted to settings.json; the in-memory mirror still remembers
-    // after restart.
+    // 落盘 settings.json；重启后内存镜像仍记得。
     assert!(UserPrefs::load().code_permission.yolo_confirmed);
     let reopened = reopen_store(&store).expect("reboot");
     assert!(reopened.code_permission_prefs().yolo_confirmed);
 }
 
-/// reconcile only fixes code sessions without a persisted record; an
-/// explicitly switched mode must be preserved verbatim.
-/// Kept as its own test: `isolated_store` holds the process-level ENV_LOCK
-/// until the guard drops, so a second call on the same thread would
-/// self-deadlock (`std::sync::Mutex` is not reentrant) — call it only once
-/// per test.
+/// reconcile 只修正无持久化记录的 code 会话；显式切过的 mode 必须原样保留。
+/// 拆成独立测试：`isolated_store` 持有进程级 ENV_LOCK 直到 guard drop，同一线程
+/// 内二次调用会自死锁（`std::sync::Mutex` 不可重入），每测试只调一次。
 #[test]
 fn reconcile_does_not_overwrite_explicitly_persisted_mode() {
     let (store, _g) = isolated_store();
@@ -3751,10 +3689,8 @@ fn reconcile_does_not_overwrite_explicitly_persisted_mode() {
 fn fresh_code_session_default_plan_registers_pending_plan() {
     let (store, _g) = isolated_store();
     with_code_sessions(&store, &["code-1"]);
-    // On first use (the default resolves to Plan and no in-memory entry
-    // exists yet), registering a plan must succeed — it must not be
-    // materialized into Yolo by entry or_default, silently losing the Plan
-    // semantics.
+    // 首次使用（默认值经解析得到 Plan、尚无内存条目）时出方案必须能登记，
+    // 不能被 entry or_default 物化成 Yolo 而静默丢失 Plan 语义。
     let registered = store
         .register_pending_plan("code-1", "plan-1".to_string())
         .expect("register plan on fresh code session");
@@ -3762,8 +3698,7 @@ fn fresh_code_session_default_plan_registers_pending_plan() {
     assert_eq!(registered.pending_plan_id.as_deref(), Some("plan-1"));
 }
 
-/// A workflow run's workspace derives from the run id and does not land
-/// under sessions/.
+/// 工作流运行的工作区由 run id 派生，不落在 sessions/ 下。
 #[test]
 fn session_model_update_rolls_back_memory_when_sidecar_write_fails() {
     let (store, _guard) = isolated_store();
@@ -3790,7 +3725,7 @@ fn session_model_update_rolls_back_memory_when_sidecar_write_fails() {
     );
 }
 
-// ===================== code-mode rewind: conversation truncation + sidecar backup (rewind.rs) =====================
+// ===================== 代码模式回退：对话截断 + sidecar 备份（rewind.rs）=====================
 
 fn tool_result_message(id: &str) -> Message {
     Message {
@@ -3804,7 +3739,7 @@ fn tool_result_message(id: &str) -> Message {
     }
 }
 
-/// Read a session's backup records from the `_rewound_turns.json` sidecar.
+/// 读 `_rewound_turns.json` sidecar 中某会话的备份记录。
 fn rewound_records(id: &str) -> Vec<super::rewind::RewoundTurnsRecord> {
     let path = paths::sessions_root().join("_rewound_turns.json");
     let bytes = std::fs::read(&path).expect("read rewound turns sidecar");
@@ -3813,9 +3748,8 @@ fn rewound_records(id: &str) -> Vec<super::rewind::RewoundTurnsRecord> {
     map.get(id).cloned().unwrap_or_default()
 }
 
-/// Boundary caliber: a tool_result (also role="user") must not count as a
-/// turn boundary; the truncation point must land on the (N+1)-th real user
-/// prompt, and every assistant/tool_result before it is preserved.
+/// 定位口径：tool_result（同样 role="user"）不得被算作 turn 边界；截断点必须落在
+/// 第 N+1 个真实用户 prompt 上，其前的 assistant/tool_result 全部保留。
 #[test]
 fn rewind_truncates_at_turn_boundary_with_interleaved_tool_results() {
     let (store, _g) = isolated_store();
@@ -3856,10 +3790,8 @@ fn rewind_truncates_at_turn_boundary_with_interleaved_tool_results() {
         transcript_revision(&kept).expect("kept revision")
     );
 
-    // sidecar backup: truncation time, original revision, and the removed
-    // messages are complete; the post-truncation revision is recorded (the
-    // undo precise-recheck condition) and bound to the code rollback point
-    // (not passed this time → None).
+    // sidecar 备份：截断时间、原 revision、被截消息齐全；记录截断后 revision
+    // （undo 精确复核条件）与代码回滚点绑定（本次未传 → None）。
     let records = rewound_records(&id);
     assert_eq!(records.len(), 1);
     let record = &records[0];
@@ -3871,7 +3803,7 @@ fn rewind_truncates_at_turn_boundary_with_interleaved_tool_results() {
     assert_eq!(record.removed_messages, messages[4..]);
 }
 
-/// N=0 = rewind to before the first turn; the transcript is fully truncated.
+/// N=0 = 回退到第一轮之前，transcript 全部截断。
 #[test]
 fn rewind_to_zero_turns_empties_transcript() {
     let (store, _g) = isolated_store();
@@ -3904,8 +3836,7 @@ fn rewind_to_zero_turns_empties_transcript() {
     assert_eq!(records[0].removed_messages.len(), 4);
 }
 
-/// N ≥ the current turn count: errors truthfully; neither the transcript
-/// nor the sidecar is touched.
+/// N ≥ 当前 turn 数：如实报错，transcript 与 sidecar 都不动。
 #[test]
 fn rewind_out_of_range_errors_and_leaves_transcript_untouched() {
     let (store, _g) = isolated_store();
@@ -3918,8 +3849,7 @@ fn rewind_out_of_range_errors_and_leaves_transcript_untouched() {
         .update_messages(&id, messages.clone())
         .expect("seed transcript");
 
-    // Both N == the current turn count (nothing to truncate) and N > the
-    // current turn count must error.
+    // N == 当前 turn 数（无可截内容）与 N > 当前 turn 数都必须报错。
     assert!(store.truncate_to_user_turn(&id, 1, None).is_err());
     assert!(store.truncate_to_user_turn(&id, 7, None).is_err());
     assert_eq!(store.load(&id).expect("load").messages, messages);
@@ -3929,10 +3859,8 @@ fn rewind_out_of_range_errors_and_leaves_transcript_untouched() {
     );
 }
 
-/// Guard pass-through: rewind is an explicit allow path of
-/// looks_like_truncating_overwrite, so the truncation itself is not blocked;
-/// but the same guard's protection of generic entries like update_messages
-/// is unchanged.
+/// 守卫放行：回退是 looks_like_truncating_overwrite 的显式放行路径，截断本身不受
+/// 拦；但同一守卫对 update_messages 等通用入口的保护不变。
 #[test]
 fn rewind_bypasses_guard_while_update_messages_stays_protected() {
     let (store, _g) = isolated_store();
@@ -3950,17 +3878,14 @@ fn rewind_bypasses_guard_while_update_messages_stays_protected() {
         .update_messages(&id, messages.clone())
         .expect("seed transcript");
 
-    // The same truncating overwrite through the generic entry is still
-    // blocked by the guard.
+    // 同样的断式覆盖走通用入口仍被守卫拦截。
     assert!(store.update_messages(&id, vec![]).is_err());
-    // The rewind-dedicated path passes (N=0 clearing everything is allowed
-    // too).
+    // 回退专用路径放行（N=0 清空全部也允许）。
     store.truncate_to_user_turn(&id, 0, None).expect("rewind");
     assert!(store.load(&id).expect("load").messages.is_empty());
 }
 
-/// revision/CAS: the revision changes naturally after truncation, so a CAS
-/// holding the old revision must fail.
+/// revision/CAS：截断后 revision 自然变化，持旧 revision 的 CAS 必须失败。
 #[test]
 fn stale_revision_cas_fails_after_rewind() {
     let (store, _g) = isolated_store();
@@ -3987,8 +3912,7 @@ fn stale_revision_cas_fails_after_rewind() {
     assert!(error.to_string().contains("session_revision_conflict"));
 }
 
-/// Multiple rewinds append to the sidecar; past the per-session capacity
-/// the oldest is trimmed, preventing unbounded growth.
+/// 多次回退向 sidecar 追加；超过每会话容量上限时裁掉最老，防无限膨胀。
 #[test]
 fn rewind_backups_append_and_cap_at_limit() {
     let (store, _g) = isolated_store();
@@ -4012,7 +3936,7 @@ fn rewind_backups_append_and_cap_at_limit() {
     }
     let records = rewound_records(&id);
     assert_eq!(records.len(), 20, "每会话备份条数封顶 20（LRU 裁最老）");
-    // The oldest one (round 0) has been trimmed; the last 20 remain.
+    // 最老的一条（round 0）已被裁掉，剩余的是最后 20 次。
     assert!(
         records
             .iter()
@@ -4020,7 +3944,7 @@ fn rewind_backups_append_and_cap_at_limit() {
     );
 }
 
-/// Deleting a session cleans up its rewind-backup sidecar in sync.
+/// 删除会话时回退备份 sidecar 同步清理。
 #[test]
 fn delete_session_purges_rewound_turns_backup() {
     let (store, _g) = isolated_store();
@@ -4043,15 +3967,13 @@ fn delete_session_purges_rewound_turns_backup() {
 
     store.delete(&id).expect("delete session");
 
-    // The session's backup in the sidecar is cleared; with no other
-    // sessions, the whole file is removed.
+    // sidecar 中该会话的备份已清；无其他会话时整个文件被移除。
     assert!(!paths::sessions_root().join("_rewound_turns.json").exists());
 }
 
-// ===================== rewind undo (restore_rewound_turns) + compaction marker =====================
+// ===================== 回退反悔（restore_rewound_turns）+ compaction 标记 =====================
 
-/// Undo round trip: restore after truncating; messages return to
-/// pre-truncation, and the sidecar record is consumed and deleted.
+/// 反悔往返：截断后恢复，messages 回到截断前，sidecar 记录被消费删除。
 #[test]
 fn restore_rewound_turns_round_trips_messages_and_consumes_record() {
     let (store, _g) = isolated_store();
@@ -4080,7 +4002,7 @@ fn restore_rewound_turns_round_trips_messages_and_consumes_record() {
         messages,
         "反悔后 transcript 必须逐条回到截断前"
     );
-    // The record has been consumed: a second undo errors truthfully.
+    // 记录已被消费：再次反悔如实报错。
     assert!(
         store
             .latest_rewound_turns_record(&id)
@@ -4090,8 +4012,7 @@ fn restore_rewound_turns_round_trips_messages_and_consumes_record() {
     assert!(store.restore_rewound_turns(&id).is_err());
 }
 
-/// A new turn sent after the rewind → undo is impossible; errors truthfully
-/// and the transcript is untouched.
+/// 回退后发过新轮次 → 不可反悔，如实报错且 transcript 不动。
 #[test]
 fn restore_rewound_turns_rejects_after_new_turn() {
     let (store, _g) = isolated_store();
@@ -4111,8 +4032,7 @@ fn restore_rewound_turns_rejects_after_new_turn() {
         )
         .expect("seed transcript");
     store.truncate_to_user_turn(&id, 1, None).expect("rewind");
-    // Recreated after the rewind: a new turn is appended (turn count
-    // becomes 2 ≠ kept_turns 1).
+    // 回退后重新创作：追加新轮次（turn 数变为 2 ≠ kept_turns 1）。
     store
         .update_messages(
             &id,
@@ -4130,7 +4050,7 @@ fn restore_rewound_turns_rejects_after_new_turn() {
         .expect_err("new turn after rewind must block undo");
     assert!(error.to_string().contains("不可反悔"), "{error:#}");
     assert_eq!(store.load(&id).expect("load").messages.len(), 4);
-    // The record is kept (not consumed) — no data is lost.
+    // 记录保留（未消费），数据不丢。
     assert!(
         store
             .latest_rewound_turns_record(&id)
@@ -4139,8 +4059,7 @@ fn restore_rewound_turns_rejects_after_new_turn() {
     );
 }
 
-/// had_compaction: two cases — system_prompt with / without the
-/// foundation's compaction-summary marker.
+/// had_compaction：system_prompt 含/不含底座压缩摘要标记两例。
 #[test]
 fn truncate_reports_compaction_summary_residue_in_system_prompt() {
     let (store, _g) = isolated_store();
@@ -4159,8 +4078,7 @@ fn truncate_reports_compaction_summary_residue_in_system_prompt() {
             assistant_text("答二"),
         ]
     };
-    // With marker: simulates a system_prompt persisted after the
-    // foundation's compaction.
+    // 含标记：模拟底座 compaction 后持久化的 system_prompt。
     let mut state = chat_engine_state(messages());
     state.system_prompt = Some(SystemPrompt::Text(
         "前文摘要：Conversation Summary (Auto-Generated)\n……".to_string(),
@@ -4688,25 +4606,33 @@ fn load_rejects_case_variant_id_alias() {
         .expect("create aux");
     let alias = format!("AUX-{}", &aux.id[4..]);
 
-    // The record file exists on disk either way; the load must refuse the
-    // alias regardless of the filesystem's case semantics.
+    // Seed the alias physically: a file named `AUX-<suffix>.json` whose
+    // contents are the canonical record (which still declares the lowercase
+    // aux- id inside). On a case-insensitive filesystem this collides with
+    // the canonical file (same path), on a case-sensitive one it is a second
+    // file — either way `load(alias)` resolves a real record whose metadata
+    // id differs from the requested id, so the identity check is the ONLY
+    // passing branch on every platform. (Round-10 MAJOR-3: a disjunction
+    // `mismatch || NotFound` would be vacuous on Linux, where an unseeded
+    // alias file never exists and NotFound fires before the check.)
     let record = store
         .manager
         .sessions_dir()
         .join(format!("{}.json", aux.id));
-    assert!(record.exists(), "precondition: aux record is on disk");
+    let alias_record = store.manager.sessions_dir().join(format!("{alias}.json"));
+    if alias_record != record && !alias_record.exists() {
+        std::fs::copy(&record, &alias_record).expect("seed the alias record");
+    }
     let error = store
         .load(&alias)
         .expect_err("a case-variant alias must not load the aux record");
     assert!(
-        error.to_string().contains("session id mismatch")
-            || error.chain().any(|cause| {
-                cause
-                    .downcast_ref::<std::io::Error>()
-                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
-            }),
-        "the alias must fail closed (identity mismatch, or NotFound on a case-sensitive fs): {error:#}"
+        error.to_string().contains("session id mismatch"),
+        "the alias must fail closed at the identity check on every fs: {error:#}"
     );
+    if alias_record != record {
+        std::fs::remove_file(&alias_record).expect("clean up the seeded alias");
+    }
 
     // The canonical id keeps working — the identity check must not reject
     // the legitimate load.
@@ -4767,6 +4693,78 @@ fn reconcile_aux_sessions_fails_closed_on_transient_load_error() {
         store.aux_session_id(&main.metadata.id).as_deref(),
         Some(rebuilt.id.as_str())
     );
+}
+
+/// PR #433 review round-10: a transient read failure on the aux sidecar
+/// must fail closed everywhere this boot — get_or_create refuses to create,
+/// the startup reconciliation skips rather than classifying live records as
+/// orphans, and the flag only recovers on the next successful load.
+#[test]
+fn aux_sidecar_read_failure_fails_closed_everywhere() {
+    let (store, _g) = isolated_store();
+    let main = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create main");
+    let aux = store
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect("create aux on a healthy boot");
+    assert!(aux.id.starts_with("aux-"));
+
+    // Make the sidecar path unreadable: a directory where the file belongs
+    // makes exists() true but read_to_string fail with a non-NotFound
+    // error — a stand-in for a transient boot-time fault (AV/backup lock,
+    // EIO).
+    let sidecar = paths::sessions_root().join("_aux_sessions.json");
+    std::fs::remove_file(&sidecar).expect("remove the healthy sidecar");
+    std::fs::create_dir(&sidecar).expect("block the sidecar path with a directory");
+
+    // Reboot against the fault: load_aux_sessions must log and leave the
+    // not-loaded flag set, so every consumer fails closed this boot. A
+    // fresh store also clears the in-memory map — an orphan candidate
+    // (aux record alive, no mapping) now sits on disk for step 2.
+    let reopened = reopen_store(&store).expect("reboot against the unreadable sidecar");
+
+    // 1. get_or_create refuses to create: persisting a new mapping now
+    // would overwrite the (possibly intact) sidecar with only the fresh
+    // entry, and the refusal names the unloaded-bindings cause rather than
+    // the raw io error.
+    let error = reopened
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect_err("creation must fail closed while bindings are not loaded");
+    assert!(
+        error.to_string().contains("not loaded this boot"),
+        "the refusal must name the unloaded-bindings cause: {error:#}"
+    );
+
+    // 2. Reconciliation skips: mapping-based orphan decisions against the
+    // artificially empty map would otherwise delete the live aux record.
+    reopened
+        .reconcile_aux_sessions()
+        .expect("reconcile skips cleanly when bindings are not loaded");
+    reopened
+        .load(&aux.id)
+        .expect("the live aux record must survive the skipped reconcile");
+
+    // 3. The sidecar path is untouched — fail-closed must not rewrite the
+    // file it could not read.
+    assert!(
+        sidecar.is_dir(),
+        "the unreadable sidecar must be left exactly as found"
+    );
+
+    // After the fault clears, the next boot's load recovers: an absent file
+    // is a healthy state, the flag flips true, the orphan's backlink
+    // rebuilds the mapping, and get_or_create resolves the same aux
+    // (fail-closed does not wedge the recovery path).
+    std::fs::remove_dir(&sidecar).expect("unblock the sidecar path");
+    let recovered = reopen_store(&reopened).expect("reboot after the fault clears");
+    recovered
+        .reconcile_aux_sessions()
+        .expect("reconcile runs again once bindings load");
+    let resolved = recovered
+        .get_or_create_aux_session(&main.metadata.id)
+        .expect("resolution resumes after the sidecar read recovers");
+    assert_eq!(resolved.id, aux.id);
 }
 
 /// Creating an aux session must inherit the main session's per-session

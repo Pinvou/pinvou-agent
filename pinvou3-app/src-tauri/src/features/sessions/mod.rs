@@ -151,6 +151,14 @@ pub struct SessionStore {
     /// or a dead main session are reclaimed by the startup-path
     /// `reconcile_aux_sessions` (retention.rs).
     pub(crate) aux_sessions: Arc<RwLock<HashMap<String, String>>>,
+    /// Whether the aux sidecar was actually read this boot. A transient read
+    /// failure (AV/backup lock, EIO after exists() returned true) used to
+    /// silently leave an empty in-memory map, and the next set_aux_session
+    /// then overwrote the sidecar with only the fresh mapping — destroying
+    /// every pre-existing binding and feeding the startup reconciliation a
+    /// real orphan it would delete. Consumers that write mappings or run the
+    /// reconciliation must fail closed / skip when this is false.
+    pub(crate) aux_sessions_loaded: Arc<std::sync::atomic::AtomicBool>,
     /// Mutex for aux-session get-or-create: the mapping lookup and creation
     /// must run in one critical section, or two concurrent calls each create a
     /// session and the later write overwrites the mapping, leaving the first

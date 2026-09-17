@@ -646,6 +646,11 @@ pub async fn rename_session(
     app: AppHandle,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
+    if crate::features::sessions::is_aux_session_id(&id) {
+        return Err(format!(
+            "rename_session({id}): auxiliary conversations are managed through their main session"
+        ));
+    }
     store
         .set_title(&id, title)
         .map_err(|e| format!("rename_session({id}): {e:#}"))?;
@@ -661,6 +666,14 @@ pub async fn set_session_pinned(
     app: AppHandle,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
+    // Aux ids would land in the pinned table as ghost entries: aux sessions
+    // are invisible in every list, so the entry could never be cleared from
+    // the UI.
+    if crate::features::sessions::is_aux_session_id(&id) {
+        return Err(format!(
+            "set_session_pinned({id}): auxiliary conversations are managed through their main session"
+        ));
+    }
     // 先 load 一次确认 session 存在,避免置顶表残留无效 id。
     store
         .load(&id)
@@ -679,6 +692,12 @@ pub async fn set_session_archived(
     app: AppHandle,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
+    // Same ghost-entry argument as set_session_pinned.
+    if crate::features::sessions::is_aux_session_id(&id) {
+        return Err(format!(
+            "set_session_archived({id}): auxiliary conversations are managed through their main session"
+        ));
+    }
     // 先 load 一次确认 session 存在,避免收起表残留无效 id。
     store
         .load(&id)

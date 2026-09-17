@@ -477,10 +477,7 @@ test('旧独立入口退役：多智能体经会话级开关 + 每轮注入委�
   );
   assert.match(
     assistantBridgeSource,
-    // Window 2200→2500: the swarm rework (#444) grows the function body with
-    // the delegation-tier split; the pin targets the roster load, not the
-    // function's length.
-    /build_engine_config_for_multi_agent[\s\S]{0,2500}FleetRoster::load\([\s\S]{0,160}snapshot\.fleet_config\(\)[\s\S]{0,80}&cfg\.workspace/,
+    /build_engine_config_for_multi_agent[\s\S]{0,2200}FleetRoster::load\([\s\S]{0,160}snapshot\.fleet_config\(\)[\s\S]{0,80}&cfg\.workspace/,
     '初始名册必须把全局配置与实际 execution workspace 合并，允许项目同名 profile 按底座规则覆盖',
   );
   // Wave-2 拆分后 sessions 职责分散在 mod.rs 与 mode_state/store/retention 等

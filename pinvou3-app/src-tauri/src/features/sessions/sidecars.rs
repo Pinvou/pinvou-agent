@@ -351,12 +351,28 @@ impl SessionStore {
 
     pub fn load_aux_sessions(&self) {
         let file = crate::platform::paths::sessions_root().join(AUX_SESSIONS_FILE);
+        // Absent sidecar = nothing to load, and that is a healthy state (the
+        // flag still flips true): only a read failure on an existing file
+        // must leave the "not loaded" mark that fails get_or_create and the
+        // startup reconciliation closed.
         if !file.exists() {
+            self.aux_sessions_loaded
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             return;
         }
         let content = match std::fs::read_to_string(&file) {
             Ok(c) => c,
-            Err(_) => return,
+            // A silent swallow here chains into real transcript loss: the
+            // empty in-memory map makes the next set_aux_session overwrite
+            // the sidecar with only the fresh mapping, and the next boot's
+            // reconciliation then deletes the pre-existing aux records as
+            // ambiguous duplicates. Log (same level as the parse-error
+            // branch below) and leave aux_sessions_loaded false so the
+            // writers/reconciler fail closed this boot.
+            Err(error) => {
+                eprintln!("[sessions] load_aux_sessions read failed: {error}");
+                return;
+            }
         };
         match serde_json::from_str::<HashMap<String, String>>(&content) {
             Ok(map) => {
@@ -392,14 +408,31 @@ impl SessionStore {
                             && main_id != aux_id
                             && seen_aux_ids.insert(aux_id.clone());
                         if !valid {
-                            eprintln!("[sessions] drop invalid aux mapping {main_id} -> {aux_id}");
+                            // No raw ids in logs (the CodeQL cleartext-logging
+                            // stance this PR settled on); the entry kinds still
+                            // identify the dropped shape for debugging.
+                            eprintln!("[sessions] drop invalid aux mapping entry");
                         }
                         valid
                     })
                     .collect();
                 *self.aux_sessions.write() = map;
             }
-            Err(e) => eprintln!("[sessions] load_aux_sessions failed: {e}"),
+            // A parse failure is NOT the fail-closed case: the sidecar's
+            // content is provably unrecoverable, so the records+backlinks on
+            // disk carry all remaining truth, and orphan classification (with
+            // its backlink-first rebuild) is safe to run. The corrupted file
+            // is only ever overwritten once a fresh, validated mapping exists
+            // (the empty-map write is suppressed by the not-loaded flag only
+            // for the read-failure case, where the file may be intact).
+            Err(e) => {
+                eprintln!("[sessions] load_aux_sessions failed: {e}");
+                self.aux_sessions_loaded
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                return;
+            }
         }
+        self.aux_sessions_loaded
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }

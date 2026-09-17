@@ -357,6 +357,17 @@ impl SessionStore {
     /// create_aux_session would trigger enforce and misdelete the newborn as an
     /// orphan).
     pub(crate) fn reconcile_aux_sessions(&self) -> Result<()> {
+        // Skip entirely when the sidecar was never successfully read this
+        // boot: mapping-based decisions (missing mapping ⇒ rebuild/delete)
+        // would run against an artificially empty map and delete live
+        // transcripts. The next boot retries the reconcile.
+        if !self
+            .aux_sessions_loaded
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            eprintln!("[sessions] aux reconciliation skipped: bindings not loaded this boot");
+            return Ok(());
+        }
         let aux_ids: Vec<String> = self
             .list_sessions_cached()
             .context("list sessions for aux session reconciliation")?
@@ -374,8 +385,26 @@ impl SessionStore {
                 // Mapping exists, but the main session record is no longer on
                 // disk → dead main with a surviving aux.
                 Some((main_id, _)) => {
-                    if !chat_session_file(&self.manager, main_id).is_ok_and(|path| path.exists()) {
+                    let main_gone =
+                        !chat_session_file(&self.manager, main_id).is_ok_and(|path| path.exists());
+                    // A hand-edited sidecar can map mainA to an aux whose
+                    // record backlink names mainB — without this check the
+                    // mapping is trusted and mainA's panel would read mainB's
+                    // transcript. On mismatch (main still alive) detach the
+                    // false mapping so the record becomes a backlink-rebuild
+                    // candidate for its true parent; when the main is gone the
+                    // record is orphaned outright. A record read failure keeps
+                    // the mapping (fail open to "unknown", matching the
+                    // transient-fault stance of the rebuild side).
+                    let backlink_mismatch = match self.load(&aux_id) {
+                        Ok(session) => session.metadata.parent_session_id.as_deref()
+                            != Some(main_id.as_str()),
+                        Err(_) => false,
+                    };
+                    if main_gone {
                         orphan_ids.push(aux_id);
+                    } else if backlink_mismatch {
+                        let _ = self.set_aux_session(main_id, None);
                     }
                 }
                 // Mapping missing: crash in the creation window / corrupted

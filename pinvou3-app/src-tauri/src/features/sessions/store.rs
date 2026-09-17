@@ -213,6 +213,7 @@ impl SessionStore {
             pinned_sessions: Arc::new(RwLock::new(HashMap::new())),
             hidden_sessions: Arc::new(RwLock::new(HashMap::new())),
             aux_sessions: Arc::new(RwLock::new(HashMap::new())),
+            aux_sessions_loaded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             aux_sessions_io: Arc::new(Mutex::new(())),
             execution_root_resolver: Arc::new(RwLock::new(None)),
             session_workspaces: Arc::new(RwLock::new(HashMap::new())),
@@ -405,12 +406,9 @@ impl SessionStore {
             self.delete(&aux_id)
                 .with_context(|| format!("delete aux session {aux_id} of {id}"))?;
         }
-        // Upstream delete_session removes the session JSON before cleaning the
-        // directory: when directory cleanup fails, the JSON is already gone
-        // from disk and the error propagates upward — invalidate the snapshot
-        // as "a delete was attempted and disk may have changed", without
-        // waiting for the unified invalidation after the match (an early Err
-        // return would skip it).
+        // 上游 delete_session 先删会话 JSON 再清目录:目录清理失败时 JSON 已
+        // 不在盘上但错误会向上传播——按「已发起删除即可能变更盘面」失效快照,
+        // 不能等走到 match 之后的统一失效(Err 提前 return 会跳过它)。
         self.invalidate_list_cache();
         let (committed, delete_result) = self.delete_session_record(id);
         if committed {
@@ -733,6 +731,23 @@ impl SessionStore {
                 }
             });
         }
+        // The retention sweep bypasses aux_sessions_io (store layer cannot
+        // take the creation lock): a save() above can trigger an eviction of
+        // the parent in the window before the mapping lands, leaving a
+        // dead-parent/live-aux orphan. Re-check inside the caller's lock and
+        // roll back instead of publishing the mapping. (Round-10 minor-1.)
+        if self.load(parent_id).is_err() {
+            let _ = self.set_aux_session(parent_id, None);
+            let rollback = self.delete(&id);
+            return Err(match rollback {
+                Ok(()) => anyhow::anyhow!(
+                    "parent session {parent_id} was evicted while creating its aux session"
+                ),
+                Err(rollback_error) => anyhow::anyhow!(
+                    "parent session {parent_id} was evicted while creating its aux session; rollback aux Session {id}: {rollback_error:#}"
+                ),
+            });
+        }
         Ok(session.metadata)
     }
 
@@ -752,6 +767,20 @@ impl SessionStore {
             bail!("Scheduled-run session '{parent_id}' cannot own an aux session");
         }
         let _create = self.aux_sessions_io.lock();
+        // Fail closed when the sidecar read failed this boot (the in-memory
+        // map is empty but the on-disk bindings are unknown): creating here
+        // would overwrite the sidecar with only the fresh mapping and hand
+        // the next boot's reconciliation a real orphan to delete. A parse
+        // failure is NOT covered — the sidecar content is provably dead, so
+        // rebuilding from records+backlinks is the recovery path, and this
+        // function is part of it. The panel surfaces a refusal as
+        // ensureFailed; the next boot reloads the file.
+        if !self
+            .aux_sessions_loaded
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            bail!("Aux session bindings were not loaded this boot; refusing to create");
+        }
         if let Some(aux_id) = self.aux_session_id(parent_id) {
             match self.load(&aux_id) {
                 Ok(aux) => return Ok(aux.metadata),
