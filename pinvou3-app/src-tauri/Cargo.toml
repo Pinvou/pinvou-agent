@@ -181,9 +181,6 @@ rand = "0.10"
 # Keep 0.22: age/codewhale-tui/hyper-util still require 0.22; a solo 0.23 bump would only add a second copy. Revisit once upstreams align.
 base64 = "0.22"
 tempfile = "3"
-# Test-only helper for deterministic mtime bumps (fingerprint tests must not
-# rely on the filesystem clock's resolution).
-filetime = "0.2"
 age = { version = "=0.12.1", default-features = false }
 
 # keyring 不再直接依赖 —— 凭证走底座 codewhale-secrets(它内部按平台引 keyring)。

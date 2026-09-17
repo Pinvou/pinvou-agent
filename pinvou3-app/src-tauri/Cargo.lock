@@ -6222,7 +6222,6 @@ dependencies = [
  "codewhale-tui",
  "encoding_rs",
  "fd-lock",
- "filetime",
  "flate2",
  "futures-util",
  "gtk",

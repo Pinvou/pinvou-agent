@@ -513,12 +513,16 @@ pub fn checkout_workspace_branch(
     workspace_branches(&root)
 }
 
-/// diff 内存缓存：键 = (session_id, 相对路径)，值 = 文件指纹 + diff 文本。
-/// 指纹覆盖工作区文件（size + mtime 纳秒 + 头尾采样 hash——内容变而 size/mtime
-/// 未变（同尺寸覆盖写）也能失效）、`.git/index`（git add/reset 等暂存区变化
-/// 会更新 index）与 HEAD 指向的 ref 文件（reset --soft / update-ref / commit 只
-/// 移动 HEAD、可能不更新 index 或工作区——而 git diff --cached 依赖 HEAD），
-/// 任一变化即失效；仅进程内存、不落盘，重启即清空。
+/// In-memory diff cache: key = (session_id, relative path), value = file
+/// fingerprint + diff text. The fingerprint covers the workspace file (size +
+/// mtime nanoseconds + content-sampled hash — files ≤ 8 KiB are hashed in
+/// full, larger files head and tail 4 KiB each — so a content change with
+/// unchanged size/mtime, such as a same-size overwrite, still invalidates),
+/// `.git/index` (staging-area changes from git add/reset update it) and the
+/// ref file HEAD points to (reset --soft / update-ref / commit only move HEAD
+/// and may touch neither the index nor the worktree — yet git diff --cached
+/// depends on HEAD); any change invalidates the entry. Process memory only,
+/// never persisted; cleared on restart.
 const DIFF_CACHE_MAX_ENTRIES: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -528,8 +532,10 @@ struct DiffFingerprint {
     head_tail_hash: u64,
     index_size: u64,
     index_modified: u128,
+    index_hash: u64,
     head_ref_size: u64,
     head_ref_modified: u128,
+    head_ref_hash: u64,
 }
 
 #[derive(Clone)]
@@ -551,8 +557,14 @@ fn modified_nanos(metadata: &fs::Metadata) -> u128 {
         .unwrap_or_default()
 }
 
-// 头 4KB + 尾 4KB 的 FNV-1a 采样：文件内容变化（含同尺寸覆盖写）时大概率失效，
-// 每次开销恒定 ~8KB 读取，远小于重跑 git diff。
+// FNV-1a content sampling: files ≤ 8 KiB are read in full, leaving no
+// sampling blind spot — a medium-size repo's .git/index falls exactly in this
+// range: entries are fixed-size and same-path/same-SHA-width rewrites keep the
+// size unchanged, and the rewrite can land within the same mtime granularity,
+// so head-only sampling would miss rewrites of later entries and the checksum.
+// Files > 8 KiB read head and tail 4 KiB each; content changes (including
+// same-size overwrites) still invalidate with high probability. Constant ≤ 8
+// KiB read per call, far cheaper than re-running git diff.
 fn sample_head_tail_hash(path: &Path, len: u64) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     let mut visit = |bytes: &[u8]| {
@@ -562,17 +574,18 @@ fn sample_head_tail_hash(path: &Path, len: u64) -> u64 {
         }
     };
     if let Ok(mut file) = fs::File::open(path) {
-        let head_len = 4096.min(len as usize);
-        let mut head = vec![0u8; head_len];
-        if file.read_exact(&mut head).is_ok() {
-            visit(&head);
-        }
-        if len > 8192 {
-            let tail_len = 4096.min((len - head_len as u64) as usize);
-            let mut tail = vec![0u8; tail_len];
-            if file.seek(SeekFrom::End(-(tail_len as i64))).is_ok()
-                && file.read_exact(&mut tail).is_ok()
-            {
+        if len <= 8192 {
+            let mut full = vec![0u8; len as usize];
+            if file.read_exact(&mut full).is_ok() {
+                visit(&full);
+            }
+        } else {
+            let mut head = vec![0u8; 4096];
+            if file.read_exact(&mut head).is_ok() {
+                visit(&head);
+            }
+            let mut tail = vec![0u8; 4096];
+            if file.seek(SeekFrom::End(-4096)).is_ok() && file.read_exact(&mut tail).is_ok() {
                 visit(&tail);
             }
         }
@@ -587,26 +600,40 @@ fn diff_fingerprint(root: &Path, relative: &str) -> DiffFingerprint {
         head_tail_hash: 0,
         index_size: 0,
         index_modified: 0,
+        index_hash: 0,
         head_ref_size: 0,
         head_ref_modified: 0,
+        head_ref_hash: 0,
     };
     if let Ok(metadata) = root.join(relative).metadata() {
         fingerprint.file_size = metadata.len();
         fingerprint.file_modified = modified_nanos(&metadata);
         fingerprint.head_tail_hash = sample_head_tail_hash(&root.join(relative), metadata.len());
     }
-    // git 暂存区变化会重写 .git/index；非 git 工作区无此文件，字段保持 0。
+    // Staging-area changes rewrite .git/index; a non-git worktree has no such
+    // file and the fields stay 0. Index entries are fixed-size and
+    // same-path/same-SHA-width rewrites often keep the size unchanged, and can
+    // likewise land within one mtime granularity — add a content-hash fallback
+    // exactly like the HEAD ref below.
     if let Ok(metadata) = root.join(".git/index").metadata() {
         fingerprint.index_size = metadata.len();
         fingerprint.index_modified = modified_nanos(&metadata);
+        fingerprint.index_hash = sample_head_tail_hash(&root.join(".git/index"), metadata.len());
     }
-    // git diff --cached 比较 index 与 HEAD；reset --soft / update-ref / commit 只移动
-    // HEAD（改写其指向的 ref 文件），可能不更新 .git/index 或工作区。解析 .git/HEAD
-    // （多为 symref: ref: refs/heads/<branch>）后 stat 目标文件，使此类改动也能失效。
+    // git diff --cached compares the index with HEAD; reset --soft /
+    // update-ref / commit only move HEAD (rewriting the ref file it points to)
+    // and may touch neither .git/index nor the worktree. Resolve .git/HEAD
+    // (usually a symref: ref: refs/heads/<branch>) and stat the target so such
+    // changes invalidate too.
     if let Some(head_ref) = head_ref_path(root) {
         if let Ok(metadata) = head_ref.metadata() {
             fingerprint.head_ref_size = metadata.len();
             fingerprint.head_ref_modified = modified_nanos(&metadata);
+            // Content-hash fallback: reset --soft / update-ref can land within
+            // the same timestamp granularity as the previous fingerprint and
+            // leave mtime unchanged; only the content (the rewritten SHA)
+            // invalidates the cache correctly.
+            fingerprint.head_ref_hash = sample_head_tail_hash(&head_ref, metadata.len());
         }
     }
     fingerprint
@@ -1386,6 +1413,20 @@ mod tests {
         assert_eq!(third.text, fourth.text);
     }
 
+    // Sample the mtime at a moment and write it back: same-size same-mtime
+    // rewrites are more deterministic than relying on filesystem timestamp
+    // granularity — without the content hash these tests fail on every
+    // platform, not only on coarse-mtime Linux CI.
+    fn current_times(path: &Path) -> fs::FileTimes {
+        let metadata = fs::metadata(path).unwrap();
+        fs::FileTimes::new().set_modified(metadata.modified().unwrap())
+    }
+
+    fn apply_times(path: &Path, times: fs::FileTimes) {
+        let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_times(times).unwrap();
+    }
+
     #[test]
     fn diff_fingerprint_covers_file_and_git_index() {
         let root = TestDir::new("diff-fingerprint");
@@ -1394,20 +1435,128 @@ mod tests {
         fs::write(root.path().join("main.py"), "print(1)\n").unwrap();
 
         let baseline = diff_fingerprint(root.path(), "main.py");
-        // 文件内容变化 → 指纹变化。
+        // Staging change (.git/index rewrite) → fingerprint changes. Index
+        // entries are fixed-size; same-path same-SHA-width rewrites keep the
+        // size, so after explicitly pinning the mtime back to the baseline
+        // only the content hash can invalidate.
+        let index = root.path().join(".git/index");
+        let index_stamp = current_times(&index);
+        fs::write(&index, b"idx2").unwrap();
+        apply_times(&index, index_stamp);
+        assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
+        // Content and mtime fully restored → fingerprint returns to baseline
+        // (same content must not cause spurious invalidation).
+        fs::write(&index, b"idx1").unwrap();
+        apply_times(&index, index_stamp);
+        assert_eq!(baseline, diff_fingerprint(root.path(), "main.py"));
+        // File content change → fingerprint changes.
         fs::write(root.path().join("main.py"), "print(2)\n").unwrap();
         assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
-        // 暂存区变化（.git/index 重写）→ 指纹变化。
-        fs::write(root.path().join(".git/index"), b"idx2").unwrap();
-        assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
+    }
+
+    // Medium real-repo index (4–8 KiB): 80 files put the index just past the
+    // head sampling window while staying within the "≤ 8 KiB" range — the
+    // f075 entry (offset > 5 KiB) and the checksum both live in the second
+    // half of the file, so a same-size same-mtime staging rewrite can only be
+    // caught by the full hash (head/tail sampling used to miss that range).
+    #[test]
+    fn diff_fingerprint_invalidates_on_medium_index_staging_change() {
+        let Some(root) = init_git_repo("diff-fingerprint-medium-index") else {
+            return;
+        };
+        for index in 1..=80 {
+            fs::write(
+                root.path().join(format!("f{index:03}")),
+                format!("content {index}\n"),
+            )
+            .unwrap();
+        }
+        git_output(root.path(), &["add", "."]).unwrap();
+        git_output(
+            root.path(),
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=test",
+                "commit",
+                "-m",
+                "80 files",
+            ],
+        )
+        .unwrap();
+        // read-tree strips the TREE extension left by add, so the baseline and
+        // tampered states below both come from the same update-index rewrite
+        // path, guaranteeing identical index sizes for both.
+        git_output(root.path(), &["read-tree", "HEAD"]).unwrap();
+        let old_sha = git_output(root.path(), &["rev-parse", ":f075"]).unwrap();
+        let tampered_blob = std::env::temp_dir().join(format!(
+            "pinvou3-tampered-blob-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&tampered_blob, "tampered\n").unwrap();
+        let new_sha = git_output(
+            root.path(),
+            &["hash-object", "-w", tampered_blob.to_str().unwrap()],
+        )
+        .unwrap();
+        let _ = fs::remove_file(&tampered_blob);
+        let old_sha = old_sha.trim();
+        let new_sha = new_sha.trim();
+        let restage = |sha: &str| {
+            git_output(
+                root.path(),
+                &["update-index", "--cacheinfo", &format!("100644,{sha},f075")],
+            )
+            .unwrap();
+        };
+
+        // Run tamper → restore once first, so the baseline state is also a
+        // product of an update-index rewrite.
+        restage(new_sha);
+        restage(old_sha);
+        let index = root.path().join(".git/index");
+        let baseline = diff_fingerprint(root.path(), "f001");
+        // Premise guard: the index must land in the target range beyond the
+        // head sampling window and within 8 KiB.
+        assert!(
+            baseline.index_size > 4096 && baseline.index_size <= 8192,
+            "index size {} not in the 4–8 KiB target range",
+            baseline.index_size
+        );
+        let index_stamp = current_times(&index);
+
+        // Equivalent update-index rewrite of the staged blob: the worktree is
+        // untouched, only the second half of the index changes.
+        restage(new_sha);
+        apply_times(&index, index_stamp);
+        // Same-size guard: if the size changed, the invalidation would not
+        // come from the content hash and this test would lose its point.
+        let after = diff_fingerprint(root.path(), "f001");
+        assert_eq!(after.index_size, baseline.index_size);
+        assert_eq!(after.index_modified, baseline.index_modified);
+        assert_ne!(after, baseline);
+        // Restoring the staged content returns the fingerprint to the
+        // baseline (same content must not cause spurious invalidation).
+        restage(old_sha);
+        apply_times(&index, index_stamp);
+        assert_eq!(diff_fingerprint(root.path(), "f001"), baseline);
     }
 
     #[test]
     fn diff_fingerprint_invalidates_on_head_change() {
-        // git diff --cached 比较 index 与 HEAD；reset --soft / update-ref 只改写 HEAD
-        // 指向的 ref 文件、不更新 .git/index 或工作区——指纹必须覆盖此场景，否则缓存
-        // 会返回陈旧差异。.git/HEAD 多为 symref（ref: refs/heads/<branch>），目标文件
-        // 是 41 字节的 SHA（不同提交同尺寸），故此处以同尺寸重写验证 mtime 失效。
+        // git diff --cached compares the index with HEAD; reset --soft /
+        // update-ref only rewrite the ref file HEAD points to and update
+        // neither .git/index nor the worktree — the fingerprint must cover
+        // this case or the cache serves stale diffs. .git/HEAD is usually a
+        // symref (ref: refs/heads/<branch>) whose target file is a 41-byte
+        // SHA (same size across commits), and two rewrites can land within
+        // the same mtime granularity, so this verifies content-hash
+        // invalidation via a same-size same-mtime rewrite.
         let root = TestDir::new("diff-fingerprint-head");
         fs::create_dir_all(root.path().join(".git/refs/heads")).unwrap();
         let head_ref = root.path().join(".git/refs/heads/main");
@@ -1416,27 +1565,27 @@ mod tests {
         fs::write(root.path().join("main.py"), "print(1)\n").unwrap();
 
         let baseline = diff_fingerprint(root.path(), "main.py");
-        // 等价 reset --soft <other-commit>：分支 ref 同尺寸改写（index 与工作区不变）。
-        // Bump the mtime deterministically: on filesystems/CPUs fast enough for
-        // both writes to land within one clock tick (or with coarse mtime
-        // granularity), two quick fs::write calls share a timestamp and the
-        // mtime-only fingerprint compares equal — the CI failure mode this
-        // fixes (#537).
+        let ref_stamp = current_times(&head_ref);
+        // Equivalent of reset --soft <other-commit>: the branch ref is
+        // rewritten at the same size (index and worktree untouched).
         fs::write(&head_ref, format!("{}\n", "b".repeat(40))).unwrap();
-        filetime::set_file_mtime(
-            &head_ref,
-            filetime::FileTime::from_unix_time(1_800_000_000, 0),
-        )
-        .unwrap();
+        apply_times(&head_ref, ref_stamp);
         assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
+        // Content and mtime fully restored → fingerprint returns to baseline
+        // (same content must not cause spurious invalidation).
+        fs::write(&head_ref, format!("{}\n", "a".repeat(40))).unwrap();
+        apply_times(&head_ref, ref_stamp);
+        assert_eq!(baseline, diff_fingerprint(root.path(), "main.py"));
 
-        // symref 目标切换（checkout）也算 HEAD 变化：HEAD 文件内容改写即失效。
+        // A symref target switch (checkout) also counts as a HEAD change:
+        // rewriting the HEAD file invalidates. The dev ref is the same size
+        // as main and pinned to the same mtime, so the invalidation can only
+        // come from the content hash (after the symref switch the resolved
+        // path is dev with different content).
+        let dev_ref = root.path().join(".git/refs/heads/dev");
+        fs::write(&dev_ref, format!("{}\n", "c".repeat(40))).unwrap();
+        apply_times(&dev_ref, ref_stamp);
         fs::write(root.path().join(".git/HEAD"), "ref: refs/heads/dev\n").unwrap();
-        filetime::set_file_mtime(
-            root.path().join(".git/HEAD"),
-            filetime::FileTime::from_unix_time(1_800_000_100, 0),
-        )
-        .unwrap();
         assert_ne!(baseline, diff_fingerprint(root.path(), "main.py"));
     }
 
