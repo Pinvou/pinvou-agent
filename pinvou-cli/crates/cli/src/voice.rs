@@ -542,7 +542,12 @@ fn asr_install(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     let mut steps: Vec<String> = Vec::new();
     if !ffmpeg_available() {
         pinvou3_lib::features::dependencies::install_dependencies(vec!["ffmpeg".to_owned()], None)
-            .map_err(|error| CliError::failed(format!("voice asr-install: ffmpeg: {error}")))?;
+            .map_err(|error| {
+                CliError::failed(format!(
+                    "voice asr-install: ffmpeg: {}",
+                    crate::deps::translate_deps_error(&error.to_string())
+                ))
+            })?;
         steps.push("installed ffmpeg".to_owned());
     }
     if !model_available() {
@@ -1040,17 +1045,6 @@ const MAX_ENGINE_OUTPUT_BYTES: u64 = 8 * 1024 * 1024;
 /// Drains one child output pipe, capped at [`MAX_ENGINE_OUTPUT_BYTES`] and
 /// decoded lossily, so a chatty engine neither buffers without bound nor
 /// fails the whole transcription over an invalid byte.
-/// Collects one capped pipe drain through a bounded grace instead of an
-/// unbounded join: a descendant that inherited the pipe's write end can keep
-/// it open past the engine's exit, and `read_to_end` never sees EOF. On
-/// grace expiry the straggler is left alone — this process exits right
-/// after, closing the read end, and the shortfall surfaces as the usual
-/// parse/length failure instead of a hang.
-fn drain_with_grace(rx: std::sync::mpsc::Receiver<String>) -> String {
-    rx.recv_timeout(std::time::Duration::from_secs(5))
-        .unwrap_or_default()
-}
-
 fn drain_capped<R: std::io::Read>(pipe: Option<R>) -> String {
     let mut bytes = Vec::new();
     if let Some(pipe) = pipe {
@@ -1060,6 +1054,17 @@ fn drain_capped<R: std::io::Read>(pipe: Option<R>) -> String {
         );
     }
     String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// Collects one capped pipe drain through a bounded grace instead of an
+/// unbounded join: a descendant that inherited the pipe's write end can keep
+/// it open past the engine's exit, and `read_to_end` never sees EOF. On
+/// grace expiry the straggler is left alone — this process exits right
+/// after, closing the read end, and the shortfall surfaces as the usual
+/// parse/length failure instead of a hang.
+fn drain_with_grace(rx: std::sync::mpsc::Receiver<String>) -> String {
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap_or_default()
 }
 
 /// Mirror of `run_local_asr_cli`: same argument protocol, same env-driven

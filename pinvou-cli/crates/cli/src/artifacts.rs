@@ -211,9 +211,25 @@ fn deliverable_index() -> Vec<DeliverableRow> {
         Err(_) => return Vec::new(),
     };
     let mut by_path: HashMap<String, DeliverableRow> = HashMap::new();
+    // `list` only reads the metadata header, but a session record is parsed
+    // whole: cap the per-file read like every other family lane so a huge
+    // transcript cannot dominate the listing (oversized files are skipped
+    // with a note rather than read).
+    const MAX_LIST_SCAN_BYTES: u64 = 32 * 1024 * 1024;
     for entry in entries.flatten() {
         let file = entry.path();
         if !file.is_file() || file.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        if std::fs::metadata(&file)
+            .map(|meta| meta.len())
+            .unwrap_or_default()
+            > MAX_LIST_SCAN_BYTES
+        {
+            eprintln!(
+                "[artifacts] list skips {} (larger than the {MAX_LIST_SCAN_BYTES}-byte scan cap)",
+                file.display()
+            );
             continue;
         }
         let Ok(raw) = std::fs::read_to_string(&file) else {

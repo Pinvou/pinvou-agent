@@ -1254,7 +1254,9 @@ fn pending(
                 .unwrap_or(true);
             if !materialized {
                 return Err(CliError::failed(format!(
-                    "memory pending confirm({id}): the candidate is confirmed, but its                      content is profile-shaped preference text that is deliberately not                      materialized; nothing was written to the target store"
+                    "memory pending confirm({id}): the candidate is confirmed, but its content \
+                     is profile-shaped preference text that is deliberately not materialized; \
+                     nothing was written to the target store"
                 )));
             }
             (

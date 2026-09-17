@@ -96,8 +96,30 @@ fn write_file(
     destination: &std::path::Path,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
+    use std::io::Write;
     let markdown = result.markdown.clone().unwrap_or_default();
-    std::fs::write(destination, markdown).map_err(|error| {
+    // Same no-overwrite policy as `sessions export`: a plain write could
+    // destroy an unrelated file the user pointed at with exit 0, and
+    // `create_new` makes the check and the write one atomic step.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                CliError::failed(format!(
+                    "files ingest: refusing to overwrite {}; choose a destination that does \
+                     not exist yet",
+                    destination.display()
+                ))
+            } else {
+                CliError::failed(format!(
+                    "files ingest: cannot write {}: {error}",
+                    destination.display()
+                ))
+            }
+        })?;
+    file.write_all(markdown.as_bytes()).map_err(|error| {
         CliError::failed(format!(
             "files ingest: cannot write {}: {error}",
             destination.display()
