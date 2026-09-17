@@ -15,6 +15,15 @@ import { pathBasename } from '../../shared/path-utils.js';
 
 const OAUTH_UI_TIMEOUT_MS = 90_000;
 
+// 释放共享忙碌槽位：只释放属于自己的那次操作。
+// 连接器的完成/失败事件是**异步**送达的，期间用户完全可能已经收起了本连接器的
+// 登录弹窗（收起不取消后台流程）并发起了另一个工具操作，此时 busyId 已经易主。
+// 无条件 `setBusyId(null)` 会把别人未完成的忙碌态一并抹掉：按钮只按
+// `busyId === tool.backendId` 判断禁用，于是正在跑的安装/卸载/导入会提前放闸，
+// 可以被重复触发。
+// 用法：`setBusyId(current => releaseBusy(current, cfg.key))`。
+const releaseBusy = (busyId, toolId) => (busyId === toolId ? null : busyId);
+
 const canStartExternalAuth = () => can('oauth') && can('externalAuth');
 
 const isRestrictedExternalAuthTool = (tool) => !!tool && !!(
@@ -382,7 +391,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         } catch (e) {
           console.error(`${cfg.key} connect failed:`, e);
           conn.stopTick();
-          setBusyId(null);
+          setBusyId((current) => releaseBusy(current, cfg.key));
           conn.setFlow(f => {
             const step = (f && f.active) || 'cli';
             return { ...(f || { steps: {} }), phase: 'error', err: String(e).slice(0, 300), errStep: step, steps: { ...(f && f.steps), [step]: 'error' } };
@@ -393,7 +402,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const resetFlow = ({ setBusyId }) => {
         conn.stopTick();
         invokeTauri(cfg.commands.cancel).catch(() => {});
-        conn.setFlow(null); setBusyId(null);
+        conn.setFlow(null); setBusyId((current) => releaseBusy(current, cfg.key));
       };
       // Retry: ensure_cli is idempotent, so simply rerun the whole connection flow.
       const retry = (deps) => { connect(deps); };
@@ -410,7 +419,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           console.error(`${cfg.key} logout failed:`, e);
           setAlert({ visible: true, loading: false, title: detailCopy.actions.operationFailed, isError: true });
         } finally {
-          setBusyId(null);
+          setBusyId((current) => releaseBusy(current, cfg.key));
         }
       };
       return { conn, ensureListeners, connect, disconnect, resetFlow, retry };
@@ -479,12 +488,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           const ph = flow && flow.phase;
           if (ph !== prevPhase) {
             if (ph === 'done') {
-              setBusyId(null);
+              setBusyId((current) => releaseBusy(current, toolId));
               loadBackendState();
               setAlert({ visible: true, loading: false, title: doneTitle, subtitle: detailCopy.actions.enabled, isInstall: true, isError: false, toolId });
               notifyComposerToolsChanged();
             } else if (ph === 'error') {
-              setBusyId(null);
+              setBusyId((current) => releaseBusy(current, toolId));
             }
             prevPhase = ph;
           }
