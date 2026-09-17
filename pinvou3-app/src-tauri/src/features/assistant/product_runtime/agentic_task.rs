@@ -377,12 +377,12 @@ pub async fn run_agentic_task(
         match store.chat_session_has_messages(&session_id) {
             Ok(false) => {
                 runtime.schedule_eval_cleanup(&session_id);
-                let _ = runtime.close_eval_session_result(&session_id).await;
+                log_cleanup_delete(&runtime, &session_id).await;
             }
             Ok(true) if keep_session => runtime.pool.evict(&session_id).await,
             Ok(true) => {
                 runtime.schedule_eval_cleanup(&session_id);
-                let _ = runtime.close_eval_session_result(&session_id).await;
+                log_cleanup_delete(&runtime, &session_id).await;
             }
             Err(_) => runtime.pool.evict(&session_id).await,
         }
@@ -391,7 +391,7 @@ pub async fn run_agentic_task(
         runtime.pool.evict(&session_id).await;
     } else {
         runtime.schedule_eval_cleanup(&session_id);
-        let _ = runtime.close_eval_session_result(&session_id).await;
+        log_cleanup_delete(&runtime, &session_id).await;
     }
     // Disarm before reporting: the prepare-time save happened before any setup
     // fault could surface, so the evictions are real regardless of the final
@@ -402,6 +402,15 @@ pub async fn run_agentic_task(
         eprintln!("{warning}");
     }
     outcome
+}
+
+/// Best-effort cleanup delete: a failed delete must not mask the run's own
+/// outcome, but silently stranding the session in the shared store hides the
+/// failure from the operator — log it instead of discarding the result.
+async fn log_cleanup_delete(runtime: &EnginePoolRuntime, session_id: &str) {
+    if let Err(error) = runtime.close_eval_session_result(session_id).await {
+        eprintln!("[agent-task] cleanup delete for session {session_id} failed: {error:#}");
+    }
 }
 
 /// `PINVOU3_AGENT_TASK_KEEP_SESSION`: sessions are kept by default; only the
@@ -502,8 +511,17 @@ fn ensure_model_exists(model_id: &str) -> Result<()> {
 /// automation authority and never host external agentic turns; ACP sessions
 /// do not live in this store, so they fail the existence check first.
 fn ensure_existing_chat_session(store: &SessionStore, session_id: &str) -> Result<()> {
-    if store.load(session_id).is_err() {
+    if !store.chat_session_record_exists(session_id) {
         anyhow::bail!("agent_session_not_found: session '{session_id}' does not exist");
+    }
+    // The record exists on disk but could not be loaded: report the real
+    // fault. A corrupt or unreadable transcript is a different problem from
+    // a missing session, and "does not exist" would misdirect the harness
+    // operator (the safe direction is unchanged: both fail loud).
+    if let Err(error) = store.load(session_id) {
+        anyhow::bail!(
+            "agent_session_unreadable: session '{session_id}' exists but could not be loaded: {error:#}"
+        );
     }
     match store.session_kind(session_id)? {
         SessionKind::Chat => Ok(()),
@@ -592,7 +610,7 @@ async fn run_turn(
             // cleaned up, so the caller's record stays untouched.
             if matches!(request.mode, Some(AgenticTaskMode::Plan)) {
                 store
-                    .set_mode(session_id, SerializableMode::Plan)
+                    .set_mode_and_persist(session_id, SerializableMode::Plan)
                     .context("persist session mode")?;
             }
             crate::features::assistant::timing::register_eval_observation(session_id);
@@ -638,7 +656,7 @@ async fn run_turn(
             // session, exactly like the bind failure above.
             if matches!(request.mode, Some(AgenticTaskMode::Plan)) {
                 store
-                    .set_mode(session_id, SerializableMode::Plan)
+                    .set_mode_and_persist(session_id, SerializableMode::Plan)
                     .context("persist session mode")?;
             }
         }
@@ -1259,6 +1277,32 @@ mod tests {
         );
         let error = ensure_existing_chat_session(&store, &chat.metadata.id).unwrap_err();
         assert!(error.to_string().contains("agent_session_not_chat"));
+
+        // An existing-but-corrupt record reports unreadable, not "not found".
+        let mut record_path = None;
+        let wanted = std::ffi::OsString::from(format!("{}.json", chat.metadata.id));
+        let mut stack = vec![crate::platform::paths::sessions_root()];
+        while let Some(dir) = stack.pop() {
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.file_name().is_some_and(|name| name == &wanted) {
+                    record_path = Some(path);
+                }
+            }
+        }
+        std::fs::write(
+            record_path.expect("chat session record file under the sessions root"),
+            b"{corrupted",
+        )
+        .unwrap();
+        let error = ensure_existing_chat_session(&store, &chat.metadata.id).unwrap_err();
+        assert!(error.to_string().contains("agent_session_unreadable"));
         // `_env` restores the captured PINVOU3_HOME on return or panic.
     }
 
