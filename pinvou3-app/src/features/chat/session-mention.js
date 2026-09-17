@@ -133,3 +133,9 @@ export function dedupeSessionRefs(refs) {
   }
   return out;
 }
+
+// bridge 经典脚本(platform/{tauri,web})的自动标题等路径经 window 全局复用同一
+// 契约解析——bridge 不能反向 import features,全局发布保证块格式只有一个真相源。
+if (typeof window !== 'undefined') {
+  window.__PINVOU_SESSION_MENTION__ = { buildSessionMentionBlock, splitSessionMentionBlock };
+}

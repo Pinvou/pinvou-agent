@@ -1492,7 +1492,12 @@ function isScheduledRunSession(sid) { return pinvouSharedweb().isScheduledRunSes
         // 自动标题复用展示层过滤：内部信封/子智能体交接不参与命名，避免 XML 痕迹进
         // sidebar。hideInternalEnvelope=true 剥离 turn_meta/system-reminder 元数据块，
         // 否则普通消息的标题会拼入尾随 turn_meta（引擎持久化为独立 text block）。
-        const titleText = firstUser ? userMessageDisplayText(firstUser.content || [], true) : "";
+        let titleText = firstUser ? userMessageDisplayText(firstUser.content || [], true) : "";
+        // 「引用对话」注入块(消息开头的 ## Referenced chats 契约)不是用户正文,不参与
+        // 自动标题;契约解析单一来源在 features/chat/session-mention.js(经 window 全局
+        // 发布,bridge 经典脚本不反向 import features)。
+        const splitMention = window.__PINVOU_SESSION_MENTION__ && window.__PINVOU_SESSION_MENTION__.splitSessionMentionBlock;
+        if (splitMention) titleText = splitMention(titleText).text.trim();
         if (titleText) {
           const newTitle = titleText.slice(0, 20);
           await invoke("rename_session", { id: sid, title: newTitle });
