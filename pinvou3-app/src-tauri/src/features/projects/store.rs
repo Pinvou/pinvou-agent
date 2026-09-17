@@ -89,6 +89,7 @@ pub struct ProjectStore {
 /// Drop clears the flag. It holds only the `Arc<Mutex<bool>>`, not a lock
 /// guard, so it is Send-safe across await points; clearing happens in Drop,
 /// so error paths cannot leave a permanently closed gate.
+#[derive(Debug)]
 pub struct RebindGate {
     flag: Arc<parking_lot::Mutex<bool>>,
 }

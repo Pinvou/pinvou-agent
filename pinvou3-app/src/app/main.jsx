@@ -2716,6 +2716,10 @@ const NAV_PREFETCH = {
           // stable prefix, never human-readable copy.
           if (message.startsWith('REBIND_OLD_ROOT_EXISTS')) {
             setRebindDraft(prev => prev && { ...prev, warnExisting: true, error: null });
+          } else if (message.startsWith('REBIND_IN_PROGRESS')) {
+            // Concurrent-gate rejection (round-7 m1): map the typed prefix to
+            // copy instead of surfacing raw prose.
+            setRebindDraft(prev => prev && { ...prev, error: t.uiProjects.rebindInProgress });
           } else if (message.startsWith('REBIND_SESSIONS_BUSY')) {
             // Busy rejection is the fence's high-frequency happy path
             // (Minor 7): map it to i18n copy; only session ids follow the
