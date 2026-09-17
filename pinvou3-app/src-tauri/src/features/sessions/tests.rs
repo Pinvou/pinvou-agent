@@ -799,6 +799,69 @@ fn create_empty_with_id_preserves_requested_identity() {
     );
 }
 
+/// Headless session ids persist for good now, so a second create with the
+/// same caller-chosen id must fail loud instead of silently replacing the
+/// kept record (transcript loss, and the old pin would transfer to the new
+/// stub).
+#[test]
+fn create_empty_with_id_refuses_to_overwrite_an_existing_record() {
+    let (store, _g) = isolated_store();
+    let requested_id = "eval_collision_guard";
+
+    store
+        .create_empty_with_id(
+            requested_id.to_string(),
+            "/model".into(),
+            None,
+            std::env::temp_dir(),
+        )
+        .expect("first create");
+
+    assert!(store.chat_session_record_exists(requested_id));
+    assert!(
+        !store
+            .chat_session_has_messages(requested_id)
+            .expect("classify the fresh stub"),
+        "a freshly created session is a zero-message stub"
+    );
+
+    let second = store.create_empty_with_id(
+        requested_id.to_string(),
+        "/model".into(),
+        None,
+        std::env::temp_dir(),
+    );
+    assert!(
+        second.is_err(),
+        "a second create with the same id must not overwrite the record"
+    );
+    assert!(store.chat_session_record_exists(requested_id));
+}
+
+#[test]
+fn chat_session_has_messages_reflects_the_durable_transcript() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create chat");
+    assert!(
+        !store
+            .chat_session_has_messages(&session.metadata.id)
+            .expect("classify the empty transcript"),
+        "a session without messages is a stub"
+    );
+
+    store
+        .update_messages(&session.metadata.id, vec![user_text("hello")])
+        .expect("append the first message");
+    assert!(
+        store
+            .chat_session_has_messages(&session.metadata.id)
+            .expect("classify the started transcript"),
+        "a session with admitted messages has started"
+    );
+}
+
 #[test]
 fn admitted_display_fallback_is_revision_guarded_for_append_and_edit() {
     let (store, _g) = isolated_store();
@@ -2017,6 +2080,121 @@ fn chat_retention_with_all_sessions_pinned_deletes_nothing() {
         store.list().expect("chat list").len(),
         MAX_SESSIONS_PER_KIND + 1,
         "all-pinned stores are exempt from the cap: nothing may be deleted"
+    );
+}
+
+/// A pin written to the durable pin file after this process booted (the
+/// cross-process GUI case: the user pins a session while a headless batch run
+/// is live) must still protect the session — the sweep consults the file, not
+/// the boot-time map.
+#[test]
+fn chat_retention_honors_pins_written_after_boot() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+    let mut ids = Vec::new();
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("durable-pin-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(index as i64);
+        store.save(&session).expect("seed session");
+        ids.push(session.metadata.id);
+    }
+    // Simulate the GUI process pinning the oldest session through the durable
+    // file only: this store's in-memory map never learns about it.
+    let pinned_id = ids[MAX_SESSIONS_PER_KIND - 1].clone();
+    let pin_file = crate::platform::paths::sessions_root().join("_pinned_sessions.json");
+    let payload = format!(r#"[{{"id":"{pinned_id}","pinned_at":"2026-09-17T00:00:00+00:00"}}]"#);
+    std::fs::write(&pin_file, payload).expect("write the durable pin");
+
+    // updated_at decreases with index, so the two fresh 51st/52nd sessions
+    // push the sweep past the cap with the externally pinned session as the
+    // natural (oldest) victim.
+    for suffix in ["fresh-a", "fresh-b"] {
+        let fresh = create_saved_session_with_id_and_mode(
+            format!("durable-pin-{suffix}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        store.save(&fresh).expect("persist the over-cap session");
+    }
+
+    assert!(
+        store.load(&pinned_id).is_ok(),
+        "a pin written after boot must protect the session from this sweep"
+    );
+    assert!(
+        store.load(&ids[MAX_SESSIONS_PER_KIND - 2]).is_err(),
+        "the oldest unpinned session is evicted instead"
+    );
+    assert!(
+        !store.is_pinned(&pinned_id),
+        "the sweep reads the durable file without adopting it into the boot-time map"
+    );
+}
+
+/// A torn or unreadable pin file must not widen the eviction set: the sweep
+/// falls back to the boot-time map, which still protects the pinned session.
+#[test]
+fn chat_retention_falls_back_to_boot_pins_when_pin_file_is_unreadable() {
+    let (store, _g) = isolated_store();
+    let now = Utc::now();
+    let mut ids = Vec::new();
+    for index in 0..MAX_SESSIONS_PER_KIND {
+        let mut session = create_saved_session_with_id_and_mode(
+            format!("torn-pin-{index}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.updated_at = now - chrono::Duration::seconds(index as i64);
+        store.save(&session).expect("seed session");
+        ids.push(session.metadata.id);
+    }
+    let pinned_id = ids[MAX_SESSIONS_PER_KIND - 1].clone();
+    store.set_pinned(&pinned_id, true);
+    // Corrupt the durable file (a torn write shape): parsing fails, so the
+    // sweep must keep the boot-time map instead of treating every session as
+    // unpinned.
+    let pin_file = crate::platform::paths::sessions_root().join("_pinned_sessions.json");
+    std::fs::write(&pin_file, "{ not json").expect("corrupt the pin file");
+
+    // updated_at decreases with index, so the two fresh 51st/52nd sessions
+    // push the sweep past the cap with the pinned session as the natural
+    // (oldest) victim.
+    for suffix in ["fresh-a", "fresh-b"] {
+        let fresh = create_saved_session_with_id_and_mode(
+            format!("torn-pin-{suffix}"),
+            &[],
+            "/chat-model",
+            &std::env::temp_dir(),
+            0,
+            None,
+            None,
+        );
+        store.save(&fresh).expect("persist the over-cap session");
+    }
+
+    assert!(
+        store.load(&pinned_id).is_ok(),
+        "a torn pin file must not widen the eviction set"
+    );
+    assert!(
+        store.load(&ids[MAX_SESSIONS_PER_KIND - 2]).is_err(),
+        "the oldest unpinned session is evicted instead"
     );
 }
 

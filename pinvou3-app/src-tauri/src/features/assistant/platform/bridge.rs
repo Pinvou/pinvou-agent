@@ -5663,7 +5663,9 @@ mod tests {
     /// `build_engine_config` must not configure `max_tool_calls` (upstream
     /// `None` = unbounded, admission gate lazy). Runaway protection stays
     /// with the foundation's max_steps, per-turn wall clock, bounded retries,
-    /// and cancel boundaries.
+    /// and cancel boundaries. The removed `PINVOU3_MAX_TOOL_CALLS` env knob
+    /// must stay dead: setting it must not resurrect a cap in either config
+    /// path.
     #[test]
     fn engine_config_has_no_tool_call_cap() {
         assert_eq!(
@@ -5675,6 +5677,21 @@ mod tests {
         assert_eq!(
             cfg.max_tool_calls, None,
             "per-session configs must not grow a tool-call cap either"
+        );
+        let (_lock, _env) = locked_env(&["PINVOU3_MAX_TOOL_CALLS"]);
+        // SAFETY: ENV_LOCK held; env writes are serialized across tests.
+        unsafe { std::env::set_var("PINVOU3_MAX_TOOL_CALLS", "512") };
+        assert_eq!(
+            fixture_bridge().build_engine_config().max_tool_calls,
+            None,
+            "the removed PINVOU3_MAX_TOOL_CALLS knob must not resurrect a cap"
+        );
+        assert_eq!(
+            fixture_bridge()
+                .build_engine_config_for_session("any_session")
+                .max_tool_calls,
+            None,
+            "the removed knob must not reach per-session configs either"
         );
     }
 
