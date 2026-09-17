@@ -189,11 +189,10 @@ fn files_ingest_round_trips_markdown_and_text_fixtures() {
     assert_eq!(outcome.exit_code, ExitCode::Success);
     assert!(
         outcome.stdout.contains("File: notes.md"),
-        "{}",
-        outcome.stdout
+        "markdown ingest summary must carry the fixture header"
     );
-    assert!(outcome.stdout.contains("Kind: text"), "{}", outcome.stdout);
-    assert!(outcome.stdout.contains("Tokens: "), "{}", outcome.stdout);
+    assert!(outcome.stdout.contains("Kind: text"));
+    assert!(outcome.stdout.contains("Tokens: "));
     let written = std::fs::read_to_string(&output_file).unwrap();
     assert!(written.contains("Heading"));
     assert!(written.contains("Body line with 内容."));
@@ -202,8 +201,8 @@ fn files_ingest_round_trips_markdown_and_text_fixtures() {
     let outcome = run(&["pinvou", "files", "ingest", text_fixture.to_str().unwrap()])
         .expect("text ingest must succeed");
     assert_eq!(outcome.exit_code, ExitCode::Success);
-    assert!(outcome.stdout.contains("Kind: text"), "{}", outcome.stdout);
-    assert!(outcome.stdout.contains("alpha\nbeta"), "{}", outcome.stdout);
+    assert!(outcome.stdout.contains("Kind: text"));
+    assert!(outcome.stdout.contains("alpha\nbeta"));
 
     // JSON mode mirrors the human fields in a single line.
     let value = run_json(&["pinvou", "files", "ingest", text_fixture.to_str().unwrap()]);
@@ -685,14 +684,16 @@ fn voice_postprocess_retry_failure_is_an_error() {
         "the known-bad first output must not leak into the result: {message}"
     );
     // The server exits after its two rounds; if the host failed before even
-    // the first request, don't hang the test on join.
+    // the first request, the accept loop would block the join forever —
+    // give the thread a bounded window and detach it (the test process is
+    // short-lived; a leaked listener thread dies with it).
     for _ in 0..100 {
         if server.is_finished() {
-            break;
+            server.join().expect("the mock endpoint thread finishes");
+            return;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    server.join().expect("the mock endpoint thread finishes");
 }
 
 /// `voice asr-install` mutates the system (pkexec/apt ffmpeg install), so
@@ -714,6 +715,40 @@ fn voice_asr_install_without_yes_exits_two_before_touching_the_system() {
     );
 }
 
+/// Input validation must precede the ASR-availability gate: `/dev/zero`
+/// reports len 0, so the old stat-then-read pair streamed it unbounded into
+/// memory, and on a machine with no ASR the refusal must still be about the
+/// input, not the missing engine. Unix-only because of the `/dev` path.
+#[cfg(unix)]
+#[test]
+fn voice_transcribe_rejects_special_and_oversized_files_before_the_asr_gate() {
+    use std::io::Write as _;
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("voice-transcribe-input-gate");
+
+    let error = run(&["pinvou", "voice", "transcribe", "/dev/zero"])
+        .expect_err("a character device must be refused");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("not a regular audio file"),
+        "the refusal must name the regular-file rule: {error}"
+    );
+
+    // A grown regular file over the cap takes the same early rejection.
+    let big =
+        std::env::temp_dir().join(format!("pinvou-voice-over-cap-{}.wav", std::process::id()));
+    let mut file = std::fs::File::create(&big).unwrap();
+    file.write_all(&[0u8; 4 * 1024 * 1024 + 1]).unwrap();
+    drop(file);
+    let error = run(&["pinvou", "voice", "transcribe", big.to_str().unwrap()])
+        .expect_err("an over-cap recording must be refused");
+    assert!(
+        error.to_string().contains("recording_too_long"),
+        "the refusal must be the transcription cap: {error}"
+    );
+    let _ = std::fs::remove_file(&big);
+}
+
 /// OPT-IN: `voice asr-install` downloads the SenseVoice model (network) and
 /// may install ffmpeg through pkexec/apt. Run with: cargo test -p pinvou-cli
 /// --test misc_contract -- --ignored voice_asr_install
@@ -727,7 +762,7 @@ fn voice_asr_install_downloads_model_with_network_and_pkexec() {
     let outcome = run(&["pinvou", "voice", "asr-install", "--yes"])
         .expect("install should run with network and policy agent available");
     assert_eq!(outcome.exit_code, ExitCode::Success);
-    assert!(outcome.stdout.contains("Model: true"), "{}", outcome.stdout);
+    assert!(outcome.stdout.contains("Model: true"));
 }
 
 // ── deps ────────────────────────────────────────────────────────────────────
@@ -795,7 +830,7 @@ fn deps_check_reports_the_platform_capability_table() {
     // Human mode: one `key<TAB>state<TAB>packages` row per item.
     let outcome = run(&["pinvou", "deps", "check"]).unwrap();
     let lines = outcome.stdout.lines().count();
-    assert_eq!(lines, items.len(), "{}", outcome.stdout);
+    assert_eq!(lines, items.len());
     assert!(outcome.stdout.contains("voice_asr\t"));
     // macOS carries the GUI's i18n key `email_manual` as the email row hint;
     // the CLI boundary maps it to English copy instead of leaking the key.
@@ -1142,9 +1177,8 @@ fn monitor_snapshot_produces_a_one_shot_sample() {
     assert_eq!(outcome.exit_code, ExitCode::Success);
     assert!(
         outcome.stdout.contains("GeneratedAt: "),
-        "{}",
-        outcome.stdout
+        "monitor snapshot must carry the GeneratedAt header"
     );
-    assert!(outcome.stdout.contains("Ram: "), "{}", outcome.stdout);
-    assert!(outcome.stdout.contains("Backend: "), "{}", outcome.stdout);
+    assert!(outcome.stdout.contains("Ram: "));
+    assert!(outcome.stdout.contains("Backend: "));
 }

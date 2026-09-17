@@ -2933,8 +2933,12 @@ fn code_sessions_timeline(id: &str, output: OutputMode) -> Result<CliOutcome, Cl
 // CLI-specific value). Path validation stays a CLI pre-check so escapes
 // remain usage errors (exit 2).
 
-const PREVIEW_LIMIT: usize = 512 * 1024;
-const DIFF_LIMIT: usize = 1024 * 1024;
+// Direct references to the app's workspace limits (not local copies): the
+// CLI's diff/preview paths share the GUI's caps, so a change on either side
+// breaks this build instead of silently diverging.
+use pinvou3_lib::features::codex_acp::workspace::{
+    DIFF_LIMIT, IGNORED_DIRECTORIES, PREVIEW_LIMIT, SEARCH_LIMIT,
+};
 /// Upper bound on per-file diffs composed into one whole-workspace diff; each
 /// file costs two git spawns, so this bounds the subprocess fan-out.
 const WORKSPACE_DIFF_FILE_CAP: usize = 500;
@@ -4345,17 +4349,6 @@ fn respond(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn workspace_mirror_limits_match_the_app_module() {
-        // The read-only workspace ops call `features::codex_acp::workspace`
-        // directly; only the kept diff mirror (and its preview fallback)
-        // still carries local limit copies, so a drift on either side must
-        // break this build instead of silently diverging from the GUI.
-        use pinvou3_lib::features::codex_acp::workspace as app;
-        assert_eq!(PREVIEW_LIMIT, app::PREVIEW_LIMIT);
-        assert_eq!(DIFF_LIMIT, app::DIFF_LIMIT);
-    }
 
     #[test]
     fn codex_version_gate_extracts_the_digit_token_like_the_gui() {

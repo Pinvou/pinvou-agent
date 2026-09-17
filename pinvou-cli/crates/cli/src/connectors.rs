@@ -1096,7 +1096,13 @@ fn set_enabled(
     // hard-block and skill materialization read `disabled_bundles.json`.
     pinvou3_lib::features::marketplace::sync_disabled_bundles_for_connector_switch(
         spec.id, enabled,
-    );
+    )
+    .map_err(|error| {
+        CliError::failed(format!(
+            "connectors {}: could not sync disabled bundles for the switch: {error}",
+            spec.id
+        ))
+    })?;
     let connected = cli_connected(spec).unwrap_or(false);
     let skills_should_show = connected && !is_disabled(kind);
     let action = if enabled { "enabled" } else { "disabled" };
@@ -1130,7 +1136,14 @@ fn apply_skills(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, C
     let connected = cli_connected(spec).unwrap_or(false);
     let visible = connected && !is_disabled(kind);
     if visible {
-        pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(spec.id);
+        pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(spec.id).map_err(
+            |error| {
+                CliError::failed(format!(
+                    "connectors {}: deny-all scope sync failed: {error}",
+                    spec.id
+                ))
+            },
+        )?;
     }
     let human = format!(
         "{} skills should show: {}\nconnected: {}\nskill unpack: requires the desktop app (embedded bundle)\nruleset refresh: requires the GUI engine pool",
@@ -2290,7 +2303,8 @@ fn ima_connect(
             .map_err(|error| CliError::failed(format!("ima skill install failed: {error}")))?;
         pinvou3_lib::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(
             IMA_SKILL_ID,
-        );
+        )
+        .map_err(|error| CliError::failed(format!("ima skill scope sync failed: {error}")))?;
         Ok(())
     })();
     if let Err(error) = result {
@@ -2413,7 +2427,7 @@ fn ima_logout(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     let client_result = store.delete(&ima_secret_ref("client_id"));
     let api_result = store.delete(&ima_secret_ref("api_key"));
     let _ = SkillMarketplaceManager::new().uninstall(IMA_SKILL_ID);
-    pinvou3_lib::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(
+    let _ = pinvou3_lib::features::marketplace::skill_scope::remove_skill_from_disabled_scopes(
         IMA_SKILL_ID,
     );
     client_result.map_err(|error| credential_error(error.user_message()))?;

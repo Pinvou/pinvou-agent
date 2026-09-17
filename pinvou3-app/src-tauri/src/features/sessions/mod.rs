@@ -79,7 +79,8 @@ pub use self::scheduled::{
 // retention eviction, so the re-export follows the same feature gate.
 /// Re-exported for the agentic-run cleanup guard (kept stable alongside the
 /// other historical `crate::features::sessions::X` paths).
-pub use self::store::EVAL_SESSION_FACTORY_TITLE;
+#[cfg(any(feature = "benchmark-hooks", test))]
+pub(crate) use self::store::EVAL_SESSION_FACTORY_TITLE;
 #[cfg(feature = "benchmark-hooks")]
 pub(crate) use self::store::HEADLESS_SESSION_PREFIX;
 /// Re-export the headless retention cap: it is the number the runner's
