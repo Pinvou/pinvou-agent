@@ -212,9 +212,13 @@ pub struct RebindWorkspaceReport {
     pub affected_project_ids: Vec<String>,
     /// Sessions found in an active turn by the post-migration recheck or
     /// skipped by the idle-gated eviction: their bindings moved, but a turn
-    /// may still execute against the old directory. The frontend suggests
-    /// one retry when idle — the retry feeds these sessions back as explicit
-    /// eviction candidates, so the remedy is real (review #463 M2).
+    /// may still execute against the old directory. The frontend keeps the
+    /// dialog open on a non-empty list (also when nothing failed) and its
+    /// retry feeds these sessions back as explicit eviction candidates, so
+    /// the documented "retry once when idle" remedy is reachable — closing
+    /// the dialog instead would leave the instruction with no entry point,
+    /// because the unavailable-root badge disappears once the root moved
+    /// (review #463 M2 + round-8 MAJOR-2).
     #[serde(default)]
     pub post_busy_session_ids: Vec<String>,
 }
@@ -366,10 +370,12 @@ pub async fn rebind_workspace_root(
     // Root pre-flight (review #463 round-8 M3): the roots are committed last,
     // so a rewrite that cannot succeed — an overlap conflict with another
     // project's territory — must be rejected here, before any session binding
-    // has been translated.
+    // has been translated. Reachable from the picker (choosing a folder that
+    // is or contains another project's root), hence the typed marker so the
+    // copy is localized (round-8 M4).
     store
         .plan_rebind_roots(&from, &to_display)
-        .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
+        .map_err(|e| format!("REBIND_ROOTS_CONFLICT: {e:#}"))?;
 
     // Affected-set snapshot (shared by the active-turn fence and the
     // metadata replay), taken BEFORE any rewrite (review #463 M1): the
@@ -579,9 +585,42 @@ pub async fn rebind_workspace_root(
     // the old root as unavailable and the badge reruns the remaining lanes
     // (every step is idempotent). The overlap invariant was pre-flighted
     // before any write and is revalidated under the write lock here.
+    //
+    // This retry entry exists exactly while `from` is unavailable, which is
+    // also the only state in which the badge (the sole rebind entry) is
+    // rendered — so the reorder restores the entry for every interrupted run
+    // that the user could have started in the first place. In the
+    // strong-confirm path (`from` reappeared after the badge was shown, see
+    // require_confirm_existing) the folder is available again and no badge is
+    // rendered either way; the dialog that drove the run is still open and its
+    // retry covers that window.
+    //
+    // Residual (review #463 round-8 MINOR-3, on record): the pre-flight reads a
+    // snapshot and the commit revalidates under the write lock, so a project
+    // mutation landing between the two (the rebind gate serializes rebinds
+    // only) fails HERE — after the session lanes are durable. The user gets the
+    // localized conflict marker and a dialog that stays open with a retry, and
+    // a rerun converges once the overlap is resolved, but the per-session
+    // detail of this run is not reported alongside the error.
     let affected_project_ids = store
         .rebind_roots(&from, &to_display)
-        .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
+        .map_err(|e| format!("REBIND_ROOTS_CONFLICT: {e:#}"))?;
+
+    // Post-pass fence hits that the pre-rewrite snapshot never saw (review
+    // #463 round-8 MINOR-1): a session created under `from` by a concurrent
+    // writer during this run is not in `affected`, so the metadata loop never
+    // visited it and its `sidecar_final_stale` entry would otherwise be
+    // dropped. It has no metadata to replay here, but it must still be
+    // reported — otherwise the run claims success while an index record still
+    // sits under `from` and a boot restore can resurrect the old path. Done
+    // before the reclaim tail so these sessions are eviction candidates too.
+    for session_id in &final_stale {
+        if !affected.iter().any(|(sid, _)| sid == session_id)
+            && !failed_session_ids.contains(session_id)
+        {
+            failed_session_ids.push(session_id.clone());
+        }
+    }
 
     emit_project_event(&app, "projects:list_changed", "rebound");
     for session_id in &rebound_session_ids {
@@ -616,12 +655,17 @@ pub async fn rebind_workspace_root(
     // reclaim through their idle-aware primitives: the recheck and the
     // removal are atomic, so a turn that starts after the recheck above is
     // NOT killed — the session is reported as post-busy instead. A
-    // successful reclaim also resets the per-session shell manager, which
-    // pins its cwd at construction (M1). Candidates are this run's rebound
-    // sessions plus the fed-back retry candidates (M2).
+    // successful reclaim also resets the per-session shell state, which pins
+    // its cwd at construction (M1/M2). Candidates are this run's rebound
+    // sessions, the sessions it could not finish, and the fed-back retry
+    // candidates (M2).
     let post_busy: std::collections::HashSet<String> =
         post_busy_session_ids.iter().cloned().collect();
-    for session_id in collect_eviction_candidates(&rebound_session_ids, &retry_evict_candidates) {
+    for session_id in collect_eviction_candidates(
+        &rebound_session_ids,
+        &failed_session_ids,
+        &retry_evict_candidates,
+    ) {
         if post_busy.contains(&session_id) {
             continue;
         }
@@ -642,6 +686,20 @@ pub async fn rebind_workspace_root(
             if touched_this_run && !post_busy_session_ids.contains(&session_id) {
                 post_busy_session_ids.push(session_id);
             }
+        }
+    }
+    // Post-pass fence hits that the pre-rewrite snapshot never saw (review
+    // #463 round-8 MINOR-1): a session created under `from` by a concurrent
+    // writer during this run is not in `affected`, so the metadata loop never
+    // visited it and its `sidecar_final_stale` entry would be dropped. It has
+    // no metadata to replay here, but it must still be reported — otherwise
+    // the run claims success while an index record still sits under `from`
+    // and a boot restore can resurrect the old path.
+    for session_id in &final_stale {
+        if !affected.iter().any(|(sid, _)| sid == session_id)
+            && !failed_session_ids.contains(session_id)
+        {
+            failed_session_ids.push(session_id.clone());
         }
     }
     Ok(RebindWorkspaceReport {
@@ -682,16 +740,20 @@ fn admit_rebind_retry_candidate(
     }
 }
 
-/// Eviction candidates for the rebind tail: sessions rebound in this run
-/// plus `to`-lane sessions whose metadata is already synced (post-busy
-/// sessions from a previous run — review #463 M2), deduplicated, order
-/// preserved.
+/// Eviction candidates for the rebind tail: sessions rebound in this run,
+/// sessions this run could not finish (`failed_session_ids` — their binding
+/// lanes may already have moved even though the metadata write failed, so a
+/// resident runtime would otherwise keep the old cwd with nothing reclaiming
+/// it; review #463 round-8 MAJOR-1), plus `to`-lane sessions whose metadata is
+/// already synced (post-busy sessions from a previous run — review #463 M2),
+/// deduplicated, order preserved.
 fn collect_eviction_candidates(
     rebound_session_ids: &[String],
+    failed_session_ids: &[String],
     retry_evict_candidates: &[String],
 ) -> Vec<String> {
     let mut candidates = rebound_session_ids.to_vec();
-    for session_id in retry_evict_candidates {
+    for session_id in failed_session_ids.iter().chain(retry_evict_candidates) {
         if !candidates.contains(session_id) {
             candidates.push(session_id.clone());
         }
@@ -752,21 +814,32 @@ mod tests {
     }
 
     #[test]
-    fn eviction_candidates_merge_rebound_and_retry_without_duplicates() {
-        // review #463 M2: the retry (post-busy) population is fed back as
-        // explicit eviction candidates alongside this run's rebound sessions,
-        // deduplicated, rebound first.
+    fn eviction_candidates_merge_rebound_failed_and_retry_without_duplicates() {
+        // review #463 M2 + round-8 MAJOR-1: this run's rebound sessions, the
+        // ones it failed to finish, and the fed-back retry (post-busy)
+        // population are all eviction candidates, deduplicated, rebound first.
         let rebound = vec!["s1".to_string(), "s2".to_string()];
-        let retry = vec!["s2".to_string(), "s3".to_string()];
+        let failed = vec!["s2".to_string(), "s4".to_string()];
+        let retry = vec!["s4".to_string(), "s3".to_string()];
         assert_eq!(
-            collect_eviction_candidates(&rebound, &retry),
-            vec!["s1".to_string(), "s2".to_string(), "s3".to_string()]
+            collect_eviction_candidates(&rebound, &failed, &retry),
+            vec![
+                "s1".to_string(),
+                "s2".to_string(),
+                "s4".to_string(),
+                "s3".to_string()
+            ]
         );
-        assert!(collect_eviction_candidates(&[], &[]).is_empty());
+        assert!(collect_eviction_candidates(&[], &[], &[]).is_empty());
         assert_eq!(
-            collect_eviction_candidates(&[], &["s9".to_string()]),
+            collect_eviction_candidates(&[], &[], &["s9".to_string()]),
             vec!["s9".to_string()],
             "a pure retry run (nothing rebound) still evicts the fed-back candidates"
+        );
+        assert_eq!(
+            collect_eviction_candidates(&[], &["s8".to_string()], &[]),
+            vec!["s8".to_string()],
+            "a session whose metadata write failed is still reclaimed: its binding lanes may have moved"
         );
     }
 

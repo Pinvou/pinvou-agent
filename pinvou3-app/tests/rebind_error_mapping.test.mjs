@@ -2,8 +2,12 @@
 // nothing exercised the FE↔BE mapping before, so a marker the backend emits
 // could silently fall through to the raw-error branch and surface unlocalized
 // backend prose. These tests pin both directions — every marker classifies,
-// and every marker resolves to real copy in all three languages.
+// every marker resolves to real copy in all three languages, and no marker the
+// backend emits is missing from the classifier.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import test from "node:test";
 
 import { dictEn } from "../src/shared/i18n/en.js";
@@ -14,6 +18,12 @@ import {
   REBIND_SESSIONS_BUSY,
   classifyRebindError,
 } from "../src/features/projects/rebindErrors.js";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const backendSources = [
+  path.join(here, "..", "src-tauri", "src", "app", "commands", "projects.rs"),
+  path.join(here, "..", "src-tauri", "src", "features", "projects", "store.rs"),
+];
 
 test("old-root-exists escalates instead of rendering an error", () => {
   const classified = classifyRebindError(
@@ -51,25 +61,45 @@ test("every copy marker resolves to trilingual uiProjects copy", () => {
   }
 });
 
-test("the three destination markers are mapped and distinct", () => {
+test("the destination markers are mapped and distinct", () => {
   // A silent collision would make one marker unreachable: the classifier picks
   // the first matching prefix.
-  for (const marker of ["REBIND_TO_ROOT:", "REBIND_TO_NESTED:", "REBIND_TO_UNUSABLE:"]) {
-    const classified = classifyRebindError(marker, dictEn);
-    assert.equal(classified.kind, "copy", `${marker} must be mapped`);
-  }
   assert.deepEqual(
     [
       classifyRebindError("REBIND_TO_ROOT:", dictEn).message,
       classifyRebindError("REBIND_TO_NESTED:", dictEn).message,
       classifyRebindError("REBIND_TO_UNUSABLE:", dictEn).message,
+      classifyRebindError("REBIND_ROOTS_CONFLICT:", dictEn).message,
     ],
     [
       dictEn.uiProjects.rebindToRoot,
       dictEn.uiProjects.rebindToNested,
       dictEn.uiProjects.rebindToUnusable,
+      dictEn.uiProjects.rebindRootsConflict,
     ],
   );
+});
+
+test("the backend emits no marker the frontend cannot classify", () => {
+  // The Rust sources are the source of truth for the marker set: a new marker
+  // must not ship without a mapping, or it reaches the dialog as raw backend
+  // prose in every language. This is the test that would have caught
+  // REBIND_ROOTS_CONFLICT before it was mapped.
+  const markers = new Set();
+  for (const file of backendSources) {
+    for (const match of readFileSync(file, "utf8").matchAll(/"(REBIND_[A-Z_]+)/g)) {
+      markers.add(match[1]);
+    }
+  }
+  assert.ok(markers.size >= 5, `expected the backend marker set, saw ${[...markers]}`);
+  for (const marker of markers) {
+    const classified = classifyRebindError(`${marker}: payload`, dictEn);
+    assert.notEqual(
+      classified.kind,
+      "raw",
+      `${marker} is emitted by the backend but has no frontend mapping`,
+    );
+  }
 });
 
 test("an unmapped backend error stays verbatim for diagnostics", () => {

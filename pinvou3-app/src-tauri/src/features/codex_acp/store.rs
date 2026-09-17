@@ -188,15 +188,17 @@ pub struct RebindWorkspacePrefixOutcome {
 
 /// Session ids that own a directory under the code-session sidecar root.
 ///
-/// Single source of truth for the two rebind scans that walk this directory
-/// (the candidate scan in [`SessionAgentStore::sessions_under_workspace`] and
-/// the rewrite pass in [`SessionAgentStore::rebind_workspace_prefix`]; review
-/// #463 round-8 elegance): the hand-rolled copies had already drifted on entry
-/// typing and error handling. A missing root — no sidecar ever written — is
-/// normal and yields nothing; any other `read_dir` failure is logged, never
-/// silently swallowed (review #463 minor: failing open would let boot restore
-/// resurrect old paths with zero signal).
-fn code_session_dir_ids(store_path: &Path, context: &str) -> Vec<String> {
+/// Single source of truth for every scan that walks this directory — the boot
+/// restore in `mod.rs`, the rebind candidate scan in
+/// [`SessionAgentStore::sessions_under_workspace`] and the rewrite pass in
+/// [`SessionAgentStore::rebind_workspace_prefix`] (review #463 round-8
+/// elegance): the hand-rolled copies had already drifted on entry typing and
+/// error handling. A missing root — no sidecar ever written — is normal and
+/// yields nothing; any other `read_dir` failure is logged, never silently
+/// swallowed (review #463 minor: failing open would let boot restore
+/// resurrect old paths with zero signal). Directory entries that cannot be
+/// read are logged and skipped, so one bad entry never hides the rest.
+pub(super) fn code_session_dir_ids(store_path: &Path, context: &str) -> Vec<String> {
     let root = code_session_sidecar_root(store_path);
     let entries = match fs::read_dir(&root) {
         Ok(entries) => entries,
@@ -210,7 +212,14 @@ fn code_session_dir_ids(store_path: &Path, context: &str) -> Vec<String> {
         }
     };
     let mut ids = Vec::new();
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                eprintln!("[pinvou3-app] {context}: unreadable sidecar entry skipped ({error})");
+                continue;
+            }
+        };
         let Ok(file_type) = entry.file_type() else {
             continue;
         };

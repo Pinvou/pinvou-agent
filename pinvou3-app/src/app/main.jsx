@@ -2668,16 +2668,15 @@ const NAV_PREFETCH = {
           const rebound = (report && report.rebound_session_ids) ? report.rebound_session_ids.length : 0;
           const failed = (report && report.failed_session_ids) ? report.failed_session_ids.length : 0;
           const postBusy = (report && report.post_busy_session_ids) ? report.post_busy_session_ids.length : 0;
-          // Partial failure is no longer swallowed (finding 3), and the
-          // dialog no longer closes: the root has already moved, so after
-          // the loadProjects refresh the unavailable badge (the only rebind
-          // entry) disappears and the toast's "retry the rest" promise
-          // would be unreachable (review #463 M1). The dialog switches to
-          // the partial-report state in place, listing failed sessions with
-          // a retry; rerunning the backend with the same from/to converges
-          // (the snapshot includes unsynced sessions; already-rebound ones
-          // are no-ops). The success path still closes + toasts.
-          if (failed > 0) {
+          // The dialog stays open whenever the report still has something the
+          // user must act on — failed sessions to retry, or sessions whose
+          // runtime the idle gate refused (round-8 MAJOR-2: closing on the
+          // post-busy-only case left "retry once when idle" with no entry
+          // point, because the unavailable-root badge disappears once the root
+          // has moved). Rerunning the backend with the same from/to converges
+          // (the snapshot includes unsynced sessions; already-rebound ones are
+          // no-ops).
+          if (failed > 0 || postBusy > 0) {
             setRebindDraft(prev => prev && {
               ...prev,
               partial: {
@@ -2689,13 +2688,7 @@ const NAV_PREFETCH = {
             });
           } else {
             setRebindDraft(null);
-            if (postBusy > 0) {
-              // Report both halves: the busy-only toast would silently drop
-              // the rebound count (review #463 minor).
-              setSettingsToast(rebound > 0
-                ? t.uiProjects.rebindSuccessPostBusy(rebound, postBusy)
-                : t.uiProjects.rebindBusyAfter(postBusy));
-            } else if (rebound > 0) {
+            if (rebound > 0) {
               setSettingsToast(t.uiProjects.rebindSuccess(rebound));
             } else {
               // A retry after everything already converged (or a root with

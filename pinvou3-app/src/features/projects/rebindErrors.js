@@ -15,6 +15,7 @@ const REBIND_SESSIONS_BUSY = 'REBIND_SESSIONS_BUSY';
 const REBIND_TO_ROOT = 'REBIND_TO_ROOT';
 const REBIND_TO_NESTED = 'REBIND_TO_NESTED';
 const REBIND_TO_UNUSABLE = 'REBIND_TO_UNUSABLE';
+const REBIND_ROOTS_CONFLICT = 'REBIND_ROOTS_CONFLICT';
 
 // Markers that resolve to a single trilingual `uiProjects` key. Busy and
 // old-root-exists are handled separately below: the former carries a
@@ -25,6 +26,7 @@ const REBIND_MARKER_MESSAGE_KEYS = {
   [REBIND_TO_ROOT]: 'rebindToRoot',
   [REBIND_TO_NESTED]: 'rebindToNested',
   [REBIND_TO_UNUSABLE]: 'rebindToUnusable',
+  [REBIND_ROOTS_CONFLICT]: 'rebindRootsConflict',
 };
 
 /// `null` when the failure carries no marker (an unmapped backend error, which
@@ -59,6 +61,7 @@ export {
   REBIND_IN_PROGRESS,
   REBIND_MARKER_MESSAGE_KEYS,
   REBIND_OLD_ROOT_EXISTS,
+  REBIND_ROOTS_CONFLICT,
   REBIND_SESSIONS_BUSY,
   REBIND_TO_NESTED,
   REBIND_TO_ROOT,

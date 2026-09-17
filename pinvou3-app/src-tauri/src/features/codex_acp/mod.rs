@@ -148,28 +148,64 @@ async fn take_session_if_still_idle<T>(
 
 /// Minimum idle time before a rebind may reclaim a resident ACP runtime.
 ///
-/// Closes the pre-admission window (review #463 round-8 M1): `send_message`
-/// resolves or spawns the runtime under the sessions lock (`get_or_spawn`
-/// refreshes `last_activity` right there), but only flips `busy` later in
-/// `admit_prompt_turn`, after `prepare_codex_prompt` and the activity touch
-/// have run unlocked. A take landing in that window sees `busy == false` and
-/// would remove + `shutdown()` the runtime the sender is about to prompt —
-/// the message dies as "Failed". The idle reaper is immune to exactly this
-/// window because its predicate already requires `IDLE_EVICT_AFTER_SECS`;
-/// rebind cannot wait 30 minutes, so it uses a small epsilon instead. The
-/// cost is bounded and honest: a session active within the last second is
-/// reported as post-busy rather than reclaimed, and the user's retry (or the
-/// idle reaper) picks it up.
+/// Part of closing the pre-admission window (review #463 round-8 M1): the
+/// authoritative part is [`PromptAdmissionGuard`], which marks a runtime whose
+/// sender has resolved it but not yet admitted a turn. This epsilon covers the
+/// residual gap between `get_or_spawn`'s in-lock activity refresh and the
+/// moment the guard is installed (a function return), and keeps the predicate
+/// conservative for any other caller that touches a runtime without going
+/// through the guard. The idle reaper is immune to the whole window because
+/// its predicate already requires `IDLE_EVICT_AFTER_SECS`.
+///
+/// The cost is bounded and honest: a session active within the last second is
+/// reported as post-busy rather than reclaimed, and the user's retry (which
+/// the dialog now offers) or the idle reaper picks it up.
 const REBIND_EVICT_IDLE_EPSILON: Duration = Duration::from_secs(1);
 
+/// Marks the window between resolving a runtime for a prompt and admitting the
+/// turn (review #463 round-8 M1).
+///
+/// `send_message` calls `get_or_spawn` (which refreshes `last_activity` under
+/// the sessions lock) and only flips `busy` later, after
+/// `prepare_codex_prompt` has run unlocked — and that step is not bounded: it
+/// reads and base64-encodes every image attachment synchronously. A rebind
+/// eviction landing in that window used to remove and `shutdown()` the runtime
+/// the sender was about to prompt, so the user's message died as "Failed".
+/// Holding this guard across the whole window makes the runtime observably
+/// busy to [`rebind_evictable`]; Drop releases it on every path, including the
+/// early returns and panics inside the guarded section, so a failed send can
+/// never leave the runtime permanently un-evictable.
+struct PromptAdmissionGuard<'a> {
+    pending: &'a AtomicBool,
+}
+
+impl<'a> PromptAdmissionGuard<'a> {
+    fn new(pending: &'a AtomicBool) -> Self {
+        pending.store(true, Ordering::Release);
+        Self { pending }
+    }
+}
+
+impl Drop for PromptAdmissionGuard<'_> {
+    fn drop(&mut self) {
+        self.pending.store(false, Ordering::Release);
+    }
+}
+
 /// Rebind eviction recheck predicate (pure function, unit-testable; review
-/// #463 eviction-tail TOCTOU + round-8 M1): only prompt/config activity, or
-/// activity recent enough to be inside the `get_or_spawn` → admission window,
-/// blocks eviction. Unlike the idle reaper there is no 30-minute idle gate
-/// and no active-session gate — a rebound runtime must be reclaimed even when
+/// #463 eviction-tail TOCTOU + round-8 M1): a prompt or config in flight, a
+/// runtime whose sender has resolved it but not yet admitted the turn, or
+/// activity recent enough to be inside the residual window all block
+/// eviction. Unlike the idle reaper there is no 30-minute idle gate and no
+/// active-session gate — a rebound runtime must be reclaimed even when
 /// recently used so the next prompt respawns in the new directory.
-fn rebind_evictable(busy: bool, configuring: bool, idle_for: Duration) -> bool {
-    !busy && !configuring && idle_for >= REBIND_EVICT_IDLE_EPSILON
+fn rebind_evictable(
+    busy: bool,
+    configuring: bool,
+    prompt_pending: bool,
+    idle_for: Duration,
+) -> bool {
+    !busy && !configuring && !prompt_pending && idle_for >= REBIND_EVICT_IDLE_EPSILON
 }
 
 /// Result of the rebind eviction take: distinguishes "no resident runtime"
@@ -460,42 +496,15 @@ fn restore_code_native_sessions_from_sidecars(
     agents: &SessionAgentStore,
 ) -> SidecarRecoverySummary {
     let mut summary = SidecarRecoverySummary::default();
-    let sessions_root = store::code_session_sidecar_root(agents.path());
-    let entries = match std::fs::read_dir(&sessions_root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            // sessions 根不存在 = 没有任何会话，无需恢复。
-            return summary;
-        }
-        Err(error) => {
-            eprintln!(
-                "[pinvou3-app] scan native code session sidecars failed ({}): {error:#}",
-                sessions_root.display()
-            );
-            return summary;
-        }
-    };
-    for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(error) => {
-                eprintln!(
-                    "[pinvou3-app] scan native code session sidecars failed to read an entry: {error:#}"
-                );
-                continue;
-            }
-        };
-        let session_dir = entry.path();
-        if !session_dir.is_dir() {
-            continue;
-        }
-        let Some(session_id) = session_dir.file_name().and_then(|name| name.to_str()) else {
+    // Shared iterator (review #463 round-8 elegance): the scan root, the
+    // "no sessions directory is normal" case and the unreadable-entry logging
+    // are defined once next to the sidecar readers, so the boot restore and
+    // both rebind scans cannot drift apart again.
+    for session_id in store::code_session_dir_ids(agents.path(), "native code session restore") {
+        let Some(sidecar) = store::read_code_session_sidecar(agents.path(), &session_id) else {
             continue;
         };
-        let Some(sidecar) = store::read_code_session_sidecar(agents.path(), session_id) else {
-            continue;
-        };
-        let record = agents.get(session_id);
+        let record = agents.get(&session_id);
         if record.mode.is_code() {
             // 索引完好无需恢复：不计入 restored，避免每次启动误报恢复信号。
             continue;
@@ -503,14 +512,14 @@ fn restore_code_native_sessions_from_sidecars(
         if record.backend.is_acp() {
             // 会话已被 ACP 绑定：sidecar 是历史残留，恢复必然被拒，直接清理并
             // 如实记日志，而不是每次启动重复报 degraded。
-            store::remove_code_session_sidecar(agents.path(), session_id);
+            store::remove_code_session_sidecar(agents.path(), &session_id);
             summary.cleaned += 1;
             eprintln!(
                 "[pinvou3-app] removed leftover native code session sidecar for ACP session {session_id}"
             );
             continue;
         }
-        match agents.restore_missing_code_session_record(session_id, sidecar) {
+        match agents.restore_missing_code_session_record(&session_id, sidecar) {
             Ok(true) => {
                 summary.restored += 1;
                 eprintln!("[pinvou3-app] recovered native code session index for {session_id}");
@@ -710,6 +719,10 @@ struct AcpSession {
     bridge: EventBridge,
     busy: AtomicBool,
     configuring: AtomicBool,
+    /// Set for the whole window between resolving this runtime for a prompt
+    /// and admitting the turn, so a rebind eviction cannot shut it down under
+    /// the sender (see [`PromptAdmissionGuard`]).
+    prompt_pending: AtomicBool,
     models: Vec<CodexAcpModel>,
     current_model: parking_lot::RwLock<Option<String>>,
     modes: parking_lot::RwLock<Option<SessionModeState>>,
@@ -3074,6 +3087,12 @@ impl AcpPool {
         let workspace_references =
             workspace::resolve_workspace_references(&workspace, &workspace_references)?;
         let runtime = self.get_or_spawn(session_id).await?;
+        // Hold the pre-admission window open for rebind eviction from here to
+        // admission (review #463 round-8 M1): `prepare_codex_prompt` reads and
+        // encodes every image attachment synchronously and is not bounded, so
+        // an eviction landing in between would remove and shut down the
+        // runtime this sender is about to prompt. Drop releases on every path.
+        let _admission = PromptAdmissionGuard::new(&runtime.prompt_pending);
         let prepared = prepare_codex_prompt(
             &content,
             &attachments,
@@ -3085,6 +3104,7 @@ impl AcpPool {
                 .touch_activity(session_id)
                 .context("更新 ACP 会话最近活跃时间失败")
         })?;
+        drop(_admission);
         let pool = self.clone();
         let session_id = session_id.to_string();
         tokio::spawn(async move {
@@ -3210,24 +3230,28 @@ impl AcpPool {
         true
     }
 
-    /// Rebind eviction (review #463 eviction-tail TOCTOU): like
-    /// [`evict_if_idle`](Self::evict_if_idle) the recheck and the removal are
-    /// atomic under the sessions lock, but with the rebind predicate — a turn
-    /// that starts after the command layer's post-migration recheck is
+    /// Rebind eviction (review #463 eviction-tail TOCTOU + round-8 M1/M2):
+    /// like [`evict_if_idle`](Self::evict_if_idle) the recheck and the removal
+    /// are atomic under the sessions lock, but with the rebind predicate — a
+    /// turn that starts after the command layer's post-migration recheck is
     /// observed as busy/configuring and keeps its runtime instead of being
-    /// killed; there is no idle-duration or active-session gate, because a
-    /// rebound runtime must be rebuilt in the new directory even when
-    /// recently active. Only a genuinely reclaimed runtime goes through the
-    /// `evict` cleanup (pending prompts answered, metadata-backend hint
-    /// dropped); a busy session keeps everything untouched. Returns false
-    /// only for a busy/configuring resident runtime — a session without a
-    /// resident runtime is trivially idle and counts as done, so the command
-    /// layer does not misreport it as post-busy.
+    /// killed, and so is a runtime whose sender has resolved it but not yet
+    /// admitted the turn (`prompt_pending`). There is no idle-duration gate
+    /// beyond the small epsilon, and no active-session gate, because a rebound
+    /// runtime must be rebuilt in the new directory even when recently used.
+    /// A genuinely reclaimed runtime goes through the `evict` cleanup (pending
+    /// prompts answered first, metadata-backend hint dropped).
+    ///
+    /// Returns false for a busy / configuring / admission-pending resident
+    /// runtime — the command layer reports it as post-busy, so the user keeps
+    /// a retry entry. A session without a resident runtime is trivially idle
+    /// and counts as done, so it is not misreported as post-busy.
     pub async fn evict_if_idle_for_rebind(&self, session_id: &str) -> bool {
         let taken = take_session_for_rebind(&self.sessions, session_id, |runtime| {
             rebind_evictable(
                 runtime.busy.load(Ordering::Acquire),
                 runtime.configuring.load(Ordering::Acquire),
+                runtime.prompt_pending.load(Ordering::Acquire),
                 runtime.idle_for(),
             )
         })
@@ -4075,6 +4099,7 @@ impl AcpPool {
             bridge: event_bridge,
             busy: AtomicBool::new(false),
             configuring: AtomicBool::new(false),
+            prompt_pending: AtomicBool::new(false),
             models,
             current_model: parking_lot::RwLock::new(current_model_id),
             modes: parking_lot::RwLock::new(mode_state),
@@ -4578,13 +4603,14 @@ mod tests {
         );
     }
 
-    /// Bare entry for take_session_for_rebind tests: replicates the three
+    /// Bare entry for take_session_for_rebind tests: replicates the four
     /// AcpSession states that gate rebind eviction (busy / configuring /
-    /// last_activity), avoiding the real ConnectionTo / Child (not
-    /// constructible in tests).
+    /// prompt_pending / last_activity), avoiding the real ConnectionTo /
+    /// Child (not constructible in tests).
     struct FakeRebindEntry {
         busy: AtomicBool,
         configuring: AtomicBool,
+        prompt_pending: AtomicBool,
         last_activity: parking_lot::Mutex<Instant>,
     }
 
@@ -4593,16 +4619,18 @@ mod tests {
             Self {
                 busy: AtomicBool::new(false),
                 configuring: AtomicBool::new(false),
+                prompt_pending: AtomicBool::new(false),
                 last_activity: parking_lot::Mutex::new(Instant::now() - Duration::from_secs(60)),
             }
         }
 
-        /// A session whose runtime was just resolved by `get_or_spawn` but
-        /// whose `busy` flag has not been set yet (round-8 M1).
-        fn just_touched() -> Self {
+        /// A session whose runtime was just resolved by `get_or_spawn` and
+        /// whose sender is still preparing the prompt (round-8 M1).
+        fn awaiting_admission() -> Self {
             Self {
                 busy: AtomicBool::new(false),
                 configuring: AtomicBool::new(false),
+                prompt_pending: AtomicBool::new(true),
                 last_activity: parking_lot::Mutex::new(Instant::now()),
             }
         }
@@ -4612,51 +4640,84 @@ mod tests {
             rebind_evictable(
                 self.busy.load(Ordering::Acquire),
                 self.configuring.load(Ordering::Acquire),
+                self.prompt_pending.load(Ordering::Acquire),
                 self.last_activity.lock().elapsed(),
             )
         }
     }
 
     #[test]
-    fn rebind_evictable_blocks_prompt_config_and_pre_admission_activity() {
+    fn rebind_evictable_blocks_prompt_config_pending_and_recent_activity() {
         let idle = Duration::from_secs(60);
         // review #463: no 30-minute idle gate and no active-session gate —
-        // only an in-flight prompt or a config sync blocks rebind eviction.
-        assert!(rebind_evictable(false, false, idle));
-        assert!(!rebind_evictable(true, false, idle));
-        assert!(!rebind_evictable(false, true, idle));
-        assert!(!rebind_evictable(true, true, idle));
-        // review #463 round-8 M1: the window between `get_or_spawn`'s
-        // activity refresh and `admit_prompt_turn`'s busy flip must not be
-        // evictable either, or the runtime the sender is about to prompt is
-        // shut down under it.
+        // an in-flight prompt, a config sync, a resolved-but-unadmitted
+        // runtime or recent activity all block rebind eviction.
+        assert!(rebind_evictable(false, false, false, idle));
+        assert!(!rebind_evictable(true, false, false, idle));
+        assert!(!rebind_evictable(false, true, false, idle));
+        assert!(!rebind_evictable(true, true, false, idle));
+        // review #463 round-8 M1: the window between `get_or_spawn`'s activity
+        // refresh and `admit_prompt_turn`'s busy flip must not be evictable
+        // either, however long the prompt preparation takes — the guard keeps
+        // the runtime observably pending for its whole duration.
+        assert!(!rebind_evictable(false, false, true, idle));
         assert!(!rebind_evictable(
+            false,
             false,
             false,
             REBIND_EVICT_IDLE_EPSILON - Duration::from_millis(1)
         ));
-        assert!(rebind_evictable(false, false, REBIND_EVICT_IDLE_EPSILON));
+        assert!(rebind_evictable(
+            false,
+            false,
+            false,
+            REBIND_EVICT_IDLE_EPSILON
+        ));
+    }
+
+    #[test]
+    fn prompt_admission_guard_marks_and_releases() {
+        let pending = AtomicBool::new(false);
+        {
+            let _guard = PromptAdmissionGuard::new(&pending);
+            assert!(
+                pending.load(Ordering::Acquire),
+                "the guarded window must be observable to rebind eviction"
+            );
+            assert!(!rebind_evictable(
+                false,
+                false,
+                pending.load(Ordering::Acquire),
+                Duration::from_secs(60)
+            ));
+        }
+        assert!(
+            !pending.load(Ordering::Acquire),
+            "Drop must release the flag on every path, so a failed send cannot wedge eviction"
+        );
     }
 
     #[tokio::test]
-    async fn rebind_evict_skips_runtime_touched_before_admission() {
+    async fn rebind_evict_skips_runtime_awaiting_admission() {
         // round-8 M1 regression: a `send_message` that already passed
-        // `get_or_spawn` (activity refreshed, `busy` still false) must keep
-        // its runtime — the take would otherwise remove and shut down the
-        // session the sender is moments away from prompting.
+        // `get_or_spawn` and is still preparing the prompt must keep its
+        // runtime — the take would otherwise remove and shut down the session
+        // the sender is moments away from prompting, however long the
+        // preparation takes.
         let sessions: Mutex<HashMap<String, FakeRebindEntry>> = Mutex::new(HashMap::from([(
-            "pre-admission".to_string(),
-            FakeRebindEntry::just_touched(),
+            "awaiting-admission".to_string(),
+            FakeRebindEntry::awaiting_admission(),
         )]));
 
         let taken =
-            take_session_for_rebind(&sessions, "pre-admission", FakeRebindEntry::evictable).await;
+            take_session_for_rebind(&sessions, "awaiting-admission", FakeRebindEntry::evictable)
+                .await;
         assert!(
             matches!(taken, RebindEvictTake::Busy),
-            "a runtime used within the epsilon window must be treated as busy"
+            "a runtime awaiting admission must be treated as busy"
         );
         assert!(
-            sessions.lock().await.contains_key("pre-admission"),
+            sessions.lock().await.contains_key("awaiting-admission"),
             "the sender's runtime stays in the pool"
         );
     }
