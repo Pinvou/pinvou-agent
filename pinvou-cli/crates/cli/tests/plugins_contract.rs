@@ -70,6 +70,21 @@ fn usage_error(args: &[&str]) -> String {
     error.to_string()
 }
 
+/// Panic-safe restore for an env var an opt-in test sets (same pattern as
+/// models_contract.rs): without the Drop guard a failing assert would leak
+/// the variable into every later test in the binary.
+struct RestoreEnvVar(&'static str, Option<std::ffi::OsString>);
+
+impl Drop for RestoreEnvVar {
+    fn drop(&mut self) {
+        // SAFETY: the file-scoped ENV_LOCK is held for the whole test.
+        match self.1.take() {
+            Some(value) => unsafe { std::env::set_var(self.0, value) },
+            None => unsafe { std::env::remove_var(self.0) },
+        }
+    }
+}
+
 fn run_ok(args: &[&str]) -> String {
     let parsed = parse_args(args.to_vec()).expect("valid command");
     let outcome = execute(parsed).expect("execute succeeds");
