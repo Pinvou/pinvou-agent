@@ -1351,25 +1351,22 @@ fn index_cancel(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError
     } else {
         open_service()?
     };
-    // Re-check on the open that will actually cancel: `cancel_index`
-    // targets the latest job at call time, so a job created between the
-    // validation open and this one must fail here instead of being
-    // cancelled unvalidated — the whole point of the pre-check above.
-    if was_active {
-        match service.index_status().job_id.as_deref() {
-            Some(active) if active == job_id => {}
-            Some(active) => {
-                return Err(CliError::failed(format!(
-                    "knowledge index cancel({job_id}): job is no longer the active/latest \
-                     index job (latest: {active}); re-run to act on {active}"
-                )));
-            }
-            None => {
-                return Err(CliError::failed(format!(
-                    "knowledge_index_job_not_found: no index job exists anymore (nothing \
-                     to cancel for {job_id})"
-                )));
-            }
+    // Re-check on the open that will actually cancel — in BOTH branches:
+    // `cancel_index` targets the latest job at call time even when the named
+    // job is finished, so a job created between the validation open and this
+    // one must fail here instead of being cancelled unvalidated — the whole
+    // point of the pre-check above.
+    match service.index_status().job_id.as_deref() {
+        Some(active) if active == job_id => {}
+        Some(active) => {
+            return Err(CliError::failed(format!(
+                "knowledge index cancel({job_id}): job is no longer the active/latest index job (latest: {active}); re-run to act on {active}"
+            )));
+        }
+        None => {
+            return Err(CliError::failed(format!(
+                "knowledge_index_job_not_found: no index job exists anymore (nothing to cancel for {job_id})"
+            )));
         }
     }
     service
