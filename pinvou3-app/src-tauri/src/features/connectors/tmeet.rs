@@ -446,22 +446,17 @@ pub fn tmeet_skills_should_show() -> bool {
 pub async fn tmeet_apply_skills() -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(|| -> Result<bool, String> {
         let show = tmeet_skills_should_show();
+        // Deny-first transaction boundary (#517 review): see
+        // feishu_apply_skills — the gate sync runs before any skill file is
+        // written, so a refusal cannot leave the connector exposed.
+        if show {
+            crate::features::marketplace::sync_deny_all_scopes_after_install("tmeet")?;
+        }
         GATE.apply_skills(show)?;
         Ok(show)
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))??;
-    // scope 门禁同步：见 feishu_apply_skills 同名注释（code 默认关语义对齐）。
-    if show {
-        // The sync write can block on the cross-process flock (#515): keep it
-        // off the executor; a refused write (lock unavailable) fails the call
-        // so the safety default is never silently skipped.
-        tokio::task::spawn_blocking(|| {
-            crate::features::marketplace::sync_deny_all_scopes_after_install("tmeet")
-        })
-        .await
-        .map_err(|e| format!("spawn_blocking: {e}"))??;
-    }
     Ok(json!({ "visible": show }))
 }
 

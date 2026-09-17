@@ -351,23 +351,19 @@ pub fn feishu_skills_should_show() -> bool {
 pub async fn feishu_apply_skills() -> Result<Value, String> {
     let show = tokio::task::spawn_blocking(|| -> Result<bool, String> {
         let show = feishu_skills_should_show();
+        // Deny-first transaction boundary (#517 review): register the
+        // connector in the initialized DenyAll scopes BEFORE materializing
+        // skill files, so a refused gate sync aborts before `apply_skills`
+        // exposes anything — the connector can never end up enabled outside
+        // the deny list.
+        if show {
+            crate::features::marketplace::sync_deny_all_scopes_after_install("feishu")?;
+        }
         GATE.apply_skills(show)?;
         Ok(show)
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))??;
-    // scope 门禁同步：连接器转为可用等同「新装」——已初始化 code 开关时加入 code
-    // 禁用集，保持「code 会话外部能力默认关」语义（与 MCP 新装连接器一致）。
-    if show {
-        // The sync write can block on the cross-process flock (#515): keep it
-        // off the executor; a refused write (lock unavailable) fails the call
-        // so the safety default is never silently skipped.
-        tokio::task::spawn_blocking(|| {
-            crate::features::marketplace::sync_deny_all_scopes_after_install("feishu")
-        })
-        .await
-        .map_err(|e| format!("spawn_blocking: {e}"))??;
-    }
     // 技能写盘即可——连接成功弹窗已引导「新建对话」,新会话 spawn 时自然扫到飞书技能;
     // 不再原地广播刷新当前对话(故不依赖子模块 Op::RefreshSystemPrompt)。
     Ok(json!({ "visible": show }))
