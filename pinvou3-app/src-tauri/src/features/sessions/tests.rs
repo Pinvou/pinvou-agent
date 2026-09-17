@@ -4197,8 +4197,10 @@ fn forkguard_session_archive_export_via_store_keeps_full_context() {
     let _ = std::fs::remove_dir_all(&output_dir);
 }
 
-/// 目录重绑定的元数据写入路径(评审 #463):set_workspace 只改 workspace
-/// 字段并可重读验证;不存在/损坏 JSON 的分类由命令层据此区分孤儿。
+/// Metadata write path for directory rebind (review #463): set_workspace
+/// changes only the workspace field and is verifiable by reload; the command
+/// layer uses durable_session_record_is_absent to tell orphans (missing /
+/// corrupt JSON) apart.
 #[test]
 fn set_workspace_persists_rebound_path() {
     let (store, _guard) = isolated_store();
@@ -4211,12 +4213,14 @@ fn set_workspace_persists_rebound_path() {
         .expect("set workspace");
     let reloaded = store.load(&session.metadata.id).expect("reload");
     assert_eq!(reloaded.metadata.workspace, target);
-    // 同值重复写幂等(重绑定失败重试路径依赖这一点)。
+    // Rewriting the same value is idempotent (the rebind retry path depends
+    // on this).
     store
         .set_workspace(&session.metadata.id, target.clone())
         .expect("idempotent rewrite");
-    // 会话 JSON 不存在 = durable 缺席(孤儿分类只认它);在场(哪怕损坏)
-    // 不得被当孤儿静默跳过。
+    // Missing session JSON = durably absent (the orphan classification only
+    // accepts this); a present record — even corrupt — must not be silently
+    // skipped as an orphan.
     assert!(!store.durable_session_record_is_absent(&session.metadata.id));
     assert!(store.durable_session_record_is_absent("sess-definitely-missing"));
 }

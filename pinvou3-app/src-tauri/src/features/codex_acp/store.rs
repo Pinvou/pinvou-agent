@@ -167,18 +167,22 @@ pub struct CodeSessionSidecar {
     pub bound_at: Option<i64>,
 }
 
-/// `rebind_workspace_prefix` 的产出。
+/// Output of `rebind_workspace_prefix`.
 #[derive(Debug, Default)]
 pub struct RebindWorkspacePrefixOutcome {
-    /// 受影响 (session_id, 平移后路径)：索引命中的会话 + 写入成功的孤儿
-    /// sidecar。sidecar 落盘失败的孤儿不入此表——sidecar 即其绑定,声称
-    /// 已平移到新路径是虚报(评审 #463 nit)。
+    /// Affected (session_id, translated path): index-matched sessions plus
+    /// orphan sidecars whose rewrite succeeded. An orphan whose sidecar write
+    /// failed is NOT listed — the sidecar is its binding, so claiming it
+    /// moved to the new path would be a false report (review #463 nit).
     pub affected: Vec<(String, PathBuf)>,
-    /// sidecar 最终陈旧的会话:本跑内已无自愈路径。两种来源——孤儿
-    /// (重写段失败,没有补写路径)与索引会话(重写+补写两趟都失败)。
-    /// 陈旧 sidecar 仍在 `from` 前缀下,命令层应计入 failed_session_ids,
-    /// 用户重跑时磁盘前缀扫描会改写它而收敛;不报,索引损坏时恢复流程
-    /// 会复活旧路径、静默撤销重绑定(评审 #463 Major 2)。
+    /// Sessions whose sidecar is finally stale: no self-healing path remains
+    /// in this run. Two sources — orphans (rewrite pass failed, no backfill
+    /// path) and indexed sessions (both the rewrite and the rewrite-retry
+    /// pass failed). A stale sidecar still sits under the `from` prefix; the
+    /// command layer should count it into failed_session_ids so a user rerun
+    /// converges it via the on-disk prefix scan. Not reporting it would let a
+    /// restore with a damaged index resurrect the old path and silently undo
+    /// the rebind (review #463 Major 2).
     pub sidecar_final_stale: Vec<String>,
 }
 
@@ -542,10 +546,12 @@ impl SessionAgentStore {
         }
     }
 
-    /// 折叠键前缀匹配 + 原样后缀:匹配经共享 `filesystem_path_identity_key`
-    /// 折叠(Windows 折叠分隔符与大小写,仅大小写改名不再漏配),后缀按组件数
-    /// 从原路径切回,保留子目录原有大小写。返回 `None` = 不在 `from` 之下;
-    /// 空后缀 = 路径本身就是 `from`。
+    /// Folded-key prefix match + literal suffix: matching goes through the
+    /// shared `filesystem_path_identity_key` fold (Windows folds separators
+    /// and case, so a case-only rename no longer misses), and the suffix is
+    /// cut from the original path by component count, preserving the
+    /// subdirectory's original casing. Returns `None` = not under `from`;
+    /// an empty suffix = the path IS `from`.
     fn rebind_relative_suffix(path: &Path, from: &Path) -> Option<PathBuf> {
         let path_key = crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy());
         let from_key = crate::platform::os::filesystem_path_identity_key(&from.to_string_lossy());
@@ -560,11 +566,14 @@ impl SessionAgentStore {
         Some(path.components().skip(from.components().count()).collect())
     }
 
-    /// 列出绑定在 `from` 前缀下的项目会话（目录重绑定的候选集；`from` 通常
-    /// 已在磁盘上消失，因此按折叠键前缀匹配而非 canonicalize 比较）。
-    /// 除辅助索引外同时扫描 code-session sidecar 目录：索引损坏/丢失时全部
-    /// 原生代码会话都是索引外孤儿，只扫索引会让重绑定栅栏与元数据重放集体
-    /// 漏保（评审 #463 M6）。同一 session_id 索引记录优先，孤儿仅补差集。
+    /// Lists project sessions bound under the `from` prefix (candidate set for
+    /// directory rebind; `from` has usually vanished from disk, so matching is
+    /// a folded-key prefix match, not a canonicalize comparison). Besides the
+    /// helper index this also scans the code-session sidecar directory: with a
+    /// damaged/lost index every native code session is an off-index orphan,
+    /// and an index-only scan would leave the rebind fence and the metadata
+    /// replay collectively blind (review #463 M6). The index record wins for a
+    /// shared session_id; orphans only fill the difference set.
     pub fn sessions_under_workspace(&self, from: &Path) -> Vec<(String, PathBuf)> {
         let mut matched: Vec<(String, PathBuf)> = self
             .records
@@ -578,10 +587,27 @@ impl SessionAgentStore {
                 Self::rebind_relative_suffix(path, from).map(|_| (session_id.clone(), path.clone()))
             })
             .collect();
-        // 索引外孤儿 sidecar:启动恢复以 sidecar 为权威,候选集必须同口径
-        // (扫法与 rebind_workspace_prefix 的 sidecar 重写段一致)。
+        // Off-index orphan sidecars: startup restore treats the sidecar as
+        // authoritative, so the candidate set must use the same scope (same
+        // scan shape as the sidecar rewrite pass of rebind_workspace_prefix).
         let sidecar_root = code_session_sidecar_root(&self.path);
-        if let Ok(entries) = fs::read_dir(&sidecar_root) {
+        let entries = match fs::read_dir(&sidecar_root) {
+            Ok(entries) => Some(entries),
+            // No sessions directory yet is normal (no sidecar ever written).
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            // review #463 minor: an unreadable sidecar root must not fail
+            // open silently — the candidate set would miss orphans, and the
+            // rewrite/stale-report pass would skip them too, letting boot
+            // restore resurrect old paths with zero signal.
+            Err(error) => {
+                eprintln!(
+                    "[pinvou3-app] sidecar root {} unreadable during rebind candidate scan: {error}",
+                    sidecar_root.display()
+                );
+                None
+            }
+        };
+        if let Some(entries) = entries {
             for entry in entries.flatten() {
                 let Ok(file_type) = entry.file_type() else {
                     continue;
@@ -612,9 +638,11 @@ impl SessionAgentStore {
         matched
     }
 
-    /// 由候选绑定路径算重绑定目标:`from` 前缀下的路径平移后缀到 `to`;已在
-    /// `to` 前缀下的路径(上一轮已平移、元数据未同步的重试候选)原样返回。
-    /// 两者都不命中返回 None(不可能是候选)。
+    /// Computes the rebind target for a candidate binding path: a path under
+    /// the `from` prefix moves its suffix onto `to`; a path already under
+    /// `to` (a retry candidate translated by a previous run whose metadata
+    /// was not synced) is returned unchanged. Neither matching returns None
+    /// (cannot be a candidate).
     pub fn rebind_target_path(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
         if let Some(suffix) = Self::rebind_relative_suffix(path, from) {
             return Some(if suffix.as_os_str().is_empty() {
@@ -626,27 +654,34 @@ impl SessionAgentStore {
         Self::rebind_relative_suffix(path, to).map(|_| path.to_path_buf())
     }
 
-    /// 目录重绑定（修断链通道）：把绑定在 `from` 前缀下的项目会话整体平移到
-    /// `to`。与 `set_acp_workspace`/`bind_code_native_session` 的“会话开始后
-    /// 不可换目录”不同，本方法绕过该约束——仅当目录已失效（或用户在旧目录
-    /// 仍存在时显式确认）时由命令层调用，命令层负责活跃回合栅栏与目标校验。
+    /// Directory rebind (broken-link repair): translates every project
+    /// session bound under the `from` prefix onto `to`. Unlike
+    /// `set_acp_workspace`/`bind_code_native_session` ("no directory change
+    /// after a session starts"), this method bypasses that constraint — the
+    /// command layer calls it only when the directory is gone (or the user
+    /// explicitly confirmed while it still exists), and the command layer
+    /// owns the active-turn fence and target validation.
     ///
-    /// 三处一致中的前两处在此落盘：辅助索引（session-agents.json）与权威
-    /// sidecar（code-session.json，含索引外孤儿——启动扫描按 sidecar 恢复，
-    /// 漏写会让旧值复活）；第三处 SavedSession 元数据由命令层经 SessionStore
-    /// 写入。幂等：from→to 重跑无匹配即空操作。
+    /// Two of the three consistency points are persisted here: the helper
+    /// index (session-agents.json) and the authoritative sidecars
+    /// (code-session.json, including off-index orphans — startup scan
+    /// restores from sidecars, so a missed rewrite resurrects the old
+    /// value); the third, SavedSession metadata, is written by the command
+    /// layer via SessionStore. Idempotent: a from→to rerun with no match is
+    /// a no-op.
     ///
-    /// 存储形式不变量（评审 #463 m1）：`from`/`to` 必须与绑定时的存储形态
-    /// 同源——会话绑定保存的是绑定当时的路径原值（对已存在目录，绑定入口
-    /// 已经过 canonical 化）。`from` 指向已消失目录时命令层无法对其做
-    /// canonical 化，macOS `/tmp` 与 `/private/tmp` 这类别名在此不可分辨；
-    /// 调用方必须传存储原值（前端取项目 store 的 root 展示串），传别名会
-    /// 静默半改写。
+    /// Storage-form invariant (review #463 m1): `from`/`to` must be in the
+    /// same form as the bindings stored at bind time (for existing
+    /// directories the bind entry already canonicalized them). The command
+    /// layer normalizes `from` once at the entry (review #463 B1), so an
+    /// alias spelling (macOS `/tmp` vs `/private/tmp`) cannot half-rewrite.
     ///
-    /// 返回受影响 (session_id, 新路径) 及 sidecar 最终陈旧名单（孤儿重写
-    /// 失败、或索引会话重写+补写两趟都失败——本跑内已无自愈路径，命令层
-    /// 应计入 failed_session_ids，重跑由磁盘前缀扫描收敛，评审 #463 m2 /
-    /// Major 2）。
+    /// Returns the affected (session_id, new path) pairs and the finally
+    /// stale sidecar list (orphan rewrite failure, or indexed session whose
+    /// rewrite AND retry pass both failed — no self-healing path remains in
+    /// this run; the command layer should count them into
+    /// failed_session_ids, and a rerun converges via the on-disk prefix
+    /// scan; review #463 m2 / Major 2).
     pub fn rebind_workspace_prefix(
         &self,
         from: &Path,
@@ -657,6 +692,12 @@ impl SessionAgentStore {
         }
         let mut affected: Vec<(String, PathBuf)> = Vec::new();
         let mut sidecar_final_stale: Vec<String> = Vec::new();
+        // Original bindings of the mutated records, kept so a persist
+        // failure can roll memory back to the on-disk state (review #463
+        // minor: unconditional persist() + advanced memory on failure left
+        // the process believing the rebind happened while disk said
+        // otherwise).
+        let mut originals: Vec<(String, Option<PathBuf>)> = Vec::new();
         {
             let mut records = self.records.write();
             for (session_id, record) in records.iter_mut() {
@@ -674,17 +715,48 @@ impl SessionAgentStore {
                 } else {
                     to.join(suffix)
                 };
+                originals.push((session_id.clone(), record.workspace_path.clone()));
                 record.workspace_path = Some(next.clone());
                 affected.push((session_id.clone(), next));
             }
         }
-        self.persist()?;
-        // sidecar 重写：原生代码会话的权威绑定。ACP 会话本就无 sidecar（绑定
-        // 时即清除）；索引外孤儿 sidecar 也要改——否则重启恢复会用旧目录复活。
-        // 写失败记日志且不标记已重写（下面的补写段会重试），不静默按成功计。
+        if let Err(error) = self.persist() {
+            // Roll the in-memory bindings back to the persisted state: the
+            // caller reports the rebind as failed, and a retry must see the
+            // original `from` bindings (not ones memory pretends moved).
+            let mut records = self.records.write();
+            for (session_id, original) in originals {
+                if let Some(record) = records.get_mut(&session_id) {
+                    record.workspace_path = original;
+                }
+            }
+            return Err(error);
+        }
+        // Sidecar rewrite: the authoritative binding of native code
+        // sessions. ACP sessions have no sidecar (cleared at bind time);
+        // off-index orphan sidecars are rewritten too — otherwise a restart
+        // restore resurrects the old directory. A write failure is logged
+        // and NOT marked rewritten (the retry pass below retries it); it is
+        // never silently counted as success.
         let mut sidecar_rewritten: Vec<String> = Vec::new();
         let sidecar_root = code_session_sidecar_root(&self.path);
-        if let Ok(entries) = fs::read_dir(&sidecar_root) {
+        let sidecar_entries = match fs::read_dir(&sidecar_root) {
+            Ok(entries) => Some(entries),
+            // No sessions directory yet is normal (no sidecar ever written).
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            // review #463 minor: an unreadable sidecar root must not fail
+            // open silently — the rewrite pass AND the stale report would
+            // both be skipped, letting boot restore resurrect old paths
+            // with zero signal.
+            Err(error) => {
+                eprintln!(
+                    "[pinvou3-app] sidecar root {} unreadable during rebind rewrite: {error}",
+                    sidecar_root.display()
+                );
+                None
+            }
+        };
+        if let Some(entries) = sidecar_entries {
             for entry in entries.flatten() {
                 let Ok(file_type) = entry.file_type() else {
                     continue;
@@ -722,20 +794,30 @@ impl SessionAgentStore {
                     },
                 ) {
                     Err(error) => {
-                        // 旧 sidecar 仍在盘上,重启恢复会复活旧目录;索引内
-                        // 会话走下面的补写段重试,孤儿没有补写路径——两种
-                        // 情况都先进最终陈旧名单(索引会话若补写成功会被
-                        // 移出),交命令层计入 failed(评审 #463 m2/Major 2)。
-                        // 失败会话经 sidecar_final_stale 上报前端展示,日志
-                        // 不落明文会话 id(CodeQL cleartext-logging)。
-                        eprintln!("[pinvou3-app] 重绑定改写原生代码会话 sidecar 失败: {error:#}");
+                        // The old sidecar is still on disk; a restart restore
+                        // would resurrect the old directory. Indexed sessions
+                        // get retried by the rewrite pass below; orphans have
+                        // no retry path — both go into the finally-stale list
+                        // (an indexed session leaves the list if the retry
+                        // succeeds) for the command layer to count as failed
+                        // (review #463 m2/Major 2). Failed sessions reach the
+                        // frontend via sidecar_final_stale; the log carries
+                        // only the root cause, never a plaintext session id —
+                        // the error chain embeds sessions/<id>/ paths (CodeQL
+                        // cleartext-logging, review #463 round 7).
+                        eprintln!(
+                            "[pinvou3-app] 重绑定改写原生代码会话 sidecar 失败: {}",
+                            error.root_cause()
+                        );
                         sidecar_final_stale.push(session_id.clone());
                     }
                     Ok(()) => {
                         sidecar_rewritten.push(session_id.clone());
-                        // 索引缺失的孤儿:写入成功才计入受影响名单——
-                        // sidecar 即其绑定,失败时声称已平移到 next 是虚报
-                        // (评审 #463 nit)。索引内会话已在 affected 中。
+                        // Orphan with a missing index record: only a
+                        // successful write counts as affected — the sidecar
+                        // IS its binding, and claiming a failed one moved to
+                        // `next` would be a false report (review #463 nit).
+                        // Indexed sessions are already in `affected`.
                         if !affected.iter().any(|(sid, _)| *sid == session_id) {
                             affected.push((session_id, next));
                         }
@@ -743,12 +825,15 @@ impl SessionAgentStore {
                 }
             }
         }
-        // 索引内已改绑的原生代码会话补写 sidecar。跳过上面已重写的会话:
-        // 重写段保留了原 bound_at,这里再以 now 回填是双写 + 丢失首次绑定
-        // 时间(评审 #463 minor)。补写也失败 = 最终陈旧:回填自愈只补
-        // *缺失*的 sidecar,boot restore 在索引完好时跳过 sidecar,无人
-        // 会再改写这条陈旧记录——留在名单里交命令层计入 failed;补写
-        // 成功则移出名单(评审 #463 Major 2)。
+        // Rewrite-retry pass for indexed native code sessions already
+        // rebound. Sessions rewritten above are skipped: that pass preserved
+        // the original bound_at, and rewriting here with now would double
+        // write + lose the first-bind timestamp (review #463 minor). A failed
+        // retry = finally stale: backfill self-healing only rewrites
+        // *missing* sidecars, and boot restore skips sidecars while the index
+        // is intact, so nothing would ever rewrite this stale record — it
+        // stays in the list for the command layer to count as failed; a
+        // successful retry removes it (review #463 Major 2).
         {
             let records = self.records.read();
             for (session_id, path) in &affected {
@@ -1504,9 +1589,10 @@ mod tests {
         fs::create_dir_all(from.join("sub")).unwrap();
         fs::create_dir_all(&to).unwrap();
 
-        // s1:原生代码会话,绑定 = from 本身(写 sidecar);
-        // s2:ACP 项目会话,绑定 = from/sub(无 sidecar);
-        // s3:绑定在别处,不受影响;前缀边界:from-x 不得命中 from。
+        // s1: native code session, binding = from itself (writes a sidecar);
+        // s2: ACP project session, binding = from/sub (no sidecar);
+        // s3: bound elsewhere, unaffected; prefix boundary: from-x must not
+        // match from.
         store
             .bind_code_native_session("s1", CodexWorkspaceKind::Project, Some(from.clone()))
             .unwrap();
@@ -1530,7 +1616,8 @@ mod tests {
             .unwrap();
 
         let matched = store.sessions_under_workspace(&from);
-        // s1 在索引与 sidecar 双处命中,按 session_id 去重只计一次(索引优先)。
+        // s1 matches in both the index and the sidecar; dedupe by session_id
+        // counts it once (index wins).
         assert_eq!(matched.len(), 2);
 
         let bound_at_before =
@@ -1565,18 +1652,21 @@ mod tests {
             "目录边界:sibling 前缀不得误命中"
         );
 
-        // 权威 sidecar 同步改写(s1);ACP 会话 s2 无 sidecar。bound_at 保留
-        // 首次绑定时间,不被后面的索引补写段以 now 回填覆盖(评审 #463 minor)。
+        // The authoritative sidecar is rewritten too (s1); the ACP session s2
+        // has no sidecar. bound_at keeps the first-bind timestamp and is not
+        // overwritten by the index rewrite-retry pass below with now (review
+        // #463 minor).
         let sidecar = read_code_session_sidecar(&store.path, "s1").unwrap();
         assert_eq!(sidecar.workspace_path.as_deref(), Some(to.as_path()));
         assert_eq!(sidecar.bound_at, bound_at_before);
 
-        // 幂等:再跑一遍 from→to 无命中。
+        // Idempotent: a second from→to run matches nothing.
         let rerun = store.rebind_workspace_prefix(&from, &to).unwrap();
         assert!(rerun.affected.is_empty());
         assert!(rerun.sidecar_final_stale.is_empty());
 
-        // 孤儿 sidecar(索引无记录)也会被改写,重启恢复不会复活旧目录。
+        // Orphan sidecars (no index record) are rewritten too, so a restart
+        // restore does not resurrect the old directory.
         persist_code_session_sidecar(
             &code_session_sidecar_path(&store.path, "orphan"),
             &CodeSessionSidecar {
@@ -1587,7 +1677,8 @@ mod tests {
             },
         )
         .unwrap();
-        // 候选集同口径含索引外孤儿(评审 #463 M6):栅栏不再漏保孤儿。
+        // The candidate set covers off-index orphans too (review #463 M6):
+        // the fence no longer misses orphans.
         let matched = store.sessions_under_workspace(&root.join("from"));
         assert_eq!(matched.len(), 1);
         assert_eq!(matched[0].0, "orphan");
@@ -1596,7 +1687,8 @@ mod tests {
             .rebind_workspace_prefix(&root.join("from"), &root.join("to2"))
             .unwrap();
         fs::create_dir_all(root.join("to2")).unwrap();
-        // 上一步 to 已改走;此轮 from 无索引命中,但孤儿 sidecar 命中。
+        // The previous run moved `to` away; this round has no index hit for
+        // from, but the orphan sidecar matches.
         assert!(affected.affected.iter().any(|(sid, _)| sid == "orphan"));
         assert!(affected.sidecar_final_stale.is_empty());
         let orphan = read_code_session_sidecar(&store.path, "orphan").unwrap();
@@ -1624,7 +1716,8 @@ mod tests {
         let to = root.join("to");
         fs::create_dir_all(&from).unwrap();
         fs::create_dir_all(&to).unwrap();
-        // 索引外孤儿:sidecar 是唯一权威载体(索引无记录,没有补写路径)。
+        // Off-index orphan: the sidecar is the only authoritative carrier
+        // (no index record, no rewrite-retry path).
         persist_code_session_sidecar(
             &code_session_sidecar_path(&store.path, "orphan-deny"),
             &CodeSessionSidecar {
@@ -1635,7 +1728,8 @@ mod tests {
             },
         )
         .unwrap();
-        // 索引内原生代码会话:重写段与补写段都会尝试改写它的 sidecar。
+        // Indexed native code session: both the rewrite pass and the retry
+        // pass try to rewrite its sidecar.
         store
             .bind_code_native_session(
                 "indexed-deny",
@@ -1643,9 +1737,11 @@ mod tests {
                 Some(from.clone()),
             )
             .unwrap();
-        // 占住两个会话持久化的临时文件路径:写入 code-session.json.tmp 时
-        // 即失败,rename 永远走不到,跨平台稳定地模拟落盘故障——孤儿只有
-        // 重写段,索引会话两趟都撞同一堵墙,构成"最终陈旧"。
+        // Occupy the temp-file path both sessions persist through: writing
+        // code-session.json.tmp fails immediately and rename is never
+        // reached — a cross-platform-stable simulation of a persist failure.
+        // The orphan has only the rewrite pass; the indexed session hits the
+        // same wall in both passes, which is "finally stale".
         for sid in ["orphan-deny", "indexed-deny"] {
             fs::create_dir_all(
                 code_session_sidecar_path(&store.path, sid).with_extension("json.tmp"),
@@ -1660,8 +1756,10 @@ mod tests {
             stale,
             vec!["indexed-deny".to_string(), "orphan-deny".to_string()]
         );
-        // 孤儿写入失败不得进 affected——sidecar 即其绑定,声称已平移是虚报
-        // (评审 #463 nit);索引会话索引已改写,affected 如实包含。
+        // An orphan whose write failed must NOT enter affected — the sidecar
+        // is its binding, so claiming it moved would be a false report
+        // (review #463 nit); the indexed session's index was rewritten, so
+        // affected honestly includes it.
         assert!(!outcome.affected.iter().any(|(sid, _)| sid == "orphan-deny"));
         assert!(
             outcome
@@ -1669,12 +1767,66 @@ mod tests {
                 .iter()
                 .any(|(sid, _)| sid == "indexed-deny")
         );
-        // 盘上 sidecar 仍是旧路径:命令层据此把两者计入 failed 而非成功
-        // (Major 2),失败重跑时旧路径仍命中 from 前缀,重试可收敛。
+        // The on-disk sidecars still hold the old paths: the command layer
+        // counts both as failed rather than succeeded (Major 2), and on a
+        // rerun after failure the old paths still match the from prefix, so
+        // the retry converges.
         for sid in ["orphan-deny", "indexed-deny"] {
             let stale = read_code_session_sidecar(&store.path, sid).unwrap();
             assert_eq!(stale.workspace_path.as_deref(), Some(from.as_path()));
         }
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rebind_prefix_rolls_back_memory_when_index_persist_fails() {
+        // review #463 minor: persist() runs after the in-memory index
+        // mutation; on failure the memory must be rolled back to the
+        // on-disk state, otherwise the process believes the rebind happened
+        // while disk says otherwise, and a retry would see no `from`
+        // bindings left to move.
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-rebind-rollback-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let from = root.join("from");
+        let to = root.join("to");
+        fs::create_dir_all(&from).unwrap();
+        fs::create_dir_all(&to).unwrap();
+        store
+            .bind_code_native_session("s1", CodexWorkspaceKind::Project, Some(from.clone()))
+            .unwrap();
+
+        // Occupy the index's temp-file path with a directory: fs::write to a
+        // directory fails on every platform, so persist() fails
+        // deterministically after the in-memory mutation.
+        fs::create_dir_all(store.path.with_extension("json.tmp")).unwrap();
+        let error = store
+            .rebind_workspace_prefix(&from, &to)
+            .expect_err("persist failure surfaces as an error");
+        assert!(!error.to_string().is_empty());
+        assert_eq!(
+            store.get("s1").workspace_path.as_deref(),
+            Some(from.as_path()),
+            "memory rolled back to the on-disk binding"
+        );
+
+        // After clearing the obstacle a retry converges: the original `from`
+        // binding is still there to be moved.
+        fs::remove_dir_all(store.path.with_extension("json.tmp")).unwrap();
+        let outcome = store.rebind_workspace_prefix(&from, &to).unwrap();
+        assert!(outcome.affected.iter().any(|(sid, _)| sid == "s1"));
+        assert_eq!(
+            store.get("s1").workspace_path.as_deref(),
+            Some(to.as_path())
+        );
 
         fs::remove_dir_all(&root).unwrap();
     }

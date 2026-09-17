@@ -386,9 +386,11 @@ impl SessionStore {
         (committed, result)
     }
 
-    /// 会话 JSON 是否已不在盘上(无效 id 一律按"在场"处理,fail-closed)。
-    /// 除删除路径外,目录重绑定的孤儿分类也用它:只认 NotFound,损坏 JSON
-    /// 不算孤儿(评审 #463:解析失败必须进失败名单可重试,不静默跳过)。
+    /// Whether the session JSON is no longer on disk (an invalid id is always
+    /// treated as "present", fail-closed). Besides the delete path, the
+    /// rebind orphan classification also uses it: only NotFound counts — a
+    /// corrupt JSON is not an orphan (review #463: a parse failure must enter
+    /// the failed list as retryable, never silently skipped).
     pub(crate) fn durable_session_record_is_absent(&self, id: &str) -> bool {
         if validate_session_id(id).is_err() {
             return false;
@@ -543,16 +545,21 @@ impl SessionStore {
         Ok(())
     }
 
-    /// 目录重绑定的元数据写入(与 set_title 同款 load→patch→persist 模式)。
-    /// 只改 SavedSession 元数据的 workspace 字段,不触碰消息/transcript——
-    /// 历史回合里引用的旧路径是事实记录,保持原样。调用方(命令层)负责
-    /// 活跃回合栅栏;此处上锁防与 Engine 写盘竞争。
+    /// Metadata write for directory rebind (same load→patch→persist pattern
+    /// as set_title). Only the SavedSession metadata workspace field changes;
+    /// messages/transcript are untouched — old paths referenced by historical
+    /// turns are factual records and stay as-is. The caller (command layer)
+    /// owns the active-turn fence; the lock here guards against Engine writes.
+    /// The load context deliberately does not embed the session id: the
+    /// command layer logs this error chain and rebind logs must not persist
+    /// session ids (CodeQL cleartext-logging, review #463 round 7); the id is
+    /// available to the caller at the failure site.
     pub fn set_workspace(&self, id: &str, workspace: PathBuf) -> Result<()> {
         let _mutation = self.scheduled_mutation.lock();
         let mut session = self
             .manager
             .load_session_snapshot(id)
-            .with_context(|| format!("load_session({id}) for workspace rebind"))?;
+            .with_context(|| "load_session for workspace rebind".to_string())?;
         session.metadata.workspace = workspace;
         self.persist_then_reconcile(&session, "workspace rebind")?;
         Ok(())
