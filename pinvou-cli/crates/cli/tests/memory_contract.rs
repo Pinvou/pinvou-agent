@@ -670,7 +670,7 @@ fn memory_add_accepts_ordinary_punctuated_work_context() {
             .iter()
             .any(|item| item["text"] == serde_json::json!("We deploy on Fridays")),
         "the punctuated work-context item must be materialized with the \
-         punctuation-stripped normalization: {json}"
+         punctuation-stripped normalization"
     );
     let _ = home;
 }

@@ -276,7 +276,7 @@ fn personas_list_shows_builtin_catalog_and_source_filters() {
         assert!(!entry["dept"].as_str().unwrap().is_empty());
         assert!(
             entry["source"] == "builtin" || entry["source"] == "user",
-            "{entry}"
+            "persona entries must carry a known source"
         );
         assert!(
             entry.get("body").is_none(),
@@ -330,7 +330,10 @@ fn personas_create_show_update_delete_round_trip_persists_user_card() {
     assert_eq!(value["dept"], "specialized");
     assert_eq!(value["description"], "first");
     let id = value["id"].as_str().unwrap().to_owned();
-    assert!(id.starts_with("user-contract-tester-"), "{id}");
+    assert!(
+        id.starts_with("user-contract-tester-"),
+        "the imported persona id must derive from the raw name"
+    );
     assert!(
         home.user_personas_dir()
             .join(format!("{id}.json"))
