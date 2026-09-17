@@ -10,23 +10,23 @@
 |---|---|
 | 上游基线 | tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5` |
 | 维护分支 | CodeWhale PR #44 与 fast-follow PR #46 将 `pinvou3-clean` 对齐到 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf` |
-| 发布状态 | 公开 `pinvou3-clean`、不可变 tag `pinvou-v0.9.12-r1` 与父仓 gitlink 均指向同一 head |
+| 发布状态 | 公开 `pinvou3-clean` 已前进到 `92427bd8d`（含 #58–#61）；不可变 tag `pinvou-v0.9.12-r1` 仍钉在 `1fafee7e2`；本分支父仓 gitlink 指向 workspace_roots 主题 head `33b23a4a2`（CodeWhale PR #54 head，待合并后重新对齐） |
 | 升级前回退点 | 公开不可变 tag `pinvou-v0.9.5-r13` → `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 `backup/pre-v0.9.12-sync` 仅作便利引用 |
 | 历史组织 | 上游之上 15 个带 DCO sign-off 的提交，仍归属 4 个长期主题；最后十个提交收口评审确认的行为、测试、文档与精确 SHA 发布门禁缺口 |
 | drift | `94 files, +5022/-944`，净增 4078 行；旧 r13 为 `110 files, +10895/-1195` |
 | 守护 | 37 条独立 CodeWhale `forkguard_*` 行为测试（31 条默认 + 6 条 `benchmark-eval-controls`）+ 父仓指纹与行为测试 |
 | 父仓适配 | v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2 |
 
-### 多根工作区 workspace_roots + 指令 source 相对化（2026-09-11，本分支未推送）
+### 多根工作区 workspace_roots + 指令 source 相对化（2026-09-17 已 rebase，CodeWhale PR #54 head）
 
-- CodeWhale 分支 `pinvou3/workspace-roots-v12`（v0.9.12 r1 之上 10 个提交，head `f2526196c`，自 v0.9.5 线的 `pinvou3/workspace-roots` @d9431a28f 逐提交移植，层次 1:1）：线程从单根 `cwd` 扩展为 **cwd（主根）+ workspace_roots（全量可访问根集合）**，是"单入口工作区"（项目 = 主文件夹 + 一组钥匙）的底座前提。四层落地：
+- CodeWhale 分支 `pinvou3/workspace-roots-v12`（`qiuYliangM/CodeWhale` fork，PR #54 head `33b23a4a2`；已 rebase 到 `pinvou3-clean` @`92427bd8d`——即 v0.9.12 r1 + ae7e3fb36/#53 + #58–#61 之上 17 个提交；更早的 10 提交中文信息线 head `f2526196c` 已被该英文改写线取代）：线程从单根 `cwd` 扩展为 **cwd（主根）+ workspace_roots（全量可访问根集合）**，是"单入口工作区"（项目 = 主文件夹 + 一组钥匙）的底座前提。四层落地：
   1. **协议与会话模型**：`ThreadStartParams`/`ThreadResumeParams`/`ThreadForkParams` 与 `Thread` DTO 增加 `workspace_roots`（serde default，旧载荷读入为空）；SQLite `threads` 表 v5 迁移加 `workspace_roots TEXT`（缺省 `'[]'`，旧库零迁移退化）；TUI 两侧 JSON（`ThreadRecord`/`SessionMetadata`）additive serde default 字段。
   2. **回合环境**：根集合经 `Op::SyncSession` / Runtime API `UpdateThreadRequest` 运行中替换（活动回合拒绝 + 驱逐缓存引擎），每回合读取——快照语义，下回合生效；`normalize_workspace_roots` 保证 cwd 居首去重，空集合 ≡ `[cwd]`。resume 三态：带 roots 整体替换；只带 cwd 替换主根槽位、附加根保留；都不带沿用持久化值（顺带修复 cwd 被 fallback 覆盖的缺陷）。v12 适配：`SyncSession` wire 镜像、exec_agent 装配、acp_server 接缝均已接线。
-  3. **权限沙箱**：`:workspace_roots` 符号常量（`WORKSPACE_ROOTS_SYMBOL`）在每回合策略构造点物化（注：暂无配置面消费该字面值）；`workspace_write_policy(workspace, roots, network_access)` 的 writable_roots = 归一化全集合（空集合逐字节等于旧值 `[workspace]`）；写豁免 carve-out 逐根判定（排除名仍拒）；`ToolContext::resolve_path` 跨根放行、真越界仍 `PathEscape`；execpolicy 规则跨根匹配。v12 的 `SandboxNetworkAccess` 类型化参数与 fork 反转点全部保留。
-  4. **提示词/项目指令**：AGENTS.md 发现仅主根（v12 的仓库边界回溯语义保留），附加根只给访问权不注入指令；`<project_instructions source="…">` 标签由绝对路径改为仅文件名（统一 helper `project_instructions_source_label`，位于 `project_context/types.rs`），目录搬移/换主根且指令内容相同者不再击破 KV 前缀缓存。v12 差异：compaction 逐字重注入点已在上游重构中消失，旧线对应测试未移植。
+  3. **权限沙箱**：每回合策略构造点直接物化全量根集合——`workspace_write_policy(workspace, roots, network_access)` 的 writable_roots = `normalize_workspace_roots(workspace, roots)`（空集合逐字节等于旧值 `[workspace]`；改写线已放弃早先的 `:workspace_roots` 符号常量设计，无配置面消费该字面值）；写豁免 carve-out 逐根判定（排除名仍拒）；`ToolContext::resolve_path` 跨根放行、真越界仍 `PathEscape`；execpolicy 规则跨根匹配（allow 规则保持主根作用域）。v12 的 `SandboxNetworkAccess` 类型化参数与 fork 反转点全部保留。
+  4. **提示词/项目指令**：AGENTS.md 发现仅主根（v12 的仓库边界回溯语义保留），附加根只给访问权不注入指令；`<project_instructions source="…">` 标签仅文件名化（统一 helper `project_instructions_source_label`，位于 `project_context/types.rs`）已由 `pinvou3-clean` #59 吸收为共有行为，本主题不再携带该 diff，只保留"指令发现仅主根"的语义与回归测试；目录搬移/换主根且指令内容相同者不再击破 KV 前缀缓存。v12 差异：compaction 逐字重注入点已在上游重构中消失，旧线对应测试未移植。
 - 行为变化边界：未配置多根（空集合）时协议帧、策略值、路径判定逐字节等价单根现状；TUI 交互端无多根 UI，根集合只能经 Runtime API/headless 进入；fork 暂不继承父线程附加根。
-- drift：v0.9.12 r1 → 本主题为 `40 files, +1635/-142` 的移植等价物；新增 7 条 forkguard（6 条 `forkguard_workspace_roots_*` + 1 条 source 相对化），默认组 31→38 条运行通过。另含 turn_meta 列根：多根会话的每回合元数据新增 `Accessible folders:` 行（紧贴 `Current workspace:`，最多 5 个超出截断，单根逐字节无此行）——模型获知附加根的通道。
-- 指纹锚点：`pub workspace_roots: Vec<PathBuf>,`（protocol）、`pub fn normalize_workspace_roots(`（core）、`ADD COLUMN workspace_roots TEXT NOT NULL DEFAULT '[]';`（state）、`WORKSPACE_ROOTS_SYMBOL: &str = ":workspace_roots"`（sandbox/policy）、`fn project_instructions_source_label(`（project_context/types.rs）及 7 条 `fn forkguard_*` 测试名。
+- drift：`pinvou3-clean` @`92427bd8d` → 本主题 head `33b23a4a2` 为 `51 files, +2706/-168`（旧登记 `40 files, +1635/-142` 与实际不符：旧线 r1→`f2526196c` 实为 `47 files, +1877/-158`，rebase 后改写线含 6 个后续修复提交故继续增大）；新增 6 条 `forkguard_workspace_roots_*` 行为名（source 相对化那条已被 #59 收进 `pinvou3-clean`），全仓独立 forkguard 行为名 72→78，`codewhale-tui --lib forkguard_` 默认组 72 条 + benchmark 组 6 条运行通过。另含 turn_meta 列根：多根会话的每回合元数据新增 `Accessible folders:` 行（紧贴 `Current workspace:`，最多 5 个超出截断，单根逐字节无此行）——模型获知附加根的通道。
+- 指纹锚点：`pub workspace_roots: Vec<PathBuf>,`（protocol）、`pub fn normalize_workspace_roots(`（core）、`ADD COLUMN workspace_roots TEXT NOT NULL DEFAULT '[]';`（state）、`writable_roots: codewhale_core::normalize_workspace_roots(workspace, workspace_roots),`（core/authority.rs，每回合策略构造点物化）、`fn project_instructions_source_label(`（project_context/types.rs，已在 `pinvou3-clean` #59）及 6 条 `fn forkguard_workspace_roots_*` 测试名。
 
 ## 1. 为什么本次使用 clean re-fork
 
