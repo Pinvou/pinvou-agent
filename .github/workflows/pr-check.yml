@@ -739,6 +739,14 @@ jobs:
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
 
+      # pipewire-rs 0.10 (computer_use Wayland capture, direct + via xcap) needs SPA
+      # static inline helpers that ubuntu-22.04's libpipewire 0.3.48 headers lack
+      # (libspa-sys bindgens against system headers at build time). Build the upstream
+      # 1.0.7 headers+lib into /usr/local so pkg-config resolves the prefix; idempotent,
+      # no runner-image drift. See scripts/ci-libpipewire-build.sh for the full rationale.
+      - name: Build PipeWire 1.0.7 dev prefix (jammy SPA headers too old)
+        run: bash scripts/ci-libpipewire-build.sh
+
       # Clippy hard gate (no continue-on-error): lint config lives in the
       # Cargo.toml [lints] table, never CLI -W/-D (avoids divergence from
       # local runs). Two steps:
@@ -924,6 +932,14 @@ jobs:
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
 
+      # pipewire-rs 0.10 (computer_use Wayland capture, direct + via xcap) needs SPA
+      # static inline helpers that ubuntu-22.04's libpipewire 0.3.48 headers lack
+      # (libspa-sys bindgens against system headers at build time). Build the upstream
+      # 1.0.7 headers+lib into /usr/local so pkg-config resolves the prefix; idempotent,
+      # no runner-image drift. See scripts/ci-libpipewire-build.sh for the full rationale.
+      - name: Build PipeWire 1.0.7 dev prefix (jammy SPA headers too old)
+        run: bash scripts/ci-libpipewire-build.sh
+
       # bge-m3 是 gitignored 大资源(559M),CI 干净 checkout 没有它,而 tauri_build::build()
       # 会校验 tauri.conf resources 路径存在。单测用 mem()=embedder None、不加载真模型,真
       # bge-m3/vLLM 的 e2e 测试都已 #[ignore] —— 故造空占位文件骗过资源校验即可(已实测可行)。
@@ -1103,6 +1119,14 @@ jobs:
           sudo apt-get autoremove -y --purge
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
+
+      # pipewire-rs 0.10 (computer_use Wayland capture, direct + via xcap) needs SPA
+      # static inline helpers that ubuntu-22.04's libpipewire 0.3.48 headers lack
+      # (libspa-sys bindgens against system headers at build time). Build the upstream
+      # 1.0.7 headers+lib into /usr/local so pkg-config resolves the prefix; idempotent,
+      # no runner-image drift. See scripts/ci-libpipewire-build.sh for the full rationale.
+      - name: Build PipeWire 1.0.7 dev prefix (jammy SPA headers too old)
+        run: bash scripts/ci-libpipewire-build.sh
 
       - name: bge-m3 placeholder (tauri-build resource check)
         run: |
