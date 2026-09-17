@@ -81,8 +81,11 @@ fn with_disabled_bundles_lock<T>(f: impl FnOnce() -> T) -> Result<T, String> {
 /// reads run on every prompt/tool listing — refusing them would break the
 /// GUI on exactly the degraded machines the lock failure describes. Writers
 /// must not use this wrapper: they refuse (see `with_disabled_bundles_lock`).
-/// The read path's internal migration saves converge (both processes merge
-/// the same legacy sources), so the degraded read remains benign.
+/// The closure handed to this wrapper must be persistence-free: on the
+/// degraded path it runs without the cross-process lock, so any save it
+/// performed could clobber a concurrent lock-holding writer's consent state
+/// (exactly the lost update the flock exists to prevent). The read entry
+/// point therefore pairs with [`load_disabled_bundles_file_readonly_locked`].
 fn with_disabled_bundles_lock_read<T>(f: impl FnOnce() -> T) -> T {
     let _guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
@@ -170,14 +173,37 @@ fn attempt_cross_process_lock<T, F: FnOnce() -> T>(f: F) -> Result<T, (String, F
     Ok(f())
 }
 
-/// 读完整文件（取两层锁）。可能触发「读到即迁移」的读路径必须走本入口与持锁写方
-/// 串行（与旧两份文件的 #287 竞态范式一致）。
+/// Reads the whole file under both locks. The read path that can trigger
+/// "load-then-migrate" must serialize with lock-holding writers through this
+/// entry point (same race shape as the old two-file #287 bug), and on the
+/// degraded path it must not persist anything — see
+/// [`load_disabled_bundles_file_readonly_locked`].
 pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
-    with_disabled_bundles_lock_read(load_disabled_bundles_file_locked)
+    with_disabled_bundles_lock_read(load_disabled_bundles_file_readonly_locked)
 }
 
-/// 已持锁读实现。首个版本：文件不存在时从两份旧文件迁移（幂等）；文件存在时按新
-/// 格式解析，防御性剥除 `skill:` 前缀残留（新写路径不会再产生）。
+/// Locked read implementation used by the degraded path: memory-only. A
+/// missing file merges the two legacy files in memory without saving the
+/// migration (a concurrent lock-holding writer owns the canonical file); a
+/// present file is parsed and `skill:` prefix residuals are stripped in
+/// memory only (fresh writers never produce them anymore). Writers must use
+/// [`load_disabled_bundles_file_locked`], which persists migration and
+/// normalization while holding the cross-process lock.
+fn load_disabled_bundles_file_readonly_locked() -> DisabledBundlesFile {
+    let path = disabled_bundles_path();
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return migrate_from_legacy_files(),
+    };
+    let mut file: DisabledBundlesFile = serde_json::from_str(&content).unwrap_or_default();
+    strip_skill_prefixes(&mut file);
+    file
+}
+
+/// Locked read-and-heal implementation for writers: a missing file migrates
+/// the two legacy files (idempotent) and persists the result; a present file
+/// is parsed and defensive `skill:` prefix stripping is saved back. Must run
+/// under [`with_disabled_bundles_lock`].
 fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
     let path = disabled_bundles_path();
     let content = match std::fs::read_to_string(&path) {
@@ -781,6 +807,38 @@ mod tests {
         let _ = std::fs::remove_file(&base);
     }
 
+    /// The degraded read must be persistence-free: when the cross-process
+    /// lock is unavailable (here: the lock path is a directory, so opening
+    /// it fails) the read still returns the effective view — legacy entries
+    /// merged in memory — but must not save the migration or any
+    /// normalization, because it would run without the flock and could
+    /// clobber a concurrent lock-holding writer's consent state.
+    #[test]
+    fn degraded_read_never_persists_the_migration() {
+        with_temp_home(|| {
+            // Seed the legacy two-file layout so an in-memory migration has
+            // something to merge (the canonical file stays absent).
+            std::fs::write(
+                paths::pinvou3_home().join("disabled_connectors.json"),
+                serde_json::to_string(&vec!["weather".to_string()]).unwrap(),
+            )
+            .unwrap();
+            // Make the cross-process lock unopenable: a directory where the
+            // lock file should be.
+            std::fs::create_dir(paths::pinvou3_home().join("disabled_bundles.lock")).unwrap();
+
+            let loaded = load_disabled_bundles_for(ConnectorScope::Plain);
+            assert!(
+                loaded.contains(&"weather".to_string()),
+                "the degraded read must still surface the legacy entries"
+            );
+            assert!(
+                !disabled_bundles_path().exists(),
+                "the degraded read must not persist the migrated canonical file"
+            );
+        });
+    }
+
     /// Single-critical-section RMW semantics: the closure receives the
     /// **effective list** (an uninitialized DenyAll scope expands to the
     /// currently claimed set ∪ built-in CLI packages, the same view
@@ -976,7 +1034,7 @@ mod tests {
     /// 读路径的「读到即迁移落盘」必须取 `DISABLED_BUNDLES_FILE_LOCK` 与持锁写方
     /// 串行：持锁期间并发 load（磁盘为旧连接器文件、必然触发迁移落盘）不得先行落盘。
     #[test]
-    fn read_path_migration_serializes_with_file_lock() {
+    fn read_path_stays_persistence_free_and_serialized() {
         with_temp_home(|| {
             let legacy = r#"["weather"]"#;
             let conn = paths::pinvou3_home().join("disabled_connectors.json");
@@ -987,17 +1045,20 @@ mod tests {
                 .unwrap_or_else(|p| p.into_inner());
             let reader = std::thread::spawn(load_disabled_bundles_for_plain_for_lock_test);
             std::thread::sleep(std::time::Duration::from_millis(200));
-            // 持锁期间 bundles 文件尚未写入（迁移被串行化）。
+            // While the lock is held the read must not write the migration.
             assert!(
                 !disabled_bundles_path().exists(),
-                "持锁期间读路径不得先行迁移落盘"
+                "the read path must not persist the migration while the lock is held"
             );
             drop(guard);
             assert_eq!(reader.join().unwrap(), vec!["weather".to_string()]);
-            let content = std::fs::read_to_string(disabled_bundles_path()).unwrap();
+            // The read is persistence-free even after the lock releases: a
+            // degraded (lock-less) read runs the same closure, so it must not
+            // save anything a lock-holding writer could clobber. Only writers
+            // materialize the canonical file.
             assert!(
-                content.contains("\"scopes\""),
-                "释放锁后迁移完成: {content}"
+                !disabled_bundles_path().exists(),
+                "the read path must never persist the migrated canonical file"
             );
         });
     }
