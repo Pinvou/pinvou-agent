@@ -39,9 +39,9 @@ pub async fn set_disabled_connectors(
 #[tauri::command]
 pub async fn get_disabled_connectors(scope: Option<String>) -> Result<Vec<String>, String> {
     let scope = parse_connector_scope(scope.as_deref())?;
-    // The read path enters the cross-process flock (#515) and can block until
-    // the peer process releases it; keep it off the executor thread (aligned
-    // with the write commands below).
+    // The read path tries the cross-process flock (#515) and degrades instead
+    // of blocking, but it still takes the in-process scope mutex and does file
+    // I/O; keep it off the executor thread (aligned with the write commands).
     tokio::task::spawn_blocking(move || {
         crate::features::marketplace::load_disabled_bundles_for(scope)
     })
