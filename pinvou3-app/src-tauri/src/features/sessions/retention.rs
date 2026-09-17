@@ -397,8 +397,9 @@ impl SessionStore {
                     // the mapping (fail open to "unknown", matching the
                     // transient-fault stance of the rebuild side).
                     let backlink_mismatch = match self.load(&aux_id) {
-                        Ok(session) => session.metadata.parent_session_id.as_deref()
-                            != Some(main_id.as_str()),
+                        Ok(session) => {
+                            session.metadata.parent_session_id.as_deref() != Some(main_id.as_str())
+                        }
                         Err(_) => false,
                     };
                     if main_gone {
