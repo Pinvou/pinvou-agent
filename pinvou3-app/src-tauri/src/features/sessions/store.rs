@@ -206,17 +206,17 @@ impl SessionStore {
         Ok(store)
     }
 
-    /// 上游 `manager.list_sessions()` 的缓存读取:首访全目录扫描后缓存
-    /// `Arc<Vec<SessionMetadata>>`,后续 list 共享同一快照。失效点在 App 侧
-    /// 唯一写路径(`save_session_atomic`/`delete`),所以缓存与盘面一致的
-    /// 前提是「所有会话 JSON 都经 SessionStore 写入」——当前属实(save/
-    /// set_title/touch_activity/create_new 全走 save_session_atomic)。
-    /// 返回 `Arc` 让调用方(如 AcpPool 启动扫描)零拷贝消费。
+    /// Cached read of the upstream `manager.list_sessions()`: after a full directory scan on first access, it caches
+    /// `Arc<Vec<SessionMetadata>>`, and subsequent lists share the same snapshot. The invalidation point is the App-side
+    /// single write path (`save_session_atomic`/`delete`), so cache-on-disk consistency presupposes that
+    /// "all session JSON goes through SessionStore writes" — currently true (save/
+    /// set_title/touch_activity/create_new all go through save_session_atomic).
+    /// Returning an `Arc` lets callers (such as the AcpPool startup scan) consume it zero-copy.
     ///
-    /// 回填带代数守卫:miss 扫描期间若发生写(失效自增了代数),该扫描结果
-    /// 丢弃重扫——否则写前启动的慢扫描会用旧目录视图覆盖写后快照,陈旧
-    /// 列表(如重命名后的标题)会驻留到下一次任意写才恢复。并发 miss 的
-    /// 重复扫描良性(幂等读),不值得再加装载互斥。
+    /// Backfill carries a generation guard: if a write occurs while a miss is scanning (the invalidation bumps the generation), that scan result is
+    /// discarded and rescanned — otherwise a slow scan started before the write would overwrite the post-write snapshot with the old directory view, and a stale
+    /// list (e.g. a renamed title) would persist until the next arbitrary write. Duplicate scans from concurrent misses are
+    /// benign (idempotent reads), not worth adding a loading mutex.
     pub(crate) fn list_sessions_cached(&self) -> std::io::Result<Arc<Vec<SessionMetadata>>> {
         let generation_now = self.list_cache_generation.load(Ordering::Acquire);
         loop {
@@ -224,20 +224,20 @@ impl SessionStore {
                 if generation == generation_now {
                     return Ok(cached);
                 }
-                // 过期代数条目:等待的写方尚未清槽或守卫失效时被落地,击穿
-                // 重扫,不能把写前视图当有效快照返回。
+                // Stale-generation entry: if it is persisted while the waiting writer has not yet cleared the slot or the guard has failed, it would punch through
+                // the rescan; the pre-write view must not be returned as a valid snapshot.
             }
             let generation_at_scan = self.list_cache_generation.load(Ordering::Acquire);
             let fresh = Arc::new(self.manager.list_sessions()?);
             let mut slot = self.list_cache.write();
             if self.list_cache_generation.load(Ordering::Acquire) == generation_at_scan {
-                // 扫描期间无写:安全回填。写锁保证只有一个 miss 竞争者落地,
-                // 后到者走到顶部已能命中(或带着更新的代数再扫一轮)。
+                // No writes during the scan: safe to backfill. The write lock guarantees only one miss contender persists;
+                // latecomers reaching the top already hit the cache (or rescan with the newer generation).
                 *slot = Some((generation_at_scan, Arc::clone(&fresh)));
                 return Ok(fresh);
             }
-            // 扫描期间发生过写:丢弃本次结果,重扫。连续写活跃时最多重扫
-            // 到写间歇,与无缓存时的每 list 现扫同阶,不会活锁。
+            // A write occurred during the scan: discard this result and rescan. Under sustained write activity it rescans at most
+            // until the next write gap — same order as the per-list live scan without a cache, so no livelock.
         }
     }
 
@@ -254,11 +254,10 @@ impl SessionStore {
             .clone();
         // Scheduled conversations share the durable store so detail/history can
         // load them normally, but remain owned by the Scheduled Tasks surface.
-        // 多智能体是普通会话的持久开关，不是独立会话类型；这里只隔离定时
-        // 会话，其余历史统一进入普通列表。
-        // benchmark 构建中,评测会话(eval_ 前缀,含 GAIA 私有题目)不进用户历史:
-        // 正常路径由评测运行器清理,崩溃残留也不能把私密题目带进会话列表。
-        // 默认桌面构建不保留这项前缀语义,避免 benchmark 未启用时改变普通会话列表。
+        // Multi-agent is a persistent switch on ordinary sessions, not a separate session type; only scheduled
+        // sessions are isolated here — all other history goes into the ordinary list.
+        // In benchmark builds, evaluation sessions (eval_ prefix, including GAIA private problems) do not enter user history:
+        // the normal path is cleaned up by the evaluation runner, and crash leftovers must not leak private problems into the session list.
         out.retain(|metadata| !metadata.id.starts_with("sched-"));
         #[cfg(feature = "benchmark-hooks")]
         out.retain(|metadata| !metadata.id.starts_with("eval_"));
@@ -330,9 +329,12 @@ impl SessionStore {
         if self.is_scheduled_session(id)? {
             bail!("Scheduled-run sessions are deleted through their automation");
         }
-        // 上游 delete_session 先删会话 JSON 再清目录:目录清理失败时 JSON 已
-        // 不在盘上但错误会向上传播——按「已发起删除即可能变更盘面」失效快照,
-        // 不能等走到 match 之后的统一失效(Err 提前 return 会跳过它)。
+        // Upstream delete_session removes the session JSON before cleaning the
+        // directory: when directory cleanup fails, the JSON is already gone
+        // from disk and the error propagates upward — invalidate the snapshot
+        // as "a delete was attempted and disk may have changed", without
+        // waiting for the unified invalidation after the match (an early Err
+        // return would skip it).
         self.invalidate_list_cache();
         let (committed, delete_result) = self.delete_session_record(id);
         if committed {
@@ -341,7 +343,7 @@ impl SessionStore {
             // error return cannot strand an active id, model binding or turn
             // state forever when the caller never retries.
             self.purge_session_side_maps(&[id.to_string()]);
-            // 回退备份 sidecar 同样随会话清理（best-effort，见其实现注释）。
+            // The rewind-backup sidecar is likewise cleaned up with the session (best-effort; see its implementation comment).
             Self::purge_rewound_turns_backups(&[id.to_string()]);
         }
         match delete_result {
@@ -478,8 +480,8 @@ impl SessionStore {
     }
 
     pub(crate) fn reconcile_code_default_modes(&self) {
-        // 有显式 per-session 记录的 code 会话：交给 load_session_mode_states 覆盖，
-        // 不在此处理。
+        // Code sessions with an explicit per-session record: left for load_session_mode_states to override,
+        // not handled here.
         let persisted: HashSet<String> = self.session_mode_states.read().keys().cloned().collect();
         let mut m = self.mode_states.write();
         for (id, state) in m.iter_mut() {
@@ -527,9 +529,9 @@ impl SessionStore {
     }
 
     pub fn set_title(&self, id: &str, title: String) -> Result<()> {
-        // 标题和 transcript 存在同一个 JSON 中。定时会话生成期间 Engine 也会写这个
-        // 文件，所以必须把 load / modify / save 放在同一把锁里；否则重命名可能把
-        // Engine 刚落盘的新消息用旧快照覆盖掉。
+        // The title and transcript live in the same JSON. The Engine also writes this
+        // file while a scheduled session is generating, so load / modify / save must sit under the same lock; otherwise a rename could overwrite
+        // the new messages the Engine just persisted with a stale snapshot.
         let _mutation = self.scheduled_mutation.lock();
         let mut session = self
             .manager
@@ -569,8 +571,8 @@ impl SessionStore {
             None,
         );
         session.metadata.title = "新对话".to_string();
-        // per-session 模型：先落 sidecar 再公开 Session JSON，避免写盘失败后
-        // 留下一条看似创建成功、重启却切回其它模型的会话。
+        // Per-session model: persist the sidecar first, then publish the Session JSON, to avoid a write failure leaving
+        // a session that appears created successfully yet falls back to another model after restart.
         if let Some(mid) = model_id {
             self.set_session_model_id(&id, Some(mid))?;
         }
@@ -719,9 +721,9 @@ impl SessionStore {
         Ok(session)
     }
 
-    /// 以调用方提供的 ID 创建空会话，供需要在启动前确定隔离 ID 的内部运行时使用。
+    /// Create an empty session with a caller-provided ID, for internal runtimes that need the isolation ID determined before startup.
     ///
-    /// 普通 GUI 会话仍使用 [`Self::create_new`] 的随机 ID；这里不设置 active session。
+    /// Ordinary GUI sessions still use [`Self::create_new`]'s random ID; this does not set the active session.
     #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) fn create_empty_with_id(
         &self,
