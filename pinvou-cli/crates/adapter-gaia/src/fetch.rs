@@ -308,6 +308,9 @@ pub struct SnapshotFileMetadata {
 enum ExpectedDigest {
     Sha256([u8; 32]),
     GitSha1([u8; 20]),
+    // "快照条目无摘要"的模型态:当前只有 review 契约测试构造它,
+    // 生产匹配分支是防御性的,故在非测试编译下抑制 dead_code。
+    #[cfg_attr(not(test), allow(dead_code))]
     None,
 }
 
@@ -325,15 +328,6 @@ impl SnapshotFileMetadata {
             remote_path: remote_path.into(),
             size,
             expected_digest: ExpectedDigest::GitSha1(expected_sha1),
-        }
-    }
-
-    #[deprecated(note = "size-only metadata is rejected by GAIA acquisition")]
-    pub fn new_without_digest(remote_path: impl Into<PathBuf>, size: u64) -> Self {
-        Self {
-            remote_path: remote_path.into(),
-            size,
-            expected_digest: ExpectedDigest::None,
         }
     }
 
@@ -624,6 +618,9 @@ pub struct GaiaSnapshotManager<D> {
 }
 
 impl<D: SnapshotDownloader> GaiaSnapshotManager<D> {
+    /// Test-only convenience wrapper; production always constructs through
+    /// [`GaiaSnapshotManager::new_with_optional_worktree`].
+    #[cfg(test)]
     pub fn new(
         acquisition_root: impl AsRef<Path>,
         worktree_root: impl AsRef<Path>,
@@ -2452,9 +2449,12 @@ mod review_contract_tests {
     }
 
     #[test]
-    #[allow(deprecated)]
     fn fetch_size_only_metadata_remains_source_compatible_but_cannot_publish_content() {
-        let metadata = SnapshotFileMetadata::new_without_digest("payload", 7);
+        let metadata = SnapshotFileMetadata {
+            remote_path: PathBuf::from("payload"),
+            size: 7,
+            expected_digest: ExpectedDigest::None,
+        };
         assert_eq!(metadata.expected_sha256(), None);
         let root = test_directory("size-only-rejected");
         let destination = root.join("payload");

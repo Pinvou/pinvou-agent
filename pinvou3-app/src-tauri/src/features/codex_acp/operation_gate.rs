@@ -134,13 +134,7 @@ impl SessionConfigChange<'_> {
 }
 
 impl AcpPool {
-    fn remember_config_choice(
-        &self,
-        session_id: &str,
-        runtime: &AcpSession,
-        config_id: &str,
-        value_id: &str,
-    ) {
+    fn remember_config_choice(&self, session_id: &str, config_id: &str, value_id: &str) {
         let backend = self.backend(session_id);
         let mut errors = Vec::new();
         if let Err(error) = self
@@ -161,14 +155,6 @@ impl AcpPool {
                 value_id,
                 message
             );
-            runtime.bridge.emit(
-                "config_persistence_failed",
-                json!({
-                    "configId": config_id,
-                    "valueId": value_id,
-                    "message": message,
-                }),
-            );
         }
     }
 
@@ -182,22 +168,10 @@ impl AcpPool {
             begin_configuration(&runtime.busy, &runtime.configuring, change.busy_error())?;
         let config_id = change.config_id();
         let value_id = change.value_id();
-        runtime.bridge.emit(
-            "config_change_requested",
-            json!({ "configId": config_id, "valueId": value_id }),
-        );
         if let Err(error) = change.apply(&runtime).await {
-            runtime.bridge.emit(
-                "config_change_failed",
-                json!({
-                    "configId": config_id,
-                    "valueId": value_id,
-                    "message": format!("{error:#}"),
-                }),
-            );
             return Err(error);
         }
-        self.remember_config_choice(session_id, &runtime, config_id, value_id);
+        self.remember_config_choice(session_id, config_id, value_id);
         runtime.bridge.emit(
             "config_change_applied",
             json!({ "configId": config_id, "valueId": value_id }),

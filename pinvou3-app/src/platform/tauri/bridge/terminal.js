@@ -242,15 +242,6 @@
     }
   }
 
-  async function cancelTrackedShellTask(sessionId, taskId) {
-    const sid = sessionId || state.activeSessionId;
-    if (!sid || !taskId) return;
-    try {
-      await invoke("cancel_shell_task", { sessionId: sid, taskId });
-    } finally {
-      scheduleShellPoll(sid, true);
-    }
-  }
   function scheduleShellNotify() {
     if (shellNotifyTimer != null) return;
     shellNotifyTimer = window.setTimeout(function () {
@@ -524,7 +515,6 @@
       applyShellSnapshots,
       scheduleShellPoll,
       runShellPoll,
-      cancelTrackedShellTask,
       scheduleShellNotify,
       markBackgroundToolItem,
       finishBackgroundToolItem,

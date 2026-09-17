@@ -21,12 +21,7 @@ const MAX_BATCH_ENTRIES: usize = 64;
 const MAX_ENTRY_BYTES: usize = 24 * 1024;
 const FRONTEND_EVENTS: &[&str] = &[
     "authority_sync_notice_shown",
-    "browser_network_offline",
-    "browser_network_online",
     "chat_done_classified",
-    "connection_state_changed",
-    "diagnostics_initialized",
-    "document_visibility_changed",
     "local_send_blocked_by_remote_sync",
     "local_turn_admission_failed",
     "local_turn_admitted",

@@ -71,7 +71,6 @@ impl SmokeCase {
                 ToolPolicyId::new(SMOKE_TOOL_POLICY_ID),
                 OutputContract::new("smoke-private-output/v1"),
             ),
-            None,
         )
     }
 }
@@ -1098,15 +1097,6 @@ fn score_dimensions(deductions: [u32; 5]) -> ProductScoreDimensions {
     }
 }
 
-const REQUIRED_JUDGE_DIMENSIONS: [&str; 6] = [
-    "task_completion",
-    "correctness",
-    "tool_choice",
-    "efficiency",
-    "safety_boundaries",
-    "overall_quality",
-];
-
 #[derive(Clone, PartialEq)]
 pub struct JudgeDimensionScore {
     dimension: String,
@@ -1172,65 +1162,6 @@ impl JudgeWireResponse {
             findings,
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct JudgeParseError(&'static str);
-
-impl fmt::Display for JudgeParseError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.0)
-    }
-}
-
-impl std::error::Error for JudgeParseError {}
-
-pub fn parse_judge_response(response: JudgeWireResponse) -> Result<JudgeReport, JudgeParseError> {
-    let mut response = response;
-    if response.dimensions.len() != REQUIRED_JUDGE_DIMENSIONS.len() {
-        return Err(JudgeParseError("judge must provide exactly six dimensions"));
-    }
-    let mut seen = HashSet::new();
-    for dimension in &response.dimensions {
-        if !REQUIRED_JUDGE_DIMENSIONS.contains(&dimension.dimension.as_str())
-            || !seen.insert(dimension.dimension.as_str())
-        {
-            return Err(JudgeParseError("judge dimensions must be known and unique"));
-        }
-        if dimension.score > 100
-            || !dimension.confidence.is_finite()
-            || !(0.0..=1.0).contains(&dimension.confidence)
-            || dimension.evidence.trim().is_empty()
-            || !judge_text_is_safe(&dimension.evidence, 500)
-        {
-            return Err(JudgeParseError("judge dimension values are invalid"));
-        }
-    }
-    if response.findings.len() > 20
-        || response.findings.iter().any(|finding| {
-            finding.id.len() > 64
-                || !finding
-                    .id
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-                || finding
-                    .case_id
-                    .as_deref()
-                    .is_some_and(|case_id| !judge_text_is_safe(case_id, 128))
-                || !judge_text_is_safe(&finding.title, 300)
-                || !judge_text_is_safe(&finding.recommendation, 300)
-        })
-    {
-        return Err(JudgeParseError("judge findings are invalid"));
-    }
-    for finding in &mut response.findings {
-        finding.source = FindingSource::Judge;
-    }
-    Ok(JudgeReport {
-        status: JudgeStatus::Completed,
-        dimensions: response.dimensions,
-        findings: response.findings,
-    })
 }
 
 fn judge_text_is_safe(value: &str, max_chars: usize) -> bool {

@@ -229,16 +229,23 @@ pub fn browser_session_mcp_json(session_id: &str) -> PathBuf {
     browser_session_mcp_dir().join(format!("{}.json", browser_session_token(session_id)))
 }
 
+/// Stable FNV-1a 64-bit digest over raw bytes. Shared building block for
+/// stable local identifiers derived from session IDs; callers format the
+/// returned value (e.g. `{value:016x}`) for their own file/label needs.
+pub(crate) fn fnv1a64(data: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in data {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
 /// Stable FNV-1a token for a session ID. It is used only for local filenames, WebView labels,
 /// and initial-page markers, not authentication. Requests retain the complete session_id,
 /// which the main application recomputes and validates.
 pub fn browser_session_token(session_id: &str) -> String {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in session_id.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("{hash:016x}")
+    format!("{:016x}", fnv1a64(session_id.as_bytes()))
 }
 /// Browser MCP wrapper embedded at compile time and extracted to
 /// `~/.pinvou3/bundle/mcp-servers/`.
@@ -294,13 +301,6 @@ pub fn user_skills_dir() -> PathBuf {
 /// `<id>.json`（PersonaCard 序列化）。跟 bundle 内嵌的内置卡分离，**永不被覆写**。
 pub fn user_personas_dir() -> PathBuf {
     user_root().join("personas")
-}
-
-/// `~/.deepseek/skills/` — CodeWhale 标准用户 skills 目录；通过
-/// `/skill install` 安装的 skill 都在这里。它与 Pinvou 私有的
-/// [`user_skills_dir`] 平行；会话物化时用户 Skill 覆盖同名 bundle Skill。
-pub fn deepseek_skills_dir() -> PathBuf {
-    user_home_dir().join(".deepseek").join("skills")
 }
 
 /// 兼容字段：阶段 B 旧 sandbox workspace（已不作为 engine workspace 使用，
@@ -417,33 +417,6 @@ fn sanitize_memory_runtime_id(raw: &str) -> String {
     }
 }
 
-/// `~/.pinvou3/updates/` —— 应用内升级下载的 deb 暂存目录。
-/// 不用 /tmp：tmpfs 受内存限制 + 重启清空（下载完提示重启后文件就没了）。
-pub fn updates_dir() -> PathBuf {
-    pinvou3_home().join("updates")
-}
-
-/// `~/.pinvou3/feedback/` —— 用户主动提交的反馈包、失败待重试内容和提交回执。
-pub fn feedback_root() -> PathBuf {
-    pinvou3_home().join("feedback")
-}
-
-/// `~/.pinvou3/feedback/pending/` —— 上传失败或正在准备的反馈包目录。
-pub fn feedback_pending_dir() -> PathBuf {
-    feedback_root().join("pending")
-}
-
-/// `~/.pinvou3/feedback/receipts/` —— 成功提交后保留的轻量回执。
-pub fn feedback_receipts_dir() -> PathBuf {
-    feedback_root().join("receipts")
-}
-
-/// `~/.pinvou3/updates/update-feedback.json` —— Windows OTA 安装器启动后
-/// 跨进程保留的待反馈记录。Linux .deb 更新不使用此文件。
-pub fn update_feedback_record_path() -> PathBuf {
-    updates_dir().join("update-feedback.json")
-}
-
 /// `~/.pinvou3/sessions/<session_id>/artifacts/` —— AI 默认产物落地目录。
 /// `$PINVOU3_SESSION_ARTIFACTS` 环境变量注入这个值给 engine + LLM。
 pub fn session_artifacts_dir(session_id: &str) -> PathBuf {
@@ -462,16 +435,6 @@ pub fn session_workspace_dir(session_id: &str) -> PathBuf {
 /// 会话私有目录随会话删除一起清理，无需单独清理逻辑。
 pub fn session_skills_dir(session_id: &str) -> PathBuf {
     sessions_root().join(session_id).join("skills")
-}
-
-/// `~/.pinvou3/sessions/<session_id>/instructions.md` —— 每个 session 独立的
-/// Legacy `~/.pinvou3/sessions/<sid>/instructions.md` 路径。
-///
-/// C 方案(P-no-disk)前用作 per-session prompt 文件,EngineConfig.instructions
-/// 指向它。改成 `InstructionSource::Inline` 后这个 disk 文件**不再被生产代码读**,
-/// 仅用于 boot 时 legacy 清理(早期 pinvou3 版本写下的残留)。新版 pinvou3 不再写。
-pub fn session_instructions_path(session_id: &str) -> PathBuf {
-    sessions_root().join(session_id).join("instructions.md")
 }
 
 /// `~/.pinvou3/sessions/<session_id>/persona_events.json` —— 该 session 的卡牌

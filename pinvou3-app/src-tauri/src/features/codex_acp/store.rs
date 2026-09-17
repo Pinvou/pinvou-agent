@@ -552,42 +552,6 @@ impl SessionAgentStore {
         self.persist()
     }
 
-    pub fn set_acp_model(&self, session_id: &str, model_id: Option<String>) -> Result<()> {
-        {
-            let mut records = self.records.write();
-            let record = records.entry(session_id.to_string()).or_default();
-            record.acp_model_id = model_id.clone();
-            match model_id {
-                Some(model_id) => {
-                    record
-                        .acp_config_values
-                        .insert("model".to_string(), model_id);
-                }
-                None => {
-                    record.acp_config_values.remove("model");
-                }
-            }
-        }
-        self.persist()
-    }
-
-    pub fn set_acp_mode(&self, session_id: &str, mode_id: Option<String>) -> Result<()> {
-        {
-            let mut records = self.records.write();
-            let record = records.entry(session_id.to_string()).or_default();
-            record.acp_mode_id = mode_id.clone();
-            match mode_id {
-                Some(mode_id) => {
-                    record.acp_config_values.insert("mode".to_string(), mode_id);
-                }
-                None => {
-                    record.acp_config_values.remove("mode");
-                }
-            }
-        }
-        self.persist()
-    }
-
     pub fn set_acp_config_value(
         &self,
         session_id: &str,
@@ -1279,29 +1243,6 @@ mod tests {
         assert_eq!(
             recovered.acp_config_values.get("reasoning_effort"),
             Some(&"high".to_string())
-        );
-        fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn codex_mode_is_persisted_with_the_session_record() {
-        let root =
-            std::env::temp_dir().join(format!("pinvou3-codex-mode-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("session-agents.json");
-        let store = SessionAgentStore {
-            path: path.clone(),
-            records: Arc::new(RwLock::new(HashMap::new())),
-        };
-        store
-            .set_acp_mode("session-1", Some("agent-full-access".to_string()))
-            .unwrap();
-
-        let value: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-        assert_eq!(
-            value["sessions"]["session-1"]["acp_mode_id"],
-            "agent-full-access"
         );
         fs::remove_dir_all(&root).unwrap();
     }

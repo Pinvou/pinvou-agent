@@ -604,7 +604,8 @@ mod tests {
             Some("CACHE_SENTINEL_V2")
         );
 
-        crate::features::personas::delete_user_persona(&created.id).expect("delete cached expert");
+        crate::features::personas::delete_user_persona_with(&created.id, || ())
+            .expect("delete cached expert");
         let after_delete = ExpertRosterSnapshot::capture();
         assert!(!after_delete.fleet_config().profiles.contains_key(&role_id));
 

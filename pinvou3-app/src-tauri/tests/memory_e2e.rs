@@ -4,7 +4,6 @@
 //! real user's `~/.pinvou3`. The LLM test is ignored by default, matching the
 //! existing L1 harness convention.
 
-use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -15,9 +14,8 @@ use deepseek_tui::core::engine::spawn_engine;
 use deepseek_tui::core::events::Event;
 use pinvou3_lib::features::assistant::platform::bridge::{Pinvou3Bridge, paths};
 use pinvou3_lib::features::memory::{
-    self, MemoryProfile, MemorySuggestion, PendingSensitiveIdentity, ProfileConventions,
-    ProfileIdentity, ProfilePatch, RecentWorkItem, RecentWorkPatch, TimedMemoryItem,
-    WorkContextFile,
+    self, MemoryProfile, MemorySuggestion, ProfileConventions, ProfileIdentity, ProfilePatch,
+    RecentWorkItem, TimedMemoryItem, WorkContextFile,
 };
 
 const DEFAULT_VLLM_BASE_URL: &str = "http://127.0.0.1:8000/v1";
@@ -83,16 +81,6 @@ fn setup_isolated_home(name: &str) -> (EnvGuard, PathBuf) {
 fn setup_memory_fixture(name: &str) -> (EnvGuard, PathBuf) {
     let (env, root) = setup_isolated_home(name);
 
-    let mut pending = BTreeMap::new();
-    pending.insert(
-        "id_card".to_string(),
-        PendingSensitiveIdentity {
-            value: "身份证 110101199001010000".to_string(),
-            source: "test".to_string(),
-            status: "pending_confirm".to_string(),
-        },
-    );
-
     let profile = MemoryProfile {
         version: 1,
         updated_at: "2026-07-06T00:00:00Z".to_string(),
@@ -107,7 +95,6 @@ fn setup_memory_fixture(name: &str) -> (EnvGuard, PathBuf) {
             number_usage: "GB/T 15835".to_string(),
             style_notes: vec!["回答先给结论".to_string(), "称呼用户为林主任".to_string()],
         },
-        pending_sensitive_identity: pending,
     };
     memory::save_profile(&profile).expect("save memory profile");
 
@@ -190,7 +177,6 @@ fn pending_memory_deduplicates_same_content_candidates() {
     .expect("enqueue duplicate candidate");
 
     assert_eq!(first.id, second.id);
-    assert_eq!(second.seen_count, 2);
     let pending = memory::load_pending_memory().expect("load pending");
     assert_eq!(pending.len(), 1);
 }
@@ -219,7 +205,9 @@ fn confirmed_preferences_upsert_by_standard_topic() {
     .expect("enqueue updated preference");
     memory::confirm_pending_memory(&second.id).expect("confirm updated preference");
 
-    let preferences = memory::list_preferences().expect("list preferences");
+    let preferences = memory::list_preferences_with_cleanup()
+        .expect("list preferences")
+        .value;
     assert_eq!(preferences.len(), 1);
     assert_eq!(preferences[0].topic, "answer_style");
     assert_eq!(preferences[0].text, "回答风格要求简洁、俏皮可爱");
@@ -257,7 +245,9 @@ fn memory_overview_filters_legacy_profile_preferences_and_cleans_profile_labels(
     );
     write_preference("pref.answer", "unconditional", "回答风格要求简洁");
 
-    let preferences = memory::list_preferences().expect("list preferences");
+    let preferences = memory::list_preferences_with_cleanup()
+        .expect("list preferences")
+        .value;
     assert_eq!(preferences.len(), 1);
     assert_eq!(preferences[0].text, "回答风格要求简洁");
 }
@@ -333,7 +323,7 @@ fn memory_profile_correction_and_clear_updates_files() {
     assert!(corrected.block.contains("林主任"));
     assert!(!corrected.block.contains("王主任"));
 
-    memory::clear_profile().expect("clear profile");
+    memory::save_profile(&MemoryProfile::default()).expect("clear profile");
     let cleared = memory::runtime_snapshot("correction-a").expect("cleared runtime");
     assert!(!cleared.block.contains("林主任"));
     assert!(!cleared.block.contains("画像："));
@@ -399,35 +389,6 @@ fn memory_preference_scope_and_recent_work_ttl_quality() {
 
     let recent_file = std::fs::read_to_string(memory::recent_work_path()).expect("read recent");
     assert!(recent_file.contains("\"status\":\"archived\""));
-}
-
-#[test]
-#[ignore = "memory E2E mutates process env; run explicitly with --test-threads=1"]
-fn memory_manual_recent_work_update_is_compact_and_actionable() {
-    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let (_env, _root) = setup_isolated_home("recent-upsert");
-    let item = memory::upsert_recent_work(RecentWorkPatch {
-        id: Some("current-summary".to_string()),
-        title: "正在写上半年全委工作总结，需要重点突出项目建设和营商环境成效，标题很长也要被截断"
-            .to_string(),
-        summary: Some(
-            "下一步补齐数据表和三条问题建议，摘要也不能太长，否则会污染 prompt".to_string(),
-        ),
-        source: Some("user_declared".to_string()),
-        ttl_days: Some(7),
-    })
-    .expect("upsert recent work");
-    assert!(item.title.chars().count() <= 50);
-    assert!(item.summary.chars().count() <= 80);
-
-    let snapshot = memory::runtime_snapshot("recent-upsert").expect("runtime");
-    assert!(snapshot.block.contains("当前关注"));
-    assert!(snapshot.block.contains("正在处理："));
-    assert!(snapshot.block.chars().count() < 700);
-
-    memory::archive_recent_work("current-summary").expect("archive");
-    let archived = memory::runtime_snapshot("recent-upsert").expect("archived runtime");
-    assert!(!archived.block.contains("上半年全委工作总结"));
 }
 
 #[test]
@@ -831,7 +792,9 @@ async fn memory_llm_realistic_effect_snapshot() {
     }
 
     let profile_state = memory::load_profile().expect("load profile");
-    let preferences = memory::list_preferences().expect("list preferences");
+    let preferences = memory::list_preferences_with_cleanup()
+        .expect("list preferences")
+        .value;
     let work_context = memory::load_work_context().expect("load work context");
     let focus = memory::load_current_focus().expect("load current focus");
     let activity = memory::load_recent_activity().expect("load recent activity");

@@ -85,14 +85,7 @@ assertClearBefore(
   'pet navigation with unknown session',
 );
 
-// 6. HMR/legacy-state fallback off the retired scheduled entry lands on chat.
-assertClearBefore(
-  windowFrom("if (!SCHEDULED_TASKS_ENTRY_ENABLED && currentView === 'scheduled')"),
-  'chat',
-  'retired scheduled entry fallback',
-);
-
-// 7. New chat: the non-codex branch of handleNewChat lands on a normal chat
+// 6. New chat: the non-codex branch of handleNewChat lands on a normal chat
 // draft. This covers the tool-intent path (tool store "new chat with this
 // tool") that force-skips the codex draft even while code mode is on, plus
 // forceMode='chat' call sites — the highest-traffic exit path of the mode.
@@ -102,14 +95,14 @@ assertClearBefore(
   'handleNewChat normal-chat branch',
 );
 
-// 8. Session list: opening a normal chat session is the baseline exit path.
+// 7. Session list: opening a normal chat session is the baseline exit path.
 assertClearBefore(
   windowFrom('const handleSwitchSession = useCallback(async (id) => {', 500),
   'chat',
   'handleSwitchSession',
 );
 
-// 9. navigateFromScheduledRun('chat') serves the collapsed-rail "current chat"
+// 8. navigateFromScheduledRun('chat') serves the collapsed-rail "current chat"
 // and the mobile bottom tab — the round-2 P1 fix site. The clear precedes the
 // navigation variable, matching the clear-before-nav order of the other sites.
 assert.match(

@@ -22,18 +22,7 @@
 //! cache: written on bind, backfilled from the sidecar on a read miss (bindings
 //! created by other processes are visible too), and cleared on deletion /
 //! retention cleanup.
-//!
-//! The legacy global table `_session_workspaces.json` was an intermediate
-//! development format that never shipped with `main`; boot-time
-//! [`SessionStore::migrate_legacy_session_workspaces`] exists only to converge
-//! homes of intermediate dev builds: live-session entries are rewritten as
-//! sidecars one by one and the old file is then removed; entries whose write
-//! failed stay untouched in the old file (the in-memory table takes over
-//! resolution for this run) and the next boot retries, without blocking startup.
-//! Once all legacy entries are migrated, the migration becomes a permanent
-//! no-op (missing file returns immediately).
 
-use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
@@ -44,9 +33,6 @@ use super::{SessionStore, validate_session_id};
 
 /// Schema version of the binding sidecar; used for migration if fields evolve.
 const SESSION_WORKSPACE_SIDECAR_VERSION: u32 = 1;
-/// Legacy global binding table of the intermediate format (never shipped with
-/// `main`; removed once the boot-time migration succeeds).
-const LEGACY_SESSION_WORKSPACES_FILE: &str = "_session_workspaces.json";
 /// Per-session binding sidecar file name (inside the session-private directory).
 const SESSION_WORKSPACE_SIDECAR_FILE: &str = "workspace-binding.json";
 
@@ -176,62 +162,6 @@ impl SessionStore {
                 "[sessions] remove workspace binding sidecar failed ({}): {error:#}",
                 file.display()
             ),
-        }
-    }
-
-    /// Boot-time legacy migration: global table `_session_workspaces.json` →
-    /// per-session sidecar (serving only homes of intermediate dev builds, see the
-    /// module docs). Live-session entries are rewritten as sidecars one by one
-    /// (rewriting identical values is idempotent); once all migrate, the old file
-    /// is removed. If any entry write fails, the old file is kept as-is, unmigrated
-    /// entries are taken over by the in-memory table so they still resolve, and the
-    /// next boot retries without blocking startup. Ghost entries (whose `<id>.json`
-    /// no longer exists — leftovers of sessions deleted out of process) are dropped
-    /// without migration.
-    pub fn migrate_legacy_session_workspaces(&self) {
-        let legacy = self
-            .manager
-            .sessions_dir()
-            .join(LEGACY_SESSION_WORKSPACES_FILE);
-        let Ok(content) = std::fs::read_to_string(&legacy) else {
-            return;
-        };
-        let bindings: HashMap<String, PathBuf> = match serde_json::from_str(&content) {
-            Ok(bindings) => bindings,
-            Err(error) => {
-                eprintln!("[sessions] parse legacy session workspaces failed: {error}");
-                return;
-            }
-        };
-        let mut unmigrated = HashMap::new();
-        for (id, path) in bindings {
-            if !self
-                .manager
-                .sessions_dir()
-                .join(format!("{id}.json"))
-                .is_file()
-            {
-                continue;
-            }
-            if let Err(error) = self.bind_session_workspace(&id, path.clone()) {
-                eprintln!("[sessions] migrate workspace binding for {id} failed: {error:#}");
-                unmigrated.insert(id, path);
-            }
-        }
-        if unmigrated.is_empty() {
-            match std::fs::remove_file(&legacy) {
-                Ok(()) => {}
-                Err(error) if error.kind() == ErrorKind::NotFound => {}
-                Err(error) => eprintln!(
-                    "[sessions] remove legacy session workspaces failed ({}): {error:#}",
-                    legacy.display()
-                ),
-            }
-        } else {
-            // Unmigrated entries are taken over by the cache so they still resolve
-            // (retried on the next boot). extend instead of replacing the whole
-            // map: a wholesale replace would drop entries bound earlier in this boot.
-            self.session_workspaces.write().extend(unmigrated);
         }
     }
 }

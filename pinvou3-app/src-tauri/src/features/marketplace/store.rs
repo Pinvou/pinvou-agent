@@ -39,10 +39,10 @@ pub const EXTRA_DISPLAY_DESCRIPTION: &str = "display_description";
 /// 单技能包**首次回写 SKILL.md 前**留存的 frontmatter 原 description 备份 key
 /// （清空展示说明时恢复原值用）。空串哨兵 = 原本没有 description；缺 key =
 /// 从未回写过（多技能/纯 MCP 包不回写，也不存备份）。
-pub const EXTRA_SKILL_DESC_BACKUP: &str = "skill_description_backup";
+pub(crate) const EXTRA_SKILL_DESC_BACKUP: &str = "skill_description_backup";
 
 /// 展示名校验上限（字符数）。
-pub const MAX_DISPLAY_NAME_CHARS: usize = 64;
+pub(crate) const MAX_DISPLAY_NAME_CHARS: usize = 64;
 /// 展示说明校验上限（字符数；对齐 skill_marketplace 的 description 展示截断口径）。
 pub const MAX_DISPLAY_DESCRIPTION_CHARS: usize = 240;
 
@@ -342,11 +342,6 @@ impl BundleStore {
     /// 路径用。id 不存在 → Ok(false)；原因未变 → Ok(true) 但不写盘。
     pub fn mark_degraded(&self, id: &str, reason: &str) -> Result<bool, String> {
         self.set_degraded(id, Some(reason.to_string()))
-    }
-
-    /// 局部更新：清除 `Degraded`（修复完成/重新连接后调用）。语义同 [`Self::mark_degraded`]。
-    pub fn clear_degraded(&self, id: &str) -> Result<bool, String> {
-        self.set_degraded(id, None)
     }
 
     fn set_degraded(&self, id: &str, reason: Option<String>) -> Result<bool, String> {
@@ -1205,11 +1200,12 @@ mod tests {
                 store.get("feishu").unwrap().unwrap().degraded,
                 Some("二进制缺失".to_string())
             );
-            assert!(store.clear_degraded("feishu").unwrap());
+            // 清除路径走私有 set_degraded(id, None)（公开包装已随死代码清理删除）
+            assert!(store.set_degraded("feishu", None).unwrap());
             assert_eq!(store.get("feishu").unwrap().unwrap().degraded, None);
             // 不存在的 id：Ok(false)，不误建记录
             assert!(!store.mark_degraded("ghost", "x").unwrap());
-            assert!(!store.clear_degraded("ghost").unwrap());
+            assert!(!store.set_degraded("ghost", None).unwrap());
             assert!(store.get("ghost").unwrap().is_none());
         });
     }

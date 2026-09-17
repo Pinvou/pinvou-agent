@@ -403,16 +403,6 @@ impl KnowledgeClient {
         .await
     }
 
-    pub async fn trashed_collections(&self) -> Result<Vec<Collection>, String> {
-        self.get("/api/v2/owner/trash/collections?limit=200&offset=0")
-            .await
-    }
-
-    pub async fn trashed_documents(&self) -> Result<Vec<TrashedDocument>, String> {
-        self.get("/api/v2/owner/trash/documents?limit=200&offset=0")
-            .await
-    }
-
     pub async fn permanently_delete_collection(&self, id: i64) -> Result<(), String> {
         self.send_empty(
             Method::DELETE,
@@ -451,19 +441,6 @@ impl KnowledgeClient {
         request: &CreateCollectionRequest,
     ) -> Result<Collection, String> {
         self.post("/api/v1/collections", request).await
-    }
-
-    pub async fn update_collection(
-        &self,
-        id: i64,
-        request: &CreateCollectionRequest,
-    ) -> Result<Collection, String> {
-        self.send_json(
-            Method::PUT,
-            &format!("/api/v1/collections/{id}"),
-            Some(request),
-        )
-        .await
     }
 
     pub async fn delete_collection(&self, id: i64) -> Result<(), String> {
@@ -524,7 +501,7 @@ impl KnowledgeClient {
         self.upload_bytes(collection_id, filename, bytes).await
     }
 
-    pub async fn upload_bytes(
+    async fn upload_bytes(
         &self,
         collection_id: i64,
         filename: &str,

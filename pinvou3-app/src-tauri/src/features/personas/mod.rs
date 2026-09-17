@@ -314,11 +314,6 @@ pub fn update_user_persona(mut card: PersonaCard) -> Result<PersonaSummary, Stri
     Ok(card.summary())
 }
 
-/// 删除用户卡(只能删 user- 前缀的自制卡)。
-pub fn delete_user_persona(id: &str) -> Result<(), String> {
-    delete_user_persona_with(id, || ())
-}
-
 /// Delete a card and run cross-feature cleanup before another operation can
 /// publish a snapshot of that card.
 pub(crate) fn delete_user_persona_with<T>(
@@ -560,18 +555,19 @@ mod tests {
 
         // 内置卡不能被 update/delete
         assert!(update_user_persona(mk("pinvou-card-creator", "x")).is_err());
-        assert!(delete_user_persona("pinvou-card-creator").is_err());
+        assert!(delete_user_persona_with("pinvou-card-creator", || ()).is_err());
 
         // delete
-        delete_user_persona(&sum.id).expect("delete");
+        delete_user_persona_with(&sum.id, || ()).expect("delete");
         assert!(get(&sum.id).is_none(), "删后查不到");
 
         // Missing files are idempotent; other filesystem failures must reach the UI.
-        delete_user_persona(&sum.id).expect("delete already missing card");
+        delete_user_persona_with(&sum.id, || ()).expect("delete already missing card");
         let blocked_path =
             crate::platform::paths::user_personas_dir().join(format!("{}.json", sum.id));
         std::fs::create_dir(&blocked_path).expect("create non-file deletion target");
-        let error = delete_user_persona(&sum.id).expect_err("directory is not a card file");
+        let error =
+            delete_user_persona_with(&sum.id, || ()).expect_err("directory is not a card file");
         assert!(error.starts_with("Failed to delete persona:"));
         assert!(
             blocked_path.is_dir(),

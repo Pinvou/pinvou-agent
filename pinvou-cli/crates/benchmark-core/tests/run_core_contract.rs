@@ -61,7 +61,6 @@ fn task(id: &str) -> BenchmarkTask {
             ToolPolicyId::new("smoke/v1"),
             OutputContract::new("text/v1"),
         ),
-        None,
     )
 }
 
@@ -77,7 +76,6 @@ fn attachment_task(id: &str) -> BenchmarkTask {
             ToolPolicyId::new("smoke/v1"),
             OutputContract::new("text/v1"),
         ),
-        None,
     )
 }
 
@@ -518,7 +516,6 @@ async fn unsafe_native_tool_policy_is_rejected_before_backend_or_outcome_process
             ToolPolicyId::new("api_key=PRIVATE_SENTINEL"),
             OutputContract::new("text/v1"),
         ),
-        None,
     );
 
     let error = runner
@@ -629,7 +626,6 @@ async fn attachment_resolution_consumes_the_same_task_deadline() {
                     ToolPolicyId::new("smoke/v1"),
                     OutputContract::new("text/v1"),
                 ),
-                None,
             ),
             &RunContext::new("attachment-timeout", base.clone()),
         ),
@@ -710,7 +706,6 @@ fn short_task(id: &str) -> BenchmarkTask {
             ToolPolicyId::new("smoke/v1"),
             OutputContract::new("text/v1"),
         ),
-        None,
     )
 }
 
@@ -1094,7 +1089,6 @@ fn external_harness_is_contract_only() {
             vec!["runner".into()],
             Duration::from_secs(5),
         ),
-        None,
     );
     let summary = futures::executor::block_on(
         service.run(manifest("run-1"), &BenchmarkPlan::new(vec![external])),

@@ -18,7 +18,7 @@ const AcFmtIcon = FileTypeIcon;
     const AcArrowUpRight = ({ className }) => <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg>;
     const AcFolder = ({ className }) => <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>;
 
-    const ArtifactCard = ({ item, _theme, t, isLatest }) => { // eslint-disable-line no-unused-vars -- theme is kept for the existing props contract; callers still pass it
+    const ArtifactCard = ({ item, t, isLatest }) => {
       const path = item.path || '';
       const canOpenArtifact = !isWeb || can('artifactDownload');
       const kind = _artifactKind(path);
@@ -126,14 +126,6 @@ const AcFmtIcon = FileTypeIcon;
       return item.name === 'File' && ['read', 'list', 'search_name', 'search_content'].includes(item.args?.action);
     };
 
-    const toolBasename = (p) => {
-      if (typeof p !== 'string' || !p) return '';
-      // Same implementation as shared/path-utils' pathBasename: strip trailing separators, take the last segment,
-      // fall back to the original path on empty result (all-separator string like '///'). The old inline version
-      // only split on '/'; pathBasename also handles '\\' (more accurate last segment for Windows paths).
-      return pathBasename(p, { collapseTrailing: true, fallback: p });
-    };
-
     // A 档摘要：只从结构化 args 提“动作对象”（文件名/命令/模式），稳且免费，不 parse output。
     // eslint-disable-next-line sonarjs/cognitive-complexity -- per-tool switch summary mapping; splitting by tool has low payoff; legacy view; tracked separately
     const toolSummary = (name, args, t) => {
@@ -141,7 +133,7 @@ const AcFmtIcon = FileTypeIcon;
       switch (name) {
         case 'read':
         case 'read_file': {
-          const base = toolBasename(args.path);
+          const base = pathBasename(args.path, { collapseTrailing: true, fallback: args.path });
           if (args.start_line || args.max_lines) {
             const s = Number(args.start_line) || 1;
             const max = Number(args.max_lines);
@@ -152,7 +144,7 @@ const AcFmtIcon = FileTypeIcon;
         case 'File': {
           const action = args.action;
           if (action === 'read') {
-            const base = toolBasename(args.path);
+            const base = pathBasename(args.path, { collapseTrailing: true, fallback: args.path });
             if (args.start_line || args.max_lines) {
               const s = Number(args.start_line) || 1;
               const max = Number(args.max_lines);
@@ -160,13 +152,13 @@ const AcFmtIcon = FileTypeIcon;
             }
             return base;
           }
-          if (action === 'list') return toolBasename(args.path || '.') || '.';
+          if (action === 'list') return pathBasename(args.path || '.', { collapseTrailing: true, fallback: args.path || '.' }) || '.';
           if (action === 'search_content') return args.pattern ? '"' + args.pattern + '"' : '';
           if (action === 'search_name') return args.query ? '"' + args.query + '"' : '';
           if (action === 'patch') {
             const paths = [];
             const add = path => {
-              const base = toolBasename(path);
+              const base = pathBasename(path, { collapseTrailing: true, fallback: path });
               if (base && !paths.includes(base)) paths.push(base);
             };
             add(args.path);
@@ -180,15 +172,15 @@ const AcFmtIcon = FileTypeIcon;
             });
             return paths.join(', ');
           }
-          return toolBasename(args.path);
+          return pathBasename(args.path, { collapseTrailing: true, fallback: args.path });
         }
         case 'write':
         case 'edit':
         case 'write_file':
         case 'edit_file':
-          return toolBasename(args.path);
+          return pathBasename(args.path, { collapseTrailing: true, fallback: args.path });
         case 'list_dir':
-          return toolBasename(args.path || '.') || '.';
+          return pathBasename(args.path || '.', { collapseTrailing: true, fallback: args.path || '.' }) || '.';
         case 'grep_files':
           return args.pattern ? '"' + args.pattern + '"' : '';
         case 'file_search':
@@ -693,8 +685,6 @@ const AcFmtIcon = FileTypeIcon;
       );
     };
 
-    // ── 每工具定制结果视图（仿 Claude Code）：解析失败一律 fallback 纯文本，永不崩 ──
-
     // 技能市场预置卡(backendId 必须匹配 Rust SkillManifest.id)。技能=SKILL.md 目录,
     // 装到 bundle/skills/ 进 system prompt;与上方 MCP 工具(tsToolsData)并列两个子页。
     // ⚠ 此表已近退役:预置技能卡一律由后端数据合成(companionSkillCards),不要再往
@@ -736,8 +726,8 @@ const AcFmtIcon = FileTypeIcon;
       if (tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.tmeetCli) return 'cli';
       if (tool.imaOpenapi) return 'api';
       if (Array.isArray(bundleMcpIds) && bundleMcpIds.includes(tool.backendId)) return 'bundle';
-      // mcpServer/oauthMcp 为显式标记位,分组不依赖可本地化的 type 文案;type 正则仅作兜底。
-      if (tool.oauthMcp || tool.mcpServer || /mcp/i.test(tool.type || '')) return 'mcp';
+      // mcpServer/oauthMcp 显式标记位已在上方短路返回,分组不依赖可本地化的 type 文案;type 正则仅作兜底。
+      if (/mcp/i.test(tool.type || '')) return 'mcp';
       return 'api';
     };
     // 业务分组:直接取条目 category(数据即业务类 id)。无明确业务归属的条目
@@ -882,6 +872,4 @@ const AcFmtIcon = FileTypeIcon;
       );
     };
 
-    // ── 飞书连接流程卡（内联、非阻塞；取代旧的阻塞式扫码浮层）──
-
-export { AcFmtIcon, AcShieldCheck, AcSparkles, AcArrowUpRight, AcFolder, ArtifactCard, QUIET_TOOLS, isQuietTool, toolBasename, toolSummary, isReceipt, parseReceipt, ReceiptBlock, tryParseJson, tryTailJson, looksDiff, outBox, TODO_SYM, TODO_TOOLS, OutputPre, OutputError, ListDirView, GrepView, DiffView, ShellView, ShellTextView, TodoView, tsToolsData, tsToolWelcomeData, localizeTool, mergeConfigFields, weatherIconSvg, WeatherCard, isWeatherTool, isStockQuoteTool, StockQuoteCard, tsSkillsData, tsSkillIconByName, tsCategories, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup, TsActionBtn };
+export { AcShieldCheck, AcSparkles, ArtifactCard, isQuietTool, toolSummary, isReceipt, ReceiptBlock, tryParseJson, tryTailJson, looksDiff, TODO_TOOLS, OutputPre, OutputError, ListDirView, GrepView, DiffView, ShellView, ShellTextView, TodoView, tsToolsData, tsToolWelcomeData, localizeTool, mergeConfigFields, WeatherCard, isWeatherTool, isStockQuoteTool, StockQuoteCard, tsSkillsData, tsSkillIconByName, tsCategories, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup, TsActionBtn };

@@ -258,7 +258,7 @@ const SUBAGENT_TYPE_ALIASES = new Set([
   'verifier', 'verify', 'verification', 'validator', 'tester',
 ]);
 
-export function subagentRoleForType(agentType) {
+function subagentRoleForType(agentType) {
   const normalized = String(agentType || '').trim().toLowerCase();
   if (['explore', 'exploration', 'explorer', 'scout'].includes(normalized)) return 'scout';
   if (['plan', 'planning', 'planner', 'awaiter', 'manager'].includes(normalized)) return 'manager';
@@ -334,20 +334,24 @@ export function subagentRoleOrdinals(summaries) {
 }
 
 /**
- * 把底座按创建顺序给出的平面 worker ledger 投影成当前可见的树行。
- * `expandedAgentIds` 只控制后代是否展开；父记录已被 ledger 裁剪的孤儿会作为
- * 根节点保留，坏数据形成环时也不会递归卡死。
+ * 树行投影共用件：先把 summaries 归一化成 child 索引 + 根列表。
+ * `onlyKnownParents` 时父记录不在清单里的条目按根处理（父被 ledger 裁剪的
+ * 孤儿仍可见）；否则缺失父级也照常挂进索引（后代查询只按索引取）。
  */
-export function visibleSubagentTreeRows(summaries, expandedAgentIds = []) {
-  const ordered = (summaries || []).filter(entry => entry && entry.agent_id);
-  const byId = new Map(ordered.map(entry => [String(entry.agent_id), entry]));
+function buildSubagentChildIndex(summaries, { onlyKnownParents }) {
+  const byId = new Map();
+  const ordered = [];
+  for (const entry of summaries || []) {
+    if (!entry || !entry.agent_id) continue;
+    ordered.push(entry);
+    byId.set(String(entry.agent_id), entry);
+  }
   const childrenByParent = new Map();
   const roots = [];
-
   for (const entry of ordered) {
     const agentId = String(entry.agent_id);
     const parentId = String(entry.parent_run_id || '').trim();
-    if (parentId && parentId !== agentId && byId.has(parentId)) {
+    if (parentId && parentId !== agentId && (!onlyKnownParents || byId.has(parentId))) {
       const children = childrenByParent.get(parentId) || [];
       children.push(entry);
       childrenByParent.set(parentId, children);
@@ -355,6 +359,36 @@ export function visibleSubagentTreeRows(summaries, expandedAgentIds = []) {
       roots.push(entry);
     }
   }
+  return { ordered, childrenByParent, roots };
+}
+
+const toExpandedAgentIdSet = (expandedAgentIds) => (expandedAgentIds instanceof Set
+  ? expandedAgentIds
+  : new Set(expandedAgentIds || []));
+
+// 递归追加可见行：按首次出现截断（环坏数据不会卡死），展开与否决定是否下钻。
+function appendVisibleSubagentRows(childrenByParent, expanded, seen, starts) {
+  const rows = [];
+  const append = (entry, depth) => {
+    const agentId = String(entry.agent_id);
+    if (seen.has(agentId)) return;
+    seen.add(agentId);
+    const children = childrenByParent.get(agentId) || [];
+    rows.push({ entry, depth, childCount: children.length });
+    if (!expanded.has(agentId)) return;
+    for (const child of children) append(child, depth + 1);
+  };
+  for (const start of starts) append(start, 0);
+  return rows;
+}
+
+/**
+ * 把底座按创建顺序给出的平面 worker ledger 投影成当前可见的树行。
+ * `expandedAgentIds` 只控制后代是否展开；父记录已被 ledger 裁剪的孤儿会作为
+ * 根节点保留，坏数据形成环时也不会递归卡死。
+ */
+export function visibleSubagentTreeRows(summaries, expandedAgentIds = []) {
+  const { ordered, childrenByParent, roots } = buildSubagentChildIndex(summaries, { onlyKnownParents: true });
 
   // 正常 ledger 一定能从根遍历完。额外把环或损坏关系中的剩余分量提升为根，
   // 保证数据异常时只是层级降级，不会让代理凭空消失。
@@ -372,22 +406,7 @@ export function visibleSubagentTreeRows(summaries, expandedAgentIds = []) {
     markStructure(entry);
   }
 
-  const expanded = expandedAgentIds instanceof Set
-    ? expandedAgentIds
-    : new Set(expandedAgentIds || []);
-  const rows = [];
-  const visiblySeen = new Set();
-  const append = (entry, depth) => {
-    const agentId = String(entry.agent_id);
-    if (visiblySeen.has(agentId)) return;
-    visiblySeen.add(agentId);
-    const children = childrenByParent.get(agentId) || [];
-    rows.push({ entry, depth, childCount: children.length });
-    if (!expanded.has(agentId)) return;
-    for (const child of children) append(child, depth + 1);
-  };
-  for (const root of roots) append(root, 0);
-  return rows;
+  return appendVisibleSubagentRows(childrenByParent, toExpandedAgentIdSet(expandedAgentIds), new Set(), roots);
 }
 
 /** 返回某代理从直属根到直接父级的祖先 ID，供详情返回列表时展开所在路径。 */

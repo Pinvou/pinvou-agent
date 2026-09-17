@@ -1,13 +1,13 @@
-//! ProductChatRuntime: 产品等价的聊天 runtime seam。
+//! EnginePoolRuntime: 产品等价的聊天 runtime seam。
 //!
-//! GUI 和评测 Runner 共同调用此 trait，确保评测走真实产品链路。
+//! GUI 和评测 Runner 共同调用此入口，确保评测走真实产品链路。
 //! 当前实现薄包装 EnginePool——逻辑逐步从 EnginePool/AppEngine/Bridge
 //! 迁入此处，但首期只建立 seam 不搬逻辑。
 //!
 //! 设计原则（低耦合）：
-//! - trait 类型（SessionSpec/TurnInput/TurnHandle）不引用 EnginePool/Op/EngineConfig
-//! - trait 窄接口：prepare/submit/is_active/cancel/close 共 5 个方法
-//! - 实现是唯一知道 EnginePool 的地方；换实现不影响 trait 消费方
+//! - seam 类型（SessionSpec/TurnInput/TurnHandle）不引用 EnginePool/Op/EngineConfig
+//! - 窄接口：prepare/submit/is_turn_active/wait_for_completion/cancel/close
+//! - 实现是唯一知道 EnginePool 的地方；换实现不影响消费方
 //! - 不引入循环依赖：product_runtime -> engine_pool（单向）
 
 use anyhow::Result;
@@ -70,7 +70,6 @@ pub struct RuntimeToolEvent {
     pub name: String,
     pub failed: bool,
     pub failure_code: Option<String>,
-    pub argument_keys: Vec<String>,
     pub elapsed_ms: Option<u64>,
 }
 
@@ -189,26 +188,16 @@ fn extract_turn_analysis(messages: &[Message]) -> (String, Vec<RuntimeToolEvent>
         .iter()
         .flat_map(|message| &message.content)
         .filter_map(|block| match block {
-            ContentBlock::ToolUse {
-                id, name, input, ..
-            } => {
-                let mut argument_keys = input
-                    .as_object()
-                    .map(|object| object.keys().cloned().collect::<Vec<_>>())
-                    .unwrap_or_default();
-                argument_keys.sort();
-                Some(RuntimeToolEvent {
-                    id: id.clone(),
-                    name: name.clone(),
-                    failed: failures
-                        .get(id.as_str())
-                        .map(|(failed, _)| *failed)
-                        .unwrap_or(false),
-                    failure_code: failures.get(id.as_str()).and_then(|(_, code)| code.clone()),
-                    argument_keys,
-                    elapsed_ms: None,
-                })
-            }
+            ContentBlock::ToolUse { id, name, .. } => Some(RuntimeToolEvent {
+                id: id.clone(),
+                name: name.clone(),
+                failed: failures
+                    .get(id.as_str())
+                    .map(|(failed, _)| *failed)
+                    .unwrap_or(false),
+                failure_code: failures.get(id.as_str()).and_then(|(_, code)| code.clone()),
+                elapsed_ms: None,
+            }),
             _ => None,
         })
         .collect();
@@ -216,35 +205,11 @@ fn extract_turn_analysis(messages: &[Message]) -> (String, Vec<RuntimeToolEvent>
     (assistant_text, tool_events)
 }
 
-/// 产品聊天 runtime seam。
-///
-/// GUI 和 headless 评测宿主都通过此 trait 驱动会话，
-/// 确保评测与生产走同一条构造路径。
-pub trait ProductChatRuntime: Send + Sync {
-    /// 确保会话已创建并就绪
-    async fn prepare(&self, spec: &SessionSpec) -> Result<()>;
-
-    /// 提交用户消息，返回轮次句柄
-    async fn submit(&self, input: &TurnInput) -> Result<TurnHandle>;
-
-    /// 当前是否有活跃轮次
-    fn is_turn_active(&self, session_id: &str) -> bool;
-
-    /// 等待轮次完成并返回结果（轮询实现，后续可升级为事件流）
-    async fn wait_for_completion(&self, handle: &TurnHandle) -> Result<TurnResult>;
-
-    /// 取消当前轮次
-    async fn cancel(&self, session_id: &str);
-
-    /// 删除本次评测的临时会话（释放引擎资源且不污染用户历史）
-    async fn close(&self, session_id: &str);
-}
-
 /// EnginePool 薄包装实现。
 ///
 /// 首期只是委托调用，不添加逻辑。后续产品语义（路由策略、
 /// 事件归一化、工具策略等）逐步从 EnginePool/AppEngine/Bridge
-/// 迁入此处，trait 消费方不受影响。
+/// 迁入此处，调用方不受影响。
 #[derive(Clone)]
 pub struct EnginePoolRuntime {
     pool: Arc<EnginePool>,
@@ -277,10 +242,6 @@ impl EnginePoolRuntime {
         Self { pool }
     }
 
-    pub(crate) fn tested_eval_identity(&self) -> crate::features::assistant::eval::ModelIdentity {
-        self.pool.tested_eval_identity()
-    }
-
     pub(crate) fn pin_active_eval_suite_model(&self) -> Result<EvalSuiteModelSnapshot> {
         self.pool.pin_active_eval_suite_model()
     }
@@ -303,14 +264,6 @@ impl EnginePoolRuntime {
         self.pool.discard_eval_suite_model(suite);
     }
 
-    pub(crate) fn pin_eval_model_selection(&self, model_id: &str) -> Result<EvalModelSelection> {
-        self.pool.pin_eval_model_selection(model_id)
-    }
-
-    pub(crate) fn discard_eval_model_selection(&self, selection: &EvalModelSelection) {
-        self.pool.discard_eval_model_selection(selection);
-    }
-
     pub(crate) async fn close_eval_session_result(&self, session_id: &str) -> Result<()> {
         self.pool.delete_eval_session(session_id).await
     }
@@ -327,14 +280,42 @@ impl EnginePoolRuntime {
     }
 }
 
-impl ProductChatRuntime for EnginePoolRuntime {
-    async fn prepare(&self, spec: &SessionSpec) -> Result<()> {
+impl EnginePoolRuntime {
+    /// Turn-scoping pipeline shared by the completion path and the agentic
+    /// partial-salvage path: keep the timeline milestones recorded for
+    /// `turn_id` (bookends excluded) and retain only the extracted tool events
+    /// whose ids appear in those milestones. The caller owns the timeline
+    /// read-error semantics (completion fails hard; salvage keeps all events).
+    fn scope_turn_analysis_to_turn(
+        timeline: &[timing::TimelineEvent],
+        turn_id: &str,
+        mut tool_events: Vec<RuntimeToolEvent>,
+    ) -> (Vec<timing::TimelineEvent>, Vec<RuntimeToolEvent>) {
+        let milestones: Vec<timing::TimelineEvent> = timeline
+            .iter()
+            .filter(|event| {
+                event.turn_id == turn_id
+                    && !matches!(event.event.as_str(), "user_start" | "assistant_done")
+            })
+            .cloned()
+            .collect();
+        let turn_tool_ids = milestones
+            .iter()
+            .filter_map(|event| event.tool_id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        tool_events.retain(|tool| turn_tool_ids.contains(&tool.id));
+        (milestones, tool_events)
+    }
+
+    /// 确保会话已创建并就绪
+    pub(crate) async fn prepare(&self, spec: &SessionSpec) -> Result<()> {
         self.pool
             .prepare_eval_session(&spec.session_id, spec.model_selection.as_ref())
             .await
     }
 
-    async fn submit(&self, input: &TurnInput) -> Result<TurnHandle> {
+    /// 提交用户消息，返回轮次句柄
+    pub(crate) async fn submit(&self, input: &TurnInput) -> Result<TurnHandle> {
         let turn_id = timing::start_turn(&input.session_id);
         if let Some(policy_id) = input.eval_tool_policy {
             let policy = match policy_id {
@@ -370,11 +351,13 @@ impl ProductChatRuntime for EnginePoolRuntime {
         })
     }
 
-    fn is_turn_active(&self, session_id: &str) -> bool {
+    /// 当前是否有活跃轮次
+    pub(crate) fn is_turn_active(&self, session_id: &str) -> bool {
         self.pool.is_turn_active(session_id)
     }
 
-    async fn wait_for_completion(&self, handle: &TurnHandle) -> Result<TurnResult> {
+    /// 等待轮次完成并返回结果（轮询实现，后续可升级为事件流）
+    pub(crate) async fn wait_for_completion(&self, handle: &TurnHandle) -> Result<TurnResult> {
         let session_id = &handle.session_id;
         while self.pool.is_turn_active(session_id) {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -385,21 +368,10 @@ impl ProductChatRuntime for EnginePoolRuntime {
             .iter()
             .rev()
             .find(|e| e.turn_id == handle.turn_id && e.event == "assistant_done");
-        let milestones: Vec<timing::TimelineEvent> = timeline
-            .iter()
-            .filter(|event| {
-                event.turn_id == handle.turn_id
-                    && !matches!(event.event.as_str(), "user_start" | "assistant_done")
-            })
-            .cloned()
-            .collect();
         let transcript = self.pool.load_eval_transcript(session_id)?;
-        let (assistant_text, mut tool_events) = extract_turn_analysis(&transcript);
-        let turn_tool_ids = milestones
-            .iter()
-            .filter_map(|event| event.tool_id.clone())
-            .collect::<std::collections::HashSet<_>>();
-        tool_events.retain(|tool| turn_tool_ids.contains(&tool.id));
+        let (assistant_text, tool_events) = extract_turn_analysis(&transcript);
+        let (milestones, mut tool_events) =
+            Self::scope_turn_analysis_to_turn(&timeline, &handle.turn_id, tool_events);
         let tool_elapsed = milestones
             .iter()
             .filter(|event| event.event == "tool_call_completed")
@@ -421,13 +393,15 @@ impl ProductChatRuntime for EnginePoolRuntime {
         })
     }
 
-    async fn cancel(&self, session_id: &str) {
+    /// 取消当前轮次
+    pub(crate) async fn cancel(&self, session_id: &str) {
         // Evaluation/headless cancel means stop: un-injected steers are not
         // kept (StopDropInbox).
         self.pool.cancel(session_id, false).await;
     }
 
-    async fn close(&self, session_id: &str) {
+    /// 删除本次评测的临时会话（释放引擎资源且不污染用户历史）
+    pub(crate) async fn close(&self, session_id: &str) {
         if let Err(error) = self.pool.delete_chat_session(session_id).await {
             eprintln!("[eval] failed to delete temporary session {session_id}: {error:#}");
         }
@@ -494,7 +468,6 @@ mod tests {
             tool_events[0].failure_code.as_deref(),
             Some("tool_execution_failed")
         );
-        assert_eq!(tool_events[0].argument_keys, ["query"]);
         let debug = format!("{tool_events:?}");
         assert!(!debug.contains("secret tool input"));
         assert!(!debug.contains("secret tool output"));

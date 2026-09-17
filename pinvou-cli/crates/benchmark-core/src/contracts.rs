@@ -46,7 +46,6 @@ public_id!(ToolPolicyId);
 public_id!(OutputContract);
 public_id!(VerifiedArtifact);
 public_id!(ArtifactReference);
-opaque_handle!(ReferenceHandle);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExecutionKind {
@@ -108,7 +107,6 @@ pub struct BenchmarkTask {
     category: Option<String>,
     level: Option<String>,
     execution: ExecutionRequest,
-    reference_handle: Option<ReferenceHandle>,
 }
 
 impl BenchmarkTask {
@@ -117,14 +115,12 @@ impl BenchmarkTask {
         category: Option<String>,
         level: Option<String>,
         execution: ExecutionRequest,
-        reference_handle: Option<ReferenceHandle>,
     ) -> Self {
         Self {
             task_id: task_id.into(),
             category,
             level,
             execution,
-            reference_handle,
         }
     }
     pub fn task_id(&self) -> &str {
@@ -138,9 +134,6 @@ impl BenchmarkTask {
     }
     pub fn execution(&self) -> &ExecutionRequest {
         &self.execution
-    }
-    pub fn reference_handle(&self) -> Option<&ReferenceHandle> {
-        self.reference_handle.as_ref()
     }
 }
 
@@ -315,7 +308,6 @@ pub struct TaskOutcome {
     artifacts: Vec<ArtifactReference>,
     usage: Option<UsageMetrics>,
     elapsed_ms: u64,
-    trajectory_ref: Option<PathBuf>,
     failure_category: Option<SafeFailureCategory>,
     failure_reason: Option<SafeFailureReason>,
     tool_observations: Vec<ToolObservation>,
@@ -337,7 +329,6 @@ impl TaskOutcome {
             artifacts,
             usage: None,
             elapsed_ms,
-            trajectory_ref: None,
             failure_category: None,
             failure_reason: None,
             tool_observations: Vec::new(),
@@ -366,9 +357,6 @@ impl TaskOutcome {
     }
     pub fn elapsed_ms(&self) -> u64 {
         self.elapsed_ms
-    }
-    pub fn trajectory_ref(&self) -> Option<&Path> {
-        self.trajectory_ref.as_deref()
     }
     pub fn failure_category(&self) -> Option<&SafeFailureCategory> {
         self.failure_category.as_ref()
@@ -466,20 +454,17 @@ impl BenchmarkPlan {
 #[derive(Clone, Debug)]
 pub struct RunContext {
     run_id: String,
-    run_root: PathBuf,
 }
 impl RunContext {
-    pub fn new(run_id: impl Into<String>, run_root: PathBuf) -> Self {
+    /// The `run_root` parameter is kept for signature compatibility with
+    /// existing callers; the context no longer stores it.
+    pub fn new(run_id: impl Into<String>, _run_root: PathBuf) -> Self {
         Self {
             run_id: run_id.into(),
-            run_root,
         }
     }
     pub fn run_id(&self) -> &str {
         &self.run_id
-    }
-    pub fn run_root(&self) -> &Path {
-        &self.run_root
     }
 }
 

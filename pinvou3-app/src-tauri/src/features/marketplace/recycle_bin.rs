@@ -30,7 +30,7 @@ use crate::platform::paths;
 const SCHEMA_VERSION: u32 = 1;
 
 /// 回收站条目 kind：纯 MCP 包。
-pub const KIND_MCP: &str = "mcp";
+pub(crate) const KIND_MCP: &str = "mcp";
 /// 回收站条目 kind：纯技能包。
 pub const KIND_SKILL: &str = "skill";
 /// 回收站条目 kind：组合包（mcp/ + skills/）。

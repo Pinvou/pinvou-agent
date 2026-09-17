@@ -277,7 +277,9 @@ impl SessionStore {
         Ok(())
     }
 
-    pub fn multi_agent_session_ids(&self) -> Vec<String> {
+    /// Multi-agent session ids for the `_multi_agent.json` sidecar; only the
+    /// save path in this module consumes the snapshot.
+    fn multi_agent_session_ids(&self) -> Vec<String> {
         let m = self.mode_states.read();
         let mut ids: Vec<String> = m
             .iter()

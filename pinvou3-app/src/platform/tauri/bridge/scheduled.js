@@ -288,11 +288,6 @@
     }) || null;
   }
 
-  function activeScheduledTaskModel() {
-    const model = activeScheduledTaskModelConfig();
-    return model && model.model || null;
-  }
-
   function lockScheduledTaskDraftModel(draft) {
     if (!draft) return null;
     const active = activeScheduledTaskModelConfig();
@@ -857,7 +852,6 @@
       parseLooseJsonObject,
       normalizeScheduledTaskDraft,
       activeScheduledTaskModelConfig,
-      activeScheduledTaskModel,
       lockScheduledTaskDraftModel,
       parseScheduledTaskDraftFromText,
       clearScheduledTaskDraft,

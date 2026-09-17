@@ -5,7 +5,6 @@ use crate::features::pet::{
 use pet_domain::*;
 use selected_pet_domain::*;
 
-async_command_passthrough!(detach_domain, open_detached_window(kind: String, id: Option<String>, app: AppHandle) -> Result<(), String>);
 async_command_passthrough!(detach_domain, begin_detach_drag(kind: String, id: Option<String>, app: AppHandle) -> Result<(), String>);
 
 async_command_passthrough!(pet_domain, set_pet_enabled(enabled: bool, app: AppHandle) -> Result<(), String>);

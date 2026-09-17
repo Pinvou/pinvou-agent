@@ -40,7 +40,6 @@ for (const language of ['zh', 'en', 'ja']) {
     'login', 'logout', 'loginWaiting', 'openLoginUrl', 'loginCodePlaceholder', 'submitCode', 'logoutRelayDisabled',
     'cancelInstall', 'installCancelled',
     'modelSlotsTitle', 'modelSlotsHint', 'modelSlotsRequired',
-    'slot_opus', 'slot_sonnet', 'slot_haiku', 'slot_fable', 'slot_subagent',
     'contextWindow', 'contextWindowHint', 'contextWindowInvalid',
   ]) {
     assert.ok(dict[language].uiAcpProviders[key], `${language}.uiAcpProviders.${key} must exist`);

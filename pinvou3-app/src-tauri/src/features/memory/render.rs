@@ -1,7 +1,7 @@
 //! 运行时记忆渲染：注入块（`<pinvou_user_memory>`）拼装、设备快照文档生成，
 //! 以及 runtime prompt 文件刷新/保证存在。
 //!
-//! 抽离自 `mod.rs`。`render_from_parts` 与快照文档是纯函数；`refresh_runtime_prompt`
+//! 抽离自 `mod.rs`。`render_from_parts` 与快照文档是纯函数；`runtime_snapshot`
 //! 等会触发过期归档并落盘 runtime 文件。
 
 use std::io as stdio;
@@ -211,7 +211,15 @@ pub(super) fn render_from_parts(
     (block, items)
 }
 
-pub fn refresh_runtime_prompt(session_id: &str) -> stdio::Result<RuntimeMemorySnapshot> {
+pub fn ensure_runtime_prompt(session_id: &str) -> stdio::Result<PathBuf> {
+    let path = io::runtime_prompt_path(session_id);
+    if !path.exists() {
+        let _ = runtime_snapshot(session_id)?;
+    }
+    Ok(path)
+}
+
+pub fn runtime_snapshot(session_id: &str) -> stdio::Result<RuntimeMemorySnapshot> {
     let _guard = io::write_lock().lock();
     if !io::memory_enabled() {
         return io::disabled_runtime_snapshot(session_id);
@@ -229,18 +237,6 @@ pub fn refresh_runtime_prompt(session_id: &str) -> stdio::Result<RuntimeMemorySn
         block,
         items,
     })
-}
-
-pub fn ensure_runtime_prompt(session_id: &str) -> stdio::Result<PathBuf> {
-    let path = io::runtime_prompt_path(session_id);
-    if !path.exists() {
-        let _ = refresh_runtime_prompt(session_id)?;
-    }
-    Ok(path)
-}
-
-pub fn runtime_snapshot(session_id: &str) -> stdio::Result<RuntimeMemorySnapshot> {
-    refresh_runtime_prompt(session_id)
 }
 
 pub fn write_memory_snapshot_document(

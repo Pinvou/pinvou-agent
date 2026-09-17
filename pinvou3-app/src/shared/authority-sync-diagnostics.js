@@ -16,9 +16,9 @@
   const MAX_BATCH_ENTRIES = 32;
   const MAX_STRING_CHARS = 2048;
   const ALLOWED_EVENTS = new Set([
-    "authority_sync_notice_shown", "browser_network_offline", "browser_network_online",
-    "chat_done_classified", "connection_state_changed", "diagnostics_initialized",
-    "document_visibility_changed", "local_send_blocked_by_remote_sync",
+    "authority_sync_notice_shown",
+    "chat_done_classified",
+    "local_send_blocked_by_remote_sync",
     "local_turn_admission_failed", "local_turn_admitted", "local_turn_claimed",
     "reconcile_attempt_failed", "reconcile_attempt_rejected", "reconcile_deferred_busy",
     "reconcile_exhausted", "reconcile_joined_inflight", "reconcile_started",

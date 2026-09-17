@@ -6,10 +6,9 @@ use agent_backend_api::{HeadlessAgentBackend, PrivateInputResolver};
 
 use crate::Result;
 use crate::{
-    BenchmarkAdapter, BenchmarkError, BenchmarkPlan, CompletedRun, NativeAgentRunner,
-    OfficialScoreReport, PredictionRetention, PrivatePredictionContentType, RunContext,
-    RunManifest, RunStore, SafeFailureCategory, SubmissionArtifact, TaskOutcome, TaskRunner,
-    TaskSelection, TaskStatus, VerifiedDataset,
+    BenchmarkAdapter, BenchmarkError, BenchmarkPlan, NativeAgentRunner, PredictionRetention,
+    PrivatePredictionContentType, RunContext, RunManifest, RunStore, SafeFailureCategory,
+    TaskOutcome, TaskRunner, TaskSelection, TaskStatus, VerifiedDataset,
 };
 
 pub struct BenchmarkService<R> {
@@ -103,23 +102,6 @@ where
             adapter.private_prediction_content_type(),
         )
         .await
-    }
-
-    pub fn score_adapter(
-        &self,
-        adapter: &dyn BenchmarkAdapter,
-        run: &CompletedRun,
-    ) -> Result<OfficialScoreReport> {
-        adapter.score(run)
-    }
-
-    pub fn write_adapter_submission(
-        &self,
-        adapter: &dyn BenchmarkAdapter,
-        run: &CompletedRun,
-        destination: &Path,
-    ) -> Result<SubmissionArtifact> {
-        adapter.write_submission(run, destination)
     }
 
     pub async fn resume(&self, run_id: &str, plan: &BenchmarkPlan) -> Result<RunSummary> {

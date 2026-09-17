@@ -2,10 +2,11 @@ import {
   assistantMarkdownCopyText,
   normalizeAssistantMessageText,
 } from './structured-assistant-content.js';
-import { copyClipboardText, fallbackCopyText } from '../../shared/clipboard.js';
 import { createTurndownService } from '../../shared/turndown-factory.js';
 
-export { copyClipboardText, fallbackCopyText };
+// Test seam: tests/assistant_message_actions.test.mjs imports copyClipboardText
+// from this module, so the re-export from shared/clipboard.js must stay.
+export { copyClipboardText } from '../../shared/clipboard.js';
 
 // 旧 HTML 会话复制为 Markdown 的转换器懒加载缓存。
 let legacyHtmlConverter = null;

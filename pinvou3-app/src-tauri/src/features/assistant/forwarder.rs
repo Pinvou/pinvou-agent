@@ -1188,7 +1188,6 @@ pub(crate) fn spawn_event_forwarder(
                     }
                     maybe_notify_task_completed(
                         &app,
-                        &store,
                         &session_id,
                         current_turn_id.take(),
                         terminal_status,

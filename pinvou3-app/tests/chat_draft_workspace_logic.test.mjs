@@ -64,7 +64,7 @@ function loadSessionsFeature(overrides) {
   const sessionStates = {};
   const deferreds = {};
   const calls = { invoke: [] };
-  const api = factory(Object.assign({
+  const context = Object.assign({
     state,
     sessionStates,
     notify() { calls.notify = (calls.notify || 0) + 1; },
@@ -108,7 +108,16 @@ function loadSessionsFeature(overrides) {
     loadScheduledTaskRecentRuns() { return Promise.resolve(); },
     scheduledRunSessionOwners: {},
     personaPlaceholderTitles: {},
-  }, overrides || {}));
+  }, overrides || {});
+  // Mirrors the bridge's hoisted pickDirectory scaffold: normalized single-select
+  // array over the harness-provided dialogOpen override.
+  context.pickDirectory = async options => {
+    if (!context.dialogOpen) return null;
+    const selected = await context.dialogOpen(options);
+    if (!selected) return null;
+    return Array.isArray(selected) ? selected : [selected];
+  };
+  const api = factory(context);
   return {
     api, state, sessionStates, calls, storage,
     defer(name) {

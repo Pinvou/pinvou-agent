@@ -3,7 +3,7 @@ use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct WorkspaceIdentity {
+pub(in crate::features::remote_control) struct WorkspaceIdentity {
     device: u64,
     inode: u64,
 }

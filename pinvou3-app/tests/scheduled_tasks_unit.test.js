@@ -43,7 +43,6 @@ const webBridge = [
 const scheduledTasksRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'scheduled', 'tasks.rs'), 'utf8');
 // Wave 2 把版本化存储层拆到 stores.rs；read-state 迁移（migrate→default）落该子模块。
 const scheduledStoresRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'scheduled', 'stores.rs'), 'utf8');
-const enginePoolRust = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'features', 'assistant', 'engine_pool.rs'), 'utf8');
 const scheduledTaskPromptRust = scheduledTasksRust.slice(
   scheduledTasksRust.indexOf('const SCHEDULED_TASK_CHAT_PROMPT'),
   scheduledTasksRust.indexOf('pub fn scheduled_automation_root')
@@ -74,18 +73,6 @@ function mustNotContain(text) {
 assert.ok(
   /scheduledPlans:\s*'定时任务'/.test(indexHtml),
   'left sidebar label should be 定时任务'
-);
-assert.ok(
-  /const SCHEDULED_TASKS_ENTRY_ENABLED = true/.test(indexHtml),
-  'scheduled-task entry should be enabled after the creation flow is fixed'
-);
-assert.ok(
-  /SCHEDULED_TASKS_ENTRY_ENABLED\s*&&\s*\(\s*<NavItem[\s\S]{0,500}label=\{t\.scheduledPlans\}/.test(indexHtml),
-  'the scheduled-task navigation item must be gated by the temporary feature flag'
-);
-assert.ok(
-  /SCHEDULED_TASKS_ENTRY_ENABLED\s*&&\s*bs\.scheduledTaskAutoOpenId/.test(indexHtml),
-  'automatic scheduled-task navigation must be gated with the visible entry'
 );
 assert.ok(
   /const ScheduledTasksView\s*=/.test(indexHtml),
@@ -487,11 +474,6 @@ assert.ok(
     /if \(selectAfterCreate\) selectScheduledTask\(created\.id\)/.test(tauriBridge) &&
     /if \(selectAfterCreate\) state\.scheduledTaskDetail = created/.test(tauriBridge),
   'scheduled creation dialogs should be able to create without immediately opening the edit sheet'
-);
-assert.ok(
-  /fn should_sync_session\(_is_scheduled: bool, _has_messages: bool\)[\s\S]{0,520}\n\s*true\s*\n}/.test(enginePoolRust) &&
-    /should_sync_session\(is_scheduled, !saved\.messages\.is_empty\(\)\)/.test(enginePoolRust),
-  'every Session must SyncSession even when its durable message list is empty'
 );
 assert.ok(
   tauriBridge.includes('preserveInterruptedAssistantPresentation') &&

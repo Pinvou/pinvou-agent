@@ -49,14 +49,11 @@ const SCHEMA_VERSION: u32 = 1;
 
 /// 删除项目的结果汇报:受影响会话只被解绑(回落隐式分组),永不删除。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DeleteProjectReport {
-    pub affected_session_ids: Vec<String>,
-}
+pub struct DeleteProjectReport {}
 
 /// 移动归属的结果:前端据此提示"已加入项目(并添加了文件夹 xx)"。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MoveSessionOutcome {
-    pub project_id: Option<String>,
     /// 本次顺带加入目标项目的文件夹(canonicalized);未新增为 None。
     pub added_root: Option<PathBuf>,
 }
@@ -347,6 +344,8 @@ impl ProjectStore {
         self.state.read().projects.clone()
     }
 
+    /// 仅测试用断言原料（生产路径走 `list` / `assignments_snapshot`）。
+    #[cfg(test)]
     pub fn get(&self, project_id: &str) -> Option<Project> {
         self.state
             .read()
@@ -356,7 +355,9 @@ impl ProjectStore {
             .cloned()
     }
 
-    /// 归属解析原料:显式归属条目(`None` = 显式移出)。
+    /// 归属解析原料:显式归属条目(`None` = 显式移出)。仅测试用（生产路径走
+    /// `assignments_snapshot`）。
+    #[cfg(test)]
     pub fn assignment_of(&self, session_id: &str) -> Option<Option<String>> {
         self.state.read().assignments.get(session_id).cloned()
     }
@@ -466,9 +467,7 @@ impl ProjectStore {
             state.assignments.remove(session_id);
         }
         persist_locked(&state, &self.path)?;
-        Ok(DeleteProjectReport {
-            affected_session_ids: affected,
-        })
+        Ok(DeleteProjectReport {})
     }
 
     /// 移动会话归属(纯逻辑层写;不触碰会话的工作目录绑定)。
@@ -563,10 +562,7 @@ impl ProjectStore {
             state.assignments.insert(session_id.to_string(), None);
         }
         persist_locked(&state, &self.path)?;
-        Ok(MoveSessionOutcome {
-            project_id: project_id.map(str::to_string),
-            added_root,
-        })
+        Ok(MoveSessionOutcome { added_root })
     }
 
     /// 会话删除钩子:摘除其归属条目(含显式移出的 None 条目)。返回是否

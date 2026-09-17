@@ -392,43 +392,6 @@ pub async fn set_super_permission(
     Ok(crate::platform::super_permission::is_enabled())
 }
 
-/// 读 pinvou3 内置 skill 的 body(去掉 frontmatter)。
-/// 用途:前端 autoTriggerPinvouReview 把完整 SKILL.md 内容塞进 user message,
-/// 不依赖本地 Qwen3.6 主动 read_file —— 弱模型不会主动用 progressive disclosure。
-/// 设计依据:docs/Pinvou-品悟设计.md §10.5 (即将补)
-#[tauri::command]
-pub async fn read_skill_body(name: String) -> Result<String, String> {
-    use crate::platform::paths;
-    let safe_name: String = name
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-        .collect();
-    if safe_name != name || safe_name.is_empty() {
-        return Err(format!("invalid skill name: {name}"));
-    }
-    // 市场技能按包聚合（bundles/<pkg>/skills/）优先，旧扁平布局回退由
-    // find_skill_dir 内置（迁移过渡容错，下个版本删除回退）。
-    let path = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-        .find_skill_dir(&safe_name)
-        .unwrap_or_else(|| paths::bundle_skills_dir().join(&safe_name))
-        .join("SKILL.md");
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("read SKILL.md ({}): {e}", path.display()))?;
-    // 剥 frontmatter ---\n...\n---\n
-    let body = if let Some(rest) = content.strip_prefix("---\n") {
-        if let Some(end) = rest.find("\n---\n") {
-            rest[end + 5..].trim_start().to_string()
-        } else if let Some(end) = rest.find("\n---") {
-            rest[end + 4..].trim_start().to_string()
-        } else {
-            content
-        }
-    } else {
-        content
-    };
-    Ok(body)
-}
-
 // 修法 D 删除了 revise_plan 命令.
 // 用户点 [✏️ 改改] 时前端走 CodeWhale 底座做法:不切 phase, 仅 input 预填"修订方案:"前缀.
 // phase 保持 Ready, 下一条 chat 触发的 Ready reminder 已包含"用户发新消息=隐式修订"语义.
@@ -511,20 +474,6 @@ pub async fn get_pending_user_inputs(
         busy: pool.is_turn_active(&session_id),
         pending: crate::features::assistant::pending_user_input::list(&session_id),
     })
-}
-
-#[tauri::command]
-pub async fn restart_engine(
-    pool: State<'_, EnginePool>,
-    store: State<'_, SessionStore>,
-) -> Result<(), String> {
-    // 多 session 并发:重启 = evict 当前 active session 的 engine(取消在跑 turn +
-    // Shutdown + abort forwarder),下次 chat 时 EnginePool 重新 spawn 干净的并从磁盘
-    // rehydrate 历史。也是 engine-busy 卡死时的恢复路径。
-    if let Some(sid) = store.active_id() {
-        pool.evict(&sid).await;
-    }
-    Ok(())
 }
 
 // ===================== Pinvou v4 召唤式检阅 =====================

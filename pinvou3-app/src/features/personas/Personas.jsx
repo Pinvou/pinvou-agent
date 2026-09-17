@@ -231,8 +231,6 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
       const [editor, setEditor] = useState(null); // null | { initial }
       const [chooser, setChooser] = useState(false); // 造卡方式选择(AI/手动)
       const [myOnly, setMyOnly] = useState(!!initialMyOnly); // 「我的卡牌」facet(从存入确认窗"去查看"进来则默认开)
-      // biome-ignore lint/correctness/noUnusedVariables: delete-confirmation state is only written in the event flow (legacy placeholder); list rows never read it
-      const [confirmDelId, setConfirmDelId] = useState(null); // eslint-disable-line no-unused-vars, sonarjs/no-unused-vars, sonarjs/no-dead-store -- delete-confirmation state is only written in the event flow (legacy placeholder); list rows never read it
 
       useEffect(() => { if (bridge.available) bridge.personas.loadPersonas(); }, []);
       useEffect(() => {
@@ -257,7 +255,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
       const shown = filtered.slice(0, visible);
 
       function editCard(card, e){ if(e) { e.stopPropagation(); } setEditor({ initial: card }); }
-      function doDelete(card, e){ if(e) { e.stopPropagation(); } setConfirmDelId(null);
+      function doDelete(card, e){ if(e) { e.stopPropagation(); }
         Promise.resolve(bridge.personas.deletePersona(card.id)).then(function(){ setToast(t.cpToastDeleted(card.name)); }).catch(function(){ setToast(t.cpToastDelFailed); }); }
       // The card 3D hover effect (onMove/onLeave) and the resetFacets quick view reset are not wired up; the original implementation remains in git history
       function equip(card, e){ if(e) { e.stopPropagation(); }
@@ -455,4 +453,4 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
     // Shared Components
     // ==========================================
 
-export { PersonaEditorModal, AICardBanner, CardPoolView };
+export { PersonaEditorModal, CardPoolView };

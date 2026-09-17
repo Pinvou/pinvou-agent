@@ -205,7 +205,6 @@ test('macOS trusted input stays app-scoped and unsupported gestures fail closed'
     macos,
     /CGEventPost|postEvent|mouseLocation\(|addGlobalMonitor|dispatchEvent|\.click\(\)|new MouseEvent/,
   );
-  assert.match(macos, /trusted-input-gesture-unavailable-on-wkwebview/);
   assert.match(macos, /dialog-backend-unavailable-on-wkwebview/);
   const darwinCatalog = createPinvouBrowserCoreCatalog({ includeDialog: false });
   assert.equal(

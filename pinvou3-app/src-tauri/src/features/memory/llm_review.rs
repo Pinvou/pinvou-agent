@@ -1,5 +1,5 @@
 //! LLM 后台记忆复盘：触发判别、提示词、chat/completions 调用、响应清洗与
-//! 自动落库，以及纯启发式的 turn 候选发现（不走 LLM 的兜底）。
+//! 自动落库。
 //!
 //! 抽离自 `mod.rs`。`review_turn_candidates_with_llm` 是 pub 入口；诊断日志、
 //! reasoning dialect 控制、JSON 解析与候选清洗等 helper 集中在本模块内。
@@ -64,8 +64,7 @@ pub(super) const LLM_REVIEW_PROMPT_TEMPLATE: &str = r#"你是 pinvou 的后台�
       "topic": "call_name | assistant_alias | answer_style | workflow_preference | document_preference | role_domain | project_context | task_pattern | tooling_context | output_expectation | current_work | completed_work",
       "content": "整理后的完整记忆内容",
       "confidence": 0.0,
-      "ttl_days": null,
-      "reason": "一句话说明"
+      "ttl_days": null
     }
   ]
 }
@@ -850,7 +849,6 @@ pub(super) fn sanitize_llm_memory_item(
     };
     let mut topic = clean_text(&raw.topic, 40);
     let mut content = super::util::clean_candidate_sentence(&raw.content, 180);
-    let _reason = clean_text(&raw.reason, 120);
     if content.is_empty() || looks_sensitive(&content) {
         return None;
     }

@@ -6,8 +6,8 @@ use agent_backend_api::PrivateInputHandle;
 use agent_backend_api::{SecretOutput, SecretText};
 use async_trait::async_trait;
 use benchmark_core::{
-    BenchmarkAdapter, BenchmarkDescriptor, BenchmarkId, BenchmarkPlan, BenchmarkRegistry,
-    BenchmarkService, BenchmarkTask, CompletedRun, ExecutionKind, ExecutionRequest, ModelIdentity,
+    BenchmarkAdapter, BenchmarkDescriptor, BenchmarkId, BenchmarkPlan, BenchmarkService,
+    BenchmarkTask, CompletedRun, ExecutionKind, ExecutionRequest, ModelIdentity,
     OfficialScoreReport, OutputContract, PredictionRetention, PreparedTask, RunContext,
     RunManifest, RunStore, Split, SubmissionArtifact, TaskOutcome, TaskRunner, TaskSelection,
     TaskStatus, ToolPolicyId, VerifiedDataset,
@@ -21,6 +21,38 @@ fn temp_base(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("pinvou-registry-{name}-{nonce}"));
     std::fs::create_dir(&path).unwrap();
     path
+}
+
+/// Local registry fixture standing in for the removed `BenchmarkRegistry`
+/// helper: the duplicate/unknown-id contract under test is adapter-keyed
+/// lookup with explicit error codes.
+#[derive(Default)]
+struct LocalRegistry {
+    adapters: std::collections::HashMap<String, Arc<dyn BenchmarkAdapter>>,
+}
+
+impl LocalRegistry {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn register(&mut self, adapter: Arc<dyn BenchmarkAdapter>) -> benchmark_core::Result<()> {
+        let id = adapter.descriptor().id().as_str().to_owned();
+        if self.adapters.contains_key(&id) {
+            return Err(benchmark_core::BenchmarkError::Contract(
+                "duplicate_benchmark".into(),
+            ));
+        }
+        self.adapters.insert(id, adapter);
+        Ok(())
+    }
+
+    fn get(&self, id: &BenchmarkId) -> benchmark_core::Result<Arc<dyn BenchmarkAdapter>> {
+        self.adapters
+            .get(id.as_str())
+            .cloned()
+            .ok_or_else(|| benchmark_core::BenchmarkError::Contract("unknown_benchmark".into()))
+    }
 }
 
 #[derive(Default)]
@@ -79,7 +111,6 @@ impl BenchmarkAdapter for FixtureAdapter {
                 ToolPolicyId::new("fixture/v1"),
                 OutputContract::new("fixture/v1"),
             ),
-            None,
         )]))
     }
 
@@ -397,7 +428,7 @@ fn durable_runs_publish_only_core_handles_and_reopen_for_scoring() {
 
 #[test]
 fn registry_rejects_duplicate_and_unknown_benchmark_ids() {
-    let mut registry = BenchmarkRegistry::new();
+    let mut registry = LocalRegistry::new();
     registry
         .register(Arc::new(FixtureAdapter::new(
             "fixture",
@@ -465,16 +496,10 @@ fn adapter_driven_service_plans_prepares_then_runs_without_implicit_scoring() {
     drop(snapshot);
 
     let completed = CompletedRun::new(summary.run_id(), summary.outcomes().to_vec());
+    assert_eq!(adapter.score(&completed).unwrap().accuracy(), 1.0);
     assert_eq!(
-        service
-            .score_adapter(&adapter, &completed)
-            .unwrap()
-            .accuracy(),
-        1.0
-    );
-    assert_eq!(
-        service
-            .write_adapter_submission(&adapter, &completed, Path::new("submission.jsonl"))
+        adapter
+            .write_submission(&completed, Path::new("submission.jsonl"))
             .unwrap()
             .path(),
         Path::new("submission.jsonl")

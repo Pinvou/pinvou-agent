@@ -162,7 +162,6 @@ pub enum BenchmarkCommand {
     Resume(String),
     Report(String),
     RunNotAvailable(String),
-    NotAvailable(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -258,7 +257,10 @@ where
                     output = OutputMode::Json;
                     values.drain(index..=index + 1);
                 }
-                _ => index += 1,
+                // Fail fast instead of leaving the unrecognized token in argv,
+                // where it would later surface as a misleading
+                // "unknown benchmark command" usage error.
+                _ => return Err(CliError::usage("--output requires human or json")),
             }
         } else {
             index += 1;
@@ -535,9 +537,6 @@ pub fn execute(parsed: ParsedCli) -> Result<CliOutcome, CliError> {
         CliCommand::Benchmark(BenchmarkCommand::RunNotAvailable(error)) => {
             Err(CliError::usage(error))
         }
-        CliCommand::Benchmark(BenchmarkCommand::NotAvailable(command)) => Err(CliError::usage(
-            format!("benchmark command '{command}' is not_available"),
-        )),
         CliCommand::Agent(AgentCommand::Run {
             prompt_file,
             workspace,
@@ -1482,19 +1481,23 @@ mod product {
     use adapter_smoke::{
         SMOKE_TOOL_POLICY_ID, SMOKE_TOOL_POLICY_ID_DEPRECATED, SmokeAdapter, SmokePrivateInputs,
     };
+    use benchmark_core::{
+        BenchmarkAdapter, BenchmarkService, ModelIdentity, RunManifest, RunSummary, Split,
+        TaskSelection, ToolPolicyId,
+    };
+
+    use super::*;
+
     use agent_backend_api::{
         AgentBackendError, AgentRunObserver, AgentSessionHandle, AgentTaskInput, AgentTaskOutcome,
         HeadlessAgentBackend, PrepareRequest, PrivateInputResolver, PrivateOutputHandle,
         SecretOutput, SuiteModelIdentity,
     };
     use async_trait::async_trait;
-    use benchmark_core::{
-        BenchmarkAdapter, BenchmarkService, ModelIdentity, NativeAgentRunner, RunManifest,
-        RunSummary, Split, TaskSelection, ToolPolicyId,
-    };
 
-    use super::*;
-
+    /// Sized newtype over the product backend trait object: the benchmark
+    /// service stores its backend by value (`B: HeadlessAgentBackend`), which a
+    /// bare `dyn` receiver cannot satisfy.
     struct DynamicBackend(Arc<dyn HeadlessAgentBackend>);
 
     #[async_trait]
@@ -1685,12 +1688,11 @@ mod product {
             if !smoke_resume_manifest_matches(&stored, &adapter, &model) {
                 return Err(anyhow::anyhow!("resume_manifest_mismatch"));
             }
-            let service: BenchmarkService<NativeAgentRunner<DynamicBackend>> =
-                BenchmarkService::native_with_private_inputs(
-                    &base,
-                    Arc::new(DynamicBackend(backend)),
-                    Arc::new(SmokePrivateInputs::new()),
-                )?;
+            let service = BenchmarkService::native_with_private_inputs(
+                &base,
+                Arc::new(DynamicBackend(backend)),
+                Arc::new(SmokePrivateInputs::new()),
+            )?;
             let summary = service.resume(&run_id, &plan).await?;
             finalize_summary(&base, summary, output)
         })

@@ -140,7 +140,6 @@ pub struct ScheduledTaskDto {
 pub struct DeletedScheduledTaskDto {
     #[serde(flatten)]
     pub task: ScheduledTaskDto,
-    pub deleted_session_ids: Vec<String>,
 }
 
 pub type ScheduledTaskDetailDto = ScheduledTaskDto;
@@ -284,7 +283,6 @@ fn open_scheduled_automation_manager(root: PathBuf) -> Result<AutomationManager>
     AutomationManager::open(root)
 }
 
-#[allow(dead_code)]
 pub fn scheduled_task_data_root() -> std::path::PathBuf {
     crate::platform::paths::pinvou3_home().join("tasks")
 }
@@ -835,7 +833,6 @@ impl ScheduledTaskState {
                     Some(&self.task_kinds),
                     Some(&self.ui_metadata),
                 ),
-                deleted_session_ids: Vec::new(),
             };
             if let Err(error) = self.task_kinds.remove(id) {
                 log::warn!(
@@ -1377,7 +1374,7 @@ fn build_create_request(
         .model
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(default_model);
-    canonical_scheduled_mode(input.mode, None)?;
+    canonical_scheduled_mode(input.mode)?;
     // Kind is allow-listed at creation time (create_task owns the normalized result and
     // persists it to the sidecar).
     canonical_scheduled_kind(input.kind)?;
@@ -1419,7 +1416,7 @@ fn build_update_request(
     // The kind is a one-time property decided at creation: the update contract has no
     // kind (UpdateScheduledTaskInput lacks the field, and serde silently drops an extra
     // "kind" in the JSON), so the sidecar is never rewritten.
-    canonical_scheduled_mode(input.mode, None)?;
+    canonical_scheduled_mode(input.mode)?;
     let status = input.paused.map(paused_to_status);
     Ok(UpdateAutomationRequest {
         name: input.name,
@@ -1443,18 +1440,15 @@ fn build_update_request(
     })
 }
 
-fn canonical_scheduled_mode(
-    mode: Option<String>,
-    default: Option<&str>,
-) -> Result<Option<String>, String> {
-    let Some(mode) = mode.or_else(|| default.map(str::to_string)) else {
-        return Ok(None);
-    };
-    let mode = mode.trim();
-    match mode {
-        "agent" | "plan" | "yolo" => Ok(Some(mode.to_string())),
-        _ => Err(format!(
-            "Scheduled task mode must be exactly one of agent|plan|yolo, got '{mode}'"
+/// 定时任务恒以 YOLO 运行（见 `SCHEDULED_EXECUTION_MODE`，创建/更新请求里的
+/// `mode` 一律被下游覆盖为该值），本函数只做输入校验：空/缺省或显式 `"yolo"`
+/// 放行，其余拒绝。历史上的 `agent`/`plan` 接受臂没有意义——下游无差别覆盖
+/// 成 yolo，用户输入被静默丢弃，不如显式报错。
+fn canonical_scheduled_mode(mode: Option<String>) -> Result<(), String> {
+    match mode.as_deref().map(str::trim) {
+        None | Some("") | Some(SCHEDULED_EXECUTION_MODE) => Ok(()),
+        Some(other) => Err(format!(
+            "Scheduled tasks always run in '{SCHEDULED_EXECUTION_MODE}' mode, got '{other}'"
         )),
     }
 }
@@ -2621,7 +2615,6 @@ mod tests {
             .delete_for_test(fixture.automation_id.clone())
             .await
             .expect("delete task while retaining history");
-        assert!(deleted.deleted_session_ids.is_empty());
         {
             let manager = fixture.state.automations.lock().await;
             assert!(
@@ -3023,7 +3016,7 @@ mod tests {
                 kind: None,
                 model: None,
                 model_id: None,
-                mode: Some("agent".to_string()),
+                mode: Some("yolo".to_string()),
                 allow_shell: Some(false),
                 trust_mode: Some(false),
                 auto_approve: Some(false),
@@ -3041,18 +3034,10 @@ mod tests {
 
         let deleted = state.delete_for_test(created.id).await.expect("delete");
         assert_eq!(deleted.task.name, "测试计划");
-        assert!(deleted.deleted_session_ids.is_empty());
         let serialized = serde_json::to_value(&deleted).expect("delete response json");
         assert_eq!(
             serialized.get("name").and_then(serde_json::Value::as_str),
             Some("测试计划")
-        );
-        assert_eq!(
-            serialized
-                .get("deletedSessionIds")
-                .and_then(serde_json::Value::as_array)
-                .map(Vec::len),
-            Some(0)
         );
         match previous {
             // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
@@ -3612,7 +3597,7 @@ mod tests {
                 kind: None,
                 model: None,
                 model_id: None,
-                mode: Some("agent".to_string()),
+                mode: Some("yolo".to_string()),
                 allow_shell: Some(false),
                 trust_mode: Some(false),
                 auto_approve: Some(false),
@@ -3632,7 +3617,7 @@ mod tests {
                     cwds: Some(vec!["/tmp/workspace-b".to_string()]),
                     model: None,
                     model_id: None,
-                    mode: Some("plan".to_string()),
+                    mode: Some("yolo".to_string()),
                     allow_shell: Some(!expected_allow_shell),
                     trust_mode: Some(false),
                     auto_approve: Some(false),
@@ -3683,7 +3668,7 @@ mod tests {
                 model: Some("model-1".to_string()),
                 model_provider: None,
                 model_provider_id: None,
-                mode: Some("agent".to_string()),
+                mode: Some("yolo".to_string()),
                 allow_shell: Some(false),
                 trust_mode: Some(false),
                 auto_approve: Some(false),
@@ -3758,7 +3743,7 @@ mod tests {
                 kind: None,
                 model: None,
                 model_id: None,
-                mode: Some("plan".to_string()),
+                mode: Some("yolo".to_string()),
                 allow_shell: Some(false),
                 trust_mode: Some(false),
                 auto_approve: Some(false),
@@ -3840,7 +3825,7 @@ mod tests {
             })
             .await
             .expect_err("planner is not a canonical scheduled mode");
-        assert!(error.contains("agent|plan|yolo"), "{error}");
+        assert!(error.contains("'yolo'"), "{error}");
         assert!(
             state
                 .automations
@@ -3910,7 +3895,7 @@ mod tests {
                 kind: None,
                 model: None,
                 model_id: None,
-                mode: Some("agent".to_string()),
+                mode: Some("yolo".to_string()),
                 allow_shell: None,
                 trust_mode: None,
                 auto_approve: None,
@@ -3938,7 +3923,10 @@ mod tests {
             )
             .await
             .expect_err("planner is not a canonical scheduled mode");
-        assert!(error.contains("agent|plan|yolo"), "{error}");
+        assert!(
+            error.contains("Scheduled tasks always run in 'yolo' mode"),
+            "{error}"
+        );
         assert_eq!(
             state
                 .automations
@@ -4500,7 +4488,7 @@ mod tests {
             kind,
             model: None,
             model_id: None,
-            mode: Some("agent".to_string()),
+            mode: Some("yolo".to_string()),
             allow_shell: Some(false),
             trust_mode: Some(false),
             auto_approve: Some(false),

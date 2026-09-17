@@ -20,15 +20,11 @@ mod platform;
 mod self_metrics;
 
 // re-export 子模块 pub 面，保持 `crate::features::monitor::Foo` 调用路径不变。
-// `MonitorDiagnostic` 仅在 model_probe 内部使用，但作为原 pub 面的一部分保留 re-export
-// 以维持外部可见性承诺（无外部调用方，allow 抑制 unused_imports 门禁）。
-#[allow(unused_imports)]
 pub use model_probe::{
-    MonitorDiagnostic, VllmSnapshot, VllmStatus, active_model_snapshot, adopts_probed_facts,
-    probe_vllm_model_info, resolve_served_model, vllm_base_url, vllm_configured_model,
-    vllm_snapshot,
+    VllmSnapshot, VllmStatus, active_model_snapshot, adopts_probed_facts, probe_vllm_model_info,
+    resolve_served_model, vllm_base_url, vllm_configured_model, vllm_snapshot,
 };
-pub use self_metrics::{SelfMetrics, SelfMetricsDebugSnapshot, SelfPerfSnapshot};
+pub use self_metrics::{SelfMetrics, SelfPerfSnapshot};
 
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -49,7 +45,6 @@ pub struct MonitorSnapshot {
     /// 无关,任何后端(本地 vLLM / LM Studio / Ollama / 云端 API)都有值——因为是在
     /// 流式转发通路上就地测的。前端一律用这块显示这四项(vllm 块只剩队列/窗口/健康)。
     pub self_perf: SelfPerfSnapshot,
-    pub self_perf_debug: SelfMetricsDebugSnapshot,
     pub app: AppSnapshot,
 }
 
@@ -150,7 +145,6 @@ async fn sample_all_with_cpu(
             None => vllm_snapshot(vllm_upstream, configured_model).await,
         },
         self_perf: state.self_metrics.snapshot(),
-        self_perf_debug: state.self_metrics.debug_snapshot(),
         app: AppSnapshot {
             pinvou3_version: env!("CARGO_PKG_VERSION"),
             deepseek_tui_version: env!("CARGO_PKG_VERSION"), // TODO: 从 deepseek-tui crate 取
@@ -233,11 +227,27 @@ mod tests {
 
     #[tokio::test]
     async fn sample_all_keeps_other_fields_when_cpu_snapshot_is_none() {
+        // 该测试会经由 active_model_snapshot 读取宿主真实 prefs;一旦宿主
+        // settings.json 存在带 credential_ref 的 active_model,无头测试进程会
+        // 在 macOS 钥匙串授权弹窗上永久阻塞。用临时 PINVOU3_HOME 隔离,
+        // 保证 prefs 为空、探测走纯本地快路径。
+        let temp_home =
+            std::env::temp_dir().join(format!("pinvou3-monitor-test-{}", std::process::id()));
+        std::fs::create_dir_all(&temp_home).expect("create isolated PINVOU3_HOME");
+        let env_lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let env_restore = crate::platform::paths::tests::EnvVarGuard::capture(&["PINVOU3_HOME"]);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &temp_home) };
+        drop(env_lock);
+
         let state = MonitorState::new();
         let snapshot = sample_all_with_cpu(&state, "not-a-url", None, None).await;
         assert!(snapshot.generated_at_ms > 0);
         assert!(snapshot.cpu.is_none());
         assert_eq!(snapshot.self_perf.gen_tokens_total, 0);
         assert_eq!(snapshot.app.pinvou3_version, env!("CARGO_PKG_VERSION"));
+        drop(env_restore);
     }
 }

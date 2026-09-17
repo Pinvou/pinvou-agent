@@ -25,7 +25,6 @@ use tauri_runtime_wry::{
     Context, EventLoopIterationContext, Message, Plugin, PluginBuilder, WebContext, WebContextStore,
 };
 
-use super::NativeInput;
 use super::state::{NativeTabLease, UserNavigationState, WorkspaceControl};
 
 const DRIVER_BIN_ENV: &str = "PINVOU3_WEBKIT_WEBDRIVER_BIN";
@@ -796,37 +795,6 @@ pub(super) async fn bind_webview(webview: &Webview) -> Result<(), String> {
         .run_active(runtime.select_webview_locked(webview, None))
         .await
         .map(|_| ())
-}
-
-pub(super) async fn dispatch_input(
-    webview: &Webview,
-    authorization: &NativeTabLease,
-    input: NativeInput,
-) -> Result<(), String> {
-    let runtime = runtime()?;
-    let emits_takeover_signal = !matches!(&input, NativeInput::MouseMove { .. });
-    let actions = actions_for_input(input)?;
-    let authorization = authorization.clone();
-    runtime
-        .run_active(async {
-            runtime
-                .select_webview_locked(webview, Some(&authorization))
-                .await?;
-            let session = runtime.current_session_locked()?;
-            runtime
-                .request_authorized_locked(
-                    &session,
-                    webview.label(),
-                    &authorization,
-                    emits_takeover_signal,
-                    Method::POST,
-                    "actions",
-                    Some(json!({ "actions": actions })),
-                )
-                .await
-                .map(|_| ())
-        })
-        .await
 }
 
 pub(super) async fn click_element(
@@ -2184,106 +2152,6 @@ fn webdriver_key_sequence(sequence: &str) -> Result<String, String> {
         modifiers.push('\u{E000}');
     }
     Ok(modifiers)
-}
-
-fn key_actions(sequence: &str) -> Result<Vec<Value>, String> {
-    let mut modifiers = Vec::new();
-    let mut key = None;
-    for part in sequence.split('+').filter(|part| !part.is_empty()) {
-        match part.to_ascii_lowercase().as_str() {
-            "control" | "ctrl" => modifiers.push("\u{E009}"),
-            "shift" => modifiers.push("\u{E008}"),
-            "alt" => modifiers.push("\u{E00A}"),
-            "meta" | "super" => modifiers.push("\u{E03D}"),
-            _ if key.is_none() => key = Some(key_value(part).to_string()),
-            _ => return Err(format!("browser/unsupported-key-sequence: {sequence}")),
-        }
-    }
-    let key = key.ok_or_else(|| "browser/empty-key-sequence".to_string())?;
-    let mut actions = modifiers
-        .iter()
-        .map(|value| json!({ "type": "keyDown", "value": value }))
-        .collect::<Vec<_>>();
-    actions.push(json!({ "type": "keyDown", "value": key }));
-    actions.push(json!({ "type": "keyUp", "value": key }));
-    actions.extend(
-        modifiers
-            .iter()
-            .rev()
-            .map(|value| json!({ "type": "keyUp", "value": value })),
-    );
-    Ok(actions)
-}
-
-fn text_actions(text: &str) -> Vec<Value> {
-    text.chars()
-        .flat_map(|character| {
-            let value = character.to_string();
-            [
-                json!({ "type": "keyDown", "value": value }),
-                json!({ "type": "keyUp", "value": value }),
-            ]
-        })
-        .collect()
-}
-
-fn actions_for_input(input: NativeInput) -> Result<Vec<Value>, String> {
-    match input {
-        NativeInput::MouseMove { x, y } => Ok(vec![pointer_source(vec![pointer_move(x, y, 0)?])]),
-        NativeInput::MouseClick {
-            x,
-            y,
-            button,
-            click_count,
-        } => {
-            let button = match button {
-                1 => 0,
-                2 => 1,
-                3 => 2,
-                _ => return Err("browser/unsupported-pointer-button".to_string()),
-            };
-            if !(1..=2).contains(&click_count) {
-                return Err("browser/unsupported-click-count".to_string());
-            }
-            let mut actions = vec![pointer_move(x, y, 0)?];
-            for _ in 0..click_count {
-                actions.push(json!({ "type": "pointerDown", "button": button }));
-                actions.push(json!({ "type": "pointerUp", "button": button }));
-            }
-            Ok(vec![pointer_source(actions)])
-        }
-        NativeInput::Drag {
-            from_x,
-            from_y,
-            to_x,
-            to_y,
-        } => Ok(vec![pointer_source(vec![
-            pointer_move(from_x, from_y, 0)?,
-            json!({ "type": "pointerDown", "button": 0 }),
-            pointer_move(to_x, to_y, 250)?,
-            json!({ "type": "pointerUp", "button": 0 }),
-        ])]),
-        NativeInput::Key { key } => Ok(vec![key_source(key_actions(&key)?)]),
-        NativeInput::Text { text } => Ok(vec![key_source(text_actions(&text))]),
-        NativeInput::Scroll {
-            x,
-            y,
-            delta_x,
-            delta_y,
-        } => Ok(vec![json!({
-            "type": "wheel",
-            "id": "pinvou-wheel",
-            "actions": [{
-                "type": "scroll",
-                "duration": 0,
-                "origin": "viewport",
-                "x": finite_coordinate(x)?,
-                "y": finite_coordinate(y)?,
-                "deltaX": finite_coordinate(delta_x)?,
-                "deltaY": finite_coordinate(delta_y)?,
-            }],
-        })]),
-    }
 }
 
 struct BrowserAutomationContextPlugin {
@@ -3767,17 +3635,5 @@ mod tests {
         assert!(endpoint.starts_with("127.0.0.1:"));
     }
 
-    #[test]
-    fn webdriver_actions_use_page_local_sources() {
-        let actions = actions_for_input(NativeInput::MouseClick {
-            x: 12.0,
-            y: 34.0,
-            button: 1,
-            click_count: 1,
-        })
-        .expect("click actions");
-        assert_eq!(actions[0]["type"], "pointer");
-        assert_eq!(actions[0]["actions"][0]["origin"], "viewport");
-        assert_eq!(key_actions("Control+A").expect("key actions").len(), 4);
     }
 }

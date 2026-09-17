@@ -774,10 +774,9 @@ test('each Linux WebDriver mutation revalidates exact tab and active lease befor
   assert.match(linuxAutomation, /browser\/webkit-session-changed-before-dispatch/);
   assert.match(linuxAutomation, /browser\/action-partially-committed/);
   const mutationDispatch = linuxAutomation.slice(
-    linuxAutomation.indexOf('pub(super) async fn dispatch_input'),
+    linuxAutomation.indexOf('pub(super) async fn click_element'),
     linuxAutomation.indexOf('pub(super) async fn shutdown_for_stop'),
   );
-  assert.match(mutationDispatch, /"actions"/);
   assert.match(
     mutationDispatch,
     /WebDriverCommandPath::segments\(\[\s*"element",\s*element\.as_str\(\),\s*"click",?\s*\]\)/,

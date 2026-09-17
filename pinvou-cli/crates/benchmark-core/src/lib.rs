@@ -6,7 +6,6 @@ mod manifest;
 // C1 freezes the private store; C2 wires it into runner/service.
 #[allow(dead_code)]
 mod private_prediction;
-mod registry;
 mod report;
 mod runner;
 mod security;
@@ -21,7 +20,6 @@ pub use error::{BenchmarkError, Result};
 pub use event::{RunEvent, RunEventKind};
 pub use manifest::{ModelIdentity, RunManifest};
 pub use private_prediction::{PrivatePredictionContentType, PrivatePredictionPayload, ScorerView};
-pub use registry::BenchmarkRegistry;
 pub use report::{ReportArtifact, publish_markdown_report, publish_score_json};
 pub use runner::{NativeAgentRunner, TaskRunner};
 pub use service::{BenchmarkService, RunSummary};

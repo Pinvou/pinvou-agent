@@ -21,6 +21,9 @@
     // through this wrapper). undefined when unavailable; pickDraftWorkspace
     // returns null early in that case.
     const dialogOpen = context.dialogOpen || null;
+    // Shared normalized directory-picker scaffold (same bridge.js helper used
+    // by pickFolder/pickFolders); returns null when unavailable or cancelled.
+    const pickDirectory = context.pickDirectory;
     const sessionStates = context.sessionStates;
     const scheduledRunSessionOwners = context.scheduledRunSessionOwners;
     const personaPlaceholderTitles = context.personaPlaceholderTitles;
@@ -667,8 +670,8 @@
   // without changing the current selection.
   async function pickDraftWorkspace() {
     if (state.activeSessionId || !dialogOpen) return null;
-    const selected = await dialogOpen({ directory: true, multiple: false, title: bt("pickFolderTitle") });
-    const path = Array.isArray(selected) ? selected[0] : selected;
+    const selected = await pickDirectory({ directory: true, multiple: false, title: bt("pickFolderTitle") });
+    const path = (selected && selected[0]) || null;
     if (!path) return null;
     rememberDraftWorkspaceRecent(path);
     setDraftWorkspace(path);

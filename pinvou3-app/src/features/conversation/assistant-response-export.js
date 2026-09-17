@@ -1,6 +1,6 @@
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
 
-export const ASSISTANT_EXPORT_FORMATS = Object.freeze(['md', 'html']);
+const ASSISTANT_EXPORT_FORMATS = Object.freeze(['md', 'html']);
 
 function escapeHtmlAttribute(value) {
   return String(value || '')

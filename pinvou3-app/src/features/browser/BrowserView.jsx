@@ -47,7 +47,6 @@ import {
   persistenceWarningReducer,
   visiblePersistenceWarning,
 } from './persistence-warning.mjs';
-import { dispatchBrowserNavigation } from './browser-navigation.mjs';
 import {
   awaitBrowserListenerReadiness,
   browserStatusRetryDelay,
@@ -954,18 +953,18 @@ export function BrowserView({
     }
     const errorOperationEpoch = beginErrorOperation();
     try {
-      await dispatchBrowserNavigation({
-        target: browserAddressValue(target),
-        publishInput: (address) => {
-          lifecycleEventEpochRef.current += 1;
-          setUrlInput(address);
-          if (fragmentOnly) publishCommittedUrl(target, sessionId);
-        },
-        dispatch: () => invokeTauri('browser_navigate', {
-          sessionId,
-          url: target,
-          requestId,
-        }),
+      // Navigation IPC acknowledges dispatch, not a completed page load.
+      // Publish the optimistic address before dispatch so a fast Finished
+      // event can replace it; never write the requested URL again after the
+      // command resolves.
+      const address = browserAddressValue(target);
+      lifecycleEventEpochRef.current += 1;
+      setUrlInput(address);
+      if (fragmentOnly) publishCommittedUrl(target, sessionId);
+      await invokeTauri('browser_navigate', {
+        sessionId,
+        url: target,
+        requestId,
       });
     } catch (e) {
       if (navigationRequestEpochRef.current !== navigationEpoch) return;

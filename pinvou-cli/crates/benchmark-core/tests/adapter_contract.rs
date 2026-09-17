@@ -5,8 +5,8 @@ use agent_backend_api::{AttachmentHandle, PrivateInputHandle};
 use benchmark_core::{
     ArtifactReference, BenchmarkAdapter, BenchmarkDescriptor, BenchmarkId, BenchmarkPlan,
     BenchmarkTask, CompletedRun, ExecutionKind, ExecutionRequest, OfficialScoreReport,
-    OutputContract, PredictionRetention, PreparedTask, ReferenceHandle, RunContext, Split,
-    SubmissionArtifact, TaskOutcome, TaskSelection, TaskStatus, ToolPolicyId, VerifiedDataset,
+    OutputContract, PredictionRetention, PreparedTask, RunContext, Split, SubmissionArtifact,
+    TaskOutcome, TaskSelection, TaskStatus, ToolPolicyId, VerifiedDataset,
 };
 
 #[test]
@@ -69,7 +69,6 @@ fn native_task() -> BenchmarkTask {
             ToolPolicyId::new("gaia/v1"),
             OutputContract::new("final-answer/v1"),
         ),
-        Some(ReferenceHandle::new("private-reference-1")),
     )
 }
 

@@ -110,12 +110,9 @@ function useComposerVoiceInput(adapter) {
     current.bridge.voice.clearVoiceInput();
   }, []);
 
-  const closeVoice = useCallback(() => {
-    const current = adapterRef.current || {};
-    if (!current.bridge || !current.bridge.available) return;
-    current.bridge.voice.cancelVoiceInput();
-    current.bridge.voice.clearVoiceInput();
-  }, []);
+  // closeVoice shares cancelVoice's "cancel + reset" teardown; both names stay
+  // because callers use them interchangeably at different call sites.
+  const closeVoice = cancelVoice;
 
   const cancelVoiceEditPreview = useCallback(() => {
     setEditPreview(null);
@@ -128,10 +125,7 @@ function useComposerVoiceInput(adapter) {
       closeVoice();
       return;
     }
-    const current = adapterRef.current || {};
-    if (!current.bridge || !current.bridge.available) return;
-    current.bridge.voice.cancelVoiceInput();
-    current.bridge.voice.clearVoiceInput();
+    closeVoice();
   }, [closeVoice]);
 
   const applyVoiceEditPreview = useCallback(async (options = {}) => {
@@ -401,7 +395,6 @@ function useComposerVoiceInput(adapter) {
     if (!current.targetId) return;
     return registerVoiceTarget({
       targetId: current.targetId,
-      ownerKind: current.ownerKind,
       voiceSessionId,
       workspaceId: current.workspaceId,
       sessionId: current.sessionId,
@@ -419,7 +412,6 @@ function useComposerVoiceInput(adapter) {
     });
   }, [
     adapter.targetId,
-    adapter.ownerKind,
     adapter.workspaceId,
     adapter.sessionId,
     voiceSessionId,
@@ -429,7 +421,6 @@ function useComposerVoiceInput(adapter) {
   ]);
 
   return {
-    voiceSessionId,
     editPreview,
     triggerVoice,
     cancelVoice,

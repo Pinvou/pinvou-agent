@@ -160,7 +160,7 @@ fn gaia_parser_exposes_only_the_pinned_official_level_one_workflow() {
                 "gaia",
                 "--run-id",
                 "run-1",
-                "--output",
+                "--destination",
                 "submission.jsonl",
             ],
             BenchmarkCommand::SubmissionGaia {
@@ -480,6 +480,16 @@ fn invalid_usage_maps_to_exit_code_two() {
     assert_eq!(ExitCode::Success.as_i32(), 0);
     assert_eq!(ExitCode::Failed.as_i32(), 1);
     assert_eq!(ExitCode::Usage.as_i32(), 2);
+}
+
+#[test]
+fn invalid_output_value_fails_fast_with_usage_error() {
+    // An unrecognized --output value must be rejected immediately instead of
+    // staying in argv and later surfacing as a misleading "unknown benchmark
+    // command" error.
+    let error = parse_args(["pinvou", "--output", "yaml", "benchmark", "list"]).unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert_eq!(error.to_string(), "--output requires human or json");
 }
 
 #[test]

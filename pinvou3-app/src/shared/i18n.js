@@ -92,6 +92,4 @@ export function createLatestLanguageGate(ensure = ensureLanguage) {
   };
 }
 
-if (typeof window !== 'undefined') window.__PINVOU_SHARED_I18N__ = dict;
-
 export { dict, LANG_TO_TAG, TAG_TO_LANG, languageFromLocaleTags, initialSystemLanguage, SEARCH_KEY_PROVIDERS };
