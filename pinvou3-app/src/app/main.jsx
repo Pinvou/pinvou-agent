@@ -21,7 +21,7 @@ import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
 import { COLOR_SCHEME_STORAGE_KEY, normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
 import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
-import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfirm } from '../features/projects/projectGrouping.js';
+import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfirm, WORKSPACE_KIND_BOUND } from '../features/projects/projectGrouping.js';
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
 import { MoveToProjectDialog } from '../features/projects/MoveToProjectDialog.jsx';
 import { RebindFolderDialog } from '../features/projects/RebindFolderDialog.jsx';
@@ -1533,7 +1533,7 @@ const NAV_PREFETCH = {
             // A standalone 'bound' kind: shares the three-tier grouping with
             // the code/ACP 'project' kind, but is not a disguised
             // project-kind (review #452 finding 5).
-            workspaceKind: s.workspace_binding ? 'bound' : '',
+            workspaceKind: s.workspace_binding ? WORKSPACE_KIND_BOUND : '',
             leadingIcon: <PinvouLogo className="h-[18px] w-[18px]" />,
             testId: 'regular-sidebar-item',
             menuTestId: 'regular-sidebar-menu',
@@ -3011,11 +3011,12 @@ const NAV_PREFETCH = {
           });
         }
       };
-      // 日期分组/平铺两种布局共用的任务项渲染
+      // Task-item renderer shared by the date-grouped and flat layouts.
       const renderSidebarTaskItem = (chat) => {
         const detachKind = chat.taskKind === 'codex' ? 'codex-session' : 'session';
-        // 拖拽与"移动到项目"菜单项同一可用性门控:项目列表为空(bootstrap
-        // windows, users with zero projects) the row is not draggable,
+        // One availability gate for both dragging and the "move to project"
+        // menu item: with an empty project list (bootstrap windows, users
+        // with zero projects) the row is not draggable,
         // avoiding a dead gesture with zero reachable drop targets. #445
         // bound work sessions (taskKind regular + workspacePath) have the
         // same rights as code sessions — grouping follows binding, and the

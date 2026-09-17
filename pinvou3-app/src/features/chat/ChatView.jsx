@@ -1822,8 +1822,14 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
         bridge.sessions.getSessionWorkspaceBinding(sid)
           .then(binding => {
             const normalized = binding || null;
-            workspaceBindingCacheRef.current[sid] = normalized;
-            if (!cancelled) setSessionWorkspaceBinding(normalized);
+            // Guard the cache write too, not just the setState: a query issued
+            // just before a rebind may resolve after the invalidation wipe and
+            // would otherwise re-cache the pre-rebind value (review #464
+            // round-5 item 6).
+            if (!cancelled) {
+              workspaceBindingCacheRef.current[sid] = normalized;
+              setSessionWorkspaceBinding(normalized);
+            }
           })
           // Treat query failure (e.g. old backend without the command) as unbound; never misreport.
           .catch(() => { if (!cancelled) setSessionWorkspaceBinding(null); });

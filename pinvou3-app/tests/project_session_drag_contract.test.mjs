@@ -107,3 +107,13 @@ test('drop handler guards busy before opening the preset confirm', () => {
   assert.notStrictEqual(presetOpen, -1);
   assert.ok(busyGuard < presetOpen, 'the busy guard must run before the preset branch');
 });
+
+test('the bound workspace kind is one shared constant between emitter and consumer', () => {
+  // review #464 round-5 item 5: if the producer (main.jsx) and the consumer
+  // (projectGrouping.js) spell 'bound' independently, a rename on either side
+  // silently drops bound sessions from the project view with every behavioral
+  // test green (the grouping tests inject the string into the pure function).
+  assert.match(GROUPING, /export const WORKSPACE_KIND_BOUND = 'bound'/, 'consumer must export the shared kind constant');
+  assert.match(GROUPING, /WORKSPACE_KINDS_WITH_PROJECT_DIR = \['project', WORKSPACE_KIND_BOUND\]/, 'consumer list must use the constant');
+  assert.match(MAIN, /workspaceKind: s\.workspace_binding \? WORKSPACE_KIND_BOUND : ''/, 'emitter must use the shared constant, not a string literal');
+});

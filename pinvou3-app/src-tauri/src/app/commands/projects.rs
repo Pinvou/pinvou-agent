@@ -368,17 +368,22 @@ pub async fn rebind_workspace_root(
     reject_nested_rebind_target(&from, &to_key)?;
     require_confirm_existing(&from, confirm_existing)?;
 
-    // 受影响集合快照(活跃回合栅栏与元数据重放共用),必须在重写之前取
-    // (review #463 M1): the rewrite returns only the set this run rewrote;
-    // sessions translated by a previous run whose set_workspace failed no
-    // longer match `from`, so without a snapshot they can never be retried.
+    // Snapshot of the affected set (shared by the active-turn fence and the
+    // metadata replay), taken before any rewrite (review #463 M1): the
+    // rewrite returns only the set this run rewrote; sessions translated by a
+    // previous run whose set_workspace failed no longer match `from`, so
+    // without a snapshot they can never be retried.
     // The candidate set spans both binding stores: agent records (code/ACP,
     // including off-index orphan sidecars, M6) and plain-session binding
     // sidecars (unify: grouping follows binding, so plain bound sessions are
     // also in rebind scope); retry candidates "already under to but with
     // metadata not yet synced" are included as well.
     let mut affected = acp_pool.agents().sessions_under_workspace(&from);
-    affected.extend(sessions.workspace_bindings_under(&from));
+    affected.extend(
+        sessions
+            .workspace_bindings_under(&from)
+            .map_err(|e| format!("rebind_workspace_root: scan workspace bindings: {e:#}"))?,
+    );
     // Post-busy sessions of a previous run land here on retry (review #463
     // M2): their metadata was already synced in run 1, so they are absent
     // from `affected` — without feeding them back as explicit eviction
@@ -392,7 +397,11 @@ pub async fn rebind_workspace_root(
         .agents()
         .sessions_under_workspace(&to_key)
         .into_iter()
-        .chain(sessions.workspace_bindings_under(&to_key))
+        .chain(
+            sessions
+                .workspace_bindings_under(&to_key)
+                .map_err(|e| format!("rebind_workspace_root: scan workspace bindings: {e:#}"))?,
+        )
     {
         if affected.iter().any(|(sid, _)| *sid == session_id) {
             continue;
@@ -622,6 +631,19 @@ pub async fn rebind_workspace_root(
             // retry once it is idle again.
             if !post_busy_session_ids.contains(&session_id) {
                 post_busy_session_ids.push(session_id);
+            }
+        }
+    }
+    // The plain sidecars and metadata moved, but if the legacy global table
+    // could not be synced, the next boot migration would re-bind the old
+    // paths over the fresh sidecars — the report must not claim success
+    // (review #464 round-5 blocker 1). List the affected sessions as failed;
+    // a rerun rewrites the legacy table from the in-memory table (even with
+    // zero candidates) and converges.
+    if plain_rebind.legacy_sync_failed {
+        for (session_id, _) in &plain_rebind.rebound {
+            if !failed_session_ids.contains(session_id) {
+                failed_session_ids.push(session_id.clone());
             }
         }
     }

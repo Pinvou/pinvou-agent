@@ -122,8 +122,14 @@ function projectCoversPath(project, path) {
 // (code/ACP) and 'bound' (#445 bound plain work sessions). 'bound' is its
 // own kind, not disguised as 'project' — so when project-kind later gains
 // its own behavior (e.g. a baseline panel), plain bound sessions are not
-// affected by mistake (review #452 finding 5).
-const WORKSPACE_KINDS_WITH_PROJECT_DIR = ['project', 'bound'];
+// affected by mistake (review #452 finding 5). Exported so the emitter
+// (main.jsx) and this consumer share one spelling — a producer-side rename
+// would otherwise silently drop bound sessions from the project view with
+// every test green (review #464 round-5 item 5; source-pinned by
+// project_session_drag_contract.test.mjs).
+export const WORKSPACE_KIND_BOUND = 'bound';
+
+const WORKSPACE_KINDS_WITH_PROJECT_DIR = ['project', WORKSPACE_KIND_BOUND];
 
 function hasProjectWorkspace(item) {
   return (

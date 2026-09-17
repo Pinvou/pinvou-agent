@@ -48,6 +48,12 @@ use serde::{Deserialize, Serialize};
 pub struct RebindBindingsOutcome {
     pub rebound: Vec<(String, PathBuf)>,
     pub failed_session_ids: Vec<String>,
+    /// True when the legacy global table is still on disk but this process
+    /// failed to rewrite/remove it in sync: the next boot migration would
+    /// re-bind the old paths over the fresh sidecars (silent resurrection),
+    /// so the report must not claim success (review #464 round-5 blocker 1).
+    /// A rerun converges — the rewrite is retried from the in-memory table.
+    pub legacy_sync_failed: bool,
 }
 
 /// "Equal to or nested under" prefix check on folded identity keys: Windows
@@ -214,25 +220,42 @@ impl SessionStore {
     /// merged because while the legacy-data migration is unfinished, unmigrated
     /// entries exist only in memory / the old global table (review #464 nit:
     /// the fence candidates must not miss this group).
-    pub fn workspace_bindings_under(&self, from: &Path) -> Vec<(String, PathBuf)> {
+    /// Fails closed on an unreadable sessions dir (review #464 round-5 item 4,
+    /// mirroring the codex lane): silently yielding an empty candidate set
+    /// would shrink the rewrite with zero signal and resurrect old paths at
+    /// the next boot. A missing dir (fresh home) is the empty set.
+    pub fn workspace_bindings_under(
+        &self,
+        from: &Path,
+    ) -> Result<Vec<(String, PathBuf)>, std::io::Error> {
         let covered = |path: &Path| folded_covers(from, path);
         let mut matched = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(self.manager.sessions_dir()) {
-            for entry in entries.flatten() {
-                if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                    continue;
+        match std::fs::read_dir(self.manager.sessions_dir()) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                        continue;
+                    }
+                    let Some(id) = entry.file_name().to_str().map(str::to_string) else {
+                        continue;
+                    };
+                    let Some(sidecar) =
+                        read_workspace_sidecar(&entry.path().join(SESSION_WORKSPACE_SIDECAR_FILE))
+                    else {
+                        continue;
+                    };
+                    if covered(&sidecar.path) {
+                        matched.push((id, sidecar.path));
+                    }
                 }
-                let Some(id) = entry.file_name().to_str().map(str::to_string) else {
-                    continue;
-                };
-                let Some(sidecar) =
-                    read_workspace_sidecar(&entry.path().join(SESSION_WORKSPACE_SIDECAR_FILE))
-                else {
-                    continue;
-                };
-                if covered(&sidecar.path) {
-                    matched.push((id, sidecar.path));
-                }
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                eprintln!(
+                    "[sessions] scan workspace binding sidecars failed ({}): {error:#}",
+                    self.manager.sessions_dir().display()
+                );
+                return Err(error);
             }
         }
         // Union with the in-memory table (deduplicated): entries that never
@@ -242,7 +265,7 @@ impl SessionStore {
                 matched.push((id.clone(), path.clone()));
             }
         }
-        matched
+        Ok(matched)
     }
 
     /// Directory rebinding (the broken-link repair channel): translates every
@@ -259,7 +282,8 @@ impl SessionStore {
     /// `?` — by then the project roots and agent index have already been
     /// translated, so aborting would make the same entry fail again on every
     /// retry; failures go into `failed_session_ids` and the command layer
-    /// merges them into the report.
+    /// merges them into the report. The reserved fallibility is real: the
+    /// sidecar scan fails closed on an unreadable sessions dir.
     pub fn rebind_workspace_bindings(
         &self,
         from: &Path,
@@ -268,16 +292,12 @@ impl SessionStore {
         let covered = |path: &Path| folded_covers(from, path);
         let skip = from.components().count();
         let mut outcome = RebindBindingsOutcome::default();
-        // Candidates = sidecar scan ∪ in-memory legacy table: on the degraded
-        // path where the legacy-data migration is unfinished, unmigrated
-        // entries exist only in memory / the old global table; missing them
-        // would resurrect the old directory at the next boot migration.
-        let mut candidates: Vec<(String, PathBuf)> = self.workspace_bindings_under(from);
-        for (id, path) in self.session_workspaces.read().iter() {
-            if !candidates.iter().any(|(existing_id, _)| existing_id == id) {
-                candidates.push((id.clone(), path.clone()));
-            }
-        }
+        // Candidates = sidecar scan ∪ in-memory legacy table, via
+        // workspace_bindings_under (already the union — review #464 round-5
+        // nit: a second in-memory union here duplicated it exactly).
+        let candidates: Vec<(String, PathBuf)> = self
+            .workspace_bindings_under(from)
+            .context("scan workspace bindings")?;
         for (id, path) in candidates {
             if !covered(&path) {
                 continue;
@@ -346,8 +366,13 @@ impl SessionStore {
         // Degraded-path symmetry (review #452 finding 9): while the old
         // global table is still on disk (legacy-data migration unfinished),
         // rewrite it in sync, otherwise the rebind would be resurrected by
-        // the old table at the next boot migration.
-        self.rewrite_legacy_session_workspaces_if_present();
+        // the old table at the next boot migration. A failed rewrite is NOT
+        // log-only: the next boot would re-bind the old paths over the fresh
+        // sidecars, so the outcome must carry the failure and the report
+        // cannot claim success (review #464 round-5 blocker 1).
+        if !self.rewrite_legacy_session_workspaces_if_present() {
+            outcome.legacy_sync_failed = true;
+        }
         Ok(outcome)
     }
 
@@ -356,11 +381,12 @@ impl SessionStore {
     /// (no other call surface); all that remains here: if the table is
     /// non-empty, atomically rewrite it wholesale with the in-memory table
     /// contents; if empty, delete the file (no entries left to resurrect).
-    /// Write failures are only logged — the in-memory table and sidecars are
-    /// already authoritative, and the old table is nothing but migration
-    /// residue. Exception: a file whose boot parse failed stays untouched, so
-    /// a corrupt-but-repairable file keeps the "fix it and retry" door open.
-    fn rewrite_legacy_session_workspaces_if_present(&self) {
+    /// Returns false when the file is still on disk but the sync failed —
+    /// the caller reports it (a silent success would resurrect old paths at
+    /// the next boot). Exception: a file whose boot parse failed stays
+    /// untouched (counts as success here — preservation is deliberate), so a
+    /// corrupt-but-repairable file keeps the "fix it and retry" door open.
+    fn rewrite_legacy_session_workspaces_if_present(&self) -> bool {
         // A file this process never successfully parsed (corrupt but
         // repairable) must not be deleted or overwritten — otherwise the
         // first rebind closes the "repair the file and retry" door
@@ -369,32 +395,37 @@ impl SessionStore {
             .legacy_session_workspaces_parse_failed
             .load(std::sync::atomic::Ordering::SeqCst)
         {
-            return;
+            return true;
         }
         let legacy = self
             .manager
             .sessions_dir()
             .join(LEGACY_SESSION_WORKSPACES_FILE);
         if !legacy.is_file() {
-            return;
+            return true;
         }
         let bindings = self.session_workspaces.read();
         if bindings.is_empty() {
-            if let Err(error) = std::fs::remove_file(&legacy) {
-                if error.kind() != std::io::ErrorKind::NotFound {
+            return match std::fs::remove_file(&legacy) {
+                Ok(()) => true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+                Err(error) => {
                     eprintln!("[sessions] remove legacy session workspaces failed: {error:#}");
+                    false
                 }
-            }
-            return;
+            };
         }
         match serde_json::to_vec_pretty(&*bindings) {
-            Ok(payload) => {
-                if let Err(error) = crate::platform::filesystem::atomic_write(&legacy, &payload) {
+            Ok(payload) => match crate::platform::filesystem::atomic_write(&legacy, &payload) {
+                Ok(()) => true,
+                Err(error) => {
                     eprintln!("[sessions] rewrite legacy session workspaces failed: {error:#}");
+                    false
                 }
-            }
+            },
             Err(error) => {
                 eprintln!("[sessions] serialize legacy session workspaces failed: {error:#}");
+                false
             }
         }
     }

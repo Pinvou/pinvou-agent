@@ -4265,7 +4265,7 @@ fn rebind_workspace_bindings_moves_plain_bindings_and_stays_idempotent() {
         .bind_session_workspace(&sibling_session.metadata.id, sibling.clone())
         .expect("bind sibling");
 
-    let matched = store.workspace_bindings_under(&bound);
+    let matched = store.workspace_bindings_under(&bound).expect("scan");
     assert_eq!(matched.len(), 2, "elsewhere 与 sibling 前缀不得命中");
 
     let affected = store
@@ -4366,7 +4366,7 @@ fn rebind_workspace_bindings_covers_memory_only_legacy_entries() {
         "precondition: no sidecar on disk"
     );
 
-    let matched = store.workspace_bindings_under(&from);
+    let matched = store.workspace_bindings_under(&from).expect("scan");
     assert!(
         matched.iter().any(|(id, _)| id == &session.metadata.id),
         "memory-table entry must join the busy-guard candidate set"
@@ -4426,6 +4426,63 @@ fn rebind_preserves_corrupt_legacy_workspaces_file() {
         std::fs::read(&legacy).expect("legacy file must survive rebind"),
         b"{ not valid json",
         "corrupt-but-repairable legacy file must be preserved verbatim",
+    );
+
+    let _ = std::fs::remove_dir_all(&from);
+    let _ = std::fs::remove_dir_all(&to);
+}
+
+/// Round-5 blocker 1: a legacy-table sync failure must surface in the
+/// outcome — a silent "success" would let the next boot migration re-bind the
+/// old paths over the fresh sidecars. Sessions-dir is made read-only so the
+/// atomic rewrite fails deterministically (POSIX permissions; Windows skips
+/// via a runtime branch per the architecture-guard convention).
+#[test]
+fn rebind_reports_legacy_table_sync_failure() {
+    if std::env::consts::OS == "windows" {
+        return;
+    }
+    let (store, _g) = isolated_store();
+    let from = unique_temp_dir("rebind-legacyfail-from");
+    std::fs::create_dir_all(&from).expect("create from");
+    let to = unique_temp_dir("rebind-legacyfail-to");
+    std::fs::create_dir_all(&to).expect("create to");
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    store
+        .bind_session_workspace(&session.metadata.id, from.clone())
+        .expect("bind");
+    // Mid-migration home: the legacy global table is still on disk.
+    let legacy = store
+        .manager
+        .sessions_dir()
+        .join("_session_workspaces.json");
+    std::fs::write(&legacy, b"{}").expect("seed legacy file");
+
+    use std::os::unix::fs::PermissionsExt;
+    let sessions_dir = store.manager.sessions_dir();
+    let original = std::fs::metadata(&sessions_dir)
+        .expect("meta")
+        .permissions();
+    std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(0o555))
+        .expect("read-only sessions dir");
+
+    let outcome = store.rebind_workspace_bindings(&from, &to).expect("rebind");
+
+    std::fs::set_permissions(&sessions_dir, original).expect("restore permissions");
+    assert!(
+        outcome.legacy_sync_failed,
+        "legacy table sync failure must be flagged in the outcome"
+    );
+    // The sidecar itself rewrote fine (its directory stays writable); the
+    // resurrection hazard comes purely from the stale legacy table.
+    assert!(
+        outcome
+            .rebound
+            .iter()
+            .any(|(id, _)| id == &session.metadata.id),
+        "the sidecar rewrite succeeded and is reported as rebound"
     );
 
     let _ = std::fs::remove_dir_all(&from);
