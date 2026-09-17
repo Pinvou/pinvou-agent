@@ -1829,7 +1829,9 @@ impl Pinvou3Bridge {
             max_tool_calls: {
                 if std::env::var_os("PINVOU3_MAX_TOOL_CALLS").is_some() {
                     eprintln!(
-                        "[pinvou3] PINVOU3_MAX_TOOL_CALLS is no longer read: the                          tool-call round cap was removed; runaway protection is                          the foundation's max_steps and per-turn wall clock."
+                        "[pinvou3] PINVOU3_MAX_TOOL_CALLS is no longer read: the tool-call \
+                         round cap was removed; runaway protection is the foundation's \
+                         max_steps and per-turn wall clock."
                     );
                 }
                 None
