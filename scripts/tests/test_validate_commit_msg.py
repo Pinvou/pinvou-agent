@@ -104,7 +104,7 @@ class ValidateCommitRangeTests(unittest.TestCase):
         ):
             git_mock.side_effect = [
                 "0123456789abcdef",
-                "hexin\x00372726039@qq.com\x00fix: enforce English commit subjects",
+                "dev\x00dev@example.com\x00fix: enforce English commit subjects",
             ]
 
             self.assertEqual(validate_commit_msg.validate_range("base", "head"), [])
@@ -128,7 +128,7 @@ class ValidateCommitRangeTests(unittest.TestCase):
         ):
             git_mock.side_effect = [
                 "0123456789abcdef",
-                "hexin\x00372726039@qq.com\x00chore: initialize community source",
+                "dev\x00dev@example.com\x00chore: initialize community source",
             ]
 
             self.assertEqual(validate_commit_msg.validate_range("base", "head"), [])
@@ -150,7 +150,7 @@ class ValidateCommitRangeTests(unittest.TestCase):
         ):
             git_mock.side_effect = [
                 "fedcba9876543210",
-                "hexin\x00372726039@qq.com\x00fix missing separator",
+                "dev\x00dev@example.com\x00fix missing separator",
             ]
 
             errors = validate_commit_msg.validate_range("base", "head")
@@ -196,7 +196,7 @@ class ValidateCommitRangeTests(unittest.TestCase):
         ):
             git_mock.side_effect = [
                 "0123456789abcdef",
-                "hexin\x0013790929+h3c-hexin@users.noreply.github.com\x00chore: 重建社区版开源基线",
+                "dev\x00dev@users.noreply.github.com\x00chore: 重建社区版开源基线",
             ]
 
             self.assertEqual(

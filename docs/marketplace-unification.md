@@ -1,6 +1,6 @@
 # 工具市场统一治理方案（marketplace unification）
 
-> 状态：实施中（Phase 2 app 侧已完成；`docs/marketplace-unification-todo.md` 为已过期的历史交接快照，不再是进度真相源——现行状态以 `docs/plugin-package-spec.md`、`docs/plugin-protocol.md` 与本文为准）。
+> 状态：实施中（Phase 2 app 侧已完成；现行状态以 `docs/plugin-package-spec.md`、`docs/plugin-protocol.md` 与本文为准）。
 > 关联文档：`docs/工具市场.md`（现状设计）、`docs/fork-policy.md`（底座改动边界）；
 > #287 已合入：`docs/capability-governance.md` 为能力治理单一真相源（scope 已按模式泛化、
 > PackDefaultPolicy / declare_all_modes! 编译期哨兵已就位），本文聚焦市场侧的统一改造。
@@ -297,7 +297,7 @@ install_bundle(id):
 
 ## 12. 设计溯源
 
-本方案的抽象纪律参照 deepseek-harness（`.luzeyang/deepseek-harness`）的插件体系：
+本方案的抽象纪律参照 deepseek-harness 的插件体系（贡献者本地设计参考，已归档不入库）：
 一切皆插件无特权核心（→ 底座缝）、声明式组合显式优于隐式（→ 注册表无扫描）、
 安装与激活分离（→ installed/ready 分离）、效果可逆 fail loud（→ 原子管线 + 空包拒收）、
 决策点强制（→ execpolicy 硬拦截）、单一真相源派生一切（→ BundleStore + 删除投影层）、

@@ -1,5 +1,5 @@
 //! 会话模式策略：把 plain/code 的行为差异收敛为数据，共享链路不再 if 分流。
-//! 方向对齐 .luzeyang/code-plain-decoupling/code-native-agent-会话能力档案设计.md（已归档）。
+//! 方向对齐贡献者本地设计笔记「code-native-agent-会话能力档案设计」（已归档，不入库）。
 //! 能力面分化是**编译期常量**（模式定义的一部分）：能力档案（编译内嵌 JSON +
 //! 统一解析器）已退役——底座能力不做用户级运行期开关，没有写入者的运行期
 //! 配置只是常量的间接层。能力差量收敛为一张静态表 `MODE_TABLE`（取代最后的
@@ -33,7 +33,7 @@ const PLAN_REMINDER: &str = "你现在在 Plan 模式(只读调研)。本 turn:\
 /// 落地后，code 会话按「组合目录是否为空」动态决定隐藏（见
 /// bridge::shape_disallowed_tools，由表字段 `skills_empty_hides_load_skill`
 /// 驱动）——空 → 隐藏（避免"开关开着但没技能"的假状态），非空 → 放行。
-/// 方向对齐 .luzeyang/code-plain-decoupling/skill-scope-governance-实施方案.md（已归档）。
+/// 方向对齐贡献者本地设计笔记「skill-scope-governance-实施方案」（已归档，不入库）。
 pub(crate) const LOAD_SKILL: &str = "load_skill";
 
 /// 单模式的能力差量（编译期常量，[`MODE_TABLE`] 的行）。语义全部是"该模式

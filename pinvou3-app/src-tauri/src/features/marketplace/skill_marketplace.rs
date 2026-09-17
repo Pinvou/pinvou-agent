@@ -542,7 +542,7 @@ impl SkillMarketplaceManager {
     /// 4. **Builtin-release convergence**: unmarked, unrecorded dirs under
     ///    `bundle/skills/` that are not in this build's embedded builtin set
     ///    `builtin_released` are deleted as stale residue. Another edition
-    ///    embedding a same-named skill (e.g. the group edition's eip) keeps it
+    ///    embedding a same-named skill keeps it
     ///    via its own builtin set — the essential difference from a name-list
     ///    cleanup. Marked dirs are left to the layout migration.
     ///    `bundle/skills/` is a builtin-managed area, not user storage:

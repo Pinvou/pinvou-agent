@@ -5,7 +5,7 @@
 //! 下一轮 prompt 的 `## Skills` 块（空目录 → 整个块不渲染，见底座
 //! `render_skills_block` 空 registry 返回 None）。
 //!
-//! 设计对照 `.luzeyang/code-plain-decoupling/skill-scope-governance-实施方案.md`
+//! 设计对照贡献者本地设计笔记「skill-scope-governance-实施方案」（已归档，不入库）
 //! （已归档，按 §2.1/§2.2/§2.3/§2.4 实现）：
 //!   - 开关落 `~/.pinvou3/disabled_skills.json`（`{scopes: {<mode>: [...]},
 //!     "initialized": [...]}`，scope 键即模式名，与 `disabled_connectors.json`

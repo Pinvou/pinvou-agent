@@ -11,7 +11,7 @@
 
 ## 第一篇：code 与 plain 模式解耦及能力回补（PR #182）
 
-> 关联：`.luzeyang/code-plain-decoupling/code-plain-decoupling-improvements.md`（设计方案，下称「设计文档」，已归档）、`.luzeyang/code-plain-decoupling/code-mode-review-improvements.md`（问题来源，已归档）、`.luzeyang/code-plain-decoupling/code-native-agent-会话能力档案设计.md`（策略对象方向，已归档）。
+> 关联：贡献者本地设计笔记 code-plain-decoupling 系列（设计方案/问题来源/会话能力档案设计，均已归档，不入库；设计方案下称「设计文档」）。
 > 分支：`feat/code-plain-decoupling`（自 `fix/code-native-agent-review-issues` HEAD 拉出，未同步主线）。
 > 本篇登记设计文档 D-1~D-3、R-1~R-3 六项的实施结果，作为 PR 的验收依据。X-1/X-2（Skills 底座改动）维持标记、不在本次改动内；S-1 安全护栏按决策挂起。
 
@@ -80,7 +80,7 @@ code 模式（真实项目目录绑定）与 plain 模式（沙箱会话目录�
 
 #### 文档同步
 
-- 设计方案与剩余项评估（含 S-1 挂起项、X-1/X-2 标记项）已归档至 `.luzeyang/code-plain-decoupling/`；R-2 方案实施修订归档于该处设计文档内。
+- 设计方案与剩余项评估（含 S-1 挂起项、X-1/X-2 标记项）已归档至贡献者本地设计笔记；R-2 方案实施修订归档于该处设计文档内。
 - `docs/code-native-agent.md` §9：Plan 降级条目更新为审批闭环已落地；用量条目更新为现行降级方案（R-3 顺带）。
 
 ### 四、验证结果
@@ -100,7 +100,7 @@ code 模式（真实项目目录绑定）与 plain 模式（沙箱会话目录�
 
 ## 第二篇：code 会话权限默认值与 mode 持久化（PR #190）
 
-> 关联：`docs/code-native-agent.md` §8.7（历史语义；现行两分 lane 语义以本篇第六节为准）、第一篇（前序解耦）、`.luzeyang/code-plain-decoupling/code-plain-decoupling-剩余待改动项评估.md`（S-1 背景，已归档）。
+> 关联：`docs/code-native-agent.md` §8.7（历史语义；现行两分 lane 语义以本篇第六节为准）、第一篇（前序解耦）、贡献者本地设计笔记「剩余待改动项评估」（S-1 背景，已归档，不入库）。
 > 分支：`feat/code-mode-permission`（基于最新 main，含 #182 解耦成果）。
 > 本篇登记 S-1 权限决策的实施结果，作为 PR 的验收依据。
 

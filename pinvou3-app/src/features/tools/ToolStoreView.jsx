@@ -2441,9 +2441,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                   <p className="text-[13px] text-slate-500 dark:text-slate-400 truncate mt-0.5 font-medium">{tool.subtitle}</p>
                                   <div className="flex items-center gap-2 mt-1.5">
                                     <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded uppercase tracking-wide">{tool.type}</span>
-                                    {tool.internal ? (
-                                      <span className="text-[10px] font-semibold text-sky-700 dark:text-sky-300 bg-sky-100 dark:bg-sky-500/15 px-1.5 py-0.5 rounded-full">{storeCopy.internalDirect}</span>
-                                    ) : tool.authRequired && (
+                                    {tool.authRequired && (
                                       <span className="text-[10px] text-amber-500/80 dark:text-amber-400/80 flex items-center gap-0.5">
                                         <Zap size={10} /> {storeCopy.keyRequired}
                                       </span>
