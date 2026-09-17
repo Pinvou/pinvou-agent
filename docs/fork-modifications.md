@@ -28,7 +28,7 @@
 | 升级前回退点 | 公开不可变 tag `pinvou-v0.9.5-r13` → `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 `backup/pre-v0.9.12-sync` 仅作便利引用 |
 | 历史组织 | 上游之上 33 个带 DCO sign-off 的提交，归属 4 个长期主题（T1–T4）+ 2 个追加减量主题（T5 会话归档导出、T6 蜂群限流治理）；r1 之后 18 个提交全部经 PR squash 合入并过五项必需门禁 |
 | drift | `167 files, +11480/-1470`，净增 10010 行；r1 为 `94 files, +5022/-944`，旧 r13 为 `110 files, +10895/-1195` |
-| 守护 | 72 条独立 CodeWhale `forkguard_*` 行为名（登记下限 54，其中 3 条钉在 `benchmark-eval-controls` 门控面）+ 父仓指纹与行为测试 |
+| 守护 | 72 条独立 CodeWhale `forkguard_*` 行为名（登记下限 54，其中 6 条钉在 `benchmark-eval-controls` 门控面）+ 父仓指纹与行为测试 |
 | 父仓适配 | v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2、Shell 任务来源对账；消费方 PR #396（execpolicy）、#408（轮次取消）、#444（蜂群）、#468（computer-use）、#472（一键导出）依赖本批底座能力 |
 
 ## 1. 为什么本次使用 clean re-fork
@@ -90,7 +90,7 @@
 | `09ebba3fa` | T5 新增 | 会话全保真 tar.xz 导出：`session_export` 模块 + `codewhale sessions export` CLI，liblzma 静态压缩，刻意不脱敏与 `/export` 互补（#51） |
 | `6ae5b1734` | T1 修复 | GLM-5.3/5.3-Flash forced-thinking：`disabled` 改写为 `enabled`+`low`，effort 别名映射到 low/high/max（#52，默认 Z.ai 模型 `off` 档必现报错的修复） |
 | `ae7e3fb36` | T1 修复 | BigModel 通用端点 `open.bigmodel.cn/api/paas/v4` 纳入第一方 Chat 路由谓词，推理控制在两 host 统一（#53） |
-| `72e98fd89` | T3 修复 | 模型面文本停指不存在的工具：技能索引 Usage 与子代理 `## Skills` 头教 `tool_search` 两段激活与直呼注水兜底、mcp-discovery 注册命令按可用性自条件并停引退役 `exec_shell`、best-of-n `create_goal` 存在性门控、父上下文提示改引首轮必活 `read`/`bash`、捆绑技能退役/隐藏名清单清扫、`MAX_REGISTRY_MATCHES` 与「eight」文案编译期互钉（#56） |
+| `72e98fd89` | T3 修复 | 模型面文本停指不存在的工具：技能索引 Usage 与子代理 `## Skills` 头教 `tool_search` 两段激活与直呼注水兜底、mcp-discovery 注册命令按可用性自条件并停引退役 `exec_shell`、best-of-n `create_goal` 存在性门控、父上下文提示改引首轮必活 `read`/`bash`、捆绑技能退役/隐藏名清单清扫、web/fetch 工件元数据补 `evidence_available: true`（web_run 溢出、fetch_url 全部落盘工件）使 `retrieve_tool_result` 次轮自动激活、`MAX_REGISTRY_MATCHES` 与「eight」文案编译期互钉（#56） |
 | `f05b9acfa` | T1 新增 | `TurnStarted` 回显 host 提交的 `submission_id`（SendMessage/EditLastTurn 携带、全部自启续轮路径一律 `None`、wire 事件同步加字段），主机侧可区分在途提交与越前自启（#58，#254 回放越窗收口的底座半边） |
 | `102da17a1` | T3 修复 | `<project_instructions>` 与 repo constitution 来源标签相对化：共享渲染助手统一系统提示与上下文报告，未变更内容的大小写重读不再产生伪 `<context_update>` 追加，绝对路径退出 provider 边界标签（#59，自 #54 拆出；祖先链/项目规则标签维持绝对路径，遗留见父仓 #514） |
 | `889fc2f99` | 门禁修复 | 基线重同步（自 #56 剥离的搭车修复）：TUI CHANGELOG 切片补 DDG→Bing 记录、v0.9.12 事实文件与生成页刷新、engine/tests.rs clippy 冗余闭包、telemetry 信任文案改钉 0.9.11 历史 ask-first 先例并以契约测试锚定（#60） |
