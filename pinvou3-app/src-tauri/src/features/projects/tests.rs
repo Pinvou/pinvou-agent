@@ -415,6 +415,56 @@ fn rebind_roots_rewrites_prefix_and_stays_idempotent() {
 }
 
 #[test]
+fn rebind_roots_cuts_suffix_by_resolved_form_for_alias_callers() {
+    // round-6/7 B1 pinned: an alias caller passes a `from` whose resolved
+    // form has more components than the raw spelling (/var/x vs
+    // /private/var/x). The match domain is resolved; cutting by the raw
+    // component count would misplace subdirectories as <to>/x. A symlink
+    // reproduces the same skew and pins the "cut in the same domain as the
+    // match" semantics. std::env::consts::OS branches instead of cfg syntax:
+    // platform conditional compilation stays out of the features layer
+    // (architecture guard); symlink setup is POSIX-only.
+    if std::env::consts::OS == "windows" {
+        return;
+    }
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let real = temp.path().join("real");
+    let alias = temp.path().join("alias");
+    std::fs::create_dir_all(&real).expect("create real dir");
+    std::os::unix::fs::symlink(&real, &alias).expect("symlink");
+
+    // The project root is stored in display form (create resolves the symlink
+    // via root_display) while `from` is passed in raw alias form — exactly the
+    // alias-caller scenario.
+    let from = alias.clone();
+    let to = temp.path().join("moved");
+    std::fs::create_dir_all(&to).expect("create to dir");
+    let project = create(&store, "Alias", &[from.clone()]);
+
+    let affected = store.rebind_roots(&from, &to).expect("rebind roots");
+    assert_eq!(affected, vec![project.id.clone()]);
+    // The rewritten root must equal display(&to) exactly, with no leftover
+    // alias component.
+    let roots = store.get(&project.id).unwrap().roots;
+    assert_eq!(roots, vec![display(&to)]);
+}
+
+#[test]
+fn begin_rebind_serializes_and_releases_on_drop() {
+    // round-7 m7: the gate's check-and-set and Drop release had zero coverage.
+    let store =
+        ProjectStore::from_paths(std::env::temp_dir().join("pinvou3-rebind-gate-test.json"));
+    let _gate = store.begin_rebind().expect("first acquire wins");
+    let error = store
+        .begin_rebind()
+        .expect_err("second acquire must be rejected");
+    assert!(error.starts_with("REBIND_IN_PROGRESS:"));
+    drop(_gate);
+    store.begin_rebind().expect("gate released by Drop");
+}
+
+#[test]
 fn rebind_roots_rejects_overlap_and_keeps_state() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);

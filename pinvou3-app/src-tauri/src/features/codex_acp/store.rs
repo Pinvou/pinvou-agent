@@ -1701,6 +1701,38 @@ mod tests {
     }
 
     #[test]
+    fn rebind_target_path_covers_from_prefix_to_side_and_no_match() {
+        // round-7 m7: the cut helper was previously covered only indirectly.
+        // Three arms: from-prefix shift, to-prefix (retry candidate) returned
+        // as-is, and no match returns None.
+        let from = Path::new("/work/alpha");
+        let to = Path::new("/vault/beta");
+        assert_eq!(
+            SessionAgentStore::rebind_target_path(Path::new("/work/alpha"), from, to),
+            Some(PathBuf::from("/vault/beta"))
+        );
+        assert_eq!(
+            SessionAgentStore::rebind_target_path(Path::new("/work/alpha/sub"), from, to),
+            Some(PathBuf::from("/vault/beta/sub"))
+        );
+        // Already under `to`: retry candidate returned as-is (the metadata
+        // loop converges on this).
+        assert_eq!(
+            SessionAgentStore::rebind_target_path(Path::new("/vault/beta/keep"), from, to),
+            Some(PathBuf::from("/vault/beta/keep"))
+        );
+        // A from-x sibling and unrelated paths are not candidates.
+        assert_eq!(
+            SessionAgentStore::rebind_target_path(Path::new("/work/alphax"), from, to),
+            None
+        );
+        assert_eq!(
+            SessionAgentStore::rebind_target_path(Path::new("/elsewhere"), from, to),
+            None
+        );
+    }
+
+    #[test]
     fn rebind_prefix_reports_orphan_sidecar_write_failures() {
         let root = std::env::temp_dir().join(format!(
             "pinvou3-codex-rebind-sidecar-fail-test-{}",
