@@ -1237,6 +1237,25 @@ fn export_installed_package_writes_zip_and_preset_is_rejected() {
     assert!(dest.is_file());
     assert!(std::fs::metadata(&dest).unwrap().len() > 0);
 
+    // An existing destination is refused, not overwritten (exit 1).
+    let (message, code) = run_err(&[
+        "pinvoy",
+        "plugins",
+        "export",
+        FIXTURE_DIR_SKILL,
+        "--output",
+        dest.to_str().unwrap(),
+    ]);
+    assert_eq!(code, ExitCode::Failed);
+    assert!(
+        message.contains("refusing to overwrite"),
+        "message: {message}"
+    );
+    assert!(
+        std::fs::metadata(&dest).unwrap().len() > 0,
+        "the existing destination must be untouched"
+    );
+
     // Embedded preset packages refuse export (feature's own error, exit 1).
     let (message, code) = run_err(&["pinvoy", "plugins", "export", "pptx"]);
     assert_eq!(code, ExitCode::Failed);

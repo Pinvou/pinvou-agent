@@ -1991,9 +1991,16 @@ fn spawn_and_capture_url(
         drain_for_url(spec, stderr, tx.clone());
     }
     drop(tx);
-    let url_wait = Duration::from_secs(spec.login_url_wait_secs)
-        .min(deadline.saturating_duration_since(Instant::now()))
-        .max(Duration::from_secs(1));
+    // The 1 s floor applies only while budget remains: a spent deadline must
+    // not buy an extra second past it.
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let url_wait = if remaining.is_zero() {
+        Duration::ZERO
+    } else {
+        Duration::from_secs(spec.login_url_wait_secs)
+            .min(remaining)
+            .max(Duration::from_secs(1))
+    };
     let mut url: Option<String> = None;
     let mut user_code: Option<String> = None;
     let needs_code_line = spec.id == "dingtalk";

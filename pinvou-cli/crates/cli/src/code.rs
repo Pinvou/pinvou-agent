@@ -68,12 +68,13 @@ const USAGE: &str = "usage: pinvou code <agents|login|logout|providers|sessions|
 
 const AGENTS_USAGE: &str =
     "usage: pinvou code agents <list|status <agent>|install <agent>>  (agent: codex|claude|kimi)";
-const LOGIN_USAGE: &str = "usage: pinvou code login <agent> [--code-env VAR|--code-stdin]  \
+const LOGIN_USAGE: &str = "usage: pinvou code login <agent> [--code C|--code-env VAR|--code-stdin]  \
      (agent: codex|claude|kimi; the claude flow consumes an authorization code)";
 const LOGOUT_USAGE: &str = "usage: pinvou code logout <agent> --yes  (agent: codex|claude|kimi)";
 const PROVIDERS_USAGE: &str = "usage: pinvou code providers <list [--agent A]|add --agent A --name N --base-url U \
      [--wire-api anthropic|openai|kimi (aliases: openai_compatible|chat)] [--model M] [--model-slot SLOT=M]... [--context-window N] \
-     (--api-key-env V|--api-key-stdin)|update <id> --agent A [...] |remove <id> --agent A --yes \
+     (--api-key-env V|--api-key-stdin)|update <id> --agent A [--model M] [--model-slot SLOT=M]... [--context-window N] \
+     (--api-key-env V|--api-key-stdin|--delete-key)|remove <id> --agent A --yes \
      |switch <agent> <provider-id>|switch-official <agent>|export --agent A [--output PATH] \
      |import --agent A <PATH>|probe <provider-id> --agent A>";
 const SESSIONS_USAGE: &str = "usage: pinvou code sessions <list|info <id>|timeline <id>>";
@@ -2946,10 +2947,9 @@ fn code_sessions_timeline(id: &str, output: OutputMode) -> Result<CliOutcome, Cl
 
 // Direct references to the app's workspace limits (not local copies): the
 // CLI's diff/preview paths share the GUI's caps, so a change on either side
-// breaks this build instead of silently diverging.
-use pinvou3_lib::features::codex_acp::workspace::{
-    DIFF_LIMIT, IGNORED_DIRECTORIES, PREVIEW_LIMIT, SEARCH_LIMIT,
-};
+// breaks this build instead of silently diverging. (`SEARCH_LIMIT` is
+// referenced through the module path where it is compared.)
+use pinvou3_lib::features::codex_acp::workspace::{DIFF_LIMIT, PREVIEW_LIMIT};
 /// Upper bound on per-file diffs composed into one whole-workspace diff; each
 /// file costs two git spawns, so this bounds the subprocess fan-out.
 const WORKSPACE_DIFF_FILE_CAP: usize = 500;

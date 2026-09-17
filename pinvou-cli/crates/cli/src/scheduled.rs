@@ -2230,6 +2230,12 @@ enabled in settings",
                 let _ = std::fs::remove_file(path);
             }
             let _ = std::fs::remove_dir_all(store_holder.workspace_dir(&id));
+            // A binding written above must not outlive the rolled-back task:
+            // clear it so no binding for a nonexistent id lingers in the
+            // shared registry.
+            if model_id.as_deref().is_some() {
+                let _ = persist_model_binding(&store_holder, &id, None);
+            }
             return Err(error);
         }
     }
