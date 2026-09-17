@@ -51,6 +51,7 @@ import { collectClipboardImages, readPasteImageAsBytes } from '../attachments/pa
 import { formatAttachmentLimitError } from '../attachments/attachment-limit-errors.js';
 import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachmentDropOverlay.jsx';
 import { SessionMentionChips, SessionMentionMenu, SessionMentionCards } from './SessionMentionControls.jsx';
+import { PROJECT_SESSION_DRAG_TYPE } from '../projects/projectGrouping.js';
 import {
   buildSessionMentionBlock,
   splitSessionMentionBlock,
@@ -1034,6 +1035,41 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const handleOpenMentionSession = useCallback((sessionId) => {
         if (onSwitchSession) onSwitchSession(sessionId);
       }, [onSwitchSession]);
+      // 侧栏会话行(「移动到项目」拖动手势,#462 的 application/x-pinvou-session
+      // payload)拖进输入区 = 引用该会话,复用与 @ 面板同一 add 路径;附件拖放只认
+      // Files(attachment-drop-controller hasFiles),会话拖动无 Files,两者不冲突。
+      const sessionDropDepthRef = useRef(0);
+      const [sessionDropActive, setSessionDropActive] = useState(false);
+      const isSessionRowDrag = (e) => {
+        const types = (e.dataTransfer && e.dataTransfer.types) || [];
+        // eslint-disable-next-line unicorn/prefer-spread -- Safari 14 的 dataTransfer.types 是 DOMStringList(不可迭代,只能 Array.from);Chromium 新冻结数组同样兼容
+        return Array.from(types).includes(PROJECT_SESSION_DRAG_TYPE);
+      };
+      const handleComposerSessionDragEnter = (e) => {
+        if (!isSessionRowDrag(e)) return;
+        sessionDropDepthRef.current += 1;
+        setSessionDropActive(true);
+      };
+      const handleComposerSessionDragLeave = (e) => {
+        if (!isSessionRowDrag(e)) return;
+        sessionDropDepthRef.current = Math.max(0, sessionDropDepthRef.current - 1);
+        if (sessionDropDepthRef.current === 0) setSessionDropActive(false);
+      };
+      const handleComposerSessionDragOver = (e) => {
+        if (!isSessionRowDrag(e)) return;
+        e.preventDefault(); // 允许 drop
+      };
+      const handleComposerSessionDrop = (e) => {
+        if (!isSessionRowDrag(e)) return;
+        e.preventDefault();
+        sessionDropDepthRef.current = 0;
+        setSessionDropActive(false);
+        const sessionId = e.dataTransfer.getData(PROJECT_SESSION_DRAG_TYPE);
+        if (!sessionId || sessionId === activeSessionId) return;
+        if (sessionRefs.some(ref => ref.sessionId === sessionId)) return;
+        const title = ((((bs && bs.sessions) || []).find(s => s.id === sessionId)) || {}).title || '';
+        handleSelectMentionCandidate({ sessionId, title });
+      };
       const handleDesignElementSelected = useCallback((element) => {
         setSelectedDesignElement(element || null);
       }, []);
@@ -2676,9 +2712,14 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             <ComputerUseDialogs slice={computerUseSlice} copy={computerUseCopy} />
           )}
           {/* Floating Input Area */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: 会话行拖放热区(drop zone);键盘等价路径是输入框 @ 引用面板 */}
           <div
             ref={composerWrapRef}
             data-testid="chat-composer-wrap"
+            onDragEnter={handleComposerSessionDragEnter}
+            onDragLeave={handleComposerSessionDragLeave}
+            onDragOver={handleComposerSessionDragOver}
+            onDrop={handleComposerSessionDrop}
             className={`absolute ${isWeb ? 'bottom-2 sm:bottom-8' : 'bottom-8'} inset-x-0 z-20`}
             style={responsiveGutterStyle}
           >
@@ -2825,6 +2866,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               formatError={formatAttachmentError}
               className="mb-2 px-2"
             />
+            {sessionDropActive && (
+              <div data-testid="session-mention-drop-hint"
+                className="mb-2 px-3 py-2 rounded-2xl text-[12px] leading-5 bg-[#E8F0FE] text-[#1967D2] dark:bg-[#1F3A5F] dark:text-[#A8C7FA]">
+                {t.uiSessionMention.dropHint}
+              </div>
+            )}
             <SessionMentionChips
               refs={sessionRefs}
               onRemove={handleRemoveMentionRef}
