@@ -6,7 +6,7 @@
 
 > **落地状态**（2026-08-14）：§1、§2 为现状（能力档案已退役，模式能力差量
 > 已收敛为静态表 `MODE_TABLE`）；§3 的存储已收敛为**单一 `disabled_bundles.json`**
-> （`{scopes, hidden_scopes, initialized, project_skills_enabled, plain_defaults_migrated}`，键 = 包 id，见 §3.2），取代原
+> （`{scopes, hidden_scopes, default_off_scopes, initialized, project_skills_enabled, plain_defaults_migrated}`，键 = 包 id，见 §3.2），取代原
 > `disabled_connectors.json` + `disabled_skills.json` 双文件与 `skill:` 前缀跨文件借道；
 > companion 联动排除改由包模型现算（`bundle::skill_owner_package`）。§3.1 的
 > 统一包模型与「一个包 = 一个开关」已部分落地（`BundleStore` + `bundle_readiness`），
@@ -88,11 +88,16 @@ Bundle = { id, name, mcp_servers: [], skills: [], cli: [] }
 存储：`~/.pinvou3/disabled_bundles.json` 单一文件（包 id × 模式键控 map）：
 
 ```json
-{ "scopes": { "<mode>": ["<包 id>"] }, "hidden_scopes": { "<mode>": ["<包 id>"] }, "initialized": ["<mode>"], "project_skills_enabled": false, "plain_defaults_migrated": true }
+{ "scopes": { "<mode>": ["<包 id>"] }, "hidden_scopes": { "<mode>": ["<包 id>"] }, "default_off_scopes": { "<mode>": ["<包 id>"] }, "initialized": ["<mode>"], "project_skills_enabled": false, "plain_defaults_migrated": true }
 ```
 
 scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
-`initialized` 集合取代原 `code_initialized` 布尔。首个版本读取时把旧的
+`initialized` 集合取代原 `code_initialized` 布尔。`default_off_scopes`（评审
+R11-B2）记录 `scopes` 中由**安装默认**写入（非用户显式关闭）的条目：安装
+同步写 stored+本表，用户 disable 只写 stored，composer 整表写清空该 scope
+的本表（用户接管列表）；批量 enable 的整批判拒只针对 stored 中**不在**本表
+的 id——安装默认的关可被用户动作（欢迎卡/场景 opt-in）移除，显式 opt-out
+不可。首个版本读取时把旧的
 `disabled_connectors.json`（连接器 id）与 `disabled_skills.json`（技能 id）迁移合并：
 连接器 id 原样进包 id（连接器 id 即包 id），技能 id 经 `bundle::skill_owner_package`
 映射到所属包（companion → MCP/CLI 包，独立技能 → 自身），`skill:` 前缀跨文件借道
@@ -122,6 +127,11 @@ scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
 | plain | **DenyAll** | 全禁（工具开关全量收敛：外部能力一律显式开启） |
 | code | **DenyAll** | 全禁（外部能力显式开启，封泄露面/攻击面） |
 
+`PackDefaultPolicy::AllowAll` 变体已随收敛退役（仅保留枚举形态）。
+重新引入的判据：新模式必须在其模式文档中论证「默认放行外部能力」的
+同意模型（对齐本文件 §3.2 的显式开启原则），并给出该模式 DenyAll 化的
+迁移路径；未经此论证不得恢复任何模式的 AllowAll 默认。
+
 plain 从 AllowAll 翻为 DenyAll 时的**存量迁移**（读时迁移，见
 `scope.rs::load_disabled_bundles_file_locked`）：旧版文件（无
 `plain_defaults_migrated` 字段）或旧双文件时代的装机，plain 被初始化为
@@ -133,16 +143,22 @@ plain 从 AllowAll 翻为 DenyAll 时的**存量迁移**（读时迁移，见
 老装机 + 从未动过开关的用户可能三者皆无。信号只检查这两条特定路径：家目录
 即使持有无关状态（`knowledge/`、`logs/` 等），只要二者皆无仍判全新。
 `settings.json` **不构成**信号（评审 #455 R8-3）：预置模板/跨机拷贝的
-settings.json 会把全新装机误判为升级（plain 全开，fail-open）；真实老装机
-必留非空 `sessions/`（首启 `ensure_dirs` 自写 `sessions/default/artifacts`），
-收窄不漏判。
+settings.json 会把全新装机误判为升级（plain 全开，fail-open）。收窄**并非
+无遗漏**（评审 R11-M4）：真实老装机通常留有非空 `sessions/`，但被工具清空
+`sessions/`、又无 `installed.json` 与 legacy 文件的老装机会被误判全新——
+方向是 fail-closed（默认全关，可用性而非安全问题）；两类群体在无持久版本
+标记时不可区分（见 follow-up 注册表）。
 
-已知限制（进程内备忘的时效性，评审 #455 R9 nit）：freeze 落盘失败
+已知限制（进程内备忘的时效性，评审 #455 R9/R11）：freeze 落盘失败
 （`UNPERSISTED_VERDICT`）与损坏恢复覆盖写失败（`PENDING_CORRUPT_RECOVERY`）
 各有一个进程内备忘，命中即复用、不重复落盘尝试；任意一次成功落盘会清除
 对应备忘（文件回到合法 JSON）。备忘不跨进程持久——**重启后**若磁盘故障
-仍未恢复，首读会重新走对应分支（freeze 重算判定、损坏恢复重新隔离一次）；
-这是 fail-closed 方向的有界重试，非数据丢失面。该信号会被应用自身首启行为污染（bridge
+仍未恢复，首读会重新走对应分支。两个分支的重启方向**不同**（评审 R11-M4
+如实化）：损坏恢复的重跑是 fail-closed（重新隔离一次、内存全关兜底）；
+freeze 的重跑是 **fail-open**——重启后首读会用已存在的 `sessions/default`
+重新判定，全新装机被误判为升级 ⇒ plain 全开（正是 freeze 要防的翻转；
+进程内备忘只覆盖单次生命周期，跨重启的持久化即登记的
+crash-during-freeze durability follow-up，根治靠 settings 版本标记）。该信号会被应用自身首启行为污染（bridge
 boot 自写 `sessions/` 目录项、缺省补写默认 `settings.json`），因此首读被
 上提至各宿主启动钩顶部（GUI setup、headless bridge、dump_system_prompt，
 早于一切首启自写），且判定在**首次读取时无条件落盘**（置

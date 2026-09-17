@@ -30,7 +30,10 @@ pub enum SessionMode {
 pub enum PackDefaultPolicy {
     /// Allow-all. Every mode has converged on DenyAll; this variant is kept
     /// only for potential future modes (review #455) and is unreachable from
-    /// current code paths.
+    /// current code paths. Reintroduction criteria live in
+    /// docs/capability-governance.md §3.2 (round-11 m13): a future mode must
+    /// justify the default-allow consent model there and provide a DenyAll
+    /// migration path before any mode may use this variant again.
     AllowAll,
     DenyAll,
 }
