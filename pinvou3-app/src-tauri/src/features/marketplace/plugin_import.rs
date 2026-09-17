@@ -621,6 +621,22 @@ pub fn import_plugin_package(
     zip_path: &str,
     display_name: &str,
 ) -> Result<PluginImportReport, String> {
+    import_plugin_package_gated(zip_path, display_name, &|_| Ok(()))
+}
+
+/// Same pipeline with a pre-land gate hook: `pre_land` runs after the package
+/// id is fixed and fully validated but BEFORE any content lands on disk or
+/// replaces an existing installation. A `pre_land` refusal aborts the import
+/// with nothing touched — the DenyAll consent gate uses this to register the
+/// deny entry before the package is exposed (#515/#517 review round 4):
+/// rolling an already-landed import back via uninstall would destroy a
+/// pre-existing installation (re-import overwrites), while a deny-first
+/// refusal loses nothing.
+pub fn import_plugin_package_gated(
+    zip_path: &str,
+    display_name: &str,
+    pre_land: &dyn Fn(&str) -> Result<(), String>,
+) -> Result<PluginImportReport, String> {
     let file = std::fs::File::open(zip_path).map_err(|e| format!("打开 zip: {e}"))?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("读取 zip: {e}"))?;
 
@@ -871,6 +887,13 @@ pub fn import_plugin_package(
             }
         }
     }
+
+    // Pre-land gate hook: the id is final and validated here, nothing has
+    // been written yet. A refusal aborts the whole import before any content
+    // lands or an existing installation is replaced (deny-first consent gate,
+    // #517 review round 4). Runs before the same-id import lock on purpose:
+    // the scope RMW lock and the import lock are never nested.
+    pre_land(&id)?;
 
     // 落盘到 staged：mcp/ + skills/ 子树 + 裸包回退规范化 → bundles/<id>/ 原子 rename。
     // 注：旧 spanner/ 与 runtime/ 子树已删除，导入侧不再识别这两类前缀。

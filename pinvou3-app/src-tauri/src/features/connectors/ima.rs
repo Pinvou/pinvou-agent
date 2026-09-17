@@ -317,51 +317,57 @@ pub async fn ima_connect(client_id: String, api_key: String) -> Result<Value, St
     validate_credentials(&client_id, &api_key).await?;
 
     tokio::task::spawn_blocking(move || {
-        let store = SystemCredentialStore::new();
-        let previous_client_id = store.get(&client_id_ref()).map_err(|e| e.user_message())?;
-        let previous_api_key = store.get(&api_key_ref()).map_err(|e| e.user_message())?;
-
-        let mut skill_installed = false;
-        let result = (|| -> Result<(), String> {
-            store
-                .set(&client_id_ref(), client_id.trim())
-                .map_err(|e| e.user_message())?;
-            store
-                .set(&api_key_ref(), api_key.trim())
-                .map_err(|e| e.user_message())?;
-            SkillMarketplaceManager::new().install(IMA_SKILL_ID)?;
-            skill_installed = true;
-            // 新装技能默认加入 DenyAll scope（当前 code）禁用集（外部能力显式
-            // 开启）；在线会话组合目录
-            // 由命令层（connectors::ima_connect）重写。
-            // 注意引用 marketplace::skill_scope（持久化层）而非 assistant：避免
-            // connectors → assistant 依赖环（架构守卫 rust_feature_cycles）。
-            crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(
-                IMA_SKILL_ID,
-            )?;
-            Ok(())
-        })();
-
-        if let Err(err) = result {
-            // Transaction boundary (#517 review): a refused gate sync must not
-            // leave the skill installed outside the deny list — roll the
-            // skill install back before restoring the credentials.
-            // Best-effort: a failed rollback is reported but does not mask
-            // the refusal.
-            if skill_installed {
-                if let Err(re) = SkillMarketplaceManager::new().uninstall(IMA_SKILL_ID) {
-                    eprintln!("[ima] skill rollback after failed connect also failed: {re}");
-                }
-            }
-            rollback_secret(&store, &client_id_ref(), previous_client_id)?;
-            rollback_secret(&store, &api_key_ref(), previous_api_key)?;
-            return Err(err);
-        }
-
-        Ok::<Value, String>(json!({ "ok": true, "connected": true }))
+        ima_connect_sync_with_store(client_id, api_key, &SystemCredentialStore::new())
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))?
+}
+
+/// Testable connect core (injected store, mirrors `status_with_store`): tests
+/// pass a `MemoryCredentialStore` so no thread ever touches the real system
+/// credential vault.
+fn ima_connect_sync_with_store<S: CredentialStore>(
+    client_id: String,
+    api_key: String,
+    store: &S,
+) -> Result<Value, String> {
+    let previous_client_id = store.get(&client_id_ref()).map_err(|e| e.user_message())?;
+    let previous_api_key = store.get(&api_key_ref()).map_err(|e| e.user_message())?;
+
+    let result = (|| -> Result<(), String> {
+        // Deny-first (#517 review round 4): register the deny entry BEFORE
+        // the credentials are touched or the skill content is replaced —
+        // a refusal aborts with nothing changed at all. A connect
+        // re-runs `install` over an existing skill, so an uninstall-based
+        // rollback here would destroy the user's pre-existing copy.
+        // 新装技能默认加入 DenyAll scope（当前 code）禁用集（外部能力显式
+        // 开启）；在线会话组合目录
+        // 由命令层（connectors::ima_connect）重写。
+        // 注意引用 marketplace::skill_scope（持久化层）而非 assistant：避免
+        // connectors → assistant 依赖环（架构守卫 rust_feature_cycles）。
+        crate::features::marketplace::skill_scope::sync_deny_all_scopes_after_skill_install(
+            IMA_SKILL_ID,
+        )?;
+        store
+            .set(&client_id_ref(), client_id.trim())
+            .map_err(|e| e.user_message())?;
+        store
+            .set(&api_key_ref(), api_key.trim())
+            .map_err(|e| e.user_message())?;
+        SkillMarketplaceManager::new().install(IMA_SKILL_ID)?;
+        Ok(())
+    })();
+
+    if let Err(err) = result {
+        // Credentials are restored to their previous values; the skill is
+        // left exactly as found (deny-first above already refused before
+        // anything was replaced).
+        rollback_secret(store, &client_id_ref(), previous_client_id)?;
+        rollback_secret(store, &api_key_ref(), previous_api_key)?;
+        return Err(err);
+    }
+
+    Ok(json!({ "ok": true, "connected": true }))
 }
 
 fn rollback_secret<S: CredentialStore>(
@@ -416,6 +422,31 @@ mod tests {
     use super::*;
     use crate::platform::credential_store::MemoryCredentialStore;
 
+    /// Temp-home harness (ENV_LOCK-serialized) for the connect regressions.
+    fn with_temp_home<F: FnOnce()>(f: F) {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-ima-connect-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        f();
+        match prev {
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn status_requires_both_credentials() {
         let store = MemoryCredentialStore::default();
@@ -424,6 +455,62 @@ mod tests {
         assert!(!status_with_store(&store).unwrap().credentials_present);
         store.set(&api_key_ref(), "api-key").unwrap();
         assert!(status_with_store(&store).unwrap().credentials_present);
+    }
+
+    /// Review round 4 (#517): a connect whose DenyAll consent-gate
+    /// registration is refused must abort BEFORE the credentials are touched
+    /// or the skill content is replaced. A connect re-runs `install` over an
+    /// existing skill, so the previous uninstall-based rollback destroyed the
+    /// user's pre-existing copy; deny-first keeps both the credentials and
+    /// the skill exactly as found.
+    #[test]
+    fn connect_refused_sync_keeps_existing_skill_and_credentials() {
+        with_temp_home(|| {
+            let store = MemoryCredentialStore::default();
+            store.set(&client_id_ref(), "client-v1").unwrap();
+            store.set(&api_key_ref(), "key-v1").unwrap();
+            let skills = SkillMarketplaceManager::new();
+            skills
+                .install(IMA_SKILL_ID)
+                .expect("skill install must succeed while the lock works");
+            let skill_md = skills
+                .find_skill_dir(IMA_SKILL_ID)
+                .expect("precondition: ima skill installed")
+                .join("SKILL.md");
+
+            // Initialize the code scope (makes the DenyAll sync a required
+            // write), then make the lock file unopenable so the sync refuses.
+            crate::features::marketplace::save_disabled_bundles_for(
+                crate::features::marketplace::ConnectorScope::Code,
+                &["seed-bundle".to_string()],
+            )
+            .expect("code scope must initialize while the lock works");
+            let lock = crate::platform::paths::pinvou3_home().join("disabled_bundles.lock");
+            std::fs::remove_file(&lock).unwrap();
+            std::fs::create_dir_all(&lock).unwrap();
+
+            let error =
+                ima_connect_sync_with_store("client-v2".to_string(), "key-v2".to_string(), &store)
+                    .unwrap_err();
+            assert!(
+                error.contains("disabled_bundles.lock"),
+                "refusal must name the lock failure: {error}"
+            );
+            assert_eq!(
+                store.get(&client_id_ref()).unwrap().as_deref(),
+                Some("client-v1"),
+                "credentials must be untouched by a refused connect"
+            );
+            assert_eq!(
+                store.get(&api_key_ref()).unwrap().as_deref(),
+                Some("key-v1"),
+                "credentials must be untouched by a refused connect"
+            );
+            assert!(
+                skill_md.is_file(),
+                "the pre-existing skill must survive a refused connect"
+            );
+        });
     }
 
     #[test]

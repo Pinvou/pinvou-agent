@@ -605,8 +605,9 @@ pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<
 }
 
 /// 该 scope 对底座「不可用」的包 id 并集 = 开关关（disabled）+ 不可见（hidden）。
-/// 物化/工具白名单按此并集排除，两套门控对模型都是「调不到」。单次加载快照内
-/// 取并集，避免两次独立加载之间夹进一次并发写导致并集口径错位。
+/// 物化/工具白名单按此并集排除，两套门控对模型都是「调不到」。The union is
+/// taken inside a single load snapshot so a concurrent write between two
+/// independent loads cannot skew the union's basis (M-6b).
 pub fn unavailable_bundles_for(scope: ConnectorScope) -> Vec<String> {
     let file = load_disabled_bundles_file();
     let mut ids = resolve_scope_disabled_ids(&file, scope);
