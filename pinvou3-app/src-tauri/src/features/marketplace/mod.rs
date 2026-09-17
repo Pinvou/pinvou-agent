@@ -2153,11 +2153,23 @@ mod tests {
 
             FAIL_NEXT_INSTALLED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
-            assert!(
-                manager
-                    .install("trusted-lock", &std::collections::HashMap::new())
-                    .is_err()
-            );
+            // The scenario requires the injected installed.json write failure
+            // specifically. Windows dev/test binaries have no bundled Python
+            // runtime, so a locked tool fails during dependency setup and
+            // never reaches the injected write: skip in that case instead of
+            // failing — and disarm the flag, which would otherwise poison the
+            // next install test with a phantom write failure.
+            match manager.install("trusted-lock", &std::collections::HashMap::new()) {
+                Err(error) if error.contains("installed.json") => {}
+                Err(error) => {
+                    FAIL_NEXT_INSTALLED_WRITE.swap(false, std::sync::atomic::Ordering::SeqCst);
+                    eprintln!("skipping: install cannot reach the injected write here: {error}");
+                    return;
+                }
+                Ok(()) => {
+                    panic!("the injected installed.json write failure must fail the install")
+                }
+            };
             assert!(
                 old_environment.is_dir(),
                 "the rolled-back mcp.json still references this environment"

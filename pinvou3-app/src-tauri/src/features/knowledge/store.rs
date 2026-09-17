@@ -639,6 +639,52 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// Windows twin of `failed_probe_never_deletes_an_existing_store`: a file
+    /// held open with no sharing mode makes the probe connection's open fail
+    /// (ERROR_SHARING_VIOLATION), the same deterministic probe failure the
+    /// unix test constructs through permissions. `Store::open` must fail loud
+    /// and leave the store file in place.
+    #[cfg(windows)]
+    #[test]
+    fn failed_probe_never_deletes_an_existing_store_windows() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-knowledge-probe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let db = tmp.join("index.db");
+        {
+            let store = Store::open(&db).expect("create store");
+            assert_eq!(store.stats().unwrap().total_files, 0);
+        }
+        // Hold the store exclusively: any subsequent open (the probe's) fails.
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&db)
+            .expect("hold the store without sharing");
+        assert!(
+            Store::open(&db).is_err(),
+            "an unopenable store must fail loud instead of probing version 0"
+        );
+        drop(held);
+        assert!(
+            db.exists(),
+            "the store file must survive a failed probe untouched"
+        );
+        assert!(
+            Store::open(&db).is_ok(),
+            "the store must reopen after the blocking handle is released"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     /// A steady-state open (schema already current) no longer runs the DDL
     /// batch and the user_version write: this is what lets the open skip the
     /// schema write lock in the GUI+CLI two-process scenario. A connection
