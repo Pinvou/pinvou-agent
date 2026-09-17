@@ -1,7 +1,12 @@
 use std::io::Write;
 
 fn main() {
-    let result = pinvou_cli::parse_args(std::env::args()).and_then(pinvou_cli::execute);
+    // `std::env::args` panics on non-Unicode argv (a raw-bytes path from a
+    // tool would exit 101 with a backtrace); lossy-convert instead so the
+    // regular usage/exit-code contract handles the argument.
+    let result =
+        pinvou_cli::parse_args(std::env::args_os().map(|arg| arg.to_string_lossy().into_owned()))
+            .and_then(pinvou_cli::execute);
     match result {
         Ok(outcome) => {
             // Rust ignores SIGPIPE, so a closed pipe (`pinvou ... | head`)

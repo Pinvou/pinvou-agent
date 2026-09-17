@@ -555,6 +555,7 @@ fn write(
             })?;
         let tmp = path.with_file_name(format!(".{file_name}.tmp-{}-{nonce}", std::process::id()));
         std::fs::write(&tmp, &content).map_err(|error| {
+            let _ = std::fs::remove_file(&tmp);
             CliError::failed(format!(
                 "artifact_write_failed({}): {error}",
                 path.display()

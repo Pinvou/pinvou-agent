@@ -617,6 +617,11 @@ fn export(
                     )));
                 }
                 Err(error) => {
+                    // The exclusive create succeeded but the body failed
+                    // (ENOSPC, quota): drop the truncated destination so a
+                    // retry is possible and no half-written transcript
+                    // masquerades as an export.
+                    let _ = std::fs::remove_file(&path);
                     return Err(CliError::failed(format!(
                         "sessions export({id}): cannot write {}: {error}",
                         path.display()

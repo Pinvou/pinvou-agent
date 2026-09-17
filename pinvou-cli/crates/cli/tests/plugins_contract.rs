@@ -1081,6 +1081,10 @@ fn oauth_login_guards_and_cancel_behaviour() {
 fn tools_install_with_secret_persists_credential() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("tools-secret");
+    let _amap = RestoreEnvVar(
+        "PINVOU_CLI_TEST_AMAP_KEY",
+        std::env::var_os("PINVOU_CLI_TEST_AMAP_KEY"),
+    );
     unsafe { std::env::set_var("PINVOU_CLI_TEST_AMAP_KEY", "test-secret-value") };
 
     let stdout = run_ok(&[
@@ -1114,6 +1118,10 @@ fn tools_install_with_secret_persists_credential() {
 fn tools_install_warns_when_remote_validation_is_skipped() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("tools-validate");
+    let _patsnap = RestoreEnvVar(
+        "PINVOU_CLI_TEST_PATSNAP_KEY",
+        std::env::var_os("PINVOU_CLI_TEST_PATSNAP_KEY"),
+    );
     unsafe { std::env::set_var("PINVOU_CLI_TEST_PATSNAP_KEY", "test-secret-value") };
 
     let stdout = run_ok(&[

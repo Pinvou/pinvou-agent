@@ -65,7 +65,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::support::{render, require_yes, success};
+use crate::support::{render, require_yes, sandbox_home, success};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::marketplace::{
     ConnectorScope, MarketplaceManager,
@@ -540,6 +540,11 @@ fn is_display_unsafe_char(c: char) -> bool {
 }
 
 pub fn execute(command: PluginsCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
+    // Every store path this family touches resolves through the lib's
+    // `pinvou3_home`, which accepts a relative `PINVOU3_HOME` verbatim;
+    // enforce the same absolute-home contract as the sibling families so one
+    // binary cannot half-apply state against a cwd-relative store.
+    sandbox_home()?;
     match command {
         PluginsCommand::ToolsList { installed_only } => tools_list(installed_only, output),
         PluginsCommand::ToolsInstall { id, secrets } => tools_install(&id, &secrets, output),
