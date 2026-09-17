@@ -321,6 +321,7 @@ pub async fn ima_connect(client_id: String, api_key: String) -> Result<Value, St
         let previous_client_id = store.get(&client_id_ref()).map_err(|e| e.user_message())?;
         let previous_api_key = store.get(&api_key_ref()).map_err(|e| e.user_message())?;
 
+        let mut skill_installed = false;
         let result = (|| -> Result<(), String> {
             store
                 .set(&client_id_ref(), client_id.trim())
@@ -329,6 +330,7 @@ pub async fn ima_connect(client_id: String, api_key: String) -> Result<Value, St
                 .set(&api_key_ref(), api_key.trim())
                 .map_err(|e| e.user_message())?;
             SkillMarketplaceManager::new().install(IMA_SKILL_ID)?;
+            skill_installed = true;
             // 新装技能默认加入 DenyAll scope（当前 code）禁用集（外部能力显式
             // 开启）；在线会话组合目录
             // 由命令层（connectors::ima_connect）重写。
@@ -339,6 +341,16 @@ pub async fn ima_connect(client_id: String, api_key: String) -> Result<Value, St
         })();
 
         if let Err(err) = result {
+            // Transaction boundary (#517 review): a refused gate sync must not
+            // leave the skill installed outside the deny list — roll the
+            // skill install back before restoring the credentials.
+            // Best-effort: a failed rollback is reported but does not mask
+            // the refusal.
+            if skill_installed {
+                if let Err(re) = SkillMarketplaceManager::new().uninstall(IMA_SKILL_ID) {
+                    eprintln!("[ima] skill rollback after failed connect also failed: {re}");
+                }
+            }
             rollback_secret(&store, &client_id_ref(), previous_client_id)?;
             rollback_secret(&store, &api_key_ref(), previous_api_key)?;
             return Err(err);

@@ -1385,7 +1385,7 @@ mod tests {
     /// same bounded recv_timeout idiom as the peer-contention regression.
     #[test]
     fn hot_read_degrades_while_local_write_parks_in_critical_section() {
-        with_temp_home(|| {
+        with_temp_home("pinvou3-scope-hot-read", || {
             save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()])
                 .expect("seeding the stored state should succeed");
             let (park_tx, park_rx) = std::sync::mpsc::channel();
