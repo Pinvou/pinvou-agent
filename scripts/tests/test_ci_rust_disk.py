@@ -195,6 +195,17 @@ class RustDiskTests(unittest.TestCase):
             sdk.mkdir()
             with patch.object(DISK.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout="")):
                 DISK.prepare_disk(self.workspace)
+            self.assertFalse(sdk.exists())
+            sdk.mkdir()
+            # The 120s cap must be part of the du call itself: an uncapped du
+            # could hang the whole cleanup step.
+            def assert_capped_du(*args, **kwargs):
+                self.assertEqual(kwargs.get("timeout"), DISK.DU_TIMEOUT_SECS)
+                self.assertEqual(args[0][:2], ["du", "-sh"])
+                return SimpleNamespace(returncode=0, stdout="4.0K\t/x\n")
+
+            with patch.object(DISK.subprocess, "run", side_effect=assert_capped_du):
+                DISK.prepare_disk(self.workspace)
         self.assertFalse(sdk.exists())
 
     def test_non_positive_min_free_gib_is_rejected(self):

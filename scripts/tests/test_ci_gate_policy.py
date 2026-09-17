@@ -565,6 +565,42 @@ class CiGatePolicyTests(unittest.TestCase):
                 " (degrade to stock runner memory with a ::warning)",
             )
 
+    def test_memory_setup_wrapped_at_every_call_site(self):
+        # The wrapper contract is repo-wide, not just pr-check.yml: every
+        # invocation of ci-memory-setup.sh in any workflow file must carry
+        # the `timeout --kill-after=15 240` cap and the non-fatal ::warning
+        # degradation on the same run line.
+        workflows = sorted(
+            list((ROOT / ".github/workflows").glob("*.yml"))
+            + list((ROOT / ".github/workflows").glob("*.yaml"))
+        )
+        self.assertTrue(workflows, "no workflow files found under .github/workflows")
+        call_sites = 0
+        for workflow in workflows:
+            text = _without_yaml_comments(workflow.read_text(encoding="utf-8"))
+            for line in text.splitlines():
+                if "scripts/ci-memory-setup.sh" not in line:
+                    continue
+                call_sites += 1
+                self.assertIn(
+                    "timeout --kill-after=15 240",
+                    line,
+                    f"{workflow.name}: the ci-memory-setup.sh call must be"
+                    " capped by 'timeout --kill-after=15 240' (an in-kernel"
+                    " hang is uninterruptible; the outer cap is the last"
+                    " backstop)",
+                )
+                self.assertIn(
+                    '|| echo "::warning::ci-memory-setup',
+                    line,
+                    f"{workflow.name}: the ci-memory-setup.sh call must stay"
+                    " non-fatal (degrade to stock runner memory with a"
+                    " ::warning)",
+                )
+        self.assertGreaterEqual(
+            call_sites, 20, "expected the memory-setup wrapper at 20+ call sites"
+        )
+
     def test_windows_rust_test_cumulative_main_push_is_path_independent(self):
         # Main's Windows regression must remain independent of adjacent diff paths.
         windows_rust_test = self.pr_workflow.split(
@@ -913,11 +949,12 @@ class ReleaseDiskAndImagePolicyTests(unittest.TestCase):
         )
 
     def test_release_linux_build_jobs_prepare_disk_and_prune_apt(self):
-        # Release build jobs (single-disk hosted runner, x64 images boot with
-        # only ~13-14G free) must clean up unused preinstalled SDKs before
-        # toolchains/caches/dependencies hit the disk, and run autoremove +
-        # clean after installing system deps; otherwise a cold compile has
-        # filled the disk (ENOSPC, since 2026-09-13).
+        # Release build jobs (single-disk hosted runner; with the old 16G
+        # /mnt swapfile in place x64 builds had only ~13-14G free) must clean
+        # up unused preinstalled SDKs before toolchains/caches/dependencies
+        # hit the disk, and run autoremove + clean after installing system
+        # deps; otherwise a cold compile has filled the disk (ENOSPC, since
+        # 2026-09-13).
         blocks = re.split(
             r"\n  (?=[A-Za-z0-9_-]+:\s*$)", self.release_workflow, flags=re.MULTILINE
         )
@@ -930,10 +967,20 @@ class ReleaseDiskAndImagePolicyTests(unittest.TestCase):
             self.assertIn("--min-free-gib 24", job)
             # Disk preparation must run before setup-node (the aggressive tier
             # deletes /opt/hostedtoolcache, and setup-node would re-download
-            # Node afterwards).
+            # Node afterwards) and before the toolchain and the Rust cache
+            # land, so the free-space gate measures the disk the cold build
+            # actually gets.
             self.assertLess(
                 job.index("python3 scripts/ci-rust-disk.py"),
                 job.index("uses: actions/setup-node"),
+            )
+            self.assertLess(
+                job.index("python3 scripts/ci-rust-disk.py"),
+                job.index("uses: dtolnay/rust-toolchain"),
+            )
+            self.assertLess(
+                job.index("python3 scripts/ci-rust-disk.py"),
+                job.index("uses: Swatinem/rust-cache"),
             )
             self.assertIn("sudo apt-get autoremove -y --purge", job)
             self.assertIn("sudo apt-get clean", job)
@@ -950,9 +997,11 @@ class ReleaseDiskAndImagePolicyTests(unittest.TestCase):
         # as the release build; image upgrades must be coordinated across the
         # whole repo at once — rolling images like ubuntu-latest and per-job
         # version bumps are forbidden.
-        # Strip YAML comments before scanning: version mentions inside
-        # comments (e.g. migration notes) must not trip the guard; it only
-        # polices real runs-on lines.
+        # Strip full-line YAML comments before scanning: version mentions
+        # inside full-line comments (e.g. migration notes) must not trip the
+        # image rules. Note that the ubuntu-latest ban still scans the
+        # remaining text, including inline trailing comments — keep such
+        # notes on their own comment lines.
         allowed = {"ubuntu-22.04", "ubuntu-22.04-arm"}
         workflows = sorted(
             list((ROOT / ".github/workflows").glob("*.yml"))
