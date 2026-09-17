@@ -194,7 +194,13 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       if (auxIdRef.current !== sentAuxId) return;
       setSendFailed(true);
     } finally {
-      sendingRef.current = false;
+      // Only the binding this send was issued for may release the latch: the
+      // rebind effect resets sendingRef for the new binding, and an old
+      // send's late finally must not clear the latch a newer send on the
+      // rebound task is relying on (same stale-finally class as handleRestart).
+      if (auxIdRef.current === sentAuxId) {
+        sendingRef.current = false;
+      }
     }
   }, [auxChat, draft, busy, restarting, pullSnapshot]);
 
@@ -222,6 +228,11 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
     setRestartArmed(false);
     setRestarting(true);
     setDiscardFailed(false);
+    // A failed send's banner must not survive into the restart: when the
+    // discard succeeds but the ensure rebuild fails, the binding is cleared
+    // and the composer disabled — showing "send failed, retry" next to the
+    // ensure failure is a contradictory double banner.
+    setSendFailed(false);
     const generation = generationRef.current;
     try {
       try {

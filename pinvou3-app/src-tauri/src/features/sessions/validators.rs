@@ -42,13 +42,25 @@ pub(crate) fn validate_scheduled_session_id(id: &str) -> Result<()> {
 /// the aux session. Every is-aux decision must go through this helper so the
 /// gates hold regardless of filesystem case semantics.
 pub(crate) fn is_aux_session_id(id: &str) -> bool {
-    id.len() >= 4 && id[..4].eq_ignore_ascii_case("aux-")
+    // `get(..4)` instead of slicing: byte slicing panics when the index falls
+    // inside a multibyte UTF-8 char, and these guards run on client-supplied
+    // ids before any charset validation (e.g. the delete_session cascade
+    // resolves the aux mapping before the session manager's validate).
+    id.get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("aux-"))
 }
 
 /// Case-insensitive `sched-` prefix test — same alias-defeating argument as
-/// [`is_aux_session_id`], applied wherever a sched- identity decides a guard.
+/// [`is_aux_session_id`]. Applied at the guards this module owns (aux
+/// creation, sidecar validation, list/retention filters, sched- turn gates);
+/// the sched-side registries (`is_scheduled_session`, `purge_all_scheduled_
+/// side_maps`, `list_scheduled`) keep their pre-existing exact-match checks —
+/// scheduled profiles are only ever written through the validating API, so
+/// their registry keys cannot carry case variants.
 pub(crate) fn is_sched_session_id(id: &str) -> bool {
-    id.len() >= 6 && id[..6].eq_ignore_ascii_case("sched-")
+    // See is_aux_session_id for the boundary-safe `get(..6)`.
+    id.get(..6)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("sched-"))
 }
 
 pub(crate) fn validate_scheduled_task_id(id: &str) -> Result<()> {

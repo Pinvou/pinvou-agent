@@ -201,6 +201,11 @@ assert.doesNotMatch(chat, /`取消\$\{scene\.label\}`/);
 assert.doesNotMatch(chat, /:\s*'描述你想生成或调整的内容'/);
 assert.doesNotMatch(chat, />下载语音识别模型</);
 assert.match(chat, /data-testid="aux-chat-open"/);
+// Work-mode entry parity with code mode (round-9 minor-2): the entry pill
+// reflects the panel's real dock visibility via onActiveChange — no highlight
+// while another dock panel occludes the aux panel.
+assert.match(chat, /onActiveChange=\{setAuxChatDockActive\}/);
+assert.match(chat, /auxChatPanel && auxChatDockActive/);
 const auxChatPanel = source('features/aux-chat/AuxChatPanel.jsx');
 assert.match(auxChatPanel, /const copy = t\.uiAuxChat/);
 assert.match(auxChatPanel, /copy=\{conversationCopy\}/);
@@ -257,7 +262,7 @@ assert.match(restartBlock.slice(finallyClause), /} finally \{[\s\S]*?if \(genera
 // key-repeat Enter must be ignored outright. The latch must be released on
 // every outcome via finally, or the composer would lock after one failure.
 assert.match(auxChatPanel, /if \(!auxChat \|\| !sentAuxId \|\| !text \|\| busy \|\| restarting \|\| sendingRef\.current\) return;/);
-assert.match(auxChatPanel, /sendingRef\.current = true;[\s\S]*?await auxChat\.send\(sentAuxId, text\);[\s\S]*?\} finally \{\s*sendingRef\.current = false;/);
+assert.match(auxChatPanel, /sendingRef\.current = true;[\s\S]*?await auxChat\.send\(sentAuxId, text\);[\s\S]*?\} finally \{[\s\S]*?if \(auxIdRef\.current === sentAuxId\) \{\s*sendingRef\.current = false;/);
 assert.match(auxChatPanel, /if \(event\.repeat\) return;/);
 // Rebind resets restarting (round-7 m11): the restart invokes have no
 // transport timeout, so a promise that never settles must not latch the next
@@ -272,6 +277,15 @@ assert.match(rebindBlock, /setRestarting\(false\);/, 'the rebind effect must res
 // auxChat.send invoke (same no-transport-timeout class) must not latch sends
 // across later task rebinds either.
 assert.match(rebindBlock, /sendingRef\.current = false;/, 'the rebind effect must reset the send latch itself');
+// Stale-finally latch guard (round-9 minor-3): an old send's late finally
+// must not clear the latch a newer send on the rebound task relies on — the
+// release is gated on the binding still being the one the send was issued
+// for.
+assert.match(auxChatPanel, /finally \{[\s\S]{0,400}if \(auxIdRef\.current === sentAuxId\) \{\s*sendingRef\.current = false;\s*\}/);
+// Double-banner guard (round-9 minor-1): entering the restart flow must
+// clear a stale sendFailed too, or a failed send's "retry" banner renders
+// next to the ensure-failure banner after the binding was cleared.
+assert.match(restartBlock, /setRestarting\(true\);\s*setDiscardFailed\(false\);[\s\S]{0,400}setSendFailed\(false\);/);
 assert.match(source('features/pet/PetSettingsSection.jsx'), /t\.uiPetSettings/);
 const conversation = source('features/conversation/ConversationTimeline.jsx');
 assert.match(conversation, /conversationCopy\(copy\)/);

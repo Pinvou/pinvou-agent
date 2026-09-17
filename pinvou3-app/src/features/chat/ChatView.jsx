@@ -1418,9 +1418,23 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
       // the right dock layout, so the main conversation scroll position must
       // be restored, same as in CodexAcpView).
       const [auxChatPanel, setAuxChatPanel] = useState(null);
+      // The panel's real visibility in the dock (same mechanism as
+      // CodexAcpView's auxChatDockActive): when another dock panel covers the
+      // aux panel the entry pill does not highlight, and clicking it again
+      // brings the panel to the front via the openTick bump.
+      const [auxChatDockActive, setAuxChatDockActive] = useState(false);
       const auxChatPanelRequestRef = useRef(0);
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the sub-agent panel on session switch
       useEffect(() => { setSubagentPanel(null); }, [activeSessionId]);
+      // When the mount condition drops (sched- session / no active session),
+      // the panel unmounts outright and RightDockPanel's onActiveChange has no
+      // unmount cleanup, so the highlight would linger; reset it here and let
+      // the re-mounted panel report its real visibility again.
+      useEffect(() => {
+        if (auxChatPanel && activeSessionId && !activeSessionId.startsWith('sched-')) return;
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset dock highlight when the panel unmounts; one-shot mirror, same pattern as CodexAcpView
+        setAuxChatDockActive(false);
+      }, [auxChatPanel, activeSessionId]);
       const rememberScrollBeforeSubagentPanelChange = useCallback(() => {
         subagentPanelScrollRef.current = captureConversationScrollPosition(
           scrollRef.current,
@@ -2475,9 +2489,13 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
                   onFocus={() => prefetchChatPanel('auxChat')}
                   onClick={openAuxChatPanel}
                   className={`pointer-events-auto flex h-10 shrink-0 items-center gap-2 rounded-full border px-3 text-[14px] font-medium shadow-sm transition-colors ${
-                    theme === 'dark'
-                      ? 'border-white/10 bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]'
-                      : 'border-black/10 bg-white text-[#1F1F1F] hover:bg-[#F0F4F9]'
+                    auxChatPanel && auxChatDockActive
+                      ? theme === 'dark'
+                        ? 'border-blue-400/30 bg-blue-500/15 text-blue-300'
+                        : 'border-blue-500/20 bg-blue-500/10 text-blue-600'
+                      : theme === 'dark'
+                        ? 'border-white/10 bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]'
+                        : 'border-black/10 bg-white text-[#1F1F1F] hover:bg-[#F0F4F9]'
                   }`}
                 >
                   <MessageSquare size={16} />
@@ -3121,6 +3139,7 @@ const ToolWelcomeCard = ({ toolId, _theme, t, onSend }) => {
             <LazyAuxChatPanel
               sessionId={activeSessionId}
               activationKey={auxChatPanel.openTick}
+              onActiveChange={setAuxChatDockActive}
               t={t}
               theme={theme}
               onClose={closeAuxChatPanel}
