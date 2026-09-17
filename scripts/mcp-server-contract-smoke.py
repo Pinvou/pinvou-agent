@@ -175,8 +175,9 @@ def main():
         "patsnap-search",
         "wecom-bot",
         "tencent-docs",
+        "session-reader",
     }
-    print("✅ manifest: 11 个可安装 MCP 清单完整且目录 ID 一致")
+    print("✅ manifest: 12 个可安装 MCP 清单完整且目录 ID 一致")
 
     expected = {
         "weather": {"get_weather"},
@@ -190,6 +191,7 @@ def main():
         "pptx": {"make_pptx"},
         "gongwen": {"make_gongwen"},
         "wecom-bot": {"send_text", "send_markdown", "send_news", "send_image", "send_file"},
+        "session-reader": {"read_session", "list_sessions"},
     }
     for tool_id, names in expected.items():
         check_protocol(tool_id, names)

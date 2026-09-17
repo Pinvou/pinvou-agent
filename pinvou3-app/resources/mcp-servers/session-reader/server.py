@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""session_reader — pinvou3 内置只读会话查询 MCP server(零第三方依赖,只用 stdlib)。
+"""session_reader — pinvou3 只读会话查询 MCP server(零第三方依赖,只用 stdlib)。
+
+形态:插件中心(工具商店)预置市场包 session-reader(默认安装,用户可在工具商店
+卸载/重装);安装时包内容释放到 ~/.pinvou3/bundles/session-reader/mcp/ 并以该目录为
+cwd 拉起本脚本。
 
 配合「引用对话(Session Mention)」能力:用户在输入框引用另一个会话后,模型只拿到
 结构化元信息(sessionId + 标题 + 不可信契约),正文零注入;需要内容时主动调
@@ -25,9 +29,11 @@ read_session 按需、分页读取。
 协议:newline-delimited JSON-RPC 2.0 over stdio(对齐底座 mcp.rs 的 stdio
 transport:每条消息一行 JSON + '\n',read_line 读)。protocolVersion 2024-11-05。
 
-会话目录解析:优先命令行 --sessions-dir <abs>(应用注册 mcp.json 时写入,底座 env
-sanitize 不透传 PINVOU3_HOME,不能依赖环境变量);否则 PINVOU3_HOME 环境变量(开发/
-测试兜底);最后回退 ~/.pinvou3/sessions。
+会话目录解析:--sessions-dir <abs>(显式覆盖,主要供测试) > PINVOU3_HOME 环境变量
+(开发/测试兜底) > ~/.pinvou3/sessions。生产环境 PINVOU3_HOME 不设置,走 HOME 回退;
+底座 child_env sanitize 放行 HOME/USERPROFILE,不透传 PINVOU3_HOME,所以测试与
+开发侧的 PINVOU3_HOME 重定位对引擎拉起的实例不生效——这正是显式 --sessions-dir
+参数存在的原因。
 """
 import argparse
 import base64

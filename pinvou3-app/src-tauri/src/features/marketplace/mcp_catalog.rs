@@ -96,6 +96,19 @@ pub const MCP_PACKAGES: &[McpPackageSpec] = &[
         manifest_json: include_str!("../../../../resources/mcp-servers/tencent-docs/manifest.json"),
         files: &[],
     },
+    // 会话读取（本地 stdio，只读分页读取本机其他会话历史；「引用对话」能力的
+    // 模型侧查询工具。纯本地无网络、无凭据；默认安装，见
+    // marketplace::ensure_default_installed_mcp_tools）。
+    McpPackageSpec {
+        id: "session-reader",
+        manifest_json: include_str!(
+            "../../../../resources/mcp-servers/session-reader/manifest.json"
+        ),
+        files: &[(
+            "server.py",
+            include_str!("../../../../resources/mcp-servers/session-reader/server.py"),
+        )],
+    },
     // 企微群机器人（本地 stdio，包装企业微信官方群机器人 webhook 消息推送 API；
     // key 走凭据库 + ${ENV} 占位符，不落明文）。
     McpPackageSpec {
@@ -244,7 +257,7 @@ mod tests {
                 assert!(!content.is_empty(), "{} 的 {name} 为空", spec.id);
             }
         }
-        // 已知 11 个内置包
-        assert_eq!(MCP_PACKAGES.len(), 11);
+        // 已知 12 个内置包
+        assert_eq!(MCP_PACKAGES.len(), 12);
     }
 }

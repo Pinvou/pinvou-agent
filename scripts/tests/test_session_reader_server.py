@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""session_reader_server 的纯逻辑与 stdio 协议契约测试。
+"""session-reader(会话读取,工具商店预置市场包)server.py 的纯逻辑与 stdio 协议契约测试。
 
 覆盖「引用对话(Session Mention)」P2 验收点:
 - read_session 分页(最新在前、cursor 翻页连续无重复无遗漏);
@@ -26,12 +26,10 @@ ROOT = Path(__file__).resolve().parents[2]
 SERVER_PATH = (
     ROOT
     / "pinvou3-app"
-    / "src-tauri"
     / "resources"
-    / "common"
-    / "bundle"
     / "mcp-servers"
-    / "session_reader_server.py"
+    / "session-reader"
+    / "server.py"
 )
 
 spec = importlib.util.spec_from_file_location("session_reader_server", SERVER_PATH)
