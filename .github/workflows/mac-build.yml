@@ -62,7 +62,10 @@ jobs:
   changes:
     name: changes
     runs-on: ubuntu-22.04
-    timeout-minutes: 5
+    # 10min: checkout (fetch-depth: 0) plus the memory-setup wrapper's worst
+    # case (240s + 15s kill grace) must not turn the intended non-fatal
+    # degradation into a hard job timeout that fails `build` via `needs`.
+    timeout-minutes: 10
     outputs:
       bundle_chain: ${{ steps.filter.outputs.bundle_chain }}
     steps:

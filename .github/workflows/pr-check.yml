@@ -1065,8 +1065,9 @@ jobs:
         with:
           submodules: false
 
-      # Same policy as rust-test: the Linux Rust job must set up extra memory
-      # first (enforced by the gate policy).
+      # Same policy as rust-test: the Linux Rust job attempts extra memory
+      # first (best effort and non-fatal; only the wrapper structure is
+      # enforced by the gate policy).
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
         run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"

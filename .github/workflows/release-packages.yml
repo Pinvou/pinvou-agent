@@ -256,8 +256,9 @@ jobs:
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
         run: timeout --kill-after=15 240 sudo bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
-      # The ARM64 image is lightweight (~38G free at boot) and setup-node relies on hostedtoolcache,
-      # so only remove "base"-tier SDKs and leave /opt untouched.
+      # The ARM64 image has ample headroom (~34G free), so the base tier
+      # already clears the 24G floor; deleting the tool cache would buy
+      # little and only force setup-node to re-download Node afterwards.
       - name: Prepare disk space for the release build
         run: |
           sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
