@@ -138,8 +138,20 @@ impl SessionStore {
                 .and_then(|v| v.as_str())
                 .cmp(&b.get("id").and_then(|v| v.as_str()))
         });
-        if let Ok(json) = serde_json::to_string_pretty(&out) {
-            let _ = std::fs::write(file, json);
+        let json = match serde_json::to_string_pretty(&out) {
+            Ok(json) => json,
+            Err(error) => {
+                eprintln!("[sessions] serialize _pinned_sessions.json failed: {error}");
+                return;
+            }
+        };
+        // The pin file is the cross-process retention truth: a plain
+        // truncating write would let a concurrent durable-pin read observe
+        // an empty or partial file and fall back to the boot-time map,
+        // evicting a just-pinned session. Write through tmp+rename like the
+        // other session sidecars.
+        if let Err(error) = crate::platform::filesystem::atomic_write(&file, json.as_bytes()) {
+            eprintln!("[sessions] persist _pinned_sessions.json failed: {error}");
         }
     }
 
@@ -165,8 +177,9 @@ impl SessionStore {
     /// map loaded at boot — a GUI pin made after this process started must
     /// still protect the session from this process's sweep. Any missing,
     /// unreadable, or unparseable file keeps the boot-time map: the save path
-    /// deletes the file exactly when the map empties, and a torn read (the
-    /// file is written non-atomically) must never widen the eviction set.
+    /// deletes the file exactly when the map empties, and a torn read (an
+    /// externally corrupted or legacy non-atomic file) must never widen the
+    /// eviction set.
     pub(crate) fn durable_pinned_sessions(&self) -> std::collections::HashSet<String> {
         let file = crate::platform::paths::sessions_root().join(PINNED_SESSIONS_FILE);
         std::fs::read_to_string(&file)

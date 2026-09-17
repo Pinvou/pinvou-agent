@@ -258,6 +258,19 @@ impl SessionStore {
         Ok(())
     }
 
+    /// [`Self::set_mode`] for headless runners: additionally requires the
+    /// durable `_session_mode_states.json` write to land. A caller that
+    /// reports success while the mode would not survive the process hands
+    /// back a session that reopens in the stale mode (Plan → Yolo is the
+    /// unsafe divergence), so the runner treats a failed persist as a
+    /// failed run. The interactive GUI keeps the lenient [`Self::set_mode`]
+    /// path, where the in-memory switch already took effect.
+    pub fn set_mode_and_persist(&self, id: &str, mode: SerializableMode) -> Result<()> {
+        self.set_mode(id, mode)?;
+        self.save_session_mode_states_checked()
+            .context("persist session mode states")
+    }
+
     pub fn set_multi_agent(&self, id: &str, enabled: bool) -> Result<()> {
         let _io = self.multi_agent_flags_io.lock();
         let previous = {
@@ -843,20 +856,25 @@ impl SessionStore {
     /// 而 `load_session_mode_states` 对损坏文件是静默跳过——一次中断写入会让所有
     /// per-session mode 记录永久丢失，表现为「显式切过 mode，重启后回 Plan」。
     pub fn save_session_mode_states(&self) {
+        if let Err(error) = self.save_session_mode_states_checked() {
+            eprintln!("[sessions] {error}");
+        }
+    }
+
+    /// Fallible core of [`Self::save_session_mode_states`]: headless callers
+    /// need to know the durable mode map actually landed, so the serialize
+    /// and write failures are returned instead of only logged.
+    fn save_session_mode_states_checked(&self) -> Result<()> {
         let states_file = crate::platform::paths::sessions_root().join("_session_mode_states.json");
         let modes = self.session_mode_states.read();
         if modes.is_empty() {
             let _ = std::fs::remove_file(&states_file);
-            return;
+            return Ok(());
         }
-        let Ok(json) = serde_json::to_string_pretty(&*modes) else {
-            eprintln!("[sessions] serialize _session_mode_states.json failed");
-            return;
-        };
-        if let Err(error) = crate::platform::filesystem::atomic_write(&states_file, json.as_bytes())
-        {
-            eprintln!("[sessions] persist _session_mode_states.json failed: {error}");
-        }
+        let json = serde_json::to_string_pretty(&*modes)
+            .context("serialize _session_mode_states.json failed")?;
+        crate::platform::filesystem::atomic_write(&states_file, json.as_bytes())
+            .context("persist _session_mode_states.json failed")
     }
 
     /// 启动时恢复所有会话的 per-session mode：合并进 `mode_states`，
