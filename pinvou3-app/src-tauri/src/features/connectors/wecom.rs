@@ -244,6 +244,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         Ok(u) => u,
         Err(_) => {
             let _ = child.kill();
+            cc::reap_after_kill(&mut child);
             conn.set_pid(ID, None);
             let _ = std::fs::remove_dir_all(&qr_dir);
             // Cancel tree-kills the child → pipe EOF lands here: the user stopped
@@ -266,6 +267,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
     // here covers the race.)
     if conn.is_cancelled(ID) {
         let _ = child.kill();
+        cc::reap_after_kill(&mut child);
         conn.set_pid(ID, None);
         return Ok(());
     }
@@ -279,6 +281,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
     loop {
         if conn.is_cancelled(ID) {
             let _ = child.kill();
+            cc::reap_after_kill(&mut child);
             conn.set_pid(ID, None);
             return Ok(()); // 取消:静默
         }

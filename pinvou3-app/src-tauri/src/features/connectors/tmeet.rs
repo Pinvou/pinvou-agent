@@ -258,6 +258,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
         let now = std::time::Instant::now();
         if now >= deadline {
             let _ = child.kill();
+            cc::reap_after_kill(&mut child);
             conn.set_pid(ID, None);
             return Err(auth_failure_message(
                 &auth_lines,
@@ -306,6 +307,7 @@ fn phase_scan(app: &AppHandle) -> Result<(), String> {
     loop {
         if conn.is_cancelled(ID) {
             let _ = child.kill();
+            cc::reap_after_kill(&mut child);
             conn.set_pid(ID, None);
             return Ok(());
         }
