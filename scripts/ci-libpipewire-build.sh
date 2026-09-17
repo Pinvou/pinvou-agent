@@ -30,7 +30,7 @@ if command -v pkg-config >/dev/null 2>&1 &&
 fi
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+trap 'sudo rm -rf "$work"' EXIT
 
 sudo apt-get update -qq
 sudo apt-get install -y --no-install-recommends meson ninja-build ca-certificates curl
@@ -46,8 +46,10 @@ cd "$work/pipewire-$PW_VERSION"
 # Minimal header+core-lib build: every optional backend/plugin disabled; the
 # default spa-plugins set stays on (the pw modules reference it), which only
 # adds header-free core C plugins. Validated flags, meson >= 0.61.1 (jammy
-# ships 0.61.2), no further system dev packages required.
-sudo meson setup build --prefix=/usr/local -Dlibdir=lib \
+# ships 0.61.2), no further system dev packages required. setup/build run as
+# the job user (a root-owned build dir would break ninja and the cleanup
+# trap); only the install into /usr/local and ldconfig need sudo.
+meson setup build --prefix=/usr/local -Dlibdir=lib \
   -Dtests=disabled -Ddocs=disabled -Dman=disabled -Dexamples=disabled \
   -Dpipewire-alsa=disabled -Dpipewire-jack=disabled -Dsession-managers=[] \
   -Dsystemd=disabled -Ddbus=disabled -Dgstreamer=disabled -Dbluez5=disabled \
