@@ -207,9 +207,10 @@ jobs:
               - 'pinvou-cli/**/Cargo.toml'
               - 'pinvou-cli/**/Cargo.lock'
               - 'CodeWhale'
-              # 本 workflow 文件刻意不进 cli_rust(策略:workflow 改动不得联动全量
-              # app 测试;test_ci_gate_policy 锁定此项)。cli-test 自身的改动由下一条
-              # cli_rust PR / merge queue 验证。
+              # This workflow file is deliberately excluded from cli_rust
+              # (policy: workflow changes must not drag in the full app test
+              # suite; test_ci_gate_policy pins this). Changes to cli-test
+              # itself are validated by the next cli_rust PR / the merge queue.
               # The CLI path-depends on the app crate: leaf features exempt
               # from the full app suite (feedback, personas, pet) still gate
               # through the CLI suite, so a consumer-breaking change cannot
