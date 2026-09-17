@@ -27,9 +27,11 @@ use crate::platform::paths;
 
 use super::scheduled::ChatEngineState;
 use super::transcript::{looks_like_truncating_overwrite, transcript_revision};
-use super::validators::{
-    chat_session_file, generate_session_id, persisted_system_prompt, validate_session_id,
-};
+use super::validators::{generate_session_id, persisted_system_prompt, validate_session_id};
+// Only the benchmark-gated helper below consults the record path, so the
+// import must share its cfg to stay unused-warning-clean in plain builds.
+#[cfg(any(feature = "benchmark-hooks", test))]
+use super::validators::chat_session_file;
 use super::{
     CodeSessionPredicate, ExecutionRootResolver, SessionDeletedHook, SessionKind,
     SessionPurgedHook, SessionRoots, SessionStore, session_roots_for,
