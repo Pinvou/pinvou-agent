@@ -69,7 +69,15 @@ impl ConnectorGate {
         .await
         .map_err(|e| format!("spawn_blocking: {e}"))??;
         if show {
-            crate::features::marketplace::sync_deny_all_scopes_after_install(self.id);
+            // The DenyAll write takes the cross-process bundle lock, which can
+            // block on the desktop/CLI two-process pair; keep it off the async
+            // worker like the apply_skills lane above, and propagate the
+            // fail-closed refusal instead of silently skipping the sync.
+            tokio::task::spawn_blocking(move || {
+                crate::features::marketplace::sync_deny_all_scopes_after_install(self.id)
+            })
+            .await
+            .map_err(|e| format!("sync_deny_all join: {e}"))??;
         }
         Ok(json!({ "visible": show }))
     }
