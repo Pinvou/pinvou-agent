@@ -1,0 +1,114 @@
+# macOS 运行环境要求
+
+pinvou3 在 macOS 上支持 **Apple Silicon (arm64) + Intel (x86_64)**（Universal 二进制通吃）+ **macOS 11.0 (Big Sur) 及以上**。
+
+## 系统要求
+
+| 项目 | 要求 |
+|------|------|
+| 处理器 | Apple Silicon (arm64) + Intel (x86_64)，Universal 二进制通吃 |
+| macOS 版本 | 11.0 (Big Sur) 或更高 |
+| 磁盘空间 | 应用本体（不再打包语音引擎、不再按需下载语音模型；macOS 走系统 Speech 框架） |
+
+> 语音识别改用 macOS 系统 Speech 框架（系统自带，无需安装）。应用会按当前语言和系统识别器的运行时能力选择路径：支持端上识别时强制在本机处理，否则由 Apple Speech 在线服务处理。该能力不由 Apple Silicon / Intel 架构单独决定。当前 dmg 为 Universal 二进制（arm64 + x86_64），两类 Mac 均可直接运行。
+
+## 语音识别（系统自带，无需安装）
+
+macOS 语音输入直接调用系统 **Speech 框架**，无需额外安装引擎，也无需下载模型。应用会查询当前语言对应识别器的 `supportsOnDeviceRecognition`：
+
+- 支持时，要求系统在设备端识别
+- 不支持时，由 Apple Speech 在线服务处理，需联网且音频可能发送给 Apple
+
+端上能力取决于系统、语言和识别器状态，不能仅凭 Apple Silicon / Intel 架构判断。
+
+一期打包的 SenseVoice darwin-arm64 引擎与按需下载的 ASR 模型已全部移除。
+
+## 可选外部依赖
+
+文件解析、OCR 等功能依赖外部命令行工具。这些工具**不是必须的**——缺失时对应功能会优雅降级（跳过该格式，不影响其他功能），但安装后可获得完整体验。
+
+### 安装方式一：Homebrew（推荐）
+
+如果已安装 [Homebrew](https://brew.sh)，应用内「设置 → 依赖体检」页面提供一键安装按钮。
+
+```bash
+# 安装 Homebrew（如尚未安装）
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# 通过应用内「依赖体检」一键安装，或手动执行：
+brew install poppler pandoc tesseract tesseract-lang p7zip
+brew install --cask libreoffice
+```
+
+### 安装方式二：手动安装（无需 Homebrew）
+
+不想安装 Homebrew 的用户可从各工具官网下载：
+
+| 功能 | 工具 | 安装方式 | 官网 |
+|------|------|----------|------|
+| PDF 文本提取 | poppler (`pdftotext`) | Homebrew / 官网 | https://poppler.freedesktop.org |
+| PDF 渲染预览 | poppler (`pdftoppm`) | Homebrew / 官网 | https://poppler.freedesktop.org |
+| Office 文档转换 | LibreOffice | Homebrew cask / 官网 | https://www.libreoffice.org/download |
+| Markdown/文档转换 | pandoc | Homebrew / 官网 | https://pandoc.org/installing.html |
+| OCR（扫描件识别） | tesseract | Homebrew / 官网 | https://tesseract-ocr.github.io/tessdoc/Installation.html |
+| 压缩包解压 | 7-Zip (`7z`) | Homebrew (`p7zip`) / 官网 | https://www.7-zip.org |
+| 语音输入 | macOS 系统 Speech 框架 | 系统自带（无需安装） | — |
+| 邮件解析 (.msg) | msgconvert (Perl 模块) | `sudo cpan -i Email::Outlook::Message` | — |
+| 邮件解析 (.eml) | Python 3 | macOS 自带（需 Xcode Command Line Tools） | https://www.python.org/downloads |
+
+### Python 3 说明
+
+macOS 自带 `/usr/bin/python3`，但需要安装 **Xcode Command Line Tools**：
+
+```bash
+xcode-select --install
+```
+
+如果未安装 Command Line Tools，`/usr/bin/python3` 只是一个弹窗 stub，无法实际运行。
+
+## 依赖缺失时的行为
+
+| 功能 | 依赖缺失时的行为 |
+|------|------------------|
+| PDF 文本提取 | 跳过文本提取，尝试 OCR 兜底 |
+| PDF OCR | 跳过 OCR，该 PDF 标记为无法解析 |
+| Office 文档 | 跳过转换，返回提示信息 |
+| 压缩包 | 跳过解压，返回提示信息 |
+| 邮件 (.msg/.eml) | 跳过解析，返回提示信息 |
+| 语音输入 | 走系统 Speech 框架：支持时端上识别，否则使用 Apple Speech 在线服务 |
+
+**所有缺失均不会导致应用崩溃。** 文件解析等功能用到的系统工具在首次使用时检测一次并缓存；「设置 → 依赖体检」页面为实时检测。
+
+## 应用内依赖体检
+
+打开「设置 → 依赖体检」可查看各功能的依赖安装状态。检测是实时的（不走缓存），安装完工具后重新体检即可反映。
+
+- **Linux**：显示 `sudo apt install ...` 一键安装指引
+- **macOS**：检测到 Homebrew 时显示一键安装按钮；未检测到 Homebrew 时显示各工具官网链接
+- **Windows**：依赖已内置或需手动安装
+
+## GUI 启动与 PATH
+
+从 DMG、Finder 或 Spotlight 启动的 GUI 应用不继承终端 shell 的 PATH。pinvou3 会在启动时将以下目录加入进程 PATH：
+
+- `/opt/homebrew/bin`（Apple Silicon Homebrew）
+- `/usr/local/bin`（Intel Homebrew / 手动安装工具）
+- `/Applications/LibreOffice.app/Contents/MacOS`（LibreOffice cask 安装位置）
+
+如果工具安装在非标准路径，可通过设置 `PINVOU3_ASR_CMD` 等环境变量指向自定义路径。
+
+## 已知限制（后续 PR 跟进）
+
+以下为当前 macOS 分发链路的已知风险，集中登记以便后续 PR 跟踪：
+
+- **未签名 / ad-hoc 分发**：当前 dmg 为 ad-hoc 签名（`pinvou3-app/src-tauri/config/platforms/macos/tauri.conf.json` 的 `bundle.macOS.signingIdentity = "-"`），首次打开会被 Gatekeeper 隔离。用户需手动解除隔离：
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/pinvou3.app
+  ```
+  Developer ID + 公证（notarization）凭证将在后续 PR 接入，届时可省去此步并启用 Hardened Runtime（路线见 `pinvou3-app/src-tauri/packaging/macos/entitlements.plist` 顶部注释）。
+
+- **应用内更新为占位实现（OTA 尚未启用）**：本仓的应用内更新为占位实现——更新检查恒返回无可用更新，下载/安装返回「当前平台暂不支持应用内更新」，当前不存在线上 OTA 通道。本地打包校验脚本（`scripts/run-mac-verify.sh`）覆盖本地编译、单测、依赖探测与 bundle/plist 字段校验（含 CFBundleIdentifier / PlistBuddy），但不做任何 OTA / manifest / 签名校验；`latest.json` manifest 机制在 `features/updater/mod.rs` 中仅为历史设计（未实施）。将来启用 OTA（如经 pinvou.com 分发域名下发 manifest + dmg）时，需引入 manifest 离线签名（minisign / Developer ID）+ 客户端验签，不能仅靠 sha256 自校验——否则攻击者若控制分发域名，理论上可投递伪造的更新。
+
+- **Keychain 授权提示**：macOS 与 Linux/Windows 采用同一安全策略，API Key 优先写入系统凭据存储（macOS Keychain）；仅在系统凭据存储确实不可用时回退文件存储。当前 ad-hoc 签名的开发/测试构建身份不稳定，重建后可能再次触发 Keychain 授权提示；接入稳定签名身份后可改善这一体验。
+
+- **Intel Mac 支持**：dmg 已为 Universal 二进制（arm64 + x86_64），Intel Mac 可直接运行。语音识别已改用系统 Speech 框架，不再有 SenseVoice darwin-arm64 的二进制障碍；实际使用端上还是在线识别由当前语言对应的系统识别器能力决定。
