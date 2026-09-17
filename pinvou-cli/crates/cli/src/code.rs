@@ -2025,16 +2025,6 @@ fn login(
     let mut child = command.spawn().map_err(|error| {
         CliError::failed(format!("code login({agent}): cannot spawn CLI: {error}"))
     })?;
-    {
-        use std::io::Write;
-        let mut stdin = child.stdin.take();
-        if let (Some(code), Some(stdin)) = (code.as_deref(), stdin.as_mut()) {
-            let _ = writeln!(stdin, "{}", code.trim());
-            let _ = stdin.flush();
-        }
-        // Close stdin for non-code flows so CLI login prompts on the terminal
-        // fail fast instead of blocking on a pipe that never fills.
-    }
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     // The drains report through channels instead of join handles: a
@@ -2050,6 +2040,20 @@ fn login(
     std::thread::spawn(move || {
         let _ = err_tx.send(drain_stream(stderr));
     });
+    // The stdin write happens only after the drains are running: the code is
+    // up to the GUI's 4096-char max, which can exceed the OS pipe buffer, so
+    // a child that fills its own stdout before reading stdin would otherwise
+    // deadlock the write before the deadline loop below ever starts.
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take();
+        if let (Some(code), Some(stdin)) = (code.as_deref(), stdin.as_mut()) {
+            let _ = writeln!(stdin, "{}", code.trim());
+            let _ = stdin.flush();
+        }
+        // Close stdin for non-code flows so CLI login prompts on the terminal
+        // fail fast instead of blocking on a pipe that never fills.
+    }
     let deadline = Duration::from_secs(if agent == "kimi" { 1800 } else { 600 });
     let started = Instant::now();
     let mut timed_out = false;
@@ -2082,6 +2086,13 @@ fn login(
         .recv_timeout(Duration::from_secs(5))
         .unwrap_or_default();
     let combined = format!("{out_text}\n{err_text}");
+    // Exact-value strip of the authorization code this process wrote to the
+    // child's stdin before the heuristic pass: a short, non-secret-shaped
+    // code the vendor CLI echoed back would survive `redact_secret` alone.
+    let combined = match code.as_deref() {
+        Some(value) => combined.replace(value.trim(), "[REDACTED]"),
+        None => combined,
+    };
     if timed_out {
         // The buffered transcript would die with this error otherwise, and
         // its login link is exactly what the user needs to finish the flow.
