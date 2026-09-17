@@ -667,6 +667,7 @@ ready: 'PPT 生成を有効にしました。生成を開始します',
 failure: 'PPT 生成機能の準備に失敗しました。しばらくしてからもう一度お試しください。',
   },
   missingCapabilities: (ids) => `不足している機能：${ids}`,
+  attachmentPrompt: '添付内容に基づいて処理を続けてください。',
   // 個人ワークベンチ テンプレートチップの表示名。personal-workbench-scene.js の
   // title（中国語原文）は下書き一致とメッセージ meta で使うため正本のまま、
   // 描画時にテンプレート id でこちらのローカライズ名を解決する。

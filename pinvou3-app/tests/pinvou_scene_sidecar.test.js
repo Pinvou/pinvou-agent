@@ -247,7 +247,7 @@ function rec(name, pass, detail = '') {
 
   rec('附件-only 发送也会按当前专业子模式创建 scene meta',
     /if \(visibleOutgoing \|\| hasReadyAttachment\)/.test(chatViewSource) &&
-      /const scenePrompt = outgoing \|\| '请根据附件内容继续处理。';/.test(chatViewSource) &&
+      /const scenePrompt = outgoing \|\| t\.uiChatScenes\.attachmentPrompt;/.test(chatViewSource) &&
       /\}, \[activeSessionId, dataVisualizationSceneActive, documentWritingSceneActive, hasReadyAttachment, personalWorkbenchSceneActive, pptDesignSceneActive, t, visualPosterSceneActive\]\);/.test(chatViewSource),
     'ChatView sendChatMessage contract');
 
