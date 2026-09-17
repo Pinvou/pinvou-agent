@@ -11,14 +11,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use walkdir::{DirEntry, WalkDir};
 
-// `pub`: the CLI's workspace mirror differentially pins these (the mirror
-// is deleted only when the CLI adopts the real calls, and until then a drift
-// here must break the CLI build, not silently diverge).
-pub const LIST_LIMIT: usize = 500;
+// `pub` constants are consumed by the CLI (code.rs imports them directly, so
+// a drift breaks the CLI build); the `pub(crate)` ones have no external
+// consumer yet and stay closed until one exists.
+pub(crate) const LIST_LIMIT: usize = 500;
 pub const SEARCH_LIMIT: usize = 300;
-pub const WALK_LIMIT: usize = 20_000;
+pub(crate) const WALK_LIMIT: usize = 20_000;
 pub const PREVIEW_LIMIT: usize = 512 * 1024;
-pub const IMAGE_PREVIEW_LIMIT: u64 = 10 * 1024 * 1024;
+pub(crate) const IMAGE_PREVIEW_LIMIT: u64 = 10 * 1024 * 1024;
 pub const DIFF_LIMIT: usize = 1024 * 1024;
 
 pub const IGNORED_DIRECTORIES: &[&str] = &[

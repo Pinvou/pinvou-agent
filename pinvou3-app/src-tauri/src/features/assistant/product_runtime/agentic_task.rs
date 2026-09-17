@@ -378,9 +378,9 @@ pub async fn run_agentic_task(
     // order: schedule the late sweep, then the turn-gated delete) — but only
     // while it still wears the factory title: a GUI user who adopted the
     // session mid-run (renamed it in the session list) owns it now, and
-    // their rename must survive a failed run. An explicit
-    // PINVOU3_AGENT_TASK_KEEP_SESSION=0 sandbox stays unconditional — the
-    // harness opted into one-shot cleanup for its own store. Both cleanup
+    // their rename must survive a failed run — even when the harness set
+    // PINVOU3_AGENT_TASK_KEEP_SESSION=0, whose one-shot cleanup therefore
+    // carries the same adoption exception. Both cleanup
     // steps are best-effort and the delete result is discarded, so a failed
     // cleanup never masks the original error returned below. Failures
     // before prepare created anything degrade to a no-op: the delete of a

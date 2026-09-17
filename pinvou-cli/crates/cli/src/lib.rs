@@ -470,7 +470,11 @@ fn parse_gaia_submission(values: &[String]) -> Result<BenchmarkCommand, CliError
     let output = destination
         .or(legacy_output)
         .map(PathBuf::from)
-        .ok_or_else(|| CliError::usage("benchmark submission gaia requires --destination"))?;
+                .ok_or_else(|| {
+            CliError::usage(
+                "benchmark submission gaia requires --destination (note: the global --output                  flag claims the values 'json' and 'human' anywhere in argv — spell a                  destination literally named `json` as --output ./json)",
+            )
+        })?;
     Ok(BenchmarkCommand::SubmissionGaia { run_id, output })
 }
 

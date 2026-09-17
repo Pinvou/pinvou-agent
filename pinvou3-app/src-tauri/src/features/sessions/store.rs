@@ -50,15 +50,17 @@ pub(crate) const MAX_SESSIONS_PER_KIND: usize = 50;
 
 /// Placeholder title for a fresh chat session. One of the trilingual
 /// sentinels in the frontend's `DEFAULT_CHAT_TITLES`: the sidebar localizes
-/// it per UI language and the first send triggers the auto-rename. Sessions
-/// created headlessly share the same sentinel so they behave identically in
-/// the history list.
+/// it per UI language and the first send triggers the auto-rename. GUI-created
+/// sessions carry it; headless agent runs stamp the factory title below and
+/// only adopt this sentinel after the CLI's post-success rename to an honest
+/// label (or a GUI-side rename).
 pub(crate) const NEW_CHAT_TITLE: &str = "新对话";
 /// Title stamped onto freshly created eval sessions by
 /// `SessionStore::create_empty_with_id`. An agentic run deletes a failed
 /// fresh session only while it still wears this title, so a GUI user who
 /// adopted the session mid-run (renamed it in the session list) keeps it.
-pub const EVAL_SESSION_FACTORY_TITLE: &str = "临时评测";
+/// `pub(crate)`: the only consumer is the in-crate agentic runner.
+pub(crate) const EVAL_SESSION_FACTORY_TITLE: &str = "临时评测";
 
 impl SessionStore {
     /// Repair persisted tool histories only at process boot, before any

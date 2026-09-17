@@ -269,8 +269,8 @@ fn run_agent(
     let report = pinvou_product_backend::run_agentic_task(request)
         .map_err(|error| CliError::failed(format!("agent_run_failed: {error:#}")))?;
     // A fresh run persists its session under the eval-session factory title
-    // ("临时评测"), which then reads as a stray user chat in the GUI's
-    // session list. Give CLI-created sessions an honest label; best-effort —
+    // (EVAL_SESSION_FACTORY_TITLE), which then reads as a stray user chat in
+    // the GUI's session list. Give CLI-created sessions an honest label; best-effort —
     // a failed rename is cosmetic and must not fail the report. A
     // caller-provided session keeps its own title. Success path only: the
     // rename needs `report.session_id`, which a failed run never produces.

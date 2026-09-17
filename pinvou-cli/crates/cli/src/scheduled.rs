@@ -1384,6 +1384,10 @@ fn require_object_definition(id: &str, def: &serde_json::Value) -> Result<(), Cl
         return Err(malformed());
     }
     // Required by `AutomationRecord` without #[serde(default)]/Option.
+    // Type-checked, not just presence-checked: a non-string `name`/`id` (or a
+    // numeric timestamp) would slip past the gate and render as a phantom
+    // task with empty strings, the exact shape the GUI's serde rejects the
+    // whole record for.
     for field in [
         "id",
         "name",
@@ -1393,9 +1397,24 @@ fn require_object_definition(id: &str, def: &serde_json::Value) -> Result<(), Cl
         "created_at",
         "updated_at",
     ] {
-        if def.get(field).map(serde_json::Value::is_null) != Some(false) {
+        if def.get(field).map(serde_json::Value::is_string) != Some(true) {
             return Err(malformed());
         }
+    }
+    // Defense in depth: the id doubles as the on-disk workspace directory
+    // name, so a file-supplied id must be a single path component even when
+    // the caller reached this def without an id argument check. A component
+    // violation is the same malformed-file failure as above (the store is
+    // broken; only its fix is user-actionable), not a usage error.
+    let id = def
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let mut components = std::path::Path::new(id).components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+    {
+        return Err(malformed());
     }
     Ok(())
 }
@@ -2308,6 +2327,8 @@ fn update(
 /// derived from the task id and persisted as the single cwd entry.
 fn ensure_workspace(store_holder: &TaskStore, def: &mut serde_json::Value) -> Result<(), CliError> {
     let id = str_field(def, "id").unwrap_or("").to_owned();
+    // `require_object_definition` already rejected non-component ids at the
+    // read gate; this join therefore only ever sees validated ids.
     let workspace = store_holder.workspace_dir(&id);
     std::fs::create_dir_all(&workspace).map_err(|error| {
         CliError::failed(format!(
