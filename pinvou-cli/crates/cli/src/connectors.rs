@@ -71,10 +71,10 @@ const USAGE: &str =
     "usage: pinvou connectors <status|ensure-cli|enable|disable|logout|apply-skills|connect|ima>";
 
 /// Semantic-version floor per connector, mirroring the `*_MIN_VERSION`
-/// gates in wecom.rs (1.1.0 command-model baseline) and tmeet.rs (1.0.15).
-const WECOM_MIN_VERSION: (u64, u64, u64) = (1, 1, 0);
-const TMEET_MIN_VERSION: (u64, u64, u64) = (1, 0, 15);
-const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.15";
+/// gates in wecom.rs (1.2.1 skill baseline) and tmeet.rs (1.0.18 npm spec).
+const WECOM_MIN_VERSION: (u64, u64, u64) = (1, 2, 1);
+const TMEET_MIN_VERSION: (u64, u64, u64) = (1, 0, 18);
+const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.18";
 
 /// ima skill installed by `ima_connect` (mirror of ima.rs `IMA_SKILL_ID`).
 const IMA_SKILL_ID: &str = "ima-skills";
