@@ -3500,14 +3500,9 @@ mod tests {
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Plain,
             &["feishu".to_string()],
-<<<<<<< HEAD
-        );
-        let rs = bridge.scope_deny_ruleset_with("sess-plain", Vec::new());
-=======
         )
         .unwrap();
-        let rs = bridge.cli_deny_ruleset("sess-plain");
->>>>>>> 14ae7df24 (fix(marketplace): fail closed when the bundle lock is unavailable)
+        let rs = bridge.scope_deny_ruleset_with("sess-plain", Vec::new());
         let mut cmds: Vec<&str> = rs
             .ask_rules
             .iter()
@@ -3557,14 +3552,9 @@ mod tests {
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Code,
             &["dingtalk".to_string()],
-<<<<<<< HEAD
-        );
-        let rs = bridge.scope_deny_ruleset_with("sess-code", Vec::new());
-=======
         )
         .unwrap();
-        let rs = bridge.cli_deny_ruleset("sess-code");
->>>>>>> 14ae7df24 (fix(marketplace): fail closed when the bundle lock is unavailable)
+        let rs = bridge.scope_deny_ruleset_with("sess-code", Vec::new());
         let mut cmds: Vec<&str> = rs
             .ask_rules
             .iter()
@@ -3622,14 +3612,9 @@ mod tests {
         crate::features::marketplace::save_disabled_connectors_for(
             ConnectorScope::Plain,
             &["feishu".to_string()],
-<<<<<<< HEAD
-        );
-        let rs = bridge.scope_deny_ruleset_with("sess-plain", Vec::new());
-=======
         )
         .unwrap();
-        let rs = bridge.cli_deny_ruleset("sess-plain");
->>>>>>> 14ae7df24 (fix(marketplace): fail closed when the bundle lock is unavailable)
+        let rs = bridge.scope_deny_ruleset_with("sess-plain", Vec::new());
 
         let engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![rs]);
         let check = |command: &str| {

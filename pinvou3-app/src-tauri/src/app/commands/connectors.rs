@@ -39,9 +39,14 @@ pub async fn set_disabled_connectors(
 #[tauri::command]
 pub async fn get_disabled_connectors(scope: Option<String>) -> Result<Vec<String>, String> {
     let scope = parse_connector_scope(scope.as_deref())?;
-    Ok(crate::features::marketplace::load_disabled_connectors_for(
-        scope,
-    ))
+    // The read takes the cross-process bundle lock, which can block on the
+    // desktop/CLI two-process pair; keep it off the async worker like the
+    // neighboring writers.
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::load_disabled_connectors_for(scope)
+    })
+    .await
+    .map_err(|e| format!("get_disabled_connectors join: {e}"))
 }
 
 /// 商店「管理可见性」：写某 scope 被「不可见」的包 id 列表。控制 composer 列表显隐 +
@@ -69,7 +74,12 @@ pub async fn set_bundle_visibility(
 #[tauri::command]
 pub async fn get_bundle_visibility(scope: Option<String>) -> Result<Vec<String>, String> {
     let scope = parse_connector_scope(scope.as_deref())?;
-    Ok(crate::features::marketplace::load_hidden_bundles_for(scope))
+    // Same cross-process bundle lock as the writers; stay off the worker.
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::load_hidden_bundles_for(scope)
+    })
+    .await
+    .map_err(|e| format!("get_bundle_visibility join: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -85,7 +95,14 @@ pub async fn set_project_skills_enabled(
     app: AppHandle,
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
-    crate::features::marketplace::skill_scope::set_project_skills_enabled(enabled)?;
+    // The write takes the cross-process bundle lock, which can block
+    // indefinitely while another GUI/CLI process holds it; keep it off the
+    // async worker like the adjacent visibility/skill writes.
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::skill_scope::set_project_skills_enabled(enabled)
+    })
+    .await
+    .map_err(|e| format!("set_project_skills_enabled join: {e}"))??;
     // 开关影响 code 会话组合目录：重写在线会话组合目录 + 热刷 load_skill 隐藏
     // 判定 + execpolicy 规则集（项目级 skills 重新纳入 deny/allow 集合），并广播
     // 工具变更（其它窗口/实例借此刷新开关状态）。
@@ -96,7 +113,10 @@ pub async fn set_project_skills_enabled(
 /// 项目级 skills 开关状态（默认关）。
 #[tauri::command]
 pub async fn get_project_skills_enabled() -> Result<bool, String> {
-    Ok(crate::features::marketplace::skill_scope::project_skills_enabled())
+    // Same cross-process bundle lock as the writers; stay off the worker.
+    tokio::task::spawn_blocking(crate::features::marketplace::skill_scope::project_skills_enabled)
+        .await
+        .map_err(|e| format!("get_project_skills_enabled join: {e}"))
 }
 
 /// 解析前端传入的 scope:缺省/空 = plain;已注册模式名(`SessionMode` 的

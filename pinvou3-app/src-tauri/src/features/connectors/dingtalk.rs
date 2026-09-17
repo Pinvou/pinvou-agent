@@ -436,7 +436,14 @@ pub async fn dingtalk_apply_skills() -> Result<Value, String> {
     .map_err(|e| format!("spawn_blocking: {e}"))??;
     // scope 门禁同步：见 feishu_apply_skills 同名注释（code 默认关语义对齐）。
     if show {
-        crate::features::marketplace::sync_deny_all_scopes_after_install("dingtalk")?;
+        // The DenyAll write takes the cross-process bundle lock, which can
+        // block on the desktop/CLI two-process pair; reuse this function's
+        // spawn_blocking lane instead of the async worker.
+        tokio::task::spawn_blocking(move || {
+            crate::features::marketplace::sync_deny_all_scopes_after_install("dingtalk")
+        })
+        .await
+        .map_err(|e| format!("sync_deny_all join: {e}"))??;
     }
     Ok(json!({ "visible": show }))
 }
