@@ -945,6 +945,24 @@ impl SkillMarketplaceManager {
         zip_path: &str,
         display_name: &str,
     ) -> Result<String, String> {
+        self.import_package_named_gated(zip_path, display_name, &|_| Ok(()))
+    }
+
+    /// Same pipeline with a pre-land gate hook: `pre_land` runs once the skill
+    /// name (= package id) is derived and fully validated but BEFORE any
+    /// content lands on disk or replaces an existing installation. A refusal
+    /// aborts the import with nothing touched — the DenyAll consent gate uses
+    /// this to register the deny entry before the skill is exposed (#515/#517
+    /// review round 4): uninstalling an already-landed re-import would destroy
+    /// the user's pre-existing copy (import overwrites in place), while a
+    /// deny-first refusal loses nothing. Runs before the same-id import lock
+    /// on purpose: the scope RMW lock and the import lock are never nested.
+    pub fn import_package_named_gated(
+        &self,
+        zip_path: &str,
+        display_name: &str,
+        pre_land: &dyn Fn(&str) -> Result<(), String>,
+    ) -> Result<String, String> {
         let file = std::fs::File::open(zip_path).map_err(|e| format!("打开 zip: {e}"))?;
         let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("读取 zip: {e}"))?;
 
@@ -1022,6 +1040,12 @@ impl SkillMarketplaceManager {
                 "技能 '{name}' 已存在于包 '{other}'，请先卸载该包或改名后重试"
             ));
         }
+
+        // Pre-land gate hook: the name is final and validated here, nothing
+        // has been written yet. A refusal aborts the whole import before any
+        // content lands or an existing installation is replaced (deny-first
+        // consent gate, #517 review round 4).
+        pre_land(&name)?;
 
         // 自此持同 id import_lock 至函数尾：staged 暂存目录就位于共享路径
         // `bundles/<name>/skills/` 之下，锁外 staging 会与统一导入的 rename、

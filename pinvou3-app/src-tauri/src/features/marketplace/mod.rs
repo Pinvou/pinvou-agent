@@ -748,13 +748,17 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     pub fn installed_ids(&self) -> Vec<String> {
         let content = match std::fs::read_to_string(&self.installed_file) {
             Ok(c) => c,
-            // 首次安装前文件缺失：空清单就是真实状态。
+            // Missing file before the first install: an empty list IS the true state.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
             Err(e) => {
-                // 文件存在却读不出（AV/权限类瞬时态）时静默返回空，会让未初始化
-                // DenyAll scope 的「默认全禁已装包」缩水成仅内置包（fail-open 方向）。
-                // 按下方损坏分支同款口径从 mcp.json 只读重建（不回写 installed.json），
-                // 把失败方向偏保守；不可读本身照样响亮记日志。
+                // Returning an empty list when the file exists but cannot be
+                // read (AV/permission transient) would silently shrink the
+                // uninitialized DenyAll scope's "deny every installed package"
+                // default to builtins only (fail-open direction). Recover ids
+                // read-only from mcp.json (no installed.json rewrite), same
+                // discipline as the corrupt-parse branch below, to keep the
+                // failure direction conservative; the unreadable file itself
+                // is still logged loudly.
                 eprintln!(
                     "[marketplace] installed.json unreadable: {e}; recovering ids from mcp.json"
                 );
