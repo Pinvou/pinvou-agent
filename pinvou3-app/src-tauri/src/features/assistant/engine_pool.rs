@@ -81,6 +81,16 @@ fn should_reap_idle_engine(
         && idle_for_secs >= IDLE_EVICT_AFTER_SECS
 }
 
+/// Rebind eviction recheck (pure function, unit-testable; review #463
+/// eviction-tail TOCTOU): only genuine turn activity blocks the reclaim — an
+/// in-flight/reserved turn (reserve occupies the lifecycle before the gate is
+/// taken) or a running scheduled round. Unlike the idle reaper there is no
+/// idle-duration or active-session gate: a rebound session must be reclaimed
+/// even when recently active, so the next turn respawns in the new directory.
+fn rebind_evictable(turn_active: bool, scheduled_running: bool) -> bool {
+    !turn_active && !scheduled_running
+}
+
 /// `evict_if_idle` 的锁内复核（纯函数，便于单测）：快照后活动时钟必须未前进
 /// （turn 提交与终态收口都会推它前进），且按现值仍满足空闲回收条件；任一不
 /// 满足即跳过本轮回收，留待下一次巡检。
@@ -359,6 +369,42 @@ where
     };
     reclaim(entry).await;
     true
+}
+
+/// Rebind eviction tail skeleton (review #463 M1 + eviction-tail TOCTOU),
+/// extracted like [`evict_if_idle_with_gates`] so bare Default components and
+/// probe closures give deterministic tests: the idle-gated take runs under
+/// the turn gate + runtime lock, and a successful take ALSO drops the
+/// per-session shell manager under the same gates. The manager's cwd is
+/// pinned at construction and `SessionShellManagers::for_session` is
+/// `entry().or_insert_with`, so a surviving manager would keep executing bare
+/// shell commands in the old directory while the rebuilt engine runs in the
+/// new one — split-brain inside one turn (M1). The reset happens inside the
+/// gated section so a new turn cannot slip in between and rebuild the
+/// manager against the new workspace only to have it dropped afterwards.
+async fn rebind_evict_with_gates<T, Take, TakeFut, Reclaim, ReclaimFut>(
+    turn_locks: &SessionTurnLocks,
+    runtime_locks: &SessionTurnLocks,
+    shell_managers: &SessionShellManagers,
+    session_id: &str,
+    take_entry: Take,
+    reclaim: Reclaim,
+) -> bool
+where
+    Take: FnOnce() -> TakeFut,
+    TakeFut: Future<Output = Option<T>>,
+    Reclaim: FnOnce(T) -> ReclaimFut,
+    ReclaimFut: Future<Output = ()>,
+{
+    evict_if_idle_with_gates(turn_locks, runtime_locks, session_id, take_entry, |entry| {
+        let shell_managers = shell_managers.clone();
+        let session_id = session_id.to_string();
+        async move {
+            reclaim(entry).await;
+            shell_managers.remove(&session_id);
+        }
+    })
+    .await
 }
 
 /// 两个 epoch 快照是否仍指向同一轮次，供 cancel 跨 turn_lock 边界守护使用。
@@ -1469,6 +1515,46 @@ impl EnginePool {
                 }
             },
             |entry| self.reclaim_engine_entry(session_id, entry),
+        )
+        .await
+    }
+
+    /// Rebind eviction (review #463 M1 + eviction-tail TOCTOU): same turn
+    /// gate + runtime lock as [`evict`](Self::evict), but the entry is taken
+    /// only when the session is still idle at recheck time — a turn that
+    /// started after the command layer's post-migration recheck keeps its
+    /// engine instead of being cancelled into an Interrupted terminal.
+    /// A successful take also resets the per-session shell manager (via
+    /// [`rebind_evict_with_gates`]): its cwd is pinned at construction, so a
+    /// surviving manager would keep running bare shell commands in the old
+    /// directory while the rebuilt engine runs in the new one. The lifecycle
+    /// is deliberately NOT forgotten — an unsubmitted reservation must
+    /// survive and submit to the rebuilt engine (same semantics as reclaim).
+    ///
+    /// The take yields `Some(None)` for an idle session with no resident
+    /// engine: there is nothing to reclaim, but the shell manager may still
+    /// exist from an earlier turn and must be reset. Returns false only when
+    /// the session was busy and nothing was touched.
+    pub async fn evict_if_idle_for_rebind(&self, session_id: &str) -> bool {
+        rebind_evict_with_gates(
+            &self.turn_locks,
+            &self.runtime_model_locks,
+            &self.shell_managers,
+            session_id,
+            || async {
+                if !rebind_evictable(
+                    self.is_turn_active(session_id),
+                    self.scheduled_running_sessions.lock().contains(session_id),
+                ) {
+                    return None;
+                }
+                Some(self.entries.lock().await.remove(session_id))
+            },
+            |entry| async move {
+                if let Some(entry) = entry {
+                    self.reclaim_engine_entry(session_id, entry).await;
+                }
+            },
         )
         .await
     }
@@ -2855,10 +2941,10 @@ mod scheduled_model_tests {
         TranscriptOperation, cancel_turn_with_gates, default_model_for_new_session_from,
         delete_chat_session_with_gate, delete_scheduled_run_with_gate, delete_then_forget,
         evict_if_idle_with_gates, generation_matches, identity_for_active_model,
-        identity_for_saved_model, quiesce_engine_before_reclaim, resolve_eval_model_selection_from,
-        resolve_runtime_model_override, resolve_scheduled_model, resolve_spawn_model,
-        scheduled_profile_after_turn_gate, should_still_reap_after_snapshot, should_sync_session,
-        user_display_message,
+        identity_for_saved_model, quiesce_engine_before_reclaim, rebind_evict_with_gates,
+        rebind_evictable, resolve_eval_model_selection_from, resolve_runtime_model_override,
+        resolve_scheduled_model, resolve_spawn_model, scheduled_profile_after_turn_gate,
+        should_still_reap_after_snapshot, should_sync_session, user_display_message,
     };
     use crate::features::assistant::runtime_model::PreparedRuntimeModel;
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
@@ -3138,6 +3224,155 @@ mod scheduled_model_tests {
         assert!(evicted, "快照后无活动的空闲会话必须照常回收");
         assert!(!entry_present.load(Ordering::Acquire));
         assert!(reclaimed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn rebind_evictable_blocks_only_real_activity() {
+        // review #463: rebind eviction has no idle-duration or active-session
+        // gate — only an in-flight/reserved turn or a running scheduled round
+        // blocks the reclaim.
+        assert!(rebind_evictable(false, false));
+        assert!(!rebind_evictable(true, false));
+        assert!(!rebind_evictable(false, true));
+        assert!(!rebind_evictable(true, true));
+    }
+
+    #[tokio::test]
+    async fn rebind_eviction_resets_shell_manager_for_idle_session() {
+        // review #463 M1 regression: the per-session ShellManager pins its cwd
+        // at construction and `for_session` is entry().or_insert_with, so a
+        // manager surviving the rebind eviction would keep executing bare
+        // shell commands in the OLD directory while the rebuilt engine runs
+        // in the new one. The eviction tail must drop it under the gates.
+        let turn_locks = SessionTurnLocks::default();
+        let runtime_locks = SessionTurnLocks::default();
+        let shell_managers = SessionShellManagers::default();
+        let lifecycles = SessionTurnLifecycles::default();
+        let sid = "session-rebind-evict-idle";
+        let _lifecycle = lifecycles.for_session(sid);
+        shell_managers.for_session(sid, PathBuf::from("D:/old-root"));
+
+        // Same take sequence as EnginePool::evict_if_idle_for_rebind: idle
+        // recheck via rebind_evictable, then the entry removal. A resident
+        // engine entry is reclaimed…
+        let reclaimed = Arc::new(AtomicBool::new(false));
+        let probe_reclaim = reclaimed.clone();
+        let probe_lifecycles = lifecycles.clone();
+        let evicted = rebind_evict_with_gates(
+            &turn_locks,
+            &runtime_locks,
+            &shell_managers,
+            sid,
+            move || {
+                let probe_lifecycles = probe_lifecycles.clone();
+                async move {
+                    let turn_active = probe_lifecycles.get(sid).is_some_and(|lc| lc.is_active());
+                    rebind_evictable(turn_active, false).then_some(Some(()))
+                }
+            },
+            move |_| {
+                probe_reclaim.store(true, Ordering::Release);
+                async {}
+            },
+        )
+        .await;
+
+        assert!(evicted, "idle session must be evicted");
+        assert!(reclaimed.load(Ordering::Acquire));
+        assert!(
+            shell_managers.get(sid).is_none(),
+            "shell manager must be reset so the next turn rebuilds it against the rebound workspace"
+        );
+
+        // …and an idle session WITHOUT a resident engine still gets its shell
+        // manager reset (take yields Some(None)): the manager may exist from
+        // an earlier turn even though the engine was already reclaimed.
+        shell_managers.for_session(sid, PathBuf::from("D:/old-root"));
+        let evicted = rebind_evict_with_gates(
+            &turn_locks,
+            &runtime_locks,
+            &shell_managers,
+            sid,
+            || async { Some(None::<()>) },
+            |_| async {},
+        )
+        .await;
+        assert!(evicted);
+        assert!(
+            shell_managers.get(sid).is_none(),
+            "shell manager reset must not depend on a resident engine entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn rebind_eviction_skips_turn_started_after_recheck() {
+        // review #463 eviction-tail TOCTOU regression: a turn that starts
+        // between the command layer's post-migration recheck and the eviction
+        // must NOT be killed — the idle recheck under the turn gate observes
+        // the reservation and skips the session entirely (no reclaim, no
+        // shell manager reset), leaving it for the post-busy report.
+        let turn_locks = SessionTurnLocks::default();
+        let runtime_locks = SessionTurnLocks::default();
+        let shell_managers = SessionShellManagers::default();
+        let lifecycles = SessionTurnLifecycles::default();
+        let sid = "session-rebind-evict-busy";
+        let lifecycle = lifecycles.for_session(sid);
+        shell_managers.for_session(sid, PathBuf::from("D:/old-root"));
+
+        // A new turn wins the turn gate before the eviction (send path holds
+        // the gate while submitting); the eviction queues outside.
+        let gate = turn_locks.for_session(sid).await;
+        let blocker = gate.lock().await;
+
+        let reclaimed = Arc::new(AtomicBool::new(false));
+        let evict_locks = turn_locks.clone();
+        let evict_runtime_locks = runtime_locks.clone();
+        let evict_shell_managers = shell_managers.clone();
+        let evict_lifecycles = lifecycles.clone();
+        let probe_reclaim = reclaimed.clone();
+        let eviction = tokio::spawn(async move {
+            rebind_evict_with_gates(
+                &evict_locks,
+                &evict_runtime_locks,
+                &evict_shell_managers,
+                sid,
+                move || {
+                    let evict_lifecycles = evict_lifecycles.clone();
+                    async move {
+                        let turn_active =
+                            evict_lifecycles.get(sid).is_some_and(|lc| lc.is_active());
+                        rebind_evictable(turn_active, false).then_some(())
+                    }
+                },
+                move |_| {
+                    probe_reclaim.store(true, Ordering::Release);
+                    async {}
+                },
+            )
+            .await
+        });
+        tokio::task::yield_now().await;
+
+        // The turn starts after the command layer's recheck: reserve (does
+        // not take the gate) flips the lifecycle to active.
+        let reservation = lifecycle.reserve().expect("new turn reserve");
+        drop(blocker);
+        drop(gate);
+
+        let evicted = eviction.await.expect("eviction task joins");
+        assert!(!evicted, "a session with a fresh turn must be skipped");
+        assert!(
+            !reclaimed.load(Ordering::Acquire),
+            "no reclaim for a session that became busy"
+        );
+        assert!(
+            shell_managers.get(sid).is_some(),
+            "shell manager survives a skipped eviction"
+        );
+        assert!(
+            reservation.ensure_active().is_ok(),
+            "the in-flight reservation must stay valid"
+        );
     }
 
     fn model(id: &str, wire_name: &str) -> SavedModel {

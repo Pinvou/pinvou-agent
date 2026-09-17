@@ -1,9 +1,10 @@
-//! 项目层命令:跨 store 组合与会话存在性校验在此层完成,
-//! `features::projects` 本体不依赖 sessions/codex_acp(依赖方向约束)。
+//! Project-layer commands: cross-store composition and session-existence
+//! checks live here; `features::projects` itself does not depend on
+//! sessions/codex_acp (dependency-direction constraint).
 //!
-//! Phase 0 暴露:list/create/update/delete/move。目录重绑定
-//! (`rebind_workspace_root`)属 Phase 4,其栅栏(活跃回合拒绝、baseline
-//! 重采集)需要 AcpPool 写路径集成,不随本层首发。
+//! Exposed: list/create/update/delete/move, plus the directory rebind
+//! (`rebind_workspace_root`) with its fences (active-turn rejection, busy
+//! recheck, idle-gated runtime eviction, baseline recapture).
 
 use std::path::{Path, PathBuf};
 
@@ -18,12 +19,14 @@ use crate::features::sessions::SessionStore;
 
 use super::sessions::ensure_chat_session;
 
-/// 项目事件只走本地 emit:projects 域按 bridge 契约是桌面端专属,
-/// remote-control 正式支持项目列表之前不转发(评审 #447 finding 11:在
-/// 消费方出现前不转发)。转发被拒的实际位置是 `policy.events` 闸门
-/// (remote_control/manager 的 publish_event_inner),拒绝经
-/// `forward_local_event` 记日志;`RUST_FORWARDED_EVENTS` 只负责去重
-/// Frontend 来源的回声,与本裁决无关(评审 #463 minor:此前注释归属有误)。
+/// Project events are only emitted locally: the projects domain is
+/// desktop-only per the bridge contract and is not forwarded until
+/// remote-control officially supports project lists (review #447 finding 11:
+/// do not forward before a consumer exists). The actual rejection point is
+/// the `policy.events` gate (publish_event_inner in remote_control/manager),
+/// logged via `forward_local_event`; `RUST_FORWARDED_EVENTS` only dedupes
+/// echoes from Frontend sources and is unrelated to this decision (review
+/// #463 minor: a previous comment attributed this incorrectly).
 fn emit_project_event(app: &AppHandle, event: &str, action: &str) {
     let _ = app.emit(event, serde_json::json!({ "action": action }));
 }
@@ -198,37 +201,60 @@ pub async fn move_session_to_project(
     Ok(outcome)
 }
 
-/// rebind_workspace_root 的结果汇报:逐会话结果 + 受影响项目。重绑定幂等,
-/// 失败项可直接重试(候选快照含"已在 to 下但元数据未同步"的重试项,
-/// 已成功的部分重跑为空操作)。
+/// Result report of rebind_workspace_root: per-session outcomes + affected
+/// projects. Rebind is idempotent and failures can be retried directly (the
+/// candidate snapshot includes retry items "already under to but metadata
+/// not synced"; the succeeded parts rerun as no-ops).
 #[derive(Debug, Clone, Serialize)]
 pub struct RebindWorkspaceReport {
     pub rebound_session_ids: Vec<String>,
     pub failed_session_ids: Vec<String>,
     pub affected_project_ids: Vec<String>,
-    /// 迁移完成后复查发现已进入活跃回合的会话:它们的绑定已平移,但回合
-    /// 可能仍对着旧目录执行,前端据此提示必要时空闲后重试一次。
+    /// Sessions found in an active turn by the post-migration recheck or
+    /// skipped by the idle-gated eviction: their bindings moved, but a turn
+    /// may still execute against the old directory. The frontend suggests
+    /// one retry when idle — the retry feeds these sessions back as explicit
+    /// eviction candidates, so the remedy is real (review #463 M2).
     #[serde(default)]
     pub post_busy_session_ids: Vec<String>,
 }
 
-/// `from` 入参校验:空串与文件系统根(Unix `/`、Windows 盘符根——两者都
-/// 没有 parent)拒绝。空前缀经折叠键匹配会命中一切记录——`from=""` 是全量
-/// 重写,`from="/"` 配合 confirm-existing 是全量重安置,都不是重绑定语义
-/// (评审 #463 minor)。
+/// `from` validation: empty, relative, and filesystem-root paths are
+/// rejected. An empty prefix matches every record under folded-key matching
+/// (a full rewrite), a root `from` with confirm-existing relocates
+/// everything, and a relative `from` diverges the storage lanes (the
+/// projects lane absolutizes it through ancestor resolution while the codex
+/// lane folds it raw) — none of these is a rebind (review #463 minor).
 fn validate_rebind_from(from: &Path) -> Result<(), String> {
-    if from.as_os_str().is_empty() || from.parent().is_none() {
+    if from.as_os_str().is_empty() || !from.is_absolute() || from.parent().is_none() {
         return Err(format!(
-            "rebind_workspace_root: from 必须是非根目录的路径，收到 {}",
+            "rebind_workspace_root: from 必须是绝对的非根目录路径，收到 {}",
             from.display()
         ));
     }
     Ok(())
 }
 
-/// `to` 不得位于 `from` 之内(相等由调用方先行处理):重绑定按前缀平移,
-/// 目标在旧目录内部时重跑会不断加深 (/a/x → /a/x/new/x → …),幂等性被
-/// 破坏(评审 #451 finding 6)。折叠键比较,大小写/分隔符差异不能逃避。
+/// `to` = filesystem root (Unix `/`, Windows drive root — both have no
+/// parent) is rejected: translating every binding onto the filesystem root
+/// is a mass relocation, not a rebind (review #463 minor). Existence and
+/// directory-ness are checked separately by
+/// `validate_codex_project_workspace`.
+fn validate_rebind_to(to: &Path) -> Result<(), String> {
+    if to.parent().is_none() {
+        return Err(format!(
+            "rebind_workspace_root: to 不能是文件系统根，收到 {}",
+            to.display()
+        ));
+    }
+    Ok(())
+}
+
+/// `to` must not sit inside `from` (equality is handled by the caller
+/// first): rebind translates by prefix, and a target inside the old
+/// directory deepens on every rerun (/a/x → /a/x/new/x → …), breaking
+/// idempotency (review #451 finding 6). Compared on folded keys so case /
+/// separator differences cannot evade it.
 fn reject_nested_rebind_target(from: &Path, to_key: &Path) -> Result<(), String> {
     let from_canon = std::fs::canonicalize(from).unwrap_or_else(|_| from.to_path_buf());
     let from_key = crate::platform::os::filesystem_path_identity_key(
@@ -247,8 +273,10 @@ fn reject_nested_rebind_target(from: &Path, to_key: &Path) -> Result<(), String>
     Ok(())
 }
 
-/// 旧目录仍在磁盘上 = 非断链场景,要求显式强确认。错误以稳定标记前缀
-/// 表达类型,前端据此升级强警告,不匹配人类文案(finding 11)。
+/// Old directory still on disk = not a broken-link scenario, so an explicit
+/// strong confirmation is required. The error carries a stable marker
+/// prefix; the frontend escalates to a strong warning by prefix and never
+/// matches human copy (finding 11).
 fn require_confirm_existing(from: &Path, confirm_existing: Option<bool>) -> Result<(), String> {
     if from.is_dir() && !confirm_existing.unwrap_or(false) {
         return Err(
@@ -259,23 +287,33 @@ fn require_confirm_existing(from: &Path, confirm_existing: Option<bool>) -> Resu
     Ok(())
 }
 
-/// 目录重绑定(修断链):项目文件夹被物理移走/删除后,把一切以 `from` 为
-/// 前缀的绑定——项目 root、会话工作区(索引/sidecar/元数据三处)、归属
-/// 派生——整体平移到 `to`。与"移动归属"不同,这是物理层写操作,故有栅栏:
-/// - `to` 必须存在且是目录(经 validate_codex_project_workspace 校验);
-/// - 旧目录 `from` 仍存在时须 `confirm_existing = true`(前端已强确认);
-/// - 受影响会话任一有活跃回合(ACP prompt、原生 Engine turn 或 scheduled
-///   轮)即整体拒绝;
-/// - 平移后项目 root 不得与其它项目重叠,违者整体报错回滚。
-/// transcript 里的历史路径不改写;workspace baseline 逐会话重采集(失败仅
-/// 记日志,baseline 可再派生)。
+/// Directory rebind (broken-link repair): after a project folder is
+/// physically moved/deleted, every binding under the `from` prefix — project
+/// roots, session workspaces (index/sidecar/metadata), derived assignments —
+/// is translated onto `to`. Unlike "move assignment" this is a physical-layer
+/// write, so it carries fences:
+/// - `to` must exist and be a directory (validated by
+///   validate_codex_project_workspace) and must not be the filesystem root;
+/// - `from` must be an absolute, non-root path;
+/// - while the old directory `from` still exists, `confirm_existing = true`
+///   is required (the frontend has strong-confirmed);
+/// - if any affected session has an active turn (ACP prompt, native Engine
+///   turn, or scheduled round) the whole rebind is rejected;
+/// - after translation, project roots must not overlap other projects, or
+///   the whole rebind fails and rolls back.
+/// Historical paths in transcripts are not rewritten; the workspace baseline
+/// is recaptured per session (failures are only logged — the baseline is
+/// derivable again).
 ///
-/// 存储形式不变量(评审 #463 m1):`from` 必须与存储形态同源——项目 root
-/// 存 `root_display`(canonical),会话绑定存绑定当时经 canonical 化的目录。
-/// `from` 指向已消失目录时无法 canonical 化,路径别名(macOS `/tmp` 与
-/// `/private/tmp`)在此不可分辨,折叠键匹配会静默半改写。命令层不改写入参
-/// (canonicalize 失败回退原值对消失目录是空操作),前端一律传项目 store 的
-/// root 展示串;`rebind_workspace_root` 是公开命令,这一约定即其入参契约。
+/// Storage-form invariant (review #463 m1/B1): `from` is normalized once at
+/// this entry via `rebind_source_display` — project roots are stored in
+/// `root_display` (canonical) form and session bindings were canonicalized
+/// at bind time, while the three storage lanes match in different domains
+/// (the projects store resolves symlinked ancestors, the codex/session lanes
+/// fold lexically). Normalizing at the entry pins every lane to one resolved
+/// form, so an alias caller (macOS `/var/x` vs the stored `/private/var/x`)
+/// cannot half-migrate. `rebind_workspace_root` is a public command; this
+/// normalization is part of its input contract.
 #[tauri::command]
 pub async fn rebind_workspace_root(
     from: PathBuf,
@@ -287,11 +325,19 @@ pub async fn rebind_workspace_root(
     acp_pool: State<'_, AcpPool>,
     engines: State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<RebindWorkspaceReport, String> {
-    // 并发栅栏(Minor 10):重绑定跨三处存储写阶段,序列化并发调用。凭证
-    // 持有到命令返回,Drop 清零。
+    // Concurrency fence (Minor 10): a rebind writes across three stores, so
+    // concurrent calls are serialized. The token is held until the command
+    // returns; Drop clears it.
     let _rebind_gate = store.begin_rebind()?;
+    validate_rebind_from(&from)?;
+    validate_rebind_to(&to)?;
     let to_key = crate::features::codex_acp::validate_codex_project_workspace(&to)
         .map_err(|e| format!("rebind_workspace_root: 目标目录不可用: {e:#}"))?;
+    // Normalize `from` once for all three storage lanes (review #463 B1, see
+    // the docblock). Resolved through the deepest existing ancestor, so a
+    // vanished directory behind a symlinked ancestor (macOS /var) still
+    // resolves into the stored key domain.
+    let from = crate::features::projects::rebind_source_display(&from);
     if from == to_key {
         return Ok(RebindWorkspaceReport {
             rebound_session_ids: Vec::new(),
@@ -300,38 +346,56 @@ pub async fn rebind_workspace_root(
             post_busy_session_ids: Vec::new(),
         });
     }
-    validate_rebind_from(&from)?;
     reject_nested_rebind_target(&from, &to_key)?;
     require_confirm_existing(&from, confirm_existing)?;
 
-    // 受影响集合快照(活跃回合栅栏与元数据重放共用),必须在重写之前取
-    // (评审 #463 M1):rebind_workspace_prefix 的返回只是本跑改写的集合,
-    // 上一跑已平移而 set_workspace 失败的会话不再匹配 `from`,不快照就
-    // 永远无法重试。sessions_under_workspace 含索引外孤儿 sidecar(M6);
-    // 另纳入"已在 to 下但元数据未同步"的重试候选,失败重跑即可收敛。
+    // Affected-set snapshot (shared by the active-turn fence and the
+    // metadata replay), taken BEFORE any rewrite (review #463 M1): the
+    // return of rebind_workspace_prefix is only the set this run rewrote — a
+    // session translated by a previous run whose set_workspace failed no
+    // longer matches `from` and could never be retried without the snapshot.
+    // sessions_under_workspace includes off-index orphan sidecars (M6);
+    // retry candidates "already under to but metadata not synced" are folded
+    // in too, so a failed rerun converges.
     let mut affected = acp_pool.agents().sessions_under_workspace(&from);
+    // Post-busy sessions of a previous run land here on retry (review #463
+    // M2): their metadata was already synced in run 1, so they are absent
+    // from `affected` — without feeding them back as explicit eviction
+    // candidates, the documented "retry once when idle" remedy would be a
+    // no-op (they would never re-enter rebound_session_ids and never be
+    // evicted). A known, accepted coarseness: healthy sessions created
+    // directly under `to` also land here; evicting their idle runtime is a
+    // harmless lazy-respawn (the same thing the idle reaper does routinely).
+    let mut retry_evict_candidates: Vec<String> = Vec::new();
     for (session_id, path) in acp_pool.agents().sessions_under_workspace(&to_key) {
         if affected.iter().any(|(sid, _)| *sid == session_id) {
             continue;
         }
-        // 元数据与绑定一致的是正常会话;读不出元数据(孤儿/损坏)也按候选
-        // 处理,元数据循环里自会分类。
+        // A session whose metadata matches its binding is healthy; one whose
+        // metadata cannot be read (orphan/corrupt) is treated as a candidate
+        // too — the metadata loop classifies it.
         let needs_metadata_sync = match sessions.load(&session_id) {
             Ok(session) => session.metadata.workspace != path,
             Err(_) => true,
         };
         if needs_metadata_sync {
             affected.push((session_id, path));
+        } else {
+            retry_evict_candidates.push(session_id);
         }
     }
 
-    // 活跃回合栅栏:受影响会话任一在跑 prompt/turn/scheduled 轮就拒绝,
-    // 等空闲后重试。scheduled 轮只记在 scheduled_running_sessions,不算
-    // 进去会漏掉 spawn→submit 窗口里的在途轮(同 rewind 门口径,M5)。
-    // 已知权衡(评审 #463 Minor 9,记录在案):busy 判定读运行时的
-    // busy/configuring 标志,标志一旦卡死(进程异常退出未复位)会持续
-    // 拒绝直到重启;ACP 侧 is_turn_active 并入 configuring,配置同步窗口
-    // 同样落在拒绝范围内。不设 stale 逃生门,避免误回收在途回合的会话。
+    // Active-turn fence: if any affected session is running a prompt/turn/
+    // scheduled round, reject and let the user retry when idle. Scheduled
+    // rounds are only recorded in scheduled_running_sessions; not counting
+    // them would miss an in-flight round in the spawn→submit window (same
+    // semantics as the rewind gate, M5).
+    // Known trade-off (review #463 Minor 9, on record): the busy check reads
+    // the runtime's busy/configuring flags; a flag stuck set (process died
+    // without resetting) keeps rejecting until restart. On the ACP side
+    // is_turn_active folds in configuring, so the config-sync window is also
+    // covered by the rejection. There is deliberately no stale escape hatch,
+    // to avoid reclaiming a session with an in-flight turn by mistake.
     let mut busy_ids = Vec::new();
     for (session_id, _) in &affected {
         if acp_pool.is_turn_active(session_id).await
@@ -342,23 +406,29 @@ pub async fn rebind_workspace_root(
         }
     }
     if !busy_ids.is_empty() {
-        // 类型化标记(Minor 7):busy 拒绝是栅栏正常工作的高频路径,前端按
-        // 稳定前缀映射 i18n 文案,标记后只跟会话 id 供排查(同
-        // REBIND_OLD_ROOT_EXISTS 的既有约定)。
+        // Typed marker (Minor 7): a busy rejection is the fence's normal
+        // high-frequency path; the frontend maps it to i18n copy by stable
+        // prefix, and only session ids follow the marker (same convention as
+        // REBIND_OLD_ROOT_EXISTS).
         return Err(format!("REBIND_SESSIONS_BUSY: {}", busy_ids.join(", ")));
     }
 
-    // 顺序:项目 root → 会话绑定(索引+sidecar) → 元数据 → baseline。
-    // 每步幂等,失败重试只补未完成部分。元数据循环驱动自上面的快照,
-    // 逐候选算目标路径(from 前缀下平移;已在 to 下的重试候选原样)。
+    // Order: project roots → session bindings (index + sidecars) → metadata
+    // → baseline. Every step is idempotent; a failed retry only completes
+    // the unfinished parts. The metadata loop is driven by the snapshot
+    // above, computing the target per candidate (translated for those under
+    // the from prefix; as-is for retry candidates already under to).
     let affected_project_ids = store
         .rebind_roots(&from, &to_key)
         .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
-    // sidecar 最终陈旧名单(Major 2):孤儿重写失败、或索引会话重写+补写
-    // 两趟都失败——本跑内已无自愈路径(回填只补缺失,boot restore 在索引
-    // 完好时跳过 sidecar),不报的话索引损坏时恢复会复活旧目录、静默撤销
-    // 重绑定。陈旧 sidecar 仍在 from 前缀下,计入 failed 后用户重跑,磁盘
-    // 前缀扫描即改写收敛。
+    // Finally-stale sidecar list (Major 2): an orphan rewrite failure, or an
+    // indexed session whose rewrite + retry passes both failed — no
+    // self-healing path remains in this run (backfill only fills missing
+    // sidecars, and boot restore skips sidecars while the index is intact).
+    // Not reporting them would let a restore with a damaged index resurrect
+    // old directories and silently undo the rebind. Stale sidecars still sit
+    // under the from prefix; once counted as failed, a user rerun converges
+    // them via the on-disk prefix scan.
     let prefix_outcome = acp_pool
         .agents()
         .rebind_workspace_prefix(&from, &to_key)
@@ -370,17 +440,19 @@ pub async fn rebind_workspace_root(
         else {
             continue;
         };
-        // 孤儿(会话 JSON 已不存在)没有元数据可写;损坏 JSON 不是孤儿——
-        // set_workspace 的 load 解析失败会进 failed,可重试(评审 #463
-        // minor:孤儿分类只认 NotFound,不认一切 load 错误)。
+        // An orphan (session JSON already gone) has no metadata to write; a
+        // corrupt JSON is NOT an orphan — set_workspace's load parse failure
+        // lands in failed and is retryable (review #463 minor: the orphan
+        // classification accepts only NotFound, not any load error).
         if sessions.durable_session_record_is_absent(session_id) {
             if prefix_outcome
                 .sidecar_final_stale
                 .iter()
                 .any(|sid| sid == session_id)
             {
-                // 孤儿 sidecar 落盘失败:重启会复活旧目录,按失败上报,
-                // 重跑即重试同一 sidecar(m2)。
+                // Orphan sidecar persist failed: a restart would resurrect
+                // the old directory, so report it as failed — a rerun retries
+                // the same sidecar (m2).
                 failed_session_ids.push(session_id.clone());
             } else {
                 rebound_session_ids.push(session_id.clone());
@@ -389,8 +461,10 @@ pub async fn rebind_workspace_root(
         }
         match sessions.set_workspace(session_id, new_path.clone()) {
             Ok(()) => {
-                // 索引会话的 sidecar 两趟都失败:绑定已平移但权威 sidecar
-                // 仍是旧路径,如实计入 failed 触发用户重跑(Major 2)。
+                // Indexed session whose sidecar failed both passes: the
+                // binding moved but the authoritative sidecar still holds the
+                // old path, so honestly count it as failed to trigger a user
+                // rerun (Major 2).
                 if prefix_outcome
                     .sidecar_final_stale
                     .iter()
@@ -402,13 +476,23 @@ pub async fn rebind_workspace_root(
                 }
             }
             Err(error) => {
-                eprintln!("[projects] rebind set_workspace failed: {error:#}");
+                // CodeQL cleartext-logging (review #463 round 7): the error
+                // chain embeds the session id (sessions/<id>.json paths), so
+                // only the root cause — which never carries paths or ids —
+                // is logged; the id reaches the user through the report's
+                // failed list instead.
+                eprintln!(
+                    "[projects] rebind set_workspace failed: {}",
+                    error.root_cause()
+                );
                 failed_session_ids.push(session_id.clone());
             }
         }
-        // baseline 重采集:best-effort,git 指纹可再派生,失败不阻断重绑定。
-        // 走 spawn_blocking:非 git 目录会同步遍历上万条目,不能在 async
-        // 命令线程上串行跑(同 codex.rs 建会话时的既有 idiom)。
+        // Baseline recapture: best-effort, the git fingerprint is derivable
+        // again, and a failure does not block the rebind. Runs on
+        // spawn_blocking: a non-git directory synchronously walks tens of
+        // thousands of entries and must not run serially on the async
+        // command thread (same idiom as session creation in codex.rs).
         let baseline_session_id = session_id.clone();
         let baseline_root = new_path.clone();
         match tauri::async_runtime::spawn_blocking(move || {
@@ -421,7 +505,13 @@ pub async fn rebind_workspace_root(
         {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
-                eprintln!("[projects] rebind capture_baseline failed: {error:#}")
+                // Same CodeQL constraint as set_workspace above: the chain
+                // embeds sessions/<id>/…json.tmp paths; log the root cause
+                // only.
+                eprintln!(
+                    "[projects] rebind capture_baseline failed: {}",
+                    error.root_cause()
+                )
             }
             Err(error) => {
                 eprintln!("[projects] rebind capture_baseline task failed: {error}")
@@ -438,9 +528,12 @@ pub async fn rebind_workspace_root(
             "workspace_rebound",
         );
     }
-    // 迁移后忙碌复查(finding 5):入口栅栏与多文件迁移不是互斥区,回合可能
-    // 在迁移期间启动、对着旧目录执行。绑定已平移,这里只如实上报,前端提示
-    // 必要时空闲后重试一次。scheduled 轮同入口栅栏口径(M5)。
+    // Post-migration busy recheck (finding 5): the entry fence and the
+    // multi-file migration are not mutually exclusive, so a turn may have
+    // started — against the old directory — during the migration. Bindings
+    // are already moved; report honestly and let the frontend suggest one
+    // retry when idle. Scheduled rounds share the entry-fence semantics
+    // (M5).
     let mut post_busy_session_ids = Vec::new();
     for (session_id, _) in &affected {
         if acp_pool.is_turn_active(session_id).await
@@ -450,21 +543,34 @@ pub async fn rebind_workspace_root(
             post_busy_session_ids.push(session_id.clone());
         }
     }
-    // 空闲运行时定向回收(评审 #463 Major 1):rebind 只平移存储绑定,驻留
-    // 进程仍持有 spawn 时的旧 cwd——ACP get_or_spawn 的复用分支不比对工作区,
-    // 原生引擎的 PreparedRuntimeModel 重建键不含 workspace,下一回合会继续
-    // 在已消失/错位的目录里执行,而 UI 承诺的是"改用新目录"。对绑定已平移
-    // 且未进入新回合的会话回收运行时,下次 send 走 lazy respawn 以新目录
-    // 重建(同 rewind 的回收语义)。post_busy 会话在跑在途回合,不动:回合
-    // 对着旧目录执行是该修复的已知边界,已由 rebindBusyAfter 文案提示。
-    let post_busy: std::collections::HashSet<&str> =
-        post_busy_session_ids.iter().map(String::as_str).collect();
-    for session_id in &rebound_session_ids {
-        if post_busy.contains(session_id.as_str()) {
+    // Idle-gated runtime reclaim (review #463 M1/M2 + eviction-tail TOCTOU):
+    // rebind only translates stored bindings — resident processes still hold
+    // the cwd captured at spawn (ACP get_or_spawn's reuse branch does not
+    // compare workspaces; the native engine's PreparedRuntimeModel rebuild
+    // key excludes the workspace), so the next turn would keep executing in
+    // the vanished folder while the UI promises the new one. Both pools
+    // reclaim through their idle-aware primitives: the recheck and the
+    // removal are atomic, so a turn that starts after the recheck above is
+    // NOT killed — the session is reported as post-busy instead. A
+    // successful reclaim also resets the per-session shell manager, which
+    // pins its cwd at construction (M1). Candidates are this run's rebound
+    // sessions plus the fed-back retry candidates (M2).
+    let post_busy: std::collections::HashSet<String> =
+        post_busy_session_ids.iter().cloned().collect();
+    for session_id in collect_eviction_candidates(&rebound_session_ids, &retry_evict_candidates) {
+        if post_busy.contains(&session_id) {
             continue;
         }
-        acp_pool.evict(session_id).await;
-        engines.evict(session_id).await;
+        let acp_idle = acp_pool.evict_if_idle_for_rebind(&session_id).await;
+        let engine_idle = engines.evict_if_idle_for_rebind(&session_id).await;
+        if !acp_idle || !engine_idle {
+            // A turn started between the recheck and the eviction and the
+            // pools refused to kill it. Surface the session so the user can
+            // retry once it is idle again.
+            if !post_busy_session_ids.contains(&session_id) {
+                post_busy_session_ids.push(session_id);
+            }
+        }
     }
     Ok(RebindWorkspaceReport {
         rebound_session_ids,
@@ -472,6 +578,23 @@ pub async fn rebind_workspace_root(
         affected_project_ids,
         post_busy_session_ids,
     })
+}
+
+/// Eviction candidates for the rebind tail: sessions rebound in this run
+/// plus `to`-lane sessions whose metadata is already synced (post-busy
+/// sessions from a previous run — review #463 M2), deduplicated, order
+/// preserved.
+fn collect_eviction_candidates(
+    rebound_session_ids: &[String],
+    retry_evict_candidates: &[String],
+) -> Vec<String> {
+    let mut candidates = rebound_session_ids.to_vec();
+    for session_id in retry_evict_candidates {
+        if !candidates.contains(session_id) {
+            candidates.push(session_id.clone());
+        }
+    }
+    candidates
 }
 
 #[cfg(test)]
@@ -484,7 +607,8 @@ mod tests {
             validate_rebind_from(Path::new("")).is_err(),
             "空串是全量重写"
         );
-        // 平台根(Unix `/`、Windows 盘符根)没有 parent,必须拒绝。
+        // Platform roots (Unix `/`, Windows drive roots) have no parent and
+        // must be rejected.
         let root = std::env::temp_dir()
             .canonicalize()
             .ok()
@@ -496,6 +620,48 @@ mod tests {
         );
         let normal = std::env::temp_dir().join("pinvou3-rebind-from-check");
         assert!(validate_rebind_from(&normal).is_ok());
+    }
+
+    #[test]
+    fn rebind_from_rejects_relative_paths() {
+        // review #463 minor: a relative `from` diverges the storage lanes
+        // (the projects lane absolutizes it through ancestor resolution, the
+        // codex lane folds it raw), so the entry rejects it outright.
+        assert!(validate_rebind_from(Path::new("relative/dir")).is_err());
+        assert!(validate_rebind_from(Path::new("./also-relative")).is_err());
+    }
+
+    #[test]
+    fn rebind_to_rejects_filesystem_root() {
+        // review #463 minor: rebinding onto the filesystem root is a mass
+        // relocation, not a rebind.
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .ok()
+            .and_then(|p| p.ancestors().last().map(|a| a.to_path_buf()))
+            .expect("temp dir must have a root ancestor");
+        assert!(validate_rebind_to(&root).is_err());
+        let normal = std::env::temp_dir().join("pinvou3-rebind-to-check");
+        assert!(validate_rebind_to(&normal).is_ok());
+    }
+
+    #[test]
+    fn eviction_candidates_merge_rebound_and_retry_without_duplicates() {
+        // review #463 M2: the retry (post-busy) population is fed back as
+        // explicit eviction candidates alongside this run's rebound sessions,
+        // deduplicated, rebound first.
+        let rebound = vec!["s1".to_string(), "s2".to_string()];
+        let retry = vec!["s2".to_string(), "s3".to_string()];
+        assert_eq!(
+            collect_eviction_candidates(&rebound, &retry),
+            vec!["s1".to_string(), "s2".to_string(), "s3".to_string()]
+        );
+        assert!(collect_eviction_candidates(&[], &[]).is_empty());
+        assert_eq!(
+            collect_eviction_candidates(&[], &["s9".to_string()]),
+            vec!["s9".to_string()],
+            "a pure retry run (nothing rebound) still evicts the fed-back candidates"
+        );
     }
 
     #[test]

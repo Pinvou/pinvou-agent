@@ -76,16 +76,19 @@ struct StoreState {
 pub struct ProjectStore {
     state: Arc<RwLock<StoreState>>,
     path: Arc<PathBuf>,
-    /// 目录重绑定的进程内临界区标志(Minor 10):check-and-set 在同一把锁内
-    /// 完成,Guard Drop 清零。重绑定跨 projects store / 会话 store / sidecar
-    /// 三处写入,两次并发调用会交错各自的写阶段——单次写原子且重跑收敛,
-    /// 但序列化后可免掉交错期的中间态报告。
+    /// Process-local critical-section flag for directory rebinds (Minor 10):
+    /// check-and-set completes under one lock, and the guard's Drop clears it.
+    /// A rebind writes across three stores (projects store / session store /
+    /// sidecars); two concurrent calls would interleave their write phases —
+    /// each write is atomic and reruns converge, but serialization avoids the
+    /// intermediate-state reports of the interleaved window.
     rebind_gate: Arc<parking_lot::Mutex<bool>>,
 }
 
-/// `begin_rebind` 的 RAII 凭证:持有期间其他 rebind 调用被拒,Drop 清零。
-/// 只持 `Arc<Mutex<bool>>` 不持锁守卫,跨 await 点(Send future)安全;
-/// 清零在 Drop 内完成,错误路径不会留下常闭的栅栏。
+/// RAII token of `begin_rebind`: while held, other rebind calls are rejected;
+/// Drop clears the flag. It holds only the `Arc<Mutex<bool>>`, not a lock
+/// guard, so it is Send-safe across await points; clearing happens in Drop,
+/// so error paths cannot leave a permanently closed gate.
 pub struct RebindGate {
     flag: Arc<parking_lot::Mutex<bool>>,
 }
@@ -169,19 +172,27 @@ fn resolve_through_existing_ancestor(path: &Path) -> PathBuf {
     lexical
 }
 
-/// root 的比较键:展示形态经共享的 `filesystem_path_identity_key` 折叠——
-/// Windows 折叠分隔符与大小写(`C:\Work` 与 `c:\work` 是同一 root),POSIX
-/// 大小写敏感、原样保留。
-///
-/// 已知残留(接受的边缘):macOS 默认 APFS 大小写不敏感,但共享 helper 按
-/// 「卷可能配置为大小写敏感」的约定不折叠大小写(见 platform/os/macos),
-/// 同一目录换大小写写法仍算两个 root。按平台自行折叠会破坏大小写敏感卷,
-/// 故在此记录而不折叠。
-fn root_key(path: &Path) -> String {
-    identity_key_of_display(&root_display(path))
+/// Command-entry normalization of a rebind `from` (review #463 B1): the three
+/// storage lanes match in different domains (this store resolves symlinked
+/// ancestors; the codex/session lanes fold lexically), so an alias caller
+/// (macOS `/var/x` vs the stored `/private/var/x`) would half-migrate.
+/// Resolving once at the command entry pins every lane to the same form.
+/// Idempotent for paths already in display form.
+pub fn rebind_source_display(from: &Path) -> PathBuf {
+    root_display(from)
 }
 
-/// 已存 root(写入时已是展示形态)的比较键:无需再触盘,只做键折叠。
+/// Comparison key of a root: the display form folded through the shared
+/// `filesystem_path_identity_key` — Windows folds separators and case
+/// (`C:\Work` and `c:\work` are the same root); POSIX is case-sensitive and
+/// kept as-is. Stored roots are already in display form at write time, so no
+/// disk touch is needed — only the key fold.
+///
+/// Known residual (accepted edge): macOS defaults to a case-insensitive
+/// APFS, but the shared helper deliberately does not fold case (a volume may
+/// be configured case-sensitive; see platform/os/macos), so the same
+/// directory spelled in two cases still counts as two roots. Folding here
+/// would break case-sensitive volumes, so it is documented instead.
 fn identity_key_of_display(path: &Path) -> String {
     crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy())
 }
@@ -361,9 +372,14 @@ impl ProjectStore {
         }
     }
 
-    /// 进入目录重绑定临界区(Minor 10):check-and-set 原子完成,已置位即拒
-    /// (REBIND_IN_PROGRESS 类型化标记,前端按稳定前缀匹配的既有约定处理)。
-    /// 拒绝路径不创建 Guard,凭证 Drop 是唯一清零点,错误路径不留常闭栅栏。
+    /// Enters the directory-rebind critical section (Minor 10): check-and-set
+    /// is atomic; an already-set flag is rejected with the typed
+    /// `REBIND_IN_PROGRESS` marker. The marker follows the stable-prefix
+    /// convention of `REBIND_OLD_ROOT_EXISTS`/`REBIND_SESSIONS_BUSY`;
+    /// localized frontend copy for this marker is not mapped yet (tracked in
+    /// review #463), so the raw message is shown until it lands. The
+    /// rejection path creates no guard; the token's Drop is the only clearing
+    /// point, so error paths never leave a permanently closed gate.
     pub fn begin_rebind(&self) -> std::result::Result<RebindGate, String> {
         let mut flag = self.rebind_gate.lock();
         if *flag {
@@ -603,23 +619,43 @@ impl ProjectStore {
         })
     }
 
-    /// 目录重绑定(修断链通道):把落在 `from` 前缀下的项目 root 平移到 `to`。
-    /// `from` 按存储原值匹配(可能已在磁盘上消失),`to` 由命令层校验为存在
-    /// 的 canonical 路径。改写后逐项目复验重叠约束——平移出的 root 可能撞上
-    /// 其它项目的领地,此时整体报错回滚(内存态未落盘)。返回受影响项目 id。
-    /// 幂等:无 root 命中即空操作。
+    /// Directory rebind (broken-link repair): translate project roots under
+    /// the `from` prefix onto `to`. Matching runs in the resolved display
+    /// domain, and the suffix is cut from each stored root by the RESOLVED
+    /// `from` component count (review #463 B1): for an alias `from` (macOS
+    /// `/var/x` resolving to `/private/var/x`) the resolved form is one
+    /// component deeper, and cutting by the raw argument's count would keep
+    /// an extra component, rewriting the root to `<to>/x` instead of `<to>`.
+    /// `to` is validated by the command layer as an existing canonical path.
+    /// After rewriting, overlap invariants are revalidated per project — a
+    /// translated root may collide with another project's territory, in which
+    /// case the whole rebind fails and rolls back (memory untouched, nothing
+    /// persisted). Returns the affected project ids.
+    ///
+    /// Idempotent: no matching root is an empty Ok, not an error. The retry
+    /// contract depends on this — a rerun after a partially failed run finds
+    /// the roots already moved and must converge to a no-op while the command
+    /// layer retries the remaining session writes. A `from` that never had
+    /// any root is indistinguishable from a completed retry at this layer;
+    /// the entry normalization in the command layer (resolving `from` once
+    /// for all three storage lanes) is what prevents a silent half-migration.
     pub fn rebind_roots(&self, from: &Path, to: &Path) -> Result<Vec<String>> {
         let mut state = self.state.write();
         if from == to {
             return Ok(Vec::new());
         }
-        // to 由命令层保证存在,这里统一成 canonical 键,与存储形态一致;
-        // from 的匹配在折叠键上进行(Windows 折叠大小写/分隔符,仅大小写
-        // 改名的目录不再漏配),后缀按组件数从原 root 切回,保留子目录
-        // 原有大小写。改写在副本上进行,复验通过才提交内存态——重叠
-        // 冲突时调用方看到的状态与盘面保持一致。
+        // `to` is guaranteed to exist by the command layer; normalize it to
+        // the canonical display form used for storage. `from` matching runs on
+        // the folded identity key of its resolved display form (Windows folds
+        // case/separators, so a case-only rename still matches), and the
+        // suffix is cut by the resolved component count so a subdirectory
+        // keeps its original casing. Rewrites happen on a candidate copy and
+        // commit only after revalidation — on an overlap conflict the caller
+        // observes state identical to disk.
         let to_key = root_display(to);
-        let from_key = root_key(from);
+        let from_display = root_display(from);
+        let from_key = identity_key_of_display(&from_display);
+        let from_depth = from_display.components().count();
         let mut candidate = state.projects.clone();
         let mut affected_projects = Vec::new();
         for project in candidate.iter_mut() {
@@ -629,7 +665,7 @@ impl ProjectStore {
                 if !key_is_same_or_nested(&root_key_str, &from_key) {
                     continue;
                 }
-                let suffix: PathBuf = root.components().skip(from.components().count()).collect();
+                let suffix: PathBuf = root.components().skip(from_depth).collect();
                 *root = if suffix.as_os_str().is_empty() {
                     to_key.clone()
                 } else {

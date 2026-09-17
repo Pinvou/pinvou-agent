@@ -1,5 +1,6 @@
 //! ProjectStore 行为测试。全部走 `from_paths` + 临时目录,不触进程全局
 //! `PINVOU3_HOME`。
+// architecture-guard: allow-target-cfg -- the rebind alias regression needs a real directory symlink to emulate macOS /var → /private/var ancestor resolution; symlink creation is only available unprivileged on unix, so the test is cfg(unix)-gated and no platform behavior leaks into shared code.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -395,9 +396,10 @@ fn rebind_roots_rewrites_prefix_and_stays_idempotent() {
     assert_eq!(affected, vec![project.id.clone()]);
     let roots = store.get(&project.id).unwrap().roots;
     assert!(roots.contains(&display(&to)));
-    // 期望形态统一走 display():Windows 上 env::temp_dir 的 8.3 短名会被
-    // 祖先 canonicalize 展开,原始 abs() 与存储形态词法不等(评审 #463
-    // windows CI 同因两连挂)。
+    // Expected forms go through display(): on Windows the 8.3 short name of
+    // env::temp_dir is expanded by ancestor canonicalization, so raw abs()
+    // and the stored form differ lexically (review #463 windows CI failed
+    // twice on this).
     assert!(
         roots.contains(&display(&abs("untouched"))),
         "prefix 外的 root 不动"
@@ -407,7 +409,7 @@ fn rebind_roots_rewrites_prefix_and_stays_idempotent() {
         vec![display(&abs("elsewhere"))]
     );
 
-    // 幂等:from 前缀已无命中,再跑为空操作。
+    // Idempotent: nothing matches the from prefix anymore, rerun is a no-op.
     assert!(store.rebind_roots(&from, &to).unwrap().is_empty());
     assert_eq!(store.get(&project.id).unwrap().roots, roots);
 }
@@ -428,7 +430,7 @@ fn rebind_roots_rejects_overlap_and_keeps_state() {
         .rebind_roots(&from, &occupied)
         .expect_err("overlap after rebind rejected");
     assert!(error.to_string().contains("overlap"));
-    // 报错回滚:内存态未变(未落盘)。
+    // Error rolls back: memory state unchanged (nothing persisted).
     assert_eq!(store.get(&project.id).unwrap(), before);
 }
 
@@ -514,4 +516,88 @@ fn root_keys_fold_case_only_on_windows() {
         create(&store, "小写", &[abs("caseprobe")]);
         assert_eq!(store.list().len(), 2);
     }
+}
+
+#[test]
+fn rebind_roots_display_form_preserves_nested_suffix() {
+    // Display-form `from` (the documented IPC contract): a root nested one
+    // level below `from` moves to `to`/suffix with its original casing kept.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let from = abs("nested-from");
+    let to = temp.path().join("nested-to");
+    std::fs::create_dir_all(&to).expect("create to dir");
+
+    let project = create(&store, "嵌套搬家", &[from.join("Sub")]);
+    let affected = store.rebind_roots(&from, &to).expect("rebind nested root");
+    assert_eq!(affected, vec![project.id.clone()]);
+    assert_eq!(
+        store.get(&project.id).unwrap().roots,
+        vec![display(&to).join("Sub")],
+        "nested suffix survives with original casing"
+    );
+
+    // A `from` that matches no stored root is an explicit no-op, not a
+    // partial rewrite: state stays untouched and nothing is persisted.
+    let missing = abs("never-stored");
+    assert!(
+        store.rebind_roots(&missing, &to).unwrap().is_empty(),
+        "unknown from must be an empty Ok (idempotent retry contract)"
+    );
+    assert_eq!(store.list().len(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn rebind_roots_via_symlink_alias_cuts_suffix_by_resolved_depth() {
+    // review #463 B1 regression: `from` reaches the store through a symlinked
+    // ancestor (macOS /var → /private/var). The alias resolves one component
+    // DEEPER than its raw spelling; matching runs in the resolved domain, so
+    // cutting the suffix by the raw argument's component count would keep one
+    // component too many and rewrite the root to <to>/proj/sub instead of
+    // <to>/sub (while the codex/session lanes, matching lexically, would not
+    // match at all — a cross-store half-migration).
+    let temp = tempfile::tempdir().expect("tempdir");
+    let deep = temp.path().join("real").join("deep");
+    std::fs::create_dir_all(&deep).expect("create deep dir");
+    let alias = temp.path().join("alias");
+    std::os::unix::fs::symlink(&deep, &alias).expect("create symlink");
+    // Vanished leaf below the alias: resolution goes through the deepest
+    // existing ancestor (the symlink), landing one level deeper than the
+    // raw form.
+    let from = alias.join("proj");
+    let to = temp.path().join("moved");
+    std::fs::create_dir_all(&to).expect("create to dir");
+
+    let store = store_in(&temp);
+    // Stored root in canonical (real) form, nested one level below `from`.
+    let project = create(&store, "别名", &[deep.join("proj").join("sub")]);
+
+    let affected = store.rebind_roots(&from, &to).expect("rebind via alias");
+    assert_eq!(affected, vec![project.id.clone()]);
+    assert_eq!(
+        store.get(&project.id).unwrap().roots,
+        vec![display(&to).join("sub")],
+        "suffix cut by resolved depth: no extra component survives"
+    );
+}
+
+#[test]
+fn begin_rebind_rejects_concurrent_rebind_and_releases_on_drop() {
+    // Minor 10 fence: check-and-set is atomic; the RAII token's Drop is the
+    // only release point, so error paths cannot leave a permanently closed
+    // gate.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let gate = store.begin_rebind().expect("first gate acquired");
+    let rejected = store
+        .begin_rebind()
+        .err()
+        .expect("second rebind rejected while the gate is held");
+    assert!(
+        rejected.starts_with("REBIND_IN_PROGRESS"),
+        "typed marker follows the stable-prefix convention"
+    );
+    drop(gate);
+    let _gate = store.begin_rebind().expect("gate released on drop");
 }
